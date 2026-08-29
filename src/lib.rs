@@ -408,22 +408,46 @@ fn run_memo(
 /// refuses `mine`/`inbox`. See the `requests` module docs for why this does not
 /// copy the frozen helper's fallback to the server's current pane.
 fn calling_viewer(dir: &std::path::Path) -> requests::Viewer {
-    calling_pane()
+    calling_pane(dir)
         .map(|observed| requests::Viewer::from_pane(&observed, &own_session(dir)))
         .unwrap_or_default()
 }
 
-/// The pane a helper was invoked from, observed on the ambient server —
-/// `None` for no `TMUX_PANE`, an empty one, or one the server does not answer
-/// for.
-fn calling_pane() -> Option<tmux::ObservedViewer> {
+/// The tmux server a helper reads its OWN pane on: the session's recorded
+/// selector when usable, else the ambient server.
+///
+/// The bash helpers read `TMUX_PANE` off `$AE_TMUX_SERVER` (the shim ae exports
+/// into every session's environment); the core does not read that env, so it
+/// reads the same server from the session's recorded selector instead — they
+/// name the same server, since the launch pins one from the other. An unusable
+/// selector degrades to the ambient server (who-am-I then simply finds no
+/// identity, exactly as an unstamped pane does) rather than refusing: this is a
+/// read of the caller's own identity, not a destructive routing decision.
+fn viewer_server(dir: &std::path::Path) -> crate::inventory::ServerId {
+    match crate::meta::read_bytes(dir)
+        .map(|bytes| crate::meta::Meta::parse(&String::from_utf8_lossy(&bytes)).server_selector())
+    {
+        Ok(crate::meta::ServerSelector::Positive(selector)) => {
+            crate::inventory::ServerId::Selected(selector)
+        }
+        _ => crate::inventory::ServerId::Ambient,
+    }
+}
+
+/// The pane a helper was invoked from, observed on the session's recorded
+/// server — `None` for no `TMUX_PANE`, an empty one, or one the server does not
+/// answer for.
+fn calling_pane(dir: &std::path::Path) -> Option<tmux::ObservedViewer> {
     #[allow(
         clippy::disallowed_methods,
         reason = "a door: the pane a helper was invoked from is TMUX_PANE, which tmux sets in every pane's environment — see clippy.toml"
     )]
     let pane = std::env::var_os("TMUX_PANE");
     let pane = pane.filter(|value| !value.is_empty())?;
-    transport::observe_viewer(pane.to_str()?)
+    // Who-am-I reads the caller's pane on the session's OWN recorded server —
+    // the core has no $AE_TMUX_SERVER shim, so a session on a non-ambient server
+    // (or a caller with no $TMUX) would otherwise read no identity.
+    transport::observe_viewer(&viewer_server(dir), pane.to_str()?)
 }
 
 /// `session=` in `<dir>/meta` — what the frozen `_lib` reads into
@@ -621,7 +645,7 @@ pub fn run_with(
         cli::Request::Reply { dir, tail } => reply::run(
             dir,
             tail,
-            calling_pane().as_ref(),
+            calling_pane(dir).as_ref(),
             &own_session(dir),
             time::Timestamp::now(),
             err,
@@ -678,8 +702,9 @@ pub fn run_with(
         cli::Request::CompactRevalidate {
             dir,
             tuple,
+            when,
             keep_history,
-        } => compact::revalidate_step(dir, tuple, *keep_history, err)?,
+        } => compact::revalidate_step(dir, tuple, *keep_history, when, err)?,
         cli::Request::CompactArchive {
             dir,
             tuple,
@@ -706,6 +731,16 @@ pub fn run_with(
             tuple,
             keep_history,
         } => compact::teardown_step(dir, tuple, *keep_history, out, err)?,
+        cli::Request::CompactWait {
+            dir,
+            reference,
+            timeout_secs,
+        } => compact::wait_step(dir, reference, *timeout_secs, err)?,
+        cli::Request::CompactCancel { dir, reference } => {
+            compact::cancel_step(dir, reference, err)?
+        }
+        cli::Request::CompactMemoBaseline { dir } => compact::memo_baseline_step(dir, out)?,
+        cli::Request::CompactFindOutstanding { dir } => compact::find_outstanding_step(dir, out)?,
         cli::Request::List(list_args) => {
             if let Some(world) = world {
                 // SC-017o: the warning goes to STDERR and the table still

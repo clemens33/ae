@@ -4978,7 +4978,7 @@ assert_eq "#34: commit and push failures say STOPPED, name the resume, and drop 
         && "$(printf '%s' "$_e34" | command grep -c 'Or pick the session back up: ae ${session_name}' || true)" == "2" \
         && "$_code" != *'Session preserved'* ]] && echo 1 || echo 0)"
 unset _e34
-assert_eq "kill-verified: exactly three scoped call sites, no more" "3" \
+assert_eq "kill-verified: exactly four scoped call sites, no more (end, stop, self-detect, compact)" "4" \
     "$(printf '%s' "$AE_SOURCE" | command grep -c '_lifecycle_kill_verified "' || true)"
 
 # ── #33 self-detection reuses #29's PROVEN mechanism ─────────────────
@@ -12938,8 +12938,8 @@ assert_eq "compact-self: an UNPROVEN answer means not inside, which is the safe 
 # ORDER MATTERS MORE THAN THE CHECK: it must run before a mint, an event, a prompt or an
 # archive read, so a caller inside the target cannot change anything by trying.
 _cp48_cmd_src="$(awk '/^cmd_compact\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
-assert_eq "compact-self: the refusal precedes the freeze (which can MINT) in cmd_compact" "1" \
-    "$([[ "$_cp48_cmd_src" == *'_compact_refuse_if_inside "$name" || return 1'*'_compact_freeze_source'* ]] && echo 1 || echo 0)"
+assert_eq "compact-self: the refusal precedes the freeze (the core's _compact-freeze) in cmd_compact" "1" \
+    "$([[ "$_cp48_cmd_src" == *'_compact_refuse_if_inside "$name" || return 1'*'_compact-freeze'* ]] && echo 1 || echo 0)"
 assert_eq "compact-self: and it asks the same question stop asks, not a private one" "1" \
     "$([[ "$AE_SOURCE" == *'_compact_refuse_if_inside() { # <name>'*'_stop_current_target_proven "$1"'* ]] && echo 1 || echo 0)"
 
@@ -13200,12 +13200,19 @@ assert_eq "compact-proofs (source shape): no _ar_purge_archive call — behaviou
     "$(grep -c '_ar_purge_archive' <<<"$_cp48_cmd" | tr -d '[:space:]')"
 assert_eq "compact-proofs (source shape): no hand-rolled archive rm — same coverage" "0" \
     "$(grep -cE 'rm -rf .*archive' <<<"$_cp48_cmd" | tr -d '[:space:]')"
-assert_eq "compact-proofs (source shape): two revalidation call sites — gate 2's BEHAVIOUR is proven by the compact-gate2 arm" "2" \
-    "$(grep -c '_compact_revalidate' <<<"$_cp48_cmd" | tr -d '[:space:]')"
-assert_eq "compact-proofs (source shape): _end_session_locked, not cmd_end — behaviour proven by compact-keep, which needs the frozen plan honoured by the shared planner" "1" \
-    "$([[ "$_cp48_cmd" == *'_end_session_locked "$c_name"'* && "$_cp48_cmd" != *'cmd_end'* ]] && echo 1 || echo 0)"
-assert_eq "compact-proofs (source shape): the authorization payload is installed — behaviour proven by compact-keep (a wrong payload makes the planner refuse)" "1" \
-    "$([[ "$_cp48_cmd" == *'_AE_END_FROZEN_PLAN["$c_name"]='*'_AE_END_FROZEN_AUTHORITY["$c_name"]="compact"'* ]] && echo 1 || echo 0)"
+assert_eq "compact-proofs (source shape): two core revalidation call sites — gate 2's BEHAVIOUR is proven by the compact-gate2 arm" "2" \
+    "$(grep -c '_compact-revalidate' <<<"$_cp48_cmd" | tr -d '[:space:]')"
+# CLEAN CUT (P3.7): the destructive steps are the pinned core's own, NOT the shared bash
+# _end_session_locked — the core owns verify_stopped, the archive equivalence gate and the
+# teardown re-preflight. behaviour proven by compact-keep (the archive must exist and the
+# source be gone) and compact-out (recovery precedes teardown on the real streams).
+assert_eq "compact-proofs (source shape): the core archives and tears down, NOT _end_session_locked" "1" \
+    "$([[ "$_cp48_cmd" == *'_compact-archive'* && "$_cp48_cmd" == *'_compact-teardown'* && "$_cp48_cmd" != *'_end_session_locked'* ]] && echo 1 || echo 0)"
+# The frozen TUPLE is the authorization payload, re-proved at every destructive gate — the
+# same string passed to the archive and the teardown, so a session replaced since the freeze
+# is caught before it is stopped. behaviour proven by compact-gate2 (a replacement is refused).
+assert_eq "compact-proofs (source shape): the frozen tuple authorizes both destructive gates" "1" \
+    "$([[ "$_cp48_cmd" == *'_compact-archive "$tuple"'* && "$_cp48_cmd" == *'_compact-teardown "$tuple"'* ]] && echo 1 || echo 0)"
 # THE STDOUT CONTRACT. compact's stdout is five lines in one order, and a caller piping
 # this command gets the contract rather than the commentary — so end's own progress (which
 # prints its own "Archived <uuid>") and compact's phase-(a) diagnostics both go to stderr.
@@ -13224,10 +13231,10 @@ assert_eq "compact-stdout (source shape): the FOUR contract lines appear in the 
           "$_cp48_c" -lt "$_cp48_d" ]] && echo 1 || echo 0)"
 # And the fifth line is NOT on stdout: it announces a launch that can still refuse.
 assert_eq "compact-stdout (source shape): the relaunch announcement is redirected to stderr" "1" \
-    "$([[ "$_cp48_cmd" == *"printf 'Starting fresh session %s from archive %s...\\n' \"\$c_name\" \"\$c_uuid\""* &&
+    "$([[ "$_cp48_cmd" == *"printf 'Starting fresh session %s from archive %s...\\n' \"\$plan_name\" \"\$plan_uuid\""* &&
          "$_cp48_cmd" == *'} >&2 2>/dev/null || true'* ]] && echo 1 || echo 0)"
 assert_eq "compact-stdout: so does the question, its echo, and a decline — stdout stays EMPTY unless the boundary is crossed" "1" \
-    "$([[ "$_cp48_cmd" == *'_compact_confirm_body "$tuple" "$roster" "$_CP_DIGEST_ONLY" >&2'* &&
+    "$([[ "$_cp48_cmd" == *'_compact_confirm_body "$tuple" "$c_roster" "$_CP_DIGEST_ONLY" >&2'* &&
          "$_cp48_cmd" == *'printf "Continue? [y/N] " >&2'* &&
          "$_cp48_cmd" == *'echo "Aborted." >&2'* ]] && echo 1 || echo 0)"
 # EOF IS NOT CONSENT and not a crash: the read must not be bare, or `set -e` kills the
@@ -13249,8 +13256,13 @@ assert_eq "compact-boundary: SIGPIPE is ignored across the report and RESTORED b
        _cp48_x="$(grep -n '^    exec env' <<<"$_cp48_cmd" | head -1 | cut -d: -f1)"
        [[ -n "$_cp48_ign" && -n "$_cp48_res" && -n "$_cp48_x" &&
           "$_cp48_ign" -lt "$_cp48_res" && "$_cp48_res" -lt "$_cp48_x" ]] && echo 1 || echo 0)"
-assert_eq "compact-stdout: end's progress is chatter, so it goes to stderr" "1" \
-    "$([[ "$_cp48_cmd" == *'_end_session_locked "$c_name" >&2'* ]] && echo 1 || echo 0)"
+# The core's destructive steps CAPTURE their stdout ($(…)) so their recovery line and exec
+# plan reach bash, not the caller's stdout — the contract stays the four lines. The core's
+# own diagnostics go to its stderr, which passes through. behaviour proven by compact-out.
+assert_eq "compact-stdout: the core's destructive steps capture stdout, keeping the contract clean" "1" \
+    "$([[ "$_cp48_cmd" == *'recovery="$(META_DIR="$dir" _ae_core_try --capture --quiet _compact-archive'* &&
+         "$_cp48_cmd" == *'plan="$(META_DIR="$dir" _ae_core_try --capture --quiet _compact-teardown'* &&
+         "$_cp48_cmd" == *"printf '%s\\n' \"\$recovery\" >&2"* ]] && echo 1 || echo 0)"
 assert_eq "compact-stdout: and so do the frozen facts printed before the prompt" "1" \
     "$([[ "$_cp48_cmd" == *'printf '"'"'archive: %s\n'"'"' "$c_archive"'*'} >&2'* ]] && echo 1 || echo 0)"
 assert_eq "compact-proofs (source shape): Recovery precedes the exec in the source — behaviour proven by compact-out, which reads the real stdout and stderr" "1" \

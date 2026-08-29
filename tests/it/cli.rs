@@ -1354,8 +1354,19 @@ impl Tracked {
             std::fs::create_dir_all(&fixture.dir).is_ok(),
             "a session dir"
         );
+        // The meta records the socket the fixture's tmux runs on, as a real
+        // launch does: target resolution reads this recorded selector (not the
+        // caller's ambient server) and FAILS CLOSED without it, so a serverless
+        // meta would be an unrealistic fixture, not a passing one.
         assert!(
-            std::fs::write(fixture.dir.join("meta"), format!("session={session}\n")).is_ok(),
+            std::fs::write(
+                fixture.dir.join("meta"),
+                format!(
+                    "session={session}\ntmux_server_kind=socket\ntmux_server={}\n",
+                    fixture.sock.display()
+                ),
+            )
+            .is_ok(),
             "a meta file"
         );
         // One script, installed under both names: `send` (the public helper,

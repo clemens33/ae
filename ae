@@ -6361,16 +6361,32 @@ cmd_compact() {
     _require_session_path_safe "$name" || return 1
     # FIRST, before a mint, an event, a prompt or an archive read.
     _compact_refuse_if_inside "$name" || return 1
-    local tuple
-    tuple="$(_compact_freeze_source "$name" "$_CP_KEEP_HISTORY")" || return 1
+
+    local dir="${SESSIONS_DIR}/${name}"
+    # --keep-history rides through to every core gate that re-reads the purge policy.
+    local -a keep=()
+    [[ "$_CP_KEEP_HISTORY" == true ]] && keep=(--keep-history)
+
+    # ── phase (a): freeze ───────────────────────────────────────────────────────
+    # CLEAN CUT (P3.7). The pinned core resolves and freezes the authorization tuple —
+    # identity, mode, origin, config-derived roster and purge, archive path — or refuses
+    # a session it cannot classify. There is NO bash fallback: compact is Rust-owned, so a
+    # session with no bound core cannot be compacted (125 = the core was not attempted).
+    local tuple _cp_rc=0
+    tuple="$(META_DIR="$dir" _ae_core_try --capture --quiet _compact-freeze "${keep[@]}")" || _cp_rc=$?
+    if ((_cp_rc == 125)); then
+        echo "Error: 'ae compact' requires the ae core, and session '${name}' has none bound." >&2
+        echo "  Refresh the session ('ae doctor --refresh ${name}') so the core is available, then retry." >&2
+        return 1
+    fi
+    ((_cp_rc == 0)) || return "$_cp_rc"
+
     local c_name c_uuid c_uuid_origin c_mode c_origin c_config c_purge c_archive c_main c_roster
     IFS=$'\x1f' read -r c_name c_uuid c_uuid_origin c_mode c_origin c_config c_purge c_archive c_main c_roster <<<"$tuple"
-    _compact_archive_preflight "$c_uuid" || return 1
+
     echo "compact: ${c_name} (${c_mode}) resolved and frozen." >&2
-    # STDERR: compact's STDOUT is a contract — the FOUR lines at the boundary, in order,
-    # and nothing else. (It was five until "Starting fresh session" moved to stderr: that
-    # line claimed a relaunch the launch can still refuse.) Everything before that is diagnostics, and a caller piping this
-    # command should get the contract rather than the commentary.
+    # STDERR: compact's STDOUT is a contract — the four boundary lines, in order, and
+    # nothing else. Everything before the boundary is diagnostics.
     {
         printf 'session: %s\n' "$c_name"
         printf 'uuid: %s (%s)\n' "$c_uuid" "$c_uuid_origin"
@@ -6382,37 +6398,18 @@ cmd_compact() {
     } >&2
 
     # ── phase (1): confirm ──────────────────────────────────────────────────────
-    # The roster is resolved BEFORE the prompt, because the prompt promises which agents
-    # the fresh session will start and an unresolvable roster must refuse while there is
-    # still nothing to undo.
-    # The roster was resolved once, in the freezer, and is compared at both gates.
-    local roster="$c_roster"
+    # THE PROMPT IS NOT THE CONTRACT. The question, the answer's echo and a decline all go
+    # to stderr, so compact's stdout stays EMPTY unless the boundary was actually crossed.
     if [[ "$_CP_FORCE" != true ]]; then
-        # THE PROMPT IS NOT THE CONTRACT. stdout carries the five boundary lines and
-        # nothing else, so the question, the answer's echo and a decline all go to
-        # stderr — which is where a human reading a terminal sees them anyway. The
-        # invariant this buys is worth more than the convention it breaks: compact's
-        # stdout is EMPTY unless the boundary was actually crossed.
-        _compact_confirm_body "$tuple" "$roster" "$_CP_DIGEST_ONLY" >&2
+        _compact_confirm_body "$tuple" "$c_roster" "$_CP_DIGEST_ONLY" >&2
         printf "Continue? [y/N] " >&2
-        local reply=""
-        # EOF IS NOT CONSENT — AND IT IS NOT A CRASH EITHER. `read` returns 1 at
-        # end-of-input, which under `set -e` aborted the command exactly here: after the
-        # facts were printed, before anything said what happened, with a non-zero status
-        # indistinguishable from a failure. A caller with no stdin — a script, cron,
-        # `ae compact x < /dev/null` — must get the same clean decline a human typing `n`
-        # gets. Declining on EOF is also the safe direction: the one thing this must never
-        # do is read "no answer" as "yes".
-        local _cp_asked=true
+        local reply="" _cp_asked=true
+        # EOF IS NOT CONSENT — AND NOT A CRASH. A caller with no stdin gets the same clean
+        # decline a human typing `n` gets; the exit STATUS is the only channel that tells
+        # "the operator said no" (0) from "the question never reached anyone" (1).
         read -r -n 1 reply || _cp_asked=false
         echo >&2
         if [[ "$_cp_asked" != true ]]; then
-            # EOF IS NOT A DECISION, AND MUST NOT REPORT LIKE ONE. `n` is an answer and
-            # exits 0; end-of-input means ae could not ask at all. stdout is empty in both
-            # cases — deliberately, because it carries the boundary contract — so the exit
-            # STATUS is the only channel a caller has to tell "the operator said no" from
-            # "the question never reached anyone". Reporting 0 here would let
-            # `ae compact x && deploy` run deploy after nothing happened at all.
             echo "Error: could not obtain confirmation — no input on stdin." >&2
             echo "  Nothing was stopped, archived or changed. Run it from a terminal, or" >&2
             echo "  pass -f if you mean to proceed without being asked." >&2
@@ -6423,30 +6420,13 @@ cmd_compact() {
             return 0
         fi
     fi
-    # FIRST revalidation: between the freeze and the human's answer the session could have
-    # been replaced, and a replacement must never be MESSAGED. The second runs after the
-    # bounded wait, so a replacement is never STOPPED.
+
     # ── phase (b): the semantic handover ────────────────────────────────────────
-    local dir="${SESSIONS_DIR}/${c_name}"
-    local actor ref body baseline outstanding
-    actor="$(_compact_actor "$c_uuid")"
-    # FREEZING A REFERENCE IS NOT FREEZING AN IDENTITY. The frozen main ref is
-    # `alias:name`, and a same-config replacement has the IDENTICAL ref — so it still
-    # addresses whoever holds that slot NOW, and a check-then-send gap let the message
-    # land on a session the gate never saw. The lock closes the gap where it exists:
-    # it spans the revalidation and the PUBLICATION of the request or its withdrawal,
-    # and is released before the bounded WAIT. Publication is fast; the wait can defer
-    # for 30s on a busy pane, and holding a lifecycle lock across that would be a new
-    # hazard rather than a fix.
-    # THE LIMIT OF THIS LOCK, NAMED: it serialises replacements that go THROUGH ae — an
-    # end plus a launch both take this lock and are ordered out of the window. It cannot
-    # serialise a DIRECT REWRITE of meta's session_id by something that never takes it;
-    # that is outside its reach by construction, not an oversight. Measured outcome for
-    # that case: compact asks the frozen main, the handover times out, and it returns
-    # non-zero with the session left LIVE — a wasted handover window, not a wrong action,
-    # which is the direction a destructive command is allowed to fail in. Do not add a
-    # revalidate-immediately-before-send to chase it: that narrows a window it cannot
-    # close and buys a false sense of coverage for a path the lock cannot reach.
+    # Under the lifecycle lock so a replacement is never MESSAGED. The core owns every
+    # ledger read (revalidate, find-outstanding, cancel, baseline); bash owns only the
+    # pane DELIVERY through the session's own `ask`, and releases the lock before the
+    # bounded WAIT (which polls append-only records and needs no lock).
+    local actor="ae:compact:${c_uuid}" ref=""
     local _cp_block="${SESSIONS_DIR}/.lifecycle.${c_name}.lock"
     {
         if command -v flock >/dev/null 2>&1; then
@@ -6455,126 +6435,108 @@ cmd_compact() {
                 return 1
             fi
         fi
-        _compact_revalidate "$c_name" "$tuple" "after confirmation" || return 1
-        # An outstanding request from a previous attempt is REUSED, never duplicated — and
-        # its baseline is reused with it, so a memo row written for the first attempt still
-        # counts for this one.
-        outstanding="$(_compact_find_outstanding "${dir}/events.jsonl" "$actor" || true)"
-        if [[ -n "$outstanding" ]]; then
-            IFS=$'\t' read -r ref body <<<"$outstanding"
-            baseline="$(_compact_baseline_of "$body" || printf '0')"
-            echo "compact: reusing the outstanding handover request ${ref}." >&2
-        fi
+        META_DIR="$dir" _ae_core_try --capture --quiet _compact-revalidate "$tuple" --when "after confirmation" "${keep[@]}" || return 1
+        # A retry reuses an outstanding request (and, through its stored body, its baseline)
+        # rather than delivering a duplicate.
+        ref="$(META_DIR="$dir" _ae_core_try --capture --quiet _compact-find-outstanding)" || true
         if [[ "$_CP_DIGEST_ONLY" == true ]]; then
             # The ONLY degradation, and it is explicit. Withdraw anything outstanding so no
             # later archive reports an open request nobody is waiting on.
-            if [[ -n "$outstanding" ]]; then
-                _compact_cancel_outstanding "$dir" "$ref" "$actor" || return 1
+            if [[ -n "$ref" ]]; then
+                META_DIR="$dir" _ae_core_try --capture --quiet _compact-cancel "$ref" || return 1
                 echo "compact: withdrew ${ref} (--digest-only)." >&2
             fi
             echo "compact: semantic handover skipped (--digest-only); the digest is the handover." >&2
-        elif [[ -z "$outstanding" ]]; then
-            # THE FROZEN ref, and now under the lock that proved it — the ref names a
-            # SLOT, so only holding the lock from the check through the send makes the
-            # instance that was proved the instance that is messaged.
-            local main_ref="$c_main"
-            baseline="$(_compact_memo_offset "${dir}/memo.tsv")"
-            _compact_send_handover "$dir" "$c_name" "$c_uuid" "$main_ref" "$baseline" || return 1
-            outstanding="$(_compact_find_outstanding "${dir}/events.jsonl" "$actor" || true)"
-            if [[ -z "$outstanding" ]]; then
+        elif [[ -z "$ref" ]]; then
+            # Fresh delivery: the core captures the pre-delivery memo baseline and embeds it
+            # in the request body; `ask` (bash, pane-side) delivers it as the reserved actor.
+            local baseline body main_ref="$c_main"
+            baseline="$(META_DIR="$dir" _ae_core_try --capture --quiet _compact-memo-baseline)" || baseline=0
+            body="$(_compact_request_text "$c_name" "$baseline")"
+            if ! AE_SENDER_OVERRIDE="$actor" "${dir}/ask" "$main_ref" "$body"; then
+                echo "Error: could not deliver the handover request to '${main_ref}'." >&2
+                echo "  Nothing was stopped and nothing was archived; the session is untouched." >&2
+                return 1
+            fi
+            ref="$(META_DIR="$dir" _ae_core_try --capture --quiet _compact-find-outstanding)" || true
+            if [[ -z "$ref" ]]; then
                 echo "Error: the handover request was delivered but not recorded — refusing to wait on a request ae cannot see." >&2
                 return 1
             fi
-            IFS=$'\t' read -r ref body <<<"$outstanding"
             echo "compact: handover requested as ${ref}; waiting for the reply AND a new handover memo." >&2
+        else
+            echo "compact: reusing the outstanding handover request ${ref}." >&2
         fi
     } 8>"$_cp_block"
-    # UNLOCKED from here: the wait is the long part, and nothing it observes needs the
-    # lock — both facts it polls are append-only records.
+
+    # ── phase (c): the bounded wait ─────────────────────────────────────────────
+    # The core owns the poll and the state interpretation; bash branches on the exit code
+    # alone. On timeout the core leaves the request as it found it (a normal timeout is a
+    # resumable pause) and prints which fact arrived — only --digest-only ever withdraws.
     if [[ "$_CP_DIGEST_ONLY" != true ]]; then
         local secs
         secs="$(_compact_handover_secs)"
-        if ! _compact_wait_handover "$dir" "$ref" "$c_name" "${baseline:-0}" "$secs"; then
-            echo "Error: no complete handover within ${secs}s — a reply AND a new handover memo are both required." >&2
-            case "$_AE_CP_SAW" in
-                reply)
-                    # The reply CLOSED the request, so there is nothing left to keep waiting on
-                    # and a re-run will ask again from scratch. Say that rather than promising
-                    # the opposite.
-                    echo "  The reply arrived; the handover memo did not." >&2
-                    echo "  Nothing was stopped and nothing was archived. ${ref} is answered and closed, so" >&2
-                    echo "  a re-run sends a FRESH request: ask your main agent to write the memo first" >&2
-                    echo "  ('memo add --topic handover ...'), or run 'ae compact --digest-only ${c_name}'" >&2
-                    echo "  to archive the digest as it stands." >&2
-                    ;;
-                memo)
-                    echo "  The handover memo was written; the reply did not arrive." >&2
-                    echo "  Nothing was stopped and nothing was archived. The request stays open: re-run" >&2
-                    echo "  'ae compact ${c_name}' to keep waiting on it, or 'ae compact --digest-only ${c_name}'" >&2
-                    echo "  to withdraw it and archive the digest as it stands." >&2
-                    ;;
-                *)
-                    echo "  Nothing was stopped and nothing was archived. The request stays open: re-run" >&2
-                    echo "  'ae compact ${c_name}' to keep waiting on it, or 'ae compact --digest-only ${c_name}'" >&2
-                    echo "  to withdraw it and archive the digest as it stands." >&2
-                    ;;
-            esac
-            return 1
-        fi
-        echo "compact: handover complete (reply ${ref} and a new handover memo)." >&2
+        META_DIR="$dir" _ae_core_try --capture --quiet _compact-wait "$ref" --timeout "$secs" || return 1
     fi
-    # ── phase (c): revalidate, then end under ONE lock ─────────────────────────
-    # The lock spans revalidation through teardown, and is RELEASED before the relaunch —
-    # the fresh session has the same name and takes the same lock, so holding it across
-    # both would deadlock ae against itself.
+
+    # ── phase (d): revalidate, stop, archive, teardown — under ONE lock ──────────
+    # A replacement is never STOPPED (revalidate again). Bash stops the tmux session on its
+    # OWN recorded server by exact id (a verified kill); the core's verify_stopped gate is
+    # what AUTHORIZES the archive and teardown. The recovery command is PRINTED before the
+    # teardown removes the source. The lock is RELEASED before the relaunch — the fresh
+    # session takes the same lock.
+    local _cp_dr=0 recovery="" plan="" at
+    at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     local _cp_lock="${SESSIONS_DIR}/.lifecycle.${c_name}.lock"
-    local _cp_rc=0
     {
         if command -v flock >/dev/null 2>&1; then
             if ! flock -w 15 9; then
                 echo "Error: another lifecycle operation is in progress for '${c_name}' — retry shortly. Nothing was changed." >&2
-                _cp_rc=1
+                _cp_dr=1
             fi
         else
             echo "note: flock not found — lifecycle locking degraded (compact/start/end races unguarded)" >&2
         fi
-        if ((_cp_rc == 0)); then
-            # SECOND revalidation: a replacement is never STOPPED. The first ran before
-            # the handover request so a replacement is never MESSAGED.
-            if _compact_revalidate "$c_name" "$tuple" "after the handover wait"; then
-                # compact's frozen tuple IS end's authorization payload — one mechanism,
-                # and `keep` because compact exists to keep the archive.
-                _AE_END_FROZEN_PLAN["$c_name"]="keep"$'\t'"${c_archive}"$'\t'"${c_purge}"
-                _AE_END_FROZEN_AUTHORITY["$c_name"]="compact"
-                # THE INSTALLED FREEZE MUST BE SOMETHING THE LIVE PLANNER CAN EMIT.
-                # _end_archive_plan re-derives the history policy from live config, so a
-                # purge-configured session made the planner emit `purge|…|true` against a
-                # frozen `keep|…|false` and the byte-compare refused — which meant
-                # --keep-history, the documented override printed in compact's own refusal
-                # message, could never complete a compact. Sealing the decision through the
-                # CLI-override mechanism is what that mechanism already means: this
-                # decision is made, stop re-deriving it.
-                _AE_PURGE_HISTORY_CLI="$c_purge"
-                # The shared end implementation, entered INSIDE the lock it already holds
-                # — not a second process, not a second lock, not a copy of end's ordering.
-                # end's progress goes to STDERR: it is informative (file counts, cleanup)
-                # but its own "Archived <uuid>" line would duplicate the first line of
-                # compact's four-line stdout contract.
-                _end_session_locked "$c_name" >&2 || _cp_rc=$?
-            else
-                _cp_rc=1
+        if ((_cp_dr == 0)); then
+            META_DIR="$dir" _ae_core_try --capture --quiet _compact-revalidate "$tuple" --when "after the handover wait" "${keep[@]}" || _cp_dr=1
+        fi
+        if ((_cp_dr == 0)); then
+            # STOP on the recorded server, by EXACT id (never by name: `kill-session -t proj`
+            # prefix-matches). Empty id = not live there; the verify_stopped gate then either
+            # proves it stopped or refuses (fail closed) rather than acting on a live session.
+            local sid
+            sid="$(_end_live_id "$c_name")"
+            if [[ -n "$sid" ]]; then
+                _lifecycle_kill_verified "$c_name" compact "$sid" || _cp_dr=1
             fi
         fi
+        if ((_cp_dr == 0)); then
+            # Kill any legacy heartbeat (a background process, not a pane, so the kill above
+            # does not reach it). compact keeps history by definition — nothing is purged.
+            kill_heartbeat "$c_name"
+            # ARCHIVE (core): revalidate + PROVE stopped + publish (or reuse an equivalent) +
+            # print the recovery command. Local mode manages no branch, so the git facts are
+            # recorded honestly as not-managed. stderr carries the core's own diagnostics.
+            recovery="$(META_DIR="$dir" _ae_core_try --capture --quiet _compact-archive "$tuple" "$at" not-managed - - - "${keep[@]}")" || _cp_dr=$?
+        fi
+        if ((_cp_dr == 0)); then
+            # The recovery point is durable and proven — SHOW it before anything is torn down.
+            printf '%s\n' "$recovery" >&2
+            # TEARDOWN (core): revalidate + PROVE stopped + re-preflight the archive + remove
+            # the live session + print the exec plan (name<US>uuid).
+            plan="$(META_DIR="$dir" _ae_core_try --capture --quiet _compact-teardown "$tuple" "${keep[@]}")" || _cp_dr=$?
+        fi
     } 9>"$_cp_lock"
-    if ((_cp_rc != 0)); then
-        return "$_cp_rc"
+    if ((_cp_dr != 0)); then
+        return "$_cp_dr"
     fi
 
-    # ── phase (d): the boundary, then the fresh session ────────────────────────
+    # ── phase (e): the boundary, then the fresh session ─────────────────────────
     # THE ARCHIVE IS PUBLISHED AND THE SOURCE IS GONE. Everything from here is
     # unrecoverable-by-rollback, so the recovery line is printed BEFORE the relaunch is
-    # invoked: after this point the process may exec into launch and never return, and a
-    # recovery line emitted from a failure handler is one that does not exist when needed.
+    # invoked; after this point the process may exec into launch and never return.
+    local plan_name plan_uuid
+    IFS=$'\x1f' read -r plan_name plan_uuid <<<"$plan"
     local from_proof
     if ! from_proof="$(_ar_from_preflight "$c_uuid")" || [[ -z "$from_proof" ]]; then
         echo "Error: the archive ${c_uuid} was published but does not validate for inheritance." >&2
@@ -6586,46 +6548,37 @@ cmd_compact() {
     # re-proves the parent immediately before publishing the child's meta and must find
     # this same tuple, or it rolls back rather than creating a child without lineage.
     export _AE_FROM_EXPECTED="$from_proof"
-    # The roster is an authorized fact, so it travels as the ANSWER rather than as the
-    # path it was computed from — see the launch side for why a config snapshot could not
-    # have closed this window.
+    # The roster is an authorized fact, so it travels as the ANSWER rather than the path it
+    # was computed from.
     export _AE_FROM_ROSTER="$c_roster"
-    local recovery
-    recovery="$(_compact_recovery_command "$tuple")"
+    local recovery_cmd
+    recovery_cmd="$(_compact_recovery_command "$tuple")"
     # THE REPORT MUST NOT BE ABLE TO KILL THE RELAUNCH. Past this line the archive is
-    # published and the source session is gone, so the only thing that still matters is
-    # that the fresh session starts. A consumer that exits before reading — `ae compact x
-    # | head -1`, the piped use this contract exists to support — closes stdout under us,
-    # and SIGPIPE KILLS THIS PROCESS rather than failing the write: `|| true` cannot catch
-    # a signal. Measured before the fix, 3/3: archived YES, session gone, NO relaunch, and
-    # the recovery line lost down the same closed pipe, with the pipeline reporting 0
-    # because a pipeline's status is its consumer's. Ignore SIGPIPE across the report, then
-    # RESTORE it before the exec so the child does not inherit an ignored disposition.
+    # published and the source is gone, so the only thing that still matters is that the
+    # fresh session starts. A consumer that exits before reading closes stdout under us, and
+    # SIGPIPE would KILL this process rather than fail the write; `|| true` cannot catch a
+    # signal. Ignore SIGPIPE across the report, then RESTORE it before the exec so the child
+    # does not inherit an ignored disposition.
     trap '' PIPE
     {
         printf 'Archived %s\n' "$c_uuid"
         printf 'Archive: %s\n' "$c_archive"
         printf 'Digest: %s/digest.md\n' "$c_archive"
-        printf 'Recovery: %s\n' "$recovery"
+        printf 'Recovery: %s\n' "$recovery_cmd"
     } 2>/dev/null || true
     # THE RECOVERY INFORMATION ALSO GOES TO STDERR, so a broken stdout cannot destroy the
     # only route back — and "starting the fresh session" is PROGRESS, not contract. The
-    # launch below can still refuse (the name is claimable in the release window), and a
-    # stdout line claiming a launch that then fails is precisely what the contract must
-    # never do. What stdout promises is now exactly what is true at this instant: THE
-    # ARCHIVE EXISTS AND THE PRINTED RECOVERY COMMAND WILL WORK.
+    # conversation-files disposition rides here too: compact ALWAYS keeps history (the
+    # tuple's purge field is forced false; a purge-configured origin was refused or
+    # overridden by --keep-history), so the on-disk files survive — but that is a note, not
+    # one of the four stdout contract lines, which stop at what is TRUE the instant they print.
     {
-        printf 'Recovery: %s\n' "$recovery"
-        printf 'Starting fresh session %s from archive %s...\n' "$c_name" "$c_uuid"
+        printf 'Recovery: %s\n' "$recovery_cmd"
+        printf 'kept agent conversation files (claude/codex token history; purge: ae end --purge-history)\n'
+        printf 'Starting fresh session %s from archive %s...\n' "$plan_name" "$plan_uuid"
     } >&2 2>/dev/null || true
     trap - PIPE
-    # Flushed before the exec: nothing below is guaranteed to run.
-    local mode_flag
-    case "$c_mode" in
-        git) mode_flag="--worktree" ;;
-        full) mode_flag="--copy" ;;
-        *) mode_flag="--local" ;;
-    esac
+    # Flushed before the exec: nothing below is guaranteed to run. compact is local-only.
     local -a launch_env=()
     [[ -n "${AE_HOME:-}" ]] && launch_env+=("AE_HOME=${AE_HOME}")
     [[ -n "$c_config" && "$c_config" != /dev/null ]] && launch_env+=("CONFIG_FILE=${c_config}")
@@ -6633,7 +6586,7 @@ cmd_compact() {
         echo "Error: cannot enter ${c_origin} to start the fresh session. Run the recovery command above." >&2
         return 1
     }
-    exec env "${launch_env[@]}" "$(_ae_own_path)" "$mode_flag" "$c_name" --from "$c_uuid"
+    exec env "${launch_env[@]}" "$(_ae_own_path)" --local "$plan_name" --from "$plan_uuid"
 }
 
 cmd_status() {

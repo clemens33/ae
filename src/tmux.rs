@@ -156,6 +156,62 @@ pub fn interpret_sessions(succeeded: bool, stdout: &str) -> Result<Vec<String>, 
         .collect())
 }
 
+/// What a stop-verification `list-sessions` proved about one session.
+///
+/// The tri-state the destructive compact gate needs, and the SC-017l distinction
+/// the generic [`interpret_sessions`] deliberately collapses: for LIVENESS, a
+/// server that did not answer is `unknown`, full stop. For a STOP CHECK, one
+/// failure shape is not "no answer" but a definitive one — killing the LAST
+/// session on a server exits the server, and the stale-socket diagnostic it
+/// leaves behind PROVES the session is gone. This is the frozen bash
+/// `_end_verify_gone` tri-state, ported.
+#[derive(Debug, PartialEq, Eq)]
+pub enum StopProbe {
+    /// The server answered and the session is STILL among its sessions.
+    Present,
+    /// Verified gone: the server answered without the name, OR it reported the
+    /// stale-socket "no server running on …" diagnostic (a clean server exit —
+    /// the socket file lingers, so the diagnostic, not socket-absence, is the
+    /// proof).
+    Absent,
+    /// Unproven: the server could not be reached for any OTHER reason (ENOENT,
+    /// permission, refused). Never equated with absence — the same fail-closed
+    /// stance the stop gate takes.
+    Unknown,
+}
+
+/// What a completed stop-verification `list-sessions` means for `name`.
+///
+/// A SUCCESSFUL run is authoritative: the name is [`StopProbe::Present`] or
+/// [`StopProbe::Absent`] by whether it appears. A FAILED run is
+/// [`StopProbe::Absent`] ONLY for the exact stale-socket diagnostic and
+/// [`StopProbe::Unknown`] otherwise — anchored to tmux's shape as a first-line
+/// prefix, never a substring, because a server literally NAMED `no server
+/// running` once made a permission error contain the words (frozen bash's
+/// 10th-review B2). ENOENT and permission-denied are `Unknown`: unlinking a LIVE
+/// server's socket yields a connect error while the server keeps running (frozen
+/// bash's 11th-review B1), so only the stale-socket shape proves a clean exit.
+#[must_use]
+pub fn interpret_stopped(succeeded: bool, stdout: &str, stderr: &str, name: &str) -> StopProbe {
+    if succeeded {
+        let present = stdout.lines().map(str::trim_end).any(|line| line == name);
+        return if present {
+            StopProbe::Present
+        } else {
+            StopProbe::Absent
+        };
+    }
+    let clean_dead = stderr
+        .lines()
+        .next()
+        .is_some_and(|line| line.starts_with("no server running on "));
+    if clean_dead {
+        StopProbe::Absent
+    } else {
+        StopProbe::Unknown
+    }
+}
+
 /// The ownership marker a completed `show-environment` run reported.
 ///
 /// `AE_SESSION=<value>` is the marker; tmux spells an UNSET variable
@@ -651,9 +707,9 @@ mod tests {
     }
 
     use super::{
-        ObservedPane, SlotObservation, interpret_marker, interpret_panes, interpret_sessions,
-        is_addressable_socket, list_panes_args, list_sessions_args, marker_args, server_args,
-        slot_observation,
+        ObservedPane, SlotObservation, StopProbe, interpret_marker, interpret_panes,
+        interpret_sessions, interpret_stopped, is_addressable_socket, list_panes_args,
+        list_sessions_args, marker_args, server_args, slot_observation,
     };
     use crate::inventory::{QueryFailed, ServerId};
     use crate::meta::Selector;
@@ -721,6 +777,74 @@ mod tests {
                 "{payload:?}"
             );
         }
+    }
+
+    #[test]
+    fn stop_probe_reads_presence_from_a_successful_listing() {
+        // A SUCCESSFUL run is authoritative both ways.
+        assert_eq!(
+            interpret_stopped(true, "other\nsess\n", "", "sess"),
+            StopProbe::Present
+        );
+        assert_eq!(
+            interpret_stopped(true, "other\n", "", "sess"),
+            StopProbe::Absent
+        );
+        assert_eq!(
+            interpret_stopped(true, "", "", "sess"),
+            StopProbe::Absent,
+            "an empty SUCCESS proves the session is gone"
+        );
+        // Exact-name only: `sess` is NOT present in a list of `session` — tmux would
+        // prefix-match, ae never does (the same guard `interpret_sessions` earns).
+        assert_eq!(
+            interpret_stopped(true, "session\n", "", "sess"),
+            StopProbe::Absent,
+            "a longer name that merely starts with the target is not the target"
+        );
+    }
+
+    #[test]
+    fn stop_probe_reads_a_clean_server_exit_as_absent() {
+        // Killing the last session exits the server; the stale-socket diagnostic
+        // is the PROOF the session is gone — the whole reason this classifier
+        // exists apart from interpret_sessions, which calls the same bytes a failure.
+        assert_eq!(
+            interpret_stopped(false, "", "no server running on /tmp/x\n", "sess"),
+            StopProbe::Absent
+        );
+    }
+
+    #[test]
+    fn stop_probe_reads_any_other_failure_as_unknown_never_absent() {
+        // ENOENT / permission / refused prove nothing — a live server whose socket
+        // was unlinked yields a connect error while it keeps running (11th-review B1).
+        for stderr in [
+            "",
+            "error connecting to /tmp/x (No such file or directory)\n",
+            "error connecting to /tmp/x (Permission denied)\n",
+        ] {
+            assert_eq!(
+                interpret_stopped(false, "", stderr, "sess"),
+                StopProbe::Unknown,
+                "{stderr:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn stop_probe_anchors_clean_dead_at_the_line_start_never_a_substring() {
+        // A server literally NAMED "no server running" once made a permission error
+        // CONTAIN the words (10th-review B2). The magic phrase mid-line is not proof.
+        assert_eq!(
+            interpret_stopped(
+                false,
+                "",
+                "error: cannot reach the no server running on host\n",
+                "sess"
+            ),
+            StopProbe::Unknown
+        );
     }
 
     #[test]

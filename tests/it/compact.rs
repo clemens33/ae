@@ -306,3 +306,81 @@ fn a_managed_mode_is_refused_clearly() {
     );
     assert!(stdout(&out).is_empty(), "no tuple on refusal");
 }
+
+/// Seed a compact handover ask (slotless compact actor → main) into `<dir>/events.jsonl`,
+/// with a stored body carrying memo baseline 0. Returns the ref.
+fn seed_handover(dir: &Path) -> String {
+    let reference = "ae-20260829T000000Z-abcd1234";
+    std::fs::create_dir_all(dir.join("messages")).unwrap();
+    let body = dir.join("messages").join("handover.ask.txt");
+    std::fs::write(&body, "COMPACT HANDOVER\nAE-COMPACT-MEMO-BASELINE=0\n").unwrap();
+    let ask = format!(
+        "{{\"ts\":\"2026-08-29T00:00:00Z\",\"actor\":\"ae:compact:{UUID}\",\"action\":\"ask\",\"target\":\"cl:main\",\"ref\":\"{reference}\",\"body_file\":\"{}\",\"actor_session\":\"sess\",\"target_slot\":\"main\",\"target_session\":\"sess\"}}\n",
+        body.display()
+    );
+    std::fs::write(dir.join("events.jsonl"), ask).unwrap();
+    reference.to_owned()
+}
+
+#[test]
+fn compact_wait_succeeds_end_to_end_when_both_facts_are_present() {
+    // The full CLI path: parse → dispatch → wait_step. A reply and a fresh handover memo
+    // are both present, so a --timeout 0 poll succeeds on its single read.
+    let s = Scratch::new("wait-e2e");
+    let dir = s.0.join("sessions").join("sess");
+    std::fs::create_dir_all(&dir).unwrap();
+    let reference = seed_handover(&dir);
+    // The reply from main, and a new handover memo row.
+    let reply = format!(
+        "{{\"ts\":\"2026-08-29T00:01:00Z\",\"actor\":\"cl:main\",\"action\":\"reply\",\"ref\":\"{reference}\",\"actor_slot\":\"main\",\"actor_session\":\"sess\"}}\n"
+    );
+    std::fs::write(
+        dir.join("events.jsonl"),
+        format!(
+            "{{\"ts\":\"2026-08-29T00:00:00Z\",\"actor\":\"ae:compact:{UUID}\",\"action\":\"ask\",\"target\":\"cl:main\",\"ref\":\"{reference}\",\"body_file\":\"{}\",\"actor_session\":\"sess\",\"target_slot\":\"main\",\"target_session\":\"sess\"}}\n{reply}",
+            dir.join("messages").join("handover.ask.txt").display()
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("memo.tsv"),
+        "2026-08-29T00:01:00Z\tcl:main\thandover\tpicking up\n",
+    )
+    .unwrap();
+    let out = core(
+        s.0.as_path(),
+        &[
+            "_compact-wait",
+            dir.to_str().unwrap(),
+            &reference,
+            "--timeout",
+            "0",
+        ],
+    );
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("handover complete"),
+        "{}",
+        stderr(&out)
+    );
+}
+
+#[test]
+fn compact_cancel_withdraws_end_to_end() {
+    // The full CLI path: parse → dispatch → cancel_step, which appends a slotless cancel.
+    let s = Scratch::new("cancel-e2e");
+    let dir = s.0.join("sessions").join("sess");
+    std::fs::create_dir_all(&dir).unwrap();
+    let reference = seed_handover(&dir);
+    let out = core(
+        s.0.as_path(),
+        &["_compact-cancel", dir.to_str().unwrap(), &reference],
+    );
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    // A cancel event for the ref was appended to the ledger.
+    let ledger = std::fs::read_to_string(dir.join("events.jsonl")).unwrap();
+    assert!(
+        ledger.contains("\"action\":\"cancel\"") && ledger.contains(&reference),
+        "cancel event recorded: {ledger}"
+    );
+}

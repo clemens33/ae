@@ -46,7 +46,9 @@
 use std::io::{self, Write};
 use std::path::Path;
 
+use crate::inventory::ServerId;
 use crate::json::Value;
+use crate::meta;
 use crate::requests::is_slot;
 use crate::state::{self, EXIT_FAILED, EXIT_USAGE};
 use crate::time::Timestamp;
@@ -289,6 +291,16 @@ pub enum ResolveError {
         /// The session searched.
         session: String,
     },
+    /// The target session records no usable tmux server (its selector is
+    /// Missing/Ambiguous, or its meta is unreadable). Resolution FAILS CLOSED
+    /// rather than falling back to the ambient server: a pane-less caller's
+    /// ambient is not the recorded server, so a fallback would enumerate the
+    /// wrong server and mis-route silently — the clean cut refuses instead and
+    /// says how to repair it.
+    UnresolvableServer {
+        /// The session whose server pointer could not be trusted.
+        session: String,
+    },
 }
 
 impl ResolveError {
@@ -309,6 +321,9 @@ impl ResolveError {
             Self::NotFound { target, session } => {
                 format!("Error: agent '{target}' not found in session '{session}'")
             }
+            Self::UnresolvableServer { session } => format!(
+                "Error: session '{session}' records no usable tmux server — refresh or migrate the session, then retry"
+            ),
         }
     }
 }
@@ -424,10 +439,16 @@ pub fn pick<'a>(
 /// [`ResolveError`] — see its variants. A pane named by id always resolves
 /// (the frozen helper returns 0 for one, and `send` fails later if it is not
 /// there); its stamps are simply empty when they cannot be read.
-pub fn resolve(target: &str, own_session: &str) -> Result<Resolved, ResolveError> {
-    let (pane, agent) = match lookup(target, own_session)? {
+pub fn resolve(target: &str, own_session: &str, dir: &Path) -> Result<Resolved, ResolveError> {
+    let (server, pane, agent) = match lookup(target, own_session)? {
         Lookup::Pane(pane) => {
-            let observed = transport::observe_viewer(&pane).unwrap_or_default();
+            // A raw pane id is an unambiguous address on its own server, so there
+            // is nothing to enumerate and no name to collide: the recorded server
+            // only lets its stamps be read, and an unusable one leaves them empty
+            // (the frozen "stamps are simply empty when they cannot be read")
+            // rather than refusing. No mis-route is possible, so this never fails.
+            let server = pane_server(dir);
+            let observed = transport::observe_viewer(&server, &pane).unwrap_or_default();
             let agent = match (observed.agent, observed.session) {
                 (Some(agent), Some(session)) if session != own_session => {
                     format!("@{session}:{agent}")
@@ -435,22 +456,29 @@ pub fn resolve(target: &str, own_session: &str) -> Result<Resolved, ResolveError
                 (Some(agent), _) => agent,
                 (None, _) => String::new(),
             };
-            (pane, agent)
+            (server, pane, agent)
         }
         Lookup::Named {
             session,
             target,
             explicit,
         } => {
-            if explicit && !transport::session_exists(&session) {
+            // Enumerate on the TARGET session's own recorded server, not the
+            // caller's: `@session:agent` may name a session on a different tmux
+            // server, and a same-session target resolves to the same server anyway.
+            // FAILS CLOSED — enumerating a colliding name on the wrong (ambient)
+            // server would mis-route silently, so a session with no usable server
+            // pointer refuses here rather than falling back.
+            let server = named_server(dir, &session, own_session)?;
+            if explicit && !transport::session_exists(&server, &session) {
                 return Err(ResolveError::SessionNotFound(session));
             }
-            let roster = transport::observe_agents(&session).unwrap_or_default();
+            let roster = transport::observe_agents(&server, &session).unwrap_or_default();
             let (pane, agent) = pick(&roster, &target, &session, own_session)?;
-            (pane.to_owned(), agent)
+            (server, pane.to_owned(), agent)
         }
     };
-    let observed = transport::observe_viewer(&pane).unwrap_or_default();
+    let observed = transport::observe_viewer(&server, &pane).unwrap_or_default();
     Ok(Resolved {
         pane,
         agent,
@@ -460,6 +488,60 @@ pub fn resolve(target: &str, own_session: &str) -> Result<Resolved, ResolveError
             .unwrap_or_default(),
         session: observed.session.unwrap_or_default(),
     })
+}
+
+/// The server for reading a RAW PANE target's stamps: the caller session's
+/// recorded one when it is usable, else the ambient server. Never fails — a pane
+/// id addresses one pane unambiguously, so an unusable server only means its
+/// stamps read empty, never a mis-route (contrast [`named_server`], where a
+/// wrong server enumerates a wrong roster).
+fn pane_server(dir: &Path) -> ServerId {
+    // Through `meta.rs`'s inventoried `read_bytes` door (the same one compact
+    // reads meta through), not a raw fs call here — a new world-reading site is
+    // a line in a review, not a diff nobody read.
+    let selector =
+        meta::read_bytes(dir).map(|bytes| meta::Meta::parse(&String::from_utf8_lossy(&bytes)));
+    match selector.map(|parsed| parsed.server_selector()) {
+        Ok(meta::ServerSelector::Positive(selector)) => ServerId::Selected(selector),
+        _ => ServerId::Ambient,
+    }
+}
+
+/// The tmux server a NAMED target must be enumerated on — the TARGET session's
+/// own recorded server, from its meta (the caller's own directory for an
+/// unqualified name, a sibling directory under the same sessions root for
+/// `@session:agent`).
+///
+/// FAILS CLOSED, two ways: a session whose meta cannot be read is
+/// [`ResolveError::SessionNotFound`] (it is not a session ae can locate); one
+/// whose selector is Missing/Ambiguous is [`ResolveError::UnresolvableServer`].
+/// Never a silent fall back to the ambient server — the ambient server is the
+/// caller's, and enumerating a colliding name on it (pane-less, or cross-server)
+/// is the exact mis-route this refuses. A real launch records an absolute socket
+/// selector, so only legacy/corrupted meta reaches the refusal, which
+/// `doctor --refresh` repairs.
+fn named_server(dir: &Path, session: &str, own_session: &str) -> Result<ServerId, ResolveError> {
+    let meta_dir = if session == own_session {
+        dir.to_path_buf()
+    } else {
+        match dir.parent() {
+            Some(root) => root.join(session),
+            None => return Err(ResolveError::SessionNotFound(session.to_owned())),
+        }
+    };
+    // Through `meta.rs`'s inventoried `read_bytes` door. An unreadable meta
+    // (absent included) is a session ae cannot locate — SessionNotFound.
+    let Ok(bytes) = meta::read_bytes(&meta_dir) else {
+        return Err(ResolveError::SessionNotFound(session.to_owned()));
+    };
+    match meta::Meta::parse(&String::from_utf8_lossy(&bytes)).server_selector() {
+        meta::ServerSelector::Positive(selector) => Ok(ServerId::Selected(selector)),
+        meta::ServerSelector::Missing | meta::ServerSelector::Ambiguous => {
+            Err(ResolveError::UnresolvableServer {
+                session: session.to_owned(),
+            })
+        }
+    }
 }
 
 // ---- the event ------------------------------------------------------------
@@ -639,7 +721,7 @@ pub fn run(
         }
         return Ok(0);
     }
-    let resolved = match resolve(&parsed.target, own_session) {
+    let resolved = match resolve(&parsed.target, own_session, dir) {
         Ok(resolved) => resolved,
         Err(why) => {
             writeln!(err, "{}", why.message())?;
@@ -710,14 +792,89 @@ pub(crate) fn delivery_code(
 #[cfg(test)]
 mod tests {
     use super::{
-        Kind, Lookup, Parsed, ResolveError, Usage, compose, is_blank, is_external, lookup, parse,
-        pick, refusal, reply_command, request_id,
+        Kind, Lookup, Parsed, ResolveError, Usage, compose, is_blank, is_external, lookup,
+        named_server, pane_server, parse, pick, refusal, reply_command, request_id,
     };
+    use crate::inventory::ServerId;
+    use crate::meta::Selector;
     use crate::time::Timestamp;
     use crate::tmux::ObservedAgent;
 
     fn words(items: &[&str]) -> Vec<String> {
         items.iter().map(|item| (*item).to_owned()).collect()
+    }
+
+    /// A sessions root under the temp dir with one session subdir per `(name,
+    /// meta)`, each carrying the given meta text. Returns the root.
+    fn sessions_root(tag: &str, sessions: &[(&str, &str)]) -> std::path::PathBuf {
+        let root = std::env::temp_dir()
+            .join(format!("aetrsrv.{}.{tag}", std::process::id()))
+            .join("sessions");
+        let _ = std::fs::remove_dir_all(&root);
+        for (name, meta) in sessions {
+            let dir = root.join(name);
+            std::fs::create_dir_all(&dir).expect("a session dir");
+            std::fs::write(dir.join("meta"), meta).expect("a meta file");
+        }
+        std::fs::create_dir_all(&root).expect("a sessions root");
+        root
+    }
+
+    const SOCK_A: &str = "session=a\ntmux_server_kind=socket\ntmux_server=/srv/a.sock\n";
+    const SOCK_B: &str = "session=b\ntmux_server_kind=socket\ntmux_server=/srv/b.sock\n";
+
+    #[test]
+    fn named_server_reads_the_target_sessions_own_recorded_server_not_the_callers() {
+        let root = sessions_root("named-ok", &[("a", SOCK_A), ("b", SOCK_B)]);
+        let a = root.join("a");
+        // An unqualified target enumerates on the CALLER's own recorded server.
+        assert_eq!(
+            named_server(&a, "a", "a"),
+            Ok(ServerId::Selected(Selector::Socket("/srv/a.sock".into()))),
+        );
+        // A cross-session target enumerates on the TARGET's server, read from the
+        // TARGET's own meta — the whole point of correction 1. If it read the
+        // caller's meta instead it would answer /srv/a.sock here.
+        assert_eq!(
+            named_server(&a, "b", "a"),
+            Ok(ServerId::Selected(Selector::Socket("/srv/b.sock".into()))),
+        );
+    }
+
+    #[test]
+    fn named_server_fails_closed_two_ways() {
+        let root = sessions_root("named-bad", &[("a", SOCK_A), ("blank", "session=blank\n")]);
+        let a = root.join("a");
+        // A recorded selector that is Missing (no usable pointer) REFUSES rather
+        // than falling back to the ambient server — the mis-route correction 2
+        // closes.
+        assert_eq!(
+            named_server(&a, "blank", "a"),
+            Err(ResolveError::UnresolvableServer {
+                session: "blank".to_owned(),
+            }),
+        );
+        // A session with no meta at all cannot be located — SessionNotFound, not
+        // an ambient guess.
+        assert_eq!(
+            named_server(&a, "ghost", "a"),
+            Err(ResolveError::SessionNotFound("ghost".to_owned())),
+        );
+    }
+
+    #[test]
+    fn pane_server_uses_the_recorded_server_when_usable_and_ambient_otherwise() {
+        let root = sessions_root("pane", &[("a", SOCK_A), ("blank", "session=blank\n")]);
+        // A raw pane is unambiguous, so a usable recorded server only reads its
+        // stamps…
+        assert_eq!(
+            pane_server(&root.join("a")),
+            ServerId::Selected(Selector::Socket("/srv/a.sock".into())),
+        );
+        // …and an unusable or absent one degrades to ambient rather than
+        // refusing (no roster is enumerated, so no name can be mis-routed).
+        assert_eq!(pane_server(&root.join("blank")), ServerId::Ambient);
+        assert_eq!(pane_server(&root.join("absent")), ServerId::Ambient);
     }
 
     fn roster(rows: &[(&str, &str)]) -> Vec<ObservedAgent> {

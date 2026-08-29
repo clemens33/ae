@@ -18,15 +18,18 @@
 //! canonicalized), `config`, `purge` (`true`/`false`), `archive_path`, `main_ref`
 //! (`alias:name`), `roster` (`main=<alias> workers=<a,b|->`).
 
+use std::ffi::OsStr;
 use std::io::{self, Write};
+use std::os::unix::ffi::OsStrExt as _;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use crate::archive::{ConfigNode, classify_config_node};
 use crate::config::{Workspace, read_workspace};
-use crate::inventory::{Discovery, ServerId};
-use crate::meta;
+use crate::inventory::ServerId;
 use crate::state::EXIT_FAILED;
-use crate::transport::Tmux;
+use crate::transport;
+use crate::{event_text, meta, requests};
 
 /// `_compact-freeze` core entry. Emits the frozen tuple on `out` and returns `0`, or
 /// writes a clear one-line refusal to `err` and returns [`EXIT_FAILED`]. Never
@@ -62,7 +65,7 @@ pub(crate) fn freeze(
         "git" | "full" => {
             writeln!(
                 err,
-                "compact: '{name}' is {mode} mode; compact is local-mode only. Use: ae end {name}, then start a new session yourself."
+                "compact: '{name}' is {mode} mode; compact is local-mode only. A fresh {mode} workspace would be based on the canonical origin's HEAD, which normally lags the session's own branch — you would get a session missing the code it just archived. Use: ae end {name}, then start a new session yourself."
             )?;
             return Ok(EXIT_FAILED);
         }
@@ -166,12 +169,7 @@ pub(crate) fn freeze(
         )?;
         return Ok(EXIT_FAILED);
     };
-    let roster_workers = workspace
-        .workers
-        .as_deref()
-        .filter(|w| !w.is_empty())
-        .unwrap_or("-");
-    let roster = format!("main={roster_main} workers={roster_workers}");
+    let roster = roster_string(roster_main, workspace.workers.as_deref());
 
     let Some(root) = crate::state_root() else {
         writeln!(err, "compact: cannot resolve the ae state root.")?;
@@ -286,12 +284,16 @@ pub(crate) struct FrozenTuple {
     pub(crate) origin: String,
     pub(crate) config: String,
     pub(crate) purge: bool,
+    /// The roster the fresh session was PROMISED to start (`main=<alias> workers=<a,b|->`),
+    /// as SHOWN at the prompt. Revalidate compares the config's CURRENT roster against it, so
+    /// a config rewritten under the window that would start different agents is refused.
+    pub(crate) roster: String,
 }
 
 impl FrozenTuple {
     /// Parse the tuple line. `None` unless there are EXACTLY ten fields — `freeze`'s
     /// framing guard proves no field carries the separator or a newline, so a genuine
-    /// tuple round-trips and a malformed argument is refused, not misread. Only the six
+    /// tuple round-trips and a malformed argument is refused, not misread. Only the seven
     /// fields Rust revalidates against are kept; the field count is still validated in full.
     pub(crate) fn parse(line: &str) -> Option<Self> {
         let line = line.strip_suffix('\n').unwrap_or(line);
@@ -306,7 +308,7 @@ impl FrozenTuple {
             purge,
             _archive_path,
             _main_ref,
-            _roster,
+            roster,
         ] = fields.as_slice()
         else {
             return None;
@@ -318,6 +320,7 @@ impl FrozenTuple {
             origin: (*origin).to_owned(),
             config: (*config).to_owned(),
             purge: *purge == "true",
+            roster: (*roster).to_owned(),
         })
     }
 }
@@ -341,27 +344,19 @@ pub(crate) enum StopState {
 /// unreachable server, or a Missing/Ambiguous selector, is never read as stopped (the
 /// same fail-closed stance `end` takes).
 pub(crate) fn verify_stopped(meta_bytes: &[u8], name: &str) -> StopState {
-    verify_stopped_with(&Tmux, meta_bytes, name)
-}
-
-/// [`verify_stopped`] over any [`Discovery`] backend, so the tri-state is testable without
-/// a real tmux server.
-fn verify_stopped_with(backend: &impl Discovery, meta_bytes: &[u8], name: &str) -> StopState {
     let selector = meta::Meta::parse(&String::from_utf8_lossy(meta_bytes)).server_selector();
     let meta::ServerSelector::Positive(sel) = selector else {
         // Missing / Ambiguous (or any other non-positive shape): fail closed, as `end`
         // does — an unidentified server is never proven empty.
         return StopState::Unknown;
     };
-    match backend.enumerate(&ServerId::Selected(sel)) {
-        Err(_) => StopState::Unknown,
-        Ok(sessions) => {
-            if sessions.iter().any(|s| s.name == name) {
-                StopState::Alive
-            } else {
-                StopState::Stopped
-            }
-        }
+    // The RECORDED server's stop verdict, including the clean-dead case the generic
+    // enumeration cannot see: killing the last session exits the server, and its
+    // stale-socket diagnostic PROVES the session gone (frozen `_end_verify_gone`).
+    match transport::verify_session_absent(&ServerId::Selected(sel), name) {
+        crate::tmux::StopProbe::Present => StopState::Alive,
+        crate::tmux::StopProbe::Absent => StopState::Stopped,
+        crate::tmux::StopProbe::Unknown => StopState::Unknown,
     }
 }
 
@@ -371,6 +366,15 @@ fn verify_stopped_with(backend: &impl Discovery, meta_bytes: &[u8], name: &str) 
 /// the gate. Mirrors the frozen `_compact_revalidate` semantics: the id is the replacement
 /// guard, mode/origin/config anchor identity, a purge flip is a different operation, and a
 /// surviving spawned agent blocks a roster compact would otherwise silently drop.
+/// The roster string the fresh session is PROMISED to start — `main=<alias> workers=<a,b|->`.
+/// Derived identically where the prompt SHOWS it (`freeze`) and where a config rewritten
+/// under the confirm window would now RESOLVE it (`revalidate`), so the "what was authorized"
+/// and "what would start now" strings cannot silently diverge in their formatting.
+fn roster_string(main: &str, workers: Option<&str>) -> String {
+    let workers = workers.filter(|w| !w.is_empty()).unwrap_or("-");
+    format!("main={main} workers={workers}")
+}
+
 fn revalidate(
     dir: &Path,
     frozen: &FrozenTuple,
@@ -405,7 +409,7 @@ fn revalidate(
             &now_uuid
         };
         return Err(format!(
-            "compact: '{}' is not the session that was authorized ({when}) — authorized id {}, on disk now {shown}. Nothing was stopped or archived.",
+            "compact: '{}' is not the session that was authorized ({when}) — authorized id {}, on disk now {shown}. Nothing was stopped and nothing was archived.",
             frozen.name, frozen.uuid
         ));
     }
@@ -438,6 +442,20 @@ fn revalidate(
             frozen.name
         ));
     }
+    // The roster is an AUTHORIZED FACT, not merely a resolvable one: it was PRINTED at the
+    // prompt as what the child will start, so a config rewritten during the window that now
+    // resolves to a DIFFERENT roster must refuse — proving merely that SOME roster resolves
+    // would let a child start agents nobody approved. Edits made BEFORE compact are adopted;
+    // only a change DURING the window is caught here. Mirrors the frozen `_compact_revalidate`
+    // roster gate, and reads the current roster from the same config `resolve_workspace` did.
+    let now_main = workspace.main.as_deref().unwrap_or_default();
+    let now_roster = roster_string(now_main, workspace.workers.as_deref());
+    if now_roster != frozen.roster {
+        return Err(format!(
+            "compact: '{}' would now start a different roster than the one shown ({when}); refusing. Shown: {}. Now: {now_roster}. Nothing was stopped and nothing was archived.",
+            frozen.name, frozen.roster
+        ));
+    }
     // Spawn closure: compact never retires someone else's worker, so a spawned agent must
     // be gone before the fresh roster (main + workers) replaces the session.
     let parsed = meta::Meta::parse(&String::from_utf8_lossy(&bytes));
@@ -457,13 +475,18 @@ fn revalidate(
     Ok(())
 }
 
-/// `_compact-revalidate` core entry — the PRE-MESSAGE gate bash crosses before the semantic
-/// handover, so a session REPLACED since the freeze is never messaged. `0` if it is still
-/// the authorized session; a named refusal on `err` and [`EXIT_FAILED`] otherwise. Read-only.
+/// `_compact-revalidate` core entry — the authorization gate bash crosses at BOTH lifecycle
+/// points: after confirmation (before anything is messaged) and after the handover wait
+/// (before anything is stopped). `when` is the driver's label for which crossing this is, so
+/// a refusal names the gate that caught the drift — the two are not interchangeable, and a
+/// test proves an identity change during the unlocked wait is caught by the SECOND, not the
+/// first. `0` if it is still the authorized session; a named refusal on `err` and
+/// [`EXIT_FAILED`] otherwise. Read-only.
 pub(crate) fn revalidate_step(
     dir: &Path,
     tuple: &str,
     keep_history: bool,
+    when: &str,
     err: &mut impl Write,
 ) -> io::Result<u8> {
     let Some(frozen) = FrozenTuple::parse(tuple) else {
@@ -473,7 +496,7 @@ pub(crate) fn revalidate_step(
         )?;
         return Ok(EXIT_FAILED);
     };
-    match revalidate(dir, &frozen, keep_history, "before the handover") {
+    match revalidate(dir, &frozen, keep_history, when) {
         Ok(()) => Ok(0),
         Err(reason) => {
             writeln!(err, "{reason}")?;
@@ -689,6 +712,278 @@ pub(crate) fn teardown_step(
     // The exec plan: bash relaunches `ae <name> --from <uuid>` (compact is local-only, so
     // the fresh session is the default local mode).
     writeln!(out, "{}\u{1f}{}", frozen.name, frozen.uuid)?;
+    Ok(0)
+}
+
+// ── The semantic handover: wait for BOTH facts, or withdraw (slice B) ────────────
+//
+// The handover is delivered through the session's own `ask` (bash, pane-side) as a tracked
+// request from the reserved compact actor `ae:compact:<uuid>`, carrying a memo BASELINE in
+// its body. These two cores own the WAIT and the WITHDRAWAL — the stateful half the clean
+// cut keeps in Rust — and read the ledger and memo the frozen `_compact_wait_handover` /
+// `_compact_cancel_outstanding` read. Bash branches on the exit code alone.
+
+/// The poll interval between reads while waiting. The frozen `_compact_wait_handover`
+/// polled every two seconds; the bounded deadline is never overshot.
+const HANDOVER_POLL: Duration = Duration::from_secs(2);
+
+/// The default handover bound when bash passes no `--timeout` — the frozen
+/// `_compact_handover_secs` fallback (its `AE_COMPACT_HANDOVER_SECS` override lives in the
+/// bash driver, which passes the resolved value through).
+pub(crate) const DEFAULT_HANDOVER_SECS: u64 = 300;
+
+/// One flat member of an event line equals `want` — present AND equal, distinguishing an
+/// absent key (which never matches) from one present and equal.
+fn field_eq(line: &[u8], key: &str, want: &[u8]) -> bool {
+    event_text::member(line, key).value() == Some(want)
+}
+
+/// The pre-delivery memo boundary the frozen `_compact_request_text` embeds in the request
+/// body (`AE-COMPACT-MEMO-BASELINE=<n>`). A handover is real only if a memo row was
+/// appended AFTER this byte offset, so a memo rewritten wholesale beforehand cannot
+/// masquerade as new content.
+///
+/// `Some(n)` ONLY when the marker is present AND its value parses — `Some(0)` is legitimate
+/// (an empty memo at request time, so any row is new). A marker that is ABSENT or MALFORMED
+/// returns `None`: UNAVAILABLE EVIDENCE, which the wait refuses. It must never fall back to
+/// `0`, because a `0` baseline lets a memo written BEFORE this request satisfy the "new
+/// handover memo" fact, collapsing the two-fact safety gate to one (p4runner BLOCKER,
+/// review dc59b178).
+fn baseline_from_body(body: &[u8]) -> Option<usize> {
+    for line in body.split(|&b| b == b'\n') {
+        if let Some(rest) = line.strip_prefix(b"AE-COMPACT-MEMO-BASELINE=") {
+            // The marker is authoritative once found: a malformed value is a corrupt
+            // request, NOT a reason to fall back to 0. Return None so the wait fails closed.
+            return std::str::from_utf8(rest)
+                .ok()
+                .and_then(|s| s.trim().parse::<usize>().ok());
+        }
+    }
+    None
+}
+
+/// The stored request body IF it is a readable regular file, else `None`. A deleted, FIFO,
+/// directory, or otherwise non-regular `body_file` is UNAVAILABLE EVIDENCE — the wait must
+/// refuse rather than read it as empty (which would yield baseline `0`, the same one-fact
+/// collapse the marker guard closes). Follows symlinks, matching the frozen `[[ -f ]]` gate;
+/// a TOCTOU removal between the check and the read yields empty bytes, hence `None` baseline,
+/// hence the same closed refusal.
+fn read_body_regular(path_bytes: &[u8]) -> Option<Vec<u8>> {
+    let path = Path::new(OsStr::from_bytes(path_bytes));
+    if !crate::archive::regular_file(path) {
+        return None;
+    }
+    Some(event_text::read_container(path))
+}
+
+/// A `reply` for the EXACT ref, from the `main` slot of the FROZEN session — the frozen
+/// `_compact_reply_seen`. Not the request sensor's "is it closed" row: this answers
+/// "closed by exactly the main agent the handover addressed".
+fn reply_seen(events: &[u8], reference: &str, session: &str) -> bool {
+    event_text::read_lines(events).into_iter().any(|line| {
+        event_text::event_line(line).is_some_and(|line| {
+            field_eq(line, "action", b"reply")
+                && field_eq(line, "ref", reference.as_bytes())
+                && field_eq(line, "actor_slot", b"main")
+                && field_eq(line, "actor_session", session.as_bytes())
+        })
+    })
+}
+
+/// At least one VALID handover row appended after `baseline` — the frozen
+/// `_compact_memo_after`. Rows are read from the byte offset onward, so a wholesale rewrite
+/// cannot masquerade; a row counts only with a non-empty ts and author, the `handover`
+/// topic, and non-empty text.
+fn memo_after(memo: &[u8], baseline: usize) -> bool {
+    let tail = memo.get(baseline..).unwrap_or(&[]);
+    tail.split(|&b| b == b'\n').any(|row| {
+        if row.is_empty() {
+            return false;
+        }
+        let mut cols = row.splitn(4, |&b| b == b'\t');
+        let ts = cols.next().unwrap_or_default();
+        let author = cols.next().unwrap_or_default();
+        let topic = cols.next().unwrap_or_default();
+        let text = cols.next().unwrap_or_default();
+        !ts.is_empty() && !author.is_empty() && topic == b"handover" && !text.is_empty()
+    })
+}
+
+/// The request `reference` names, from the live ledger, or `None` if the ledger has no such
+/// request.
+fn request_by_ref(dir: &Path, reference: &str) -> Option<requests::Request> {
+    let container = event_text::read_container(&dir.join("events.jsonl"));
+    requests::states(&container)
+        .into_iter()
+        .find(|r| r.id == reference.as_bytes())
+}
+
+/// `_compact-wait <session-dir> <ref> [--timeout <secs>]` core — the bounded wait for the
+/// TWO handover facts. `0` only when a `reply` (exact ref, main slot, frozen session) AND a
+/// new `handover` memo row (after the request's own baseline) have BOTH arrived. On timeout
+/// it returns [`EXIT_FAILED`] and LEAVES the request as it found it (ruling A, 2026-08-29):
+/// a normal timeout is a resumable pause, and only `--digest-only` withdraws. The guidance
+/// naming WHICH fact arrived is written here — bash branches on the exit code alone.
+pub(crate) fn wait_step(
+    dir: &Path,
+    reference: &str,
+    timeout_secs: u64,
+    err: &mut impl Write,
+) -> io::Result<u8> {
+    let name = dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or_default()
+        .to_owned();
+    let Some(req) = request_by_ref(dir, reference) else {
+        writeln!(
+            err,
+            "compact: cannot wait on {reference} — the ledger has no such request. Nothing was stopped and nothing was archived."
+        )?;
+        return Ok(EXIT_FAILED);
+    };
+    // The memo baseline is REQUIRED evidence: without it the "new handover memo" fact cannot
+    // be told from a memo that predates this request. A missing/non-regular body, or a body
+    // with no valid AE-COMPACT-MEMO-BASELINE marker, fails the wait CLOSED — no stop, no
+    // archive, no teardown (p4runner BLOCKER, review dc59b178).
+    let Some(baseline) = read_body_regular(&req.body_file).and_then(|b| baseline_from_body(&b))
+    else {
+        writeln!(
+            err,
+            "compact: cannot establish the handover memo baseline for {reference} — its request body is missing, not a regular file, or carries no valid AE-COMPACT-MEMO-BASELINE marker. Refusing the wait; nothing was stopped and nothing was archived."
+        )?;
+        return Ok(EXIT_FAILED);
+    };
+    let events_path = dir.join("events.jsonl");
+    let memo_path = dir.join("memo.tsv");
+
+    let deadline = Instant::now() + Duration::from_secs(timeout_secs);
+    let mut saw_reply;
+    let mut saw_memo;
+    loop {
+        saw_reply = reply_seen(&event_text::read_container(&events_path), reference, &name);
+        saw_memo = memo_after(&event_text::read_container(&memo_path), baseline);
+        if saw_reply && saw_memo {
+            writeln!(
+                err,
+                "compact: handover complete (reply {reference} and a new handover memo)."
+            )?;
+            return Ok(0);
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            break;
+        }
+        std::thread::sleep(HANDOVER_POLL.min(deadline - now));
+    }
+
+    writeln!(
+        err,
+        "compact: no complete handover within {timeout_secs}s — a reply AND a new handover memo are both required."
+    )?;
+    if saw_reply {
+        // The reply CLOSED the request, so there is nothing left to keep waiting on and a
+        // re-run asks again from scratch.
+        writeln!(
+            err,
+            "  The reply arrived; the handover memo did not. {reference} is answered and closed, so a re-run sends a FRESH request. Ask your main agent to write the memo first (memo add --topic handover ...), or run ae compact --digest-only {name} to archive the digest as it stands."
+        )?;
+    } else if saw_memo {
+        writeln!(
+            err,
+            "  The handover memo was written; the reply did not arrive. The request stays open: re-run ae compact {name} to keep waiting on it, or ae compact --digest-only {name} to archive the digest as it stands."
+        )?;
+    } else {
+        writeln!(
+            err,
+            "  The request stays open: re-run ae compact {name} to keep waiting on it, or ae compact --digest-only {name} to archive the digest as it stands."
+        )?;
+    }
+    Ok(EXIT_FAILED)
+}
+
+/// `_compact-cancel <session-dir> <ref>` core — withdraw an outstanding compact handover
+/// request, the `--digest-only` degradation. Emits a Rust-owned, COMPLETELY SLOTLESS
+/// `cancel` event whose actor is the request's own opener (`ae:compact:<uuid>`), which is
+/// the exact shape [`requests::states`] reads as a withdrawal (the `withdrawn_by` display
+/// arm: all four routing keys absent, actor bytes equal to the opening actor). Idempotent:
+/// a request already closed is a no-op success. Refuses to withdraw anything not opened by
+/// compact.
+pub(crate) fn cancel_step(dir: &Path, reference: &str, err: &mut impl Write) -> io::Result<u8> {
+    let Some(req) = request_by_ref(dir, reference) else {
+        writeln!(
+            err,
+            "compact: cannot withdraw {reference} — the ledger has no such request."
+        )?;
+        return Ok(EXIT_FAILED);
+    };
+    let actor = String::from_utf8_lossy(&req.from).into_owned();
+    if !actor.starts_with("ae:compact:") {
+        writeln!(
+            err,
+            "compact: refusing to withdraw {reference} — it was not opened by compact (opener '{actor}')."
+        )?;
+        return Ok(EXIT_FAILED);
+    }
+    if req.status != requests::Status::Pending {
+        // Already replied or already withdrawn — nothing to take back.
+        return Ok(0);
+    }
+    let line = crate::state::event_line(
+        crate::time::Timestamp::now(),
+        &actor,
+        "cancel",
+        reference,
+        "withdrawn: --digest-only, semantic handover skipped",
+    );
+    crate::state::emit(dir, &line)?;
+    Ok(0)
+}
+
+/// The reserved compact actor for the session at `dir` — `ae:compact:<session-uuid>`, the
+/// sender the handover is delivered as and the opener a withdrawal must match. Empty when
+/// meta records no valid session id (then nothing is an outstanding compact request).
+fn compact_actor(dir: &Path) -> String {
+    let uuid = meta::read_bytes(dir)
+        .ok()
+        .and_then(|b| meta_str(&b, "session_id"))
+        .map(|raw| crate::archive::canonical_uuid(&raw))
+        .unwrap_or_default();
+    if uuid.is_empty() {
+        String::new()
+    } else {
+        format!("ae:compact:{uuid}")
+    }
+}
+
+/// `_compact-memo-baseline <dir>` core — print the current `memo.tsv` byte size, the
+/// pre-delivery boundary the bash driver embeds in the handover request body (the frozen
+/// `_compact_memo_offset`). `_compact-wait` counts a handover only for a memo row appended
+/// PAST this offset, which is why it is captured before delivery. No newline — bash
+/// captures it with `$(…)`.
+pub(crate) fn memo_baseline_step(dir: &Path, out: &mut impl Write) -> io::Result<u8> {
+    let memo = event_text::read_container(&dir.join("memo.tsv"));
+    write!(out, "{}", memo.len())?;
+    Ok(0)
+}
+
+/// `_compact-find-outstanding <dir>` core — print the ref of the FIRST still-pending
+/// handover request opened by this session's compact actor, or nothing. The frozen
+/// `_compact_find_outstanding`: a retry reuses this ref (and, through its stored body, its
+/// baseline) instead of delivering a duplicate. No newline — bash captures it with `$(…)`
+/// and tests it with `-n`.
+pub(crate) fn find_outstanding_step(dir: &Path, out: &mut impl Write) -> io::Result<u8> {
+    let actor = compact_actor(dir);
+    if actor.is_empty() {
+        return Ok(0);
+    }
+    let container = event_text::read_container(&dir.join("events.jsonl"));
+    if let Some(req) = requests::states(&container)
+        .into_iter()
+        .find(|r| r.status == requests::Status::Pending && r.from == actor.as_bytes())
+    {
+        out.write_all(&req.id)?;
+    }
     Ok(0)
 }
 
@@ -1026,7 +1321,7 @@ mod tests {
     }
 
     #[test]
-    fn frozen_tuple_parses_ten_fields_and_keeps_the_six_rust_uses() {
+    fn frozen_tuple_parses_ten_fields_and_keeps_the_seven_rust_uses() {
         let f = FrozenTuple::parse(&tuple10("sess", UUID, "local", "/o", "/c", true))
             .expect("ten fields parse");
         assert_eq!(f.name, "sess");
@@ -1035,6 +1330,8 @@ mod tests {
         assert_eq!(f.origin, "/o");
         assert_eq!(f.config, "/c");
         assert!(f.purge);
+        // The roster (10th field) is now kept too — the revalidate roster-drift gate reads it.
+        assert_eq!(f.roster, "main=cl workers=-");
     }
 
     #[test]
@@ -1053,75 +1350,21 @@ mod tests {
         );
     }
 
-    // ---- verify_stopped tri-state (C1) ----
-
-    /// A [`Discovery`] backend whose answer is fixed, so the tri-state is hermetic.
-    enum Fake {
-        /// The server answers with these session names.
-        Answers(Vec<String>),
-        /// The server does not answer.
-        Fails,
-    }
-    impl crate::inventory::Discovery for Fake {
-        fn enumerate(
-            &self,
-            _server: &crate::inventory::ServerId,
-        ) -> Result<Vec<crate::inventory::DiscoveredSession>, crate::inventory::QueryFailed>
-        {
-            match self {
-                Fake::Answers(names) => Ok(names
-                    .iter()
-                    .map(|n| crate::inventory::DiscoveredSession {
-                        name: n.clone(),
-                        marker: None,
-                    })
-                    .collect()),
-                Fake::Fails => Err(crate::inventory::QueryFailed),
-            }
-        }
-    }
-
-    const POSITIVE_SERVER: &[u8] = b"mode=local\ntmux_server=srv\ntmux_server_kind=name\n";
-
-    #[test]
-    fn stop_present_on_the_recorded_server_is_alive() {
-        let backend = Fake::Answers(vec!["other".into(), "sess".into()]);
-        assert_eq!(
-            verify_stopped_with(&backend, POSITIVE_SERVER, "sess"),
-            StopState::Alive
-        );
-    }
-
-    #[test]
-    fn stop_absent_from_an_answering_server_is_stopped() {
-        let backend = Fake::Answers(vec!["other".into()]);
-        assert_eq!(
-            verify_stopped_with(&backend, POSITIVE_SERVER, "sess"),
-            StopState::Stopped
-        );
-    }
-
-    #[test]
-    fn stop_query_failure_is_unknown_never_stopped() {
-        assert_eq!(
-            verify_stopped_with(&Fake::Fails, POSITIVE_SERVER, "sess"),
-            StopState::Unknown
-        );
-    }
+    // ---- verify_stopped selector guard (C1) ----
+    //
+    // The recorded-server QUERY tri-state (present → Alive, answered-absent and
+    // clean-dead → Stopped, any other failure → Unknown) is the pure
+    // `crate::tmux::interpret_stopped`, unit-tested at its own site. Here we cover
+    // only what `verify_stopped` itself decides BEFORE any query: a non-positive
+    // selector fails closed without asking a server at all.
 
     #[test]
     fn stop_missing_or_ambiguous_selector_is_unknown() {
-        // No selector recorded → Missing → Unknown, whatever an answering server would say.
-        assert_eq!(
-            verify_stopped_with(&Fake::Answers(vec![]), b"mode=local\n", "sess"),
-            StopState::Unknown
-        );
+        // No selector recorded → Missing → Unknown, before any server is queried.
+        assert_eq!(verify_stopped(b"mode=local\n", "sess"), StopState::Unknown);
         // Two selector keys → Ambiguous → Unknown.
         let ambiguous = b"tmux_server=a\ntmux_server=b\ntmux_server_kind=name\n";
-        assert_eq!(
-            verify_stopped_with(&Fake::Answers(vec![]), ambiguous, "sess"),
-            StopState::Unknown
-        );
+        assert_eq!(verify_stopped(ambiguous, "sess"), StopState::Unknown);
     }
 
     // ---- revalidate (the authorization gate) ----
@@ -1134,6 +1377,10 @@ mod tests {
             origin: origin.display().to_string(),
             config: config.display().to_string(),
             purge: false,
+            // Every revalidate fixture's config is `[workspace] main = cl` (no workers), so
+            // this is the roster it resolves to — a match, so the drift gate passes and each
+            // test exercises the check it targets rather than tripping the roster gate first.
+            roster: "main=cl workers=-".to_owned(),
         }
     }
 
@@ -1203,6 +1450,26 @@ mod tests {
         );
         // --keep-history authorizes it.
         assert!(revalidate(&dir, &f, true, "test").is_ok());
+    }
+
+    #[test]
+    fn revalidate_refuses_a_roster_rewritten_under_the_window() {
+        let s = Scratch::new("reval-roster");
+        let dir = session(&s, "", Some("[workspace]\nmain = cl\n"));
+        let f = frozen(&s.0, &s.0.join("config"));
+        // Unchanged config → the shown roster still resolves → accepted.
+        assert!(revalidate(&dir, &f, false, "test").is_ok());
+        // Rewritten DURING the window to start a different main. The config PATH is unchanged
+        // (that gate passes), but the roster it now resolves to is not the one shown.
+        std::fs::write(s.0.join("config"), "[workspace]\nmain = other\n").unwrap();
+        let err = revalidate(&dir, &f, false, "after confirmation").unwrap_err();
+        assert!(
+            err.contains("would now start a different roster than the one shown"),
+            "{err}"
+        );
+        assert!(err.contains("after confirmation"), "{err}"); // the gate label threads through
+        assert!(err.contains("main=cl"), "{err}"); // names what was shown
+        assert!(err.contains("main=other"), "{err}"); // and what would start now
     }
 
     #[test]
@@ -1308,5 +1575,344 @@ mod tests {
             !archive_recovery_point_valid(&archive_root, UUID, &mut err4).unwrap(),
             "a missing archive must be rejected"
         );
+    }
+
+    // ---- the semantic handover wait + cancel (slice B) ----
+
+    const REF: &str = "ae-20260829T000000Z-abcd1234";
+
+    /// A bare session dir named `sess` under the scratch root — the basename `wait_step`
+    /// and the reply/session checks bind to.
+    fn handover_dir(s: &Scratch) -> PathBuf {
+        let dir = s.0.join("sess");
+        std::fs::create_dir_all(dir.join("messages")).unwrap();
+        dir
+    }
+
+    /// Seed a compact handover ask opening from the reserved compact actor — SLOTLESS
+    /// sender (`actor_session` present, no `actor_slot`), addressed to main, with a stored
+    /// body carrying the memo baseline. The ledger reads it as one Pending request.
+    fn seed_handover(dir: &Path, baseline: usize) {
+        let body = dir.join("messages").join("handover.ask.txt");
+        std::fs::write(
+            &body,
+            format!("COMPACT HANDOVER ...\nAE-COMPACT-MEMO-BASELINE={baseline}\n"),
+        )
+        .unwrap();
+        let ask = format!(
+            "{{\"ts\":\"2026-08-29T00:00:00Z\",\"actor\":\"ae:compact:{UUID}\",\"action\":\"ask\",\"target\":\"cl:main\",\"ref\":\"{REF}\",\"body_file\":\"{}\",\"actor_session\":\"sess\",\"target_slot\":\"main\",\"target_session\":\"sess\"}}\n",
+            body.display()
+        );
+        std::fs::write(dir.join("events.jsonl"), ask).unwrap();
+    }
+
+    fn append_reply(dir: &Path) {
+        use std::io::Write as _;
+        let reply = format!(
+            "{{\"ts\":\"2026-08-29T00:01:00Z\",\"actor\":\"cl:main\",\"action\":\"reply\",\"ref\":\"{REF}\",\"actor_slot\":\"main\",\"actor_session\":\"sess\",\"target\":\"ae:compact:{UUID}\"}}\n"
+        );
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(dir.join("events.jsonl"))
+            .unwrap();
+        f.write_all(reply.as_bytes()).unwrap();
+    }
+
+    fn status_of(dir: &Path) -> requests::Status {
+        let container = event_text::read_container(&dir.join("events.jsonl"));
+        requests::states(&container)
+            .into_iter()
+            .find(|r| r.id == REF.as_bytes())
+            .expect("the seeded request")
+            .status
+    }
+
+    // ---- pure predicates ----
+
+    #[test]
+    fn baseline_reads_the_body_marker() {
+        assert_eq!(
+            baseline_from_body(b"intro\nAE-COMPACT-MEMO-BASELINE=42\nmore\n"),
+            Some(42)
+        );
+        // A legitimate zero (empty memo at request time) is NOT the same as no evidence.
+        assert_eq!(
+            baseline_from_body(b"AE-COMPACT-MEMO-BASELINE=0\n"),
+            Some(0),
+            "a real 0 baseline is valid"
+        );
+        // Absent or malformed is UNAVAILABLE EVIDENCE — None, never a silent 0.
+        assert_eq!(
+            baseline_from_body(b"no marker here\n"),
+            None,
+            "absent -> None"
+        );
+        assert_eq!(
+            baseline_from_body(b"AE-COMPACT-MEMO-BASELINE=notanumber\n"),
+            None,
+            "malformed -> None, never a fallback 0"
+        );
+    }
+
+    #[test]
+    fn memo_after_requires_a_handover_row_past_the_offset() {
+        let memo = b"a\tcl\thandover\told\n";
+        assert!(!memo_after(memo, memo.len()), "nothing past the end");
+        assert!(memo_after(memo, 0), "a valid handover row from offset 0");
+        assert!(!memo_after(b"a\tcl\tchat\thi\n", 0), "wrong topic");
+        assert!(!memo_after(b"a\tcl\thandover\t\n", 0), "empty text");
+        assert!(!memo_after(b"\t\thandover\ttext\n", 0), "no ts/author");
+    }
+
+    #[test]
+    fn reply_seen_matches_ref_slot_and_session_exactly() {
+        let ev = format!(
+            "{{\"ts\":\"t\",\"actor\":\"cl:main\",\"action\":\"reply\",\"ref\":\"{REF}\",\"actor_slot\":\"main\",\"actor_session\":\"sess\"}}\n"
+        );
+        assert!(reply_seen(ev.as_bytes(), REF, "sess"));
+        assert!(!reply_seen(ev.as_bytes(), "other-ref", "sess"), "wrong ref");
+        assert!(!reply_seen(ev.as_bytes(), REF, "other"), "wrong session");
+        let worker = ev.replace("\"actor_slot\":\"main\"", "\"actor_slot\":\"worker.0\"");
+        assert!(!reply_seen(worker.as_bytes(), REF, "sess"), "wrong slot");
+    }
+
+    // ---- wait_step (timeout 0 => a single poll then the timeout branch) ----
+
+    #[test]
+    fn wait_succeeds_when_both_facts_are_present() {
+        let s = Scratch::new("wait-both");
+        let dir = handover_dir(&s);
+        seed_handover(&dir, 0);
+        append_reply(&dir);
+        std::fs::write(
+            dir.join("memo.tsv"),
+            "2026-08-29T00:01:00Z\tcl:main\thandover\tpicking up\n",
+        )
+        .unwrap();
+        let mut err = Vec::new();
+        let code = wait_step(&dir, REF, 0, &mut err).unwrap();
+        assert_eq!(code, 0, "{}", String::from_utf8_lossy(&err));
+        assert!(String::from_utf8_lossy(&err).contains("handover complete"));
+    }
+
+    #[test]
+    fn wait_times_out_and_leaves_the_request_pending_when_only_the_memo_arrived() {
+        let s = Scratch::new("wait-memo");
+        let dir = handover_dir(&s);
+        seed_handover(&dir, 0);
+        std::fs::write(
+            dir.join("memo.tsv"),
+            "2026-08-29T00:01:00Z\tcl:main\thandover\tpicking up\n",
+        )
+        .unwrap();
+        let mut err = Vec::new();
+        let code = wait_step(&dir, REF, 0, &mut err).unwrap();
+        assert_eq!(code, EXIT_FAILED);
+        let msg = String::from_utf8_lossy(&err);
+        // The guidance names the session (the frozen contract the integration arms assert),
+        // and points at the two ways forward.
+        assert!(
+            msg.contains("stays open") && msg.contains("ae compact --digest-only sess"),
+            "{msg}"
+        );
+        // Ruling A: a normal timeout writes NOTHING to the ledger — the request is reusable.
+        assert_eq!(status_of(&dir), requests::Status::Pending);
+    }
+
+    #[test]
+    fn wait_reports_the_reply_closed_case() {
+        // The reply arrived, the memo did not: the reply already closed the ref, so a
+        // re-run must send a fresh request — the guidance says so.
+        let s = Scratch::new("wait-reply");
+        let dir = handover_dir(&s);
+        seed_handover(&dir, 0);
+        append_reply(&dir);
+        let mut err = Vec::new();
+        let code = wait_step(&dir, REF, 0, &mut err).unwrap();
+        assert_eq!(code, EXIT_FAILED);
+        let msg = String::from_utf8_lossy(&err);
+        assert!(
+            msg.contains("answered and closed") && msg.contains("FRESH"),
+            "{msg}"
+        );
+    }
+
+    #[test]
+    fn wait_refuses_an_unknown_ref() {
+        let s = Scratch::new("wait-unknown");
+        let dir = handover_dir(&s);
+        std::fs::write(dir.join("events.jsonl"), "").unwrap();
+        let mut err = Vec::new();
+        let code = wait_step(&dir, REF, 0, &mut err).unwrap();
+        assert_eq!(code, EXIT_FAILED);
+        assert!(String::from_utf8_lossy(&err).contains("no such request"));
+    }
+
+    #[test]
+    fn wait_fails_closed_when_the_baseline_evidence_is_unavailable() {
+        // The BLOCKER (p4runner review dc59b178): a memo written BEFORE the request PLUS a
+        // reply must NOT satisfy the two-fact gate when the baseline cannot be established.
+        // A missing/non-regular body or a body with no valid marker would default to
+        // baseline 0, and `memo_after(old_memo, 0)` would then pass the pre-existing memo as
+        // "new". This row is a VALID handover row that baseline 0 would have accepted.
+        let old_memo = "2026-08-29T00:00:00Z\tcl:main\thandover\twritten BEFORE the request\n";
+        let body = |dir: &Path| dir.join("messages").join("handover.ask.txt");
+
+        // (a) body present but carries NO valid marker.
+        {
+            let s = Scratch::new("wait-nomark");
+            let dir = handover_dir(&s);
+            seed_handover(&dir, 0);
+            std::fs::write(body(&dir), "COMPACT HANDOVER but no baseline marker\n").unwrap();
+            append_reply(&dir);
+            std::fs::write(dir.join("memo.tsv"), old_memo).unwrap();
+            let mut err = Vec::new();
+            let code = wait_step(&dir, REF, 0, &mut err).unwrap();
+            let msg = String::from_utf8_lossy(&err);
+            assert_eq!(code, EXIT_FAILED, "{msg}");
+            assert!(
+                msg.contains("cannot establish the handover memo baseline"),
+                "{msg}"
+            );
+            // Fail-closed writes nothing to the ledger — the request stays reusable.
+            assert_eq!(status_of(&dir), requests::Status::Pending);
+        }
+
+        // (b) body MISSING entirely — the same old memo + reply still fails closed.
+        {
+            let s = Scratch::new("wait-nobody");
+            let dir = handover_dir(&s);
+            seed_handover(&dir, 0);
+            std::fs::remove_file(body(&dir)).unwrap();
+            append_reply(&dir);
+            std::fs::write(dir.join("memo.tsv"), old_memo).unwrap();
+            let mut err = Vec::new();
+            let code = wait_step(&dir, REF, 0, &mut err).unwrap();
+            let msg = String::from_utf8_lossy(&err);
+            assert_eq!(code, EXIT_FAILED, "{msg}");
+            assert!(
+                msg.contains("cannot establish the handover memo baseline"),
+                "{msg}"
+            );
+        }
+        // The legitimate-zero control (a real `AE-COMPACT-MEMO-BASELINE=0` proceeds) is
+        // `wait_succeeds_when_both_facts_are_present`, which seeds baseline 0 and succeeds.
+    }
+
+    // ---- cancel_step (--digest-only withdrawal), pinned in the request VIEW ----
+
+    #[test]
+    fn cancel_withdraws_a_compact_handover_and_pins_it_cancelled() {
+        let s = Scratch::new("cancel-ok");
+        let dir = handover_dir(&s);
+        seed_handover(&dir, 0);
+        assert_eq!(status_of(&dir), requests::Status::Pending, "precondition");
+        let mut err = Vec::new();
+        assert_eq!(
+            cancel_step(&dir, REF, &mut err).unwrap(),
+            0,
+            "{}",
+            String::from_utf8_lossy(&err)
+        );
+        // The PIN: requests reads it as cancelled, not merely that a cancel byte was written.
+        assert_eq!(status_of(&dir), requests::Status::Cancelled);
+    }
+
+    #[test]
+    fn cancel_refuses_a_request_not_opened_by_compact() {
+        let s = Scratch::new("cancel-foreign");
+        let dir = handover_dir(&s);
+        // A normal pane-to-pane ask, not the reserved compact actor.
+        let ask = format!(
+            "{{\"ts\":\"2026-08-29T00:00:00Z\",\"actor\":\"cl:lead\",\"action\":\"ask\",\"target\":\"cl:main\",\"ref\":\"{REF}\",\"actor_slot\":\"main\",\"actor_session\":\"sess\",\"target_slot\":\"worker.0\",\"target_session\":\"sess\"}}\n"
+        );
+        std::fs::write(dir.join("events.jsonl"), ask).unwrap();
+        let mut err = Vec::new();
+        assert_eq!(cancel_step(&dir, REF, &mut err).unwrap(), EXIT_FAILED);
+        assert!(String::from_utf8_lossy(&err).contains("not opened by compact"));
+    }
+
+    #[test]
+    fn cancel_is_idempotent_once_withdrawn() {
+        // The already-closed no-op: a second withdrawal finds the request no longer
+        // Pending and writes nothing — no duplicate cancel event, still Cancelled.
+        let s = Scratch::new("cancel-twice");
+        let dir = handover_dir(&s);
+        seed_handover(&dir, 0);
+        let mut err = Vec::new();
+        assert_eq!(cancel_step(&dir, REF, &mut err).unwrap(), 0);
+        assert_eq!(status_of(&dir), requests::Status::Cancelled);
+        let before = event_text::read_container(&dir.join("events.jsonl"));
+        let mut err2 = Vec::new();
+        assert_eq!(cancel_step(&dir, REF, &mut err2).unwrap(), 0);
+        let after = event_text::read_container(&dir.join("events.jsonl"));
+        assert_eq!(before, after, "no second cancel event appended");
+        assert_eq!(status_of(&dir), requests::Status::Cancelled);
+    }
+
+    #[test]
+    fn cancel_refuses_an_unknown_ref() {
+        let s = Scratch::new("cancel-unknown");
+        let dir = handover_dir(&s);
+        std::fs::write(dir.join("events.jsonl"), "").unwrap();
+        let mut err = Vec::new();
+        assert_eq!(cancel_step(&dir, REF, &mut err).unwrap(), EXIT_FAILED);
+        assert!(String::from_utf8_lossy(&err).contains("no such request"));
+    }
+
+    // ---- memo baseline + find-outstanding (the bash-driver state reads) ----
+
+    #[test]
+    fn memo_baseline_is_the_file_byte_size() {
+        let s = Scratch::new("memo-baseline");
+        let dir = handover_dir(&s);
+        // No memo yet → 0.
+        let mut out = Vec::new();
+        memo_baseline_step(&dir, &mut out).unwrap();
+        assert_eq!(out, b"0");
+        // With content → its byte length, printed without a trailing newline.
+        let body = "2026-08-29T00:00:00Z\tcl:main\thandover\thi\n";
+        std::fs::write(dir.join("memo.tsv"), body).unwrap();
+        let mut out2 = Vec::new();
+        memo_baseline_step(&dir, &mut out2).unwrap();
+        assert_eq!(out2, body.len().to_string().into_bytes());
+    }
+
+    #[test]
+    fn find_outstanding_prints_a_pending_compact_ref_only() {
+        let s = Scratch::new("find-outstanding");
+        let dir = handover_dir(&s);
+        std::fs::write(dir.join("meta"), format!("session_id={UUID}\nmode=local\n")).unwrap();
+        // No events → nothing outstanding.
+        std::fs::write(dir.join("events.jsonl"), "").unwrap();
+        let mut out = Vec::new();
+        find_outstanding_step(&dir, &mut out).unwrap();
+        assert!(out.is_empty(), "no request → no ref");
+        // A pending compact handover → its ref.
+        seed_handover(&dir, 0);
+        let mut out2 = Vec::new();
+        find_outstanding_step(&dir, &mut out2).unwrap();
+        assert_eq!(out2, REF.as_bytes());
+        // Once withdrawn it is no longer outstanding.
+        let mut e = Vec::new();
+        cancel_step(&dir, REF, &mut e).unwrap();
+        let mut out3 = Vec::new();
+        find_outstanding_step(&dir, &mut out3).unwrap();
+        assert!(out3.is_empty(), "a cancelled request is not outstanding");
+    }
+
+    #[test]
+    fn find_outstanding_ignores_a_non_compact_pending_request() {
+        let s = Scratch::new("find-foreign");
+        let dir = handover_dir(&s);
+        std::fs::write(dir.join("meta"), format!("session_id={UUID}\nmode=local\n")).unwrap();
+        // A normal pane-to-pane ask is pending but NOT a compact request.
+        let ask = format!(
+            "{{\"ts\":\"t\",\"actor\":\"cl:lead\",\"action\":\"ask\",\"target\":\"cl:main\",\"ref\":\"{REF}\",\"actor_slot\":\"main\",\"actor_session\":\"sess\"}}\n"
+        );
+        std::fs::write(dir.join("events.jsonl"), ask).unwrap();
+        let mut out = Vec::new();
+        find_outstanding_step(&dir, &mut out).unwrap();
+        assert!(out.is_empty(), "only a compact-actor request counts");
     }
 }

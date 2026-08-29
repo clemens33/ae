@@ -420,7 +420,7 @@ pub fn run(
         }
         return Ok(0);
     }
-    let resolved = match tracked::resolve(&reply_target, own_session) {
+    let resolved = match tracked::resolve(&reply_target, own_session, dir) {
         Ok(resolved) => resolved,
         Err(why) => {
             writeln!(err, "{}", why.message())?;

@@ -106,19 +106,51 @@ impl Discovery for Tmux {
     }
 }
 
-/// Whether the AMBIENT server has a session `name` — the frozen resolver's
+/// Whether `server` has a session `name` — the frozen resolver's
 /// `tmux has-session -t` before a cross-session lookup (prefix-matched, as
-/// tmux does).
+/// tmux does). A non-addressable server is `false`, never put on the wire.
+///
+/// The server is a PARAMETER for the same reason [`observe_agents`] takes one:
+/// an `@session:agent` target may live on a server that is not the caller's
+/// ambient one, so the existence probe must ask the TARGET session's recorded
+/// server.
 #[must_use]
-pub fn session_exists(name: &str) -> bool {
-    run(PROGRAM, &tmux::has_session_args(&ServerId::Ambient, name)).0
+pub fn session_exists(server: &ServerId, name: &str) -> bool {
+    addressable(server) && run(PROGRAM, &tmux::has_session_args(server, name)).0
 }
 
-/// The pane roster of `session` on the AMBIENT server, or `None` when the
-/// enumeration failed — see [`tmux::interpret_agents`].
+/// Whether `name` is verifiably STOPPED on its recorded `server` — the frozen
+/// `_end_verify_gone` tri-state the destructive compact gate crosses.
+///
+/// Distinct from [`session_exists`] and [`Tmux::enumerate`] because it must read
+/// tmux's stderr: a clean server exit (its last session gone) proves the session
+/// is stopped, and only the `no server running on …` diagnostic distinguishes
+/// that from an unreachable server. A non-addressable server is
+/// [`tmux::StopProbe::Unknown`] — never put on the wire, never read as absence.
 #[must_use]
-pub fn observe_agents(session: &str) -> Option<Vec<tmux::ObservedAgent>> {
-    let (succeeded, stdout) = run(PROGRAM, &tmux::agents_args(&ServerId::Ambient, session));
+pub fn verify_session_absent(server: &ServerId, name: &str) -> tmux::StopProbe {
+    if !addressable(server) {
+        return tmux::StopProbe::Unknown;
+    }
+    let (succeeded, stdout, stderr) = run_captured(PROGRAM, &tmux::list_sessions_args(server));
+    tmux::interpret_stopped(succeeded, &stdout, &stderr, name)
+}
+
+/// The pane roster of `session` on `server`, or `None` when the enumeration
+/// failed — see [`tmux::interpret_agents`]. A non-addressable server (a relative
+/// socket) is `None` rather than put on the wire, as [`addressable`] rules.
+///
+/// The server is a PARAMETER because a target session need not live on the
+/// caller's ambient server: a PANE-LESS caller (compact delivering a handover)
+/// has no `TMUX` pointing at the recorded server, so enumerating the ambient
+/// server finds nothing. The caller passes the session's recorded selector; an
+/// in-pane caller's ambient IS that server, so the two agree there.
+#[must_use]
+pub fn observe_agents(server: &ServerId, session: &str) -> Option<Vec<tmux::ObservedAgent>> {
+    if !addressable(server) {
+        return None;
+    }
+    let (succeeded, stdout) = run(PROGRAM, &tmux::agents_args(server, session));
     tmux::interpret_agents(succeeded, &stdout)
 }
 
@@ -167,14 +199,21 @@ pub fn deliver(
 
 /// The calling pane's identity readings, from the AMBIENT server.
 ///
-/// Ambient, deliberately: a generated helper is invoked inside the session it
-/// serves, and the frozen helper it replaces runs a bare `tmux` for exactly
-/// this read. The listing's refusal to select an ambient server (SC-1410c) is
-/// about entitlement to sessions ae did not record; a pane asking who it is
-/// has already been placed by tmux.
+/// A pane's identity readings from `server`, or `None` when the read failed. A
+/// non-addressable server is `None` rather than put on the wire.
+///
+/// The WHO-AM-I caller passes [`ServerId::Ambient`] deliberately: a generated
+/// helper is invoked inside the session it serves, and the frozen helper it
+/// replaces runs a bare `tmux` for exactly this read — a pane asking who it is
+/// has already been placed by tmux. A TARGET pane resolved for a pane-less
+/// caller lives on the RECORDED server instead, which is why the server is a
+/// parameter rather than always ambient.
 #[must_use]
-pub fn observe_viewer(pane: &str) -> Option<tmux::ObservedViewer> {
-    let (succeeded, stdout) = run(PROGRAM, &tmux::viewer_args(&ServerId::Ambient, pane));
+pub fn observe_viewer(server: &ServerId, pane: &str) -> Option<tmux::ObservedViewer> {
+    if !addressable(server) {
+        return None;
+    }
+    let (succeeded, stdout) = run(PROGRAM, &tmux::viewer_args(server, pane));
     tmux::interpret_viewer(succeeded, &stdout)
 }
 
@@ -252,6 +291,22 @@ fn run(program: &str, args: &[String]) -> (bool, String) {
         ),
         // Nothing ran. Not an empty answer — see the module docs.
         None => (false, String::new()),
+    }
+}
+
+/// Like [`run`], but ALSO returns the child's stderr — the one caller that needs
+/// it is the stop verification, which reads tmux's `no server running on …`
+/// diagnostic to tell a clean server exit (proof the session is gone) from any
+/// other failure (unproven). Everywhere else stderr is noise and [`run`] drops
+/// it; here it carries the SC-017l distinction.
+fn run_captured(program: &str, args: &[String]) -> (bool, String, String) {
+    match spawn(program, args, &[], false) {
+        Some(output) => (
+            output.status.success(),
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        ),
+        None => (false, String::new(), String::new()),
     }
 }
 

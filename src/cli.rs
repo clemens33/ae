@@ -75,10 +75,16 @@ pub const END_NONLOCAL_TEARDOWN: &str = "_end-nonlocal-teardown";
 /// human-typed.
 pub const COMPACT_FREEZE: &str = "_compact-freeze";
 
-/// compact's pre-message gate: `_compact-revalidate <dir> <tuple> [--keep-history]`.
-/// Proves the live session is still the one the freeze authorized before the semantic
-/// handover is messaged. Pure read-only. Underscored — a core entry, never typed.
+/// compact's authorization gate: `_compact-revalidate <dir> <tuple> [--when <label>]
+/// [--keep-history]`. Proves the live session is still the one the freeze authorized, at both
+/// the after-confirmation and after-handover-wait crossings. Pure read-only. Underscored — a
+/// core entry, never typed.
 pub const COMPACT_REVALIDATE: &str = "_compact-revalidate";
+
+/// The gate label when the driver passes no `--when` — the single-gate wording the entry had
+/// before the two crossings were distinguished, kept so a caller that omits the flag is not
+/// silently mislabelled.
+pub const DEFAULT_REVALIDATE_WHEN: &str = "before the handover";
 
 /// compact's destructive stage 1: `_compact-archive <dir> <tuple> <archived-at>
 /// <push-outcome> <push-ref> <preserved> <workdir> [--keep-history]`. Revalidates the
@@ -91,6 +97,27 @@ pub const COMPACT_ARCHIVE: &str = "_compact-archive";
 /// Re-proves the authorization and the stop, requires the durable archive, removes the
 /// live session, and prints the exec plan. Underscored — a core entry, never typed.
 pub const COMPACT_TEARDOWN: &str = "_compact-teardown";
+
+/// compact's semantic-handover wait: `_compact-wait <dir> <ref> [--timeout <secs>]`.
+/// Bounded poll for BOTH the reply and a new handover memo; on timeout it leaves the
+/// request as found (only `--digest-only` withdraws). Underscored — a core entry, never
+/// typed.
+pub const COMPACT_WAIT: &str = "_compact-wait";
+
+/// compact's `--digest-only` withdrawal: `_compact-cancel <dir> <ref>`. Emits the
+/// Rust-owned slotless cancel event that withdraws an outstanding compact handover request.
+/// Underscored — a core entry, never typed.
+pub const COMPACT_CANCEL: &str = "_compact-cancel";
+
+/// compact's pre-delivery memo boundary: `_compact-memo-baseline <dir>`. Prints the current
+/// `memo.tsv` byte size — the offset a handover memo must be appended past. Underscored — a
+/// core entry, never typed.
+pub const COMPACT_MEMO_BASELINE: &str = "_compact-memo-baseline";
+
+/// compact's retry-reuse lookup: `_compact-find-outstanding <dir>`. Prints the ref of a
+/// still-pending compact handover request, so a re-run reuses it instead of delivering a
+/// duplicate. Underscored — a core entry, never typed.
+pub const COMPACT_FIND_OUTSTANDING: &str = "_compact-find-outstanding";
 
 /// The `state` helper's surface — `_state <meta-dir> [<value> [reason…]]`.
 /// Underscored like [`REQUESTS`]: launched by the generated helper, not typed.
@@ -249,12 +276,17 @@ pub enum Request {
         /// `--keep-history`: override a config that opts into purging agent history.
         keep_history: bool,
     },
-    /// `_compact-revalidate <dir> <tuple> [--keep-history]` — the pre-message gate.
+    /// `_compact-revalidate <dir> <tuple> [--when <label>] [--keep-history]` — the
+    /// authorization gate, crossed after confirmation AND after the handover wait.
     CompactRevalidate {
         /// The session directory.
         dir: PathBuf,
         /// The frozen tuple from `_compact-freeze`.
         tuple: String,
+        /// The driver's label for WHICH gate this is (e.g. "after confirmation", "after the
+        /// handover wait"), so a refusal names the crossing. Defaults to "before the handover"
+        /// when the flag is absent, preserving the single-gate wording for any legacy caller.
+        when: String,
         /// `--keep-history`, carried from the original invocation.
         keep_history: bool,
     },
@@ -289,6 +321,33 @@ pub enum Request {
         tuple: String,
         /// `--keep-history`, as [`Request::CompactArchive`].
         keep_history: bool,
+    },
+    /// `_compact-wait <dir> <ref> [--timeout <secs>]` — the bounded semantic-handover wait.
+    CompactWait {
+        /// The session directory.
+        dir: PathBuf,
+        /// The tracked handover request id to wait on.
+        reference: String,
+        /// The bound in seconds; [`crate::compact::DEFAULT_HANDOVER_SECS`] when `--timeout`
+        /// is unset.
+        timeout_secs: u64,
+    },
+    /// `_compact-cancel <dir> <ref>` — withdraw an outstanding compact handover request.
+    CompactCancel {
+        /// The session directory.
+        dir: PathBuf,
+        /// The tracked handover request id to withdraw.
+        reference: String,
+    },
+    /// `_compact-memo-baseline <dir>` — print the current `memo.tsv` byte size.
+    CompactMemoBaseline {
+        /// The session directory.
+        dir: PathBuf,
+    },
+    /// `_compact-find-outstanding <dir>` — print a still-pending compact handover ref.
+    CompactFindOutstanding {
+        /// The session directory.
+        dir: PathBuf,
     },
     /// `_end-nonlocal-teardown <session-dir> [--preserve]` — removes the managed
     /// workdir (copy/worktree) and then the canonical state of a nonlocal session.
@@ -523,13 +582,32 @@ impl Request {
                 [dir, tuple] => Self::CompactRevalidate {
                     dir: dir.into(),
                     tuple: tuple.clone(),
+                    when: DEFAULT_REVALIDATE_WHEN.to_owned(),
                     keep_history: false,
                 },
                 [dir, tuple, flag] if flag == "--keep-history" => Self::CompactRevalidate {
                     dir: dir.into(),
                     tuple: tuple.clone(),
+                    when: DEFAULT_REVALIDATE_WHEN.to_owned(),
                     keep_history: true,
                 },
+                [dir, tuple, flag, label] if flag == "--when" => Self::CompactRevalidate {
+                    dir: dir.into(),
+                    tuple: tuple.clone(),
+                    when: label.clone(),
+                    keep_history: false,
+                },
+                [dir, tuple, flag, label, keep] if flag == "--when" && keep == "--keep-history" => {
+                    Self::CompactRevalidate {
+                        dir: dir.into(),
+                        tuple: tuple.clone(),
+                        when: label.clone(),
+                        keep_history: true,
+                    }
+                }
+                // `--when` with no label is a usage error naming the flag itself.
+                [_, _, flag] if flag == "--when" => Self::MissingOperand(COMPACT_REVALIDATE),
+                [_, _, flag, _, extra, ..] if flag == "--when" => Self::UsageError(extra.clone()),
                 [_, _, flag, extra, ..] if flag == "--keep-history" => {
                     Self::UsageError(extra.clone())
                 }
@@ -596,6 +674,44 @@ impl Request {
                 }
                 [_, _, extra, ..] => Self::UsageError(extra.clone()),
                 _ => Self::MissingOperand(COMPACT_TEARDOWN),
+            },
+            Some(COMPACT_WAIT) => match &args[1..] {
+                [dir, reference] => Self::CompactWait {
+                    dir: dir.into(),
+                    reference: reference.clone(),
+                    timeout_secs: crate::compact::DEFAULT_HANDOVER_SECS,
+                },
+                [dir, reference, flag, secs] if flag == "--timeout" => match secs.parse::<u64>() {
+                    Ok(n) => Self::CompactWait {
+                        dir: dir.into(),
+                        reference: reference.clone(),
+                        timeout_secs: n,
+                    },
+                    Err(_) => Self::UsageError(secs.clone()),
+                },
+                [_, _, flag, _, extra, ..] if flag == "--timeout" => {
+                    Self::UsageError(extra.clone())
+                }
+                [_, _, extra, ..] => Self::UsageError(extra.clone()),
+                _ => Self::MissingOperand(COMPACT_WAIT),
+            },
+            Some(COMPACT_CANCEL) => match &args[1..] {
+                [dir, reference] => Self::CompactCancel {
+                    dir: dir.into(),
+                    reference: reference.clone(),
+                },
+                [_, _, extra, ..] => Self::UsageError(extra.clone()),
+                _ => Self::MissingOperand(COMPACT_CANCEL),
+            },
+            Some(COMPACT_MEMO_BASELINE) => match &args[1..] {
+                [dir] => Self::CompactMemoBaseline { dir: dir.into() },
+                [_, extra, ..] => Self::UsageError(extra.clone()),
+                _ => Self::MissingOperand(COMPACT_MEMO_BASELINE),
+            },
+            Some(COMPACT_FIND_OUTSTANDING) => match &args[1..] {
+                [dir] => Self::CompactFindOutstanding { dir: dir.into() },
+                [_, extra, ..] => Self::UsageError(extra.clone()),
+                _ => Self::MissingOperand(COMPACT_FIND_OUTSTANDING),
             },
             Some(ARCHIVE_PREVIEW) => match &args[1..] {
                 [] => Self::MissingOperand(ARCHIVE_PREVIEW),
@@ -693,7 +809,11 @@ impl Request {
             | Self::CompactFreeze { .. }
             | Self::CompactRevalidate { .. }
             | Self::CompactArchive { .. }
-            | Self::CompactTeardown { .. } => None,
+            | Self::CompactTeardown { .. }
+            | Self::CompactWait { .. }
+            | Self::CompactCancel { .. }
+            | Self::CompactMemoBaseline { .. }
+            | Self::CompactFindOutstanding { .. } => None,
         }
     }
 }
@@ -701,9 +821,10 @@ impl Request {
 #[cfg(test)]
 mod tests {
     use super::{
-        ARCHIVE_PREVIEW, ASK, COMPACT_ARCHIVE, COMPACT_FREEZE, COMPACT_REVALIDATE,
-        COMPACT_TEARDOWN, END_NONLOCAL_TEARDOWN, EVENTS_TAIL, GOAL, MEMO, REPLY, REQUESTS, REVIEW,
-        Request, SEND, STATE,
+        ARCHIVE_PREVIEW, ASK, COMPACT_ARCHIVE, COMPACT_CANCEL, COMPACT_FIND_OUTSTANDING,
+        COMPACT_FREEZE, COMPACT_MEMO_BASELINE, COMPACT_REVALIDATE, COMPACT_TEARDOWN, COMPACT_WAIT,
+        DEFAULT_REVALIDATE_WHEN, END_NONLOCAL_TEARDOWN, EVENTS_TAIL, GOAL, MEMO, REPLY, REQUESTS,
+        REVIEW, Request, SEND, STATE,
     };
     use crate::filters::{ListArgs, Scope};
     use crate::requests::Mode;
@@ -1117,11 +1238,13 @@ mod tests {
 
     #[test]
     fn compact_revalidate_parses_dir_tuple_and_optional_keep_history() {
+        // No --when: the default single-gate label, so a legacy caller is not mislabelled.
         assert_eq!(
             Request::parse(&argv(&[COMPACT_REVALIDATE, "/s/d", "t\u{1f}u"])),
             Request::CompactRevalidate {
                 dir: "/s/d".into(),
                 tuple: "t\u{1f}u".to_owned(),
+                when: DEFAULT_REVALIDATE_WHEN.to_owned(),
                 keep_history: false,
             }
         );
@@ -1130,6 +1253,7 @@ mod tests {
             Request::CompactRevalidate {
                 dir: "/s/d".into(),
                 tuple: "t".to_owned(),
+                when: DEFAULT_REVALIDATE_WHEN.to_owned(),
                 keep_history: true,
             }
         );
@@ -1140,6 +1264,61 @@ mod tests {
         assert_eq!(
             Request::parse(&argv(&[COMPACT_REVALIDATE])),
             Request::MissingOperand(COMPACT_REVALIDATE)
+        );
+    }
+
+    #[test]
+    fn compact_revalidate_carries_the_gate_label_and_keep_history_together() {
+        // The label is a whole argv element, spaces and all — the two crossings are named
+        // "after confirmation" and "after the handover wait", and a refusal must print which.
+        assert_eq!(
+            Request::parse(&argv(&[
+                COMPACT_REVALIDATE,
+                "/s/d",
+                "t",
+                "--when",
+                "after the handover wait",
+            ])),
+            Request::CompactRevalidate {
+                dir: "/s/d".into(),
+                tuple: "t".to_owned(),
+                when: "after the handover wait".to_owned(),
+                keep_history: false,
+            }
+        );
+        // --when composes with --keep-history, in that order.
+        assert_eq!(
+            Request::parse(&argv(&[
+                COMPACT_REVALIDATE,
+                "/s/d",
+                "t",
+                "--when",
+                "after confirmation",
+                "--keep-history",
+            ])),
+            Request::CompactRevalidate {
+                dir: "/s/d".into(),
+                tuple: "t".to_owned(),
+                when: "after confirmation".to_owned(),
+                keep_history: true,
+            }
+        );
+        // --when with no label names the flag as the missing operand, not a silent default.
+        assert_eq!(
+            Request::parse(&argv(&[COMPACT_REVALIDATE, "/s/d", "t", "--when"])),
+            Request::MissingOperand(COMPACT_REVALIDATE)
+        );
+        // A stray token after a complete --when form is the usage error it names.
+        assert_eq!(
+            Request::parse(&argv(&[
+                COMPACT_REVALIDATE,
+                "/s/d",
+                "t",
+                "--when",
+                "x",
+                "bogus"
+            ])),
+            Request::UsageError("bogus".to_owned())
         );
     }
 
@@ -1164,6 +1343,82 @@ mod tests {
         assert_eq!(
             Request::parse(&argv(&[COMPACT_TEARDOWN, "/s/d", "t", "bogus"])),
             Request::UsageError("bogus".to_owned())
+        );
+    }
+
+    #[test]
+    fn compact_wait_parses_dir_ref_and_optional_timeout() {
+        assert_eq!(
+            Request::parse(&argv(&[COMPACT_WAIT, "/s/d", "r1"])),
+            Request::CompactWait {
+                dir: "/s/d".into(),
+                reference: "r1".to_owned(),
+                timeout_secs: super::super::compact::DEFAULT_HANDOVER_SECS,
+            }
+        );
+        assert_eq!(
+            Request::parse(&argv(&[COMPACT_WAIT, "/s/d", "r1", "--timeout", "45"])),
+            Request::CompactWait {
+                dir: "/s/d".into(),
+                reference: "r1".to_owned(),
+                timeout_secs: 45,
+            }
+        );
+        // A non-numeric timeout is a usage error, not a silent default.
+        assert_eq!(
+            Request::parse(&argv(&[COMPACT_WAIT, "/s/d", "r1", "--timeout", "soon"])),
+            Request::UsageError("soon".to_owned())
+        );
+        assert_eq!(
+            Request::parse(&argv(&[COMPACT_WAIT, "/s/d", "r1", "bogus"])),
+            Request::UsageError("bogus".to_owned())
+        );
+        assert_eq!(
+            Request::parse(&argv(&[COMPACT_WAIT])),
+            Request::MissingOperand(COMPACT_WAIT)
+        );
+    }
+
+    #[test]
+    fn compact_cancel_parses_dir_and_ref() {
+        assert_eq!(
+            Request::parse(&argv(&[COMPACT_CANCEL, "/s/d", "r1"])),
+            Request::CompactCancel {
+                dir: "/s/d".into(),
+                reference: "r1".to_owned(),
+            }
+        );
+        assert_eq!(
+            Request::parse(&argv(&[COMPACT_CANCEL, "/s/d", "r1", "bogus"])),
+            Request::UsageError("bogus".to_owned())
+        );
+        assert_eq!(
+            Request::parse(&argv(&[COMPACT_CANCEL])),
+            Request::MissingOperand(COMPACT_CANCEL)
+        );
+    }
+
+    #[test]
+    fn compact_memo_baseline_and_find_outstanding_take_only_a_dir() {
+        assert_eq!(
+            Request::parse(&argv(&[COMPACT_MEMO_BASELINE, "/s/d"])),
+            Request::CompactMemoBaseline { dir: "/s/d".into() }
+        );
+        assert_eq!(
+            Request::parse(&argv(&[COMPACT_MEMO_BASELINE, "/s/d", "x"])),
+            Request::UsageError("x".to_owned())
+        );
+        assert_eq!(
+            Request::parse(&argv(&[COMPACT_MEMO_BASELINE])),
+            Request::MissingOperand(COMPACT_MEMO_BASELINE)
+        );
+        assert_eq!(
+            Request::parse(&argv(&[COMPACT_FIND_OUTSTANDING, "/s/d"])),
+            Request::CompactFindOutstanding { dir: "/s/d".into() }
+        );
+        assert_eq!(
+            Request::parse(&argv(&[COMPACT_FIND_OUTSTANDING])),
+            Request::MissingOperand(COMPACT_FIND_OUTSTANDING)
         );
     }
 

@@ -6164,6 +6164,12 @@ unset a48_tree_before a48_prev_out a48_end a48_forbidden a48_f a48_exec a48_p a4
 fi
 # ── ae compact, phase (a): it resolves, it refuses, it changes nothing ───────────
 if _itest_section 'ae compact, phase (a): it resolves, it refuses, it changes nothing'; then
+# ── P3.7 core-guard: compact is Rust-owned; bind the built core for this section ──
+_C48_CORE="$(dirname "$AE")/target/debug/ae"
+if [[ ! -x "$_C48_CORE" ]]; then
+    echo "  SKIP (compact is Rust-owned): no built core at ${_C48_CORE} — build it first (cargo build)." >&2
+else
+export AE_CORE_BIN="$_C48_CORE"
 _C48_BEFORE=$((PASS + FAIL))   # coverage baseline — see the sentinel at the end of this section
 C48_REPO="$(setup_repo)"
 (cd "$C48_REPO" && "$AE" --local comp-ok &) 2>/dev/null
@@ -6242,30 +6248,51 @@ assert_contains "compact: and says why, rather than just no" \
 assert_eq "compact: the refused session is untouched" "0" "$(tmux has-session -t comp-git 2>/dev/null; echo $?)"
 "$AE" end -f --keep-history comp-git >/dev/null 2>&1 || true
 
-# A session that predates session ids is migrated on touch — id and provenance together.
+# CLEAN CUT (P3.7): a pre-session-id session is NOT minted one at compact. A session whose
+# meta records no parseable session id is unsupported old state and is REFUSED with a
+# refresh/migrate instruction — the frozen bash minted at freeze, the Rust core does not.
 (cd "$C48_REPO" && "$AE" --local comp-mint &) 2>/dev/null
 wait_for_session "comp-mint" 20
 sleep 1
+# The valid id ae assigned at launch — captured so the refusal can be shown NOT to have
+# minted one in its place, and so end can resolve the session afterwards.
+c48_mint_id="$(grep '^session_id=' "$HOME/.ae/sessions/comp-mint/meta" | cut -d= -f2-)"
 _sed_i -e "/^session_id=/d" "$HOME/.ae/sessions/comp-mint/meta"
-c48_mint="$("$AE" compact comp-mint </dev/null 2>&1 || true)"
-assert_contains "compact: a session with no id is minted one at freeze" "Minted a session id for 'comp-mint'" "$c48_mint"
-assert_contains "compact: and the tuple records that provenance" "(minted-at-compact)" "$c48_mint"
-assert_eq "compact: the id and its provenance are both in the live meta" "2" \
-    "$(grep -cE '^session_id=|^session_id_origin=minted-at-compact' "$HOME/.ae/sessions/comp-mint/meta" | tr -d '[:space:]')"
-_sed_i -e "s|^session_id=.*|session_id=not-a-uuid|" "$HOME/.ae/sessions/comp-mint/meta"
+c48_mint_rc=0
+c48_mint="$("$AE" compact comp-mint </dev/null 2>&1)" || c48_mint_rc=$?
+assert_eq "compact: a session with no id is REFUSED, not minted one" "1" \
+    "$([[ $c48_mint_rc -ne 0 ]] && echo 1 || echo 0)"
+assert_contains "compact: and says the session must be refreshed or migrated first" \
+    "records no valid session id — refresh or migrate the session, then retry" "$c48_mint"
+assert_eq "compact: nothing was minted — the meta still records no session id" "0" \
+    "$(grep -c '^session_id=' "$HOME/.ae/sessions/comp-mint/meta" | tr -d '[:space:]')"
+assert_eq "compact: and no minted-at-compact provenance was written" "0" \
+    "$(grep -c '^session_id_origin=minted-at-compact' "$HOME/.ae/sessions/comp-mint/meta" | tr -d '[:space:]')"
+# An unparseable id is the SAME unsupported state, refused the same way — never overwritten.
+printf 'session_id=not-a-uuid\n' >>"$HOME/.ae/sessions/comp-mint/meta"
 c48_badid_rc=0
 c48_badid="$("$AE" compact comp-mint </dev/null 2>&1)" || c48_badid_rc=$?
 assert_eq "compact: an unparseable id refuses" "1" "$([[ $c48_badid_rc -ne 0 ]] && echo 1 || echo 0)"
-assert_contains "compact: and will not overwrite it" "ae will not overwrite a value it cannot parse" "$c48_badid"
+assert_contains "compact: with the same refresh-or-migrate instruction" \
+    "records no valid session id — refresh or migrate the session, then retry" "$c48_badid"
 assert_eq "compact: the value survives untouched" "not-a-uuid" \
     "$(grep '^session_id=' "$HOME/.ae/sessions/comp-mint/meta" | cut -d= -f2-)"
-_sed_i -e "s|^session_id=.*|session_id=55555555-6666-7777-8888-999999999999|" "$HOME/.ae/sessions/comp-mint/meta"
+# Restore the real id so end can resolve and tear the session down cleanly.
+_sed_i -e "s|^session_id=.*|session_id=${c48_mint_id}|" "$HOME/.ae/sessions/comp-mint/meta"
 "$AE" end -f --keep-history comp-mint >/dev/null 2>&1 || true
-unset c48_ok_rc C48_REPO C48_GREPO C48_UUID c48_ok c48_pane c48_self_out c48_purge c48_purge_rc c48_git c48_git_rc c48_mint c48_badid c48_badid_rc
+unset c48_ok_rc C48_REPO C48_GREPO C48_UUID c48_ok c48_pane c48_self_out c48_purge c48_purge_rc c48_git c48_git_rc c48_mint c48_mint_id c48_mint_rc c48_badid c48_badid_rc
+unset AE_CORE_BIN _C48_CORE
+fi  # ── P3.7 core-guard end ──
 fi
 
 # ── compact phase (b): the handover is a fact, not a claim ──────────────────────
 if _itest_section 'compact phase (b): the handover is a fact, not a claim'; then
+# ── P3.7 core-guard: compact is Rust-owned; bind the built core for this section ──
+_C48_CORE="$(dirname "$AE")/target/debug/ae"
+if [[ ! -x "$_C48_CORE" ]]; then
+    echo "  SKIP (compact is Rust-owned): no built core at ${_C48_CORE} — build it first (cargo build)." >&2
+else
+export AE_CORE_BIN="$_C48_CORE"
 # DELIVERY FAILURE: a main agent whose pane is gone. compact must refuse before anything
 # is asked of anyone — no request recorded, nothing stopped, nothing archived.
 B48_REPO="$(setup_repo)"
@@ -6741,11 +6768,19 @@ assert_eq "compact-snapshot: and it really is the child, not the survivor" "1" \
     "$(grep -c "^parent_archive_id=${C48S_UUID}$" "$HOME/.ae/sessions/comp-snap/meta" 2>/dev/null | tr -d '[:space:]')"
 "$AE" end -f --keep-history comp-snap >/dev/null 2>&1 || true
 unset C48S_REPO C48S_UUID
+unset AE_CORE_BIN _C48_CORE
+fi  # ── P3.7 core-guard end ──
 fi
 
 
 # ── compact (c)+(d): it hands over, it ends, it comes back ─────────────────────
 if _itest_section 'compact (c)+(d): it hands over, it ends, it comes back'; then
+# ── P3.7 core-guard: compact is Rust-owned; bind the built core for this section ──
+_C48_CORE="$(dirname "$AE")/target/debug/ae"
+if [[ ! -x "$_C48_CORE" ]]; then
+    echo "  SKIP (compact is Rust-owned): no built core at ${_C48_CORE} — build it first (cargo build)." >&2
+else
+export AE_CORE_BIN="$_C48_CORE"
 # The happy path proves the WHOLE boundary in one run: the five-line stdout contract
 # in order, the archive published with the session's own semantics inside it, the
 # source gone, and a genuinely NEW session under the same name that knows its parent.
@@ -6952,11 +6987,66 @@ _C48_EXPECTED="$(awk '
     END { print n + 0 }' "$0")"
 assert_eq "compact-coverage: every arm in this section actually ran" "$_C48_EXPECTED" "$_C48_RAN"
 unset _C48_BEFORE _C48_RAN _C48_EXPECTED
+unset AE_CORE_BIN _C48_CORE
+fi  # ── P3.7 core-guard end ──
 fi
 
 # ── end of the ae compact section ──
 # Load-bearing: the sentinel's awk range stops HERE. Anything appended below is a new
 # section and must not be counted as a compact arm. Do not delete or reword the marker.
+
+# ── tracked resolution: a paneless request routes on the recorded server ──
+if _itest_section 'tracked resolution: a paneless request routes on the recorded server, not the ambient one'; then
+_TR_CORE="$(dirname "$AE")/target/debug/ae"
+if [[ ! -x "$_TR_CORE" ]]; then
+    echo "  SKIP (tracked resolution is Rust-owned): no built core at ${_TR_CORE} — build it first (cargo build)." >&2
+else
+export AE_CORE_BIN="$_TR_CORE"
+# The compact handover delivers its ask PANELESS (no TMUX_PANE). The resolver must read the
+# TARGET session's OWN recorded tmux server to enumerate it: pane-less there is no ambient
+# TMUX pointing at the custom server, so an ambient enumeration would miss it entirely, and
+# on the default server it would silently mis-route a colliding name. Two sessions with the
+# SAME agent ref on one custom server make only the server+session distinguish them.
+TR_SRV="ae-tr-$$"
+TR_RA="$(setup_repo)"
+TR_RB="$(setup_repo)"
+(cd "$TR_RA" && AE_TMUX_SERVER="$TR_SRV" "$AE" --local tr-a &) 2>/dev/null
+(cd "$TR_RB" && AE_TMUX_SERVER="$TR_SRV" "$AE" --local tr-b &) 2>/dev/null
+for _i in $(seq 1 40); do command tmux -L "$TR_SRV" has-session -t tr-a 2>/dev/null && command tmux -L "$TR_SRV" has-session -t tr-b 2>/dev/null && break; sleep 0.4; done
+for _i in $(seq 1 40); do [[ -f "$HOME/.ae/sessions/tr-a/meta" && -f "$HOME/.ae/sessions/tr-b/meta" ]] && break; sleep 0.4; done
+sleep 1
+TR_A="$HOME/.ae/sessions/tr-a"
+TR_B="$HOME/.ae/sessions/tr-b"
+assert_eq "tracked-resolution: (setup) both sessions carry the same colliding agent ref" "dummy:dummy dummy:dummy" \
+    "$(grep -h '^agent.main=' "$TR_A/meta" "$TR_B/meta" | sed -E 's/^agent\.main=([^:]+:[^:]+):.*/\1/' | tr '\n' ' ' | sed 's/ $//')"
+# A PANELESS ask from tr-a, explicitly naming tr-b: it must reach tr-b on its recorded
+# server. Before the recorded-server fix a pane-less caller enumerated the ambient (default)
+# server, which holds neither session, so this could not resolve at all.
+tr_rc=0
+AE_SENDER_OVERRIDE="ae:probe:tr" "$TR_A/ask" @tr-b:dummy:dummy "routed on the recorded server" >/dev/null 2>&1 || tr_rc=$?
+assert_eq "tracked-resolution: the paneless cross-session ask resolves and delivers" "0" \
+    "$([[ $tr_rc -eq 0 ]] && echo 0 || echo 1)"
+# The ask is recorded in the CALLER's (tr-a's) log; its target_session names tr-b — proof it
+# reached the session it named and not tr-a's identically-named twin.
+assert_eq "tracked-resolution: it routed to tr-b, the session it named, not the caller's twin" "1" \
+    "$(awk -F'"' '/"action":"ask"/ { for (i = 1; i <= NF; i++) if ($i == "target_session") print $(i + 2) }' "$TR_A/events.jsonl" 2>/dev/null | grep -c '^tr-b$' | tr -d '[:space:]')"
+# FAIL CLOSED: break tr-a's own recorded server pointer, then a paneless same-session ask
+# REFUSES with the refresh/migrate instruction and records nothing — never a silent fallback
+# to the ambient server, which is the mis-route the clean cut forbids.
+tr_before="$(awk '/"action":"ask"/ { n++ } END { print n + 0 }' "$TR_A/events.jsonl")"
+_sed_i -e 's|^tmux_server=.*|tmux_server=|' -e '/^tmux_server_kind=/d' "$TR_A/meta"
+tr_bad_rc=0
+tr_bad="$(AE_SENDER_OVERRIDE="ae:probe:tr" "$TR_A/ask" dummy:dummy "should refuse" 2>&1)" || tr_bad_rc=$?
+assert_eq "tracked-resolution: a broken server pointer refuses" "1" "$([[ $tr_bad_rc -ne 0 ]] && echo 1 || echo 0)"
+assert_contains "tracked-resolution: and says to refresh or migrate the session" \
+    "records no usable tmux server" "$tr_bad"
+assert_eq "tracked-resolution: the refused ask recorded nothing new" "$tr_before" \
+    "$(awk '/"action":"ask"/ { n++ } END { print n + 0 }' "$TR_A/events.jsonl")"
+command tmux -L "$TR_SRV" kill-server 2>/dev/null || true
+unset TR_SRV TR_RA TR_RB TR_A TR_B tr_rc tr_bad tr_bad_rc tr_before
+unset AE_CORE_BIN _TR_CORE
+fi
+fi
 
 # ── #59: each slot's generated artifacts carry THAT slot's identity ──
 if _itest_section '#59: each slot'\''s generated artifacts carry THAT slot'\''s identity'; then
