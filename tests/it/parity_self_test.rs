@@ -955,6 +955,43 @@ fn run_git_has_exactly_one_product_caller() {
     );
 }
 
+/// `transport::run_ps` is the FIXED-PROGRAM `ps` leg of the one process door —
+/// the watchdog's per-cycle process-table snapshot. Same seal as [`run_git`]: it
+/// takes a `procs::PsArgv` whose inner vector is private to `src/procs.rs`, and
+/// that argv carries NO caller input at all (the snapshot spelling is a
+/// constant), so there is nothing to inject even in principle. This guard is
+/// defence in depth beside that seal: within `src/`, the INVOCATION form
+/// `run_ps(` appears in exactly two files — `transport.rs`, which DEFINES it,
+/// and `procs.rs`, its one product caller (`snapshot`). A third file gaining a
+/// call is a line in a review, not a diff nobody read.
+#[test]
+fn run_ps_has_exactly_one_product_caller() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut holders: Vec<String> = rust_sources()
+        .into_iter()
+        .filter(|p| p.starts_with(root.join("src")))
+        .filter(|p| fs::read_to_string(p).is_ok_and(|text| text.contains("run_ps(")))
+        .map(|p| {
+            p.strip_prefix(root)
+                .unwrap_or(&p)
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    holders.sort();
+
+    // Control FIRST: a scan that matched nothing would pass this vacuously.
+    assert!(
+        !holders.is_empty(),
+        "the scan found no `run_ps` anywhere in src/; it did not run"
+    );
+    assert_eq!(
+        holders,
+        vec!["src/procs.rs".to_owned(), "src/transport.rs".to_owned()],
+        "the ps process leg gained (or lost) a product holder"
+    );
+}
+
 /// reviewer4's round-6 bypasses of this guard, from their tree, byte for byte.
 ///
 /// Both were rustfmt-clean, clippy-clean and left all three boundary tests

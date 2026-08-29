@@ -142,6 +142,16 @@ pub const REPLY: &str = "_reply";
 /// The `send` helper's surface — `_send <meta-dir> <target> <message…>`.
 pub const SEND: &str = "_send";
 
+/// The watchdog daemon's surface — `_watchdog-run <meta-dir> [knob flags]`.
+///
+/// Underscored like every other core entry, and never human-typed: the bash
+/// `watchdog` helper's `_run` execs this. EVERY tunable arrives as a FLAG
+/// because this crate's clippy policy disallows reading the environment — bash
+/// reads `AE_WATCHDOG_*` (with its `AE_LOOP_*` fallback) and passes what it
+/// read, so the names are spelled in exactly one place and it is the frozen
+/// script.
+pub const WATCHDOG_RUN: &str = "_watchdog-run";
+
 /// What an argv asks the binary to do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Request {
@@ -267,6 +277,14 @@ pub enum Request {
         /// The session directory (`_ae_core_try`'s injected meta dir). The core
         /// derives the name and sessions root from it and validates both.
         dir: PathBuf,
+    },
+    /// `_watchdog-run <meta-dir> [knob flags]` — run the watchdog daemon for a
+    /// session until its session or its state goes away.
+    WatchdogRun {
+        /// The session's meta directory.
+        dir: PathBuf,
+        /// Every tunable, defaulted to the frozen values a flagless call keeps.
+        knobs: crate::watchdog_daemon::Knobs,
     },
     /// `_compact-freeze <session-dir> [--keep-history]` — resolves and emits the
     /// frozen compact tuple. Pure read-only.
@@ -563,6 +581,16 @@ impl Request {
                 [_, extra, ..] => Self::UsageError(extra.clone()),
                 _ => Self::MissingOperand(END_NONLOCAL_TEARDOWN),
             },
+            Some(WATCHDOG_RUN) => match &args[1..] {
+                [] => Self::MissingOperand(WATCHDOG_RUN),
+                [dir, flags @ ..] => match watchdog_knobs(flags) {
+                    Ok(knobs) => Self::WatchdogRun {
+                        dir: dir.into(),
+                        knobs,
+                    },
+                    Err(word) => Self::UsageError(word),
+                },
+            },
             Some(COMPACT_FREEZE) => match &args[1..] {
                 [dir] => Self::CompactFreeze {
                     dir: dir.into(),
@@ -806,6 +834,7 @@ impl Request {
             | Self::ArchivePurge { .. }
             | Self::EndLocalTeardown { .. }
             | Self::EndNonlocalTeardown { .. }
+            | Self::WatchdogRun { .. }
             | Self::CompactFreeze { .. }
             | Self::CompactRevalidate { .. }
             | Self::CompactArchive { .. }
@@ -818,13 +847,53 @@ impl Request {
     }
 }
 
+/// Read the watchdog's knob flags — every one `--flag <number>`, in any order.
+///
+/// An unrecognised flag, a missing value and an unparseable number are all the
+/// same answer: the offending word, which the caller turns into SC-022's usage
+/// exit. Silently defaulting a knob bash meant to set would make the daemon run
+/// a cadence nobody chose, and a watchdog is not a place to guess.
+fn watchdog_knobs(flags: &[String]) -> std::result::Result<crate::watchdog_daemon::Knobs, String> {
+    let mut knobs = crate::watchdog_daemon::Knobs::default();
+    let mut rest = flags;
+    while let [flag, tail @ ..] = rest {
+        let Some((value, after)) = tail.split_first() else {
+            return Err(flag.clone());
+        };
+        let number = |text: &str| text.parse::<u64>().map_err(|_| text.to_owned());
+        match flag.as_str() {
+            "--interval" => knobs.interval_secs = number(value)?,
+            "--stale-secs" => knobs.stale_secs = number(value)?,
+            "--max-nudges" => knobs.max_nudges = count(value)?,
+            "--throttle-alert-cycles" => knobs.throttle_alert_cycles = count(value)?,
+            "--undelivered-max" => knobs.undelivered_max = count(value)?,
+            "--quiet-beat-ms" => knobs.quiet_beat_ms = number(value)?,
+            "--quiet-tries" => knobs.quiet_tries = size(value)?,
+            "--quiet-panes-per-cycle" => knobs.quiet_panes_per_cycle = size(value)?,
+            _ => return Err(flag.clone()),
+        }
+        rest = after;
+    }
+    Ok(knobs)
+}
+
+/// A `u32` knob, or the offending word.
+fn count(text: &str) -> std::result::Result<u32, String> {
+    text.parse::<u32>().map_err(|_| text.to_owned())
+}
+
+/// A `usize` knob, or the offending word.
+fn size(text: &str) -> std::result::Result<usize, String> {
+    text.parse::<usize>().map_err(|_| text.to_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         ARCHIVE_PREVIEW, ASK, COMPACT_ARCHIVE, COMPACT_CANCEL, COMPACT_FIND_OUTSTANDING,
         COMPACT_FREEZE, COMPACT_MEMO_BASELINE, COMPACT_REVALIDATE, COMPACT_TEARDOWN, COMPACT_WAIT,
         DEFAULT_REVALIDATE_WHEN, END_NONLOCAL_TEARDOWN, EVENTS_TAIL, GOAL, MEMO, REPLY, REQUESTS,
-        REVIEW, Request, SEND, STATE,
+        REVIEW, Request, SEND, STATE, WATCHDOG_RUN,
     };
     use crate::filters::{ListArgs, Scope};
     use crate::requests::Mode;
@@ -1473,6 +1542,87 @@ mod tests {
             Request::parse(&argv(&[END_NONLOCAL_TEARDOWN])).exit_code(),
             Some(2),
             "no session dir is a usage error"
+        );
+    }
+
+    #[test]
+    fn watchdog_run_defaults_every_knob_a_flagless_call_omits() {
+        // The frozen cadence is what a bash side that reads no env passes: this
+        // entry must run it rather than invent one.
+        assert_eq!(
+            Request::parse(&argv(&[WATCHDOG_RUN, "/s/demo"])),
+            Request::WatchdogRun {
+                dir: "/s/demo".into(),
+                knobs: crate::watchdog_daemon::Knobs::default(),
+            }
+        );
+    }
+
+    #[test]
+    fn watchdog_run_reads_every_knob_in_any_order() {
+        let Request::WatchdogRun { dir, knobs } = Request::parse(&argv(&[
+            WATCHDOG_RUN,
+            "/s/demo",
+            "--quiet-tries",
+            "9",
+            "--interval",
+            "30",
+            "--stale-secs",
+            "120",
+            "--max-nudges",
+            "1",
+            "--throttle-alert-cycles",
+            "7",
+            "--undelivered-max",
+            "4",
+            "--quiet-beat-ms",
+            "250",
+            "--quiet-panes-per-cycle",
+            "3",
+        ])) else {
+            panic!("the knob flags did not parse");
+        };
+        assert_eq!(dir, std::path::PathBuf::from("/s/demo"));
+        assert_eq!(knobs.interval_secs, 30);
+        assert_eq!(knobs.stale_secs, 120);
+        assert_eq!(knobs.max_nudges, 1);
+        assert_eq!(knobs.throttle_alert_cycles, 7);
+        assert_eq!(knobs.undelivered_max, 4);
+        assert_eq!(knobs.quiet_beat_ms, 250);
+        assert_eq!(knobs.quiet_tries, 9);
+        assert_eq!(knobs.quiet_panes_per_cycle, 3);
+    }
+
+    #[test]
+    fn a_knob_the_daemon_cannot_read_is_a_usage_error_not_a_default() {
+        // Silently defaulting a knob bash meant to set would run a cadence
+        // nobody chose — and a watchdog is not a place to guess.
+        assert_eq!(
+            Request::parse(&argv(&[WATCHDOG_RUN, "/s/demo", "--interval", "soon"])),
+            Request::UsageError("soon".to_owned())
+        );
+        assert_eq!(
+            Request::parse(&argv(&[WATCHDOG_RUN, "/s/demo", "--interval"])),
+            Request::UsageError("--interval".to_owned()),
+            "a flag with no value names the flag"
+        );
+        assert_eq!(
+            Request::parse(&argv(&[WATCHDOG_RUN, "/s/demo", "--telegram", "on"])),
+            Request::UsageError("--telegram".to_owned())
+        );
+        assert_eq!(
+            Request::parse(&argv(&[WATCHDOG_RUN])),
+            Request::MissingOperand(WATCHDOG_RUN)
+        );
+        // SC-022: a usage error is 2, kept distinct from "it went wrong".
+        assert_eq!(
+            Request::parse(&argv(&[WATCHDOG_RUN, "/s/demo", "--interval", "soon"])).exit_code(),
+            Some(2)
+        );
+        // The run itself answers None: argv does not decide how it ends.
+        assert_eq!(
+            Request::parse(&argv(&[WATCHDOG_RUN, "/s/demo"])).exit_code(),
+            None
         );
     }
 

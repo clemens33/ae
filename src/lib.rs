@@ -82,6 +82,7 @@ pub mod listing;
 pub mod liveness;
 pub mod memo;
 pub mod meta;
+pub mod procs;
 pub mod reply;
 pub mod requests;
 pub mod send;
@@ -92,6 +93,8 @@ pub mod time;
 pub mod tmux;
 pub mod tracked;
 pub mod transport;
+pub mod watchdog;
+pub mod watchdog_daemon;
 
 use std::io::Write;
 
@@ -739,6 +742,7 @@ pub fn run_with(
         cli::Request::CompactCancel { dir, reference } => {
             compact::cancel_step(dir, reference, err)?
         }
+        cli::Request::WatchdogRun { dir, knobs } => watchdog_daemon::run(dir, *knobs, err)?,
         cli::Request::CompactMemoBaseline { dir } => compact::memo_baseline_step(dir, out)?,
         cli::Request::CompactFindOutstanding { dir } => compact::find_outstanding_step(dir, out)?,
         cli::Request::List(list_args) => {

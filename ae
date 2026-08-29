@@ -16053,6 +16053,30 @@ _watchdog_set_status() {
 # the dying process silently vandalising its replacement. Only clean up what is still
 # ours. (Full stop/start serialization is a separate ticket; this is the cheap guard.)
 _watchdog_exit_cleanup() {
+    # Reap what this wrapper backgrounded (P4.1), FIRST and only PIDs we launched
+    # (both empty on the bash rollback path -> no-ops). MEASURED: a bash EXIT trap
+    # does NOT run on an untrapped fatal signal, so the Rust branch traps
+    # TERM/HUP/INT to route `watchdog stop` and pane teardown through here.
+    #  - the interval sleep: our own PID, or a signal that interrupts `wait`
+    #    orphans it, reparented, for up to one interval.
+    #  - the core daemon's whole process GROUP: the daemon PLUS its in-flight send
+    #    subtree (send -> _send-deliver -> tmux). A bare `kill $_wd_child` reaps
+    #    only the daemon and leaves a mid-paste send alive to deliver a nudge AFTER
+    #    stop. The daemon is launched under `set -m`, so it LEADS its own group and
+    #    $_wd_child is that group id; the negative-pid TERM reaps the subtree
+    #    without touching this wrapper (a different group). Fall back to the lone
+    #    daemon if the group is already gone.
+    # A handle is populated ONLY while its process is believed alive (the tick
+    # loop drops each the instant it reaps/observes-dead), and we still re-check
+    # liveness here: a bare kill of a stale handle would signal a REUSED pid, and a
+    # negative-pid TERM a reused process GROUP. `kill -0` proves the pid is live
+    # before we signal — the closest bash gets to "signal only what we launched".
+    if [[ -n "${_wd_sleep:-}" ]] && kill -0 "$_wd_sleep" 2>/dev/null; then
+        kill "$_wd_sleep" 2>/dev/null || true
+    fi
+    if [[ -n "${_wd_child:-}" ]] && kill -0 "$_wd_child" 2>/dev/null; then
+        kill -TERM "-$_wd_child" 2>/dev/null || kill "$_wd_child" 2>/dev/null || true
+    fi
     local _owner=""
     [[ -f "$PIDFILE" ]] && _owner="$(cat "$PIDFILE" 2>/dev/null || true)"
     if [[ -n "$_owner" && "$_owner" != "$$" ]]; then
@@ -16394,6 +16418,12 @@ helper_watchdog_main() {
     # --- _run: the actual watchdog (runs inside hidden tmux window) ---
 
     echo "$$" >"$PIDFILE"
+    # Only ever signal a PID THIS invocation launched. Initialise BEFORE the EXIT
+    # trap so an inherited/exported `_wd_child`/`_wd_sleep` can never make cleanup
+    # TERM an unrelated process. Both stay empty on the bash rollback path, where
+    # the cleanup guards are then no-ops.
+    _wd_child=""
+    _wd_sleep=""
     trap '_watchdog_exit_cleanup' EXIT
     _watchdog_set_status @ae_watchdog_status "[watch ◌ starting]"
     _watchdog_set_status @ae_branch_status "$(_watchdog_branch_segment)"
@@ -16406,6 +16436,115 @@ helper_watchdog_main() {
     printf '│ read-only pane (input disabled). use peek _watchdog or stop with `watchdog stop`.\n'
     printf '╰────────────────────────────────────────────────────────╯\n'
     printf '\033[0m\n'
+
+    # ── PRIMARY (P4.1): the Rust core owns the watchdog loop ──────────────────
+    # Rust runs the long loop, every liveness/stale/throttle/quiet decision, and
+    # publishes @ae_watchdog_status / @ae_agents_status / @ae_window_status DIRECTLY
+    # through the typed tmux transport. Bash is process glue here: launch the core
+    # child, keep @ae_branch_status fresh (a git read the core does not own), and
+    # tick the two DEFERRED bash-only concerns — pending tool-session-id recovery
+    # and telegram bridge supervision (both stay bash this slice, per colead). The
+    # bash loop BELOW is the ROLLBACK for when no usable core is pinned; do NOT
+    # delete it — it mirrors the compact/end `_ae_core_try || bash-body` pattern.
+    #
+    # KNOWN TEMPORARY GAP: the Rust daemon does not run the meta-agent (steward)
+    # sweep — deferred to the steward slice. A meta-agent session under the core
+    # loses sweep cadence until then; the bash rollback below still sweeps.
+    #
+    # Core usability MIRRORS _ae_core_try's gate (AE_CORE= set-but-empty forces
+    # bash; pinned ae_core + matching ae_core_version + executable), inlined rather
+    # than shared because the watchdog needs a BACKGROUND daemon, not exec/capture.
+    _wd_core=""
+    if ! { [[ -n "${AE_CORE+set}" && -z "${AE_CORE:-}" ]]; }; then
+        _wd_bin="$(grep '^ae_core=' "${META_DIR}/meta" 2>/dev/null | cut -d= -f2- || true)"
+        _wd_ver="$(grep '^ae_core_version=' "${META_DIR}/meta" 2>/dev/null | cut -d= -f2- || true)"
+        if [[ -n "$_wd_bin" && -n "$_wd_ver" && -x "$_wd_bin" ]]; then
+            _wd_actual="$("$_wd_bin" --version 2>/dev/null | head -1 || true)"
+            _wd_actual="${_wd_actual##* }"
+            [[ "$_wd_actual" == "$_wd_ver" ]] && _wd_core="$_wd_bin"
+        fi
+    fi
+    if [[ -n "$_wd_core" ]]; then
+        # These traps make the EXIT cleanup (child reap + ownership-checked bar
+        # clear) run on `watchdog stop` (SIGTERM) and pane-close/teardown (SIGHUP)
+        # — MEASURED: an untrapped fatal signal never runs a bash EXIT trap. Each
+        # exits, which triggers the EXIT trap; the code is 128+signal by convention.
+        trap 'exit 143' TERM
+        trap 'exit 129' HUP
+        trap 'exit 130' INT
+        # Launch the core under job control (`set -m`) so it LEADS ITS OWN PROCESS
+        # GROUP — the send subtree it spawns (send -> _send-deliver -> tmux)
+        # inherits that group, so the EXIT cleanup reaps the whole subtree with one
+        # group signal and no mid-paste send survives stop. MEASURED: `set -m`
+        # gives a bg job pgid == its pid, and its descendants inherit it. `set +m`
+        # right after, so the tick sleep below stays in THIS wrapper's group and is
+        # reaped by its own tracked PID instead.
+        set -m
+        "$_wd_core" _watchdog-run "$META_DIR" \
+            --interval "$INTERVAL" --stale-secs "$STALE_SECS" --max-nudges "$MAX_NUDGES" \
+            --throttle-alert-cycles "$THROTTLE_ALERT_CYCLES" --undelivered-max "$UNDELIVERED_MAX" \
+            --quiet-beat-ms "$((QUIET_SETTLE_BEAT * 1000))" --quiet-tries "$QUIET_SETTLE_TRIES" \
+            --quiet-panes-per-cycle "$QUIET_STABILIZE_PER_CYCLE" &
+        _wd_child=$!
+        set +m
+        AE_PATH_BIN="$(grep '^ae_path=' "${META_DIR}/meta" 2>/dev/null | cut -d= -f2- || true)"
+        last_tg_supervise=0
+        while kill -0 "$_wd_child" 2>/dev/null; do
+            # @ae_branch_status is a git read the core does not publish — keep it live.
+            _watchdog_set_status @ae_branch_status "$(_watchdog_branch_segment)"
+            # DEFERRED bash-only: recover pending tool session ids (codex/gemini/opencode
+            # post-launch capture retry). Emit the durable record; the core reads it too.
+            if [[ -n "${AE_PATH_BIN:-}" && -x "${AE_PATH_BIN:-}" ]]; then
+                # shellcheck disable=SC2034  # r_slot consumed positionally, unused
+                while IFS=$'\t' read -r r_kind r_slot r_agent r_tool r_captured; do
+                    [[ "$r_kind" == "ok" && -n "$r_captured" ]] || continue
+                    ae_emit_event "recover" "$r_agent" "$r_captured" "captured ${r_tool} session id (${r_captured:0:8})"
+                done < <("$AE_PATH_BIN" _recover-pending "$_AE_SESSION" 2>/dev/null || true)
+            fi
+            # DEFERRED bash-only: best-effort telegram bridge revive, throttled to
+            # TG_SUPERVISE_SECS. The revive respects [telegram] enabled and is a no-op
+            # with no network when telegram is off — the P4.1 no-network constraint.
+            if ((TG_SUPERVISE_SECS > 0)) && [[ -n "${AE_PATH_BIN:-}" && -x "${AE_PATH_BIN:-}" ]]; then
+                now_epoch="$(date +%s)"
+                if ((now_epoch - last_tg_supervise >= TG_SUPERVISE_SECS)); then
+                    last_tg_supervise=$now_epoch
+                    tg_srv="$(grep '^tmux_server=' "${META_DIR}/meta" 2>/dev/null | cut -d= -f2- || true)"
+                    if [[ -n "$tg_srv" ]]; then
+                        AE_TMUX_SERVER="$tg_srv" "$AE_PATH_BIN" telegram _supervise >/dev/null 2>&1 || true
+                    else
+                        "$AE_PATH_BIN" telegram _supervise >/dev/null 2>&1 || true
+                    fi
+                fi
+            fi
+            # Interruptible wait: a trapped signal fires PROMPTLY here. A bare
+            # `sleep` would hold the foreground and delay stop by up to one interval.
+            # Track the sleep's PID so the EXIT cleanup can reap it — a signal that
+            # interrupts `wait` otherwise orphans it (reparented) for one interval.
+            sleep "$INTERVAL" &
+            _wd_sleep=$!
+            wait "$_wd_sleep" 2>/dev/null || true
+            # Reaped by the wait — drop the handle so cleanup never signals its
+            # (now reusable) pid. On the stop/teardown path the trap exits from
+            # INSIDE the wait with the handle still live, so cleanup still reaps it.
+            _wd_sleep=""
+        done
+        # The loop condition observed the core (group LEADER) DEAD. A CLEAN exit
+        # (session gone, between cycles) leaves no descendants — but a SIGKILL/crash
+        # mid-delivery kills ONLY the leader and ORPHANS its send subtree
+        # (send -> _send-deliver -> tmux), which stays in the leader's process group
+        # and could still paste a nudge AFTER the daemon crashed. A process group
+        # outlives its dead leader while it has members, and its pgid is NOT reused
+        # until the group empties — so a probe here sees OUR orphans, never a
+        # recycled group. Reap them, THEN drop the handle (an empty group -> nothing
+        # to signal, and cleanup then skips it too).
+        if kill -0 "-$_wd_child" 2>/dev/null; then
+            kill -TERM "-$_wd_child" 2>/dev/null || true
+        fi
+        _wd_child=""
+        # Nothing left to tick; the EXIT trap clears the bar (ownership-checked).
+        exit 0
+    fi
+    # No usable core — fall through to the bash ROLLBACK loop below.
 
     declare -A prev_hash last_hash_change nudge_count dead_agents alerted_missing throttle_streak
     # Per-pane undelivered-nudge streak (#44) — see step 7. (The quiet baseline needs

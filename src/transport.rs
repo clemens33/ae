@@ -337,6 +337,134 @@ pub(crate) fn run_git(argv: &crate::git::GitArgv) -> (bool, String) {
     }
 }
 
+/// The process-table snapshot leg of the one process door — the ONLY way
+/// product code runs `ps`, the program FIXED here. Mirrors [`run_git`]: the argv
+/// is a [`crate::procs::PsArgv`] whose inner vector is private to `src/procs.rs`,
+/// so only that module's fixed-argv constructor can mint one, and this entry
+/// cannot be alias-imported and handed an arbitrary `ps` command line. The argv
+/// carries NO caller input at all (the snapshot spelling is a constant), so
+/// unlike git there is nothing to inject even in principle. Returns whether `ps`
+/// exited zero and its stdout decoded lossily; the watchdog's dead-check treats
+/// a failed run (`false`) as UNKNOWN and never as a dead agent.
+///
+/// `src/procs.rs` is the only caller; the type seal is the boundary and
+/// `run_ps_has_exactly_one_product_caller` in `tests/it/parity_self_test.rs` is
+/// defence in depth, so this leg cannot quietly become a general spawner.
+pub(crate) fn run_ps(argv: &crate::procs::PsArgv) -> (bool, String) {
+    match spawn("ps", argv.as_args(), &[], false) {
+        Some(output) => (
+            output.status.success(),
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+        ),
+        None => (false, String::new()),
+    }
+}
+
+/// The watchdog's pane roster of `session` on `server` — richer than
+/// [`observe_agents`], carrying the pid and foreground command the cycle's
+/// dead/stale checks read. `None` on a failed run or a non-addressable server,
+/// never an empty answer for an unreachable one (the module's exit-status rule).
+#[must_use]
+pub fn observe_watch_panes(server: &ServerId, session: &str) -> Option<Vec<tmux::WatchPane>> {
+    if !addressable(server) {
+        return None;
+    }
+    let (succeeded, stdout) = run(PROGRAM, &tmux::watch_panes_args(server, session));
+    tmux::interpret_watch_panes(succeeded, &stdout)
+}
+
+/// The last ~40 joined lines of `pane` on `server`, or `None` when the capture
+/// failed or the server is non-addressable. The bytes feed the watchdog's quiet
+/// hash and throttle scan; there is nothing to interpret, so the raw stdout is
+/// the answer, gated on the run having succeeded.
+#[must_use]
+pub fn capture_pane(server: &ServerId, pane: &str) -> Option<String> {
+    if !addressable(server) {
+        return None;
+    }
+    let (succeeded, stdout) = run(PROGRAM, &tmux::capture_pane_args(server, pane));
+    succeeded.then_some(stdout)
+}
+
+/// The id tmux holds for the session named exactly `name` on `server`.
+///
+/// Every watchdog WRITE targets this id rather than the name, because `-t`
+/// prefix-matches and a session whose name prefixes another's would take the
+/// other's publication. `None` — a failed run, a non-addressable server, or a
+/// name the server does not hold — means the caller writes NOTHING: an empty
+/// target lands on tmux's CURRENT session, which belongs to somebody else.
+#[must_use]
+pub fn observe_session_id(server: &ServerId, name: &str) -> Option<String> {
+    if !addressable(server) {
+        return None;
+    }
+    let (succeeded, stdout) = run(PROGRAM, &tmux::session_ids_args(server));
+    tmux::interpret_session_id(succeeded, &stdout, name)
+}
+
+/// `session`'s panes with the window each belongs to, for the per-window glyphs.
+#[must_use]
+pub fn observe_window_panes(server: &ServerId, session: &str) -> Option<Vec<tmux::WindowPane>> {
+    if !addressable(server) {
+        return None;
+    }
+    let (succeeded, stdout) = run(PROGRAM, &tmux::window_panes_args(server, session));
+    tmux::interpret_window_panes(succeeded, &stdout)
+}
+
+/// Publish one user option on `target`, which must be an exact id.
+///
+/// The VALUE needs no escaping: a tmux user option interpolates literally, with
+/// no format parsing and no `#()`. The option NAME and the target are ours.
+/// Returns whether tmux accepted it — a failed publication is a stale bar, not a
+/// reason to stop watching, so every caller degrades rather than aborts.
+#[must_use]
+pub fn publish_option(
+    server: &ServerId,
+    scope: tmux::OptionScope,
+    target: &str,
+    name: &str,
+    value: &str,
+) -> bool {
+    if !addressable(server) {
+        return false;
+    }
+    let (succeeded, _) = run(
+        PROGRAM,
+        &tmux::set_option_args(server, scope, target, name, value),
+    );
+    succeeded
+}
+
+/// Remove one user option from `target`. Unset, never set-to-empty — see
+/// [`tmux::unset_option_args`].
+#[must_use]
+pub fn clear_option(server: &ServerId, scope: tmux::OptionScope, target: &str, name: &str) -> bool {
+    if !addressable(server) {
+        return false;
+    }
+    let (succeeded, _) = run(
+        PROGRAM,
+        &tmux::unset_option_args(server, scope, target, name),
+    );
+    succeeded
+}
+
+/// Show a transient message on `target`'s clients.
+///
+/// `text` MUST already be [`tmux::format_literal`]-escaped — `display-message`
+/// reads a FORMAT, and `#(…)` in one runs a shell. This function does not escape
+/// for the caller ON PURPOSE: an escape applied here would be invisible at the
+/// call site, and the sink is the one place a reviewer must be able to SEE it.
+#[must_use]
+pub fn display_message(server: &ServerId, target: &str, text: &str) -> bool {
+    if !addressable(server) {
+        return false;
+    }
+    let (succeeded, _) = run(PROGRAM, &tmux::display_message_args(server, target, text));
+    succeeded
+}
+
 #[cfg(test)]
 mod tests {
     use super::{Tmux, run};

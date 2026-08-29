@@ -638,8 +638,552 @@ pub fn interpret_agents(succeeded: bool, stdout: &str) -> Option<Vec<ObservedAge
     )
 }
 
+/// The watchdog's per-pane reading — richer than [`PANE_FORMAT`]'s liveness
+/// three, and deliberately its OWN format so widening it never touches the
+/// SC-017s contract that [`interpret_panes`] answers. Five fields, `\x1f`
+/// (unit separator) delimited: none of them — a `%`-prefixed pane id, an
+/// allowlisted `@ae_slot`/`@ae_agent`, a command token, a numeric pid — can
+/// contain that byte, so an empty middle field can never shift the columns the
+/// way a tab or a space would (the TSV-framing hazard, avoided by construction).
+pub const WATCH_PANE_FORMAT: &str =
+    "#{pane_id}\u{1f}#{@ae_slot}\u{1f}#{@ae_agent}\u{1f}#{pane_current_command}\u{1f}#{pane_pid}";
+
+/// The number of fields [`WATCH_PANE_FORMAT`] yields.
+const WATCH_PANE_FIELDS: usize = 5;
+
+/// The arguments enumerating every pane of `session` on `server` for the
+/// watchdog — `list-panes -s -t <session> -F <WATCH_PANE_FORMAT>`, the frozen
+/// watchdog's own enumeration widened to the fields its cycle reads.
+#[must_use]
+pub fn watch_panes_args(server: &ServerId, session: &str) -> Vec<String> {
+    let mut args = server_args(server);
+    args.extend(
+        ["list-panes", "-s", "-t", session, "-F", WATCH_PANE_FORMAT].map(ToOwned::to_owned),
+    );
+    args
+}
+
+/// One pane as the watchdog reads it: its id, its `@ae_slot`/`@ae_agent` stamps
+/// (empty -> `None`), its foreground command, and its pid (empty or unparseable
+/// -> `None`, which the dead-check treats as no usable descendant probe rather
+/// than a guess).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WatchPane {
+    /// `#{pane_id}`, e.g. `%3`.
+    pub pane_id: String,
+    /// `@ae_slot`, or `None` when unstamped.
+    pub slot: Option<String>,
+    /// `@ae_agent`, the display `alias:name`, or `None` when unstamped.
+    pub agent: Option<String>,
+    /// `#{pane_current_command}`.
+    pub current_command: String,
+    /// `#{pane_pid}`, or `None` when tmux printed no parseable pid.
+    pub pane_pid: Option<u32>,
+}
+
+/// What a completed watchdog enumeration means: `None` on a failed run (the
+/// frozen loop reads nothing from a `2>/dev/null` failure); otherwise one
+/// [`WatchPane`] per line that split into exactly [`WATCH_PANE_FIELDS`] fields.
+/// A line that does not is DROPPED, not guessed — with a `\x1f` delimiter a
+/// well-formed pane is always exactly five fields, so a short line is genuine
+/// corruption and reading it would misattribute a pane.
+///
+/// ```
+/// use ae::tmux::{WatchPane, interpret_watch_panes};
+///
+/// let sep = '\u{1f}';
+/// let out = format!("%1{sep}main{sep}cl:lead{sep}claude{sep}4321\n%2{sep}{sep}{sep}zsh{sep}88\n");
+/// let panes = interpret_watch_panes(true, &out).unwrap();
+/// assert_eq!(panes[0], WatchPane {
+///     pane_id: "%1".into(), slot: Some("main".into()), agent: Some("cl:lead".into()),
+///     current_command: "claude".into(), pane_pid: Some(4321),
+/// });
+/// assert_eq!(panes[1].slot, None);
+/// assert_eq!(panes[1].agent, None);
+/// assert_eq!(panes[1].pane_pid, Some(88));
+/// assert!(interpret_watch_panes(false, "").is_none());
+/// ```
+#[must_use]
+pub fn interpret_watch_panes(succeeded: bool, stdout: &str) -> Option<Vec<WatchPane>> {
+    if !succeeded {
+        return None;
+    }
+    let reading = |field: &str| (!field.is_empty()).then(|| field.to_owned());
+    Some(
+        stdout
+            .lines()
+            .filter_map(|line| {
+                let fields: Vec<&str> = line.split('\u{1f}').collect();
+                if fields.len() != WATCH_PANE_FIELDS {
+                    return None;
+                }
+                Some(WatchPane {
+                    pane_id: fields[0].to_owned(),
+                    slot: reading(fields[1]),
+                    agent: reading(fields[2]),
+                    current_command: fields[3].to_owned(),
+                    pane_pid: fields[4].parse::<u32>().ok(),
+                })
+            })
+            .collect(),
+    )
+}
+
+/// The arguments capturing `pane`'s recent output for the watchdog's hash and
+/// throttle scan — `capture-pane -p -J -S -40 -E - -t <pane>`, the frozen
+/// watchdog's exact flags: print to stdout, join wrapped lines, start 40 lines
+/// back, end at the last line.
+#[must_use]
+pub fn capture_pane_args(server: &ServerId, pane: &str) -> Vec<String> {
+    let mut args = server_args(server);
+    args.extend(
+        [
+            "capture-pane",
+            "-p",
+            "-J",
+            "-S",
+            "-40",
+            "-E",
+            "-",
+            "-t",
+            pane,
+        ]
+        .map(ToOwned::to_owned),
+    );
+    args
+}
+
+// ---------------------------------------------------------------------------
+// The watchdog's tmux WRITES — status publication and the transient alert.
+// ---------------------------------------------------------------------------
+
+/// The session-scoped user option carrying the watchdog bar, `[watch <glyph>
+/// <active>/<total>]` (ae:16983).
+pub const WATCHDOG_STATUS_OPTION: &str = "@ae_watchdog_status";
+
+/// The session-scoped user option carrying the roster line (ae:17024).
+pub const AGENTS_STATUS_OPTION: &str = "@ae_agents_status";
+
+/// The WINDOW-scoped user option carrying that window's glyphs (ae:17047).
+pub const WINDOW_STATUS_OPTION: &str = "@ae_window_status";
+
+/// How long a transient watchdog alert stays on screen, in milliseconds — the
+/// frozen `display-message -d 10000` (ae:16516 and siblings).
+const DISPLAY_MESSAGE_MS: &str = "10000";
+
+/// Which option table a name lives in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OptionScope {
+    /// A session option: `set-option -t <session-id> …`.
+    Session,
+    /// A window option: `set-option -w -t <window-id> …`.
+    Window,
+}
+
+impl OptionScope {
+    /// The flag tmux needs for this table, if any.
+    const fn flag(self) -> Option<&'static str> {
+        match self {
+            Self::Session => None,
+            Self::Window => Some("-w"),
+        }
+    }
+}
+
+/// Escape text that is about to enter a tmux FORMAT context — the frozen
+/// `_ae_tmux_format_literal` (ae:1233-1236), `#` then `%`.
+///
+/// `#` introduces a format: `#{…}` interpolates and **`#(cmd)` RUNS A SHELL**.
+/// `%` is strftime. Doubling each makes tmux render it literally.
+///
+/// `#` is doubled first because the frozen helper doubles it first, and keeping
+/// the same order keeps the two readable side by side. The two passes actually
+/// COMMUTE — each introduces only the character it matched, which the other pass
+/// does not match — so the order is a convention, NOT a correctness requirement.
+/// Recorded because the opposite is the intuitive guess: a control that swapped
+/// the order left every test green, which is what sent me to check.
+///
+/// This is for [`display_message_args`] and nothing else. A tmux USER option's
+/// VALUE is interpolated literally — no format parsing, no `#()` — so
+/// [`set_option_args`] must NOT escape, or every `#` in a roster label would
+/// render doubled.
+#[must_use]
+pub fn format_literal(text: &str) -> String {
+    text.replace('#', "##").replace('%', "%%")
+}
+
+/// Set one user option on `target`, which MUST be an exact id.
+///
+/// `-t` PREFIX-MATCHES a name, so a session called `demo` can receive the option
+/// meant for `demo2`. Every caller resolves an id first (`$N` for a session, `@N`
+/// for a window) — the frozen watchdog does the same, and its comment records
+/// why a window INDEX is not good enough either: closing a window renumbers the
+/// ones after it, so glyphs land on the wrong window and cleanup misses one.
+#[must_use]
+pub fn set_option_args(
+    server: &ServerId,
+    scope: OptionScope,
+    target: &str,
+    name: &str,
+    value: &str,
+) -> Vec<String> {
+    let mut args = server_args(server);
+    args.push("set-option".to_owned());
+    if let Some(flag) = scope.flag() {
+        args.push(flag.to_owned());
+    }
+    args.extend(["-t", target, name, value].map(ToOwned::to_owned));
+    args
+}
+
+/// Remove one user option from `target` — `set-option -u`.
+///
+/// UNSET, never set-to-empty: an option that outlives what it described keeps
+/// asserting it. The frozen makes the same distinction for an empty roster
+/// (ae:17026-17031) — "a roster outliving its agents would keep asserting a
+/// fleet that no longer exists".
+#[must_use]
+pub fn unset_option_args(
+    server: &ServerId,
+    scope: OptionScope,
+    target: &str,
+    name: &str,
+) -> Vec<String> {
+    let mut args = server_args(server);
+    args.push("set-option".to_owned());
+    if let Some(flag) = scope.flag() {
+        args.push(flag.to_owned());
+    }
+    args.extend(["-u", "-t", target, name].map(ToOwned::to_owned));
+    args
+}
+
+/// Show a transient message on `target`'s clients.
+///
+/// `text` MUST already be [`format_literal`]-escaped: `display-message` reads
+/// its argument as a FORMAT, and `#(…)` in a format runs a shell command. The
+/// text this carries is an `alias:name` plus a summary, so the sink is reachable
+/// from named agents rather than being theoretical.
+#[must_use]
+pub fn display_message_args(server: &ServerId, target: &str, text: &str) -> Vec<String> {
+    let mut args = server_args(server);
+    args.extend(
+        [
+            "display-message",
+            "-d",
+            DISPLAY_MESSAGE_MS,
+            "-t",
+            target,
+            text,
+        ]
+        .map(ToOwned::to_owned),
+    );
+    args
+}
+
+/// `#{session_id}\x1f#{session_name}` — the pair the id resolver reads.
+///
+/// `\x1f` rather than a space: the frozen splits on whitespace and a session
+/// name cannot contain one (`_validate_session_name`), but a delimiter that
+/// cannot appear in either field is one fewer thing to be true.
+pub const SESSION_ID_FORMAT: &str = "#{session_id}\u{1f}#{session_name}";
+
+/// The arguments listing `server`'s sessions as id/name pairs.
+#[must_use]
+pub fn session_ids_args(server: &ServerId) -> Vec<String> {
+    let mut args = server_args(server);
+    args.extend(["list-sessions", "-F", SESSION_ID_FORMAT].map(ToOwned::to_owned));
+    args
+}
+
+/// The id tmux holds for the session named EXACTLY `name`, or `None`.
+///
+/// Exact, never a prefix: the id exists to make the write target unambiguous, so
+/// resolving it by prefix would reintroduce the hazard it removes. `None` for a
+/// failed run and for a name the server does not hold — and the caller must then
+/// write NOTHING, because `-t ""` lands on tmux's CURRENT session, which is some
+/// other user's bar (the frozen guards exactly this at ae:16960).
+///
+/// ```
+/// use ae::tmux::interpret_session_id;
+/// let listing = "$0\u{1f}other\n$3\u{1f}demo\n";
+/// assert_eq!(interpret_session_id(true, listing, "demo"), Some("$3".to_owned()));
+/// assert_eq!(interpret_session_id(true, listing, "dem"), None);
+/// assert_eq!(interpret_session_id(false, listing, "demo"), None);
+/// ```
+#[must_use]
+pub fn interpret_session_id(succeeded: bool, stdout: &str, name: &str) -> Option<String> {
+    if !succeeded {
+        return None;
+    }
+    stdout.lines().find_map(|line| {
+        let (id, held) = line.split_once('\u{1f}')?;
+        (held == name && !id.is_empty()).then(|| id.to_owned())
+    })
+}
+
+/// `#{pane_id}\x1f#{window_id}\x1f#{@ae_agent}` — the window-grouping read.
+///
+/// A SEPARATE enumeration from [`WATCH_PANE_FORMAT`], deliberately: the frozen
+/// keeps the window id out of the main cycle's format because that format is a
+/// pinned parity contract with the aewatch sidecar (ae:17035-17037). One cheap
+/// extra `list-panes` costs less than breaking it.
+pub const WINDOW_PANE_FORMAT: &str = "#{pane_id}\u{1f}#{window_id}\u{1f}#{@ae_agent}";
+
+/// The number of fields [`WINDOW_PANE_FORMAT`] yields.
+const WINDOW_PANE_FIELDS: usize = 3;
+
+/// One pane as the window grouping reads it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WindowPane {
+    /// `#{pane_id}`.
+    pub pane_id: String,
+    /// `#{window_id}` — `@N`, server-global and stable for the window's life.
+    pub window_id: String,
+    /// `@ae_agent`, or `None` when unstamped.
+    pub agent: Option<String>,
+}
+
+/// The arguments grouping `session`'s panes by window.
+#[must_use]
+pub fn window_panes_args(server: &ServerId, session: &str) -> Vec<String> {
+    let mut args = server_args(server);
+    args.extend(
+        ["list-panes", "-s", "-t", session, "-F", WINDOW_PANE_FORMAT].map(ToOwned::to_owned),
+    );
+    args
+}
+
+/// One [`WindowPane`] per line that split into exactly [`WINDOW_PANE_FIELDS`]
+/// fields; `None` on a failed run. A short line is DROPPED rather than guessed,
+/// for the same reason [`interpret_watch_panes`] drops one.
+#[must_use]
+pub fn interpret_window_panes(succeeded: bool, stdout: &str) -> Option<Vec<WindowPane>> {
+    if !succeeded {
+        return None;
+    }
+    Some(
+        stdout
+            .lines()
+            .filter_map(|line| {
+                let fields: Vec<&str> = line.split('\u{1f}').collect();
+                if fields.len() != WINDOW_PANE_FIELDS {
+                    return None;
+                }
+                Some(WindowPane {
+                    pane_id: fields[0].to_owned(),
+                    window_id: fields[1].to_owned(),
+                    agent: (!fields[2].is_empty()).then(|| fields[2].to_owned()),
+                })
+            })
+            .collect(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_format_escape_doubles_hash_then_percent() {
+        use super::format_literal;
+        // `#(cmd)` in a tmux format RUNS A SHELL; `%` is strftime.
+        assert_eq!(format_literal("plain text"), "plain text");
+        assert_eq!(format_literal("#(id)"), "##(id)");
+        assert_eq!(format_literal("#{session_name}"), "##{session_name}");
+        assert_eq!(format_literal("100%"), "100%%");
+        assert_eq!(format_literal("#%"), "##%%");
+        assert_eq!(format_literal("#"), "##");
+        // NOT idempotent, and must not be: escaping twice is a rendering bug,
+        // so the one call site is the place that must not grow a second.
+        assert_eq!(format_literal("##"), "####");
+        // A hostile agent name is the realistic carrier.
+        assert_eq!(
+            format_literal("[ae watchdog] cl:#(touch /tmp/pwned) is DEAD"),
+            "[ae watchdog] cl:##(touch /tmp/pwned) is DEAD"
+        );
+    }
+
+    #[test]
+    fn a_user_option_write_targets_an_exact_id_in_the_right_table() {
+        use super::{
+            AGENTS_STATUS_OPTION, OptionScope, WINDOW_STATUS_OPTION, set_option_args,
+            unset_option_args,
+        };
+        use crate::inventory::ServerId;
+        use crate::meta::Selector;
+        let server = ServerId::Selected(Selector::Name("ae".to_owned()));
+        assert_eq!(
+            set_option_args(
+                &server,
+                OptionScope::Session,
+                "$3",
+                AGENTS_STATUS_OPTION,
+                "lead● builder◌"
+            ),
+            [
+                "-L",
+                "ae",
+                "set-option",
+                "-t",
+                "$3",
+                "@ae_agents_status",
+                "lead● builder◌"
+            ]
+        );
+        // The window table needs -w, and the target is a window id.
+        assert_eq!(
+            set_option_args(
+                &server,
+                OptionScope::Window,
+                "@7",
+                WINDOW_STATUS_OPTION,
+                "●◌"
+            ),
+            [
+                "-L",
+                "ae",
+                "set-option",
+                "-w",
+                "-t",
+                "@7",
+                "@ae_window_status",
+                "●◌"
+            ]
+        );
+        // UNSET, not set-to-empty.
+        assert_eq!(
+            unset_option_args(&server, OptionScope::Session, "$3", AGENTS_STATUS_OPTION),
+            [
+                "-L",
+                "ae",
+                "set-option",
+                "-u",
+                "-t",
+                "$3",
+                "@ae_agents_status"
+            ]
+        );
+        assert_eq!(
+            unset_option_args(&server, OptionScope::Window, "@7", WINDOW_STATUS_OPTION),
+            [
+                "-L",
+                "ae",
+                "set-option",
+                "-w",
+                "-u",
+                "-t",
+                "@7",
+                "@ae_window_status"
+            ]
+        );
+    }
+
+    #[test]
+    fn the_transient_alert_carries_the_frozen_duration() {
+        use super::display_message_args;
+        use crate::inventory::ServerId;
+        assert_eq!(
+            display_message_args(&ServerId::Ambient, "$3", "[ae watchdog] cl:a is DEAD"),
+            [
+                "display-message",
+                "-d",
+                "10000",
+                "-t",
+                "$3",
+                "[ae watchdog] cl:a is DEAD"
+            ]
+        );
+    }
+
+    #[test]
+    fn the_window_grouping_read_drops_short_lines_and_reads_an_unstamped_pane_as_none() {
+        use super::{WindowPane, interpret_window_panes, window_panes_args};
+        use crate::inventory::ServerId;
+        assert_eq!(
+            window_panes_args(&ServerId::Ambient, "demo"),
+            [
+                "list-panes",
+                "-s",
+                "-t",
+                "demo",
+                "-F",
+                super::WINDOW_PANE_FORMAT
+            ]
+        );
+        let listing = "%1\u{1f}@0\u{1f}cl:lead\n%2\u{1f}@0\u{1f}\n%3 @1 cl:x\n";
+        let panes = interpret_window_panes(true, listing).expect("a successful run");
+        assert_eq!(
+            panes,
+            vec![
+                WindowPane {
+                    pane_id: "%1".to_owned(),
+                    window_id: "@0".to_owned(),
+                    agent: Some("cl:lead".to_owned()),
+                },
+                WindowPane {
+                    pane_id: "%2".to_owned(),
+                    window_id: "@0".to_owned(),
+                    agent: None,
+                },
+            ],
+            "the space-delimited line is corruption, not a pane"
+        );
+        assert!(interpret_window_panes(false, listing).is_none());
+    }
+
+    #[test]
+    fn the_watchdog_pane_reading_widens_the_enumeration_and_drops_short_lines() {
+        use super::{
+            WATCH_PANE_FORMAT, WatchPane, capture_pane_args, interpret_watch_panes,
+            watch_panes_args,
+        };
+        use crate::inventory::ServerId;
+        assert_eq!(
+            watch_panes_args(&ServerId::Ambient, "s"),
+            ["list-panes", "-s", "-t", "s", "-F", WATCH_PANE_FORMAT]
+        );
+        assert_eq!(
+            capture_pane_args(&ServerId::Ambient, "%3"),
+            [
+                "capture-pane",
+                "-p",
+                "-J",
+                "-S",
+                "-40",
+                "-E",
+                "-",
+                "-t",
+                "%3"
+            ]
+        );
+        let sep = '\u{1f}';
+        // A well-formed pane, a short (corrupt) line that must be DROPPED, and a
+        // pane whose pid tmux could not print -> None (never a guessed dead).
+        let out = format!(
+            "%1{sep}main{sep}cl:lead{sep}claude{sep}9\n%bad{sep}main\n%2{sep}{sep}{sep}zsh{sep}\n"
+        );
+        let panes = interpret_watch_panes(true, &out).expect("a successful enumeration");
+        assert_eq!(
+            panes.len(),
+            2,
+            "the two-field corrupt line is dropped, not read"
+        );
+        assert_eq!(panes[0].pane_pid, Some(9));
+        assert_eq!(
+            panes[1],
+            WatchPane {
+                pane_id: "%2".into(),
+                slot: None,
+                agent: None,
+                current_command: "zsh".into(),
+                pane_pid: None,
+            }
+        );
+        assert!(
+            interpret_watch_panes(true, "").unwrap().is_empty(),
+            "no panes is an empty enumeration, not None"
+        );
+    }
+
     #[test]
     fn the_resolver_queries_are_the_frozen_ones() {
         use super::{AGENTS_FORMAT, SLOTS_FORMAT, agents_args, has_session_args, slots_args};
