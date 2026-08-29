@@ -1,0 +1,72 @@
+
+# cargo-vet imports lock
+
+[[publisher.wasi]]
+version = "0.11.1+wasi-snapshot-preview1"
+when = "2025-06-10"
+user-id = 1
+user-login = "alexcrichton"
+user-name = "Alex Crichton"
+
+[[publisher.windows-targets]]
+version = "0.52.6"
+when = "2024-07-03"
+user-id = 64539
+user-login = "kennykerr"
+user-name = "Kenny Kerr"
+
+[[publisher.windows_aarch64_gnullvm]]
+version = "0.52.6"
+when = "2024-07-03"
+user-id = 64539
+user-login = "kennykerr"
+user-name = "Kenny Kerr"
+
+[[publisher.windows_i686_gnullvm]]
+version = "0.52.6"
+when = "2024-07-03"
+user-id = 64539
+user-login = "kennykerr"
+user-name = "Kenny Kerr"
+
+[[publisher.windows_x86_64_gnullvm]]
+version = "0.52.6"
+when = "2024-07-03"
+user-id = 64539
+user-login = "kennykerr"
+user-name = "Kenny Kerr"
+
+[[audits.google.audits.cfg-if]]
+who = "George Burgess IV <gbiv@google.com>"
+criteria = "safe-to-deploy"
+version = "1.0.0"
+aggregated-from = "https://chromium.googlesource.com/chromiumos/third_party/rust_crates/+/refs/heads/main/cargo-vet/audits.toml?format=TEXT"
+
+[[audits.isrg.audits.cfg-if]]
+who = "David Cook <dcook@divviup.org>"
+criteria = "safe-to-deploy"
+delta = "1.0.0 -> 1.0.1"
+
+[[audits.isrg.audits.cfg-if]]
+who = "J.C. Jones <jc@divviup.org>"
+criteria = "safe-to-deploy"
+delta = "1.0.1 -> 1.0.3"
+
+[[audits.isrg.audits.cfg-if]]
+who = "David Cook <dcook@divviup.org>"
+criteria = "safe-to-deploy"
+delta = "1.0.3 -> 1.0.4"
+
+[[audits.isrg.audits.subtle]]
+who = "David Cook <dcook@divviup.org>"
+criteria = "safe-to-deploy"
+delta = "2.5.0 -> 2.6.1"
+
+[[audits.mozilla.audits.subtle]]
+who = "Simon Friedberger <simon@mozilla.com>"
+criteria = "safe-to-deploy"
+version = "2.5.0"
+notes = "The goal is to provide some constant-time correctness for cryptographic implementations. The approach is reasonable, it is known to be insufficient but this is pointed out in the documentation."
+aggregated-from = "https://hg.mozilla.org/mozilla-central/raw-file/tip/supply-chain/audits.toml"
+
+[audits.zcash.audits]

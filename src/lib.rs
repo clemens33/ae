@@ -89,6 +89,7 @@ pub mod send;
 pub mod session;
 pub mod state;
 pub mod teardown;
+pub mod telegram;
 pub mod time;
 pub mod tmux;
 pub mod tracked;

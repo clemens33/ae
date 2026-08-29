@@ -332,7 +332,31 @@ or chrono.** Zero-dep is doctrine with recorded triggers, not dogma.
 drop `--allow license-not-encountered` from `rust-deny` (already recorded above); the
 clippy `disallowed_types` capability boundary loses its empty-dep-tables premise and
 degrades toward a naming convention — **cargo-vet arrives in the same change** to replace
-what it loses; and the first dep graph (ring, for TLS) is exactly the one to vet first.
+what it loses.
+
+That last cost was paid at P4.3, and paying it taught something the aspiration
+above ("ring, for TLS, is exactly the one to vet first") got wrong: **the TLS
+graph turned out to be un-auditable in place.** No import registry (mozilla,
+google, zcash, isrg — all four are wired) certifies ring `0.17.14`, rustls
+`0.23.35` or ureq `3.4.0`; there is no trusted-publisher path to any of them; and
+ring is 261k lines of crypto/asm no agent here can credibly attest. So cargo-vet
+ships with that graph **EXEMPTED, not audited** — and the exemptions **honestly
+encode an accepted risk, not an audit claim.**
+
+**RISK ACCEPTANCE (P4.3, project-local, 2026-08-29) — recorded, NOT gated.** The
+pinned `ureq 3.4.0`, `rustls 0.23.35`, `ring 0.17.14` and their locked transitive
+graph are accepted as they stand; tracer B goes live on this acceptance after code
+review, and is deliberately NOT gated on a future certification that may never
+arrive. The acceptance rests on: established,
+maintained crates; an exact lockfile; `default-features` off; rustls-only TLS
+(native-tls off); an explicitly named ring provider; egress locked (proxy off,
+https-only, no redirects, finite timeouts); cargo-deny advisory gating; and a
+cross-model dependency review — set against the fact that no agent here can
+credibly attest 261k lines of crypto/asm and no registry certifies these exact
+versions. **Revisit triggers:** any version change, a new advisory, a feature
+expansion, or an upstream registry certification becoming available — replace the
+exemption with an imported audit the moment one is possible. cargo-deny gates the
+whole graph for advisories in the meantime.
 
 **Std replaces crates since our MSRV** — use these, never the crate equivalents:
 `std::process::ExitCode`/`Termination` (1.61) over raw `exit()`, `std::io::IsTerminal`
@@ -368,8 +392,12 @@ The bootstrap contract, in full — nothing else is assumed to exist:
 - **Proven by run 32350969851 (2026-08-20, green on both platforms):** bootstrap contract,
   idempotence assert, all lanes, native `ae --version` + exit-code proof on real
   x86_64 Linux and arm64 macOS, and the **static musl binary built, run, and asserted
-  static on Linux** (artifact `ae-linux-x86_64-musl`) — the musl target links on stock
-  `ubuntu-24.04` with no extra packages.
+  static on Linux** (artifact `ae-linux-x86_64-musl`). **That run was zero-dependency: the
+  musl target then linked on stock `ubuntu-24.04` with no extra packages.** That is no longer
+  true — the first dependency (`ring`, 2026-08-29) compiles C for the target, so the Linux leg
+  now installs `musl-tools`. A new green run re-proves the musl artifact under that step; until
+  it lands, the musl half of this proof is "configured, awaiting first run" again (see "The
+  linux target is musl" below).
 - The bash-era lanes are deliberately **not** wired there yet (blocked on the gate-integrity
   issues #58/#67); adding them now would publish a red badge for a known, separately-tracked
   gap.
@@ -379,17 +407,26 @@ The bootstrap contract, in full — nothing else is assumed to exist:
 - **musl, not gnu.** The epic promises a static zero-dep binary; a glibc build is dynamically
   linked against the build host's libc and is not the artifact ae's one-file install contract
   describes.
-- **On a laptop the cross target is a compile smoke only** — `cargo check` never links, so
-  nothing produced here can be mistaken for a runnable artifact. Target-native proof belongs
-  on that target's own machine. The CI ubuntu leg is **configured** to upgrade it — build,
-  run, and assert static: no `PT_INTERP` segment in `readelf -l` (authoritative), `file` must
-  say static and must never say "dynamically", `ldd` informational only. A missing `readelf`
-  fails loudly rather than skipping the assertion, because a skipped assertion is a vacuous
-  gate. Configured, not yet observed — see the pending-first-run note above.
-- **NSS caveat — flagged for P4 (daemons).** musl has no NSS: user, group and host lookups do
-  not consult `/etc/nsswitch.conf`, so `getpwuid`/`getaddrinfo` behave differently than under
-  glibc — LDAP/SSSD-backed users and some resolver setups resolve differently or not at all.
-  Nothing in today's surface depends on it; the daemons that land in P4 might.
+- **The musl build needs a C toolchain as of the first dependency (2026-08-29, P4.3).**
+  `ring`'s build script compiles C for the target, so a musl `cargo check`/`build` is no
+  longer link-free — it needs `x86_64-linux-musl-gcc`. Consequences, recorded so they are not
+  rediscovered: (1) the musl compile-smoke was **removed** from `just rust-build-release`,
+  which is now native-only — forcing every clone to install a from-source macOS cross
+  toolchain to run one recipe is the wrong trade; (2) the musl artifact is BUILT, LINKED, RUN
+  and proven static on the **Linux CI leg only** (`.github/workflows/rust.yml`), which
+  installs `musl-tools` for exactly this reason and is the only place musl can link anyway;
+  (3) macOS no longer touches the target at all. The static proof itself is unchanged — no
+  `PT_INTERP` in `readelf -l` (authoritative), `file` must say static and never "dynamically",
+  `ldd` informational — and its "configured, proven on first run after this lands" status
+  resets with the `musl-tools` step. Local musl checking now costs a cross toolchain; the
+  Linux CI leg is the proof of record.
+- **NSS caveat — flagged for P4 (daemons), and now LIVE: the Telegram bridge resolves
+  `api.telegram.org`.** musl has no NSS: user, group and host lookups do not consult
+  `/etc/nsswitch.conf`, so `getpwuid`/`getaddrinfo` behave differently than under glibc —
+  LDAP/SSSD-backed users and some resolver setups resolve differently or not at all. Tracer A
+  is dormant (no live DNS yet), but wiring it (tracer B) makes a static-musl `getaddrinfo`
+  against a real host the first place this can bite. The design's musl-DNS check (cost item 4)
+  could not run on the laptop — no musl toolchain — and is owed before the bridge goes live.
 
 ### Code shape
 

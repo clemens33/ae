@@ -1745,10 +1745,24 @@ fn is_product_line(file: &str, line: usize) -> bool {
     let Ok(text) = std::fs::read_to_string(&path) else {
         return false;
     };
-    match text.find("#[cfg(test)]") {
-        Some(at) => text[..at].lines().count() >= line,
-        None => true,
-    }
+    // THE CUT IS THE TEST MODULE, NOT THE FIRST `#[cfg(test)]`, and the
+    // difference is a hole this tripwire used to have. A module that gates an
+    // individual ITEM on `#[cfg(test)]` — `src/telegram.rs` gates its loopback
+    // egress seam that way, near the top of the file — put every line after that
+    // item on the test side of an "up to the first marker" cut, and the guard
+    // then inventoried the first eighty lines of the file and reported the rest
+    // as tests. A new product door below it was invisible, which is the one
+    // thing this test exists to prevent.
+    //
+    // So: find the test module, then step back to the `#[cfg(test)]` that
+    // introduces it (an inner `#![allow(...)]` can sit between the attribute and
+    // the `mod`, as `src/state.rs` does, so the two are found separately). A file
+    // with no test module is product all the way down.
+    let Some(module) = text.find("\nmod tests {") else {
+        return true;
+    };
+    let cut = text[..module].rfind("#[cfg(test)]").unwrap_or(module);
+    text[..cut].lines().count() >= line
 }
 
 #[test]
@@ -1759,10 +1773,13 @@ fn criterion_3_the_places_this_crate_can_read_the_world_are_the_inventoried_ones
     // discarded call to any of them slips straight past. (`symlink_metadata`
     // WAS on that unlisted list and is now the twelfth entry — the example
     // moved because the door did, which is what the list is for.)
-    // The empty dependency tables and `unsafe_code = "forbid"` close the
-    // THIRD-PARTY and LIBC routes; neither closes an unlisted safe-std one, and
-    // reading them as covering the enumeration is what let an earlier version of
-    // this file call a name list a boundary.
+    // `unsafe_code = "forbid"` still closes the LIBC route. The other premise —
+    // empty dependency tables, closing the THIRD-PARTY route — FELL on
+    // 2026-08-29 when ureq and rustls arrived with the Telegram bridge, so this
+    // list now describes ae's own source and not the compiled artifact. Neither
+    // premise ever closed an unlisted safe-std route, and reading them as
+    // covering the enumeration is what let an earlier version of this file call
+    // a name list a boundary.
     //
     // The live criterion 3 residual is explicit: a source-name inventory is NOT
     // a capability boundary and makes no zero-access claim. This test stays as
@@ -1837,6 +1854,14 @@ fn criterion_3_the_places_this_crate_can_read_the_world_are_the_inventoried_ones
             // removal durable. The meta read it validates identity through is
             // `meta.rs`'s inventoried door, not a new one here.
             "src/teardown.rs".to_owned(),
+            // The outbound Telegram bridge's own reads (P4.3): the event log's
+            // identity and length, the log body read from the cursor, the
+            // durable cursor itself, and the two reads behind the credentials —
+            // the INI config and the bot-token file. Registered deliberately,
+            // and it is the door with the highest stakes on this list: what it
+            // reads is a secret, and where it sends the result is the public
+            // internet.
+            "src/telegram.rs".to_owned(),
             // The steward heartbeat's `lstat` (P4.2): the one read the watchdog
             // daemon takes for itself, proving `meta-agent-state.json` is a
             // non-symlink regular file before its mtime is trusted as liveness.

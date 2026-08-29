@@ -43,10 +43,12 @@
 //!   doors relax it, and they do different jobs: THIS harness's is the one in
 //!   [`capture::raw`]; the other is in `tests/it/cli.rs`, whose black-box tests
 //!   must run the product binary and whose factory is private to that module,
-//!   so nothing here can reach a child through it. That is a capability
-//!   boundary rather than a naming convention ONLY because this crate has no
+//!   so nothing here can reach a child through it. That was a capability
+//!   boundary rather than a naming convention ONLY because this crate had no
 //!   dependencies and forbids `unsafe_code`; both premises are written down at
-//!   the pin site, because both can stop being true.
+//!   the pin site, because both can stop being true — and the first one DID, on
+//!   2026-08-29, when ureq and rustls landed for the Telegram bridge. Read
+//!   `clippy.toml` for what the deny still claims and what it no longer does.
 //!
 //! **Watched, not closed — the signed residuals:**
 //!

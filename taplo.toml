@@ -5,4 +5,9 @@ include = ["**/*.toml"]
 # cliff.toml is a bash-era file and is NOT taplo-formatted. Reformatting it here
 # would be an unrelated diff in a frozen area; it joins the lane when someone
 # deliberately reformats it.
-exclude = ["cliff.toml", "target/**"]
+#
+# supply-chain/ is cargo-vet's, and cargo-vet OWNS the format of those files — it
+# rewrites config.toml/audits.toml on its own runs. taplo and cargo-vet would
+# fight over their layout every run, so taplo stays out (same reasoning as
+# cliff.toml). cargo-vet's own writer is their formatter.
+exclude = ["cliff.toml", "target/**", "supply-chain/**"]

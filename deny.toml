@@ -29,18 +29,30 @@ ignore = []
 # Permissive only. ae is MIT and ships as one binary — a copyleft dependency
 # changes the distribution contract, so it needs a deliberate exception rather
 # than a silent pass.
-allow = [
-  "MIT",
-  "Apache-2.0",
-  "Apache-2.0 WITH LLVM-exception",
-  "BSD-2-Clause",
-  "BSD-3-Clause",
-  "ISC",
-  "Unicode-3.0",
-  "Zlib",
-]
+#
+# MINIMAL-TO-ENCOUNTERED as of the first dependency (2026-08-29, P4.3 tracer A):
+# exactly the four licenses the shipped graph resolves to across BOTH targets.
+# `just rust-deny` no longer passes `--allow license-not-encountered`, so an
+# unmatched entry here is a WARNING that means the allow-list drifted — which
+# only works as a signal if the baseline is clean. A speculative forward-looking
+# entry (the old list carried Apache-2.0-WITH-LLVM-exception, BSD-2-Clause,
+# Unicode-3.0, Zlib, none of them in the graph) is exactly the noise that would
+# hide the next real drift. Add a license back HERE, deliberately, the day a
+# crate actually needs it — the same rule as "a dependency arrives with the
+# feature that needs it".
+allow = ["MIT", "Apache-2.0", "BSD-3-Clause", "ISC"]
 confidence-threshold = 0.9
-exceptions = []
+# webpki-roots ships Mozilla's CA-certificate DATA, not code, under
+# CDLA-Permissive-2.0 (Community Data License Agreement — Permissive: a
+# permissive DATA license). It arrives transitively through ureq's
+# `rustls-webpki-roots` feature, which is not optional — with it off ureq's
+# rustls connector reaches `panic!("WebPki is disabled...")` on the first
+# request (ureq-3.4.0 src/tls/rustls.rs:200), because a static musl binary has
+# no host trust store to fall back to. SCOPED to this one crate rather than
+# widening the allow-list above, deliberately: CDLA is a data license, and
+# nothing else in ae's graph should acquire it by a silent pass.
+# Ref: https://spdx.org/licenses/CDLA-Permissive-2.0.html
+exceptions = [{ crate = "webpki-roots", allow = ["CDLA-Permissive-2.0"] }]
 
 [licenses.private]
 # `ae` itself is `publish = false`; it is still MIT and still checked.

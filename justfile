@@ -231,6 +231,10 @@ TAPLO_VERSION := "0.10.0"
 DENY_VERSION := "0.20.2"
 MUTANTS_VERSION := "27.1.0"
 LLVM_COV_VERSION := "0.9.0"
+# Arrived with the FIRST runtime dependency (P4.3): cargo-deny gates the graph's
+# advisories/licenses/bans/sources, cargo-vet gates its PROVENANCE (who reviewed
+# the code). See `rust-vet`.
+VET_VERSION := "0.10.2"
 
 # The foreign target. musl, not gnu — the epic promises a STATIC zero-dep binary
 # and gnu is not that (see rust-toolchain.toml for the NSS caveat). Compile-smoke
@@ -277,6 +281,7 @@ rust-setup:
     ensure cargo-deny     "{{ DENY_VERSION }}"     'cargo deny --version'
     ensure cargo-mutants  "{{ MUTANTS_VERSION }}"  'cargo mutants --version'
     ensure cargo-llvm-cov "{{ LLVM_COV_VERSION }}" 'cargo llvm-cov --version'
+    ensure cargo-vet      "{{ VET_VERSION }}"      'cargo vet --version'
 
     echo "==> ready — run: just rust-check"
 
@@ -325,27 +330,50 @@ rust-cov:
 rust-mutants *args:
     cargo mutants --cargo-arg=--locked {{ args }}
 
-# `license-not-encountered` is allowed because the license allow-list is
-# deliberately forward-looking; with zero dependencies every entry is unmatched.
-# REMOVE THE --allow AT THE FIRST REAL DEPENDENCY: once a dep exists the warning
-# stops being noise and starts being the signal that the allow-list drifted.
+# The `--allow license-not-encountered` crutch is GONE as of the first real
+# dependency (2026-08-29, P4.3 tracer A): the deny.toml allow-list is now
+# minimal-to-encountered, so an unmatched entry is a genuine drift signal rather
+# than the zero-dependency baseline noise it used to be. Do not re-add the flag;
+# prune or extend the allow-list instead.
 
 # Supply chain: advisories, licenses, bans, sources (policy in deny.toml)
 rust-deny:
-    cargo deny --locked check --allow license-not-encountered
+    cargo deny --locked check
 
-# NATIVE is a real, runnable binary and is run here to prove it. The foreign
-# target is a COMPILE SMOKE — `cargo check` does not link, and a foreign binary
-# this host could produce would not be proven runnable anyway. Target-native
-# proof belongs on that target's own machine or CI runner.
+# Supply-chain PROVENANCE: has a human reviewed each dependency's code? cargo-vet
+# arrived with the first runtime dependency (P4.3), orthogonal to cargo-deny (do
+# NOT also add cargo-audit — that duplicates deny's RustSec lane). Posture is the
+# honest first setup: four trusted registries (mozilla, google, zcash, isrg) are
+# imported and PINNED in supply-chain/imports.lock, so `--locked` re-checks
+# offline in CI. The current graph is grandfathered as `exemptions` in
+# supply-chain/config.toml — the audit BACKLOG, not an audited set: ring, rustls
+# and ureq are the priority to delta-audit (their exact versions are newer than
+# the registries certify), and cargo-deny already gates them for advisories. A
+# dependency or version that no import covers fails HERE until it is audited or
+# exemption'd — that is the point.
+rust-vet:
+    cargo vet --locked
 
-# Release build: native binary + foreign-target compile smoke
+# NATIVE is a real, runnable binary and is run here to prove it.
+#
+# THE MUSL COMPILE-SMOKE WAS REMOVED at the first dependency (2026-08-29, P4.3
+# tracer A). It used to be a free `cargo check --target {{ RUST_CROSS_TARGET }}`
+# that never linked. `ring` ended that: its build script compiles C for the
+# target, so a musl `cargo check` now needs a musl C toolchain
+# (`x86_64-linux-musl-gcc`) — trivial to add on the Linux CI leg (`musl-tools`),
+# a heavy from-source cross-toolchain on a macOS laptop. Forcing every clone to
+# install one to run `rust-build-release` is the wrong trade: the musl artifact
+# is BUILT, LINKED, RUN and proven static on the Linux CI leg
+# (.github/workflows/rust.yml), which is the only place it can link anyway. This
+# recipe stays native-only so a bare clone builds without a cross toolchain.
+# {{ RUST_CROSS_TARGET }} is still the pinned musl triple, used by that CI leg
+# and deny.toml's graph.
+
+# Release build: native binary (musl artifact is a Linux-CI-only proof — see above)
 rust-build-release:
     cargo build --release --locked
     @echo "==> native binary: target/release/ae"
     @./target/release/ae --version
-    @echo "==> compile smoke ONLY (not a runnable artifact): {{ RUST_CROSS_TARGET }}"
-    cargo check --release --locked --target {{ RUST_CROSS_TARGET }} --all-targets
 
 # bacon is deliberately NOT installed by rust-setup: a personal dev loop is not
 # part of the bootstrap contract.

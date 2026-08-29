@@ -1,0 +1,34 @@
+
+# cargo-vet audits file
+
+[audits]
+
+[[trusted.wasi]]
+criteria = "safe-to-deploy"
+user-id = 1 # Alex Crichton (alexcrichton)
+start = "2020-06-03"
+end = "2027-08-29"
+
+[[trusted.windows-targets]]
+criteria = "safe-to-deploy"
+user-id = 64539 # Kenny Kerr (kennykerr)
+start = "2022-09-09"
+end = "2027-08-29"
+
+[[trusted.windows_aarch64_gnullvm]]
+criteria = "safe-to-deploy"
+user-id = 64539 # Kenny Kerr (kennykerr)
+start = "2022-09-01"
+end = "2027-08-29"
+
+[[trusted.windows_i686_gnullvm]]
+criteria = "safe-to-deploy"
+user-id = 64539 # Kenny Kerr (kennykerr)
+start = "2024-04-02"
+end = "2027-08-29"
+
+[[trusted.windows_x86_64_gnullvm]]
+criteria = "safe-to-deploy"
+user-id = 64539 # Kenny Kerr (kennykerr)
+start = "2022-09-01"
+end = "2027-08-29"

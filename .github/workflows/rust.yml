@@ -36,6 +36,7 @@ on:
       - deny.toml
       - clippy.toml
       - taplo.toml
+      - supply-chain/**
       - .cargo/**
       - src/**
       - tests/it/**
@@ -50,6 +51,7 @@ on:
       - deny.toml
       - clippy.toml
       - taplo.toml
+      - supply-chain/**
       - .cargo/**
       - src/**
       - tests/it/**
@@ -150,7 +152,7 @@ jobs:
                    | shasum -a 256 | cut -d' ' -f1 )"
           echo "hash=$hash" >> "$GITHUB_OUTPUT"
 
-      # `just` plus the five pinned dev tools, all built from source by
+      # `just` plus the six pinned dev tools, all built from source by
       # `cargo install --locked`. Slow exactly once per pin change; after that
       # this cache makes rust-setup a no-op.
       - name: Cache pinned dev tools
@@ -212,13 +214,21 @@ jobs:
       - name: just rust-deny
         run: just rust-deny
 
+      # Supply-chain PROVENANCE (arrived with the first dependency, P4.3).
+      # `--locked` uses the pinned supply-chain/imports.lock, so this needs no
+      # network and no fetch. Orthogonal to rust-deny; see the recipe comment.
+      - name: just rust-vet
+        run: just rust-vet
+
       # The lane that asks whether the tests discriminate. Run on both platforms:
       # a mutant caught on macOS is not evidence about Linux.
       - name: just rust-mutants
         run: just rust-mutants
 
-      # Native build + the musl compile smoke. On ubuntu the "cross" smoke is
-      # same-arch (gnu host, musl target) and still never links — by design.
+      # Native build only. The musl compile-smoke that used to live in this
+      # recipe was removed at the first dependency: `ring` compiles C for the
+      # target, so a musl `cargo check` now needs a musl C toolchain, and the
+      # musl artifact is built+proven for real on the Linux leg below instead.
       - name: just rust-build-release
         run: just rust-build-release
 
@@ -256,12 +266,26 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
+      # ring's build script compiles C for the target, so the musl build needs a
+      # musl C toolchain. `musl-tools` provides `musl-gcc`, which the `cc` crate
+      # selects for a same-arch musl target. Linux-only: this is the only leg
+      # that links musl, and macOS no longer touches the target at all (the
+      # compile-smoke was removed with the first dependency). CONFIGURED here,
+      # proven on the first CI run after this lands — the same "configured, not
+      # yet observed" status the epic's zero-dependency musl proof once had.
+      - name: Install musl C toolchain (ring compiles C for the musl target)
+        if: matrix.name == 'linux-x86_64'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends musl-tools
+
       # ── The epic's promise, proven rather than asserted ────────────────────
       #
-      # Only on Linux: a musl target can actually LINK here, so this leg upgrades
-      # musl from compile-smoke to a real artifact. macOS keeps the check-smoke
-      # (it has no musl linker), and the justfile is unchanged for the same
-      # reason — a laptop cannot produce this.
+      # Only on Linux: a musl target can actually LINK here, so this leg builds
+      # the real static artifact. macOS does NOT touch the musl target — the
+      # compile-smoke that used to run there was removed at the first dependency
+      # (ring compiles C; a macOS laptop has no musl cross toolchain), so the one
+      # place musl is exercised is right here.
       #
       # A musl-static binary runs fine on a glibc host, so it is EXECUTED here,
       # not just built.

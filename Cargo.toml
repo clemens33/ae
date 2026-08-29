@@ -33,11 +33,68 @@ path = "src/main.rs"
 name = "it"
 path = "tests/it/main.rs"
 
-# No runtime dependencies. Per #80: "no error dependency exists until a real
-# error does" — the same restraint applies to everything else. Deps arrive with
-# the feature that needs them, not in the skeleton.
+# ae's FIRST runtime dependencies, and the last for a long while. They arrive
+# WITH the feature that needs them (P4.3 tracer A: the outbound Telegram
+# bridge), never in a skeleton — #80's "no error dependency exists until a real
+# error does", generalised. Everything else stays std: CLI parsing, JSON,
+# errors, time and the unix/fs surface are ours by ratified decision (AGENTS.md
+# "Dependency posture"), and this row does not reopen any of them.
+#
+# THREE COSTS ARE PAID BY THIS TABLE BEING NON-EMPTY, all recorded before the
+# first line was written (AGENTS.md, "Costs of the first [dependencies] row"):
+#   1. `just rust-deny` drops `--allow license-not-encountered` — from now an
+#      unmatched allow-list entry is drift, not the zero-dependency baseline.
+#   2. The clippy `disallowed_types` / `disallowed_methods` capability
+#      boundaries lose their empty-dep-tables premise and degrade toward a
+#      naming convention. Documented at the site: clippy.toml.
+#   3. cargo-vet arrives with this change. Its direct TLS graph (ring, rustls,
+#      ureq) is EXEMPTED, not audited: no registry certifies these exact versions,
+#      no trusted-publisher path exists, and ring is 261k lines of crypto no one
+#      here can credibly attest. So the exemption honestly encodes an ACCEPTED
+#      RISK, recorded on the record in AGENTS.md (a project-local decision, with
+#      revisit triggers), never a provenance claim — cargo-deny still gates the
+#      whole graph for advisories.
+#
+# WHY THESE, exactly: TLS HTTP is the one surface std does not cover, and a
+# session multiplexer that talks to Telegram over the public internet may not
+# hand-roll it. ureq is blocking (no async runtime for two background loops),
+# rustls is memory-safe TLS, ring is the pinned crypto provider — pinned
+# EXPLICITLY rather than left to ureq's default, whose docs reserve the right to
+# change it, because a static musl binary's provider is not a detail to
+# discover in production. attohttpc was rejected on license (MPL-2.0 against
+# deny.toml's permissive allow-list); reqwest/hyper drag in tokio.
+#
+# EXACT versions (`=`), not carets: "pins, not channels" is the toolchain rule
+# and it applies to the dependency graph too. `Cargo.lock` is committed; a bump
+# is a deliberate commit, and cargo-deny's `wildcards = "deny"` agrees.
 [dependencies]
+# `default-features = false` drops ureq's `gzip` (flate2) and leaves `json`
+# (serde/serde_json) off — we parse Telegram's replies with `crate::json`, which
+# already bounds nesting at MAX_DEPTH and keeps oversized integers verbatim.
+#
+# `rustls-no-provider` takes the rustls transport WITHOUT ureq choosing the
+# crypto provider for us (that is `src/telegram.rs`'s job, explicitly).
+# `rustls-webpki-roots` is NOT optional decoration: with the feature off,
+# ureq's default `RootCerts::WebPki` reaches a `panic!("WebPki is disabled...")`
+# at the first request (ureq-3.4.0 src/tls/rustls.rs:200). Mozilla's root set,
+# compiled in, is also the right answer for a static musl binary that cannot
+# rely on a host trust store being present or readable.
+ureq = { version = "=3.4.0", default-features = false, features = [
+  "rustls-no-provider",
+  "rustls-webpki-roots",
+] }
+# A DIRECT dependency purely to name the provider: `ring`, chosen rather than
+# inherited. `std` is stated rather than relied upon — feature unification would
+# supply it from ureq today, and a pin that depends on another crate's feature
+# list is not a pin.
+rustls = { version = "=0.23.35", default-features = false, features = [
+  "ring",
+  "std",
+] }
 
+# The fake Telegram server the outbound gate runs against is a `std::net`
+# TcpListener in the test module itself: a test double that needed a dependency
+# would be a second network stack to trust.
 [dev-dependencies]
 
 [lints.rust]
