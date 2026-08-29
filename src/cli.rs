@@ -870,7 +870,7 @@ fn watchdog_knobs(flags: &[String]) -> std::result::Result<crate::watchdog_daemo
             "--quiet-beat-ms" => knobs.quiet_beat_ms = number(value)?,
             "--quiet-tries" => knobs.quiet_tries = size(value)?,
             "--quiet-panes-per-cycle" => knobs.quiet_panes_per_cycle = size(value)?,
-            // The steward cadence (ae:16435-16448). `--sweep-secs 0` is a
+            // The orchestrator cadence (ae:16435-16448). `--sweep-secs 0` is a
             // MEANINGFUL value, not an omission: SC-1405b makes it "no sweep
             // branch at all", so bash passing a configured zero must reach the
             // daemon as a zero rather than fall back to the frozen 300.

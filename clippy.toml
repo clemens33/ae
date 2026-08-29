@@ -106,7 +106,7 @@ disallowed-methods = [
   # the two are not interchangeable and the difference is a security property:
   # `metadata` FOLLOWS a symlink, `symlink_metadata` classifies the link itself.
   # Every product use here is deliberately the non-following one (the teardown
-  # and archive path guards, and the watchdog's steward heartbeat), so the entry
+  # and archive path guards, and the watchdog's orchestrator heartbeat), so the entry
   # exists to keep each of them a line in a review rather than to discourage it.
   "std::fs::symlink_metadata",
   "std::fs::File::open",

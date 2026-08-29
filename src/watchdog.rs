@@ -744,12 +744,12 @@ impl QuietCycle {
 }
 
 // ---------------------------------------------------------------------------
-// The steward (meta-agent) sweep cadence — ae:16727-16899.
+// The orchestrator (meta-agent) sweep cadence — ae:16727-16899.
 //
-// A steward session is a long-running SERVICE, so "idle between sweeps" is
+// An orchestrator session is a long-running SERVICE, so "idle between sweeps" is
 // NORMAL rather than stale: its main agent leaves the stale-nudge watchdog
 // entirely (SC-935) for an explicit cadence — prompt a sweep every
-// `sweep_secs`, and guard liveness with the steward's OWN heartbeat file
+// `sweep_secs`, and guard liveness with the orchestrator's OWN heartbeat file
 // instead of with pane silence.
 //
 // Everything below is the DECISION half. No clock, no filesystem, no send: the
@@ -758,7 +758,7 @@ impl QuietCycle {
 // (`watchdog_daemon::account` / `record_nudge`).
 // ---------------------------------------------------------------------------
 
-/// The steward sweep tunables — ae:16435-16448, with the frozen defaults.
+/// The orchestrator sweep tunables — ae:16435-16448, with the frozen defaults.
 ///
 /// bash validates these out of `AE_WATCHDOG_SWEEP_*` (with the `AE_LOOP_*`
 /// legacy fallback, SC-1408a) before any arithmetic, and passes what it read;
@@ -790,7 +790,7 @@ impl SweepKnobs {
     /// Whether the sweep branch runs at all.
     ///
     /// SC-1405b: `0` is not "sweep immediately", it is "there is no sweep
-    /// branch" — the steward main falls back to the normal watchdog. bash
+    /// branch" — the orchestrator main falls back to the normal watchdog. bash
     /// spells it as the `((SWEEP_SECS > 0))` conjunct on the branch guard
     /// (ae:16738), so a zero never reaches any of the arithmetic below.
     #[must_use]
@@ -823,7 +823,7 @@ impl SweepKnobs {
 ///
 /// The heartbeat uses [`distance_secs`] instead, and the split is the point.
 /// Applying the ABSOLUTE difference here would make a backwards clock jump
-/// compute an enormous elapsed grace and raise a wedge alert against a steward
+/// compute an enormous elapsed grace and raise a wedge alert against an orchestrator
 /// that is sweeping perfectly well — a NEW false-wedge path, which is the exact
 /// failure the heartbeat's symmetry was chosen to avoid. Applying the CLAMP to
 /// the heartbeat would restore the indefinite-masking hole. Neither is a
@@ -888,12 +888,12 @@ fn back_date(now: SystemTime, secs: u64) -> SystemTime {
         .unwrap_or(UNIX_EPOCH)
 }
 
-/// What the steward's heartbeat file says about it — the third state is the
+/// What the orchestrator's heartbeat file says about it — the third state is the
 /// point.
 ///
-/// The steward rewrites `<session>/meta-agent-state.json` on every real sweep
+/// The orchestrator rewrites `<session>/meta-agent-state.json` on every real sweep
 /// (`contrib/aemonitor`'s default `--state` path), so a heartbeat that stops
-/// advancing while the watchdog keeps prompting is a steward that is LIVE but
+/// advancing while the watchdog keeps prompting is an orchestrator that is LIVE but
 /// NOT SWEEPING: a model stall, an upstream throttle, a wedge (SC-939b). The
 /// dead-pane and missing-pane checks cannot see that — the process is fine.
 ///
@@ -909,7 +909,7 @@ fn back_date(now: SystemTime, secs: u64) -> SystemTime {
 /// an `lstat` of a NON-SYMLINK REGULAR file: `[[ -f ]]` FOLLOWS symlinks, so
 /// bash accepts a heartbeat that points anywhere, and anything writable in the
 /// session directory could then be aimed at a file that some other process
-/// touches often — a wedged steward silenced by a link. `None` is every
+/// touches often — a wedged orchestrator silenced by a link. `None` is every
 /// untrusted reading, and `None` is [`Heartbeat::Untrusted`], never
 /// [`Heartbeat::Fresh`].
 ///
@@ -918,7 +918,7 @@ fn back_date(now: SystemTime, secs: u64) -> SystemTime {
 /// worth an alert yet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Heartbeat {
-    /// A trusted mtime inside the window — the steward is sweeping.
+    /// A trusted mtime inside the window — the orchestrator is sweeping.
     Fresh,
     /// A trusted mtime OUTSIDE the window, on either side: one that stopped
     /// advancing, or one stamped so far ahead of this clock that it cannot be
@@ -945,11 +945,11 @@ pub enum Heartbeat {
 /// * a NEAR-future mtime, inside the window, is **Fresh**. Deliberate skew
 ///   tolerance: a heartbeat can land on an NFS mount or a second host whose
 ///   clock leads ours by seconds, so every fresh write looks slightly future.
-///   Refusing those would false-wedge a perfectly healthy steward on every
+///   Refusing those would false-wedge a perfectly healthy orchestrator on every
 ///   sweep — worse than the hole it closes.
 /// * a FAR-future mtime, beyond the window, is **Stale**. bash reads it Fresh
 ///   forever, because its `now - hb` goes negative and a negative is below any
-///   window — so a timestamp set far ahead masks a wedged steward
+///   window — so a timestamp set far ahead masks a wedged orchestrator
 ///   INDEFINITELY. Symmetry closes that: the further out the stamp, the sooner
 ///   it stops counting as liveness.
 ///
@@ -990,15 +990,15 @@ pub fn heartbeat_offset(mtime: Option<SystemTime>, now: SystemTime) -> Option<He
     })
 }
 
-/// The roster slot the steward cadence belongs to. One spelling, here.
+/// The roster slot the orchestrator cadence belongs to. One spelling, here.
 pub const MAIN_SLOT: &str = "main";
 
 /// Whether this pane is the one the sweep cadence applies to — bash's
 /// `[[ "$META_AGENT" == "true" && "$agent" == "$META_MAIN_AGENT" ]]`
 /// (ae:16738), keyed by SLOT rather than by display name.
 ///
-/// SC-935: the cadence is the steward MAIN agent's alone. Workers and spawned
-/// agents in a steward session keep the normal watchdog — they are ordinary
+/// SC-935: the cadence is the orchestrator MAIN agent's alone. Workers and spawned
+/// agents in an orchestrator session keep the normal watchdog — they are ordinary
 /// agents that happen to share a session with a monitor.
 ///
 /// # Why the SLOT, and not the `alias:name` bash compares
@@ -1023,14 +1023,14 @@ pub fn is_sweep_target(meta_agent: bool, slot: &str) -> bool {
     meta_agent && slot == MAIN_SLOT
 }
 
-/// What the steward's row shows this cycle — ae:16755-16765.
+/// What the orchestrator's row shows this cycle — ae:16755-16765.
 ///
 /// bash derives the glyph from the SAME two conditions the alert branch judges,
 /// deliberately: the expressions are identical so the glyph can never disagree
 /// with the alert. Here they are one expression, computed once.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SweepVerdict {
-    /// A fresh heartbeat — the steward is sweeping.
+    /// A fresh heartbeat — the orchestrator is sweeping.
     MetaSweeping,
     /// Prompted past the window with no fresh heartbeat — live but not sweeping.
     MetaWedged,
@@ -1054,7 +1054,7 @@ impl SweepVerdict {
 /// Which "not sweeping" the wedge alert is reporting — ae:16780-16784.
 ///
 /// The two readings need different words because they send a human to different
-/// places: a heartbeat that STOPPED points at the steward's own loop, while one
+/// places: a heartbeat that STOPPED points at the orchestrator's own loop, while one
 /// that never existed points at the state file's path or its writer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WedgeDetail {
@@ -1168,7 +1168,7 @@ impl SweepAlert {
     }
 }
 
-/// Something the loop must DO for the steward this cycle.
+/// Something the loop must DO for the orchestrator this cycle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SweepEffect {
     /// Deliver one sweep prompt through the session's own `send` helper, then
@@ -1176,7 +1176,7 @@ pub enum SweepEffect {
     ///
     /// Delivery is CHECKED, never fire-and-forget (SC-936): `send` exits
     /// non-zero when it REFUSES a dead shell or ABANDONS a busy target, and a
-    /// swallowed failure advanced the cadence while the steward was never
+    /// swallowed failure advanced the cadence while the orchestrator was never
     /// prompted (the measured 94-minute blind spot at ae:16812-16818).
     FireSweepNudge,
     /// Raise or clear one alert.
@@ -1195,7 +1195,7 @@ pub enum SweepEffect {
     ReconcileWedge,
 }
 
-/// What the steward pane carries from cycle to cycle — bash's
+/// What the orchestrator pane carries from cycle to cycle — bash's
 /// `last_sweep_nudge` / `first_sweep_nudge` / `sweep_nudge_fails` /
 /// `meta_wedge_alerted` / `sweep_unreachable_alerted` / `meta_reconciled`
 /// (ae:16409-16430), gathered into one value.
@@ -1215,7 +1215,7 @@ pub struct SweepState {
     ///
     /// The wedge window ticks from a DELIVERED prompt, never from an attempt:
     /// starting it on an undelivered one would alert "not sweeping" against a
-    /// steward that was never actually reached.
+    /// orchestrator that was never actually reached.
     pub first_delivered: Option<SystemTime>,
     /// Consecutive undelivered prompts.
     pub fails: u32,
@@ -1227,7 +1227,7 @@ pub struct SweepState {
     pub reconciled: bool,
 }
 
-/// What the cycle observed about the steward, after the heartbeat was read.
+/// What the cycle observed about the orchestrator, after the heartbeat was read.
 ///
 /// Build it with [`SweepObservation::new`]: the state and the age must come
 /// from ONE reading, and a constructor is the only way to make describing two
@@ -1270,7 +1270,7 @@ pub struct SweepAccounting {
     pub verdict: SweepVerdict,
 }
 
-/// Account for the steward main in one cycle — ae:16738-16897, and the only
+/// Account for the orchestrator main in one cycle — ae:16738-16897, and the only
 /// place any of it is decided.
 ///
 /// `None` is SC-1405b: with `sweep_secs == 0` there is NO sweep branch, and the
@@ -1279,7 +1279,7 @@ pub struct SweepAccounting {
 /// would suppress the stale watchdog too, which is the opposite of the row.
 ///
 /// The caller gates on [`is_sweep_target`] first (SC-935); this function
-/// assumes the pane is the steward main.
+/// assumes the pane is the orchestrator main.
 ///
 /// The order is bash's:
 ///
@@ -1385,7 +1385,7 @@ pub fn sweep_step(
 ///
 /// `send`'s status means "delivered AND logged" — its last command is the event
 /// append — so an event-write failure after a successful paste reports failure
-/// and this books a retry for a prompt the steward already got. That is the
+/// and this books a retry for a prompt the orchestrator already got. That is the
 /// chosen trade: a duplicate sweep costs one redundant sweep, a dropped one
 /// costs a blind spot. Do not "fix" it by reading a non-zero status as
 /// delivered.
@@ -1410,7 +1410,7 @@ pub fn record_sweep(
         // `alert-cleared` is untyped, so emitting one while the wedge alert is
         // still latched would erase a live "not sweeping" from `ae list` while
         // `wedge_alerted` stayed set — it could then never re-fire, and a
-        // wedged steward would go invisible. The wedge owns its own clear.
+        // wedged orchestrator would go invisible. The wedge owns its own clear.
         if state.wedge_alerted {
             return Vec::new();
         }
@@ -1439,7 +1439,7 @@ pub fn record_sweep(
         return Vec::new();
     }
 
-    // SC-938/SC-1407b: bounded. A persistently unreachable steward degrades to
+    // SC-938/SC-1407b: bounded. A persistently unreachable orchestrator degrades to
     // the normal cadence and escalates ONCE rather than retry-spamming.
     state.last_sweep = Some(settled_now);
     if state.unreachable_alerted {
@@ -2275,7 +2275,7 @@ tail line
         );
     }
 
-    // -- the steward sweep cadence (SC-935..SC-939b, SC-1405b, SC-1406b) ------
+    // -- the orchestrator sweep cadence (SC-935..SC-939b, SC-1405b, SC-1406b) ------
 
     /// A fixed clock. Far from the epoch so a back-dated cadence is a real
     /// instant rather than a saturation artefact.
@@ -2342,7 +2342,7 @@ tail line
         // FUTURE SIDE — the divergence, and it flips at the SAME boundary.
         // Inside the window a leading clock is tolerated, because an NFS mount
         // or a second host makes every fresh write look slightly future and
-        // refusing those would false-wedge a healthy steward on every sweep.
+        // refusing those would false-wedge a healthy orchestrator on every sweep.
         assert_eq!(
             classify_heartbeat(Some(at(900)), at(300), 660),
             Heartbeat::Fresh,
@@ -2356,7 +2356,7 @@ tail line
         // Beyond it, it stops counting as liveness. THIS IS THE CLOSED HOLE:
         // bash reads any future stamp Fresh forever (its `now - hb` goes
         // negative and a negative is below any window), so a timestamp set far
-        // ahead masks a wedged steward INDEFINITELY.
+        // ahead masks a wedged orchestrator INDEFINITELY.
         assert_eq!(
             classify_heartbeat(Some(at(961)), at(300), 660),
             Heartbeat::Stale,
@@ -2430,7 +2430,7 @@ tail line
         // The SPLIT, pinned. `first_delivered` and `last_sweep` are values THIS
         // daemon wrote; a future one means our own clock went backwards. Taking
         // the absolute distance there would compute an enormous elapsed grace
-        // and raise a wedge against a steward that is sweeping perfectly well —
+        // and raise a wedge against an orchestrator that is sweeping perfectly well —
         // a NEW false-wedge path, which is the failure the heartbeat symmetry
         // exists to avoid. bash clamps both, and so does this.
         let k = knobs();
@@ -2459,8 +2459,8 @@ tail line
     }
 
     #[test]
-    fn only_the_steward_main_slot_gets_the_cadence() {
-        // SC-935: workers and spawned agents in a steward session keep the
+    fn only_the_orchestrator_main_slot_gets_the_cadence() {
+        // SC-935: workers and spawned agents in an orchestrator session keep the
         // normal watchdog. Keyed by SLOT, which cannot alias — `spawn`
         // uniquifies only the numeric slot, so two registrations can share one
         // `alias:name`, and a reference-keyed gate would hand the cadence to
@@ -2477,12 +2477,12 @@ tail line
         ] {
             assert!(
                 !is_sweep_target(true, other),
-                "{other:?} is not the steward main slot"
+                "{other:?} is not the orchestrator main slot"
             );
         }
         assert!(
             !is_sweep_target(false, "main"),
-            "a session that is not the steward has no sweep branch"
+            "a session that is not the orchestrator has no sweep branch"
         );
         assert!(
             !is_sweep_target(true, ""),

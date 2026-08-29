@@ -33,7 +33,7 @@ listed in AGENTS.md and has not changed.
   manager, no interpreter, no service to keep alive.
 - **Your repo stays clean.** Session state lives in `~/.ae/sessions/`, archives in
   `~/.ae/archive/`. Working directories are never touched.
-- **Optional stays optional.** Companions (telegram, steward, monitor) may declare their
+- **Optional stays optional.** Companions (telegram, orchestrator, monitor) may declare their
   own dependencies; core ae keeps working on a machine without them.
 - **Coordination is a protocol, not a framework.** Agents call small CLI helpers they
   already know how to use. No SDK, no plugin system, no custom wire format.

@@ -105,7 +105,7 @@ Launch/attach/resume decision (`ae [name]`, `--local/--copy/--worktree`, `--from
 `end`/`rm` (`--purge-history`), `stop`, `stop all`, `rename`, `transfer`, `compact`,
 `archive preview` (two words), `_recover-pending` (internal, helper-invoked — not
 public surface), `doctor [--refresh]`, `watchdog …` (helper alias `loop`),
-`telegram setup|start|stop|status`, `steward --init|--attach|--help|--detach` (flags,
+`telegram setup|start|stop|status`, `orchestrator --init|--attach|--help|--detach` (flags,
 not subcommands; deprecated alias `hub`), `help`/`version`, exit codes. (Census:
 `cmd_*` functions + dispatcher arms at 72c7293.)
 
@@ -171,7 +171,7 @@ existence re-check safety invariant; the rest of this exact set bucket 2;
 conflict=none throughout). Empirical remains pending C-cluster observation; this MARK
 does not ratify IS.**
 
-**SC-013 — `steward --help`/`--detach` flag surface.** `authority=code-observation`.
+**SC-013 — `orchestrator --help`/`--detach` flag surface.** `authority=code-observation`.
 Empirical: pending probe. Conflict: pending seat closure (UNCLASSIFIED).
 
 **SC-016a — `ae status [name]` signature.** Bucket 2. Authority: commands.md:134.
@@ -840,10 +840,10 @@ S1MAP: telegram setup -> SC-969 SC-970
 S1MAP: telegram start -> SC-953 SC-956 SC-963 SC-971
 S1MAP: telegram stop -> SC-954 SC-957 SC-971
 S1MAP: telegram status -> SC-955
-S1MAP: steward --init -> SC-932
-S1MAP: steward --attach -> SC-931
-S1MAP: steward --help -> SC-013
-S1MAP: steward --detach -> SC-013
+S1MAP: orchestrator --init -> SC-932
+S1MAP: orchestrator --attach -> SC-931
+S1MAP: orchestrator --help -> SC-013
+S1MAP: orchestrator --detach -> SC-013
 S1MAP: hub -> SC-939f
 S1MAP: help -> SC-012
 S1MAP: version -> SC-014
@@ -1133,7 +1133,7 @@ Authority: config.md copy modes. Empirical: pending. Conflict: none.
 `~/.ae/sessions/<name>/` layout (`meta`, `events.jsonl`, `memo.tsv`, request records,
 locks, `workspace.md`, generated helpers), `~/.ae/archive/<uuid>/` (inert; #48 format +
 digests), claims (#71 — first Rust-native), `launch.<slot>.sh` + `.started` marker,
-hub/steward dirs (`AE_HUB_DIR`, `AE_STEWARD_DIR`).
+hub/orchestrator dirs (`AE_HUB_DIR`, `AE_ORCHESTRATOR_DIR`).
 
 <!-- rows: SC-4xx -->
 
@@ -1447,7 +1447,7 @@ RE-MARKED 2026-08-25 — gpt56sol:colead ruling, drafted opus5:reason2.**
 exceptions.** Bucket 2 — the DEFAULT derivation covers config, `sessions/`,
 `archive/`, worktrees, daemon dirs; the exceptions are explicit overrides only:
 `CONFIG_FILE` may point outside `AE_HOME`, project `.ae/config` shadows key-by-key
-(SC-304), and `AE_STEWARD_DIR`/`AE_HUB_DIR` may relocate their dirs (frozen ae:56-64,
+(SC-304), and `AE_ORCHESTRATOR_DIR`/`AE_HUB_DIR` may relocate their dirs (frozen ae:56-64,
 ae:10365-10370 — gate correction: not ALL roots). Authority: AGENTS.md +
 architecture.md + config.md. Empirical: frozen source cites. Conflict: none.
 
@@ -2716,7 +2716,7 @@ UNCLASSIFIED.
 Watchdog (nudge rules, quiet-state honoring, footprint exclusion; bash impl vs
 `AE_WATCHDOG_IMPL=uv` aewatch), telegram bridge (chat events, reply routing, markdown/jq
 injection boundaries; bash daemon vs aewatch runtime handoff via marker + fresh
-heartbeat), `ae steward` + ae-monitor window (bash product surfaces) vs contrib
+heartbeat), `ae orchestrator` + ae-monitor window (bash product surfaces) vs contrib
 templates/sidecars.
 
 <!-- rows: SC-9xx — claims collected by gpt56luna:s10source (colead's evidence worker,
@@ -2737,7 +2737,7 @@ durable events/log, never pane-peeking. Authority: DR-002 (both seats).
 Conflict: DR-002.
 
 Rows SC-902+ per the ratified schema (gate: the earlier flat table violated it).
-Sources: colead's fine-grain proposals (memo topics s10-watchdog/-steward/-telegram/
+Sources: colead's fine-grain proposals (memo topics s10-watchdog/-orchestrator/-telegram/
 -defects, frozen citations therein) + lead bridge/cross-cutting splits. Numeric
 tunables/defaults/malformed values live in S15; helper-publication atomicity in S11;
 core-dependency floor deduped to SC-940 + S12. **classified_by: pending colead's
@@ -2826,21 +2826,21 @@ Watchdog + monitor (authority: watchdog.md / monitor.md @72c7293, cited per memo
   serving; the restart emits durable before/after/failure facts. Implementation may
   re-exec. (The bash keeps-loaded-body behavior retires with the topology.)
 
-Steward (authority: commands.md/telegram.md @72c7293, cited per memo):
-- **SC-930** b2 — bare `ae steward` ensures the detached steward, never attaches.
-  Authority: commands.md:219-249. Empirical: docs/migration/evidence/locks-census-2.md § Steward — Locks and acquisition order. Conflict: none.
+Orchestrator (authority: commands.md/telegram.md @72c7293, cited per memo):
+- **SC-930** b2 — bare `ae orchestrator` ensures the detached orchestrator, never attaches.
+  Authority: commands.md:219-249. Empirical: docs/migration/evidence/locks-census-2.md § Orchestrator — Locks and acquisition order. Conflict: none.
 - **SC-931** b2 — `--attach` is the explicit attach/switch surface.
-  Authority: commands.md:233-249. Empirical: docs/migration/evidence/locks-census-2.md § Steward — Locks and acquisition order. Conflict: none.
+  Authority: commands.md:233-249. Empirical: docs/migration/evidence/locks-census-2.md § Orchestrator — Locks and acquisition order. Conflict: none.
 - **SC-932** b1 — `--init` scaffolds and NEVER overwrites operator files.
-  Authority: commands.md:233-238,251-256. Empirical: docs/migration/evidence/locks-census-2.md § Steward — Write sequence/Crash residue. Conflict: none.
-- **SC-933** b1 — steward launch isolates its config and neutralizes project-local
-  Authority: commands.md:240-246. Empirical: docs/migration/evidence/locks-census-2.md § Steward — Locks and acquisition order. Conflict: none.
+  Authority: commands.md:233-238,251-256. Empirical: docs/migration/evidence/locks-census-2.md § Orchestrator — Write sequence/Crash residue. Conflict: none.
+- **SC-933** b1 — orchestrator launch isolates its config and neutralizes project-local
+  Authority: commands.md:240-246. Empirical: docs/migration/evidence/locks-census-2.md § Orchestrator — Locks and acquisition order. Conflict: none.
   config.
-- **SC-934** b1 — steward authority is monitor/relay/suggest ONLY: never ends, stops,
-  Authority: commands.md:221-231. Empirical: pending-probe(steward authority boundary). Conflict: none.
+- **SC-934** b1 — orchestrator authority is monitor/relay/suggest ONLY: never ends, stops,
+  Authority: commands.md:221-231. Empirical: pending-probe(orchestrator authority boundary). Conflict: none.
   edits, or dispatches into another session without human authorization.
-- **SC-935** b1 — only the steward main agent gets sweep cadence, no stale escalation;
-  Authority: commands.md:187-195. Empirical: pending-probe(steward-only sweep cadence and worker watchdog). Conflict: none.
+- **SC-935** b1 — only the orchestrator main agent gets sweep cadence, no stale escalation;
+  Authority: commands.md:187-195. Empirical: pending-probe(orchestrator-only sweep cadence and worker watchdog). Conflict: none.
   its workers keep normal watchdog behavior.
 - **SC-936** b1 — a sweep nudge is delivery-checked; refusal is logged, never counted
   Authority: commands.md:197-200. Empirical: pending-probe(sweep delivery refusal accounting). Conflict: none.
@@ -2853,18 +2853,18 @@ Steward (authority: commands.md/telegram.md @72c7293, cited per memo):
 - **SC-939a** b1 — sweep delivery is at-least-once: event-write failure after paste may
   Authority: commands.md:203-206. Empirical: pending-probe(at-least-once sweep event write). Conflict: none.
   duplicate, never silently drop.
-- **SC-939b** b1 — steward liveness = dead-pane checks AND a live-but-not-sweeping
-  Authority: commands.md:208-215. Empirical: docs/migration/evidence/locks-census-2.md § Steward — Write sequence (aemonitor/heartbeat read). Conflict: none.
+- **SC-939b** b1 — orchestrator liveness = dead-pane checks AND a live-but-not-sweeping
+  Authority: commands.md:208-215. Empirical: docs/migration/evidence/locks-census-2.md § Orchestrator — Write sequence (aemonitor/heartbeat read). Conflict: none.
   heartbeat (~2x cadence); stale alerts once, recovery clears.
 - **SC-939c** b2 — sweep nudges are outside the default Telegram include.
-  Authority: commands.md:215-217 + telegram.md:138-140. Empirical: pending-probe(steward sweep Telegram include exclusion). Conflict: none.
-- **SC-939d** b2 — plain Telegram text defaults to the running steward absent a sticky
-  Authority: telegram.md:69-77,110-116. Empirical: pending-probe(plain Telegram text steward default routing). Conflict: none.
-  override; no steward yields start guidance.
-- **SC-939e** b2 — `/use` overrides that default; `/use clear` restores steward routing.
+  Authority: commands.md:215-217 + telegram.md:138-140. Empirical: pending-probe(orchestrator sweep Telegram include exclusion). Conflict: none.
+- **SC-939d** b2 — plain Telegram text defaults to the running orchestrator absent a sticky
+  Authority: telegram.md:69-77,110-116. Empirical: pending-probe(plain Telegram text orchestrator default routing). Conflict: none.
+  override; no orchestrator yields start guidance.
+- **SC-939e** b2 — `/use` overrides that default; `/use clear` restores orchestrator routing.
   Authority: telegram.md:73-77,110-116. Empirical: docs/migration/evidence/locks-census-3-aewatch.md § Audited addenda — I3 shared Telegram store caller semantics. Conflict: none.
-- **SC-939f** b2 — deprecated `hub` stays accepted; canonical name is steward (#52
-  Authority: commands.md:264-272 + #52 policy ruling. Empirical: docs/migration/evidence/locks-census-2.md § Steward — Locks and acquisition order (steward/hub trampoline). Conflict: none.
+- **SC-939f** b2 — deprecated `hub` stays accepted; canonical name is orchestrator (#52
+  Authority: commands.md:264-272 + #52 policy ruling. Empirical: docs/migration/evidence/locks-census-2.md § Orchestrator — Locks and acquisition order (orchestrator/hub trampoline). Conflict: none.
   policy ruling).
 
 Telegram (authority: telegram.md @72c7293, cited per memo):
@@ -2886,7 +2886,7 @@ Telegram (authority: telegram.md @72c7293, cited per memo):
   silently drops.
 - **SC-944c** b1 — inbound trust predicate: private chat only; failure silently drops.
   Authority: UNRESOLVED(memo citation is only the unqualified line range 59-65). Empirical: pending-probe(private-chat trust predicate). Conflict: none.
-- **SC-945** b2 — routing precedence: command > reply > compact > override/steward.
+- **SC-945** b2 — routing precedence: command > reply > compact > override/orchestrator.
   Authority: UNRESOLVED(memo citation is only the unqualified line range 67-77). Empirical: pending-probe(inbound routing precedence). Conflict: none.
 - **SC-946** b1 — every inbound route passes the same session/agent revalidation.
   Authority: UNRESOLVED(memo citation is only the unqualified line references 69,77). Empirical: pending-probe(shared session/agent revalidation). Conflict: none.
@@ -3375,7 +3375,7 @@ cut showing no session). Conflict: none.
 ### S15 — Environment controls (census: `AE_*` at 72c7293)
 
 `AE_HOME`, `CONFIG_FILE`/`AE_LOCAL_CONFIG`, `AE_TMUX_SERVER`, `AE_WATCHDOG_IMPL`,
-`AE_NO_AUTOSTART`, `AE_END_SERVER`, `AE_HUB_DIR`, `AE_STEWARD_DIR`, `AE_EVENTS_KEEP`,
+`AE_NO_AUTOSTART`, `AE_END_SERVER`, `AE_HUB_DIR`, `AE_ORCHESTRATOR_DIR`, `AE_EVENTS_KEEP`,
 `AE_SEND_DEFER_SEC`, `AE_ATTN_REQUEST_SECS`, `AE_LIST_ACTIVE_SECS`,
 `AE_COMPACT_HANDOVER_SECS`, `AE_WATCHDOG_*` tunables, `AE_LOOP_*` tunables,
 `AE_TELEGRAM_*` tunables, `AE_SENDER_OVERRIDE`, launch-token/slot vars
@@ -3470,7 +3470,7 @@ authority).
   Authority: code-observation. Empirical: pending probe. Conflict: pending seat closure (UNCLASSIFIED).
 **SC-1410f — `AE_HUB_DIR`.**
   Authority: code-observation. Empirical: pending probe. Conflict: pending seat closure (UNCLASSIFIED).
-**SC-1410g — `AE_STEWARD_DIR`.**
+**SC-1410g — `AE_ORCHESTRATOR_DIR`.**
   Authority: code-observation. Empirical: pending probe. Conflict: pending seat closure (UNCLASSIFIED).
 **SC-1410h — `AE_EVENTS_KEEP`.**
   Authority: code-observation. Empirical: pending probe. Conflict: pending seat closure (UNCLASSIFIED).

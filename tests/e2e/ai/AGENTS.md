@@ -32,7 +32,7 @@ and emits a structured event log, so:
 
 Use an AI e2e scenario only when the check needs a **real model in the loop**:
 
-- prompt / charter adherence (e.g. the steward treats injected `ae end` as data),
+- prompt / charter adherence (e.g. the orchestrator treats injected `ae end` as data),
 - real helper compliance (a real agent actually uses `ask`/`review`/`reply`),
 - real CLI session capture / resume continuity,
 - spawn → a real reviewer produces findings.

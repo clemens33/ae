@@ -22,7 +22,7 @@ from harness import AW, MultiTickEnv
 _E = 1783234800
 
 
-def _contracts_with_tick(tick_extra, sessions=("work", "steward")):
+def _contracts_with_tick(tick_extra, sessions=("work", "orchestrator")):
     """A minimal valid contracts object with one fixture (declaring `sessions`) whose
     single tick carries the given input keys (on top of a numeric epoch)."""
     return {
@@ -37,7 +37,7 @@ def _contracts_with_tick(tick_extra, sessions=("work", "steward")):
 
 
 class TickSchemaValidationTest(unittest.TestCase):
-    def _tick_errs(self, tick_extra, sessions=("work", "steward")):
+    def _tick_errs(self, tick_extra, sessions=("work", "orchestrator")):
         # Only the tick-input errors — filter out the unrelated required-fixture-family
         # completeness errors from this minimal single-fixture object.
         return [e for e in AW.validate_contracts(_contracts_with_tick(tick_extra, sessions)) if "ticks[0]" in e]
@@ -88,7 +88,7 @@ class TickSchemaValidationTest(unittest.TestCase):
     def test_well_formed_per_session_inputs_accepted(self):
         errs = self._tick_errs({
             "events": [{"session": "work", "event": {"actor": "claude:lead", "action": "send"}}],
-            "heartbeats": {"steward": {"age": 10}},
+            "heartbeats": {"orchestrator": {"age": 10}},
             "recover": {"work": [{"kind": "ok", "slot": "main", "agent": "codex:lead", "tool": "codex", "captured": "x"}]},
         })
         self.assertEqual(errs, [], f"well-formed per-session tick inputs must validate: {errs}")

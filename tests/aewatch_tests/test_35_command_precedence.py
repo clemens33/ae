@@ -3,11 +3,11 @@
 The user-visible routing chain that composes on the resolver (s11a) + delivery (s11b).
 Precedence — the ORDERING is behavior (ae:3485-3517 + the poll-level reply decision
 ae:3792-3797):
-    slash command  >  non-slash reply  >  @session:agent  >  /use sticky  >  steward default
+    slash command  >  non-slash reply  >  @session:agent  >  /use sticky  >  orchestrator default
 A /help / /list / unknown-command / help text are the fallbacks.
 
   CurrentTarget (ae:3618 TG_TARGET_FILE): the sticky /use target "<session>\\t<agent>".
-  find_steward (ae:3717-3746): running meta-agent for auto-default — 'steward' > 'hub' >
+  find_orchestrator (ae:3717-3746): running meta-agent for auto-default — 'orchestrator' > 'hub' >
     any running meta-agent.
   route_message: decide the target by precedence, deliver via tg_dispatch (s11b), and
     send every user-facing reply through the injected `reply` seam (the outbound
@@ -102,29 +102,29 @@ class CurrentTargetTest(unittest.TestCase):
         self.assertEqual(mode, 0o600, f"the routing target must be owner-only, got {oct(mode)}")
 
 
-class StewardTest(unittest.TestCase):
+class OrchestratorTest(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         self.fx = Fixture(self._tmp.name)
 
-    def test_prefers_steward_then_hub_then_any(self):
-        for name in ("hub", "steward", "other"):
+    def test_prefers_orchestrator_then_hub_then_any(self):
+        for name in ("hub", "orchestrator", "other"):
             self.fx.meta(name, meta_agent="true")
-        sessions = [_sess("hub"), _sess("steward"), _sess("other")]
-        self.assertEqual(AW.find_steward(sessions, self.fx.ae_home)[0], "steward")
+        sessions = [_sess("hub"), _sess("orchestrator"), _sess("other")]
+        self.assertEqual(AW.find_orchestrator(sessions, self.fx.ae_home)[0], "orchestrator")
 
-    def test_hub_when_no_steward(self):
+    def test_hub_when_no_orchestrator(self):
         self.fx.meta("hub", meta_agent="true")
         self.fx.meta("plain")  # not a meta-agent
-        self.assertEqual(AW.find_steward([_sess("hub"), _sess("plain")], self.fx.ae_home)[0], "hub")
+        self.assertEqual(AW.find_orchestrator([_sess("hub"), _sess("plain")], self.fx.ae_home)[0], "hub")
 
     def test_ignores_non_meta_agent_and_stopped(self):
         self.fx.meta("work", meta_agent="true")
-        # running but NOT meta_agent, and a stopped meta_agent -> no steward
-        self.assertIsNone(AW.find_steward([_sess("plain")], self.fx.ae_home))
+        # running but NOT meta_agent, and a stopped meta_agent -> no orchestrator
+        self.assertIsNone(AW.find_orchestrator([_sess("plain")], self.fx.ae_home))
         self.fx.meta("dead", meta_agent="true")
-        self.assertIsNone(AW.find_steward([_sess("dead", running=False)], self.fx.ae_home))
+        self.assertIsNone(AW.find_orchestrator([_sess("dead", running=False)], self.fx.ae_home))
 
 
 class PrecedenceTest(unittest.TestCase):
@@ -133,9 +133,9 @@ class PrecedenceTest(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
         self.fx = Fixture(self._tmp.name)
         self.fx.helper("work")
-        self.fx.helper("steward")
-        self.fx.meta("steward", meta_agent="true")
-        self.sessions = [_sess("work"), _sess("steward")]
+        self.fx.helper("orchestrator")
+        self.fx.meta("orchestrator", meta_agent="true")
+        self.sessions = [_sess("work"), _sess("orchestrator")]
 
     def test_slash_command_beats_reply(self):
         # A /list sent AS a reply is still a command (slash > reply).
@@ -151,20 +151,20 @@ class PrecedenceTest(unittest.TestCase):
         self.fx.route("@work:codex:lead do the thing", sessions=self.sessions)
         self.assertEqual(self.fx.call()["argv"], ["codex:lead", "do the thing"])
 
-    def test_bare_uses_sticky_over_steward(self):
+    def test_bare_uses_sticky_over_orchestrator(self):
         self.fx.current_target.save("work", "codex:lead")
         self.fx.route("hello", sessions=self.sessions)
         call = self.fx.call()
         self.assertEqual(call["argv"], ["codex:lead", "hello"])
         self.assertEqual(call["sender"], "telegram:55")
 
-    def test_bare_defaults_to_steward_when_no_sticky(self):
-        self.fx.route("hello steward", sessions=self.sessions)
-        # delivered to the steward session's main agent
-        self.assertEqual(self.fx.call()["argv"], ["codex:lead", "hello steward"])
+    def test_bare_defaults_to_orchestrator_when_no_sticky(self):
+        self.fx.route("hello orchestrator", sessions=self.sessions)
+        # delivered to the orchestrator session's main agent
+        self.assertEqual(self.fx.call()["argv"], ["codex:lead", "hello orchestrator"])
 
-    def test_bare_no_sticky_no_steward_guides(self):
-        self.fx.route("hello", sessions=[_sess("work")])  # no steward, no sticky
+    def test_bare_no_sticky_no_orchestrator_guides(self):
+        self.fx.route("hello", sessions=[_sess("work")])  # no orchestrator, no sticky
         self.assertIsNone(self.fx.call())
         self.assertTrue(self.fx.replies, "the user is guided, not silently dropped")
 
@@ -209,13 +209,13 @@ class ReplyFailSafeTest(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
         self.fx = Fixture(self._tmp.name)
         self.fx.helper("work", "send")
-        self.fx.helper("steward", "send")
-        self.fx.meta("steward", meta_agent="true")
-        self.sessions = [_sess("work"), _sess("steward")]
+        self.fx.helper("orchestrator", "send")
+        self.fx.meta("orchestrator", meta_agent="true")
+        self.sessions = [_sess("work"), _sess("orchestrator")]
 
     def test_malformed_reply_header_fails_safe_no_fallback(self):
         # A forged/broken reply (unparseable header) must GUIDE, not blind-dispatch AND
-        # not fall back to a sticky / steward target (codex — security-relevant). Cover
+        # not fall back to a sticky / orchestrator target (codex — security-relevant). Cover
         # BOTH parse guards: no bracket, and a bracketed-but-too-few-tokens / empty header.
         self.fx.current_target.save("work", "codex:lead")  # a sticky exists — must NOT be used
         for bad in ("this is not a [header]", "[work]", "[work] onlyaction", "[] send actor"):
@@ -237,8 +237,8 @@ class PrecedenceContractAnchorTest(unittest.TestCase):
                 {"rule": "slash beats reply", "source": ["ae:3485-3517", "ae:3792-3797"]},
                 {"rule": "non-slash reply routes to the forwarded agent", "source": "ae:3591-3600"},
                 {"rule": "@session:agent direct", "source": "ae:3628-3641"},
-                {"rule": "/use sticky over steward default", "source": "ae:3648-3711"},
-                {"rule": "steward auto-default", "source": "ae:3717-3746"},
+                {"rule": "/use sticky over orchestrator default", "source": "ae:3648-3711"},
+                {"rule": "orchestrator auto-default", "source": "ae:3717-3746"},
             ],
         }
         self.assertEqual(AW.validate_bridge_fixture(contract), [], "the precedence contract must be fully anchored")

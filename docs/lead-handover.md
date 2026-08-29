@@ -106,7 +106,7 @@ knowledge: what to trust, what to distrust, where to look first.
 | Watchdog behaving oddly | The session's `events.jsonl`; the watchdog pane log; with `=uv`, the aewatch daemon log under `$AE_HOME/aewatch/` |
 | Telegram double/missing sends | `ae telegram status` (backend line); `$AE_HOME/aewatch/bridge-owner` + heartbeat age vs the 90s budget; shared `$AE_HOME/telegram/` offsets |
 | Requests/replies bouncing | Meta `agent.*` entries vs live `@ae_agent`/`@ae_slot` pane options; post-fix, slots are the routing truth |
-| Agent seems dead/wrong-model | Read the TUI footer (model + effort) against the config alias — harnesses fall back silently under credit/usage limits; the steward's eyeball is the current detector until watchdog-v2 lands |
+| Agent seems dead/wrong-model | Read the TUI footer (model + effort) against the config alias — harnesses fall back silently under credit/usage limits; the orchestrator's eyeball is the current detector until watchdog-v2 lands |
 | Suite red only in full runs | Contention (see fragile list); serial rerun on a quiet box |
 | `ae list --json` truncated / odd | The `set -e` hazards: query-function exit codes, the guarded emitter region in `cmd_list` |
 | Agent seems idle but is demonstrably working / endless "needs attention" | `command grep '"actor":"<agent>"' events.jsonl \| tail -1` — `_last_event_age` keys on `actor`; misattribution freezes the clock, it does not slow it |
@@ -162,7 +162,7 @@ knowledge: what to trust, what to distrust, where to look first.
   declared-vs-completed gap as "reconcile the tree": AIASSIST-115's lead declared the
   wind-down (its own `events.jsonl` records done/"fully closed" on 2026-07-18) but never
   ran `ae end` — the tmux session died while the session dir *and* worktree were left
-  behind, and every `--running`-scoped sensor (the default `ae list`, the steward's
+  behind, and every `--running`-scoped sensor (the default `ae list`, the orchestrator's
   charter) was structurally blind to it, so 115 sat half-dead for three days. Marking
   `done` closes the *report*; `ae end` closes the *session* (commits/pushes if git,
   removes the dir + worktree). Until the second runs, the work is an orphan. `ae doctor`

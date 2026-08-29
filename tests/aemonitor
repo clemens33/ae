@@ -179,7 +179,7 @@ assert_eq "--dry-run leaves state unchanged" "$before" "$(cat "$WORK/st.json")"
 
 # ── heartbeat: EVERY real sweep refreshes the state file ─────────────
 # The watchdog's live-but-not-sweeping guard (ae: hb_file=…/meta-agent-state.json)
-# treats this file's mtime as the steward's heartbeat. So a sweep that changes
+# treats this file's mtime as the orchestrator's heartbeat. So a sweep that changes
 # NOTHING must still refresh it — otherwise a quiet fleet stales the heartbeat and
 # the watchdog false-alarms "meta-agent not sweeping" at SWEEP_SECS*2+60.
 # These pin the contract the watchdog depends on; they pass today (verified

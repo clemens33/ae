@@ -1156,9 +1156,9 @@ def _session_main_ref(session) -> str:
     return ""
 
 
-def find_steward(sessions, ae_home):
-    """The running steward (meta-agent) for auto-default routing (ae:3717-3746): a running
-    session with meta_agent=true in its meta. Prefer canonical 'steward', then legacy
+def find_orchestrator(sessions, ae_home):
+    """The running orchestrator (meta-agent) for auto-default routing (ae:3717-3746): a running
+    session with meta_agent=true in its meta. Prefer canonical 'orchestrator', then legacy
     'hub', then any other running meta-agent. Returns (session_name, main_agent_ref) or None."""
     hub = other = None
     for s in sessions:
@@ -1169,7 +1169,7 @@ def find_steward(sessions, ae_home):
         main = _session_main_ref(s)
         if not main:
             continue
-        if s.name == "steward":
+        if s.name == "orchestrator":
             return (s.name, main)
         if s.name == "hub":
             if hub is None:
@@ -1181,10 +1181,10 @@ def find_steward(sessions, ae_home):
 
 _HELP_TEXT = (
     "ae telegram:\n"
-    "• Plain text → your steward (auto-default; just talk to it).\n"
+    "• Plain text → your orchestrator (auto-default; just talk to it).\n"
     "• Reply to any forwarded message → answers that agent (no command).\n"
     "• @session:agent <msg> → send to an agent directly.\n"
-    "• /use <session> <agent> → redirect plain messages elsewhere; /use clear → back to the steward.\n"
+    "• /use <session> <agent> → redirect plain messages elsewhere; /use clear → back to the orchestrator.\n"
     "/list\n"
     "/session <name|id-prefix> send|ask <agent> <msg>"
 )
@@ -1271,19 +1271,19 @@ def _route_use(from_id, args, *, sessions, ae_home, current_target, reply):
     if not args:
         cur = current_target.load()
         if cur:
-            reply(f"Current target: {cur[0]} → {cur[1]}  (plain messages go here; /use clear to fall back to the steward)")
+            reply(f"Current target: {cur[0]} → {cur[1]}  (plain messages go here; /use clear to fall back to the orchestrator)")
             return
-        st = find_steward(sessions, ae_home)
+        st = find_orchestrator(sessions, ae_home)
         if st:
-            reply(f"No override set — plain messages go to the steward ({st[0]} → {st[1]}). /use <session> <agent> to redirect.")
+            reply(f"No override set — plain messages go to the orchestrator ({st[0]} → {st[1]}). /use <session> <agent> to redirect.")
         else:
-            reply("No override set and no steward running. Start one with 'ae steward', or /use <session> <agent>.")
+            reply("No override set and no orchestrator running. Start one with 'ae orchestrator', or /use <session> <agent>.")
         return
     parts = args.split()
     ref = parts[0]
     if ref in ("clear", "off", "none"):
         current_target.clear()
-        reply("Override cleared — plain messages go to the steward again.")
+        reply("Override cleared — plain messages go to the orchestrator again.")
         return
     if len(parts) < 2:
         reply("Usage: /use <session> <agent>   (or /use clear)")
@@ -1300,7 +1300,7 @@ def _route_use(from_id, args, *, sessions, ae_home, current_target, reply):
               else f"No agent '{agent}' in session {sr.value.name}")
         return
     if current_target.save(sr.value.name, ar.value):
-        reply(f"Override set: {sr.value.name} → {ar.value}. Plain messages go here until /use clear (then back to the steward).")
+        reply(f"Override set: {sr.value.name} → {ar.value}. Plain messages go here until /use clear (then back to the orchestrator).")
     else:
         reply("Failed to save current target")
 
@@ -1324,7 +1324,7 @@ def _route_command(from_id, stripped, *, sessions, ae_home, current_target, repl
 def route_message(from_id, text, update, *, sessions, ae_home, current_target, reply, timeout=10):
     """Route one authorized inbound message by PRECEDENCE (ae:3485-3517 + the poll-level
     reply decision ae:3792-3797): slash command > non-slash reply > @session:agent >
-    /use sticky > steward default > guidance. Delivers via tg_dispatch (s11b); every
+    /use sticky > orchestrator default > guidance. Delivers via tg_dispatch (s11b); every
     user-facing line goes through the injected `reply` seam (the s16 daemon wires it to
     the transport's send_message). poll_inbound's `dispatch` seam binds this."""
     stripped = text.strip()
@@ -1351,11 +1351,11 @@ def route_message(from_id, text, update, *, sessions, ae_home, current_target, r
     if target:
         _deliver_and_report(from_id, target[0], "send", target[1], text, sessions=sessions, ae_home=ae_home, reply=reply, timeout=timeout)
         return
-    steward = find_steward(sessions, ae_home)
-    if steward:
-        _deliver_and_report(from_id, steward[0], "send", steward[1], text, sessions=sessions, ae_home=ae_home, reply=reply, timeout=timeout)
+    orchestrator = find_orchestrator(sessions, ae_home)
+    if orchestrator:
+        _deliver_and_report(from_id, orchestrator[0], "send", orchestrator[1], text, sessions=sessions, ae_home=ae_home, reply=reply, timeout=timeout)
         return
-    reply("No steward running and no /use target set. Start one with 'ae steward' (then just talk "
+    reply("No orchestrator running and no /use target set. Start one with 'ae orchestrator' (then just talk "
           "to it), reply to a message, use @session:agent <msg>, or /use <session> <agent>. (/help)")
 
 
@@ -1511,7 +1511,7 @@ def process_session_events(events_file, prev, name, config, *, send, recorder=No
 _COMMAND_MENU = [  # ae:3313-3316
     {"command": "list", "description": "Running sessions (name, id, last activity)"},
     {"command": "use",
-     "description": "Redirect plain messages to a session (default is the steward): /use <session> <agent>"},
+     "description": "Redirect plain messages to a session (default is the orchestrator): /use <session> <agent>"},
     {"command": "session", "description": "Message an agent: /session <name> send|ask <agent> <msg>"},
     {"command": "help", "description": "Show help"},
 ]
@@ -1931,7 +1931,7 @@ class WatchdogState:
     # key + the pane hash captured when it was first observed (ae's quiet_base_*).
     quiet_base_key: dict = dataclasses.field(default_factory=dict)
     quiet_base_hash: dict = dataclasses.field(default_factory=dict)
-    # Meta-agent (steward) sweep cadence + wedge latches (ae's last_sweep_nudge /
+    # Meta-agent (orchestrator) sweep cadence + wedge latches (ae's last_sweep_nudge /
     # first_sweep_nudge / meta_wedge_alerted / meta_reconciled).
     last_sweep_nudge: dict = dataclasses.field(default_factory=dict)
     first_sweep_nudge: dict = dataclasses.field(default_factory=dict)
@@ -2234,7 +2234,7 @@ def _buf_shows_throttle(buf: str, agent_bin: str) -> bool:
     return False
 
 
-# The exact steward sweep prompt (ae:7788-7790). Fixed text — no runtime paths.
+# The exact orchestrator sweep prompt (ae:7788-7790). Fixed text — no runtime paths.
 _SWEEP_TEXT = (
     "Run your sweep now: ae list --json, diff your state file, and report ONLY "
     "new/changed attention to Clemens via say (stay silent if nothing changed). "
@@ -2251,7 +2251,7 @@ def _meta_main_agent(session_dir) -> str:
 
 
 def _heartbeat_mtime(session_dir) -> int:
-    """The steward heartbeat file's mtime as INTEGER seconds (bash `stat -c %Y`), or
+    """The orchestrator heartbeat file's mtime as INTEGER seconds (bash `stat -c %Y`), or
     0 when absent. int() cast so (now - hb) // 60 matches bash exactly (ae:7738)."""
     if session_dir is None:
         return 0
@@ -2552,9 +2552,9 @@ def run_watchdog_cycle(
                 f"[ae watchdog] {agent} is DEAD — process dropped to shell", duration_ms=_ALERT_DURATION_MS, server=tmux_server
             )
             continue
-        # 1b. Meta-agent (steward) sweep cadence + wedge (ae:7719-7798) — ONLY the
+        # 1b. Meta-agent (orchestrator) sweep cadence + wedge (ae:7719-7798) — ONLY the
         #     meta session's main agent. Idle between sweeps is NORMAL, not stale:
-        #     prompt a sweep every SWEEP_SECS, and guard liveness via the steward's
+        #     prompt a sweep every SWEEP_SECS, and guard liveness via the orchestrator's
         #     heartbeat file (wedge alert if it stops advancing, cleared on recovery).
         if meta_agent == "true" and agent == meta_main_agent and config.sweep_secs > 0:
             hb = _heartbeat_mtime(session_dir)

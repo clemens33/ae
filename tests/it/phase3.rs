@@ -1862,11 +1862,11 @@ fn criterion_3_the_places_this_crate_can_read_the_world_are_the_inventoried_ones
             // reads is a secret, and where it sends the result is the public
             // internet.
             "src/telegram.rs".to_owned(),
-            // The steward heartbeat's `lstat` (P4.2): the one read the watchdog
+            // The orchestrator heartbeat's `lstat` (P4.2): the one read the watchdog
             // daemon takes for itself, proving `meta-agent-state.json` is a
             // non-symlink regular file before its mtime is trusted as liveness.
             // `symlink_metadata`, never `metadata` — the frozen bash `[[ -f ]]`
-            // FOLLOWS a link, and a followed link is how a wedged steward gets
+            // FOLLOWS a link, and a followed link is how a wedged orchestrator gets
             // silenced by a state file somebody else keeps touching. Its meta
             // and event-container reads are `meta.rs`'s and `event_text.rs`'s
             // inventoried doors, not new ones here. Registered deliberately.

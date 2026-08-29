@@ -36,7 +36,7 @@ class BridgeFixture:
     def __init__(self, root, *, updates=None):
         self.ae_home = Path(root)
         (self.ae_home / "sessions").mkdir(parents=True)
-        self.steward_rec = self.ae_home / "steward-call.json"
+        self.orchestrator_rec = self.ae_home / "orchestrator-call.json"
         # token file (owner-only) + [telegram] config
         tok = self.ae_home / "tok"
         tok.write_text("123456:secret-token-value")
@@ -44,7 +44,7 @@ class BridgeFixture:
         (self.ae_home / "config").write_text(
             "[telegram]\nenabled = true\ntoken_file = " + str(tok) + "\n"
             "chat_id = 42\nallowed_user_ids = 7\ninclude = send,ask,chat\n")
-        self._session("steward", "stew0001", "codex:lead", meta_agent=True, helper=True)
+        self._session("orchestrator", "stew0001", "codex:lead", meta_agent=True, helper=True)
         self._session("work", "work0002", "optimal:cw")
         self.transport = FakeTelegramTransport(updates=updates or [], allow_default_ok=True)
         self.recorder = AW.EffectRecorder()
@@ -67,19 +67,19 @@ class BridgeFixture:
         (d / "events.jsonl").write_text("")
         if helper:
             h = d / "send"
-            h.write_text(_HELPER.replace("__REC__", str(self.steward_rec)))
+            h.write_text(_HELPER.replace("__REC__", str(self.orchestrator_rec)))
             h.chmod(h.stat().st_mode | stat.S_IEXEC)
 
     def _discover(self):
         return [
-            AW.DiscoveredSession(name="steward", session_id="stew0001", work_dir="",
+            AW.DiscoveredSession(name="orchestrator", session_id="stew0001", work_dir="",
                                  tmux_server="", running=True, agents=[_agent("codex:lead")]),
             AW.DiscoveredSession(name="work", session_id="work0002", work_dir="",
                                  tmux_server="", running=True, agents=[_agent("optimal:cw")]),
         ]
 
-    def steward_call(self):
-        return json.loads(self.steward_rec.read_text()) if self.steward_rec.exists() else None
+    def orchestrator_call(self):
+        return json.loads(self.orchestrator_rec.read_text()) if self.orchestrator_rec.exists() else None
 
     def append_work_event(self, **ev):
         with (self.ae_home / "sessions" / "work" / "events.jsonl").open("a") as fh:
@@ -100,19 +100,19 @@ class BridgeTickTest(unittest.TestCase):
         # Tick 1 establishes outbound EOF (no history replay) + no inbound yet.
         fx = BridgeFixture(self._tmp.name)
         fx.bridge.tick()
-        self.assertIsNone(fx.steward_call(), "no inbound dispatch on the init tick")
+        self.assertIsNone(fx.orchestrator_call(), "no inbound dispatch on the init tick")
         base_sends = len(fx.transport.sent)
 
         # Now a NEW outbound event on `work` AND an inbound message arrive; ONE tick
-        # must dispatch the inbound to the steward AND forward the outbound event.
+        # must dispatch the inbound to the orchestrator AND forward the outbound event.
         fx.append_work_event(action="send", actor="optimal:cw", summary="progress update")
-        fx.transport._updates.append(_update(500, "hello steward"))
+        fx.transport._updates.append(_update(500, "hello orchestrator"))
         fx.bridge.tick()
 
-        # inbound: routed to the steward's main agent via its send helper.
-        call = fx.steward_call()
-        self.assertIsNotNone(call, "the inbound message reached the steward")
-        self.assertEqual(call["argv"], ["codex:lead", "hello steward"])
+        # inbound: routed to the orchestrator's main agent via its send helper.
+        call = fx.orchestrator_call()
+        self.assertIsNotNone(call, "the inbound message reached the orchestrator")
+        self.assertEqual(call["argv"], ["codex:lead", "hello orchestrator"])
         self.assertEqual(call["sender"], "telegram:7")
 
         # outbound: the new work event was forwarded (a telegram.send effect for it).
@@ -175,15 +175,15 @@ class BridgeTickTest(unittest.TestCase):
         # A failing session's outbound drain must not starve the others (codex).
         fx = BridgeFixture(self._tmp.name)
         fx.bridge.tick()  # init EOF for both
-        with (fx.ae_home / "sessions" / "steward" / "events.jsonl").open("a") as f:
-            f.write(_line(action="send", actor="codex:lead", summary="steward event"))
+        with (fx.ae_home / "sessions" / "orchestrator" / "events.jsonl").open("a") as f:
+            f.write(_line(action="send", actor="codex:lead", summary="orchestrator event"))
         fx.append_work_event(action="send", actor="optimal:cw", summary="work event")
 
         real = AW.process_session_events
 
         def flaky(events_file, prev, name, *a, **kw):
-            if name == "steward":  # the FIRST discovered session raises
-                raise RuntimeError("boom in steward drain")
+            if name == "orchestrator":  # the FIRST discovered session raises
+                raise RuntimeError("boom in orchestrator drain")
             return real(events_file, prev, name, *a, **kw)
 
         with unittest.mock.patch.object(AW, "process_session_events", flaky):

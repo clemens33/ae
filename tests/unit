@@ -2936,15 +2936,15 @@ assert_eq "attn: malformed AE_ATTN_REQUEST_SECS degrades (old ask still flags)" 
     "unanswered" "$(AE_ATTN_REQUEST_SECS=abc _session_attn_rollup s "$_sr_dir" "agent.main=codex:w:x" 2>/dev/null; printf '%s' "$_AE_ATTN_REASON")"
 unset -f _agent_alert_reason _session_states tmux
 
-# ── steward companion autostart ─────────────────────────────────────
+# ── orchestrator companion autostart ─────────────────────────────────────
 
-assert_eq "autostart: steward companion fn exists with all four guards" "1" \
-    "$([[ "$AE_SOURCE" == *'_steward_autostart_if_scaffolded() {'* && "$AE_SOURCE" == *'AE_NO_AUTOSTART'* && "$AE_SOURCE" == *'steward | hub) return 0'* && "$AE_SOURCE" == *'daemon_session_running steward || _st_rc=$?'* ]] && echo 1 || echo 0)"
+assert_eq "autostart: orchestrator companion fn exists with all four guards" "1" \
+    "$([[ "$AE_SOURCE" == *'_orchestrator_autostart_if_scaffolded() {'* && "$AE_SOURCE" == *'AE_NO_AUTOSTART'* && "$AE_SOURCE" == *'orchestrator | hub) return 0'* && "$AE_SOURCE" == *'daemon_session_running orchestrator || _st_rc=$?'* ]] && echo 1 || echo 0)"
 
 # ── daemon_session_running: error is not absence (#28) ───────────────
 # The old body was `tmux list-sessions 2>/dev/null | grep -Fxq`, so ANY tmux
 # failure came back as a plain false. One transient client error then read as
-# "no steward running" and fired an autostart whose backgrounded duplicate died
+# "no orchestrator running" and fired an autostart whose backgrounded duplicate died
 # silently. Tri-state now: 0 running / 1 verifiably absent / 2 unknown.
 # ABSENCE IS PROVEN, NEVER INFERRED. The classifier is the SHARED
 # _tmux_err_is_clean_dead (stale socket only) — see its own assertions below for
@@ -2953,34 +2953,34 @@ assert_eq "autostart: steward companion fn exists with all four guards" "1" \
 # reading an unlinked-but-LIVE server as dead deletes state; here it would
 # create a SECOND SERVER on that socket path, and the two never see each other.
 # shellcheck disable=SC2317,SC2329
-_dsr_tmux_ok() { tmux() { printf 'aedev\nsteward\nsteward-old\n'; }; }
+_dsr_tmux_ok() { tmux() { printf 'aedev\norchestrator\norchestrator-old\n'; }; }
 assert_eq "dsr: running session -> 0" "0" \
-    "$(_dsr_tmux_ok; daemon_session_running steward; echo $?)"
+    "$(_dsr_tmux_ok; daemon_session_running orchestrator; echo $?)"
 assert_eq "dsr: exact match only (prefix must not count)" "1" \
     "$(_dsr_tmux_ok; daemon_session_running stew; echo $?)"
 assert_eq "dsr: successful listing without the name -> absent" "1" \
     "$(_dsr_tmux_ok; daemon_session_running hub; echo $?)"
 # shellcheck disable=SC2329  # tmux() is a double; daemon_session_running calls it inside this $( )
 assert_eq "dsr: server exited cleanly (stale socket) -> absent, autostart may proceed" "1" \
-    "$(tmux() { echo 'no server running on /tmp/tmux-501/default' >&2; return 1; }; daemon_session_running steward; echo $?)"
+    "$(tmux() { echo 'no server running on /tmp/tmux-501/default' >&2; return 1; }; daemon_session_running orchestrator; echo $?)"
 # THE LIVE-UNLINKED CASE (round-2 BLOCKER). Unlinking a running server's socket
 # yields ENOENT while the server and its sessions keep running. Treating that as
 # absence is what starts a second server — so it is UNKNOWN, and nothing fires.
 # shellcheck disable=SC2329  # tmux() is a double; daemon_session_running calls it inside this $( )
 assert_eq "dsr: ENOENT is UNKNOWN, not absence (unlinked LIVE server)" "2" \
-    "$(tmux() { echo 'error connecting to /tmp/tmux-501/default (No such file or directory)' >&2; return 1; }; daemon_session_running steward; echo $?)"
+    "$(tmux() { echo 'error connecting to /tmp/tmux-501/default (No such file or directory)' >&2; return 1; }; daemon_session_running orchestrator; echo $?)"
 # shellcheck disable=SC2329  # tmux() is a double; daemon_session_running calls it inside this $( )
 assert_eq "dsr: permission error -> UNKNOWN" "2" \
-    "$(tmux() { echo 'error connecting to /tmp/tmux-501/default (Permission denied)' >&2; return 1; }; daemon_session_running steward; echo $?)"
+    "$(tmux() { echo 'error connecting to /tmp/tmux-501/default (Permission denied)' >&2; return 1; }; daemon_session_running orchestrator; echo $?)"
 # shellcheck disable=SC2329  # tmux() is a double; daemon_session_running calls it inside this $( )
 assert_eq "dsr: tmux failed for any other reason -> UNKNOWN, not absent" "2" \
-    "$(tmux() { echo 'lost server' >&2; return 1; }; daemon_session_running steward; echo $?)"
+    "$(tmux() { echo 'lost server' >&2; return 1; }; daemon_session_running orchestrator; echo $?)"
 # ...and the consequence, end to end: an unlinked LIVE server must not produce a
-# second one. (The steward caller's own note is asserted further down.)
+# second one. (The orchestrator caller's own note is asserted further down.)
 # shellcheck disable=SC2329  # tmux() is a double; daemon_session_running calls it inside this $( )
 assert_eq "dsr: ENOENT never reaches the create path" "no-launch" \
     "$(tmux() { echo 'error connecting to /tmp/tmux-501/default (No such file or directory)' >&2; return 1; }
-       _rc=0; daemon_session_running steward || _rc=$?
+       _rc=0; daemon_session_running orchestrator || _rc=$?
        if ((_rc == 1)); then echo "WOULD-LAUNCH"; else echo "no-launch"; fi)"
 # One immediate retry (no sleep — the observed failure is first-call-only, and a
 # delay would tax the launch path on every genuinely broken tmux).
@@ -2996,9 +2996,9 @@ assert_eq "dsr: retries once, so a first-call-only failure still answers" "0" \
                echo 'lost server' >&2
                return 1
            fi
-           printf 'steward\n'
+           printf 'orchestrator\n'
        }
-       daemon_session_running steward
+       daemon_session_running orchestrator
        echo $?)"
 assert_eq "dsr: ...and that took exactly two tmux calls" "2" \
     "$(_c="$(<"$_dsr_ctr")"; echo "${#_c}")"
@@ -3007,30 +3007,30 @@ unset _dsr_ctr
 unset -f _dsr_tmux_ok
 
 # Autostart consequence: UNKNOWN must skip, and say why. Fail toward doing
-# nothing — a duplicate steward's launch dies with its stderr on /dev/null.
+# nothing — a duplicate orchestrator's launch dies with its stderr on /dev/null.
 _as_sc="$(mktemp -d)"
-mkdir -p "$_as_sc/steward"
-: >"$_as_sc/steward/steward.config"
-eval "$(awk '/^_steward_autostart_if_scaffolded\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+mkdir -p "$_as_sc/orchestrator"
+: >"$_as_sc/orchestrator/orchestrator.config"
+eval "$(awk '/^_orchestrator_autostart_if_scaffolded\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
 # shellcheck disable=SC2317,SC2329
 daemon_session_running() { return "${_AS_RC:-1}"; }
 assert_eq "autostart: tmux UNKNOWN -> no launch, legible note" "skipped" \
     "$(_AS_RC=2
-       out="$(SESSION=x CONFIG_DIR="$_as_sc" AE_STEWARD_DIR="" _steward_autostart_if_scaffolded 2>&1)"
+       out="$(SESSION=x CONFIG_DIR="$_as_sc" AE_ORCHESTRATOR_DIR="" _orchestrator_autostart_if_scaffolded 2>&1)"
        case "$out" in
-           *'Starting steward companion'*) echo "STARTED" ;;
+           *'Starting orchestrator companion'*) echo "STARTED" ;;
            *'autostart skipped'*'cannot be ruled out'*) echo "skipped" ;;
            *) echo "silent:$out" ;;
        esac)"
 assert_eq "autostart: verified absence still starts the companion" "started" \
     "$(_AS_RC=1
-       out="$(SESSION=x CONFIG_DIR="$_as_sc" AE_STEWARD_DIR="" _steward_autostart_if_scaffolded 2>&1)"
+       out="$(SESSION=x CONFIG_DIR="$_as_sc" AE_ORCHESTRATOR_DIR="" _orchestrator_autostart_if_scaffolded 2>&1)"
        case "$out" in
-           *'Starting steward companion'*) echo "started" ;;
+           *'Starting orchestrator companion'*) echo "started" ;;
            *) echo "not-started:$out" ;;
        esac)"
-assert_eq "autostart: steward already running -> silent no-op" "" \
-    "$(_AS_RC=0 SESSION=x CONFIG_DIR="$_as_sc" AE_STEWARD_DIR="" _steward_autostart_if_scaffolded 2>&1)"
+assert_eq "autostart: orchestrator already running -> silent no-op" "" \
+    "$(_AS_RC=0 SESSION=x CONFIG_DIR="$_as_sc" AE_ORCHESTRATOR_DIR="" _orchestrator_autostart_if_scaffolded 2>&1)"
 # Restore the REAL definition — later blocks install their own stubs, but the
 # extraction list now provides this one and nothing should silently lose it.
 eval "$(awk '/^daemon_session_running\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
@@ -3038,28 +3038,28 @@ rm -rf "$_as_sc"
 unset _as_sc
 
 assert_eq "autostart: launch flow calls companion beside the bridge autostart" "1" \
-    "$([[ "$AE_SOURCE" == *'_telegram_autostart_if_enabled 2>/dev/null || true'*'_steward_autostart_if_scaffolded 2>/dev/null || true'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'_telegram_autostart_if_enabled 2>/dev/null || true'*'_orchestrator_autostart_if_scaffolded 2>/dev/null || true'* ]] && echo 1 || echo 0)"
 
 # Behavioural: guards short-circuit without touching tmux/config state.
-eval "$(awk '/^_steward_autostart_if_scaffolded\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+eval "$(awk '/^_orchestrator_autostart_if_scaffolded\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
 assert_eq "autostart: AE_NO_AUTOSTART=1 skips" "0" \
-    "$(AE_NO_AUTOSTART=1 _steward_autostart_if_scaffolded; echo $?)"
-assert_eq "autostart: steward's own launch skips (no output)" "" \
-    "$(SESSION=steward _steward_autostart_if_scaffolded 2>/dev/null)"
+    "$(AE_NO_AUTOSTART=1 _orchestrator_autostart_if_scaffolded; echo $?)"
+assert_eq "autostart: orchestrator's own launch skips (no output)" "" \
+    "$(SESSION=orchestrator _orchestrator_autostart_if_scaffolded 2>/dev/null)"
 assert_eq "autostart: no scaffold -> silent no-op" "" \
-    "$(SESSION=x CONFIG_DIR="$(mktemp -d)" AE_STEWARD_DIR="" _steward_autostart_if_scaffolded 2>/dev/null)"
-# Era-detection parity (codex IMPORTANT): AE_STEWARD_DIR set-but-missing is
+    "$(SESSION=x CONFIG_DIR="$(mktemp -d)" AE_ORCHESTRATOR_DIR="" _orchestrator_autostart_if_scaffolded 2>/dev/null)"
+# Era-detection parity (codex IMPORTANT): AE_ORCHESTRATOR_DIR set-but-missing is
 # authoritative → no autostart even when a legacy scaffold exists.
 _as_tmp="$(mktemp -d)"
 mkdir -p "$_as_tmp/meta-hub"; : > "$_as_tmp/meta-hub/hub.config"
-assert_eq "autostart: set-but-missing AE_STEWARD_DIR is authoritative (no legacy fallback)" "" \
-    "$(SESSION=x CONFIG_DIR="$_as_tmp" AE_STEWARD_DIR="$_as_tmp/nonexistent" _steward_autostart_if_scaffolded 2>/dev/null)"
+assert_eq "autostart: set-but-missing AE_ORCHESTRATOR_DIR is authoritative (no legacy fallback)" "" \
+    "$(SESSION=x CONFIG_DIR="$_as_tmp" AE_ORCHESTRATOR_DIR="$_as_tmp/nonexistent" _orchestrator_autostart_if_scaffolded 2>/dev/null)"
 # AE_HUB_DIR-only legacy scaffold IS honoured (mirrors the trampoline) — the
 # probe passes; the fn then reaches daemon_session_running (stub it running).
 # shellcheck disable=SC2317,SC2329
 daemon_session_running() { return 0; }
 assert_eq "autostart: AE_HUB_DIR legacy scaffold honoured (reaches running-check)" "0" \
-    "$(SESSION=x CONFIG_DIR="$(mktemp -d)" AE_STEWARD_DIR="" AE_HUB_DIR="$_as_tmp/meta-hub" _steward_autostart_if_scaffolded 2>/dev/null; echo $?)"
+    "$(SESSION=x CONFIG_DIR="$(mktemp -d)" AE_ORCHESTRATOR_DIR="" AE_HUB_DIR="$_as_tmp/meta-hub" _orchestrator_autostart_if_scaffolded 2>/dev/null; echo $?)"
 unset -f daemon_session_running
 
 # Budget raised 1200 -> 2200 when the guard gained the bash>=4 RE-EXEC ladder
@@ -3073,17 +3073,17 @@ assert_eq "bash guard: re-execs under a modern bash before refusing" "1" \
 # Loop safety must be a bounded COUNT, not a boolean. A boolean is inherited by
 # any descendant that re-invokes ae through ae's PATH-resolved shebang; on a
 # hostile PATH that child lands on 3.2, sees the marker, and refuses instead of
-# re-execing — silently, when its stderr is discarded (steward autostart).
+# re-execing — silently, when its stderr is discarded (orchestrator autostart).
 assert_eq "bash guard: re-exec marker is a bounded counter, not a boolean" "1" \
     "$([[ "${AE_SOURCE:0:2200}" == *'AE_BASH_REEXEC=$((_ae_tries + 1))'* &&
         "${AE_SOURCE:0:2200}" == *'-lt 2'* ]] && echo 1 || echo 0)"
 # ...and the marker must not survive into the environment of anything ae runs.
 assert_eq "bash guard: marker is unset once the running shell is >= 4" "1" \
     "$([[ "${AE_SOURCE:0:3000}" == *'unset AE_BASH_REEXEC'* ]] && echo 1 || echo 0)"
-# The steward autostart child discards stderr, so it must not depend on ae's
+# The orchestrator autostart child discards stderr, so it must not depend on ae's
 # shebang resolving to a modern bash.
-assert_eq "autostart: steward child is launched through the resolved bash" "1" \
-    "$([[ "$AE_SOURCE" == *'(AE_NO_AUTOSTART=1 "${BASH:-bash}" "$0" steward'* ]] && echo 1 || echo 0)"
+assert_eq "autostart: orchestrator child is launched through the resolved bash" "1" \
+    "$([[ "$AE_SOURCE" == *'(AE_NO_AUTOSTART=1 "${BASH:-bash}" "$0" orchestrator'* ]] && echo 1 || echo 0)"
 
 # Generalized emission-completeness guards — ALL declare-f emissions, not just
 # the watchdog (same failure class: a name silently dropped from a declare -f
@@ -4105,7 +4105,7 @@ assert_eq "roster: ⚙ is never emitted, and the reason is recorded in-source" "
         && "$AE_SOURCE" == *'4h38m'* ]] && echo 1 || echo 0)"
 assert_eq "roster: glyph takes ONE argument (no subprocess override path)" "◌" "$(_roster_glyph stale busy)"
 
-# ── roster-completeness: registered keying, steward, per-window ──────
+# ── roster-completeness: registered keying, orchestrator, per-window ──────
 # BARE-CALL ERREXIT PROBE (AGENTS.md "only a BARE call proves set -e safety"): every
 # assertion in this file reaches these functions through $(…) inside assert_eq, which
 # MASKS a nonzero return — a fully green suite proves nothing about errexit. The
@@ -4180,17 +4180,17 @@ assert_eq "roster: publisher composes from registered slots, not live panes" "1"
 assert_eq "roster: a dead-pane agent still occupies its slot in the line" "lead● colead✖ builder◌" \
     "$(printf 'fable5:lead\tactive\ngpt56sol:colead\tmissing\nopus48:builder\tstale\n' | _roster_compose)"
 
-# STEWARD GLYPH — the meta-agent cadence branch `continue`d without assigning a verdict,
-# so the steward always rendered '·' (the neutral "we did not decide"). It IS decided:
+# ORCHESTRATOR GLYPH — the meta-agent cadence branch `continue`d without assigning a verdict,
+# so the orchestrator always rendered '·' (the neutral "we did not decide"). It IS decided:
 # the branch already computes heartbeat freshness against the wedge window.
 # 👁 = swept recently (heartbeat fresh) — an honest reading of the aemonitor state file,
-# not a claim the steward is "working". ◌ = past the grace window without a heartbeat,
+# not a claim the orchestrator is "working". ◌ = past the grace window without a heartbeat,
 # which is exactly what the existing wedge alert calls "not sweeping". '·' while still
 # inside the grace window with no heartbeat yet: undecided, and we say so.
-assert_eq "roster: steward sweeping (fresh heartbeat) renders 👁" "👁" "$(_roster_glyph meta-sweeping)"
-assert_eq "roster: steward past grace with no heartbeat renders ◌ (matches 'not sweeping')" "◌" \
+assert_eq "roster: orchestrator sweeping (fresh heartbeat) renders 👁" "👁" "$(_roster_glyph meta-sweeping)"
+assert_eq "roster: orchestrator past grace with no heartbeat renders ◌ (matches 'not sweeping')" "◌" \
     "$(_roster_glyph meta-wedged)"
-assert_eq "roster: steward inside the grace window is neutral, not a liveness claim" "·" \
+assert_eq "roster: orchestrator inside the grace window is neutral, not a liveness claim" "·" \
     "$(_roster_glyph meta-starting)"
 assert_eq "roster: the cadence branch assigns a verdict (no more silent '·')" "1" \
     "$([[ "$AE_SOURCE" == *'roster_verdict["$pane"]="meta-sweeping"'* \
@@ -7141,9 +7141,9 @@ line' 'tab	separated' "with 'singlequotes'" "with \\backslash" ""; do
 done
 unset _t_val _t_quoted _t_roundtrip
 
-# Steward guard + spawned-drop visibility (transfer audit findings).
-assert_eq "transfer: refuses steward/meta-agent sessions with re-init guidance" "1" \
-    "$([[ "$AE_SOURCE" == *'meta_agent=true$'*'transfer is refused'* && "$AE_SOURCE" == *"'ae steward --init && ae steward' on the target machine"* ]] && echo 1 || echo 0)"
+# Orchestrator guard + spawned-drop visibility (transfer audit findings).
+assert_eq "transfer: refuses orchestrator/meta-agent sessions with re-init guidance" "1" \
+    "$([[ "$AE_SOURCE" == *'meta_agent=true$'*'transfer is refused'* && "$AE_SOURCE" == *"'ae orchestrator --init && ae orchestrator' on the target machine"* ]] && echo 1 || echo 0)"
 
 assert_eq "resume: spawned agent with missing alias warns loudly instead of silent drop" "1" \
     "$([[ "$AE_SOURCE" == *'NOT restored — alias'* && "$AE_SOURCE" == *'Entry preserved; add the alias and resume again.'* && "$AE_SOURCE" == *'UNRESOLVED_SPAWNED[$i]'* ]] && echo 1 || echo 0)"
@@ -7749,38 +7749,38 @@ assert_eq "telegram: cmd_telegram_stop defined"    "1" "$([[ "$AE_SOURCE" == *'c
 assert_eq "telegram: cmd_telegram_status defined"  "1" "$([[ "$AE_SOURCE" == *'cmd_telegram_status() {'* ]] && echo 1 || echo 0)"
 assert_eq "telegram: cmd_telegram_help defined"    "1" "$([[ "$AE_SOURCE" == *'cmd_telegram_help() {'* ]] && echo 1 || echo 0)"
 
-# ── telegram: steward is the auto-default target for plain messages ──
-# Behavioral: tg_find_steward picks the running meta_agent session, preferring
-# 'steward' > 'hub' > any. Extract it + stub daemon_session_running.
-eval "$(awk '/^tg_find_steward\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+# ── telegram: orchestrator is the auto-default target for plain messages ──
+# Behavioral: tg_find_orchestrator picks the running meta_agent session, preferring
+# 'orchestrator' > 'hub' > any. Extract it + stub daemon_session_running.
+eval "$(awk '/^tg_find_orchestrator\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
 # stub: all mock sessions "running" (called indirectly by the eval'd fn → SC2317)
 # shellcheck disable=SC2317,SC2329
 daemon_session_running() { return 0; }
 _tgs_dir="$(mktemp -d)"
-# SESSIONS_DIR is read by the eval'd tg_find_steward (shellcheck can't see through eval)
+# SESSIONS_DIR is read by the eval'd tg_find_orchestrator (shellcheck can't see through eval)
 # shellcheck disable=SC2034
 SESSIONS_DIR="$_tgs_dir"
-mkdir -p "$_tgs_dir/work" "$_tgs_dir/hub" "$_tgs_dir/steward"
+mkdir -p "$_tgs_dir/work" "$_tgs_dir/hub" "$_tgs_dir/orchestrator"
 printf 'agent.main=claude:lead:sid1\n' >"$_tgs_dir/work/meta"                       # not a meta-agent
 printf 'meta_agent=true\nagent.main=claude:meta:sid2\n' >"$_tgs_dir/hub/meta"        # legacy meta-agent
-printf 'meta_agent=true\nagent.main=claude:steward:sid3\n' >"$_tgs_dir/steward/meta" # canonical
-assert_eq "tg_find_steward: prefers canonical 'steward' session + its main agent" \
-    $'steward\tclaude:steward' "$(tg_find_steward)"
-rm -rf "$_tgs_dir/steward"
-assert_eq "tg_find_steward: falls back to legacy 'hub' meta-agent when no steward" \
-    $'hub\tclaude:meta' "$(tg_find_steward)"
+printf 'meta_agent=true\nagent.main=claude:orchestrator:sid3\n' >"$_tgs_dir/orchestrator/meta" # canonical
+assert_eq "tg_find_orchestrator: prefers canonical 'orchestrator' session + its main agent" \
+    $'orchestrator\tclaude:orchestrator' "$(tg_find_orchestrator)"
+rm -rf "$_tgs_dir/orchestrator"
+assert_eq "tg_find_orchestrator: falls back to legacy 'hub' meta-agent when no orchestrator" \
+    $'hub\tclaude:meta' "$(tg_find_orchestrator)"
 rm -rf "$_tgs_dir/hub"
-assert_eq "tg_find_steward: no meta_agent session → empty (non-meta sessions ignored)" \
-    "" "$(tg_find_steward)"
+assert_eq "tg_find_orchestrator: no meta_agent session → empty (non-meta sessions ignored)" \
+    "" "$(tg_find_orchestrator)"
 rm -rf "$_tgs_dir"
 unset -f daemon_session_running
 
-# Structural: a plain message with no /use override routes to the steward.
-assert_eq "telegram: tg_route_sticky auto-defaults to the steward (no /use needed)" "1" \
-    "$([[ "$AE_SOURCE" == *'No explicit /use override → default to the steward.'* \
-        && "$AE_SOURCE" == *'steward="$(tg_find_steward)"'* ]] && echo 1 || echo 0)"
-assert_eq "telegram: /use override still wins over the steward default" "1" \
-    "$([[ "$AE_SOURCE" == *'if [[ -f "$TG_TARGET_FILE" ]]; then'*'tg_dispatch "$from_id" "$sess" "send" "$agent" "$msg"'*'steward="$(tg_find_steward)"'* ]] && echo 1 || echo 0)"
+# Structural: a plain message with no /use override routes to the orchestrator.
+assert_eq "telegram: tg_route_sticky auto-defaults to the orchestrator (no /use needed)" "1" \
+    "$([[ "$AE_SOURCE" == *'No explicit /use override → default to the orchestrator.'* \
+        && "$AE_SOURCE" == *'orchestrator="$(tg_find_orchestrator)"'* ]] && echo 1 || echo 0)"
+assert_eq "telegram: /use override still wins over the orchestrator default" "1" \
+    "$([[ "$AE_SOURCE" == *'if [[ -f "$TG_TARGET_FILE" ]]; then'*'tg_dispatch "$from_id" "$sess" "send" "$agent" "$msg"'*'orchestrator="$(tg_find_orchestrator)"'* ]] && echo 1 || echo 0)"
 
 # Structural: top-level dispatcher routes 'ae telegram <sub>'.
 assert_eq "telegram: main dispatcher routes 'telegram' subcommand" "1" \
@@ -8147,7 +8147,7 @@ assert_eq "tg-sup: watchdog step 10 revives via throttled 'telegram _supervise'"
 assert_eq "tg-sup: step 10 propagates AE_TMUX_SERVER from meta" "1" \
     "$([[ "$AE_SOURCE" == *"grep '^tmux_server=' \"\$META_DIR/meta\""* && "$AE_SOURCE" == *'AE_TMUX_SERVER="$tg_srv" "$AE_PATH_BIN" telegram _supervise'* ]] && echo 1 || echo 0)"
 
-# ── Layer-3 Slice 3: meta-agent (steward) sweep cadence ──────────────
+# ── Layer-3 Slice 3: meta-agent (orchestrator) sweep cadence ──────────────
 # Config [workspace] meta=true is read and, when truthy, persisted to session
 # meta as meta_agent=true (config-driven, re-read every start/resume).
 assert_eq "meta: [workspace] meta is read into META_AGENT_CFG" "1" \
@@ -8198,12 +8198,12 @@ assert_eq "meta: recovery clears via latch AND durable reconcile (survives resta
         && "$AE_SOURCE" == *'-z "${meta_reconciled[$pane]:-}"'* \
         && "$AE_SOURCE" == *'_agent_alert_reason "$META_DIR/events.jsonl" "$agent" "$_AE_SESSION"'* ]] && echo 1 || echo 0)"
 # ── sweep-nudge delivery is CHECKED, not fire-and-forget ─────────────
-# Shipped outage (steward events.jsonl, 2026-07-15): the sweep send was
+# Shipped outage (orchestrator events.jsonl, 2026-07-15): the sweep send was
 # `2>/dev/null || true`, then last_sweep_nudge advanced and the log said "sweep
 # nudge sent" UNCONDITIONALLY. But `send` exits 1 when it REFUSES (dead shell) or
 # ABANDONS (target busy / human at the pane past AE_SEND_DEFER_SEC). Every nudge
 # from 05:00:24Z to 06:55:00Z was eaten silently — 94 minutes, ZERO nudge events,
-# the steward never prompted. The wedge alert at 05:20:59Z was the only signal,
+# the orchestrator never prompted. The wedge alert at 05:20:59Z was the only signal,
 # and it was a TRUE positive. So: capture the status; a failed nudge must be
 # LOUD and must NOT consume the cadence slot.
 assert_eq "meta: sweep nudge captures send exit status (no fire-and-forget)" "1" \
@@ -8215,7 +8215,7 @@ assert_eq "meta: failed sweep nudge logs FAILED and retries soon (no silent wait
     "$([[ "$AE_SOURCE" == *'sweep nudge FAILED'* \
         && "$AE_SOURCE" == *'due in ~${sweep_retry}s, lands on the next poll'* \
         && "$AE_SOURCE" == *'last_sweep_nudge["$pane"]=$((sweep_now - SWEEP_SECS + sweep_retry))'* ]] && echo 1 || echo 0)"
-# Retry must be BOUNDED: a permanently-unreachable steward degrades to the normal
+# Retry must be BOUNDED: a permanently-unreachable orchestrator degrades to the normal
 # cadence + ONE escalation alert, it does not retry-spam every 30s forever.
 assert_eq "meta: sweep-nudge retry is bounded + escalates once" "1" \
     "$([[ "$AE_SOURCE" == *'sweep_nudge_fails['* \
@@ -8228,7 +8228,7 @@ assert_eq "meta: sweep retry delay is clamped to <= SWEEP_SECS" "1" \
 # BLOCKER (codex cross-review): alert-cleared is UNTYPED — _agent_alert_reason
 # returns "no alert" on ANY clear. Clearing 'unreachable' while the wedge alert is
 # still latched would erase a live "not sweeping" from ae list AND leave
-# meta_wedge_alerted set so it could never re-fire — a wedged steward goes
+# meta_wedge_alerted set so it could never re-fire — a wedged orchestrator goes
 # invisible. The unreachable-clear must be gated on no wedge being outstanding.
 assert_eq "meta: unreachable-clear must not erase a live wedge alert" "1" \
     "$([[ "$AE_SOURCE" == *'if [[ -z "${meta_wedge_alerted[$pane]:-}" ]]; then'*'ae_emit_event "alert-cleared" "$agent" "" "meta-agent reachable again'* ]] && echo 1 || echo 0)"
@@ -8245,7 +8245,7 @@ assert_eq "meta: retry knobs reject leading zeros (octal arithmetic trap)" "1" \
     "$([[ "$AE_SOURCE" == *'[[ "$SWEEP_RETRY_MAX" =~ ^(0|[1-9][0-9]*)$ ]] || SWEEP_RETRY_MAX=6'* \
         && "$AE_SOURCE" == *'[[ "$SWEEP_RETRY_SECS" =~ ^[1-9][0-9]*$ ]] || SWEEP_RETRY_SECS=30'* ]] && echo 1 || echo 0)"
 # The wedge grace window must tick from the first SUCCESSFUL prompt. If it starts
-# on an attempt we never delivered, we alert "not sweeping" against a steward that
+# on an attempt we never delivered, we alert "not sweeping" against an orchestrator that
 # was never actually reached — misattributing a delivery outage as a model stall.
 assert_eq "meta: first_sweep_nudge records the first DELIVERED nudge only" "1" \
     "$([[ "$AE_SOURCE" == *'if ((sweep_rc == 0)); then'* \
@@ -8854,8 +8854,8 @@ assert_eq "tg-cg: bare message routes to the sticky target via tg_route_sticky" 
 assert_eq "tg-cg: /use clear removes the target" "1" \
     "$([[ "$AE_SOURCE" == *'clear|off|none)'* && "$AE_SOURCE" == *'rm -f "$TG_TARGET_FILE"'* ]] && echo 1 || echo 0)"
 # /help advertises the compact grammar + /use.
-assert_eq "tg-cg: /help mentions steward-default, @session:agent, and /use redirect" "1" \
-    "$([[ "$AE_SOURCE" == *'Plain text → your steward (auto-default'* && "$AE_SOURCE" == *'@session:agent <msg> → send to an agent directly'* && "$AE_SOURCE" == *'/use <session> <agent> → redirect plain messages elsewhere'* ]] && echo 1 || echo 0)"
+assert_eq "tg-cg: /help mentions orchestrator-default, @session:agent, and /use redirect" "1" \
+    "$([[ "$AE_SOURCE" == *'Plain text → your orchestrator (auto-default'* && "$AE_SOURCE" == *'@session:agent <msg> → send to an agent directly'* && "$AE_SOURCE" == *'/use <session> <agent> → redirect plain messages elsewhere'* ]] && echo 1 || echo 0)"
 
 # ── Telegram setMyCommands menu (inbound UX, slice 3) ────────────────
 
@@ -8888,85 +8888,85 @@ assert_eq "tg-menu: commands JSON NOT passed inline (would truncate at first spa
 # (jq -cn '[…]' → valid). A source-extraction round-trip here proved too fragile
 # to be worth it.
 
-# ── ae steward: launcher scaffold + dispatcher trampoline + hub compat ──
+# ── ae orchestrator: launcher scaffold + dispatcher trampoline + hub compat ──
 
 # Extract the pure scaffold helpers from the script.
 eval "$(awk '
-    /^_steward_scaffold_file\(\) \{/ { printing=1 }
-    /^cmd_steward_init\(\) \{/ { printing=1 }
+    /^_orchestrator_scaffold_file\(\) \{/ { printing=1 }
+    /^cmd_orchestrator_init\(\) \{/ { printing=1 }
     printing { print }
     printing && /^\}$/ { printing=0 }
 ' "$(dirname "$0")/../ae")"
 
 _stw_t="$(mktemp -d)"
 printf 'read the charter at __X__ now\n' >"$_stw_t/tpl"
-_steward_scaffold_file "$_stw_t/tpl" "$_stw_t/out" "__X__" "/a/b/CHARTER.md" >/dev/null
-assert_eq "steward scaffold: placeholder substituted via bash (no sed, '/'-safe)" \
+_orchestrator_scaffold_file "$_stw_t/tpl" "$_stw_t/out" "__X__" "/a/b/CHARTER.md" >/dev/null
+assert_eq "orchestrator scaffold: placeholder substituted via bash (no sed, '/'-safe)" \
     "read the charter at /a/b/CHARTER.md now" "$(cat "$_stw_t/out")"
 # Multiple placeholder/value pairs in one call (CHARTER.md needs aemonitor + helpers).
 printf 'run __A__ and helpers in __H__\n' >"$_stw_t/tpl2"
-_steward_scaffold_file "$_stw_t/tpl2" "$_stw_t/multi" "__A__" "/bin/mon" "__H__" "/iso/sessions/steward" >/dev/null
-assert_eq "steward scaffold: substitutes multiple placeholder pairs in one call" \
-    "run /bin/mon and helpers in /iso/sessions/steward" "$(cat "$_stw_t/multi")"
+_orchestrator_scaffold_file "$_stw_t/tpl2" "$_stw_t/multi" "__A__" "/bin/mon" "__H__" "/iso/sessions/orchestrator" >/dev/null
+assert_eq "orchestrator scaffold: substitutes multiple placeholder pairs in one call" \
+    "run /bin/mon and helpers in /iso/sessions/orchestrator" "$(cat "$_stw_t/multi")"
 printf 'ORIGINAL\n' >"$_stw_t/keep"
-_steward_scaffold_file "$_stw_t/tpl" "$_stw_t/keep" "__X__" "/a/b/c" >/dev/null
-assert_eq "steward scaffold: never overwrites an existing file" "ORIGINAL" "$(cat "$_stw_t/keep")"
-assert_eq "steward scaffold: created vs skipped reported per file" "skipped (exists): $_stw_t/keep" \
-    "$(_steward_scaffold_file "$_stw_t/tpl" "$_stw_t/keep" "__X__" "v" | tr -d '\n' | sed 's/^ *//')"
-assert_eq "steward scaffold: missing template errors (non-zero)" "1" \
-    "$(_steward_scaffold_file "$_stw_t/nope" "$_stw_t/out2" "__X__" "v" >/dev/null 2>&1; echo $?)"
-assert_eq "steward init: rejects STEWARD_DIR containing a quote (INI safety)" "1" \
-    "$(AE_STEWARD_DIR='/bad"dir' cmd_steward_init >/dev/null 2>&1; echo $?)"
+_orchestrator_scaffold_file "$_stw_t/tpl" "$_stw_t/keep" "__X__" "/a/b/c" >/dev/null
+assert_eq "orchestrator scaffold: never overwrites an existing file" "ORIGINAL" "$(cat "$_stw_t/keep")"
+assert_eq "orchestrator scaffold: created vs skipped reported per file" "skipped (exists): $_stw_t/keep" \
+    "$(_orchestrator_scaffold_file "$_stw_t/tpl" "$_stw_t/keep" "__X__" "v" | tr -d '\n' | sed 's/^ *//')"
+assert_eq "orchestrator scaffold: missing template errors (non-zero)" "1" \
+    "$(_orchestrator_scaffold_file "$_stw_t/nope" "$_stw_t/out2" "__X__" "v" >/dev/null 2>&1; echo $?)"
+assert_eq "orchestrator init: rejects ORCHESTRATOR_DIR containing a quote (INI safety)" "1" \
+    "$(AE_ORCHESTRATOR_DIR='/bad"dir' cmd_orchestrator_init >/dev/null 2>&1; echo $?)"
 rm -rf "$_stw_t"
 unset _stw_t
 
 # Charter helper paths are a placeholder (substituted to the session helper dir),
-# NOT a literal ~/.ae — so an isolated AE_HOME steward can't point at the live ~/.ae.
-_aestw_charter="$(dirname "$0")/../contrib/aesteward/CHARTER.md"
-assert_eq "aesteward charter: helper paths use __HELPERS_DIR__, not literal ~/.ae/sessions/steward" "1" \
+# NOT a literal ~/.ae — so an isolated AE_HOME orchestrator can't point at the live ~/.ae.
+_aestw_charter="$(dirname "$0")/../contrib/aeorchestrator/CHARTER.md"
+assert_eq "aeorchestrator charter: helper paths use __HELPERS_DIR__, not literal ~/.ae/sessions/orchestrator" "1" \
     "$([[ -f "$_aestw_charter" ]] && grep -q '__HELPERS_DIR__' "$_aestw_charter" &&
-        ! grep -q '[~]/.ae/sessions/steward' "$_aestw_charter" && echo 1 || echo 0)"
+        ! grep -q '[~]/.ae/sessions/orchestrator' "$_aestw_charter" && echo 1 || echo 0)"
 # Codex IMPORTANT 1: state-changing messages must be authenticated against the
 # event log (agent-relayed 'objective:' text is visually identical to the
 # operator's) — the charter must require the actor check before any mutation.
-assert_eq "aesteward charter: operator-semantic changes need positive telegram-auth, refuse otherwise" "1" \
+assert_eq "aeorchestrator charter: operator-semantic changes need positive telegram-auth, refuse otherwise" "1" \
     "$(grep -q 'Authenticating an operator-semantic change' "$_aestw_charter" &&
         grep -q '"actor":"telegram:<id>"' "$_aestw_charter" &&
         grep -q 'do NOT mutate' "$_aestw_charter" &&
         grep -q 'Ignored an unauthenticated state change' "$_aestw_charter" && echo 1 || echo 0)"
-# Codex IMPORTANT: the steward's OWN ask-once latches (asked_objective_at,
+# Codex IMPORTANT: the orchestrator's OWN ask-once latches (asked_objective_at,
 # transition_offered_for) are autonomous bookkeeping — the auth rule must NOT
 # block them, or the rituals can never persist and would repeat.
-assert_eq "aesteward charter: steward-owned latch fields are auth-exempt (own bookkeeping)" "1" \
-    "$(grep -q 'Steward-owned latches' "$_aestw_charter" &&
+assert_eq "aeorchestrator charter: orchestrator-owned latch fields are auth-exempt (own bookkeeping)" "1" \
+    "$(grep -q 'Orchestrator-owned latches' "$_aestw_charter" &&
         grep -q 'need NO authentication' "$_aestw_charter" && echo 1 || echo 0)"
 # Codex IMPORTANT: match must be EXACT — never a prefix. ae truncates event
 # summaries at ~200 bytes, so a prefix check would let a paste sharing the first
 # 200 bytes + a malicious tail pass; therefore over-cap semantic commands can't be
 # authenticated and are refused (objectives/ideas are one-liners).
-assert_eq "aesteward charter: EXACT-match only (never prefix); over-cap commands refused" "1" \
+assert_eq "aeorchestrator charter: EXACT-match only (never prefix); over-cap commands refused" "1" \
     "$(grep -q 'EXACTLY equals' "$_aestw_charter" &&
         grep -q 'Exact only — never a prefix' "$_aestw_charter" &&
         grep -q "longer than ~200 bytes can't be authenticated" "$_aestw_charter" && echo 1 || echo 0)"
 # Codex IMPORTANT 2: the transition review is ask-once via a DURABLE latch —
 # without it, 'objective done + unstruck ideas' stays true across sweeps/restarts
 # and the offer would repeat (violating the no-nag contract).
-assert_eq "aesteward charter: transition review has a durable ask-once latch" "1" \
+assert_eq "aeorchestrator charter: transition review has a durable ask-once latch" "1" \
     "$(grep -q 'transition_offered_for' "$_aestw_charter" &&
         grep -q 'transition_offered_for=<objective_set_at>' "$_aestw_charter" && echo 1 || echo 0)"
 
-assert_eq "aesteward charter: orphaned-worker watch (suggest-only retire)" "1" \
+assert_eq "aeorchestrator charter: orphaned-worker watch (suggest-only retire)" "1" \
     "$(grep -q 'orphaned workers' "$_aestw_charter" &&
         grep -q 'never retire anything yourself' "$_aestw_charter" && echo 1 || echo 0)"
 
-assert_eq "aesteward charter: config watch (lkg copy, report-once, never edit)" "1" \
+assert_eq "aeorchestrator charter: config watch (lkg copy, report-once, never edit)" "1" \
     "$(grep -q 'config.lkg' "$_aestw_charter" &&
         grep -q 'report each change exactly once' "$_aestw_charter" &&
         grep -q 'ONLY AFTER' "$_aestw_charter" &&
         grep -q 'NEVER paste values of secret-looking keys' "$_aestw_charter" &&
         grep -qi 'Never edit the' "$_aestw_charter" && echo 1 || echo 0)"
 # Slice #3 — proactive interrupts (§8b): the gated exception to the trust contract.
-assert_eq "aesteward charter: proactive interrupts require ALL FOUR gates" "1" \
+assert_eq "aeorchestrator charter: proactive interrupts require ALL FOUR gates" "1" \
     "$(grep -q 'Proactive interrupts' "$_aestw_charter" &&
         grep -qi 'ALL FOUR gates' "$_aestw_charter" &&
         grep -q '1. \*\*Eligibility' "$_aestw_charter" &&
@@ -8976,80 +8976,80 @@ assert_eq "aesteward charter: proactive interrupts require ALL FOUR gates" "1" \
 # Codex IMPORTANT: a persistent condition must nudge ONCE — a fired latch that
 # re-arms only on signal-clear / objective-change / operator-reply, not on the
 # budget/floor. T3 must be tone-at-first-fire, not a repeat of an unanswered nudge.
-assert_eq "aesteward charter: never-repeat fired latch (gate 3) + T3 is not a repeat" "1" \
+assert_eq "aeorchestrator charter: never-repeat fired latch (gate 3) + T3 is not a repeat" "1" \
     "$(grep -q 'proactive_fired_signal' "$_aestw_charter" &&
         grep -q 'not every 60 min' "$_aestw_charter" &&
         grep -q 'never repetition' "$_aestw_charter" && echo 1 || echo 0)"
 # Codex IMPORTANT: an ignored proactive is counted at most ONCE (pending-reply
 # marker cleared on count), not re-counted every later sweep.
-assert_eq "aesteward charter: ignored proactive counted once via pending-reply marker" "1" \
+assert_eq "aeorchestrator charter: ignored proactive counted once via pending-reply marker" "1" \
     "$(grep -q 'proactive_pending_reply_for' "$_aestw_charter" &&
         grep -q 'counted \*\*once\*\*' "$_aestw_charter" && echo 1 || echo 0)"
 # Codex NIT: quiet-hours wraparound is defined deterministically (+ reject malformed).
-assert_eq "aesteward charter: quiet-hours wraparound rule defined" "1" \
+assert_eq "aeorchestrator charter: quiet-hours wraparound rule defined" "1" \
     "$(grep -q 'crosses' "$_aestw_charter" &&
         grep -q 'now >= START. OR .now < END' "$_aestw_charter" &&
         grep -q 'malformed window is ignored' "$_aestw_charter" && echo 1 || echo 0)"
-assert_eq "aesteward charter: interrupt budget + two-consecutive-sweeps signal" "1" \
+assert_eq "aeorchestrator charter: interrupt budget + two-consecutive-sweeps signal" "1" \
     "$(grep -q 'proactive_sent_count' "$_aestw_charter" &&
         grep -q 'now - proactive_last_at >= 60min' "$_aestw_charter" &&
         grep -q 'holds THIS sweep AND held' "$_aestw_charter" &&
         grep -q 'armed_signal' "$_aestw_charter" && echo 1 || echo 0)"
-assert_eq "aesteward charter: feedback loop self-mutes via own latch after ignores" "1" \
+assert_eq "aeorchestrator charter: feedback loop self-mutes via own latch after ignores" "1" \
     "$(grep -q 'proactive_ignored_streak' "$_aestw_charter" &&
         grep -q 'proactive_ignored_streak >= 2' "$_aestw_charter" &&
         grep -q 'self-mute — set .self_mute_until' "$_aestw_charter" &&
         grep -q 'never touch the operator' "$_aestw_charter" && echo 1 || echo 0)"
-assert_eq "aesteward charter: conservative starter triggers, no clock-only nag, never auto-acts" "1" \
+assert_eq "aeorchestrator charter: conservative starter triggers, no clock-only nag, never auto-acts" "1" \
     "$(grep -q 'Checkpoint overdue' "$_aestw_charter" &&
         grep -q 'Off-objective drift' "$_aestw_charter" &&
         grep -q 'NOT triggers' "$_aestw_charter" &&
         grep -q 'T4 does not exist' "$_aestw_charter" && echo 1 || echo 0)"
-assert_eq "aesteward charter: snooze + quiet-hours escape hatches in the protocol" "1" \
+assert_eq "aeorchestrator charter: snooze + quiet-hours escape hatches in the protocol" "1" \
     "$(grep -q '`snooze \[<min>\]`' "$_aestw_charter" &&
         grep -q 'quiet_hours' "$_aestw_charter" &&
         grep -q 'snooze_until' "$_aestw_charter" && echo 1 || echo 0)"
 # The trust contract must now ROUTE unsolicited messages through §8b, not forbid
 # them outright (slice #2 said "never"; slice #3 makes it "only via the gates").
-assert_eq "aesteward charter: trust contract routes proactive talk through §8b gates" "1" \
+assert_eq "aeorchestrator charter: trust contract routes proactive talk through §8b gates" "1" \
     "$(grep -q 'ONLY through the §8b gates' "$_aestw_charter" && echo 1 || echo 0)"
 unset _aestw_charter
-assert_eq "steward init: substitutes __HELPERS_DIR__ with the steward session helper dir" "1" \
-    "$([[ "$AE_SOURCE" == *'helpers_dir="$CONFIG_DIR/sessions/steward"'* \
+assert_eq "orchestrator init: substitutes __HELPERS_DIR__ with the orchestrator session helper dir" "1" \
+    "$([[ "$AE_SOURCE" == *'helpers_dir="$CONFIG_DIR/sessions/orchestrator"'* \
         && "$AE_SOURCE" == *'"__HELPERS_DIR__" "$helpers_dir"'* ]] && echo 1 || echo 0)"
 
 # Structural — the dispatcher trampoline must preserve FULL config isolation
 # (codex BLOCKER) and fall through WITHOUT re-exec (no recursion).
-assert_eq "steward dispatcher: trampoline pins the standalone config (absolute)" "1" \
-    "$([[ "$AE_SOURCE" == *'CONFIG_FILE="$PWD/$(basename "$_steward_config")"'* ]] && echo 1 || echo 0)"
-assert_eq "steward dispatcher: clears caller-PWD AE_LOCAL_CONFIG + cd steward dir" "1" \
-    "$([[ "$AE_SOURCE" == *'steward | hub)'*'AE_LOCAL_CONFIG=""'*'cd "$_steward_dir"'* ]] && echo 1 || echo 0)"
-assert_eq "steward dispatcher: falls through (set -- session) with NO recursive exec" "1" \
-    "$([[ "$AE_SOURCE" == *'set -- "$_steward_session"'* && "$AE_SOURCE" != *'exec ae steward'* ]] && echo 1 || echo 0)"
-assert_eq "steward dispatcher: rejects extra args (reserved-name leak guard)" "1" \
-    "$([[ "$AE_SOURCE" == *"'ae steward' takes no positional arguments"* ]] && echo 1 || echo 0)"
-assert_eq "steward dispatcher: routes --init, --help, and explicit attach flags" "1" \
-    "$([[ "$AE_SOURCE" == *'--init)'* && "$AE_SOURCE" == *'cmd_steward_init'* && "$AE_SOURCE" == *'cmd_steward_help'* && "$AE_SOURCE" == *'--attach | --switch)'* ]] && echo 1 || echo 0)"
-assert_eq "steward dispatcher: bare steward is detached by default, --attach opts into focus switch" "1" \
-    "$([[ "$AE_SOURCE" == *'_steward_attach=false'* && "$AE_SOURCE" == *'ATTACH_ON_READY=false'* && "$AE_SOURCE" == *'ATTACH_ON_READY=true'* ]] && echo 1 || echo 0)"
-assert_eq "steward dispatcher: no-attach path exits without tmux_attach" "1" \
+assert_eq "orchestrator dispatcher: trampoline pins the standalone config (absolute)" "1" \
+    "$([[ "$AE_SOURCE" == *'CONFIG_FILE="$PWD/$(basename "$_orchestrator_config")"'* ]] && echo 1 || echo 0)"
+assert_eq "orchestrator dispatcher: clears caller-PWD AE_LOCAL_CONFIG + cd orchestrator dir" "1" \
+    "$([[ "$AE_SOURCE" == *'orchestrator | hub)'*'AE_LOCAL_CONFIG=""'*'cd "$_orchestrator_dir"'* ]] && echo 1 || echo 0)"
+assert_eq "orchestrator dispatcher: falls through (set -- session) with NO recursive exec" "1" \
+    "$([[ "$AE_SOURCE" == *'set -- "$_orchestrator_session"'* && "$AE_SOURCE" != *'exec ae orchestrator'* ]] && echo 1 || echo 0)"
+assert_eq "orchestrator dispatcher: rejects extra args (reserved-name leak guard)" "1" \
+    "$([[ "$AE_SOURCE" == *"'ae orchestrator' takes no positional arguments"* ]] && echo 1 || echo 0)"
+assert_eq "orchestrator dispatcher: routes --init, --help, and explicit attach flags" "1" \
+    "$([[ "$AE_SOURCE" == *'--init)'* && "$AE_SOURCE" == *'cmd_orchestrator_init'* && "$AE_SOURCE" == *'cmd_orchestrator_help'* && "$AE_SOURCE" == *'--attach | --switch)'* ]] && echo 1 || echo 0)"
+assert_eq "orchestrator dispatcher: bare orchestrator is detached by default, --attach opts into focus switch" "1" \
+    "$([[ "$AE_SOURCE" == *'_orchestrator_attach=false'* && "$AE_SOURCE" == *'ATTACH_ON_READY=false'* && "$AE_SOURCE" == *'ATTACH_ON_READY=true'* ]] && echo 1 || echo 0)"
+assert_eq "orchestrator dispatcher: no-attach path exits without tmux_attach" "1" \
     "$([[ "$AE_SOURCE" == *'if [[ "$ATTACH_ON_READY" != "true" ]]; then'* && "$AE_SOURCE" == *"Session '\$SESSION' is running."* && "$AE_SOURCE" == *"Session '\$SESSION' started."* ]] && echo 1 || echo 0)"
-assert_eq "steward flag: workspace.steward canonical, hub/meta legacy aliases" "1" \
-    "$([[ "$AE_SOURCE" == *'META_AGENT_CFG="$(get_config workspace.steward)"'* \
+assert_eq "orchestrator flag: workspace.orchestrator canonical, hub/meta legacy aliases" "1" \
+    "$([[ "$AE_SOURCE" == *'META_AGENT_CFG="$(get_config workspace.orchestrator)"'* \
         && "$AE_SOURCE" == *'META_AGENT_CFG="$(get_config workspace.hub)"'* \
         && "$AE_SOURCE" == *'META_AGENT_CFG="$(get_config workspace.meta)"'* ]] && echo 1 || echo 0)"
 
-# Hub back-compat (released name): 'ae hub' dispatches into the steward branch;
+# Hub back-compat (released name): 'ae hub' dispatches into the orchestrator branch;
 # a legacy hub scaffold resolves to hub.config AND keeps the 'hub' session name
 # (so its baked charter paths + resume state stay consistent).
-assert_eq "steward compat: 'hub' is a dispatch alias of steward" "1" \
-    "$([[ "$AE_SOURCE" == *'steward | hub)'* ]] && echo 1 || echo 0)"
-assert_eq "steward compat: legacy scaffold resolution (AE_HUB_DIR + meta-hub/hub.config → session hub)" "1" \
-    "$([[ "$AE_SOURCE" == *'_steward_config="$_steward_dir/hub.config"'* \
+assert_eq "orchestrator compat: 'hub' is a dispatch alias of orchestrator" "1" \
+    "$([[ "$AE_SOURCE" == *'orchestrator | hub)'* ]] && echo 1 || echo 0)"
+assert_eq "orchestrator compat: legacy scaffold resolution (AE_HUB_DIR + meta-hub/hub.config → session hub)" "1" \
+    "$([[ "$AE_SOURCE" == *'_orchestrator_config="$_orchestrator_dir/hub.config"'* \
         && "$AE_SOURCE" == *'$CONFIG_DIR/meta-hub/hub.config'* \
-        && "$AE_SOURCE" == *'_steward_session=hub'* ]] && echo 1 || echo 0)"
-assert_eq "steward compat: legacy path prints a migration hint" "1" \
-    "$([[ "$AE_SOURCE" == *'ae end hub && ae steward --init && ae steward'* ]] && echo 1 || echo 0)"
+        && "$AE_SOURCE" == *'_orchestrator_session=hub'* ]] && echo 1 || echo 0)"
+assert_eq "orchestrator compat: legacy path prints a migration hint" "1" \
+    "$([[ "$AE_SOURCE" == *'ae end hub && ae orchestrator --init && ae orchestrator'* ]] && echo 1 || echo 0)"
 
 # ── AE_HOME authoritative for ALL ae state (config/sessions/worktrees) ──
 # Lets an isolated run keep the real $HOME (so real agent-CLI auth works) while
@@ -9058,12 +9058,12 @@ assert_eq "AE_HOME: CONFIG_DIR derives from AE_HOME, not hardcoded \$HOME/.ae" "
     "$([[ "$AE_SOURCE" == *'AE_HOME="${AE_HOME:-${HOME}/.ae}"'* \
         && "$AE_SOURCE" == *'CONFIG_DIR="$AE_HOME"'* \
         && "$AE_SOURCE" != *'CONFIG_DIR="${HOME}/.ae"'* ]] && echo 1 || echo 0)"
-# Daemon/steward/session must not escape AE_HOME back to live ~/.ae (codex BLOCKERs):
+# Daemon/orchestrator/session must not escape AE_HOME back to live ~/.ae (codex BLOCKERs):
 assert_eq "AE_HOME: telegram daemon is spawned WITH AE_HOME (no live-~/.ae leak)" "1" \
     "$([[ "$AE_SOURCE" == *'AE_HOME=${q_aehome} CONFIG_FILE='* ]] && echo 1 || echo 0)"
-assert_eq "AE_HOME: steward dir defaults under CONFIG_DIR, not hardcoded \$HOME/.ae" "1" \
-    "$([[ "$AE_SOURCE" == *'AE_STEWARD_DIR:-$CONFIG_DIR/steward'* \
-        && "$AE_SOURCE" != *'AE_STEWARD_DIR:-$HOME/.ae/steward'* \
+assert_eq "AE_HOME: orchestrator dir defaults under CONFIG_DIR, not hardcoded \$HOME/.ae" "1" \
+    "$([[ "$AE_SOURCE" == *'AE_ORCHESTRATOR_DIR:-$CONFIG_DIR/orchestrator'* \
+        && "$AE_SOURCE" != *'AE_ORCHESTRATOR_DIR:-$HOME/.ae/orchestrator'* \
         && "$AE_SOURCE" != *'AE_HUB_DIR:-$HOME/.ae/meta-hub'* ]] && echo 1 || echo 0)"
 assert_eq "AE_HOME: pinned into the session env for hidden helpers" "1" \
     "$([[ "$AE_SOURCE" == *'set-environment -t "$SESSION" AE_HOME "$CONFIG_DIR"'* ]] && echo 1 || echo 0)"
@@ -9216,7 +9216,7 @@ assert_eq "end (B2): cleanup_session has zero raw-name tmux show-environment rea
     "$(printf '%s' "$_cs_body" | grep -c 'tmux show-environment -t "\$session_name"' || true)"
 
 # ── _aewatch_autostart_if_available (s18: companion-autostart seam) ──
-# Structural guards: mirrors the steward hook — AE_NO_AUTOSTART guard, an
+# Structural guards: mirrors the orchestrator hook — AE_NO_AUTOSTART guard, an
 # AE_WATCHDOG_IMPL=uv OPT-IN gate (availability must NOT be the trigger — a live daemon
 # by default would double-run the bash watchdogs, the s18-gate blocker), availability-
 # gated silent no-op, HEARTBEAT-FRESH fast path (NOT name-only — a stale session falls
@@ -10727,7 +10727,7 @@ assert_eq "nb2: specimen-5 — the hint IS in the region (whole-pane capture)" "
 assert_eq "nb2: specimen-5 — hint sits below the border, so it is never content" "1" \
     "$(_cl_end "$_cl_staged" border 'paste again to expand')"
 # Detection must not be text-matched to the token either: raw text staged behind the
-# ornament is the steward's variant-3 loss and is caught by the same CLASS rule.
+# ornament is the orchestrator's variant-3 loss and is caught by the same CLASS rule.
 assert_eq "nb2: REAL prompt row + raw typed text -> occupied" "occupied" \
     "$(_occ claude '\033[39m❯\xc2\xa0Run your sweep now\n')"
 
@@ -10747,7 +10747,7 @@ assert_eq "still-staged: codex transcript echo (not live input) -> clear (kills 
 assert_eq "still-staged: codex unreadable -> clear (non-regressive)" "clear" "$(_pss codex '')"
 assert_eq "still-staged: claude '[Pasted text]' still in input -> staged" "staged" "$(_pss claude '❯\xc2\xa0[Pasted text #3 +5 lines]')"
 assert_eq "still-staged: claude clear input -> clear (submitted)" "clear" "$(_pss claude '❯\xc2\xa0')"
-# Steward's variant-3 evidence (24 samples, 2026-07-15): sends to IDLE claude panes
+# Orchestrator's variant-3 evidence (24 samples, 2026-07-15): sends to IDLE claude panes
 # lost the Enter and the message sat staged as RAW UNSTYLED TEXT — no '[Pasted text #'
 # token at all (short sends are not pasted as a token). A token-shaped detector reads
 # that as clear = the silent-loss class again. The rule is the CLASS (any content after
@@ -11094,7 +11094,7 @@ assert_eq "input-busy: unknown tool -> safe (no predicate, don't regress)" "safe
 # The claude launch DISABLES the input-box ghost suggestion (so idle==bare ornament).
 assert_eq "launch: claude env disables prompt suggestion" "1" \
     "$([[ "$AE_SOURCE" == *'CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=0 ${launch_cmd}'* ]] && echo 1 || echo 0)"
-# Steward variant-3 insurance: claude's paste->Enter settle is 0.3s (the observed
+# Orchestrator variant-3 insurance: claude's paste->Enter settle is 0.3s (the observed
 # Enter-drop is claude-only and client-state dependent), codex stays at 0.1s so its
 # sends don't pay latency for a bug never seen there. The retry loop is the guarantee.
 assert_eq "settle: claude paste->Enter settle bumped to 0.3s, codex unchanged" "1" \

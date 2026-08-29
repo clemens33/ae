@@ -101,10 +101,10 @@ class RealTmuxReadTest(unittest.TestCase):
 
     # ── list_sessions ───────────────────────────────────────────────────
     def test_default_server_omits_dash_L_and_None_equals_empty(self):
-        fx = {"sessions_by_server": {"": ["work", "steward"]}}
+        fx = {"sessions_by_server": {"": ["work", "orchestrator"]}}
         for server in (None, ""):
             client = self._client(fx)
-            self.assertEqual(client.list_sessions(server), ["work", "steward"])
+            self.assertEqual(client.list_sessions(server), ["work", "orchestrator"])
             self.assertEqual(self._argv_calls(), [["list-sessions", "-F", "#{session_name}"]],
                              f"server={server!r} must produce identical no--L argv")
 

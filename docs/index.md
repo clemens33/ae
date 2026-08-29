@@ -13,7 +13,7 @@
 - **One command.** `ae` starts a session, `ae` reattaches. That's the whole workflow.
 - **Agents talk to each other.** Each agent gets workspace context injected into its system prompt — starting with which agent it is. They send messages by name, spawn new agents, and coordinate without manual wiring.
 - **Everything survives reboots.** Sessions, spawned agents, conversation history. Pick up exactly where you left off.
-- **One window to your whole fleet.** The optional [`ae steward`](reference/commands.md#ae-steward) meta-agent — your fleet's chief of staff — watches every session and relays to them — talk to *it* from your phone over [Telegram](reference/telegram.md#steward-centric-routing-talk-to-the-meta-agent-not-ten-sessions) instead of juggling ten panes.
+- **One window to your whole fleet.** The optional [`ae orchestrator`](reference/commands.md#ae-orchestrator) meta-agent — your fleet's chief of staff — watches every session and relays to them — talk to *it* from your phone over [Telegram](reference/telegram.md#orchestrator-centric-routing-talk-to-the-meta-agent-not-ten-sessions) instead of juggling ten panes.
 - **Nothing touches your repo.** Session state lives in `~/.ae/sessions/`. Your working directory stays clean.
 - **Single bash script.** No frameworks, no runtimes, no abstractions. Just bash, tmux, and git.
 
@@ -45,7 +45,7 @@ Two agents in own tmux windows, talking to each other through generated shell he
 - [Quick start](getting-started/quick-start.md)
 - [Configure agents and layouts](getting-started/config.md)
 - [Browse the command reference](reference/commands.md)
-- [Telegram bridge + steward-centric routing](reference/telegram.md)
+- [Telegram bridge + orchestrator-centric routing](reference/telegram.md)
 
 ### Doctrine
 

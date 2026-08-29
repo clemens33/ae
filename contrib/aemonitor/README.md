@@ -2,14 +2,14 @@
 
 **Optional contrib tooling. NOT part of core `ae`, NOT auto-installed.** Core ae
 stays a single jq-free bash script; this is a separate consumer of
-`ae list --json` for the [steward meta-agent](../../docs/) (Layer 3).
+`ae list --json` for the [orchestrator meta-agent](../../docs/) (Layer 3).
 
 `ae` itself never depends on this. `ae list`, `ae next`, session start, the watchdog,
 and the telegram bridge all work whether or not `aemonitor` exists.
 
 ## What it does
 
-The steward agent is good at *phrasing* and *orchestrating* but bad at durable
+The orchestrator agent is good at *phrasing* and *orchestrating* but bad at durable
 bookkeeping — left to manage its own state file it drifts (freeform notes,
 hand-written wrong timestamps). `aemonitor` owns the **deterministic** part:
 
@@ -21,16 +21,16 @@ hand-written wrong timestamps). `aemonitor` owns the **deterministic** part:
 - maintains a quiet-sweep **liveness** counter,
 - prints exact, ready-to-send report lines (empty output = nothing to report).
 
-The steward just runs it each sweep and lets it deliver; it does **not** re-phrase
+The orchestrator just runs it each sweep and lets it deliver; it does **not** re-phrase
 the output (that would reintroduce drift).
 
 ## Delivery-aware dedup (the important guarantee)
 
 A change is marked **notified** only after delivery actually succeeds. Pass the
-steward's `say` helper as `--notify-cmd`:
+orchestrator's `say` helper as `--notify-cmd`:
 
 ```bash
-aemonitor sweep --notify-cmd /home/you/.ae/sessions/steward/say
+aemonitor sweep --notify-cmd /home/you/.ae/sessions/orchestrator/say
 ```
 
 `aemonitor` runs `say "<report>"` and advances `notified` **only if it exits 0**.
@@ -56,7 +56,7 @@ aemonitor sweep [--state PATH] [--input PATH|-] [--now EPOCH]
 | `--state PATH` | state file. Default: derived from the current tmux session → `~/.ae/sessions/<session>/meta-agent-state.json`. Always pass it explicitly in tests. |
 | `--input PATH\|-` | `ae list --json` input (file or stdin). Omit to run `ae list --json --running`. Files/stdin make it deterministically testable. |
 | `--now EPOCH` | "now" in epoch seconds (default: real time). For deterministic tests. |
-| `--notify-cmd PATH` | path to a single executable (e.g. the steward's `say` helper) — invoked as `PATH "<report>"`, not via a shell (no arg-splitting/injection). Commits `notified` only on exit 0. |
+| `--notify-cmd PATH` | path to a single executable (e.g. the orchestrator's `say` helper) — invoked as `PATH "<report>"`, not via a shell (no arg-splitting/injection). Commits `notified` only on exit 0. |
 | `--init` | seed the state file to the current snapshot **silently** (no first-install spam), then exit. |
 | `--dry-run` | preview report lines without mutating state. |
 | `--format text\|json` | `text` (default, one line each) or `json` (`{report:[…], delivered:bool}`) for tests/inspection. |

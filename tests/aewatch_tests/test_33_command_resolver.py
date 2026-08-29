@@ -32,7 +32,7 @@ class SessionRefTest(unittest.TestCase):
     def _sessions(self):
         return [
             _sess("work", session_id="abc12345"),
-            _sess("steward", session_id="def67890"),
+            _sess("orchestrator", session_id="def67890"),
             _sess("dead", session_id="abc99999", running=False),
         ]
 
@@ -44,7 +44,7 @@ class SessionRefTest(unittest.TestCase):
     def test_unique_session_id_prefix(self):
         r = AW.resolve_session_ref(self._sessions(), "def6")
         self.assertTrue(r.ok)
-        self.assertEqual(r.value.name, "steward")
+        self.assertEqual(r.value.name, "orchestrator")
 
     def test_running_only_ignores_stopped_session(self):
         # "dead" exists but is not running -> not resolvable (ae:3395 daemon_session_running).

@@ -100,7 +100,7 @@ gate-integrity row: the FIRST P1 811-suite invocation; integrity rows resolve fi
 | 3 | shellcheck-closure lint tier — bash-era tooling, class dies with the core |
 | 25 | tmux facelift — feature work in frozen bash; revisit post-P5 |
 | 42 | superseded — #58's acceptance delivers it (colead correction, accepted); class dies in Rust regardless |
-| 52 | ruled (both seats): steward NAME retained through P5, CLOSED — any later rename is a new post-rewrite decision; the P4-revisit clause is removed as internally contradictory |
+| 52 | ruled (both seats): orchestrator NAME retained through P5, CLOSED — any later rename is a new post-rewrite decision; the P4-revisit clause is removed as internally contradictory |
 
 ## administrative (tracking, not bash behavior)
 

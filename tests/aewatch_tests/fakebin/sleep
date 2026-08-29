@@ -38,7 +38,7 @@ if idx < n:
             evp = sdir / entry["session"] / "events.jsonl"
             with evp.open("a", encoding="utf-8") as fh:
                 fh.write(json.dumps(entry["event"], separators=(",", ":")) + "\n")
-        # Steward heartbeats, keyed by session (mtime = INTEGER epoch - age).
+        # Orchestrator heartbeats, keyed by session (mtime = INTEGER epoch - age).
         for session, spec in tick.get("heartbeats", {}).items():
             hb = sdir / session / "meta-agent-state.json"
             hb.write_text("{}", encoding="utf-8")

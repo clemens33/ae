@@ -2167,7 +2167,7 @@ prints the cited line's own text. What it proves is that the citation **resolves
 line**. What it does **not** prove is that the line is the RIGHT one for the claim beside
 it — a citation pointing confidently at a wrong-but-plausible line passes clean.
 
-The demonstration is exact: that tool would NOT have caught the `+8`-offset steward
+The demonstration is exact: that tool would NOT have caught the `+8`-offset orchestrator
 citations that motivated building it. `ae:16748` is a real line with real text. What caught
 them was a seat reading the source.
 

@@ -1067,8 +1067,8 @@ if _itest_section 'hostile PATH: ae must survive its own re-exec marker'; then
 # `#!/usr/bin/env bash` resolves to 3.2 and ae re-execs itself under a modern
 # bash. Anything ae then spawns that re-invokes ae through that same shebang
 # INHERITS the marker. While the marker was a boolean, the child saw it, skipped
-# the re-exec that would have saved it, and refused — and the steward autostart
-# child discards stderr, so it died in silence and the steward never came up.
+# the re-exec that would have saved it, and refused — and the orchestrator autostart
+# child discards stderr, so it died in silence and the orchestrator never came up.
 # The absolute-path ladder is what makes this recoverable: brew's bash is found
 # even though it is not on PATH here.
 _hostile_path="/usr/bin:/bin:/usr/sbin:/sbin"
@@ -1082,7 +1082,7 @@ assert_eq "hostile PATH: runaway re-exec count still refuses" "1" \
 assert_contains "hostile PATH: the refusal names the fix" "brew install bash" \
     "$(PATH="$_hostile_path" AE_BASH_REEXEC=9 "$AE" --version 2>&1 || true)"
 # Non-leakage into children is asserted structurally in tests/unit (`unset
-# AE_BASH_REEXEC`); its BEHAVIOURAL proof is the steward autostart block below,
+# AE_BASH_REEXEC`); its BEHAVIOURAL proof is the orchestrator autostart block below,
 # which spawns exactly such a child — run this suite under a hostile PATH and
 # that block exercises the real path end to end.
 
@@ -3086,9 +3086,9 @@ assert_contains "transfer: --help mentions --dry-run" "--dry-run" "$transfer_hel
 assert_contains "transfer: --help mentions --yes" "--yes" "$transfer_help_out"
 fi
 
-# ── Test: ae steward (legacy hub scaffold) — config isolation + hub compat ──
-if _itest_section 'Test: ae steward (legacy hub scaffold) — config isolation + hub compat'; then
-# The launcher must reproduce the start-steward wrapper's FULL isolation: a
+# ── Test: ae orchestrator (legacy hub scaffold) — config isolation + hub compat ──
+if _itest_section 'Test: ae orchestrator (legacy hub scaffold) — config isolation + hub compat'; then
+# The launcher must reproduce the start-orchestrator wrapper's FULL isolation: a
 # project's ./.ae/config must NOT override the standalone config (the worker-leak
 # class codex flagged as a BLOCKER). We run the DEPRECATED `ae hub` alias with a
 # legacy AE_HUB_DIR scaffold and assert (a) isolation holds and (b) the legacy
@@ -3142,36 +3142,36 @@ assert_eq "hub: rejects an extra positional (reserved-name leak guard)" "1" \
 assert_eq "hub: the extra-arg name was NOT created as a session" "1" \
     "$(tmux has-session -t other 2>/dev/null && echo 0 || echo 1)"
 
-# `ae steward --init` with a RELATIVE AE_STEWARD_DIR must still bake an ABSOLUTE
-# charter path into steward.config (else `ae steward` cd's in and rel/CHARTER.md
+# `ae orchestrator --init` with a RELATIVE AE_ORCHESTRATOR_DIR must still bake an ABSOLUTE
+# charter path into orchestrator.config (else `ae orchestrator` cd's in and rel/CHARTER.md
 # → rel/rel/...).
 REL_BASE="$TMPDIR/relbase"
 mkdir -p "$REL_BASE"
-(cd "$REL_BASE" && AE_STEWARD_DIR="relstw" "$AE" steward --init >/dev/null 2>&1)
-assert_contains "steward --init: relative AE_STEWARD_DIR yields an absolute CHARTER path" \
-    "$REL_BASE/relstw/CHARTER.md" "$(cat "$REL_BASE/relstw/steward.config" 2>/dev/null)"
+(cd "$REL_BASE" && AE_ORCHESTRATOR_DIR="relstw" "$AE" orchestrator --init >/dev/null 2>&1)
+assert_contains "orchestrator --init: relative AE_ORCHESTRATOR_DIR yields an absolute CHARTER path" \
+    "$REL_BASE/relstw/CHARTER.md" "$(cat "$REL_BASE/relstw/orchestrator.config" 2>/dev/null)"
 
 # `ae help` (the in-tool discovery surface) lists the new first-class command.
-assert_contains "help: lists 'ae steward'" "ae steward" "$("$AE" help 2>/dev/null)"
+assert_contains "help: lists 'ae orchestrator'" "ae orchestrator" "$("$AE" help 2>/dev/null)"
 
-# Canonical steward path: AE_STEWARD_DIR scaffold → session named 'steward'.
-STW_DIR="$TMPDIR/steward-canon"
-(AE_STEWARD_DIR="$STW_DIR" "$AE" steward --init >/dev/null 2>&1)
-assert_eq "steward --init: scaffolds steward.config + CHARTER.md" "1" \
-    "$([[ -f "$STW_DIR/steward.config" && -f "$STW_DIR/CHARTER.md" ]] && echo 1 || echo 0)"
-assert_contains "steward --init: config marks steward = true" "steward = true" \
-    "$(cat "$STW_DIR/steward.config" 2>/dev/null)"
+# Canonical orchestrator path: AE_ORCHESTRATOR_DIR scaffold → session named 'orchestrator'.
+STW_DIR="$TMPDIR/orchestrator-canon"
+(AE_ORCHESTRATOR_DIR="$STW_DIR" "$AE" orchestrator --init >/dev/null 2>&1)
+assert_eq "orchestrator --init: scaffolds orchestrator.config + CHARTER.md" "1" \
+    "$([[ -f "$STW_DIR/orchestrator.config" && -f "$STW_DIR/CHARTER.md" ]] && echo 1 || echo 0)"
+assert_contains "orchestrator --init: config marks orchestrator = true" "orchestrator = true" \
+    "$(cat "$STW_DIR/orchestrator.config" 2>/dev/null)"
 # Swap in the dummy agent so the session can actually launch in the harness.
-_sed_i 's|^claude = .*|claude = "bash"|' "$STW_DIR/steward.config"
-stw_launch_out="$(AE_STEWARD_DIR="$STW_DIR" "$AE" steward 2>&1)"
-wait_for_session "steward"
+_sed_i 's|^claude = .*|claude = "bash"|' "$STW_DIR/orchestrator.config"
+stw_launch_out="$(AE_ORCHESTRATOR_DIR="$STW_DIR" "$AE" orchestrator 2>&1)"
+wait_for_session "orchestrator"
 sleep 1
-assert_contains "steward: bare launch starts detached as session 'steward'" "Session 'steward' started." "$stw_launch_out"
-assert_contains "steward: meta_agent mode on via 'steward = true'" "meta_agent=true" \
-    "$(cat "$HOME/.ae/sessions/steward/meta" 2>/dev/null)"
-assert_eq "steward: rejects an extra positional (reserved-name leak guard)" "1" \
-    "$(AE_STEWARD_DIR="$STW_DIR" "$AE" steward other2 2>/dev/null; echo $?)"
-tmux kill-session -t steward 2>/dev/null || true
+assert_contains "orchestrator: bare launch starts detached as session 'orchestrator'" "Session 'orchestrator' started." "$stw_launch_out"
+assert_contains "orchestrator: meta_agent mode on via 'orchestrator = true'" "meta_agent=true" \
+    "$(cat "$HOME/.ae/sessions/orchestrator/meta" 2>/dev/null)"
+assert_eq "orchestrator: rejects an extra positional (reserved-name leak guard)" "1" \
+    "$(AE_ORCHESTRATOR_DIR="$STW_DIR" "$AE" orchestrator other2 2>/dev/null; echo $?)"
+tmux kill-session -t orchestrator 2>/dev/null || true
 
 # AE_HOME relocates ALL ae state away from $HOME/.ae WITHOUT swapping $HOME — the
 # isolation primitive for real-agent e2e (keep real $HOME for CLI auth, isolate ae
@@ -3186,18 +3186,18 @@ assert_eq "AE_HOME: session state lands under AE_HOME, not \$HOME/.ae" "1" \
     "$([[ -f "$ALT_AE_HOME/sessions/aehome-test/meta" && ! -e "$HOME/.ae/sessions/aehome-test" ]] && echo 1 || echo 0)"
 tmux kill-session -t aehome-test 2>/dev/null || true
 
-# `ae steward --init` under AE_HOME must scaffold into $AE_HOME/steward, not live
+# `ae orchestrator --init` under AE_HOME must scaffold into $AE_HOME/orchestrator, not live
 # ~/.ae (codex BLOCKER class: the dir previously defaulted to $HOME/.ae).
 HUB_AEH="$TMPDIR/stw-aehome"
-(cd "$TMPDIR" && AE_HOME="$HUB_AEH" "$AE" steward --init >/dev/null 2>&1)
-assert_eq "AE_HOME: steward --init scaffolds under AE_HOME, not \$HOME/.ae" "1" \
-    "$([[ -f "$HUB_AEH/steward/steward.config" && ! -e "$HOME/.ae/steward" ]] && echo 1 || echo 0)"
+(cd "$TMPDIR" && AE_HOME="$HUB_AEH" "$AE" orchestrator --init >/dev/null 2>&1)
+assert_eq "AE_HOME: orchestrator --init scaffolds under AE_HOME, not \$HOME/.ae" "1" \
+    "$([[ -f "$HUB_AEH/orchestrator/orchestrator.config" && ! -e "$HOME/.ae/orchestrator" ]] && echo 1 || echo 0)"
 # The charter's helper paths must point at the ISOLATED hub session dir, never the
 # live ~/.ae (the charter-path fix that unblocks hub e2e scenarios).
 assert_eq "AE_HOME: scaffolded charter helper paths point under AE_HOME, not ~/.ae" "1" \
-    "$([[ -f "$HUB_AEH/steward/CHARTER.md" ]] &&
-        grep -q "$HUB_AEH/sessions/steward/say" "$HUB_AEH/steward/CHARTER.md" &&
-        ! grep -q '[~]/.ae/sessions/steward' "$HUB_AEH/steward/CHARTER.md" && echo 1 || echo 0)"
+    "$([[ -f "$HUB_AEH/orchestrator/CHARTER.md" ]] &&
+        grep -q "$HUB_AEH/sessions/orchestrator/say" "$HUB_AEH/orchestrator/CHARTER.md" &&
+        ! grep -q '[~]/.ae/sessions/orchestrator' "$HUB_AEH/orchestrator/CHARTER.md" && echo 1 || echo 0)"
 
 # ae end conversation-file cleanup flag: KEEP by default, --purge-history opts in.
 REPO_KEEP="$(setup_repo)"
@@ -3294,52 +3294,52 @@ assert_eq "list (human): exits 0 when a per-session helper returns non-zero" "0"
 "$AE" end -f jsonrobust 2>/dev/null || true
 fi
 
-# ── steward companion autostart: scaffold → any launch brings it up ──
-if _itest_section 'steward companion autostart: scaffold → any launch brings it up'; then
-mkdir -p "$HOME/.ae/steward"
-cat > "$HOME/.ae/steward/steward.config" <<'EOF'
+# ── orchestrator companion autostart: scaffold → any launch brings it up ──
+if _itest_section 'orchestrator companion autostart: scaffold → any launch brings it up'; then
+mkdir -p "$HOME/.ae/orchestrator"
+cat > "$HOME/.ae/orchestrator/orchestrator.config" <<'EOF'
 [agents]
 dummy = "bash"
 
 [workspace]
-main = dummy:steward
-steward = true
+main = dummy:orchestrator
+orchestrator = true
 watchdog = false
 EOF
 REPO_AS="$(setup_repo)"
 (cd "$REPO_AS" && "$AE" --local autostart-host &) 2>/dev/null
 wait_for_session "autostart-host"
 as_i=0
-while ! tmux has-session -t steward 2>/dev/null && ((as_i < 20)); do
+while ! tmux has-session -t orchestrator 2>/dev/null && ((as_i < 20)); do
     sleep 0.5
     as_i=$((as_i + 1))
 done
-assert_eq "autostart: steward companion comes up with a fleet launch" "0" \
-    "$(tmux has-session -t steward 2>/dev/null; echo $?)"
-# Existing-session fast path (codex IMPORTANT): steward down + re-running
+assert_eq "autostart: orchestrator companion comes up with a fleet launch" "0" \
+    "$(tmux has-session -t orchestrator 2>/dev/null; echo $?)"
+# Existing-session fast path (codex IMPORTANT): orchestrator down + re-running
 # 'ae <existing>' must bring it back (previously only the bridge was ensured).
-"$AE" stop steward 2>/dev/null || true
+"$AE" stop orchestrator 2>/dev/null || true
 sleep 0.5
 (cd "$REPO_AS" && "$AE" --local autostart-host &) 2>/dev/null
 as_i=0
-while ! tmux has-session -t steward 2>/dev/null && ((as_i < 20)); do
+while ! tmux has-session -t orchestrator 2>/dev/null && ((as_i < 20)); do
     sleep 0.5
     as_i=$((as_i + 1))
 done
-assert_eq "autostart: existing-session relaunch revives the steward" "0" \
-    "$(tmux has-session -t steward 2>/dev/null; echo $?)"
-"$AE" stop steward 2>/dev/null || true
+assert_eq "autostart: existing-session relaunch revives the orchestrator" "0" \
+    "$(tmux has-session -t orchestrator 2>/dev/null; echo $?)"
+"$AE" stop orchestrator 2>/dev/null || true
 "$AE" end -f autostart-host 2>/dev/null || true
 sleep 0.5
-# Opt-out honoured: AE_NO_AUTOSTART=1 must not bring the steward back.
+# Opt-out honoured: AE_NO_AUTOSTART=1 must not bring the orchestrator back.
 REPO_AS2="$(setup_repo)"
 (cd "$REPO_AS2" && AE_NO_AUTOSTART=1 "$AE" --local autostart-off &) 2>/dev/null
 wait_for_session "autostart-off"
 sleep 2
-assert_eq "autostart: AE_NO_AUTOSTART=1 keeps the steward down" "1" \
-    "$(tmux has-session -t steward 2>/dev/null && echo 0 || echo 1)"
+assert_eq "autostart: AE_NO_AUTOSTART=1 keeps the orchestrator down" "1" \
+    "$(tmux has-session -t orchestrator 2>/dev/null && echo 0 || echo 1)"
 "$AE" end -f autostart-off 2>/dev/null || true
-rm -rf "$HOME/.ae/steward"
+rm -rf "$HOME/.ae/orchestrator"
 sleep 0.5
 fi
 
@@ -3409,7 +3409,7 @@ assert_eq "aewatch-autostart: no-op when running + FRESH heartbeat (fast path)" 
 assert_eq "aewatch-autostart: RESTARTS when running + STALE heartbeat (blocker guard)" "yes" "$([[ "$(_aw_run 0 stale 0)" == invoked:* ]] && echo yes || echo no)"
 # #28: rc 2 is UNKNOWN, not absent. `up` kills and recreates the daemon session,
 # so a tmux that could not answer must produce NO launch at all — the same
-# fail-toward-nothing rule the steward autostart follows.
+# fail-toward-nothing rule the orchestrator autostart follows.
 assert_eq "aewatch-autostart: UNKNOWN tmux (rc 2) never launches (#28)" "noop" "$(_aw_run 2 none 0)"
 assert_eq "aewatch-autostart: UNKNOWN tmux does not restart on a stale heartbeat either" "noop" "$(_aw_run 2 stale 0)"
 assert_eq "aewatch-autostart: AE_NO_AUTOSTART=1 skips" "noop" "$(_aw_run 1 none 1)"
@@ -3755,7 +3755,7 @@ fi
 if _itest_section '#28 boundary: ONE definition, BOTH runtimes'; then
 # Round-3 BLOCKER. daemon_session_running lived ONLY inside the telegram daemon's
 # single-quoted heredoc, so ae's own top-level callers
-# (_steward_autostart_if_scaffolded, _aewatch_autostart_if_available) invoked an
+# (_orchestrator_autostart_if_scaffolded, _aewatch_autostart_if_available) invoked an
 # UNDEFINED command: rc 127, swallowed by their `2>/dev/null`, which is neither
 # "running" nor "unknown" and therefore fell straight through to CREATE — the
 # fix for #28 never ran on the live attach path at all. The reverse hole came
@@ -3819,13 +3819,13 @@ tg_run="$(AE_HOME="$TGB/aehome" HOME="$TGB/fakehome" "${BASH:-bash}" -c '
         for f in daemon_session_running _tmux_err_is_clean_dead; do
             if declare -F "$f" >/dev/null 2>&1; then echo "gen:PRESENT $f"; else echo "gen:MISSING $f"; fi
         done
-        tmux() { printf "aedev\nsteward\n"; }
-        daemon_session_running steward; echo "running=$?"
+        tmux() { printf "aedev\norchestrator\n"; }
+        daemon_session_running orchestrator; echo "running=$?"
         daemon_session_running hub;     echo "absent=$?"
         tmux() { echo "no server running on /tmp/x" >&2; return 1; }
-        daemon_session_running steward; echo "stale=$?"
+        daemon_session_running orchestrator; echo "stale=$?"
         tmux() { echo "error connecting to /tmp/x (No such file or directory)" >&2; return 1; }
-        daemon_session_running steward; echo "enoent=$?"
+        daemon_session_running orchestrator; echo "enoent=$?"
     } >&9
 ' _ "$TGB/nomain.sh")"
 assert_eq "#28 boundary: the generated daemon carries BOTH reviewed functions" "1" \

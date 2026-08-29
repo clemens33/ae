@@ -1,10 +1,10 @@
-"""Phase-2 Slice 10 contract: meta-agent (steward) sweep cadence + wedge.
+"""Phase-2 Slice 10 contract: meta-agent (orchestrator) sweep cadence + wedge.
 
 The main agent of a meta session (meta_agent=true) is a long-running SERVICE, so
 "idle between sweeps" is NORMAL, not stale. Instead of the stale-nudge path, the
 watchdog (ae:7719-7798): (a) prompts a sweep every SWEEP_SECS (a nudge with a fixed
 'Run your sweep now: …' paste + summary 'sweep cadence', actor 'watchdog'), and
-(b) guards liveness via the steward's OWN heartbeat file (meta-agent-state.json) —
+(b) guards liveness via the orchestrator's OWN heartbeat file (meta-agent-state.json) —
 if it stops advancing after we've prompted long enough, raise ONE wedge alert
 (actor 'human') + display, cleared on recovery.
 

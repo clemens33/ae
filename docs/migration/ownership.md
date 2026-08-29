@@ -364,7 +364,7 @@ consuming operation, never an independent flip; gate finding b29dac92, blocker 4
   operation owning tmux realization). What the design must cover before any ruling:
   op2's REAL effect set is not just attach — tmux session/window/pane creation, agent
   launch, async SID capture (D13), per-session ae-monitor window
-  (`_monitor_ensure_events_pane`), watchdog/telegram/steward hooks; `tmux attach` runs
+  (`_monitor_ensure_events_pane`), watchdog/telegram/orchestrator hooks; `tmux attach` runs
   after `new-session`, so an attach failure can leave a LIVE session (a "no state writes /
   stopped-but-launchable" claim is false without a rollback matrix); durable
   prepared-state marker + idempotent re-entry + full failure/rollback matrix required.
@@ -593,26 +593,26 @@ consuming operation, never an independent flip; gate finding b29dac92, blocker 4
 - current owner: bash
 - planned owner/fate: **rust at P4**
 
-### D29a — steward scaffolding (`ae steward --init`)
+### D29a — orchestrator scaffolding (`ae orchestrator --init`)
 
-- effects: steward dir scaffolding (`AE_STEWARD_DIR`: steward.config, CHARTER.md — never
+- effects: orchestrator dir scaffolding (`AE_ORCHESTRATOR_DIR`: orchestrator.config, CHARTER.md — never
   overwrites)
-- current writer/call path: `cmd_steward_init`
+- current writer/call path: `cmd_orchestrator_init`
 - current owner: **bash (product surface)**
 - planned owner/fate: **rust at P4**
 
-### D29b — steward session launch
+### D29b — orchestrator session launch
 
-- effects: detached steward session launch (isolated config), autostart hook
+- effects: detached orchestrator session launch (isolated config), autostart hook
   (`AE_NO_AUTOSTART` gate). The per-session ae-monitor window is NOT here: it is created
   by `_monitor_ensure_events_pane` on every session launch — a D17 effect (gate finding
   a1358882)
-- current writer/call path: `cmd_steward` family
+- current writer/call path: `cmd_orchestrator` family
 - locks / atomicity: TBD
 - current owner: **bash (product surface)**
 - planned owner/fate: **rust at P4** — one operation including its tmux calls
 
-### D30a — aesteward templates (static files)
+### D30a — aeorchestrator templates (static files)
 
 - effects / call path: none at runtime — static templates CONSUMED by D29a (bash) at
   scaffold time; python owns only the source tree

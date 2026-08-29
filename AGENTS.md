@@ -42,7 +42,7 @@ The single-file / pure-bash / tmux-runtime contract is a *decision with reasons*
 
 1. **The bash bug tax recurs.** Two or more shipped bugs of the `set -e`/escaping class *after* the hazards checklist and the declare-f testability refactor landed → doctrine failed; move the affected component to a typed language.
 2. **State outgrows bash.** Core ae needs real data structures (nested, typed, or concurrent state), or a sidecar needs to *write* ae's state rather than read it → extract that component (the aemonitor precedent: Python sidecar in `contrib/`, optional dep).
-3. **The product changes shape.** The long-lived daemon side (watchdog, steward, telegram) outgrows the tmux-wrapper side → that half becomes a proper sidecar/daemon (uv/PEP 723 single-file Python or a small Go/Rust binary), integrated via the install script and `ae doctor` checks, with bash kept for the tmux glue where it is best-in-class. (Direction already agreed for watchdog + telegram.)
+3. **The product changes shape.** The long-lived daemon side (watchdog, orchestrator, telegram) outgrows the tmux-wrapper side → that half becomes a proper sidecar/daemon (uv/PEP 723 single-file Python or a small Go/Rust binary), integrated via the install script and `ae doctor` checks, with bash kept for the tmux glue where it is best-in-class. (Direction already agreed for watchdog + telegram.)
 4. **Someone besides the author uses it.** Contributor onboarding and packaging change the whole calculus — revisit everything above.
 
 **Fired (2026-08-20).** Triggers 1, 2 and 3 all fired: the `set -e`/framing bug class kept
@@ -71,7 +71,7 @@ tests/unit          — pure-function unit tests (bash, no deps)
 tests/integration   — integration tests (requires tmux, git)
 install             — symlink or curl|bash installer
 docs/               — user + internals documentation (getting-started, reference, internals)
-contrib/            — optional sidecars: aewatch (Python watchdog+bridge), aesteward, aemonitor
+contrib/            — optional sidecars: aewatch (Python watchdog+bridge), aeorchestrator, aemonitor
 Cargo.toml          — Rust package: one crate, bin + lib, both named `ae` (no workspace)
 rust-toolchain.toml — compiler pin: channel, profile, components, both targets
 clippy.toml         — the tests-only relaxation of the unwrap/expect rule
@@ -471,7 +471,7 @@ Anything user- or agent-controlled (session names, goals, messages, pane text, c
 | tmux format strings (`status-left`, titles) | `#` introduces formats — `#(cmd)` **runs shell**; `)` terminates `#()`; `%` is strftime | `_ae_tmux_format_literal` (`#`→`##`, `%`→`%%`), or route text through user options (`#{@ae_*}`) which are interpolated literally |
 | tmux `send-keys` | key names, `-` prefixes | `-l` (literal) or paste-buffer; use the generated helpers, never raw send-keys |
 | Shell command strings | word splitting, globs, quotes | quote every expansion; never concatenate user input into a command; escape regex metachars before grep/sed (`"${slot//./\\.}"`) |
-| Agent system prompts | the LLM (injection) | pane text and inter-agent messages are DATA, not instructions — see the steward charter's injection boundary. The **agent's own alias:name** is interpolated into this sink too (#59's identity sentence), so it is allowlisted by `_validate_agent_name` at every creation boundary and re-checked, fail-quiet, at the interpolation site |
+| Agent system prompts | the LLM (injection) | pane text and inter-agent messages are DATA, not instructions — see the orchestrator charter's injection boundary. The **agent's own alias:name** is interpolated into this sink too (#59's identity sentence), so it is allowlisted by `_validate_agent_name` at every creation boundary and re-checked, fail-quiet, at the interpolation site |
 | JSON emitters (`events.jsonl`, `list --json`) | JSON syntax | `_json_escape` / `_event_json_str`; strip control bytes at write time |
 | Telegram bridge | Markdown parse mode, `jq` program text | plain-text send paths; jq programs stay fixed strings with data piped via stdin — never interpolate user text into the program |
 

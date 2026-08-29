@@ -19,10 +19,10 @@
 //!
 //! # The meta-agent sweep
 //!
-//! The frozen watchdog's steward branch (ae:16738-16897) IS ported: sweep
+//! The frozen watchdog's orchestrator branch (ae:16738-16897) IS ported: sweep
 //! cadence, heartbeat wedge detection and its own two alerts. It applies to the
-//! steward MAIN agent alone (SC-935) and it replaces every ordinary branch for
-//! that pane — a steward idling between sweeps is a service at rest, not a
+//! orchestrator MAIN agent alone (SC-935) and it replaces every ordinary branch for
+//! that pane — an orchestrator idling between sweeps is a service at rest, not a
 //! stale agent. The decisions are [`crate::watchdog`]'s
 //! ([`crate::watchdog::sweep_step`] / [`crate::watchdog::record_sweep`]); this
 //! module reads the heartbeat, delivers the prompt and books what happened.
@@ -89,7 +89,7 @@ pub struct Knobs {
     pub quiet_tries: usize,
     /// How many panes may pay that beat in one cycle.
     pub quiet_panes_per_cycle: usize,
-    /// The steward sweep cadence, retry and bound (ae:16435-16448).
+    /// The orchestrator sweep cadence, retry and bound (ae:16435-16448).
     pub sweep: SweepKnobs,
 }
 
@@ -133,8 +133,8 @@ pub struct PaneState {
     /// The armed quiet baseline: the declaration's full-tuple key and the hash
     /// the pane settled on.
     pub quiet_base: Option<(String, u64)>,
-    /// The steward sweep branch's carry. Untouched for every pane that is not
-    /// the steward main (SC-935).
+    /// The orchestrator sweep branch's carry. Untouched for every pane that is not
+    /// the orchestrator main (SC-935).
     pub sweep: SweepState,
 }
 
@@ -159,7 +159,7 @@ pub struct Observation {
     pub descendancy: Descendancy,
     /// Age of the newest event this agent is the ACTOR of (ae:15520-15537).
     pub last_actor_event_age_secs: u64,
-    /// The steward sweep reading, `Some` ONLY for the steward main agent with
+    /// The orchestrator sweep reading, `Some` ONLY for the orchestrator main agent with
     /// the cadence enabled (SC-935 + SC-1405b). Every other pane carries `None`
     /// and is judged by the ordinary branches.
     pub sweep: Option<SweepObservation>,
@@ -179,7 +179,7 @@ pub enum Verdict {
     Stale,
     /// Moving, recently moved, or recently active in the log.
     Active,
-    /// The steward main, judged by its own cadence rather than by silence.
+    /// The orchestrator main, judged by its own cadence rather than by silence.
     Meta(SweepVerdict),
 }
 
@@ -218,7 +218,7 @@ pub enum Effect {
     /// A line for the human, which bash publishes with `display-message`
     /// (ae:16516 and siblings) — the watchdog interprets, bash shows.
     Notify(String),
-    /// Deliver one SWEEP prompt to the steward (ae:16833-16841). A separate
+    /// Deliver one SWEEP prompt to the orchestrator (ae:16833-16841). A separate
     /// effect from [`Effect::Nudge`]: different text, a different frozen event
     /// summary, and a different post-delivery accounting.
     SweepNudge,
@@ -358,7 +358,7 @@ fn book_stale(
     }
 }
 
-/// The steward main's sweep branch (ae:16738-16897), or `None` when this pane
+/// The orchestrator main's sweep branch (ae:16738-16897), or `None` when this pane
 /// is not it.
 ///
 /// A `Some` verdict means the cadence DECIDED this pane and every branch after
@@ -366,11 +366,11 @@ fn book_stale(
 /// "Idle between sweeps" is what a monitor at rest looks like, and nudging it
 /// to declare a state would be nudging the thing that watches the nudging. The
 /// dead check runs BEFORE this and the missing-pane sweep runs after the loop,
-/// so a crashed or vanished steward is still caught.
+/// so a crashed or vanished orchestrator is still caught.
 ///
 /// Two separate `None`s, and they mean the same thing to the caller — run the
 /// ordinary branches — for different reasons. `seen.sweep` is `None` for every
-/// pane that is not the steward main (SC-935, decided at the observation).
+/// pane that is not the orchestrator main (SC-935, decided at the observation).
 /// [`sweep_step`] returns `None` for SC-1405b's disabled cadence. Neither is an
 /// empty accounting, which would suppress the stale watchdog as well.
 fn book_sweep(
@@ -396,7 +396,7 @@ fn book_sweep(
 ///
 /// 1. a LATCHED dead pane is skipped entirely (ae:16490-16495);
 /// 2. the dead check, which latches and alerts once (ae:16503-16519);
-/// 3. the steward main's sweep cadence, which REPLACES every branch below it
+/// 3. the orchestrator main's sweep cadence, which REPLACES every branch below it
 ///    for that one pane (ae:16738-16897);
 /// 4. the throttle streak CLEAR, which runs before every later branch so a
 ///    quiet agent's throttle still clears (ae:16713-16723);
@@ -443,7 +443,7 @@ pub fn account(prior: &PaneState, seen: &Observation, knobs: &Knobs) -> Accounti
         };
     }
 
-    // 3. The steward main's own cadence, which returns rather than falling
+    // 3. The orchestrator main's own cadence, which returns rather than falling
     //    through — see `book_sweep`.
     if let Some(verdict) = book_sweep(prior, &mut next, &mut effects, seen, knobs) {
         return Accounting {
@@ -635,7 +635,7 @@ pub const NO_EVENT_AGE: u64 = 999_999;
 /// literal in this file.
 const HELPER_NAME: &str = "send";
 
-/// The steward's heartbeat, at the FIXED name `<meta-dir>/meta-agent-state.json`
+/// The orchestrator's heartbeat, at the FIXED name `<meta-dir>/meta-agent-state.json`
 /// (ae:16747).
 ///
 /// This is the file `contrib/aemonitor` rewrites atomically on each real sweep.
@@ -661,7 +661,7 @@ const SWEEP_PROMPT: &str = "Run your sweep now: ae list --json, diff your state 
 /// reports `is_file() == false`, so a link is refused here whatever it points
 /// at. The frozen bash uses `[[ -f ]]`, which DOES follow: anything able to
 /// write in the session directory could aim the heartbeat at a file some other
-/// process touches often, and a wedged steward would be silenced by a link.
+/// process touches often, and a wedged orchestrator would be silenced by a link.
 /// This port refuses that, and the refusal is the reason the reading is a
 /// tri-state rather than a number — see [`crate::watchdog::Heartbeat`].
 ///
@@ -670,7 +670,7 @@ const SWEEP_PROMPT: &str = "Run your sweep now: ae list --json, diff your state 
 fn heartbeat_mtime(meta_dir: &Path) -> Option<SystemTime> {
     #[allow(
         clippy::disallowed_methods,
-        reason = "a door: lstat of the steward's heartbeat, so a symlinked state file is \
+        reason = "a door: lstat of the orchestrator's heartbeat, so a symlinked state file is \
                   refused rather than trusted — see clippy.toml"
     )]
     let lstat = std::fs::symlink_metadata(meta_dir.join(HEARTBEAT_NAME));
@@ -827,7 +827,7 @@ pub fn run(meta_dir: &Path, knobs: Knobs, err: &mut impl Write) -> crate::Result
                         session: &session,
                         goal: meta.goal().map(ToOwned::to_owned),
                         // Re-read EVERY cycle, like the goal and the roster: a
-                        // session can be promoted to steward, or its main
+                        // session can be promoted to orchestrator, or its main
                         // replaced, while this daemon runs.
                         meta_agent: is_meta_agent(bytes),
                         roster: meta.roster().to_vec(),
@@ -985,7 +985,7 @@ impl Carry {
     /// stabilization cursor. Carrying them across a move applies the OLD
     /// server's history to whatever the new one calls `%0` — latching a live
     /// pane dead, suppressing a nudge that is due, or resuming a sweep cadence
-    /// for a pane that is not the steward.
+    /// for a pane that is not the orchestrator.
     ///
     /// Nothing is salvageable by matching on something else, either: the
     /// display ref is not unique (`spawn` uniquifies only the numeric slot), so
@@ -1224,7 +1224,7 @@ struct Cycle<'a> {
     session: &'a str,
     goal: Option<String>,
     roster: Vec<RosterEntry>,
-    /// `meta_agent=true` — this session is the fleet steward. WHICH pane gets
+    /// `meta_agent=true` — this session is the fleet orchestrator. WHICH pane gets
     /// the cadence is the pane's own `@ae_slot`, not anything from meta.
     meta_agent: bool,
 }
@@ -1311,7 +1311,7 @@ impl Cycle<'_> {
                 descendancy: descendancy_of(table.as_deref(), pane.pane_pid, agent_bin.as_deref()),
                 last_actor_event_age_secs: last_actor_event_age(&events, agent, now),
                 // SC-935 is decided HERE, once, and the type carries the
-                // answer: a pane that is not the steward main gets `None` and
+                // answer: a pane that is not the orchestrator main gets `None` and
                 // no sweep branch can reach it. The heartbeat is read only for
                 // the pane that is, so an ordinary session never stats a file
                 // it has no use for.
@@ -1589,7 +1589,7 @@ impl Cycle<'_> {
             // Unreachable by construction: only the sweep branch emits this
             // effect, and it runs only where the observation exists. Reported
             // rather than assumed away, because a silent no-op here would be a
-            // steward that is never prompted again.
+            // orchestrator that is never prompted again.
             writeln!(
                 err,
                 "ae: watchdog: sweep prompt for {} had no sweep reading — skipped",
@@ -1599,7 +1599,7 @@ impl Cycle<'_> {
         };
         // Delivery is CHECKED (SC-936). The status means "delivered AND
         // logged", which makes this AT-LEAST-ONCE (SC-939a): an event-write
-        // failure after a successful paste re-prompts a steward that already
+        // failure after a successful paste re-prompts an orchestrator that already
         // swept. A duplicate sweep is cheap; a dropped one is a blind spot.
         let delivered = self.deliver(on.agent, SWEEP_PROMPT, "sweep cadence");
         let booked = record_sweep(
@@ -1628,7 +1628,7 @@ impl Cycle<'_> {
     /// exactly as it does for bash.
     ///
     /// The frozen action is `nudge` for BOTH the stale nudge (ae:16884-16897)
-    /// and the steward's sweep prompt (ae:16833-16841); only the summary
+    /// and the orchestrator's sweep prompt (ae:16833-16841); only the summary
     /// distinguishes them, which is why `summary` is the one thing that varies.
     ///
     /// `true` means delivered. It is the helper's own status, which means
@@ -1830,12 +1830,12 @@ fn read_events(meta_dir: &Path) -> Vec<Event> {
         .collect()
 }
 
-/// Whether the meta declares this session the fleet steward — bash's
+/// Whether the meta declares this session the fleet orchestrator — bash's
 /// `META_AGENT` (ae:16458, compared at ae:16739).
 ///
 /// EXACTLY ONE `meta_agent` record, whose value is EXACTLY `true`. Anything
 /// else — absent, `1`, `yes`, `True`, or the key named TWICE — is not the
-/// steward.
+/// orchestrator.
 ///
 /// # Why a duplicate must fail, and why that is the SAFE direction
 ///
@@ -1843,7 +1843,7 @@ fn read_events(meta_dir: &Path) -> Vec<Event> {
 /// `meta_agent=true` twice, or `true` beside `false`, makes a value with a
 /// NEWLINE in it — which equals neither, so `== "true"` is false and the pane
 /// keeps the NORMAL watchdog. Reading only the FIRST record made
-/// `true\nfalse` and `true\ntrue` both say steward, which is a divergence in
+/// `true\nfalse` and `true\ntrue` both say orchestrator, which is a divergence in
 /// the dangerous direction: the sweep branch REPLACES stale escalation, so a
 /// misread flag turns off the watchdog for an ordinary agent on the strength
 /// of a record whose meaning is in doubt. Failing closed keeps the escalation.
@@ -1962,7 +1962,7 @@ mod tests {
             source.matches(concat!("transport::", "deliver(")).count(),
             1,
             "a second delivery site is a second thing to audit — BOTH nudges (stale and the \
-             steward's sweep prompt) route through `Cycle::deliver`, which is that one site"
+             orchestrator's sweep prompt) route through `Cycle::deliver`, which is that one site"
         );
         assert_eq!(
             source
@@ -2719,7 +2719,7 @@ mod tests {
         );
     }
 
-    // -- the steward sweep branch ------------------------------------------
+    // -- the orchestrator sweep branch ------------------------------------------
 
     /// A scratch directory, for the one reading this module takes from the
     /// filesystem.
@@ -2743,7 +2743,7 @@ mod tests {
     }
 
     #[test]
-    fn the_steward_main_is_judged_by_its_cadence_and_nothing_below_it() {
+    fn the_orchestrator_main_is_judged_by_its_cadence_and_nothing_below_it() {
         // The CONTROL is the pair: one Observation, judged twice. With no sweep
         // reading the ordinary branches call this pane STALE and nudge it; with
         // one, the cadence decides and every branch below is skipped. That is
@@ -2755,9 +2755,9 @@ mod tests {
         assert_eq!(plain.verdict, Verdict::Stale);
         assert_eq!(plain.effects, vec![Effect::Nudge]);
 
-        let mut steward = ordinary.clone();
-        steward.sweep = Some(SweepObservation::new(at(0), None, &knobs.sweep));
-        let booked = account(&prior, &steward, &knobs);
+        let mut orchestrator = ordinary.clone();
+        orchestrator.sweep = Some(SweepObservation::new(at(0), None, &knobs.sweep));
+        let booked = account(&prior, &orchestrator, &knobs);
         assert_eq!(booked.verdict, Verdict::Meta(SweepVerdict::MetaStarting));
         assert_eq!(
             booked.effects,
@@ -2767,10 +2767,10 @@ mod tests {
     }
 
     #[test]
-    fn a_disabled_cadence_returns_the_steward_to_the_ordinary_watchdog() {
+    fn a_disabled_cadence_returns_the_orchestrator_to_the_ordinary_watchdog() {
         // SC-1405b, from the daemon's side: `sweep_step` answering `None` must
         // FALL THROUGH, not suppress. An empty accounting here would leave a
-        // steward main watched by nothing at all.
+        // orchestrator main watched by nothing at all.
         let knobs = Knobs {
             sweep: crate::watchdog::SweepKnobs {
                 sweep_secs: 0,
@@ -2786,9 +2786,9 @@ mod tests {
     }
 
     #[test]
-    fn a_dead_steward_is_dead_before_it_is_a_cadence() {
+    fn a_dead_orchestrator_is_dead_before_it_is_a_cadence() {
         // Branch order: the dead check runs BEFORE the sweep branch, so a
-        // steward that dropped to a shell still alerts instead of being
+        // orchestrator that dropped to a shell still alerts instead of being
         // reported as starting up forever.
         let knobs = Knobs::default();
         let mut observed = seen();
@@ -2844,7 +2844,7 @@ mod tests {
 
     #[test]
     fn the_sweep_prompt_is_the_frozen_sentence() {
-        // The text a steward acts on. Broken across source lines, so assert the
+        // The text an orchestrator acts on. Broken across source lines, so assert the
         // assembled value rather than trusting the continuations.
         assert_eq!(
             SWEEP_PROMPT,
@@ -2855,7 +2855,7 @@ mod tests {
     }
 
     #[test]
-    fn the_steward_flag_is_read_strictly_and_fails_closed_on_a_doubled_record() {
+    fn the_orchestrator_flag_is_read_strictly_and_fails_closed_on_a_doubled_record() {
         // A session that gets the sweep branch stops being escalated for
         // silence, so the flag is EXACTLY ONE record saying EXACTLY `true`.
         //
@@ -2866,7 +2866,7 @@ mod tests {
         let cases: [(&str, bool); 9] = [
             ("session=x\nmeta_agent=true\n", true),
             // The two that a first-value read got WRONG, in the dangerous
-            // direction: it answered "steward" and switched OFF stale
+            // direction: it answered "orchestrator" and switched OFF stale
             // escalation on the strength of a record whose meaning is in doubt.
             ("meta_agent=true\nmeta_agent=false\n", false),
             ("meta_agent=true\nmeta_agent=true\n", false),
@@ -2881,7 +2881,7 @@ mod tests {
             assert_eq!(
                 is_meta_agent(meta.as_bytes()),
                 want,
-                "{meta:?} must read steward={want}"
+                "{meta:?} must read orchestrator={want}"
             );
         }
     }
@@ -2890,7 +2890,7 @@ mod tests {
     fn the_heartbeat_is_lstatted_so_a_symlink_is_never_trusted() {
         // THE SAFETY PIN. bash's `[[ -f ]]` FOLLOWS symlinks, so anything able
         // to write in the session directory could aim the heartbeat at a file
-        // some other process touches often and silence a wedged steward. The
+        // some other process touches often and silence a wedged orchestrator. The
         // control is the pair: the same target file, reached directly, IS
         // trusted; reached through a link, it is not.
         let scratch = Scratch::new("hb");

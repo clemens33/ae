@@ -81,7 +81,7 @@ visible name), and on its right a roster of every registered agent:
 The glyphs are the **watchdog's verdict** for each agent — never a claim about what an
 agent is "doing" (it cannot see that): `●` it saw the pane advance, `✔` declared done,
 `⏳` waiting on you, `⛔` blocked, `◌` stale/nudged, `⚡` throttled, `✖` dead or its pane
-is gone, `👁` the steward swept recently, `·` no verdict this cycle. The roster is keyed
+is gone, `👁` the orchestrator swept recently, `·` no verdict this cycle. The roster is keyed
 by the agents in session meta, so an agent whose pane vanished still holds its slot as
 `✖` rather than quietly disappearing from the line. The same glyphs appear per window in
 the window list, so attention maps onto the windows you already scan. Everything is
@@ -122,7 +122,7 @@ The watchdog reads its tunables from environment variables (set them in the sess
 | `AE_WATCHDOG_MAX_NUDGES` | 2 | Nudges before escalating to alert |
 | `AE_WATCHDOG_THROTTLE_ALERT_CYCLES` | 5 | Cycles of continuous upstream throttle before alert |
 | `AE_WATCHDOG_TG_SUPERVISE_SEC` | 120 | Telegram-bridge revive cadence in seconds (`0` disables) |
-| `AE_WATCHDOG_SWEEP_SEC` | 300 | Steward/meta-agent sweep cadence in seconds (`0` falls back to the normal watchdog) |
+| `AE_WATCHDOG_SWEEP_SEC` | 300 | Orchestrator/meta-agent sweep cadence in seconds (`0` falls back to the normal watchdog) |
 | `AE_WATCHDOG_SWEEP_RETRY_SEC` | 30 | After an UNDELIVERED sweep nudge, retry this soon instead of waiting a full `AE_WATCHDOG_SWEEP_SEC` (clamped to it; floor — lands on the next poll) |
 | `AE_WATCHDOG_SWEEP_RETRY_MAX` | 6 | Fast retries allowed before falling back to normal cadence and raising one `meta-agent unreachable` alert |
 
@@ -148,7 +148,7 @@ dev    = "claude --permission-mode bypassPermissions --model claude-opus-5 --eff
 devx   = "grok --always-approve -m grok-4.6 --effort high"
 # cross-model review seat (spawned per slice, retired after)
 review = "codex --yolo -m gpt-5.6-sol -c model_reasoning_effort=xhigh"
-# leads / steward / hardest work
+# leads / orchestrator / hardest work
 best   = "claude --permission-mode bypassPermissions --model fable --effort xhigh"
 
 [workspace]
@@ -156,7 +156,7 @@ main = best:lead
 workers = codex:coworker
 ```
 
-Role guidance: leads and the steward run `optimal`/`best`; cross-model
+Role guidance: leads and the orchestrator run `optimal`/`best`; cross-model
 reviews run `codex` (a different model family sees different bugs);
 chores/tests/CI run `fast`; scoped implementation runs `standard`.
 Spawned workers must never wait on approval prompts (they stall unattended

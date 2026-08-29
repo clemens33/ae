@@ -22,7 +22,7 @@ Works with [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex
 - **Nothing touches your repo** -- session state lives in `~/.ae/sessions/`. Your working directory stays clean.
 - **Tiered delegation** -- leads run the strongest model; bounded chores go to cheap spawned workers in their own tmux windows, reviewed and retired. Convention, not machinery ([docs](docs/reference/delegation.md)).
 - **A status bar that answers "who needs me"** -- inside its sessions ae owns the tmux footer: session, git branch, and watchdog health on line one; the focused agent plus a whole-org roster showing the watchdog's verdict per agent (`lead● colead✔ builder◌ grok⚡`) on line two. Verdicts, never claims.
-- **A chief of staff on your phone** -- the optional steward session watches your whole fleet and reports over Telegram; tell it your objective and it helps you hold it.
+- **A chief of staff on your phone** -- the optional orchestrator session watches your whole fleet and reports over Telegram; tell it your objective and it helps you hold it.
 - **Single bash script** -- no frameworks, no runtimes, no abstractions. Just bash, tmux, and git. Optional companions live in `contrib/` and are never required.
 
 ## Install
@@ -176,8 +176,8 @@ Everything else is an **optional companion** under `contrib/`, never required fo
 | Companion | What | Deps |
 |---|---|---|
 | `ae telegram` | machine-global bridge: fleet events to your Telegram chat, replies route back | `jq` + `curl` |
-| `ae steward` ([contrib/aesteward](contrib/aesteward)) | the fleet's chief of staff: monitors every session, relays and reports, guards an objective once you set one | an agent CLI |
-| [contrib/aemonitor](contrib/aemonitor) | deterministic sweep helper the steward uses | Python 3 stdlib |
+| `ae orchestrator` ([contrib/aeorchestrator](contrib/aeorchestrator)) | the fleet's chief of staff: monitors every session, relays and reports, guards an objective once you set one | an agent CLI |
+| [contrib/aemonitor](contrib/aemonitor) | deterministic sweep helper the orchestrator uses | Python 3 stdlib |
 | [contrib/aewatch](contrib/aewatch) | next-gen watchdog + bridge as a single-file Python sidecar (PEP 723, stdlib-only), built test-first against a dual-run oracle that proves byte-exact parity with the bash watchdog | Python >= 3.11 |
 
 That last one is deliberate honesty rather than scope creep: the long-running daemon half (watchdog, bridge) is where bash hurts most, so it is being carved out under strict behavioral-parity testing -- per the revisit triggers in [AGENTS.md](AGENTS.md). The tmux-glue half, where bash is best-in-class, stays bash. Companions start automatically once you opt in; `AE_NO_AUTOSTART=1` skips.

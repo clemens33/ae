@@ -17,8 +17,8 @@ ae watchdog <start|stop|status> [name]
                        Toggle the stale-agent watchdog (per-session, persists across resume)
 ae telegram <setup|start|stop|status>
                        Machine-global Telegram bridge — see Telegram bridge reference
-ae steward [--attach|--init]
-                       Ensure the detached steward (meta-agent) is running; --attach
+ae orchestrator [--attach|--init]
+                       Ensure the detached orchestrator (meta-agent) is running; --attach
                        switches to it (--init scaffolds config + charter)
 ae stop [name]         Pause session, keep ae + agent conversation state for resume
 ae transfer <name> <ssh-target> [--pull]  Move a stopped session (incl. Claude/Codex conversation files) to/from another machine
@@ -126,7 +126,7 @@ table above); each agent's `reason` is its own contribution. `goal_set_epoch`
 is when the goal was last set (age it for staleness); `branch` is the
 session's live git branch (from the watchdog's status segment, with a git
 fallback) — together with `name`, `origin` and `mode` they give a consumer
-(e.g. the steward) the session's context without any manual bookkeeping.
+(e.g. the orchestrator) the session's context without any manual bookkeeping.
 `schema_version` lets consumers gate on shape. `attention_rank` is the numeric
 severity (`dead` 6 → `unanswered` 1); richer per-agent timing fields are a
 planned addition.
@@ -184,14 +184,14 @@ ae watchdog status my-feature
 
 The [watchdog](../internals/watchdog.md) is on by default — only an explicit `false` / `no` / `off` / `0` in config or session meta keeps it off. `watchdog start` is idempotent; running it again just confirms the meta flag.
 
-### Meta-agent (steward) sweep cadence
+### Meta-agent (orchestrator) sweep cadence
 
-A session marked as the fleet steward with `[workspace] steward = true` (or its
+A session marked as the fleet orchestrator with `[workspace] orchestrator = true` (or its
 legacy aliases `hub = true` / `meta = true`; persisted to
 its meta as `meta_agent=true`) gets a different watchdog behaviour for its **main
 agent**: instead of the stale-nudge watchdog, the watchdog sends a *"run your sweep
 now"* nudge every `AE_WATCHDOG_SWEEP_SEC` seconds (default 300) and never escalates
-the steward to a stale `attn:` alert (idle between sweeps is normal for a monitor).
+the orchestrator to a stale `attn:` alert (idle between sweeps is normal for a monitor).
 Workers/spawned agents in the same session keep the normal watchdog.
 
 Sweep nudges are **delivery-checked**. A nudge can fail to land — the target's shell
@@ -202,74 +202,74 @@ waiting a full sweep window. After `AE_WATCHDOG_SWEEP_RETRY_MAX` (default 6) fas
 retries the watchdog falls back to the normal cadence and raises one
 `meta-agent unreachable` alert, cleared when a nudge next lands. Delivery is
 **at-least-once**: a nudge that lands but fails to write its event is retried, so the
-steward may occasionally sweep twice — a redundant sweep is cheap, a silently dropped
+orchestrator may occasionally sweep twice — a redundant sweep is cheap, a silently dropped
 one is not.
 
 Liveness is still guarded two ways: the dead/missing-pane checks catch a crashed
-steward, and a **heartbeat** check catches a *live-but-not-sweeping* steward (model
-stall, upstream throttle, wedge) — the steward's sweep helper rewrites
-`~/.ae/sessions/<steward>/meta-agent-state.json` on each real sweep, and if that mtime
+orchestrator, and a **heartbeat** check catches a *live-but-not-sweeping* orchestrator (model
+stall, upstream throttle, wedge) — the orchestrator's sweep helper rewrites
+`~/.ae/sessions/<orchestrator>/meta-agent-state.json` on each real sweep, and if that mtime
 stops advancing past ~`2×AE_WATCHDOG_SWEEP_SEC` the watchdog raises one alert (cleared on
 recovery). This is the file [`contrib/aemonitor`](../../contrib/aemonitor/) writes
-by default; if you override its `--state` path for the steward, point it at this same
+by default; if you override its `--state` path for the orchestrator, point it at this same
 file or the watchdog heartbeat will false-alarm. The sweep nudges use `action=nudge`,
 which is **not in the default telegram include set**, so routine sweeps don't
 reach your phone (a custom `include` containing `nudge` would forward them).
 
-## `ae steward`
+## `ae orchestrator`
 
-The **steward** — your fleet's chief of staff: a single ae session that monitors
+The **orchestrator** — your fleet's chief of staff: a single ae session that monitors
 all your *other* ae sessions and is your one point of contact to them (it relays
 your instructions to the other sessions and reports what needs you, via the
 Telegram `say` channel). Once you set an objective (`objective: …` over Telegram) it also holds it, parks
 your ideas, and answers `what next` — and may proactively nudge you when you drift,
 but only through hard gates (concrete signal held two sweeps, a rate budget, quiet
 hours, suggest-only; ignore a couple and it self-mutes for the day). See
-[`contrib/aesteward`](../../contrib/aesteward/). It
+[`contrib/aeorchestrator`](../../contrib/aeorchestrator/). It
 is a monitor + relay + focus aide: per its charter it never ends/stops/edits
 another session on its own, and only suggests — it dispatches nothing without
 your say-so.
 
 ```text
-ae steward          Ensure the detached `steward` session is running
-ae steward --attach Switch/attach to the `steward` session
-ae steward --init   Scaffold ~/.ae/steward/{steward.config,CHARTER.md} (never overwrites)
-ae steward --help   Usage
+ae orchestrator          Ensure the detached `orchestrator` session is running
+ae orchestrator --attach Switch/attach to the `orchestrator` session
+ae orchestrator --init   Scaffold ~/.ae/orchestrator/{orchestrator.config,CHARTER.md} (never overwrites)
+ae orchestrator --help   Usage
 ```
 
-`ae steward` launches the `steward` session with **full config isolation**: it
-uses `~/.ae/steward/steward.config` as the config and neutralizes any
+`ae orchestrator` launches the `orchestrator` session with **full config isolation**: it
+uses `~/.ae/orchestrator/orchestrator.config` as the config and neutralizes any
 project-local `./.ae/config`, so the global config's `workers` never leak into
-the single-agent steward regardless of the directory you run it from. The config
-dir defaults to `${AE_HOME:-~/.ae}/steward` and is overridable with
-`AE_STEWARD_DIR` (so an isolated `AE_HOME` run keeps its steward state out of
+the single-agent orchestrator regardless of the directory you run it from. The config
+dir defaults to `${AE_HOME:-~/.ae}/orchestrator` and is overridable with
+`AE_ORCHESTRATOR_DIR` (so an isolated `AE_HOME` run keeps its orchestrator state out of
 your live `~/.ae`).
-Unlike normal `ae <name>` session starts, bare `ae steward` does **not** attach
-or switch the current tmux client; use `ae steward --attach` when you want to
-inspect the steward pane directly.
+Unlike normal `ae <name>` session starts, bare `ae orchestrator` does **not** attach
+or switch the current tmux client; use `ae orchestrator --attach` when you want to
+inspect the orchestrator pane directly.
 
-First time: run `ae steward --init` to scaffold the config + charter from
-[`contrib/aesteward`](../../contrib/aesteward/) (placeholders for the charter and
+First time: run `ae orchestrator --init` to scaffold the config + charter from
+[`contrib/aeorchestrator`](../../contrib/aeorchestrator/) (placeholders for the charter and
 [`aemonitor`](../../contrib/aemonitor/) paths are substituted), edit them to
-taste, then `ae steward`. The charter wires the deterministic sweep to
+taste, then `ae orchestrator`. The charter wires the deterministic sweep to
 `aemonitor`, defines the objective-armed focus aide, and tells the agent its only channel to you is
 `say`.
 
-To talk to the steward from your phone, run the [Telegram bridge](telegram.md):
-plain messages route to the running steward automatically (no `/use` setup), and
+To talk to the orchestrator from your phone, run the [Telegram bridge](telegram.md):
+plain messages route to the running orchestrator automatically (no `/use` setup), and
 `/use <session> <agent>` redirects to another session when you want (`/use clear`
-returns to the steward) — see
-[Steward-centric routing](telegram.md#steward-centric-routing-talk-to-the-meta-agent-not-ten-sessions).
+returns to the orchestrator) — see
+[Orchestrator-centric routing](telegram.md#orchestrator-centric-routing-talk-to-the-meta-agent-not-ten-sessions).
 
 **Deprecated alias + legacy scaffolds:** `ae hub` still works and maps to the
 same launcher. A pre-rename `~/.ae/meta-hub/hub.config` scaffold (from
 `ae hub --init`) is still honoured — it keeps its `hub` session name so its baked
 charter paths and resume state stay consistent (`AE_HUB_DIR` is honoured too).
-Migrate with `ae end hub && ae steward --init && ae steward`.
+Migrate with `ae end hub && ae orchestrator --init && ae orchestrator`.
 
-`steward` is a reserved subcommand (as is `hub`). If you ever need a normal
-session literally named `steward`, `ae --local steward` reaches the generic start
-path (the first argument is then no longer `steward`).
+`orchestrator` is a reserved subcommand (as is `hub`). If you ever need a normal
+session literally named `orchestrator`, `ae --local orchestrator` reaches the generic start
+path (the first argument is then no longer `orchestrator`).
 
 ## `ae telegram`
 

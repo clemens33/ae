@@ -723,7 +723,7 @@ validator fails if any family is missing.
           },
           {
             "command": "use",
-            "description": "Redirect plain messages to a session/agent; /use clear resets to the steward"
+            "description": "Redirect plain messages to a session/agent; /use clear resets to the orchestrator"
           },
           {
             "command": "session",

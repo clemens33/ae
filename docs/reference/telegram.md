@@ -70,19 +70,19 @@ Three ways to reach an agent, easiest first:
 
 **2. Compact prefix — `@session:agent <msg>`.** Start a new thread without `/session`: `@mdk:claude:lead deploy now`. `session` is up to the first `:`; `agent` is the rest (keeps its `alias:name` colon). Sent as a `send`.
 
-**3. Plain messages → the steward (auto-default).** With no override set, a **plain message** (no slash, no `@`) goes to your running **steward** (the `meta_agent` session — canonical `steward`, else legacy `hub`) as a `send`. So once `ae steward` is up you just talk to it — no setup. If no steward is running you're guided to start one (or use a target form above).
+**3. Plain messages → the orchestrator (auto-default).** With no override set, a **plain message** (no slash, no `@`) goes to your running **orchestrator** (the `meta_agent` session — canonical `orchestrator`, else legacy `hub`) as a `send`. So once `ae orchestrator` is up you just talk to it — no setup. If no orchestrator is running you're guided to start one (or use a target form above).
 
-**4. Sticky override — `/use`.** `/use <session> <agent>` redirects plain messages to another session; `/use` shows the current routing; `/use clear` drops the override and plain messages go back to the steward. Use this to hold a conversation with one specific session for a while.
+**4. Sticky override — `/use`.** `/use <session> <agent>` redirects plain messages to another session; `/use` shows the current routing; `/use clear` drops the override and plain messages go back to the orchestrator. Use this to hold a conversation with one specific session for a while.
 
-**Precedence** (per message, after trimming): starts with `/` → **always a command** (even sent as a reply); else a reply → routes to that event's agent; else `@…` → compact send; else a plain message → the `/use` override if set, else the running steward (auto-default), else a hint to start one. Every path funnels through the same session/agent revalidation — none can escape a real running session.
+**Precedence** (per message, after trimming): starts with `/` → **always a command** (even sent as a reply); else a reply → routes to that event's agent; else `@…` → compact send; else a plain message → the `/use` override if set, else the running orchestrator (auto-default), else a hint to start one. Every path funnels through the same session/agent revalidation — none can escape a real running session.
 
 **Grammar (explicit commands):**
 
 ```
 /help                                     show this list
 /list                                     running sessions: name, session_id[:8], last activity
-/use <name|id-prefix> <agent>             redirect plain messages to this session (override the steward default)
-/use clear                                drop the override; plain messages go to the steward again
+/use <name|id-prefix> <agent>             redirect plain messages to this session (override the orchestrator default)
+/use clear                                drop the override; plain messages go to the orchestrator again
 /session <name|id-prefix> send <agent> <msg…>   one-way message into an agent pane
 /session <name|id-prefix> ask  <agent> <msg…>   tracked request; the reply routes back to chat
 @session:agent <msg…>                     compact one-off send (no /session)
@@ -96,52 +96,52 @@ Three ways to reach an agent, easiest first:
 
 **Replay safety.** The daemon advances its `getUpdates` offset (persisted in `~/.ae/telegram/tg_offset`) before dispatching, so a crash can't re-run a side-effecting command on restart (at-most-once).
 
-## Steward-centric routing: talk to the meta-agent, not ten sessions
+## Orchestrator-centric routing: talk to the meta-agent, not ten sessions
 
-The [`ae steward`](commands.md#ae-steward) meta-agent turns the bridge from a
+The [`ae orchestrator`](commands.md#ae-orchestrator) meta-agent turns the bridge from a
 *broadcast* (every session shouting events at you) into a *conversation* (you talk
 to one agent that watches the rest and relays for you). This is **not a new
 mechanism** — it's a setup on top of the routing above:
 
-1. **Run the bridge and the steward together.** The steward reports to you only
+1. **Run the bridge and the orchestrator together.** The orchestrator reports to you only
    through its [`say`](helpers.md) helper, which emits `chat` events the bridge
    forwards like any other — so it appears in your chat as
-   `[steward] chat  claude:steward …`.
-2. **The steward is your default correspondent — automatically.** Every plain
-   message you type (no slash, no `@`) goes to the running steward as a `send`;
+   `[orchestrator] chat  claude:orchestrator …`.
+2. **The orchestrator is your default correspondent — automatically.** Every plain
+   message you type (no slash, no `@`) goes to the running orchestrator as a `send`;
    no `/use` needed. So you just talk to it. (`/use <session> <agent>` still
    redirects to a specific session when you want that; `/use clear` returns to
-   the steward.) This is also how the steward's operator protocol travels:
+   the orchestrator.) This is also how the orchestrator's operator protocol travels:
    `objective: …`, `idea: …`, `status`, `what next`, `snooze`, `drop objective`
    are just plain messages.
 3. **The loop closes both ways:**
-   - **you → steward** — plain text (auto-default) *or* a swipe-reply to any
-     of its messages (reply-to-routing) reaches `steward:claude:steward`.
-   - **steward → you** — its `say` reports land in the chat.
-   - **steward → other sessions** — it relays your instruction with `send`/`ask`
+   - **you → orchestrator** — plain text (auto-default) *or* a swipe-reply to any
+     of its messages (reply-to-routing) reaches `orchestrator:claude:orchestrator`.
+   - **orchestrator → you** — its `say` reports land in the chat.
+   - **orchestrator → other sessions** — it relays your instruction with `send`/`ask`
      to `@othersession:agent` and reports back what it sent (and the request id).
    - **other sessions → you** — their events still forward directly (the bridge is
-     machine-global), so you also see raw activity, not only the steward's summary.
+     machine-global), so you also see raw activity, not only the orchestrator's summary.
 
 ### Tuning the signal
 
-Because the bridge forwards **every** session's events, with the steward running
+Because the bridge forwards **every** session's events, with the orchestrator running
 you receive both its curated reports *and* the raw event stream. To lean on the
-steward as your primary signal and quiet the rest, narrow the outbound filter — e.g.
+orchestrator as your primary signal and quiet the rest, narrow the outbound filter — e.g.
 keep the conversational + alerting actions and drop routine relays:
 
 ```toml
 [telegram]
-include = "chat,alert,throttled,ask,reply,done"   # steward 'say' = chat; keep alerts
+include = "chat,alert,throttled,ask,reply,done"   # orchestrator 'say' = chat; keep alerts
 ```
 
-`nudge` is already outside the default include, so the steward's own sweep prompts
-never reach your phone. **Keep `chat` in the include** or the steward cannot talk to
+`nudge` is already outside the default include, so the orchestrator's own sweep prompts
+never reach your phone. **Keep `chat` in the include** or the orchestrator cannot talk to
 you at all.
 
-> The steward does not replace the bridge — it sits on top of it. You can still
-> address any session directly (`@session:agent …`, `/session …`) while the steward
-> is your sticky default; the steward is a convenience, not a gatekeeper.
+> The orchestrator does not replace the bridge — it sits on top of it. You can still
+> address any session directly (`@session:agent …`, `/session …`) while the orchestrator
+> is your sticky default; the orchestrator is a convenience, not a gatekeeper.
 
 ## Commands
 
