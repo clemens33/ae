@@ -14,6 +14,8 @@
 //! cycle — which the mapping found lacks the bash quiet-stabilization budget and
 //! is not a byte-for-byte oracle. Each ported rule cites its bash site.
 
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
 use crate::events::Event;
 use crate::procs::Descendancy;
 
@@ -741,13 +743,725 @@ impl QuietCycle {
     }
 }
 
+// ---------------------------------------------------------------------------
+// The steward (meta-agent) sweep cadence — ae:16727-16899.
+//
+// A steward session is a long-running SERVICE, so "idle between sweeps" is
+// NORMAL rather than stale: its main agent leaves the stale-nudge watchdog
+// entirely (SC-935) for an explicit cadence — prompt a sweep every
+// `sweep_secs`, and guard liveness with the steward's OWN heartbeat file
+// instead of with pane silence.
+//
+// Everything below is the DECISION half. No clock, no filesystem, no send: the
+// daemon reads the heartbeat's mtime, performs the delivery, and reports back
+// what happened, exactly as it already does for the stale-nudge branch
+// (`watchdog_daemon::account` / `record_nudge`).
+// ---------------------------------------------------------------------------
+
+/// The steward sweep tunables — ae:16435-16448, with the frozen defaults.
+///
+/// bash validates these out of `AE_WATCHDOG_SWEEP_*` (with the `AE_LOOP_*`
+/// legacy fallback, SC-1408a) before any arithmetic, and passes what it read;
+/// the defaults live here so a caller that passes nothing runs the frozen
+/// cadence (SC-1405a, SC-1406a, SC-1407a).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SweepKnobs {
+    /// Seconds between sweep prompts. `0` disables the branch (SC-1405b).
+    pub sweep_secs: u64,
+    /// How soon an UNDELIVERED prompt is retried instead of burning a whole
+    /// cadence window (SC-937).
+    pub retry_secs: u64,
+    /// How many FAST retries are allowed before the branch falls back to the
+    /// normal cadence and escalates once (SC-1407b).
+    pub retry_max: u32,
+}
+
+impl Default for SweepKnobs {
+    fn default() -> Self {
+        Self {
+            sweep_secs: 300,
+            retry_secs: 30,
+            retry_max: 6,
+        }
+    }
+}
+
+impl SweepKnobs {
+    /// Whether the sweep branch runs at all.
+    ///
+    /// SC-1405b: `0` is not "sweep immediately", it is "there is no sweep
+    /// branch" — the steward main falls back to the normal watchdog. bash
+    /// spells it as the `((SWEEP_SECS > 0))` conjunct on the branch guard
+    /// (ae:16738), so a zero never reaches any of the arithmetic below.
+    #[must_use]
+    pub const fn enabled(&self) -> bool {
+        self.sweep_secs > 0
+    }
+
+    /// The heartbeat window: `SWEEP_SECS * 2 + 60` (ae:16750).
+    ///
+    /// Two cadences plus a minute — one missed sweep is not a wedge, and the
+    /// minute absorbs the poll interval that the second one is judged across.
+    /// Saturating because the knob is caller-supplied: an absurd cadence must
+    /// widen the window, never wrap it into a narrow one that alerts on
+    /// everything.
+    #[must_use]
+    pub const fn wedge_secs(&self) -> u64 {
+        self.sweep_secs.saturating_mul(2).saturating_add(60)
+    }
+}
+
+/// Seconds ELAPSED from `then` to `now`, clamped at zero.
+///
+/// For the instants this daemon WROTE ITSELF — the cadence mark and the grace
+/// origin. A future value there means our own clock went backwards between two
+/// cycles, and the clamp is what bash does with it: `now - last_sweep` goes
+/// negative, a negative is below any window, so the cadence is simply not due
+/// yet and the grace has simply not elapsed. Both answers are the quiet ones.
+///
+/// # Why this is NOT the heartbeat's function — read before merging them
+///
+/// The heartbeat uses [`distance_secs`] instead, and the split is the point.
+/// Applying the ABSOLUTE difference here would make a backwards clock jump
+/// compute an enormous elapsed grace and raise a wedge alert against a steward
+/// that is sweeping perfectly well — a NEW false-wedge path, which is the exact
+/// failure the heartbeat's symmetry was chosen to avoid. Applying the CLAMP to
+/// the heartbeat would restore the indefinite-masking hole. Neither is a
+/// generalisation of the other: one measures a value we wrote, the other a
+/// value another process — possibly on another host — wrote.
+fn secs_between(now: SystemTime, then: SystemTime) -> u64 {
+    now.duration_since(then).map_or(0, |d| d.as_secs())
+}
+
+/// The ABSOLUTE distance between two instants, in seconds — direction dropped.
+///
+/// For the heartbeat alone, and only because a heartbeat is written by a
+/// DIFFERENT process, possibly on a different host with a different clock. See
+/// [`secs_between`] for why the two are not merged.
+fn distance_secs(now: SystemTime, then: SystemTime) -> u64 {
+    match now.duration_since(then) {
+        Ok(elapsed) => elapsed.as_secs(),
+        Err(ahead) => ahead.duration().as_secs(),
+    }
+}
+
+/// How far a trusted heartbeat sits from now, and ON WHICH SIDE.
+///
+/// The side is kept because the WORDING depends on it, and a wrong word here is
+/// a lie to a human debugging an outage: a timestamp in the FUTURE was not
+/// "written N minutes ago", and saying so sends someone looking for a stall
+/// that never happened. [`classify_heartbeat`] does not care about the side —
+/// it judges the distance — so the two facts are separate on purpose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeartbeatOffset {
+    /// Written this many seconds ago. The ordinary case.
+    Behind {
+        /// Seconds since the heartbeat was written.
+        secs: u64,
+    },
+    /// Stamped this many seconds in the FUTURE — clock skew between this host
+    /// and whatever wrote the file, or a clock that was set forward.
+    Ahead {
+        /// Seconds by which the heartbeat leads this clock.
+        secs: u64,
+    },
+}
+
+impl HeartbeatOffset {
+    /// The distance, with the side dropped — what the freshness window judges.
+    #[must_use]
+    pub const fn distance_secs(self) -> u64 {
+        match self {
+            Self::Behind { secs } | Self::Ahead { secs } => secs,
+        }
+    }
+}
+
+/// `now` moved `secs` into the past.
+///
+/// The fallback direction is deliberate: an instant that cannot be represented
+/// makes the next prompt due IMMEDIATELY rather than a full cadence away. A
+/// duplicate sweep prompt costs one redundant sweep; a dropped one costs a
+/// blind spot (SC-939a's at-least-once trade, applied to the arithmetic).
+fn back_date(now: SystemTime, secs: u64) -> SystemTime {
+    now.checked_sub(Duration::from_secs(secs))
+        .unwrap_or(UNIX_EPOCH)
+}
+
+/// What the steward's heartbeat file says about it — the third state is the
+/// point.
+///
+/// The steward rewrites `<session>/meta-agent-state.json` on every real sweep
+/// (`contrib/aemonitor`'s default `--state` path), so a heartbeat that stops
+/// advancing while the watchdog keeps prompting is a steward that is LIVE but
+/// NOT SWEEPING: a model stall, an upstream throttle, a wedge (SC-939b). The
+/// dead-pane and missing-pane checks cannot see that — the process is fine.
+///
+/// # Why three states and not two
+///
+/// bash reads the heartbeat as ONE number: `hb=0` unless `[[ -f ]]`, then
+/// `_ae_stat mtime` (whose own failure also lands as `0`). So "no file",
+/// "not a regular file", "a stat that could not run" and "a genuinely ancient
+/// heartbeat" are all `hb=0`, distinguished only in the alert's wording.
+///
+/// This port keeps them apart because the SAFETY PIN needs them apart. The
+/// mtime that reaches [`classify_heartbeat`] is trusted only when it came from
+/// an `lstat` of a NON-SYMLINK REGULAR file: `[[ -f ]]` FOLLOWS symlinks, so
+/// bash accepts a heartbeat that points anywhere, and anything writable in the
+/// session directory could then be aimed at a file that some other process
+/// touches often — a wedged steward silenced by a link. `None` is every
+/// untrusted reading, and `None` is [`Heartbeat::Untrusted`], never
+/// [`Heartbeat::Fresh`].
+///
+/// Neither [`Heartbeat::Stale`] nor [`Heartbeat::Untrusted`] is a health claim:
+/// both mean "not sweeping" and only the startup grace decides whether that is
+/// worth an alert yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Heartbeat {
+    /// A trusted mtime inside the window — the steward is sweeping.
+    Fresh,
+    /// A trusted mtime OUTSIDE the window, on either side: one that stopped
+    /// advancing, or one stamped so far ahead of this clock that it cannot be
+    /// read as liveness.
+    Stale,
+    /// No trusted mtime at all: missing, a symlink, not a regular file, or a
+    /// reading that could not be taken. NOT evidence of health.
+    Untrusted,
+}
+
+/// Classify an ALREADY-VALIDATED heartbeat mtime — ae:16748-16758.
+///
+/// `mtime` is `Some` only for a non-symlink regular file's modification time
+/// (the caller's `lstat`, per the safety pin on [`Heartbeat`]); every other
+/// reading — missing, symlink, directory, fifo, unreadable — arrives as `None`
+/// and classifies [`Heartbeat::Untrusted`].
+///
+/// # The window is SYMMETRIC, and that is a deliberate divergence from bash
+///
+/// The boundary is bash's on the past side — `now - hb <= wedge_secs`, so an
+/// age EQUAL to the window is still fresh and one second past it is not — but
+/// this judges the DISTANCE, so it applies on the future side too:
+///
+/// * a NEAR-future mtime, inside the window, is **Fresh**. Deliberate skew
+///   tolerance: a heartbeat can land on an NFS mount or a second host whose
+///   clock leads ours by seconds, so every fresh write looks slightly future.
+///   Refusing those would false-wedge a perfectly healthy steward on every
+///   sweep — worse than the hole it closes.
+/// * a FAR-future mtime, beyond the window, is **Stale**. bash reads it Fresh
+///   forever, because its `now - hb` goes negative and a negative is below any
+///   window — so a timestamp set far ahead masks a wedged steward
+///   INDEFINITELY. Symmetry closes that: the further out the stamp, the sooner
+///   it stops counting as liveness.
+///
+/// [`Heartbeat::Untrusted`] stays exactly what the READ LAYER could not vouch
+/// for. A clock is not a trust question, and conflating the two is what makes
+/// skew look like an attack.
+#[must_use]
+pub fn classify_heartbeat(
+    mtime: Option<SystemTime>,
+    now: SystemTime,
+    wedge_secs: u64,
+) -> Heartbeat {
+    match mtime {
+        None => Heartbeat::Untrusted,
+        Some(at) if distance_secs(now, at) <= wedge_secs => Heartbeat::Fresh,
+        Some(_) => Heartbeat::Stale,
+    }
+}
+
+/// Where a trusted heartbeat sits relative to `now`, or `None` when there is no
+/// trusted reading.
+///
+/// Separate from [`classify_heartbeat`] because an offset is not a
+/// classification: this carries no policy and no window. The wedge alert's
+/// wording needs the distance AND the side (ae:16780-16784), and
+/// [`SweepObservation::new`] derives this and the classification from the SAME
+/// reading so the two can never describe different files.
+#[must_use]
+pub fn heartbeat_offset(mtime: Option<SystemTime>, now: SystemTime) -> Option<HeartbeatOffset> {
+    let at = mtime?;
+    Some(match now.duration_since(at) {
+        Ok(elapsed) => HeartbeatOffset::Behind {
+            secs: elapsed.as_secs(),
+        },
+        Err(ahead) => HeartbeatOffset::Ahead {
+            secs: ahead.duration().as_secs(),
+        },
+    })
+}
+
+/// The roster slot the steward cadence belongs to. One spelling, here.
+pub const MAIN_SLOT: &str = "main";
+
+/// Whether this pane is the one the sweep cadence applies to — bash's
+/// `[[ "$META_AGENT" == "true" && "$agent" == "$META_MAIN_AGENT" ]]`
+/// (ae:16738), keyed by SLOT rather than by display name.
+///
+/// SC-935: the cadence is the steward MAIN agent's alone. Workers and spawned
+/// agents in a steward session keep the normal watchdog — they are ordinary
+/// agents that happen to share a session with a monitor.
+///
+/// # Why the SLOT, and not the `alias:name` bash compares
+///
+/// Same reason the roster line is keyed by slot (ae:16986-17024): `spawn`
+/// uniquifies only the NUMERIC slot, so two registrations CAN share one
+/// `alias:name`. A reference-keyed gate would hand the sweep cadence to BOTH
+/// panes — and the cadence REPLACES stale escalation, so the second pane would
+/// silently stop being watched. The slot cannot alias, and it is the key every
+/// other per-pane decision in this daemon already uses.
+///
+/// It also removes a whole class of question rather than answering it. Keying
+/// on the reference meant deriving it from `agent.main` in meta, which made the
+/// gate depend on that record being unambiguous — one more thing to read, to
+/// fail closed on, and to keep in step with bash's own multiline-scalar
+/// behaviour. The pane's own `@ae_slot` is the fact, and ae stamped it.
+///
+/// An UNSTAMPED pane has no slot and is therefore never the target, which is
+/// the fail-closed direction: an unstamped pane keeps the ordinary watchdog.
+#[must_use]
+pub fn is_sweep_target(meta_agent: bool, slot: &str) -> bool {
+    meta_agent && slot == MAIN_SLOT
+}
+
+/// What the steward's row shows this cycle — ae:16755-16765.
+///
+/// bash derives the glyph from the SAME two conditions the alert branch judges,
+/// deliberately: the expressions are identical so the glyph can never disagree
+/// with the alert. Here they are one expression, computed once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SweepVerdict {
+    /// A fresh heartbeat — the steward is sweeping.
+    MetaSweeping,
+    /// Prompted past the window with no fresh heartbeat — live but not sweeping.
+    MetaWedged,
+    /// Inside the startup grace with no heartbeat yet: genuinely undecided, and
+    /// the glyph says exactly that rather than inventing a liveness claim.
+    MetaStarting,
+}
+
+impl SweepVerdict {
+    /// The glyph the frozen roster publishes for this verdict (ae:16202-16204).
+    #[must_use]
+    pub const fn glyph(self) -> &'static str {
+        match self {
+            Self::MetaSweeping => "👁",
+            Self::MetaWedged => "◌",
+            Self::MetaStarting => "·",
+        }
+    }
+}
+
+/// Which "not sweeping" the wedge alert is reporting — ae:16780-16784.
+///
+/// The two readings need different words because they send a human to different
+/// places: a heartbeat that STOPPED points at the steward's own loop, while one
+/// that never existed points at the state file's path or its writer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WedgeDetail {
+    /// A trusted heartbeat exists but stopped advancing this long ago.
+    Stalled {
+        /// Seconds since the heartbeat last moved.
+        age_secs: u64,
+    },
+    /// A trusted heartbeat stamped this far AHEAD of this clock — far enough
+    /// that it is outside the freshness window and cannot be read as liveness.
+    ///
+    /// Its own variant rather than a signed `Stalled`, because the WORDING is
+    /// the whole reason the side is carried: a future timestamp was not written
+    /// "N minutes ago", and telling a human it was sends them hunting a stall
+    /// that never happened. The past wording is bash's, frozen, and untouched.
+    Ahead {
+        /// Seconds by which the heartbeat leads this clock.
+        ahead_secs: u64,
+    },
+    /// No trusted heartbeat has ever been read, across this much prompting.
+    ///
+    /// bash reaches this wording for a missing file. This port also reaches it
+    /// for a heartbeat REFUSED by the safety pin (a symlink, a non-regular
+    /// file) — where "never wrote a heartbeat" is the alert's honest reading of
+    /// what the watchdog is willing to trust, not a claim about the file's
+    /// contents.
+    Never {
+        /// Seconds of delivered sweep prompts with nothing to show for them.
+        prompting_secs: u64,
+    },
+}
+
+/// An alert the sweep branch raises or clears, as a TRANSITION rather than as
+/// prose.
+///
+/// The two alerts are separate on purpose and bash says why (ae:16843-16856):
+/// `alert-cleared` is UNTYPED — anything that clears clears THE alert — so a
+/// clear emitted while the other alert is still latched would erase a live
+/// warning that could then never re-fire. Keeping the transitions typed here is
+/// what lets the accounting refuse that combination in one readable place.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SweepAlert {
+    /// Live but not sweeping (SC-939b). Raised ONCE per wedge.
+    RaiseWedge(WedgeDetail),
+    /// The heartbeat resumed.
+    ClearWedge,
+    /// Sweep prompts stopped landing altogether (SC-938/SC-1407b). Raised ONCE.
+    RaiseUnreachable {
+        /// Consecutive undelivered prompts at the moment of escalation.
+        undelivered: u32,
+    },
+    /// A prompt landed again.
+    ClearUnreachable,
+}
+
+impl SweepAlert {
+    /// The frozen event action this transition appends.
+    #[must_use]
+    pub const fn action(self) -> &'static str {
+        match self {
+            Self::RaiseWedge(_) | Self::RaiseUnreachable { .. } => "alert",
+            Self::ClearWedge | Self::ClearUnreachable => "alert-cleared",
+        }
+    }
+
+    /// The frozen summary text, quoted from the branch that emits it.
+    ///
+    /// The wedge summary deliberately avoids the `throttl`/`dead`/`missing`
+    /// substrings so `_agent_alert_reason` ranks it by its own "not sweeping"
+    /// case (ae:16775-16777); the unreachable one carries "not sweeping" for
+    /// the same reason. Do not reword either without checking that ranking.
+    #[must_use]
+    pub fn summary(self) -> String {
+        match self {
+            Self::RaiseWedge(WedgeDetail::Stalled { age_secs }) => format!(
+                "meta-agent not sweeping — no heartbeat for {}m (may be stuck)",
+                age_secs / 60
+            ),
+            Self::RaiseWedge(WedgeDetail::Ahead { ahead_secs }) => format!(
+                "meta-agent not sweeping — heartbeat timestamp is {}m ahead of this clock (may \
+                 be stuck)",
+                ahead_secs / 60
+            ),
+            Self::RaiseWedge(WedgeDetail::Never { prompting_secs }) => format!(
+                "meta-agent not sweeping — never wrote a heartbeat in {}m of sweep prompts (may \
+                 be stuck)",
+                prompting_secs / 60
+            ),
+            Self::ClearWedge => "meta-agent sweeping again (heartbeat resumed)".to_owned(),
+            Self::RaiseUnreachable { undelivered } => format!(
+                "meta-agent unreachable — {undelivered} sweep nudges undelivered (not sweeping)"
+            ),
+            Self::ClearUnreachable => {
+                "meta-agent reachable again (sweep nudge delivered)".to_owned()
+            }
+        }
+    }
+
+    /// The `display-message` line for the human, or `None` when the transition
+    /// is log-only. As with [`crate::watchdog_daemon::Effect::Notify`] this is
+    /// the suffix; the loop prefixes the agent.
+    #[must_use]
+    pub const fn notify(self) -> Option<&'static str> {
+        match self {
+            Self::RaiseWedge(_) => Some("(meta-agent) not sweeping — may be stuck"),
+            Self::RaiseUnreachable { .. } => {
+                Some("(meta-agent) unreachable — sweep nudges undelivered")
+            }
+            Self::ClearWedge | Self::ClearUnreachable => None,
+        }
+    }
+}
+
+/// Something the loop must DO for the steward this cycle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SweepEffect {
+    /// Deliver one sweep prompt through the session's own `send` helper, then
+    /// report the outcome to [`record_sweep`].
+    ///
+    /// Delivery is CHECKED, never fire-and-forget (SC-936): `send` exits
+    /// non-zero when it REFUSES a dead shell or ABANDONS a busy target, and a
+    /// swallowed failure advanced the cadence while the steward was never
+    /// prompted (the measured 94-minute blind spot at ae:16812-16818).
+    FireSweepNudge,
+    /// Raise or clear one alert.
+    Alert(SweepAlert),
+    /// ONCE per daemon lifetime, on the first fresh heartbeat seen with no
+    /// latched wedge: read the DURABLE event log and, if it still shows an
+    /// active alert for this agent, emit [`SweepAlert::ClearWedge`]'s event
+    /// (ae:16768-16774).
+    ///
+    /// The in-memory latch is lost across a watchdog restart, so a watchdog
+    /// that alerted before the restart would otherwise never clear. Kept as an
+    /// effect rather than as a `has_active_alert` input because bash reads that
+    /// log LAZILY — once, and only on the cycle that can act on it.
+    /// Idempotent: once cleared, the clear is the newest event and a re-scan
+    /// finds nothing active.
+    ReconcileWedge,
+}
+
+/// What the steward pane carries from cycle to cycle — bash's
+/// `last_sweep_nudge` / `first_sweep_nudge` / `sweep_nudge_fails` /
+/// `meta_wedge_alerted` / `sweep_unreachable_alerted` / `meta_reconciled`
+/// (ae:16409-16430), gathered into one value.
+///
+/// Default is the fresh pane bash starts with: every array unset, which its
+/// `${...:-0}` reads as zero.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SweepState {
+    /// When the cadence was last satisfied. `None` is bash's `0` — the first
+    /// cycle is always due.
+    ///
+    /// A FAST RETRY back-dates this rather than storing a due time, exactly as
+    /// bash does (`sweep_now - SWEEP_SECS + sweep_retry`), so one comparison
+    /// serves both schedules.
+    pub last_sweep: Option<SystemTime>,
+    /// When the first prompt LANDED — the startup grace's origin.
+    ///
+    /// The wedge window ticks from a DELIVERED prompt, never from an attempt:
+    /// starting it on an undelivered one would alert "not sweeping" against a
+    /// steward that was never actually reached.
+    pub first_delivered: Option<SystemTime>,
+    /// Consecutive undelivered prompts.
+    pub fails: u32,
+    /// The wedge alert is raised once per wedge, not once per cycle.
+    pub wedge_alerted: bool,
+    /// The unreachable alert is raised once per unreachable run.
+    pub unreachable_alerted: bool,
+    /// Whether the once-per-lifetime durable reconcile has been offered.
+    pub reconciled: bool,
+}
+
+/// What the cycle observed about the steward, after the heartbeat was read.
+///
+/// Build it with [`SweepObservation::new`]: the state and the age must come
+/// from ONE reading, and a constructor is the only way to make describing two
+/// different files impossible.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SweepObservation {
+    /// Wall clock for this cycle (bash's `now_epoch`).
+    pub now: SystemTime,
+    /// The heartbeat's tri-state.
+    pub heartbeat: Heartbeat,
+    /// Where it sits relative to `now`, `None` when there is no trusted
+    /// reading. Carries the SIDE, because the alert's wording depends on it.
+    pub heartbeat_offset: Option<HeartbeatOffset>,
+}
+
+impl SweepObservation {
+    /// Derive the observation from one validated heartbeat reading.
+    ///
+    /// `heartbeat_mtime` is `Some` only for a non-symlink regular file — see
+    /// the safety pin on [`Heartbeat`].
+    #[must_use]
+    pub fn new(now: SystemTime, heartbeat_mtime: Option<SystemTime>, knobs: &SweepKnobs) -> Self {
+        Self {
+            now,
+            heartbeat: classify_heartbeat(heartbeat_mtime, now, knobs.wedge_secs()),
+            heartbeat_offset: heartbeat_offset(heartbeat_mtime, now),
+        }
+    }
+}
+
+/// The result of one sweep cycle's accounting.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SweepAccounting {
+    /// The state to carry into the next cycle — or into [`record_sweep`] first,
+    /// when the effects contain [`SweepEffect::FireSweepNudge`].
+    pub next: SweepState,
+    /// What the loop must do, in order.
+    pub effects: Vec<SweepEffect>,
+    /// The glyph verdict for the status line.
+    pub verdict: SweepVerdict,
+}
+
+/// Account for the steward main in one cycle — ae:16738-16897, and the only
+/// place any of it is decided.
+///
+/// `None` is SC-1405b: with `sweep_secs == 0` there is NO sweep branch, and the
+/// caller must fall through to the normal watchdog for this pane. Returning an
+/// `Option` rather than an empty accounting is the point — an empty accounting
+/// would suppress the stale watchdog too, which is the opposite of the row.
+///
+/// The caller gates on [`is_sweep_target`] first (SC-935); this function
+/// assumes the pane is the steward main.
+///
+/// The order is bash's:
+///
+/// 1. the verdict, from the heartbeat and the startup grace;
+/// 2. the wedge alert's raise / clear / post-restart reconcile;
+/// 3. the cadence, which only ever DECIDES to prompt.
+///
+/// Step 3 never books its own outcome: the delivery happens in the loop and its
+/// result comes back through [`record_sweep`]. That is the same split
+/// [`crate::watchdog_daemon::account`] and
+/// [`crate::watchdog_daemon::record_nudge`] already use, and it is what keeps
+/// "a prompt was attempted" from being recorded as "a prompt landed" (SC-936).
+#[must_use]
+pub fn sweep_step(
+    prior: &SweepState,
+    seen: &SweepObservation,
+    knobs: &SweepKnobs,
+) -> Option<SweepAccounting> {
+    if !knobs.enabled() {
+        return None; // SC-1405b — not this branch at all.
+    }
+    let mut next = *prior;
+    let mut effects = Vec::new();
+
+    // 1. The verdict. A FRESH heartbeat is the only healthy reading; Stale and
+    //    Untrusted both mean "not sweeping", and the startup grace is what
+    //    decides whether that is worth an alert yet. The grace runs from the
+    //    first DELIVERED prompt and the comparison is bash's strict `>`, so an
+    //    age exactly equal to the window is still starting up.
+    let grace_secs = prior.first_delivered.map(|at| secs_between(seen.now, at));
+    let verdict = match (seen.heartbeat, grace_secs) {
+        (Heartbeat::Fresh, _) => SweepVerdict::MetaSweeping,
+        (_, Some(elapsed)) if elapsed > knobs.wedge_secs() => SweepVerdict::MetaWedged,
+        _ => SweepVerdict::MetaStarting,
+    };
+
+    // 2. The wedge alert, judged off the SAME expression as the verdict.
+    match verdict {
+        SweepVerdict::MetaSweeping => {
+            if prior.wedge_alerted {
+                next.wedge_alerted = false;
+                next.reconciled = true;
+                effects.push(SweepEffect::Alert(SweepAlert::ClearWedge));
+            } else if !prior.reconciled {
+                next.reconciled = true;
+                effects.push(SweepEffect::ReconcileWedge);
+            }
+        }
+        SweepVerdict::MetaWedged => {
+            if !prior.wedge_alerted {
+                next.wedge_alerted = true;
+                let detail = match seen.heartbeat_offset {
+                    Some(HeartbeatOffset::Behind { secs }) => {
+                        WedgeDetail::Stalled { age_secs: secs }
+                    }
+                    Some(HeartbeatOffset::Ahead { secs }) => {
+                        WedgeDetail::Ahead { ahead_secs: secs }
+                    }
+                    None => WedgeDetail::Never {
+                        prompting_secs: grace_secs.unwrap_or(0),
+                    },
+                };
+                effects.push(SweepEffect::Alert(SweepAlert::RaiseWedge(detail)));
+            }
+        }
+        SweepVerdict::MetaStarting => {}
+    }
+
+    // 3. The cadence. An absent `last_sweep` is bash's `0`: the first cycle
+    //    prompts. The boundary is `>=`, so an elapsed exactly equal to the
+    //    cadence is due.
+    let due = prior
+        .last_sweep
+        .is_none_or(|at| secs_between(seen.now, at) >= knobs.sweep_secs);
+    if due {
+        effects.push(SweepEffect::FireSweepNudge);
+    }
+
+    Some(SweepAccounting {
+        next,
+        effects,
+        verdict,
+    })
+}
+
+/// Book a sweep prompt's outcome — ae:16833-16895.
+///
+/// Call this with the state [`sweep_step`] returned, only when its effects
+/// contained [`SweepEffect::FireSweepNudge`], and only after the delivery
+/// actually returned.
+///
+/// # The two clocks are not interchangeable
+///
+/// `cycle_now` is the clock the cycle opened with (bash's `now_epoch`);
+/// `settled_now` is re-read AFTER the send returned (bash's `sweep_now`). The
+/// send BLOCKS while it defers a busy target — up to `AE_SEND_DEFER_SEC` — so
+/// scheduling a retry off `cycle_now` would make it due the moment `send`
+/// returned, which is not a retry interval at all. A landed prompt keeps
+/// `cycle_now`, because its schedule is the cadence and the cadence is the
+/// cycle's.
+///
+/// # Delivery is at-least-once (SC-939a)
+///
+/// `send`'s status means "delivered AND logged" — its last command is the event
+/// append — so an event-write failure after a successful paste reports failure
+/// and this books a retry for a prompt the steward already got. That is the
+/// chosen trade: a duplicate sweep costs one redundant sweep, a dropped one
+/// costs a blind spot. Do not "fix" it by reading a non-zero status as
+/// delivered.
+pub fn record_sweep(
+    state: &mut SweepState,
+    delivered: bool,
+    cycle_now: SystemTime,
+    settled_now: SystemTime,
+    knobs: &SweepKnobs,
+) -> Vec<SweepEffect> {
+    if delivered {
+        if state.first_delivered.is_none() {
+            state.first_delivered = Some(cycle_now);
+        }
+        state.fails = 0;
+        state.last_sweep = Some(cycle_now);
+        if !state.unreachable_alerted {
+            return Vec::new();
+        }
+        state.unreachable_alerted = false;
+        // The latch drops either way; only the EVENT is conditional.
+        // `alert-cleared` is untyped, so emitting one while the wedge alert is
+        // still latched would erase a live "not sweeping" from `ae list` while
+        // `wedge_alerted` stayed set — it could then never re-fire, and a
+        // wedged steward would go invisible. The wedge owns its own clear.
+        if state.wedge_alerted {
+            return Vec::new();
+        }
+        return vec![SweepEffect::Alert(SweepAlert::ClearUnreachable)];
+    }
+
+    state.fails = state.fails.saturating_add(1);
+    if state.fails <= knobs.retry_max {
+        // Don't consume the cadence slot — make the retry due `retry` seconds
+        // after THIS failure, by back-dating the cadence rather than by
+        // carrying a second schedule.
+        //
+        // SC-1406b: CLAMPED to the cadence, in ONE expression. A retry longer
+        // than `sweep_secs` would push `last_sweep` into the FUTURE and DELAY
+        // the next prompt instead of hastening it, so the amount the cadence is
+        // hastened by SATURATES at zero: a retry at or past the cadence simply
+        // does not hasten it. bash clamps `sweep_retry` and then subtracts;
+        // that is the same arithmetic, but writing BOTH here left the clamp
+        // undecidable — no input could tell the `min` from the saturation, so
+        // no test could hold it (a mutation of the `min` alone stayed green).
+        // It is a FLOOR, not a deadline: the watchdog polls on its own
+        // interval, so the retry lands on the first poll at or after that
+        // point, never sooner.
+        let hastened_by = knobs.sweep_secs.saturating_sub(knobs.retry_secs);
+        state.last_sweep = Some(back_date(settled_now, hastened_by));
+        return Vec::new();
+    }
+
+    // SC-938/SC-1407b: bounded. A persistently unreachable steward degrades to
+    // the normal cadence and escalates ONCE rather than retry-spamming.
+    state.last_sweep = Some(settled_now);
+    if state.unreachable_alerted {
+        return Vec::new();
+    }
+    state.unreachable_alerted = true;
+    vec![SweepEffect::Alert(SweepAlert::RaiseUnreachable {
+        undelivered: state.fails,
+    })]
+}
+
 #[cfg(test)]
 mod tests {
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
     use super::{
-        QuietCycle, QuietKind, QuietPane, classify_dead, command_is_shell, declaration_key,
-        indented, is_echo, latest_relevant_event, quiet_cursor_advance, quiet_filter, quiet_hash,
+        Heartbeat, HeartbeatOffset, QuietCycle, QuietKind, QuietPane, SweepAlert, SweepEffect,
+        SweepKnobs, SweepObservation, SweepState, SweepVerdict, WedgeDetail, classify_dead,
+        classify_heartbeat, command_is_shell, declaration_key, heartbeat_offset, indented, is_echo,
+        is_sweep_target, latest_relevant_event, quiet_cursor_advance, quiet_filter, quiet_hash,
         quiet_pane_decision, quiet_reason, quiet_stabilize, quiet_stabilize_allowed, raw_nudge,
-        shows_throttle, stale_composite, submit_hdr,
+        record_sweep, shows_throttle, stale_composite, submit_hdr, sweep_step,
     };
     use crate::events::Event;
     use crate::procs::Descendancy;
@@ -1559,5 +2273,642 @@ tail line
             quiet_stabilize_allowed(1, 2, 3, 3),
             "at the cursor, budget left"
         );
+    }
+
+    // -- the steward sweep cadence (SC-935..SC-939b, SC-1405b, SC-1406b) ------
+
+    /// A fixed clock. Far from the epoch so a back-dated cadence is a real
+    /// instant rather than a saturation artefact.
+    const BASE: u64 = 1_700_000_000;
+
+    fn at(offset_secs: u64) -> SystemTime {
+        UNIX_EPOCH + Duration::from_secs(BASE + offset_secs)
+    }
+
+    /// The frozen knobs: 300s cadence, 30s retry, 6 fast retries.
+    fn knobs() -> SweepKnobs {
+        SweepKnobs::default()
+    }
+
+    fn seen(now_offset: u64, heartbeat: Option<u64>, k: &SweepKnobs) -> SweepObservation {
+        SweepObservation::new(at(now_offset), heartbeat.map(at), k)
+    }
+
+    #[test]
+    fn the_frozen_sweep_defaults_are_the_bash_ones() {
+        let k = knobs();
+        assert_eq!(k.sweep_secs, 300, "SC-1405a");
+        assert_eq!(k.retry_secs, 30, "SC-1406a");
+        assert_eq!(k.retry_max, 6, "SC-1407a");
+        assert_eq!(k.wedge_secs(), 660, "SWEEP_SECS * 2 + 60");
+        assert!(k.enabled());
+    }
+
+    #[test]
+    fn an_untrusted_reading_is_never_fresh_however_recent_the_clock_is() {
+        // The safety pin, as a pair: the SAME instant classifies Fresh when the
+        // mtime is trusted and Untrusted when it is not. Nothing about the
+        // clock can turn a missing / symlinked / non-regular heartbeat into a
+        // health claim.
+        assert_eq!(
+            classify_heartbeat(None, at(0), 660),
+            Heartbeat::Untrusted,
+            "no trusted mtime is never Fresh"
+        );
+        assert_eq!(
+            classify_heartbeat(Some(at(0)), at(0), 660),
+            Heartbeat::Fresh,
+            "the control: a trusted mtime at the same instant IS fresh"
+        );
+        // Even a zero-width window cannot make the absent reading fresh.
+        assert_eq!(classify_heartbeat(None, at(0), 0), Heartbeat::Untrusted);
+        assert_eq!(heartbeat_offset(None, at(0)), None);
+    }
+
+    #[test]
+    fn the_heartbeat_window_is_symmetric_so_skew_is_tolerated_but_never_forever() {
+        // PAST SIDE — bash's boundary, unchanged: `now - hb <= wedge_secs`.
+        assert_eq!(
+            classify_heartbeat(Some(at(0)), at(660), 660),
+            Heartbeat::Fresh,
+            "an age exactly at the window is fresh"
+        );
+        assert_eq!(
+            classify_heartbeat(Some(at(0)), at(661), 660),
+            Heartbeat::Stale,
+            "one second past it is not"
+        );
+
+        // FUTURE SIDE — the divergence, and it flips at the SAME boundary.
+        // Inside the window a leading clock is tolerated, because an NFS mount
+        // or a second host makes every fresh write look slightly future and
+        // refusing those would false-wedge a healthy steward on every sweep.
+        assert_eq!(
+            classify_heartbeat(Some(at(900)), at(300), 660),
+            Heartbeat::Fresh,
+            "600s ahead is inside the window — deliberate skew tolerance"
+        );
+        assert_eq!(
+            classify_heartbeat(Some(at(960)), at(300), 660),
+            Heartbeat::Fresh,
+            "exactly at the window, on the future side too"
+        );
+        // Beyond it, it stops counting as liveness. THIS IS THE CLOSED HOLE:
+        // bash reads any future stamp Fresh forever (its `now - hb` goes
+        // negative and a negative is below any window), so a timestamp set far
+        // ahead masks a wedged steward INDEFINITELY.
+        assert_eq!(
+            classify_heartbeat(Some(at(961)), at(300), 660),
+            Heartbeat::Stale,
+            "one second beyond the window on the future side is not liveness"
+        );
+        assert_eq!(
+            classify_heartbeat(Some(at(9_000_000)), at(300), 660),
+            Heartbeat::Stale,
+            "a far-future stamp can no longer mask a wedge"
+        );
+
+        // The OFFSET reports the real distance and the real side — never 0,
+        // and never "behind" for a timestamp that is ahead.
+        assert_eq!(
+            heartbeat_offset(Some(at(900)), at(300)),
+            Some(HeartbeatOffset::Ahead { secs: 600 }),
+            "a future mtime reports its true distance, not zero"
+        );
+        assert_eq!(
+            heartbeat_offset(Some(at(0)), at(700)),
+            Some(HeartbeatOffset::Behind { secs: 700 })
+        );
+        assert_eq!(
+            HeartbeatOffset::Ahead { secs: 600 }.distance_secs(),
+            HeartbeatOffset::Behind { secs: 600 }.distance_secs(),
+            "the window judges the distance; only the wording judges the side"
+        );
+    }
+
+    #[test]
+    fn a_far_future_heartbeat_is_never_described_as_having_been_written_ago() {
+        // A timestamp in the FUTURE was not written N minutes ago, and telling
+        // a human it was sends them hunting a stall that never happened.
+        let k = knobs();
+        let prior = SweepState {
+            first_delivered: Some(at(0)),
+            ..SweepState::default()
+        };
+        // Past the grace, with a heartbeat stamped 2000s AHEAD of now.
+        let acc = sweep_step(&prior, &seen(700, Some(2700), &k), &k).expect("enabled");
+        assert_eq!(acc.verdict, SweepVerdict::MetaWedged);
+        assert!(
+            acc.effects
+                .contains(&SweepEffect::Alert(SweepAlert::RaiseWedge(
+                    WedgeDetail::Ahead { ahead_secs: 2000 }
+                ))),
+            "the future side gets its own detail, not a signed Stalled"
+        );
+        let text = SweepAlert::RaiseWedge(WedgeDetail::Ahead { ahead_secs: 2000 }).summary();
+        assert_eq!(
+            text,
+            "meta-agent not sweeping — heartbeat timestamp is 33m ahead of this clock (may be \
+             stuck)"
+        );
+        for banned in ["ago", "no heartbeat for", "never wrote"] {
+            assert!(
+                !text.contains(banned),
+                "{text:?} must not carry {banned:?} — the timestamp is AHEAD, not old"
+            );
+        }
+        // Still an alert of the right CLASS: `_agent_alert_reason` ranks on
+        // "not sweeping", and none of the higher-ranking substrings may appear.
+        assert!(text.contains("not sweeping"));
+        for banned in ["throttl", "dead", "missing"] {
+            assert!(!text.contains(banned), "{text:?} must not carry {banned:?}");
+        }
+    }
+
+    #[test]
+    fn the_daemons_own_timestamps_clamp_rather_than_taking_a_distance() {
+        // The SPLIT, pinned. `first_delivered` and `last_sweep` are values THIS
+        // daemon wrote; a future one means our own clock went backwards. Taking
+        // the absolute distance there would compute an enormous elapsed grace
+        // and raise a wedge against a steward that is sweeping perfectly well —
+        // a NEW false-wedge path, which is the failure the heartbeat symmetry
+        // exists to avoid. bash clamps both, and so does this.
+        let k = knobs();
+        let jumped = SweepState {
+            // Both stamped an hour ahead of the cycle clock.
+            first_delivered: Some(at(3600)),
+            last_sweep: Some(at(3600)),
+            ..SweepState::default()
+        };
+        let acc = sweep_step(&jumped, &seen(0, None, &k), &k).expect("enabled");
+        assert_eq!(
+            acc.verdict,
+            SweepVerdict::MetaStarting,
+            "a backwards clock jump must not read as an hour of elapsed grace"
+        );
+        assert!(
+            !acc.effects
+                .iter()
+                .any(|e| matches!(e, SweepEffect::Alert(_))),
+            "and it must raise nothing"
+        );
+        assert!(
+            !acc.effects.contains(&SweepEffect::FireSweepNudge),
+            "nor make the cadence due"
+        );
+    }
+
+    #[test]
+    fn only_the_steward_main_slot_gets_the_cadence() {
+        // SC-935: workers and spawned agents in a steward session keep the
+        // normal watchdog. Keyed by SLOT, which cannot alias — `spawn`
+        // uniquifies only the numeric slot, so two registrations can share one
+        // `alias:name`, and a reference-keyed gate would hand the cadence to
+        // BOTH (silently un-watching the second, since the cadence replaces
+        // stale escalation).
+        assert!(is_sweep_target(true, "main"));
+        for other in [
+            "worker.1",
+            "worker.0",
+            "spawned.3",
+            "Main",
+            "main.1",
+            " main",
+        ] {
+            assert!(
+                !is_sweep_target(true, other),
+                "{other:?} is not the steward main slot"
+            );
+        }
+        assert!(
+            !is_sweep_target(false, "main"),
+            "a session that is not the steward has no sweep branch"
+        );
+        assert!(
+            !is_sweep_target(true, ""),
+            "an UNSTAMPED pane has no slot and keeps the ordinary watchdog"
+        );
+    }
+
+    #[test]
+    fn a_zero_cadence_removes_the_branch_rather_than_emptying_it() {
+        // SC-1405b, with its own control: the SAME inputs that produce a wedge
+        // alert on the frozen cadence produce NO BRANCH at all on `0` — the
+        // caller falls through to the normal watchdog.
+        let prior = SweepState {
+            first_delivered: Some(at(0)),
+            ..SweepState::default()
+        };
+        let off = SweepKnobs {
+            sweep_secs: 0,
+            ..knobs()
+        };
+        assert!(!off.enabled());
+        assert_eq!(
+            sweep_step(&prior, &seen(5000, None, &off), &off),
+            None,
+            "sweep_secs 0 is not a branch"
+        );
+
+        let on = knobs();
+        let acc = sweep_step(&prior, &seen(5000, None, &on), &on).expect("the control runs");
+        assert_eq!(acc.verdict, SweepVerdict::MetaWedged);
+        assert!(
+            acc.effects
+                .contains(&SweepEffect::Alert(SweepAlert::RaiseWedge(
+                    WedgeDetail::Never {
+                        prompting_secs: 5000
+                    }
+                ))),
+            "the control proves the disabled case was disabled, not merely quiet"
+        );
+    }
+
+    #[test]
+    fn the_cadence_fires_on_the_first_cycle_and_then_on_the_window_boundary() {
+        let k = knobs();
+        let fresh = SweepState::default();
+        let first = sweep_step(&fresh, &seen(0, None, &k), &k).expect("enabled");
+        assert!(
+            first.effects.contains(&SweepEffect::FireSweepNudge),
+            "an absent last_sweep is bash's 0 — the first cycle prompts"
+        );
+
+        let prompted = SweepState {
+            last_sweep: Some(at(0)),
+            ..fresh
+        };
+        // The boundary flips the decision: 299s holds, 300s fires.
+        let held = sweep_step(&prompted, &seen(299, None, &k), &k).expect("enabled");
+        assert!(!held.effects.contains(&SweepEffect::FireSweepNudge));
+        let due = sweep_step(&prompted, &seen(300, None, &k), &k).expect("enabled");
+        assert!(due.effects.contains(&SweepEffect::FireSweepNudge));
+    }
+
+    #[test]
+    fn an_undelivered_prompt_retries_fast_without_consuming_the_cadence_slot() {
+        // SC-937. The retry is a FLOOR: due 30s after the failure, on the first
+        // poll at or after that point.
+        let k = knobs();
+        let mut state = SweepState {
+            last_sweep: Some(at(0)),
+            ..SweepState::default()
+        };
+        let effects = record_sweep(&mut state, false, at(300), at(302), &k);
+        assert!(effects.is_empty(), "a fast retry escalates nothing");
+        assert_eq!(state.fails, 1);
+        assert_eq!(
+            state.first_delivered, None,
+            "the wedge grace never starts on an attempt"
+        );
+
+        // Scheduled off the SETTLED clock (302), not the cycle clock (300).
+        let early = sweep_step(&state, &seen(331, None, &k), &k).expect("enabled");
+        assert!(
+            !early.effects.contains(&SweepEffect::FireSweepNudge),
+            "one second before the retry floor"
+        );
+        let ready = sweep_step(&state, &seen(332, None, &k), &k).expect("enabled");
+        assert!(
+            ready.effects.contains(&SweepEffect::FireSweepNudge),
+            "302 + 30 = 332"
+        );
+    }
+
+    #[test]
+    fn the_retry_interval_is_clamped_to_the_cadence() {
+        // SC-1406b. An unclamped 600s retry against a 300s cadence would push
+        // last_sweep into the FUTURE and DELAY the next prompt to +600.
+        let k = SweepKnobs {
+            retry_secs: 600,
+            ..knobs()
+        };
+        let mut state = SweepState::default();
+        assert!(record_sweep(&mut state, false, at(0), at(0), &k).is_empty());
+        assert!(
+            !sweep_step(&state, &seen(299, None, &k), &k)
+                .expect("enabled")
+                .effects
+                .contains(&SweepEffect::FireSweepNudge)
+        );
+        assert!(
+            sweep_step(&state, &seen(300, None, &k), &k)
+                .expect("enabled")
+                .effects
+                .contains(&SweepEffect::FireSweepNudge),
+            "clamped to the cadence, not delayed to the unclamped 600"
+        );
+    }
+
+    #[test]
+    fn past_the_retry_maximum_the_branch_alerts_once_and_returns_to_the_cadence() {
+        // SC-938 / SC-1407b.
+        let k = knobs();
+        let mut state = SweepState::default();
+        for attempt in 1..=k.retry_max {
+            let effects = record_sweep(&mut state, false, at(0), at(0), &k);
+            assert!(effects.is_empty(), "fast retry {attempt} escalates nothing");
+            assert!(!state.unreachable_alerted);
+        }
+        let escalation = record_sweep(&mut state, false, at(0), at(0), &k);
+        assert_eq!(
+            escalation,
+            vec![SweepEffect::Alert(SweepAlert::RaiseUnreachable {
+                undelivered: 7
+            })]
+        );
+        assert!(state.unreachable_alerted);
+        assert_eq!(
+            state.last_sweep,
+            Some(at(0)),
+            "back to the normal cadence — no more back-dating"
+        );
+
+        // ONE alert: the next failure escalates nothing.
+        assert!(
+            record_sweep(&mut state, false, at(0), at(0), &k).is_empty(),
+            "the unreachable alert is raised once per run"
+        );
+
+        // Cleared on a landed delivery.
+        let cleared = record_sweep(&mut state, true, at(900), at(901), &k);
+        assert_eq!(
+            cleared,
+            vec![SweepEffect::Alert(SweepAlert::ClearUnreachable)]
+        );
+        assert!(!state.unreachable_alerted);
+        assert_eq!(state.fails, 0);
+        assert_eq!(
+            state.last_sweep,
+            Some(at(900)),
+            "a landed prompt schedules off the CYCLE clock"
+        );
+        assert_eq!(state.first_delivered, Some(at(900)));
+    }
+
+    #[test]
+    fn a_retry_maximum_of_zero_escalates_on_the_first_failure() {
+        // `^(0|[1-9][0-9]*)$` accepts 0, so the branch has to survive it: no
+        // fast retry at all, straight to the bounded cadence.
+        let k = SweepKnobs {
+            retry_max: 0,
+            ..knobs()
+        };
+        let mut state = SweepState::default();
+        assert_eq!(
+            record_sweep(&mut state, false, at(0), at(0), &k),
+            vec![SweepEffect::Alert(SweepAlert::RaiseUnreachable {
+                undelivered: 1
+            })]
+        );
+        assert_eq!(state.last_sweep, Some(at(0)));
+    }
+
+    #[test]
+    fn the_unreachable_clear_is_withheld_while_a_wedge_alert_is_still_latched() {
+        // `alert-cleared` is untyped: emitting one here would erase a live
+        // "not sweeping" that could then never re-fire. The latch still drops.
+        let k = knobs();
+        let mut state = SweepState {
+            unreachable_alerted: true,
+            wedge_alerted: true,
+            ..SweepState::default()
+        };
+        assert!(
+            record_sweep(&mut state, true, at(0), at(0), &k).is_empty(),
+            "reachable again, but the wedge alert owns its own clear"
+        );
+        assert!(!state.unreachable_alerted);
+        assert!(state.wedge_alerted);
+    }
+
+    #[test]
+    fn the_first_delivered_prompt_is_the_only_one_that_starts_the_grace() {
+        let k = knobs();
+        let mut state = SweepState::default();
+        assert!(record_sweep(&mut state, true, at(10), at(11), &k).is_empty());
+        assert_eq!(state.first_delivered, Some(at(10)));
+        assert!(record_sweep(&mut state, true, at(310), at(311), &k).is_empty());
+        assert_eq!(
+            state.first_delivered,
+            Some(at(10)),
+            "the grace origin never moves"
+        );
+    }
+
+    #[test]
+    fn the_wedge_raises_once_past_the_grace_and_the_boundary_is_strict() {
+        // SC-939b. The grace runs from the first DELIVERED prompt; bash's
+        // comparison is `>`, so an elapsed exactly at the window is still
+        // starting up.
+        let k = knobs();
+        let prior = SweepState {
+            first_delivered: Some(at(0)),
+            ..SweepState::default()
+        };
+        let edge = sweep_step(&prior, &seen(660, None, &k), &k).expect("enabled");
+        assert_eq!(edge.verdict, SweepVerdict::MetaStarting);
+        assert!(
+            !edge
+                .effects
+                .iter()
+                .any(|e| matches!(e, SweepEffect::Alert(SweepAlert::RaiseWedge(_)))),
+            "no liveness claim is invented inside the grace"
+        );
+
+        let over = sweep_step(&prior, &seen(661, None, &k), &k).expect("enabled");
+        assert_eq!(over.verdict, SweepVerdict::MetaWedged);
+        assert!(
+            over.effects
+                .contains(&SweepEffect::Alert(SweepAlert::RaiseWedge(
+                    WedgeDetail::Never {
+                        prompting_secs: 661
+                    }
+                ))),
+            "one second past the window flips the decision"
+        );
+        assert!(over.next.wedge_alerted);
+
+        // ONE alert per wedge.
+        let again = sweep_step(&over.next, &seen(1200, None, &k), &k).expect("enabled");
+        assert_eq!(again.verdict, SweepVerdict::MetaWedged);
+        assert!(
+            !again
+                .effects
+                .iter()
+                .any(|e| matches!(e, SweepEffect::Alert(_))),
+            "the wedge alert is raised once, not once per cycle"
+        );
+    }
+
+    #[test]
+    fn a_stalled_heartbeat_and_an_untrusted_one_wedge_with_different_words() {
+        let k = knobs();
+        let prior = SweepState {
+            first_delivered: Some(at(0)),
+            ..SweepState::default()
+        };
+        // A trusted heartbeat that stopped advancing.
+        let stalled = sweep_step(&prior, &seen(700, Some(0), &k), &k).expect("enabled");
+        assert_eq!(stalled.verdict, SweepVerdict::MetaWedged);
+        assert!(
+            stalled
+                .effects
+                .contains(&SweepEffect::Alert(SweepAlert::RaiseWedge(
+                    WedgeDetail::Stalled { age_secs: 700 }
+                )))
+        );
+        // No trusted heartbeat at all.
+        let never = sweep_step(&prior, &seen(700, None, &k), &k).expect("enabled");
+        assert!(
+            never
+                .effects
+                .contains(&SweepEffect::Alert(SweepAlert::RaiseWedge(
+                    WedgeDetail::Never {
+                        prompting_secs: 700
+                    }
+                )))
+        );
+    }
+
+    #[test]
+    fn a_fresh_heartbeat_clears_a_latched_wedge_and_reports_sweeping() {
+        let k = knobs();
+        let wedged = SweepState {
+            first_delivered: Some(at(0)),
+            last_sweep: Some(at(700)),
+            wedge_alerted: true,
+            ..SweepState::default()
+        };
+        let recovered = sweep_step(&wedged, &seen(800, Some(790), &k), &k).expect("enabled");
+        assert_eq!(recovered.verdict, SweepVerdict::MetaSweeping);
+        assert_eq!(
+            recovered.effects,
+            vec![SweepEffect::Alert(SweepAlert::ClearWedge)],
+            "the watchdog raised it, so the watchdog clears it"
+        );
+        assert!(!recovered.next.wedge_alerted);
+        assert!(
+            recovered.next.reconciled,
+            "an in-memory clear also settles the durable reconcile"
+        );
+
+        // Idempotent: no second clear.
+        let steady = sweep_step(&recovered.next, &seen(900, Some(890), &k), &k).expect("enabled");
+        assert!(
+            !steady
+                .effects
+                .iter()
+                .any(|e| matches!(e, SweepEffect::Alert(_) | SweepEffect::ReconcileWedge))
+        );
+    }
+
+    #[test]
+    fn the_durable_reconcile_is_offered_once_per_daemon_lifetime() {
+        // A watchdog restarted after alerting has lost the latch, so the first
+        // fresh heartbeat has to reach for the event log — once.
+        let k = knobs();
+        let restarted = SweepState::default();
+        let first = sweep_step(&restarted, &seen(0, Some(0), &k), &k).expect("enabled");
+        assert_eq!(first.verdict, SweepVerdict::MetaSweeping);
+        assert!(first.effects.contains(&SweepEffect::ReconcileWedge));
+        assert!(first.next.reconciled);
+
+        let second = sweep_step(&first.next, &seen(400, Some(390), &k), &k).expect("enabled");
+        assert!(
+            !second.effects.contains(&SweepEffect::ReconcileWedge),
+            "the log is read lazily, once"
+        );
+    }
+
+    #[test]
+    fn the_roster_glyphs_and_alert_texts_are_the_frozen_ones() {
+        assert_eq!(SweepVerdict::MetaSweeping.glyph(), "👁");
+        assert_eq!(SweepVerdict::MetaWedged.glyph(), "◌");
+        assert_eq!(SweepVerdict::MetaStarting.glyph(), "·");
+
+        let wedge = SweepAlert::RaiseWedge(WedgeDetail::Stalled { age_secs: 700 });
+        assert_eq!(wedge.action(), "alert");
+        assert_eq!(
+            wedge.summary(),
+            "meta-agent not sweeping — no heartbeat for 11m (may be stuck)"
+        );
+        assert_eq!(
+            wedge.notify(),
+            Some("(meta-agent) not sweeping — may be stuck")
+        );
+        for text in [
+            wedge.summary(),
+            SweepAlert::RaiseUnreachable { undelivered: 7 }.summary(),
+        ] {
+            for banned in ["throttl", "dead", "missing"] {
+                assert!(
+                    !text.contains(banned),
+                    "{text:?} must not carry {banned:?} — it would outrank its own \
+                     'not sweeping' case in _agent_alert_reason"
+                );
+            }
+        }
+        assert_eq!(
+            SweepAlert::RaiseWedge(WedgeDetail::Never {
+                prompting_secs: 661
+            })
+            .summary(),
+            "meta-agent not sweeping — never wrote a heartbeat in 11m of sweep prompts (may be \
+             stuck)"
+        );
+        let clear = SweepAlert::ClearWedge;
+        assert_eq!(clear.action(), "alert-cleared");
+        assert_eq!(
+            clear.summary(),
+            "meta-agent sweeping again (heartbeat resumed)"
+        );
+        assert_eq!(clear.notify(), None);
+        let unreachable = SweepAlert::RaiseUnreachable { undelivered: 7 };
+        assert_eq!(unreachable.action(), "alert");
+        assert_eq!(
+            unreachable.summary(),
+            "meta-agent unreachable — 7 sweep nudges undelivered (not sweeping)"
+        );
+        assert_eq!(
+            unreachable.notify(),
+            Some("(meta-agent) unreachable — sweep nudges undelivered")
+        );
+        let reachable = SweepAlert::ClearUnreachable;
+        assert_eq!(reachable.action(), "alert-cleared");
+        assert_eq!(
+            reachable.summary(),
+            "meta-agent reachable again (sweep nudge delivered)"
+        );
+        assert_eq!(reachable.notify(), None);
+    }
+
+    #[test]
+    fn a_stale_or_untrusted_heartbeat_is_never_reported_as_sweeping() {
+        // The tri-state's whole point: only Fresh is a health claim. Inside the
+        // grace the verdict is undecided (MetaStarting), past it wedged —
+        // never sweeping.
+        let k = knobs();
+        let prior = SweepState {
+            first_delivered: Some(at(0)),
+            ..SweepState::default()
+        };
+        let cases: [(Option<u64>, u64, SweepVerdict); 6] = [
+            (None, 100, SweepVerdict::MetaStarting),
+            (None, 660, SweepVerdict::MetaStarting),
+            (None, 661, SweepVerdict::MetaWedged),
+            (None, 5000, SweepVerdict::MetaWedged),
+            (Some(0), 700, SweepVerdict::MetaWedged),
+            (Some(1000), 2000, SweepVerdict::MetaWedged),
+        ];
+        for (hb, now, want) in cases {
+            let acc = sweep_step(&prior, &seen(now, hb, &k), &k).expect("enabled");
+            assert_eq!(acc.verdict, want, "hb={hb:?} now={now}");
+            assert_ne!(
+                acc.verdict,
+                SweepVerdict::MetaSweeping,
+                "a non-fresh heartbeat is never health"
+            );
+        }
     }
 }

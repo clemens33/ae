@@ -1280,7 +1280,13 @@ mod tests {
         std::fs::set_permissions(&dotae, std::fs::Permissions::from_mode(0o000)).unwrap();
         // If this process can still traverse `.ae` (e.g. it runs as root), the premise
         // does not hold — restore and skip rather than assert a false negative.
-        let denied = std::fs::symlink_metadata(dotae.join("config")).is_err();
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "a door: this test's own premise check — that `.ae` really is \
+                      untraversable for this process — see clippy.toml"
+        )]
+        let probe = std::fs::symlink_metadata(dotae.join("config"));
+        let denied = probe.is_err();
         if !denied {
             let _ = std::fs::set_permissions(&dotae, std::fs::Permissions::from_mode(0o755));
             eprintln!("`.ae` traversal not denied (root?); skipping untraversable regression");

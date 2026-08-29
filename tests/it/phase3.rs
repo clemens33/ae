@@ -1754,9 +1754,11 @@ fn is_product_line(file: &str, line: usize) -> bool {
 #[test]
 fn criterion_3_the_places_this_crate_can_read_the_world_are_the_inventoried_ones() {
     // A TRIPWIRE OVER ENTRY POINTS, AND ITS LIMIT IS THE TEST. `clippy.toml`
-    // names eleven resolved paths; safe std still exposes `canonicalize`,
-    // `read_link`, `symlink_metadata`, `OpenOptions::open` and `DirEntry`
-    // observations, and a discarded call to any of them slips straight past.
+    // names twelve resolved paths; safe std still exposes `canonicalize`,
+    // `read_link`, `OpenOptions::open` and `DirEntry` observations, and a
+    // discarded call to any of them slips straight past. (`symlink_metadata`
+    // WAS on that unlisted list and is now the twelfth entry — the example
+    // moved because the door did, which is what the list is for.)
     // The empty dependency tables and `unsafe_code = "forbid"` close the
     // THIRD-PARTY and LIBC routes; neither closes an unlisted safe-std one, and
     // reading them as covering the enumeration is what let an earlier version of
@@ -1835,8 +1837,17 @@ fn criterion_3_the_places_this_crate_can_read_the_world_are_the_inventoried_ones
             // removal durable. The meta read it validates identity through is
             // `meta.rs`'s inventoried door, not a new one here.
             "src/teardown.rs".to_owned(),
+            // The steward heartbeat's `lstat` (P4.2): the one read the watchdog
+            // daemon takes for itself, proving `meta-agent-state.json` is a
+            // non-symlink regular file before its mtime is trusted as liveness.
+            // `symlink_metadata`, never `metadata` — the frozen bash `[[ -f ]]`
+            // FOLLOWS a link, and a followed link is how a wedged steward gets
+            // silenced by a state file somebody else keeps touching. Its meta
+            // and event-container reads are `meta.rs`'s and `event_text.rs`'s
+            // inventoried doors, not new ones here. Registered deliberately.
+            "src/watchdog_daemon.rs".to_owned(),
         ],
-        "the set of places product code can reach the eleven named entry points changed"
+        "the set of places product code can reach the twelve named entry points changed"
     );
 }
 

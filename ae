@@ -16513,9 +16513,11 @@ helper_watchdog_main() {
     # bash loop BELOW is the ROLLBACK for when no usable core is pinned; do NOT
     # delete it — it mirrors the compact/end `_ae_core_try || bash-body` pattern.
     #
-    # KNOWN TEMPORARY GAP: the Rust daemon does not run the meta-agent (steward)
-    # sweep — deferred to the steward slice. A meta-agent session under the core
-    # loses sweep cadence until then; the bash rollback below still sweeps.
+    # The meta-agent (steward) sweep cadence runs in the Rust daemon as of P4.2:
+    # it owns sweep detection, cadence, delivery-check, retry and heartbeat-wedge
+    # for the steward MAIN. The bash rollback below KEEPS its own sweep as the
+    # rollback (mirrors P4.1's core||bash split), used only when no usable core
+    # is pinned; retire at P5 with the rest of the rollback loop.
     #
     # Core usability MIRRORS _ae_core_try's gate (AE_CORE= set-but-empty forces
     # bash; pinned ae_core + matching ae_core_version + executable), inlined rather
@@ -16550,7 +16552,8 @@ helper_watchdog_main() {
             --interval "$INTERVAL" --stale-secs "$STALE_SECS" --max-nudges "$MAX_NUDGES" \
             --throttle-alert-cycles "$THROTTLE_ALERT_CYCLES" --undelivered-max "$UNDELIVERED_MAX" \
             --quiet-beat-ms "$((QUIET_SETTLE_BEAT * 1000))" --quiet-tries "$QUIET_SETTLE_TRIES" \
-            --quiet-panes-per-cycle "$QUIET_STABILIZE_PER_CYCLE" &
+            --quiet-panes-per-cycle "$QUIET_STABILIZE_PER_CYCLE" \
+            --sweep-secs "$SWEEP_SECS" --sweep-retry-secs "$SWEEP_RETRY_SECS" --sweep-retry-max "$SWEEP_RETRY_MAX" &
         _wd_child=$!
         set +m
         AE_PATH_BIN="$(grep '^ae_path=' "${META_DIR}/meta" 2>/dev/null | cut -d= -f2- || true)"

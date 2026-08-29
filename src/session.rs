@@ -332,24 +332,7 @@ impl SessionRead {
     /// EVERY scan is a claim to check against every scan.
     #[must_use]
     pub fn alert_reason_of(&self, session: &str, slot: &str, reference: &str) -> Option<Reason> {
-        // LEDGER ORDER, not timestamp order: the LAST decisive record wins, and
-        // `self.events` arrives in append order (`EventLog::drain_all` walks
-        // generations in order, and `Drain` preserves each one's offsets).
-        //
-        // `next_back` rather than `last`: this walks BACKWARD and stops at the
-        // first decisive record, which is the incumbent's `tac` scan exactly
-        // (events.md:128 — "newest-first via tac and stops at the first
-        // relevant match"), and it does not read the whole log to find a
-        // verdict sitting at the end of it.
-        match self
-            .events
-            .iter()
-            .filter_map(|event| decisive_verdict(event, session, slot, reference))
-            .next_back()
-        {
-            Some(Verdict::Raised(reason)) => Some(reason),
-            Some(Verdict::Clear) | None => None,
-        }
+        alert_reason_in(&self.events, session, slot, reference)
     }
 
     /// Whether this read lost anything — SC-509b's "ACTUAL read/parse loss".
@@ -441,6 +424,43 @@ fn is_actor(event: &Event, session: &str, slot: &str, reference: &str) -> bool {
         (RoutingMember::Absent, RoutingMember::Absent) => event.actor == reference,
         // Partial, or present-and-empty: routed, to nobody nameable.
         _ => false,
+    }
+}
+
+/// The alert the durable log still shows for one agent, or `None`.
+///
+/// The scan `_agent_alert_reason` performs, as a free function over a slice, so
+/// the watchdog daemon can ask the question against the events it already read
+/// this cycle without composing a whole [`SessionRead`]. ONE definition: the
+/// method above delegates here, because two walks of the same log with the same
+/// meaning is exactly how the two drift apart.
+///
+/// # Ledger order, not timestamp order
+///
+/// The LAST decisive record wins, and `events` must arrive in APPEND order
+/// (`EventLog::drain_all` walks generations in order, and `Drain` preserves
+/// each one's offsets). Ordering by `ts` would let an independently-clocked
+/// watchdog lose an alert it appended *after* the agent's own event merely by
+/// stamping it earlier.
+///
+/// `next_back` rather than `last`: this walks BACKWARD and stops at the first
+/// decisive record, which is the incumbent's `tac` scan exactly (events.md:128
+/// — "newest-first via tac and stops at the first relevant match"), and it does
+/// not read the whole log to find a verdict sitting at the end of it.
+#[must_use]
+pub fn alert_reason_in(
+    events: &[Event],
+    session: &str,
+    slot: &str,
+    reference: &str,
+) -> Option<Reason> {
+    match events
+        .iter()
+        .filter_map(|event| decisive_verdict(event, session, slot, reference))
+        .next_back()
+    {
+        Some(Verdict::Raised(reason)) => Some(reason),
+        Some(Verdict::Clear) | None => None,
     }
 }
 

@@ -77,6 +77,13 @@ disallowed-methods = [
   "std::fs::read_to_string",
   "std::fs::read_dir",
   "std::fs::metadata",
+  # The lstat door. Listed BESIDE `metadata` rather than instead of it, because
+  # the two are not interchangeable and the difference is a security property:
+  # `metadata` FOLLOWS a symlink, `symlink_metadata` classifies the link itself.
+  # Every product use here is deliberately the non-following one (the teardown
+  # and archive path guards, and the watchdog's steward heartbeat), so the entry
+  # exists to keep each of them a line in a review rather than to discourage it.
+  "std::fs::symlink_metadata",
   "std::fs::File::open",
   "std::path::Path::exists",
   "std::path::Path::metadata",

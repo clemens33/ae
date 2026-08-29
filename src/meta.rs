@@ -526,6 +526,45 @@ pub fn first_value<'a>(text: &'a [u8], key: &str) -> Option<&'a [u8]> {
     })
 }
 
+/// The value of `key` when the meta names it EXACTLY ONCE, or `None`.
+///
+/// The fail-closed reading of a flat record file, for the keys where a
+/// duplicate is not a tie to break but a record whose meaning is in doubt. It
+/// is the same answer [`Meta::parse`] reaches for the keys it absorbs (SC-405e:
+/// a duplicated key contributes NOTHING, because no row says whether the first
+/// or the last occurrence wins, and publishing either would be fabrication).
+/// This is that rule for a key `Meta` leaves uninterpreted.
+///
+/// Distinct from [`first_value`] on purpose, and the caller picks: `first_value`
+/// answers "what does the first record say", which is right where a later
+/// duplicate is harmless; this answers "does the file say ONE thing", which is
+/// what a flag guarding behavior needs.
+///
+/// # Bash parity
+///
+/// The frozen helpers read such a flag as `grep '^key=' meta | cut -d= -f2-`
+/// captured into a scalar, so two records make a value with a NEWLINE in it,
+/// which equals neither one alone. Any duplicate therefore fails every `==`
+/// comparison bash makes against it — `None` here is that same answer, reached
+/// by a route that does not depend on a shell's field splitting.
+#[must_use]
+pub fn sole_value<'a>(text: &'a [u8], key: &str) -> Option<&'a [u8]> {
+    let mut found = None;
+    for line in text.split(|byte| *byte == b'\n') {
+        let Some(value) = line
+            .strip_prefix(key.as_bytes())
+            .and_then(|rest| rest.strip_prefix(b"="))
+        else {
+            continue;
+        };
+        if found.is_some() {
+            return None; // named twice: the record does not say one thing
+        }
+        found = Some(value);
+    }
+    found
+}
+
 /// `text` with `key` set to `value`, or removed when `value` is `None` — the
 /// frozen helpers' awk, byte for byte (measured against it):
 ///
@@ -1158,5 +1197,42 @@ mod tests {
             .to_string(),
             "malformed roster entry agent.main at line 2"
         );
+    }
+
+    #[test]
+    fn a_sole_value_is_the_one_a_key_names_exactly_once() {
+        use super::{first_value, sole_value};
+        // The contrast with `first_value` IS the point, so both are asserted on
+        // the same inputs: `first_value` answers "what does the first record
+        // say", which is right where a later duplicate is harmless; this
+        // answers "does the file say ONE thing", which is what a flag guarding
+        // behavior needs.
+        let once = b"session=x\nmeta_agent=true\n";
+        assert_eq!(sole_value(once, "meta_agent"), Some(b"true".as_slice()));
+        assert_eq!(first_value(once, "meta_agent"), Some(b"true".as_slice()));
+
+        for doubled in [
+            &b"meta_agent=true\nmeta_agent=false\n"[..],
+            &b"meta_agent=true\nmeta_agent=true\n"[..],
+            &b"meta_agent=false\nsession=x\nmeta_agent=true\n"[..],
+        ] {
+            assert_eq!(
+                sole_value(doubled, "meta_agent"),
+                None,
+                "a key named twice does not say one thing"
+            );
+            assert!(
+                first_value(doubled, "meta_agent").is_some(),
+                "the control: `first_value` still answers, which is exactly why \
+                 a flag must not be read with it"
+            );
+        }
+
+        assert_eq!(sole_value(b"session=x\n", "meta_agent"), None, "absent");
+        // An empty value is a value: present once, and it is the empty string.
+        assert_eq!(sole_value(b"meta_agent=\n", "meta_agent"), Some(&b""[..]));
+        // The key match is a whole prefix up to `=`, not a substring.
+        assert_eq!(sole_value(b"not_meta_agent=true\n", "meta_agent"), None);
+        assert_eq!(sole_value(b"meta_agent_x=true\n", "meta_agent"), None);
     }
 }

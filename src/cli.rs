@@ -870,6 +870,13 @@ fn watchdog_knobs(flags: &[String]) -> std::result::Result<crate::watchdog_daemo
             "--quiet-beat-ms" => knobs.quiet_beat_ms = number(value)?,
             "--quiet-tries" => knobs.quiet_tries = size(value)?,
             "--quiet-panes-per-cycle" => knobs.quiet_panes_per_cycle = size(value)?,
+            // The steward cadence (ae:16435-16448). `--sweep-secs 0` is a
+            // MEANINGFUL value, not an omission: SC-1405b makes it "no sweep
+            // branch at all", so bash passing a configured zero must reach the
+            // daemon as a zero rather than fall back to the frozen 300.
+            "--sweep-secs" => knobs.sweep.sweep_secs = number(value)?,
+            "--sweep-retry-secs" => knobs.sweep.retry_secs = number(value)?,
+            "--sweep-retry-max" => knobs.sweep.retry_max = count(value)?,
             _ => return Err(flag.clone()),
         }
         rest = after;
@@ -1579,6 +1586,12 @@ mod tests {
             "250",
             "--quiet-panes-per-cycle",
             "3",
+            "--sweep-retry-max",
+            "2",
+            "--sweep-secs",
+            "600",
+            "--sweep-retry-secs",
+            "45",
         ])) else {
             panic!("the knob flags did not parse");
         };
@@ -1591,6 +1604,30 @@ mod tests {
         assert_eq!(knobs.quiet_beat_ms, 250);
         assert_eq!(knobs.quiet_tries, 9);
         assert_eq!(knobs.quiet_panes_per_cycle, 3);
+        assert_eq!(knobs.sweep.sweep_secs, 600);
+        assert_eq!(knobs.sweep.retry_secs, 45);
+        assert_eq!(knobs.sweep.retry_max, 2);
+    }
+
+    #[test]
+    fn a_configured_zero_sweep_reaches_the_daemon_as_a_zero() {
+        // SC-1405b is a VALUE, not an omission: `0` means "no sweep branch",
+        // and defaulting it to the frozen 300 would start prompting a session
+        // whose operator turned the cadence off. The control is the pair —
+        // omitting the flag is what yields 300.
+        let Request::WatchdogRun { knobs, .. } =
+            Request::parse(&argv(&[WATCHDOG_RUN, "/s/demo", "--sweep-secs", "0"]))
+        else {
+            panic!("the knob flags did not parse");
+        };
+        assert_eq!(knobs.sweep.sweep_secs, 0);
+        assert!(!knobs.sweep.enabled());
+        let Request::WatchdogRun { knobs, .. } = Request::parse(&argv(&[WATCHDOG_RUN, "/s/demo"]))
+        else {
+            panic!("the flagless call did not parse");
+        };
+        assert_eq!(knobs.sweep.sweep_secs, 300);
+        assert!(knobs.sweep.enabled());
     }
 
     #[test]
