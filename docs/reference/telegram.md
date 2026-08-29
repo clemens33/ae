@@ -18,10 +18,10 @@ See the [bridge protocol](../internals/bridge-protocol.md) for the substrate it 
 
 ## Dependencies
 
-`jq` and `curl` are **feature-only**: ae's core commands (`ae <name>`, `ae list`, `ae stop`, …) do not require them. The bridge refuses to start if either is missing.
+The bridge needs **only a configured ae core** — it *is* the ae core binary, run in a background tmux session. There are no extra CLI dependencies: the old bash bridge's `jq` + `curl` requirement is gone. On a machine with no usable core, `ae telegram start` errors and autostart warns and continues; ae's core commands (`ae <name>`, `ae list`, `ae stop`, …) are unaffected.
 
 ```bash
-ae doctor              # reports OK/WARN for the telegram block when configured
+ae doctor              # reports telegram.core OK/WARN when telegram is configured
 ```
 
 ## Setup
@@ -94,7 +94,7 @@ Three ways to reach an agent, easiest first:
 
 **Command menu.** When inbound is enabled, the daemon registers the slash commands (`/list`, `/use`, `/session`, `/help`) with Telegram (`setMyCommands`) on startup, so they show up in the chat's `/` menu — no need to memorise the grammar. Best-effort: a registration failure is logged and ignored.
 
-**Replay safety.** The daemon advances its `getUpdates` offset (persisted in `~/.ae/telegram/tg_offset`) before dispatching, so a crash can't re-run a side-effecting command on restart (at-most-once).
+**Replay safety.** The daemon advances its `getUpdates` offset (persisted in `~/.ae/telegram/tg_offset`) only *after* an update is durably routed, so an ordinary restart resumes after the last handled update; a crash between routing and the offset write may redeliver exactly that one update (at-least-once — at most one honest duplicate). An authorized target that stays undeliverable gets a bounded give-up: after a bounded number of retries the daemon sends the text back to the chat and, *only once Telegram accepts that notice*, advances — so one dead pane can't stall the queue, and nothing is dropped without a delivered notice.
 
 ## Orchestrator-centric routing: talk to the meta-agent, not ten sessions
 
@@ -161,55 +161,37 @@ The daemon is **per-machine**, not per-session. A single instance serves every a
 | Trigger | Behavior |
 |---|---|
 | `ae telegram start` | Spawn daemon now, persist `enabled = true`. |
-| `ae <name>` (start or resume) | If `enabled = true` and daemon not running and deps present, spawn it. **Never blocks session start** — any failure is a one-line stderr warning, agent launch continues. |
+| `ae <name>` (start or resume) | If `enabled = true` and the daemon is not running, spawn it — the spawn resolves the ae core and a missing/unusable core is a one-line stderr warning. **Never blocks session start** — any failure is a one-line stderr warning, agent launch continues. |
 | `ae telegram stop` | Kill daemon, persist `enabled = false`. |
 | Watchdog | While any session's [watchdog](../internals/watchdog.md) is running, it best-effort revives the daemon every ~`AE_WATCHDOG_TG_SUPERVISE_SEC` seconds (default 120) if `enabled = true` and it died. Idempotent + respects the `enabled` flag, so a deliberate `ae telegram stop` is **not** undone. This is the closest thing to supervision without systemd — see below. |
 | Reboot | Daemon dies with tmux. Next `ae <name>` (or a running watchdog's supervision tick) triggers the autostart hook. For sessions the daemon already tracked, the events written while it was down stay in `events.jsonl` and are forwarded from the saved offset when it restarts. A session first seen *after* the restart is initialized at end-of-file — its pre-restart events are not backfilled. |
 
-**Recovery is bounded, not magic.** For the **outbound** path, Telegram queues nothing — what buffers missed events is the local `events.jsonl` plus the per-session offset in `state.tsv`: a tracked session resumes exactly where it left off, while a brand-new session starts from EOF (no history flood, by design). For the **inbound** path, Telegram *does* hold undelivered `getUpdates` for ~24h, so commands sent while the daemon is down are processed when it next polls (and the offset in `tg_offset` prevents re-running already-handled ones).
+**Recovery is bounded, not magic.** For the **outbound** path, Telegram queues nothing — what buffers missed events is the local `events.jsonl` plus each session's `telegram-outbound.cursor`: a tracked session resumes exactly where it left off, while a brand-new session starts from EOF (no history flood, by design). For the **inbound** path, Telegram *does* hold undelivered `getUpdates` for ~24h, so commands sent while the daemon is down are processed when it next polls (and the offset in `tg_offset` prevents re-running already-handled ones).
 
 **Watchdog supervision (best-effort).** The per-session watchdog re-runs the autostart check every ~120s (`AE_WATCHDOG_TG_SUPERVISE_SEC`, set `0` to disable), so a crashed daemon is revived within a couple of minutes **as long as at least one session's watchdog is alive**. start / stop / supervise serialize on a control lock (`~/.ae/telegram/control.lock`) and the revive re-checks `enabled` under that lock, so a deliberate `ae telegram stop` is never undone by an in-flight tick, and concurrent watchdogs across sessions don't fight. The supervise call inherits the session's tmux server, so multi-server setups revive on the right server. This is not a hard supervisor: if every session is stopped (or `ae watchdog` is off everywhere), nothing watches the bridge.
 
-> **No crash-loop backoff (yet).** If the daemon exits immediately while `enabled = true` (e.g. a bad token slips past validation), each running watchdog will keep re-spawning it on its ~120s cadence — visible as repeated `daemon started` / `daemon exiting` pairs in `daemon.log`. It won't duplicate daemons (lock-guarded), just churn. Watch the log; `ae telegram stop` halts it.
+> **No crash-loop backoff (yet).** If the daemon exits immediately while `enabled = true` (e.g. a bad token slips past validation), each running watchdog will keep re-spawning it on its ~120s cadence — visible as the `ae-telegram` tmux session repeatedly reappearing and dying. It won't duplicate daemons (a single tmux session name is the guard), just churn. `ae telegram stop` halts it.
 
 **systemd supervision is deferred.** For a *hard* guarantee independent of running sessions, a user unit would need a foreground daemon mode (`ae telegram start` currently spawns the tmux session and exits, so `Restart=on-failure` can't catch a crash). That's Stage 5 (see [issue #1](https://github.com/clemens33/ae/issues/1)).
 
 To have the bridge alive before the first `ae <name>` of a session, run `ae telegram start` from your shell login (e.g. `~/.bashrc`, `~/.config/fish/conf.d/`).
 
-## Backends: bash daemon and aewatch (opt-in)
-
-The bridge has two interchangeable backends. The **bash daemon** (the `ae-telegram` tmux session) described above is the default. When the [aewatch sidecar](../internals/watchdog.md#implementations-bash-default-and-aewatch-opt-in) runs (`AE_WATCHDOG_IMPL=uv`), it hosts the bridge in-process instead — reproducing the same outbound filter, inbound routing, and command menu over the **same on-disk state**.
-
-**One sender at a time.** The aewatch daemon claims ownership by writing `$AE_HOME/aewatch/bridge-owner` and keeping its heartbeat fresh. While that marker exists *and* the heartbeat is fresh (age ≤ 90s), ae treats the aewatch bridge as the owner: the bash autostart hook and the watchdog's `telegram _supervise` revive both stand down, so exactly one bridge ever sends. The handoff order is marker → stop the bash daemon → send, with no window where both send. See [bridge ownership](../internals/bridge-protocol.md#bridge-ownership) for the mechanism.
-
-**Shared state = seamless handoff.** The aewatch bridge reads and writes the same `~/.ae/telegram/{state.tsv, tg_offset, current_target}` files as the bash daemon, so it resumes from the last durable offset — no replayed history, no lost `/use` target.
-
-**bash is the fallback.** If the aewatch daemon dies, its heartbeat goes stale, the marker stops counting, and the next watchdog `telegram _supervise` brings the bash daemon back.
-
-**Backend-aware reporting.** `ae telegram status` and `ae doctor` name the active backend:
-
-- `ae doctor` → `OK    telegram.daemon    enabled; aewatch daemon owns the bridge`
-- `ae telegram status` → `backend: aewatch (bridge-owner marker + fresh heartbeat; shared state in ~/.ae/telegram)`
-
-`ae telegram start` still honors an explicit human request even when aewatch owns the bridge, but warns first:
-
-```text
-ae telegram: WARNING — aewatch owns the bridge (bridge-owner + fresh heartbeat); starting the bash bridge too may double-send. Proceeding on your explicit request.
-```
-
 ## State files
+
+There is **one** bridge implementation: the ae core binary, run in the
+`ae-telegram` tmux session. The former bash daemon and the opt-in aewatch
+in-process bridge are both retired — a single sender, no ownership handoff, no
+backend switch.
 
 | Path | Purpose |
 |---|---|
-| `~/.ae/telegram-daemon` | The generated daemon script (regenerated on every `ae telegram start`) |
-| `~/.ae/telegram/state.tsv` | Per-session `(session_id, inode, byte_offset, last_ts)` so restarts don't replay events |
-| `~/.ae/telegram/daemon.lock` | `flock` guard preventing two daemons from running at once |
-| `~/.ae/telegram/current_target` | The active `/use` inbound routing target (shared with the aewatch backend) |
-| `$AE_HOME/aewatch/bridge-owner` | Ownership marker written by the aewatch bridge; with a fresh heartbeat it signals the bash daemon to stand down (see [Backends](#backends-bash-daemon-and-aewatch-opt-in)) |
-| `~/.ae/telegram/daemon.log` | All daemon output (stderr+stdout), so a crash is diagnosable after the tmux session is gone. Rotated to `daemon.log.1` once at startup past ~1 MiB (`AE_TELEGRAM_LOG_MAX_BYTES`) |
+| `~/.ae/telegram/tg_offset` | Durable inbound `getUpdates` cursor. Advances only *after* an update is durably routed — at-least-once (see **Replay safety**, above) |
+| `~/.ae/telegram/current_target` | The active `/use` inbound routing target |
+| `<session-meta>/telegram-outbound.cursor` | Per-session outbound forward cursor `(inode, byte_offset)`, written beside each session's `events.jsonl` so restarts don't replay events. There is deliberately **no** single global outbound file — progress is per session |
+| `~/.ae/telegram/control.lock` | Serializes `start` / `stop` / `supervise` so concurrent watchdogs across sessions don't fight |
 | `~/.config/ae/telegram-bot.token` | The Bot API token (chmod 600, owner-only) |
 
-The bot token never appears in process argv: the daemon passes the URL to `curl` via `-K -` (config on stdin), and logs are passed through a `bot<TOKEN>` → `bot<redacted>` redactor.
+The bot token never appears in process argv or in any log: it rides the **URL path** (`/bot<TOKEN>/sendMessage`, `/bot<TOKEN>/getUpdates`) over TLS via the core's locked HTTP client (proxy off, https-only, no redirects, finite timeouts), and every surfaced API error is redacted before it is printed.
 
 ## Troubleshooting
 
@@ -220,25 +202,17 @@ Reset ownership: `chown $USER ~/.config/ae/telegram-bot.token`. Or check the pat
 Fix perms: `chmod 600 ~/.config/ae/telegram-bot.token`.
 
 **Daemon is running but no messages arrive**
-The bridge runs in its own tmux session (`ae-telegram`), not as an ae agent — the `peek` helper won't find it. Read its log file (persists across restarts and across the session dying):
+The bridge runs in its own tmux session (`ae-telegram`), not as an ae agent — the `peek` helper won't find it. Read its live output straight from the pane:
 
 ```bash
-tail -n 50 ~/.ae/telegram/daemon.log     # recent output
-tail -f  ~/.ae/telegram/daemon.log        # follow live
+tmux capture-pane -pt ae-telegram -S -100   # last 100 lines
+tmux attach -t ae-telegram                  # follow live (Ctrl-b d detaches)
 ```
 
-Likely causes: wrong `chat_id`, bot was blocked from the user side, network outage, or Telegram returned a 4xx (visible in the log with the token redacted).
+Likely causes: wrong `chat_id`, bot was blocked from the user side, network outage, or Telegram returned a 4xx (surfaced in the pane with the token redacted). Config-level problems (an unusable core, a bad token file) are caught up front by `ae telegram status` and `ae doctor`.
 
-**Daemon died and you want to know why**
-Because all output (including the bash error that killed it) is captured to the log, the cause survives the session. Check the tail and the rotated copy:
-
-```bash
-tail -n 30 ~/.ae/telegram/daemon.log      # the "daemon exiting (rc=…)" line + any error above it
-tail -n 30 ~/.ae/telegram/daemon.log.1    # previous run, if it rotated
-```
-
-**`ae <name>` prints `ae telegram: skipped autostart — missing deps:jq`**
-Install `jq`. The session continues without the bridge.
+**Daemon won't stay up**
+`ae telegram status` shows it not running. A startup refusal prints a single `ae: telegram: …` line to the `ae-telegram` pane before the daemon exits (missing/unreadable token file, wrong token permissions, no usable ae core, an uncreatable state dir). `ae doctor` (`telegram.core`, `telegram.token`) and `ae telegram status` name the common ones without attaching. Note the pane is **not** a persistent log — it dies with the tmux session, so catch a refusal live (attach, or re-run `ae telegram start` and inspect the pane).
 
 **Two ae machines run the same bot**
 They'll fight over `getUpdates` (Telegram 409) and duplicate outbound messages. Use one bot per machine, or stop the daemon on the inactive host.

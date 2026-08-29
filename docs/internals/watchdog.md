@@ -11,24 +11,33 @@ The watchdog is a per-session monitor that lives inside the hidden `ae-monitor` 
 
 The watchdog runs as a `bash` subprocess pinned to a single tmux pane named `_watchdog`.
 
-## Implementations: bash (default) and aewatch (opt-in)
+## Implementations: bash (the one watchdog) — and aewatch, retired
 
-Two implementations reproduce the same watchdog behavior. The **bash watchdog** described on this page is the default and needs nothing beyond `bash` + `tmux`. The **aewatch sidecar** is an optional Python reproduction of the watchdog *and* the [Telegram bridge](../reference/telegram.md), enabled per shell with `AE_WATCHDOG_IMPL=uv`.
+> **RETIRED at P4.3 (2026-08-29).** The aewatch sidecar is no longer selectable:
+> `AE_WATCHDOG_IMPL=uv` selects nothing, and the **bash per-session watchdog
+> described on this page is the one watchdog**. Its Telegram-bridge half is
+> superseded by the Rust core, which is now the single bridge. The rest of this
+> section is kept as archival design history — read it as what the two-backend
+> arrangement WAS, not as a choice available today.
 
-| | bash watchdog (default) | aewatch sidecar (`AE_WATCHDOG_IMPL=uv`) |
+Two implementations reproduced the same watchdog behavior. The **bash watchdog** described on this page is the live one and needs nothing beyond `bash` + `tmux`. The **aewatch sidecar** was an optional Python reproduction of the watchdog *and* the [Telegram bridge](../reference/telegram.md), once enabled per shell with `AE_WATCHDOG_IMPL=uv`.
+
+| | bash watchdog (live) | aewatch sidecar (retired; `AE_WATCHDOG_IMPL=uv` selects nothing) |
 |---|---|---|
 | Runtime | a `bash` subprocess in each session's `_watchdog` pane | one `uv` / PEP 723 Python process (`contrib/aewatch/aewatch`, stdlib-only) |
 | Scope | per session | one daemon per `AE_HOME`, sweeping every discovered session |
 | Home | the session's `ae-monitor` window | a dedicated `ae-aewatch` tmux session on the root server |
 | Liveness | the `_watchdog` pane + pid | a heartbeat file (`$AE_HOME/aewatch/heartbeat`) touched each tick |
 
-**Selection is exclusive and decided once, at session start.** `_start_session_watchdog` reads the effective `AE_WATCHDOG_IMPL`: `uv` starts (or reuses) the aewatch daemon and does *not* start the bash `_watchdog`; anything else starts the bash watchdog. A component — watchdog or bridge — never runs twice against the same session.
+*Archival, all three paragraphs below — the selection they describe no longer exists.*
 
-**Reuse is heartbeat-aware.** Launching under `=uv` reuses a running `ae-aewatch` session only when its heartbeat is fresh; a stale or wedged daemon is replaced, not trusted.
+**Selection was exclusive and decided once, at session start.** `_start_session_watchdog` read the effective `AE_WATCHDOG_IMPL`: `uv` started (or reused) the aewatch daemon and did *not* start the bash `_watchdog`; anything else started the bash watchdog. A component — watchdog or bridge — never ran twice against the same session. Since P4.3 the selection is gone: every session starts the bash watchdog, and a stale `ae-aewatch` session is killed when the bridge spawns.
 
-**bash is the living fallback.** aewatch owns the Telegram bridge only while it holds the `bridge-owner` marker *and* its heartbeat is fresh (age ≤ 90s). If the aewatch daemon dies, the heartbeat goes stale and the next bash `telegram _supervise` revives the bash bridge — so exactly one bridge sends, with no extra code on the fallback path. See [the bridge protocol](bridge-protocol.md) for the handoff.
+**Reuse was heartbeat-aware.** Launching under `=uv` reused a running `ae-aewatch` session only when its heartbeat was fresh; a stale or wedged daemon was replaced, not trusted.
 
-The rest of this page describes the bash watchdog. aewatch reproduces the same per-cycle state machine and effects; the two are cross-checked by a bash-vs-Python parity oracle in `contrib/aewatch/`.
+**There is no longer a bridge fallback, because there is no longer a second bridge.** This is the paragraph P4.3 invalidated: aewatch used to own the Telegram bridge while it held the `bridge-owner` marker with a fresh heartbeat (age ≤ 90s), and a dead daemon let the next bash `telegram _supervise` revive the bash bridge. **The Rust core is now the bridge** — one implementation, no marker, no handoff, nothing to fall back to or from. See [the bridge protocol](bridge-protocol.md), whose two-owner section is likewise archival.
+
+The rest of this page describes the bash watchdog, which is live. aewatch reproduced the same per-cycle state machine and effects; the two are cross-checked by a bash-vs-Python parity oracle in `contrib/aewatch/`, which is the reason the retired source is kept.
 
 ## Tunables
 

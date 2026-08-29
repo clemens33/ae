@@ -108,13 +108,20 @@ The session UUID is generated at first session creation, preserved on resume, pr
 
 ## Bridge ownership
 
-ae can drive a session's outbound path from either of two bridge implementations — the bash `ae-telegram` daemon or the in-process aewatch bridge (see [Telegram backends](../reference/telegram.md#backends-bash-daemon-and-aewatch-opt-in)). Only one may send at a time, coordinated by a durable marker rather than a lock — a lock can't span the bash/Python boundary or a process handoff:
+> **Superseded at P4.3 (2026-08-29).** ae has **one** bridge: the Rust core, run
+> in the `ae-telegram` tmux session. The bash telegram daemon and the in-process
+> aewatch bridge are both retired, so there is no second owner to coordinate
+> with, no `bridge-owner` marker and no handoff. Everything in this section is
+> **archival protocol history**, kept because it is the contract an *external*
+> bridge implementation was told to honour — see the closing note.
+
+ae once drove a session's outbound path from either of two bridge implementations — the bash `ae-telegram` daemon or the in-process aewatch bridge. Only one could send at a time, coordinated by a durable marker rather than a lock — a lock can't span the bash/Python boundary or a process handoff:
 
 - The owning bridge writes `$AE_HOME/aewatch/bridge-owner` and keeps `$AE_HOME/aewatch/heartbeat` fresh (touched each tick).
 - Any bridge — or a bash reviver — treats the marker as authoritative only while the heartbeat is fresh (age ≤ 90s). A stale heartbeat means the owner is gone and the marker suppresses no one.
 - Handoff order is strict: claim the marker → stop the other bridge → only then send. There is no window in which both send, and the shared `~/.ae/telegram/` offset files mean the taking-over bridge resumes from the last durable offset.
 
-A bridge implementer coexisting with ae's own bridges should honor the same marker: if `bridge-owner` exists with a fresh heartbeat, stand down.
+A bridge implementer coexisting with ae's own bridge no longer has a marker to read: ae's Rust bridge does not write `bridge-owner`, and nothing in ae reads it. An external bridge that wants to coexist should key on the single `ae-telegram` session and on the durable state it owns — `~/.ae/telegram/tg_offset` for the inbound offset and `<meta>/telegram-outbound.cursor` per session for outbound — rather than on the retired marker protocol above.
 
 ## Allowed and disallowed assumptions
 

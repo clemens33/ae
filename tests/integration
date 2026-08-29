@@ -3343,119 +3343,77 @@ rm -rf "$HOME/.ae/orchestrator"
 sleep 0.5
 fi
 
-# ── _aewatch_autostart_if_available behavior (slice 18) ────────────────
-if _itest_section '_aewatch_autostart_if_available behavior (slice 18)'; then
-# Extract the hook to a file and run it in a controlled env: a FAKE sidecar under a temp
-# $0 dir (records its `up` argv), a stubbed daemon_session_running, and a controlled
-# heartbeat. Proves start / silent no-op / existing-session fast path / STALE-restart.
-_AW_HOOK="$TMPDIR/aw-hook.sh"
+# ── aewatch retired: the bridge spawn kills a stale sidecar (RR P4) ──────────
+if _itest_section 'aewatch retired: the bridge spawn kills a stale sidecar'; then
+# The hook that used to START aewatch is gone, but a retirement that only edits
+# bytes does not help against a process ALREADY RUNNING: a live aewatch claims the
+# bridge-owner marker and kills competing bridges on every tmux server, so it would
+# kill the Rust core seconds after we launch it. The spawn therefore retires it
+# first. Drive the REAL _telegram_spawn_daemon with a fake tmux that reports the
+# sidecar present or absent and records every kill-session.
+_TG_SPAWN_FNS="$TMPDIR/tg-spawn-fns.sh"
 {
-    # _ae_stat too: the fresh-heartbeat fast path reads the heartbeat's mtime
-    # through it, and a missing definition breaks the age arithmetic — the hook
-    # then starts a SECOND daemon on top of a live one.
-    awk '/^_ae_stat\(\) \{/,/^\}$/' "$AE"
-    awk '/^_aewatch_autostart_if_available\(\) \{/{f=1} f{print} f&&/^\}$/{exit}' "$AE"
-} >"$_AW_HOOK"
+    awk '/^_ae_core_bin_input\(\) \{/,/^\}$/' "$AE"
+    awk '/^_ae_core_bin_version\(\) \{/,/^\}$/' "$AE"
+    awk '/^_tmux_err_is_clean_dead\(\) \{/,/^\}$/' "$AE"
+    awk '/^daemon_session_running\(\) \{/,/^\}$/' "$AE"
+    awk '/^_telegram_spawn_daemon\(\) \{/,/^\}$/' "$AE"
+} >"$_TG_SPAWN_FNS"
 
-# _aw_run <running_rc> <heartbeat: none|fresh|stale> <no_autostart> [no_sidecar] [impl]
-# echoes "invoked:<recorded argv>" or "noop". impl defaults to uv (the opt-in that ARMS
-# the hook); any other value / empty must be a no-op (the exclusivity opt-in gate).
-_aw_run() {
-    local running_rc="$1" hb="$2" noauto="$3" no_sidecar="${4:-}" impl="${5-uv}"
-    local d; d="$(mktemp -d "$TMPDIR/aw.XXXXXX")"
-    mkdir -p "$d/home/aewatch"
-    if [[ -z "$no_sidecar" ]]; then
-        mkdir -p "$d/contrib/aewatch"
-        cat > "$d/contrib/aewatch/aewatch" <<'FAKE'
-#!/usr/bin/env python3
-import sys, pathlib
-pathlib.Path(sys.argv[0] + ".rec").write_text(" ".join(sys.argv[1:]))
-FAKE
-        chmod +x "$d/contrib/aewatch/aewatch"
-    fi
-    case "$hb" in
-        fresh) : > "$d/home/aewatch/heartbeat" ;;
-        stale) : > "$d/home/aewatch/heartbeat"; _touch_ago 7200 "$d/home/aewatch/heartbeat" ;;
-    esac
-    cat > "$d/wrapper" <<WRAP
+# _spawn_run <sidecar: present|absent> -> "<killed|nokill>|<spawned|nospawn>"
+_spawn_run() {
+    local sidecar="$1" d
+    d="$(mktemp -d "$TMPDIR/tgs.XXXXXX")"
+    printf '%s\n' '#!/bin/sh' 'echo "ae 0.0.0"' >"$d/core"
+    chmod 0700 "$d/core"
+    cat >"$d/wrapper" <<WRAP
 #!/usr/bin/env bash
-AE_NO_AUTOSTART=$noauto
-AE_WATCHDOG_IMPL=$impl
-CONFIG_DIR="$d/home"
-daemon_session_running() { return $running_rc; }
-source "$_AW_HOOK"
-_aewatch_autostart_if_available
+CONFIG_DIR="$d"
+CONFIG_FILE="$d/config"
+_TELEGRAM_TMUX_SESSION="ae-telegram"
+tmux() {
+    case "\$1" in
+        list-sessions) [[ "$sidecar" == present ]] && echo ae-aewatch; return 0 ;;
+        kill-session) echo "\$*" >>"$d/kills"; return 0 ;;
+        new-session) echo spawned >"$d/spawned"; return 0 ;;
+        *) return 0 ;;
+    esac
+}
+source "$_TG_SPAWN_FNS"
+AE_CORE_BIN="$d/core" _telegram_spawn_daemon
 WRAP
     "${BASH:-bash}" "$d/wrapper" >/dev/null 2>&1
-    # Poll, don't sleep-and-hope: the hook backgrounds `uv run`, whose first-run
-    # bootstrap can exceed a fixed 0.3s (measured ~0.4s on macOS) — a flake that
-    # reads as "the hook never fired".
-    for _i in $(seq 1 25); do
-        [[ -f "$d/contrib/aewatch/aewatch.rec" ]] && break
-        sleep 0.2
-    done
-    if [[ -f "$d/contrib/aewatch/aewatch.rec" ]]; then
-        echo "invoked:$(cat "$d/contrib/aewatch/aewatch.rec")"
-    else
-        echo "noop"
-    fi
+    if grep -q 'ae-aewatch' "$d/kills" 2>/dev/null; then printf 'killed'; else printf 'nokill'; fi
+    if [[ -f "$d/spawned" ]]; then printf '|spawned\n'; else printf '|nospawn\n'; fi
+    rm -rf "$d"
 }
-
-_AW_START="$(_aw_run 1 none 0)"   # not running, sidecar present, impl=uv -> start
-assert_eq "aewatch-autostart: invokes up when available + not running (opt-in uv)" "yes" "$([[ "$_AW_START" == invoked:* ]] && echo yes || echo no)"
-assert_eq "aewatch-autostart: passes up --ae-home + --runner" "yes" "$(grep -qE 'up --ae-home .* --runner (uv|python3)' <<<"$_AW_START" && echo yes || echo no)"
-assert_eq "aewatch-autostart: silent no-op when sidecar script absent" "noop" "$(_aw_run 1 none 0 nosidecar)"
-assert_eq "aewatch-autostart: no-op when running + FRESH heartbeat (fast path)" "noop" "$(_aw_run 0 fresh 0)"
-assert_eq "aewatch-autostart: RESTARTS when running + STALE heartbeat (blocker guard)" "yes" "$([[ "$(_aw_run 0 stale 0)" == invoked:* ]] && echo yes || echo no)"
-# #28: rc 2 is UNKNOWN, not absent. `up` kills and recreates the daemon session,
-# so a tmux that could not answer must produce NO launch at all — the same
-# fail-toward-nothing rule the orchestrator autostart follows.
-assert_eq "aewatch-autostart: UNKNOWN tmux (rc 2) never launches (#28)" "noop" "$(_aw_run 2 none 0)"
-assert_eq "aewatch-autostart: UNKNOWN tmux does not restart on a stale heartbeat either" "noop" "$(_aw_run 2 stale 0)"
-assert_eq "aewatch-autostart: AE_NO_AUTOSTART=1 skips" "noop" "$(_aw_run 1 none 1)"
-# Exclusivity opt-in gate: WITHOUT AE_WATCHDOG_IMPL=uv the daemon must NOT start, even
-# fully available + not running (default = bash watchdog only, no live double-run).
-assert_eq "aewatch-autostart: no-op under AE_WATCHDOG_IMPL=bash (default path)" "noop" "$(_aw_run 1 none 0 '' bash)"
-assert_eq "aewatch-autostart: no-op when AE_WATCHDOG_IMPL unset/empty" "noop" "$(_aw_run 1 none 0 '' '')"
+# The case that matters: a live sidecar is retired, and the core still comes up.
+assert_eq "aewatch retired: a RUNNING sidecar is killed, then the core spawns" "killed|spawned" "$(_spawn_run present)"
+# ...and the retirement is not unconditional — no sidecar means no kill at all.
+assert_eq "aewatch retired: no sidecar -> no kill, core still spawns" "nokill|spawned" "$(_spawn_run absent)"
 fi
 
-# ── s19: Telegram bridge ownership / no-double-send (the MANDATORY guard test) ──
-if _itest_section 's19: Telegram bridge ownership / no-double-send (the MANDATORY guard test)'; then
-# All THREE bash-bridge revive paths (launch, reattach, watchdog _supervise) funnel through
-# _telegram_autostart_if_enabled. Ownership is a DURABLE MARKER + fresh heartbeat (NOT env —
-# a concurrent bash reviver never shares the uv-launcher's env). Drive the REAL
-# _aewatch_owns_bridge + _telegram_autostart_if_enabled with stubbed lifecycle deps: a
-# bridge-owner marker + FRESH heartbeat suppresses the bash bridge for ANY caller (codex's
-# concurrent-revive assertion); marker+STALE or NO-marker leaves the bash fallback unchanged.
-# (Stopping a RUNNING bash bridge is the aewatch daemon's handoff, tested aewatch-side.)
+# ── telegram autostart: intent + liveness are the whole decision ──────────────
+if _itest_section 'telegram autostart: intent + liveness are the whole decision'; then
+# All THREE revive paths (launch, reattach, watchdog _supervise) funnel through
+# _telegram_autostart_if_enabled. The aewatch-vs-bash ownership arbitration that
+# used to sit at the top of it is retired with the bash bridge it arbitrated: the
+# Rust core is the only sender, so a LIVE DAEMON — not a marker file — is what
+# stops a second spawn. Drive the REAL function with stubbed lifecycle deps.
 _TG_FNS="$TMPDIR/tg-fns.sh"
-{
-    # _ae_stat too: _aewatch_owns_bridge calls it for the heartbeat mtime, and a
-    # missing definition makes the age arithmetic fail -> "not owned" -> a bash
-    # bridge spawns under a live aewatch.
-    awk '/^_ae_stat\(\) \{/,/^\}$/' "$AE"
-    awk '/^_aewatch_owns_bridge\(\) \{/,/^\}$/' "$AE"
-    awk '/^_telegram_autostart_if_enabled\(\) \{/,/^\}$/' "$AE"
-} >"$_TG_FNS"
+awk '/^_telegram_autostart_if_enabled\(\) \{/,/^\}$/' "$AE" >"$_TG_FNS"
 
-# _tg_run <marker: yes|no> <hb: none|fresh|stale> <bash_running_rc> -> spawned|nospawn
+# _tg_run <intent: true|false> <daemon_running_rc> -> spawned|nospawn
 _tg_run() {
-    local marker="$1" hb="$2" bashrc="$3" d
+    local intent="$1" runrc="$2" d
     d="$(mktemp -d "$TMPDIR/tg.XXXXXX")"
-    mkdir -p "$d/aewatch"
-    [[ "$marker" == yes ]] && : >"$d/aewatch/bridge-owner"
-    case "$hb" in
-        fresh) : >"$d/aewatch/heartbeat" ;;
-        stale) : >"$d/aewatch/heartbeat"; _touch_ago 7200 "$d/aewatch/heartbeat" ;;
-    esac
     cat >"$d/wrapper" <<WRAP
 #!/usr/bin/env bash
 CONFIG_DIR="$d"
 _TELEGRAM_TMUX_SESSION="ae-telegram"
-_telegram_daemon_running() { return $bashrc; }
-_telegram_intent_enabled() { echo true; }
-_telegram_intent_enabled_uncached() { echo true; }
-_telegram_missing_deps() { :; }
+_telegram_daemon_running() { return $runrc; }
+_telegram_intent_enabled() { echo $intent; }
+_telegram_intent_enabled_uncached() { echo $intent; }
 _telegram_validate_token_file() { :; }
 _telegram_control_lock_file() { echo "$d/lock"; }
 _telegram_spawn_daemon() { echo spawned >"$d/spawned"; }
@@ -3467,15 +3425,12 @@ WRAP
     { [[ -f "$d/spawned" ]] && echo spawned; } || echo nospawn
     rm -rf "$d"
 }
-# Concurrent-revive guard (the mandatory invariant, ae side): marker + fresh heartbeat
-# suppresses the bash bridge even for a non-uv reviver (_supervise/reattach/launch).
-assert_eq "s19: bridge-owner + fresh heartbeat -> NO bash bridge spawned (any caller)" "nospawn" "$(_tg_run yes fresh 1)"
-# marker present but bash somehow already running: the guard still refuses a SECOND spawn.
-assert_eq "s19: bridge-owner + fresh + bash already running -> no second spawn" "nospawn" "$(_tg_run yes fresh 0)"
-# Fallback: aewatch died (STALE heartbeat) -> bash revives, single-sender restored.
-assert_eq "s19: bridge-owner + STALE heartbeat -> bash bridge spawns (fallback revive)" "spawned" "$(_tg_run yes stale 1)"
-# Default path zero-diff: no marker -> bash autostarts exactly as before.
-assert_eq "s19: no marker + enabled -> bash bridge spawns (default path unchanged)" "spawned" "$(_tg_run no none 1)"
+# Enabled and nothing running: the one revive path spawns.
+assert_eq "tg-autostart: enabled + no daemon -> the bridge is spawned" "spawned" "$(_tg_run true 1)"
+# Already running: liveness is the suppressor now (it re-checks under the lock too).
+assert_eq "tg-autostart: enabled + daemon already running -> no second spawn" "nospawn" "$(_tg_run true 0)"
+# Intent off: nothing starts, whatever the runtime looks like.
+assert_eq "tg-autostart: disabled -> never spawns" "nospawn" "$(_tg_run false 1)"
 fi
 
 # ── lead-default Part 3: layout = lead-solo (real tmux windows) ───────
@@ -3751,40 +3706,41 @@ assert_contains "#27: the fallback announces itself" "re-run" "$RR_ERR"
 unset RR_BIN RR_REPO RR_UUID RR_SCRIPT RR_ERR
 fi
 
-# ── #28 boundary: ONE definition, BOTH runtimes ──────────────────────
-if _itest_section '#28 boundary: ONE definition, BOTH runtimes'; then
+# ── #28 boundary: ONE definition, in the runtime that calls it ───────────────
+if _itest_section '#28 boundary: ONE definition, in the runtime that calls it'; then
 # Round-3 BLOCKER. daemon_session_running lived ONLY inside the telegram daemon's
-# single-quoted heredoc, so ae's own top-level callers
-# (_orchestrator_autostart_if_scaffolded, _aewatch_autostart_if_available) invoked an
+# single-quoted heredoc, so ae's own top-level callers invoked an
 # UNDEFINED command: rc 127, swallowed by their `2>/dev/null`, which is neither
 # "running" nor "unknown" and therefore fell straight through to CREATE — the
-# fix for #28 never ran on the live attach path at all. The reverse hole came
-# with it: the generated daemon had the probe but not the classifier it calls.
-# Neither is visible to a test that awk-extracts the text and evals it, because
-# that specimen is a THIRD thing existing in no runtime. So both boundaries are
-# checked by SOURCING real bytes and asking bash's own function table.
+# fix for #28 never ran on the live attach path at all. The generated daemon is
+# gone with the bash bridge, so only ae's own runtime is left to check — and it
+# is the one the callers were always in. It is checked by SOURCING real bytes and
+# asking bash's own function table, never by awk-extracting a specimen that exists
+# in no runtime.
 TGB="$TMPDIR/tgboundary"
-mkdir -p "$TGB/out" "$TGB/aehome" "$TGB/fakehome/.ae"
+mkdir -p "$TGB/fakehome/.ae"
 cat >"$TGB/trap.sh" <<'TRAPEOF'
 {
     for f in daemon_session_running _tmux_err_is_clean_dead; do
         if declare -F "$f" >/dev/null 2>&1; then echo "top:PRESENT $f"; else echo "top:MISSING $f"; fi
     done
-    CONFIG_DIR="$TGB_OUT" _telegram_write_daemon 2>/dev/null || echo "top:WRITE-FAILED"
-    # #31 on the REAL artifact: a generator that dies mid-write must leave the
-    # live daemon whole, and leave no temp behind.
-    _tg_art="$TGB_OUT/telegram-daemon"
-    _tg_before="$(cksum <"$_tg_art")"
-    _publish_executable_artifact "$_tg_art" 0700 false 2>/dev/null || echo "top:REFUSED"
-    if [[ "$(cksum <"$_tg_art")" == "$_tg_before" ]]; then echo "top:INTACT"; else echo "top:CLOBBERED"; fi
-    echo "top:temps=$(find "$TGB_OUT" -name 'telegram-daemon.tmp.*' | wc -l | tr -d '[:space:]')"
+    # ...and the tri-state actually answers, both error directions. The rc is
+    # captured explicitly: ae runs under errexit, where a bare `absent` probe
+    # would abort the trap instead of reporting 1.
+    _dsr_probe() { local rc=0; daemon_session_running "$1" || rc=$?; echo "$2=$rc"; }
+    tmux() { printf "aedev\norchestrator\n"; }
+    _dsr_probe orchestrator running
+    _dsr_probe hub absent
+    tmux() { echo "no server running on /tmp/x" >&2; return 1; }
+    _dsr_probe orchestrator stale
+    tmux() { echo "error connecting to /tmp/x (No such file or directory)" >&2; return 1; }
+    _dsr_probe orchestrator enoent
 } >&9
 TRAPEOF
 # ae runs on source, so the probe rides an EXIT trap (which fires on ae's own
-# exit, with every top-level definition in scope) and reports on a saved fd —
-# the daemon body re-points fd 1 and 2 at its log.
+# exit, with every top-level definition in scope) and reports on a saved fd.
 # shellcheck disable=SC2016  # $1/$2 are the INNER shell's positional args, by design
-tg_top="$(TGB_OUT="$TGB/out" HOME="$TGB/fakehome" AE_HOME="$TGB/fakehome/.ae" "${BASH:-bash}" -c '
+tg_top="$(HOME="$TGB/fakehome" AE_HOME="$TGB/fakehome/.ae" "${BASH:-bash}" -c '
     exec 9>&1
     trap ". $2" EXIT
     source "$1" version >/dev/null 2>&1
@@ -3793,49 +3749,11 @@ assert_eq "#28 boundary: ae's OWN top level defines the probe its autostarts cal
     "$([[ "$tg_top" == *'top:PRESENT daemon_session_running'* ]] && echo 1 || echo 0)"
 assert_eq "#28 boundary: ...and the classifier that probe depends on" "1" \
     "$([[ "$tg_top" == *'top:PRESENT _tmux_err_is_clean_dead'* ]] && echo 1 || echo 0)"
-TGD="$TGB/out/telegram-daemon"
-assert_eq "#28 boundary: the machine-global daemon artifact was generated" "1" \
-    "$([[ -f "$TGD" ]] && echo 1 || echo 0)"
-# #31: publication goes through the chokepoint, so atomicity is by construction.
-assert_eq "#31: a failed regeneration refuses, leaves the live daemon whole, no temp" \
-    "REFUSED|INTACT|temps=0" \
-    "$(printf '%s\n' "$tg_top" | command grep -oE 'top:(REFUSED|INTACT|CLOBBERED|temps=[0-9]+)' \
-        | sed 's/^top://' | paste -sd'|' -)"
-assert_eq "#31: the published artifact is executable by its owner" "1" \
-    "$([[ -x "$TGD" ]] && echo 1 || echo 0)"
-assert_eq "#28 boundary: the artifact parses" "0" \
-    "$("${BASH:-bash}" -n "$TGD" 2>/dev/null; echo $?)"
-# The execution seam: the artifact's final line is the single main invocation,
-# emitted by ae itself. Asserting it before dropping it keeps the seam honest —
-# if the tail ever changes shape, this fails instead of silently slicing wrong.
-assert_eq "#28 boundary: the declare-f tail ends at exactly one main call" 'main "$@"' \
-    "$(tail -1 "$TGD")"
-sed '$d' "$TGD" >"$TGB/nomain.sh"
-# shellcheck disable=SC2016  # $1 is the INNER shell's positional arg, by design
-tg_run="$(AE_HOME="$TGB/aehome" HOME="$TGB/fakehome" "${BASH:-bash}" -c '
-    exec 9>&1
-    source "$1"
-    {
-        for f in daemon_session_running _tmux_err_is_clean_dead; do
-            if declare -F "$f" >/dev/null 2>&1; then echo "gen:PRESENT $f"; else echo "gen:MISSING $f"; fi
-        done
-        tmux() { printf "aedev\norchestrator\n"; }
-        daemon_session_running orchestrator; echo "running=$?"
-        daemon_session_running hub;     echo "absent=$?"
-        tmux() { echo "no server running on /tmp/x" >&2; return 1; }
-        daemon_session_running orchestrator; echo "stale=$?"
-        tmux() { echo "error connecting to /tmp/x (No such file or directory)" >&2; return 1; }
-        daemon_session_running orchestrator; echo "enoent=$?"
-    } >&9
-' _ "$TGB/nomain.sh")"
-assert_eq "#28 boundary: the generated daemon carries BOTH reviewed functions" "1" \
-    "$([[ "$tg_run" == *'gen:PRESENT daemon_session_running'* && "$tg_run" == *'gen:PRESENT _tmux_err_is_clean_dead'* ]] && echo 1 || echo 0)"
-# ...and the tri-state actually answers INSIDE the artifact, both error directions.
-assert_eq "#28 boundary: tri-state answers inside the artifact (stale=absent, ENOENT=unknown)" \
+assert_eq "#28 boundary: tri-state answers in ae's runtime (stale=absent, ENOENT=unknown)" \
     "running=0|absent=1|stale=1|enoent=2" \
-    "$(printf '%s\n' "$tg_run" | command grep -E '^(running|absent|stale|enoent)=' | paste -sd'|' -)"
+    "$(printf '%s\n' "$tg_top" | command grep -E '^(running|absent|stale|enoent)=' | paste -sd'|' -)"
 rm -rf "$TGB"
-unset TGB TGD tg_top tg_run
+unset TGB tg_top
 fi
 
 # ── ROLLBACK: a failed launch must not leave debris behind ───────────

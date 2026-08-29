@@ -509,7 +509,11 @@ consuming operation, never an independent flip; gate finding b29dac92, blocker 4
 - **default mode (bash):** nudges go through the generated `send` helper — per-target
   lock + busy/human/dead/verified-submit guards; tmux option writes otherwise carry no
   ae lock
-- **`AE_WATCHDOG_IMPL=uv` mode (python contrib, aewatch):** holds `aewatch.lock` for
+- **`AE_WATCHDOG_IMPL=uv` mode (python contrib, aewatch) — *SUPERSEDED AT P4.3
+  (2026-08-29): this mode is no longer selectable. `AE_WATCHDOG_IMPL=uv` selects
+  nothing, aewatch is unwired, and the bash per-session watchdog above is the one
+  watchdog. The row is kept because the audit findings in it (I1/I2/I5/I6/I8, #45)
+  are the measured history the flip was argued from:*** holds `aewatch.lock` for
   loop/tick lifetime ONLY (`up`/start orchestration is OUTSIDE the singleton — audit I6:
   concurrent autostarts can race and kill/recreate each other); bounded
   `events.jsonl.lock` append (two failure directions — audit I2); reads meta/config/
@@ -543,9 +547,17 @@ consuming operation, never an independent flip; gate finding b29dac92, blocker 4
 
 ### D27 — telegram bridge (runtime handoff; corrected per gate finding fe7cfc2e, blocker 6)
 
-- **ownership is a runtime handoff, not a static split:** when the aewatch marker exists
-  AND its heartbeat is fresh, **aewatch owns the bridge operation and the bash daemon
-  stands down**; otherwise the bash daemon owns it.
+> **SUPERSEDED AT P4.3 (2026-08-29) — the planned owner arrived.** The **Rust core
+> is the single bridge**, run in the `ae-telegram` tmux session. Both seats below
+> are retired: the bash telegram daemon and the aewatch bridge. There is no
+> handoff, no `bridge-owner` marker and no second sender, so the two-seat topology
+> and every defect that lived in the handoff (#83/#84/#85, audit I3) are archival
+> — they describe a mechanism that no longer exists rather than open work. Kept as
+> the measured history the flip was argued from.
+
+- **ownership WAS a runtime handoff, not a static split:** when the aewatch marker existed
+  AND its heartbeat was fresh, **aewatch owned the bridge operation and the bash daemon
+  stood down**; otherwise the bash daemon owned it.
 - **known defects (both seats, 2026-08-20):** `ae telegram start` under a live aewatch
   WARNS AND PROCEEDS — double sender (ae:10639-10648): fix-known-defect(**#83**,
   intended: single-sender holds against explicit operator start). The takeover itself is
@@ -561,10 +573,13 @@ consuming operation, never an independent flip; gate finding b29dac92, blocker 4
   `current_target`) have NO common lock — bash EXIT can regress offsets after a
   takeover (audit I3). **Gate: DR-002 conditions + DR-003 + #83-#87 intended behaviors are the written flip-gate requirement (stale blocker text removed 2026-08-20).**
 - effects: chat event consumption, Telegram send/receive, reply routing to panes
-- current writer/call path: bash telegram daemon; aewatch bridge (mode above)
-- locks / atomicity: TBD per mode — the marker+heartbeat handoff itself is a contract
-  surface (S10 rows)
-- planned owner/fate: **rust at P4**
+- current writer/call path: **the Rust core** (single bridge, P4.3). *Formerly: bash
+  telegram daemon; aewatch bridge (mode above) — both retired.*
+- locks / atomicity: the marker+heartbeat handoff is no longer a contract surface,
+  because there is nothing to hand off between. The durable state is the Rust core's:
+  `~/.ae/telegram/tg_offset` (inbound offset, advanced only after a durable route) and
+  `<meta>/telegram-outbound.cursor` per session.
+- planned owner/fate: **rust at P4** — **DONE at P4.3**
 
 ### D28a — telegram setup (`ae telegram setup`)
 
@@ -629,6 +644,11 @@ consuming operation, never an independent flip; gate finding b29dac92, blocker 4
 - planned owner/fate: **stays contrib indefinitely** (epic: optional analytics stay Python)
 
 ### D30c — aewatch internals
+
+> **SUPERSEDED AT P4.3 (2026-08-29).** aewatch is retired and unwired: nothing in ae
+> launches it, so none of the call paths below run in the shipped product. The source
+> and its tests are kept as archival material and as the bash-vs-Python parity oracle.
+> The audit findings stay recorded — they are why the runtime ownership retired.
 
 - effects / call path (census-3): daemon loop/once/`up` (up OUTSIDE the singleton),
   singleton/heartbeat/backoff/log/marker writers, event append (`_locked_append`) and

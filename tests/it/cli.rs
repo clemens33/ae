@@ -2482,3 +2482,48 @@ fn a_chat_send_keeps_its_lines_and_its_own_cap_on_the_pane_and_at_the_sink() {
         &last[..last.len().min(160)]
     );
 }
+
+#[test]
+fn the_telegram_daemon_entry_names_what_it_actually_needs_and_never_stutters() {
+    // Two presentation defects a unit test cannot see, both found by running
+    // the binary: the shared missing-operand line told a machine-global entry
+    // to supply a SESSION meta directory, and the startup refusal printed
+    // "telegram: telegram:" because the error type already names its subsystem.
+    let missing = ae().arg("_telegram-run").output().expect("the binary runs");
+    assert_eq!(missing.status.code(), Some(2));
+    let said = String::from_utf8_lossy(&missing.stderr);
+    assert_eq!(
+        said.trim_end(),
+        "ae: _telegram-run needs an ae home directory"
+    );
+    assert!(
+        String::from_utf8_lossy(&missing.stdout).is_empty(),
+        "a diagnostic must not reach stdout (SC-022)"
+    );
+
+    // And the per-session entries keep the phrase that is right for THEM.
+    let watchdog = ae().arg("_watchdog-run").output().expect("the binary runs");
+    assert_eq!(
+        String::from_utf8_lossy(&watchdog.stderr).trim_end(),
+        "ae: _watchdog-run needs a session meta directory"
+    );
+
+    // A startup refusal: one "telegram:", named once, with the path that is
+    // wrong and nothing else. NO NETWORK — the refusal happens before any
+    // client is built.
+    let empty = std::env::temp_dir().join(format!("ae-tg-entry-{}", std::process::id()));
+    std::fs::create_dir_all(&empty).expect("a temp ae home");
+    let refused = ae()
+        .arg("_telegram-run")
+        .arg(&empty)
+        .output()
+        .expect("the binary runs");
+    assert_eq!(refused.status.code(), Some(1));
+    let refusal = String::from_utf8_lossy(&refused.stderr);
+    assert!(
+        refusal.starts_with("ae: telegram: unreadable config "),
+        "{refusal}"
+    );
+    assert_eq!(refusal.matches("telegram:").count(), 1, "{refusal}");
+    std::fs::remove_dir_all(&empty).ok();
+}

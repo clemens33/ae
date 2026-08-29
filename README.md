@@ -171,16 +171,15 @@ No custom protocols, no frameworks. Just system prompts and bash scripts agents 
 
 The core contract has not moved: `ae` is a single bash script whose only hard dependencies are **bash >= 4.0, tmux, and git**. Your repos stay untouched -- session state lives in `~/.ae/sessions/`, and `--copy`/`--worktree` give agents isolated workspaces when you want them.
 
-Everything else is an **optional companion** under `contrib/`, never required for core commands:
+Everything else is **optional**, never required for core commands:
 
-| Companion | What | Deps |
+| Feature | What | Needs |
 |---|---|---|
-| `ae telegram` | machine-global bridge: fleet events to your Telegram chat, replies route back | `jq` + `curl` |
+| `ae telegram` | machine-global bridge: fleet events to your Telegram chat, replies route back | a configured ae core (no extra CLI deps) |
 | `ae orchestrator` ([contrib/aeorchestrator](contrib/aeorchestrator)) | the fleet's chief of staff: monitors every session, relays and reports, guards an objective once you set one | an agent CLI |
 | [contrib/aemonitor](contrib/aemonitor) | deterministic sweep helper the orchestrator uses | Python 3 stdlib |
-| [contrib/aewatch](contrib/aewatch) | next-gen watchdog + bridge as a single-file Python sidecar (PEP 723, stdlib-only), built test-first against a dual-run oracle that proves byte-exact parity with the bash watchdog | Python >= 3.11 |
 
-That last one is deliberate honesty rather than scope creep: the long-running daemon half (watchdog, bridge) is where bash hurts most, so it is being carved out under strict behavioral-parity testing -- per the revisit triggers in [AGENTS.md](AGENTS.md). The tmux-glue half, where bash is best-in-class, stays bash. Companions start automatically once you opt in; `AE_NO_AUTOSTART=1` skips.
+The long-running daemon half (watchdog, bridge) is where bash hurts most, so it is being carved into the typed Rust core -- per the revisit triggers in [AGENTS.md](AGENTS.md). The Telegram bridge is the first daemon fully in the core: it *is* the ae core binary, run in a background tmux session, with no `jq`/`curl` dependency. (An earlier stdlib-only Python sidecar, [contrib/aewatch](contrib/aewatch), prototyped this carve-out under byte-exact parity testing; it is retired now that the core owns the bridge.) The tmux-glue half, where bash is best-in-class, stays bash. Companions start automatically once you opt in; `AE_NO_AUTOSTART=1` skips.
 
 That carve-out is now the whole plan: this bash script is **frozen at `72c7293`** and the typed core takes over domain by domain on `rust-rewrite`. What carries over unchanged is the part you depend on — one file to install, no runtime, no repo pollution, `~/.ae/` as the only state. What goes away is bash as the implementation. See **[VISION.md](VISION.md)**.
 

@@ -3,7 +3,13 @@
 # requires-python = ">=3.11"
 # dependencies = []
 # ///
-"""aewatch — optional uv/PEP 723 sidecar for ae's watchdog + telegram bridge.
+"""RETIRED (P4.3, 2026-08-29): ae no longer launches this sidecar.
+`AE_WATCHDOG_IMPL=uv` no longer selects it, and the Telegram bridge it prototyped
+is now the Rust core (the ae core binary). Kept as archival source and the
+bash-vs-Python parity oracle; not wired into ae. Everything below is the
+historical description of what this sidecar was built to be.
+
+aewatch — optional uv/PEP 723 sidecar for ae's watchdog + telegram bridge.
 
 Phase 1 is a runnable, stdlib-only skeleton growing one slice at a time. So far:
 version reporting and the contract fixture-matrix loader/validator. It performs

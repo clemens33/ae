@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ae - agentic engineering: tmux-based multi-agent workspace
 set -euo pipefail
-AE_VERSION="0.2.19"
+AE_VERSION="0.2.20"
 
 # Fail fast with a clear message on bash < 4 (macOS ships 3.2 and defaults to
 # zsh). This must sit BEFORE any bash-4-only syntax is parsed — bash parses
@@ -7890,17 +7890,16 @@ _tmux_err_is_clean_dead() {
 }
 
 # Exact-match check for a RUNNING tmux session (not prefix — same guard as the
-# main script). Used by ae's own companion autostarts AND by the generated
-# telegram daemon, which shares the tmux server.
+# main script). Used by ae's own companion autostarts and by the telegram spawn,
+# which retires a stale aewatch sidecar through it.
 #
 # BOUNDARY (round-3 BLOCKER): this lives at TOP LEVEL, beside the classifier it
-# depends on, and both are emitted into the telegram daemon with `declare -f`
-# just before its `main "$@"` — the declare-f pattern the session helpers already
-# use. It previously existed ONLY inside the daemon heredoc, so ae's own
-# top-level callers (_orchestrator_autostart_if_scaffolded,
-# _aewatch_autostart_if_available) invoked an undefined command: rc 127,
+# depends on. It previously existed ONLY inside the bash telegram daemon's
+# heredoc, so ae's own top-level callers invoked an undefined command: rc 127,
 # swallowed by their `2>/dev/null`, which reads as neither running nor unknown
-# and therefore fell straight through to CREATE. One definition, both runtimes.
+# and therefore fell straight through to CREATE. That heredoc is gone with the
+# bash bridge, and this definition is now the only one there has ever needed to
+# be — keep it at top level, where its callers actually run.
 #
 # TRI-STATE (#28), same contract as _end_verify_gone: "the query failed" is not
 # "the session is absent". The old `2>/dev/null | grep -Fxq` swallowed every
@@ -9273,12 +9272,16 @@ cmd_doctor() {
         _tg_present="true"
     fi
     if [[ "$_tg_present" == "true" ]]; then
-        local _tg_missing
-        _tg_missing="$(_telegram_missing_deps)"
-        if [[ -n "$_tg_missing" ]]; then
-            doctor_report "WARN" "telegram.deps" "missing:$_tg_missing (needed for ae telegram)"
+        # The bridge is the ae core binary, so the ONE dependency to report is a
+        # usable core — resolved the machine-general way the spawn uses, not a
+        # session's meta pin.
+        local _tg_core=""
+        if _tg_core="$(_ae_core_bin_input)" &&
+            [[ "$_tg_core" == /* && -x "$_tg_core" ]] &&
+            _ae_core_bin_version "$_tg_core" >/dev/null 2>&1; then
+            doctor_report "OK" "telegram.core" "$_tg_core"
         else
-            doctor_report "OK" "telegram.deps" "jq + curl present"
+            doctor_report "WARN" "telegram.core" "no usable ae core (set workspace.core or AE_CORE_BIN)"
         fi
         if [[ -n "$_tg_token" ]]; then
             local _tg_err
@@ -9296,9 +9299,7 @@ cmd_doctor() {
             doctor_report "WARN" "telegram.chat_id" "telegram.chat_id not set"
         fi
         if [[ "$(_telegram_intent_enabled)" == "true" ]]; then
-            if _aewatch_owns_bridge; then
-                doctor_report "OK" "telegram.daemon" "enabled; aewatch daemon owns the bridge"
-            elif _telegram_daemon_running; then
+            if _telegram_daemon_running; then
                 doctor_report "OK" "telegram.daemon" "running"
             else
                 doctor_report "WARN" "telegram.daemon" "enabled but not running (will autostart on 'ae <name>')"
@@ -9360,13 +9361,17 @@ cmd_watchdog() {
 # ── Telegram bridge (machine-global chat daemon) ─────────────────────
 #
 # Forwards filtered events from every ae session on this machine to a
-# Telegram chat, via a single bash daemon running in a background tmux
-# session named `ae-telegram`. Hard deps (jq, curl) are required ONLY
-# when this feature is in use; core ae commands work without them.
+# Telegram chat, and routes replies back. The bridge itself is the RUST
+# CORE (`ae _telegram-run`), run in a background tmux session named
+# `ae-telegram`; what is left here is the start/stop/status glue and the
+# config surface. The ONE dependency is a usable ae core. The retired bash
+# bridge needed two optional CLIs and gated on them; the core needs none, so
+# this feature ships no optional dependency and no dep gate — the core
+# resolution in _telegram_spawn_daemon is the only thing that can refuse.
 #
-# Per-session offset state lives at ~/.ae/telegram/state.tsv with
-# (session_id, inode, byte_offset) so restarts don't replay events.
-# Token never appears in argv — curl reads its config from stdin.
+# The daemon owns its own state under ~/.ae/telegram/ (offset, sticky
+# target) and reads its secrets from [telegram] in the config file ae
+# hands it — never from argv, and never from the environment.
 
 _TELEGRAM_TMUX_SESSION="ae-telegram"
 # Serializes start / stop / autostart(supervise) so an "is it enabled + running?"
@@ -9428,13 +9433,6 @@ _telegram_daemon_running() {
 }
 
 # Check feature deps. Echoes missing names space-separated. Empty == OK.
-_telegram_missing_deps() {
-    local missing=""
-    command -v jq >/dev/null 2>&1 || missing+=" jq"
-    command -v curl >/dev/null 2>&1 || missing+=" curl"
-    printf '%s' "${missing# }"
-}
-
 # Validate token file (path, exists, readable, mode 600, owned by user).
 # Echoes error message on failure, returns non-zero. Echoes nothing on success.
 _telegram_validate_token_file() {
@@ -9468,989 +9466,6 @@ _telegram_validate_token_file() {
             ;;
     esac
     return 0
-}
-
-# Write the daemon helper to ~/.ae/telegram-daemon, idempotent.
-# Reached only through _telegram_spawn_daemon (which cmd_telegram_start and the
-# autostart path both go through).
-#
-# Published via the chokepoint, so a generator failure leaves the running
-# daemon's artifact whole instead of truncating it (#31). Mode is explicit 0700
-# rather than the old `chmod +x`, whose result depended on the ambient umask;
-# only this user ever runs it, and every other ae artifact is already 0700.
-_telegram_write_daemon() {
-    mkdir -p "$CONFIG_DIR/telegram"
-    _publish_executable_artifact "$CONFIG_DIR/telegram-daemon" 0700 _emit_telegram_daemon
-}
-
-# Body of ~/.ae/telegram-daemon, to stdout.
-_emit_telegram_daemon() {
-    # Name the interpreter instead of resolving it through PATH. The artifact is
-    # executable, so a direct invocation under a macOS login PATH lands on
-    # /bin/bash 3.2, which cannot even PARSE the bash-4 bodies below.
-    # _telegram_spawn_daemon passes an explicit interpreter too; this covers the
-    # file being run on its own. Emitted at generation time, like the helpers.
-    printf '%s\n' "#!${BASH:-/usr/bin/env bash}"
-    cat <<'TELEGRAM_DAEMON_EOF'
-# ae-telegram daemon — auto-generated by `ae telegram start`.
-# Tails events.jsonl across every ae session on this machine and
-# forwards filtered events to one Telegram chat. Single instance per
-# host (lock-guarded). Token is read from a file and passed to curl
-# via stdin config so it never appears in process argv.
-
-set -uo pipefail
-
-AE_HOME="${AE_HOME:-$HOME/.ae}"
-SESSIONS_DIR="$AE_HOME/sessions"
-STATE_DIR="$AE_HOME/telegram"
-STATE_FILE="$STATE_DIR/state.tsv"
-LOCK_FILE="$STATE_DIR/daemon.lock"
-LOG_FILE="$STATE_DIR/daemon.log"
-LOG_MAX_BYTES="${AE_TELEGRAM_LOG_MAX_BYTES:-1048576}" # rotate at ~1 MiB
-CONFIG_FILE="${CONFIG_FILE:-$AE_HOME/config}"
-
-DISCOVERY_INTERVAL="${AE_TELEGRAM_DISCOVERY_INTERVAL:-2}"
-POLL_INTERVAL="${AE_TELEGRAM_POLL_INTERVAL:-1}"
-
-mkdir -p "$STATE_DIR"
-
-# Portability shim — the daemon is a standalone script, so it carries its own
-# copy of ae's _ae_stat (GNU `stat -c` vs BSD/macOS `stat -f`). Distinct name:
-# the emission guards count col-0 `_ae_stat() {` definitions in ae's source and
-# a second one here would read as a duplicate. Only the keys used here.
-_stat_field() {
-    local key="$1" file="$2"
-    case "$key" in
-        mtime) stat -c %Y "$file" 2>/dev/null || stat -f %m "$file" 2>/dev/null ;;
-        size) stat -c %s "$file" 2>/dev/null || stat -f %z "$file" 2>/dev/null ;;
-        inode) stat -c %i "$file" 2>/dev/null || stat -f %i "$file" 2>/dev/null ;;
-        *) return 1 ;;
-    esac
-}
-
-# Persist ALL daemon output to a log file. This is stderr+stdout, not just the
-# _log lines, so an uncaught crash (e.g. the bash "unbound variable" message
-# under set -u that closes the tmux session) lands in the log and the death is
-# diagnosable after the session is gone — the pane-only output we had before
-# vanished with the session. Rotate once at startup if the log grew large.
-if [[ -f "$LOG_FILE" ]] && (($(_stat_field size "$LOG_FILE" || echo 0) > LOG_MAX_BYTES)); then
-    mv -f "$LOG_FILE" "$LOG_FILE.1" 2>/dev/null && chmod 600 "$LOG_FILE.1" 2>/dev/null || true
-fi
-# Owner-only: the log captures chat ids, session names, sender ids and raw
-# operational detail. Create it 600 BEFORE redirecting (shell redirection would
-# otherwise honour the ambient umask, typically 0644).
-: >>"$LOG_FILE" && chmod 600 "$LOG_FILE" 2>/dev/null || true
-exec >>"$LOG_FILE" 2>&1
-
-declare -A TG_CFG=()
-declare -A STATE_INODE=()
-declare -A STATE_OFFSET=()
-declare -A SESSION_NAME=()
-declare -A SESSION_PATH=()
-TG_TOKEN=""
-TG_CHAT_ID=""
-TG_INCLUDE_DEFAULT="send,ask,review,reply,done,alert,throttled,chat"
-TG_INCLUDE=""
-TG_EXCLUDE=""
-TG_ALLOWED_IDS=""          # comma/space list; non-empty enables inbound commands
-TG_OFFSET_FILE="$STATE_DIR/tg_offset"
-TG_UPDATES_LIMIT=10        # bounded updates per cycle so a backlog can't
-                          # starve the outbound event-tail pass
-
-_log() { printf '%s %s\n' "$(date -u +%FT%TZ)" "$*" >&2; }
-
-_redact() { sed -E 's|bot[0-9]+:[A-Za-z0-9_-]+|bot<redacted>|g'; }
-
-# Literal tilde-prefix expansion; case patterns are literal '~' matches,
-# not shell tilde-expansion (silenced for shellcheck — same suppression
-# as the corresponding helper in ae itself).
-# shellcheck disable=SC2088
-_expand_path() {
-    local p="$1"
-    case "$p" in
-        '~') printf '%s' "$HOME" ;;
-        '~/'*) printf '%s/%s' "$HOME" "${p#"~/"}" ;;
-        *) printf '%s' "$p" ;;
-    esac
-}
-
-# Parse [telegram] block from CONFIG_FILE. Same shape as ae's parse_config
-# but scoped to one section to keep this daemon dependency-free of ae.
-read_config() {
-    TG_CFG=()
-    [[ -f "$CONFIG_FILE" ]] || return 0
-    local section="" line val
-    while IFS= read -r line; do
-        line="${line#"${line%%[![:space:]]*}"}"
-        line="${line%"${line##*[![:space:]]}"}"
-        [[ -z "$line" ]] && continue
-        [[ "$line" == \#* ]] && continue
-        if [[ "$line" =~ ^\[([a-zA-Z_-]+)\]$ ]]; then
-            section="${BASH_REMATCH[1]}"
-            continue
-        fi
-        [[ "$section" == "telegram" ]] || continue
-        if [[ "$line" =~ ^([a-zA-Z_][a-zA-Z0-9_-]*)[[:space:]]*=[[:space:]]*\"(.*)\"$ ]]; then
-            TG_CFG["${BASH_REMATCH[1]}"]="${BASH_REMATCH[2]}"
-        elif [[ "$line" =~ ^([a-zA-Z_][a-zA-Z0-9_-]*)[[:space:]]*=[[:space:]]*(.+)$ ]]; then
-            val="${BASH_REMATCH[2]}"
-            val="${val%%#*}"
-            val="${val%"${val##*[![:space:]]}"}"
-            TG_CFG["${BASH_REMATCH[1]}"]="$val"
-        fi
-    done <"$CONFIG_FILE"
-}
-
-# Load token + chat + filter set. Exits non-zero on missing required config.
-load_runtime_config() {
-    local token_file
-    token_file="${TG_CFG[token_file]:-}"
-    [[ -n "$token_file" ]] || { _log "missing telegram.token_file"; return 1; }
-    token_file="$(_expand_path "$token_file")"
-    [[ -r "$token_file" ]] || { _log "token file not readable: $token_file"; return 1; }
-    TG_TOKEN="$(< "$token_file")"
-    TG_TOKEN="${TG_TOKEN%$'\n'}"
-    TG_TOKEN="${TG_TOKEN//$'\r'/}"
-    [[ -n "$TG_TOKEN" ]] || { _log "token file is empty"; return 1; }
-    TG_CHAT_ID="${TG_CFG[chat_id]:-}"
-    [[ -n "$TG_CHAT_ID" ]] || { _log "missing telegram.chat_id"; return 1; }
-    TG_INCLUDE="${TG_CFG[include]:-$TG_INCLUDE_DEFAULT}"
-    TG_EXCLUDE="${TG_CFG[exclude]:-}"
-    TG_ALLOWED_IDS="${TG_CFG[allowed_user_ids]:-}"
-    return 0
-}
-
-# Inbound (chat -> ae) is enabled ONLY when at least one user id is
-# allow-listed. With no allow-list there is no authorized sender, so the
-# daemon stays outbound-only (Stage 2 behavior preserved verbatim).
-inbound_enabled() {
-    [[ -n "${TG_ALLOWED_IDS//[, ]/}" ]]
-}
-
-# Authorize an incoming update. ALL must hold (codex BLOCKER): the sender id
-# is numeric and allow-listed, the chat is exactly the configured control
-# channel, and it's a private chat. This confines command execution to the
-# intended 1:1 channel — a group/accidental-add cannot drive ae.
-update_authorized() {
-    local from_id="$1" chat_id="$2" chat_type="$3" item
-    [[ "$from_id" =~ ^[0-9]+$ ]] || return 1
-    [[ "$chat_type" == "private" ]] || return 1
-    [[ "$chat_id" == "$TG_CHAT_ID" ]] || return 1
-    local -a ids
-    IFS=', ' read -ra ids <<<"$TG_ALLOWED_IDS"
-    for item in "${ids[@]}"; do
-        [[ "$item" == "$from_id" ]] && return 0
-    done
-    return 1
-}
-
-# True if action is in TG_INCLUDE and not in TG_EXCLUDE. Both are
-# comma-separated; whitespace tolerated.
-event_action_allowed() {
-    local action="$1" item
-    local -a items
-    IFS=', ' read -ra items <<<"$TG_INCLUDE"
-    local found=0
-    for item in "${items[@]}"; do
-        [[ "$item" == "$action" ]] && { found=1; break; }
-    done
-    (( found )) || return 1
-    [[ -n "$TG_EXCLUDE" ]] || return 0
-    IFS=', ' read -ra items <<<"$TG_EXCLUDE"
-    for item in "${items[@]}"; do
-        [[ "$item" == "$action" ]] && return 1
-    done
-    return 0
-}
-
-# Truncate text to N chars, preserving full UTF-8 best-effort.
-truncate_text() {
-    local text="$1" limit="$2"
-    if (( ${#text} > limit )); then
-        printf '%s…(truncated)' "${text:0:limit}"
-    else
-        printf '%s' "$text"
-    fi
-}
-
-# Format one event into a Telegram-bound message body.
-# Input: session_name, JSON event line.
-format_event() {
-    local name="$1" line="$2"
-    local action actor target summary
-    action=$(jq -r '.action // ""' <<<"$line" 2>/dev/null) || return 1
-    actor=$(jq -r '.actor // ""' <<<"$line" 2>/dev/null) || return 1
-    target=$(jq -r '.target // ""' <<<"$line" 2>/dev/null) || return 1
-    summary=$(jq -r '.summary // ""' <<<"$line" 2>/dev/null) || return 1
-    local hdr="[$name] $action  $actor"
-    [[ -n "$target" ]] && hdr+=" → $target"
-    if [[ -n "$summary" ]]; then
-        printf '%s\n%s' "$hdr" "$(truncate_text "$summary" 3500)"
-    else
-        printf '%s' "$hdr"
-    fi
-}
-
-# Send a Telegram sendMessage. URL + token are interpolated into a
-# heredoc piped to curl's -K config-on-stdin, so neither token nor
-# message body appear in argv.
-send_message() {
-    local text="$1" resp rc tmp_text
-    # curl's -K config is line-oriented. An inline `data-urlencode = text=...`
-    # with embedded newlines splits into multiple directives (the second line
-    # becomes "world" → curl warning "unknown option"). Pass the payload via
-    # data-urlencode's @file form so multi-line text is data, not config.
-    tmp_text=$(mktemp "${TMPDIR:-/tmp}/ae-telegram-msg.XXXXXX") || {
-        _log "send_message: mktemp failed"
-        return 1
-    }
-    (umask 077; printf '%s' "$text" >"$tmp_text") || {
-        rm -f "$tmp_text"
-        _log "send_message: writing payload temp failed"
-        return 1
-    }
-    resp=$(curl -sS -K - 2>&1 <<EOF
-silent
-fail-with-body
-url = https://api.telegram.org/bot${TG_TOKEN}/sendMessage
-data-urlencode = chat_id=${TG_CHAT_ID}
-data-urlencode = text@${tmp_text}
-EOF
-)
-    rc=$?
-    rm -f "$tmp_text"
-    if (( rc != 0 )); then
-        _log "send_message failed (rc=$rc): $(printf '%s' "$resp" | _redact | head -c 400)"
-        return 1
-    fi
-    return 0
-}
-
-# Register the bot's slash-command menu with Telegram (setMyCommands) so the
-# inbound commands surface in the "/" UI. Best-effort + non-fatal; called once
-# at startup only when inbound is enabled (no point advertising commands that
-# would be rejected). Token via -K stdin, never argv (same as send_message).
-tg_set_commands() {
-    local cmds_json resp ok tmp_cmds
-    cmds_json=$(jq -cn '[
-        {command:"list",    description:"Running sessions (name, id, last activity)"},
-        {command:"use",     description:"Redirect plain messages to a session (default is the orchestrator): /use <session> <agent>"},
-        {command:"session", description:"Message an agent: /session <name> send|ask <agent> <msg>"},
-        {command:"help",    description:"Show help"}
-    ]' 2>/dev/null) || return 0
-    # Pass the JSON via data-urlencode's @file form, not inline. curl's -K config
-    # parser truncates an unquoted value at the first space, and the descriptions
-    # contain spaces — an inline `commands=${cmds_json}` ships chopped JSON and
-    # Telegram rejects it with 400 "can't parse commands JSON object". @file keeps
-    # the payload out of the config grammar (same fix as send_message).
-    tmp_cmds=$(mktemp "${TMPDIR:-/tmp}/ae-telegram-cmds.XXXXXX") || {
-        _log "setMyCommands: mktemp failed"
-        return 0
-    }
-    (umask 077; printf '%s' "$cmds_json" >"$tmp_cmds") || {
-        rm -f "$tmp_cmds"
-        _log "setMyCommands: writing payload temp failed"
-        return 0
-    }
-    resp=$(curl -sS -K - 2>&1 <<EOF
-silent
-fail-with-body
-url = https://api.telegram.org/bot${TG_TOKEN}/setMyCommands
-data-urlencode = commands@${tmp_cmds}
-EOF
-)
-    if (( $? != 0 )); then
-        rm -f "$tmp_cmds"
-        _log "setMyCommands failed: $(printf '%s' "$resp" | _redact | head -c 200)"
-        return 0
-    fi
-    rm -f "$tmp_cmds"
-    ok=$(printf '%s' "$resp" | jq -r '.ok // false' 2>/dev/null)
-    if [[ "$ok" == "true" ]]; then
-        _log "registered bot command menu (setMyCommands)"
-    else
-        _log "setMyCommands not ok: $(printf '%s' "$resp" | _redact | head -c 200)"
-    fi
-    return 0
-}
-
-# ── Inbound (chat -> ae) ─────────────────────────────────────────────
-
-# Read the persisted getUpdates offset (last acked update_id). Empty => 0.
-tg_load_offset() {
-    local v=""
-    [[ -f "$TG_OFFSET_FILE" ]] && v="$(< "$TG_OFFSET_FILE")"
-    [[ "$v" =~ ^[0-9]+$ ]] || v=0
-    printf '%s' "$v"
-}
-
-# Persist the offset atomically (tmp+rename). Returns non-zero on failure;
-# the caller MUST NOT dispatch the command if this fails, else a disk error
-# after fetch-but-before-persist would replay a side-effecting command on the
-# next daemon start (codex IMPORTANT — at-most-once depends on this write).
-tg_save_offset() {
-    local val="$1" tmp="$TG_OFFSET_FILE.tmp.$$"
-    printf '%s\n' "$val" >"$tmp" 2>/dev/null || return 1
-    mv "$tmp" "$TG_OFFSET_FILE" 2>/dev/null || { rm -f "$tmp"; return 1; }
-    return 0
-}
-
-# (daemon_session_running is NOT defined here — it is a TOP-LEVEL function beside
-# _tmux_err_is_clean_dead, and both are emitted into this artifact with declare -f
-# just before `main "$@"`. It used to live inside this heredoc, which meant ae's
-# own top-level callers invoked an undefined command; see the boundary note at
-# the top-level definition.)
-
-# Resolve a chat-supplied session reference to a real session dir WITHOUT
-# ever building a path from the input (codex — path-traversal guard). Only
-# RUNNING sessions are considered (codex — don't offer/dispatch into stopped
-# sessions, which would fail later with a misleading error). Matches exact
-# session name, else a unique session_id prefix. Echoes "name<TAB>dir" on a
-# unique match; returns 1 (none) or 2 (ambiguous).
-resolve_session_ref() {
-    local ref="$1" meta dir name sid
-    local exact_dir="" exact_name=""
-    local -a pre_dirs=() pre_names=()
-    for meta in "$SESSIONS_DIR"/*/meta; do
-        [[ -f "$meta" ]] || continue
-        dir="${meta%/meta}"
-        name="${dir##*/}"
-        daemon_session_running "$name" || continue
-        sid="$(grep '^session_id=' "$meta" 2>/dev/null | head -1 | cut -d= -f2-)"
-        if [[ "$name" == "$ref" ]]; then
-            exact_dir="$dir"; exact_name="$name"
-        fi
-        if [[ -n "$sid" && "$sid" == "$ref"* ]]; then
-            pre_dirs+=("$dir"); pre_names+=("$name")
-        fi
-    done
-    if [[ -n "$exact_dir" ]]; then
-        printf '%s\t%s\n' "$exact_name" "$exact_dir"; return 0
-    fi
-    case "${#pre_dirs[@]}" in
-        1) printf '%s\t%s\n' "${pre_names[0]}" "${pre_dirs[0]}"; return 0 ;;
-        0) return 1 ;;
-        *) return 2 ;;
-    esac
-}
-
-# Validate a chat-supplied agent ref against the RESOLVED session's actual
-# agents and return the canonical "alias:name" (codex BLOCKER). The session
-# helpers' grammar is broader than ours — it also accepts %pane-id,
-# @session:agent, and external prefixes — which would let a command escape
-# the resolved session into an arbitrary pane/session. We never pass the raw
-# input to the helper: we match it (exact alias:name OR unique bare name)
-# against meta's agent.* entries and pass only the canonical ref. Anything
-# with %, @, or a foreign prefix simply won't match.
-resolve_agent_in_session() {
-    local dir="$1" want="$2" line ref alias name
-    local match="" bare_hits=0 bare_match=""
-    while IFS= read -r line; do
-        ref="${line#*=}"            # alias:name:uuid
-        alias="${ref%%:*}"
-        name="${ref#*:}"; name="${name%%:*}"
-        [[ -n "$alias" && -n "$name" ]] || continue
-        if [[ "$want" == "${alias}:${name}" ]]; then
-            match="${alias}:${name}"; break
-        fi
-        if [[ "$want" == "$name" ]]; then
-            bare_hits=$((bare_hits + 1)); bare_match="${alias}:${name}"
-        fi
-    done < <(grep -E '^agent\.[a-z0-9.]+=' "$dir/meta" 2>/dev/null)
-    if [[ -n "$match" ]]; then printf '%s' "$match"; return 0; fi
-    if (( bare_hits == 1 )); then printf '%s' "$bare_match"; return 0; fi
-    (( bare_hits > 1 )) && return 2   # ambiguous bare name
-    return 1                          # no such agent in this session
-}
-
-# /list reply body: RUNNING ae sessions with their short session_id + age.
-tg_cmd_list() {
-    local meta dir name sid ev age out=""
-    local now; now=$(date +%s)
-    for meta in "$SESSIONS_DIR"/*/meta; do
-        [[ -f "$meta" ]] || continue
-        dir="${meta%/meta}"; name="${dir##*/}"
-        daemon_session_running "$name" || continue
-        sid="$(grep '^session_id=' "$meta" 2>/dev/null | head -1 | cut -d= -f2-)"
-        ev="$dir/events.jsonl"
-        if [[ -f "$ev" ]]; then
-            local mt; mt=$(_stat_field mtime "$ev" || echo 0)
-            local d=$((now - mt))
-            if (( d < 90 )); then age="just now"
-            elif (( d < 3600 )); then age="$((d/60))m ago"
-            elif (( d < 86400 )); then age="$((d/3600))h ago"
-            else age="$((d/86400))d ago"; fi
-        else
-            age="-"
-        fi
-        out+="• ${name}  [${sid:0:8}]  ${age}"$'\n'
-    done
-    [[ -n "$out" ]] || out="(no running sessions)"
-    printf 'Running sessions:\n%s' "$out"
-}
-
-# Dispatch one authorized command. from_id is pre-validated numeric.
-tg_handle_command() {
-    local from_id="$1" text="$2"
-    # Strip leading/trailing whitespace.
-    text="${text#"${text%%[![:space:]]*}"}"
-    text="${text%"${text##*[![:space:]]}"}"
-
-    # Compact prefix: "@session:agent msg" sends straight to that agent (mirrors
-    # ae's @session:agent addressing). Handled BEFORE command parsing because the
-    # /cmd@botname stripping below would otherwise eat a leading @.
-    if [[ "$text" == @* ]]; then
-        tg_cmd_at "$from_id" "$text"
-        return
-    fi
-
-    local cmd rest
-    cmd="${text%%[[:space:]]*}"
-    rest="${text#"$cmd"}"
-    rest="${rest#"${rest%%[![:space:]]*}"}"
-    # Tolerate /cmd@botname in case pinning is ever loosened.
-    cmd="${cmd%@*}"
-
-    case "$cmd" in
-        /help|"")
-            send_message "$(printf 'ae telegram:\n• Plain text → your orchestrator (auto-default; just talk to it).\n• Reply to any forwarded message → answers that agent (no command).\n• @session:agent <msg> → send to an agent directly.\n• /use <session> <agent> → redirect plain messages elsewhere; /use clear → back to the orchestrator.\n/list\n/session <name|id-prefix> send|ask <agent> <msg>')"
-            ;;
-        /list)
-            send_message "$(tg_cmd_list)"
-            ;;
-        /use)
-            tg_cmd_use "$from_id" "$rest"
-            ;;
-        /session)
-            tg_cmd_session "$from_id" "$rest"
-            ;;
-        /*)
-            send_message "Unknown command: $cmd — try /help"
-            ;;
-        *)
-            # Bare text (no slash, no @): route to the sticky /use target if set.
-            tg_route_sticky "$from_id" "$text"
-            ;;
-    esac
-}
-
-# /session <ref> <send|ask> <agent> <msg...>
-tg_cmd_session() {
-    local from_id="$1" args="$2"
-    local ref verb agent msg
-    ref="${args%%[[:space:]]*}"; args="${args#"$ref"}"; args="${args#"${args%%[![:space:]]*}"}"
-    verb="${args%%[[:space:]]*}"; args="${args#"$verb"}"; args="${args#"${args%%[![:space:]]*}"}"
-    agent="${args%%[[:space:]]*}"; args="${args#"$agent"}"; args="${args#"${args%%[![:space:]]*}"}"
-    msg="$args"
-    if [[ -z "$ref" || -z "$verb" || -z "$agent" || -z "$msg" ]]; then
-        send_message "Usage: /session <name|id-prefix> <send|ask> <agent> <msg>"
-        return
-    fi
-    case "$verb" in
-        send|ask) ;;
-        *) send_message "Unknown verb '$verb' (use send or ask)"; return ;;
-    esac
-    tg_dispatch "$from_id" "$ref" "$verb" "$agent" "$msg"
-}
-
-# Resolve <ref>+<agent> against RUNNING sessions and deliver <msg> via the
-# session's send/ask helper under the external-actor identity. Shared by the
-# explicit /session command and by reply-routing — all the security lives here:
-# resolve_session_ref (running-only) + resolve_agent_in_session (canonicalize +
-# reject %pane / @session / telegram: targets, so a chat command can't escape
-# the named session). Reports each failure back to chat; returns nonzero on any.
-tg_dispatch() {
-    local from_id="$1" ref="$2" verb="$3" agent="$4" msg="$5"
-    # Capture rc explicitly — `if ! cmd` would make $? the status of `!` (0),
-    # so the ambiguous (2) branch would be unreachable (codex NIT).
-    local resolved rc name dir
-    resolved="$(resolve_session_ref "$ref")"; rc=$?
-    if (( rc != 0 )); then
-        case $rc in
-            2) send_message "Ambiguous session '$ref' — be more specific" ;;
-            *) send_message "No running session matching '$ref'" ;;
-        esac
-        return 1
-    fi
-    name="${resolved%%$'\t'*}"; dir="${resolved#*$'\t'}"
-    # Constrain the target to an agent that actually lives in THIS session,
-    # and canonicalize it (codex BLOCKER). This blocks %pane-id, @session:agent,
-    # and telegram:/discord: targets — they cannot match a real agent ref, so
-    # a Telegram command can never escape the resolved session.
-    local canon arc
-    canon="$(resolve_agent_in_session "$dir" "$agent")"; arc=$?
-    if (( arc != 0 )); then
-        case $arc in
-            2) send_message "Ambiguous agent '$agent' in ${name} — use alias:name" ;;
-            *) send_message "No agent '$agent' in session ${name}" ;;
-        esac
-        return 1
-    fi
-    local helper="$dir/$verb"
-    if [[ ! -x "$helper" ]]; then
-        send_message "Session '$name' has no '$verb' helper"
-        return 1
-    fi
-    # Dispatch with the external-actor identity. No eval; positional args;
-    # the agent is the canonical alias:name we validated above.
-    if AE_SENDER_OVERRIDE="telegram:$from_id" "$helper" "$canon" "$msg" >/dev/null 2>&1; then
-        send_message "→ ${verb} delivered to ${canon} in ${name}"
-    else
-        send_message "Failed to ${verb} ${canon} in ${name}"
-    fi
-}
-
-# Parse the header line of a message THIS bridge forwarded — format_event emits
-# "[<session>] <action>  <actor> [→ <target>]" as line 1. Echoes
-# "<session>\t<actor>" or returns nonzero if it doesn't look like ours. Values
-# are validated downstream (resolve_session_ref / resolve_agent_in_session), so
-# a misparse fails safe rather than dispatching somewhere unexpected.
-tg_parse_reply_target() {
-    local rtext="$1" first sess rest action actor
-    first="${rtext%%$'\n'*}"
-    [[ "$first" == "["*"] "* ]] || return 1
-    sess="${first#\[}"; sess="${sess%%]*}"
-    rest="${first#*] }"
-    read -r action actor _ <<<"$rest"
-    [[ -n "$sess" && -n "$actor" ]] || return 1
-    printf '%s\t%s' "$sess" "$actor"
-}
-
-# A plain (non-command) message sent as a Telegram REPLY to a forwarded event:
-# route it to that event's agent — no `/session …` typing. reply = send (deliver
-# the answer straight into the agent's pane).
-tg_handle_reply() {
-    local from_id="$1" rtext="$2" msg="$3" tgt sess actor
-    if ! tgt="$(tg_parse_reply_target "$rtext")"; then
-        send_message "Couldn't tell which agent that was a reply to — use /session <name> send <agent> <msg>"
-        return
-    fi
-    sess="${tgt%%$'\t'*}"; actor="${tgt#*$'\t'}"
-    tg_dispatch "$from_id" "$sess" "send" "$actor" "$msg"
-}
-
-# Sticky default target ("/use") — a single machine-global current target for the
-# one control chat, stored as "<session>\t<agent>". Re-validated on every send,
-# so a stopped session just reports an error rather than misrouting.
-TG_TARGET_FILE="$STATE_DIR/current_target"
-
-# Compact prefix: "@session:agent <msg>" → send <msg> to that agent. agent keeps
-# its alias:name colon (session is up to the FIRST colon, agent is the rest of
-# the token). Reuses tg_dispatch, so the same session/agent revalidation applies.
-tg_cmd_at() {
-    local from_id="$1" text="$2" token spec sess agent msg
-    token="${text%%[[:space:]]*}"
-    msg="${text#"$token"}"; msg="${msg#"${msg%%[![:space:]]*}"}"
-    spec="${token#@}"
-    if [[ "$spec" != *:* ]]; then
-        send_message "Usage: @session:agent <msg>  (e.g. @mdk:claude:lead do X)"
-        return
-    fi
-    sess="${spec%%:*}"; agent="${spec#*:}"
-    if [[ -z "$msg" ]]; then
-        send_message "Nothing to send — @session:agent <msg>"
-        return
-    fi
-    tg_dispatch "$from_id" "$sess" "send" "$agent" "$msg"
-}
-
-# /use            → show the current sticky target
-# /use clear|off  → clear it
-# /use <ref> <agent> → set it (validated against running sessions, canonicalized)
-tg_cmd_use() {
-    local from_id="$1" args="$2" ref agent resolved rc name dir canon arc
-    if [[ -z "$args" ]]; then
-        if [[ -f "$TG_TARGET_FILE" ]]; then
-            local cur; cur="$(cat "$TG_TARGET_FILE" 2>/dev/null)"
-            send_message "Current target: ${cur%%$'\t'*} → ${cur#*$'\t'}  (plain messages go here; /use clear to fall back to the orchestrator)"
-        else
-            local st; st="$(tg_find_orchestrator)"
-            if [[ -n "$st" ]]; then
-                send_message "No override set — plain messages go to the orchestrator (${st%%$'\t'*} → ${st#*$'\t'}). /use <session> <agent> to redirect."
-            else
-                send_message "No override set and no orchestrator running. Start one with 'ae orchestrator', or /use <session> <agent>."
-            fi
-        fi
-        return
-    fi
-    ref="${args%%[[:space:]]*}"
-    case "$ref" in
-        clear|off|none)
-            rm -f "$TG_TARGET_FILE" 2>/dev/null || true
-            send_message "Override cleared — plain messages go to the orchestrator again."
-            return
-            ;;
-    esac
-    agent="${args#"$ref"}"; agent="${agent#"${agent%%[![:space:]]*}"}"
-    agent="${agent%%[[:space:]]*}"
-    if [[ -z "$ref" || -z "$agent" ]]; then
-        send_message "Usage: /use <session> <agent>   (or /use clear)"
-        return
-    fi
-    resolved="$(resolve_session_ref "$ref")"; rc=$?
-    if (( rc != 0 )); then
-        case $rc in
-            2) send_message "Ambiguous session '$ref' — be more specific" ;;
-            *) send_message "No running session matching '$ref'" ;;
-        esac
-        return
-    fi
-    name="${resolved%%$'\t'*}"; dir="${resolved#*$'\t'}"
-    canon="$(resolve_agent_in_session "$dir" "$agent")"; arc=$?
-    if (( arc != 0 )); then
-        case $arc in
-            2) send_message "Ambiguous agent '$agent' in ${name} — use alias:name" ;;
-            *) send_message "No agent '$agent' in session ${name}" ;;
-        esac
-        return
-    fi
-    (umask 077; printf '%s\t%s\n' "$name" "$canon" >"$TG_TARGET_FILE") || {
-        send_message "Failed to save current target"
-        return
-    }
-    send_message "Override set: ${name} → ${canon}. Plain messages go here until /use clear (then back to the orchestrator)."
-}
-
-# Find the running orchestrator (meta-agent) for auto-default routing: a running
-# session with meta_agent=true in its meta. Prefer the canonical `orchestrator` name,
-# then legacy `hub`, then any other running meta-agent. Echoes
-# "<session>\t<alias:name>" (its main agent) or nothing.
-tg_find_orchestrator() {
-    local meta dir name main
-    local hub_name="" hub_main="" any_name="" any_main=""
-    for meta in "$SESSIONS_DIR"/*/meta; do
-        [[ -f "$meta" ]] || continue
-        grep -q '^meta_agent=true$' "$meta" 2>/dev/null || continue
-        dir="${meta%/meta}"; name="${dir##*/}"
-        daemon_session_running "$name" || continue
-        main="$(grep '^agent.main=' "$meta" 2>/dev/null | head -1 | cut -d= -f2- | cut -d: -f1,2)"
-        [[ -n "$main" ]] || continue
-        case "$name" in
-            orchestrator) printf '%s\t%s\n' "$name" "$main"; return 0 ;; # canonical wins
-            hub) hub_name="$name"; hub_main="$main" ;;
-            *) [[ -z "$any_name" ]] && { any_name="$name"; any_main="$main"; } ;;
-        esac
-    done
-    if [[ -n "$hub_name" ]]; then
-        printf '%s\t%s\n' "$hub_name" "$hub_main"
-    elif [[ -n "$any_name" ]]; then
-        printf '%s\t%s\n' "$any_name" "$any_main"
-    fi
-}
-
-# Bare (non-slash, non-@, non-reply) message → an explicit `/use` sticky target if
-# set, else auto-default to the running orchestrator (so you just talk to it — no
-# `/use` needed), else guide the user.
-tg_route_sticky() {
-    local from_id="$1" msg="$2" cur sess agent orchestrator
-    if [[ -f "$TG_TARGET_FILE" ]]; then
-        cur="$(cat "$TG_TARGET_FILE" 2>/dev/null)"
-        sess="${cur%%$'\t'*}"; agent="${cur#*$'\t'}"
-        if [[ -z "$sess" || -z "$agent" ]]; then
-            send_message "Current target is unset/corrupt — /use <session> <agent>"
-            return
-        fi
-        tg_dispatch "$from_id" "$sess" "send" "$agent" "$msg"
-        return
-    fi
-    # No explicit /use override → default to the orchestrator.
-    orchestrator="$(tg_find_orchestrator)"
-    if [[ -n "$orchestrator" ]]; then
-        sess="${orchestrator%%$'\t'*}"; agent="${orchestrator#*$'\t'}"
-        tg_dispatch "$from_id" "$sess" "send" "$agent" "$msg"
-        return
-    fi
-    send_message "No orchestrator running and no /use target set. Start one with 'ae orchestrator' (then just talk to it), reply to a message, use @session:agent <msg>, or /use <session> <agent>. (/help)"
-}
-
-# Poll getUpdates once (short-poll, bounded). For each update: persist the
-# offset FIRST (at-most-once), then auth-check, then dispatch.
-poll_updates() {
-    inbound_enabled || return 0
-    local offset next resp ok
-    offset="$(tg_load_offset)"
-    next=$((offset + 1))
-    resp=$(curl -sS -K - 2>&1 <<EOF
-silent
-url = https://api.telegram.org/bot${TG_TOKEN}/getUpdates
-data = offset=${next}
-data = limit=${TG_UPDATES_LIMIT}
-data = timeout=0
-data-urlencode = allowed_updates=["message"]
-EOF
-)
-    [[ $? -eq 0 ]] || { _log "getUpdates failed: $(printf '%s' "$resp" | _redact | head -c 200)"; return 0; }
-    ok=$(printf '%s' "$resp" | jq -r '.ok // false' 2>/dev/null) || return 0
-    [[ "$ok" == "true" ]] || { _log "getUpdates not ok: $(printf '%s' "$resp" | _redact | head -c 200)"; return 0; }
-
-    local n; n=$(printf '%s' "$resp" | jq '.result | length' 2>/dev/null) || return 0
-    [[ "$n" =~ ^[0-9]+$ ]] || return 0
-    local i upd uid fid cid ctype mtext
-    for (( i=0; i<n; i++ )); do
-        upd=$(printf '%s' "$resp" | jq -c ".result[$i]" 2>/dev/null) || continue
-        uid=$(printf '%s' "$upd" | jq -r '.update_id // empty' 2>/dev/null)
-        [[ "$uid" =~ ^[0-9]+$ ]] || continue
-        # Persist offset BEFORE dispatch. If it fails, stop processing this
-        # cycle entirely so nothing executes that could later replay.
-        if ! tg_save_offset "$uid"; then
-            _log "offset persist failed — skipping inbound dispatch until it recovers"
-            return 0
-        fi
-        fid=$(printf '%s' "$upd" | jq -r '.message.from.id // empty' 2>/dev/null)
-        cid=$(printf '%s' "$upd" | jq -r '.message.chat.id // empty' 2>/dev/null)
-        ctype=$(printf '%s' "$upd" | jq -r '.message.chat.type // empty' 2>/dev/null)
-        mtext=$(printf '%s' "$upd" | jq -r '.message.text // empty' 2>/dev/null)
-        [[ -n "$mtext" ]] || continue
-        if ! update_authorized "$fid" "$cid" "$ctype"; then
-            _log "dropped unauthorized update (from=$fid chat=$cid type=$ctype)"
-            continue
-        fi
-        # Reply-to-routing: a plain (non-slash) message sent as a reply to a
-        # forwarded event routes straight to that event's agent. Slash commands
-        # are always handled as commands, even when sent as a reply. Trim leading
-        # whitespace before the slash check so " /list" / a leading-newline are
-        # still recognised as commands (matches tg_handle_command's own trim).
-        local rtext mt_lead
-        rtext=$(printf '%s' "$upd" | jq -r '.message.reply_to_message.text // empty' 2>/dev/null)
-        mt_lead="${mtext#"${mtext%%[![:space:]]*}"}"
-        if [[ "$mt_lead" != /* && -n "$rtext" ]]; then
-            tg_handle_reply "$fid" "$rtext" "$mtext"
-        else
-            tg_handle_command "$fid" "$mtext"
-        fi
-    done
-}
-
-# Discover ae sessions: scan SESSIONS_DIR/*/meta. Populates
-# SESSION_NAME and SESSION_PATH keyed by session_id.
-discover_sessions() {
-    local meta dir session_id name
-    declare -A seen=()
-    for meta in "$SESSIONS_DIR"/*/meta; do
-        [[ -f "$meta" ]] || continue
-        dir="${meta%/meta}"
-        name="${dir##*/}"
-        session_id=$(grep '^session_id=' "$meta" 2>/dev/null | head -1 | cut -d= -f2-)
-        [[ -n "$session_id" ]] || continue
-        SESSION_NAME[$session_id]="$name"
-        SESSION_PATH[$session_id]="$dir"
-        seen[$session_id]=1
-    done
-    # Drop missing sessions from state
-    local sid
-    for sid in "${!SESSION_NAME[@]}"; do
-        if [[ -z "${seen[$sid]:-}" ]]; then
-            unset 'SESSION_NAME[$sid]' 'SESSION_PATH[$sid]'
-            unset 'STATE_INODE[$sid]' 'STATE_OFFSET[$sid]'
-        fi
-    done
-}
-
-# Read offset state from disk into STATE_*.
-load_state() {
-    STATE_INODE=()
-    STATE_OFFSET=()
-    [[ -f "$STATE_FILE" ]] || return 0
-    local sid inode offset _rest
-    while IFS=$'\t' read -r sid inode offset _rest; do
-        [[ -z "$sid" || "$sid" == \#* ]] && continue
-        STATE_INODE[$sid]="$inode"
-        STATE_OFFSET[$sid]="$offset"
-    done <"$STATE_FILE"
-}
-
-# Persist offset state atomically (tmp + rename, flock-guarded).
-save_state() {
-    local tmp="$STATE_FILE.tmp.$$"
-    {
-        printf '# session_id\tinode\tbyte_offset\tlast_ts\n'
-        local sid
-        for sid in "${!STATE_OFFSET[@]}"; do
-            printf '%s\t%s\t%s\t%s\n' \
-                "$sid" "${STATE_INODE[$sid]:-0}" "${STATE_OFFSET[$sid]:-0}" \
-                "$(date -u +%FT%TZ)"
-        done
-    } >"$tmp"
-    mv "$tmp" "$STATE_FILE"
-}
-
-# Stream new newline-terminated records from a session's events.jsonl,
-# starting from the saved byte offset, and forward each accepted event
-# to Telegram.
-#
-# Subtle correctness invariants codex flagged in review:
-# (1) Use process substitution, NOT command substitution. `chunk=$(tail ...)`
-#     strips trailing newlines — a single complete record `{...}\n` then looks
-#     like a partial line and never advances the offset.
-# (2) Advance the byte offset by the actual byte count of each consumed line
-#     (line + '\n'), NOT by ${#var} which counts characters and drifts on UTF-8.
-# (3) For an unseen session_id OR an inode change (transfer / recreate),
-#     initialize at EOF instead of byte 0. Otherwise enabling the bridge
-#     replays every historical event in every session.
-# (4) Plain `while IFS= read -r line` naturally drops an unterminated trailing
-#     partial line — `read` returns non-zero AND leaves no body for the loop.
-process_session() {
-    local sid="$1"
-    local name="${SESSION_NAME[$sid]}"
-    local path="${SESSION_PATH[$sid]}"
-    local events_file="$path/events.jsonl"
-    [[ -f "$events_file" ]] || return 0
-
-    local cur_inode="${STATE_INODE[$sid]:-}"
-    local cur_offset="${STATE_OFFSET[$sid]:-0}"
-    local file_inode file_size
-    file_inode=$(_stat_field inode "$events_file") || return 0
-    file_size=$(_stat_field size "$events_file") || return 0
-
-    # Unknown session_id OR inode change: jump to EOF, persist, and skip
-    # this iteration. This is the codex-flagged "don't replay history"
-    # invariant — without it, every existing session's full event log
-    # would flood the chat the first time the daemon comes up.
-    if [[ -z "$cur_inode" || "$file_inode" != "$cur_inode" ]]; then
-        STATE_INODE[$sid]="$file_inode"
-        STATE_OFFSET[$sid]="$file_size"
-        return 0
-    fi
-
-    if (( file_size <= cur_offset )); then
-        STATE_INODE[$sid]="$file_inode"
-        STATE_OFFSET[$sid]="$cur_offset"
-        return 0
-    fi
-
-    # At-least-once delivery. The offset is only advanced PAST a deliverable
-    # event after send_message succeeds; on send failure we break without
-    # committing, so the same event (and everything after it) is retried on
-    # the next poll instead of being silently dropped on a transient 429/5xx
-    # or network blip. Filtered / empty / unparseable records carry no
-    # delivery obligation and advance the offset freely.
-    local line action body line_bytes
-    local new_offset="$cur_offset"
-    while IFS= read -r line; do
-        # Byte-accurate width: wc -c counts the trailing '\n' that we'd
-        # otherwise lose to printf, so the file position stays in sync even
-        # when summaries contain multi-byte UTF-8 codepoints.
-        line_bytes=$(printf '%s\n' "$line" | wc -c)
-        if [[ -n "$line" ]]; then
-            action=$(jq -r '.action // ""' <<<"$line" 2>/dev/null) || action=""
-            if [[ -n "$action" ]] && event_action_allowed "$action"; then
-                body=$(format_event "$name" "$line") || body=""
-                if [[ -n "$body" ]]; then
-                    if ! send_message "$body"; then
-                        _log "send failed for $sid — will retry from offset $new_offset"
-                        break
-                    fi
-                fi
-            fi
-        fi
-        new_offset=$((new_offset + line_bytes))
-    done < <(tail -c "+$((cur_offset + 1))" "$events_file" 2>/dev/null)
-
-    STATE_INODE[$sid]="$file_inode"
-    STATE_OFFSET[$sid]="$new_offset"
-}
-
-# Acquire exclusive daemon lock — refuses to run if another daemon
-# holds the lock (would otherwise create duplicate Telegram messages).
-acquire_lock() {
-    exec 9>"$LOCK_FILE"
-    if ! flock -n 9; then
-        _log "another ae telegram daemon is already running (lock: $LOCK_FILE)"
-        return 1
-    fi
-    return 0
-}
-
-# The EXIT trap must only persist state when THIS process owns the lock AND
-# has loaded existing state — otherwise a daemon that lost the flock race, or
-# bailed during config validation, would rewrite state.tsv down to just the
-# header and wipe a healthy daemon's offsets.
-LOCK_HELD=0
-STATE_LOADED=0
-# main() is an infinite loop with no internal exit path, so the daemon only ever
-# stops because something OUTSIDE it intervenes. "exiting (rc=0)" alone hides
-# whether that was SIGTERM (`ae telegram stop` / a stray `tmux kill-session`),
-# SIGHUP (the tmux session or server torn down — e.g. a client/terminal closing),
-# SIGINT, or a genuinely internal exit (which would mean a code path we don't know
-# about). Record the terminating signal so the next death is diagnosable. Each
-# handler re-exits with 128+signum, so death behaviour is unchanged — only the log
-# gains the cause.
-_DAEMON_EXIT_SIGNAL=""
-_daemon_on_signal() {
-    _DAEMON_EXIT_SIGNAL="$1"
-    exit "$2"
-}
-trap '_daemon_on_signal SIGHUP 129' HUP
-trap '_daemon_on_signal SIGINT 130' INT
-trap '_daemon_on_signal SIGTERM 143' TERM
-# Single EXIT handler (bash keeps only one): capture the exit status FIRST, then
-# persist offsets if we held the lock, then record WHY the daemon stopped — the
-# rc plus the signal makes a crash (e.g. set -u abort), an external kill, and a
-# clean stop distinguishable in the log file.
-daemon_on_exit() {
-    local rc=$?
-    [[ "$LOCK_HELD" == 1 && "$STATE_LOADED" == 1 ]] && { save_state 2>/dev/null || true; }
-    if [[ -n "$_DAEMON_EXIT_SIGNAL" ]]; then
-        _log "daemon exiting (rc=$rc, signal=$_DAEMON_EXIT_SIGNAL)"
-    else
-        _log "daemon exiting (rc=$rc, no signal — internal/clean exit)"
-    fi
-}
-trap daemon_on_exit EXIT
-
-main() {
-    mkdir -p "$STATE_DIR"
-    acquire_lock || exit 1
-    LOCK_HELD=1
-    read_config
-    load_runtime_config || exit 1
-    load_state
-    STATE_LOADED=1
-    if inbound_enabled; then
-        _log "daemon started — include=$TG_INCLUDE exclude=${TG_EXCLUDE:-<none>} inbound=on (allow-listed users)"
-        # Advertise the inbound commands in Telegram's "/" menu (best-effort).
-        tg_set_commands
-    else
-        _log "daemon started — include=$TG_INCLUDE exclude=${TG_EXCLUDE:-<none>} inbound=off (no allowed_user_ids)"
-    fi
-
-    local last_discovery=0
-    local now sid
-    while :; do
-        now=$(date +%s)
-        if (( now - last_discovery >= DISCOVERY_INTERVAL )); then
-            discover_sessions
-            last_discovery=$now
-        fi
-        for sid in "${!SESSION_NAME[@]}"; do
-            process_session "$sid"
-        done
-        save_state
-        # Inbound (chat -> ae): short-poll once per cycle, bounded.
-        poll_updates
-        sleep "$POLL_INTERVAL"
-    done
-}
-
-TELEGRAM_DAEMON_EOF
-    # declare-f tail, exactly like the session helpers: the tmux presence probe
-    # and the error classifier it depends on have ONE definition, at ae's top
-    # level, and are re-printed into this artifact from there. Copying them into
-    # the heredoc instead is what let the two runtimes drift apart (round-3
-    # BLOCKER) — ae had the caller without the callee, the daemon the callee
-    # without ITS callee, and both failures were silent. Order matters at
-    # RUNTIME, not parse time: `main "$@"` is the only invocation, and it is
-    # last. An undefined name here fails the emitter rather than publishing a
-    # daemon that would die on its first probe — the chokepoint keeps the
-    # previous artifact.
-    # Refusal is a SEPARATE `declare -F` probe, not a `|| return 1` tail on the
-    # emission line: the emission-completeness guard reads everything after
-    # `declare -f ` as the name list, so a tail would enrol `||` as a function
-    # name and take the guard down with it. Uppercase -F is invisible to that
-    # guard and answers the only question here — are both names defined.
-    declare -F _tmux_err_is_clean_dead daemon_session_running >/dev/null || return 1
-    declare -f _tmux_err_is_clean_dead daemon_session_running
-    printf '%s\n' 'main "$@"'
 }
 
 # Persist the enabled flag in ~/.ae/config without disturbing other content.
@@ -10488,32 +9503,66 @@ _telegram_persist_intent() {
     # removed after proving both stale-mtime and cross-process wrong-owner races.)
 }
 
-# Spawn the daemon in its dedicated tmux session. Caller must have
-# checked deps and validated config — this just orchestrates tmux.
-# The daemon inherits the EXACT config file ae validated (CONFIG_FILE),
-# not its own $HOME/.ae/config default — otherwise a CONFIG_FILE override
-# (tests, or a non-default config) would validate one file and the daemon
-# would read another. Both the env value and the script path are %q-quoted.
+# Spawn the Rust core's telegram bridge in its dedicated tmux session. Caller
+# must have checked deps and validated config — this just orchestrates tmux.
+# The daemon inherits the EXACT config file ae validated (CONFIG_FILE) via
+# --config rather than its own <ae-home>/config default: a CONFIG_FILE override
+# (tests, or a non-default config) would otherwise validate one file and leave
+# the daemon reading another. Secrets never ride argv — the core reads
+# token_file / chat_id / allowed_user_ids out of [telegram] in --config itself.
+#
+# The command is passed to tmux as DIRECT ARGV, not as one shell string. A
+# single-string shell-command is run through /bin/sh (dash on Linux), so it
+# needs quoting we cannot do portably: printf %q emits bash-only $'...' for a
+# path containing a newline or a nonprintable, and dash would then hand the
+# daemon different argv than ae resolved. The multi-argument form tmux execs
+# directly — no shell, no quoting boundary — so a path with a space, a quote
+# or a newline survives byte-for-byte. The core path is absolute (checked
+# above), which also keeps it out of option-parsing ambiguity.
 _telegram_spawn_daemon() {
     # Every failure below RETURNS, and the function ends with an explicit 0.
     # Previously the write was unchecked, new-session's rc was discarded, and a
     # trailing `|| true` on a cosmetic tmux call forced rc 0 — so the caller's
     # "autostart failed (continuing without bridge)" warning could never fire
     # and a bridge that never started looked like one that had.
-    _telegram_write_daemon || return 1
-    local q_cfg q_daemon q_aehome
-    q_cfg="$(printf '%q' "$CONFIG_FILE")"
-    q_daemon="$(printf '%q' "$CONFIG_DIR/telegram-daemon")"
-    # Pass AE_HOME too: the daemon defaults AE_HOME to $HOME/.ae, so without this
-    # an isolated (AE_HOME=...) run would spawn a daemon tailing the LIVE ~/.ae.
-    q_aehome="$(printf '%q' "$CONFIG_DIR")"
-    # Name the interpreter: a bare `bash` here resolves through the tmux pane's
-    # PATH, which on macOS is /bin/bash 3.2 — it cannot run the daemon's bash-4
-    # constructs, so the bridge died on start with no useful message.
-    local q_bash
-    q_bash="$(printf '%q' "${BASH:-bash}")"
+    #
+    # The bridge is machine-global (one per host, not one per session), so the
+    # core is resolved the machine-general way — the same operator-input +
+    # absolute + executable + reports-a-version test _ae_core_preflight_try
+    # applies — never from a session's meta pin. The bash bridge is retired, so
+    # there is no fallback body to degrade to: an unusable core is a hard
+    # refusal here, and the caller decides how loud that is (explicit start
+    # errors, autostart warns and continues).
+    local _core
+    _core="$(_ae_core_bin_input)" || {
+        echo "ae telegram: no ae core configured (set workspace.core or AE_CORE_BIN)" >&2
+        return 1
+    }
+    [[ "$_core" == /* && -x "$_core" ]] || {
+        echo "ae telegram: ae core not an executable absolute path: $_core" >&2
+        return 1
+    }
+    _ae_core_bin_version "$_core" >/dev/null 2>&1 || {
+        echo "ae telegram: ae core reports no version: $_core" >&2
+        return 1
+    }
+    # Retire a stale aewatch sidecar first (RR P4). A RUNNING aewatch holds the old
+    # bytes whatever this file now says: it claims the bridge-owner marker and kills
+    # competing bridges on every tmux server, so it would kill the core we are about
+    # to start. Placed AFTER the core checks deliberately — an unusable core returns
+    # above, and retiring the sidecar there would leave the machine with no bridge at
+    # all. The probe is TRI-STATE and only rc 0 (verified running) fires the kill: an
+    # UNKNOWN answer (rc 2, tmux could not say) must never authorise a destructive
+    # guess (#28). The kill itself is best-effort and never fatal.
+    if daemon_session_running ae-aewatch 2>/dev/null; then
+        echo "ae telegram: retiring stale aewatch sidecar (superseded by the Rust bridge)" >&2
+        tmux kill-session -t ae-aewatch 2>/dev/null || true
+    fi
+    # <ae-home> is CONFIG_DIR, not $HOME/.ae: an isolated (AE_HOME=...) run must
+    # spawn a daemon reading THAT tree, never the live ~/.ae. --home is the real
+    # $HOME, and is used only to expand a ~/ token_file path.
     if ! tmux new-session -d -s "$_TELEGRAM_TMUX_SESSION" -c "$HOME" \
-        "AE_HOME=${q_aehome} CONFIG_FILE=${q_cfg} exec ${q_bash} ${q_daemon}" 2>/dev/null; then
+        "$_core" _telegram-run "$CONFIG_DIR" --config "$CONFIG_FILE" --home "$HOME" 2>/dev/null; then
         return 1
     fi
     # Cosmetic only — these may fail without the bridge being any less started.
@@ -10575,104 +9624,33 @@ _orchestrator_autostart_if_scaffolded() {
     return 0
 }
 
-# Companion: bring up the aewatch sidecar daemon (WATCHDOG only for now; the bridge is
-# wired in s19) in its own per-AE_HOME tmux session. OPT-IN via AE_WATCHDOG_IMPL=uv ONLY
-# — never by mere availability; the plain default keeps the bash per-session watchdog, so
-# there is no live double-run (plan p3). Then additionally availability-gated (the
-# contrib/aewatch script + a uv/python3 runtime); anything missing is a SILENT no-op.
-# Guarded by AE_NO_AUTOSTART; strictly non-fatal — never blocks or fails a launch. The
-# existing-session fast path is HEARTBEAT-FRESH-aware — a stale/wedged ae-aewatch session
-# must still fall through to `up`, which kills + recreates it (never name-only suppress).
-# Invoked exclusively from _start_session_watchdog (below), which owns the bash-standdown.
-_aewatch_autostart_if_available() {
-    [[ "${AE_NO_AUTOSTART:-}" == "1" ]] && return 0
-    # OPT-IN ONLY (plan p3: no live watchdog double-run by default). The aewatch daemon
-    # watchdog runs solely under the explicit AE_WATCHDOG_IMPL=uv switch; unset/bash/any
-    # other value keeps the bash per-session watchdog and starts NO aewatch daemon.
-    [[ "${AE_WATCHDOG_IMPL:-}" == "uv" ]] || return 0
-    local _aw
-    _aw="$(cd "$(dirname "$0")" && pwd)/contrib/aewatch/aewatch"
-    [[ -f "$_aw" ]] || return 0
-    local -a _run
-    local _runner=""
-    if command -v uv >/dev/null 2>&1; then
-        _run=(uv run "$_aw")
-        _runner=uv
-    elif command -v python3 >/dev/null 2>&1; then
-        _run=(python3 "$_aw")
-        _runner=python3
-    else
-        return 0
-    fi
-    # Fast path ONLY when the heartbeat is fresh (age <= 90s, matching aewatch's
-    # heartbeat_max_age); a stale/absent heartbeat falls through to `up` for a restart.
-    local _hb="$CONFIG_DIR/aewatch/heartbeat"
-    local _aw_rc=0
-    daemon_session_running ae-aewatch || _aw_rc=$?
-    # UNKNOWN (rc 2, #28) is not absence: `up` KILLS and recreates the daemon
-    # session, so acting on a tmux error that could not see a healthy one is the
-    # destructive guess. Silent no-op, matching this function's contract that
-    # anything unavailable simply doesn't fire.
-    if ((_aw_rc == 2)); then
-        return 0
-    fi
-    if ((_aw_rc == 0)) && [[ -f "$_hb" ]]; then
-        local _age=$(($(date +%s) - $(_ae_stat mtime "$_hb" || echo 0)))
-        ((_age >= 0 && _age <= 90)) && return 0
-    fi
-    echo "Starting aewatch companion daemon in the background (AE_NO_AUTOSTART=1 skips)."
-    (AE_NO_AUTOSTART=1 "${_run[@]}" up --ae-home "$CONFIG_DIR" --runner "$_runner" >/dev/null 2>&1 &)
-    return 0
-}
-
 # The single watchdog-ownership decision for a launching session (plan p3: exactly
 # one watchdog per session, no double-run). Arg is the effective watchdog-enabled
-# value (meta > config). Disabled -> NEITHER. AE_WATCHDOG_IMPL=uv -> the aewatch
-# daemon watches (bash stands down); anything else -> the bash per-session watchdog.
-# The aewatch hook itself is availability/heartbeat-gated and non-fatal.
+# value (meta > config). Disabled -> NO watchdog; anything else -> the bash
+# per-session watchdog, which is now the ONLY one. The aewatch sidecar is retired
+# (RR P4): AE_WATCHDOG_IMPL no longer selects anything here, because a live aewatch
+# daemon claims the bridge-owner marker and kills competing bridges — including the
+# Rust one — so leaving it selectable would let a stale sidecar fight the core.
 _start_session_watchdog() {
     local _enabled="$1"
     case "${_enabled,,}" in
         false | no | off | 0) return 0 ;;
     esac
-    if [[ "${AE_WATCHDOG_IMPL:-}" == "uv" ]]; then
-        _aewatch_autostart_if_available 2>/dev/null || true
-    else
-        "${AE_META}/watchdog" start
-    fi
-}
-
-# s19: does a live aewatch daemon OWN the Telegram bridge? True when the durable bridge-owner
-# marker exists AND the ae-aewatch heartbeat is fresh (age <= 90s, the s18-hook rule).
-# Ownership is a machine-readable FACT, NOT env: a concurrent bash reviver (another session's
-# `telegram _supervise`) never shares the uv-launcher's env, so the marker (written by the
-# aewatch daemon's handoff) is what suppresses every revive path — only ONE bridge ever sends.
-_aewatch_owns_bridge() {
-    # Ownership is a DURABLE MARKER + fresh heartbeat, NOT env: a concurrent bash reviver
-    # (another session's `telegram _supervise`) never shares the uv-launcher's env. The
-    # aewatch daemon writes bridge-owner while its bridge is active; a STALE heartbeat means
-    # aewatch is dead, so bash revives (the free fallback).
-    [[ -f "$CONFIG_DIR/aewatch/bridge-owner" ]] || return 1
-    local _hb="$CONFIG_DIR/aewatch/heartbeat"
-    [[ -f "$_hb" ]] || return 1
-    local _age=$(($(date +%s) - $(_ae_stat mtime "$_hb" || echo 0)))
-    ((_age >= 0 && _age <= 90))
+    "${AE_META}/watchdog" start
 }
 
 _telegram_autostart_if_enabled() {
-    # s19: a live aewatch daemon owning the bridge (bridge-owner marker + fresh heartbeat)
-    # stands bash down — return 0, do NOT start. This ONE guard covers every revive path
-    # (launch, reattach, watchdog _supervise) that funnels here. A STALE heartbeat (aewatch
-    # dead) falls through and bash revives — the free fallback.
-    _aewatch_owns_bridge && return 0
+    # The Rust core is the ONE bridge now: the aewatch stand-down guard is gone
+    # along with the bash bridge it used to suppress, so intent + liveness are
+    # the whole decision. Every revive path (launch, reattach, watchdog
+    # _supervise) still funnels here.
     [[ "$(_telegram_intent_enabled)" == "true" ]] || return 0
     _telegram_daemon_running && return 0
-    local missing
-    missing="$(_telegram_missing_deps)"
-    if [[ -n "$missing" ]]; then
-        echo "ae telegram: skipped autostart — missing deps:$missing" >&2
-        return 0
-    fi
+    # No dependency pre-check: the bridge IS the ae core, so "can this machine
+    # run it" is exactly "is there a usable core", which _telegram_spawn_daemon
+    # already decides. A second gate here would duplicate that judgement and
+    # drift from it. An unusable core reaches the caller as a failed spawn, and
+    # the warn-and-continue tail below is where it surfaces.
     local token_file err lock
     token_file="$(get_config telegram.token_file 2>/dev/null || true)"
     if err="$(_telegram_validate_token_file "$token_file" 2>&1)"; then
@@ -10717,8 +9695,9 @@ Config block in ~/.ae/config:
   include = "send,ask,review,reply,done,alert,throttled,chat"   # default
   exclude = "memo"                                             # default empty
 
-Requires: jq, curl. The bridge runs in tmux session `ae-telegram` and
-forwards filtered events from every ae session on this machine.
+Requires: a configured ae core (workspace.core or AE_CORE_BIN) and nothing
+else. The bridge IS the ae core binary, run in tmux session `ae-telegram`;
+it forwards filtered events from every ae session on this machine.
 See docs/internals/bridge-protocol.md for the underlying contract.
 EOF
 }
@@ -10783,12 +9762,10 @@ EOF
 }
 
 cmd_telegram_start() {
-    local missing err
-    missing="$(_telegram_missing_deps)"
-    if [[ -n "$missing" ]]; then
-        echo "Error: ae telegram needs:$missing" >&2
-        return 1
-    fi
+    # No dependency pre-check — see _telegram_autostart_if_enabled. An unusable
+    # core fails in the spawn below, which prints WHICH of the three conditions
+    # failed; this path only adds that the start did not happen.
+    local err
     local token_file
     token_file="$(get_config telegram.token_file 2>/dev/null || true)"
     if ! err="$(_telegram_validate_token_file "$token_file" 2>&1)"; then
@@ -10812,11 +9789,6 @@ cmd_telegram_start() {
             return 1
         }
         _telegram_persist_intent "true"
-        # s19: if the aewatch daemon owns the bridge, WARN but honor the explicit human
-        # request (`ae telegram start`) — human intent wins; we just say so, then spawn.
-        if _aewatch_owns_bridge; then
-            echo "ae telegram: WARNING — aewatch owns the bridge (bridge-owner + fresh heartbeat); starting the bash bridge too may double-send. Proceeding on your explicit request." >&2
-        fi
         if _telegram_daemon_running; then
             echo "ae telegram: already running (tmux session $_TELEGRAM_TMUX_SESSION)"
             return 0
@@ -10860,18 +9832,15 @@ cmd_telegram_status() {
     if _telegram_daemon_running; then runtime="running"; else runtime="stopped"; fi
     echo "ae telegram:"
     echo "  intent:  enabled=$intent (in $CONFIG_FILE)"
-    if _aewatch_owns_bridge; then
-        echo "  backend: aewatch (bridge-owner marker + fresh heartbeat; shared state in $CONFIG_DIR/telegram)"
+    echo "  backend: ae core (state in $CONFIG_DIR/telegram)"
+    echo "  runtime: daemon $runtime (tmux session $_TELEGRAM_TMUX_SESSION)"
+    local core=""
+    if core="$(_ae_core_bin_input)" &&
+        [[ "$core" == /* && -x "$core" ]] &&
+        _ae_core_bin_version "$core" >/dev/null 2>&1; then
+        echo "  core:    $core"
     else
-        echo "  backend: bash"
-    fi
-    echo "  runtime: bash daemon $runtime (tmux session $_TELEGRAM_TMUX_SESSION)"
-    local missing
-    missing="$(_telegram_missing_deps)"
-    if [[ -n "$missing" ]]; then
-        echo "  deps:    MISSING:$missing"
-    else
-        echo "  deps:    jq=$(command -v jq) curl=$(command -v curl)"
+        echo "  core:    not configured (set workspace.core or AE_CORE_BIN)"
     fi
     local token_file err
     token_file="$(get_config telegram.token_file 2>/dev/null || true)"
@@ -10884,13 +9853,26 @@ cmd_telegram_status() {
     else
         echo "  token:   not configured"
     fi
-    local state_file="$CONFIG_DIR/telegram/state.tsv"
-    if [[ -f "$state_file" ]]; then
-        local tracked
-        # awk avoids `grep -c`'s "0 + exit 1" footgun (which `|| echo 0`
-        # turned into a two-line "0\n0" count).
-        tracked=$(awk '!/^#/ && NF {n++} END {print n + 0}' "$state_file")
-        echo "  state:   $tracked sessions tracked ($state_file)"
+    # The state the DAEMON owns, which is not what the bash bridge owned. Its
+    # state.tsv (one row per tracked session, the outbound fan-in cursor) is
+    # orphaned: nothing writes it any more, so reporting it described a file
+    # that would stay absent forever. The core keeps two files here instead —
+    # and deliberately no global outbound cursor, because outbound progress is
+    # PER SESSION (<meta>/telegram-outbound.cursor) and has no single path to
+    # print.
+    local _tg_state_dir="$CONFIG_DIR/telegram"
+    local _f _shown=""
+    for _f in tg_offset current_target; do
+        # `[[ ... ]] && x` as a loop body's LAST statement returns 1 when the
+        # condition is false, and ae runs under errexit — the documented footgun.
+        if [[ -f "${_tg_state_dir}/${_f}" ]]; then
+            _shown+=" $_f"
+        fi
+    done
+    if [[ -n "$_shown" ]]; then
+        echo "  state:   ${_shown# } (in $_tg_state_dir)"
+    else
+        echo "  state:   none yet (in $_tg_state_dir)"
     fi
     # An explicit include= that omits `chat` silently drops agents' `say`
     # replies (outbound chat). When include is unset the default carries `chat`,
@@ -11385,7 +10367,7 @@ HELP
     fi
     # Orchestrator guard (audit finding): a meta-agent session is machine-local by
     # nature — transferring it silently breaks the source's Telegram routing
-    # (tg_find_orchestrator) and spawns a rogue orchestrator watching the WRONG fleet on
+    # (the bridge's orchestrator routing) and spawns a rogue orchestrator watching the WRONG fleet on
     # the destination. Refuse in both directions; re-init on the target
     # machine instead (ae orchestrator --init && ae orchestrator).
     if grep -q '^meta_agent=true$' "${local_session_dir}/meta" 2>/dev/null; then
@@ -17706,10 +16688,10 @@ if tmux has-session -t "$SESSION" 2>/dev/null; then
     if tmux show-environment -t "$SESSION" AE_SESSION 2>/dev/null | grep -q '^AE_SESSION='; then
         _telegram_autostart_if_enabled 2>/dev/null || true
         _orchestrator_autostart_if_scaffolded 2>/dev/null || true
-        # NOTE: aewatch autostart is deliberately NOT wired on reattach. Watchdog
-        # ownership is decided once at launch (_start_session_watchdog); reviving or
-        # migrating a running session's watchdog under AE_WATCHDOG_IMPL=uv (a bash-owned
-        # session reattached with uv) would double-run — that mode-switch is its own slice.
+        # NOTE: no watchdog autostart on reattach. Ownership is decided once at
+        # launch (_start_session_watchdog), and the bash per-session watchdog is the
+        # one watchdog there is — the aewatch sidecar is retired (RR P4), so there is
+        # no second implementation left to revive, migrate, or double-run.
         if [[ "$ATTACH_ON_READY" != "true" ]]; then
             echo "Session '$SESSION' is running. Use 'ae orchestrator --attach' to view."
             exit 0
@@ -18890,9 +17872,9 @@ else
     WATCHDOG_ENABLED="$(get_config workspace.watchdog)"
     [[ -n "$WATCHDOG_ENABLED" ]] || WATCHDOG_ENABLED="$(get_config workspace.loop)"
 fi
-# Exactly one watchdog per session (plan p3: no double-run): AE_WATCHDOG_IMPL=uv
-# picks the aewatch daemon (bash stands down), else the bash per-session watchdog;
-# disabled starts neither.
+# Exactly one watchdog per session (plan p3: no double-run): the bash per-session
+# watchdog is the one implementation — aewatch is retired (RR P4) — and disabled
+# starts none.
 _start_session_watchdog "$WATCHDOG_ENABLED"
 
 # Optional: auto-start the Telegram bridge if [telegram] enabled = true.

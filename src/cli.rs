@@ -152,6 +152,16 @@ pub const SEND: &str = "_send";
 /// script.
 pub const WATCHDOG_RUN: &str = "_watchdog-run";
 
+/// The telegram bridge daemon's surface —
+/// `_telegram-run <ae-home> [--config <p>] [--home <p>] [knob flags]`.
+///
+/// Underscored like every other core entry, and never human-typed: the bash
+/// `telegram` glue execs this. The PATHS are arguments for the same reason the
+/// watchdog's knobs are — this crate's clippy policy disallows reading the
+/// environment, so `AE_HOME` is spelled in exactly one place and it is the
+/// frozen script.
+pub const TELEGRAM_RUN: &str = "_telegram-run";
+
 /// What an argv asks the binary to do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Request {
@@ -285,6 +295,14 @@ pub enum Request {
         dir: PathBuf,
         /// Every tunable, defaulted to the frozen values a flagless call keeps.
         knobs: crate::watchdog_daemon::Knobs,
+    },
+    /// `_telegram-run <ae-home> [--config <p>] [--home <p>] [knob flags]` — run
+    /// the Telegram bridge: inbound long poll plus outbound `say` forwarding.
+    TelegramRun {
+        /// Where the bridge reads its config, its secrets and its sessions.
+        paths: crate::telegram::bridge::Paths,
+        /// Every tunable, defaulted to the values a flagless call keeps.
+        knobs: crate::telegram::bridge::Knobs,
     },
     /// `_compact-freeze <session-dir> [--keep-history]` — resolves and emits the
     /// frozen compact tuple. Pure read-only.
@@ -591,6 +609,13 @@ impl Request {
                     Err(word) => Self::UsageError(word),
                 },
             },
+            Some(TELEGRAM_RUN) => match &args[1..] {
+                [] => Self::MissingOperand(TELEGRAM_RUN),
+                [ae_home, flags @ ..] => match telegram_options(ae_home, flags) {
+                    Ok((paths, knobs)) => Self::TelegramRun { paths, knobs },
+                    Err(word) => Self::UsageError(word),
+                },
+            },
             Some(COMPACT_FREEZE) => match &args[1..] {
                 [dir] => Self::CompactFreeze {
                     dir: dir.into(),
@@ -835,6 +860,7 @@ impl Request {
             | Self::EndLocalTeardown { .. }
             | Self::EndNonlocalTeardown { .. }
             | Self::WatchdogRun { .. }
+            | Self::TelegramRun { .. }
             | Self::CompactFreeze { .. }
             | Self::CompactRevalidate { .. }
             | Self::CompactArchive { .. }
@@ -884,6 +910,54 @@ fn watchdog_knobs(flags: &[String]) -> std::result::Result<crate::watchdog_daemo
     Ok(knobs)
 }
 
+/// Read `_telegram-run`'s paths and knobs.
+///
+/// The two PATH flags default to the conventional layout under `<ae-home>`
+/// rather than being required: bash passes them when it has them, and a human
+/// running the daemon by hand should not have to restate what `AE_HOME` already
+/// implies. Everything else follows the watchdog's rule — an unrecognised flag,
+/// a missing value and an unparseable number are all the offending word, never
+/// a silent default for a knob the caller meant to set.
+fn telegram_options(
+    ae_home: &str,
+    flags: &[String],
+) -> std::result::Result<
+    (
+        crate::telegram::bridge::Paths,
+        crate::telegram::bridge::Knobs,
+    ),
+    String,
+> {
+    let mut paths = crate::telegram::bridge::Paths::under(ae_home);
+    let mut knobs = crate::telegram::bridge::Knobs::default();
+    let mut rest = flags;
+    while let [flag, tail @ ..] = rest {
+        if flag == "--once" {
+            knobs.once = true;
+            rest = tail;
+            continue;
+        }
+        let Some((value, after)) = tail.split_first() else {
+            return Err(flag.clone());
+        };
+        let seconds = |text: &str| {
+            text.parse::<u64>()
+                .map(std::time::Duration::from_secs)
+                .map_err(|_| text.to_owned())
+        };
+        match flag.as_str() {
+            "--config" => paths.config = value.into(),
+            "--home" => paths.home = value.into(),
+            "--limit" => knobs.inbound.limit = count(value)?,
+            "--long-poll" => knobs.inbound.long_poll = seconds(value)?,
+            "--outbound-interval" => knobs.outbound_interval = seconds(value)?,
+            _ => return Err(flag.clone()),
+        }
+        rest = after;
+    }
+    Ok((paths, knobs))
+}
+
 /// A `u32` knob, or the offending word.
 fn count(text: &str) -> std::result::Result<u32, String> {
     text.parse::<u32>().map_err(|_| text.to_owned())
@@ -900,7 +974,7 @@ mod tests {
         ARCHIVE_PREVIEW, ASK, COMPACT_ARCHIVE, COMPACT_CANCEL, COMPACT_FIND_OUTSTANDING,
         COMPACT_FREEZE, COMPACT_MEMO_BASELINE, COMPACT_REVALIDATE, COMPACT_TEARDOWN, COMPACT_WAIT,
         DEFAULT_REVALIDATE_WHEN, END_NONLOCAL_TEARDOWN, EVENTS_TAIL, GOAL, MEMO, REPLY, REQUESTS,
-        REVIEW, Request, SEND, STATE, WATCHDOG_RUN,
+        REVIEW, Request, SEND, STATE, TELEGRAM_RUN, WATCHDOG_RUN,
     };
     use crate::filters::{ListArgs, Scope};
     use crate::requests::Mode;
@@ -1549,6 +1623,71 @@ mod tests {
             Request::parse(&argv(&[END_NONLOCAL_TEARDOWN])).exit_code(),
             Some(2),
             "no session dir is a usage error"
+        );
+    }
+
+    #[test]
+    fn telegram_run_derives_both_paths_from_ae_home_when_they_are_not_given() {
+        // The conventional layout is not restated by the caller: bash knows
+        // AE_HOME, and everything else follows from it.
+        let Request::TelegramRun { paths, knobs } =
+            Request::parse(&argv(&[TELEGRAM_RUN, "/home/me/.ae"]))
+        else {
+            panic!("_telegram-run must parse with only an ae home");
+        };
+        assert_eq!(paths.ae_home, std::path::PathBuf::from("/home/me/.ae"));
+        assert_eq!(
+            paths.config,
+            std::path::PathBuf::from("/home/me/.ae/config")
+        );
+        assert_eq!(paths.home, std::path::PathBuf::from("/home/me"));
+        assert_eq!(knobs, crate::telegram::bridge::Knobs::default());
+    }
+
+    #[test]
+    fn telegram_run_reads_every_flag_in_any_order() {
+        let Request::TelegramRun { paths, knobs } = Request::parse(&argv(&[
+            TELEGRAM_RUN,
+            "/ae",
+            "--long-poll",
+            "7",
+            "--once",
+            "--home",
+            "/elsewhere",
+            "--limit",
+            "3",
+            "--outbound-interval",
+            "9",
+            "--config",
+            "/etc/ae.conf",
+        ])) else {
+            panic!("every flag must parse in any order");
+        };
+        assert_eq!(paths.config, std::path::PathBuf::from("/etc/ae.conf"));
+        assert_eq!(paths.home, std::path::PathBuf::from("/elsewhere"));
+        assert_eq!(knobs.inbound.limit, 3);
+        assert_eq!(knobs.inbound.long_poll, std::time::Duration::from_secs(7));
+        assert_eq!(knobs.outbound_interval, std::time::Duration::from_secs(9));
+        assert!(knobs.once);
+    }
+
+    #[test]
+    fn a_telegram_knob_the_daemon_cannot_read_is_a_usage_error_not_a_default() {
+        // Same rule as the watchdog's: silently defaulting a knob the caller
+        // meant to set would run a cadence nobody chose.
+        for bad in [
+            vec![TELEGRAM_RUN, "/ae", "--nope", "1"],
+            vec![TELEGRAM_RUN, "/ae", "--limit", "twelve"],
+            vec![TELEGRAM_RUN, "/ae", "--long-poll"],
+        ] {
+            assert!(
+                matches!(Request::parse(&argv(&bad)), Request::UsageError(_)),
+                "{bad:?} was accepted"
+            );
+        }
+        assert_eq!(
+            Request::parse(&argv(&[TELEGRAM_RUN])),
+            Request::MissingOperand(TELEGRAM_RUN)
         );
     }
 

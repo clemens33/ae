@@ -1,5 +1,12 @@
-//! The outbound half of the Telegram bridge: `say`'s chat events, forwarded to
-//! `sendMessage` over TLS.
+//! The Telegram bridge: the network boundary, the secret, and the OUTBOUND
+//! half — `say`'s chat events, forwarded to `sendMessage` over TLS.
+//!
+//! The INBOUND half lives in this module's own submodules rather than beside
+//! it, so that everything hardened here — the one locked [`Api`], the one
+//! [`open_regular`], the one [`durable_write`] — is reachable from it WITHOUT
+//! being widened to the crate: [`inbound`] runs one `getUpdates` cycle,
+//! [`routing`] decides where a message goes, and [`bridge`] is the daemon that
+//! turns the two halves into two loops.
 //!
 //! This is ae's only surface that talks to the public internet, and everything
 //! unusual about it follows from two facts:
@@ -54,6 +61,16 @@ use std::time::Duration;
 
 use crate::json::{self, Value};
 
+// The inbound half, in submodules of THIS one rather than beside it. That is a
+// privacy decision, not a filing one: a child module can see its parent's
+// private items, so `open_regular`, `durable_write` and the locked [`Api`]'s
+// test seam are reachable from the inbound code WITHOUT widening any of them to
+// the crate. Everything hardened here stays hardened there, and none of it
+// becomes reachable from a module that has no business with a bot token.
+pub mod bridge;
+pub mod inbound;
+pub mod routing;
+
 // ─── the network boundary ────────────────────────────────────────────────
 
 /// The production API root. A CONSTANT, and deliberately not a config key: an
@@ -77,6 +94,23 @@ const TIMEOUT_GLOBAL: Duration = Duration::from_secs(30);
 /// STREAMING and ignores `Content-Length` entirely, because a hostile or broken
 /// peer's declared length is a claim about a body it has not sent yet.
 const MAX_RESPONSE_BYTES: usize = 64 * 1024;
+
+/// The most a `getUpdates` long poll may ask Telegram to hold the connection.
+///
+/// STRICTLY BELOW [`TIMEOUT_RECV_RESPONSE`], and that relationship is the point
+/// rather than the number: the agent's ceiling must be able to outlast the wait
+/// we asked for, or every quiet poll ends as our own timeout and the loop backs
+/// off on its most normal outcome.
+const LONG_POLL_MAX: Duration = Duration::from_secs(10);
+
+/// THE COMPILER holds that relationship, not a comment and not a test: raising
+/// the long poll past the agent's receive ceiling — or lowering the ceiling
+/// under it — fails the build rather than turning every quiet poll into a
+/// timeout nobody would connect to this line.
+const _: () = assert!(
+    LONG_POLL_MAX.as_secs() < TIMEOUT_RECV_RESPONSE.as_secs(),
+    "the long poll must be answerable within the agent's receive timeout"
+);
 
 /// Telegram's own `text` limit is 4096 UTF-8 characters; a longer message is
 /// rejected with a 400. Truncating below it is our choice, not the API's, and
@@ -166,6 +200,18 @@ impl Credentials {
             token,
             chat_id: chat_id.into(),
         }
+    }
+
+    /// The configured control chat, verbatim.
+    ///
+    /// Read by the INBOUND half, which admits an update only from exactly this
+    /// chat (SC-944b). Compared as TEXT, like the frozen bash does: a chat id
+    /// is an identifier, and normalising it into a number would make two
+    /// spellings of one config value compare differently from how they were
+    /// written.
+    #[must_use]
+    pub fn chat_id(&self) -> &str {
+        &self.chat_id
     }
 
     /// The `chat_id` as JSON: a number when it is one, a string otherwise
@@ -328,6 +374,35 @@ impl std::error::Error for CredentialsError {}
 /// empty value: a bridge that starts with no token would post nowhere and say
 /// nothing about it.
 pub fn load_credentials(config: &Path, home: &Path) -> Result<Credentials, CredentialsError> {
+    load_settings(config, home).map(|settings| settings.credentials)
+}
+
+/// Everything the bridge reads out of an ae config: the outbound credentials,
+/// and the inbound allow-list.
+///
+/// One struct and ONE parse. The alternative — a second reader for the inbound
+/// keys — would read the same file at a different moment, and a config edited
+/// between the two would leave the bridge posting to one chat while trusting
+/// the allow-list of another.
+#[derive(Debug, Clone)]
+pub struct Settings {
+    /// The bot token and the chat the outbound half posts to.
+    pub credentials: Credentials,
+    /// **SC-943: inbound exists ONLY with a non-empty allow-list.** An empty
+    /// list is not "allow everyone" and not "allow nobody by accident" — it is
+    /// the configured state of an outbound-only bridge, and the inbound loop
+    /// does not run at all in it.
+    pub allowed_user_ids: Vec<String>,
+}
+
+/// Read `[telegram]` whole: `token_file`, `chat_id` and `allowed_user_ids`.
+///
+/// # Errors
+///
+/// [`CredentialsError`], exactly as [`load_credentials`] — the allow-list has
+/// no failure of its own, because ABSENT is a legal, meaningful value for it
+/// (SC-943's outbound-only bridge) rather than a missing requirement.
+pub fn load_settings(config: &Path, home: &Path) -> Result<Settings, CredentialsError> {
     let text = match read_regular_file(config) {
         Ok((text, _)) => text,
         Err(NotRegular::Node) => return Err(CredentialsError::ConfigNotRegular(config.to_owned())),
@@ -339,6 +414,7 @@ pub fn load_credentials(config: &Path, home: &Path) -> Result<Credentials, Crede
     };
     let mut token_file = None;
     let mut chat_id = None;
+    let mut allowed = None;
     let mut section = String::new();
     for raw in text.lines() {
         let line = raw.trim();
@@ -358,6 +434,7 @@ pub fn load_credentials(config: &Path, home: &Path) -> Result<Credentials, Crede
         match key.as_str() {
             "token_file" => token_file = Some(value),
             "chat_id" => chat_id = Some(value),
+            "allowed_user_ids" => allowed = Some(value),
             _ => {}
         }
     }
@@ -389,7 +466,26 @@ pub fn load_credentials(config: &Path, home: &Path) -> Result<Credentials, Crede
     if token.is_empty() {
         return Err(CredentialsError::TokenEmpty);
     }
-    Ok(Credentials::new(Token::new(token), chat_id))
+    Ok(Settings {
+        credentials: Credentials::new(Token::new(token), chat_id),
+        allowed_user_ids: allowed.as_deref().map(parse_id_list).unwrap_or_default(),
+    })
+}
+
+/// Split an `allowed_user_ids` value the way the frozen bash does: on commas
+/// AND spaces, discarding empties.
+///
+/// NON-NUMERIC ENTRIES ARE KEPT AS WRITTEN and simply never match, because
+/// `from.id` is separately required to be numeric before it is compared
+/// (SC-944a). Dropping them here would be a silent repair of a typo the
+/// operator should see fail.
+fn parse_id_list(value: &str) -> Vec<String> {
+    value
+        .split([',', ' ', '\t'])
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
 }
 
 /// `[name]` → `name`, for a line that is one.
@@ -512,22 +608,89 @@ pub enum SendFailure {
 const _: fn() = || {
     fn holds_no_owned_text<T: Copy>() {}
     holds_no_owned_text::<SendFailure>();
+    // The endpoint-carrying form inherits the property rather than restating
+    // it: a `Copy` struct cannot own a `String` either, and this is the type
+    // the INBOUND half returns.
+    holds_no_owned_text::<ApiFailure>();
 };
+
+/// Which Telegram method a failure came from.
+///
+/// The METHOD NAME is not a secret — the bot token is, and it is in the URL
+/// path, which is why nothing else about the request is ever presented. This
+/// exists so a `getUpdates` failure cannot be rendered as a `sendMessage` one:
+/// a bridge with two endpoints and one failure text is a bridge whose logs
+/// name the wrong half.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Method {
+    /// `sendMessage` — the outbound half.
+    SendMessage,
+    /// `getUpdates` — the inbound long-poll.
+    GetUpdates,
+    /// `setMyCommands` — the startup command-menu registration.
+    SetMyCommands,
+}
+
+impl Method {
+    /// The bare method name, which is all of the URL that is ever printed.
+    const fn label(self) -> &'static str {
+        match self {
+            Self::SendMessage => "sendMessage",
+            Self::GetUpdates => "getUpdates",
+            Self::SetMyCommands => "setMyCommands",
+        }
+    }
+}
+
+/// One API call that did not land: which method, and which redacted class.
+///
+/// Both halves are `Copy` and neither can hold text, so this type is subject to
+/// the same compile-time guarantee [`SendFailure`] is — see the `const _` above.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ApiFailure {
+    /// The method that failed.
+    pub method: Method,
+    /// Why, in the redacted classes [`SendFailure`] enumerates.
+    pub kind: SendFailure,
+}
+
+impl ApiFailure {
+    /// Pair a failure class with the endpoint that produced it.
+    #[must_use]
+    pub const fn at(method: Method, kind: SendFailure) -> Self {
+        Self { method, kind }
+    }
+}
+
+impl fmt::Display for ApiFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Every arm is `{method} {endpoint}: {class}`. No URL, no host, no
+        // response body, no upstream error text. THE ONE PLACE the detail text
+        // is written, so the two endpoints cannot drift into two vocabularies.
+        write!(f, "POST {}: ", self.method.label())?;
+        match self.kind {
+            SendFailure::Status(class, code) => write!(f, "{} ({code})", class.label()),
+            SendFailure::Rejected => f.write_str("rejected by telegram (ok != true)"),
+            SendFailure::Malformed => f.write_str("response was not the expected JSON"),
+            SendFailure::TooLarge => {
+                write!(f, "response body exceeded {MAX_RESPONSE_BYTES} bytes")
+            }
+            SendFailure::Timeout => f.write_str("timed out"),
+            SendFailure::Redirected => f.write_str("redirected (refused)"),
+            SendFailure::Transport => f.write_str("transport failure"),
+        }
+    }
+}
+
+impl std::error::Error for ApiFailure {}
 
 impl fmt::Display for SendFailure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Every arm is `{method} {endpoint}: {class}`. No URL, no host, no
-        // response body, no upstream error text.
-        f.write_str("POST sendMessage: ")?;
-        match self {
-            Self::Status(class, code) => write!(f, "{} ({code})", class.label()),
-            Self::Rejected => f.write_str("rejected by telegram (ok != true)"),
-            Self::Malformed => f.write_str("response was not the expected JSON"),
-            Self::TooLarge => write!(f, "response body exceeded {MAX_RESPONSE_BYTES} bytes"),
-            Self::Timeout => f.write_str("timed out"),
-            Self::Redirected => f.write_str("redirected (refused)"),
-            Self::Transport => f.write_str("transport failure"),
-        }
+        // A bare `SendFailure` is the OUTBOUND half's, and it renders exactly
+        // as it always has — byte for byte. It renders THROUGH [`ApiFailure`]
+        // so that adding the inbound endpoint did not fork the detail text into
+        // two copies that could disagree.
+        ApiFailure::at(Method::SendMessage, *self).fmt(f)
     }
 }
 
@@ -681,6 +844,135 @@ impl Api {
         }
         accepted(&bytes)
     }
+
+    /// Register the slash-command menu, so the chat's `/` list offers ae's
+    /// grammar instead of requiring the operator to remember it.
+    ///
+    /// **BEST EFFORT BY CONTRACT, and the caller is expected to ignore the
+    /// error** (`docs/reference/telegram.md`): a bridge that refused to start
+    /// because a cosmetic menu did not register would trade the whole feature
+    /// for a nicety. Nothing downstream reads the result — the commands work
+    /// whether or not Telegram ever showed them in a menu.
+    ///
+    /// # Errors
+    ///
+    /// [`SendFailure`], redacted like every other failure here. Same acceptance
+    /// rule as [`Api::send_message`]: 2xx **and** `ok:true`.
+    pub fn set_my_commands(&self, commands: &[(&str, &str)]) -> Result<(), SendFailure> {
+        let url = format!(
+            "{}/bot{}/setMyCommands",
+            self.egress.base(),
+            self.credentials.token.expose()
+        );
+        let body = Value::obj([(
+            "commands",
+            Value::Arr(
+                commands
+                    .iter()
+                    .map(|&(command, description)| {
+                        Value::obj([
+                            ("command", Value::str(command)),
+                            ("description", Value::str(description)),
+                        ])
+                    })
+                    .collect(),
+            ),
+        )])
+        .render();
+        let sent = self
+            .agent
+            .post(&url)
+            .content_type("application/json")
+            .send(body.as_str());
+        let mut response = sent.map_err(classify)?;
+        let status = response.status().as_u16();
+        let bytes = read_bounded(response.body_mut().as_reader())?;
+        if !(200..300).contains(&status) {
+            return Err(SendFailure::Status(StatusClass::of(status), status));
+        }
+        accepted(&bytes)
+    }
+
+    /// Long-poll `getUpdates` for everything from `offset` onwards.
+    ///
+    /// Returns the `result` array's elements, untouched — this method owns the
+    /// NETWORK boundary (the locked agent, the byte cap, the `ok == true`
+    /// envelope) and nothing about what an update MEANS, which is
+    /// [`inbound`]'s.
+    ///
+    /// # The long poll is bounded twice, and the two bounds are not the same one
+    ///
+    /// `wait` is Telegram's own parameter: the server holds the connection open
+    /// that long before answering with an empty result. The AGENT's
+    /// `timeout_recv_response` is our ceiling on the same wait, and it is not
+    /// negotiable at run time because the agent is built once, locked, in
+    /// [`Api::agent`]. So `wait` is clamped to [`LONG_POLL_MAX`], which is
+    /// strictly below that ceiling: a normal empty poll must be ANSWERED by
+    /// Telegram rather than aborted by us, because an aborted poll is
+    /// indistinguishable from a broken one and would put the loop into backoff
+    /// on its quietest, most normal path.
+    ///
+    /// # Errors
+    ///
+    /// [`ApiFailure`] — the same redacted classes the outbound half uses, named
+    /// with this endpoint. A failure here means the caller must NOT advance the
+    /// durable offset: see [`inbound`]'s module docs.
+    pub fn get_updates(
+        &self,
+        offset: i64,
+        limit: u32,
+        wait: Duration,
+    ) -> Result<Vec<Value>, ApiFailure> {
+        self.updates(offset, limit, wait)
+            .map_err(|kind| ApiFailure::at(Method::GetUpdates, kind))
+    }
+
+    /// [`Api::get_updates`] before the endpoint is attached to its failure.
+    fn updates(&self, offset: i64, limit: u32, wait: Duration) -> Result<Vec<Value>, SendFailure> {
+        // The one place the token becomes part of a string, for this endpoint.
+        // A local, never logged, dead at the end of the function — exactly as
+        // in `send_message`.
+        let url = format!(
+            "{}/bot{}/getUpdates",
+            self.egress.base(),
+            self.credentials.token.expose()
+        );
+        let seconds = wait.min(LONG_POLL_MAX).as_secs();
+        let body = Value::obj([
+            ("offset", Value::Num(offset)),
+            ("limit", Value::Num(i64::from(limit))),
+            (
+                "timeout",
+                Value::Num(i64::try_from(seconds).unwrap_or(i64::MAX)),
+            ),
+            // ONLY `message`. Every other update kind — edits, callbacks,
+            // channel posts — is something this bridge has no route for, and
+            // asking for them would mean receiving updates whose only possible
+            // handling is to advance the offset past them.
+            ("allowed_updates", Value::Arr(vec![Value::str("message")])),
+        ])
+        .render();
+
+        let sent = self
+            .agent
+            .post(&url)
+            .content_type("application/json")
+            .send(body.as_str());
+        let mut response = sent.map_err(classify)?;
+        let status = response.status().as_u16();
+        let bytes = read_bounded(response.body_mut().as_reader())?;
+        if !(200..300).contains(&status) {
+            return Err(SendFailure::Status(StatusClass::of(status), status));
+        }
+        match envelope(&bytes)?.get("result") {
+            Some(Value::Arr(updates)) => Ok(updates.clone()),
+            // A 200 with `ok:true` and no array to go with it is not a quiet
+            // empty poll — it is a response this reader does not understand,
+            // and treating it as "no updates" would advance nothing while
+            // reporting health.
+            _ => Err(SendFailure::Malformed),
+        }
+    }
 }
 
 /// Map a `ureq::Error` to a redacted class. The error is consumed, never
@@ -728,10 +1020,20 @@ fn read_bounded(reader: impl Read) -> Result<Vec<u8>, SendFailure> {
 /// that is not JSON at all, a body nested past `MAX_DEPTH` — is a failure with
 /// the cursor left where it was.
 fn accepted(bytes: &[u8]) -> Result<(), SendFailure> {
+    envelope(bytes).map(|_| ())
+}
+
+/// [`accepted`], keeping the parsed body for a caller that needs its `result`.
+///
+/// The acceptance test is the SAME one for both endpoints, and deliberately so:
+/// Telegram signals a refusal with 200 + `ok:false` on `getUpdates` exactly as
+/// it does on `sendMessage`, and an inbound loop that read only the status code
+/// would treat a refusal as an empty poll and keep advancing.
+fn envelope(bytes: &[u8]) -> Result<Value, SendFailure> {
     let text = std::str::from_utf8(bytes).map_err(|_| SendFailure::Malformed)?;
     let value = json::parse(text).map_err(|_| SendFailure::Malformed)?;
     match value.get("ok") {
-        Some(Value::Bool(true)) => Ok(()),
+        Some(Value::Bool(true)) => Ok(value),
         // `Some(Bool(false))`, `Some(anything else)` and `None` are one answer:
         // not accepted. Distinguishing them would only invite a caller to treat
         // one of them as success.
@@ -860,16 +1162,15 @@ pub fn load_cursor(path: &Path) -> Result<Option<Cursor>, CursorError> {
         .ok_or(CursorError::Unrecognised)
 }
 
-/// Write the cursor DURABLY: temp file, `fsync` the temp, rename, `fsync` the
-/// directory.
+/// Write the cursor DURABLY, through the bridge's one durable write.
 ///
-/// The directory sync is the half that is easy to skip and expensive to omit.
-/// A rename is atomic with respect to a reader, which is a different property
-/// from being durable with respect to power loss: the new contents can be on
-/// the platter while the directory entry still points at the old inode. That
-/// rollback would put the cursor BEHIND deliveries Telegram has already
-/// accepted, and the honest one-event crash window of this module's contract
-/// would quietly become a several-event one.
+/// The mechanics — `O_EXCL` temp, `fsync` the temp, rename, `fsync` the
+/// directory — and the reason each of them is load-bearing live at
+/// [`durable_write`], which the inbound offset checkpoint shares. What is
+/// specific to the CURSOR is the consequence of getting it wrong: a rollback
+/// here would put the cursor BEHIND deliveries Telegram has already accepted,
+/// and this module's honest one-event crash window would quietly become a
+/// several-event one.
 ///
 /// # Errors
 ///
@@ -877,12 +1178,50 @@ pub fn load_cursor(path: &Path) -> Result<Option<Cursor>, CursorError> {
 /// checkpoint as an un-checkpointed delivery — the event was sent, and the
 /// duplicate on restart is the designed cost.
 pub fn store_cursor(path: &Path, cursor: &Cursor) -> Result<(), CursorError> {
+    durable_write(path, &cursor.render()).map_err(CursorError::NotWritten)
+}
+
+/// The stem a checkpoint's temp file falls back to when the target path has no
+/// usable file name of its own.
+const CHECKPOINT_STEM: &str = "ae-telegram-checkpoint";
+
+/// Write `contents` to `path` DURABLY: temp file, `fsync` the temp, rename,
+/// `fsync` the directory.
+///
+/// **THE ONE DURABLE WRITE IN THIS BRIDGE**, shared by the outbound cursor and
+/// the inbound update offset, because those two checkpoints make the same
+/// promise and a second spelling of it is a second thing to get wrong. Both
+/// carry "how far have we definitely got", and both are read back after a crash
+/// by a process whose correctness depends on the answer not having rolled back.
+///
+/// Every property below is load-bearing:
+///
+/// * `create_new(true)` is `O_EXCL`, which NEVER follows an existing node. The
+///   temp name is predictable (it has to be, to be cleanable), so without this
+///   a planted symlink at that path would be followed and whatever it points at
+///   TRUNCATED — by a process with whatever access the bridge has.
+/// * `mode(0o600)` sets the permissions at CREATION rather than after, so the
+///   file is never briefly world-readable, and it is those bits the rename
+///   carries onto the checkpoint.
+/// * `sync_all` on the temp, THEN the rename, THEN `sync_all` on the directory.
+///   The directory sync is the half that is easy to skip and expensive to omit:
+///   a rename is atomic with respect to a reader, which is a different property
+///   from being durable with respect to power loss. The new contents can be on
+///   the platter while the directory entry still points at the old inode, and
+///   that rollback would put a checkpoint BEHIND work already done — turning
+///   this bridge's honest one-item crash window into an unbounded one.
+///
+/// # Errors
+///
+/// The underlying [`io::Error`]. A caller must treat a failed write as an
+/// UN-checkpointed step: the work was done, and the duplicate on restart is the
+/// designed cost.
+pub(crate) fn durable_write(path: &Path, contents: &str) -> io::Result<()> {
     let directory = path.parent().unwrap_or(Path::new("."));
     let temp = directory.join(format!(
         "{}.tmp.{}",
-        path.file_name().map_or("telegram-outbound.cursor", |n| n
-            .to_str()
-            .unwrap_or("telegram-outbound.cursor")),
+        path.file_name()
+            .map_or(CHECKPOINT_STEM, |n| n.to_str().unwrap_or(CHECKPOINT_STEM)),
         std::process::id()
     ));
     let staged = (|| {
@@ -907,20 +1246,19 @@ pub fn store_cursor(path: &Path, cursor: &Cursor) -> Result<(), CursorError> {
             }
             Err(why) => return Err(why),
         };
-        file.write_all(cursor.render().as_bytes())?;
+        file.write_all(contents.as_bytes())?;
         file.sync_all()?;
         drop(file);
         fs::rename(&temp, path)
     })();
     if let Err(why) = staged {
         let _ = fs::remove_file(&temp);
-        return Err(CursorError::NotWritten(why));
+        return Err(why);
     }
     fs::OpenOptions::new()
         .read(true)
         .open(directory)
         .and_then(|handle| handle.sync_all())
-        .map_err(CursorError::NotWritten)
 }
 
 // ─── the pump ────────────────────────────────────────────────────────────
@@ -1351,7 +1689,7 @@ mod tests {
     use super::{
         Api, Credentials, CredentialsError, Cursor, MAX_RESPONSE_BYTES, Outbound, PassFailure,
         SendFailure, StatusClass, Token, backoff_delay, load_credentials, load_cursor,
-        store_cursor, truncate_chars,
+        load_settings, parse_id_list, store_cursor, truncate_chars,
     };
     use std::collections::VecDeque;
     use std::io::{BufRead as _, BufReader, Read as _, Write as _};
@@ -1365,32 +1703,37 @@ mod tests {
     /// A token that is obviously fake and obviously searchable. Every
     /// "the token never appears in X" assertion looks for THIS string, so it
     /// must not be a substring of anything a test legitimately prints.
-    const FAKE_TOKEN: &str = "123456789:AAqRSTUVwxyzTOKENnotarealoneKKKK7";
-    const CHAT: &str = "-1001234567890";
+    pub(super) const FAKE_TOKEN: &str = "123456789:AAqRSTUVwxyzTOKENnotarealoneKKKK7";
+    pub(super) const CHAT: &str = "-1001234567890";
 
     // ─── the fake Telegram ───────────────────────────────────────────────
 
     /// One request the fake server saw.
     #[derive(Debug, Clone)]
-    struct Seen {
-        method: String,
-        path: String,
-        content_type: Option<String>,
-        body: String,
+    pub(super) struct Seen {
+        pub(super) method: String,
+        pub(super) path: String,
+        pub(super) content_type: Option<String>,
+        pub(super) body: String,
         /// The durable cursor AT THE MOMENT this request arrived, when the fake
         /// was told to watch one. This is how a test can see *when* a checkpoint
         /// is written rather than only where it ends up: the client writes the
         /// cursor for event N before the request for event N+1 leaves, so the
         /// value observed here is evidence about ordering, not about the final
         /// state.
-        cursor_on_arrival: Option<Cursor>,
+        pub(super) cursor_on_arrival: Option<Cursor>,
     }
 
     /// What the fake server answers with.
     #[derive(Debug, Clone)]
-    enum Reply {
+    pub(super) enum Reply {
         /// A normal framed response.
-        Body { status: u16, body: String },
+        Body {
+            /// The status line's code.
+            status: u16,
+            /// The framed body.
+            body: String,
+        },
         /// A chunked response of `chunks` × `chunk`, with no `Content-Length` at
         /// all — the shape a cap that trusts a declared length cannot bound.
         /// `written` counts the chunks that actually got out.
@@ -1412,10 +1755,10 @@ mod tests {
     }
 
     impl Reply {
-        fn ok() -> Self {
+        pub(super) fn ok() -> Self {
             Self::json(200, r#"{"ok":true,"result":{"message_id":42}}"#)
         }
-        fn json(status: u16, body: &str) -> Self {
+        pub(super) fn json(status: u16, body: &str) -> Self {
             Self::Body {
                 status,
                 body: body.to_owned(),
@@ -1423,7 +1766,7 @@ mod tests {
         }
     }
 
-    struct Fake {
+    pub(super) struct Fake {
         base: String,
         seen: Arc<Mutex<Vec<Seen>>>,
         replies: Arc<Mutex<VecDeque<Reply>>>,
@@ -1433,7 +1776,7 @@ mod tests {
     impl Fake {
         /// Start a server that answers with `replies` in order, repeating the
         /// last one once the script runs out.
-        fn start(replies: Vec<Reply>) -> Self {
+        pub(super) fn start(replies: Vec<Reply>) -> Self {
             Self::watching(replies, None)
         }
 
@@ -1483,15 +1826,15 @@ mod tests {
             fake
         }
 
-        fn one(reply: Reply) -> Self {
+        pub(super) fn one(reply: Reply) -> Self {
             Self::start(vec![reply])
         }
 
-        fn requests(&self) -> Vec<Seen> {
+        pub(super) fn requests(&self) -> Vec<Seen> {
             self.seen.lock().unwrap().clone()
         }
 
-        fn api(&self) -> Api {
+        pub(super) fn api(&self) -> Api {
             Api::loopback(
                 self.base.clone(),
                 Credentials::new(Token::new(FAKE_TOKEN), CHAT),
@@ -1499,7 +1842,7 @@ mod tests {
         }
 
         /// Replace the scripted replies mid-test.
-        fn script(&self, replies: Vec<Reply>) {
+        pub(super) fn script(&self, replies: Vec<Reply>) {
             *self.replies.lock().unwrap() = VecDeque::from(replies);
         }
     }
@@ -1681,6 +2024,16 @@ mod tests {
     fn chat_event(actor: &str, text: &str) -> String {
         format!(
             r#"{{"ts":"2026-08-29T10:00:00Z","actor":"{actor}","action":"chat","summary":"{text}"}}"#
+        )
+    }
+
+    /// A watchdog `nudge` — the action BOTH the stale nudge and the
+    /// orchestrator's sweep prompt carry, on ONE line, because a record that
+    /// spans two lines is skipped for being unframed rather than for being a
+    /// nudge, and a fixture that passes for that reason proves nothing.
+    fn nudge_event(ts: &str, summary: &str) -> String {
+        format!(
+            r#"{{"ts":"{ts}","actor":"watchdog","action":"nudge","target":"claude:lead","summary":"{summary}"}}"#
         )
     }
 
@@ -2031,6 +2384,34 @@ mod tests {
     }
 
     #[test]
+    fn a_sweep_nudge_is_not_forwarded_by_default() {
+        // SC-939c. The orchestrator's sweep prompt and the stale nudge are both
+        // the `nudge` action (only their summaries differ), and neither is in
+        // the default Telegram include. Here that row holds BY CONSTRUCTION —
+        // this bridge forwards the `chat` action and nothing else — so what
+        // this test pins is that the construction does not quietly widen.
+        let temp = Temp::new("sweep");
+        append(
+            temp.path(),
+            &[
+                nudge_event("2026-08-29T10:00:00Z", "sweep cadence"),
+                nudge_event("2026-08-29T10:00:01Z", "stale 900s"),
+                chat_event("claude:lead", "this one is a say"),
+            ],
+        );
+        let fake = Fake::start(vec![Reply::ok()]);
+        let mut outbound = Outbound::new(temp.path(), "aerewrite");
+        let pass = outbound.pump(&fake.api());
+
+        assert_eq!(pass.delivered, 1);
+        assert_eq!(pass.skipped, 2, "a nudge reached the chat");
+        assert_eq!(
+            texts(&fake),
+            vec!["[aerewrite] claude:lead\nthis one is a say".to_owned()]
+        );
+    }
+
+    #[test]
     fn a_normal_restart_forwards_nothing_already_sent() {
         let temp = Temp::new("restart");
         append(
@@ -2172,7 +2553,7 @@ mod tests {
     /// A read-only directory is how a failing checkpoint is arranged without a
     /// product seam: the log still opens and reads, the cursor still loads, and
     /// only the temp-file creation inside `store_cursor` is refused.
-    fn with_unwritable_dir<T>(dir: &Path, body: impl FnOnce() -> T) -> T {
+    pub(super) fn with_unwritable_dir<T>(dir: &Path, body: impl FnOnce() -> T) -> T {
         let original = std::fs::metadata(dir).unwrap().permissions();
         std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o555)).unwrap();
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body));
@@ -2591,6 +2972,103 @@ mod tests {
             "the trailing newline survived"
         );
         assert_eq!(credentials.chat_id, CHAT, "the comment was not stripped");
+    }
+
+    #[test]
+    fn the_allow_list_splits_on_every_separator_and_repairs_nothing() {
+        // The allow-list IS the trust predicate's input (SC-944a): every id that
+        // survives this decides who may drive this machine's sessions from a
+        // chat. So the only normalisation here is whitespace — a parser that
+        // quietly dropped a malformed id would narrow or widen admission in a
+        // way the operator never wrote and cannot see.
+        assert_eq!(parse_id_list("42"), vec!["42".to_owned()]);
+        assert_eq!(
+            parse_id_list(" 42 ,7\t9 "),
+            vec!["42".to_owned(), "7".to_owned(), "9".to_owned()],
+            "comma, space and tab all separate, and the parts are trimmed"
+        );
+        assert!(
+            parse_id_list("").is_empty(),
+            "no ids is not one empty id — SC-943 reads an empty list as inbound DISABLED, \
+             and a phantom entry would switch it on with an allow-list matching nobody"
+        );
+        assert!(
+            parse_id_list("  ,\t, ,").is_empty(),
+            "separators alone admit nobody"
+        );
+        assert_eq!(
+            parse_id_list("42,not-an-id"),
+            vec!["42".to_owned(), "not-an-id".to_owned()],
+            "a malformed id is KEPT, so it fails to match loudly instead of being repaired \
+             away — the operator sees their typo refuse traffic, not silently pass it"
+        );
+    }
+
+    #[test]
+    fn the_settings_carry_the_chat_id_and_the_allow_list_the_daemon_admits_on() {
+        // The two values the inbound policy is built from, read back through
+        // the accessors the daemon actually calls. Without this the wiring from
+        // config to `Policy` is asserted nowhere: every routing test builds its
+        // policy from a literal.
+        let temp = Temp::new("settings");
+        write_token(&temp.path().join("tg.token"), FAKE_TOKEN);
+        let config = write_config(
+            temp.path(),
+            &format!(
+                "[telegram]\ntoken_file = ~/tg.token\nchat_id = {CHAT}\n\
+                 allowed_user_ids = 42, 7\n"
+            ),
+        );
+        let settings = load_settings(&config, temp.path()).unwrap();
+        assert_eq!(settings.credentials.chat_id(), CHAT);
+        assert_eq!(
+            settings.allowed_user_ids,
+            vec!["42".to_owned(), "7".to_owned()]
+        );
+    }
+
+    #[test]
+    fn a_token_file_is_trimmed_of_every_line_ending_a_text_editor_can_leave() {
+        // A token with a stray `\r` or trailing space is a 404 from Telegram
+        // and an opaque one: the failure type CANNOT carry the token, so the
+        // operator gets "not found" with nothing to look at. CRLF is the shape
+        // that actually happens — a token file written on Windows, or pasted
+        // through one.
+        let temp = Temp::new("tokentrim");
+        write_token(
+            &temp.path().join("tg.token"),
+            &format!(" \t{FAKE_TOKEN}\r\n"),
+        );
+        let config = write_config(
+            temp.path(),
+            &format!("[telegram]\ntoken_file = ~/tg.token\nchat_id = {CHAT}\n"),
+        );
+        let credentials = load_credentials(&config, temp.path()).unwrap();
+        assert_eq!(credentials.token.expose(), FAKE_TOKEN);
+    }
+
+    #[test]
+    fn a_commented_out_setting_is_never_honoured() {
+        // Comments are skipped BEFORE the key grammar sees them, and the key
+        // grammar would refuse them anyway — defence in depth over one
+        // property: a setting an operator commented out must not be live. It is
+        // stated here as the property rather than as the mechanism, so either
+        // layer may change without this test having to.
+        let temp = Temp::new("commented");
+        write_token(&temp.path().join("tg.token"), FAKE_TOKEN);
+        let config = write_config(
+            temp.path(),
+            &format!(
+                "[telegram]\n# chat_id = 999\n; chat_id = 998\n\n   \n\
+                 token_file = ~/tg.token\nchat_id = {CHAT}\n# allowed_user_ids = 666\n"
+            ),
+        );
+        let settings = load_settings(&config, temp.path()).unwrap();
+        assert_eq!(settings.credentials.chat_id(), CHAT);
+        assert!(
+            settings.allowed_user_ids.is_empty(),
+            "a commented-out allow-list must leave inbound DISABLED, not admit 666"
+        );
     }
 
     #[test]

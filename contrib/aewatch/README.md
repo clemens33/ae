@@ -1,5 +1,13 @@
 # aewatch (optional contrib sidecar)
 
+> **RETIRED (P4.3, 2026-08-29):** ae no longer launches this sidecar.
+> `AE_WATCHDOG_IMPL=uv` no longer selects it, and the Telegram bridge it
+> prototyped is now the Rust core (the ae core binary). Kept as archival source
+> and the bash-vs-Python parity oracle; not wired into ae.
+>
+> Everything below is the historical description of what this sidecar was built
+> to be. Read it as design history, not as a description of a live component.
+
 `aewatch` is an **optional** uv / [PEP 723](https://peps.python.org/pep-0723/)
 single-file Python sidecar that will take over ae's long-lived daemon work — the
 per-session watchdog sweep and the Telegram bridge — the part where bash hurts

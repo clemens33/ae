@@ -241,35 +241,66 @@ fn the_destination_is_a_constant_and_the_test_seam_is_compiled_out() {
 }
 
 #[test]
-fn the_cursor_write_syncs_both_the_file_and_its_directory() {
+fn the_one_durable_write_syncs_both_the_file_and_its_directory() {
     // An fsync is not observable from inside the process that issued it, so
     // this is a source-level guard and claims nothing more. What it protects is
     // the difference between atomic and durable: a rename is atomic for a
-    // reader while the directory entry is still unwritten, and a cursor that
-    // rolls back on power loss turns this module's honest one-event crash
-    // window into an unbounded one.
+    // reader while the directory entry is still unwritten, and a checkpoint that
+    // rolls back on power loss turns this bridge's honest one-item crash window
+    // into an unbounded one.
+    //
+    // It moved from `store_cursor` to `durable_write` when the INBOUND offset
+    // acquired the same need. That is a strengthening, not a relocation: one
+    // implementation now carries the property for both checkpoints, and the
+    // two assertions below are what stop either of them from growing a second
+    // spelling of it.
     let telegram = product("telegram.rs");
-    let store = telegram
-        .split_once("pub fn store_cursor(")
+    let write = telegram
+        .split_once("pub(crate) fn durable_write(")
         .and_then(|(_, rest)| rest.split_once("\n}\n"))
         .map(|(body, _)| body.to_owned())
-        .expect("store_cursor must exist");
+        .expect("durable_write must exist");
     assert_eq!(
-        store.matches("sync_all()").count(),
+        write.matches("sync_all()").count(),
         2,
-        "store_cursor no longer syncs BOTH the temp file and the parent directory:\n{store}"
+        "the durable write no longer syncs BOTH the temp file and the parent directory:\n{write}"
     );
     assert!(
-        store.contains("fs::rename("),
-        "store_cursor no longer renames into place"
+        write.contains("fs::rename("),
+        "the durable write no longer renames into place"
     );
-    let sync_at = store.find("sync_all()").expect("a sync");
-    let rename_at = store.find("fs::rename(").expect("the rename");
+    let sync_at = write.find("sync_all()").expect("a sync");
+    let rename_at = write.find("fs::rename(").expect("the rename");
     assert!(
         sync_at < rename_at,
         "the temp file is renamed before it is synced — the rename can publish an \
          empty file"
     );
+
+    // BOTH checkpoints must go through it. A second durable write would be a
+    // second thing to get right, and the one that got it wrong would be the one
+    // nobody re-read.
+    let store_cursor = telegram
+        .split_once("pub fn store_cursor(")
+        .and_then(|(_, rest)| rest.split_once("\n}"))
+        .map(|(body, _)| body.to_owned())
+        .expect("store_cursor must exist");
+    assert!(
+        store_cursor.contains("durable_write(path,"),
+        "the outbound cursor no longer checkpoints through the one durable write"
+    );
+    let inbound = product("telegram/inbound.rs");
+    assert!(
+        inbound.contains("durable_write(path,"),
+        "the inbound offset no longer checkpoints through the one durable write"
+    );
+    for module in ["telegram.rs", "telegram/inbound.rs", "telegram/bridge.rs"] {
+        let source = product(module);
+        assert!(
+            !source.contains("fs::write("),
+            "{module} writes a file without the durable path"
+        );
+    }
 }
 
 #[test]
@@ -455,27 +486,177 @@ fn every_read_goes_through_one_open_that_classifies_first() {
 }
 
 #[test]
-fn the_cursor_temp_cannot_follow_a_planted_symlink() {
+fn the_durable_write_temp_cannot_follow_a_planted_symlink() {
     // FIX 5. `create_new(true)` is `O_EXCL`; `create(true).truncate(true)` is
-    // the shape that follows a symlink and truncates its target.
+    // the shape that follows a symlink and truncates its target. The temp name
+    // is predictable by necessity, so this is the only thing standing between a
+    // planted link and whatever it points at.
     let telegram = product("telegram.rs");
-    let store = telegram
-        .split_once("pub fn store_cursor(")
+    let write = telegram
+        .split_once("pub(crate) fn durable_write(")
         .and_then(|(_, rest)| rest.split_once("\n}\n"))
         .map(|(body, _)| body.to_owned())
-        .expect("store_cursor must exist");
+        .expect("durable_write must exist");
     assert!(
-        store.contains("create_new(true)"),
+        write.contains("create_new(true)"),
         "the temp is not created with O_EXCL"
     );
     assert!(
-        !store.contains("truncate(true)"),
+        !write.contains("truncate(true)"),
         "the temp still truncates whatever is at its path"
     );
     assert!(
-        store.contains("mode(0o600)"),
+        write.contains("mode(0o600)"),
         "the temp is not created owner-only"
     );
     // Durability is unchanged — FIX 5 must not have cost the fsyncs.
-    assert_eq!(store.matches("sync_all()").count(), 2);
+    assert_eq!(write.matches("sync_all()").count(), 2);
+}
+
+#[test]
+fn the_daemon_drops_the_word_channel_before_it_joins_the_poller() {
+    // A SHUTDOWN DEADLOCK, guarded structurally because it cannot be reached
+    // behaviourally: `run` builds the production client, so no test in this
+    // suite executes the ordering below.
+    //
+    // The inbound thread may be blocked awaiting confirmation of a give-up
+    // notice, and that wait is UNBOUNDED by design (a bounded one abandons the
+    // word in the channel and lets the next retry queue another, which is how
+    // one give-up became many notices). It ends when the answer channel
+    // disconnects — and the answer's sender lives inside the queued word, which
+    // the word RECEIVER owns. So while `inbox_words` is alive the word is
+    // alive, nothing wakes the thread, and `join` never returns.
+    //
+    // Dropping before the join ends that wait with a rejection, which is also
+    // the correct answer: a bridge on its way out must not advance its offset
+    // past a notice it never sent. This asserts the ORDER, which is the whole
+    // property — the drop existing further down the scope would not do.
+    let bridge = product("telegram/bridge.rs");
+    let dropped = bridge
+        .find("drop(inbox_words)")
+        .expect("run() must drop the word channel explicitly, not let it fall out of scope");
+    let joined = bridge
+        .find("poller.join()")
+        .expect("run() must join the inbound thread");
+    assert!(
+        dropped < joined,
+        "the word channel is dropped AFTER the poller is joined; an inbound thread blocked \
+         on a give-up confirmation can never be woken, and the daemon hangs on shutdown"
+    );
+}
+
+// ─── the give-up's hard/transient split, against a real tmux server ──────
+//
+// The only branch of the inbound bridge's refusal classifier that a unit test
+// cannot reach: "hard" requires an enumeration that RAN and ANSWERED. The unit
+// side proves the fail-safe direction (every failure is transient); this proves
+// the arm that makes that direction mean something — without it, `Refusal::Hard`
+// is produced by nothing and the short bound is dead policy.
+
+/// A short scratch dir — `/tmp` directly, for `sun_path`'s 104 bytes on macOS.
+fn tg_scratch(tag: &str) -> std::path::PathBuf {
+    let dir = std::path::PathBuf::from(format!("/tmp/ae-tg-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(std::fs::create_dir_all(&dir).is_ok(), "a short scratch dir");
+    dir
+}
+
+/// Plant a session dir whose meta points at `socket`, and NO `send` helper — so
+/// delivery through it always refuses and the classifier is what is measured.
+fn plant_session(root: &std::path::Path, socket: &std::path::Path) -> std::path::PathBuf {
+    let dir = root.join("sessions").join("work");
+    let planted = std::fs::create_dir_all(&dir).and_then(|()| {
+        std::fs::write(
+            dir.join("meta"),
+            format!(
+                "mode=local\nagent.main=cl:lead\ntmux_server_kind=socket\ntmux_server={}\n",
+                socket.display()
+            ),
+        )
+    });
+    assert!(planted.is_ok(), "a planted session");
+    dir
+}
+
+#[test]
+fn a_pane_a_real_server_does_not_list_is_the_only_thing_that_counts_as_hard() {
+    use ae::telegram::bridge::Helper;
+    use ae::telegram::inbound::{Deliver as _, Delivered, Refusal};
+    use ae::telegram::routing::Verb;
+    use ae::telegram::routing::World as _;
+
+    let scratch = tg_scratch("hard");
+    assert!(
+        super::phase2::tmux_present(&scratch),
+        "tmux is not runnable here, so the hard/transient split cannot be proven; \
+         install tmux or run this suite where one exists"
+    );
+    let socket = scratch.join("s.sock");
+    let dir = plant_session(&scratch, &socket);
+
+    // ARM 1 — no server at all. The enumeration cannot run, and a probe that
+    // could not run is not evidence of death.
+    let refusal = Helper.deliver(Verb::Send, "work", &dir, "cl:lead", "hello", "42");
+    assert!(
+        matches!(refusal, Delivered::No(Refusal::Transient)),
+        "an unreachable server must not shorten the bound: {refusal:?}"
+    );
+
+    // ARM 2 — a real server, really answering, with a pane that is NOT the
+    // target. This is the one shape that earns the short bound.
+    let server = ae::inventory::ServerId::Selected(ae::meta::Selector::Socket(socket.clone()));
+    let mut create = ae::tmux::server_args(&server);
+    create.extend(["new-session", "-d", "-s", "work"].map(ToOwned::to_owned));
+    let (created, _) = super::phase2::run_tmux(&create, &scratch);
+    assert!(created, "the fixture server must start");
+
+    let refusal = Helper.deliver(Verb::Send, "work", &dir, "cl:lead", "hello", "42");
+    assert!(
+        matches!(refusal, Delivered::No(Refusal::Hard)),
+        "a server that answered and does not hold the target is the hard case: {refusal:?}"
+    );
+
+    // ARM 3 — the same server, now holding a pane stamped as the target. A pane
+    // that is THERE is never hard, however the delivery failed.
+    let mut stamp = ae::tmux::server_args(&server);
+    stamp.extend(["set-option", "-p", "-t", "work", "@ae_agent", "cl:lead"].map(ToOwned::to_owned));
+    let (stamped, _) = super::phase2::run_tmux(&stamp, &scratch);
+    assert!(stamped, "stamping the pane must succeed");
+
+    let refusal = Helper.deliver(Verb::Send, "work", &dir, "cl:lead", "hello", "42");
+    assert!(
+        matches!(refusal, Delivered::No(Refusal::Transient)),
+        "a pane that is present cannot be dead, whatever the send helper did: {refusal:?}"
+    );
+
+    // ARM 4 — the same real server, seen through the World the router resolves
+    // against. `Machine::running` is what turns a chat's "work" into a session
+    // dir, and it is gated on the record's OWN server answering (SC-947); a
+    // liveness check that answered from an ambient server would be an answer
+    // about a different machine's-worth of state. Nothing but a real server can
+    // tell that apart from an empty world.
+    let machine = ae::telegram::bridge::Machine::under(ae::inventory::Roots::under(&scratch));
+    let running = machine.running();
+    assert_eq!(
+        running
+            .iter()
+            .map(|session| session.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["work"],
+        "the planted session is live on its own server and must be routable"
+    );
+    assert_eq!(running[0].dir, dir);
+    assert_eq!(running[0].main.as_deref(), Some("cl:lead"));
+
+    let mut kill = ae::tmux::server_args(&server);
+    kill.push("kill-server".to_owned());
+    let _ = super::phase2::run_tmux(&kill, &scratch);
+
+    // And with the server gone, the same record is NOT running: the scan reads
+    // liveness, not the presence of a directory.
+    assert!(
+        machine.running().is_empty(),
+        "a session whose server no longer answers must drop out of the world"
+    );
+    let _ = std::fs::remove_dir_all(&scratch);
 }

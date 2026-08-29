@@ -3764,18 +3764,12 @@ assert_eq "helpers: no PATH-resolved shebang emitted inside the marker region" "
     "$(grep -vE '^[[:space:]]*#[^!]' <<<"$_sb_region" | grep -v 'local _ae_sb=' |
         grep -c '/usr/bin/env bash' || true)"
 
-# Artifacts emitted OUTSIDE the marker region are invisible to the check above.
-# The telegram daemon has its own writer and is chmod +x, so running it directly
-# under a macOS login PATH lands on /bin/bash 3.2, which cannot parse its bash-4
-# bodies. The comment above used to claim this was "checked separately" — it was
-# not, and the daemon kept `#!/usr/bin/env bash` through the whole sweep.
-_tg_daemon_body="$(awk "/<<'TELEGRAM_DAEMON_EOF'/{f=1;next} /^TELEGRAM_DAEMON_EOF\$/{f=0} f" <<<"$AE_SOURCE")"
-assert_eq "telegram daemon: no PATH-resolved shebang inside the emitted body" "0" \
-    "$(grep -c '/usr/bin/env bash' <<<"$_tg_daemon_body" || true)"
-assert_eq "telegram daemon: emission pins the interpreter from \$BASH" "1" \
-    "$(awk "/<<'TELEGRAM_DAEMON_EOF'/{print prev} {prev=\$0}" <<<"$AE_SOURCE" |
-        grep -c 'BASH:-/usr/bin/env bash' || true)"
-
+# The telegram daemon used to be an emitted bash artifact with its own writer and
+# its own interpreter-pinning problem. The Rust core is that daemon now: it is
+# not generated, not chmod'd, and not parsed by a shell — so the artifact whose
+# shebang these two checks policed no longer exists.
+assert_eq "telegram daemon: no emitted bash daemon survives in ae" "0" \
+    "$(grep -c 'TELEGRAM_DAEMON_EOF' <<<"$AE_SOURCE" || true)"
 
 assert_eq "watchdog: helper script exists in generated source" \
     "1" \
@@ -4457,15 +4451,13 @@ assert_eq "clean-dead: verify-gone, the sweep AND the daemon probe share the ONE
     "$(printf '%s' "$AE_SOURCE" | command grep -c '_tmux_err_is_clean_dead "$_out"\|_tmux_err_is_clean_dead "$out"' || true)"
 assert_eq "clean-dead: no rival classifier was introduced alongside it" "0" \
     "$(printf '%s' "$AE_SOURCE" | command grep -c '_tmux_err_is_no_server' || true)"
-# Round-3 BLOCKER: the probe must have exactly ONE definition. It used to have
-# one — inside the telegram daemon's heredoc — while ae's own top-level callers
-# invoked it as an undefined command. A second copy reintroduces the drift; a
-# zero count means it moved somewhere the callers cannot see.
+# Round-3 BLOCKER: the probe must have exactly ONE definition. It used to have a
+# second — inside the telegram daemon's heredoc — while ae's own top-level
+# callers invoked it as an undefined command. The heredoc is gone with the bash
+# bridge, and the one definition is the whole story now: a second copy
+# reintroduces the drift, a zero count means it moved out of the callers' sight.
 assert_eq "dsr: exactly one definition of the probe exists in ae" "1" \
     "$(printf '%s' "$AE_SOURCE" | command grep -c '^daemon_session_running() {' || true)"
-assert_eq "dsr: the daemon artifact receives it by declare -f, not by a copy" "1" \
-    "$([[ "$AE_SOURCE" == *'declare -f _tmux_err_is_clean_dead daemon_session_running'* \
-        && "$AE_SOURCE" == *"printf '%s\\n' 'main \"\$@\"'"* ]] && echo 1 || echo 0)"
 
 # ── CHOKEPOINT: one door for publishing executable artifacts ─────────
 # This replaces an INVENTORY of writers, which was fail-open in three ways at
@@ -4528,11 +4520,12 @@ done <<<"$_pub_raw"
 assert_eq "chokepoint: the only raw executable-mode chmod left in ae is its own" \
     'if ! chmod "$mode" "$tmp"; then' "${_pub_left%$'\n'}"
 unset _pub_raw _pub_left _pl _pn _pnum _ptext _pnext
-# Three callers now: the launch script, the telegram daemon, and _publish_data_artifact
-# — the DATA sibling (#53), which delegates here rather than growing a second temp+mode
-# +rename of its own. A wrapper that enters the chokepoint is the discipline working,
-# not a bypass; what the guard forbids is a second definition or a hand-rolled publish.
-assert_eq "chokepoint: one definition, and every artifact writer enters it" "1|3" \
+# Two callers now: the launch script and _publish_data_artifact — the DATA sibling
+# (#53), which delegates here rather than growing a second temp+mode+rename of its
+# own. (The third was the telegram daemon, retired with the bash bridge.) A wrapper
+# that enters the chokepoint is the discipline working, not a bypass; what the guard
+# forbids is a second definition or a hand-rolled publish.
+assert_eq "chokepoint: one definition, and every artifact writer enters it" "1|2" \
     "$(_d="$(printf '%s' "$AE_SOURCE" | command grep -c '^_publish_executable_artifact() {' || true)"
        _u="$(printf '%s' "$AE_SOURCE" | command grep -c '_publish_executable_artifact "' || true)"
        printf '%s|%s' "$_d" "$_u")"
@@ -4563,9 +4556,6 @@ assert_eq "chokepoint: a generator that dies mid-write leaves the LIVE artifact 
        _body="$(tail -1 "$_pub_dir/art")"
        _left="$(find "$_pub_dir" -name 'art.tmp.*' | wc -l | tr -d '[:space:]')"
        printf '%s|%s|%s' "${_body#echo }" "$_rc" "$_left")"
-# ...and the daemon's emitter refuses rather than publishing a probe-less daemon.
-assert_eq "chokepoint: the telegram emitter refuses when an emitted name is missing" "1" \
-    "$([[ "$AE_SOURCE" == *'declare -F _tmux_err_is_clean_dead daemon_session_running >/dev/null || return 1'* ]] && echo 1 || echo 0)"
 rm -rf "$_pub_dir"
 unset _pub_dir
 unset -f _pub_good _pub_partial
@@ -4867,26 +4857,69 @@ assert_eq "caller: send_agent_cmd checks the write_launch_script assignment" "1"
     "$([[ "$AE_SOURCE" == *'if ! launch_script="$(write_launch_script "$meta_dir" "$slot" "$launch_cmd" "$resume_id" "$pre_injection_cmd")"; then'* \
         && "$AE_SOURCE" == *'agent not started'* ]] && echo 1 || echo 0)"
 
-# The bridge: a failed write or a failed new-session must reach the caller, whose
-# "autostart failed" warning was unreachable while a cosmetic `|| true` tail
-# forced rc 0.
-eval "$(awk '/^_telegram_spawn_daemon\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
-# shellcheck disable=SC2317,SC2329
-_telegram_write_daemon() { return 1; }
-assert_eq "caller: spawn returns non-zero when the daemon artifact cannot be written" "1" \
-    "$(CONFIG_FILE=/dev/null CONFIG_DIR="$(mktemp -d)" _telegram_spawn_daemon 2>/dev/null; echo $?)"
-# shellcheck disable=SC2317,SC2329
-_telegram_write_daemon() { return 0; }
+# The bridge: an unusable core or a refused new-session must reach the caller,
+# whose "autostart failed" warning was unreachable while a cosmetic `|| true`
+# tail forced rc 0. The bash daemon artifact is retired — the spawn now resolves
+# the RUST core (operator input, absolute, executable, reports a version) and
+# hands tmux DIRECT ARGV.
+eval "$(awk '/^(_telegram_spawn_daemon|_ae_core_bin_input|_ae_core_bin_version)\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+# No core configured at all (empty AE_CORE_BIN, empty config) — refuse, don't spawn.
+assert_eq "caller: spawn refuses when no ae core is configured" "1" \
+    "$(AE_CORE_BIN='' AE_LOCAL_CONFIG='' CONFIG_FILE=/dev/null CONFIG_DIR="$(mktemp -d)" _telegram_spawn_daemon 2>/dev/null; echo $?)"
+# Configured, but not an absolute executable: a relative path would resolve
+# against wherever the caller happened to run.
+assert_eq "caller: spawn refuses a core that is not an absolute executable" "1" \
+    "$(AE_CORE_BIN=target/release/ae AE_LOCAL_CONFIG='' CONFIG_FILE=/dev/null CONFIG_DIR="$(mktemp -d)" _telegram_spawn_daemon 2>/dev/null; echo $?)"
+# The fake cores live under a path holding a SPACE and a QUOTE, because argv
+# survival is the whole point of the direct-argv spawn below.
+_tg_core_dir="$(mktemp -d)/a b'c"
+mkdir -p "$_tg_core_dir"
+_tg_core="$_tg_core_dir/ae core"
+printf '%s\n' '#!/bin/sh' 'echo "ae 0.0.0"' >"$_tg_core"
+chmod 0700 "$_tg_core"
+_tg_mute="$_tg_core_dir/mute core"
+printf '%s\n' '#!/bin/sh' 'exit 1' >"$_tg_mute"
+chmod 0700 "$_tg_mute"
+# Executable, absolute — but it answers no version, so it is not a core.
+assert_eq "caller: spawn refuses a core that reports no version" "1" \
+    "$(AE_CORE_BIN="$_tg_mute" AE_LOCAL_CONFIG='' CONFIG_FILE=/dev/null CONFIG_DIR="$(mktemp -d)" _telegram_spawn_daemon 2>/dev/null; echo $?)"
 # shellcheck disable=SC2317,SC2329
 tmux() { case "$*" in new-session*) return 1 ;; *) return 0 ;; esac; }
 assert_eq "caller: spawn returns non-zero when tmux refuses the session" "1" \
-    "$(_TELEGRAM_TMUX_SESSION=ae-telegram CONFIG_FILE=/dev/null CONFIG_DIR="$(mktemp -d)" _telegram_spawn_daemon 2>/dev/null; echo $?)"
+    "$(AE_CORE_BIN="$_tg_core" AE_LOCAL_CONFIG='' _TELEGRAM_TMUX_SESSION=ae-telegram CONFIG_FILE=/dev/null CONFIG_DIR="$(mktemp -d)" _telegram_spawn_daemon 2>/dev/null; echo $?)"
 # ...and with both healthy it still reports success, cosmetic tmux calls or not.
 # shellcheck disable=SC2317,SC2329
 tmux() { case "$*" in set-option* | rename-window*) return 1 ;; *) return 0 ;; esac; }
 assert_eq "caller: cosmetic tmux failures do NOT make a started bridge look failed" "0" \
-    "$(_TELEGRAM_TMUX_SESSION=ae-telegram CONFIG_FILE=/dev/null CONFIG_DIR="$(mktemp -d)" _telegram_spawn_daemon 2>/dev/null; echo $?)"
-unset -f tmux _telegram_write_daemon _telegram_spawn_daemon
+    "$(AE_CORE_BIN="$_tg_core" AE_LOCAL_CONFIG='' _TELEGRAM_TMUX_SESSION=ae-telegram CONFIG_FILE=/dev/null CONFIG_DIR="$(mktemp -d)" _telegram_spawn_daemon 2>/dev/null; echo $?)"
+# The daemon's argv, word for word. tmux gets the command as SEPARATE ARGUMENTS
+# and execs it directly, so a path holding a space or a quote arrives intact; a
+# one-string shell-command would be re-split by /bin/sh, and `printf %q` cannot
+# fix that portably (its $'...' output is bash-only and dash mis-parses it).
+_tg_argv_out="$(mktemp)"
+_tg_home="$(mktemp -d)/x y'z"
+mkdir -p "$_tg_home"
+# shellcheck disable=SC2317,SC2329
+tmux() {
+    if [[ "$1" == new-session ]]; then
+        shift 6 # new-session -d -s <session> -c <dir>
+        printf '%s\n' "$@" >"$_tg_argv_out"
+    fi
+    return 0
+}
+AE_CORE_BIN="$_tg_core" AE_LOCAL_CONFIG='' _TELEGRAM_TMUX_SESSION=ae-telegram \
+    CONFIG_FILE="$_tg_home/config file" CONFIG_DIR="$_tg_home" HOME="$_tg_home" \
+    _telegram_spawn_daemon >/dev/null 2>&1 || true
+assert_eq "caller: the daemon's argv survives spaces and quotes (direct argv, no shell)" \
+    "$(printf '%s\n' "$_tg_core" _telegram-run "$_tg_home" --config "$_tg_home/config file" --home "$_tg_home")" \
+    "$(cat "$_tg_argv_out")"
+# The spawn line itself: the Rust subcommand, and no revived bash daemon.
+assert_eq "caller: spawn launches the core's _telegram-run, not a bash daemon" "1" \
+    "$([[ "$AE_SOURCE" == *'"$_core" _telegram-run "$CONFIG_DIR" --config "$CONFIG_FILE" --home "$HOME"'* \
+        && "$AE_SOURCE" != *'_telegram_write_daemon'* ]] && echo 1 || echo 0)"
+unset -f tmux _telegram_spawn_daemon
+rm -rf "$_tg_core_dir" "$_tg_home" "$_tg_argv_out"
+unset _tg_core_dir _tg_core _tg_mute _tg_argv_out _tg_home
 # And the autostart warning the above unblocks is really on that branch.
 assert_eq "caller: the autostart warning is gated on the spawn's status" "1" \
     "$([[ "$AE_SOURCE" == *'if ! _telegram_spawn_daemon 2>/dev/null; then'*'autostart failed (continuing without bridge)'* ]] && echo 1 || echo 0)"
@@ -7732,13 +7765,15 @@ unset _t_uuid_out
 assert_eq "external-actor: ae_tracked_send exec passes _AE_EVENT_ACTION env to send (unchanged contract)" "1" \
     "$([[ "$AE_SOURCE" == *'exec env _AE_EVENT_ACTION="$action" _AE_EVENT_REF="$req_id" _AE_EVENT_SUMMARY="$body"'*'/send" "$target_name" "$msg"'* ]] && echo 1 || echo 0)"
 
-# ── Telegram bridge (Stage 2) ────────────────────────────────────────
-# Stage 2 ships the machine-global Telegram bridge as a new `ae telegram`
-# subcommand + a generated daemon helper at ~/.ae/telegram-daemon. The
-# tests below assert (a) the orchestration surface in ae itself and (b)
-# the daemon body's structural invariants that codex's scope review made
-# load-bearing (offset persistence, token-safe curl, non-fatal autostart,
-# session discovery, filter set).
+# ── Telegram bridge (start/stop glue) ────────────────────────────────
+# The machine-global bridge reaches ae as the `ae telegram` subcommand.
+# The DAEMON is the Rust core now, so the daemon-body invariants that
+# used to be asserted here (offset persistence, token-safe curl, session
+# discovery, the filter set, the whole inbound routing/auth surface) moved
+# to the core with its own gate. What is left in bash — and therefore
+# what is tested below — is the orchestration surface: the subcommands,
+# intent persistence, the control lock, dep + token validation, the
+# liveness probe, and the spawn that hands the core its argv.
 
 # Structural: cmd_telegram + four subcommand functions exist.
 assert_eq "telegram: cmd_telegram dispatcher defined" "1" \
@@ -7748,39 +7783,6 @@ assert_eq "telegram: cmd_telegram_start defined"   "1" "$([[ "$AE_SOURCE" == *'c
 assert_eq "telegram: cmd_telegram_stop defined"    "1" "$([[ "$AE_SOURCE" == *'cmd_telegram_stop() {'* ]] && echo 1 || echo 0)"
 assert_eq "telegram: cmd_telegram_status defined"  "1" "$([[ "$AE_SOURCE" == *'cmd_telegram_status() {'* ]] && echo 1 || echo 0)"
 assert_eq "telegram: cmd_telegram_help defined"    "1" "$([[ "$AE_SOURCE" == *'cmd_telegram_help() {'* ]] && echo 1 || echo 0)"
-
-# ── telegram: orchestrator is the auto-default target for plain messages ──
-# Behavioral: tg_find_orchestrator picks the running meta_agent session, preferring
-# 'orchestrator' > 'hub' > any. Extract it + stub daemon_session_running.
-eval "$(awk '/^tg_find_orchestrator\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
-# stub: all mock sessions "running" (called indirectly by the eval'd fn → SC2317)
-# shellcheck disable=SC2317,SC2329
-daemon_session_running() { return 0; }
-_tgs_dir="$(mktemp -d)"
-# SESSIONS_DIR is read by the eval'd tg_find_orchestrator (shellcheck can't see through eval)
-# shellcheck disable=SC2034
-SESSIONS_DIR="$_tgs_dir"
-mkdir -p "$_tgs_dir/work" "$_tgs_dir/hub" "$_tgs_dir/orchestrator"
-printf 'agent.main=claude:lead:sid1\n' >"$_tgs_dir/work/meta"                       # not a meta-agent
-printf 'meta_agent=true\nagent.main=claude:meta:sid2\n' >"$_tgs_dir/hub/meta"        # legacy meta-agent
-printf 'meta_agent=true\nagent.main=claude:orchestrator:sid3\n' >"$_tgs_dir/orchestrator/meta" # canonical
-assert_eq "tg_find_orchestrator: prefers canonical 'orchestrator' session + its main agent" \
-    $'orchestrator\tclaude:orchestrator' "$(tg_find_orchestrator)"
-rm -rf "$_tgs_dir/orchestrator"
-assert_eq "tg_find_orchestrator: falls back to legacy 'hub' meta-agent when no orchestrator" \
-    $'hub\tclaude:meta' "$(tg_find_orchestrator)"
-rm -rf "$_tgs_dir/hub"
-assert_eq "tg_find_orchestrator: no meta_agent session → empty (non-meta sessions ignored)" \
-    "" "$(tg_find_orchestrator)"
-rm -rf "$_tgs_dir"
-unset -f daemon_session_running
-
-# Structural: a plain message with no /use override routes to the orchestrator.
-assert_eq "telegram: tg_route_sticky auto-defaults to the orchestrator (no /use needed)" "1" \
-    "$([[ "$AE_SOURCE" == *'No explicit /use override → default to the orchestrator.'* \
-        && "$AE_SOURCE" == *'orchestrator="$(tg_find_orchestrator)"'* ]] && echo 1 || echo 0)"
-assert_eq "telegram: /use override still wins over the orchestrator default" "1" \
-    "$([[ "$AE_SOURCE" == *'if [[ -f "$TG_TARGET_FILE" ]]; then'*'tg_dispatch "$from_id" "$sess" "send" "$agent" "$msg"'*'orchestrator="$(tg_find_orchestrator)"'* ]] && echo 1 || echo 0)"
 
 # Structural: top-level dispatcher routes 'ae telegram <sub>'.
 assert_eq "telegram: main dispatcher routes 'telegram' subcommand" "1" \
@@ -7810,111 +7812,17 @@ assert_eq "telegram: token path never contains the literal \$HOME/~ artifact" "1
 rm -rf "$_t_tok_dir" "$_t_tilde_cfg"
 unset _t_tok_dir _t_tilde_cfg _t_tilde_out
 
-# BLOCKER guard (codex): jq + curl are NOT global ae deps.
-# Tolerate a small number of references inside the telegram functions; the
-# important assertion is that there is no top-level unconditional check.
-_t_jq_occ=$(grep -c "command -v jq" "$AE_BIN" || true)
-_t_curl_occ=$(grep -c "command -v curl" "$AE_BIN" || true)
-assert_eq "telegram: jq presence checks confined to feature code" "1" \
-    "$([[ "$_t_jq_occ" -ge 1 && "$_t_jq_occ" -le 3 ]] && echo 1 || echo 0)"
-assert_eq "telegram: curl presence checks confined to feature code" "1" \
-    "$([[ "$_t_curl_occ" -ge 1 && "$_t_curl_occ" -le 3 ]] && echo 1 || echo 0)"
-unset _t_jq_occ _t_curl_occ
-
-# IMPORTANT guard (codex): offset persistence keyed by (session_id, inode, byte_offset).
-assert_eq "telegram: daemon persists state at ~/.ae/telegram/state.tsv" "1" \
-    "$([[ "$AE_SOURCE" == *'STATE_FILE="$STATE_DIR/state.tsv"'* ]] && echo 1 || echo 0)"
-assert_eq "telegram: state schema is session_id + inode + byte_offset" "1" \
-    "$([[ "$AE_SOURCE" == *'# session_id\tinode\tbyte_offset\tlast_ts'* ]] && echo 1 || echo 0)"
-assert_eq "telegram: state file written atomically via tmp+mv" "1" \
-    "$([[ "$AE_SOURCE" == *'local tmp="$STATE_FILE.tmp.$$"'* && "$AE_SOURCE" == *'mv "$tmp" "$STATE_FILE"'* ]] && echo 1 || echo 0)"
-# Codex review IMPORTANT 1: an unseen session_id OR an inode change must
-# jump to EOF (file_size), NOT to byte 0. Otherwise enabling the bridge
-# replays every historical event in every existing session.
-assert_eq "telegram: unseen session / inode change initializes at EOF (no historical replay)" "1" \
-    "$([[ "$AE_SOURCE" == *'if [[ -z "$cur_inode" || "$file_inode" != "$cur_inode" ]]; then
-        STATE_INODE[$sid]="$file_inode"
-        STATE_OFFSET[$sid]="$file_size"
-        return 0
-    fi'* ]] && echo 1 || echo 0)"
-
-# IMPORTANT guard (codex): token NEVER in argv. Daemon uses curl -K -
-# with a heredoc-piped config; URL containing the token lives only on
-# curl's stdin, not in the spawned process's argv.
-assert_eq "telegram: daemon uses curl -K - for token-safe outbound" "1" \
-    "$([[ "$AE_SOURCE" == *'curl -sS -K - 2>&1 <<EOF'* ]] && echo 1 || echo 0)"
-assert_eq "telegram: daemon URL containing token is interpolated into heredoc, not argv" "1" \
-    "$([[ "$AE_SOURCE" == *'url = https://api.telegram.org/bot${TG_TOKEN}/sendMessage'* ]] && echo 1 || echo 0)"
-assert_eq "telegram: daemon redacts token from any logged URL" "1" \
-    "$([[ "$AE_SOURCE" == *'_redact() { sed -E '"'"'s|bot[0-9]+:[A-Za-z0-9_-]+|bot<redacted>|g'"'"'; }'* ]] && echo 1 || echo 0)"
-
-# Codex review BLOCKER 2: curl's -K config is line-oriented. Passing
-# the message body inline as `data-urlencode = text=...` makes a
-# multi-line message split into two curl directives (the second becomes
-# an unknown option). Use data-urlencode's @file form so the payload is
-# data, not config syntax.
-assert_eq "telegram: send_message passes multi-line text via @file, not inline" "1" \
-    "$([[ "$AE_SOURCE" == *'data-urlencode = text@${tmp_text}'* ]] && echo 1 || echo 0)"
-assert_eq "telegram: send_message does NOT pass message body as inline curl config" "1" \
-    "$([[ "$AE_SOURCE" != *'data-urlencode = text=${text}'* ]] && echo 1 || echo 0)"
-assert_eq "telegram: send_message temp file gets 0600 perms via umask 077" "1" \
-    "$([[ "$AE_SOURCE" == *'(umask 077; printf '"'"'%s'"'"' "$text" >"$tmp_text")'* ]] && echo 1 || echo 0)"
-assert_eq "telegram: send_message cleans up temp file after curl" "1" \
-    "$([[ "$AE_SOURCE" == *'rm -f "$tmp_text"
-    if (( rc != 0 )); then'* ]] && echo 1 || echo 0)"
-
-# Codex review BLOCKER 1: process_session must STREAM via process
-# substitution, NOT capture into a variable. `chunk=$(tail -c ...)`
-# strips trailing newlines (command-sub does this unconditionally), so
-# a single newly-arrived complete record `{...}\n` looks like a partial
-# line and never advances the offset.
-assert_eq "telegram: process_session streams events via < <(tail -c ...)" "1" \
-    "$([[ "$AE_SOURCE" == *'done < <(tail -c "+$((cur_offset + 1))" "$events_file" 2>/dev/null)'* ]] && echo 1 || echo 0)"
-assert_eq "telegram: process_session does NOT capture chunk via command substitution" "1" \
-    "$([[ "$AE_SOURCE" != *'chunk=$(tail -c "+$((cur_offset + 1))"'* ]] && echo 1 || echo 0)"
-
-# Codex review BLOCKER 1 (continued): byte offset advances by the
-# actual byte count of each consumed line (printf | wc -c), NOT by
-# bash's character-counting ${#var}. UTF-8 summaries would otherwise
-# drift the file position.
-assert_eq "telegram: process_session advances offset by byte count, not char count" "1" \
-    "$([[ "$AE_SOURCE" == *"line_bytes=\$(printf '%s\\n' \"\$line\" | wc -c)"* ]] && echo 1 || echo 0)"
-assert_eq "telegram: process_session does NOT use \${#var} to advance the file offset" "1" \
-    "$([[ "$AE_SOURCE" != *'new_offset=$((cur_offset + ${#complete}))'* ]] && echo 1 || echo 0)"
-
-# Codex review IMPORTANT #1 (round 2): at-least-once delivery. The offset is
-# only advanced PAST a deliverable event after send_message succeeds; a send
-# failure breaks the read loop WITHOUT committing, so the event is retried next
-# poll instead of being silently dropped.
-assert_eq "telegram: send failure breaks before advancing the offset" "1" \
-    "$([[ "$AE_SOURCE" == *'if ! send_message "$body"; then
-                        _log "send failed for $sid — will retry from offset $new_offset"
-                        break'* ]] && echo 1 || echo 0)"
-assert_eq "telegram: offset only advances after the send decision (commit-after)" "1" \
-    "$([[ "$AE_SOURCE" == *'fi
-        new_offset=$((new_offset + line_bytes))
-    done < <(tail -c'* ]] && echo 1 || echo 0)"
-
-# Codex review IMPORTANT #2 (round 2): EXIT handler must not clobber state.tsv
-# unless this process actually holds the lock AND loaded state. (Now lives in
-# the merged daemon_on_exit function, which also records the exit rc.)
-assert_eq "telegram: EXIT handler guarded by LOCK_HELD + STATE_LOADED" "1" \
-    "$([[ "$AE_SOURCE" == *'[[ "$LOCK_HELD" == 1 && "$STATE_LOADED" == 1 ]] && { save_state 2>/dev/null || true; }'* ]] && echo 1 || echo 0)"
-assert_eq "telegram: LOCK_HELD set only after flock acquired" "1" \
-    "$([[ "$AE_SOURCE" == *'acquire_lock || exit 1
-    LOCK_HELD=1'* ]] && echo 1 || echo 0)"
-assert_eq "telegram: STATE_LOADED set only after load_state" "1" \
-    "$([[ "$AE_SOURCE" == *'load_state
-    STATE_LOADED=1'* ]] && echo 1 || echo 0)"
-
-# Codex review IMPORTANT #3 (round 2): the spawned daemon inherits the EXACT
-# CONFIG_FILE ae validated, %q-quoted, not its own $HOME/.ae/config default.
-# Plus AE_HOME (later BLOCKER): the daemon must inherit the isolated AE_HOME too,
-# else an AE_HOME run spawns a daemon tailing the live ~/.ae.
-assert_eq "telegram: spawn passes resolved AE_HOME + CONFIG_FILE into the daemon env" "1" \
-    "$([[ "$AE_SOURCE" == *'"AE_HOME=${q_aehome} CONFIG_FILE=${q_cfg} exec ${q_bash} ${q_daemon}"'* ]] && echo 1 || echo 0)"
-assert_eq "telegram: spawn %q-quotes both config + daemon path" "1" \
-    "$([[ "$AE_SOURCE" == *'q_cfg="$(printf '"'"'%q'"'"' "$CONFIG_FILE")"'* && "$AE_SOURCE" == *'q_daemon="$(printf '"'"'%q'"'"' "$CONFIG_DIR/telegram-daemon")"'* ]] && echo 1 || echo 0)"
+# The original BLOCKER guard (codex) allowed jq + curl inside the telegram
+# feature but nowhere else. The bash bridge that needed them is retired and the
+# core needs neither, so the tolerance is now ZERO: not "confined to feature
+# code", ABSENT. A reappearing `command -v jq` means someone re-added a
+# dependency gate to a feature whose only dependency is the ae core.
+assert_eq "telegram: no jq presence check survives anywhere in ae" "0" \
+    "$(grep -c "command -v jq" "$AE_BIN" || true)"
+assert_eq "telegram: no curl presence check survives anywhere in ae" "0" \
+    "$(grep -c "command -v curl" "$AE_BIN" || true)"
+assert_eq "telegram: the dep-gate helper itself is gone" "0" \
+    "$(grep -c '_telegram_missing_deps' "$AE_BIN" || true)"
 
 # IMPORTANT guard (codex): every auto-start hook invocation is strictly
 # non-fatal (`2>/dev/null || true`). Three call sites: the two launch paths
@@ -7923,45 +7831,18 @@ assert_eq "telegram: spawn %q-quotes both config + daemon path" "1" \
 _t_attach_calls=$(grep -c '_telegram_autostart_if_enabled 2>/dev/null || true' "$(dirname "$0")/../ae")
 assert_eq "telegram: every auto-start hook call uses the non-fatal guard (2 launch + supervise)" "3" "$_t_attach_calls"
 unset _t_attach_calls
-assert_eq "telegram: autostart returns 0 when deps are missing" "1" \
-    "$([[ "$AE_SOURCE" == *'echo "ae telegram: skipped autostart — missing deps:$missing" >&2
-        return 0'* ]] && echo 1 || echo 0)"
+# There is no dep pre-check left to return early from: an unusable core reaches
+# the caller as a FAILED SPAWN, and this is the tail that must swallow it.
+assert_eq "telegram: autostart has no dependency pre-check" "0" \
+    "$(awk '/^_telegram_autostart_if_enabled\(\) \{/,/^\}$/' "$AE_BIN" | grep -c 'missing' || true)"
 assert_eq "telegram: autostart returns 0 on spawn failure" "1" \
     "$([[ "$AE_SOURCE" == *'echo "ae telegram: autostart failed (continuing without bridge)" >&2'* ]] && echo 1 || echo 0)"
-
-# IMPORTANT guard (codex): session fan-in is NOT a naive `tail -F` glob.
-assert_eq "telegram: daemon discovers sessions by scanning meta files" "1" \
-    "$([[ "$AE_SOURCE" == *'for meta in "$SESSIONS_DIR"/*/meta; do'* ]] && echo 1 || echo 0)"
-assert_eq "telegram: daemon binds by session_id, not session name" "1" \
-    "$([[ "$AE_SOURCE" == *"session_id=\$(grep '^session_id=' \"\$meta\""* ]] && echo 1 || echo 0)"
-assert_eq "telegram: daemon does NOT use glob-based tail -F" "1" \
-    "$([[ "$AE_SOURCE" != *'tail -F '*'sessions/*/events.jsonl'* ]] && echo 1 || echo 0)"
-assert_eq "telegram: daemon drops missing sessions from in-memory state" "1" \
-    "$([[ "$AE_SOURCE" == *"unset 'SESSION_NAME[\$sid]' 'SESSION_PATH[\$sid]'"* ]] && echo 1 || echo 0)"
-
-# NIT applied (codex): default include set adds 'throttled'; 'memo' off.
-# 'chat' added for the say helper (agent → Telegram free-text, Option 1).
-assert_eq "telegram: default include set covers throttled + chat" "1" \
-    "$([[ "$AE_SOURCE" == *'TG_INCLUDE_DEFAULT="send,ask,review,reply,done,alert,throttled,chat"'* ]] && echo 1 || echo 0)"
-# The literal default-include string must not contain 'memo'. We extract
-# the exact default-line and grep — the loose glob was matching memo
-# elsewhere in the script (help text, comments).
-_t_default_line=$(grep -E 'TG_INCLUDE_DEFAULT="[^"]+"' "$AE_BIN" | head -1 || true)
-assert_eq "telegram: memo NOT in default include set" "1" \
-    "$([[ -n "$_t_default_line" && "$_t_default_line" != *memo* ]] && echo 1 || echo 0)"
-unset _t_default_line
 
 # Permission validation (codex answer 7): owner check + 600 mode required.
 assert_eq "telegram: token file ownership validated" "1" \
     "$([[ "$AE_SOURCE" == *'owner="$(_ae_stat uid "$resolved" || echo -1)"'* && "$AE_SOURCE" == *'[[ "$owner" == "${UID:-$(id -u)}" ]]'* ]] && echo 1 || echo 0)"
 assert_eq "telegram: token file mode 600 or 400 required" "1" \
     "$([[ "$AE_SOURCE" == *'400 | 600) ;;'*'token file must be chmod 600'* ]] && echo 1 || echo 0)"
-
-# Single-instance lock: daemon refuses to start if another holds the lock,
-# preventing two daemons from competing over getUpdates / dupe-messaging.
-assert_eq "telegram: daemon acquires exclusive flock before running" "1" \
-    "$([[ "$AE_SOURCE" == *'exec 9>"$LOCK_FILE"
-    if ! flock -n 9; then'* ]] && echo 1 || echo 0)"
 
 # Idempotent start: existing tmux session detected via exact match (NOT
 # tmux has-session, which prefix-matches — same class of bug as 'mdk' vs
@@ -8031,19 +7912,32 @@ unset _t_pD
 assert_eq "telegram: setup refuses to clobber existing [telegram] block" "1" \
     "$([[ "$AE_SOURCE" == *'echo "Warning: [telegram] section already exists in $CONFIG_FILE — leaving as-is."'* ]] && echo 1 || echo 0)"
 
-# Behavioral: status reports intent + runtime + deps + token, even with
+# Behavioral: status reports intent + runtime + core + token, even with
 # an empty config (no [telegram] block).
 _t_status_out="$(CONFIG_FILE=/dev/null "$AE_BIN" telegram status 2>&1)"
 assert_eq "telegram: status shows intent line"  "1" "$([[ "$_t_status_out" == *'intent:'*'enabled='* ]] && echo 1 || echo 0)"
 assert_eq "telegram: status shows runtime line" "1" "$([[ "$_t_status_out" == *'runtime:'*'tmux session ae-telegram'* ]] && echo 1 || echo 0)"
-assert_eq "telegram: status shows deps line"    "1" "$([[ "$_t_status_out" == *'deps:'* ]] && echo 1 || echo 0)"
+assert_eq "telegram: status shows core line, not deps" "1" \
+    "$([[ "$_t_status_out" == *'core:'* && "$_t_status_out" != *'deps:'* ]] && echo 1 || echo 0)"
 assert_eq "telegram: status shows token line"   "1" "$([[ "$_t_status_out" == *'token:'* ]] && echo 1 || echo 0)"
+# The daemon's state, not the bash bridge's. state.tsv is ORPHANED — the core's
+# inbound cursor is tg_offset and its /use target is current_target, while the
+# OUTBOUND cursor is per-session (<meta>/telegram-outbound.cursor) and so has no
+# single path to print here. Reporting state.tsv described a file that would
+# stay absent forever.
+assert_eq "telegram: status reports the core's state files, never the orphaned state.tsv" "1" \
+    "$([[ "$_t_status_out" == *'state:'* && "$_t_status_out" != *'state.tsv'* ]] && echo 1 || echo 0)"
+assert_eq "telegram: status names no single global outbound cursor" "1" \
+    "$([[ "$_t_status_out" != *'telegram-outbound.cursor'* ]] && echo 1 || echo 0)"
 unset _t_status_out
 
 # Behavioral: ae telegram help is self-contained.
 _t_help_out="$("$AE_BIN" telegram help 2>&1)"
 assert_eq "telegram: help lists all four subcommands" "1" \
     "$([[ "$_t_help_out" == *'ae telegram setup'* && "$_t_help_out" == *'ae telegram start'* && "$_t_help_out" == *'ae telegram stop'* && "$_t_help_out" == *'ae telegram status'* ]] && echo 1 || echo 0)"
+assert_eq "telegram: help promises only a core, no optional CLIs" "1" \
+    "$([[ "$_t_help_out" == *'Requires: a configured ae core'* \
+        && "$_t_help_out" != *'jq'* && "$_t_help_out" != *'curl'* ]] && echo 1 || echo 0)"
 assert_eq "telegram: help links to bridge-protocol.md" "1" \
     "$([[ "$_t_help_out" == *'docs/internals/bridge-protocol.md'* ]] && echo 1 || echo 0)"
 unset _t_help_out
@@ -8082,46 +7976,12 @@ _t_cache_b="$(mktemp -d)"
 _t_tmp_cfg="$(mktemp)"
 printf '[agents]\nclaude = "claude"\n\n[workspace]\nmain = claude:lead\n\n[telegram]\nenabled = true\n' >"$_t_tmp_cfg"
 _t_doc_out_cfg="$(XDG_RUNTIME_DIR="$_t_cache_b" CONFIG_FILE="$_t_tmp_cfg" "$AE_BIN" doctor 2>&1 || true)"
-assert_eq "telegram: doctor reports deps line when [telegram] is configured" "1" \
-    "$([[ "$_t_doc_out_cfg" == *'telegram.deps'* ]] && echo 1 || echo 0)"
+assert_eq "telegram: doctor reports the core, not deps, when [telegram] is configured" "1" \
+    "$([[ "$_t_doc_out_cfg" == *'telegram.core'* && "$_t_doc_out_cfg" != *'telegram.deps'* ]] && echo 1 || echo 0)"
 assert_eq "telegram: doctor warns about missing token_file" "1" \
     "$([[ "$_t_doc_out_cfg" == *'telegram.token'* ]] && echo 1 || echo 0)"
 rm -f "$_t_tmp_cfg"; rm -rf "$_t_cache_b"
 unset _t_tmp_cfg _t_doc_out_cfg _t_cache_b
-
-# ── Telegram daemon log file ─────────────────────────────────────────
-# The daemon lives in a detached tmux session; before this its only output
-# was the pane, which vanished when the session died (so a crash was
-# undiagnosable). Capture stderr+stdout to a persistent log instead.
-
-assert_eq "tg-log: daemon defines a LOG_FILE under the telegram state dir" "1" \
-    "$([[ "$AE_SOURCE" == *'LOG_FILE="$STATE_DIR/daemon.log"'* ]] && echo 1 || echo 0)"
-
-assert_eq "tg-log: daemon redirects all output (stderr+stdout) to the log" "1" \
-    "$([[ "$AE_SOURCE" == *'exec >>"$LOG_FILE" 2>&1'* ]] && echo 1 || echo 0)"
-
-# The single EXIT handler captures rc FIRST (bash keeps one EXIT trap, so this
-# is merged with the lock/state-save handler — a separate trap would be clobbered).
-assert_eq "tg-log: single EXIT handler records exit rc (merged, not clobbered)" "1" \
-    "$([[ "$AE_SOURCE" == *'daemon_on_exit() {'* && "$AE_SOURCE" == *'local rc=$?'* && "$AE_SOURCE" == *'daemon exiting (rc=$rc, signal=$_DAEMON_EXIT_SIGNAL)'* && "$AE_SOURCE" == *'trap daemon_on_exit EXIT'* ]] && echo 1 || echo 0)"
-
-# Death-cause instrumentation: main() is an infinite loop, so any exit is
-# external. Signal traps (HUP/INT/TERM) record which signal terminated the
-# daemon so "exiting (rc=0)" no longer hides the cause. Each re-exits 128+signum.
-assert_eq "tg-diag: daemon traps HUP/INT/TERM and records the signal" "1" \
-    "$([[ "$AE_SOURCE" == *"trap '_daemon_on_signal SIGHUP 129' HUP"* \
-        && "$AE_SOURCE" == *"trap '_daemon_on_signal SIGINT 130' INT"* \
-        && "$AE_SOURCE" == *"trap '_daemon_on_signal SIGTERM 143' TERM"* ]] && echo 1 || echo 0)"
-assert_eq "tg-diag: exit log distinguishes signal vs internal/clean exit" "1" \
-    "$([[ "$AE_SOURCE" == *'no signal — internal/clean exit'* ]] && echo 1 || echo 0)"
-
-# Log file is created owner-only (600) before the redirect — it holds chat ids,
-# session names, sender ids.
-assert_eq "tg-log: daemon log is created chmod 600 before redirect" "1" \
-    "$([[ "$AE_SOURCE" == *': >>"$LOG_FILE" && chmod 600 "$LOG_FILE"'* ]] && echo 1 || echo 0)"
-
-assert_eq "tg-log: daemon rotates the log at startup past the size cap" "1" \
-    "$([[ "$AE_SOURCE" == *'mv -f "$LOG_FILE" "$LOG_FILE.1"'* && "$AE_SOURCE" == *'AE_TELEGRAM_LOG_MAX_BYTES'* ]] && echo 1 || echo 0)"
 
 # ── Watchdog-supervised telegram bridge ──────────────────────────────
 # The per-session watchdog best-effort revives the machine-global daemon
@@ -8314,143 +8174,6 @@ rm -f "$_tgc_cfg"; unset _tgc_cfg
 assert_eq "tg-sup: last_tg_supervise initialized before the watchdog loop" "1" \
     "$([[ "$AE_SOURCE" == *'last_tg_supervise=0
     while true; do'* ]] && echo 1 || echo 0)"
-
-# ── Telegram Stage 3 — bidirectional (chat → ae) ─────────────────────
-# Inbound command path. Structural assertions lock the codex-reviewed
-# security invariants; the behavioral block extracts the daemon body and
-# exercises the pure security functions directly.
-
-# Structural: inbound is gated on allowed_user_ids (secure default).
-assert_eq "tg3: inbound_enabled gates on allowed_user_ids" "1" \
-    "$([[ "$AE_SOURCE" == *'inbound_enabled() {'*'TG_ALLOWED_IDS//[, ]/'* ]] && echo 1 || echo 0)"
-
-# Structural (codex BLOCKER): auth requires from.id ∈ allow-list AND
-# chat.id == configured chat AND chat.type == private.
-assert_eq "tg3: update_authorized requires numeric from.id" "1" \
-    "$([[ "$AE_SOURCE" == *'[[ "$from_id" =~ ^[0-9]+$ ]] || return 1'* ]] && echo 1 || echo 0)"
-assert_eq "tg3: update_authorized pins chat.type == private" "1" \
-    "$([[ "$AE_SOURCE" == *'[[ "$chat_type" == "private" ]] || return 1'* ]] && echo 1 || echo 0)"
-assert_eq "tg3: update_authorized pins chat.id == configured chat" "1" \
-    "$([[ "$AE_SOURCE" == *'[[ "$chat_id" == "$TG_CHAT_ID" ]] || return 1'* ]] && echo 1 || echo 0)"
-
-# Structural (codex IMPORTANT): offset persisted BEFORE dispatch; abort the
-# cycle if persistence fails (at-most-once for side-effecting commands).
-assert_eq "tg3: offset saved before dispatch, cycle aborts on failure" "1" \
-    "$([[ "$AE_SOURCE" == *'if ! tg_save_offset "$uid"; then'*'return 0'* ]] && echo 1 || echo 0)"
-assert_eq "tg3: tg_save_offset writes atomically (tmp+mv)" "1" \
-    "$([[ "$AE_SOURCE" == *'tmp="$TG_OFFSET_FILE.tmp.$$"'* && "$AE_SOURCE" == *'mv "$tmp" "$TG_OFFSET_FILE"'* ]] && echo 1 || echo 0)"
-
-# Structural (codex IMPORTANT): session dir is DISCOVERED from meta scan,
-# never built from the chat-supplied ref (path-traversal guard).
-assert_eq "tg3: resolve_session_ref scans meta, does not build path from input" "1" \
-    "$([[ "$AE_SOURCE" == *'resolve_session_ref() {'*'for meta in "$SESSIONS_DIR"/*/meta; do'* ]] && echo 1 || echo 0)"
-
-# Structural: dispatch passes the CANONICAL validated agent (not raw input)
-# with AE_SENDER_OVERRIDE; positional args, never eval.
-assert_eq "tg3: dispatch passes canonical agent + AE_SENDER_OVERRIDE (no raw input, no eval)" "1" \
-    "$([[ "$AE_SOURCE" == *'AE_SENDER_OVERRIDE="telegram:$from_id" "$helper" "$canon" "$msg"'* ]] && echo 1 || echo 0)"
-assert_eq "tg3: command handler never evals user text" "1" \
-    "$([[ "$AE_SOURCE" != *'eval "$text"'* && "$AE_SOURCE" != *'eval $text'* ]] && echo 1 || echo 0)"
-
-# Structural (codex BLOCKER): chat-supplied agent is validated against the
-# resolved session's real agents and canonicalized — never passed raw to the
-# helper (which would accept %pane-id / @session:agent / external prefixes).
-assert_eq "tg3: agent validated against session meta before dispatch" "1" \
-    "$([[ "$AE_SOURCE" == *'resolve_agent_in_session() {'*"grep -E '^agent\\.[a-z0-9.]+='"* ]] && echo 1 || echo 0)"
-assert_eq "tg3: tg_cmd_session canonicalizes agent before dispatch" "1" \
-    "$([[ "$AE_SOURCE" == *'canon="$(resolve_agent_in_session "$dir" "$agent")"'* ]] && echo 1 || echo 0)"
-
-# Structural (codex IMPORTANT): /list + resolve restricted to RUNNING sessions.
-assert_eq "tg3: resolve_session_ref filters to running sessions" "1" \
-    "$([[ "$AE_SOURCE" == *'resolve_session_ref() {'*'daemon_session_running "$name" || continue'* ]] && echo 1 || echo 0)"
-assert_eq "tg3: tg_cmd_list filters to running sessions" "1" \
-    "$([[ "$AE_SOURCE" == *'tg_cmd_list() {'*'daemon_session_running "$name" || continue'* ]] && echo 1 || echo 0)"
-
-# Structural (codex NIT): rc captured explicitly so the ambiguous (2) branch
-# is reachable (not swallowed by `if ! cmd`).
-assert_eq "tg3: resolve rc captured explicitly (ambiguous branch reachable)" "1" \
-    "$([[ "$AE_SOURCE" == *'resolved="$(resolve_session_ref "$ref")"; rc=$?'* ]] && echo 1 || echo 0)"
-
-# Structural (codex NIT): bounded updates per cycle so backlog can't starve
-# the outbound pass.
-assert_eq "tg3: getUpdates is bounded by limit" "1" \
-    "$([[ "$AE_SOURCE" == *'data = limit=${TG_UPDATES_LIMIT}'* ]] && echo 1 || echo 0)"
-
-# Behavioral: extract the daemon body and exercise the security functions.
-_tg3_daemon="$(mktemp)"
-# Strip the top-level lines that have side effects when SOURCED (vs run as the
-# real daemon): `main "$@"` and the `exec >>"$LOG_FILE" 2>&1` log redirect —
-# the latter would hijack this test's own stdout into a log file.
-awk "/<<'TELEGRAM_DAEMON_EOF'/{f=1;next} /^TELEGRAM_DAEMON_EOF\$/{f=0} f" \
-    "$(dirname "$0")/../ae" | sed -e '/^main "\$@"$/d' -e '/^exec >>"\$LOG_FILE" 2>&1$/d' >"$_tg3_daemon"
-_tg3_home="$(mktemp -d)"
-_tg3_result="$(
-    AE_HOME="$_tg3_home" "${BASH:-bash}" -c '
-        set -uo pipefail
-        SESSIONS_DIR="$AE_HOME/sessions"; STATE_DIR="$AE_HOME/telegram"
-        mkdir -p "$SESSIONS_DIR" "$STATE_DIR"
-        # shellcheck disable=SC1090
-        source "'"$_tg3_daemon"'" 2>/dev/null || true
-        # Stub the tmux running-check so resolve logic is tested without a
-        # live server (the running filter itself is asserted structurally).
-        daemon_session_running() { return 0; }
-        TG_CHAT_ID="999"; TG_ALLOWED_IDS="999, 1000"; TG_OFFSET_FILE="$STATE_DIR/tg_offset"
-        p=0
-        update_authorized 999 999 private   && p=$((p+1))   # 1 allow
-        update_authorized 999 999 group     || p=$((p+1))   # 2 reject group
-        update_authorized 999 888 private   || p=$((p+1))   # 3 reject wrong chat
-        update_authorized 777 999 private   || p=$((p+1))   # 4 reject unlisted
-        update_authorized abc 999 private   || p=$((p+1))   # 5 reject non-numeric
-        inbound_enabled                     && p=$((p+1))   # 6 inbound on
-        ( TG_ALLOWED_IDS=""; inbound_enabled ) || p=$((p+1)) # 7 inbound off
-        tg_save_offset 12345 && [[ "$(tg_load_offset)" == 12345 ]] && p=$((p+1)) # 8 offset rt
-        mkdir -p "$SESSIONS_DIR/alpha"
-        printf "session=alpha\nsession_id=aaaa1111-2222-3333-4444-555566667777\nagent.main=claude:lead:u1\nagent.worker.0=codex:coworker:u2\n" >"$SESSIONS_DIR/alpha/meta"
-        [[ "$(resolve_session_ref alpha)" == "alpha	$SESSIONS_DIR/alpha" ]] && p=$((p+1)) # 9 exact
-        [[ "$(resolve_session_ref aaaa)" == "alpha	$SESSIONS_DIR/alpha" ]] && p=$((p+1)) # 10 prefix
-        resolve_session_ref nope >/dev/null || p=$((p+1))   # 11 none
-        resolve_session_ref "../../etc" >/dev/null || p=$((p+1)) # 12 traversal blocked
-        # Agent validation (codex BLOCKER): canonicalize, and reject anything
-        # that is not a real agent of this session.
-        d="$SESSIONS_DIR/alpha"
-        [[ "$(resolve_agent_in_session "$d" claude:lead)" == "claude:lead" ]] && p=$((p+1)) # 13 exact ref
-        [[ "$(resolve_agent_in_session "$d" coworker)" == "codex:coworker" ]] && p=$((p+1)) # 14 bare->canon
-        resolve_agent_in_session "$d" "%42"   >/dev/null || p=$((p+1)) # 15 reject pane-id
-        resolve_agent_in_session "$d" "@x:y"  >/dev/null || p=$((p+1)) # 16 reject cross-session
-        resolve_agent_in_session "$d" "telegram:9" >/dev/null || p=$((p+1)) # 17 reject external prefix
-        resolve_agent_in_session "$d" "ghost" >/dev/null || p=$((p+1)) # 18 reject unknown agent
-        # Reply-routing: parse the forwarded-message header → session\tactor.
-        [[ "$(tg_parse_reply_target "[alpha] waiting-user  claude:lead")" == "alpha	claude:lead" ]] && p=$((p+1)) # 19 parse plain header
-        [[ "$(tg_parse_reply_target "[alpha] ask  claude:lead → codex:coworker
-the question text")" == "alpha	claude:lead" ]] && p=$((p+1)) # 20 header w/ target+summary → actor, line 1 only
-        tg_parse_reply_target "just a normal message" >/dev/null || p=$((p+1)) # 21 reject non-header
-        tg_parse_reply_target "" >/dev/null || p=$((p+1)) # 22 reject empty
-        # Compact grammar + sticky target (slice 2). Stub the side-effecting
-        # boundary so we observe routing without curl/helpers.
-        send_message() { :; }
-        tg_dispatch() { printf "%s|%s|%s|%s" "$2" "$3" "$4" "$5" >"$STATE_DIR/disp"; }
-        rm -f "$STATE_DIR/disp"
-        tg_cmd_at 999 "@alpha:claude:lead do the thing"
-        [[ "$(cat "$STATE_DIR/disp" 2>/dev/null)" == "alpha|send|claude:lead|do the thing" ]] && p=$((p+1)) # 23 @session:agent → send (agent keeps alias:name colon)
-        rm -f "$STATE_DIR/disp"
-        tg_cmd_at 999 "@noagent hello"  # missing :agent → usage, no dispatch
-        [[ ! -f "$STATE_DIR/disp" ]] && p=$((p+1)) # 24 @ without agent does not dispatch
-        tg_cmd_use 999 "alpha claude:lead"   # validated against running alpha
-        [[ "$(cat "$TG_TARGET_FILE" 2>/dev/null)" == "alpha	claude:lead" ]] && p=$((p+1)) # 25 /use persists a validated canon target
-        rm -f "$STATE_DIR/disp"
-        tg_route_sticky 999 "bare message"
-        [[ "$(cat "$STATE_DIR/disp" 2>/dev/null)" == "alpha|send|claude:lead|bare message" ]] && p=$((p+1)) # 26 bare msg routes to sticky target
-        tg_cmd_use 999 clear
-        [[ ! -f "$TG_TARGET_FILE" ]] && p=$((p+1)) # 27 /use clear removes target
-        rm -f "$STATE_DIR/disp"
-        tg_route_sticky 999 "no target now"
-        [[ ! -f "$STATE_DIR/disp" ]] && p=$((p+1)) # 28 sticky with no target does not dispatch
-        echo "$p"
-    ' 2>/dev/null
-)"
-assert_eq "tg3: inbound behavioral suite — security + reply + compact grammar (28 checks)" "28" "$_tg3_result"
-rm -rf "$_tg3_home"; rm -f "$_tg3_daemon"
-unset _tg3_daemon _tg3_home _tg3_result
 
 # ── say helper + chat event (agent → Telegram free-text, Option 1) ───
 
@@ -8747,10 +8470,6 @@ assert_eq "cap_summary: capped value round-trips through escape+parse" \
     "$_EV_SUMMARY" "$_EV"
 
 
-# chat in the default include so fresh setups forward agent replies.
-assert_eq "say: chat in TG_INCLUDE_DEFAULT" "1" \
-    "$([[ "$AE_SOURCE" == *'TG_INCLUDE_DEFAULT="send,ask,review,reply,done,alert,throttled,chat"'* ]] && echo 1 || echo 0)"
-
 # Discoverability surfaces (a helper agents don't know about is dead weight).
 assert_eq "say: advertised in cmd_help, agent ctx, workspace.md" "1" \
     "$([[ "$AE_SOURCE" == *'requests, peek, say, spawn'* \
@@ -8791,102 +8510,6 @@ _say_result="$(
 assert_eq "say: ae_emit_event — chat keeps newlines+>200, others cap/flatten (6 checks)" "6" "$_say_result"
 rm -rf "$_say_home"; rm -f "$_say_lib"
 unset _say_lib _say_home _say_result
-
-# Behavioral: the daemon's include/exclude filter accepts chat by default,
-# is blockable, and exclude still wins. Pure-bash (no jq) so it stays dep-free.
-_sayd_daemon="$(mktemp)"
-awk "/<<'TELEGRAM_DAEMON_EOF'/{f=1;next} /^TELEGRAM_DAEMON_EOF\$/{f=0} f" \
-    "$(dirname "$0")/../ae" | sed -e '/^main "\$@"$/d' -e '/^exec >>"\$LOG_FILE" 2>&1$/d' >"$_sayd_daemon"
-_sayd_result="$(
-    "${BASH:-bash}" -c '
-        set -uo pipefail
-        # shellcheck disable=SC1090
-        source "'"$_sayd_daemon"'" 2>/dev/null || true
-        p=0
-        ( TG_INCLUDE="$TG_INCLUDE_DEFAULT"; TG_EXCLUDE=""; event_action_allowed chat ) && p=$((p+1))  # 1 default allows
-        ( TG_INCLUDE="send,ask"; TG_EXCLUDE=""; event_action_allowed chat ) || p=$((p+1))             # 2 blockable
-        ( TG_INCLUDE="send,chat"; TG_EXCLUDE="chat"; event_action_allowed chat ) || p=$((p+1))        # 3 exclude wins
-        echo "$p"
-    ' 2>/dev/null
-)"
-assert_eq "say: daemon event_action_allowed — chat default/blockable/exclude (3 checks)" "3" "$_sayd_result"
-rm -f "$_sayd_daemon"
-unset _sayd_daemon _sayd_result
-
-# ── Telegram reply-to-routing (inbound UX, slice 1) ──────────────────
-# Reply to a forwarded event → routes to that agent, no /session typing.
-
-# Shared dispatch factored out of /session and reused by reply-routing (all the
-# resolve/canonicalize security lives in one place).
-assert_eq "tg-reply: tg_dispatch shared by /session and reply paths" "1" \
-    "$([[ "$AE_SOURCE" == *'tg_dispatch() {'* && "$AE_SOURCE" == *'tg_dispatch "$from_id" "$ref" "$verb" "$agent" "$msg"'* ]] && echo 1 || echo 0)"
-# Reply path parses the forwarded header then dispatches a send to that actor.
-assert_eq "tg-reply: tg_handle_reply parses target then sends to the actor" "1" \
-    "$([[ "$AE_SOURCE" == *'tg_handle_reply() {'* && "$AE_SOURCE" == *'tg_parse_reply_target "$rtext"'* && "$AE_SOURCE" == *'tg_dispatch "$from_id" "$sess" "send" "$actor" "$msg"'* ]] && echo 1 || echo 0)"
-# poll_updates routes a non-slash reply via tg_handle_reply; slash always = command.
-assert_eq "tg-reply: poll_updates routes non-slash replies to tg_handle_reply" "1" \
-    "$([[ "$AE_SOURCE" == *'reply_to_message.text // empty'* && "$AE_SOURCE" == *'if [[ "$mt_lead" != /* && -n "$rtext" ]]; then'* && "$AE_SOURCE" == *'tg_handle_reply "$fid" "$rtext" "$mtext"'* ]] && echo 1 || echo 0)"
-# Slash detection trims leading whitespace first (codex NIT) so " /list" or a
-# leading-newline reply is still a command, matching tg_handle_command's trim.
-assert_eq "tg-reply: slash-vs-reply check trims leading whitespace" "1" \
-    "$([[ "$AE_SOURCE" == *'mt_lead="${mtext#"${mtext%%[![:space:]]*}"}"'* ]] && echo 1 || echo 0)"
-# Misparse fails safe (reuses the downstream validators; no eval).
-assert_eq "tg-reply: unparseable reply target is reported, not dispatched" "1" \
-    "$([[ "$AE_SOURCE" == *"Couldn't tell which agent that was a reply to"* ]] && echo 1 || echo 0)"
-# /help advertises reply-routing.
-assert_eq "tg-reply: /help mentions replying to a forwarded message" "1" \
-    "$([[ "$AE_SOURCE" == *'Reply to any forwarded message → answers that agent'* ]] && echo 1 || echo 0)"
-
-# ── Telegram compact grammar + sticky target (inbound UX, slice 2) ────
-
-# @session:agent is handled BEFORE the /cmd@botname strip would eat the leading @.
-assert_eq "tg-cg: @-prefix handled before command parsing" "1" \
-    "$([[ "$AE_SOURCE" == *'if [[ "$text" == @* ]]; then'*'tg_cmd_at "$from_id" "$text"'* ]] && echo 1 || echo 0)"
-# @session:agent splits session at the FIRST colon, agent keeps its alias:name.
-assert_eq "tg-cg: tg_cmd_at parses @session:agent (agent keeps colon)" "1" \
-    "$([[ "$AE_SOURCE" == *'tg_cmd_at() {'* && "$AE_SOURCE" == *'sess="${spec%%:*}"; agent="${spec#*:}"'* && "$AE_SOURCE" == *'tg_dispatch "$from_id" "$sess" "send" "$agent" "$msg"'* ]] && echo 1 || echo 0)"
-# /use validates + persists; sticky route + clear.
-assert_eq "tg-cg: /use sets a validated sticky target" "1" \
-    "$([[ "$AE_SOURCE" == *'tg_cmd_use() {'* && "$AE_SOURCE" == *'TG_TARGET_FILE="$STATE_DIR/current_target"'* && "$AE_SOURCE" == *'resolve_agent_in_session "$dir" "$agent"'* ]] && echo 1 || echo 0)"
-assert_eq "tg-cg: bare message routes to the sticky target via tg_route_sticky" "1" \
-    "$([[ "$AE_SOURCE" == *'tg_route_sticky() {'* && "$AE_SOURCE" == *'tg_route_sticky "$from_id" "$text"'* ]] && echo 1 || echo 0)"
-# /use clear unsets; sticky/at reuse tg_dispatch (so same revalidation as /session).
-assert_eq "tg-cg: /use clear removes the target" "1" \
-    "$([[ "$AE_SOURCE" == *'clear|off|none)'* && "$AE_SOURCE" == *'rm -f "$TG_TARGET_FILE"'* ]] && echo 1 || echo 0)"
-# /help advertises the compact grammar + /use.
-assert_eq "tg-cg: /help mentions orchestrator-default, @session:agent, and /use redirect" "1" \
-    "$([[ "$AE_SOURCE" == *'Plain text → your orchestrator (auto-default'* && "$AE_SOURCE" == *'@session:agent <msg> → send to an agent directly'* && "$AE_SOURCE" == *'/use <session> <agent> → redirect plain messages elsewhere'* ]] && echo 1 || echo 0)"
-
-# ── Telegram setMyCommands menu (inbound UX, slice 3) ────────────────
-
-# Registers the slash-command menu via the Bot API; token via -K stdin (argv-safe).
-assert_eq "tg-menu: tg_set_commands posts to setMyCommands (token off argv)" "1" \
-    "$([[ "$AE_SOURCE" == *'tg_set_commands() {'* && "$AE_SOURCE" == *'/setMyCommands'* && "$AE_SOURCE" == *'curl -sS -K -'* ]] && echo 1 || echo 0)"
-# Called once at startup ONLY when inbound is enabled (don't advertise commands
-# that would be rejected).
-assert_eq "tg-menu: command menu registered at startup only when inbound enabled" "1" \
-    "$([[ "$AE_SOURCE" == *'inbound=on (allow-listed users)"'*'tg_set_commands'* ]] && echo 1 || echo 0)"
-# Menu lists the real inbound commands.
-assert_eq "tg-menu: menu advertises list/use/session/help" "1" \
-    "$([[ "$AE_SOURCE" == *'{command:"list"'* && "$AE_SOURCE" == *'{command:"use"'* && "$AE_SOURCE" == *'{command:"session"'* && "$AE_SOURCE" == *'{command:"help"'* ]] && echo 1 || echo 0)"
-# Best-effort: a failed registration is logged, not fatal.
-assert_eq "tg-menu: setMyCommands failure is non-fatal (logged, returns 0)" "1" \
-    "$([[ "$AE_SOURCE" == *'setMyCommands failed:'* && "$AE_SOURCE" == *'setMyCommands not ok:'* ]] && echo 1 || echo 0)"
-# REGRESSION GUARD: the commands JSON MUST go through data-urlencode's @file form,
-# never inline. curl's -K config parser truncates an unquoted value at the first
-# space, and the descriptions contain spaces — an inline `commands=${cmds_json}`
-# ships chopped JSON and Telegram answers 400 "can't parse commands JSON object".
-# The live API call isn't exercised in tests, so this structural check is the only
-# guard against the space-truncation trap recurring (same fix as send_message).
-assert_eq "tg-menu: commands JSON passed via @file form, not inline" "1" \
-    "$([[ "$AE_SOURCE" == *'data-urlencode = commands@${tmp_cmds}'* ]] && echo 1 || echo 0)"
-assert_eq "tg-menu: commands JSON NOT passed inline (would truncate at first space)" "1" \
-    "$([[ "$AE_SOURCE" != *'data-urlencode = commands=${cmds_json}'* ]] && echo 1 || echo 0)"
-
-# Names are lowercase per Telegram's ^[a-z0-9_]+$ rule (they appear as literal
-# lowercase tokens in the menu asserts above); JSON validity verified manually
-# (jq -cn '[…]' → valid). A source-extraction round-trip here proved too fragile
-# to be worth it.
 
 # ── ae orchestrator: launcher scaffold + dispatcher trampoline + hub compat ──
 
@@ -9059,8 +8682,8 @@ assert_eq "AE_HOME: CONFIG_DIR derives from AE_HOME, not hardcoded \$HOME/.ae" "
         && "$AE_SOURCE" == *'CONFIG_DIR="$AE_HOME"'* \
         && "$AE_SOURCE" != *'CONFIG_DIR="${HOME}/.ae"'* ]] && echo 1 || echo 0)"
 # Daemon/orchestrator/session must not escape AE_HOME back to live ~/.ae (codex BLOCKERs):
-assert_eq "AE_HOME: telegram daemon is spawned WITH AE_HOME (no live-~/.ae leak)" "1" \
-    "$([[ "$AE_SOURCE" == *'AE_HOME=${q_aehome} CONFIG_FILE='* ]] && echo 1 || echo 0)"
+assert_eq "AE_HOME: telegram daemon gets CONFIG_DIR as its <ae-home> (no live-~/.ae leak)" "1" \
+    "$([[ "$AE_SOURCE" == *'_telegram-run "$CONFIG_DIR" --config "$CONFIG_FILE" --home "$HOME"'* ]] && echo 1 || echo 0)"
 assert_eq "AE_HOME: orchestrator dir defaults under CONFIG_DIR, not hardcoded \$HOME/.ae" "1" \
     "$([[ "$AE_SOURCE" == *'AE_ORCHESTRATOR_DIR:-$CONFIG_DIR/orchestrator'* \
         && "$AE_SOURCE" != *'AE_ORCHESTRATOR_DIR:-$HOME/.ae/orchestrator'* \
@@ -9215,31 +8838,17 @@ _cs_body="$(awk "/^cleanup_session\\(\\) \\{/{p=1} p{print} p&&/^\\}\\$/{p=0}" a
 assert_eq "end (B2): cleanup_session has zero raw-name tmux show-environment reads" "0" \
     "$(printf '%s' "$_cs_body" | grep -c 'tmux show-environment -t "\$session_name"' || true)"
 
-# ── _aewatch_autostart_if_available (s18: companion-autostart seam) ──
-# Structural guards: mirrors the orchestrator hook — AE_NO_AUTOSTART guard, an
-# AE_WATCHDOG_IMPL=uv OPT-IN gate (availability must NOT be the trigger — a live daemon
-# by default would double-run the bash watchdogs, the s18-gate blocker), availability-
-# gated silent no-op, HEARTBEAT-FRESH fast path (NOT name-only — a stale session falls
-# through to restart), --runner passthrough, backgrounded. Called ONCE, from the
-# _start_session_watchdog decision below; the reattach mode-switch is a later slice.
-_AW_FN="$(awk '/^_aewatch_autostart_if_available\(\) \{/{f=1} f{print} f&&/^\}$/{exit}' <<<"$AE_SOURCE")"
-assert_eq "aewatch-autostart: function defined" "yes" "$([[ -n "$_AW_FN" ]] && echo yes || echo no)"
-assert_eq "aewatch-autostart: AE_NO_AUTOSTART guard" "yes" "$(grep -q 'AE_NO_AUTOSTART' <<<"$_AW_FN" && echo yes || echo no)"
-assert_eq "aewatch-autostart: AE_WATCHDOG_IMPL=uv opt-in gate (not availability)" "yes" "$(grep -qE 'AE_WATCHDOG_IMPL.*==.*uv' <<<"$_AW_FN" && echo yes || echo no)"
-assert_eq "aewatch-autostart: availability check (contrib/aewatch script)" "yes" "$(grep -q 'contrib/aewatch/aewatch' <<<"$_AW_FN" && echo yes || echo no)"
-assert_eq "aewatch-autostart: silent no-op when script missing" "yes" "$(grep -qE '\[\[ -f "\$_aw" \]\] \|\| return 0' <<<"$_AW_FN" && echo yes || echo no)"
-assert_eq "aewatch-autostart: runtime check (uv or python3)" "yes" "$(grep -qE 'command -v uv|command -v python3' <<<"$_AW_FN" && echo yes || echo no)"
-assert_eq "aewatch-autostart: HEARTBEAT-fresh fast path (not name-only)" "yes" "$(grep -q 'heartbeat' <<<"$_AW_FN" && echo yes || echo no)"
-assert_eq "aewatch-autostart: invokes 'up' with --ae-home + --runner" "yes" "$(grep -qE 'up --ae-home .* --runner' <<<"$_AW_FN" && echo yes || echo no)"
-assert_eq "aewatch-autostart: backgrounded (non-blocking)" "yes" "$(grep -qE '&\)' <<<"$_AW_FN" && echo yes || echo no)"
-assert_eq "aewatch-autostart: called once, non-fatal, from the watchdog decision" "1" "$(grep -c '_aewatch_autostart_if_available 2>/dev/null || true' <<<"$AE_SOURCE")"
-
-# ── _start_session_watchdog: the single watchdog-ownership decision (s18 rework) ──
-# The plan's no-double-run non-negotiable made STRUCTURAL: EXACTLY ONE watchdog per
-# session — the aewatch daemon under AE_WATCHDOG_IMPL=uv (bash stands down), else the
-# bash per-session watchdog; a disabled watchdog (meta/config false) starts NEITHER.
-# Driven behaviorally: a fake ${AE_META}/watchdog executable records a bash start, a
-# stubbed hook records an aewatch start; exactly one (or none) may fire.
+# ── _start_session_watchdog: the single watchdog-ownership decision ──────────
+# The plan's no-double-run non-negotiable, made structural — and now trivially
+# true, because exactly ONE watchdog implementation is left. The aewatch sidecar
+# is retired (RR P4): a running one claims the bridge-owner marker and kills
+# competing bridges on every tmux server, the Rust one included, and updated
+# bytes on disk do not help a process already running. So AE_WATCHDOG_IMPL no
+# longer SELECTS anything here — enabled starts the bash per-session watchdog
+# whatever it says, disabled starts none. Driven behaviorally: a fake
+# ${AE_META}/watchdog executable records a bash start, and the retired hook is
+# still stubbed as a TRIPWIRE — if anyone re-wires it, `uv` records "aewatch"
+# and the second assertion below goes red.
 eval "$(awk '/^_start_session_watchdog\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
 assert_eq "watchdog-decision: _start_session_watchdog defined" "yes" "$(declare -F _start_session_watchdog >/dev/null && echo yes || echo no)"
 _sw_run() {  # <impl> <enabled> -> "bash" | "aewatch" | "none"
@@ -9249,57 +8858,41 @@ _sw_run() {  # <impl> <enabled> -> "bash" | "aewatch" | "none"
     printf '#!/usr/bin/env bash\necho bash >>"%s/rec"\n' "$d" >"$d/meta/watchdog"
     chmod +x "$d/meta/watchdog"
     : >"$d/rec"
-    # shellcheck disable=SC2317,SC2329  # invoked indirectly by the eval'd _start_session_watchdog
+    # shellcheck disable=SC2317,SC2329  # tripwire: nothing may reach this any more
     _aewatch_autostart_if_available() { echo aewatch >>"$d/rec"; }
     AE_META="$d/meta" AE_WATCHDOG_IMPL="$impl" _start_session_watchdog "$enabled"
     if [[ -s "$d/rec" ]]; then cat "$d/rec"; else echo none; fi
     rm -rf "$d"
 }
-assert_eq "watchdog-decision: default+enabled -> bash ONLY" "bash" "$(_sw_run '' true)"
-assert_eq "watchdog-decision: uv+enabled -> aewatch ONLY (bash stands down)" "aewatch" "$(_sw_run uv true)"
+assert_eq "watchdog-decision: default+enabled -> bash" "bash" "$(_sw_run '' true)"
+assert_eq "watchdog-decision: uv+enabled -> BASH too (aewatch retired, not selectable)" "bash" "$(_sw_run uv true)"
 assert_eq "watchdog-decision: explicit bash -> bash" "bash" "$(_sw_run bash true)"
-assert_eq "watchdog-decision: invalid impl -> bash (never aewatch)" "bash" "$(_sw_run xyz true)"
+assert_eq "watchdog-decision: invalid impl -> bash" "bash" "$(_sw_run xyz true)"
 assert_eq "watchdog-decision: disabled+uv -> NEITHER" "none" "$(_sw_run uv false)"
 assert_eq "watchdog-decision: disabled+default -> NEITHER" "none" "$(_sw_run '' false)"
 
-# ── s19: Telegram bridge ownership (aewatch vs bash), no double-send ──────────
-# Ownership is a DURABLE MARKER + fresh heartbeat (NOT env — a concurrent bash reviver via
-# `telegram _supervise` never shares the uv-launcher's env, so ownership must be a machine-
-# readable fact). _aewatch_owns_bridge: $AE_HOME/aewatch/bridge-owner exists AND the heartbeat
-# is fresh (<=90s, the s18-hook rule). Marker but STALE heartbeat (aewatch dead) -> NOT owned,
-# so the next _supervise revives bash (the free fallback). The bash STOP lives in the aewatch
-# daemon's handoff, NOT in ae.
-eval "$(awk '/^_aewatch_owns_bridge\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
-_owns_run() {  # <marker: yes|no> <hb: none|fresh|stale> -> yes|no
-    local marker="$1" hb="$2" d
-    d="$(mktemp -d)"
-    mkdir -p "$d/aewatch"
-    [[ "$marker" == yes ]] && : >"$d/aewatch/bridge-owner"
-    case "$hb" in
-        fresh) : >"$d/aewatch/heartbeat" ;;
-        stale) : >"$d/aewatch/heartbeat"; _touch_ago 7200 "$d/aewatch/heartbeat" ;;
-    esac
-    if CONFIG_DIR="$d" _aewatch_owns_bridge; then echo yes; else echo no; fi
-    rm -rf "$d"
-}
-assert_eq "owns-bridge: marker + FRESH heartbeat -> owns" "yes" "$(_owns_run yes fresh)"
-assert_eq "owns-bridge: marker + STALE heartbeat -> NOT owns (bash revives = fallback)" "no" "$(_owns_run yes stale)"
-assert_eq "owns-bridge: marker + NO heartbeat -> NOT owns" "no" "$(_owns_run yes none)"
-assert_eq "owns-bridge: NO marker + fresh heartbeat -> NOT owns (default path zero-diff)" "no" "$(_owns_run no fresh)"
-assert_eq "owns-bridge: NO marker + no heartbeat -> NOT owns" "no" "$(_owns_run no none)"
+# The retirement itself, both halves: no hook left to select, and the bridge
+# spawn retires a sidecar that is ALREADY running before it starts the core —
+# the only case where stale bytes could still kill the Rust bridge.
+assert_eq "aewatch retired: the autostart hook is gone from ae" "yes" \
+    "$(grep -q '_aewatch_autostart_if_available' <<<"$AE_SOURCE" && echo no || echo yes)"
+assert_eq "aewatch retired: the telegram spawn kills a stale ae-aewatch before launching the core" "yes" \
+    "$([[ "$AE_SOURCE" == *'if daemon_session_running ae-aewatch 2>/dev/null; then'*'tmux kill-session -t ae-aewatch'*'_telegram-run'* ]] && echo yes || echo no)"
 
-# Structural: ONE ownership guard at the top of _telegram_autostart_if_enabled (launch,
-# reattach, AND _supervise all flow through it); no ae-side standdown (the daemon stops bash);
-# cmd_telegram_start WARNS but honors explicit human intent; status is backend-aware.
+# ── s19 retired: ONE bridge, and it is the Rust core ─────────────────────────
+# The aewatch-vs-bash ownership decision (a bridge-owner marker plus a fresh
+# heartbeat) existed to keep two bash senders from double-sending. It is gone
+# with the bash bridge it arbitrated: nothing stands the autostart down any
+# more, so intent + liveness are the whole decision.
 _TG_AS_FN="$(awk '/^_telegram_autostart_if_enabled\(\) \{/{f=1} f{print} f&&/^\}$/{exit}' <<<"$AE_SOURCE")"
-assert_eq "s19 guard: autostart defers to the aewatch owner (return 0, no spawn)" "yes" \
-    "$(grep -qE '_aewatch_owns_bridge && return 0' <<<"$_TG_AS_FN" && echo yes || echo no)"
-assert_eq "s19: no ae-side _telegram_standdown (the daemon owns the bash stop)" "yes" \
-    "$(grep -q '_telegram_standdown' <<<"$AE_SOURCE" && echo no || echo yes)"
-assert_eq "s19: cmd_telegram_start WARNS then still spawns (human bypass)" "yes" \
-    "$([[ "$AE_SOURCE" == *'_aewatch_owns_bridge'*'aewatch owns the bridge'*'_telegram_spawn_daemon'* ]] && echo yes || echo no)"
-assert_eq "s19: status reports the active backend (marker)" "yes" \
-    "$([[ "$AE_SOURCE" == *'backend: aewatch'* && "$AE_SOURCE" == *'backend: bash'* ]] && echo yes || echo no)"
+assert_eq "s19 retired: no bridge-ownership fallback survives in ae" "yes" \
+    "$(grep -q '_aewatch_owns_bridge' <<<"$AE_SOURCE" && echo no || echo yes)"
+assert_eq "s19 retired: autostart decides on intent + liveness alone" "yes" \
+    "$(grep -qE '_telegram_intent_enabled.*==.*"true"' <<<"$_TG_AS_FN" \
+        && grep -q '_telegram_daemon_running && return 0' <<<"$_TG_AS_FN" && echo yes || echo no)"
+assert_eq "s19 retired: status reports one backend, the core" "yes" \
+    "$([[ "$AE_SOURCE" == *'backend: ae core'* && "$AE_SOURCE" != *'backend: bash'* ]] && echo yes || echo no)"
+unset _TG_AS_FN
 
 # ── request-integrity Bug A: worker resume symmetry (recover from meta like main) ────
 # On resume, workers must be recovered from meta agent.worker.N (names PRESERVED), NOT

@@ -11,12 +11,18 @@ knowledge: what to trust, what to distrust, where to look first.
 - The session-helper template library + its guards (emission-completeness, one-def-
   per-name, template-parity, set-u sourcing, isolation tripwire). Regenerated helpers
   are atomic; a generator failure cannot truncate a live helper.
-- The aewatch test suite (461+, dual-run oracle) and the contracts gate with
-  mutation-proven coverage guards (post-s20 it cannot pass blind).
+- The contracts gate with mutation-proven coverage guards (post-s20 it cannot pass
+  blind).
+- *(Not on this list since P4.3, 2026-08-29: the aewatch test suite — 461+, dual-run
+  oracle. It is kept, but the sidecar it covers is RETIRED, so it is the bash-vs-Python
+  **parity oracle for archival source**, not a gate on any live component. Nothing
+  shipping is protected by it. It needs Python >= 3.11 and skips below that, so a green
+  local run is not automatic evidence either.)*
 - The `AGENTS.md` bash-hazards checklist — every entry is a shipped bug class. Treat
   it as a pre-edit gate for any `ae` change, not as documentation.
-- Default-mode behavior: both phase-3 ae edits are proven zero-diff when
-  `AE_WATCHDOG_IMPL` is unset.
+- Watchdog behavior: both phase-3 ae edits are proven zero-diff. *(This used to read
+  "when `AE_WATCHDOG_IMPL` is unset", naming one of two live modes. Since P4.3 unset is
+  the only mode — `=uv` selects nothing — so the proof covers every session there is.)*
 - Message delivery to a *busy* agent TUI — fixed on main as of `1141578`: the
   input-region sensor is structural (SGR-state parsed, bottom-most prompt selection,
   chrome-bounded), the send path verifies post-submit, and `spawn` reports rc=1 +
@@ -74,10 +80,12 @@ knowledge: what to trust, what to distrust, where to look first.
   leg alone before believing it.
 
 **Frozen (do not extend, only bugfix):**
-- The generated bash watchdog and bash telegram bridge — they are the living
-  *fallback*, not the future. New detectors and features land in the aewatch sidecar
-  (effect-tested). The "carrot list" (model-drift alarm, parked-state, human-typing
-  signal) is deliberately sidecar-only.
+- The generated bash watchdog. It is live and frozen: bugfix only.
+  *(Superseded at P4.3, 2026-08-29: the bash **telegram bridge** is no longer part
+  of this bullet — it is RETIRED, and the Rust core is the bridge. The aewatch
+  sidecar is retired and unwired too, so "new detectors land in the sidecar" no
+  longer describes anywhere they can land; the "carrot list" — model-drift alarm,
+  parked-state, human-typing signal — is unhomed until the Rust core takes it.)*
 - The config format. INI-ish, regex-parsed, four sections. Feature pressure routes
   to code (e.g. slot-aware context injection in `build_ae_context`), never to new
   config keys.
@@ -103,8 +111,8 @@ knowledge: what to trust, what to distrust, where to look first.
 
 | Symptom | First looks |
 |---|---|
-| Watchdog behaving oddly | The session's `events.jsonl`; the watchdog pane log; with `=uv`, the aewatch daemon log under `$AE_HOME/aewatch/` |
-| Telegram double/missing sends | `ae telegram status` (backend line); `$AE_HOME/aewatch/bridge-owner` + heartbeat age vs the 90s budget; shared `$AE_HOME/telegram/` offsets |
+| Watchdog behaving oddly | The session's `events.jsonl`; the watchdog pane log. *(The `=uv` aewatch daemon log is gone — the selection is retired at P4.3; the bash per-session watchdog is the one watchdog.)* |
+| Telegram double/missing sends | The single `ae-telegram` tmux session (there is no bridge-owner marker and no second backend to hand off to since P4.3); the durable inbound state in `~/.ae/telegram/tg_offset` and the sticky target in `~/.ae/telegram/current_target`; the per-session outbound cursor at `<meta>/telegram-outbound.cursor` |
 | Requests/replies bouncing | Meta `agent.*` entries vs live `@ae_agent`/`@ae_slot` pane options; post-fix, slots are the routing truth |
 | Agent seems dead/wrong-model | Read the TUI footer (model + effort) against the config alias — harnesses fall back silently under credit/usage limits; the orchestrator's eyeball is the current detector until watchdog-v2 lands |
 | Suite red only in full runs | Contention (see fragile list); serial rerun on a quiet box |
@@ -125,7 +133,10 @@ knowledge: what to trust, what to distrust, where to look first.
   sets state. Tracked requests (`ask`/`review`) are the legitimate command channel.
 - Single-file bash `ae`, tmux runtime, minimal deps — a *decision with revisit
   triggers* (see `AGENTS.md`), re-evaluated only when a trigger fires. The sidecar
-  precedent (aewatch) is the sanctioned escape hatch shape.
+  precedent (aewatch) is the sanctioned escape hatch *shape*. *(Superseded at P4.3:
+  triggers 1–3 fired and the hatch actually taken was a Rust core, not a Python
+  sidecar — aewatch is retired and unwired. The precedent stands as a shape; it is
+  not a live component.)*
 - `.local/` is gitignored working memory; session memos are the durable decision
   log. Blueprints do not travel with the repo — key rulings must also live in memos.
 
@@ -177,6 +188,10 @@ knowledge: what to trust, what to distrust, where to look first.
 - Phase 3 complete: 20/20 slices, gate green, independently re-verified. The bash
   watchdog + bridge have a full stdlib-only Python successor (`contrib/aewatch`,
   single file) behind `AE_WATCHDOG_IMPL=uv`, bash as living fallback.
+  *(Superseded at P4.3, 2026-08-29 — this row is the state as of the 2026-07-07
+  handover and is kept as such. `AE_WATCHDOG_IMPL=uv` no longer selects anything,
+  aewatch is retired and unwired, and the successor to the bridge turned out to be
+  the Rust core rather than the Python sidecar.)*
 - In flight: request-integrity slice (branch `ae/request-integrity`) — identity/
   routing/paste fixes; blueprint in `.local/plan-request-integrity.md`.
 - Queued: lead-default slice (model-named aliases `fable5/opus48/gpt55`, strict

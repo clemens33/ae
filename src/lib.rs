@@ -626,7 +626,17 @@ pub fn run_with(
             request.exit_code().unwrap_or(2)
         }
         cli::Request::MissingOperand(command) => {
-            writeln!(err, "ae: {command} needs a session meta directory")?;
+            // Every internal entry but one is per-SESSION and takes that
+            // session's meta directory. The telegram bridge is machine-global —
+            // one bot, one chat, every session — so it takes AE_HOME, and being
+            // told to supply a meta directory would send an operator looking
+            // for a path that has nothing to do with it.
+            let operand = if *command == cli::TELEGRAM_RUN {
+                "an ae home directory"
+            } else {
+                "a session meta directory"
+            };
+            writeln!(err, "ae: {command} needs {operand}")?;
             request.exit_code().unwrap_or(2)
         }
         // The frozen helper writes its table and its refusal to the streams a
@@ -744,6 +754,7 @@ pub fn run_with(
             compact::cancel_step(dir, reference, err)?
         }
         cli::Request::WatchdogRun { dir, knobs } => watchdog_daemon::run(dir, *knobs, err)?,
+        cli::Request::TelegramRun { paths, knobs } => telegram::bridge::run(paths, *knobs, err)?,
         cli::Request::CompactMemoBaseline { dir } => compact::memo_baseline_step(dir, out)?,
         cli::Request::CompactFindOutstanding { dir } => compact::find_outstanding_step(dir, out)?,
         cli::Request::List(list_args) => {

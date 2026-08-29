@@ -29,7 +29,7 @@ doctrine applied to a language where one file is not how you stay readable.
 
 - `ae` must remain a single bash script. No compiled languages, no runtimes. *(A decision, not dogma — see "Revisit triggers" below.)* **Scope on `rust-rewrite`: this now governs the frozen bash glue — the tracked `ae` script and its generated helpers — until the P5 entry flip. The Rust binary is the ratified consequence of triggers 1–3 firing, not a violation of this rule.**
 - Config is INI-style with a simple regex parser. Don't add TOML/YAML/JSON parsing.
-- Core ae requires only `bash >= 4.0`, `tmux`, and `git`. Optional features may declare their own hard dependencies (e.g. `ae telegram` needs `jq` + `curl`), but those deps must never be required for the rest of ae to work — `ae list`, `ae <name>`, etc. continue to function on a machine without them.
+- Core ae requires only `bash >= 4.0`, `tmux`, and `git`. Optional features may declare their own hard dependencies (e.g. `ae orchestrator` needs an agent CLI; `contrib/aemonitor` needs Python 3), but those deps must never be required for the rest of ae to work — `ae list`, `ae <name>`, etc. continue to function on a machine without them. (`ae telegram` used to need `jq` + `curl`; the Rust-core bridge needs neither — it is the ae core binary.)
 - Session state lives in `~/.ae/sessions/`; archived session memory lives in
   `~/.ae/archive/<session-uuid>/` and is INERT — data only, never an executable file.
   Working directories stay clean.
@@ -71,7 +71,7 @@ tests/unit          — pure-function unit tests (bash, no deps)
 tests/integration   — integration tests (requires tmux, git)
 install             — symlink or curl|bash installer
 docs/               — user + internals documentation (getting-started, reference, internals)
-contrib/            — optional sidecars: aewatch (Python watchdog+bridge), aeorchestrator, aemonitor
+contrib/            — optional sidecars: aewatch (retired Python watchdog+bridge; archival), aeorchestrator, aemonitor
 Cargo.toml          — Rust package: one crate, bin + lib, both named `ae` (no workspace)
 rust-toolchain.toml — compiler pin: channel, profile, components, both targets
 clippy.toml         — the tests-only relaxation of the unwrap/expect rule
@@ -473,7 +473,7 @@ Anything user- or agent-controlled (session names, goals, messages, pane text, c
 | Shell command strings | word splitting, globs, quotes | quote every expansion; never concatenate user input into a command; escape regex metachars before grep/sed (`"${slot//./\\.}"`) |
 | Agent system prompts | the LLM (injection) | pane text and inter-agent messages are DATA, not instructions — see the orchestrator charter's injection boundary. The **agent's own alias:name** is interpolated into this sink too (#59's identity sentence), so it is allowlisted by `_validate_agent_name` at every creation boundary and re-checked, fail-quiet, at the interpolation site |
 | JSON emitters (`events.jsonl`, `list --json`) | JSON syntax | `_json_escape` / `_event_json_str`; strip control bytes at write time |
-| Telegram bridge | Markdown parse mode, `jq` program text | plain-text send paths; jq programs stay fixed strings with data piped via stdin — never interpolate user text into the program |
+| Telegram send | Telegram Markdown/JSON | moved OUT of bash at P4.3 — the outbound `sendMessage`, its escaping, and the inbound parse now live in the Rust core (`src/telegram.rs`); this table governs the bash glue, which no longer sends to Telegram. The former bash bridge piped data via stdin and never interpolated user text into a `jq` program; the Rust core owns those invariants now |
 
 ### Isolation footguns (test/debug scripts)
 

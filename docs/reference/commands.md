@@ -277,12 +277,12 @@ path (the first argument is then no longer `orchestrator`).
 ae telegram setup       # interactive: writes [telegram] config + token file
 ae telegram start       # spawn daemon now, persist enabled=true
 ae telegram stop        # kill daemon, persist enabled=false
-ae telegram status      # report intent + runtime + deps + token validation
+ae telegram status      # report intent + runtime + core + token validation
 ```
 
-Machine-global daemon that bridges every ae session on this host to one Telegram chat. Single instance per machine (lock-guarded). Outbound forwards filtered events to chat. Inbound (when `allowed_user_ids` is set) offers three ways to reach an agent: **reply** to a forwarded event (routes to that agent), the compact **`@session:agent <msg>`** prefix, and a sticky **`/use <session> <agent>`** default for plain messages — plus the explicit `/list` and `/session <name|id-prefix> send|ask <agent> <msg>`. All paths share the same session/agent revalidation. Inbound is from the configured private chat only — auth requires matching `from.id` + `chat.id` + a private chat.
+Machine-global daemon that bridges every ae session on this host to one Telegram chat. Single instance per machine (one `ae-telegram` tmux session). Outbound forwards filtered events to chat. Inbound (when `allowed_user_ids` is set) offers three ways to reach an agent: **reply** to a forwarded event (routes to that agent), the compact **`@session:agent <msg>`** prefix, and a sticky **`/use <session> <agent>`** default for plain messages — plus the explicit `/list` and `/session <name|id-prefix> send|ask <agent> <msg>`. All paths share the same session/agent revalidation. Inbound is from the configured private chat only — auth requires matching `from.id` + `chat.id` + a private chat.
 
-`jq` + `curl` are feature-only dependencies; ae's core commands work without them. See the [Telegram bridge](telegram.md) page for setup, config schema, inbound trust boundary, and lifecycle.
+The bridge is the ae core binary — it needs a configured ae core and no extra CLI dependencies. See the [Telegram bridge](telegram.md) page for setup, config schema, inbound trust boundary, and lifecycle.
 
 ## `ae rename old-name new-name`
 

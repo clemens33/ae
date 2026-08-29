@@ -2719,6 +2719,13 @@ injection boundaries; bash daemon vs aewatch runtime handoff via marker + fresh
 heartbeat), `ae orchestrator` + ae-monitor window (bash product surfaces) vs contrib
 templates/sidecars.
 
+> **P4.3 update (2026-08-29):** the telegram-bridge half of this description is now
+> historical IS. The bridge is the **Rust core** (the ae core binary, run in the
+> `ae-telegram` tmux session); the bash telegram daemon and the aewatch in-process bridge —
+> and their marker/heartbeat handoff — are **retired**, and `AE_WATCHDOG_IMPL=uv` no longer
+> selects the aewatch sidecar. The **watchdog** half of S10 is unchanged: the bash
+> per-session watchdog remains the watchdog until its own migration slice.
+
 <!-- rows: SC-9xx — claims collected by gpt56luna:s10source (colead's evidence worker,
 2026-08-20, frozen-doc citations); buckets proposed by lead; colead confirm pending -->
 
@@ -2899,9 +2906,11 @@ Telegram (authority: telegram.md @72c7293, cited per memo):
   external-actor escapes rejected.
 - **SC-950** b2 — sender identity is `telegram:<id>`; replies route back outbound.
   Authority: UNRESOLVED(memo citation is only the unqualified line reference 93). Empirical: pending-probe(Telegram sender identity and reply route). Conflict: none.
-- **SC-951** b1 — inbound update offset persists BEFORE dispatch: at-most-once side
-  Authority: UNRESOLVED(memo citation is only the unqualified line reference 97). Empirical: docs/migration/evidence/locks-census-2.md § Telegram setup/start/stop and daemon loop — Inbound polling. Conflict: none.
-  effects.
+- **SC-951** b4 DR-007 — inbound update offset advances only AFTER a successful durable
+  Authority: DR-007 (both seats, 2026-08-29). Empirical: docs/migration/evidence/locks-census-2.md § Telegram setup/start/stop and daemon loop — Inbound polling. Conflict: DR-007.
+  route: at-least-once, at most one honest duplicate per routed-before-offset crash
+  window. (IS at 72c7293: persist-before-dispatch = at-most-once, silently LOSES an
+  update on a crash after the offset write but before the route.)
 - **SC-952** b2 — command-menu registration is best-effort (log and ignore).
   Authority: UNRESOLVED(memo citation is only the unqualified line reference 95). Empirical: docs/migration/evidence/locks-census-2.md § Telegram setup/start/stop and daemon loop — tg_set_commands. Conflict: none.
 - **SC-953** b2 — start is idempotent.
@@ -2922,9 +2931,10 @@ Telegram (authority: telegram.md @72c7293, cited per memo):
   failure silently ignored — #86-D evidence.)
 - **SC-959** b2 — a first-seen session starts at EOF; no history flood.
   Authority: UNRESOLVED(memo citation is only the unqualified line range 167-169). Empirical: pending-probe(first-seen session EOF initialization). Conflict: none.
-- **SC-960** b1 — the persisted getUpdates offset prevents inbound redispatch on
-  Authority: UNRESOLVED(memo gives unqualified line references 97,169). Empirical: docs/migration/evidence/locks-census-2.md § Telegram setup/start/stop and daemon loop — Inbound polling. Conflict: none.
-  restart.
+- **SC-960** b4 DR-007 — an ordinary restart resumes after the last durable HANDLED
+  Authority: DR-007 (both seats, 2026-08-29). Empirical: docs/migration/evidence/locks-census-2.md § Telegram setup/start/stop and daemon loop — Inbound polling. Conflict: DR-007.
+  offset (no redispatch of already-handled updates); a routed-before-offset crash may
+  redeliver exactly that one update (the DR-007 crash window).
 - **SC-961** b1 — token file is owner-only 0600; wrong perms refuse start with a
   Authority: UNRESOLVED(memo gives only unqualified line references 35,210,216-220). Empirical: docs/migration/evidence/locks-census-2.md § Telegram setup/start/stop and daemon loop — Setup write sequence. Conflict: none.
   corrective diagnostic.
@@ -3637,9 +3647,46 @@ DR-004 Durable inbox, coalesced notification
 ```
 
 ```
+DR-007 At-least-once inbound Telegram routing
+- affected SC ids: SC-951, SC-960 (both bucket 4 under this DR); the bounded-give-up
+  exception below.
+- context / current IS: at 72c7293 SC-951/SC-960 recorded persist-before-dispatch
+  (at-most-once) — a crash after the offset write but before the update is routed LOSES
+  that update silently. Tracer B ships the inverse for durability.
+- options considered: (a) keep at-most-once (accepts silent inbound loss); (b)
+  at-least-once with an explicit crash-window bound plus a bounded give-up for the
+  otherwise-unrecoverable case.
+- decision / intended Rust behavior: AT-LEAST-ONCE. The durable getUpdates offset
+  advances ONLY after an update is successfully AND durably routed; an ordinary restart
+  resumes after the last handled offset. A crash between routing and the offset write may
+  redeliver EXACTLY that one update (the honest crash window) — never wholesale replay,
+  never a loss. Malformed / oversized / non-2xx responses never route and never advance;
+  policy-dropped updates (including an unauthorized chat/sender) are "handled" and the
+  offset may advance past them — only a FAILURE to route an AUTHORIZED update holds the
+  offset.
+- bounded give-up (the explicit exception, so a dead target cannot deadlock the queue):
+  an authorized route that keeps failing is retried on the short cadence against a budget
+  KEYED TO THE update_id (counting only authorized route-delivery failures — not general
+  API/network errors — reset on a different id or on success). On exhaustion the daemon
+  sends a give-up notice (original text + failed target) back to the authorized chat and
+  REQUIRES Telegram acceptance (2xx + ok:true) BEFORE advancing the offset; an unaccepted
+  notice keeps the update held / backing off (a best-effort void notice then advance would
+  be silent loss). The budget is IN-MEMORY and resets on daemon restart (mirrors sweep-retry
+  state; no second durable ledger). If the notice succeeds but the offset checkpoint then
+  fails, the possible duplicate notice belongs to the same routed-before-offset crash window.
+- trade-offs accepted: hold-forever is an unrecoverable DEADLOCK — a held offset blocks every
+  later update including the /use that would redirect away from the dead target; the bounded
+  give-up trades that stall for at most one surfaced (never silent) non-delivery. Mirrors the
+  sweep-delivery contract SC-936/937/938.
+- authority: tracer B gate rulings; both-seat design record.
+- seats + date: fable5:lead + gpt56sol:colead, 2026-08-29.
+```
+
+```
 DR-003 At-least-once outbound Telegram delivery
 - affected SC ids: SC-958 (bucket 4 under this DR); #86's outbound half (scope refined
-  by issue comment); inbound is NOT affected — SC-951/SC-960 stay at-most-once.
+  by issue comment). Inbound is governed SEPARATELY by DR-007 (at-least-once inbound
+  routing) — this DR stays outbound-specific.
 - context / current IS: telegram.md:9-12,167-169 promise saved offsets prevent restart
   replay; census-3 I3 shows sends succeed while the durable offset save fails silently.
   After a remote send succeeds, a crash before local cursor commit makes exactly-once
@@ -3687,6 +3734,11 @@ DR-002 One daemon per AE_HOME
   the consumer).
 - trade-offs accepted: single supervised process replaces N independent ones (SPOF
   accepted against condition 1); observable topology changes (pane and selector gone).
+- P4.3 status (2026-08-29): the **telegram half has landed** — the Rust core owns the single
+  machine bridge (getUpdates inbound + `say`/events outbound), the bash telegram daemon and the
+  aewatch in-process bridge are retired, and `AE_WATCHDOG_IMPL` no longer selects the aewatch
+  sidecar. The **watchdog half** of this DR (one Rust daemon owning the per-session watchdog) is
+  not yet cut — the bash per-session watchdog remains.
 - authority: epic #79 P4 (both runtimes retire); census-3 (measured aewatch topology =
   the incumbent design); Clemens' ambitious-divergence latitude.
 - seats + date: gpt56sol:colead (proposed) + fable5:lead (concurred, five conditions),
