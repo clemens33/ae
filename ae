@@ -15488,6 +15488,27 @@ _watchdog_start() {
     # upgrade + refresh (helpers are rewritten but the running watchdog is not
     # restarted). Reap it first so we never run two watchdogs side by side.
     _watchdog_reap_legacy
+    # Single-starter mutual exclusion (P4.1a). Both the launch auto-start
+    # (_start_session_watchdog -> "${AE_META}/watchdog" start) and an explicit
+    # `ae watchdog start` reach THIS function; without a lock two concurrent callers
+    # each read _watchdog_is_running=false in the window before either establishes
+    # its pane+pidfile, and BOTH split a _watchdog daemon. Acquire an flock on
+    # .watchdog.start.lock BEFORE the check+spawn. FAILING to acquire is NOT licence
+    # to proceed — another starter holds it and is establishing the single daemon, so
+    # we DEFER (no spawn) rather than duplicate. Only a MISSING flock binary degrades
+    # to the unguarded path (documented, optional platform). flock (not mkdir) so the
+    # kernel releases it on any death — no stale-lock wedge. The fd stays open for the
+    # rest of the function, holding the lock across the spawn+registration below.
+    if command -v flock >/dev/null 2>&1; then
+        # exec (persistent fd), not a block redirect: the lock must span the spawn
+        # and the pidfile wait. A failed open exits the helper loudly before any
+        # spawn — itself a no-spawn outcome.
+        exec 201>"${META_DIR}/.watchdog.start.lock"
+        if ! flock -w "$START_LOCK_WAIT" 201; then
+            echo "Watchdog start deferred: could not acquire the start lock (another start in progress)." >&2
+            exit 0
+        fi
+    fi
     # Idempotent: if a current watchdog is already running, just confirm the meta
     # flag and exit — do NOT touch status-right (its indicator must stay live).
     if _watchdog_is_running; then
@@ -15508,6 +15529,36 @@ _watchdog_start() {
     tmux select-pane -t "$watchdog_pane" -T "ae watchdog" 2>/dev/null || true
     # Read-only: disable input on the watchdog pane (events pane was already disabled).
     tmux select-pane -t "$watchdog_pane" -d 2>/dev/null || true
+    # The daemon (_run) publishes its pidfile ASYNCHRONOUSLY, so releasing the lock
+    # the moment the pane exists would let the next starter race that write into a
+    # duplicate spawn. HOLD the lock (fd 201, open until exit) until the daemon is
+    # established by the SAME criteria the next starter's _watchdog_is_running
+    # applies: a fully-written pidfile with a LIVE pid AND our tagged pane. The check
+    # is NON-DESTRUCTIVE (never deletes a partial file) and requires a VALIDATED pid —
+    # registering on mere file existence would release the lock over a zero-byte
+    # pidfile (the write is atomic upstream, but this belt-and-suspenders holds even
+    # if it were not), and the next starter would read no pid, delete it, and spawn a
+    # duplicate. If nothing registers within the bound the start FAILED: tear down the
+    # pane WE spawned and abort loudly while STILL holding the lock — leaving no
+    # live-but-unregistered daemon for the next starter to duplicate. Bounded so a
+    # stillborn daemon cannot wedge start; registration normally lands on the first
+    # poll.
+    local _pw _registered=0 _rp
+    for _pw in $(seq 1 "$START_REGISTER_TRIES"); do
+        if [[ -f "$PIDFILE" ]]; then
+            _rp="$(cat "$PIDFILE" 2>/dev/null || true)"
+            if [[ -n "$_rp" ]] && kill -0 "$_rp" 2>/dev/null && [[ -n "$(_monitor_find_pane _watchdog)" ]]; then
+                _registered=1
+                break
+            fi
+        fi
+        sleep 0.05
+    done
+    if ((_registered == 0)); then
+        tmux kill-pane -t "$watchdog_pane" 2>/dev/null || true
+        echo "Error: watchdog did not publish a pidfile within the start bound; start aborted." >&2
+        exit 1
+    fi
     # status-right is OWNED BY AE (_ae_apply_status_bar bakes '[path git] [watch …]' with
     # the #{@ae_watchdog_status} reference at the END). The watchdog never rewrites the
     # bar — it only feeds the user option each cycle — so there is nothing to capture,
@@ -16395,6 +16446,15 @@ helper_watchdog_main() {
     [[ "$SWEEP_RETRY_SECS" =~ ^[1-9][0-9]*$ ]] || SWEEP_RETRY_SECS=30
     SWEEP_RETRY_MAX="${AE_WATCHDOG_SWEEP_RETRY_MAX:-6}"
     [[ "$SWEEP_RETRY_MAX" =~ ^(0|[1-9][0-9]*)$ ]] || SWEEP_RETRY_MAX=6
+    # P4.1a start-serialization knobs (see _watchdog_start). START_LOCK_WAIT: max
+    # seconds a starter blocks on .watchdog.start.lock before deferring (a wedged
+    # holder must not hang a start forever). START_REGISTER_TRIES: polls (x0.05s) to
+    # await the spawned daemon's pidfile before declaring the start failed. Generous
+    # defaults; validated like the tunables above (leading-zero/octal rejected).
+    START_LOCK_WAIT="${AE_WATCHDOG_START_LOCK_WAIT_SEC:-15}"
+    [[ "$START_LOCK_WAIT" =~ ^[1-9][0-9]*$ ]] || START_LOCK_WAIT=15
+    START_REGISTER_TRIES="${AE_WATCHDOG_START_REGISTER_TRIES:-200}"
+    [[ "$START_REGISTER_TRIES" =~ ^[1-9][0-9]*$ ]] || START_REGISTER_TRIES=200
     META_AGENT="$(grep '^meta_agent=' "$META_DIR/meta" 2>/dev/null | cut -d= -f2- || true)"
     # Only the MAIN meta-agent runs the sweep cadence; any workers/spawned agents in a
     # meta session keep the normal watchdog. (alias:name, dropping the session-id.)
@@ -16417,7 +16477,13 @@ helper_watchdog_main() {
 
     # --- _run: the actual watchdog (runs inside hidden tmux window) ---
 
-    echo "$$" >"$PIDFILE"
+    # Publish the pidfile ATOMICALLY (temp + rename): `echo >file` creates the file
+    # empty and only THEN writes the pid, so a reader can observe a zero-byte pidfile
+    # mid-write. A serialized starter that saw the empty file would read no pid,
+    # delete it (_watchdog_is_running rms an empty pidfile), and spawn a duplicate
+    # while this daemon finishes writing. rename(2) makes the pidfile appear only
+    # fully written — the validated registration wait in _watchdog_start depends on it.
+    printf '%s\n' "$$" >"${PIDFILE}.tmp.$$" && mv -f "${PIDFILE}.tmp.$$" "$PIDFILE"
     # Only ever signal a PID THIS invocation launched. Initialise BEFORE the EXIT
     # trap so an inherited/exported `_wd_child`/`_wd_sleep` can never make cleanup
     # TERM an unrelated process. Both stay empty on the bash rollback path, where

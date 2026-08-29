@@ -3821,6 +3821,44 @@ assert_eq "status-right ownership: _watchdog_start never sets/reads status-right
 assert_eq "status-right ownership: save/prepend/restore machinery deleted" "0" \
     "$(grep -c '_watchdog_restore_status_right\|_strip_watchdog_status_prefix\|status_right_prev' <<<"$AE_SOURCE")"
 
+# ── P4.1a: single-starter mutual exclusion (no double-daemon on concurrent start) ──
+# The launch auto-start (_start_session_watchdog -> "${AE_META}/watchdog" start) and an
+# explicit `ae watchdog start` reach the SAME _watchdog_start; without a lock two
+# concurrent callers each read is-running=false in the check->spawn window and BOTH
+# split a daemon (measured: a burst of concurrent starts spawned 3 panes/round). The
+# claim is an flock on .watchdog.start.lock ACQUIRED BEFORE the split-window spawn and
+# HELD (fd open until exit) across a wait for the daemon's ASYNC pidfile, so a
+# serialized next starter observes a fully-established watchdog and defers. flock (not
+# mkdir) so the kernel releases it on any death — no stale-lock wedge.
+assert_eq "P4.1a: _watchdog_start takes an flock start-lock (kernel-released, no stale wedge)" "1" \
+    "$([[ "$_wds_fn" == *flock* && "$_wds_fn" == *'.watchdog.start.lock'* ]] && echo 1 || echo 0)"
+_wds_lock_ln="$(grep -n '\.watchdog\.start\.lock' <<<"$_wds_fn" | head -1 | cut -d: -f1 || true)"
+_wds_spawn_ln="$(grep -n 'split-window' <<<"$_wds_fn" | head -1 | cut -d: -f1 || true)"
+_wds_wait_ln="$(grep -n -- '-f "$PIDFILE"' <<<"$_wds_fn" | head -1 | cut -d: -f1 || true)"
+assert_eq "P4.1a: the start-lock is acquired BEFORE the split-window spawn" "1" \
+    "$([[ -n "$_wds_lock_ln" && -n "$_wds_spawn_ln" && "$_wds_lock_ln" -lt "$_wds_spawn_ln" ]] && echo 1 || echo 0)"
+assert_eq "P4.1a: the lock is HELD until the daemon publishes its pidfile (wait after spawn)" "1" \
+    "$([[ -n "$_wds_wait_ln" && -n "$_wds_spawn_ln" && "$_wds_wait_ln" -gt "$_wds_spawn_ln" ]] && echo 1 || echo 0)"
+# A FAILED/timed-out lock acquisition must DEFER (no spawn), never proceed unprotected
+# (the removed `flock ... 201 || true` fall-through restored the concurrent-spawn race).
+assert_eq "P4.1a: a failed/timed-out lock acquisition DEFERS (no bare-proceed fall-through)" "1" \
+    "$([[ "$_wds_fn" != *'201 || true'* && "$_wds_fn" == *'could not acquire the start lock'* ]] && echo 1 || echo 0)"
+# A pidfile-registration TIMEOUT must tear down the pane WE spawned and fail — never
+# report success leaving a live-but-unregistered daemon the next starter duplicates.
+assert_eq "P4.1a: pidfile-registration timeout tears down the spawned pane and aborts" "1" \
+    "$([[ "$_wds_fn" == *'_registered'* && "$_wds_fn" == *'kill-pane -t "$watchdog_pane"'* && "$_wds_fn" == *'did not publish a pidfile'* ]] && echo 1 || echo 0)"
+# Registration must wait for a VALIDATED published pid + our tagged pane, NOT mere
+# file existence: `echo >file` yields a zero-byte pidfile mid-write; registering on
+# existence would release the lock over it, and the next starter would read no pid,
+# delete it, and spawn a duplicate (the empty-pidfile race). Non-destructive — it
+# never deletes a partial file.
+assert_eq "P4.1a: registration waits for a validated live pid + pane (not mere existence)" "1" \
+    "$([[ "$_wds_fn" == *'kill -0 "$_rp"'* && "$_wds_fn" == *'_monitor_find_pane _watchdog'* ]] && echo 1 || echo 0)"
+# And the daemon publishes the pidfile ATOMICALLY (temp + rename) so it never appears
+# empty at the source; the bare echo-redirect (empty-then-write) is gone.
+assert_eq "P4.1a: the daemon publishes its pidfile atomically (temp + rename)" "1" \
+    "$([[ "$AE_SOURCE" == *'mv -f "${PIDFILE}.tmp.$$" "$PIDFILE"'* && "$AE_SOURCE" != *'echo "$$" >"$PIDFILE"'* ]] && echo 1 || echo 0)"
+
 # Root fix: _watchdog_is_running must require a live @ae_agent=_watchdog pane in
 # its OWN session (not just a live pid) before reporting running — a recycled pid
 # from a stale pidfile must not read as running, and a stale pidfile is cleaned.
