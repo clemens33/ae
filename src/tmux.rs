@@ -640,13 +640,17 @@ pub fn interpret_agents(succeeded: bool, stdout: &str) -> Option<Vec<ObservedAge
 
 /// The watchdog's per-pane reading — richer than [`PANE_FORMAT`]'s liveness
 /// three, and deliberately its OWN format so widening it never touches the
-/// SC-017s contract that [`interpret_panes`] answers. Five fields, `\x1f`
-/// (unit separator) delimited: none of them — a `%`-prefixed pane id, an
-/// allowlisted `@ae_slot`/`@ae_agent`, a command token, a numeric pid — can
-/// contain that byte, so an empty middle field can never shift the columns the
-/// way a tab or a space would (the TSV-framing hazard, avoided by construction).
+/// SC-017s contract that [`interpret_panes`] answers. Five fields, printable
+/// ` | ` delimited: the first four fields — a `%`-prefixed pane id, an
+/// allowlisted `@ae_slot`/`@ae_agent`, and a numeric pid — cannot contain that
+/// sequence. `pane_current_command` is free text, so it is last and may carry
+/// the separator verbatim.
+///
+/// tmux 3.4 escapes control characters in `-F` output as octal while tmux 3.5+
+/// emits them raw. A printable separator stays byte-identical across versions.
+const WATCH_PANE_SEPARATOR: &str = " | ";
 pub const WATCH_PANE_FORMAT: &str =
-    "#{pane_id}\u{1f}#{@ae_slot}\u{1f}#{@ae_agent}\u{1f}#{pane_current_command}\u{1f}#{pane_pid}";
+    "#{pane_id} | #{@ae_slot} | #{@ae_agent} | #{pane_pid} | #{pane_current_command}";
 
 /// The number of fields [`WATCH_PANE_FORMAT`] yields.
 const WATCH_PANE_FIELDS: usize = 5;
@@ -681,18 +685,19 @@ pub struct WatchPane {
     pub pane_pid: Option<u32>,
 }
 
-/// What a completed watchdog enumeration means: `None` on a failed run (the
-/// frozen loop reads nothing from a `2>/dev/null` failure); otherwise one
-/// [`WatchPane`] per line that split into exactly [`WATCH_PANE_FIELDS`] fields.
-/// A line that does not is DROPPED, not guessed — with a `\x1f` delimiter a
-/// well-formed pane is always exactly five fields, so a short line is genuine
-/// corruption and reading it would misattribute a pane.
+/// What a completed watchdog enumeration means: `None` on a failed run or an
+/// untrusted successful reading; otherwise one [`WatchPane`] per line. Every
+/// non-empty line must split into exactly [`WATCH_PANE_FIELDS`] fields. The
+/// split is limited to that arity so the free-text command remains intact. A
+/// line that does not is a parse failure of the whole reading, not a dropped
+/// pane: silently dropping it could turn a present pane into a false `Hard`
+/// verdict.
 ///
 /// ```
 /// use ae::tmux::{WatchPane, interpret_watch_panes};
 ///
-/// let sep = '\u{1f}';
-/// let out = format!("%1{sep}main{sep}cl:lead{sep}claude{sep}4321\n%2{sep}{sep}{sep}zsh{sep}88\n");
+/// let sep = " | ";
+/// let out = format!("%1{sep}main{sep}cl:lead{sep}4321{sep}claude\n%2{sep}{sep}{sep}88{sep}zsh\n");
 /// let panes = interpret_watch_panes(true, &out).unwrap();
 /// assert_eq!(panes[0], WatchPane {
 ///     pane_id: "%1".into(), slot: Some("main".into()), agent: Some("cl:lead".into()),
@@ -709,24 +714,26 @@ pub fn interpret_watch_panes(succeeded: bool, stdout: &str) -> Option<Vec<WatchP
         return None;
     }
     let reading = |field: &str| (!field.is_empty()).then(|| field.to_owned());
-    Some(
-        stdout
-            .lines()
-            .filter_map(|line| {
-                let fields: Vec<&str> = line.split('\u{1f}').collect();
-                if fields.len() != WATCH_PANE_FIELDS {
-                    return None;
-                }
-                Some(WatchPane {
-                    pane_id: fields[0].to_owned(),
-                    slot: reading(fields[1]),
-                    agent: reading(fields[2]),
-                    current_command: fields[3].to_owned(),
-                    pane_pid: fields[4].parse::<u32>().ok(),
-                })
-            })
-            .collect(),
-    )
+    let mut panes = Vec::new();
+    for line in stdout.lines() {
+        let fields: Vec<&str> = line
+            .splitn(WATCH_PANE_FIELDS, WATCH_PANE_SEPARATOR)
+            .collect();
+        if fields.len() != WATCH_PANE_FIELDS {
+            return None;
+        }
+        panes.push(WatchPane {
+            pane_id: fields[0].to_owned(),
+            slot: reading(fields[1]),
+            agent: reading(fields[2]),
+            current_command: fields[4].to_owned(),
+            pane_pid: fields[3].parse::<u32>().ok(),
+        });
+    }
+    if !stdout.is_empty() && panes.is_empty() {
+        return None;
+    }
+    Some(panes)
 }
 
 /// The arguments capturing `pane`'s recent output for the watchdog's hash and
@@ -1131,7 +1138,32 @@ mod tests {
     }
 
     #[test]
-    fn the_watchdog_pane_reading_widens_the_enumeration_and_drops_short_lines() {
+    fn the_watchdog_format_is_pinned_to_its_printable_separator() {
+        use super::{WATCH_PANE_FORMAT, WATCH_PANE_SEPARATOR};
+
+        let reconstructed = [
+            "#{pane_id}",
+            WATCH_PANE_SEPARATOR,
+            "#{@ae_slot}",
+            WATCH_PANE_SEPARATOR,
+            "#{@ae_agent}",
+            WATCH_PANE_SEPARATOR,
+            "#{pane_pid}",
+            WATCH_PANE_SEPARATOR,
+            "#{pane_current_command}",
+        ]
+        .concat();
+        assert_eq!(WATCH_PANE_FORMAT, reconstructed);
+        assert!(
+            !WATCH_PANE_FORMAT
+                .chars()
+                .any(|character| character.is_ascii_control())
+        );
+        assert_eq!(WATCH_PANE_FORMAT.matches(WATCH_PANE_SEPARATOR).count(), 4);
+    }
+
+    #[test]
+    fn the_watchdog_pane_reading_widens_the_enumeration_and_refuses_malformed_lines() {
         use super::{
             WATCH_PANE_FORMAT, WatchPane, capture_pane_args, interpret_watch_panes,
             watch_panes_args,
@@ -1155,18 +1187,12 @@ mod tests {
                 "%3"
             ]
         );
-        let sep = '\u{1f}';
-        // A well-formed pane, a short (corrupt) line that must be DROPPED, and a
-        // pane whose pid tmux could not print -> None (never a guessed dead).
-        let out = format!(
-            "%1{sep}main{sep}cl:lead{sep}claude{sep}9\n%bad{sep}main\n%2{sep}{sep}{sep}zsh{sep}\n"
-        );
+        let sep = super::WATCH_PANE_SEPARATOR;
+        // A well-formed pane and a pane whose pid tmux could not print -> None
+        // (never a guessed dead).
+        let out = format!("%1{sep}main{sep}cl:lead{sep}9{sep}claude\n%2{sep}{sep}{sep}{sep}zsh\n");
         let panes = interpret_watch_panes(true, &out).expect("a successful enumeration");
-        assert_eq!(
-            panes.len(),
-            2,
-            "the two-field corrupt line is dropped, not read"
-        );
+        assert_eq!(panes.len(), 2);
         assert_eq!(panes[0].pane_pid, Some(9));
         assert_eq!(
             panes[1],
@@ -1182,6 +1208,54 @@ mod tests {
             interpret_watch_panes(true, "").unwrap().is_empty(),
             "no panes is an empty enumeration, not None"
         );
+        assert!(
+            interpret_watch_panes(true, "%bad | main").is_none(),
+            "a line that cannot split is a failure of the whole reading"
+        );
+        assert!(
+            interpret_watch_panes(true, "\n").is_none(),
+            "non-empty output with no parseable lines is untrusted"
+        );
+    }
+
+    #[test]
+    fn the_watchdog_fixtures_preserve_tmux_version_framing() {
+        use super::{WatchPane, interpret_watch_panes};
+
+        // Literal output captured from tmux 3.4 with the printable separator.
+        let tmux_3_4 = "%0 |  | cl:lead | 1234 | fish\n";
+        assert_eq!(
+            interpret_watch_panes(true, tmux_3_4),
+            Some(vec![WatchPane {
+                pane_id: "%0".into(),
+                slot: None,
+                agent: Some("cl:lead".into()),
+                current_command: "fish".into(),
+                pane_pid: Some(1234),
+            }])
+        );
+
+        // Literal output captured from tmux 3.7b with the printable separator.
+        let tmux_3_7b = "%1 | main | cl:lead | 4321 | claude\n";
+        assert_eq!(
+            interpret_watch_panes(true, tmux_3_7b),
+            Some(vec![WatchPane {
+                pane_id: "%1".into(),
+                slot: Some("main".into()),
+                agent: Some("cl:lead".into()),
+                current_command: "claude".into(),
+                pane_pid: Some(4321),
+            }])
+        );
+
+        // The old tmux 3.4 control separator remains untrusted; the parser
+        // must not normalize escaped producer output into data.
+        let escaped_old = "%0\\037\\037cl:lead\\037fish\\0371234\n";
+        assert!(interpret_watch_panes(true, escaped_old).is_none());
+
+        let command_with_separator = "%2 | worker | cl:helper | 77 | tool | with separator\n";
+        let panes = interpret_watch_panes(true, command_with_separator).expect("valid reading");
+        assert_eq!(panes[0].current_command, "tool | with separator");
     }
 
     #[test]
