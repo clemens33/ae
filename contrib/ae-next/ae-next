@@ -1,0 +1,212 @@
+#!/usr/bin/env bash
+# ae-next — run the rust-rewrite hybrid (bash glue + Rust core) beside the
+# installed `ae`, sharing nothing with it.
+#
+# THE WHOLE JOB IS ISOLATION. Four exported variables and one refusal:
+#   AE_HOME             ~/.ae-next          (AE_NEXT_HOME overrides)
+#   CONFIG_FILE         $AE_HOME/config     so an inherited CONFIG_FILE cannot redirect it
+#   AE_TMUX_SERVER      ae-next             (AE_NEXT_TMUX_SERVER overrides)
+#   AE_TMUX_SERVER_KIND name
+# Sessions, archive, worktrees, locks, the Telegram offset and the tmux server
+# all follow those, so an ae-next session and an ae session cannot see each
+# other's state — the ownership rule is structural rather than a convention.
+#
+# WHAT THIS DELIBERATELY DOES NOT DO: it does not export AE_CORE_BIN. The core is
+# resolved by `ae` itself from $AE_HOME/core/current on EVERY entry, including
+# the re-entries this wrapper is not part of — a generated helper exec'ing its
+# recorded ae path, the watchdog re-invoking `telegram _supervise`, compact
+# launching its child. An exported path would be a copy of that pointer, frozen
+# into a tmux server's environment at launch and stale from the first upgrade;
+# reading the file each time is what makes an install visible everywhere at once.
+# The check below is a PRE-CHECK for a clear early error, not the resolution.
+#
+# See docs/migration/coexistence.md. Not P5: nothing here touches ~/.local/bin/ae
+# or ~/.ae.
+set -euo pipefail
+
+_refuse() {
+    echo "ae-next: $1" >&2
+    exit 2
+}
+
+# ── SHARED INPUT RULES — byte-identical in ae-next and its installer ─────────
+# WHY THE SAME TEXT TWICE. An install that SUCCEEDS and a wrapper that then
+# REFUSES is the worst of the three outcomes: state on disk and no command to
+# reach it with. There is no shared library for contrib scripts, so the two
+# copies are kept byte-identical and any drift shows up in one diff.
+#
+# Each function PRINTS the reason it refuses and returns 0 either way — the empty
+# string is "no objection". Callers turn that into their own exit shape.
+#
+# THE HOME RULES, and what each one is for:
+#   absolute        a relative home resolves against whatever directory the
+#                   caller happened to be in, so one command installs to two
+#                   places on two runs;
+#   no literal ~    nothing here expands a tilde (the shell already did, or the
+#                   value came from a file), so `~/x` would create a directory
+#                   whose NAME starts with a tilde;
+#   not the legacy  the whole point of the slice is that ~/.ae is untouched. The
+#     home          comparison is RESOLVED, because `…/.ae-next/../.ae` and a
+#                   symlinked root pointing at ~/.ae both spell it without
+#                   looking like it;
+#   root not a      the final component is ours to create and own. A symlinked
+#     symlink       ANCESTOR is fine and normal (macOS /var -> /private/var); a
+#                   symlinked ROOT means everything below lands somewhere never
+#                   checked.
+_ae_next_home_reason() {
+    local home="$1" base parent rparent resolved legacy_parent legacy
+    # The tilde is DELIBERATELY a literal here: this is the rule that REFUSES an
+    # unexpanded one, so expanding it would delete the check.
+    # shellcheck disable=SC2088
+    case "$home" in
+        '~' | '~/'*)
+            echo "AE_NEXT_HOME must be an absolute path, and a literal '~' is never expanded here: $home"
+            return 0
+            ;;
+        /*) ;;
+        *)
+            echo "AE_NEXT_HOME must be an absolute path: $home"
+            return 0
+            ;;
+    esac
+    # NO '.' OR '..' COMPONENTS, checked on the RAW value before anything is
+    # resolved, created or compared. This is not tidiness. `cd -P` can only
+    # resolve a parent that EXISTS, so `$HOME/missing/../.ae` survives
+    # resolution as its own literal string, compares unequal to the legacy home,
+    # and is then MATERIALISED by `mkdir -p` — which creates the missing
+    # component and lands the install in ~/.ae after all. Rejecting the
+    # components removes the whole family; the resolved comparison below stays
+    # as the second line of defence for the paths that do exist.
+    case "/$home/" in
+        */../* | */./*)
+            echo "AE_NEXT_HOME must not contain '.' or '..' path components: $home"
+            return 0
+            ;;
+    esac
+    if [ -L "$home" ]; then
+        echo "AE_NEXT_HOME must not itself be a symlink (an ancestor may be): $home"
+        return 0
+    fi
+    # Resolve the PARENT and re-append the name, so a home that does not exist
+    # yet is still comparable. `cd -P` is the portable resolver — `readlink -f`
+    # is GNU-only (AGENTS.md, GNU vs BSD userland).
+    base="$(basename "$home")"
+    parent="$(dirname "$home")"
+    rparent="$parent"
+    if [ -d "$parent" ]; then rparent="$(cd -P "$parent" && pwd)"; fi
+    resolved="$rparent/$base"
+    legacy_parent="$(dirname "$HOME/.ae")"
+    if [ -d "$legacy_parent" ]; then legacy_parent="$(cd -P "$legacy_parent" && pwd)"; fi
+    legacy="$legacy_parent/.ae"
+    if [ "$resolved" = "$legacy" ]; then
+        echo "AE_NEXT_HOME resolves to the legacy ae home ($legacy), the one tree this slice must never touch: $home"
+        return 0
+    fi
+    return 0
+}
+
+# THE SERVER RULE. `default` is the tmux server the installed ae uses, so an
+# ae-next pointed at it is not a second instance at all — it is the first one
+# wearing a second name, sharing sessions with the ae you are trying not to
+# disturb. Refused rather than silently renamed: an operator who typed it meant
+# something, and it was not this.
+_ae_next_server_reason() {
+    local server="$1"
+    if [ "$server" = "default" ]; then
+        echo "AE_NEXT_TMUX_SERVER must not be 'default' — that is the installed ae's own tmux server, and pointing ae-next at it would share sessions with the instance this command exists to leave alone"
+        return 0
+    fi
+    # THE SESSION-NAME GRAMMAR, for the same reason `ae` allowlists it there:
+    # this value becomes a tmux socket NAME. `./default` and `../default` name
+    # the very socket the rule above refuses, a slash makes it a path, and a
+    # leading dot hides it. One class, no exceptions to reason about.
+    #
+    # Matched with `[[ =~ ]]` and a variable, never `printf | grep -q`: under
+    # `set -o pipefail` a matching `grep -q` exits first, SIGPIPEs the producer,
+    # and the PIPELINE reports failure — so the valid names would be the ones
+    # refused.
+    local grammar='^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$'
+    if ! [[ "$server" =~ $grammar ]]; then
+        echo "AE_NEXT_TMUX_SERVER must match ^[A-Za-z0-9][A-Za-z0-9_-]{0,63}\$ — the session-name grammar, with no slash and no dot components: $server"
+        return 0
+    fi
+    return 0
+}
+
+# ── The repo this wrapper belongs to ─────────────────────────────────────────
+# Resolved from the wrapper's REAL location, so the symlink at
+# ~/.local/bin/ae-next runs the checkout it was linked from. Symlink-safe without
+# `readlink -f`, which is GNU-only (AGENTS.md, GNU vs BSD userland).
+_src="${BASH_SOURCE[0]}"
+while [ -L "$_src" ]; do
+    _dir="$(cd -P "$(dirname "$_src")" && pwd)"
+    _src="$(readlink "$_src")"
+    case "$_src" in
+        /*) ;;
+        *) _src="$_dir/$_src" ;;
+    esac
+done
+_here="$(cd -P "$(dirname "$_src")" && pwd)"
+_ae="$(cd -P "$_here/../.." && pwd)/ae"
+[ -x "$_ae" ] || _refuse "no executable ae at $_ae — is this a checkout?"
+
+# ── The isolated instance ────────────────────────────────────────────────────
+# UNCONDITIONAL overrides, including of values inherited from an outer ae
+# session: running ae-next from inside an ae pane is the normal case during the
+# canary, and inheriting that pane's AE_HOME would put ae-next's state in the old
+# tree. AE_NEXT_HOME / AE_NEXT_TMUX_SERVER are the sanctioned overrides, and a
+# second instance is a second install under its own home.
+#
+# THE SAME RULES THE INSTALLER APPLIED, applied again here rather than trusted:
+# the two run at different times, the environment between them is whatever the
+# operator's shell holds, and an install that succeeded is no evidence about the
+# variables set for THIS invocation.
+AE_HOME="${AE_NEXT_HOME:-$HOME/.ae-next}"
+_reason="$(_ae_next_home_reason "$AE_HOME")"
+[ -z "$_reason" ] || _refuse "$_reason"
+export AE_HOME
+CONFIG_FILE="$AE_HOME/config"
+export CONFIG_FILE
+AE_TMUX_SERVER="${AE_NEXT_TMUX_SERVER:-ae-next}"
+_reason="$(_ae_next_server_reason "$AE_TMUX_SERVER")"
+[ -z "$_reason" ] || _refuse "$_reason"
+export AE_TMUX_SERVER
+AE_TMUX_SERVER_KIND="name"
+export AE_TMUX_SERVER_KIND
+
+# The core is NEXT-OWNED and file-borne. An inherited AE_CORE_BIN is the one
+# input that could quietly repoint it, so it is removed rather than overridden —
+# there is no value this wrapper wants in it.
+if [ -n "${AE_CORE_BIN:-}" ]; then
+    echo "ae-next: ignoring inherited AE_CORE_BIN=$AE_CORE_BIN (the core comes from $AE_HOME/core/current)" >&2
+fi
+unset AE_CORE_BIN
+
+# ── Pre-check: is there an installed core to resolve? ────────────────────────
+# `ae` degrades to its bash bodies when no core is bound, visibly but quietly,
+# and `compact` hard-requires one. For ae-next that degradation only ever means
+# the install did not happen, so it is reported once, here, with the command that
+# fixes it, instead of letting every later invocation explain a symptom.
+_current="$AE_HOME/core/current"
+_missing() {
+    echo "ae-next: $1" >&2
+    echo "ae-next: run 'just next-install' in $(dirname "$_ae")" >&2
+    exit 2
+}
+# lstat FIRST, and never follow: core/current is a regular pointer file this
+# instance's installer wrote. A symlink there is not a pointer we published, and
+# reading through it would resolve a core from a path nobody validated.
+if [ -L "$_current" ]; then
+    _missing "the core pointer $_current is a symlink; it must be the regular file the installer writes"
+fi
+[ -f "$_current" ] || _missing "no installed core: $_current is missing"
+_core="$(head -1 "$_current" 2>/dev/null || true)"
+_core="$(printf '%s' "$_core" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+[ -n "$_core" ] || _missing "no installed core: $_current is empty"
+case "$_core" in
+    /*) ;;
+    *) _missing "the core path in $_current is not absolute: $_core" ;;
+esac
+[ -x "$_core" ] || _missing "the core in $_current is not executable: $_core"
+
+exec "$_ae" "$@"

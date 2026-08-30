@@ -162,6 +162,16 @@ pub const WATCHDOG_RUN: &str = "_watchdog-run";
 /// frozen script.
 pub const TELEGRAM_RUN: &str = "_telegram-run";
 
+/// The musl DNS/NSS instrument — `_net-probe <host> [--port <n>]`.
+///
+/// Underscored like every other core entry, and for the same reason: it is run
+/// by a CI step (and, later, a `doctor` check), never typed at a session. Its
+/// authority is the pre-P5 coexistence design
+/// (`docs/migration/coexistence.md`, item 4) rather than a semantic-contract
+/// row — there is no row because there is no bash predecessor: nothing in the
+/// frozen script ever resolved a hostname. The behavior is [`crate::netprobe`].
+pub const NET_PROBE: &str = "_net-probe";
+
 /// What an argv asks the binary to do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Request {
@@ -303,6 +313,16 @@ pub enum Request {
         paths: crate::telegram::bridge::Paths,
         /// Every tunable, defaulted to the values a flagless call keeps.
         knobs: crate::telegram::bridge::Knobs,
+    },
+    /// `_net-probe <host> [--port <n>]` — resolve a name and report what the
+    /// resolver did.
+    NetProbe {
+        /// The host to resolve. A NAME is the whole point: an IP literal is
+        /// answered without a resolver ever being asked.
+        host: String,
+        /// The port the resolved authority carries, defaulted to
+        /// [`crate::netprobe::DEFAULT_PORT`].
+        port: u16,
     },
     /// `_compact-freeze <session-dir> [--keep-history]` — resolves and emits the
     /// frozen compact tuple. Pure read-only.
@@ -616,6 +636,16 @@ impl Request {
                     Err(word) => Self::UsageError(word),
                 },
             },
+            Some(NET_PROBE) => match &args[1..] {
+                [] => Self::MissingOperand(NET_PROBE),
+                [host, flags @ ..] => match net_probe_port(flags) {
+                    Ok(port) => Self::NetProbe {
+                        host: host.clone(),
+                        port,
+                    },
+                    Err(word) => Self::UsageError(word),
+                },
+            },
             Some(COMPACT_FREEZE) => match &args[1..] {
                 [dir] => Self::CompactFreeze {
                     dir: dir.into(),
@@ -861,6 +891,7 @@ impl Request {
             | Self::EndNonlocalTeardown { .. }
             | Self::WatchdogRun { .. }
             | Self::TelegramRun { .. }
+            | Self::NetProbe { .. }
             | Self::CompactFreeze { .. }
             | Self::CompactRevalidate { .. }
             | Self::CompactArchive { .. }
@@ -958,6 +989,24 @@ fn telegram_options(
     Ok((paths, knobs))
 }
 
+/// Read `_net-probe`'s only flag: `--port <n>`.
+///
+/// The watchdog's rule again — an unrecognised flag, a missing value and a
+/// number that is not a port are all the offending word, never a silent
+/// default. A caller who typed `--port` meant a port, and resolving 443 because
+/// their value did not parse would report an answer about an authority nobody
+/// asked for.
+fn net_probe_port(flags: &[String]) -> std::result::Result<u16, String> {
+    match flags {
+        [] => Ok(crate::netprobe::DEFAULT_PORT),
+        [flag, value] if flag == "--port" => value.parse::<u16>().map_err(|_| value.clone()),
+        // `--port <n> <extra> …`: --port is valid here, so the first UNEXPECTED
+        // token is the one after its value — name that, not --port.
+        [flag, _value, extra, ..] if flag == "--port" => Err(extra.clone()),
+        [flag, ..] => Err(flag.clone()),
+    }
+}
+
 /// A `u32` knob, or the offending word.
 fn count(text: &str) -> std::result::Result<u32, String> {
     text.parse::<u32>().map_err(|_| text.to_owned())
@@ -973,8 +1022,8 @@ mod tests {
     use super::{
         ARCHIVE_PREVIEW, ASK, COMPACT_ARCHIVE, COMPACT_CANCEL, COMPACT_FIND_OUTSTANDING,
         COMPACT_FREEZE, COMPACT_MEMO_BASELINE, COMPACT_REVALIDATE, COMPACT_TEARDOWN, COMPACT_WAIT,
-        DEFAULT_REVALIDATE_WHEN, END_NONLOCAL_TEARDOWN, EVENTS_TAIL, GOAL, MEMO, REPLY, REQUESTS,
-        REVIEW, Request, SEND, STATE, TELEGRAM_RUN, WATCHDOG_RUN,
+        DEFAULT_REVALIDATE_WHEN, END_NONLOCAL_TEARDOWN, EVENTS_TAIL, GOAL, MEMO, NET_PROBE, REPLY,
+        REQUESTS, REVIEW, Request, SEND, STATE, TELEGRAM_RUN, WATCHDOG_RUN,
     };
     use crate::filters::{ListArgs, Scope};
     use crate::requests::Mode;
@@ -1614,6 +1663,68 @@ mod tests {
         assert_eq!(
             Request::parse(&argv(&extra)),
             Request::UsageError("extra".to_owned())
+        );
+    }
+
+    #[test]
+    fn net_probe_takes_a_host_and_defaults_its_port() {
+        assert_eq!(
+            Request::parse(&argv(&[NET_PROBE, "api.telegram.org"])),
+            Request::NetProbe {
+                host: "api.telegram.org".to_owned(),
+                port: crate::netprobe::DEFAULT_PORT,
+            }
+        );
+        assert_eq!(
+            Request::parse(&argv(&[NET_PROBE, "example.test", "--port", "80"])),
+            Request::NetProbe {
+                host: "example.test".to_owned(),
+                port: 80,
+            }
+        );
+    }
+
+    #[test]
+    fn net_probe_never_guesses_a_port_it_was_asked_for() {
+        // Every one of these names the offending WORD and exits 2 — a knob the
+        // caller typed is never silently replaced by the default.
+        for (argv_words, offender) in [
+            (vec![NET_PROBE, "h", "--port"], "--port"),
+            (vec![NET_PROBE, "h", "--port", "https"], "https"),
+            (vec![NET_PROBE, "h", "--port", "70000"], "70000"),
+            (vec![NET_PROBE, "h", "--port", "80", "extra"], "extra"),
+            (vec![NET_PROBE, "h", "--nope"], "--nope"),
+        ] {
+            let request = Request::parse(&argv(&argv_words));
+            assert_eq!(
+                request,
+                Request::UsageError(offender.to_owned()),
+                "{argv_words:?}"
+            );
+            assert_eq!(request.exit_code(), Some(2));
+        }
+    }
+
+    #[test]
+    fn net_probe_without_a_host_is_a_missing_operand() {
+        assert_eq!(
+            Request::parse(&argv(&[NET_PROBE])),
+            Request::MissingOperand(NET_PROBE)
+        );
+        assert_eq!(
+            Request::parse(&argv(&[NET_PROBE])).exit_code(),
+            Some(2),
+            "no host is a usage error"
+        );
+    }
+
+    #[test]
+    fn a_lookup_is_not_decided_by_argv() {
+        // `None` is the honest answer: whether this exits 0 or 1 depends on
+        // what a resolver says, which the command line does not contain.
+        assert_eq!(
+            Request::parse(&argv(&[NET_PROBE, "localhost"])).exit_code(),
+            None
         );
     }
 

@@ -339,6 +339,45 @@ jobs:
 
           echo "static musl proof ok: $got — $described"
 
+      # THE musl DNS/NSS CHECK P4 OWED (AGENTS.md, "The linux target is musl").
+      # musl has no NSS: it does not consult /etc/nsswitch.conf, so a static musl
+      # binary's `getaddrinfo` is not the one glibc gives. The Telegram bridge
+      # resolves api.telegram.org for real, and the check could not run on the
+      # laptop — there is no musl toolchain there. This is the only place the
+      # artifact and a real resolver exist together, so this is the proof of
+      # record. It costs no credential and opens no connection: `_net-probe`
+      # resolves and reports (docs/migration/coexistence.md, item 5).
+      #
+      # THE NEGATIVE CONTROL RUNS FIRST, and it is not decoration: a probe that
+      # answered `ok` unconditionally would pass the positive case forever. A
+      # reserved `.invalid` name (RFC 6761) can never resolve, so an `ok` there
+      # means the instrument is not measuring a resolver and this step is
+      # vacuous — which is a failure, not a pass.
+      - name: musl DNS/NSS — the static binary resolves a real name
+        if: matrix.name == 'linux-x86_64'
+        run: |
+          set -euo pipefail
+          bin=target/x86_64-unknown-linux-musl/release/ae
+
+          set +e
+          "$bin" _net-probe ae-net-probe-must-never-resolve.invalid >/dev/null 2>&1
+          code=$?
+          set -e
+          [ "$code" -eq 1 ] || {
+            echo "::error::the probe exited $code for a reserved .invalid name — it is not measuring a resolver, so the check below would be vacuous"
+            exit 1
+          }
+
+          out="$("$bin" _net-probe api.telegram.org)" || {
+            echo "::error::static musl ae could not resolve api.telegram.org — musl has no NSS, and this is the failure P4 recorded as possible"
+            exit 1
+          }
+          case "$out" in
+            ok\ *) : ;;
+            *) echo "::error::unexpected probe output: $out"; exit 1 ;;
+          esac
+          echo "musl DNS/NSS proof ok: $out"
+
       - name: Upload static musl binary
         if: matrix.name == 'linux-x86_64'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

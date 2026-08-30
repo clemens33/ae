@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ae - agentic engineering: tmux-based multi-agent workspace
 set -euo pipefail
-AE_VERSION="0.2.20"
+AE_VERSION="0.2.21"
 
 # Fail fast with a clear message on bash < 4 (macOS ships 3.2 and defaults to
 # zsh). This must sit BEFORE any bash-4-only syntax is parsed — bash parses
@@ -2638,21 +2638,65 @@ _resolve_spawned() {
     return 0
 }
 
+# The core path an INSTALL publishes: <AE_HOME>/core/current, one line holding an
+# absolute path. General, not ae-next-specific — P5 can install through the same
+# pointer — and deliberately a FILE rather than an exported variable.
+#
+# WHY A FILE. Every re-entry into ae resolves the core again: a generated helper
+# execs its recorded ae path, the watchdog re-invokes `telegram _supervise`,
+# compact launches its child, `doctor --refresh` regenerates. An exported
+# AE_CORE_BIN is a COPY of the pointer, frozen into a tmux server's environment
+# at launch and stale from the first upgrade onwards; a file is read fresh every
+# time, so one install is visible to everything at once.
+#
+# FAIL-QUIET, like an unusable config value: a missing file, an empty line, or a
+# relative/`~` path prints nothing and lets the caller fall through to the config.
+# A `~` value is refused rather than expanded because _ae_core_bin_input does not
+# expand one either — pinning a path that cannot be executed is worse than
+# pinning none.
+_ae_core_current_input() {
+    local file line
+    [[ -n "${CONFIG_DIR:-}" ]] || return 0
+    file="$CONFIG_DIR/core/current"
+    # A SYMLINK IS NOT A POINTER WE PUBLISHED, and lstat says so before anything
+    # reads through it. The wrapper refuses one too, but the wrapper is not on
+    # this path: a generated helper exec'ing its recorded ae, the watchdog's
+    # `telegram _supervise`, compact's child launch and a bare `ae` run with
+    # AE_HOME set all reach THIS reader directly. Fail-quiet like every other
+    # unusable value here — fall through to the config rather than resolve a core
+    # from a path nobody published.
+    if [[ -L "$file" ]]; then
+        return 0
+    fi
+    [[ -f "$file" ]] || return 0
+    line="$(head -1 "$file" 2>/dev/null || true)"
+    # Trim, pure bash, same idiom as parse_config.
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
+    [[ "$line" == /* ]] || return 0
+    printf '%s\n' "$line"
+    return 0
+}
+
 # Resolve the operator's Rust core binding, or nothing.
 #
-# OPERATOR-OWNED INPUTS ONLY: the AE_CORE_BIN environment variable, then the
-# config key `workspace.core`. Deliberately NOT the PATH and NOT a build-layout
-# guess such as `target/release/ae`. PATH is wrong because a helper runs in the
-# AGENT's inherited environment rather than the operator's shell, so it can
-# resolve differently, or to a different VERSION than the one that created the
-# session; a build layout is wrong because it is a developer artifact that does
-# not exist on a clean install. Resolved ONCE, at creation or refresh, and
-# recorded — never re-resolved at helper-run time.
+# OPERATOR-OWNED INPUTS ONLY, in precedence order: the AE_CORE_BIN environment
+# variable, then <AE_HOME>/core/current (what an install published — see the
+# reader above), then the config key `workspace.core`. Deliberately NOT the PATH
+# and NOT a build-layout guess such as `target/release/ae`. PATH is wrong
+# because a helper runs in the AGENT's inherited environment rather than the
+# operator's shell, so it can resolve differently, or to a different VERSION
+# than the one that created the session; a build layout is wrong because it is a
+# developer artifact that does not exist on a clean install. Resolved ONCE, at
+# creation or refresh, and recorded — never re-resolved at helper-run time.
 #
 # An empty result is the normal supported state: no binding means every helper
 # stays on its bash body.
 _ae_core_bin_input() {
     local candidate="${AE_CORE_BIN:-}"
+    if [[ -z "$candidate" ]]; then
+        candidate="$(_ae_core_current_input)"
+    fi
     if [[ -z "$candidate" ]]; then
         candidate="$(get_config workspace.core 2>/dev/null || true)"
     fi
@@ -9519,6 +9563,134 @@ _telegram_persist_intent() {
 # directly — no shell, no quoting boundary — so a path with a space, a quote
 # or a newline survives byte-for-byte. The core path is absolute (checked
 # above), which also keeps it out of option-parsing ambiguity.
+# ── COEXISTENCE (pre-P5): delete at the entry flip ───────────────────────────
+# WHY THIS EXISTS. The bridge's "already running" check sees only its OWN tmux
+# server, so a named-server instance (ae-next) and the default-server instance
+# (the installed ae) are invisible to each other — and two bridges long-polling
+# ONE bot token is the failure that costs updates, not just tidiness: Telegram
+# hands an update to whichever getUpdates arrives first and the other never sees
+# it. Structural isolation cannot solve this one, because the token is outside
+# both state trees.
+#
+# THIS BLOCK GOES AWAY AT THE ENTRY FLIP, when there is one ae again. It is
+# deliberately conservative: it never stops the default-server instance from
+# starting (a plain `ae` has AE_TMUX_SERVER unset and is not gated at all), only
+# a second, named-server one.
+
+# The bot token behind a config file, or nothing. NEVER printed anywhere: it is a
+# credential, and this function exists to compare two of them, not to show them.
+_telegram_coexistence_token() {
+    local cfg="$1" file token
+    [[ -f "$cfg" ]] || return 1
+    # A SCOPED read: parse_config reads the ambient CONFIG_FILE/AE_LOCAL_CONFIG
+    # globals, so they are supplied as a COMMAND PREFIX inside the subshell
+    # $( ) already provides — this shell's own values are never touched.
+    file="$(CONFIG_FILE="$cfg" AE_LOCAL_CONFIG="" get_config telegram.token_file 2>/dev/null || true)"
+    [[ -n "$file" ]] || return 1
+    file="$(_telegram_expand_path "$file")"
+    [[ -f "$file" && -r "$file" ]] || return 1
+    token="$(head -1 "$file" 2>/dev/null || true)"
+    token="${token#"${token%%[![:space:]]*}"}"
+    token="${token%"${token##*[![:space:]]}"}"
+    [[ -n "$token" ]] || return 1
+    printf '%s\n' "$token"
+    return 0
+}
+
+# The default server's session names, or a verdict about why there are none.
+#   stdout : the session names, one per line          (rc 0)
+#   rc 1   : there is provably no server there        (the stale-socket shape)
+#   rc 2   : cannot tell                              (anything else)
+#
+# THE PROBE SELECTS THE DEFAULT SERVER EXPLICITLY, and both variables that could
+# redirect it are cleared:
+#   TMUX         a probe run from inside a pane would otherwise inherit that
+#                pane's server — and this instance's panes are exactly where the
+#                guard runs from;
+#   TMUX_TMPDIR  the socket DIRECTORY `-L default` resolves inside; leaving it
+#                set is the same bypass in another variable.
+# `-L` outranks $TMUX (measured), but only for the socket NAME; the directory is
+# TMUX_TMPDIR's, so both are needed for "the default server" to mean the one word
+# it says. There is deliberately NO environment knob pointing this elsewhere: an
+# env-selectable default server is a production bypass of the guard. Tests
+# isolate it through PATH instead.
+_telegram_coexistence_probe() {
+    local out="" rc=0 _try
+    for _try in 1 2; do
+        rc=0
+        out="$(env -u TMUX -u TMUX_TMPDIR tmux -L default list-sessions -F '#{session_name}' 2>&1)" || rc=$?
+        ((rc == 0)) && break
+        # Tri-state, as #28: only the stale-socket shape proves there is no
+        # server. Anything else is "cannot tell", and cannot tell is not absent.
+        if _tmux_err_is_clean_dead "$out"; then
+            return 1
+        fi
+    done
+    ((rc == 0)) || return 2
+    printf '%s\n' "$out"
+    return 0
+}
+
+# Do the two instances share a bot?
+#   0 = same bot, or one of the tokens cannot be read (fail CLOSED)
+#   1 = provably different bots, so both may run
+_telegram_coexistence_same_bot() {
+    local mine theirs
+    mine="$(_telegram_coexistence_token "$CONFIG_FILE")" || mine=""
+    theirs="$(_telegram_coexistence_token "$HOME/.ae/config")" || theirs=""
+    if [[ -n "$mine" && -n "$theirs" && "$mine" != "$theirs" ]]; then
+        return 1
+    fi
+    return 0
+}
+
+# 0 = go ahead, 1 = refuse (with the reason on stderr).
+#
+# Called TWICE around the spawn — see the call sites. It is one function rather
+# than a pre-check and a separate re-check because the question is identical both
+# times, and two copies of a tri-state probe is two places for the tri-state to
+# be got wrong.
+_telegram_coexistence_guard() {
+    # Only a named-server instance can be the SECOND bridge. The installed ae has
+    # no AE_TMUX_SERVER and is never gated by its own coexistence guard.
+    [[ -n "${AE_TMUX_SERVER:-}" ]] || return 0
+
+    local names rc=0 line found_bridge=0 found_aewatch=0
+    names="$(_telegram_coexistence_probe)" || rc=$?
+    if ((rc == 1)); then
+        return 0
+    fi
+    if ((rc != 0)); then
+        echo "ae telegram: cannot tell whether another ae instance's bridge is live on the default tmux server" >&2
+        echo "ae telegram: refusing to start a second bridge on the same bot token: run 'ae telegram stop', or give ae-next a distinct bot token" >&2
+        return 1
+    fi
+    while IFS= read -r line; do
+        if [[ "$line" == "$_TELEGRAM_TMUX_SESSION" ]]; then found_bridge=1; fi
+        if [[ "$line" == "ae-aewatch" ]]; then found_aewatch=1; fi
+    done <<<"$names"
+
+    # AEWATCH FIRST, and REFUSE rather than kill. A live aewatch claims the
+    # bridge-owner marker and kills competing bridges on EVERY tmux server, so it
+    # would take ours down seconds after we start it — but it belongs to the
+    # other instance, and killing another instance's process is not this
+    # command's to do. (The named-server retirement below is different: that
+    # sidecar is on OUR server.) Ordered before the token comparison because it
+    # holds whoever's bot is configured.
+    if ((found_aewatch == 1)); then
+        echo "ae telegram: a retired aewatch sidecar is live on the default tmux server, and it kills competing bridges on every server. Stop it first: tmux kill-session -t ae-aewatch on the default server (or ae watchdog stop)" >&2
+        return 1
+    fi
+    ((found_bridge == 1)) || return 0
+    # A bridge IS live over there. Two different bots are two different
+    # conversations and may both run; the same bot may not.
+    if ! _telegram_coexistence_same_bot; then
+        return 0
+    fi
+    echo "ae telegram: another ae instance's Telegram bridge is live on the default tmux server with the same bot token: run 'ae telegram stop', or give ae-next a distinct bot token" >&2
+    return 1
+}
+
 _telegram_spawn_daemon() {
     # Every failure below RETURNS, and the function ends with an explicit 0.
     # Previously the write was unchecked, new-session's rc was discarded, and a
@@ -9546,6 +9718,12 @@ _telegram_spawn_daemon() {
         echo "ae telegram: ae core reports no version: $_core" >&2
         return 1
     }
+    # COEXISTENCE (pre-P5): delete at the entry flip. Placed BEFORE the aewatch
+    # retirement below because the guard is a pure probe and the retirement is a
+    # KILL: refusing after it would leave the machine with no bridge at all.
+    if ! _telegram_coexistence_guard; then
+        return 1
+    fi
     # Retire a stale aewatch sidecar first (RR P4). A RUNNING aewatch holds the old
     # bytes whatever this file now says: it claims the bridge-owner marker and kills
     # competing bridges on every tmux server, so it would kill the core we are about
@@ -9563,6 +9741,29 @@ _telegram_spawn_daemon() {
     # $HOME, and is used only to expand a ~/ token_file path.
     if ! tmux new-session -d -s "$_TELEGRAM_TMUX_SESSION" -c "$HOME" \
         "$_core" _telegram-run "$CONFIG_DIR" --config "$CONFIG_FILE" --home "$HOME" 2>/dev/null; then
+        return 1
+    fi
+    # COEXISTENCE (pre-P5): delete at the entry flip. CHECK -> SPAWN -> RE-CHECK,
+    # with SELF-RETREAT.
+    #
+    # WHY A SECOND LOOK. The pre-check answers about a moment that has already
+    # passed by the time the session exists, and the other instance is the plain
+    # `ae` — FROZEN on main, which means it will never learn to honour a claim,
+    # a lock or a marker this side invents. There is no protocol to agree on, so
+    # the only move available is to look again and, if the other bridge came up
+    # in the window, take OUR OWN down. Never theirs: killing another instance's
+    # process is not this command's to do, and it is the instance the operator
+    # did not ask to disturb.
+    #
+    # THE RESIDUAL, stated rather than papered over: between the spawn above and
+    # the probe below, both bridges can be polling the same bot for a few
+    # seconds, and each update in that window goes to whichever getUpdates
+    # arrived first. The window is BOUNDED by this re-check, not closed by it.
+    # That is accepted: the alternative is a claim protocol only one side can
+    # implement.
+    if ! _telegram_coexistence_guard; then
+        # Through the shim — our server, our session.
+        tmux kill-session -t "$_TELEGRAM_TMUX_SESSION" 2>/dev/null || true
         return 1
     fi
     # Cosmetic only — these may fail without the bridge being any less started.

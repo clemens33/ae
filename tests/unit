@@ -4447,7 +4447,13 @@ assert_eq "clean-dead: ADVERSARIAL 'no server running'-named socket's perm error
 # #28 joined as the third consumer: the daemon presence probe proves absence with
 # the SAME predicate, so ENOENT cannot mean "absent" on one path and "dead" on
 # another. A second classifier here was the round-2 BLOCKER.
-assert_eq "clean-dead: verify-gone, the sweep AND the daemon probe share the ONE classifier" "3" \
+#
+# THE FOURTH is the pre-P5 coexistence guard's probe of the default tmux server,
+# and it is the case the shared predicate matters most for: "cannot tell" there
+# must fail CLOSED (refuse to start a second bridge), so a probe that read ENOENT
+# as absence would authorise exactly the double-poll the guard exists to prevent.
+# It goes back to three at the entry flip, when that block is deleted.
+assert_eq "clean-dead: verify-gone, the sweep, the daemon probe AND the coexistence guard share the ONE classifier" "4" \
     "$(printf '%s' "$AE_SOURCE" | command grep -c '_tmux_err_is_clean_dead "$_out"\|_tmux_err_is_clean_dead "$out"' || true)"
 assert_eq "clean-dead: no rival classifier was introduced alongside it" "0" \
     "$(printf '%s' "$AE_SOURCE" | command grep -c '_tmux_err_is_no_server' || true)"
@@ -4862,7 +4868,111 @@ assert_eq "caller: send_agent_cmd checks the write_launch_script assignment" "1"
 # tail forced rc 0. The bash daemon artifact is retired — the spawn now resolves
 # the RUST core (operator input, absolute, executable, reports a version) and
 # hands tmux DIRECT ARGV.
-eval "$(awk '/^(_telegram_spawn_daemon|_ae_core_bin_input|_ae_core_bin_version)\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+eval "$(awk '/^(_telegram_spawn_daemon|_telegram_coexistence_guard|_telegram_coexistence_probe|_telegram_coexistence_same_bot|_telegram_coexistence_token|_ae_core_bin_input|_ae_core_current_input|_ae_core_bin_version)\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+
+# ── COEXISTENCE (pre-P5): the core comes from three sources, in one order ────
+# env AE_CORE_BIN -> <AE_HOME>/core/current -> config workspace.core. The middle
+# one is what makes an install visible to every RE-ENTRY (a helper exec'ing its
+# recorded ae path, the watchdog's `telegram _supervise`, compact's child) with
+# no environment to go stale. Each case below differs from its neighbour by ONE
+# fact, so a precedence that silently collapsed would show up as a wrong answer
+# rather than as a still-green suite.
+_cc_dir="$(mktemp -d)"
+mkdir -p "$_cc_dir/core"
+printf '%s\n' '[workspace]' 'core = /from/config' >"$_cc_dir/config"
+printf '%s\n' '/from/current' >"$_cc_dir/core/current"
+assert_eq "core input: env AE_CORE_BIN outranks core/current and the config" "/from/env" \
+    "$(AE_CORE_BIN=/from/env AE_LOCAL_CONFIG='' CONFIG_FILE="$_cc_dir/config" CONFIG_DIR="$_cc_dir" _ae_core_bin_input)"
+assert_eq "core input: core/current outranks the config when no env is set" "/from/current" \
+    "$(AE_CORE_BIN='' AE_LOCAL_CONFIG='' CONFIG_FILE="$_cc_dir/config" CONFIG_DIR="$_cc_dir" _ae_core_bin_input)"
+# Leading/trailing whitespace is the installer's newline and a hand edit's tab —
+# trimmed, because a path with a stray space is a path that will not execute.
+printf '%s\n' '   /from/current   ' >"$_cc_dir/core/current"
+assert_eq "core input: the current line is trimmed" "/from/current" \
+    "$(AE_CORE_BIN='' AE_LOCAL_CONFIG='' CONFIG_FILE="$_cc_dir/config" CONFIG_DIR="$_cc_dir" _ae_core_bin_input)"
+# NOT ABSOLUTE = IGNORED, fail-quiet, exactly like an unusable config value. A
+# relative path would resolve against whatever directory the caller happened to
+# be in, and `~` is not expanded by this reader, so pinning either would pin a
+# core that cannot be run.
+# The tilde is DELIBERATELY unexpanded: this reader refuses a `~` value rather
+# than expanding one, so the literal is the fixture.
+# shellcheck disable=SC2088
+for _cc_bad in 'relative/ae' '~/.ae-next/core/0.0.0/ae' '' '   '; do
+    printf '%s\n' "$_cc_bad" >"$_cc_dir/core/current"
+    assert_eq "core input: a non-absolute current ('$_cc_bad') falls through to the config" "/from/config" \
+        "$(AE_CORE_BIN='' AE_LOCAL_CONFIG='' CONFIG_FILE="$_cc_dir/config" CONFIG_DIR="$_cc_dir" _ae_core_bin_input)"
+done
+# A SYMLINK is not a pointer the installer published, and this reader is the one
+# RE-ENTRY uses — helpers, the watchdog's supervise, compact's child, a bare `ae`
+# with AE_HOME set. None of them pass through the wrapper's own refusal, so the
+# check has to be here as well.
+rm -f "$_cc_dir/core/current"
+# THE LINK MUST POINT AT A READABLE POINTER FILE, or this test cannot fail. A
+# DANGLING link is rejected by the `-f` test that follows anyway, so the symlink
+# rule would never be the sole decider and dropping it would leave the row green
+# — measured, on this very assertion.
+printf '%s\n' '/from/the-link-target' >"$_cc_dir/core/real-current"
+ln -s "$_cc_dir/core/real-current" "$_cc_dir/core/current"
+assert_eq "core input: a SYMLINKED core/current is ignored, not followed" "/from/config" \
+    "$(AE_CORE_BIN='' AE_LOCAL_CONFIG='' CONFIG_FILE="$_cc_dir/config" CONFIG_DIR="$_cc_dir" _ae_core_bin_input)"
+rm -f "$_cc_dir/core/current" "$_cc_dir/core/real-current"
+assert_eq "core input: a missing core/current falls through to the config" "/from/config" \
+    "$(AE_CORE_BIN='' AE_LOCAL_CONFIG='' CONFIG_FILE="$_cc_dir/config" CONFIG_DIR="$_cc_dir" _ae_core_bin_input)"
+# Nothing anywhere is a REFUSAL (rc 1), not an empty string that a caller might
+# treat as a path.
+assert_eq "core input: no env, no current, no config -> rc 1" "1" \
+    "$(AE_CORE_BIN='' AE_LOCAL_CONFIG='' CONFIG_FILE=/dev/null CONFIG_DIR="$_cc_dir" _ae_core_bin_input >/dev/null 2>&1; echo $?)"
+# An unset CONFIG_DIR must not abort under `set -u` — the reader is called from
+# paths that run before any session home is derived.
+assert_eq "core input: an unset CONFIG_DIR is not an error" "/from/config" \
+    "$(AE_CORE_BIN='' AE_LOCAL_CONFIG='' CONFIG_FILE="$_cc_dir/config" CONFIG_DIR='' _ae_core_bin_input)"
+rm -rf "$_cc_dir"
+unset _cc_dir _cc_bad
+
+# ── COEXISTENCE (pre-P5): the guard is SKIPPED for a default-server instance ──
+# The installed ae has no AE_TMUX_SERVER and must never be gated by the guard
+# that exists to protect it. Asserted here rather than only in the integration
+# section because this is the case that must never probe anything at all.
+assert_eq "coexistence guard: no AE_TMUX_SERVER -> no probe, no refusal" "0" \
+    "$(AE_TMUX_SERVER='' _telegram_coexistence_guard >/dev/null 2>&1; echo $?)"
+# The refusal wording is the operator's only instruction, and both halves of it
+# are load-bearing: stop the other bridge, or give this one its own bot.
+assert_eq "coexistence guard: the refusal names both ways out" "1" \
+    "$([[ "$AE_SOURCE" == *"run 'ae telegram stop', or give ae-next a distinct bot token"* ]] && echo 1 || echo 0)"
+# The probe clears BOTH redirections. -L names the socket, TMUX_TMPDIR names the
+# DIRECTORY it lives in, and $TMUX would hand the probe this pane's server: any
+# one of the three left in place points "the default server" somewhere else.
+assert_eq "coexistence guard: the probe clears TMUX and TMUX_TMPDIR and names -L default" "1" \
+    "$([[ "$AE_SOURCE" == *"env -u TMUX -u TMUX_TMPDIR tmux -L default list-sessions -F '#{session_name}'"* ]] && echo 1 || echo 0)"
+# ...and there is NO environment knob to point it elsewhere. An env-selectable
+# default server would be a production bypass of the guard.
+assert_eq "coexistence guard: no env knob selects the probed server" "0" \
+    "$(command grep -c 'AE_COEXIST_DEFAULT_SERVER' <<<"$AE_SOURCE" || true)"
+# The block is marked for deletion at the entry flip, where one ae returns.
+assert_eq "coexistence guard: the block is marked for deletion at the entry flip" "1" \
+    "$([[ "$AE_SOURCE" == *'COEXISTENCE (pre-P5): delete at the entry flip'* ]] && echo 1 || echo 0)"
+# CHECK -> SPAWN -> RE-CHECK. The pre-check answers about a moment that has
+# passed by the time the session exists, and the other instance is the FROZEN
+# ae — it can honour no claim this side invents, so looking again and retreating
+# is the only move available. TWO call sites, not one: a single guard call is the
+# implementation this pair of assertions exists to keep from coming back.
+assert_eq "coexistence guard: the spawn asks TWICE — before and after new-session" "2" \
+    "$(command grep -c 'if ! _telegram_coexistence_guard; then' <<<"$AE_SOURCE" || true)"
+# ...and the retreat kills OUR session, never the other instance's process.
+assert_eq "coexistence guard: the retreat kills our own bridge, through our own shim" "1" \
+    "$([[ "$AE_SOURCE" == *'tmux kill-session -t "$_TELEGRAM_TMUX_SESSION" 2>/dev/null || true'* ]] && echo 1 || echo 0)"
+# The residual is DOCUMENTED rather than implied: a window in which both can poll.
+assert_eq "coexistence guard: the residual window is stated at the site" "1" \
+    "$([[ "$AE_SOURCE" == *'The window is BOUNDED by this re-check, not closed by it'* ]] && echo 1 || echo 0)"
+# A default-server aewatch is REFUSED, never killed: it belongs to the other
+# instance. The instruction has to name the session and the way to stop it.
+assert_eq "coexistence guard: a default-server aewatch is refused with an instruction" "1" \
+    "$([[ "$AE_SOURCE" == *'tmux kill-session -t ae-aewatch on the default server'* ]] && echo 1 || echo 0)"
+# The one kill of ae-aewatch that remains is the NAMED-server retirement, which
+# is our own sidecar on our own server — a different fact from the refusal above.
+assert_eq "coexistence guard: our own named-server aewatch retirement still kills" "1" \
+    "$(command grep -c 'tmux kill-session -t ae-aewatch 2>/dev/null || true' <<<"$AE_SOURCE" || true)"
+
 # No core configured at all (empty AE_CORE_BIN, empty config) — refuse, don't spawn.
 assert_eq "caller: spawn refuses when no ae core is configured" "1" \
     "$(AE_CORE_BIN='' AE_LOCAL_CONFIG='' CONFIG_FILE=/dev/null CONFIG_DIR="$(mktemp -d)" _telegram_spawn_daemon 2>/dev/null; echo $?)"

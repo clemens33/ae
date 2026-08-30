@@ -3357,6 +3357,11 @@ _TG_SPAWN_FNS="$TMPDIR/tg-spawn-fns.sh"
     awk '/^_ae_core_bin_version\(\) \{/,/^\}$/' "$AE"
     awk '/^_tmux_err_is_clean_dead\(\) \{/,/^\}$/' "$AE"
     awk '/^daemon_session_running\(\) \{/,/^\}$/' "$AE"
+    # COEXISTENCE (pre-P5): the spawn calls the guard, so the fixture must carry
+    # it. A MISSING function is not a skipped check — it is rc 127, which the
+    # spawn reads as a refusal (the round-3 BLOCKER that put
+    # daemon_session_running at top level, in another shape).
+    awk '/^_telegram_coexistence_guard\(\) \{/,/^\}$/' "$AE"
     awk '/^_telegram_spawn_daemon\(\) \{/,/^\}$/' "$AE"
 } >"$_TG_SPAWN_FNS"
 
@@ -3371,6 +3376,12 @@ _spawn_run() {
 CONFIG_DIR="$d"
 CONFIG_FILE="$d/config"
 _TELEGRAM_TMUX_SESSION="ae-telegram"
+# A DEFAULT-SERVER instance: the coexistence guard gates only a named-server one,
+# and this section is about the aewatch retirement, not about coexistence. The
+# harness exports AE_TMUX_SERVER for its own isolation, so it is cleared here
+# deliberately rather than inherited by accident. The guard's own behaviour has
+# its own section ("ae-next coexistence: Telegram ownership guard").
+unset AE_TMUX_SERVER
 tmux() {
     case "\$1" in
         list-sessions) [[ "$sidecar" == present ]] && echo ae-aewatch; return 0 ;;
@@ -7227,6 +7238,1044 @@ assert_eq "#59 C4-1: an EMPTY frozen WORKER name still launches" "1" \
     "$(tmux has-session -t c4empty2 2>/dev/null && echo 1 || echo 0)"
 "$AE" end -f c4empty2 >/dev/null 2>&1 || true
 unset C4_BIN C4_REPO C4_REPO2 C4_AID C4_KID C4_OUT _c4_t _c4_d
+fi
+
+# ── ae-next coexistence: installer + wrapper (pre-P5) ────────────────────────
+if _itest_section 'ae-next coexistence: installer + wrapper'; then
+
+# THE POINT OF THIS SECTION. ae-next is a SECOND command beside the installed
+# `ae`, and the whole safety argument is that it shares nothing: its own state
+# home, its own tmux server, its own immutable core, and a config that carries no
+# credentials. Every assertion below is one half of that argument — and the
+# fixtures are the REAL wrapper and the REAL installer, copied into a fake
+# checkout, because a rewritten copy of a script under test proves nothing about
+# the script that ships.
+#
+# The target `ae` here is a STUB that dumps its environment and argv: what the
+# wrapper is responsible for is the environment it hands over, and driving the
+# real ae would test the whole product instead of that contract. The real one
+# gets its own section ("real ae through the symlink").
+
+NX_REPO_SRC="$(dirname "$AE")"
+NX_ROOT="$TMPDIR/aenext"
+NX_HOME="$NX_ROOT/home"
+NX_REPO="$NX_ROOT/repo"
+mkdir -p "$NX_HOME/.ae" "$NX_HOME/.local/bin" "$NX_REPO/contrib/ae-next"
+
+# Mode and inode, portably. GNU and BSD stat share no format flags at all, and
+# the wrong one FAILS QUIETLY through `|| fallback` (AGENTS.md, GNU vs BSD) —
+# which here would read as "the mode is whatever we expected".
+_nx_mode() {
+    if [[ "$(uname)" == "Darwin" ]]; then stat -f '%Lp' "$1"; else stat -c '%a' "$1"; fi
+}
+_nx_inode() {
+    if [[ "$(uname)" == "Darwin" ]]; then stat -f '%i' "$1"; else stat -c '%i' "$1"; fi
+}
+
+# The fake checkout: the real scripts, a stub `ae` that reports its environment.
+cp "$NX_REPO_SRC/contrib/ae-next/ae-next" "$NX_REPO/contrib/ae-next/ae-next"
+cp "$NX_REPO_SRC/contrib/ae-next/install" "$NX_REPO/contrib/ae-next/install"
+chmod 0755 "$NX_REPO/contrib/ae-next/ae-next" "$NX_REPO/contrib/ae-next/install"
+cat >"$NX_REPO/ae" <<'NXSTUB'
+#!/usr/bin/env bash
+AE_VERSION="9.9.9"
+echo "ARGV:$*"
+echo "AE_HOME:${AE_HOME:-}"
+echo "CONFIG_FILE:${CONFIG_FILE:-}"
+echo "AE_TMUX_SERVER:${AE_TMUX_SERVER:-}"
+echo "AE_TMUX_SERVER_KIND:${AE_TMUX_SERVER_KIND:-}"
+echo "AE_CORE_BIN:${AE_CORE_BIN-<unset>}"
+NXSTUB
+chmod 0755 "$NX_REPO/ae"
+
+# Two "cores" of the same version with DIFFERENT bytes, and one of a later
+# version. The version a core reports is what the installer keys on, so these
+# three cover: first install, the byte-identical re-run, the refusal, and the
+# upgrade.
+NX_CORE="$NX_ROOT/core-a"
+NX_CORE_B="$NX_ROOT/core-b"
+NX_CORE_V2="$NX_ROOT/core-v2"
+# The single quotes are the point: these are the STUB's own $1, written to disk
+# for it to expand at run time, never expanded here.
+# shellcheck disable=SC2016
+printf '%s\n' '#!/bin/sh' 'case "$1" in --version) echo "ae 9.9.9";; esac' >"$NX_CORE"
+# shellcheck disable=SC2016
+printf '%s\n' '#!/bin/sh' '# different bytes, same version' 'case "$1" in --version) echo "ae 9.9.9";; esac' >"$NX_CORE_B"
+# shellcheck disable=SC2016
+printf '%s\n' '#!/bin/sh' 'case "$1" in --version) echo "ae 9.9.10";; esac' >"$NX_CORE_V2"
+chmod 0755 "$NX_CORE" "$NX_CORE_B" "$NX_CORE_V2"
+
+# The old home this seeds FROM: an ae config with real-shaped Telegram
+# credentials in it. Those keys are the reason the seed exists.
+cat >"$NX_HOME/.ae/config" <<'NXCFG'
+[agents]
+cl = "claude"
+
+[workspace]
+main = cl
+layout = vertical
+
+[telegram]
+enabled = true
+token_file = "~/.config/ae/telegram-bot.token"
+chat_id = 12345
+allowed_user_ids = 67890
+include = chat,state
+
+[prompt]
+instructions = "keep this"
+NXCFG
+# A decoy at the path this installer must never touch.
+printf 'THE INSTALLED AE — NEVER TOUCHED\n' >"$NX_HOME/.local/bin/ae"
+NX_OLD_CFG_FPR="$(_fpr <"$NX_HOME/.ae/config")"
+NX_OLD_AE_FPR="$(_fpr <"$NX_HOME/.local/bin/ae")"
+
+_nx_install() { # [env assignments via caller] -> stdout+stderr, rc in $?
+    HOME="$NX_HOME" AE_NEXT_CORE_BIN="${NX_INSTALL_CORE:-$NX_CORE}" \
+        AE_NEXT_HOME="${NX_INSTALL_HOME:-}" \
+        "${BASH:-bash}" "$NX_REPO/contrib/ae-next/install" 2>&1
+}
+
+# ── The first install ────────────────────────────────────────────────────────
+NX_RC=0; NX_OUT="$(_nx_install)" || NX_RC=$?
+NX_NEXT="$NX_HOME/.ae-next"
+assert_eq "ae-next install: a first install succeeds" "0" "$NX_RC"
+assert_eq "ae-next install: the core lands at core/<version>/ae" "1" \
+    "$([[ -f "$NX_NEXT/core/9.9.9/ae" ]] && echo 1 || echo 0)"
+# IMMUTABLE, and the two modes are different on purpose: the version leaf is
+# read-only so a rebuild cannot land new bytes under a path a running session
+# pinned, while core/ itself stays writable so the NEXT version can be added.
+assert_eq "ae-next install: the installed core is 0555" "555" "$(_nx_mode "$NX_NEXT/core/9.9.9/ae")"
+assert_eq "ae-next install: its version directory is 0555" "555" "$(_nx_mode "$NX_NEXT/core/9.9.9")"
+assert_eq "ae-next install: core/ itself stays 0755 so an upgrade can be added" "755" "$(_nx_mode "$NX_NEXT/core")"
+# The pointer is an EXPANDED ABSOLUTE path: `ae` does not expand `~`, so a `~`
+# here would pin a core that cannot be executed.
+assert_eq "ae-next install: core/current holds the expanded absolute path" "$NX_NEXT/core/9.9.9/ae" \
+    "$(cat "$NX_NEXT/core/current")"
+# The PHYSICAL path: the installer resolves its own location with `cd -P`, and on
+# macOS /var is a symlink to /private/var, so the logical fixture path and the
+# resolved one differ by that prefix. Resolving both sides is the honest
+# comparison — pinning the logical one would pass only on Linux.
+assert_eq "ae-next install: the command is linked at ~/.local/bin/ae-next" \
+    "$(cd -P "$NX_REPO/contrib/ae-next" && pwd)/ae-next" \
+    "$(readlink "$NX_HOME/.local/bin/ae-next")"
+
+# ── The seed: a config with NO reusable credentials ──────────────────────────
+# One bot token polled by two bridges loses updates silently, so the copy that
+# would make that easy is the copy that must not exist. The whole [telegram]
+# section is replaced rather than `enabled` alone: credentials left behind are
+# one edit away from being live.
+NX_SEED="$(cat "$NX_NEXT/config")"
+assert_eq "ae-next seed: [telegram] is present and disabled" "1" \
+    "$([[ "$NX_SEED" == *'[telegram]'* && "$NX_SEED" == *'enabled = false'* ]] && echo 1 || echo 0)"
+assert_eq "ae-next seed: no token_file survives" "0" "$(command grep -c 'token_file' "$NX_NEXT/config" || true)"
+assert_eq "ae-next seed: no chat_id survives" "0" "$(command grep -c 'chat_id' "$NX_NEXT/config" || true)"
+assert_eq "ae-next seed: no allowed_user_ids survives" "0" "$(command grep -c 'allowed_user_ids' "$NX_NEXT/config" || true)"
+assert_eq "ae-next seed: no include filter survives" "0" "$(command grep -c '^include' "$NX_NEXT/config" || true)"
+assert_eq "ae-next seed: enabled = true did NOT survive" "0" \
+    "$(command grep -c 'enabled = true' "$NX_NEXT/config" || true)"
+# ...and everything that is NOT a credential is carried over unchanged: a seed
+# that dropped the agents would be a config nobody can launch with.
+assert_eq "ae-next seed: the non-telegram sections are carried over" "1" \
+    "$([[ "$NX_SEED" == *'[agents]'* && "$NX_SEED" == *'main = cl'* && "$NX_SEED" == *'keep this'* ]] && echo 1 || echo 0)"
+# The core has exactly ONE source, and it is not the config.
+assert_eq "ae-next seed: no workspace.core is written" "0" \
+    "$(command grep -c '^core' "$NX_NEXT/config" || true)"
+
+# ── Idempotence, and the refusal that guards immutability ────────────────────
+NX_INODE="$(_nx_inode "$NX_NEXT/core/9.9.9/ae")"
+NX_RC=0; NX_OUT="$(_nx_install)" || NX_RC=$?
+assert_eq "ae-next install: a second identical run succeeds" "0" "$NX_RC"
+assert_eq "ae-next install: ...and installs nothing new (same inode)" "$NX_INODE" \
+    "$(_nx_inode "$NX_NEXT/core/9.9.9/ae")"
+assert_contains "ae-next install: ...and says so" "no-op" "$NX_OUT"
+# THE MUTATION CONTROL'S TARGET. Same version, different bytes: an installed
+# version may be pinned by a running session, so it is never rewritten in place.
+NX_RC=0; NX_OUT="$(NX_INSTALL_CORE="$NX_CORE_B" _nx_install)" || NX_RC=$?
+assert_eq "ae-next install: DIFFERENT bytes at an installed version are REFUSED" "1" \
+    "$([[ "$NX_RC" -ne 0 ]] && echo 1 || echo 0)"
+assert_contains "ae-next install: ...and the refusal says how to fix it" "Bump the version" "$NX_OUT"
+assert_eq "ae-next install: ...and the installed bytes did not change" "$NX_INODE" \
+    "$(_nx_inode "$NX_NEXT/core/9.9.9/ae")"
+# A core whose version does not match the glue's AE_VERSION is refused too: the
+# two move together, and a mismatched pair degrades sessions to bash bodies for
+# no visible reason.
+NX_RC=0; NX_OUT="$(NX_INSTALL_CORE="$NX_CORE_V2" _nx_install)" || NX_RC=$?
+assert_eq "ae-next install: a core whose version is not AE_VERSION is refused" "1" \
+    "$([[ "$NX_RC" -ne 0 ]] && echo 1 || echo 0)"
+assert_contains "ae-next install: ...naming both versions" "9.9.10" "$NX_OUT"
+
+# ── The upgrade: a new version beside the old, and current repointed ─────────
+# The old leaf STAYS. A session that pinned it keeps running against the exact
+# bytes it bound to; that is the entire reason the path carries the version.
+_nx_bump_stub_version() { # <version>
+    # The inner $1/$2 belong to the child shell, and BSD sed has no -i EXPR FILE
+    # form (AGENTS.md, GNU vs BSD) — temp + rename instead.
+    # shellcheck disable=SC2016
+    "${BASH:-bash}" -c 'f="$1"; v="$2"; t="$f.tmp"; sed "s/^AE_VERSION=.*/AE_VERSION=\"$v\"/" "$f" >"$t" && mv "$t" "$f"' _ "$NX_REPO/ae" "$1"
+    # `mv` carries the TEMP file's mode, so the rewritten stub is 0644 and the
+    # wrapper's "no executable ae here" refusal fires on the next call — an
+    # artefact of the fixture, not of anything under test.
+    chmod 0755 "$NX_REPO/ae"
+}
+_nx_bump_stub_version 9.9.10
+NX_RC=0; NX_OUT="$(NX_INSTALL_CORE="$NX_CORE_V2" _nx_install)" || NX_RC=$?
+assert_eq "ae-next upgrade: installing a NEW version succeeds" "0" "$NX_RC"
+assert_eq "ae-next upgrade: the new version is installed" "1" \
+    "$([[ -f "$NX_NEXT/core/9.9.10/ae" ]] && echo 1 || echo 0)"
+assert_eq "ae-next upgrade: the OLD version is still there, untouched" "$NX_INODE" \
+    "$(_nx_inode "$NX_NEXT/core/9.9.9/ae")"
+assert_eq "ae-next upgrade: core/current now points at the new one" "$NX_NEXT/core/9.9.10/ae" \
+    "$(cat "$NX_NEXT/core/current")"
+# The config is the operator's from the moment it exists — an upgrade may not
+# reset a deliberate `enabled = true` and its credentials.
+printf '\n[telegram]\nenabled = true\ntoken_file = "/tmp/mine.token"\n' >>"$NX_NEXT/config"
+NX_CFG_FPR="$(_fpr <"$NX_NEXT/config")"
+NX_OUT="$(NX_INSTALL_CORE="$NX_CORE_V2" _nx_install)"
+assert_eq "ae-next install: a re-run never edits an existing config" "$NX_CFG_FPR" \
+    "$(_fpr <"$NX_NEXT/config")"
+
+# ── What it must never write ────────────────────────────────────────────────
+assert_eq "ae-next install: ~/.ae/config was never written" "$NX_OLD_CFG_FPR" "$(_fpr <"$NX_HOME/.ae/config")"
+assert_eq "ae-next install: ~/.local/bin/ae was never written" "$NX_OLD_AE_FPR" "$(_fpr <"$NX_HOME/.local/bin/ae")"
+assert_not_exists "ae-next install: no core was installed under ~/.ae" "$NX_HOME/.ae/core"
+# ...and the HARNESS's own ae home — the one every other section uses — is not
+# in the blast radius either.
+assert_not_exists "ae-next install: the harness ae home has no core/ either" "$HOME/.ae/core"
+
+# ── A second instance is a second home ──────────────────────────────────────
+NX_ALT="$NX_ROOT/alt"
+NX_RC=0; NX_OUT="$(NX_INSTALL_HOME="$NX_ALT" NX_INSTALL_CORE="$NX_CORE_V2" _nx_install)" || NX_RC=$?
+assert_eq "ae-next install: AE_NEXT_HOME=<other> succeeds" "0" "$NX_RC"
+assert_eq "ae-next install: ...and installs THERE" "$NX_ALT/core/9.9.10/ae" "$(cat "$NX_ALT/core/current")"
+assert_eq "ae-next install: ...and leaves the default instance's pointer alone" "$NX_NEXT/core/9.9.10/ae" \
+    "$(cat "$NX_NEXT/core/current")"
+
+# ── The wrapper's environment contract ──────────────────────────────────────
+# This is the whole isolation argument in five variables. It is asserted at the
+# DEFAULTS and under both sanctioned overrides, because a wrapper that honoured
+# only one of them would isolate only one of the two instances.
+_nx_wrap() { # [pre-set env via caller] -> the stub ae's report
+    HOME="$NX_HOME" "$NX_HOME/.local/bin/ae-next" "$@" 2>/dev/null
+}
+NX_W="$(_nx_wrap list --json)"
+assert_contains "ae-next wrapper: AE_HOME defaults to ~/.ae-next" "AE_HOME:$NX_NEXT" "$NX_W"
+assert_contains "ae-next wrapper: CONFIG_FILE is pinned inside it" "CONFIG_FILE:$NX_NEXT/config" "$NX_W"
+assert_contains "ae-next wrapper: the tmux server defaults to ae-next" "AE_TMUX_SERVER:ae-next" "$NX_W"
+assert_contains "ae-next wrapper: the server kind is always name" "AE_TMUX_SERVER_KIND:name" "$NX_W"
+assert_contains "ae-next wrapper: argv is passed through untouched" "ARGV:list --json" "$NX_W"
+# AE_CORE_BIN is UNSET, never exported: the core is read from core/current on
+# every entry, so nothing env-borne can go stale inside a long-lived tmux server.
+assert_contains "ae-next wrapper: AE_CORE_BIN is not exported at all" "AE_CORE_BIN:<unset>" "$NX_W"
+
+NX_W="$(AE_NEXT_HOME="$NX_ALT" AE_NEXT_TMUX_SERVER=ae-next2 _nx_wrap doctor)"
+assert_contains "ae-next wrapper: AE_NEXT_HOME overrides the home" "AE_HOME:$NX_ALT" "$NX_W"
+assert_contains "ae-next wrapper: ...and the config follows it" "CONFIG_FILE:$NX_ALT/config" "$NX_W"
+assert_contains "ae-next wrapper: AE_NEXT_TMUX_SERVER overrides the server" "AE_TMUX_SERVER:ae-next2" "$NX_W"
+
+# ── The conflict cases: inherited state loses ───────────────────────────────
+# Running ae-next from inside an ae pane is the NORMAL case during the canary,
+# so every one of these arrives by inheritance rather than by malice — and every
+# one of them would put ae-next's state, config or core somewhere it does not
+# belong.
+NX_W="$(CONFIG_FILE=/tmp/evil-config AE_HOME=/tmp/evil-home _nx_wrap x)"
+assert_contains "ae-next wrapper: an inherited CONFIG_FILE loses" "CONFIG_FILE:$NX_NEXT/config" "$NX_W"
+assert_contains "ae-next wrapper: an inherited AE_HOME loses" "AE_HOME:$NX_NEXT" "$NX_W"
+NX_W="$(AE_CORE_BIN=/tmp/evil-core _nx_wrap x 2>&1)"
+assert_contains "ae-next wrapper: an inherited AE_CORE_BIN is removed, not honoured" "AE_CORE_BIN:<unset>" "$NX_W"
+NX_W="$(AE_CORE_BIN=/tmp/evil-core HOME="$NX_HOME" "$NX_HOME/.local/bin/ae-next" x 2>&1 >/dev/null)"
+assert_contains "ae-next wrapper: ...and says so once, on stderr" "ignoring inherited AE_CORE_BIN" "$NX_W"
+
+# The third conflict source is a cwd .ae/config carrying its own workspace.core.
+# The wrapper cannot see it — it is read by `ae` — so this asserts the RESOLVER:
+# env, then core/current, then the config, which is what makes a next-owned core
+# un-repointable by a repo someone happens to be standing in.
+# get_config and parse_config come along deliberately: without them the resolver
+# falls through to an UNDEFINED command whose failure is swallowed, and the
+# precedence assertion below would pass because the config source was broken
+# rather than because core/current outranked it. The CONTROL two rows down is
+# what catches that — it is red unless the config source really works.
+eval "$(awk '/^(_ae_core_current_input|_ae_core_bin_input|get_config|parse_config)\(\) \{/,/^\}$/' "$AE")"
+NX_EVIL="$NX_ROOT/evil"
+mkdir -p "$NX_EVIL/.ae"
+printf '[workspace]\ncore = /tmp/evil\n' >"$NX_EVIL/.ae/config"
+assert_eq "ae-next core: a cwd .ae/config's workspace.core loses to core/current" "$NX_NEXT/core/9.9.10/ae" \
+    "$(AE_CORE_BIN='' CONFIG_FILE="$NX_NEXT/config" AE_LOCAL_CONFIG="$NX_EVIL/.ae/config" CONFIG_DIR="$NX_NEXT" _ae_core_bin_input)"
+# The control for that assertion: with core/current gone, the evil config DOES
+# win — so the row above is about precedence and not about the fixture being
+# unreachable.
+assert_eq "ae-next core: CONTROL — with no core/current, the cwd config is what would be used" "/tmp/evil" \
+    "$(AE_CORE_BIN='' CONFIG_FILE="$NX_NEXT/config" AE_LOCAL_CONFIG="$NX_EVIL/.ae/config" CONFIG_DIR="$NX_ROOT/nowhere" _ae_core_bin_input)"
+unset -f _ae_core_current_input _ae_core_bin_input get_config parse_config
+
+# ── No installed core: refuse early, and say what to run ────────────────────
+# `ae` degrades to its bash bodies when nothing is bound — visibly, but quietly.
+# For ae-next that degradation only ever means the install did not happen, so it
+# is reported once, here, with the command that fixes it.
+mv "$NX_NEXT/core/current" "$NX_NEXT/core/current.away"
+NX_RC=0; NX_W="$(HOME="$NX_HOME" "$NX_HOME/.local/bin/ae-next" list 2>&1)" || NX_RC=$?
+assert_eq "ae-next wrapper: no installed core -> exit 2" "2" "$NX_RC"
+assert_contains "ae-next wrapper: ...naming the command that fixes it" "just next-install" "$NX_W"
+assert_eq "ae-next wrapper: ...and the target ae never ran" "0" \
+    "$([[ "$NX_W" == *"ARGV:"* ]] && echo 1 || echo 0)"
+# The same refusal for a pointer that exists but cannot be used: an empty file, a
+# relative path, and a path that is not executable are all "no installed core".
+: >"$NX_ROOT/not-executable"
+chmod 0644 "$NX_ROOT/not-executable"
+for _nx_bad in '' 'relative/ae' "$NX_ROOT/not-executable"; do
+    printf '%s\n' "$_nx_bad" >"$NX_NEXT/core/current"
+    NX_RC=0
+    HOME="$NX_HOME" "$NX_HOME/.local/bin/ae-next" list >/dev/null 2>&1 || NX_RC=$?
+    assert_eq "ae-next wrapper: an unusable core/current ('$_nx_bad') is exit 2" "2" "$NX_RC"
+done
+mv "$NX_NEXT/core/current.away" "$NX_NEXT/core/current"
+
+# ── Hardening: refusable inputs, and nodes that are ours to write ───────────
+# NOT AN ATTACKER MODEL. Every case below is an ordinary accident — a relative
+# path typed once, a tilde that never got expanded, a home that traverses back
+# into ~/.ae, a stale symlink where a regular file belongs — and each one costs
+# more to debug after the fact than to refuse. The rule that matters most is the
+# one about the PAIR: an install that succeeds and a wrapper that then refuses
+# leaves state on disk and no command to reach it with, so both scripts apply the
+# same rules and both are asserted here.
+#
+# The shared block is copied text (contrib scripts have no library), so its
+# identity is asserted rather than assumed.
+# The extraction runs to the brace that CLOSES _ae_next_server_reason, not to the
+# line that opens it: a range ending at the opening line leaves the whole server
+# grammar — the newest and least settled rule in the block — outside the identity
+# guard, which is exactly where drift would land unseen.
+# shellcheck disable=SC2016  # the awk program is single-quoted on purpose: $ and \{ are awk's, not the shell's
+NX_SHARED_EXTRACT='/^# ── SHARED INPUT RULES/{p=1} p{print} /^_ae_next_server_reason\(\) \{$/{f=1} f && /^\}$/{exit}'
+NX_SHARED_A="$(command awk "$NX_SHARED_EXTRACT" "$NX_REPO_SRC/contrib/ae-next/install")"
+NX_SHARED_B="$(command awk "$NX_SHARED_EXTRACT" "$NX_REPO_SRC/contrib/ae-next/ae-next")"
+# A guard on the guard: an extraction that silently stopped early would compare
+# two equal prefixes and pass. Both rule names must be inside what was compared.
+assert_contains "ae-next hardening: the compared block reaches the home rule" "_ae_next_home_reason() {" "$NX_SHARED_A"
+assert_contains "ae-next hardening: ...and through the server rule's closing brace" "AE_NEXT_TMUX_SERVER must match" "$NX_SHARED_A"
+assert_eq "ae-next hardening: the shared input rules are byte-identical in both scripts" "1" \
+    "$([[ -n "$NX_SHARED_A" && "$NX_SHARED_A" == "$NX_SHARED_B" ]] && echo 1 || echo 0)"
+
+# A symlinked root that RESOLVES to the legacy home: the case a plain string
+# comparison against "$HOME/.ae" would wave through.
+ln -s "$NX_HOME/.ae" "$NX_ROOT/legacy-link"
+# The tilde is a LITERAL on purpose: the rule under test refuses an unexpanded
+# one, so expanding it here would test nothing.
+# shellcheck disable=SC2088
+for _nx_bad_home in \
+    'relative/ae-next' \
+    '~/.ae-next' \
+    "$NX_HOME/.ae" \
+    "$NX_HOME/.ae-next/../.ae" \
+    "$NX_HOME/missing/../.ae" \
+    "$NX_HOME/./.ae-next" \
+    "$NX_ROOT/legacy-link"; do
+    NX_RC=0
+    NX_OUT="$(AE_NEXT_HOME="$_nx_bad_home" HOME="$NX_HOME" AE_NEXT_CORE_BIN="$NX_CORE_V2" \
+        "${BASH:-bash}" "$NX_REPO/contrib/ae-next/install" 2>&1)" || NX_RC=$?
+    assert_eq "ae-next hardening: install refuses AE_NEXT_HOME='$_nx_bad_home'" "1" \
+        "$([[ "$NX_RC" -ne 0 ]] && echo 1 || echo 0)"
+    assert_contains "ae-next hardening: ...naming the variable it refused" "AE_NEXT_HOME" "$NX_OUT"
+    NX_RC=0
+    NX_OUT="$(AE_NEXT_HOME="$_nx_bad_home" HOME="$NX_HOME" "$NX_HOME/.local/bin/ae-next" list 2>&1)" || NX_RC=$?
+    assert_eq "ae-next hardening: the WRAPPER refuses the same home, exit 2 ('$_nx_bad_home')" "2" "$NX_RC"
+    assert_contains "ae-next hardening: ...with the same rule text" "AE_NEXT_HOME" "$NX_OUT"
+done
+# ...and the install that WOULD have happened did not: no state under the refused
+# homes, and the legacy home is untouched.
+assert_not_exists "ae-next hardening: the refused traversal home created nothing" "$NX_HOME/.ae/core"
+# THE `..` CASE IS THE ONE THAT NEEDED ITS OWN RULE. `cd -P` can only resolve a
+# parent that EXISTS, so `<home>/missing/../.ae` compares unequal to the legacy
+# home right up until `mkdir -p` CREATES the missing component — and then it is
+# the legacy home. The components are refused on the raw value, before anything
+# is resolved or created; this asserts nothing was created on the way.
+assert_not_exists "ae-next hardening: ...and did not create the missing component either" "$NX_HOME/missing"
+# CONTROL for the whole family: an ordinary alternate home still installs, so the
+# rules above refuse a class rather than refusing everything.
+NX_RC=0
+NX_OUT="$(NX_INSTALL_HOME="$NX_ROOT/plain2" NX_INSTALL_CORE="$NX_CORE_V2" _nx_install)" || NX_RC=$?
+assert_eq "ae-next hardening: CONTROL — a plain alternate home still installs" "0" "$NX_RC"
+assert_eq "ae-next hardening: ...and published its own pointer" "$NX_ROOT/plain2/core/9.9.10/ae" \
+    "$(cat "$NX_ROOT/plain2/core/current" 2>/dev/null || true)"
+
+# The server name becomes a tmux SOCKET name, so it takes the session-name
+# grammar. `./default` and `../default` name the very socket the default-server
+# rule refuses — a string comparison against "default" alone never sees them.
+for _nx_bad_srv in './default' '../default' 'a/b' '.hidden'; do
+    NX_RC=0
+    NX_OUT="$(AE_NEXT_TMUX_SERVER="$_nx_bad_srv" HOME="$NX_HOME" AE_NEXT_CORE_BIN="$NX_CORE_V2" \
+        "${BASH:-bash}" "$NX_REPO/contrib/ae-next/install" 2>&1)" || NX_RC=$?
+    assert_eq "ae-next hardening: install refuses AE_NEXT_TMUX_SERVER='$_nx_bad_srv'" "1" \
+        "$([[ "$NX_RC" -ne 0 ]] && echo 1 || echo 0)"
+    assert_contains "ae-next hardening: ...naming the variable" "AE_NEXT_TMUX_SERVER" "$NX_OUT"
+    NX_RC=0
+    NX_OUT="$(AE_NEXT_TMUX_SERVER="$_nx_bad_srv" HOME="$NX_HOME" "$NX_HOME/.local/bin/ae-next" list 2>&1)" || NX_RC=$?
+    assert_eq "ae-next hardening: the WRAPPER refuses the server '$_nx_bad_srv', exit 2" "2" "$NX_RC"
+done
+# CONTROL: a legal second-instance name passes both, and reaches the tool.
+assert_contains "ae-next hardening: CONTROL — a legal server name is accepted" "AE_TMUX_SERVER:ae-next2" \
+    "$(AE_NEXT_TMUX_SERVER=ae-next2 _nx_wrap x)"
+
+# `default` is the installed ae's own server: an ae-next pointed there is the
+# first instance wearing a second name, sharing the sessions this whole slice
+# exists to leave alone.
+NX_RC=0
+NX_OUT="$(AE_NEXT_TMUX_SERVER=default HOME="$NX_HOME" AE_NEXT_CORE_BIN="$NX_CORE_V2" \
+    "${BASH:-bash}" "$NX_REPO/contrib/ae-next/install" 2>&1)" || NX_RC=$?
+assert_eq "ae-next hardening: install refuses AE_NEXT_TMUX_SERVER=default" "1" \
+    "$([[ "$NX_RC" -ne 0 ]] && echo 1 || echo 0)"
+assert_contains "ae-next hardening: ...saying whose server that is" "installed ae's own tmux server" "$NX_OUT"
+NX_RC=0
+NX_OUT="$(AE_NEXT_TMUX_SERVER=default HOME="$NX_HOME" "$NX_HOME/.local/bin/ae-next" list 2>&1)" || NX_RC=$?
+assert_eq "ae-next hardening: the WRAPPER refuses it too, exit 2" "2" "$NX_RC"
+
+# ── Owned nodes: a symlink where a regular file belongs is refused ──────────
+# The installed tree is 0555 by design, so `rm -rf` cannot unlink through it.
+# Every scratch reset below goes through this rather than remembering to chmod.
+_nx_scratch_reset() {
+    chmod -R u+w "$NX_SCRATCH" 2>/dev/null || true
+    rm -rf "$NX_SCRATCH"
+    mkdir -p "$@"
+}
+_nx_install_rc() { # -> rc of an install into a scratch home
+    local rc=0
+    HOME="$NX_HOME" AE_NEXT_HOME="$1" AE_NEXT_CORE_BIN="$NX_CORE_V2" \
+        "${BASH:-bash}" "$NX_REPO/contrib/ae-next/install" >"$NX_ROOT/last-install.out" 2>&1 || rc=$?
+    printf '%s' "$rc"
+}
+NX_SCRATCH="$NX_ROOT/scratch"
+# config planted as a symlink
+_nx_scratch_reset "$NX_SCRATCH"
+ln -s /dev/null "$NX_SCRATCH/config"
+assert_eq "ae-next hardening: a symlinked config is refused" "1" \
+    "$([[ "$(_nx_install_rc "$NX_SCRATCH")" -ne 0 ]] && echo 1 || echo 0)"
+assert_contains "ae-next hardening: ...saying it is a symlink" "symlink" "$(cat "$NX_ROOT/last-install.out")"
+# core/current planted as a symlink
+_nx_scratch_reset "$NX_SCRATCH/core"
+ln -s /dev/null "$NX_SCRATCH/core/current"
+assert_eq "ae-next hardening: a symlinked core/current is refused" "1" \
+    "$([[ "$(_nx_install_rc "$NX_SCRATCH")" -ne 0 ]] && echo 1 || echo 0)"
+# the installed core planted as a symlink
+_nx_scratch_reset "$NX_SCRATCH/core/9.9.10"
+ln -s "$NX_CORE_V2" "$NX_SCRATCH/core/9.9.10/ae"
+assert_eq "ae-next hardening: a symlinked installed core is refused" "1" \
+    "$([[ "$(_nx_install_rc "$NX_SCRATCH")" -ne 0 ]] && echo 1 || echo 0)"
+# core/current planted as a DIRECTORY
+_nx_scratch_reset "$NX_SCRATCH/core/current"
+assert_eq "ae-next hardening: a directory at core/current is refused" "1" \
+    "$([[ "$(_nx_install_rc "$NX_SCRATCH")" -ne 0 ]] && echo 1 || echo 0)"
+assert_contains "ae-next hardening: ...saying it is not a regular file" "regular file" "$(cat "$NX_ROOT/last-install.out")"
+
+# ── Publishing: rename, not write-in-place ─────────────────────────────────
+# A stray temp from a killed run is INERT — it is not on any path a reader
+# consults — and the next install still publishes correctly beside it.
+_nx_scratch_reset "$NX_SCRATCH/core/9.9.10"
+printf 'a torn copy nobody should ever run\n' >"$NX_SCRATCH/core/9.9.10/.ae.XXtorn"
+assert_eq "ae-next hardening: a leftover temp does not block the install" "0" "$(_nx_install_rc "$NX_SCRATCH")"
+assert_eq "ae-next hardening: ...and the published core is the real one, not the temp" "1" \
+    "$(cmp -s "$NX_CORE_V2" "$NX_SCRATCH/core/9.9.10/ae" && echo 1 || echo 0)"
+# The structural half: the final path is only ever named by a rename.
+assert_eq "ae-next hardening: the core leaf is published by rename, never copied into place" "1" \
+    "$(_nx_src="$(cat "$NX_REPO_SRC/contrib/ae-next/install")"
+       # These are the installer's own expansions, matched as TEXT in its source.
+       # shellcheck disable=SC2016
+       [[ "$_nx_src" == *'mv "$_tmp" "$INSTALLED"'* && "$_nx_src" != *'cp "$BUILT" "$INSTALLED"'* ]] && echo 1 || echo 0)"
+
+# An identical core whose mode drifted is HARDENED, not refused: the bytes are
+# right, so refusing would strand an operator over a permission bit.
+chmod 0755 "$NX_SCRATCH/core/9.9.10" 2>/dev/null || true
+chmod 0644 "$NX_SCRATCH/core/9.9.10/ae"
+assert_eq "ae-next hardening: an identical but writable core re-installs clean" "0" "$(_nx_install_rc "$NX_SCRATCH")"
+assert_eq "ae-next hardening: ...and its mode is enforced back to 0555" "555" \
+    "$(_nx_mode "$NX_SCRATCH/core/9.9.10/ae")"
+
+# ── Re-entry does not go through the wrapper ───────────────────────────────
+# The wrapper refuses a symlinked core/current, but it is not the only door: a
+# generated helper execs its recorded ae, the watchdog re-invokes
+# `telegram _supervise`, compact launches its child, and a person can run `ae`
+# with AE_HOME set. All of those reach the reader in `ae` directly, so the
+# refusal has to live there too. Driven through the REAL ae binary, not the
+# wrapper, which is the whole point.
+NX_RC=0
+NX_OUT="$(NX_INSTALL_HOME="$NX_ROOT/reentry" NX_INSTALL_CORE="$NX_CORE_V2" _nx_install)" || NX_RC=$?
+NX_REENTRY_CORE="$NX_ROOT/reentry/core/9.9.10/ae"
+assert_eq "ae-next re-entry: the fixture install published a pointer" "$NX_REENTRY_CORE" \
+    "$(cat "$NX_ROOT/reentry/core/current" 2>/dev/null || true)"
+# The POSITIVE half first: with a regular pointer, a raw `ae` really does resolve
+# the core through it. Without this row the negative below could pass because
+# nothing was ever resolvable.
+NX_OUT="$(AE_HOME="$NX_ROOT/reentry" CONFIG_FILE="$NX_ROOT/reentry/config" AE_LOCAL_CONFIG='' \
+    AE_CORE_BIN='' "$AE" doctor 2>&1 || true)"
+assert_contains "ae-next re-entry: a raw ae resolves the core through core/current" "$NX_REENTRY_CORE" "$NX_OUT"
+rm -f "$NX_ROOT/reentry/core/current"
+# The link points at a REAL POINTER FILE holding a usable absolute path, not at
+# the binary and not at nothing: only then is the symlink rule the sole decider.
+# A dangling link, or one aimed at the binary, is rejected by the checks that
+# follow anyway — so the test would pass with the rule deleted, which is the
+# shape of a control that can never fail.
+printf '%s\n' "$NX_REENTRY_CORE" >"$NX_ROOT/reentry/core/current.real"
+ln -s "$NX_ROOT/reentry/core/current.real" "$NX_ROOT/reentry/core/current"
+NX_OUT="$(AE_HOME="$NX_ROOT/reentry" CONFIG_FILE="$NX_ROOT/reentry/config" AE_LOCAL_CONFIG='' \
+    AE_CORE_BIN='' "$AE" doctor 2>&1 || true)"
+assert_eq "ae-next re-entry: a SYMLINKED core/current binds nothing, even through a raw ae" "0" \
+    "$(printf '%s' "$NX_OUT" | command grep -c "$NX_REENTRY_CORE" || true)"
+
+# ── The command link: a directory destination is refused, not linked into ──
+# `ln -sf` given a directory creates the link INSIDE it and reports success, so
+# the operator would be told the command was installed while nothing exists at
+# the path they were told about.
+_nx_scratch_reset "$NX_SCRATCH"
+NX_LINKHOME="$NX_ROOT/linkhome"
+rm -rf "$NX_LINKHOME"; mkdir -p "$NX_LINKHOME/.local/bin/ae-next" "$NX_LINKHOME/.ae"
+cp "$NX_HOME/.ae/config" "$NX_LINKHOME/.ae/config"
+NX_RC=0
+NX_OUT="$(HOME="$NX_LINKHOME" AE_NEXT_HOME="$NX_LINKHOME/.ae-next" AE_NEXT_CORE_BIN="$NX_CORE_V2" \
+    "${BASH:-bash}" "$NX_REPO/contrib/ae-next/install" 2>&1)" || NX_RC=$?
+assert_eq "ae-next hardening: a directory at ~/.local/bin/ae-next is refused" "1" \
+    "$([[ "$NX_RC" -ne 0 ]] && echo 1 || echo 0)"
+assert_contains "ae-next hardening: ...rather than linking inside it" "refusing to link inside it" "$NX_OUT"
+assert_not_exists "ae-next hardening: ...and no link was nested" "$NX_LINKHOME/.local/bin/ae-next/ae-next"
+unset -f _nx_install_rc _nx_scratch_reset
+unset NX_SHARED_A NX_SHARED_B NX_SCRATCH NX_LINKHOME NX_REENTRY_CORE _nx_bad_srv
+
+# THE INSTALLED TREE IS READ-ONLY BY DESIGN (0555 version directories), and
+# `rm -rf` cannot unlink a file out of a directory it may not write. That is the
+# product behaving correctly and the SUITE's problem to clean up after: without
+# this the run's temp HOME survives and the harness reports a lost isolation
+# tree — a real failure caused by a real feature.
+chmod -R u+w "$NX_ROOT" 2>/dev/null || true
+unset -f _nx_mode _nx_inode _nx_install _nx_wrap _nx_bump_stub_version
+unset NX_REPO_SRC NX_ROOT NX_HOME NX_REPO NX_CORE NX_CORE_B NX_CORE_V2 NX_OUT NX_RC NX_NEXT
+unset NX_SEED NX_INODE NX_OLD_CFG_FPR NX_OLD_AE_FPR NX_CFG_FPR NX_ALT NX_W NX_EVIL _nx_bad NX_INSTALL_CORE NX_INSTALL_HOME
+fi
+
+# ── ae-next coexistence: Telegram ownership guard (pre-P5) ───────────────────
+if _itest_section 'ae-next coexistence: Telegram ownership guard'; then
+
+# THE HAZARD THIS GUARDS. Two bridges long-polling ONE bot token do not collide
+# loudly: Telegram hands each update to whichever getUpdates arrived first, so
+# the other simply never sees it. Half the messages vanish and both bridges look
+# healthy. Isolation cannot solve it — the token lives outside both state trees —
+# so the spawn asks, before it starts, whether the OTHER instance's bridge is
+# already live on the same bot.
+#
+# THE FAKE tmux IS ON PATH, NOT A FUNCTION. `command tmux` bypasses functions;
+# `env ... tmux` bypasses them too, and the guard's probe is deliberately built
+# that way so no shell-level shim can answer for the default server. A function
+# fixture would therefore test nothing — it would never be called. The fake is a
+# PASSTHROUGH: it answers only `-L default list-sessions`, records its full
+# environment on every call, and execs the real tmux for everything else.
+TGG_ROOT="$TMPDIR/tgguard"
+TGG_BIN="$TGG_ROOT/bin"
+TGG_FIX="$TGG_ROOT/fixture"
+TGG_HOME="$TGG_ROOT/home"
+mkdir -p "$TGG_BIN" "$TGG_FIX" "$TGG_HOME/.ae"
+TGG_REAL_TMUX="$(command -v tmux)"
+
+cat >"$TGG_BIN/tmux" <<TGGFAKE
+#!/bin/sh
+# Records EVERY call's environment: the bypass assertions are about what the
+# probe cleared, and only the callee can testify to that.
+env >"$TGG_FIX/env.last"
+case "\$*" in
+    "-L default list-sessions"*)
+        if [ -f "$TGG_FIX/unknown" ]; then
+            echo "error connecting to /tmp/tmux-501/default (Permission denied)" >&2
+            exit 1
+        fi
+        if [ -f "$TGG_FIX/flip" ]; then
+            # THE WINDOW, made deterministic: the first probe sees nothing and
+            # arms the second. That is the race the re-check exists for, and a
+            # fixture is the only way to observe it without timing luck.
+            rm -f "$TGG_FIX/flip"
+            : >"$TGG_FIX/present"
+            echo "no server running on /tmp/tmux-501/default" >&2
+            exit 1
+        fi
+        if [ -f "$TGG_FIX/present" ]; then
+            cat "$TGG_FIX/sessions"
+            exit 0
+        fi
+        # The one shape that PROVES absence: tmux leaves the socket behind when a
+        # server exits cleanly.
+        echo "no server running on /tmp/tmux-501/default" >&2
+        exit 1
+        ;;
+esac
+exec "$TGG_REAL_TMUX" "\$@"
+TGGFAKE
+chmod 0755 "$TGG_BIN/tmux"
+
+TGG_FNS="$TGG_ROOT/fns.sh"
+{
+    awk '/^parse_config\(\) \{/,/^\}$/' "$AE"
+    awk '/^get_config\(\) \{/,/^\}$/' "$AE"
+    awk '/^_telegram_expand_path\(\) \{/,/^\}$/' "$AE"
+    awk '/^_ae_core_current_input\(\) \{/,/^\}$/' "$AE"
+    awk '/^_ae_core_bin_input\(\) \{/,/^\}$/' "$AE"
+    awk '/^_ae_core_bin_version\(\) \{/,/^\}$/' "$AE"
+    awk '/^_tmux_err_is_clean_dead\(\) \{/,/^\}$/' "$AE"
+    awk '/^daemon_session_running\(\) \{/,/^\}$/' "$AE"
+    awk '/^_telegram_coexistence_token\(\) \{/,/^\}$/' "$AE"
+    awk '/^_telegram_coexistence_probe\(\) \{/,/^\}$/' "$AE"
+    awk '/^_telegram_coexistence_same_bot\(\) \{/,/^\}$/' "$AE"
+    awk '/^_telegram_coexistence_guard\(\) \{/,/^\}$/' "$AE"
+    awk '/^_telegram_spawn_daemon\(\) \{/,/^\}$/' "$AE"
+} >"$TGG_FNS"
+
+# The old instance's config lives at $HOME/.ae/config — the guard knows that path
+# literally, which is a stated limit of the design (an old instance under a
+# relocated AE_HOME is not detected).
+printf '%s\n' 'BOT-TOKEN-OLD' >"$TGG_ROOT/token-old"
+printf '%s\n' 'BOT-TOKEN-OLD' >"$TGG_ROOT/token-same"
+printf '%s\n' 'BOT-TOKEN-NEW' >"$TGG_ROOT/token-different"
+printf '[telegram]\ntoken_file = "%s"\n' "$TGG_ROOT/token-old" >"$TGG_HOME/.ae/config"
+# shellcheck disable=SC2016
+printf '%s\n' '#!/bin/sh' 'case "$1" in --version) echo "ae 9.9.9";; esac' >"$TGG_ROOT/core"
+chmod 0755 "$TGG_ROOT/core"
+
+# _tgg <present|absent|unknown> <mine-token-file|none> [pre-set env...] -> refused|spawned
+_tgg() {
+    local state="$1" mine="$2"
+    shift 2
+    rm -f "$TGG_FIX/present" "$TGG_FIX/unknown" "$TGG_FIX/flip" "$TGG_FIX/spawned" \
+        "$TGG_FIX/kills" "$TGG_FIX/err" "$TGG_FIX/env.last"
+    case "$state" in
+        present)
+            : >"$TGG_FIX/present"
+            printf '%s\n' 'some-other-session' 'ae-telegram' 'yet-another' >"$TGG_FIX/sessions"
+            ;;
+        live-but-no-bridge)
+            : >"$TGG_FIX/present"
+            printf '%s\n' 'some-other-session' >"$TGG_FIX/sessions"
+            ;;
+        aewatch)
+            : >"$TGG_FIX/present"
+            printf '%s\n' 'some-other-session' 'ae-aewatch' >"$TGG_FIX/sessions"
+            ;;
+        flip)
+            # Absent on the first probe, live on the second — the spawn goes
+            # through and the re-check is what has to catch it.
+            : >"$TGG_FIX/flip"
+            printf '%s\n' 'ae-telegram' >"$TGG_FIX/sessions"
+            ;;
+        unknown) : >"$TGG_FIX/unknown" ;;
+    esac
+    if [[ "$mine" == none ]]; then
+        printf '[telegram]\nenabled = true\n' >"$TGG_ROOT/next-config"
+    else
+        printf '[telegram]\nenabled = true\ntoken_file = "%s"\n' "$mine" >"$TGG_ROOT/next-config"
+    fi
+    cat >"$TGG_ROOT/drive" <<TGGDRIVE
+#!/usr/bin/env bash
+set -uo pipefail
+CONFIG_DIR="$TGG_ROOT"
+CONFIG_FILE="$TGG_ROOT/next-config"
+AE_LOCAL_CONFIG=""
+_TELEGRAM_TMUX_SESSION="ae-telegram"
+# ae's OWN tmux calls (the aewatch probe, the spawn itself) go through the shell
+# function, exactly as they do in the product. Only the guard's probe escapes to
+# PATH — which is the distinction under test.
+tmux() {
+    case "\$1" in
+        list-sessions) return 0 ;;
+        new-session) echo spawned >"$TGG_FIX/spawned"; return 0 ;;
+        kill-session) shift; printf '%s\n' "\$*" >>"$TGG_FIX/kills"; return 0 ;;
+        *) return 0 ;;
+    esac
+}
+source "$TGG_FNS"
+_telegram_spawn_daemon
+TGGDRIVE
+    # THE VERDICT IS THE SPAWN'S OWN ANSWER, not a marker file. A re-check that
+    # retreats has already run new-session, so reading the marker would report
+    # "spawned" for exactly the case the retreat exists to prevent.
+    local rc=0
+    PATH="$TGG_BIN:$PATH" HOME="$TGG_HOME" AE_CORE_BIN="$TGG_ROOT/core" \
+        env "$@" "${BASH:-bash}" "$TGG_ROOT/drive" >/dev/null 2>"$TGG_FIX/err" || rc=$?
+    if [[ "$rc" -eq 0 ]]; then printf 'spawned'; else printf 'refused'; fi
+}
+
+# ── The five cases ──────────────────────────────────────────────────────────
+# THE SAME BOT is the one that must not be polled twice.
+assert_eq "tg guard: a live default-server bridge on the SAME token refuses the spawn" "refused" \
+    "$(_tgg present "$TGG_ROOT/token-same" AE_TMUX_SERVER=ae-next)"
+# Two different bots are two different conversations, and both may run.
+assert_eq "tg guard: a live bridge on a DIFFERENT token still spawns" "spawned" \
+    "$(_tgg present "$TGG_ROOT/token-different" AE_TMUX_SERVER=ae-next)"
+# Nothing over there: nothing to collide with.
+assert_eq "tg guard: no default server at all -> spawn" "spawned" \
+    "$(_tgg absent "$TGG_ROOT/token-same" AE_TMUX_SERVER=ae-next)"
+# A live default server WITHOUT a bridge is not a bridge. This separates "the
+# server answered" from "the bridge is there" — a guard that refused on any live
+# default server would block every canary on this machine.
+assert_eq "tg guard: a live default server with no ae-telegram session -> spawn" "spawned" \
+    "$(_tgg live-but-no-bridge "$TGG_ROOT/token-same" AE_TMUX_SERVER=ae-next)"
+# CANNOT TELL IS NOT ABSENT (#28). The cost of guessing wrong is a silently
+# halved update stream, so the unknown answer fails closed.
+assert_eq "tg guard: an unreadable default server (rc 2 / cannot tell) refuses" "refused" \
+    "$(_tgg unknown "$TGG_ROOT/token-different" AE_TMUX_SERVER=ae-next)"
+# An unreadable token cannot be PROVEN different, so it is treated as the same.
+assert_eq "tg guard: a token this instance cannot read refuses" "refused" \
+    "$(_tgg present none AE_TMUX_SERVER=ae-next)"
+# THE INSTALLED ae IS NEVER GATED BY ITS OWN GUARD: no AE_TMUX_SERVER, no probe.
+assert_eq "tg guard: a default-server instance is not gated at all" "spawned" \
+    "$(_tgg present "$TGG_ROOT/token-same" AE_TMUX_SERVER=)"
+
+# ── Bypass discriminator (1): the probe must not follow \$TMUX ───────────────
+# The guard runs from INSIDE a pane of the named server during a canary, so an
+# inherited $TMUX is the normal case, not an exotic one. If the probe followed
+# it, it would interrogate ae-next's own server, find no old bridge there, and
+# authorise the double poll it exists to prevent.
+assert_eq "tg guard: a probe run from inside a named-server pane still refuses" "refused" \
+    "$(_tgg present "$TGG_ROOT/token-same" AE_TMUX_SERVER=ae-next TMUX=/tmp/tmux-501/ae-next,123,0)"
+# ZERO occurrences: the probe's own environment carried no TMUX at all.
+assert_eq "tg guard: ...and TMUX really was cleared for the probe" "0" \
+    "$(command grep -c '^TMUX=' "$TGG_FIX/env.last" | tr -d '[:space:]')"
+
+# ── Bypass discriminator (2): TMUX_TMPDIR is the same bypass, renamed ────────
+# -L names the SOCKET; TMUX_TMPDIR names the DIRECTORY it is looked up in. With
+# it left in place, `-L default` resolves inside whatever directory the caller
+# supplied — a different server wearing the same name.
+assert_eq "tg guard: an alternate TMUX_TMPDIR does not redirect the probe" "refused" \
+    "$(_tgg present "$TGG_ROOT/token-same" AE_TMUX_SERVER=ae-next TMUX_TMPDIR="$TGG_ROOT/empty-tmpdir")"
+assert_eq "tg guard: ...and the probe's own environment carried NEITHER redirection" "0|0" \
+    "$(printf '%s|%s' \
+        "$(command grep -c '^TMUX=' "$TGG_FIX/env.last" | tr -d '[:space:]')" \
+        "$(command grep -c '^TMUX_TMPDIR=' "$TGG_FIX/env.last" | tr -d '[:space:]')")"
+
+# ── A retired aewatch on the DEFAULT server: refuse, never kill ────────────
+# A live aewatch claims the bridge-owner marker and kills competing bridges on
+# EVERY tmux server, so starting beside it means being killed seconds later. It
+# belongs to the other instance, though, and killing another instance's process
+# is not this command's to do — so this refuses and says how to stop it. The
+# token here is DIFFERENT on purpose: this refusal does not depend on whose bot
+# is configured, which a token-shaped implementation would have got wrong.
+assert_eq "tg guard: a live aewatch on the default server refuses the spawn" "refused" \
+    "$(_tgg aewatch "$TGG_ROOT/token-different" AE_TMUX_SERVER=ae-next)"
+assert_contains "tg guard: ...naming ae-aewatch" "ae-aewatch" "$(cat "$TGG_FIX/err" 2>/dev/null || true)"
+assert_not_exists "tg guard: ...and nothing was spawned" "$TGG_FIX/spawned"
+assert_not_exists "tg guard: ...and nothing of THEIRS was killed" "$TGG_FIX/kills"
+
+# ── The window: check -> spawn -> RE-CHECK, with self-retreat ──────────────
+# The pre-check answers about a moment that has passed by the time the session
+# exists, and the other instance is the frozen `ae` — it will never honour a
+# claim this side invents, so there is no protocol to agree on. The only move
+# left is to look again and take OUR OWN bridge down. The fixture makes the race
+# deterministic: absent on the first probe, live on the second.
+assert_eq "tg guard: a bridge that appears DURING the spawn makes us retreat" "refused" \
+    "$(_tgg flip "$TGG_ROOT/token-same" AE_TMUX_SERVER=ae-next)"
+assert_eq "tg guard: ...the session really was created first (there WAS a window)" "1" \
+    "$([[ -f "$TGG_FIX/spawned" ]] && echo 1 || echo 0)"
+assert_contains "tg guard: ...and OUR OWN bridge is what got killed" "ae-telegram" \
+    "$(cat "$TGG_FIX/kills" 2>/dev/null || true)"
+assert_contains "tg guard: ...with the refusal the operator can act on" "distinct bot token" \
+    "$(cat "$TGG_FIX/err" 2>/dev/null || true)"
+
+# ── The refusal is a refusal: nothing was started ───────────────────────────
+_tgg present "$TGG_ROOT/token-same" AE_TMUX_SERVER=ae-next >/dev/null
+assert_not_exists "tg guard: a refused spawn creates no tmux session" "$TGG_FIX/spawned"
+
+unset -f _tgg
+unset TGG_ROOT TGG_BIN TGG_FIX TGG_HOME TGG_REAL_TMUX TGG_FNS
+fi
+
+# ── ae-next coexistence: real ae through the symlink (pre-P5) ────────────────
+if _itest_section 'ae-next coexistence: real ae through the symlink'; then
+
+# EVERYTHING ELSE IN THIS SLICE IS A STUB TEST. This one is the product: the real
+# installer, the real wrapper, the real `ae`, the real Rust core, a real session
+# on a real tmux server. It is the assertion that the isolation argument holds
+# end to end rather than only in the environment the wrapper prints.
+NXR_REPO_SRC="$(dirname "$AE")"
+NXR_CORE="$NXR_REPO_SRC/target/debug/ae"
+# The debug binary is what `just rust-check` leaves behind. Build it if it is
+# missing and cargo is here; if it is still missing the assertion below FAILS
+# loudly rather than skipping — a section that quietly tests nothing is the
+# failure this suite exists to avoid.
+if [[ ! -x "$NXR_CORE" ]] && command -v cargo >/dev/null 2>&1; then
+    (cd "$NXR_REPO_SRC" && cargo build --locked >/dev/null 2>&1) || true
+fi
+NXR_VERSION="$(command grep -m1 '^AE_VERSION=' "$AE" | cut -d'"' -f2)"
+assert_eq "ae-next real: the core binary exists (cargo build --locked)" "1" \
+    "$([[ -x "$NXR_CORE" ]] && echo 1 || echo 0)"
+assert_eq "ae-next real: ...and it is the version the glue is" "$NXR_VERSION" \
+    "$("$NXR_CORE" --version 2>/dev/null | awk '{print $NF}')"
+
+NXR_HOME="$HOME/.ae-next"
+AE_NEXT_CORE_BIN="$NXR_CORE" "${BASH:-bash}" "$NXR_REPO_SRC/contrib/ae-next/install" >/dev/null 2>&1 || true
+assert_eq "ae-next real: the install published core/current" "$NXR_HOME/core/$NXR_VERSION/ae" \
+    "$(cat "$NXR_HOME/core/current" 2>/dev/null || true)"
+
+# A REAL session, launched the way a human launches it: through the symlink.
+NXR_GIT="$(setup_repo)"
+(cd "$NXR_GIT" && "$HOME/.local/bin/ae-next" --local nxreal >/dev/null 2>&1 &) 2>/dev/null
+NXR_I=0
+while ! command tmux -L ae-next has-session -t nxreal 2>/dev/null; do
+    sleep 0.5
+    NXR_I=$((NXR_I + 1))
+    if ((NXR_I >= 30)); then break; fi
+done
+sleep 2
+NXR_META="$NXR_HOME/sessions/nxreal"
+
+# ── The two instances cannot see each other ────────────────────────────────
+assert_eq "ae-next real: the session is live on the ae-next server" "1" \
+    "$(command tmux -L ae-next has-session -t nxreal 2>/dev/null && echo 1 || echo 0)"
+assert_eq "ae-next real: ...and NOT on the harness's own server" "0" \
+    "$(tmux has-session -t nxreal 2>/dev/null && echo 1 || echo 0)"
+assert_eq "ae-next real: its state is under ~/.ae-next, not ~/.ae" "1" \
+    "$([[ -f "$NXR_META/meta" ]] && echo 1 || echo 0)"
+assert_not_exists "ae-next real: nothing was written to the old home" "$HOME/.ae/sessions/nxreal"
+# The listing is the human-visible half of the same fact.
+assert_contains "ae-next real: ae-next list shows it" "nxreal" \
+    "$("$HOME/.local/bin/ae-next" list 2>/dev/null || true)"
+assert_eq "ae-next real: the plain ae does not" "0" \
+    "$("$AE" list 2>/dev/null | command grep -c 'nxreal' || true)"
+
+# ── The core the session bound is the IMMUTABLE one ────────────────────────
+# Not target/debug/ae, which the next `cargo build` overwrites: the copy under
+# core/<version>/, which nothing can rewrite in place.
+assert_eq "ae-next real: meta pins the immutable core path" "$NXR_HOME/core/$NXR_VERSION/ae" \
+    "$(command grep '^ae_core=' "$NXR_META/meta" 2>/dev/null | cut -d= -f2- || true)"
+assert_eq "ae-next real: meta pins the version it reported" "$NXR_VERSION" \
+    "$(command grep '^ae_core_version=' "$NXR_META/meta" 2>/dev/null | cut -d= -f2- || true)"
+# ...and it got there from core/current, with no AE_CORE_BIN anywhere: the
+# wrapper unsets it, so this pin can only have come from the file.
+# MEASURED, and worth knowing before reading the next two rows: ae does NOT
+# record the name it was handed. resolve_launch_tmux_server asks the live server
+# for its own `#{socket_path}` first and records THAT, so a session started with
+# AE_TMUX_SERVER=ae-next stores `tmux_server=<…>/tmux-<uid>/ae-next` with
+# `tmux_server_kind=socket`. The name is the FALLBACK, for when the query fails.
+# What matters for coexistence is which server it resolves to, so that is what is
+# asserted — pinning the spelling would pin an implementation detail and would
+# have been red here for the right behaviour.
+NXR_SRV="$(command grep '^tmux_server=' "$NXR_META/meta" 2>/dev/null | cut -d= -f2- || true)"
+assert_eq "ae-next real: the session records the ae-next server (by socket or by name)" "ae-next" \
+    "$(basename "$NXR_SRV")"
+assert_eq "ae-next real: ...and it is NOT the harness's own server" "0" \
+    "$([[ "$NXR_SRV" == *"$AE_TMUX_SERVER"* ]] && echo 1 || echo 0)"
+assert_eq "ae-next real: the server kind is classified, never left ambiguous" "1" \
+    "$(_k="$(command grep '^tmux_server_kind=' "$NXR_META/meta" 2>/dev/null | cut -d= -f2- || true)"
+       [[ "$_k" == socket || "$_k" == name ]] && echo 1 || echo 0)"
+# The helpers an agent runs inside that session must reach the SAME server, or a
+# send would address the old instance's panes. Asserted by RUNNING one: `agents`
+# enumerates panes through _lib's re-export, so it can only name this session's
+# main pane if it reached the ae-next server. A grep of _lib would prove nothing
+# — _lib reads the server out of meta at run time and contains no literal.
+NXR_PANE="$(command grep '^main_pane=' "$NXR_META/meta" 2>/dev/null | cut -d= -f2- || true)"
+# Captured, then matched — never `agents | grep -q`. Under `set -o pipefail`,
+# `grep -q` exits at the first match and SIGPIPEs the producer, so the PIPELINE
+# reports failure and the assertion reads "the helper found nothing" for output
+# that contained the answer. Measured here, on this very row.
+NXR_AGENTS="$("$NXR_META/agents" 2>/dev/null || true)"
+assert_contains "ae-next real: a generated helper reaches the ae-next server" "$NXR_PANE" "$NXR_AGENTS"
+
+# ── doctor, through the symlink ────────────────────────────────────────────
+# The operator's first move after an install, and the one surface that prints
+# the RESOLVED core back to them — so it is also the check that the whole
+# chain (wrapper -> core/current -> _ae_core_bin_input) agrees end to end.
+NXR_RC=0
+NXR_DOCTOR="$("$HOME/.local/bin/ae-next" doctor 2>&1)" || NXR_RC=$?
+assert_eq "ae-next real: doctor through the symlink exits 0" "0" "$NXR_RC"
+assert_contains "ae-next real: ...and names the immutable core it resolved" \
+    "$NXR_HOME/core/$NXR_VERSION/ae" "$NXR_DOCTOR"
+
+# ── end archives into the next home ────────────────────────────────────────
+"$HOME/.local/bin/ae-next" end -f nxreal >/dev/null 2>&1 || true
+sleep 1
+assert_eq "ae-next real: end archived under ~/.ae-next/archive" "1" \
+    "$(command ls -1 "$NXR_HOME/archive" 2>/dev/null | command grep -c . || true)"
+assert_eq "ae-next real: ...and the session is gone from the ae-next server" "0" \
+    "$(command tmux -L ae-next has-session -t nxreal 2>/dev/null && echo 1 || echo 0)"
+
+command tmux -L ae-next kill-server 2>/dev/null || true
+# 0555 version directories are the product's; the suite's own cleanup cannot
+# unlink through them (see the installer section for the same note).
+chmod -R u+w "$NXR_HOME" 2>/dev/null || true
+unset NXR_REPO_SRC NXR_CORE NXR_VERSION NXR_HOME NXR_GIT NXR_I NXR_META NXR_SRV NXR_PANE NXR_AGENTS NXR_DOCTOR NXR_RC
+fi
+
+# ── ae-next coexistence: upgrade + re-entry (pre-P5) ─────────────────────────
+if _itest_section 'ae-next coexistence: upgrade + re-entry'; then
+
+# THE QUESTION THIS SECTION ANSWERS. An upgrade installs a new core beside the
+# old one and repoints core/current. Everything that RE-ENTERS ae after that —
+# a new session, the watchdog restarting the bridge, compact launching its child
+# — resolves the core again, from the file. A session that pinned the old
+# version must keep running against the exact bytes it bound to, and everything
+# new must get the new one. Both halves, or the upgrade is either a lie or a
+# rug-pull.
+#
+# TWO REAL CORES AT TWO VERSIONS. The real binary reports one version, so each
+# "version" here is the real core behind a one-line shim that answers --version
+# and execs it for everything else: real behaviour, controlled version. The repo
+# is a copy of the real `ae` with its AE_VERSION line rewritten to match, because
+# the installer refuses a core whose version is not the glue's.
+NXU_SRC="$(dirname "$AE")"
+NXU_ROOT="$TMPDIR/nxup"
+NXU_REPO="$NXU_ROOT/repo"
+NXU_HOME="$NXU_ROOT/home"
+mkdir -p "$NXU_REPO/contrib/ae-next" "$NXU_HOME"
+cp "$NXU_SRC/contrib/ae-next/ae-next" "$NXU_SRC/contrib/ae-next/install" "$NXU_REPO/contrib/ae-next/"
+chmod 0755 "$NXU_REPO/contrib/ae-next/ae-next" "$NXU_REPO/contrib/ae-next/install"
+
+_nxu_repo_at() { # <version> — the real ae, wearing a version
+    sed "s/^AE_VERSION=.*/AE_VERSION=\"$1\"/" "$NXU_SRC/ae" >"$NXU_REPO/ae.tmp"
+    mv "$NXU_REPO/ae.tmp" "$NXU_REPO/ae"
+    chmod 0755 "$NXU_REPO/ae"
+}
+_nxu_core_at() { # <version> <dest> — the real core, wearing a version
+    printf '%s\n' '#!/bin/sh' \
+        "case \"\$1\" in --version) echo \"ae $1\";; *) exec \"$NXU_SRC/target/debug/ae\" \"\$@\";; esac" >"$2"
+    chmod 0755 "$2"
+}
+_nxu_core_at 9.9.9 "$NXU_ROOT/core-v1"
+_nxu_core_at 9.9.10 "$NXU_ROOT/core-v2"
+
+# ── v1: install, then a real session that pins it ───────────────────────────
+_nxu_repo_at 9.9.9
+AE_NEXT_HOME="$NXU_HOME/.ae-next" AE_NEXT_CORE_BIN="$NXU_ROOT/core-v1" \
+    "${BASH:-bash}" "$NXU_REPO/contrib/ae-next/install" >/dev/null 2>&1 || true
+NXU_NEXT="$NXU_HOME/.ae-next"
+assert_eq "ae-next upgrade: v1 is the published core" "$NXU_NEXT/core/9.9.9/ae" \
+    "$(cat "$NXU_NEXT/core/current" 2>/dev/null || true)"
+
+NXU_GIT="$(setup_repo)"
+(cd "$NXU_GIT" && AE_NEXT_HOME="$NXU_NEXT" AE_NEXT_TMUX_SERVER=ae-next-up \
+    "$NXU_REPO/contrib/ae-next/ae-next" --local nxup1 >/dev/null 2>&1 &) 2>/dev/null
+NXU_I=0
+while ! command tmux -L ae-next-up has-session -t nxup1 2>/dev/null; do
+    sleep 0.5
+    NXU_I=$((NXU_I + 1))
+    if ((NXU_I >= 40)); then break; fi
+done
+sleep 2
+assert_eq "ae-next upgrade: the v1 session pinned v1" "$NXU_NEXT/core/9.9.9/ae" \
+    "$(command grep '^ae_core=' "$NXU_NEXT/sessions/nxup1/meta" 2>/dev/null | cut -d= -f2- || true)"
+assert_eq "ae-next upgrade: ...and recorded its version" "9.9.9" \
+    "$(command grep '^ae_core_version=' "$NXU_NEXT/sessions/nxup1/meta" 2>/dev/null | cut -d= -f2- || true)"
+# The OVERRIDE's isolation, asserted where the override is actually used: this
+# session was launched with AE_NEXT_TMUX_SERVER=ae-next-up, so it must be
+# invisible on the harness's own server — the stand-in here for "the installed
+# instance's server".
+assert_eq "ae-next upgrade: an overridden server keeps the session off the harness server" "0" \
+    "$(tmux has-session -t nxup1 2>/dev/null && echo 1 || echo 0)"
+
+# ── v2: install beside it ──────────────────────────────────────────────────
+_nxu_repo_at 9.9.10
+AE_NEXT_HOME="$NXU_NEXT" AE_NEXT_CORE_BIN="$NXU_ROOT/core-v2" \
+    "${BASH:-bash}" "$NXU_REPO/contrib/ae-next/install" >/dev/null 2>&1 || true
+assert_eq "ae-next upgrade: current now names v2" "$NXU_NEXT/core/9.9.10/ae" \
+    "$(cat "$NXU_NEXT/core/current" 2>/dev/null || true)"
+assert_eq "ae-next upgrade: the v1 leaf is still there" "1" \
+    "$([[ -x "$NXU_NEXT/core/9.9.9/ae" ]] && echo 1 || echo 0)"
+# THE RUG-PULL THAT MUST NOT HAPPEN: the live session's pin is untouched, and the
+# bytes behind it are the ones it bound to.
+assert_eq "ae-next upgrade: the live v1 session's pin did not move" "$NXU_NEXT/core/9.9.9/ae" \
+    "$(command grep '^ae_core=' "$NXU_NEXT/sessions/nxup1/meta" 2>/dev/null | cut -d= -f2- || true)"
+assert_eq "ae-next upgrade: ...and that binary still reports 9.9.9" "9.9.9" \
+    "$("$NXU_NEXT/core/9.9.9/ae" --version 2>/dev/null | awk '{print $NF}')"
+
+# ── A new session gets the new core ────────────────────────────────────────
+(cd "$NXU_GIT" && AE_NEXT_HOME="$NXU_NEXT" AE_NEXT_TMUX_SERVER=ae-next-up \
+    "$NXU_REPO/contrib/ae-next/ae-next" --local nxup2 >/dev/null 2>&1 &) 2>/dev/null
+NXU_I=0
+while ! command tmux -L ae-next-up has-session -t nxup2 2>/dev/null; do
+    sleep 0.5
+    NXU_I=$((NXU_I + 1))
+    if ((NXU_I >= 40)); then break; fi
+done
+sleep 2
+assert_eq "ae-next upgrade: a NEW session pins v2" "$NXU_NEXT/core/9.9.10/ae" \
+    "$(command grep '^ae_core=' "$NXU_NEXT/sessions/nxup2/meta" 2>/dev/null | cut -d= -f2- || true)"
+assert_eq "ae-next upgrade: ...while the older session still pins v1" "$NXU_NEXT/core/9.9.9/ae" \
+    "$(command grep '^ae_core=' "$NXU_NEXT/sessions/nxup1/meta" 2>/dev/null | cut -d= -f2- || true)"
+
+# ── Re-entry: the bridge restart resolves v2, with nothing in the environment ─
+# This is the case an exported AE_CORE_BIN would have got wrong. The watchdog
+# re-invokes `telegram _supervise` inside a long-lived tmux server whose
+# environment was captured at LAUNCH; if the core path lived there, a restart
+# after an upgrade would revive the OLD core forever. It is read from
+# core/current instead, so the spawn's argv names v2 — asserted by capturing the
+# argv the spawn hands tmux, which is the same code path `_supervise` reaches.
+NXU_FNS="$NXU_ROOT/fns.sh"
+{
+    awk '/^parse_config\(\) \{/,/^\}$/' "$AE"
+    awk '/^get_config\(\) \{/,/^\}$/' "$AE"
+    awk '/^_telegram_expand_path\(\) \{/,/^\}$/' "$AE"
+    awk '/^_ae_core_current_input\(\) \{/,/^\}$/' "$AE"
+    awk '/^_ae_core_bin_input\(\) \{/,/^\}$/' "$AE"
+    awk '/^_ae_core_bin_version\(\) \{/,/^\}$/' "$AE"
+    awk '/^_tmux_err_is_clean_dead\(\) \{/,/^\}$/' "$AE"
+    awk '/^daemon_session_running\(\) \{/,/^\}$/' "$AE"
+    awk '/^_telegram_coexistence_token\(\) \{/,/^\}$/' "$AE"
+    awk '/^_telegram_coexistence_probe\(\) \{/,/^\}$/' "$AE"
+    awk '/^_telegram_coexistence_same_bot\(\) \{/,/^\}$/' "$AE"
+    awk '/^_telegram_coexistence_guard\(\) \{/,/^\}$/' "$AE"
+    awk '/^_telegram_spawn_daemon\(\) \{/,/^\}$/' "$AE"
+} >"$NXU_FNS"
+# A PASSTHROUGH fake tmux on PATH so the ownership guard's probe of the default
+# server answers "absent" deterministically — the guard is active here (this is a
+# named-server instance) and its production probe deliberately escapes every
+# shell-level shim.
+mkdir -p "$NXU_ROOT/bin"
+NXU_REAL_TMUX="$(command -v tmux)"
+cat >"$NXU_ROOT/bin/tmux" <<NXUFAKE
+#!/bin/sh
+case "\$*" in
+    "-L default list-sessions"*)
+        echo "no server running on /tmp/tmux-501/default" >&2
+        exit 1
+        ;;
+esac
+exec "$NXU_REAL_TMUX" "\$@"
+NXUFAKE
+chmod 0755 "$NXU_ROOT/bin/tmux"
+cat >"$NXU_ROOT/restart" <<NXURESTART
+#!/usr/bin/env bash
+set -uo pipefail
+CONFIG_DIR="$NXU_NEXT"
+CONFIG_FILE="$NXU_NEXT/config"
+AE_LOCAL_CONFIG=""
+_TELEGRAM_TMUX_SESSION="ae-telegram"
+tmux() {
+    if [[ "\$1" == new-session ]]; then
+        shift 6
+        printf '%s\n' "\$@" >"$NXU_ROOT/spawn-argv"
+    fi
+    return 0
+}
+source "$NXU_FNS"
+_telegram_spawn_daemon
+NXURESTART
+rm -f "$NXU_ROOT/spawn-argv"
+# NOTHING in the environment names a core: no AE_CORE_BIN, and the config carries
+# no workspace.core. core/current is the only source there is.
+PATH="$NXU_ROOT/bin:$PATH" AE_TMUX_SERVER=ae-next-up HOME="$NXU_HOME" \
+    "${BASH:-bash}" "$NXU_ROOT/restart" >/dev/null 2>&1 || true
+assert_eq "ae-next re-entry: a bridge restart spawns the UPGRADED core" "$NXU_NEXT/core/9.9.10/ae" \
+    "$(head -1 "$NXU_ROOT/spawn-argv" 2>/dev/null || true)"
+assert_contains "ae-next re-entry: ...pointed at the next home" "$NXU_NEXT" \
+    "$(cat "$NXU_ROOT/spawn-argv" 2>/dev/null || true)"
+
+# ── Re-entry: compact's child binds a version, and never an empty one ───────
+# compact HARD-REQUIRES a core: an unbound one does not degrade there, it stops.
+# Its child launch re-resolves exactly like the bridge restart above, so the
+# thing to prove is that the resolver answers with the intended version when the
+# environment is empty — an empty answer is what would kill a compact child after
+# its source is already archived and gone.
+eval "$(awk '/^(_ae_core_current_input|_ae_core_bin_input|get_config|parse_config)\(\) \{/,/^\}$/' "$AE")"
+assert_eq "ae-next re-entry: a child launch resolves the upgraded core" "$NXU_NEXT/core/9.9.10/ae" \
+    "$(AE_CORE_BIN='' AE_LOCAL_CONFIG='' CONFIG_FILE="$NXU_NEXT/config" CONFIG_DIR="$NXU_NEXT" _ae_core_bin_input)"
+assert_eq "ae-next re-entry: ...and never an empty one" "0" \
+    "$(AE_CORE_BIN='' AE_LOCAL_CONFIG='' CONFIG_FILE="$NXU_NEXT/config" CONFIG_DIR="$NXU_NEXT" _ae_core_bin_input | command grep -c '^$' || true)"
+unset -f _ae_core_current_input _ae_core_bin_input get_config parse_config
+
+command tmux -L ae-next-up kill-server 2>/dev/null || true
+chmod -R u+w "$NXU_NEXT" 2>/dev/null || true
+unset -f _nxu_repo_at _nxu_core_at
+unset NXU_SRC NXU_ROOT NXU_REPO NXU_HOME NXU_NEXT NXU_GIT NXU_I NXU_FNS NXU_REAL_TMUX
 fi
 
 # ── Results ──────────────────────────────────────────────────────────

@@ -82,6 +82,7 @@ pub mod listing;
 pub mod liveness;
 pub mod memo;
 pub mod meta;
+pub mod netprobe;
 pub mod procs;
 pub mod reply;
 pub mod requests;
@@ -633,6 +634,11 @@ pub fn run_with(
             // for a path that has nothing to do with it.
             let operand = if *command == cli::TELEGRAM_RUN {
                 "an ae home directory"
+            } else if *command == cli::NET_PROBE {
+                // Not a directory at all: the one entry here that takes a name
+                // to resolve. Telling its caller to supply a meta directory
+                // would send them looking for a path with nothing to do with it.
+                "a host to resolve"
             } else {
                 "a session meta directory"
             };
@@ -755,6 +761,7 @@ pub fn run_with(
         }
         cli::Request::WatchdogRun { dir, knobs } => watchdog_daemon::run(dir, *knobs, err)?,
         cli::Request::TelegramRun { paths, knobs } => telegram::bridge::run(paths, *knobs, err)?,
+        cli::Request::NetProbe { host, port } => netprobe::run(host, *port, out, err)?,
         cli::Request::CompactMemoBaseline { dir } => compact::memo_baseline_step(dir, out)?,
         cli::Request::CompactFindOutstanding { dir } => compact::find_outstanding_step(dir, out)?,
         cli::Request::List(list_args) => {

@@ -96,6 +96,12 @@ Strangler fig, with single-owner vertical cutovers.
 | **P4** | Daemons: watchdog + telegram graduate from Python contrib |
 | **P5** | Entry flip: the installer points `ae` at the binary; the single-file / pure-bash doctrine retires and the bash-hazards checklist shrinks to the pane glue that survives |
 
+Before that flip the rewrite is dogfooded **beside** the installed ae rather than over it:
+`ae-next` (contrib/ae-next, `just next-install`) runs this branch with its own `~/.ae-next`,
+its own tmux server and an immutable core, so the ae you work with is never the experiment.
+The intended end state is a later, separately approved promotion — `ae-next` becomes `ae`,
+today's `ae` is kept as `ae-legacy` for rollback. See docs/migration/coexistence.md.
+
 ## Status
 
 Branch `rust-rewrite`. Bash ae is **frozen at `72c7293`** — no feature work, no rescue

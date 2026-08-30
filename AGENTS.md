@@ -72,6 +72,9 @@ tests/integration   — integration tests (requires tmux, git)
 install             — symlink or curl|bash installer
 docs/               — user + internals documentation (getting-started, reference, internals)
 contrib/            — optional sidecars: aewatch (retired Python watchdog+bridge; archival), aeorchestrator, aemonitor
+contrib/ae-next/    — PRE-P5 COEXISTENCE, retires at the entry flip: the `ae-next` wrapper
+                      + its installer, which run this branch beside the installed `ae`
+                      (own ~/.ae-next, own tmux server, immutable core). docs/migration/coexistence.md
 Cargo.toml          — Rust package: one crate, bin + lib, both named `ae` (no workspace)
 rust-toolchain.toml — compiler pin: channel, profile, components, both targets
 clippy.toml         — the tests-only relaxation of the unwrap/expect rule

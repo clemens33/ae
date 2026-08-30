@@ -28,6 +28,7 @@ check: lint format-check
 # Lint with shellcheck
 lint:
     shellcheck -x ae tests/unit tests/integration tests/aemonitor tests/aewatch install \
+        contrib/ae-next/ae-next contrib/ae-next/install \
         tests/e2e/ai/lib.sh tests/e2e/ai/run_scenario.sh \
         $(find tests/e2e/ai/scenarios -name steps.sh) < /dev/null
 
@@ -37,11 +38,11 @@ lint:
 
 # Check formatting (shfmt, diff mode)
 format-check:
-    shfmt -d -i 4 -ci ae install < /dev/null
+    shfmt -d -i 4 -ci ae install contrib/ae-next/ae-next contrib/ae-next/install < /dev/null
 
 # Auto-format
 format:
-    shfmt -w -i 4 -ci ae install
+    shfmt -w -i 4 -ci ae install contrib/ae-next/ae-next contrib/ae-next/install
 
 # ── Testing ──────────────────────────────────────────────────────────
 
@@ -76,6 +77,20 @@ test-aewatch-fast:
 # subscription — real tokens, your live rate budget). NOT part of `check`/`test`.
 test-ai *args="tests/e2e/ai/scenarios":
     AE_E2E_AI={{ env_var_or_default("AE_E2E_AI", "") }} tests/e2e/ai/run_scenario.sh {{ args }}
+
+# ── Coexistence: ae-next (pre-P5) ────────────────────────────────────
+# Installs a SECOND command, `ae-next`, that runs this branch's hybrid (bash glue
+# + Rust core) with its own state home (~/.ae-next), its own tmux server and an
+# immutable copy of the core under ~/.ae-next/core/<version>/. It never touches
+# ~/.local/bin/ae, ~/.ae, or the `install` script — dogfooding the rewrite is not
+# supposed to cost you the ae you work with.
+#
+# Retires at the P5 entry flip, together with contrib/ae-next itself.
+# Design and canary plan: docs/migration/coexistence.md
+
+# Install/upgrade the ae-next command beside your installed ae
+next-install:
+    contrib/ae-next/install
 
 # ── Version ──────────────────────────────────────────────────────────
 

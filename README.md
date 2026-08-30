@@ -181,6 +181,12 @@ Everything else is **optional**, never required for core commands:
 
 The long-running daemon half (watchdog, bridge) is where bash hurts most, so it is being carved into the typed Rust core -- per the revisit triggers in [AGENTS.md](AGENTS.md). The Telegram bridge is the first daemon fully in the core: it *is* the ae core binary, run in a background tmux session, with no `jq`/`curl` dependency. (An earlier stdlib-only Python sidecar, [contrib/aewatch](contrib/aewatch), prototyped this carve-out under byte-exact parity testing; it is retired now that the core owns the bridge.) The tmux-glue half, where bash is best-in-class, stays bash. Companions start automatically once you opt in; `AE_NO_AUTOSTART=1` skips.
 
+Trying the rewrite is not supposed to cost you the ae you work with, so it installs as a
+**second command**: `just next-install` puts `ae-next` beside `ae`, with its own state home
+(`~/.ae-next`), its own tmux server and its own immutable copy of the core. Nothing under
+`~/.ae` or at `~/.local/bin/ae` changes, and rollback is deleting the three things it made.
+See [docs/migration/coexistence.md](docs/migration/coexistence.md); it retires at the entry flip.
+
 That carve-out is now the whole plan: this bash script is **frozen at `72c7293`** and the typed core takes over domain by domain on `rust-rewrite`. What carries over unchanged is the part you depend on — one file to install, no runtime, no repo pollution, `~/.ae/` as the only state. What goes away is bash as the implementation. See **[VISION.md](VISION.md)**.
 
 ## Requirements
