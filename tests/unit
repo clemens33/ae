@@ -13696,6 +13696,79 @@ assert_eq "bare-call: _ar_root" "SURVIVED" "$(_ar48_bare_probe "_ar_root >/dev/n
 rm -rf "$_ar48_root"
 unset _ar48_root _ar48_s1 _ar48_meta _ar48_rows _ar48_full _ar48_full_meta _ar48_hd _ar48_hd_meta
 
+# A real rig capture carries OSC 8 hyperlink controls in Claude's status footer.
+# They are zero-width; parsed printable text must retain only the visible footer row,
+# and that footer must not make an otherwise empty input box look occupied.
+_pb1_osc_fixture="$(dirname "$AE_BIN")/tests/fixtures/input-rows/claude-osc-footer.raw"
+_pb1_osc_row="$(<"$_pb1_osc_fixture")"
+_pb1_osc_visible='  🧠 Opus 5 (1M context) (xhigh)  📁 ae-rust  🌿 rust-rewrite              /rc'
+assert_eq "P-B1 OSC fixture: private Claude session host is redacted" "0" \
+    "$(grep -c 'https://claude.ai/' "$_pb1_osc_fixture" || true)"
+assert_eq "P-B1 OSC fixture: redacted URL keeps example host" "1" \
+    "$(grep -c 'https://example.test/' "$_pb1_osc_fixture" || true)"
+_sgr_parse "$_pb1_osc_row"
+_pb1_osc_join=""
+for _pb1_i in "${!_SGR_TEXT[@]}"; do
+    _pb1_osc_join+="${_SGR_TEXT[_pb1_i]}"
+done
+assert_eq "P-B1 OSC fixture: parser keeps visible footer text only" "$_pb1_osc_visible" "$_pb1_osc_join"
+assert_eq "P-B1 OSC fixture: parsed width equals visible footer width" "${#_pb1_osc_visible}" "${#_pb1_osc_join}"
+_pb1_osc_border="$(printf '%80s' '' | tr ' ' '─')"
+_pb1_osc_idle_region=$'\n'"$_pb1_osc_border"$'\n❯\xc2\xa0\n'"$_pb1_osc_border"$'\n'"$_pb1_osc_row"
+_pb1_osc_idle_class="$(_capture_input_region() { printf '%s' "$_pb1_osc_idle_region"; }
+    _pb1_osc_rc=0
+    _input_region_occupied "%1" claude || _pb1_osc_rc=$?
+    case "$_pb1_osc_rc" in 1) printf idle ;; 0) printf occupied ;; *) printf indeterminate ;; esac)"
+assert_eq "P-B1 OSC fixture: Claude footer classifies empty input as IDLE" "idle" "$_pb1_osc_idle_class"
+unset -f _capture_input_region
+
+# Synthetic ST-terminated OSC must preserve the current row's text and continue
+# parsing the next row. An unterminated OSC is bounded by that row boundary too.
+_sgr_parse $'left \e]8;id=x;https://example.test\e\\right\nnext'
+_pb1_st_join="${_SGR_TEXT[0]}${_SGR_TEXT[1]}"
+assert_eq "P-B1 OSC synthetic ST: visible text survives" "left right" "$_pb1_st_join"
+assert_eq "P-B1 OSC synthetic ST: next row survives" "next" "${_SGR_TEXT[2]}"
+assert_eq "P-B1 OSC synthetic ST: next row has a new line number" "1" "${_SGR_LINE[2]}"
+_sgr_parse $'left \e]8;unterminated\nnext'
+assert_eq "P-B1 OSC bound: unterminated control cannot swallow next row" "next" "${_SGR_TEXT[1]}"
+
+# Mutation control: removing the OSC branch makes the real fixture's parsed text
+# include hyperlink bytes, so this acceptance probe must turn RED.
+_pb1_sgr_src="$(awk '/^_sgr_parse\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+_pb1_sgr_mutated="$(awk '
+    /OSC hyperlinks/ { arm=1 }
+    arm && /^        if / { print "        if false; then"; arm=0; next }
+    { print }
+' <<<"$_pb1_sgr_src")"
+_pb1_sgr_mutation_result="$(
+    eval "$_pb1_sgr_mutated"
+    _sgr_parse "$_pb1_osc_row"
+    _pb1_mutated_join=""
+    for _pb1_i in "${!_SGR_TEXT[@]}"; do
+        _pb1_mutated_join+="${_SGR_TEXT[_pb1_i]}"
+    done
+    [[ "$_pb1_mutated_join" != "$_pb1_osc_visible" ]] && printf RED || printf GREEN
+)"
+assert_eq "P-B1 OSC mutation RED: removing OSC consumption breaks visible-width proof" "RED" "$_pb1_sgr_mutation_result"
+
+# BARE errexit probe: the parser is called as a statement under set -euo pipefail;
+# its line transition must not be hidden by a command substitution or conditional.
+_pb1_sgr_bare_dir="$(mktemp -d)"
+cat >"$_pb1_sgr_bare_dir/probe.sh" <<'PROBE'
+set -euo pipefail
+eval "$(awk '/^_sgr_parse\(\) \{/,/^\}$/' "$AE_BIN")"
+_sgr_parse "$FIXTURE"
+printf 'SURVIVED'
+PROBE
+_pb1_sgr_bare_rc=0
+AE_BIN="$AE_BIN" FIXTURE="$_pb1_osc_fixture" "${BASH:-bash}" "$_pb1_sgr_bare_dir/probe.sh" >"$_pb1_sgr_bare_dir/out" 2>/dev/null || _pb1_sgr_bare_rc=$?
+assert_eq "P-B1 OSC bare probe: parser survives under set -euo pipefail" "0" "$_pb1_sgr_bare_rc"
+assert_eq "P-B1 OSC bare probe: statement after parser runs" "SURVIVED" "$(<"$_pb1_sgr_bare_dir/out")"
+rm -rf "$_pb1_sgr_bare_dir"
+unset _pb1_osc_fixture _pb1_osc_row _pb1_osc_visible _pb1_osc_join _pb1_osc_border _pb1_osc_idle_region \
+    _pb1_osc_idle_class _pb1_sgr_src _pb1_sgr_mutated _pb1_sgr_mutation_result _pb1_sgr_bare_dir \
+    _pb1_sgr_bare_rc _pb1_i _pb1_st_join _pb1_osc_rc _pb1_mutated_join
+
 # ── Results ──────────────────────────────────────────────────────────
 
 echo ""

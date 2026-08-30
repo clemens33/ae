@@ -13028,6 +13028,31 @@ _sgr_parse() {
     local -a ps
     local j v
     while [[ -n "$rest" ]]; do
+        # `capture-pane -e` preserves OSC hyperlinks (Claude's status footer uses
+        # them). OSC is terminal control data, not printable pane content; consume
+        # it through BEL or ST so zero-width hyperlinks cannot inflate a row and make
+        # the input border look like occupied text.
+        if [[ "$rest" == $'\e]'* ]]; then
+            rest="${rest:2}"
+            while [[ -n "$rest" ]]; do
+                if [[ "${rest:0:1}" == $'\a' ]]; then
+                    rest="${rest:1}"
+                    break
+                elif [[ "$rest" == $'\e\\'* ]]; then
+                    rest="${rest:2}"
+                    break
+                elif [[ "${rest:0:1}" == $'\n' ]]; then
+                    # An unterminated OSC cannot consume the next capture row.
+                    # Treat the row boundary as the control's end and let the
+                    # outer parser account for it normally.
+                    rest="${rest:1}"
+                    line=$((line + 1))
+                    break
+                fi
+                rest="${rest:1}"
+            done
+            continue
+        fi
         if [[ "$rest" == $'\e['* ]]; then
             body="${rest#$'\e['}"
             seq="${body%%[a-zA-Z]*}"
