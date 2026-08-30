@@ -2,7 +2,8 @@
 
 **Status:** scope ratified (five cross-model rounds) → built (items 1-7) → hardened through three
 cross-model code-review rounds (13 BLOCKER, 4 IMPORTANT, 3 NIT folded in; final verdict SHIP) →
-**landed on `rust-rewrite`** → canary (gated on the paste fix, slice A). Update this
+**landed on `rust-rewrite`** → **canary in progress** (2026-08-30: outcomes 1–2 PASS; 4 blocked on a
+Linux liveness bug found by CI (see the checklist); 3 awaits a test bot). Update this
 line as it moves.
 
 ## Decision (binding, 2026-08-30)
@@ -189,9 +190,21 @@ present, still immutable — so nothing degrades underneath them.
 
 All four outcomes, then no open blocker:
 
-- [ ] **Lifecycle + archive:** launch a real session on `ae-next`; `send`/`ask`/`reply`, `state`,
-      `memo`, `goal`; `ae-next end` → archive under `~/.ae-next/archive/<uuid>`.
-- [ ] **Compact + restore:** `ae-next compact` on a live session; `ae-next <new> --from <uuid>`.
+- [x] **Lifecycle + archive** — PASS 2026-08-30 (second run; core 0.2.23). Session on the `ae-next`
+      server only (the default server never listed it); meta pinned the immutable core; `memo`,
+      `send`, `peek` and `events.jsonl` worked from outside the pane; `ae-next end` archived
+      (`040c64e3…`) and left no live state or server. Two by-design refusals seen on the way:
+      `state` from outside a pane refuses (state is pane-attributed), and a Codex worker in a
+      brand-new directory shows its directory-trust chooser — operator consent, never answered
+      by ae. The FIRST run found a real bug: the final attach `exec`'d tmux past the server
+      shim and searched the default server ("cannot find session") — fixed in `1039fd9d`.
+- [x] **Compact + restore** — PASS 2026-08-30. `ae-next compact` published the archive and the
+      same-name child came up with the frozen roster; `ae-next <new> --from <uuid>` recorded
+      `parent_archive_id` and the pinned core. The child has no `memo.tsv` — by contract (no
+      archive *content* is injected; the parent pointer and the digest instruction are the
+      handover, see `docs/reference/commands.md`). Headless invocations (no tty) end with
+      `open terminal failed: not a terminal`, rc 1, AFTER the operation succeeded — the final
+      attach has no terminal; a scripted canary should use the no-attach path.
 - [ ] **Telegram round-trip.** The seeded config has no credentials; configure `ae-next`
       explicitly, one of:
       **A (recommended)** a distinct test bot: its token file under `~/.ae-next`, its
@@ -201,7 +214,13 @@ All four outcomes, then no open blocker:
       → `say` + a reply → `ae-next telegram stop` → `ae telegram start`. If the old bridge is
       still live, the guard refuses the start — that refusal is the test of the guard.
 - [ ] **musl DNS/NSS:** the CI Linux leg's `_net-probe` step is green; optionally the same
-      binary in `docker run --rm alpine` locally.
+      binary in `docker run --rm alpine` locally. *2026-08-30: the lane had been red on both
+      platforms since the first dependency landed. Three causes peeled so far: a history-deriving
+      control on a depth-1 checkout (fixed, `d42a6db2`); the same control inside cargo-mutants'
+      `.git`-less tree copy (fixed, `copy_vcs`); and — still open — the Linux leg fails
+      `tests/it/telegram.rs` "a pane that is present cannot be dead: No(Hard)" against a real
+      tmux server: a Linux liveness-classification bug in the core, under diagnosis. The probe
+      has not run yet; this outcome stays open until it does.*
 
 ## Rollback
 
