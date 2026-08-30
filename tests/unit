@@ -11481,6 +11481,7 @@ _sf_probe() {  # <entry> <target> -> "rc=? out=<stdout> emitted=<n> resolved=<n>
         eval "$(awk '/^helper_send_deliver_main\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
         eval "$(awk '/^helper_send_finish_event\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
         eval "$(awk '/^helper_send_deliver_finish\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+        eval "$(awk '/^_notice_emit_failure\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
         evfile="$(mktemp)" # a FILE survives the inner subshell fork (a var would not)
         # shellcheck disable=SC2317,SC2329
         ae_require_body() { return 0; }
@@ -11531,6 +11532,142 @@ assert_eq "send-finish: the _send-deliver entry prints the body file and records
     "rc=0 out=/probe/body.txt emitted=0 resolved=1" "$(_sf_probe helper_send_deliver_main cl:target)"
 assert_eq "send-finish: the _send-deliver entry refuses a sink before resolving, recording nothing" \
     "rc=1 out= emitted=0 resolved=0" "$(_sf_probe helper_send_deliver_main telegram:x)"
+
+# A notice proof failure exercises the generated entry split itself. The shared body
+# must keep the internal _send-deliver ledger byte-unchanged while the public send owns
+# exactly one delivery-failed event.
+_sf_generated_deliver_failure() { # -> "rc=? events=? unchanged=?"
+    (
+        local d rc=0 long_body
+        d="$(mktemp -d)"
+        printf 'seed event\n' >"$d/events.jsonl"
+        cp "$d/events.jsonl" "$d/events.before"
+        long_body="$(head -c 9000 </dev/zero | tr '\0' L)"
+        export SF_D="$d"
+        eval "$(awk '/^helper_send_body\(\) \{/,/^\}$/' <<<\"$AE_SOURCE\")"
+        eval "$(awk '/^helper_send_deliver_main\(\) \{/,/^\}$/' <<<\"$AE_SOURCE\")"
+        eval "$(awk '/^helper_send_deliver_finish\(\) \{/,/^\}$/' <<<\"$AE_SOURCE\")"
+        # shellcheck disable=SC2317,SC2329
+        ae_require_body() { return 0; }
+        # shellcheck disable=SC2317,SC2329
+        ae_current_agent_ref() { printf 'cl:probe'; }
+        # shellcheck disable=SC2317,SC2329
+        ae_extract_req_id() { printf cap; }
+        # shellcheck disable=SC2034,SC2317,SC2329  # AE_RESOLVED_* read by helper_send_body
+        ae_resolve() { AE_RESOLVED_PANE='%9' AE_RESOLVED_AGENT='cl:target' AE_RESOLVED_SESSION=receiver; return 0; }
+        # shellcheck disable=SC2317,SC2329
+        _pane_agent_is_dead() { return 1; }
+        # shellcheck disable=SC2317,SC2329
+        ae_provenance_sender() { printf 'cl:probe'; }
+        # shellcheck disable=SC2034,SC2317,SC2329  # _AE_LAST_BODY_FILE read by helper_send_body
+        ae_store_message_body() { _AE_LAST_BODY_FILE="$SF_D/body.txt"; printf '%s' "$3" >"$SF_D/body.txt"; }
+        # shellcheck disable=SC2317,SC2329
+        ae_lock_target() { return 0; }
+        # shellcheck disable=SC2317,SC2329
+        ae_unlock_target() { return 0; }
+        # shellcheck disable=SC2317,SC2329
+        ae_target_tool() { printf codex; }
+        # shellcheck disable=SC2317,SC2329
+        _paste_input_busy() { return 1; }
+        # shellcheck disable=SC2317,SC2329
+        _pane_recently_viewed() { return 1; }
+        # shellcheck disable=SC2317,SC2329
+        _notice_prepare() { _NOTICE_MODE=notice; _NOTICE_PAYLOAD=pointer; return 0; }
+        # shellcheck disable=SC2317,SC2329
+        ae_submit_pasted_message() { return 1; }
+        # shellcheck disable=SC2317,SC2329
+        ae_emit_event() { printf '%s\n' "$*" >>"$SF_D/events.jsonl"; }
+        # shellcheck disable=SC2317,SC2329
+        tmux() { return 0; }
+        # shellcheck disable=SC2317,SC2329
+        sleep() { :; }
+        # Emit an on-disk internal helper and its _lib, matching the generated artifact
+        # boundary rather than calling the function definition directly. Generate it
+        # after the stubs so the child observes the same dependency surface.
+        {
+            printf '#!/usr/bin/env bash\nset -euo pipefail\n'
+            declare -f helper_send_body helper_send_deliver_finish helper_send_deliver_main
+            declare -f ae_require_body ae_current_agent_ref ae_extract_req_id ae_resolve \
+                _pane_agent_is_dead ae_provenance_sender ae_store_message_body ae_lock_target \
+                ae_unlock_target ae_target_tool _paste_input_busy _pane_recently_viewed \
+                _notice_prepare ae_submit_pasted_message ae_emit_event tmux sleep
+        } >"$d/_lib"
+        {
+            printf '#!/usr/bin/env bash\nset -euo pipefail\n'
+            printf 'source "%s/_lib"\nhelper_send_deliver_main "$@"\n' "$d"
+        } >"$d/_send-deliver"
+        chmod 700 "$d/_lib" "$d/_send-deliver"
+        ( "$d/_send-deliver" cl:target "$long_body" ) >"$d/out" 2>"$d/err" || rc=$?
+        printf 'rc=%s events=%s unchanged=%s' "${rc:-0}" \
+            "$(grep -c 'delivery-failed' "$d/events.jsonl" || true)" \
+            "$(cmp -s "$d/events.before" "$d/events.jsonl" && echo 1 || echo 0)"
+        rm -rf "$d"
+    )
+}
+assert_eq "send-finish: generated _send-deliver long-notice failure leaves ledger byte-unchanged" \
+    "rc=1 events=0 unchanged=1" "$(_sf_generated_deliver_failure)"
+
+_sf_notice_failure_probe() { # <entry> -> "rc=? events=? unchanged=?"
+    local entry="$1"
+    (
+        local d rc=0
+        d="$(mktemp -d)"
+        printf 'seed event\n' >"$d/events.jsonl"
+        cp "$d/events.jsonl" "$d/events.before"
+        eval "$(awk '/^helper_send_body\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+        eval "$(awk '/^helper_send_main\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+        eval "$(awk '/^helper_send_deliver_main\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+        eval "$(awk '/^helper_send_finish_event\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+        eval "$(awk '/^helper_send_deliver_finish\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+        eval "$(awk '/^_notice_emit_failure\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+        # shellcheck disable=SC2317,SC2329
+        _ae_core_try() { return 1; }
+        # shellcheck disable=SC2317,SC2329
+        ae_require_body() { return 0; }
+        # shellcheck disable=SC2317,SC2329
+        ae_current_agent_ref() { printf 'cl:probe'; }
+        # shellcheck disable=SC2317,SC2329
+        ae_extract_req_id() { printf cap; }
+        # shellcheck disable=SC2034,SC2317,SC2329  # AE_RESOLVED_* read by helper_send_body
+        ae_resolve() { AE_RESOLVED_PANE='%9' AE_RESOLVED_AGENT='cl:target'; return 0; }
+        # shellcheck disable=SC2317,SC2329
+        _pane_agent_is_dead() { return 1; }
+        # shellcheck disable=SC2317,SC2329
+        ae_provenance_sender() { printf 'cl:probe'; }
+        # shellcheck disable=SC2034,SC2317,SC2329  # _AE_LAST_BODY_FILE read by helper_send_body
+        ae_store_message_body() { _AE_LAST_BODY_FILE="$d/body.txt"; printf body >"$d/body.txt"; }
+        # shellcheck disable=SC2317,SC2329
+        ae_lock_target() { return 0; }
+        # shellcheck disable=SC2317,SC2329
+        ae_unlock_target() { return 0; }
+        # shellcheck disable=SC2317,SC2329
+        ae_target_tool() { printf codex; }
+        # shellcheck disable=SC2317,SC2329
+        _paste_input_busy() { return 1; }
+        # shellcheck disable=SC2317,SC2329
+        _pane_recently_viewed() { return 1; }
+        # shellcheck disable=SC2317,SC2329
+        _notice_prepare() { _NOTICE_MODE=notice; _NOTICE_PAYLOAD=pointer; return 0; }
+        # shellcheck disable=SC2317,SC2329
+        ae_submit_pasted_message() { return 1; }
+        # shellcheck disable=SC2317,SC2329
+        ae_emit_event() { printf '%s\n' "$*" >>"$d/events.jsonl"; }
+        # shellcheck disable=SC2317,SC2329
+        tmux() { return 0; }
+        # shellcheck disable=SC2317,SC2329
+        sleep() { :; }
+        ( "$entry" cl:target 'FORCED-NOTICE-PROOF-FAILURE' ) >"$d/out" 2>"$d/err" || rc=$?
+        printf 'rc=%s events=%s unchanged=%s' "$rc" \
+            "$(grep -c 'delivery-failed' "$d/events.jsonl" || true)" \
+            "$(cmp -s "$d/events.before" "$d/events.jsonl" && echo 1 || echo 0)"
+        rm -rf "$d"
+    )
+}
+assert_eq "send-finish: generated _send-deliver proof failure leaves ledger byte-unchanged" \
+    "rc=1 events=0 unchanged=1" "$(_sf_notice_failure_probe helper_send_deliver_main)"
+assert_eq "send-finish: public notice proof failure records exactly one delivery-failed" \
+    "rc=1 events=1 unchanged=0" "$(_sf_notice_failure_probe helper_send_main)"
+unset -f _sf_notice_failure_probe
 # helper_send_body refuses a dead-shell target BEFORE the lock (fail fast, no defer).
 assert_eq "send-guard: dead-shell refusal precedes the lock" "1" \
     "$([[ "$AE_SOURCE" == *'if _pane_agent_is_dead "$target"; then'*'REFUSED'*'exit 1'*'ae_lock_target "$target"'* ]] && echo 1 || echo 0)"
@@ -13696,6 +13833,37 @@ assert_eq "bare-call: _ar_root" "SURVIVED" "$(_ar48_bare_probe "_ar_root >/dev/n
 rm -rf "$_ar48_root"
 unset _ar48_root _ar48_s1 _ar48_meta _ar48_rows _ar48_full _ar48_full_meta _ar48_hd _ar48_hd_meta
 
+# ── Slice B P-B1: notice reconstruction fixtures (D1) ─────────────────────
+# These are the 18 raw rows captured from real Claude/Codex panes at 80/120/200
+# columns. The companion .notice is the exact one-line payload pasted into that
+# pane. Keep the raw capture as the authority for row shape: the fixture proves
+# where the renderer dropped a wrap-space and where it scrolled the head away.
+_pb1_fixture_dir="$(dirname "$AE_BIN")/tests/fixtures/input-rows"
+_pb1_fixture_probe() { # <raw> -> pass|fail|missing
+    local raw="$1" notice="${1%.raw}.notice" base tool capture intended
+    base="${raw##*/}"
+    tool="${base%%-*}"
+    capture="$(<"$raw")"
+    intended="$(<"$notice")"
+    eval "$(awk '/^_notice_reconstruct\(\) \{/,/^\}$/' <<<"$AE_SOURCE")" 2>/dev/null || true
+    eval "$(awk '/^_notice_prove\(\) \{/,/^\}$/' <<<"$AE_SOURCE")" 2>/dev/null || true
+    if ! declare -F _notice_prove >/dev/null 2>&1; then
+        printf 'missing'
+    elif _notice_prove "$tool" "$capture" "$intended" >/dev/null 2>&1; then
+        printf 'pass'
+    else
+        printf 'fail'
+    fi
+}
+for _pb1_raw in "$_pb1_fixture_dir"/*.raw; do
+    [[ "$_pb1_raw" == *claude-osc-footer.raw ]] && continue
+    _pb1_expect=pass
+    [[ "$_pb1_raw" == *claude-large-80.raw ]] && _pb1_expect=fail
+    assert_eq "P-B1 fixture proof: ${_pb1_raw##*/}" "$_pb1_expect" "$(_pb1_fixture_probe "$_pb1_raw")"
+done
+unset -f _pb1_fixture_probe
+unset _pb1_fixture_dir _pb1_raw _pb1_expect
+
 # A real rig capture carries OSC 8 hyperlink controls in Claude's status footer.
 # They are zero-width; parsed printable text must retain only the visible footer row,
 # and that footer must not make an otherwise empty input box look occupied.
@@ -13768,6 +13936,236 @@ rm -rf "$_pb1_sgr_bare_dir"
 unset _pb1_osc_fixture _pb1_osc_row _pb1_osc_visible _pb1_osc_join _pb1_osc_border _pb1_osc_idle_region \
     _pb1_osc_idle_class _pb1_sgr_src _pb1_sgr_mutated _pb1_sgr_mutation_result _pb1_sgr_bare_dir \
     _pb1_sgr_bare_rc _pb1_i _pb1_st_join _pb1_osc_rc _pb1_mutated_join
+
+# D1 mutation controls and the threshold boundary use a current v4 notice with both
+# sentinels.  They are deliberately separate from the older measurement companions
+# above, whose terminal text predates the id sentinel.
+eval "$(awk '/^_notice_reconstruct\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+eval "$(awk '/^_notice_prove\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+eval "$(awk '/^_notice_compose\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+eval "$(awk '/^_notice_prepare\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+eval "$(awk '/^_notice_clear_measurable\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+eval "$(awk '/^_notice_repaste\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+_pb1_v4_notice='⟦ae:msg from A⟧[p1] LONG BODY 9000 B: messages/body.txt — read it first; then run your reply helper: reply p1 ⟧p1⟧'
+_pb1_v4_rows=$'❯ ⟦ae:msg from A⟧[p1] LONG BODY 9000 B: messages/body.txt — read it first;\n  then run your reply helper: reply p1 ⟧p1⟧\n────────────────────────────────────────'
+assert_eq "P-B1 proof: v4 rows join and both sentinels pass" "1" \
+    "$(_notice_prove claude "$_pb1_v4_rows" "$_pb1_v4_notice" && echo 1 || echo 0)"
+assert_eq "P-B1 mutation RED: dropped terminal sentinel" "0" \
+    "$(_notice_prove claude "${_pb1_v4_rows% ⟧p1⟧*}" "$_pb1_v4_notice" && echo 1 || echo 0)"
+assert_eq "P-B1 mutation RED: skipped two-space row join" "0" \
+    "$(_notice_prove claude "${_pb1_v4_rows/  then/then}" "$_pb1_v4_notice" && echo 1 || echo 0)"
+
+# A changed capture is not a clear: a footer redraw can change bytes while the old
+# pointer remains occupied. The fake returns that sequence and records every tmux argv;
+# the proof must stay UNCONFIRMED and must never press Enter.
+_pb1_changed_not_cleared="$({
+    eval "$(awk '/^ae_submit_pasted_message\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+    eval "$(awk '/^_notice_clear_measurable\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+    _pb1_clear_dir="$(mktemp -d)"
+    _pb1_capture_n=0
+    _capture_input_region() {
+        _pb1_capture_n=$((_pb1_capture_n + 1))
+        case "$_pb1_capture_n" in
+            1) printf 'staged pointer' ;;
+            2) printf 'footer redraw' ;;
+            *) printf 'still occupied pointer' ;;
+        esac
+    }
+    _notice_prove() { return 1; }
+    _input_region_occupied() {
+        _capture_input_region "$1" >/dev/null
+        return 0
+    }
+    tmux() {
+        printf '%s\n' "$*" >>"$_pb1_clear_dir/tmux.log"
+        case "$1" in load-buffer) cat >/dev/null ;; esac
+        return 0
+    }
+    sleep() { :; }
+    _pb1_rc=0
+    ae_submit_pasted_message %pb1 codex pb1-buffer pointer notice pointer /tmp/body.txt 2>/dev/null || _pb1_rc=$?
+    printf 'rc=%s enters=%s' "$_pb1_rc" \
+        "$(grep -c 'send-keys.*Enter' "$_pb1_clear_dir/tmux.log" 2>/dev/null || true)"
+    rm -rf "$_pb1_clear_dir"
+} )"
+assert_eq "P-B1 clear proof: changed-but-not-cleared capture stays UNCONFIRMED with no Enter" \
+    "rc=1 enters=0" "$_pb1_changed_not_cleared"
+unset _pb1_changed_not_cleared
+
+# Spawn uses a distinct task head so a task is not misrepresented as transcript chat.
+# Its deliberate LONG BODY grammar still closes over the same renderer row proof.
+_pb1_spawn_dir="$(mktemp -d)"
+mkdir -p "$_pb1_spawn_dir/messages"
+printf '%8193s' '' | tr ' ' x >"$_pb1_spawn_dir/messages/spawn.txt"
+_AE_SESSION=pb1spawn _AE_META_DIR="$_pb1_spawn_dir"
+_notice_compose spawn spawn-slot sender "$_pb1_spawn_dir/messages/spawn.txt" pb1spawn
+_pb1_spawn_notice="$_NOTICE_PAYLOAD"
+_pb1_spawn_rows=$'❯ ⟦ae:task⟧[spawn-slot] LONG BODY 8193 B in your session dir: messages/spawn.txt — read it fully,\n  then begin ⟧spawn-slot⟧\n────────────────────────────────────────'
+assert_eq "P-B1 spawn: compose closes over perfect rows" "1" \
+    "$(_notice_prove claude "$_pb1_spawn_rows" "$_pb1_spawn_notice" && echo 1 || echo 0)"
+assert_eq "P-B1 spawn mutation RED: dropped task head" "0" \
+    "$(_notice_prove claude "${_pb1_spawn_rows/⟦ae:task⟧/}" "$_pb1_spawn_notice" && echo 1 || echo 0)"
+rm -rf "$_pb1_spawn_dir"
+unset _pb1_spawn_dir _pb1_spawn_notice _pb1_spawn_rows
+
+_pb1_threshold_dir="$(mktemp -d)"
+_pb1_8192="$_pb1_threshold_dir/body-8192.txt"
+_pb1_8193="$_pb1_threshold_dir/body-8193.txt"
+printf '%8192s' '' | tr ' ' x >"$_pb1_8192"
+printf '%8193s' '' | tr ' ' x >"$_pb1_8193"
+_AE_SESSION=pb1test _AE_META_DIR="$_pb1_threshold_dir" _notice_prepare codex send '' A pb1test "$_pb1_8192" direct
+assert_eq "P-B1 threshold: 8192 framed bytes stay direct" "direct" "$_NOTICE_MODE"
+_AE_SESSION=pb1test _AE_META_DIR="$_pb1_threshold_dir" _notice_prepare codex send '' A pb1test "$_pb1_8193" direct
+assert_eq "P-B1 threshold: 8193 framed bytes select notice mode" "notice" "$_NOTICE_MODE"
+rm -rf "$_pb1_threshold_dir"
+
+# The tracked matrix is four cells: ask/review x same/cross session.  The sender owns
+# one body file in every cell; only the pointer grammar changes for a cross-session
+# target, and both tracked kinds carry the sender's absolute reply helper there.
+_pb1_matrix_dir="$(mktemp -d)"
+mkdir -p "$_pb1_matrix_dir/messages"
+printf '%8193s' '' | tr ' ' x >"$_pb1_matrix_dir/messages/matrix.txt"
+_AE_SESSION=sender _AE_META_DIR="$_pb1_matrix_dir" _AE_SESSIONS_DIR="$(dirname "$_pb1_matrix_dir")"
+for _pb1_kind in ask review; do
+    _notice_compose "$_pb1_kind" req actor "$_pb1_matrix_dir/messages/matrix.txt" sender
+    assert_eq "P-B1 matrix: $_pb1_kind same-session body is relative" "1" \
+        "$([[ "$_NOTICE_PAYLOAD" == *'in your session dir: messages/matrix.txt'* \
+            && "$_NOTICE_PAYLOAD" == *'reply req ⟧req⟧' ]] && echo 1 || echo 0)"
+    _notice_compose "$_pb1_kind" req actor "$_pb1_matrix_dir/messages/matrix.txt" receiver
+    assert_eq "P-B1 matrix: $_pb1_kind cross-session body and reply are absolute" "1" \
+        "$([[ "$_NOTICE_PAYLOAD" == *": $_pb1_matrix_dir/messages/matrix.txt — read it first; reply: $_pb1_matrix_dir/reply req ⟧req⟧"* \
+            && "$_NOTICE_PAYLOAD" != *'in your session dir: messages/'* ]] && echo 1 || echo 0)"
+done
+assert_eq "P-B1 matrix: tracked cells do not copy the sender body" "1" \
+    "$(find "$_pb1_matrix_dir/messages" -type f -name '*.txt' | wc -l | tr -d '[:space:]')"
+rm -rf "$_pb1_matrix_dir"
+unset _pb1_kind _pb1_matrix_dir
+
+# A cross-session absolute path can make the pointer itself exceed the 300-byte cap.
+# The send body must refuse before staging or pasting anything, while naming the
+# published recovery path so the caller can retry through another channel.
+_pb1_cap_dir="$(mktemp -d)"
+_pb1_cap_base="$(printf '%240s' '' | tr ' ' x)"
+_pb1_cap_body="$_pb1_cap_dir/${_pb1_cap_base}.txt"
+printf '%8193s' '' | tr ' ' x >"$_pb1_cap_body"
+_pb1_cap_log="$_pb1_cap_dir/tmux.log"
+_pb1_cap_result="$(
+    exec 2>"$_pb1_cap_dir/err"
+    eval "$(awk '/^_notice_compose\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+    eval "$(awk '/^_notice_prepare\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+    eval "$(awk '/^ae_require_body\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+    eval "$(awk '/^helper_send_body\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+    _AE_SESSION=sender _AE_EVENT_ACTION=ask _AE_EVENT_REF=cap
+    AE_RESOLVED_SESSION=receiver
+    # shellcheck disable=SC2034,SC2317,SC2329  # AE_RESOLVED_* read by helper_send_body
+    ae_resolve() { AE_RESOLVED_PANE='%9' AE_RESOLVED_AGENT='cl:target' AE_RESOLVED_SESSION=receiver; return 0; }
+    # shellcheck disable=SC2317,SC2329
+    _pane_agent_is_dead() { return 1; }
+    # shellcheck disable=SC2317,SC2329
+    ae_provenance_sender() { printf 'cl:sender'; }
+    # shellcheck disable=SC2317,SC2329
+    ae_current_agent_ref() { printf 'cl:sender'; }
+    # shellcheck disable=SC2317,SC2329
+    ae_extract_req_id() { printf cap; }
+    # shellcheck disable=SC2317,SC2329
+    ae_store_message_body() { _AE_LAST_BODY_FILE="$_pb1_cap_body"; }
+    # shellcheck disable=SC2317,SC2329
+    ae_lock_target() { return 0; }
+    # shellcheck disable=SC2317,SC2329
+    ae_unlock_target() { return 0; }
+    # shellcheck disable=SC2317,SC2329
+    ae_target_tool() { printf codex; }
+    # shellcheck disable=SC2317,SC2329
+    _paste_input_busy() { return 1; }
+    # shellcheck disable=SC2317,SC2329
+    _pane_recently_viewed() { return 1; }
+    # shellcheck disable=SC2317,SC2329
+    helper_send_finish_event() { :; }
+    # shellcheck disable=SC2317,SC2329
+    ae_emit_event() { :; }
+    # shellcheck disable=SC2317,SC2329
+    sleep() { :; }
+    # shellcheck disable=SC2317,SC2329
+    tmux() { printf '%s\n' "$*" >>"$_pb1_cap_log"; return 0; }
+    : >"$_pb1_cap_log"
+    _ae_send_finish=helper_send_finish_event
+    _rc=0
+    ( helper_send_body cl:target 'CAP-BODY' ) || _rc=$?
+    printf 'rc=%s load=%s paste=%s named=%s' "$_rc" \
+        "$(grep -c '^load-buffer' "$_pb1_cap_log" 2>/dev/null || true)" \
+        "$(grep -c '^paste-buffer' "$_pb1_cap_log" 2>/dev/null || true)" \
+        "$(grep -F -c "$_pb1_cap_body" "$_pb1_cap_dir/err" 2>/dev/null || true)"
+ )"
+assert_eq "P-B1 cap: over-300-byte cross-session notice refuses before paste" \
+    "rc=1 load=0 paste=0 named=1" "$_pb1_cap_result"
+rm -rf "$_pb1_cap_dir"
+unset _pb1_cap_dir _pb1_cap_base _pb1_cap_body _pb1_cap_log _pb1_cap_result
+
+# Interrupt notices must identify the sender, not the resolved target pane. Exercise
+# the real compose path with a cross-session oversized body so the actor is in the
+# exact pointer that would be pasted.
+_pb1_interrupt_dir="$(mktemp -d)"
+_pb1_interrupt_body="$_pb1_interrupt_dir/body.txt"
+printf '%8193s' '' | tr ' ' x >"$_pb1_interrupt_body"
+_pb1_interrupt_notice="$(
+    eval "$(awk '/^helper_interrupt_main\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+    eval "$(awk '/^_notice_compose\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+    eval "$(awk '/^_notice_prepare\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+    _AE_SESSION=sender _AE_META_DIR="$_pb1_interrupt_dir"
+    # shellcheck disable=SC2034,SC2317,SC2329  # AE_RESOLVED_* read by helper_interrupt_main
+    ae_resolve() { AE_RESOLVED_PANE='%9' AE_RESOLVED_AGENT='cl:target' AE_RESOLVED_SESSION=receiver; return 0; }
+    # shellcheck disable=SC2317,SC2329
+    _pane_agent_is_dead() { return 1; }
+    # shellcheck disable=SC2317,SC2329
+    ae_provenance_sender() { printf 'cl:sender'; }
+    # shellcheck disable=SC2317,SC2329
+    ae_store_message_body() { _AE_LAST_BODY_FILE="$_pb1_interrupt_body"; }
+    # shellcheck disable=SC2317,SC2329
+    ae_lock_target() { return 0; }
+    # shellcheck disable=SC2317,SC2329
+    ae_unlock_target() { return 0; }
+    # shellcheck disable=SC2317,SC2329
+    ae_target_tool() { printf codex; }
+    # shellcheck disable=SC2317,SC2329
+    ae_submit_pasted_message() { _pb1_interrupt_notice="$4"; return 0; }
+    # shellcheck disable=SC2317,SC2329
+    ae_emit_event() { :; }
+    # shellcheck disable=SC2317,SC2329
+    sleep() { :; }
+    # shellcheck disable=SC2317,SC2329
+    tmux() { return 0; }
+    helper_interrupt_main cl:target 'INTERRUPT-BODY'
+    printf '%s' "$_pb1_interrupt_notice"
+)"
+assert_eq "P-B1 interrupt: notice actor is sender provenance, never target" "1" \
+    "$([[ "$_pb1_interrupt_notice" == *'⟦ae:msg from cl:sender⟧'* \
+        && "$_pb1_interrupt_notice" != *'cl:target'* ]] && echo 1 || echo 0)"
+rm -rf "$_pb1_interrupt_dir"
+unset _pb1_interrupt_dir _pb1_interrupt_body _pb1_interrupt_notice
+
+# Proof failure is terminal before Enter when clear cannot be measured.  The fake tmux
+# records every argv so the control proves a notice cannot become a delivered event by
+# accidentally pressing Enter after an unconfirmed capture.
+_pb1_submit_dir="$(mktemp -d)"
+_pb1_submit_log="$_pb1_submit_dir/tmux.log"
+_pb1_submit_tmux() {
+    printf '%s\n' "$*" >>"$_pb1_submit_log"
+    case "$1" in
+        load-buffer) cat >/dev/null ;;
+        paste-buffer) return 0 ;;
+        send-keys) return 0 ;;
+    esac
+}
+tmux() { _pb1_submit_tmux "$@"; }
+_capture_input_region() { printf '%s' 'unreadable'; }
+_pb1_submit_rc=0
+ae_submit_pasted_message %pb1 codex pb1-buffer "$_pb1_v4_notice" notice "$_pb1_v4_notice" "$_pb1_submit_dir/body.txt" || _pb1_submit_rc=$?
+assert_eq "P-B1 proof failure: no Enter after an unmeasurable clear" "0" \
+    "$(grep -c 'send-keys.*Enter' "$_pb1_submit_log" 2>/dev/null || true)"
+assert_eq "P-B1 proof failure: notice submit is UNCONFIRMED" "1" "$((_pb1_submit_rc != 0))"
+unset -f tmux _capture_input_region _pb1_submit_tmux
+rm -rf "$_pb1_submit_dir"
+unset _pb1_v4_notice _pb1_v4_rows _pb1_threshold_dir _pb1_8192 _pb1_8193 _pb1_submit_dir _pb1_submit_log _pb1_submit_rc
 
 # ── Results ──────────────────────────────────────────────────────────
 

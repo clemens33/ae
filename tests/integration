@@ -7980,6 +7980,277 @@ unset -f _tgg
 unset TGG_ROOT TGG_BIN TGG_FIX TGG_HOME TGG_REAL_TMUX TGG_FNS
 fi
 
+# ── Slice B P-B1: oversized ask notices on an isolated real-tool rig ─────────
+if _itest_section 'Slice B P-B1: oversized ask notices on an isolated real-tool rig'; then
+# This is the product-shaped check for D1/D2: the two real TUIs receive a 9 KiB ask,
+# only the <=300-byte pointer is pasted, the visible rows reconstruct byte-for-byte,
+# and the transcript shows the agent opening its sender-owned body.  The rig is a
+# different tmux server and uses pane ids for delivery, so neither a live-session name
+# nor the harness's ambient server can be reached accidentally.
+P1_RIG_BASH=/opt/homebrew/bin/bash
+P1_RIG_OUT="$TMPDIR/pb1-rig.out"
+P1_RIG_ERR="$TMPDIR/pb1-rig.err"
+
+# Every rig command runs under the pinned bash.  The wrapper prepends the isolated
+# server and requires callers to provide -t explicitly; no helper below can target the
+# default server by accident.
+p1_tmux() {
+    "$P1_RIG_BASH" -c 'command tmux "$@"' p1-tmux -L "$P1_RIG_SRV" "$@"
+}
+
+# The real-tool rig is opt-in. This gate is deliberately the FIRST branch after the
+# section selector: no credentials, repo, config, socket, or session may exist when a
+# normal full suite does not explicitly request authenticated CLI work.
+if [[ "${AE_ITEST_RIG:-}" != 1 ]]; then
+    echo "  SKIP (P-B1 real rig): set AE_ITEST_RIG=1 to opt in; no rig side effects" >&2
+elif [[ ! -x "$P1_RIG_BASH" || -z "$(command -v claude || true)" || -z "$(command -v codex || true)" ]]; then
+    echo "  SKIP (P-B1 real rig): /opt/homebrew/bin/bash, claude and codex are required" >&2
+else
+    P1_RIG_SRV="ae-pb1-rig-$$"
+    P1_RIG_SESS="pb1-rig-$$-${RANDOM}"
+    # The rig owns credentials, repo, and server. Install an EXIT trap before any
+    # launch or credential copy so an assertion abort deletes credential copies
+    # immediately and still hands control back to suite cleanup. Normal completion
+    # calls this same function before the variables are unset.
+    P1_CLEANED=0
+    p1_cleanup() {
+        ((P1_CLEANED)) && return 0
+        P1_CLEANED=1
+        if [[ -n "${P1_RIG_SESS:-}" ]]; then p1_tmux kill-session -t "$P1_RIG_SESS" 2>/dev/null || true; fi
+        if [[ -n "${P1_RIG_REPO:-}" && -d "$P1_RIG_REPO" ]]; then rm -rf "$P1_RIG_REPO"; fi
+        if [[ -n "${P1_CLAUDE_CONFIG_DIR:-}" && -d "$P1_CLAUDE_CONFIG_DIR" ]]; then rm -rf "$P1_CLAUDE_CONFIG_DIR"; fi
+        if [[ -n "${P1_CODEX_HOME:-}" && -d "$P1_CODEX_HOME" ]]; then rm -rf "$P1_CODEX_HOME"; fi
+    }
+    p1_cleanup_on_exit() {
+        p1_cleanup
+        cleanup
+    }
+    trap p1_cleanup_on_exit EXIT
+
+    # Trust is granted by the injected per-tool stores, not by placing the repo under
+    # the operator's projects root. Keeping the disposable repo under suite TMPDIR
+    # prevents a stranded repo from polluting every checkout on an interrupted run.
+    P1_RIG_TMP_ROOT="$(cd "$TMPDIR" && pwd -P)"
+    P1_RIG_REPO="$(mktemp -d "$TMPDIR/pb1-rig-repo-XXXXXX")"
+    P1_RIG_REPO="$(cd "$P1_RIG_REPO" && pwd -P)"
+    git -C "$P1_RIG_REPO" init -q
+    git -C "$P1_RIG_REPO" config user.email "test@test"
+    git -C "$P1_RIG_REPO" config user.name "test"
+    git -C "$P1_RIG_REPO" commit -q --allow-empty -m "init"
+    assert_eq "P-B1 rig: disposable repo is under suite TMPDIR, not projects root" "1" \
+        "$([[ "$P1_RIG_REPO" == "$P1_RIG_TMP_ROOT/"* && "$P1_RIG_REPO" != "$REAL_HOME/projects/"* ]] && echo 1 || echo 0)"
+    P1_CLAUDE_CONFIG_DIR="$TMPDIR/pb1-claude-config"
+    mkdir -p "$P1_CLAUDE_CONFIG_DIR"
+    cp "$REAL_HOME/.claude.json" "$P1_CLAUDE_CONFIG_DIR/.claude.json"
+    chmod 600 "$P1_CLAUDE_CONFIG_DIR/.claude.json"
+    awk -v path="$P1_RIG_REPO" '
+        !inserted && /"projects": \{/ {
+            print
+            printf "    \"%s\": {\"hasTrustDialogAccepted\": true},\n", path
+            inserted = 1
+            next
+        }
+        { print }
+    ' "$P1_CLAUDE_CONFIG_DIR/.claude.json" >"$P1_CLAUDE_CONFIG_DIR/.claude.json.new"
+    mv "$P1_CLAUDE_CONFIG_DIR/.claude.json.new" "$P1_CLAUDE_CONFIG_DIR/.claude.json"
+    chmod 600 "$P1_CLAUDE_CONFIG_DIR/.claude.json"
+    if ! grep -Fq "\"$P1_RIG_REPO\"" "$P1_CLAUDE_CONFIG_DIR/.claude.json"; then
+        echo "P-B1 rig: Claude trust injection marker missing; refusing to launch" >&2
+        exit 1
+    fi
+    P1_CODEX_HOME="$TMPDIR/pb1-codex-home"
+    mkdir -p "$P1_CODEX_HOME"
+    chmod 700 "$P1_CODEX_HOME"
+    cp "$REAL_HOME/.codex/config.toml" "$P1_CODEX_HOME/config.toml"
+    chmod 600 "$P1_CODEX_HOME/config.toml"
+    cp "$REAL_HOME/.codex/auth.json" "$P1_CODEX_HOME/auth.json"
+    chmod 600 "$P1_CODEX_HOME/auth.json"
+    printf '\n[projects."%s"]\ntrust_level = "trusted"\n' "$P1_RIG_REPO" >>"$P1_CODEX_HOME/config.toml"
+    if ! grep -Fq "[projects.\"$P1_RIG_REPO\"]" "$P1_CODEX_HOME/config.toml"; then
+        echo "P-B1 rig: Codex trust injection marker missing; refusing to launch" >&2
+        exit 1
+    fi
+    mkdir -p "$P1_RIG_REPO/.ae"
+    # The suite's HOME is intentionally hermetic, but the real CLIs need the
+    # operator's authenticated stores.  Scope that access to each rig process;
+    # ae state remains under the suite HOME/AE_HOME.
+    P1_CLAUDE_CMD="env HOME=$REAL_HOME CLAUDE_CONFIG_DIR=$P1_CLAUDE_CONFIG_DIR claude --no-chrome --permission-mode acceptEdits"
+    P1_CODEX_CMD="env HOME=$REAL_HOME CODEX_HOME=$P1_CODEX_HOME codex --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust"
+    printf '%s\n' '[agents]' "claude = \"$P1_CLAUDE_CMD\"" "codex = \"$P1_CODEX_CMD\"" '' '[workspace]' 'main = claude:lead' 'workers = codex:worker' 'layout = lead-solo' >"$P1_RIG_REPO/.ae/config"
+    (cd "$P1_RIG_REPO" && SHELL="$P1_RIG_BASH" CONFIG_FILE="$P1_RIG_REPO/.ae/config" AE_TMUX_SERVER="$P1_RIG_SRV" "$P1_RIG_BASH" "$AE" --local "$P1_RIG_SESS" >"$P1_RIG_OUT" 2>"$P1_RIG_ERR") 2>/dev/null &
+    P1_LAUNCH_PID=$!
+    P1_LAUNCH_RC=0
+    wait "$P1_LAUNCH_PID" || P1_LAUNCH_RC=$?
+    P1_RIG_READY=0
+    for _p1_i in $(seq 1 90); do
+        if p1_tmux has-session -t "$P1_RIG_SESS" 2>/dev/null; then P1_RIG_READY=1; break; fi
+        sleep 0.5
+    done
+    assert_eq "P-B1 rig: isolated session starts on its own server" "1" "$P1_RIG_READY"
+    P1_RIG_META="$HOME/.ae/sessions/$P1_RIG_SESS"
+    for _p1_i in $(seq 1 90); do
+        [[ -f "$P1_RIG_META/meta" ]] && break
+        sleep 0.5
+    done
+    assert_eq "P-B1 rig: session metadata is published" "1" "$([[ -f "$P1_RIG_META/meta" ]] && echo 1 || echo 0)"
+
+    if [[ -f "$P1_RIG_META/meta" ]]; then
+        # Metadata lands before launch pastes.  Wait on the actual launcher process so
+        # the helper probes never race the initial shell command still staged in a pane.
+        # This harness has no current terminal client, so ae's final attach is
+        # expected to fail after the detached session and launch commands exist.
+        # Assert that known harness shape rather than mistaking attach's rc for a
+        # launch failure.
+        assert_eq "P-B1 rig: detached launcher reaches the no-client attach" "1" \
+            "$([[ "$P1_LAUNCH_RC" -ne 0 ]] && echo 1 || echo 0)"
+        # Resolve ids on the rig server, then assert each is non-empty before invoking
+        # any helper.  The ask helpers are the only delivery mechanism; tmux is read-only.
+        P1_CLAUDE_PANE="$(p1_tmux list-panes -s -t "$P1_RIG_SESS" -F '#{pane_id} #{@ae_agent}' 2>/dev/null | awk '$2=="claude:lead"{print $1; exit}')"
+        P1_CODEX_PANE="$(p1_tmux list-panes -s -t "$P1_RIG_SESS" -F '#{pane_id} #{@ae_agent}' 2>/dev/null | awk '$2=="codex:worker"{print $1; exit}')"
+        assert_eq "P-B1 rig: resolved Claude pane id is non-empty before paste" "1" "$([[ -n "$P1_CLAUDE_PANE" ]] && echo 1 || echo 0)"
+        assert_eq "P-B1 rig: resolved Codex pane id is non-empty before paste" "1" "$([[ -n "$P1_CODEX_PANE" ]] && echo 1 || echo 0)"
+        P1_TOOLS_READY=0
+        P1_IDLE_STREAK=0
+        for _p1_i in $(seq 1 180); do
+            P1_CLAUDE_CAP="$(p1_tmux capture-pane -p -t "$P1_CLAUDE_PANE" 2>/dev/null || true)"
+            P1_CODEX_CAP="$(p1_tmux capture-pane -p -t "$P1_CODEX_PANE" 2>/dev/null || true)"
+            # Both TUIs draw an input prompt before their initial launch work is
+            # finished.  Require three consecutive idle-shaped captures so the
+            # oversized asks do not race that work and get classified as staged.
+            P1_CLAUDE_TAIL="$(printf '%s\n' "$P1_CLAUDE_CAP" | tail -10)"
+            P1_CODEX_TAIL="$(printf '%s\n' "$P1_CODEX_CAP" | tail -10)"
+            if [[ "$P1_CLAUDE_CAP" == *❯* && "$P1_CODEX_CAP" == *›* ]] \
+                && [[ "$P1_CLAUDE_TAIL" != *"Press up to edit"* ]] \
+                && [[ "$P1_CLAUDE_TAIL" != *"Running"* && "$P1_CLAUDE_TAIL" != *"✢"* ]] \
+                && [[ "$P1_CODEX_TAIL" == *"Ask Codex to do anything"* ]] \
+                && [[ "$P1_CODEX_TAIL" != *"Working"* && "$P1_CODEX_TAIL" != *"Running"* ]]; then
+                P1_IDLE_STREAK=$((P1_IDLE_STREAK + 1))
+                if ((P1_IDLE_STREAK >= 3)); then
+                    P1_TOOLS_READY=1
+                    break
+                fi
+            else
+                P1_IDLE_STREAK=0
+            fi
+            sleep 0.5
+        done
+        assert_eq "P-B1 rig: both real TUIs expose stable idle input prompts" "1" "$P1_TOOLS_READY"
+
+    P1_LONG_BODY="$(printf '%8193s' '' | tr ' ' x)"
+    # One ask into each real renderer.  The target is a pane id, never a name from the
+    # live session.  The generated helper owns resolution, locking, proof and eventing.
+    P1_ASK_CLAUDE_RC=0
+    AE_CORE='' AE_SEND_DEFER_SEC=90 AE_SENDER_OVERRIDE=codex:worker "$P1_RIG_BASH" "$P1_RIG_META/ask" "$P1_CLAUDE_PANE" "$P1_LONG_BODY" >"$TMPDIR/pb1-ask-claude.out" 2>"$TMPDIR/pb1-ask-claude.err" || P1_ASK_CLAUDE_RC=$?
+    P1_ASK_CODEX_RC=0
+    AE_CORE='' AE_SEND_DEFER_SEC=90 AE_SENDER_OVERRIDE=claude:lead "$P1_RIG_BASH" "$P1_RIG_META/ask" "$P1_CODEX_PANE" "$P1_LONG_BODY" >"$TMPDIR/pb1-ask-codex.out" 2>"$TMPDIR/pb1-ask-codex.err" || P1_ASK_CODEX_RC=$?
+        assert_eq "P-B1 rig: Claude oversized ask helper exits successfully" "0" "$P1_ASK_CLAUDE_RC"
+        assert_eq "P-B1 rig: Codex oversized ask helper exits successfully" "0" "$P1_ASK_CODEX_RC"
+        P1_ASK_N="$(grep -c '"action":"ask"' "$P1_RIG_META/events.jsonl" 2>/dev/null || true)"
+        assert_eq "P-B1 rig: both oversized asks record delivery events" "2" "$P1_ASK_N"
+        if [[ -f "$P1_RIG_META/events.jsonl" ]]; then
+
+        # Load the notice helpers from the exact current ae for receiver-side proof.
+        eval "$(awk '/^_notice_reconstruct\(\) \{/,/^\}$/' "$AE")"
+        eval "$(awk '/^_notice_prove\(\) \{/,/^\}$/' "$AE")"
+        eval "$(awk '/^_notice_compose\(\) \{/,/^\}$/' "$AE")"
+        P1_ASK_REF_CLAUDE="$(awk -F'"' '/"action":"ask"/ { for (i = 1; i <= NF; i++) if ($i == "ref") print $(i + 2) }' "$P1_RIG_META/events.jsonl" | head -1)"
+        P1_ASK_REF_CODEX="$(awk -F'"' '/"action":"ask"/ { for (i = 1; i <= NF; i++) if ($i == "ref") print $(i + 2) }' "$P1_RIG_META/events.jsonl" | tail -1)"
+        P1_BODY_CLAUDE="$(find "$P1_RIG_META/messages" -type f -name "${P1_ASK_REF_CLAUDE}.ask.*.txt" -print -quit 2>/dev/null || true)"
+        P1_BODY_CODEX="$(find "$P1_RIG_META/messages" -type f -name "${P1_ASK_REF_CODEX}.ask.*.txt" -print -quit 2>/dev/null || true)"
+        _AE_SESSION="$P1_RIG_SESS"; _AE_META_DIR="$P1_RIG_META"; _AE_SESSIONS_DIR="$(dirname "$P1_RIG_META")"
+        _notice_compose ask "$P1_ASK_REF_CLAUDE" codex:worker "$P1_BODY_CLAUDE" "$P1_RIG_SESS"; P1_NOTICE_CLAUDE="$_NOTICE_PAYLOAD"
+        _notice_compose ask "$P1_ASK_REF_CODEX" claude:lead "$P1_BODY_CODEX" "$P1_RIG_SESS"; P1_NOTICE_CODEX="$_NOTICE_PAYLOAD"
+        # The helper returns only after its pre-Enter proof and submit.  Wait for each
+        # real TUI to echo the submitted notice into its transcript, then reconstruct
+        # only the prompt-to-terminal-sentinel rows; status/tool rows below it are not
+        # part of the notice and must not be fed to the input-region proof function.
+        p1_transcript_prove() {
+            local tool="$1" capture="$2" intended="$3" head line rows="" started=0 orn tail candidate
+            head="${intended%% LONG BODY*}"
+            [[ "$head" != "$intended" ]] || return 1
+            if [[ "$head" =~ \[([^]]+)\] ]]; then
+                tail="⟧${BASH_REMATCH[1]}⟧"
+            else
+                return 1
+            fi
+            case "$tool" in claude) orn='❯' ;; codex) orn='›' ;; *) return 1 ;; esac
+            if [[ "$tool" == codex ]]; then
+                candidate="$(_notice_reconstruct "$tool" "$capture" "$intended")" || return 1
+                [[ "$candidate" == "$head"* && "$candidate" == *"$tail" ]] || return 1
+                [[ "$candidate" == "$intended" ]] || return 1
+                return 0
+            fi
+            while IFS= read -r line || [[ -n "$line" ]]; do
+                if ((started == 0)); then
+                    [[ "$line" == *"$orn"*"$head"* ]] || continue
+                    started=1
+                fi
+                rows+="$line"$'\n'
+                [[ "$line" == *"$tail"* ]] || continue
+                candidate="$(_notice_reconstruct "$tool" "$rows" "$intended")" || return 1
+                [[ "$candidate" == "$head"* && "$candidate" == *"$tail" ]] || return 1
+                [[ "$candidate" == "$intended" ]] || return 1
+                return 0
+            done <<<"$capture"
+            return 1
+        }
+        p1_body_read() {
+            local capture="$1" body="$2" base line
+            base="${body##*/}"
+            while IFS= read -r line || [[ -n "$line" ]]; do
+                [[ "$line" == *"$base"* ]] || continue
+                [[ "$line" == *cat* || "$line" == *Read* || "$line" == *read* ]] && return 0
+            done <<<"$capture"
+            return 1
+        }
+        P1_TRANSCRIPT_CLAUDE=0 P1_TRANSCRIPT_CODEX=0
+        P1_READ_CLAUDE=0 P1_READ_CODEX=0
+        for _p1_i in $(seq 1 60); do
+            P1_CAP_CLAUDE="$(p1_tmux capture-pane -S - -p -t "$P1_CLAUDE_PANE" 2>/dev/null || true)"
+            P1_CAP_CODEX="$(p1_tmux capture-pane -S - -p -t "$P1_CODEX_PANE" 2>/dev/null || true)"
+            p1_transcript_prove claude "$P1_CAP_CLAUDE" "$P1_NOTICE_CLAUDE" && P1_TRANSCRIPT_CLAUDE=1 || true
+            p1_transcript_prove codex "$P1_CAP_CODEX" "$P1_NOTICE_CODEX" && P1_TRANSCRIPT_CODEX=1 || true
+            p1_body_read "$P1_CAP_CLAUDE" "$P1_BODY_CLAUDE" && P1_READ_CLAUDE=1 || true
+            p1_body_read "$P1_CAP_CODEX" "$P1_BODY_CODEX" && P1_READ_CODEX=1 || true
+            ((P1_TRANSCRIPT_CLAUDE && P1_TRANSCRIPT_CODEX && P1_READ_CLAUDE && P1_READ_CODEX)) && break
+            sleep 1
+        done
+        assert_eq "P-B1 rig: Claude transcript reconstructs the exact notice" "1" "$P1_TRANSCRIPT_CLAUDE"
+        assert_eq "P-B1 rig: Codex transcript reconstructs the exact notice" "1" "$P1_TRANSCRIPT_CODEX"
+
+        assert_eq "P-B1 rig: Claude's first tool call names the sender body" "1" "$P1_READ_CLAUDE"
+        assert_eq "P-B1 rig: Codex's first tool call names the sender body" "1" "$P1_READ_CODEX"
+        else
+            assert_eq "P-B1 rig: ask helpers leave an event log" "1" "0"
+        fi
+    else
+        assert_eq "P-B1 rig: missing metadata is a launch failure, not an awk abort" "1" "0"
+    fi
+fi
+# The rig is disposable and isolated. Run the same cleanup registered in the EXIT
+# trap before unsetting its paths, then restore the suite trap. Credential copies are
+# asserted absent immediately after the opted-in run, not deferred to suite teardown.
+if [[ "${P1_CLEANED:-}" == 0 ]]; then
+    p1_cleanup
+    assert_eq "P-B1 rig: disposable repo is removed after the run" "0" \
+        "$([[ -e "$P1_RIG_REPO" ]] && echo 1 || echo 0)"
+    assert_eq "P-B1 rig: named rig session is removed after the run" "0" \
+        "$(p1_tmux has-session -t "$P1_RIG_SESS" 2>/dev/null && echo 1 || echo 0)"
+    assert_eq "P-B1 rig: Claude credential copy is deleted after the run" "0" \
+        "$([[ -e "$P1_CLAUDE_CONFIG_DIR/.claude.json" ]] && echo 1 || echo 0)"
+    assert_eq "P-B1 rig: Codex credential copies are deleted after the run" "0" \
+        "$([[ -e "$P1_CODEX_HOME/config.toml" || -e "$P1_CODEX_HOME/auth.json" ]] && echo 1 || echo 0)"
+    trap cleanup EXIT
+fi
+unset P1_RIG_BASH P1_RIG_SRV P1_RIG_SESS P1_RIG_REPO P1_RIG_OUT P1_RIG_ERR P1_RIG_READY \
+    P1_CLAUDE_CONFIG_DIR P1_CODEX_HOME P1_CLAUDE_CMD P1_CODEX_CMD \
+    P1_RIG_META P1_LAUNCH_PID P1_LAUNCH_RC P1_CLAUDE_PANE P1_CODEX_PANE P1_CLAUDE_CAP P1_CODEX_CAP \
+    P1_TOOLS_READY P1_LONG_BODY P1_ASK_CLAUDE_RC \
+    P1_ASK_CODEX_RC P1_ASK_N P1_ASK_REF_CLAUDE \
+    P1_ASK_REF_CODEX P1_BODY_CLAUDE P1_BODY_CODEX P1_NOTICE_CLAUDE P1_NOTICE_CODEX \
+    P1_CAP_CLAUDE P1_CAP_CODEX P1_READ_CLAUDE P1_READ_CODEX P1_CLEANED P1_RIG_TMP_ROOT _p1_i
+fi
+
 # ── ae-next coexistence: real ae through the symlink (pre-P5) ────────────────
 if _itest_section 'ae-next coexistence: real ae through the symlink'; then
 

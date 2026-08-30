@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ae - agentic engineering: tmux-based multi-agent workspace
 set -euo pipefail
-AE_VERSION="0.2.23"
+AE_VERSION="0.2.24"
 
 # Fail fast with a clear message on bash < 4 (macOS ships 3.2 and defaults to
 # zsh). This must sit BEFORE any bash-4-only syntax is parsed — bash parses
@@ -410,10 +410,24 @@ get_config() {
 # ae_submit_pasted_message is a column-0 fn, so it is available here at launch as
 # well as in the generated helpers (via _lib). Usage: tmux_paste_submit <pane> <text>
 tmux_paste_submit() {
-    local pane="$1" text="$2"
+    local pane="$1" text="$2" body_file="${3:-${_NOTICE_BODY_FILE:-}}"
+    local action="${4:-${_NOTICE_ACTION:-spawn}}"
+    local ref="${5:-${_NOTICE_REF:-task}}"
+    local target_session="${6:-${_NOTICE_TARGET_SESSION:-${_AE_SESSION:-}}}"
+    local actor="${7:-${_NOTICE_ACTOR:-ae}}"
     local buf="ae-ps-$$-${pane}"
     local tool
     tool="$(pane_current_command "$pane")"
+    if [[ -n "$body_file" ]]; then
+        _notice_prepare "$tool" "$action" "$ref" "$actor" "$target_session" "$body_file" "$text" || {
+            echo "ae: oversized ${action} notice could not be composed; body preserved at ${body_file}. Nothing was submitted." >&2
+            return 1
+        }
+        if [[ "${_NOTICE_MODE:-direct}" == notice ]]; then
+            ae_submit_pasted_message "$pane" "$tool" "$buf" "$_NOTICE_PAYLOAD" notice "$_NOTICE_PAYLOAD" "$body_file"
+            return $?
+        fi
+    fi
     ae_submit_pasted_message "$pane" "$tool" "$buf" "$text"
 }
 
@@ -11243,7 +11257,7 @@ _wait_input_ready() { # <pane> <tool_kind> [polls] -> 0 ready, 1 timed out
 _cmd_spawn() {
     # Shadow the script-global _AE_META_DIR: spawn executes from ae, but its body
     # belongs in the target session's meta; otherwise it lands in <repo>/messages/.
-    local meta_dir="$1" _AE_META_DIR="$1"
+    local meta_dir="$1" _AE_META_DIR="$1" _AE_SESSION=""
     shift
     local alias_arg="$1"
     shift
@@ -11295,6 +11309,7 @@ _cmd_spawn() {
         echo "Error: session not found in metadata" >&2
         return 1
     fi
+    _AE_SESSION="$session"
     if ! tmux has-session -t "$session" 2>/dev/null; then
         echo "Error: session '$session' not running" >&2
         return 1
@@ -11392,7 +11407,7 @@ _cmd_spawn() {
     # contract below). Tools WITHOUT system-prompt injection carry the brief in
     # initial_msg, which send_agent_cmd already delivered as the first message — for those
     # there is no separate paste to fail, so delivery is settled here.
-    local _delivered=1 _fail_reason=""
+    local _delivered=1 _fail_reason="" _task_body_file=""
 
     # For agents with system prompt injection, send spawn prompt separately
     if [[ -z "$initial_msg" ]]; then
@@ -11401,6 +11416,11 @@ _cmd_spawn() {
             _delivered=0
             _fail_reason="task body storage failed — nothing was pasted"
         else
+            _task_body_file="${_AE_LAST_BODY_FILE:-}"
+            _NOTICE_BODY_FILE="$_task_body_file"
+            _NOTICE_ACTION=spawn
+            _NOTICE_REF="spawn-${slot}"
+            _NOTICE_TARGET_SESSION="$session"
             # Wait for the TUI to actually ACCEPT input before pasting.
             # wait_for_agent_start only proves the process is running — pasting in the boot
             # gap is swallowed wholesale, with nothing staged for the lingering-nudge below
@@ -11438,7 +11458,7 @@ _cmd_spawn() {
                     # Staged past the bounded verify-retries: the text may be sitting unsent
                     # in the box. UNCONFIRMED is not delivered, and must not read as success.
                     _delivered=0
-                    _fail_reason="brief submit UNCONFIRMED (tmux_paste_submit rc=$_paste_rc) — it may be staged unsent"
+                    _fail_reason="brief submit UNCONFIRMED (tmux_paste_submit rc=$_paste_rc) — body preserved at ${_task_body_file}; it may be staged unsent"
                 fi
             fi
             if ((_ready == 1)); then
@@ -13008,6 +13028,191 @@ _capture_input_region() {
     return 0
 }
 
+# Reconstruct a one-line notice from a captured input box.  Claude and Codex both
+# render wrapped continuation rows with TWO leading spaces, while capture-pane drops
+# the visual wrap-space at the row boundary.  The intended notice is already known at
+# this point (it is the exact text staged in the buffer), so reinsert ONE space only
+# when the joined bytes are an exact prefix of that notice.  No other whitespace is
+# normalised: this is a byte-preserving proof, not a pretty-printer.
+_notice_reconstruct() { # <tool> <capture> <intended> -> reconstructed notice
+    local tool="$1" capture="$2" intended="$3"
+    local head line prefix part candidate="" rest j i
+    local -a rows=()
+    # The fixture captures are plain, while the real sensor preserves SGR. Strip CSI
+    # styling only; printable bytes (including NBSP) remain data for the join.
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line="$(printf '%s' "$line" | sed $'s/\033\\[[0-9;?]*[ -\/]*[@-~]//g')"
+        rows[${#rows[@]}]="$line"
+    done <<<"$capture"
+    # The head includes the request id, which disambiguates whole-pane captures with
+    # several historical notices in the transcript. Message and spawn heads are
+    # deliberately distinct: spawn is an instruction, not transcript chat.
+    head="${intended%% LONG BODY*}"
+    [[ -n "$head" && "$head" != "$intended" ]] || head="⟦ae:msg from"
+    if [[ "$head" != "⟦ae:msg from" ]]; then
+        case "$head" in
+            ⟦ae:msg\ from\ * | ⟦ae:task⟧\[*\]) ;;
+            *) return 1 ;;
+        esac
+    fi
+    for ((i = 0; i < ${#rows[@]}; i++)); do
+        line="${rows[i]}"
+        [[ "$line" == *"$head"* ]] || continue
+        prefix="${line%%"$head"*}"
+        case "$tool" in
+            claude)
+                [[ "$prefix" == *❯* ]] || continue
+                prefix="${prefix%%❯*}"
+                ;;
+            codex)
+                [[ "$prefix" == *›* ]] || continue
+                prefix="${prefix%%›*}"
+                ;;
+            *) return 1 ;;
+        esac
+        # A transcript line may contain the same bytes, but it is not a prompt row.
+        [[ -z "${prefix//[[:space:]]/}" ]] || continue
+        case "$tool" in
+            claude) line="${line#*❯}" ;;
+            codex) line="${line#*›}" ;;
+        esac
+        case "$line" in
+            " "*) line="${line# }" ;;
+            $'\u00a0'*) line="${line#$'\u00a0'}" ;;
+        esac
+        candidate="$line"
+        for ((j = i + 1; j < ${#rows[@]}; j++)); do
+            rest="${rows[j]}"
+            while [[ "$rest" == *" " ]]; do rest="${rest% }"; done
+            if [[ "$tool" == codex && -z "${rest//[[:space:]]/}" ]]; then
+                break
+            fi
+            if [[ "$tool" == claude && "$rest" =~ ^[[:space:]]*─+[[:space:]]*$ ]]; then
+                break
+            fi
+            [[ "$rest" == "  "* ]] || break
+            part="${rest:2}"
+            # Reinsert exactly the one wrap-space proven by the intended bytes.
+            if [[ "$intended" == "$candidate"* ]]; then
+                rest="${intended:${#candidate}}"
+                [[ "$rest" == " "* ]] && candidate+=" "
+            fi
+            candidate+="$part"
+        done
+        printf '%s' "$candidate"
+        return 0
+    done
+    return 1
+}
+
+# Cheap proof gate: sentinels catch a clipped head/tail before the full byte compare.
+# Older measurement captures predate the terminal id sentinel; their exact companion
+# notice still gets compared, while current v4 notices require both sentinels.
+_notice_prove() { # <tool> <capture> <intended> -> 0 exact, 1 unconfirmed
+    local tool="$1" capture="$2" intended="$3" candidate head id
+    candidate="$(_notice_reconstruct "$tool" "$capture" "$intended")" || return 1
+    head="${intended%% LONG BODY*}"
+    [[ "$head" != "$intended" ]] || head="⟦ae:msg from"
+    case "$head" in
+        ⟦ae:msg\ from\ * | ⟦ae:task⟧\[*\] | "⟦ae:msg from") ;;
+        *) return 1 ;;
+    esac
+    [[ "$head" != "$intended" && "$candidate" == "$head"* ]] || return 1
+    if [[ "$head" =~ \[([^]]+)\] ]]; then
+        id="${BASH_REMATCH[1]}"
+        if [[ "$intended" == *"⟧${id}⟧" ]]; then
+            [[ "$candidate" == *"⟧${id}⟧" ]] || return 1
+        fi
+    fi
+    [[ "$candidate" == "$intended" ]]
+}
+
+# Compose the small pointer that replaces an oversized framed body.  The body file is
+# sender-owned; only its path crosses the pane.  Same-session recipients get the
+# session-relative messages/*.txt grammar, while cross-session requests receive the
+# absolute sender path and reply helper.  Globals are used deliberately so callers do
+# not lose the mode/payload through command substitution under errexit.
+_notice_compose() { # <action> <ref> <actor> <body-file> <target-session>
+    local action="$1" ref="$2" actor="$3" body_file="$4" target_session="$5"
+    local body_name body_path bytes reply_tail notice
+    body_name="${body_file##*/}"
+    [[ "$body_name" == *.txt ]] || return 1
+    if [[ -n "${_AE_SESSION:-}" && "$target_session" == "$_AE_SESSION" ]]; then
+        body_path="messages/${body_name}"
+    else
+        body_path="$body_file"
+    fi
+    bytes="$(wc -c <"$body_file" 2>/dev/null | tr -d '[:space:]')"
+    [[ "$bytes" =~ ^[0-9]+$ ]] || return 1
+    case "$action" in
+        spawn)
+            notice="⟦ae:task⟧[${ref}] LONG BODY ${bytes} B in your session dir: ${body_path} — read it fully, then begin ⟧${ref}⟧"
+            ;;
+        ask | review | reply)
+            [[ -n "$ref" ]] || return 1
+            if [[ "$body_path" == messages/* ]]; then
+                reply_tail="then run your reply helper: reply ${ref} ⟧${ref}⟧"
+                notice="⟦ae:msg from ${actor}⟧[${ref}] LONG BODY ${bytes} B in your session dir: ${body_path} — read it first; ${reply_tail}"
+            else
+                reply_tail="reply: ${_AE_META_DIR}/reply ${ref} ⟧${ref}⟧"
+                notice="⟦ae:msg from ${actor}⟧[${ref}] LONG BODY ${bytes} B: ${body_path} — read it first; ${reply_tail}"
+            fi
+            ;;
+        *)
+            notice="⟦ae:msg from ${actor}⟧[-] LONG BODY ${bytes} B in your session dir: ${body_path} — read it first ⟧-⟧"
+            ;;
+    esac
+    # A notice above this cap cannot be safely treated as a small pointer. Refuse it
+    # before any paste; the full body remains recoverable at body_file. This is a
+    # local pre-paste refusal, so callers report stderr only and emit no delivery event.
+    [[ "$(printf '%s' "$notice" | wc -c | tr -d '[:space:]')" -le 300 ]] || return 1
+    _NOTICE_PAYLOAD="$notice"
+    return 0
+}
+
+_notice_prepare() { # <tool> <action> <ref> <actor> <target-session> <body-file> <direct>
+    local tool="$1" action="$2" ref="$3" actor="$4" target_session="$5" body_file="$6" direct="$7"
+    local bytes
+    _NOTICE_MODE=direct
+    _NOTICE_PAYLOAD="$direct"
+    case "$tool" in claude | codex) ;; *) return 0 ;; esac
+    bytes="$(wc -c <"$body_file" 2>/dev/null | tr -d '[:space:]')"
+    [[ "$bytes" =~ ^[0-9]+$ ]] || return 1
+    ((bytes <= 8192)) && return 0
+    _notice_compose "$action" "$ref" "$actor" "$body_file" "$target_session" || return 1
+    _NOTICE_MODE=notice
+    return 0
+}
+
+# One measurable clear-and-retry is permitted after a notice proof failure. A changed
+# capture is not proof: a footer redraw can change bytes while the old pointer remains
+# staged. Require the modeled sensor to report a POSITIVE EMPTY input region after C-u;
+# indeterminate and occupied both leave the pane untouched (in particular, no Enter).
+_notice_clear_measurable() { # <pane> <tool> <before-capture> -> 0 clear observed
+    local pane="$1" tool="$2" after occupancy=2
+    tmux send-keys -t "$pane" C-u 2>/dev/null || return 1
+    sleep 0.1
+    after="$(_capture_input_region "$pane")"
+    [[ -n "$after" ]] || return 1
+    if _input_region_occupied "$pane" "$tool"; then
+        occupancy=0
+    else
+        occupancy=$?
+    fi
+    ((occupancy == 1))
+}
+
+_notice_repaste() { # <buffer> <notice> <pane> -> stage the notice again
+    local buf="$1" notice="$2" pane="$3"
+    printf '%s' "$notice" | tmux load-buffer -b "$buf" - 2>/dev/null || return 1
+    tmux paste-buffer -d -p -b "$buf" -t "$pane" 2>/dev/null
+}
+
+_notice_emit_failure() { # <target> <ref> <body-file> <reason>
+    ae_emit_event "delivery-failed" "$1" "$2" \
+        "UNCONFIRMED notice; published body: $3; $4"
+}
+
 # Parse a captured region into styled SEGMENTS: parallel arrays _SGR_BOLD/_SGR_DIM/
 # _SGR_TEXT/_SGR_LINE, one entry per run of text sharing an SGR state. Parses SGR
 # *state* — params, grouping and resets — never byte literals: tmux legally serializes
@@ -13522,7 +13727,8 @@ _pane_agent_is_dead() {
 # it sees the failure. Unified: tmux_paste_submit (launch) delegates here so the
 # two paste paths can't drift.
 ae_submit_pasted_message() {
-    local pane="$1" tool="$2" buf="$3" msg="$4"
+    local pane="$1" tool="$2" buf="$3" msg="$4" mode="${5:-direct}"
+    local intended="${6:-}" body_file="${7:-}"
     local _settle=0.1
     # THE BODY GOES IN ON STDIN, NOT IN ARGV, AND THE STATUS IS CHECKED.
     #
@@ -13548,6 +13754,33 @@ ae_submit_pasted_message() {
     if ! tmux paste-buffer -d -p -b "$buf" -t "$pane" 2>/dev/null; then
         echo "ae: paste FAILED into pane ${pane} (${tool}) — nothing was sent." >&2
         return 1
+    fi
+    if [[ "$mode" == notice ]]; then
+        # A notice is a delivery pointer, so Enter is forbidden until the visible
+        # input rows prove the exact staged bytes.  One clear-and-repaste is allowed
+        # only when the clear itself is measurable; otherwise leave the pointer
+        # staged and report the sender-owned recovery path.
+        local _notice_ok=0 _notice_attempt=0 _notice_region
+        while ((_notice_attempt < 2)); do
+            sleep 0.1
+            _notice_region="$(_capture_input_region "$pane")"
+            if _notice_prove "$tool" "$_notice_region" "$intended"; then
+                _notice_ok=1
+                break
+            fi
+            ((_notice_attempt == 0)) || break
+            if ! _notice_clear_measurable "$pane" "$tool" "$_notice_region"; then
+                break
+            fi
+            if ! _notice_repaste "$buf" "$intended" "$pane"; then
+                break
+            fi
+            _notice_attempt=1
+        done
+        if ((_notice_ok == 0)); then
+            echo "ae: notice UNCONFIRMED to pane ${pane} (${tool}) — recovery body preserved at ${body_file}. Nothing was submitted; re-send." >&2
+            return 1
+        fi
     fi
     if [[ "$tool" == "claude" ]]; then
         # Claude only: the orchestrator's 24-sample sweep (2026-07-15) found sends to IDLE
@@ -13707,6 +13940,17 @@ helper_send_body() {
     ae_lock_target "$target"
 
     tool="$(ae_target_tool "$target")"
+    _NOTICE_MODE=direct
+    _NOTICE_PAYLOAD="$msg"
+    if declare -F _notice_prepare >/dev/null 2>&1; then
+        _notice_prepare "$tool" "${_AE_EVENT_ACTION:-send}" \
+            "${_AE_EVENT_REF:-${req_id:-}}" "${_prov:-unverified}" \
+            "${AE_RESOLVED_SESSION:-}" "${_AE_LAST_BODY_FILE:-}" "$msg" || {
+            ae_unlock_target
+            echo "ae: oversized message notice could not be composed; body preserved at ${_AE_LAST_BODY_FILE}. Nothing was submitted." >&2
+            exit 1
+        }
+    fi
 
     # NO FOCUS CHANGE — ever. paste-buffer -t / send-keys -t write to the NAMED pane;
     # focus is not part of any TUI's submission contract (codex send-focus review).
@@ -13739,7 +13983,20 @@ helper_send_body() {
     # Safe now: cancel (only AFTER the safety check), paste + verify — all by -t target.
     tmux send-keys -t "$target" -X cancel 2>/dev/null || true
 
-    if ! ae_submit_pasted_message "$target" "$tool" "$buf" "$msg"; then
+    if [[ "${_NOTICE_MODE:-direct}" == notice ]]; then
+        if ! ae_submit_pasted_message "$target" "$tool" "$buf" "$_NOTICE_PAYLOAD" notice \
+            "$_NOTICE_PAYLOAD" "${_AE_LAST_BODY_FILE:-}"; then
+            # Only the public send entry owns the delivery-failed event. The shared
+            # body also backs _send-deliver, whose Rust caller records its own event.
+            if [[ "${_ae_send_event_enabled:-0}" == 1 ]]; then
+                _notice_emit_failure "$logged_target" "${_AE_EVENT_REF:-${req_id:-}}" \
+                    "${_AE_LAST_BODY_FILE:-}" "submit proof failed"
+            fi
+            ae_unlock_target
+            echo "ae: send to ${logged_target} UNCONFIRMED — submit not verified; body preserved at ${_AE_LAST_BODY_FILE}. Re-send." >&2
+            exit 1
+        fi
+    elif ! ae_submit_pasted_message "$target" "$tool" "$buf" "$msg"; then
         ae_unlock_target
         echo "ae: send to ${logged_target} UNCONFIRMED — submit not verified; body preserved at ${_AE_LAST_BODY_FILE}. Re-send." >&2
         exit 1
@@ -13779,7 +14036,7 @@ helper_send_body() {
 helper_send_main() {
     META_DIR="$(cd "$(dirname "$0")" && pwd)"
     _ae_core_try _send "$@" || true
-    local _ae_send_finish=helper_send_finish_event
+    local _ae_send_finish=helper_send_finish_event _ae_send_event_enabled=1
     helper_send_body "$@"
 }
 helper_send_finish_event() {
@@ -13797,7 +14054,7 @@ helper_send_deliver_main() {
             exit 1
             ;;
     esac
-    local _ae_send_finish=helper_send_deliver_finish
+    local _ae_send_finish=helper_send_deliver_finish _ae_send_event_enabled=0
     helper_send_body "$@"
 }
 helper_send_deliver_finish() {
@@ -14352,6 +14609,8 @@ helper_interrupt_main() {
     shift
     target="$AE_RESOLVED_PANE"
     msg="${*:-}"
+    local _prov
+    _prov="$(ae_provenance_sender)"
 
     # Interpreted-sink guard (same as send): if the agent is dead and its pane
     # dropped to a shell, a message paste + Enter would EXECUTE as a shell
@@ -14379,10 +14638,31 @@ helper_interrupt_main() {
         sleep 0.5
         buf="ae-interrupt-$$"
         tool="$(ae_target_tool "$target")"
+        _NOTICE_MODE=direct
+        _NOTICE_PAYLOAD="$msg"
+        if declare -F _notice_prepare >/dev/null 2>&1; then
+            _notice_prepare "$tool" "interrupt" "" "${_prov:-unverified}" \
+                "${AE_RESOLVED_SESSION:-}" "${_AE_LAST_BODY_FILE:-}" "$msg" || {
+                ae_unlock_target
+                echo "ae: oversized interrupt notice could not be composed; body preserved at ${_AE_LAST_BODY_FILE}. Nothing was submitted." >&2
+                exit 1
+            }
+        fi
         # Mirror send: a message interrupt must NOT log success on an unconfirmed
         # submit (codex code-round finding — the "false delivered" class the send
         # path already fixes). Unlock, fail LOUD, emit NO event.
-        if ! ae_submit_pasted_message "$target" "$tool" "$buf" "$msg"; then
+        if [[ "${_NOTICE_MODE:-direct}" == notice ]]; then
+            if ! ae_submit_pasted_message "$target" "$tool" "$buf" "$_NOTICE_PAYLOAD" notice \
+                "$_NOTICE_PAYLOAD" "${_AE_LAST_BODY_FILE:-}"; then
+                # Interrupt is a public-only entry today, so this event has no
+                # internal _send-deliver counterpart to double-book the ledger.
+                _notice_emit_failure "${AE_RESOLVED_AGENT:-$target}" "" \
+                    "${_AE_LAST_BODY_FILE:-}" "interrupt submit proof failed"
+                ae_unlock_target
+                echo "ae: interrupt message to ${AE_RESOLVED_AGENT:-$target} UNCONFIRMED — submit not verified; body preserved at ${_AE_LAST_BODY_FILE}. Re-send." >&2
+                exit 1
+            fi
+        elif ! ae_submit_pasted_message "$target" "$tool" "$buf" "$msg"; then
             ae_unlock_target
             echo "ae: interrupt message to ${AE_RESOLVED_AGENT:-$target} UNCONFIRMED — submit not verified; body preserved at ${_AE_LAST_BODY_FILE}. Re-send." >&2
             exit 1
@@ -17662,7 +17942,7 @@ LIBPROLOGUE
             ae_target_tool ae_json_escape ae_sanitize_utf8 ae_cap_summary ae_emit_event ae_latest_state_for \
             _event_json_str _agents_alert_reasons _agent_alert_reason ae_make_req_id ae_tracked_send ae_find_request \
             ae_require_body ae_store_message_body ae_provenance_sender \
-            ae_submit_pasted_message _capture_input_region _sgr_parse _input_region_prompt_seg _input_region_is_border _input_region_content_end _input_region_occupied _paste_still_staged _paste_input_busy _pane_recently_viewed \
+            ae_submit_pasted_message _capture_input_region _sgr_parse _input_region_prompt_seg _input_region_is_border _input_region_content_end _input_region_occupied _paste_still_staged _paste_input_busy _pane_recently_viewed _notice_reconstruct _notice_prove _notice_compose _notice_prepare _notice_clear_measurable _notice_repaste _notice_emit_failure \
             command_is_shell _agent_bin_for_pane _pane_agent_is_dead _pane_has_descendant_named \
             ae_meta_get ae_meta_set ae_meta_unset \
             _ae_tac _ae_stat _ae_epoch _ae_json_first _ae_md5

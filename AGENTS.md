@@ -121,7 +121,7 @@ ae generates these scripts in `~/.ae/sessions/<name>/` for agents and humans to 
 
 | Helper | Purpose |
 |--------|---------|
-| `send <agent> <message>` | Deliver a message to another agent's pane (serialized with flock). Refuses a dead pane, defers on busy or human-typed input (claude/codex), verifies the submit, and fails loudly rather than dropping silently |
+| `send <agent> <message>` | Deliver a message to another agent's pane (serialized with flock). Refuses a dead pane, defers on busy or human-typed input (claude/codex), verifies the submit, and fails loudly rather than dropping silently; framed bodies over 8192 bytes use a <=300-byte sender-owned `messages/*.txt` notice with pre-Enter row proof |
 | `ask <agent> <question>` | Send a tracked request with a request ID and exact reply command |
 | `review <agent> <request>` | Ask another agent for a critical review with findings-first output |
 | `reply <request-id> <message>` | Reply to a logged `ask`/`review` by request ID. Verified against the request's stored **slot** (routing key), not the display name; `--as <agent>` is advisory display only |
@@ -137,8 +137,8 @@ ae generates these scripts in `~/.ae/sessions/<name>/` for agents and humans to 
 | `peak <agent> [lines]` | Alias for `peek` (common typo) |
 | `agents` | List all agents in the session with pane IDs and processes |
 | `focus <agent>` | Switch tmux focus to another agent's pane |
-| `interrupt <agent> [message]` | Cancel current generation, optionally send new instructions |
-| `spawn <alias:name> [prompt]` | Add a new agent to the workspace |
+| `interrupt <agent> [message]` | Cancel current generation, optionally send new instructions; oversized Claude/Codex messages use the same proven notice transport |
+| `spawn <alias:name> [prompt]` | Add a new agent to the workspace; oversized Claude/Codex task prompts use a sender-owned `messages/*.txt` notice |
 | `retire <agent>` | Remove a spawned agent (kills pane, cleans meta, updates manifest) |
 
 All helpers share a `_lib` library that provides name resolution, tmux server support, flock serialization, request tracking (`ae_tracked_send`, `ae_find_request`), and event-log helpers (`ae_emit_event`, `_event_json_str`). Name resolution supports exact `alias:name`, alias-only when unique (e.g. `codex`), bare name (e.g. `lead`), `%pane-id`, and cross-session `@session:agent` syntax. `agents --all` lists agents across all running ae sessions.

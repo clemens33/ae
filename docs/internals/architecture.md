@@ -264,16 +264,25 @@ The on-disk `meta` and `events.jsonl` carry stable enough keys that newer code c
 
 ## Message delivery transport
 
-Message bodies are staged through `tmux load-buffer` on stdin, then submitted with one
-shared `tmux paste-buffer -p` call. The `-p` is a request: tmux wraps the paste in bracket
+Message bodies are staged through `tmux load-buffer` on stdin and submitted with the shared
+`tmux paste-buffer -p` transport. The `-p` is a request: tmux wraps the paste in bracket
 controls only when the receiving application has enabled bracketed-paste mode, so a TUI or
-shell that never asked sees a plain paste. Submission is then verified per tool — Claude's
-0.3-second settle and bounded Enter verification/retry loop, Codex's busy/staged detection —
-which cover submission timing, while the bracketed request covers the transport boundary
-for the tools that use it. A 2026-08-30 reproduction on Claude recorded plain-paste head loss in
-4/4 trials and bracketed-paste loss in 0/6, with receiver-side byte-exact payloads;
-completeness is measured for Claude only. The evidence table lives in this change's commit
-message (git log -1 for the commit that introduced -p) and in the session memo.
+shell that never asked sees a plain paste. A 2026-08-30 reproduction on Claude recorded
+plain-paste head loss in 4/4 trials and bracketed-paste loss in 0/6, with receiver-side
+byte-exact payloads.
+
+The transport threshold is 8192 framed bytes. Bodies at or below it are pasted directly;
+larger Claude/Codex bodies are published once in the sender's `messages/` directory and
+only a <=300-byte notice is pasted. Same-session notices use `messages/<file>`; a
+cross-session ask/review carries the sender-owned absolute body and reply-helper paths.
+Before Enter, `_capture_input_region` rows from the prompt to the tool's border/blank
+separator are stripped of trailing spaces and their two-space continuation indents; the
+joined bytes must equal the intended notice, including the v4 head and terminal id
+sentinels. One clear-and-repaste is allowed only when the clear is measurable. If proof,
+composition, or final submission cannot be confirmed, ae emits a loud `UNCONFIRMED`
+failure naming the published body and records no delivered event. Unmodelled tools stay
+on direct transport. The same matrix is used for send, ask/review, reply, interrupt, and
+spawn task delivery.
 
 ## Agent system prompt injection
 
