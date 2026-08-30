@@ -11,7 +11,7 @@ name = "ae"
 # `ae --version` prints this one — so while this binary is something a person
 # runs, 0.0.0 was not a placeholder, it was false product information.
 # Keep this in step with `AE_VERSION` until one scheme retires the other.
-version = "0.2.22"
+version = "0.2.23"
 edition = "2024"
 rust-version = "1.97.1"
 description = "Agent environment: tmux-backed multi-agent session multiplexer"

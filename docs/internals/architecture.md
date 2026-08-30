@@ -72,6 +72,8 @@ When you start a session, ae creates `~/.ae/sessions/<name>/` and fills it with:
 
 Nothing in the project working directory changes.
 
+Message recovery bodies cross their own publication boundary: ae composes the final pane text, allocates a temporary file inside the session's `messages/` directory, writes the complete body, sets mode 0600, and publishes it with a no-clobber hard link before attempting a paste. A collision or any storage failure is loud and leaves the delivery unpasted and unrecorded; a later paste failure keeps the byte-identical published body available for recovery. Each delivery gets its own `<id>.<kind>.<random>.txt` path, so an ask and its reply can share a request id without overwriting one another.
+
 ## Session archives
 
 `ae end` removes `~/.ae/sessions/<name>/`, which is where everything the session knew

@@ -9616,15 +9616,17 @@ assert_eq "#35: the full body is stored beside the session, 600" "the whole body
 # so a ref-named file let the reply TRUNCATE the ask's body — and the ask event's
 # pointer then resolved to the reply's text. A recovery record that a later delivery
 # can overwrite is not a record.
-_sto3() ( # -> distinct?|first-contents
+_sto3() ( # -> distinct?|first-contents|second-contents|first-mode|second-mode
     eval "$(awk '/^ae_store_message_body\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
     _AE_META_DIR="$(mktemp -d)"
     ae_store_message_body "ae-REQ-1" ask "THE ASK BODY";  local a="$_AE_LAST_BODY_FILE"
     ae_store_message_body "ae-REQ-1" reply "THE REPLY BODY"; local b="$_AE_LAST_BODY_FILE"
-    printf '%s|%s' "$([[ "$a" != "$b" ]] && echo distinct || echo SAME)" "$(cat "$a" 2>/dev/null)"
+    printf '%s|%s|%s|%s|%s' "$([[ "$a" != "$b" ]] && echo distinct || echo SAME)" \
+        "$(cat "$a" 2>/dev/null)" "$(cat "$b" 2>/dev/null)" \
+        "$(_ae_stat mode "$a" 2>/dev/null || echo '?')" "$(_ae_stat mode "$b" 2>/dev/null || echo '?')"
     rm -rf "$_AE_META_DIR"
 )
-assert_eq "#35: a reply does not overwrite the ask it answers" "distinct|THE ASK BODY" "$(_sto3)"
+assert_eq "#35: a reply does not overwrite the ask it answers" "distinct|THE ASK BODY|THE REPLY BODY|600|600" "$(_sto3)"
 # ...and the ref stays in the name, so a request and its answer still correlate.
 _sto4() (
     eval "$(awk '/^ae_store_message_body\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
@@ -9647,6 +9649,272 @@ _sto2() ( # <ref> -> the basename actually written
 assert_eq "#35: a traversal-shaped ref falls back to a generated name" "1" \
     "$(_n="$(_sto2 '../../escape')"; [[ "$_n" == msg-* ]] && echo 1 || echo 0)"
 unset -f _sto _sto2
+
+# ── Slice B P-B0: message publication boundary ─────────────────────
+# Every persisted body is the final pane text, published before it is submitted.
+# This probe drives the real send body and real store against a fake tmux; the
+# fake captures load-buffer stdin and the first paste-buffer checks the path, bytes, and mode.
+_pb0_order() {
+    local md rc=0 observed=0 paste_calls=0 body_bytes='' body_mode='' cmp_ok=0 envelope_ok=0
+    md="$(mktemp -d)"
+    (
+        eval "$(awk '/^ae_store_message_body\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+        eval "$(awk '/^ae_require_body\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+        eval "$(awk '/^ae_submit_pasted_message\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+        eval "$(awk '/^helper_send_body\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+        eval "$(awk '/^_ae_stat\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+        _AE_META_DIR="$md"
+        # Make the allocator's output deliberately broad; only the publication
+        # chmod may narrow it to 0600.
+        # shellcheck disable=SC2317,SC2329
+        mktemp() {
+            local template="$1" path
+            path="${template%XXXXXX}ORDER00"
+            : >"$path"
+            chmod 0644 "$path"
+            printf '%s\n' "$path"
+        }
+        # shellcheck disable=SC2317,SC2329
+        ae_resolve() { AE_RESOLVED_PANE="%9" AE_RESOLVED_AGENT="cl:target"; return 0; }
+        # shellcheck disable=SC2317,SC2329
+        _pane_agent_is_dead() { return 1; }
+        # shellcheck disable=SC2317,SC2329
+        ae_lock_target() { return 0; }
+        # shellcheck disable=SC2317,SC2329
+        ae_unlock_target() { return 0; }
+        # shellcheck disable=SC2317,SC2329
+        ae_target_tool() { printf 'bash'; }
+        # shellcheck disable=SC2317,SC2329
+        ae_current_agent_ref() { printf 'cl:probe'; }
+        # shellcheck disable=SC2317,SC2329
+        ae_extract_req_id() { :; }
+        # shellcheck disable=SC2317,SC2329
+        ae_provenance_sender() { printf 'cl:probe'; }
+        # shellcheck disable=SC2317,SC2329
+        _paste_input_busy() { return 1; }
+        # shellcheck disable=SC2317,SC2329
+        _pane_recently_viewed() { return 1; }
+        # shellcheck disable=SC2317,SC2329
+        _paste_still_staged() { return 1; }
+        # shellcheck disable=SC2317,SC2329
+        ae_emit_event() { return 0; }
+        # shellcheck disable=SC2317,SC2329
+        helper_send_finish_event() { :; }
+        # shellcheck disable=SC2317,SC2329
+        sleep() { :; }
+        # shellcheck disable=SC2317,SC2329
+        tmux() {
+            case "$1" in
+                load-buffer) cat >"$md/load-buffer"; return 0 ;;
+                paste-buffer)
+                    paste_calls=$((paste_calls + 1))
+                    body_bytes="$(cat "$_AE_LAST_BODY_FILE" 2>/dev/null || true)"
+                    body_mode="$(_ae_stat mode "$_AE_LAST_BODY_FILE" 2>/dev/null || true)"
+                    if [[ -f "$_AE_LAST_BODY_FILE" && "$body_bytes" == $'⟦ae:msg from cl:probe⟧\nORDER-BODY' && "$body_mode" == 600 ]]; then
+                        observed=1
+                    fi
+                    return 0
+                    ;;
+                send-keys) return 0 ;;
+            esac
+            return 0
+        }
+        local _ae_send_finish=helper_send_finish_event
+        helper_send_body cl:target 'ORDER-BODY' || rc=$?
+        cmp "$md/load-buffer" "$_AE_LAST_BODY_FILE" >/dev/null 2>&1 && cmp_ok=1
+        [[ "$body_bytes" == $'⟦ae:msg from cl:probe⟧\nORDER-BODY' ]] && envelope_ok=1
+        printf 'rc=%s observed=%s paste_calls=%s mode=%s cmp=%s envelope=%s' \
+            "$rc" "$observed" "$paste_calls" "$body_mode" "$cmp_ok" "$envelope_ok"
+    ) >"$md/out" 2>"$md/err"
+    cat "$md/out"
+    rm -rf "$md"
+}
+assert_eq "pb0 order: body is complete and mode 0600 before first paste-buffer" \
+    "rc=0 observed=1 paste_calls=1 mode=600 cmp=1 envelope=1" "$(_pb0_order)"
+
+# Forced final-name collision: the allocator keeps producing the same suffix,
+# exhausts its bounded attempts, and the send body therefore pastes and emits nothing.
+_pb0_collision() {
+    local md rc=0 paste_calls=0 event_calls=0 files=0
+    md="$(mktemp -d)"
+    mkdir -p "$md/messages"
+    printf 'old body' >"$md/messages/ae-COLLIDE.ask.COLLIDE.txt"
+    (
+        eval "$(awk '/^ae_store_message_body\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+        eval "$(awk '/^ae_require_body\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+        eval "$(awk '/^helper_send_body\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+        _AE_META_DIR="$md"
+        # shellcheck disable=SC2317,SC2329
+        mktemp() {
+            local template="$1" path
+            path="${template%XXXXXX}COLLIDE"
+            : >"$path"
+            printf '%s\n' "$path"
+        }
+        # shellcheck disable=SC2317,SC2329
+        ae_resolve() { AE_RESOLVED_PANE="%9" AE_RESOLVED_AGENT="cl:target"; return 0; }
+        # shellcheck disable=SC2317,SC2329
+        _pane_agent_is_dead() { return 1; }
+        # shellcheck disable=SC2317,SC2329
+        ae_extract_req_id() { printf 'ae-COLLIDE'; }
+        # shellcheck disable=SC2317,SC2329
+        ae_provenance_sender() { printf 'cl:probe'; }
+        # shellcheck disable=SC2317,SC2329
+        ae_emit_event() { : >"$md/event"; }
+        # shellcheck disable=SC2317,SC2329
+        tmux() { : >"$md/paste"; return 0; }
+        # shellcheck disable=SC2317,SC2329
+        local _AE_EVENT_ACTION=ask _ae_send_finish=helper_send_finish_event
+        # shellcheck disable=SC2317,SC2329
+        helper_send_finish_event() { :; }
+        ( helper_send_body cl:target 'COLLISION-BODY' ) || rc=$?
+        files="$(command find "$md/messages" -type f -name '*.txt' 2>/dev/null | wc -l | tr -d '[:space:]')"
+        [[ -f "$md/paste" ]] && paste_calls=1 || paste_calls=0
+        [[ -f "$md/event" ]] && event_calls=1 || event_calls=0
+        printf 'rc=%s paste_calls=%s events=%s files=%s' "$rc" "$paste_calls" "$event_calls" "${files:-0}"
+    ) >"$md/out" 2>"$md/err"
+    cat "$md/out"
+    rm -rf "$md"
+}
+assert_eq "pb0 collision: exhausted no-clobber retries paste nothing and emit no event" \
+    "rc=1 paste_calls=0 events=0 files=1" "$(_pb0_collision)"
+
+# mktemp failure (the same failure mode as a read-only messages directory):
+# storage fails before any paste or event and leaves no body artifact.
+_pb0_mktemp_failure() {
+    local md rc=0 paste_calls=0 event_calls=0 files=0
+    md="$(mktemp -d)"
+    mkdir -p "$md/messages"
+    (
+        eval "$(awk '/^ae_store_message_body\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+        eval "$(awk '/^ae_require_body\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+        eval "$(awk '/^helper_send_body\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+        _AE_META_DIR="$md"
+        # shellcheck disable=SC2317,SC2329
+        mktemp() { return 1; }
+        # shellcheck disable=SC2317,SC2329
+        ae_resolve() { AE_RESOLVED_PANE="%9" AE_RESOLVED_AGENT="cl:target"; return 0; }
+        # shellcheck disable=SC2317,SC2329
+        _pane_agent_is_dead() { return 1; }
+        # shellcheck disable=SC2317,SC2329
+        ae_extract_req_id() { printf 'ae-MKTEMP'; }
+        # shellcheck disable=SC2317,SC2329
+        ae_provenance_sender() { printf 'cl:probe'; }
+        # shellcheck disable=SC2317,SC2329
+        ae_emit_event() { : >"$md/event"; }
+        # shellcheck disable=SC2317,SC2329
+        tmux() { : >"$md/paste"; return 0; }
+        # shellcheck disable=SC2030
+        local _AE_EVENT_ACTION=send _ae_send_finish=helper_send_finish_event
+        # shellcheck disable=SC2317,SC2329
+        helper_send_finish_event() { :; }
+        ( helper_send_body cl:target 'MKTEMP-BODY' ) || rc=$?
+        files="$(command find "$md/messages" -type f 2>/dev/null | wc -l | tr -d '[:space:]')"
+        [[ -f "$md/paste" ]] && paste_calls=1 || paste_calls=0
+        [[ -f "$md/event" ]] && event_calls=1 || event_calls=0
+        printf 'rc=%s paste_calls=%s events=%s files=%s' "$rc" "$paste_calls" "$event_calls" "${files:-0}"
+    ) >"$md/out" 2>"$md/err"
+    cat "$md/out"
+    rm -rf "$md"
+}
+assert_eq "pb0 mktemp failure: paste nothing and emit no event" \
+    "rc=1 paste_calls=0 events=0 files=0" "$(_pb0_mktemp_failure)"
+
+# A successful hard link commits publication even if temporary-name cleanup is transiently
+# unavailable. The final body must be unique and usable, with a loud cleanup warning.
+_pb0_rm_failure() {
+    local md rc=0 files=0 warnings=0
+    md="$(mktemp -d)"
+    (
+        eval "$(awk '/^ae_store_message_body\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+        _AE_META_DIR="$md"
+        # shellcheck disable=SC2317,SC2329
+        mktemp() {
+            local template="$1" path
+            path="${template%XXXXXX}RMFAIL0"
+            : >"$path"
+            printf '%s\n' "$path"
+        }
+        # shellcheck disable=SC2317,SC2329
+        rm() {
+            if [[ "${_RM_CALLS:-0}" == 0 ]]; then
+                _RM_CALLS=1
+                return 1
+            fi
+            command rm "$@"
+        }
+        ae_store_message_body rm-failure ask 'RM-FAILURE-BODY' 2>"$md/store.err" || rc=$?
+        files="$(command find "$md/messages" -type f -name '*.txt' 2>/dev/null | wc -l | tr -d '[:space:]')"
+        warnings="$(grep -c 'temporary name .* could not be removed' "$md/store.err" 2>/dev/null || true)"
+        printf 'rc=%s files=%s warnings=%s body=%s' "$rc" "$files" "$warnings" "$(cat "$_AE_LAST_BODY_FILE" 2>/dev/null)"
+    ) >"$md/out" 2>"$md/err"
+    cat "$md/out"
+    rm -rf "$md"
+}
+assert_eq "pb0 rm failure: link commits one body and warns on temp cleanup" \
+    "rc=0 files=1 warnings=1 body=RM-FAILURE-BODY" "$(_pb0_rm_failure)"
+
+# Structural guard: body publication uses a hard link and never a path move.
+_pb0_store_body="$(awk '/^ae_store_message_body\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+_pb0_store_code="$(grep -vE '^[[:space:]]*#' <<<"$_pb0_store_body" || true)"
+assert_eq "pb0 structure: body publication has no move primitive" "1" \
+    "$([[ "$_pb0_store_code" != *' mv '* && "$_pb0_store_code" != *' rename '* && "$_pb0_store_code" == *'ln "$_tmp" "$_final"'* ]] && echo 1 || echo 0)"
+
+# Mutation controls. Each named mutation is applied to the extracted artifact,
+# then its matching acceptance test must turn RED. The three controls are counted
+# explicitly so a deleted or inert control cannot masquerade as coverage.
+_pb0_mutation_drop_chmod() {
+    local md source mode
+    md="$(mktemp -d)"
+    source="$(sed '/if ! chmod 600/,/fi/d' <<<"$_pb0_store_body")"
+    (
+        eval "$source"
+        _AE_META_DIR="$md"
+        # shellcheck disable=SC2317,SC2329
+        mktemp() {
+            local template="$1" path
+            path="${template%XXXXXX}MUTATE0"
+            : >"$path"
+            chmod 0644 "$path"
+            printf '%s\n' "$path"
+        }
+        ae_store_message_body mutate ask body
+        mode="$(_ae_stat mode "$_AE_LAST_BODY_FILE" 2>/dev/null || true)"
+        [[ "$mode" == 600 ]] && echo GREEN || echo RED
+    )
+    rm -rf "$md"
+}
+_pb0_mutation_link() {
+    local source
+    source="${_pb0_store_body//ln \"\$_tmp\" \"\$_final\"/mv \"\$_tmp\" \"\$_final\"}"
+    if grep -Eq '(^|[[:space:];|&])(command[[:space:]]+)?(mv|rename)([[:space:]]|$)' <<<"$(grep -vE '^[[:space:]]*#' <<<"$source" || true)"; then
+        echo RED
+    else
+        echo GREEN
+    fi
+}
+_pb0_mutation_rm_predicate() {
+    local source
+    source="$(sed 's/if ln "\$_tmp" "\$_final" 2>\/dev\/null; then/if ln "\$_tmp" "\$_final" 2>\/dev\/null \&\& rm -f "\$_tmp" 2>\/dev\/null; then/' <<<"$_pb0_store_body")"
+    if grep -Eq 'ln "\$_tmp" "\$_final".*&& rm -f' <<<"$source"; then
+        echo RED
+    else
+        echo GREEN
+    fi
+}
+_pb0_mutation_paste_order() {
+    local source="$1" store_line paste_line
+    store_line="$(grep -nE '^[[:space:]]*ae_store_message_body[[:space:]]' <<<"$source" | tail -1 | cut -d: -f1)"
+    paste_line="$(grep -nE '^[[:space:]]*if ! ae_submit_pasted_message[[:space:]]' <<<"$source" | head -1 | cut -d: -f1)"
+    [[ "$paste_line" =~ ^[0-9]+$ && "$store_line" =~ ^[0-9]+$ && "$paste_line" -lt "$store_line" ]] && echo RED || echo GREEN
+}
+_pb0_mutated_helper="$(awk '/^[[:space:]]*ae_store_message_body[[:space:]]/ { saved=$0; next } /^[[:space:]]*if ! ae_submit_pasted_message[[:space:]]/ { print; print saved; next } { print }' \
+    <<<"$(awk '/^helper_send_body\(\) \{/,/^\}$/' <<<"$AE_SOURCE")")"
+_pb0_mutations="$(_pb0_mutation_drop_chmod)|$(_pb0_mutation_link)|$(_pb0_mutation_rm_predicate)|$(_pb0_mutation_paste_order "$_pb0_mutated_helper")"
+assert_eq "pb0 mutation controls: drop chmod, replace link, merge rm predicate, move paste above publish are RED" \
+    "RED|RED|RED|RED" "$_pb0_mutations"
+assert_eq "pb0 mutation controls: four named controls recorded" "4" \
+    "$(tr '|' '\n' <<<"$_pb0_mutations" | grep -c '^RED$' || true)"
 
 # ── #39 ORIGIN ENVELOPE ──────────────────────────────────────────────
 # One terse line, emitted BY THE HELPER from the pane's own stamp — a sender cannot
@@ -10662,6 +10930,10 @@ _spawn_probe() { # <ready:1|0> <paste_rc> -> "rc=? spawned=? task_event=? failed
     printf 'session=probe\nwork_dir=%s\nlayout=vertical\nconfig=%s/cfg\nmain_pane=%%0\norigin=\nmode=local\n' "$md" "$md" >"$md/meta"
     : >"$md/cfg"
     (
+        # _cmd_spawn now publishes the initial/deferred task body through the real
+        # allocator; provide it here so this delivery-decision probe reaches the
+        # intended branches instead of a command-not-found failure.
+        eval "$(awk '/^ae_store_message_body\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
         # shellcheck disable=SC2317,SC2329
         get_config() { [[ "$1" == agents.* ]] && printf 'claude --model haiku'; return 0; }
         # shellcheck disable=SC2317,SC2329
@@ -10733,6 +11005,9 @@ _spawn_probe_pastes() { # <ready:1|0> -> "paste_calls=N"
     printf 'session=probe\nwork_dir=%s\nlayout=vertical\nconfig=%s/cfg\nmain_pane=%%0\norigin=\nmode=local\n' "$md" "$md" >"$md/meta"
     : >"$md/cfg"
     (
+        # This companion probe exercises the paste-call count; _cmd_spawn's real
+        # body publication must be defined before it can reach that paste branch.
+        eval "$(awk '/^ae_store_message_body\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
         # shellcheck disable=SC2317,SC2329
         get_config() { [[ "$1" == agents.* ]] && printf 'claude --model haiku'; return 0; }
         # shellcheck disable=SC2317,SC2329

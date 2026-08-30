@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ae - agentic engineering: tmux-based multi-agent workspace
 set -euo pipefail
-AE_VERSION="0.2.22"
+AE_VERSION="0.2.23"
 
 # Fail fast with a clear message on bash < 4 (macOS ships 3.2 and defaults to
 # zsh). This must sit BEFORE any bash-4-only syntax is parsed — bash parses
@@ -11202,7 +11202,9 @@ _wait_input_ready() { # <pane> <tool_kind> [polls] -> 0 ready, 1 timed out
 }
 
 _cmd_spawn() {
-    local meta_dir="$1"
+    # Shadow the script-global _AE_META_DIR: spawn executes from ae, but its body
+    # belongs in the target session's meta; otherwise it lands in <repo>/messages/.
+    local meta_dir="$1" _AE_META_DIR="$1"
     shift
     local alias_arg="$1"
     shift
@@ -11326,6 +11328,14 @@ _cmd_spawn() {
     if [[ -n "$initial_msg" ]]; then
         initial_msg="${initial_msg} --- ${prompt}"
     fi
+    # The initial prompt is part of the launch paste for tools without a
+    # system-prompt channel. Publish it before send_agent_cmd can paste the
+    # launch command; a storage failure rolls back the registered worker.
+    if [[ -n "$initial_msg" ]] && ! ae_store_message_body "spawn-${slot}" "spawn" "$initial_msg"; then
+        _spawn_rollback "$meta_dir" "$slot" "$pane_id" "$session" "$work_dir" "$origin" "$mode" "$main_pane"
+        echo "Error: '${alias_name}:${spawn_name}' task body could not be stored — spawn rolled back." >&2
+        return 1
+    fi
     # By this point the window/pane exists and the agent is REGISTERED in meta
     # (agent.<slot>, agent_bin.<slot>, launch_id.<slot>). A failed launch that
     # simply returned would leave a phantom: a roster entry with an empty pane,
@@ -11347,56 +11357,61 @@ _cmd_spawn() {
 
     # For agents with system prompt injection, send spawn prompt separately
     if [[ -z "$initial_msg" ]]; then
-        # Wait for the TUI to actually ACCEPT input before pasting.
-        # wait_for_agent_start only proves the process is running — pasting in the boot
-        # gap is swallowed wholesale, with nothing staged for the lingering-nudge below
-        # to detect (live-dogfood finding: workers booted brief-less twice).
         local _ready=0
-        _wait_input_ready "$pane_id" "$tool_kind" 30 && _ready=1
-        if ((_ready == 0)); then
-            # DO NOT paste into a state we could not confirm idle. The old code polled
-            # for any of '❯|bypass permissions|for shortcuts' and pasted on timeout
-            # regardless — so claude's trust dialog ('❯ 1. Yes, I trust this folder')
-            # read READY and the brief went INTO THE MODAL, where Enter answers the
-            # dialog instead (colead ROUND5 BLOCKER 2). Leave the pane untouched — the
-            # brief is re-sendable, a clobbered modal is not — and record NOT-DELIVERED
-            # so the caller sees it (colead ROUND6: stderr alone let the positive path
-            # run on and claim success).
+        if ! ae_store_message_body "spawn-${slot}" "spawn" "$prompt"; then
             _delivered=0
-            _fail_reason="input never reached a confirmed-idle state (busy, modal, or unreadable)"
+            _fail_reason="task body storage failed — nothing was pasted"
         else
-            # #38: NO select-pane. Same deletion as #36's launch path, same reviewed
-            # doctrine — "focus is not part of any TUI's submission contract;
-            # select-pane here changed the window's active pane, routing the human's
-            # in-flight keystrokes into the TARGET mid-send — acute under lead-pair,
-            # where lead and colead share window 0." A spawn firing while the human
-            # types did exactly that. paste-buffer -t / send-keys -t reach the named
-            # pane without it, and it was also a bare call under errexit that could
-            # abort before the delivery reporting below. If jump-to-new-worker is
-            # wanted it belongs in the explicit focus helper, AFTER delivery.
-            # Launch paste is best-effort for DELIVERY, but never silent: a slow TUI
-            # whose paste stays staged past the bounded verify-retries returns non-zero
-            # and this runs under set -e, so the status is captured rather than dropped.
-            # The old bare `|| true` discarded exactly the signal that says "your worker
-            # never got its brief".
-            local _paste_rc=0
-            tmux_paste_submit "$pane_id" "$prompt" || _paste_rc=$?
-            if ((_paste_rc != 0)); then
-                # Staged past the bounded verify-retries: the text may be sitting unsent
-                # in the box. UNCONFIRMED is not delivered, and must not read as success.
+            # Wait for the TUI to actually ACCEPT input before pasting.
+            # wait_for_agent_start only proves the process is running — pasting in the boot
+            # gap is swallowed wholesale, with nothing staged for the lingering-nudge below
+            # to detect (live-dogfood finding: workers booted brief-less twice).
+            _wait_input_ready "$pane_id" "$tool_kind" 30 && _ready=1
+            if ((_ready == 0)); then
+                # DO NOT paste into a state we could not confirm idle. The old code polled
+                # for any of '❯|bypass permissions|for shortcuts' and pasted on timeout
+                # regardless — so claude's trust dialog ('❯ 1. Yes, I trust this folder')
+                # read READY and the brief went INTO THE MODAL, where Enter answers the
+                # dialog instead (colead ROUND5 BLOCKER 2). Leave the pane untouched — the
+                # brief is re-sendable, a clobbered modal is not — and record NOT-DELIVERED
+                # so the caller sees it (colead ROUND6: stderr alone let the positive path
+                # run on and claim success).
                 _delivered=0
-                _fail_reason="brief submit UNCONFIRMED (tmux_paste_submit rc=$_paste_rc) — it may be staged unsent"
+                _fail_reason="input never reached a confirmed-idle state (busy, modal, or unreadable)"
+            else
+                # #38: NO select-pane. Same deletion as #36's launch path, same reviewed
+                # doctrine — "focus is not part of any TUI's submission contract;
+                # select-pane here changed the window's active pane, routing the human's
+                # in-flight keystrokes into the TARGET mid-send — acute under lead-pair,
+                # where lead and colead share window 0." A spawn firing while the human
+                # types did exactly that. paste-buffer -t / send-keys -t reach the named
+                # pane without it, and it was also a bare call under errexit that could
+                # abort before the delivery reporting below. If jump-to-new-worker is
+                # wanted it belongs in the explicit focus helper, AFTER delivery.
+                # Launch paste is best-effort for DELIVERY, but never silent: a slow TUI
+                # whose paste stays staged past the bounded verify-retries returns non-zero
+                # and this runs under set -e, so the status is captured rather than dropped.
+                # The old bare `|| true` discarded exactly the signal that says "your worker
+                # never got its brief".
+                local _paste_rc=0
+                tmux_paste_submit "$pane_id" "$prompt" || _paste_rc=$?
+                if ((_paste_rc != 0)); then
+                    # Staged past the bounded verify-retries: the text may be sitting unsent
+                    # in the box. UNCONFIRMED is not delivered, and must not read as success.
+                    _delivered=0
+                    _fail_reason="brief submit UNCONFIRMED (tmux_paste_submit rc=$_paste_rc) — it may be staged unsent"
+                fi
             fi
-        fi
-        if ((_ready == 1)); then
-            # A booting TUI can swallow the quick post-paste Enter, leaving the prompt
-            # staged in the input box (live-dogfood find). Verify the text actually left
-            # the input; nudge Enter once more if it lingers. Only when we actually
-            # pasted — never blind-Enter a pane we deliberately did not touch.
-            sleep 1.5
-            if tmux capture-pane -p -t "$pane_id" 2>/dev/null | tail -n 6 |
-                grep -qF "${prompt:0:40}"; then
-                tmux send-keys -t "$pane_id" Enter
+            if ((_ready == 1)); then
+                # A booting TUI can swallow the quick post-paste Enter, leaving the prompt
+                # staged in the input box (live-dogfood find). Verify the text actually left
+                # the input; nudge Enter once more if it lingers. Only when we actually
+                # pasted — never blind-Enter a pane we deliberately did not touch.
+                sleep 1.5
+                if tmux capture-pane -p -t "$pane_id" 2>/dev/null | tail -n 6 |
+                    grep -qF "${prompt:0:40}"; then
+                    tmux send-keys -t "$pane_id" Enter
+                fi
             fi
         fi
     fi
@@ -12690,8 +12705,12 @@ ae_make_req_id() {
 # it is the same material as the pane content, not world-readable metadata.
 ae_store_message_body() { # <ref-or-empty> <action> <body>
     local ref="$1" action="$2" body="$3" dir="${_AE_META_DIR}/messages" stem
+    _AE_LAST_BODY_FILE=""
     [[ -n "$body" ]] || return 0
-    mkdir -p "$dir" 2>/dev/null || return 0
+    if ! mkdir -p "$dir" 2>/dev/null; then
+        echo "ae: message body storage failed: could not create ${dir}" >&2
+        return 1
+    fi
     # ONE ARTIFACT PER DELIVERY, never per REF. ask and reply share a request id BY
     # DESIGN, so a ref-named file meant the reply TRUNCATED the ask's body — and the
     # ask event's pointer then resolved to the reply's text, silently. The recovery
@@ -12704,27 +12723,39 @@ ae_store_message_body() { # <ref-or-empty> <action> <body>
         stem="msg-$(date -u +%Y%m%dT%H%M%SZ)"
     fi
     [[ "$action" =~ ^[A-Za-z0-9._-]+$ ]] || action="send"
-    # mktemp for atomic uniqueness; the .txt is added by RENAME because a portable
-    # template must END in XXXXXX (BSD mktemp has no --suffix, and this file runs on
-    # both userlands). The rename target inherits mktemp's uniqueness, so it cannot
-    # collide either.
-    local _tmp
-    _tmp="$(mktemp "${dir}/${stem}.${action}.XXXXXX" 2>/dev/null)" || {
-        _AE_LAST_BODY_FILE=""
-        return 0
-    }
-    if command mv -f "$_tmp" "${_tmp}.txt" 2>/dev/null; then
-        _AE_LAST_BODY_FILE="${_tmp}.txt"
-    else
-        _AE_LAST_BODY_FILE="$_tmp"
-    fi
-    printf '%s' "$body" >"$_AE_LAST_BODY_FILE" 2>/dev/null || {
-        rm -f "$_AE_LAST_BODY_FILE" 2>/dev/null || true
-        _AE_LAST_BODY_FILE=""
-        return 0
-    }
-    chmod 600 "$_AE_LAST_BODY_FILE" 2>/dev/null || true
-    return 0
+    # mktemp creates the temporary inode inside messages/. The .txt suffix is
+    # added to the final path so the template remains portable on BSD and GNU.
+    # Publish by hard-linking then unlinking the temporary name: ln fails when
+    # the final name already exists, so no delivery can clobber an earlier body.
+    local _tmp _final _attempt=0 _max_attempts=8
+    while ((_attempt < _max_attempts)); do
+        _attempt=$((_attempt + 1))
+        if ! _tmp="$(mktemp "${dir}/${stem}.${action}.XXXXXX" 2>/dev/null)"; then
+            echo "ae: message body storage failed: mktemp could not allocate in ${dir}" >&2
+            return 1
+        fi
+        _final="${_tmp}.txt"
+        if ! printf '%s' "$body" >"$_tmp" 2>/dev/null; then
+            rm -f "$_tmp" 2>/dev/null || true
+            echo "ae: message body storage failed: could not write ${_tmp}" >&2
+            return 1
+        fi
+        if ! chmod 600 "$_tmp" 2>/dev/null; then
+            rm -f "$_tmp" 2>/dev/null || true
+            echo "ae: message body storage failed: could not set mode 0600 on ${_tmp}" >&2
+            return 1
+        fi
+        if ln "$_tmp" "$_final" 2>/dev/null; then
+            _AE_LAST_BODY_FILE="$_final"
+            if ! rm -f "$_tmp" 2>/dev/null; then
+                echo "ae: message body storage warning: published ${_final}, temporary name ${_tmp} could not be removed" >&2
+            fi
+            return 0
+        fi
+        rm -f "$_tmp" 2>/dev/null || true
+    done
+    echo "ae: message body storage failed: could not publish a unique path after ${_max_attempts} attempts" >&2
+    return 1
 }
 
 # PROVENANCE IS NOT AMBIENT. ae_current_pane falls back to asking tmux for the
@@ -13562,6 +13593,7 @@ helper_send_body() {
     # `ae:`-shaped target must still fail loudly rather than have its message
     # swallowed into the log. That is the whole reason the family is a whitelist.
     if [[ "$target_ref" == telegram:* || "$target_ref" == discord:* || "$target_ref" == ae:compact:* ]]; then
+        ae_store_message_body "${_AE_EVENT_REF:-${req_id:-}}" "${_AE_EVENT_ACTION:-send}" "$msg" || exit 1
         ae_emit_event "${_AE_EVENT_ACTION:-send}" "$target_ref" "${_AE_EVENT_REF:-${req_id:-}}" "${_AE_EVENT_SUMMARY:-$msg}"
         exit 0
     fi
@@ -13604,6 +13636,10 @@ helper_send_body() {
         msg="⟦ae:msg from unverified⟧"$'\n'"${msg}"
     fi
 
+    # Publish the exact recoverable pane text BEFORE locking or submitting it. A storage
+    # failure is terminal for this delivery: no pane text, paste, or event may follow it.
+    ae_store_message_body "${_AE_EVENT_REF:-${req_id:-}}" "${_AE_EVENT_ACTION:-send}" "$msg" || exit 1
+
     ae_lock_target "$target"
 
     tool="$(ae_target_tool "$target")"
@@ -13641,7 +13677,7 @@ helper_send_body() {
 
     if ! ae_submit_pasted_message "$target" "$tool" "$buf" "$msg"; then
         ae_unlock_target
-        echo "ae: send to ${logged_target} UNCONFIRMED — submit not verified. Re-send." >&2
+        echo "ae: send to ${logged_target} UNCONFIRMED — submit not verified; body preserved at ${_AE_LAST_BODY_FILE}. Re-send." >&2
         exit 1
     fi
     ae_unlock_target
@@ -13650,8 +13686,8 @@ helper_send_body() {
     # delivery cannot be reconstructed from the log — which is what turned two
     # incidents into "please resend verbatim" instead of "let me go read it". The full
     # delivered text is kept beside the session and the event points at it, so the
-    # recipient can recover the body themselves.
-    ae_store_message_body "${_AE_EVENT_REF:-${req_id:-}}" "${_AE_EVENT_ACTION:-send}" "$msg"
+    # recipient can recover the body themselves. Publication happened before the paste
+    # above; this finisher is the only remaining event write.
     # The FINISH belongs to the ENTRY POINT, not to the environment. `send`
     # (helper_send_main) records the send event here; `_send-deliver`
     # (helper_send_deliver_main, P2.5a) prints the recovery file's path instead,
@@ -14262,6 +14298,12 @@ helper_interrupt_main() {
         exit 1
     fi
 
+    # Persist a message interrupt before any cancel or paste. A failed body
+    # publication leaves the target untouched and records no interrupt event.
+    if [[ -n "$msg" ]]; then
+        ae_store_message_body "" "interrupt" "$msg" || exit 1
+    fi
+
     ae_lock_target "$target"
 
     # NO FOCUS CHANGE — send-keys -t (incl. -X cancel and Escape) targets the pane
@@ -14278,7 +14320,7 @@ helper_interrupt_main() {
         # path already fixes). Unlock, fail LOUD, emit NO event.
         if ! ae_submit_pasted_message "$target" "$tool" "$buf" "$msg"; then
             ae_unlock_target
-            echo "ae: interrupt message to ${AE_RESOLVED_AGENT:-$target} UNCONFIRMED — submit not verified. Re-send." >&2
+            echo "ae: interrupt message to ${AE_RESOLVED_AGENT:-$target} UNCONFIRMED — submit not verified; body preserved at ${_AE_LAST_BODY_FILE}. Re-send." >&2
             exit 1
         fi
     fi
