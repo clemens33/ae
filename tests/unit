@@ -2317,6 +2317,160 @@ assert_eq "inside-tmux: 4 client branches guarded, 1 deliberate bare read left" 
 unset -f _it_stub ps tmux
 unset _IT_TTY _IT_PANES _IT_SESSION
 
+# ── tmux_attach: explicit server selection at the exec boundary ────────────
+# `exec tmux` bypasses ae's function shim, so an attach from a plain shell looked
+# for a named-server session on the default server. The explicit argv must survive
+# exec at both attach/switch sites, while a client on a different server gets an
+# actionable hint rather than a nested-client error.
+_tmux_attach_body="$(awk '/^tmux_attach\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+eval "$_tmux_attach_body"
+assert_eq "tmux_attach: no bare exec tmux bypass remains" "1" \
+    "$(grep -Eq '^[[:space:]]*exec command tmux ' <<<"$_tmux_attach_body" \
+        && ! grep -Eq '^[[:space:]]*exec tmux ' <<<"$_tmux_attach_body" && echo 1 || echo 0)"
+_ta_dir="$(mktemp -d)"
+_ta_bin="$_ta_dir/bin"
+mkdir -p "$_ta_bin"
+cat >"$_ta_bin/tmux" <<'TMUX_STUB'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "-S" && "${3:-}" == "list-panes" ]]; then
+    [[ -n "${AE_TA_CURRENT_PANES:-}" ]] && printf '%s\n' "$AE_TA_CURRENT_PANES"
+    exit 0
+fi
+if [[ "${1:-}" == "list-panes" || ( "${1:-}" == "-L" && "${3:-}" == "list-panes" ) ]]; then
+    [[ -n "${AE_TA_PREDICATE_PANES:-}" ]] && printf '%s\n' "$AE_TA_PREDICATE_PANES"
+    exit 0
+fi
+printf '%s\n' "$@" >"${AE_TA_LOG:?}"
+TMUX_STUB
+chmod +x "$_ta_bin/tmux"
+_ta_attach_args() (
+    export PATH="$_ta_bin:$PATH" AE_TA_LOG="$_ta_dir/argv"
+    export AE_TMUX_SERVER=canary AE_TMUX_SERVER_KIND=name
+    unset TMUX
+    _AE_INSIDE_TMUX=0 tmux_attach target
+)
+_ta_attach_args
+assert_eq "tmux_attach: named server args precede attach-session" \
+    $'-L\ncanary\nattach-session\n-t\ntarget' "$(cat "$_ta_dir/argv")"
+_ta_default_args() (
+    export PATH="$_ta_bin:$PATH" AE_TA_LOG="$_ta_dir/argv"
+    unset AE_TMUX_SERVER AE_TMUX_SERVER_KIND TMUX
+    _AE_INSIDE_TMUX=0 tmux_attach target
+)
+_ta_default_args
+assert_eq "tmux_attach: unset server emits no -L/-S" \
+    $'attach-session\n-t\ntarget' "$(cat "$_ta_dir/argv")"
+_ta_foreign_hint() (
+    export PATH="$_ta_bin:$PATH" AE_TA_LOG="$_ta_dir/argv"
+    export AE_TMUX_SERVER=other AE_TMUX_SERVER_KIND=name TMUX_TMPDIR="$_ta_dir"
+    export AE_TA_CURRENT_PANES=/dev/ttys039
+    TMUX="$_ta_dir/tmux-$(id -u)/foreign,123,0"
+    export TMUX
+    : >"$_ta_dir/argv"
+    unset _AE_INSIDE_TMUX
+    # shellcheck disable=SC2317,SC2329
+    ps() { printf 'ttys039\n'; }
+    tmux_attach target
+    echo CONTINUED
+)
+_ta_foreign_rc=0
+_ta_hint="$(_ta_foreign_hint 2>&1)" || _ta_foreign_rc=$?
+assert_eq "tmux_attach: foreign client gets a direct attach hint and no tmux call" \
+    "session 'target' is on tmux server 'other'; attach with: tmux -L other attach -t target|0" \
+    "$_ta_hint|$(wc -c <"$_ta_dir/argv" | tr -d '[:space:]')"
+assert_eq "tmux_attach: foreign hint exits instead of returning to its caller" \
+    "0|0" "$_ta_foreign_rc|$([[ "$_ta_hint" != *CONTINUED* ]] && echo 0 || echo 1)"
+_ta_stale_tmux() (
+    export PATH="$_ta_bin:$PATH" AE_TA_LOG="$_ta_dir/argv"
+    export AE_TMUX_SERVER=other AE_TMUX_SERVER_KIND=name TMUX_TMPDIR="$_ta_dir"
+    unset AE_TA_CURRENT_PANES
+    export AE_TA_PREDICATE_PANES=/dev/ttys040
+    TMUX="$_ta_dir/tmux-$(id -u)/foreign,123,0"
+    export TMUX
+    : >"$_ta_dir/argv"
+    unset _AE_INSIDE_TMUX
+    # shellcheck disable=SC2317,SC2329
+    ps() { printf 'ttys039\n'; }
+    tmux_attach target
+)
+_ta_stale_out="$(_ta_stale_tmux 2>&1)"
+assert_eq "tmux_attach: stale inherited TMUX falls through to explicit attach" \
+    $'no-hint|-L\nother\nattach-session\n-t\ntarget' \
+    "$([[ "$_ta_stale_out" != *'on tmux server'* ]] && printf 'no-hint' || printf 'hint')|$(cat "$_ta_dir/argv")"
+_ta_same_server() (
+    export PATH="$_ta_bin:$PATH" AE_TA_LOG="$_ta_dir/argv"
+    export AE_TMUX_SERVER=canary AE_TMUX_SERVER_KIND=name TMUX_TMPDIR="$_ta_dir"
+    TMUX="$_ta_dir/tmux-$(id -u)/canary,123,0"
+    export TMUX
+    : >"$_ta_dir/argv"
+    _AE_INSIDE_TMUX=1 tmux_attach target
+)
+_ta_same_server
+assert_eq "tmux_attach: same-server client switches with explicit server args" \
+    $'-L\ncanary\nswitch-client\n-t\ntarget' "$(cat "$_ta_dir/argv")"
+_ta_mutated_body="${_tmux_attach_body//exec command tmux/exec tmux}"
+_ta_mutation_structural="$(grep -Eq '^[[:space:]]*exec tmux ' <<<"$_ta_mutated_body" && echo RED || echo GREEN)"
+_ta_mutation_behavior="$(
+    export PATH="$_ta_bin:$PATH" AE_TA_LOG="$_ta_dir/argv"
+    export AE_TMUX_SERVER=canary AE_TMUX_SERVER_KIND=name
+    unset TMUX
+    (
+        eval "$_ta_mutated_body"
+        _AE_INSIDE_TMUX=0 tmux_attach target >/dev/null 2>&1
+    )
+    [[ "$(cat "$_ta_dir/argv")" == $'attach-session\n-t\ntarget' ]] && echo GREEN || echo RED
+)"
+assert_eq "tmux_attach mutation control: bare exec tmux makes structure and argv checks RED" \
+    "RED|RED" "$_ta_mutation_structural|$_ta_mutation_behavior"
+_ta_stale_nested_body="$(printf '%s\n' "$_tmux_attach_body" | sed 's/^        if \[\[ "\$_current_pane_match" == 1 && -n "\$_current_sock" && -n "\$_target_sock" && "\$_current_sock" != "\$_target_sock" \]\]; then$/        if [[ -n "\$_current_sock" \&\& -n "\$_target_sock" \&\& "\$_current_sock" != "\$_target_sock" ]]; then/')"
+_ta_nested_mutation="$(
+    export PATH="$_ta_bin:$PATH" AE_TA_LOG="$_ta_dir/argv"
+    export AE_TMUX_SERVER=other AE_TMUX_SERVER_KIND=name TMUX_TMPDIR="$_ta_dir"
+    unset AE_TA_CURRENT_PANES
+    export AE_TA_PREDICATE_PANES=/dev/ttys040
+    TMUX="$_ta_dir/tmux-$(id -u)/foreign,123,0"
+    export TMUX
+    : >"$_ta_dir/argv"
+    unset _AE_INSIDE_TMUX
+    (
+        eval "$_ta_stale_nested_body"
+        # shellcheck disable=SC2317,SC2329
+        ps() { printf 'ttys999\n'; }
+        # shellcheck disable=SC2317,SC2329
+        tmux() {
+            case "$*" in
+                *list-panes*) printf '/dev/ttys039\n' ;;
+                *) return 1 ;;
+            esac
+        }
+        tmux_attach target >/dev/null 2>&1
+    )
+    [[ -s "$_ta_dir/argv" ]] && echo GREEN || echo RED
+)"
+assert_eq "tmux_attach mutation control: dropping tty proof makes stale case RED" \
+    "RED" "$_ta_nested_mutation"
+_ta_return_mutated_body="$(printf '%s\n' "$_tmux_attach_body" | sed 's/^            exit 0$/            return 0/')"
+_ta_return_mutation="$(
+    export PATH="$_ta_bin:$PATH" AE_TA_LOG="$_ta_dir/argv"
+    export AE_TMUX_SERVER=other AE_TMUX_SERVER_KIND=name TMUX_TMPDIR="$_ta_dir"
+    export AE_TA_CURRENT_PANES=/dev/ttys039
+    TMUX="$_ta_dir/tmux-$(id -u)/foreign,123,0"
+    export TMUX
+    : >"$_ta_dir/argv"
+    unset _AE_INSIDE_TMUX
+    (
+        eval "$_ta_return_mutated_body"
+        # shellcheck disable=SC2317,SC2329
+        ps() { printf 'ttys039\n'; }
+        tmux_attach target
+        echo CONTINUED
+    )
+)"
+assert_eq "tmux_attach mutation control: return instead of exit makes continuation RED" \
+    "RED" "$([[ "$_ta_return_mutation" == *CONTINUED* ]] && echo RED || echo GREEN)"
+rm -rf "$_ta_dir"
+unset _tmux_attach_body _ta_dir _ta_bin _ta_hint _ta_foreign_rc _ta_stale_out _ta_mutated_body _ta_mutation_structural _ta_mutation_behavior _ta_stale_nested_body _ta_nested_mutation _ta_return_mutated_body _ta_return_mutation
+
 # _next_better: the deterministic ranking comparison (rank desc, epoch desc,
 # name asc). Behavioural — sourced directly (codex IMPORTANT 2: name tie-break).
 eval "$(awk '/^_next_better\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"

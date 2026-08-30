@@ -8071,6 +8071,35 @@ NXR_PANE="$(command grep '^main_pane=' "$NXR_META/meta" 2>/dev/null | cut -d= -f
 NXR_AGENTS="$("$NXR_META/agents" 2>/dev/null || true)"
 assert_contains "ae-next real: a generated helper reaches the ae-next server" "$NXR_PANE" "$NXR_AGENTS"
 
+# ── explicit re-entry attach through the wrapper ───────────────────────────
+# The launch above was deliberately detached, leaving nxreal running for a fresh
+# invocation. With TMUX absent, the wrapper must carry its named-server selection
+# through tmux_attach's exec rather than falling back to the default server.
+NXR_ATTACH_BIN="$NXR_HOME/attach-fake-bin"
+NXR_ATTACH_LOG="$NXR_HOME/attach-argv"
+# `tmux` is a harness function in this shell; command -v would capture that
+# function name and make the passthrough wrapper recurse into itself.
+NXR_REAL_TMUX="$(type -P tmux)"
+mkdir -p "$NXR_ATTACH_BIN"
+cat >"$NXR_ATTACH_BIN/tmux" <<'TMUX_ATTACH_WRAP'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "-L" && "${2:-}" == "ae-next" && "${3:-}" == "attach-session" ]]; then
+    printf '%s\n' "$@" >"$NXR_ATTACH_LOG"
+    exit 0
+fi
+exec "$NXR_REAL_TMUX" "$@"
+TMUX_ATTACH_WRAP
+chmod +x "$NXR_ATTACH_BIN/tmux"
+export NXR_ATTACH_LOG NXR_REAL_TMUX
+NXR_ATTACH_RC=0
+(cd "$NXR_GIT" && env -u TMUX PATH="$NXR_ATTACH_BIN:$PATH" AE_HOME="$NXR_HOME" \
+    "$HOME/.local/bin/ae-next" nxreal >/dev/null 2>&1) || NXR_ATTACH_RC=$?
+assert_eq "ae-next real: explicit wrapper attach exits cleanly" "0" "$NXR_ATTACH_RC"
+assert_eq "ae-next real: explicit attach finds the detached session on its server" "1" \
+    "$(command tmux -L ae-next has-session -t '=nxreal' 2>/dev/null && echo 1 || echo 0)"
+assert_eq "ae-next real: explicit attach exec carries -L before attach-session" \
+    $'-L\nae-next\nattach-session\n-t\nnxreal' "$(cat "$NXR_ATTACH_LOG" 2>/dev/null || true)"
+
 # ── doctor, through the symlink ────────────────────────────────────────────
 # The operator's first move after an install, and the one surface that prints
 # the RESOLVED core back to them — so it is also the check that the whole
@@ -8093,7 +8122,7 @@ command tmux -L ae-next kill-server 2>/dev/null || true
 # 0555 version directories are the product's; the suite's own cleanup cannot
 # unlink through them (see the installer section for the same note).
 chmod -R u+w "$NXR_HOME" 2>/dev/null || true
-unset NXR_REPO_SRC NXR_CORE NXR_VERSION NXR_HOME NXR_GIT NXR_I NXR_META NXR_SRV NXR_PANE NXR_AGENTS NXR_DOCTOR NXR_RC
+unset NXR_REPO_SRC NXR_CORE NXR_VERSION NXR_HOME NXR_GIT NXR_I NXR_META NXR_SRV NXR_PANE NXR_AGENTS NXR_ATTACH_BIN NXR_ATTACH_LOG NXR_REAL_TMUX NXR_ATTACH_RC NXR_DOCTOR NXR_RC
 fi
 
 # ── ae-next coexistence: upgrade + re-entry (pre-P5) ─────────────────────────

@@ -2318,12 +2318,51 @@ default_session_name() {
 # _ae_inside_tmux, not a bare $TMUX test (#29): switch-client from a shell that
 # is not a tmux client moves the ORIGINAL pane's view and leaves this terminal
 # with nothing attached.
+# Contract: never returns — every path execs or exits.
 tmux_attach() {
     local target="$1"
+    local -a _srv_args=()
+    local _srv="${AE_TMUX_SERVER:-}" _kind="${AE_TMUX_SERVER_KIND:-}"
+    if [[ -n "$_srv" ]]; then
+        mapfile -t _srv_args < <(_srv_tmux_args "$_kind" "$_srv")
+    fi
+    # A shell inside one server cannot switch its client to a session on another:
+    # switch-client addresses the CURRENT server, while the explicit args below
+    # address the target. Detect the mismatch from the raw environment before the
+    # same-server predicate: that predicate asks whether this shell belongs to the
+    # target server, so it is false in exactly the foreign-server case we must explain.
+    if [[ -n "$_srv" && -n "${TMUX:-}" ]]; then
+        local _current_sock="${TMUX%%,*}" _target_sock
+        if [[ "$_kind" == "socket" || (-z "$_kind" && "$_srv" == /*) ]]; then
+            _target_sock="$_srv"
+        else
+            _target_sock="${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/$_srv"
+        fi
+        _current_sock="$(realpath "$_current_sock" 2>/dev/null || printf '%s' "$_current_sock")"
+        _target_sock="$(realpath "$_target_sock" 2>/dev/null || printf '%s' "$_target_sock")"
+        local _current_tty="" _current_panes="" _current_pane_match=0
+        _current_tty="$(ps -o tty= -p $$ 2>/dev/null | tr -d '[:space:]')" || _current_tty=""
+        _current_panes="$(command tmux -S "$_current_sock" list-panes -a -F '#{pane_tty}' 2>/dev/null)" || _current_panes=""
+        if [[ -n "$_current_tty" && "$_current_tty" != '?' && "$_current_tty" != '??' &&
+            "$_current_tty" != '-' && -n "$_current_panes" ]]; then
+            _current_tty="${_current_tty#/dev/}"
+            while IFS= read -r _p; do
+                if [[ "${_p#/dev/}" == "$_current_tty" ]]; then
+                    _current_pane_match=1
+                    break
+                fi
+            done <<<"$_current_panes"
+        fi
+        if [[ "$_current_pane_match" == 1 && -n "$_current_sock" && -n "$_target_sock" && "$_current_sock" != "$_target_sock" ]]; then
+            printf "session '%s' is on tmux server '%s'; attach with: tmux %s attach -t %s\n" \
+                "$target" "$_srv" "${_srv_args[*]+"${_srv_args[*]}"}" "$target"
+            exit 0
+        fi
+    fi
     if _ae_inside_tmux; then
-        exec tmux switch-client -t "$target"
+        exec command tmux ${_srv_args[@]+"${_srv_args[@]}"} switch-client -t "$target"
     else
-        exec tmux attach-session -t "$target"
+        exec command tmux ${_srv_args[@]+"${_srv_args[@]}"} attach-session -t "$target"
     fi
 }
 
