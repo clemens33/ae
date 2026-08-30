@@ -100,6 +100,13 @@ jobs:
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Full history: the criterion-1 control in tests/it/cli.rs DERIVES its phase-2
+          # baseline from `git log -S` + `git show <removal>^:src/lib.rs` rather than a
+          # hardcoded sha. A depth-1 checkout has no such history and the control panics
+          # ("the refusal constant must appear in history") — red on both platforms since
+          # the control landed, while the same lane is green on any full clone.
+          fetch-depth: 0
 
       # Pinned dev tools install into a dedicated root, NOT ~/.cargo/bin: caching
       # ~/.cargo/bin would archive and later restore the runner's own
