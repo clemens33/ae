@@ -9,3 +9,10 @@ test_tool = "nextest"
 # measured baseline run, so it scales with the suite instead of being a guess.
 timeout_multiplier = 5.0
 minimum_test_timeout = 20.0
+
+# The criterion-1 control (tests/it/cli.rs) DERIVES its phase-2 baseline from git history
+# (`git log -S` + `git show`) instead of a hardcoded sha. cargo-mutants runs the suite in a
+# copy of the tree that omits `.git` by default, so the control panicked there ("this control
+# needs git and the repository history to be present") and the lane exited 4 before any
+# mutant ran. Copying the VCS directory keeps the control honest inside the copy.
+copy_vcs = true
