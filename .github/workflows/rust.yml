@@ -59,6 +59,11 @@ on:
       - .github/workflows/rust.yml
   # The manual escape hatch: run the lanes against any ref regardless of paths.
   workflow_dispatch:
+    inputs:
+      mutants:
+        description: "Also run the FULL mutation lane (hours; 6 h budget). Dispatchable only once this file exists on the default branch."
+        type: boolean
+        default: false
 
 concurrency:
   group: rust-${{ github.ref }}
@@ -83,7 +88,10 @@ jobs:
   rust:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    # 45 minutes for a push or PR; 6 hours only for a manual dispatch that asks for the
+    # FULL mutation lane (mutants=true). Everything else in this job, the bounded
+    # per-push mutation step included, finishes well inside the first budget.
+    timeout-minutes: ${{ (github.event_name == 'workflow_dispatch' && inputs.mutants) && 360 || 45 }}
     strategy:
       # One platform's failure must not cancel the other's evidence — the whole
       # point of this matrix is proving BOTH natively.
@@ -227,10 +235,6 @@ jobs:
       - name: just rust-vet
         run: just rust-vet
 
-      # The lane that asks whether the tests discriminate. Run on both platforms:
-      # a mutant caught on macOS is not evidence about Linux.
-      - name: just rust-mutants
-        run: just rust-mutants
 
       # Native build only. The musl compile-smoke that used to live in this
       # recipe was removed at the first dependency: `ring` compiles C for the
@@ -393,3 +397,59 @@ jobs:
           path: target/x86_64-unknown-linux-musl/release/ae
           retention-days: 7
           if-no-files-found: error
+
+      # LAST, deliberately: everything above is evidence this job exists to produce
+      # (checks, supply chain, the native build, and on Linux the static musl binary and
+      # its DNS proof). The mutation lane below is bounded in SCOPE but not in TIME — a
+      # broad source change can still fill the 45-minute budget — so it runs only after
+      # that evidence is in, and a timeout here cancels nothing that matters.
+      # The lane that asks whether the tests discriminate. Run on both platforms:
+      # a mutant caught on macOS is not evidence about Linux. Per push it is BOUNDED
+      # to the mutants that touch the pushed range (cargo-mutants' incremental mode,
+      # --in-diff): the first full run in CI was cancelled by the 45-minute budget while
+      # still in src/archive.rs, and the step then sat BEFORE the musl steps, so an
+      # unbounded run starved the evidence after it — hence its place at the end now.
+      # The full lane stays available as
+      # a manual dispatch with mutants=true under the 6-hour budget — and a scheduled
+      # run is deliberately NOT declared: GitHub fires schedules (and lists dispatches)
+      # from the default branch only, where this file does not exist yet.
+      - name: just rust-mutants --in-diff (the pushed range)
+        if: github.event_name == 'push' || github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = pull_request ]; then
+            base="${{ github.event.pull_request.base.sha }}"
+          else
+            base="${{ github.event.before }}"
+          fi
+          # A new branch's first push has an all-zero 'before'; there is no range to bound
+          # to, and an unbounded run does not fit the budget — say so and skip, loudly.
+          if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ] || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
+            echo "::warning::mutation lane NOT RUN: no pushed range to bound it to (base='${base:-none}'); run the full lane by manual dispatch (mutants=true, once dispatchable)"
+            { echo '### Mutation lane: not run'; echo "No pushed range to bound the mutation step to (base='${base:-none}')."; } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          # KNOWN GAP, detected on its own and named wherever it bites: in-diff selects SOURCE
+          # mutants only, so a change to tests or to anything that shapes how tests run
+          # (Cargo, the toolchain pin, tool configs, the justfile, this workflow) can weaken
+          # a test — or drop a lane — while a previously caught mutant elsewhere survives,
+          # and the bounded run below cannot see it even when src/ changed too. Failing
+          # closed would need a runnable full lane, and none is reachable from this branch
+          # (dispatch and schedule fire from the default branch, where this file does not
+          # exist). Until that stub lands there, this step SAYS so, in an annotation and in
+          # the job summary; it does not pretend to be a gate. The inventory mirrors the
+          # workflow's own trigger paths minus src/.
+          infra='tests Cargo.toml Cargo.lock rust-toolchain.toml deny.toml clippy.toml taplo.toml supply-chain .cargo justfile .github/workflows/rust.yml'
+          # shellcheck disable=SC2086  # the inventory is a deliberate word list
+          if ! git diff --quiet "$base" "${{ github.sha }}" -- $infra; then
+            changed="$(git diff --name-only "$base" "${{ github.sha }}" -- $infra | tr '\n' ' ')"
+            echo "::warning::mutation lane GAP: the pushed range changes tests or test infrastructure ($changed) — in-diff cannot detect a weakened test or a dropped lane; run the full lane (manual dispatch, mutants=true, once dispatchable)"
+            { echo '### Mutation lane: known gap'; echo "The pushed range changes tests or test infrastructure: $changed"; echo 'The diff-bounded mutation step selects source mutants only, so a weakened test or a dropped lane is invisible to this job. Run the full lane by manual dispatch (mutants=true) once the workflow is dispatchable from the default branch.'; } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          git diff "$base" "${{ github.sha }}" -- src > "$RUNNER_TEMP/push.diff"
+          if [ ! -s "$RUNNER_TEMP/push.diff" ]; then echo "no Rust source change in the pushed range; nothing to mutate"; exit 0; fi
+          just rust-mutants --in-diff "$RUNNER_TEMP/push.diff"
+      - name: just rust-mutants (full lane, manual dispatch only)
+        if: github.event_name == 'workflow_dispatch' && inputs.mutants
+        run: just rust-mutants

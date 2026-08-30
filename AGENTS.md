@@ -243,7 +243,7 @@ is stale.
 | `just rust-lint` | `cargo clippy --locked --all-targets --all-features -- -D warnings` + `taplo lint` |
 | `just rust-test` | `cargo nextest run --locked` **and** `cargo test --doc --locked` |
 | `just rust-deny` | supply chain: advisories, licenses, bans, sources (`cargo deny --locked check`) |
-| `just rust-mutants` | does the suite discriminate, or does it merely pass? (`--cargo-arg=--locked`) |
+| `just rust-mutants` | does the suite discriminate, or does it merely pass? (`--cargo-arg=--locked`). CI runs it **bounded to the pushed range** per push (`--in-diff`, minutes); the full lane is a manual dispatch with `mutants=true` under a 6-hour budget — a full run is hours and never fit the push job (since 2026-08-30). **Known gap, named in the step:** in-diff selects source mutants only, so any change to tests or test infrastructure (Cargo, toolchain pin, tool configs, justfile, the workflow) can weaken a test or drop a lane unseen — with or without a `src/` change; the job detects that inventory first, annotates and summarises it, then still mutates any `src/` change. The mutation steps run LAST so a broad change cannot starve the musl evidence. Closing it needs a runnable full lane, i.e. a scheduler/dispatch stub on the default branch (`main`) — a decision for the human, since it touches the frozen branch. No schedule here: GitHub fires schedules from the default branch only |
 | `just rust-cov` | coverage **report**, not a gate |
 | `just rust-build-release` | native release binary (`--locked`) + foreign-target compile smoke |
 | `just rust-watch` | optional bacon loop; bacon is deliberately not part of the bootstrap |
@@ -393,7 +393,8 @@ The bootstrap contract, in full — nothing else is assumed to exist:
   pinned — with `fail-fast: false` so one platform's failure cannot cancel the other's
   evidence. Actions are first-party and SHA-pinned, version in a trailing comment.
 - **Proven by run 32350969851 (2026-08-20, green on both platforms):** bootstrap contract,
-  idempotence assert, all lanes, native `ae --version` + exit-code proof on real
+  idempotence assert, every push lane (the mutation lane is diff-bounded per push since
+  2026-08-30 — see the table), native `ae --version` + exit-code proof on real
   x86_64 Linux and arm64 macOS, and the **static musl binary built, run, and asserted
   static on Linux** (artifact `ae-linux-x86_64-musl`). **That run was zero-dependency: the
   musl target then linked on stock `ubuntu-24.04` with no extra packages.** That is no longer
