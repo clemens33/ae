@@ -1781,6 +1781,46 @@ assert_eq "helpers: launch paste delegates to the shared submit helper" \
     "1" \
     "$([[ "$AE_SOURCE" == *'ae_submit_pasted_message "$pane" "$tool" "$buf" "$text"'* ]] && echo 1 || echo 0)"
 
+# Claude and Codex must use the same bracketed-paste transport. Keep this guard
+# against the extracted function body so a branch can never silently regress to
+# plain tmux paste (the source-shape half of the Slice A regression test).
+_paste_submit_body="$(awk '/^ae_submit_pasted_message\(\) \{/,/^\}$/ ' <<<"$AE_SOURCE")"
+_paste_submit_call_count="$(awk '/tmux paste-buffer/ { n++ } END { print n + 0 }' <<<"$_paste_submit_body")"
+_paste_submit_unbracketed_count="$(awk '/tmux paste-buffer/ && $0 !~ / -p / { n++ } END { print n + 0 }' <<<"$_paste_submit_body")"
+assert_eq "helpers: submit has one bracketed paste invocation" \
+    "1" \
+    "$([[ "$_paste_submit_call_count" == 1 && "$_paste_submit_unbracketed_count" == 0 ]] && echo 1 || echo 0)"
+
+# Behavioral half: a fake tmux records argv, exercising the real Claude branch
+# and proving that the paste-buffer call carries -p at runtime.
+eval "$(awk '/^ae_submit_pasted_message\(\) \{/,/^\}$/ ' <<<"$AE_SOURCE")"
+_paste_tmux_args="$(
+    # shellcheck disable=SC2329  # invoked indirectly by ae_submit_pasted_message
+    _paste_still_staged() { return 1; }
+    _paste_tmux_dir="$(mktemp -d)"
+    trap 'rm -rf "$_paste_tmux_dir"' EXIT
+    _paste_tmux_log="$_paste_tmux_dir/argv"
+    cat >"$_paste_tmux_dir/tmux" <<'TMUX_STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$@" >>"${AE_TEST_TMUX_LOG:?}"
+if [[ "$1" == "load-buffer" ]]; then
+    cat >/dev/null
+fi
+TMUX_STUB
+    chmod 0755 "$_paste_tmux_dir/tmux"
+    AE_TEST_TMUX_LOG="$_paste_tmux_log" PATH="$_paste_tmux_dir:$PATH" \
+    ae_submit_pasted_message "%99" claude test-buffer "head\nbody" >/dev/null
+    awk '
+    $0 == "paste-buffer" { in_paste = 1 }
+    in_paste { print }
+    in_paste && $0 == "send-keys" { exit }
+' "$_paste_tmux_log"
+)"
+assert_eq "helpers: Claude paste-buffer uses bracketed mode" \
+    "1" \
+    "$([[ "$_paste_tmux_args" == *$'\n-p\n'* ]] && echo 1 || echo 0)"
+unset _paste_submit_body _paste_submit_call_count _paste_submit_unbracketed_count _paste_tmux_args
+
 # ── events.jsonl infrastructure ─────────────────────────────────────
 
 # _lib functions are top-level since the declare-f migration — extract directly.
@@ -9539,7 +9579,7 @@ assert_eq "#35: the body is staged from STDIN, never as a tmux command argument"
 # report success: nothing pasted, empty box, "delivered".
 assert_eq "#35: both transport steps are status-checked and fail loudly" "1" \
     "$([[ "$_asp" == *'paste transport FAILED'*'return 1'* \
-        && "$(printf '%s' "$_asp" | command grep -c 'paste FAILED into pane' || true)" == "2" ]] && echo 1 || echo 0)"
+        && "$(printf '%s' "$_asp" | command grep -c 'paste FAILED into pane' || true)" == "1" ]] && echo 1 || echo 0)"
 unset _asp
 # (2) An EMPTY body was accepted with rc 0 — the reviewer lost a whole verdict that
 #     way. Whitespace-only counts as empty; a body of spaces says as much as none.

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ae - agentic engineering: tmux-based multi-agent workspace
 set -euo pipefail
-AE_VERSION="0.2.21"
+AE_VERSION="0.2.22"
 
 # Fail fast with a clear message on bash < 4 (macOS ships 3.2 and defaults to
 # zsh). This must sit BEFORE any bash-4-only syntax is parsed — bash parses
@@ -13444,17 +13444,17 @@ ae_submit_pasted_message() {
         echo "ae: paste transport FAILED for pane ${pane} (${tool}) — could not stage ${#msg} bytes. Nothing was sent." >&2
         return 1
     fi
-    if [[ "$tool" == "codex" ]]; then
-        # Codex expects bracketed-paste mode for injected input.
-        if ! tmux paste-buffer -d -p -b "$buf" -t "$pane" 2>/dev/null; then
-            echo "ae: paste FAILED into pane ${pane} (${tool}) — nothing was sent." >&2
-            return 1
-        fi
-    else
-        if ! tmux paste-buffer -d -b "$buf" -t "$pane" 2>/dev/null; then
-            echo "ae: paste FAILED into pane ${pane} (${tool}) — nothing was sent." >&2
-            return 1
-        fi
+    # Bracketed paste is REQUESTED for every pane: tmux wraps the paste in bracket controls
+    # only when the receiving application enabled that mode, so a tool or shell that never
+    # asked sees a plain paste. Measured 2026-08-30 on claude: plain paste lost the head in
+    # 4/4 trials, bracketed paste 0/6 with receiver-side byte-exact payloads (evidence table:
+    # this change's commit message and the session memo). Completeness is measured for
+    # claude only; the tool-specific submission checks below verify each TUI's own signal.
+    if ! tmux paste-buffer -d -p -b "$buf" -t "$pane" 2>/dev/null; then
+        echo "ae: paste FAILED into pane ${pane} (${tool}) — nothing was sent." >&2
+        return 1
+    fi
+    if [[ "$tool" == "claude" ]]; then
         # Claude only: the orchestrator's 24-sample sweep (2026-07-15) found sends to IDLE
         # claude panes losing the Enter — the text stayed staged raw — while sends to
         # BUSY panes queued and delivered. The lead's fresh-pane repro did NOT

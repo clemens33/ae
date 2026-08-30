@@ -260,6 +260,19 @@ The on-disk `meta` and `events.jsonl` carry stable enough keys that newer code c
 
 `sync_session_assets` also sweeps a fixed list of orphans (`done`, `register-sid`, `messages.tsv`, `requests.tsv`) so renames and removals don't leave ghosts.
 
+## Message delivery transport
+
+Message bodies are staged through `tmux load-buffer` on stdin, then submitted with one
+shared `tmux paste-buffer -p` call. The `-p` is a request: tmux wraps the paste in bracket
+controls only when the receiving application has enabled bracketed-paste mode, so a TUI or
+shell that never asked sees a plain paste. Submission is then verified per tool — Claude's
+0.3-second settle and bounded Enter verification/retry loop, Codex's busy/staged detection —
+which cover submission timing, while the bracketed request covers the transport boundary
+for the tools that use it. A 2026-08-30 reproduction on Claude recorded plain-paste head loss in
+4/4 trials and bracketed-paste loss in 0/6, with receiver-side byte-exact payloads;
+completeness is measured for Claude only. The evidence table lives in this change's commit
+message (git log -1 for the commit that introduced -p) and in the session memo.
+
 ## Agent system prompt injection
 
 Every agent gets a workspace context injected into its system prompt at launch:
