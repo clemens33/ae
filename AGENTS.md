@@ -400,9 +400,10 @@ The bootstrap contract, in full — nothing else is assumed to exist:
   static on Linux** (artifact `ae-linux-x86_64-musl`). **That run was zero-dependency: the
   musl target then linked on stock `ubuntu-24.04` with no extra packages.** That is no longer
   true — the first dependency (`ring`, 2026-08-29) compiles C for the target, so the Linux leg
-  now installs `musl-tools`. A new green run re-proves the musl artifact under that step; until
-  it lands, the musl half of this proof is "configured, awaiting first run" again (see "The
-  linux target is musl" below).
+  now installs `musl-tools`. **Re-proven by run 33323387544 (2026-08-30, green on both
+  platforms):** the musl artifact built, linked, ran and asserted static-pie under that step,
+  and the `_net-probe` DNS proof ran on it for the first time (see "The linux target is
+  musl" below).
 - The bash-era lanes are deliberately **not** wired there yet (blocked on the gate-integrity
   issues #58/#67); adding them now would publish a red badge for a known, separately-tracked
   gap.
@@ -422,16 +423,20 @@ The bootstrap contract, in full — nothing else is assumed to exist:
   installs `musl-tools` for exactly this reason and is the only place musl can link anyway;
   (3) macOS no longer touches the target at all. The static proof itself is unchanged — no
   `PT_INTERP` in `readelf -l` (authoritative), `file` must say static and never "dynamically",
-  `ldd` informational — and its "configured, proven on first run after this lands" status
-  resets with the `musl-tools` step. Local musl checking now costs a cross toolchain; the
-  Linux CI leg is the proof of record.
+  `ldd` informational — and it was re-proven under the `musl-tools` step by run
+  33323387544 (2026-08-30). Local musl checking now costs a cross toolchain; the Linux CI
+  leg is the proof of record.
 - **NSS caveat — flagged for P4 (daemons), and now LIVE: the Telegram bridge resolves
   `api.telegram.org`.** musl has no NSS: user, group and host lookups do not consult
   `/etc/nsswitch.conf`, so `getpwuid`/`getaddrinfo` behave differently than under glibc —
   LDAP/SSSD-backed users and some resolver setups resolve differently or not at all. Tracer A
   is dormant (no live DNS yet), but wiring it (tracer B) makes a static-musl `getaddrinfo`
   against a real host the first place this can bite. The design's musl-DNS check (cost item 4)
-  could not run on the laptop — no musl toolchain — and is owed before the bridge goes live.
+  cannot run on the laptop — no musl toolchain — so it runs on the Linux CI leg: the static
+  musl binary's `_net-probe api.telegram.org` answered `ok 2` on `ubuntu-24.04` (run
+  33323387544, 2026-08-30), after a reserved `.invalid` name refused as the negative control.
+  That proves the plain `/etc/resolv.conf` path from a static musl binary, not an NSS-only
+  host (LDAP/SSSD/mDNS names) — the residual is host-specific and stays recorded here.
 
 ### Code shape
 

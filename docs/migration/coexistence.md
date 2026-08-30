@@ -2,9 +2,8 @@
 
 **Status:** scope ratified (five cross-model rounds) → built (items 1-7) → hardened through three
 cross-model code-review rounds (13 BLOCKER, 4 IMPORTANT, 3 NIT folded in; final verdict SHIP) →
-**landed on `rust-rewrite`** → **canary in progress** (2026-08-30: outcomes 1–2 PASS; 4 blocked on a
-Linux liveness bug found by CI (see the checklist); 3 awaits a test bot). Update this
-line as it moves.
+**landed on `rust-rewrite`** → **canary in progress** (2026-08-30: outcomes 1, 2 and 4 PASS;
+3 awaits a test bot — see the checklist). Update this line as it moves.
 
 ## Decision (binding, 2026-08-30)
 
@@ -213,14 +212,19 @@ All four outcomes, then no open blocker:
       **B** exclusive smoke with the live token: `ae telegram stop` → `ae-next telegram start`
       → `say` + a reply → `ae-next telegram stop` → `ae telegram start`. If the old bridge is
       still live, the guard refuses the start — that refusal is the test of the guard.
-- [ ] **musl DNS/NSS:** the CI Linux leg's `_net-probe` step is green; optionally the same
-      binary in `docker run --rm alpine` locally. *2026-08-30: the lane had been red on both
-      platforms since the first dependency landed. Three causes peeled so far: a history-deriving
-      control on a depth-1 checkout (fixed, `d42a6db2`); the same control inside cargo-mutants'
-      `.git`-less tree copy (fixed, `copy_vcs`); and — still open — the Linux leg fails
-      `tests/it/telegram.rs` "a pane that is present cannot be dead: No(Hard)" against a real
-      tmux server: a Linux liveness-classification bug in the core, under diagnosis. The probe
-      has not run yet; this outcome stays open until it does.*
+- [x] **musl DNS/NSS:** the CI Linux leg's `_net-probe` step is green; optionally the same
+      binary in `docker run --rm alpine` locally. *PASS 2026-08-30, run 33323387544 at
+      `dd38896d`, `ubuntu-24.04`: the static-pie musl `ae 0.2.23` answered
+      `_net-probe api.telegram.org` with `ok 2` (two addresses), after the reserved
+      `.invalid` negative control exited 1 as the step requires. The lane had been red on
+      both platforms since the first dependency landed; three causes were peeled before the
+      probe could run: a history-deriving control on a depth-1 checkout (`d42a6db2`), the
+      same control inside cargo-mutants' `.git`-less tree copy (`copy_vcs`, `3e44ad32`), and
+      a Linux liveness-classification bug — tmux 3.4 escapes the U+001F separator in `-F`
+      output, so a present pane read as "hard dead" (`dd38896d`). Scope of the proof: the
+      runner's resolver (systemd-resolved stub, `/etc/resolv.conf`) works from a static musl
+      binary; a host whose names resolve only through NSS modules (LDAP/SSSD, mDNS) is still
+      outside it — the AGENTS.md caveat stands as a host-specific residual, not a blocker.*
 
 ## Rollback
 
