@@ -187,6 +187,7 @@ backend switch.
 |---|---|
 | `~/.ae/telegram/tg_offset` | Durable inbound `getUpdates` cursor. Advances only *after* an update is durably routed — at-least-once (see **Replay safety**, above) |
 | `~/.ae/telegram/current_target` | The active `/use` inbound routing target |
+| `~/.ae/telegram/autostart-refusal` | Last autostart refusal as a fixed category (`aewatch-live`, `same-token-live`, `token-unreadable`, `probe-failed`, or `spawn-failed`) plus its UTC timestamp; retained after a later successful start |
 | `<session-meta>/telegram-outbound.cursor` | Per-session outbound forward cursor `(inode, byte_offset)`, written beside each session's `events.jsonl` so restarts don't replay events. There is deliberately **no** single global outbound file — progress is per session |
 | `~/.ae/telegram/control.lock` | Serializes `start` / `stop` / `supervise` so concurrent watchdogs across sessions don't fight |
 | `~/.config/ae/telegram-bot.token` | The Bot API token (chmod 600, owner-only) |
@@ -212,7 +213,7 @@ tmux attach -t ae-telegram                  # follow live (Ctrl-b d detaches)
 Likely causes: wrong `chat_id`, bot was blocked from the user side, network outage, or Telegram returned a 4xx (surfaced in the pane with the token redacted). Config-level problems (an unusable core, a bad token file) are caught up front by `ae telegram status` and `ae doctor`.
 
 **Daemon won't stay up**
-`ae telegram status` shows it not running. A startup refusal prints a single `ae: telegram: …` line to the `ae-telegram` pane before the daemon exits (missing/unreadable token file, wrong token permissions, no usable ae core, an uncreatable state dir). `ae doctor` (`telegram.core`, `telegram.token`) and `ae telegram status` name the common ones without attaching. Note the pane is **not** a persistent log — it dies with the tmux session, so catch a refusal live (attach, or re-run `ae telegram start` and inspect the pane).
+`ae telegram status` shows it not running. A startup refusal prints a single `ae: telegram: …` line to the `ae-telegram` pane before the daemon exits (missing/unreadable token file, wrong token permissions, no usable ae core, an uncreatable state dir). Autostart refusals are also persisted as a fixed redacted category and timestamp in `~/.ae/telegram/autostart-refusal`; `ae telegram status` and `ae doctor` show that last refusal even while the bridge is down. Note the pane is **not** a persistent log — it dies with the tmux session, so use the status/doctor row for the durable refusal record.
 
 **Two ae machines run the same bot**
 They'll fight over `getUpdates` (Telegram 409) and duplicate outbound messages. Use one bot per machine, or stop the daemon on the inactive host.
