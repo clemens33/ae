@@ -37,6 +37,9 @@ jobs:
           want="ae $version"
           got="$($bin --version)"
           [ "$got" = "$want" ] || { echo "::error::--version printed '$got', want '$want'"; exit 1; }
+          glue_version="$(grep -m1 '^AE_VERSION=' ae | cut -d'"' -f2)"
+          [ -n "$glue_version" ] || { echo "::error::ae AE_VERSION is empty"; exit 1; }
+          [ "$glue_version" = "$version" ] || { echo "::error::ae AE_VERSION is '$glue_version', want '$version'"; exit 1; }
 
           command -v readelf >/dev/null || { echo "::error::readelf is required"; exit 1; }
           headers="$(readelf -l "$bin")"
@@ -94,6 +97,9 @@ jobs:
           want="ae $version"
           got="$($bin --version)"
           [ "$got" = "$want" ] || { echo "::error::--version printed '$got', want '$want'"; exit 1; }
+          glue_version="$(grep -m1 '^AE_VERSION=' ae | cut -d'"' -f2)"
+          [ -n "$glue_version" ] || { echo "::error::ae AE_VERSION is empty"; exit 1; }
+          [ "$glue_version" = "$version" ] || { echo "::error::ae AE_VERSION is '$glue_version', want '$version'"; exit 1; }
           "$bin" _net-probe localhost >/dev/null
 
           root="ae-next-$version-darwin-arm64"

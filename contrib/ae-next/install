@@ -53,7 +53,7 @@ note() { echo "ae-next install: $*"; }
 #                   symlinked ROOT means everything below lands somewhere never
 #                   checked.
 _ae_next_home_reason() {
-    local home="$1" base parent rparent resolved legacy_parent legacy
+    local home="$1" cursor tail component rprefix resolved legacy_parent legacy probe next
     # The tilde is DELIBERATELY a literal here: this is the rule that REFUSES an
     # unexpanded one, so expanding it would delete the check.
     # shellcheck disable=SC2088
@@ -82,24 +82,74 @@ _ae_next_home_reason() {
             return 0
             ;;
     esac
+    # Trailing slashes make `link/` resolve through the symlink, so `-L` answers
+    # false. Strip them (keep a bare `/`) before the symlink test; do not refuse
+    # the slash itself — it is ordinary shell-completion.
+    if [ "$home" != "/" ]; then
+        while [ "$home" != "${home%/}" ]; do
+            home="${home%/}"
+        done
+        [ -n "$home" ] || home="/"
+    fi
     if [ -L "$home" ]; then
         echo "AE_NEXT_HOME must not itself be a symlink (an ancestor may be): $home"
         return 0
     fi
-    # Resolve the PARENT and re-append the name, so a home that does not exist
-    # yet is still comparable. `cd -P` is the portable resolver — `readlink -f`
+    # Resolve from the nearest EXISTING ancestor and re-append the unresolved
+    # tail. Resolving only the immediate parent misses `$HOME/.AE/a/b` when `a`
+    # does not exist yet: `cd -P` cannot canonicalise a missing parent, so the
+    # case-alias `.AE` never becomes `.ae` and `mkdir -p` then materialises
+    # inside the legacy tree. `cd -P` is the portable resolver — `readlink -f`
     # is GNU-only (AGENTS.md, GNU vs BSD userland).
-    base="$(basename "$home")"
-    parent="$(dirname "$home")"
-    rparent="$parent"
-    if [ -d "$parent" ]; then rparent="$(cd -P "$parent" && pwd)"; fi
-    resolved="$rparent/$base"
+    cursor="$home"
+    tail=""
+    while [ ! -d "$cursor" ] && [ "$cursor" != "/" ]; do
+        component="$(basename "$cursor")"
+        if [ -n "$tail" ]; then
+            tail="$component/$tail"
+        else
+            tail="$component"
+        fi
+        cursor="$(dirname "$cursor")"
+    done
+    if [ -d "$cursor" ]; then
+        rprefix="$(cd -P "$cursor" && pwd)"
+    else
+        rprefix="$cursor"
+    fi
+    if [ -n "$tail" ]; then
+        if [ "$rprefix" = "/" ]; then
+            resolved="/$tail"
+        else
+            resolved="$rprefix/$tail"
+        fi
+    else
+        resolved="$rprefix"
+    fi
     legacy_parent="$(dirname "$HOME/.ae")"
     if [ -d "$legacy_parent" ]; then legacy_parent="$(cd -P "$legacy_parent" && pwd)"; fi
     legacy="$legacy_parent/.ae"
-    if [ "$resolved" = "$legacy" ]; then
-        echo "AE_NEXT_HOME resolves to the legacy ae home ($legacy), the one tree this slice must never touch: $home"
-        return 0
+    case "$resolved" in
+        "$legacy" | "$legacy"/*)
+            echo "AE_NEXT_HOME resolves to the legacy ae home ($legacy), the one tree this slice must never touch: $home"
+            return 0
+            ;;
+    esac
+    # `cd -P` preserves the typed case on APFS (measured: `.AE` stays `.AE`
+    # in pwd), so the string compare cannot see a case-alias ancestor.
+    # Walk existing ancestors with `-ef` against the legacy home — that is
+    # what catches `.AE/a/b` when `a` does not exist yet.
+    if [ -d "$legacy" ]; then
+        probe="$cursor"
+        while [ -n "$probe" ] && [ "$probe" != "/" ]; do
+            if [ -d "$probe" ] && [ "$probe" -ef "$legacy" ]; then
+                echo "AE_NEXT_HOME resolves to the legacy ae home ($legacy), the one tree this slice must never touch: $home"
+                return 0
+            fi
+            next="$(dirname "$probe")"
+            [ "$next" = "$probe" ] && break
+            probe="$next"
+        done
     fi
     # The string comparison cannot see filesystem aliases such as a
     # case-insensitive spelling. When both homes exist, device+inode identity

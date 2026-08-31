@@ -10,6 +10,10 @@ set -euo pipefail
 
 REMOTE_REPOSITORY_DEFAULT="https://github.com/clemens33/ae"
 
+# Seeded config. Writer and rollback comparison read this same value — two
+# copies would drift silently, and rollback would stop recognising its own seed.
+_REMOTE_CONFIG_SEED=$'[telegram]\nenabled = false\n'
+
 remote_die() {
     echo "ae-next installer: $*" >&2
     return 1
@@ -601,6 +605,10 @@ remote_remove_created_dir() {
 
 remote_restore_symlink() {
     local path="$1" had="$2" target="$3" label="$4" tmp
+    if [ -d "$path" ] && [ ! -L "$path" ]; then
+        echo "ae-next installer: rollback cannot restore $label over a directory: $path" >&2
+        return 1
+    fi
     if ! rm -f "$path"; then
         echo "ae-next installer: rollback could not remove $label: $path" >&2
         return 1
@@ -618,6 +626,13 @@ remote_restore_symlink() {
 
 remote_restore_file() {
     local path="$1" had="$2" value="$3" label="$4" tmp
+    # lstat, do not follow: a directory at the destination makes `mv -f file dir`
+    # return 0 and nest the file, after which recovery reports success and
+    # deletes the journal having restored nothing.
+    if [ -d "$path" ] && [ ! -L "$path" ]; then
+        echo "ae-next installer: rollback cannot restore $label over a directory: $path" >&2
+        return 1
+    fi
     if [ "$had" -eq 0 ]; then
         if ! rm -f "$path"; then
             echo "ae-next installer: rollback could not remove $label: $path" >&2
@@ -629,7 +644,27 @@ remote_restore_file() {
         echo "ae-next installer: rollback could not stage $label: $path" >&2
         return 1
     }
-    if ! printf '%s\n' "$value" >"$tmp" || ! mv -f "$tmp" "$path"; then
+    if ! printf '%s\n' "$value" >"$tmp"; then
+        rm -f "$tmp" || true
+        echo "ae-next installer: rollback could not restore $label: $path" >&2
+        return 1
+    fi
+    # LOAD-BEARING. The directory refusal above lets a symlink through (`-L`
+    # first, do not follow). Measured: `mv -f file symlink-to-dir` returns 0
+    # and nests the file inside the target, leaving the symlink intact — the
+    # same silent-success / journal-deleted hole as a real directory. Refusing
+    # a real directory is not sufficient on its own; this rm is what closes
+    # the symlink case. Do not tidy it away because the following mv looks
+    # atomic. The non-atomic window (dest absent, then mv) fails loudly and
+    # preserves the journal; nesting reports success and deletes it.
+    if [ -e "$path" ] || [ -L "$path" ]; then
+        if ! rm -f "$path"; then
+            rm -f "$tmp" || true
+            echo "ae-next installer: rollback could not remove $label: $path" >&2
+            return 1
+        fi
+    fi
+    if ! mv -f "$tmp" "$path"; then
         rm -f "$tmp" || true
         echo "ae-next installer: rollback could not restore $label: $path" >&2
         return 1
@@ -658,9 +693,14 @@ remote_recover_journal() {
     if ! remote_restore_file "$_REMOTE_J_CORE_POINTER" "$_REMOTE_J_CORE_HAD" "$_REMOTE_J_CORE_OLD" core/current; then
         recovery_rc=1
     fi
-    if [ "$_REMOTE_J_CONFIG_HAD" -eq 0 ] && ! rm -f "$_REMOTE_J_CONFIG"; then
-        echo "ae-next installer: rollback could not remove seeded config: $_REMOTE_J_CONFIG" >&2
-        recovery_rc=1
+    if [ "$_REMOTE_J_CONFIG_HAD" -eq 0 ]; then
+        if [ -f "$_REMOTE_J_CONFIG" ] && [ ! -L "$_REMOTE_J_CONFIG" ] \
+            && printf '%s' "$_REMOTE_CONFIG_SEED" | cmp -s "$_REMOTE_J_CONFIG" -; then
+            if ! rm -f "$_REMOTE_J_CONFIG"; then
+                echo "ae-next installer: rollback could not remove seeded config: $_REMOTE_J_CONFIG" >&2
+                recovery_rc=1
+            fi
+        fi
     fi
     for ((index = ${#_REMOTE_J_CREATED[@]} - 1; index >= 0; index--)); do
         item="${_REMOTE_J_CREATED[$index]}"
@@ -755,7 +795,7 @@ remote_test_failure() {
 remote_main() {
     local platform requested version repository release_ref sums archive archive_path
     local root extracted version_dir versions core_root compat_dir current_pointer config link
-    local stage compat_stage file source core_version list_file entry temp pointer_target suffix
+    local stage compat_stage file source core_version glue_version list_file entry temp pointer_target suffix
     local home link_parent core_had=0 core_old="" current_had=0 current_old=""
     local link_had=0 link_old="" config_had=0
     remote_reset_state
@@ -829,11 +869,18 @@ remote_main() {
             return 1
         fi
     fi
-    [ "$requested" = "latest" ] && [ -n "${version:-}" ] || version="${version:-${archive#ae-next-}}"
-    if [ -z "${version:-}" ] || [[ "$version" == *-darwin-arm64.tar.gz || "$version" == *-linux-x86_64-musl.tar.gz ]]; then
+    if [ -z "${version:-}" ]; then
         version="${archive#ae-next-}"
         suffix="-$platform.tar.gz"
         version="${version%"$suffix"}"
+    fi
+    if ! remote_version_ok "$version"; then
+        remote_die "could not derive a CalVer version from $archive"
+        return 1
+    fi
+    if [ "$requested" != "latest" ] && [ "$requested" != "$version" ]; then
+        remote_die "AE_VERSION is $requested but the bundle is $version"
+        return 1
     fi
     archive="$(remote_archive_name "$version" "$platform")"
     remote_verify_checksum "$sums" "$archive_path" "$(basename "$archive_path")" || return 1
@@ -889,6 +936,16 @@ remote_main() {
     core_version="${core_version##* }"
     if [ "$core_version" != "$version" ]; then
         remote_die "archive core reports $core_version, expected $version"
+        return 1
+    fi
+    glue_version="$(grep -m1 '^AE_VERSION=' "$source/ae" | cut -d'"' -f2)"
+    [ -n "$glue_version" ] || {
+        remote_die "could not read AE_VERSION from archive glue"
+        return 1
+    }
+    if [ "$core_version" != "$glue_version" ]; then
+        remote_die "version mismatch: the core reports $core_version, ae is $glue_version.
+They move together. Rebuild the core, or bump AE_VERSION, Cargo.toml and Cargo.lock in one commit."
         return 1
     fi
 
@@ -1013,7 +1070,7 @@ remote_main() {
 
     if [ ! -e "$config" ]; then
         temp="$(mktemp "$home/.config.XXXXXX")"
-        printf '[telegram]\nenabled = false\n' >"$temp"
+        printf '%s' "$_REMOTE_CONFIG_SEED" >"$temp"
         mv "$temp" "$config"
     fi
 
@@ -1047,6 +1104,6 @@ remote_main() {
     echo "ae-next: installed $version for $platform under $version_dir"
 }
 
-if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+if [ "${BASH_SOURCE[0]:-$0}" = "$0" ]; then
     remote_main "$@"
 fi

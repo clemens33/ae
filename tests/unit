@@ -14735,6 +14735,18 @@ unset _calver_root _calver_real_git _calver_real_mv _calver_real_cp _calver_janu
     _calver_partial_backup _calver_partial_backup_before _calver_partial_backup_rc _calver_partial_backup_out \
     _calver_justfile
 
+# THE TWO VERSIONS MOVE TOGETHER. just bump updates both; this guard
+# catches a partial bump at `just check` time, before any tag exists.
+_ae_glue_version="$(grep -m1 '^AE_VERSION=' "$AE_BIN" | cut -d'"' -f2)"
+_cargo_pkg_version="$(grep -m1 '^version = "' "$(dirname "$AE_BIN")/Cargo.toml" | cut -d'"' -f2)"
+assert_eq "ae AE_VERSION equals Cargo.toml version" "$_ae_glue_version" "$_cargo_pkg_version"
+assert_eq "ae AE_VERSION is non-empty" "1" \
+    "$([[ -n "$_ae_glue_version" ]] && echo 1 || echo 0)"
+unset _ae_glue_version _cargo_pkg_version
+
+assert_eq "release workflow: both legs check frozen glue AE_VERSION against the tag" "2" \
+    "$(grep -cF "grep -m1 '^AE_VERSION=' ae" "$(dirname "$AE_BIN")/.github/workflows/release.yml" || true)"
+
 # ── ae-next remote installer ─────────────────────────────────────────
 # The installer has a guarded main, so its pure platform/version/checksum
 # functions can be sourced without downloading or touching a user's home.
@@ -14746,6 +14758,8 @@ assert_eq "remote installer sanity: checksum gate call remains present" "1" \
     "$([[ "$_remote_installer_source" == *'remote_verify_checksum "$sums" "$archive_path"'* ]] && echo 1 || echo 0)"
 assert_eq "remote installer sanity: unknown-platform refusal remains present" "1" \
     "$([[ "$_remote_installer_source" == *'unsupported platform:'* && "$_remote_installer_source" == *'*)'* ]] && echo 1 || echo 0)"
+assert_eq "remote installer sanity: stdin entry defaults BASH_SOURCE so curl|bash reaches main" "1" \
+    "$([[ "$_remote_installer_source" == *'${BASH_SOURCE[0]:-$0}'* ]] && echo 1 || echo 0)"
 
 _remote_r12_vocab_root="$(mktemp -d "${TMPDIR:-/tmp}/ae-r12-vocab.XXXXXX")"
 _remote_r12_vocab_journal="$_remote_r12_vocab_root/journal"
@@ -14767,9 +14781,12 @@ _REMOTE_JOURNAL=""
 
 _remote_home_reason_test() {
     local script="$1" label="$2" root case_variant distinct exact missing missing_root
+    local descendant case_deep symlink_desc slash_slink nested_ok slash_ok
     eval "$(awk '/^_ae_next_home_reason\(\) \{/,/^\}$/' "$script")"
     root="$(mktemp -d "${TMPDIR:-/tmp}/ae-home-reason.XXXXXX")"
-    mkdir -p "$root/.ae" "$root/.ae-next"
+    mkdir -p "$root/.ae" "$root/.ae-next" "$root/.ae/canary" "$root/other"
+    ln -s "$root/.ae" "$root/legacy-link"
+    ln -s "$root/other" "$root/slink"
     case_variant="$(HOME="$root" _ae_next_home_reason "$root/.AE")"
     if [ -d "$root/.AE" ]; then
         assert_eq "remote installer $label: case-insensitive identity branch refuses case variant" "1" \
@@ -14784,6 +14801,29 @@ _remote_home_reason_test() {
     exact="$(HOME="$root" _ae_next_home_reason "$root/.ae")"
     assert_eq "remote installer $label: exact legacy home remains refused" "1" \
         "$([[ "$exact" == *'AE_NEXT_HOME resolves to the legacy ae home'* ]] && echo 1 || echo 0)"
+    descendant="$(HOME="$root" _ae_next_home_reason "$root/.ae/canary")"
+    assert_eq "remote installer $label: direct legacy descendant is refused" "1" \
+        "$([[ "$descendant" == *'AE_NEXT_HOME resolves to the legacy ae home'* ]] && echo 1 || echo 0)"
+    case_deep="$(HOME="$root" _ae_next_home_reason "$root/.AE/a/b")"
+    if [ -d "$root/.AE" ]; then
+        assert_eq "remote installer $label: case-alias plus nonexistent intermediate is refused" "1" \
+            "$([[ "$case_deep" == *'AE_NEXT_HOME resolves to the legacy ae home'* ]] && echo 1 || echo 0)"
+    else
+        assert_eq "remote installer $label: case-sensitive distinct .AE/a/b is accepted" "1" \
+            "$([[ -z "$case_deep" ]] && echo 1 || echo 0)"
+    fi
+    symlink_desc="$(HOME="$root" _ae_next_home_reason "$root/legacy-link/x")"
+    assert_eq "remote installer $label: symlink-to-descendant is refused" "1" \
+        "$([[ "$symlink_desc" == *'AE_NEXT_HOME resolves to the legacy ae home'* ]] && echo 1 || echo 0)"
+    slash_slink="$(HOME="$root" _ae_next_home_reason "$root/slink/")"
+    assert_eq "remote installer $label: trailing-slash symlink to non-legacy is refused" "1" \
+        "$([[ "$slash_slink" == *'must not itself be a symlink'* ]] && echo 1 || echo 0)"
+    nested_ok="$(HOME="$root" _ae_next_home_reason "$root/.ae-next/x")"
+    assert_eq "remote installer $label: nested distinct home is accepted" "1" \
+        "$([[ -z "$nested_ok" ]] && echo 1 || echo 0)"
+    slash_ok="$(HOME="$root" _ae_next_home_reason "$root/.ae-next/")"
+    assert_eq "remote installer $label: trailing slash on a clean home is accepted" "1" \
+        "$([[ -z "$slash_ok" ]] && echo 1 || echo 0)"
     missing_root="$(mktemp -d "${TMPDIR:-/tmp}/ae-home-reason-missing.XXXXXX")"
     missing="$(HOME="$missing_root" _ae_next_home_reason "$missing_root/.ae")"
     assert_eq "remote installer $label: nonexistent exact legacy home uses string refusal" "1" \
@@ -14792,6 +14832,78 @@ _remote_home_reason_test() {
 }
 _remote_home_reason_test "$(dirname "$AE_BIN")/contrib/ae-next/ae-next" wrapper
 _remote_home_reason_test "$(dirname "$AE_BIN")/contrib/ae-next/install" checkout-installer
+assert_eq "ae-next and install keep _ae_next_home_reason byte-identical" \
+    "$(awk '/^_ae_next_home_reason\(\) \{/,/^\}$/' "$(dirname "$AE_BIN")/contrib/ae-next/ae-next")" \
+    "$(awk '/^_ae_next_home_reason\(\) \{/,/^\}$/' "$(dirname "$AE_BIN")/contrib/ae-next/install")"
+
+# Wrapper runtime pair check and recovery guidance (fixes 4 and 5).
+_wrap_pair_root="$(mktemp -d "${TMPDIR:-/tmp}/ae-wrap-pair.XXXXXX")"
+_wrap_pair_ver="$_wrap_pair_root/versions/2026.8.1"
+_wrap_pair_home="$_wrap_pair_root/home"
+mkdir -p "$_wrap_pair_ver" "$_wrap_pair_home/.ae-next/core"
+printf '#!/usr/bin/env bash\nprintf "ae 2026.8.1\\n"\n' >"$_wrap_pair_root/core"
+chmod +x "$_wrap_pair_root/core"
+printf '%s\n' "$_wrap_pair_root/core" >"$_wrap_pair_home/.ae-next/core/current"
+{
+    printf '#!/usr/bin/env bash\n'
+    printf 'AE_VERSION="2026.8.1"\n'
+    printf 'echo "ae $AE_VERSION"\n'
+} >"$_wrap_pair_ver/ae"
+chmod +x "$_wrap_pair_ver/ae"
+cp "$(dirname "$AE_BIN")/contrib/ae-next/ae-next" "$_wrap_pair_ver/ae-next"
+printf '#!/usr/bin/env bash\necho install-remote-ok\n' >"$_wrap_pair_ver/install-remote"
+chmod +x "$_wrap_pair_ver/ae-next" "$_wrap_pair_ver/install-remote"
+_wrap_pair_rc=0
+_wrap_pair_out="$(HOME="$_wrap_pair_home" "$_wrap_pair_ver/ae-next" --version 2>"$_wrap_pair_root/match.err")" || _wrap_pair_rc=$?
+assert_eq "ae-next wrapper: matching pair execs glue" "0" "$_wrap_pair_rc"
+assert_eq "ae-next wrapper: matching pair prints glue version" "ae 2026.8.1" "$_wrap_pair_out"
+_sed_i -e 's/^AE_VERSION=.*/AE_VERSION="2026.8.2"/' "$_wrap_pair_ver/ae"
+chmod +x "$_wrap_pair_ver/ae"
+_wrap_mis_rc=0
+set +e
+HOME="$_wrap_pair_home" "$_wrap_pair_ver/ae-next" --version \
+    >"$_wrap_pair_root/mis.out" 2>"$_wrap_pair_root/mis.err"
+_wrap_mis_rc=$?
+set -e
+assert_eq "ae-next wrapper: mismatched pair is refused" "2" "$_wrap_mis_rc"
+assert_eq "ae-next wrapper: mismatch names both versions" "1" \
+    "$(grep -F -c 'version mismatch: the core reports 2026.8.1, ae is 2026.8.2.' "$_wrap_pair_root/mis.err" || true)"
+assert_eq "ae-next wrapper: mismatch names they move together" "1" \
+    "$(grep -F -c 'They move together.' "$_wrap_pair_root/mis.err" || true)"
+
+rm -f "$_wrap_pair_home/.ae-next/core/current"
+_wrap_miss_rc=0
+set +e
+HOME="$_wrap_pair_home" "$_wrap_pair_ver/ae-next" --version \
+    >"$_wrap_pair_root/miss.out" 2>"$_wrap_pair_root/miss.err"
+_wrap_miss_rc=$?
+set -e
+assert_eq "ae-next wrapper bundle recovery: missing core is refused" "2" "$_wrap_miss_rc"
+_wrap_repair="$(awk '/^ae-next: run / { sub(/^ae-next: run /, ""); print; exit }' "$_wrap_pair_root/miss.err")"
+assert_eq "ae-next wrapper bundle recovery: names sibling install-remote" "1" \
+    "$([[ -n "$_wrap_repair" && "$_wrap_repair" -ef "$_wrap_pair_ver/install-remote" ]] && echo 1 || echo 0)"
+assert_eq "ae-next wrapper bundle recovery: named command is executable" "1" \
+    "$([[ -x "$_wrap_repair" ]] && echo 1 || echo 0)"
+
+_wrap_co_root="$(mktemp -d "${TMPDIR:-/tmp}/ae-wrap-co.XXXXXX")"
+mkdir -p "$_wrap_co_root/contrib/ae-next" "$_wrap_co_root/home/.ae-next"
+printf '#!/usr/bin/env bash\nAE_VERSION="2026.8.1"\necho "ae $AE_VERSION"\n' >"$_wrap_co_root/ae"
+chmod +x "$_wrap_co_root/ae"
+cp "$(dirname "$AE_BIN")/contrib/ae-next/ae-next" "$_wrap_co_root/contrib/ae-next/ae-next"
+chmod +x "$_wrap_co_root/contrib/ae-next/ae-next"
+_wrap_co_rc=0
+set +e
+HOME="$_wrap_co_root/home" "$_wrap_co_root/contrib/ae-next/ae-next" --version \
+    >"$_wrap_co_root/out" 2>"$_wrap_co_root/err"
+_wrap_co_rc=$?
+set -e
+assert_eq "ae-next wrapper checkout recovery: missing core is refused" "2" "$_wrap_co_rc"
+_wrap_co_dir="$(awk -F' in ' '/just next-install/ { print $2; exit }' "$_wrap_co_root/err")"
+assert_eq "ae-next wrapper checkout recovery: names just next-install" "1" \
+    "$(grep -F -c "run 'just next-install'" "$_wrap_co_root/err" || true)"
+assert_eq "ae-next wrapper checkout recovery: names the checkout root" "1" \
+    "$([[ -n "$_wrap_co_dir" && "$_wrap_co_dir" -ef "$_wrap_co_root" ]] && echo 1 || echo 0)"
+rm -rf "$_wrap_pair_root" "$_wrap_co_root"
 
 _remote_home_prepare_probe() {
     local root="$1" candidate="$2"
@@ -14913,6 +15025,7 @@ _remote_make_bundle() {
     mkdir -p "$dir"
     printf '#!/usr/bin/env bash\nprintf "ae %s\\n" --version\n' "$version" >"$dir/ae-core"
     cp "$AE_BIN" "$dir/ae"
+    _sed_i -e "s/^AE_VERSION=.*/AE_VERSION=\"${version}\"/" "$dir/ae"
     cp "$(dirname "$AE_BIN")/contrib/ae-next/ae-next" "$dir/ae-next"
     cp "$_remote_installer" "$dir/install-remote"
     chmod +x "$dir/ae-core" "$dir/ae" "$dir/ae-next" "$dir/install-remote"
@@ -14922,6 +15035,59 @@ _remote_make_bundle() {
 }
 _remote_make_bundle 2026.8.1 ae-next-2026.8.1-darwin-arm64
 _remote_make_bundle 2026.8.2 ae-next-2026.8.2-darwin-arm64
+assert_eq "remote installer fixture: 2026.8.1 glue AE_VERSION matches bundle" "2026.8.1" \
+    "$(grep -m1 '^AE_VERSION=' "$_remote_fixture/ae-next-2026.8.1-darwin-arm64/ae" | cut -d'"' -f2)"
+assert_eq "remote installer fixture: 2026.8.2 glue AE_VERSION matches bundle" "2026.8.2" \
+    "$(grep -m1 '^AE_VERSION=' "$_remote_fixture/ae-next-2026.8.2-darwin-arm64/ae" | cut -d'"' -f2)"
+
+# 7a: a bundle whose core and glue disagree must be refused. Inner layout and
+# basename stay 2026.8.1 so the pin matches and the glue check is what fires.
+_remote_mismatch_build="$_remote_fixture/glue-mismatch-build"
+mkdir -p "$_remote_mismatch_build" "$_remote_fixture/glue-mismatch"
+cp -R "$_remote_fixture/ae-next-2026.8.1-darwin-arm64" \
+    "$_remote_mismatch_build/ae-next-2026.8.1-darwin-arm64"
+_sed_i -e 's/^AE_VERSION=.*/AE_VERSION="2026.8.2"/' \
+    "$_remote_mismatch_build/ae-next-2026.8.1-darwin-arm64/ae"
+chmod +x "$_remote_mismatch_build/ae-next-2026.8.1-darwin-arm64/ae"
+tar -czf "$_remote_fixture/glue-mismatch/ae-next-2026.8.1-darwin-arm64.tar.gz" \
+    -C "$_remote_mismatch_build" "ae-next-2026.8.1-darwin-arm64"
+_remote_mismatch_digest="$(remote_sha256 "$_remote_fixture/glue-mismatch/ae-next-2026.8.1-darwin-arm64.tar.gz")"
+printf '%s  %s\n' "$_remote_mismatch_digest" "ae-next-2026.8.1-darwin-arm64.tar.gz" \
+    >"$_remote_fixture/glue-mismatch/SHA256SUMS"
+_remote_mismatch_home="$(mktemp -d "$_remote_fixture/glue-mismatch-home.XXXXXX")"
+_remote_mismatch_rc=0
+set +e
+(
+    set -e
+    HOME="$_remote_mismatch_home" AE_VERSION=2026.8.1 \
+        AE_NEXT_BUNDLE="$_remote_fixture/glue-mismatch/ae-next-2026.8.1-darwin-arm64.tar.gz" \
+        AE_NEXT_SUMS="$_remote_fixture/glue-mismatch/SHA256SUMS" remote_main
+) >"$_remote_mismatch_home/out" 2>"$_remote_mismatch_home/err"
+_remote_mismatch_rc=$?
+set -e
+assert_eq "remote installer 7a: core/glue mismatch is refused" "1" "$_remote_mismatch_rc"
+assert_eq "remote installer 7a: mismatch names both versions" "1" \
+    "$(grep -F -c 'version mismatch: the core reports 2026.8.1, ae is 2026.8.2.' "$_remote_mismatch_home/err" || true)"
+assert_eq "remote installer 7a: mismatch does not publish current" "0" \
+    "$([[ ! -e "$_remote_mismatch_home/.ae-next/current" ]] && echo 0 || echo 1)"
+
+# 7b: a pin that disagrees with the local bundle basename must be refused.
+_remote_pin_home="$(mktemp -d "$_remote_fixture/pin-mismatch-home.XXXXXX")"
+_remote_pin_rc=0
+set +e
+(
+    set -e
+    HOME="$_remote_pin_home" AE_VERSION=2026.8.1 \
+        AE_NEXT_BUNDLE="$_remote_fixture/ae-next-2026.8.2-darwin-arm64.tar.gz" \
+        AE_NEXT_SUMS="$_remote_fixture/ae-next-2026.8.2-darwin-arm64-SHA256SUMS" remote_main
+) >"$_remote_pin_home/out" 2>"$_remote_pin_home/err"
+_remote_pin_rc=$?
+set -e
+assert_eq "remote installer 7b: pin that disagrees with bundle basename is refused" "1" "$_remote_pin_rc"
+assert_eq "remote installer 7b: refusal names pin and bundle versions" "1" \
+    "$(grep -F -c 'AE_VERSION is 2026.8.1 but the bundle is 2026.8.2' "$_remote_pin_home/err" || true)"
+assert_eq "remote installer 7b: pin mismatch does not publish current" "0" \
+    "$([[ ! -e "$_remote_pin_home/.ae-next/current" ]] && echo 0 || echo 1)"
 _remote_home="$_remote_fixture/home"
 mkdir -p "$_remote_home"
 (
@@ -14963,13 +15129,72 @@ assert_eq "remote installer surface: trailing HOME uses fixed current path" \
 assert_eq "remote installer surface: trailing HOME uses fixed link path" \
     "$_remote_trailing_home/.ae-next/current/ae-next" \
     "$(readlink "$_remote_trailing_home/.local/bin/ae-next")"
+
+# File-path entry, stdin entry (the advertised curl|bash class), and source.
+# Sourcing must not run main — tests/unit calls remote_* directly after source.
+_remote_file_home="$(mktemp -d "$_remote_fixture/file-home.XXXXXX")"
+_remote_file_rc=0
+set +e
+(
+    set -euo pipefail
+    HOME="$_remote_file_home" AE_VERSION=2026.8.1 \
+        AE_NEXT_BUNDLE="$_remote_fixture/ae-next-2026.8.1-darwin-arm64.tar.gz" \
+        AE_NEXT_SUMS="$_remote_fixture/ae-next-2026.8.1-darwin-arm64-SHA256SUMS" \
+        "${BASH:-bash}" "$_remote_installer"
+) >"$_remote_file_home/out" 2>"$_remote_file_home/err"
+_remote_file_rc=$?
+set -e
+assert_eq "remote installer file entry: bash install-remote reaches main" "0" "$_remote_file_rc"
+assert_eq "remote installer file entry: current is published" \
+    "$_remote_file_home/.ae-next/versions/2026.8.1" \
+    "$(readlink "$_remote_file_home/.ae-next/current" 2>/dev/null || true)"
+assert_eq "remote installer file entry: command link is published" \
+    "$_remote_file_home/.ae-next/current/ae-next" \
+    "$(readlink "$_remote_file_home/.local/bin/ae-next" 2>/dev/null || true)"
+
+_remote_stdin_home="$(mktemp -d "$_remote_fixture/stdin-home.XXXXXX")"
+_remote_stdin_rc=0
+set +e
+(
+    set -euo pipefail
+    HOME="$_remote_stdin_home" AE_VERSION=2026.8.1 \
+        AE_NEXT_BUNDLE="$_remote_fixture/ae-next-2026.8.1-darwin-arm64.tar.gz" \
+        AE_NEXT_SUMS="$_remote_fixture/ae-next-2026.8.1-darwin-arm64-SHA256SUMS" \
+        "${BASH:-bash}" <"$_remote_installer"
+) >"$_remote_stdin_home/out" 2>"$_remote_stdin_home/err"
+_remote_stdin_rc=$?
+set -e
+assert_eq "remote installer stdin entry: curl|bash class reaches main" "0" "$_remote_stdin_rc"
+assert_eq "remote installer stdin entry: current is published" \
+    "$_remote_stdin_home/.ae-next/versions/2026.8.1" \
+    "$(readlink "$_remote_stdin_home/.ae-next/current" 2>/dev/null || true)"
+assert_eq "remote installer stdin entry: command link is published" \
+    "$_remote_stdin_home/.ae-next/current/ae-next" \
+    "$(readlink "$_remote_stdin_home/.local/bin/ae-next" 2>/dev/null || true)"
+
+_remote_source_home="$(mktemp -d "$_remote_fixture/source-home.XXXXXX")"
+_remote_source_rc=0
+set +e
+(
+    set -euo pipefail
+    HOME="$_remote_source_home"
+    # shellcheck source=/dev/null
+    source "$_remote_installer"
+) >"$_remote_source_home/out" 2>"$_remote_source_home/err"
+_remote_source_rc=$?
+set -e
+assert_eq "remote installer source: does not run main" "0" "$_remote_source_rc"
+assert_eq "remote installer source: does not publish current" "0" \
+    "$([[ ! -e "$_remote_source_home/.ae-next" ]] && echo 0 || echo 1)"
+
 _remote_live_rc=0
 _remote_live_output=""
 rm -rf "$_remote_fixture/ae-next-2026.8.1-darwin-arm64"
 _remote_live_output="$(HOME="$_remote_home" \
     "$_remote_home/.local/bin/ae-next" --version 2>/dev/null)" || _remote_live_rc=$?
 assert_eq "remote installer acceptance: deleting checkout does not affect a new ae-next session" "0" "$_remote_live_rc"
-assert_eq "remote installer acceptance: installed wrapper executes its bundled glue" "ae 2026.8.1" "$_remote_live_output"
+assert_eq "remote installer acceptance: installed wrapper executes its bundled glue" \
+    "ae 2026.8.1" "$_remote_live_output"
 _remote_failure_rc=0
 set +e
 (
@@ -15267,6 +15492,97 @@ assert_eq "remote installer r7: all-present journal preserves config" "existing-
     "$(cat "$_remote_r7_valid_home/config")"
 assert_eq "remote installer r7: all-present journal is removed after recovery" "0" \
     "$([[ ! -e "$_remote_r7_valid_journal" ]] && echo 0 || echo 1)"
+
+# Rollback deletes seeded config only while it still equals the compile-time
+# seed. Operator content is preserved; an untouched seed is still removed.
+_remote_r6_write_journal() {
+    local home="$1" journal="$2"
+    {
+        printf 'format=1\n'
+        printf 'version=2026.8.1\n'
+        printf 'home=%s\n' "$home"
+        printf 'core_pointer=%s/core/current\n' "$home"
+        printf 'core_had=0\ncore_old=\n'
+        printf 'current_pointer=%s/current\n' "$home"
+        printf 'current_had=0\ncurrent_old=\n'
+        printf 'link=%s/.local/bin/ae-next\nlink_had=0\nlink_old=\n' "$(dirname "$home")"
+        printf 'config=%s/config\nconfig_had=0\n' "$home"
+    } >"$journal"
+}
+_remote_r6_op_root="$(mktemp -d "$_remote_fixture/r6-op-config.XXXXXX")"
+_remote_r6_op_home="$_remote_r6_op_root/.ae-next"
+mkdir -p "$_remote_r6_op_home" "$_remote_r6_op_root/.local/bin"
+printf 'operator-owned config\n' >"$_remote_r6_op_home/config"
+_remote_r6_op_journal="$_remote_r6_op_home/.ae-next-install.journal"
+_remote_r6_write_journal "$_remote_r6_op_home" "$_remote_r6_op_journal"
+_remote_r6_op_rc=0
+set +e
+(
+    set -e
+    HOME="$_remote_r6_op_root" remote_recover_existing_journal "$_remote_r6_op_home"
+) >"$_remote_r6_op_root/out" 2>"$_remote_r6_op_root/err"
+_remote_r6_op_rc=$?
+set -e
+assert_eq "remote installer r6: operator config recovery succeeds" "0" "$_remote_r6_op_rc"
+assert_eq "remote installer r6: operator config is preserved" "operator-owned config" \
+    "$(cat "$_remote_r6_op_home/config")"
+assert_eq "remote installer r6: operator-config journal is removed" "0" \
+    "$([[ ! -e "$_remote_r6_op_journal" ]] && echo 0 || echo 1)"
+
+_remote_r6_seed_root="$(mktemp -d "$_remote_fixture/r6-seed-config.XXXXXX")"
+_remote_r6_seed_home="$_remote_r6_seed_root/.ae-next"
+mkdir -p "$_remote_r6_seed_home" "$_remote_r6_seed_root/.local/bin"
+printf '%s' "$_REMOTE_CONFIG_SEED" >"$_remote_r6_seed_home/config"
+_remote_r6_seed_journal="$_remote_r6_seed_home/.ae-next-install.journal"
+_remote_r6_write_journal "$_remote_r6_seed_home" "$_remote_r6_seed_journal"
+_remote_r6_seed_rc=0
+set +e
+(
+    set -e
+    HOME="$_remote_r6_seed_root" remote_recover_existing_journal "$_remote_r6_seed_home"
+) >"$_remote_r6_seed_root/out" 2>"$_remote_r6_seed_root/err"
+_remote_r6_seed_rc=$?
+set -e
+assert_eq "remote installer r6: seed config recovery succeeds" "0" "$_remote_r6_seed_rc"
+assert_eq "remote installer r6: untouched seed is removed" "0" \
+    "$([[ ! -e "$_remote_r6_seed_home/config" ]] && echo 0 || echo 1)"
+assert_eq "remote installer r6: seed-config journal is removed" "0" \
+    "$([[ ! -e "$_remote_r6_seed_journal" ]] && echo 0 || echo 1)"
+assert_eq "remote installer r6: writer and rollback share one seed" "3" \
+    "$(grep -cF '_REMOTE_CONFIG_SEED' "$_remote_installer" || true)"
+
+# Directory at core/current: mv -f file dir returns 0 and nests. Recovery must
+# fail AND keep the journal — a nonzero return that still deletes it is not a fix.
+_remote_f8_root="$(mktemp -d "$_remote_fixture/f8-core-dir.XXXXXX")"
+_remote_f8_home="$_remote_f8_root/.ae-next"
+mkdir -p "$_remote_f8_home/core/current" "$_remote_f8_root/.local/bin"
+_remote_f8_journal="$_remote_f8_home/.ae-next-install.journal"
+{
+    printf 'format=1\n'
+    printf 'version=2026.8.1\n'
+    printf 'home=%s\n' "$_remote_f8_home"
+    printf 'core_pointer=%s/core/current\n' "$_remote_f8_home"
+    printf 'core_had=1\ncore_old=%s/core/old/ae\n' "$_remote_f8_home"
+    printf 'current_pointer=%s/current\n' "$_remote_f8_home"
+    printf 'current_had=0\ncurrent_old=\n'
+    printf 'link=%s/.local/bin/ae-next\nlink_had=0\nlink_old=\n' "$_remote_f8_root"
+    printf 'config=%s/config\nconfig_had=1\n' "$_remote_f8_home"
+} >"$_remote_f8_journal"
+_remote_f8_rc=0
+set +e
+(
+    set -e
+    HOME="$_remote_f8_root" remote_recover_existing_journal "$_remote_f8_home"
+) >"$_remote_f8_root/out" 2>"$_remote_f8_root/err"
+_remote_f8_rc=$?
+set -e
+assert_eq "remote installer 8: directory at core/current is refused" "1" "$_remote_f8_rc"
+assert_eq "remote installer 8: refusal names a directory destination" "1" \
+    "$(grep -F -c 'rollback cannot restore core/current over a directory' "$_remote_f8_root/err" || true)"
+assert_eq "remote installer 8: journal is preserved" "1" \
+    "$([[ -f "$_remote_f8_journal" ]] && echo 1 || echo 0)"
+assert_eq "remote installer 8: core/current remains a directory" "1" \
+    "$([[ -d "$_remote_f8_home/core/current" && ! -L "$_remote_f8_home/core/current" ]] && echo 1 || echo 0)"
 
 # A journal cannot redirect recovery to an external command link. The fixed
 # HOME-derived destination is bound before any journal value can be used.
@@ -15669,10 +15985,13 @@ unset -f _remote_make_bundle remote_platform remote_detect_platform remote_selec
     remote_recover_journal remote_recover_existing_journal remote_atomic_symlink_replace remote_remove_created_dir \
     remote_path_components_ok remote_validate_bin_destination remote_version_ok remote_restore remote_test_failure remote_reset_state remote_main \
     _remote_r10_rm_victim_test _remote_r10_rmdir_refusal_test \
-    _ae_next_home_reason _ae_next_home_prepare _remote_home_reason_test _remote_home_prepare_probe _remote_home_prepare_test
+    _ae_next_home_reason _ae_next_home_prepare _remote_home_reason_test _remote_home_prepare_probe _remote_home_prepare_test \
+    _remote_r6_write_journal
 unset _remote_installer _remote_installer_source _remote_platform_rc _remote_version_rc _remote_fixture _remote_digest _remote_checksum_rc \
     _remote_tmp_root _remote_home _remote_old_current _remote_old_core _remote_mode _remote_pair_mode _remote_pair_file \
-    _remote_trailing_home _remote_trailing_rc _remote_live_rc _remote_live_output _remote_failure_rc \
+    _remote_trailing_home _remote_trailing_rc \
+    _remote_file_home _remote_file_rc _remote_stdin_home _remote_stdin_rc _remote_source_home _remote_source_rc \
+    _remote_live_rc _remote_live_output _remote_failure_rc \
     _remote_signal_boundary _remote_symlink_rc _remote_failure_err _remote_recovery_rc \
     _remote_fresh_mkdir_boundary \
     _remote_r4_journal_root _remote_r4_journal_home _remote_r4_journal _remote_r4_journal_rc \
@@ -15695,7 +16014,15 @@ unset _remote_installer _remote_installer_source _remote_platform_rc _remote_ver
     _remote_r10_positive_rmdir_core _remote_r10_positive_rmdir_local _remote_r10_positive_rmdir_bin \
     _remote_r10_positive_rmdir_journal _remote_r10_positive_rmdir_rc \
     _remote_r10_bad_version_root _remote_r10_bad_version_home _remote_r10_bad_version_journal \
-    _remote_r10_bad_version_rc
+    _remote_r10_bad_version_rc \
+    _wrap_pair_root _wrap_pair_ver _wrap_pair_home _wrap_pair_rc _wrap_pair_out \
+    _wrap_mis_rc _wrap_miss_rc _wrap_repair _wrap_co_root _wrap_co_rc _wrap_co_dir \
+    _remote_r6_op_root _remote_r6_op_home _remote_r6_op_journal _remote_r6_op_rc \
+    _remote_r6_seed_root _remote_r6_seed_home _remote_r6_seed_journal _remote_r6_seed_rc \
+    _REMOTE_CONFIG_SEED \
+    _remote_mismatch_build _remote_mismatch_digest _remote_mismatch_home _remote_mismatch_rc \
+    _remote_pin_home _remote_pin_rc \
+    _remote_f8_root _remote_f8_home _remote_f8_journal _remote_f8_rc
 
 # ── Results ──────────────────────────────────────────────────────────
 
