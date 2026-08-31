@@ -3444,6 +3444,269 @@ assert_eq "tg-autostart: enabled + daemon already running -> no second spawn" "n
 assert_eq "tg-autostart: disabled -> never spawns" "nospawn" "$(_tg_run false 1)"
 fi
 
+# ── telegram autostart refusal visibility: durable, redacted, dual surface ──
+if _itest_section 'telegram autostart refusal visibility'; then
+# Autostart callers discard stderr, so exercise the real autostart function with
+# a refusal carrying a token-shaped SHAPE and assert the only durable values are
+# the closed category, timestamp, and action. The bridge is down while status and
+# doctor read the global record, so no live Telegram credentials are needed.
+_TG_OBS_FNS="$TMPDIR/tg-observe-fns.sh"
+{
+    awk '/^_telegram_autostart_refusal_category\(\) \{/,/^\}$/' "$AE"
+    awk '/^_telegram_load_last_autostart_refusal\(\) \{/,/^\}$/' "$AE"
+    awk '/^_telegram_record_autostart_refusal\(\) \{/,/^\}$/' "$AE"
+    awk '/^_telegram_autostart_if_enabled\(\) \{/,/^\}$/' "$AE"
+} >"$_TG_OBS_FNS"
+_tg_obs_d="$(mktemp -d "$TMPDIR/tg-observe.XXXXXX")"
+mkdir -p "$_tg_obs_d/session" "$_tg_obs_d/sessions/fixture"
+printf '[telegram]\nenabled = true\n' >"$_tg_obs_d/config"
+_tg_obs_token='123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi'
+cat >"$_tg_obs_d/wrapper" <<WRAP
+#!/usr/bin/env bash
+set -euo pipefail
+export CONFIG_DIR="$_tg_obs_d"
+export CONFIG_FILE="$_tg_obs_d/config"
+export SESSIONS_DIR="$_tg_obs_d/sessions"
+export _AE_META_DIR="$_tg_obs_d/session"
+export SESSION=fixture
+source "$_TG_OBS_FNS"
+ae_emit_event() {
+    printf '{"action":"%s","target":"%s","summary":"%s"}\n' "\$1" "\$2" "\$4" >>"$_tg_obs_d/session/events.jsonl"
+}
+_telegram_intent_enabled() { echo true; }
+_telegram_intent_enabled_uncached() { echo true; }
+_telegram_daemon_running() { return 1; }
+_telegram_validate_token_file() { :; }
+_telegram_control_lock_file() { echo "$_tg_obs_d/control.lock"; }
+_telegram_spawn_daemon() {
+    printf 'coexistence refusal token=%s\n' "$_tg_obs_token" >&2
+    return 1
+}
+_telegram_autostart_if_enabled >/dev/null 2>&1
+WRAP
+chmod 0700 "$_tg_obs_d/wrapper"
+"$_tg_obs_d/wrapper"
+_tg_obs_record="$(<"$_tg_obs_d/telegram/autostart-refusal")"
+assert_eq "tg-observe: record is category + UTC timestamp only" "1" \
+    "$([[ "$_tg_obs_record" =~ ^(aewatch-live|same-token-live|token-unreadable|probe-failed|spawn-failed)$'\t'[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] && echo 1 || echo 0)"
+assert_eq "tg-observe: record excludes token-shaped refusal text" "1" \
+    "$([[ "$_tg_obs_record" != *"$_tg_obs_token"* && "$_tg_obs_record" != *'coexistence'* ]] && echo 1 || echo 0)"
+assert_eq "tg-observe: session event is emitted" "1" \
+    "$(grep -c '"action":"telegram_autostart_refused"' "$_tg_obs_d/session/events.jsonl" 2>/dev/null || true)"
+_tg_obs_event="$(<"$_tg_obs_d/session/events.jsonl")"
+assert_eq "tg-observe: session event excludes token-shaped refusal text" "1" \
+    "$([[ "$_tg_obs_event" != *"$_tg_obs_token"* && "$_tg_obs_event" != *'coexistence'* ]] && echo 1 || echo 0)"
+_tg_obs_status="$(AE_HOME="$_tg_obs_d" CONFIG_FILE="$_tg_obs_d/config" "$AE" telegram status 2>&1)"
+_tg_obs_doctor="$(AE_HOME="$_tg_obs_d" CONFIG_FILE="$_tg_obs_d/config" "$AE" doctor 2>&1 || true)"
+assert_eq "tg-observe: status surfaces last refusal with timestamp" "1" \
+    "$([[ "$_tg_obs_status" == *'last refusal=spawn-failed at '* && "$_tg_obs_status" != *"$_tg_obs_token"* ]] && echo 1 || echo 0)"
+assert_eq "tg-observe: doctor surfaces WARN category + timestamp" "1" \
+    "$([[ "$_tg_obs_doctor" == *'WARN  telegram.autostart'*'last refusal=spawn-failed at '* && "$_tg_obs_doctor" != *"$_tg_obs_token"* ]] && echo 1 || echo 0)"
+assert_eq "tg-observe: sink outputs exclude token-shaped value" "1" \
+    "$([[ "$_tg_obs_status" != *"$_tg_obs_token"* && "$_tg_obs_doctor" != *"$_tg_obs_token"* ]] && echo 1 || echo 0)"
+assert_eq "tg-observe: atomic writer leaves no temporary record" "0" \
+    "$(find "$_tg_obs_d/telegram" -maxdepth 1 -name 'autostart-refusal.tmp.*' -print | wc -l | tr -d '[:space:]')"
+rm -rf "$_tg_obs_d"
+unset _TG_OBS_FNS _tg_obs_d _tg_obs_record _tg_obs_event _tg_obs_status _tg_obs_doctor _tg_obs_token
+
+# Real seam coverage: the mapper sees a token-shaped unknown, the loader is fed
+# a hostile multiline row, and all five refusal decisions are driven through
+# the real guard/autostart branches. Only probe observations and validation are
+# fixtures; no category discriminator is stubbed.
+_TG_OBS_REAL_FNS="$TMPDIR/tg-observe-real-fns.sh"
+{
+    awk '/^_telegram_autostart_refusal_category\(\) \{/,/^\}$/' "$AE"
+    awk '/^_telegram_load_last_autostart_refusal\(\) \{/,/^\}$/' "$AE"
+    awk '/^_telegram_record_autostart_refusal\(\) \{/,/^\}$/' "$AE"
+    awk '/^_telegram_autostart_if_enabled\(\) \{/,/^\}$/' "$AE"
+    awk '/^_telegram_expand_path\(\) \{/,/^\}$/' "$AE"
+    awk '/^_telegram_coexistence_token\(\) \{/,/^\}$/' "$AE"
+    awk '/^_telegram_coexistence_same_bot\(\) \{/,/^\}$/' "$AE"
+    awk '/^_telegram_coexistence_guard\(\) \{/,/^\}$/' "$AE"
+} >"$_TG_OBS_REAL_FNS"
+_tg_obs_real_token='123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi'
+
+_tg_obs_real_case() {
+    local case_name="$1" expected="$2" root runtime record event status doctor
+    root="$(mktemp -d "$TMPDIR/tg-real.XXXXXX")"
+    runtime="$(mktemp -d "$TMPDIR/tg-runtime.XXXXXX")"
+    mkdir -p "$root/session" "$root/sessions/fixture" "$root/home/.ae"
+    printf '[telegram]\nenabled = true\ntoken_file = %s/current.token\n' "$root" >"$root/config"
+    printf '[telegram]\ntoken_file = %s/other.token\n' "$root" >"$root/home/.ae/config"
+    printf '%s\n' "$_tg_obs_real_token" >"$root/current.token"
+    chmod 600 "$root/current.token"
+    [[ "$case_name" == token-unreadable || "$case_name" == guard-token-unreadable ]] || {
+        printf '%s\n' "$_tg_obs_real_token" >"$root/other.token"
+        chmod 600 "$root/other.token"
+    }
+    cat >"$root/wrapper" <<WRAP
+#!/usr/bin/env bash
+set -euo pipefail
+export CONFIG_DIR="$root"
+export CONFIG_FILE="$root/config"
+export SESSIONS_DIR="$root/sessions"
+export _AE_META_DIR="$root/session"
+export _AE_SESSION=fixture
+export SESSION=fixture
+export HOME="$root/home"
+export AE_TELEGRAM_AUTOSTART_SESSION=fixture
+_TELEGRAM_TMUX_SESSION=ae-telegram
+source "$_TG_OBS_REAL_FNS"
+ae_emit_event() {
+    printf '{"action":"%s","target":"%s","summary":"%s"}\n' "\$1" "\$2" "\$4" >>"$root/session/events.jsonl"
+}
+get_config() {
+    case "\$CONFIG_FILE" in
+        "$root/config") printf '%s/current.token' "$root" ;;
+        "$root/home/.ae/config") printf '%s/other.token' "$root" ;;
+        *) return 0 ;;
+    esac
+}
+_telegram_intent_enabled() { echo true; }
+_telegram_intent_enabled_uncached() { echo true; }
+_telegram_daemon_running() { return 1; }
+_telegram_control_lock_file() { echo "$root/control.lock"; }
+_telegram_validate_token_file() {
+    if [[ "$case_name" == token-unreadable ]]; then
+        : >"$root/validation-refusal"
+        printf 'token validation failed: %s\n' "$_tg_obs_real_token" >&2
+        return 1
+    fi
+    return 0
+}
+_telegram_coexistence_probe() {
+    case "$case_name" in
+        aewatch-live) printf '%s\n' ae-aewatch; return 0 ;;
+        same-token-live|token-unreadable|guard-token-unreadable) printf '%s\n' ae-telegram; return 0 ;;
+        probe-failed) return 2 ;;
+        spawn-failed|unknown-category) return 1 ;;
+    esac
+}
+_telegram_spawn_daemon() {
+    if [[ "$case_name" == spawn-failed ]]; then
+        printf 'spawn refusal token=%s\n' "$_tg_obs_real_token" >&2
+        return 1
+    fi
+    _telegram_coexistence_guard
+}
+if [[ "$case_name" == unknown-category ]]; then
+    _telegram_record_autostart_refusal "$_tg_obs_real_token"
+else
+    export AE_TMUX_SERVER=named
+    _telegram_autostart_if_enabled >/dev/null 2>&1
+fi
+WRAP
+    chmod 700 "$root/wrapper"
+    "$root/wrapper" >/dev/null 2>&1
+    record="$(<"$root/telegram/autostart-refusal")"
+    event="$(<"$root/session/events.jsonl")"
+    status="$(AE_HOME="$root" CONFIG_FILE="$root/config" XDG_RUNTIME_DIR="$runtime" "$AE" telegram status 2>&1)"
+    doctor="$(AE_HOME="$root" CONFIG_FILE="$root/config" XDG_RUNTIME_DIR="$runtime" "$AE" doctor 2>&1 || true)"
+    assert_eq "tg-real[$case_name]: exact category in closed record" "1" \
+        "$([[ "$record" =~ ^(aewatch-live|same-token-live|token-unreadable|probe-failed|spawn-failed)$'\t'[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ && "$record" == "$expected"$'\t'* ]] && echo 1 || echo 0)"
+    assert_eq "tg-real[$case_name]: exact action/category event" "1" \
+        "$(grep -Fcx "{\"action\":\"telegram_autostart_refused\",\"target\":\"fixture\",\"summary\":\"category=$expected\"}" "$root/session/events.jsonl" 2>/dev/null || true)"
+    assert_eq "tg-real[$case_name]: event excludes token" "1" \
+        "$([[ "$event" != *"$_tg_obs_real_token"* ]] && echo 1 || echo 0)"
+    assert_eq "tg-real[$case_name]: record excludes token" "1" \
+        "$([[ "$record" != *"$_tg_obs_real_token"* ]] && echo 1 || echo 0)"
+    assert_eq "tg-real[$case_name]: status exposes category + timestamp" "1" \
+        "$([[ "$status" == *"last refusal=$expected at "* && "$status" != *"$_tg_obs_real_token"* ]] && echo 1 || echo 0)"
+    assert_eq "tg-real[$case_name]: doctor exposes category + timestamp" "1" \
+        "$([[ "$doctor" == *"WARN  telegram.autostart"* && "$doctor" == *"last refusal=$expected at "* && "$doctor" != *"$_tg_obs_real_token"* ]] && echo 1 || echo 0)"
+    case "$case_name" in
+        token-unreadable) assert_eq "tg-real[$case_name]: validation refusal branch fired" "1" "$([[ -f "$root/validation-refusal" ]] && echo 1 || echo 0)" ;;
+        guard-token-unreadable) assert_eq "tg-real[$case_name]: comparator refusal bypassed validation-failure branch" "0" "$([[ -f "$root/validation-refusal" ]] && echo 1 || echo 0)" ;;
+    esac
+    assert_eq "tg-real[$case_name]: no torn temp record" "0" \
+        "$(find "$root/telegram" -maxdepth 1 -name 'autostart-refusal.tmp.*' -print | wc -l | tr -d '[:space:]')"
+    rm -rf "$root" "$runtime"
+}
+
+# Mapper mutation control and all five real decisions.
+_tg_obs_real_case unknown-category spawn-failed
+_tg_obs_real_case aewatch-live aewatch-live
+_tg_obs_real_case same-token-live same-token-live
+_tg_obs_real_case token-unreadable token-unreadable
+_tg_obs_real_case guard-token-unreadable token-unreadable
+_tg_obs_real_case probe-failed probe-failed
+_tg_obs_real_case spawn-failed spawn-failed
+
+_tg_obs_hostile="$(mktemp -d "$TMPDIR/tg-hostile.XXXXXX")"
+mkdir -p "$_tg_obs_hostile/telegram"
+printf '[telegram]\nenabled = true\n' >"$_tg_obs_hostile/config"
+_tg_obs_hostile_check() {
+    local label="$1" row="$2" runtime status doctor
+    runtime="$(mktemp -d "$TMPDIR/tg-hostile-runtime.XXXXXX")"
+    printf '%b\n' "$row" >"$_tg_obs_hostile/telegram/autostart-refusal"
+    status="$(AE_HOME="$_tg_obs_hostile" CONFIG_FILE="$_tg_obs_hostile/config" XDG_RUNTIME_DIR="$runtime" "$AE" telegram status 2>&1)"
+    doctor="$(AE_HOME="$_tg_obs_hostile" CONFIG_FILE="$_tg_obs_hostile/config" XDG_RUNTIME_DIR="$runtime" "$AE" doctor 2>&1 || true)"
+    assert_eq "tg-real hostile[$label]: omitted from status" "1" \
+        "$([[ "$status" != *'last refusal='* && "$status" != *'free-text'* && "$status" != *"$_tg_obs_real_token"* ]] && echo 1 || echo 0)"
+    assert_eq "tg-real hostile[$label]: omitted from doctor" "1" \
+        "$([[ "$doctor" != *'telegram.autostart'* && "$doctor" != *'free-text'* && "$doctor" != *"$_tg_obs_real_token"* ]] && echo 1 || echo 0)"
+    rm -rf "$runtime"
+}
+# Isolate each malformed shape so early newline rejection cannot mask grammar.
+_tg_obs_hostile_check unknown-category $'123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi\t2026-08-31T00:00:00Z'
+_tg_obs_hostile_check invalid-timestamp $'spawn-failed\tnot-a-timestamp'
+_tg_obs_hostile_check multiline-valid-rows $'spawn-failed\t2026-08-31T00:00:00Z\naewatch-live\t2026-08-31T00:00:00Z'
+rm -rf "$_tg_obs_hostile"
+
+# Real-envelope regression: poison every ambient facet and require the writer to
+# bind actor, routing/body fields, and ledger path to fixed validated values.
+_TG_OBS_ENVELOPE_FNS="$TMPDIR/tg-observe-envelope-fns.sh"
+{
+    awk '/^_telegram_autostart_refusal_category\(\) \{/,/^\}$/' "$AE"
+    awk '/^_telegram_record_autostart_refusal\(\) \{/,/^\}$/' "$AE"
+    awk '/^ae_log_append\(\) \{/,/^\}$/' "$AE"
+    awk '/^ae_json_escape\(\) \{/,/^\}$/' "$AE"
+    awk '/^ae_sanitize_utf8\(\) \{/,/^\}$/' "$AE"
+    awk '/^ae_cap_summary\(\) \{/,/^\}$/' "$AE"
+    awk '/^ae_emit_event\(\) \{/,/^\}$/' "$AE"
+} >"$_TG_OBS_ENVELOPE_FNS"
+_tg_obs_envelope="$(mktemp -d "$TMPDIR/tg-envelope.XXXXXX")"
+mkdir -p "$_tg_obs_envelope/sessions/fixture" "$_tg_obs_envelope/decoy"
+_tg_obs_envelope_token='123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi'
+cat >"$_tg_obs_envelope/wrapper" <<WRAP
+#!/usr/bin/env bash
+set -euo pipefail
+export CONFIG_DIR="$_tg_obs_envelope"
+export CONFIG_FILE="$_tg_obs_envelope/config"
+export SESSIONS_DIR="$_tg_obs_envelope/sessions"
+export SESSION=fixture
+export AE_META="$_tg_obs_envelope/decoy"
+export _AE_META_DIR="$_tg_obs_envelope/decoy"
+export AE_SENDER_OVERRIDE="$_tg_obs_envelope_token"
+export _AE_EVENT_ACTOR_SLOT="$_tg_obs_envelope_token"
+export _AE_EVENT_ACTOR_SESSION="$_tg_obs_envelope_token"
+export _AE_EVENT_TARGET_SLOT="$_tg_obs_envelope_token"
+export _AE_EVENT_TARGET_SESSION="$_tg_obs_envelope_token"
+export _AE_LAST_BODY_FILE="$_tg_obs_envelope_token"
+source "$_TG_OBS_ENVELOPE_FNS"
+_telegram_record_autostart_refusal spawn-failed fixture
+WRAP
+chmod 700 "$_tg_obs_envelope/wrapper"
+"$_tg_obs_envelope/wrapper" >/dev/null 2>&1
+if [[ -f "$_tg_obs_envelope/sessions/fixture/events.jsonl" ]]; then
+    _tg_obs_envelope_event="$(<"$_tg_obs_envelope/sessions/fixture/events.jsonl")"
+else
+    _tg_obs_envelope_event=""
+fi
+_tg_obs_envelope_pattern='^\{"ts":"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z","actor":"ae","action":"telegram_autostart_refused","target":"fixture","summary":"category=spawn-failed"\}$'
+assert_eq "tg-real envelope: fixed fields only, actor sealed, token absent" "1" \
+    "$(grep -Ecx "$_tg_obs_envelope_pattern" "$_tg_obs_envelope/sessions/fixture/events.jsonl" 2>/dev/null || true)"
+assert_eq "tg-real envelope: poisoned token absent from intended event" "1" \
+    "$([[ "$_tg_obs_envelope_event" != *"$_tg_obs_envelope_token"* ]] && echo 1 || echo 0)"
+assert_eq "tg-real envelope: poisoned ambient routing/body fields absent" "1" \
+    "$([[ "$_tg_obs_envelope_event" != *'_AE_EVENT_'* && "$_tg_obs_envelope_event" != *'_AE_LAST_BODY_FILE'* ]] && echo 1 || echo 0)"
+assert_eq "tg-real envelope: ambient decoy ledger stays empty" "0" \
+    "$(find "$_tg_obs_envelope/decoy" -type f -print | wc -l | tr -d '[:space:]')"
+rm -rf "$_tg_obs_envelope"
+unset _TG_OBS_ENVELOPE_FNS _tg_obs_envelope _tg_obs_envelope_token _tg_obs_envelope_event _tg_obs_envelope_pattern
+unset _TG_OBS_REAL_FNS _tg_obs_real_token _tg_obs_hostile
+fi
+
 # ── lead-default Part 3: layout = lead-solo (real tmux windows) ───────
 if _itest_section 'lead-default Part 3: layout = lead-solo (real tmux windows)'; then
 cp "$HOME/.ae/config" "$HOME/.ae/config.ls-bak"

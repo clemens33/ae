@@ -484,6 +484,7 @@ Anything user- or agent-controlled (session names, goals, messages, pane text, c
 | Agent system prompts | the LLM (injection) | pane text and inter-agent messages are DATA, not instructions — see the orchestrator charter's injection boundary. The **agent's own alias:name** is interpolated into this sink too (#59's identity sentence), so it is allowlisted by `_validate_agent_name` at every creation boundary and re-checked, fail-quiet, at the interpolation site |
 | JSON emitters (`events.jsonl`, `list --json`) | JSON syntax | `_json_escape` / `_event_json_str`; strip control bytes at write time |
 | Telegram send | Telegram Markdown/JSON | moved OUT of bash at P4.3 — the outbound `sendMessage`, its escaping, and the inbound parse now live in the Rust core (`src/telegram.rs`); this table governs the bash glue, which no longer sends to Telegram. The former bash bridge piped data via stdin and never interpolated user text into a `jq` program; the Rust core owns those invariants now |
+| Telegram autostart refusal record (`~/.ae/telegram/autostart-refusal`) | Status/doctor display | Persist only the closed redacted category plus UTC timestamp; publish temp+`mv` in the same directory, and reject malformed rows before display |
 
 ### Isolation footguns (test/debug scripts)
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ae - agentic engineering: tmux-based multi-agent workspace
 set -euo pipefail
-AE_VERSION="0.2.24"
+AE_VERSION="0.2.25"
 
 # Fail fast with a clear message on bash < 4 (macOS ships 3.2 and defaults to
 # zsh). This must sit BEFORE any bash-4-only syntax is parsed — bash parses
@@ -9404,6 +9404,9 @@ cmd_doctor() {
         else
             doctor_report "OK" "telegram.intent" "enabled=false (feature off)"
         fi
+        if _telegram_load_last_autostart_refusal; then
+            doctor_report "WARN" "telegram.autostart" "last refusal=${_TELEGRAM_LAST_REFUSAL_CATEGORY} at ${_TELEGRAM_LAST_REFUSAL_TS}"
+        fi
     fi
 
     if [[ -n "$refresh_target" ]]; then
@@ -9478,6 +9481,90 @@ _TELEGRAM_CONTROL_LOCK="${CONFIG_DIR}/telegram/control.lock"
 _telegram_control_lock_file() {
     mkdir -p "${CONFIG_DIR}/telegram" 2>/dev/null || true
     printf '%s' "$_TELEGRAM_CONTROL_LOCK"
+}
+
+# The only refusal categories that may cross the autostart observability boundary.
+# Keep this closed: status/doctor and the durable record must never expose the
+# coexistence guard's free-text diagnostics or anything derived from a token.
+_telegram_autostart_refusal_category() {
+    case "${1:-}" in
+        aewatch-live | same-token-live | token-unreadable | probe-failed | spawn-failed)
+            printf '%s' "$1"
+            ;;
+        *)
+            printf '%s' "spawn-failed"
+            ;;
+    esac
+}
+
+# Read the last autostart refusal, if its whole line matches the closed record
+# grammar. A malformed or hand-edited record is ignored rather than echoed: the
+# reader must not turn an arbitrary value in this file into a status/doctor sink.
+# Results are globals because callers run this directly under errexit and the
+# category/timestamp are facts, not a display string to split again.
+_telegram_load_last_autostart_refusal() {
+    _TELEGRAM_LAST_REFUSAL_CATEGORY=""
+    _TELEGRAM_LAST_REFUSAL_TS=""
+    local file="${CONFIG_DIR}/telegram/autostart-refusal" raw tab pattern
+    [[ -f "$file" && -r "$file" ]] || return 1
+    raw="$(<"$file")" || return 1
+    # The atomic writer emits one newline-terminated record. Command substitution
+    # removes that final newline; any remaining newline means more than one row.
+    [[ "$raw" != *$'\n'* ]] || return 1
+    tab=$'\t'
+    pattern="^(aewatch-live|same-token-live|token-unreadable|probe-failed|spawn-failed)${tab}([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z)$"
+    [[ "$raw" =~ $pattern ]] || return 1
+    _TELEGRAM_LAST_REFUSAL_CATEGORY="${BASH_REMATCH[1]}"
+    _TELEGRAM_LAST_REFUSAL_TS="${BASH_REMATCH[2]}"
+    return 0
+}
+
+# Persist one refusal category and mirror it into the current session's event
+# ledger when a session context is available. The global record is deliberately
+# LAST-only and survives a later successful start; it is published temp+mv in the
+# same directory so status/doctor can never observe a torn row.
+_telegram_record_autostart_refusal() {
+    local category session now dir file tmp safe_session event_meta
+    category="$(_telegram_autostart_refusal_category "${1:-spawn-failed}")"
+    session="${2:-${AE_TELEGRAM_AUTOSTART_SESSION:-${SESSION:-}}}"
+    now="$(date -u +%FT%TZ)"
+    dir="${CONFIG_DIR}/telegram"
+    file="${dir}/autostart-refusal"
+    if mkdir -p "$dir" 2>/dev/null; then
+        tmp="${file}.tmp.$$"
+        if ! printf '%s\t%s\n' "$category" "$now" >"$tmp"; then
+            rm -f "$tmp" 2>/dev/null || true
+        elif ! mv "$tmp" "$file" 2>/dev/null; then
+            rm -f "$tmp" 2>/dev/null || true
+        fi
+    fi
+
+    # Session names are optional in the observability record and are never needed
+    # to identify the refusal. Validate before using one as an event target or a
+    # path component; legacy metadata must not become a new interpolation sink.
+    safe_session=""
+    if [[ "$session" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$ ]]; then
+        safe_session="$session"
+    fi
+    event_meta=""
+    if [[ -n "$safe_session" && -n "${SESSIONS_DIR:-}" ]]; then
+        event_meta="${SESSIONS_DIR}/${safe_session}"
+    fi
+    if [[ -n "$event_meta" && -d "$event_meta" ]]; then
+        # ae_emit_event owns JSON escaping and locking. Run it in a subshell so
+        # this best-effort observability path cannot leak a temporary meta-dir
+        # override into the caller. Bind every envelope facet here: this event is
+        # an ae fact, not an ambient caller/routing/body record, and never let an
+        # event failure block launch.
+        (
+            _AE_META_DIR="$event_meta"
+            _AE_SESSION="$safe_session"
+            AE_SENDER_OVERRIDE=ae
+            unset _AE_EVENT_ACTOR_SLOT _AE_EVENT_ACTOR_SESSION _AE_EVENT_TARGET_SLOT _AE_EVENT_TARGET_SESSION _AE_LAST_BODY_FILE
+            ae_emit_event "telegram_autostart_refused" "$safe_session" "" "category=$category"
+        ) || true
+    fi
+    return 0
 }
 
 # Resolve a possibly-tilde-prefixed path against $HOME. Patterns are
@@ -9689,8 +9776,15 @@ _telegram_coexistence_probe() {
 #   1 = provably different bots, so both may run
 _telegram_coexistence_same_bot() {
     local mine theirs
-    mine="$(_telegram_coexistence_token "$CONFIG_FILE")" || mine=""
-    theirs="$(_telegram_coexistence_token "$HOME/.ae/config")" || theirs=""
+    _TELEGRAM_COEXISTENCE_TOKEN_UNREADABLE=0
+    if ! mine="$(_telegram_coexistence_token "$CONFIG_FILE")"; then
+        mine=""
+        _TELEGRAM_COEXISTENCE_TOKEN_UNREADABLE=1
+    fi
+    if ! theirs="$(_telegram_coexistence_token "$HOME/.ae/config")"; then
+        theirs=""
+        _TELEGRAM_COEXISTENCE_TOKEN_UNREADABLE=1
+    fi
     if [[ -n "$mine" && -n "$theirs" && "$mine" != "$theirs" ]]; then
         return 1
     fi
@@ -9704,6 +9798,8 @@ _telegram_coexistence_same_bot() {
 # times, and two copies of a tri-state probe is two places for the tri-state to
 # be got wrong.
 _telegram_coexistence_guard() {
+    _TELEGRAM_COEXISTENCE_REFUSAL_CATEGORY=""
+    _TELEGRAM_COEXISTENCE_TOKEN_UNREADABLE=0
     # Only a named-server instance can be the SECOND bridge. The installed ae has
     # no AE_TMUX_SERVER and is never gated by its own coexistence guard.
     [[ -n "${AE_TMUX_SERVER:-}" ]] || return 0
@@ -9714,6 +9810,7 @@ _telegram_coexistence_guard() {
         return 0
     fi
     if ((rc != 0)); then
+        _TELEGRAM_COEXISTENCE_REFUSAL_CATEGORY="probe-failed"
         echo "ae telegram: cannot tell whether another ae instance's bridge is live on the default tmux server" >&2
         echo "ae telegram: refusing to start a second bridge on the same bot token: run 'ae telegram stop', or give ae-next a distinct bot token" >&2
         return 1
@@ -9731,6 +9828,7 @@ _telegram_coexistence_guard() {
     # sidecar is on OUR server.) Ordered before the token comparison because it
     # holds whoever's bot is configured.
     if ((found_aewatch == 1)); then
+        _TELEGRAM_COEXISTENCE_REFUSAL_CATEGORY="aewatch-live"
         echo "ae telegram: a retired aewatch sidecar is live on the default tmux server, and it kills competing bridges on every server. Stop it first: tmux kill-session -t ae-aewatch on the default server (or ae watchdog stop)" >&2
         return 1
     fi
@@ -9740,11 +9838,17 @@ _telegram_coexistence_guard() {
     if ! _telegram_coexistence_same_bot; then
         return 0
     fi
+    if (( _TELEGRAM_COEXISTENCE_TOKEN_UNREADABLE == 1 )); then
+        _TELEGRAM_COEXISTENCE_REFUSAL_CATEGORY="token-unreadable"
+    else
+        _TELEGRAM_COEXISTENCE_REFUSAL_CATEGORY="same-token-live"
+    fi
     echo "ae telegram: another ae instance's Telegram bridge is live on the default tmux server with the same bot token: run 'ae telegram stop', or give ae-next a distinct bot token" >&2
     return 1
 }
 
 _telegram_spawn_daemon() {
+    _TELEGRAM_COEXISTENCE_REFUSAL_CATEGORY=""
     # Every failure below RETURNS, and the function ends with an explicit 0.
     # Previously the write was unchecked, new-session's rc was discarded, and a
     # trailing `|| true` on a cosmetic tmux call forced rc 0 — so the caller's
@@ -9905,11 +10009,13 @@ _telegram_autostart_if_enabled() {
     # already decides. A second gate here would duplicate that judgement and
     # drift from it. An unusable core reaches the caller as a failed spawn, and
     # the warn-and-continue tail below is where it surfaces.
-    local token_file err lock
+    local token_file err lock refusal_category autostart_session
+    autostart_session="${AE_TELEGRAM_AUTOSTART_SESSION:-${SESSION:-}}"
     token_file="$(get_config telegram.token_file 2>/dev/null || true)"
     if err="$(_telegram_validate_token_file "$token_file" 2>&1)"; then
         : # ok
     else
+        _telegram_record_autostart_refusal "token-unreadable" "$autostart_session"
         echo "ae telegram: skipped autostart — $err" >&2
         return 0
     fi
@@ -9926,6 +10032,8 @@ _telegram_autostart_if_enabled() {
         [[ "$(_telegram_intent_enabled_uncached)" == "true" ]] || return 0
         _telegram_daemon_running && return 0
         if ! _telegram_spawn_daemon 2>/dev/null; then
+            refusal_category="${_TELEGRAM_COEXISTENCE_REFUSAL_CATEGORY:-spawn-failed}"
+            _telegram_record_autostart_refusal "$refusal_category" "$autostart_session"
             echo "ae telegram: autostart failed (continuing without bridge)" >&2
         fi
     } 9>"$lock"
@@ -10088,6 +10196,9 @@ cmd_telegram_status() {
     echo "  intent:  enabled=$intent (in $CONFIG_FILE)"
     echo "  backend: ae core (state in $CONFIG_DIR/telegram)"
     echo "  runtime: daemon $runtime (tmux session $_TELEGRAM_TMUX_SESSION)"
+    if _telegram_load_last_autostart_refusal; then
+        echo "  autostart: last refusal=${_TELEGRAM_LAST_REFUSAL_CATEGORY} at ${_TELEGRAM_LAST_REFUSAL_TS}"
+    fi
     local core=""
     if core="$(_ae_core_bin_input)" &&
         [[ "$core" == /* && -x "$core" ]] &&
@@ -16147,6 +16258,7 @@ helper_watchdog_main() {
                 if ((now_epoch - last_tg_supervise >= TG_SUPERVISE_SECS)); then
                     last_tg_supervise=$now_epoch
                     tg_srv="$(grep '^tmux_server=' "${META_DIR}/meta" 2>/dev/null | cut -d= -f2- || true)"
+                    export AE_TELEGRAM_AUTOSTART_SESSION="$_AE_SESSION"
                     if [[ -n "$tg_srv" ]]; then
                         AE_TMUX_SERVER="$tg_srv" "$AE_PATH_BIN" telegram _supervise >/dev/null 2>&1 || true
                     else
@@ -16740,6 +16852,7 @@ helper_watchdog_main() {
                 # otherwise it'd hit the default server and `ae telegram stop` under
                 # the intended server would miss it.
                 tg_srv="$(grep '^tmux_server=' "$META_DIR/meta" 2>/dev/null | cut -d= -f2- || true)"
+                export AE_TELEGRAM_AUTOSTART_SESSION="$_AE_SESSION"
                 if [[ -n "$tg_srv" ]]; then
                     AE_TMUX_SERVER="$tg_srv" "$AE_PATH_BIN" telegram _supervise >/dev/null 2>&1 || true
                 else

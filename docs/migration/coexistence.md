@@ -109,10 +109,11 @@ underneath the sessions that pinned it; the integration suite hit exactly that a
    appeared meanwhile with the same (or an unreadable) token, it kills **its own** bridge and
    refuses. Residual, accepted: a window of seconds in which both may poll, bounded by the
    re-check. Visibility: the refusal is loud for `telegram start` and visible in `telegram
-   status`/`doctor` (the bridge is simply not running); at autostart (launch, `_supervise`) it is
-   currently SILENT — every autostart call site discards stderr, a pre-existing property of all
-   autostart failures, recorded as a follow-up (surface refusals through `status`/`doctor` or an
-   event). Functionally benign for the same-token case: the default-server bridge keeps serving.
+   status`/`doctor` (the bridge is simply not running). Autostart (launch, `_supervise`) now
+   records the fixed redacted category and timestamp in `~/.ae/telegram/autostart-refusal`,
+   emits `telegram_autostart_refused` in the current session's `events.jsonl`, and surfaces
+   the last record through `status`/`doctor` even while the bridge is down. Functionally benign
+   for the same-token case: the default-server bridge keeps serving.
 4. **Core: `ae _net-probe <host> [--port N]`** — resolves `host:port` with
    `std::net::ToSocketAddrs`; prints `ok <n>` or `error: <class>`; exit 0/1; no TLS, no token.
    The musl DNS/NSS instrument. A core behavior change → **version `0.2.21`** (`AE_VERSION`,
