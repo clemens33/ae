@@ -5,7 +5,9 @@
 # It installs an IMMUTABLE copy of the Rust core under $AE_HOME/core/<version>/,
 # publishes that path as $AE_HOME/core/current, seeds $AE_HOME/config with every
 # Telegram credential stripped, and symlinks ~/.local/bin/ae-next at the tracked
-# wrapper. AE_HOME here is ~/.ae-next (or AE_NEXT_HOME), never ~/.ae.
+# wrapper. AE_HOME here is ~/.ae-next by default; AE_NEXT_HOME is an advanced
+# coexistence runtime override, never ~/.ae. This surface is separate from
+# install-remote's fixed publication paths.
 #
 # It never writes ~/.ae, never writes ~/.local/bin/ae, and never edits the repo's
 # `install` script. That is the whole point of the slice: the installed ae keeps
@@ -99,6 +101,13 @@ _ae_next_home_reason() {
         echo "AE_NEXT_HOME resolves to the legacy ae home ($legacy), the one tree this slice must never touch: $home"
         return 0
     fi
+    # The string comparison cannot see filesystem aliases such as a
+    # case-insensitive spelling. When both homes exist, device+inode identity
+    # is authoritative: AE_NEXT_HOME must not resolve to the legacy ae home.
+    if [ -d "$home" ] && [ -d "$HOME/.ae" ] && [ "$home" -ef "$HOME/.ae" ]; then
+        echo "AE_NEXT_HOME resolves to the legacy ae home under a different spelling: $home"
+        return 0
+    fi
     return 0
 }
 
@@ -152,6 +161,27 @@ _require_regular_or_absent() {
     if [ -e "$1" ] && [ ! -f "$1" ]; then die "$2 is not a regular file: $1"; fi
 }
 
+_ae_next_home_prepare() {
+    local home="$1" existed=0 reason
+    if [ -e "$home" ] || [ -L "$home" ]; then existed=1; fi
+    if [ "$existed" -eq 0 ] && ! mkdir -p "$home"; then
+        echo "could not create AE_NEXT_HOME root: $home"
+        return 1
+    fi
+    # Re-run the complete home validator after creating only the root. This is
+    # the first point where a fresh case-variant can be classified by -ef.
+    reason="$(_ae_next_home_reason "$home")"
+    if [ -n "$reason" ]; then
+        if [ "$existed" -eq 0 ] && ! rmdir "$home"; then
+            echo "AE_NEXT_HOME resolves to the legacy ae home under another spelling, and the newly-created root could not be removed: $home"
+            return 1
+        fi
+        echo "$reason"
+        return 1
+    fi
+    return 0
+}
+
 # ── Where things are ─────────────────────────────────────────────────────────
 
 # The repo, resolved from this script's REAL location. Symlink-safe without
@@ -183,6 +213,11 @@ _reason="$(_ae_next_home_reason "$AE_NEXT_HOME")"
 # and a working install whose command refuses on every launch.
 _reason="$(_ae_next_server_reason "${AE_NEXT_TMUX_SERVER:-ae-next}")"
 [ -z "$_reason" ] || die "$_reason"
+
+# Classify the candidate root before any child (core, pointer, config, or
+# version) can be created. A fresh alias is ours to remove; a pre-existing one
+# is never removed by this installer.
+_reason="$(_ae_next_home_prepare "$AE_NEXT_HOME")" || die "$_reason"
 
 CORE_ROOT="$AE_NEXT_HOME/core"
 CURRENT="$CORE_ROOT/current"

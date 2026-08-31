@@ -17,6 +17,21 @@ curl -fsSL https://raw.githubusercontent.com/clemens33/ae/main/install | bash
 
 This clones the repo into `~/.local/share/ae` and symlinks `~/.local/share/ae/ae` to `~/.local/bin/ae`. Make sure `~/.local/bin` is on your `PATH`.
 
+## Prebuilt ae-next (rewrite branch)
+
+To install the Rust rewrite beside the frozen command, use the standalone
+installer:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/clemens33/ae/rust-rewrite/contrib/ae-next/install-remote | bash
+```
+
+It supports macOS Apple Silicon (`darwin-arm64`) and Linux x86_64, including
+WSL2. Intel macOS, Linux ARM, and Windows/MSYS are rejected. The bundle and
+`SHA256SUMS` are downloaded to temporary files and verified before extraction;
+the complete core/glue/wrapper pair is then published atomically under
+`~/.ae-next`. Set `AE_VERSION=2026.8.1` to pin a release.
+
 ## From a local clone
 
 ```bash

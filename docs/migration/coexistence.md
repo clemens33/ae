@@ -14,8 +14,8 @@ A second command, **`ae-next`**, runs the `rust-rewrite` hybrid (bash glue + Rus
 
 | Rule | Shape |
 |---|---|
-| Isolated state | `AE_HOME=~/.ae-next` — config, sessions, archive, worktrees, locks, Telegram offset. The wrapper also pins `CONFIG_FILE=$AE_HOME/config`, so an inherited `CONFIG_FILE` cannot redirect it |
-| Isolated tmux | named server `ae-next` (`AE_TMUX_SERVER=ae-next`, kind `name`); a second instance takes another name via `AE_NEXT_TMUX_SERVER` with its own `AE_NEXT_HOME` — parallel canaries. **The overrides cannot alias the installed instance**: the name `default` and a home that resolves to `~/.ae` (or whose final root is a symlink) are refused by installer and wrapper alike |
+| Isolated state | remote install fixed `~/.ae-next` — config, sessions, archive, worktrees, locks, Telegram offset. The shipped wrapper and checkout installer also expose `AE_NEXT_HOME` as an advanced coexistence runtime override; the wrapper pins `CONFIG_FILE=$AE_HOME/config`, so an inherited `CONFIG_FILE` cannot redirect it |
+| Isolated tmux | named server `ae-next` (`AE_TMUX_SERVER=ae-next`, kind `name`) |
 | Immutable core | installed at `$AE_HOME/core/<version>/ae`, directory and binary `0555` (`$AE_HOME/core/` itself stays writable so the next version can be added); **never `target/release` in place** |
 | Core authority | **next-owned and persistent**: the installer writes `$AE_HOME/core/current` (one line, an expanded absolute path), and `ae` itself reads it — `_ae_core_bin_input` resolves `AE_CORE_BIN` → `$CONFIG_DIR/core/current` → `workspace.core`. Because `AE_HOME` already propagates to every re-entry (launch env, `tmux set-environment`, the compact child command, helper and watchdog re-exec of `ae_path`), every path resolves the intended immutable version with **no environment to go stale**. The wrapper unsets `AE_CORE_BIN` and never exports it. On the wrapper path no config source can repoint the core, because the wrapper refuses to run unless `core/current` names an absolute executable; `ae` itself falls through to `workspace.core` only when the pointer is absent or unusable (missing, relative, symlinked), and the installer never writes that key |
 | Ownership | a session is managed only by the command that created it — structurally, since neither command can see the other's state dir or server |
@@ -46,7 +46,9 @@ underneath the sessions that pinned it; the integration suite hit exactly that a
 1. **`contrib/ae-next/ae-next`** — the tracked wrapper (bash, shellcheck-covered), symlinked as
    `~/.local/bin/ae-next`. It:
    - sets `AE_HOME="${AE_NEXT_HOME:-$HOME/.ae-next}"` and `CONFIG_FILE="$AE_HOME/config"`
-     (overriding anything inherited);
+     (overriding anything inherited). `AE_NEXT_HOME` is an advanced coexistence runtime
+     override shipped in the wrapper, separate from install-remote's fixed publication paths,
+     and is recorded for P5 retirement;
    - sets `AE_TMUX_SERVER="${AE_NEXT_TMUX_SERVER:-ae-next}"`, `AE_TMUX_SERVER_KIND=name`;
    - **unsets `AE_CORE_BIN`** (one warning to stderr when it was set) and never exports it: the
      core comes from `$AE_HOME/core/current` through `ae` itself, so nothing env-borne can go
@@ -55,8 +57,8 @@ underneath the sessions that pinned it; the integration suite hit exactly that a
      `just next-install`;
    - `exec`s the repo's `ae "$@"`, located relative to the wrapper's real location with the
      `install` script's symlink-safe, BSD-safe idiom (no `readlink -f`).
-2. **`contrib/ae-next/install`** — idempotent, run as `just next-install`; every path below
-   honours `AE_NEXT_HOME`:
+2. **`contrib/ae-next/install`** — idempotent, run as `just next-install`; every installed
+   path is derived from the user's home:
    - the core: `cargo build --release --locked`, or a prebuilt binary via
      `AE_NEXT_CORE_BIN=<path>` (tests, CI artifacts); read its `--version` → `VER`; refuse
      unless `VER` equals `AE_VERSION` in `ae` (they move together);
@@ -70,11 +72,7 @@ underneath the sessions that pinned it; the integration suite hit exactly that a
      written (the core has exactly one source: `core/current`);
    - symlink `~/.local/bin/ae-next` → the wrapper;
    - never writes `~/.ae`, `~/.local/bin/ae`, or the `install` script;
-   - hardening (second cross-model review + delta review): `AE_NEXT_HOME` must be absolute,
-     contain no `.` or `..` component (a non-existent intermediate defeats path resolution, so
-     `~/missing/../.ae` would alias the installed home), must not resolve to `~/.ae`, and its
-     final root must not be a symlink — the wrapper checks the same rules, byte-identical, so an
-     install can never become a run-refusal; `AE_NEXT_TMUX_SERVER` must match the session-name
+   - hardening (second cross-model review + delta review): `AE_NEXT_TMUX_SERVER` must match the session-name
      grammar (`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$` — no slash, no dot components, so `./default`
      cannot alias the installed socket) and may not be `default`; owned nodes are classified once with lstat (`core/` and the version dir real
      directories; the installed binary, `core/current` and the config absent or regular
@@ -129,7 +127,9 @@ underneath the sessions that pinned it; the integration suite hit exactly that a
      **upgrade install** (a second version) succeeds beside the first and repoints `current`;
      the seed strips every credential key and forces `enabled = false`; a re-run leaves an
      edited config alone; the symlink exists; `~/.ae` and `~/.local/bin/ae` are never
-     written; an `AE_NEXT_HOME=<other>` install writes only there. Wrapper: the env contract
+     written; the remote fixed install writes only under `~/.ae-next`. The wrapper and
+     checkout installer retain `AE_NEXT_HOME` as an advanced coexistence runtime override,
+     separate from those publication paths. Wrapper: the env contract
      (`AE_HOME`, `CONFIG_FILE`, `AE_TMUX_SERVER`, kind, `AE_CORE_BIN`) at the defaults AND
      under both overrides; **conflict cases** — inherited `CONFIG_FILE`, inherited
      `AE_CORE_BIN`, and a cwd `.ae/config` carrying `workspace.core = /tmp/evil` all lose;
@@ -171,15 +171,32 @@ Complexity: M. Zero P5 artifacts.
 
 ## Install and use
 
+### Prebuilt distribution
+
+For a machine without this checkout, install the verified release bundle with:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/clemens33/ae/rust-rewrite/contrib/ae-next/install-remote | bash
+```
+
+The installer accepts `AE_VERSION=<version>` for a pinned release. It detects
+only `darwin-arm64` and `linux-x86_64-musl` (WSL2 is included in the latter),
+downloads the matching tarball and `SHA256SUMS`, verifies the checksum before
+extraction, and publishes the core, frozen glue, and wrapper as one immutable
+version directory. The `current` pointer and `~/.local/bin/ae-next` link never
+reference this repository, so editing or deleting the checkout cannot affect a
+running or new ae-next session. The release workflow builds these bundles from
+the tag and the first real post-seal tag remains the outstanding end-to-end
+workflow proof.
+
 ```
 just next-install          # build, install core/<ver>, write core/current, seed config, link ae-next
 ae-next doctor             # core bound? server ae-next? telegram disabled?
 ae-next --local mysession  # a session on the ae-next server, state under ~/.ae-next
 ae-next list               # sees only ae-next sessions; `ae list` sees only the old ones
 
-# a second, fully parallel instance (own state, own server, own core install):
-AE_NEXT_HOME=~/.ae-next2 just next-install
-AE_NEXT_HOME=~/.ae-next2 AE_NEXT_TMUX_SERVER=ae-next2 ae-next --local other
+# a second tmux server name is available for a manually arranged development instance:
+AE_NEXT_TMUX_SERVER=ae-next2 ae-next --local other
 ```
 
 Upgrading after a version bump: `just next-install` again installs `core/<newver>/ae` beside
@@ -238,8 +255,10 @@ Per-session, `AE_CORE=` (set-empty) forces the bash bodies for one invocation.
 - `ae-next stop` run from inside a pane of the **old** server consults `$TMUX` for the caller's
   pane tty; the answer is simply not a pane of any `ae-next` session. Harmless.
 - The wrapper overrides an inherited `AE_HOME`, `CONFIG_FILE` and `AE_TMUX_SERVER` and
-  unsets `AE_CORE_BIN` unconditionally — that is its purpose. `AE_NEXT_HOME`/`AE_NEXT_TMUX_SERVER`
-  are the sanctioned overrides; the core has no override at all (install a version instead).
+  unsets `AE_CORE_BIN` unconditionally — that is its purpose. `AE_NEXT_HOME` is an advanced
+  coexistence runtime override in the shipped wrapper and checkout installer, separate from
+  install-remote's fixed publication paths; it is a P5 retirement item. `AE_NEXT_TMUX_SERVER`
+  is the sanctioned server-name override.
 - The ownership guard knows the default home as `$HOME/.ae` literally. An old instance run
   under a relocated `AE_HOME` is not detected; the guard fails closed only on what it can see.
 - A cwd `.ae/config` still overrides *other* keys (agents, layout) for `ae-next` exactly as it

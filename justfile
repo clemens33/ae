@@ -28,7 +28,7 @@ check: lint format-check
 # Lint with shellcheck
 lint:
     shellcheck -x ae tests/unit tests/integration tests/aemonitor tests/aewatch install \
-        contrib/ae-next/ae-next contrib/ae-next/install \
+        contrib/ae-next/ae-next contrib/ae-next/install contrib/ae-next/install-remote \
         tests/e2e/ai/lib.sh tests/e2e/ai/run_scenario.sh \
         $(find tests/e2e/ai/scenarios -name steps.sh) < /dev/null
 
@@ -38,11 +38,11 @@ lint:
 
 # Check formatting (shfmt, diff mode)
 format-check:
-    shfmt -d -i 4 -ci ae install contrib/ae-next/ae-next contrib/ae-next/install < /dev/null
+    shfmt -d -i 4 -ci ae install contrib/ae-next/ae-next contrib/ae-next/install contrib/ae-next/install-remote < /dev/null
 
 # Auto-format
 format:
-    shfmt -w -i 4 -ci ae install contrib/ae-next/ae-next contrib/ae-next/install
+    shfmt -w -i 4 -ci ae install contrib/ae-next/ae-next contrib/ae-next/install contrib/ae-next/install-remote
 
 # ── Testing ──────────────────────────────────────────────────────────
 

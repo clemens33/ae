@@ -3,7 +3,7 @@
 # installed `ae`, sharing nothing with it.
 #
 # THE WHOLE JOB IS ISOLATION. Four exported variables and one refusal:
-#   AE_HOME             ~/.ae-next          (AE_NEXT_HOME overrides)
+#   AE_HOME             ~/.ae-next          (AE_NEXT_HOME is an advanced coexistence runtime override)
 #   CONFIG_FILE         $AE_HOME/config     so an inherited CONFIG_FILE cannot redirect it
 #   AE_TMUX_SERVER      ae-next             (AE_NEXT_TMUX_SERVER overrides)
 #   AE_TMUX_SERVER_KIND name
@@ -22,6 +22,8 @@
 #
 # See docs/migration/coexistence.md. Not P5: nothing here touches ~/.local/bin/ae
 # or ~/.ae.
+# AE_NEXT_HOME ships as an advanced coexistence runtime override. It is separate
+# from install-remote's fixed publication paths and is a P5 retirement item.
 set -euo pipefail
 
 _refuse() {
@@ -102,6 +104,13 @@ _ae_next_home_reason() {
         echo "AE_NEXT_HOME resolves to the legacy ae home ($legacy), the one tree this slice must never touch: $home"
         return 0
     fi
+    # The string comparison cannot see filesystem aliases such as a
+    # case-insensitive spelling. When both homes exist, device+inode identity
+    # is authoritative: AE_NEXT_HOME must not resolve to the legacy ae home.
+    if [ -d "$home" ] && [ -d "$HOME/.ae" ] && [ "$home" -ef "$HOME/.ae" ]; then
+        echo "AE_NEXT_HOME resolves to the legacy ae home under a different spelling: $home"
+        return 0
+    fi
     return 0
 }
 
@@ -147,7 +156,16 @@ while [ -L "$_src" ]; do
     esac
 done
 _here="$(cd -P "$(dirname "$_src")" && pwd)"
-_ae="$(cd -P "$_here/../.." && pwd)/ae"
+# A release bundle carries the glue beside this wrapper. Prefer that sibling so
+# the installed command is self-contained: deleting or editing the checkout
+# that produced the bundle cannot change a running or new session. The
+# checkout-relative fallback is retained solely for `just next-install` during
+# pre-P5 development, where this tracked wrapper is symlinked from the repo.
+if [ -f "$_here/ae" ]; then
+    _ae="$_here/ae"
+else
+    _ae="$(cd -P "$_here/../.." && pwd)/ae"
+fi
 [ -x "$_ae" ] || _refuse "no executable ae at $_ae — is this a checkout?"
 
 # ── The isolated instance ────────────────────────────────────────────────────

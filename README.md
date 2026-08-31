@@ -40,6 +40,26 @@ git clone https://github.com/clemens33/ae.git ~/.local/share/ae
 
 Both methods symlink `ae` to `~/.local/bin/ae`. Make sure `~/.local/bin` is on your `PATH`, then run `ae doctor` to check your environment.
 
+### Install the prebuilt ae-next rewrite
+
+The rewrite is distributed as a verified prebuilt pair beside the frozen `ae`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/clemens33/ae/rust-rewrite/contrib/ae-next/install-remote | bash
+```
+
+The installer downloads the platform bundle and `SHA256SUMS` to temporary files,
+verifies the bundle before extraction, then atomically publishes an immutable
+versioned install under `~/.ae-next`. Set `AE_VERSION=2026.8.1` to pin a release.
+
+| Platform | Bundle | Status |
+|---|---|---|
+| macOS Apple Silicon | `darwin-arm64` | supported |
+| Linux x86_64 (including WSL2) | `linux-x86_64-musl` | supported |
+| macOS Intel | `darwin-x86_64` | rejected |
+| Linux ARM | `linux-arm64` | rejected |
+| Windows / MSYS | — | rejected |
+
 ## Quick start
 
 ```bash
@@ -185,7 +205,9 @@ Trying the rewrite is not supposed to cost you the ae you work with, so it insta
 **second command**: `just next-install` puts `ae-next` beside `ae`, with its own state home
 (`~/.ae-next`), its own tmux server and its own immutable copy of the core. Nothing under
 `~/.ae` or at `~/.local/bin/ae` changes, and rollback is deleting the three things it made.
-See [docs/migration/coexistence.md](docs/migration/coexistence.md); it retires at the entry flip.
+For a clean machine, use the [prebuilt one-line installer](#install-the-prebuilt-ae-next-rewrite);
+`just next-install` remains the checkout-local development install. See
+[docs/migration/coexistence.md](docs/migration/coexistence.md); it retires at the entry flip.
 
 That carve-out is now the whole plan: this bash script is **frozen at `72c7293`** and the typed core takes over domain by domain on `rust-rewrite`. What carries over unchanged is the part you depend on — one file to install, no runtime, no repo pollution, `~/.ae/` as the only state. What goes away is bash as the implementation. See **[VISION.md](VISION.md)**.
 

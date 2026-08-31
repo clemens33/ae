@@ -72,8 +72,9 @@ tests/integration   — integration tests (requires tmux, git)
 install             — symlink or curl|bash installer
 docs/               — user + internals documentation (getting-started, reference, internals)
 contrib/            — optional sidecars: aewatch (retired Python watchdog+bridge; archival), aeorchestrator, aemonitor
-contrib/ae-next/    — PRE-P5 COEXISTENCE, retires at the entry flip: the `ae-next` wrapper
-                      + its installer, which run this branch beside the installed `ae`
+contrib/ae-next/    — PRE-P5 COEXISTENCE, retires at the entry flip: the `ae-next` wrapper,
+                      checkout-local installer, and standalone checksum-verifying
+                      `install-remote`, which run this branch beside installed `ae`
                       (own ~/.ae-next, own tmux server, immutable core). docs/migration/coexistence.md
 Cargo.toml          — Rust package: one crate, bin + lib, both named `ae` (no workspace)
 rust-toolchain.toml — compiler pin: channel, profile, components, both targets
@@ -83,7 +84,7 @@ taplo.toml          — TOML fmt/lint scope
 .cargo/             — repo-owned cargo config (aliases) + cargo-mutants config
 src/                — Rust sources: main.rs (thin) + lib.rs (everything testable)
 tests/it/           — the single integration-test target (main.rs + `mod` submodules)
-.github/workflows/  — rust lanes, both platforms (bash lanes deliberately not wired yet)
+.github/workflows/  — rust lanes and tag-triggered prebuilt release lanes, both platforms
 README.md           — user docs
 VISION.md           — what ae is, and where it is going
 AGENTS.md           — this file
@@ -248,9 +249,52 @@ is stale.
 | `just rust-cov` | coverage **report**, not a gate |
 | `just rust-build-release` | native release binary (`--locked`) + foreign-target compile smoke |
 | `just rust-watch` | optional bacon loop; bacon is deliberately not part of the bootstrap |
+| `.github/workflows/release.yml` | tag-triggered prebuilt bundles: static musl Linux + native Apple Silicon macOS, checksum manifest, GitHub Release upload |
 
 Coverage becomes a gate the day a threshold is ratified, and not before. An unratified
 number that blocks a merge is a number nobody agreed to.
+
+### Prebuilt ae-next distribution
+
+Release tags matching `v[0-9]*.[0-9]*.[0-9]*` build their own release binaries with
+`--locked` on pinned `ubuntu-24.04` and `macos-15` runners. The Linux artifact is
+proven static (`PT_INTERP` absent and `file` reports static) and runs both `_net-probe`
+controls against the shipped binary: the reserved `.invalid` name must refuse and
+`api.telegram.org` must resolve. Each bundle contains the core, frozen `ae` glue,
+`ae-next`, and `install-remote`; the final job emits one `SHA256SUMS` over both tarballs.
+The standalone installer downloads files, verifies the checksum before extraction,
+and atomically publishes the complete pair under one immutable version directory.
+The first real post-seal tag is the outstanding end-to-end workflow proof; local unit
+tests use fixture bundles and never access the network.
+
+**The remote installer takes no path overrides.** It installs to `~/.ae-next` and
+`~/.local/bin/ae-next`, derived from `HOME` and nothing else. Accepting a
+caller-chosen home and command path meant validation had to prove two arbitrary
+pathnames could never alias each other or the legacy tree, and successive review
+rounds kept finding spellings that slipped it: a symlink at the legacy command
+path, a missing component followed by `..`, repeated slashes the filesystem
+collapses — with case-insensitive spellings still open and unclosable by string
+comparison. Fixed paths delete that class by construction, and `HOME` stays the
+isolation seam the tests already used. The journal is persisted state a later run
+parses, so it is still validated as hostile: every pointer and the command path
+must equal their fixed spellings, flags are checked through a helper rather than a
+mixed `&&`/`||` chain a normal value could veto, and a journal for another home is
+refused and preserved for diagnosis rather than acted on.
+
+**The wrapper keeps `AE_NEXT_HOME`, and that is a different surface — not a
+leftover.** It is an advanced coexistence runtime override, unadvertised in user
+docs and scheduled for removal in its own slice before P5. It ships in the bundle,
+and it is a state-write authority: the wrapper exports `AE_HOME`, so that variable
+directs every write `ae` makes. So it is guarded by **identity, not spelling** — a
+resolved-string comparison accepts `~/.AE`, which on a case-insensitive filesystem
+(the macOS default) *is* the legacy home (measured: same device and inode, strings
+unequal). The wrapper and the checkout-local installer refuse a candidate that
+`test -ef` proves is `~/.ae`. Because `-ef` needs both paths to exist it is vacuous
+on a fresh machine, so the checkout installer creates only the candidate root,
+classifies it before any child or config write, and removes it again if what it
+created was an alias. The wrapper needs no such dance: it requires
+`$AE_HOME/core/current` and exits before `exec` otherwise, so it never creates a
+home.
 
 ### Lint policy: `[lints]` + `-D warnings`
 

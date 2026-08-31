@@ -1,0 +1,157 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]*.[0-9]*.[0-9]*'
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  build-linux:
+    name: build linux-x86_64-musl
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+
+      - name: Install musl toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends musl-tools
+
+      - name: Build release binary
+        run: cargo build --release --locked --target x86_64-unknown-linux-musl
+
+      - name: Verify and bundle Linux artifact
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          bin="target/x86_64-unknown-linux-musl/release/ae"
+          want="ae $version"
+          got="$($bin --version)"
+          [ "$got" = "$want" ] || { echo "::error::--version printed '$got', want '$want'"; exit 1; }
+
+          command -v readelf >/dev/null || { echo "::error::readelf is required"; exit 1; }
+          headers="$(readelf -l "$bin")"
+          if printf '%s\n' "$headers" | grep -q 'INTERP'; then
+            echo "::error::musl binary has a PT_INTERP segment"
+            exit 1
+          fi
+          described="$(file -b "$bin")"
+          case "$described" in
+            *dynamically*) echo "::error::file reports a dynamic binary: $described"; exit 1 ;;
+            *static*) : ;;
+            *) echo "::error::file does not report a static binary: $described"; exit 1 ;;
+          esac
+
+          set +e
+          "$bin" _net-probe ae-release-negative-control.invalid >/dev/null 2>&1
+          invalid_code=$?
+          set -e
+          [ "$invalid_code" -eq 1 ] || { echo "::error::.invalid probe exited $invalid_code, want 1"; exit 1; }
+          "$bin" _net-probe api.telegram.org >/dev/null
+
+          root="ae-next-$version-linux-x86_64-musl"
+          mkdir "$root"
+          cp "$bin" "$root/ae-core"
+          cp ae "$root/ae"
+          cp contrib/ae-next/ae-next "$root/ae-next"
+          cp contrib/ae-next/install-remote "$root/install-remote"
+          chmod 0555 "$root" "$root/ae-core" "$root/ae" "$root/ae-next" "$root/install-remote"
+          tar -czf "$root.tar.gz" "$root"
+
+      - name: Upload Linux bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ae-next-linux-x86_64-musl
+          path: ae-next-*.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  build-macos:
+    name: build darwin-arm64
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+
+      - name: Build release binary
+        run: cargo build --release --locked
+
+      - name: Verify and bundle macOS artifact
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          bin="target/release/ae"
+          want="ae $version"
+          got="$($bin --version)"
+          [ "$got" = "$want" ] || { echo "::error::--version printed '$got', want '$want'"; exit 1; }
+          "$bin" _net-probe localhost >/dev/null
+
+          root="ae-next-$version-darwin-arm64"
+          mkdir "$root"
+          cp "$bin" "$root/ae-core"
+          cp ae "$root/ae"
+          cp contrib/ae-next/ae-next "$root/ae-next"
+          cp contrib/ae-next/install-remote "$root/install-remote"
+          chmod 0555 "$root" "$root/ae-core" "$root/ae" "$root/ae-next" "$root/install-remote"
+          tar -czf "$root.tar.gz" "$root"
+
+      - name: Upload macOS bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ae-next-darwin-arm64
+          path: ae-next-*.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: publish GitHub release
+    needs: [build-linux, build-macos]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download Linux bundle
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ae-next-linux-x86_64-musl
+          path: release-assets
+
+      - name: Download macOS bundle
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ae-next-darwin-arm64
+          path: release-assets
+
+      - name: Generate checksums and attach release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          linux="$(find release-assets -name "ae-next-$version-linux-x86_64-musl.tar.gz" -type f -print -quit)"
+          darwin="$(find release-assets -name "ae-next-$version-darwin-arm64.tar.gz" -type f -print -quit)"
+          [ -n "$linux" ] || { echo "::error::Linux bundle is missing"; exit 1; }
+          [ -n "$darwin" ] || { echo "::error::macOS bundle is missing"; exit 1; }
+          mkdir -p publish
+          cp "$linux" "$darwin" publish/
+          (cd publish && sha256sum -- ae-next-*.tar.gz > SHA256SUMS)
+          # A retry may reach this job after the release object exists. Upload
+          # the freshly generated assets in that case; the first run creates it.
+          if gh release view "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" publish/* --clobber -R "$GITHUB_REPOSITORY"
+          else
+            gh release create "$GITHUB_REF_NAME" publish/* \
+              -R "$GITHUB_REPOSITORY" \
+              --title "ae-next $version" \
+              --generate-notes
+          fi

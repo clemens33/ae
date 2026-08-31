@@ -1,0 +1,1052 @@
+#!/usr/bin/env bash
+# ae-next remote installer.
+#
+# This file is safe to fetch as the small, one-line bootstrap command. It is
+# deliberately a downloader only for the installer itself: release payloads
+# are downloaded to files, checked against SHA256SUMS, and extracted only after
+# the checksum matches. It installs ae-next beside the frozen `ae` command and
+# never reads, writes, or executes a repository checkout.
+set -euo pipefail
+
+REMOTE_REPOSITORY_DEFAULT="https://github.com/clemens33/ae"
+
+remote_die() {
+    echo "ae-next installer: $*" >&2
+    return 1
+}
+
+remote_platform() {
+    local os="$1" arch="$2"
+    case "$os:$arch" in
+        Darwin:arm64)
+            printf '%s\n' "darwin-arm64"
+            ;;
+        Darwin:x86_64)
+            echo "ae-next: Intel macOS is unsupported; use an Apple Silicon Mac." >&2
+            return 1
+            ;;
+        Linux:x86_64)
+            printf '%s\n' "linux-x86_64-musl"
+            ;;
+        Linux:arm* | Linux:aarch64)
+            echo "ae-next: Linux ARM is unsupported; use a Linux x86_64 machine." >&2
+            return 1
+            ;;
+        MINGW*:* | MSYS*:* | CYGWIN*:* | Windows_NT:*)
+            echo "ae-next: Windows (including MSYS) is unsupported; use macOS or Linux." >&2
+            return 1
+            ;;
+        *)
+            echo "ae-next: unsupported platform: $os/$arch (only darwin-arm64 and linux-x86_64 are supported)." >&2
+            return 1
+            ;;
+    esac
+}
+
+remote_detect_platform() {
+    remote_platform "$(uname -s)" "$(uname -m)"
+}
+
+remote_select_version() {
+    local requested="${1:-}" version
+    if [ -z "$requested" ]; then
+        printf '%s\n' "latest"
+        return 0
+    fi
+    version="${requested#v}"
+    if ! remote_version_ok "$version"; then
+        echo "ae-next: AE_VERSION must be a CalVer tag such as 2026.8.1 (a leading v is accepted): $requested" >&2
+        return 1
+    fi
+    printf '%s\n' "$version"
+}
+
+remote_version_ok() {
+    [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+}
+
+remote_archive_name() {
+    printf 'ae-next-%s-%s.tar.gz\n' "$1" "$2"
+}
+
+remote_sha256() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | awk 'NR == 1 { print $1; exit }'
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$1" | awk 'NR == 1 { print $1; exit }'
+    else
+        echo "ae-next: neither sha256sum nor shasum is available." >&2
+        return 1
+    fi
+}
+
+# Verify one archive using the same checksum-file spelling emitted by both
+# GNU sha256sum and BSD shasum. This function is intentionally pure with
+# respect to the install: it reads two paths and never mutates either one.
+remote_verify_checksum() {
+    local sums payload name expected actual
+    sums="$1"
+    payload="$2"
+    name="${3:-$(basename "$payload")}"
+    [ -f "$sums" ] || {
+        echo "ae-next: checksum file is missing: $sums" >&2
+        return 1
+    }
+    [ -f "$payload" ] || {
+        echo "ae-next: payload is missing: $payload" >&2
+        return 1
+    }
+    expected="$(awk -v wanted="$name" '$2 == wanted || $2 == "*" wanted { print $1; exit }' "$sums")"
+    if [[ ! "$expected" =~ ^[0-9a-fA-F]{64}$ ]]; then
+        echo "ae-next: checksum entry for $name is missing or malformed." >&2
+        return 1
+    fi
+    actual="$(remote_sha256 "$payload")" || return 1
+    if [ "$actual" != "$expected" ]; then
+        echo "ae-next: checksum mismatch for $name; nothing was installed." >&2
+        return 1
+    fi
+}
+
+remote_latest_archive() {
+    local sums="$1" platform="$2"
+    awk -v platform="$platform" '
+        {
+            name = $2
+            sub(/^\*/, "", name)
+            if (name ~ ("^ae-next-[0-9]+\\.[0-9]+\\.[0-9]+-" platform "\\.tar\\.gz$")) {
+                print name
+                exit
+            }
+        }
+    ' "$sums"
+}
+
+remote_require_dir() {
+    local path="$1" label="$2"
+    if [ -L "$path" ]; then
+        remote_die "$label is a symlink, refusing to write through it: $path"
+        return 1
+    fi
+    if [ -e "$path" ] && [ ! -d "$path" ]; then
+        remote_die "$label is not a directory: $path"
+        return 1
+    fi
+}
+
+remote_require_regular_or_absent() {
+    local path="$1" label="$2"
+    if [ -L "$path" ]; then
+        remote_die "$label is a symlink, refusing to write through it: $path"
+        return 1
+    fi
+    if [ -e "$path" ] && [ ! -f "$path" ]; then
+        remote_die "$label is not a regular file: $path"
+        return 1
+    fi
+}
+
+remote_require_regular_file() {
+    local path="$1" label="$2"
+    if [ -L "$path" ] || [ ! -f "$path" ]; then
+        remote_die "$label must be a regular non-symlink file: $path"
+        return 1
+    fi
+}
+
+remote_path_components_ok() {
+    local path="$1" label="$2"
+    case "$path" in
+        *//*)
+            remote_die "$label must not contain repeated '/' separators: $path"
+            return 1
+            ;;
+    esac
+    case "$path" in
+        */)
+            remote_die "$label must not have a trailing '/': $path"
+            return 1
+            ;;
+    esac
+    case "/$path/" in
+        */./* | */../*)
+            remote_die "$label must not contain '.' or '..' path components: $path"
+            return 1
+            ;;
+    esac
+}
+
+remote_fixed_paths() {
+    local home_root
+    if [ -z "${HOME:-}" ]; then
+        remote_die "HOME is not set"
+        return 1
+    fi
+    home_root="$HOME"
+    if [ "$home_root" != "/" ]; then
+        home_root="${home_root%/}"
+    fi
+    _REMOTE_FIXED_HOME="$home_root/.ae-next"
+    _REMOTE_FIXED_LINK="$home_root/.local/bin/ae-next"
+    remote_path_components_ok "$_REMOTE_FIXED_HOME" "ae-next home" || return 1
+    remote_path_components_ok "$_REMOTE_FIXED_LINK" "ae-next command path" || return 1
+    remote_journal_value_ok "$_REMOTE_FIXED_HOME" || return 1
+    remote_journal_value_ok "$_REMOTE_FIXED_LINK" || return 1
+    remote_validate_home "$_REMOTE_FIXED_HOME" || return 1
+}
+
+remote_flag_ok() {
+    [ "$1" = 0 ] || [ "$1" = 1 ]
+}
+
+remote_validate_bin_destination() {
+    local path="$1" home="$2"
+    local parent base resolved legacy legacy_parent resolved_parent resolved_legacy resolved_home
+    remote_path_components_ok "$path" "ae-next command path" || return 1
+    case "$path" in
+        /*) ;;
+        *)
+            remote_die "ae-next command path must be absolute: $path"
+            return 1
+            ;;
+    esac
+    remote_journal_value_ok "$path" || return 1
+    remote_journal_value_ok "$home" || return 1
+    legacy="${home%/.ae-next}/.local/bin/ae"
+    if [ "$path" = "$legacy" ]; then
+        remote_die "ae-next command path must not replace the legacy ae command: $path"
+        return 1
+    fi
+    case "$path" in
+        "$home" | "$home"/*)
+            remote_die "ae-next command path must not point inside the ae-next home: $path"
+            return 1
+            ;;
+    esac
+    # Resolve only the destination's parent. Following the destination itself
+    # would reject a foreign symlink target, even though publication replaces
+    # the destination entry without following it.
+    parent="$(dirname "$path")"
+    base="$(basename "$path")"
+    if [ -d "$parent" ]; then
+        if ! resolved_parent="$(cd -P "$parent" && pwd -P)"; then
+            remote_die "could not resolve ae-next command path parent: $parent"
+            return 1
+        fi
+        resolved="$resolved_parent/$base"
+        legacy_parent="$(dirname "$legacy")"
+        if [ -d "$legacy_parent" ]; then
+            if ! resolved_legacy="$(cd -P "$legacy_parent" && pwd -P)"; then
+                remote_die "could not resolve the legacy ae command parent: $legacy_parent"
+                return 1
+            fi
+            resolved_legacy="$resolved_legacy/ae"
+            if [ "$resolved" = "$resolved_legacy" ]; then
+                remote_die "ae-next command path resolves to the legacy ae command: $path"
+                return 1
+            fi
+        fi
+        if [ -d "$home" ]; then
+            if ! resolved_home="$(cd -P "$home" && pwd -P)"; then
+                remote_die "could not resolve the ae-next home: $home"
+                return 1
+            fi
+            case "$resolved" in
+                "$resolved_home" | "$resolved_home"/*)
+                    remote_die "ae-next command path resolves inside the ae-next home: $path"
+                    return 1
+                    ;;
+            esac
+        fi
+    fi
+    if [ -e "$path" ] && [ ! -L "$path" ]; then
+        remote_die "ae-next command destination is not a symlink: $path"
+        return 1
+    fi
+    if [ -d "$path" ]; then
+        remote_die "ae-next command destination is a directory: $path"
+        return 1
+    fi
+}
+
+remote_validate_home() {
+    local home="$1" base parent resolved legacy_parent legacy
+    remote_path_components_ok "$home" "ae-next home" || return 1
+    case "$home" in
+        /*) ;;
+        *)
+            remote_die "ae-next home must be absolute: $home"
+            return 1
+            ;;
+    esac
+    if [ "$home" = "${HOME:-}/.ae" ]; then
+        remote_die "ae-next home must not be the legacy ae home: $home"
+        return 1
+    fi
+    if [ -L "$home" ]; then
+        remote_die "ae-next home must not itself be a symlink: $home"
+        return 1
+    fi
+    # Resolve the parent before comparing with ~/.ae. This catches an
+    # alternate spelling through a symlink while still allowing a normal
+    # symlinked ancestor such as macOS /var.
+    base="$(basename "$home")"
+    parent="$(dirname "$home")"
+    resolved="$parent/$base"
+    if [ -d "$parent" ]; then
+        resolved="$(cd -P "$parent" && pwd)/$base"
+    fi
+    legacy_parent="$(dirname "${HOME:-}/.ae")"
+    if [ -d "$legacy_parent" ]; then
+        legacy_parent="$(cd -P "$legacy_parent" && pwd)"
+    fi
+    legacy="$legacy_parent/.ae"
+    if [ "$resolved" = "$legacy" ]; then
+        remote_die "ae-next home resolves to the legacy ae home: $home"
+        return 1
+    fi
+}
+
+remote_download() {
+    local url="$1" destination="$2"
+    if ! command -v curl >/dev/null 2>&1; then
+        remote_die "curl is required to download a release."
+        return 1
+    fi
+    # The archive is a payload, never a shell program on a pipe. curl keeps TLS
+    # verification at its default; `-k` is deliberately absent.
+    curl -fsSL --retry 3 --output "$destination" "$url"
+}
+
+_REMOTE_TMP=""
+_REMOTE_STAGE=""
+_REMOTE_JOURNAL=""
+_REMOTE_JOURNAL_HOME=""
+_REMOTE_FIXED_HOME=""
+_REMOTE_FIXED_LINK=""
+_REMOTE_J_FORMAT=""
+_REMOTE_J_VERSION=""
+_REMOTE_J_CORE_POINTER=""
+_REMOTE_J_CORE_HAD=0
+_REMOTE_J_CORE_OLD=""
+_REMOTE_J_CURRENT_POINTER=""
+_REMOTE_J_CURRENT_HAD=0
+_REMOTE_J_CURRENT_OLD=""
+_REMOTE_J_LINK=""
+_REMOTE_J_LINK_HAD=0
+_REMOTE_J_LINK_OLD=""
+_REMOTE_J_CONFIG=""
+_REMOTE_J_CONFIG_HAD=0
+_REMOTE_J_CREATED=()
+
+remote_reset_state() {
+    _REMOTE_TMP=""
+    _REMOTE_STAGE=""
+    _REMOTE_JOURNAL=""
+    _REMOTE_JOURNAL_HOME=""
+    _REMOTE_FIXED_HOME=""
+    _REMOTE_FIXED_LINK=""
+    _REMOTE_J_FORMAT=""
+    _REMOTE_J_VERSION=""
+    _REMOTE_J_CORE_POINTER=""
+    _REMOTE_J_CORE_HAD=0
+    _REMOTE_J_CORE_OLD=""
+    _REMOTE_J_CURRENT_POINTER=""
+    _REMOTE_J_CURRENT_HAD=0
+    _REMOTE_J_CURRENT_OLD=""
+    _REMOTE_J_LINK=""
+    _REMOTE_J_LINK_HAD=0
+    _REMOTE_J_LINK_OLD=""
+    _REMOTE_J_CONFIG=""
+    _REMOTE_J_CONFIG_HAD=0
+    _REMOTE_J_CREATED=()
+}
+
+remote_journal_value_ok() {
+    case "$1" in
+        *$'\n'* | *$'\r'*)
+            remote_die "cannot journal a path containing a newline"
+            return 1
+            ;;
+    esac
+}
+
+remote_journal_create() {
+    local journal="$1" home="$2" version="$3" core_pointer="$4" core_had="$5" core_old="$6"
+    local current_pointer="$7" current_had="$8" current_old="$9" link="${10}" link_had="${11}"
+    local link_old="${12}" config="${13}" config_had="${14}" tmp
+    local value
+    for value in "$journal" "$home" "$version" "$core_pointer" "$current_pointer" "$link" "$config" \
+        "$core_old" "$current_old" "$link_old"; do
+        remote_journal_value_ok "$value" || return 1
+    done
+    if ! remote_version_ok "$version"; then
+        remote_die "cannot journal an invalid version: $version"
+        return 1
+    fi
+    if [ -e "$journal" ] || [ -L "$journal" ]; then
+        remote_die "install journal already exists: $journal"
+        return 1
+    fi
+    tmp="$(mktemp "${journal}.tmp.XXXXXX")" || {
+        remote_die "could not stage install journal: $journal"
+        return 1
+    }
+    if ! {
+        printf 'format=1\n'
+        printf 'version=%s\n' "$version"
+        printf 'home=%s\n' "$home"
+        printf 'core_pointer=%s\n' "$core_pointer"
+        printf 'core_had=%s\n' "$core_had"
+        printf 'core_old=%s\n' "$core_old"
+        printf 'current_pointer=%s\n' "$current_pointer"
+        printf 'current_had=%s\n' "$current_had"
+        printf 'current_old=%s\n' "$current_old"
+        printf 'link=%s\n' "$link"
+        printf 'link_had=%s\n' "$link_had"
+        printf 'link_old=%s\n' "$link_old"
+        printf 'config=%s\n' "$config"
+        printf 'config_had=%s\n' "$config_had"
+    } >"$tmp"; then
+        rm -f "$tmp" || true
+        remote_die "could not write install journal: $journal"
+        return 1
+    fi
+    if ! chmod 0600 "$tmp" || ! mv -f "$tmp" "$journal"; then
+        rm -f "$tmp" || true
+        remote_die "could not publish install journal: $journal"
+        return 1
+    fi
+    _REMOTE_JOURNAL="$journal"
+}
+
+remote_journal_add_dir() {
+    local kind="$1" path="$2" tmp
+    case "$kind" in
+        rmdir) ;;
+        *)
+            remote_die "internal error: unknown journal directory action: $kind"
+            return 1
+            ;;
+    esac
+    remote_journal_value_ok "$path" || return 1
+    tmp="$(mktemp "${_REMOTE_JOURNAL}.tmp.XXXXXX")" || {
+        remote_die "could not stage install journal update"
+        return 1
+    }
+    if ! cat "$_REMOTE_JOURNAL" >"$tmp" || ! printf 'created_dir=%s|%s\n' "$kind" "$path" >>"$tmp" ||
+        ! chmod 0600 "$tmp" || ! mv -f "$tmp" "$_REMOTE_JOURNAL"; then
+        rm -f "$tmp" || true
+        remote_die "could not update install journal: $_REMOTE_JOURNAL"
+        return 1
+    fi
+}
+
+remote_mkdir_recorded() {
+    local path="$1" target="$1" hook="${2:-}" parent index
+    local -a missing=()
+    if [ -d "$path" ]; then
+        return 0
+    fi
+    while [ ! -d "$path" ]; do
+        if [ -L "$path" ]; then
+            remote_die "cannot create directory through a symlink: $path"
+            return 1
+        fi
+        if [ -e "$path" ]; then
+            remote_die "cannot create directory over a non-directory path: $path"
+            return 1
+        fi
+        missing+=("$path")
+        parent="$(dirname "$path")"
+        if [ "$parent" = "$path" ]; then
+            remote_die "cannot find a parent directory for: $path"
+            return 1
+        fi
+        path="$parent"
+    done
+    for ((index = ${#missing[@]} - 1; index >= 0; index--)); do
+        path="${missing[$index]}"
+        if ! remote_journal_add_dir rmdir "$path"; then
+            remote_die "could not prepare directory journal: $path"
+            return 1
+        fi
+        if [ -n "$hook" ] && [ "$path" = "$target" ]; then
+            remote_test_failure "$hook"
+            hook=""
+        fi
+        if ! mkdir "$path"; then
+            remote_die "could not create directory: $path"
+            return 1
+        fi
+    done
+}
+
+remote_journal_load() {
+    local journal="$1" expected_home="$2" expected_link="$3" line key value
+    _REMOTE_J_CREATED=()
+    _REMOTE_J_FORMAT=""
+    _REMOTE_J_VERSION=""
+    _REMOTE_JOURNAL_HOME=""
+    _REMOTE_J_CORE_POINTER=""
+    _REMOTE_J_CORE_HAD=""
+    _REMOTE_J_CORE_OLD=""
+    _REMOTE_J_CURRENT_POINTER=""
+    _REMOTE_J_CURRENT_HAD=""
+    _REMOTE_J_CURRENT_OLD=""
+    _REMOTE_J_LINK=""
+    _REMOTE_J_LINK_HAD=""
+    _REMOTE_J_LINK_OLD=""
+    _REMOTE_J_CONFIG=""
+    _REMOTE_J_CONFIG_HAD=""
+    while IFS= read -r line || [ -n "$line" ]; do
+        key="${line%%=*}"
+        value="${line#*=}"
+        case "$key" in
+            format) _REMOTE_J_FORMAT="$value" ;;
+            version) _REMOTE_J_VERSION="$value" ;;
+            home) _REMOTE_JOURNAL_HOME="$value" ;;
+            core_pointer) _REMOTE_J_CORE_POINTER="$value" ;;
+            core_had) _REMOTE_J_CORE_HAD="$value" ;;
+            core_old) _REMOTE_J_CORE_OLD="$value" ;;
+            current_pointer) _REMOTE_J_CURRENT_POINTER="$value" ;;
+            current_had) _REMOTE_J_CURRENT_HAD="$value" ;;
+            current_old) _REMOTE_J_CURRENT_OLD="$value" ;;
+            link) _REMOTE_J_LINK="$value" ;;
+            link_had) _REMOTE_J_LINK_HAD="$value" ;;
+            link_old) _REMOTE_J_LINK_OLD="$value" ;;
+            config) _REMOTE_J_CONFIG="$value" ;;
+            config_had) _REMOTE_J_CONFIG_HAD="$value" ;;
+            created_dir) _REMOTE_J_CREATED+=("$value") ;;
+            "") ;;
+            *)
+                remote_die "install journal has an unknown field: $key"
+                return 1
+                ;;
+        esac
+    done <"$journal"
+    if [ "$_REMOTE_J_FORMAT" != 1 ] || [ -z "$_REMOTE_J_VERSION" ] ||
+        [ "$_REMOTE_JOURNAL_HOME" != "$expected_home" ] ||
+        [ "$_REMOTE_J_CORE_POINTER" != "$expected_home/core/current" ] ||
+        [ "$_REMOTE_J_CURRENT_POINTER" != "$expected_home/current" ] ||
+        [ "$_REMOTE_J_CONFIG" != "$expected_home/config" ] ||
+        ! remote_flag_ok "$_REMOTE_J_CORE_HAD" || ! remote_flag_ok "$_REMOTE_J_CURRENT_HAD" ||
+        ! remote_flag_ok "$_REMOTE_J_LINK_HAD" || ! remote_flag_ok "$_REMOTE_J_CONFIG_HAD"; then
+        remote_die "install journal is malformed or for another home: $journal"
+        return 1
+    fi
+    if ! remote_version_ok "$_REMOTE_J_VERSION"; then
+        remote_die "install journal version is invalid: $journal"
+        return 1
+    fi
+    remote_validate_bin_destination "$_REMOTE_J_LINK" "$expected_home" || return 1
+    if [ "$_REMOTE_J_LINK" != "$expected_link" ]; then
+        remote_die "install journal is for another command path: $journal"
+        return 1
+    fi
+    local item kind path link_parent link_ancestor
+    link_parent="$(dirname "$_REMOTE_J_LINK")"
+    link_ancestor="$(dirname "$link_parent")"
+    for item in "${_REMOTE_J_CREATED[@]}"; do
+        kind="${item%%|*}"
+        path="${item#*|}"
+        remote_journal_value_ok "$path" || return 1
+        remote_path_components_ok "$path" "install journal directory" || return 1
+        case "$kind" in
+            rm)
+                remote_die "install journal rm directory action is no longer supported: $path"
+                return 1
+                ;;
+            rmdir)
+                # rmdir removes only an empty directory and fails harmlessly;
+                # rm -rf destroys content, so it is never a journal operation.
+                case "$path" in
+                    "$expected_home/versions" | "$expected_home/core" | "$link_parent" | "$link_ancestor") ;;
+                    *)
+                        remote_die "install journal rmdir path is not one of the emitted directories: $path"
+                        return 1
+                        ;;
+                esac
+                ;;
+            *)
+                remote_die "install journal has an invalid directory action: $journal"
+                return 1
+                ;;
+        esac
+    done
+}
+
+remote_remove_created_dir() {
+    local path="$1" child
+    if [ ! -e "$path" ] && [ ! -L "$path" ]; then
+        return 0
+    fi
+    if rmdir "$path"; then
+        return 0
+    fi
+    if [ -L "$path" ] || [ ! -d "$path" ]; then
+        return 1
+    fi
+    # A published version or compat directory may intentionally remain inside
+    # this parent after rollback. Non-empty means retained content, so the
+    # parent is already in the designed final state; other failures remain
+    # errors and preserve the journal for recovery.
+    for child in "$path"/* "$path"/.[!.]* "$path"/..?*; do
+        if [ -e "$child" ] || [ -L "$child" ]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+remote_restore_symlink() {
+    local path="$1" had="$2" target="$3" label="$4" tmp
+    if ! rm -f "$path"; then
+        echo "ae-next installer: rollback could not remove $label: $path" >&2
+        return 1
+    fi
+    if [ "$had" -eq 1 ]; then
+        tmp="$(dirname "$path")/.ae-next-recover.$$"
+        rm -f "$tmp" || true
+        if ! ln -s "$target" "$tmp" || ! mv -f "$tmp" "$path"; then
+            rm -f "$tmp" || true
+            echo "ae-next installer: rollback could not restore $label: $path" >&2
+            return 1
+        fi
+    fi
+}
+
+remote_restore_file() {
+    local path="$1" had="$2" value="$3" label="$4" tmp
+    if [ "$had" -eq 0 ]; then
+        if ! rm -f "$path"; then
+            echo "ae-next installer: rollback could not remove $label: $path" >&2
+            return 1
+        fi
+        return 0
+    fi
+    tmp="$(mktemp "${path}.ae-next-recover.XXXXXX")" || {
+        echo "ae-next installer: rollback could not stage $label: $path" >&2
+        return 1
+    }
+    if ! printf '%s\n' "$value" >"$tmp" || ! mv -f "$tmp" "$path"; then
+        rm -f "$tmp" || true
+        echo "ae-next installer: rollback could not restore $label: $path" >&2
+        return 1
+    fi
+}
+
+remote_recover_journal() {
+    local journal="$1" expected_home recovery_rc=0 item path index
+    if ! remote_fixed_paths; then
+        return 1
+    fi
+    expected_home="$_REMOTE_FIXED_HOME"
+    if ! [ -f "$journal" ] || [ -L "$journal" ]; then
+        remote_die "install journal is missing or not a regular file: $journal"
+        return 1
+    fi
+    if ! remote_journal_load "$journal" "$expected_home" "$_REMOTE_FIXED_LINK"; then
+        return 1
+    fi
+    if ! remote_restore_symlink "$_REMOTE_J_LINK" "$_REMOTE_J_LINK_HAD" "$_REMOTE_J_LINK_OLD" command-link; then
+        recovery_rc=1
+    fi
+    if ! remote_restore_symlink "$_REMOTE_J_CURRENT_POINTER" "$_REMOTE_J_CURRENT_HAD" "$_REMOTE_J_CURRENT_OLD" current-pointer; then
+        recovery_rc=1
+    fi
+    if ! remote_restore_file "$_REMOTE_J_CORE_POINTER" "$_REMOTE_J_CORE_HAD" "$_REMOTE_J_CORE_OLD" core/current; then
+        recovery_rc=1
+    fi
+    if [ "$_REMOTE_J_CONFIG_HAD" -eq 0 ] && ! rm -f "$_REMOTE_J_CONFIG"; then
+        echo "ae-next installer: rollback could not remove seeded config: $_REMOTE_J_CONFIG" >&2
+        recovery_rc=1
+    fi
+    for ((index = ${#_REMOTE_J_CREATED[@]} - 1; index >= 0; index--)); do
+        item="${_REMOTE_J_CREATED[$index]}"
+        path="${item#*|}"
+        if ! remote_remove_created_dir "$path"; then
+            echo "ae-next installer: rollback could not remove created directory: $path" >&2
+            recovery_rc=1
+        fi
+    done
+    return "$recovery_rc"
+}
+
+remote_recover_existing_journal() {
+    local home="$1" journal
+    journal="$home/.ae-next-install.journal"
+    if [ -L "$journal" ]; then
+        remote_die "install journal is a symlink, refusing to read it: $journal"
+        return 1
+    fi
+    if [ -e "$journal" ] && [ ! -f "$journal" ]; then
+        remote_die "install journal is not a regular file: $journal"
+        return 1
+    fi
+    if [ -f "$journal" ]; then
+        echo "ae-next installer: recovering interrupted install from $journal" >&2
+        if ! remote_recover_journal "$journal" "$home"; then
+            echo "ae-next installer: previous rollback incomplete; journal preserved at $journal; rerun installer to recover." >&2
+            return 1
+        fi
+        if ! rm -f "$journal"; then
+            echo "ae-next installer: recovery succeeded but journal could not be removed; journal preserved at $journal; rerun installer to recover." >&2
+            return 1
+        fi
+    fi
+}
+
+remote_atomic_symlink_replace() {
+    local source="$1" destination="$2"
+    case "$(uname -s)" in
+        Darwin)
+            # BSD mv follows a destination symlink to a directory unless -h
+            # is set; keep this rename on the pointer itself.
+            mv -hf "$source" "$destination"
+            ;;
+        *)
+            # GNU mv uses -T for the same no-follow destination semantics.
+            mv -fT "$source" "$destination"
+            ;;
+    esac
+}
+
+remote_restore() {
+    local rc="${1:-$?}" recovery_rc=0
+    trap - EXIT INT TERM HUP
+    # A trap is a failure path: one reversal must never prevent the others.
+    set +e
+    if [ -n "$_REMOTE_JOURNAL" ] && [ -f "$_REMOTE_JOURNAL" ]; then
+        remote_recover_journal "$_REMOTE_JOURNAL" "$_REMOTE_JOURNAL_HOME" || recovery_rc=1
+        if [ "$recovery_rc" -eq 0 ] && ! rm -f "$_REMOTE_JOURNAL"; then
+            echo "ae-next installer: rollback restored values but could not remove journal" >&2
+            recovery_rc=1
+        fi
+    fi
+    if [ -n "$_REMOTE_STAGE" ]; then
+        chmod 0755 "$_REMOTE_STAGE" "$_REMOTE_STAGE"/* 2>/dev/null || true
+        rm -rf "$_REMOTE_STAGE" || recovery_rc=1
+    fi
+    [ -z "$_REMOTE_TMP" ] || rm -rf "$_REMOTE_TMP" || recovery_rc=1
+    if [ "$recovery_rc" -ne 0 ]; then
+        echo "ae-next installer: rollback incomplete; journal preserved at $_REMOTE_JOURNAL; rerun installer to recover." >&2
+        exit 1
+    fi
+    exit "$rc"
+}
+
+remote_test_failure() {
+    # Test-only knob: it can force a failure after a publication step, never
+    # skip checksum, path, or payload validation.
+    case "${AE_NEXT_INSTALL_TEST_FAIL_AFTER:-}" in
+        "$1")
+            remote_die "test failure injected after $1"
+            return 1
+            ;;
+        term-"$1" | signal-"$1")
+            echo "ae-next installer: test sending TERM after $1" >&2
+            kill -TERM "${BASHPID:-$$}"
+            return 1
+            ;;
+    esac
+}
+
+remote_main() {
+    local platform requested version repository release_ref sums archive archive_path
+    local root extracted version_dir versions core_root compat_dir current_pointer config link
+    local stage compat_stage file source core_version list_file entry temp pointer_target suffix
+    local home link_parent core_had=0 core_old="" current_had=0 current_old=""
+    local link_had=0 link_old="" config_had=0
+    remote_reset_state
+    remote_fixed_paths || return 1
+    home="$_REMOTE_FIXED_HOME"
+    link="$_REMOTE_FIXED_LINK"
+    if ! remote_recover_existing_journal "$home"; then
+        return 1
+    fi
+    if ! platform="$(remote_detect_platform)"; then
+        return 1
+    fi
+    requested="$(remote_select_version "${AE_VERSION:-}")" || return 1
+    repository="${AE_REPOSITORY:-$REMOTE_REPOSITORY_DEFAULT}"
+    case "$repository" in
+        https://*) ;;
+        *)
+            remote_die "AE_REPOSITORY must use https://"
+            return 1
+            ;;
+    esac
+    _REMOTE_TMP="$(mktemp -d "${TMPDIR:-/tmp}/ae-next-install.XXXXXX")"
+    _REMOTE_JOURNAL_HOME="$home"
+    trap 'remote_restore "$?"' EXIT
+    trap 'remote_restore 130' INT
+    trap 'remote_restore 143' TERM
+    trap 'remote_restore 129' HUP
+
+    if [ -n "${AE_NEXT_BUNDLE:-}" ]; then
+        archive_path="$AE_NEXT_BUNDLE"
+        if [ ! -f "$archive_path" ]; then
+            remote_die "AE_NEXT_BUNDLE does not name a file: $archive_path"
+            return 1
+        fi
+        sums="${AE_NEXT_SUMS:-$(dirname "$archive_path")/SHA256SUMS}"
+        if [ ! -f "$sums" ]; then
+            remote_die "checksum file is missing: $sums"
+            return 1
+        fi
+        archive="$(basename "$archive_path")"
+        cp "$archive_path" "$_REMOTE_TMP/$archive"
+        archive_path="$_REMOTE_TMP/$archive"
+    else
+        if [ "$requested" = "latest" ]; then
+            release_ref="latest"
+        else
+            release_ref="v$requested"
+        fi
+        sums="$_REMOTE_TMP/SHA256SUMS"
+        if ! remote_download "$repository/releases/$release_ref/download/SHA256SUMS" "$sums"; then
+            remote_die "could not download SHA256SUMS"
+            return 1
+        fi
+        if [ "$requested" = "latest" ]; then
+            archive="$(remote_latest_archive "$sums" "$platform")"
+            if [ -z "$archive" ]; then
+                remote_die "latest release has no $platform bundle"
+                return 1
+            fi
+            version="${archive#ae-next-}"
+            suffix="-$platform.tar.gz"
+            version="${version%"$suffix"}"
+            version="$(remote_select_version "$version")" || return 1
+        else
+            version="$requested"
+            archive="$(remote_archive_name "$version" "$platform")"
+        fi
+        archive_path="$_REMOTE_TMP/$archive"
+        if ! remote_download "$repository/releases/$release_ref/download/$archive" "$archive_path"; then
+            remote_die "could not download $archive"
+            return 1
+        fi
+    fi
+    [ "$requested" = "latest" ] && [ -n "${version:-}" ] || version="${version:-${archive#ae-next-}}"
+    if [ -z "${version:-}" ] || [[ "$version" == *-darwin-arm64.tar.gz || "$version" == *-linux-x86_64-musl.tar.gz ]]; then
+        version="${archive#ae-next-}"
+        suffix="-$platform.tar.gz"
+        version="${version%"$suffix"}"
+    fi
+    archive="$(remote_archive_name "$version" "$platform")"
+    remote_verify_checksum "$sums" "$archive_path" "$(basename "$archive_path")" || return 1
+
+    root="ae-next-$version-$platform"
+    extracted="$_REMOTE_TMP/extracted"
+    mkdir -p "$extracted"
+    list_file="$_REMOTE_TMP/tar-list"
+    if ! tar -tzf "$archive_path" >"$list_file"; then
+        remote_die "archive is not a readable gzip tarball"
+        return 1
+    fi
+    while IFS= read -r entry; do
+        case "$entry" in
+            "$root/" | "$root/ae" | "$root/ae-next" | "$root/ae-core" | "$root/install-remote") ;;
+            *)
+                remote_die "archive contains an unexpected path: $entry"
+                return 1
+                ;;
+        esac
+    done <"$list_file"
+    if ! tar -xzf "$archive_path" -C "$extracted"; then
+        remote_die "archive extraction failed"
+        return 1
+    fi
+    source="$extracted/$root"
+    for file in ae ae-next ae-core install-remote; do
+        if [ ! -f "$source/$file" ]; then
+            remote_die "archive is missing $file"
+            return 1
+        fi
+        if [ -L "$source/$file" ]; then
+            remote_die "archive contains a symlink for $file"
+            return 1
+        fi
+    done
+    if [ ! -x "$source/ae" ]; then
+        remote_die "archive glue is not executable"
+        return 1
+    fi
+    if [ ! -x "$source/ae-next" ]; then
+        remote_die "archive wrapper is not executable"
+        return 1
+    fi
+    if [ ! -x "$source/ae-core" ]; then
+        remote_die "archive core is not executable"
+        return 1
+    fi
+    if ! core_version="$("$source/ae-core" --version 2>/dev/null | head -1)"; then
+        remote_die "archive core did not run"
+        return 1
+    fi
+    core_version="${core_version##* }"
+    if [ "$core_version" != "$version" ]; then
+        remote_die "archive core reports $core_version, expected $version"
+        return 1
+    fi
+
+    versions="$home/versions"
+    core_root="$home/core"
+    current_pointer="$home/current"
+    config="$home/config"
+    remote_validate_bin_destination "$link" "$home" || return 1
+    mkdir -p "$home"
+    remote_require_dir "$home" "ae-next home"
+    remote_require_dir "$versions" "version directory"
+    remote_require_dir "$core_root" "core directory"
+    remote_require_regular_or_absent "$core_root/current" "core/current"
+    remote_require_regular_or_absent "$config" "ae-next config"
+    if [ -e "$current_pointer" ] && [ ! -L "$current_pointer" ]; then
+        remote_die "current is not the published ae-next pointer: $current_pointer"
+        return 1
+    fi
+
+    if [ -L "$current_pointer" ]; then
+        current_had=1
+        current_old="$(readlink "$current_pointer")"
+    fi
+    if [ -f "$core_root/current" ]; then
+        core_had=1
+        core_old="$(cat "$core_root/current")"
+    fi
+    if [ -L "$link" ]; then
+        link_had=1
+        link_old="$(readlink "$link")"
+    fi
+    if [ -e "$config" ]; then
+        config_had=1
+    fi
+    _REMOTE_JOURNAL="$home/.ae-next-install.journal"
+    if ! remote_journal_create "$_REMOTE_JOURNAL" "$home" "$version" "$core_root/current" "$core_had" "$core_old" \
+        "$current_pointer" "$current_had" "$current_old" "$link" "$link_had" "$link_old" \
+        "$config" "$config_had"; then
+        return 1
+    fi
+    if [ ! -d "$versions" ]; then
+        if ! remote_journal_add_dir rmdir "$versions"; then
+            remote_die "could not prepare version directory journal: $versions"
+            return 1
+        fi
+        remote_test_failure mkdir-versions
+        if ! mkdir "$versions"; then
+            remote_die "could not create version directory: $versions"
+            return 1
+        fi
+    fi
+    if [ ! -d "$core_root" ]; then
+        if ! remote_journal_add_dir rmdir "$core_root"; then
+            remote_die "could not prepare core directory journal: $core_root"
+            return 1
+        fi
+        remote_test_failure mkdir-core
+        if ! mkdir "$core_root"; then
+            remote_die "could not create core directory: $core_root"
+            return 1
+        fi
+    fi
+
+    version_dir="$versions/$version"
+    remote_require_dir "$version_dir" "installed version directory"
+    if [ -d "$version_dir" ]; then
+        for file in ae ae-next ae-core install-remote; do
+            if ! remote_require_regular_file "$version_dir/$file" "installed version member"; then
+                return 1
+            fi
+        done
+        for file in ae ae-next ae-core install-remote; do
+            if ! cmp -s "$source/$file" "$version_dir/$file"; then
+                remote_die "version $version is already installed with different bytes"
+                return 1
+            fi
+        done
+        chmod 0555 "$version_dir" "$version_dir/ae" "$version_dir/ae-next" "$version_dir/ae-core" "$version_dir/install-remote"
+    else
+        stage="$(mktemp -d "$versions/.stage.XXXXXX")"
+        _REMOTE_STAGE="$stage"
+        for file in ae ae-next ae-core install-remote; do
+            cp "$source/$file" "$stage/$file"
+            chmod 0555 "$stage/$file"
+        done
+        chmod 0555 "$stage"
+        mv "$stage" "$version_dir"
+        _REMOTE_STAGE=""
+    fi
+
+    # Preserve the compatibility layout used by the prebuilt-aware frozen
+    # glue and by sessions from the checkout-local installer: existing sessions
+    # pin an absolute core/<version>/ae path. The new pair is additive; this
+    # leaf is an immutable compatibility copy, never a move or replacement of
+    # an existing version's bytes.
+    compat_dir="$core_root/$version"
+    _REMOTE_COMPAT_DIR="$compat_dir"
+    remote_require_dir "$compat_dir" "compatibility core version directory"
+    if [ -d "$compat_dir" ]; then
+        if [ ! -f "$compat_dir/ae" ]; then
+            remote_die "compatibility core directory has no ae binary: $compat_dir"
+            return 1
+        fi
+        if [ -L "$compat_dir/ae" ]; then
+            remote_die "compatibility core binary is a symlink: $compat_dir/ae"
+            return 1
+        fi
+        if ! cmp -s "$source/ae-core" "$compat_dir/ae"; then
+            remote_die "core $version is already installed with different bytes"
+            return 1
+        fi
+        chmod 0555 "$compat_dir" "$compat_dir/ae"
+    else
+        compat_stage="$(mktemp -d "$core_root/.stage-core.XXXXXX")"
+        _REMOTE_STAGE="$compat_stage"
+        cp "$source/ae-core" "$compat_stage/ae"
+        chmod 0555 "$compat_stage/ae" "$compat_stage"
+        mv "$compat_stage" "$compat_dir"
+        _REMOTE_STAGE=""
+    fi
+    remote_test_failure stage
+
+    if [ ! -e "$config" ]; then
+        temp="$(mktemp "$home/.config.XXXXXX")"
+        printf '[telegram]\nenabled = false\n' >"$temp"
+        mv "$temp" "$config"
+    fi
+
+    pointer_target="$compat_dir/ae"
+    temp="$(mktemp "$core_root/.current.XXXXXX")"
+    printf '%s\n' "$pointer_target" >"$temp"
+    mv "$temp" "$core_root/current"
+    remote_test_failure core
+
+    temp="$home/.current.$$"
+    rm -f "$temp"
+    ln -s "$version_dir" "$temp"
+    remote_atomic_symlink_replace "$temp" "$current_pointer"
+    remote_test_failure current
+
+    link_parent="$(dirname "$link")"
+    remote_mkdir_recorded "$link_parent" mkdir-link-parent
+    temp="$link_parent/.ae-next.$$"
+    rm -f "$temp"
+    ln -s "$home/current/ae-next" "$temp"
+    remote_atomic_symlink_replace "$temp" "$link"
+    remote_test_failure link
+
+    if ! rm -f "$_REMOTE_JOURNAL"; then
+        remote_die "install succeeded but journal could not be removed; journal preserved at $_REMOTE_JOURNAL; rerun installer to recover."
+        return 1
+    fi
+    _REMOTE_JOURNAL=""
+    trap - EXIT INT TERM HUP
+    rm -rf "$_REMOTE_TMP"
+    echo "ae-next: installed $version for $platform under $version_dir"
+}
+
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+    remote_main "$@"
+fi

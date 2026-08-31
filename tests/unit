@@ -14735,6 +14735,968 @@ unset _calver_root _calver_real_git _calver_real_mv _calver_real_cp _calver_janu
     _calver_partial_backup _calver_partial_backup_before _calver_partial_backup_rc _calver_partial_backup_out \
     _calver_justfile
 
+# ── ae-next remote installer ─────────────────────────────────────────
+# The installer has a guarded main, so its pure platform/version/checksum
+# functions can be sourced without downloading or touching a user's home.
+_remote_installer="$(dirname "$AE_BIN")/contrib/ae-next/install-remote"
+# shellcheck source=/dev/null
+source "$_remote_installer"
+_remote_installer_source="$(cat "$_remote_installer")"
+assert_eq "remote installer sanity: checksum gate call remains present" "1" \
+    "$([[ "$_remote_installer_source" == *'remote_verify_checksum "$sums" "$archive_path"'* ]] && echo 1 || echo 0)"
+assert_eq "remote installer sanity: unknown-platform refusal remains present" "1" \
+    "$([[ "$_remote_installer_source" == *'unsupported platform:'* && "$_remote_installer_source" == *'*)'* ]] && echo 1 || echo 0)"
+
+_remote_r12_vocab_root="$(mktemp -d "${TMPDIR:-/tmp}/ae-r12-vocab.XXXXXX")"
+_remote_r12_vocab_journal="$_remote_r12_vocab_root/journal"
+printf 'sentinel\n' >"$_remote_r12_vocab_journal"
+_REMOTE_JOURNAL="$_remote_r12_vocab_journal"
+_remote_r12_vocab_rc=0
+set +e
+remote_journal_add_dir rm "$_remote_r12_vocab_root/victim" \
+    >"$_remote_r12_vocab_root/out" 2>"$_remote_r12_vocab_root/err"
+_remote_r12_vocab_rc=$?
+set -e
+assert_eq "remote installer r12: producer rejects rm journal action" "1" "$_remote_r12_vocab_rc"
+assert_eq "remote installer r12: producer rejection uses internal error" "1" \
+    "$(grep -F -c 'internal error: unknown journal directory action: rm' "$_remote_r12_vocab_root/err" || true)"
+assert_eq "remote installer r12: producer rejection leaves journal unchanged" "sentinel" \
+    "$(cat "$_remote_r12_vocab_journal")"
+rm -rf "$_remote_r12_vocab_root"
+_REMOTE_JOURNAL=""
+
+_remote_home_reason_test() {
+    local script="$1" label="$2" root case_variant distinct exact missing missing_root
+    eval "$(awk '/^_ae_next_home_reason\(\) \{/,/^\}$/' "$script")"
+    root="$(mktemp -d "${TMPDIR:-/tmp}/ae-home-reason.XXXXXX")"
+    mkdir -p "$root/.ae" "$root/.ae-next"
+    case_variant="$(HOME="$root" _ae_next_home_reason "$root/.AE")"
+    if [ -d "$root/.AE" ]; then
+        assert_eq "remote installer $label: case-insensitive identity branch refuses case variant" "1" \
+            "$([[ "$case_variant" == *'AE_NEXT_HOME resolves to the legacy ae home'* ]] && echo 1 || echo 0)"
+    else
+        assert_eq "remote installer $label: case-sensitive identity branch accepts distinct case variant" "1" \
+            "$([[ -z "$case_variant" ]] && echo 1 || echo 0)"
+    fi
+    distinct="$(HOME="$root" _ae_next_home_reason "$root/.ae-next")"
+    assert_eq "remote installer $label: distinct home is accepted" "1" \
+        "$([[ -z "$distinct" ]] && echo 1 || echo 0)"
+    exact="$(HOME="$root" _ae_next_home_reason "$root/.ae")"
+    assert_eq "remote installer $label: exact legacy home remains refused" "1" \
+        "$([[ "$exact" == *'AE_NEXT_HOME resolves to the legacy ae home'* ]] && echo 1 || echo 0)"
+    missing_root="$(mktemp -d "${TMPDIR:-/tmp}/ae-home-reason-missing.XXXXXX")"
+    missing="$(HOME="$missing_root" _ae_next_home_reason "$missing_root/.ae")"
+    assert_eq "remote installer $label: nonexistent exact legacy home uses string refusal" "1" \
+        "$([[ "$missing" == *'AE_NEXT_HOME resolves to the legacy ae home'* ]] && echo 1 || echo 0)"
+    rm -rf "$root" "$missing_root"
+}
+_remote_home_reason_test "$(dirname "$AE_BIN")/contrib/ae-next/ae-next" wrapper
+_remote_home_reason_test "$(dirname "$AE_BIN")/contrib/ae-next/install" checkout-installer
+
+_remote_home_prepare_probe() {
+    local root="$1" candidate="$2"
+    HOME="$root"
+    export HOME
+    _ae_next_home_prepare "$candidate"
+}
+_remote_home_prepare_test() {
+    local script="$1" label="$2" root candidate output rc fs_probe fs_branch
+    eval "$(awk '/^_ae_next_home_reason\(\) \{/,/^\}$/' "$script")"
+    eval "$(awk '/^_ae_next_home_prepare\(\) \{/,/^\}$/' "$script")"
+
+    fs_probe="$(mktemp -d "${TMPDIR:-/tmp}/ae-home-fs-probe.XXXXXX")"
+    mkdir "$fs_probe/.AE"
+    if [ -d "$fs_probe/.ae" ]; then
+        fs_branch=case-insensitive
+    else
+        fs_branch=case-sensitive
+    fi
+    rmdir "$fs_probe/.AE"
+    rmdir "$fs_probe"
+
+    root="$(mktemp -d "${TMPDIR:-/tmp}/ae-home-prepare-fresh.XXXXXX")"
+    candidate="$root/.AE"
+    rc=0
+    set +e
+    output="$(_remote_home_prepare_probe "$root" "$candidate")"
+    rc=$?
+    set -e
+    if [ "$fs_branch" = case-insensitive ]; then
+        assert_eq "remote installer $label r8c: fresh case-variant branch refuses" "1" "$rc"
+        assert_eq "remote installer $label r8c: fresh case-variant refusal names AE_NEXT_HOME" "1" \
+            "$([[ "$output" == *'AE_NEXT_HOME resolves to the legacy ae home'* ]] && echo 1 || echo 0)"
+        assert_eq "remote installer $label r8c: fresh case-variant root is removed" "0" \
+            "$([[ ! -e "$candidate" && ! -L "$candidate" ]] && echo 0 || echo 1)"
+    else
+        assert_eq "remote installer $label r8c: fresh case-sensitive branch accepts" "0" "$rc"
+        assert_eq "remote installer $label r8c: fresh case-sensitive root remains" "0" \
+            "$([[ -d "$candidate" ]] && echo 0 || echo 1)"
+        rmdir "$candidate"
+    fi
+    rm -rf "$root"
+
+    root="$(mktemp -d "${TMPDIR:-/tmp}/ae-home-prepare-existing.XXXXXX")"
+    mkdir -p "$root/.ae"
+    candidate="$root/.AE"
+    rc=0
+    set +e
+    output="$(_remote_home_prepare_probe "$root" "$candidate")"
+    rc=$?
+    set -e
+    if [ "$fs_branch" = case-insensitive ]; then
+        assert_eq "remote installer $label r8c: pre-existing case alias refuses" "1" "$rc"
+        assert_eq "remote installer $label r8c: pre-existing alias refusal names AE_NEXT_HOME" "1" \
+            "$([[ "$output" == *'AE_NEXT_HOME resolves to the legacy ae home'* ]] && echo 1 || echo 0)"
+        assert_eq "remote installer $label r8c: pre-existing alias is preserved" "0" \
+            "$([[ -d "$candidate" ]] && echo 0 || echo 1)"
+    else
+        assert_eq "remote installer $label r8c: pre-existing case-sensitive root accepts" "0" "$rc"
+        assert_eq "remote installer $label r8c: case-sensitive candidate is created" "0" \
+            "$([[ -d "$candidate" ]] && echo 0 || echo 1)"
+    fi
+    rm -rf "$root"
+
+    root="$(mktemp -d "${TMPDIR:-/tmp}/ae-home-prepare-distinct.XXXXXX")"
+    candidate="$root/custom-home"
+    rc=0
+    set +e
+    output="$(_remote_home_prepare_probe "$root" "$candidate")"
+    rc=$?
+    set -e
+    assert_eq "remote installer $label r8c: distinct fresh home is accepted" "0" "$rc"
+    assert_eq "remote installer $label r8c: distinct fresh home exists" "0" \
+        "$([[ -d "$candidate" ]] && echo 0 || echo 1)"
+    rm -rf "$root"
+}
+_remote_home_prepare_test "$(dirname "$AE_BIN")/contrib/ae-next/install" checkout-installer
+
+assert_eq "remote installer: Apple Silicon maps to darwin-arm64" "darwin-arm64" \
+    "$(remote_platform Darwin arm64)"
+assert_eq "remote installer: x86_64 Linux maps to linux-x86_64-musl" "linux-x86_64-musl" \
+    "$(remote_platform Linux x86_64)"
+_remote_platform_rc=0
+remote_platform Darwin x86_64 >/dev/null 2>"${TMPDIR:-/tmp}/ae-remote-platform.err" || _remote_platform_rc=$?
+assert_eq "remote installer: Intel Mac is rejected" "1" "$_remote_platform_rc"
+_remote_platform_rc=0
+remote_platform Linux aarch64 >/dev/null 2>"${TMPDIR:-/tmp}/ae-remote-platform.err" || _remote_platform_rc=$?
+assert_eq "remote installer: Linux ARM is rejected" "1" "$_remote_platform_rc"
+_remote_platform_rc=0
+remote_platform MINGW64_NT x86_64 >/dev/null 2>"${TMPDIR:-/tmp}/ae-remote-platform.err" || _remote_platform_rc=$?
+assert_eq "remote installer: Windows/MSYS is rejected" "1" "$_remote_platform_rc"
+rm -f "${TMPDIR:-/tmp}/ae-remote-platform.err"
+
+assert_eq "remote installer: unpinned version selects latest" "latest" "$(remote_select_version "")"
+assert_eq "remote installer: pinned version strips v" "2026.8.1" "$(remote_select_version v2026.8.1)"
+_remote_version_rc=0
+remote_select_version bad >/dev/null 2>&1 || _remote_version_rc=$?
+assert_eq "remote installer: malformed pinned version is rejected" "1" "$_remote_version_rc"
+
+_remote_tmp_root="${TMPDIR:-/tmp}"
+_remote_tmp_root="${_remote_tmp_root%/}"
+_remote_fixture="$(mktemp -d "$_remote_tmp_root/ae-remote-unit.XXXXXX")"
+printf 'fixture-payload\n' >"$_remote_fixture/bundle.tar.gz"
+_remote_digest="$(remote_sha256 "$_remote_fixture/bundle.tar.gz")"
+printf '%s  bundle.tar.gz\n' "$_remote_digest" >"$_remote_fixture/SHA256SUMS"
+_remote_checksum_rc=0
+remote_verify_checksum "$_remote_fixture/SHA256SUMS" "$_remote_fixture/bundle.tar.gz" >/dev/null 2>&1 || _remote_checksum_rc=$?
+assert_eq "remote installer: matching SHA256SUMS entry is accepted" "0" "$_remote_checksum_rc"
+printf '%064d  bundle.tar.gz\n' 0 >"$_remote_fixture/bad-SHA256SUMS"
+_remote_checksum_rc=0
+remote_verify_checksum "$_remote_fixture/bad-SHA256SUMS" "$_remote_fixture/bundle.tar.gz" >/dev/null 2>&1 || _remote_checksum_rc=$?
+assert_eq "remote installer: checksum mismatch is refused" "1" "$_remote_checksum_rc"
+
+# Fixture bundle for the atomic publication check. The fake core is the only
+# executable payload; no network and no repository path are involved.
+_remote_make_bundle() {
+    local version="$1" root="$2" dir digest
+    dir="$_remote_fixture/$root"
+    mkdir -p "$dir"
+    printf '#!/usr/bin/env bash\nprintf "ae %s\\n" --version\n' "$version" >"$dir/ae-core"
+    cp "$AE_BIN" "$dir/ae"
+    cp "$(dirname "$AE_BIN")/contrib/ae-next/ae-next" "$dir/ae-next"
+    cp "$_remote_installer" "$dir/install-remote"
+    chmod +x "$dir/ae-core" "$dir/ae" "$dir/ae-next" "$dir/install-remote"
+    tar -czf "$_remote_fixture/$root.tar.gz" -C "$_remote_fixture" "$root"
+    digest="$(remote_sha256 "$_remote_fixture/$root.tar.gz")"
+    printf '%s  %s.tar.gz\n' "$digest" "$root" >"$_remote_fixture/$root-SHA256SUMS"
+}
+_remote_make_bundle 2026.8.1 ae-next-2026.8.1-darwin-arm64
+_remote_make_bundle 2026.8.2 ae-next-2026.8.2-darwin-arm64
+_remote_home="$_remote_fixture/home"
+mkdir -p "$_remote_home"
+(
+    set -e
+    HOME="$_remote_home" AE_VERSION=2026.8.1 \
+        AE_NEXT_BUNDLE="$_remote_fixture/ae-next-2026.8.1-darwin-arm64.tar.gz" \
+        AE_NEXT_SUMS="$_remote_fixture/ae-next-2026.8.1-darwin-arm64-SHA256SUMS" \
+        remote_main
+) >/dev/null 2>&1
+_remote_old_current="$(readlink "$_remote_home/.ae-next/current")"
+_remote_old_core="$(cat "$_remote_home/.ae-next/core/current")"
+_remote_mode() {
+    stat -f '%Lp' "$1" 2>/dev/null || stat -c '%a' "$1"
+}
+_remote_pair_mode=1
+for _remote_pair_file in ae ae-next ae-core install-remote; do
+    [ "$(_remote_mode "$_remote_home/.ae-next/versions/2026.8.1/$_remote_pair_file")" = "555" ] || _remote_pair_mode=0
+done
+assert_eq "remote installer: installed pair files are immutable 0555" "1" "$_remote_pair_mode"
+assert_eq "remote installer acceptance: complete pair version directory is immutable 0555" "555" \
+    "$(_remote_mode "$_remote_home/.ae-next/versions/2026.8.1")"
+assert_eq "remote installer acceptance: current points at the complete version pair" \
+    "$_remote_home/.ae-next/versions/2026.8.1" "$_remote_old_current"
+_remote_trailing_home="$(mktemp -d "$_remote_fixture/trailing-home.XXXXXX")"
+_remote_trailing_rc=0
+set +e
+(
+    set -e
+    HOME="$_remote_trailing_home/" AE_VERSION=2026.8.1 \
+        AE_NEXT_BUNDLE="$_remote_fixture/ae-next-2026.8.1-darwin-arm64.tar.gz" \
+        AE_NEXT_SUMS="$_remote_fixture/ae-next-2026.8.1-darwin-arm64-SHA256SUMS" remote_main
+) >"$_remote_trailing_home/out" 2>"$_remote_trailing_home/err"
+_remote_trailing_rc=$?
+set -e
+assert_eq "remote installer surface: one trailing HOME slash is tolerated" "0" "$_remote_trailing_rc"
+assert_eq "remote installer surface: trailing HOME uses fixed current path" \
+    "$_remote_trailing_home/.ae-next/versions/2026.8.1" \
+    "$(readlink "$_remote_trailing_home/.ae-next/current")"
+assert_eq "remote installer surface: trailing HOME uses fixed link path" \
+    "$_remote_trailing_home/.ae-next/current/ae-next" \
+    "$(readlink "$_remote_trailing_home/.local/bin/ae-next")"
+_remote_live_rc=0
+_remote_live_output=""
+rm -rf "$_remote_fixture/ae-next-2026.8.1-darwin-arm64"
+_remote_live_output="$(HOME="$_remote_home" \
+    "$_remote_home/.local/bin/ae-next" --version 2>/dev/null)" || _remote_live_rc=$?
+assert_eq "remote installer acceptance: deleting checkout does not affect a new ae-next session" "0" "$_remote_live_rc"
+assert_eq "remote installer acceptance: installed wrapper executes its bundled glue" "ae 2026.8.1" "$_remote_live_output"
+_remote_failure_rc=0
+set +e
+(
+    set -e
+    HOME="$_remote_home" AE_VERSION=2026.8.2 \
+        AE_NEXT_BUNDLE="$_remote_fixture/ae-next-2026.8.2-darwin-arm64.tar.gz" \
+        AE_NEXT_SUMS="$_remote_fixture/ae-next-2026.8.2-darwin-arm64-SHA256SUMS" \
+        AE_NEXT_INSTALL_TEST_FAIL_AFTER=current remote_main
+) >/dev/null 2>&1
+_remote_failure_rc=$?
+set -e
+assert_eq "remote installer: injected mid-install failure is nonzero" "1" "$_remote_failure_rc"
+assert_eq "remote installer: failed install leaves current pointer unchanged" "$_remote_old_current" \
+    "$(readlink "$_remote_home/.ae-next/current")"
+assert_eq "remote installer: failed install leaves core/current unchanged" "$_remote_old_core" \
+    "$(cat "$_remote_home/.ae-next/core/current")"
+assert_eq "remote installer: failed install retains complete published version" "0" \
+    "$([[ -d "$_remote_home/.ae-next/versions/2026.8.2" ]] && echo 0 || echo 1)"
+
+# Fresh-install signal windows: each TERM lands after the durable journal
+# records a directory but before mkdir. Recovery must treat an absent target as
+# already undone, then a rerun must recover first and complete the install.
+_remote_fresh_mkdir_boundary() {
+    local boundary="$1" home="$_remote_fixture/fresh-$1" rc=0
+    mkdir -p "$home"
+    set +e
+    (
+        set -e
+        HOME="$home" AE_VERSION=2026.8.1 \
+            AE_NEXT_BUNDLE="$_remote_fixture/ae-next-2026.8.1-darwin-arm64.tar.gz" \
+            AE_NEXT_SUMS="$_remote_fixture/ae-next-2026.8.1-darwin-arm64-SHA256SUMS" \
+            AE_NEXT_INSTALL_TEST_FAIL_AFTER="term-$boundary" remote_main
+    ) >"$home/fail.out" 2>&1
+    rc=$?
+    set -e
+    assert_eq "remote installer fresh acceptance: TERM after journal-add $boundary exits 143" "143" "$rc"
+    assert_eq "remote installer fresh acceptance: TERM after journal-add $boundary removes journal" "0" \
+        "$([[ ! -e "$home/.ae-next/.ae-next-install.journal" ]] && echo 0 || echo 1)"
+    set +e
+    (
+        set -e
+        HOME="$home" AE_VERSION=2026.8.1 \
+            AE_NEXT_BUNDLE="$_remote_fixture/ae-next-2026.8.1-darwin-arm64.tar.gz" \
+            AE_NEXT_SUMS="$_remote_fixture/ae-next-2026.8.1-darwin-arm64-SHA256SUMS" remote_main
+    ) >"$home/recover.out" 2>&1
+    rc=$?
+    set -e
+    assert_eq "remote installer fresh acceptance: rerun after $boundary completes" "0" "$rc"
+    assert_eq "remote installer fresh acceptance: rerun after $boundary publishes current" \
+        "$home/.ae-next/versions/2026.8.1" "$(readlink "$home/.ae-next/current")"
+    assert_eq "remote installer fresh acceptance: rerun after $boundary removes journal" "0" \
+        "$([[ ! -e "$home/.ae-next/.ae-next-install.journal" ]] && echo 0 || echo 1)"
+}
+_remote_fresh_mkdir_boundary mkdir-versions
+_remote_fresh_mkdir_boundary mkdir-core
+_remote_fresh_mkdir_boundary mkdir-link-parent
+
+_remote_r4_journal_root="$(mktemp -d "$_remote_fixture/r4-journal.XXXXXX")"
+_remote_r4_journal_home="$_remote_r4_journal_root/.ae-next"
+mkdir -p "$_remote_r4_journal_home"
+_remote_r4_journal="$_remote_r4_journal_home/.ae-next-install.journal"
+{
+    printf 'format=1\n'
+    printf 'version=2026.8.1\n'
+    printf 'home=%s\n' "$_remote_r4_journal_home"
+    printf 'core_pointer=%s/core/current\n' "$_remote_r4_journal_home"
+    printf 'core_had=0\ncore_old=\n'
+    printf 'current_pointer=%s/current\n' "$_remote_r4_journal_home"
+    printf 'current_had=0\ncurrent_old=\n'
+    printf 'link=%s/config\nlink_had=0\nlink_old=\n' "$_remote_r4_journal_home"
+    printf 'config=%s/config\nconfig_had=0\n' "$_remote_r4_journal_home"
+} >"$_remote_r4_journal"
+_remote_r4_journal_rc=0
+set +e
+(
+    set -e
+    HOME="$_remote_r4_journal_root" remote_recover_journal \
+        "$_remote_r4_journal" "$_remote_r4_journal_home"
+) >"$_remote_r4_journal_root/out" 2>"$_remote_r4_journal_root/err"
+_remote_r4_journal_rc=$?
+set -e
+assert_eq "remote installer r4: journal link inside home is refused" "1" "$_remote_r4_journal_rc"
+assert_eq "remote installer r4: journal-side refusal names protected home" "1" \
+    "$(grep -F -c 'must not point inside the ae-next home' "$_remote_r4_journal_root/err" || true)"
+assert_eq "remote installer r4: malformed protected journal remains for diagnosis" "1" \
+    "$([[ -f "$_remote_r4_journal" ]] && echo 1 || echo 0)"
+
+# A dangling destination parent must fail before the walker records a directory
+# reversal. The EXIT rollback removes the journal, and removing the dangling
+# link makes the next real install succeed rather than wedge recovery forever.
+_remote_r4_dangling_root="$(mktemp -d "$_remote_fixture/r4-dangling.XXXXXX")"
+mkdir -p "$_remote_r4_dangling_root/.ae-next"
+mkdir -p "$_remote_r4_dangling_root"
+ln -s "$_remote_r4_dangling_root/missing-parent" "$_remote_r4_dangling_root/.local"
+_remote_r4_dangling_rc=0
+set +e
+(
+    set -e
+    HOME="$_remote_r4_dangling_root" AE_VERSION=2026.8.1 \
+        AE_NEXT_BUNDLE="$_remote_fixture/ae-next-2026.8.1-darwin-arm64.tar.gz" \
+        AE_NEXT_SUMS="$_remote_fixture/ae-next-2026.8.1-darwin-arm64-SHA256SUMS" remote_main
+) >"$_remote_r4_dangling_root/out" 2>"$_remote_r4_dangling_root/err"
+_remote_r4_dangling_rc=$?
+set -e
+assert_eq "remote installer r4: dangling parent is refused" "1" "$_remote_r4_dangling_rc"
+assert_eq "remote installer r4: dangling refusal names symlink path" "1" \
+    "$(grep -F -c 'cannot create directory through a symlink' "$_remote_r4_dangling_root/err" || true)"
+assert_eq "remote installer r4: dangling refusal leaves no journal" "0" \
+    "$([[ ! -e "$_remote_r4_dangling_root/.ae-next/.ae-next-install.journal" && \
+        ! -L "$_remote_r4_dangling_root/.ae-next/.ae-next-install.journal" ]] && echo 0 || echo 1)"
+rm -f "$_remote_r4_dangling_root/.local"
+_remote_r4_dangling_rerun_rc=0
+set +e
+(
+    set -e
+    HOME="$_remote_r4_dangling_root" AE_VERSION=2026.8.1 \
+        AE_NEXT_BUNDLE="$_remote_fixture/ae-next-2026.8.1-darwin-arm64.tar.gz" \
+        AE_NEXT_SUMS="$_remote_fixture/ae-next-2026.8.1-darwin-arm64-SHA256SUMS" remote_main
+) >"$_remote_r4_dangling_root/rerun.out" 2>"$_remote_r4_dangling_root/rerun.err"
+_remote_r4_dangling_rerun_rc=$?
+set -e
+assert_eq "remote installer r4: cleared dangling parent reruns cleanly" "0" "$_remote_r4_dangling_rerun_rc"
+assert_eq "remote installer r4: cleared dangling parent publishes link" \
+    "$_remote_r4_dangling_root/.ae-next/current/ae-next" "$(readlink "$_remote_r4_dangling_root/.local/bin/ae-next")"
+assert_eq "remote installer r4: cleared dangling parent leaves no journal" "0" \
+    "$([[ ! -e "$_remote_r4_dangling_root/.ae-next/.ae-next-install.journal" && \
+        ! -L "$_remote_r4_dangling_root/.ae-next/.ae-next-install.journal" ]] && echo 0 || echo 1)"
+
+# Component grammar runs before all destination alias checks. The missing
+# component plus dot-dot spelling must not reach the directory walker.
+_remote_r5_trailing_rc=0
+set +e
+remote_path_components_ok /tmp/ae-next/ "ae-next command path" >/dev/null 2>&1
+_remote_r5_trailing_rc=$?
+set -e
+assert_eq "remote installer r5: trailing-slash destination is refused" "1" "$_remote_r5_trailing_rc"
+_remote_r5_journal_root="$(mktemp -d "$_remote_fixture/r5-journal.XXXXXX")"
+_remote_r5_journal_home="$_remote_r5_journal_root/.ae-next"
+mkdir -p "$_remote_r5_journal_home"
+_remote_r5_journal="$_remote_r5_journal_home/.ae-next-install.journal"
+{
+    printf 'format=1\n'
+    printf 'version=2026.8.1\n'
+    printf 'home=%s\n' "$_remote_r5_journal_home"
+    printf 'core_pointer=%s/core/current\n' "$_remote_r5_journal_home"
+    printf 'core_had=0\ncore_old=\n'
+    printf 'current_pointer=%s/current\n' "$_remote_r5_journal_home"
+    printf 'current_had=0\ncurrent_old=\n'
+    printf 'link=%s/missing/../external/ae-next\nlink_had=0\nlink_old=\n' "$_remote_r5_journal_root"
+    printf 'config=%s/config\nconfig_had=0\n' "$_remote_r5_journal_home"
+} >"$_remote_r5_journal"
+_remote_r5_journal_rc=0
+set +e
+(
+    set -e
+    HOME="$_remote_r5_journal_root" remote_recover_journal \
+        "$_remote_r5_journal" "$_remote_r5_journal_home"
+) >"$_remote_r5_journal_root/out" 2>"$_remote_r5_journal_root/err"
+_remote_r5_journal_rc=$?
+set -e
+assert_eq "remote installer r5: dot-dot journal link is refused" "1" "$_remote_r5_journal_rc"
+assert_eq "remote installer r5: journal dot-dot refusal names component grammar" "1" \
+    "$(grep -F -c "must not contain '.' or '..' path components" "$_remote_r5_journal_root/err" || true)"
+assert_eq "remote installer r5: dot-dot journal remains for diagnosis" "1" \
+    "$([[ -f "$_remote_r5_journal" ]] && echo 1 || echo 0)"
+
+_remote_r7_journal_root="$(mktemp -d "$_remote_fixture/r7-journal.XXXXXX")"
+_remote_r7_journal_home="$_remote_r7_journal_root/.ae-next"
+mkdir -p "$_remote_r7_journal_home"
+_remote_r7_journal="$_remote_r7_journal_home/.ae-next-install.journal"
+{
+    printf 'format=1\n'
+    printf 'version=2026.8.1\n'
+    printf 'home=%s\n' "$_remote_r7_journal_home"
+    printf 'core_pointer=%s/core/current\n' "$_remote_r7_journal_home"
+    printf 'core_had=0\ncore_old=\n'
+    printf 'current_pointer=%s/current\n' "$_remote_r7_journal_home"
+    printf 'current_had=0\ncurrent_old=\n'
+    printf 'link=%s//external/ae-next\nlink_had=0\nlink_old=\n' "$_remote_r7_journal_root"
+    printf 'config=%s/config\nconfig_had=0\n' "$_remote_r7_journal_home"
+} >"$_remote_r7_journal"
+_remote_r7_journal_rc=0
+set +e
+(
+    set -e
+    HOME="$_remote_r7_journal_root" remote_recover_journal \
+        "$_remote_r7_journal" "$_remote_r7_journal_home"
+) >"$_remote_r7_journal_root/out" 2>"$_remote_r7_journal_root/err"
+_remote_r7_journal_rc=$?
+set -e
+assert_eq "remote installer r7: repeated-slash journal link is refused" "1" "$_remote_r7_journal_rc"
+assert_eq "remote installer r7: repeated-slash journal refusal names grammar" "1" \
+    "$(grep -F -c "must not contain repeated '/' separators" "$_remote_r7_journal_root/err" || true)"
+assert_eq "remote installer r7: repeated-slash journal is preserved" "1" \
+    "$([[ -f "$_remote_r7_journal" ]] && echo 1 || echo 0)"
+
+_remote_r7_legacy_root="$(mktemp -d "$_remote_fixture/r7-legacy.XXXXXX")"
+_remote_r7_legacy_home="$_remote_r7_legacy_root/.ae-next"
+mkdir -p "$_remote_r7_legacy_home"
+_remote_r7_legacy_journal="$_remote_r7_legacy_home/.ae-next-install.journal"
+{
+    printf 'format=1\n'
+    printf 'version=2026.8.1\n'
+    printf 'home=%s\n' "$_remote_r7_legacy_home"
+    printf 'core_pointer=%s/core/current\n' "$_remote_r7_legacy_home"
+    printf 'core_had=0\ncore_old=\n'
+    printf 'current_pointer=%s/current\n' "$_remote_r7_legacy_home"
+    printf 'current_had=0\ncurrent_old=\n'
+    printf 'link=%s/.local/bin/ae\nlink_had=0\nlink_old=\n' "$_remote_r7_legacy_root"
+    printf 'config=%s/config\nconfig_had=0\n' "$_remote_r7_legacy_home"
+} >"$_remote_r7_legacy_journal"
+_remote_r7_legacy_rc=0
+set +e
+(
+    set -e
+    HOME="$_remote_r7_legacy_root" remote_recover_journal \
+        "$_remote_r7_legacy_journal" "$_remote_r7_legacy_home"
+) >"$_remote_r7_legacy_root/out" 2>"$_remote_r7_legacy_root/err"
+_remote_r7_legacy_rc=$?
+set -e
+assert_eq "remote installer r7: journal legacy ae link is refused" "1" "$_remote_r7_legacy_rc"
+assert_eq "remote installer r7: journal legacy refusal names protected command" "1" \
+    "$(grep -F -c 'must not replace the legacy ae command' "$_remote_r7_legacy_root/err" || true)"
+assert_eq "remote installer r7: journal legacy refusal preserves journal" "1" \
+    "$([[ -f "$_remote_r7_legacy_journal" ]] && echo 1 || echo 0)"
+
+_remote_r7_old_root="$(mktemp -d "$_remote_fixture/r7-old-home.XXXXXX")"
+_remote_r7_old_home="$_remote_r7_old_root/old/.ae-next"
+_remote_r7_fixed_home="$_remote_r7_old_root/.ae-next"
+mkdir -p "$_remote_r7_fixed_home"
+_remote_r7_old_journal="$_remote_r7_fixed_home/.ae-next-install.journal"
+{
+    printf 'format=1\n'
+    printf 'version=2026.8.1\n'
+    printf 'home=%s\n' "$_remote_r7_old_home"
+    printf 'core_pointer=%s/core/current\n' "$_remote_r7_old_home"
+    printf 'core_had=0\ncore_old=\n'
+    printf 'current_pointer=%s/current\n' "$_remote_r7_old_home"
+    printf 'current_had=0\ncurrent_old=\n'
+    printf 'link=%s/.local/bin/ae-next\nlink_had=0\nlink_old=\n' "$_remote_r7_old_root"
+    printf 'config=%s/config\nconfig_had=1\n' "$_remote_r7_old_home"
+} >"$_remote_r7_old_journal"
+_remote_r7_old_rc=0
+set +e
+(
+    set -e
+    HOME="$_remote_r7_old_root" remote_recover_journal \
+        "$_remote_r7_old_journal" "$_remote_r7_fixed_home"
+) >"$_remote_r7_old_root/out" 2>"$_remote_r7_old_root/err"
+_remote_r7_old_rc=$?
+set -e
+assert_eq "remote installer r7: older custom-home journal is refused" "1" "$_remote_r7_old_rc"
+assert_eq "remote installer r7: older custom-home refusal names mismatch" "1" \
+    "$(grep -F -c 'malformed or for another home' "$_remote_r7_old_root/err" || true)"
+assert_eq "remote installer r7: older custom-home journal is preserved" "1" \
+    "$([[ -f "$_remote_r7_old_journal" ]] && echo 1 || echo 0)"
+
+_remote_r7_valid_root="$(mktemp -d "$_remote_fixture/r7-valid-flags.XXXXXX")"
+_remote_r7_valid_home="$_remote_r7_valid_root/.ae-next"
+mkdir -p "$_remote_r7_valid_home/core" "$_remote_r7_valid_home/versions/old" \
+    "$_remote_r7_valid_root/.local/bin"
+printf 'new-core\n' >"$_remote_r7_valid_home/core/current"
+ln -s new-current "$_remote_r7_valid_home/current"
+ln -s new-link "$_remote_r7_valid_root/.local/bin/ae-next"
+printf 'existing-config\n' >"$_remote_r7_valid_home/config"
+_remote_r7_valid_journal="$_remote_r7_valid_home/.ae-next-install.journal"
+{
+    printf 'format=1\n'
+    printf 'version=2026.8.1\n'
+    printf 'home=%s\n' "$_remote_r7_valid_home"
+    printf 'core_pointer=%s/core/current\n' "$_remote_r7_valid_home"
+    printf 'core_had=1\ncore_old=%s/core/old/ae\n' "$_remote_r7_valid_home"
+    printf 'current_pointer=%s/current\n' "$_remote_r7_valid_home"
+    printf 'current_had=1\ncurrent_old=%s/versions/old\n' "$_remote_r7_valid_home"
+    printf 'link=%s/.local/bin/ae-next\nlink_had=1\nlink_old=%s/current/ae-next\n' \
+        "$_remote_r7_valid_root" "$_remote_r7_valid_home"
+    printf 'config=%s/config\nconfig_had=1\n' "$_remote_r7_valid_home"
+} >"$_remote_r7_valid_journal"
+_remote_r7_valid_rc=0
+set +e
+(
+    set -e
+    HOME="$_remote_r7_valid_root" remote_recover_existing_journal "$_remote_r7_valid_home"
+) >"$_remote_r7_valid_root/out" 2>"$_remote_r7_valid_root/err"
+_remote_r7_valid_rc=$?
+set -e
+assert_eq "remote installer r7: all-present journal flags recover" "0" "$_remote_r7_valid_rc"
+assert_eq "remote installer r7: all-present journal restores core/current" \
+    "$_remote_r7_valid_home/core/old/ae" "$(cat "$_remote_r7_valid_home/core/current")"
+assert_eq "remote installer r7: all-present journal restores current" \
+    "$_remote_r7_valid_home/versions/old" "$(readlink "$_remote_r7_valid_home/current")"
+assert_eq "remote installer r7: all-present journal restores command link" \
+    "$_remote_r7_valid_home/current/ae-next" "$(readlink "$_remote_r7_valid_root/.local/bin/ae-next")"
+assert_eq "remote installer r7: all-present journal preserves config" "existing-config" \
+    "$(cat "$_remote_r7_valid_home/config")"
+assert_eq "remote installer r7: all-present journal is removed after recovery" "0" \
+    "$([[ ! -e "$_remote_r7_valid_journal" ]] && echo 0 || echo 1)"
+
+# A journal cannot redirect recovery to an external command link. The fixed
+# HOME-derived destination is bound before any journal value can be used.
+_remote_r8_external_root="$(mktemp -d "$_remote_fixture/r8-external-link.XXXXXX")"
+_remote_r8_external_home="$_remote_r8_external_root/.ae-next"
+_remote_r8_external_link="$_remote_r8_external_root/outside/ae-next"
+mkdir -p "$_remote_r8_external_home" "$(dirname "$_remote_r8_external_link")"
+ln -s untouched-target "$_remote_r8_external_link"
+_remote_r8_external_journal="$_remote_r8_external_home/.ae-next-install.journal"
+{
+    printf 'format=1\n'
+    printf 'version=2026.8.1\n'
+    printf 'home=%s\n' "$_remote_r8_external_home"
+    printf 'core_pointer=%s/core/current\n' "$_remote_r8_external_home"
+    printf 'core_had=0\ncore_old=\n'
+    printf 'current_pointer=%s/current\n' "$_remote_r8_external_home"
+    printf 'current_had=0\ncurrent_old=\n'
+    printf 'link=%s\nlink_had=0\nlink_old=\n' "$_remote_r8_external_link"
+    printf 'config=%s/config\nconfig_had=0\n' "$_remote_r8_external_home"
+} >"$_remote_r8_external_journal"
+_remote_r8_external_rc=0
+set +e
+(
+    set -e
+    HOME="$_remote_r8_external_root" remote_recover_journal \
+        "$_remote_r8_external_journal" "$_remote_r8_external_home"
+) >"$_remote_r8_external_root/out" 2>"$_remote_r8_external_root/err"
+_remote_r8_external_rc=$?
+set -e
+assert_eq "remote installer r8: external journal link is refused" "1" "$_remote_r8_external_rc"
+assert_eq "remote installer r8: external link refusal names command path" "1" \
+    "$(grep -F -c 'another command path' "$_remote_r8_external_root/err" || true)"
+assert_eq "remote installer r8: external symlink remains untouched" "untouched-target" \
+    "$(readlink "$_remote_r8_external_link")"
+assert_eq "remote installer r8: external-link journal is preserved" "1" \
+    "$([[ -f "$_remote_r8_external_journal" ]] && echo 1 || echo 0)"
+
+# Rollback rows are derived from the installer's emitters, not admitted by a
+# broad home boundary. An rm row for live in-home state must be rejected before
+# recovery can run rm -rf; the journal stays available for diagnosis.
+_remote_r10_rm_victim_test() {
+    local label="$1" relative="$2" root home victim journal victim_file rc=0
+    root="$(mktemp -d "$_remote_fixture/r10-$1.XXXXXX")"
+    home="$root/.ae-next"
+    victim="$home/$relative"
+    if [[ "$relative" == .local/* ]]; then
+        victim="$root/$relative"
+    fi
+    mkdir -p "$home" "$(dirname "$victim")"
+    if [[ "$relative" == config ]]; then
+        victim_file="$victim"
+    else
+        mkdir -p "$victim"
+        victim_file="$victim/content"
+    fi
+    printf 'live-state\n' >"$victim_file"
+    journal="$home/.ae-next-install.journal"
+    {
+        printf 'format=1\nversion=2026.8.1\n'
+        printf 'home=%s\n' "$home"
+        printf 'core_pointer=%s/core/current\ncore_had=0\ncore_old=\n' "$home"
+        printf 'current_pointer=%s/current\ncurrent_had=0\ncurrent_old=\n' "$home"
+        printf 'link=%s/.local/bin/ae-next\nlink_had=0\nlink_old=\n' "$root"
+        printf 'config=%s/config\nconfig_had=0\n' "$home"
+        printf 'created_dir=rm|%s\n' "$victim"
+    } >"$journal"
+    set +e
+    (
+        set -e
+        HOME="$root" remote_recover_journal "$journal" "$home"
+    ) >"$root/out" 2>"$root/err"
+    rc=$?
+    set -e
+    assert_eq "remote installer r10: $label rm victim is refused" "1" "$rc"
+    assert_eq "remote installer r12: $label rm refusal names unsupported vocabulary" "1" \
+        "$(grep -F -c 'install journal rm directory action is no longer supported' "$root/err" || true)"
+    assert_eq "remote installer r10: $label rm victim survives" "live-state" "$(cat "$victim_file")"
+    assert_eq "remote installer r10: $label rm victim survives as same kind" "0" \
+        "$([[ -d "$victim" || -f "$victim" ]] && echo 0 || echo 1)"
+    assert_eq "remote installer r10: $label rm journal is preserved" "1" \
+        "$([[ -f "$journal" ]] && echo 1 || echo 0)"
+    rm -rf "$root"
+}
+_remote_r10_rm_victim_test "session" "sessions/384"
+_remote_r10_rm_victim_test "archive" "archive/session-384"
+_remote_r10_rm_victim_test "config" "config"
+_remote_r10_rm_victim_test "external" ".local/bin/victim"
+_remote_r10_rm_victim_test "exact-version" "versions/2026.8.1"
+
+_remote_r10_rmdir_refusal_test() {
+    local label="$1" relative="$2" root home target journal rc=0
+    root="$(mktemp -d "$_remote_fixture/r10-rmdir-$1.XXXXXX")"
+    home="$root/.ae-next"
+    if [ "$relative" = home ]; then
+        target="$root"
+    else
+        target="$home/$relative"
+        mkdir -p "$target"
+    fi
+    mkdir -p "$home"
+    journal="$home/.ae-next-install.journal"
+    {
+        printf 'format=1\nversion=2026.8.1\n'
+        printf 'home=%s\n' "$home"
+        printf 'core_pointer=%s/core/current\ncore_had=0\ncore_old=\n' "$home"
+        printf 'current_pointer=%s/current\ncurrent_had=0\ncurrent_old=\n' "$home"
+        printf 'link=%s/.local/bin/ae-next\nlink_had=0\nlink_old=\n' "$root"
+        printf 'config=%s/config\nconfig_had=0\n' "$home"
+        printf 'created_dir=rmdir|%s\n' "$target"
+    } >"$journal"
+    set +e
+    (
+        set -e
+        HOME="$root" remote_recover_journal "$journal" "$home"
+    ) >"$root/out" 2>"$root/err"
+    rc=$?
+    set -e
+    assert_eq "remote installer r10: $label rmdir victim is refused" "1" "$rc"
+    assert_eq "remote installer r10: $label rmdir refusal names exact emitted set" "1" \
+        "$(grep -F -c 'install journal rmdir path is not one of the emitted directories' "$root/err" || true)"
+    assert_eq "remote installer r10: $label rmdir victim survives" "0" \
+        "$([[ -d "$target" ]] && echo 0 || echo 1)"
+    assert_eq "remote installer r10: $label rmdir journal is preserved" "1" \
+        "$([[ -f "$journal" ]] && echo 1 || echo 0)"
+    rm -rf "$root"
+}
+_remote_r10_rmdir_refusal_test "arbitrary-home" "other-empty-dir"
+_remote_r10_rmdir_refusal_test "home-root" home
+
+# An interruption after both atomic directory publications retains complete,
+# byte-correct directories. The next run must reuse them and finish cleanly.
+_remote_r12_retained_root="$(mktemp -d "$_remote_fixture/r12-retained.XXXXXX")"
+_remote_r12_retained_home="$_remote_r12_retained_root/.ae-next"
+_remote_r12_retained_version="$_remote_r12_retained_home/versions/2026.8.2"
+_remote_r12_retained_compat="$_remote_r12_retained_home/core/2026.8.2/ae"
+_remote_r12_retained_bundle="$_remote_fixture/ae-next-2026.8.2-darwin-arm64"
+mkdir -p "$_remote_r12_retained_home"
+_remote_r12_retained_rc=0
+set +e
+(
+    set -e
+    HOME="$_remote_r12_retained_root" AE_VERSION=2026.8.2 \
+        AE_NEXT_BUNDLE="$_remote_fixture/ae-next-2026.8.2-darwin-arm64.tar.gz" \
+        AE_NEXT_SUMS="$_remote_fixture/ae-next-2026.8.2-darwin-arm64-SHA256SUMS" \
+        AE_NEXT_INSTALL_TEST_FAIL_AFTER=stage remote_main
+) >"$_remote_r12_retained_root/fail.out" 2>"$_remote_r12_retained_root/fail.err"
+_remote_r12_retained_rc=$?
+set -e
+assert_eq "remote installer r12: stage interruption is nonzero" "1" "$_remote_r12_retained_rc"
+assert_eq "remote installer r12: interrupted install retains published version" "0" \
+    "$([[ -d "$_remote_r12_retained_version" ]] && echo 0 || echo 1)"
+_remote_r12_retained_pair_ok=1
+for _remote_r12_retained_file in ae ae-next ae-core install-remote; do
+    if [ ! -f "$_remote_r12_retained_version/$_remote_r12_retained_file" ] || \
+        ! cmp -s "$_remote_r12_retained_bundle/$_remote_r12_retained_file" \
+            "$_remote_r12_retained_version/$_remote_r12_retained_file"; then
+        _remote_r12_retained_pair_ok=0
+    fi
+done
+assert_eq "remote installer r12: retained version pair is complete and byte-correct" "1" \
+    "$_remote_r12_retained_pair_ok"
+assert_eq "remote installer r12: interrupted install retains compatibility core" "0" \
+    "$([[ -f "$_remote_r12_retained_compat" ]] && cmp -s "$_remote_r12_retained_bundle/ae-core" "$_remote_r12_retained_compat" && echo 0 || echo 1)"
+assert_eq "remote installer r12: non-empty parent reversal succeeds and removes journal" "0" \
+    "$([[ ! -e "$_remote_r12_retained_home/.ae-next-install.journal" ]] && echo 0 || echo 1)"
+_remote_r12_retained_rerun_rc=0
+set +e
+(
+    set -e
+    HOME="$_remote_r12_retained_root" AE_VERSION=2026.8.2 \
+        AE_NEXT_BUNDLE="$_remote_fixture/ae-next-2026.8.2-darwin-arm64.tar.gz" \
+        AE_NEXT_SUMS="$_remote_fixture/ae-next-2026.8.2-darwin-arm64-SHA256SUMS" remote_main
+) >"$_remote_r12_retained_root/rerun.out" 2>"$_remote_r12_retained_root/rerun.err"
+_remote_r12_retained_rerun_rc=$?
+set -e
+assert_eq "remote installer r12: rerun reuses retained complete pair" "0" "$_remote_r12_retained_rerun_rc"
+assert_eq "remote installer r12: rerun publishes retained version" \
+    "$_remote_r12_retained_version" "$(readlink "$_remote_r12_retained_home/current")"
+
+# Positive controls for the other emitted rmdir shapes: home/versions,
+# home/core, and both creatable ancestors of the fixed command link.
+_remote_r10_positive_rmdir_root="$(mktemp -d "$_remote_fixture/r10-positive-rmdir.XXXXXX")"
+_remote_r10_positive_rmdir_home="$_remote_r10_positive_rmdir_root/.ae-next"
+_remote_r10_positive_rmdir_versions="$_remote_r10_positive_rmdir_home/versions"
+_remote_r10_positive_rmdir_core="$_remote_r10_positive_rmdir_home/core"
+_remote_r10_positive_rmdir_local="$_remote_r10_positive_rmdir_root/.local"
+_remote_r10_positive_rmdir_bin="$_remote_r10_positive_rmdir_local/bin"
+mkdir -p "$_remote_r10_positive_rmdir_versions" "$_remote_r10_positive_rmdir_core" \
+    "$_remote_r10_positive_rmdir_bin"
+_remote_r10_positive_rmdir_journal="$_remote_r10_positive_rmdir_home/.ae-next-install.journal"
+{
+    printf 'format=1\nversion=2026.8.1\n'
+    printf 'home=%s\n' "$_remote_r10_positive_rmdir_home"
+    printf 'core_pointer=%s/core/current\ncore_had=0\ncore_old=\n' "$_remote_r10_positive_rmdir_home"
+    printf 'current_pointer=%s/current\ncurrent_had=0\ncurrent_old=\n' "$_remote_r10_positive_rmdir_home"
+    printf 'link=%s/.local/bin/ae-next\nlink_had=0\nlink_old=\n' "$_remote_r10_positive_rmdir_root"
+    printf 'config=%s/config\nconfig_had=0\n' "$_remote_r10_positive_rmdir_home"
+    printf 'created_dir=rmdir|%s\ncreated_dir=rmdir|%s\ncreated_dir=rmdir|%s\ncreated_dir=rmdir|%s\n' \
+        "$_remote_r10_positive_rmdir_versions" "$_remote_r10_positive_rmdir_core" \
+        "$_remote_r10_positive_rmdir_local" "$_remote_r10_positive_rmdir_bin"
+} >"$_remote_r10_positive_rmdir_journal"
+_remote_r10_positive_rmdir_rc=0
+set +e
+(
+    set -e
+    HOME="$_remote_r10_positive_rmdir_root" remote_recover_existing_journal \
+        "$_remote_r10_positive_rmdir_home"
+) >"$_remote_r10_positive_rmdir_root/out" 2>"$_remote_r10_positive_rmdir_root/err"
+_remote_r10_positive_rmdir_rc=$?
+set -e
+assert_eq "remote installer r10: exact versions/core/link-parent rmdir rows recover" "0" \
+    "$_remote_r10_positive_rmdir_rc"
+assert_eq "remote installer r10: exact versions/core/link-parent rmdir rows remove only emitted dirs" "0" \
+    "$([[ ! -e "$_remote_r10_positive_rmdir_versions" && \
+        ! -e "$_remote_r10_positive_rmdir_core" && ! -e "$_remote_r10_positive_rmdir_local" ]] && echo 0 || echo 1)"
+
+# The version field is part of the exact rm derivation; malformed versions are
+# rejected even when the rest of the journal has otherwise valid fields.
+_remote_r10_bad_version_root="$(mktemp -d "$_remote_fixture/r10-bad-version.XXXXXX")"
+_remote_r10_bad_version_home="$_remote_r10_bad_version_root/.ae-next"
+mkdir -p "$_remote_r10_bad_version_home"
+_remote_r10_bad_version_journal="$_remote_r10_bad_version_home/.ae-next-install.journal"
+{
+    printf 'format=1\nversion=2026.8.x\n'
+    printf 'home=%s\ncore_pointer=%s/core/current\ncore_had=0\ncore_old=\n' \
+        "$_remote_r10_bad_version_home" "$_remote_r10_bad_version_home"
+    printf 'current_pointer=%s/current\ncurrent_had=0\ncurrent_old=\n' "$_remote_r10_bad_version_home"
+    printf 'link=%s/.local/bin/ae-next\nlink_had=0\nlink_old=\n' "$_remote_r10_bad_version_root"
+    printf 'config=%s/config\nconfig_had=0\n' "$_remote_r10_bad_version_home"
+} >"$_remote_r10_bad_version_journal"
+_remote_r10_bad_version_rc=0
+set +e
+(
+    set -e
+    HOME="$_remote_r10_bad_version_root" remote_recover_journal \
+        "$_remote_r10_bad_version_journal" "$_remote_r10_bad_version_home"
+) >"$_remote_r10_bad_version_root/out" 2>"$_remote_r10_bad_version_root/err"
+_remote_r10_bad_version_rc=$?
+set -e
+assert_eq "remote installer r10: malformed journal version is refused" "1" "$_remote_r10_bad_version_rc"
+assert_eq "remote installer r10: malformed version refusal is named" "1" \
+    "$(grep -F -c 'install journal version is invalid' "$_remote_r10_bad_version_root/err" || true)"
+assert_eq "remote installer r10: malformed version journal is preserved" "1" \
+    "$([[ -f "$_remote_r10_bad_version_journal" ]] && echo 1 || echo 0)"
+
+# Control: a fixed link destination may create a deep missing parent chain. A
+# late-link TERM must remove every created parent and leave no wedge; the next
+# run then installs end to end.
+_remote_r5_late_root="$(mktemp -d "$_remote_fixture/r5-late-link.XXXXXX")"
+_remote_r5_late_home="$_remote_r5_late_root/.ae-next"
+_remote_r5_late_bin="$_remote_r5_late_root/.local/bin/ae-next"
+mkdir -p "$_remote_r5_late_home"
+_remote_r5_late_rc=0
+set +e
+(
+    set -e
+    HOME="$_remote_r5_late_root" AE_VERSION=2026.8.1 \
+        AE_NEXT_BUNDLE="$_remote_fixture/ae-next-2026.8.1-darwin-arm64.tar.gz" \
+        AE_NEXT_SUMS="$_remote_fixture/ae-next-2026.8.1-darwin-arm64-SHA256SUMS" \
+        AE_NEXT_INSTALL_TEST_FAIL_AFTER=term-link remote_main
+) >"$_remote_r5_late_root/out" 2>"$_remote_r5_late_root/err"
+_remote_r5_late_rc=$?
+set -e
+assert_eq "remote installer r5: late-link TERM exits by signal" "143" "$_remote_r5_late_rc"
+assert_eq "remote installer r5: late-link rollback removes journal" "0" \
+    "$([[ ! -e "$_remote_r5_late_home/.ae-next-install.journal" && \
+        ! -L "$_remote_r5_late_home/.ae-next-install.journal" ]] && echo 0 || echo 1)"
+assert_eq "remote installer r5: late-link rollback restores absent old link" "0" \
+    "$([[ ! -e "$_remote_r5_late_bin" && ! -L "$_remote_r5_late_bin" ]] && echo 0 || echo 1)"
+assert_eq "remote installer r5: late-link rollback removes all created parents" "0" \
+    "$([[ ! -e "$_remote_r5_late_root/.local" && ! -L "$_remote_r5_late_root/.local" ]] && echo 0 || echo 1)"
+_remote_r5_late_rerun_rc=0
+set +e
+(
+    set -e
+    HOME="$_remote_r5_late_root" AE_VERSION=2026.8.1 \
+        AE_NEXT_BUNDLE="$_remote_fixture/ae-next-2026.8.1-darwin-arm64.tar.gz" \
+        AE_NEXT_SUMS="$_remote_fixture/ae-next-2026.8.1-darwin-arm64-SHA256SUMS" remote_main
+) >"$_remote_r5_late_root/rerun.out" 2>"$_remote_r5_late_root/rerun.err"
+_remote_r5_late_rerun_rc=$?
+set -e
+assert_eq "remote installer r5: late-link rerun completes cleanly" "0" "$_remote_r5_late_rerun_rc"
+assert_eq "remote installer r5: late-link rerun publishes external link" \
+    "$_remote_r5_late_home/current/ae-next" "$(readlink "$_remote_r5_late_bin")"
+assert_eq "remote installer r5: late-link rerun leaves no journal" "0" \
+    "$([[ ! -e "$_remote_r5_late_home/.ae-next-install.journal" && \
+        ! -L "$_remote_r5_late_home/.ae-next-install.journal" ]] && echo 0 || echo 1)"
+
+# Signal regression: TERM at every pointer publication boundary must run the
+# same journal recovery as an ordinary failure, retaining complete published
+# directories and leaving no stale journal behind.
+_remote_signal_boundary() {
+    local boundary="$1" rc=0 err_file
+    err_file="$_remote_fixture/term-$boundary.err"
+    set +e
+    (
+        set -e
+        HOME="$_remote_home" AE_VERSION=2026.8.2 \
+            AE_NEXT_BUNDLE="$_remote_fixture/ae-next-2026.8.2-darwin-arm64.tar.gz" \
+            AE_NEXT_SUMS="$_remote_fixture/ae-next-2026.8.2-darwin-arm64-SHA256SUMS" \
+            AE_NEXT_INSTALL_TEST_FAIL_AFTER="term-$boundary" remote_main
+    ) >"$err_file" 2>&1
+    rc=$?
+    set -e
+    assert_eq "remote installer signal acceptance: TERM after $boundary exits 143" "143" "$rc"
+    assert_eq "remote installer signal acceptance: TERM after $boundary preserves current" \
+        "$_remote_old_current" "$(readlink "$_remote_home/.ae-next/current")"
+    assert_eq "remote installer signal acceptance: TERM after $boundary preserves core/current" \
+        "$_remote_old_core" "$(cat "$_remote_home/.ae-next/core/current")"
+    assert_eq "remote installer signal acceptance: TERM after $boundary removes journal" "0" \
+        "$([[ ! -e "$_remote_home/.ae-next/.ae-next-install.journal" ]] && echo 0 || echo 1)"
+    assert_eq "remote installer signal acceptance: TERM after $boundary retains complete version" "0" \
+        "$([[ -d "$_remote_home/.ae-next/versions/2026.8.2" ]] && echo 0 || echo 1)"
+    rm -f "$err_file"
+}
+_remote_signal_boundary core
+_remote_signal_boundary current
+_remote_signal_boundary link
+
+# Idempotence must not follow a byte-identical symlink in an existing version.
+# The old pointers must remain untouched when that member is refused.
+chmod u+w "$_remote_home/.ae-next/versions/2026.8.1"
+cp "$_remote_home/.ae-next/versions/2026.8.1/ae" "$_remote_fixture/identical-ae"
+rm -f "$_remote_home/.ae-next/versions/2026.8.1/ae"
+ln -s "$_remote_fixture/identical-ae" "$_remote_home/.ae-next/versions/2026.8.1/ae"
+_remote_symlink_rc=0
+set +e
+(
+    set -e
+    HOME="$_remote_home" AE_VERSION=2026.8.1 \
+        AE_NEXT_BUNDLE="$_remote_fixture/ae-next-2026.8.1-darwin-arm64.tar.gz" \
+        AE_NEXT_SUMS="$_remote_fixture/ae-next-2026.8.1-darwin-arm64-SHA256SUMS" remote_main
+) >"$_remote_fixture/symlink.out" 2>&1
+_remote_symlink_rc=$?
+set -e
+assert_eq "remote installer idempotence: byte-identical symlink member is refused" "1" "$_remote_symlink_rc"
+assert_eq "remote installer idempotence: symlink refusal preserves current" "$_remote_old_current" \
+    "$(readlink "$_remote_home/.ae-next/current")"
+assert_eq "remote installer idempotence: symlink refusal preserves core/current" "$_remote_old_core" \
+    "$(cat "$_remote_home/.ae-next/core/current")"
+chmod u+w "$_remote_home/.ae-next/versions/2026.8.1"
+rm -f "$_remote_home/.ae-next/versions/2026.8.1/ae"
+cp "$_remote_fixture/identical-ae" "$_remote_home/.ae-next/versions/2026.8.1/ae"
+chmod 0555 "$_remote_home/.ae-next/versions/2026.8.1/ae" "$_remote_home/.ae-next/versions/2026.8.1"
+
+# Make one rollback operation fail. Recovery must continue independently,
+# preserve the journal, and name the rerun recovery path loudly. A clean rerun
+# then recovers first and installs the requested version.
+_remote_failure_rc=0
+_remote_failure_err="$_remote_fixture/rollback.err"
+set +e
+(
+    set -e
+    rm() {
+        local arg
+        for arg in "$@"; do
+            if [ "$arg" = "$_remote_home/.ae-next/current" ]; then
+                return 1
+            fi
+        done
+        command rm "$@"
+    }
+    HOME="$_remote_home" AE_VERSION=2026.8.2 \
+        AE_NEXT_BUNDLE="$_remote_fixture/ae-next-2026.8.2-darwin-arm64.tar.gz" \
+        AE_NEXT_SUMS="$_remote_fixture/ae-next-2026.8.2-darwin-arm64-SHA256SUMS" \
+        AE_NEXT_INSTALL_TEST_FAIL_AFTER=term-current remote_main
+) >"$_remote_fixture/rollback.out" 2>"$_remote_failure_err"
+_remote_failure_rc=$?
+set -e
+assert_eq "remote installer rollback acceptance: failed reversal is nonzero" "1" "$_remote_failure_rc"
+assert_eq "remote installer rollback acceptance: journal survives failed reversal" "1" \
+    "$([[ -f "$_remote_home/.ae-next/.ae-next-install.journal" ]] && echo 1 || echo 0)"
+assert_eq "remote installer rollback acceptance: loud message names incomplete rollback" "1" \
+    "$(grep -F -c 'rollback incomplete' "$_remote_failure_err" || true)"
+assert_eq "remote installer rollback acceptance: loud message names rerun recovery" "1" \
+    "$(grep -F -c 'rerun installer to recover' "$_remote_failure_err" || true)"
+set +e
+(
+    set -e
+    HOME="$_remote_home" AE_VERSION=2026.8.2 \
+        AE_NEXT_BUNDLE="$_remote_fixture/ae-next-2026.8.2-darwin-arm64.tar.gz" \
+        AE_NEXT_SUMS="$_remote_fixture/ae-next-2026.8.2-darwin-arm64-SHA256SUMS" remote_main
+) >"$_remote_fixture/recovery.out" 2>&1
+_remote_recovery_rc=$?
+set -e
+assert_eq "remote installer recovery acceptance: journal-present rerun installs successfully" "0" "$_remote_recovery_rc"
+assert_eq "remote installer recovery acceptance: rerun removes journal" "0" \
+    "$([[ ! -e "$_remote_home/.ae-next/.ae-next-install.journal" ]] && echo 0 || echo 1)"
+assert_eq "remote installer recovery acceptance: rerun leaves requested current" \
+    "$_remote_home/.ae-next/versions/2026.8.2" "$(readlink "$_remote_home/.ae-next/current")"
+assert_eq "remote installer recovery acceptance: rerun announces recovery-first path" "1" \
+    "$(grep -F -c 'recovering interrupted install' "$_remote_fixture/recovery.out" || true)"
+
+chmod -R u+w "$_remote_fixture"
+rm -rf "$_remote_fixture"
+unset -f _remote_make_bundle remote_platform remote_detect_platform remote_select_version remote_archive_name \
+    remote_sha256 remote_verify_checksum remote_latest_archive remote_require_dir remote_require_regular_or_absent \
+    remote_require_regular_file remote_validate_home remote_download remote_journal_value_ok remote_journal_create \
+    remote_journal_add_dir remote_mkdir_recorded remote_journal_load remote_restore_symlink remote_restore_file \
+    remote_recover_journal remote_recover_existing_journal remote_atomic_symlink_replace remote_remove_created_dir \
+    remote_path_components_ok remote_validate_bin_destination remote_version_ok remote_restore remote_test_failure remote_reset_state remote_main \
+    _remote_r10_rm_victim_test _remote_r10_rmdir_refusal_test \
+    _ae_next_home_reason _ae_next_home_prepare _remote_home_reason_test _remote_home_prepare_probe _remote_home_prepare_test
+unset _remote_installer _remote_installer_source _remote_platform_rc _remote_version_rc _remote_fixture _remote_digest _remote_checksum_rc \
+    _remote_tmp_root _remote_home _remote_old_current _remote_old_core _remote_mode _remote_pair_mode _remote_pair_file \
+    _remote_trailing_home _remote_trailing_rc _remote_live_rc _remote_live_output _remote_failure_rc \
+    _remote_signal_boundary _remote_symlink_rc _remote_failure_err _remote_recovery_rc \
+    _remote_fresh_mkdir_boundary \
+    _remote_r4_journal_root _remote_r4_journal_home _remote_r4_journal _remote_r4_journal_rc \
+    _remote_r4_dangling_root \
+    _remote_r4_dangling_rc _remote_r4_dangling_rerun_rc \
+    _remote_r5_trailing_rc \
+    _remote_r5_journal_root _remote_r5_journal_home _remote_r5_journal _remote_r5_journal_rc \
+    _remote_r5_late_root _remote_r5_late_home _remote_r5_late_bin _remote_r5_late_rc \
+    _remote_r5_late_rerun_rc \
+    _remote_r7_journal_root _remote_r7_journal_home _remote_r7_journal _remote_r7_journal_rc \
+    _remote_r7_legacy_root _remote_r7_legacy_home _remote_r7_legacy_journal _remote_r7_legacy_rc \
+    _remote_r7_old_root _remote_r7_old_home _remote_r7_fixed_home _remote_r7_old_journal _remote_r7_old_rc \
+    _remote_r7_valid_root _remote_r7_valid_home _remote_r7_valid_journal _remote_r7_valid_rc \
+    _remote_r8_external_root _remote_r8_external_home _remote_r8_external_link \
+    _remote_r8_external_journal _remote_r8_external_rc \
+    _remote_r12_retained_root _remote_r12_retained_home _remote_r12_retained_version \
+    _remote_r12_retained_compat _remote_r12_retained_bundle _remote_r12_retained_rc \
+    _remote_r12_retained_pair_ok _remote_r12_retained_file _remote_r12_retained_rerun_rc \
+    _remote_r10_positive_rmdir_root _remote_r10_positive_rmdir_home _remote_r10_positive_rmdir_versions \
+    _remote_r10_positive_rmdir_core _remote_r10_positive_rmdir_local _remote_r10_positive_rmdir_bin \
+    _remote_r10_positive_rmdir_journal _remote_r10_positive_rmdir_rc \
+    _remote_r10_bad_version_root _remote_r10_bad_version_home _remote_r10_bad_version_journal \
+    _remote_r10_bad_version_rc
+
 # ── Results ──────────────────────────────────────────────────────────
 
 echo ""
