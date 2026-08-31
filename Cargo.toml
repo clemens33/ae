@@ -12,7 +12,7 @@ name = "ae"
 # `ae --version` prints this one — so while this binary is something a person
 # runs, 0.0.0 was not a placeholder, it was false product information.
 # Keep this equal to `AE_VERSION`; the two schemes are unified before promotion.
-version = "2026.8.1"
+version = "2026.8.2"
 edition = "2024"
 rust-version = "1.97.1"
 description = "Agent environment: tmux-backed multi-agent session multiplexer"
