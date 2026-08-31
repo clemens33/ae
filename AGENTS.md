@@ -453,9 +453,10 @@ The bootstrap contract, in full — nothing else is assumed to exist:
 
 ### Deferred, with the trigger recorded
 
-- **Version scheme.** Bash CalVer (`AE_VERSION`) and Cargo semver (`0.0.0`) are *not*
-  reconciled, and `ae --version` prints the Cargo one. Unify at the **P5 entry flip** — the
-  moment the two can no longer disagree without a user seeing it.
+- **Version scheme.** `AE_VERSION` and Cargo's package version are unified NOW, deliberately
+  pre-promotion: both use SemVer-compatible CalVer `YYYY.M.N`. `just bump` derives N from
+  matching Git tags (`vYYYY.M.N`), resets monthly, refuses duplicate tags, and updates `ae`,
+  `Cargo.toml`, and `Cargo.lock` together.
 - **`panic = "abort"`** in the release profile forecloses `catch_unwind`. Revisit at **P4**:
   a long-lived watchdog or telegram loop may want to survive a panic in one iteration rather
   than take the process down. Cheap to flip; recorded so it stays a decision.

@@ -98,20 +98,279 @@ next-install:
 version:
     @grep -m1 '^AE_VERSION=' ae | cut -d'"' -f2
 
-# Compute next release version using CalVer: YYYY.MM.BUILD
+# Restore a previously interrupted CalVer bump from durable backups.
+bump-recover:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    RECOVERY_DIR=".ae-bump-recovery"
+    paths=(ae Cargo.toml Cargo.lock)
+    staged=()
+    if [[ ! -d "$RECOVERY_DIR" ]]; then
+        echo "Error: ${RECOVERY_DIR} is not present; nothing to recover" >&2
+        exit 1
+    fi
+    if [[ ! -f "$RECOVERY_DIR/backups-ready" ]]; then
+        echo "Error: ${RECOVERY_DIR}/backups-ready is missing; marker retained and live files unchanged" >&2
+        exit 1
+    fi
+
+    cleanup() {
+        local status="$?"
+        local restore_tmp
+        for restore_tmp in "${staged[@]}"; do
+            if [[ -n "$restore_tmp" && -e "$restore_tmp" ]] && ! rm -f "$restore_tmp"; then
+                status=1
+            fi
+        done
+        return "$status"
+    }
+    trap cleanup EXIT
+
+    for index in "${!paths[@]}"; do
+        path="${paths[$index]}"
+        name="${path##*/}"
+        backup="$RECOVERY_DIR/${name}.orig"
+        if [[ ! -f "$backup" ]]; then
+            echo "Error: missing ${backup}; marker retained and live files unchanged" >&2
+            exit 1
+        fi
+        if ! restore_tmp="$(mktemp "${path}.bump-recover.XXXXXX")"; then
+            echo "Error: could not stage ${path}; marker retained and live files unchanged" >&2
+            exit 1
+        fi
+        staged+=("$restore_tmp")
+        if ! cp -p "$backup" "$restore_tmp"; then
+            echo "Error: could not stage ${path}; marker retained and live files unchanged" >&2
+            exit 1
+        fi
+        if ! cmp -s "$restore_tmp" "$backup"; then
+            echo "Error: staged restore verification failed for ${path}; marker retained and live files unchanged" >&2
+            exit 1
+        fi
+    done
+
+    for index in "${!paths[@]}"; do
+        path="${paths[$index]}"
+        if ! mv "${staged[$index]}" "$path"; then
+            echo "Error: could not restore ${path}; marker retained" >&2
+            exit 1
+        fi
+    done
+
+    if ! rm -rf "$RECOVERY_DIR"; then
+        echo "Error: restored files but could not remove ${RECOVERY_DIR}; marker retained" >&2
+        exit 1
+    fi
+    trap - EXIT
+
+# Compute next release version using SemVer-compatible CalVer: YYYY.M.N.
+# The sequence is tag-derived, so a stale working tree version cannot cause a
+# duplicate publication. Version files use durable backups and recover-or-refuse
+# publication; stdout remains the VERSION-only contract for just release.
 bump:
     #!/usr/bin/env bash
     set -euo pipefail
-    CURRENT=$(grep -m1 '^AE_VERSION=' ae | cut -d'"' -f2)
-    YEAR_MONTH="$(date +%Y.%m)"
-    BUILD=1
-    if [[ "$CURRENT" =~ ^([0-9]{4})\.([0-9]{2})\.([0-9]+)$ ]]; then
-        CURRENT_YEAR_MONTH="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
-        if [[ "$CURRENT_YEAR_MONTH" == "$YEAR_MONTH" ]]; then
-            BUILD=$((BASH_REMATCH[3] + 1))
-        fi
+    RECOVERY_DIR=".ae-bump-recovery"
+    if [[ -e "$RECOVERY_DIR" ]]; then
+        echo "Error: stale ${RECOVERY_DIR} exists; recover before starting another bump." >&2
+        echo "run just bump-recover." >&2
+        exit 1
     fi
-    echo "${YEAR_MONTH}.${BUILD}"
+
+    YEAR_MONTH="$(date -u +%Y).$((10#$(date -u +%m)))"
+    TAG_PREFIX="v${YEAR_MONTH}."
+    TAG_RE="^v${YEAR_MONTH//./\\.}\.([0-9]+)$"
+    MAX=0
+    while IFS= read -r tag; do
+        if [[ "$tag" =~ $TAG_RE ]]; then
+            sequence="${BASH_REMATCH[1]}"
+            if ((10#$sequence > MAX)); then
+                MAX=$((10#$sequence))
+            fi
+        fi
+    done < <(git tag --list "${TAG_PREFIX}*")
+
+    VERSION="${YEAR_MONTH}.$((MAX + 1))"
+    TAG="v${VERSION}"
+    if git show-ref --verify --quiet "refs/tags/${TAG}"; then
+        echo "Error: release tag ${TAG} already exists" >&2
+        exit 1
+    fi
+
+    TMP_DIR="$(mktemp -d .ae-bump.XXXXXX)"
+    if ! mkdir "$RECOVERY_DIR"; then
+        rm -rf "$TMP_DIR"
+        echo "Error: could not create ${RECOVERY_DIR}" >&2
+        exit 1
+    fi
+
+    recover() {
+        local path name restore_tmp recovery_rc=0
+        if [[ ! -f "$RECOVERY_DIR/backups-ready" ]]; then
+            rm -f "$RECOVERY_DIR"/*.orig "$RECOVERY_DIR"/*.orig.tmp.* "$RECOVERY_DIR"/backups-ready.tmp.* || true
+            return 0
+        fi
+        for path in ae Cargo.toml Cargo.lock; do
+            name="${path##*/}"
+            if [[ ! -f "$RECOVERY_DIR/${name}.orig" ]]; then
+                recovery_rc=1
+                continue
+            fi
+            restore_tmp="$RECOVERY_DIR/${name}.restore.$$"
+            if ! cp -p "$RECOVERY_DIR/${name}.orig" "$restore_tmp" ||
+                ! mv "$restore_tmp" "$path"; then
+                rm -f "$restore_tmp" || true
+                recovery_rc=1
+            fi
+        done
+        return "$recovery_rc"
+    }
+    cleanup() {
+        local status="$?"
+        local recovery_status=0
+        # An interrupted or failed publication restores every backed-up file
+        # before either temporary data or the durable recovery marker is removed.
+        if [[ "${BUMP_PUBLISHED:-0}" != 1 ]]; then
+            recover || recovery_status="$?"
+        fi
+        rm -rf "$TMP_DIR" || recovery_status=1
+        if ((recovery_status == 0)); then
+            rm -rf "$RECOVERY_DIR" || recovery_status=1
+        fi
+        if ((recovery_status != 0)); then
+            echo "Error: bump recovery failed; ${RECOVERY_DIR} retained for manual recovery" >&2
+            return "$recovery_status"
+        fi
+        return "$status"
+    }
+    trap cleanup EXIT
+    backup_files() {
+        local path name backup_tmp
+        for path in ae Cargo.toml Cargo.lock; do
+            name="${path##*/}"
+            backup_tmp="$RECOVERY_DIR/${name}.orig.tmp.$$"
+            cp -p "$path" "$backup_tmp"
+            mv "$backup_tmp" "$RECOVERY_DIR/${name}.orig"
+        done
+        for path in ae Cargo.toml Cargo.lock; do
+            name="${path##*/}"
+            if ! cmp -s "$RECOVERY_DIR/${name}.orig" "$path"; then
+                echo "Error: backup verification failed for ${path}" >&2
+                return 1
+            fi
+        done
+        : >"$RECOVERY_DIR/backups-ready.tmp.$$"
+        mv "$RECOVERY_DIR/backups-ready.tmp.$$" "$RECOVERY_DIR/backups-ready"
+    }
+    backup_files
+    for path in ae Cargo.toml Cargo.lock; do
+        name="${path##*/}"
+        cp -p "$path" "$TMP_DIR/$name"
+    done
+
+    # Redirect into mode-preserving copies: replacing ae with a freshly-created
+    # redirection target would silently drop its executable bit.
+    cp -p "$TMP_DIR/ae" "$TMP_DIR/ae.next"
+    sed "s/^AE_VERSION=\".*\"/AE_VERSION=\"$VERSION\"/" \
+        "$TMP_DIR/ae" >"$TMP_DIR/ae.next"
+    mv "$TMP_DIR/ae.next" "$TMP_DIR/ae"
+    cp -p "$TMP_DIR/Cargo.toml" "$TMP_DIR/Cargo.toml.next"
+    awk -v version="$VERSION" '
+        !done && /^version = "/ { print "version = \"" version "\""; done=1; next }
+        { print }
+    ' "$TMP_DIR/Cargo.toml" >"$TMP_DIR/Cargo.toml.next"
+    mv "$TMP_DIR/Cargo.toml.next" "$TMP_DIR/Cargo.toml"
+    cp -p "$TMP_DIR/Cargo.lock" "$TMP_DIR/Cargo.lock.next"
+    awk -v version="$VERSION" '
+        function flush(    i, name, source, versions, replaced) {
+            if (n == 0) return
+            name = ""
+            source = 0
+            versions = 0
+            for (i = 1; i <= n; i++) {
+                if (lines[i] == "name = \"ae\"") name = "ae"
+                if (lines[i] ~ /^source = /) source = 1
+                if (lines[i] ~ /^version = "/) versions++
+            }
+            if (name == "ae" && !source) {
+                roots++
+                if (versions != 1) invalid = 1
+                if (roots == 1) {
+                    replaced = 0
+                    for (i = 1; i <= n; i++) {
+                        if (!replaced && lines[i] ~ /^version = "/) {
+                            print "version = \"" version "\""
+                            replaced = 1
+                        } else {
+                            print lines[i]
+                        }
+                    }
+                    if (!replaced) invalid = 1
+                } else {
+                    for (i = 1; i <= n; i++) print lines[i]
+                }
+            } else {
+                for (i = 1; i <= n; i++) print lines[i]
+            }
+            delete lines
+            n = 0
+        }
+        /^\[\[package\]\]$/ {
+            flush()
+            lines[++n] = $0
+            next
+        }
+        { lines[++n] = $0 }
+        END {
+            flush()
+            if (roots != 1 || invalid) exit 1
+        }
+    ' "$TMP_DIR/Cargo.lock" >"$TMP_DIR/Cargo.lock.next"
+    mv "$TMP_DIR/Cargo.lock.next" "$TMP_DIR/Cargo.lock"
+
+    grep -q '^AE_VERSION="'"$VERSION"'"$' "$TMP_DIR/ae"
+    grep -q '^version = "'"$VERSION"'"$' "$TMP_DIR/Cargo.toml"
+    awk -v version="$VERSION" '
+        function flush(    i, name, source) {
+            if (n == 0) return
+            name = ""
+            source = 0
+            for (i = 1; i <= n; i++) {
+                if (lines[i] == "name = \"ae\"") name = "ae"
+                if (lines[i] ~ /^source = /) source = 1
+            }
+            if (name == "ae" && !source) {
+                roots++
+                for (i = 1; i <= n; i++) {
+                    if (lines[i] == "version = \"" version "\"") matches++
+                }
+            }
+            delete lines
+            n = 0
+        }
+        /^\[\[package\]\]$/ {
+            flush()
+            lines[++n] = $0
+            next
+        }
+        { lines[++n] = $0 }
+        END {
+            flush()
+            exit !(roots == 1 && matches == 1)
+        }
+    ' "$TMP_DIR/Cargo.lock"
+
+    for path in ae Cargo.toml Cargo.lock; do
+        name="${path##*/}"
+        if ! mv "$TMP_DIR/$name" "$path"; then
+            echo "Error: could not publish ${path}; recover-or-refuse marker retained if recovery fails" >&2
+            exit 1
+        fi
+    done
+    BUMP_PUBLISHED=1
+    trap - EXIT
+    rm -rf "$TMP_DIR" "$RECOVERY_DIR"
+    printf '%s\n' "$VERSION"
 
 # ── Changelog ────────────────────────────────────────────────────────
 
@@ -143,18 +402,15 @@ release:
     # Version
     VERSION=$(just bump)
     echo "Releasing v$VERSION"
+    # Re-parse and compile after bump before any changelog or tag publication.
+    cargo check --locked
 
-    # Update version in script + README badge. `sed -i EXPR FILE` is GNU-only
-    # (BSD reads EXPR as the backup suffix) — temp + mv works on both. `cp -p`
-    # first so the temp inherits the target's mode: a bare redirect would create
-    # it at the ambient umask and the rename would strip ae's 0755 exec bit,
-    # which `git add -u` then stages into the release.
+    # Update the README badge. `just bump` preserves ae's executable bit.
     sed_i() {
         local f="$1"; shift
         cp -p "$f" "$f.tmp.$$" || return 1
         sed "$@" "$f" > "$f.tmp.$$" && mv "$f.tmp.$$" "$f" || { rm -f "$f.tmp.$$"; return 1; }
     }
-    sed_i ae "s/^AE_VERSION=\".*\"/AE_VERSION=\"$VERSION\"/"
     sed_i README.md -E "s/release-[0-9]+\\.[0-9]+\\.[0-9]+/release-$VERSION/" 2>/dev/null || true
     # Guard the guard: a release must never publish ae without its exec bit.
     [ -x ae ] || { echo "Error: ae lost its executable bit during version bump" >&2; exit 1; }

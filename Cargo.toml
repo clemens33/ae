@@ -4,14 +4,15 @@
 [package]
 name = "ae"
 # This version tracks the shipping ae product version. The bash era versions ae with
-# CalVer (`AE_VERSION` in the `ae` script, bumped by `just bump`); this value is
-# deliberately held EQUAL to it rather than reconciled into a second scheme.
+# SemVer-compatible CalVer (`YYYY.M.N`), held equal to `AE_VERSION` in the `ae`
+# script. `just bump` derives N from matching release tags and updates both
+# version files plus `Cargo.lock` together.
 # WHY IT MOVED OFF 0.0.0: delivery-first brought the entry flip's trigger
 # forward. The two versions may not disagree where a user can see both, and
 # `ae --version` prints this one — so while this binary is something a person
 # runs, 0.0.0 was not a placeholder, it was false product information.
-# Keep this in step with `AE_VERSION` until one scheme retires the other.
-version = "0.2.25"
+# Keep this equal to `AE_VERSION`; the two schemes are unified before promotion.
+version = "2026.8.1"
 edition = "2024"
 rust-version = "1.97.1"
 description = "Agent environment: tmux-backed multi-agent session multiplexer"

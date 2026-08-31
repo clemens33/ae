@@ -58,12 +58,17 @@ bash tests/integration   # ~60 scenarios, real tmux sessions
 
 ## Releases
 
-CalVer in `YYYY.MM.BUILD` format. `just release` is the full pipeline:
+SemVer-compatible CalVer in `YYYY.M.N` format, with the sequence derived from matching Git
+tags and reset each month. `just release` is the full pipeline:
+
+The bump is recover-or-refuse: durable backups restore version files on a handled failure;
+an untrappable interruption leaves `.ae-bump-recovery`, and the next bump stops until it is
+recovered with `just bump-recover`.
 
 1. Pre-flight: clean working tree, fetch tags, pull rebase.
 2. `just check` (shellcheck + shfmt).
 3. `just test` (unit + integration).
-4. Bump `AE_VERSION` in `ae` and the README badge.
+4. Bump `AE_VERSION` in `ae`, the Cargo package and lockfile, and the README badge.
 5. `git-cliff` → `CHANGELOG.md` + release-body.
 6. Commit, tag, push, `gh release`.
 

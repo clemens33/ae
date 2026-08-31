@@ -14447,6 +14447,294 @@ unset -f tmux _capture_input_region _pb1_submit_tmux
 rm -rf "$_pb1_submit_dir"
 unset _pb1_v4_notice _pb1_v4_rows _pb1_threshold_dir _pb1_8192 _pb1_8193 _pb1_submit_dir _pb1_submit_log _pb1_submit_rc
 
+# ── CalVer bump: isolated tag/date fixtures ──────────────────────────
+#
+# Each fixture is a separate git repository. The date shim supplies a
+# deterministic UTC year/month, while all git tag reads stay inside that repo.
+_calver_root="$(mktemp -d)"
+_calver_real_git="$(command -v git)"
+_calver_real_mv="$(command -v mv)"
+_calver_real_cp="$(command -v cp)"
+_calver_cliff_config="$(<"$(dirname "$AE_BIN")/cliff.toml")"
+assert_eq "CalVer cliff: padded and unpadded month pattern is configured" "1" \
+    "$([[ "$_calver_cliff_config" == *'\\.[0-9]{1,2}\\.'* ]] && echo 1 || echo 0)"
+_calver_cliff_pattern='^v([0-9]{4}\.[0-9]{1,2}\.[0-9]+|[0-9]+\.[0-9]+\.[0-9]+)$'
+assert_eq "CalVer cliff: padded legacy tag matches tag pattern" "1" \
+    "$([[ "v2026.08.1" =~ $_calver_cliff_pattern ]] && echo 1 || echo 0)"
+unset _calver_cliff_config _calver_cliff_pattern
+_calver_make_fixture() {
+    local dir="$1"
+    mkdir -p "$dir/bin"
+    cp "$AE_BIN" "$dir/ae"
+    cp "$(dirname "$AE_BIN")/Cargo.toml" "$dir/Cargo.toml"
+    cp "$(dirname "$AE_BIN")/Cargo.lock" "$dir/Cargo.lock"
+    cp "$(dirname "$AE_BIN")/justfile" "$dir/justfile"
+    printf '%s\n' \
+        '#!/usr/bin/env bash' \
+        'if [[ "${2:-}" == "+%Y" ]]; then printf "%s\n" "$AE_FIXTURE_YEAR"; elif [[ "${2:-}" == "+%m" ]]; then printf "%s\n" "$AE_FIXTURE_MONTH"; else exit 1; fi' \
+        >"$dir/bin/date"
+    chmod +x "$dir/bin/date"
+    git -C "$dir" init -q
+    git -C "$dir" config user.email calver@example.test
+    git -C "$dir" config user.name CalVer
+    printf '%s\n' fixture >"$dir/fixture"
+    git -C "$dir" add ae Cargo.toml Cargo.lock justfile fixture
+    git -C "$dir" commit -qm fixture
+}
+_calver_tag_fixture() {
+    local dir="$1" tag
+    shift
+    for tag; do
+        git -C "$dir" tag "$tag"
+    done
+}
+_calver_run() {
+    local dir="$1" year="$2" month="$3"
+    (
+        cd "$dir"
+        # shellcheck disable=SC2031  # PATH selects fixture date/git shims
+        env "AE_FIXTURE_YEAR=$year" "AE_FIXTURE_MONTH=$month" \
+            "AE_REAL_GIT=$_calver_real_git" "AE_REAL_MV=$_calver_real_mv" \
+            "AE_REAL_CP=$_calver_real_cp" \
+            "PATH=$dir/bin:$PATH" just bump
+    )
+}
+_calver_recover_run() {
+    local dir="$1"
+    (
+        cd "$dir"
+        env "AE_REAL_CP=$_calver_real_cp" "PATH=$dir/bin:$PATH" just bump-recover
+    )
+}
+_calver_versions() {
+    local dir="$1"
+    printf '%s|%s|%s' \
+        "$(grep -m1 '^AE_VERSION=' "$dir/ae" | cut -d'"' -f2)" \
+        "$(grep -m1 '^version = "' "$dir/Cargo.toml" | cut -d'"' -f2)" \
+        "$(awk '/^name = "ae"$/{in_ae=1; next} in_ae && /^version = /{gsub(/"/, "", $3); print $3; exit} /^\\[\\[package\\]\\]$/{in_ae=0}' "$dir/Cargo.lock")"
+}
+_calver_fingerprint() {
+    cksum "$1/ae" "$1/Cargo.toml" "$1/Cargo.lock"
+}
+_calver_source_ae_block() {
+    awk '
+        function flush(    i) {
+            if (has_name && has_source) {
+                for (i = 1; i <= n; i++) print lines[i]
+            }
+            delete lines
+            n = 0
+            has_name = 0
+            has_source = 0
+        }
+        /^\[\[package\]\]$/ {
+            flush()
+            lines[++n] = $0
+            next
+        }
+        {
+            lines[++n] = $0
+            if ($0 == "name = \"ae\"") has_name = 1
+            if ($0 ~ /^source = /) has_source = 1
+        }
+        END { flush() }
+    ' "$1/Cargo.lock"
+}
+_calver_january="$(mktemp -d "$_calver_root/january.XXXXXX")"
+_calver_make_fixture "$_calver_january" 2026 01
+_calver_january_out="$(_calver_run "$_calver_january" 2026 01)"
+assert_eq "CalVer bump: no matching tag starts at sequence 1" "2026.1.1" "$_calver_january_out"
+assert_eq "CalVer bump: January never emits a padded month" "2026.1.1" "$_calver_january_out"
+assert_eq "CalVer bump: January moves ae, Cargo.toml, Cargo.lock together" \
+    "2026.1.1|2026.1.1|2026.1.1" "$(_calver_versions "$_calver_january")"
+assert_eq "CalVer mutation RED: padded January month is rejected" "1" \
+    "$([[ "$_calver_january_out" != *".01."* ]] && echo 1 || echo 0)"
+
+_calver_august="$(mktemp -d "$_calver_root/august.XXXXXX")"
+_calver_make_fixture "$_calver_august" 2026 08
+_calver_tag_fixture "$_calver_august" v2026.8.1 v2026.8.2
+_calver_august_out="$(_calver_run "$_calver_august" 2026 08)"
+assert_eq "CalVer bump: same-month tags 1 and 2 produce sequence 3" "2026.8.3" "$_calver_august_out"
+assert_eq "CalVer mutation RED: file arithmetic fallback ignores matching tags" \
+    "2026.8.3" "$_calver_august_out"
+assert_eq "CalVer bump: August never emits a padded month" "1" \
+    "$([[ "$_calver_august_out" != *".08."* ]] && echo 1 || echo 0)"
+assert_eq "CalVer bump: successful publish preserves ae executable bit" "1" \
+    "$([[ -x "$_calver_august/ae" ]] && echo 1 || echo 0)"
+assert_eq "CalVer bump: August files move together" \
+    "2026.8.3|2026.8.3|2026.8.3" "$(_calver_versions "$_calver_august")"
+
+_calver_rollover="$(mktemp -d "$_calver_root/rollover.XXXXXX")"
+_calver_make_fixture "$_calver_rollover" 2026 08
+_calver_tag_fixture "$_calver_rollover" v2026.7.1 v2026.7.2
+_calver_rollover_out="$(_calver_run "$_calver_rollover" 2026 08)"
+assert_eq "CalVer bump: month rollover resets sequence to 1" "2026.8.1" "$_calver_rollover_out"
+assert_eq "CalVer mutation RED: padded rollover month is rejected" "1" \
+    "$([[ "$_calver_rollover_out" != *".08."* ]] && echo 1 || echo 0)"
+
+_calver_stale="$(mktemp -d "$_calver_root/stale.XXXXXX")"
+_calver_make_fixture "$_calver_stale" 2026 08
+mkdir "$_calver_stale/.ae-bump-recovery"
+printf '%s\n' interrupted >"$_calver_stale/.ae-bump-recovery/marker"
+_calver_stale_before="$(_calver_fingerprint "$_calver_stale")"
+_calver_stale_rc=0
+_calver_stale_out="$(_calver_run "$_calver_stale" 2026 08 2>"$_calver_stale/err")" || _calver_stale_rc="$?"
+assert_eq "CalVer bump: stale recovery marker refuses before edits" "1" "$_calver_stale_rc"
+assert_eq "CalVer bump: stale recovery refusal emits no version" "" "$_calver_stale_out"
+assert_eq "CalVer bump: stale recovery refusal is loud" "1" \
+    "$(grep -F -c 'stale .ae-bump-recovery exists' "$_calver_stale/err" || true)"
+assert_eq "CalVer bump: stale recovery refusal names the recovery recipe" "1" \
+    "$(grep -F -c 'run just bump-recover.' "$_calver_stale/err" || true)"
+assert_eq "CalVer bump: stale recovery refusal preserves marker" "1" \
+    "$([[ -d "$_calver_stale/.ae-bump-recovery" ]] && echo 1 || echo 0)"
+assert_eq "CalVer bump: stale recovery refusal edits none of three version files" \
+    "$_calver_stale_before" "$(_calver_fingerprint "$_calver_stale")"
+_calver_stale_recover_rc=0
+_calver_stale_recover_out="$(_calver_recover_run "$_calver_stale" 2>"$_calver_stale/recover.err")" || _calver_stale_recover_rc="$?"
+assert_eq "CalVer bump: incomplete recovery refuses nonzero" "1" "$_calver_stale_recover_rc"
+assert_eq "CalVer bump: incomplete recovery emits no output" "" "$_calver_stale_recover_out"
+assert_eq "CalVer bump: incomplete recovery retains marker and leaves live files untouched" \
+    "$_calver_stale_before" "$(_calver_fingerprint "$_calver_stale")"
+assert_eq "CalVer bump: incomplete recovery refusal is loud" "1" \
+    "$(grep -F -c 'backups-ready is missing' "$_calver_stale/recover.err" || true)"
+
+_calver_manual="$(mktemp -d "$_calver_root/manual-recovery.XXXXXX")"
+_calver_make_fixture "$_calver_manual" 2026 08
+_calver_manual_before="$(_calver_fingerprint "$_calver_manual")"
+mkdir "$_calver_manual/.ae-bump-recovery"
+for _calver_manual_path in ae Cargo.toml Cargo.lock; do
+    cp -p "$_calver_manual/$_calver_manual_path" \
+        "$_calver_manual/.ae-bump-recovery/$_calver_manual_path.orig"
+    printf '%s\n' interrupted >>"$_calver_manual/$_calver_manual_path"
+done
+: >"$_calver_manual/.ae-bump-recovery/backups-ready"
+_calver_manual_rc=0
+_calver_manual_out="$(_calver_recover_run "$_calver_manual" 2>"$_calver_manual/err")" || _calver_manual_rc="$?"
+assert_eq "CalVer bump: bump-recover restores mixed tree" "0" "$_calver_manual_rc"
+assert_eq "CalVer bump: bump-recover emits no output" "" "$_calver_manual_out"
+assert_eq "CalVer bump: bump-recover restores all three live files" \
+    "$_calver_manual_before" "$(_calver_fingerprint "$_calver_manual")"
+assert_eq "CalVer bump: bump-recover removes marker after restoration" "1" \
+    "$([[ ! -e "$_calver_manual/.ae-bump-recovery" ]] && echo 1 || echo 0)"
+
+_calver_recover_copy_fail="$(mktemp -d "$_calver_root/recover-copy-failure.XXXXXX")"
+_calver_make_fixture "$_calver_recover_copy_fail" 2026 08
+mkdir "$_calver_recover_copy_fail/.ae-bump-recovery"
+for _calver_recover_copy_fail_path in ae Cargo.toml Cargo.lock; do
+    cp -p "$_calver_recover_copy_fail/$_calver_recover_copy_fail_path" \
+        "$_calver_recover_copy_fail/.ae-bump-recovery/$_calver_recover_copy_fail_path.orig"
+    printf '%s\n' interrupted >>"$_calver_recover_copy_fail/$_calver_recover_copy_fail_path"
+done
+: >"$_calver_recover_copy_fail/.ae-bump-recovery/backups-ready"
+_calver_recover_copy_fail_mixed="$(_calver_fingerprint "$_calver_recover_copy_fail")"
+printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'if [[ "${3:-}" == *".bump-recover."* ]]; then : >"$3"; exit 1; fi' \
+    'exec "$AE_REAL_CP" "$@"' \
+    >"$_calver_recover_copy_fail/bin/cp"
+chmod +x "$_calver_recover_copy_fail/bin/cp"
+_calver_recover_copy_fail_rc=0
+_calver_recover_copy_fail_out="$(_calver_recover_run "$_calver_recover_copy_fail" 2>"$_calver_recover_copy_fail/err")" || _calver_recover_copy_fail_rc="$?"
+assert_eq "CalVer bump: recovery copy failure is nonzero" "1" "$_calver_recover_copy_fail_rc"
+assert_eq "CalVer bump: recovery copy failure emits no output" "" "$_calver_recover_copy_fail_out"
+assert_eq "CalVer bump: recovery copy failure leaves mixed live files untouched" \
+    "$_calver_recover_copy_fail_mixed" "$(_calver_fingerprint "$_calver_recover_copy_fail")"
+assert_eq "CalVer bump: recovery copy failure retains marker" "1" \
+    "$([[ -d "$_calver_recover_copy_fail/.ae-bump-recovery" ]] && echo 1 || echo 0)"
+assert_eq "CalVer bump: recovery copy failure is loud" "1" \
+    "$(grep -F -c 'marker retained and live files unchanged' "$_calver_recover_copy_fail/err" || true)"
+
+_calver_duplicate="$(mktemp -d "$_calver_root/duplicate.XXXXXX")"
+_calver_make_fixture "$_calver_duplicate" 2026 08
+_calver_tag_fixture "$_calver_duplicate" v2026.8.1
+printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'if [[ "${1:-}" == tag && "${2:-}" == --list ]]; then exit 0; fi' \
+    'if [[ "${1:-}" == show-ref && "${2:-}" == --verify && "${3:-}" == --quiet && "${4:-}" == refs/tags/v2026.8.1 ]]; then exit 0; fi' \
+    'exec "$AE_REAL_GIT" "$@"' \
+    >"$_calver_duplicate/bin/git"
+chmod +x "$_calver_duplicate/bin/git"
+_calver_duplicate_before="$(_calver_fingerprint "$_calver_duplicate")"
+_calver_duplicate_rc=0
+_calver_duplicate_out="$(_calver_run "$_calver_duplicate" 2026 08 2>"$_calver_duplicate/err")" || _calver_duplicate_rc="$?"
+assert_eq "CalVer bump: duplicate target tag is refused nonzero" "1" "$_calver_duplicate_rc"
+assert_eq "CalVer bump: duplicate refusal emits no version" "" "$_calver_duplicate_out"
+assert_eq "CalVer bump: duplicate refusal is loud" "1" \
+    "$(grep -F -c 'release tag v2026.8.1 already exists' "$_calver_duplicate/err" || true)"
+assert_eq "CalVer bump: duplicate refusal edits none of three version files" \
+    "$_calver_duplicate_before" "$(_calver_fingerprint "$_calver_duplicate")"
+
+_calver_duplicate_name="$(mktemp -d "$_calver_root/duplicate-name.XXXXXX")"
+_calver_make_fixture "$_calver_duplicate_name" 2026 08
+printf '%s\n' \
+    '' \
+    '[[package]]' \
+    'name = "ae"' \
+    'version = "9.9.9"' \
+    'source = "registry+https://github.com/rust-lang/crates.io-index"' \
+    'checksum = "0000000000000000000000000000000000000000000000000000000000000000"' \
+    >>"$_calver_duplicate_name/Cargo.lock"
+git -C "$_calver_duplicate_name" add Cargo.lock
+git -C "$_calver_duplicate_name" commit -qm duplicate-name
+_calver_duplicate_name_before="$(_calver_source_ae_block "$_calver_duplicate_name")"
+_calver_duplicate_name_out="$(_calver_run "$_calver_duplicate_name" 2026 08)"
+assert_eq "CalVer bump: root-only lock rewrite still bumps duplicate-name fixture" \
+    "2026.8.1" "$_calver_duplicate_name_out"
+assert_eq "CalVer bump: dependency named ae remains byte-untouched" \
+    "$_calver_duplicate_name_before" "$(_calver_source_ae_block "$_calver_duplicate_name")"
+
+_calver_atomic="$(mktemp -d "$_calver_root/atomic.XXXXXX")"
+_calver_make_fixture "$_calver_atomic" 2026 08
+printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'if [[ "${2:-}" == Cargo.lock && "${1:-}" == *".ae-bump."*/* ]]; then exit 1; fi' \
+    'exec "$AE_REAL_MV" "$@"' \
+    >"$_calver_atomic/bin/mv"
+chmod +x "$_calver_atomic/bin/mv"
+_calver_atomic_before="$(_calver_fingerprint "$_calver_atomic")"
+_calver_atomic_rc=0
+_calver_atomic_out="$(_calver_run "$_calver_atomic" 2026 08 2>"$_calver_atomic/err")" || _calver_atomic_rc="$?"
+assert_eq "CalVer bump: a publication failure is nonzero" "1" "$_calver_atomic_rc"
+assert_eq "CalVer bump: a publication failure emits no version" "" "$_calver_atomic_out"
+assert_eq "CalVer bump: interrupted publish between files rolls all three files back" \
+    "$_calver_atomic_before" "$(_calver_fingerprint "$_calver_atomic")"
+
+_calver_partial_backup="$(mktemp -d "$_calver_root/partial-backup.XXXXXX")"
+_calver_make_fixture "$_calver_partial_backup" 2026 08
+printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'if [[ "${2:-}" == ae && "${3:-}" == *".orig.tmp."* ]]; then : >"$3"; exit 1; fi' \
+    'exec "$AE_REAL_CP" "$@"' \
+    >"$_calver_partial_backup/bin/cp"
+chmod +x "$_calver_partial_backup/bin/cp"
+_calver_partial_backup_before="$(_calver_fingerprint "$_calver_partial_backup")"
+_calver_partial_backup_rc=0
+_calver_partial_backup_out="$(_calver_run "$_calver_partial_backup" 2026 08 2>"$_calver_partial_backup/err")" || _calver_partial_backup_rc="$?"
+assert_eq "CalVer bump: partial backup failure is nonzero" "1" "$_calver_partial_backup_rc"
+assert_eq "CalVer bump: partial backup failure emits no version" "" "$_calver_partial_backup_out"
+assert_eq "CalVer bump: partial backup failure leaves live files byte-identical" \
+    "$_calver_partial_backup_before" "$(_calver_fingerprint "$_calver_partial_backup")"
+assert_eq "CalVer bump: partial backup failure clears unready recovery marker" "1" \
+    "$([[ ! -e "$_calver_partial_backup/.ae-bump-recovery" ]] && echo 1 || echo 0)"
+
+_calver_justfile="$(<"$(dirname "$AE_BIN")/justfile")"
+assert_eq "CalVer release: tag is v plus the derived VERSION and does not rewrite ae again" "1" \
+    "$([[ "$_calver_justfile" == *'TAG="v$VERSION"'* && "$_calver_justfile" != *'sed_i ae '* ]] && echo 1 || echo 0)"
+
+rm -rf "$_calver_root"
+unset -f _calver_make_fixture _calver_tag_fixture _calver_run _calver_recover_run _calver_versions _calver_fingerprint _calver_source_ae_block
+unset _calver_root _calver_real_git _calver_real_mv _calver_real_cp _calver_january _calver_january_out _calver_august _calver_august_out \
+    _calver_rollover _calver_rollover_out _calver_stale _calver_stale_before _calver_stale_rc _calver_stale_out \
+    _calver_stale_recover_rc _calver_stale_recover_out \
+    _calver_manual _calver_manual_before _calver_manual_path _calver_manual_rc _calver_manual_out \
+    _calver_recover_copy_fail _calver_recover_copy_fail_mixed _calver_recover_copy_fail_path \
+    _calver_recover_copy_fail_rc _calver_recover_copy_fail_out \
+    _calver_duplicate _calver_duplicate_before _calver_duplicate_rc _calver_duplicate_out \
+    _calver_duplicate_name _calver_duplicate_name_before _calver_duplicate_name_out \
+    _calver_atomic _calver_atomic_before _calver_atomic_rc _calver_atomic_out \
+    _calver_partial_backup _calver_partial_backup_before _calver_partial_backup_rc _calver_partial_backup_out \
+    _calver_justfile
+
 # ── Results ──────────────────────────────────────────────────────────
 
 echo ""
