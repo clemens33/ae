@@ -8,12 +8,7 @@
 
 **ae** runs AI coding agents side-by-side in tmux. They know about each other, communicate by name, and survive reboots. One public command, a Rust core, and only the pane glue left in Bash.
 
-Works with [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex](https://github.com/openai/codex), [Gemini CLI](https://github.com/google-gemini/gemini-cli), [Grok Build](https://github.com/xai-org/grok-build), [OpenCode](https://github.com/opencode-ai/opencode), or any CLI tool.
-
-> 🦀 The public `ae` command is a small wrapper that validates and invokes a matched, immutable Rust core plus the Bash pane glue, all from one versioned directory. What ae is and where it is going: **[VISION.md](VISION.md)**.
-
-
-> 📖 **[Full documentation](docs/index.md)** — guides, command and helper reference, and internals. This README is the quick tour.
+Works with any CLI-based agentic harness.
 
 ## Why ae
 
@@ -24,7 +19,7 @@ Works with [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex
 - **Tiered delegation** -- leads run the strongest model; bounded chores go to cheap spawned workers in their own tmux windows, reviewed and retired. Convention, not machinery ([docs](docs/reference/delegation.md)).
 - **A status bar that answers "who needs me"** -- inside its sessions ae owns the tmux footer: session, git branch, and watchdog health on line one; the focused agent plus a whole-org roster showing the watchdog's verdict per agent (`lead● colead✔ builder◌ grok⚡`) on line two. Verdicts, never claims.
 - **A chief of staff on your phone** -- the optional orchestrator session watches your whole fleet and reports over Telegram; tell it your objective and it helps you hold it.
-- **Small public surface** -- one command, a versioned core, and Bash only where tmux-pane glue is the right tool. Optional companions live in `contrib/` and are never required.
+- **Small public surface** -- one command, and optional companions in `contrib/` that are never required.
 
 ## Install
 
@@ -185,7 +180,7 @@ No custom protocols, no frameworks. Just system prompts and bash scripts agents 
 
 ## One public command, typed core
 
-`ae` is a small public wrapper over a versioned Rust core and the Bash pane glue. Your repos stay untouched -- session state lives in `~/.ae/sessions/`, and `--copy`/`--worktree` give agents isolated workspaces when you want them.
+`ae` is a small public wrapper over a versioned Rust core and the Bash pane glue. `--copy` and `--worktree` give agents isolated workspaces when you want them.
 
 Everything else is **optional**, never required for core commands:
 

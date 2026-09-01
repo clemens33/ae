@@ -2,9 +2,8 @@
 
 One public wrapper, one Rust core, and minimal policy-frozen Bash pane glue in one immutable versioned install. Keep the product thin: tmux remains the runtime, and Bash remains only where pane glue is best-in-class.
 
-> **Where the rules live.** State, lifecycle and the daemons are one Rust binary; the Bash
-> sections below govern the surviving pane glue. Rust rules:
-> [Rust era](#rust-era-main). Product direction: [VISION.md](VISION.md).
+> **Where the rules live.** The Bash sections below govern the surviving pane glue; the Rust
+> core has its own: [Rust era](#rust-era-main). Product direction: [VISION.md](VISION.md).
 
 ## Philosophy
 
