@@ -1,18 +1,14 @@
 # Architecture
 
-## P5 topology and status
+## Topology
 
-P5 entered on 2026-08-31; `main` now carries the post-strangler product. The public
-`~/.local/bin/ae` wrapper selects one immutable
-`~/.ae/versions/<V>/` set: `ae` (wrapper), `ae-core` (Rust lifecycle/state core),
-`ae-glue` (policy-frozen, shrinking Bash pane glue with the P5 sibling-binding routing fix),
-and `install` (the immutable sibling used by `ae upgrade`). `~/.ae/current` points at that
-set and `~/.ae/core/current` points at its core. The original pre-rewrite Bash script is
-separately preserved locally byte-exact at `72c7293` as the `ae-legacy` P5 cutover anchor
-outside the public bundle, removable once pre-flip live sessions stop or resume.
+The public `~/.local/bin/ae` wrapper selects one immutable `~/.ae/versions/<V>/` set: `ae`
+(wrapper), `ae-core` (Rust lifecycle/state core), `ae-glue` (minimal policy-frozen Bash
+pane glue), and `install` (the immutable sibling used by `ae upgrade`). `~/.ae/current`
+points at that set and `~/.ae/core/current` points at its core.
 
 The diagrams and sections below model the surviving `ae-glue` pane internals. They are not
-a model of the whole P5 product or its wrapper/core/installer topology.
+a model of the whole product or its wrapper/core/installer topology.
 
 ## Mental model
 
@@ -66,10 +62,10 @@ flowchart TB
 
 The regenerate step runs on a new launch or resume, never against an already-running session. After an installed upgrade, stopped sessions bind the new generation on resume while running sessions stay pinned; no migration ceremony is needed.
 
-## Policy-frozen, shrinking Bash pane glue
+## The Bash pane glue
 
-The tracked `ae` glue handles tmux orchestration, helper generation, and the P5
-sibling-binding routing fix. Its file index groups functions by concern (Config, Helpers,
+The tracked `ae` glue handles tmux orchestration, helper generation, and sibling-binding
+routing. Its file index groups functions by concern (Config, Helpers,
 Resume, Session, Launch, Manifest, Commands). The Rust core owns state/lifecycle; the public
 wrapper and versioned installer are described above.
 

@@ -1,14 +1,14 @@
 # Development
 
-ae ships one public wrapper over an immutable versioned Rust core and policy-frozen, shrinking
-Bash pane glue with the P5 sibling-binding routing fix.
+ae ships one public wrapper over an immutable versioned Rust core and minimal policy-frozen
+Bash pane glue.
 The repo contains that product, its installer and release lanes, glue/installer tests, Rust
 tests, and this docs site.
 
 ## Layout
 
 ```
-ae                  — policy-frozen, shrinking pane glue with the P5 sibling-binding routing fix (bundled as `ae-glue`)
+ae                  — the Bash pane glue (bundled as `ae-glue`)
 ae-entry            — public wrapper source (installed and bundled as `ae`)
 justfile            — dev/release pipeline (just check, just test, just release)
 cliff.toml          — git-cliff config (CalVer-compatible changelog)
@@ -57,7 +57,7 @@ just docs-build       # build the static site into ./site
 
 ## Tests
 
-`tests/unit` covers the policy-frozen, shrinking pane glue (including the P5 sibling-binding routing fix), public-wrapper/installer contract, and helper templates with a tiny `assert_eq` harness. Session-helper logic (watchdog, send, ask, requests, …) lives in the top-level **template library** section of `ae` — real column-0 functions emitted into generated helpers via `declare -f` — so tests extract and exercise that glue directly; there are no helper heredocs to parse anymore (only three trivial exec shims remain heredocs). Two builder helpers (`_build_lib_from_source`, `_build_helper_from_source`) reconstruct a runnable `_lib`/helper from the emission's own prologue + `declare -f` list when a test needs the full artifact.
+`tests/unit` covers the Bash pane glue, the public-wrapper/installer contract, and helper templates with a tiny `assert_eq` harness. Session-helper logic (watchdog, send, ask, requests, …) lives in the top-level **template library** section of `ae` — real column-0 functions emitted into generated helpers via `declare -f` — so tests extract and exercise that glue directly; there are no helper heredocs to parse anymore (only three trivial exec shims remain heredocs). Two builder helpers (`_build_lib_from_source`, `_build_helper_from_source`) reconstruct a runnable `_lib`/helper from the emission's own prologue + `declare -f` list when a test needs the full artifact.
 
 When adding or changing a helper, the guard suite enforces the emission invariants: every `declare -f` list ends with its `helper_<name>_main`, every emitted name has exactly one top-level definition, the template `helper_*` set equals the emitted union, and the whole template library must source silently under `set -u` (an executable leak would run on every ordinary `ae` invocation).
 
@@ -80,7 +80,7 @@ recovered with `just bump-recover`.
 1. Pre-flight: clean working tree, fetch tags, pull rebase.
 2. `just check` (shellcheck + shfmt).
 3. `just test` (unit + integration).
-4. Bump all four version-bearing files: `_AE_ENTRY_VERSION` in `ae-entry`, `AE_VERSION` in `ae`, the Cargo package and lockfile; after the first Rust-era tag, flip the README badges from untagged/pre-release to tagged release and from checkout-install to `curl | bash`.
+4. `just bump` updates all four version-bearing files — `_AE_ENTRY_VERSION` in `ae-entry`, `AE_VERSION` in `ae`, the Cargo package and lockfile — and rewrites the README and docs/index release badges. It refuses to proceed if the pre-release badge or the obsolete checkout-install prose is still standing in either file; a real build-from-source section is not what it is looking for.
 5. `git-cliff` → `CHANGELOG.md` + release-body.
 6. Commit, tag, push, `gh release`.
 
@@ -106,7 +106,7 @@ Review invocations run **read-only** — a `--full-auto` reviewer is a tree muta
 
 ## Philosophy reminders
 
-- ae is a public wrapper, Rust core, and policy-frozen shrinking Bash pane glue with the P5 sibling-binding routing fix; no new Bash features return to the glue.
+- ae is a public wrapper, a Rust core, and the Bash pane glue; no new Bash features return to the glue.
 - Config is INI-style with a simple regex parser. Don't add TOML/YAML/JSON parsing.
 - The installed runtime is an immutable matched set; checkout development additionally needs rustup and just. (Docs tooling remains optional.)
 - Session state lives in `~/.ae/sessions/`. Working directories stay clean.

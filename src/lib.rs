@@ -1,8 +1,7 @@
 //! `ae` — agent environment: a tmux-backed multi-agent session multiplexer.
 //!
-//! The Rust rewrite (epic #79). P0 laid the skeleton so every quality lane —
-//! fmt, clippy, nextest, doctests, coverage, mutants — runs against real code;
-//! P1 is adding the read side, slice by slice.
+//! Every quality lane — fmt, clippy, nextest, doctests, coverage, mutants —
+//! runs against real code.
 //!
 //! # Where the behavior comes from
 //!
@@ -14,7 +13,7 @@
 //! fields of the `list --json` digest are *inputs* to [`session::entry_for`]
 //! rather than things it reads. See that module's docs for the list.
 //!
-//! # The read side so far (P1 slice 1: `list --json`)
+//! # The first read-side slice (P1: `list --json`)
 //!
 //! | Module | Rows |
 //! |---|---|

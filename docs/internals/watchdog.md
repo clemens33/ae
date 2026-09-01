@@ -2,7 +2,7 @@
 
 The watchdog is a per-session monitor that lives inside the hidden `ae-monitor` tmux window. Its live loop is the Rust core's `_watchdog-run`, launched by the generated watchdog helper (the `ae` helper region around `ae:16204-16254`). It walks every registered agent pane on a fixed cycle, classifies each agent's state, and reacts: nudges idle agents, alerts on dead ones, pauses nudging when upstream rate limits are visible, and respects explicit completion signals.
 
-Bash is process start/stop/tick glue only: it starts and stops the core child, refreshes the git-branch display, and runs the deferred pending-session-id recovery and Telegram-supervision ticks. The old Bash loop remains only as a rollback path when no usable core is pinned; it is not part of the P5 live path.
+Bash is process start/stop/tick glue only: it starts and stops the core child, refreshes the git-branch display, and runs the deferred pending-session-id recovery and Telegram-supervision ticks. The old Bash loop remains only as a rollback path when no usable core is pinned; it is not part of the live path.
 
 ## Lifecycle
 

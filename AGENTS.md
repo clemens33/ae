@@ -1,16 +1,10 @@
 # ae
 
-One public wrapper, one Rust core, and policy-frozen, shrinking Bash pane glue with the P5 sibling-binding routing fix in one immutable versioned install. Keep the product thin: tmux remains the runtime, and Bash remains only where pane glue is best-in-class.
+One public wrapper, one Rust core, and minimal policy-frozen Bash pane glue in one immutable versioned install. Keep the product thin: tmux remains the runtime, and Bash remains only where pane glue is best-in-class.
 
-> **P5 entered 2026-08-31; `main` carries the post-strangler product.** `rust-rewrite`
-> (epic #79) is historical development-branch context. The tracked `ae` is policy-frozen
-> (no new Bash features), shrinking surviving pane glue with the P5 sibling-binding routing
-> fix, shipped as immutable `ae-glue`; state, lifecycle, and daemons are one Rust binary. The
-> original pre-rewrite script is preserved locally byte-exact at `72c7293` as the `ae-legacy`
-> P5 cutover anchor outside the public bundle, removable once pre-flip live sessions stop or
-> resume. The single-file / pure-Bash rules are historical. Rust-era rules:
-> [Rust era](#rust-era-current-main). Direction and phases:
-> [VISION.md](VISION.md).
+> **Where the rules live.** State, lifecycle and the daemons are one Rust binary; the Bash
+> sections below govern the surviving pane glue. Rust rules:
+> [Rust era](#rust-era-main). Product direction: [VISION.md](VISION.md).
 
 ## Philosophy
 
@@ -21,7 +15,7 @@ One public wrapper, one Rust core, and policy-frozen, shrinking Bash pane glue w
 - No build steps, no package managers, no abstractions.
 - Simplicity is the feature. The entire tool must remain understandable in one sitting.
 
-*Scope after the P5 entry flip:* the first, second, third and sixth bullets are durable —
+*Scope:* the first, second, third and sixth bullets are durable —
 they describe what ae **is**, and the Rust core inherits them unchanged (a thin wrapper,
 daily productivity, resist features, understandable in one sitting). "One file does
 everything" and "no build steps" were bash-implementation rules; they are historical.
@@ -30,7 +24,7 @@ stay readable.
 
 ## Rules
 
-- `ae` must remain a single bash script. No compiled languages, no runtimes. *(Historical pre-P5 decision; triggers 1–3 fired and P5 entered on 2026-08-31.)* The tracked `ae` is policy-frozen (no new Bash features), shrinking surviving pane glue with the P5 sibling-binding routing fix, shipped as `ae-glue`; the byte-exact original at `72c7293` is the local `ae-legacy` P5 cutover anchor outside the public bundle, removable once pre-flip live sessions stop or resume. The Rust binary is the ratified successor, not a violation of the durable product doctrine.
+- `ae` must remain a single bash script. No compiled languages, no runtimes. *(Historical: this once governed all of `ae`; triggers 1–3 fired on 2026-08-20 and the Rust core is the ratified successor, not a violation of the durable product doctrine.)* What survives is minimal pane glue, shipped as `ae-glue` and policy-frozen: no new Bash features.
 - Config is INI-style with a simple regex parser. Don't add TOML/YAML/JSON parsing.
 - Core ae requires only `bash >= 4.0`, `tmux`, and `git`. Optional features may declare their own hard dependencies (e.g. `ae orchestrator` needs an agent CLI; `contrib/aemonitor` needs Python 3), but those deps must never be required for the rest of ae to work — `ae list`, `ae <name>`, etc. continue to function on a machine without them. (`ae telegram` used to need `jq` + `curl`; the Rust-core bridge needs neither — it is the ae core binary.)
 - Session state lives in `~/.ae/sessions/`; archived session memory lives in
@@ -52,7 +46,10 @@ The single-file / pure-bash / tmux-runtime contract is a *decision with reasons*
 shipping *after* the hazards checklist existed, the events ledger and request/claim state
 outgrew what bash can hold safely, and the daemon half outgrew the wrapper half. The ruling
 is epic #79 — a Rust core, bash kept for the tmux glue where it is best-in-class. Trigger 4
-has not fired; nothing here is packaged for contributors yet.
+is partly here: ae is packaged and released as checksum-verified platform bundles, so the
+install side of that calculus has already changed. What has not arrived is a second author —
+no contributor onboarding, no external consumer. Re-evaluate everything above when one shows
+up.
 
 tmux as the runtime is no longer unchallenged: **herdr** (herdrdev/herdr, Rust, Apache-2.0, ~24k stars) is a credible agent multiplexer with its own renderer, agent-state sidebar, and a Unix socket API agents can drive programmatically — the first serious non-tmux substrate. It competes with ae's *plumbing*, not its coordination protocol or doctrine; a watchlist item, not a migration plan — migrate only when one of the triggers above fires, and if trigger 3 does, herdr's socket API is a candidate substrate to port the helpers onto. Watch alongside zellij's programmatic CLI (still no send-keys-stable API). Assessed 2026-08-03, cross-model research (secondary sources + repo metadata); read its source before any commitment.
 
@@ -67,7 +64,7 @@ tmux as the runtime is no longer unchallenged: **herdr** (herdrdev/herdr, Rust, 
 ## Structure
 
 ```
-ae                  — policy-frozen, shrinking pane glue with the P5 sibling-binding routing fix (bundled as `ae-glue`)
+ae                  — minimal policy-frozen pane glue (bundled as `ae-glue`)
 ae-entry            — public wrapper source (installed and bundled as `ae`)
 justfile            — dev/release pipeline (just check, just test, just release)
 cliff.toml          — git-cliff changelog config (CalVer-compatible)
@@ -97,7 +94,7 @@ How this project is built and reviewed, distilled from lived sessions — load t
 
 - `docs/gatekeeping.md` — the slice-gate craft: invariant-first diff reads, the failure taxonomy, verification mechanics. Read before gating or reviewing an ae change.
 - `docs/design-patterns.md` — the coordination patterns behind ae's design (ownership facts, chokepoint guards, fallback-for-free, identity facets).
-- `docs/lead-handover.md` — trust map, first-looks table, and session mechanics for a lead agent taking over ae development.
+- `docs/lead-handover.md` — **historical.** The trust map, first-looks table, and session mechanics from before the Rust core owned `list`. Handover evidence, not current guidance.
 
 ## How it works
 
@@ -261,19 +258,18 @@ Release tags matching `v[0-9]*.[0-9]*.[0-9]*` build their own release binaries w
 proven static (`PT_INTERP` absent and `file` reports static) and runs both `_net-probe`
 controls against the shipped binary: the reserved `.invalid` name must refuse and
 `api.telegram.org` must resolve. Each bundle contains the public `ae` wrapper, `ae-core`,
-policy-frozen, shrinking `ae-glue` with the P5 sibling-binding routing fix, and canonical
+minimal policy-frozen `ae-glue`, and canonical
 `install`; the final job emits one `SHA256SUMS` over both
 tarballs. The installer downloads files, verifies the checksum before extraction, and
 atomically publishes the complete matched set under one immutable version directory.
-The first real post-seal tag is the outstanding end-to-end workflow proof; local unit
-tests use fixture bundles and never access the network.
+Local unit tests use fixture bundles and never access the network.
 
 **The canonical installer takes no path overrides.** It installs to `~/.ae/versions` and
 `~/.local/bin/ae`, derived from `HOME` and nothing else. Fixed publication paths avoid
 aliasing with legacy state; persisted journals are hostile input and are refused, then
 preserved for diagnosis, when their pointers or command path disagree.
 
-**P5 executed the `AE_NEXT_HOME` retirement on 2026-08-31.** The coexistence wrapper and
+**The `AE_NEXT_HOME` retirement executed on 2026-08-31.** The coexistence wrapper and
 its advanced state-write override no longer ship. The public wrapper unsets inherited
 `AE_CORE`, `AE_TMUX_SERVER`, `AE_TMUX_SERVER_KIND`, and `AE_CORE_BIN`; it unconditionally
 sets `AE_HOME=$HOME/.ae` and `CONFIG_FILE=$AE_HOME/config`, ignoring inherited `AE_HOME` and
@@ -284,7 +280,7 @@ coreless Bash mode is unreachable through the public entry. The retained coexist
 glue block is likewise unreachable via that entry and is scheduled for its own retirement
 slice.
 
-**P5 command ownership (ruled 2026-08-31):** except `upgrade` and the three version
+**Command ownership (ruled 2026-08-31):** except `upgrade` and the three version
 spellings, every row below passes the validated triple first. Before every non-`upgrade`
 exec, the wrapper unsets `AE_VERSION`; the operator pin is scoped solely to `upgrade` and
 cannot freeze into a session.
@@ -351,14 +347,15 @@ sibling unconditionally (ignoring `AE_CORE_BIN`). In every other shape, resoluti
   no immutable version.
 - **cargo-audit is deliberately absent**: cargo-deny covers RustSec directly, so a second
   lane is duplication with a second failure mode.
-- `just rust-deny` passes `--allow license-not-encountered` **only because the crate has zero
-  dependencies**. Remove it at the first real dependency — from then on the warning is the
-  signal that the allow-list drifted.
+- `just rust-deny` no longer passes `--allow license-not-encountered`: the flag went with the
+  first real dependency (2026-08-29). The allow-list is now MINIMAL-TO-ENCOUNTERED, and a
+  license-not-encountered warning is the signal that it drifted — which is the point of
+  dropping the flag.
 
 Dependencies arrive **with the feature that needs them**, never in the skeleton: "no error
 dependency exists until a real error does" generalises. `Cargo.lock` is committed.
-**Trigger:** cargo-fuzz is required *before* any hostile persisted-state parser cuts over
-(a P2/P3 entry condition, recorded so it is not rediscovered late).
+**Trigger:** cargo-fuzz is required *before* any hostile persisted-state parser cuts
+over — recorded so it is not rediscovered late.
 
 ### Dependency posture: the researched line (2026-08-24)
 
@@ -374,13 +371,13 @@ or chrono.** Zero-dep is doctrine with recorded triggers, not dogma.
 
 | Surface | Verdict | Trigger to revisit |
 |---|---|---|
-| CLI parsing (`cli.rs`) | **Keep from-scratch.** clap fights our grammar and costs ~half a MiB; pico-args is stale and parses in arbitrary order (breaks SC-521) | Subcommand growth (P5): adopt **lexopt** (0-dep lexer), never clap |
-| JSON (`json.rs`) | **Keep from-scratch** — it enforces SC-510d's escape set, SC-506 infallible rendering, SC-511b forward tolerance; serde_json's `Map`/`Result`/`Number` shapes fight all three | If cargo-fuzz shows the *grammar* is the expensive part: serde_json as **lexer only**, our `Value`+renderer kept. Telegram-API JSON at P4 is an **open choice** (the one point the two families split: scoped serde_json vs keep ours) — decide it then |
+| CLI parsing (`cli.rs`) | **Keep from-scratch.** clap fights our grammar and costs ~half a MiB; pico-args is stale and parses in arbitrary order (breaks SC-521) | Subcommand growth: adopt **lexopt** (0-dep lexer), never clap |
+| JSON (`json.rs`) | **Keep from-scratch** — it enforces SC-510d's escape set, SC-506 infallible rendering, SC-511b forward tolerance; serde_json's `Map`/`Result`/`Number` shapes fight all three | If cargo-fuzz shows the *grammar* is the expensive part: serde_json as **lexer only**, our `Value`+renderer kept. Telegram-API JSON was the one point the two families split (scoped serde_json vs keep ours); the bridge ships on ours |
 | Errors (`error.rs`) | **Keep the single enum.** anyhow rejected outright (type erasure + advisory history) | Variant explosion: **thiserror** (compile-time only), preferably in the same commit as the first runtime dep |
-| Unix/fs | **Keep std.** rustix/nix would sit in front of `read_dir` and punch the clippy capability boundary, whose deny is premised on empty dep tables | flock / signals / unix sockets (P2/P4): **rustix**, not nix (advisory history) |
+| Unix/fs | **Keep std.** rustix/nix would sit in front of `read_dir` and punch the clippy capability boundary, whose deny is premised on empty dep tables | flock, signals or unix sockets: **rustix**, not nix (advisory history) |
 | Time | **Keep std.** jiff pre-1.0; chrono and time both carry advisory history; our contract rows refuse the tolerance those crates sell | A real timezone/calendar need, none foreseen |
-| HTTP (P4 telegram) | **ureq + rustls**, `json` feature OFF, native-tls OFF, pin the ring CryptoProvider (musl static). attohttpc disqualified on license alone (MPL-2.0 vs deny.toml) | Arrives WITH the telegram daemon, not before |
-| Daemon concurrency (P4) | **OS threads + mpsc.** Two to four background loops do not justify an async runtime | Only if the loop count changes shape |
+| HTTP (telegram) | **ureq + rustls**, `json` feature OFF, native-tls OFF, pin the ring CryptoProvider (musl static). attohttpc disqualified on license alone (MPL-2.0 vs deny.toml) | Adopted with the telegram bridge (2026-08-29) |
+| Daemon concurrency | **OS threads + mpsc.** Two to four background loops do not justify an async runtime | Only if the loop count changes shape |
 
 **Costs of the first `[dependencies]` row, all three recorded so they are paid knowingly:**
 drop `--allow license-not-encountered` from `rust-deny` (already recorded above); the
@@ -416,12 +413,12 @@ whole graph for advisories in the meantime.
 `std::process::ExitCode`/`Termination` (1.61) over raw `exit()`, `std::io::IsTerminal`
 (1.70) over atty/is-terminal, `core::error::Error` (1.81) for no-std-shaped error trees.
 
-**Dev-lane roadmap:** cargo-fuzz at P2 (already doctrine, above); **proptest** as dev-dep
+**Dev-lane roadmap:** cargo-fuzz before the first hostile persisted-state parser (already doctrine, above); **proptest** as dev-dep
 beside it for parser round-trip invariants; **cargo-vet** with the first runtime dep
 (orthogonal to cargo-deny — do not add cargo-audit, that duplication is already refused
 above); **skip insta** (snapshot tests would pin unratified digest order — the exact
-over-pinning class criterion 15 polices); **cargo-semver-checks remains unused**: the P5-entry
-revisit resolved keep-unused per [rust-sota-grok.md](docs/research/rust-sota-grok.md#cargo-semver-checks-0500--keep-unused), because ae is unpublished CalVer product code with no external library consumer or compatibility promise. Adopt it only if the crate is published or gains a real external library consumer. Candidate clippy hardening lints to evaluate in their own quiet
+over-pinning class criterion 15 polices); **cargo-semver-checks remains unused** — revisited and
+resolved keep-unused per [rust-sota-grok.md](docs/research/rust-sota-grok.md#cargo-semver-checks-0500--keep-unused), because ae is unpublished CalVer product code with no external library consumer or compatibility promise. Adopt it only if the crate is published or gains a real external library consumer. Candidate clippy hardening lints to evaluate in their own quiet
 slice, not mid-flight: `cast_possible_truncation`, `cast_sign_loss`, `dbg_macro`, `todo`,
 `unimplemented`, `panic_in_result_fn` — evaluation means running them against the tree,
 not appending them to the table.
@@ -507,9 +504,9 @@ The bootstrap contract, in full — nothing else is assumed to exist:
   package version are unified NOW, deliberately pre-promotion: all use SemVer-compatible CalVer
   `YYYY.M.N`. `just bump` derives N from matching Git tags (`vYYYY.M.N`), resets monthly,
   refuses duplicate tags, and updates `ae-entry`, `ae`, `Cargo.toml`, and `Cargo.lock` together.
-- **`panic = "abort"`** in the release profile forecloses `catch_unwind`. Revisit at **P4**:
-  a long-lived watchdog or telegram loop may want to survive a panic in one iteration rather
-  than take the process down. Cheap to flip; recorded so it stays a decision.
+- **`panic = "abort"`** in the release profile forecloses `catch_unwind`. Revisit if the
+  long-lived watchdog or telegram loop needs to survive a panic in one iteration rather than
+  take the process down. Cheap to flip; recorded so it stays a decision.
 - **`cliff.toml` is excluded from taplo** — a bash-era file whose reformat would be an
   unrelated diff in a frozen area. It joins the lane when someone reformats it deliberately.
 
@@ -517,8 +514,8 @@ The bootstrap contract, in full — nothing else is assumed to exist:
 
 Every bug class below has shipped at least once. Check new code against both lists.
 
-*Scope after P5:* this section governs policy-frozen, shrinking `ae-glue` with the P5
-sibling-binding routing fix and the generated helpers — the pane-side Bash remainder. Its
+*Scope:* this section governs the minimal policy-frozen `ae-glue` and the generated
+helpers — the pane-side Bash remainder. Its
 measured facts (TUI markers, tool behavior, userland
 divergences) are **empirical evidence** for the semantic contract, never its normative
 authority — see `docs/migration/semantic-contract.md`.

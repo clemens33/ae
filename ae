@@ -2692,8 +2692,9 @@ _resolve_spawned() {
 }
 
 # The core path an INSTALL publishes: <AE_HOME>/core/current, one line holding an
-# absolute path. General, not ae-next-specific — P5 can install through the same
-# pointer — and deliberately a FILE rather than an exported variable.
+# absolute path. General, not tied to one installer — every install publishes
+# through the same pointer — and deliberately a FILE rather than an exported
+# variable.
 #
 # WHY A FILE. Every re-entry into ae resolves the core again: a generated helper
 # execs its recorded ae path, the watchdog re-invokes `telegram _supervise`,
@@ -16215,7 +16216,7 @@ helper_watchdog_main() {
     # it owns sweep detection, cadence, delivery-check, retry and heartbeat-wedge
     # for the orchestrator MAIN. The bash rollback below KEEPS its own sweep as the
     # rollback (mirrors P4.1's core||bash split), used only when no usable core
-    # is pinned; retire at P5 with the rest of the rollback loop.
+    # is pinned; retire with the rest of the rollback loop.
     #
     # Core usability MIRRORS _ae_core_try's gate (AE_CORE= set-but-empty forces
     # bash; pinned ae_core + matching ae_core_version + executable), inlined rather

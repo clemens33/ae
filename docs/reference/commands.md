@@ -87,8 +87,8 @@ bulk of the list and just noise for monitoring. Flags:
 | `--active` | only running sessions with recent activity (an ae event within the fixed 300 seconds / 5 minutes); alias: `--busy` |
 | `--json` | machine-readable digest (honours the filters above) |
 
-At P5, `AE_LIST_ACTIVE_SECS` and `AE_ATTN_REQUEST_SECS` are retired: the core owns
-`list` with fixed 300-second activity and 1800-second unanswered defaults; restoring
+`AE_LIST_ACTIVE_SECS` and `AE_ATTN_REQUEST_SECS` are not honoured: the core owns
+`list` with fixed 300-second activity and 1800-second unanswered defaults. Restoring
 operator overrides is a recorded follow-up.
 
 For a live dashboard, wrap it with `watch`:
@@ -153,8 +153,6 @@ version and current selectors.
 Stopped session directories are untouched and consume the current version on
 their next resume. Running sessions are reported by name as deferred until
 stop and resume; upgrade never hot-rewrites loaded helpers or daemon bodies.
-Remote download activates with the first Rust-era release tag; before then,
-use the checkout install path.
 
 ## `ae status [name]`
 

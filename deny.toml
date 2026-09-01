@@ -5,7 +5,7 @@
 # duplicate lane and is deliberately absent (#80).
 
 [graph]
-# Both targets of the epic. Restricting the graph keeps the check honest: a
+# Both targets ae ships. Restricting the graph keeps the check honest: a
 # platform we do not ship is a platform whose advisories are noise.
 targets = [
   { triple = "aarch64-apple-darwin" },

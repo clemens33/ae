@@ -44,7 +44,7 @@
 //! rename — stays UNASSOCIATED rather than being matched by display name.
 //! Attributing it by name would be a false attribution, and SC-518/SC-511b both
 //! rule that the wrong direction to fail in. The state is lost loudly until
-//! SC-977's stable identity lands at the P2 routing cutover.
+//! SC-977's stable identity is in place.
 
 use std::fs;
 use std::io;
@@ -408,7 +408,7 @@ impl SessionRuntime {
 /// UNASSOCIATED rather than attributed by display name: falling back would
 /// invent an attribution, and SC-518/SC-511b both rule that direction the wrong
 /// one to fail in. Rename loss is the documented known limitation until
-/// SC-977's stable identity lands at the P2 routing cutover.
+/// SC-977's stable identity is in place.
 ///
 /// Display matching survives only for events with NO routing key at all — every
 /// pre-SC-511a record in an existing log. A key that is half-given, or given

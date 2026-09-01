@@ -132,8 +132,8 @@ disallowed_types = "deny"
 strip = "symbols"
 lto = "thin"
 codegen-units = 1
-# REVISIT AT P4 (daemons). `panic = "abort"` forecloses `catch_unwind`: a
-# long-lived watchdog/telegram loop may want to survive a panic in one iteration
-# rather than take the process down. Cheap to flip; recorded so the trade is a
-# decision at P4 rather than a discovery.
+# REVISIT IF A DAEMON LOOP NEEDS TO SURVIVE A PANIC. `panic = "abort"`
+# forecloses `catch_unwind`: the long-lived watchdog/telegram loop may want to
+# survive a panic in one iteration rather than take the process down. Cheap to
+# flip; recorded so the trade stays a decision rather than a discovery.
 panic = "abort"

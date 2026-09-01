@@ -1,18 +1,17 @@
 # ae - agentic engineering
 
-![Version: 2026.8.2 untagged/pre-release](https://img.shields.io/badge/version-2026.8.2%20untagged%2Fpre--release-blue.svg)
+[![Release: 2026.8.2](https://img.shields.io/badge/release-2026.8.2-blue.svg)](https://github.com/clemens33/ae/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Bash](https://img.shields.io/badge/bash-%3E%3D4.0-green.svg)](https://www.gnu.org/software/bash/)
 [![tmux](https://img.shields.io/badge/requires-tmux-1BB91F.svg)](https://github.com/tmux/tmux)
-[![Install](https://img.shields.io/badge/install-checkout%20install-orange.svg)](#install)
+[![Install: curl | bash](https://img.shields.io/badge/install-curl%20%7C%20bash-orange.svg)](#install)
 
 **ae** runs AI coding agents side-by-side in tmux. They know about each other, communicate by name, and survive reboots. One public command, a Rust core, and only the pane glue left in Bash.
 
 Works with [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex](https://github.com/openai/codex), [Gemini CLI](https://github.com/google-gemini/gemini-cli), [Grok Build](https://github.com/xai-org/grok-build), [OpenCode](https://github.com/opencode-ai/opencode), or any CLI tool.
 
-> 🦀 **P5 entered 2026-08-31; `main` carries the post-strangler product.** The public `ae` command validates and invokes an immutable Rust core plus policy-frozen, shrinking Bash pane glue with the P5 sibling-binding routing fix. The previous `ae-next` coexistence surface is unreachable via the public entry; its design record remains [historical](docs/migration/coexistence.md). Direction, reasons and phases: **[VISION.md](VISION.md)**.
+> 🦀 The public `ae` command is a small wrapper that validates and invokes a matched, immutable Rust core plus the Bash pane glue, all from one versioned directory. What ae is and where it is going: **[VISION.md](VISION.md)**.
 
-> The first Rust-era release tag is pending; the version badge flips when that tag exists.
 
 > 📖 **[Full documentation](docs/index.md)** — guides, command and helper reference, and internals. This README is the quick tour.
 
@@ -29,29 +28,15 @@ Works with [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex
 
 ## Install
 
-**Checkout install is the active path until the first Rust-era release tag and bundle exist:**
-
-```bash
-git clone https://github.com/clemens33/ae.git ~/.local/share/ae
-cd ~/.local/share/ae
-just install
-```
-
-Checkout prerequisites: [rustup](https://rustup.rs/) and [just](https://github.com/casey/just) installed; then run `just rust-setup` once to provision the pinned toolchain.
-
-This installs the immutable versioned artifact and points `~/.local/bin/ae` at its public wrapper. Make sure `~/.local/bin` is on your `PATH`, then run `ae doctor`.
-
-### Release installer — activates with the first release tag
-
-The eventual one-line installer is shown here for its final interface, but it is **unusable before the first Rust-era release tag and bundle exist**. It activates with that tag.
-
 ```bash
 curl -fsSL https://raw.githubusercontent.com/clemens33/ae/main/install | bash
 ```
 
 The installer downloads the platform bundle and `SHA256SUMS` to temporary files,
 verifies the bundle before extraction, then atomically publishes an immutable
-versioned install under `~/.ae/versions`. Set `AE_VERSION=2026.8.2` to pin a release.
+versioned install under `~/.ae/versions` and points `~/.local/bin/ae` at its
+public wrapper. Make sure `~/.local/bin` is on your `PATH`, then run `ae doctor`.
+Set `AE_VERSION=2026.8.2` to pin a release.
 
 | Platform | Bundle | Status |
 |---|---|---|
@@ -60,6 +45,16 @@ versioned install under `~/.ae/versions`. Set `AE_VERSION=2026.8.2` to pin a rel
 | macOS Intel | `darwin-x86_64` | rejected |
 | Linux ARM | `linux-arm64` | rejected |
 | Windows / MSYS | — | rejected |
+
+### Build from source
+
+```bash
+git clone https://github.com/clemens33/ae.git ~/.local/share/ae
+cd ~/.local/share/ae
+just install
+```
+
+Prerequisites: [rustup](https://rustup.rs/) and [just](https://github.com/casey/just) installed; then run `just rust-setup` once to provision the pinned toolchain. This runs the same canonical installer and compiles a native binary for this machine.
 
 ## Quick start
 
@@ -190,7 +185,7 @@ No custom protocols, no frameworks. Just system prompts and bash scripts agents 
 
 ## One public command, typed core
 
-`ae` is a small public wrapper over a versioned Rust core and policy-frozen, shrinking Bash pane glue with the P5 sibling-binding routing fix. Your repos stay untouched -- session state lives in `~/.ae/sessions/`, and `--copy`/`--worktree` give agents isolated workspaces when you want them.
+`ae` is a small public wrapper over a versioned Rust core and the Bash pane glue. Your repos stay untouched -- session state lives in `~/.ae/sessions/`, and `--copy`/`--worktree` give agents isolated workspaces when you want them.
 
 Everything else is **optional**, never required for core commands:
 
@@ -200,13 +195,10 @@ Everything else is **optional**, never required for core commands:
 | `ae orchestrator` ([contrib/aeorchestrator](contrib/aeorchestrator)) | the fleet's chief of staff: monitors every session, relays and reports, guards an objective once you set one | an agent CLI |
 | [contrib/aemonitor](contrib/aemonitor) | deterministic sweep helper the orchestrator uses | Python 3 stdlib |
 
-Daemons are Rust-owned: the watchdog helper starts core `_watchdog-run`, and Telegram starts core `_telegram-run`, with no `jq`/`curl` dependency. Bash keeps their start/stop/tick pane glue; its old watchdog loop remains only as an unreachable legacy-anchor rollback path. (An earlier stdlib-only Python sidecar, [contrib/aewatch](contrib/aewatch), prototyped the carve-out under byte-exact parity testing; it is retired now that the core owns the bridge.) Autostart controls are per component: set `watchdog = false` in workspace config to disable the workspace watchdog; set `enabled = false` in Telegram config to disable Telegram; set `AE_NO_AUTOSTART=1` to disable orchestrator autostart only.
+Daemons are Rust-owned: the watchdog helper starts core `_watchdog-run`, and Telegram starts core `_telegram-run`, with no `jq`/`curl` dependency. Bash keeps their start/stop/tick pane glue. Autostart controls are per component: set `watchdog = false` in workspace config to disable the workspace watchdog; set `enabled = false` in Telegram config to disable Telegram; set `AE_NO_AUTOSTART=1` to disable orchestrator autostart only.
 
-The P5 entry flip makes the `ae-next` coexistence surface unreachable via the public entry;
-the residual glue block is scheduled for its own retirement slice. A public entry cannot reach
-coreless Bash mode: it validates the matched wrapper, core, and glue before execution. The
-historical coexistence record is retained for migration evidence, not as an install path. See
-**[VISION.md](VISION.md)**.
+A public entry cannot reach coreless Bash mode: it validates the matched wrapper, core, and
+glue before execution. See **[VISION.md](VISION.md)**.
 
 ### Upgrade
 
@@ -216,13 +208,11 @@ ae upgrade
 
 `ae upgrade` installs the latest release (or an `AE_VERSION` pin) through its immutable sibling installer, verifies the checksum before extraction, and atomically repoints the public wrapper and `core/current`. A stopped session consumes the current version on its next resume. A running session is reported by name and stays pinned until it is stopped and resumed; upgrades never hot-rewrite running sessions.
 
-`ae upgrade` exists now for repair and local fixture use; remote latest releases and `AE_VERSION` pins activate only after the first Rust-era tag. Until then, update the checkout and rerun `just install`.
-
 ## Requirements
 
 - **bash >= 4.0** (macOS ships 3.2 — `brew install bash` and put brew's bin dir ahead of `/bin` on `PATH`)
 - [tmux](https://github.com/tmux/tmux) and [git](https://git-scm.com/)
-- [just](https://github.com/casey/just) for the active checkout install (`just install`)
+- [just](https://github.com/casey/just) only to build from source (`just install`)
 - At least one AI coding agent CLI (see *Works with*, above)
 
 Linux (GNU userland) and macOS (BSD userland) are both first-class: ae routes

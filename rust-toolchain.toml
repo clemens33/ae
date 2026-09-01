@@ -12,13 +12,13 @@ components = ["rustfmt", "clippy", "llvm-tools"]
 # on macOS and x86_64-unknown-linux-musl on Linux. Both are linked and executed;
 # macOS deliberately does not touch the Linux target.
 #
-# musl, NOT gnu: the epic promises a STATIC zero-dep binary, and on Linux musl
-# is that promise — a glibc build is dynamically linked against the build host's
+# musl, NOT gnu: ae ships a STATIC binary with no host runtime dependency, and
+# on Linux musl is that promise — a glibc build is dynamically linked against the build host's
 # libc and is not the artifact ae's one-file install contract describes.
 #
-# CAVEAT (flagged for P4 daemon work): musl has no NSS. User, group and host
+# CAVEAT (flagged when the daemons were designed): musl has no NSS. User, group and host
 # lookups do not consult /etc/nsswitch.conf, so getpwuid/getaddrinfo behave
 # differently than under glibc — LDAP/SSSD-backed users and some resolver setups
-# resolve differently or not at all. ae's current surface does not depend on any
-# of it; the daemons that land in P4 might.
+# resolve differently or not at all. The Telegram bridge resolves
+# `api.telegram.org` from this binary, so the CI Linux leg proves the lookup.
 targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-musl"]

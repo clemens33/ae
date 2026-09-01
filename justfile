@@ -529,8 +529,8 @@ LLVM_COV_VERSION := "0.9.0"
 # the code). See `rust-vet`.
 VET_VERSION := "0.10.2"
 
-# The foreign target. musl, not gnu — the epic promises a STATIC zero-dep binary
-# and gnu is not that (see rust-toolchain.toml for the NSS caveat). Compile-smoke
+# The foreign target. musl, not gnu — ae ships a STATIC binary with no host
+# runtime dependency, and gnu is not that (see rust-toolchain.toml for the NSS caveat). Compile-smoke
 # only: `cargo check` never links, so nothing produced here can be mistaken for a
 # runnable artifact.
 

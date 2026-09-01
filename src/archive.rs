@@ -5,7 +5,7 @@
 //! `events.jsonl` and `messages/*.txt`, and renders the exact digest `ae`
 //! would archive — the "preview" snapshot — to stdout, with the command's
 //! banner and any degradation notices to stderr. Archive publication and the
-//! publisher claim are P3.3; this slice is preview only.
+//! publisher claim live elsewhere; this module is preview only.
 //!
 //! # The frozen surface, and the successor spelling
 //!
