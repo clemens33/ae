@@ -32,13 +32,23 @@ mkdocs.yml          — docs site config
 | [just](https://github.com/casey/just) | task runner |
 | [rustup](https://rustup.rs/) | pinned Rust toolchain bootstrap |
 | cargo / rustfmt / clippy | Rust build, format, and lint tooling (provisioned by `just rust-setup`) |
-| [shellcheck](https://github.com/koalaman/shellcheck) | bash linter |
+| [shellcheck](https://github.com/koalaman/shellcheck) | bash linter, pinned to **0.11.0** and enforced by `just lint` |
 | [shfmt](https://github.com/mvdan/sh) | bash formatter (indent=4, case-indent) |
 | [git-cliff](https://github.com/orhun/git-cliff) | changelog from conventional commits |
 | [gh](https://cli.github.com/) | GitHub CLI for releases |
 | [mkdocs-material](https://squidfunk.github.io/mkdocs-material/) | docs site (optional, only for `just docs`) |
 
 ## Common commands
+
+**What the bash lint lane does and does not cover.** `just lint` pins shellcheck to 0.11.0
+and refuses to run against any other version — the finding set moves between releases, so an
+unpinned linter is a gate that changes without a commit. It then enforces a severity floor of
+`warning`: warnings and errors fail the lane, and everything below warning — informational
+and style diagnostics alike — does not. A green `just
+lint` therefore does **not** mean plain `shellcheck` reports nothing. It currently leaves 93
+info-level notes standing — 55 SC2031 and 38 SC2030, all in the suites, where the subshells
+are deliberate isolation and restructuring them would trade real test safety for a clean
+linter page. The SC2016 and SC2329 sites carry their own reasoned comments instead.
 
 ```bash
 just check            # shellcheck + shfmt (diff mode)

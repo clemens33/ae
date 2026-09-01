@@ -4148,7 +4148,7 @@ assert_eq "core shim: the plain fallback complains once and spends the marker" \
     "$(_cq_probe _requests)"
 assert_eq "core shim: ...and is silent after it" "rc=1 err= marker=1" "$(_cq_probe _requests)"
 assert_eq "core shim: --quiet under a set-but-empty AE_CORE is the same silent fallback" \
-    "rc=1 err= marker=1" "$(AE_CORE= _cq_probe --quiet _events-tail)"
+    "rc=1 err= marker=1" "$(AE_CORE='' _cq_probe --quiet _events-tail)"
 rm -rf "$_cq_dir"
 unset _cq_dir
 
@@ -11824,9 +11824,9 @@ _sf_generated_deliver_failure() { # -> "rc=? events=? unchanged=?"
         cp "$d/events.jsonl" "$d/events.before"
         long_body="$(head -c 9000 </dev/zero | tr '\0' L)"
         export SF_D="$d"
-        eval "$(awk '/^helper_send_body\(\) \{/,/^\}$/' <<<\"$AE_SOURCE\")"
-        eval "$(awk '/^helper_send_deliver_main\(\) \{/,/^\}$/' <<<\"$AE_SOURCE\")"
-        eval "$(awk '/^helper_send_deliver_finish\(\) \{/,/^\}$/' <<<\"$AE_SOURCE\")"
+        eval "$(awk '/^helper_send_body\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+        eval "$(awk '/^helper_send_deliver_main\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+        eval "$(awk '/^helper_send_deliver_finish\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
         # shellcheck disable=SC2317,SC2329
         ae_require_body() { return 0; }
         # shellcheck disable=SC2317,SC2329
@@ -13992,9 +13992,44 @@ _gate_lint_redirect_ok() { # stdin: justfile text
     return 0
 }
 
+# 1 when the pin recipe asks whether shellcheck EXISTS before probing its version.
+_gate_pin_availability_ok() { # stdin: justfile text
+    local text avail probe
+    text="$(awk '
+        /^_shellcheck-pin:/ { p = 1; next }
+        p && /^[^ \t]/ { p = 0 }
+        p {
+            line = $0
+            sub(/^[ \t]+/, "", line)
+            if (line ~ /^#/ || line == "") next
+            print line
+        }
+    ')"
+    # Under `set -e` with pipefail, `have="$(shellcheck --version | awk ...)"` ABORTS at
+    # rc 127 when the binary is absent: the probe's stderr is already redirected, so the
+    # recipe dies with a bare exit code and none of the install guidance ever prints —
+    # on exactly the fresh machine that needs it. Caught in review after it shipped here.
+    # Order is the invariant, not mere presence: the availability question must come
+    # FIRST, so a later reordering that reintroduces the abort is caught.
+    avail="$(grep -nE 'command -v[[:space:]]+shellcheck' <<<"$text" | head -1 | cut -d: -f1)"
+    probe="$(grep -nE 'shellcheck[[:space:]]+--version' <<<"$text" | head -1 | cut -d: -f1)"
+    if [[ -n "$avail" && -n "$probe" ]] && (( avail < probe )); then echo 1; else echo 0; fi
+    return 0
+}
+
 _gate_justfile="$(cat "$(dirname "$AE_BIN")/justfile")"
 assert_eq "gate (#67, source shape): the real lint recipe protects shellcheck's stdin" "1" \
     "$(_gate_lint_redirect_ok <<<"$_gate_justfile")"
+assert_eq "gate (pin, source shape): availability is checked before the version probe" "1" \
+    "$(_gate_pin_availability_ok <<<"$_gate_justfile")"
+# RED — the shape that shipped here and was caught in review: probe first, no availability
+# test, so an absent binary kills the recipe at rc 127 instead of printing the guidance.
+assert_eq "gate (pin) red: a bare version probe with no availability test is caught" "0" \
+    "$(_gate_pin_availability_ok <<<'_shellcheck-pin:
+    want="0.11.0"
+    have="$(shellcheck --version | awk "/^version:/ {print \$2}")"
+    [ "$have" = "$want" ] || exit 1
+')"
 # RED 1 — the comment-as-evidence lie: the only protected text is a comment.
 assert_eq "gate (#67) red: a commented-out redirect is not evidence" "0" \
     "$(_gate_lint_redirect_ok <<<'lint:
@@ -14163,6 +14198,7 @@ assert_eq "P-B1 OSC fixture: parser keeps visible footer text only" "$_pb1_osc_v
 assert_eq "P-B1 OSC fixture: parsed width equals visible footer width" "${#_pb1_osc_visible}" "${#_pb1_osc_join}"
 _pb1_osc_border="$(printf '%80s' '' | tr ' ' '─')"
 _pb1_osc_idle_region=$'\n'"$_pb1_osc_border"$'\n❯\xc2\xa0\n'"$_pb1_osc_border"$'\n'"$_pb1_osc_row"
+# shellcheck disable=SC2329  # a double: the sourced body calls it, this file never does
 _pb1_osc_idle_class="$(_capture_input_region() { printf '%s' "$_pb1_osc_idle_region"; }
     _pb1_osc_rc=0
     _input_region_occupied "%1" claude || _pb1_osc_rc=$?
@@ -14243,6 +14279,7 @@ _pb1_changed_not_cleared="$({
     eval "$(awk '/^_notice_clear_measurable\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
     _pb1_clear_dir="$(mktemp -d)"
     _pb1_capture_n=0
+    # shellcheck disable=SC2329  # a double: the sourced body calls it, this file never does
     _capture_input_region() {
         _pb1_capture_n=$((_pb1_capture_n + 1))
         case "$_pb1_capture_n" in
@@ -14251,16 +14288,20 @@ _pb1_changed_not_cleared="$({
             *) printf 'still occupied pointer' ;;
         esac
     }
+    # shellcheck disable=SC2329  # a double: the sourced body calls it, this file never does
     _notice_prove() { return 1; }
+    # shellcheck disable=SC2329  # a double: the sourced body calls it, this file never does
     _input_region_occupied() {
         _capture_input_region "$1" >/dev/null
         return 0
     }
+    # shellcheck disable=SC2329  # a double: the sourced body calls it, this file never does
     tmux() {
         printf '%s\n' "$*" >>"$_pb1_clear_dir/tmux.log"
         case "$1" in load-buffer) cat >/dev/null ;; esac
         return 0
     }
+    # shellcheck disable=SC2329  # a double: the sourced body calls it, this file never does
     sleep() { :; }
     _pb1_rc=0
     ae_submit_pasted_message %pb1 codex pb1-buffer pointer notice pointer /tmp/body.txt 2>/dev/null || _pb1_rc=$?
@@ -14428,6 +14469,7 @@ unset _pb1_interrupt_dir _pb1_interrupt_body _pb1_interrupt_notice
 # accidentally pressing Enter after an unconfirmed capture.
 _pb1_submit_dir="$(mktemp -d)"
 _pb1_submit_log="$_pb1_submit_dir/tmux.log"
+# shellcheck disable=SC2329  # a double: the sourced body calls it, this file never does
 _pb1_submit_tmux() {
     printf '%s\n' "$*" >>"$_pb1_submit_log"
     case "$1" in
@@ -14436,7 +14478,9 @@ _pb1_submit_tmux() {
         send-keys) return 0 ;;
     esac
 }
+# shellcheck disable=SC2329  # a double: the sourced body calls it, this file never does
 tmux() { _pb1_submit_tmux "$@"; }
+# shellcheck disable=SC2329  # a double: the sourced body calls it, this file never does
 _capture_input_region() { printf '%s' 'unreadable'; }
 _pb1_submit_rc=0
 ae_submit_pasted_message %pb1 codex pb1-buffer "$_pb1_v4_notice" notice "$_pb1_v4_notice" "$_pb1_submit_dir/body.txt" || _pb1_submit_rc=$?
@@ -16018,6 +16062,7 @@ _remote_failure_err="$_remote_fixture/rollback.err"
 set +e
 (
     set -e
+    # shellcheck disable=SC2329  # a double: the sourced body calls it, this file never does
     rm() {
         local arg
         for arg in "$@"; do

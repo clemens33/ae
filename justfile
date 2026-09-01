@@ -25,9 +25,42 @@ check: lint format-check
 # luck most of the time. tests/unit pins the redirect structurally, because it
 # reads like line-noise to the next person tidying the recipe.
 
-# Lint with shellcheck
-lint:
-    shellcheck -x ae ae-entry tests/unit tests/integration tests/aemonitor tests/aewatch install \
+# Enforce the linter pin. Kept OUT of `lint` deliberately: the #67 gate requires the
+# lint recipe to contain exactly ONE `shellcheck` token, so that the `< /dev/null` on
+# that line provably protects the invocation's stdin. A version probe inside the body
+# would be a second token and would defeat the check that exists to stop the wedge.
+_shellcheck-pin:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    want="0.11.0"
+    # AVAILABILITY BEFORE VERSION. Under `set -e` with pipefail, probing the version of a
+    # binary that is not installed aborts this recipe at rc 127 with the probe's stderr
+    # already redirected, so `just` prints an exit code and NONE of the guidance below —
+    # exactly the fresh machine that needs it most. Ask whether the tool exists first, and
+    # let a probe that runs but prints nothing recognisable fall through to the same
+    # message instead of killing the shell.
+    if command -v shellcheck >/dev/null 2>&1; then
+        have="$(shellcheck --version 2>/dev/null | awk '/^version:/ {print $2}' || true)"
+    else
+        have=""
+    fi
+    if [ "${have:-}" != "$want" ]; then
+        echo "Error: the bash lint lane is pinned to shellcheck $want, found ${have:-no shellcheck on PATH}" >&2
+        echo "       Its finding set moves between releases, so an unpinned linter is a gate" >&2
+        echo "       that changes without a commit. Install $want (macOS: brew install shellcheck)" >&2
+        echo "       and confirm with: shellcheck --version" >&2
+        exit 1
+    fi
+
+# Lint with shellcheck.
+# SEVERITY FLOOR: warning and error are the gate; everything BELOW warning — info and
+# style — is advisory and is NOT enforced. State it plainly: a green run here does NOT
+# mean the raw linter reports nothing. It leaves 93 info notes standing, 55 SC2031 and 38 SC2030, all in the
+# suites, where the subshells are deliberate isolation and restructuring them would trade
+# real test safety for a clean linter page. The SC2016 and SC2329 sites carry their own
+# reasoned comments instead. Full rationale: docs/development.md.
+lint: _shellcheck-pin
+    shellcheck --severity=warning -x ae ae-entry tests/unit tests/integration tests/aemonitor tests/aewatch install \
         tests/e2e/ai/lib.sh tests/e2e/ai/run_scenario.sh \
         $(find tests/e2e/ai/scenarios -name steps.sh) < /dev/null
 
@@ -50,7 +83,26 @@ test: test-unit test-integration test-aemonitor test-aewatch
 
 # Unit tests (pure functions, no deps)
 test-unit:
-    bash tests/unit
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # tests/unit needs bash >= 4 (`local -A`, associative arrays). macOS ships 3.2 as
+    # /bin/bash, so a bare `bash` here dies at the first declaration and `just` reports
+    # it as a test failure rather than as a missing interpreter. Resolve by VERSION, not
+    # by path: hardcoding a brew prefix would be wrong on Linux and on a non-brew mac.
+    # Scope is deliberately this recipe only — test-integration and test-aemonitor were
+    # measured running fine under /bin/bash, and widening without a failing case would
+    # be a change with no evidence behind it.
+    for candidate in "${BASH:-}" bash /opt/homebrew/bin/bash /usr/local/bin/bash; do
+        [ -n "$candidate" ] || continue
+        command -v "$candidate" >/dev/null 2>&1 || continue
+        major="$("$candidate" -c 'echo "${BASH_VERSINFO[0]}"' 2>/dev/null || echo 0)"
+        if [ "${major:-0}" -ge 4 ] 2>/dev/null; then
+            exec "$candidate" tests/unit
+        fi
+    done
+    echo "Error: tests/unit needs bash >= 4.0 and no candidate on PATH provides it" >&2
+    echo "       (macOS: brew install bash)" >&2
+    exit 1
 
 # Integration tests (requires tmux, git)
 test-integration:

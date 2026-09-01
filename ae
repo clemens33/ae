@@ -9857,7 +9857,7 @@ _telegram_coexistence_guard() {
     if ! _telegram_coexistence_same_bot; then
         return 0
     fi
-    if (( _TELEGRAM_COEXISTENCE_TOKEN_UNREADABLE == 1 )); then
+    if ((_TELEGRAM_COEXISTENCE_TOKEN_UNREADABLE == 1)); then
         _TELEGRAM_COEXISTENCE_REFUSAL_CATEGORY="token-unreadable"
     else
         _TELEGRAM_COEXISTENCE_REFUSAL_CATEGORY="same-token-live"
@@ -14374,8 +14374,14 @@ _ae_core_try() { # [--quiet] [--capture] <subcommand> [args...]
     local quiet=0 capture=0
     while [[ "${1:-}" == --* ]]; do
         case "$1" in
-            --quiet) quiet=1; shift ;;
-            --capture) capture=1; shift ;;
+            --quiet)
+                quiet=1
+                shift
+                ;;
+            --capture)
+                capture=1
+                shift
+                ;;
             *) break ;;
         esac
     done
