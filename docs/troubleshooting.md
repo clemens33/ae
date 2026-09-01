@@ -23,16 +23,16 @@ ae stop <name>
 ae <name>
 ```
 
-Resume and session capture for external agent CLIs are best-effort and depend on upstream tool storage formats, which can change. All four supported tools get exact-session resume once their session id is captured; if capture failed, ae falls back gracefully (Claude `--continue`, Codex fresh-start with preserved flags, Gemini `--resume latest`, OpenCode `--continue`).
+Resume and session capture for external agent CLIs are best-effort and depend on upstream tool storage formats, which can change. All five supported tools get exact-session resume once their session id is captured; if capture failed, ae falls back gracefully (Claude `--continue`, Codex fresh-start with preserved flags, Gemini `--resume latest`, Grok `--continue`, OpenCode `--continue`).
 
 ## Helpers feel out of date after upgrading ae
 
-```bash
-ae doctor --refresh         # all sessions
-ae doctor --refresh my-fix  # single session
-```
-
-`--refresh` calls the same `sync_session_assets` path that runs on every session start. Regenerates every helper and `workspace.md`. Also runs the orphan sweep.
+Upgrading needs no refresh: stop/resume moves a session to the installed
+generation, and a running watchdog keeps its loaded body until restarted.
+`doctor --refresh` is an explicit repair/development mutation; avoid an
+unscoped refresh while sessions run. It calls the same `sync_session_assets`
+path used at session start, regenerates helpers and `workspace.md`, and runs
+the orphan sweep.
 
 ## Session feels stuck
 

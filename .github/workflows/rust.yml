@@ -410,9 +410,10 @@ jobs:
       # still in src/archive.rs, and the step then sat BEFORE the musl steps, so an
       # unbounded run starved the evidence after it — hence its place at the end now.
       # The full lane stays available as
-      # a manual dispatch with mutants=true under the 6-hour budget — and a scheduled
-      # run is deliberately NOT declared: GitHub fires schedules (and lists dispatches)
-      # from the default branch only, where this file does not exist yet.
+      # a manual dispatch with mutants=true under the 6-hour budget. The P5 entry flip
+      # puts this workflow on the default branch, dissolving GitHub's schedule-from-default
+      # blocker; cadence is an owner decision and deliberately not activated tonight. See
+      # the morning report.
       - name: just rust-mutants --in-diff (the pushed range)
         if: github.event_name == 'push' || github.event_name == 'pull_request'
         shell: bash

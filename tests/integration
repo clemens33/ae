@@ -7503,513 +7503,646 @@ assert_eq "#59 C4-1: an EMPTY frozen WORKER name still launches" "1" \
 unset C4_BIN C4_REPO C4_REPO2 C4_AID C4_KID C4_OUT _c4_t _c4_d
 fi
 
-# ── ae-next coexistence: installer + wrapper (pre-P5) ────────────────────────
-if _itest_section 'ae-next coexistence: installer + wrapper'; then
+# ── P5 installer + wrapper (retargeted from ae-next coexistence, A22) ────────
+if _itest_section 'P5 installer + wrapper'; then
 
-# THE POINT OF THIS SECTION. ae-next is a SECOND command beside the installed
-# `ae`, and the whole safety argument is that it shares nothing: its own state
-# home, its own tmux server, its own immutable core, and a config that carries no
-# credentials. Every assertion below is one half of that argument — and the
-# fixtures are the REAL wrapper and the REAL installer, copied into a fake
-# checkout, because a rewritten copy of a script under test proves nothing about
-# the script that ships.
-#
-# The target `ae` here is a STUB that dumps its environment and argv: what the
-# wrapper is responsible for is the environment it hands over, and driving the
-# real ae would test the whole product instead of that contract. The real one
-# gets its own section ("real ae through the symlink").
+# Surface: root install, ae-entry, four-member bundle. Coexistence isolation
+# (AE_NEXT_HOME, ~/.ae-next, shared-extract parity) is retired. Live invariants
+# ported: first install layout, 0555, core/current, command link, identical
+# re-run, different-bytes refuse, version-mismatch refuse, upgrade beside old,
+# config untouched, B8 inherited-env, missing-core refuse, F8 directory-leaf,
+# B14 dangling .local, core/current symlink refuse.
 
-NX_REPO_SRC="$(dirname "$AE")"
-NX_ROOT="$TMPDIR/aenext"
-NX_HOME="$NX_ROOT/home"
-NX_REPO="$NX_ROOT/repo"
-mkdir -p "$NX_HOME/.ae" "$NX_HOME/.local/bin" "$NX_REPO/contrib/ae-next"
+P5I_SRC="$(dirname "$AE")"
+P5I_ROOT="$TMPDIR/p5inst"
+P5I_HOME="$P5I_ROOT/home"
+mkdir -p "$P5I_HOME"
+P5I_VER="$(command grep -m1 '^AE_VERSION=' "$AE" | cut -d'"' -f2)"
+P5I_MAJ="${P5I_VER%%.*}"
+P5I_REST="${P5I_VER#*.}"
+P5I_MIN="${P5I_REST%%.*}"
+P5I_PAT="${P5I_REST#*.}"
+P5I_VER2="${P5I_MAJ}.${P5I_MIN}.$((P5I_PAT + 1))"
+P5I_VER3="${P5I_MAJ}.${P5I_MIN}.$((P5I_PAT + 2))"
+# The residue assertions below count ae-install.* under the installer's OWN
+# TMPDIR, so that TMPDIR must be one we control and one the installer provably
+# receives. The suite's `TMPDIR=$(mktemp -d)` keeps its export attribute only
+# because macOS exports TMPDIR already; on a host where it is not pre-exported
+# the installer would fall back to /tmp and every residue assertion here would
+# count an empty directory and pass while proving nothing. Pass it explicitly.
+P5I_TMP="$P5I_ROOT/instmp"
+mkdir -p "$P5I_TMP"
+case "$(uname -s):$(uname -m)" in
+    Darwin:arm64) P5I_PLAT=darwin-arm64 ;;
+    Linux:x86_64) P5I_PLAT=linux-x86_64-musl ;;
+    *) P5I_PLAT=unknown ;;
+esac
 
-# Mode and inode, portably. GNU and BSD stat share no format flags at all, and
-# the wrong one FAILS QUIETLY through `|| fallback` (AGENTS.md, GNU vs BSD) —
-# which here would read as "the mode is whatever we expected".
-_nx_mode() {
+_p5i_mode() {
     if [[ "$(uname)" == "Darwin" ]]; then stat -f '%Lp' "$1"; else stat -c '%a' "$1"; fi
 }
-_nx_inode() {
+_p5i_inode() {
     if [[ "$(uname)" == "Darwin" ]]; then stat -f '%i' "$1"; else stat -c '%i' "$1"; fi
 }
-
-# The fake checkout: the real scripts, a stub `ae` that reports its environment.
-cp "$NX_REPO_SRC/contrib/ae-next/ae-next" "$NX_REPO/contrib/ae-next/ae-next"
-cp "$NX_REPO_SRC/contrib/ae-next/install" "$NX_REPO/contrib/ae-next/install"
-chmod 0755 "$NX_REPO/contrib/ae-next/ae-next" "$NX_REPO/contrib/ae-next/install"
-cat >"$NX_REPO/ae" <<'NXSTUB'
+_p5i_sha() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | awk 'NR == 1 { print $1; exit }'
+    else
+        shasum -a 256 "$1" | awk 'NR == 1 { print $1; exit }'
+    fi
+}
+_p5i_make_bundle() {
+    # pack_mode is the C83 variable: the REAL release bundle ships members AND
+    # root 0555, and a 0755 fixture cannot see the defect that packaging causes.
+    local version="$1" extra_core="${2:-}" pack_mode="${3:-0755}" root dir digest
+    root="ae-${version}-${P5I_PLAT}"
+    dir="$P5I_ROOT/$root"
+    rm -rf "$dir"
+    mkdir -p "$dir"
+    cp "$P5I_SRC/ae-entry" "$dir/ae"
+    _sed_i -e "s/^_AE_ENTRY_VERSION=.*/_AE_ENTRY_VERSION=\"${version}\"/" "$dir/ae"
+    cat >"$dir/ae-glue" <<EOF
 #!/usr/bin/env bash
-AE_VERSION="9.9.9"
-echo "ARGV:$*"
-echo "AE_HOME:${AE_HOME:-}"
-echo "CONFIG_FILE:${CONFIG_FILE:-}"
-echo "AE_TMUX_SERVER:${AE_TMUX_SERVER:-}"
-echo "AE_TMUX_SERVER_KIND:${AE_TMUX_SERVER_KIND:-}"
-echo "AE_CORE_BIN:${AE_CORE_BIN-<unset>}"
-NXSTUB
-chmod 0755 "$NX_REPO/ae"
-
-# Two "cores" of the same version with DIFFERENT bytes, and one of a later
-# version. The version a core reports is what the installer keys on, so these
-# three cover: first install, the byte-identical re-run, the refusal, and the
-# upgrade.
-NX_CORE="$NX_ROOT/core-a"
-NX_CORE_B="$NX_ROOT/core-b"
-NX_CORE_V2="$NX_ROOT/core-v2"
-# The single quotes are the point: these are the STUB's own $1, written to disk
-# for it to expand at run time, never expanded here.
-# shellcheck disable=SC2016
-printf '%s\n' '#!/bin/sh' 'case "$1" in --version) echo "ae 9.9.9";; esac' >"$NX_CORE"
-# shellcheck disable=SC2016
-printf '%s\n' '#!/bin/sh' '# different bytes, same version' 'case "$1" in --version) echo "ae 9.9.9";; esac' >"$NX_CORE_B"
-# shellcheck disable=SC2016
-printf '%s\n' '#!/bin/sh' 'case "$1" in --version) echo "ae 9.9.10";; esac' >"$NX_CORE_V2"
-chmod 0755 "$NX_CORE" "$NX_CORE_B" "$NX_CORE_V2"
-
-# The old home this seeds FROM: an ae config with real-shaped Telegram
-# credentials in it. Those keys are the reason the seed exists.
-cat >"$NX_HOME/.ae/config" <<'NXCFG'
-[agents]
-cl = "claude"
-
-[workspace]
-main = cl
-layout = vertical
-
-[telegram]
-enabled = true
-token_file = "~/.config/ae/telegram-bot.token"
-chat_id = 12345
-allowed_user_ids = 67890
-include = chat,state
-
-[prompt]
-instructions = "keep this"
-NXCFG
-# A decoy at the path this installer must never touch.
-printf 'THE INSTALLED AE — NEVER TOUCHED\n' >"$NX_HOME/.local/bin/ae"
-NX_OLD_CFG_FPR="$(_fpr <"$NX_HOME/.ae/config")"
-NX_OLD_AE_FPR="$(_fpr <"$NX_HOME/.local/bin/ae")"
-
-_nx_install() { # [env assignments via caller] -> stdout+stderr, rc in $?
-    HOME="$NX_HOME" AE_NEXT_CORE_BIN="${NX_INSTALL_CORE:-$NX_CORE}" \
-        AE_NEXT_HOME="${NX_INSTALL_HOME:-}" \
-        "${BASH:-bash}" "$NX_REPO/contrib/ae-next/install" 2>&1
+AE_VERSION="${version}"
+if [ "\${1:-}" = "--version" ]; then echo "ae \$AE_VERSION"; exit 0; fi
+if [ "\${1:-}" = "_probe" ]; then
+    echo "AE_HOME=\${AE_HOME-UNSET}"
+    echo "CONFIG_FILE=\${CONFIG_FILE-UNSET}"
+    if [ -n "\${AE_TMUX_SERVER+x}" ]; then echo "AE_TMUX_SERVER=\$AE_TMUX_SERVER"; else echo "AE_TMUX_SERVER=UNSET"; fi
+    if [ -n "\${AE_CORE_BIN+x}" ]; then echo "AE_CORE_BIN=\$AE_CORE_BIN"; else echo "AE_CORE_BIN=UNSET"; fi
+    exit 0
+fi
+echo "launched \${1:-}"
+EOF
+    if [ -n "$extra_core" ]; then
+        printf '%s\n' '#!/usr/bin/env bash' \
+            "if [ \"\${1:-}\" = \"--version\" ]; then echo \"ae ${version}\"; exit 0; fi" \
+            "# different bytes" \
+            'echo STUB-CORE-B' >"$dir/ae-core"
+    else
+        printf '%s\n' '#!/usr/bin/env bash' \
+            "if [ \"\${1:-}\" = \"--version\" ]; then echo \"ae ${version}\"; exit 0; fi" \
+            'echo STUB-CORE' >"$dir/ae-core"
+    fi
+    cp "$P5I_SRC/install" "$dir/install"
+    chmod "$pack_mode" "$dir/ae" "$dir/ae-glue" "$dir/ae-core" "$dir/install"
+    chmod "$pack_mode" "$dir"
+    tar -czf "$P5I_ROOT/${root}.tar.gz" -C "$P5I_ROOT" "$root"
+    chmod u+w "$dir" 2>/dev/null || true
+    digest="$(_p5i_sha "$P5I_ROOT/${root}.tar.gz")"
+    printf '%s  %s.tar.gz\n' "$digest" "$root" >"$P5I_ROOT/${root}-SHA256SUMS"
+}
+_p5i_install() {
+    local version="$1" extra="${2:-}" pack_mode="${3:-0755}"
+    _p5i_make_bundle "$version" "$extra" "$pack_mode"
+    HOME="$P5I_HOME" AE_VERSION="$version" TMPDIR="$P5I_TMP" \
+        AE_BUNDLE="$P5I_ROOT/ae-${version}-${P5I_PLAT}.tar.gz" \
+        AE_SUMS="$P5I_ROOT/ae-${version}-${P5I_PLAT}-SHA256SUMS" \
+        "${BASH:-bash}" "$P5I_SRC/install" 2>&1
 }
 
-# ── The first install ────────────────────────────────────────────────────────
-NX_RC=0; NX_OUT="$(_nx_install)" || NX_RC=$?
-NX_NEXT="$NX_HOME/.ae-next"
-assert_eq "ae-next install: a first install succeeds" "0" "$NX_RC"
-assert_eq "ae-next install: the core lands at core/<version>/ae" "1" \
-    "$([[ -f "$NX_NEXT/core/9.9.9/ae" ]] && echo 1 || echo 0)"
-# IMMUTABLE, and the two modes are different on purpose: the version leaf is
-# read-only so a rebuild cannot land new bytes under a path a running session
-# pinned, while core/ itself stays writable so the NEXT version can be added.
-assert_eq "ae-next install: the installed core is 0555" "555" "$(_nx_mode "$NX_NEXT/core/9.9.9/ae")"
-assert_eq "ae-next install: its version directory is 0555" "555" "$(_nx_mode "$NX_NEXT/core/9.9.9")"
-assert_eq "ae-next install: core/ itself stays 0755 so an upgrade can be added" "755" "$(_nx_mode "$NX_NEXT/core")"
-# The pointer is an EXPANDED ABSOLUTE path: `ae` does not expand `~`, so a `~`
-# here would pin a core that cannot be executed.
-assert_eq "ae-next install: core/current holds the expanded absolute path" "$NX_NEXT/core/9.9.9/ae" \
-    "$(cat "$NX_NEXT/core/current")"
-# The PHYSICAL path: the installer resolves its own location with `cd -P`, and on
-# macOS /var is a symlink to /private/var, so the logical fixture path and the
-# resolved one differ by that prefix. Resolving both sides is the honest
-# comparison — pinning the logical one would pass only on Linux.
-assert_eq "ae-next install: the command is linked at ~/.local/bin/ae-next" \
-    "$(cd -P "$NX_REPO/contrib/ae-next" && pwd)/ae-next" \
-    "$(readlink "$NX_HOME/.local/bin/ae-next")"
+# ── first install ────────────────────────────────────────────────────────
+P5I_RC=0
+P5I_OUT="$(_p5i_install "$P5I_VER")" || P5I_RC=$?
+assert_eq "P5 install: a first install succeeds" "0" "$P5I_RC"
+assert_eq "P5 install: version dir members exist" "1" \
+    "$([[ -f "$P5I_HOME/.ae/versions/$P5I_VER/ae" && -f "$P5I_HOME/.ae/versions/$P5I_VER/ae-core" && -f "$P5I_HOME/.ae/versions/$P5I_VER/ae-glue" && -f "$P5I_HOME/.ae/versions/$P5I_VER/install" ]] && echo 1 || echo 0)"
+assert_eq "P5 install: the installed core is 0555" "555" \
+    "$(_p5i_mode "$P5I_HOME/.ae/versions/$P5I_VER/ae-core")"
+assert_eq "P5 install: its version directory is 0555" "555" \
+    "$(_p5i_mode "$P5I_HOME/.ae/versions/$P5I_VER")"
+# C72 RULING (1): core/current is a text pointer, ratified 0644 — deterministic,
+# not "whatever mktemp gave". This is the fresh-publish control; the rollback
+# half is proven against a PRE world this same publication produces.
+assert_eq "P5 install: the core pointer is the ratified 0644" "644" \
+    "$(_p5i_mode "$P5I_HOME/.ae/core/current")"
+assert_eq "P5 install: core/current holds the expanded absolute path" \
+    "$P5I_HOME/.ae/versions/$P5I_VER/ae-core" \
+    "$(cat "$P5I_HOME/.ae/core/current")"
+assert_eq "P5 install: current points at the version dir" \
+    "$P5I_HOME/.ae/versions/$P5I_VER" \
+    "$(readlink "$P5I_HOME/.ae/current" 2>/dev/null || true)"
+assert_eq "P5 install: the command is linked at ~/.local/bin/ae" \
+    "$P5I_HOME/.ae/current/ae" \
+    "$(readlink "$P5I_HOME/.local/bin/ae" 2>/dev/null || true)"
 
-# ── The seed: a config with NO reusable credentials ──────────────────────────
-# One bot token polled by two bridges loses updates silently, so the copy that
-# would make that easy is the copy that must not exist. The whole [telegram]
-# section is replaced rather than `enabled` alone: credentials left behind are
-# one edit away from being live.
-NX_SEED="$(cat "$NX_NEXT/config")"
-assert_eq "ae-next seed: [telegram] is present and disabled" "1" \
-    "$([[ "$NX_SEED" == *'[telegram]'* && "$NX_SEED" == *'enabled = false'* ]] && echo 1 || echo 0)"
-assert_eq "ae-next seed: no token_file survives" "0" "$(command grep -c 'token_file' "$NX_NEXT/config" || true)"
-assert_eq "ae-next seed: no chat_id survives" "0" "$(command grep -c 'chat_id' "$NX_NEXT/config" || true)"
-assert_eq "ae-next seed: no allowed_user_ids survives" "0" "$(command grep -c 'allowed_user_ids' "$NX_NEXT/config" || true)"
-assert_eq "ae-next seed: no include filter survives" "0" "$(command grep -c '^include' "$NX_NEXT/config" || true)"
-assert_eq "ae-next seed: enabled = true did NOT survive" "0" \
-    "$(command grep -c 'enabled = true' "$NX_NEXT/config" || true)"
-# ...and everything that is NOT a credential is carried over unchanged: a seed
-# that dropped the agents would be a config nobody can launch with.
-assert_eq "ae-next seed: the non-telegram sections are carried over" "1" \
-    "$([[ "$NX_SEED" == *'[agents]'* && "$NX_SEED" == *'main = cl'* && "$NX_SEED" == *'keep this'* ]] && echo 1 || echo 0)"
-# The core has exactly ONE source, and it is not the config.
-assert_eq "ae-next seed: no workspace.core is written" "0" \
-    "$(command grep -c '^core' "$NX_NEXT/config" || true)"
+# ── identical re-run + different-bytes refuse ────────────────────────────
+P5I_INODE="$(_p5i_inode "$P5I_HOME/.ae/versions/$P5I_VER/ae-core")"
+P5I_RC=0
+P5I_OUT="$(_p5i_install "$P5I_VER")" || P5I_RC=$?
+assert_eq "P5 install: a second identical run succeeds" "0" "$P5I_RC"
+assert_eq "P5 install: ...and installs nothing new (same inode)" "$P5I_INODE" \
+    "$(_p5i_inode "$P5I_HOME/.ae/versions/$P5I_VER/ae-core")"
+P5I_RC=0
+P5I_OUT="$(_p5i_install "$P5I_VER" different)" || P5I_RC=$?
+assert_eq "P5 install: DIFFERENT bytes at an installed version are REFUSED" "1" \
+    "$([[ "$P5I_RC" -ne 0 ]] && echo 1 || echo 0)"
+assert_eq "P5 install: ...and the installed bytes did not change" "$P5I_INODE" \
+    "$(_p5i_inode "$P5I_HOME/.ae/versions/$P5I_VER/ae-core")"
 
-# ── Idempotence, and the refusal that guards immutability ────────────────────
-NX_INODE="$(_nx_inode "$NX_NEXT/core/9.9.9/ae")"
-NX_RC=0; NX_OUT="$(_nx_install)" || NX_RC=$?
-assert_eq "ae-next install: a second identical run succeeds" "0" "$NX_RC"
-assert_eq "ae-next install: ...and installs nothing new (same inode)" "$NX_INODE" \
-    "$(_nx_inode "$NX_NEXT/core/9.9.9/ae")"
-assert_contains "ae-next install: ...and says so" "no-op" "$NX_OUT"
-# THE MUTATION CONTROL'S TARGET. Same version, different bytes: an installed
-# version may be pinned by a running session, so it is never rewritten in place.
-NX_RC=0; NX_OUT="$(NX_INSTALL_CORE="$NX_CORE_B" _nx_install)" || NX_RC=$?
-assert_eq "ae-next install: DIFFERENT bytes at an installed version are REFUSED" "1" \
-    "$([[ "$NX_RC" -ne 0 ]] && echo 1 || echo 0)"
-assert_contains "ae-next install: ...and the refusal says how to fix it" "Bump the version" "$NX_OUT"
-assert_eq "ae-next install: ...and the installed bytes did not change" "$NX_INODE" \
-    "$(_nx_inode "$NX_NEXT/core/9.9.9/ae")"
-# A core whose version does not match the glue's AE_VERSION is refused too: the
-# two move together, and a mismatched pair degrades sessions to bash bodies for
-# no visible reason.
-NX_RC=0; NX_OUT="$(NX_INSTALL_CORE="$NX_CORE_V2" _nx_install)" || NX_RC=$?
-assert_eq "ae-next install: a core whose version is not AE_VERSION is refused" "1" \
-    "$([[ "$NX_RC" -ne 0 ]] && echo 1 || echo 0)"
-assert_contains "ae-next install: ...naming both versions" "9.9.10" "$NX_OUT"
+# F7b: pin disagrees with bundle version
+P5I_RC=0
+_p5i_make_bundle "$P5I_VER2"
+P5I_OUT="$(HOME="$P5I_HOME" AE_VERSION="$P5I_VER" \
+    AE_BUNDLE="$P5I_ROOT/ae-${P5I_VER2}-${P5I_PLAT}.tar.gz" \
+    AE_SUMS="$P5I_ROOT/ae-${P5I_VER2}-${P5I_PLAT}-SHA256SUMS" \
+    "${BASH:-bash}" "$P5I_SRC/install" 2>&1)" || P5I_RC=$?
+assert_eq "P5 install: a pin that disagrees with the bundle is refused" "1" \
+    "$([[ "$P5I_RC" -ne 0 ]] && echo 1 || echo 0)"
 
-# ── The upgrade: a new version beside the old, and current repointed ─────────
-# The old leaf STAYS. A session that pinned it keeps running against the exact
-# bytes it bound to; that is the entire reason the path carries the version.
-_nx_bump_stub_version() { # <version>
-    # The inner $1/$2 belong to the child shell, and BSD sed has no -i EXPR FILE
-    # form (AGENTS.md, GNU vs BSD) — temp + rename instead.
-    # shellcheck disable=SC2016
-    "${BASH:-bash}" -c 'f="$1"; v="$2"; t="$f.tmp"; sed "s/^AE_VERSION=.*/AE_VERSION=\"$v\"/" "$f" >"$t" && mv "$t" "$f"' _ "$NX_REPO/ae" "$1"
-    # `mv` carries the TEMP file's mode, so the rewritten stub is 0644 and the
-    # wrapper's "no executable ae here" refusal fires on the next call — an
-    # artefact of the fixture, not of anything under test.
-    chmod 0755 "$NX_REPO/ae"
-}
-_nx_bump_stub_version 9.9.10
-NX_RC=0; NX_OUT="$(NX_INSTALL_CORE="$NX_CORE_V2" _nx_install)" || NX_RC=$?
-assert_eq "ae-next upgrade: installing a NEW version succeeds" "0" "$NX_RC"
-assert_eq "ae-next upgrade: the new version is installed" "1" \
-    "$([[ -f "$NX_NEXT/core/9.9.10/ae" ]] && echo 1 || echo 0)"
-assert_eq "ae-next upgrade: the OLD version is still there, untouched" "$NX_INODE" \
-    "$(_nx_inode "$NX_NEXT/core/9.9.9/ae")"
-assert_eq "ae-next upgrade: core/current now points at the new one" "$NX_NEXT/core/9.9.10/ae" \
-    "$(cat "$NX_NEXT/core/current")"
-# The config is the operator's from the moment it exists — an upgrade may not
-# reset a deliberate `enabled = true` and its credentials.
-printf '\n[telegram]\nenabled = true\ntoken_file = "/tmp/mine.token"\n' >>"$NX_NEXT/config"
-NX_CFG_FPR="$(_fpr <"$NX_NEXT/config")"
-NX_OUT="$(NX_INSTALL_CORE="$NX_CORE_V2" _nx_install)"
-assert_eq "ae-next install: a re-run never edits an existing config" "$NX_CFG_FPR" \
-    "$(_fpr <"$NX_NEXT/config")"
+# ── upgrade: new version beside the old ──────────────────────────────────
+P5I_RC=0
+P5I_OUT="$(_p5i_install "$P5I_VER2")" || P5I_RC=$?
+assert_eq "P5 upgrade: installing a NEW version succeeds" "0" "$P5I_RC"
+assert_eq "P5 upgrade: the new version is installed" "1" \
+    "$([[ -f "$P5I_HOME/.ae/versions/$P5I_VER2/ae-core" ]] && echo 1 || echo 0)"
+assert_eq "P5 upgrade: the OLD version is still there, untouched" "$P5I_INODE" \
+    "$(_p5i_inode "$P5I_HOME/.ae/versions/$P5I_VER/ae-core")"
+assert_eq "P5 upgrade: current now points at the new one" \
+    "$P5I_HOME/.ae/versions/$P5I_VER2" \
+    "$(readlink "$P5I_HOME/.ae/current" 2>/dev/null || true)"
+assert_eq "P5 upgrade: core/current names the new ae-core" \
+    "$P5I_HOME/.ae/versions/$P5I_VER2/ae-core" \
+    "$(cat "$P5I_HOME/.ae/core/current")"
 
-# ── What it must never write ────────────────────────────────────────────────
-assert_eq "ae-next install: ~/.ae/config was never written" "$NX_OLD_CFG_FPR" "$(_fpr <"$NX_HOME/.ae/config")"
-assert_eq "ae-next install: ~/.local/bin/ae was never written" "$NX_OLD_AE_FPR" "$(_fpr <"$NX_HOME/.local/bin/ae")"
-assert_not_exists "ae-next install: no core was installed under ~/.ae" "$NX_HOME/.ae/core"
-# ...and the HARNESS's own ae home — the one every other section uses — is not
-# in the blast radius either.
-assert_not_exists "ae-next install: the harness ae home has no core/ either" "$HOME/.ae/core"
+# A8: installer never edits an existing config
+mkdir -p "$P5I_HOME/.ae"
+printf '[agents]\nhold = "sleep 3600"\n[workspace]\nmain = hold\n' >"$P5I_HOME/.ae/config"
+P5I_CFG_FPR="$(_fpr <"$P5I_HOME/.ae/config")"
+_p5i_install "$P5I_VER2" >/dev/null 2>&1 || true
+assert_eq "P5 install: a re-run never edits an existing config" "$P5I_CFG_FPR" \
+    "$(_fpr <"$P5I_HOME/.ae/config")"
 
-# ── A second instance is a second home ──────────────────────────────────────
-NX_ALT="$NX_ROOT/alt"
-NX_RC=0; NX_OUT="$(NX_INSTALL_HOME="$NX_ALT" NX_INSTALL_CORE="$NX_CORE_V2" _nx_install)" || NX_RC=$?
-assert_eq "ae-next install: AE_NEXT_HOME=<other> succeeds" "0" "$NX_RC"
-assert_eq "ae-next install: ...and installs THERE" "$NX_ALT/core/9.9.10/ae" "$(cat "$NX_ALT/core/current")"
-assert_eq "ae-next install: ...and leaves the default instance's pointer alone" "$NX_NEXT/core/9.9.10/ae" \
-    "$(cat "$NX_NEXT/core/current")"
+# ── C83: the REAL release packaging — members AND root 0555 ──────────────
+# A 0555 directory refuses entry unlink, so the installer's cleanup of its own
+# extraction temp fails "Permission denied" AFTER publication. Every fixture
+# before this one packaged 0755 and could not see it; the 0755 arms above are
+# retained as the legacy control, and this arm is the one that discriminates.
+P5I_RC=0
+P5I_OUT="$(_p5i_install "$P5I_VER3" "" 0555)" || P5I_RC=$?
+assert_eq "C83: a 0555-packaged bundle installs rc0" "0" "$P5I_RC"
+assert_eq "C83: ...and never reports a permission failure" "0" \
+    "$(printf '%s' "$P5I_OUT" | grep -c -i 'permission denied' || true)"
+assert_eq "C83: ...and leaves no extraction residue" "0" \
+    "$(find "$P5I_TMP" -maxdepth 1 -name 'ae-install.*' 2>/dev/null | wc -l | tr -d '[:space:]')"
+assert_eq "C83: the PUBLISHED copy is still 0555 immutable" "555" \
+    "$(_p5i_mode "$P5I_HOME/.ae/versions/$P5I_VER3/ae-core")"
 
-# ── The wrapper's environment contract ──────────────────────────────────────
-# This is the whole isolation argument in five variables. It is asserted at the
-# DEFAULTS and under both sanctioned overrides, because a wrapper that honoured
-# only one of them would isolate only one of the two instances.
-_nx_wrap() { # [pre-set env via caller] -> the stub ae's report
-    HOME="$NX_HOME" "$NX_HOME/.local/bin/ae-next" "$@" 2>/dev/null
-}
-NX_W="$(_nx_wrap list --json)"
-assert_contains "ae-next wrapper: AE_HOME defaults to ~/.ae-next" "AE_HOME:$NX_NEXT" "$NX_W"
-assert_contains "ae-next wrapper: CONFIG_FILE is pinned inside it" "CONFIG_FILE:$NX_NEXT/config" "$NX_W"
-assert_contains "ae-next wrapper: the tmux server defaults to ae-next" "AE_TMUX_SERVER:ae-next" "$NX_W"
-assert_contains "ae-next wrapper: the server kind is always name" "AE_TMUX_SERVER_KIND:name" "$NX_W"
-assert_contains "ae-next wrapper: argv is passed through untouched" "ARGV:list --json" "$NX_W"
-# AE_CORE_BIN is UNSET, never exported: the core is read from core/current on
-# every entry, so nothing env-borne can go stale inside a long-lived tmux server.
-assert_contains "ae-next wrapper: AE_CORE_BIN is not exported at all" "AE_CORE_BIN:<unset>" "$NX_W"
+# ── C85: the UNWIND caller of the cleanup chokepoint, also under 0555 ────
+# C83's arm above proves the SUCCESS caller only. Deleting either unwind call
+# site would leave that arm green, so this arm drives remote_restore for real:
+# a 0555-packaged upgrade with an injected post-publication failure.
+P5I_C85="$P5I_ROOT/c85home"
+mkdir -p "$P5I_C85"
+_p5i_make_bundle "$P5I_VER" "" 0555
+P5I_RC=0
+HOME="$P5I_C85" AE_VERSION="$P5I_VER" TMPDIR="$P5I_TMP" \
+    AE_BUNDLE="$P5I_ROOT/ae-${P5I_VER}-${P5I_PLAT}.tar.gz" \
+    AE_SUMS="$P5I_ROOT/ae-${P5I_VER}-${P5I_PLAT}-SHA256SUMS" \
+    "${BASH:-bash}" "$P5I_SRC/install" >/dev/null 2>&1 || P5I_RC=$?
+assert_eq "C85: the 0555-packaged PRE install succeeds" "0" "$P5I_RC"
+P5I_C85_CORE="$(cat "$P5I_C85/.ae/core/current")"
+P5I_C85_CUR="$(readlink "$P5I_C85/.ae/current")"
+P5I_C85_LNK="$(readlink "$P5I_C85/.local/bin/ae")"
+P5I_C85_MODE="$(_p5i_mode "$P5I_C85/.ae/core/current")"
+_p5i_make_bundle "$P5I_VER2" "" 0555
+P5I_RC=0
+P5I_OUT="$(HOME="$P5I_C85" AE_VERSION="$P5I_VER2" TMPDIR="$P5I_TMP" \
+    AE_BUNDLE="$P5I_ROOT/ae-${P5I_VER2}-${P5I_PLAT}.tar.gz" \
+    AE_SUMS="$P5I_ROOT/ae-${P5I_VER2}-${P5I_PLAT}-SHA256SUMS" \
+    AE_INSTALL_TEST_FAIL_AFTER=link \
+    "${BASH:-bash}" "$P5I_SRC/install" 2>&1)" || P5I_RC=$?
+assert_eq "C85: the injected post-publication failure is nonzero" "1" \
+    "$([[ "$P5I_RC" -ne 0 ]] && echo 1 || echo 0)"
+assert_eq "C85: the unwind never reports a permission failure" "0" \
+    "$(printf '%s' "$P5I_OUT" | grep -c -i 'permission denied' || true)"
+assert_eq "C85: the unwind restores core/current" "$P5I_C85_CORE" \
+    "$(cat "$P5I_C85/.ae/core/current")"
+assert_eq "C85: ...at its recorded mode" "$P5I_C85_MODE" \
+    "$(_p5i_mode "$P5I_C85/.ae/core/current")"
+assert_eq "C85: the unwind restores the current pointer" "$P5I_C85_CUR" \
+    "$(readlink "$P5I_C85/.ae/current")"
+assert_eq "C85: the unwind restores the command link" "$P5I_C85_LNK" \
+    "$(readlink "$P5I_C85/.local/bin/ae")"
+assert_eq "C85: the unwind leaves no extraction residue" "0" \
+    "$(find "$P5I_TMP" -maxdepth 1 -name 'ae-install.*' 2>/dev/null | wc -l | tr -d '[:space:]')"
+# NON-VACUITY: the two residue assertions above are only meaningful if the
+# installer actually extracts under P5I_TMP. Prove the directory is the one it
+# uses by planting the shape and confirming the counter SEES it — an assertion
+# that can only ever read 0 is not a control.
+: >"$P5I_TMP/ae-install.vacuity-probe"
+assert_eq "C85: the residue counter can see a residue (non-vacuity)" "1" \
+    "$(find "$P5I_TMP" -maxdepth 1 -name 'ae-install.*' 2>/dev/null | wc -l | tr -d '[:space:]')"
+rm -f "$P5I_TMP/ae-install.vacuity-probe"
 
-NX_W="$(AE_NEXT_HOME="$NX_ALT" AE_NEXT_TMUX_SERVER=ae-next2 _nx_wrap doctor)"
-assert_contains "ae-next wrapper: AE_NEXT_HOME overrides the home" "AE_HOME:$NX_ALT" "$NX_W"
-assert_contains "ae-next wrapper: ...and the config follows it" "CONFIG_FILE:$NX_ALT/config" "$NX_W"
-assert_contains "ae-next wrapper: AE_NEXT_TMUX_SERVER overrides the server" "AE_TMUX_SERVER:ae-next2" "$NX_W"
+# ── C100/C101: the PRE-MV failure, the only one that reaches the stage ───
+# fail-after-link fires once the stage has already been mv'd and _REMOTE_STAGE
+# emptied, so it exercises _REMOTE_TMP and nothing else — deleting the stage
+# cleanup leaves C83 and C85 green. This arm injects BEFORE the mv.
+# It also proves C101: replaying the journal while our own stage still sits
+# inside versions/ makes the emptiness check see content, return 0 as if
+# published, delete the journal, and leave an EMPTY versions dir that was ABSENT
+# in PRE. Residue-only assertions cannot see that, so this asserts EXACT ABSENCE.
+P5I_C100="$P5I_ROOT/c100home"
+mkdir -p "$P5I_C100"
+_p5i_make_bundle "$P5I_VER" "" 0555
+P5I_RC=0
+P5I_OUT="$(HOME="$P5I_C100" AE_VERSION="$P5I_VER" TMPDIR="$P5I_TMP" \
+    AE_BUNDLE="$P5I_ROOT/ae-${P5I_VER}-${P5I_PLAT}.tar.gz" \
+    AE_SUMS="$P5I_ROOT/ae-${P5I_VER}-${P5I_PLAT}-SHA256SUMS" \
+    AE_INSTALL_TEST_FAIL_AFTER=stage-premv \
+    "${BASH:-bash}" "$P5I_SRC/install" 2>&1)" || P5I_RC=$?
+assert_eq "C100: the pre-mv injection is nonzero" "1" \
+    "$([[ "$P5I_RC" -ne 0 ]] && echo 1 || echo 0)"
+assert_eq "C100: nothing was published under versions" "0" \
+    "$([[ -e "$P5I_C100/.ae/versions/$P5I_VER" ]] && echo 1 || echo 0)"
+assert_eq "C100: no .stage residue survives" "0" \
+    "$(find "$P5I_C100/.ae" -maxdepth 2 -name '.stage.*' 2>/dev/null | wc -l | tr -d '[:space:]')"
+assert_eq "C100: no extraction residue survives" "0" \
+    "$(find "$P5I_TMP" -maxdepth 1 -name 'ae-install.*' 2>/dev/null | wc -l | tr -d '[:space:]')"
+# C101: versions/ and core/ were ABSENT in PRE, so a truthful inverse leaves
+# them ABSENT — not empty. An empty directory here IS the false inverse.
+assert_eq "C101: the versions directory is ABSENT, not merely empty" "0" \
+    "$([[ -e "$P5I_C100/.ae/versions" ]] && echo 1 || echo 0)"
+assert_eq "C101: the core directory is ABSENT, not merely empty" "0" \
+    "$([[ -e "$P5I_C100/.ae/core" ]] && echo 1 || echo 0)"
+assert_eq "C101: the journal is gone, so the inverse claimed completion honestly" "0" \
+    "$([[ -e "$P5I_C100/.ae/.ae-install.journal" ]] && echo 1 || echo 0)"
 
-# ── The conflict cases: inherited state loses ───────────────────────────────
-# Running ae-next from inside an ae pane is the NORMAL case during the canary,
-# so every one of these arrives by inheritance rather than by malice — and every
-# one of them would put ae-next's state, config or core somewhere it does not
-# belong.
-NX_W="$(CONFIG_FILE=/tmp/evil-config AE_HOME=/tmp/evil-home _nx_wrap x)"
-assert_contains "ae-next wrapper: an inherited CONFIG_FILE loses" "CONFIG_FILE:$NX_NEXT/config" "$NX_W"
-assert_contains "ae-next wrapper: an inherited AE_HOME loses" "AE_HOME:$NX_NEXT" "$NX_W"
-NX_W="$(AE_CORE_BIN=/tmp/evil-core _nx_wrap x 2>&1)"
-assert_contains "ae-next wrapper: an inherited AE_CORE_BIN is removed, not honoured" "AE_CORE_BIN:<unset>" "$NX_W"
-NX_W="$(AE_CORE_BIN=/tmp/evil-core HOME="$NX_HOME" "$NX_HOME/.local/bin/ae-next" x 2>&1 >/dev/null)"
-assert_contains "ae-next wrapper: ...and says so once, on stderr" "ignoring inherited AE_CORE_BIN" "$NX_W"
+# Control: when versions/ PREEXISTS, the inverse must PRESERVE it — the C101 fix
+# must not turn "absent in PRE" into "always removed".
+P5I_C100B="$P5I_ROOT/c100bhome"
+mkdir -p "$P5I_C100B"
+P5I_RC=0
+HOME="$P5I_C100B" AE_VERSION="$P5I_VER" TMPDIR="$P5I_TMP" \
+    AE_BUNDLE="$P5I_ROOT/ae-${P5I_VER}-${P5I_PLAT}.tar.gz" \
+    AE_SUMS="$P5I_ROOT/ae-${P5I_VER}-${P5I_PLAT}-SHA256SUMS" \
+    "${BASH:-bash}" "$P5I_SRC/install" >/dev/null 2>&1 || P5I_RC=$?
+assert_eq "C101 control: the preexisting-versions fixture installs" "0" "$P5I_RC"
+_p5i_make_bundle "$P5I_VER2" "" 0555
+P5I_RC=0
+HOME="$P5I_C100B" AE_VERSION="$P5I_VER2" TMPDIR="$P5I_TMP" \
+    AE_BUNDLE="$P5I_ROOT/ae-${P5I_VER2}-${P5I_PLAT}.tar.gz" \
+    AE_SUMS="$P5I_ROOT/ae-${P5I_VER2}-${P5I_PLAT}-SHA256SUMS" \
+    AE_INSTALL_TEST_FAIL_AFTER=stage-premv \
+    "${BASH:-bash}" "$P5I_SRC/install" >/dev/null 2>&1 || P5I_RC=$?
+assert_eq "C101 control: the pre-mv injection is nonzero" "1" \
+    "$([[ "$P5I_RC" -ne 0 ]] && echo 1 || echo 0)"
+assert_eq "C101 control: a PREEXISTING versions directory is PRESERVED" "1" \
+    "$([[ -d "$P5I_C100B/.ae/versions/$P5I_VER" ]] && echo 1 || echo 0)"
+assert_eq "C101 control: ...and the new version was not published" "0" \
+    "$([[ -e "$P5I_C100B/.ae/versions/$P5I_VER2" ]] && echo 1 || echo 0)"
 
-# The third conflict source is a cwd .ae/config carrying its own workspace.core.
-# The wrapper cannot see it — it is read by `ae` — so this asserts the RESOLVER:
-# env, then core/current, then the config, which is what makes a next-owned core
-# un-repointable by a repo someone happens to be standing in.
-# get_config and parse_config come along deliberately: without them the resolver
-# falls through to an UNDEFINED command whose failure is swallowed, and the
-# precedence assertion below would pass because the config source was broken
-# rather than because core/current outranked it. The CONTROL two rows down is
-# what catches that — it is red unless the config source really works.
-eval "$(awk '/^(_ae_core_current_input|_ae_core_bin_input|get_config|parse_config)\(\) \{/,/^\}$/' "$AE")"
-NX_EVIL="$NX_ROOT/evil"
-mkdir -p "$NX_EVIL/.ae"
-printf '[workspace]\ncore = /tmp/evil\n' >"$NX_EVIL/.ae/config"
-assert_eq "ae-next core: a cwd .ae/config's workspace.core loses to core/current" "$NX_NEXT/core/9.9.10/ae" \
-    "$(AE_CORE_BIN='' CONFIG_FILE="$NX_NEXT/config" AE_LOCAL_CONFIG="$NX_EVIL/.ae/config" CONFIG_DIR="$NX_NEXT" _ae_core_bin_input)"
-# The control for that assertion: with core/current gone, the evil config DOES
-# win — so the row above is about precedence and not about the fixture being
-# unreachable.
-assert_eq "ae-next core: CONTROL — with no core/current, the cwd config is what would be used" "/tmp/evil" \
-    "$(AE_CORE_BIN='' CONFIG_FILE="$NX_NEXT/config" AE_LOCAL_CONFIG="$NX_EVIL/.ae/config" CONFIG_DIR="$NX_ROOT/nowhere" _ae_core_bin_input)"
-unset -f _ae_core_current_input _ae_core_bin_input get_config parse_config
-
-# ── No installed core: refuse early, and say what to run ────────────────────
-# `ae` degrades to its bash bodies when nothing is bound — visibly, but quietly.
-# For ae-next that degradation only ever means the install did not happen, so it
-# is reported once, here, with the command that fixes it.
-mv "$NX_NEXT/core/current" "$NX_NEXT/core/current.away"
-NX_RC=0; NX_W="$(HOME="$NX_HOME" "$NX_HOME/.local/bin/ae-next" list 2>&1)" || NX_RC=$?
-assert_eq "ae-next wrapper: no installed core -> exit 2" "2" "$NX_RC"
-assert_contains "ae-next wrapper: ...naming the command that fixes it" "just next-install" "$NX_W"
-assert_eq "ae-next wrapper: ...and the target ae never ran" "0" \
-    "$([[ "$NX_W" == *"ARGV:"* ]] && echo 1 || echo 0)"
-# The same refusal for a pointer that exists but cannot be used: an empty file, a
-# relative path, and a path that is not executable are all "no installed core".
-: >"$NX_ROOT/not-executable"
-chmod 0644 "$NX_ROOT/not-executable"
-for _nx_bad in '' 'relative/ae' "$NX_ROOT/not-executable"; do
-    printf '%s\n' "$_nx_bad" >"$NX_NEXT/core/current"
-    NX_RC=0
-    HOME="$NX_HOME" "$NX_HOME/.local/bin/ae-next" list >/dev/null 2>&1 || NX_RC=$?
-    assert_eq "ae-next wrapper: an unusable core/current ('$_nx_bad') is exit 2" "2" "$NX_RC"
-done
-mv "$NX_NEXT/core/current.away" "$NX_NEXT/core/current"
-
-# ── Hardening: refusable inputs, and nodes that are ours to write ───────────
-# NOT AN ATTACKER MODEL. Every case below is an ordinary accident — a relative
-# path typed once, a tilde that never got expanded, a home that traverses back
-# into ~/.ae, a stale symlink where a regular file belongs — and each one costs
-# more to debug after the fact than to refuse. The rule that matters most is the
-# one about the PAIR: an install that succeeds and a wrapper that then refuses
-# leaves state on disk and no command to reach it with, so both scripts apply the
-# same rules and both are asserted here.
+# ── C102: ownership is recorded AFTER the syscall, never before ──────────
+# The window is between the journal row that CLAIMS a directory and the mkdir
+# that creates it. An operator (or a second installer) can create that exact
+# path inside it — the install lock does not serialize direct operator writes.
+# Recording ownership first makes the inverse remove a directory this install
+# never created, which is the irreversible mistake; recording it after leaves a
+# pending intent, and the inverse then preserves what it cannot prove is ours.
 #
-# The shared block is copied text (contrib scripts have no library), so its
-# identity is asserted rather than assumed.
-# The extraction runs to the brace that CLOSES _ae_next_server_reason, not to the
-# line that opens it: a range ending at the opening line leaves the whole server
-# grammar — the newest and least settled rule in the block — outside the identity
-# guard, which is exactly where drift would land unseen.
-# shellcheck disable=SC2016  # the awk program is single-quoted on purpose: $ and \{ are awk's, not the shell's
-NX_SHARED_EXTRACT='/^# ── SHARED INPUT RULES/{p=1} p{print} /^_ae_next_server_reason\(\) \{$/{f=1} f && /^\}$/{exit}'
-NX_SHARED_A="$(command awk "$NX_SHARED_EXTRACT" "$NX_REPO_SRC/contrib/ae-next/install")"
-NX_SHARED_B="$(command awk "$NX_SHARED_EXTRACT" "$NX_REPO_SRC/contrib/ae-next/ae-next")"
-# A guard on the guard: an extraction that silently stopped early would compare
-# two equal prefixes and pass. Both rule names must be inside what was compared.
-assert_contains "ae-next hardening: the compared block reaches the home rule" "_ae_next_home_reason() {" "$NX_SHARED_A"
-assert_contains "ae-next hardening: ...and through the server rule's closing brace" "AE_NEXT_TMUX_SERVER must match" "$NX_SHARED_A"
-assert_eq "ae-next hardening: the shared input rules are byte-identical in both scripts" "1" \
-    "$([[ -n "$NX_SHARED_A" && "$NX_SHARED_A" == "$NX_SHARED_B" ]] && echo 1 || echo 0)"
-
-# A symlinked root that RESOLVES to the legacy home: the case a plain string
-# comparison against "$HOME/.ae" would wave through.
-ln -s "$NX_HOME/.ae" "$NX_ROOT/legacy-link"
-# The tilde is a LITERAL on purpose: the rule under test refuses an unexpanded
-# one, so expanding it here would test nothing.
-# shellcheck disable=SC2088
-for _nx_bad_home in \
-    'relative/ae-next' \
-    '~/.ae-next' \
-    "$NX_HOME/.ae" \
-    "$NX_HOME/.ae-next/../.ae" \
-    "$NX_HOME/missing/../.ae" \
-    "$NX_HOME/./.ae-next" \
-    "$NX_ROOT/legacy-link"; do
-    NX_RC=0
-    NX_OUT="$(AE_NEXT_HOME="$_nx_bad_home" HOME="$NX_HOME" AE_NEXT_CORE_BIN="$NX_CORE_V2" \
-        "${BASH:-bash}" "$NX_REPO/contrib/ae-next/install" 2>&1)" || NX_RC=$?
-    assert_eq "ae-next hardening: install refuses AE_NEXT_HOME='$_nx_bad_home'" "1" \
-        "$([[ "$NX_RC" -ne 0 ]] && echo 1 || echo 0)"
-    assert_contains "ae-next hardening: ...naming the variable it refused" "AE_NEXT_HOME" "$NX_OUT"
-    NX_RC=0
-    NX_OUT="$(AE_NEXT_HOME="$_nx_bad_home" HOME="$NX_HOME" "$NX_HOME/.local/bin/ae-next" list 2>&1)" || NX_RC=$?
-    assert_eq "ae-next hardening: the WRAPPER refuses the same home, exit 2 ('$_nx_bad_home')" "2" "$NX_RC"
-    assert_contains "ae-next hardening: ...with the same rule text" "AE_NEXT_HOME" "$NX_OUT"
+# The gate is ANY created_dir row naming the path, deliberately: that row exists
+# in the record-first shape too, so ONE fixture drives both worlds and the only
+# difference is what the row claims. Measured against install.pre-c102 (the same
+# file with the two-state split reverted):
+#   record-first  row=rmdir   dir REMOVED  inode NO   journal deleted
+#   two-state     row=intent  dir SURVIVED inode yes  journal RETAINED
+P5I_C102="$P5I_ROOT/c102home"
+mkdir -p "$P5I_C102"
+_p5i_make_bundle "$P5I_VER" "" 0555
+P5I_C102_REL="$P5I_ROOT/c102.release"
+P5I_C102_RC="$P5I_ROOT/c102.rc"
+P5I_C102_ERR="$P5I_ROOT/c102.err"
+rm -f "$P5I_C102_REL" "$P5I_C102_RC" "$P5I_C102_ERR"
+P5I_C102_J="$P5I_C102/.ae/.ae-install.journal"
+# The backgrounded installer gets its OWN error surface. A subshell that dies
+# under errexit is silent, and its failure then surfaces as a wrong verdict
+# about the product instead of about the fixture.
+(
+    _c102_rc=0
+    HOME="$P5I_C102" AE_VERSION="$P5I_VER" TMPDIR="$P5I_TMP" \
+        AE_BUNDLE="$P5I_ROOT/ae-${P5I_VER}-${P5I_PLAT}.tar.gz" \
+        AE_SUMS="$P5I_ROOT/ae-${P5I_VER}-${P5I_PLAT}-SHA256SUMS" \
+        AE_INSTALL_TEST_FAIL_AFTER=pause-mkdir-versions \
+        AE_INSTALL_TEST_RELEASE="$P5I_C102_REL" \
+        "${BASH:-bash}" "$P5I_SRC/install" >/dev/null 2>"$P5I_C102_ERR" || _c102_rc=$?
+    printf '%s\n' "$_c102_rc" >"$P5I_C102_RC"
+) &
+P5I_C102_BG=$!
+P5I_C102_I=0
+while [ "$P5I_C102_I" -lt 200 ]; do
+    if [ -f "$P5I_C102_J" ] && command grep -Fq "|$P5I_C102/.ae/versions" "$P5I_C102_J" 2>/dev/null; then
+        break
+    fi
+    P5I_C102_I=$((P5I_C102_I + 1))
+    sleep 0.05
 done
-# ...and the install that WOULD have happened did not: no state under the refused
-# homes, and the legacy home is untouched.
-assert_not_exists "ae-next hardening: the refused traversal home created nothing" "$NX_HOME/.ae/core"
-# THE `..` CASE IS THE ONE THAT NEEDED ITS OWN RULE. `cd -P` can only resolve a
-# parent that EXISTS, so `<home>/missing/../.ae` compares unequal to the legacy
-# home right up until `mkdir -p` CREATES the missing component — and then it is
-# the legacy home. The components are refused on the raw value, before anything
-# is resolved or created; this asserts nothing was created on the way.
-assert_not_exists "ae-next hardening: ...and did not create the missing component either" "$NX_HOME/missing"
-# CONTROL for the whole family: an ordinary alternate home still installs, so the
-# rules above refuse a class rather than refusing everything.
-NX_RC=0
-NX_OUT="$(NX_INSTALL_HOME="$NX_ROOT/plain2" NX_INSTALL_CORE="$NX_CORE_V2" _nx_install)" || NX_RC=$?
-assert_eq "ae-next hardening: CONTROL — a plain alternate home still installs" "0" "$NX_RC"
-assert_eq "ae-next hardening: ...and published its own pointer" "$NX_ROOT/plain2/core/9.9.10/ae" \
-    "$(cat "$NX_ROOT/plain2/core/current" 2>/dev/null || true)"
+assert_eq "C102: the fixture reached the journal row, so the plant is not vacuous" "1" \
+    "$([[ "$P5I_C102_I" -lt 200 ]] && echo 1 || echo 0)"
+P5I_C102_ROW="$(command grep -F "|$P5I_C102/.ae/versions" "$P5I_C102_J" 2>/dev/null | tail -1 |
+    sed 's/^created_dir=//; s/|.*//')"
+assert_eq "C102: the row inside the window is a pending INTENT, not ownership" "intent" "$P5I_C102_ROW"
+P5I_C102_PLANT=0
+mkdir "$P5I_C102/.ae/versions" 2>/dev/null && P5I_C102_PLANT=1
+assert_eq "C102: the foreign directory was planted inside the window" "1" "$P5I_C102_PLANT"
+P5I_C102_INO="$(_p5i_inode "$P5I_C102/.ae/versions")"
+: >"$P5I_C102_REL"
+wait "$P5I_C102_BG" 2>/dev/null || true
+assert_eq "C102: the installer reported its own exit status" "1" \
+    "$([[ -f "$P5I_C102_RC" ]] && echo 1 || echo 0)"
+assert_eq "C102: the install exits nonzero — it could not create what it claimed" "1" \
+    "$([[ "$(cat "$P5I_C102_RC" 2>/dev/null || echo 0)" -ne 0 ]] && echo 1 || echo 0)"
+assert_eq "C102: the foreign directory SURVIVED the inverse" "1" \
+    "$([[ -d "$P5I_C102/.ae/versions" ]] && echo 1 || echo 0)"
+assert_eq "C102: ...and it is the SAME directory, not a recreated one" \
+    "$P5I_C102_INO" "$(_p5i_inode "$P5I_C102/.ae/versions" 2>/dev/null || echo GONE)"
+assert_eq "C102: nothing was published under the foreign directory" "0" \
+    "$([[ -e "$P5I_C102/.ae/versions/$P5I_VER" ]] && echo 1 || echo 0)"
+assert_eq "C102: the journal is RETAINED, so the inverse claimed no completion" "1" \
+    "$([[ -f "$P5I_C102_J" ]] && echo 1 || echo 0)"
+assert_eq "C102: the refusal is LOUD and names what it preserved" "1" \
+    "$(command grep -q 'not provably ours' "$P5I_C102_ERR" && echo 1 || echo 0)"
 
-# The server name becomes a tmux SOCKET name, so it takes the session-name
-# grammar. `./default` and `../default` name the very socket the default-server
-# rule refuses — a string comparison against "default" alone never sees them.
-for _nx_bad_srv in './default' '../default' 'a/b' '.hidden'; do
-    NX_RC=0
-    NX_OUT="$(AE_NEXT_TMUX_SERVER="$_nx_bad_srv" HOME="$NX_HOME" AE_NEXT_CORE_BIN="$NX_CORE_V2" \
-        "${BASH:-bash}" "$NX_REPO/contrib/ae-next/install" 2>&1)" || NX_RC=$?
-    assert_eq "ae-next hardening: install refuses AE_NEXT_TMUX_SERVER='$_nx_bad_srv'" "1" \
-        "$([[ "$NX_RC" -ne 0 ]] && echo 1 || echo 0)"
-    assert_contains "ae-next hardening: ...naming the variable" "AE_NEXT_TMUX_SERVER" "$NX_OUT"
-    NX_RC=0
-    NX_OUT="$(AE_NEXT_TMUX_SERVER="$_nx_bad_srv" HOME="$NX_HOME" "$NX_HOME/.local/bin/ae-next" list 2>&1)" || NX_RC=$?
-    assert_eq "ae-next hardening: the WRAPPER refuses the server '$_nx_bad_srv', exit 2" "2" "$NX_RC"
+# Control: directories this install DID create still reverse, and in reverse
+# creation order. ~/.local and ~/.local/bin are nested and are both ours here,
+# so a forward-order inverse would fail to rmdir the non-empty parent and keep
+# the journal. Absent parent + deleted journal is the order proof.
+P5I_C102C="$P5I_ROOT/c102ctrl"
+mkdir -p "$P5I_C102C"
+P5I_RC=0
+HOME="$P5I_C102C" AE_VERSION="$P5I_VER" TMPDIR="$P5I_TMP" \
+    AE_BUNDLE="$P5I_ROOT/ae-${P5I_VER}-${P5I_PLAT}.tar.gz" \
+    AE_SUMS="$P5I_ROOT/ae-${P5I_VER}-${P5I_PLAT}-SHA256SUMS" \
+    AE_INSTALL_TEST_FAIL_AFTER=link \
+    "${BASH:-bash}" "$P5I_SRC/install" >/dev/null 2>&1 || P5I_RC=$?
+assert_eq "C102 control: the late-boundary injection is nonzero" "1" \
+    "$([[ "$P5I_RC" -ne 0 ]] && echo 1 || echo 0)"
+assert_eq "C102 control: the nested link parent was removed CHILD FIRST" "0" \
+    "$([[ -e "$P5I_C102C/.local" ]] && echo 1 || echo 0)"
+# MEASURED asymmetry, pinned as behaviour and raised with the batch: the
+# PUBLISHED version directory is retained (it is immutable and its members are
+# re-verified byte-for-byte on the next run), while core/ — created by this
+# install and left empty — is reversed like any other created directory.
+assert_eq "C102 control: the published version directory is RETAINED" "1" \
+    "$([[ -d "$P5I_C102C/.ae/versions/$P5I_VER" ]] && echo 1 || echo 0)"
+assert_eq "C102 control: the empty core directory we created is reversed" "0" \
+    "$([[ -e "$P5I_C102C/.ae/core" ]] && echo 1 || echo 0)"
+assert_eq "C102 control: the journal is deleted — the inverse completed honestly" "0" \
+    "$([[ -e "$P5I_C102C/.ae/.ae-install.journal" ]] && echo 1 || echo 0)"
+
+# ── C51/C62/C67: the bundle triple refuses a MUTABLE EXTERNAL member ─────
+# `-f` and `-x` both FOLLOW symlinks, so before this lift a version-dir member
+# that was a symlink to a mutable external file passed every check and was then
+# grepped or EXECUTED as if it were ours. Each arm swaps exactly one member and
+# restores it, so the three reds are independent and the green control is the
+# unmutated wrapper run at the top.
+P5I_LIFT="$P5I_ROOT/lifthome"
+mkdir -p "$P5I_LIFT"
+_p5i_make_bundle "$P5I_VER"
+P5I_RC=0
+HOME="$P5I_LIFT" AE_VERSION="$P5I_VER" TMPDIR="$P5I_TMP" \
+    AE_BUNDLE="$P5I_ROOT/ae-${P5I_VER}-${P5I_PLAT}.tar.gz" \
+    AE_SUMS="$P5I_ROOT/ae-${P5I_VER}-${P5I_PLAT}-SHA256SUMS" \
+    "${BASH:-bash}" "$P5I_SRC/install" >/dev/null 2>&1 || P5I_RC=$?
+assert_eq "C51/C62/C67: the lift fixture installs" "0" "$P5I_RC"
+P5I_VD="$P5I_LIFT/.ae/versions/$P5I_VER"
+chmod u+w "$P5I_VD"
+P5I_RC=0
+HOME="$P5I_LIFT" "$P5I_LIFT/.local/bin/ae" _probe >/dev/null 2>&1 || P5I_RC=$?
+assert_eq "C51/C62/C67 control: the unmutated bundle wrapper runs" "0" "$P5I_RC"
+
+# C51 — sibling ae-core GONE, core/current pointed at an external SAME-VERSION
+# core. Keying bundle mode off `[ -x ae-core ]` skipped the identity refusal
+# entirely and this degraded silently into checkout semantics.
+mkdir -p "$P5I_ROOT/extcore"
+cp "$P5I_VD/ae-core" "$P5I_ROOT/extcore/ae-core"
+chmod 0755 "$P5I_ROOT/extcore/ae-core"
+mv "$P5I_VD/ae-core" "$P5I_ROOT/ae-core.away"
+printf '%s\n' "$P5I_ROOT/extcore/ae-core" >"$P5I_LIFT/.ae/core/current"
+P5I_RC=0
+P5I_OUT="$(HOME="$P5I_LIFT" "$P5I_LIFT/.local/bin/ae" _probe 2>&1)" || P5I_RC=$?
+assert_eq "C51: a bundle with no sibling ae-core is refused" "2" "$P5I_RC"
+assert_contains "C51: ...naming the bundle's own core" "ae-core" "$P5I_OUT"
+mv "$P5I_ROOT/ae-core.away" "$P5I_VD/ae-core"
+printf '%s\n' "$P5I_VD/ae-core" >"$P5I_LIFT/.ae/core/current"
+P5I_RC=0
+HOME="$P5I_LIFT" "$P5I_LIFT/.local/bin/ae" _probe >/dev/null 2>&1 || P5I_RC=$?
+assert_eq "C51: ...and the restored bundle is green again" "0" "$P5I_RC"
+
+# C62 — ae-glue is a SYMLINK to a mutable external glue of the same AE_VERSION.
+cp "$P5I_VD/ae-glue" "$P5I_ROOT/extglue"
+chmod 0755 "$P5I_ROOT/extglue"
+mv "$P5I_VD/ae-glue" "$P5I_ROOT/ae-glue.away"
+ln -s "$P5I_ROOT/extglue" "$P5I_VD/ae-glue"
+P5I_RC=0
+P5I_OUT="$(HOME="$P5I_LIFT" "$P5I_LIFT/.local/bin/ae" _probe 2>&1)" || P5I_RC=$?
+assert_eq "C62: a symlinked bundle glue is refused" "2" "$P5I_RC"
+assert_contains "C62: ...naming ae upgrade" "ae upgrade" "$P5I_OUT"
+rm -f "$P5I_VD/ae-glue"
+mv "$P5I_ROOT/ae-glue.away" "$P5I_VD/ae-glue"
+
+# C67 — install is a SYMLINK to an executable sentinel, on the PRE-TRIPLE
+# upgrade path. The sentinel must never run.
+printf '%s\n' '#!/usr/bin/env bash' ": >\"$P5I_ROOT/sentinel-ran\"" >"$P5I_ROOT/sentinel"
+chmod 0755 "$P5I_ROOT/sentinel"
+mv "$P5I_VD/install" "$P5I_ROOT/install.away"
+ln -s "$P5I_ROOT/sentinel" "$P5I_VD/install"
+P5I_RC=0
+P5I_OUT="$(HOME="$P5I_LIFT" "$P5I_LIFT/.local/bin/ae" upgrade 2>&1)" || P5I_RC=$?
+assert_eq "C67: a symlinked sibling installer is refused" "1" \
+    "$([[ "$P5I_RC" -ne 0 ]] && echo 1 || echo 0)"
+assert_eq "C67: ...and the sentinel never ran" "0" \
+    "$([[ -e "$P5I_ROOT/sentinel-ran" ]] && echo 1 || echo 0)"
+rm -f "$P5I_VD/install"
+mv "$P5I_ROOT/install.away" "$P5I_VD/install"
+chmod 0555 "$P5I_VD"
+
+# ── C104 + C105 + C112: the public entry tells the TRUTH about repair ────
+# Three defects in one function, all with the same shape: the wrapper knew what
+# was wrong and did not say it.
+#   C104  an installed wrapper whose ae-glue was missing fell into the CHECKOUT
+#         arm, where `-f "$_here/ae"` is satisfied by the wrapper ITSELF. It
+#         selected itself as its own glue.
+#   C104+ and then did not even refuse: the version reads are pipelines under
+#         `set -euo pipefail`, so grep-no-match terminated the wrapper at rc1
+#         with nothing said, BEFORE the refusal lines written for that case.
+#   C105  the corrupt-glue refusal hardcoded "ae upgrade" — an unrunnable
+#         instruction whenever the sibling installer is the missing member.
+#   C112  and none of it may cost the recovery arms: `version` diagnoses a
+#         broken triple and `upgrade` repairs it, so both must still work with
+#         the glue gone.
+# Every rc assertion below is EXACT: the whole point is discriminating rc2 (a
+# refusal) from rc1 (the silent set -e death), and "nonzero" cannot see that.
+chmod u+w "$P5I_VD"
+P5I_AE="$P5I_LIFT/.local/bin/ae"
+
+# C104 — installed name, glue ABSENT, core and installer both healthy.
+mv "$P5I_VD/ae-glue" "$P5I_ROOT/c104-glue.away"
+P5I_RC=0
+P5I_OUT="$(HOME="$P5I_LIFT" "$P5I_AE" _probe 2>&1)" || P5I_RC=$?
+assert_eq "C104: a bundle with NO glue refuses with rc2, not the silent rc1" "2" "$P5I_RC"
+assert_eq "C104: ...and says something — a public boundary owes guidance" "1" \
+    "$([[ -n "$P5I_OUT" ]] && echo 1 || echo 0)"
+assert_contains "C104: ...naming the proven repair" "ae upgrade" "$P5I_OUT"
+assert_eq "C104: ...and no glue ran, so the wrapper did not select itself" "0" \
+    "$(printf '%s' "$P5I_OUT" | command grep -c 'launched' | tr -d '[:space:]')"
+
+# C112 — the same broken bundle, with the core broken too. The two recovery
+# arms are owed an answer BEFORE any sibling check.
+printf '' >"$P5I_LIFT/.ae/core/current"
+for P5I_SPELL in version --version -V; do
+    P5I_RC=0
+    # stdout ONLY: this fixture's environment carries AE_HOME/AE_TMUX_SERVER, so
+    # the wrapper's B8 aggregated notice is expected on stderr and is asserted in
+    # the B8 section. Folding it in here would test the harness, not the arm.
+    P5I_OUT="$(HOME="$P5I_LIFT" "$P5I_AE" "$P5I_SPELL" 2>/dev/null)" || P5I_RC=$?
+    assert_eq "C112: '$P5I_SPELL' answers rc0 with glue gone and core broken" "0" "$P5I_RC"
+    assert_eq "C112: '$P5I_SPELL' prints the wrapper version exactly" "ae $P5I_VER" "$P5I_OUT"
 done
-# CONTROL: a legal second-instance name passes both, and reaches the tool.
-assert_contains "ae-next hardening: CONTROL — a legal server name is accepted" "AE_TMUX_SERVER:ae-next2" \
-    "$(AE_NEXT_TMUX_SERVER=ae-next2 _nx_wrap x)"
+# `upgrade` must REACH the sibling installer. A regular executable member that
+# only leaves a marker proves arrival without performing an install.
+mv "$P5I_VD/install" "$P5I_ROOT/c112-install.away"
+printf '%s\n' '#!/usr/bin/env bash' ": >\"$P5I_ROOT/c112-install-ran\"" >"$P5I_VD/install"
+chmod 0555 "$P5I_VD/install"
+P5I_RC=0
+HOME="$P5I_LIFT" "$P5I_AE" upgrade >/dev/null 2>&1 || P5I_RC=$?
+assert_eq "C112: bare upgrade REACHES the sibling installer" "1" \
+    "$([[ -e "$P5I_ROOT/c112-install-ran" ]] && echo 1 || echo 0)"
+rm -f "$P5I_VD/install"
+mv "$P5I_ROOT/c112-install.away" "$P5I_VD/install"
+# An ordinary session command in that same state still refuses, with guidance.
+P5I_RC=0
+P5I_OUT="$(HOME="$P5I_LIFT" "$P5I_AE" ls 2>&1)" || P5I_RC=$?
+assert_eq "C112: an ordinary command still refuses rc2" "2" "$P5I_RC"
+assert_contains "C112: ...with bundle repair guidance" "ae upgrade" "$P5I_OUT"
+printf '%s\n' "$P5I_VD/ae-core" >"$P5I_LIFT/.ae/core/current"
+mv "$P5I_ROOT/c104-glue.away" "$P5I_VD/ae-glue"
 
-# `default` is the installed ae's own server: an ae-next pointed there is the
-# first instance wearing a second name, sharing the sessions this whole slice
-# exists to leave alone.
-NX_RC=0
-NX_OUT="$(AE_NEXT_TMUX_SERVER=default HOME="$NX_HOME" AE_NEXT_CORE_BIN="$NX_CORE_V2" \
-    "${BASH:-bash}" "$NX_REPO/contrib/ae-next/install" 2>&1)" || NX_RC=$?
-assert_eq "ae-next hardening: install refuses AE_NEXT_TMUX_SERVER=default" "1" \
-    "$([[ "$NX_RC" -ne 0 ]] && echo 1 || echo 0)"
-assert_contains "ae-next hardening: ...saying whose server that is" "installed ae's own tmux server" "$NX_OUT"
-NX_RC=0
-NX_OUT="$(AE_NEXT_TMUX_SERVER=default HOME="$NX_HOME" "$NX_HOME/.local/bin/ae-next" list 2>&1)" || NX_RC=$?
-assert_eq "ae-next hardening: the WRAPPER refuses it too, exit 2" "2" "$NX_RC"
+# C105 — corrupt glue AND missing installer. "ae upgrade" is unrunnable here,
+# so it must not be the advice; the derived repair is.
+mv "$P5I_VD/ae-glue" "$P5I_ROOT/c105-glue.away"
+ln -s "$P5I_ROOT/extglue" "$P5I_VD/ae-glue"
+mv "$P5I_VD/install" "$P5I_ROOT/c105-install.away"
+P5I_RC=0
+P5I_OUT="$(HOME="$P5I_LIFT" "$P5I_AE" _probe 2>&1)" || P5I_RC=$?
+assert_eq "C105: corrupt glue with NO installer refuses rc2" "2" "$P5I_RC"
+assert_eq "C105: ...and never advises the repair it cannot run" "0" \
+    "$(printf '%s' "$P5I_OUT" | command grep -c 'ae upgrade' | tr -d '[:space:]')"
+assert_contains "C105: ...it advises reinstalling this version" "reinstall this version" "$P5I_OUT"
+# Control: restore the installer and the SAME corrupt glue names ae upgrade
+# again — the refusal follows the derived repair, not the corruption.
+mv "$P5I_ROOT/c105-install.away" "$P5I_VD/install"
+P5I_RC=0
+P5I_OUT="$(HOME="$P5I_LIFT" "$P5I_AE" _probe 2>&1)" || P5I_RC=$?
+assert_eq "C105 control: corrupt glue WITH an installer still refuses rc2" "2" "$P5I_RC"
+assert_contains "C105 control: ...and names ae upgrade" "ae upgrade" "$P5I_OUT"
+rm -f "$P5I_VD/ae-glue"
+mv "$P5I_ROOT/c105-glue.away" "$P5I_VD/ae-glue"
 
-# ── Owned nodes: a symlink where a regular file belongs is refused ──────────
-# The installed tree is 0555 by design, so `rm -rf` cannot unlink through it.
-# Every scratch reset below goes through this rather than remembering to chmod.
-_nx_scratch_reset() {
-    chmod -R u+w "$NX_SCRATCH" 2>/dev/null || true
-    rm -rf "$NX_SCRATCH"
-    mkdir -p "$@"
-}
-_nx_install_rc() { # -> rc of an install into a scratch home
-    local rc=0
-    HOME="$NX_HOME" AE_NEXT_HOME="$1" AE_NEXT_CORE_BIN="$NX_CORE_V2" \
-        "${BASH:-bash}" "$NX_REPO/contrib/ae-next/install" >"$NX_ROOT/last-install.out" 2>&1 || rc=$?
-    printf '%s' "$rc"
-}
-NX_SCRATCH="$NX_ROOT/scratch"
-# config planted as a symlink
-_nx_scratch_reset "$NX_SCRATCH"
-ln -s /dev/null "$NX_SCRATCH/config"
-assert_eq "ae-next hardening: a symlinked config is refused" "1" \
-    "$([[ "$(_nx_install_rc "$NX_SCRATCH")" -ne 0 ]] && echo 1 || echo 0)"
-assert_contains "ae-next hardening: ...saying it is a symlink" "symlink" "$(cat "$NX_ROOT/last-install.out")"
-# core/current planted as a symlink
-_nx_scratch_reset "$NX_SCRATCH/core"
-ln -s /dev/null "$NX_SCRATCH/core/current"
-assert_eq "ae-next hardening: a symlinked core/current is refused" "1" \
-    "$([[ "$(_nx_install_rc "$NX_SCRATCH")" -ne 0 ]] && echo 1 || echo 0)"
-# the installed core planted as a symlink
-_nx_scratch_reset "$NX_SCRATCH/core/9.9.10"
-ln -s "$NX_CORE_V2" "$NX_SCRATCH/core/9.9.10/ae"
-assert_eq "ae-next hardening: a symlinked installed core is refused" "1" \
-    "$([[ "$(_nx_install_rc "$NX_SCRATCH")" -ne 0 ]] && echo 1 || echo 0)"
-# core/current planted as a DIRECTORY
-_nx_scratch_reset "$NX_SCRATCH/core/current"
-assert_eq "ae-next hardening: a directory at core/current is refused" "1" \
-    "$([[ "$(_nx_install_rc "$NX_SCRATCH")" -ne 0 ]] && echo 1 || echo 0)"
-assert_contains "ae-next hardening: ...saying it is not a regular file" "regular file" "$(cat "$NX_ROOT/last-install.out")"
+# C104 EXTENSION — the two version reads. Both are pipelines, and before the
+# guarded assignment each ENDED the wrapper at rc1 instead of reaching the
+# refusal written one line below it.
+mv "$P5I_VD/ae-glue" "$P5I_ROOT/c104x-glue.away"
+printf '%s\n' '#!/usr/bin/env bash' 'echo "glue with no version line"' >"$P5I_VD/ae-glue"
+chmod 0555 "$P5I_VD/ae-glue"
+P5I_RC=0
+P5I_OUT="$(HOME="$P5I_LIFT" "$P5I_AE" _probe 2>&1)" || P5I_RC=$?
+assert_eq "C104x: an executable glue with no AE_VERSION refuses rc2, not rc1" "2" "$P5I_RC"
+assert_contains "C104x: ...naming the unreadable glue" "could not read AE_VERSION" "$P5I_OUT"
+assert_contains "C104x: ...with the derived repair" "ae upgrade" "$P5I_OUT"
+rm -f "$P5I_VD/ae-glue"
+mv "$P5I_ROOT/c104x-glue.away" "$P5I_VD/ae-glue"
 
-# ── Publishing: rename, not write-in-place ─────────────────────────────────
-# A stray temp from a killed run is INERT — it is not on any path a reader
-# consults — and the next install still publishes correctly beside it.
-_nx_scratch_reset "$NX_SCRATCH/core/9.9.10"
-printf 'a torn copy nobody should ever run\n' >"$NX_SCRATCH/core/9.9.10/.ae.XXtorn"
-assert_eq "ae-next hardening: a leftover temp does not block the install" "0" "$(_nx_install_rc "$NX_SCRATCH")"
-assert_eq "ae-next hardening: ...and the published core is the real one, not the temp" "1" \
-    "$(cmp -s "$NX_CORE_V2" "$NX_SCRATCH/core/9.9.10/ae" && echo 1 || echo 0)"
-# The structural half: the final path is only ever named by a rename.
-assert_eq "ae-next hardening: the core leaf is published by rename, never copied into place" "1" \
-    "$(_nx_src="$(cat "$NX_REPO_SRC/contrib/ae-next/install")"
-       # These are the installer's own expansions, matched as TEXT in its source.
-       # shellcheck disable=SC2016
-       [[ "$_nx_src" == *'mv "$_tmp" "$INSTALLED"'* && "$_nx_src" != *'cp "$BUILT" "$INSTALLED"'* ]] && echo 1 || echo 0)"
+mv "$P5I_VD/ae-core" "$P5I_ROOT/c104x-core.away"
+printf '%s\n' '#!/usr/bin/env bash' 'exit 1' >"$P5I_VD/ae-core"
+chmod 0555 "$P5I_VD/ae-core"
+P5I_RC=0
+P5I_OUT="$(HOME="$P5I_LIFT" "$P5I_AE" _probe 2>&1)" || P5I_RC=$?
+assert_eq "C104x: a core whose --version fails refuses rc2, not rc1" "2" "$P5I_RC"
+assert_contains "C104x: ...naming the silent core" "reported no version" "$P5I_OUT"
+assert_contains "C104x: ...with the derived repair" "ae upgrade" "$P5I_OUT"
+rm -f "$P5I_VD/ae-core"
+mv "$P5I_ROOT/c104x-core.away" "$P5I_VD/ae-core"
 
-# An identical core whose mode drifted is HARDENED, not refused: the bytes are
-# right, so refusing would strand an operator over a permission bit.
-chmod 0755 "$NX_SCRATCH/core/9.9.10" 2>/dev/null || true
-chmod 0644 "$NX_SCRATCH/core/9.9.10/ae"
-assert_eq "ae-next hardening: an identical but writable core re-installs clean" "0" "$(_nx_install_rc "$NX_SCRATCH")"
-assert_eq "ae-next hardening: ...and its mode is enforced back to 0555" "555" \
-    "$(_nx_mode "$NX_SCRATCH/core/9.9.10/ae")"
+# The green control for the whole section: everything restored, the bundle runs.
+P5I_RC=0
+HOME="$P5I_LIFT" "$P5I_AE" _probe >/dev/null 2>&1 || P5I_RC=$?
+assert_eq "C104/C105/C112 control: the restored bundle runs again" "0" "$P5I_RC"
+chmod 0555 "$P5I_VD"
 
-# ── Re-entry does not go through the wrapper ───────────────────────────────
-# The wrapper refuses a symlinked core/current, but it is not the only door: a
-# generated helper execs its recorded ae, the watchdog re-invokes
-# `telegram _supervise`, compact launches its child, and a person can run `ae`
-# with AE_HOME set. All of those reach the reader in `ae` directly, so the
-# refusal has to live there too. Driven through the REAL ae binary, not the
-# wrapper, which is the whole point.
-NX_RC=0
-NX_OUT="$(NX_INSTALL_HOME="$NX_ROOT/reentry" NX_INSTALL_CORE="$NX_CORE_V2" _nx_install)" || NX_RC=$?
-NX_REENTRY_CORE="$NX_ROOT/reentry/core/9.9.10/ae"
-assert_eq "ae-next re-entry: the fixture install published a pointer" "$NX_REENTRY_CORE" \
-    "$(cat "$NX_ROOT/reentry/core/current" 2>/dev/null || true)"
-# The POSITIVE half first: with a regular pointer, a raw `ae` really does resolve
-# the core through it. Without this row the negative below could pass because
-# nothing was ever resolvable.
-NX_OUT="$(AE_HOME="$NX_ROOT/reentry" CONFIG_FILE="$NX_ROOT/reentry/config" AE_LOCAL_CONFIG='' \
-    AE_CORE_BIN='' "$AE" doctor 2>&1 || true)"
-assert_contains "ae-next re-entry: a raw ae resolves the core through core/current" "$NX_REENTRY_CORE" "$NX_OUT"
-rm -f "$NX_ROOT/reentry/core/current"
-# The link points at a REAL POINTER FILE holding a usable absolute path, not at
-# the binary and not at nothing: only then is the symlink rule the sole decider.
-# A dangling link, or one aimed at the binary, is rejected by the checks that
-# follow anyway — so the test would pass with the rule deleted, which is the
-# shape of a control that can never fail.
-printf '%s\n' "$NX_REENTRY_CORE" >"$NX_ROOT/reentry/core/current.real"
-ln -s "$NX_ROOT/reentry/core/current.real" "$NX_ROOT/reentry/core/current"
-NX_OUT="$(AE_HOME="$NX_ROOT/reentry" CONFIG_FILE="$NX_ROOT/reentry/config" AE_LOCAL_CONFIG='' \
-    AE_CORE_BIN='' "$AE" doctor 2>&1 || true)"
-assert_eq "ae-next re-entry: a SYMLINKED core/current binds nothing, even through a raw ae" "0" \
-    "$(printf '%s' "$NX_OUT" | command grep -c "$NX_REENTRY_CORE" || true)"
+# ── B8: inherited hostile env loses ──────────────────────────────────────
+P5I_W="$(HOME="$P5I_HOME" AE_HOME=/tmp/evil-home CONFIG_FILE=/tmp/evil-config \
+    AE_CORE_BIN=/tmp/evil-core AE_TMUX_SERVER=ae-next \
+    "$P5I_HOME/.local/bin/ae" _probe 2>/dev/null || true)"
+assert_contains "P5 wrapper: inherited AE_HOME loses" "AE_HOME=$P5I_HOME/.ae" "$P5I_W"
+assert_contains "P5 wrapper: inherited CONFIG_FILE loses" "CONFIG_FILE=$P5I_HOME/.ae/config" "$P5I_W"
+assert_contains "P5 wrapper: inherited AE_CORE_BIN is unset" "AE_CORE_BIN=UNSET" "$P5I_W"
+assert_contains "P5 wrapper: inherited AE_TMUX_SERVER is unset" "AE_TMUX_SERVER=UNSET" "$P5I_W"
+P5I_ERR="$(HOME="$P5I_HOME" AE_CORE_BIN=/tmp/evil-core \
+    "$P5I_HOME/.local/bin/ae" _probe 2>&1 >/dev/null || true)"
+assert_contains "P5 wrapper: ...and names AE_CORE_BIN on stderr" "AE_CORE_BIN" "$P5I_ERR"
 
-# ── The command link: a directory destination is refused, not linked into ──
-# `ln -sf` given a directory creates the link INSIDE it and reports success, so
-# the operator would be told the command was installed while nothing exists at
-# the path they were told about.
-_nx_scratch_reset "$NX_SCRATCH"
-NX_LINKHOME="$NX_ROOT/linkhome"
-rm -rf "$NX_LINKHOME"; mkdir -p "$NX_LINKHOME/.local/bin/ae-next" "$NX_LINKHOME/.ae"
-cp "$NX_HOME/.ae/config" "$NX_LINKHOME/.ae/config"
-NX_RC=0
-NX_OUT="$(HOME="$NX_LINKHOME" AE_NEXT_HOME="$NX_LINKHOME/.ae-next" AE_NEXT_CORE_BIN="$NX_CORE_V2" \
-    "${BASH:-bash}" "$NX_REPO/contrib/ae-next/install" 2>&1)" || NX_RC=$?
-assert_eq "ae-next hardening: a directory at ~/.local/bin/ae-next is refused" "1" \
-    "$([[ "$NX_RC" -ne 0 ]] && echo 1 || echo 0)"
-assert_contains "ae-next hardening: ...rather than linking inside it" "refusing to link inside it" "$NX_OUT"
-assert_not_exists "ae-next hardening: ...and no link was nested" "$NX_LINKHOME/.local/bin/ae-next/ae-next"
-unset -f _nx_install_rc _nx_scratch_reset
-unset NX_SHARED_A NX_SHARED_B NX_SCRATCH NX_LINKHOME NX_REENTRY_CORE _nx_bad_srv
+# ── no / unusable core: refuse ───────────────────────────────────────────
+mv "$P5I_HOME/.ae/core/current" "$P5I_HOME/.ae/core/current.away"
+P5I_RC=0
+P5I_W="$(HOME="$P5I_HOME" "$P5I_HOME/.local/bin/ae" _probe 2>&1)" || P5I_RC=$?
+assert_eq "P5 wrapper: no installed core -> exit 2" "2" "$P5I_RC"
+assert_contains "P5 wrapper: ...naming ae upgrade" "ae upgrade" "$P5I_W"
+assert_eq "P5 wrapper: ...and the target glue never ran" "0" \
+    "$([[ "$P5I_W" == *"AE_HOME:"* ]] && echo 1 || echo 0)"
+: >"$P5I_ROOT/not-executable"
+chmod 0644 "$P5I_ROOT/not-executable"
+for _p5i_bad in '' 'relative/ae' "$P5I_ROOT/not-executable"; do
+    printf '%s\n' "$_p5i_bad" >"$P5I_HOME/.ae/core/current"
+    P5I_RC=0
+    HOME="$P5I_HOME" "$P5I_HOME/.local/bin/ae" _probe >/dev/null 2>&1 || P5I_RC=$?
+    assert_eq "P5 wrapper: an unusable core/current is exit 2" "2" "$P5I_RC"
+done
+mv "$P5I_HOME/.ae/core/current.away" "$P5I_HOME/.ae/core/current"
 
-# THE INSTALLED TREE IS READ-ONLY BY DESIGN (0555 version directories), and
-# `rm -rf` cannot unlink a file out of a directory it may not write. That is the
-# product behaving correctly and the SUITE's problem to clean up after: without
-# this the run's temp HOME survives and the harness reports a lost isolation
-# tree — a real failure caused by a real feature.
-chmod -R u+w "$NX_ROOT" 2>/dev/null || true
-unset -f _nx_mode _nx_inode _nx_install _nx_wrap _nx_bump_stub_version
-unset NX_REPO_SRC NX_ROOT NX_HOME NX_REPO NX_CORE NX_CORE_B NX_CORE_V2 NX_OUT NX_RC NX_NEXT
-unset NX_SEED NX_INODE NX_OLD_CFG_FPR NX_OLD_AE_FPR NX_CFG_FPR NX_ALT NX_W NX_EVIL _nx_bad NX_INSTALL_CORE NX_INSTALL_HOME
+# ── F8 directory leaf ────────────────────────────────────────────────────
+P5I_F8="$P5I_ROOT/f8home"
+mkdir -p "$P5I_F8/.local/bin/ae"
+P5I_RC=0
+_p5i_make_bundle "$P5I_VER"
+P5I_OUT="$(HOME="$P5I_F8" AE_VERSION="$P5I_VER" \
+    AE_BUNDLE="$P5I_ROOT/ae-${P5I_VER}-${P5I_PLAT}.tar.gz" \
+    AE_SUMS="$P5I_ROOT/ae-${P5I_VER}-${P5I_PLAT}-SHA256SUMS" \
+    "${BASH:-bash}" "$P5I_SRC/install" 2>&1)" || P5I_RC=$?
+assert_eq "P5 install: a directory at ~/.local/bin/ae is refused" "1" \
+    "$([[ "$P5I_RC" -ne 0 ]] && echo 1 || echo 0)"
+assert_contains "P5 install: ...naming directory" "directory" "$P5I_OUT"
+
+# ── B14 dangling .local -> .ae ───────────────────────────────────────────
+P5I_B14="$P5I_ROOT/b14home"
+mkdir -p "$P5I_B14"
+ln -s .ae "$P5I_B14/.local"
+P5I_RC=0
+P5I_OUT="$(HOME="$P5I_B14" AE_VERSION="$P5I_VER" \
+    AE_BUNDLE="$P5I_ROOT/ae-${P5I_VER}-${P5I_PLAT}.tar.gz" \
+    AE_SUMS="$P5I_ROOT/ae-${P5I_VER}-${P5I_PLAT}-SHA256SUMS" \
+    "${BASH:-bash}" "$P5I_SRC/install" 2>&1)" || P5I_RC=$?
+assert_eq "P5 install: dangling .local->.ae is refused" "1" \
+    "$([[ "$P5I_RC" -ne 0 ]] && echo 1 || echo 0)"
+assert_eq "P5 install: ...and published nothing inside ~/.ae" "1" \
+    "$([[ ! -e "$P5I_B14/.ae/current" && ! -L "$P5I_B14/.ae/current" ]] && echo 1 || echo 0)"
+
+# ── core/current as a symlink is refused ─────────────────────────────────
+P5I_SL="$P5I_ROOT/slhome"
+mkdir -p "$P5I_SL/.ae/core"
+ln -s /dev/null "$P5I_SL/.ae/core/current"
+P5I_RC=0
+P5I_OUT="$(HOME="$P5I_SL" AE_VERSION="$P5I_VER" \
+    AE_BUNDLE="$P5I_ROOT/ae-${P5I_VER}-${P5I_PLAT}.tar.gz" \
+    AE_SUMS="$P5I_ROOT/ae-${P5I_VER}-${P5I_PLAT}-SHA256SUMS" \
+    "${BASH:-bash}" "$P5I_SRC/install" 2>&1)" || P5I_RC=$?
+assert_eq "P5 install: a symlinked core/current is refused" "1" \
+    "$([[ "$P5I_RC" -ne 0 ]] && echo 1 || echo 0)"
+
+chmod -R u+w "$P5I_ROOT" 2>/dev/null || true
+unset -f _p5i_mode _p5i_inode _p5i_sha _p5i_make_bundle _p5i_install
+unset P5I_SRC P5I_ROOT P5I_HOME P5I_VER P5I_VER2 P5I_MAJ P5I_REST P5I_MIN P5I_PAT \
+    P5I_PLAT P5I_RC P5I_OUT P5I_INODE P5I_W P5I_ERR P5I_CFG_FPR P5I_F8 P5I_B14 P5I_SL _p5i_bad
 fi
 
 # ── ae-next coexistence: Telegram ownership guard (pre-P5) ───────────────────
@@ -8514,331 +8647,255 @@ unset P1_RIG_BASH P1_RIG_SRV P1_RIG_SESS P1_RIG_REPO P1_RIG_OUT P1_RIG_ERR P1_RI
     P1_CAP_CLAUDE P1_CAP_CODEX P1_READ_CLAUDE P1_READ_CODEX P1_CLEANED P1_RIG_TMP_ROOT _p1_i
 fi
 
-# ── ae-next coexistence: real ae through the symlink (pre-P5) ────────────────
-if _itest_section 'ae-next coexistence: real ae through the symlink'; then
+# ── P5 real ae through the symlink (retargeted from ae-next coexistence, A22) ─
+if _itest_section 'P5 real ae through the symlink'; then
 
-# EVERYTHING ELSE IN THIS SLICE IS A STUB TEST. This one is the product: the real
-# installer, the real wrapper, the real `ae`, the real Rust core, a real session
-# on a real tmux server. It is the assertion that the isolation argument holds
-# end to end rather than only in the environment the wrapper prints.
-NXR_REPO_SRC="$(dirname "$AE")"
-NXR_CORE="$NXR_REPO_SRC/target/debug/ae"
-# The debug binary is what `just rust-check` leaves behind. Build it if it is
-# missing and cargo is here; if it is still missing the assertion below FAILS
-# loudly rather than skipping — a section that quietly tests nothing is the
-# failure this suite exists to avoid.
-if [[ ! -x "$NXR_CORE" ]] && command -v cargo >/dev/null 2>&1; then
-    (cd "$NXR_REPO_SRC" && cargo build --locked >/dev/null 2>&1) || true
+# Real installer (checkout mode), real ae-entry, real glue, real Rust core, a
+# real session. Coexistence isolation (ae-next server, ~/.ae-next vs ~/.ae) is
+# retired: P5 is the public entry. Isolated HOME so the harness tree is untouched.
+
+NXR_SRC="$(dirname "$AE")"
+NXR_CORE=""
+if [[ -x "$NXR_SRC/target/debug/ae" ]]; then
+    NXR_CORE="$NXR_SRC/target/debug/ae"
+elif [[ -x "$NXR_SRC/target/release/ae" ]]; then
+    NXR_CORE="$NXR_SRC/target/release/ae"
+elif command -v cargo >/dev/null 2>&1; then
+    (cd "$NXR_SRC" && cargo build --locked >/dev/null 2>&1) || true
+    NXR_CORE="$NXR_SRC/target/debug/ae"
 fi
 NXR_VERSION="$(command grep -m1 '^AE_VERSION=' "$AE" | cut -d'"' -f2)"
-assert_eq "ae-next real: the core binary exists (cargo build --locked)" "1" \
+assert_eq "P5 real: the core binary exists (cargo build --locked)" "1" \
     "$([[ -x "$NXR_CORE" ]] && echo 1 || echo 0)"
-assert_eq "ae-next real: ...and it is the version the glue is" "$NXR_VERSION" \
+assert_eq "P5 real: ...and it is the version the glue is" "$NXR_VERSION" \
     "$("$NXR_CORE" --version 2>/dev/null | awk '{print $NF}')"
 
-NXR_HOME="$HOME/.ae-next"
-AE_NEXT_CORE_BIN="$NXR_CORE" "${BASH:-bash}" "$NXR_REPO_SRC/contrib/ae-next/install" >/dev/null 2>&1 || true
-assert_eq "ae-next real: the install published core/current" "$NXR_HOME/core/$NXR_VERSION/ae" \
-    "$(cat "$NXR_HOME/core/current" 2>/dev/null || true)"
+NXR_ROOT="$TMPDIR/p5real"
+NXR_HOME="$NXR_ROOT/home"
+mkdir -p "$NXR_HOME"
+NXR_RC=0
+NXR_OUT="$(HOME="$NXR_HOME" AE_CORE_BIN="$NXR_CORE" \
+    "${BASH:-bash}" "$NXR_SRC/install" 2>&1)" || NXR_RC=$?
+assert_eq "P5 real: checkout install succeeds" "0" "$NXR_RC"
+assert_eq "P5 real: the install published core/current" \
+    "$NXR_HOME/.ae/versions/$NXR_VERSION/ae-core" \
+    "$(cat "$NXR_HOME/.ae/core/current" 2>/dev/null || true)"
+assert_eq "P5 real: the command is linked at ~/.local/bin/ae" \
+    "$NXR_HOME/.ae/current/ae" \
+    "$(readlink "$NXR_HOME/.local/bin/ae" 2>/dev/null || true)"
 
-# A REAL session, launched the way a human launches it: through the symlink.
+# Dummy agent so a session can launch without a real CLI.
+mkdir -p "$NXR_HOME/.ae"
+cat >"$NXR_HOME/.ae/config" <<'EOF'
+[telegram]
+enabled = false
+
+[agents]
+dummy = "bash"
+
+[workspace]
+main = dummy
+layout = vertical
+EOF
+
 NXR_GIT="$(setup_repo)"
-(cd "$NXR_GIT" && "$HOME/.local/bin/ae-next" --local nxreal >/dev/null 2>&1 &) 2>/dev/null
+(cd "$NXR_GIT" && HOME="$NXR_HOME" "$NXR_HOME/.local/bin/ae" --local nxreal >/dev/null 2>&1 &) 2>/dev/null
 NXR_I=0
-while ! command tmux -L ae-next has-session -t nxreal 2>/dev/null; do
+NXR_META="$NXR_HOME/.ae/sessions/nxreal"
+while [[ ! -f "$NXR_META/meta" ]]; do
     sleep 0.5
     NXR_I=$((NXR_I + 1))
-    if ((NXR_I >= 30)); then break; fi
+    if ((NXR_I >= 40)); then break; fi
 done
 sleep 2
-NXR_META="$NXR_HOME/sessions/nxreal"
-
-# ── The two instances cannot see each other ────────────────────────────────
-assert_eq "ae-next real: the session is live on the ae-next server" "1" \
-    "$(command tmux -L ae-next has-session -t nxreal 2>/dev/null && echo 1 || echo 0)"
-assert_eq "ae-next real: ...and NOT on the harness's own server" "0" \
-    "$(tmux has-session -t nxreal 2>/dev/null && echo 1 || echo 0)"
-assert_eq "ae-next real: its state is under ~/.ae-next, not ~/.ae" "1" \
+assert_eq "P5 real: the session state is under the isolated ~/.ae" "1" \
     "$([[ -f "$NXR_META/meta" ]] && echo 1 || echo 0)"
-assert_not_exists "ae-next real: nothing was written to the old home" "$HOME/.ae/sessions/nxreal"
-# The listing is the human-visible half of the same fact.
-assert_contains "ae-next real: ae-next list shows it" "nxreal" \
-    "$("$HOME/.local/bin/ae-next" list 2>/dev/null || true)"
-assert_eq "ae-next real: the plain ae does not" "0" \
-    "$("$AE" list 2>/dev/null | command grep -c 'nxreal' || true)"
-
-# ── The core the session bound is the IMMUTABLE one ────────────────────────
-# Not target/debug/ae, which the next `cargo build` overwrites: the copy under
-# core/<version>/, which nothing can rewrite in place.
-assert_eq "ae-next real: meta pins the immutable core path" "$NXR_HOME/core/$NXR_VERSION/ae" \
-    "$(command grep '^ae_core=' "$NXR_META/meta" 2>/dev/null | cut -d= -f2- || true)"
-assert_eq "ae-next real: meta pins the version it reported" "$NXR_VERSION" \
+assert_eq "P5 real: meta pins the versioned glue as ae_path" "1" \
+    "$([[ "$(command grep '^ae_path=' "$NXR_META/meta" 2>/dev/null | cut -d= -f2- || true)" -ef "$NXR_HOME/.ae/versions/$NXR_VERSION/ae-glue" ]] && echo 1 || echo 0)"
+assert_eq "P5 real: meta pins the immutable sibling core" "1" \
+    "$([[ "$(command grep '^ae_core=' "$NXR_META/meta" 2>/dev/null | cut -d= -f2- || true)" -ef "$NXR_HOME/.ae/versions/$NXR_VERSION/ae-core" ]] && echo 1 || echo 0)"
+assert_eq "P5 real: meta pins the version it reported" "$NXR_VERSION" \
     "$(command grep '^ae_core_version=' "$NXR_META/meta" 2>/dev/null | cut -d= -f2- || true)"
-# ...and it got there from core/current, with no AE_CORE_BIN anywhere: the
-# wrapper unsets it, so this pin can only have come from the file.
-# MEASURED, and worth knowing before reading the next two rows: ae does NOT
-# record the name it was handed. resolve_launch_tmux_server asks the live server
-# for its own `#{socket_path}` first and records THAT, so a session started with
-# AE_TMUX_SERVER=ae-next stores `tmux_server=<…>/tmux-<uid>/ae-next` with
-# `tmux_server_kind=socket`. The name is the FALLBACK, for when the query fails.
-# What matters for coexistence is which server it resolves to, so that is what is
-# asserted — pinning the spelling would pin an implementation detail and would
-# have been red here for the right behaviour.
-NXR_SRV="$(command grep '^tmux_server=' "$NXR_META/meta" 2>/dev/null | cut -d= -f2- || true)"
-assert_eq "ae-next real: the session records the ae-next server (by socket or by name)" "ae-next" \
-    "$(basename "$NXR_SRV")"
-assert_eq "ae-next real: ...and it is NOT the harness's own server" "0" \
-    "$([[ "$NXR_SRV" == *"$AE_TMUX_SERVER"* ]] && echo 1 || echo 0)"
-assert_eq "ae-next real: the server kind is classified, never left ambiguous" "1" \
-    "$(_k="$(command grep '^tmux_server_kind=' "$NXR_META/meta" 2>/dev/null | cut -d= -f2- || true)"
-       [[ "$_k" == socket || "$_k" == name ]] && echo 1 || echo 0)"
-# The helpers an agent runs inside that session must reach the SAME server, or a
-# send would address the old instance's panes. Asserted by RUNNING one: `agents`
-# enumerates panes through _lib's re-export, so it can only name this session's
-# main pane if it reached the ae-next server. A grep of _lib would prove nothing
-# — _lib reads the server out of meta at run time and contains no literal.
+NXR_KIND="$(command grep '^tmux_server_kind=' "$NXR_META/meta" 2>/dev/null | cut -d= -f2- || true)"
+assert_eq "P5 real: the server kind is classified, never left ambiguous" "1" \
+    "$([[ "$NXR_KIND" == socket || "$NXR_KIND" == name ]] && echo 1 || echo 0)"
+
 NXR_PANE="$(command grep '^main_pane=' "$NXR_META/meta" 2>/dev/null | cut -d= -f2- || true)"
-# Captured, then matched — never `agents | grep -q`. Under `set -o pipefail`,
-# `grep -q` exits at the first match and SIGPIPEs the producer, so the PIPELINE
-# reports failure and the assertion reads "the helper found nothing" for output
-# that contained the answer. Measured here, on this very row.
-NXR_AGENTS="$("$NXR_META/agents" 2>/dev/null || true)"
-assert_contains "ae-next real: a generated helper reaches the ae-next server" "$NXR_PANE" "$NXR_AGENTS"
+NXR_AGENTS="$(HOME="$NXR_HOME" "$NXR_META/agents" 2>/dev/null || true)"
+assert_contains "P5 real: a generated helper reaches the session" "$NXR_PANE" "$NXR_AGENTS"
 
-# ── explicit re-entry attach through the wrapper ───────────────────────────
-# The launch above was deliberately detached, leaving nxreal running for a fresh
-# invocation. With TMUX absent, the wrapper must carry its named-server selection
-# through tmux_attach's exec rather than falling back to the default server.
-NXR_ATTACH_BIN="$NXR_HOME/attach-fake-bin"
-NXR_ATTACH_LOG="$NXR_HOME/attach-argv"
-# `tmux` is a harness function in this shell; command -v would capture that
-# function name and make the passthrough wrapper recurse into itself.
-NXR_REAL_TMUX="$(type -P tmux)"
-mkdir -p "$NXR_ATTACH_BIN"
-cat >"$NXR_ATTACH_BIN/tmux" <<'TMUX_ATTACH_WRAP'
-#!/usr/bin/env bash
-if [[ "${1:-}" == "-L" && "${2:-}" == "ae-next" && "${3:-}" == "attach-session" ]]; then
-    printf '%s\n' "$@" >"$NXR_ATTACH_LOG"
-    exit 0
-fi
-exec "$NXR_REAL_TMUX" "$@"
-TMUX_ATTACH_WRAP
-chmod +x "$NXR_ATTACH_BIN/tmux"
-export NXR_ATTACH_LOG NXR_REAL_TMUX
-NXR_ATTACH_RC=0
-(cd "$NXR_GIT" && env -u TMUX PATH="$NXR_ATTACH_BIN:$PATH" AE_HOME="$NXR_HOME" \
-    "$HOME/.local/bin/ae-next" nxreal >/dev/null 2>&1) || NXR_ATTACH_RC=$?
-assert_eq "ae-next real: explicit wrapper attach exits cleanly" "0" "$NXR_ATTACH_RC"
-assert_eq "ae-next real: explicit attach finds the detached session on its server" "1" \
-    "$(command tmux -L ae-next has-session -t '=nxreal' 2>/dev/null && echo 1 || echo 0)"
-assert_eq "ae-next real: explicit attach exec carries -L before attach-session" \
-    $'-L\nae-next\nattach-session\n-t\nnxreal' "$(cat "$NXR_ATTACH_LOG" 2>/dev/null || true)"
-
-# ── doctor, through the symlink ────────────────────────────────────────────
-# The operator's first move after an install, and the one surface that prints
-# the RESOLVED core back to them — so it is also the check that the whole
-# chain (wrapper -> core/current -> _ae_core_bin_input) agrees end to end.
+# doctor through the installed wrapper
 NXR_RC=0
-NXR_DOCTOR="$("$HOME/.local/bin/ae-next" doctor 2>&1)" || NXR_RC=$?
-assert_eq "ae-next real: doctor through the symlink exits 0" "0" "$NXR_RC"
-assert_contains "ae-next real: ...and names the immutable core it resolved" \
-    "$NXR_HOME/core/$NXR_VERSION/ae" "$NXR_DOCTOR"
+NXR_DOCTOR="$(HOME="$NXR_HOME" "$NXR_HOME/.local/bin/ae" doctor 2>&1)" || NXR_RC=$?
+assert_eq "P5 real: doctor through the symlink exits 0" "0" "$NXR_RC"
+assert_contains "P5 real: ...and names the immutable core it resolved" \
+    "$NXR_HOME/.ae/versions/$NXR_VERSION/ae-core" "$NXR_DOCTOR"
 
-# ── end archives into the next home ────────────────────────────────────────
-"$HOME/.local/bin/ae-next" end -f nxreal >/dev/null 2>&1 || true
+# end archives into the isolated home
+HOME="$NXR_HOME" "$NXR_HOME/.local/bin/ae" end -f nxreal >/dev/null 2>&1 || true
 sleep 1
-assert_eq "ae-next real: end archived under ~/.ae-next/archive" "1" \
-    "$(command ls -1 "$NXR_HOME/archive" 2>/dev/null | command grep -c . || true)"
-assert_eq "ae-next real: ...and the session is gone from the ae-next server" "0" \
-    "$(command tmux -L ae-next has-session -t nxreal 2>/dev/null && echo 1 || echo 0)"
+assert_eq "P5 real: end archived under ~/.ae/archive" "1" \
+    "$(command ls -1 "$NXR_HOME/.ae/archive" 2>/dev/null | command grep -c . || true)"
+assert_eq "P5 real: ...and the session dir is gone" "1" \
+    "$([[ ! -d "$NXR_META" ]] && echo 1 || echo 0)"
 
-command tmux -L ae-next kill-server 2>/dev/null || true
-# 0555 version directories are the product's; the suite's own cleanup cannot
-# unlink through them (see the installer section for the same note).
-chmod -R u+w "$NXR_HOME" 2>/dev/null || true
-unset NXR_REPO_SRC NXR_CORE NXR_VERSION NXR_HOME NXR_GIT NXR_I NXR_META NXR_SRV NXR_PANE NXR_AGENTS NXR_ATTACH_BIN NXR_ATTACH_LOG NXR_REAL_TMUX NXR_ATTACH_RC NXR_DOCTOR NXR_RC
+chmod -R u+w "$NXR_ROOT" 2>/dev/null || true
+unset NXR_SRC NXR_CORE NXR_VERSION NXR_ROOT NXR_HOME NXR_RC NXR_OUT NXR_GIT NXR_I \
+    NXR_META NXR_KIND NXR_PANE NXR_AGENTS NXR_DOCTOR
 fi
 
-# ── ae-next coexistence: upgrade + re-entry (pre-P5) ─────────────────────────
-if _itest_section 'ae-next coexistence: upgrade + re-entry'; then
+# ── P5 upgrade + re-entry (retargeted from ae-next coexistence, A22) ─────────
+if _itest_section 'P5 upgrade + re-entry'; then
 
-# THE QUESTION THIS SECTION ANSWERS. An upgrade installs a new core beside the
-# old one and repoints core/current. Everything that RE-ENTERS ae after that —
-# a new session, the watchdog restarting the bridge, compact launching its child
-# — resolves the core again, from the file. A session that pinned the old
-# version must keep running against the exact bytes it bound to, and everything
-# new must get the new one. Both halves, or the upgrade is either a lie or a
-# rug-pull.
-#
-# TWO REAL CORES AT TWO VERSIONS. The real binary reports one version, so each
-# "version" here is the real core behind a one-line shim that answers --version
-# and execs it for everything else: real behaviour, controlled version. The repo
-# is a copy of the real `ae` with its AE_VERSION line rewritten to match, because
-# the installer refuses a core whose version is not the glue's.
+# An upgrade installs a new version beside the old and repoints current. A
+# session that pinned the old glue/core must keep those bytes; a new session
+# and every re-entry (core/current reader) must get the new one.
+
 NXU_SRC="$(dirname "$AE")"
-NXU_ROOT="$TMPDIR/nxup"
-NXU_REPO="$NXU_ROOT/repo"
+NXU_ROOT="$TMPDIR/p5up"
 NXU_HOME="$NXU_ROOT/home"
-mkdir -p "$NXU_REPO/contrib/ae-next" "$NXU_HOME"
-cp "$NXU_SRC/contrib/ae-next/ae-next" "$NXU_SRC/contrib/ae-next/install" "$NXU_REPO/contrib/ae-next/"
-chmod 0755 "$NXU_REPO/contrib/ae-next/ae-next" "$NXU_REPO/contrib/ae-next/install"
+mkdir -p "$NXU_HOME"
+NXU_V1="$(command grep -m1 '^AE_VERSION=' "$AE" | cut -d'"' -f2)"
+NXU_MAJ="${NXU_V1%%.*}"
+NXU_REST="${NXU_V1#*.}"
+NXU_MIN="${NXU_REST%%.*}"
+NXU_PAT="${NXU_REST#*.}"
+NXU_V2="${NXU_MAJ}.${NXU_MIN}.$((NXU_PAT + 1))"
+case "$(uname -s):$(uname -m)" in
+    Darwin:arm64) NXU_PLAT=darwin-arm64 ;;
+    Linux:x86_64) NXU_PLAT=linux-x86_64-musl ;;
+    *) NXU_PLAT=unknown ;;
+esac
+NXU_REAL_CORE=""
+if [[ -x "$NXU_SRC/target/debug/ae" ]]; then
+    NXU_REAL_CORE="$NXU_SRC/target/debug/ae"
+elif [[ -x "$NXU_SRC/target/release/ae" ]]; then
+    NXU_REAL_CORE="$NXU_SRC/target/release/ae"
+fi
+assert_eq "P5 upgrade: a real core binary is available" "1" \
+    "$([[ -x "$NXU_REAL_CORE" ]] && echo 1 || echo 0)"
 
-_nxu_repo_at() { # <version> — the real ae, wearing a version
-    sed "s/^AE_VERSION=.*/AE_VERSION=\"$1\"/" "$NXU_SRC/ae" >"$NXU_REPO/ae.tmp"
-    mv "$NXU_REPO/ae.tmp" "$NXU_REPO/ae"
-    chmod 0755 "$NXU_REPO/ae"
+_nxu_sha() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | awk 'NR == 1 { print $1; exit }'
+    else
+        shasum -a 256 "$1" | awk 'NR == 1 { print $1; exit }'
+    fi
 }
-_nxu_core_at() { # <version> <dest> — the real core, wearing a version
+_nxu_make_bundle() {
+    local version="$1" root dir digest
+    root="ae-${version}-${NXU_PLAT}"
+    dir="$NXU_ROOT/$root"
+    rm -rf "$dir"
+    mkdir -p "$dir"
+    cp "$NXU_SRC/ae-entry" "$dir/ae"
+    _sed_i -e "s/^_AE_ENTRY_VERSION=.*/_AE_ENTRY_VERSION=\"${version}\"/" "$dir/ae"
+    sed "s/^AE_VERSION=.*/AE_VERSION=\"${version}\"/" "$NXU_SRC/ae" >"$dir/ae-glue"
+    chmod 0755 "$dir/ae-glue"
     printf '%s\n' '#!/bin/sh' \
-        "case \"\$1\" in --version) echo \"ae $1\";; *) exec \"$NXU_SRC/target/debug/ae\" \"\$@\";; esac" >"$2"
-    chmod 0755 "$2"
+        "case \"\$1\" in --version) echo \"ae ${version}\";; *) exec \"$NXU_REAL_CORE\" \"\$@\";; esac" \
+        >"$dir/ae-core"
+    cp "$NXU_SRC/install" "$dir/install"
+    chmod 0755 "$dir/ae" "$dir/ae-glue" "$dir/ae-core" "$dir/install"
+    tar -czf "$NXU_ROOT/${root}.tar.gz" -C "$NXU_ROOT" "$root"
+    digest="$(_nxu_sha "$NXU_ROOT/${root}.tar.gz")"
+    printf '%s  %s.tar.gz\n' "$digest" "$root" >"$NXU_ROOT/${root}-SHA256SUMS"
 }
-_nxu_core_at 9.9.9 "$NXU_ROOT/core-v1"
-_nxu_core_at 9.9.10 "$NXU_ROOT/core-v2"
+_nxu_install() {
+    local version="$1"
+    _nxu_make_bundle "$version"
+    HOME="$NXU_HOME" AE_VERSION="$version" \
+        AE_BUNDLE="$NXU_ROOT/ae-${version}-${NXU_PLAT}.tar.gz" \
+        AE_SUMS="$NXU_ROOT/ae-${version}-${NXU_PLAT}-SHA256SUMS" \
+        "${BASH:-bash}" "$NXU_SRC/install" 2>&1
+}
 
-# ── v1: install, then a real session that pins it ───────────────────────────
-_nxu_repo_at 9.9.9
-AE_NEXT_HOME="$NXU_HOME/.ae-next" AE_NEXT_CORE_BIN="$NXU_ROOT/core-v1" \
-    "${BASH:-bash}" "$NXU_REPO/contrib/ae-next/install" >/dev/null 2>&1 || true
-NXU_NEXT="$NXU_HOME/.ae-next"
-assert_eq "ae-next upgrade: v1 is the published core" "$NXU_NEXT/core/9.9.9/ae" \
-    "$(cat "$NXU_NEXT/core/current" 2>/dev/null || true)"
+mkdir -p "$NXU_HOME/.ae"
+cat >"$NXU_HOME/.ae/config" <<'EOF'
+[telegram]
+enabled = false
+
+[agents]
+dummy = "bash"
+
+[workspace]
+main = dummy
+layout = vertical
+EOF
+
+# ── v1: install, then a real session that pins it ────────────────────────
+NXU_RC=0
+_nxu_install "$NXU_V1" >/dev/null || NXU_RC=$?
+assert_eq "P5 upgrade: v1 install succeeds" "0" "$NXU_RC"
+assert_eq "P5 upgrade: v1 is the published core" \
+    "$NXU_HOME/.ae/versions/$NXU_V1/ae-core" \
+    "$(cat "$NXU_HOME/.ae/core/current" 2>/dev/null || true)"
 
 NXU_GIT="$(setup_repo)"
-(cd "$NXU_GIT" && AE_NEXT_HOME="$NXU_NEXT" AE_NEXT_TMUX_SERVER=ae-next-up \
-    "$NXU_REPO/contrib/ae-next/ae-next" --local nxup1 >/dev/null 2>&1 &) 2>/dev/null
+(cd "$NXU_GIT" && HOME="$NXU_HOME" "$NXU_HOME/.local/bin/ae" --local nxup1 >/dev/null 2>&1 &) 2>/dev/null
 NXU_I=0
-while ! command tmux -L ae-next-up has-session -t nxup1 2>/dev/null; do
+NXU_META1="$NXU_HOME/.ae/sessions/nxup1"
+while [[ ! -f "$NXU_META1/meta" ]]; do
     sleep 0.5
     NXU_I=$((NXU_I + 1))
     if ((NXU_I >= 40)); then break; fi
 done
 sleep 2
-assert_eq "ae-next upgrade: the v1 session pinned v1" "$NXU_NEXT/core/9.9.9/ae" \
-    "$(command grep '^ae_core=' "$NXU_NEXT/sessions/nxup1/meta" 2>/dev/null | cut -d= -f2- || true)"
-assert_eq "ae-next upgrade: ...and recorded its version" "9.9.9" \
-    "$(command grep '^ae_core_version=' "$NXU_NEXT/sessions/nxup1/meta" 2>/dev/null | cut -d= -f2- || true)"
-# The OVERRIDE's isolation, asserted where the override is actually used: this
-# session was launched with AE_NEXT_TMUX_SERVER=ae-next-up, so it must be
-# invisible on the harness's own server — the stand-in here for "the installed
-# instance's server".
-assert_eq "ae-next upgrade: an overridden server keeps the session off the harness server" "0" \
-    "$(tmux has-session -t nxup1 2>/dev/null && echo 1 || echo 0)"
+assert_eq "P5 upgrade: the v1 session pinned v1 glue" "1" \
+    "$([[ "$(command grep '^ae_path=' "$NXU_META1/meta" 2>/dev/null | cut -d= -f2- || true)" -ef "$NXU_HOME/.ae/versions/$NXU_V1/ae-glue" ]] && echo 1 || echo 0)"
+assert_eq "P5 upgrade: the v1 session pinned v1 core" "1" \
+    "$([[ "$(command grep '^ae_core=' "$NXU_META1/meta" 2>/dev/null | cut -d= -f2- || true)" -ef "$NXU_HOME/.ae/versions/$NXU_V1/ae-core" ]] && echo 1 || echo 0)"
+assert_eq "P5 upgrade: ...and recorded its version" "$NXU_V1" \
+    "$(command grep '^ae_core_version=' "$NXU_META1/meta" 2>/dev/null | cut -d= -f2- || true)"
 
-# ── v2: install beside it ──────────────────────────────────────────────────
-_nxu_repo_at 9.9.10
-AE_NEXT_HOME="$NXU_NEXT" AE_NEXT_CORE_BIN="$NXU_ROOT/core-v2" \
-    "${BASH:-bash}" "$NXU_REPO/contrib/ae-next/install" >/dev/null 2>&1 || true
-assert_eq "ae-next upgrade: current now names v2" "$NXU_NEXT/core/9.9.10/ae" \
-    "$(cat "$NXU_NEXT/core/current" 2>/dev/null || true)"
-assert_eq "ae-next upgrade: the v1 leaf is still there" "1" \
-    "$([[ -x "$NXU_NEXT/core/9.9.9/ae" ]] && echo 1 || echo 0)"
-# THE RUG-PULL THAT MUST NOT HAPPEN: the live session's pin is untouched, and the
-# bytes behind it are the ones it bound to.
-assert_eq "ae-next upgrade: the live v1 session's pin did not move" "$NXU_NEXT/core/9.9.9/ae" \
-    "$(command grep '^ae_core=' "$NXU_NEXT/sessions/nxup1/meta" 2>/dev/null | cut -d= -f2- || true)"
-assert_eq "ae-next upgrade: ...and that binary still reports 9.9.9" "9.9.9" \
-    "$("$NXU_NEXT/core/9.9.9/ae" --version 2>/dev/null | awk '{print $NF}')"
+# ── v2: install beside it ────────────────────────────────────────────────
+NXU_RC=0
+_nxu_install "$NXU_V2" >/dev/null || NXU_RC=$?
+assert_eq "P5 upgrade: v2 install succeeds" "0" "$NXU_RC"
+assert_eq "P5 upgrade: current now names v2" \
+    "$NXU_HOME/.ae/versions/$NXU_V2" \
+    "$(readlink "$NXU_HOME/.ae/current" 2>/dev/null || true)"
+assert_eq "P5 upgrade: the v1 leaf is still there" "1" \
+    "$([[ -x "$NXU_HOME/.ae/versions/$NXU_V1/ae-core" ]] && echo 1 || echo 0)"
+assert_eq "P5 upgrade: the live v1 session's pin did not move" "1" \
+    "$([[ "$(command grep '^ae_core=' "$NXU_META1/meta" 2>/dev/null | cut -d= -f2- || true)" -ef "$NXU_HOME/.ae/versions/$NXU_V1/ae-core" ]] && echo 1 || echo 0)"
+assert_eq "P5 upgrade: ...and that binary still reports v1" "$NXU_V1" \
+    "$("$NXU_HOME/.ae/versions/$NXU_V1/ae-core" --version 2>/dev/null | awk '{print $NF}')"
 
-# ── A new session gets the new core ────────────────────────────────────────
-(cd "$NXU_GIT" && AE_NEXT_HOME="$NXU_NEXT" AE_NEXT_TMUX_SERVER=ae-next-up \
-    "$NXU_REPO/contrib/ae-next/ae-next" --local nxup2 >/dev/null 2>&1 &) 2>/dev/null
+# ── A new session gets the new core ──────────────────────────────────────
+(cd "$NXU_GIT" && HOME="$NXU_HOME" "$NXU_HOME/.local/bin/ae" --local nxup2 >/dev/null 2>&1 &) 2>/dev/null
 NXU_I=0
-while ! command tmux -L ae-next-up has-session -t nxup2 2>/dev/null; do
+NXU_META2="$NXU_HOME/.ae/sessions/nxup2"
+while [[ ! -f "$NXU_META2/meta" ]]; do
     sleep 0.5
     NXU_I=$((NXU_I + 1))
     if ((NXU_I >= 40)); then break; fi
 done
 sleep 2
-assert_eq "ae-next upgrade: a NEW session pins v2" "$NXU_NEXT/core/9.9.10/ae" \
-    "$(command grep '^ae_core=' "$NXU_NEXT/sessions/nxup2/meta" 2>/dev/null | cut -d= -f2- || true)"
-assert_eq "ae-next upgrade: ...while the older session still pins v1" "$NXU_NEXT/core/9.9.9/ae" \
-    "$(command grep '^ae_core=' "$NXU_NEXT/sessions/nxup1/meta" 2>/dev/null | cut -d= -f2- || true)"
+assert_eq "P5 upgrade: a NEW session pins v2 core" "1" \
+    "$([[ "$(command grep '^ae_core=' "$NXU_META2/meta" 2>/dev/null | cut -d= -f2- || true)" -ef "$NXU_HOME/.ae/versions/$NXU_V2/ae-core" ]] && echo 1 || echo 0)"
+assert_eq "P5 upgrade: ...while the older session still pins v1" "1" \
+    "$([[ "$(command grep '^ae_core=' "$NXU_META1/meta" 2>/dev/null | cut -d= -f2- || true)" -ef "$NXU_HOME/.ae/versions/$NXU_V1/ae-core" ]] && echo 1 || echo 0)"
 
-# ── Re-entry: the bridge restart resolves v2, with nothing in the environment ─
-# This is the case an exported AE_CORE_BIN would have got wrong. The watchdog
-# re-invokes `telegram _supervise` inside a long-lived tmux server whose
-# environment was captured at LAUNCH; if the core path lived there, a restart
-# after an upgrade would revive the OLD core forever. It is read from
-# core/current instead, so the spawn's argv names v2 — asserted by capturing the
-# argv the spawn hands tmux, which is the same code path `_supervise` reaches.
-NXU_FNS="$NXU_ROOT/fns.sh"
-{
-    awk '/^parse_config\(\) \{/,/^\}$/' "$AE"
-    awk '/^get_config\(\) \{/,/^\}$/' "$AE"
-    awk '/^_telegram_expand_path\(\) \{/,/^\}$/' "$AE"
-    awk '/^_ae_core_current_input\(\) \{/,/^\}$/' "$AE"
-    awk '/^_ae_core_bin_input\(\) \{/,/^\}$/' "$AE"
-    awk '/^_ae_core_bin_version\(\) \{/,/^\}$/' "$AE"
-    awk '/^_tmux_err_is_clean_dead\(\) \{/,/^\}$/' "$AE"
-    awk '/^daemon_session_running\(\) \{/,/^\}$/' "$AE"
-    awk '/^_telegram_coexistence_token\(\) \{/,/^\}$/' "$AE"
-    awk '/^_telegram_coexistence_probe\(\) \{/,/^\}$/' "$AE"
-    awk '/^_telegram_coexistence_same_bot\(\) \{/,/^\}$/' "$AE"
-    awk '/^_telegram_coexistence_guard\(\) \{/,/^\}$/' "$AE"
-    awk '/^_telegram_spawn_daemon\(\) \{/,/^\}$/' "$AE"
-} >"$NXU_FNS"
-# A PASSTHROUGH fake tmux on PATH so the ownership guard's probe of the default
-# server answers "absent" deterministically — the guard is active here (this is a
-# named-server instance) and its production probe deliberately escapes every
-# shell-level shim.
-mkdir -p "$NXU_ROOT/bin"
-NXU_REAL_TMUX="$(command -v tmux)"
-cat >"$NXU_ROOT/bin/tmux" <<NXUFAKE
-#!/bin/sh
-case "\$*" in
-    "-L default list-sessions"*)
-        echo "no server running on /tmp/tmux-501/default" >&2
-        exit 1
-        ;;
-esac
-exec "$NXU_REAL_TMUX" "\$@"
-NXUFAKE
-chmod 0755 "$NXU_ROOT/bin/tmux"
-cat >"$NXU_ROOT/restart" <<NXURESTART
-#!/usr/bin/env bash
-set -uo pipefail
-CONFIG_DIR="$NXU_NEXT"
-CONFIG_FILE="$NXU_NEXT/config"
-AE_LOCAL_CONFIG=""
-_TELEGRAM_TMUX_SESSION="ae-telegram"
-tmux() {
-    if [[ "\$1" == new-session ]]; then
-        shift 6
-        printf '%s\n' "\$@" >"$NXU_ROOT/spawn-argv"
-    fi
-    return 0
-}
-source "$NXU_FNS"
-_telegram_spawn_daemon
-NXURESTART
-rm -f "$NXU_ROOT/spawn-argv"
-# NOTHING in the environment names a core: no AE_CORE_BIN, and the config carries
-# no workspace.core. core/current is the only source there is.
-PATH="$NXU_ROOT/bin:$PATH" AE_TMUX_SERVER=ae-next-up HOME="$NXU_HOME" \
-    "${BASH:-bash}" "$NXU_ROOT/restart" >/dev/null 2>&1 || true
-assert_eq "ae-next re-entry: a bridge restart spawns the UPGRADED core" "$NXU_NEXT/core/9.9.10/ae" \
-    "$(head -1 "$NXU_ROOT/spawn-argv" 2>/dev/null || true)"
-assert_contains "ae-next re-entry: ...pointed at the next home" "$NXU_NEXT" \
-    "$(cat "$NXU_ROOT/spawn-argv" 2>/dev/null || true)"
-
-# ── Re-entry: compact's child binds a version, and never an empty one ───────
-# compact HARD-REQUIRES a core: an unbound one does not degrade there, it stops.
-# Its child launch re-resolves exactly like the bridge restart above, so the
-# thing to prove is that the resolver answers with the intended version when the
-# environment is empty — an empty answer is what would kill a compact child after
-# its source is already archived and gone.
+# ── Re-entry: core/current (and sibling) with empty AE_CORE_BIN ──────────
+# Generated helpers exec recorded versions/<V>/ae-glue; A18 sibling-first
+# means the OLD glue still binds the OLD core after current flips.
 eval "$(awk '/^(_ae_core_current_input|_ae_core_bin_input|get_config|parse_config)\(\) \{/,/^\}$/' "$AE")"
-assert_eq "ae-next re-entry: a child launch resolves the upgraded core" "$NXU_NEXT/core/9.9.10/ae" \
-    "$(AE_CORE_BIN='' AE_LOCAL_CONFIG='' CONFIG_FILE="$NXU_NEXT/config" CONFIG_DIR="$NXU_NEXT" _ae_core_bin_input)"
-assert_eq "ae-next re-entry: ...and never an empty one" "0" \
-    "$(AE_CORE_BIN='' AE_LOCAL_CONFIG='' CONFIG_FILE="$NXU_NEXT/config" CONFIG_DIR="$NXU_NEXT" _ae_core_bin_input | command grep -c '^$' || true)"
+assert_eq "P5 re-entry: core/current names the upgraded core" \
+    "$NXU_HOME/.ae/versions/$NXU_V2/ae-core" \
+    "$(cat "$NXU_HOME/.ae/core/current")"
+assert_eq "P5 re-entry: empty env through core/current resolves v2" "1" \
+    "$([[ "$(AE_CORE_BIN='' AE_LOCAL_CONFIG='' CONFIG_FILE="$NXU_HOME/.ae/config" CONFIG_DIR="$NXU_HOME/.ae" _ae_core_bin_input)" -ef "$NXU_HOME/.ae/versions/$NXU_V2/ae-core" ]] && echo 1 || echo 0)"
+assert_eq "P5 re-entry: ...and never an empty one" "0" \
+    "$(AE_CORE_BIN='' AE_LOCAL_CONFIG='' CONFIG_FILE="$NXU_HOME/.ae/config" CONFIG_DIR="$NXU_HOME/.ae" _ae_core_bin_input | command grep -c '^$' || true)"
 unset -f _ae_core_current_input _ae_core_bin_input get_config parse_config
 
-command tmux -L ae-next-up kill-server 2>/dev/null || true
-chmod -R u+w "$NXU_NEXT" 2>/dev/null || true
-unset -f _nxu_repo_at _nxu_core_at
-unset NXU_SRC NXU_ROOT NXU_REPO NXU_HOME NXU_NEXT NXU_GIT NXU_I NXU_FNS NXU_REAL_TMUX
+HOME="$NXU_HOME" "$NXU_HOME/.local/bin/ae" end -f nxup1 >/dev/null 2>&1 || true
+HOME="$NXU_HOME" "$NXU_HOME/.local/bin/ae" end -f nxup2 >/dev/null 2>&1 || true
+chmod -R u+w "$NXU_ROOT" 2>/dev/null || true
+unset -f _nxu_sha _nxu_make_bundle _nxu_install
+unset NXU_SRC NXU_ROOT NXU_HOME NXU_V1 NXU_V2 NXU_MAJ NXU_REST NXU_MIN NXU_PAT \
+    NXU_PLAT NXU_REAL_CORE NXU_RC NXU_GIT NXU_I NXU_META1 NXU_META2
 fi
 
 # ── Results ──────────────────────────────────────────────────────────

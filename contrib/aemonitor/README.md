@@ -1,8 +1,8 @@
 # aemonitor — meta-agent state/dedup helper
 
-**Optional contrib tooling. NOT part of core `ae`, NOT auto-installed.** Core ae
-stays a single jq-free bash script; this is a separate consumer of
-`ae list --json` for the [orchestrator meta-agent](../../docs/) (Layer 3).
+**Optional contrib tooling. NOT part of core `ae`, NOT auto-installed.** Core ae is
+one public wrapper, Rust state core, and Bash pane glue; this remains a separate
+consumer of `ae list --json` for the [orchestrator meta-agent](../../docs/) (Layer 3).
 
 `ae` itself never depends on this. `ae list`, `ae next`, session start, the watchdog,
 and the telegram bridge all work whether or not `aemonitor` exists.

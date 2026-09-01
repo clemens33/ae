@@ -37,6 +37,9 @@ jobs:
           want="ae $version"
           got="$($bin --version)"
           [ "$got" = "$want" ] || { echo "::error::--version printed '$got', want '$want'"; exit 1; }
+          wrapper_version="$(grep -m1 '^_AE_ENTRY_VERSION=' ae-entry | cut -d'"' -f2)"
+          [ -n "$wrapper_version" ] || { echo "::error::ae-entry _AE_ENTRY_VERSION is empty"; exit 1; }
+          [ "$wrapper_version" = "$version" ] || { echo "::error::ae-entry _AE_ENTRY_VERSION is '$wrapper_version', want '$version'"; exit 1; }
           glue_version="$(grep -m1 '^AE_VERSION=' ae | cut -d'"' -f2)"
           [ -n "$glue_version" ] || { echo "::error::ae AE_VERSION is empty"; exit 1; }
           [ "$glue_version" = "$version" ] || { echo "::error::ae AE_VERSION is '$glue_version', want '$version'"; exit 1; }
@@ -61,20 +64,21 @@ jobs:
           [ "$invalid_code" -eq 1 ] || { echo "::error::.invalid probe exited $invalid_code, want 1"; exit 1; }
           "$bin" _net-probe api.telegram.org >/dev/null
 
-          root="ae-next-$version-linux-x86_64-musl"
+          root="ae-$version-linux-x86_64-musl"
           mkdir "$root"
           cp "$bin" "$root/ae-core"
-          cp ae "$root/ae"
-          cp contrib/ae-next/ae-next "$root/ae-next"
-          cp contrib/ae-next/install-remote "$root/install-remote"
-          chmod 0555 "$root" "$root/ae-core" "$root/ae" "$root/ae-next" "$root/install-remote"
+          cp ae-entry "$root/ae"
+          cp ae "$root/ae-glue"
+          cmp ae "$root/ae-glue"
+          cp install "$root/install"
+          chmod 0555 "$root" "$root/ae" "$root/ae-core" "$root/ae-glue" "$root/install"
           tar -czf "$root.tar.gz" "$root"
 
       - name: Upload Linux bundle
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ae-next-linux-x86_64-musl
-          path: ae-next-*.tar.gz
+          name: ae-linux-x86_64-musl
+          path: ae-*.tar.gz
           if-no-files-found: error
           retention-days: 7
 
@@ -97,25 +101,29 @@ jobs:
           want="ae $version"
           got="$($bin --version)"
           [ "$got" = "$want" ] || { echo "::error::--version printed '$got', want '$want'"; exit 1; }
+          wrapper_version="$(grep -m1 '^_AE_ENTRY_VERSION=' ae-entry | cut -d'"' -f2)"
+          [ -n "$wrapper_version" ] || { echo "::error::ae-entry _AE_ENTRY_VERSION is empty"; exit 1; }
+          [ "$wrapper_version" = "$version" ] || { echo "::error::ae-entry _AE_ENTRY_VERSION is '$wrapper_version', want '$version'"; exit 1; }
           glue_version="$(grep -m1 '^AE_VERSION=' ae | cut -d'"' -f2)"
           [ -n "$glue_version" ] || { echo "::error::ae AE_VERSION is empty"; exit 1; }
           [ "$glue_version" = "$version" ] || { echo "::error::ae AE_VERSION is '$glue_version', want '$version'"; exit 1; }
           "$bin" _net-probe localhost >/dev/null
 
-          root="ae-next-$version-darwin-arm64"
+          root="ae-$version-darwin-arm64"
           mkdir "$root"
           cp "$bin" "$root/ae-core"
-          cp ae "$root/ae"
-          cp contrib/ae-next/ae-next "$root/ae-next"
-          cp contrib/ae-next/install-remote "$root/install-remote"
-          chmod 0555 "$root" "$root/ae-core" "$root/ae" "$root/ae-next" "$root/install-remote"
+          cp ae-entry "$root/ae"
+          cp ae "$root/ae-glue"
+          cmp ae "$root/ae-glue"
+          cp install "$root/install"
+          chmod 0555 "$root" "$root/ae" "$root/ae-core" "$root/ae-glue" "$root/install"
           tar -czf "$root.tar.gz" "$root"
 
       - name: Upload macOS bundle
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ae-next-darwin-arm64
-          path: ae-next-*.tar.gz
+          name: ae-darwin-arm64
+          path: ae-*.tar.gz
           if-no-files-found: error
           retention-days: 7
 
@@ -129,13 +137,13 @@ jobs:
       - name: Download Linux bundle
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: ae-next-linux-x86_64-musl
+          name: ae-linux-x86_64-musl
           path: release-assets
 
       - name: Download macOS bundle
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: ae-next-darwin-arm64
+          name: ae-darwin-arm64
           path: release-assets
 
       - name: Generate checksums and attach release assets
@@ -144,13 +152,13 @@ jobs:
         run: |
           set -euo pipefail
           version="${GITHUB_REF_NAME#v}"
-          linux="$(find release-assets -name "ae-next-$version-linux-x86_64-musl.tar.gz" -type f -print -quit)"
-          darwin="$(find release-assets -name "ae-next-$version-darwin-arm64.tar.gz" -type f -print -quit)"
+          linux="$(find release-assets -name "ae-$version-linux-x86_64-musl.tar.gz" -type f -print -quit)"
+          darwin="$(find release-assets -name "ae-$version-darwin-arm64.tar.gz" -type f -print -quit)"
           [ -n "$linux" ] || { echo "::error::Linux bundle is missing"; exit 1; }
           [ -n "$darwin" ] || { echo "::error::macOS bundle is missing"; exit 1; }
           mkdir -p publish
           cp "$linux" "$darwin" publish/
-          (cd publish && sha256sum -- ae-next-*.tar.gz > SHA256SUMS)
+          (cd publish && sha256sum -- ae-*.tar.gz > SHA256SUMS)
           # A retry may reach this job after the release object exists. Upload
           # the freshly generated assets in that case; the first run creates it.
           if gh release view "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
@@ -158,6 +166,6 @@ jobs:
           else
             gh release create "$GITHUB_REF_NAME" publish/* \
               -R "$GITHUB_REPOSITORY" \
-              --title "ae-next $version" \
+              --title "ae $version" \
               --generate-notes
           fi

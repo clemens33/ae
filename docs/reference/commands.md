@@ -6,6 +6,7 @@ ae [name] use <alias>  Start session with a specific agent as main
 ae list [--all|--stopped|--needs-attn]
                        List sessions (running by default; --all adds stopped
                        history, --needs-attn only those needing attention)
+ae upgrade             Install the latest tagged immutable release; no extra arguments
 ae status [name]       Show agent output without attaching
 ae next [--attach]     Name the top running session needing attention (read-only;
                        alias: ae jump). --attach jumps to it. Non-zero when none.
@@ -68,12 +69,11 @@ session's agents, by severity:
 | `attn:waiting-user` | an agent declared it's waiting on you |
 | `attn:blocked` | an agent declared it's blocked on an external dep |
 | `attn:throttled` | an agent is being rate-limited upstream |
-| `attn:unanswered` | an inter-agent `ask`/`review` went unanswered past the threshold (`AE_ATTN_REQUEST_SECS`, default 30 min) |
+| `attn:unanswered` | an inter-agent `ask`/`review` went unanswered past the fixed 1800-second (30-minute) threshold |
 
 (`dead`/`stale`/`throttled` reuse the watchdog's own alert events;
 `waiting-user`/`blocked` are self-declared; `unanswered` flags an `ask`/`review`
-whose target never replied within `AE_ATTN_REQUEST_SECS` (default 30 min) — the
-lowest-severity reason.)
+whose target never replied within 1800 seconds (30 minutes) — the lowest-severity reason.)
 
 By default it shows **running sessions only** — stopped sessions are usually the
 bulk of the list and just noise for monitoring. Flags:
@@ -84,8 +84,12 @@ bulk of the list and just noise for monitoring. Flags:
 | `--all` | running sessions, then stopped ones |
 | `--stopped` | stopped sessions only |
 | `--needs-attn` | only running sessions with an `attn:` reason; aliases: `--needs-me`, `--needs`, `--attn` |
-| `--active` | only running sessions with recent activity (an ae event within ~5 min; `AE_LIST_ACTIVE_SECS` to tune); alias: `--busy` |
+| `--active` | only running sessions with recent activity (an ae event within the fixed 300 seconds / 5 minutes); alias: `--busy` |
 | `--json` | machine-readable digest (honours the filters above) |
+
+At P5, `AE_LIST_ACTIVE_SECS` and `AE_ATTN_REQUEST_SECS` are retired: the core owns
+`list` with fixed 300-second activity and 1800-second unanswered defaults; restoring
+operator overrides is a recorded follow-up.
 
 For a live dashboard, wrap it with `watch`:
 
@@ -96,8 +100,8 @@ watch -n 10 'ae list --needs-attn' # only what needs your attention
 
 ### `--json` digest
 
-`ae list --json` emits a single JSON object — a snapshot for a monitoring
-script or agent. Pure bash output; no `jq` required to produce it. The filters
+`ae list --json` emits a single JSON object — Rust-core output for a monitoring
+script or agent; no `jq` is required to produce it. The filters
 (`--running`/`--all`/`--stopped`/`--needs-attn`) decide which sessions appear.
 
 ```json
@@ -130,6 +134,27 @@ fallback) — together with `name`, `origin` and `mode` they give a consumer
 `schema_version` lets consumers gate on shape. `attention_rank` is the numeric
 severity (`dead` 6 → `unanswered` 1); richer per-agent timing fields are a
 planned addition.
+
+## `ae upgrade`
+
+`ae upgrade` has no arguments: any extra argument is a usage error (exit 2).
+To request a specific release, set a CalVer pin in the environment:
+
+```bash
+AE_VERSION=2026.8.2 ae upgrade
+```
+
+The public wrapper dispatches this repair path before its wrapper/core/glue
+triple gate, so a broken installed generation can still repair itself. Its
+immutable sibling installer downloads the selected release, verifies its
+checksum before extraction, and atomically publishes the matched immutable
+version and current selectors.
+
+Stopped session directories are untouched and consume the current version on
+their next resume. Running sessions are reported by name as deferred until
+stop and resume; upgrade never hot-rewrites loaded helpers or daemon bodies.
+Remote download activates with the first Rust-era release tag; before then,
+use the checkout install path.
 
 ## `ae status [name]`
 
@@ -167,7 +192,11 @@ $ ae next --attach
 
 Pre-flight + post-upgrade self-test. Walks a fixed checklist of `OK / WARN / FAIL` items: bash/tmux/git presence, config file, agent executables, sessions directory, and so on. Returns non-zero if anything failed.
 
-With `--refresh`, also regenerates every session helper from the currently-installed ae binary. Run after `git pull`:
+An upgrade needs no helper refresh: stop/resume is the generation-migration
+boundary, while running watchdogs retain their loaded body until stopped and
+restarted. `doctor --refresh` is an explicit repair/development mutation; do
+not run it unscoped while sessions are running. After `git pull`, run `just
+install` (checkout mode), or use tagged `ae upgrade`:
 
 ```bash
 ae doctor --refresh         # all sessions
@@ -335,8 +364,9 @@ from a script running inside the session).
 
 ### Stopping every session (`ae stop all`)
 
-`ae stop all` stops every session **ae's own metadata owns** — not whatever happens to be
-running on the ambient tmux server, which `AE_TMUX_SERVER` can redirect.
+`ae stop all` stops every session **ae's own metadata owns**, using each
+session's recorded tmux server metadata. The public wrapper ignores ambient
+`AE_TMUX_SERVER` for operational commands.
 
 The loop always runs *outside* the calling process, whether or not the caller is one of
 the targets:

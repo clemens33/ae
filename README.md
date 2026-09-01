@@ -1,16 +1,18 @@
 # ae - agentic engineering
 
-[![Release](https://img.shields.io/badge/release-0.2.1-blue.svg)](https://github.com/clemens33/ae/releases)
+![Version: 2026.8.2 untagged/pre-release](https://img.shields.io/badge/version-2026.8.2%20untagged%2Fpre--release-blue.svg)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Bash](https://img.shields.io/badge/bash-%3E%3D4.0-green.svg)](https://www.gnu.org/software/bash/)
 [![tmux](https://img.shields.io/badge/requires-tmux-1BB91F.svg)](https://github.com/tmux/tmux)
-[![Install](https://img.shields.io/badge/install-curl%20%7C%20bash-orange.svg)](#install)
+[![Install](https://img.shields.io/badge/install-checkout%20install-orange.svg)](#install)
 
-**ae** runs AI coding agents side-by-side in tmux. They know about each other, communicate by name, and survive reboots. One bash script, zero dependencies.
+**ae** runs AI coding agents side-by-side in tmux. They know about each other, communicate by name, and survive reboots. One public command, a Rust core, and only the pane glue left in Bash.
 
 Works with [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex](https://github.com/openai/codex), [Gemini CLI](https://github.com/google-gemini/gemini-cli), [Grok Build](https://github.com/xai-org/grok-build), [OpenCode](https://github.com/opencode-ai/opencode), or any CLI tool.
 
-> 🦀 **Rewrite in progress** — on branch `rust-rewrite` ([epic #79](https://github.com/clemens33/ae/issues/79)), bash `ae` is **frozen at `72c7293`** and shrinks to tmux/pane glue, while the state core, lifecycle and daemons move into a single Rust binary. The install stays one file. Everything in this README describes shipped bash behavior and holds until each domain flips. Direction, reasons and phases: **[VISION.md](VISION.md)**.
+> 🦀 **P5 entered 2026-08-31; `main` carries the post-strangler product.** The public `ae` command validates and invokes an immutable Rust core plus policy-frozen, shrinking Bash pane glue with the P5 sibling-binding routing fix. The previous `ae-next` coexistence surface is unreachable via the public entry; its design record remains [historical](docs/migration/coexistence.md). Direction, reasons and phases: **[VISION.md](VISION.md)**.
+
+> The first Rust-era release tag is pending; the version badge flips when that tag exists.
 
 > 📖 **[Full documentation](docs/index.md)** — guides, command and helper reference, and internals. This README is the quick tour.
 
@@ -23,34 +25,33 @@ Works with [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex
 - **Tiered delegation** -- leads run the strongest model; bounded chores go to cheap spawned workers in their own tmux windows, reviewed and retired. Convention, not machinery ([docs](docs/reference/delegation.md)).
 - **A status bar that answers "who needs me"** -- inside its sessions ae owns the tmux footer: session, git branch, and watchdog health on line one; the focused agent plus a whole-org roster showing the watchdog's verdict per agent (`lead● colead✔ builder◌ grok⚡`) on line two. Verdicts, never claims.
 - **A chief of staff on your phone** -- the optional orchestrator session watches your whole fleet and reports over Telegram; tell it your objective and it helps you hold it.
-- **Single bash script** -- no frameworks, no runtimes, no abstractions. Just bash, tmux, and git. Optional companions live in `contrib/` and are never required.
+- **Small public surface** -- one command, a versioned core, and Bash only where tmux-pane glue is the right tool. Optional companions live in `contrib/` and are never required.
 
 ## Install
+
+**Checkout install is the active path until the first Rust-era release tag and bundle exist:**
+
+```bash
+git clone https://github.com/clemens33/ae.git ~/.local/share/ae
+cd ~/.local/share/ae
+just install
+```
+
+Checkout prerequisites: [rustup](https://rustup.rs/) and [just](https://github.com/casey/just) installed; then run `just rust-setup` once to provision the pinned toolchain.
+
+This installs the immutable versioned artifact and points `~/.local/bin/ae` at its public wrapper. Make sure `~/.local/bin` is on your `PATH`, then run `ae doctor`.
+
+### Release installer — activates with the first release tag
+
+The eventual one-line installer is shown here for its final interface, but it is **unusable before the first Rust-era release tag and bundle exist**. It activates with that tag.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/clemens33/ae/main/install | bash
 ```
 
-Or clone manually:
-
-```bash
-git clone https://github.com/clemens33/ae.git ~/.local/share/ae
-~/.local/share/ae/install
-```
-
-Both methods symlink `ae` to `~/.local/bin/ae`. Make sure `~/.local/bin` is on your `PATH`, then run `ae doctor` to check your environment.
-
-### Install the prebuilt ae-next rewrite
-
-The rewrite is distributed as a verified prebuilt pair beside the frozen `ae`:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/clemens33/ae/rust-rewrite/contrib/ae-next/install-remote | bash
-```
-
 The installer downloads the platform bundle and `SHA256SUMS` to temporary files,
 verifies the bundle before extraction, then atomically publishes an immutable
-versioned install under `~/.ae-next`. Set `AE_VERSION=2026.8.1` to pin a release.
+versioned install under `~/.ae/versions`. Set `AE_VERSION=2026.8.2` to pin a release.
 
 | Platform | Bundle | Status |
 |---|---|---|
@@ -187,9 +188,9 @@ Each agent gets workspace context injected into its system prompt (Claude Code's
 
 No custom protocols, no frameworks. Just system prompts and bash scripts agents already know how to use.
 
-## Still one bash script
+## One public command, typed core
 
-The core contract has not moved: `ae` is a single bash script whose only hard dependencies are **bash >= 4.0, tmux, and git**. Your repos stay untouched -- session state lives in `~/.ae/sessions/`, and `--copy`/`--worktree` give agents isolated workspaces when you want them.
+`ae` is a small public wrapper over a versioned Rust core and policy-frozen, shrinking Bash pane glue with the P5 sibling-binding routing fix. Your repos stay untouched -- session state lives in `~/.ae/sessions/`, and `--copy`/`--worktree` give agents isolated workspaces when you want them.
 
 Everything else is **optional**, never required for core commands:
 
@@ -199,22 +200,29 @@ Everything else is **optional**, never required for core commands:
 | `ae orchestrator` ([contrib/aeorchestrator](contrib/aeorchestrator)) | the fleet's chief of staff: monitors every session, relays and reports, guards an objective once you set one | an agent CLI |
 | [contrib/aemonitor](contrib/aemonitor) | deterministic sweep helper the orchestrator uses | Python 3 stdlib |
 
-The long-running daemon half (watchdog, bridge) is where bash hurts most, so it is being carved into the typed Rust core -- per the revisit triggers in [AGENTS.md](AGENTS.md). The Telegram bridge is the first daemon fully in the core: it *is* the ae core binary, run in a background tmux session, with no `jq`/`curl` dependency. (An earlier stdlib-only Python sidecar, [contrib/aewatch](contrib/aewatch), prototyped this carve-out under byte-exact parity testing; it is retired now that the core owns the bridge.) The tmux-glue half, where bash is best-in-class, stays bash. Companions start automatically once you opt in; `AE_NO_AUTOSTART=1` skips.
+Daemons are Rust-owned: the watchdog helper starts core `_watchdog-run`, and Telegram starts core `_telegram-run`, with no `jq`/`curl` dependency. Bash keeps their start/stop/tick pane glue; its old watchdog loop remains only as an unreachable legacy-anchor rollback path. (An earlier stdlib-only Python sidecar, [contrib/aewatch](contrib/aewatch), prototyped the carve-out under byte-exact parity testing; it is retired now that the core owns the bridge.) Autostart controls are per component: set `watchdog = false` in workspace config to disable the workspace watchdog; set `enabled = false` in Telegram config to disable Telegram; set `AE_NO_AUTOSTART=1` to disable orchestrator autostart only.
 
-Trying the rewrite is not supposed to cost you the ae you work with, so it installs as a
-**second command**: `just next-install` puts `ae-next` beside `ae`, with its own state home
-(`~/.ae-next`), its own tmux server and its own immutable copy of the core. Nothing under
-`~/.ae` or at `~/.local/bin/ae` changes, and rollback is deleting the three things it made.
-For a clean machine, use the [prebuilt one-line installer](#install-the-prebuilt-ae-next-rewrite);
-`just next-install` remains the checkout-local development install. See
-[docs/migration/coexistence.md](docs/migration/coexistence.md); it retires at the entry flip.
+The P5 entry flip makes the `ae-next` coexistence surface unreachable via the public entry;
+the residual glue block is scheduled for its own retirement slice. A public entry cannot reach
+coreless Bash mode: it validates the matched wrapper, core, and glue before execution. The
+historical coexistence record is retained for migration evidence, not as an install path. See
+**[VISION.md](VISION.md)**.
 
-That carve-out is now the whole plan: this bash script is **frozen at `72c7293`** and the typed core takes over domain by domain on `rust-rewrite`. What carries over unchanged is the part you depend on — one file to install, no runtime, no repo pollution, `~/.ae/` as the only state. What goes away is bash as the implementation. See **[VISION.md](VISION.md)**.
+### Upgrade
+
+```bash
+ae upgrade
+```
+
+`ae upgrade` installs the latest release (or an `AE_VERSION` pin) through its immutable sibling installer, verifies the checksum before extraction, and atomically repoints the public wrapper and `core/current`. A stopped session consumes the current version on its next resume. A running session is reported by name and stays pinned until it is stopped and resumed; upgrades never hot-rewrite running sessions.
+
+`ae upgrade` exists now for repair and local fixture use; remote latest releases and `AE_VERSION` pins activate only after the first Rust-era tag. Until then, update the checkout and rerun `just install`.
 
 ## Requirements
 
 - **bash >= 4.0** (macOS ships 3.2 — `brew install bash` and put brew's bin dir ahead of `/bin` on `PATH`)
 - [tmux](https://github.com/tmux/tmux) and [git](https://git-scm.com/)
+- [just](https://github.com/casey/just) for the active checkout install (`just install`)
 - At least one AI coding agent CLI (see *Works with*, above)
 
 Linux (GNU userland) and macOS (BSD userland) are both first-class: ae routes
@@ -244,7 +252,7 @@ just test             # unit + integration tests
 just release          # check → test → CalVer bump → changelog → tag → gh release
 ```
 
-The Rust lanes live beside them on `rust-rewrite`, prefixed `rust-` and touching nothing the bash recipes own. Prerequisites are honest: [rustup](https://rustup.rs) and just, nothing else.
+The Rust lanes live beside them on `main`, prefixed `rust-` and touching nothing the Bash recipes own. Prerequisites are honest: [rustup](https://rustup.rs) and just, nothing else.
 
 ```bash
 just rust-setup       # pinned toolchain + dev tools (idempotent; installs nothing on a second run)
@@ -253,7 +261,7 @@ just rust-deny        # supply chain: advisories, licenses, bans, sources
 just rust-mutants     # do the tests discriminate, or do they merely pass?
 ```
 
-Conventions, test layout, and the release pipeline: **[docs/development.md](docs/development.md)**. The Rust toolchain contract — exact pins, lint policy, the no-`unwrap` rule — is in **[AGENTS.md](AGENTS.md#rust-era-rust-rewrite-branch)**.
+Conventions, test layout, and the release pipeline: **[docs/development.md](docs/development.md)**. The Rust toolchain contract — exact pins, lint policy, the no-`unwrap` rule — is in **[AGENTS.md](AGENTS.md#rust-era-main)**.
 
 ## License
 

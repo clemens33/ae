@@ -1,6 +1,8 @@
 # Watchdog
 
-The watchdog is a per-session monitor that lives inside the hidden `ae-monitor` tmux window. It walks every registered agent pane on a fixed cycle, classifies each agent's state, and reacts: nudges idle agents, alerts on dead ones, pauses nudging when upstream rate limits are visible, and respects explicit completion signals.
+The watchdog is a per-session monitor that lives inside the hidden `ae-monitor` tmux window. Its live loop is the Rust core's `_watchdog-run`, launched by the generated watchdog helper (the `ae` helper region around `ae:16204-16254`). It walks every registered agent pane on a fixed cycle, classifies each agent's state, and reacts: nudges idle agents, alerts on dead ones, pauses nudging when upstream rate limits are visible, and respects explicit completion signals.
+
+Bash is process start/stop/tick glue only: it starts and stops the core child, refreshes the git-branch display, and runs the deferred pending-session-id recovery and Telegram-supervision ticks. The old Bash loop remains only as a rollback path when no usable core is pinned; it is not part of the P5 live path.
 
 ## Lifecycle
 
@@ -9,20 +11,37 @@ The watchdog is a per-session monitor that lives inside the hidden `ae-monitor` 
 - **Persists across resume.** The state is recorded in session meta.
 - **Self-terminates** if the tmux session or `meta` file disappears.
 
-The watchdog runs as a `bash` subprocess pinned to a single tmux pane named `_watchdog`.
+The `_watchdog` pane hosts the Rust core process through the generated helper. The Bash wrapper around it owns lifecycle and glue duties only; `_watchdog-run` owns the live cycle and its decisions.
 
-## Implementations: bash (the one watchdog) — and aewatch, retired
+## Implementations: Rust core (live), Bash glue, and archived alternatives
+
+The live implementation is the Rust core. `_watchdog-run` owns the fixed cycle,
+all liveness/stale/throttle/quiet decisions, and their effects. The surrounding
+Bash wrapper is live only for process start/stop and the narrow tick glue listed
+above. The old Bash loop is rollback-only; it is retained for a session whose
+pinned core is unavailable, not selected as a second live implementation.
+
+| Component | Runtime | Ownership |
+|---|---|---|
+| Rust core watchdog (live) | `_watchdog-run` child in the session's `_watchdog` pane | Per-cycle observation, state-machine decisions, nudges, alerts, and status publication |
+| Bash wrapper/glue (live) | Generated helper wrapper around the core child | Process start/stop, git-branch refresh, pending tool-session-id recovery, and Telegram-supervision ticks |
+
+### Archived implementations: Bash loop and aewatch (P4.3 history; not active)
+
+> **ARCHIVAL / ROLLBACK ONLY.** The following comparison and history record the
+> former Bash/aewatch arrangement. The Bash loop is retained only as the
+> rollback path described above; aewatch is retired and is not selectable.
 
 > **RETIRED at P4.3 (2026-08-29).** The aewatch sidecar is no longer selectable:
 > `AE_WATCHDOG_IMPL=uv` selects nothing, and the **bash per-session watchdog
-> described on this page is the one watchdog**. Its Telegram-bridge half is
+> described below was the one watchdog**. Its Telegram-bridge half was
 > superseded by the Rust core, which is now the single bridge. The rest of this
 > section is kept as archival design history — read it as what the two-backend
 > arrangement WAS, not as a choice available today.
 
-Two implementations reproduced the same watchdog behavior. The **bash watchdog** described on this page is the live one and needs nothing beyond `bash` + `tmux`. The **aewatch sidecar** was an optional Python reproduction of the watchdog *and* the [Telegram bridge](../reference/telegram.md), once enabled per shell with `AE_WATCHDOG_IMPL=uv`.
+Two implementations reproduced the same watchdog behavior. The **archived Bash watchdog** described in this comparison was active then and needed nothing beyond `bash` + `tmux`. The **aewatch sidecar** was an optional Python reproduction of the watchdog *and* the [Telegram bridge](../reference/telegram.md), once enabled per shell with `AE_WATCHDOG_IMPL=uv`.
 
-| | bash watchdog (live) | aewatch sidecar (retired; `AE_WATCHDOG_IMPL=uv` selects nothing) |
+| | archived Bash watchdog (rollback-only) | aewatch sidecar (retired; `AE_WATCHDOG_IMPL=uv` selects nothing) |
 |---|---|---|
 | Runtime | a `bash` subprocess in each session's `_watchdog` pane | one `uv` / PEP 723 Python process (`contrib/aewatch/aewatch`, stdlib-only) |
 | Scope | per session | one daemon per `AE_HOME`, sweeping every discovered session |
@@ -37,7 +56,9 @@ Two implementations reproduced the same watchdog behavior. The **bash watchdog**
 
 **There is no longer a bridge fallback, because there is no longer a second bridge.** This is the paragraph P4.3 invalidated: aewatch used to own the Telegram bridge while it held the `bridge-owner` marker with a fresh heartbeat (age ≤ 90s), and a dead daemon let the next bash `telegram _supervise` revive the bash bridge. **The Rust core is now the bridge** — one implementation, no marker, no handoff, nothing to fall back to or from. See [the bridge protocol](bridge-protocol.md), whose two-owner section is likewise archival.
 
-The rest of this page describes the bash watchdog, which is live. aewatch reproduced the same per-cycle state machine and effects; the two are cross-checked by a bash-vs-Python parity oracle in `contrib/aewatch/`, which is the reason the retired source is kept.
+## Live Rust core loop
+
+The sections below describe the Rust core's per-cycle state machine and effects. They preserve the behavior formerly cross-checked with the retired Python sidecar; the historical source remains only for rollback.
 
 ## Tunables
 
@@ -153,7 +174,7 @@ There is no repeat-alert. Once an agent has been alerted for a streak, it stays 
 
 For overnight runs, pair the watchdog with an external tail process on `events.jsonl` if you actually need to be paged:
 
-```bash
+```sh
 tail -F ~/.ae/sessions/<name>/events.jsonl \
   | grep --line-buffered '"action":"alert"' \
   | xargs -L1 -I{} <your-pager-cmd>
@@ -161,7 +182,7 @@ tail -F ~/.ae/sessions/<name>/events.jsonl \
 
 ## Inspection
 
-```bash
+```sh
 ~/.ae/sessions/<name>/watchdog status         # is the watchdog running?
 ~/.ae/sessions/<name>/peek _watchdog 60       # last 60 lines of decisions
 ~/.ae/sessions/<name>/peek _events 60     # event stream

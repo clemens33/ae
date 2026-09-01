@@ -2,9 +2,9 @@
 
 **Run AI coding agents side-by-side in tmux. They know about each other, communicate by name, and survive reboots.**
 
-`ae` is a single bash script that turns tmux into a multi-agent workspace. Pair Claude Code with Codex for cross-model review. Spin up a reviewer agent on demand. Sleep through a long task and wake up to a complete event log. Zero dependencies beyond bash, tmux, and git.
+`ae` is one public wrapper over an immutable versioned Rust core and policy-frozen, shrinking Bash pane glue with the P5 sibling-binding routing fix. It turns tmux into a multi-agent workspace: pair Claude Code with Codex for cross-model review, spin up a reviewer on demand, and wake to a complete event log after a long task.
 
-[![Release](https://img.shields.io/badge/release-0.2.1-blue.svg)](https://github.com/clemens33/ae/releases)
+![Version: 2026.8.2 untagged/pre-release](https://img.shields.io/badge/version-2026.8.2%20untagged%2Fpre--release-blue.svg)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/clemens33/ae/blob/main/LICENSE)
 [![Bash](https://img.shields.io/badge/bash-%3E%3D4.0-green.svg)](https://www.gnu.org/software/bash/)
 
@@ -15,7 +15,9 @@
 - **Everything survives reboots.** Sessions, spawned agents, conversation history. Pick up exactly where you left off.
 - **One window to your whole fleet.** The optional [`ae orchestrator`](reference/commands.md#ae-orchestrator) meta-agent — your fleet's chief of staff — watches every session and relays to them — talk to *it* from your phone over [Telegram](reference/telegram.md#orchestrator-centric-routing-talk-to-the-meta-agent-not-ten-sessions) instead of juggling ten panes.
 - **Nothing touches your repo.** Session state lives in `~/.ae/sessions/`. Your working directory stays clean.
-- **Single bash script.** No frameworks, no runtimes, no abstractions. Just bash, tmux, and git.
+- **Small versioned runtime.** The public wrapper validates a matched Rust core and policy-frozen, shrinking Bash pane glue with the P5 sibling-binding routing fix from one immutable version directory.
+
+> **P5 entered 2026-08-31.** The first Rust-era release tag is pending; checkout install is the active path until the tagged `curl | bash` installer activates.
 
 ## Works with
 

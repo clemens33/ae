@@ -2702,6 +2702,14 @@ _resolve_spawned() {
 # at launch and stale from the first upgrade onwards; a file is read fresh every
 # time, so one install is visible to everything at once.
 #
+# PRECEDENCE: bundle sibling ae-core (basename of $0 is exactly ae-glue AND
+# that sibling is executable) > env AE_CORE_BIN > core/current >
+# workspace.core. Installed ae-glue is INTERNAL — generated helpers exec it
+# directly with no B8 sanitization — so a pane-carried AE_CORE_BIN must not
+# override the immutable sibling. Env is ignored silently when the sibling
+# fires. Checkout `ae` and every non-bundle / missing-sibling invocation skip
+# it and keep env > current > config.
+#
 # FAIL-QUIET, like an unusable config value: a missing file, an empty line, or a
 # relative/`~` path prints nothing and lets the caller fall through to the config.
 # A `~` value is refused rather than expanded because _ae_core_bin_input does not
@@ -2733,20 +2741,31 @@ _ae_core_current_input() {
 
 # Resolve the operator's Rust core binding, or nothing.
 #
-# OPERATOR-OWNED INPUTS ONLY, in precedence order: the AE_CORE_BIN environment
-# variable, then <AE_HOME>/core/current (what an install published — see the
-# reader above), then the config key `workspace.core`. Deliberately NOT the PATH
-# and NOT a build-layout guess such as `target/release/ae`. PATH is wrong
-# because a helper runs in the AGENT's inherited environment rather than the
-# operator's shell, so it can resolve differently, or to a different VERSION
-# than the one that created the session; a build layout is wrong because it is a
-# developer artifact that does not exist on a clean install. Resolved ONCE, at
-# creation or refresh, and recorded — never re-resolved at helper-run time.
+# OPERATOR-OWNED INPUTS ONLY, in precedence order: the bundle sibling ae-core
+# (when $0's basename is exactly ae-glue AND that sibling is executable — env
+# is then ignored, silently), then the AE_CORE_BIN environment variable, then
+# <AE_HOME>/core/current (what an install published — see the reader above),
+# then the config key `workspace.core`. Deliberately NOT the PATH and NOT a
+# build-layout guess such as `target/release/ae`. PATH is wrong because a helper
+# runs in the AGENT's inherited environment rather than the operator's shell, so
+# it can resolve differently, or to a different VERSION than the one that
+# created the session; a build layout is wrong because it is a developer artifact
+# that does not exist on a clean install. Resolved ONCE, at creation or refresh,
+# and recorded — never re-resolved at helper-run time.
 #
 # An empty result is the normal supported state: no binding means every helper
 # stays on its bash body.
 _ae_core_bin_input() {
-    local candidate="${AE_CORE_BIN:-}"
+    local candidate dir sibling
+    if [[ "$(basename "$0")" == "ae-glue" ]]; then
+        dir="$(cd -P "$(dirname "$0")" && pwd -P)" || dir=""
+        sibling="${dir:+$dir/ae-core}"
+        if [[ -n "$sibling" && -x "$sibling" ]]; then
+            printf '%s\n' "$sibling"
+            return 0
+        fi
+    fi
+    candidate="${AE_CORE_BIN:-}"
     if [[ -z "$candidate" ]]; then
         candidate="$(_ae_core_current_input)"
     fi
@@ -4339,15 +4358,14 @@ Usage: ae list [--running | --all | --stopped | --needs-attn | --active] [--json
   --stopped    stopped sessions only
   --needs-attn only running sessions with an attn reason — declared
                waiting-user/blocked, watchdog-derived dead/stale/throttled, or an
-               unanswered inter-agent ask/review (older than AE_ATTN_REQUEST_SECS,
-               default 30m); implies running-only
+               unanswered inter-agent ask/review (older than 30m); implies
+               running-only
                (aliases: --needs-me, --needs, --attn)
   --active     only running sessions with recent activity (an ae event in the
-               last 5 min; set AE_LIST_ACTIVE_SECS to change). Implies
-               running-only (alias: --busy)
+               last 5 min). Implies running-only (alias: --busy)
   --json       machine-readable digest (schema_version, per-session
                needs_attention + attention reason, per-agent state); honours
-               the filters above. Pure bash output — no jq required.
+               the filters above.
 LISTHELP
                 return 0
                 ;;

@@ -18,7 +18,7 @@ See the [bridge protocol](../internals/bridge-protocol.md) for the substrate it 
 
 ## Dependencies
 
-The bridge needs **only a configured ae core** — it *is* the ae core binary, run in a background tmux session. There are no extra CLI dependencies: the old bash bridge's `jq` + `curl` requirement is gone. On a machine with no usable core, `ae telegram start` errors and autostart warns and continues; ae's core commands (`ae <name>`, `ae list`, `ae stop`, …) are unaffected.
+The bridge needs **only a configured ae core** — it *is* the ae core binary, run in a background tmux session. There are no extra CLI dependencies: the old bash bridge's `jq` + `curl` requirement is gone. On a machine with no usable core, the public wrapper refuses every operational command — `ae telegram start`, `ae <name>`, `ae list`, and `ae stop` alike — before glue runs, naming `ae upgrade` as the repair path. `ae upgrade` and `ae version` remain available so repair and version queries survive breakage.
 
 ```bash
 ae doctor              # reports telegram.core OK/WARN when telegram is configured

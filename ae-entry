@@ -1,0 +1,434 @@
+#!/usr/bin/env bash
+# ae-entry — public `ae` wrapper. Installed name is `ae`; this source file is
+# named distinctly so it does not collide with the tracked glue (`ae`) or the
+# Rust bin target. Bundle publication copies it to versions/<V>/ae.
+#
+# Validates the triple (wrapper _AE_ENTRY_VERSION == ae-core --version == sibling
+# ae-glue AE_VERSION) and refuses BEFORE exec — before any side effect — on
+# an absent / non-regular / non-executable / empty / mismatched core/current.
+# Then execs the immutable sibling ae-glue, so a new session records that
+# versioned glue path as ae_path (generation pinning).
+#
+# Coexistence overrides are gone. B8: UNSET inherited AE_CORE, AE_TMUX_SERVER,
+# AE_TMUX_SERVER_KIND, AE_CORE_BIN; unconditionally AE_HOME=$HOME/.ae and
+# CONFIG_FILE=$AE_HOME/config (ignoring AE_HOME/AE_NEXT_HOME). One aggregated
+# notice for values that were set and would have changed behavior.
+# B13: the wrapper identity is _AE_ENTRY_VERSION, not AE_VERSION — assigning
+# AE_VERSION would overwrite an exported operator pin (F7b intent-loss).
+# AE_VERSION is a legitimate upgrade-arm input and is absent from the B8
+# unset list. Other arms unset it immediately before exec (B42/A20) so an
+# exported pin cannot freeze into the tmux server environment.
+set -euo pipefail
+
+unset _AE_ENTRY_VERSION
+_AE_ENTRY_VERSION="2026.8.2"
+
+_refuse() {
+    echo "ae: $1" >&2
+    exit 2
+}
+
+# ── The repo / bundle this wrapper belongs to ────────────────────────────────
+# Resolved from the wrapper's REAL location, so the symlink at ~/.local/bin/ae
+# runs the file it was linked from. Symlink-safe without `readlink -f`, which
+# is GNU-only (AGENTS.md, GNU vs BSD userland).
+_src="${BASH_SOURCE[0]}"
+while [ -L "$_src" ]; do
+    _dir="$(cd -P "$(dirname "$_src")" && pwd -P)"
+    _src="$(readlink "$_src")"
+    case "$_src" in
+        /*) ;;
+        *) _src="$_dir/$_src" ;;
+    esac
+done
+_here="$(cd -P "$(dirname "$_src")" && pwd -P)"
+
+# C51/C62/C67. An immutable bundle member is REGULAR, NON-SYMLINK, executable.
+# `-f` and `-x` both FOLLOW symlinks, so a member that is a symlink to a mutable
+# external file passes both and is then executed or grepped as if it were ours.
+# lstat first; the follow-tests only afterwards.
+_ae_entry_bundle_member_ok() {
+    [ ! -L "$1" ] && [ -f "$1" ] && [ -x "$1" ]
+}
+
+# B7 + C67: prove sibling install is an immutable member BEFORE naming it — and
+# before EXECUTING it, which the pre-triple upgrade arm does. With C62 (glue) and
+# C51 (core) closed, install was the last mutable external sibling, sitting on the
+# highest-authority repair path and proven only at install time, never at runtime.
+# A checkout's tracked regular install passes this unchanged.
+_ae_entry_prove_install() {
+    _ae_entry_bundle_member_ok "$_here/install"
+}
+
+# C104: WHAT THIS WRAPPER IS comes from its OWN name, decided BEFORE any glue is
+# selected. THE WRAPPER MAY NEVER SELECT ITSELF AS GLUE.
+#
+# Keying the decision off "is there a sibling ae-glue" inverted that: an
+# INSTALLED wrapper (published as `ae`) whose ae-glue was missing fell through to
+# the checkout arm, where `-f "$_here/ae"` is satisfied by the wrapper ITSELF, so
+# it selected itself as its own glue. The failure that followed was not even a
+# refusal — see the set -e note at the version reads below.
+#
+# The source file is named `ae-entry` and is published as `ae`, so the name is
+# the discriminator, and it is read from the RESOLVED path: ~/.local/bin/ae is a
+# symlink into the version directory, and it is the target that says what this
+# is. Anything not named `ae-entry` is treated as a bundle — the stricter arm,
+# which demands a proven immutable sibling rather than accepting whatever
+# executable happens to sit alongside.
+#
+# C112: classification NEVER refuses. It sets the shape, names the expected glue
+# even when that glue is absent, and derives the repair. `version` and `upgrade`
+# are owed an answer on a broken triple — the first diagnoses it and the second
+# repairs it — so the only refusal point for missing or corrupt glue is
+# _ae_entry_validate_triple, which those two arms do not pass through.
+# C62: within the bundle arm, DETECTION is lstat EXISTENCE, not `-f`. A sibling
+# ae-glue that is a symlink — or a dangling one — is a CORRUPT bundle and is
+# refused by the triple, never demoted to the checkout arm or to "no glue at
+# all". The runtime boundary's job is corruption refusal.
+_ae_bundle=0
+case "${_src##*/}" in
+    ae-entry)
+        # Checkout: this tracked source sits beside the tracked glue, which is
+        # still named `ae` there. A different file, never this one.
+        if [ -f "$_here/ae" ]; then
+            _glue="$_here/ae"
+            _ae_repair="run 'just install' in $_here"
+        else
+            _glue=""
+            _ae_repair="run 'just install'"
+        fi
+        ;;
+    *)
+        # Installed bundle. The sibling ae-glue is MANDATORY, so it is named
+        # here even when it is absent: a missing member is a corrupt bundle,
+        # which the triple refuses AS A BUNDLE, naming the proven repair.
+        _ae_bundle=1
+        _glue="$_here/ae-glue"
+        if _ae_entry_prove_install; then
+            _ae_repair="ae upgrade"
+        else
+            _ae_repair="reinstall this version (sibling install is missing)"
+        fi
+        ;;
+esac
+
+_ae_entry_sanitize_env() {
+    local default_home="$HOME/.ae"
+    local -a ignored=()
+    # Set (including empty) is the test: AE_CORE= forces bash after the triple.
+    if [ -n "${AE_CORE+x}" ]; then
+        ignored+=("AE_CORE=${AE_CORE}")
+    fi
+    if [ -n "${AE_CORE_BIN+x}" ]; then
+        ignored+=("AE_CORE_BIN=${AE_CORE_BIN}")
+    fi
+    if [ -n "${AE_TMUX_SERVER+x}" ]; then
+        ignored+=("AE_TMUX_SERVER=${AE_TMUX_SERVER}")
+    fi
+    if [ -n "${AE_TMUX_SERVER_KIND+x}" ]; then
+        ignored+=("AE_TMUX_SERVER_KIND=${AE_TMUX_SERVER_KIND}")
+    fi
+    if [ -n "${AE_HOME+x}" ] && [ "${AE_HOME}" != "$default_home" ]; then
+        ignored+=("AE_HOME=${AE_HOME}")
+    fi
+    if [ -n "${AE_NEXT_HOME+x}" ]; then
+        ignored+=("AE_NEXT_HOME=${AE_NEXT_HOME}")
+    fi
+    if [ -n "${CONFIG_FILE+x}" ] && [ "${CONFIG_FILE}" != "$default_home/config" ]; then
+        ignored+=("CONFIG_FILE=${CONFIG_FILE}")
+    fi
+    if [ ${#ignored[@]} -gt 0 ]; then
+        echo "ae: ignoring inherited ${ignored[*]}" >&2
+    fi
+    unset AE_CORE AE_CORE_BIN AE_TMUX_SERVER AE_TMUX_SERVER_KIND
+    unset AE_HOME AE_NEXT_HOME AE_NEXT_TMUX_SERVER
+    AE_HOME="$default_home"
+    export AE_HOME
+    CONFIG_FILE="$AE_HOME/config"
+    export CONFIG_FILE
+}
+
+_ae_entry_core_missing() {
+    echo "ae: $1" >&2
+    echo "ae: $_ae_repair" >&2
+    exit 2
+}
+
+_ae_entry_validate_triple() {
+    local current core glue_version core_version
+    [ -n "$_glue" ] || _refuse "no sibling ae-glue (or checkout ae) at $_here"
+    # The classification above makes self-selection structurally impossible; this
+    # is the mechanism for the rule, because a rule without one is a category and
+    # a violation is an instance that does not announce itself.
+    if [ "$_glue" -ef "$_src" ] 2>/dev/null; then
+        _refuse "refusing to run $_glue as its own glue — $_ae_repair"
+    fi
+    if [ "$_ae_bundle" -eq 1 ]; then
+        # C62: the SELECTED glue is proven an immutable member BEFORE any grep or
+        # exec. A version-dir ae-glue symlinked to a mutable external glue of the
+        # same AE_VERSION passes -f/-x and would be EXECUTED — the F4
+        # live-glue/desynced-generation class, even with C51's core closed.
+        # C105: name the repair that was DERIVED, not a hardcoded one. When
+        # prove_install already found the sibling installer missing, `ae upgrade`
+        # is an unrunnable instruction, and a refusal that hands out one is worse
+        # than a refusal that hands out none.
+        _ae_entry_bundle_member_ok "$_glue" ||
+            _refuse "the bundle glue at $_glue is not a regular executable file — $_ae_repair"
+    else
+        [ -x "$_glue" ] || _refuse "no executable glue at $_glue — is this a checkout?"
+    fi
+
+    current="$AE_HOME/core/current"
+    # lstat FIRST, and never follow: core/current is a regular pointer file the
+    # installer wrote. A symlink there is not a pointer we published.
+    if [ -L "$current" ]; then
+        _ae_entry_core_missing "the core pointer $current is a symlink; it must be the regular file the installer writes"
+    fi
+    [ -e "$current" ] || _ae_entry_core_missing "no installed core: $current is missing"
+    [ -f "$current" ] || _ae_entry_core_missing "the core pointer $current is not a regular file"
+    core="$(head -1 "$current" 2>/dev/null || true)"
+    core="$(printf '%s' "$core" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+    [ -n "$core" ] || _ae_entry_core_missing "no installed core: $current is empty"
+    case "$core" in
+        /*) ;;
+        *) _ae_entry_core_missing "the core path in $current is not absolute: $core" ;;
+    esac
+    if [ -L "$core" ]; then
+        _ae_entry_core_missing "the core in $current is not a regular file: $core"
+    fi
+    [ -e "$core" ] || _ae_entry_core_missing "the core in $current is missing: $core"
+    [ -f "$core" ] || _ae_entry_core_missing "the core in $current is not a regular file: $core"
+    [ -s "$core" ] || _ae_entry_core_missing "the core in $current is empty: $core"
+    [ -x "$core" ] || _ae_entry_core_missing "the core in $current is not executable: $core"
+    # C51: bundle mode is derived from the SELECTED GLUE, never from the core's
+    # health. Keying the B26 identity gate off `[ -x "$_here/ae-core" ]` meant a
+    # bundle whose sibling core was missing, non-regular or non-executable SKIPPED
+    # the refusal entirely: core/current could then point at another executable
+    # SAME-VERSION core, pass the triple, and the bundle would silently degrade
+    # into checkout semantics — defeating B26 at the public boundary.
+    # Checkout has no sibling glue, so it keeps pointer-only validation.
+    if [ "$_ae_bundle" -eq 1 ]; then
+        _ae_entry_bundle_member_ok "$_here/ae-core" ||
+            _ae_entry_core_missing "this bundle's sibling ae-core is missing or is not a regular executable file"
+        if [ ! "$core" -ef "$_here/ae-core" ]; then
+            _ae_entry_core_missing "the installed core is not this bundle's ae-core"
+        fi
+    fi
+
+    # C104 EXTENSION, the set -e assignment class living in the public wrapper.
+    # Both reads are PIPELINES under `set -euo pipefail`, so their failure is not
+    # an empty string — it is the wrapper terminating at rc1 with nothing said,
+    # BEFORE the refusal lines written to handle exactly that case. An executable
+    # ae-glue with no AE_VERSION makes grep exit 1; an ae-core whose --version
+    # exits nonzero fails the pipeline under pipefail (and `head -1` can SIGPIPE
+    # the producer besides). Collect through a guarded assignment, then refuse
+    # deliberately: a public boundary with a repair available owes rc2 and the
+    # repair, never a silent exit.
+    glue_version=""
+    if ! glue_version="$(grep -m1 '^AE_VERSION=' "$_glue" 2>/dev/null | cut -d'"' -f2)"; then
+        glue_version=""
+    fi
+    [ -n "$glue_version" ] || _refuse "could not read AE_VERSION from $_glue — $_ae_repair"
+    core_version=""
+    if ! core_version="$("$core" --version 2>/dev/null | head -1 | awk '{print $NF}')"; then
+        core_version=""
+    fi
+    [ -n "$core_version" ] || _refuse "the core reported no version: $core — $_ae_repair"
+    if [ "$_AE_ENTRY_VERSION" != "$core_version" ] || [ "$core_version" != "$glue_version" ]; then
+        echo "ae: version mismatch: wrapper is $_AE_ENTRY_VERSION, the core reports $core_version, glue is $glue_version." >&2
+        echo "ae: They move together. $_ae_repair, or run \`just bump\` in the checkout (it owns all four files)." >&2
+        exit 2
+    fi
+    _ae_core_bin="$core"
+}
+
+# Mirror frozen glue _srv_tmux_args + list-sessions exact name (B16/B41).
+# Prefix-match has-session -t "$name" treats catalog-long as catalog.
+# Ambient tmux misses a session live on its recorded server (the 384 shape).
+# Empty output is fail-closed: callers must not probe the default server (B24).
+_ae_entry_tmux_args() {
+    local kind="$1" v="$2"
+    case "$kind" in
+        socket) [ -n "$v" ] && printf -- '-S\n%s\n' "$v" ;;
+        name) [ -n "$v" ] && printf -- '-L\n%s\n' "$v" ;;
+        ambiguous) : ;;
+        *) [ -n "$v" ] && printf -- '-L\n%s\n' "$v" ;;
+    esac
+    return 0
+}
+
+# Mirror frozen glue _tmux_err_is_clean_dead (ae:7991): ONLY the stale-socket
+# shape is proven-dead. Permission, ENOENT, protocol errors are UNKNOWN.
+_ae_entry_tmux_err_is_clean_dead() {
+    case "$1" in
+        "no server running on "*) return 0 ;;
+    esac
+    return 1
+}
+
+# rc 0 = verified running on the recorded server (exact name in a successful
+# list-sessions); rc 1 = proven stopped (successful list without the name, or
+# clean-dead server); rc 2 = unknown/deferred (no positive kind+server record,
+# or a tmux error that is not clean-dead). Never probe the default server.
+_ae_entry_session_running() {
+    local name="$1" meta server="" kind="" out rc=0 line
+    local -a targs=()
+    meta="${AE_HOME:-$HOME/.ae}/sessions/$name/meta"
+    if [ -f "$meta" ]; then
+        server="$(grep -m1 '^tmux_server=' "$meta" 2>/dev/null | cut -d= -f2- || true)"
+        kind="$(grep -m1 '^tmux_server_kind=' "$meta" 2>/dev/null | cut -d= -f2- || true)"
+    fi
+    case "$kind" in
+        socket | name)
+            [ -n "$server" ] || return 2
+            ;;
+        *)
+            return 2
+            ;;
+    esac
+    while IFS= read -r line; do
+        targs+=("$line")
+    done < <(_ae_entry_tmux_args "$kind" "$server")
+    # No positive tmux argv → fail closed; never fall through to the default server.
+    if [ ${#targs[@]} -eq 0 ]; then
+        return 2
+    fi
+    rc=0
+    out="$(command tmux "${targs[@]}" list-sessions -F '#S' 2>&1)" || rc=$?
+    if [ "$rc" -eq 0 ]; then
+        while IFS= read -r line || [ -n "$line" ]; do
+            [ "$line" = "$name" ] && return 0
+        done <<<"$out"
+        return 1
+    fi
+    if _ae_entry_tmux_err_is_clean_dead "$out"; then
+        return 1
+    fi
+    return 2
+}
+
+_ae_entry_report_sessions() {
+    local sess_root="$AE_HOME/sessions" name rc
+    local -a running=() stopped=() unknown=()
+    echo "ae upgrade: installed under $AE_HOME/versions (core/current + public symlink repointed)."
+    echo "ae upgrade: running sessions are never hot-rewritten."
+    if [ ! -d "$sess_root" ]; then
+        echo "ae upgrade: no session directories under $sess_root"
+        return 0
+    fi
+    for name in "$sess_root"/*; do
+        [ -d "$name" ] || continue
+        name="$(basename "$name")"
+        case "$name" in
+            .* | '*') continue ;;
+        esac
+        rc=0
+        _ae_entry_session_running "$name" || rc=$?
+        case "$rc" in
+            0) running+=("$name") ;;
+            2) unknown+=("$name") ;;
+            *) stopped+=("$name") ;;
+        esac
+    done
+    if [ ${#stopped[@]} -eq 0 ]; then
+        echo "ae upgrade: stopped sessions: none"
+    else
+        echo "ae upgrade: stopped sessions (dirs untouched; consume current on next resume): ${stopped[*]}"
+    fi
+    if [ ${#running[@]} -eq 0 ]; then
+        echo "ae upgrade: running sessions deferred until stop/resume: none"
+    else
+        echo "ae upgrade: running sessions deferred until stop/resume (meta untouched): ${running[*]}"
+    fi
+    if [ ${#unknown[@]} -eq 0 ]; then
+        echo "ae upgrade: ambiguous sessions deferred (server unknown): none"
+    else
+        echo "ae upgrade: ambiguous sessions deferred (server unknown, meta untouched): ${unknown[*]}"
+    fi
+}
+
+_ae_entry_upgrade() {
+    local installer
+    # B15: leftover argv is a usage error, before any installer invocation.
+    # The only supported input is the AE_VERSION env pin.
+    if [ "$#" -ne 0 ]; then
+        echo "Usage: AE_VERSION=<calver> ae upgrade" >&2
+        echo "ae: upgrade takes no arguments; pin the target with AE_VERSION." >&2
+        exit 2
+    fi
+    if _ae_entry_prove_install; then
+        installer="$_here/install"
+    else
+        _refuse "no sibling installer at $_here/install — $_ae_repair"
+    fi
+    echo "ae upgrade: invoking $installer"
+    "$installer" || return $?
+    _ae_entry_report_sessions
+}
+
+_ae_entry_main() {
+    _ae_entry_sanitize_env
+    # B12 COMMAND OWNERSHIP TABLE (fable5:lead, session upgrade). Validation
+    # alone is not dispatch. Tonight, deliberately minimal:
+    #   list | ls [tail]  → exec validated ae-core with the argv tail verbatim
+    #                       (core refuses unknown tokens as usage, exit 2)
+    #   list | ls + exact -h/--help in the tail → ae-glue LISTHELP (B17/A6).
+    #                       Core parses -h/--help/help only at TOP level; a
+    #                       list tail is UnknownFlag rc2. Glue LISTHELP is
+    #                       the ratified text. Retires when core grows a
+    #                       ratified list-help. Do not implement core help here.
+    #   upgrade           → sibling install, BEFORE the triple gate
+    #                       (prove install present+executable only).
+    #                       Caller AE_VERSION passes through unchanged.
+    #   version | --version | -V → wrapper _AE_ENTRY_VERSION, BEFORE the
+    #                       triple gate, no sibling checks (diagnosing a
+    #                       broken triple). Word and flags are one owner.
+    #   _*                → ae-glue, never rerouted; unset AE_VERSION first
+    #   everything else   → ae-glue, behind the validated triple; unset
+    #                       AE_VERSION immediately before exec (B42).
+    #                       list|ls core exec unsets too. Glue's plain
+    #                       AE_VERSION= assignment then creates an
+    #                       unexported variable; sessions do not inherit
+    #                       the pin.
+    case "${1:-}" in
+        list | ls)
+            _ae_list_cmd="$1"
+            shift
+            _ae_list_help=0
+            for _ae_tok in "$@"; do
+                case "$_ae_tok" in
+                    -h | --help) _ae_list_help=1 ;;
+                esac
+            done
+            _ae_entry_validate_triple
+            unset AE_VERSION
+            if [ "$_ae_list_help" -eq 1 ]; then
+                exec "$_glue" "$_ae_list_cmd" "$@"
+            fi
+            exec "$_ae_core_bin" "$_ae_list_cmd" "$@"
+            ;;
+        upgrade)
+            shift
+            _ae_entry_upgrade "$@"
+            return $?
+            ;;
+        version | --version | -V)
+            printf 'ae %s\n' "$_AE_ENTRY_VERSION"
+            return 0
+            ;;
+        _*)
+            _ae_entry_validate_triple
+            unset AE_VERSION
+            exec "$_glue" "$@"
+            ;;
+        *)
+            _ae_entry_validate_triple
+            unset AE_VERSION
+            exec "$_glue" "$@"
+            ;;
+    esac
+}
+
+if [ "${BASH_SOURCE[0]:-$0}" = "$0" ]; then
+    _ae_entry_main "$@"
+fi

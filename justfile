@@ -27,8 +27,7 @@ check: lint format-check
 
 # Lint with shellcheck
 lint:
-    shellcheck -x ae tests/unit tests/integration tests/aemonitor tests/aewatch install \
-        contrib/ae-next/ae-next contrib/ae-next/install contrib/ae-next/install-remote \
+    shellcheck -x ae ae-entry tests/unit tests/integration tests/aemonitor tests/aewatch install \
         tests/e2e/ai/lib.sh tests/e2e/ai/run_scenario.sh \
         $(find tests/e2e/ai/scenarios -name steps.sh) < /dev/null
 
@@ -38,11 +37,11 @@ lint:
 
 # Check formatting (shfmt, diff mode)
 format-check:
-    shfmt -d -i 4 -ci ae install contrib/ae-next/ae-next contrib/ae-next/install contrib/ae-next/install-remote < /dev/null
+    shfmt -d -i 4 -ci ae ae-entry install < /dev/null
 
 # Auto-format
 format:
-    shfmt -w -i 4 -ci ae install contrib/ae-next/ae-next contrib/ae-next/install contrib/ae-next/install-remote
+    shfmt -w -i 4 -ci ae ae-entry install
 
 # ── Testing ──────────────────────────────────────────────────────────
 
@@ -78,20 +77,6 @@ test-aewatch-fast:
 test-ai *args="tests/e2e/ai/scenarios":
     AE_E2E_AI={{ env_var_or_default("AE_E2E_AI", "") }} tests/e2e/ai/run_scenario.sh {{ args }}
 
-# ── Coexistence: ae-next (pre-P5) ────────────────────────────────────
-# Installs a SECOND command, `ae-next`, that runs this branch's hybrid (bash glue
-# + Rust core) with its own state home (~/.ae-next), its own tmux server and an
-# immutable copy of the core under ~/.ae-next/core/<version>/. It never touches
-# ~/.local/bin/ae, ~/.ae, or the `install` script — dogfooding the rewrite is not
-# supposed to cost you the ae you work with.
-#
-# Retires at the P5 entry flip, together with contrib/ae-next itself.
-# Design and canary plan: docs/migration/coexistence.md
-
-# Install/upgrade the ae-next command beside your installed ae
-next-install:
-    contrib/ae-next/install
-
 # ── Version ──────────────────────────────────────────────────────────
 
 # Show current version
@@ -103,7 +88,7 @@ bump-recover:
     #!/usr/bin/env bash
     set -euo pipefail
     RECOVERY_DIR=".ae-bump-recovery"
-    paths=(ae Cargo.toml Cargo.lock)
+    paths=(ae ae-entry Cargo.toml Cargo.lock)
     staged=()
     if [[ ! -d "$RECOVERY_DIR" ]]; then
         echo "Error: ${RECOVERY_DIR} is not present; nothing to recover" >&2
@@ -210,7 +195,7 @@ bump:
             rm -f "$RECOVERY_DIR"/*.orig "$RECOVERY_DIR"/*.orig.tmp.* "$RECOVERY_DIR"/backups-ready.tmp.* || true
             return 0
         fi
-        for path in ae Cargo.toml Cargo.lock; do
+        for path in ae ae-entry Cargo.toml Cargo.lock; do
             name="${path##*/}"
             if [[ ! -f "$RECOVERY_DIR/${name}.orig" ]]; then
                 recovery_rc=1
@@ -246,13 +231,13 @@ bump:
     trap cleanup EXIT
     backup_files() {
         local path name backup_tmp
-        for path in ae Cargo.toml Cargo.lock; do
+        for path in ae ae-entry Cargo.toml Cargo.lock; do
             name="${path##*/}"
             backup_tmp="$RECOVERY_DIR/${name}.orig.tmp.$$"
             cp -p "$path" "$backup_tmp"
             mv "$backup_tmp" "$RECOVERY_DIR/${name}.orig"
         done
-        for path in ae Cargo.toml Cargo.lock; do
+        for path in ae ae-entry Cargo.toml Cargo.lock; do
             name="${path##*/}"
             if ! cmp -s "$RECOVERY_DIR/${name}.orig" "$path"; then
                 echo "Error: backup verification failed for ${path}" >&2
@@ -263,17 +248,21 @@ bump:
         mv "$RECOVERY_DIR/backups-ready.tmp.$$" "$RECOVERY_DIR/backups-ready"
     }
     backup_files
-    for path in ae Cargo.toml Cargo.lock; do
+    for path in ae ae-entry Cargo.toml Cargo.lock; do
         name="${path##*/}"
         cp -p "$path" "$TMP_DIR/$name"
     done
 
-    # Redirect into mode-preserving copies: replacing ae with a freshly-created
-    # redirection target would silently drop its executable bit.
+    # Redirect into mode-preserving copies: replacing ae or ae-entry with a
+    # freshly-created redirection target would silently drop its executable bit.
     cp -p "$TMP_DIR/ae" "$TMP_DIR/ae.next"
     sed "s/^AE_VERSION=\".*\"/AE_VERSION=\"$VERSION\"/" \
         "$TMP_DIR/ae" >"$TMP_DIR/ae.next"
     mv "$TMP_DIR/ae.next" "$TMP_DIR/ae"
+    cp -p "$TMP_DIR/ae-entry" "$TMP_DIR/ae-entry.next"
+    sed "s/^_AE_ENTRY_VERSION=\".*\"/_AE_ENTRY_VERSION=\"$VERSION\"/" \
+        "$TMP_DIR/ae-entry" >"$TMP_DIR/ae-entry.next"
+    mv "$TMP_DIR/ae-entry.next" "$TMP_DIR/ae-entry"
     cp -p "$TMP_DIR/Cargo.toml" "$TMP_DIR/Cargo.toml.next"
     awk -v version="$VERSION" '
         !done && /^version = "/ { print "version = \"" version "\""; done=1; next }
@@ -329,6 +318,7 @@ bump:
     mv "$TMP_DIR/Cargo.lock.next" "$TMP_DIR/Cargo.lock"
 
     grep -q '^AE_VERSION="'"$VERSION"'"$' "$TMP_DIR/ae"
+    grep -q '^_AE_ENTRY_VERSION="'"$VERSION"'"$' "$TMP_DIR/ae-entry"
     grep -q '^version = "'"$VERSION"'"$' "$TMP_DIR/Cargo.toml"
     awk -v version="$VERSION" '
         function flush(    i, name, source) {
@@ -360,7 +350,7 @@ bump:
         }
     ' "$TMP_DIR/Cargo.lock"
 
-    for path in ae Cargo.toml Cargo.lock; do
+    for path in ae ae-entry Cargo.toml Cargo.lock; do
         name="${path##*/}"
         if ! mv "$TMP_DIR/$name" "$path"; then
             echo "Error: could not publish ${path}; recover-or-refuse marker retained if recovery fails" >&2
@@ -405,15 +395,47 @@ release:
     # Re-parse and compile after bump before any changelog or tag publication.
     cargo check --locked
 
-    # Update the README badge. `just bump` preserves ae's executable bit.
+    # Update the release badges. `just bump` preserves ae and ae-entry executable bits.
     sed_i() {
         local f="$1"; shift
         cp -p "$f" "$f.tmp.$$" || return 1
         sed "$@" "$f" > "$f.tmp.$$" && mv "$f.tmp.$$" "$f" || { rm -f "$f.tmp.$$"; return 1; }
     }
-    sed_i README.md -E "s/release-[0-9]+\\.[0-9]+\\.[0-9]+/release-$VERSION/" 2>/dev/null || true
-    # Guard the guard: a release must never publish ae without its exec bit.
+    replace_badge_line() {
+        local file="$1" pre_pattern="$2" prior_pattern="$3" post_line="$4" label="$5" source_pattern
+        if grep -Eq "$pre_pattern" "$file"; then
+            source_pattern="$pre_pattern"
+        elif grep -Eq "$prior_pattern" "$file"; then
+            source_pattern="$prior_pattern"
+        else
+            echo "Error: ${label} has no known pre-release or prior-release badge line" >&2
+            exit 1
+        fi
+        sed_i "$file" -E -e "s@${source_pattern}@${post_line}@"
+        if ! grep -Fxq "$post_line" "$file"; then
+            echo "Error: ${label} did not become its expected release badge line" >&2
+            exit 1
+        fi
+    }
+    README_VERSION_PRE='^!\[Version: [0-9]+\.[0-9]+\.[0-9]+ untagged/pre-release\]\(https://img\.shields\.io/badge/version-[0-9]+\.[0-9]+\.[0-9]+%20untagged%2Fpre--release-blue\.svg\)$'
+    README_VERSION_PRIOR='^\[!\[Release: [0-9]+\.[0-9]+\.[0-9]+\]\(https://img\.shields\.io/badge/release-[0-9]+\.[0-9]+\.[0-9]+-blue\.svg\)\]\(https://github\.com/clemens33/ae/releases\)$'
+    README_VERSION_POST="[![Release: $VERSION](https://img.shields.io/badge/release-$VERSION-blue.svg)](https://github.com/clemens33/ae/releases)"
+    README_INSTALL_PRE='^\[!\[Install\]\(https://img\.shields\.io/badge/install-checkout%20install-orange\.svg\)\]\(#install\)$'
+    README_INSTALL_PRIOR='^\[!\[Install: curl \| bash\]\(https://img\.shields\.io/badge/install-curl%20%7C%20bash-orange\.svg\)\]\(#install\)$'
+    README_INSTALL_POST='[![Install: curl | bash](https://img.shields.io/badge/install-curl%20%7C%20bash-orange.svg)](#install)'
+    INDEX_VERSION_PRE="$README_VERSION_PRE"
+    INDEX_VERSION_PRIOR="$README_VERSION_PRIOR"
+    INDEX_VERSION_POST="$README_VERSION_POST"
+    replace_badge_line README.md "$README_VERSION_PRE" "$README_VERSION_PRIOR" "$README_VERSION_POST" "README version"
+    replace_badge_line README.md "$README_INSTALL_PRE" "$README_INSTALL_PRIOR" "$README_INSTALL_POST" "README Install"
+    replace_badge_line docs/index.md "$INDEX_VERSION_PRE" "$INDEX_VERSION_PRIOR" "$INDEX_VERSION_POST" "docs/index version"
+    if grep -En 'untagged/pre-release|checkout%20install|checkout install' README.md docs/index.md >&2; then
+        echo "Error: pre-release badge or checkout-install prose remains; edit it deliberately before tagging" >&2
+        exit 1
+    fi
+    # Guard the guard: a release must never publish either executable source without its bit.
     [ -x ae ] || { echo "Error: ae lost its executable bit during version bump" >&2; exit 1; }
+    [ -x ae-entry ] || { echo "Error: ae-entry lost its executable bit during version bump" >&2; exit 1; }
 
     # Generate changelog
     TAG="v$VERSION"
@@ -452,7 +474,7 @@ release:
 
 # ── Install ──────────────────────────────────────────────────────────
 
-# Install ae (symlink to ~/.local/bin)
+# Checkout-mode installation through the canonical versioned installer.
 install:
     ./install
 
@@ -473,9 +495,9 @@ docs-build:
 help:
     @just --list
 
-# ── Rust (rewrite branch, epic #79 / #80) ────────────────────────────
-# The bash-era recipes above stay while bash ae is frozen. Everything below is
-# prefixed `rust-` and touches nothing they own.
+# ── Rust core lanes (epic #79 / #80) ─────────────────────────────────
+# Bash recipes above remain for policy-frozen glue. Everything below is prefixed
+# `rust-` and owns core/toolchain work.
 #
 # PINS ARE THE CONTRACT. This block is the single source of truth for dev-tool
 # versions; `rust-setup` installs exactly these and nothing else. The compiler

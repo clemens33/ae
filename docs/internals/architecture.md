@@ -1,12 +1,24 @@
 # Architecture
 
-ae is intentionally simple. The entire tool fits in one bash script. Understanding it in a single sitting is the design goal.
+## P5 topology and status
+
+P5 entered on 2026-08-31; `main` now carries the post-strangler product. The public
+`~/.local/bin/ae` wrapper selects one immutable
+`~/.ae/versions/<V>/` set: `ae` (wrapper), `ae-core` (Rust lifecycle/state core),
+`ae-glue` (policy-frozen, shrinking Bash pane glue with the P5 sibling-binding routing fix),
+and `install` (the immutable sibling used by `ae upgrade`). `~/.ae/current` points at that
+set and `~/.ae/core/current` points at its core. The original pre-rewrite Bash script is
+separately preserved locally byte-exact at `72c7293` as the `ae-legacy` P5 cutover anchor
+outside the public bundle, removable once pre-flip live sessions stop or resume.
+
+The diagrams and sections below model the surviving `ae-glue` pane internals. They are not
+a model of the whole P5 product or its wrapper/core/installer topology.
 
 ## Mental model
 
 ```mermaid
 flowchart LR
-    User[You] -->|ae start/resume| AE[ae bash script]
+    User[You] -->|glue dispatch after wrapper/core validation| AE[ae-glue pane internals]
     AE --> Cfg[~/.ae/config<br/>INI parser]
     AE --> Tmux[(tmux session)]
     AE --> SessDir[~/.ae/sessions/&lt;name&gt;/<br/>helpers + meta + events.jsonl]
@@ -52,11 +64,14 @@ flowchart TB
     Watchdog --> Attach[tmux attach]
 ```
 
-The regenerate step is unconditional on both paths — that's how upgrades propagate without any migration ceremony.
+The regenerate step runs on a new launch or resume, never against an already-running session. After an installed upgrade, stopped sessions bind the new generation on resume while running sessions stay pinned; no migration ceremony is needed.
 
-## Single bash script
+## Policy-frozen, shrinking Bash pane glue
 
-The `ae` script does everything: config parsing, tmux orchestration, helper generation, session state management. No build step, no runtime, no plugin framework. The file index near the top of the script groups functions by concern (Config, Helpers, Resume, Session, Launch, Manifest, Commands).
+The tracked `ae` glue handles tmux orchestration, helper generation, and the P5
+sibling-binding routing fix. Its file index groups functions by concern (Config, Helpers,
+Resume, Session, Launch, Manifest, Commands). The Rust core owns state/lifecycle; the public
+wrapper and versioned installer are described above.
 
 ## Per-session state on disk
 
@@ -256,7 +271,7 @@ The display name (`@ae_agent`) is for humans; the slot is for routing. `reply` v
 
 ## Regenerate on resume
 
-Every `ae <name>` rewrites all helper scripts and `workspace.md` from the currently-installed ae binary. Upgrades propagate automatically — `git pull` then reattach. There's no migration ceremony because there's no schema versioning.
+Every `ae <name>` rewrites all helper scripts and `workspace.md` from the currently-installed ae binary. `git pull` alone leaves that immutable generation unchanged: run `just install` (checkout mode), or tagged `ae upgrade`, then stopped sessions bind the new generation on resume while running sessions stay pinned until restart. `ae doctor --refresh` regenerates helpers from that newly installed binary. There's no migration ceremony because there's no schema versioning.
 
 The on-disk `meta` and `events.jsonl` carry stable enough keys that newer code can read older data without explicit migration. If a schema change ever lands that's incompatible, this convention will need to change.
 

@@ -1,9 +1,11 @@
 # Pre-P5 coexistence: `ae-next` beside `ae`
 
-**Status:** scope ratified (five cross-model rounds) → built (items 1-7) → hardened through three
-cross-model code-review rounds (13 BLOCKER, 4 IMPORTANT, 3 NIT folded in; final verdict SHIP) →
-**landed on `rust-rewrite`** → **canary in progress** (2026-08-30: outcomes 1, 2 and 4 PASS;
-3 awaits a test bot — see the checklist). Update this line as it moves.
+> **HISTORICAL — superseded at the P5 entry flip on 2026-08-31.** `ae-next` is unreachable via the public entry; its residual glue block is scheduled for its own retirement slice. This document is preserved unchanged below as the coexistence design and canary record; it is not an installation or operating guide.
+
+**Status:** historical: scope ratified (five cross-model rounds) → built (items 1-7) → hardened
+through three cross-model code-review rounds (13 BLOCKER, 4 IMPORTANT, 3 NIT folded in; final
+verdict SHIP) → landed on the now-historical `rust-rewrite` development branch → superseded by
+the P5 entry flip on 2026-08-31. The canary checklist is retained as evidence, not a live task.
 
 ## Decision (binding, 2026-08-30)
 

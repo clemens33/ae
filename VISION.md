@@ -29,8 +29,9 @@ listed in AGENTS.md and has not changed.
 - **Simplicity is the feature.** The whole tool must stay understandable in one sitting.
 - **Daily productivity over feature completeness.** If it does not save time on every use,
   it does not belong. Resisting features is the work.
-- **One file to install, no runtime to bring.** `curl | bash`, one artifact, no package
-  manager, no interpreter, no service to keep alive.
+- **One command to install after prerequisites.** A checksum-verified four-member bundle
+  needs no Rust runtime, run-time package manager, or service to keep alive. Bash >= 4,
+  tmux, and git remain required and are not bundled.
 - **Your repo stays clean.** Session state lives in `~/.ae/sessions/`, archives in
   `~/.ae/archive/`. Working directories are never touched.
 - **Optional stays optional.** Companions (telegram, orchestrator, monitor) may declare their
@@ -40,11 +41,10 @@ listed in AGENTS.md and has not changed.
 
 ## Where it is going
 
-**One typed core, a thin bash remainder.** ae is being rewritten as a single Rust binary,
-package and binary named `ae` from day one. Bash keeps only what it is best at: pane-side
-artifacts (`launch.<slot>.sh`, interactive shims) and the tmux mechanics around
-new-session/attach. Rust calls the `tmux` CLI directly — bash was always the glue, never
-the API.
+**One typed core, a thin bash remainder.** `main` now carries the Rust binary, package, and
+public command named `ae`. Bash keeps only what it is best at: pane-side artifacts
+(`launch.<slot>.sh`, interactive shims) and the tmux mechanics around new-session/attach.
+Rust calls the `tmux` CLI directly — bash was always the glue, never the API.
 
 **Why now.** The revisit triggers in AGENTS.md fired, in order:
 
@@ -64,12 +64,15 @@ Go gives the same static binary, but with agent authors its simplicity edge evap
 the type system's bug-class elimination wins. Python stays wrong for the core: interpreter
 boot on every helper call, against a hot path where helpers are called constantly.
 
-**Daemons fold in.** Watchdog and telegram graduate into the binary once their Python
-behavior is stable; the Python contrib becomes reference and incubator only. Analytics
-sidecars stay Python contrib indefinitely.
+**Daemons are Rust-owned.** Watchdog and Telegram run in the core; Bash keeps start/stop/tick
+pane glue, while the old watchdog loop is only a rollback path. Python contrib is reference
+and incubator only. Analytics sidecars stay Python contrib indefinitely.
 
-**Install does not change shape.** Cross-compiled darwin-arm64 and linux-amd64 (static
-musl), one file, same contract as today.
+**Install preserves the user-level contract.** After Bash >= 4, tmux, and git are present,
+one command installs a checksum-verified four-member bundle (`ae`, `ae-core`, `ae-glue`,
+`install`). It needs no Rust runtime, run-time package manager, or service; macOS is built
+natively on `macos-15`, while Linux amd64 release bundles are static musl. A checkout install
+instead compiles a native binary for its current machine.
 
 ## How we get there
 
@@ -85,27 +88,33 @@ Strangler fig, with single-owner vertical cutovers.
   accidental bash behavior into the typed design.
 - **Every cutover is reversible until its phase gate passes.** The bash implementation of a
   domain is deleted only after the Rust owner survives a full gate; the flip commit names
-  its revert.
+  its revert. **P5 status exception:** the owner explicitly authorized entry despite
+  unclosed formal P1/P4 parity evidence. Runtime and product gates passed; formal parity
+  closure is not claimed, and its gate record remains local WIP.
 
 | Phase | What flips |
 |---|---|
-| **P0** | Semantic contract, golden corpus, state/lock model; Cargo package, lanes, CI, cross-compile |
+| **P0** | Semantic contract, golden corpus, state/lock model; Cargo package, lanes, CI, native-macOS and static-musl-Linux release lanes |
 | **P1** | Read side: `list --json`, requests, events queries; snapshot parity against the corpus |
 | **P2** | Write domains: events emission, request tracking, state/goal/memo — helpers become thin shims |
 | **P3** | Lifecycle: claims, archives, compact orchestration; bash keeps tmux new-session/attach |
 | **P4** | Daemons: watchdog + telegram graduate from Python contrib |
-| **P5** | Entry flip: the installer points `ae` at the binary; the single-file / pure-bash doctrine retires and the bash-hazards checklist shrinks to the pane glue that survives |
+| **P5** | **Entered 2026-08-31.** The public wrapper validates the immutable Rust core and policy-frozen, shrinking Bash pane glue, including the P5 sibling-binding routing fix; the single-file / pure-Bash doctrine is retired and the bash-hazards checklist now governs only surviving pane glue. |
 
-Before that flip the rewrite is dogfooded **beside** the installed ae rather than over it:
-`ae-next` (contrib/ae-next, `just next-install`) runs this branch with its own `~/.ae-next`,
-its own tmux server and an immutable core, so the ae you work with is never the experiment.
-The intended end state is a later, separately approved promotion — `ae-next` becomes `ae`,
-today's `ae` is kept as `ae-legacy` for rollback. See docs/migration/coexistence.md.
+The P5 entry flip makes the `ae-next` coexistence surface unreachable via the public entry;
+the residual glue block is scheduled for its own retirement slice. The public `ae` wrapper
+validates its matched wrapper/core/glue triple before execution; coreless Bash mode is
+unreachable through that entry. The historical coexistence decision remains in
+[docs/migration/coexistence.md](docs/migration/coexistence.md); the byte-exact local
+`ae-legacy` P5 cutover anchor stays outside the public bundle until pre-flip live sessions
+stop or resume.
 
 ## Status
 
-Branch `rust-rewrite`. Bash ae is **frozen at `72c7293`** — no feature work, no rescue
-tooling for pre-freeze sessions. Until a domain flips, the bash behavior documented in
-README and `docs/` is the behavior you get. The single-file / pure-bash rules in AGENTS.md
-govern that frozen glue until P5 and retire with it. The bash hazards do not retire — they
-shrink to whatever pane-side bash survives the flip, and stay binding for it.
+P5 entered on 2026-08-31; `main` now carries the post-strangler product, while
+`rust-rewrite` is historical development-branch context. The tracked Bash `ae` is
+policy-frozen (no new Bash features), shrinking surviving pane glue with the P5
+sibling-binding routing fix, shipped as immutable `ae-glue`. The original pre-rewrite script
+is preserved locally byte-exact at `72c7293` as the `ae-legacy` P5 cutover anchor outside the
+public bundle, removable once pre-flip live sessions stop or resume. The single-file /
+pure-Bash rules are historical. Bash hazards remain binding for the surviving pane-side glue.

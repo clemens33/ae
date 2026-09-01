@@ -1,16 +1,23 @@
 # Development
 
-ae is a single bash script. The repo is mostly that script + tests + this docs site.
+ae ships one public wrapper over an immutable versioned Rust core and policy-frozen, shrinking
+Bash pane glue with the P5 sibling-binding routing fix.
+The repo contains that product, its installer and release lanes, glue/installer tests, Rust
+tests, and this docs site.
 
 ## Layout
 
 ```
-ae                  — the script (everything lives here)
+ae                  — policy-frozen, shrinking pane glue with the P5 sibling-binding routing fix (bundled as `ae-glue`)
+ae-entry            — public wrapper source (installed and bundled as `ae`)
 justfile            — dev/release pipeline (just check, just test, just release)
 cliff.toml          — git-cliff config (CalVer-compatible changelog)
 tests/unit          — pure-function unit tests (bash, no deps)
 tests/integration   — integration tests (requires tmux, git)
-install             — symlink / curl|bash installer
+tests/it/           — Rust integration target
+install             — canonical checksum-verifying versioned installer
+Cargo.toml          — Rust package (bin + lib, both `ae`)
+src/                — Rust core sources
 README.md           — short user-facing intro
 AGENTS.md           — project-level rules for agents working in this repo
 CLAUDE.md           — symlink to AGENTS.md for Claude Code
@@ -23,6 +30,8 @@ mkdocs.yml          — docs site config
 | Tool | Purpose |
 |---|---|
 | [just](https://github.com/casey/just) | task runner |
+| [rustup](https://rustup.rs/) | pinned Rust toolchain bootstrap |
+| cargo / rustfmt / clippy | Rust build, format, and lint tooling (provisioned by `just rust-setup`) |
 | [shellcheck](https://github.com/koalaman/shellcheck) | bash linter |
 | [shfmt](https://github.com/mvdan/sh) | bash formatter (indent=4, case-indent) |
 | [git-cliff](https://github.com/orhun/git-cliff) | changelog from conventional commits |
@@ -37,6 +46,9 @@ just format           # shfmt -w
 just test             # unit + integration
 just test-unit        # pure-function unit tests (bash only, no tmux)
 just test-integration # tmux + git required
+just install          # checkout-mode immutable versioned install
+just rust-setup       # install pinned Rust toolchain and dev tools
+just rust-check       # Rust fmt, clippy, nextest, and doctests
 just version          # current AE_VERSION
 just release          # full release pipeline (CalVer → tag → gh release)
 just docs             # serve the docs site locally on http://localhost:8000
@@ -45,7 +57,7 @@ just docs-build       # build the static site into ./site
 
 ## Tests
 
-`tests/unit` extracts pure functions from `ae` via `awk`, sources them, and asserts behavior with a tiny `assert_eq` harness. No external dependencies. Session-helper logic (watchdog, send, ask, requests, …) lives in the top-level **template library** section of `ae` — real column-0 functions emitted into the generated helpers via `declare -f` — so tests extract and exercise those functions directly; there are no helper heredocs to parse anymore (only three trivial exec shims remain heredocs). Two builder helpers (`_build_lib_from_source`, `_build_helper_from_source`) reconstruct a runnable `_lib`/helper from the emission's own prologue + `declare -f` list when a test needs the full artifact.
+`tests/unit` covers the policy-frozen, shrinking pane glue (including the P5 sibling-binding routing fix), public-wrapper/installer contract, and helper templates with a tiny `assert_eq` harness. Session-helper logic (watchdog, send, ask, requests, …) lives in the top-level **template library** section of `ae` — real column-0 functions emitted into generated helpers via `declare -f` — so tests extract and exercise that glue directly; there are no helper heredocs to parse anymore (only three trivial exec shims remain heredocs). Two builder helpers (`_build_lib_from_source`, `_build_helper_from_source`) reconstruct a runnable `_lib`/helper from the emission's own prologue + `declare -f` list when a test needs the full artifact.
 
 When adding or changing a helper, the guard suite enforces the emission invariants: every `declare -f` list ends with its `helper_<name>_main`, every emitted name has exactly one top-level definition, the template `helper_*` set equals the emitted union, and the whole template library must source silently under `set -u` (an executable leak would run on every ordinary `ae` invocation).
 
@@ -68,13 +80,21 @@ recovered with `just bump-recover`.
 1. Pre-flight: clean working tree, fetch tags, pull rebase.
 2. `just check` (shellcheck + shfmt).
 3. `just test` (unit + integration).
-4. Bump `AE_VERSION` in `ae`, the Cargo package and lockfile, and the README badge.
+4. Bump all four version-bearing files: `_AE_ENTRY_VERSION` in `ae-entry`, `AE_VERSION` in `ae`, the Cargo package and lockfile; after the first Rust-era tag, flip the README badges from untagged/pre-release to tagged release and from checkout-install to `curl | bash`.
 5. `git-cliff` → `CHANGELOG.md` + release-body.
 6. Commit, tag, push, `gh release`.
 
 ## Cross-model code review
 
-Significant changes go through cross-model review before commit. From a Claude Code session in the repo:
+Significant changes go through cross-model review before commit. Inside an ae session, route the
+review through its visible, steward-monitored helpers:
+
+```bash
+review codex:reviewer "Review uncommitted changes critically; return findings first."
+# or: spawn codex:reviewer "Review uncommitted changes critically; return findings first."
+```
+
+Outside an ae session, use the direct CLI fallback:
 
 ```bash
 codex exec --sandbox read-only -o .local/cross-review.md "Review uncommitted changes critically..."
@@ -86,9 +106,9 @@ Review invocations run **read-only** — a `--full-auto` reviewer is a tree muta
 
 ## Philosophy reminders
 
-- ae must remain a single bash script. No compiled languages, no runtimes. (A decision with reasons, not dogma — see "Revisit triggers" in `AGENTS.md`.)
+- ae is a public wrapper, Rust core, and policy-frozen shrinking Bash pane glue with the P5 sibling-binding routing fix; no new Bash features return to the glue.
 - Config is INI-style with a simple regex parser. Don't add TOML/YAML/JSON parsing.
-- No dependencies beyond bash ≥ 4.0, tmux, and git. (Docs toolchain is *optional* and never required at runtime.)
+- The installed runtime is an immutable matched set; checkout development additionally needs rustup and just. (Docs tooling remains optional.)
 - Session state lives in `~/.ae/sessions/`. Working directories stay clean.
 - No AI tool attribution in commits.
 - Keep the script lean. If it's getting bloated, cut, don't add.

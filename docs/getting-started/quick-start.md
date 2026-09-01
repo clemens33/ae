@@ -34,7 +34,7 @@ Agents pick descriptive names, show up in own tmux windows, and talk to each oth
 
 ```bash
 ae status my-feature    # recent output from each agent
-ae list                 # all sessions with per-agent health
+ae list                 # running sessions with per-agent health
 ```
 
 ## Finish up

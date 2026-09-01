@@ -2,7 +2,7 @@
 
 > Stable surface for out-of-band consumers — chat bridges, webhooks, mirrors — to read ae activity and write back into a session without owning a tmux pane.
 
-ae itself ships no bridge daemon. The protocol below is what *any* such daemon binds to. It lives here so a bridge implementation (in this repo or another) has a fixed contract to write against, and so changes to that contract are deliberate.
+ae ships exactly one bridge daemon in `ae-core`: the Rust Telegram bridge runs in the `ae-telegram` tmux session. The protocol below is the stable event/send contract used by that shipped bridge and by external consumers such as chat bridges, webhooks, and mirrors. External consumers can read ae activity and write back into a session without owning a tmux pane; they are not additional ae bridge owners. This contract lives here so every consumer has a fixed surface to write against, and so changes are deliberate.
 
 For background context and roadmap, see [issue #1 — Chat bridge for ae sessions](https://github.com/clemens33/ae/issues/1).
 

@@ -1,13 +1,16 @@
 # ae
 
-Single bash script. No dependencies beyond bash and tmux. Keep it that way.
+One public wrapper, one Rust core, and policy-frozen, shrinking Bash pane glue with the P5 sibling-binding routing fix in one immutable versioned install. Keep the product thin: tmux remains the runtime, and Bash remains only where pane glue is best-in-class.
 
-> **Branch `rust-rewrite` (epic #79).** Bash `ae` is **frozen at `72c7293`** and shrinks to
-> tmux/pane glue; the state core, lifecycle and daemons become one Rust binary. This file is
-> **additive** for the duration: every bash section below still governs the frozen glue and
-> stays authoritative until its domain flips. The single-file / pure-bash rules retire at
-> **P5**, not now. Rust-era rules: [Rust era](#rust-era-rust-rewrite-branch). Direction and
-> phases: [VISION.md](VISION.md).
+> **P5 entered 2026-08-31; `main` carries the post-strangler product.** `rust-rewrite`
+> (epic #79) is historical development-branch context. The tracked `ae` is policy-frozen
+> (no new Bash features), shrinking surviving pane glue with the P5 sibling-binding routing
+> fix, shipped as immutable `ae-glue`; state, lifecycle, and daemons are one Rust binary. The
+> original pre-rewrite script is preserved locally byte-exact at `72c7293` as the `ae-legacy`
+> P5 cutover anchor outside the public bundle, removable once pre-flip live sessions stop or
+> resume. The single-file / pure-Bash rules are historical. Rust-era rules:
+> [Rust era](#rust-era-current-main). Direction and phases:
+> [VISION.md](VISION.md).
 
 ## Philosophy
 
@@ -18,16 +21,16 @@ Single bash script. No dependencies beyond bash and tmux. Keep it that way.
 - No build steps, no package managers, no abstractions.
 - Simplicity is the feature. The entire tool must remain understandable in one sitting.
 
-*Scope on `rust-rewrite`:* the first, second, third and sixth bullets are durable — they
-describe what ae **is**, and the Rust core inherits them unchanged (a thin wrapper, daily
-productivity, resist features, understandable in one sitting). "One file does everything"
-and "no build steps" describe the bash **implementation**: they govern the frozen glue and
-retire with it at P5. A crate with modules is not a violation of the doctrine; it is the
-doctrine applied to a language where one file is not how you stay readable.
+*Scope after the P5 entry flip:* the first, second, third and sixth bullets are durable —
+they describe what ae **is**, and the Rust core inherits them unchanged (a thin wrapper,
+daily productivity, resist features, understandable in one sitting). "One file does
+everything" and "no build steps" were bash-implementation rules; they are historical.
+A crate with modules is the doctrine applied to a language where one file is not how you
+stay readable.
 
 ## Rules
 
-- `ae` must remain a single bash script. No compiled languages, no runtimes. *(A decision, not dogma — see "Revisit triggers" below.)* **Scope on `rust-rewrite`: this now governs the frozen bash glue — the tracked `ae` script and its generated helpers — until the P5 entry flip. The Rust binary is the ratified consequence of triggers 1–3 firing, not a violation of this rule.**
+- `ae` must remain a single bash script. No compiled languages, no runtimes. *(Historical pre-P5 decision; triggers 1–3 fired and P5 entered on 2026-08-31.)* The tracked `ae` is policy-frozen (no new Bash features), shrinking surviving pane glue with the P5 sibling-binding routing fix, shipped as `ae-glue`; the byte-exact original at `72c7293` is the local `ae-legacy` P5 cutover anchor outside the public bundle, removable once pre-flip live sessions stop or resume. The Rust binary is the ratified successor, not a violation of the durable product doctrine.
 - Config is INI-style with a simple regex parser. Don't add TOML/YAML/JSON parsing.
 - Core ae requires only `bash >= 4.0`, `tmux`, and `git`. Optional features may declare their own hard dependencies (e.g. `ae orchestrator` needs an agent CLI; `contrib/aemonitor` needs Python 3), but those deps must never be required for the rest of ae to work — `ae list`, `ae <name>`, etc. continue to function on a machine without them. (`ae telegram` used to need `jq` + `curl`; the Rust-core bridge needs neither — it is the ae core binary.)
 - Session state lives in `~/.ae/sessions/`; archived session memory lives in
@@ -64,18 +67,15 @@ tmux as the runtime is no longer unchallenged: **herdr** (herdrdev/herdr, Rust, 
 ## Structure
 
 ```
-ae                  — the script
+ae                  — policy-frozen, shrinking pane glue with the P5 sibling-binding routing fix (bundled as `ae-glue`)
+ae-entry            — public wrapper source (installed and bundled as `ae`)
 justfile            — dev/release pipeline (just check, just test, just release)
 cliff.toml          — git-cliff changelog config (CalVer-compatible)
 tests/unit          — pure-function unit tests (bash, no deps)
 tests/integration   — integration tests (requires tmux, git)
-install             — symlink or curl|bash installer
+install             — canonical checksum-verifying versioned installer (checkout or release entry)
 docs/               — user + internals documentation (getting-started, reference, internals)
 contrib/            — optional sidecars: aewatch (retired Python watchdog+bridge; archival), aeorchestrator, aemonitor
-contrib/ae-next/    — PRE-P5 COEXISTENCE, retires at the entry flip: the `ae-next` wrapper,
-                      checkout-local installer, and standalone checksum-verifying
-                      `install-remote`, which run this branch beside installed `ae`
-                      (own ~/.ae-next, own tmux server, immutable core). docs/migration/coexistence.md
 Cargo.toml          — Rust package: one crate, bin + lib, both named `ae` (no workspace)
 rust-toolchain.toml — compiler pin: channel, profile, components, both targets
 clippy.toml         — the tests-only relaxation of the unwrap/expect rule
@@ -199,7 +199,7 @@ ae supports multiple coding agent CLIs. They differ significantly in session han
 - **Session names are an allowlist**, enforced at **every boundary where a name is created, imported, or mutated**: `^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$`. The grammar and the reasoning live in one place — `_validate_session_name` in `ae`; the error message echoes it verbatim. A name is simultaneously a tmux session, a directory under `~/.ae/sessions/`, part of the `.lifecycle.<name>.lock` filename, an rsync destination on both ends of `ae transfer`, and the target of the launch rollback's `rm -rf` — so it is allowlisted rather than filtered. The boundaries: **launch entry** (`ae [name]`, before the first tmux or filesystem side effect), **`default_session_name`** (which *guarantees* the grammar for any PWD rather than being checked against it), **`ae transfer`** (both directions, before any path, SSH probe, `mkdir`, or `rsync`), and **`ae rename`** (target strict). Consumers of an *existing* session use `_session_name_usable`, which also accepts a legacy name that is already a real direct-child directory — a migration path out of pre-grammar names, never a route to traversal. `ae end`/`ae stop` resolve through session lookup rather than raw path construction (measured), so they are not name boundaries. Widen only on a real name in the wild, never on speculation.
 - `launch.<slot>.sh` is **re-runnable** for the upfront-UUID tools. `--session-id` is create-once, so a human who exits the TUI and arrow-ups the script used to hit "Session ID … is already in use". The script now drops a `launch.<slot>.started` marker on its first run and `exec`s the `--resume` variant on every later one; ae clears the marker whenever it rewrites the script, so a fresh launch always creates. The decision happens BEFORE exec deliberately: a `cmd || fallback` chain would leave bash as the pane's process and `pane_current_command` would report `bash` instead of the tool, silently disabling the send path's TUI modelling (measured — and the reason today's `claude --resume … || --continue` resume launches already read as `bash`). The post-launch-capture tools have no baked id to collide with; re-running their script starts a fresh conversation instead of erroring, which is why they are out of scope rather than fixed.
 
-## Rust era (`rust-rewrite` branch)
+## Rust era (`main`)
 
 Read before editing anything Rust. **The files are the contract** — `rust-toolchain.toml`,
 `Cargo.toml`, `clippy.toml`, `deny.toml`, `taplo.toml`, `.cargo/`, and the `rust-*` block of
@@ -254,47 +254,53 @@ is stale.
 Coverage becomes a gate the day a threshold is ratified, and not before. An unratified
 number that blocks a merge is a number nobody agreed to.
 
-### Prebuilt ae-next distribution
+### Prebuilt ae distribution
 
 Release tags matching `v[0-9]*.[0-9]*.[0-9]*` build their own release binaries with
 `--locked` on pinned `ubuntu-24.04` and `macos-15` runners. The Linux artifact is
 proven static (`PT_INTERP` absent and `file` reports static) and runs both `_net-probe`
 controls against the shipped binary: the reserved `.invalid` name must refuse and
-`api.telegram.org` must resolve. Each bundle contains the core, frozen `ae` glue,
-`ae-next`, and `install-remote`; the final job emits one `SHA256SUMS` over both tarballs.
-The standalone installer downloads files, verifies the checksum before extraction,
-and atomically publishes the complete pair under one immutable version directory.
+`api.telegram.org` must resolve. Each bundle contains the public `ae` wrapper, `ae-core`,
+policy-frozen, shrinking `ae-glue` with the P5 sibling-binding routing fix, and canonical
+`install`; the final job emits one `SHA256SUMS` over both
+tarballs. The installer downloads files, verifies the checksum before extraction, and
+atomically publishes the complete matched set under one immutable version directory.
 The first real post-seal tag is the outstanding end-to-end workflow proof; local unit
 tests use fixture bundles and never access the network.
 
-**The remote installer takes no path overrides.** It installs to `~/.ae-next` and
-`~/.local/bin/ae-next`, derived from `HOME` and nothing else. Accepting a
-caller-chosen home and command path meant validation had to prove two arbitrary
-pathnames could never alias each other or the legacy tree, and successive review
-rounds kept finding spellings that slipped it: a symlink at the legacy command
-path, a missing component followed by `..`, repeated slashes the filesystem
-collapses — with case-insensitive spellings still open and unclosable by string
-comparison. Fixed paths delete that class by construction, and `HOME` stays the
-isolation seam the tests already used. The journal is persisted state a later run
-parses, so it is still validated as hostile: every pointer and the command path
-must equal their fixed spellings, flags are checked through a helper rather than a
-mixed `&&`/`||` chain a normal value could veto, and a journal for another home is
-refused and preserved for diagnosis rather than acted on.
+**The canonical installer takes no path overrides.** It installs to `~/.ae/versions` and
+`~/.local/bin/ae`, derived from `HOME` and nothing else. Fixed publication paths avoid
+aliasing with legacy state; persisted journals are hostile input and are refused, then
+preserved for diagnosis, when their pointers or command path disagree.
 
-**The wrapper keeps `AE_NEXT_HOME`, and that is a different surface — not a
-leftover.** It is an advanced coexistence runtime override, unadvertised in user
-docs and scheduled for removal in its own slice before P5. It ships in the bundle,
-and it is a state-write authority: the wrapper exports `AE_HOME`, so that variable
-directs every write `ae` makes. So it is guarded by **identity, not spelling** — a
-resolved-string comparison accepts `~/.AE`, which on a case-insensitive filesystem
-(the macOS default) *is* the legacy home (measured: same device and inode, strings
-unequal). The wrapper and the checkout-local installer refuse a candidate that
-`test -ef` proves is `~/.ae`. Because `-ef` needs both paths to exist it is vacuous
-on a fresh machine, so the checkout installer creates only the candidate root,
-classifies it before any child or config write, and removes it again if what it
-created was an alias. The wrapper needs no such dance: it requires
-`$AE_HOME/core/current` and exits before `exec` otherwise, so it never creates a
-home.
+**P5 executed the `AE_NEXT_HOME` retirement on 2026-08-31.** The coexistence wrapper and
+its advanced state-write override no longer ship. The public wrapper unsets inherited
+`AE_CORE`, `AE_TMUX_SERVER`, `AE_TMUX_SERVER_KIND`, and `AE_CORE_BIN`; it unconditionally
+sets `AE_HOME=$HOME/.ae` and `CONFIG_FILE=$AE_HOME/config`, ignoring inherited `AE_HOME` and
+`AE_NEXT_HOME`. One aggregated notice names whichever inherited values were set and would
+have changed behavior. The `AE_CORE` unset closes the set-empty Bash-fallback bypass. The
+wrapper then validates its versioned `core/current` and glue match before execution, so
+coreless Bash mode is unreachable through the public entry. The retained coexistence Telegram
+glue block is likewise unreachable via that entry and is scheduled for its own retirement
+slice.
+
+**P5 command ownership (ruled 2026-08-31):** except `upgrade` and the three version
+spellings, every row below passes the validated triple first. Before every non-`upgrade`
+exec, the wrapper unsets `AE_VERSION`; the operator pin is scoped solely to `upgrade` and
+cannot freeze into a session.
+
+| Invocation | Owner / gate order |
+|---|---|
+| `list` or `ls` without a help token in its tail | Rust core, after the validated triple |
+| `list` or `ls` whose tail contains exact `-h` or `--help` | `ae-glue` `LISTHELP`, after the validated triple; temporary until core has ratified list-help |
+| `upgrade` | immutable sibling `install`, before the triple gate so repair survives breakage; caller `AE_VERSION` is the target pin |
+| `version`, `--version`, or `-V` | public wrapper `_AE_ENTRY_VERSION`, before the triple gate |
+| `_*` | policy-frozen `ae-glue`, after the validated triple |
+| every other invocation | policy-frozen `ae-glue`, after the validated triple |
+
+When `ae-glue` is installed with an executable `ae-core` sibling, its core binding uses that
+sibling unconditionally (ignoring `AE_CORE_BIN`). In every other shape, resolution is
+`AE_CORE_BIN`, then immutable `core/current`, then config `workspace.core`.
 
 ### Lint policy: `[lints]` + `-D warnings`
 
@@ -414,8 +420,8 @@ whole graph for advisories in the meantime.
 beside it for parser round-trip invariants; **cargo-vet** with the first runtime dep
 (orthogonal to cargo-deny — do not add cargo-audit, that duplication is already refused
 above); **skip insta** (snapshot tests would pin unratified digest order — the exact
-over-pinning class criterion 15 polices); **cargo-semver-checks at P5** (publish=false,
-version 0.0.0 until then). Candidate clippy hardening lints to evaluate in their own quiet
+over-pinning class criterion 15 polices); **cargo-semver-checks remains unused**: the P5-entry
+revisit resolved keep-unused per [rust-sota-grok.md](docs/research/rust-sota-grok.md#cargo-semver-checks-0500--keep-unused), because ae is unpublished CalVer product code with no external library consumer or compatibility promise. Adopt it only if the crate is published or gains a real external library consumer. Candidate clippy hardening lints to evaluate in their own quiet
 slice, not mid-flight: `cast_possible_truncation`, `cast_sign_loss`, `dbg_macro`, `todo`,
 `unimplemented`, `panic_in_result_fn` — evaluation means running them against the tree,
 not appending them to the table.
@@ -497,23 +503,23 @@ The bootstrap contract, in full — nothing else is assumed to exist:
 
 ### Deferred, with the trigger recorded
 
-- **Version scheme.** `AE_VERSION` and Cargo's package version are unified NOW, deliberately
-  pre-promotion: both use SemVer-compatible CalVer `YYYY.M.N`. `just bump` derives N from
-  matching Git tags (`vYYYY.M.N`), resets monthly, refuses duplicate tags, and updates `ae`,
-  `Cargo.toml`, and `Cargo.lock` together.
+- **Version scheme.** `_AE_ENTRY_VERSION` in `ae-entry`, `AE_VERSION` in `ae`, and Cargo's
+  package version are unified NOW, deliberately pre-promotion: all use SemVer-compatible CalVer
+  `YYYY.M.N`. `just bump` derives N from matching Git tags (`vYYYY.M.N`), resets monthly,
+  refuses duplicate tags, and updates `ae-entry`, `ae`, `Cargo.toml`, and `Cargo.lock` together.
 - **`panic = "abort"`** in the release profile forecloses `catch_unwind`. Revisit at **P4**:
   a long-lived watchdog or telegram loop may want to survive a panic in one iteration rather
   than take the process down. Cheap to flip; recorded so it stays a decision.
 - **`cliff.toml` is excluded from taplo** — a bash-era file whose reformat would be an
   unrelated diff in a frozen area. It joins the lane when someone reformats it deliberately.
 
-## Bash hazards (read before editing `ae`)
+## Bash hazards for surviving pane glue (read before editing `ae`, bundled as `ae-glue`)
 
 Every bug class below has shipped at least once. Check new code against both lists.
 
-*Scope on `rust-rewrite`:* this section governs the frozen bash glue and the generated
-helpers — everything that stays bash until P5. It shrinks as domains flip; what survives P5
-is the pane-side remainder. The measured facts in it (TUI markers, tool behavior, userland
+*Scope after P5:* this section governs policy-frozen, shrinking `ae-glue` with the P5
+sibling-binding routing fix and the generated helpers — the pane-side Bash remainder. Its
+measured facts (TUI markers, tool behavior, userland
 divergences) are **empirical evidence** for the semantic contract, never its normative
 authority — see `docs/migration/semantic-contract.md`.
 

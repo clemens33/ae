@@ -2,6 +2,10 @@
 
 Deliverable 1 of #81, part of epic #79. Status: **DRAFT — not ratified.**
 
+**P5 disposition (2026-08-31):** the `ae-next` coexistence product has been superseded by
+the public-entry flip. Its rows and cited evidence remain historical baseline material; this
+status note neither deletes nor reclassifies any semantic-contract row.
+
 **Ratification gates (all explicit, all hard):** zero unclassified rows; zero unresolved
 conflicts; every open bash-era issue carries a migration disposition on #79; ratification
 recorded by BOTH seats as comments on #81.

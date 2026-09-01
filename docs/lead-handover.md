@@ -1,5 +1,7 @@
 # Lead handover — running ae development after phase 3
 
+> **PRE-P5 — superseded as live operating doctrine at the P5 entry flip on 2026-08-31.** The trust map, first-looks guidance, and list-incident routing below predate Rust-core ownership of `list`. [AGENTS.md](../AGENTS.md)'s P5 ownership table and [gatekeeping.md](gatekeeping.md) are the current authorities; this body is retained as historical handover evidence pending its morning rewrite.
+
 Written 2026-07-07 by the phase-3 session lead (Fable 5) for any lead model taking
 over ae development sessions. `AGENTS.md` is the contract; `gatekeeping.md` is the
 gate craft; `design-patterns.md` is the design vocabulary. This file is the local

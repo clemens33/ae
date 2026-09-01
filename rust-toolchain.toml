@@ -8,9 +8,9 @@ profile = "minimal"
 # otherwise `rustup component add`s it ON DEMAND (measured), silently mutating a
 # pinned toolchain from inside a "report" lane and requiring the network to do it.
 components = ["rustfmt", "clippy", "llvm-tools"]
-# Both targets of the epic. aarch64-apple-darwin is native here; the linux
-# target is CROSS and is only ever compile-smoked from macOS (`cargo check`,
-# no link step) — a foreign binary produced here would not be proven runnable.
+# Both product targets are native on their CI/release legs: aarch64-apple-darwin
+# on macOS and x86_64-unknown-linux-musl on Linux. Both are linked and executed;
+# macOS deliberately does not touch the Linux target.
 #
 # musl, NOT gnu: the epic promises a STATIC zero-dep binary, and on Linux musl
 # is that promise — a glibc build is dynamically linked against the build host's

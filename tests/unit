@@ -14466,6 +14466,7 @@ _calver_make_fixture() {
     local dir="$1"
     mkdir -p "$dir/bin"
     cp "$AE_BIN" "$dir/ae"
+    cp "$(dirname "$AE_BIN")/ae-entry" "$dir/ae-entry"
     cp "$(dirname "$AE_BIN")/Cargo.toml" "$dir/Cargo.toml"
     cp "$(dirname "$AE_BIN")/Cargo.lock" "$dir/Cargo.lock"
     cp "$(dirname "$AE_BIN")/justfile" "$dir/justfile"
@@ -14478,7 +14479,7 @@ _calver_make_fixture() {
     git -C "$dir" config user.email calver@example.test
     git -C "$dir" config user.name CalVer
     printf '%s\n' fixture >"$dir/fixture"
-    git -C "$dir" add ae Cargo.toml Cargo.lock justfile fixture
+    git -C "$dir" add ae ae-entry Cargo.toml Cargo.lock justfile fixture
     git -C "$dir" commit -qm fixture
 }
 _calver_tag_fixture() {
@@ -14503,18 +14504,20 @@ _calver_recover_run() {
     local dir="$1"
     (
         cd "$dir"
-        env "AE_REAL_CP=$_calver_real_cp" "PATH=$dir/bin:$PATH" just bump-recover
+        env "AE_REAL_MV=$_calver_real_mv" "AE_REAL_CP=$_calver_real_cp" \
+            "PATH=$dir/bin:$PATH" just bump-recover
     )
 }
 _calver_versions() {
     local dir="$1"
-    printf '%s|%s|%s' \
+    printf '%s|%s|%s|%s' \
+        "$(grep -m1 '^_AE_ENTRY_VERSION=' "$dir/ae-entry" | cut -d'"' -f2)" \
         "$(grep -m1 '^AE_VERSION=' "$dir/ae" | cut -d'"' -f2)" \
         "$(grep -m1 '^version = "' "$dir/Cargo.toml" | cut -d'"' -f2)" \
         "$(awk '/^name = "ae"$/{in_ae=1; next} in_ae && /^version = /{gsub(/"/, "", $3); print $3; exit} /^\\[\\[package\\]\\]$/{in_ae=0}' "$dir/Cargo.lock")"
 }
 _calver_fingerprint() {
-    cksum "$1/ae" "$1/Cargo.toml" "$1/Cargo.lock"
+    cksum "$1/ae" "$1/ae-entry" "$1/Cargo.toml" "$1/Cargo.lock"
 }
 _calver_source_ae_block() {
     awk '
@@ -14545,8 +14548,8 @@ _calver_make_fixture "$_calver_january" 2026 01
 _calver_january_out="$(_calver_run "$_calver_january" 2026 01)"
 assert_eq "CalVer bump: no matching tag starts at sequence 1" "2026.1.1" "$_calver_january_out"
 assert_eq "CalVer bump: January never emits a padded month" "2026.1.1" "$_calver_january_out"
-assert_eq "CalVer bump: January moves ae, Cargo.toml, Cargo.lock together" \
-    "2026.1.1|2026.1.1|2026.1.1" "$(_calver_versions "$_calver_january")"
+assert_eq "CalVer bump: January moves ae-entry, ae, Cargo.toml, Cargo.lock together" \
+    "2026.1.1|2026.1.1|2026.1.1|2026.1.1" "$(_calver_versions "$_calver_january")"
 assert_eq "CalVer mutation RED: padded January month is rejected" "1" \
     "$([[ "$_calver_january_out" != *".01."* ]] && echo 1 || echo 0)"
 
@@ -14561,8 +14564,21 @@ assert_eq "CalVer bump: August never emits a padded month" "1" \
     "$([[ "$_calver_august_out" != *".08."* ]] && echo 1 || echo 0)"
 assert_eq "CalVer bump: successful publish preserves ae executable bit" "1" \
     "$([[ -x "$_calver_august/ae" ]] && echo 1 || echo 0)"
-assert_eq "CalVer bump: August files move together" \
-    "2026.8.3|2026.8.3|2026.8.3" "$(_calver_versions "$_calver_august")"
+assert_eq "CalVer bump: successful publish preserves ae-entry executable bit" "1" \
+    "$([[ -x "$_calver_august/ae-entry" ]] && echo 1 || echo 0)"
+assert_eq "CalVer bump: August four version-bearing files move together" \
+    "2026.8.3|2026.8.3|2026.8.3|2026.8.3" "$(_calver_versions "$_calver_august")"
+
+# A half-published transaction can leave the public wrapper old while glue and
+# both Cargo records advanced. This is the exact divergence the triple guard
+# below must refuse in the live tree.
+_calver_partial_wrapper="$(mktemp -d "$_calver_root/partial-wrapper.XXXXXX")"
+_calver_make_fixture "$_calver_partial_wrapper" 2026 08
+cp -p "$_calver_partial_wrapper/ae-entry" "$_calver_partial_wrapper/ae-entry.before"
+_calver_partial_wrapper_out="$(_calver_run "$_calver_partial_wrapper" 2026 08)"
+cp -p "$_calver_partial_wrapper/ae-entry.before" "$_calver_partial_wrapper/ae-entry"
+assert_eq "CalVer mutation RED: wrapper left behind while ae/Cargo trio advances violates triple" \
+    "2026.8.2|2026.8.1|2026.8.1|2026.8.1" "$(_calver_versions "$_calver_partial_wrapper")"
 
 _calver_rollover="$(mktemp -d "$_calver_root/rollover.XXXXXX")"
 _calver_make_fixture "$_calver_rollover" 2026 08
@@ -14587,7 +14603,7 @@ assert_eq "CalVer bump: stale recovery refusal names the recovery recipe" "1" \
     "$(grep -F -c 'run just bump-recover.' "$_calver_stale/err" || true)"
 assert_eq "CalVer bump: stale recovery refusal preserves marker" "1" \
     "$([[ -d "$_calver_stale/.ae-bump-recovery" ]] && echo 1 || echo 0)"
-assert_eq "CalVer bump: stale recovery refusal edits none of three version files" \
+assert_eq "CalVer bump: stale recovery refusal edits none of four version files" \
     "$_calver_stale_before" "$(_calver_fingerprint "$_calver_stale")"
 _calver_stale_recover_rc=0
 _calver_stale_recover_out="$(_calver_recover_run "$_calver_stale" 2>"$_calver_stale/recover.err")" || _calver_stale_recover_rc="$?"
@@ -14602,7 +14618,7 @@ _calver_manual="$(mktemp -d "$_calver_root/manual-recovery.XXXXXX")"
 _calver_make_fixture "$_calver_manual" 2026 08
 _calver_manual_before="$(_calver_fingerprint "$_calver_manual")"
 mkdir "$_calver_manual/.ae-bump-recovery"
-for _calver_manual_path in ae Cargo.toml Cargo.lock; do
+for _calver_manual_path in ae ae-entry Cargo.toml Cargo.lock; do
     cp -p "$_calver_manual/$_calver_manual_path" \
         "$_calver_manual/.ae-bump-recovery/$_calver_manual_path.orig"
     printf '%s\n' interrupted >>"$_calver_manual/$_calver_manual_path"
@@ -14612,7 +14628,7 @@ _calver_manual_rc=0
 _calver_manual_out="$(_calver_recover_run "$_calver_manual" 2>"$_calver_manual/err")" || _calver_manual_rc="$?"
 assert_eq "CalVer bump: bump-recover restores mixed tree" "0" "$_calver_manual_rc"
 assert_eq "CalVer bump: bump-recover emits no output" "" "$_calver_manual_out"
-assert_eq "CalVer bump: bump-recover restores all three live files" \
+assert_eq "CalVer bump: bump-recover restores all four live files" \
     "$_calver_manual_before" "$(_calver_fingerprint "$_calver_manual")"
 assert_eq "CalVer bump: bump-recover removes marker after restoration" "1" \
     "$([[ ! -e "$_calver_manual/.ae-bump-recovery" ]] && echo 1 || echo 0)"
@@ -14620,7 +14636,7 @@ assert_eq "CalVer bump: bump-recover removes marker after restoration" "1" \
 _calver_recover_copy_fail="$(mktemp -d "$_calver_root/recover-copy-failure.XXXXXX")"
 _calver_make_fixture "$_calver_recover_copy_fail" 2026 08
 mkdir "$_calver_recover_copy_fail/.ae-bump-recovery"
-for _calver_recover_copy_fail_path in ae Cargo.toml Cargo.lock; do
+for _calver_recover_copy_fail_path in ae ae-entry Cargo.toml Cargo.lock; do
     cp -p "$_calver_recover_copy_fail/$_calver_recover_copy_fail_path" \
         "$_calver_recover_copy_fail/.ae-bump-recovery/$_calver_recover_copy_fail_path.orig"
     printf '%s\n' interrupted >>"$_calver_recover_copy_fail/$_calver_recover_copy_fail_path"
@@ -14661,7 +14677,7 @@ assert_eq "CalVer bump: duplicate target tag is refused nonzero" "1" "$_calver_d
 assert_eq "CalVer bump: duplicate refusal emits no version" "" "$_calver_duplicate_out"
 assert_eq "CalVer bump: duplicate refusal is loud" "1" \
     "$(grep -F -c 'release tag v2026.8.1 already exists' "$_calver_duplicate/err" || true)"
-assert_eq "CalVer bump: duplicate refusal edits none of three version files" \
+assert_eq "CalVer bump: duplicate refusal edits none of four version files" \
     "$_calver_duplicate_before" "$(_calver_fingerprint "$_calver_duplicate")"
 
 _calver_duplicate_name="$(mktemp -d "$_calver_root/duplicate-name.XXXXXX")"
@@ -14696,8 +14712,42 @@ _calver_atomic_rc=0
 _calver_atomic_out="$(_calver_run "$_calver_atomic" 2026 08 2>"$_calver_atomic/err")" || _calver_atomic_rc="$?"
 assert_eq "CalVer bump: a publication failure is nonzero" "1" "$_calver_atomic_rc"
 assert_eq "CalVer bump: a publication failure emits no version" "" "$_calver_atomic_out"
-assert_eq "CalVer bump: interrupted publish between files rolls all three files back" \
+assert_eq "CalVer bump: interrupted publish between files rolls all four files back" \
     "$_calver_atomic_before" "$(_calver_fingerprint "$_calver_atomic")"
+
+# SIGKILL bypasses bump's EXIT handler after durable backups exist. Recovery
+# must restore every version file from those backups, even if publication had
+# already changed one of them before the parent died.
+_calver_killed="$(mktemp -d "$_calver_root/killed.XXXXXX")"
+_calver_make_fixture "$_calver_killed" 2026 08
+printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'if [[ "${2:-}" == ae && "${1:-}" == *".ae-bump."*/* && ! -e .kill-fired ]]; then' \
+    '    : >.kill-fired' \
+    '    kill -KILL "$PPID"' \
+    'fi' \
+    'exec "$AE_REAL_MV" "$@"' \
+    >"$_calver_killed/bin/mv"
+chmod +x "$_calver_killed/bin/mv"
+_calver_killed_before="$(_calver_fingerprint "$_calver_killed")"
+_calver_killed_rc=0
+_calver_killed_out="$(_calver_run "$_calver_killed" 2026 08 2>"$_calver_killed/err")" || _calver_killed_rc="$?"
+assert_eq "CalVer mutation RED: SIGKILL after backup exits nonzero" "137" "$_calver_killed_rc"
+assert_eq "CalVer mutation RED: SIGKILL after backup emits no version" "" "$_calver_killed_out"
+assert_eq "CalVer mutation RED: SIGKILL leaves durable four-file backups" "1" \
+    "$([[ -f "$_calver_killed/.ae-bump-recovery/backups-ready" && \
+        -f "$_calver_killed/.ae-bump-recovery/ae-entry.orig" && \
+        -f "$_calver_killed/.ae-bump-recovery/ae.orig" && \
+        -f "$_calver_killed/.ae-bump-recovery/Cargo.toml.orig" && \
+        -f "$_calver_killed/.ae-bump-recovery/Cargo.lock.orig" ]] && echo 1 || echo 0)"
+_calver_killed_recover_rc=0
+_calver_killed_recover_out="$(_calver_recover_run "$_calver_killed" 2>"$_calver_killed/recover.err")" || _calver_killed_recover_rc="$?"
+assert_eq "CalVer bump-recover: SIGKILL recovery succeeds" "0" "$_calver_killed_recover_rc"
+assert_eq "CalVer bump-recover: SIGKILL recovery emits no output" "" "$_calver_killed_recover_out"
+assert_eq "CalVer bump-recover: SIGKILL restores all four files byte-identically" \
+    "$_calver_killed_before" "$(_calver_fingerprint "$_calver_killed")"
+assert_eq "CalVer bump-recover: SIGKILL recovery removes the durable marker" "1" \
+    "$([[ ! -e "$_calver_killed/.ae-bump-recovery" ]] && echo 1 || echo 0)"
 
 _calver_partial_backup="$(mktemp -d "$_calver_root/partial-backup.XXXXXX")"
 _calver_make_fixture "$_calver_partial_backup" 2026 08
@@ -14720,9 +14770,116 @@ assert_eq "CalVer bump: partial backup failure clears unready recovery marker" "
 _calver_justfile="$(<"$(dirname "$AE_BIN")/justfile")"
 assert_eq "CalVer release: tag is v plus the derived VERSION and does not rewrite ae again" "1" \
     "$([[ "$_calver_justfile" == *'TAG="v$VERSION"'* && "$_calver_justfile" != *'sed_i ae '* ]] && echo 1 || echo 0)"
+_calver_badge_block="$(awk '/# Update the release badges/,/# Generate changelog/' <<<"$_calver_justfile")"
+assert_eq "CalVer release: badge updater has all three exact-line transforms and the final grep gate" "1" \
+    "$([[ "$_calver_badge_block" == *'replace_badge_line README.md "$README_VERSION_PRE" "$README_VERSION_PRIOR" "$README_VERSION_POST"'* && \
+        "$_calver_badge_block" == *'replace_badge_line README.md "$README_INSTALL_PRE" "$README_INSTALL_PRIOR" "$README_INSTALL_POST"'* && \
+        "$_calver_badge_block" == *'replace_badge_line docs/index.md "$INDEX_VERSION_PRE" "$INDEX_VERSION_PRIOR" "$INDEX_VERSION_POST"'* && \
+        "$_calver_badge_block" == *'untagged/pre-release|checkout%20install|checkout install'* ]] && echo 1 || echo 0)"
+assert_eq "CalVer mutation RED: badge updater has no silent unmatched-badge path" "1" \
+    "$([[ "$_calver_badge_block" == *'has no known pre-release or prior-release badge line'* && \
+        "$_calver_badge_block" == *'did not become its expected release badge line'* && \
+        "$_calver_badge_block" != *'|| true'* ]] && echo 1 || echo 0)"
+_calver_badges="$(mktemp -d "$_calver_root/badges.XXXXXX")"
+mkdir -p "$_calver_badges/docs"
+printf '%s\n' \
+    '![Version: 2026.8.2 untagged/pre-release](https://img.shields.io/badge/version-2026.8.2%20untagged%2Fpre--release-blue.svg)' \
+    '[![Install](https://img.shields.io/badge/install-checkout%20install-orange.svg)](#install)' \
+    'The first Rust-era release tag is pending; checkout install remains active.' \
+    >"$_calver_badges/README.md"
+printf '%s\n' \
+    '![Version: 2026.8.2 untagged/pre-release](https://img.shields.io/badge/version-2026.8.2%20untagged%2Fpre--release-blue.svg)' \
+    'checkout install is the active path until the tag.' \
+    >"$_calver_badges/docs/index.md"
+_calver_replace_badge_line() {
+    local file="$1" pre_pattern="$2" prior_pattern="$3" post_line="$4" source_pattern
+    if grep -Eq "$pre_pattern" "$file"; then
+        source_pattern="$pre_pattern"
+    elif grep -Eq "$prior_pattern" "$file"; then
+        source_pattern="$prior_pattern"
+    else
+        printf 'no known pre-release or prior-release badge line: %s\n' "$file" >&2
+        return 1
+    fi
+    sed -E -e "s@${source_pattern}@${post_line}@" "$file" >"$file.next" && mv "$file.next" "$file" || return 1
+    if ! grep -Fxq "$post_line" "$file"; then
+        printf 'did not become expected release badge line: %s\n' "$file" >&2
+        return 1
+    fi
+}
+_calver_badge_version_pre='^!\[Version: [0-9]+\.[0-9]+\.[0-9]+ untagged/pre-release\]\(https://img\.shields\.io/badge/version-[0-9]+\.[0-9]+\.[0-9]+%20untagged%2Fpre--release-blue\.svg\)$'
+_calver_badge_version_prior='^\[!\[Release: [0-9]+\.[0-9]+\.[0-9]+\]\(https://img\.shields\.io/badge/release-[0-9]+\.[0-9]+\.[0-9]+-blue\.svg\)\]\(https://github\.com/clemens33/ae/releases\)$'
+_calver_badge_version_post='[![Release: 2026.8.3](https://img.shields.io/badge/release-2026.8.3-blue.svg)](https://github.com/clemens33/ae/releases)'
+_calver_badge_install_pre='^\[!\[Install\]\(https://img\.shields\.io/badge/install-checkout%20install-orange\.svg\)\]\(#install\)$'
+_calver_badge_install_prior='^\[!\[Install: curl \| bash\]\(https://img\.shields\.io/badge/install-curl%20%7C%20bash-orange\.svg\)\]\(#install\)$'
+_calver_badge_install_post='[![Install: curl | bash](https://img.shields.io/badge/install-curl%20%7C%20bash-orange.svg)](#install)'
+_calver_replace_badge_line "$_calver_badges/README.md" \
+    "$_calver_badge_version_pre" "$_calver_badge_version_prior" "$_calver_badge_version_post"
+_calver_replace_badge_line "$_calver_badges/README.md" \
+    "$_calver_badge_install_pre" "$_calver_badge_install_prior" "$_calver_badge_install_post"
+_calver_replace_badge_line "$_calver_badges/docs/index.md" \
+    "$_calver_badge_version_pre" "$_calver_badge_version_prior" "$_calver_badge_version_post"
+assert_eq "CalVer release: current-shape fixture flips both version badge lines" "2" \
+    "$(grep -F -c "$_calver_badge_version_post" "$_calver_badges/README.md" "$_calver_badges/docs/index.md" | awk -F: '{sum += $2} END {print sum}')"
+assert_eq "CalVer release: current-shape fixture flips Install alt text and URL" "1" \
+    "$(grep -F -c "$_calver_badge_install_post" "$_calver_badges/README.md")"
+
+# A second release receives prior Release badges plus the final curl badge. It
+# must update the version surfaces while preserving the curl badge byte-for-byte.
+_calver_second="$(mktemp -d "$_calver_root/second-release.XXXXXX")"
+mkdir -p "$_calver_second/docs"
+printf '%s\n' \
+    '[![Release: 2026.8.2](https://img.shields.io/badge/release-2026.8.2-blue.svg)](https://github.com/clemens33/ae/releases)' \
+    '[![Install: curl | bash](https://img.shields.io/badge/install-curl%20%7C%20bash-orange.svg)](#install)' \
+    >"$_calver_second/README.md"
+printf '%s\n' \
+    '[![Release: 2026.8.2](https://img.shields.io/badge/release-2026.8.2-blue.svg)](https://github.com/clemens33/ae/releases)' \
+    >"$_calver_second/docs/index.md"
+grep -F "$_calver_badge_install_post" "$_calver_second/README.md" >"$_calver_second/install.before"
+_calver_second_version_post='[![Release: 2026.8.3](https://img.shields.io/badge/release-2026.8.3-blue.svg)](https://github.com/clemens33/ae/releases)'
+_calver_replace_badge_line "$_calver_second/README.md" \
+    "$_calver_badge_version_pre" "$_calver_badge_version_prior" "$_calver_second_version_post"
+_calver_replace_badge_line "$_calver_second/README.md" \
+    "$_calver_badge_install_pre" "$_calver_badge_install_prior" "$_calver_badge_install_post"
+_calver_replace_badge_line "$_calver_second/docs/index.md" \
+    "$_calver_badge_version_pre" "$_calver_badge_version_prior" "$_calver_second_version_post"
+assert_eq "CalVer release: prior Release badges advance to the next release" "2" \
+    "$(grep -F -c "$_calver_second_version_post" "$_calver_second/README.md" "$_calver_second/docs/index.md" | awk -F: '{sum += $2} END {print sum}')"
+assert_eq "CalVer release: final curl badge is a byte-identical no-op" "1" \
+    "$(cmp -s "$_calver_second/install.before" <(grep -F "$_calver_badge_install_post" "$_calver_second/README.md") && echo 1 || echo 0)"
+_calver_badge_prose_rc=0
+grep -En 'untagged/pre-release|checkout%20install|checkout install' \
+    "$_calver_badges/README.md" "$_calver_badges/docs/index.md" >"$_calver_badges/prose.out" || _calver_badge_prose_rc="$?"
+assert_eq "CalVer mutation RED: final badge grep catches pre-release prose leftovers" "0" \
+    "$_calver_badge_prose_rc"
+assert_eq "CalVer mutation RED: final badge grep reports each fixture file" "2" \
+    "$(cut -d: -f1 "$_calver_badges/prose.out" | sort -u | wc -l | tr -d '[:space:]')"
+sed -E \
+    -e 's/untagged\/pre-release/tagged release/g' \
+    -e 's/checkout install/tagged installer/g' \
+    "$_calver_badges/README.md" >"$_calver_badges/README.md.next"
+mv "$_calver_badges/README.md.next" "$_calver_badges/README.md"
+sed -E \
+    -e 's/untagged\/pre-release/tagged release/g' \
+    -e 's/checkout install/tagged installer/g' \
+    "$_calver_badges/docs/index.md" >"$_calver_badges/docs/index.md.next"
+mv "$_calver_badges/docs/index.md.next" "$_calver_badges/docs/index.md"
+_calver_badge_green_rc=0
+grep -En 'untagged/pre-release|checkout%20install|checkout install' \
+    "$_calver_badges/README.md" "$_calver_badges/docs/index.md" >/dev/null || _calver_badge_green_rc="$?"
+assert_eq "CalVer release: final badge grep is green after deliberate prose edits" "1" \
+    "$_calver_badge_green_rc"
+printf '%s\n' '![Version: drift](https://example.test/drift.svg)' >"$_calver_badges/drift.md"
+_calver_badge_drift_rc=0
+_calver_replace_badge_line "$_calver_badges/drift.md" \
+    "$_calver_badge_version_pre" "$_calver_badge_version_prior" "$_calver_badge_version_post" \
+    >"$_calver_badges/drift.out" 2>"$_calver_badges/drift.err" || _calver_badge_drift_rc="$?"
+assert_eq "CalVer mutation RED: badge-shape drift fails loudly" "1" "$_calver_badge_drift_rc"
+assert_eq "CalVer mutation RED: badge-shape drift names the missing expected line" "1" \
+    "$(grep -F -c 'no known pre-release or prior-release badge line' "$_calver_badges/drift.err" || true)"
 
 rm -rf "$_calver_root"
-unset -f _calver_make_fixture _calver_tag_fixture _calver_run _calver_recover_run _calver_versions _calver_fingerprint _calver_source_ae_block
+unset -f _calver_make_fixture _calver_tag_fixture _calver_run _calver_recover_run _calver_versions _calver_fingerprint _calver_source_ae_block _calver_replace_badge_line
 unset _calver_root _calver_real_git _calver_real_mv _calver_real_cp _calver_january _calver_january_out _calver_august _calver_august_out \
     _calver_rollover _calver_rollover_out _calver_stale _calver_stale_before _calver_stale_rc _calver_stale_out \
     _calver_stale_recover_rc _calver_stale_recover_out \
@@ -14732,25 +14889,40 @@ unset _calver_root _calver_real_git _calver_real_mv _calver_real_cp _calver_janu
     _calver_duplicate _calver_duplicate_before _calver_duplicate_rc _calver_duplicate_out \
     _calver_duplicate_name _calver_duplicate_name_before _calver_duplicate_name_out \
     _calver_atomic _calver_atomic_before _calver_atomic_rc _calver_atomic_out \
+    _calver_killed _calver_killed_before _calver_killed_rc _calver_killed_out \
+    _calver_killed_recover_rc _calver_killed_recover_out \
+    _calver_partial_wrapper _calver_partial_wrapper_out \
     _calver_partial_backup _calver_partial_backup_before _calver_partial_backup_rc _calver_partial_backup_out \
-    _calver_justfile
+    _calver_justfile _calver_badge_block _calver_badges _calver_badge_version_pre \
+    _calver_badge_version_prior _calver_badge_version_post _calver_badge_install_pre \
+    _calver_badge_install_prior _calver_badge_install_post _calver_second \
+    _calver_second_version_post \
+    _calver_badge_prose_rc _calver_badge_green_rc _calver_badge_drift_rc
 
-# THE TWO VERSIONS MOVE TOGETHER. just bump updates both; this guard
-# catches a partial bump at `just check` time, before any tag exists.
+# THE THREE VERSION IDENTITIES MOVE TOGETHER. just bump updates all three;
+# this guard catches a partial bump at `just check` time, before any tag exists.
+_ae_entry_version="$(grep -m1 '^_AE_ENTRY_VERSION=' "$(dirname "$AE_BIN")/ae-entry" | cut -d'"' -f2)"
 _ae_glue_version="$(grep -m1 '^AE_VERSION=' "$AE_BIN" | cut -d'"' -f2)"
 _cargo_pkg_version="$(grep -m1 '^version = "' "$(dirname "$AE_BIN")/Cargo.toml" | cut -d'"' -f2)"
+assert_eq "ae-entry _AE_ENTRY_VERSION equals ae AE_VERSION" "$_ae_entry_version" "$_ae_glue_version"
 assert_eq "ae AE_VERSION equals Cargo.toml version" "$_ae_glue_version" "$_cargo_pkg_version"
-assert_eq "ae AE_VERSION is non-empty" "1" \
-    "$([[ -n "$_ae_glue_version" ]] && echo 1 || echo 0)"
-unset _ae_glue_version _cargo_pkg_version
+assert_eq "ae-entry, ae, and Cargo.toml version triple is non-empty" "1" \
+    "$([[ -n "$_ae_entry_version" && -n "$_ae_glue_version" && -n "$_cargo_pkg_version" ]] && echo 1 || echo 0)"
+unset _ae_entry_version _ae_glue_version _cargo_pkg_version
 
+assert_eq "release workflow: both legs check wrapper _AE_ENTRY_VERSION against the tag" "2" \
+    "$(grep -cF "grep -m1 '^_AE_ENTRY_VERSION=' ae-entry" "$(dirname "$AE_BIN")/.github/workflows/release.yml" || true)"
 assert_eq "release workflow: both legs check frozen glue AE_VERSION against the tag" "2" \
     "$(grep -cF "grep -m1 '^AE_VERSION=' ae" "$(dirname "$AE_BIN")/.github/workflows/release.yml" || true)"
+assert_eq "release workflow: both legs check ae-core version against the tag" "2" \
+    "$(grep -cF 'got="$($bin --version)"' "$(dirname "$AE_BIN")/.github/workflows/release.yml" || true)"
+assert_eq "release workflow: both legs bundle immutable sibling installer" "2" \
+    "$(grep -cF 'cp install "$root/install"' "$(dirname "$AE_BIN")/.github/workflows/release.yml" || true)"
 
-# ── ae-next remote installer ─────────────────────────────────────────
+# ── ae remote installer ─────────────────────────────────────────
 # The installer has a guarded main, so its pure platform/version/checksum
 # functions can be sourced without downloading or touching a user's home.
-_remote_installer="$(dirname "$AE_BIN")/contrib/ae-next/install-remote"
+_remote_installer="$(dirname "$AE_BIN")/install"
 # shellcheck source=/dev/null
 source "$_remote_installer"
 _remote_installer_source="$(cat "$_remote_installer")"
@@ -14779,208 +14951,6 @@ assert_eq "remote installer r12: producer rejection leaves journal unchanged" "s
 rm -rf "$_remote_r12_vocab_root"
 _REMOTE_JOURNAL=""
 
-_remote_home_reason_test() {
-    local script="$1" label="$2" root case_variant distinct exact missing missing_root
-    local descendant case_deep symlink_desc slash_slink nested_ok slash_ok
-    eval "$(awk '/^_ae_next_home_reason\(\) \{/,/^\}$/' "$script")"
-    root="$(mktemp -d "${TMPDIR:-/tmp}/ae-home-reason.XXXXXX")"
-    mkdir -p "$root/.ae" "$root/.ae-next" "$root/.ae/canary" "$root/other"
-    ln -s "$root/.ae" "$root/legacy-link"
-    ln -s "$root/other" "$root/slink"
-    case_variant="$(HOME="$root" _ae_next_home_reason "$root/.AE")"
-    if [ -d "$root/.AE" ]; then
-        assert_eq "remote installer $label: case-insensitive identity branch refuses case variant" "1" \
-            "$([[ "$case_variant" == *'AE_NEXT_HOME resolves to the legacy ae home'* ]] && echo 1 || echo 0)"
-    else
-        assert_eq "remote installer $label: case-sensitive identity branch accepts distinct case variant" "1" \
-            "$([[ -z "$case_variant" ]] && echo 1 || echo 0)"
-    fi
-    distinct="$(HOME="$root" _ae_next_home_reason "$root/.ae-next")"
-    assert_eq "remote installer $label: distinct home is accepted" "1" \
-        "$([[ -z "$distinct" ]] && echo 1 || echo 0)"
-    exact="$(HOME="$root" _ae_next_home_reason "$root/.ae")"
-    assert_eq "remote installer $label: exact legacy home remains refused" "1" \
-        "$([[ "$exact" == *'AE_NEXT_HOME resolves to the legacy ae home'* ]] && echo 1 || echo 0)"
-    descendant="$(HOME="$root" _ae_next_home_reason "$root/.ae/canary")"
-    assert_eq "remote installer $label: direct legacy descendant is refused" "1" \
-        "$([[ "$descendant" == *'AE_NEXT_HOME resolves to the legacy ae home'* ]] && echo 1 || echo 0)"
-    case_deep="$(HOME="$root" _ae_next_home_reason "$root/.AE/a/b")"
-    if [ -d "$root/.AE" ]; then
-        assert_eq "remote installer $label: case-alias plus nonexistent intermediate is refused" "1" \
-            "$([[ "$case_deep" == *'AE_NEXT_HOME resolves to the legacy ae home'* ]] && echo 1 || echo 0)"
-    else
-        assert_eq "remote installer $label: case-sensitive distinct .AE/a/b is accepted" "1" \
-            "$([[ -z "$case_deep" ]] && echo 1 || echo 0)"
-    fi
-    symlink_desc="$(HOME="$root" _ae_next_home_reason "$root/legacy-link/x")"
-    assert_eq "remote installer $label: symlink-to-descendant is refused" "1" \
-        "$([[ "$symlink_desc" == *'AE_NEXT_HOME resolves to the legacy ae home'* ]] && echo 1 || echo 0)"
-    slash_slink="$(HOME="$root" _ae_next_home_reason "$root/slink/")"
-    assert_eq "remote installer $label: trailing-slash symlink to non-legacy is refused" "1" \
-        "$([[ "$slash_slink" == *'must not itself be a symlink'* ]] && echo 1 || echo 0)"
-    nested_ok="$(HOME="$root" _ae_next_home_reason "$root/.ae-next/x")"
-    assert_eq "remote installer $label: nested distinct home is accepted" "1" \
-        "$([[ -z "$nested_ok" ]] && echo 1 || echo 0)"
-    slash_ok="$(HOME="$root" _ae_next_home_reason "$root/.ae-next/")"
-    assert_eq "remote installer $label: trailing slash on a clean home is accepted" "1" \
-        "$([[ -z "$slash_ok" ]] && echo 1 || echo 0)"
-    missing_root="$(mktemp -d "${TMPDIR:-/tmp}/ae-home-reason-missing.XXXXXX")"
-    missing="$(HOME="$missing_root" _ae_next_home_reason "$missing_root/.ae")"
-    assert_eq "remote installer $label: nonexistent exact legacy home uses string refusal" "1" \
-        "$([[ "$missing" == *'AE_NEXT_HOME resolves to the legacy ae home'* ]] && echo 1 || echo 0)"
-    rm -rf "$root" "$missing_root"
-}
-_remote_home_reason_test "$(dirname "$AE_BIN")/contrib/ae-next/ae-next" wrapper
-_remote_home_reason_test "$(dirname "$AE_BIN")/contrib/ae-next/install" checkout-installer
-assert_eq "ae-next and install keep _ae_next_home_reason byte-identical" \
-    "$(awk '/^_ae_next_home_reason\(\) \{/,/^\}$/' "$(dirname "$AE_BIN")/contrib/ae-next/ae-next")" \
-    "$(awk '/^_ae_next_home_reason\(\) \{/,/^\}$/' "$(dirname "$AE_BIN")/contrib/ae-next/install")"
-
-# Wrapper runtime pair check and recovery guidance (fixes 4 and 5).
-_wrap_pair_root="$(mktemp -d "${TMPDIR:-/tmp}/ae-wrap-pair.XXXXXX")"
-_wrap_pair_ver="$_wrap_pair_root/versions/2026.8.1"
-_wrap_pair_home="$_wrap_pair_root/home"
-mkdir -p "$_wrap_pair_ver" "$_wrap_pair_home/.ae-next/core"
-printf '#!/usr/bin/env bash\nprintf "ae 2026.8.1\\n"\n' >"$_wrap_pair_root/core"
-chmod +x "$_wrap_pair_root/core"
-printf '%s\n' "$_wrap_pair_root/core" >"$_wrap_pair_home/.ae-next/core/current"
-{
-    printf '#!/usr/bin/env bash\n'
-    printf 'AE_VERSION="2026.8.1"\n'
-    printf 'echo "ae $AE_VERSION"\n'
-} >"$_wrap_pair_ver/ae"
-chmod +x "$_wrap_pair_ver/ae"
-cp "$(dirname "$AE_BIN")/contrib/ae-next/ae-next" "$_wrap_pair_ver/ae-next"
-printf '#!/usr/bin/env bash\necho install-remote-ok\n' >"$_wrap_pair_ver/install-remote"
-chmod +x "$_wrap_pair_ver/ae-next" "$_wrap_pair_ver/install-remote"
-_wrap_pair_rc=0
-_wrap_pair_out="$(HOME="$_wrap_pair_home" "$_wrap_pair_ver/ae-next" --version 2>"$_wrap_pair_root/match.err")" || _wrap_pair_rc=$?
-assert_eq "ae-next wrapper: matching pair execs glue" "0" "$_wrap_pair_rc"
-assert_eq "ae-next wrapper: matching pair prints glue version" "ae 2026.8.1" "$_wrap_pair_out"
-_sed_i -e 's/^AE_VERSION=.*/AE_VERSION="2026.8.2"/' "$_wrap_pair_ver/ae"
-chmod +x "$_wrap_pair_ver/ae"
-_wrap_mis_rc=0
-set +e
-HOME="$_wrap_pair_home" "$_wrap_pair_ver/ae-next" --version \
-    >"$_wrap_pair_root/mis.out" 2>"$_wrap_pair_root/mis.err"
-_wrap_mis_rc=$?
-set -e
-assert_eq "ae-next wrapper: mismatched pair is refused" "2" "$_wrap_mis_rc"
-assert_eq "ae-next wrapper: mismatch names both versions" "1" \
-    "$(grep -F -c 'version mismatch: the core reports 2026.8.1, ae is 2026.8.2.' "$_wrap_pair_root/mis.err" || true)"
-assert_eq "ae-next wrapper: mismatch names they move together" "1" \
-    "$(grep -F -c 'They move together.' "$_wrap_pair_root/mis.err" || true)"
-
-rm -f "$_wrap_pair_home/.ae-next/core/current"
-_wrap_miss_rc=0
-set +e
-HOME="$_wrap_pair_home" "$_wrap_pair_ver/ae-next" --version \
-    >"$_wrap_pair_root/miss.out" 2>"$_wrap_pair_root/miss.err"
-_wrap_miss_rc=$?
-set -e
-assert_eq "ae-next wrapper bundle recovery: missing core is refused" "2" "$_wrap_miss_rc"
-_wrap_repair="$(awk '/^ae-next: run / { sub(/^ae-next: run /, ""); print; exit }' "$_wrap_pair_root/miss.err")"
-assert_eq "ae-next wrapper bundle recovery: names sibling install-remote" "1" \
-    "$([[ -n "$_wrap_repair" && "$_wrap_repair" -ef "$_wrap_pair_ver/install-remote" ]] && echo 1 || echo 0)"
-assert_eq "ae-next wrapper bundle recovery: named command is executable" "1" \
-    "$([[ -x "$_wrap_repair" ]] && echo 1 || echo 0)"
-
-_wrap_co_root="$(mktemp -d "${TMPDIR:-/tmp}/ae-wrap-co.XXXXXX")"
-mkdir -p "$_wrap_co_root/contrib/ae-next" "$_wrap_co_root/home/.ae-next"
-printf '#!/usr/bin/env bash\nAE_VERSION="2026.8.1"\necho "ae $AE_VERSION"\n' >"$_wrap_co_root/ae"
-chmod +x "$_wrap_co_root/ae"
-cp "$(dirname "$AE_BIN")/contrib/ae-next/ae-next" "$_wrap_co_root/contrib/ae-next/ae-next"
-chmod +x "$_wrap_co_root/contrib/ae-next/ae-next"
-_wrap_co_rc=0
-set +e
-HOME="$_wrap_co_root/home" "$_wrap_co_root/contrib/ae-next/ae-next" --version \
-    >"$_wrap_co_root/out" 2>"$_wrap_co_root/err"
-_wrap_co_rc=$?
-set -e
-assert_eq "ae-next wrapper checkout recovery: missing core is refused" "2" "$_wrap_co_rc"
-_wrap_co_dir="$(awk -F' in ' '/just next-install/ { print $2; exit }' "$_wrap_co_root/err")"
-assert_eq "ae-next wrapper checkout recovery: names just next-install" "1" \
-    "$(grep -F -c "run 'just next-install'" "$_wrap_co_root/err" || true)"
-assert_eq "ae-next wrapper checkout recovery: names the checkout root" "1" \
-    "$([[ -n "$_wrap_co_dir" && "$_wrap_co_dir" -ef "$_wrap_co_root" ]] && echo 1 || echo 0)"
-rm -rf "$_wrap_pair_root" "$_wrap_co_root"
-
-_remote_home_prepare_probe() {
-    local root="$1" candidate="$2"
-    HOME="$root"
-    export HOME
-    _ae_next_home_prepare "$candidate"
-}
-_remote_home_prepare_test() {
-    local script="$1" label="$2" root candidate output rc fs_probe fs_branch
-    eval "$(awk '/^_ae_next_home_reason\(\) \{/,/^\}$/' "$script")"
-    eval "$(awk '/^_ae_next_home_prepare\(\) \{/,/^\}$/' "$script")"
-
-    fs_probe="$(mktemp -d "${TMPDIR:-/tmp}/ae-home-fs-probe.XXXXXX")"
-    mkdir "$fs_probe/.AE"
-    if [ -d "$fs_probe/.ae" ]; then
-        fs_branch=case-insensitive
-    else
-        fs_branch=case-sensitive
-    fi
-    rmdir "$fs_probe/.AE"
-    rmdir "$fs_probe"
-
-    root="$(mktemp -d "${TMPDIR:-/tmp}/ae-home-prepare-fresh.XXXXXX")"
-    candidate="$root/.AE"
-    rc=0
-    set +e
-    output="$(_remote_home_prepare_probe "$root" "$candidate")"
-    rc=$?
-    set -e
-    if [ "$fs_branch" = case-insensitive ]; then
-        assert_eq "remote installer $label r8c: fresh case-variant branch refuses" "1" "$rc"
-        assert_eq "remote installer $label r8c: fresh case-variant refusal names AE_NEXT_HOME" "1" \
-            "$([[ "$output" == *'AE_NEXT_HOME resolves to the legacy ae home'* ]] && echo 1 || echo 0)"
-        assert_eq "remote installer $label r8c: fresh case-variant root is removed" "0" \
-            "$([[ ! -e "$candidate" && ! -L "$candidate" ]] && echo 0 || echo 1)"
-    else
-        assert_eq "remote installer $label r8c: fresh case-sensitive branch accepts" "0" "$rc"
-        assert_eq "remote installer $label r8c: fresh case-sensitive root remains" "0" \
-            "$([[ -d "$candidate" ]] && echo 0 || echo 1)"
-        rmdir "$candidate"
-    fi
-    rm -rf "$root"
-
-    root="$(mktemp -d "${TMPDIR:-/tmp}/ae-home-prepare-existing.XXXXXX")"
-    mkdir -p "$root/.ae"
-    candidate="$root/.AE"
-    rc=0
-    set +e
-    output="$(_remote_home_prepare_probe "$root" "$candidate")"
-    rc=$?
-    set -e
-    if [ "$fs_branch" = case-insensitive ]; then
-        assert_eq "remote installer $label r8c: pre-existing case alias refuses" "1" "$rc"
-        assert_eq "remote installer $label r8c: pre-existing alias refusal names AE_NEXT_HOME" "1" \
-            "$([[ "$output" == *'AE_NEXT_HOME resolves to the legacy ae home'* ]] && echo 1 || echo 0)"
-        assert_eq "remote installer $label r8c: pre-existing alias is preserved" "0" \
-            "$([[ -d "$candidate" ]] && echo 0 || echo 1)"
-    else
-        assert_eq "remote installer $label r8c: pre-existing case-sensitive root accepts" "0" "$rc"
-        assert_eq "remote installer $label r8c: case-sensitive candidate is created" "0" \
-            "$([[ -d "$candidate" ]] && echo 0 || echo 1)"
-    fi
-    rm -rf "$root"
-
-    root="$(mktemp -d "${TMPDIR:-/tmp}/ae-home-prepare-distinct.XXXXXX")"
-    candidate="$root/custom-home"
-    rc=0
-    set +e
-    output="$(_remote_home_prepare_probe "$root" "$candidate")"
-    rc=$?
-    set -e
-    assert_eq "remote installer $label r8c: distinct fresh home is accepted" "0" "$rc"
-    assert_eq "remote installer $label r8c: distinct fresh home exists" "0" \
-        "$([[ -d "$candidate" ]] && echo 0 || echo 1)"
-    rm -rf "$root"
-}
-_remote_home_prepare_test "$(dirname "$AE_BIN")/contrib/ae-next/install" checkout-installer
 
 assert_eq "remote installer: Apple Silicon maps to darwin-arm64" "darwin-arm64" \
     "$(remote_platform Darwin arm64)"
@@ -15017,42 +14987,47 @@ _remote_checksum_rc=0
 remote_verify_checksum "$_remote_fixture/bad-SHA256SUMS" "$_remote_fixture/bundle.tar.gz" >/dev/null 2>&1 || _remote_checksum_rc=$?
 assert_eq "remote installer: checksum mismatch is refused" "1" "$_remote_checksum_rc"
 
-# Fixture bundle for the atomic publication check. The fake core is the only
-# executable payload; no network and no repository path are involved.
+# Fixture bundle for the atomic publication check: wrapper, core, frozen glue,
+# and immutable sibling installer. No network or repository path is involved.
 _remote_make_bundle() {
     local version="$1" root="$2" dir digest
     dir="$_remote_fixture/$root"
     mkdir -p "$dir"
     printf '#!/usr/bin/env bash\nprintf "ae %s\\n" --version\n' "$version" >"$dir/ae-core"
-    cp "$AE_BIN" "$dir/ae"
-    _sed_i -e "s/^AE_VERSION=.*/AE_VERSION=\"${version}\"/" "$dir/ae"
-    cp "$(dirname "$AE_BIN")/contrib/ae-next/ae-next" "$dir/ae-next"
-    cp "$_remote_installer" "$dir/install-remote"
-    chmod +x "$dir/ae-core" "$dir/ae" "$dir/ae-next" "$dir/install-remote"
+    cp "$(dirname "$AE_BIN")/ae-entry" "$dir/ae"
+    _sed_i -e "s/^_AE_ENTRY_VERSION=.*/_AE_ENTRY_VERSION=\"${version}\"/" "$dir/ae"
+    cp "$AE_BIN" "$dir/ae-glue"
+    _sed_i -e "s/^AE_VERSION=.*/AE_VERSION=\"${version}\"/" "$dir/ae-glue"
+    cp "$_remote_installer" "$dir/install"
+    chmod +x "$dir/ae-core" "$dir/ae" "$dir/ae-glue" "$dir/install"
     tar -czf "$_remote_fixture/$root.tar.gz" -C "$_remote_fixture" "$root"
     digest="$(remote_sha256 "$_remote_fixture/$root.tar.gz")"
     printf '%s  %s.tar.gz\n' "$digest" "$root" >"$_remote_fixture/$root-SHA256SUMS"
 }
-_remote_make_bundle 2026.8.1 ae-next-2026.8.1-darwin-arm64
-_remote_make_bundle 2026.8.2 ae-next-2026.8.2-darwin-arm64
-assert_eq "remote installer fixture: 2026.8.1 glue AE_VERSION matches bundle" "2026.8.1" \
-    "$(grep -m1 '^AE_VERSION=' "$_remote_fixture/ae-next-2026.8.1-darwin-arm64/ae" | cut -d'"' -f2)"
-assert_eq "remote installer fixture: 2026.8.2 glue AE_VERSION matches bundle" "2026.8.2" \
-    "$(grep -m1 '^AE_VERSION=' "$_remote_fixture/ae-next-2026.8.2-darwin-arm64/ae" | cut -d'"' -f2)"
+_remote_make_bundle 2026.8.1 ae-2026.8.1-darwin-arm64
+_remote_make_bundle 2026.8.2 ae-2026.8.2-darwin-arm64
+assert_eq "remote installer fixture: 2026.8.1 wrapper version matches bundle" "2026.8.1" \
+    "$(grep -m1 '^_AE_ENTRY_VERSION=' "$_remote_fixture/ae-2026.8.1-darwin-arm64/ae" | cut -d'"' -f2)"
+assert_eq "remote installer fixture: 2026.8.2 wrapper version matches bundle" "2026.8.2" \
+    "$(grep -m1 '^_AE_ENTRY_VERSION=' "$_remote_fixture/ae-2026.8.2-darwin-arm64/ae" | cut -d'"' -f2)"
+assert_eq "remote installer fixture: 2026.8.1 glue version matches bundle" "2026.8.1" \
+    "$(grep -m1 '^AE_VERSION=' "$_remote_fixture/ae-2026.8.1-darwin-arm64/ae-glue" | cut -d'"' -f2)"
+assert_eq "remote installer fixture: 2026.8.2 glue version matches bundle" "2026.8.2" \
+    "$(grep -m1 '^AE_VERSION=' "$_remote_fixture/ae-2026.8.2-darwin-arm64/ae-glue" | cut -d'"' -f2)"
 
 # 7a: a bundle whose core and glue disagree must be refused. Inner layout and
 # basename stay 2026.8.1 so the pin matches and the glue check is what fires.
 _remote_mismatch_build="$_remote_fixture/glue-mismatch-build"
 mkdir -p "$_remote_mismatch_build" "$_remote_fixture/glue-mismatch"
-cp -R "$_remote_fixture/ae-next-2026.8.1-darwin-arm64" \
-    "$_remote_mismatch_build/ae-next-2026.8.1-darwin-arm64"
+cp -R "$_remote_fixture/ae-2026.8.1-darwin-arm64" \
+    "$_remote_mismatch_build/ae-2026.8.1-darwin-arm64"
 _sed_i -e 's/^AE_VERSION=.*/AE_VERSION="2026.8.2"/' \
-    "$_remote_mismatch_build/ae-next-2026.8.1-darwin-arm64/ae"
-chmod +x "$_remote_mismatch_build/ae-next-2026.8.1-darwin-arm64/ae"
-tar -czf "$_remote_fixture/glue-mismatch/ae-next-2026.8.1-darwin-arm64.tar.gz" \
-    -C "$_remote_mismatch_build" "ae-next-2026.8.1-darwin-arm64"
-_remote_mismatch_digest="$(remote_sha256 "$_remote_fixture/glue-mismatch/ae-next-2026.8.1-darwin-arm64.tar.gz")"
-printf '%s  %s\n' "$_remote_mismatch_digest" "ae-next-2026.8.1-darwin-arm64.tar.gz" \
+    "$_remote_mismatch_build/ae-2026.8.1-darwin-arm64/ae-glue"
+chmod +x "$_remote_mismatch_build/ae-2026.8.1-darwin-arm64/ae-glue"
+tar -czf "$_remote_fixture/glue-mismatch/ae-2026.8.1-darwin-arm64.tar.gz" \
+    -C "$_remote_mismatch_build" "ae-2026.8.1-darwin-arm64"
+_remote_mismatch_digest="$(remote_sha256 "$_remote_fixture/glue-mismatch/ae-2026.8.1-darwin-arm64.tar.gz")"
+printf '%s  %s\n' "$_remote_mismatch_digest" "ae-2026.8.1-darwin-arm64.tar.gz" \
     >"$_remote_fixture/glue-mismatch/SHA256SUMS"
 _remote_mismatch_home="$(mktemp -d "$_remote_fixture/glue-mismatch-home.XXXXXX")"
 _remote_mismatch_rc=0
@@ -15060,16 +15035,16 @@ set +e
 (
     set -e
     HOME="$_remote_mismatch_home" AE_VERSION=2026.8.1 \
-        AE_NEXT_BUNDLE="$_remote_fixture/glue-mismatch/ae-next-2026.8.1-darwin-arm64.tar.gz" \
-        AE_NEXT_SUMS="$_remote_fixture/glue-mismatch/SHA256SUMS" remote_main
+        AE_BUNDLE="$_remote_fixture/glue-mismatch/ae-2026.8.1-darwin-arm64.tar.gz" \
+        AE_SUMS="$_remote_fixture/glue-mismatch/SHA256SUMS" remote_main
 ) >"$_remote_mismatch_home/out" 2>"$_remote_mismatch_home/err"
 _remote_mismatch_rc=$?
 set -e
 assert_eq "remote installer 7a: core/glue mismatch is refused" "1" "$_remote_mismatch_rc"
-assert_eq "remote installer 7a: mismatch names both versions" "1" \
-    "$(grep -F -c 'version mismatch: the core reports 2026.8.1, ae is 2026.8.2.' "$_remote_mismatch_home/err" || true)"
+assert_eq "remote installer 7a: mismatch names wrapper, core, and glue versions" "1" \
+    "$(grep -F -c 'version mismatch: wrapper is 2026.8.1, the core reports 2026.8.1, glue is 2026.8.2.' "$_remote_mismatch_home/err" || true)"
 assert_eq "remote installer 7a: mismatch does not publish current" "0" \
-    "$([[ ! -e "$_remote_mismatch_home/.ae-next/current" ]] && echo 0 || echo 1)"
+    "$([[ ! -e "$_remote_mismatch_home/.ae/current" ]] && echo 0 || echo 1)"
 
 # 7b: a pin that disagrees with the local bundle basename must be refused.
 _remote_pin_home="$(mktemp -d "$_remote_fixture/pin-mismatch-home.XXXXXX")"
@@ -15078,8 +15053,8 @@ set +e
 (
     set -e
     HOME="$_remote_pin_home" AE_VERSION=2026.8.1 \
-        AE_NEXT_BUNDLE="$_remote_fixture/ae-next-2026.8.2-darwin-arm64.tar.gz" \
-        AE_NEXT_SUMS="$_remote_fixture/ae-next-2026.8.2-darwin-arm64-SHA256SUMS" remote_main
+        AE_BUNDLE="$_remote_fixture/ae-2026.8.2-darwin-arm64.tar.gz" \
+        AE_SUMS="$_remote_fixture/ae-2026.8.2-darwin-arm64-SHA256SUMS" remote_main
 ) >"$_remote_pin_home/out" 2>"$_remote_pin_home/err"
 _remote_pin_rc=$?
 set -e
@@ -15087,48 +15062,48 @@ assert_eq "remote installer 7b: pin that disagrees with bundle basename is refus
 assert_eq "remote installer 7b: refusal names pin and bundle versions" "1" \
     "$(grep -F -c 'AE_VERSION is 2026.8.1 but the bundle is 2026.8.2' "$_remote_pin_home/err" || true)"
 assert_eq "remote installer 7b: pin mismatch does not publish current" "0" \
-    "$([[ ! -e "$_remote_pin_home/.ae-next/current" ]] && echo 0 || echo 1)"
+    "$([[ ! -e "$_remote_pin_home/.ae/current" ]] && echo 0 || echo 1)"
 _remote_home="$_remote_fixture/home"
 mkdir -p "$_remote_home"
 (
     set -e
     HOME="$_remote_home" AE_VERSION=2026.8.1 \
-        AE_NEXT_BUNDLE="$_remote_fixture/ae-next-2026.8.1-darwin-arm64.tar.gz" \
-        AE_NEXT_SUMS="$_remote_fixture/ae-next-2026.8.1-darwin-arm64-SHA256SUMS" \
+        AE_BUNDLE="$_remote_fixture/ae-2026.8.1-darwin-arm64.tar.gz" \
+        AE_SUMS="$_remote_fixture/ae-2026.8.1-darwin-arm64-SHA256SUMS" \
         remote_main
 ) >/dev/null 2>&1
-_remote_old_current="$(readlink "$_remote_home/.ae-next/current")"
-_remote_old_core="$(cat "$_remote_home/.ae-next/core/current")"
+_remote_old_current="$(readlink "$_remote_home/.ae/current")"
+_remote_old_core="$(cat "$_remote_home/.ae/core/current")"
 _remote_mode() {
     stat -f '%Lp' "$1" 2>/dev/null || stat -c '%a' "$1"
 }
-_remote_pair_mode=1
-for _remote_pair_file in ae ae-next ae-core install-remote; do
-    [ "$(_remote_mode "$_remote_home/.ae-next/versions/2026.8.1/$_remote_pair_file")" = "555" ] || _remote_pair_mode=0
+_remote_member_mode=1
+for _remote_member_file in ae ae-core ae-glue install; do
+    [ "$(_remote_mode "$_remote_home/.ae/versions/2026.8.1/$_remote_member_file")" = "555" ] || _remote_member_mode=0
 done
-assert_eq "remote installer: installed pair files are immutable 0555" "1" "$_remote_pair_mode"
-assert_eq "remote installer acceptance: complete pair version directory is immutable 0555" "555" \
-    "$(_remote_mode "$_remote_home/.ae-next/versions/2026.8.1")"
-assert_eq "remote installer acceptance: current points at the complete version pair" \
-    "$_remote_home/.ae-next/versions/2026.8.1" "$_remote_old_current"
+assert_eq "remote installer: installed version members are immutable 0555" "1" "$_remote_member_mode"
+assert_eq "remote installer acceptance: complete version directory is immutable 0555" "555" \
+    "$(_remote_mode "$_remote_home/.ae/versions/2026.8.1")"
+assert_eq "remote installer acceptance: current points at the complete version set" \
+    "$_remote_home/.ae/versions/2026.8.1" "$_remote_old_current"
 _remote_trailing_home="$(mktemp -d "$_remote_fixture/trailing-home.XXXXXX")"
 _remote_trailing_rc=0
 set +e
 (
     set -e
     HOME="$_remote_trailing_home/" AE_VERSION=2026.8.1 \
-        AE_NEXT_BUNDLE="$_remote_fixture/ae-next-2026.8.1-darwin-arm64.tar.gz" \
-        AE_NEXT_SUMS="$_remote_fixture/ae-next-2026.8.1-darwin-arm64-SHA256SUMS" remote_main
+        AE_BUNDLE="$_remote_fixture/ae-2026.8.1-darwin-arm64.tar.gz" \
+        AE_SUMS="$_remote_fixture/ae-2026.8.1-darwin-arm64-SHA256SUMS" remote_main
 ) >"$_remote_trailing_home/out" 2>"$_remote_trailing_home/err"
 _remote_trailing_rc=$?
 set -e
 assert_eq "remote installer surface: one trailing HOME slash is tolerated" "0" "$_remote_trailing_rc"
 assert_eq "remote installer surface: trailing HOME uses fixed current path" \
-    "$_remote_trailing_home/.ae-next/versions/2026.8.1" \
-    "$(readlink "$_remote_trailing_home/.ae-next/current")"
+    "$_remote_trailing_home/.ae/versions/2026.8.1" \
+    "$(readlink "$_remote_trailing_home/.ae/current")"
 assert_eq "remote installer surface: trailing HOME uses fixed link path" \
-    "$_remote_trailing_home/.ae-next/current/ae-next" \
-    "$(readlink "$_remote_trailing_home/.local/bin/ae-next")"
+    "$_remote_trailing_home/.ae/current/ae" \
+    "$(readlink "$_remote_trailing_home/.local/bin/ae")"
 
 # File-path entry, stdin entry (the advertised curl|bash class), and source.
 # Sourcing must not run main — tests/unit calls remote_* directly after source.
@@ -15138,19 +15113,19 @@ set +e
 (
     set -euo pipefail
     HOME="$_remote_file_home" AE_VERSION=2026.8.1 \
-        AE_NEXT_BUNDLE="$_remote_fixture/ae-next-2026.8.1-darwin-arm64.tar.gz" \
-        AE_NEXT_SUMS="$_remote_fixture/ae-next-2026.8.1-darwin-arm64-SHA256SUMS" \
+        AE_BUNDLE="$_remote_fixture/ae-2026.8.1-darwin-arm64.tar.gz" \
+        AE_SUMS="$_remote_fixture/ae-2026.8.1-darwin-arm64-SHA256SUMS" \
         "${BASH:-bash}" "$_remote_installer"
 ) >"$_remote_file_home/out" 2>"$_remote_file_home/err"
 _remote_file_rc=$?
 set -e
-assert_eq "remote installer file entry: bash install-remote reaches main" "0" "$_remote_file_rc"
+assert_eq "remote installer file entry: bash install reaches main" "0" "$_remote_file_rc"
 assert_eq "remote installer file entry: current is published" \
-    "$_remote_file_home/.ae-next/versions/2026.8.1" \
-    "$(readlink "$_remote_file_home/.ae-next/current" 2>/dev/null || true)"
+    "$_remote_file_home/.ae/versions/2026.8.1" \
+    "$(readlink "$_remote_file_home/.ae/current" 2>/dev/null || true)"
 assert_eq "remote installer file entry: command link is published" \
-    "$_remote_file_home/.ae-next/current/ae-next" \
-    "$(readlink "$_remote_file_home/.local/bin/ae-next" 2>/dev/null || true)"
+    "$_remote_file_home/.ae/current/ae" \
+    "$(readlink "$_remote_file_home/.local/bin/ae" 2>/dev/null || true)"
 
 _remote_stdin_home="$(mktemp -d "$_remote_fixture/stdin-home.XXXXXX")"
 _remote_stdin_rc=0
@@ -15158,19 +15133,19 @@ set +e
 (
     set -euo pipefail
     HOME="$_remote_stdin_home" AE_VERSION=2026.8.1 \
-        AE_NEXT_BUNDLE="$_remote_fixture/ae-next-2026.8.1-darwin-arm64.tar.gz" \
-        AE_NEXT_SUMS="$_remote_fixture/ae-next-2026.8.1-darwin-arm64-SHA256SUMS" \
+        AE_BUNDLE="$_remote_fixture/ae-2026.8.1-darwin-arm64.tar.gz" \
+        AE_SUMS="$_remote_fixture/ae-2026.8.1-darwin-arm64-SHA256SUMS" \
         "${BASH:-bash}" <"$_remote_installer"
 ) >"$_remote_stdin_home/out" 2>"$_remote_stdin_home/err"
 _remote_stdin_rc=$?
 set -e
 assert_eq "remote installer stdin entry: curl|bash class reaches main" "0" "$_remote_stdin_rc"
 assert_eq "remote installer stdin entry: current is published" \
-    "$_remote_stdin_home/.ae-next/versions/2026.8.1" \
-    "$(readlink "$_remote_stdin_home/.ae-next/current" 2>/dev/null || true)"
+    "$_remote_stdin_home/.ae/versions/2026.8.1" \
+    "$(readlink "$_remote_stdin_home/.ae/current" 2>/dev/null || true)"
 assert_eq "remote installer stdin entry: command link is published" \
-    "$_remote_stdin_home/.ae-next/current/ae-next" \
-    "$(readlink "$_remote_stdin_home/.local/bin/ae-next" 2>/dev/null || true)"
+    "$_remote_stdin_home/.ae/current/ae" \
+    "$(readlink "$_remote_stdin_home/.local/bin/ae" 2>/dev/null || true)"
 
 _remote_source_home="$(mktemp -d "$_remote_fixture/source-home.XXXXXX")"
 _remote_source_rc=0
@@ -15185,14 +15160,14 @@ _remote_source_rc=$?
 set -e
 assert_eq "remote installer source: does not run main" "0" "$_remote_source_rc"
 assert_eq "remote installer source: does not publish current" "0" \
-    "$([[ ! -e "$_remote_source_home/.ae-next" ]] && echo 0 || echo 1)"
+    "$([[ ! -e "$_remote_source_home/.ae" ]] && echo 0 || echo 1)"
 
 _remote_live_rc=0
 _remote_live_output=""
-rm -rf "$_remote_fixture/ae-next-2026.8.1-darwin-arm64"
+rm -rf "$_remote_fixture/ae-2026.8.1-darwin-arm64"
 _remote_live_output="$(HOME="$_remote_home" \
-    "$_remote_home/.local/bin/ae-next" --version 2>/dev/null)" || _remote_live_rc=$?
-assert_eq "remote installer acceptance: deleting checkout does not affect a new ae-next session" "0" "$_remote_live_rc"
+    "$_remote_home/.local/bin/ae" --version 2>/dev/null)" || _remote_live_rc=$?
+assert_eq "remote installer acceptance: deleting checkout does not affect a new ae session" "0" "$_remote_live_rc"
 assert_eq "remote installer acceptance: installed wrapper executes its bundled glue" \
     "ae 2026.8.1" "$_remote_live_output"
 _remote_failure_rc=0
@@ -15200,19 +15175,19 @@ set +e
 (
     set -e
     HOME="$_remote_home" AE_VERSION=2026.8.2 \
-        AE_NEXT_BUNDLE="$_remote_fixture/ae-next-2026.8.2-darwin-arm64.tar.gz" \
-        AE_NEXT_SUMS="$_remote_fixture/ae-next-2026.8.2-darwin-arm64-SHA256SUMS" \
-        AE_NEXT_INSTALL_TEST_FAIL_AFTER=current remote_main
+        AE_BUNDLE="$_remote_fixture/ae-2026.8.2-darwin-arm64.tar.gz" \
+        AE_SUMS="$_remote_fixture/ae-2026.8.2-darwin-arm64-SHA256SUMS" \
+        AE_INSTALL_TEST_FAIL_AFTER=current remote_main
 ) >/dev/null 2>&1
 _remote_failure_rc=$?
 set -e
 assert_eq "remote installer: injected mid-install failure is nonzero" "1" "$_remote_failure_rc"
 assert_eq "remote installer: failed install leaves current pointer unchanged" "$_remote_old_current" \
-    "$(readlink "$_remote_home/.ae-next/current")"
+    "$(readlink "$_remote_home/.ae/current")"
 assert_eq "remote installer: failed install leaves core/current unchanged" "$_remote_old_core" \
-    "$(cat "$_remote_home/.ae-next/core/current")"
+    "$(cat "$_remote_home/.ae/core/current")"
 assert_eq "remote installer: failed install retains complete published version" "0" \
-    "$([[ -d "$_remote_home/.ae-next/versions/2026.8.2" ]] && echo 0 || echo 1)"
+    "$([[ -d "$_remote_home/.ae/versions/2026.8.2" ]] && echo 0 || echo 1)"
 
 # Fresh-install signal windows: each TERM lands after the durable journal
 # records a directory but before mkdir. Recovery must treat an absent target as
@@ -15224,38 +15199,38 @@ _remote_fresh_mkdir_boundary() {
     (
         set -e
         HOME="$home" AE_VERSION=2026.8.1 \
-            AE_NEXT_BUNDLE="$_remote_fixture/ae-next-2026.8.1-darwin-arm64.tar.gz" \
-            AE_NEXT_SUMS="$_remote_fixture/ae-next-2026.8.1-darwin-arm64-SHA256SUMS" \
-            AE_NEXT_INSTALL_TEST_FAIL_AFTER="term-$boundary" remote_main
+            AE_BUNDLE="$_remote_fixture/ae-2026.8.1-darwin-arm64.tar.gz" \
+            AE_SUMS="$_remote_fixture/ae-2026.8.1-darwin-arm64-SHA256SUMS" \
+            AE_INSTALL_TEST_FAIL_AFTER="term-$boundary" remote_main
     ) >"$home/fail.out" 2>&1
     rc=$?
     set -e
     assert_eq "remote installer fresh acceptance: TERM after journal-add $boundary exits 143" "143" "$rc"
     assert_eq "remote installer fresh acceptance: TERM after journal-add $boundary removes journal" "0" \
-        "$([[ ! -e "$home/.ae-next/.ae-next-install.journal" ]] && echo 0 || echo 1)"
+        "$([[ ! -e "$home/.ae/.ae-install.journal" ]] && echo 0 || echo 1)"
     set +e
     (
         set -e
         HOME="$home" AE_VERSION=2026.8.1 \
-            AE_NEXT_BUNDLE="$_remote_fixture/ae-next-2026.8.1-darwin-arm64.tar.gz" \
-            AE_NEXT_SUMS="$_remote_fixture/ae-next-2026.8.1-darwin-arm64-SHA256SUMS" remote_main
+            AE_BUNDLE="$_remote_fixture/ae-2026.8.1-darwin-arm64.tar.gz" \
+            AE_SUMS="$_remote_fixture/ae-2026.8.1-darwin-arm64-SHA256SUMS" remote_main
     ) >"$home/recover.out" 2>&1
     rc=$?
     set -e
     assert_eq "remote installer fresh acceptance: rerun after $boundary completes" "0" "$rc"
     assert_eq "remote installer fresh acceptance: rerun after $boundary publishes current" \
-        "$home/.ae-next/versions/2026.8.1" "$(readlink "$home/.ae-next/current")"
+        "$home/.ae/versions/2026.8.1" "$(readlink "$home/.ae/current")"
     assert_eq "remote installer fresh acceptance: rerun after $boundary removes journal" "0" \
-        "$([[ ! -e "$home/.ae-next/.ae-next-install.journal" ]] && echo 0 || echo 1)"
+        "$([[ ! -e "$home/.ae/.ae-install.journal" ]] && echo 0 || echo 1)"
 }
 _remote_fresh_mkdir_boundary mkdir-versions
 _remote_fresh_mkdir_boundary mkdir-core
 _remote_fresh_mkdir_boundary mkdir-link-parent
 
 _remote_r4_journal_root="$(mktemp -d "$_remote_fixture/r4-journal.XXXXXX")"
-_remote_r4_journal_home="$_remote_r4_journal_root/.ae-next"
+_remote_r4_journal_home="$_remote_r4_journal_root/.ae"
 mkdir -p "$_remote_r4_journal_home"
-_remote_r4_journal="$_remote_r4_journal_home/.ae-next-install.journal"
+_remote_r4_journal="$_remote_r4_journal_home/.ae-install.journal"
 {
     printf 'format=1\n'
     printf 'version=2026.8.1\n'
@@ -15278,7 +15253,7 @@ _remote_r4_journal_rc=$?
 set -e
 assert_eq "remote installer r4: journal link inside home is refused" "1" "$_remote_r4_journal_rc"
 assert_eq "remote installer r4: journal-side refusal names protected home" "1" \
-    "$(grep -F -c 'must not point inside the ae-next home' "$_remote_r4_journal_root/err" || true)"
+    "$(grep -F -c 'must not point inside the ae home' "$_remote_r4_journal_root/err" || true)"
 assert_eq "remote installer r4: malformed protected journal remains for diagnosis" "1" \
     "$([[ -f "$_remote_r4_journal" ]] && echo 1 || echo 0)"
 
@@ -15286,7 +15261,7 @@ assert_eq "remote installer r4: malformed protected journal remains for diagnosi
 # reversal. The EXIT rollback removes the journal, and removing the dangling
 # link makes the next real install succeed rather than wedge recovery forever.
 _remote_r4_dangling_root="$(mktemp -d "$_remote_fixture/r4-dangling.XXXXXX")"
-mkdir -p "$_remote_r4_dangling_root/.ae-next"
+mkdir -p "$_remote_r4_dangling_root/.ae"
 mkdir -p "$_remote_r4_dangling_root"
 ln -s "$_remote_r4_dangling_root/missing-parent" "$_remote_r4_dangling_root/.local"
 _remote_r4_dangling_rc=0
@@ -15294,8 +15269,8 @@ set +e
 (
     set -e
     HOME="$_remote_r4_dangling_root" AE_VERSION=2026.8.1 \
-        AE_NEXT_BUNDLE="$_remote_fixture/ae-next-2026.8.1-darwin-arm64.tar.gz" \
-        AE_NEXT_SUMS="$_remote_fixture/ae-next-2026.8.1-darwin-arm64-SHA256SUMS" remote_main
+        AE_BUNDLE="$_remote_fixture/ae-2026.8.1-darwin-arm64.tar.gz" \
+        AE_SUMS="$_remote_fixture/ae-2026.8.1-darwin-arm64-SHA256SUMS" remote_main
 ) >"$_remote_r4_dangling_root/out" 2>"$_remote_r4_dangling_root/err"
 _remote_r4_dangling_rc=$?
 set -e
@@ -15303,38 +15278,38 @@ assert_eq "remote installer r4: dangling parent is refused" "1" "$_remote_r4_dan
 assert_eq "remote installer r4: dangling refusal names symlink path" "1" \
     "$(grep -F -c 'cannot create directory through a symlink' "$_remote_r4_dangling_root/err" || true)"
 assert_eq "remote installer r4: dangling refusal leaves no journal" "0" \
-    "$([[ ! -e "$_remote_r4_dangling_root/.ae-next/.ae-next-install.journal" && \
-        ! -L "$_remote_r4_dangling_root/.ae-next/.ae-next-install.journal" ]] && echo 0 || echo 1)"
+    "$([[ ! -e "$_remote_r4_dangling_root/.ae/.ae-install.journal" && \
+        ! -L "$_remote_r4_dangling_root/.ae/.ae-install.journal" ]] && echo 0 || echo 1)"
 rm -f "$_remote_r4_dangling_root/.local"
 _remote_r4_dangling_rerun_rc=0
 set +e
 (
     set -e
     HOME="$_remote_r4_dangling_root" AE_VERSION=2026.8.1 \
-        AE_NEXT_BUNDLE="$_remote_fixture/ae-next-2026.8.1-darwin-arm64.tar.gz" \
-        AE_NEXT_SUMS="$_remote_fixture/ae-next-2026.8.1-darwin-arm64-SHA256SUMS" remote_main
+        AE_BUNDLE="$_remote_fixture/ae-2026.8.1-darwin-arm64.tar.gz" \
+        AE_SUMS="$_remote_fixture/ae-2026.8.1-darwin-arm64-SHA256SUMS" remote_main
 ) >"$_remote_r4_dangling_root/rerun.out" 2>"$_remote_r4_dangling_root/rerun.err"
 _remote_r4_dangling_rerun_rc=$?
 set -e
 assert_eq "remote installer r4: cleared dangling parent reruns cleanly" "0" "$_remote_r4_dangling_rerun_rc"
 assert_eq "remote installer r4: cleared dangling parent publishes link" \
-    "$_remote_r4_dangling_root/.ae-next/current/ae-next" "$(readlink "$_remote_r4_dangling_root/.local/bin/ae-next")"
+    "$_remote_r4_dangling_root/.ae/current/ae" "$(readlink "$_remote_r4_dangling_root/.local/bin/ae")"
 assert_eq "remote installer r4: cleared dangling parent leaves no journal" "0" \
-    "$([[ ! -e "$_remote_r4_dangling_root/.ae-next/.ae-next-install.journal" && \
-        ! -L "$_remote_r4_dangling_root/.ae-next/.ae-next-install.journal" ]] && echo 0 || echo 1)"
+    "$([[ ! -e "$_remote_r4_dangling_root/.ae/.ae-install.journal" && \
+        ! -L "$_remote_r4_dangling_root/.ae/.ae-install.journal" ]] && echo 0 || echo 1)"
 
 # Component grammar runs before all destination alias checks. The missing
 # component plus dot-dot spelling must not reach the directory walker.
 _remote_r5_trailing_rc=0
 set +e
-remote_path_components_ok /tmp/ae-next/ "ae-next command path" >/dev/null 2>&1
+remote_path_components_ok /tmp/ae/ "ae command path" >/dev/null 2>&1
 _remote_r5_trailing_rc=$?
 set -e
 assert_eq "remote installer r5: trailing-slash destination is refused" "1" "$_remote_r5_trailing_rc"
 _remote_r5_journal_root="$(mktemp -d "$_remote_fixture/r5-journal.XXXXXX")"
-_remote_r5_journal_home="$_remote_r5_journal_root/.ae-next"
+_remote_r5_journal_home="$_remote_r5_journal_root/.ae"
 mkdir -p "$_remote_r5_journal_home"
-_remote_r5_journal="$_remote_r5_journal_home/.ae-next-install.journal"
+_remote_r5_journal="$_remote_r5_journal_home/.ae-install.journal"
 {
     printf 'format=1\n'
     printf 'version=2026.8.1\n'
@@ -15343,7 +15318,7 @@ _remote_r5_journal="$_remote_r5_journal_home/.ae-next-install.journal"
     printf 'core_had=0\ncore_old=\n'
     printf 'current_pointer=%s/current\n' "$_remote_r5_journal_home"
     printf 'current_had=0\ncurrent_old=\n'
-    printf 'link=%s/missing/../external/ae-next\nlink_had=0\nlink_old=\n' "$_remote_r5_journal_root"
+    printf 'link=%s/missing/../external/ae\nlink_had=0\nlink_old=\n' "$_remote_r5_journal_root"
     printf 'config=%s/config\nconfig_had=0\n' "$_remote_r5_journal_home"
 } >"$_remote_r5_journal"
 _remote_r5_journal_rc=0
@@ -15362,9 +15337,9 @@ assert_eq "remote installer r5: dot-dot journal remains for diagnosis" "1" \
     "$([[ -f "$_remote_r5_journal" ]] && echo 1 || echo 0)"
 
 _remote_r7_journal_root="$(mktemp -d "$_remote_fixture/r7-journal.XXXXXX")"
-_remote_r7_journal_home="$_remote_r7_journal_root/.ae-next"
+_remote_r7_journal_home="$_remote_r7_journal_root/.ae"
 mkdir -p "$_remote_r7_journal_home"
-_remote_r7_journal="$_remote_r7_journal_home/.ae-next-install.journal"
+_remote_r7_journal="$_remote_r7_journal_home/.ae-install.journal"
 {
     printf 'format=1\n'
     printf 'version=2026.8.1\n'
@@ -15373,7 +15348,7 @@ _remote_r7_journal="$_remote_r7_journal_home/.ae-next-install.journal"
     printf 'core_had=0\ncore_old=\n'
     printf 'current_pointer=%s/current\n' "$_remote_r7_journal_home"
     printf 'current_had=0\ncurrent_old=\n'
-    printf 'link=%s//external/ae-next\nlink_had=0\nlink_old=\n' "$_remote_r7_journal_root"
+    printf 'link=%s//external/ae\nlink_had=0\nlink_old=\n' "$_remote_r7_journal_root"
     printf 'config=%s/config\nconfig_had=0\n' "$_remote_r7_journal_home"
 } >"$_remote_r7_journal"
 _remote_r7_journal_rc=0
@@ -15392,9 +15367,9 @@ assert_eq "remote installer r7: repeated-slash journal is preserved" "1" \
     "$([[ -f "$_remote_r7_journal" ]] && echo 1 || echo 0)"
 
 _remote_r7_legacy_root="$(mktemp -d "$_remote_fixture/r7-legacy.XXXXXX")"
-_remote_r7_legacy_home="$_remote_r7_legacy_root/.ae-next"
+_remote_r7_legacy_home="$_remote_r7_legacy_root/.ae"
 mkdir -p "$_remote_r7_legacy_home"
-_remote_r7_legacy_journal="$_remote_r7_legacy_home/.ae-next-install.journal"
+_remote_r7_legacy_journal="$_remote_r7_legacy_home/.ae-install.journal"
 {
     printf 'format=1\n'
     printf 'version=2026.8.1\n'
@@ -15403,7 +15378,7 @@ _remote_r7_legacy_journal="$_remote_r7_legacy_home/.ae-next-install.journal"
     printf 'core_had=0\ncore_old=\n'
     printf 'current_pointer=%s/current\n' "$_remote_r7_legacy_home"
     printf 'current_had=0\ncurrent_old=\n'
-    printf 'link=%s/.local/bin/ae\nlink_had=0\nlink_old=\n' "$_remote_r7_legacy_root"
+    printf 'link=%s/.local/bin/ae-next\nlink_had=0\nlink_old=\n' "$_remote_r7_legacy_root"
     printf 'config=%s/config\nconfig_had=0\n' "$_remote_r7_legacy_home"
 } >"$_remote_r7_legacy_journal"
 _remote_r7_legacy_rc=0
@@ -15415,17 +15390,17 @@ set +e
 ) >"$_remote_r7_legacy_root/out" 2>"$_remote_r7_legacy_root/err"
 _remote_r7_legacy_rc=$?
 set -e
-assert_eq "remote installer r7: journal legacy ae link is refused" "1" "$_remote_r7_legacy_rc"
-assert_eq "remote installer r7: journal legacy refusal names protected command" "1" \
-    "$(grep -F -c 'must not replace the legacy ae command' "$_remote_r7_legacy_root/err" || true)"
-assert_eq "remote installer r7: journal legacy refusal preserves journal" "1" \
+assert_eq "remote installer r7: journal noncanonical command link is refused" "1" "$_remote_r7_legacy_rc"
+assert_eq "remote installer r7: noncanonical command refusal names fixed path" "1" \
+    "$(grep -F -c 'install journal is for another command path' "$_remote_r7_legacy_root/err" || true)"
+assert_eq "remote installer r7: noncanonical command journal is preserved" "1" \
     "$([[ -f "$_remote_r7_legacy_journal" ]] && echo 1 || echo 0)"
 
 _remote_r7_old_root="$(mktemp -d "$_remote_fixture/r7-old-home.XXXXXX")"
-_remote_r7_old_home="$_remote_r7_old_root/old/.ae-next"
-_remote_r7_fixed_home="$_remote_r7_old_root/.ae-next"
+_remote_r7_old_home="$_remote_r7_old_root/old/.ae"
+_remote_r7_fixed_home="$_remote_r7_old_root/.ae"
 mkdir -p "$_remote_r7_fixed_home"
-_remote_r7_old_journal="$_remote_r7_fixed_home/.ae-next-install.journal"
+_remote_r7_old_journal="$_remote_r7_fixed_home/.ae-install.journal"
 {
     printf 'format=1\n'
     printf 'version=2026.8.1\n'
@@ -15434,7 +15409,7 @@ _remote_r7_old_journal="$_remote_r7_fixed_home/.ae-next-install.journal"
     printf 'core_had=0\ncore_old=\n'
     printf 'current_pointer=%s/current\n' "$_remote_r7_old_home"
     printf 'current_had=0\ncurrent_old=\n'
-    printf 'link=%s/.local/bin/ae-next\nlink_had=0\nlink_old=\n' "$_remote_r7_old_root"
+    printf 'link=%s/.local/bin/ae\nlink_had=0\nlink_old=\n' "$_remote_r7_old_root"
     printf 'config=%s/config\nconfig_had=1\n' "$_remote_r7_old_home"
 } >"$_remote_r7_old_journal"
 _remote_r7_old_rc=0
@@ -15453,23 +15428,23 @@ assert_eq "remote installer r7: older custom-home journal is preserved" "1" \
     "$([[ -f "$_remote_r7_old_journal" ]] && echo 1 || echo 0)"
 
 _remote_r7_valid_root="$(mktemp -d "$_remote_fixture/r7-valid-flags.XXXXXX")"
-_remote_r7_valid_home="$_remote_r7_valid_root/.ae-next"
+_remote_r7_valid_home="$_remote_r7_valid_root/.ae"
 mkdir -p "$_remote_r7_valid_home/core" "$_remote_r7_valid_home/versions/old" \
     "$_remote_r7_valid_root/.local/bin"
 printf 'new-core\n' >"$_remote_r7_valid_home/core/current"
 ln -s new-current "$_remote_r7_valid_home/current"
-ln -s new-link "$_remote_r7_valid_root/.local/bin/ae-next"
+ln -s new-link "$_remote_r7_valid_root/.local/bin/ae"
 printf 'existing-config\n' >"$_remote_r7_valid_home/config"
-_remote_r7_valid_journal="$_remote_r7_valid_home/.ae-next-install.journal"
+_remote_r7_valid_journal="$_remote_r7_valid_home/.ae-install.journal"
 {
     printf 'format=1\n'
     printf 'version=2026.8.1\n'
     printf 'home=%s\n' "$_remote_r7_valid_home"
     printf 'core_pointer=%s/core/current\n' "$_remote_r7_valid_home"
-    printf 'core_had=1\ncore_old=%s/core/old/ae\n' "$_remote_r7_valid_home"
+    printf 'core_had=1\ncore_old=%s/core/old/ae\ncore_mode=0555\n' "$_remote_r7_valid_home"
     printf 'current_pointer=%s/current\n' "$_remote_r7_valid_home"
     printf 'current_had=1\ncurrent_old=%s/versions/old\n' "$_remote_r7_valid_home"
-    printf 'link=%s/.local/bin/ae-next\nlink_had=1\nlink_old=%s/current/ae-next\n' \
+    printf 'link=%s/.local/bin/ae\nlink_had=1\nlink_old=%s/current/ae\n' \
         "$_remote_r7_valid_root" "$_remote_r7_valid_home"
     printf 'config=%s/config\nconfig_had=1\n' "$_remote_r7_valid_home"
 } >"$_remote_r7_valid_journal"
@@ -15484,88 +15459,193 @@ set -e
 assert_eq "remote installer r7: all-present journal flags recover" "0" "$_remote_r7_valid_rc"
 assert_eq "remote installer r7: all-present journal restores core/current" \
     "$_remote_r7_valid_home/core/old/ae" "$(cat "$_remote_r7_valid_home/core/current")"
+# C72 FIXTURE AMENDMENT (adopted): this fixture records 0555 deliberately —
+# a mode the product never publishes — so the restore is checked against a value
+# that CANNOT coincide with the ratified publish default. A fixture whose
+# recorded mode equalled that default would pass whether the recorded mode was
+# honoured or silently fallen back to, which is the opposite-sign cancellation
+# the three-installer C72b probe demonstrated live. Guard the discrimination
+# itself, so this fixture cannot quietly stop discriminating:
+assert_eq "remote installer C72: the mode fixture stays adversarial to the ratified default" "1" \
+    "$([[ "0555" != "$REMOTE_CORE_POINTER_MODE" ]] && echo 1 || echo 0)"
 assert_eq "remote installer r7: all-present journal restores current" \
     "$_remote_r7_valid_home/versions/old" "$(readlink "$_remote_r7_valid_home/current")"
 assert_eq "remote installer r7: all-present journal restores command link" \
-    "$_remote_r7_valid_home/current/ae-next" "$(readlink "$_remote_r7_valid_root/.local/bin/ae-next")"
+    "$_remote_r7_valid_home/current/ae" "$(readlink "$_remote_r7_valid_root/.local/bin/ae")"
 assert_eq "remote installer r7: all-present journal preserves config" "existing-config" \
     "$(cat "$_remote_r7_valid_home/config")"
 assert_eq "remote installer r7: all-present journal is removed after recovery" "0" \
     "$([[ ! -e "$_remote_r7_valid_journal" ]] && echo 0 || echo 1)"
+# C72: bytes without mode is a DIFFERENT file. The journal records core/current's
+# mode and recovery reapplies it, or the cutover's C45 selector-identity check
+# correctly refuses the result. Recorded 0555, so 0600 (mktemp's default, which
+# is what the defect produced) is the value this discriminates against.
+# Read back with ls, NOT with remote_file_mode: an assertion whose expectation
+# comes from the function under test proves consistency, not correctness.
+# shellcheck disable=SC2012  # a controlled mktemp path, and the point is to
+# read the mode with a DIFFERENT tool than the one under test
+assert_eq "remote installer C72: recovery restores the recorded core/current mode" "-r-xr-xr-x" \
+    "$(ls -l "$_remote_r7_valid_home/core/current" | awk '{print substr($1, 1, 10)}')"
 
-# Rollback deletes seeded config only while it still equals the compile-time
-# seed. Operator content is preserved; an untouched seed is still removed.
-_remote_r6_write_journal() {
-    local home="$1" journal="$2"
-    {
-        printf 'format=1\n'
-        printf 'version=2026.8.1\n'
-        printf 'home=%s\n' "$home"
-        printf 'core_pointer=%s/core/current\n' "$home"
-        printf 'core_had=0\ncore_old=\n'
-        printf 'current_pointer=%s/current\n' "$home"
-        printf 'current_had=0\ncurrent_old=\n'
-        printf 'link=%s/.local/bin/ae-next\nlink_had=0\nlink_old=\n' "$(dirname "$home")"
-        printf 'config=%s/config\nconfig_had=0\n' "$home"
-    } >"$journal"
-}
-_remote_r6_op_root="$(mktemp -d "$_remote_fixture/r6-op-config.XXXXXX")"
-_remote_r6_op_home="$_remote_r6_op_root/.ae-next"
-mkdir -p "$_remote_r6_op_home" "$_remote_r6_op_root/.local/bin"
-printf 'operator-owned config\n' >"$_remote_r6_op_home/config"
-_remote_r6_op_journal="$_remote_r6_op_home/.ae-next-install.journal"
-_remote_r6_write_journal "$_remote_r6_op_home" "$_remote_r6_op_journal"
-_remote_r6_op_rc=0
+# RATIFIED (C72 RULING (2)): a journal that claims a core/current but records no
+# mode is a LEGACY journal, and it recovers at the ratified publish mode 0644 —
+# the only honest fallback — announcing that fallback loudly on its own code path.
+# It does NOT refuse; refusing was my earlier unratified choice and is superseded.
+_remote_c72_root="$(mktemp -d "$_remote_fixture/c72-nomode.XXXXXX")"
+_remote_c72_home="$_remote_c72_root/.ae"
+mkdir -p "$_remote_c72_home/core" "$_remote_c72_root/.local/bin"
+printf 'live-core\n' >"$_remote_c72_home/core/current"
+_remote_c72_journal="$_remote_c72_home/.ae-install.journal"
+{
+    printf 'format=1\n'
+    printf 'version=2026.8.1\n'
+    printf 'home=%s\n' "$_remote_c72_home"
+    printf 'core_pointer=%s/core/current\n' "$_remote_c72_home"
+    printf 'core_had=1\ncore_old=%s/core/old/ae\n' "$_remote_c72_home"
+    printf 'current_pointer=%s/current\n' "$_remote_c72_home"
+    printf 'current_had=0\ncurrent_old=\n'
+    printf 'link=%s/.local/bin/ae\nlink_had=0\nlink_old=\n' "$_remote_c72_root"
+    printf 'config=%s/config\nconfig_had=0\n' "$_remote_c72_home"
+} >"$_remote_c72_journal"
+_remote_c72_rc=0
 set +e
 (
     set -e
-    HOME="$_remote_r6_op_root" remote_recover_existing_journal "$_remote_r6_op_home"
-) >"$_remote_r6_op_root/out" 2>"$_remote_r6_op_root/err"
-_remote_r6_op_rc=$?
+    HOME="$_remote_c72_root" remote_recover_existing_journal "$_remote_c72_home"
+) >"$_remote_c72_root/out" 2>"$_remote_c72_root/err"
+_remote_c72_rc=$?
 set -e
-assert_eq "remote installer r6: operator config recovery succeeds" "0" "$_remote_r6_op_rc"
-assert_eq "remote installer r6: operator config is preserved" "operator-owned config" \
-    "$(cat "$_remote_r6_op_home/config")"
-assert_eq "remote installer r6: operator-config journal is removed" "0" \
-    "$([[ ! -e "$_remote_r6_op_journal" ]] && echo 0 || echo 1)"
+# C72 RULING (2): a LEGACY journal predating core_mode restores at the ratified
+# publish mode 0644 — the only honest fallback — and says so LOUDLY on its own
+# code path. A silent default would also swallow a parser miss, which is the
+# failure this branch exists to stay distinguishable from.
+assert_eq "remote installer C72b: a legacy journal without core_mode recovers" "0" "$_remote_c72_rc"
+# shellcheck disable=SC2012  # controlled mktemp path; read with a DIFFERENT tool
+# than the one under test
+assert_eq "remote installer C72b: the legacy fallback restores at the ratified 0644" "-rw-r--r--" \
+    "$(ls -l "$_remote_c72_home/core/current" | awk '{print substr($1, 1, 10)}')"
+assert_eq "remote installer C72b: the legacy fallback is announced, not silent" "1" \
+    "$(grep -F -c 'legacy install journal carries no core_mode' "$_remote_c72_root/err" || true)"
+assert_eq "remote installer C72b: the legacy fallback names the ratified mode" "1" \
+    "$(grep -F -c 'at the ratified publish mode 0644' "$_remote_c72_root/err" || true)"
 
-_remote_r6_seed_root="$(mktemp -d "$_remote_fixture/r6-seed-config.XXXXXX")"
-_remote_r6_seed_home="$_remote_r6_seed_root/.ae-next"
-mkdir -p "$_remote_r6_seed_home" "$_remote_r6_seed_root/.local/bin"
-printf '%s' "$_REMOTE_CONFIG_SEED" >"$_remote_r6_seed_home/config"
-_remote_r6_seed_journal="$_remote_r6_seed_home/.ae-next-install.journal"
-_remote_r6_write_journal "$_remote_r6_seed_home" "$_remote_r6_seed_journal"
-_remote_r6_seed_rc=0
+# The discriminator the fallback must NOT swallow: the key IS present and its
+# value is unusable. That is a corrupt record, not a legacy one, and it refuses.
+_remote_c72c_root="$(mktemp -d "$_remote_fixture/c72-badmode.XXXXXX")"
+_remote_c72c_home="$_remote_c72c_root/.ae"
+mkdir -p "$_remote_c72c_home/core" "$_remote_c72c_root/.local/bin"
+printf 'live-core\n' >"$_remote_c72c_home/core/current"
+_remote_c72c_journal="$_remote_c72c_home/.ae-install.journal"
+{
+    printf 'format=1\n'
+    printf 'version=2026.8.1\n'
+    printf 'home=%s\n' "$_remote_c72c_home"
+    printf 'core_pointer=%s/core/current\n' "$_remote_c72c_home"
+    printf 'core_had=1\ncore_old=%s/core/old/ae\ncore_mode=9999\n' "$_remote_c72c_home"
+    printf 'current_pointer=%s/current\n' "$_remote_c72c_home"
+    printf 'current_had=0\ncurrent_old=\n'
+    printf 'link=%s/.local/bin/ae\nlink_had=0\nlink_old=\n' "$_remote_c72c_root"
+    printf 'config=%s/config\nconfig_had=0\n' "$_remote_c72c_home"
+} >"$_remote_c72c_journal"
+_remote_c72c_rc=0
 set +e
 (
     set -e
-    HOME="$_remote_r6_seed_root" remote_recover_existing_journal "$_remote_r6_seed_home"
-) >"$_remote_r6_seed_root/out" 2>"$_remote_r6_seed_root/err"
-_remote_r6_seed_rc=$?
+    HOME="$_remote_c72c_root" remote_recover_existing_journal "$_remote_c72c_home"
+) >"$_remote_c72c_root/out" 2>"$_remote_c72c_root/err"
+_remote_c72c_rc=$?
 set -e
-assert_eq "remote installer r6: seed config recovery succeeds" "0" "$_remote_r6_seed_rc"
-assert_eq "remote installer r6: untouched seed is removed" "0" \
-    "$([[ ! -e "$_remote_r6_seed_home/config" ]] && echo 0 || echo 1)"
-assert_eq "remote installer r6: seed-config journal is removed" "0" \
-    "$([[ ! -e "$_remote_r6_seed_journal" ]] && echo 0 || echo 1)"
-assert_eq "remote installer r6: writer and rollback share one seed" "3" \
-    "$(grep -cF '_REMOTE_CONFIG_SEED' "$_remote_installer" || true)"
+assert_eq "remote installer C72b: a PRESENT but invalid core_mode is refused" "1" "$_remote_c72c_rc"
+assert_eq "remote installer C72b: the refusal names an invalid mode, not a legacy journal" "1" \
+    "$(grep -F -c 'core/current mode is invalid' "$_remote_c72c_root/err" || true)"
+assert_eq "remote installer C72b: an invalid mode never takes the legacy path" "0" \
+    "$(grep -F -c 'legacy install journal' "$_remote_c72c_root/err" || true)"
+assert_eq "remote installer C72b: nothing was restored before the refusal" "live-core" \
+    "$(cat "$_remote_c72c_home/core/current")"
+assert_eq "remote installer C72b: the invalid-mode journal is kept for diagnosis" "1" \
+    "$([[ -f "$_remote_c72c_journal" ]] && echo 1 || echo 0)"
+
+# The mirror: a mode recorded with no core/current to restore it onto is an
+# incoherent PRE record, not a harmless extra field.
+_remote_c72b_root="$(mktemp -d "$_remote_fixture/c72-straymode.XXXXXX")"
+_remote_c72b_home="$_remote_c72b_root/.ae"
+mkdir -p "$_remote_c72b_home/core" "$_remote_c72b_root/.local/bin"
+_remote_c72b_journal="$_remote_c72b_home/.ae-install.journal"
+{
+    printf 'format=1\n'
+    printf 'version=2026.8.1\n'
+    printf 'home=%s\n' "$_remote_c72b_home"
+    printf 'core_pointer=%s/core/current\n' "$_remote_c72b_home"
+    printf 'core_had=0\ncore_old=\ncore_mode=0555\n'
+    printf 'current_pointer=%s/current\n' "$_remote_c72b_home"
+    printf 'current_had=0\ncurrent_old=\n'
+    printf 'link=%s/.local/bin/ae\nlink_had=0\nlink_old=\n' "$_remote_c72b_root"
+    printf 'config=%s/config\nconfig_had=0\n' "$_remote_c72b_home"
+} >"$_remote_c72b_journal"
+_remote_c72b_rc=0
+set +e
+(
+    set -e
+    HOME="$_remote_c72b_root" remote_recover_existing_journal "$_remote_c72b_home"
+) >"$_remote_c72b_root/out" 2>"$_remote_c72b_root/err"
+_remote_c72b_rc=$?
+set -e
+assert_eq "remote installer C72: a mode with no recorded core/current is refused" "1" "$_remote_c72b_rc"
+assert_eq "remote installer C72: the mirror refusal names the incoherence" "1" \
+    "$(grep -F -c 'records a core/current mode with no core/current' "$_remote_c72b_root/err" || true)"
+
+# C85 structural complement: C83's cleanup chokepoint has THREE call sites, and
+# the integration arm exercises only the success one. Deleting either unwind call
+# would leave that arm green, so pin all three here — and pin the ABSENCE of the
+# bare form, because re-introducing `rm -rf` beside the helper is the regression
+# that reads as harmless in a diff.
+assert_eq "remote installer C85: the success path cleans through the chokepoint" "1" \
+    "$([[ "$_remote_installer_source" == *'remote_release_lock
+    remote_rm_private_tree "$_REMOTE_TMP"'* ]] && echo 1 || echo 0)"
+assert_eq "remote installer C85: the unwind path cleans the stage through it" "1" \
+    "$([[ "$_remote_installer_source" == *'remote_rm_private_tree "$_REMOTE_STAGE" || private_rc=1'* ]] && echo 1 || echo 0)"
+assert_eq "remote installer C85: the unwind path cleans the extraction temp through it" "1" \
+    "$([[ "$_remote_installer_source" == *'|| remote_rm_private_tree "$_REMOTE_TMP" || private_rc=1'* ]] && echo 1 || echo 0)"
+# C101: the private cleanup runs BEFORE the replay, and the journal is deleted
+# only when both succeeded. Pin the ORDER, not just the presence — the defect
+# this replaced was an ordering defect that left every call site intact.
+assert_eq "remote installer C101: private cleanup precedes the journal replay" "1" \
+    "$([[ "$_remote_installer_source" == *'[ "$private_rc" -eq 0 ] || recovery_rc=1
+    if [ -n "$_REMOTE_JOURNAL" ] && [ -f "$_REMOTE_JOURNAL" ]; then'* ]] && echo 1 || echo 0)"
+assert_eq "remote installer C85: no bare rm -rf of the extraction temp survives" "0" \
+    "$([[ "$_remote_installer_source" == *'rm -rf "$_REMOTE_TMP"'* ]] && echo 1 || echo 0)"
+assert_eq "remote installer C85: no bare rm -rf of the stage survives" "0" \
+    "$([[ "$_remote_installer_source" == *'rm -rf "$_REMOTE_STAGE"'* ]] && echo 1 || echo 0)"
+
+# The mode reader itself: four octal digits on both userlands, and a refusal
+# rather than an empty string when the path cannot be read (GNU vs BSD stat is
+# the silent-fallback class this guards).
+_remote_c72m="$(mktemp -d "$_remote_fixture/c72-mode.XXXXXX")"
+printf 'x\n' >"$_remote_c72m/f"
+chmod 0555 "$_remote_c72m/f"
+assert_eq "remote installer C72: the mode reader pads to four octal digits" "0555" \
+    "$(remote_file_mode "$_remote_c72m/f")"
+chmod 0600 "$_remote_c72m/f"
+assert_eq "remote installer C72: the mode reader tracks a changed mode" "0600" \
+    "$(remote_file_mode "$_remote_c72m/f")"
+assert_eq "remote installer C72: an unreadable path fails instead of returning empty" "1" \
+    "$(remote_file_mode "$_remote_c72m/absent" >/dev/null 2>&1; echo $?)"
 
 # Directory at core/current: mv -f file dir returns 0 and nests. Recovery must
 # fail AND keep the journal — a nonzero return that still deletes it is not a fix.
 _remote_f8_root="$(mktemp -d "$_remote_fixture/f8-core-dir.XXXXXX")"
-_remote_f8_home="$_remote_f8_root/.ae-next"
+_remote_f8_home="$_remote_f8_root/.ae"
 mkdir -p "$_remote_f8_home/core/current" "$_remote_f8_root/.local/bin"
-_remote_f8_journal="$_remote_f8_home/.ae-next-install.journal"
+_remote_f8_journal="$_remote_f8_home/.ae-install.journal"
 {
     printf 'format=1\n'
     printf 'version=2026.8.1\n'
     printf 'home=%s\n' "$_remote_f8_home"
     printf 'core_pointer=%s/core/current\n' "$_remote_f8_home"
-    printf 'core_had=1\ncore_old=%s/core/old/ae\n' "$_remote_f8_home"
+    printf 'core_had=1\ncore_old=%s/core/old/ae\ncore_mode=0644\n' "$_remote_f8_home"
     printf 'current_pointer=%s/current\n' "$_remote_f8_home"
     printf 'current_had=0\ncurrent_old=\n'
-    printf 'link=%s/.local/bin/ae-next\nlink_had=0\nlink_old=\n' "$_remote_f8_root"
+    printf 'link=%s/.local/bin/ae\nlink_had=0\nlink_old=\n' "$_remote_f8_root"
     printf 'config=%s/config\nconfig_had=1\n' "$_remote_f8_home"
 } >"$_remote_f8_journal"
 _remote_f8_rc=0
@@ -15587,11 +15667,11 @@ assert_eq "remote installer 8: core/current remains a directory" "1" \
 # A journal cannot redirect recovery to an external command link. The fixed
 # HOME-derived destination is bound before any journal value can be used.
 _remote_r8_external_root="$(mktemp -d "$_remote_fixture/r8-external-link.XXXXXX")"
-_remote_r8_external_home="$_remote_r8_external_root/.ae-next"
-_remote_r8_external_link="$_remote_r8_external_root/outside/ae-next"
+_remote_r8_external_home="$_remote_r8_external_root/.ae"
+_remote_r8_external_link="$_remote_r8_external_root/outside/ae"
 mkdir -p "$_remote_r8_external_home" "$(dirname "$_remote_r8_external_link")"
 ln -s untouched-target "$_remote_r8_external_link"
-_remote_r8_external_journal="$_remote_r8_external_home/.ae-next-install.journal"
+_remote_r8_external_journal="$_remote_r8_external_home/.ae-install.journal"
 {
     printf 'format=1\n'
     printf 'version=2026.8.1\n'
@@ -15626,7 +15706,7 @@ assert_eq "remote installer r8: external-link journal is preserved" "1" \
 _remote_r10_rm_victim_test() {
     local label="$1" relative="$2" root home victim journal victim_file rc=0
     root="$(mktemp -d "$_remote_fixture/r10-$1.XXXXXX")"
-    home="$root/.ae-next"
+    home="$root/.ae"
     victim="$home/$relative"
     if [[ "$relative" == .local/* ]]; then
         victim="$root/$relative"
@@ -15639,13 +15719,13 @@ _remote_r10_rm_victim_test() {
         victim_file="$victim/content"
     fi
     printf 'live-state\n' >"$victim_file"
-    journal="$home/.ae-next-install.journal"
+    journal="$home/.ae-install.journal"
     {
         printf 'format=1\nversion=2026.8.1\n'
         printf 'home=%s\n' "$home"
         printf 'core_pointer=%s/core/current\ncore_had=0\ncore_old=\n' "$home"
         printf 'current_pointer=%s/current\ncurrent_had=0\ncurrent_old=\n' "$home"
-        printf 'link=%s/.local/bin/ae-next\nlink_had=0\nlink_old=\n' "$root"
+        printf 'link=%s/.local/bin/ae\nlink_had=0\nlink_old=\n' "$root"
         printf 'config=%s/config\nconfig_had=0\n' "$home"
         printf 'created_dir=rm|%s\n' "$victim"
     } >"$journal"
@@ -15675,7 +15755,7 @@ _remote_r10_rm_victim_test "exact-version" "versions/2026.8.1"
 _remote_r10_rmdir_refusal_test() {
     local label="$1" relative="$2" root home target journal rc=0
     root="$(mktemp -d "$_remote_fixture/r10-rmdir-$1.XXXXXX")"
-    home="$root/.ae-next"
+    home="$root/.ae"
     if [ "$relative" = home ]; then
         target="$root"
     else
@@ -15683,13 +15763,13 @@ _remote_r10_rmdir_refusal_test() {
         mkdir -p "$target"
     fi
     mkdir -p "$home"
-    journal="$home/.ae-next-install.journal"
+    journal="$home/.ae-install.journal"
     {
         printf 'format=1\nversion=2026.8.1\n'
         printf 'home=%s\n' "$home"
         printf 'core_pointer=%s/core/current\ncore_had=0\ncore_old=\n' "$home"
         printf 'current_pointer=%s/current\ncurrent_had=0\ncurrent_old=\n' "$home"
-        printf 'link=%s/.local/bin/ae-next\nlink_had=0\nlink_old=\n' "$root"
+        printf 'link=%s/.local/bin/ae\nlink_had=0\nlink_old=\n' "$root"
         printf 'config=%s/config\nconfig_had=0\n' "$home"
         printf 'created_dir=rmdir|%s\n' "$target"
     } >"$journal"
@@ -15702,7 +15782,7 @@ _remote_r10_rmdir_refusal_test() {
     set -e
     assert_eq "remote installer r10: $label rmdir victim is refused" "1" "$rc"
     assert_eq "remote installer r10: $label rmdir refusal names exact emitted set" "1" \
-        "$(grep -F -c 'install journal rmdir path is not one of the emitted directories' "$root/err" || true)"
+        "$(grep -F -c 'install journal directory path is not one of the emitted directories' "$root/err" || true)"
     assert_eq "remote installer r10: $label rmdir victim survives" "0" \
         "$([[ -d "$target" ]] && echo 0 || echo 1)"
     assert_eq "remote installer r10: $label rmdir journal is preserved" "1" \
@@ -15715,70 +15795,72 @@ _remote_r10_rmdir_refusal_test "home-root" home
 # An interruption after both atomic directory publications retains complete,
 # byte-correct directories. The next run must reuse them and finish cleanly.
 _remote_r12_retained_root="$(mktemp -d "$_remote_fixture/r12-retained.XXXXXX")"
-_remote_r12_retained_home="$_remote_r12_retained_root/.ae-next"
+_remote_r12_retained_home="$_remote_r12_retained_root/.ae"
 _remote_r12_retained_version="$_remote_r12_retained_home/versions/2026.8.2"
-_remote_r12_retained_compat="$_remote_r12_retained_home/core/2026.8.2/ae"
-_remote_r12_retained_bundle="$_remote_fixture/ae-next-2026.8.2-darwin-arm64"
+_remote_r12_retained_core="$_remote_r12_retained_home/core/current"
+_remote_r12_retained_bundle="$_remote_fixture/ae-2026.8.2-darwin-arm64"
 mkdir -p "$_remote_r12_retained_home"
 _remote_r12_retained_rc=0
 set +e
 (
     set -e
     HOME="$_remote_r12_retained_root" AE_VERSION=2026.8.2 \
-        AE_NEXT_BUNDLE="$_remote_fixture/ae-next-2026.8.2-darwin-arm64.tar.gz" \
-        AE_NEXT_SUMS="$_remote_fixture/ae-next-2026.8.2-darwin-arm64-SHA256SUMS" \
-        AE_NEXT_INSTALL_TEST_FAIL_AFTER=stage remote_main
+        AE_BUNDLE="$_remote_fixture/ae-2026.8.2-darwin-arm64.tar.gz" \
+        AE_SUMS="$_remote_fixture/ae-2026.8.2-darwin-arm64-SHA256SUMS" \
+        AE_INSTALL_TEST_FAIL_AFTER=stage remote_main
 ) >"$_remote_r12_retained_root/fail.out" 2>"$_remote_r12_retained_root/fail.err"
 _remote_r12_retained_rc=$?
 set -e
 assert_eq "remote installer r12: stage interruption is nonzero" "1" "$_remote_r12_retained_rc"
 assert_eq "remote installer r12: interrupted install retains published version" "0" \
     "$([[ -d "$_remote_r12_retained_version" ]] && echo 0 || echo 1)"
-_remote_r12_retained_pair_ok=1
-for _remote_r12_retained_file in ae ae-next ae-core install-remote; do
+_remote_r12_retained_members_ok=1
+for _remote_r12_retained_file in ae ae-core ae-glue install; do
     if [ ! -f "$_remote_r12_retained_version/$_remote_r12_retained_file" ] || \
         ! cmp -s "$_remote_r12_retained_bundle/$_remote_r12_retained_file" \
             "$_remote_r12_retained_version/$_remote_r12_retained_file"; then
-        _remote_r12_retained_pair_ok=0
+        _remote_r12_retained_members_ok=0
     fi
 done
-assert_eq "remote installer r12: retained version pair is complete and byte-correct" "1" \
-    "$_remote_r12_retained_pair_ok"
-assert_eq "remote installer r12: interrupted install retains compatibility core" "0" \
-    "$([[ -f "$_remote_r12_retained_compat" ]] && cmp -s "$_remote_r12_retained_bundle/ae-core" "$_remote_r12_retained_compat" && echo 0 || echo 1)"
+assert_eq "remote installer r12: retained version set is complete and byte-correct" "1" \
+    "$_remote_r12_retained_members_ok"
+assert_eq "remote installer r12: interrupted install does not publish core/current" "0" \
+    "$([[ ! -e "$_remote_r12_retained_core" ]] && echo 0 || echo 1)"
 assert_eq "remote installer r12: non-empty parent reversal succeeds and removes journal" "0" \
-    "$([[ ! -e "$_remote_r12_retained_home/.ae-next-install.journal" ]] && echo 0 || echo 1)"
+    "$([[ ! -e "$_remote_r12_retained_home/.ae-install.journal" ]] && echo 0 || echo 1)"
 _remote_r12_retained_rerun_rc=0
 set +e
 (
     set -e
     HOME="$_remote_r12_retained_root" AE_VERSION=2026.8.2 \
-        AE_NEXT_BUNDLE="$_remote_fixture/ae-next-2026.8.2-darwin-arm64.tar.gz" \
-        AE_NEXT_SUMS="$_remote_fixture/ae-next-2026.8.2-darwin-arm64-SHA256SUMS" remote_main
+        AE_BUNDLE="$_remote_fixture/ae-2026.8.2-darwin-arm64.tar.gz" \
+        AE_SUMS="$_remote_fixture/ae-2026.8.2-darwin-arm64-SHA256SUMS" remote_main
 ) >"$_remote_r12_retained_root/rerun.out" 2>"$_remote_r12_retained_root/rerun.err"
 _remote_r12_retained_rerun_rc=$?
 set -e
-assert_eq "remote installer r12: rerun reuses retained complete pair" "0" "$_remote_r12_retained_rerun_rc"
+assert_eq "remote installer r12: rerun reuses retained complete version set" "0" "$_remote_r12_retained_rerun_rc"
 assert_eq "remote installer r12: rerun publishes retained version" \
     "$_remote_r12_retained_version" "$(readlink "$_remote_r12_retained_home/current")"
+assert_eq "remote installer r12: rerun publishes core/current from retained version" \
+    "$_remote_r12_retained_version/ae-core" "$(cat "$_remote_r12_retained_core")"
 
 # Positive controls for the other emitted rmdir shapes: home/versions,
 # home/core, and both creatable ancestors of the fixed command link.
 _remote_r10_positive_rmdir_root="$(mktemp -d "$_remote_fixture/r10-positive-rmdir.XXXXXX")"
-_remote_r10_positive_rmdir_home="$_remote_r10_positive_rmdir_root/.ae-next"
+_remote_r10_positive_rmdir_home="$_remote_r10_positive_rmdir_root/.ae"
 _remote_r10_positive_rmdir_versions="$_remote_r10_positive_rmdir_home/versions"
 _remote_r10_positive_rmdir_core="$_remote_r10_positive_rmdir_home/core"
 _remote_r10_positive_rmdir_local="$_remote_r10_positive_rmdir_root/.local"
 _remote_r10_positive_rmdir_bin="$_remote_r10_positive_rmdir_local/bin"
 mkdir -p "$_remote_r10_positive_rmdir_versions" "$_remote_r10_positive_rmdir_core" \
     "$_remote_r10_positive_rmdir_bin"
-_remote_r10_positive_rmdir_journal="$_remote_r10_positive_rmdir_home/.ae-next-install.journal"
+_remote_r10_positive_rmdir_journal="$_remote_r10_positive_rmdir_home/.ae-install.journal"
 {
     printf 'format=1\nversion=2026.8.1\n'
     printf 'home=%s\n' "$_remote_r10_positive_rmdir_home"
     printf 'core_pointer=%s/core/current\ncore_had=0\ncore_old=\n' "$_remote_r10_positive_rmdir_home"
     printf 'current_pointer=%s/current\ncurrent_had=0\ncurrent_old=\n' "$_remote_r10_positive_rmdir_home"
-    printf 'link=%s/.local/bin/ae-next\nlink_had=0\nlink_old=\n' "$_remote_r10_positive_rmdir_root"
+    printf 'link=%s/.local/bin/ae\nlink_had=0\nlink_old=\n' "$_remote_r10_positive_rmdir_root"
     printf 'config=%s/config\nconfig_had=0\n' "$_remote_r10_positive_rmdir_home"
     printf 'created_dir=rmdir|%s\ncreated_dir=rmdir|%s\ncreated_dir=rmdir|%s\ncreated_dir=rmdir|%s\n' \
         "$_remote_r10_positive_rmdir_versions" "$_remote_r10_positive_rmdir_core" \
@@ -15802,15 +15884,15 @@ assert_eq "remote installer r10: exact versions/core/link-parent rmdir rows remo
 # The version field is part of the exact rm derivation; malformed versions are
 # rejected even when the rest of the journal has otherwise valid fields.
 _remote_r10_bad_version_root="$(mktemp -d "$_remote_fixture/r10-bad-version.XXXXXX")"
-_remote_r10_bad_version_home="$_remote_r10_bad_version_root/.ae-next"
+_remote_r10_bad_version_home="$_remote_r10_bad_version_root/.ae"
 mkdir -p "$_remote_r10_bad_version_home"
-_remote_r10_bad_version_journal="$_remote_r10_bad_version_home/.ae-next-install.journal"
+_remote_r10_bad_version_journal="$_remote_r10_bad_version_home/.ae-install.journal"
 {
     printf 'format=1\nversion=2026.8.x\n'
     printf 'home=%s\ncore_pointer=%s/core/current\ncore_had=0\ncore_old=\n' \
         "$_remote_r10_bad_version_home" "$_remote_r10_bad_version_home"
     printf 'current_pointer=%s/current\ncurrent_had=0\ncurrent_old=\n' "$_remote_r10_bad_version_home"
-    printf 'link=%s/.local/bin/ae-next\nlink_had=0\nlink_old=\n' "$_remote_r10_bad_version_root"
+    printf 'link=%s/.local/bin/ae\nlink_had=0\nlink_old=\n' "$_remote_r10_bad_version_root"
     printf 'config=%s/config\nconfig_had=0\n' "$_remote_r10_bad_version_home"
 } >"$_remote_r10_bad_version_journal"
 _remote_r10_bad_version_rc=0
@@ -15832,24 +15914,24 @@ assert_eq "remote installer r10: malformed version journal is preserved" "1" \
 # late-link TERM must remove every created parent and leave no wedge; the next
 # run then installs end to end.
 _remote_r5_late_root="$(mktemp -d "$_remote_fixture/r5-late-link.XXXXXX")"
-_remote_r5_late_home="$_remote_r5_late_root/.ae-next"
-_remote_r5_late_bin="$_remote_r5_late_root/.local/bin/ae-next"
+_remote_r5_late_home="$_remote_r5_late_root/.ae"
+_remote_r5_late_bin="$_remote_r5_late_root/.local/bin/ae"
 mkdir -p "$_remote_r5_late_home"
 _remote_r5_late_rc=0
 set +e
 (
     set -e
     HOME="$_remote_r5_late_root" AE_VERSION=2026.8.1 \
-        AE_NEXT_BUNDLE="$_remote_fixture/ae-next-2026.8.1-darwin-arm64.tar.gz" \
-        AE_NEXT_SUMS="$_remote_fixture/ae-next-2026.8.1-darwin-arm64-SHA256SUMS" \
-        AE_NEXT_INSTALL_TEST_FAIL_AFTER=term-link remote_main
+        AE_BUNDLE="$_remote_fixture/ae-2026.8.1-darwin-arm64.tar.gz" \
+        AE_SUMS="$_remote_fixture/ae-2026.8.1-darwin-arm64-SHA256SUMS" \
+        AE_INSTALL_TEST_FAIL_AFTER=term-link remote_main
 ) >"$_remote_r5_late_root/out" 2>"$_remote_r5_late_root/err"
 _remote_r5_late_rc=$?
 set -e
 assert_eq "remote installer r5: late-link TERM exits by signal" "143" "$_remote_r5_late_rc"
 assert_eq "remote installer r5: late-link rollback removes journal" "0" \
-    "$([[ ! -e "$_remote_r5_late_home/.ae-next-install.journal" && \
-        ! -L "$_remote_r5_late_home/.ae-next-install.journal" ]] && echo 0 || echo 1)"
+    "$([[ ! -e "$_remote_r5_late_home/.ae-install.journal" && \
+        ! -L "$_remote_r5_late_home/.ae-install.journal" ]] && echo 0 || echo 1)"
 assert_eq "remote installer r5: late-link rollback restores absent old link" "0" \
     "$([[ ! -e "$_remote_r5_late_bin" && ! -L "$_remote_r5_late_bin" ]] && echo 0 || echo 1)"
 assert_eq "remote installer r5: late-link rollback removes all created parents" "0" \
@@ -15859,17 +15941,17 @@ set +e
 (
     set -e
     HOME="$_remote_r5_late_root" AE_VERSION=2026.8.1 \
-        AE_NEXT_BUNDLE="$_remote_fixture/ae-next-2026.8.1-darwin-arm64.tar.gz" \
-        AE_NEXT_SUMS="$_remote_fixture/ae-next-2026.8.1-darwin-arm64-SHA256SUMS" remote_main
+        AE_BUNDLE="$_remote_fixture/ae-2026.8.1-darwin-arm64.tar.gz" \
+        AE_SUMS="$_remote_fixture/ae-2026.8.1-darwin-arm64-SHA256SUMS" remote_main
 ) >"$_remote_r5_late_root/rerun.out" 2>"$_remote_r5_late_root/rerun.err"
 _remote_r5_late_rerun_rc=$?
 set -e
 assert_eq "remote installer r5: late-link rerun completes cleanly" "0" "$_remote_r5_late_rerun_rc"
 assert_eq "remote installer r5: late-link rerun publishes external link" \
-    "$_remote_r5_late_home/current/ae-next" "$(readlink "$_remote_r5_late_bin")"
+    "$_remote_r5_late_home/current/ae" "$(readlink "$_remote_r5_late_bin")"
 assert_eq "remote installer r5: late-link rerun leaves no journal" "0" \
-    "$([[ ! -e "$_remote_r5_late_home/.ae-next-install.journal" && \
-        ! -L "$_remote_r5_late_home/.ae-next-install.journal" ]] && echo 0 || echo 1)"
+    "$([[ ! -e "$_remote_r5_late_home/.ae-install.journal" && \
+        ! -L "$_remote_r5_late_home/.ae-install.journal" ]] && echo 0 || echo 1)"
 
 # Signal regression: TERM at every pointer publication boundary must run the
 # same journal recovery as an ordinary failure, retaining complete published
@@ -15881,21 +15963,21 @@ _remote_signal_boundary() {
     (
         set -e
         HOME="$_remote_home" AE_VERSION=2026.8.2 \
-            AE_NEXT_BUNDLE="$_remote_fixture/ae-next-2026.8.2-darwin-arm64.tar.gz" \
-            AE_NEXT_SUMS="$_remote_fixture/ae-next-2026.8.2-darwin-arm64-SHA256SUMS" \
-            AE_NEXT_INSTALL_TEST_FAIL_AFTER="term-$boundary" remote_main
+            AE_BUNDLE="$_remote_fixture/ae-2026.8.2-darwin-arm64.tar.gz" \
+            AE_SUMS="$_remote_fixture/ae-2026.8.2-darwin-arm64-SHA256SUMS" \
+            AE_INSTALL_TEST_FAIL_AFTER="term-$boundary" remote_main
     ) >"$err_file" 2>&1
     rc=$?
     set -e
     assert_eq "remote installer signal acceptance: TERM after $boundary exits 143" "143" "$rc"
     assert_eq "remote installer signal acceptance: TERM after $boundary preserves current" \
-        "$_remote_old_current" "$(readlink "$_remote_home/.ae-next/current")"
+        "$_remote_old_current" "$(readlink "$_remote_home/.ae/current")"
     assert_eq "remote installer signal acceptance: TERM after $boundary preserves core/current" \
-        "$_remote_old_core" "$(cat "$_remote_home/.ae-next/core/current")"
+        "$_remote_old_core" "$(cat "$_remote_home/.ae/core/current")"
     assert_eq "remote installer signal acceptance: TERM after $boundary removes journal" "0" \
-        "$([[ ! -e "$_remote_home/.ae-next/.ae-next-install.journal" ]] && echo 0 || echo 1)"
+        "$([[ ! -e "$_remote_home/.ae/.ae-install.journal" ]] && echo 0 || echo 1)"
     assert_eq "remote installer signal acceptance: TERM after $boundary retains complete version" "0" \
-        "$([[ -d "$_remote_home/.ae-next/versions/2026.8.2" ]] && echo 0 || echo 1)"
+        "$([[ -d "$_remote_home/.ae/versions/2026.8.2" ]] && echo 0 || echo 1)"
     rm -f "$err_file"
 }
 _remote_signal_boundary core
@@ -15904,29 +15986,29 @@ _remote_signal_boundary link
 
 # Idempotence must not follow a byte-identical symlink in an existing version.
 # The old pointers must remain untouched when that member is refused.
-chmod u+w "$_remote_home/.ae-next/versions/2026.8.1"
-cp "$_remote_home/.ae-next/versions/2026.8.1/ae" "$_remote_fixture/identical-ae"
-rm -f "$_remote_home/.ae-next/versions/2026.8.1/ae"
-ln -s "$_remote_fixture/identical-ae" "$_remote_home/.ae-next/versions/2026.8.1/ae"
+chmod u+w "$_remote_home/.ae/versions/2026.8.1"
+cp "$_remote_home/.ae/versions/2026.8.1/ae" "$_remote_fixture/identical-ae"
+rm -f "$_remote_home/.ae/versions/2026.8.1/ae"
+ln -s "$_remote_fixture/identical-ae" "$_remote_home/.ae/versions/2026.8.1/ae"
 _remote_symlink_rc=0
 set +e
 (
     set -e
     HOME="$_remote_home" AE_VERSION=2026.8.1 \
-        AE_NEXT_BUNDLE="$_remote_fixture/ae-next-2026.8.1-darwin-arm64.tar.gz" \
-        AE_NEXT_SUMS="$_remote_fixture/ae-next-2026.8.1-darwin-arm64-SHA256SUMS" remote_main
+        AE_BUNDLE="$_remote_fixture/ae-2026.8.1-darwin-arm64.tar.gz" \
+        AE_SUMS="$_remote_fixture/ae-2026.8.1-darwin-arm64-SHA256SUMS" remote_main
 ) >"$_remote_fixture/symlink.out" 2>&1
 _remote_symlink_rc=$?
 set -e
 assert_eq "remote installer idempotence: byte-identical symlink member is refused" "1" "$_remote_symlink_rc"
 assert_eq "remote installer idempotence: symlink refusal preserves current" "$_remote_old_current" \
-    "$(readlink "$_remote_home/.ae-next/current")"
+    "$(readlink "$_remote_home/.ae/current")"
 assert_eq "remote installer idempotence: symlink refusal preserves core/current" "$_remote_old_core" \
-    "$(cat "$_remote_home/.ae-next/core/current")"
-chmod u+w "$_remote_home/.ae-next/versions/2026.8.1"
-rm -f "$_remote_home/.ae-next/versions/2026.8.1/ae"
-cp "$_remote_fixture/identical-ae" "$_remote_home/.ae-next/versions/2026.8.1/ae"
-chmod 0555 "$_remote_home/.ae-next/versions/2026.8.1/ae" "$_remote_home/.ae-next/versions/2026.8.1"
+    "$(cat "$_remote_home/.ae/core/current")"
+chmod u+w "$_remote_home/.ae/versions/2026.8.1"
+rm -f "$_remote_home/.ae/versions/2026.8.1/ae"
+cp "$_remote_fixture/identical-ae" "$_remote_home/.ae/versions/2026.8.1/ae"
+chmod 0555 "$_remote_home/.ae/versions/2026.8.1/ae" "$_remote_home/.ae/versions/2026.8.1"
 
 # Make one rollback operation fail. Recovery must continue independently,
 # preserve the journal, and name the rerun recovery path loudly. A clean rerun
@@ -15939,22 +16021,22 @@ set +e
     rm() {
         local arg
         for arg in "$@"; do
-            if [ "$arg" = "$_remote_home/.ae-next/current" ]; then
+            if [ "$arg" = "$_remote_home/.ae/current" ]; then
                 return 1
             fi
         done
         command rm "$@"
     }
     HOME="$_remote_home" AE_VERSION=2026.8.2 \
-        AE_NEXT_BUNDLE="$_remote_fixture/ae-next-2026.8.2-darwin-arm64.tar.gz" \
-        AE_NEXT_SUMS="$_remote_fixture/ae-next-2026.8.2-darwin-arm64-SHA256SUMS" \
-        AE_NEXT_INSTALL_TEST_FAIL_AFTER=term-current remote_main
+        AE_BUNDLE="$_remote_fixture/ae-2026.8.2-darwin-arm64.tar.gz" \
+        AE_SUMS="$_remote_fixture/ae-2026.8.2-darwin-arm64-SHA256SUMS" \
+        AE_INSTALL_TEST_FAIL_AFTER=term-current remote_main
 ) >"$_remote_fixture/rollback.out" 2>"$_remote_failure_err"
 _remote_failure_rc=$?
 set -e
 assert_eq "remote installer rollback acceptance: failed reversal is nonzero" "1" "$_remote_failure_rc"
 assert_eq "remote installer rollback acceptance: journal survives failed reversal" "1" \
-    "$([[ -f "$_remote_home/.ae-next/.ae-next-install.journal" ]] && echo 1 || echo 0)"
+    "$([[ -f "$_remote_home/.ae/.ae-install.journal" ]] && echo 1 || echo 0)"
 assert_eq "remote installer rollback acceptance: loud message names incomplete rollback" "1" \
     "$(grep -F -c 'rollback incomplete' "$_remote_failure_err" || true)"
 assert_eq "remote installer rollback acceptance: loud message names rerun recovery" "1" \
@@ -15963,16 +16045,16 @@ set +e
 (
     set -e
     HOME="$_remote_home" AE_VERSION=2026.8.2 \
-        AE_NEXT_BUNDLE="$_remote_fixture/ae-next-2026.8.2-darwin-arm64.tar.gz" \
-        AE_NEXT_SUMS="$_remote_fixture/ae-next-2026.8.2-darwin-arm64-SHA256SUMS" remote_main
+        AE_BUNDLE="$_remote_fixture/ae-2026.8.2-darwin-arm64.tar.gz" \
+        AE_SUMS="$_remote_fixture/ae-2026.8.2-darwin-arm64-SHA256SUMS" remote_main
 ) >"$_remote_fixture/recovery.out" 2>&1
 _remote_recovery_rc=$?
 set -e
 assert_eq "remote installer recovery acceptance: journal-present rerun installs successfully" "0" "$_remote_recovery_rc"
 assert_eq "remote installer recovery acceptance: rerun removes journal" "0" \
-    "$([[ ! -e "$_remote_home/.ae-next/.ae-next-install.journal" ]] && echo 0 || echo 1)"
+    "$([[ ! -e "$_remote_home/.ae/.ae-install.journal" ]] && echo 0 || echo 1)"
 assert_eq "remote installer recovery acceptance: rerun leaves requested current" \
-    "$_remote_home/.ae-next/versions/2026.8.2" "$(readlink "$_remote_home/.ae-next/current")"
+    "$_remote_home/.ae/versions/2026.8.2" "$(readlink "$_remote_home/.ae/current")"
 assert_eq "remote installer recovery acceptance: rerun announces recovery-first path" "1" \
     "$(grep -F -c 'recovering interrupted install' "$_remote_fixture/recovery.out" || true)"
 
@@ -15984,11 +16066,9 @@ unset -f _remote_make_bundle remote_platform remote_detect_platform remote_selec
     remote_journal_add_dir remote_mkdir_recorded remote_journal_load remote_restore_symlink remote_restore_file \
     remote_recover_journal remote_recover_existing_journal remote_atomic_symlink_replace remote_remove_created_dir \
     remote_path_components_ok remote_validate_bin_destination remote_version_ok remote_restore remote_test_failure remote_reset_state remote_main \
-    _remote_r10_rm_victim_test _remote_r10_rmdir_refusal_test \
-    _ae_next_home_reason _ae_next_home_prepare _remote_home_reason_test _remote_home_prepare_probe _remote_home_prepare_test \
-    _remote_r6_write_journal
+    _remote_r10_rm_victim_test _remote_r10_rmdir_refusal_test
 unset _remote_installer _remote_installer_source _remote_platform_rc _remote_version_rc _remote_fixture _remote_digest _remote_checksum_rc \
-    _remote_tmp_root _remote_home _remote_old_current _remote_old_core _remote_mode _remote_pair_mode _remote_pair_file \
+    _remote_tmp_root _remote_home _remote_old_current _remote_old_core _remote_mode _remote_member_mode _remote_member_file \
     _remote_trailing_home _remote_trailing_rc \
     _remote_file_home _remote_file_rc _remote_stdin_home _remote_stdin_rc _remote_source_home _remote_source_rc \
     _remote_live_rc _remote_live_output _remote_failure_rc \
@@ -16008,21 +16088,1779 @@ unset _remote_installer _remote_installer_source _remote_platform_rc _remote_ver
     _remote_r8_external_root _remote_r8_external_home _remote_r8_external_link \
     _remote_r8_external_journal _remote_r8_external_rc \
     _remote_r12_retained_root _remote_r12_retained_home _remote_r12_retained_version \
-    _remote_r12_retained_compat _remote_r12_retained_bundle _remote_r12_retained_rc \
-    _remote_r12_retained_pair_ok _remote_r12_retained_file _remote_r12_retained_rerun_rc \
+    _remote_r12_retained_core _remote_r12_retained_bundle _remote_r12_retained_rc \
+    _remote_r12_retained_members_ok _remote_r12_retained_file _remote_r12_retained_rerun_rc \
     _remote_r10_positive_rmdir_root _remote_r10_positive_rmdir_home _remote_r10_positive_rmdir_versions \
     _remote_r10_positive_rmdir_core _remote_r10_positive_rmdir_local _remote_r10_positive_rmdir_bin \
     _remote_r10_positive_rmdir_journal _remote_r10_positive_rmdir_rc \
     _remote_r10_bad_version_root _remote_r10_bad_version_home _remote_r10_bad_version_journal \
     _remote_r10_bad_version_rc \
-    _wrap_pair_root _wrap_pair_ver _wrap_pair_home _wrap_pair_rc _wrap_pair_out \
-    _wrap_mis_rc _wrap_miss_rc _wrap_repair _wrap_co_root _wrap_co_rc _wrap_co_dir \
-    _remote_r6_op_root _remote_r6_op_home _remote_r6_op_journal _remote_r6_op_rc \
-    _remote_r6_seed_root _remote_r6_seed_home _remote_r6_seed_journal _remote_r6_seed_rc \
-    _REMOTE_CONFIG_SEED \
     _remote_mismatch_build _remote_mismatch_digest _remote_mismatch_home _remote_mismatch_rc \
     _remote_pin_home _remote_pin_rc \
     _remote_f8_root _remote_f8_home _remote_f8_journal _remote_f8_rc
+
+# ── P5-PRODUCT writer-A BEGIN ─────────────────────────────────────
+# Exclusive: grok46:builder-a. Writer B must not edit between BEGIN/END.
+# Does not source contrib/ae-next. B retargets the 14750+ remote-installer
+# block at this root installer after this END marker exists.
+# shellcheck source=/dev/null
+source "$(dirname "$AE_BIN")/install"
+# shellcheck source=/dev/null
+source "$(dirname "$AE_BIN")/ae-entry"
+
+# Assigned by the sourced ae-entry; not a misspelling.
+# shellcheck disable=SC2153
+_p5_wrap_ver="$_AE_ENTRY_VERSION"
+assert_eq "P5 wrapper _AE_ENTRY_VERSION is pinned 2026.8.2" "2026.8.2" "$_p5_wrap_ver"
+assert_eq "P5 wrapper _AE_ENTRY_VERSION equals glue AE_VERSION" "$_p5_wrap_ver" \
+    "$(grep -m1 '^AE_VERSION=' "$AE_BIN" | cut -d'"' -f2)"
+assert_eq "P5 B13 wrapper does not assign AE_VERSION" "0" \
+    "$(grep -c '^AE_VERSION=' "$(dirname "$AE_BIN")/ae-entry" || true)"
+_p5_a14_enum=0
+_p5_a14_enum=$((_p5_a14_enum + $(grep -cF 'AE_VERSION, Cargo.toml' "$(dirname "$AE_BIN")/ae-entry" || true)))
+_p5_a14_enum=$((_p5_a14_enum + $(grep -cF 'AE_VERSION, Cargo.toml' "$(dirname "$AE_BIN")/install" || true)))
+assert_eq "P5 A14 diagnostics do not enumerate bump files" "0" "$_p5_a14_enum"
+_p5_a14_bump=0
+_p5_a14_bump=$((_p5_a14_bump + $(grep -cF 'just bump' "$(dirname "$AE_BIN")/ae-entry" || true)))
+_p5_a14_bump=$((_p5_a14_bump + $(grep -cF 'just bump' "$(dirname "$AE_BIN")/install" || true)))
+assert_eq "P5 A14 just-bump wording at all four mismatch sites" "4" "$_p5_a14_bump"
+assert_eq "P5 installer F1: stdin entry defaults BASH_SOURCE so curl|bash reaches main" "1" \
+    "$([[ $(grep -F -c '${BASH_SOURCE[0]:-$0}' "$(dirname "$AE_BIN")/install" || true) -ge 1 ]] && echo 1 || echo 0)"
+
+_p5_tmp_root="${TMPDIR:-/tmp}"
+_p5_tmp_root="${_p5_tmp_root%/}"
+_p5_fx="$(mktemp -d "$_p5_tmp_root/ae-p5-product.XXXXXX")"
+_p5_plat="$(remote_platform "$(uname -s)" "$(uname -m)")"
+_p5_repo="$(dirname "$AE_BIN")"
+
+_p5_write_glue() {
+    local dest="$1" version="$2"
+    cat >"$dest" <<EOF
+#!/usr/bin/env bash
+AE_VERSION="$version"
+if [ "\${1:-}" = "--version" ]; then
+    echo "ae \$AE_VERSION"
+    exit 0
+fi
+if [ "\${1:-}" = "_probe" ]; then
+    echo "AE_HOME=\${AE_HOME-UNSET}"
+    echo "CONFIG_FILE=\${CONFIG_FILE-UNSET}"
+    if [ -n "\${AE_TMUX_SERVER+x}" ]; then echo "AE_TMUX_SERVER=\$AE_TMUX_SERVER"; else echo "AE_TMUX_SERVER=UNSET"; fi
+    if [ -n "\${AE_TMUX_SERVER_KIND+x}" ]; then echo "AE_TMUX_SERVER_KIND=\$AE_TMUX_SERVER_KIND"; else echo "AE_TMUX_SERVER_KIND=UNSET"; fi
+    if [ -n "\${AE_CORE+x}" ]; then echo "AE_CORE=\${AE_CORE}"; else echo "AE_CORE=UNSET"; fi
+    if [ -n "\${AE_CORE_BIN+x}" ]; then echo "AE_CORE_BIN=\$AE_CORE_BIN"; else echo "AE_CORE_BIN=UNSET"; fi
+    if [ -n "\${AE_CORE+x}" ] && [ -z "\${AE_CORE}" ]; then
+        echo "reached=bash"
+    else
+        echo "reached=core"
+        _core="\$(head -1 "\${AE_HOME}/core/current" 2>/dev/null || true)"
+        if [ -x "\$_core" ]; then
+            echo "core_ran=\$("\$_core")"
+        fi
+    fi
+    exit 0
+fi
+if [ "\${1:-}" = "list" ] || [ "\${1:-}" = "ls" ]; then
+    for _t in "\$@"; do
+        if [ "\$_t" = "-h" ] || [ "\$_t" = "--help" ]; then
+            cat >&2 <<'LISTHELP'
+Usage: ae list [--running | --all | --stopped | --needs-attn | --active] [--json]
+  (default)    running sessions only
+  --running    running sessions only (explicit)
+  --all        running sessions, then stopped ones
+  --stopped    stopped sessions only
+  --needs-attn only running sessions with an attn reason — declared
+               waiting-user/blocked, watchdog-derived dead/stale/throttled, or an
+               unanswered inter-agent ask/review (older than AE_ATTN_REQUEST_SECS,
+               default 30m); implies running-only
+               (aliases: --needs-me, --needs, --attn)
+  --active     only running sessions with recent activity (an ae event in the
+               last 5 min; set AE_LIST_ACTIVE_SECS to change). Implies
+               running-only (alias: --busy)
+  --json       machine-readable digest (schema_version, per-session
+               needs_attention + attention reason, per-agent state); honours
+               the filters above. Pure bash output — no jq required.
+LISTHELP
+            exit 0
+        fi
+    done
+fi
+_sess="\${1:-sacrificial}"
+_dir="\${AE_HOME:-\$HOME/.ae}/sessions/\$_sess"
+mkdir -p "\$_dir"
+_path="\$(cd "\$(dirname "\$0")" && pwd)/\$(basename "\$0")"
+printf 'ae_path=%s\\n' "\$_path" >"\$_dir/meta"
+echo "launched \$_sess"
+EOF
+    chmod +x "$dest"
+}
+
+_p5_write_core() {
+    local dest="$1" version="$2"
+    printf '#!/usr/bin/env bash\nprintf "ae %s\\n"\n' "$version" >"$dest"
+    chmod +x "$dest"
+}
+
+_p5_make_bundle() {
+    local version="$1" root="$2" dir digest
+    dir="$_p5_fx/$root"
+    mkdir -p "$dir"
+    cp "$_p5_repo/ae-entry" "$dir/ae"
+    _sed_i -e "s/^_AE_ENTRY_VERSION=.*/_AE_ENTRY_VERSION=\"${version}\"/" "$dir/ae"
+    _p5_write_glue "$dir/ae-glue" "$version"
+    _p5_write_core "$dir/ae-core" "$version"
+    cp "$_p5_repo/install" "$dir/install"
+    chmod +x "$dir/ae" "$dir/ae-glue" "$dir/ae-core" "$dir/install"
+    tar -czf "$_p5_fx/$root.tar.gz" -C "$_p5_fx" "$root"
+    digest="$(remote_sha256 "$_p5_fx/$root.tar.gz")"
+    printf '%s  %s.tar.gz\n' "$digest" "$root" >"$_p5_fx/$root-SHA256SUMS"
+}
+
+_p5_write_isolated_config() {
+    # B11: CONFIG_FILE=/dev/null is inert (wrapper overwrites it). Causal
+    # telegram suppress is isolated HOME + this config. Stub agent: no real CLI.
+    local home="$1"
+    mkdir -p "$home/.ae"
+    cat >"$home/.ae/config" <<'EOF'
+[telegram]
+enabled = false
+
+[agents]
+stub = "true"
+
+[workspace]
+main = stub
+EOF
+}
+
+_p5_wrap_home() {
+    # Build an isolated HOME with versions/<v>/{ae,ae-core,ae-glue,install} and
+    # core/current. Does not run the installer — wrapper-only fixture.
+    local version="$1" home="$2" vdir
+    vdir="$home/.ae/versions/$version"
+    mkdir -p "$vdir" "$home/.ae/core" "$home/.local/bin"
+    _p5_write_isolated_config "$home"
+    cp "$_p5_repo/ae-entry" "$vdir/ae"
+    _sed_i -e "s/^_AE_ENTRY_VERSION=.*/_AE_ENTRY_VERSION=\"${version}\"/" "$vdir/ae"
+    _p5_write_glue "$vdir/ae-glue" "$version"
+    _p5_write_core "$vdir/ae-core" "$version"
+    cp "$_p5_repo/install" "$vdir/install"
+    chmod +x "$vdir/ae" "$vdir/ae-glue" "$vdir/ae-core" "$vdir/install"
+    printf '%s\n' "$vdir/ae-core" >"$home/.ae/core/current"
+    ln -s "$vdir/ae" "$home/.local/bin/ae"
+}
+
+# ── wrapper triple refusals + matching-launch control ────────────────
+_p5_w="$_p5_fx/wrap"
+mkdir -p "$_p5_w"
+_p5_wrap_home 2026.8.2 "$_p5_w/ok"
+assert_eq "P5 B11 wrap_home config disables telegram" "1" \
+    "$(grep -F -c 'enabled = false' "$_p5_w/ok/.ae/config" || true)"
+assert_eq "P5 B11 wrap_home config stubs the agent" "1" \
+    "$(grep -F -c 'stub = "true"' "$_p5_w/ok/.ae/config" || true)"
+_p5_ok_rc=0
+_p5_ok_out="$(HOME="$_p5_w/ok" "$_p5_w/ok/.ae/versions/2026.8.2/ae" --version \
+    2>"$_p5_w/ok.err")" || _p5_ok_rc=$?
+assert_eq "P5 wrapper --version is wrapper-local" "0" "$_p5_ok_rc"
+assert_eq "P5 wrapper --version shape" "ae 2026.8.2" "$_p5_ok_out"
+
+# B12: discriminating routing — stub-core marks only on list/ls, not --version
+_p5_b12_mark="$_p5_w/core-list.marker"
+{
+    printf '#!/usr/bin/env bash\n'
+    printf 'if [ "${1:-}" = "--version" ]; then printf "ae 2026.8.2\\n"; exit 0; fi\n'
+    printf 'printf invoked\\n >>%q\n' "$_p5_b12_mark"
+    printf 'if [ "${1:-}" = "list" ] || [ "${1:-}" = "ls" ]; then printf "STUB-CORE-LIST\\n"; exit 0; fi\n'
+    printf 'printf "unexpected %%s\\n" "$*" >&2; exit 1\n'
+} >"$_p5_w/ok/.ae/versions/2026.8.2/ae-core"
+chmod +x "$_p5_w/ok/.ae/versions/2026.8.2/ae-core"
+rm -f "$_p5_b12_mark"
+_p5_b12_list_rc=0
+_p5_b12_list_out="$(HOME="$_p5_w/ok" "$_p5_w/ok/.ae/versions/2026.8.2/ae" list \
+    2>"$_p5_w/b12-list.err")" || _p5_b12_list_rc=$?
+assert_eq "P5 B12 ae list hits stub-core" "0" "$_p5_b12_list_rc"
+assert_eq "P5 B12 ae list returns stub distinctive output" "STUB-CORE-LIST" "$_p5_b12_list_out"
+assert_eq "P5 B12 ae list touches core marker" "1" \
+    "$([[ -e "$_p5_b12_mark" ]] && echo 1 || echo 0)"
+rm -f "$_p5_b12_mark"
+_p5_b12_glue_rc=0
+HOME="$_p5_w/ok" "$_p5_w/ok/.ae/versions/2026.8.2/ae" doctor \
+    >"$_p5_w/b12-glue.out" 2>"$_p5_w/b12-glue.err" || _p5_b12_glue_rc=$?
+assert_eq "P5 B12 glue-owned doctor succeeds" "0" "$_p5_b12_glue_rc"
+assert_eq "P5 B12 glue-owned doctor distinctive output" "launched doctor" \
+    "$(cat "$_p5_w/b12-glue.out")"
+assert_eq "P5 B12 glue-owned command does not touch core marker" "0" \
+    "$([[ -e "$_p5_b12_mark" ]] && echo 1 || echo 0)"
+rm -f "$_p5_b12_mark"
+_p5_b12_ls_out="$(HOME="$_p5_w/ok" "$_p5_w/ok/.ae/versions/2026.8.2/ae" ls \
+    2>/dev/null)" || true
+assert_eq "P5 B12 ae ls returns stub distinctive output" "STUB-CORE-LIST" "$_p5_b12_ls_out"
+assert_eq "P5 B12 ae ls touches core marker" "1" \
+    "$([[ -e "$_p5_b12_mark" ]] && echo 1 || echo 0)"
+
+# B17/A6: list --help is glue LISTHELP, not core. Red against tail-blind
+# routing (current list|ls execs core with the tail verbatim).
+rm -f "$_p5_b12_mark"
+_p5_b17_help_rc=0
+set +e
+HOME="$_p5_w/ok" "$_p5_w/ok/.ae/versions/2026.8.2/ae" list --help \
+    >"$_p5_w/b17-help.out" 2>"$_p5_w/b17-help.err"
+_p5_b17_help_rc=$?
+set -e
+assert_eq "P5 B17 ae list --help exits 0" "0" "$_p5_b17_help_rc"
+assert_eq "P5 B17 ae list --help prints LISTHELP" "1" \
+    "$(grep -F -c 'Usage: ae list [--running | --all | --stopped | --needs-attn | --active] [--json]' "$_p5_w/b17-help.err" || true)"
+assert_eq "P5 B17 ae list --help does not touch core marker" "0" \
+    "$([[ -e "$_p5_b12_mark" ]] && echo 1 || echo 0)"
+rm -f "$_p5_b12_mark"
+_p5_b17_h_rc=0
+set +e
+HOME="$_p5_w/ok" "$_p5_w/ok/.ae/versions/2026.8.2/ae" list -h \
+    >"$_p5_w/b17-h.out" 2>"$_p5_w/b17-h.err"
+_p5_b17_h_rc=$?
+set -e
+assert_eq "P5 B17 ae list -h exits 0" "0" "$_p5_b17_h_rc"
+assert_eq "P5 B17 ae list -h prints LISTHELP" "1" \
+    "$(grep -F -c 'Usage: ae list [--running | --all | --stopped | --needs-attn | --active] [--json]' "$_p5_w/b17-h.err" || true)"
+assert_eq "P5 B17 ae list -h does not touch core marker" "0" \
+    "$([[ -e "$_p5_b12_mark" ]] && echo 1 || echo 0)"
+rm -f "$_p5_b12_mark"
+_p5_b17_json_rc=0
+_p5_b17_json_out="$(HOME="$_p5_w/ok" "$_p5_w/ok/.ae/versions/2026.8.2/ae" list --json \
+    2>"$_p5_w/b17-json.err")" || _p5_b17_json_rc=$?
+assert_eq "P5 B17 ae list --json hits stub-core" "0" "$_p5_b17_json_rc"
+assert_eq "P5 B17 ae list --json returns stub distinctive output" "STUB-CORE-LIST" "$_p5_b17_json_out"
+assert_eq "P5 B17 ae list --json touches core marker" "1" \
+    "$([[ -e "$_p5_b12_mark" ]] && echo 1 || echo 0)"
+
+# A16/B27a: LISTHELP drops retired knobs. Real glue is the subject; stub-core
+# marker still proves routing. Restore stub glue afterwards (_probe later).
+chmod -R u+w "$_p5_w/ok/.ae/versions/2026.8.2"
+cp "$AE_BIN" "$_p5_w/ok/.ae/versions/2026.8.2/ae-glue"
+chmod +x "$_p5_w/ok/.ae/versions/2026.8.2/ae-glue"
+rm -f "$_p5_b12_mark"
+_p5_b27_rc=0
+set +e
+HOME="$_p5_w/ok" "$_p5_w/ok/.ae/versions/2026.8.2/ae" list --help \
+    >"$_p5_w/b27-help.out" 2>"$_p5_w/b27-help.err"
+_p5_b27_rc=$?
+set -e
+assert_eq "P5 A16 ae list --help exits 0" "0" "$_p5_b27_rc"
+assert_eq "P5 A16 LISTHELP usage line present" "1" \
+    "$(grep -F -c 'Usage: ae list [--running | --all | --stopped | --needs-attn | --active] [--json]' "$_p5_w/b27-help.err" || true)"
+assert_eq "P5 A16 retired AE_ATTN_REQUEST_SECS absent" "0" \
+    "$(grep -F -c 'AE_ATTN_REQUEST_SECS' "$_p5_w/b27-help.err" || true)"
+assert_eq "P5 A16 retired AE_LIST_ACTIVE_SECS absent" "0" \
+    "$(grep -F -c 'AE_LIST_ACTIVE_SECS' "$_p5_w/b27-help.err" || true)"
+assert_eq "P5 A16 Pure-bash sentence absent" "0" \
+    "$(grep -F -c 'Pure bash output' "$_p5_w/b27-help.err" || true)"
+assert_eq "P5 A16 unanswered default 30m present" "1" \
+    "$(grep -F -c '30m' "$_p5_w/b27-help.err" || true)"
+assert_eq "P5 A16 active window 5 min present" "1" \
+    "$(grep -F -c '5 min' "$_p5_w/b27-help.err" || true)"
+assert_eq "P5 A16 list --help does not touch core marker" "0" \
+    "$([[ -e "$_p5_b12_mark" ]] && echo 1 || echo 0)"
+_p5_write_glue "$_p5_w/ok/.ae/versions/2026.8.2/ae-glue" 2026.8.2
+_p5_write_core "$_p5_w/ok/.ae/versions/2026.8.2/ae-core" 2026.8.2
+
+# missing pointer
+rm -f "$_p5_w/ok/.ae/core/current"
+_p5_ver_miss_rc=0
+set +e
+HOME="$_p5_w/ok" "$_p5_w/ok/.ae/versions/2026.8.2/ae" --version \
+    >"$_p5_w/ver-miss.out" 2>"$_p5_w/ver-miss.err"
+_p5_ver_miss_rc=$?
+set -e
+assert_eq "P5 B12 --version survives missing core" "0" "$_p5_ver_miss_rc"
+assert_eq "P5 B12 --version still prints identity" "ae 2026.8.2" \
+    "$(cat "$_p5_w/ver-miss.out")"
+_p5_miss_rc=0
+set +e
+HOME="$_p5_w/ok" "$_p5_w/ok/.ae/versions/2026.8.2/ae" _probe \
+    >"$_p5_w/miss.out" 2>"$_p5_w/miss.err"
+_p5_miss_rc=$?
+set -e
+assert_eq "P5 wrapper missing core pointer is refused" "2" "$_p5_miss_rc"
+assert_eq "P5 wrapper missing core names just install in checkout" "0" \
+    "$(grep -F -c "run 'just install'" "$_p5_w/miss.err" || true)"
+assert_eq "P5 wrapper missing core names ae upgrade" "1" \
+    "$(grep -F -c 'ae upgrade' "$_p5_w/miss.err" || true)"
+
+# empty pointer
+_p5_wrap_home 2026.8.2 "$_p5_w/empty"
+: >"$_p5_w/empty/.ae/core/current"
+_p5_empty_rc=0
+set +e
+HOME="$_p5_w/empty" "$_p5_w/empty/.ae/versions/2026.8.2/ae" _probe \
+    >"$_p5_w/empty.out" 2>"$_p5_w/empty.err"
+_p5_empty_rc=$?
+set -e
+assert_eq "P5 wrapper empty core pointer is refused" "2" "$_p5_empty_rc"
+
+# non-regular pointer (directory)
+_p5_wrap_home 2026.8.2 "$_p5_w/nreg"
+rm -f "$_p5_w/nreg/.ae/core/current"
+mkdir "$_p5_w/nreg/.ae/core/current"
+_p5_nreg_rc=0
+set +e
+HOME="$_p5_w/nreg" "$_p5_w/nreg/.ae/versions/2026.8.2/ae" _probe \
+    >"$_p5_w/nreg.out" 2>"$_p5_w/nreg.err"
+_p5_nreg_rc=$?
+set -e
+assert_eq "P5 wrapper non-regular core pointer is refused" "2" "$_p5_nreg_rc"
+
+# symlink pointer
+_p5_wrap_home 2026.8.2 "$_p5_w/slink"
+rm -f "$_p5_w/slink/.ae/core/current"
+ln -s "/tmp" "$_p5_w/slink/.ae/core/current"
+_p5_slink_rc=0
+set +e
+HOME="$_p5_w/slink" "$_p5_w/slink/.ae/versions/2026.8.2/ae" _probe \
+    >"$_p5_w/slink.out" 2>"$_p5_w/slink.err"
+_p5_slink_rc=$?
+set -e
+assert_eq "P5 wrapper symlink core pointer is refused" "2" "$_p5_slink_rc"
+
+# non-executable core
+_p5_wrap_home 2026.8.2 "$_p5_w/nx"
+chmod -x "$_p5_w/nx/.ae/versions/2026.8.2/ae-core"
+_p5_nx_rc=0
+set +e
+HOME="$_p5_w/nx" "$_p5_w/nx/.ae/versions/2026.8.2/ae" _probe \
+    >"$_p5_w/nx.out" 2>"$_p5_w/nx.err"
+_p5_nx_rc=$?
+set -e
+assert_eq "P5 wrapper non-executable core is refused" "2" "$_p5_nx_rc"
+
+# wrapper-vs-core mismatch
+_p5_wrap_home 2026.8.2 "$_p5_w/wmis"
+_sed_i -e 's/^_AE_ENTRY_VERSION=.*/_AE_ENTRY_VERSION="2026.8.1"/' "$_p5_w/wmis/.ae/versions/2026.8.2/ae"
+chmod +x "$_p5_w/wmis/.ae/versions/2026.8.2/ae"
+_p5_wmis_rc=0
+set +e
+HOME="$_p5_w/wmis" "$_p5_w/wmis/.ae/versions/2026.8.2/ae" _probe \
+    >"$_p5_w/wmis.out" 2>"$_p5_w/wmis.err"
+_p5_wmis_rc=$?
+set -e
+assert_eq "P5 wrapper wrapper-vs-core mismatch is refused" "2" "$_p5_wmis_rc"
+assert_eq "P5 wrapper mismatch names wrapper version" "1" \
+    "$(grep -F -c 'wrapper is 2026.8.1' "$_p5_w/wmis.err" || true)"
+assert_eq "P5 wrapper mismatch names ae upgrade" "1" \
+    "$(grep -F -c 'ae upgrade' "$_p5_w/wmis.err" || true)"
+
+# glue-vs-core mismatch
+_p5_wrap_home 2026.8.2 "$_p5_w/gmis"
+_sed_i -e 's/^AE_VERSION=.*/AE_VERSION="2026.8.1"/' "$_p5_w/gmis/.ae/versions/2026.8.2/ae-glue"
+chmod +x "$_p5_w/gmis/.ae/versions/2026.8.2/ae-glue"
+_p5_gmis_rc=0
+set +e
+HOME="$_p5_w/gmis" "$_p5_w/gmis/.ae/versions/2026.8.2/ae" _probe \
+    >"$_p5_w/gmis.out" 2>"$_p5_w/gmis.err"
+_p5_gmis_rc=$?
+set -e
+assert_eq "P5 wrapper glue-vs-core mismatch is refused" "2" "$_p5_gmis_rc"
+assert_eq "P5 wrapper mismatch names glue version" "1" \
+    "$(grep -F -c 'glue is 2026.8.1' "$_p5_w/gmis.err" || true)"
+assert_eq "P5 wrapper glue mismatch names ae upgrade" "1" \
+    "$(grep -F -c 'ae upgrade' "$_p5_w/gmis.err" || true)"
+_p5_gsess_rc=0
+set +e
+HOME="$_p5_w/gmis" "$_p5_w/gmis/.ae/versions/2026.8.2/ae" sess \
+    >"$_p5_w/gsess.out" 2>"$_p5_w/gsess.err"
+_p5_gsess_rc=$?
+set -e
+assert_eq "P5 broken triple ae <session> refuses" "2" "$_p5_gsess_rc"
+assert_eq "P5 broken triple ae <session> names ae upgrade" "1" \
+    "$(grep -F -c 'ae upgrade' "$_p5_w/gsess.err" || true)"
+
+# B8: polluted ae-next-like env — one aggregated notice, normal home/server,
+# SET-EMPTY AE_CORE must not void mandatory-core, command reaches CORE.
+_p5_wrap_home 2026.8.2 "$_p5_w/env"
+_p5_env_rc=0
+set +e
+HOME="$_p5_w/env" \
+    AE_HOME="$_p5_w/env/.ae-next" AE_NEXT_HOME="$_p5_w/env/.ae-next" \
+    AE_TMUX_SERVER=ae-next AE_TMUX_SERVER_KIND=name \
+    AE_CORE='' AE_CORE_BIN=/tmp/foreign-core \
+    CONFIG_FILE=/tmp/wrong-config \
+    "$_p5_w/env/.ae/versions/2026.8.2/ae" _probe \
+    >"$_p5_w/env.out" 2>"$_p5_w/env.err"
+_p5_env_rc=$?
+set -e
+assert_eq "P5 B8 polluted env: probe succeeds" "0" "$_p5_env_rc"
+assert_eq "P5 B8 one aggregated ignoring line" "1" \
+    "$(grep -c 'ignoring inherited' "$_p5_w/env.err" || true)"
+assert_eq "P5 B8 notice lists AE_CORE=" "1" \
+    "$(grep -F -c 'AE_CORE=' "$_p5_w/env.err" || true)"
+assert_eq "P5 B8 notice lists AE_TMUX_SERVER=ae-next" "1" \
+    "$(grep -F -c 'AE_TMUX_SERVER=ae-next' "$_p5_w/env.err" || true)"
+assert_eq "P5 B8 notice lists AE_CORE_BIN" "1" \
+    "$(grep -F -c 'AE_CORE_BIN=/tmp/foreign-core' "$_p5_w/env.err" || true)"
+assert_eq "P5 B8 notice lists AE_HOME" "1" \
+    "$(grep -F -c "AE_HOME=$_p5_w/env/.ae-next" "$_p5_w/env.err" || true)"
+assert_eq "P5 A12 notice lists CONFIG_FILE" "1" \
+    "$(grep -F -c 'CONFIG_FILE=/tmp/wrong-config' "$_p5_w/env.err" || true)"
+assert_eq "P5 A12 CONFIG_FILE appears exactly once on notice" "1" \
+    "$(grep -o 'CONFIG_FILE=' "$_p5_w/env.err" | wc -l | tr -d '[:space:]')"
+assert_eq "P5 B8 AE_HOME is normal home" \
+    "AE_HOME=$_p5_w/env/.ae" \
+    "$(grep '^AE_HOME=' "$_p5_w/env.out")"
+assert_eq "P5 B8 AE_TMUX_SERVER unset (not ae-next)" "AE_TMUX_SERVER=UNSET" \
+    "$(grep '^AE_TMUX_SERVER=' "$_p5_w/env.out")"
+assert_eq "P5 B8 AE_CORE unset (empty did not survive)" "AE_CORE=UNSET" \
+    "$(grep '^AE_CORE=' "$_p5_w/env.out")"
+assert_eq "P5 B8 CONFIG_FILE is home config" \
+    "CONFIG_FILE=$_p5_w/env/.ae/config" \
+    "$(grep '^CONFIG_FILE=' "$_p5_w/env.out")"
+assert_eq "P5 B8 core-owned command reaches CORE not bash" "reached=core" \
+    "$(grep '^reached=' "$_p5_w/env.out")"
+assert_eq "P5 B8 core actually ran" "core_ran=ae 2026.8.2" \
+    "$(grep '^core_ran=' "$_p5_w/env.out")"
+
+_p5_wrap_home 2026.8.2 "$_p5_w/cfgok"
+_p5_cfgok_rc=0
+set +e
+HOME="$_p5_w/cfgok" CONFIG_FILE="$_p5_w/cfgok/.ae/config" \
+    "$_p5_w/cfgok/.ae/versions/2026.8.2/ae" _probe \
+    >"$_p5_w/cfgok.out" 2>"$_p5_w/cfgok.err"
+_p5_cfgok_rc=$?
+set -e
+assert_eq "P5 A12 already-correct CONFIG_FILE probe succeeds" "0" "$_p5_cfgok_rc"
+assert_eq "P5 A12 already-correct CONFIG_FILE is not mentioned" "0" \
+    "$(grep -F -c 'CONFIG_FILE=' "$_p5_w/cfgok.err" || true)"
+_p5_wrap_home 2026.8.2 "$_p5_w/cfgunset"
+_p5_cfgu_rc=0
+set +e
+HOME="$_p5_w/cfgunset" "$_p5_w/cfgunset/.ae/versions/2026.8.2/ae" _probe \
+    >"$_p5_w/cfgunset.out" 2>"$_p5_w/cfgunset.err"
+_p5_cfgu_rc=$?
+set -e
+assert_eq "P5 A12 unset CONFIG_FILE probe succeeds" "0" "$_p5_cfgu_rc"
+assert_eq "P5 A12 unset CONFIG_FILE is not mentioned" "0" \
+    "$(grep -F -c 'CONFIG_FILE=' "$_p5_w/cfgunset.err" || true)"
+
+# checkout repair string (repo-shaped tree, missing core)
+_p5_co="$(mktemp -d "$_p5_fx/co.XXXXXX")"
+mkdir -p "$_p5_co/home"
+cp "$_p5_repo/ae-entry" "$_p5_co/ae-entry"
+cp "$_p5_repo/ae" "$_p5_co/ae"
+chmod +x "$_p5_co/ae-entry" "$_p5_co/ae"
+_p5_co_rc=0
+set +e
+HOME="$_p5_co/home" "$_p5_co/ae-entry" _probe \
+    >"$_p5_co/out" 2>"$_p5_co/err"
+_p5_co_rc=$?
+set -e
+assert_eq "P5 wrapper checkout missing core is refused" "2" "$_p5_co_rc"
+assert_eq "P5 wrapper checkout recovery names just install" "1" \
+    "$(grep -F -c "run 'just install'" "$_p5_co/err" || true)"
+_p5_co_dir="$(awk -F' in ' '/just install/ { print $2; exit }' "$_p5_co/err")"
+assert_eq "P5 wrapper checkout recovery names the checkout root" "1" \
+    "$([[ -n "$_p5_co_dir" && "$_p5_co_dir" -ef "$_p5_co" ]] && echo 1 || echo 0)"
+
+# B16: _ae_entry_session_running — prefix match + default-server lie.
+# No real tmux session mutation: a PATH fake emulates has-session.
+_p5_b16="$(mktemp -d "$_p5_fx/b16.XXXXXX")"
+mkdir -p "$_p5_b16/bin" \
+    "$_p5_b16/home/.ae/sessions/foo" \
+    "$_p5_b16/home/.ae/sessions/foo-long" \
+    "$_p5_b16/home/.ae/sessions/offsrv"
+: >"$_p5_b16/home/.ae/sessions/foo/meta"
+: >"$_p5_b16/home/.ae/sessions/foo-long/meta"
+printf 'tmux_server=ae-other\ntmux_server_kind=name\n' \
+    >"$_p5_b16/home/.ae/sessions/offsrv/meta"
+cat >"$_p5_b16/bin/tmux" <<'EOF'
+#!/usr/bin/env bash
+label=default
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -L)
+            label="name:$2"
+            shift 2
+            ;;
+        -S)
+            label="socket:$2"
+            shift 2
+            ;;
+        has-session)
+            shift
+            [ "${1:-}" = "-t" ] || exit 1
+            t="${2:-}"
+            exact=0
+            case "$t" in
+                =*)
+                    exact=1
+                    t="${t#=}"
+                    ;;
+            esac
+            live=""
+            case "$label" in
+                default) live=foo-long ;;
+                name:ae-other) live=offsrv ;;
+            esac
+            if [ "$exact" -eq 1 ]; then
+                [ "$t" = "$live" ] && exit 0
+                exit 1
+            fi
+            case "$live" in
+                "$t" | "$t"*) exit 0 ;;
+            esac
+            exit 1
+            ;;
+        list-sessions)
+            case "$label" in
+                default) printf 'foo-long\n' ;;
+                name:ae-other) printf 'offsrv\n' ;;
+            esac
+            exit 0
+            ;;
+        *)
+            shift
+            ;;
+    esac
+done
+exit 1
+EOF
+chmod +x "$_p5_b16/bin/tmux"
+_p5_b16_foo=0
+_p5_b16_off=0
+# shellcheck disable=SC2031  # PATH taint is HEAD SC2030 (subshells before this region)
+_p5_b16_path="$_p5_b16/bin:$PATH"
+set +e
+AE_HOME="$_p5_b16/home/.ae" PATH="$_p5_b16_path" \
+    _ae_entry_session_running foo && _p5_b16_foo=1
+AE_HOME="$_p5_b16/home/.ae" PATH="$_p5_b16_path" \
+    _ae_entry_session_running offsrv && _p5_b16_off=1
+set -e
+assert_eq "P5 B16 prefix: foo is stopped (foo-long running must not prefix-match)" "0" "$_p5_b16_foo"
+assert_eq "P5 B16 other-server: offsrv is running/deferred" "1" "$_p5_b16_off"
+
+# A13/B24: kind=ambiguous (and any no-positive-record) fail CLOSED.
+# Red against default-server fallthrough: ambiglive would read as RUNNING
+# off the default server; ambignone would read as STOPPED.
+_p5_b24="$(mktemp -d "$_p5_fx/b24.XXXXXX")"
+mkdir -p "$_p5_b24/bin" \
+    "$_p5_b24/home/.ae/sessions/ambignone" \
+    "$_p5_b24/home/.ae/sessions/ambiglive" \
+    "$_p5_b24/home/.ae/sessions/typedempty" \
+    "$_p5_b24/home/.ae/sessions/emptypair" \
+    "$_p5_b24/home/.ae/sessions/offsrv"
+printf 'tmux_server_kind=ambiguous\n' \
+    >"$_p5_b24/home/.ae/sessions/ambignone/meta"
+printf 'tmux_server_kind=ambiguous\n' \
+    >"$_p5_b24/home/.ae/sessions/ambiglive/meta"
+printf 'tmux_server_kind=socket\ntmux_server=\n' \
+    >"$_p5_b24/home/.ae/sessions/typedempty/meta"
+: >"$_p5_b24/home/.ae/sessions/emptypair/meta"
+printf 'tmux_server=ae-other\ntmux_server_kind=name\n' \
+    >"$_p5_b24/home/.ae/sessions/offsrv/meta"
+_p5_b24_log="$_p5_b24/tmux.log"
+cat >"$_p5_b24/bin/tmux" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >>"$_p5_b24_log"
+label=default
+while [ \$# -gt 0 ]; do
+    case "\$1" in
+        -L)
+            label="name:\$2"
+            shift 2
+            ;;
+        -S)
+            label="socket:\$2"
+            shift 2
+            ;;
+        has-session)
+            shift
+            [ "\${1:-}" = "-t" ] || exit 1
+            t="\${2:-}"
+            t="\${t#=}"
+            live=""
+            case "\$label" in
+                default) live=ambiglive ;;
+                name:ae-other) live=offsrv ;;
+            esac
+            [ "\$t" = "\$live" ] && exit 0
+            exit 1
+            ;;
+        list-sessions)
+            case "\$label" in
+                default) printf 'ambiglive\\n' ;;
+                name:ae-other) printf 'offsrv\\n' ;;
+            esac
+            exit 0
+            ;;
+        *)
+            shift
+            ;;
+    esac
+done
+exit 1
+EOF
+chmod +x "$_p5_b24/bin/tmux"
+: >"$_p5_b24_log"
+# shellcheck disable=SC2031  # PATH taint is HEAD SC2030 (subshells before this region)
+_p5_b24_path="$_p5_b24/bin:$PATH"
+# shellcheck disable=SC2031
+_p5_b24_old_path="$PATH"
+# shellcheck disable=SC2031  # AE_HOME taint is HEAD SC2030 (subshells before this region)
+_p5_b24_old_ae_home="${AE_HOME-}"
+PATH="$_p5_b24_path"
+AE_HOME="$_p5_b24/home/.ae"
+_p5_b24_report="$(_ae_entry_report_sessions)"
+PATH="$_p5_b24_old_path"
+if [ -n "$_p5_b24_old_ae_home" ]; then
+    AE_HOME="$_p5_b24_old_ae_home"
+else
+    unset AE_HOME
+fi
+_p5_b24_stopped="$(printf '%s\n' "$_p5_b24_report" | grep 'stopped sessions' || true)"
+_p5_b24_running="$(printf '%s\n' "$_p5_b24_report" | grep 'running sessions deferred until stop/resume (meta untouched):' || true)"
+_p5_b24_ambig="$(printf '%s\n' "$_p5_b24_report" | grep 'ambiguous sessions deferred' || true)"
+assert_eq "P5 A13 ambignone is not reported stopped" "0" \
+    "$([[ "$_p5_b24_stopped" == *ambignone* ]] && echo 1 || echo 0)"
+assert_eq "P5 A13 ambignone is reported deferred/ambiguous" "1" \
+    "$([[ "$_p5_b24_ambig" == *ambignone* ]] && echo 1 || echo 0)"
+assert_eq "P5 A13 ambiglive is not reported running-verified" "0" \
+    "$([[ "$_p5_b24_running" == *ambiglive* ]] && echo 1 || echo 0)"
+assert_eq "P5 A13 ambiglive is reported deferred/ambiguous" "1" \
+    "$([[ "$_p5_b24_ambig" == *ambiglive* ]] && echo 1 || echo 0)"
+assert_eq "P5 A13 typed-empty socket is not reported stopped" "0" \
+    "$([[ "$_p5_b24_stopped" == *typedempty* ]] && echo 1 || echo 0)"
+assert_eq "P5 A13 typed-empty socket is reported deferred/ambiguous" "1" \
+    "$([[ "$_p5_b24_ambig" == *typedempty* ]] && echo 1 || echo 0)"
+assert_eq "P5 A13 legacy empty pair is not reported stopped" "0" \
+    "$([[ "$_p5_b24_stopped" == *emptypair* ]] && echo 1 || echo 0)"
+assert_eq "P5 A13 legacy empty pair is reported deferred/ambiguous" "1" \
+    "$([[ "$_p5_b24_ambig" == *emptypair* ]] && echo 1 || echo 0)"
+assert_eq "P5 A13 default server was never probed for unknown kinds" "0" \
+    "$(grep -cE '^has-session|^list-sessions' "$_p5_b24_log" | tr -d '[:space:]')"
+_p5_b24_off=0
+set +e
+AE_HOME="$_p5_b24/home/.ae" PATH="$_p5_b24_path" \
+    _ae_entry_session_running offsrv && _p5_b24_off=1
+set -e
+assert_eq "P5 A13 A5 control: offsrv still running/deferred" "1" "$_p5_b24_off"
+
+# A15: bundle sibling ae-core outranks core/current; basename gate.
+# A18: in bundle shape the sibling outranks env too (checkout env still wins).
+# A15 extension: wrapper bundle-mode pointer must physically equal sibling.
+assert_eq "P5 A15 _ae_core_bin_input is not helper-emitted" "0" \
+    "$(grep -c 'declare -f _ae_core_bin_input' "$AE_BIN" || true)"
+_p5_a15="$(mktemp -d "$_p5_fx/a15.XXXXXX")"
+awk '/^_ae_core_current_input\(\) \{/,/^_ae_core_bin_version\(\) \{/' "$AE_BIN" |
+    sed '$d' >"$_p5_a15/core_fns.sh"
+_p5_a15_write_glue() {
+    local dest="$1"
+    cat >"$dest" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+get_config() { return 1; }
+# shellcheck disable=SC1091
+source "$_p5_a15/core_fns.sh"
+_ae_core_bin_input
+EOF
+    chmod +x "$dest"
+}
+# RED/GREEN glue: v_old ae-glue with sibling; core/current names a v_new core.
+mkdir -p "$_p5_a15/v_old" "$_p5_a15/v_new" "$_p5_a15/home/.ae/core"
+_p5_write_core "$_p5_a15/v_old/ae-core" 2026.8.2
+_p5_write_core "$_p5_a15/v_new/ae-core" 2026.8.2
+_p5_a15_write_glue "$_p5_a15/v_old/ae-glue"
+printf '%s\n' "$_p5_a15/v_new/ae-core" >"$_p5_a15/home/.ae/core/current"
+_p5_a15_got="$(CONFIG_DIR="$_p5_a15/home/.ae" AE_CORE_BIN='' \
+    "$_p5_a15/v_old/ae-glue")"
+assert_eq "P5 A15 glue sibling outranks core/current" "1" \
+    "$([[ -n "$_p5_a15_got" && "$_p5_a15_got" -ef "$_p5_a15/v_old/ae-core" ]] && echo 1 || echo 0)"
+# Control: basename ae, planted sibling ignored.
+_p5_a15_write_glue "$_p5_a15/v_old/ae"
+_p5_a15_co="$(CONFIG_DIR="$_p5_a15/home/.ae" AE_CORE_BIN='' \
+    "$_p5_a15/v_old/ae")"
+assert_eq "P5 A15 checkout basename ignores planted sibling" \
+    "$_p5_a15/v_new/ae-core" "$_p5_a15_co"
+# A18 RED: old-bundle ae-glue + hostile AE_CORE_BIN must bind the OLD sibling
+# (env-first currently records the hostile core). Checkout still honors env.
+_p5_a15_env="$(CONFIG_DIR="$_p5_a15/home/.ae" AE_CORE_BIN="$_p5_a15/v_new/ae-core" \
+    "$_p5_a15/v_old/ae-glue")"
+assert_eq "P5 A18 bundle ae-glue sibling outranks hostile AE_CORE_BIN" "1" \
+    "$([[ -n "$_p5_a15_env" && "$_p5_a15_env" -ef "$_p5_a15/v_old/ae-core" ]] && echo 1 || echo 0)"
+_p5_a18_co_env="$(CONFIG_DIR="$_p5_a15/home/.ae" AE_CORE_BIN=/from/env \
+    "$_p5_a15/v_old/ae")"
+assert_eq "P5 A18 checkout ae honors AE_CORE_BIN over planted sibling" \
+    "/from/env" "$_p5_a18_co_env"
+# Control: ae-glue without sibling falls through to current.
+mkdir -p "$_p5_a15/nosib"
+_p5_a15_write_glue "$_p5_a15/nosib/ae-glue"
+_p5_a15_ns="$(CONFIG_DIR="$_p5_a15/home/.ae" AE_CORE_BIN='' \
+    "$_p5_a15/nosib/ae-glue")"
+assert_eq "P5 A15 ae-glue without sibling uses core/current" \
+    "$_p5_a15/v_new/ae-core" "$_p5_a15_ns"
+# Wrapper identity RED: same version, different object.
+_p5_wrap_home 2026.8.2 "$_p5_a15/idhome"
+cp "$_p5_a15/idhome/.ae/versions/2026.8.2/ae-core" "$_p5_a15/other-core"
+chmod +x "$_p5_a15/other-core"
+printf '%s\n' "$_p5_a15/other-core" >"$_p5_a15/idhome/.ae/core/current"
+_p5_a15_id_rc=0
+set +e
+HOME="$_p5_a15/idhome" "$_p5_a15/idhome/.ae/versions/2026.8.2/ae" _probe \
+    >"$_p5_a15/id.out" 2>"$_p5_a15/id.err"
+_p5_a15_id_rc=$?
+set -e
+assert_eq "P5 A15 same-version different-object pointer is refused" "2" "$_p5_a15_id_rc"
+assert_eq "P5 A15 identity refusal names this bundle's ae-core" "1" \
+    "$(grep -F -c "not this bundle's ae-core" "$_p5_a15/id.err" || true)"
+# GREEN: intact chain via ~/.local/bin/ae.
+_p5_wrap_home 2026.8.2 "$_p5_a15/okhome"
+_p5_a15_ok_rc=0
+set +e
+HOME="$_p5_a15/okhome" "$_p5_a15/okhome/.local/bin/ae" _probe \
+    >"$_p5_a15/ok.out" 2>"$_p5_a15/ok.err"
+_p5_a15_ok_rc=$?
+set -e
+assert_eq "P5 A15 intact symlink chain probe succeeds" "0" "$_p5_a15_ok_rc"
+# Direct old-version wrapper after current flip (versions coincide).
+_p5_wrap_home 2026.8.2 "$_p5_a15/flip"
+mkdir -p "$_p5_a15/flip/.ae/versions/2026.8.2-b"
+cp "$_p5_a15/flip/.ae/versions/2026.8.2/ae-core" \
+    "$_p5_a15/flip/.ae/versions/2026.8.2-b/ae-core"
+chmod +x "$_p5_a15/flip/.ae/versions/2026.8.2-b/ae-core"
+printf '%s\n' "$_p5_a15/flip/.ae/versions/2026.8.2-b/ae-core" \
+    >"$_p5_a15/flip/.ae/core/current"
+_p5_a15_flip_rc=0
+set +e
+HOME="$_p5_a15/flip" "$_p5_a15/flip/.ae/versions/2026.8.2/ae" _probe \
+    >"$_p5_a15/flip.out" 2>"$_p5_a15/flip.err"
+_p5_a15_flip_rc=$?
+set -e
+assert_eq "P5 A15 old wrapper after current flip is refused" "2" "$_p5_a15_flip_rc"
+
+# B15: leftover argv after `upgrade` is a usage error, BEFORE installer
+# invocation. Discriminator is a sentinel installer that marks on invoke —
+# not an output check. Pass-through would upgrade on `--help` / a typo.
+_p5_sent="$(mktemp -d "$_p5_fx/sent.XXXXXX")"
+mkdir -p "$_p5_sent/v" "$_p5_sent/home"
+cp "$_p5_repo/ae-entry" "$_p5_sent/v/ae"
+chmod +x "$_p5_sent/v/ae"
+_p5_sent_mark="$_p5_sent/invoked"
+{
+    printf '#!/usr/bin/env bash\n'
+    printf 'printf invoked\\n >>%q\n' "$_p5_sent_mark"
+    printf 'exit 0\n'
+} >"$_p5_sent/v/install"
+chmod +x "$_p5_sent/v/install"
+_p5_sent_help_rc=0
+set +e
+HOME="$_p5_sent/home" "$_p5_sent/v/ae" upgrade --help \
+    >"$_p5_sent/help.out" 2>"$_p5_sent/help.err"
+_p5_sent_help_rc=$?
+set -e
+assert_eq "P5 B15 upgrade --help exits 2" "2" "$_p5_sent_help_rc"
+assert_eq "P5 B15 upgrade --help does not invoke installer" "0" \
+    "$([[ -e "$_p5_sent_mark" ]] && echo 1 || echo 0)"
+_p5_sent_typo_rc=0
+set +e
+HOME="$_p5_sent/home" "$_p5_sent/v/ae" upgrade frobnicate \
+    >"$_p5_sent/typo.out" 2>"$_p5_sent/typo.err"
+_p5_sent_typo_rc=$?
+set -e
+assert_eq "P5 B15 upgrade frobnicate exits 2" "2" "$_p5_sent_typo_rc"
+assert_eq "P5 B15 upgrade frobnicate does not invoke installer" "0" \
+    "$([[ -e "$_p5_sent_mark" ]] && echo 1 || echo 0)"
+_p5_sent_bare_rc=0
+set +e
+HOME="$_p5_sent/home" "$_p5_sent/v/ae" upgrade \
+    >"$_p5_sent/bare.out" 2>"$_p5_sent/bare.err"
+_p5_sent_bare_rc=$?
+set -e
+assert_eq "P5 B15 bare upgrade exits 0" "0" "$_p5_sent_bare_rc"
+assert_eq "P5 B15 bare upgrade invokes installer" "1" \
+    "$([[ -e "$_p5_sent_mark" ]] && echo 1 || echo 0)"
+
+# B13: inherited AE_VERSION pin reaches the installer unaltered
+_p5_pin="$(mktemp -d "$_p5_fx/pin.XXXXXX")"
+mkdir -p "$_p5_pin/v" "$_p5_pin/home"
+cp "$_p5_repo/ae-entry" "$_p5_pin/v/ae"
+chmod +x "$_p5_pin/v/ae"
+_p5_pin_log="$_p5_pin/received"
+{
+    printf '#!/usr/bin/env bash\n'
+    printf 'printf "%%s\\n" "${AE_VERSION-UNSET}" > %q\n' "$_p5_pin_log"
+    printf 'exit 0\n'
+} >"$_p5_pin/v/install"
+chmod +x "$_p5_pin/v/install"
+_p5_pin_rc=0
+set +e
+HOME="$_p5_pin/home" AE_VERSION=2026.9.1 "$_p5_pin/v/ae" upgrade \
+    >"$_p5_pin/out" 2>"$_p5_pin/err"
+_p5_pin_rc=$?
+set -e
+assert_eq "P5 B13 AE_VERSION pin upgrade reaches installer" "0" "$_p5_pin_rc"
+assert_eq "P5 B13 installer received exact operator pin" "2026.9.1" \
+    "$(cat "$_p5_pin_log" 2>/dev/null || echo missing)"
+
+# A11: unset before assignment so inherited export attribute does not leak.
+_p5_a11="$(mktemp -d "$_p5_fx/a11.XXXXXX")"
+_p5_wrap_home 2026.8.2 "$_p5_a11/home"
+_p5_a11_inst="$_p5_a11/inst.env"
+{
+    printf '#!/usr/bin/env bash\n'
+    printf 'if env | grep -E "^_AE_ENTRY_VERSION=" >/dev/null; then printf "%%s\\n" PRESENT; else printf "%%s\\n" ABSENT; fi >%q\n' "$_p5_a11_inst"
+    printf 'exit 0\n'
+} >"$_p5_a11/home/.ae/versions/2026.8.2/install"
+chmod +x "$_p5_a11/home/.ae/versions/2026.8.2/install"
+{
+    printf '#!/usr/bin/env bash\n'
+    printf 'AE_VERSION="2026.8.2"\n'
+    printf 'if [ "${1:-}" = "--version" ]; then printf "ae %%s\\n" "$AE_VERSION"; exit 0; fi\n'
+    printf 'if env | grep -E "^_AE_ENTRY_VERSION=" >/dev/null; then printf "%%s\\n" GLUE_PRESENT; else printf "%%s\\n" GLUE_ABSENT; fi\n'
+    printf 'exit 0\n'
+} >"$_p5_a11/home/.ae/versions/2026.8.2/ae-glue"
+chmod +x "$_p5_a11/home/.ae/versions/2026.8.2/ae-glue"
+_p5_a11_ver_rc=0
+set +e
+HOME="$_p5_a11/home" _AE_ENTRY_VERSION=hostile \
+    "$_p5_a11/home/.ae/versions/2026.8.2/ae" --version \
+    >"$_p5_a11/ver.out" 2>"$_p5_a11/ver.err"
+_p5_a11_ver_rc=$?
+set -e
+assert_eq "P5 A11 hostile export --version exits 0" "0" "$_p5_a11_ver_rc"
+assert_eq "P5 A11 hostile export --version prints wrapper identity" "ae 2026.8.2" \
+    "$(cat "$_p5_a11/ver.out")"
+_p5_a11_glue_out="$(HOME="$_p5_a11/home" _AE_ENTRY_VERSION=hostile \
+    "$_p5_a11/home/.ae/versions/2026.8.2/ae" _probe 2>/dev/null)" || true
+assert_eq "P5 A11 sentinel glue does not see _AE_ENTRY_VERSION" "GLUE_ABSENT" "$_p5_a11_glue_out"
+_p5_a11_up_rc=0
+set +e
+HOME="$_p5_a11/home" _AE_ENTRY_VERSION=hostile \
+    "$_p5_a11/home/.ae/versions/2026.8.2/ae" upgrade \
+    >"$_p5_a11/up.out" 2>"$_p5_a11/up.err"
+_p5_a11_up_rc=$?
+set -e
+assert_eq "P5 A11 hostile export upgrade reaches installer" "0" "$_p5_a11_up_rc"
+assert_eq "P5 A11 sentinel installer does not see _AE_ENTRY_VERSION" "ABSENT" \
+    "$(cat "$_p5_a11_inst" 2>/dev/null || echo missing)"
+
+# B19/A7: version | --version | -V are one pre-gate owner. Broken
+# core/current must not change the identity line or invoke core/glue.
+_p5_a7="$(mktemp -d "$_p5_fx/a7.XXXXXX")"
+_p5_wrap_home 2026.8.2 "$_p5_a7/home"
+_p5_a7_core_mark="$_p5_a7/core.marker"
+_p5_a7_glue_mark="$_p5_a7/glue.marker"
+{
+    printf '#!/usr/bin/env bash\n'
+    printf 'printf invoked\\n >>%q\n' "$_p5_a7_core_mark"
+    printf 'printf "ae 2026.8.2\\n"; exit 0\n'
+} >"$_p5_a7/home/.ae/versions/2026.8.2/ae-core"
+chmod +x "$_p5_a7/home/.ae/versions/2026.8.2/ae-core"
+{
+    printf '#!/usr/bin/env bash\n'
+    printf 'printf invoked\\n >>%q\n' "$_p5_a7_glue_mark"
+    printf 'printf "glue-version\\n"; exit 0\n'
+} >"$_p5_a7/home/.ae/versions/2026.8.2/ae-glue"
+chmod +x "$_p5_a7/home/.ae/versions/2026.8.2/ae-glue"
+rm -f "$_p5_a7/home/.ae/core/current"
+_p5_a7_run() {
+    local spelling="$1" tag="$2" rc=0
+    rm -f "$_p5_a7_core_mark" "$_p5_a7_glue_mark"
+    set +e
+    HOME="$_p5_a7/home" "$_p5_a7/home/.ae/versions/2026.8.2/ae" "$spelling" \
+        >"$_p5_a7/${tag}.out" 2>"$_p5_a7/${tag}.err"
+    rc=$?
+    set -e
+    assert_eq "P5 B19 ae $spelling on broken core exits 0" "0" "$rc"
+    assert_eq "P5 B19 ae $spelling identity line" "ae 2026.8.2" \
+        "$(cat "$_p5_a7/${tag}.out")"
+    assert_eq "P5 B19 ae $spelling does not touch stub-core marker" "0" \
+        "$([[ -e "$_p5_a7_core_mark" ]] && echo 1 || echo 0)"
+    assert_eq "P5 B19 ae $spelling does not touch glue sentinel" "0" \
+        "$([[ -e "$_p5_a7_glue_mark" ]] && echo 1 || echo 0)"
+}
+_p5_a7_run --version ver
+_p5_a7_run -V vflag
+_p5_a7_run version word
+
+# broken core: upgrade still reaches sibling installer (repair before triple)
+_p5_brk="$(mktemp -d "$_p5_fx/brk.XXXXXX")"
+_p5_wrap_home 2026.8.2 "$_p5_brk/home"
+rm -f "$_p5_brk/home/.ae/core/current"
+_p5_brk_mark="$_p5_brk/invoked"
+{
+    printf '#!/usr/bin/env bash\n'
+    printf 'printf invoked\\n >>%q\n' "$_p5_brk_mark"
+    printf 'exit 0\n'
+} >"$_p5_brk/home/.ae/versions/2026.8.2/install"
+chmod +x "$_p5_brk/home/.ae/versions/2026.8.2/install"
+_p5_brk_rc=0
+set +e
+HOME="$_p5_brk/home" "$_p5_brk/home/.ae/versions/2026.8.2/ae" upgrade \
+    >"$_p5_brk/out" 2>"$_p5_brk/err"
+_p5_brk_rc=$?
+set -e
+assert_eq "P5 broken core: upgrade reaches installer" "0" "$_p5_brk_rc"
+assert_eq "P5 broken core: sentinel touched" "1" \
+    "$([[ -e "$_p5_brk_mark" ]] && echo 1 || echo 0)"
+_p5_brk2_rc=0
+set +e
+HOME="$_p5_brk/home" "$_p5_brk/home/.ae/versions/2026.8.2/ae" sess \
+    >"$_p5_brk/sess.out" 2>"$_p5_brk/sess.err"
+_p5_brk2_rc=$?
+set -e
+assert_eq "P5 broken core: ae <session> refuses" "2" "$_p5_brk2_rc"
+assert_eq "P5 broken core: ae <session> names ae upgrade" "1" \
+    "$(grep -F -c 'ae upgrade' "$_p5_brk/sess.err" || true)"
+
+# ── installer entries + F7b + layout ─────────────────────────────────
+_p5_make_bundle 2026.8.2 "ae-2026.8.2-$_p5_plat"
+_p5_make_bundle 2026.8.3 "ae-2026.8.3-$_p5_plat"
+
+# F7b: pin vs basename
+_p5_pin_home="$(mktemp -d "$_p5_fx/pin-home.XXXXXX")"
+_p5_pin_rc=0
+set +e
+(
+    set -e
+    HOME="$_p5_pin_home" AE_VERSION=2026.8.2 \
+        AE_BUNDLE="$_p5_fx/ae-2026.8.3-$_p5_plat.tar.gz" \
+        AE_SUMS="$_p5_fx/ae-2026.8.3-$_p5_plat-SHA256SUMS" remote_main
+) >"$_p5_pin_home/out" 2>"$_p5_pin_home/err"
+_p5_pin_rc=$?
+set -e
+assert_eq "P5 installer F7b: pin that disagrees with bundle basename is refused" "1" "$_p5_pin_rc"
+assert_eq "P5 installer F7b: refusal names pin and bundle versions" "1" \
+    "$(grep -F -c 'AE_VERSION is 2026.8.2 but the bundle is 2026.8.3' "$_p5_pin_home/err" || true)"
+assert_eq "P5 installer F7b: pin mismatch does not publish current" "0" \
+    "$([[ ! -e "$_p5_pin_home/.ae/current" ]] && echo 0 || echo 1)"
+
+# B14: dangling $HOME/.local -> .ae. Creating ~/.ae makes the symlink live
+# and .local/bin resolves inside the home. Must refuse; no publication
+# anywhere, including inside ~/.ae.
+_p5_b14_home="$(mktemp -d "$_p5_fx/b14-home.XXXXXX")"
+ln -s .ae "$_p5_b14_home/.local"
+_p5_b14_rc=0
+set +e
+(
+    set -e
+    HOME="$_p5_b14_home" AE_VERSION=2026.8.2 \
+        AE_BUNDLE="$_p5_fx/ae-2026.8.2-$_p5_plat.tar.gz" \
+        AE_SUMS="$_p5_fx/ae-2026.8.2-$_p5_plat-SHA256SUMS" remote_main
+) >"$_p5_b14_home/out" 2>"$_p5_b14_home/err"
+_p5_b14_rc=$?
+set -e
+assert_eq "P5 B14 dangling .local->.ae is refused" "1" \
+    "$([[ "$_p5_b14_rc" -ne 0 ]] && echo 1 || echo 0)"
+assert_eq "P5 B14 no current pointer at ~/.ae/current" "1" \
+    "$([[ ! -e "$_p5_b14_home/.ae/current" && ! -L "$_p5_b14_home/.ae/current" ]] && echo 1 || echo 0)"
+assert_eq "P5 B14 no core/current pointer" "1" \
+    "$([[ ! -e "$_p5_b14_home/.ae/core/current" && ! -L "$_p5_b14_home/.ae/core/current" ]] && echo 1 || echo 0)"
+assert_eq "P5 B14 no command link at ~/.local/bin/ae" "1" \
+    "$([[ ! -e "$_p5_b14_home/.local/bin/ae" && ! -L "$_p5_b14_home/.local/bin/ae" ]] && echo 1 || echo 0)"
+assert_eq "P5 B14 no command link inside ~/.ae/bin" "1" \
+    "$([[ ! -e "$_p5_b14_home/.ae/bin/ae" && ! -L "$_p5_b14_home/.ae/bin/ae" ]] && echo 1 || echo 0)"
+
+# B14 control: .local -> existing EXTERNAL directory remains accepted
+_p5_b14c_home="$(mktemp -d "$_p5_fx/b14c-home.XXXXXX")"
+_p5_b14c_ext="$(mktemp -d "$_p5_fx/b14c-ext.XXXXXX")"
+ln -s "$_p5_b14c_ext" "$_p5_b14c_home/.local"
+_p5_b14c_rc=0
+set +e
+(
+    set -e
+    HOME="$_p5_b14c_home" AE_VERSION=2026.8.2 \
+        AE_BUNDLE="$_p5_fx/ae-2026.8.2-$_p5_plat.tar.gz" \
+        AE_SUMS="$_p5_fx/ae-2026.8.2-$_p5_plat-SHA256SUMS" remote_main
+) >"$_p5_b14c_home/out" 2>"$_p5_b14c_home/err"
+_p5_b14c_rc=$?
+set -e
+assert_eq "P5 B14 control: external .local symlink is accepted" "0" "$_p5_b14c_rc"
+assert_eq "P5 B14 control: current published under ~/.ae" \
+    "$_p5_b14c_home/.ae/versions/2026.8.2" \
+    "$(readlink "$_p5_b14c_home/.ae/current" 2>/dev/null || true)"
+assert_eq "P5 B14 control: command link is under the external dir" \
+    "$_p5_b14c_home/.ae/current/ae" \
+    "$(readlink "$_p5_b14c_ext/bin/ae" 2>/dev/null || true)"
+assert_eq "P5 B14 control: no nested ~/.ae/bin" "1" \
+    "$([[ ! -e "$_p5_b14c_home/.ae/bin" ]] && echo 1 || echo 0)"
+
+# B21/A8: installer writes NO config. Absence belongs to glue DEFAULT_CONFIG.
+# Red against the seed writer (empty HOME currently gets the telegram stub).
+_p5_a8_home="$(mktemp -d "$_p5_fx/a8-home.XXXXXX")"
+_p5_a8_rc=0
+set +e
+(
+    set -e
+    HOME="$_p5_a8_home" AE_VERSION=2026.8.2 \
+        AE_BUNDLE="$_p5_fx/ae-2026.8.2-$_p5_plat.tar.gz" \
+        AE_SUMS="$_p5_fx/ae-2026.8.2-$_p5_plat-SHA256SUMS" remote_main
+) >"$_p5_a8_home/out" 2>"$_p5_a8_home/err"
+_p5_a8_rc=$?
+set -e
+assert_eq "P5 B21 empty-home install succeeds" "0" "$_p5_a8_rc"
+assert_eq "P5 B21 installer left config ABSENT" "1" \
+    "$([[ ! -e "$_p5_a8_home/.ae/config" && ! -L "$_p5_a8_home/.ae/config" ]] && echo 1 || echo 0)"
+assert_eq "P5 B21 installer has no config seed constant" "0" \
+    "$(grep -cF '_REMOTE_CONFIG_SEED' "$_p5_repo/install" || true)"
+# Installed wrapper's sibling is the stub glue; swap in the real glue so one
+# invoke takes the DEFAULT_CONFIG path (config created only when ABSENT).
+chmod -R u+w "$_p5_a8_home/.ae/versions/2026.8.2"
+cp "$AE_BIN" "$_p5_a8_home/.ae/versions/2026.8.2/ae-glue"
+chmod 0555 "$_p5_a8_home/.ae/versions/2026.8.2/ae-glue" \
+    "$_p5_a8_home/.ae/versions/2026.8.2"
+_p5_a8_glue_rc=0
+set +e
+HOME="$_p5_a8_home" "$_p5_a8_home/.local/bin/ae" --help \
+    >"$_p5_a8_home/glue.out" 2>"$_p5_a8_home/glue.err"
+_p5_a8_glue_rc=$?
+set -e
+assert_eq "P5 B21 first glue invoke creates [agents]" "1" \
+    "$(grep -c '^\[agents\]' "$_p5_a8_home/.ae/config" || true)"
+assert_eq "P5 B21 first glue invoke creates [workspace]" "1" \
+    "$(grep -c '^\[workspace\]' "$_p5_a8_home/.ae/config" || true)"
+assert_eq "P5 B21 default main is present" "1" \
+    "$(grep -c '^main =' "$_p5_a8_home/.ae/config" || true)"
+
+_p5_a8c_home="$(mktemp -d "$_p5_fx/a8c-home.XXXXXX")"
+mkdir -p "$_p5_a8c_home/.ae"
+printf 'operator-owned-a8-bytes\n# unique\n' >"$_p5_a8c_home/.ae/config"
+cp "$_p5_a8c_home/.ae/config" "$_p5_a8c_home/config.before"
+_p5_a8c_rc=0
+set +e
+(
+    set -e
+    HOME="$_p5_a8c_home" AE_VERSION=2026.8.2 \
+        AE_BUNDLE="$_p5_fx/ae-2026.8.2-$_p5_plat.tar.gz" \
+        AE_SUMS="$_p5_fx/ae-2026.8.2-$_p5_plat-SHA256SUMS" remote_main
+) >"$_p5_a8c_home/out" 2>"$_p5_a8c_home/err"
+_p5_a8c_rc=$?
+set -e
+assert_eq "P5 B21 operator-config install succeeds" "0" "$_p5_a8c_rc"
+assert_eq "P5 B21 operator config survives byte-identical" "1" \
+    "$(cmp -s "$_p5_a8c_home/.ae/config" "$_p5_a8c_home/config.before" && echo 1 || echo 0)"
+
+# A9/B22: config type gate dropped. Symlinked operator config survives.
+_p5_a9_home="$(mktemp -d "$_p5_fx/a9-home.XXXXXX")"
+_p5_a9_ext="$(mktemp -d "$_p5_fx/a9-ext.XXXXXX")"
+mkdir -p "$_p5_a9_home/.ae"
+printf 'symlink-config-bytes\n' >"$_p5_a9_ext/config"
+ln -s "$_p5_a9_ext/config" "$_p5_a9_home/.ae/config"
+_p5_a9_link_before="$(readlink "$_p5_a9_home/.ae/config")"
+cp "$_p5_a9_ext/config" "$_p5_a9_home/config.before"
+_p5_a9_rc=0
+set +e
+(
+    set -e
+    HOME="$_p5_a9_home" AE_VERSION=2026.8.2 \
+        AE_BUNDLE="$_p5_fx/ae-2026.8.2-$_p5_plat.tar.gz" \
+        AE_SUMS="$_p5_fx/ae-2026.8.2-$_p5_plat-SHA256SUMS" remote_main
+) >"$_p5_a9_home/out" 2>"$_p5_a9_home/err"
+_p5_a9_rc=$?
+set -e
+assert_eq "P5 A9 symlink-config install succeeds" "0" "$_p5_a9_rc"
+assert_eq "P5 A9 config symlink target unchanged" "$_p5_a9_link_before" \
+    "$(readlink "$_p5_a9_home/.ae/config" 2>/dev/null || true)"
+assert_eq "P5 A9 config bytes unchanged" "1" \
+    "$(cmp -s "$_p5_a9_ext/config" "$_p5_a9_home/config.before" && echo 1 || echo 0)"
+assert_eq "P5 A9 installer has no config type gate" "0" \
+    "$(grep -cF 'remote_require_regular_or_absent "$config"' "$_p5_repo/install" || true)"
+
+# A10/B23: active-owner lock. Sharper red: A holds lock+journal, B refuses
+# without recovery or mutation; then A completes one coherent install.
+_p5_a10="$(mktemp -d "$_p5_fx/a10.XXXXXX")"
+_p5_a10_home="$(mktemp -d "$_p5_a10/Ahome.XXXXXX")"
+_p5_a10_rel="$_p5_a10/release"
+_p5_a10_a_rc=99
+(
+    set -e
+    HOME="$_p5_a10_home" AE_VERSION=2026.8.2 \
+        AE_BUNDLE="$_p5_fx/ae-2026.8.2-$_p5_plat.tar.gz" \
+        AE_SUMS="$_p5_fx/ae-2026.8.2-$_p5_plat-SHA256SUMS" \
+        AE_INSTALL_TEST_FAIL_AFTER=pause-journal \
+        AE_INSTALL_TEST_RELEASE="$_p5_a10_rel" remote_main
+) >"$_p5_a10/A.out" 2>"$_p5_a10/A.err" &
+_p5_a10_a=$!
+_p5_a10_i=0
+while [ "$_p5_a10_i" -lt 200 ]; do
+    if [ -d "$_p5_a10_home/.ae/.ae-install.lock" ] &&
+        [ -f "$_p5_a10_home/.ae/.ae-install.journal" ]; then
+        break
+    fi
+    sleep 0.05
+    _p5_a10_i=$((_p5_a10_i + 1))
+done
+assert_eq "P5 A10 A published lock+journal before pause" "1" \
+    "$([[ -d "$_p5_a10_home/.ae/.ae-install.lock" && -f "$_p5_a10_home/.ae/.ae-install.journal" ]] && echo 1 || echo 0)"
+cp "$_p5_a10_home/.ae/.ae-install.journal" "$_p5_a10/A.journal.before"
+_p5_a10_b_rc=0
+set +e
+(
+    set -e
+    HOME="$_p5_a10_home" AE_VERSION=2026.8.2 \
+        AE_BUNDLE="$_p5_fx/ae-2026.8.2-$_p5_plat.tar.gz" \
+        AE_SUMS="$_p5_fx/ae-2026.8.2-$_p5_plat-SHA256SUMS" remote_main
+) >"$_p5_a10/B.out" 2>"$_p5_a10/B.err"
+_p5_a10_b_rc=$?
+set -e
+assert_eq "P5 A10 B refuses while A holds the lock" "1" \
+    "$([[ "$_p5_a10_b_rc" -ne 0 ]] && echo 1 || echo 0)"
+assert_eq "P5 A10 B names the lock path" "1" \
+    "$(grep -F -c "$_p5_a10_home/.ae/.ae-install.lock" "$_p5_a10/B.err" || true)"
+assert_eq "P5 A10 B did not recover A's journal" "1" \
+    "$(cmp -s "$_p5_a10_home/.ae/.ae-install.journal" "$_p5_a10/A.journal.before" && echo 1 || echo 0)"
+assert_eq "P5 A10 no current published while A is paused" "1" \
+    "$([[ ! -e "$_p5_a10_home/.ae/current" && ! -L "$_p5_a10_home/.ae/current" ]] && echo 1 || echo 0)"
+: >"$_p5_a10_rel"
+wait "$_p5_a10_a" || _p5_a10_a_rc=$?
+if [ "$_p5_a10_a_rc" -eq 99 ]; then
+    _p5_a10_a_rc=0
+fi
+assert_eq "P5 A10 A completes after release" "0" "$_p5_a10_a_rc"
+assert_eq "P5 A10 one coherent current after A" \
+    "$_p5_a10_home/.ae/versions/2026.8.2" \
+    "$(readlink "$_p5_a10_home/.ae/current" 2>/dev/null || true)"
+assert_eq "P5 A10 A's journal consumed" "1" \
+    "$([[ ! -e "$_p5_a10_home/.ae/.ae-install.journal" ]] && echo 1 || echo 0)"
+assert_eq "P5 A10 lock released after A" "1" \
+    "$([[ ! -e "$_p5_a10_home/.ae/.ae-install.lock" ]] && echo 1 || echo 0)"
+
+# A10 second red: no-clobber journal publication (ln, not mv).
+_p5_a10j="$(mktemp -d "$_p5_fx/a10j.XXXXXX")"
+mkdir -p "$_p5_a10j/home" "$_p5_a10j/ok"
+_p5_a10j_j="$_p5_a10j/home/.ae-install.journal"
+(
+    remote_journal_create "$_p5_a10j_j" "$_p5_a10j/home" "2026.8.2" \
+        "$_p5_a10j/home/core/current" 0 "" \
+        "$_p5_a10j/home/current" 0 "" \
+        "$_p5_a10j/bin/ae" 0 "" \
+        "$_p5_a10j/home/config" 0 "" && : >"$_p5_a10j/ok/a"
+) >/dev/null 2>"$_p5_a10j/a.err" &
+_p5_a10j_a=$!
+(
+    remote_journal_create "$_p5_a10j_j" "$_p5_a10j/home" "2026.8.3" \
+        "$_p5_a10j/home/core/current" 0 "" \
+        "$_p5_a10j/home/current" 0 "" \
+        "$_p5_a10j/bin/ae" 0 "" \
+        "$_p5_a10j/home/config" 0 "" && : >"$_p5_a10j/ok/b"
+) >/dev/null 2>"$_p5_a10j/b.err" &
+_p5_a10j_b=$!
+wait "$_p5_a10j_a" || true
+wait "$_p5_a10j_b" || true
+_p5_a10j_n=0
+[ -f "$_p5_a10j/ok/a" ] && _p5_a10j_n=$((_p5_a10j_n + 1))
+[ -f "$_p5_a10j/ok/b" ] && _p5_a10j_n=$((_p5_a10j_n + 1))
+assert_eq "P5 A10 concurrent journal_create: exactly one winner" "1" "$_p5_a10j_n"
+assert_eq "P5 A10 winning journal is one complete record" "1" \
+    "$([[ -f "$_p5_a10j_j" && "$(grep -c '^format=1$' "$_p5_a10j_j")" -eq 1 && "$(grep -c '^version=' "$_p5_a10j_j")" -eq 1 ]] && echo 1 || echo 0)"
+
+# A10 control: stale lock + dead PID → takeover + crashed-predecessor recovery.
+_p5_a10s_root="$(mktemp -d "$_p5_fx/a10s.XXXXXX")"
+mkdir -p "$_p5_a10s_root/.ae/.ae-install.lock" "$_p5_a10s_root/.local/bin"
+true &
+_p5_a10s_dead=$!
+wait "$_p5_a10s_dead" || true
+printf '%s\n' "$_p5_a10s_dead" >"$_p5_a10s_root/.ae/.ae-install.lock/pid"
+{
+    printf 'format=1\n'
+    printf 'version=2026.8.2\n'
+    printf 'home=%s\n' "$_p5_a10s_root/.ae"
+    printf 'core_pointer=%s/core/current\n' "$_p5_a10s_root/.ae"
+    printf 'core_had=0\ncore_old=\n'
+    printf 'current_pointer=%s/current\n' "$_p5_a10s_root/.ae"
+    printf 'current_had=0\ncurrent_old=\n'
+    printf 'link=%s/.local/bin/ae\nlink_had=0\nlink_old=\n' "$_p5_a10s_root"
+    printf 'config=%s/config\nconfig_had=0\n' "$_p5_a10s_root/.ae"
+} >"$_p5_a10s_root/.ae/.ae-install.journal"
+_p5_a10s_rc=0
+set +e
+(
+    set -e
+    HOME="$_p5_a10s_root" AE_VERSION=2026.8.2 \
+        AE_BUNDLE="$_p5_fx/ae-2026.8.2-$_p5_plat.tar.gz" \
+        AE_SUMS="$_p5_fx/ae-2026.8.2-$_p5_plat-SHA256SUMS" remote_main
+) >"$_p5_a10s_root/out" 2>"$_p5_a10s_root/err"
+_p5_a10s_rc=$?
+set -e
+assert_eq "P5 A10 stale lock takeover install succeeds" "0" "$_p5_a10s_rc"
+assert_eq "P5 A10 stale lock recovered crashed-predecessor journal" "1" \
+    "$(grep -F -c 'recovering interrupted install' "$_p5_a10s_root/err" || true)"
+assert_eq "P5 A10 stale lock gone after takeover" "1" \
+    "$([[ ! -e "$_p5_a10s_root/.ae/.ae-install.lock" ]] && echo 1 || echo 0)"
+assert_eq "P5 A10 stale takeover published current" \
+    "$_p5_a10s_root/.ae/versions/2026.8.2" \
+    "$(readlink "$_p5_a10s_root/.ae/current" 2>/dev/null || true)"
+
+# A17/B28: two dead-PID observers; claim-first so exactly one acquires.
+_p5_a17="$(mktemp -d "$_p5_fx/a17.XXXXXX")"
+mkdir -p "$_p5_a17/home/.ae/.ae-install.lock" "$_p5_a17/ok"
+true &
+_p5_a17_dead=$!
+wait "$_p5_a17_dead" || true
+printf '%s\n' "$_p5_a17_dead" >"$_p5_a17/home/.ae/.ae-install.lock/pid"
+_p5_a17_rel="$_p5_a17/release"
+_p5_a17_home="$_p5_a17/home/.ae"
+(
+    AE_INSTALL_TEST_FAIL_AFTER=pause-stale-dead \
+    AE_INSTALL_TEST_RELEASE="$_p5_a17_rel" \
+        remote_acquire_lock "$_p5_a17_home" && : >"$_p5_a17/ok/A"
+    remote_release_lock
+) >"$_p5_a17/A.out" 2>"$_p5_a17/A.err" &
+_p5_a17_a=$!
+_p5_a17_i=0
+while [ "$_p5_a17_i" -lt 200 ]; do
+    grep -q 'test pause after stale-dead' "$_p5_a17/A.err" 2>/dev/null && break
+    sleep 0.05
+    _p5_a17_i=$((_p5_a17_i + 1))
+done
+(
+    AE_INSTALL_TEST_FAIL_AFTER=pause-stale-dead \
+    AE_INSTALL_TEST_RELEASE="$_p5_a17_rel" \
+        remote_acquire_lock "$_p5_a17_home" && : >"$_p5_a17/ok/B"
+    remote_release_lock
+) >"$_p5_a17/B.out" 2>"$_p5_a17/B.err" &
+_p5_a17_b=$!
+_p5_a17_i=0
+while [ "$_p5_a17_i" -lt 200 ]; do
+    grep -q 'test pause after stale-dead' "$_p5_a17/B.err" 2>/dev/null && break
+    sleep 0.05
+    _p5_a17_i=$((_p5_a17_i + 1))
+done
+: >"$_p5_a17_rel"
+wait "$_p5_a17_a" || true
+wait "$_p5_a17_b" || true
+_p5_a17_n=0
+[ -f "$_p5_a17/ok/A" ] && _p5_a17_n=$((_p5_a17_n + 1))
+[ -f "$_p5_a17/ok/B" ] && _p5_a17_n=$((_p5_a17_n + 1))
+assert_eq "P5 A17 two dead-PID observers: exactly one acquires" "1" "$_p5_a17_n"
+_p5_a17_ref=0
+grep -q 'another install is in progress' "$_p5_a17/A.err" 2>/dev/null && _p5_a17_ref=$((_p5_a17_ref + 1))
+grep -q 'another install is in progress' "$_p5_a17/B.err" 2>/dev/null && _p5_a17_ref=$((_p5_a17_ref + 1))
+assert_eq "P5 A17 loser refused in-progress" "1" "$_p5_a17_ref"
+
+# A17/B35: predictable lock.stale.<pid> dir with sentinel must survive.
+_p5_a17s="$(mktemp -d "$_p5_fx/a17s.XXXXXX")"
+mkdir -p "$_p5_a17s/.ae/.ae-install.lock" "$_p5_a17s/.ae/.ae-install.lock.stale.$$"
+printf 'sentinel-keep\n' >"$_p5_a17s/.ae/.ae-install.lock.stale.$$/keep-me"
+true &
+_p5_a17s_dead=$!
+wait "$_p5_a17s_dead" || true
+printf '%s\n' "$_p5_a17s_dead" >"$_p5_a17s/.ae/.ae-install.lock/pid"
+_p5_a17s_rc=0
+set +e
+remote_acquire_lock "$_p5_a17s/.ae"
+_p5_a17s_rc=$?
+set -e
+assert_eq "P5 A17 stale takeover acquires" "0" "$_p5_a17s_rc"
+assert_eq "P5 A17 predictable stale-pid dir sentinel survives" "1" \
+    "$([[ -f "$_p5_a17s/.ae/.ae-install.lock.stale.$$/keep-me" ]] && echo 1 || echo 0)"
+assert_eq "P5 A17 did not nest lock into predictable stale-pid dir" "1" \
+    "$([[ ! -e "$_p5_a17s/.ae/.ae-install.lock.stale.$$/lock" ]] && echo 1 || echo 0)"
+remote_release_lock
+
+# A19/B41: stopped is a proven state. has-session 2>/dev/null maps every
+# nonzero rc to stopped — a permission/protocol error must read unknown.
+# Controls: successful list without the name → stopped; clean-dead → stopped;
+# exact name present → running.
+_p5_a19="$(mktemp -d "$_p5_fx/a19.XXXXXX")"
+mkdir -p "$_p5_a19/bin" \
+    "$_p5_a19/home/.ae/sessions/permerr" \
+    "$_p5_a19/home/.ae/sessions/absent" \
+    "$_p5_a19/home/.ae/sessions/cleadead" \
+    "$_p5_a19/home/.ae/sessions/live"
+printf 'tmux_server=ae-perm\ntmux_server_kind=name\n' \
+    >"$_p5_a19/home/.ae/sessions/permerr/meta"
+printf 'tmux_server=ae-absent\ntmux_server_kind=name\n' \
+    >"$_p5_a19/home/.ae/sessions/absent/meta"
+printf 'tmux_server=ae-dead\ntmux_server_kind=name\n' \
+    >"$_p5_a19/home/.ae/sessions/cleadead/meta"
+printf 'tmux_server=ae-live\ntmux_server_kind=name\n' \
+    >"$_p5_a19/home/.ae/sessions/live/meta"
+cat >"$_p5_a19/bin/tmux" <<'EOF'
+#!/usr/bin/env bash
+label=default
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -L)
+            label="name:$2"
+            shift 2
+            ;;
+        -S)
+            label="socket:$2"
+            shift 2
+            ;;
+        has-session | list-sessions)
+            cmd="$1"
+            shift
+            case "$label" in
+                name:ae-perm)
+                    echo "error connecting to /tmp/tmux-1000/x (Permission denied)" >&2
+                    exit 1
+                    ;;
+                name:ae-absent)
+                    if [ "$cmd" = "list-sessions" ]; then
+                        printf 'other\n'
+                        exit 0
+                    fi
+                    exit 1
+                    ;;
+                name:ae-dead)
+                    echo "no server running on /tmp/tmux-1000/x" >&2
+                    exit 1
+                    ;;
+                name:ae-live)
+                    if [ "$cmd" = "list-sessions" ]; then
+                        printf 'live\n'
+                        exit 0
+                    fi
+                    t=""
+                    [ "${1:-}" = "-t" ] && t="${2:-}"
+                    t="${t#=}"
+                    [ "$t" = "live" ] && exit 0
+                    exit 1
+                    ;;
+            esac
+            exit 1
+            ;;
+        *)
+            shift
+            ;;
+    esac
+done
+exit 1
+EOF
+chmod +x "$_p5_a19/bin/tmux"
+# shellcheck disable=SC2031  # PATH taint is HEAD SC2030 (subshells before this region)
+_p5_a19_path="$_p5_a19/bin:$PATH"
+_p5_a19_perm_rc=0
+set +e
+AE_HOME="$_p5_a19/home/.ae" PATH="$_p5_a19_path" \
+    _ae_entry_session_running permerr
+_p5_a19_perm_rc=$?
+set -e
+_p5_a19_abs_rc=0
+set +e
+AE_HOME="$_p5_a19/home/.ae" PATH="$_p5_a19_path" \
+    _ae_entry_session_running absent
+_p5_a19_abs_rc=$?
+set -e
+_p5_a19_dead_rc=0
+set +e
+AE_HOME="$_p5_a19/home/.ae" PATH="$_p5_a19_path" \
+    _ae_entry_session_running cleadead
+_p5_a19_dead_rc=$?
+set -e
+_p5_a19_live_rc=0
+set +e
+AE_HOME="$_p5_a19/home/.ae" PATH="$_p5_a19_path" \
+    _ae_entry_session_running live
+_p5_a19_live_rc=$?
+set -e
+_p5_a19_report="$(AE_HOME="$_p5_a19/home/.ae" PATH="$_p5_a19_path" \
+    _ae_entry_report_sessions)"
+_p5_a19_stopped="$(printf '%s\n' "$_p5_a19_report" | grep 'stopped sessions' || true)"
+_p5_a19_running="$(printf '%s\n' "$_p5_a19_report" | grep 'running sessions deferred until stop/resume (meta untouched):' || true)"
+_p5_a19_ambig="$(printf '%s\n' "$_p5_a19_report" | grep 'ambiguous sessions deferred' || true)"
+assert_eq "P5 A19 permission error is not stopped (rc)" "2" "$_p5_a19_perm_rc"
+assert_eq "P5 A19 permission error is not reported stopped" "0" \
+    "$([[ "$_p5_a19_stopped" == *permerr* ]] && echo 1 || echo 0)"
+assert_eq "P5 A19 permission error is reported deferred/unknown" "1" \
+    "$([[ "$_p5_a19_ambig" == *permerr* ]] && echo 1 || echo 0)"
+assert_eq "P5 A19 successful list without name is stopped" "1" "$_p5_a19_abs_rc"
+assert_eq "P5 A19 absent is reported stopped" "1" \
+    "$([[ "$_p5_a19_stopped" == *absent* ]] && echo 1 || echo 0)"
+assert_eq "P5 A19 clean-dead server is stopped" "1" "$_p5_a19_dead_rc"
+assert_eq "P5 A19 live exact name is running" "0" "$_p5_a19_live_rc"
+assert_eq "P5 A19 live is reported running-deferred" "1" \
+    "$([[ "$_p5_a19_running" == *live* ]] && echo 1 || echo 0)"
+
+# A20/B42: AE_VERSION pin is upgrade-arm INPUT. Other arms unset it before
+# exec so a pane cannot freeze future in-pane upgrades at the old generation.
+# Glue's own plain assignment (ae:4) then creates an unexported variable.
+_p5_a20="$(mktemp -d "$_p5_fx/a20.XXXXXX")"
+_p5_wrap_home 2026.8.2 "$_p5_a20/home"
+_p5_a20_inst="$_p5_a20/inst.env"
+_p5_a20_core="$_p5_a20/core.env"
+_p5_a20_glue="$_p5_a20/glue.env"
+{
+    printf '#!/usr/bin/env bash\n'
+    printf 'printf "%%s\\n" "${AE_VERSION-UNSET}" > %q\n' "$_p5_a20_inst"
+    printf 'exit 0\n'
+} >"$_p5_a20/home/.ae/versions/2026.8.2/install"
+chmod +x "$_p5_a20/home/.ae/versions/2026.8.2/install"
+{
+    printf '#!/usr/bin/env bash\n'
+    printf 'if [ "${1:-}" = "--version" ]; then printf "ae 2026.8.2\\n"; exit 0; fi\n'
+    printf 'if env | grep -E "^AE_VERSION=" >/dev/null; then printf "%%s\\n" PRESENT; else printf "%%s\\n" ABSENT; fi >%q\n' "$_p5_a20_core"
+    printf 'if [ "${1:-}" = "list" ] || [ "${1:-}" = "ls" ]; then printf "STUB-CORE-LIST\\n"; exit 0; fi\n'
+    printf 'exit 0\n'
+} >"$_p5_a20/home/.ae/versions/2026.8.2/ae-core"
+chmod +x "$_p5_a20/home/.ae/versions/2026.8.2/ae-core"
+{
+    printf '#!/usr/bin/env bash\n'
+    printf 'AE_VERSION="2026.8.2"\n'
+    printf 'if [ "${1:-}" = "--version" ]; then printf "ae %%s\\n" "$AE_VERSION"; exit 0; fi\n'
+    printf 'if env | grep -E "^AE_VERSION=" >/dev/null; then printf "%%s\\n" PRESENT; else printf "%%s\\n" ABSENT; fi >%q\n' "$_p5_a20_glue"
+    printf 'exit 0\n'
+} >"$_p5_a20/home/.ae/versions/2026.8.2/ae-glue"
+chmod +x "$_p5_a20/home/.ae/versions/2026.8.2/ae-glue"
+_p5_a20_up_rc=0
+set +e
+HOME="$_p5_a20/home" AE_VERSION=2026.9.9 \
+    "$_p5_a20/home/.ae/versions/2026.8.2/ae" upgrade \
+    >"$_p5_a20/up.out" 2>"$_p5_a20/up.err"
+_p5_a20_up_rc=$?
+set -e
+assert_eq "P5 A20 hostile AE_VERSION reaches upgrade sentinel" "0" "$_p5_a20_up_rc"
+assert_eq "P5 A20 upgrade sentinel received exact operator pin" "2026.9.9" \
+    "$(cat "$_p5_a20_inst" 2>/dev/null || echo missing)"
+_p5_a20_list_rc=0
+set +e
+HOME="$_p5_a20/home" AE_VERSION=2026.9.9 \
+    "$_p5_a20/home/.ae/versions/2026.8.2/ae" list \
+    >"$_p5_a20/list.out" 2>"$_p5_a20/list.err"
+_p5_a20_list_rc=$?
+set -e
+assert_eq "P5 A20 ae list with hostile pin exits 0" "0" "$_p5_a20_list_rc"
+assert_eq "P5 A20 AE_VERSION absent from core sentinel env on list" "ABSENT" \
+    "$(cat "$_p5_a20_core" 2>/dev/null || echo missing)"
+_p5_a20_glue_rc=0
+set +e
+HOME="$_p5_a20/home" AE_VERSION=2026.9.9 \
+    "$_p5_a20/home/.ae/versions/2026.8.2/ae" doctor \
+    >"$_p5_a20/glue.out" 2>"$_p5_a20/glue.err"
+_p5_a20_glue_rc=$?
+set -e
+assert_eq "P5 A20 glue-owned command with hostile pin exits 0" "0" "$_p5_a20_glue_rc"
+assert_eq "P5 A20 AE_VERSION absent from glue sentinel env" "ABSENT" \
+    "$(cat "$_p5_a20_glue" 2>/dev/null || echo missing)"
+
+# A21/B14: parent-vs-leaf. Canonical ~/.local/bin/ae -> ~/.ae/current/ae must
+# be accepted (the installer published it). pwd -P HOME so macOS /var vs
+# /private/var cannot hide a leaf that string-matches inside the home.
+_p5_a21v="$(cd -P "$(mktemp -d "$_p5_fx/a21v.XXXXXX")" && pwd -P)"
+mkdir -p "$_p5_a21v/.ae/versions/2026.8.2" "$_p5_a21v/.local/bin"
+printf 'stub\n' >"$_p5_a21v/.ae/versions/2026.8.2/ae"
+ln -s "$_p5_a21v/.ae/versions/2026.8.2" "$_p5_a21v/.ae/current"
+ln -s "$_p5_a21v/.ae/current/ae" "$_p5_a21v/.local/bin/ae"
+_p5_a21v_rc=0
+set +e
+remote_validate_bin_destination "$_p5_a21v/.local/bin/ae" "$_p5_a21v/.ae"
+_p5_a21v_rc=$?
+set -e
+assert_eq "P5 A21 canonical published link is accepted by destination validation" \
+    "0" "$_p5_a21v_rc"
+
+# E2E: second install/upgrade into an already-installed home. Currently the
+# canonical link makes the next install refuse. After: succeeds, repoints all
+# three authorities, old version dir untouched.
+_p5_a21="$(cd -P "$(mktemp -d "$_p5_fx/a21.XXXXXX")" && pwd -P)"
+_p5_a21_rc1=0
+set +e
+(
+    set -e
+    HOME="$_p5_a21" AE_VERSION=2026.8.2 \
+        AE_BUNDLE="$_p5_fx/ae-2026.8.2-$_p5_plat.tar.gz" \
+        AE_SUMS="$_p5_fx/ae-2026.8.2-$_p5_plat-SHA256SUMS" remote_main
+) >"$_p5_a21/first.out" 2>"$_p5_a21/first.err"
+_p5_a21_rc1=$?
+set -e
+assert_eq "P5 A21 first install into fresh home succeeds" "0" "$_p5_a21_rc1"
+_p5_a21_old="$_p5_a21/.ae/versions/2026.8.2"
+_p5_a21_old_sum="$(remote_sha256 "$_p5_a21_old/ae-core")"
+_p5_a21_rc2=0
+set +e
+(
+    set -e
+    HOME="$_p5_a21" AE_VERSION=2026.8.3 \
+        AE_BUNDLE="$_p5_fx/ae-2026.8.3-$_p5_plat.tar.gz" \
+        AE_SUMS="$_p5_fx/ae-2026.8.3-$_p5_plat-SHA256SUMS" remote_main
+) >"$_p5_a21/second.out" 2>"$_p5_a21/second.err"
+_p5_a21_rc2=$?
+set -e
+assert_eq "P5 A21 second install into already-installed home succeeds" "0" "$_p5_a21_rc2"
+assert_eq "P5 A21 second install did not refuse inside-home command path" "0" \
+    "$(grep -F -c 'resolves inside the ae home' "$_p5_a21/second.err" || true)"
+assert_eq "P5 A21 current repointed at new version" \
+    "$_p5_a21/.ae/versions/2026.8.3" \
+    "$(readlink "$_p5_a21/.ae/current" 2>/dev/null || true)"
+assert_eq "P5 A21 core/current repointed at new ae-core" \
+    "$_p5_a21/.ae/versions/2026.8.3/ae-core" \
+    "$(cat "$_p5_a21/.ae/core/current" 2>/dev/null || true)"
+assert_eq "P5 A21 command link still names current/ae" \
+    "$_p5_a21/.ae/current/ae" \
+    "$(readlink "$_p5_a21/.local/bin/ae" 2>/dev/null || true)"
+assert_eq "P5 A21 old version dir untouched" "1" \
+    "$([[ -d "$_p5_a21_old" && "$(remote_sha256 "$_p5_a21_old/ae-core")" = "$_p5_a21_old_sum" ]] && echo 1 || echo 0)"
+
+# file entry
+_p5_file_home="$(mktemp -d "$_p5_fx/file-home.XXXXXX")"
+_p5_file_rc=0
+set +e
+(
+    set -euo pipefail
+    HOME="$_p5_file_home" AE_VERSION=2026.8.2 \
+        AE_BUNDLE="$_p5_fx/ae-2026.8.2-$_p5_plat.tar.gz" \
+        AE_SUMS="$_p5_fx/ae-2026.8.2-$_p5_plat-SHA256SUMS" \
+        "${BASH:-bash}" "$_p5_repo/install"
+) >"$_p5_file_home/out" 2>"$_p5_file_home/err"
+_p5_file_rc=$?
+set -e
+assert_eq "P5 installer file entry: bash install reaches main" "0" "$_p5_file_rc"
+assert_eq "P5 installer file entry: current is published" \
+    "$_p5_file_home/.ae/versions/2026.8.2" \
+    "$(readlink "$_p5_file_home/.ae/current" 2>/dev/null || true)"
+assert_eq "P5 installer file entry: command link is published" \
+    "$_p5_file_home/.ae/current/ae" \
+    "$(readlink "$_p5_file_home/.local/bin/ae" 2>/dev/null || true)"
+assert_eq "P5 installer file entry: core/current names versioned ae-core" \
+    "$_p5_file_home/.ae/versions/2026.8.2/ae-core" \
+    "$(cat "$_p5_file_home/.ae/core/current" 2>/dev/null || true)"
+assert_eq "P5 installer file entry: version dir has ae-glue" "1" \
+    "$([[ -x "$_p5_file_home/.ae/versions/2026.8.2/ae-glue" ]] && echo 1 || echo 0)"
+_p5_mode() { stat -f '%Lp' "$1" 2>/dev/null || stat -c '%a' "$1"; }
+_p5_four=1
+for _p5_m in ae ae-core ae-glue install; do
+    [ "$(_p5_mode "$_p5_file_home/.ae/versions/2026.8.2/$_p5_m")" = "555" ] || _p5_four=0
+done
+assert_eq "P5 B7 all four version-dir members are 0555" "1" "$_p5_four"
+
+# stdin entry (curl|bash class)
+_p5_stdin_home="$(mktemp -d "$_p5_fx/stdin-home.XXXXXX")"
+_p5_stdin_rc=0
+set +e
+(
+    set -euo pipefail
+    HOME="$_p5_stdin_home" AE_VERSION=2026.8.2 \
+        AE_BUNDLE="$_p5_fx/ae-2026.8.2-$_p5_plat.tar.gz" \
+        AE_SUMS="$_p5_fx/ae-2026.8.2-$_p5_plat-SHA256SUMS" \
+        "${BASH:-bash}" <"$_p5_repo/install"
+) >"$_p5_stdin_home/out" 2>"$_p5_stdin_home/err"
+_p5_stdin_rc=$?
+set -e
+assert_eq "P5 installer stdin entry: curl|bash class reaches main" "0" "$_p5_stdin_rc"
+assert_eq "P5 installer stdin entry: current is published" \
+    "$_p5_stdin_home/.ae/versions/2026.8.2" \
+    "$(readlink "$_p5_stdin_home/.ae/current" 2>/dev/null || true)"
+
+# source-no-run
+_p5_src_home="$(mktemp -d "$_p5_fx/source-home.XXXXXX")"
+_p5_src_rc=0
+set +e
+env HOME="$_p5_src_home" "${BASH:-bash}" -c 'set -euo pipefail; source "$1"' _ "$_p5_repo/install" \
+    >"$_p5_src_home/out" 2>"$_p5_src_home/err"
+_p5_src_rc=$?
+set -e
+assert_eq "P5 installer source: does not run main" "0" "$_p5_src_rc"
+assert_eq "P5 installer source: does not publish current" "0" \
+    "$([[ ! -e "$_p5_src_home/.ae" ]] && echo 0 || echo 1)"
+
+# F8 directory-refusal at the command destination
+_p5_f8_home="$(mktemp -d "$_p5_fx/f8-home.XXXXXX")"
+mkdir -p "$_p5_f8_home/.local/bin/ae"
+_p5_f8_rc=0
+set +e
+(
+    set -e
+    HOME="$_p5_f8_home" AE_VERSION=2026.8.2 \
+        AE_BUNDLE="$_p5_fx/ae-2026.8.2-$_p5_plat.tar.gz" \
+        AE_SUMS="$_p5_fx/ae-2026.8.2-$_p5_plat-SHA256SUMS" remote_main
+) >"$_p5_f8_home/out" 2>"$_p5_f8_home/err"
+_p5_f8_rc=$?
+set -e
+assert_eq "P5 installer F8: directory at command destination is refused" "1" "$_p5_f8_rc"
+assert_eq "P5 installer F8: refusal names directory" "1" \
+    "$(grep -F -c 'ae command destination is a directory' "$_p5_f8_home/err" || true)"
+
+# ── sacrificial session ae_path + upgrade (isolation preamble verbatim) ─
+# Tripwire (2026-07-02 incident: the REAL ~/.ae/config was clobbered with a
+# test fixture during a test window): fingerprint the real user's config
+# BEFORE overriding HOME; cleanup screams and exits non-zero if it changed.
+# Resolve the real home from the account DB, not $HOME (a nested run may already
+# have overridden it). getent is glibc-only; macOS answers via dscl. $HOME is the
+# last resort — still correct here, since this runs before the override below.
+# NEVER: export HOME="$TMP/home" AE_HOME="$HOME/.ae"  — AE_HOME binds OLD home.
+# B8/B11: do not fight the wrapper. Isolated HOME is the seam; the wrapper
+# derives AE_HOME=<isolated>/.ae. CONFIG_FILE=/dev/null is inert. Causal
+# telegram suppress is this home's .ae/config.
+_p5_iso="$(mktemp -d "$_p5_fx/iso.XXXXXX")"
+_p5_real_home="$(getent passwd "$(id -u)" 2>/dev/null | cut -d: -f6 || true)"
+[[ -n "$_p5_real_home" ]] || _p5_real_home="$(dscl . -read "/Users/$(id -un)" NFSHomeDirectory 2>/dev/null | awk '{print $2}' || true)"
+# shellcheck disable=SC2031  # HOME taint is HEAD SC2030 (subshells before this region)
+[[ -n "$_p5_real_home" ]] || _p5_real_home="$HOME"
+_p5_real_tmux="$(command -v tmux || true)"
+_p5_tg_snap() {
+    if [ -n "$_p5_real_tmux" ]; then
+        "$_p5_real_tmux" list-panes -t ae-telegram -F '#{pane_pid}' 2>/dev/null | paste -sd, - || true
+    fi
+}
+_p5_tg_n() {
+    if [ -n "$_p5_real_tmux" ]; then
+        "$_p5_real_tmux" list-panes -t ae-telegram 2>/dev/null | wc -l | tr -d '[:space:]' || echo 0
+    else
+        echo 0
+    fi
+}
+_p5_tg_pid_before="$(_p5_tg_snap)"
+_p5_tg_n_before="$(_p5_tg_n)"
+# shellcheck disable=SC2031  # HOME taint is HEAD SC2030 (subshells before this region)
+export HOME="$_p5_iso/home"
+mkdir -p "$HOME/.ae"
+_p5_write_isolated_config "$HOME"
+
+_p5_iso_rc=0
+set +e
+(
+    set -e
+    AE_VERSION=2026.8.2 \
+        AE_BUNDLE="$_p5_fx/ae-2026.8.2-$_p5_plat.tar.gz" \
+        AE_SUMS="$_p5_fx/ae-2026.8.2-$_p5_plat-SHA256SUMS" remote_main
+) >"$_p5_iso/install.out" 2>"$_p5_iso/install.err"
+_p5_iso_rc=$?
+set -e
+assert_eq "P5 iso install 2026.8.2 succeeds" "0" "$_p5_iso_rc"
+
+# new-session meta ae_path == versions/<v>/ae-glue (glue records basename of \$0)
+_p5_launch_rc=0
+set +e
+"$_p5_iso/home/.ae/versions/2026.8.2/ae" sacrificial \
+    >"$_p5_iso/launch.out" 2>"$_p5_iso/launch.err"
+_p5_launch_rc=$?
+set -e
+assert_eq "P5 sacrificial launch succeeds" "0" "$_p5_launch_rc"
+_p5_got_path="$(grep -m1 '^ae_path=' "$HOME/.ae/sessions/sacrificial/meta" | cut -d= -f2-)"
+assert_eq "P5 new-session meta ae_path equals versions/v/ae-glue" "1" \
+    "$([[ -n "$_p5_got_path" && "$_p5_got_path" -ef "$HOME/.ae/versions/2026.8.2/ae-glue" ]] && echo 1 || echo 0)"
+
+# stopped + running session dirs for the upgrade report
+mkdir -p "$HOME/.ae/sessions/stoppedone" "$HOME/.ae/sessions/liveone"
+printf 'ae_path=%s\nmarker=stopped\ntmux_server=ae-iso\ntmux_server_kind=name\n' \
+    "$HOME/.ae/versions/2026.8.2/ae-glue" \
+    >"$HOME/.ae/sessions/stoppedone/meta"
+printf 'ae_path=%s\nmarker=running\ntmux_server=ae-iso\ntmux_server_kind=name\n' \
+    "$HOME/.ae/versions/2026.8.2/ae-glue" \
+    >"$HOME/.ae/sessions/liveone/meta"
+cp -R "$HOME/.ae/sessions/stoppedone" "$_p5_iso/stoppedone.before"
+cp -R "$HOME/.ae/sessions/liveone" "$_p5_iso/liveone.before"
+# extra bytes so a rewrite would show
+printf 'payload\n' >"$HOME/.ae/sessions/stoppedone/payload.bin"
+cp "$HOME/.ae/sessions/stoppedone/payload.bin" "$_p5_iso/stoppedone.before/payload.bin"
+
+mkdir -p "$_p5_iso/bin"
+cat >"$_p5_iso/bin/tmux" <<'EOF'
+#!/usr/bin/env bash
+label=default
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -L)
+            label="name:$2"
+            shift 2
+            ;;
+        -S)
+            label="socket:$2"
+            shift 2
+            ;;
+        has-session)
+            shift
+            [ "${1:-}" = "-t" ] || exit 1
+            t="${2:-}"
+            t="${t#=}"
+            [ "$label" = "name:ae-iso" ] && [ "$t" = "liveone" ] && exit 0
+            exit 1
+            ;;
+        list-sessions)
+            [ "$label" = "name:ae-iso" ] && { printf 'liveone\n'; exit 0; }
+            exit 1
+            ;;
+        *)
+            shift
+            ;;
+    esac
+done
+exit 1
+EOF
+chmod +x "$_p5_iso/bin/tmux"
+
+_p5_iso_path="$_p5_iso/bin:$PATH"
+_p5_up_rc=0
+set +e
+env PATH="$_p5_iso_path" \
+    AE_BUNDLE="$_p5_fx/ae-2026.8.3-$_p5_plat.tar.gz" \
+    AE_SUMS="$_p5_fx/ae-2026.8.3-$_p5_plat-SHA256SUMS" \
+    AE_VERSION=2026.8.3 \
+    "$_p5_iso/home/.ae/versions/2026.8.2/ae" upgrade \
+    >"$_p5_iso/upgrade.out" 2>"$_p5_iso/upgrade.err"
+_p5_up_rc=$?
+set -e
+assert_eq "P5 upgrade via wrapper succeeds" "0" "$_p5_up_rc"
+assert_eq "P5 upgrade publishes 2026.8.3 current" \
+    "$HOME/.ae/versions/2026.8.3" \
+    "$(readlink "$HOME/.ae/current" 2>/dev/null || true)"
+assert_eq "P5 upgrade report says running sessions are never hot-rewritten" "1" \
+    "$(grep -F -c 'never hot-rewritten' "$_p5_iso/upgrade.out" || true)"
+assert_eq "P5 upgrade report lists stopped session by name" "1" \
+    "$(grep -F -c 'stoppedone' "$_p5_iso/upgrade.out" || true)"
+assert_eq "P5 upgrade report names liveone as deferred until stop/resume" "1" \
+    "$(grep -F -c 'deferred until stop/resume (meta untouched): liveone' "$_p5_iso/upgrade.out" || true)"
+assert_eq "P5 stopped-session dir untouched across upgrade (byte-compare)" "1" \
+    "$(diff -rq "$HOME/.ae/sessions/stoppedone" "$_p5_iso/stoppedone.before" >/dev/null && echo 1 || echo 0)"
+assert_eq "P5 running-session meta untouched across upgrade (byte-compare)" "1" \
+    "$(cmp -s "$HOME/.ae/sessions/liveone/meta" "$_p5_iso/liveone.before/meta" && echo 1 || echo 0)"
+assert_eq "P5 sacrificial ae_path unchanged across upgrade" "1" \
+    "$([[ -n "$_p5_got_path" && "$_p5_got_path" -ef "$HOME/.ae/versions/2026.8.2/ae-glue" ]] && echo 1 || echo 0)"
+assert_eq "P5 B11 iso config telegram remains disabled" "1" \
+    "$(grep -F -c 'enabled = false' "$HOME/.ae/config" || true)"
+assert_eq "P5 B11 iso config stub agent remains" "1" \
+    "$(grep -F -c 'stub = "true"' "$HOME/.ae/config" || true)"
+_p5_tg_pid_after="$(_p5_tg_snap)"
+_p5_tg_n_after="$(_p5_tg_n)"
+assert_eq "P5 B11 real ae-telegram pane PIDs unchanged" "$_p5_tg_pid_before" "$_p5_tg_pid_after"
+assert_eq "P5 B11 real ae-telegram pane count unchanged" "$_p5_tg_n_before" "$_p5_tg_n_after"
+
+# restore test-suite HOME isolation (do not leak the sacrificial HOME)
+unset HOME AE_HOME
+# tests/unit itself does not set HOME; later cleanup is fine. Re-export a
+# throwaway so leftover code cannot write the operator home if any.
+export HOME="$_p5_fx/post-home"
+mkdir -p "$HOME"
+
+chmod -R u+w "$_p5_fx" 2>/dev/null || true
+rm -rf "$_p5_fx"
+unset -f _p5_write_glue _p5_write_core _p5_make_bundle _p5_wrap_home _p5_mode \
+    _p5_write_isolated_config _p5_tg_snap _p5_tg_n _p5_a7_run _p5_a15_write_glue
+unset _p5_fx _p5_tmp_root _p5_plat _p5_repo _p5_w _p5_ok_rc _p5_ok_out _p5_miss_rc \
+    _p5_empty_rc _p5_nreg_rc _p5_slink_rc _p5_nx_rc _p5_wmis_rc _p5_gmis_rc \
+    _p5_env_rc _p5_co _p5_co_rc _p5_co_dir _p5_pin_home _p5_pin_rc \
+    _p5_file_home _p5_file_rc _p5_stdin_home _p5_stdin_rc _p5_src_home \
+    _p5_src_rc _p5_f8_home _p5_f8_rc _p5_iso _p5_iso_rc _p5_launch_rc \
+    _p5_up_rc _p5_real_home _p5_got_path _p5_sent _p5_sent_mark \
+    _p5_sent_help_rc _p5_sent_typo_rc _p5_sent_bare_rc \
+    _p5_gsess_rc _p5_brk _p5_brk_mark _p5_brk_rc _p5_brk2_rc _p5_four _p5_m \
+    _p5_real_tmux _p5_tg_pid_before _p5_tg_n_before _p5_tg_pid_after _p5_tg_n_after \
+    _p5_b12_mark _p5_b12_list_rc _p5_b12_list_out _p5_b12_glue_rc _p5_b12_ls_out \
+    _p5_ver_miss_rc _p5_pin _p5_pin_log _p5_pin_rc \
+    _p5_b14_home _p5_b14_rc _p5_b14c_home _p5_b14c_ext _p5_b14c_rc \
+    _p5_b16 _p5_b16_foo _p5_b16_off \
+    _p5_b17_help_rc _p5_b17_h_rc _p5_b17_json_rc _p5_b17_json_out _p5_b27_rc \
+    _p5_a7 _p5_a7_core_mark _p5_a7_glue_mark \
+    _p5_a8_home _p5_a8_rc _p5_a8_glue_rc _p5_a8c_home _p5_a8c_rc \
+    _p5_cfgok_rc _p5_cfgu_rc \
+    _p5_a11 _p5_a11_inst _p5_a11_ver_rc _p5_a11_glue_out _p5_a11_up_rc \
+    _p5_a9_home _p5_a9_ext _p5_a9_link_before _p5_a9_rc \
+    _p5_a10 _p5_a10_home _p5_a10_rel _p5_a10_a _p5_a10_a_rc _p5_a10_i \
+    _p5_a10_b_rc _p5_a10j _p5_a10j_j _p5_a10j_a _p5_a10j_b _p5_a10j_n \
+    _p5_a10s_root _p5_a10s_dead _p5_a10s_rc \
+    _p5_b24 _p5_b24_log _p5_b24_report _p5_b24_stopped _p5_b24_running \
+    _p5_b24_ambig _p5_b24_off _p5_a14_enum _p5_a14_bump _p5_wrap_ver \
+    _p5_b16_path _p5_b24_path _p5_iso_path _p5_b24_old_path _p5_b24_old_ae_home \
+    _p5_a15 _p5_a15_got _p5_a15_co _p5_a15_env _p5_a15_ns _p5_a15_id_rc \
+    _p5_a15_ok_rc _p5_a15_flip_rc _p5_a18_co_env \
+    _p5_a17 _p5_a17_dead _p5_a17_rel _p5_a17_home _p5_a17_a _p5_a17_b \
+    _p5_a17_i _p5_a17_n _p5_a17_ref _p5_a17s _p5_a17s_dead _p5_a17s_rc \
+    _p5_a19 _p5_a19_path \
+    _p5_a19_perm_rc _p5_a19_abs_rc _p5_a19_dead_rc _p5_a19_live_rc \
+    _p5_a19_report _p5_a19_stopped _p5_a19_running _p5_a19_ambig \
+    _p5_a20 _p5_a20_inst _p5_a20_core _p5_a20_glue \
+    _p5_a20_up_rc _p5_a20_list_rc _p5_a20_glue_rc \
+    _p5_a21v _p5_a21v_rc _p5_a21 _p5_a21_rc1 _p5_a21_rc2 \
+    _p5_a21_old _p5_a21_old_sum
+
+# ── P5-PRODUCT writer-A END ───────────────────────────────────────
 
 # ── Results ──────────────────────────────────────────────────────────
 

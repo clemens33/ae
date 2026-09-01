@@ -9,7 +9,7 @@ CHANGED since the last sweep, dedups it, and — crucially — only marks a chan
 permanently swallows an alert. It maintains a quiet-sweep liveness counter and
 prints exact, ready-to-send report lines (empty = nothing to report).
 
-NOT part of core ae (which stays a single jq-free bash script). Optional contrib
+NOT part of core ae (public wrapper + Rust core + Bash pane glue). Optional contrib
 consumer of `ae list --json`. Pure stdlib Python 3 — no jq, no third-party deps.
 See README.md.
 
