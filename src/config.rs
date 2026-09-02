@@ -1,13 +1,21 @@
-//! The three `[workspace]` values compact resolves from config — and nothing else.
+//! The two readers over ae's INI config.
 //!
-//! ae config is INI-style; the frozen `parse_config`/`get_config` pair (in the bash
-//! `ae`) reads every section and key. Compact needs exactly three of them —
-//! `[workspace].main`, `[workspace].workers`, `[workspace].purge_agent_history` —
-//! layering a global file under an origin-local one (the LAST value wins, as
-//! `get_config` does). This reads those three, with the same per-line grammar the
-//! frozen parser uses, and deliberately nothing more: compact needs three keys, so it
-//! reads three keys. It is not a general config framework and must not grow into one.
+//! **Compact's three `[workspace]` values** (`main`, `workers`,
+//! `purge_agent_history`) — [`read_workspace`], the original reader, kept exactly
+//! as it was: compact needs three keys, so it reads three keys.
+//!
+//! **Identity v2** — [`read_identity`] and [`launch_plan`]: the `[profiles]`
+//! inventory, the `[roster]` name→profile bindings and the workspace seats, read
+//! with the same per-line grammar the frozen bash `parse_config` uses and
+//! validated BOTH directions into a typed [`LaunchPlan`] before any session
+//! side effect exists. The identity plan (alias-free names, profile as metadata)
+//! is the authority for the rules pinned here; the bash glue no longer parses
+//! identity from config once P4 lands.
+//!
+//! Still not a general config framework: `[prompt]`, `[telegram]`, the layout
+//! and copy-mode keys stay with the glue's reader.
 
+use std::fmt;
 use std::path::{Path, PathBuf};
 
 /// The `[workspace]` values compact resolves. `main`/`workers` are `None` when the
@@ -111,11 +119,42 @@ fn section_header(line: &str) -> Option<String> {
 /// kept); an unquoted value strips a trailing `#comment` then trailing whitespace and
 /// must be non-empty. The key grammar is `^[a-zA-Z_][a-zA-Z0-9_-]*`.
 fn parse_entry(line: &str) -> Option<(&str, String)> {
+    parse_entry_with(line, is_config_key)
+}
+
+/// [`parse_entry`] with the key grammar as a parameter: `[roster]` keys are
+/// agent NAMES (digit-leading allowed), every other section keeps the frozen
+/// config-key grammar. A key the predicate rejects makes the line no entry.
+fn parse_entry_with(line: &str, key_ok: fn(&str) -> bool) -> Option<(&str, String)> {
     let eq = line.find('=')?;
     let key = line[..eq].trim_end();
-    if !is_config_key(key) {
+    if !key_ok(key) {
         return None;
     }
+    Some((key, entry_value(line)?))
+}
+
+/// The raw KEY a line claims: the text before its first `=`, trimmed — `None`
+/// for a line with no `=` or a `#` comment (a commented-out `# old = x` claims
+/// nothing). The key GRAMMAR is the caller's, per section; this is the claim
+/// itself, recorded for the same-file duplicate gate BEFORE any value parse,
+/// so `lead =` followed by `lead = cc` is a key named twice (colead round-2
+/// IMPORTANT-1).
+fn key_claim(line: &str) -> Option<&str> {
+    let eq = line.find('=')?;
+    let key = line[..eq].trim_end();
+    if key.starts_with('#') {
+        None
+    } else {
+        Some(key)
+    }
+}
+
+/// The VALUE half of a `key = value` line: a `"..."` keeps its inner bytes
+/// verbatim; an unquoted value strips a trailing `#comment` then whitespace and
+/// must be non-empty.
+fn entry_value(line: &str) -> Option<String> {
+    let eq = line.find('=')?;
     let rhs = line[eq + 1..].trim_start();
     // The line is already whole-line-trimmed, so a fully-quoted value ends at the
     // final byte. A quote that opens but does not close falls through to the unquoted
@@ -123,7 +162,7 @@ fn parse_entry(line: &str) -> Option<(&str, String)> {
     if let Some(rest) = rhs.strip_prefix('"')
         && let Some(inner) = rest.strip_suffix('"')
     {
-        return Some((key, inner.to_owned()));
+        return Some(inner.to_owned());
     }
     let val = match rhs.find('#') {
         Some(hash) => &rhs[..hash],
@@ -133,7 +172,7 @@ fn parse_entry(line: &str) -> Option<(&str, String)> {
     if val.is_empty() {
         return None;
     }
-    Some((key, val.to_owned()))
+    Some(val.to_owned())
 }
 
 /// The frozen key grammar `^[a-zA-Z_][a-zA-Z0-9_-]*`.
@@ -146,6 +185,538 @@ fn is_config_key(s: &str) -> bool {
     bytes.all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
+/// The agent-name grammar, spelled as the frozen `_validate_agent_name` prints
+/// it. ONE definition: the core validates every identity against this, and the
+/// glue's copy is deleted at the P4 cutover.
+pub const AGENT_NAME_GRAMMAR: &str = "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$";
+
+/// Whether `name` is an agent name: a letter or digit, then up to 63 of
+/// letters, digits, `_` or `-`.
+#[must_use]
+pub fn is_agent_name(name: &str) -> bool {
+    let mut bytes = name.bytes();
+    match bytes.next() {
+        Some(b) if b.is_ascii_alphanumeric() => {}
+        _ => return false,
+    }
+    name.len() <= 64 && bytes.all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
+/// The identity v2 config: `[profiles]`, `[roster]`, and the two workspace
+/// seat keys. Order is first appearance across the overlay; a key the local
+/// file repeats keeps its global position with the local value.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct IdentityConfig {
+    /// `[profiles] <profile> = <launch command>` — the reusable inventory.
+    pub profiles: Vec<(String, String)>,
+    /// `[roster] <name> = <profile>` — the agents promised to launch.
+    pub roster: Vec<(String, String)>,
+    /// `[workspace] main`, raw. `None` when never set.
+    pub main: Option<String>,
+    /// `[workspace] workers`, raw (comma-separated). `None` when never set.
+    pub workers: Option<String>,
+}
+
+impl IdentityConfig {
+    /// The launch command bound to `profile`, if defined.
+    #[must_use]
+    pub fn profile(&self, profile: &str) -> Option<&str> {
+        self.profiles
+            .iter()
+            .find(|(key, _)| key == profile)
+            .map(|(_, cmd)| cmd.as_str())
+    }
+
+    /// The profile `name` is bound to in `[roster]`, if any.
+    #[must_use]
+    pub fn roster_profile(&self, name: &str) -> Option<&str> {
+        self.roster
+            .iter()
+            .find(|(key, _)| key == name)
+            .map(|(_, profile)| profile.as_str())
+    }
+}
+
+/// Why a config could not be READ as identity v2 — each refuses the whole
+/// read before any plan is built. Every message names the file and line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConfigError {
+    /// A SELECTED file that cannot be read or decoded (never treated as empty).
+    Unreadable(PathBuf),
+    /// One file names one identity key twice. Precedence inside a file is
+    /// unruled, and the glue's last-wins reading would silently differ from a
+    /// first-wins one — so a v2 file names each key once.
+    DuplicateKey {
+        /// The file.
+        file: PathBuf,
+        /// `profiles`, `roster` or `workspace`.
+        section: String,
+        /// The key as written.
+        key: String,
+        /// 1-based line of the repeat.
+        line: usize,
+    },
+    /// The file still carries an `[agents]` section: the v1 shape, which has no
+    /// v2 meaning and would leave the operator's intent split across two
+    /// vocabularies.
+    LegacyAgents {
+        /// The file.
+        file: PathBuf,
+        /// 1-based line of the header.
+        line: usize,
+    },
+    /// A `[roster]` key that is not an agent name.
+    RosterKey {
+        /// The file.
+        file: PathBuf,
+        /// The key as written.
+        key: String,
+        /// 1-based line.
+        line: usize,
+    },
+}
+
+impl fmt::Display for ConfigError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Unreadable(path) => {
+                write!(f, "Error: config {} cannot be read.", path.display())
+            }
+            Self::DuplicateKey {
+                file,
+                section,
+                key,
+                line,
+            } => write!(
+                f,
+                "Error: {}:{line}: duplicate key '{key}' in [{section}] — a v2 config names each key once per file.",
+                file.display()
+            ),
+            Self::LegacyAgents { file, line } => write!(
+                f,
+                "Error: {}:{line}: [agents] is not a v2 section — move each alias to [profiles] and bind agent names to profiles in [roster].",
+                file.display()
+            ),
+            Self::RosterKey { file, key, line } => write!(
+                f,
+                "Error: {}:{line}: invalid agent name '{key}' in [roster]. Names must match {AGENT_NAME_GRAMMAR}.",
+                file.display()
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ConfigError {}
+
+/// Read the identity v2 config, layering `local` over `global` key by key —
+/// a later file's value replaces an earlier file's for the same key, in the
+/// same section; keys the later file does not name survive.
+///
+/// # Errors
+///
+/// [`ConfigError`] — a selected file that cannot be read, a same-file
+/// duplicate identity key, a surviving `[agents]` section, or a `[roster]` key
+/// outside the agent-name grammar. Absence is `None`, never an error.
+pub fn read_identity(
+    global: Option<&Path>,
+    local: Option<&Path>,
+) -> Result<IdentityConfig, ConfigError> {
+    let mut cfg = IdentityConfig::default();
+    for file in [global, local].into_iter().flatten() {
+        overlay_identity(file, &mut cfg)?;
+    }
+    Ok(cfg)
+}
+
+/// The three identity sections.
+const IDENTITY_SECTIONS: [&str; 3] = ["profiles", "roster", "workspace"];
+
+fn overlay_identity(file: &Path, cfg: &mut IdentityConfig) -> Result<(), ConfigError> {
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: reads the INI config the frozen parse_config reads — see clippy.toml"
+    )]
+    let read = std::fs::read_to_string(file);
+    let text = read.map_err(|_| ConfigError::Unreadable(file.to_owned()))?;
+    let mut section = String::new();
+    let mut seen: Vec<(String, String)> = Vec::new();
+    for (index, raw) in text.lines().enumerate() {
+        let line = index + 1;
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if let Some(name) = section_header(trimmed) {
+            if name == "agents" {
+                return Err(ConfigError::LegacyAgents {
+                    file: file.to_owned(),
+                    line,
+                });
+            }
+            section = name;
+            continue;
+        }
+        if !IDENTITY_SECTIONS.contains(&section.as_str()) {
+            continue;
+        }
+        // The raw KEY CLAIM first (comments excluded): a `[roster]` key outside
+        // the agent grammar refuses here, before any value parse, and a key
+        // named twice refuses even when one claim carries no value.
+        let Some(key) = key_claim(trimmed) else {
+            continue;
+        };
+        if section == "roster" {
+            if !is_agent_name(key) {
+                return Err(ConfigError::RosterKey {
+                    file: file.to_owned(),
+                    key: key.to_owned(),
+                    line,
+                });
+            }
+        } else if !is_config_key(key) {
+            // The frozen tolerance: a non-key line contributes nothing.
+            continue;
+        }
+        if section == "workspace" && key != "main" && key != "workers" {
+            continue;
+        }
+        if seen.iter().any(|(s, k)| s == &section && k == key) {
+            return Err(ConfigError::DuplicateKey {
+                file: file.to_owned(),
+                section: section.clone(),
+                key: key.to_owned(),
+                line,
+            });
+        }
+        seen.push((section.clone(), key.to_owned()));
+        // Now the VALUE. An empty one (`lead =`, `lead = # note`) binds nothing
+        // — the claim stands for the duplicate gate, the row is skipped, and a
+        // seat naming it later reports NotInRoster, never a bad name.
+        let Some(value) = entry_value(trimmed) else {
+            continue;
+        };
+        match section.as_str() {
+            "profiles" => upsert(&mut cfg.profiles, key, value),
+            "roster" => upsert(&mut cfg.roster, key, value),
+            _ => {
+                if key == "main" {
+                    cfg.main = Some(value);
+                } else {
+                    cfg.workers = Some(value);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Replace `key`'s value in place (keeping its position), else append.
+fn upsert(rows: &mut Vec<(String, String)>, key: &str, value: String) {
+    match rows.iter_mut().find(|(k, _)| k == key) {
+        Some((_, existing)) => *existing = value,
+        None => rows.push((key.to_owned(), value)),
+    }
+}
+
+/// One seat of a launch: the slot it takes, its identity, and the profile
+/// resolved into the command it runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Seat {
+    /// `main` or `worker.<n>`.
+    pub slot: String,
+    /// The agent's name — its identity.
+    pub name: String,
+    /// The profile bound in `[roster]`.
+    pub profile: String,
+    /// The profile's launch command, verbatim (operator-authored shell text).
+    pub command: String,
+    /// The RAW leading-assignment span (`cmd.assign`), byte-exact from the
+    /// command — empty when there are none. The launcher evals
+    /// `<assign_span> exec <argv_span> <context suffix>`.
+    pub assign_span: String,
+    /// The RAW argv span (`cmd.argv`), byte-exact from the command.
+    pub argv_span: String,
+    /// The binary name the validated parse found (`agent_bin.<slot>`), path
+    /// stripped, `env` prefix peeled.
+    pub binary: String,
+    /// Which harness that is.
+    pub tool: crate::launch_cmd::ToolKind,
+}
+
+/// The seats a launch will create, main first, workers in config order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LaunchPlan {
+    /// `seats[0]` is the main seat.
+    pub seats: Vec<Seat>,
+}
+
+/// One way the workspace roster is not launchable. ALL of them are collected
+/// before the refusal, so the operator fixes the config once.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Violation {
+    /// `[workspace] main` never set (and no override).
+    MainMissing,
+    /// `[workspace] workers` has an empty entry (`a,,b`, a trailing comma).
+    EmptyWorker {
+        /// 1-based position in the list.
+        position: usize,
+    },
+    /// A seat name outside the agent-name grammar (an `alias:name` included).
+    BadName {
+        /// `workspace.main`, `workspace.workers` or `use`.
+        seat: String,
+        /// The name as written.
+        name: String,
+    },
+    /// A seat name with no `[roster]` binding.
+    NotInRoster {
+        /// Where it was named.
+        seat: String,
+        /// The name.
+        name: String,
+    },
+    /// A name taking two seats.
+    NameTwice {
+        /// Where the repeat was named.
+        seat: String,
+        /// The name.
+        name: String,
+    },
+    /// A roster binding to a profile `[profiles]` does not define.
+    ProfileMissing {
+        /// The roster name.
+        name: String,
+        /// The profile it names.
+        profile: String,
+    },
+    /// A roster name bound to no workspace seat. REFUSED (ruled 2026-09-02):
+    /// `[roster]` lists the agents promised to launch; a dormant row is a
+    /// typo or a stale promise, and listing it would make the section mean two
+    /// things.
+    Dormant {
+        /// The roster name.
+        name: String,
+        /// Its profile.
+        profile: String,
+    },
+    /// A launch command that is not ONE SIMPLE COMMAND (the command execution
+    /// contract): an operator, comment, redirection, substitution or grouping
+    /// outside quotes would detach the fixed suffix; a malformed line or one
+    /// with no command word cannot run at all. Never let near a pane.
+    CommandRefused {
+        /// The seat name.
+        name: String,
+        /// The profile whose command failed.
+        profile: String,
+        /// Why.
+        why: crate::launch_cmd::Refusal,
+    },
+}
+
+impl fmt::Display for Violation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MainMissing => {
+                write!(
+                    f,
+                    "workspace.main is not set — name the standing main seat."
+                )
+            }
+            Self::EmptyWorker { position } => {
+                write!(
+                    f,
+                    "workspace.workers has an empty entry at position {position}."
+                )
+            }
+            Self::BadName { seat, name } => write!(
+                f,
+                "{seat}: invalid agent name '{name}'. Names must match {AGENT_NAME_GRAMMAR} — a v2 seat is a bare name bound in [roster], never alias:name."
+            ),
+            Self::NotInRoster { seat, name } => {
+                write!(f, "{seat}: '{name}' is not bound to a profile in [roster].")
+            }
+            Self::NameTwice { seat, name } => write!(
+                f,
+                "{seat}: '{name}' is named more than once across main and workers — a name is one seat."
+            ),
+            Self::ProfileMissing { name, profile } => write!(
+                f,
+                "[roster] {name} = {profile}: profile '{profile}' is not defined in [profiles]."
+            ),
+            Self::Dormant { name, profile } => write!(
+                f,
+                "[roster] {name} = {profile} is bound to no workspace seat — name it in main/workers or remove it ([roster] lists the agents promised to launch; [profiles] is the reusable inventory)."
+            ),
+            Self::CommandRefused { name, profile, why } => write!(
+                f,
+                "[profiles] {profile} (seat '{name}'): the launch command must be one simple command — it has {why}."
+            ),
+        }
+    }
+}
+
+/// The refusal a launcher prints: one line per violation, in config order.
+#[must_use]
+pub fn render_violations(violations: &[Violation]) -> String {
+    let mut out = String::from("Error: the workspace roster is not launchable:\n");
+    for violation in violations {
+        out.push_str("  - ");
+        out.push_str(&violation.to_string());
+        out.push('\n');
+    }
+    out
+}
+
+/// One named seat → its [`Seat`], or `Ok(None)` when the seat's profile is
+/// undefined (its [`Violation::ProfileMissing`] is raised by the independent
+/// roster pass in [`launch_plan`], so this returns no seat and no duplicate).
+/// The binary, tool and raw spans come from ONE validated parse of the command
+/// — never the frozen [`crate::launch_cmd::split_binary`] heuristic, which
+/// would misread a command word that merely contains `=` (colead IMPORTANT-2).
+fn resolve_seat(
+    cfg: &IdentityConfig,
+    seat: &str,
+    name: &str,
+    slot: String,
+) -> Result<Option<Seat>, Violation> {
+    let Some(profile) = cfg.roster_profile(name) else {
+        return Err(Violation::NotInRoster {
+            seat: seat.to_owned(),
+            name: name.to_owned(),
+        });
+    };
+    let Some(command) = cfg.profile(profile) else {
+        // Undefined profile: reported once by the independent roster pass.
+        return Ok(None);
+    };
+    let parsed = crate::launch_cmd::lex_simple_command(command).map_err(|why| {
+        Violation::CommandRefused {
+            name: name.to_owned(),
+            profile: profile.to_owned(),
+            why,
+        }
+    })?;
+    let tool = parsed.tool();
+    Ok(Some(Seat {
+        slot,
+        name: name.to_owned(),
+        profile: profile.to_owned(),
+        command: command.to_owned(),
+        assign_span: parsed.assign_span,
+        argv_span: parsed.argv_span,
+        binary: parsed.binary,
+        tool,
+    }))
+}
+
+/// Resolve the workspace seats into a [`LaunchPlan`], validating both
+/// directions: every seat name is in the grammar, bound once in `[roster]`,
+/// bound to a defined and lexable profile, and named for one seat only; and
+/// every `[roster]` row is bound to some seat. `main_override` is the launch
+/// line's `use <name>`, which replaces `[workspace] main` for this launch.
+///
+/// # Errors
+///
+/// Every [`Violation`] found, in the order the config states things — never
+/// just the first.
+pub fn launch_plan(
+    cfg: &IdentityConfig,
+    main_override: Option<&str>,
+) -> Result<LaunchPlan, Vec<Violation>> {
+    let mut violations = Vec::new();
+    let mut named: Vec<(String, String)> = Vec::new(); // (seat label, name)
+    let main_seat = if main_override.is_some() {
+        "use"
+    } else {
+        "workspace.main"
+    };
+    match main_override
+        .map(str::trim)
+        .or(cfg.main.as_deref().map(str::trim))
+    {
+        Some(name) if !name.is_empty() => named.push((main_seat.to_owned(), name.to_owned())),
+        _ => violations.push(Violation::MainMissing),
+    }
+    if let Some(workers) = cfg.workers.as_deref() {
+        for (index, entry) in workers.split(',').enumerate() {
+            let name = entry.trim();
+            if name.is_empty() {
+                // A lone empty value (`workers =` never parses; but `workers = ""`
+                // does) means "no workers", not an empty seat.
+                if workers.trim().is_empty() {
+                    break;
+                }
+                violations.push(Violation::EmptyWorker {
+                    position: index + 1,
+                });
+                continue;
+            }
+            named.push(("workspace.workers".to_owned(), name.to_owned()));
+        }
+    }
+    // Validate EVERY roster profile binding independently, in config order,
+    // BEFORE resolving seats — so a dormant row with a missing profile reports
+    // both ProfileMissing and Dormant, not one or the other (colead IMPORTANT-4).
+    for (name, profile) in &cfg.roster {
+        if cfg.profile(profile).is_none() {
+            violations.push(Violation::ProfileMissing {
+                name: name.clone(),
+                profile: profile.clone(),
+            });
+        }
+    }
+    let mut seats = Vec::new();
+    let mut seen: Vec<&str> = Vec::new();
+    let mut worker_index = 0usize;
+    for (seat, name) in &named {
+        if !is_agent_name(name) {
+            violations.push(Violation::BadName {
+                seat: seat.clone(),
+                name: name.clone(),
+            });
+            continue;
+        }
+        if seen.contains(&name.as_str()) {
+            violations.push(Violation::NameTwice {
+                seat: seat.clone(),
+                name: name.clone(),
+            });
+            continue;
+        }
+        seen.push(name);
+        let slot = if seat == "workspace.workers" {
+            format!("worker.{worker_index}")
+        } else {
+            "main".to_owned()
+        };
+        match resolve_seat(cfg, seat, name, slot) {
+            // A resolved seat consumes its worker index; a profile-missing seat
+            // (Ok(None), already reported above) does not create a worker.
+            Ok(Some(resolved)) => {
+                if seat == "workspace.workers" {
+                    worker_index += 1;
+                }
+                seats.push(resolved);
+            }
+            Ok(None) => {}
+            Err(violation) => violations.push(violation),
+        }
+    }
+    for (name, profile) in &cfg.roster {
+        if !named.iter().any(|(_, n)| n == name) {
+            violations.push(Violation::Dormant {
+                name: name.clone(),
+                profile: profile.clone(),
+            });
+        }
+    }
+    if violations.is_empty() {
+        Ok(LaunchPlan { seats })
+    } else {
+        Err(violations)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -156,10 +727,15 @@ mod tests {
     struct NamedTemp(std::path::PathBuf);
     impl NamedTemp {
         fn new(tag: &str, text: &str) -> Self {
+            // Unique per INSTANCE (pid + atomic counter), not per tag: plain
+            // `cargo test` runs these in threads, and a shared `v2` path made
+            // tests overwrite each other's file (colead round-2 IMPORTANT-3).
+            use std::sync::atomic::{AtomicUsize, Ordering};
+            static N: AtomicUsize = AtomicUsize::new(0);
             let path = std::env::temp_dir().join(format!(
                 "ae-config-{tag}-{}-{}",
                 std::process::id(),
-                tag
+                N.fetch_add(1, Ordering::Relaxed)
             ));
             let mut f = std::fs::File::create(&path).expect("temp config");
             f.write_all(text.as_bytes()).expect("write config");
@@ -271,5 +847,407 @@ mod tests {
                 "'{v}' is not truthy"
             );
         }
+    }
+
+    // ---- identity v2 ---------------------------------------------------
+
+    const V2: &str = "[profiles]\n\
+        fable5 = \"claude --permission-mode bypassPermissions --model fable --effort xhigh\"\n\
+        gpt56sol = \"codex --yolo -m gpt-5.6-sol -c model_reasoning_effort=xhigh\"\n\
+        mic = \"CLAUDE_CONFIG_DIR=$HOME/.claude-mic claude --model fable\"\n\
+        [roster]\n\
+        lead = fable5\n\
+        colead = gpt56sol\n\
+        [workspace]\n\
+        main = lead\n\
+        workers = colead\n\
+        layout = lead-pair\n";
+
+    fn v2(text: &str) -> (NamedTemp, IdentityConfig) {
+        let file = NamedTemp::new("v2", text);
+        let cfg = read_identity(Some(file.path()), None).expect("readable v2 config");
+        (file, cfg)
+    }
+
+    #[test]
+    fn the_agent_name_grammar_is_the_frozen_one() {
+        for ok in ["lead", "2nd", "a", "x-y_z", &"n".repeat(64), "A9"] {
+            assert!(is_agent_name(ok), "{ok:?}");
+        }
+        for bad in [
+            "",
+            "_x",
+            "-x",
+            "a:b",
+            "a b",
+            "ä",
+            &"n".repeat(65),
+            "a/b",
+            "a.b",
+        ] {
+            assert!(!is_agent_name(bad), "{bad:?}");
+        }
+        assert_eq!(AGENT_NAME_GRAMMAR, "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$");
+    }
+
+    #[test]
+    fn identity_reads_profiles_roster_and_seats_in_order() {
+        let (_f, cfg) = v2(V2);
+        assert_eq!(
+            cfg.profiles
+                .iter()
+                .map(|(k, _)| k.as_str())
+                .collect::<Vec<_>>(),
+            ["fable5", "gpt56sol", "mic"]
+        );
+        assert_eq!(
+            cfg.profile("mic"),
+            Some("CLAUDE_CONFIG_DIR=$HOME/.claude-mic claude --model fable"),
+            "a quoted value keeps its inner bytes, $HOME included"
+        );
+        assert_eq!(
+            cfg.roster,
+            [
+                ("lead".to_owned(), "fable5".to_owned()),
+                ("colead".to_owned(), "gpt56sol".to_owned())
+            ]
+        );
+        assert_eq!(cfg.main.as_deref(), Some("lead"));
+        assert_eq!(cfg.workers.as_deref(), Some("colead"));
+        let plan = launch_plan(&cfg, None).expect("launchable");
+        assert_eq!(plan.seats.len(), 2);
+        assert_eq!(plan.seats[0].slot, "main");
+        assert_eq!(plan.seats[0].name, "lead");
+        assert_eq!(plan.seats[0].profile, "fable5");
+        assert_eq!(plan.seats[0].binary, "claude");
+        assert_eq!(plan.seats[0].tool, crate::launch_cmd::ToolKind::Claude);
+        assert_eq!(plan.seats[1].slot, "worker.0");
+        assert_eq!(plan.seats[1].name, "colead");
+        assert_eq!(plan.seats[1].tool, crate::launch_cmd::ToolKind::Codex);
+        assert!(plan.seats[1].command.starts_with("codex --yolo"));
+    }
+
+    #[test]
+    fn identity_overlay_is_key_wise_with_local_winning_and_order_kept() {
+        let g = NamedTemp::new(
+            "g2",
+            "[profiles]\na = \"one\"\nb = \"two\"\n[roster]\nlead = a\n[workspace]\nmain = lead\n",
+        );
+        let l = NamedTemp::new(
+            "l2",
+            "[profiles]\nb = \"TWO\"\nc = \"three\"\n[roster]\nlead = b\n",
+        );
+        let cfg = read_identity(Some(g.path()), Some(l.path())).expect("readable");
+        assert_eq!(
+            cfg.profiles,
+            [
+                ("a".to_owned(), "one".to_owned()),
+                ("b".to_owned(), "TWO".to_owned()),
+                ("c".to_owned(), "three".to_owned())
+            ],
+            "local replaces b in place and appends c"
+        );
+        assert_eq!(cfg.roster_profile("lead"), Some("b"));
+        assert_eq!(cfg.main.as_deref(), Some("lead"), "global's main survives");
+        // The same key in BOTH files is an overlay, not a duplicate.
+        assert!(launch_plan(&cfg, None).is_ok());
+    }
+
+    #[test]
+    fn identity_refuses_a_same_file_duplicate_a_legacy_section_and_a_bad_roster_key() {
+        let dup = NamedTemp::new("dup", "[profiles]\na = \"one\"\na = \"two\"\n");
+        assert_eq!(
+            read_identity(Some(dup.path()), None).unwrap_err(),
+            ConfigError::DuplicateKey {
+                file: dup.path().to_owned(),
+                section: "profiles".to_owned(),
+                key: "a".to_owned(),
+                line: 3
+            }
+        );
+        let dup = NamedTemp::new("dupw", "[workspace]\nmain = a\nlayout = x\nmain = b\n");
+        assert!(matches!(
+            read_identity(Some(dup.path()), None).unwrap_err(),
+            ConfigError::DuplicateKey { section, key, line: 4, .. } if section == "workspace" && key == "main"
+        ));
+        // Keys outside the identity set never collide (the glue reads them).
+        let ok = NamedTemp::new(
+            "dupl",
+            "[workspace]\nlayout = x\nlayout = y\n[prompt]\na = 1\na = 2\n",
+        );
+        assert!(read_identity(Some(ok.path()), None).is_ok());
+        let legacy = NamedTemp::new("legacy", "[profiles]\na = \"x\"\n\n[agents]\nb = \"y\"\n");
+        let err = read_identity(Some(legacy.path()), None).unwrap_err();
+        assert_eq!(
+            err,
+            ConfigError::LegacyAgents {
+                file: legacy.path().to_owned(),
+                line: 4
+            }
+        );
+        assert!(
+            err.to_string().contains("[agents] is not a v2 section"),
+            "{err}"
+        );
+        let bad = NamedTemp::new("badkey", "[roster]\n2nd = a\nno:colons = b\n");
+        assert_eq!(
+            read_identity(Some(bad.path()), None).unwrap_err(),
+            ConfigError::RosterKey {
+                file: bad.path().to_owned(),
+                key: "no:colons".to_owned(),
+                line: 3
+            },
+            "a digit-leading roster key is legal; a colon is not"
+        );
+        let missing = Path::new("/no/such/v2");
+        assert_eq!(
+            read_identity(Some(missing), None).unwrap_err(),
+            ConfigError::Unreadable(missing.to_path_buf())
+        );
+        assert_eq!(
+            read_identity(None, None).expect("absence is empty"),
+            IdentityConfig::default()
+        );
+    }
+
+    #[test]
+    fn identity_plan_collects_every_violation_before_refusing() {
+        let text = "[profiles]\ncc = \"claude\"\nbroken = \"'unterminated\"\n\
+            [roster]\nlead = cc\nghost = nope\nsleepy = cc\nbad = broken\n\
+            [workspace]\nmain = lead\nworkers = lead, ghost, , nobody, x:y, bad\n";
+        let (_f, cfg) = v2(text);
+        let violations = launch_plan(&cfg, None).unwrap_err();
+        assert_eq!(
+            violations,
+            [
+                Violation::EmptyWorker { position: 3 },
+                // ProfileMissing is checked in the independent roster pass, so
+                // it precedes the per-seat violations (colead IMPORTANT-4).
+                Violation::ProfileMissing {
+                    name: "ghost".to_owned(),
+                    profile: "nope".to_owned()
+                },
+                Violation::NameTwice {
+                    seat: "workspace.workers".to_owned(),
+                    name: "lead".to_owned()
+                },
+                Violation::NotInRoster {
+                    seat: "workspace.workers".to_owned(),
+                    name: "nobody".to_owned()
+                },
+                Violation::BadName {
+                    seat: "workspace.workers".to_owned(),
+                    name: "x:y".to_owned()
+                },
+                Violation::CommandRefused {
+                    name: "bad".to_owned(),
+                    profile: "broken".to_owned(),
+                    why: crate::launch_cmd::Refusal::UnterminatedQuote,
+                },
+                Violation::Dormant {
+                    name: "sleepy".to_owned(),
+                    profile: "cc".to_owned()
+                },
+            ]
+        );
+        let rendered = render_violations(&violations);
+        assert!(rendered.starts_with("Error: the workspace roster is not launchable:\n  - "));
+        assert_eq!(rendered.lines().count(), 8);
+        assert!(
+            rendered.contains("'x:y'. Names must match ^[A-Za-z0-9]"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("[roster] sleepy = cc is bound to no workspace seat"),
+            "{rendered}"
+        );
+        // No main at all.
+        let (_f, cfg) =
+            v2("[profiles]\ncc = \"claude\"\n[roster]\nlead = cc\n[workspace]\nworkers = lead\n");
+        assert_eq!(
+            launch_plan(&cfg, None).unwrap_err(),
+            [Violation::MainMissing]
+        );
+    }
+
+    #[test]
+    fn a_dormant_row_with_a_missing_profile_is_two_findings() {
+        // Colead IMPORTANT-4: the both-direction invariant — a roster row that
+        // is BOTH unused AND bound to an undefined profile reports both, so the
+        // operator fixes the config once.
+        let (_f, cfg) = v2(
+            "[profiles]\ncc = \"claude\"\n[roster]\nlead = cc\nunused = missing\n\
+             [workspace]\nmain = lead\n",
+        );
+        assert_eq!(
+            launch_plan(&cfg, None).unwrap_err(),
+            [
+                Violation::ProfileMissing {
+                    name: "unused".to_owned(),
+                    profile: "missing".to_owned()
+                },
+                Violation::Dormant {
+                    name: "unused".to_owned(),
+                    profile: "missing".to_owned()
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_roster_comment_and_an_empty_value_are_not_bad_names() {
+        // Colead IMPORTANT-3: a commented-out binding (an `=` inside it) is
+        // SKIPPED like the frozen parser, never a hard config refusal.
+        let (_f, cfg) = v2(
+            "[profiles]\ncc = \"claude\"\n[roster]\n# old = fable5\nlead = cc\n\
+             [workspace]\nmain = lead\n",
+        );
+        assert!(launch_plan(&cfg, None).is_ok(), "the comment is ignored");
+        assert_eq!(cfg.roster_profile("lead"), Some("cc"));
+        assert_eq!(cfg.roster_profile("old"), None, "the comment bound nothing");
+        // A good key with an EMPTY value binds nothing — the seat then reports
+        // NotInRoster, never `invalid agent name 'lead'`.
+        let empty = NamedTemp::new(
+            "emptyval",
+            "[profiles]\ncc = \"claude\"\n[roster]\nlead =\n[workspace]\nmain = lead\n",
+        );
+        let cfg = read_identity(Some(empty.path()), None).expect("an empty value is not a bad key");
+        assert_eq!(cfg.roster_profile("lead"), None);
+        assert_eq!(
+            launch_plan(&cfg, None).unwrap_err(),
+            [Violation::NotInRoster {
+                seat: "workspace.main".to_owned(),
+                name: "lead".to_owned()
+            }]
+        );
+        // An empty value hidden behind a comment (`lead = # note`) is the same.
+        let commented = NamedTemp::new(
+            "emptycomment",
+            "[profiles]\ncc = \"claude\"\n[roster]\nlead = # note\n[workspace]\nmain = lead\n",
+        );
+        let cfg = read_identity(Some(commented.path()), None).expect("readable");
+        assert_eq!(cfg.roster_profile("lead"), None);
+        // A genuinely bad KEY still refuses.
+        let bad = NamedTemp::new("badname", "[roster]\nno:colons = cc\n");
+        assert!(matches!(
+            read_identity(Some(bad.path()), None).unwrap_err(),
+            ConfigError::RosterKey { key, .. } if key == "no:colons"
+        ));
+    }
+
+    #[test]
+    fn a_key_claimed_twice_refuses_even_when_one_claim_has_no_value() {
+        // Colead round-2 IMPORTANT-1: the duplicate gate sees the raw claim.
+        let cases = [
+            ("profiles", "[profiles]\na =\na = \"x\"\n", "a"),
+            ("profiles", "[profiles]\na = \"x\"\na =\n", "a"),
+            ("roster", "[roster]\nlead =\nlead = cc\n", "lead"),
+            ("roster", "[roster]\nlead = cc\nlead = # note\n", "lead"),
+            ("workspace", "[workspace]\nmain =\nmain = lead\n", "main"),
+            ("workspace", "[workspace]\nmain = lead\nmain =\n", "main"),
+        ];
+        for (section, text, key) in cases {
+            let f = NamedTemp::new("dupclaim", text);
+            assert_eq!(
+                read_identity(Some(f.path()), None).unwrap_err(),
+                ConfigError::DuplicateKey {
+                    file: f.path().to_owned(),
+                    section: section.to_owned(),
+                    key: key.to_owned(),
+                    line: 3
+                },
+                "{text:?}"
+            );
+        }
+        // A comment is not a claim — control.
+        let f = NamedTemp::new("dupcomment", "[roster]\n# lead = old\nlead = cc\n");
+        assert!(read_identity(Some(f.path()), None).is_ok());
+    }
+
+    #[test]
+    fn a_prefix_only_profile_is_refused_at_plan_level() {
+        // Colead round-2 IMPORTANT-2, at the LaunchPlan level: no Seat with an
+        // empty agent_bin ever exists.
+        for cmd in ["env", "env -i", "env -u FOO", "env A=1"] {
+            let (_f, cfg) = v2(&format!(
+                "[profiles]\np = \"{cmd}\"\n[roster]\nlead = p\n[workspace]\nmain = lead\n"
+            ));
+            assert_eq!(
+                launch_plan(&cfg, None).unwrap_err(),
+                [Violation::CommandRefused {
+                    name: "lead".to_owned(),
+                    profile: "p".to_owned(),
+                    why: crate::launch_cmd::Refusal::NoCommand
+                }],
+                "{cmd:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_seat_carries_the_byte_exact_launch_spans_from_one_parse() {
+        // Colead IMPORTANT-1: the validated assign/argv spans are transported on
+        // the Seat, not reparsed downstream. Tabs and runs of spaces survive.
+        let (_f, cfg) = v2(
+            "[profiles]\nmic = \"A=1  B=2 env -u C claude --model\tfable\"\n\
+             [roster]\nlead = mic\n[workspace]\nmain = lead\n",
+        );
+        let plan = launch_plan(&cfg, None).expect("launchable");
+        let seat = &plan.seats[0];
+        assert_eq!(seat.assign_span, "A=1  B=2");
+        assert_eq!(seat.argv_span, "env -u C claude --model\tfable");
+        assert_eq!(seat.binary, "claude", "env prefix peeled by the parse");
+        assert_eq!(seat.tool, crate::launch_cmd::ToolKind::Claude);
+    }
+
+    #[test]
+    fn identity_plan_honours_a_use_override_and_no_workers() {
+        let (_f, cfg) = v2(V2);
+        let plan = launch_plan(&cfg, Some("colead")).unwrap_err();
+        assert_eq!(
+            plan,
+            [
+                Violation::NameTwice {
+                    seat: "workspace.workers".to_owned(),
+                    name: "colead".to_owned()
+                },
+                Violation::Dormant {
+                    name: "lead".to_owned(),
+                    profile: "fable5".to_owned()
+                }
+            ],
+            "`use colead` with colead still a worker: one name, two seats — and lead goes dormant"
+        );
+        assert_eq!(
+            launch_plan(&cfg, Some("cl:lead")).unwrap_err()[0],
+            Violation::BadName {
+                seat: "use".to_owned(),
+                name: "cl:lead".to_owned()
+            },
+            "the v1 spelling is refused with the grammar, not misread"
+        );
+        let (_f, cfg) =
+            v2("[profiles]\ncc = \"claude\"\n[roster]\nsolo = cc\n[workspace]\nmain = solo\n");
+        let plan = launch_plan(&cfg, None).expect("a workspace with no workers launches");
+        assert_eq!(plan.seats.len(), 1);
+        let (_f, cfg) = v2(
+            "[profiles]\ncc = \"claude\"\n[roster]\nsolo = cc\n[workspace]\nmain = solo\nworkers = \"\"\n",
+        );
+        assert_eq!(
+            launch_plan(&cfg, None)
+                .expect("an explicitly empty workers list")
+                .seats
+                .len(),
+            1
+        );
+        // Whitespace around names is not part of them.
+        let (_f, cfg) = v2(
+            "[profiles]\ncc = \"claude\"\n[roster]\na = cc\nb = cc\n[workspace]\nmain = a\nworkers =  b , \n",
+        );
+        assert_eq!(
+            launch_plan(&cfg, None).unwrap_err(),
+            [Violation::EmptyWorker { position: 2 }],
+            "a trailing comma is an empty seat, not silence"
+        );
     }
 }
