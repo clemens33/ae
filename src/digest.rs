@@ -106,11 +106,12 @@ impl Status {
 /// One entry of a session's `agents[]` (SC-509).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct AgentEntry {
-    /// `ref` — the `alias:name` an agent is addressed by.
+    /// `ref` — the display ref an agent is addressed by: `alias:name` for a v1
+    /// roster row, the bare name for an identity-v2 row (`RosterEntry::reference`).
     pub reference: String,
-    /// The configured alias half of the ref.
+    /// The configured alias (v1) / profile (v2) — schema 2 still publishes it.
     pub alias: String,
-    /// The display-name half of the ref.
+    /// The display name.
     pub name: String,
     /// The captured tool session id, where one exists.
     pub session_id: Option<String>,

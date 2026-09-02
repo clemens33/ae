@@ -2539,10 +2539,11 @@ mod tests {
     fn entry(slot: &str, alias: &str, name: &str) -> RosterEntry {
         RosterEntry {
             slot: slot.to_owned(),
-            alias: alias.to_owned(),
             name: name.to_owned(),
-            session_id: None,
+            profile: Some(alias.to_owned()),
+            harness_session: None,
             binary: None,
+            schema: crate::meta::RosterSchema::V1,
         }
     }
 

@@ -921,8 +921,11 @@ fn meta_member_complete(meta: &Meta, key: &str, value_present: bool) -> bool {
 /// that could name an agent makes the population unenumerable.
 fn roster_complete(meta: &Meta) -> bool {
     !meta.anomalies().iter().any(|anomaly| match anomaly {
-        Anomaly::MalformedLine { .. } | Anomaly::MalformedRosterEntry { .. } => true,
-        Anomaly::DuplicateKey { key, .. } => key.starts_with("agent."),
+        Anomaly::MalformedLine { .. }
+        | Anomaly::MalformedRosterEntry { .. }
+        | Anomaly::MixedSchemaSlot { .. }
+        | Anomaly::DuplicateName { .. } => true,
+        Anomaly::DuplicateKey { key, .. } => key.starts_with("agent.") || key.starts_with("seat."),
         Anomaly::UnknownKey { .. } => false,
     })
 }
@@ -977,9 +980,11 @@ fn agent_entries(
             let runtime_agent = runtime.agent(&slot.slot);
             AgentEntry {
                 reference: reference.clone(),
-                alias: slot.alias.clone(),
+                // Schema 2 keeps publishing `alias`; for a v2 row that is the
+                // profile — the same metadata under the field the consumers read.
+                alias: slot.profile.clone().unwrap_or_default(),
                 name: slot.name.clone(),
-                session_id: slot.session_id.clone(),
+                session_id: slot.harness_session.clone(),
                 alive: agent_liveness(runtime, runtime_agent),
                 state: declared.map(ToOwned::to_owned),
                 // SC-509c: this agent's OWN contribution, from the two
@@ -1027,7 +1032,9 @@ fn anomalies_degrade(anomalies: &[Anomaly]) -> bool {
         Anomaly::UnknownKey { .. } => false,
         Anomaly::MalformedLine { .. }
         | Anomaly::DuplicateKey { .. }
-        | Anomaly::MalformedRosterEntry { .. } => true,
+        | Anomaly::MalformedRosterEntry { .. }
+        | Anomaly::MixedSchemaSlot { .. }
+        | Anomaly::DuplicateName { .. } => true,
     })
 }
 

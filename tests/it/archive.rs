@@ -377,3 +377,176 @@ fn a_roster_record_on_the_final_unterminated_line_is_not_dropped() {
         "bare nolf refusal"
     );
 }
+
+/// Copy the `ordinary` fixture session into `scratch/<tag>` with each
+/// `(anchor, replacement)` applied to its meta, in order.
+fn ordinary_with(scratch: &Scratch, tag: &str, edits: &[(&str, &str)]) -> PathBuf {
+    let dir = scratch.path().join(tag);
+    copy_tree(&cases_root().join("ordinary").join("session"), &dir);
+    let meta_path = dir.join("meta");
+    let mut meta = std::fs::read_to_string(&meta_path).expect("read meta");
+    for (anchor, to) in edits {
+        assert!(
+            meta.contains(anchor),
+            "{tag}: fixture anchor '{anchor}' not found"
+        );
+        meta = meta.replace(anchor, to);
+    }
+    std::fs::write(&meta_path, meta).expect("rewrite meta");
+    dir
+}
+
+/// The fixture's v1 main row, and its v1 worker row.
+const ORDINARY_MAIN: &str = "agent.main=cl:lead:AE3AA692-E177-4798-9BA0-D14E0D084061";
+const ORDINARY_WORKER: &str = "agent.worker.0=cx:worker";
+
+#[test]
+fn an_identity_v2_seat_is_the_roster_ref() {
+    // Identity v2 (P1, read side). A `seat.<slot>=<name>` row names a slot
+    // exactly as `agent.<slot>` does and the digest's ref is the bare NAME —
+    // the profile and harness-session rows are metadata the digest never
+    // renders. Nothing writes v2 meta before the P4 cutover, so the frozen
+    // fixtures are untouched and the v1 rows beside a seat render exactly as
+    // before.
+    let scratch = Scratch::new("v2seat");
+    let dir = ordinary_with(
+        &scratch,
+        "seat-only",
+        &[(
+            ORDINARY_MAIN,
+            "schema=2\nseat.main=lead\nprofile.main=cl\n\
+             harness_session.main=AE3AA692-E177-4798-9BA0-D14E0D084061",
+        )],
+    );
+    let out = bounded_preview(&dir).expect("the tracer BLOCKED on a v2 seat");
+    assert_eq!(out.status.code(), Some(0), "{:?}", out.stderr);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("- main — lead (claude)\n"),
+        "the v2 ref is the bare name:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("cl:lead (claude)"),
+        "no alias:name is fabricated for a v2 seat:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("- worker.0 — cx:worker (codex)\n"),
+        "v1 rows beside it are untouched:\n{stdout}"
+    );
+
+    // CONTROLS for the uniqueness rule below. Two v2 seats with DISTINCT names
+    // render both; a v1 duplicate row keeps the frozen behaviour (the slot
+    // rendered once per row, no refusal) — the v2 rule must not leak into v1.
+    let dir = ordinary_with(
+        &scratch,
+        "distinct-names",
+        &[
+            (ORDINARY_MAIN, "seat.main=lead"),
+            (ORDINARY_WORKER, "seat.worker.0=colead"),
+        ],
+    );
+    let out = bounded_preview(&dir).expect("the tracer BLOCKED on distinct v2 seats");
+    assert_eq!(out.status.code(), Some(0), "{:?}", out.stderr);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("- main — lead (claude)\n"), "{stdout}");
+    assert!(stdout.contains("- worker.0 — colead (codex)\n"), "{stdout}");
+    let dir = ordinary_with(
+        &scratch,
+        "v1-dup-row",
+        &[(
+            ORDINARY_WORKER,
+            "agent.worker.0=cx:worker\nagent.worker.0=cx:worker",
+        )],
+    );
+    let out = bounded_preview(&dir).expect("the tracer BLOCKED on a v1 duplicate row");
+    assert_eq!(out.status.code(), Some(0), "{:?}", out.stderr);
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout)
+            .matches("- worker.0 — cx:worker (codex)\n")
+            .count(),
+        2,
+        "frozen v1 behaviour: one rendered row per duplicate"
+    );
+}
+
+#[test]
+fn a_doubtful_v2_roster_refuses_the_whole_preview() {
+    // A slot claimed by BOTH prefixes, a seat with no name, a repeated seat
+    // key, or one NAME on two seats refuses the whole preview: a roster in
+    // doubt is a FAILED archive, never a partial one — the exact two-line
+    // refusal, nothing rendered, nothing written.
+    let scratch = Scratch::new("v2doubt");
+    let both =
+        "archive: slot 'main' is named by both agent.main and seat.main; the roster is in doubt.";
+    let dup_name =
+        "archive: roster name 'lead' is claimed by more than one seat; the roster is in doubt.";
+    let cases: [(&str, Edits<'_>, &str); 7] = [
+        (
+            "both-schemas",
+            &[(ORDINARY_MAIN, "agent.main=cl:lead\nseat.main=lead")],
+            both,
+        ),
+        // A BARE `agent.main` (no `=`) is still a claim on the slot — the same
+        // presence test `_ar_roster_slots` applies — so it is "both", not a v2
+        // seat with an ignorable neighbour.
+        (
+            "bare-agent-and-seat",
+            &[(ORDINARY_MAIN, "agent.main\nseat.main=lead")],
+            both,
+        ),
+        (
+            "empty-seat",
+            &[(ORDINARY_MAIN, "seat.main=")],
+            "archive: roster entry 'seat.main=' has no name.",
+        ),
+        // A repeated v2 seat key is a seat in doubt (v1's duplicate-row shape
+        // stays frozen — see the control in the test above).
+        (
+            "dup-seat",
+            &[(ORDINARY_MAIN, "seat.main=lead\nseat.main=lead")],
+            "archive: roster entry 'seat.main' appears more than once; the roster is in doubt.",
+        ),
+        // Under v2 the name IS the identity: one name on two seats refuses —
+        // two v2 seats, and a v2 seat colliding with a v1 row's name half in
+        // either position.
+        (
+            "dup-name-v2",
+            &[
+                (ORDINARY_MAIN, "seat.main=lead"),
+                (ORDINARY_WORKER, "seat.worker.0=lead"),
+            ],
+            dup_name,
+        ),
+        (
+            "dup-name-v1-v2",
+            &[(ORDINARY_WORKER, "seat.worker.0=lead")],
+            dup_name,
+        ),
+        (
+            "dup-name-v2-v1",
+            &[(ORDINARY_MAIN, "seat.main=worker")],
+            "archive: roster name 'worker' is claimed by more than one seat; the roster is in doubt.",
+        ),
+    ];
+    for (tag, edits, first_line) in cases {
+        let dir = ordinary_with(&scratch, tag, edits);
+        let before = snapshot(&dir);
+        let out = bounded_preview(&dir)
+            .unwrap_or_else(|| panic!("{tag}: the tracer BLOCKED on a doubtful roster"));
+        assert_eq!(out.status.code(), Some(1), "{tag}: refuses at 1");
+        assert!(out.stdout.is_empty(), "{tag}: a refusal renders no digest");
+        assert_eq!(
+            String::from_utf8_lossy(&out.stderr),
+            format!("{first_line}\nae: could not render a preview for '{tag}'.\n"),
+            "{tag}: exact two-line refusal"
+        );
+        assert_eq!(
+            snapshot(&dir),
+            before,
+            "{tag}: the tracer wrote into the session"
+        );
+    }
+}
+
+/// `(anchor, replacement)` edits to a fixture meta.
+type Edits<'a> = &'a [(&'a str, &'a str)];

@@ -1073,6 +1073,31 @@ mod tests {
         assert!(err.contains("local-mode only"), "{err}");
     }
 
+    /// Identity v2 (P1, read side). The tracer that preceded this test pinned
+    /// the v1 core's answer to a v2-only meta: no `agent.main`, empty roster,
+    /// "records no valid main agent" — fail closed (git history). With the v2
+    /// read model the seat IS the main agent and the handover ref is its name.
+    /// Nothing writes v2 meta before the P4 cutover, so no live compact changes
+    /// behaviour here; v1 metas keep their `alias:name` ref (`reference()`).
+    #[test]
+    fn identity_v2_only_meta_hands_over_from_the_named_seat() {
+        let s = Scratch::new("v2only");
+        let dir = session(&s, "", Some("[workspace]\nmain = lead\n"));
+        std::fs::write(
+            dir.join("meta"),
+            format!(
+                "session_id={UUID}\nmode=local\norigin={}\nconfig={}\nschema=2\nseat.main=lead\nprofile.main=fable5\n",
+                s.0.display(),
+                s.0.join("config").display()
+            ),
+        )
+        .unwrap();
+        let (code, out, err) = run(&dir, false);
+        assert_eq!(code, 0, "{err}");
+        let fields: Vec<&str> = out.trim_end().split('\u{1f}').collect();
+        assert_eq!(fields[8], "lead", "the handover ref is the seat's name");
+    }
+
     #[test]
     fn no_valid_session_id_is_refused_with_refresh_migrate() {
         let s = Scratch::new("nouuid");

@@ -414,7 +414,13 @@ fn roster_slots(meta_bytes: &[u8]) -> Vec<String> {
     // remainder (SC parity), so the ref lookup agrees with the slot list.
     for (index, line) in meta_bytes.split(|&byte| byte == b'\n').enumerate() {
         let text = String::from_utf8_lossy(line);
-        let Some(rest) = text.strip_prefix("agent.") else {
+        // Identity v2 (P1, read side): a `seat.<slot>` row names a slot exactly as
+        // an `agent.<slot>` row does; the roster below reads whichever the slot
+        // carries and refuses a slot that carries both.
+        let Some(rest) = text
+            .strip_prefix("agent.")
+            .or_else(|| text.strip_prefix("seat."))
+        else {
             continue;
         };
         // The frozen `_ar_roster_slots` accepts EVERY `^agent\.` line, `=` or
@@ -437,6 +443,23 @@ fn roster_slots(meta_bytes: &[u8]) -> Vec<String> {
     }
     keyed.sort_by_key(|&(rank, num, index, _)| (rank, num, index));
     keyed.into_iter().map(|(_, _, _, slot)| slot).collect()
+}
+
+/// Whether the meta carries a line for `key` at all — `key=…` OR a bare `key`
+/// (the `awk -F=` shape `roster_slots` also accepts). Presence, not value.
+fn has_roster_line(meta_bytes: &[u8], key: &str) -> bool {
+    count_roster_lines(meta_bytes, key) > 0
+}
+
+/// How many lines claim `key` (`key=…` or bare `key`).
+fn count_roster_lines(meta_bytes: &[u8], key: &str) -> usize {
+    meta_bytes
+        .split(|&byte| byte == b'\n')
+        .filter(|line| {
+            line.strip_prefix(key.as_bytes())
+                .is_some_and(|rest| rest.is_empty() || rest.first() == Some(&b'='))
+        })
+        .count()
 }
 
 /// `_valid_slot`: the one slot grammar the event path enforces —
@@ -480,6 +503,9 @@ fn strip_ref(raw: &str) -> String {
 /// stripped pairs the digest renders.
 fn roster(meta_bytes: &[u8]) -> Result<Vec<(String, String)>, String> {
     let mut out = Vec::new();
+    // Identity v2 seats, checked for NAME uniqueness after the walk: under v2
+    // the name is the identity, so one name on two seats is a roster in doubt.
+    let mut seat_names: Vec<String> = Vec::new();
     for slot in roster_slots(meta_bytes) {
         if !valid_slot(&slot) {
             return Err(format!(
@@ -487,12 +513,61 @@ fn roster(meta_bytes: &[u8]) -> Result<Vec<(String, String)>, String> {
             ));
         }
         let raw = meta_get(meta_bytes, &format!("agent.{slot}"));
+        // Presence is a LINE with the prefix, `=` or not — the same test
+        // `roster_slots` applies — so a bare `agent.main` beside `seat.main=lead`
+        // is still two schemas claiming one seat, not a v2 seat with noise.
+        let agent_present = has_roster_line(meta_bytes, &format!("agent.{slot}"));
+        let seat_key = format!("seat.{slot}");
+        let seat_present = has_roster_line(meta_bytes, &seat_key);
+        let seat = meta_get(meta_bytes, &seat_key);
+        if agent_present && seat_present {
+            return Err(format!(
+                "archive: slot '{slot}' is named by both agent.{slot} and seat.{slot}; the roster is in doubt."
+            ));
+        }
+        if seat_present {
+            // Identity v2: the seat's NAME is the ref. An empty name is refused
+            // exactly as an empty v1 ref is — a FAILED archive, never a partial one.
+            if seat.is_empty() {
+                return Err(format!("archive: roster entry 'seat.{slot}=' has no name."));
+            }
+            // A repeated `seat.<slot>` is a seat in doubt (the meta reader
+            // invalidates it; this reader refuses). The frozen v1 duplicate-row
+            // behaviour — the slot emitted once per row — is deliberately kept.
+            if count_roster_lines(meta_bytes, &seat_key) > 1 {
+                return Err(format!(
+                    "archive: roster entry 'seat.{slot}' appears more than once; the roster is in doubt."
+                ));
+            }
+            seat_names.push(seat.clone());
+            out.push((slot, seat));
+            continue;
+        }
         if !ref_ok(&raw) {
             return Err(format!(
                 "archive: roster entry 'agent.{slot}={raw}' is not alias:name[:session-id]."
             ));
         }
         out.push((slot, strip_ref(&raw)));
+    }
+    // A v2 name must be unique against every OTHER entry — a v2 seat, or the
+    // name half of a v1 `alias:name` (what a bare-name address matches). Two
+    // v1 rows sharing a name are two refs and stay as they were.
+    for name in &seat_names {
+        let carriers = out
+            .iter()
+            .filter(|(_, reference)| {
+                reference == name
+                    || reference
+                        .split_once(':')
+                        .is_some_and(|(_, v1_name)| v1_name == name)
+            })
+            .count();
+        if carriers > 1 {
+            return Err(format!(
+                "archive: roster name '{name}' is claimed by more than one seat; the roster is in doubt."
+            ));
+        }
     }
     Ok(out)
 }
