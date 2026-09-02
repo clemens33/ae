@@ -30,7 +30,7 @@ e2e_assert "session is alive" e2e_session_alive "$session"
 meta="$AE_HOME/sessions/$session/meta"
 captured=1
 for _ in $(seq 1 30); do
-    if grep -Eq '^agent\.main=claude:main:[0-9a-fA-F-]{8,}' "$meta" 2>/dev/null; then
+    if grep -Eq '^harness_session\.main=[0-9a-fA-F-]{8,}' "$meta" 2>/dev/null; then
         captured=0
         break
     fi
@@ -41,7 +41,7 @@ e2e_assert "real Claude session id captured in meta (a real process launched)" \
 
 # Advisory semantic check: does the agent answer a trivial prompt? Pure judge —
 # never gates the run. We give it a prompt via the agent's own send helper.
-"$AE_HOME/sessions/$session/send" "@${session}:claude:main" \
+"$AE_HOME/sessions/$session/send" "@${session}:main" \
     "Reply with exactly the word: READY" >/dev/null 2>&1 || true
 sleep 25
 pane="$(e2e_tmux capture-pane -p -t "$session" 2>/dev/null || true)"

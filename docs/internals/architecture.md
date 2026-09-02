@@ -73,7 +73,7 @@ wrapper and versioned installer are described above.
 
 When you start a session, ae creates `~/.ae/sessions/<name>/` and fills it with:
 
-- **`meta`** — INI-style key/value pairs: session name, work_dir, origin, mode, layout, per-slot agent records (`agent.<slot>` = `alias:name:session_id` and `agent_bin.<slot>` = the launched binary, for `main` / `worker.<n>` / `spawned.<n>`), captured tool session ids. Read on resume.
+- **`meta`** — INI-style key/value pairs: session name, work_dir, origin, mode, layout, per-slot agent records (`seat.<slot>` = the agent's bare name, `profile.<slot>` = the launch profile, `agent_bin.<slot>` = the launched binary, and `harness_session.<slot>` = the captured tool session id, for `main` / `worker.<n>` / `spawned.<n>`); a pre-v2 meta instead carries `agent.<slot>` = `alias:name:session_id`, read but never written. Read on resume.
 - **`events.jsonl`** — append-only JSONL audit log. Single source of truth for messaging and request state.
 - **`memo.tsv`** — shared session memory (durable findings, decisions, handoffs).
 - **`workspace.md`** — human/agent-readable manifest of the session (regenerated on every resume).
@@ -120,9 +120,11 @@ the counts they report. An entry ae does not recognise fails rather than being i
 published.
 
 **The meta is generated, never copied.** Session, mode, origin, layout, ae version and
-goal are preserved under `source_*` names; `agent.<slot>` is reduced from
-`alias:name:provider-session-id` to `alias:name` (the provider conversation UUID is the
-one field that could re-open a real transcript); `work_dir`, `config`, `main_pane`,
+goal are preserved under `source_*` names; a v2 session's roster is archived as
+`seat.<slot>=<name>`, with the harness session id dropped entirely (the provider
+conversation UUID is the one field that could re-open a real transcript) — a pre-v2
+source instead keeps the legacy `agent.<slot>=alias:name` shape, session id dropped the
+same way; `work_dir`, `config`, `main_pane`,
 `ae_path`, `tmux_*`, `watchdog`, `meta_agent`, every `launch_id.*` and every unknown key
 are dropped. Keys are written in a fixed order, so two archives of the same facts are
 byte-identical.
@@ -258,7 +260,7 @@ waiting — because keeping the record is the entire point of the command.
 
 An agent is described by four distinct facets — keeping them separate is what lets messaging survive churn (a renamed agent, a transferred config, a resumed session). Pattern 9 in [design patterns](../design-patterns.md) is the full treatment; the layers:
 
-- **Address** — how you *refer* to an agent: `alias:name`, a bare name, a `%pane-id`, or `@session:agent`. Resolved flexibly, and deliberately not a stable key.
+- **Address** — how you *refer* to an agent: a bare `<name>` locally, `<session>:<name>` or `@session:name` across sessions, or a `%pane-id`. Resolved flexibly (no alias matching), and deliberately not a stable key.
 - **Spec** — what config says the agent *should be*: `agents.<alias>` → the launch command. The resolved binary is recorded per slot as `agent_bin.<slot>` in meta (authoritative — the display name is arbitrary user text).
 - **Truth** — what is *actually* running in the pane now: `pane_current_command` and the `@ae_agent` tmux option. The watchdog's dead-check and the send path's shell guard read this.
 - **Routing key** — the stable identity used to *deliver and verify* messages: the pane's `@ae_slot` (`main` / `worker.<n>` / `spawned.<n>`) plus its session. Requests and replies are keyed on slot + session, so a reply reaches the right agent even after its display name changes. Slots are stamped at launch and back-filled on `ae doctor --refresh`.
@@ -316,9 +318,9 @@ agent it is:
 > workspace.md lists the others.
 
 This is a **transported fact**, not something the agent should work out. ae reads it from the
-roster entry `agent.<slot>` in `meta` (`<alias>:<name>[:<session-id>]` — the session id is
-plumbing and is dropped), and the slot is the same one already passed to the injector, so no
-new plumbing carries it.
+roster entry `seat.<slot>` in `meta` (the agent's bare name — a pre-v2 meta instead carries
+`agent.<slot>` as `alias:name[:session-id]`, with the session id dropped the same way), and the
+slot is the same one already passed to the injector, so no new plumbing carries it.
 
 It exists because an agent that is *not* told derives an identity from its surroundings. A
 freshly spawned agent asked who it was answered "I am fable5:lead" — it had read its own
@@ -326,9 +328,9 @@ model name and landed on the session's lead seat, whose injected instructions ca
 delegation authority. Every agent otherwise receives near-identical context, so guessing was
 the only option available to it.
 
-Missing meta, a slotless pane, or a roster entry that is not `alias:name` yields **no identity
-line at all** — the same fail-quiet rule as the working-tree block. ae states what it knows;
-it never invents a name.
+Missing meta, a slotless pane, or a roster entry that is not a valid name (or, for a pre-v2
+meta, not `alias:name`) yields **no identity line at all** — the same fail-quiet rule as the
+working-tree block. ae states what it knows; it never invents a name.
 
 Because that sentence is a **privileged sink** — an agent name reaching the LLM as part of
 its own instructions — the name is also an allowlist: `_validate_agent_name`,

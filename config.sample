@@ -6,8 +6,11 @@
 # take effect for NEW sessions only. (ae doctor --refresh regenerates the on-disk session
 # helpers + workspace.md after you upgrade ae; it changes neither running agents nor config.)
 
-[agents]
-# Register any CLI tool as an alias: alias = "the shell command that launches it".
+[profiles]
+# Register any CLI tool as a PROFILE: profile = "the shell command that launches it". A
+# profile is a reusable launch recipe, not an identity: an agent IS its NAME, bound to a
+# profile in [roster] below. The command must be ONE simple command (env assignments plus
+# one argv; no ; | & # redirections or $(…) outside quotes) — ae refuses anything else.
 # Model-named aliases: the prefix names the model + major, so the running model is legible at
 # a glance. STRICT pins (never --model best) — a model-named alias must not silently run a
 # different model; that would make the name lie and blind the model-drift alarm. Exact IDs
@@ -22,22 +25,32 @@ gpt56terra = "codex --yolo -m gpt-5.6-terra -c model_reasoning_effort=xhigh"
 gpt56luna = "codex -m gpt-5.6-luna -c model_reasoning_effort=low -a never"
 opencode = "opencode"
 
+[roster]
+# The agents promised to launch: name = profile. The NAME is the identity of the agent — it is
+# addressed as <name> in the session and <session>:<name> across sessions; the profile is
+# metadata (`ae list` shows it). Every seat in main/workers below must be bound here — ae
+# refuses the launch otherwise and lists every violation. A name bound here but not seated
+# is legal: `ae <session> use <name>` starts it as main instead. Spawn on demand with:
+# spawn <name> --using <profile> [prompt].
+lead = fable5
+colead = gpt56sol
+
 [workspace]
-# main = the standing main seat (alias:name) — under lead-pair a technical lifecycle
-# anchor, not a rank. workers = comma-separated agents launched at start.
+# main = the standing main seat (a [roster] NAME) — under lead-pair a technical lifecycle
+# anchor, not a rank. workers = comma-separated [roster] names launched at start.
 # layout = vertical | horizontal | lead-pair. watchdog = true nudges stale/idle agents.
 # The leads delegate by rule (see docs/reference/delegation.md — spawn workers on demand).
 # Standing seats are the JUDGMENT PAIR only: under lead-pair the FIRST worker (worker.0)
 # is the COLEAD seat — an EQUAL leadership peer of the lead (interchangeable, same level,
 # sharing the leads window 0:leads); main stays the technical lifecycle anchor (compact
 # handover), which is infrastructure, not seniority. Builders and reviewers are NOT
-# standing seats: either peer spawns them per slice (spawn opus5:builder / spawn
-# gpt56sol:reviewer) and retires its own spawns when the work is verified — every spawn
+# standing seats: either peer spawns them per slice (spawn builder --using opus5 / spawn
+# reviewer --using gpt56sol) and retires its own spawns when the work is verified — every spawn
 # ends in a retire. This keeps idle panes at zero, makes the retire contract do real
 # work, and still keeps judgment (the pair) separate from review (a spawned seat) on
 # every slice.
-main = fable5:lead
-workers = gpt56sol:colead
+main = lead
+workers = colead
 layout = lead-pair
 watchdog = true
 

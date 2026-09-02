@@ -162,6 +162,23 @@ pub const WATCHDOG_RUN: &str = "_watchdog-run";
 /// frozen script.
 pub const TELEGRAM_RUN: &str = "_telegram-run";
 
+/// The identity v2 launch resolver: `_launch-plan [--global <f>] [--local <f>]
+/// [--main <name>] [--workers <a,b>]`. The core reads `[profiles]`/`[roster]`/
+/// `[workspace]`, validates the whole workspace, and prints the seats a launch
+/// creates. Underscored — a core entry, never human-typed.
+pub const LAUNCH_PLAN: &str = "_launch-plan";
+
+/// The identity v2 first-meta publisher: `_meta-init <dir> --base <file>
+/// [--replace]`. Bash stages the base facts in a file and pipes the seat records
+/// on stdin; the core concatenates the roster block and publishes ONE document.
+/// Underscored — a core entry, never human-typed.
+pub const META_INIT: &str = "_meta-init";
+
+/// The identity v2 roster surface: `_roster <dir> <add-seat|remove-seat|
+/// set-harness-session|migrate|list> …`. Every write happens under the meta
+/// lock. Underscored — a core entry, never human-typed.
+pub const ROSTER: &str = "_roster";
+
 /// The musl DNS/NSS instrument — `_net-probe <host> [--port <n>]`.
 ///
 /// Underscored like every other core entry, and for the same reason: it is run
@@ -313,6 +330,29 @@ pub enum Request {
         paths: crate::telegram::bridge::Paths,
         /// Every tunable, defaulted to the values a flagless call keeps.
         knobs: crate::telegram::bridge::Knobs,
+    },
+    /// `_launch-plan [--global <f>] [--local <f>] [--main <name>]
+    /// [--workers <a,b>]` — validated by [`crate::identity::launch_plan`],
+    /// which owns the flag grammar and its usage text.
+    LaunchPlan {
+        /// Everything after the subcommand, as typed.
+        tail: Vec<String>,
+    },
+    /// `_meta-init <dir> --base <file> [--replace]` — validated by
+    /// [`crate::identity::meta_init`]. The seat records arrive on stdin.
+    MetaInit {
+        /// The session meta directory.
+        dir: PathBuf,
+        /// Everything after it, as typed.
+        tail: Vec<String>,
+    },
+    /// `_roster <dir> <subcommand> …` — validated by
+    /// [`crate::identity::roster`].
+    Roster {
+        /// The session meta directory.
+        dir: PathBuf,
+        /// Everything after it, as typed.
+        tail: Vec<String>,
     },
     /// `_net-probe <host> [--port <n>]` — resolve a name and report what the
     /// resolver did.
@@ -796,6 +836,26 @@ impl Request {
                 [_, extra, ..] => Self::UsageError(extra.clone()),
                 _ => Self::MissingOperand(COMPACT_FIND_OUTSTANDING),
             },
+            // Every flag is optional: a launch with no config files still
+            // resolves (to a MainMissing violation), and the entry says so
+            // itself rather than being told by argv that it asked wrong.
+            Some(LAUNCH_PLAN) => Self::LaunchPlan {
+                tail: args[1..].to_vec(),
+            },
+            Some(META_INIT) => match &args[1..] {
+                [] => Self::MissingOperand(META_INIT),
+                [dir, tail @ ..] => Self::MetaInit {
+                    dir: dir.into(),
+                    tail: tail.to_vec(),
+                },
+            },
+            Some(ROSTER) => match &args[1..] {
+                [] => Self::MissingOperand(ROSTER),
+                [dir, tail @ ..] => Self::Roster {
+                    dir: dir.into(),
+                    tail: tail.to_vec(),
+                },
+            },
             Some(ARCHIVE_PREVIEW) => match &args[1..] {
                 [] => Self::MissingOperand(ARCHIVE_PREVIEW),
                 [dir] => Self::ArchivePreview { dir: dir.into() },
@@ -899,7 +959,10 @@ impl Request {
             | Self::CompactWait { .. }
             | Self::CompactCancel { .. }
             | Self::CompactMemoBaseline { .. }
-            | Self::CompactFindOutstanding { .. } => None,
+            | Self::CompactFindOutstanding { .. }
+            | Self::LaunchPlan { .. }
+            | Self::MetaInit { .. }
+            | Self::Roster { .. } => None,
         }
     }
 }

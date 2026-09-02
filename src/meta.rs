@@ -1128,6 +1128,98 @@ pub fn init(dir: &Path, content: &str) -> Result<(), RewriteError> {
     publish_bytes(dir, &path, content.as_bytes())
 }
 
+/// The whole meta, published OVER whatever is there — [`init`]'s sibling for a
+/// caller that MEANS to replace an existing document.
+///
+/// Same lock, same temp + fsync + rename, same all-or-nothing visibility: a
+/// reader sees the old meta or the complete new one. The difference from
+/// [`init`] is the one gate, and it is deliberate rather than a relaxation —
+/// `init` refuses over an existing meta because initialisation is a create, and
+/// a caller that has already read the current document and assembled its
+/// successor is doing something else. `_meta-init --replace` is that caller:
+/// it re-publishes a session's identity from base facts it just staged.
+///
+/// # Errors
+///
+/// [`RewriteError::NotWritten`] when the lock is not acquired or any write,
+/// sync or rename fails; [`RewriteError::Unknown`] when the rename returned but
+/// the directory sync did not.
+pub fn replace(dir: &Path, content: &str) -> Result<(), RewriteError> {
+    let path = dir.join(FILE);
+    let _held = crate::state::acquire(&dir.join(LOCK), crate::state::LOCK_WAIT)
+        .map_err(RewriteError::NotWritten)?;
+    publish_bytes(dir, &path, content.as_bytes())
+}
+
+/// Take the `meta.lock` beside `dir`'s meta — the same lock [`rewrite`],
+/// [`init`] and [`replace`] take for themselves — and hold it until the
+/// returned handle is dropped.
+///
+/// For the callers those three cannot serve: a read-decide-publish step whose
+/// DECISION must not race another writer. `_roster add-seat` allocates the
+/// lowest free `spawned.<n>` from the document it is about to append to, and
+/// two of them under two separate locks would allocate the same index; the
+/// roster migrate rewrites every line of a document it first had to read.
+/// Neither is expressible as a key-at-a-time [`rewrite`].
+///
+/// Pair it with [`publish_locked`], which publishes WITHOUT re-taking the lock:
+/// `acquire` locks a fresh open file description each time, so a second
+/// acquisition from the same process blocks against the first rather than
+/// nesting.
+///
+/// # Errors
+///
+/// The underlying [`io::Error`] — the lock not acquired within
+/// [`crate::state::LOCK_WAIT`], or the lock file not openable.
+pub fn lock(dir: &Path) -> io::Result<fs::File> {
+    crate::state::acquire(&dir.join(LOCK), crate::state::LOCK_WAIT)
+}
+
+/// Publish `content` as the whole meta, for a caller that ALREADY HOLDS
+/// [`lock`]. The publish itself is [`init`]'s and [`replace`]'s: temp, fsync,
+/// rename, directory fsync.
+///
+/// Takes no lock of its own, and so must never be called without one held —
+/// the handle from [`lock`] is the evidence, and keeping it alive across this
+/// call is what makes the read-decide-publish step atomic.
+///
+/// # Errors
+///
+/// [`RewriteError::NotWritten`] when any write, sync or rename fails;
+/// [`RewriteError::Unknown`] when the rename returned but the directory sync
+/// did not.
+pub fn publish_locked(dir: &Path, content: &str) -> Result<(), RewriteError> {
+    publish_bytes(dir, &dir.join(FILE), content.as_bytes())
+}
+
+/// The staged BASE-FACTS document `_meta-init` consumes: the `key=value` lines
+/// bash wrote for a session before its roster block existed, read from `path`.
+///
+/// A meta read, in the module that owns meta documents — deliberately here
+/// rather than in the identity entries, so the crate keeps ONE inventoried
+/// place where a meta document is read off the filesystem. It is a whole
+/// separate function from [`read_bytes`] because the target is different: that
+/// one reads a session's own `meta` by its directory, this one reads a path a
+/// caller was handed.
+///
+/// Text, not bytes: a meta is a record file of `key=value` lines, the
+/// [`init`]/[`replace`] publishers take `&str`, and a base file that is not
+/// UTF-8 is not a document worth publishing a session's identity from — the
+/// decode failure is reported as the refusal it is.
+///
+/// # Errors
+///
+/// The underlying [`io::Error`] — an absent file is `NotFound`, an
+/// undecodable one is `InvalidData`.
+pub fn read_base(path: &Path) -> io::Result<String> {
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: the staged base-facts document _meta-init publishes a session's first meta from — see clippy.toml"
+    )]
+    let text = fs::read_to_string(path);
+    text
+}
+
 /// Stage `bytes` to a per-process temp beside `path`, fsync it, rename it over
 /// `path`, then fsync the directory so the entry is durable. The rename makes
 /// the first observable version the complete one; the two syncs are why a

@@ -489,16 +489,6 @@ pub enum Violation {
         /// The profile it names.
         profile: String,
     },
-    /// A roster name bound to no workspace seat. REFUSED (ruled 2026-09-02):
-    /// `[roster]` lists the agents promised to launch; a dormant row is a
-    /// typo or a stale promise, and listing it would make the section mean two
-    /// things.
-    Dormant {
-        /// The roster name.
-        name: String,
-        /// Its profile.
-        profile: String,
-    },
     /// A launch command that is not ONE SIMPLE COMMAND (the command execution
     /// contract): an operator, comment, redirection, substitution or grouping
     /// outside quotes would detach the fixed suffix; a malformed line or one
@@ -542,10 +532,6 @@ impl fmt::Display for Violation {
             Self::ProfileMissing { name, profile } => write!(
                 f,
                 "[roster] {name} = {profile}: profile '{profile}' is not defined in [profiles]."
-            ),
-            Self::Dormant { name, profile } => write!(
-                f,
-                "[roster] {name} = {profile} is bound to no workspace seat — name it in main/workers or remove it ([roster] lists the agents promised to launch; [profiles] is the reusable inventory)."
             ),
             Self::CommandRefused { name, profile, why } => write!(
                 f,
@@ -612,7 +598,8 @@ fn resolve_seat(
 /// Resolve the workspace seats into a [`LaunchPlan`], validating both
 /// directions: every seat name is in the grammar, bound once in `[roster]`,
 /// bound to a defined and lexable profile, and named for one seat only; and
-/// every `[roster]` row is bound to some seat. `main_override` is the launch
+/// every `[roster]` row names a defined profile (a row bound to no seat is
+/// legal — it is what `use <name>` selects). `main_override` is the launch
 /// line's `use <name>`, which replaces `[workspace] main` for this launch.
 ///
 /// # Errors
@@ -655,8 +642,8 @@ pub fn launch_plan(
         }
     }
     // Validate EVERY roster profile binding independently, in config order,
-    // BEFORE resolving seats — so a dormant row with a missing profile reports
-    // both ProfileMissing and Dormant, not one or the other (colead IMPORTANT-4).
+    // BEFORE resolving seats — so an unseated row with a missing profile is still
+    // reported (colead IMPORTANT-4), and a seat's profile is reported exactly once.
     for (name, profile) in &cfg.roster {
         if cfg.profile(profile).is_none() {
             violations.push(Violation::ProfileMissing {
@@ -702,14 +689,11 @@ pub fn launch_plan(
             Err(violation) => violations.push(violation),
         }
     }
-    for (name, profile) in &cfg.roster {
-        if !named.iter().any(|(_, n)| n == name) {
-            violations.push(Violation::Dormant {
-                name: name.clone(),
-                profile: profile.clone(),
-            });
-        }
-    }
+    // A roster row bound to no seat is NOT a violation (ruled 2026-09-02, reversing
+    // the v5 "dormant refuses" ruling): `[roster]` is the set of named agents this
+    // workspace MAY launch, main/workers pick the defaults, and `use <name>` picks
+    // another — which is only possible if an unseated row is legal. Its profile is
+    // still validated above, so a typo in the binding is still caught.
     if violations.is_empty() {
         Ok(LaunchPlan { seats })
     } else {
@@ -1044,22 +1028,18 @@ mod tests {
                     profile: "broken".to_owned(),
                     why: crate::launch_cmd::Refusal::UnterminatedQuote,
                 },
-                Violation::Dormant {
-                    name: "sleepy".to_owned(),
-                    profile: "cc".to_owned()
-                },
             ]
         );
         let rendered = render_violations(&violations);
         assert!(rendered.starts_with("Error: the workspace roster is not launchable:\n  - "));
-        assert_eq!(rendered.lines().count(), 8);
+        assert_eq!(rendered.lines().count(), 7);
         assert!(
             rendered.contains("'x:y'. Names must match ^[A-Za-z0-9]"),
             "{rendered}"
         );
         assert!(
-            rendered.contains("[roster] sleepy = cc is bound to no workspace seat"),
-            "{rendered}"
+            !rendered.contains("sleepy"),
+            "an unseated roster row is legal (it is what `use` selects): {rendered}"
         );
         // No main at all.
         let (_f, cfg) =
@@ -1071,27 +1051,31 @@ mod tests {
     }
 
     #[test]
-    fn a_dormant_row_with_a_missing_profile_is_two_findings() {
-        // Colead IMPORTANT-4: the both-direction invariant — a roster row that
-        // is BOTH unused AND bound to an undefined profile reports both, so the
-        // operator fixes the config once.
+    fn an_unseated_roster_row_is_legal_but_its_profile_is_still_checked() {
+        // Colead IMPORTANT-4 kept its half: the independent pass reports a missing
+        // profile on a row nobody seats. The row itself is legal — it is what
+        // `use <name>` selects (ruled 2026-09-02).
         let (_f, cfg) = v2(
             "[profiles]\ncc = \"claude\"\n[roster]\nlead = cc\nunused = missing\n\
              [workspace]\nmain = lead\n",
         );
         assert_eq!(
             launch_plan(&cfg, None).unwrap_err(),
-            [
-                Violation::ProfileMissing {
-                    name: "unused".to_owned(),
-                    profile: "missing".to_owned()
-                },
-                Violation::Dormant {
-                    name: "unused".to_owned(),
-                    profile: "missing".to_owned()
-                },
-            ]
+            [Violation::ProfileMissing {
+                name: "unused".to_owned(),
+                profile: "missing".to_owned()
+            }]
         );
+        let (_f, cfg) = v2(
+            "[profiles]\ncc = \"claude\"\n[roster]\nlead = cc\nspare = cc\n[workspace]\nmain = lead\n",
+        );
+        let plan = launch_plan(&cfg, None).expect("an unseated row is not a violation");
+        assert_eq!(plan.seats.len(), 1);
+        // And `use spare` seats it as main, displacing lead — the config's own main
+        // is then the unseated row, and that is fine too.
+        let plan = launch_plan(&cfg, Some("spare")).expect("`use` selects the unseated row");
+        assert_eq!(plan.seats[0].name, "spare");
+        assert_eq!(plan.seats[0].slot, "main");
     }
 
     #[test]
@@ -1206,17 +1190,11 @@ mod tests {
         let plan = launch_plan(&cfg, Some("colead")).unwrap_err();
         assert_eq!(
             plan,
-            [
-                Violation::NameTwice {
-                    seat: "workspace.workers".to_owned(),
-                    name: "colead".to_owned()
-                },
-                Violation::Dormant {
-                    name: "lead".to_owned(),
-                    profile: "fable5".to_owned()
-                }
-            ],
-            "`use colead` with colead still a worker: one name, two seats — and lead goes dormant"
+            [Violation::NameTwice {
+                seat: "workspace.workers".to_owned(),
+                name: "colead".to_owned()
+            }],
+            "`use colead` with colead still a worker: one name, two seats"
         );
         assert_eq!(
             launch_plan(&cfg, Some("cl:lead")).unwrap_err()[0],

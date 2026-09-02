@@ -19,11 +19,14 @@ ae setup under test, nothing else.
 
 ## ae config
 ```ini
-[agents]
+[profiles]
 claude = "claude --permission-mode bypassPermissions --model opus[1m]"
 
+[roster]
+main = claude
+
 [workspace]
-main = claude:main
+main = main
 copy = local
 layout = vertical
 ```
@@ -34,7 +37,7 @@ See `steps.sh`.
 ## Expect
 Deterministic (the gate):
 - the session's tmux session is alive;
-- its `meta` records `agent.main=claude:main:<uuid>` with a real captured session
+- its `meta` records `seat.main=main` and `harness_session.main=<uuid>` with a real captured session
   id (not `pending`) — i.e. a real Claude process launched and ae hooked it.
 
 Semantic (advisory judge): the agent answered a trivial prompt sensibly.

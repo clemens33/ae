@@ -157,8 +157,8 @@ pub fn observe_agents(server: &ServerId, session: &str) -> Option<Vec<tmux::Obse
 /// The slot roster of `session` on the AMBIENT server — the frozen
 /// `ae_slot_resolver`'s query — or `None` when the enumeration failed.
 #[must_use]
-pub fn observe_slots(session: &str) -> Option<Vec<tmux::ObservedSlot>> {
-    let (succeeded, stdout) = run(PROGRAM, &tmux::slots_args(&ServerId::Ambient, session));
+pub fn observe_slots(server: &ServerId, session: &str) -> Option<Vec<tmux::ObservedSlot>> {
+    let (succeeded, stdout) = run(PROGRAM, &tmux::slots_args(server, session));
     tmux::interpret_slots(succeeded, &stdout)
 }
 

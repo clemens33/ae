@@ -236,7 +236,7 @@ pub fn migrate(
 ///   `profile.<slot>` / `harness_session.<slot>` is a v2 fact beside a v1 row;
 /// - an `UnknownKey` elsewhere is tolerated: a real v1 meta is full of them
 ///   (`session`/`layout`/`config`/`ae_core` rows).
-fn roster_doubting(a: &Anomaly) -> bool {
+pub(crate) fn roster_doubting(a: &Anomaly) -> bool {
     const IDENTITY_PREFIXES: [&str; 5] = [
         "agent.",
         "agent_bin.",

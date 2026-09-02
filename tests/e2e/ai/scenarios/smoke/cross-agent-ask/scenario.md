@@ -20,12 +20,16 @@ needs only the `claude` CLI; swap the worker to `codex:coworker` to test cross-C
 
 ## ae config
 ```ini
-[agents]
+[profiles]
 claude = "claude --permission-mode bypassPermissions --model opus[1m]"
 
+[roster]
+lead = claude
+reviewer = claude
+
 [workspace]
-main = claude:lead
-workers = claude:reviewer
+main = lead
+workers = reviewer
 layout = vertical
 ```
 

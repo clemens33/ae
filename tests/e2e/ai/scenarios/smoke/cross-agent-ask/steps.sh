@@ -26,9 +26,9 @@ fi
 # Both agents recorded in meta (main + the worker).
 meta="$AE_HOME/sessions/$session/meta"
 e2e_assert "lead agent present in meta" \
-    grep -Eq '^agent\.main=claude:lead:' "$meta"
+    grep -Eq '^seat\.main=lead$' "$meta"
 e2e_assert "reviewer agent present in meta" \
-    grep -Eq '^agent\.worker\.0=claude:reviewer:' "$meta"
+    grep -Eq '^seat\.worker\.0=reviewer$' "$meta"
 
 # Give the agents a moment to finish their first-turn setup before we poke them.
 sleep 8
@@ -36,8 +36,8 @@ sleep 8
 # Send a TRACKED ask to the reviewer. An ask from outside an agent pane has no
 # caller identity (it would silently degrade to a plain `send`), so we attribute
 # it to the lead via AE_SENDER_OVERRIDE — emitting a real ask the reviewer replies to.
-AE_SENDER_OVERRIDE="claude:lead" \
-    "$AE_HOME/sessions/$session/ask" "claude:reviewer" \
+AE_SENDER_OVERRIDE="lead" \
+    "$AE_HOME/sessions/$session/ask" "reviewer" \
     "Reply with exactly: 2+2=4 — nothing else." >/dev/null 2>&1 || \
     e2e_inconclusive "ask helper invocation failed"
 

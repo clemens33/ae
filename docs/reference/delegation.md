@@ -28,8 +28,8 @@ knob, not the point.
 
 ## The tiers
 
-ae needs no mechanism for this — an alias *is* a tier (see
-[Configuration](../getting-started/config.md#model-tiers-recommended-aliases)
+ae needs no mechanism for this — a profile *is* a tier (see
+[Configuration](../getting-started/config.md#model-tiers-recommended-profiles)
 for the recommended `fast` / `standard` / `optimal` / `best` + `codex` /
 `codexfast` block). Role guidance:
 
@@ -67,8 +67,8 @@ result the lead consumes immediately.
 
 ## The contracts
 
-**Naming**: alias = tier, name = role. `chore:tests`, `chore:callers`, `dev:docs-sync`, `review:slice7`,
-`standard:docs-sync` — never `worker`, `helper-3`.
+**Naming**: name = role, profile = tier. `tests`, `callers`, `docs-sync`, `slice7`
+— never `worker`, `helper-3`. Pick the tier per spawn: `spawn tests --using chore`.
 
 **Brief** (what the spawner sends): objective, allowed scope/files, verification
 command, expected reply shape, whether edits are allowed.
@@ -88,7 +88,7 @@ scope; for parallel write-heavy work use separate worktrees or sessions.
 
 ```bash
 # spawner (either peer):
-~/.ae/sessions/myfeat/spawn fast:tests "Objective: run 'just test'; report
+~/.ae/sessions/myfeat/spawn tests --using fast "Objective: run 'just test'; report
 failures only, format: Outcome/Verified/Risks. Read-only — no edits."
 # worker (when done): declares 'state done', replies with the summary
 # spawner: reviews, then
@@ -130,7 +130,7 @@ against this).
 ## What ae deliberately does NOT do
 
 No model router or auto-selection (judgment call), no per-spawn model flags
-(aliases already encode tiers), no cost tracking, no auto-retire (destroys
+(profiles already encode tiers), no cost tracking, no auto-retire (destroys
 inspectability), no task queue (`events.jsonl`/`requests`/`memo` are enough),
 and the orchestrator never dispatches workers on its own — it suggests, you decide.
 Auto-merge allowlists, attempt-count bookkeeping, and cost tracking are

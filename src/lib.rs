@@ -75,6 +75,7 @@ pub mod events_tail;
 pub mod filters;
 pub mod git;
 pub mod goal;
+pub mod identity;
 pub mod inventory;
 pub mod json;
 pub mod launch_cmd;
@@ -684,6 +685,17 @@ pub fn run_with(
         // `events_tail::follow` — so the only way out is a signal or a write
         // failure, and the write failure is the one this arm can report.
         cli::Request::EventsTail { dir } => match events_tail::follow(dir, out)? {},
+        cli::Request::LaunchPlan { tail } => identity::launch_plan(tail, out, err)?,
+        // The only entry whose payload arrives on STDIN: a launch's seat list
+        // is many records, and an argv is not the place for a document. Read to
+        // the end BEFORE anything is published, so a truncated pipe is a
+        // refusal the trailer catches rather than a half-built roster.
+        cli::Request::MetaInit { dir, tail } => {
+            let mut stdin = String::new();
+            std::io::Read::read_to_string(&mut std::io::stdin(), &mut stdin)?;
+            identity::meta_init(dir, tail, &stdin, out, err)?
+        }
+        cli::Request::Roster { dir, tail } => identity::roster(dir, tail, out, err)?,
         cli::Request::ArchivePreview { dir } => archive::preview(dir, out, err)?,
         cli::Request::ArchivePublish {
             dir,

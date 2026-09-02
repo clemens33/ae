@@ -1335,10 +1335,7 @@ impl Tracked {
         let ids: Vec<&str> = panes.lines().collect();
         assert_eq!(ids.len(), 2, "{panes}");
         let (main, worker) = (ids[0].to_owned(), ids[1].to_owned());
-        for (pane, slot, agent) in [
-            (&main, "main", "cl:lead"),
-            (&worker, "worker.0", "cl:worker"),
-        ] {
+        for (pane, slot, agent) in [(&main, "main", "lead"), (&worker, "worker.0", "worker")] {
             assert!(
                 fixture
                     .tmux(&["set-option", "-p", "-t", pane, "@ae_slot", slot])
@@ -1520,7 +1517,7 @@ fn ask_composes_the_frozen_message_delivers_through_send_and_writes_the_slotted_
     assert_eq!(asked, (Some(0), String::new(), String::new()));
     let (target, message, env) = fx.stub();
     assert_eq!(
-        target, "cl:worker\n",
+        target, "worker\n",
         "the bare name resolved to the display ref"
     );
     let id = stub_ref(&env);
@@ -1536,7 +1533,7 @@ fn ask_composes_the_frozen_message_delivers_through_send_and_writes_the_slotted_
         "the names the frozen body store reads, and NO ambient switch"
     );
     let reply_cmd = format!(
-        "{}/reply --as \"cl:worker\" \"{id}\" \"<your reply>\"",
+        "{}/reply --as \"worker\" \"{id}\" \"<your reply>\"",
         fx.dir.display()
     );
     assert_eq!(
@@ -1544,20 +1541,20 @@ fn ask_composes_the_frozen_message_delivers_through_send_and_writes_the_slotted_
         ae::tracked::compose(
             ae::tracked::Kind::Ask,
             &id,
-            "cl:lead",
+            "lead",
             "the question",
             &reply_cmd
         )
     );
     assert!(message.starts_with(&format!(
-        "REQUEST {id} from cl:lead: the question\n\nREQUIRED:"
+        "REQUEST {id} from lead: the question\n\nREQUIRED:"
     )));
     let events = fx.events();
     assert_eq!(events.len(), 1, "{events:?}");
     let body_file = fx.dir.join("messages").join(format!("{id}.ask.stub.txt"));
     assert!(
         events[0].ends_with(&format!(
-            "\"actor\":\"cl:lead\",\"action\":\"ask\",\"target\":\"cl:worker\",\"ref\":\"{id}\",\"actor_slot\":\"main\",\"actor_session\":\"trask\",\"target_slot\":\"worker.0\",\"target_session\":\"trask\",\"summary\":\"the question\",\"body_file\":\"{}\"}}",
+            "\"actor\":\"lead\",\"action\":\"ask\",\"target\":\"worker\",\"ref\":\"{id}\",\"actor_slot\":\"main\",\"actor_session\":\"trask\",\"target_slot\":\"worker.0\",\"target_session\":\"trask\",\"summary\":\"the question\",\"body_file\":\"{}\"}}",
             body_file.display()
         )),
         "{}",
@@ -1573,7 +1570,7 @@ fn ask_composes_the_frozen_message_delivers_through_send_and_writes_the_slotted_
     let listed = fx.run(ae::cli::REQUESTS, Some(&fx.main), &["all"], &[]);
     assert_eq!(listed.0, Some(0), "{listed:?}");
     assert!(
-        listed.1.contains("pending") && listed.1.contains(&id) && listed.1.contains("cl:worker"),
+        listed.1.contains("pending") && listed.1.contains(&id) && listed.1.contains("worker"),
         "{listed:?}"
     );
 }
@@ -1584,34 +1581,37 @@ fn review_carries_its_instructions_and_every_target_spelling_resolves_as_the_hel
     let reviewed = fx.run(
         ae::cli::REVIEW,
         Some(&fx.worker),
-        &["cl:lead", "look", "at", "x"],
+        &["lead", "look", "at", "x"],
         &[],
     );
     assert_eq!(reviewed, (Some(0), String::new(), String::new()));
     let (target, message, env) = fx.stub();
-    assert_eq!(target, "cl:lead\n");
+    assert_eq!(target, "lead\n");
     assert_eq!(fx.stub_helper(), "_send-deliver\n");
     let id = stub_ref(&env);
     assert!(is_request_id(&id, "review"), "{id}");
     assert!(message.starts_with(&format!(
-        "REVIEW REQUEST {id} from cl:worker: look at x\n\n{}\n\nREQUIRED",
+        "REVIEW REQUEST {id} from worker: look at x\n\n{}\n\nREQUIRED",
         ae::tracked::REVIEW_INSTRUCTIONS
     )));
-    assert!(message.ends_with(&format!("\n{}/reply --as \"cl:lead\" \"{id}\" \"<your review>\"\nDo not reply any other way. Do NOT use peek/peak as a reply mechanism.", fx.dir.display())));
+    assert!(message.ends_with(&format!("\n{}/reply --as \"lead\" \"{id}\" \"<your review>\"\nDo not reply any other way. Do NOT use peek/peak as a reply mechanism.", fx.dir.display())));
     let events = fx.events();
     assert!(
-        events[0].contains(&format!("\"actor\":\"cl:worker\",\"action\":\"review\",\"target\":\"cl:lead\",\"ref\":\"{id}\",\"actor_slot\":\"worker.0\",\"actor_session\":\"trrev\",\"target_slot\":\"main\",\"target_session\":\"trrev\",")),
+        events[0].contains(&format!("\"actor\":\"worker\",\"action\":\"review\",\"target\":\"lead\",\"ref\":\"{id}\",\"actor_slot\":\"worker.0\",\"actor_session\":\"trrev\",\"target_slot\":\"main\",\"target_session\":\"trrev\",")),
         "{}",
         events[0]
     );
 
-    // A pane id passes through and is read for its stamps; the explicit
-    // own-session spelling resolves without the cross-session prefix; a unique
-    // alias resolves too (each pane has a distinct one here).
+    // THE THREE SPELLINGS OF ONE PANE, plus its id. Identity v2 widens what is
+    // ACCEPTED and moves nothing that is printed: the bare name, the session
+    // qualified without an `@`, and the `@` form all reach the same pane, and
+    // all three answer with the same display ref.
     for (spelling, expected) in [
-        (fx.main.as_str(), "cl:lead"),
-        ("@trrev:lead", "cl:lead"),
-        ("@trrev:cl:worker", "cl:worker"),
+        (fx.main.as_str(), "lead"),
+        ("lead", "lead"),
+        ("trrev:lead", "lead"),
+        ("@trrev:lead", "lead"),
+        ("@trrev:worker", "worker"),
     ] {
         fx.forget_stub();
         let sent = fx.run(ae::cli::ASK, Some(&fx.worker), &[spelling, "q"], &[]);
@@ -1623,12 +1623,24 @@ fn review_carries_its_instructions_and_every_target_spelling_resolves_as_the_hel
 #[test]
 fn a_request_that_does_not_resolve_or_is_refused_leaves_no_event_and_no_paste() {
     let fx = Tracked::new("ref");
-    let cases: [Refusal<'_>; 8] = [
+    let cases: [Refusal<'_>; 9] = [
+        // IDENTITY V2: the alias-only and bare-name arms of the resolver are
+        // retired, so a legacy alias addresses nothing. It is NOT FOUND, not
+        // ambiguous — the roster can no longer make a target ambiguous at all,
+        // because a name is one seat.
         (
             &["cl", "q"],
             &[],
             Some(1),
-            "Error: ambiguous name 'cl' in session 'trref' — use alias:name format\n".to_owned(),
+            "Error: agent 'cl' not found in session 'trref'\n".to_owned(),
+        ),
+        // One colon and no `@` is now a CROSS-SESSION address, so an
+        // alias-shaped target names a session that does not exist.
+        (
+            &["cl:lead", "q"],
+            &[],
+            Some(1),
+            "Error: session 'cl' not found\n".to_owned(),
         ),
         (
             &["nobody", "q"],
@@ -1637,7 +1649,7 @@ fn a_request_that_does_not_resolve_or_is_refused_leaves_no_event_and_no_paste() 
             "Error: agent 'nobody' not found in session 'trref'\n".to_owned(),
         ),
         (
-            &["@nosuch:cl:lead", "q"],
+            &["@nosuch:lead", "q"],
             &[],
             Some(1),
             "Error: session 'nosuch' not found\n".to_owned(),
@@ -1750,7 +1762,7 @@ fn no_identity_falls_back_to_a_plain_send_and_external_and_override_senders_are_
     assert_eq!(events.len(), 1);
     assert!(
         events[0].contains(
-            "\"actor\":\"cl:lead\",\"action\":\"ask\",\"target\":\"telegram:42\",\"ref\":\"ae-"
+            "\"actor\":\"lead\",\"action\":\"ask\",\"target\":\"telegram:42\",\"ref\":\"ae-"
         ) && events[0].ends_with(
             "\"actor_slot\":\"main\",\"actor_session\":\"tridn\",\"summary\":\"hello\"}"
         ),
@@ -1778,7 +1790,7 @@ fn no_identity_falls_back_to_a_plain_send_and_external_and_override_senders_are_
     assert_eq!(events.len(), 2);
     assert!(
         events[1].contains(
-            "\"actor\":\"bridge\",\"action\":\"review\",\"target\":\"cl:worker\",\"ref\":\"review-"
+            "\"actor\":\"bridge\",\"action\":\"review\",\"target\":\"worker\",\"ref\":\"review-"
         ) && events[1].contains("\",\"actor_session\":\"tridn\",\"target_slot\":\"worker.0\",")
             && !events[1].contains("actor_slot"),
         "{}",
@@ -1824,15 +1836,8 @@ fn reply_routes_to_the_asker_by_stored_slot_records_the_frozen_event_and_closes_
     // The asker is renamed AFTER the ask: the reply must reach the pane
     // holding the stored slot under its CURRENT name, never the stale one.
     assert!(
-        fx.tmux(&[
-            "set-option",
-            "-p",
-            "-t",
-            &fx.main,
-            "@ae_agent",
-            "renamed:lead"
-        ])
-        .0
+        fx.tmux(&["set-option", "-p", "-t", &fx.main, "@ae_agent", "renamed"])
+            .0
     );
     let replied = fx.run(
         ae::cli::REPLY,
@@ -1843,14 +1848,11 @@ fn reply_routes_to_the_asker_by_stored_slot_records_the_frozen_event_and_closes_
     assert_eq!(replied, (Some(0), String::new(), String::new()));
     let (target, message, env) = fx.stub();
     assert_eq!(fx.stub_helper(), "_send-deliver\n");
-    assert_eq!(
-        target, "renamed:lead\n",
-        "routed by slot to the current name"
-    );
+    assert_eq!(target, "renamed\n", "routed by slot to the current name");
     assert_eq!(message, format!("[{id}] the answer"));
     assert_eq!(
         env,
-        format!("AE_SENDER_OVERRIDE=cl:worker\n_AE_EVENT_ACTION=reply\n_AE_EVENT_REF={id}\n"),
+        format!("AE_SENDER_OVERRIDE=worker\n_AE_EVENT_ACTION=reply\n_AE_EVENT_REF={id}\n"),
         "the verified sender rides to the entry as the envelope's identity"
     );
     let events = fx.events();
@@ -1858,7 +1860,7 @@ fn reply_routes_to_the_asker_by_stored_slot_records_the_frozen_event_and_closes_
     let body_file = fx.dir.join("messages").join(format!("{id}.reply.stub.txt"));
     assert!(
         events[1].ends_with(&format!(
-            "\"actor\":\"cl:worker\",\"action\":\"reply\",\"target\":\"renamed:lead\",\"ref\":\"{id}\",\"actor_slot\":\"worker.0\",\"actor_session\":\"{session}\",\"target_slot\":\"main\",\"target_session\":\"{session}\",\"summary\":\"the answer\",\"body_file\":\"{}\"}}",
+            "\"actor\":\"worker\",\"action\":\"reply\",\"target\":\"renamed\",\"ref\":\"{id}\",\"actor_slot\":\"worker.0\",\"actor_session\":\"{session}\",\"target_slot\":\"main\",\"target_session\":\"{session}\",\"summary\":\"the answer\",\"body_file\":\"{}\"}}",
             body_file.display()
         )),
         "{}",
@@ -1880,7 +1882,7 @@ fn reply_routes_to_the_asker_by_stored_slot_records_the_frozen_event_and_closes_
     let as_reply = fx.run(
         ae::cli::REPLY,
         Some(&fx.worker),
-        &["--as", "stale:old", &id2, "ok"],
+        &["--as", "stale", &id2, "ok"],
         &[],
     );
     assert_eq!(
@@ -1888,19 +1890,18 @@ fn reply_routes_to_the_asker_by_stored_slot_records_the_frozen_event_and_closes_
         (
             Some(0),
             String::new(),
-            "Warning: --as 'stale:old' != stored target name 'cl:worker' (name is advisory; slot verified)\n".to_owned()
+            "Warning: --as 'stale' != stored target name 'worker' (name is advisory; slot verified)\n".to_owned()
         )
     );
     let events = fx.events();
     assert!(
-        events[3]
-            .contains("\"actor\":\"stale:old\",\"action\":\"reply\",\"target\":\"renamed:lead\""),
+        events[3].contains("\"actor\":\"stale\",\"action\":\"reply\",\"target\":\"renamed\""),
         "{}",
         events[3]
     );
     assert_eq!(
         fx.stub().2,
-        format!("AE_SENDER_OVERRIDE=stale:old\n_AE_EVENT_ACTION=reply\n_AE_EVENT_REF={id2}\n"),
+        format!("AE_SENDER_OVERRIDE=stale\n_AE_EVENT_ACTION=reply\n_AE_EVENT_REF={id2}\n"),
         "the envelope names the --as identity, as the event does"
     );
 }
@@ -1920,16 +1921,16 @@ fn the_verified_sender_overwrites_an_override_inherited_from_the_caller() {
     );
     assert_eq!(poisoned, (Some(0), String::new(), String::new()));
     let (target, message, env) = fx.stub();
-    assert_eq!(target, "cl:lead\n");
+    assert_eq!(target, "lead\n");
     assert_eq!(message, format!("[{id}] clean"));
     assert_eq!(
         env,
-        format!("AE_SENDER_OVERRIDE=cl:worker\n_AE_EVENT_ACTION=reply\n_AE_EVENT_REF={id}\n"),
+        format!("AE_SENDER_OVERRIDE=worker\n_AE_EVENT_ACTION=reply\n_AE_EVENT_REF={id}\n"),
         "the pane's verified identity, not the inherited one"
     );
     let last = fx.events().pop().unwrap_or_default();
     assert!(
-        last.contains("\"actor\":\"cl:worker\",\"action\":\"reply\"") && !last.contains("spoof"),
+        last.contains("\"actor\":\"worker\",\"action\":\"reply\"") && !last.contains("spoof"),
         "{last}"
     );
     // A `--as` reply carries the --as identity, which is also what the event
@@ -1938,13 +1939,13 @@ fn the_verified_sender_overwrites_an_override_inherited_from_the_caller() {
     let as_reply = fx.run(
         ae::cli::REPLY,
         Some(&fx.worker),
-        &["--as", "cl:worker", &id2, "ok"],
+        &["--as", "worker", &id2, "ok"],
         &[("AE_SENDER_OVERRIDE", "spoof")],
     );
     assert_eq!(as_reply, (Some(0), String::new(), String::new()));
     assert_eq!(
         fx.stub().2,
-        format!("AE_SENDER_OVERRIDE=cl:worker\n_AE_EVENT_ACTION=reply\n_AE_EVENT_REF={id2}\n")
+        format!("AE_SENDER_OVERRIDE=worker\n_AE_EVENT_ACTION=reply\n_AE_EVENT_REF={id2}\n")
     );
 }
 
@@ -1962,7 +1963,7 @@ fn a_reply_is_refused_exactly_and_pastes_nothing_when_the_pane_the_id_or_the_bod
         (Some(&fx.main), vec![&id, "x"], Some(1), slot_error.clone()),
         (
             Some(&fx.main),
-            vec!["--as", "cl:worker", &id, "x"],
+            vec!["--as", "worker", &id, "x"],
             Some(1),
             slot_error,
         ),
@@ -1997,7 +1998,7 @@ fn a_reply_is_refused_exactly_and_pastes_nothing_when_the_pane_the_id_or_the_bod
         ),
         (
             Some(&fx.worker),
-            vec!["--as", "cl:worker", &id],
+            vec!["--as", "worker", &id],
             Some(2),
             ae::reply::USAGE.to_owned(),
         ),
@@ -2031,27 +2032,27 @@ fn a_pre_migration_row_name_matches_with_the_frozen_errors_and_is_answered_at_th
     let fx = Tracked::new("ro");
     append_event(
         &fx,
-        r#"{"ts":"2026-01-01T00:00:00Z","actor":"cl:lead","action":"ask","target":"cl:worker","ref":"ae-old-1","summary":"old"}"#,
+        r#"{"ts":"2026-01-01T00:00:00Z","actor":"lead","action":"ask","target":"worker","ref":"ae-old-1","summary":"old"}"#,
     );
     let old_cases: Vec<ReplyCase<'_>> = vec![
         (
             Some(&fx.worker),
             vec!["--as", "x:y", "ae-old-1", "x"],
             Some(1),
-            "Error: override agent 'x:y' does not match assigned target 'cl:worker'\n".to_owned(),
+            "Error: override agent 'x:y' does not match assigned target 'worker'\n".to_owned(),
         ),
         (
             Some(&fx.main),
             vec!["ae-old-1", "x"],
             Some(1),
-            "Error: request 'ae-old-1' is assigned to 'cl:worker', current pane is 'cl:lead'\n"
+            "Error: request 'ae-old-1' is assigned to 'worker', current pane is 'lead'\n"
                 .to_owned(),
         ),
         (
             None,
             vec!["ae-old-1", "x"],
             Some(1),
-            "Error: could not detect current agent identity; rerun with --as 'cl:worker' from the assigned agent context\n".to_owned(),
+            "Error: could not detect current agent identity; rerun with --as 'worker' from the assigned agent context\n".to_owned(),
         ),
     ];
     for (pane, tail, code, stderr) in old_cases {
@@ -2065,13 +2066,13 @@ fn a_pre_migration_row_name_matches_with_the_frozen_errors_and_is_answered_at_th
     assert_eq!(old, (Some(0), String::new(), String::new()));
     assert_eq!(
         fx.stub().0,
-        "cl:lead\n",
+        "lead\n",
         "the stored name, no slot to route by"
     );
     let last = fx.events().pop().unwrap_or_default();
     assert!(
         last.contains(
-            "\"actor\":\"cl:worker\",\"action\":\"reply\",\"target\":\"cl:lead\",\"ref\":\"ae-old-1\",\"actor_slot\":\"worker.0\",\"actor_session\":\"trro\",\"summary\":\"seen\""
+            "\"actor\":\"worker\",\"action\":\"reply\",\"target\":\"lead\",\"ref\":\"ae-old-1\",\"actor_slot\":\"worker.0\",\"actor_session\":\"trro\",\"summary\":\"seen\""
         ) && !last.contains("target_slot"),
         "{last}"
     );
@@ -2086,15 +2087,15 @@ fn a_bash_shaped_request_is_consumed_a_pane_less_asker_is_answered_event_only_an
     append_event(
         &fx,
         &format!(
-            r#"{{"ts":"2026-08-27T10:00:00Z","actor":"cl:lead","action":"ask","target":"cl:worker","ref":"{id}","actor_slot":"main","actor_session":"trrb","target_slot":"worker.0","target_session":"trrb","summary":"bash asked","body_file":"/nonexistent"}}"#
+            r#"{{"ts":"2026-08-27T10:00:00Z","actor":"lead","action":"ask","target":"worker","ref":"{id}","actor_slot":"main","actor_session":"trrb","target_slot":"worker.0","target_session":"trrb","summary":"bash asked","body_file":"/nonexistent"}}"#
         ),
     );
     let replied = fx.run(ae::cli::REPLY, Some(&fx.worker), &[id, "done"], &[]);
     assert_eq!(replied, (Some(0), String::new(), String::new()));
-    assert_eq!(fx.stub().0, "cl:lead\n", "routed by the bash-stored slot");
+    assert_eq!(fx.stub().0, "lead\n", "routed by the bash-stored slot");
     assert!(
         fx.events()[1].contains(&format!(
-            "\"actor\":\"cl:worker\",\"action\":\"reply\",\"target\":\"cl:lead\",\"ref\":\"{id}\",\"actor_slot\":\"worker.0\",\"actor_session\":\"trrb\",\"target_slot\":\"main\",\"target_session\":\"trrb\",\"summary\":\"done\""
+            "\"actor\":\"worker\",\"action\":\"reply\",\"target\":\"lead\",\"ref\":\"{id}\",\"actor_slot\":\"worker.0\",\"actor_session\":\"trrb\",\"target_slot\":\"main\",\"target_session\":\"trrb\",\"summary\":\"done\""
         )),
         "{}",
         fx.events()[1]
@@ -2122,7 +2123,7 @@ fn a_bash_shaped_request_is_consumed_a_pane_less_asker_is_answered_event_only_an
     append_event(
         &fx,
         &format!(
-            r#"{{"ts":"2026-08-27T10:00:01Z","actor":"telegram:42","action":"ask","target":"cl:worker","ref":"{bridged}","target_slot":"worker.0","target_session":"trrb","summary":"from the bridge"}}"#
+            r#"{{"ts":"2026-08-27T10:00:01Z","actor":"telegram:42","action":"ask","target":"worker","ref":"{bridged}","target_slot":"worker.0","target_session":"trrb","summary":"from the bridge"}}"#
         ),
     );
     fx.forget_stub();
@@ -2132,7 +2133,7 @@ fn a_bash_shaped_request_is_consumed_a_pane_less_asker_is_answered_event_only_an
     let last = fx.events().pop().unwrap_or_default();
     assert!(
         last.ends_with(&format!(
-            "\"actor\":\"cl:worker\",\"action\":\"reply\",\"target\":\"telegram:42\",\"ref\":\"{bridged}\",\"actor_slot\":\"worker.0\",\"actor_session\":\"trrb\",\"summary\":\"hello\"}}"
+            "\"actor\":\"worker\",\"action\":\"reply\",\"target\":\"telegram:42\",\"ref\":\"{bridged}\",\"actor_slot\":\"worker.0\",\"actor_session\":\"trrb\",\"summary\":\"hello\"}}"
         )),
         "{last}"
     );
@@ -2155,7 +2156,7 @@ fn send_pastes_through_the_entry_and_records_the_one_frozen_event() {
     assert_eq!(fx.stub_helper(), "_send-deliver\n");
     assert_eq!(
         (target.as_str(), message.as_str()),
-        ("cl:worker\n", "hello there")
+        ("worker\n", "hello there")
     );
     assert_eq!(
         env, "_AE_EVENT_ACTION=send\n",
@@ -2166,7 +2167,7 @@ fn send_pastes_through_the_entry_and_records_the_one_frozen_event() {
     let body_file = fx.dir.join("messages").join("msg.send.stub.txt");
     assert!(
         events[0].ends_with(&format!(
-            "\"actor\":\"cl:lead\",\"action\":\"send\",\"target\":\"cl:worker\",\"summary\":\"⟦ae:msg from stub⟧ hello there\",\"body_file\":\"{}\"}}",
+            "\"actor\":\"lead\",\"action\":\"send\",\"target\":\"worker\",\"summary\":\"⟦ae:msg from stub⟧ hello there\",\"body_file\":\"{}\"}}",
             body_file.display()
         )),
         "a plain send carries no routing members, as the frozen emitter writes it: {}",
@@ -2184,7 +2185,7 @@ fn send_pastes_through_the_entry_and_records_the_one_frozen_event() {
     assert_eq!(fx.stub().2, "_AE_EVENT_ACTION=send\n_AE_EVENT_REF=ae-1\n");
     let last = fx.events().pop().unwrap_or_default();
     assert!(
-        last.contains("\"action\":\"send\",\"target\":\"cl:worker\",\"ref\":\"ae-1\",\"summary\":\"⟦ae:msg from stub⟧ [ae-1] noted\",\"body_file\":")
+        last.contains("\"action\":\"send\",\"target\":\"worker\",\"ref\":\"ae-1\",\"summary\":\"⟦ae:msg from stub⟧ [ae-1] noted\",\"body_file\":")
             && last.contains("ae-1.send.stub.txt"),
         "{last}"
     );
@@ -2198,18 +2199,13 @@ fn send_pastes_through_the_entry_and_records_the_one_frozen_event() {
         &[],
     );
     assert_eq!(by_id, (Some(0), String::new(), String::new()));
-    assert_eq!(fx.stub().0, "cl:worker\n");
+    assert_eq!(fx.stub().0, "worker\n");
     let last = fx.events().pop().unwrap_or_default();
-    assert!(last.contains("\"target\":\"cl:worker\""), "{last}");
+    assert!(last.contains("\"target\":\"worker\""), "{last}");
     // The cross-session spelling of this session resolves, and the event
     // names what the entry was handed.
     fx.forget_stub();
-    let spelled = fx.run(
-        ae::cli::SEND,
-        Some(&fx.main),
-        &["@trsp:cl:worker", "hi"],
-        &[],
-    );
+    let spelled = fx.run(ae::cli::SEND, Some(&fx.main), &["@trsp:worker", "hi"], &[]);
     assert_eq!(spelled, (Some(0), String::new(), String::new()));
     let handed = fx.stub().0;
     assert!(!handed.is_empty(), "the entry was run");
@@ -2229,7 +2225,7 @@ fn send_carries_the_frozen_event_fields_from_the_environment_and_the_override_to
         Some(&fx.main),
         &["worker", "withdrawn:", "--digest-only"],
         &[
-            ("AE_SENDER_OVERRIDE", "cl:lead"),
+            ("AE_SENDER_OVERRIDE", "lead"),
             ("_AE_EVENT_ACTION", "cancel"),
             ("_AE_EVENT_REF", "ae-9"),
             ("_AE_EVENT_SUMMARY", "withdrawn"),
@@ -2243,17 +2239,17 @@ fn send_carries_the_frozen_event_fields_from_the_environment_and_the_override_to
     let (target, message, env) = fx.stub();
     assert_eq!(
         (target.as_str(), message.as_str()),
-        ("cl:worker\n", "withdrawn: --digest-only")
+        ("worker\n", "withdrawn: --digest-only")
     );
     assert_eq!(
-        env, "AE_SENDER_OVERRIDE=cl:lead\n_AE_EVENT_ACTION=cancel\n_AE_EVENT_REF=ae-9\n",
+        env, "AE_SENDER_OVERRIDE=lead\n_AE_EVENT_ACTION=cancel\n_AE_EVENT_REF=ae-9\n",
         "the explicit override rides to the envelope; the action and ref name the file"
     );
     let events = fx.events();
     let body_file = fx.dir.join("messages").join("ae-9.cancel.stub.txt");
     assert!(
         events[0].ends_with(&format!(
-            "\"actor\":\"cl:lead\",\"action\":\"cancel\",\"target\":\"cl:worker\",\"ref\":\"ae-9\",\"actor_slot\":\"main\",\"actor_session\":\"trss\",\"target_slot\":\"worker.0\",\"target_session\":\"trss\",\"summary\":\"withdrawn\",\"body_file\":\"{}\"}}",
+            "\"actor\":\"lead\",\"action\":\"cancel\",\"target\":\"worker\",\"ref\":\"ae-9\",\"actor_slot\":\"main\",\"actor_session\":\"trss\",\"target_slot\":\"worker.0\",\"target_session\":\"trss\",\"summary\":\"withdrawn\",\"body_file\":\"{}\"}}",
             body_file.display()
         )),
         "{}",
@@ -2274,7 +2270,7 @@ fn send_carries_the_frozen_event_fields_from_the_environment_and_the_override_to
     );
     let last = fx.events().pop().unwrap_or_default();
     assert!(
-        last.contains("\"actor\":\"telegram:42\",\"action\":\"send\",\"target\":\"cl:worker\",\"summary\":\"⟦ae:msg from stub⟧ from the bridge\""),
+        last.contains("\"actor\":\"telegram:42\",\"action\":\"send\",\"target\":\"worker\",\"summary\":\"⟦ae:msg from stub⟧ from the bridge\""),
         "{last}"
     );
     // A pane-less caller with no name is `human`, and hands the entry no name.
@@ -2338,7 +2334,9 @@ fn send_refuses_exactly_records_nothing_on_a_failed_delivery_and_names_the_gap_a
     assert!(fx.stub().0.is_empty());
     let last = fx.events().pop().unwrap_or_default();
     assert!(
-        last.ends_with("\"actor\":\"cl:lead\",\"action\":\"send\",\"target\":\"telegram:42\",\"summary\":\"hi\"}"),
+        last.ends_with(
+            "\"actor\":\"lead\",\"action\":\"send\",\"target\":\"telegram:42\",\"summary\":\"hi\"}"
+        ),
         "{last}"
     );
     // The entry missing: said so, at 1, naming it.
@@ -2371,7 +2369,7 @@ fn a_confirmed_delivery_whose_event_cannot_be_written_is_reported_as_that_gap() 
     assert_eq!(gap.0, Some(1), "{gap:?}");
     assert!(
         gap.2
-            .starts_with("ae: send to cl:worker was delivered but its event was not emitted: "),
+            .starts_with("ae: send to worker was delivered but its event was not emitted: "),
         "{gap:?}"
     );
     assert_eq!(
@@ -2399,14 +2397,14 @@ fn a_send_without_a_readable_record_summarises_the_message_as_typed_and_says_so(
         (
             Some(0),
             String::new(),
-            "ae: send to cl:worker: no recovery record was written; the summary is of the message as typed\n".into()
+            "ae: send to worker: no recovery record was written; the summary is of the message as typed\n".into()
         )
     );
     let events = fx.events();
     assert_eq!(events.len(), 1, "{events:?}");
     assert!(
         events[0].ends_with(
-            "\"actor\":\"cl:lead\",\"action\":\"send\",\"target\":\"cl:worker\",\"summary\":\"as typed\"}"
+            "\"actor\":\"lead\",\"action\":\"send\",\"target\":\"worker\",\"summary\":\"as typed\"}"
         ),
         "no record, no body_file: {}",
         events[0]
@@ -2424,7 +2422,7 @@ fn a_send_without_a_readable_record_summarises_the_message_as_typed_and_says_so(
     assert_eq!(
         unreadable.2,
         format!(
-            "ae: send to cl:worker: recovery record {} could not be read; the summary is of the message as typed\n",
+            "ae: send to worker: recovery record {} could not be read; the summary is of the message as typed\n",
             record.display()
         )
     );
@@ -2457,7 +2455,7 @@ fn a_chat_send_keeps_its_lines_and_its_own_cap_on_the_pane_and_at_the_sink() {
     let events = fx.events();
     assert_eq!(events.len(), 1, "{events:?}");
     let expected = format!(
-        "\"action\":\"chat\",\"target\":\"cl:worker\",\"summary\":\"⟦ae:msg from stub⟧\\nfirst {line}\\nsecond\\tline {line}\\nthird\",\"body_file\":"
+        "\"action\":\"chat\",\"target\":\"worker\",\"summary\":\"⟦ae:msg from stub⟧\\nfirst {line}\\nsecond\\tline {line}\\nthird\",\"body_file\":"
     );
     assert!(events[0].contains(&expected), "{}", events[0]);
     fx.forget_stub();
@@ -2473,7 +2471,7 @@ fn a_chat_send_keeps_its_lines_and_its_own_cap_on_the_pane_and_at_the_sink() {
     let last = fx.events().pop().unwrap_or_default();
     let kept = 3500 - payload.chars().count() - 1;
     let expected = format!(
-        "\"actor\":\"cl:lead\",\"action\":\"chat\",\"target\":\"telegram:42\",\"summary\":\"first {line}\\nsecond\\tline {line}\\nthird\\n{}\"}}",
+        "\"actor\":\"lead\",\"action\":\"chat\",\"target\":\"telegram:42\",\"summary\":\"first {line}\\nsecond\\tline {line}\\nthird\\n{}\"}}",
         "y".repeat(kept)
     );
     assert!(

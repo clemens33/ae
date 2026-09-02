@@ -85,7 +85,7 @@ Every agent pane carries a stable **slot** — `main`, `worker.<n>`, or `spawned
 |---|---|
 | `focus <agent>` | Switch tmux focus to another pane. |
 | `interrupt <agent> [message]` | Cancel current generation, optionally send a replacement instruction. |
-| `spawn <alias:name> [prompt]` | Add a new agent to the workspace, in its own tmux window named after its role. Always pass a descriptive role name. |
+| `spawn <name> --using <profile> [prompt]` | Add a new agent to the workspace, in its own tmux window named after its role. Always pass a descriptive role name. |
 | `retire <agent>` | Remove a spawned agent — kills its pane (and window), cleans meta incl. launch bookkeeping, updates `workspace.md`. |
 
 ## Internal

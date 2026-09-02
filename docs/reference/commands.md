@@ -522,8 +522,9 @@ Four properties are worth knowing, because they are what the archive *is*:
   run one.
 - **The meta is generated, never copied.** Live meta carries runtime coordinates that are
   meaningless or harmful in a snapshot — panes, sockets, watchdog state, launch ids — and
-  in `agent.<slot>` it carries the *provider conversation UUID*, the one field that could
-  re-open somebody's real transcript. The archive records `alias:name` and drops the rest.
+  in `harness_session.<slot>` it carries the *provider conversation UUID*, the one field
+  that could re-open somebody's real transcript. The archive records `seat.<slot>=<name>`
+  and drops the rest (a pre-v2 source instead keeps the legacy `agent.<slot>=alias:name`).
 - **Capture, then delete.** The archive is published after the session is verifiably
   stopped and after git has had its say, and *before* any live state is removed. If it
   cannot be written, `ae end` fails non-zero and the whole session is still there.

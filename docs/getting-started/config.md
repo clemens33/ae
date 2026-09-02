@@ -5,16 +5,20 @@
 ## Example
 
 ```toml
-[agents]
+[profiles]
 claude = "claude --permission-mode bypassPermissions --model claude-opus-4-8"
 codex = "codex --yolo -m gpt-5.5 -c model_reasoning_effort=high"
 gemini = "gemini --yolo -m gemini-2.5-pro"
 grokbuild = "grok --always-approve -m grok-4.6 --effort high"
 opencode = "opencode -m google/gemini-3-pro-preview"
 
+[roster]
+lead = claude
+colead = codex
+
 [workspace]
-main = claude:lead
-workers = codex:colead
+main = lead
+workers = colead
 layout = lead-pair
 watchdog = true
 
@@ -22,26 +26,27 @@ watchdog = true
 instructions = "Always write tests. Prefer TypeScript."
 ```
 
-## `[agents]`
+## `[profiles]`
 
-Register any CLI tool as an agent alias. The value is the shell command to launch it. ae extracts the executable name from the command and verifies it's on `PATH` during `ae doctor`.
+Register any CLI tool as a profile — a reusable launch recipe. The value is the shell command to launch it. ae extracts the executable name from the command and verifies it's on `PATH` during `ae doctor`.
 
 ### Multiple identities of one CLI
 
 One binary can serve several logins/subscriptions — Claude Code selects its
-identity via `CLAUDE_CONFIG_DIR`, so an env prefix in the alias command is all
+identity via `CLAUDE_CONFIG_DIR`, so an env prefix in the profile command is all
 it takes:
 
 ```toml
-[agents]
+[profiles]
 fable5   = "claude --permission-mode bypassPermissions --model fable --effort xhigh"
 fablemic = "CLAUDE_CONFIG_DIR=$HOME/.claude-mic claude --permission-mode bypassPermissions --model fable --effort xhigh"
 claude2  = "CLAUDE_CONFIG_DIR=$HOME/.claude2 claude --permission-mode bypassPermissions --model opus --effort xhigh"
 ```
 
-Each alias gets its own login (macOS keychain entries are keyed by the config
+Each profile gets its own login (macOS keychain entries are keyed by the config
 dir), its own usage pool, and its own history — so one workspace can mix a work
-subscription and a personal one seat by seat. `/login` once per identity.
+subscription and a personal one seat by seat (bind each to its own `[roster]`
+name). `/login` once per identity.
 
 Two traps:
 
@@ -52,17 +57,28 @@ Two traps:
   deliberately treated as an unknown tool — no session IDs, no exact resume.
 
 Current limitation: env-prefixed commands are classified by a raw prefix match
-today, so the identity aliases launch fine but degrade to generic-tool handling
+today, so the identity profiles launch fine but degrade to generic-tool handling
 (no `--session-id`, heuristic resume) until
 [#32](https://github.com/clemens33/ae/issues/32) lands. Track that issue if you
 adopt this pattern.
+
+## `[roster]`
+
+Bind names to profiles: `name = profile`. The NAME is the agent's identity — it's
+what you address with `send`/`ask`/`spawn`, and what pane titles, borders, and
+`ae list` show; the profile is metadata (`ae list` shows it alongside the name),
+and the same profile can back more than one name. Every seat in
+`[workspace] main`/`workers` must be bound here — ae refuses the launch
+otherwise and lists every violation. A name bound here but not seated is legal:
+`ae <session> use <name>` starts it as main instead of the configured one. Spawn
+on demand with `spawn <name> --using <profile>`.
 
 ## `[workspace]`
 
 | Key       | Description                                          | Default       |
 |-----------|------------------------------------------------------|---------------|
-| `main`    | `alias:name` for the standing main seat. Under `lead-pair` this is a *technical* lifecycle anchor (compact handover, non-retirable), not a rank | `fable5:lead` |
-| `workers` | Comma-separated agents launched at startup. Under `lead-pair` the FIRST worker is the colead seat — an equal leadership peer of the lead (interchangeable, same level). Recommended default: the colead ONLY — builders/reviewers are spawned on demand per slice and retired when done | `gpt56sol:colead` |
+| `main`    | `[roster]` name for the standing main seat. Under `lead-pair` this is a *technical* lifecycle anchor (compact handover, non-retirable), not a rank | `lead` |
+| `workers` | Comma-separated `[roster]` names launched at startup. Under `lead-pair` the FIRST worker is the colead seat — an equal leadership peer of the lead (interchangeable, same level). Recommended default: the colead ONLY — builders/reviewers are spawned on demand per slice and retired when done | `colead` |
 | `layout`  | `lead-pair` (lead + colead share window 0, other workers in window 1), `lead-solo` (lead alone in window 0, workers in window 1), `vertical` (side-by-side splits), `horizontal` (stacked splits) | `lead-pair`   |
 | `copy`    | Working directory mode (see below)                   | `local`       |
 | `watchdog`    | Auto-start the watchdog (`true` / `false`)            | `true`        |
@@ -128,14 +144,14 @@ The watchdog reads its tunables from environment variables (set them in the sess
 
 The legacy `AE_LOOP_*` names are still honoured as fallbacks for each tunable. To turn the watchdog off for a single session, run `~/.ae/sessions/<name>/watchdog stop` once. The setting persists across resume.
 
-## Model tiers (recommended aliases)
+## Model tiers (recommended profiles)
 
-Aliases are arbitrary shell commands, so capability tiers are just config.
-Name aliases by intent, not by vendor model — the config survives model
+Profiles are arbitrary shell commands, so capability tiers are just config.
+Name profiles by intent, not by vendor model — the config survives model
 generations:
 
 ```toml
-[agents]
+[profiles]
 # tiers (Claude Code) — workers MUST be non-interactive: an approval prompt
 # stalls an unattended pane forever. bypassPermissions is the trusting default
 # (matches ae's own examples); acceptEdits is the cautious alternative.
@@ -151,9 +167,13 @@ review = "codex --yolo -m gpt-5.6-sol -c model_reasoning_effort=xhigh"
 # leads / orchestrator / hardest work
 best   = "claude --permission-mode bypassPermissions --model fable --effort xhigh"
 
+[roster]
+lead = best
+coworker = codex
+
 [workspace]
-main = best:lead
-workers = codex:coworker
+main = lead
+workers = coworker
 ```
 
 Role guidance: leads and the orchestrator run `optimal`/`best`; cross-model

@@ -129,14 +129,14 @@ review <agent> <request>       # critical review, findings-first reply contract
 state <value> [reason]         # declare work state: working|waiting-user|blocked|done
 say <text>                     # push a line to the human's Telegram chat (reply routes back)
 memo add [--topic t] <text>    # durable shared session memory (survives restarts)
-spawn <alias:name> [prompt]    # add an agent · retire <agent> removes one
+spawn <name> --using <profile> [prompt]   # add an agent · retire <agent> removes one
 peek <agent> [lines]           # view an agent's recent output (inspection only)
 ```
 
-Agent names resolve flexibly -- `codex:reviewer` (exact), `codex` (alias), `reviewer` (bare name), `%42` (pane id) -- and `@session:agent` reaches across sessions:
+Agent names resolve exactly -- `reviewer` (the name), `%42` (pane id) -- and `session:agent` or `@session:agent` reaches across sessions:
 
 ```bash
-send @other-feature:claude:lead "check my API changes"
+send @other-feature:lead "check my API changes"
 agents --all                   # discover agents across every ae session
 ```
 
@@ -147,22 +147,26 @@ Agents call these automatically when you ask them to collaborate. Full helper ca
 `~/.ae/config` is auto-created on first run; per-project overrides go in `.ae/config`.
 
 ```toml
-[agents]
+[profiles]
 claude = "claude --permission-mode bypassPermissions --model opus"
 codex = "codex --yolo -m gpt-5.6-sol -c model_reasoning_effort=high"
 grok = "grok --always-approve -m grok-4.6 --effort high"
 agy = "agy --dangerously-skip-permissions"   # any CLI works — agy has no special ae integration
 
+[roster]
+lead = claude
+reviewer = codex
+
 [workspace]
-main = claude:lead
-workers = codex:reviewer
+main = lead
+workers = reviewer
 layout = vertical
 
 [prompt]
 instructions = "Always write tests. Prefer TypeScript."
 ```
 
-Register any CLI tool under `[agents]`; `[workspace]` sets the layout; `[prompt]` injects custom instructions into every agent's system prompt. One binary can serve several logins — e.g. `CLAUDE_CONFIG_DIR=$HOME/.claude-work claude ...` as its own alias gives a seat its own subscription, login, and history ([details and caveats](docs/getting-started/config.md#multiple-identities-of-one-cli)). The default ae writes on first run -- mirrored in the repo as [`config.sample`](config.sample) -- is a documented lead-pair setup. Choose how agents see your code with a working-directory mode:
+The NAME in `[roster]` is the agent's identity -- it's what you address in `send`/`spawn` and what shows in pane titles and `ae list`; the profile is just metadata (`ae list` shows it alongside the name). Register any CLI tool under `[profiles]`; `[roster]` binds names to profiles; `[workspace]` sets the layout; `[prompt]` injects custom instructions into every agent's system prompt. One binary can serve several logins — e.g. `CLAUDE_CONFIG_DIR=$HOME/.claude-work claude ...` as its own profile gives a seat its own subscription, login, and history ([details and caveats](docs/getting-started/config.md#multiple-identities-of-one-cli)). The default ae writes on first run -- mirrored in the repo as [`config.sample`](config.sample) -- is a documented lead-pair setup. Choose how agents see your code with a working-directory mode:
 
 | Mode | Flag | What it does |
 |------|------|------|
@@ -174,7 +178,7 @@ Full lineup, role guidance, and every key: **[docs/getting-started/config.md](do
 
 ## How it works
 
-Each agent gets workspace context injected into its system prompt (Claude Code's `--append-system-prompt`, Codex's `developer_instructions`, Gemini's `-i`). That context tells it **which agent it is** (`You are agent <alias>:<name> (slot <slot>)`), who the other agents are, how to reach them by name, and how to spawn or retire agents. The communication itself happens through shell helpers (`send`, `peek`, `spawn`, …) that ae generates in `~/.ae/sessions/` -- agents call them like any other CLI tool.
+Each agent gets workspace context injected into its system prompt (Claude Code's `--append-system-prompt`, Codex's `developer_instructions`, Gemini's `-i`). That context tells it **which agent it is** (`You are agent <name> (slot <slot>)`), who the other agents are, how to reach them by name, and how to spawn or retire agents. The communication itself happens through shell helpers (`send`, `peek`, `spawn`, …) that ae generates in `~/.ae/sessions/` -- agents call them like any other CLI tool.
 
 No custom protocols, no frameworks. Just system prompts and bash scripts agents already know how to use.
 

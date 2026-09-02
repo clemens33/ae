@@ -277,7 +277,12 @@ pub enum ResolveError {
     CrossSessionEmpty,
     /// The named session is not on the server.
     SessionNotFound(String),
-    /// More than one alias or bare-name match.
+    /// More than one pane carries the target identity.
+    ///
+    /// Under identity v2 the roster cannot produce this: a name is one seat,
+    /// and matching is exact. What remains is the pane layer — two panes
+    /// stamped identically, which no ae code path creates and a hand-edited
+    /// `@ae_agent` can. Refusing beats picking the first one silently.
     Ambiguous {
         /// The name as typed.
         target: String,
@@ -315,9 +320,9 @@ impl ResolveError {
                 "Error: cross-session target must be @session:agent".to_owned()
             }
             Self::SessionNotFound(session) => format!("Error: session '{session}' not found"),
-            Self::Ambiguous { target, session } => format!(
-                "Error: ambiguous name '{target}' in session '{session}' — use alias:name format"
-            ),
+            Self::Ambiguous { target, session } => {
+                format!("Error: ambiguous name '{target}' in session '{session}'")
+            }
             Self::NotFound { target, session } => {
                 format!("Error: agent '{target}' not found in session '{session}'")
             }
@@ -368,6 +373,27 @@ pub fn lookup(target: &str, own_session: &str) -> Result<Lookup, ResolveError> {
             explicit: true,
         });
     }
+    // Identity v2 makes a stamp the BARE NAME, and `_validate_agent_name`
+    // forbids a `:` inside one — so `<session>:<name>` is free to mean across
+    // sessions without the `@`, unambiguously, and `aedev:lead` addresses the
+    // same pane `@aedev:lead` does. The consequence is deliberate and is the
+    // point: `fable5:lead` is now a session named `fable5`, not an alias, so it
+    // no longer reaches a pane stamped `lead`.
+    //
+    // BOTH halves must be non-empty and there must be exactly one colon.
+    // Anything else stays a plain name and fails as one — a caller who typed no
+    // `@` should not be answered with a shape error about the `@` form.
+    if let Some((session, name)) = target.split_once(':')
+        && !session.is_empty()
+        && !name.is_empty()
+        && !name.contains(':')
+    {
+        return Ok(Lookup::Named {
+            session: session.to_owned(),
+            target: name.to_owned(),
+            explicit: true,
+        });
+    }
     Ok(Lookup::Named {
         session: own_session.to_owned(),
         target: target.to_owned(),
@@ -375,10 +401,23 @@ pub fn lookup(target: &str, own_session: &str) -> Result<Lookup, ResolveError> {
     })
 }
 
-/// The frozen loop's pick over a roster: the first exact `alias:name` match;
-/// else the one alias-only match; else the one bare-name match. Two or more
-/// of either is ambiguous; none is not found. The display ref is `@session:`
-/// prefixed when `session` is not `own_session`.
+/// The pick over a roster: the pane whose `@ae_agent` stamp IS the target,
+/// exactly. Nothing partial.
+///
+/// **The alias-only and bare-name arms are retired (identity v2).** They
+/// existed because a v1 stamp was `alias:name` and neither half alone addressed
+/// a pane; under v2 the stamp is the bare name, which is the whole identity, so
+/// a prefix match can only ever be a guess. Retiring them is what makes
+/// `fable5:lead` stop resolving a pane stamped `lead` — and it is why a target
+/// with one colon is now read as `<session>:<name>` in [`lookup`] instead.
+///
+/// A name is one seat, so the ROSTER can no longer make a target ambiguous.
+/// [`ResolveError::Ambiguous`] survives for the pane layer alone: two panes
+/// stamped identically. Answering that with the first one would route a message
+/// to a pane nobody chose.
+///
+/// The display ref is unchanged — `@session:` prefixed when `session` is not
+/// `own_session`. Accepted input widened; output did not move.
 ///
 /// # Errors
 ///
@@ -396,39 +435,15 @@ pub fn pick<'a>(
             format!("@{session}:{agent}")
         }
     };
-    let mut alias_matches: Vec<&ObservedAgent> = Vec::new();
-    let mut bare_matches: Vec<&ObservedAgent> = Vec::new();
-    for row in roster {
-        if row.agent == target {
-            return Ok((row.pane.as_str(), display(&row.agent)));
-        }
-        let alias = row
-            .agent
-            .split_once(':')
-            .map_or(row.agent.as_str(), |(alias, _)| alias);
-        let name = row
-            .agent
-            .split_once(':')
-            .map_or(row.agent.as_str(), |(_, name)| name);
-        if alias == target {
-            alias_matches.push(row);
-        }
-        if name == target {
-            bare_matches.push(row);
-        }
-    }
-    if let [row] = alias_matches.as_slice() {
-        return Ok((row.pane.as_str(), display(&row.agent)));
-    }
-    if let [row] = bare_matches.as_slice() {
-        return Ok((row.pane.as_str(), display(&row.agent)));
-    }
+    let mut matches = roster.iter().filter(|row| row.agent == target);
+    let first = matches.next();
+    let second = matches.next();
     let target = target.to_owned();
     let session = session.to_owned();
-    if alias_matches.len() > 1 || bare_matches.len() > 1 {
-        Err(ResolveError::Ambiguous { target, session })
-    } else {
-        Err(ResolveError::NotFound { target, session })
+    match (first, second) {
+        (Some(row), None) => Ok((row.pane.as_str(), display(&row.agent))),
+        (Some(_), Some(_)) => Err(ResolveError::Ambiguous { target, session }),
+        (None, _) => Err(ResolveError::NotFound { target, session }),
     }
 }
 
@@ -520,7 +535,11 @@ fn pane_server(dir: &Path) -> ServerId {
 /// is the exact mis-route this refuses. A real launch records an absolute socket
 /// selector, so only legacy/corrupted meta reaches the refusal, which
 /// `doctor --refresh` repairs.
-fn named_server(dir: &Path, session: &str, own_session: &str) -> Result<ServerId, ResolveError> {
+pub(crate) fn named_server(
+    dir: &Path,
+    session: &str,
+    own_session: &str,
+) -> Result<ServerId, ResolveError> {
     let meta_dir = if session == own_session {
         dir.to_path_buf()
     } else {
@@ -966,6 +985,49 @@ mod tests {
         );
         assert_eq!(lookup("@:w", "s"), Err(ResolveError::CrossSessionEmpty));
         assert_eq!(lookup("@s:", "s"), Err(ResolveError::CrossSessionEmpty));
+        // IDENTITY V2: one colon, no `@`, is the same cross-session address.
+        // `lead`, `s:lead` and `@s:lead` all name one pane; `fable5:lead` names
+        // a SESSION called fable5 and no longer stands in for an alias.
+        assert_eq!(
+            lookup("s:lead", "s"),
+            Ok(Lookup::Named {
+                session: "s".to_owned(),
+                target: "lead".to_owned(),
+                explicit: true
+            }),
+            "the own session named without the @ is still checked with has-session"
+        );
+        assert_eq!(
+            lookup("other:lead", "s"),
+            Ok(Lookup::Named {
+                session: "other".to_owned(),
+                target: "lead".to_owned(),
+                explicit: true
+            })
+        );
+        assert_eq!(
+            lookup("fable5:lead", "s"),
+            Ok(Lookup::Named {
+                session: "fable5".to_owned(),
+                target: "lead".to_owned(),
+                explicit: true
+            }),
+            "an alias-shaped target is a session name now, and fails as one"
+        );
+        // A half that is empty, or a second colon, is NOT a cross-session
+        // address: it stays a plain name and fails as a plain name, rather than
+        // being answered with a shape error about an `@` nobody typed.
+        for plain in [":lead", "s:", "cl:x:y"] {
+            assert_eq!(
+                lookup(plain, "s"),
+                Ok(Lookup::Named {
+                    session: "s".to_owned(),
+                    target: plain.to_owned(),
+                    explicit: false
+                }),
+                "{plain}"
+            );
+        }
         assert_eq!(
             ResolveError::CrossSessionShape("@x".to_owned()).message(),
             "Error: cross-session target must be @session:agent, got '@x'"
@@ -973,49 +1035,36 @@ mod tests {
     }
 
     #[test]
-    fn the_pick_is_exact_then_unique_alias_then_unique_bare_name() {
+    fn the_pick_is_exact_and_the_alias_and_bare_name_arms_are_retired() {
+        // A v2 roster: every stamp is the bare NAME. The two legacy `alias:name`
+        // stamps are here because a session written before the cutover still
+        // carries them, and they must keep resolving by their WHOLE stamp.
         let rows = roster(&[
-            ("%1", "cl:lead"),
-            ("%2", "cl:worker"),
-            ("%3", "gx:lead"),
+            ("%1", "lead"),
+            ("%2", "colead"),
+            ("%3", "cl:legacy"),
             ("%4", ""),
-            ("%5", "solo"),
+            ("%5", "gx:legacy"),
         ]);
+        assert_eq!(pick(&rows, "lead", "s", "s"), Ok(("%1", "lead".to_owned())));
         assert_eq!(
-            pick(&rows, "cl:worker", "s", "s"),
-            Ok(("%2", "cl:worker".to_owned()))
+            pick(&rows, "cl:legacy", "s", "s"),
+            Ok(("%3", "cl:legacy".to_owned())),
+            "a legacy stamp still resolves by its whole self"
         );
-        assert_eq!(
-            pick(&rows, "gx", "s", "s"),
-            Ok(("%3", "gx:lead".to_owned())),
-            "unique alias"
-        );
-        assert_eq!(
-            pick(&rows, "worker", "s", "s"),
-            Ok(("%2", "cl:worker".to_owned())),
-            "unique bare name"
-        );
-        assert_eq!(
-            pick(&rows, "solo", "s", "s"),
-            Ok(("%5", "solo".to_owned())),
-            "no colon: alias and name are the whole stamp"
-        );
-        assert_eq!(
-            pick(&rows, "cl", "s", "s"),
-            Err(ResolveError::Ambiguous {
-                target: "cl".to_owned(),
-                session: "s".to_owned()
-            }),
-            "two cl: panes"
-        );
-        assert_eq!(
-            pick(&rows, "lead", "s", "s"),
-            Err(ResolveError::Ambiguous {
-                target: "lead".to_owned(),
-                session: "s".to_owned()
-            }),
-            "two :lead panes"
-        );
+        // THE RETIREMENT, stated as the failures it causes. Neither half of a
+        // legacy stamp addresses its pane any more, and an alias that once
+        // stood in for a seat now finds nothing at all.
+        for partial in ["cl", "legacy", "gx"] {
+            assert_eq!(
+                pick(&rows, partial, "s", "s"),
+                Err(ResolveError::NotFound {
+                    target: partial.to_owned(),
+                    session: "s".to_owned()
+                }),
+                "{partial}: a partial match is a guess, not an address"
+            );
+        }
         assert_eq!(
             pick(&rows, "nobody", "s", "s"),
             Err(ResolveError::NotFound {
@@ -1029,21 +1078,30 @@ mod tests {
             "the frozen quirk, kept: an empty name is an exact match for an unstamped pane"
         );
         assert_eq!(
-            pick(&rows, "worker", "other", "s"),
-            Ok(("%2", "@other:cl:worker".to_owned())),
-            "cross-session display"
+            pick(&rows, "colead", "other", "s"),
+            Ok(("%2", "@other:colead".to_owned())),
+            "the display ref is unchanged — accepted input widened, output did not move"
         );
-        // An ambiguous alias does not hide a unique bare name: the frozen
-        // ifs are sequential, and the second still runs.
-        let rows = roster(&[("%1", "x:a"), ("%2", "x:b"), ("%3", "y:x")]);
-        assert_eq!(pick(&rows, "x", "s", "s"), Ok(("%3", "y:x".to_owned())));
+        // AMBIGUITY IS NOW THE PANE LAYER'S ALONE. A v2 roster cannot produce
+        // it (a name is one seat), so the only way in is two panes stamped
+        // identically — which no ae path creates and a hand-edited `@ae_agent`
+        // can. First-one-wins would route to a pane nobody chose.
+        let twins = roster(&[("%1", "lead"), ("%2", "lead")]);
+        assert_eq!(
+            pick(&twins, "lead", "s", "s"),
+            Err(ResolveError::Ambiguous {
+                target: "lead".to_owned(),
+                session: "s".to_owned()
+            })
+        );
         assert_eq!(
             ResolveError::Ambiguous {
-                target: "cl".to_owned(),
+                target: "lead".to_owned(),
                 session: "s".to_owned()
             }
             .message(),
-            "Error: ambiguous name 'cl' in session 's' — use alias:name format"
+            "Error: ambiguous name 'lead' in session 's'",
+            "the alias:name advice is gone with the arm that made it advice"
         );
         assert_eq!(
             ResolveError::NotFound {

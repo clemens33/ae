@@ -68,7 +68,7 @@ Three ways to reach an agent, easiest first:
 
 **1. Reply-to-routing (the easy path).** **Reply** (Telegram swipe-reply) to any event the bridge forwarded and your message goes straight to that event's agent — no session/agent typing. The bridge reads the replied-to message's header (`[session] action  actor …`) and revalidates it exactly like `/session … send`, so a reply can only ever reach a real agent you could already address.
 
-**2. Compact prefix — `@session:agent <msg>`.** Start a new thread without `/session`: `@mdk:claude:lead deploy now`. `session` is up to the first `:`; `agent` is the rest (keeps its `alias:name` colon). Sent as a `send`.
+**2. Compact prefix — `@session:agent <msg>`.** Start a new thread without `/session`: `@mdk:lead deploy now`. `session` is up to the first `:`; `agent` is the rest — a bare name, no alias. Sent as a `send`.
 
 **3. Plain messages → the orchestrator (auto-default).** With no override set, a **plain message** (no slash, no `@`) goes to your running **orchestrator** (the `meta_agent` session — canonical `orchestrator`, else legacy `hub`) as a `send`. So once `ae orchestrator` is up you just talk to it — no setup. If no orchestrator is running you're guided to start one (or use a target form above).
 
@@ -89,7 +89,7 @@ Three ways to reach an agent, easiest first:
 ```
 
 - `<name|id-prefix>` resolves only against **running** sessions (exact name, or a unique `session_id` prefix). Stopped sessions are not offered or addressable.
-- `<agent>` is validated against the resolved session's real agents (exact `alias:name` or a unique bare name) and canonicalized before dispatch. `%pane-id`, `@other-session:agent`, and `telegram:`/`discord:` targets are rejected — a command can't escape the named session.
+- `<agent>` is validated against the resolved session's real agents (an exact bare name; no alias matching) and canonicalized before dispatch. `%pane-id`, `@other-session:agent`, and `telegram:`/`discord:` targets are rejected — a command can't escape the named session.
 - Commands run with the sender identity `telegram:<your-id>`; `ask` replies and any agent message targeting `telegram:<your-id>` flow back out via the outbound path.
 
 **Command menu.** When inbound is enabled, the daemon registers the slash commands (`/list`, `/use`, `/session`, `/help`) with Telegram (`setMyCommands`) on startup, so they show up in the chat's `/` menu — no need to memorise the grammar. Best-effort: a registration failure is logged and ignored.

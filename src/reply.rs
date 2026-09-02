@@ -396,7 +396,16 @@ pub fn run(
     } else {
         verified.sender.clone()
     };
-    let reply_target = route(&request, own_session, transport::observe_slots);
+    // The asker's panes are enumerated on THAT session's recorded tmux server —
+    // the same door `tracked::resolve` uses — never the ambient one. Under the
+    // ambient server the roster came back empty whenever the session lived on
+    // its own socket, the slot lookup silently fell back to the STORED name, and
+    // a churned name then missed (v1's alias-prefix matching hid exactly this).
+    let reply_target = route(&request, own_session, |search| {
+        tracked::named_server(dir, search, own_session)
+            .ok()
+            .and_then(|server| transport::observe_slots(&server, search))
+    });
     let target_slot = key_text(&request.from_slot);
     let target_session = key_text(&request.from_session);
     let mut fields = EventFields {

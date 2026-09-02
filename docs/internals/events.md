@@ -51,9 +51,9 @@ Every event has these keys; `target`, `ref`, and `summary` are optional and omit
 ```json
 {
   "ts":      "2026-05-19T07:29:45Z",        // ISO 8601 UTC, second precision
-  "actor":   "claude:lead",                 // alias:name of the emitter (or 'watchdog', 'human')
+  "actor":   "lead",                        // bare name of the emitter (or 'watchdog', 'human')
   "action":  "done",                        // event type — see below
-  "target":  "codex:coworker",              // alias:name of the recipient when applicable
+  "target":  "coworker",                    // bare name of the recipient when applicable
   "ref":     "ae-20260519T072100Z-abc123",  // polysemous — see action table
   "summary": "first 200 chars of payload"   // optional preview, truncated
 }

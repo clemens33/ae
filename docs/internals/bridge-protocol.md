@@ -27,7 +27,7 @@ An *actor* in ae is anyone who can write an event. Today there are three classes
 
 External-actor identifiers are strings the bridge chooses and the bridge owns the mapping from chat-platform user id → external-actor id. ae does not maintain that mapping.
 
-External-actor identifiers SHOULD use the form `<platform>:<id>`. The `:` separator matches the agent-pane convention (`alias:name`) but the value is not parsed by ae beyond the prefix check in `send` and `ae_tracked_send`.
+External-actor identifiers SHOULD use the form `<platform>:<id>`. The `:` separator mirrors the cross-session addressing convention (`<session>:<name>`) but the value is not parsed by ae beyond the prefix check in `send` and `ae_tracked_send`.
 
 ## Writing back into ae
 
