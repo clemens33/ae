@@ -14,7 +14,7 @@
 # beat family aliases where they would drift: --model opus moved to Opus 5 the day it shipped.
 # opus5 = everyday builder tier (xhigh is a deliberate opt-up; Opus 5 defaults to high).
 opus5 = "claude --permission-mode bypassPermissions --model claude-opus-5 --effort xhigh"
-# fable5 = frontier lead tier (the default session lead; pair it with a cross-model colead).
+# fable5 = frontier lead tier (default lead seat; pairs with a cross-model colead as its equal peer).
 fable5 = "claude --permission-mode bypassPermissions --model fable --effort xhigh"
 sonnet5 = "claude --permission-mode bypassPermissions --model sonnet --effort low"
 gpt56sol = "codex --yolo -m gpt-5.6-sol -c model_reasoning_effort=xhigh"
@@ -23,16 +23,19 @@ gpt56luna = "codex -m gpt-5.6-luna -c model_reasoning_effort=low -a never"
 opencode = "opencode"
 
 [workspace]
-# main = the primary agent (alias:name). workers = comma-separated agents launched at start.
+# main = the standing main seat (alias:name) — under lead-pair a technical lifecycle
+# anchor, not a rank. workers = comma-separated agents launched at start.
 # layout = vertical | horizontal | lead-pair. watchdog = true nudges stale/idle agents.
-# The lead delegates by rule (see docs/reference/delegation.md — spawn workers on demand).
+# The leads delegate by rule (see docs/reference/delegation.md — spawn workers on demand).
 # Standing seats are the JUDGMENT PAIR only: under lead-pair the FIRST worker (worker.0)
-# is the COLEAD seat — a cross-model judgment partner sharing the leads window (0:leads).
-# Builders and reviewers are NOT standing seats: the lead spawns them per slice
-# (spawn opus5:builder / spawn gpt56sol:reviewer) and retires them when the work is
-# verified — every spawn ends in a retire. This keeps idle panes at zero, makes the
-# retire contract do real work, and still keeps judgment (colead) separate from
-# review (a spawned seat) on every slice.
+# is the COLEAD seat — an EQUAL leadership peer of the lead (interchangeable, same level,
+# sharing the leads window 0:leads); main stays the technical lifecycle anchor (compact
+# handover), which is infrastructure, not seniority. Builders and reviewers are NOT
+# standing seats: either peer spawns them per slice (spawn opus5:builder / spawn
+# gpt56sol:reviewer) and retires its own spawns when the work is verified — every spawn
+# ends in a retire. This keeps idle panes at zero, makes the retire contract do real
+# work, and still keeps judgment (the pair) separate from review (a spawned seat) on
+# every slice.
 main = fable5:lead
 workers = gpt56sol:colead
 layout = lead-pair

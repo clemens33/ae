@@ -112,7 +112,7 @@ AE_LOCAL_CONFIG=""
 
 # Extract pure function definitions from ae (matches "func() {" but not "func() ${BODY}" heredoc copies)
 eval "$(awk '
-    /^(_ae_tac|_ae_stat|_ae_epoch|_ae_sed_inplace|_ae_json_first|_ae_json_first_num|_ae_md5|_ae_inside_tmux|daemon_session_running|launch_rerun_command|write_launch_script|_publish_executable_artifact|_emit_launch_script|_validate_session_name|_validate_agent_name|_dedup_worker_names|_session_name_usable|_session_path_is_safe|_require_session_path_safe|_transfer_remote_path_is_safe|_canonical_dir|_path_is_direct_child|_spawn_rollback|parse_config|get_config|build_ae_context|strip_session_flags|strip_opencode_session_flags|strip_gemini_prompt_flags|strip_grok_session_flags|resume_cmd_from_cmd|inject_session_id|inject_ae_context|initial_prompt_for_cmd|gen_uuid|resolve_agent_session_id|resolve_launch_tmux_server|_end_verify_gone|_srv_tmux_args|_end_target_server|_end_target_kind|_tmux_err_is_clean_dead|_ae_install_tmux_shim|_end_sweep_servers|read_session_meta|_cmd_split_binary|_cmd_strip_env_prefix|_cmd_binary_kind|_cmd_env_prefix|ae_json_escape|_publish_data_artifact|_opencode_context_files|tool_kind_from_cmd|tool_name_from_cmd|tool_kind_supports_launch_id|read_launch_id_for_slot|read_launch_time_for_slot|default_session_name|sanitize_branch_name|shell_quote|build_launch_command|_launch_injected_head|_launch_is_resume|_launch_id_probeable|_launch_probe_claude|_launch_probe_codex|_launch_resume_decider|extract_binary_from_cmd|_transfer_validate_uuid|_transfer_find_claude_session_file|_transfer_find_codex_session_file|_transfer_json_escape|_transfer_bash_quote|_transfer_session_summary|_transfer_session_running|_transfer_ensure_stopped|_transfer_ensure_stopped_remote|_transfer_ssh_probe|_transfer_local_rsync_supports_protect_args|_transfer_remote_preflight|_transfer_check_remote_path|_transfer_remote_session_exists|_transfer_emit_destination_event|_transfer_read_remote_meta_value|_transfer_find_remote_claude_session_file|_transfer_find_remote_codex_session_file|_transfer_local_session_exists|_transfer_emit_local_event|_cleanup_agent_session_files|_end_target_class|_end_confirm_body|_end_tmux|_end_live_id|_end_target_server|_end_history_lines|_ae_session_id|_end_target_server|_end_live_id|_roster_glyph|_roster_label|_roster_compose|_roster_slot_refs|_roster_window_compose|_roster_session_id|cmd_transfer)\(\) \{/ { printing=1 }
+    /^(_ae_tac|_ae_stat|_ae_epoch|_ae_sed_inplace|_ae_json_first|_ae_json_first_num|_ae_md5|_ae_inside_tmux|daemon_session_running|launch_rerun_command|write_launch_script|_publish_executable_artifact|_emit_launch_script|_validate_session_name|_validate_agent_name|_dedup_worker_names|_session_name_usable|_session_path_is_safe|_require_session_path_safe|_transfer_remote_path_is_safe|_canonical_dir|_path_is_direct_child|_spawn_rollback|parse_config|get_config|build_ae_context|strip_session_flags|strip_opencode_session_flags|strip_gemini_prompt_flags|strip_grok_session_flags|resume_cmd_from_cmd|inject_session_id|inject_ae_context|initial_prompt_for_cmd|gen_uuid|resolve_agent_session_id|resolve_launch_tmux_server|_end_verify_gone|_srv_tmux_args|_end_target_server|_end_target_kind|_tmux_err_is_clean_dead|_ae_install_tmux_shim|_end_sweep_servers|read_session_meta|_cmd_split_binary|_cmd_strip_env_prefix|_cmd_binary_kind|_cmd_env_prefix|ae_json_escape|_publish_data_artifact|_opencode_context_files|tool_kind_from_cmd|tool_name_from_cmd|tool_kind_supports_launch_id|read_launch_id_for_slot|read_launch_time_for_slot|default_session_name|sanitize_branch_name|shell_quote|build_launch_command|_launch_injected_head|_launch_is_resume|_launch_id_probeable|_launch_probe_claude|_launch_probe_codex|_launch_resume_decider|extract_binary_from_cmd|_transfer_validate_uuid|_transfer_find_claude_session_file|_transfer_find_codex_session_file|_transfer_json_escape|_transfer_bash_quote|_transfer_session_summary|_transfer_session_running|_transfer_ensure_stopped|_transfer_ensure_stopped_remote|_transfer_ssh_probe|_transfer_local_rsync_supports_protect_args|_transfer_remote_preflight|_transfer_check_remote_path|_transfer_remote_session_exists|_transfer_emit_destination_event|_transfer_read_remote_meta_value|_transfer_find_remote_claude_session_file|_transfer_find_remote_codex_session_file|_transfer_local_session_exists|_transfer_emit_local_event|_cleanup_agent_session_files|_end_target_class|_end_confirm_body|_end_tmux|_end_live_id|_end_target_server|_end_history_lines|_ae_session_id|_end_target_server|_end_live_id|_roster_glyph|_roster_label|_roster_compose|_roster_slot_refs|_roster_window_compose|_roster_session_id|regenerate_manifest|_valid_slot|_stamp_live_slots|cmd_transfer)\(\) \{/ { printing=1 }
     printing { print }
     printing && /^\}$/ { printing=0 }
 ' "$(dirname "$0")/../ae")"
@@ -1417,7 +1417,10 @@ assert_eq "mode-context: unknown mode -> NO working-tree block (fail-quiet)" "0"
 assert_eq "mode-context: mode block COMPOSES with slot block (git + worker)" "1" "$([[ "$_mc_git" == *"WORKER ROLE"* && "$_mc_git" == *"isolated git worktree"* ]] && echo 1 || echo 0)"
 rm -rf "$_mc_dir"
 
-# ── session-shape: COLEAD role block — structural on layout=lead-pair + worker.0 ──
+# ── session-shape: LEADERSHIP PEER block — structural on layout=lead-pair, main + worker.0 ──
+# Human ruling 2026-09-01: lead and colead are interchangeable, same-level leadership
+# peers. ONE shared block feeds both seats; the byte-identity pin below is what makes
+# "shared" a fact rather than a discipline — two hand-kept copies could drift.
 _cl_dir="$(mktemp -d)"
 printf 'mode=local\norigin=/o\nlayout=lead-pair\n' >"$_cl_dir/meta"
 _cl_colead="$(CONFIG_FILE=/dev/null build_ae_context "$_cl_dir" "sess" "/work" "worker.0")"
@@ -1425,13 +1428,106 @@ _cl_w1="$(CONFIG_FILE=/dev/null build_ae_context "$_cl_dir" "sess" "/work" "work
 _cl_main="$(CONFIG_FILE=/dev/null build_ae_context "$_cl_dir" "sess" "/work" "main")"
 printf 'mode=local\norigin=/o\nlayout=lead-solo\n' >"$_cl_dir/meta"
 _cl_solo_w0="$(CONFIG_FILE=/dev/null build_ae_context "$_cl_dir" "sess" "/work" "worker.0")"
-assert_eq "colead: lead-pair + worker.0 -> COLEAD block (judgment partner, lead rules)" "1" "$([[ "$_cl_colead" == *"COLEAD ROLE"* && "$_cl_colead" == *"THE LEAD RULES"* ]] && echo 1 || echo 0)"
-assert_eq "colead: lead-pair worker.0 has NO plain worker block" "0" "$([[ "$_cl_colead" == *"WORKER ROLE"* ]] && echo 1 || echo 0)"
-assert_eq "colead: lead-pair worker.1 stays a plain WORKER" "1" "$([[ "$_cl_w1" == *"WORKER ROLE"* && "$_cl_w1" != *"COLEAD ROLE"* ]] && echo 1 || echo 0)"
-assert_eq "colead: lead-pair main stays LEAD (no colead leak)" "1" "$([[ "$_cl_main" == *"LEAD ROLE"* && "$_cl_main" != *"COLEAD ROLE"* ]] && echo 1 || echo 0)"
-assert_eq "colead: lead-solo worker.0 is a plain WORKER (colead is structural, not slot-only)" "1" "$([[ "$_cl_solo_w0" == *"WORKER ROLE"* && "$_cl_solo_w0" != *"COLEAD ROLE"* ]] && echo 1 || echo 0)"
-assert_eq "colead: composes with the mode block (local caution present)" "1" "$([[ "$_cl_colead" == *"COLEAD ROLE"* && "$_cl_colead" == *"LIVE checkout"* ]] && echo 1 || echo 0)"
+_cl_solo_main="$(CONFIG_FILE=/dev/null build_ae_context "$_cl_dir" "sess" "/work" "main")"
+assert_eq "peer: lead-pair worker.0 -> LEADERSHIP PEER block (owner rules, bounded human escalation)" "1" "$([[ "$_cl_colead" == *"LEADERSHIP PEER"* && "$_cl_colead" == *"OWNER RULES"* ]] && echo 1 || echo 0)"
+assert_eq "peer: lead-pair main -> the SAME LEADERSHIP PEER block" "1" "$([[ "$_cl_main" == *"LEADERSHIP PEER"* ]] && echo 1 || echo 0)"
+assert_eq "peer: lead-pair seats carry NO solo-lead/colead/worker block" "0" "$([[ "$_cl_main" == *"LEAD ROLE"* || "$_cl_main" == *"COLEAD ROLE"* || "$_cl_colead" == *"LEAD ROLE"* || "$_cl_colead" == *"COLEAD ROLE"* || "$_cl_colead" == *"WORKER ROLE"* ]] && echo 1 || echo 0)"
+assert_eq "peer: main and worker.0 contexts are BYTE-IDENTICAL (the shared block cannot drift)" "1" "$([[ "$_cl_main" == "$_cl_colead" && -n "$_cl_main" ]] && echo 1 || echo 0)"
+assert_eq "peer: lead-pair worker.1 stays a plain WORKER" "1" "$([[ "$_cl_w1" == *"WORKER ROLE"* && "$_cl_w1" != *"LEADERSHIP PEER"* ]] && echo 1 || echo 0)"
+assert_eq "peer: lead-solo worker.0 is a plain WORKER (the peer seat is structural, not slot-only)" "1" "$([[ "$_cl_solo_w0" == *"WORKER ROLE"* && "$_cl_solo_w0" != *"LEADERSHIP PEER"* ]] && echo 1 || echo 0)"
+assert_eq "peer: lead-solo main keeps the solo LEAD ROLE (no peer leak outside lead-pair)" "1" "$([[ "$_cl_solo_main" == *"LEAD ROLE"* && "$_cl_solo_main" != *"LEADERSHIP PEER"* ]] && echo 1 || echo 0)"
+assert_eq "peer: composes with the mode block (local caution present)" "1" "$([[ "$_cl_colead" == *"LEADERSHIP PEER"* && "$_cl_colead" == *"LIVE checkout"* ]] && echo 1 || echo 0)"
 rm -rf "$_cl_dir"
+
+# ── manifest roles: under lead-pair the worker.0 standing seat labels 'lead' too ──
+# regenerate_manifest reads layout from meta and slot from @ae_slot ('|'-framed, so an
+# UNSTAMPED pane's empty slot survives as an empty field instead of shifting @ae_agent
+# left — the #48 class). Unstamped panes fall back to the main-pane-id check.
+_mfr_dir="$(mktemp -d)"
+printf 'session=s\nlayout=lead-pair\n' >"$_mfr_dir/meta"
+# shellcheck disable=SC2317,SC2329
+tmux() {
+    if [[ "${1:-}" == "list-panes" ]]; then
+        printf '%s\n' '%1|main|fable5:lead' '%2|worker.0|gpt56sol:colead' '%3|spawned.0|opus5:builder'
+    fi
+    return 0
+}
+CONFIG_FILE=/dev/null AE_LOCAL_CONFIG="" regenerate_manifest "s" "/work" "/o" "local" "%1" "$_mfr_dir"
+assert_eq "manifest-roles: lead-pair -> main AND worker.0 rows read 'lead', spawned reads 'agent'" "1|1|1" \
+    "$(printf '%s|%s|%s' \
+        "$(command grep -c '^| fable5:lead | .* | lead | %1 |$' "$_mfr_dir/workspace.md" || true)" \
+        "$(command grep -c '^| gpt56sol:colead | .* | lead | %2 |$' "$_mfr_dir/workspace.md" || true)" \
+        "$(command grep -c '^| opus5:builder | .* | agent | %3 |$' "$_mfr_dir/workspace.md" || true)")"
+# Layout is the decider: outside lead-pair the same worker.0 pane is a plain agent —
+# and an UNSTAMPED main pane (empty @ae_slot field) still labels 'lead' via the pane-id
+# fallback, which also proves the '|' framing kept the empty middle field in place.
+printf 'session=s\nlayout=vertical\n' >"$_mfr_dir/meta"
+# shellcheck disable=SC2317,SC2329
+tmux() {
+    if [[ "${1:-}" == "list-panes" ]]; then
+        printf '%s\n' '%1||fable5:lead' '%2|worker.0|gpt56sol:colead'
+    fi
+    return 0
+}
+CONFIG_FILE=/dev/null AE_LOCAL_CONFIG="" regenerate_manifest "s" "/work" "/o" "local" "%1" "$_mfr_dir"
+assert_eq "manifest-roles: outside lead-pair worker.0 is 'agent'; unstamped main still 'lead' (pane-id fallback)" "1|1" \
+    "$(printf '%s|%s' \
+        "$(command grep -c '^| fable5:lead | .* | lead | %1 |$' "$_mfr_dir/workspace.md" || true)" \
+        "$(command grep -c '^| gpt56sol:colead | .* | agent | %2 |$' "$_mfr_dir/workspace.md" || true)")"
+unset -f tmux
+rm -rf "$_mfr_dir"
+unset _mfr_dir
+
+# ── refresh ordering: stamp @ae_slot BEFORE the manifest is regenerated ──
+# On the FIRST doctor --refresh of a pre-slot lead-pair session, worker.0 has an
+# empty @ae_slot; regenerate_manifest reads @ae_slot for the role column, so the
+# region must run _stamp_live_slots first or the colead row prints 'agent' until
+# some later regeneration (colead gate finding, review f9c11c22). The tmux stub
+# is STATEFUL — set-option rewrites the pane table list-panes serves — so this
+# proves the composition, and the old-order control proves the pin discriminates.
+_ord_dir="$(mktemp -d)"
+printf 'session=s\nlayout=lead-pair\nagent.main=fable5:lead:aaaa\nagent.worker.0=gpt56sol:colead:bbbb\n' >"$_ord_dir/meta"
+# shellcheck disable=SC2317,SC2329
+tmux() {
+    case "${1:-}" in
+        list-panes) cat "$_ord_dir/panes" ;;
+        set-option) # shape: set-option -p -t <pane> @ae_slot <slot>
+            local _p="$4" _s="$6" _pid _pslot _pagent _out=""
+            while IFS='|' read -r _pid _pslot _pagent; do
+                [[ "$_pid" == "$_p" ]] && _pslot="$_s"
+                _out+="${_pid}|${_pslot}|${_pagent}"$'\n'
+            done <"$_ord_dir/panes"
+            printf '%s' "$_out" >"$_ord_dir/panes" ;;
+    esac
+    return 0
+}
+# Region order (stamp, then regenerate): the unstamped colead row comes out 'lead'.
+printf '%s\n' '%1|main|fable5:lead' '%2||gpt56sol:colead' >"$_ord_dir/panes"
+_stamp_live_slots "s" "$_ord_dir/meta"
+CONFIG_FILE=/dev/null AE_LOCAL_CONFIG="" regenerate_manifest "s" "/work" "/o" "local" "%1" "$_ord_dir"
+assert_eq "refresh-order: stamp-then-regenerate labels an unstamped lead-pair worker.0 'lead' in ONE pass" "1|1" \
+    "$(printf '%s|%s' \
+        "$(command grep -c '^| fable5:lead | .* | lead | %1 |$' "$_ord_dir/workspace.md" || true)" \
+        "$(command grep -c '^| gpt56sol:colead | .* | lead | %2 |$' "$_ord_dir/workspace.md" || true)")"
+# CONTROL (old order): regenerate-then-stamp leaves the same fixture's colead row
+# 'agent' — the discriminating input that makes the ordering pin non-vacuous.
+printf '%s\n' '%1|main|fable5:lead' '%2||gpt56sol:colead' >"$_ord_dir/panes"
+CONFIG_FILE=/dev/null AE_LOCAL_CONFIG="" regenerate_manifest "s" "/work" "/o" "local" "%1" "$_ord_dir"
+_stamp_live_slots "s" "$_ord_dir/meta"
+assert_eq "refresh-order CONTROL: the old regenerate-then-stamp order leaves the colead row 'agent'" "1" \
+    "$(command grep -c '^| gpt56sol:colead | .* | agent | %2 |$' "$_ord_dir/workspace.md" || true)"
+unset -f tmux
+rm -rf "$_ord_dir"
+unset _ord_dir
+# ...and the structural pin on the shipped region: the stamp call precedes the
+# regenerate call between the SYNC_SESSION_ASSETS_BODY markers, so doctor
+# --refresh (which awk-sources exactly that region) runs them in the proven order.
+_ord_region="$(awk '/^    # SYNC_SESSION_ASSETS_BODY_START$/{f=1} f{print} /^    # SYNC_SESSION_ASSETS_BODY_END$/{f=0}' <<<"$AE_SOURCE")"
+_ord_stamp_ln="$(command grep -Fn '_stamp_live_slots "$SESSION"' <<<"$_ord_region" | head -1 | cut -d: -f1)"
+_ord_regen_ln="$(command grep -Fn 'regenerate_manifest "$SESSION"' <<<"$_ord_region" | head -1 | cut -d: -f1)"
+assert_eq "refresh-order: _stamp_live_slots precedes regenerate_manifest inside the marker region" "1" \
+    "$([[ -n "$_ord_stamp_ln" && -n "$_ord_regen_ln" && "$_ord_stamp_ln" -lt "$_ord_regen_ln" ]] && echo 1 || echo 0)"
+unset _ord_region _ord_stamp_ln _ord_regen_ln
 
 # ── #59 identity: an agent is TOLD its own name, never left to infer it ──────────
 # A spawned agent asked who it was answered "I am fable5:lead" — it read its model
@@ -1480,8 +1576,9 @@ assert_eq "#59: no meta at all -> NO identity line (and the rest still builds)" 
 assert_eq "#59: identity sits immediately after Session/Directory, before the rules" "1" \
     "$([[ "$_id_main" == "You are in an ae multi-agent workspace. Session: sess. Directory: /work. You are agent fable5:lead (slot main). Sign and identify as this agent only; workspace.md lists the others. Helper scripts in "* ]] && echo 1 || echo 0)"
 # One sentence, no role content — the role blocks below own that, and they still fire.
+# (The fixture is lead-pair, so main and worker.0 both carry the shared peer block.)
 assert_eq "#59: identity does not displace the role blocks (composes)" "1" \
-    "$([[ "$_id_main" == *"LEAD ROLE"* && "$_id_w0" == *"COLEAD ROLE"* && "$_id_sp3" == *"WORKER ROLE"* ]] && echo 1 || echo 0)"
+    "$([[ "$_id_main" == *"LEADERSHIP PEER"* && "$_id_w0" == *"LEADERSHIP PEER"* && "$_id_sp3" == *"WORKER ROLE"* ]] && echo 1 || echo 0)"
 
 # PER TOOL PATH. #59 is tool-agnostic — all five integrations shipped it — so the pin
 # is per transport, at the far end of each one's escaping, not on build_ae_context alone.

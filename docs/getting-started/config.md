@@ -61,8 +61,8 @@ adopt this pattern.
 
 | Key       | Description                                          | Default       |
 |-----------|------------------------------------------------------|---------------|
-| `main`    | `alias:name` for the primary agent                   | `fable5:lead` |
-| `workers` | Comma-separated agents launched at startup. Under `lead-pair` the FIRST worker is the colead seat. Recommended default: the colead ONLY — builders/reviewers are spawned on demand per slice and retired when done | `gpt56sol:colead` |
+| `main`    | `alias:name` for the standing main seat. Under `lead-pair` this is a *technical* lifecycle anchor (compact handover, non-retirable), not a rank | `fable5:lead` |
+| `workers` | Comma-separated agents launched at startup. Under `lead-pair` the FIRST worker is the colead seat — an equal leadership peer of the lead (interchangeable, same level). Recommended default: the colead ONLY — builders/reviewers are spawned on demand per slice and retired when done | `gpt56sol:colead` |
 | `layout`  | `lead-pair` (lead + colead share window 0, other workers in window 1), `lead-solo` (lead alone in window 0, workers in window 1), `vertical` (side-by-side splits), `horizontal` (stacked splits) | `lead-pair`   |
 | `copy`    | Working directory mode (see below)                   | `local`       |
 | `watchdog`    | Auto-start the watchdog (`true` / `false`)            | `true`        |

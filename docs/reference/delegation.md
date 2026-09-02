@@ -1,9 +1,21 @@
 # Delegation — leads, tiers, and spawned workers
 
 The era of running the strongest model for everything is over. The pattern
-that works: **the lead (and the orchestrator) stay on a frontier model; bounded
+that works: **the leads (and the orchestrator) stay on frontier models; bounded
 subtasks go to spawned workers on cheaper/faster tiers; workers get retired
 when reviewed.**
+
+Under the default `lead-pair` layout the two standing seats — `lead` and
+`colead` — are **equal leadership peers**: interchangeable, same level, no
+implicit seniority. Both interface with the human, triage, decide, delegate,
+gate, and review; neither builds slices. Every decision gets one explicitly
+assigned owner (whoever opens a topic proposes its owner); the other peer
+challenges once, concretely, with evidence — then the owner rules and both
+commit. Escalate to the human only when ownership itself is unclear or
+disputed, or when safety/irreversibility warrants it. The `main` slot remains
+the *technical* lifecycle anchor (compact handover, non-retirable) — that is
+infrastructure, not rank. Each peer owns review and retirement of its own
+spawns. "The lead" below therefore means *whichever peer spawned the worker*.
 
 Honest economics up front: multi-agent work can cost *more* tokens in total —
 Anthropic's own numbers ([multi-agent research system](https://www.anthropic.com/engineering/multi-agent-research-system))
@@ -23,7 +35,7 @@ for the recommended `fast` / `standard` / `optimal` / `best` + `codex` /
 
 | Role | Tier |
 |---|---|
-| Session lead, orchestrator | `optimal` / `best` |
+| Session leads (lead + colead), orchestrator | `optimal` / `best` |
 | Cross-model review | `codex` (different model family = different blind spots) |
 | Chores, test runners, CI/CD, scouts | `fast` / `codexfast` |
 | Scoped implementation | `standard` |
@@ -58,28 +70,28 @@ result the lead consumes immediately.
 **Naming**: alias = tier, name = role. `chore:tests`, `chore:callers`, `dev:docs-sync`, `review:slice7`,
 `standard:docs-sync` — never `worker`, `helper-3`.
 
-**Brief** (what the lead sends): objective, allowed scope/files, verification
+**Brief** (what the spawner sends): objective, allowed scope/files, verification
 command, expected reply shape, whether edits are allowed.
 
 **Result** (what the worker replies): `Outcome / Changed / Verified (command +
-result) / Risks / Need from lead`. No raw logs unless asked.
+result) / Risks / Need from spawner`. No raw logs unless asked.
 
 **Lifecycle**: worker declares `state working` on start, `state done` when
-finished, then waits. The lead reviews the output/diff, then `retire <name>`.
+finished, then waits. The spawner reviews the output/diff, then `retire <name>`.
 Workers never self-retire — the pane must survive until reviewed. `memo` is
 for durable findings that outlive the pane, never chat transcripts.
 
-**File ownership**: one writer per file. In `--local` mode the lead assigns
+**File ownership**: one writer per file. In `--local` mode the leads assign
 scope; for parallel write-heavy work use separate worktrees or sessions.
 
 ## Example round-trip
 
 ```bash
-# lead:
+# spawner (either peer):
 ~/.ae/sessions/myfeat/spawn fast:tests "Objective: run 'just test'; report
 failures only, format: Outcome/Verified/Risks. Read-only — no edits."
 # worker (when done): declares 'state done', replies with the summary
-# lead: reviews, then
+# spawner: reviews, then
 ~/.ae/sessions/myfeat/retire tests
 ```
 
@@ -94,7 +106,7 @@ to name what ae already does — useful when judging how much autonomy a loop
   alerts; orchestrator passive monitoring.)
 - **L2 — assisted, gated**: the loop proposes concrete actions and a human
   (or a *different* agent) verifies before anything changes. (Orchestrator
-  suggestions; the lead→worker round-trip — the lead is the checker.)
+  suggestions; the spawner→worker round-trip — the spawner is the checker.)
 - **L3 — unattended**: the loop acts without a gate. **ae ships nothing at
   L3 by design** — the orchestrator suggests-never-dispatches, workers never
   self-retire, nothing auto-merges.
@@ -103,11 +115,11 @@ Two hard rules from the same playbook, already implicit in the contracts
 above, now explicit:
 
 - **Verifier ≠ implementer.** The agent that did the work never accepts it —
-  the lead reviews the worker's diff/output before `retire`; cross-model
+  the spawner reviews the worker's diff/output before `retire`; cross-model
   review gates commits.
 - **Attempt cap.** A worker stuck after **3 fix attempts** on the same
-  failure stops and reports (`Need from lead: …`) instead of looping. The
-  lead escalates or re-scopes; nobody grinds silently.
+  failure stops and reports (`Need from spawner: …`) instead of looping. The
+  spawner escalates or re-scopes; nobody grinds silently.
 
 Named smells when reviewing a loop/charter/config change: *"same agent
 implements and verifies"*, *"no kill switch"* (every ae loop has one:
