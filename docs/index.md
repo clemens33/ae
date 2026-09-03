@@ -13,7 +13,7 @@
 - **One command.** `ae` starts a session, `ae` reattaches. That's the whole workflow.
 - **Agents talk to each other.** Each agent gets workspace context injected into its system prompt — starting with which agent it is. They send messages by name, spawn new agents, and coordinate without manual wiring.
 - **Everything survives reboots.** Sessions, spawned agents, conversation history. Pick up exactly where you left off.
-- **One window to your whole fleet.** The optional [`ae orchestrator`](reference/commands.md#ae-orchestrator) meta-agent — your fleet's chief of staff — watches every session and relays to them — talk to *it* from your phone over [Telegram](reference/telegram.md#orchestrator-centric-routing-talk-to-the-meta-agent-not-ten-sessions) instead of juggling ten panes.
+- **One window to your whole fleet.** The optional [orchestrator companion](reference/commands.md#the-orchestrator-companion) meta-agent — your fleet's chief of staff — watches every session and relays to them — talk to *it* from your phone over [Telegram](reference/telegram.md#orchestrator-centric-routing-talk-to-the-meta-agent-not-ten-sessions) instead of juggling ten panes.
 - **Nothing touches your repo.** Session state lives in `~/.ae/sessions/`. Your working directory stays clean.
 - **Small versioned runtime.** The public wrapper validates a matched Rust core and Bash pane glue from one immutable version directory.
 

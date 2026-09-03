@@ -64,10 +64,13 @@ The regenerate step runs on a new launch or resume, never against an already-run
 
 ## The Bash pane glue
 
-The tracked `ae` glue handles tmux orchestration, helper generation, and sibling-binding
-routing. Its file index groups functions by concern (Config, Helpers,
-Resume, Session, Launch, Manifest, Commands). The Rust core owns state/lifecycle; the public
-wrapper and versioned installer are described above.
+`ae` is the pane-side remainder and nothing more: the bash preamble and its `bash >= 4`
+re-exec, the core binding, the name and path guards, the sensor that answers whether the
+caller is really inside a tmux pane, the launch flag assembly, a dispatcher of thin core
+routes, and refusing arms for the words that were cut. It holds no bash body for any
+core-owned domain and reads none of ae's own state — the core does every read and every
+effect. Its own header lists the ABSENCES the test suite asserts, which is the place to look
+before adding anything back.
 
 ## Per-session state on disk
 
@@ -77,8 +80,7 @@ When you start a session, ae creates `~/.ae/sessions/<name>/` and fills it with:
 - **`events.jsonl`** — append-only JSONL audit log. Single source of truth for messaging and request state.
 - **`memo.tsv`** — shared session memory (durable findings, decisions, handoffs).
 - **`workspace.md`** — human/agent-readable manifest of the session (regenerated on every resume).
-- **`_lib`** — shared bash library sourced by every helper. Hosts: name resolution, flock serialization, request tracking (`ae_tracked_send`, `ae_find_request`), event log writers (`ae_emit_event`, `_event_json_str`).
-- **`send`, `ask`, `review`, `reply`, `requests`, `mark-done`, `memo`, `peek`/`peak`, `agents`, `focus`, `interrupt`, `spawn`, `retire`, `watchdog`, `events-tail`, `_register-sid`, `_send-deliver`** — session helpers, all generated bash scripts.
+- **`send`, `ask`, `review`, `reply`, `requests`, `state`, `mark-done`, `say`, `memo`, `goal`, `peek`/`peak`, `agents`, `focus`, `interrupt`, `spawn`, `retire`** — the agent-facing helpers, plus `watchdog`/`loop` and `events-tail` for the two monitor panes. Each is a four-line shim that names its own directory and execs the core; there is no shared bash library under them any more, because there is no bash logic left to share.
 - **`launch.*.sh`** — pre-built launch commands per agent slot (for resume).
 
 Nothing in the project working directory changes.
@@ -156,9 +158,9 @@ be identified, so the end refuses rather than letting cleanup delete that memory
 and so does a session whose `session_id` is present but unparseable, whichever history
 flag was passed.
 
-The confirmed plan is **frozen**: `cmd_end` resolves each target's plan exactly once,
-renders the prompt from those fields and freezes those same fields, and
-`_end_archive_step` re-proves them under the lifecycle lock. One observation, not two —
+The confirmed plan is **frozen**: `_end` resolves each target's plan exactly once,
+renders the prompt from those fields and freezes those same fields, then re-proves them
+under the lifecycle lock before the archive step. One observation, not two —
 a value worth confirming to a human is worth observing exactly once, and nothing in that
 path may run inside a command substitution, because a fork cannot carry the freeze back.
 `ae end all` also carries the **confirmed target list** into execution rather than
@@ -221,9 +223,9 @@ digest as the handover.
 `ae:compact:<uuid>`, which joins `telegram:`/`discord:` in the event-only sink family —
 recognised on both the send and the reply side, so nothing tries to resolve it to a pane.
 That required one prerequisite fix in the request protocol: a slotless override sender
-must still be replyable by its assignee, which `ae_find_request`/`helper_reply_main` got
+must still be replyable by its assignee, which the bash request lookup and reply body got
 wrong because they framed their fields with tabs and IFS-whitespace collapsed an empty
-one, shifting every field after it. Both now frame with `\x1f`.
+one, shifting every field after it. Both frame with `\x1f`, and both are the core's now.
 
 **Its stdout is a contract**: `Archived`, `Archive:`, `Digest:`, `Recovery:` — four lines,
 that order, nothing else, and *empty* unless the boundary was crossed. It promises exactly
@@ -349,10 +351,17 @@ The full helper catalog lives in `workspace.md`, which the prompt points at.
 | Agent | Capture method |
 |---|---|
 | Claude Code | ae generates the UUID up-front and passes it via `--session-id UUID`. Immediate. |
-| Codex | No launch-time flag exists. ae instructs Codex via `developer_instructions` to run `_register-sid` as its first action; that helper scans `~/.codex/sessions/YYYY/MM/DD/*.jsonl` filtered by launch token and CWD, writes the UUID into `meta`. |
+| Codex | No launch-time flag exists, so the core runs a chain in a detached child: the `codex.<slot>.sid` file codex's own first-task instruction writes, then a launch-token scan of `~/.codex/sessions/YYYY/MM/DD/*.jsonl`, then a cwd scan of the same files, then the TUI header. |
 | Gemini | Post-launch scan of `~/.gemini/tmp/<project>/chats/session-*.json` by launch token. |
 | Grok Build | ae generates the UUID up-front and passes it via `--session-id UUID`. Immediate — same as Claude Code, no post-launch scan. |
 | OpenCode | Post-launch `opencode session list --format json` filtered by CWD. |
+
+Every scan is filtered by the seat's recorded launch time, so a stale conversation in the
+same directory cannot be captured as this one. Capture runs in its own detached process,
+never on the launch's thread, so a tool that takes half a minute to answer does not delay the
+attach — and if that child dies before its tool answers, the watchdog closes the gap: each
+cycle it takes one look at every seat still pending and registers whatever it finds. The next
+tick is the retry, so it neither sleeps nor polls.
 
 Resume uses the captured UUID for exact conversation restore; falls back to a CWD heuristic if capture failed.
 

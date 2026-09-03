@@ -33,9 +33,12 @@ Agents pick descriptive names, show up in own tmux windows, and talk to each oth
 ## Check on agents without attaching
 
 ```bash
-ae status my-feature    # recent output from each agent
 ae list                 # running sessions with per-agent health
+ae list --needs-attn    # only the ones needing you
+ae next                 # name the top session needing attention
 ```
+
+Inside a session, `peek <agent>` shows one agent's recent output.
 
 ## Finish up
 

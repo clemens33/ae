@@ -1,6 +1,8 @@
 # Session helpers
 
-Every ae session has a directory at `~/.ae/sessions/<name>/` filled with generated bash scripts. Agents call them by absolute path (they're deliberately not on `PATH`); humans can too. All helpers regenerate from the running ae binary on every start, resume, and `ae doctor --refresh`.
+Every ae session has a directory at `~/.ae/sessions/<name>/` filled with generated helper scripts. Agents call them by absolute path (they're deliberately not on `PATH`); humans can too. All helpers regenerate from the running ae binary on every start, resume, and `ae doctor --refresh`.
+
+Each one is a **thin shim**: four lines of bash that name their own session directory and hand the whole argv to the ae core. The names and the argv are the contract — every agent in a live workspace calls them by name — and everything behind them is Rust.
 
 ## Communication
 
@@ -17,7 +19,7 @@ All messaging helpers emit a structured event into `events.jsonl` so the morning
 
 ### How they compose
 
-`ask` and `review` are thin wrappers over the shared `ae_tracked_send` in `_lib`. Everything ultimately dispatches through `send`, which is the only helper that actually pastes into a pane. `reply` looks up the original request via `ae_find_request` (also in `_lib`) before delegating to `send`.
+`ask` and `review` are the tracked form of a send: they resolve the target, mint a request id, and build the message before the same delivery runs. Everything ends at the one path that actually pastes into a pane. `reply` looks the original request up and verifies the pairing against its stored slot before delivering.
 
 ```mermaid
 flowchart LR
@@ -25,20 +27,20 @@ flowchart LR
     A --ask--> AK[ask helper]
     A --review--> RV[review helper]
 
-    AK --> TS["_lib::ae_tracked_send<br/>(resolve target,<br/>mint req_id,<br/>build message)"]
+    AK --> TS["tracked send<br/>(resolve target,<br/>mint req_id,<br/>build message)"]
     RV --> TS
-    TS -->|exec env<br/>_AE_EVENT_ACTION=ask/review| S
+    TS -->|action = ask/review| S
 
     S -->|tmux paste| B[Agent B pane]
-    S -->|ae_emit_event| EJ[(events.jsonl)]
+    S -->|emit event| EJ[(events.jsonl)]
 
     B --reply--> RP[reply helper]
-    RP -->|ae_find_request<br/>verify pairing| EJ
-    RP -->|exec env<br/>_AE_EVENT_ACTION=reply| S
+    RP -->|look up request,<br/>verify pairing| EJ
+    RP -->|action = reply| S
     S -->|tmux paste| A
 ```
 
-Only one helper touches tmux (`send`). Only one path mints request ids (`ae_tracked_send`). Only one helper validates reply pairing (`ae_find_request`). That symmetry is why the surface is auditable in `events.jsonl` — every interaction passes through the same emit point.
+Only one path touches tmux. Only one path mints request ids. Only one path validates reply pairing. That symmetry is why the surface is auditable in `events.jsonl` — every interaction passes through the same emit point, and since the move to the core it is one implementation rather than a bash body and a Rust one agreeing by inspection.
 
 ### How `send` delivers
 
@@ -88,29 +90,34 @@ Every agent pane carries a stable **slot** — `main`, `worker.<n>`, or `spawned
 | `spawn <name> --using <profile> [prompt]` | Add a new agent to the workspace, in its own tmux window named after its role. Always pass a descriptive role name. |
 | `retire <agent>` | Remove a spawned agent — kills its pane (and window), cleans meta incl. launch bookkeeping, updates `workspace.md`. |
 
-## Internal
+## Not agent-facing
 
-Helpers prefixed `_` are launched by ae itself, not by you or by other agents.
+Two more shims share the directory. They are the whole command of the two panes inside the
+`ae-monitor` window, so each has to be an executable file tmux can run rather than a shell
+line quoting a core path:
 
-- `_register-sid` — Codex self-registers its session UUID on launch (so ae can resume the exact conversation later).
-- `_watchdog` / `_events` (pane tags, not scripts) — the panes inside the `ae-monitor` window.
+- `watchdog` — the stale-agent watchdog daemon (`loop` is its deprecated alias).
+- `events-tail` — the live event-log view.
+
+`ae doctor --refresh` republishes all of them. It replaces on-disk scripts only: a running
+watchdog keeps the process it already is until it is stopped and started.
 
 ## Name resolution
 
-Every helper that takes an agent argument resolves it flexibly:
+Every helper that takes an agent argument resolves it **exactly**. Alias-only and partial
+matching are gone: a name is an identity, and guessing at a prefix is how a message reaches
+the wrong agent.
 
-- `codex:reviewer` — exact match (alias + name).
-- `codex` — alias only, when unique in the session.
-- `reviewer` — bare name, when unique.
+- `reviewer` — the agent's name.
 - `%42` — raw tmux pane id.
-- `@other-session:codex:reviewer` — cross-session.
+- `other-session:reviewer` or `@other-session:reviewer` — cross-session.
 
 ## Cross-session
 
 Prefix any target with `@<session>:` to reach an agent in a different ae session:
 
 ```bash
-~/.ae/sessions/<your-session>/send @other-feature:claude:lead "check my API changes"
+~/.ae/sessions/<your-session>/send @other-feature:lead "check my API changes"
 ~/.ae/sessions/<your-session>/peek @other-feature:reviewer 50
 ~/.ae/sessions/<your-session>/agents --all
 ```

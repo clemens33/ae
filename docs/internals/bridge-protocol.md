@@ -13,7 +13,7 @@ Four pieces of substrate, shipped and stable:
 1. **`events.jsonl`** — append-only JSON-lines stream of everything that happens in a session. See [events.md](events.md) for the full schema. Bridges read this.
 2. **`AE_SENDER_OVERRIDE`** — env var that lets a non-pane caller identify itself when invoking `send` / `ask` / `review`. Bridges set this when writing back.
 3. **Allow-listed external-actor target prefixes** — `telegram:*` and `discord:*` are treated as event-only sinks: `send` emits the event and exits without touching tmux. Bridges read those events and forward them to the chat platform.
-4. **`session_id`** — stable UUID per ae session, stored in `~/.ae/sessions/<name>/meta` as `session_id=<uuid>`. Survives rename and `ae transfer`. Bridges bind to this rather than the human-readable name.
+4. **`session_id`** — stable UUID per ae session, stored in `~/.ae/sessions/<name>/meta` as `session_id=<uuid>`. Survives a rename. Bridges bind to this rather than the human-readable name.
 
 ## Identities
 
@@ -27,7 +27,7 @@ An *actor* in ae is anyone who can write an event. Today there are three classes
 
 External-actor identifiers are strings the bridge chooses and the bridge owns the mapping from chat-platform user id → external-actor id. ae does not maintain that mapping.
 
-External-actor identifiers SHOULD use the form `<platform>:<id>`. The `:` separator mirrors the cross-session addressing convention (`<session>:<name>`) but the value is not parsed by ae beyond the prefix check in `send` and `ae_tracked_send`.
+External-actor identifiers SHOULD use the form `<platform>:<id>`. The `:` separator mirrors the cross-session addressing convention (`<session>:<name>`) but the value is not parsed by ae beyond the prefix check on the send and tracked-send paths.
 
 ## Writing back into ae
 
@@ -49,7 +49,7 @@ export AE_SENDER_OVERRIDE=telegram:clemens
 ~/.ae/sessions/<name>/reply --as telegram:clemens ae-20260528T130000Z-abc123 "approved"
 ```
 
-`AE_SENDER_OVERRIDE` is honored by `send` and `ae_tracked_send` (the shared body behind `ask` / `review`). The override becomes the `actor` field on emitted events; replies will route to it via the request-id pairing rules in [events.md](events.md#how-requests-reads-events).
+`AE_SENDER_OVERRIDE` is honored on the send path and on the tracked send behind `ask` / `review`. The override becomes the `actor` field on emitted events; replies will route to it via the request-id pairing rules in [events.md](events.md#how-requests-reads-events).
 
 `reply` takes a separate `--as <external-actor>` flag for caller identity — it does NOT read `AE_SENDER_OVERRIDE` directly, because outside a tmux pane there is no implicit identity to fall back on. Internally `reply` sets `AE_SENDER_OVERRIDE` itself when it delegates the underlying write to `send`.
 
@@ -57,7 +57,7 @@ For targets the bridge does NOT have a pane to send to — e.g. the bridge is it
 
 ## Event-only target prefixes
 
-`send` and `ae_tracked_send` short-circuit when the target matches an allow-listed external-actor prefix:
+A send — plain or tracked — short-circuits when the target matches an allow-listed external-actor prefix:
 
 - `telegram:*`
 - `discord:*`
@@ -92,13 +92,13 @@ ae writes through a single `flock`-serialized writer per session, with each reco
 - The events file may not exist until the first write into a freshly created session. Tailing it should tolerate `ENOENT` and pick up when it appears.
 - If the bridge persists offsets to avoid replay on restart, key them by `(session_id, inode)`. The path can change (rename, transfer); the inode changes if the session is recreated.
 - ae does not rotate `events.jsonl`. The file grows for the lifetime of the session. Bridges should not load it whole; tail or back-scan only.
-- A session directory can disappear (`ae end` / `ae rm`), be renamed (`ae rename`), or move between machines (`ae transfer`). Treat the session as the durable identity (`session_id`), not the path.
+- A session directory can disappear (`ae end` / `ae rm`) or be renamed (`ae rename`). Treat the session as the durable identity (`session_id`), not the path.
 
 For schema and per-action semantics, see [events.md](events.md). The actions a bridge typically cares about as of the Stage 0 substrate are `send`, `ask`, `review`, `reply`, `done`, `alert`, `nudge`, `chat`, and possibly `memo`. `chat` is a first-class bridge action: an agent's free-text reply to the human (via the `say` helper), carrying its text in `summary`. Internal actions like `focus`, `spawn`, `retire`, `recover`, `throttled` are usually noise for a chat surface.
 
 ## Binding by session identity
 
-A session's human-readable name can change (`ae rename`) and the workspace can move between machines (`ae transfer`). Bridges that need a stable handle should bind to `session_id` instead of the name.
+A session's human-readable name can change (`ae rename`). Bridges that need a stable handle should bind to `session_id` instead of the name.
 
 ```bash
 grep '^session_id=' ~/.ae/sessions/<name>/meta | cut -d= -f2-
@@ -138,7 +138,7 @@ A bridge implementer coexisting with ae's own bridge no longer has a marker to r
 - Assuming the file size stays bounded. Long sessions grow without rotation. Bridges should not load the whole file into memory; tail or back-scan.
 - Assuming the human-readable session name is stable. Use `session_id`.
 - Assuming `actor` always matches a tmux pane. External actors won't.
-- Writing to `events.jsonl` directly. Always go through `send` / `ask` / `review` / `reply` / `memo` — the schema is enforced by `_lib::ae_emit_event`, not by file convention.
+- Writing to `events.jsonl` directly. Always go through `send` / `ask` / `review` / `reply` / `memo` — the schema is enforced by the core's single emit path, not by file convention.
 - Assuming this list of write helpers is final. New helpers add new event actions over time (the `state` helper emits `state` events for `working` / `waiting-user` / `blocked` / `done`; the `say` helper emits `chat`). Bridges should ignore unknown event actions.
 
 ## Versioning

@@ -80,15 +80,22 @@ tail -F ~/.ae/sessions/<name>/events.jsonl \
 
 ## Codex session id capture failed
 
-Codex has no launch-time UUID flag. ae captures it post-launch by scanning `~/.codex/sessions/YYYY/MM/DD/*.jsonl` filtered by launch token and CWD. If the capture failed (network blip, codex crashed before writing its file, etc.), the watchdog retries the capture every cycle as step 9. To force a manual retry:
+Codex has no launch-time UUID flag, so the core runs a chain in a detached child: the id
+file codex's own first-task instruction writes, then a launch-token scan of
+`~/.codex/sessions/YYYY/MM/DD/*.jsonl`, then a cwd scan of the same files, then the TUI
+header. Every scan is filtered by the seat's recorded launch time, so a stale conversation in
+the same directory cannot be captured as this one.
 
-```bash
-~/.ae/sessions/<name>/_register-sid worker.0   # adjust slot as needed
-```
+You do not have to do anything if it fails. The capture child can die before codex answers —
+the machine sleeps, the session is resumed, the process is killed with the pane it was
+launched beside — and the watchdog closes that gap: every cycle it takes one look at each
+seat still pending and registers whatever it finds. The next tick is the retry. A seat that
+stays pending across several cycles means codex never wrote an id worth finding; resume then
+falls back to a fresh conversation.
 
 ## Pane shows `(null)` agent label
 
-`tmux set-option @ae_agent` failed for that pane. Refresh the helpers (`ae doctor --refresh <name>`) — `regenerate_manifest` rewrites pane labels and tags. If the pane is missing entirely, that's a different problem (agent CLI exited); use `ae status <name>` to inspect.
+`tmux set-option @ae_agent` failed for that pane. Refresh the session (`ae doctor --refresh <name>`) — it rewrites pane labels and tags along with the helper shims and `workspace.md`. If the pane is missing entirely, that's a different problem (agent CLI exited); `peek <agent>` shows what it printed on the way out.
 
 ## Using fish or zsh
 
@@ -100,17 +107,16 @@ Primary development target. `ae doctor` is your friend.
 
 ## On macOS / non-Ubuntu Linux
 
-Supported. ae routes every GNU/BSD-divergent coreutil (`tac`, `stat`, `date -d`,
-`sed -i`, `grep -oP`) through a portability shim, so Homebrew `coreutils` is
-**not** required. `ae doctor` reports which userland it detected.
+Supported, and Homebrew `coreutils` is **not** required. The GNU/BSD-divergent tools
+(`tac`, `stat`, `date -d`, `sed -i`, `grep -oP`) are simply not called any more: everything
+that used to reach for them is Rust. `flock` and `timeout` are likewise no longer ae's
+dependencies — the core locks with its own `flock(2)` and times out in its own code — so
+`ae doctor` no longer reports rows for them.
 
-Two extra binaries are worth installing anyway (`brew install flock coreutils`):
-
-- **`flock`** — core commands degrade gracefully without it, but the *generated
-  session helpers* do not: they lock unguarded, so `state`/`goal` writes fail and
-  a `send` can deliver and then report failure (inviting a duplicate retry).
-  Install it before relying on multi-agent messaging.
-- **`timeout`** — without it, the watchdog's git probes are unbounded, so a wedged git stalls a status refresh.
+One macOS requirement stands: `ae` itself needs **bash >= 4.0**, because macOS ships 3.2.
+`brew install bash` and put brew's bin directory ahead of `/bin` on `PATH`. The session
+helpers do not care — each is a one-line `exec` that runs fine under 3.2 — but the glue does,
+and it re-execs itself to get there.
 
 Resume / session-id capture for external CLIs still depends on each tool's local
 storage format, which differs across platforms.

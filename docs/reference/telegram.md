@@ -70,7 +70,7 @@ Three ways to reach an agent, easiest first:
 
 **2. Compact prefix — `@session:agent <msg>`.** Start a new thread without `/session`: `@mdk:lead deploy now`. `session` is up to the first `:`; `agent` is the rest — a bare name, no alias. Sent as a `send`.
 
-**3. Plain messages → the orchestrator (auto-default).** With no override set, a **plain message** (no slash, no `@`) goes to your running **orchestrator** (the `meta_agent` session — canonical `orchestrator`, else legacy `hub`) as a `send`. So once `ae orchestrator` is up you just talk to it — no setup. If no orchestrator is running you're guided to start one (or use a target form above).
+**3. Plain messages → the orchestrator (auto-default).** With no override set, a **plain message** (no slash, no `@`) goes to your running **orchestrator** (the `meta_agent` session — canonical `orchestrator`, else legacy `hub`) as a `send`. So once the orchestrator session is up you just talk to it — no setup. If no orchestrator is running you're guided to start one (or use a target form above).
 
 **4. Sticky override — `/use`.** `/use <session> <agent>` redirects plain messages to another session; `/use` shows the current routing; `/use clear` drops the override and plain messages go back to the orchestrator. Use this to hold a conversation with one specific session for a while.
 
@@ -98,7 +98,7 @@ Three ways to reach an agent, easiest first:
 
 ## Orchestrator-centric routing: talk to the meta-agent, not ten sessions
 
-The [`ae orchestrator`](commands.md#ae-orchestrator) meta-agent turns the bridge from a
+The [orchestrator companion](commands.md#the-orchestrator-companion) meta-agent turns the bridge from a
 *broadcast* (every session shouting events at you) into a *conversation* (you talk
 to one agent that watches the rest and relays for you). This is **not a new
 mechanism** — it's a setup on top of the routing above:

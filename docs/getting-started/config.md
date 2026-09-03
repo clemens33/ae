@@ -195,7 +195,6 @@ See [Delegation](../reference/delegation.md) for when to spawn what.
 │   ├── events.jsonl                # event log (audit trail)
 │   ├── memo.tsv                    # shared session memory
 │   ├── workspace.md                # in-session reference for agents
-│   ├── _lib                        # shared library sourced by helpers
 │   ├── send, ask, review, reply…   # session helpers (regenerated on resume)
 │   └── ...
 └── worktrees/<name>/               # for --worktree mode

@@ -4,7 +4,7 @@
 
 ## Producers and consumers
 
-Single writer (`ae_emit_event` in `_lib`), single file, multiple readers. The append-only structure plus flock-serialized writes mean readers can scan safely without coordination.
+Single writer, single file, multiple readers. The writer is the ae core, reached through whichever helper shim the agent called. The append-only structure plus lock-serialized writes mean readers can scan safely without coordination.
 
 ```mermaid
 flowchart LR
@@ -19,12 +19,12 @@ flowchart LR
         LP1["watchdog<br/>nudge / alert /<br/>throttled / throttle-cleared /<br/>recover"]
         IH[interrupt / focus]
     end
-    EE["_lib::ae_emit_event<br/>(JSON escape,<br/>flock + append)"]
+    EE["ae core emit<br/>(JSON escape,<br/>lock + append)"]
     FILE[(events.jsonl)]
     subgraph Readers
         direction TB
-        LP2["watchdog<br/>_agent_done_epoch<br/>_buf_shows_throttle"]
-        REQ["requests helper<br/>ae_find_request"]
+        LP2["watchdog<br/>done epoch,<br/>throttle detection"]
+        REQ["requests helper"]
         ET["_events pane<br/>events-tail"]
     end
 
@@ -42,7 +42,7 @@ flowchart LR
     FILE -.tail -F.-> ET
 ```
 
-Inspection helpers (`peek`, `agents`, `requests`, `events-tail`, `watchdog status`) read but don't write. Mutating helpers and the watchdog write through the single `ae_emit_event` choke point.
+Inspection helpers (`peek`, `agents`, `requests`, `events-tail`, `watchdog status`) read but don't write. Mutating helpers and the watchdog write through the core's single emit choke point.
 
 ## Schema
 
@@ -66,7 +66,7 @@ Every event has these keys; `target`, `ref`, and `summary` are optional and omit
 - `recover` — the captured session id (Codex/Gemini/OpenCode UUID).
 - Other actions — usually absent.
 
-String values are JSON-escaped: `\"` `\\` `\n` `\t` `\r`. The flat schema is intentionally cheap to parse from bash (`_event_json_str` in `_lib` is a pure bash walker).
+String values are JSON-escaped: `\"` `\\` `\n` `\t` `\r`, and control bytes are stripped at write time. Rendering is the core's (`src/json.rs`); the flat schema stays cheap for any reader to parse a line at a time.
 
 ### Routing-key fields
 
@@ -114,7 +114,7 @@ Each is optional and omitted when empty. Readers that don't understand them igno
 
 A request is `replied` only when the reply's `actor` equals the request's `target` AND the reply's `target` equals the request's `actor`. Stray reply events (wrong actor / wrong target) leave the request `pending`. Without that check a misrouted or manual reply could falsely close a request.
 
-`ae_find_request` returns the matched request as a tab-separated row. When the event carries routing-key fields the row is seven columns — `action  actor  target  actor_slot  actor_session  target_slot  target_session` — and `reply` verifies the responder's live slot against `target_slot` + `target_session` before delivering, so identity survives a name change. An event without those fields yields a three-column row (`action  actor  target`) and pairing falls back to the display name.
+The core's request lookup returns the matched request as a tab-separated row. When the event carries routing-key fields the row is seven columns — `action  actor  target  actor_slot  actor_session  target_slot  target_session` — and `reply` verifies the responder's live slot against `target_slot` + `target_session` before delivering, so identity survives a name change. An event without those fields yields a three-column row (`action  actor  target`) and pairing falls back to the display name.
 
 ## How `_agent_done_epoch` reads events
 

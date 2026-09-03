@@ -67,19 +67,43 @@ just docs-build       # build the static site into ./site
 
 ## Tests
 
-`tests/unit` covers the Bash pane glue, the public-wrapper/installer contract, and helper templates with a tiny `assert_eq` harness. Session-helper logic (watchdog, send, ask, requests, …) lives in the top-level **template library** section of `ae` — real column-0 functions emitted into generated helpers via `declare -f` — so tests extract and exercise that glue directly; there are no helper heredocs to parse anymore (only three trivial exec shims remain heredocs). Two builder helpers (`_build_lib_from_source`, `_build_helper_from_source`) reconstruct a runnable `_lib`/helper from the emission's own prologue + `declare -f` list when a test needs the full artifact.
+The Rust suite is where behaviour is tested: `cargo nextest` for units and the single
+`tests/it` integration target, plus `cargo test --doc` for the doctests, both run by `just
+rust-check`. `just rust-mutants` asks the harder question — whether those tests would ever go
+red.
 
-When adding or changing a helper, the guard suite enforces the emission invariants: every `declare -f` list ends with its `helper_<name>_main`, every emitted name has exactly one top-level definition, the template `helper_*` set equals the emitted union, and the whole template library must source silently under `set -u` (an executable leak would run on every ordinary `ae` invocation).
+The bash suites cover what is still bash. `tests/unit` exercises the pane glue and the
+public-wrapper/installer contract with a tiny `assert_eq` harness. The session-helper
+template library it used to reconstruct is gone with the helpers themselves; what it asserts
+about them now is the **shim set** — that a refreshed session directory holds exactly the
+core's list, never `>= N`, so an artifact quietly appearing or vanishing is a failure rather
+than a different number. Retired sections stay in the file as one-line tombstones naming
+their subject and why it left, rather than being deleted silently.
 
-`tests/integration` spins up real tmux sessions, exercises the full lifecycle (create, send, ask, reply, stop, resume, end), and tears down. Requires tmux and git. The `doctor --refresh` scenario doubles as the declare-f canary: it clobbers generated helpers, refreshes, and runs the regenerated artifacts end-to-end (including a watchdog stop → start cycle, since a running watchdog keeps its loaded body until restarted).
+`tests/integration` spins up real tmux sessions, exercises the full lifecycle (create, send,
+ask, reply, stop, resume, end), and tears down. Requires tmux and git. The `doctor --refresh`
+scenario is the canary for the shim set: it clobbers the generated helpers, refreshes, and
+pins the bytes byte-for-byte against what the core writes at launch, so the refresh entry and
+the launch entry cannot drift. It includes a watchdog stop → start cycle, since a refresh
+replaces on-disk scripts only and a running daemon keeps the process it already is.
+
+Two lanes, two purposes. `just test-unit` and `just test-integration` are the **gate**: the
+full serial run, unnarrowable, ~30 minutes for the integration half. The three below are the
+**inner loop** — same assertions, minutes instead:
 
 ```bash
-bash tests/unit          # ~650+ assertions, pure bash (no tmux needed)
-bash tests/integration   # ~60 scenarios, real tmux sessions
-just itest-all           # the same 88 sections, sharded across cores (~4 min)
-just itest list          # only the sections of one domain (see tests/itest-domains.tsv)
-just unit                # fast unit default (~1 min); AE_UNIT_FULL=1 for the slow blocks
+just unit                # unit tests without the five slow rigs (~1 min);
+                         #   AE_UNIT_FULL=1 restores them. The summary line says
+                         #   when it was not the full run
+just itest <domain>...   # only those domains' integration sections (seconds).
+                         #   Domains live in tests/itest-domains.tsv;
+                         #   `tests/itest-par --list` prints them
+just itest-all           # every section, sharded across cores (~4 min)
 ```
+
+`itest-all` runs the sections in several processes, so a section that only passes because of
+what ran before it fails **here** and not in the serial gate. That is the point of having
+both: run the domain you touched in the loop, the serial gate once per slice.
 
 ## Releases
 
@@ -120,7 +144,7 @@ Review invocations run **read-only** — a `--full-auto` reviewer is a tree muta
 ## Philosophy reminders
 
 - ae is a public wrapper, a Rust core, and the Bash pane glue; no new Bash features return to the glue.
-- Config is INI-style with a simple regex parser. Don't add TOML/YAML/JSON parsing.
+- Config is INI-style, parsed by the core (`src/config.rs`). Don't add TOML/YAML/JSON parsing.
 - The installed runtime is an immutable matched set; checkout development additionally needs rustup and just. (Docs tooling remains optional.)
 - Session state lives in `~/.ae/sessions/`. Working directories stay clean.
 - No AI tool attribution in commits.

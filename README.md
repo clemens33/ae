@@ -79,7 +79,6 @@ ae my-feature                  # every agent resumes with its conversation histo
 
 **Check on agents without attaching:**
 ```bash
-ae status my-feature           # recent output from all agents
 ae list                        # running sessions: goal, git branch, per-agent state + attn marker
 ae list --needs-attn           # only sessions needing attention (alias: --attn)
 ae list --all                  # include stopped sessions
@@ -88,6 +87,9 @@ ae next                        # name the top session needing attention (--attac
 watch -n 10 'ae list'          # live dashboard
 ```
 
+`ae status` was retired. `ae list` answers the same question from one implementation, and
+inside a session the `peek` helper shows one agent's recent output.
+
 **Finish up:**
 ```bash
 ae stop my-feature             # pause, keep state — resume later with 'ae my-feature'
@@ -95,7 +97,6 @@ ae end my-feature              # commit + push to ae/my-feature, archive the ses
                                #   memory to ~/.ae/archive/<uuid>/, remove ae state
                                #   (keeps conversation files; --purge-history deletes them
                                #    and writes no archive)
-ae transfer my-feature vm.host # move a stopped session + conversations to another machine
 ```
 
 **Continue where a finished session left off:**
@@ -191,10 +192,10 @@ Everything else is **optional**, never required for core commands:
 | Feature | What | Needs |
 |---|---|---|
 | `ae telegram` | machine-global bridge: fleet events to your Telegram chat, replies route back | a configured ae core (no extra CLI deps) |
-| `ae orchestrator` ([contrib/aeorchestrator](contrib/aeorchestrator)) | the fleet's chief of staff: monitors every session, relays and reports, guards an objective once you set one | an agent CLI |
+| the orchestrator companion ([contrib/aeorchestrator](contrib/aeorchestrator)) | the fleet's chief of staff: monitors every session, relays and reports, guards an objective once you set one. An ordinary ae session against its own config, started for you alongside the first launch | an agent CLI |
 | [contrib/aemonitor](contrib/aemonitor) | deterministic sweep helper the orchestrator uses | Python 3 stdlib |
 
-Daemons are Rust-owned: the watchdog helper starts core `_watchdog-run`, and Telegram starts core `_telegram-run`, with no `jq`/`curl` dependency. Bash keeps their start/stop/tick pane glue. Autostart controls are per component: set `watchdog = false` in workspace config to disable the workspace watchdog; set `enabled = false` in Telegram config to disable Telegram; set `AE_NO_AUTOSTART=1` to disable orchestrator autostart only.
+Both daemons are Rust, start to finish: the watchdog pane runs core `_watchdog-run`, the bridge runs core `_telegram-run`, and `ae watchdog`/`ae telegram` are core operations the glue routes to. Neither needs `jq` or `curl`. Autostart controls are per component: set `watchdog = false` in workspace config to disable the workspace watchdog; set `enabled = false` in Telegram config to disable Telegram; set `AE_NO_AUTOSTART=1` to start neither companion with a launch.
 
 A public entry cannot reach coreless Bash mode: it validates the matched wrapper, core, and
 glue before execution. See **[VISION.md](VISION.md)**.
@@ -214,20 +215,13 @@ ae upgrade
 - [just](https://github.com/casey/just) only to build from source (`just install`)
 - At least one AI coding agent CLI (see *Works with*, above)
 
-Linux (GNU userland) and macOS (BSD userland) are both first-class: ae routes
-every divergent coreutil through a portability shim, so no GNU *coreutils*
-package is required. Two extra binaries are worth installing on macOS
-(`brew install flock coreutils`):
+Linux (GNU userland) and macOS (BSD userland) are both first-class, and no GNU
+*coreutils* package is required. The divergent coreutils are simply not called
+any more: the readers that needed them are Rust, and the core locks and times
+out with its own code rather than shelling out to `flock` or `timeout`.
 
-- **`flock`** — `ae list`, `ae <name>` and friends work without it, but the
-  generated session helpers (`send`, `ask`, `state`, `goal`, the event log) lock
-  unguarded, so a missing `flock` degrades them: `state`/`goal` writes fail, and
-  a `send` can deliver its message and *then* report failure, inviting a
-  duplicate retry. Install it if you use multi-agent messaging.
-- **`timeout`** — bounds the watchdog's git probes; without it a wedged git
-  stalls a status refresh.
-
-`ae doctor` reports both, plus which userland it detected.
+`ae doctor` reports the userland it detected along with the rest of the
+environment.
 
 `ae` runs under bash, but your interactive shell can be anything (fish, zsh, …). Run **`ae doctor`** after installing ae or upgrading any agent CLI -- it checks bash/tmux/git, your config, and whether configured agents are on `PATH`. Resume/session capture for external CLIs is best-effort and depends on each tool's upstream behavior; `ae doctor` is your first stop when something looks off. More: **[docs/troubleshooting.md](docs/troubleshooting.md)**.
 

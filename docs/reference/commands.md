@@ -7,7 +7,6 @@ ae list [--all|--stopped|--needs-attn]
                        List sessions (running by default; --all adds stopped
                        history, --needs-attn only those needing attention)
 ae upgrade             Install the latest tagged immutable release; no extra arguments
-ae status [name]       Show agent output without attaching
 ae next [--attach]     Name the top running session needing attention (read-only;
                        alias: ae jump). --attach jumps to it. Non-zero when none.
 ae doctor              Check local environment and ae config
@@ -18,11 +17,7 @@ ae watchdog <start|stop|status> [name]
                        Toggle the stale-agent watchdog (per-session, persists across resume)
 ae telegram <setup|start|stop|status>
                        Machine-global Telegram bridge — see Telegram bridge reference
-ae orchestrator [--attach|--init]
-                       Ensure the detached orchestrator (meta-agent) is running; --attach
-                       switches to it (--init scaffolds config + charter)
 ae stop [name]         Pause session, keep ae + agent conversation state for resume
-ae transfer <name> <ssh-target> [--pull]  Move a stopped session (incl. Claude/Codex conversation files) to/from another machine
 ae archive preview [name]
                        Print the digest an end would archive. Read-only: writes nothing,
                        emits no event, does not stop the session
@@ -40,7 +35,24 @@ ae version             Show version
 ae help                Show short help
 ```
 
-When run inside an ae session, `stop`, `end`, `status`, `watchdog`, and `doctor --refresh` detect the current session automatically.
+When run inside an ae session, `stop`, `end`, `watchdog`, `rename` and `doctor --refresh`
+detect the current session automatically.
+
+### Retired words
+
+Three commands were cut rather than ported to the Rust core. Two keep a **refusing arm** in
+the glue instead of being deleted, because anything the dispatcher does not match falls
+through to a launch and a launch takes the last positional as a session name — a bare `ae
+status` would otherwise create a session called `status`.
+
+| Word | What now |
+|---|---|
+| `ae status [name]` | Refuses (exit 2). `ae list` answers the same question from one implementation, and its per-session sub-line already carries the state, goal and attention rollup `status` printed. Inside a session, the `peek` helper shows one agent's recent output |
+| `ae orchestrator` / `ae hub` | Refuses (exit 2), and prints the replacement recipe. The orchestrator is an ordinary ae session against its own config — see [the orchestrator](#the-orchestrator-companion) below |
+| `ae transfer <name> <ssh-target>` | Gone, no arm. Cross-machine session sync was ruled cut rather than ported |
+
+Any other `_`-prefixed word nobody serves also fails closed with exit 2, for the same
+fall-through reason.
 
 ## Modes
 
@@ -154,10 +166,6 @@ Stopped session directories are untouched and consume the current version on
 their next resume. Running sessions are reported by name as deferred until
 stop and resume; upgrade never hot-rewrites loaded helpers or daemon bodies.
 
-## `ae status [name]`
-
-Prints the last ~80 lines from each agent's pane without attaching. Useful for a quick "what is everyone doing" snapshot. Marks each agent's binary name and pane id.
-
 ## `ae next` (alias `ae jump`)
 
 The attention navigator — the action half of `ae list`. Names the single
@@ -188,7 +196,21 @@ $ ae next --attach
 
 ## `ae doctor`
 
-Pre-flight + post-upgrade self-test. Walks a fixed checklist of `OK / WARN / FAIL` items: bash/tmux/git presence, config file, agent executables, sessions directory, and so on. Returns non-zero if anything failed.
+Pre-flight + post-upgrade self-test. Walks a fixed checklist of `OK / WARN / FAIL` items and
+returns non-zero if anything failed: the two hard dependencies (`tmux`, `git`), whether the
+config parses and names a startup roster whose profiles resolve to real executables, whether
+the state root's sessions are coherent, and whether each session's recorded core and glue
+agree with the binary answering right now.
+
+The report is the core's. The glue hands it the one fact the core cannot see — which bash is
+running the glue — because `ae` re-execs itself under a modern bash when its shebang lands on
+macOS's 3.2, and a core probing `bash --version` would report whatever is first on `PATH`
+instead.
+
+Three rows the frozen bash `doctor` printed are **dropped rather than reported as
+permanently OK**: `flock` and `timeout` are no longer ae's dependencies (the core locks with
+its own `flock(2)` and times out in its own code), and there is no portability-shim layer
+left to name in a `userland` row.
 
 An upgrade needs no helper refresh: stop/resume is the generation-migration
 boundary, while running watchdogs retain their loaded body until stopped and
@@ -208,6 +230,10 @@ ae watchdog start my-feature
 ae watchdog stop my-feature
 ae watchdog status my-feature
 ```
+
+`start`, `stop` and `status` are core operations, and so is the daemon they manage: the
+session's `watchdog` helper is a shim that execs the core's `_watchdog-run`, which is the
+whole command of the monitor pane. `ae loop` is the deprecated spelling, kept as an alias.
 
 The [watchdog](../internals/watchdog.md) is on by default — only an explicit `false` / `no` / `off` / `0` in config or session meta keeps it off. `watchdog start` is idempotent; running it again just confirms the meta flag.
 
@@ -243,7 +269,7 @@ file or the watchdog heartbeat will false-alarm. The sweep nudges use `action=nu
 which is **not in the default telegram include set**, so routine sweeps don't
 reach your phone (a custom `include` containing `nudge` would forward them).
 
-## `ae orchestrator`
+## The orchestrator companion
 
 The **orchestrator** — your fleet's chief of staff: a single ae session that monitors
 all your *other* ae sessions and is your one point of contact to them (it relays
@@ -257,46 +283,43 @@ is a monitor + relay + focus aide: per its charter it never ends/stops/edits
 another session on its own, and only suggests — it dispatches nothing without
 your say-so.
 
-```text
-ae orchestrator          Ensure the detached `orchestrator` session is running
-ae orchestrator --attach Switch/attach to the `orchestrator` session
-ae orchestrator --init   Scaffold ~/.ae/orchestrator/{orchestrator.config,CHARTER.md} (never overwrites)
-ae orchestrator --help   Usage
+**`ae orchestrator` is no longer a command.** It was a trampoline, not an operation: it
+scaffolded a config and a charter on `--init`, then rewrote the config path and the working
+directory and fell through to the generic launch, so the orchestrator ran as an ordinary
+session that happened to be named `orchestrator`. Everything it did has an owner now, and it
+is not the glue. Run it as what it always was:
+
+```bash
+cd ~/.ae/orchestrator && CONFIG_FILE=$PWD/orchestrator.config ae --local orchestrator
 ```
 
-`ae orchestrator` launches the `orchestrator` session with **full config isolation**: it
-uses `~/.ae/orchestrator/orchestrator.config` as the config and neutralizes any
-project-local `./.ae/config`, so the global config's `workers` never leak into
-the single-agent orchestrator regardless of the directory you run it from. The config
-dir defaults to `${AE_HOME:-~/.ae}/orchestrator` and is overridable with
-`AE_ORCHESTRATOR_DIR` (so an isolated `AE_HOME` run keeps its orchestrator state out of
-your live `~/.ae`).
-Unlike normal `ae <name>` session starts, bare `ae orchestrator` does **not** attach
-or switch the current tmux client; use `ae orchestrator --attach` when you want to
-inspect the orchestrator pane directly.
+That is exactly what the retired command prints when you reach for it.
 
-First time: run `ae orchestrator --init` to scaffold the config + charter from
-[`contrib/aeorchestrator`](../../contrib/aeorchestrator/) (placeholders for the charter and
-[`aemonitor`](../../contrib/aemonitor/) paths are substituted), edit them to
-taste, then `ae orchestrator`. The charter wires the deterministic sweep to
-`aemonitor`, defines the objective-armed focus aide, and tells the agent its only channel to you is
-`say`.
+**Setting it up.** There is no `--init` any more. Copy the two templates from
+[`contrib/aeorchestrator`](../../contrib/aeorchestrator/) into `~/.ae/orchestrator/` yourself
+— `orchestrator.config` and `CHARTER.md` — and replace the charter path placeholder in the
+config with the real path. The charter wires the deterministic sweep to
+[`aemonitor`](../../contrib/aemonitor/), defines the objective-armed focus aide, and tells the
+agent its only channel to you is `say`. The config marks the session with `[workspace]
+orchestrator = true`, which is what gives its main agent the sweep cadence described above.
+
+Config isolation is still the point of running it this way. `CONFIG_FILE` names the
+orchestrator's own config and `--local` keeps it in that directory, so the global config's
+`workers` never leak into the single-agent orchestrator regardless of where you started from.
+
+**Autostart.** A launch starts the companion for you: if `~/.ae/orchestrator/orchestrator.config`
+exists (or the legacy `~/.ae/meta-hub/hub.config`, which keeps running under the name `hub`
+so its baked charter paths stay consistent), the core brings the orchestrator up in the
+background beside the session you asked for. It is guarded three ways — the session it is
+launching from is never the orchestrator itself, a verified-present orchestrator is left
+alone, and a tmux server that cannot answer counts as *unknown* and refuses to start one
+rather than risk a duplicate. `AE_NO_AUTOSTART=1` starts neither companion.
 
 To talk to the orchestrator from your phone, run the [Telegram bridge](telegram.md):
 plain messages route to the running orchestrator automatically (no `/use` setup), and
 `/use <session> <agent>` redirects to another session when you want (`/use clear`
 returns to the orchestrator) — see
 [Orchestrator-centric routing](telegram.md#orchestrator-centric-routing-talk-to-the-meta-agent-not-ten-sessions).
-
-**Deprecated alias + legacy scaffolds:** `ae hub` still works and maps to the
-same launcher. A pre-rename `~/.ae/meta-hub/hub.config` scaffold (from
-`ae hub --init`) is still honoured — it keeps its `hub` session name so its baked
-charter paths and resume state stay consistent (`AE_HUB_DIR` is honoured too).
-Migrate with `ae end hub && ae orchestrator --init && ae orchestrator`.
-
-`orchestrator` is a reserved subcommand (as is `hub`). If you ever need a normal
-session literally named `orchestrator`, `ae --local orchestrator` reaches the generic start
-path (the first argument is then no longer `orchestrator`).
 
 ## `ae telegram`
 
@@ -309,17 +332,25 @@ ae telegram status      # report intent + runtime + core + token validation
 
 Machine-global daemon that bridges every ae session on this host to one Telegram chat. Single instance per machine (one `ae-telegram` tmux session). Outbound forwards filtered events to chat. Inbound (when `allowed_user_ids` is set) offers three ways to reach an agent: **reply** to a forwarded event (routes to that agent), the compact **`@session:agent <msg>`** prefix, and a sticky **`/use <session> <agent>`** default for plain messages — plus the explicit `/list` and `/session <name|id-prefix> send|ask <agent> <msg>`. All paths share the same session/agent revalidation. Inbound is from the configured private chat only — auth requires matching `from.id` + `chat.id` + a private chat.
 
-The bridge is the ae core binary — it needs a configured ae core and no extra CLI dependencies. See the [Telegram bridge](telegram.md) page for setup, config schema, inbound trust boundary, and lifecycle.
+`setup`, `start`, `stop` and `status` are core operations, and the daemon is the ae core
+binary running `_telegram-run` — no `jq`, no `curl`, no extra CLI dependency. The glue passes
+only what the core will not read for itself: which config to honour, which home to keep state
+under, and which tmux server the daemon's session belongs on. See the [Telegram
+bridge](telegram.md) page for setup, config schema, inbound trust boundary, and lifecycle.
 
-## `ae rename old-name new-name`
+## `ae rename [old] <new>`
 
-Rename a session. Renames the tmux session, moves the session directory, updates `session=` in meta, and regenerates `workspace.md` to reflect the new name. Running tmux server stays up.
+Rename a session: the tmux session, the session directory, `session=` in meta, the
+regenerated `workspace.md`, and the status bar, all under the session's lifecycle lock as one
+core operation. The running tmux server stays up. `[old]` is optional — run it inside the
+session you mean and the core resolves it. The new name must satisfy the session-name
+grammar, and the error echoes it verbatim when it does not.
 
 ## `ae stop`
 
 Pause a session for later resume. Detaches all agents and kills the tmux session, but leaves everything on disk: ae state at `~/.ae/sessions/<name>/` plus the per-agent conversation files at `~/.claude/projects/.../<uuid>.jsonl` and `~/.codex/sessions/.../<uuid>.jsonl`. The next `ae <name>` resumes with the full conversation history.
 
-Use this when you're done for the day, switching contexts, or moving to another machine via `ae transfer`.
+Use this when you're done for the day or switching contexts.
 
 **What "stopped" means.** `ae stop` resolves the session on the tmux server its own
 meta records — never whichever server happens to be ambient — addresses it by exact
@@ -737,16 +768,17 @@ its cleanup is live session state only.
 
 ## Hidden subcommands
 
-The following are internal helpers ae invokes itself, prefixed with `_`. Don't call them directly:
+Everything ae does is one core operation reached through a `_`-prefixed entry: `_launch`,
+`_stop`, `_end`, `_compact`, `_spawn`, `_retire`, `_send`, `_ask`, `_review`, `_reply`,
+`_requests`, `_state`, `_goal`, `_memo`, `_say`, `_peek`, `_agents`, `_focus`, `_interrupt`,
+`_watchdog`, `_telegram`, and the two daemon bodies `_watchdog-run` and `_telegram-run`.
+The public words above and the session helpers are thin routes to them.
 
-- `_spawn`, `_retire` — pane lifecycle (called via `spawn` / `retire` session helpers).
-- `_recover-pending` — re-attempt post-launch session ID capture (called by the watchdog).
-- `_register-sid` — Codex first-task to self-register its session UUID (injected via `developer_instructions`).
-- `_stop-supervisor <name>`, `_stop-fleet-supervisor <op-id> <name> <session-id>…` — the
-  detached workers behind `ae stop` (self) and `ae stop all`. They exist so the kill runs in a
-  process the kill cannot take down with it. The fleet worker is handed its targets explicitly
-  and looks for no others, which is why the list is an argument rather than something it works
-  out itself; each target is named as a *pair*, so the worker stops the session that was
-  confirmed rather than whatever holds the name by the time it gets there.
+Don't call them directly — the glue refuses any `_`-prefixed word it does not serve, with
+exit 2 and before any side effect, so a typo cannot quietly become a session name.
 
-They're listed only for transparency — your interface is the public commands above.
+Two entries retired with the glue cuts and are listed so an old note does not mislead:
+`_recover-pending` re-attempted post-launch session-id capture by shelling back into bash;
+the core now recovers in-process on every watchdog cycle. `_stop-supervisor` and
+`_stop-fleet-supervisor` were the detached workers behind `ae stop` and `ae stop all`; the
+core forks its own supervisor.
