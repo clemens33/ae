@@ -11,6 +11,7 @@ mod archive_purge;
 mod cli;
 mod compact;
 mod deliver;
+mod doctor;
 mod fixtures;
 mod git;
 mod helper_corpus;

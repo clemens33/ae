@@ -69,6 +69,7 @@ mod compact;
 pub mod config;
 pub mod deliver;
 pub mod digest;
+pub mod doctor;
 pub mod error;
 pub mod event_text;
 pub mod events;
@@ -92,6 +93,7 @@ pub mod netprobe;
 pub mod next;
 pub mod panes;
 pub mod procs;
+pub mod rename;
 pub mod render;
 pub mod reply;
 pub mod requests;
@@ -1001,6 +1003,27 @@ pub fn run_with(
                 EXIT_UNAVAILABLE
             }
         }
+        // `doctor` and `rename` take no session directory, so like `end`/`stop`
+        // they derive the state root themselves and refuse the same way when
+        // there is none.
+        cli::Request::Doctor { tail } => {
+            if let Some(root) = state_root() {
+                doctor::run(&root, tail, out, err)?
+            } else {
+                writeln!(err, "ae: {NO_STATE_ROOT}")?;
+                EXIT_UNAVAILABLE
+            }
+        }
+        cli::Request::Rename { tail } => {
+            if let Some(root) = state_root() {
+                rename::run(&root, tail, out, err)?
+            } else {
+                writeln!(err, "ae: {NO_STATE_ROOT}")?;
+                EXIT_UNAVAILABLE
+            }
+        }
+        cli::Request::CheckDeps { tail } => doctor::check_deps(tail, err)?,
+        cli::Request::ShimsRender { dir, tail } => doctor::shims_render(dir, tail, err)?,
         cli::Request::Roster { dir, tail } => identity::roster(dir, tail, out, err)?,
         cli::Request::ManifestRender { dir, tail } => render::run_manifest(dir, tail, out, err)?,
         cli::Request::Context { dir, tail } => render::run_context(dir, tail, out, err)?,

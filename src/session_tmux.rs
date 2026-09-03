@@ -100,6 +100,12 @@ pub(crate) enum Op<'a> {
     /// `rename-window -t <target> <name>`. `name` MUST already be
     /// [`crate::tmux::format_literal`]-escaped: a window name is a FORMAT.
     RenameWindow { target: &'a str, name: &'a str },
+    /// `rename-session -t <target> <name>` — `ae rename`'s tmux half. The
+    /// target is the session's exact ID, never its name: `-t proj`
+    /// PREFIX-MATCHES, so a rename addressed by name can move a live
+    /// `project` instead. A session name is not a format, so `name` is passed
+    /// as typed.
+    RenameSession { target: &'a str, name: &'a str },
     /// `show-options -gv <name>` — the GLOBAL option value the session-scoped
     /// `status-format[0]` copy is taken from.
     ShowGlobalOption { name: &'a str },
@@ -117,6 +123,10 @@ pub(crate) enum Op<'a> {
 }
 
 /// Build the argv for one operation, server selector first.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one arm per tmux operation: the length IS the surface, and splitting the table would put half the argv shapes somewhere a reader of the other half would not look"
+)]
 pub(crate) fn argv(server: &ServerId, op: &Op<'_>) -> TmuxArgv {
     let mut args = server_args(server);
     match *op {
@@ -195,6 +205,9 @@ pub(crate) fn argv(server: &ServerId, op: &Op<'_>) -> TmuxArgv {
         }
         Op::SelectWindow { pane } => {
             args.extend(["select-window", "-t", pane].map(ToOwned::to_owned));
+        }
+        Op::RenameSession { target, name } => {
+            args.extend(["rename-session", "-t", target, name].map(ToOwned::to_owned));
         }
         Op::RenameWindow { target, name } => {
             args.extend(["rename-window", "-t", target, name].map(ToOwned::to_owned));

@@ -1830,6 +1830,12 @@ fn criterion_3_the_places_this_crate_can_read_the_world_are_the_inventoried_ones
             // compact's roster and purge-policy resolution. A new read surface —
             // a line in a review, not a diff nobody read.
             "src/config.rs".to_owned(),
+            // `ae doctor`'s ONE own door: the `command -v` resolution of the
+            // hard dependencies — the `PATH` variable, and the executable bit
+            // of each candidate. Its session facts read through `inventory.rs`
+            // and `meta.rs`, which are already here. Registered deliberately:
+            // a report that reaches the world is a line in a review.
+            "src/doctor.rs".to_owned(),
             "src/event_text.rs".to_owned(),
             "src/events.rs".to_owned(),
             "src/inventory.rs".to_owned(),
@@ -1867,6 +1873,12 @@ fn criterion_3_the_places_this_crate_can_read_the_world_are_the_inventoried_ones
             // machine. Its meta reads are `meta.rs`'s inventoried door, not new
             // ones here. Registered deliberately — a render that reaches the
             // world is a line in a review, not a diff nobody read.
+            // `ae rename`'s ONE own door: the `lstat` that classifies each
+            // session path as a link or not, before a move that would
+            // otherwise relocate whatever a link points at. Every other read
+            // it makes is `meta.rs`'s or `lifecycle.rs`'s. Registered
+            // deliberately.
+            "src/rename.rs".to_owned(),
             "src/render.rs".to_owned(),
             // The git branch read: `HEAD` under the session's own work tree,
             // plus the `.git` pointer file a worktree uses instead of a
