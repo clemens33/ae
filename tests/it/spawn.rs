@@ -118,8 +118,9 @@ impl Rig {
             std::fs::write(
                 &config,
                 format!(
-                    "[profiles]\nfake = \"{}\"\ncodexish = \"codex --nope\"\n\n[workspace]\nmain = lead\nlayout = vertical\n",
-                    bin.display()
+                    "[profiles]\nfake = \"{}\"\ncodexish = \"codex --nope\"\nbad = \"/usr/bin/touch {}; /usr/bin/tail -f /dev/null\"\n\n[workspace]\nmain = lead\nlayout = vertical\n",
+                    bin.display(),
+                    scratch.join("marker").display()
                 ),
             )
             .is_ok(),
@@ -526,4 +527,38 @@ fn the_spawn_grammar_refuses_a_missing_profile_and_a_hostile_name() {
             rig.meta()
         );
     }
+}
+
+/// THE SAME GRAMMAR AS A LAUNCH SEAT, BEFORE ANY EFFECT.
+///
+/// config.rs runs the one-simple-command lexer over the initial roster only; a
+/// profile selected at spawn reached `bash -lc` unvalidated, so a profile with
+/// a semicolon executed its first command, then the spawn reported itself
+/// incomplete with the seat left in meta (colead gate b5d60fec). The profile
+/// must refuse with no seat, no pane and no side effect of the command itself.
+#[test]
+fn a_profile_that_is_not_one_simple_command_is_refused_before_any_effect() {
+    let rig = Rig::new("semicolon");
+    let meta_before = rig.meta();
+    let windows_before = rig.windows();
+    let (code, _, stderr) = rig.run(ae::cli::SPAWN, &["helper", "--using", "bad", "--", "task"]);
+    assert_ne!(
+        code,
+        Some(0),
+        "a semicolon profile must not spawn: {stderr}"
+    );
+    assert!(
+        stderr.contains("profile 'bad' refused"),
+        "the refusal names the profile: {stderr}"
+    );
+    assert!(
+        !rig.scratch.join("marker").exists(),
+        "the profile's first command must never execute"
+    );
+    assert_eq!(rig.meta(), meta_before, "no seat reserved");
+    assert_eq!(rig.windows(), windows_before, "no pane created");
+    assert!(
+        !rig.meta().contains("spawned.0"),
+        "nothing of the refused spawn survives in meta"
+    );
 }

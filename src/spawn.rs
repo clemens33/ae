@@ -337,7 +337,24 @@ pub fn run_spawn(
         )
     };
 
-    let tool = ToolKind::from_cmd(&command);
+    // THE SAME GRAMMAR AS A LAUNCH SEAT, before any effect. config.rs enforces the
+    // one-simple-command lexer for the initial roster only; a profile selected at
+    // spawn used to reach `bash -lc` unvalidated, so `bad = "touch m; tail -f
+    // /dev/null"` executed the semicolon command and then reported the spawn
+    // incomplete with the seat left in meta (colead gate b5d60fec, repro). Tool
+    // and binary now come from the one validated parse.
+    let lexed = match crate::launch_cmd::lex_simple_command(&command) {
+        Ok(lexed) => lexed,
+        Err(why) => {
+            writeln!(
+                err,
+                "Error: profile '{}' refused — {why}. Nothing was spawned.",
+                parsed.profile
+            )?;
+            return Ok(EXIT_FAILED);
+        }
+    };
+    let tool = lexed.tool();
     let binary = crate::launch_cmd::split_binary(&command)
         .map(|split| split.binary_name().to_owned())
         .unwrap_or_default();
