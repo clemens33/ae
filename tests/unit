@@ -25,6 +25,14 @@
 # No dependencies beyond bash.
 
 set -euo pipefail
+# bash >= 4 or refuse NOW. /bin/bash on macOS is 3.2; run under it, this suite gets
+# thousands of lines in and dies on an associative array or `${v,,}` in a way that reads
+# as a product bug (measured 2026-09-03: a long detour). ae itself re-execs under a newer
+# bash; a test harness must not — it would test a different interpreter than it reports.
+if [[ -z "${BASH_VERSINFO[0]:-}" ]] || ((BASH_VERSINFO[0] < 4)); then
+    echo "$0: needs bash >= 4 (this is ${BASH_VERSION:-unknown}); try /opt/homebrew/bin/bash $0" >&2
+    exit 2
+fi
 
 PASS=0
 FAIL=0
@@ -122,7 +130,11 @@ fi
 _AE_UNIT_CORE_VER="$("$_AE_UNIT_CORE" --version 2>/dev/null | head -1)"
 _AE_UNIT_CORE_VER="${_AE_UNIT_CORE_VER##* }"
 
-# Isolate config from user's real ~/.ae/config
+# Isolate config from user's real ~/.ae/config. This suite is run from inside an ae agent
+# pane, which EXPORTS the session's identity and config (AE_DIR, AE_MODE, AE_ORIGIN,
+# AE_SESSION, CONFIG_FILE); assigning CONFIG_FILE below keeps the inherited export alive,
+# so the pane-exported set is unset first — the same rule as the integration preamble.
+unset AE_DIR AE_MODE AE_ORIGIN AE_SESSION CONFIG_FILE
 CONFIG_FILE="/dev/null"
 AE_LOCAL_CONFIG=""
 

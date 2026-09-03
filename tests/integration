@@ -12,6 +12,14 @@
 # Uses an isolated tmux server, tmux socket directory and temp HOME — safe to run
 # alongside real sessions.
 set -euo pipefail
+# bash >= 4 or refuse NOW. /bin/bash on macOS is 3.2; run under it, this suite gets
+# thousands of lines in and dies on an associative array or `${v,,}` in a way that reads
+# as a product bug (measured 2026-09-03: a long detour). ae itself re-execs under a newer
+# bash; a test harness must not — it would test a different interpreter than it reports.
+if [[ -z "${BASH_VERSINFO[0]:-}" ]] || ((BASH_VERSINFO[0] < 4)); then
+    echo "$0: needs bash >= 4 (this is ${BASH_VERSION:-unknown}); try /opt/homebrew/bin/bash $0" >&2
+    exit 2
+fi
 
 PASS=0
 FAIL=0
@@ -493,10 +501,12 @@ export AE_HOME="$HOME/.ae"
 #
 # The general rule, and the reason this is a block and not a line: the isolation preamble
 # owns EVERY ae-owned variable an agent pane exports, not just the two obvious ones. Today
-# that is AE_DIR, AE_MODE, AE_ORIGIN, AE_SESSION, CONFIG_FILE, plus TMUX/TMUX_PANE. Only
-# CONFIG_FILE is proven to break a run, so only it is cleared here — but a new inherited
-# variable belongs on this list, not in a debugging session six months from now.
-unset CONFIG_FILE
+# that is AE_DIR, AE_MODE, AE_ORIGIN, AE_SESSION, AE_LOCAL_CONFIG and CONFIG_FILE — all
+# cleared below (an unset of an absent variable is free; an inherited one is a leak).
+# TMUX and TMUX_PANE stay: they do not name ae state, and the product's tmux shim
+# addresses the isolated server by name regardless. A new inherited variable belongs on
+# this list, not in a debugging session six months from now.
+unset AE_DIR AE_MODE AE_ORIGIN AE_SESSION AE_LOCAL_CONFIG CONFIG_FILE
 mkdir -p "$HOME/.ae"
 
 cleanup() {
