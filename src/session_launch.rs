@@ -221,8 +221,8 @@ pub struct Env {
     /// The version the resolved core reported, when the caller measured it.
     pub core_version: Option<String>,
     /// The glue's own path, recorded as `ae_path` — the `ae` COMMAND a helper or
-    /// the watchdog re-execs (`ae telegram _supervise`, `ae _recover-pending`),
-    /// which under a versioned install is a different file from the core.
+    /// the watchdog re-execs (`ae telegram _supervise`), which under a
+    /// versioned install is a different file from the core.
     pub glue: Option<PathBuf>,
     /// `--no-autostart`: start NEITHER companion. The frozen
     /// `AE_NO_AUTOSTART=1`, which the core cannot read for itself — the

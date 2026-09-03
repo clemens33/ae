@@ -957,10 +957,11 @@ fn watch(
                     cycle.run(&mut carry, err)?;
                     // The pane's own per-cycle duties, in the frozen wrapper's
                     // order (ae:14431-14459): the branch pair, which is a git
-                    // read no cycle owns, then the two deferred ticks. AFTER the
-                    // cycle deliberately — a nudge is what this process is for,
-                    // and a git or a supervise that is slow must not delay one.
-                    tick_pane_duties(&server, session, meta, deferred, journal, err)?;
+                    // read no cycle owns, then the recovery and the revive.
+                    // AFTER the cycle deliberately — a nudge is what this
+                    // process is for, and a git read, a history scan or a
+                    // supervise that is slow must not delay one.
+                    tick_pane_duties(&server, meta_dir, session, meta, deferred, journal, err)?;
                 }
             }
         }
@@ -968,13 +969,21 @@ fn watch(
     }
 }
 
-/// The branch publication and the two deferred bash-only ticks, once per cycle.
+/// The branch publication, the pending-id recovery and the Telegram revive,
+/// once per cycle.
 ///
-/// Every one degrades in place: a failed git read publishes "no branch", a
-/// `_recover-pending` that could not run recovers nothing, and a supervise is
-/// best-effort by construction. None of them is a reason to stop watching.
+/// Every one degrades in place: a failed git read publishes "no branch", a look
+/// that finds no session id leaves the seat pending for the next cycle, and a
+/// supervise is best-effort by construction. None of them is a reason to stop
+/// watching.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the cycle's context, passed rather than gathered: each is a fact the loop \
+              already owns, and a struct would only rename them"
+)]
 fn tick_pane_duties(
     server: &crate::inventory::ServerId,
+    meta_dir: &Path,
     session: &str,
     meta: &Meta,
     deferred: &mut crate::watchdog_glue::Deferred,
@@ -988,13 +997,10 @@ fn tick_pane_duties(
             crate::watchdog_glue::branch_reading(meta.work_dir()).as_ref(),
         );
     }
-    if !deferred.armed() {
-        return Ok(());
-    }
-    for row in deferred.recover(session) {
+    for row in crate::watchdog_glue::recover(meta_dir, meta.roster()) {
         // The DURABLE record of a post-launch capture. Emitted here rather than
-        // left to `_recover-pending` because the recovery itself is silent: the
-        // id lands in meta and nothing else would ever say it had.
+        // by the recovery itself because that step is silent: the id lands in
+        // meta and nothing else would ever say it had.
         journal.record_referring(
             "recover",
             &row.agent,

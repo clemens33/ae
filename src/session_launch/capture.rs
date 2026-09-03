@@ -18,6 +18,15 @@
 //! path backgrounded it with `&` for the same reason, so a tool that takes half
 //! a minute to print its id does not delay the attach.
 //!
+//! # The second caller: the watchdog's recovery
+//!
+//! A capture child can die before its tool answers — the machine sleeps, the
+//! session is resumed, the process is killed with the pane it was launched
+//! beside — and the seat then stays `pending` for the rest of the session. The
+//! watchdog closes that gap: every cycle it takes ONE look at each pending seat
+//! ([`pending_seats`] + [`attempt`]) and registers whatever it finds. No
+//! sleeping and no polling there, because the next tick IS the retry.
+//!
 //! # What is NOT ported
 //!
 //! * **opencode's launch-token DB scan.** It queried the `part` table for
@@ -153,6 +162,88 @@ pub fn run(dir: &Path, slot: &str, pane: &str, server: &ServerId) -> u8 {
 }
 
 // ---------------------------------------------------------------------------
+// the watchdog's recovery: one look per tick, for a seat still pending
+// ---------------------------------------------------------------------------
+
+/// One seat whose id a recovery tick may still find.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Pending {
+    /// The roster key the captured id is written under.
+    pub slot: String,
+    /// The agent's name — what an event about the recovery names.
+    pub agent: String,
+    /// The harness sitting in the seat, read from `agent_bin.<slot>`.
+    pub tool: ToolKind,
+}
+
+/// The seats one recovery pass tries: an id still unrecorded, in a seat whose
+/// tool has no launch-time id flag.
+///
+/// Both halves are the frozen `walk_pending_session_ids`' selection, ported to
+/// the roster the core owns: it took `harness_session.<slot>` rows reading
+/// `pending` and kept only codex, gemini and opencode — claude and grok launch
+/// with an ae-generated id, so a seat holding one is never waiting for a
+/// capture. The empty spelling counts as pending beside the frozen literal:
+/// [`crate::meta`] reads an empty metadata row as ABSENT metadata, so a seat
+/// whose id was never written and one whose row says `pending` reach here as
+/// `None` and `Some("pending")` for the same reason.
+#[must_use]
+pub fn pending_seats(roster: &[crate::meta::RosterEntry]) -> Vec<Pending> {
+    roster
+        .iter()
+        .filter(|entry| is_pending(entry.harness_session.as_deref()))
+        .filter_map(|entry| {
+            let tool = ToolKind::from_binary_name(entry.binary.as_deref().unwrap_or_default());
+            crate::launch::supports_launch_id(tool).then(|| Pending {
+                slot: entry.slot.clone(),
+                agent: entry.name.clone(),
+                tool,
+            })
+        })
+        .collect()
+}
+
+/// Whether a roster's recorded id still means "no id yet".
+fn is_pending(id: Option<&str>) -> bool {
+    id.is_none_or(|id| id.is_empty() || id == crate::launch::PENDING)
+}
+
+/// ONE look for a seat's id: no sleeping, no pane, no handshake file.
+///
+/// What the watchdog runs per tick, and the reason it is not [`run`]: the
+/// launch's capture may sleep for half a minute because it is a detached child
+/// nobody waits on, while this is a step inside a daemon cycle that must not
+/// hold up a nudge. There is no polling to lose — the watchdog ticks again.
+///
+/// The methods are the frozen `doctor_try_capture_session_id`'s: the history
+/// scans, and only those. Codex's `codex.<slot>.sid` handshake is excluded
+/// because the file carries no launch time of its own, so a leftover from an
+/// earlier launch of the same slot would read as this one's; the TUI scrape is
+/// excluded because it is a guess at a header, and because a recovery must work
+/// for a seat whose pane is long past its banner.
+///
+/// Within a tool, the chain is the CAPTURE's, not the frozen recovery's — one
+/// scan per tool, shared with [`run`], rather than two that can drift apart.
+/// Two arms are therefore wider here than in bash: gemini falls back to the
+/// project root when the seat carries no launch token, and opencode matches on
+/// the session's directory rather than on a token nothing pastes any more
+/// (AGENTS.md records that scan as inert). Both are already what the launch's
+/// own child does, and both stay floored by `launch_time.<slot>` and rooted in
+/// this session's working directory, so neither widens what a capture may
+/// match — only which caller may match it.
+#[must_use]
+pub fn attempt(dir: &Path, slot: &str) -> Option<String> {
+    let facts = facts(dir, slot)?;
+    let home = home_dir();
+    match facts.tool {
+        ToolKind::Codex => home.as_deref().and_then(|home| scan_codex(home, &facts)),
+        ToolKind::Gemini => home.as_deref().and_then(|home| scan_gemini(home, &facts)),
+        ToolKind::OpenCode => scan_opencode(&facts),
+        _ => None,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // what the capture reads about itself
 // ---------------------------------------------------------------------------
 
@@ -208,7 +299,7 @@ fn home_dir() -> Option<PathBuf> {
 }
 
 /// Write the captured id into the roster, under the meta lock the core holds.
-fn register(dir: &Path, slot: &str, id: &str) {
+pub(crate) fn register(dir: &Path, slot: &str, id: &str) {
     let tail = [
         "set-harness-session".to_owned(),
         slot.to_owned(),
@@ -259,24 +350,31 @@ fn capture_codex(
             }
         }
     }
-    if let Some(home) = home {
-        let days = day_dirs(Timestamp::now());
-        if !facts.launch_id.is_empty()
-            && let Some(id) =
-                find_codex_by_launch_id(home, &facts.launch_id, facts.launch_time, &days)
-        {
-            return Some(id);
-        }
-        if !facts.work_dir.is_empty()
-            && let Some(id) = find_codex_by_cwd(home, &facts.work_dir, facts.launch_time, &days)
-        {
-            return Some(id);
-        }
+    if let Some(id) = home.and_then(|home| scan_codex(home, facts)) {
+        return Some(id);
     }
     // The TUI scrape, least reliable and therefore last: codex prints
     // `session id: <uuid>` once in its header.
     let screen = crate::transport::capture_pane(server, pane)?;
     scrape_session_id(&screen)
+}
+
+/// One look through codex's own history: the launch token first, this
+/// directory's newest conversation second.
+///
+/// Split out of [`capture_codex`] because it is the half that neither sleeps
+/// nor needs a pane, which is exactly the half [`attempt`] may run.
+fn scan_codex(home: &Path, facts: &Facts) -> Option<String> {
+    let days = day_dirs(Timestamp::now());
+    if !facts.launch_id.is_empty()
+        && let Some(id) = find_codex_by_launch_id(home, &facts.launch_id, facts.launch_time, &days)
+    {
+        return Some(id);
+    }
+    if facts.work_dir.is_empty() {
+        return None;
+    }
+    find_codex_by_cwd(home, &facts.work_dir, facts.launch_time, &days)
 }
 
 /// The first `session id: <hex-and-dashes>` a screen carries.
@@ -364,24 +462,30 @@ fn codex_logs(home: &Path, days: &[String]) -> Vec<PathBuf> {
 /// `launch_time.<slot>` and rooted in this session's own working directory — so
 /// the frozen leading `sleep 5` bought nothing but latency.
 fn capture_gemini(home: &Path, facts: &Facts) -> Option<String> {
-    if facts.work_dir.is_empty() {
-        return None;
-    }
     for attempt in 0..POLLS {
         if attempt > 0 {
             std::thread::sleep(POLL);
         }
-        if !facts.launch_id.is_empty()
-            && let Some(id) =
-                find_gemini_by_launch_id(home, &facts.work_dir, &facts.launch_id, facts.launch_time)
-        {
-            return Some(id);
-        }
-        if let Some(id) = find_gemini_by_cwd(home, &facts.work_dir, facts.launch_time) {
+        if let Some(id) = scan_gemini(home, facts) {
             return Some(id);
         }
     }
     None
+}
+
+/// One look through gemini's chat history for this project: the launch token
+/// first, the project root alone second.
+fn scan_gemini(home: &Path, facts: &Facts) -> Option<String> {
+    if facts.work_dir.is_empty() {
+        return None;
+    }
+    if !facts.launch_id.is_empty()
+        && let Some(id) =
+            find_gemini_by_launch_id(home, &facts.work_dir, &facts.launch_id, facts.launch_time)
+    {
+        return Some(id);
+    }
+    find_gemini_by_cwd(home, &facts.work_dir, facts.launch_time)
 }
 
 /// The newest gemini chat for this project whose file carries the launch token.
@@ -448,6 +552,19 @@ fn gemini_chats(home: &Path, work_dir: &str) -> Vec<PathBuf> {
 /// Looks first and sleeps between attempts, for the same reason as gemini's
 /// scan: the `updated` filter makes an immediate look safe.
 fn capture_opencode(facts: &Facts) -> Option<String> {
+    for attempt in 0..POLLS {
+        if attempt > 0 {
+            std::thread::sleep(POLL);
+        }
+        if let Some(id) = scan_opencode(facts) {
+            return Some(id);
+        }
+    }
+    None
+}
+
+/// One `opencode session list`, read for a session in this working directory.
+fn scan_opencode(facts: &Facts) -> Option<String> {
     if facts.work_dir.is_empty() {
         return None;
     }
@@ -455,18 +572,13 @@ fn capture_opencode(facts: &Facts) -> Option<String> {
     // a nonsense epoch must not overflow into a negative lower bound that
     // matches everything.
     let since = facts.launch_time.saturating_mul(1000);
-    for attempt in 0..POLLS {
-        if attempt > 0 {
-            std::thread::sleep(POLL);
-        }
-        // A failed run is "no answer", never an empty one: opencode may not be
-        // installed at all, which the frozen path checked with `command -v`.
-        let (ran, listed) = crate::transport::run_opencode(&opencode_list_argv());
-        if ran && let Some(id) = pick_opencode_session(&listed, &facts.work_dir, since) {
-            return Some(id);
-        }
+    // A failed run is "no answer", never an empty one: opencode may not be
+    // installed at all, which the frozen path checked with `command -v`.
+    let (ran, listed) = crate::transport::run_opencode(&opencode_list_argv());
+    if !ran {
+        return None;
     }
-    None
+    pick_opencode_session(&listed, &facts.work_dir, since)
 }
 
 /// The newest session in `listed` whose `directory` is `work_dir` and whose
@@ -767,6 +879,57 @@ mod tests {
     fn write(path: &Path, body: &str) {
         std::fs::create_dir_all(path.parent().expect("a parent")).expect("dirs");
         std::fs::write(path, body).expect("a fixture file");
+    }
+
+    /// One roster row, spelled the way a v2 meta writes it.
+    fn seat(slot: &str, name: &str, binary: &str, id: Option<&str>) -> crate::meta::RosterEntry {
+        crate::meta::RosterEntry {
+            slot: slot.to_owned(),
+            name: name.to_owned(),
+            profile: Some("p".to_owned()),
+            harness_session: id.map(ToOwned::to_owned),
+            binary: Some(binary.to_owned()),
+            schema: crate::meta::RosterSchema::V2,
+        }
+    }
+
+    #[test]
+    fn a_recovery_takes_the_pending_seats_whose_tool_has_no_launch_time_id() {
+        let roster = [
+            // Pending, both spellings: the frozen literal and the empty row a
+            // v2 meta reads as absent metadata.
+            seat("worker.1", "w1", "codex", Some(crate::launch::PENDING)),
+            seat("worker.2", "w2", "gemini", None),
+            seat("worker.3", "w3", "opencode", Some("")),
+            // Pending, but claude and grok launch WITH an id — a seat holding
+            // one is never waiting for a capture, whatever its row says.
+            seat("main", "lead", "claude", Some(crate::launch::PENDING)),
+            seat("worker.4", "w4", "grok", None),
+            // Already captured: nothing to recover.
+            seat("worker.5", "w5", "codex", Some("0191aaaa-bbbb")),
+            // No `agent_bin.<slot>` at all — an unclassifiable seat is not a
+            // capture target, and guessing one would ask the wrong tool.
+            crate::meta::RosterEntry {
+                binary: None,
+                ..seat("worker.6", "w6", "codex", None)
+            },
+        ];
+
+        let picked = pending_seats(&roster);
+        let taken: Vec<(&str, &str)> = picked
+            .iter()
+            .map(|seat| (seat.slot.as_str(), seat.tool.as_str()))
+            .collect();
+        assert_eq!(
+            taken,
+            vec![
+                ("worker.1", "codex"),
+                ("worker.2", "gemini"),
+                ("worker.3", "opencode"),
+            ],
+            "the pending capture-tool seats, in roster order"
+        );
+        assert_eq!(picked[0].agent, "w1", "the event names the AGENT");
     }
 
     #[test]
