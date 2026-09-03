@@ -274,6 +274,17 @@ pub(crate) fn run_stop(
             }
         }
     }
+    let caller_session = if pane.is_empty() {
+        None
+    } else {
+        crate::transport::observe_pane_owner(&ServerId::Ambient, &pane).map(|owner| owner.session)
+    };
+    if target.is_empty() && is_self {
+        let Some(own) = self_target(caller_session.as_deref(), err)? else {
+            return Ok(EXIT_FAILED);
+        };
+        target = own;
+    }
     if target.is_empty() {
         writeln!(err, "{STOP_USAGE}")?;
         return Ok(EXIT_USAGE);
@@ -292,21 +303,9 @@ pub(crate) fn run_stop(
     if supervise {
         return run_supervisor(root, &target, out, err);
     }
-    let caller_session = if pane.is_empty() {
-        None
-    } else {
-        crate::transport::observe_pane_owner(&ServerId::Ambient, &pane).map(|owner| owner.session)
-    };
     if let Some(own) = &caller_session {
         if target == "all" && all_sessions(root).contains(own) {
-            if !yes {
-                writeln!(
-                    err,
-                    "Error: 'stop all' from inside session '{own}' needs -y: the stop is handed to a detached supervisor and cannot prompt."
-                )?;
-                return Ok(EXIT_FAILED);
-            }
-            return fleet_supervised(root, own, out, err);
+            return fleet_supervised(root, own, yes, out, err);
         }
         if target == *own {
             is_self = true;
@@ -321,13 +320,20 @@ pub(crate) fn run_stop(
             writeln!(out, "No running ae sessions.")?;
             return Ok(0);
         }
+        // THE FLEET FORM CONFIRMS FROM EVERY CALLER. Singular stop destroys
+        // nothing and needs no prompt; `stop all` takes down every session a
+        // typo away, so without -y it asks, and with no terminal it refuses —
+        // the bash contract from the first day (glue cut 2 finding).
+        if !yes && !confirm_fleet_stop(names.len(), out, err)? {
+            return Ok(EXIT_FAILED);
+        }
         let mut failures = 0_u32;
         for name in names {
             // A stopped session in the roster is not a failure of `stop all`:
             // the fleet form's job is that nothing is left running, and one
             // already down satisfies it. Only a session that could not be
             // stopped counts.
-            match stop_one(root, &name, out, err)? {
+            match stop_recorded(root, &name, out, err)? {
                 StopOutcome::Stopped | StopOutcome::AlreadyStopped => {}
                 StopOutcome::Failed => failures += 1,
             }
@@ -345,10 +351,68 @@ pub(crate) fn run_stop(
         writeln!(err, "ae: '{target}' is not a usable session name.")?;
         return Ok(EXIT_FAILED);
     }
-    match stop_one(root, &target, out, err)? {
+    match stop_recorded(root, &target, out, err)? {
         StopOutcome::Stopped => Ok(0),
         StopOutcome::AlreadyStopped | StopOutcome::Failed => Ok(EXIT_FAILED),
     }
+}
+
+/// `stop all` without `-y`: ask on a terminal, refuse without one. `true`
+/// means go ahead.
+fn confirm_fleet_stop(
+    count: usize,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> io::Result<bool> {
+    if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+        writeln!(
+            err,
+            "Error: 'stop all' stops every running ae session ({count}), and there is no terminal to confirm on."
+        )?;
+        writeln!(err, "  Re-run with -y: ae stop all -y")?;
+        writeln!(err, "  Nothing was stopped.")?;
+        return Ok(false);
+    }
+    write!(out, "Stop all {count} running ae session(s)? [y/N] ")?;
+    out.flush()?;
+    let mut reply = String::new();
+    let answered = std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut reply)
+        .is_ok_and(|read| read > 0);
+    let reply = reply.trim_start();
+    if !answered || !(reply.starts_with('y') || reply.starts_with('Y')) {
+        writeln!(out, "Nothing was stopped.")?;
+        return Ok(false);
+    }
+    Ok(true)
+}
+
+/// One target's stop, RECORDED in that target's own events log whatever the
+/// caller's streams were: the request before, the outcome after. The log is
+/// the only witness that survives the caller — an agent that stops a session
+/// from a pane about to close, a script whose stdout nobody reads — so every
+/// stop path goes through here, in-process or supervised. The diagnostics are
+/// captured so the failure reason can travel into the record, then replayed
+/// to the caller unchanged.
+fn stop_recorded(
+    root: &Path,
+    name: &str,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> io::Result<StopOutcome> {
+    let dir = sessions_dir(root).join(name);
+    emit_stop_event(&dir, name, STOP_REQUEST_ACTION, "stop requested");
+    let mut captured_out = Vec::new();
+    let mut captured_err = Vec::new();
+    let outcome = stop_one(root, name, &mut captured_out, &mut captured_err)?;
+    let summary = match outcome {
+        StopOutcome::Stopped => "stopped: verified gone on its recorded server".to_owned(),
+        StopOutcome::AlreadyStopped => "already stopped".to_owned(),
+        StopOutcome::Failed => format!("FAILED: {}", String::from_utf8_lossy(&captured_err).trim()),
+    };
+    emit_stop_event(&dir, name, STOP_RESULT_ACTION, &summary);
+    out.write_all(&captured_out)?;
+    err.write_all(&captured_err)?;
+    Ok(outcome)
 }
 
 /// What one target's stop did — kept distinct so the fleet form can treat an
@@ -541,6 +605,18 @@ fn self_supervised(
 /// Calls [`stop_one`] directly, never `run_stop`: this process inherits `TMUX`
 /// from the pane that spawned it, so routing through the self path again would
 /// recurse. Calling the locked path directly makes that impossible by shape.
+/// `--self` with no name IS a name: the session the caller's pane resolves to.
+fn self_target(caller: Option<&str>, err: &mut impl Write) -> io::Result<Option<String>> {
+    if let Some(own) = caller {
+        return Ok(Some(own.to_owned()));
+    }
+    writeln!(
+        err,
+        "Error: --self with no session name needs a pane ae can resolve (--pane <id>); this one is not an ae agent pane."
+    )?;
+    Ok(None)
+}
+
 /// Lift `--pane <id>` / `--pane=<id>` out of a stop tail; the rest stays in
 /// order. An empty value is no pane.
 fn split_pane_flag(tail: &[String]) -> (String, Vec<String>) {
@@ -585,9 +661,17 @@ fn run_supervisor(
 fn fleet_supervised(
     root: &Path,
     own: &str,
+    yes: bool,
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> io::Result<u8> {
+    if !yes {
+        writeln!(
+            err,
+            "Error: 'stop all' from inside session '{own}' needs -y: the stop is handed to a detached supervisor and cannot prompt."
+        )?;
+        return Ok(EXIT_FAILED);
+    }
     let Some(argv) = supervisor_argv("all") else {
         writeln!(
             err,
@@ -626,45 +710,14 @@ fn supervise_one(
     if !name_is_usable(root, name) {
         return Ok(EXIT_FAILED);
     }
-    let dir = sessions_dir(root).join(name);
-    if !dir_exists(&dir) {
+    if !dir_exists(&sessions_dir(root).join(name)) {
         return Ok(EXIT_FAILED);
     }
-    // The diagnostics are CAPTURED, not written to the inherited streams: this
-    // process has none a human can read, and the failure line is the only place
-    // the reason survives.
-    let mut captured_out = Vec::new();
-    let mut captured_err = Vec::new();
-    let outcome = stop_one(root, name, &mut captured_out, &mut captured_err)?;
-    match outcome {
-        StopOutcome::Stopped => {
-            emit_stop_event(
-                &dir,
-                name,
-                STOP_RESULT_ACTION,
-                "stopped: verified gone on its recorded server",
-            );
-            out.write_all(&captured_out)?;
-            Ok(0)
-        }
-        // Already stopped is not a failure to record as one: the session the
-        // caller asked about is gone, which is what it asked for.
-        StopOutcome::AlreadyStopped => {
-            emit_stop_event(&dir, name, STOP_RESULT_ACTION, "already stopped");
-            err.write_all(&captured_err)?;
-            Ok(EXIT_FAILED)
-        }
-        StopOutcome::Failed => {
-            let reason = String::from_utf8_lossy(&captured_err);
-            emit_stop_event(
-                &dir,
-                name,
-                STOP_RESULT_ACTION,
-                &format!("FAILED: {}", reason.trim()),
-            );
-            err.write_all(&captured_err)?;
-            Ok(EXIT_FAILED)
-        }
+    // This process has no streams a human can read; the record written by
+    // `stop_recorded` is the only place the outcome survives.
+    match stop_recorded(root, name, out, err)? {
+        StopOutcome::Stopped => Ok(0),
+        StopOutcome::AlreadyStopped | StopOutcome::Failed => Ok(EXIT_FAILED),
     }
 }
 
