@@ -1886,10 +1886,17 @@ fn criterion_3_the_places_this_crate_can_read_the_world_are_the_inventoried_ones
             // `meta.rs`'s and `config.rs`'s inventoried doors, not new ones
             // here. Registered deliberately.
             "src/session_launch.rs".to_owned(),
-            // The codex capture handshake's one read (B move 3): the
-            // `codex.<slot>.sid` file codex's own `_register-sid` wrote. One
-            // read, on its own thread, and it exists so a post-launch id can
-            // reach the roster at all.
+            // The post-launch session-id capture's reads (B move 3, widened
+            // to every capture tool): the `codex.<slot>.sid` file codex's own
+            // `_register-sid` wrote, the day-partitioned `~/.codex/sessions`
+            // logs and gemini's `~/.gemini/tmp/*/chats` history that the
+            // launch-token and cwd scans walk, the seat's `HOME`, and the
+            // `canonicalize` every cwd match compares through. All of them run
+            // in a DETACHED child whose only product is one roster row, and
+            // they exist so a post-launch id can reach the roster at all.
+            // Registered deliberately: a scan of another tool's private
+            // history directory is exactly the kind of read that must be a
+            // line in a review.
             "src/session_launch/capture.rs".to_owned(),
             // The LOCAL-mode teardown's own reads (P3.5): the `lstat` that proves
             // the session dir is a real direct child and never a link, and the

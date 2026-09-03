@@ -8157,10 +8157,16 @@ assert_eq "slot-stamp: main pane -> main" "yes" "$([[ "$AE_SOURCE" == *'@ae_slot
 assert_eq "slot-stamp: worker pane -> worker.i" "yes" "$([[ "$AE_SOURCE" == *'@ae_slot "worker.${i}"'* ]] && echo yes || echo no)"
 # The spawned pane's @ae_slot stamp is set by the core now (B move 2 stamps @ae_agent
 # and @ae_slot on the new pane before anything reads them). The glue still stamps the
-# launch seats above, and still READS the stamp — the post-spawn session-id capture
-# finds its pane by it, which is what makes the stamp load-bearing on this side too.
-assert_eq "slot-stamp: the glue finds a spawned pane by its @ae_slot stamp" "yes" \
-    "$([[ "$AE_SOURCE" == *"list-panes -s -t \"\$session\" -F '#{pane_id} #{@ae_slot}'"* ]] && echo yes || echo no)"
+# launch seats above; it no longer READS the stamp for a spawned seat, because the
+# post-spawn session-id capture went to the core with the rest of the operation — and
+# the core holds the pane it just created rather than looking it back up. So the pin
+# here is the ABSENCE: `_cmd_spawn` is a bare core call, and nothing in the glue forks
+# a capture for a seat the core allocated.
+assert_eq "spawn: the glue holds no post-spawn capture fork" "yes" \
+    "$([[ "$AE_SOURCE" != *_spawn_capture_after* ]] && echo yes || echo no)"
+assert_eq "spawn: the glue execs the core and does nothing after it" "yes" \
+    "$(_cs="$(awk '/^_cmd_spawn\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+       [[ "$_cs" == *'_ae_core_try _spawn "$@"'* && "$_cs" != *capture* ]] && echo yes || echo no)"
 # (A.1: `requests` and `reply` are the core's now — their bash bodies, and the slot
 # helpers only they consumed, are gone. The SENSOR they read is not: its session
 # qualification is pinned below, and the archive digest reads the same rows.)
