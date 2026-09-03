@@ -138,7 +138,7 @@ ae generates these scripts in `~/.ae/sessions/<name>/` for agents and humans to 
 | `spawn <name> --using <profile> [prompt]` | Add a new agent to the workspace; oversized Claude/Codex task prompts use a sender-owned `messages/*.txt` notice |
 | `retire <name>` \| `retire %pane` | Remove a spawned agent (kills pane, cleans meta, updates manifest); exact name only — `main`/`worker` seats refuse ("use 'ae end'") |
 
-All helpers share a `_lib` library that provides name resolution, tmux server support, flock serialization, request tracking (`ae_tracked_send`, `ae_find_request`), and event-log helpers (`ae_emit_event`, `_event_json_str`). Name resolution supports the exact agent name, `%pane-id`, and cross-session `session:agent` / `@session:agent` syntax — alias-only and partial matching are gone. `agents --all` lists agents across all running ae sessions.
+All helpers share a `_lib` library that provides name resolution, tmux server support, flock serialization, and event-log helpers (`ae_emit_event`, `_event_json_str`). Request tracking is core-owned (`_ask`, `_review`, `_reply`, `_requests`): since slice A.1 the helpers are thin core calls, and `helper_send_body` is the one bash body left — the pane-delivery seam the core calls back into via `_send-deliver`, not a fallback. Name resolution supports the exact agent name, `%pane-id`, and cross-session `session:agent` / `@session:agent` syntax — alias-only and partial matching are gone. `agents --all` lists agents across all running ae sessions.
 
 Internal helpers prefixed with `_` (e.g. `_register-sid`; `_send-deliver`, the Rust core's delivery-only entry to the send body for a tracked request — it prints the recovery file's path and never emits an event, the core records that itself) are launched by ae or the core, never by agents, and are not part of the agent-facing surface.
 
@@ -297,9 +297,10 @@ its advanced state-write override no longer ship. The public wrapper unsets inhe
 `AE_CORE`, `AE_TMUX_SERVER`, `AE_TMUX_SERVER_KIND`, and `AE_CORE_BIN`; it unconditionally
 sets `AE_HOME=$HOME/.ae` and `CONFIG_FILE=$AE_HOME/config`, ignoring inherited `AE_HOME` and
 `AE_NEXT_HOME`. One aggregated notice names whichever inherited values were set and would
-have changed behavior. The `AE_CORE` unset closes the set-empty Bash-fallback bypass. The
-wrapper then validates its versioned `core/current` and glue match before execution, so
-coreless Bash mode is unreachable through the public entry. The retained coexistence Telegram
+have changed behavior. The `AE_CORE` unset is now belt and braces: since slice A.1 (finishing #79) there is
+no coreless mode anywhere — the glue itself refuses with `ae: the ae core is required
+for '<sub>'` (exit 2, before any side effect) when no matched core is bound, and the
+wrapper still validates its versioned `core/current` and glue match before execution. The retained coexistence Telegram
 glue block is likewise unreachable via that entry and is scheduled for its own retirement
 slice.
 
