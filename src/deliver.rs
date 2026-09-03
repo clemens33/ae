@@ -105,6 +105,12 @@ pub enum Shape {
     /// deferral that protects a send would defeat it. Not framed: an
     /// interrupt is a control action, not transcript chat.
     Interrupt,
+    /// A spawn's BRIEF, pasted into a freshly launched TUI. Not framed — the
+    /// task is the agent's own first instruction, not a message from a peer —
+    /// and not deferred, because the caller has already proven the input box
+    /// idle with [`input_ready`]; a second wait here would only re-ask a
+    /// question that was just answered, on a pane nobody else is writing to.
+    Launch,
 }
 
 /// One delivery, fully specified.
@@ -291,6 +297,7 @@ pub fn deliver(
                 match request.shape {
                     Shape::Send => "send",
                     Shape::Interrupt => "interrupt message",
+                    Shape::Launch => "spawn brief",
                 },
                 request.logged_target
             )?;
@@ -314,7 +321,7 @@ pub const UNVERIFIED: &str = "unverified";
 /// sender cannot mark its own message as coming from someone else by writing a
 /// header, because the header it would have to forge is added after it.
 fn frame(request: &Request<'_>) -> String {
-    if request.shape == Shape::Interrupt {
+    if matches!(request.shape, Shape::Interrupt | Shape::Launch) {
         return request.body.to_owned();
     }
     format!(
@@ -343,6 +350,10 @@ fn dead_pane_line(request: &Request<'_>) -> String {
         ),
         Shape::Interrupt => format!(
             "ae: interrupt of {} REFUSED — target pane is a shell, not a running agent; a stray Enter would EXECUTE the message as a shell command. Re-launch the agent, then re-send.",
+            request.logged_target
+        ),
+        Shape::Launch => format!(
+            "ae: brief for {} REFUSED — the pane is a shell, not a running agent (the launch did not take). Nothing pasted; a stray Enter would EXECUTE the brief as a shell command.",
             request.logged_target
         ),
     }
@@ -550,12 +561,97 @@ pub fn input_ready(server: &ServerId, pane: &str, tool: Tool) -> bool {
         .is_some_and(|screen| region::composed_ui(&screen))
 }
 
+/// How often the launch readiness wait re-reads the pane — the frozen
+/// `_wait_input_ready`'s `sleep 0.5`.
+const READY_POLL: Duration = Duration::from_millis(500);
+
+/// Wait, bounded, until `pane` will accept a paste — the frozen
+/// `_wait_input_ready`, whose `polls` this counts in the same units.
+///
+/// ONE bounded readiness wait, for both delivery moments. The spawn path had it
+/// inline and the launch path had nothing at all; the same question deserves
+/// the same answer wherever it is asked. A timeout is `false`, and the CALLER
+/// must then leave the pane untouched: a brief is re-sendable, a clobbered
+/// modal is not.
+#[must_use]
+pub fn wait_input_ready(server: &ServerId, pane: &str, tool: Tool, polls: u32) -> bool {
+    for _ in 0..polls {
+        if input_ready(server, pane, tool) {
+            return true;
+        }
+        std::thread::sleep(READY_POLL);
+    }
+    false
+}
+
+/// Paste `text` into `pane` and press Enter, verifying the submit.
+///
+/// The LAUNCH-COMMAND paste, which is the one delivery in ae that legitimately
+/// targets a SHELL: the pane has not started its agent yet, and the text is the
+/// path of the launch script it must run. So none of [`deliver`]'s guards apply
+/// — the dead-pane refusal exists precisely to keep a message out of a shell,
+/// and here the shell is the intended reader.
+///
+/// Best effort by design, exactly as the frozen `tmux_paste_submit || true`
+/// call site is: a shell is unmodelled, so [`still_staged`] cannot see anything
+/// and the single Enter is all there is. The return value says whether the
+/// staging and the Enter were accepted, never that the shell ran it.
+#[must_use]
+pub fn submit_shell_text(server: &ServerId, pane: &str, text: &str) -> bool {
+    let buffer = buffer_name(pane);
+    if !transport::load_buffer(server, &buffer, text.as_bytes())
+        || !transport::paste_buffer(server, &buffer, pane)
+    {
+        return false;
+    }
+    std::thread::sleep(SETTLE_OTHER);
+    transport::send_key(server, pane, Key::Enter)
+}
+
 /// Paste and CONFIRM the submit — `ae_submit_pasted_message`.
 ///
 /// On a busy TUI a single Enter can be swallowed and the staged text later
 /// clears WITHOUT sending — the founding exhibit is a review paste that never
 /// reached a busy codex. So the Enter is verified, retried a bounded number of
 /// times, and then FAILS LOUD.
+/// Why a staged paste did not reach the pane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StageFailure {
+    /// `load-buffer` refused: nothing is staged.
+    Load,
+    /// `paste-buffer` refused after the load: the staged buffer has been deleted.
+    Paste,
+}
+
+/// Stage `bytes` and paste them into `pane`, and NEVER leave the bytes behind.
+///
+/// `paste-buffer -d` consumes the buffer only when it succeeds; a paste that
+/// fails after a successful load (the pane died in between, the server refused)
+/// left the body sitting in the server's buffer stack, readable by `save-buffer`
+/// from any client — one leaked body per failed or raced delivery (colead gate
+/// 0b570acd, deterministic repro). Every post-load exit deletes the buffer.
+///
+/// # Errors
+///
+/// [`StageFailure::Load`] when the bytes could not be staged (nothing to clean
+/// up); [`StageFailure::Paste`] when the paste refused after the load — the
+/// staged buffer has already been deleted.
+pub fn stage_and_paste(
+    server: &ServerId,
+    buffer: &str,
+    bytes: &[u8],
+    pane: &str,
+) -> Result<(), StageFailure> {
+    if !transport::load_buffer(server, buffer, bytes) {
+        return Err(StageFailure::Load);
+    }
+    if transport::paste_buffer(server, buffer, pane) {
+        return Ok(());
+    }
+    let _ = transport::delete_buffer(server, buffer);
+    Err(StageFailure::Paste)
+}
+
 fn submit(
     request: &Request<'_>,
     tool: Tool,
@@ -567,26 +663,29 @@ fn submit(
     let buffer = buffer_name(request.pane);
     let server = request.server;
     let pane = request.pane;
-    if !transport::load_buffer(server, &buffer, payload.as_bytes()) {
-        writeln!(
-            err,
-            "ae: paste transport FAILED for pane {pane} ({}) — could not stage {} bytes. Nothing was sent.",
-            tool.as_str(),
-            payload.chars().count()
-        )?;
-        return Ok(Err(Failure::Paste {
-            body_file: body_file.to_owned(),
-        }));
-    }
-    if !transport::paste_buffer(server, &buffer, pane) {
-        writeln!(
-            err,
-            "ae: paste FAILED into pane {pane} ({}) — nothing was sent.",
-            tool.as_str()
-        )?;
-        return Ok(Err(Failure::Paste {
-            body_file: body_file.to_owned(),
-        }));
+    match stage_and_paste(server, &buffer, payload.as_bytes(), pane) {
+        Ok(()) => {}
+        Err(StageFailure::Load) => {
+            writeln!(
+                err,
+                "ae: paste transport FAILED for pane {pane} ({}) — could not stage {} bytes. Nothing was sent.",
+                tool.as_str(),
+                payload.chars().count()
+            )?;
+            return Ok(Err(Failure::Paste {
+                body_file: body_file.to_owned(),
+            }));
+        }
+        Err(StageFailure::Paste) => {
+            writeln!(
+                err,
+                "ae: paste FAILED into pane {pane} ({}) — nothing was sent.",
+                tool.as_str()
+            )?;
+            return Ok(Err(Failure::Paste {
+                body_file: body_file.to_owned(),
+            }));
+        }
     }
     if let notice::Mode::Notice(pointer) = mode
         && !prove_notice(server, pane, tool, pointer, &buffer)
@@ -651,9 +750,7 @@ fn prove_notice(server: &ServerId, pane: &str, tool: Tool, pointer: &str, buffer
         if !clear_is_measurable(server, pane, tool) {
             return false;
         }
-        if !transport::load_buffer(server, buffer, pointer.as_bytes())
-            || !transport::paste_buffer(server, buffer, pane)
-        {
+        if stage_and_paste(server, buffer, pointer.as_bytes(), pane).is_err() {
             return false;
         }
     }

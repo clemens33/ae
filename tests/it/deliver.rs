@@ -585,3 +585,52 @@ fn interrupt_refuses_exactly_and_records_nothing_for_a_refusal() {
     assert!(rig.events().is_empty());
     assert!(rig.submitted().is_empty());
 }
+
+/// A BODY NEVER OUTLIVES ITS DELIVERY IN THE SERVER'S BUFFER STACK.
+///
+/// `paste-buffer -d` consumes the buffer only when the paste succeeds. A pane
+/// that died between the load and the paste used to leave the staged body
+/// readable by `save-buffer` from any client of the server — one leaked body
+/// per failed or raced delivery (colead gate 0b570acd). The failure arm must
+/// delete what it staged; the success arm must leave nothing either.
+#[test]
+fn a_paste_that_fails_after_the_load_leaves_no_buffer_behind() {
+    let rig = Rig::new("leak", "claude", 0);
+    let server = rig.server();
+    let live = deliver::stage_and_paste(&server, "ae-send-probe", b"LIVE-BODY", &rig.pane);
+    assert_eq!(live, Ok(()), "a live pane takes the paste");
+    let (_, buffers) = rig.tmux(&["list-buffers", "-F", "#{buffer_name}"]);
+    assert!(
+        !buffers.contains("ae-send-probe"),
+        "a successful paste consumes its buffer: {buffers:?}"
+    );
+
+    // The server must OUTLIVE the pane: killing the last pane exits the server,
+    // and then the load itself fails (nothing staged, nothing to leak). The leak
+    // needs a live server and a dead target, which is the raced-delivery shape.
+    assert!(
+        rig.tmux(&["new-session", "-d", "-s", "keepalive", "sleep", "60"])
+            .0,
+        "a second session holds the server up"
+    );
+    assert!(
+        rig.tmux(&["kill-pane", "-t", &rig.pane]).0,
+        "the target dies"
+    );
+    let dead = deliver::stage_and_paste(
+        &server,
+        "ae-send-probe",
+        b"SENSITIVE-BODY-MARKER",
+        &rig.pane,
+    );
+    assert_eq!(
+        dead,
+        Err(deliver::StageFailure::Paste),
+        "the paste must fail on a dead pane"
+    );
+    let (_, buffers) = rig.tmux(&["list-buffers", "-F", "#{buffer_name}"]);
+    assert!(
+        !buffers.contains("ae-send-probe"),
+        "a failed paste must delete what it staged: {buffers:?}"
+    );
+}
