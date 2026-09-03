@@ -69,6 +69,7 @@ justfile            — dev/release pipeline (just check, just test, just releas
 cliff.toml          — git-cliff changelog config (CalVer-compatible)
 tests/unit          — pure-function unit tests (bash, no deps)
 tests/integration   — integration tests (requires tmux, git)
+tests/itest-par     — parallel sharded runner for tests/integration (`just itest-all`, `just itest <domain>`); tests/itest-domains.tsv tags every section with a domain and records order-dependent chains, tests/itest-timings.tsv holds measured seconds per section
 install             — canonical checksum-verifying versioned installer (checkout or release entry)
 docs/               — user + internals documentation (getting-started, reference, internals)
 contrib/            — optional sidecars: aewatch (retired Python watchdog+bridge; archival), aeorchestrator, aemonitor
@@ -261,6 +262,7 @@ run after the commit on the integrated diff (nothing is pushed); fixes roll forw
 |---|---|
 | `just rust-setup` | bootstrap: toolchain + pinned tools. Idempotent — a second run installs nothing |
 | `just rust-check` | **the gate**: `rust-fmt-check` + `rust-lint` + `rust-test` |
+| `just unit` / `just itest <domain>` / `just itest-all` | the bash inner loop: fast unit default (~1 min; `AE_UNIT_FULL=1` for all), one domain of integration sections (seconds), the parallel full pass (~4 min). `just test` stays the serial full set |
 | `just rust-fmt` / `rust-fmt-check` | `cargo fmt` + `taplo fmt` (both languages of the build) |
 | `just rust-lint` | `cargo clippy --locked --all-targets --all-features -- -D warnings` + `taplo lint` |
 | `just rust-test` | `cargo nextest run --locked` **and** `cargo test --doc --locked` |
