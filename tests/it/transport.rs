@@ -452,6 +452,36 @@ fn wait_for_a_dead_pane(socket: &Path, scratch: &Path, session: &str) {
     panic!("no pane ever reported pane_dead=1; the #109 arm cannot be proven");
 }
 
+/// Wait until `pane` reports `pane_current_command` == `command` with `pane_dead` == 0,
+/// or fail loudly.
+///
+/// `split-window <cmd>` returns as soon as the pane exists; tmux can still report
+/// the launch shell for a moment before it has exec'd the command. A positive
+/// liveness arm asserted in that window proves nothing and fails deterministically
+/// on a fast machine (colead gate 82f5b511). Bounded polling, not a sleep.
+fn wait_for_pane_command(socket: &Path, scratch: &Path, pane: &str, command: &str) {
+    let server = ServerId::Selected(Selector::Socket(socket.to_path_buf()));
+    let mut args = ae::tmux::server_args(&server);
+    args.extend(
+        [
+            "display-message",
+            "-p",
+            "-t",
+            pane,
+            "#{pane_dead}\t#{pane_current_command}",
+        ]
+        .map(ToOwned::to_owned),
+    );
+    for _ in 0..200 {
+        let (ok, out) = run_tmux(&args, scratch);
+        if ok && out.trim() == format!("0\t{command}") {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    panic!("pane {pane} never reported pane_current_command={command} with pane_dead=0");
+}
+
 /// Turn on `remain-on-exit`, so a pane whose process exits is RETAINED.
 ///
 /// Neither ae nor the successor sets this; SC-017s records it as
@@ -639,6 +669,7 @@ fn sc_017p_the_list_route_answers_each_seat_from_the_live_panes_and_the_publishe
     mark_pane(&socket, &scratch, &shell, "spawned.0");
     let agent = split(&socket, &scratch, "live", Some("sleep 60"));
     mark_pane(&socket, &scratch, &agent, "main");
+    wait_for_pane_command(&socket, &scratch, &agent, "sleep");
     publish_branch(&socket, &scratch, "live", "feature/runtime");
 
     let root = scratch.join("home");
