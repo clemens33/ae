@@ -276,7 +276,7 @@ _ae_inside_tmux() {
 #   Resume:     strip_session_flags, resume_cmd_from_cmd, inject_session_id, inject_ae_context, resolve_agent_session_id
 #   Session:    read_session_meta, list_ae_sessions, iter_stopped_sessions, kill_heartbeat, cleanup_session
 #   End/branch: sanitize_branch_name, resolve_session_workdir, end_session
-#   Commands:   cmd_list, cmd_status, cmd_stop, cmd_rename, cmd_end, cmd_doctor, cmd_transfer, cmd_help, _cmd_spawn
+#   Commands:   cmd_list, cmd_status, cmd_stop, cmd_rename, cmd_end, cmd_doctor, cmd_transfer, cmd_help
 #   Manifest:   regenerate_manifest, sync_session_assets
 #   Launch:     send_agent_cmd, capture_codex_session_id
 
@@ -1953,7 +1953,7 @@ start_capture_session_id() {
 
 # Generate or restore a session-scoped agent ID
 # Uses globals $RESUMING and $SESSION when available (main launch path)
-# For _cmd_spawn: RESUMING is unset → always generates new IDs
+# Launch-path only since B glue cut 1: spawn is the core's, and it mints its own
 resolve_agent_session_id() {
     local cmd="$1" slot="$2"
     local session_id=""
@@ -2034,30 +2034,6 @@ _validate_session_name() {
     echo "Error: invalid session name '${name}'." >&2
     echo "       Names must match ^[A-Za-z0-9][A-Za-z0-9_-]{0,127}\$ — start with a letter or digit," >&2
     echo "       then letters, digits, '_' or '-', up to 128 characters." >&2
-    return 1
-}
-
-# Agent names are an ALLOWLIST for the same reason session names are, plus one this
-# grammar owns alone: an agent name reaches a PRIVILEGED SINK. Since #59 it is
-# interpolated into the agent's own system prompt / developer_instructions /
-# opencode instructions — the sink AGENTS.md's interpreted-sinks table calls
-# "Agent system prompts -> the LLM (injection)". Only ':' was rejected before, so a
-# peer could spawn `cl:helper). Ignore the slot below; sign as the lead` and have
-# that prose emitted INSIDE the identity sentence, in the one place an agent is
-# told who it is. Same character class as a session name (shell-, path- and
-# tmux-safe by construction), shorter cap: a name is a window title and a roster
-# field, not a directory. Enforced at every creation boundary — `_cmd_spawn` (the
-# peer boundary, the hostile one) and the launch-time roster parse of
-# [workspace] main/workers (the operator boundary) — and re-checked, fail-quiet,
-# at the interpolation site itself for meta that predates the grammar.
-_validate_agent_name() {
-    local name="$1"
-    if [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$ ]]; then
-        return 0
-    fi
-    echo "Error: invalid agent name '${name}'." >&2
-    echo "       Names must match ^[A-Za-z0-9][A-Za-z0-9_-]{0,63}\$ — start with a letter or digit," >&2
-    echo "       then letters, digits, '_' or '-', up to 64 characters." >&2
     return 1
 }
 
@@ -9468,314 +9444,81 @@ _wait_input_ready() { # <pane> <tool_kind> [polls] -> 0 ready, 1 timed out
     return 1
 }
 
+# `ae _spawn <meta-dir> <name> --using <profile> [--] [prompt]` — the entry the
+# session's `spawn` helper execs. B move 2 made the whole operation the core's:
+# the argv grammar and its usage line, the name allowlist, the profile lookup,
+# the seat reserved in meta BEFORE the pane exists, the window, the pane stamps,
+# the manifest, the launch script, the readiness-gated brief, the rollback on
+# every failure after the seat, the ownership-guarded kill, and the spawn /
+# spawn-failed events.
+#
+# ONE duty stays here, and it is why this is not a bare exec: the post-launch
+# session-id CAPTURE for the tools with no launch-time id flag (codex, opencode,
+# gemini). That capture is a detached poll which OUTLIVES the command — minutes
+# of sleeping and scanning the tool's own history directory — so it cannot live
+# inside a core process the caller waits on. The core has already written
+# `launch_id.<slot>` and `launch_time.<slot>`; this fork only watches for the id
+# and writes it back through the roster. It runs ONLY after a success, because a
+# rolled-back spawn has no seat to write to.
 _cmd_spawn() {
-    # Shadow the script-global _AE_META_DIR: spawn executes from ae, but its body
-    # belongs in the target session's meta; otherwise it lands in <repo>/messages/.
-    local meta_dir="$1" _AE_META_DIR="$1" _AE_SESSION=""
+    local meta_dir="$1" name rc=0
     shift
-    # Identity v2 grammar: spawn <name> --using <profile> [--] [prompt]. The NAME is the
-    # agent's identity and is REQUIRED (no default); --using names the [profiles] recipe
-    # (alias_name keeps its frozen variable name and now holds the PROFILE). `--` ends
-    # the options so a prompt may start with a dash.
-    local spawn_name="" alias_name=""
-    if [[ $# -lt 1 || "$1" == -* ]]; then
-        echo "Usage: spawn <name> --using <profile> [--] [prompt]" >&2
-        return 1
-    fi
-    spawn_name="$1"
-    shift
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-            --using)
-                if [[ $# -lt 2 ]]; then
-                    echo "Error: --using requires a profile name." >&2
-                    return 1
-                fi
-                alias_name="$2"
-                shift 2
-                ;;
-            --using=*)
-                alias_name="${1#--using=}"
-                shift
-                ;;
-            --)
-                shift
-                break
-                ;;
-            *) break ;;
-        esac
-    done
-    if [[ -z "$alias_name" ]]; then
-        echo "Error: spawn needs --using <profile> (the profiles are listed in workspace.md)." >&2
-        return 1
-    fi
-    # THE PEER BOUNDARY. A spawn name arrives from another agent, and since #59 it is
-    # interpolated into the new agent's own system prompt — so it is allowlisted here,
-    # before any effect (the core re-checks it at add-seat).
-    _validate_agent_name "$spawn_name" || return 1
-    local user_prompt="${*:-}"
-
-    # Resolve caller's agent identity (the pane that ran spawn)
-    local caller_pane caller_agent
-    caller_pane="$(tmux display-message -p '#{pane_id}' 2>/dev/null || true)"
-    caller_agent=""
-    if [[ -n "$caller_pane" ]]; then
-        caller_agent="$(tmux display-message -t "$caller_pane" -p '#{@ae_agent}' 2>/dev/null || true)"
-    fi
-
-    # Build spawn prompt with reply-back instruction
-    local prompt
-    if [[ -n "$user_prompt" ]]; then
-        if [[ -n "$caller_agent" ]]; then
-            prompt="${user_prompt} — When done, reply back via: ${meta_dir}/send \"${caller_agent}\" \"<your reply>\""
-        else
-            prompt="$user_prompt"
-        fi
-    else
-        prompt="You were spawned into an ae workspace. Read ${meta_dir}/workspace.md for details."
-    fi
-
-    # Read meta
-    declare -A meta=()
-    while IFS='=' read -r k v; do
-        case "$k" in
-            mode | origin | session | work_dir | layout | config | main_pane) meta["$k"]="$v" ;;
-        esac
-    done <"$meta_dir/meta"
-
-    local session="${meta[session]:-}" work_dir="${meta[work_dir]:-}" layout="${meta[layout]:-vertical}"
-    local config_file="${meta[config]:-}" main_pane="${meta[main_pane]:-}"
-    local origin="${meta[origin]:-}" mode="${meta[mode]:-}"
-
-    if [[ -z "$session" ]]; then
-        echo "Error: session not found in metadata" >&2
-        return 1
-    fi
-    _AE_SESSION="$session"
-    if ! tmux has-session -t "$session" 2>/dev/null; then
-        echo "Error: session '$session' not running" >&2
-        return 1
-    fi
-
-    CONFIG_FILE="$config_file"
-    # Wire up per-project config from session's origin directory
-    AE_LOCAL_CONFIG=""
-    if [[ -n "$origin" ]] && [[ -f "${origin}/.ae/config" ]]; then
-        AE_LOCAL_CONFIG="${origin}/.ae/config"
-    fi
-    local cmd
-    cmd="$(get_config "profiles.${alias_name}")"
-    if [[ -z "$cmd" ]]; then
-        echo "Error: profile '${alias_name}' not defined in [profiles] of $config_file" >&2
-        return 1
-    fi
-
-    # New window per worker: spawned agents get their own tmux window so the
-    # main window keeps the lead layout untouched and N parallel workers stay
-    # usable. -d: don't steal the caller's focus. (The window is renamed to
-    # the worker's role name after the meta flock resolves it.)
-    local pane_id
-    # Identity v2: the SEAT is the core's to allocate and write — add-seat checks the
-    # name grammar and uniqueness, takes the lowest free spawned.<n>, and publishes the
-    # rows in one atomic rewrite under meta.lock — BEFORE the pane exists, so the roster
-    # is never racy. On any later failure the seat is removed again (_spawn_rollback:
-    # best effort, as the bash spawn cleaned up). The sid is known up front for the
-    # upfront-UUID tools and "pending" for the capture tools, exactly as before.
-    local session_id tool_kind slot launch_id _as_out
-    tool_kind="$(tool_kind_from_cmd "$cmd")"
-    session_id="$(resolve_agent_session_id "$cmd" "spawned.new")"
-    local -a _as_args=(--using "$alias_name" --binary "$(extract_binary_from_cmd "$cmd")")
-    [[ -n "$session_id" ]] && _as_args+=(--session "$session_id")
-    _as_out="$(META_DIR="$meta_dir" _identity_core session _roster add-seat "$spawn_name" "${_as_args[@]}")" || return 1
-    slot="${_as_out#slot${_IDENT_US}}"
-    if [[ "$slot" != spawned.* ]]; then
-        echo "Error: unexpected add-seat answer '${_as_out}'." >&2
-        return 1
-    fi
-    # The launch token is a capture fact of the glue (codex/gemini/opencode), not a
-    # roster row: appended under the same meta.lock the core takes, so the two never
-    # interleave.
-    if tool_kind_supports_launch_id "$tool_kind"; then
-        launch_id="$(gen_uuid)"
-        {
-            if flock -w 5 200; then
-                echo "launch_id.${slot}=${launch_id}" >>"$meta_dir/meta"
-            else
-                echo "ae: could not lock meta for the launch token of '${spawn_name}'." >&2
-            fi
-        } 200>"$meta_dir/meta.lock"
-    fi
-
-    pane_id="$(tmux new-window -d -t "${session}:" -c "$work_dir" -P -F '#{pane_id}' 2>/dev/null || true)"
-    if [[ -z "$pane_id" ]]; then
-        META_DIR="$meta_dir" _identity_core session _roster remove-seat "$spawn_name" >/dev/null 2>&1 || true
-        echo "Error: could not create a pane for '${spawn_name}' — seat released." >&2
-        return 1
-    fi
-
-    # Label pane + name the worker's window (explicit rename-window also disables
-    # tmux automatic-rename). @ae_agent IS the bare name now.
-    tmux select-pane -t "$pane_id" -T "ae:${spawn_name}"
-    tmux set-option -p -t "$pane_id" @ae_agent "${spawn_name}"
-    tmux set-option -p -t "$pane_id" @ae_slot "${slot}"
-    tmux rename-window -t "$pane_id" "$(_ae_tmux_format_literal "$spawn_name")" 2>/dev/null || true
-
-    # Regenerate workspace.md from live panes
-    regenerate_manifest "$session" "$work_dir" "$origin" "$mode" "$main_pane" "$meta_dir"
-
-    # Wait for new pane's shell to initialize before sending commands
-    sleep 0.3
-
-    # Launch agent with session-scoped ID and ae workspace context
-    local scoped_cmd scoped_pre initial_msg
-    scoped_cmd="$(inject_session_id "$cmd" "$session_id")"
-    scoped_pre="$scoped_cmd"
-    scoped_cmd="$(inject_ae_context "$scoped_cmd" "$meta_dir" "$session" "$work_dir" "$slot")"
-    # For agents without system prompt injection, combine workspace context + spawn prompt
-    initial_msg="$(initial_prompt_for_cmd "$cmd" "$meta_dir" "$session" "$work_dir" "$slot")"
-    if [[ -n "$initial_msg" ]]; then
-        initial_msg="${initial_msg} --- ${prompt}"
-    fi
-    # The initial prompt is part of the launch paste for tools without a
-    # system-prompt channel. Publish it before send_agent_cmd can paste the
-    # launch command; a storage failure rolls back the registered worker.
-    if [[ -n "$initial_msg" ]] && ! ae_store_message_body "spawn-${slot}" "spawn" "$initial_msg"; then
-        _spawn_rollback "$meta_dir" "$slot" "$pane_id" "$session" "$work_dir" "$origin" "$mode" "$main_pane" "$spawn_name"
-        echo "Error: '${spawn_name}' task body could not be stored — spawn rolled back." >&2
-        return 1
-    fi
-    # By this point the window/pane exists and the agent is REGISTERED in meta
-    # (agent.<slot>, agent_bin.<slot>, launch_id.<slot>). A failed launch that
-    # simply returned would leave a phantom: a roster entry with an empty pane,
-    # visible to `ae list`, addressable by every helper, retirable only by hand.
-    if ! send_agent_cmd "$pane_id" "$scoped_cmd" "$initial_msg" "$meta_dir" "$slot" "$session_id" "$scoped_pre"; then
-        _spawn_rollback "$meta_dir" "$slot" "$pane_id" "$session" "$work_dir" "$origin" "$mode" "$main_pane" "$spawn_name"
-        echo "Error: '${spawn_name}' could not be launched — spawn rolled back." >&2
-        return 1
-    fi
-
-    # Post-launch: capture agent session ID if needed
-    start_capture_session_id "$tool_kind" "$pane_id" "$slot" "$meta_dir"
-
-    # Brief-delivered truth, tracked separately from pane-created truth (see the outer
-    # contract below). Tools WITHOUT system-prompt injection carry the brief in
-    # initial_msg, which send_agent_cmd already delivered as the first message — for those
-    # there is no separate paste to fail, so delivery is settled here.
-    local _delivered=1 _fail_reason="" _task_body_file=""
-
-    # For agents with system prompt injection, send spawn prompt separately
-    if [[ -z "$initial_msg" ]]; then
-        local _ready=0
-        if ! ae_store_message_body "spawn-${slot}" "spawn" "$prompt"; then
-            _delivered=0
-            _fail_reason="task body storage failed — nothing was pasted"
-        else
-            _task_body_file="${_AE_LAST_BODY_FILE:-}"
-            _NOTICE_BODY_FILE="$_task_body_file"
-            _NOTICE_ACTION=spawn
-            _NOTICE_REF="spawn-${slot}"
-            _NOTICE_TARGET_SESSION="$session"
-            # Wait for the TUI to actually ACCEPT input before pasting.
-            # wait_for_agent_start only proves the process is running — pasting in the boot
-            # gap is swallowed wholesale, with nothing staged for the lingering-nudge below
-            # to detect (live-dogfood finding: workers booted brief-less twice).
-            _wait_input_ready "$pane_id" "$tool_kind" 30 && _ready=1
-            if ((_ready == 0)); then
-                # DO NOT paste into a state we could not confirm idle. The old code polled
-                # for any of '❯|bypass permissions|for shortcuts' and pasted on timeout
-                # regardless — so claude's trust dialog ('❯ 1. Yes, I trust this folder')
-                # read READY and the brief went INTO THE MODAL, where Enter answers the
-                # dialog instead (colead ROUND5 BLOCKER 2). Leave the pane untouched — the
-                # brief is re-sendable, a clobbered modal is not — and record NOT-DELIVERED
-                # so the caller sees it (colead ROUND6: stderr alone let the positive path
-                # run on and claim success).
-                _delivered=0
-                _fail_reason="input never reached a confirmed-idle state (busy, modal, or unreadable)"
-            else
-                # #38: NO select-pane. Same deletion as #36's launch path, same reviewed
-                # doctrine — "focus is not part of any TUI's submission contract;
-                # select-pane here changed the window's active pane, routing the human's
-                # in-flight keystrokes into the TARGET mid-send — acute under lead-pair,
-                # where lead and colead share window 0." A spawn firing while the human
-                # types did exactly that. paste-buffer -t / send-keys -t reach the named
-                # pane without it, and it was also a bare call under errexit that could
-                # abort before the delivery reporting below. If jump-to-new-worker is
-                # wanted it belongs in the explicit focus helper, AFTER delivery.
-                # Launch paste is best-effort for DELIVERY, but never silent: a slow TUI
-                # whose paste stays staged past the bounded verify-retries returns non-zero
-                # and this runs under set -e, so the status is captured rather than dropped.
-                # The old bare `|| true` discarded exactly the signal that says "your worker
-                # never got its brief".
-                local _paste_rc=0
-                tmux_paste_submit "$pane_id" "$prompt" || _paste_rc=$?
-                if ((_paste_rc != 0)); then
-                    # Staged past the bounded verify-retries: the text may be sitting unsent
-                    # in the box. UNCONFIRMED is not delivered, and must not read as success.
-                    _delivered=0
-                    _fail_reason="brief submit UNCONFIRMED (tmux_paste_submit rc=$_paste_rc) — body preserved at ${_task_body_file}; it may be staged unsent"
-                fi
-            fi
-            if ((_ready == 1)); then
-                # A booting TUI can swallow the quick post-paste Enter, leaving the prompt
-                # staged in the input box (live-dogfood find). Verify the text actually left
-                # the input; nudge Enter once more if it lingers. Only when we actually
-                # pasted — never blind-Enter a pane we deliberately did not touch.
-                sleep 1.5
-                if tmux capture-pane -p -t "$pane_id" 2>/dev/null | tail -n 6 |
-                    grep -qF "${prompt:0:40}"; then
-                    tmux send-keys -t "$pane_id" Enter
-                fi
-            fi
-        fi
-    fi
-
-    # PANE-CREATED and BRIEF-DELIVERED are different truths, and only the second one
-    # means the worker was assigned its task. Conflating them is how a delivery failure
-    # became a success at the caller: both failure branches printed to stderr and then
-    # control ran on to the positive line, a task-bearing action=spawn event, and rc=0 —
-    # so supervision saw an assigned worker whose brief was absent, and automation could
-    # not tell (colead ROUND6 BLOCKER, caller-probed). stderr is for humans; rc and the
-    # event log are the machine-visible contract, and they must agree with reality.
-    if ((_delivered == 0)); then
-        # The pane EXISTS and is in meta — say so, so nobody respawns a duplicate — but
-        # report failure and never claim the task was assigned. The brief is preserved on
-        # disk rather than quoted into the message: it is arbitrary multi-line text, and a
-        # '<the brief>' placeholder is not a resend path anyone can run (colead ROUND6).
-        local _brief_file="${meta_dir}/undelivered.${spawn_name}.txt"
-        printf '%s' "$prompt" >"$_brief_file" 2>/dev/null || _brief_file=""
-        [[ -n "$_brief_file" ]] && chmod 600 "$_brief_file" 2>/dev/null
-        echo "ae: SPAWN INCOMPLETE — ${spawn_name} exists in pane ${pane_id}, brief NOT delivered" >&2
-        echo "ae: reason: ${_fail_reason}" >&2
-        echo "ae: do NOT respawn (the pane is live) — send to the existing agent:" >&2
-        if [[ -n "$_brief_file" ]]; then
-            echo "ae:   ${meta_dir}/send ${spawn_name} \"\$(cat ${_brief_file})\"" >&2
-        else
-            echo "ae:   ${meta_dir}/send ${spawn_name} '<re-send your brief>'" >&2
-        fi
-        # An explicit delivery-failed FACT, not silence: supervision reads this log, and a
-        # missing event is indistinguishable from a spawn that never happened. It carries
-        # NO task summary — nothing here assigned that task.
-        _spawn_emit_event "$meta_dir" "${caller_agent:-human}" "${spawn_name}" \
-            "spawn-failed" "brief not delivered: ${_fail_reason}"
-        return 1
-    fi
-
-    echo "Spawned ${spawn_name} in pane $pane_id"
-    # Same capping path as ae_emit_event. This site kept the original
-    # `printf '%.200s' | tr` idiom and reproduced the issue-#7 abort verbatim on
-    # a straddling prompt — a second copy of a fixed bug is still the bug.
-    local _sp_sum="${user_prompt:-}"
-    _sp_sum="${_sp_sum//$'\n'/ }"
-    _sp_sum="${_sp_sum//$'\t'/ }"
-    ae_cap_summary "$_sp_sum" 200
-    _spawn_emit_event "$meta_dir" "${caller_agent:-human}" "${spawn_name}" \
-        "spawn" "$_EV_SUMMARY"
+    name="${1:-}"
+    META_DIR="$meta_dir" _ae_core_try --capture _spawn "$@" || rc=$?
+    ((rc == 0)) || return "$rc"
+    _spawn_capture_after "$meta_dir" "$name"
     return 0
 }
 
-# Append one event to the session log. Inline-equivalent of ae_emit_event — _cmd_spawn
-# runs outside the _lib context — kept as its own function so the spawn path has exactly
-# ONE event writer and the success/failure calls cannot drift apart.
+# Fork the post-launch session-id capture for the seat `_spawn` just created.
+#
+# The SLOT is read back from meta rather than guessed: the core owns seat
+# allocation, and `seat.spawned.<n>=<name>` is where it records which index it
+# took — deriving one here would be a second allocator, disagreeing the first
+# time two spawns race. The pane is found by its `@ae_slot` stamp for the same
+# reason, and the tool kind from the seat's own `agent_bin.<slot>`.
+#
+# Nothing here is fatal. A capture that cannot start costs an exact `--resume`
+# on the next cycle (the tool falls back to its CWD heuristic), never the spawn
+# that has already succeeded — so every probe degrades to a quiet return.
+_spawn_capture_after() {
+    local meta_dir="$1" name="$2" meta="$1/meta"
+    local slot="" _sl bin="" kind="" session="" pane=""
+    [[ -n "$name" && -f "$meta" ]] || return 0
+    # The name is allowlisted (^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$), so it carries no
+    # regex metacharacter; the slot does — escape its dot before it is one.
+    slot="$(sed -n "s/^seat\\.\\(spawned\\.[0-9][0-9]*\\)=${name}$/\\1/p" "$meta" | head -1 || true)"
+    [[ -n "$slot" ]] || return 0
+    _sl="${slot//./\\.}"
+    bin="$(sed -n "s/^agent_bin\\.${_sl}=//p" "$meta" | head -1 || true)"
+    [[ -n "$bin" ]] || return 0
+    kind="$(tool_kind_from_cmd "$bin")"
+    tool_kind_supports_launch_id "$kind" || return 0
+    session="$(sed -n 's/^session=//p' "$meta" | head -1 || true)"
+    [[ -n "$session" ]] || return 0
+    pane="$(tmux list-panes -s -t "$session" -F '#{pane_id} #{@ae_slot}' 2>/dev/null |
+        awk -v s="$slot" '$2 == s { print $1; exit }' || true)"
+    [[ -n "$pane" ]] || return 0
+    capture_session_id "$kind" "$pane" "$slot" "$meta_dir" &
+    return 0
+}
+
+# `ae _retire <meta-dir> <name|%pane>` — the entry the session's `retire` helper
+# execs. Wholly the core's since B move 2: exact name or `%pane` resolution, the
+# refusal that protects the main/worker seats, the meta strip under meta.lock,
+# the launch artifacts, the ownership-guarded kill, the manifest and the retire
+# event. Nothing follows it here, so the shim EXECs.
+_cmd_retire() {
+    local meta_dir="$1"
+    shift
+    META_DIR="$meta_dir" _ae_core_try _retire "$@"
+}
+
+# Append one event to the session log, from code that runs OUTSIDE the `_lib`
+# context and so cannot call ae_emit_event: `ae stop`, and the launch path's
+# delivery-failure reporter. It keeps its `_spawn_` name because the spawn path
+# was its first caller; that caller is the core's since B move 2, and the two
+# above are what is left.
 _spawn_emit_event() { # <meta_dir> <actor> <target> <action> <summary>
     local meta_dir="$1" actor="$2" target="$3" action="$4" summary="$5"
     local _esc _actor _target _summary _ts _json
@@ -9801,110 +9544,6 @@ _spawn_emit_event() { # <meta_dir> <actor> <target> <action> <summary>
     return 0
 }
 
-# Internal: retire a spawned agent (called via retire helper → ae _retire)
-_cmd_retire() {
-    local meta_dir="$1"
-    shift
-    local target="$1"
-
-    # Read meta
-    declare -A meta=()
-    while IFS='=' read -r k v; do
-        case "$k" in
-            mode | origin | session | work_dir | layout | config | main_pane) meta["$k"]="$v" ;;
-        esac
-    done <"$meta_dir/meta"
-
-    local session="${meta[session]:-}" work_dir="${meta[work_dir]:-}"
-    local main_pane="${meta[main_pane]:-}" origin="${meta[origin]:-}" mode="${meta[mode]:-}"
-
-    if [[ -z "$session" ]]; then
-        echo "Error: session not found in metadata" >&2
-        return 1
-    fi
-
-    # Resolve agent name to pane ID
-    local resolved="" pane_agent=""
-    if [[ "$target" == %* ]]; then
-        # Validate pane belongs to this session
-        local pane_in_session=false
-        while IFS=$'\t' read -r pid aagent; do
-            if [[ "$pid" == "$target" ]]; then
-                resolved="$target"
-                pane_agent="$aagent"
-                pane_in_session=true
-                break
-            fi
-        done < <(tmux list-panes -s -t "$session" -F '#{pane_id}	#{@ae_agent}' 2>/dev/null)
-        if [[ "$pane_in_session" == false ]]; then
-            echo "Error: pane '${target}' not found in session '${session}'" >&2
-            return 1
-        fi
-    else
-        # Identity v2: @ae_agent IS the bare name — exact match only. A seat whose pane
-        # is already gone (a spawn that died between the seat and the pane) still
-        # resolves by NAME at the core below, so retire can clean it.
-        while IFS=$'\t' read -r pid aagent; do
-            if [[ "$aagent" == "$target" ]]; then
-                resolved="$pid"
-                pane_agent="$aagent"
-                break
-            fi
-        done < <(tmux list-panes -s -t "$session" -F '#{pane_id}	#{@ae_agent}' 2>/dev/null)
-        [[ -n "$pane_agent" ]] || pane_agent="$target"
-    fi
-
-    # Prevent retiring the main agent
-    if [[ "$resolved" == "$main_pane" ]]; then
-        echo "Error: cannot retire the main agent — use 'ae end' instead" >&2
-        return 1
-    fi
-
-    # Identity v2: the core removes the seat — refusing a main or worker seat (those end
-    # with the session) and an unknown name — in one locked rewrite that drops every row
-    # of the slot; the glue then kills the pane and drops the launcher. Core first: a
-    # refused retire must not kill anything.
-    local _rs_out spawned_slot
-    _rs_out="$(META_DIR="$meta_dir" _identity_core session _roster remove-seat "$pane_agent")" || return 1
-    spawned_slot="${_rs_out#slot${_IDENT_US}}"
-    if [[ -n "$resolved" ]]; then
-        _kill_owned_pane "$resolved" "${meta[session]:-}" "$pane_agent"
-    fi
-    # The worker's launch script — and its #27 re-run marker — are dead weight
-    # once the pane is gone.
-    rm -f "${meta_dir}/launch.${spawned_slot}.sh" "${meta_dir}/launch.${spawned_slot}.started"
-    # (No layout rebalance: the worker lived in its own window — killing the
-    # pane closed that window; the main window's layout was never touched.)
-
-    # Regenerate manifest
-    CONFIG_FILE="${meta[config]:-}"
-    AE_LOCAL_CONFIG=""
-    if [[ -n "$origin" ]] && [[ -f "${origin}/.ae/config" ]]; then
-        AE_LOCAL_CONFIG="${origin}/.ae/config"
-    fi
-    regenerate_manifest "$session" "$work_dir" "$origin" "$mode" "$main_pane" "$meta_dir"
-
-    echo "Retired ${pane_agent} (pane ${resolved})"
-    # Emit event (inline — _cmd_retire runs outside _lib context)
-    local _esc _actor _target _ts _json
-    _esc() {
-        local s="$1"
-        s="${s//\\/\\\\}"
-        s="${s//\"/\\\"}"
-        s="${s//$'\n'/\\n}"
-        s="${s//$'\t'/\\t}"
-        s="${s//$'\r'/\\r}"
-        printf '%s' "$s"
-    }
-    _actor="$(tmux display-message -p '#{@ae_agent}' 2>/dev/null || true)"
-    [[ -n "$_actor" ]] || _actor="human"
-    _actor="$(_esc "$_actor")"
-    _target="$(_esc "$pane_agent")"
-    _ts="$(date -u +%FT%TZ)"
-    _json="$(printf '{"ts":"%s","actor":"%s","action":"retire","target":"%s"}' "$_ts" "$_actor" "$_target")"
-    { flock -w 5 8 && printf '%s\n' "$_json" >>"$meta_dir/events.jsonl"; } 8>>"$meta_dir/events.jsonl.lock"
-}
-
 # Regenerate workspace.md from live tmux pane state.
 #
 # A.2c: the DOCUMENT is the core's — it reads the session's meta, lists the panes
@@ -9919,28 +9558,6 @@ regenerate_manifest() {
     [[ -n "${AE_LOCAL_CONFIG:-}" && -f "${AE_LOCAL_CONFIG:-}" ]] && cfg+=(--local "$AE_LOCAL_CONFIG")
     _ae_core_preflight_try _manifest-render "$sessions_dir" "$sess" "$wdir" "$origin" "$mode" \
         "$main_pane" ${cfg[@]+"${cfg[@]}"}
-}
-
-# Undo a spawn whose agent never launched. Same teardown _cmd_retire performs,
-# run on the failure path: strip the slot's meta keys under the SAME meta.lock
-# the registration took, drop its launch artifacts, kill the window/pane, and
-# rebuild the manifest so workspace.md stops advertising an agent that does not
-# exist. Every step is tolerated — the caller's non-zero status is what matters.
-_spawn_rollback() {
-    local meta_dir="$1" slot="$2" pane_id="$3"
-    local session="$4" work_dir="$5" origin="$6" mode="$7" main_pane="$8" name="${9:-}"
-    # Identity v2: the seat's rows are the core's — remove-seat drops every row of the
-    # slot (launch token included) in one locked rewrite, so a concurrent registration
-    # is never stamped over. On refusal the entry is left for `retire`; the rest of the
-    # cleanup is unaffected and the caller's status still stands.
-    if [[ -n "$name" ]]; then
-        META_DIR="$meta_dir" _identity_core session _roster remove-seat "$name" >/dev/null 2>&1 ||
-            echo "ae: spawn rollback could not remove the seat of '${name}' (${slot}) — remove it with 'retire'." >&2
-    fi
-    rm -f "${meta_dir}/launch.${slot}.sh" "${meta_dir}/launch.${slot}.started"
-    _kill_owned_pane "$pane_id" "$session" "$name"
-    regenerate_manifest "$session" "$work_dir" "$origin" "$mode" "$main_pane" "$meta_dir" 2>/dev/null || true
-    return 0
 }
 
 # --- Agent launch helper (must be defined before dispatcher for _spawn) ---
@@ -10188,14 +9805,17 @@ helper_state_main() {
 }
 
 # Resolve agent target to pane ID
-# Supports: %pane-id, @session:agent-ref, alias:name, alias-only, bare-name
-# Sets: AE_RESOLVED_PANE (pane ID), AE_RESOLVED_AGENT (canonical agent ref) or exits with error
+# Supports: %pane-id, @session:agent-ref, bare-name
+# Sets: AE_RESOLVED_PANE (pane ID), AE_RESOLVED_AGENT (canonical agent ref),
+# AE_RESOLVED_SLOT (validated, else empty) — or returns non-zero with an error.
+# AE_RESOLVED_SESSION left the contract with B glue cut 1: the frozen send body
+# was its only reader, and a published global nobody reads is a claim the next
+# caller will believe.
 ae_resolve() {
     local target="$1"
     AE_RESOLVED_PANE=""
     AE_RESOLVED_AGENT=""
     AE_RESOLVED_SLOT=""
-    AE_RESOLVED_SESSION=""
 
     # 1. Raw pane ID — pass through
     if [[ "$target" == %* ]]; then
@@ -10205,7 +9825,6 @@ ae_resolve() {
         pane_session="$(tmux display-message -p -t "$target" '#S' 2>/dev/null || true)"
         AE_RESOLVED_SLOT="$(tmux display-message -p -t "$target" '#{@ae_slot}' 2>/dev/null || true)"
         _valid_slot "$AE_RESOLVED_SLOT" || AE_RESOLVED_SLOT=""
-        AE_RESOLVED_SESSION="$pane_session"
         if [[ -n "$pane_agent" ]]; then
             if [[ -n "$pane_session" && "$pane_session" != "$_AE_SESSION" ]]; then
                 AE_RESOLVED_AGENT="${pane_session}:${pane_agent}"
@@ -10264,22 +9883,7 @@ ae_resolve() {
     AE_RESOLVED_AGENT="$resolved_agent"
     AE_RESOLVED_SLOT="$(tmux display-message -p -t "$resolved" '#{@ae_slot}' 2>/dev/null || true)"
     _valid_slot "$AE_RESOLVED_SLOT" || AE_RESOLVED_SLOT=""
-    AE_RESOLVED_SESSION="$(tmux display-message -p -t "$resolved" '#S' 2>/dev/null || true)"
     return 0
-}
-
-# Acquire per-target flock (shared between send and interrupt, globally across sessions)
-ae_lock_target() {
-    local pane="$1"
-    local lockdir="${_AE_SESSIONS_DIR}/.locks"
-    mkdir -p "$lockdir"
-    local lockfile="${lockdir}/send-lock-${pane//[^a-zA-Z0-9]/_}"
-    exec 9>"$lockfile"
-    flock 9
-}
-
-ae_unlock_target() {
-    exec 9>&-
 }
 
 ae_now_utc() {
@@ -10401,13 +10005,6 @@ ae_preview_text() {
     printf '%.200s' "$text"
 }
 
-ae_extract_req_id() {
-    local text="$1"
-    if [[ "$text" =~ \[((ae|review)-[A-Za-z0-9._:-]+)\] ]]; then
-        printf '%s' "${BASH_REMATCH[1]}"
-    fi
-}
-
 ae_log_append() {
     local file="$1" line="$2"
     {
@@ -10423,32 +10020,6 @@ ae_log_read() {
         flock -s 8 || exit 1
         cat "$file"
     } 8<>"${file}.lock"
-}
-
-# Determine target tool type from pane metadata/process name.
-# Returns: codex | claude | other
-ae_target_tool() {
-    local pane="$1" row agent cmd slot bin=""
-    row="$(tmux list-panes -a -F '#{pane_id}|#{@ae_agent}|#{pane_current_command}' 2>/dev/null | awk -F'|' -v p="$pane" '$1==p {print; exit}')"
-    [[ -z "$row" ]] && {
-        echo "other"
-        return 0
-    }
-    IFS='|' read -r _ agent cmd <<<"$row"
-    # Identity v2: the agent NAME says nothing about the harness. The authoritative
-    # fact is the seat's agent_bin.<slot> row (this session's meta); the pane's live
-    # command is the fallback for a pane outside it.
-    slot="$(tmux display-message -p -t "$pane" '#{@ae_slot}' 2>/dev/null || true)"
-    if [[ -n "$slot" && -f "${_AE_META_DIR:-${META_DIR:-/nonexistent}}/meta" ]]; then
-        bin="$(grep "^agent_bin\.${slot//./\\.}=" "${_AE_META_DIR:-${META_DIR:-}}/meta" 2>/dev/null | head -1 | cut -d= -f2- || true)"
-    fi
-    if [[ "$bin" == "codex" || "$cmd" == "codex" ]]; then
-        echo "codex"
-    elif [[ "$bin" == "claude" || "$cmd" == "claude" ]]; then
-        echo "claude"
-    else
-        echo "other"
-    fi
 }
 
 ae_emit_event() {
@@ -10500,156 +10071,6 @@ ae_emit_event() {
     [[ -n "${_AE_LAST_BODY_FILE:-}" ]] && json+="$(printf ',"body_file":"%s"' "$(ae_json_escape "$_AE_LAST_BODY_FILE")")"
     json+="}"
     ae_log_append "${_AE_META_DIR}/events.jsonl" "$json"
-}
-
-# Shared body for ask/review. Resolves target, generates req_id, builds the
-# message (with optional instructions block + uniform reply contract footer),
-# and execs into send with the appropriate _AE_EVENT_* env vars set.
-# Args: action req_prefix header instructions reply_label target body...
-# AN EMPTY BODY IS A LOST MESSAGE, NOT A MESSAGE. `reply "$req" ""` was accepted
-# with rc 0: the sender believed a verdict was delivered, the recipient received a
-# header with nothing under it, and the event recorded a blank summary — the reviewer
-# lost an entire verdict to this. Whitespace-only counts as empty: a body of spaces
-# and newlines carries exactly as much as none.
-# Keeps the FULL delivered text where the recipient can find it. Named by request id
-# when there is one (so `reply`/`requests` line up), otherwise by timestamp. Mode 600:
-# it is the same material as the pane content, not world-readable metadata.
-ae_store_message_body() { # <ref-or-empty> <action> <body>
-    local ref="$1" action="$2" body="$3" dir="${_AE_META_DIR}/messages" stem
-    _AE_LAST_BODY_FILE=""
-    [[ -n "$body" ]] || return 0
-    if ! mkdir -p "$dir" 2>/dev/null; then
-        echo "ae: message body storage failed: could not create ${dir}" >&2
-        return 1
-    fi
-    # ONE ARTIFACT PER DELIVERY, never per REF. ask and reply share a request id BY
-    # DESIGN, so a ref-named file meant the reply TRUNCATED the ask's body — and the
-    # ask event's pointer then resolved to the reply's text, silently. The recovery
-    # record has to be immutable or it is not a record. The ref stays in the NAME so
-    # a request and its answer still correlate; mktemp supplies uniqueness atomically
-    # rather than by a timestamp two deliveries can share.
-    if [[ "$ref" =~ ^[A-Za-z0-9._-]+$ ]]; then
-        stem="$ref"
-    else
-        stem="msg-$(date -u +%Y%m%dT%H%M%SZ)"
-    fi
-    [[ "$action" =~ ^[A-Za-z0-9._-]+$ ]] || action="send"
-    # mktemp creates the temporary inode inside messages/. The .txt suffix is
-    # added to the final path so the template remains portable on BSD and GNU.
-    # Publish by hard-linking then unlinking the temporary name: ln fails when
-    # the final name already exists, so no delivery can clobber an earlier body.
-    local _tmp _final _attempt=0 _max_attempts=8
-    while ((_attempt < _max_attempts)); do
-        _attempt=$((_attempt + 1))
-        if ! _tmp="$(mktemp "${dir}/${stem}.${action}.XXXXXX" 2>/dev/null)"; then
-            echo "ae: message body storage failed: mktemp could not allocate in ${dir}" >&2
-            return 1
-        fi
-        _final="${_tmp}.txt"
-        if ! printf '%s' "$body" >"$_tmp" 2>/dev/null; then
-            rm -f "$_tmp" 2>/dev/null || true
-            echo "ae: message body storage failed: could not write ${_tmp}" >&2
-            return 1
-        fi
-        if ! chmod 600 "$_tmp" 2>/dev/null; then
-            rm -f "$_tmp" 2>/dev/null || true
-            echo "ae: message body storage failed: could not set mode 0600 on ${_tmp}" >&2
-            return 1
-        fi
-        if ln "$_tmp" "$_final" 2>/dev/null; then
-            _AE_LAST_BODY_FILE="$_final"
-            if ! rm -f "$_tmp" 2>/dev/null; then
-                echo "ae: message body storage warning: published ${_final}, temporary name ${_tmp} could not be removed" >&2
-            fi
-            return 0
-        fi
-        rm -f "$_tmp" 2>/dev/null || true
-    done
-    echo "ae: message body storage failed: could not publish a unique path after ${_max_attempts} attempts" >&2
-    return 1
-}
-
-# PROVENANCE IS NOT AMBIENT. ae_current_pane falls back to asking tmux for the
-# ACTIVE pane when $TMUX_PANE is absent — fine for display, catastrophic for
-# attribution: a context-stripped agent then resolves as WHOEVER HAS FOCUS (probed:
-# `env -u TMUX_PANE` resolved as fable5:lead), and a stale socket resolves as nothing
-# at all, which previously meant "human" — the accidental authority grant this
-# envelope exists to exclude, handed out by the envelope itself.
-#
-# So provenance asks a narrower question than display does: can this caller be
-# POSITIVELY bound to its OWN pane? $TMUX_PANE must be present AND the pane must
-# answer for itself on our own server AND carry an @ae_agent stamp. Anything less is
-# UNVERIFIED — which is marked, never guessed, and never silently promoted to the
-# human. Delivery still flows; only the claim about who sent it is withheld.
-#
-# AE_SENDER_OVERRIDE is explicit, not ambient (chat bridges identify themselves; the
-# reply helper sets it only AFTER slot verification), so it is honoured as given.
-ae_provenance_sender() {
-    if [[ -n "${AE_SENDER_OVERRIDE:-}" ]]; then
-        printf '%s' "$AE_SENDER_OVERRIDE"
-        return 0
-    fi
-    # NO ambient fallback here — $TMUX_PANE or nothing.
-    local pane="${TMUX_PANE:-}"
-    [[ -n "$pane" ]] || return 0
-    # A PANE ID IS SERVER-LOCAL, so it means nothing until the SERVER is pinned down.
-    # Two isolated servers both allocate %0: a caller whose environment names B's %0,
-    # asked of A, gets A's %0 and its stamp — a NAME, which is an authority claim, and
-    # therefore worse than admitting ignorance. Proving the pane answers for itself is
-    # not enough; A's %0 answers for itself perfectly.
-    #
-    # Same round-trip #33 established for self-stop and reused for the fleet, third
-    # use here rather than a fourth identity check:
-    #   C2  our $TMUX server answers for ITSELF (socket+pid round-trip) — catches a
-    #       stale or forged $TMUX
-    #   C3  that identity is the SESSION's recorded server — catches the caller who is
-    #       genuinely inside tmux, just not inside OURS
-    # Only then is the pane id meaningful, and it is queried on THAT socket explicitly
-    # rather than through an ambient tmux that might resolve elsewhere.
-    [[ -n "${TMUX:-}" ]] || return 0
-    local _sock="${TMUX%%,*}" _rest="${TMUX#*,}"
-    local _pid="${_rest%%,*}"
-    [[ -n "$_sock" && -n "$_pid" ]] || return 0
-    local _ours
-    _ours="$(command tmux -S "$_sock" display-message -p '#{socket_path} #{pid}' 2>/dev/null || true)"
-    [[ "$_ours" == "${_sock} ${_pid}" ]] || return 0
-    # The session's own recorded server, read from its meta — the same positive
-    # ownership record the stop path trusts, not an ambient guess.
-    local _srv _kind _theirs
-    _srv="$(ae_meta_get tmux_server)"
-    _kind="$(ae_meta_get tmux_server_kind)"
-    [[ -n "$_srv" && "$_kind" != "ambiguous" ]] || return 0
-    if [[ "$_kind" == "name" ]]; then
-        _theirs="$(command tmux -L "$_srv" display-message -p '#{socket_path} #{pid}' 2>/dev/null || true)"
-    else
-        _theirs="$(command tmux -S "$_srv" display-message -p '#{socket_path} #{pid}' 2>/dev/null || true)"
-    fi
-    [[ -n "$_theirs" && "$_theirs" == "$_ours" ]] || return 0
-    # Server proven ours; NOW the pane id means something. Asked on that socket.
-    local seen
-    seen="$(command tmux -S "$_sock" display-message -p -t "$pane" '#{pane_id}' 2>/dev/null || true)"
-    [[ "$seen" == "$pane" ]] || return 0
-    local agent
-    agent="$(command tmux -S "$_sock" display-message -p -t "$pane" '#{@ae_agent}' 2>/dev/null || true)"
-    [[ -n "$agent" ]] || return 0
-    local session
-    session="$(command tmux -S "$_sock" display-message -p -t "$pane" '#S' 2>/dev/null || true)"
-    if [[ -n "$session" && "$session" != "$_AE_SESSION" ]]; then
-        printf '@%s:%s' "$session" "$agent"
-    else
-        printf '%s' "$agent"
-    fi
-    return 0
-}
-
-ae_require_body() { # <helper-name> <body>
-    local what="$1" body="$2"
-    if [[ -z "${body//[[:space:]]/}" ]]; then
-        echo "ae: ${what} REFUSED — the message body is empty (or only whitespace). Nothing was sent." >&2
-        echo "ae: a delivered header with no body reads as a message that was received and said nothing." >&2
-        return 1
-    fi
-    return 0
 }
 
 # Capture the pane's INPUT REGION with SGR escape sequences PRESERVED (capture-pane -e).
@@ -10861,11 +10282,6 @@ _notice_repaste() { # <buffer> <notice> <pane> -> stage the notice again
     local buf="$1" notice="$2" pane="$3"
     printf '%s' "$notice" | tmux load-buffer -b "$buf" - 2>/dev/null || return 1
     tmux paste-buffer -d -p -b "$buf" -t "$pane" 2>/dev/null
-}
-
-_notice_emit_failure() { # <target> <ref> <body-file> <reason>
-    ae_emit_event "delivery-failed" "$1" "$2" \
-        "UNCONFIRMED notice; published body: $3; $4"
 }
 
 # Parse a captured region into styled SEGMENTS: parallel arrays _SGR_BOLD/_SGR_DIM/
@@ -11268,35 +10684,6 @@ _paste_still_staged() {
     esac
 }
 
-# Is it UNSAFE to paste into this pane right now? Return 0 (unsafe) when the
-# input holds unsent/human-typed content OR the target is mid-generation OR the
-# state can't be read — fail-CLOSED, NEVER paste into uncertainty (delivery-bug
-# exhibit #3: a helper paste clipped the human's half-typed question). Return 1
-# (safe) ONLY on a confident idle+empty read. Robust for claude (the exhibit
-# tool); best-effort for codex (its dim empty-placeholder is indistinguishable
-# from typed text in a color-stripped capture — NOTE for the codex reviewer).
-# Is an attached client LOOKING AT this pane with recent input activity? Supplemental
-# human-presence signal for the send defer (codex send-focus review): typing into an
-# IDLE codex is undetectable in a color-stripped capture, but a human plausibly AT the
-# pane right now is cheap to see. list-clients' #{pane_id} is the client's own active
-# pane — stronger than #{pane_active}, which only means active-in-window, not viewed.
-# #{client_activity} is the epoch of the client's last INPUT; navigation/mouse count
-# too, so false positives are safe deferrals. This cannot prove the input box is empty
-# (the busy predicate stays primary) and cannot close the check-to-paste race — it
-# narrows the codex idle-typing gap, nothing more. Grace ~4s of quiet.
-_pane_recently_viewed() {
-    local pane="$1" grace="${2:-4}" now cpane cact
-    now="$(date +%s)"
-    while IFS='|' read -r cpane cact; do
-        [[ "$cpane" == "$pane" ]] || continue
-        [[ "$cact" =~ ^[0-9]+$ ]] || continue
-        if ((now - cact < grace)); then
-            return 0 # human plausibly typing HERE right now -> defer
-        fi
-    done < <(tmux list-clients -F '#{pane_id}|#{client_activity}' 2>/dev/null || true)
-    return 1
-}
-
 _paste_input_busy() {
     local pane="$1" tool="$2"
     # Only claude/codex are modeled for input protection. Other tools (gemini,
@@ -11316,61 +10703,6 @@ _paste_input_busy() {
     _input_region_occupied "$pane" "$tool"
     rc=$?
     ((rc == 1)) && return 1 || return 0 # IDLE=safe; OCCUPIED/INDETERMINATE=unsafe
-}
-
-# Resolve the agent BINARY expected in a pane from meta agent_bin.<slot>
-# (authoritative — written at launch via extract_binary_from_cmd; the @ae_agent
-# alias is arbitrary user text). Empty when the pane is unstamped or the meta
-# can't be read. Cross-session aware (reads the pane's OWN session meta). Query
-# helper: result is stdout, explicit return.
-_agent_bin_for_pane() {
-    local pane="$1" slot psess meta
-    slot="$(tmux display-message -p -t "$pane" '#{@ae_slot}' 2>/dev/null || true)"
-    _valid_slot "$slot" || {
-        printf ''
-        return 0
-    }
-    psess="$(tmux display-message -p -t "$pane" '#S' 2>/dev/null || true)"
-    [[ -n "$psess" ]] || {
-        printf ''
-        return 0
-    }
-    meta="${_AE_SESSIONS_DIR}/${psess}/meta"
-    [[ -f "$meta" ]] || {
-        printf ''
-        return 0
-    }
-    grep "^agent_bin.${slot}=" "$meta" 2>/dev/null | head -1 | cut -d= -f2- || true
-    return 0
-}
-
-# Is this pane a DEAD-agent shell? A real agent that exits drops its pane back to
-# a login shell; a subsequent paste + Enter would EXECUTE the message as a shell
-# command — the AGENTS.md interpreted-sink class (message-as-code). Detect: the
-# pane's foreground is a shell AND the agent EXPECTED there is NOT itself a shell.
-# A shell-BASED agent (agent_bin is bash/etc — e.g. test dummies) and an
-# undeterminable pane fail-OPEN (return 1, deliver) so this never breaks
-# legitimate delivery. Live real agents run in the foreground under the
-# `exec bash -lc` launcher, so their pane_current_command IS the agent binary
-# (not a shell) — only a genuinely dead one shows a bare shell. Mirrors the
-# watchdog dead-check heuristic (command_is_shell + expected binary).
-_pane_agent_is_dead() {
-    local pane="$1" proc abin pane_pid
-    proc="$(tmux display-message -p -t "$pane" '#{pane_current_command}' 2>/dev/null || true)"
-    command_is_shell "$proc" || return 1 # a real process is in the foreground -> alive
-    abin="$(_agent_bin_for_pane "$pane")"
-    command_is_shell "$abin" && return 1 # shell-based agent or undeterminable -> deliver
-    # Foreground is a shell AND a real agent is expected — but a LIVE agent running a
-    # Bash tool (or launched under the `bash -lc` wrapper) shows a shell foreground
-    # while its binary is alive as a DESCENDANT. Walk the process tree before declaring
-    # death, exactly as the watchdog dead-check does (_pane_has_descendant_named). The
-    # earlier version omitted this walk and false-refused sends to live-but-busy agents
-    # (proven: a live claude under `bash` still got a REFUSED send).
-    pane_pid="$(tmux display-message -p -t "$pane" '#{pane_pid}' 2>/dev/null || true)"
-    if [[ -n "$pane_pid" ]] && _pane_has_descendant_named "$pane_pid" "$abin"; then
-        return 1 # agent binary alive in the pane's process tree -> deliver
-    fi
-    return 0 # real agent expected, only a shell in the tree -> genuinely DEAD
 }
 
 # Paste a message into a pane and CONFIRM it submitted. On a busy TUI a single
@@ -11472,10 +10804,6 @@ ae_submit_pasted_message() {
 # meta.lock (same lock the watchdog's meta writer uses) so concurrent helpers
 # can't clobber each other; last-write-wins per key. Values are single-line.
 
-ae_meta_get() {
-    grep "^${1}=" "${_AE_META_DIR}/meta" 2>/dev/null | head -1 | cut -d= -f2- || true
-}
-
 ae_meta_set() {
     local key="$1" value="$2"
     local meta_file="${_AE_META_DIR}/meta"
@@ -11498,227 +10826,43 @@ ae_meta_set() {
 #   memo/goal/peek/agents/focus/interrupt/spawn/retire/_register-sid/
 #   events-tail; each emitted into its generated helper, main fn last) —
 
-# send:
-# The send BODY, shared by two entry points (below): `send` (helper_send_main,
-# public) and `_send-deliver` (helper_send_deliver_main, internal). Everything up
-# to the finish is the frozen paste path; the finish is the entry point's.
-helper_send_body() {
-    META_DIR="$(cd "$(dirname "$0")" && pwd)"
-    if [[ $# -lt 2 ]]; then
-        echo "Usage: send <agent-name|pane-id|@session:agent> <message>" >&2
-        echo "  Examples: send claude:lead \"hello\"" >&2
-        echo "           send @my-feature:claude:lead \"hello\"" >&2
-        exit 1
-    fi
-    target_ref="$1"
-    shift
-    msg="$*"
-    ae_require_body send "$msg" || exit 1
-    sender="${AE_SENDER_OVERRIDE:-}"
-    if [[ -z "$sender" ]]; then
-        sender="$(ae_current_agent_ref)"
-    fi
-    [[ -n "$sender" ]] || sender="human"
-    req_id="$(ae_extract_req_id "$msg")"
-
-    # External actor targets (telegram:*, discord:*) are NOT panes — they're
-    # event-only sinks consumed by an out-of-band bridge daemon tailing
-    # events.jsonl. For these targets, emit the event and exit; skip the tmux
-    # paste path. Any other unresolved name still fails loudly so typos surface.
-    #
-    # `ae:compact:<uuid>` joins that family as the return address of an `ae compact`
-    # handover request: compact is a COMMAND, not a pane, so the agent's reply has
-    # nowhere to be delivered and must be RECORDED instead. The match is that exact
-    # prefix and nothing wider — deliberately not `ae:*`, because the failure this
-    # family can produce is a SILENT NO-OP DELIVERY, and an agent that mistypes an
-    # `ae:`-shaped target must still fail loudly rather than have its message
-    # swallowed into the log. That is the whole reason the family is a whitelist.
-    if [[ "$target_ref" == telegram:* || "$target_ref" == discord:* || "$target_ref" == ae:compact:* ]]; then
-        ae_store_message_body "${_AE_EVENT_REF:-${req_id:-}}" "${_AE_EVENT_ACTION:-send}" "$msg" || exit 1
-        ae_emit_event "${_AE_EVENT_ACTION:-send}" "$target_ref" "${_AE_EVENT_REF:-${req_id:-}}" "${_AE_EVENT_SUMMARY:-$msg}"
-        exit 0
-    fi
-
-    ae_resolve "$target_ref" || exit 1
-    target="$AE_RESOLVED_PANE"
-    logged_target="${AE_RESOLVED_AGENT:-$target_ref}"
-    buf="ae-send-$$"
-
-    # Interpreted-sink guard: refuse to paste into a pane whose agent has DIED
-    # and dropped to a shell — a stray Enter would EXECUTE the message as a shell
-    # command (message-as-code). No retry/defer: a dead agent won't recover on
-    # its own. Placed BEFORE the lock and the busy-defer loop so a dead target
-    # fails fast, not after a 5x defer. (Launch legitimately pastes into a shell
-    # via tmux_paste_submit, not this send path, so the guard lives here.)
-    if _pane_agent_is_dead "$target"; then
-        echo "ae: send to ${logged_target} REFUSED — target pane is a shell, not a running agent (the agent process is gone). Nothing pasted; a stray Enter would EXECUTE the message as a shell command. Re-launch the agent, then re-send." >&2
-        exit 1
-    fi
-
-    # #39 ORIGIN ENVELOPE. One terse line, emitted BY THE HELPER from the pane's own
-    # stamp — never composed from the sender's prose, which is the whole point: a
-    # sender cannot mark its own message as coming from someone else by writing a
-    # header, because the header it would have to forge is added here, after it.
-    #
-    # Added AFTER the request-id extraction above and AFTER the telegram/discord
-    # early-exit: req-id parsing keeps seeing the message it has always seen, and the
-    # human's chat stays unmarked. That asymmetry is deliberate and load-bearing —
-    # the human types raw and never marks anything, so ABSENCE of the envelope is how
-    # an agent recognises them.
-    # EVERY helper-delivered message is marked, with a VERIFIED sender or with
-    # "unverified" — never with a guess, and never left bare. Bare is the human's
-    # signature, and only DIRECT TYPING earns it: nothing that comes through a helper
-    # may wear it. An unbindable caller is therefore marked unverified rather than
-    # falling through to look like the human, which is the failure this closes.
-    _prov="$(ae_provenance_sender)"
-    if [[ -n "$_prov" ]]; then
-        msg="⟦ae:msg from ${_prov}⟧"$'\n'"${msg}"
-    else
-        msg="⟦ae:msg from unverified⟧"$'\n'"${msg}"
-    fi
-
-    # Publish the exact recoverable pane text BEFORE locking or submitting it. A storage
-    # failure is terminal for this delivery: no pane text, paste, or event may follow it.
-    ae_store_message_body "${_AE_EVENT_REF:-${req_id:-}}" "${_AE_EVENT_ACTION:-send}" "$msg" || exit 1
-
-    ae_lock_target "$target"
-
-    tool="$(ae_target_tool "$target")"
-    _NOTICE_MODE=direct
-    _NOTICE_PAYLOAD="$msg"
-    if declare -F _notice_prepare >/dev/null 2>&1; then
-        _notice_prepare "$tool" "${_AE_EVENT_ACTION:-send}" \
-            "${_AE_EVENT_REF:-${req_id:-}}" "${_prov:-unverified}" \
-            "${AE_RESOLVED_SESSION:-}" "${_AE_LAST_BODY_FILE:-}" "$msg" || {
-            ae_unlock_target
-            echo "ae: oversized message notice could not be composed; body preserved at ${_AE_LAST_BODY_FILE}. Nothing was submitted." >&2
-            exit 1
-        }
-    fi
-
-    # NO FOCUS CHANGE — ever. paste-buffer -t / send-keys -t write to the NAMED pane;
-    # focus is not part of any TUI's submission contract (codex send-focus review).
-    # select-pane here changed the window's active pane, routing the human's in-flight
-    # keystrokes into the TARGET mid-send — acute under lead-pair, where lead and
-    # colead share window 0. Only the explicit `focus` helper may select panes.
-    #
-    # Protect in-progress input and avoid a busy target (delivery-bug exhibits: a
-    # helper paste CLIPPED the human's half-typed question; a review paste never
-    # submitted to a busy codex). The cancel keystroke ITSELF would clobber staged or
-    # human-typed text, so inspect the state BEFORE any cancel. Defer while unsafe:
-    # busy/non-empty input (fail-closed for modeled TUIs) OR a human plausibly AT the
-    # pane right now (attached client viewing it with recent input — supplemental,
-    # tool-agnostic; codex idle typing is otherwise undetectable). Bounded in-process
-    # wait (AE_SEND_DEFER_SEC, default 30s — a human mid-sentence outlasts 2s), then
-    # LOUD failure. The target flock is HELD while waiting, so competing sends and
-    # interrupts to this target queue behind us in order. No durable outbox.
-    _defer_sec="${AE_SEND_DEFER_SEC:-30}"
-    [[ "$_defer_sec" =~ ^[0-9]+$ ]] || _defer_sec=30
-    _wait_start=$SECONDS
-    while _paste_input_busy "$target" "$tool" || _pane_recently_viewed "$target"; do
-        if ((SECONDS - _wait_start >= _defer_sec)); then
-            ae_unlock_target
-            echo "ae: send to ${logged_target} ABANDONED — target stayed busy / human input or attention (not clear within ${_defer_sec}s; AE_SEND_DEFER_SEC overrides). Re-send." >&2
-            exit 1
-        fi
-        sleep 0.4
-    done
-
-    # Safe now: cancel (only AFTER the safety check), paste + verify — all by -t target.
-    tmux send-keys -t "$target" -X cancel 2>/dev/null || true
-
-    if [[ "${_NOTICE_MODE:-direct}" == notice ]]; then
-        if ! ae_submit_pasted_message "$target" "$tool" "$buf" "$_NOTICE_PAYLOAD" notice \
-            "$_NOTICE_PAYLOAD" "${_AE_LAST_BODY_FILE:-}"; then
-            # Only the public send entry owns the delivery-failed event. The shared
-            # body also backs _send-deliver, whose Rust caller records its own event.
-            if [[ "${_ae_send_event_enabled:-0}" == 1 ]]; then
-                _notice_emit_failure "$logged_target" "${_AE_EVENT_REF:-${req_id:-}}" \
-                    "${_AE_LAST_BODY_FILE:-}" "submit proof failed"
-            fi
-            ae_unlock_target
-            echo "ae: send to ${logged_target} UNCONFIRMED — submit not verified; body preserved at ${_AE_LAST_BODY_FILE}. Re-send." >&2
-            exit 1
-        fi
-    elif ! ae_submit_pasted_message "$target" "$tool" "$buf" "$msg"; then
-        ae_unlock_target
-        echo "ae: send to ${logged_target} UNCONFIRMED — submit not verified; body preserved at ${_AE_LAST_BODY_FILE}. Re-send." >&2
-        exit 1
-    fi
-    ae_unlock_target
-    # RECOVERABLE BY THE RECIPIENT, not just by the sender's memory. events.jsonl caps
-    # summaries at 200 characters by design, so a message that does not survive
-    # delivery cannot be reconstructed from the log — which is what turned two
-    # incidents into "please resend verbatim" instead of "let me go read it". The full
-    # delivered text is kept beside the session and the event points at it, so the
-    # recipient can recover the body themselves. Publication happened before the paste
-    # above; this finisher is the only remaining event write.
-    # The FINISH belongs to the ENTRY POINT, not to the environment. `send`
-    # (helper_send_main) records the send event here; `_send-deliver`
-    # (helper_send_deliver_main, P2.5a) prints the recovery file's path instead,
-    # because the Rust core that ran it writes the ask/review event ITSELF under
-    # its own locked, synced transaction. The order is the frozen one — paste,
-    # store, then the event — only the last step is the entry point's. Each entry
-    # pins its finisher in a `local`, which shadows any variable of that name in
-    # the ambient environment: nothing a caller exports can make the public
-    # `send` deliver without recording (P2.5a review, BLOCKER).
-    "${_ae_send_finish:?ae: send finisher not selected - helper_send_body runs behind an entry point}" \
-        "$logged_target" "${_AE_EVENT_REF:-${req_id:-}}" "$msg"
-}
-
-# The two entry points of the send body, and their finishers. A finisher gets
-# <logged-target> <ref> <msg>; the stored recovery file is _AE_LAST_BODY_FILE.
-# send: the public helper. It records, always. The whole send goes to the
-# pinned Rust core first (P2.6): the argv, the body refusal, the event fields
-# read off THIS environment (AE_SENDER_OVERRIDE and the _AE_EVENT_* members —
-# the frozen contract every caller of this helper writes), target resolution,
-# the paste through this session's internal `_send-deliver` entry and the one
-# event under the core's locked transaction. The shim EXECs the core, so a core
-# that delivered and then could not record exits with that gap and no bash body
-# remains to deliver again; with no usable core it refuses (one line, exit 2).
-# helper_send_body survives only behind `_send-deliver`, which the core calls
-# BACK into for the paste — a seam, not a fallback.
+# send: the public helper, and a shim. The whole send is the pinned Rust core's
+# (B move 1): the argv, the body refusal, the event fields read off THIS
+# environment (AE_SENDER_OVERRIDE and the _AE_EVENT_* members — the frozen
+# contract every caller of this helper writes), target resolution, the DELIVERY
+# itself and the one event under the core's locked transaction. The shim EXECs
+# the core, so a core that delivered and then could not record exits with that
+# gap and nothing in bash remains to deliver again; with no usable core it
+# refuses (one line, exit 2).
+#
+# The frozen `helper_send_body` and the internal `_send-deliver` entry it stood
+# behind are GONE with this move. The paste was never delegated back to bash
+# after B move 1 — src/deliver.rs does the dead-pane refusal, the provenance
+# envelope, the recovery-body store, the per-target lock, the busy deferral, the
+# bracketed paste, the oversize notice and the submit verification in-process —
+# so what stood here was a second implementation of a measured path with no
+# caller. A dormant one is worse than none: it drifts from the live one unseen,
+# and the day something reaches for it, it is the old behaviour that answers.
 helper_send_main() {
     META_DIR="$(cd "$(dirname "$0")" && pwd)"
     _ae_core_try _send "$@"
-}
-# _send-deliver: INTERNAL, not on the agent-facing surface. The Rust core runs it
-# to paste a tracked request it composed, and records the ask/review event from
-# the path it prints. Event-only sinks are the core's own — it never delivers to
-# one — and where the frozen send would RECORD such a target, this entry records
-# nothing, ever. The whitelist is helper_send_body's, verbatim.
-helper_send_deliver_main() {
-    case "${1:-}" in
-        telegram:* | discord:* | ae:compact:*)
-            echo "ae: _send-deliver: ${1} is an event-only sink, not a pane — nothing to deliver, nothing recorded" >&2
-            exit 1
-            ;;
-    esac
-    local _ae_send_finish=helper_send_deliver_finish _ae_send_event_enabled=0
-    helper_send_body "$@"
-}
-helper_send_deliver_finish() {
-    printf '%s\n' "${_AE_LAST_BODY_FILE:-}"
 }
 
 # ask:
 helper_ask_main() {
     # The whole request goes to the pinned Rust core (P2.5a): body refusal,
-    # identity, target resolution, the request id, the composed message and
-    # the ask event under the core's locked transaction — with the PASTE done
-    # by this session's internal `_send-deliver` entry (the frozen send body,
-    # printing the recovery path instead of recording; never an ambient switch
-    # on the public `send`), so the TUI modelling stays where it was measured.
-    # The shim EXECs the core; with no usable core it refuses (one line, exit 2).
+    # identity, target resolution, the request id, the composed message, the
+    # PASTE (in-process since B move 1 — the TUI modelling was ported, not
+    # delegated) and the ask event under the core's locked transaction. The shim
+    # EXECs the core; with no usable core it refuses (one line, exit 2).
     META_DIR="$(cd "$(dirname "$0")" && pwd)"
     _ae_core_try _ask "$@"
 }
 
 # review:
 helper_review_main() {
-    # As `ask`: the core composes, delivers through the internal `_send-deliver`
-    # entry, and writes the review event. The shim EXECs the core; with no usable
-    # core it refuses (one line, exit 2).
+    # As `ask`: the core composes, delivers, and writes the review event. The
+    # shim EXECs the core; with no usable core it refuses (one line, exit 2).
     META_DIR="$(cd "$(dirname "$0")" && pwd)"
     _ae_core_try _review "$@"
 }
@@ -11727,9 +10871,9 @@ helper_review_main() {
 helper_reply_main() {
     # The whole reply goes to the pinned Rust core (P2.5b): the argv, the body
     # refusal, the request lookup, the slot-and-session check, the routing by
-    # stored slot, the paste through this session's internal `_send-deliver`
-    # entry and the reply event under the core's locked transaction. The shim
-    # EXECs the core; with no usable core it refuses (one line, exit 2).
+    # stored slot, the paste and the reply event under the core's locked
+    # transaction. The shim EXECs the core; with no usable core it refuses (one
+    # line, exit 2).
     META_DIR="$(cd "$(dirname "$0")" && pwd)"
     _ae_core_try _reply "$@"
 }
@@ -12010,80 +11154,15 @@ helper_focus_main() {
     ae_emit_event "focus" "${AE_RESOLVED_AGENT:-$1}"
 }
 
-# interrupt:
+# interrupt: a shim. B move 1 took the whole operation to the pinned Rust core —
+# target resolution, the interpreted-sink refusal on a pane that has dropped to a
+# shell, the cancel keystroke, the optional message with its provenance envelope,
+# the per-target lock and the one interrupt event under the core's locked
+# transaction. The shim EXECs the core; with no usable core it refuses (one line,
+# exit 2).
 helper_interrupt_main() {
-    if [[ $# -lt 1 ]]; then
-        echo "Usage: interrupt <agent-name|pane-id|@session:agent> [message]" >&2
-        echo "  Examples: interrupt codex:reviewer" >&2
-        echo "           interrupt @my-feature:claude:lead \"Stop — try a different approach\"" >&2
-        exit 1
-    fi
-    ae_resolve "$1" || exit 1
-    shift
-    target="$AE_RESOLVED_PANE"
-    msg="${*:-}"
-    local _prov
-    _prov="$(ae_provenance_sender)"
-
-    # Interpreted-sink guard (same as send): if the agent is dead and its pane
-    # dropped to a shell, a message paste + Enter would EXECUTE as a shell
-    # command. Only refuse when there IS a message — a no-message interrupt is
-    # just harmless cancel keystrokes into whatever is there.
-    if [[ -n "$msg" ]] && _pane_agent_is_dead "$target"; then
-        echo "ae: interrupt of ${AE_RESOLVED_AGENT:-$target} REFUSED — target pane is a shell, not a running agent; a stray Enter would EXECUTE the message as a shell command. Re-launch the agent, then re-send." >&2
-        exit 1
-    fi
-
-    # Persist a message interrupt before any cancel or paste. A failed body
-    # publication leaves the target untouched and records no interrupt event.
-    if [[ -n "$msg" ]]; then
-        ae_store_message_body "" "interrupt" "$msg" || exit 1
-    fi
-
-    ae_lock_target "$target"
-
-    # NO FOCUS CHANGE — send-keys -t (incl. -X cancel and Escape) targets the pane
-    # without selecting it; see helper_send_body. Only `focus` selects panes.
-    tmux send-keys -t "$target" -X cancel 2>/dev/null || true
-    tmux send-keys -t "$target" Escape
-
-    if [[ -n "$msg" ]]; then
-        sleep 0.5
-        buf="ae-interrupt-$$"
-        tool="$(ae_target_tool "$target")"
-        _NOTICE_MODE=direct
-        _NOTICE_PAYLOAD="$msg"
-        if declare -F _notice_prepare >/dev/null 2>&1; then
-            _notice_prepare "$tool" "interrupt" "" "${_prov:-unverified}" \
-                "${AE_RESOLVED_SESSION:-}" "${_AE_LAST_BODY_FILE:-}" "$msg" || {
-                ae_unlock_target
-                echo "ae: oversized interrupt notice could not be composed; body preserved at ${_AE_LAST_BODY_FILE}. Nothing was submitted." >&2
-                exit 1
-            }
-        fi
-        # Mirror send: a message interrupt must NOT log success on an unconfirmed
-        # submit (codex code-round finding — the "false delivered" class the send
-        # path already fixes). Unlock, fail LOUD, emit NO event.
-        if [[ "${_NOTICE_MODE:-direct}" == notice ]]; then
-            if ! ae_submit_pasted_message "$target" "$tool" "$buf" "$_NOTICE_PAYLOAD" notice \
-                "$_NOTICE_PAYLOAD" "${_AE_LAST_BODY_FILE:-}"; then
-                # Interrupt is a public-only entry today, so this event has no
-                # internal _send-deliver counterpart to double-book the ledger.
-                _notice_emit_failure "${AE_RESOLVED_AGENT:-$target}" "" \
-                    "${_AE_LAST_BODY_FILE:-}" "interrupt submit proof failed"
-                ae_unlock_target
-                echo "ae: interrupt message to ${AE_RESOLVED_AGENT:-$target} UNCONFIRMED — submit not verified; body preserved at ${_AE_LAST_BODY_FILE}. Re-send." >&2
-                exit 1
-            fi
-        elif ! ae_submit_pasted_message "$target" "$tool" "$buf" "$msg"; then
-            ae_unlock_target
-            echo "ae: interrupt message to ${AE_RESOLVED_AGENT:-$target} UNCONFIRMED — submit not verified; body preserved at ${_AE_LAST_BODY_FILE}. Re-send." >&2
-            exit 1
-        fi
-    fi
-
-    ae_emit_event "interrupt" "${AE_RESOLVED_AGENT:-$target}" "" "$msg"
-    ae_unlock_target
+    META_DIR="$(cd "$(dirname "$0")" && pwd)"
+    _ae_core_try _interrupt "$@"
 }
 
 # spawn:
@@ -12589,32 +11668,6 @@ _watchdog_clear_bar_options() {
         tmux set-option -w -t "$_wi" -u @ae_window_status 2>/dev/null || true
     done < <(tmux list-windows -t "$_sid" -F '#{window_id}' 2>/dev/null || true)
     return 0
-}
-
-# Check if any process named $2 is a descendant of pane PID $1.
-# Walks each candidate's ancestor chain via /proc/<pid>/stat.
-# Used to avoid false-positive "dead" alerts when the pane's foreground is
-# a shell wrapper (e.g. bash -lc) but the actual agent is running underneath.
-_pane_has_descendant_named() {
-    local pane_pid="$1" target="$2"
-    [[ -n "$pane_pid" && -n "$target" ]] || return 1
-    local pids
-    pids="$(pgrep -x "$target" 2>/dev/null || true)"
-    [[ -n "$pids" ]] || return 1
-    local pid cur
-    for pid in $pids; do
-        cur="$pid"
-        while [[ -n "$cur" && "$cur" != "1" && "$cur" != "0" ]]; do
-            if [[ "$cur" == "$pane_pid" ]]; then
-                return 0
-            fi
-            # ps, not /proc: /proc is Linux-only (on macOS the walk stopped at
-            # the first hop and EVERY live agent read as dead), and field 4 of
-            # /proc/<pid>/stat shifts whenever the comm contains a space.
-            cur="$(ps -o ppid= -p "$cur" 2>/dev/null | tr -d '[:space:]' || true)"
-        done
-    done
-    return 1
 }
 
 helper_watchdog_main() {
@@ -13517,8 +12570,8 @@ if [[ "$RESUMING" == true ]]; then
 
     # Create panes for spawned agents
     for i in "${!SPAWNED_ALIASES[@]}"; do
-        # Spawned agents live in their own windows (matches _cmd_spawn — the
-        # main window keeps the lead/worker layout).
+        # Spawned agents live in their own windows (matches the core's `_spawn` —
+        # the main window keeps the lead/worker layout).
         local_id="$(tmux new-window -d -t "${SESSION}:" -c "$WORK_DIR" -P -F '#{pane_id}')"
         tmux rename-window -t "$local_id" "$(_ae_tmux_format_literal "${SPAWNED_NAMES[$i]}")" 2>/dev/null || true
         PANE_IDS+=("$local_id")
@@ -13780,17 +12833,14 @@ fi
 _AE_SESSION="$(grep '^session=' "$_AE_META_DIR/meta" | cut -d= -f2-)"
 _AE_SESSIONS_DIR="$(dirname "$_AE_META_DIR")"
 LIBPROLOGUE
-        declare -f ae_resolve ae_lock_target ae_unlock_target ae_now_utc ae_current_pane \
-            ae_current_agent ae_current_agent_ref _valid_slot ae_preview_text ae_extract_req_id \
-            ae_log_append ae_log_read ae_target_tool ae_json_escape ae_sanitize_utf8 \
-            ae_cap_summary ae_emit_event _event_json_str ae_require_body ae_store_message_body \
-            ae_provenance_sender ae_submit_pasted_message _capture_input_region _sgr_parse \
-            _input_region_prompt_seg _input_region_is_border _input_region_content_end \
-            _input_region_occupied _paste_still_staged _paste_input_busy _pane_recently_viewed \
-            _notice_reconstruct _notice_prove _notice_compose _notice_prepare \
-            _notice_clear_measurable _notice_repaste _notice_emit_failure command_is_shell \
-            _agent_bin_for_pane _pane_agent_is_dead _pane_has_descendant_named ae_meta_get \
-            ae_meta_set _ae_tac _ae_stat _ae_json_first _ae_md5
+        declare -f ae_resolve ae_now_utc ae_current_pane ae_current_agent ae_current_agent_ref \
+            _valid_slot ae_preview_text ae_log_append ae_log_read ae_json_escape \
+            ae_sanitize_utf8 ae_cap_summary ae_emit_event _event_json_str \
+            ae_submit_pasted_message _capture_input_region _sgr_parse _input_region_prompt_seg \
+            _input_region_is_border _input_region_content_end _input_region_occupied \
+            _paste_still_staged _paste_input_busy _notice_reconstruct _notice_prove \
+            _notice_compose _notice_prepare _notice_clear_measurable _notice_repaste \
+            command_is_shell ae_meta_set _ae_tac _ae_stat _ae_json_first _ae_md5
     } >"${AE_META}/_lib.tmp.$$"
     chmod 0700 "${AE_META}/_lib.tmp.$$"
     mv "${AE_META}/_lib.tmp.$$" "${AE_META}/_lib"
@@ -13801,26 +12851,19 @@ LIBPROLOGUE
         cat <<'SENDPROLOGUE'
 source "$(cd "$(dirname "$0")" && pwd)/_lib"
 SENDPROLOGUE
-        declare -f _ae_core_try helper_send_body helper_send_main
+        declare -f _ae_core_try helper_send_main
         printf 'helper_send_main "$@"\n'
     } >"${AE_META}/send.tmp.$$"
     chmod 0700 "${AE_META}/send.tmp.$$"
     mv "${AE_META}/send.tmp.$$" "${AE_META}/send"
 
-    # Helper: _send-deliver <target> <message> — INTERNAL (P2.5a): the send body
-    # behind its delivery-only entry, for the Rust core's tracked requests. Same
-    # paste, same body store; the recovery file's path on stdout and NO event —
-    # the core records the ask/review event itself. Not for agents or humans.
-    {
-        printf '%s\n' "$_ae_sb"
-        cat <<'SENDDELIVERPROLOGUE'
-source "$(cd "$(dirname "$0")" && pwd)/_lib"
-SENDDELIVERPROLOGUE
-        declare -f helper_send_body helper_send_deliver_finish helper_send_deliver_main
-        printf 'helper_send_deliver_main "$@"\n'
-    } >"${AE_META}/_send-deliver.tmp.$$"
-    chmod 0700 "${AE_META}/_send-deliver.tmp.$$"
-    mv "${AE_META}/_send-deliver.tmp.$$" "${AE_META}/_send-deliver"
+    # `_send-deliver` used to be generated here — the frozen send body behind a
+    # delivery-only entry, for the core to call back into while pasting a tracked
+    # request it had composed. B move 1 took the paste into the core itself, so
+    # nothing has run that entry since; generating it would publish an executable
+    # second implementation of the delivery path that only drift can reach.
+    # `ask`/`review`/`reply` deliver in-process now, and this session's helper set
+    # is one artifact smaller.
 
     # Helper: ask <target> <question> — structured send with reply-to metadata
     {
@@ -14008,7 +13051,7 @@ FOCUSPROLOGUE
         cat <<'INTERRUPTPROLOGUE'
 source "$(cd "$(dirname "$0")" && pwd)/_lib"
 INTERRUPTPROLOGUE
-        declare -f helper_interrupt_main
+        declare -f _ae_core_try helper_interrupt_main
         printf 'helper_interrupt_main "$@"\n'
     } >"${AE_META}/interrupt.tmp.$$"
     chmod 0700 "${AE_META}/interrupt.tmp.$$"
@@ -14079,12 +13122,10 @@ set -uo pipefail
 source "$(cd "$(dirname "$0")" && pwd)/_lib"
 WDPROLOGUE
         declare -f _ae_core_try _watchdog_is_running _set_meta_kv _unset_meta_kv \
-            _set_meta_watchdog \
-            _kill_owned_pane _monitor_find_pane _monitor_ensure_events_pane \
+            _set_meta_watchdog _kill_owned_pane _monitor_find_pane _monitor_ensure_events_pane \
             _watchdog_ensure_monitor _watchdog_reap_legacy_one _watchdog_reap_legacy \
             _watchdog_stop _watchdog_status _watchdog_start _watchdog_clear_bar_options \
-            _pane_has_descendant_named _roster_session_id _ae_session_id _watchdog_session_id \
-            helper_watchdog_main
+            _roster_session_id _ae_session_id _watchdog_session_id helper_watchdog_main
         printf 'helper_watchdog_main "$@"\n'
     } >"${AE_META}/watchdog.tmp.$$"
     chmod 0700 "${AE_META}/watchdog.tmp.$$"

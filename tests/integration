@@ -4329,29 +4329,44 @@ assert_eq "recovery (#35): both bodies survive side by side" "1|1" \
     "$(printf '%s|%s' \
         "$(command grep -rlq 'FIRST-DELIVERY-BODY' "$lp_msgs" 2>/dev/null && echo 1 || echo 0)" \
         "$(command grep -rlq 'SECOND-DELIVERY-BODY' "$lp_msgs" 2>/dev/null && echo 1 || echo 0)")"
-# P2.5a: `_send-deliver` is the send body behind its INTERNAL delivery-only entry —
-# the Rust core pastes a tracked request through it and records the ask/review event
-# itself from the path it prints. The public `send` ALWAYS records: its finisher is
-# its entry point's `local`, so no ambient variable can make it deliver silently.
+# B glue cut 1: the internal `_send-deliver` entry is GONE — the core delivers a
+# tracked request in-process, so there is no delivery-only shim to drive here. The
+# properties that entry existed to prove are asserted through the SHIPPED helpers
+# instead: an `ask` reaches the target's pane and records exactly one event, a plain
+# `send` always records, and an event-only sink is recorded without a paste.
 lp_ev="$HOME/.ae/sessions/test-leadpair/events.jsonl"
-lp_dl_out="$("$HOME/.ae/sessions/test-leadpair/_send-deliver" colead "DELIVER-ONLY-BODY-7c1e" 2>/dev/null || echo "rc=$?")"
+assert_eq "send-deliver: the internal delivery-only helper is not generated any more" "0" \
+    "$([[ -e "$HOME/.ae/sessions/test-leadpair/_send-deliver" ]] && echo 1 || echo 0)"
+"$HOME/.ae/sessions/test-leadpair/ask" colead "DELIVER-ONLY-BODY-7c1e" >/dev/null 2>&1 || true
 sleep 1
-assert_eq "_send-deliver: prints the recovery file's path and nothing else" "1" \
-    "$([[ "$lp_dl_out" == */messages/* && -f "$lp_dl_out" ]] && echo 1 || echo 0)"
-assert_eq "_send-deliver: the recovery file holds the delivered body" "1" \
-    "$(command grep -q 'DELIVER-ONLY-BODY-7c1e' "${lp_dl_out:-/nonexistent}" 2>/dev/null && echo 1 || echo 0)"
-assert_eq "_send-deliver: the paste reached the pane" "1" \
+assert_eq "ask: the paste reached the target's pane" "1" \
     "$([[ "$(tmux capture-pane -p -t "$lp_colead_pane" 2>/dev/null | tr -d '\n')" == *DELIVER-ONLY-BODY-7c1e* ]] && echo 1 || echo 0)"
-assert_eq "_send-deliver: emits NO event" "0" "$(command grep -c 'DELIVER-ONLY-BODY-7c1e' "$lp_ev" 2>/dev/null || true)"
+assert_eq "ask: exactly one event is recorded for it (the core writes it, nothing double-books)" "1" \
+    "$(command grep -c 'DELIVER-ONLY-BODY-7c1e' "$lp_ev" 2>/dev/null || true)"
+# The ACTION depends on the caller's identity, and this rig deliberately has none:
+# the suite runs from its own shell with no @ae_agent stamp, so the core takes its
+# no-identity fallback and the delivery is recorded as a plain send. Either way it is
+# recorded EXACTLY once, which is the property the retired internal entry existed to
+# protect — its whole reason for printing a path instead of recording was that the
+# core would write the event itself, and a second writer would double-book the ledger.
+assert_eq "ask: the one event is an ask or the no-identity send, never both" "1" \
+    "$(command grep 'DELIVER-ONLY-BODY-7c1e' "$lp_ev" 2>/dev/null |
+        command grep -cE '"action":"(ask|send)"' || true)"
+# The public `send` ALWAYS records, and no ambient variable can make it deliver
+# silently — the switch that once selected a finisher is not a variable any more.
 lp_amb_out="$(env _AE_DELIVER_ONLY=1 _ae_send_finish=helper_send_deliver_finish "$HOME/.ae/sessions/test-leadpair/send" colead "AMBIENT-SWITCH-BODY-7c1e" 2>/dev/null || true)"
 sleep 1
 assert_eq "send: an ambient deliver-only variable changes nothing — the send event is recorded" "1" \
     "$(command grep -q '"action":"send".*AMBIENT-SWITCH-BODY-7c1e' "$lp_ev" 2>/dev/null && echo 1 || echo 0)"
 assert_eq "send: and no recovery path leaks onto stdout" "" "$lp_amb_out"
-"$HOME/.ae/sessions/test-leadpair/_send-deliver" telegram:x "SINK-BODY-7c1e" >/dev/null 2>&1 && lp_dl_ext_rc=0 || lp_dl_ext_rc=$?
-assert_eq "_send-deliver: an event-only sink is refused (the core records those itself)" "1" "$lp_dl_ext_rc"
-assert_eq "_send-deliver: and refused means nothing recorded" "0" "$(command grep -c 'SINK-BODY-7c1e' "$lp_ev" 2>/dev/null || true)"
-unset lp_ev lp_dl_out lp_amb_out lp_dl_ext_rc
+# An event-only sink is RECORDED, never pasted — and it is the core that decides so.
+"$HOME/.ae/sessions/test-leadpair/send" telegram:x "SINK-BODY-7c1e" >/dev/null 2>&1 || true
+sleep 1
+assert_eq "send: an event-only sink is recorded" "1" \
+    "$(command grep -c 'SINK-BODY-7c1e' "$lp_ev" 2>/dev/null || true)"
+assert_eq "send: ...and never pasted into a pane" "0" \
+    "$([[ "$(tmux capture-pane -p -t "$lp_colead_pane" 2>/dev/null | tr -d '\n')" == *SINK-BODY-7c1e* ]] && echo 1 || echo 0)"
+unset lp_ev lp_amb_out
 unset lp_msgs lp_before lp_after
 unset lp_empty_rc lp_ws_rc lp_big lp_big_rc lp_big_file
 # Rename regression (codex): under lead-pair the window-0 role name must SURVIVE a
@@ -4502,6 +4517,9 @@ if _itest_section 'ROLLBACK: a failed launch must not leave debris behind'; then
 # publish fails, and send_agent_cmd returns non-zero exactly where it would in
 # the field. Everything before that point — tmux session, panes, meta, every
 # helper — is built for real, which is the state the rollback has to undo.
+# (The SPAWN arm below injects its fault differently — see the note there. Its
+# publisher is the core's since B move 2, and the core writes with std::fs
+# instead of shelling out, so a `chmod` on PATH no longer reaches it.)
 RB_BIN="$TMPDIR/binrb"
 mkdir -p "$RB_BIN"
 cat >"$RB_BIN/chmod" <<'RBCHMOD'
@@ -4565,6 +4583,15 @@ RB_REPO3="$(setup_repo)"
 (cd "$RB_REPO3" && "$AE" --local rbspawn &) 2>/dev/null
 wait_for_session "rbspawn"
 sleep 1
+# THE FAULT, injected where the core's spawn can still roll back: a launch script
+# it cannot publish. `write_launch_script` renames a temp over
+# <meta>/launch.<slot>.sh, and a rename onto a non-empty DIRECTORY fails — so this
+# decoy makes the publish fail AFTER the seat is reserved and the pane exists,
+# which is exactly the state the rollback has to undo. A brief that fails to
+# deliver would NOT do: the core treats pane-created and brief-delivered as
+# different truths and records spawn-failed rather than rolling back, by design.
+mkdir -p "$HOME/.ae/sessions/rbspawn/launch.spawned.0.sh"
+: >"$HOME/.ae/sessions/rbspawn/launch.spawned.0.sh/decoy"
 rb3_rc=0
 rb3_out="$(PATH="$RB_BIN:$PATH" _timeout 90 "$HOME/.ae/sessions/rbspawn/spawn" rbworker --using dummy2 "brief" 2>&1)" || rb3_rc=$?
 assert_eq "rollback (spawn): the spawn reports failure" "1" "$([[ $rb3_rc -ne 0 ]] && echo 1 || echo 0)"
@@ -4576,8 +4603,12 @@ assert_eq "rollback (spawn): no phantom agent registered in meta" "0" \
 # panes carry one as well, so the seat count reads @ae_slot — see the note in Test 4.
 assert_eq "rollback (spawn): no orphan agent pane left in the session" "1" \
     "$(tmux list-panes -s -t rbspawn -F '#{@ae_slot}' 2>/dev/null | command grep -c . || true)"
-assert_not_exists "rollback (spawn): launch artifacts removed" \
-    "$HOME/.ae/sessions/rbspawn/launch.spawned.0.sh"
+# The decoy directory is the TEST's, and `remove_file` cannot take it; what the
+# rollback owns is the re-run marker and any temp its publisher left mid-write.
+assert_eq "rollback (spawn): no launch marker and no publish temp left behind" "0" \
+    "$(command ls "$HOME/.ae/sessions/rbspawn" 2>/dev/null |
+        command grep -c '^launch\.spawned\.0\.\(started\|tmp\.\)' || true)"
+rm -rf "$HOME/.ae/sessions/rbspawn/launch.spawned.0.sh"
 "$AE" end -f rbspawn >/dev/null 2>&1 || true
 
 # (d) THE DELETION BOUNDARY. $SESSION becomes a directory name, and since the
@@ -9088,9 +9119,9 @@ else
 
     P1_LONG_BODY="$(printf '%8193s' '' | tr ' ' x)"
     # One ask into each real renderer.  The target is a pane id, never a name from the
-    # live session.  Since A.1 the helper EXECs the pinned core, which owns resolution,
-    # the id and the event and calls BACK into this session's `_send-deliver` for the
-    # paste — so the transport under test is still the frozen bash send body.
+    # live session.  The helper EXECs the pinned core, which owns resolution, the id,
+    # the PASTE (in-process since B move 1) and the event — so the transport under test
+    # is the core's delivery path against a real TUI.
     # AE_SENDER_OVERRIDE supplies the caller identity a paneless rig has no stamp for.
     P1_ASK_CLAUDE_RC=0
     AE_SEND_DEFER_SEC=90 AE_SENDER_OVERRIDE=worker "$P1_RIG_BASH" "$P1_RIG_META/ask" "$P1_CLAUDE_PANE" "$P1_LONG_BODY" >"$TMPDIR/pb1-ask-claude.out" 2>"$TMPDIR/pb1-ask-claude.err" || P1_ASK_CLAUDE_RC=$?
