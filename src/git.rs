@@ -35,6 +35,17 @@ enum Query<'a> {
     IsAncestor { base: &'a str, tip: &'a str },
     /// `rev-list --count <base>..<tip>` — the range size (printed value).
     CountRange { base: &'a str, tip: &'a str },
+    /// `symbolic-ref --quiet --short HEAD` — the branch NAME, judged by its
+    /// printed value. `--quiet` so a detached HEAD is a silent failure rather
+    /// than a diagnostic on stderr the watchdog would have to filter.
+    Branch,
+    /// `rev-parse --short HEAD` — the detached-HEAD fallback the frozen branch
+    /// segment reaches for when `symbolic-ref` names nothing (ae:13866).
+    ShortHead,
+    /// `status --porcelain --untracked-files=no` — the dirty marker. Untracked
+    /// files are deliberately EXCLUDED: a build artifact nobody committed is not
+    /// a modified work tree, and the bar would otherwise read `*` forever.
+    PorcelainStatus,
     /// `worktree remove --force <worktree>` — the git-mode teardown's workdir
     /// commit, judged by exit status. Run with `-C <origin>`. A successful remove
     /// deletes that worktree's working directory AND its admin record in origin;
@@ -84,6 +95,22 @@ fn argv(wdir: &OsStr, query: &Query) -> GitArgv {
             args.push("rev-list".into());
             args.push("--count".into());
             args.push(format!("{base}..{tip}").into());
+        }
+        Query::Branch => {
+            args.push("symbolic-ref".into());
+            args.push("--quiet".into());
+            args.push("--short".into());
+            args.push("HEAD".into());
+        }
+        Query::ShortHead => {
+            args.push("rev-parse".into());
+            args.push("--short".into());
+            args.push("HEAD".into());
+        }
+        Query::PorcelainStatus => {
+            args.push("status".into());
+            args.push("--porcelain".into());
+            args.push("--untracked-files=no".into());
         }
         Query::WorktreeRemove { worktree } => {
             args.push("worktree".into());
@@ -169,6 +196,51 @@ pub(crate) fn worktree_remove(origin: &[u8], worktree: &[u8]) -> bool {
     let origin = OsStr::from_bytes(origin);
     let worktree = OsStr::from_bytes(worktree);
     crate::transport::run_git(&argv(origin, &Query::WorktreeRemove { worktree })).0
+}
+
+/// The watchdog's branch segment: the branch NAME at `wdir`, or its short HEAD
+/// when HEAD is detached, or `None`.
+///
+/// `None` for an empty path, a path that is not inside a work tree (judged by
+/// exit status, as the frozen `_watchdog_branch_segment` does at ae:13859), and
+/// a HEAD that names nothing. The value is trimmed of surrounding whitespace and
+/// otherwise passed through verbatim — the DISPLAY trim belongs to the caller,
+/// because `@ae_branch_name` is the machine value and must not carry one.
+pub(crate) fn branch_head(wdir: &[u8]) -> Option<String> {
+    if wdir.is_empty() {
+        return None;
+    }
+    let wdir = OsStr::from_bytes(wdir);
+    if !crate::transport::run_git(&argv(wdir, &Query::IsWorkTree)).0 {
+        return None;
+    }
+    let (named, out) = crate::transport::run_git(&argv(wdir, &Query::Branch));
+    let branch = out.trim();
+    if named && !branch.is_empty() {
+        return Some(branch.to_owned());
+    }
+    let (resolved, out) = crate::transport::run_git(&argv(wdir, &Query::ShortHead));
+    let sha = out.trim();
+    if resolved && !sha.is_empty() {
+        Some(sha.to_owned())
+    } else {
+        None
+    }
+}
+
+/// Whether the work tree at `wdir` has TRACKED modifications — the `*` the
+/// watchdog appends to the displayed branch.
+///
+/// A failed run is `false`: an unreadable work tree is not a dirty one, and a
+/// bar that claims uncommitted work on the strength of a git that did not answer
+/// is worse than a bar that says nothing.
+pub(crate) fn work_tree_dirty(wdir: &[u8]) -> bool {
+    if wdir.is_empty() {
+        return false;
+    }
+    let wdir = OsStr::from_bytes(wdir);
+    let (succeeded, out) = crate::transport::run_git(&argv(wdir, &Query::PorcelainStatus));
+    succeeded && out.lines().any(|line| !line.is_empty())
 }
 
 #[cfg(test)]

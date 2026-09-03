@@ -86,6 +86,7 @@ pub mod meta;
 pub mod netprobe;
 pub mod next;
 pub mod procs;
+pub mod render;
 pub mod reply;
 pub mod requests;
 pub mod roster;
@@ -100,6 +101,7 @@ pub mod tracked;
 pub mod transport;
 pub mod watchdog;
 pub mod watchdog_daemon;
+pub mod watchdog_glue;
 
 use std::io::Write;
 
@@ -858,6 +860,8 @@ pub fn run_with(
             identity::meta_init(dir, tail, &stdin, out, err)?
         }
         cli::Request::Roster { dir, tail } => identity::roster(dir, tail, out, err)?,
+        cli::Request::ManifestRender { dir, tail } => render::run_manifest(dir, tail, out, err)?,
+        cli::Request::Context { dir, tail } => render::run_context(dir, tail, out, err)?,
         cli::Request::ArchivePreview { dir } => archive::preview(dir, out, err)?,
         cli::Request::ArchivePublish {
             dir,
@@ -934,7 +938,7 @@ pub fn run_with(
         cli::Request::CompactCancel { dir, reference } => {
             compact::cancel_step(dir, reference, err)?
         }
-        cli::Request::WatchdogRun { dir, knobs } => watchdog_daemon::run(dir, *knobs, err)?,
+        cli::Request::WatchdogRun { dir, knobs } => watchdog_daemon::run(dir, *knobs, out, err)?,
         cli::Request::TelegramRun { paths, knobs } => telegram::bridge::run(paths, *knobs, err)?,
         cli::Request::NetProbe { host, port } => netprobe::run(host, *port, out, err)?,
         cli::Request::CompactMemoBaseline { dir } => compact::memo_baseline_step(dir, out)?,

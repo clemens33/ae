@@ -1839,6 +1839,13 @@ fn criterion_3_the_places_this_crate_can_read_the_world_are_the_inventoried_ones
             // new door all the same.
             "src/memo.rs".to_owned(),
             "src/meta.rs".to_owned(),
+            // The two document renders' own reads (A.2c): the INI config behind
+            // the profile inventory and `prompt.instructions`, and the `[[ -f ]]`
+            // that decides whether a parent archive's digest is still on this
+            // machine. Its meta reads are `meta.rs`'s inventoried door, not new
+            // ones here. Registered deliberately — a render that reaches the
+            // world is a line in a review, not a diff nobody read.
+            "src/render.rs".to_owned(),
             // The git branch read: `HEAD` under the session's own work tree,
             // plus the `.git` pointer file a worktree uses instead of a
             // directory. Registered deliberately — the branch is a fact about
@@ -1871,6 +1878,13 @@ fn criterion_3_the_places_this_crate_can_read_the_world_are_the_inventoried_ones
             // and event-container reads are `meta.rs`'s and `event_text.rs`'s
             // inventoried doors, not new ones here. Registered deliberately.
             "src/watchdog_daemon.rs".to_owned(),
+            // The watchdog PANE's own pidfile read (A.3): the ownership check
+            // that decides whether this daemon may still remove its own
+            // registration. One read, and it exists so a dying daemon cannot
+            // delete a replacement's pidfile. Its writes (the atomic publish,
+            // and the legacy-artifact removals) are not doors — nothing in the
+            // named twelve is a write. Registered deliberately.
+            "src/watchdog_glue.rs".to_owned(),
         ],
         "the set of places product code can reach the twelve named entry points changed"
     );

@@ -91,6 +91,9 @@ pub struct Knobs {
     pub quiet_panes_per_cycle: usize,
     /// The orchestrator sweep cadence, retry and bound (ae:16435-16448).
     pub sweep: SweepKnobs,
+    /// Seconds between best-effort Telegram bridge revives (ae:14297-14299).
+    /// `0` disables supervision outright.
+    pub tg_supervise_secs: u64,
 }
 
 impl Default for Knobs {
@@ -105,6 +108,7 @@ impl Default for Knobs {
             quiet_tries: 4,
             quiet_panes_per_cycle: 2,
             sweep: SweepKnobs::default(),
+            tg_supervise_secs: 120,
         }
     }
 }
@@ -735,7 +739,12 @@ const NEUTRAL_GLYPH: &str = "·";
 ///
 /// Only writing the status stream; every observation failure degrades within
 /// the cycle instead.
-pub fn run(meta_dir: &Path, knobs: Knobs, err: &mut impl Write) -> crate::Result<u8> {
+pub fn run(
+    meta_dir: &Path,
+    knobs: Knobs,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> crate::Result<u8> {
     let Ok(bytes) = crate::meta::read_bytes(meta_dir) else {
         writeln!(
             err,
@@ -747,7 +756,7 @@ pub fn run(meta_dir: &Path, knobs: Knobs, err: &mut impl Write) -> crate::Result
     let meta = Meta::parse(&String::from_utf8_lossy(&bytes));
     // The INITIAL resolution, kept as the fast refuse. `rebind` re-asks it
     // every cycle from that cycle's own meta — see its doc for why.
-    let mut server = match meta.server_selector() {
+    let server = match meta.server_selector() {
         ServerSelector::Positive(selector) => crate::inventory::ServerId::Selected(selector),
         ServerSelector::Missing | ServerSelector::Ambiguous => {
             writeln!(
@@ -764,8 +773,123 @@ pub fn run(meta_dir: &Path, knobs: Knobs, err: &mut impl Write) -> crate::Result
         meta_dir,
         session: &session,
     };
-    let mut carry = Carry::new(&knobs);
 
+    // ── The pane's own duties, which were the bash wrapper's until slice A.3 ──
+    // Order is the frozen one (ae:14346-14372): the pidfile FIRST, because the
+    // start path's registration wait is what releases the start lock; then the
+    // bars, so a pane that is up says so before its first cycle; then the banner.
+    let pidfile = match crate::watchdog_glue::PidFile::publish(meta_dir) {
+        Ok(published) => Some(published),
+        Err(why) => {
+            // Reported, not fatal. A watchdog that refuses to watch a live
+            // session because it could not write its own bookkeeping has turned
+            // a cosmetic failure into an outage; `watchdog status` degrades to
+            // "not running" instead, which is exactly what a missing pidfile has
+            // always meant.
+            writeln!(err, "ae: watchdog: pidfile not published: {why}")?;
+            None
+        }
+    };
+    // The pre-rename reap, which was `_watchdog_start`'s first act (ae:13302-13306).
+    // It happens HERE now, because the pane IS the daemon: a `doctor --refresh`
+    // rewrites helpers but does not restart a running watchdog, so a legacy
+    // `_shepherd` / `_loop` process can outlive the rename and we must never run
+    // two watchdogs over one session — nor leave a stray legacy pane this loop
+    // would then mis-classify as an agent.
+    crate::watchdog_glue::reap_legacy(&server, &session, meta_dir, err)?;
+    announce_start(&server, &session, meta.work_dir());
+    write!(
+        out,
+        "{}",
+        crate::watchdog_glue::banner(
+            &session,
+            knobs.interval_secs,
+            knobs.stale_secs,
+            knobs.max_nudges
+        )
+    )?;
+    out.flush()?;
+    let mut deferred = crate::watchdog_glue::Deferred::new(
+        crate::watchdog_glue::recorded_ae_path(&bytes),
+        recorded_server_value(&meta),
+        knobs.tg_supervise_secs,
+    );
+
+    let code = watch(
+        meta_dir,
+        knobs,
+        server,
+        &session,
+        &helper,
+        &journal,
+        &mut deferred,
+        err,
+    );
+    // OWNERSHIP-CHECKED, and only on a return this daemon chose. A stop/start in
+    // quick succession can leave this cleanup running after the replacement is
+    // already registered, and removing its pidfile would be the dying process
+    // vandalising its successor (ae:13996-14000).
+    if let Some(pidfile) = &pidfile {
+        let _ = pidfile.release();
+    }
+    code
+}
+
+/// Publish the two things a pane that is UP says before its first cycle: the
+/// starting health segment and the branch pair (ae:14361-14362).
+///
+/// Separate from the loop's own publication because it must land BEFORE the
+/// first observation: a watchdog that publishes nothing until its first cycle
+/// completes leaves the bar reading whatever the last one left there.
+fn announce_start(server: &crate::inventory::ServerId, session: &str, work_dir: Option<&str>) {
+    let Some(session_id) = transport::observe_session_id(server, session) else {
+        return;
+    };
+    let _ = transport::publish_option(
+        server,
+        OptionScope::Session,
+        &session_id,
+        tmux::WATCHDOG_STATUS_OPTION,
+        "[watch ◌ starting]",
+    );
+    crate::watchdog_glue::publish_branch(
+        server,
+        &session_id,
+        crate::watchdog_glue::branch_reading(work_dir).as_ref(),
+    );
+}
+
+/// The raw `tmux_server` value to export as `AE_TMUX_SERVER` when the deferred
+/// tick runs the recorded `ae` binary, so a supervise reaches the session's own
+/// server rather than an ambient one (ae:14453-14458).
+fn recorded_server_value(meta: &Meta) -> Option<String> {
+    match meta.server_selector() {
+        ServerSelector::Positive(crate::meta::Selector::Name(name)) => Some(name),
+        ServerSelector::Positive(crate::meta::Selector::Socket(path)) => {
+            Some(path.display().to_string())
+        }
+        ServerSelector::Missing | ServerSelector::Ambiguous => None,
+    }
+}
+
+/// The loop itself, split from [`run`] so the pidfile it publishes is released
+/// on EVERY return rather than on the ones someone remembered.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the loop's context, kept as parameters so `run` owns the pidfile's lifetime; \
+              gathering them into a struct would move that ownership back inside the loop"
+)]
+fn watch(
+    meta_dir: &Path,
+    knobs: Knobs,
+    mut server: crate::inventory::ServerId,
+    session: &str,
+    helper: &SendHelper,
+    journal: &Journal<'_>,
+    deferred: &mut crate::watchdog_glue::Deferred,
+    err: &mut impl Write,
+) -> crate::Result<u8> {
+    let mut carry = Carry::new(&knobs);
     loop {
         let read = crate::meta::read_bytes(meta_dir);
         // ONE parse per cycle, and it happens BEFORE the probe because the
@@ -782,15 +906,15 @@ pub fn run(meta_dir: &Path, knobs: Knobs, err: &mut impl Write) -> crate::Result
                     named,
                     &mut carry,
                     &knobs,
-                    |leaving| clear_published(leaving, &session),
-                    &journal,
+                    |leaving| clear_published(leaving, session),
+                    journal,
                     err,
                 )?;
             }
             Rebind::Refuse => {
                 // Retract what we published, on the server we published it to,
                 // then stop exactly as startup would have.
-                let _ = clear_published(&server, &session);
+                let _ = clear_published(&server, session);
                 writeln!(
                     err,
                     "ae: watchdog: the recorded tmux server stopped naming exactly one \
@@ -799,11 +923,11 @@ pub fn run(meta_dir: &Path, knobs: Knobs, err: &mut impl Write) -> crate::Result
                 return Ok(1);
             }
         }
-        let probe = transport::verify_session_absent(&server, &session);
+        let probe = transport::verify_session_absent(&server, session);
         match continuation(read.as_ref().err().map(io::Error::kind), &probe) {
             Continuation::Stop => {
                 // PROVEN gone.
-                let _ = clear_published(&server, &session);
+                let _ = clear_published(&server, session);
                 return Ok(0);
             }
             Continuation::Retry => {
@@ -822,9 +946,9 @@ pub fn run(meta_dir: &Path, knobs: Knobs, err: &mut impl Write) -> crate::Result
                     let cycle = Cycle {
                         knobs,
                         meta_dir,
-                        helper: &helper,
+                        helper,
                         server: &server,
-                        session: &session,
+                        session,
                         goal: meta.goal().map(ToOwned::to_owned),
                         // Re-read EVERY cycle, like the goal and the roster: a
                         // session can be promoted to orchestrator, or its main
@@ -833,11 +957,56 @@ pub fn run(meta_dir: &Path, knobs: Knobs, err: &mut impl Write) -> crate::Result
                         roster: meta.roster().to_vec(),
                     };
                     cycle.run(&mut carry, err)?;
+                    // The pane's own per-cycle duties, in the frozen wrapper's
+                    // order (ae:14431-14459): the branch pair, which is a git
+                    // read no cycle owns, then the two deferred ticks. AFTER the
+                    // cycle deliberately — a nudge is what this process is for,
+                    // and a git or a supervise that is slow must not delay one.
+                    tick_pane_duties(&server, session, meta, deferred, journal, err)?;
                 }
             }
         }
         std::thread::sleep(Duration::from_secs(knobs.interval_secs));
     }
+}
+
+/// The branch publication and the two deferred bash-only ticks, once per cycle.
+///
+/// Every one degrades in place: a failed git read publishes "no branch", a
+/// `_recover-pending` that could not run recovers nothing, and a supervise is
+/// best-effort by construction. None of them is a reason to stop watching.
+fn tick_pane_duties(
+    server: &crate::inventory::ServerId,
+    session: &str,
+    meta: &Meta,
+    deferred: &mut crate::watchdog_glue::Deferred,
+    journal: &Journal<'_>,
+    err: &mut impl Write,
+) -> crate::Result<()> {
+    if let Some(session_id) = transport::observe_session_id(server, session) {
+        crate::watchdog_glue::publish_branch(
+            server,
+            &session_id,
+            crate::watchdog_glue::branch_reading(meta.work_dir()).as_ref(),
+        );
+    }
+    if !deferred.armed() {
+        return Ok(());
+    }
+    for row in deferred.recover(session) {
+        // The DURABLE record of a post-launch capture. Emitted here rather than
+        // left to `_recover-pending` because the recovery itself is silent: the
+        // id lands in meta and nothing else would ever say it had.
+        journal.record_referring(
+            "recover",
+            &row.agent,
+            &row.captured,
+            &crate::watchdog_glue::recovered_summary(&row),
+            err,
+        )?;
+    }
+    deferred.supervise(session, SystemTime::now());
+    Ok(())
 }
 
 /// Which tmux server this cycle must OBSERVE and PUBLISH on.
@@ -929,12 +1098,27 @@ impl Journal<'_> {
         summary: &str,
         err: &mut impl Write,
     ) -> crate::Result<()> {
+        self.record_referring(action, target, "", summary, err)
+    }
+
+    /// Append one watchdog event that names a REFERENCE — the id, request or
+    /// artifact the record is about. Split from [`Journal::record`] rather than
+    /// added to it because every other emission has nothing to refer to, and a
+    /// `""` at each of those call sites is a field nobody reads.
+    fn record_referring(
+        &self,
+        action: &str,
+        target: &str,
+        reference: &str,
+        summary: &str,
+        err: &mut impl Write,
+    ) -> crate::Result<()> {
         let line = tracked::event_line(&EventFields {
             ts: Timestamp::now(),
             actor: ACTOR,
             action,
             target,
-            reference: "",
+            reference,
             actor_slot: "",
             actor_session: self.session,
             target_slot: "",
@@ -1169,6 +1353,10 @@ fn clear_published(server: &crate::inventory::ServerId, session: &str) -> bool {
     for name in [tmux::WATCHDOG_STATUS_OPTION, tmux::AGENTS_STATUS_OPTION] {
         ok &= transport::clear_option(server, OptionScope::Session, &session_id, name);
     }
+    // The branch pair is published by THIS daemon too since slice A.3, so it is
+    // retracted with everything else: a stopped watchdog that left `@ae_branch_*`
+    // behind would keep asserting a branch nobody is watching (ae:14010).
+    ok &= crate::watchdog_glue::clear_branch(server, &session_id);
     let Some(panes) = transport::observe_window_panes(server, session) else {
         return false;
     };
@@ -1995,7 +2183,7 @@ mod tests {
         );
         assert_eq!(
             source
-                .matches(concat!("clear_published(", "leaving, &session)"))
+                .matches(concat!("clear_published(", "leaving, session)"))
                 .count(),
             1,
             "the move retracts from the server it is LEAVING, in exactly one place — the \
@@ -2003,7 +2191,7 @@ mod tests {
         );
         assert_eq!(
             source
-                .matches(concat!("clear_published(&", "server, &session)"))
+                .matches(concat!("clear_published(&", "server, session)"))
                 .count(),
             2,
             "the OTHER two clears address the server still in force: the session is proven \
@@ -2033,9 +2221,12 @@ mod tests {
              one in force — a rebind that cannot compare cannot tell a move from a repeat"
         );
         assert_eq!(
-            source.matches("let mut server").count(),
+            source.matches(concat!("mut ", "server")).count(),
             1,
-            "and there is ONE binding for it to move, not a startup pin beside a cycle copy"
+            "and there is ONE binding for it to move, not a startup pin beside a cycle copy. \
+             It is the LOOP's parameter since slice A.3: `run` resolves the server, hands it \
+             over by value, and keeps only the pidfile's lifetime — so the compiler forbids \
+             a startup copy outliving the move rather than this guard merely counting one"
         );
         // The answer is APPLIED, and applied THROUGH the adopt — a decision
         // nothing assigns is a decision that did not happen, and a move that

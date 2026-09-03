@@ -20,3 +20,4 @@ mod phase3;
 mod teardown;
 mod telegram;
 mod transport;
+mod watchdog_glue;

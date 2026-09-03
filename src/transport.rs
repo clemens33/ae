@@ -403,6 +403,38 @@ pub(crate) fn run_git(argv: &crate::git::GitArgv) -> (bool, String) {
     }
 }
 
+/// The session's own `ae` binary leg of the one process door — the ONLY way
+/// product code runs the recorded wrapper, its PATH chosen by the session record
+/// rather than by a caller. Mirrors [`run_git`] and [`run_ps`]: the argv is a
+/// [`crate::watchdog_glue::AeArgv`] whose inner vector is private to that
+/// module, so only its fixed-shape constructors can mint one and this leg cannot
+/// be alias-imported and handed an arbitrary command line.
+///
+/// It exists because two of the watchdog pane's duties are still bash
+/// subcommands — `_recover-pending` and `telegram _supervise` — and the frozen
+/// wrapper ran exactly this binary with exactly these arguments. Returns whether
+/// it exited zero and its stdout decoded lossily; stderr is captured and
+/// dropped, because a supervise that complains must not print into a read-only
+/// watchdog pane.
+pub(crate) fn run_ae(
+    bin: &std::path::Path,
+    argv: &crate::watchdog_glue::AeArgv,
+    envs: &[(&str, &str)],
+) -> (bool, String) {
+    match spawn(
+        &bin.display().to_string(),
+        argv.as_args(),
+        envs,
+        Streams::Captured,
+    ) {
+        Some(output) => (
+            output.status.success(),
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+        ),
+        None => (false, String::new()),
+    }
+}
+
 /// The process-table snapshot leg of the one process door — the ONLY way
 /// product code runs `ps`, the program FIXED here. Mirrors [`run_git`]: the argv
 /// is a [`crate::procs::PsArgv`] whose inner vector is private to `src/procs.rs`,
@@ -437,6 +469,42 @@ pub fn observe_watch_panes(server: &ServerId, session: &str) -> Option<Vec<tmux:
     }
     let (succeeded, stdout) = run(PROGRAM, &tmux::watch_panes_args(server, session));
     tmux::interpret_watch_panes(succeeded, &stdout)
+}
+
+/// Who a pane says it belongs to — `#{session_name}` and `@ae_agent`, read from
+/// the PANE ITSELF at the moment a kill is being authorised.
+///
+/// `None` is the REFUSAL: a failed run and a successful one that names no
+/// session both mean "no owner named", and a kill may be authorised by neither.
+/// The argv and the interpreter are
+/// [`crate::watchdog_glue`]'s — see that module's docs for why they sit there
+/// rather than beside their siblings in [`crate::tmux`].
+#[must_use]
+pub fn observe_pane_owner(
+    server: &ServerId,
+    pane: &str,
+) -> Option<crate::watchdog_glue::PaneOwner> {
+    if !addressable(server) {
+        return None;
+    }
+    let (succeeded, stdout) = run(
+        PROGRAM,
+        &crate::watchdog_glue::pane_owner_args(server, pane),
+    );
+    crate::watchdog_glue::interpret_pane_owner(succeeded, &stdout)
+}
+
+/// Kill one pane by exact id. Returns whether tmux accepted it.
+///
+/// UNGUARDED on purpose: the ownership check that authorises a kill is
+/// [`crate::watchdog_glue::kill_owned_pane`]'s, and putting a second copy here
+/// would make two places responsible for one rule. Nothing else may call this.
+#[must_use]
+pub fn kill_pane(server: &ServerId, pane: &str) -> bool {
+    if !addressable(server) {
+        return false;
+    }
+    run(PROGRAM, &crate::watchdog_glue::kill_pane_args(server, pane)).0
 }
 
 /// The last ~40 joined lines of `pane` on `server`, or `None` when the capture

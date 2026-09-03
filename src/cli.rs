@@ -179,6 +179,16 @@ pub const META_INIT: &str = "_meta-init";
 /// lock. Underscored — a core entry, never human-typed.
 pub const ROSTER: &str = "_roster";
 
+/// The `workspace.md` render: `_manifest-render <dir> <session> <work-dir>
+/// <origin> <mode> <main-pane> [--global <f>] [--local <f>] [--out <path>]`.
+/// Underscored — a core entry, never human-typed.
+pub const MANIFEST_RENDER: &str = "_manifest-render";
+
+/// The per-seat system-prompt render: `_context <dir> <session> <work-dir>
+/// <slot> [--global <f>] [--local <f>]`. Underscored — a core entry, never
+/// human-typed.
+pub const CONTEXT: &str = "_context";
+
 /// The musl DNS/NSS instrument — `_net-probe <host> [--port <n>]`.
 ///
 /// Underscored like every other core entry, and for the same reason: it is run
@@ -356,6 +366,20 @@ pub enum Request {
     /// `_roster <dir> <subcommand> …` — validated by
     /// [`crate::identity::roster`].
     Roster {
+        /// The session meta directory.
+        dir: PathBuf,
+        /// Everything after it, as typed.
+        tail: Vec<String>,
+    },
+    /// `_manifest-render <dir> …` — render the session's `workspace.md`.
+    ManifestRender {
+        /// The session meta directory.
+        dir: PathBuf,
+        /// Everything after it, as typed.
+        tail: Vec<String>,
+    },
+    /// `_context <dir> …` — render one seat's system-prompt context.
+    Context {
         /// The session meta directory.
         dir: PathBuf,
         /// Everything after it, as typed.
@@ -866,6 +890,20 @@ impl Request {
                     tail: tail.to_vec(),
                 },
             },
+            Some(MANIFEST_RENDER) => match &args[1..] {
+                [] => Self::MissingOperand(MANIFEST_RENDER),
+                [dir, tail @ ..] => Self::ManifestRender {
+                    dir: dir.into(),
+                    tail: tail.to_vec(),
+                },
+            },
+            Some(CONTEXT) => match &args[1..] {
+                [] => Self::MissingOperand(CONTEXT),
+                [dir, tail @ ..] => Self::Context {
+                    dir: dir.into(),
+                    tail: tail.to_vec(),
+                },
+            },
             Some(ARCHIVE_PREVIEW) => match &args[1..] {
                 [] => Self::MissingOperand(ARCHIVE_PREVIEW),
                 [dir] => Self::ArchivePreview { dir: dir.into() },
@@ -973,7 +1011,9 @@ impl Request {
             | Self::CompactFindOutstanding { .. }
             | Self::LaunchPlan { .. }
             | Self::MetaInit { .. }
-            | Self::Roster { .. } => None,
+            | Self::Roster { .. }
+            | Self::ManifestRender { .. }
+            | Self::Context { .. } => None,
         }
     }
 }
@@ -1008,6 +1048,10 @@ fn watchdog_knobs(flags: &[String]) -> std::result::Result<crate::watchdog_daemo
             "--sweep-secs" => knobs.sweep.sweep_secs = number(value)?,
             "--sweep-retry-secs" => knobs.sweep.retry_secs = number(value)?,
             "--sweep-retry-max" => knobs.sweep.retry_max = count(value)?,
+            // The deferred Telegram revive's cadence (ae:14297-14299). Zero is
+            // MEANINGFUL — it disables supervision — so it must reach the daemon
+            // as a zero rather than fall back to the frozen 120.
+            "--tg-supervise-secs" => knobs.tg_supervise_secs = number(value)?,
             _ => return Err(flag.clone()),
         }
         rest = after;
