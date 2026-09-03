@@ -499,6 +499,31 @@ pub(crate) fn run_ps(argv: &crate::procs::PsArgv) -> (bool, String) {
     }
 }
 
+/// The `opencode` leg of the one process door — the ONLY way product code runs
+/// `opencode`, the program FIXED here so a caller chooses nothing at all.
+///
+/// It exists because opencode is the one capture tool that will not tell ae its
+/// conversation id and keeps no readable history file either: the id has to be
+/// asked for, and `opencode session list --format json` is the question the
+/// frozen path asked. Mirrors [`run_ps`]: the argv is a
+/// [`crate::session_launch::capture::OpenCodeArgv`] whose inner vector is
+/// private to that module, and it carries NO caller input (the whole command
+/// line is a constant), so there is nothing to inject even in principle.
+///
+/// Returns whether it exited zero and its stdout decoded lossily. A `false` is
+/// "no answer" — opencode may not be installed, which the frozen path checked
+/// with `command -v` — and the capture treats it as such rather than as an
+/// empty session list.
+pub(crate) fn run_opencode(argv: &crate::session_launch::capture::OpenCodeArgv) -> (bool, String) {
+    match spawn("opencode", argv.as_args(), &[], Streams::Captured, None) {
+        Some(output) => (
+            output.status.success(),
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+        ),
+        None => (false, String::new()),
+    }
+}
+
 /// The detached-supervisor leg of the one process door — the ONLY way product
 /// code starts a process that must OUTLIVE it, and the program is FIXED here to
 /// `nohup`.

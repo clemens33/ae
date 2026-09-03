@@ -38,6 +38,7 @@ use crate::inventory::ServerId;
 use crate::launch;
 use crate::launch_cmd::ToolKind;
 use crate::meta::{self, Meta, ServerSelector};
+use crate::session_launch::capture;
 use crate::state::{self, EXIT_FAILED, EXIT_USAGE};
 use crate::time::Timestamp;
 use crate::tracked::{self, EventFields};
@@ -468,13 +469,38 @@ pub fn run_spawn(
         &launch::shell_quote(&script.display().to_string()),
     );
     wait_for_agent_start(&facts.server, &pane, tool);
-    // The capture tools need the launch instant to filter stale sessions. The
-    // capture itself still runs outside the core.
+    // The capture tools need the launch instant to filter stale sessions, so it
+    // is recorded BEFORE the capture child is started — the child reads it back
+    // out of meta, and a capture with no floor would accept a conversation this
+    // spawn did not create.
     if launch::supports_launch_id(tool) {
         let _ = meta::rewrite(
             dir,
             &format!("launch_time.{slot}"),
             Some(&crate::time::Timestamp::now().epoch().to_string()),
+        );
+        // The post-launch id capture, detached: it polls and scans for minutes,
+        // so it cannot run inside the process the spawning agent waits on. The
+        // frozen path forked it from bash after the core returned; the core owns
+        // it now, which is also what makes it start from the facts it has just
+        // written rather than from a second reader's guess at the slot.
+        //
+        // HERE, not after the brief. Two reasons, and both are deliberate
+        // departures from the frozen "only on rc==0": the capture window is
+        // finite (the tool writes its session record within seconds of
+        // starting, and the poll gives up), so time spent waiting for a
+        // readiness-gated paste is time taken off it; and a brief that fails to
+        // deliver does NOT roll the seat back — the agent is alive and its id is
+        // still worth having. A capture that outlives a seat which later goes
+        // away is harmless: `set-harness-session` refuses a slot that is not in
+        // the roster.
+        capture::start(
+            dir,
+            &[capture::Target {
+                slot: slot.clone(),
+                tool,
+                pane: pane.clone(),
+            }],
         );
     }
 

@@ -2149,7 +2149,6 @@ fn launching_capture(launching: &[Launching], resuming: bool) -> Vec<capture::Ta
             slot: agent.slot.clone(),
             tool: agent.tool,
             pane: agent.pane.clone(),
-            launch_id: agent.launch_id.clone(),
         })
         .collect()
 }

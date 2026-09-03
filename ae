@@ -4121,55 +4121,16 @@ cmd_help() {
 # every failure after the seat, the ownership-guarded kill, and the spawn /
 # spawn-failed events.
 #
-# ONE duty stays here, and it is why this is not a bare exec: the post-launch
-# session-id CAPTURE for the tools with no launch-time id flag (codex, opencode,
-# gemini). That capture is a detached poll which OUTLIVES the command — minutes
-# of sleeping and scanning the tool's own history directory — so it cannot live
-# inside a core process the caller waits on. The core has already written
-# `launch_id.<slot>` and `launch_time.<slot>`; this fork only watches for the id
-# and writes it back through the roster. It runs ONLY after a success, because a
-# rolled-back spawn has no seat to write to.
+# The post-launch session-id CAPTURE for the tools with no launch-time id flag
+# (codex, opencode, gemini) was the one duty left here, and it went to the core
+# too: it forks `_capture-sid` for the seat it has just created, from the
+# `launch_id.<slot>` and `launch_time.<slot>` it wrote itself, rather than a
+# second reader re-deriving the slot and the pane out of meta. Nothing follows
+# the core call now, so the shim EXECs.
 _cmd_spawn() {
-    local meta_dir="$1" name rc=0
+    local meta_dir="$1"
     shift
-    name="${1:-}"
-    META_DIR="$meta_dir" _ae_core_try --capture _spawn "$@" || rc=$?
-    ((rc == 0)) || return "$rc"
-    _spawn_capture_after "$meta_dir" "$name"
-    return 0
-}
-
-# Fork the post-launch session-id capture for the seat `_spawn` just created.
-#
-# The SLOT is read back from meta rather than guessed: the core owns seat
-# allocation, and `seat.spawned.<n>=<name>` is where it records which index it
-# took — deriving one here would be a second allocator, disagreeing the first
-# time two spawns race. The pane is found by its `@ae_slot` stamp for the same
-# reason, and the tool kind from the seat's own `agent_bin.<slot>`.
-#
-# Nothing here is fatal. A capture that cannot start costs an exact `--resume`
-# on the next cycle (the tool falls back to its CWD heuristic), never the spawn
-# that has already succeeded — so every probe degrades to a quiet return.
-_spawn_capture_after() {
-    local meta_dir="$1" name="$2" meta="$1/meta"
-    local slot="" _sl bin="" kind="" session="" pane=""
-    [[ -n "$name" && -f "$meta" ]] || return 0
-    # The name is allowlisted (^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$), so it carries no
-    # regex metacharacter; the slot does — escape its dot before it is one.
-    slot="$(sed -n "s/^seat\\.\\(spawned\\.[0-9][0-9]*\\)=${name}$/\\1/p" "$meta" | head -1 || true)"
-    [[ -n "$slot" ]] || return 0
-    _sl="${slot//./\\.}"
-    bin="$(sed -n "s/^agent_bin\\.${_sl}=//p" "$meta" | head -1 || true)"
-    [[ -n "$bin" ]] || return 0
-    kind="$(tool_kind_from_cmd "$bin")"
-    tool_kind_supports_launch_id "$kind" || return 0
-    session="$(sed -n 's/^session=//p' "$meta" | head -1 || true)"
-    [[ -n "$session" ]] || return 0
-    pane="$(tmux list-panes -s -t "$session" -F '#{pane_id} #{@ae_slot}' 2>/dev/null |
-        awk -v s="$slot" '$2 == s { print $1; exit }' || true)"
-    [[ -n "$pane" ]] || return 0
-    capture_session_id "$kind" "$pane" "$slot" "$meta_dir" &
-    return 0
+    META_DIR="$meta_dir" _ae_core_try _spawn "$@"
 }
 
 # `ae _retire <meta-dir> <name|%pane>` — the entry the session's `retire` helper
