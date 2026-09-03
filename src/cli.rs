@@ -170,6 +170,15 @@ pub const TELEGRAM_RUN: &str = "_telegram-run";
 /// [prompt]`. The WHOLE operation — seat, window, stamps, manifest, launch
 /// script and brief. Underscored — a core entry, never human-typed (the
 /// `spawn` helper execs it).
+/// The two daemons' LIFECYCLE, as whole core operations: `_watchdog
+/// <start|stop|status> [session] [--pane <id>]` and `_telegram
+/// <start|stop|status> [--config <f>] [--home <d>]`. The bodies are
+/// [`WATCHDOG_RUN`] and [`TELEGRAM_RUN`]; these START and STOP them. Underscored
+/// like every other core entry — the `watchdog` / `telegram` words a human types
+/// stay the glue's, and a leading `_` can never shadow a session name.
+pub const WATCHDOG: &str = "_watchdog";
+pub const TELEGRAM: &str = "_telegram";
+
 pub const SPAWN: &str = "_spawn";
 
 /// The retire operation: `_retire <meta-dir> <name|%pane>`. Underscored — a
@@ -319,6 +328,18 @@ pub enum Request {
     Launch {
         /// Everything after the subcommand, as given. Validated by
         /// [`crate::session_launch`], whose refusals are the launch's own.
+        tail: Vec<String>,
+    },
+    /// `_watchdog <start|stop|status> [session] [--pane <id>]` — validated by
+    /// [`crate::watchdog_lifecycle::run`].
+    Watchdog {
+        /// Everything after the subcommand, as typed.
+        tail: Vec<String>,
+    },
+    /// `_telegram <start|stop|status> [--config <f>] [--home <d>]` — validated
+    /// by [`crate::telegram_lifecycle::run`].
+    Telegram {
+        /// Everything after the subcommand, as typed.
         tail: Vec<String>,
     },
     /// `_requests <meta-dir> [mine|inbox|all]` — the `requests` helper surface.
@@ -902,6 +923,12 @@ impl Request {
                     Err(word) => Self::UsageError(word),
                 },
             },
+            Some(WATCHDOG) => Self::Watchdog {
+                tail: args[1..].to_vec(),
+            },
+            Some(TELEGRAM) => Self::Telegram {
+                tail: args[1..].to_vec(),
+            },
             Some(NET_PROBE) => match &args[1..] {
                 [] => Self::MissingOperand(NET_PROBE),
                 [host, flags @ ..] => match net_probe_port(flags) {
@@ -1225,6 +1252,8 @@ impl Request {
             | Self::EndNonlocalTeardown { .. }
             | Self::WatchdogRun { .. }
             | Self::TelegramRun { .. }
+            | Self::Watchdog { .. }
+            | Self::Telegram { .. }
             | Self::NetProbe { .. }
             | Self::CompactFreeze { .. }
             | Self::CompactRevalidate { .. }

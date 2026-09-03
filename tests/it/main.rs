@@ -11,6 +11,7 @@ mod archive_purge;
 mod capture;
 mod cli;
 mod compact;
+mod daemons;
 mod deliver;
 mod fixtures;
 mod git;

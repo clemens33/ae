@@ -59,6 +59,23 @@ pub(crate) enum Op<'a> {
         /// The first pane's working directory.
         work_dir: &'a str,
     },
+    /// `new-session -d -s <name> -c <dir> <command…>` — a DAEMON's own
+    /// session, which is not the launch's shape: no `-P -F`, because nothing
+    /// reads a pane id back from it, and a command, because the session exists
+    /// only to hold that process. The Telegram bridge's, and the frozen
+    /// `_telegram_spawn_daemon`'s (ae:7977).
+    ///
+    /// The command is DIRECT ARGV, never one shell string: tmux execs a
+    /// multi-word command itself, so a path carrying a space, a quote or a
+    /// newline survives byte-for-byte instead of being re-split by `/bin/sh`.
+    NewDaemonSession {
+        /// The session name — a constant here, never operator input.
+        name: &'a str,
+        /// The daemon's working directory.
+        work_dir: &'a str,
+        /// The command the session's one pane runs.
+        command: &'a [String],
+    },
     /// `set-environment -t <session> <key> <value>`.
     SetEnv {
         session: &'a str,
@@ -117,6 +134,10 @@ pub(crate) enum Op<'a> {
 }
 
 /// Build the argv for one operation, server selector first.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the tmux argv table: one match arm per operation, kept as one readable dispatch rather than fragmented into per-op builders"
+)]
 pub(crate) fn argv(server: &ServerId, op: &Op<'_>) -> TmuxArgv {
     let mut args = server_args(server);
     match *op {
@@ -135,6 +156,17 @@ pub(crate) fn argv(server: &ServerId, op: &Op<'_>) -> TmuxArgv {
                 ]
                 .map(ToOwned::to_owned),
             );
+        }
+        Op::NewDaemonSession {
+            name,
+            work_dir,
+            command,
+        } => {
+            args.extend(["new-session", "-d", "-s", name].map(ToOwned::to_owned));
+            if !work_dir.is_empty() {
+                args.extend(["-c", work_dir].map(ToOwned::to_owned));
+            }
+            args.extend(command.iter().cloned());
         }
         Op::SetEnv {
             session,

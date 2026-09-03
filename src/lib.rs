@@ -104,6 +104,7 @@ pub mod spawn;
 pub mod state;
 pub mod teardown;
 pub mod telegram;
+pub mod telegram_lifecycle;
 pub mod time;
 pub mod tmux;
 pub mod tracked;
@@ -111,6 +112,7 @@ pub mod transport;
 pub mod watchdog;
 pub mod watchdog_daemon;
 pub mod watchdog_glue;
+pub mod watchdog_lifecycle;
 
 use std::io::Write;
 
@@ -1079,6 +1081,25 @@ pub fn run_with(
         } => compact::wait_step(dir, reference, *timeout_secs, err)?,
         cli::Request::CompactCancel { dir, reference } => {
             compact::cancel_step(dir, reference, err)?
+        }
+        // The two daemons' lifecycle. Like `end`/`stop`/`compact` they take a
+        // NAME (or nothing at all), so they derive the state root the way `list`
+        // does, and refuse the same way when there is none.
+        cli::Request::Watchdog { tail } => {
+            if let Some(root) = state_root() {
+                watchdog_lifecycle::run(&root, tail, out, err)?
+            } else {
+                writeln!(err, "ae: {NO_STATE_ROOT}")?;
+                EXIT_UNAVAILABLE
+            }
+        }
+        cli::Request::Telegram { tail } => {
+            if let Some(root) = state_root() {
+                telegram_lifecycle::run(&root, tail, out, err)?
+            } else {
+                writeln!(err, "ae: {NO_STATE_ROOT}")?;
+                EXIT_UNAVAILABLE
+            }
         }
         cli::Request::WatchdogRun { dir, knobs } => watchdog_daemon::run(dir, *knobs, out, err)?,
         cli::Request::TelegramRun { paths, knobs } => telegram::bridge::run(paths, *knobs, err)?,

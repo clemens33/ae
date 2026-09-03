@@ -617,6 +617,49 @@ pub fn recorded_ae_path(meta_bytes: &[u8]) -> Option<PathBuf> {
     None
 }
 
+/// The daemon's pidfile path under `meta_dir` — `.watchdog.pid`.
+///
+/// Published here rather than spelled again at the lifecycle's call sites: the
+/// name is one fact, and a start that polled a different filename from the one
+/// the daemon publishes would wait out its bound every time.
+#[must_use]
+pub fn pidfile(meta_dir: &Path) -> PathBuf {
+    meta_dir.join(PIDFILE_NAME)
+}
+
+/// The pid a session's pidfile names, or `None` when it names nothing usable.
+///
+/// The read the LIFECYCLE needs, beside [`PidFile`]'s ownership-checked release:
+/// `status` reports the pid, `start` refuses to duplicate a daemon that already
+/// published one, and `stop` removes only the registration it observed. A
+/// zero-byte or non-numeric file is `None` — the publish is atomic, so a partial
+/// read means the file is not a pidfile.
+#[must_use]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "a door: the pidfile read the start/stop/status decisions rest on — see clippy.toml"
+)]
+pub fn read_pid(meta_dir: &Path) -> Option<u32> {
+    let text = std::fs::read_to_string(pidfile(meta_dir)).ok()?;
+    text.trim().parse::<u32>().ok()
+}
+
+/// Remove the pidfile, but ONLY while it still names `pid`.
+///
+/// [`PidFile::release`]'s rule from the OTHER side: the stopper reads a pid,
+/// kills the pane it belongs to and then retracts the registration — and
+/// between those steps a replacement may already have published its own. The
+/// ownership check is what keeps a stop from vandalising the next daemon's
+/// pidfile, exactly as it keeps a dying daemon from vandalising its successor's.
+/// Returns whether the file was removed.
+#[must_use]
+pub fn clear_pid(meta_dir: &Path, pid: u32) -> bool {
+    if read_pid(meta_dir) != Some(pid) {
+        return false;
+    }
+    std::fs::remove_file(pidfile(meta_dir)).is_ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::{

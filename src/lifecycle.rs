@@ -465,6 +465,23 @@ fn supervisor_argv(name: &str) -> Option<DetachedArgv> {
     ]))
 }
 
+/// `nohup env AE_NO_AUTOSTART=1 <glue> <session>` — the launch's orchestrator
+/// companion (the frozen ae:8055), and the second shape this module can mint.
+///
+/// `env` carries the recursion guard the core cannot set for itself: the child
+/// is the GLUE, which reads `AE_NO_AUTOSTART` to decide whether to start
+/// companions of its own. Every word is fixed but the glue's path and the
+/// scaffold's session name, and there is no shell, so a path with a space stays
+/// one argument.
+pub(crate) fn orchestrator_argv(glue: &Path, session: &str) -> DetachedArgv {
+    DetachedArgv(vec![
+        "env".to_owned(),
+        "AE_NO_AUTOSTART=1".to_owned(),
+        glue.display().to_string(),
+        session.to_owned(),
+    ])
+}
+
 /// Append one line to the target's event log, best-effort.
 ///
 /// Best-effort deliberately: a self-stop whose audit line could not be written

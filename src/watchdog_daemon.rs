@@ -1339,7 +1339,7 @@ pub fn continuation(meta_error: Option<io::ErrorKind>, session: &StopProbe) -> C
 ///
 /// When the SESSION is what went away there is nothing to clear — its options
 /// died with it — and the id resolution simply finds nothing.
-fn clear_published(server: &crate::inventory::ServerId, session: &str) -> bool {
+pub(crate) fn clear_published(server: &crate::inventory::ServerId, session: &str) -> bool {
     let Some(session_id) = transport::observe_session_id(server, session) else {
         return false;
     };
