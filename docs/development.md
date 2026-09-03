@@ -76,6 +76,9 @@ When adding or changing a helper, the guard suite enforces the emission invarian
 ```bash
 bash tests/unit          # ~650+ assertions, pure bash (no tmux needed)
 bash tests/integration   # ~60 scenarios, real tmux sessions
+just itest-all           # the same 88 sections, sharded across cores (~4 min)
+just itest list          # only the sections of one domain (see tests/itest-domains.tsv)
+just unit                # fast unit default (~1 min); AE_UNIT_FULL=1 for the slow blocks
 ```
 
 ## Releases
