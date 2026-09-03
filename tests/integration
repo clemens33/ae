@@ -1085,6 +1085,18 @@ assert_eq "core binding: the unusable path is still recorded" "$_cb_root/mute-co
     "$(grep '^ae_core=' "$_cb_meta/meta" | cut -d= -f2- || true)"
 assert_eq "core binding: with no version, so it can never run" "" \
     "$(grep '^ae_core_version=' "$_cb_meta/meta" | cut -d= -f2- || true)"
+# ...and the refresh VISITED EVERY SESSION on the way. The workspace render is a
+# fail-closed core call since A.2c, and a fail-closed shim EXITS rather than
+# returning — which `if fn; then` cannot catch. Before doctor_refresh_sessions ran
+# each session in a subshell, this very refresh died at the first session: the
+# later ones kept their stale pin and no verdict was printed for any of them. The
+# repair path has to outlive the fault it repairs, so the sibling sessions are the
+# assertion.
+assert_eq "core binding: a render refusal does not end the refresh at the first session" \
+    "$_cb_root/mute-core" \
+    "$(grep '^ae_core=' "$_cb_wt/meta" | cut -d= -f2- || true)"
+assert_contains "core binding: and every visited session still gets its own verdict" \
+    "refresh:test-core-wt" "$(cat "$_cb_root/refresh.log")"
 assert_eq "core binding: the helper refuses, naming the unbound core" "rc=2 token=0 msg=1 reason=1" \
     "$(_cb_refuse 'could not be bound')"
 assert_eq "core binding: and it refuses on every later call too" "rc=2 token=0 msg=1 reason=1" \
@@ -2226,12 +2238,12 @@ assert_eq "next: unknown flag exits non-zero" "1" \
 sleep 0.5
 
 # NOTE: the watchdog's quiet-state behaviour (done/waiting-user/blocked
-# suppression + the waiting-user/blocked pane-activity escape hatch) is covered
-# by unit tests of the extracted decision functions (_agent_quiet_reason,
-# _quiet_pane_decision) in tests/unit. A live-watchdog integration test is not
-# practical here: the watchdog runs in a tmux split-window pane that inherits
-# tmux's environment, so AE_WATCHDOG_* overrides set on the ae invocation do
-# not reach it, leaving no way to drive a fast, deterministic cycle.
+# suppression + the waiting-user/blocked pane-activity escape hatch) is the
+# core's daemon since A.3 and is covered by its own tests. A live-watchdog
+# integration test is still not practical here: the watchdog runs in a tmux
+# split-window pane that inherits tmux's environment, so AE_WATCHDOG_* overrides
+# set on the ae invocation do not reach it, leaving no way to drive a fast,
+# deterministic cycle.
 fi
 
 # ── Test 4: Spawn persistence ────────────────────────────────────────
@@ -3181,8 +3193,8 @@ assert_eq "roster: no alias prefix leaks into the bar" "1" \
 # A declared 'done' must surface as ✔ — proves the roster reads the SAME verdicts the
 # cycle already reaches, rather than re-deriving state of its own.
 # The declaration must come FROM the agent's pane: `state` resolves its actor via
-# ae_current_agent_ref -> #{@ae_agent} of TMUX_PANE, and _agent_quiet_reason only honours
-# an agent's OWN declaration. Run from this test shell it would log actor=human and be
+# ae_current_agent_ref -> #{@ae_agent} of TMUX_PANE, and the daemon's quiet-state
+# read only honours an agent's OWN declaration. Run from this test shell it would log actor=human and be
 # correctly ignored — so set TMUX_PANE to the agent's pane and drive the real helper
 # (no forged event: this is the same code path the agent itself runs).
 ROST_PANE="$(tmux list-panes -s -t test-roster -F '#{pane_id} #{@ae_agent}' 2>/dev/null \
@@ -3685,12 +3697,11 @@ fi
 
 # ── ae list robustness: a per-session helper returning non-zero must NOT abort
 if _itest_section 'ae list robustness: a per-session helper returning non-zero must NOT abort'; then
-#    the listing. Regression: cmd_list ran under `set -e`, so when
-#    `_agent_alert_reason` returned non-zero (a scanned event targets an agent
+#    the listing. Regression: cmd_list ran under `set -e`, so when the bash
+#    alert-reason helper returned non-zero (a scanned event targets an agent
 #    whose actor is someone else — e.g. an inbound send/nudge), the assignment
-#    `r="$(_agent_alert_reason …)"` killed the whole command mid-output —
-#    truncating `--json` to INVALID (no closing `]}`, exit 1) and dropping rows
-#    from the human table.
+#    that captured it killed the whole command mid-output — truncating `--json`
+#    to INVALID (no closing `]}`, exit 1) and dropping rows from the human table.
 #    A.2a: the bash emitter that had the bug is gone and `list` is the core's,
 #    so this section now pins the END-TO-END contract it always described — one
 #    unreadable session degrades (the core marks it `"degraded":true`) and the
@@ -3700,8 +3711,8 @@ REPO_JR="$(setup_repo)"
 wait_for_session "jsonrobust"
 sleep 1
 jr_agent="$(sed -n 's/^seat.main=//p' "$HOME/.ae/sessions/jsonrobust/meta" || true)"
-# A lone target-only event (actor != agent) drives _agent_alert_reason to a
-# non-zero return for this session's live agent.
+# A lone target-only event (actor != agent) is the shape that drove the retired
+# bash helper to a non-zero return for this session's live agent.
 printf '{"actor":"other:sender","target":"%s","action":"send","summary":"hi"}\n' \
     "$jr_agent" >"$HOME/.ae/sessions/jsonrobust/events.jsonl"
 json_rc="$("$AE" list --json >/dev/null 2>&1; echo $?)"
