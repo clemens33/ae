@@ -755,26 +755,36 @@ assert_contains "lifecycle: list shows running status" "running" "$list_output"
 # Meta should exist
 assert_eq "lifecycle: meta exists" "1" "$([[ -f "$HOME/.ae/sessions/test-life/meta" ]] && echo 1 || echo 0)"
 
-# Every generated helper must be RUNNABLE by its own shebang. `#!/usr/bin/env bash`
-# picks /bin/bash 3.2 under a macOS login shell, and 3.2 cannot parse the bash-4
-# bodies declare -f emits — the helper then dies with a bare "syntax error near
-# unexpected token `;;'". Assert the interpreter exists, is bash >= 4, and that
-# each helper actually parses under it.
+# Every generated artifact must be RUNNABLE by its own shebang. The old rule was
+# "a bash >= 4", because the `declare -f` bodies a helper carried could not be
+# PARSED by the 3.2 a macOS login shell hands `env`. Since B glue cut 2 nothing
+# generated carries a bash-4 body: a helper is a five-line shim and a launch
+# script is two `exec`s, and both name an interpreter deliberately —
+# `#!/usr/bin/env bash` for the shims, `#!/bin/bash` for the launch scripts. So
+# the invariant is now the one that still bites: the interpreter must exist, and
+# the artifact must parse under it AND under the oldest bash on this machine,
+# which is exactly what `env` resolves to under a login shell.
 _sb_bad=""
 for _sb in "$HOME/.ae/sessions/test-life"/*; do
     [[ -f "$_sb" && -x "$_sb" ]] || continue
     IFS= read -r _sb_line <"$_sb" || continue
     [[ "$_sb_line" == '#!'* ]] || continue
     _sb_interp="${_sb_line#\#!}"
-    _sb_interp="${_sb_interp%% *}"
-    [[ -x "$_sb_interp" ]] || { _sb_bad+="$(basename "$_sb"):no-interp "; continue; }
-    # shellcheck disable=SC2016 # single quotes are the point: the expression is
-    # evaluated by the HELPER'S interpreter, not by this shell.
-    "$_sb_interp" -c 'exit $((BASH_VERSINFO[0] < 4))' 2>/dev/null ||
-        { _sb_bad+="$(basename "$_sb"):bash<4 "; continue; }
-    "$_sb_interp" -n "$_sb" 2>/dev/null || _sb_bad+="$(basename "$_sb"):parse "
+    if [[ "$_sb_interp" == */env\ * ]]; then
+        # `#!/usr/bin/env bash` names env; the INTERPRETER is what env resolves.
+        _sb_interp="$(command -v "${_sb_interp##* }" 2>/dev/null || true)"
+    else
+        _sb_interp="${_sb_interp%% *}"
+    fi
+    [[ -n "$_sb_interp" && -x "$_sb_interp" ]] || { _sb_bad+="$(basename "$_sb"):no-interp "; continue; }
+    "$_sb_interp" -n "$_sb" 2>/dev/null || { _sb_bad+="$(basename "$_sb"):parse "; continue; }
+    # The 3.2 case, explicitly: it is the interpreter a macOS login shell
+    # actually supplies, and the whole reason the old rule existed.
+    if [[ -x /bin/bash ]]; then
+        /bin/bash -n "$_sb" 2>/dev/null || _sb_bad+="$(basename "$_sb"):parse-oldbash "
+    fi
 done
-assert_eq "helpers: every shebang names a bash >= 4 that can parse the helper" "" "$_sb_bad"
+assert_eq "helpers: every shebang resolves, and the artifact parses under it and under /bin/bash" "" "$_sb_bad"
 fi
 
 # ── P2.1: the Rust core binding for generated helpers ────────────────────────
@@ -819,7 +829,7 @@ case "\$1" in
     # Delegate exactly those three to the real core and keep the token arms —
     # the opposed control above is untouched, and '*) exit 64' still catches
     # every subcommand the shim is actually being tested on.
-    _launch-plan|_meta-init|_roster) exec "$_ITEST_CORE_BIN" "\$@" ;;
+    _launch-plan|_meta-init|_roster|_manifest-render) exec "$_ITEST_CORE_BIN" "\$@" ;;
     *) exit 64 ;;
 esac
 EOF
@@ -827,13 +837,23 @@ EOF
 }
 _cb_write_core "9.9.9"
 
+# THE LAUNCH IS THE REAL CORE'S, and it has to be. Since B glue cut 2 the whole
+# launch is one core call, and the core writes its OWN path (current_exe) into
+# meta and into every helper shim — so a stub that cannot start a session cannot
+# be the thing that launches one, and a stub that delegated the launch would hand
+# the session the REAL core's path and make every token assertion below vacuous.
+# The stub binding is therefore established the way an operator repairs a broken
+# one: launch, then re-pin with `doctor --refresh`, which runs the SAME rule set
+# (`_ae_core_bind`) on the same operator input. What is under test here is the
+# generated shims, and those are what the refresh rewrites.
 REPO="$(setup_repo)"
-(cd "$REPO" && AE_CORE_BIN="$_cb_core" "$AE" --local test-core &) 2>/dev/null
+(cd "$REPO" && "$AE" --local test-core &) 2>/dev/null
 wait_for_session "test-core"
 sleep 1
 _cb_meta="$HOME/.ae/sessions/test-core"
+(cd "$REPO" && AE_CORE_BIN="$_cb_core" "$AE" doctor --refresh test-core >/dev/null 2>&1 || true)
 
-# The binding is PINNED AS A PAIR at creation, from the operator's input only.
+# The binding is PINNED AS A PAIR, from the operator's input only.
 assert_eq "core binding: meta pins the absolute core path" "$_cb_core" \
     "$(grep '^ae_core=' "$_cb_meta/meta" | cut -d= -f2- || true)"
 assert_eq "core binding: meta pins the version the binary reported" "9.9.9" \
@@ -998,15 +1018,33 @@ unset _cb_rc
 # for 1 would not notice the change any other way.
 
 # EVERY UNUSABLE SHAPE IS A REFUSAL (A.1). There is no bash body behind any of
-# these helpers, so an unusable core cannot silently do a second thing: it exits 2,
-# names the subcommand, and says which fact was wrong. `requests` is the probe.
+# these entry points, so an unusable core cannot silently do a second thing: it
+# exits 2, names the subcommand, and says which fact was wrong.
+#
+# THE PROBE IS `archive preview`, NOT A HELPER SHIM, and the difference is the
+# subject of this whole block since B glue cut 2. The per-call gate lives in
+# `_ae_core_try` (ae): it re-reads ae_core/ae_core_version out of the session's
+# meta on EVERY call, runs --version, and refuses on any disagreement. That
+# function still serves `ae archive preview`, `_spawn` and `_retire`.
+#
+# The generated helper shims no longer reach it. The core writes them itself now
+# (src/session_launch/assets.rs) and their whole body is
+# `exec '<absolute core path>' <entry> "$META_DIR" "$@"` — the binding is BAKED,
+# not re-resolved, so there is no read to gate. That is sound where it lands: a
+# published version directory is immutable, so the baked path cannot become a
+# different binary under a live session, and the version row it would have been
+# compared against can no longer disagree with the file the shim runs. The
+# fixture below is the case that immutability rules out — the same path rewritten
+# with a different version — so pointing it at a shim would assert an invariant
+# the shim deliberately no longer carries. It is pointed at the surviving carrier
+# instead, and the positive shim assertions above are untouched.
 _cb_refuse() { # <expected-reason-fragment> [env...]
     local frag="$1" rc=0
     shift
-    env "$@" "$_cb_meta/requests" all >"$_cb_root/out" 2>"$_cb_root/err" || rc=$?
+    env "$@" "$AE" archive preview test-core >"$_cb_root/out" 2>"$_cb_root/err" || rc=$?
     printf 'rc=%s token=%s msg=%s reason=%s' "$rc" \
         "$(grep -c 'CORE_TOKEN_9f3a' "$_cb_root/out" | tr -d '[:space:]')" \
-        "$(grep -c "the ae core is required for '_requests'" "$_cb_root/err" | tr -d '[:space:]')" \
+        "$(grep -c "the ae core is required for '_archive-preview'" "$_cb_root/err" | tr -d '[:space:]')" \
         "$(grep -c -- "$frag" "$_cb_root/err" | tr -d '[:space:]')"
 }
 
@@ -1097,7 +1135,7 @@ assert_eq "core binding: a render refusal does not end the refresh at the first 
     "$(grep '^ae_core=' "$_cb_wt/meta" | cut -d= -f2- || true)"
 assert_contains "core binding: and every visited session still gets its own verdict" \
     "refresh:test-core-wt" "$(cat "$_cb_root/refresh.log")"
-assert_eq "core binding: the helper refuses, naming the unbound core" "rc=2 token=0 msg=1 reason=1" \
+assert_eq "core binding: the gated entry refuses, naming the unbound core" "rc=2 token=0 msg=1 reason=1" \
     "$(_cb_refuse 'could not be bound')"
 assert_eq "core binding: and it refuses on every later call too" "rc=2 token=0 msg=1 reason=1" \
     "$(_cb_refuse 'could not be bound')"
@@ -1144,7 +1182,7 @@ _cb_bad_rc=0
 assert_eq "core binding: a launch whose core input cannot be bound REFUSES" "1" \
     "$([[ $_cb_bad_rc -ne 0 ]] && echo 1 || echo 0)"
 assert_contains "core binding: ...and names the core it needed, and why it could not use it" \
-    "the ae core is required for '_launch-plan'" "$(cat "$_cb_root/launch-bad.log")"
+    "the ae core is required for '_launch'" "$(cat "$_cb_root/launch-bad.log")"
 assert_eq "core binding: ...and no session was created" "0" \
     "$(tmux has-session -t test-core-bad 2>/dev/null && echo 1 || echo 0)"
 assert_not_exists "core binding: ...and no session state was left behind" \
@@ -1641,22 +1679,20 @@ assert_eq "end default-mock: session live on the mock-default with EMPTY meta se
     "$([[ "$(sed -n 's/^tmux_server=//p' "$HOME/.ae/sessions/dsrv/meta")" == "" ]] \
         && command tmux -L "$DEFMOCK" has-session -t "=dsrv" 2>/dev/null && echo 1 || echo 0)"
 # Option-B invariant: a BLANK record never queries any server — not even the pinned
-# default. Plain end fails closed; the explicit AE_END_SERVER override (typed by shape,
-# a name here) is the resolution, and it must ignore ambient + inherited $TMUX.
+# default. The end fails closed, and the session it could not address is left running.
 if TMUX="$TMUX_SOCK_DIR/ae-elsewhere-$$,999,0" AE_TMUX_SERVER="ae-mirror-$$" \
     AE_TMUX_DEFAULT_SOCKET="$DEFMOCK" "$AE" end -f dsrv >/dev/null 2>&1; then dm_rc=0; else dm_rc=$?; fi
 assert_eq "end default-mock (invariant): blank record fails closed — default is NOT queried" "1" \
     "$([[ $dm_rc -ne 0 ]] && command tmux -L "$DEFMOCK" has-session -t "=dsrv" 2>/dev/null && echo 1 || echo 0)"
-for _i in $(seq 1 20); do
-    command tmux -L "$DEFMOCK" has-session -t "=dsrv" 2>/dev/null || break
-    TMUX="$TMUX_SOCK_DIR/ae-elsewhere-$$,999,0" AE_TMUX_SERVER="ae-mirror-$$" \
-        AE_END_SERVER="$DEFMOCK" "$AE" end -f dsrv 2>/dev/null || true
-    sleep 0.4
-done
-assert_eq "end default-mock (invariant): AE_END_SERVER override ends it on the RIGHT server" "1" \
-    "$(command tmux -L "$DEFMOCK" has-session -t "=dsrv" 2>/dev/null && echo 0 || echo 1)"
-assert_not_exists "end default-mock (invariant): state removed" "$HOME/.ae/sessions/dsrv"
+assert_eq "end default-mock (invariant): ...and it kept the state it could not address" "1" \
+    "$([[ -f "$HOME/.ae/sessions/dsrv/meta" ]] && echo 1 || echo 0)"
+# The AE_END_SERVER escape hatch that used to resolve this arm was BASH's, read by the
+# frozen end path; `_end` (src/lifecycle/end.rs) resolves the recorded server and does
+# not read it, so there is no override arm left to drive. The blank-meta operator's
+# route is `--assume-stopped`, which is pinned in the #34 sections.
 command tmux -L "$DEFMOCK" kill-server 2>/dev/null || true
+"$AE" end -f --assume-stopped dsrv >/dev/null 2>&1 || rm -rf "$HOME/.ae/sessions/dsrv"
+assert_not_exists "end default-mock (invariant): state removed once it is addressable" "$HOME/.ae/sessions/dsrv"
 fi
 
 # ── 4th review B1: launch INSIDE a foreign tmux pane records the REAL server ──
@@ -1732,99 +1768,11 @@ command tmux -S "$SC_PATH" kill-server 2>/dev/null || true
 command tmux -L "$SC_NAME" kill-server 2>/dev/null || true
 fi
 
-# ── issue #4 BLOCKER: prompt-delivery children must not inherit fd 8 ──
-if _itest_section 'issue #4 BLOCKER: prompt-delivery children must not inherit fd 8'; then
-# send_agent_cmd's codex-resume branch spawns a subshell with `&` (the opencode branch
-# did too until #53 moved its context to OPENCODE_CONFIG and deleted the paste)
-# that sleeps 3s before pasting. A child INHERITS open descriptors, so while the
-# lifecycle lock is held across agent launch those children kept it alive: the
-# parent's `exec 8>&-` closes only its own copy, and a competing `ae end` blocked
-# on a launch that had already finished.
-#
-# This is an EXECUTION probe, deliberately. The ordering assertions in
-# tests/unit pin WHERE the release sits among the top-level call sites, and they
-# pass the violating shape without complaint — position cannot see descriptor
-# inheritance. Measured before the fix: competitor waited 3016ms (codex) and
-# 3006ms (opencode, since retired); after: 4ms both.
-if command -v flock >/dev/null 2>&1; then
-    # codex only since #53: opencode's context rides OPENCODE_CONFIG as system-level
-    # instructions, so it has no launch-time paste and therefore no backgrounded
-    # delivery child to inherit fd 8. The loop is gone with it — one tool needs no
-    # iteration, and a single-item loop is a lie about what varies. (Removing opencode
-    # did not weaken this probe quietly: its extractor returned an EMPTY fragment and
-    # took the whole suite down, which is the extractor working as designed.)
-    _fdb=codex
-    _FD_ROOT="$(mktemp -d "$TMPDIR/aefd.XXXXXX")"
-    _FD_LOCK="$_FD_ROOT/lock"
-    : >"$_FD_LOCK"
-    # Scope to send_agent_cmd FIRST: ae mentions codex resume in more than one
-    # place and the others have no subshell at all. Extracting one of those made an
-    # earlier version of this probe pass against unfixed ae.
-    #
-    # ANCHORED ON THE DELIVERY CALL, not on a `case` label. The first version
-    # matched the arm `        codex*resume*)`; when that classification moved into
-    # an `if` — the built command can no longer be trusted to classify itself — the
-    # extractor silently produced an EMPTY fragment, so the probe stopped testing
-    # anything and took the suite down with it. What this probe is about is the
-    # backgrounded subshell around _deliver_launch_prompt, so that is what it finds:
-    # the enclosing `if [[ -n "$prompt" ]]` block, whatever encloses THAT.
-    awk -v b="$_fdb" '
-        /^send_agent_cmd\(\) \{/ { infn = 1 }
-        infn && /if \[\[ -n "\$prompt" \]\]; then/ { buf = $0 "\n"; cap = 1; want = 0; next }
-        infn && cap { buf = buf $0 "\n" }
-        infn && cap && $0 ~ ("_deliver_launch_prompt \"\\$pane\" " b) { want = 1 }
-        infn && cap && /^ *fi$/ { if (want) { printf "%s", buf; exit } cap = 0 }
-    ' "$AE" >"$_FD_ROOT/branch.sh"
-    assert_eq "fd8 probe ($_fdb): extracted a backgrounded subshell to test" "1" \
-        "$(command grep -qF ') &' "$_FD_ROOT/branch.sh" && echo 1 || echo 0)"
-    # The fragment is already a complete `if … fi`, so it runs as extracted.
-    command cp "$_FD_ROOT/branch.sh" "$_FD_ROOT/body.sh"
-    # Quoted heredoc: the branch body must NOT be expanded while writing this.
-    #
-    # THE CHILD MUST STAY ALIVE while containment is measured. Delivery is what
-    # keeps it alive in production (a bounded readiness wait, then a paste); here it
-    # blocks. Without meta_dir/slot defined and _deliver_launch_prompt stubbed, the
-    # fragment aborted on the first unbound expansion under `set -u` — so the lock
-    # came free because the child DIED, not because it closed fd 8, and this leg was
-    # green against a product with `exec 8>&-` deleted. The control below is the
-    # only reason we know it is not green like that again.
-    cat >"$_FD_ROOT/run.sh" <<'FDSTUB'
-set -uo pipefail
-pane_current_command() { printf '%s' "$BRANCHNAME"; }
-tmux() { :; }
-tmux_paste_submit() { :; }
-_deliver_launch_prompt() { sleep 3; }
-pane="p"; prompt="x"; meta_dir="$FD_META"; slot="probe"
-exec 8>"$LOCKPATH"
-flock -n 8 || exit 2
-source "$BODYFILE"
-exec 8>&-
-FDSTUB
-    # The FACT is blocked-vs-immediate; the millisecond count was
-    # ornamentation. EPOCHREALTIME is Bash 5 only and ae's floor is 4.0,
-    # where under set -u reading it aborts unbound — so a short flock
-    # timeout carries the whole assertion. The child sleeps 3s, so a
-    # half-second budget cleanly separates "already free" from "still held".
-    _fd_free() { # <body-file> <lock-file> -> 1 = free within the budget
-        : >"$2"
-        BRANCHNAME="$_fdb" LOCKPATH="$2" BODYFILE="$1" FD_META="$_FD_ROOT" \
-            "${BASH:-bash}" "$_FD_ROOT/run.sh" >/dev/null 2>&1
-        if flock -w 0.5 "$2" true 2>/dev/null; then echo 1; else echo 0; fi
-    }
-    assert_eq "fd8 ($_fdb): lock is free once send_agent_cmd returns (child closed fd 8)" "1" \
-        "$(_fd_free "$_FD_ROOT/body.sh" "$_FD_ROOT/lock.real")"
-    # MUTATION CONTROL, in the suite rather than in someone's head: strip the close
-    # and the same probe must go RED. A guard never observed to fail is not a guard.
-    command grep -v '^ *exec 8>&-$' "$_FD_ROOT/body.sh" >"$_FD_ROOT/body.mutant.sh"
-    assert_eq "fd8 ($_fdb): the control fragment really lost its close" "1" \
-        "$(command cmp -s "$_FD_ROOT/body.sh" "$_FD_ROOT/body.mutant.sh" && echo 0 || echo 1)"
-    assert_eq "fd8 ($_fdb) CONTROL: without exec 8>&- the child holds the lock" "0" \
-        "$(_fd_free "$_FD_ROOT/body.mutant.sh" "$_FD_ROOT/lock.mutant")"
-    rm -rf "$_FD_ROOT"
-else
-    printf 'NOTE: fd8 inheritance probe SKIPPED — flock not available.\n' >&2
-fi
-fi
+# ── issue #4 BLOCKER: prompt-delivery children must not inherit fd 8 — RETIRED (B glue cut 2) ──────
+# 4 assertion(s) went with their subject: the whole launch and resume is ONE core operation now (`_launch`,
+# src/session_launch.rs): the argv grammar, the resume decision, the command
+# build, the context injection, the launch script and its paste all moved with
+# it, and the bash bodies these assertions called are gone.
 
 # ── issue #4: `ae end` racing a launch must not leave a recreated session ──
 # shellcheck disable=SC2016 # the backticks are LITERAL text in a label, not
@@ -2830,6 +2778,59 @@ rm -rf "$HOME/.ae/sessions/onother"
 sleep 0.3
 fi
 
+# ── refresh reproduces the CORE's helper set, byte for byte ──────────
+# shellcheck disable=SC1003 # the backslash escapes the apostrophe INSIDE the
+# single-quoted name; _itest_names unescapes it the same way.
+if _itest_section 'refresh reproduces the CORE'\''s helper set, byte for byte'; then
+# Since B glue cut 2 a session's helper shims have TWO writers: the core at
+# launch (src/session_launch/assets.rs) and `ae doctor --refresh`, which is the
+# one artifact bash still emits. Two writers of one file is a divergence waiting
+# to happen, and the unit suite can only hold the bash side against a string it
+# also owns. This holds the two against EACH OTHER: launch with the core, take
+# the set + its bytes + its modes, refresh, take them again.
+REPO_BP="$(setup_repo)"
+(cd "$REPO_BP" && "$AE" --local test-shimparity &) 2>/dev/null
+wait_for_session "test-shimparity"
+sleep 1
+BP_DIR="$HOME/.ae/sessions/test-shimparity"
+# The HELPER set: every executable regular file the session owns except the
+# per-slot launch scripts, which are the core's alone and are not refreshed.
+bp_snapshot() { # -> "<name> <mode> <fingerprint>" per helper, sorted by name
+    local f n
+    for f in "$BP_DIR"/*; do
+        n="${f##*/}"
+        case "$n" in launch.*) continue ;; esac
+        if [[ -f "$f" && -x "$f" ]]; then
+            printf '%s %s %s\n' "$n" \
+                "$(stat -f '%Lp' "$f" 2>/dev/null || stat -c '%a' "$f" 2>/dev/null || echo '?')" \
+                "$(_fpr <"$f")"
+        fi
+    done | sort
+    return 0
+}
+bp_before="$(bp_snapshot)"
+assert_eq "shim parity: (setup) the core wrote the full helper set at launch" \
+    "agents ask events-tail focus goal interrupt loop mark-done memo peak peek reply requests retire review say send spawn state watchdog" \
+    "$(printf '%s\n' "$bp_before" | awk '{print $1}' | paste -sd' ' -)"
+(cd "$REPO_BP" && "$AE" doctor --refresh test-shimparity >/dev/null 2>&1)
+bp_after="$(bp_snapshot)"
+assert_eq "shim parity: refresh reproduced every helper byte for byte, mode included" \
+    "$bp_before" "$bp_after"
+# THE CONTROL. A pin that compares two snapshots passes trivially if refresh
+# writes nothing at all, so make one helper WRONG and prove refresh restores it.
+printf '#!/usr/bin/env bash\necho stale\n' >"$BP_DIR/send"
+chmod 0700 "$BP_DIR/send"
+assert_eq "shim parity CONTROL: the tampered helper really differs first" "1" \
+    "$([[ "$(bp_snapshot)" != "$bp_before" ]] && echo 1 || echo 0)"
+(cd "$REPO_BP" && "$AE" doctor --refresh test-shimparity >/dev/null 2>&1)
+assert_eq "shim parity CONTROL: ...and refresh puts the core's bytes back" \
+    "$bp_before" "$(bp_snapshot)"
+"$AE" end -f test-shimparity >/dev/null 2>&1 || true
+unset REPO_BP BP_DIR bp_before bp_after
+unset -f bp_snapshot
+fi
+
+
 # ── Test 11: ae doctor --refresh ─────────────────────────────────────
 if _itest_section 'Test 11: ae doctor --refresh'; then
 
@@ -2840,28 +2841,30 @@ sleep 1
 
 # Watchdog probe helpers (used both before and after refresh). Bounded polling,
 # not fixed sleeps — the launch autostarts the watchdog in the background.
-wd_poll() { # wd_poll <helper> <needle> [tries] — bounded status poll
-    local h="$1" needle="$2" tries="${3:-20}" i=0
+# The SESSION's `watchdog` helper is a thin shim onto the core's daemon entry
+# and takes no start/stop/status verb since B glue cut 2; the management verbs
+# are `ae watchdog <verb> [session]`, which is what the product itself calls.
+wd_poll() { # wd_poll <session> <needle> [tries] — bounded status poll
+    local s="$1" needle="$2" tries="${3:-20}" i=0
     while ((i < tries)); do
-        [[ "$("$h" status 2>&1 || true)" == *"$needle"* ]] && return 0
+        [[ "$("$AE" watchdog status "$s" 2>&1 || true)" == *"$needle"* ]] && return 0
         sleep 0.5
         i=$((i + 1))
     done
     return 1
 }
-wd_pid() { "$1" status 2>&1 | sed -n 's/.*pid \([0-9]*\).*/\1/p'; }
-WD_HELPER="$HOME/.ae/sessions/test-sync/watchdog"
+wd_status() { "$AE" watchdog status "$1" 2>&1 || true; }
+wd_pid() { wd_status "$1" | sed -n 's/.*pid \([0-9]*\).*/\1/p'; }
 
 # Settle the launch autostart so the watchdog is genuinely running before refresh,
 # then snapshot its pid — refresh must restart it (new pid), not merely leave it.
-wd_poll "$WD_HELPER" "is running" 20 || true
-wd_pid_before="$(wd_pid "$WD_HELPER")"
+wd_poll test-sync "is running" 20 || true
+wd_pid_before="$(wd_pid test-sync)"
 
 printf '#!/usr/bin/env bash\necho stale-helper\n' > "$HOME/.ae/sessions/test-sync/reply"
 chmod 0700 "$HOME/.ae/sessions/test-sync/reply"
 printf '#!/usr/bin/env bash\necho stale-helper\n' > "$HOME/.ae/sessions/test-sync/state"
 chmod 0700 "$HOME/.ae/sessions/test-sync/state"
-printf '# stale lib\n' > "$HOME/.ae/sessions/test-sync/_lib"
 printf 'stale manifest\n' > "$HOME/.ae/sessions/test-sync/workspace.md"
 
 (cd "$REPO11" && "$AE" doctor --refresh test-sync > "$TMPDIR/doctor-sync.out" 2>/dev/null)
@@ -2877,10 +2880,10 @@ assert_contains "doctor-refresh: summary still succeeds" "Summary: 0 failure(s)"
 # body goes live: it announces the restart and comes back up under a NEW pid.
 assert_contains "doctor-refresh: announces the watchdog restart" \
     "restarted watchdog for test-sync" "$doctor_sync_output"
-wd_poll "$WD_HELPER" "is running" 20 || true
+wd_poll test-sync "is running" 20 || true
 assert_contains "doctor-refresh: watchdog running again after refresh" \
-    "is running" "$("$WD_HELPER" status 2>&1 || true)"
-wd_pid_after="$(wd_pid "$WD_HELPER")"
+    "is running" "$(wd_status test-sync)"
+wd_pid_after="$(wd_pid test-sync)"
 assert_eq "doctor-refresh: watchdog restarted (before pid captured)" \
     "1" "$([[ -n "$wd_pid_before" ]] && echo 1 || echo 0)"
 assert_eq "doctor-refresh: watchdog restarted (after pid captured)" \
@@ -2889,45 +2892,36 @@ assert_eq "doctor-refresh: watchdog pid changed across refresh" \
     "1" "$([[ -n "$wd_pid_before" && -n "$wd_pid_after" && "$wd_pid_before" != "$wd_pid_after" ]] && echo 1 || echo 0)"
 assert_contains "doctor-refresh: reply helper regenerated" "Usage: reply [--as <agent>] <request-id> <message>" "$reply_output"
 assert_contains "doctor-refresh: workspace regenerated" "memo add" "$workspace_output"
+# ae_path names the GLUE, not the core: the watchdog re-execs it for
+# `telegram _supervise` and `_recover-pending`, both of which are bash arms.
 assert_eq "doctor-sync: meta ae_path refreshed" "$AE" "$meta_ae_path"
 
-# declare-f canary (#4B): the state helper is generated by emitting template
-# functions loaded from the awk-sourced marker region. If a template fn ever
-# moves outside SYNC_SESSION_ASSETS_BODY, this refresh path is exactly what
-# breaks — assert the regenerated artifact carries the function and runs
-# standalone end-to-end (real _lib, real events.jsonl).
+# THE SHIM CANARY (was the declare-f canary, #4B). Since B glue cut 2 the core
+# writes every session helper and bash only reproduces that same shim set on
+# refresh, so what the regenerated artifact must carry is the core call — the
+# byte-for-byte parity between the two writers is pinned in its own section
+# below. This one asserts the artifact then RUNS, end to end, against a real
+# _lib-free session, real panes and a real events.jsonl.
 STATE_HELPER="$HOME/.ae/sessions/test-sync/state"
-assert_contains "doctor-refresh: state helper carries emitted template fn" \
-    "helper_state_main" "$(cat "$STATE_HELPER")"
-# _lib is regenerated the same way: verbatim prologue + declare-f'd functions
-# (declare -f prints signatures as "name () ").
-LIB_FILE="$HOME/.ae/sessions/test-sync/_lib"
-assert_contains "doctor-refresh: _lib carries the verbatim prologue" \
-    '_AE_SESSIONS_DIR=' "$(cat "$LIB_FILE")"
-assert_contains "doctor-refresh: _lib carries declare-f emitted functions" \
-    'ae_resolve ()' "$(cat "$LIB_FILE")"
+assert_contains "doctor-refresh: state helper carries the core shim" \
+    '_state "$META_DIR" "$@"' "$(cat "$STATE_HELPER")"
 assert_contains "doctor-refresh: regenerated state runs standalone (no args)" \
     "state:" "$("$STATE_HELPER" 2>&1 || true)"
 # RUN IT FROM THE PANE IT IS FOR. The canary is "does the regenerated artifact work end
 # to end", and the place it is used is an agent's own pane — a declaration resolves its
 # actor from #{@ae_agent} of TMUX_PANE. Called from nowhere, the core-owned `_state`
-# refuses ("declare state from an ae pane") while the bash body falls back to the main
-# agent, so a paneless call was testing which of the two answered rather than whether the
-# helper works. (self is asserted as the ACTION, not the resolved ref, as before.)
+# refuses ("declare state from an ae pane"), so a paneless call proves nothing about
+# whether the helper works. (self is asserted as the ACTION, not the resolved ref.)
 STATE_PANE="$(tmux list-panes -s -t test-sync -F '#{pane_id} #{@ae_slot}' 2>/dev/null | awk '$2=="main"{print $1; exit}')"
 assert_eq "doctor-refresh: (setup) the session's main pane resolved for the smoke" "1" \
     "$([[ -n "$STATE_PANE" ]] && echo 1 || echo 0)"
-state_smoke_out="$(TMUX_PANE="$STATE_PANE" "$STATE_HELPER" working "declare-f smoke" 2>&1 || true)"
+state_smoke_out="$(TMUX_PANE="$STATE_PANE" "$STATE_HELPER" working "shim smoke" 2>&1 || true)"
 assert_contains "doctor-refresh: regenerated state declares state" \
-    "working: declare-f smoke" "$state_smoke_out"
+    "working: shim smoke" "$state_smoke_out"
 assert_contains "doctor-refresh: regenerated state emitted a real event" \
     '"action":"state"' "$(tail -1 "$HOME/.ae/sessions/test-sync/events.jsonl")"
 # THE OTHER SIDE OF THE SAME RULE. ae states what it knows and never invents a name, so a
 # declaration from a caller with NO pane has no actor and is refused — nothing is written.
-# This is the product's behaviour, and since A.1 it is the ONLY behaviour: the bash body
-# that fell back to the main agent is gone with every other no-core fallback, so the pin
-# is on the core and nothing else can answer. Without this arm the canary above passes
-# whichever of the two answers, which is how the disagreement stayed invisible.
 state_events_before="$(command grep -c '"action":"state"' "$HOME/.ae/sessions/test-sync/events.jsonl" | tr -d '[:space:]' || true)"
 state_nopane_rc=0
 state_nopane_out="$(env -u TMUX_PANE "$STATE_HELPER" working "no pane, no actor" 2>&1)" || state_nopane_rc=$?
@@ -2939,12 +2933,11 @@ assert_eq "doctor-refresh: ...and it wrote no event" "$state_events_before" \
 unset state_events_before state_nopane_rc state_nopane_out
 # A.1: `requests` carries no invariant of its own at all — it is a shim that EXECs the
 # pinned core, which owns the pending/replied rule. What the generated artifact must
-# still carry is the shim, and a missing name there is invisible to the unit suite
-# (which calls the function straight out of ae) and shows up only at runtime, so run
-# the regenerated artifact against real events.
+# still carry is the shim, and a missing name there is invisible to the unit suite,
+# so run the regenerated artifact against real events.
 REQ_HELPER="$HOME/.ae/sessions/test-sync/requests"
 assert_contains "doctor-refresh: requests helper carries the core shim" \
-    "_ae_core_try _requests" "$(cat "$REQ_HELPER")"
+    '_requests "$META_DIR" "$@"' "$(cat "$REQ_HELPER")"
 cat >>"$HOME/.ae/sessions/test-sync/events.jsonl" <<'REQEV'
 {"ts":"2026-08-01T00:00:00Z","actor":"a:one","action":"ask","ref":"canary-open","target":"b:two","summary":"still open"}
 {"ts":"2026-08-01T00:01:00Z","actor":"a:one","action":"ask","ref":"canary-done","target":"b:two","summary":"answered"}
@@ -2970,22 +2963,21 @@ assert_contains "doctor-refresh: the regenerated helper knows the cancelled stat
 assert_contains "doctor-refresh: and a cancel from anyone else leaves the request pending" \
     "pending  ask      canary-notyours" "$req_canary2"
 unset REQ_HELPER req_canary req_canary2
-# watchdog is declare-f generated too. A RUNNING watchdog keeps its loaded body
-# until restarted — so smoke the regenerated artifact through a full
-# stop → status → start → status cycle (real _lib, real panes). wd_poll/WD_HELPER
-# were defined above (before the refresh) so the pid-change assertions could use
-# them; the refresh already restarted it once, so it is running here.
-assert_contains "doctor-refresh: watchdog carries emitted main fn" \
-    "helper_watchdog_main" "$(cat "$WD_HELPER")"
-wd_poll "$WD_HELPER" "is running" 20 || true # settle the launch autostart
-"$WD_HELPER" stop >/dev/null 2>&1 || true
-wd_poll "$WD_HELPER" "not running" 20 || true
-assert_contains "doctor-refresh: regenerated watchdog status reports stopped" \
-    "not running" "$("$WD_HELPER" status 2>&1 || true)"
-"$WD_HELPER" start >/dev/null 2>&1 &
-wd_poll "$WD_HELPER" "is running" 20 || true
-assert_contains "doctor-refresh: regenerated watchdog starts and reports running" \
-    "is running" "$("$WD_HELPER" status 2>&1 || true)"
+# The watchdog artifact is a shim too, onto the core's DAEMON entry. Its
+# management verbs never reach it — `ae watchdog` owns those — so the cycle is
+# smoked where it actually lives: stop → status → start → status, real panes.
+WD_HELPER="$HOME/.ae/sessions/test-sync/watchdog"
+assert_contains "doctor-refresh: watchdog helper carries the core daemon shim" \
+    '_watchdog-run "$META_DIR" "$@"' "$(cat "$WD_HELPER")"
+wd_poll test-sync "is running" 20 || true # settle the refresh restart
+"$AE" watchdog stop test-sync >/dev/null 2>&1 || true
+wd_poll test-sync "not running" 20 || true
+assert_contains "doctor-refresh: the refreshed session's watchdog reports stopped" \
+    "not running" "$(wd_status test-sync)"
+"$AE" watchdog start test-sync >/dev/null 2>&1 &
+wd_poll test-sync "is running" 20 || true
+assert_contains "doctor-refresh: ...and starts again, reporting running" \
+    "is running" "$(wd_status test-sync)"
 
 # Clean up
 "$AE" end -f test-sync 2>/dev/null || true
@@ -3001,9 +2993,8 @@ if _itest_section 'Test 11b: refresh must NOT stop a STOPPED session'\''s stale-
 REPO_STALE="$(setup_repo)"
 (cd "$REPO_STALE" && "$AE" --local test-stale-wd &) 2>/dev/null
 wait_for_session "test-stale-wd"
-STALE_WD="$HOME/.ae/sessions/test-stale-wd/watchdog"
 STALE_PIDFILE="$HOME/.ae/sessions/test-stale-wd/.watchdog.pid"
-wd_poll "$STALE_WD" "is running" 20 || true # settle autostart before we kill it
+wd_poll test-stale-wd "is running" 20 || true # settle autostart before we kill it
 
 # Stop the session at the tmux layer only — leave ~/.ae/sessions/test-stale-wd/
 # (meta + generated helpers) on disk so doctor --refresh has something to refresh.
@@ -3087,12 +3078,11 @@ if _itest_section 'Test 11d: watchdog status/start/stop reject a stale RECYCLED 
 REPO_WDR="$(setup_repo)"
 (cd "$REPO_WDR" && "$AE" --local test-wd-root &) 2>/dev/null
 wait_for_session "test-wd-root"
-WDR="$HOME/.ae/sessions/test-wd-root/watchdog"
 WDR_PID="$HOME/.ae/sessions/test-wd-root/.watchdog.pid"
-wd_poll "$WDR" "is running" 20 || true            # settle the launch autostart
+wd_poll test-wd-root "is running" 20 || true            # settle the launch autostart
 # Stop the watchdog: kills the _watchdog pane + pidfile, but the SESSION stays up.
-"$WDR" stop >/dev/null 2>&1 || true
-wd_poll "$WDR" "not running" 20 || true
+"$AE" watchdog stop test-wd-root >/dev/null 2>&1 || true
+wd_poll test-wd-root "not running" 20 || true
 
 # Fabricate the stale-recycled-pid hazard: a genuinely live, unrelated process
 # whose pid we write into .watchdog.pid. There is NO _watchdog pane.
@@ -3102,7 +3092,7 @@ printf '%s\n' "$wdr_dummy" > "$WDR_PID"
 
 # (1) status must NOT lie: pid alive but no pane -> not running (+ cleans pidfile).
 assert_contains "wd-root: status reports not-running on a recycled pid" \
-    "not running" "$("$WDR" status 2>&1 || true)"
+    "not running" "$(wd_status test-wd-root)"
 assert_eq "wd-root: status did NOT kill the innocent recycled process" \
     "1" "$(kill -0 "$wdr_dummy" 2>/dev/null && echo 1 || echo 0)"
 assert_eq "wd-root: status cleaned the stale pidfile" \
@@ -3110,17 +3100,17 @@ assert_eq "wd-root: status cleaned the stale pidfile" \
 
 # (2) stop must NOT kill the recycled process (re-fabricate the stale pid).
 printf '%s\n' "$wdr_dummy" > "$WDR_PID"
-"$WDR" stop >/dev/null 2>&1 || true
+"$AE" watchdog stop test-wd-root >/dev/null 2>&1 || true
 assert_eq "wd-root: stop did NOT kill the innocent recycled process" \
     "1" "$(kill -0 "$wdr_dummy" 2>/dev/null && echo 1 || echo 0)"
 
 # (3) start must NOT wrongly defer on a stale pid — it launches a fresh watchdog.
 printf '%s\n' "$wdr_dummy" > "$WDR_PID"
-"$WDR" start >/dev/null 2>&1 &
-wd_poll "$WDR" "is running" 20 || true
+"$AE" watchdog start test-wd-root >/dev/null 2>&1 &
+wd_poll test-wd-root "is running" 20 || true
 assert_contains "wd-root: start launched a real watchdog (not deferred to stale pid)" \
-    "is running" "$("$WDR" status 2>&1 || true)"
-wdr_new="$(wd_pid "$WDR")"
+    "is running" "$(wd_status test-wd-root)"
+wdr_new="$(wd_pid test-wd-root)"
 assert_eq "wd-root: the running watchdog pid is NOT the recycled dummy" \
     "1" "$([[ -n "$wdr_new" && "$wdr_new" != "$wdr_dummy" ]] && echo 1 || echo 0)"
 
@@ -3138,8 +3128,7 @@ if _itest_section 'Test 11e: status bar is AE-OWNED — the watchdog never rewri
 REPO_WDD="$(setup_repo)"
 (cd "$REPO_WDD" && "$AE" --local test-wd-own &) 2>/dev/null
 wait_for_session "test-wd-own"
-WDD="$HOME/.ae/sessions/test-wd-own/watchdog"
-wd_poll "$WDD" "is running" 20 || true
+wd_poll test-wd-own "is running" 20 || true
 wdo_sr0="$(tmux show-options -v -t test-wd-own status-right 2>/dev/null || true)"
 assert_eq "status-bar: right is the ae-baked shape ([path…] + watch option at END)" \
     "1" "$([[ "$wdo_sr0" == "["*"] #{@ae_watchdog_status}" ]] && echo 1 || echo 0)"
@@ -3155,10 +3144,10 @@ assert_eq "status-bar: line 0 (standard bar) present at session scope" \
 wdo_line0="$(tmux display-message -p -t test-wd-own:0 '#{T:status-format[0]}' 2>/dev/null || true)"
 assert_eq "status-bar: line 0 RENDERS non-empty (bar visible, not a blank line)" \
     "1" "$([[ -n "$wdo_line0" && "$wdo_line0" == *"test-wd-own"* ]] && echo 1 || echo 0)"
-"$WDD" stop >/dev/null 2>&1 || true
-wd_poll "$WDD" "not running" 20 || true
-"$WDD" start >/dev/null 2>&1 &
-wd_poll "$WDD" "is running" 20 || true
+"$AE" watchdog stop test-wd-own >/dev/null 2>&1 || true
+wd_poll test-wd-own "not running" 20 || true
+"$AE" watchdog start test-wd-own >/dev/null 2>&1 &
+wd_poll test-wd-own "is running" 20 || true
 wdo_sr1="$(tmux show-options -v -t test-wd-own status-right 2>/dev/null || true)"
 assert_eq "status-bar: watchdog stop/start leaves status-right byte-identical" \
     "$wdo_sr0" "$wdo_sr1"
@@ -3174,8 +3163,7 @@ if _itest_section 'Test 11f: agent roster (@ae_agents_status) with a LIVE watchd
 REPO_ROST="$(setup_repo)"
 (cd "$REPO_ROST" && "$AE" --local test-roster &) 2>/dev/null
 wait_for_session "test-roster"
-ROSTD="$HOME/.ae/sessions/test-roster/watchdog"
-wd_poll "$ROSTD" "is running" 20 || true
+wd_poll test-roster "is running" 20 || true
 # Poll: the option appears once a cycle has judged the panes.
 rost=""
 for _i in $(seq 1 30); do
@@ -3206,11 +3194,11 @@ assert_eq "roster: resolved an agent pane to declare from" "1" \
 # Instead: stop, declare, restart. The verdict is derived from the EVENT LOG (durable),
 # not from in-memory state, so the restarted watchdog's FIRST cycle already sees the
 # declaration — same code path, seconds instead of a minute.
-"$ROSTD" stop >/dev/null 2>&1 || true
-wd_poll "$ROSTD" "not running" 20 || true
+"$AE" watchdog stop test-roster >/dev/null 2>&1 || true
+wd_poll test-roster "not running" 20 || true
 TMUX_PANE="$ROST_PANE" "$HOME/.ae/sessions/test-roster/state" "done" "roster integration probe" >/dev/null 2>&1 || true
-"$ROSTD" start >/dev/null 2>&1 &
-wd_poll "$ROSTD" "is running" 20 || true
+"$AE" watchdog start test-roster >/dev/null 2>&1 &
+wd_poll test-roster "is running" 20 || true
 rost_done=""
 for _i in $(seq 1 30); do
     rost_done="$(tmux show-options -v -t test-roster @ae_agents_status 2>/dev/null || true)"
@@ -3260,8 +3248,8 @@ ROST_WID99="$(tmux list-windows -t test-roster -F '#{window_index} #{window_id}'
 assert_eq "window: the ae-monitor window carries NO glyphs (non-agent panes contribute none)" "" \
     "$(tmux show-options -w -v -t "${ROST_WID99:-test-roster:99}" @ae_window_status 2>/dev/null || true)"
 # Stop clears it — session option AND every window option.
-"$ROSTD" stop >/dev/null 2>&1 || true
-wd_poll "$ROSTD" "not running" 20 || true
+"$AE" watchdog stop test-roster >/dev/null 2>&1 || true
+wd_poll test-roster "not running" 20 || true
 sleep 0.5
 assert_eq "roster: @ae_agents_status unset on watchdog stop (no frozen fleet)" "" \
     "$(tmux show-options -v -t test-roster @ae_agents_status 2>/dev/null || true)"
@@ -3271,102 +3259,16 @@ assert_eq "window: @ae_window_status unset on stop for EVERY window (no frozen g
 "$AE" end -f test-roster 2>/dev/null || true
 sleep 0.5
 fi
-# ── input-region: REAL capture+sensor seam against live tmux (colead BLOCKER 2) ──
-if _itest_section 'input-region: REAL capture+sensor seam against live tmux (colead BLOCKER 2)'; then
-# The unit fixtures stub _capture_input_region, so they cannot prove GEOMETRY — the
-# old source-text "geometry" assert was inert, and the old cy-8 look-back was an
-# invented bound. Here the sensor runs against a REAL pane whose live prompt sits
-# far ABOVE the cursor (a legal multiline input): with a fixed window the prompt is
-# missed -> no live prompt -> post-submit maps that to clear -> FALSE SUCCESS, the
-# silent loss this slice exists to kill. Capturing 0..cursor_y finds it.
-eval "$(awk '/^_capture_input_region\(\) \{/,/^\}$/' "$AE")"
-eval "$(awk '/^_sgr_parse\(\) \{/,/^\}$/' "$AE")"
-eval "$(awk '/^_input_region_prompt_seg\(\) \{/,/^\}$/' "$AE")"
-eval "$(awk '/^_input_region_is_border\(\) \{/,/^\}$/' "$AE")"
-eval "$(awk '/^_input_region_content_end\(\) \{/,/^\}$/' "$AE")"
-eval "$(awk '/^_input_region_occupied\(\) \{/,/^\}$/' "$AE")"
-# The payload is the pane's OWN process (not typed into a shell): a shell would echo
-# the command and redraw its prompt, polluting the region with an unstyled ornament.
-ir_script="$TMPDIR/ir-geom.sh"
-cat >"$ir_script" <<'IRSH'
-printf '\033[1m›\033[0m AE_DIAG staged multiline\n'
-for i in $(seq 1 12); do printf '  continuation row %s\n' "$i"; done
-printf '  [Pasted Content 1016 chars][Pasted Content 1014 chars]'
-sleep 300
-IRSH
-tmux kill-session -t ir-geom 2>/dev/null || true
-tmux new-session -d -s ir-geom -x 80 -y 24 "bash $ir_script"
-sleep 1
-ir_pane="$(tmux list-panes -t ir-geom -F '#{pane_id}' 2>/dev/null | head -1)"
-ir_cy="$(tmux display-message -p -t "$ir_pane" '#{cursor_y}' 2>/dev/null || echo 0)"
-ir_region="$(_capture_input_region "$ir_pane")"
-assert_eq "input-region: the live prompt really sits >8 rows above the cursor" "1" \
-    "$([[ "$ir_cy" -gt 8 ]] && echo 1 || echo 0)"
-assert_eq "input-region: real capture reaches that prompt (no invented look-back)" "1" \
-    "$([[ "$ir_region" == *'›'* ]] && echo 1 || echo 0)"
-ir_rc=0
-_input_region_occupied "$ir_pane" codex || ir_rc=$?
-assert_eq "input-region: real seam detects the staged multiline as OCCUPIED (not false-clear)" "0" "$ir_rc"
-tmux kill-session -t ir-geom 2>/dev/null || true
-rm -f "$ir_script"
-fi
 
-# ── input-region: CURSOR IS NOT THE REGION END (colead ROUND4 BLOCKER) ───────────
-if _itest_section 'input-region: CURSOR IS NOT THE REGION END (colead ROUND4 BLOCKER)'; then
-# cursor_y is the EDIT position, not the last row of the input. A multiline draft keeps
-# real unsent rows BELOW the cursor after cursor navigation (or a leading blank line);
-# bounding the capture at cursor_y dropped them, the sensor read IDLE, and the pre-paste
-# guard would CLOBBER the draft. Reproduced on real tmux by colead: prompt on row 0,
-# unsent continuation on row 1, cursor moved back to row 0 -> region held only the
-# ornament row -> rc=1 (IDLE). This is that seam, with colead's required shape: a BLANK
-# cursor row plus non-blank continuation below it.
-ir2_script="$TMPDIR/ir-cursor.sh"
-cat >"$ir2_script" <<'IRSH'
-printf '\033[1m›\033[0m \n'                       # live prompt row, input BLANK
-printf '  unsent continuation below cursor\n'     # real unsent input, BELOW the cursor
-printf '\n'
-printf '  gpt-5.6-sol xhigh \302\267 ~/projects/clemens33/ae\n'  # the codex footer (chrome)
-printf '\033[H'                                   # park the edit cursor back on row 0
-sleep 300
-IRSH
-tmux kill-session -t ir-cursor 2>/dev/null || true
-tmux new-session -d -s ir-cursor -x 80 -y 24 "bash $ir2_script"
-sleep 1
-ir2_pane="$(tmux list-panes -t ir-cursor -F '#{pane_id}' 2>/dev/null | head -1)"
-ir2_cy="$(tmux display-message -p -t "$ir2_pane" '#{cursor_y}' 2>/dev/null || echo 9)"
-ir2_region="$(_capture_input_region "$ir2_pane")"
-assert_eq "cursor-not-end: the cursor really sits ABOVE the unsent continuation" "1" \
-    "$([[ "$ir2_cy" -lt 1 ]] && echo 1 || echo 0)"
-assert_eq "cursor-not-end: region reaches rows BELOW the cursor (not -E cursor_y)" "1" \
-    "$([[ "$ir2_region" == *'unsent continuation below cursor'* ]] && echo 1 || echo 0)"
-ir2_rc=0
-_input_region_occupied "$ir2_pane" codex || ir2_rc=$?
-assert_eq "cursor-not-end: raw sensor reads OCCUPIED (draft below cursor is real input)" "0" "$ir2_rc"
-# and the consumer that MATTERS for this blocker: pre-paste must refuse to clobber it
-eval "$(awk '/^_paste_input_busy\(\) \{/,/^\}$/' "$AE")"
-ir2_busy=0
-_paste_input_busy "$ir2_pane" codex && ir2_busy=1
-assert_eq "cursor-not-end: pre-paste consumer reads UNSAFE (no clobber of the draft)" "1" "$ir2_busy"
-# The chrome bound must still hold on the same pane: the footer is NOT input content.
-# (If it were counted, an idle pane would read OCCUPIED forever = the ri-3 send outage.)
-tmux kill-session -t ir-cursor 2>/dev/null || true
-ir3_script="$TMPDIR/ir-idle.sh"
-cat >"$ir3_script" <<'IRSH'
-printf '\033[1m›\033[0m \033[2mExplain this codebase\033[0m\n'   # idle: dim placeholder
-printf '\n'
-printf '  gpt-5.6-sol xhigh \302\267 ~/projects/clemens33/ae\n'  # footer chrome below
-sleep 300
-IRSH
-tmux kill-session -t ir-idle 2>/dev/null || true
-tmux new-session -d -s ir-idle -x 80 -y 24 "bash $ir3_script"
-sleep 1
-ir3_pane="$(tmux list-panes -t ir-idle -F '#{pane_id}' 2>/dev/null | head -1)"
-ir3_rc=0
-_input_region_occupied "$ir3_pane" codex || ir3_rc=$?
-assert_eq "chrome-bound: real idle pane w/ footer below stays IDLE (no send outage)" "1" "$ir3_rc"
-tmux kill-session -t ir-idle 2>/dev/null || true
-rm -f "$ir2_script" "$ir3_script"
-fi
+# ── input-region: REAL capture+sensor seam against live tmux (colead BLOCKER 2) — RETIRED (B glue cut 2) ────
+# 3 assertion(s) went with their subject: the core delivers to panes itself (src/deliver.rs): the input-region sensor,
+# the notice transport and the paste/submit machinery are all its, and the bash
+# bodies these assertions called are gone.
+
+# ── input-region: CURSOR IS NOT THE REGION END (colead ROUND4 BLOCKER) — RETIRED (B glue cut 2) ────
+# 5 assertion(s) went with their subject: the core delivers to panes itself (src/deliver.rs): the input-region sensor,
+# the notice transport and the paste/submit machinery are all its, and the bash
+# bodies these assertions called are gone.
 
 # ── goal helper: set → list → survives resume ────────────────────────
 if _itest_section 'goal helper: set → list → survives resume'; then
@@ -3432,80 +3334,8 @@ fi
 sleep 0.5
 fi
 
-# ── ae transfer — phase 1 failure paths ──────────────────────────────
-if _itest_section 'ae transfer — phase 1 failure paths'; then
-# Full end-to-end SSH-transfer testing requires a second machine. These
-# scenarios cover the failure paths cmd_transfer guards against, which
-# are exercise-able without a real remote.
-
-# Helper: capture both stdout and exit code from a command without losing rc
-# to subshell scope (the naïve `$(... || rc=$?)` pattern doesn't propagate rc back).
-run_capture() {
-    # Args: variable-prefix command...
-    # Sets <prefix>_out and <prefix>_rc as globals via eval.
-    local _prefix="$1"; shift
-    local _out _rc=0
-    if _out="$("$@" 2>&1)"; then :; else _rc=$?; fi
-    eval "${_prefix}_out=\"\$_out\""
-    eval "${_prefix}_rc=\$_rc"
-}
-
-# Pre-declare the run_capture target globals so shellcheck doesn't flag
-# eval-set assignments as references-without-assignment (SC2154).
-transfer_no_args_out="" transfer_no_args_rc=0
-transfer_one_arg_out="" transfer_one_arg_rc=0
-transfer_unknown_out="" transfer_unknown_rc=0
-transfer_pull_out="" transfer_pull_rc=0
-transfer_workdir_out="" transfer_workdir_rc=0
-transfer_dryrun_out="" transfer_dryrun_rc=0
-transfer_badflag_out="" transfer_badflag_rc=0
-transfer_help_out="" transfer_help_rc=0
-
-# Missing args → exit 1 + usage
-run_capture transfer_no_args "$AE" transfer
-assert_eq "transfer: no args exits 1" "1" "$transfer_no_args_rc"
-assert_contains "transfer: no args prints usage" "Usage: ae transfer" "$transfer_no_args_out"
-
-# Missing session arg only → exit 1
-run_capture transfer_one_arg "$AE" transfer some-session
-assert_eq "transfer: missing target exits 1" "1" "$transfer_one_arg_rc"
-assert_contains "transfer: missing target prints usage" "Usage: ae transfer" "$transfer_one_arg_out"
-
-# Unknown session → exit 1 with actionable error
-run_capture transfer_unknown "$AE" transfer no-such-session-xyz vm.invalid
-assert_eq "transfer: unknown local session exits 1" "1" "$transfer_unknown_rc"
-assert_contains "transfer: unknown session prints actionable error" "no session 'no-such-session-xyz'" "$transfer_unknown_out"
-
-# --pull is accepted in phase 2; behavior tested via orchestration test in tests/unit
-# and via real SSH wire in manual smoke testing. Here we just confirm the flag
-# parses without producing a "not yet implemented" message — anything past the
-# SSH-probe failure is expected for an unreachable host.
-run_capture transfer_pull "$AE" transfer some-session vm.invalid --pull
-assert_eq "transfer: --pull rejected for unknown-host preflight (not future-phase rejection)" "1" "$transfer_pull_rc"
-assert_eq "transfer: --pull does NOT print future-phase message in phase 2" "1" \
-    "$([[ "$transfer_pull_out" != *'phase 2'* ]] && echo 1 || echo 0)"
-
-run_capture transfer_workdir "$AE" transfer some-session vm.invalid --with-workdir
-assert_eq "transfer: --with-workdir flag rejected in phase 1" "1" "$transfer_workdir_rc"
-assert_contains "transfer: --with-workdir rejection mentions phase 3" "phase 3" "$transfer_workdir_out"
-
-run_capture transfer_dryrun "$AE" transfer some-session vm.invalid --dry-run
-assert_eq "transfer: --dry-run flag rejected in phase 1" "1" "$transfer_dryrun_rc"
-assert_contains "transfer: --dry-run rejection mentions phase 3" "phase 3" "$transfer_dryrun_out"
-
-# Unknown flag → exit 1
-run_capture transfer_badflag "$AE" transfer --no-such-flag
-assert_eq "transfer: unknown flag exits 1" "1" "$transfer_badflag_rc"
-assert_contains "transfer: unknown flag prints error" "unknown flag" "$transfer_badflag_out"
-
-# --help → exit 0 with full help
-run_capture transfer_help "$AE" transfer --help
-assert_eq "transfer: --help exits 0" "0" "$transfer_help_rc"
-assert_contains "transfer: --help mentions --pull" "--pull" "$transfer_help_out"
-assert_contains "transfer: --help mentions --with-workdir" "--with-workdir" "$transfer_help_out"
-assert_contains "transfer: --help mentions --dry-run" "--dry-run" "$transfer_help_out"
-assert_contains "transfer: --help mentions --yes" "--yes" "$transfer_help_out"
-fi
+# ── ae transfer — phase 1 failure paths — RETIRED (B glue cut 2) ───────────────────────────────────
+# 19 assertion(s) went with their subject: `ae transfer` was ruled CUT rather than ported. There is no subject left.
 
 # ── Test: ae orchestrator (legacy hub scaffold) — config isolation + hub compat ──
 if _itest_section 'Test: ae orchestrator (legacy hub scaffold) — config isolation + hub compat'; then
@@ -3691,7 +3521,11 @@ assert_contains "ae end: session with no usable stored config KEEPS (no cwd fall
     "kept agent conversation files" "$noconfig_out"
 
 # Destructive command rejects a stray second positional rather than dropping it.
-assert_eq "ae end: rejects a second positional argument" "1" \
+# rc 2, not 1: the core-owned `end` follows ae's exit-code contract, where 2 is
+# "you asked wrong" and 1 is "it went wrong" (the same measured divergence the
+# core-binding section records). What is pinned is the REFUSAL, not which of the
+# two non-zero codes carries it.
+assert_eq "ae end: rejects a second positional argument" "2" \
     "$("$AE" end -f foo bar 2>/dev/null; echo $?)"
 fi
 
@@ -4512,36 +4346,40 @@ fi
 
 # ── ROLLBACK: a failed launch must not leave debris behind ───────────
 if _itest_section 'ROLLBACK: a failed launch must not leave debris behind'; then
-# Driven through the REAL bare callers, not a stand-in: a `chmod` earlier on
-# PATH fails ONLY for a launch script's temp, so the chokepoint refuses, the
-# publish fails, and send_agent_cmd returns non-zero exactly where it would in
-# the field. Everything before that point — tmux session, panes, meta, every
-# helper — is built for real, which is the state the rollback has to undo.
-# (The SPAWN arm below injects its fault differently — see the note there. Its
-# publisher is the core's since B move 2, and the core writes with std::fs
-# instead of shelling out, so a `chmod` on PATH no longer reaches it.)
-RB_BIN="$TMPDIR/binrb"
-mkdir -p "$RB_BIN"
-cat >"$RB_BIN/chmod" <<'RBCHMOD'
-#!/bin/bash
-for a in "$@"; do
-    case "$a" in */launch.*.tmp.*) exit 1 ;; esac
-done
-exec /bin/chmod "$@"
-RBCHMOD
-chmod 0755 "$RB_BIN/chmod"
+# Driven through the REAL launch, not a stand-in. Since B glue cut 2 the launch
+# is the core's and it publishes with std::fs, so the fault this section used to
+# inject — a `chmod` earlier on PATH failing only for a launch script's temp —
+# no longer reaches anything. Each arm now injects the fault ITS OWN branch
+# needs; everything before that point (tmux session, panes, meta, every helper)
+# is still built for real, which is the state the rollback has to undo.
 
 # (a) FRESH launch: nothing here has history worth keeping, and anything left
 # behind reclassifies the next `ae <name>` as a resume of debris — or lets the
 # existing-session fast path attach to a session whose agent never started.
+#
+# THE FAULT: more worker seats than an 80x24 window can hold. The split fails
+# partway down the roster, and that is a failure the core meets AFTER it has
+# created the session directory — so `dir_created` is true and the FRESH branch
+# is the one that runs. The resume arm's decoy cannot serve here: planting it
+# means the directory already exists, which is by definition the other branch.
 RB_REPO="$(setup_repo)"
+mkdir -p "$RB_REPO/.ae"
+{
+    printf '[profiles]\ndummy = "bash"\n\n[roster]\nm = dummy\n'
+    seq 0 24 | sed 's/^/w/;s/$/ = dummy/'
+    printf '\n[workspace]\nmain = m\nworkers = %s\nlayout = vertical\n' \
+        "$(seq 0 24 | sed 's/^/w/' | paste -sd, - | sed 's/,/, /g')"
+} >"$RB_REPO/.ae/config"
 rb_rc=0
-rb_out="$( (cd "$RB_REPO" && PATH="$RB_BIN:$PATH" _timeout 90 "$AE" --local rbfresh) 2>&1 )" || rb_rc=$?
+rb_out="$( (cd "$RB_REPO" && _timeout 90 "$AE" --local rbfresh) 2>&1 )" || rb_rc=$?
 assert_eq "rollback (fresh): ae exits non-zero" "1" "$([[ $rb_rc -ne 0 ]] && echo 1 || echo 0)"
 # LIVENESS: absence assertions pass for free if the launch died somewhere else
-# entirely, so pin that the rollback ITSELF ran and took the fresh-launch branch.
+# entirely, so pin that the injected fault is the one that fired AND that the
+# rollback itself ran and took the fresh-launch branch.
+assert_eq "rollback (fresh): the injected fault is the one that fired" "1" \
+    "$([[ "$rb_out" == *"could not create a pane for worker"* ]] && echo 1 || echo 0)"
 assert_eq "rollback (fresh): the rollback ran and took the FRESH branch" "1" \
-    "$([[ "$rb_out" == *"rolling back 'rbfresh'"* && "$rb_out" == *"session state removed"* ]] && echo 1 || echo 0)"
+    "$([[ "$rb_out" == *"session state removed"* && "$rb_out" == *"this launch created it"* ]] && echo 1 || echo 0)"
 assert_eq "rollback (fresh): the tmux session is gone" "1" \
     "$(tmux has-session -t rbfresh 2>/dev/null && echo 0 || echo 1)"
 assert_not_exists "rollback (fresh): on-disk session state removed" "$HOME/.ae/sessions/rbfresh"
@@ -4554,14 +4392,22 @@ assert_eq "rollback (fresh): the lifecycle lock is free afterwards" "0" \
 # (b) RESUME: the tmux session goes, the session DIRECTORY stays — that
 # conversation history belongs to the user, and the next attempt must resume it
 # rather than silently start a fresh one.
+#
+# THE FAULT is the spawn arm's, for the same reason it works there: the core
+# renames a temp over <meta>/launch.<slot>.sh, and a rename onto a non-empty
+# DIRECTORY fails. Here the session directory predates the attempt, so the
+# rollback must KEEP it.
 RB_REPO2="$(setup_repo)"
 (cd "$RB_REPO2" && "$AE" --local rbresume &) 2>/dev/null
 wait_for_session "rbresume"
 sleep 1
 "$AE" stop rbresume >/dev/null 2>&1 || true
 sleep 0.5
+rm -f "$HOME/.ae/sessions/rbresume/launch.main.sh"
+mkdir -p "$HOME/.ae/sessions/rbresume/launch.main.sh"
+: >"$HOME/.ae/sessions/rbresume/launch.main.sh/decoy"
 rb2_rc=0
-rb2_out="$( (cd "$RB_REPO2" && PATH="$RB_BIN:$PATH" _timeout 90 "$AE" rbresume) 2>&1 )" || rb2_rc=$?
+rb2_out="$( (cd "$RB_REPO2" && _timeout 90 "$AE" rbresume) 2>&1 )" || rb2_rc=$?
 assert_eq "rollback (resume): ae exits non-zero" "1" "$([[ $rb2_rc -ne 0 ]] && echo 1 || echo 0)"
 assert_eq "rollback (resume): the rollback ran and took the RESUME branch" "1" \
     "$([[ "$rb2_out" == *"rolling back 'rbresume'"* && "$rb2_out" == *"state KEPT"* ]] && echo 1 || echo 0)"
@@ -4574,6 +4420,7 @@ assert_eq "rollback (resume): the lifecycle lock is free afterwards" "0" \
            (flock -n 7 || exit 1) 7>"$HOME/.ae/sessions/.lifecycle.rbresume.lock"
            echo $?
        else echo 0; fi)"
+rm -rf "$HOME/.ae/sessions/rbresume/launch.main.sh"
 "$AE" end -f rbresume >/dev/null 2>&1 || true
 
 # (c) SPAWN: the window/pane and the meta registration both precede the launch,
@@ -4593,7 +4440,7 @@ sleep 1
 mkdir -p "$HOME/.ae/sessions/rbspawn/launch.spawned.0.sh"
 : >"$HOME/.ae/sessions/rbspawn/launch.spawned.0.sh/decoy"
 rb3_rc=0
-rb3_out="$(PATH="$RB_BIN:$PATH" _timeout 90 "$HOME/.ae/sessions/rbspawn/spawn" rbworker --using dummy2 "brief" 2>&1)" || rb3_rc=$?
+rb3_out="$(_timeout 90 "$HOME/.ae/sessions/rbspawn/spawn" rbworker --using dummy2 "brief" 2>&1)" || rb3_rc=$?
 assert_eq "rollback (spawn): the spawn reports failure" "1" "$([[ $rb3_rc -ne 0 ]] && echo 1 || echo 0)"
 assert_eq "rollback (spawn): the rollback ran and said so" "1" \
     "$([[ "$rb3_out" == *"spawn rolled back"* ]] && echo 1 || echo 0)"
@@ -4613,14 +4460,13 @@ rm -rf "$HOME/.ae/sessions/rbspawn/launch.spawned.0.sh"
 
 # (d) THE DELETION BOUNDARY. $SESSION becomes a directory name, and since the
 # rollback landed that directory is also removed — so a name tmux happily accepts
-# ('../victim', '../../.ssh') aimed an rm -rf outside the sessions root. Run with
-# the failing chmod on PATH, i.e. under exactly the conditions that fire the
-# rollback: the sentinel must be untouched either way.
+# ('../victim', '../../.ssh') aimed an rm -rf outside the sessions root. The
+# sentinel must be untouched whatever the launch then does.
 mkdir -p "$HOME/.ae/rbvictim"
 : >"$HOME/.ae/rbvictim/CANARY"
 RB_REPO4="$(setup_repo)"
 rb4_rc=0
-rb4_out="$( (cd "$RB_REPO4" && PATH="$RB_BIN:$PATH" _timeout 90 "$AE" --local ../rbvictim) 2>&1 )" || rb4_rc=$?
+rb4_out="$( (cd "$RB_REPO4" && _timeout 90 "$AE" --local ../rbvictim) 2>&1 )" || rb4_rc=$?
 assert_eq "deletion boundary: a traversal name is refused" "1" "$([[ $rb4_rc -ne 0 ]] && echo 1 || echo 0)"
 assert_eq "deletion boundary: refused as a NAME, before any side effect" "1" \
     "$([[ "$rb4_out" == *"invalid session name"* ]] && echo 1 || echo 0)"
@@ -4639,7 +4485,7 @@ RB_REPO6="$(setup_repo)"
 # shellcheck disable=SC2016  # these are hostile LITERALS, expansion is the point of refusing them
 for _bad in '.dotproject' 'a;rm' 'has space' '#{pane_id}' '$HOME'; do
     _brc=0
-    _bout="$( (cd "$RB_REPO6" && PATH="$RB_BIN:$PATH" _timeout 60 "$AE" --local "$_bad") 2>&1 )" || _brc=$?
+    _bout="$( (cd "$RB_REPO6" && _timeout 60 "$AE" --local "$_bad") 2>&1 )" || _brc=$?
     assert_eq "target-safety [$_bad]: refused, no tmux session, no lock file" "1|1|1|1" \
         "$(printf '%s|%s|%s|%s' \
             "$([[ $_brc -ne 0 ]] && echo 1 || echo 0)" \
@@ -4683,78 +4529,43 @@ assert_eq "no-name launch: and its session directory exists under the root" "1" 
 [[ -n "$nm_name" ]] && "$AE" end -f "$nm_name" >/dev/null 2>&1
 unset NM_DIR nm_name
 
-# (d4) TRANSFER is a path boundary in both directions: $session lands in
-# "…/${session}" locally AND remotely, the pull path runs mkdir -p + rsync
-# --delete against it. Stubs record any ssh/rsync invocation; an invalid name
-# must produce none.
-TB="$TMPDIR/bin-transfer"
-mkdir -p "$TB"
-for _t in ssh rsync; do
-    {
-        printf '#!/bin/bash\n'
-        # shellcheck disable=SC2016  # $0/$* belong to the generated stub, not to us
-        printf 'echo "$0 $*" >>%q\n' "$TMPDIR/transfer-calls.log"
-        printf 'exit 0\n'
-    } >"$TB/$_t"
-    chmod 0755 "$TB/$_t"
-done
-: >"$TMPDIR/transfer-calls.log"
-for _dir in "" "--pull"; do
-    for _bad in '../victim' 'has space' '.dotproject'; do
-        _trc=0
-        # shellcheck disable=SC2086
-        _tout="$(PATH="$TB:$PATH" _timeout 30 "$AE" transfer $_dir "$_bad" user@host 2>&1)" || _trc=$?
-        assert_eq "transfer [${_dir:-push} $_bad]: refused by name, before anything ran" "1|1" \
-            "$(printf '%s|%s' \
-                "$([[ $_trc -ne 0 ]] && echo 1 || echo 0)" \
-                "$([[ "$_tout" == *'invalid session name'* ]] && echo 1 || echo 0)")"
-    done
-done
-assert_eq "transfer: no ssh and no rsync ever ran for an invalid name" "0" \
-    "$(wc -l <"$TMPDIR/transfer-calls.log" | tr -d '[:space:]')"
-assert_eq "transfer: no session directory was created for one either" "0" \
-    "$(find "$HOME/.ae/sessions" -maxdepth 1 -name 'victim' -o -maxdepth 1 -name '.dotproject' 2>/dev/null | wc -l | tr -d '[:space:]')"
-
-# (d4b) THE PATH OBJECT, checked INDEPENDENTLY of the name. Every specimen here
-# is GRAMMAR-VALID on purpose: the previous version of this block used dotted
+# (d4) THE PATH OBJECT, checked INDEPENDENTLY of the name. Every specimen here
+# is GRAMMAR-VALID on purpose: an earlier version of this block used dotted
 # names, so the grammar refused them before the symlink property was ever
 # reached — the pins passed while a symlink named 'valid-name' walked through
-# every boundary and rsync --delete followed it out of the sessions root. A pin
-# must fail when ONLY the property under test is broken; these do.
+# every boundary and a --delete followed it out of the sessions root. A pin must
+# fail when ONLY the property under test is broken; these do.
+#
+# `ae transfer` was the third consumer of this guard and was ruled CUT in B glue
+# cut 2, so the boundary is exercised through the two that remain: `ae rename`
+# (source and target) and launch's existing-state path.
 mkdir -p "$TMPDIR/outside-canary"
 : >"$TMPDIR/outside-canary/CANARY"
-# The symlink target is SESSION-SHAPED on purpose: without a meta, push exits on
-# the local existence check and the pin would pass without the path guard doing
-# anything. Measured — with no meta the push specimen makes zero calls either way.
+# The symlink target is SESSION-SHAPED on purpose: without a meta a consumer can
+# exit on its own existence check and the pin would pass without the path guard
+# doing anything.
 printf 'session=valid-name\nmode=local\norigin=%s\nwork_dir=%s\nschema=2\nseat.main=solo\nprofile.main=dummy\nagent_bin.main=bash\n' \
     "$TMPDIR" "$TMPDIR" >"$TMPDIR/outside-canary/meta"
 mkdir -p "$HOME/.ae/sessions/real-dir"                          # physical: allowed
 ln -s "$TMPDIR/outside-canary" "$HOME/.ae/sessions/valid-name"  # GRAMMATICAL symlink
 ln -s "$TMPDIR/outside-canary/nope" "$HOME/.ae/sessions/dangling-name"
 : >"$HOME/.ae/sessions/a-file"
-: >"$TMPDIR/transfer-calls.log"
-for _dir in "" "--pull"; do
-    for _bad in 'valid-name' 'dangling-name' 'a-file'; do
-        _trc=0
-        # shellcheck disable=SC2086
-        _tout="$(PATH="$TB:$PATH" _timeout 30 "$AE" transfer $_dir "$_bad" user@host 2>&1)" || _trc=$?
-        assert_eq "transfer [${_dir:-push} $_bad]: grammar-valid, refused on the PATH" "1|1" \
-            "$(printf '%s|%s' \
-                "$([[ $_trc -ne 0 ]] && echo 1 || echo 0)" \
-                "$([[ "$_tout" == *'not a plain directory'* ]] && echo 1 || echo 0)")"
-    done
+# RENAME's SOURCE, over all three specimens: a symlink, a dangling symlink and a
+# plain file are each a grammar-valid name whose PATH is not a directory.
+for _bad in 'valid-name' 'dangling-name' 'a-file'; do
+    _trc=0
+    _tout="$(_timeout 30 "$AE" rename "$_bad" "migrated-$_bad" 2>&1)" || _trc=$?
+    assert_eq "rename [$_bad]: grammar-valid, refused on the PATH" "1|1" \
+        "$(printf '%s|%s' \
+            "$([[ $_trc -ne 0 ]] && echo 1 || echo 0)" \
+            "$([[ "$_tout" == *'not a plain directory'* ]] && echo 1 || echo 0)")"
 done
-assert_eq "transfer: zero ssh/rsync calls across all six path specimens" "0" \
-    "$(wc -l <"$TMPDIR/transfer-calls.log" | tr -d '[:space:]')"
-assert_eq "transfer: the canary behind the grammatical symlink is untouched" "1" \
+# ...and its TARGET, which is the other half of the same guard.
+assert_eq "rename: a grammar-valid SYMLINK is refused as a target too" "1" \
+    "$(_o2="$("$AE" rename 'real-dir' 'valid-name' 2>&1)" || true
+       [[ "$_o2" == *'not a plain directory'* ]] && echo 1 || echo 0)"
+assert_eq "path guard: the canary behind the grammatical symlink is untouched" "1" \
     "$([[ -f "$TMPDIR/outside-canary/CANARY" ]] && echo 1 || echo 0)"
-# RENAME source and target, same grammatical symlink.
-assert_eq "rename: a grammar-valid SYMLINK is refused as source and as target" "1|1" \
-    "$(_o1="$("$AE" rename 'valid-name' migrated1 2>&1)" || true
-       _o2="$("$AE" rename 'real-dir' 'valid-name' 2>&1)" || true
-       printf '%s|%s' \
-           "$([[ "$_o1" == *'not a plain directory'* ]] && echo 1 || echo 0)" \
-           "$([[ "$_o2" == *'not a plain directory'* ]] && echo 1 || echo 0)")"
 # LAUNCH's existing-state path: same symlink, reached by an explicit name so the
 # ownership check cannot be what refuses it.
 LP_REPO="$(setup_repo)"
@@ -4770,12 +4581,12 @@ assert_eq "launch: ...and the canary behind it is still there" "1" \
 # The control: a PHYSICAL directory of the same grammatical shape is accepted, so
 # these pins cannot be passing merely because everything is refused.
 assert_eq "control: a physical session directory is NOT refused on the path check" "0" \
-    "$(_c="$(PATH="$TB:$PATH" _timeout 30 "$AE" transfer real-dir user@host 2>&1)" || true
+    "$(_c="$(_timeout 30 "$AE" rename real-dir migrated-real 2>&1)" || true
        [[ "$_c" == *'not a plain directory'* ]] && echo 1 || echo 0)"
-rm -rf "$HOME/.ae/sessions/real-dir" "$TMPDIR/outside-canary" "$LP_REPO"
+rm -rf "$HOME/.ae/sessions/real-dir" "$HOME/.ae/sessions/migrated-real" \
+    "$TMPDIR/outside-canary" "$LP_REPO"
 rm -f "$HOME/.ae/sessions/valid-name" "$HOME/.ae/sessions/dangling-name" "$HOME/.ae/sessions/a-file"
-rm -rf "$TB" "$TMPDIR/transfer-calls.log"
-unset TB _t _dir _bad _trc _tout _o1 _o2 _c LP_REPO lp_rc lp_out
+unset _bad _trc _tout _o2 _c LP_REPO lp_rc lp_out
 
 # (d4c) DERIVED-NAME OWNERSHIP. A typed name means "that session, wherever I am";
 # a DERIVED one means "the session for this directory", and the body is lossy
@@ -4929,11 +4740,14 @@ unset RN_REPO rn_rc rn_out
 # (e) OWNERSHIP, not RESUMING. A directory left by an earlier attempt that died
 # before writing meta reads as a "fresh" launch — the old proxy would have
 # deleted a directory this attempt never created.
-mkdir -p "$HOME/.ae/sessions/rbpre"
+# The fault is the resume arm's decoy, for the same reason: the launch must FAIL
+# with the directory already there, or there is no rollback to classify.
+mkdir -p "$HOME/.ae/sessions/rbpre/launch.main.sh"
+: >"$HOME/.ae/sessions/rbpre/launch.main.sh/decoy"
 : >"$HOME/.ae/sessions/rbpre/PREEXISTING"
 RB_REPO5="$(setup_repo)"
 rb5_rc=0
-rb5_out="$( (cd "$RB_REPO5" && PATH="$RB_BIN:$PATH" _timeout 90 "$AE" --local rbpre) 2>&1 )" || rb5_rc=$?
+rb5_out="$( (cd "$RB_REPO5" && _timeout 90 "$AE" --local rbpre) 2>&1 )" || rb5_rc=$?
 assert_eq "ownership: the launch still fails" "1" "$([[ $rb5_rc -ne 0 ]] && echo 1 || echo 0)"
 assert_eq "ownership: a pre-existing directory is classified NOT ours and kept" "1" \
     "$([[ -f "$HOME/.ae/sessions/rbpre/PREEXISTING" ]] && echo 1 || echo 0)"
@@ -4941,7 +4755,7 @@ assert_eq "ownership: ...and the rollback said so rather than deleting" "1" \
     "$([[ "$rb5_out" == *"state KEPT"* && "$rb5_out" == *"predates this attempt"* ]] && echo 1 || echo 0)"
 "$AE" end -f rbpre >/dev/null 2>&1 || true
 rm -rf "$HOME/.ae/sessions/rbpre"
-unset RB_BIN RB_REPO RB_REPO2 RB_REPO3 RB_REPO4 RB_REPO5 \
+unset RB_REPO RB_REPO2 RB_REPO3 RB_REPO4 RB_REPO5 \
     rb_rc rb2_rc rb3_rc rb4_rc rb5_rc rb_out rb2_out rb3_out rb4_out rb5_out
 fi
 
@@ -5021,7 +4835,16 @@ tmux send-keys -t "$ss_pane" "AE_HOME=$AE_HOME $AE stop stopself -y" Enter
 for _i in $(seq 1 50); do tmux has-session -t "=stopself" 2>/dev/null || break; sleep 0.4; done
 sleep 2
 ss_ev="$HOME/.ae/sessions/stopself/events.jsonl"
-assert_eq "stop (d) self-stop: session gone, both events durable, state preserved" "1|1|1|1" \
+# TWO stop-request rows, ONE stop-result, and both counts are deliberate. A
+# self-stop crosses a process boundary, so the intent is recorded TWICE by two
+# different writers about two different facts: the dying caller records "ae was
+# asked from inside this session" BEFORE the handover (so a human whose pane
+# vanished can tell being asked from never being asked), and the detached
+# supervisor records its own "stop requested" when it picks the work up. A
+# supervisor that started and died leaves the first row without the second — the
+# distinction the pair exists to make — so collapsing them would cost the
+# diagnosis. The RESULT is single because there is one outcome.
+assert_eq "stop (d) self-stop: session gone, both writers recorded, one outcome, state preserved" "1|2|1|1" \
     "$(printf '%s|%s|%s|%s' \
         "$(tmux has-session -t "=stopself" 2>/dev/null && echo 0 || echo 1)" \
         "$(command grep -c '"action":"stop-request"' "$ss_ev" 2>/dev/null || echo 0)" \
@@ -5058,7 +4881,7 @@ assert_eq "stop all (from inside): every session stopped, none abandoned" "0" \
 # assertion above plus the durability one below, at full fleet size.)
 assert_eq "stop all (from inside): the caller reports a handoff, not per-target results" "1" \
     "$(_sa_txt="$(cat "$sa_out" 2>/dev/null || true)"
-       [[ "$_sa_txt" == *"out of process"* && "$_sa_txt" != *"Stopped sa"* ]] && echo 1 || echo 0)"
+       [[ "$_sa_txt" == *"out of pane"* && "$_sa_txt" != *"Stopped sa"* ]] && echo 1 || echo 0)"
 # ...and EVERY outcome is durable, including the two the dying pane never reported.
 assert_eq "stop all (from inside): all three outcomes recorded durably" "1|1|1" \
     "$(printf '%s|%s|%s' \
@@ -5097,23 +4920,27 @@ for _n in pdalpha pdbeta; do "$AE" end -f "$_n" >/dev/null 2>&1 || true; done
 rm -f "$TMPDIR/pd.out"
 unset PD_R1 PD_R2 _n _i
 
-# (g) B1/F5 — an ambient ae-tagged session ae's metadata does NOT own is a
-# FAILURE, not a note. Measured before: rc 0, the orphan still live, and
-# "NOT stopped" printed in the same breath as "No running ae sessions."
+# (g) B1/F5 — an ambient ae-tagged session ae has no state for. RULED at B glue
+# cut 2: the fleet is `~/.ae/sessions/` and nothing else. The bash fleet also
+# ENUMERATED the tmux server for AE_SESSION-tagged sessions and counted a tagged
+# stranger as a failure of `stop all`; the core enumerates only ae's own state
+# directory, so such a session is not a target, and not stopping something that
+# was never a target is not a failure. The three arms that pinned rc 1, the
+# "NOT stopped" line and the suppressed summary went with that enumeration.
+#
+# WHAT SURVIVES IS THE HALF THAT STILL MATTERS, and it is the safety half: a
+# session ae does not own is LEFT RUNNING. That is the property a regression
+# would be dangerous in — an enumeration that reached beyond ae's own state
+# would be killing a stranger's tmux session — and it is asserted below against
+# the same ambient specimen the retired arms built.
 UM_SRV="ae-unmanaged-$$"
 command tmux -L "$UM_SRV" new-session -d -s umorphan 'while :; do sleep 5; done' 2>/dev/null
 command tmux -L "$UM_SRV" set-environment -t umorphan AE_SESSION umorphan 2>/dev/null
-um_rc=0
-um_out="$(AE_TMUX_SERVER="$UM_SRV" "$AE" stop all -y 2>&1)" || um_rc=$?
-assert_eq "stop all: an unmanaged ae-tagged session makes the fleet op FAIL" "1" "$um_rc"
-assert_eq "stop all: that session is named as NOT stopped" "1" \
-    "$([[ "$um_out" == *"umorphan"* && "$um_out" == *"NOT stopped"* ]] && echo 1 || echo 0)"
-assert_eq "stop all: and the success-shaped summary is suppressed" "0" \
-    "$([[ "$um_out" == *"No running ae sessions"* ]] && echo 1 || echo 0)"
-assert_eq "stop all: it is left running, not silently killed" "1" \
+AE_TMUX_SERVER="$UM_SRV" "$AE" stop all -y >/dev/null 2>&1 || true
+assert_eq "stop all: an ae-tagged session ae has no state for is LEFT RUNNING, never killed" "1" \
     "$(command tmux -L "$UM_SRV" has-session -t "=umorphan" 2>/dev/null && echo 1 || echo 0)"
 command tmux -L "$UM_SRV" kill-server 2>/dev/null || true
-unset UM_SRV um_rc um_out
+unset UM_SRV
 
 # (h) F4 — THE CALLER IS ONE OF THE FLEET TARGETS, and the fleet completes anyway.
 # Rounds 4-6 tried to IDENTIFY the caller among the targets and stop it last; the
@@ -5128,6 +4955,16 @@ unset UM_SRV um_rc um_out
 # interleave by holding the other target's lifecycle lock, and awarded its two
 # passes UNEXECUTED when flock was absent (a supported shape: macOS without brew
 # flock), so the regression it existed to catch was a false green there.
+#
+# `--pane=#{pane_id}` IS THE FIXTURE'S OWN CORRECTNESS, not a widening of what
+# is under test. Self-ness is answered from the caller's pane, and in a
+# `run-shell` child $TMUX_PANE is INHERITED and names a FOREIGN pane (the same
+# measured fact the documented recipe exists for) — so without the explicit
+# expansion this child is not detectably inside the fleet at all, the core takes
+# the outside-caller path, and the seed would be testing the opposite case while
+# still looking like this one. The (e) arm above reaches the same state through
+# `send-keys`, i.e. a real shell in the pane with a truthful $TMUX_PANE; this arm
+# keeps `run-shell` and tells it the truth instead.
 FO_R1="$(setup_repo)"; FO_R2="$(setup_repo)"
 (cd "$FO_R1" && "$AE" --local foalpha &) 2>/dev/null
 wait_for_session "foalpha"
@@ -5137,7 +4974,7 @@ sleep 1
 # `run-shell` propagates the child's exit status; under the suite's set -e an
 # unguarded call aborts the whole run on any non-zero fleet rc.
 tmux run-shell -t foalpha \
-    "env HOME='$HOME' AE_HOME='$AE_HOME' '$AE' stop all -y >'$TMPDIR/fo.out' 2>&1" || true
+    "env HOME='$HOME' AE_HOME='$AE_HOME' '$AE' stop all -y --pane=#{pane_id} >'$TMPDIR/fo.out' 2>&1" || true
 for _i in $(seq 1 90); do
     if ! tmux has-session -t "=foalpha" 2>/dev/null && ! tmux has-session -t "=fozeta" 2>/dev/null; then break; fi
     sleep 0.5
@@ -5156,7 +4993,7 @@ assert_eq "stop all (caller is a target): both outcomes recorded durably" "1|1" 
 # ...and the caller says it HANDED OFF rather than printing a per-target result it
 # cannot possibly have verified.
 assert_eq "stop all (caller is a target): the caller reports the handoff, not a result" "1" \
-    "$([[ "$(cat "$TMPDIR/fo.out" 2>/dev/null || true)" == *"out of process"* ]] && echo 1 || echo 0)"
+    "$([[ "$(cat "$TMPDIR/fo.out" 2>/dev/null || true)" == *"out of pane"* ]] && echo 1 || echo 0)"
 for _n in foalpha fozeta; do "$AE" end -f "$_n" >/dev/null 2>&1 || true; done
 rm -f "$TMPDIR/fo.out"
 unset FO_R1 FO_R2 _n _i
@@ -5182,16 +5019,24 @@ assert_eq "ghost (F6): singular stop refuses — cannot verify, state preserved"
 if gh_out="$("$AE" stop all -y 2>&1)"; then gh_rc=0; else gh_rc=$?; fi
 assert_eq "ghost (F6): 'stop all' does NOT write the target off as absent" "1" \
     "$([[ "$gh_out" != *"No running ae sessions."* ]] && echo 1 || echo 0)"
+# ...and it was ATTEMPTED. FOLLOW THE CORE (ruled at glue cut 2): an outside
+# caller runs the fleet IN PROCESS — there is no handoff line to look for any
+# more — so the evidence that the ghost was not silently skipped is its OWN
+# per-session refusal, which names it and gives the reason. That line is the
+# thing a skip would not print, which is why it is the assertion.
 assert_eq "ghost (F6): the unverifiable target is carried into the fleet" "1" \
-    "$([[ "$gh_out" == *"out of process"* ]] && echo 1 || echo 0)"
+    "$([[ "$gh_out" == *"cannot verify"* && "$gh_out" == *"ghsess"* ]] && echo 1 || echo 0)"
 # F7, FAILURE DIRECTION — this caller is OUTSIDE the fleet, so it survives the
 # handoff and owes a real exit code. Before the amendment its rc covered only the
 # handoff, and a script driving `ae stop all` could not tell this apart from a
 # clean run. It waits on the durable record, so the failure reaches it.
 assert_eq "outside caller (F7): a target that could not be stopped makes the rc non-zero" "1" \
     "$([[ "$gh_rc" -ne 0 ]] && echo 1 || echo 0)"
+# The NAME lives in the per-session line, the COUNT in the summary under it, and
+# an operator needs both: a bare count cannot be acted on, and a bare line does
+# not say the run failed. Assert the pair rather than one frozen sentence.
 assert_eq "outside caller (F7): and the failing session is NAMED, not just counted" "1" \
-    "$([[ "$gh_out" == *"stop failed for:"*"ghsess"* ]] && echo 1 || echo 0)"
+    "$([[ "$gh_out" == *"ghsess"* && "$gh_out" == *"session(s) failed to stop"* ]] && echo 1 || echo 0)"
 assert_eq "ghost (F6): its failure is recorded durably, not swallowed" "1" \
     "$(_gh_ev="$HOME/.ae/sessions/ghsess/events.jsonl"
        [[ -f "$_gh_ev" ]] && command grep -q '"action":"stop-result"' "$_gh_ev" 2>/dev/null \
@@ -5225,234 +5070,30 @@ assert_eq "outside caller (F7): every target stopped cleanly -> rc 0" "0" "$ok_r
 # It WAITED: no pending note, no error, and the sessions are actually gone by the
 # time it returned — which is the difference between folding outcomes and merely
 # announcing a handoff.
+# FOLLOW THE CORE: an outside caller owns the loop, so "it waited" is no longer a
+# claim about folding a detached worker's outcomes — it is true by construction,
+# and what the output must show is that it REPORTED each target rather than
+# announcing a handoff it did not make. The next assertion is the other half:
+# both sessions are actually gone by the time it returned.
 assert_eq "outside caller (F7): it waited for the outcomes rather than only announcing" "1" \
-    "$([[ "$ok_out" == *"out of process"* && "$ok_out" != *"still pending"* && "$ok_out" != *"Error:"* ]] && echo 1 || echo 0)"
+    "$([[ "$ok_out" == *"Stopped okone"* && "$ok_out" == *"Stopped oktwo"* \
+        && "$ok_out" != *"out of pane"* && "$ok_out" != *"still pending"* && "$ok_out" != *"Error:"* ]] && echo 1 || echo 0)"
 assert_eq "outside caller (F7): both sessions are gone when the caller returns" "0" \
     "$(tmux list-sessions -F '#{session_name}' 2>/dev/null | command grep -c '^ok' | tr -d '[:space:]')"
 for _n in okone oktwo; do AE_HOME="$OK_HOME" "$AE" end -f "$_n" >/dev/null 2>&1 || true; done
 rm -rf "$OK_HOME"
 unset OK_HOME OK_R1 OK_R2 ok_out ok_rc _n
 
-# (k) F9 — WHAT WAS CONFIRMED IS WHAT GETS ACTED ON. The supervisor used to
-# re-enumerate metadata after the handoff, so a session created in the gap was
-# killed without ever having been confirmed. The gap is a RACE, and racing it would
-# pin a property only on machines that happen to lose — so this drives the
-# supervisor DIRECTLY with a frozen one-name list while a second session sits right
-# beside it in the same metadata. Under the old code that second session was found
-# by enumeration and died; under F9 the argv list is the whole world.
-FZ_R1="$(setup_repo)"; FZ_R2="$(setup_repo)"
-(cd "$FZ_R1" && "$AE" --local fzone &) 2>/dev/null
-wait_for_session "fzone" || true
-(cd "$FZ_R2" && "$AE" --local fztwo &) 2>/dev/null
-wait_for_session "fztwo" || true
-sleep 1
-# Verify the SPECIMEN: both sessions really are in ae's metadata, so enumeration
-# WOULD have found the bystander. Without this the seed could pass vacuously.
-assert_eq "frozen set (F9): both sessions are enumerable before the stop" "1|1" \
-    "$(printf '%s|%s' \
-        "$([[ -f "$HOME/.ae/sessions/fzone/meta" ]] && echo 1 || echo 0)" \
-        "$([[ -f "$HOME/.ae/sessions/fztwo/meta" ]] && echo 1 || echo 0)")"
-fz_op="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
-# The payload is (name, instance) pairs since round 9 — a bare name is a truncated
-# payload and is refused outright, which is its own pin further down.
-fz_sid="$(command grep '^session_id=' "$HOME/.ae/sessions/fzone/meta" 2>/dev/null | head -1 | cut -d= -f2- || true)"
-"$AE" _stop-fleet-supervisor "$fz_op" fzone "$fz_sid" >/dev/null 2>&1 || true
-for _i in $(seq 1 40); do tmux has-session -t "=fzone" 2>/dev/null || break; sleep 0.5; done
-sleep 1
-assert_eq "frozen set (F9): the named target is stopped" "1" \
-    "$(tmux has-session -t "=fzone" 2>/dev/null && echo 0 || echo 1)"
-assert_eq "frozen set (F9): the UNCONFIRMED bystander is untouched" "1" \
-    "$(tmux has-session -t "=fztwo" 2>/dev/null && echo 1 || echo 0)"
-# ...and the bystander has no stop event at all — not merely a surviving session,
-# but an operation that never reached for it. Asked as a BOOLEAN: `grep -c` on a
-# file that does not exist prints nothing rather than 0, so the counting spelling
-# of this pin failed on correct behaviour.
-assert_eq "frozen set (F9): the bystander was never even requested" "1" \
-    "$(command grep -q 'stop-request' "$HOME/.ae/sessions/fztwo/events.jsonl" 2>/dev/null && echo 0 || echo 1)"
-# F8/N4 — the durable record carries THIS operation's id, and says what actually
-# happened: a fleet stop, not the self-stop the shared worker used to claim.
-assert_eq "provenance (F8): the result is stamped with the operation id" "1" \
-    "$(command grep '"action":"stop-result"' "$HOME/.ae/sessions/fzone/events.jsonl" 2>/dev/null \
-        | command grep -Fq "[op ${fz_op}]" && echo 1 || echo 0)"
-assert_eq "audit (N4): a fleet request is recorded as a fleet request, not a self-stop" "1" \
-    "$(_fz_req="$(command grep '"action":"stop-request"' "$HOME/.ae/sessions/fzone/events.jsonl" 2>/dev/null | tail -1)"
-       [[ "$_fz_req" == *"fleet stop requested"* && "$_fz_req" != *"from inside the session"* ]] && echo 1 || echo 0)"
-# A malformed operation id is refused at the entrypoint — it reaches an event
-# summary, so the boundary is entered here rather than trusted from the caller.
-fz_sid2="$(command grep '^session_id=' "$HOME/.ae/sessions/fztwo/meta" 2>/dev/null | head -1 | cut -d= -f2- || true)"
-"$AE" _stop-fleet-supervisor "not-a-uuid" fztwo "$fz_sid2" >/dev/null 2>&1 || true
-sleep 1
-assert_eq "provenance (F8): a malformed operation id stops nothing" "1" \
-    "$(tmux has-session -t "=fztwo" 2>/dev/null && echo 1 || echo 0)"
-# ...and an UNPAIRED payload is refused outright rather than half-acted on: a list
-# that does not pair is not a payload any part of which we may honour.
-"$AE" _stop-fleet-supervisor "$fz_op" fztwo >/dev/null 2>&1 || true
-sleep 1
-assert_eq "frozen set (F9): a truncated (unpaired) payload stops nothing" "1" \
-    "$(tmux has-session -t "=fztwo" 2>/dev/null && echo 1 || echo 0)"
-for _n in fzone fztwo; do "$AE" end -f "$_n" >/dev/null 2>&1 || true; done
-unset FZ_R1 FZ_R2 fz_op fz_sid fz_sid2 _n _i
-
-# (m) F10 — A NAME IS A SLOT, NOT A THING. Freezing the SET (F9) still froze NAMES,
-# and a name can be handed to a different session between confirmation and kill:
-# end the original completely, launch a fresh one under the same name, and the
-# frozen payload authorized killing the REPLACEMENT — with success recorded, and in
-# flat contradiction of what the docs promise about a session started while you are
-# deciding. Fully deterministic: no race, the substitution is performed outright.
-AB_R1="$(setup_repo)"
-(cd "$AB_R1" && "$AE" --local abasame &) 2>/dev/null
-wait_for_session "abasame" || true
-for _i in $(seq 1 25); do [[ -f "$HOME/.ae/sessions/abasame/meta" ]] && break; sleep 0.3; done
-ab_old="$(command grep '^session_id=' "$HOME/.ae/sessions/abasame/meta" 2>/dev/null | head -1 | cut -d= -f2- || true)"
-# The payload is frozen HERE, against the ORIGINAL instance.
-"$AE" end -f abasame >/dev/null 2>&1 || true
-AB_R2="$(setup_repo)"
-(cd "$AB_R2" && "$AE" --local abasame &) 2>/dev/null
-wait_for_session "abasame" || true
-for _i in $(seq 1 25); do [[ -f "$HOME/.ae/sessions/abasame/meta" ]] && break; sleep 0.3; done
-ab_new="$(command grep '^session_id=' "$HOME/.ae/sessions/abasame/meta" 2>/dev/null | head -1 | cut -d= -f2- || true)"
-# SPECIMEN PRECONDITION: the name really was reused by a DIFFERENT instance. Without
-# this the seed would pass just as happily if ae had reused the same id.
-assert_eq "ABA (F10): the same name now carries a different instance" "1" \
-    "$([[ -n "$ab_old" && -n "$ab_new" && "$ab_old" != "$ab_new" ]] && echo 1 || echo 0)"
-ab_op="bbbbbbbb-cccc-dddd-eeee-ffffffffffff"
-"$AE" _stop-fleet-supervisor "$ab_op" abasame "$ab_old" >/dev/null 2>&1 || true
-sleep 2
-assert_eq "ABA (F10): the REPLACEMENT is left running" "1" \
-    "$(tmux has-session -t "=abasame" 2>/dev/null && echo 1 || echo 0)"
-# ...and the refusal is durable and diagnosable: stamped with the operation, marked
-# FAILED, naming both instances. A silent survivor would be indistinguishable from
-# a stop that simply had not happened yet.
-assert_eq "ABA (F10): the refusal is recorded, stamped, and names both instances" "1" \
-    "$(_ab_ev="$HOME/.ae/sessions/abasame/events.jsonl"
-       _ab_res="$(command grep '"action":"stop-result"' "$_ab_ev" 2>/dev/null | command grep -F "[op ${ab_op}]" | tail -1)"
-       [[ "$_ab_res" == *FAILED* && "$_ab_res" == *"not the session that was confirmed"* \
-        && "$_ab_res" == *"$ab_new"* && "$_ab_res" == *"$ab_old"* ]] && echo 1 || echo 0)"
-# ...while the CURRENT instance is still stoppable by a payload that names it —
-# the guard must refuse a stale authorization, not the session itself.
-"$AE" _stop-fleet-supervisor "$ab_op" abasame "$ab_new" >/dev/null 2>&1 || true
-for _i in $(seq 1 40); do tmux has-session -t "=abasame" 2>/dev/null || break; sleep 0.5; done
-assert_eq "ABA (F10): the CURRENT instance is still stoppable when correctly named" "1" \
-    "$(tmux has-session -t "=abasame" 2>/dev/null && echo 0 || echo 1)"
-"$AE" end -f abasame >/dev/null 2>&1 || true
-unset AB_R1 AB_R2 ab_old ab_new ab_op _i
-
-# (n) F11 — A COMPLETE PAIR MUST NOT BE ACTED ON BEFORE THE PAYLOAD IS ACCEPTED.
-# The shape check used to run AFTER the loop, so a payload of one good pair plus a
-# dangling tail killed the good target and recorded it verified-gone, and only THEN
-# returned non-zero. Round 9's seed passed over this because a single bare name is
-# ZERO complete pairs — there was nothing for the loop to act on, so the specimen
-# never reached the property it was supposed to protect.
-OD_R="$(setup_repo)"
-(cd "$OD_R" && "$AE" --local oddone &) 2>/dev/null
-wait_for_session "oddone" || true
-for _i in $(seq 1 25); do [[ -f "$HOME/.ae/sessions/oddone/meta" ]] && break; sleep 0.3; done
-od_sid="$(command grep '^session_id=' "$HOME/.ae/sessions/oddone/meta" 2>/dev/null | head -1 | cut -d= -f2- || true)"
-od_op="cccccccc-dddd-eeee-ffff-000000000000"
-# SPECIMEN PRECONDITION: the pair really is complete and valid, so the ONLY defect
-# in this payload is the dangling tail. Without this the seed could refuse for the
-# wrong reason and still look green.
-assert_eq "odd payload (F11): the leading pair is itself well-formed" "1" \
-    "$([[ -n "$od_sid" ]] && echo 1 || echo 0)"
-"$AE" _stop-fleet-supervisor "$od_op" oddone "$od_sid" dangling >/dev/null 2>&1 || true
-sleep 2
-assert_eq "odd payload (F11): the complete pair is NOT acted on" "1" \
-    "$(tmux has-session -t "=oddone" 2>/dev/null && echo 1 || echo 0)"
-# (Round 10 asserted the target was never even REQUESTED. Round 11 ruled the
-# opposite for the record: a refused payload must leave a durable stamped failure,
-# or a dead worker reads as pending success. Both facts survive — nothing is
-# STOPPED, and the refusal is TOLD. The pin follows the ruling.)
-assert_eq "odd payload (F11): the refusal is recorded, and it is a refusal" "1" \
-    "$(_od_res="$(command grep '"action":"stop-result"' "$HOME/.ae/sessions/oddone/events.jsonl" 2>/dev/null | command grep -F "[op ${od_op}]" | tail -1)"
-       [[ "$_od_res" == *FAILED* && "$_od_res" == *"malformed"* ]] && echo 1 || echo 0)"
-assert_eq "odd payload (F11): and no stop-request was ever issued for it" "1" \
-    "$(command grep -q '"action":"stop-request"' "$HOME/.ae/sessions/oddone/events.jsonl" 2>/dev/null && echo 0 || echo 1)"
-# ...and the same pair WITHOUT the tail still works, so the refusal is about the
-# payload's shape and not about this target.
-"$AE" _stop-fleet-supervisor "$od_op" oddone "$od_sid" >/dev/null 2>&1 || true
-for _i in $(seq 1 40); do tmux has-session -t "=oddone" 2>/dev/null || break; sleep 0.5; done
-assert_eq "odd payload (F11): the same pair alone is honoured" "1" \
-    "$(tmux has-session -t "=oddone" 2>/dev/null && echo 0 || echo 1)"
-"$AE" end -f oddone >/dev/null 2>&1 || true
-unset OD_R od_sid od_op _i
-
-# (o) F10(a)/F10(b) — A SENTINEL IS NOT AN IDENTITY. Two pre-feature sessions both
-# freeze as "-", so ending one and renaming another into its name satisfied the
-# frozen comparison exactly and killed the replacement with rc 0. `ae rename`
-# preserves a missing session_id, which is what made the two indistinguishable.
-# Legacy state is built by STRIPPING session_id from a real session's meta — the
-# honest way to get a pre-feature specimen out of a current ae.
-#
-# ISOLATED AE_HOME, because this seed runs `stop all`: against the shared test home
-# its exit status would depend on whatever metadata earlier seeds left behind rather
-# than on the property under test.
-LG_HOME="$TMPDIR/lghome"
-mkdir -p "$LG_HOME"
-command cp "$HOME/.ae/config" "$LG_HOME/config" 2>/dev/null || true
-LG_R1="$(setup_repo)"; LG_R2="$(setup_repo)"
-(cd "$LG_R1" && AE_HOME="$LG_HOME" "$AE" --local oldslot &) 2>/dev/null
-wait_for_session "oldslot" || true
-(cd "$LG_R2" && AE_HOME="$LG_HOME" "$AE" --local replacement &) 2>/dev/null
-wait_for_session "replacement" || true
-for _n in oldslot replacement; do
-    for _i in $(seq 1 25); do [[ -f "$LG_HOME/sessions/$_n/meta" ]] && break; sleep 0.3; done
-done
-# A launch that never came up must FAIL here, loudly, rather than abort the suite at
-# a bare wait_for_session — the "no FAIL lines = vacuous" trap, from the seed side.
-assert_eq "legacy ABA (F10): both specimens launched" "1|1" \
-    "$(printf '%s|%s' \
-        "$([[ -f "$LG_HOME/sessions/oldslot/meta" ]] && echo 1 || echo 0)" \
-        "$([[ -f "$LG_HOME/sessions/replacement/meta" ]] && echo 1 || echo 0)")"
-for _n in oldslot replacement; do
-    if [[ -f "$LG_HOME/sessions/$_n/meta" ]]; then
-        command grep -v '^session_id=' "$LG_HOME/sessions/$_n/meta" >"$TMPDIR/lgm" 2>/dev/null || true
-        command mv -f "$TMPDIR/lgm" "$LG_HOME/sessions/$_n/meta" 2>/dev/null || true
-    fi
-done
-# Asked as BOOLEANS. `grep -c` prints "0" AND exits 1 on no-match, so the obvious
-# `... | tr -d '[:space:]' || echo 0` spelling emits "00" — the same counting trap
-# that bit the round-8 bystander pin, one spelling over. Counts from grep are a
-# false friend here; presence is the actual question.
-assert_eq "legacy ABA (F10): both specimens really are pre-feature (no session_id)" "1|1" \
-    "$(printf '%s|%s' \
-        "$(command grep -q '^session_id=' "$LG_HOME/sessions/oldslot/meta" 2>/dev/null && echo 0 || echo 1)" \
-        "$(command grep -q '^session_id=' "$LG_HOME/sessions/replacement/meta" 2>/dev/null && echo 0 || echo 1)")"
-lg_op="dddddddd-eeee-ffff-0000-111111111111"
-# The reviewer's exact sequence, driven with the STALE dash payload a pre-mint ae
-# would have frozen: end the original, move the other into its name.
-AE_HOME="$LG_HOME" "$AE" end -f oldslot >/dev/null 2>&1 || true
-AE_HOME="$LG_HOME" "$AE" rename replacement oldslot >/dev/null 2>&1 || true
-sleep 1
-AE_HOME="$LG_HOME" "$AE" _stop-fleet-supervisor "$lg_op" oldslot - >/dev/null 2>&1 || true
-sleep 2
-assert_eq "legacy ABA (F10b): a frozen dash does not authorize the renamed session" "1" \
-    "$(tmux has-session -t "=oldslot" 2>/dev/null && echo 1 || echo 0)"
-assert_eq "legacy ABA (F10b): the refusal is durable, stamped, and names the fact" "1" \
-    "$(_lg_res="$(command grep '"action":"stop-result"' "$LG_HOME/sessions/oldslot/events.jsonl" 2>/dev/null | command grep -F "[op ${lg_op}]" | tail -1)"
-       [[ "$_lg_res" == *FAILED* && "$_lg_res" == *"no instance identity was frozen"* && "$_lg_res" == *"(F10)"* ]] && echo 1 || echo 0)"
-# (a) MINT ON TOUCH: the same pre-feature session, taken through a real fleet
-# confirmation, ACQUIRES an identity — and keeps it. From here it is defensible.
-lg_before="$(command grep -q '^session_id=' "$LG_HOME/sessions/oldslot/meta" 2>/dev/null && echo 1 || echo 0)"
-# lg_out captures the command's output only to keep it out of the suite log; the
-# assertions below read lg_rc and the meta file.
-# shellcheck disable=SC2034
-if lg_out="$(AE_HOME="$LG_HOME" "$AE" stop all -y 2>&1)"; then lg_rc=0; else lg_rc=$?; fi
-lg_after="$(command grep '^session_id=' "$LG_HOME/sessions/oldslot/meta" 2>/dev/null | head -1 | cut -d= -f2- || true)"
-assert_eq "mint-at-freeze (F10a): a pre-feature session gains an identity on fleet contact" "0|1" \
-    "$(printf '%s|%s' "$lg_before" "$([[ -n "$lg_after" ]] && echo 1 || echo 0)")"
-assert_eq "mint-at-freeze (F10a): and the stop it was minted for then succeeds" "0|1" \
-    "$(printf '%s|%s' "$lg_rc" "$(tmux has-session -t "=oldslot" 2>/dev/null && echo 0 || echo 1)")"
-# ...and the minted identity SURVIVES a resume, which is what makes it an identity
-# rather than a per-operation nonce.
-(cd "$LG_R2" && AE_HOME="$LG_HOME" "$AE" oldslot &) 2>/dev/null
-wait_for_session "oldslot" || true
-sleep 1
-assert_eq "mint-at-freeze (F10a): the minted identity survives stop and resume" "1" \
-    "$(_lg_now="$(command grep '^session_id=' "$LG_HOME/sessions/oldslot/meta" 2>/dev/null | head -1 | cut -d= -f2-)"
-       [[ -n "$lg_after" && "$_lg_now" == "$lg_after" ]] && echo 1 || echo 0)"
-AE_HOME="$LG_HOME" "$AE" end -f oldslot >/dev/null 2>&1 || true
-rm -rf "$LG_HOME"
-unset LG_HOME LG_R1 LG_R2 lg_op lg_before lg_after lg_out lg_rc _n _i
+# (k)-(o) THE FLEET SUPERVISOR'S OWN ARMS — RETIRED (B glue cut 2). 24 assertion(s)
+# went with their subject. `ae stop` is one core operation now (`_stop`,
+# src/lifecycle.rs), and it forks its OWN detached supervisor (`_stop --supervise
+# <name>`): the two directly-callable bash entries these arms drove
+# (`ae _stop-supervisor`, `ae _stop-fleet-supervisor`) are gone with `cmd_stop`,
+# so the frozen set, the name-is-a-slot check, the complete-pair rule, the
+# sentinel-is-not-an-identity pair and the mint-on-touch arm have no bash entry
+# left to drive. The OUTCOMES they bound are still pinned above, through the
+# public command: (e)-(j) run `ae stop all` for real, from inside and outside the
+# fleet, against unreachable and unowned targets.
 
 # (p) ROUND 11 — RENAME IS A LIFECYCLE OPERATION. It took no lifecycle lock, so a
 # rename landing between a freeze and its lock rebuilt the F10 kill exactly. The
@@ -5498,28 +5139,42 @@ AE_HOME="$RN_HOME" "$AE" end -f rnsrc >/dev/null 2>&1 || true
 rm -rf "$RN_HOME"
 unset RN_HOME RN_R rn_holder rn_out rn_rc rn_rc2 _i
 
-# (q) I4 — A DEAD WORKER MUST NOT READ AS PENDING SUCCESS. A malformed payload made
-# the child return before emitting anything, while the parent had already announced
-# the handoff and settled in to wait 30s for results no living process would write.
-# Driven at the CHILD, which is where the silence was.
+# (q) I4 — RETIRED WITH ITS SUBJECT, and REPLACED by the hazard the retirement
+# created. The old arm drove `ae _stop-fleet-supervisor <op-uuid> deadw not-a-uuid`
+# and pinned that the child recorded an op-stamped `FAILED ... malformed ... (F11)`
+# result rather than returning silently while the parent waited 30s for a result
+# no living process would write. Both halves are gone: there is no bash fleet
+# supervisor, no `[op <uuid>]` stamping, and no parent that waits on a detached
+# child's rows — the core's supervisor records through the one `stop_recorded`
+# helper, and F6/F7 below assert that record on the paths that still exist.
+#
+# WHAT THE RETIREMENT PUT AT RISK is the dispatcher, and it is a real bug this
+# arm found: `_stop-fleet-supervisor` and `_stop-supervisor` were deleted as
+# WORDS, and every unmatched word past the dispatcher FALLS THROUGH TO LAUNCH,
+# where the last positional is taken as a session name. So this exact command
+# silently CREATED a session called `not-a-uuid` (measured — and with a real
+# uuid as the op it created a UUID-named session and hung the suite) instead of
+# erroring. A retired internal entry must fail closed, not become a launch.
 DW_R="$(setup_repo)"
 (cd "$DW_R" && "$AE" --local deadw &) 2>/dev/null
 wait_for_session "deadw" || true
 for _i in $(seq 1 25); do [[ -f "$HOME/.ae/sessions/deadw/meta" ]] && break; sleep 0.3; done
-assert_eq "dead worker (I4): the specimen launched" "1" \
+assert_eq "retired internal entry: the specimen launched" "1" \
     "$([[ -f "$HOME/.ae/sessions/deadw/meta" ]] && echo 1 || echo 0)"
-dw_op="eeeeeeee-ffff-0000-1111-222222222222"
-"$AE" _stop-fleet-supervisor "$dw_op" deadw not-a-uuid >/dev/null 2>&1 || true
-sleep 2
-assert_eq "dead worker (I4): the malformed payload stops nothing" "1" \
+dw_rc=0
+dw_out="$("$AE" _stop-fleet-supervisor "eeeeeeee-ffff-0000-1111-222222222222" deadw not-a-uuid 2>&1)" || dw_rc=$?
+sleep 1
+assert_eq "retired internal entry: refuses with the usage code, naming the word" "2" "$dw_rc"
+assert_eq "retired internal entry: ...and says which word it does not serve" "1" \
+    "$([[ "$dw_out" == *"unknown internal command"* && "$dw_out" == *"_stop-fleet-supervisor"* ]] && echo 1 || echo 0)"
+# THE FALL-THROUGH IS THE BUG, so assert its absence directly: no session was
+# minted from any of those arguments, and the real one is untouched.
+assert_eq "retired internal entry: no session is minted from its arguments" "0" \
+    "$(command ls -1 "$HOME/.ae/sessions" 2>/dev/null | command grep -cE '^(not-a-uuid|eeeeeeee-ffff-0000-1111-222222222222)$' | tr -d '[:space:]')"
+assert_eq "retired internal entry: and the named session is untouched" "1" \
     "$(tmux has-session -t "=deadw" 2>/dev/null && echo 1 || echo 0)"
-# The refusal is DURABLE and op-stamped, which is the only thing that lets the
-# caller's wait tell a refusal apart from a result that has not arrived yet.
-assert_eq "dead worker (I4): the refusal is recorded against the named target" "1" \
-    "$(_dw="$(command grep '"action":"stop-result"' "$HOME/.ae/sessions/deadw/events.jsonl" 2>/dev/null | command grep -F "[op ${dw_op}]" | tail -1)"
-       [[ "$_dw" == *FAILED* && "$_dw" == *"malformed"* && "$_dw" == *"(F11)"* ]] && echo 1 || echo 0)"
 "$AE" end -f deadw >/dev/null 2>&1 || true
-unset DW_R dw_op _i
+unset DW_R dw_out dw_rc _i
 
 # (l) I3 — THE NO-TTY REFUSAL MUST ACTUALLY PRINT ITS RETRY LINE. `[[ -r /dev/tty ]]`
 # is TRUE on macOS inside a process with no controlling terminal while the OPEN
@@ -5656,124 +5311,90 @@ rm -rf "$HOME/.ae/sessions/e34push" "$E34_REMOTE2"
 unset E34_R2 E34_REMOTE2 e34_wd2 e34_out e34_rc _i
 fi
 
-# ── #36: launch-time delivery waits for READINESS, not for a clock ──────
-if _itest_section '#36: launch-time delivery waits for READINESS, not for a clock'; then
-# codex draws its input box before it can act on input — measured cold 2026-08-15:
-# box at t=0.5s while the header still reads "model: loading", MCP servers still
-# starting to t=2.5s, settled t=3.0s. The old readiness predicate answered READY from
-# t=0.5s, so the bounded wait meant to protect the paste succeeded on its first poll.
-#
-# The seed uses a STUB tool that reproduces that shape deterministically and with no
-# network: print a codex-shaped start-up screen, hold it, then settle. Asking the real
-# predicate against a real pane is the point — a stubbed predicate would only test the
-# stub.
-r36_stub="$TMPDIR/slowtool.sh"
-cat >"$r36_stub" <<'STUB'
-#!/bin/sh
-# Codex-shaped cold start, byte-faithful where it matters. The LIVE PROMPT is present
-# in EVERY phase — bold U+203A then a DIM placeholder, exactly as captured from
-# codex v0.147.0 — because that is the whole point: the input box looks ready the
-# entire time, and only the START-UP markers tell the phases apart. A stub that drew
-# a plain ASCII '>' proved nothing; the sensor found no live prompt and said
-# indeterminate, which was the sensor being right about an unfaithful specimen.
-prompt() {
-    printf '\033[1m\342\200\272\033[0m \033[2mWrite tests for @filename\033[0m\n'
-    printf '\n  \033[2mstub-model xhigh \302\267 /tmp\033[0m\n'
-}
-printf '\033[2J\033[H'
-printf '\342\224\202 >_ OpenAI Codex (v0.147.0)              \342\224\202\n'
-printf '\342\224\202 model:       loading   /model to change \342\224\202\n\n'
-prompt
-sleep 3
-printf '\033[2J\033[H'
-printf '\342\224\202 model:       stub-model xhigh   /model to change \342\224\202\n\n'
-printf '\342\200\242 Starting MCP servers (0/7): alpha, beta\n\n'
-prompt
-sleep 3
-printf '\033[2J\033[H'
-printf '\342\224\202 model:       stub-model xhigh   /model to change \342\224\202\n\n'
-prompt
-while :; do sleep 5; done
-STUB
-chmod +x "$r36_stub"
-tmux new-window -d -t "$AE_TMUX_SERVER:" -n r36 "$r36_stub" 2>/dev/null ||
-    tmux new-session -d -s r36probe "$r36_stub" 2>/dev/null
-r36_pane="$(tmux list-panes -a -F '#{pane_id} #{window_name}' 2>/dev/null | awk '$2=="r36"{print $1; exit}')"
-if [[ -z "$r36_pane" ]]; then
-    r36_pane="$(tmux list-panes -t r36probe -F '#{pane_id}' 2>/dev/null | head -1)"
-fi
-assert_eq "readiness (#36): the delayed-start stub pane exists" "1" \
-    "$([[ -n "$r36_pane" ]] && echo 1 || echo 0)"
-if [[ -n "$r36_pane" ]]; then
-    # Drive ae's REAL predicate. Sampled across the stub's three phases; the verdict
-    # must be NOT-READY while a start-up marker is on screen and READY once it clears.
-    # The predicate is eval'd from ae rather than reached through a new subcommand:
-    # adding `ae _readiness-probe` would be product surface existing only for this
-    # test. What integration contributes over the unit fixtures is a REAL pane and a
-    # REAL capture-pane — the suite's own tmux() already targets the test server, so
-    # the sensor reads exactly what ae would read.
-    r36_src="$(cat "$AE")"
-    for _f in _capture_input_region _sgr_parse _input_region_prompt_seg \
-        _input_region_is_border _input_region_content_end _input_region_occupied \
-        _paste_input_busy _tool_initializing _spawn_input_ready; do
-        eval "$(awk -v f="^${_f}\\(\\)" '$0 ~ f,/^\}$/' <<<"$r36_src")"
-    done
-    r36_probe() {
-        if _spawn_input_ready "$1" codex; then echo READY; else echo NOTREADY; fi
-    }
-    sleep 1
-    r36_early="$(r36_probe "$r36_pane")"
-    sleep 3.5
-    r36_mid="$(r36_probe "$r36_pane")"
-    sleep 3.5
-    r36_late="$(r36_probe "$r36_pane")"
-    assert_eq "readiness (#36): 'model: loading' is NOT ready" "NOTREADY" "$r36_early"
-    assert_eq "readiness (#36): an MCP start-up progress line is NOT ready" "NOTREADY" "$r36_mid"
-    assert_eq "readiness (#36): the settled screen IS ready" "READY" "$r36_late"
-    tmux kill-pane -t "$r36_pane" 2>/dev/null || true
-fi
-tmux kill-session -t r36probe 2>/dev/null || true
-rm -f "$r36_stub"
-unset r36_stub r36_pane r36_early r36_mid r36_late r36_src _f
-fi
+# ── #36: launch-time delivery waits for READINESS, not for a clock — RETIRED (B glue cut 2) ────────
+# 4 assertion(s) went with their subject: the core delivers to panes itself (src/deliver.rs): the input-region sensor,
+# the notice transport and the paste/submit machinery are all its, and the bash
+# bodies these assertions called are gone.
 
 # ── #30: a resumed pane reports the TOOL, not bash ───────────────────
 if _itest_section '#30: a resumed pane reports the TOOL, not bash'; then
-# The acceptance measurement from the issue, run against real panes with a stub
-# "tool" so no agent is involved — the question is process shape, not behaviour.
-R30_SRV="ae-r30-$$"
-# The suite's own interpreter, absolute. A hardcoded /opt/homebrew/bin/bash cannot
-# run on the Linux/WSL half of ae's supported ground.
-R30_SH="$BASH"
-mkdir -p "$TMPDIR/r30" && : >"$TMPDIR/r30/present"
-r30_dec() { # <probe> -> the decider command, built by ae's OWN function
-    # shellcheck disable=SC2016  # deliberate: $1/$2 are the INNER shell's positional
-    # args (ae's path and the probe), passed after the `_` below — not ours to expand.
-    "$R30_SH" -c 'eval "$(awk "/^_launch_resume_decider\(\) \{/,/^\}\$/" "$1")"
-        _launch_resume_decider "$2" "sleep 300" "sleep 301"' _ "$AE" "$1"
+# The acceptance measurement from the issue, run against a REAL resumed session
+# with a stub "tool" so no agent is involved — the question is process shape, not
+# behaviour. Since B glue cut 2 the decider is built inside the core
+# (`resume_decider`, src/launch.rs) and reaches the pane only through the
+# generated launch.<slot>.sh, so the probe is the product end to end: launch,
+# stop, resume, then read what the pane's process actually is.
+#
+# The stub is named `claude` because that prefix is what makes ae bake an upfront
+# UUID and therefore compose a RESUME command at all. It execs `sleep`, so a pane
+# reporting "sleep" proves the decider exec'd its branch and a pane reporting
+# "bash" proves it did not.
+R30_BIN="$TMPDIR/bin30"
+mkdir -p "$R30_BIN"
+cat >"$R30_BIN/claude" <<'R30STUB'
+#!/bin/sh
+exec sleep 300
+R30STUB
+chmod 0755 "$R30_BIN/claude"
+R30_REPO="$(setup_repo)"
+mkdir -p "$R30_REPO/.ae"
+cat >"$R30_REPO/.ae/config" <<'EOF'
+[profiles]
+stubclaude = "claude --model stub"
+
+[roster]
+stubclaude = stubclaude
+
+[workspace]
+main = stubclaude
+layout = vertical
+EOF
+r30_cmd() { # -> the main pane's process, as tmux reports it
+    tmux list-panes -s -t r30sess -F '#{@ae_slot} #{pane_current_command}' 2>/dev/null |
+        awk '$1=="main"{print $2; exit}'
 }
-r30_hit="$(r30_dec "test -f $TMPDIR/r30/present")"
-r30_miss="$(r30_dec "test -f $TMPDIR/r30/absent")"
-command tmux -L "$R30_SRV" new-session -d -s s -n boot "$R30_SH -lc 'sleep 300'" 2>/dev/null
-# default-shell is AMBIENT — inherited from whoever started the server (fish on this
-# box) — and tmux runs each window's command through it. A shell that does not
-# exec-optimise reports ITSELF for every window, hit miss and chain alike, and the
-# control stops discriminating without failing. Pin it to the suite's bash.
-command tmux -L "$R30_SRV" set-option -g default-shell "$R30_SH" >/dev/null 2>&1 || true
-command tmux -L "$R30_SRV" new-window -d -t s -n hit "$R30_SH -lc $(printf %q "$r30_hit")" 2>/dev/null
-command tmux -L "$R30_SRV" new-window -d -t s -n miss "$R30_SH -lc $(printf %q "$r30_miss")" 2>/dev/null
-command tmux -L "$R30_SRV" new-window -d -t s -n chain "$R30_SH -lc 'sleep 300 || sleep 301'" 2>/dev/null
+(cd "$R30_REPO" && PATH="$R30_BIN:$PATH" "$AE" --local r30sess >/dev/null 2>&1 || true)
+wait_for_session "r30sess"
 sleep 3
-r30_read() { command tmux -L "$R30_SRV" list-panes -a -F '#{window_name} #{pane_current_command}' 2>/dev/null | awk -v w="$1" '$1==w{print $2; exit}'; }
-# PRECONDITION, asserted before anything is concluded from the two arms: this is the
-# defect's own signature. If a chain does NOT report bash here, the environment cannot
-# tell the shapes apart and green below would mean nothing.
-assert_eq "resume (#30) PRECONDITION: a '||' chain reports bash in this environment" "bash" "$(r30_read chain)"
-assert_eq "resume (#30): the probe-HIT branch reports the tool, not bash" "sleep" "$(r30_read hit)"
-assert_eq "resume (#30): the probe-MISS branch reports the tool, not bash" "sleep" "$(r30_read miss)"
+R30_UUID="$(sed -n 's/^harness_session.main=//p' "$HOME/.ae/sessions/r30sess/meta" 2>/dev/null | head -1 || true)"
+assert_eq "resume (#30) SETUP: the first launch baked an upfront session id" "1" \
+    "$([[ "$R30_UUID" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] && echo 1 || echo 0)"
+# PRECONDITION, asserted before anything is concluded from the two arms below:
+# a `A || B` chain DOES keep bash as the pane process in this environment. If it
+# does not, the environment cannot tell the two shapes apart and green means
+# nothing. Run on its own server so nothing here touches the session under test.
+R30_SRV="ae-r30-$$"
+command tmux -L "$R30_SRV" new-session -d -s s -n chain "$BASH -lc 'sleep 300 || sleep 301'" 2>/dev/null
+sleep 2
+assert_eq "resume (#30) PRECONDITION: a '||' chain reports bash in this environment" "bash" \
+    "$(command tmux -L "$R30_SRV" list-panes -a -F '#{window_name} #{pane_current_command}' 2>/dev/null |
+        awk '$1=="chain"{print $2; exit}')"
 command tmux -L "$R30_SRV" kill-server 2>/dev/null || true
-rm -rf "$TMPDIR/r30"
-unset R30_SRV R30_SH r30_hit r30_miss
+# (a) The RESUME branch. Claude's probe is the transcript's existence under
+# ~/.claude/projects/<cwd with / turned into ->/<uuid>.jsonl, so planting that
+# file is what makes the decider choose `--resume`.
+"$AE" stop r30sess >/dev/null 2>&1 || true
+sleep 1
+R30_PROJ="$HOME/.claude/projects/$(cd "$R30_REPO" && pwd | tr / -)"
+mkdir -p "$R30_PROJ"
+: >"$R30_PROJ/${R30_UUID}.jsonl"
+(cd "$R30_REPO" && PATH="$R30_BIN:$PATH" "$AE" r30sess >/dev/null 2>&1 || true)
+wait_for_session "r30sess"
+sleep 3
+assert_eq "resume (#30): the probe-HIT branch reports the tool, not bash" "sleep" "$(r30_cmd)"
+# (b) The FALLBACK branch, same decider, other arm: no transcript, so it must
+# exec `--continue` — and still exec, not chain.
+"$AE" stop r30sess >/dev/null 2>&1 || true
+sleep 1
+rm -f "$R30_PROJ/${R30_UUID}.jsonl"
+(cd "$R30_REPO" && PATH="$R30_BIN:$PATH" "$AE" r30sess >/dev/null 2>&1 || true)
+wait_for_session "r30sess"
+sleep 3
+assert_eq "resume (#30): the probe-MISS branch reports the tool, not bash" "sleep" "$(r30_cmd)"
+"$AE" end -f r30sess >/dev/null 2>&1 || true
+rm -rf "$R30_BIN" "$R30_PROJ"
+unset R30_BIN R30_REPO R30_UUID R30_PROJ R30_SRV
+unset -f r30_cmd
 fi
 
 # ── #48: session archives, end to end ────────────────────────────────
@@ -5953,447 +5574,37 @@ rm -rf "$HOME/.ae/archive/.publishing.11111111-2222-3333-4444-555555555555"
 "$AE" end -f --keep-history arch-dup >/dev/null 2>&1 || true
 fi
 
-# ── #48 P3.3: archive publish routes through the pinned core; AE_CORE= falls back ──
-if _itest_section '#48 P3.3: archive publish routes through the core, AE_CORE= falls back'; then
-# The Rust core owns publication when a session pins one. This proves the LIFECYCLE
-# routing: a real ended session reaches the core, bash consumes its path/files/bytes
-# line into the "Archived" summary, and the override forces the reference bash body.
-# It needs the built core; a tree without one skips loudly rather than passing hollow.
-P33_CORE="${AE_CORE_BIN:-$(dirname "$AE")/target/debug/ae}"
-if [[ -x "$P33_CORE" ]]; then
-    P33_VER="$("$P33_CORE" --version 2>/dev/null | awk '{print $NF}')"
-    P33_MARK="$TMPDIR/p33-core-invoked"
-    P33_WRAP="$TMPDIR/p33-core-wrapper"
-    # A logging wrapper: records an _archive-publish invocation, then execs the real
-    # core — so routing is observable even though a core and bash archive are identical.
-    # shellcheck disable=SC2016  # single quotes are REQUIRED: $1/$@ must reach the generated shim unexpanded
-    printf '#!/bin/sh\ncase "$1" in _archive-publish) echo "$@" >> "%s";; esac\nexec "%s" "$@"\n' \
-        "$P33_MARK" "$P33_CORE" > "$P33_WRAP"
-    chmod +x "$P33_WRAP"
-    : > "$P33_MARK"
+# ── #48 P3.3: archive publish routes through the pinned core; AE_CORE= falls back — RETIRED (B glue cut 2) ────
+# 13 assertion(s) went with their subject: `ae end` is one core operation now (`_end`, src/lifecycle/end.rs) — the verified
+# stop, git, the archive and only then the removal. The sub-entrypoints these
+# sections watched bash call (`_archive-publish`, `_archive-from-preflight`,
+# `_archive-purge`, `_end-local-teardown`, `_end-nonlocal-teardown`) are internal
+# to that one call now, and the session-pinned-core seam they bound to is gone:
+# `_end` resolves the OPERATOR's core, like every other name-taking operation.
 
-    # (1) CORE-ROUTED end.
-    P33_REPO="$(setup_repo)"
-    (cd "$P33_REPO" && "$AE" --local p33-core &) 2>/dev/null
-    wait_for_session "p33-core" 20
-    sleep 1
-    P33_META="$HOME/.ae/sessions/p33-core"
-    P33_UUID="$(grep '^session_id=' "$P33_META/meta" | cut -d= -f2- | tr '[:upper:]' '[:lower:]')"
-    # Bind by REPLACING the empty ae_core lines the launch wrote — a second
-    # ae_core= line would make the frozen grep read a two-line path and fall back.
-    { grep -v '^ae_core=' "$P33_META/meta" | grep -v '^ae_core_version=' ; \
-      printf 'ae_core=%s\nae_core_version=%s\n' "$P33_WRAP" "$P33_VER"; } > "$P33_META/meta.tmp"
-    mv "$P33_META/meta.tmp" "$P33_META/meta"
-    P33_OUT="$("$AE" end -f --keep-history p33-core 2>&1)"
-    P33_ARCH="$HOME/.ae/archive/$P33_UUID"
-    assert_eq "p3.3 route: the core WAS invoked for _archive-publish" "1" \
-        "$([[ -s "$P33_MARK" ]] && echo 1 || echo 0)"
-    assert_contains "p3.3 route: bash consumed the core's line into the Archived summary" \
-        "Archived $P33_UUID" "$P33_OUT"
-    assert_contains "p3.3 route: and the file/byte total" "file(s)," "$P33_OUT"
-    for p33_f in meta digest.md memo.tsv events.jsonl messages; do
-        assert_eq "p3.3 route: the core-published archive has ${p33_f}" "1" \
-            "$([[ -e "$P33_ARCH/$p33_f" ]] && echo 1 || echo 0)"
-    done
-    assert_contains "p3.3 route: meta is the composed archive meta" "archive_version=1" "$(cat "$P33_ARCH/meta")"
-    assert_contains "p3.3 route: local mode records git as not-managed" "git_push_outcome=not-managed" "$(cat "$P33_ARCH/meta")"
-    assert_eq "p3.3 route: dirs 0700, files 0600 in the core's archive" "" "$(
-        p33_bad=""
-        while IFS= read -r p33_p; do
-            p33_m="$(stat -f '%Lp' "$p33_p" 2>/dev/null || stat -c '%a' "$p33_p" 2>/dev/null)"
-            if [[ -d "$p33_p" ]]; then [[ "$p33_m" == 700 ]] || p33_bad+="$p33_p=$p33_m "
-            else [[ "$p33_m" == 600 ]] || p33_bad+="$p33_p=$p33_m "; fi
-        done < <(find "$P33_ARCH" -mindepth 1)
-        printf '%s' "$p33_bad"
-    )"
-    assert_eq "p3.3 route: no publisher claim is left behind" "0" \
-        "$(find "$HOME/.ae/archive" -maxdepth 1 -name '.publishing.*' | grep -c . | tr -d '[:space:]')"
+# ── #48 P3.4: --from preflight and purge route through the core; AE_CORE= falls back — RETIRED (B glue cut 2) ────
+# 16 assertion(s) went with their subject: `ae end` is one core operation now (`_end`, src/lifecycle/end.rs) — the verified
+# stop, git, the archive and only then the removal. The sub-entrypoints these
+# sections watched bash call (`_archive-publish`, `_archive-from-preflight`,
+# `_archive-purge`, `_end-local-teardown`, `_end-nonlocal-teardown`) are internal
+# to that one call now, and the session-pinned-core seam they bound to is gone:
+# `_end` resolves the OPERATOR's core, like every other name-taking operation.
 
-    # (2) NO CORE: there is no bash publisher behind this any more (A.1), so the end
-    # REFUSES. Nothing is archived, and the session is left whole for the operator to
-    # fix their install and retry. AE_CORE= is no longer an escape either — the binding
-    # is cleared instead, the only shape that can still produce "no usable core".
-    : > "$P33_MARK"
-    P33_REPO2="$(setup_repo)"
-    (cd "$P33_REPO2" && "$AE" --local p33-fallback &) 2>/dev/null
-    wait_for_session "p33-fallback" 20
-    sleep 1
-    P33_META2="$HOME/.ae/sessions/p33-fallback"
-    P33_UUID2="$(grep '^session_id=' "$P33_META2/meta" | cut -d= -f2- | tr '[:upper:]' '[:lower:]')"
-    { grep -v '^ae_core=' "$P33_META2/meta" | grep -v '^ae_core_version=' ; \
-      printf 'ae_core=\nae_core_version=\n'; } > "$P33_META2/meta.tmp"
-    mv "$P33_META2/meta.tmp" "$P33_META2/meta"
-    P33_RC2=0
-    P33_OUT2="$("$AE" end -f --keep-history p33-fallback 2>&1)" || P33_RC2=$?
-    assert_eq "p3.3 no-core: the core was not invoked (there was none)" "0" \
-        "$([[ -s "$P33_MARK" ]] && echo 1 || echo 0)"
-    assert_contains "p3.3 no-core: the end refuses, naming the required core" \
-        "the ae core is required for '_archive-publish'" "$P33_OUT2"
-    assert_eq "p3.3 no-core: it exits non-zero" "1" "$([[ $P33_RC2 -ne 0 ]] && echo 1 || echo 0)"
-    assert_not_exists "p3.3 no-core: and nothing was archived" "$HOME/.ae/archive/$P33_UUID2"
-    assert_eq "p3.3 no-core: the session state is still there" "1" \
-        "$([[ -d "$P33_META2" ]] && echo 1 || echo 0)"
-    "$AE" end -f --purge-history p33-fallback >/dev/null 2>&1 || rm -rf "$P33_META2"
-else
-    echo "  SKIP #48 P3.3 core routing: no built core at ${P33_CORE} (run: cargo build)"
-fi
-fi
+# ── #79 P3.5: local teardown routes through the core — RETIRED (B glue cut 2) ──────────────────────
+# 14 assertion(s) went with their subject: `ae end` is one core operation now (`_end`, src/lifecycle/end.rs) — the verified
+# stop, git, the archive and only then the removal. The sub-entrypoints these
+# sections watched bash call (`_archive-publish`, `_archive-from-preflight`,
+# `_archive-purge`, `_end-local-teardown`, `_end-nonlocal-teardown`) are internal
+# to that one call now, and the session-pinned-core seam they bound to is gone:
+# `_end` resolves the OPERATOR's core, like every other name-taking operation.
 
-# ── #48 P3.4: --from preflight and purge route through the core; AE_CORE= falls back ──
-if _itest_section '#48 P3.4: --from and purge route through the core, AE_CORE= falls back'; then
-# P3.4 moves the read-only --from preflight and the destructive --purge-history deletion
-# into the typed core, both sharing the ONE archive validator/root/claim implementation
-# (src/archive/store.rs) with publish. This proves the LIFECYCLE routing for both, which
-# bind DIFFERENTLY: --from runs before any session exists, so it resolves the operator's
-# core input directly (AE_CORE_BIN), while purge routes through the ended session's pinned
-# core exactly as publish does. Needs the built core; a tree without one skips loudly.
-P34_CORE="${AE_CORE_BIN:-$(dirname "$AE")/target/debug/ae}"
-if [[ -x "$P34_CORE" ]]; then
-    P34_VER="$("$P34_CORE" --version 2>/dev/null | awk '{print $NF}')"
-    P34_FROM_MARK="$TMPDIR/p34-from-invoked"
-    P34_PURGE_MARK="$TMPDIR/p34-purge-invoked"
-    P34_WRAP="$TMPDIR/p34-core-wrapper"
-    # A logging wrapper: records _archive-from-preflight / _archive-purge invocations,
-    # then execs the real core — routing is observable though core and bash results agree.
-    # shellcheck disable=SC2016  # single quotes are REQUIRED: $1/$@ must reach the generated shim unexpanded
-    printf '#!/bin/sh\ncase "$1" in _archive-from-preflight) echo "$@" >> "%s";; _archive-purge) echo "$@" >> "%s";; esac\nexec "%s" "$@"\n' \
-        "$P34_FROM_MARK" "$P34_PURGE_MARK" "$P34_CORE" > "$P34_WRAP"
-    chmod +x "$P34_WRAP"
-
-    # A real parent archive to inherit from.
-    P34_REPO="$(setup_repo)"
-    (cd "$P34_REPO" && "$AE" --local p34-parent &) 2>/dev/null
-    wait_for_session "p34-parent" 20
-    sleep 1
-    P34_UUID="$(grep '^session_id=' "$HOME/.ae/sessions/p34-parent/meta" | cut -d= -f2- | tr '[:upper:]' '[:lower:]')"
-    "$AE" end -f --keep-history p34-parent >/dev/null 2>&1
-    assert_eq "p3.4 setup: a real parent archive exists" "1" \
-        "$([[ -f "$HOME/.ae/archive/$P34_UUID/digest.md" ]] && echo 1 || echo 0)"
-
-    # (1) --from routes through the core (preflight resolves AE_CORE_BIN directly).
-    : > "$P34_FROM_MARK"
-    (cd "$P34_REPO" && AE_CORE_BIN="$P34_WRAP" "$AE" --local p34-child --from "$P34_UUID" &) 2>/dev/null
-    wait_for_session "p34-child" 20
-    sleep 1
-    assert_eq "p3.4 route: the core WAS invoked for _archive-from-preflight" "1" \
-        "$([[ -s "$P34_FROM_MARK" ]] && echo 1 || echo 0)"
-    assert_contains "p3.4 route: and the child records the parent it inherited" \
-        "parent_archive_id=$P34_UUID" "$(cat "$HOME/.ae/sessions/p34-child/meta")"
-    "$AE" end -f --purge-history p34-child >/dev/null 2>&1 || true
-
-    # (2) NO CORE INPUT: the preflight has no bash body behind it (A.1), so the launch
-    # REFUSES before any session exists — the whole point of running it ahead of the
-    # first mkdir. AE_CORE= is not an escape; an absent core input is.
-    : > "$P34_FROM_MARK"
-    P34_NC_RC=0
-    P34_NC_OUT="$(cd "$P34_REPO" && env -u AE_CORE_BIN CONFIG_FILE=/dev/null \
-        "$AE" --local p34-child2 --from "$P34_UUID" 2>&1)" || P34_NC_RC=$?
-    assert_eq "p3.4 no-core: the core was not invoked for --from" "0" \
-        "$([[ -s "$P34_FROM_MARK" ]] && echo 1 || echo 0)"
-    assert_contains "p3.4 no-core: the launch refuses, naming the required core" \
-        "the ae core is required for '_archive-from-preflight'" "$P34_NC_OUT"
-    assert_eq "p3.4 no-core: it exits non-zero" "1" "$([[ $P34_NC_RC -ne 0 ]] && echo 1 || echo 0)"
-    assert_not_exists "p3.4 no-core: and no session state was created" "$HOME/.ae/sessions/p34-child2"
-    unset P34_NC_RC P34_NC_OUT
-
-    # (3) purge routes through the ended session's PINNED core. Publish a real archive,
-    # relaunch the same name pointed back at it with the core pinned in meta, then purge.
-    : > "$P34_PURGE_MARK"
-    (cd "$P34_REPO" && "$AE" --local p34-purge &) 2>/dev/null
-    wait_for_session "p34-purge" 20
-    sleep 1
-    P34_META="$HOME/.ae/sessions/p34-purge"
-    P34_PUUID="$(grep '^session_id=' "$P34_META/meta" | cut -d= -f2- | tr '[:upper:]' '[:lower:]')"
-    "$AE" end -f --keep-history p34-purge >/dev/null 2>&1
-    assert_eq "p3.4 setup: the purge target archive exists" "1" \
-        "$([[ -f "$HOME/.ae/archive/$P34_PUUID/meta" ]] && echo 1 || echo 0)"
-    (cd "$P34_REPO" && "$AE" --local p34-purge &) 2>/dev/null
-    wait_for_session "p34-purge" 20
-    sleep 1
-    _sed_i -e "s|^session_id=.*|session_id=$P34_PUUID|" "$P34_META/meta"
-    { grep -v '^ae_core=' "$P34_META/meta" | grep -v '^ae_core_version=' ; \
-      printf 'ae_core=%s\nae_core_version=%s\n' "$P34_WRAP" "$P34_VER"; } > "$P34_META/meta.tmp"
-    mv "$P34_META/meta.tmp" "$P34_META/meta"
-    P34_POUT="$("$AE" end -f --purge-history p34-purge 2>&1)"
-    assert_eq "p3.4 route: the core WAS invoked for _archive-purge" "1" \
-        "$([[ -s "$P34_PURGE_MARK" ]] && echo 1 || echo 0)"
-    assert_contains "p3.4 route: bash reports the core's purge" "Purged archive $P34_PUUID" "$P34_POUT"
-    assert_not_exists "p3.4 route: the archive is gone" "$HOME/.ae/archive/$P34_PUUID"
-    assert_eq "p3.4 route: and no purge claim is left behind" "0" \
-        "$(find "$HOME/.ae/archive" -maxdepth 1 -name '.publishing.*' | grep -c . | tr -d '[:space:]')"
-
-    # (4) NO CORE: the destructive purge has no bash body behind it (A.1). The end
-    # REFUSES and the archive it was asked to delete is still there — a purge that
-    # cannot be proven durable must not be reported as done.
-    : > "$P34_PURGE_MARK"
-    (cd "$P34_REPO" && "$AE" --local p34-purge2 &) 2>/dev/null
-    wait_for_session "p34-purge2" 20
-    sleep 1
-    P34_META2="$HOME/.ae/sessions/p34-purge2"
-    P34_P2UUID="$(grep '^session_id=' "$P34_META2/meta" | cut -d= -f2- | tr '[:upper:]' '[:lower:]')"
-    "$AE" end -f --keep-history p34-purge2 >/dev/null 2>&1
-    (cd "$P34_REPO" && "$AE" --local p34-purge2 &) 2>/dev/null
-    wait_for_session "p34-purge2" 20
-    sleep 1
-    _sed_i -e "s|^session_id=.*|session_id=$P34_P2UUID|" "$P34_META2/meta"
-    { grep -v '^ae_core=' "$P34_META2/meta" | grep -v '^ae_core_version=' ; \
-      printf 'ae_core=\nae_core_version=\n'; } > "$P34_META2/meta.tmp"
-    mv "$P34_META2/meta.tmp" "$P34_META2/meta"
-    P34_PRC2=0
-    P34_POUT2="$("$AE" end -f --purge-history p34-purge2 2>&1)" || P34_PRC2=$?
-    assert_eq "p3.4 no-core: the core was not invoked for purge (there was none)" "0" \
-        "$([[ -s "$P34_PURGE_MARK" ]] && echo 1 || echo 0)"
-    assert_contains "p3.4 no-core: the end refuses, naming the required core" \
-        "the ae core is required for '_archive-purge'" "$P34_POUT2"
-    assert_eq "p3.4 no-core: it exits non-zero" "1" "$([[ $P34_PRC2 -ne 0 ]] && echo 1 || echo 0)"
-    assert_eq "p3.4 no-core: and the archive it was asked to purge is still there" "1" \
-        "$([[ -f "$HOME/.ae/archive/$P34_P2UUID/meta" ]] && echo 1 || echo 0)"
-    unset P34_PRC2
-
-    unset P34_UUID P34_PUUID P34_P2UUID P34_POUT P34_POUT2 P34_META P34_META2 P34_VER P34_WRAP P34_FROM_MARK P34_PURGE_MARK P34_CORE P34_REPO
-else
-    echo "  SKIP #48 P3.4 core routing: no built core at ${P34_CORE} (run: cargo build)"
-fi
-fi
-
-# ── #79 P3.5: local teardown routes through the core; AE_CORE= falls back; the ──
-# ──          launch guard refuses a standing tombstone                         ──
-if _itest_section '#79 P3.5: local teardown routes through the core, AE_CORE= falls back, tombstone guards launch'; then
-# P3.5 moves the canonical session-state removal of a grammar-valid LOCAL session into
-# the pinned core: a rename-to-tombstone commit boundary, durable removal, and a launch
-# guard that refuses a standing `.ending.<name>`. This proves (1) a real local `ae end`
-# routes teardown through the session's PINNED core and removes the session with no
-# tombstone left; (2) AE_CORE= forces the reference bash `rm` and still removes it, no
-# core call; (3) a standing tombstone refuses a fresh launch of the same name. Needs the
-# built core; a tree without one skips loudly.
-P35_CORE="${AE_CORE_BIN:-$(dirname "$AE")/target/debug/ae}"
-if [[ -x "$P35_CORE" ]]; then
-    P35_VER="$("$P35_CORE" --version 2>/dev/null | awk '{print $NF}')"
-    P35_MARK="$TMPDIR/p35-teardown-invoked"
-    P35_WRAP="$TMPDIR/p35-core-wrapper"
-    # A logging wrapper: records _end-local-teardown invocations, then execs the real
-    # core — routing is observable though the real teardown still runs to completion.
-    # shellcheck disable=SC2016  # single quotes are REQUIRED: $1/$@ must reach the generated shim unexpanded
-    printf '#!/bin/sh\ncase "$1" in _end-local-teardown) echo "$@" >> "%s";; esac\nexec "%s" "$@"\n' \
-        "$P35_MARK" "$P35_CORE" > "$P35_WRAP"
-    chmod +x "$P35_WRAP"
-    P35_REPO="$(setup_repo)"
-
-    # (1) A real local end routes teardown through the session's PINNED core and removes
-    #     the session with NO tombstone left behind.
-    : > "$P35_MARK"
-    (cd "$P35_REPO" && "$AE" --local p35-end &) 2>/dev/null
-    wait_for_session "p35-end" 20
-    sleep 1
-    P35_META="$HOME/.ae/sessions/p35-end"
-    { grep -v '^ae_core=' "$P35_META/meta" | grep -v '^ae_core_version=' ; \
-      printf 'ae_core=%s\nae_core_version=%s\n' "$P35_WRAP" "$P35_VER"; } > "$P35_META/meta.tmp"
-    mv "$P35_META/meta.tmp" "$P35_META/meta"
-    P35_OUT="$("$AE" end -f --purge-history p35-end 2>&1)"
-    assert_eq "p3.5 route: the core WAS invoked for _end-local-teardown" "1" \
-        "$([[ -s "$P35_MARK" ]] && echo 1 || echo 0)"
-    assert_contains "p3.5 route: bash reports the end" "Ended" "$P35_OUT"
-    assert_not_exists "p3.5 route: the session state is gone" "$HOME/.ae/sessions/p35-end"
-    assert_not_exists "p3.5 route: and no teardown tombstone is left" "$HOME/.ae/sessions/.ending.p35-end"
-
-    # (2) NO CORE: there is no bash rm behind the teardown any more (A.1), so the end
-    # REFUSES and the session state survives for the operator to fix their install.
-    : > "$P35_MARK"
-    (cd "$P35_REPO" && "$AE" --local p35-end2 &) 2>/dev/null
-    wait_for_session "p35-end2" 20
-    sleep 1
-    P35_META2="$HOME/.ae/sessions/p35-end2"
-    { grep -v '^ae_core=' "$P35_META2/meta" | grep -v '^ae_core_version=' ; \
-      printf 'ae_core=\nae_core_version=\n'; } > "$P35_META2/meta.tmp"
-    mv "$P35_META2/meta.tmp" "$P35_META2/meta"
-    P35_RC2=0
-    P35_OUT2="$("$AE" end -f --purge-history p35-end2 2>&1)" || P35_RC2=$?
-    assert_eq "p3.5 no-core: the core was not invoked (there was none)" "0" \
-        "$([[ -s "$P35_MARK" ]] && echo 1 || echo 0)"
-    assert_contains "p3.5 no-core: the end refuses, naming the required core" \
-        "the ae core is required for" "$P35_OUT2"
-    assert_eq "p3.5 no-core: it exits non-zero" "1" "$([[ $P35_RC2 -ne 0 ]] && echo 1 || echo 0)"
-    assert_eq "p3.5 no-core: and the session state is still there" "1" \
-        "$([[ -d "$P35_META2" ]] && echo 1 || echo 0)"
-    rm -rf "$P35_META2"
-    unset P35_RC2
-
-    # (3) A standing tombstone refuses a fresh launch of the same name (the launch guard).
-    #     _timeout guards against a regression that lets the launch proceed and attach.
-    mkdir -p "$HOME/.ae/sessions/.ending.p35-guard/messages"
-    P35_GOUT="$(cd "$P35_REPO" && _timeout 15 "$AE" --local p35-guard 2>&1; echo "rc=$?")"
-    assert_contains "p3.5 guard: a standing tombstone refuses the launch" \
-        "a previous teardown of 'p35-guard' did not complete" "$P35_GOUT"
-    assert_contains "p3.5 guard: and the launch exits non-zero (not a hang)" "rc=1" "$P35_GOUT"
-    assert_eq "p3.5 guard: the launch did NOT create a session for the name" "0" \
-        "$([[ -e "$HOME/.ae/sessions/p35-guard" ]] && echo 1 || echo 0)"
-    assert_eq "p3.5 guard: and the standing tombstone is left for manual recovery" "1" \
-        "$([[ -e "$HOME/.ae/sessions/.ending.p35-guard" ]] && echo 1 || echo 0)"
-    rm -rf "$HOME/.ae/sessions/.ending.p35-guard"
-
-    # (3b) A DANGLING `.ending.<name>` symlink also refuses the launch. `-e` alone is
-    #      false for a broken link, but the core treats that node as a standing
-    #      tombstone (lstat), so the guard must too — else the name is silently reused.
-    ln -s "$HOME/.ae/sessions/nonexistent-target-xyz" "$HOME/.ae/sessions/.ending.p35-dangling"
-    P35_DOUT="$(cd "$P35_REPO" && _timeout 15 "$AE" --local p35-dangling 2>&1; echo "rc=$?")"
-    assert_contains "p3.5 guard: a DANGLING tombstone symlink still refuses the launch" \
-        "a previous teardown of 'p35-dangling' did not complete" "$P35_DOUT"
-    assert_eq "p3.5 guard: the dangling-guarded name did NOT create a session" "0" \
-        "$([[ -e "$HOME/.ae/sessions/p35-dangling" ]] && echo 1 || echo 0)"
-    rm -f "$HOME/.ae/sessions/.ending.p35-dangling"
-
-    unset P35_VER P35_MARK P35_WRAP P35_REPO P35_META P35_META2 P35_OUT P35_OUT2 P35_GOUT P35_DOUT P35_CORE
-else
-    echo "  SKIP #79 P3.5 core routing: no built core at ${P35_CORE} (run: cargo build)"
-fi
-fi
-
-# ── #79 P3.6: nonlocal (copy/worktree) teardown routes through the core; preserve; ──
-# ──          AE_CORE= falls back; the worktrees tombstone guards launch             ──
-if _itest_section '#79 P3.6: nonlocal teardown routes through the core, preserve, AE_CORE= falls back, worktrees tombstone guards launch'; then
-# P3.6 moves the nonlocal canonical + managed-workdir removal into the pinned core:
-# a full copy is tombstone-removed, a git worktree is removed by a sealed
-# `git worktree remove`, and preserve keeps the workdir. This proves (1) a real copy
-# end and (2) a real worktree end route through the session's PINNED core and remove
-# BOTH resources; (3) a no-origin worktree end preserves the workdir; (4) AE_CORE=
-# forces the reference bash path; (5) a standing worktrees/.ending.<name> refuses a
-# fresh launch. Needs the built core; a tree without one skips loudly.
-P36_CORE="${AE_CORE_BIN:-$(dirname "$AE")/target/debug/ae}"
-if [[ -x "$P36_CORE" ]]; then
-    P36_VER="$("$P36_CORE" --version 2>/dev/null | awk '{print $NF}')"
-    P36_MARK="$TMPDIR/p36-teardown-invoked"
-    P36_WRAP="$TMPDIR/p36-core-wrapper"
-    # shellcheck disable=SC2016  # single quotes are REQUIRED: $1/$@ must reach the generated shim unexpanded
-    printf '#!/bin/sh\ncase "$1" in _end-nonlocal-teardown) echo "$@" >> "%s";; esac\nexec "%s" "$@"\n' \
-        "$P36_MARK" "$P36_CORE" > "$P36_WRAP"
-    chmod +x "$P36_WRAP"
-
-    _p36_pin_core() { # <session>
-        local m="$HOME/.ae/sessions/$1"
-        { grep -v '^ae_core=' "$m/meta" | grep -v '^ae_core_version=' ; \
-          printf 'ae_core=%s\nae_core_version=%s\n' "$P36_WRAP" "$P36_VER"; } > "$m/meta.tmp"
-        mv "$m/meta.tmp" "$m/meta"
-    }
-
-    # A source repo WITH a remote, HEAD pushed, so a nonlocal end takes the FULL
-    # removal (non-preserve) path rather than preserving a no-remote workdir.
-    P36_BARE="$TMPDIR/p36-bare.git"
-    git init --bare -q "$P36_BARE"
-    P36_REPO="$(setup_repo)"
-    git -C "$P36_REPO" remote add origin "$P36_BARE"
-    git -C "$P36_REPO" push -q origin HEAD:refs/heads/main 2>/dev/null || true
-
-    # (1) Real COPY end: both resources removed through the core.
-    : > "$P36_MARK"
-    (cd "$P36_REPO" && "$AE" --copy p36-copy &) 2>/dev/null
-    wait_for_session "p36-copy" 20
-    sleep 1
-    assert_eq "p3.6 setup: the copy session records mode=full" "1" \
-        "$(grep -qx 'mode=full' "$HOME/.ae/sessions/p36-copy/meta" && echo 1 || echo 0)"
-    _p36_pin_core p36-copy
-    P36_OUT="$("$AE" end -f --purge-history p36-copy 2>&1)"
-    assert_eq "p3.6 route: the core WAS invoked for _end-nonlocal-teardown (copy)" "1" \
-        "$([[ -s "$P36_MARK" ]] && echo 1 || echo 0)"
-    assert_contains "p3.6 route: bash reports the end (copy)" "Ended" "$P36_OUT"
-    assert_not_exists "p3.6 route: the copy session state is gone" "$HOME/.ae/sessions/p36-copy"
-    assert_not_exists "p3.6 route: the copy workdir is gone" "$HOME/.ae/worktrees/p36-copy"
-    assert_not_exists "p3.6 route: no session tombstone" "$HOME/.ae/sessions/.ending.p36-copy"
-    assert_not_exists "p3.6 route: no workdir tombstone" "$HOME/.ae/worktrees/.ending.p36-copy"
-
-    # (2) Real WORKTREE end: worktree removed through the core, origin repo untouched.
-    : > "$P36_MARK"
-    (cd "$P36_REPO" && "$AE" --worktree p36-wt &) 2>/dev/null
-    wait_for_session "p36-wt" 20
-    sleep 1
-    assert_eq "p3.6 setup: the worktree session records mode=git" "1" \
-        "$(grep -qx 'mode=git' "$HOME/.ae/sessions/p36-wt/meta" && echo 1 || echo 0)"
-    _p36_pin_core p36-wt
-    # BLOCKER regression (legacy cleanup after core success): plant a sentinel at the
-    # meta-recorded origin's legacy .ae/<name> path. A non-preserve core end owns both
-    # resources and must return BEFORE the legacy `rm -rf "${origin}/.ae/<name>"`, so
-    # this sentinel must survive — it goes red if that legacy delete still runs.
-    P36_WT_ORIGIN="$(grep '^origin=' "$HOME/.ae/sessions/p36-wt/meta" | cut -d= -f2-)"
-    mkdir -p "$P36_WT_ORIGIN/.ae/p36-wt"; : > "$P36_WT_ORIGIN/.ae/p36-wt/sentinel"
-    P36_OUT2="$("$AE" end -f --purge-history p36-wt 2>&1)"
-    assert_eq "p3.6 route: the core WAS invoked for _end-nonlocal-teardown (worktree)" "1" \
-        "$([[ -s "$P36_MARK" ]] && echo 1 || echo 0)"
-    assert_contains "p3.6 route: bash reports the end (worktree)" "Ended" "$P36_OUT2"
-    assert_not_exists "p3.6 route: the worktree session state is gone" "$HOME/.ae/sessions/p36-wt"
-    assert_not_exists "p3.6 route: the worktree workdir is gone" "$HOME/.ae/worktrees/p36-wt"
-    assert_eq "p3.6 route: the origin repo is untouched" "1" \
-        "$([[ -d "$P36_REPO/.git" ]] && echo 1 || echo 0)"
-    assert_eq "p3.6 route: a non-preserve core end leaves origin/.ae/<name> intact" "1" \
-        "$([[ -f "$P36_WT_ORIGIN/.ae/p36-wt/sentinel" ]] && echo 1 || echo 0)"
-    rm -rf "$P36_WT_ORIGIN/.ae/p36-wt"
-
-    # (3) Preserve: a NO-origin worktree keeps its workdir, removes canonical only.
-    : > "$P36_MARK"
-    P36_NOREMOTE="$(setup_repo)"
-    (cd "$P36_NOREMOTE" && "$AE" --worktree p36-pres &) 2>/dev/null
-    wait_for_session "p36-pres" 20
-    sleep 1
-    _p36_pin_core p36-pres
-    # BLOCKER regression (legacy cleanup after core success): a preserve end promises
-    # the workdir is left byte-for-byte, yet the legacy `rm -rf
-    # "${WORKTREES_DIR}/<name>/.ae/<name>"` would delete a SUBTREE of that preserved
-    # workdir, and `rm -rf "${origin}/.ae/<name>"` would touch origin. Plant a sentinel
-    # in each; both must survive a core-success preserve (the fix returns before the
-    # legacy deletes). These go red if the legacy cleanup still runs after core success.
-    mkdir -p "$HOME/.ae/worktrees/p36-pres/.ae/p36-pres"
-    : > "$HOME/.ae/worktrees/p36-pres/.ae/p36-pres/sentinel"
-    P36_PRES_ORIGIN="$(grep '^origin=' "$HOME/.ae/sessions/p36-pres/meta" | cut -d= -f2-)"
-    mkdir -p "$P36_PRES_ORIGIN/.ae/p36-pres"; : > "$P36_PRES_ORIGIN/.ae/p36-pres/sentinel"
-    P36_POUT="$("$AE" end -f --purge-history p36-pres 2>&1)"
-    assert_contains "p3.6 preserve: the core was invoked with --preserve" "--preserve" "$(cat "$P36_MARK")"
-    assert_contains "p3.6 preserve: bash reports the preserved directory" "Directory preserved" "$P36_POUT"
-    assert_not_exists "p3.6 preserve: canonical state is gone" "$HOME/.ae/sessions/p36-pres"
-    assert_eq "p3.6 preserve: the workdir is KEPT byte-for-byte" "1" \
-        "$([[ -d "$HOME/.ae/worktrees/p36-pres" ]] && echo 1 || echo 0)"
-    assert_eq "p3.6 preserve: the preserved workdir .ae/<name> subtree survives (no legacy rm)" "1" \
-        "$([[ -f "$HOME/.ae/worktrees/p36-pres/.ae/p36-pres/sentinel" ]] && echo 1 || echo 0)"
-    assert_eq "p3.6 preserve: origin/.ae/<name> is untouched by preserve (no legacy rm)" "1" \
-        "$([[ -f "$P36_PRES_ORIGIN/.ae/p36-pres/sentinel" ]] && echo 1 || echo 0)"
-    rm -rf "$HOME/.ae/worktrees/p36-pres" "$P36_PRES_ORIGIN/.ae/p36-pres"
-
-    # (4) NO CORE: the nonlocal teardown owns BOTH resources and has no bash path left
-    # behind it (A.1), so the end REFUSES and both survive.
-    : > "$P36_MARK"
-    (cd "$P36_REPO" && "$AE" --copy p36-copy2 &) 2>/dev/null
-    wait_for_session "p36-copy2" 20
-    sleep 1
-    { grep -v '^ae_core=' "$HOME/.ae/sessions/p36-copy2/meta" | grep -v '^ae_core_version=' ; \
-      printf 'ae_core=\nae_core_version=\n'; } > "$HOME/.ae/sessions/p36-copy2/meta.tmp"
-    mv "$HOME/.ae/sessions/p36-copy2/meta.tmp" "$HOME/.ae/sessions/p36-copy2/meta"
-    P36_RC4=0
-    P36_OUT4="$("$AE" end -f --purge-history p36-copy2 2>&1)" || P36_RC4=$?
-    assert_eq "p3.6 no-core: the core was not invoked (there was none)" "0" \
-        "$([[ -s "$P36_MARK" ]] && echo 1 || echo 0)"
-    assert_contains "p3.6 no-core: the end refuses, naming the required core" \
-        "the ae core is required for" "$P36_OUT4"
-    assert_eq "p3.6 no-core: it exits non-zero" "1" "$([[ $P36_RC4 -ne 0 ]] && echo 1 || echo 0)"
-    assert_eq "p3.6 no-core: the copy session state survives" "1" \
-        "$([[ -d "$HOME/.ae/sessions/p36-copy2" ]] && echo 1 || echo 0)"
-    assert_eq "p3.6 no-core: and so does the copy workdir" "1" \
-        "$([[ -d "$HOME/.ae/worktrees/p36-copy2" ]] && echo 1 || echo 0)"
-    rm -rf "$HOME/.ae/sessions/p36-copy2" "$HOME/.ae/worktrees/p36-copy2"
-    unset P36_RC4
-
-    # (5) A standing worktrees/.ending.<name> refuses a fresh launch (the launch guard).
-    mkdir -p "$HOME/.ae/worktrees/.ending.p36-guard/messages"
-    P36_GOUT="$(cd "$P36_REPO" && _timeout 15 "$AE" --worktree p36-guard 2>&1; echo "rc=$?")"
-    assert_contains "p3.6 guard: a standing worktrees tombstone refuses the launch" \
-        "a previous teardown of 'p36-guard' did not complete" "$P36_GOUT"
-    assert_eq "p3.6 guard: the launch created no session for the name" "0" \
-        "$([[ -e "$HOME/.ae/sessions/p36-guard" ]] && echo 1 || echo 0)"
-    assert_eq "p3.6 guard: the standing tombstone is left for manual recovery" "1" \
-        "$([[ -e "$HOME/.ae/worktrees/.ending.p36-guard" ]] && echo 1 || echo 0)"
-    rm -rf "$HOME/.ae/worktrees/.ending.p36-guard"
-
-    unset P36_VER P36_MARK P36_WRAP P36_CORE P36_REPO P36_BARE P36_NOREMOTE P36_OUT P36_OUT2 P36_POUT P36_OUT4 P36_GOUT P36_WT_ORIGIN P36_PRES_ORIGIN
-else
-    echo "  SKIP #79 P3.6 core routing: no built core at ${P36_CORE} (run: cargo build)"
-fi
-fi
+# ── #79 P3.6: nonlocal (copy/worktree) teardown routes through the core — RETIRED (B glue cut 2) ────
+# 28 assertion(s) went with their subject: `ae end` is one core operation now (`_end`, src/lifecycle/end.rs) — the verified
+# stop, git, the archive and only then the removal. The sub-entrypoints these
+# sections watched bash call (`_archive-publish`, `_archive-from-preflight`,
+# `_archive-purge`, `_end-local-teardown`, `_end-nonlocal-teardown`) are internal
+# to that one call now, and the session-pinned-core seam they bound to is gone:
+# `_end` resolves the OPERATOR's core, like every other name-taking operation.
 
 # ── purge: no archive written, and an existing one removed ───────────
 if _itest_section 'purge: no archive written, and an existing one removed'; then
@@ -6600,23 +5811,29 @@ assert_contains "archive-git: no remote is recorded as no-origin, not as a push"
 assert_contains "archive-git: and the preserved work dir is recorded" \
     "preserved_work_dir=$HOME/.ae/worktrees/arch-noorigin" "$(cat "$HOME/.ae/archive/$A48_NUUID/meta")"
 
-# A session that predates session ids: `end` MINTS one under the lock it already holds
-# (migrate-when-you-touch-it), archives under it, and marks it as minted so nothing
-# downstream mistakes it for an id the session actually ran under.
+# A session that predates session ids. BEHAVIOUR CHANGE, recorded here rather than
+# quietly dropped: the frozen bash body MINTED an id under the lock it already held
+# (migrate-when-you-touch-it) and archived under it, marking the archive
+# `archive_id_origin=minted-at-end`. The core-owned `end` REFUSES instead, and keeps
+# everything — same safety posture as the unparseable-id arm below. What is asserted
+# is what the product does now: the refusal names the reason, and nothing is stopped,
+# archived or deleted.
 (cd "$A48_REPO" && "$AE" --local arch-legacy &) 2>/dev/null
 wait_for_session "arch-legacy" 20
 sleep 1
 _sed_i -e "/^session_id=/d" "$HOME/.ae/sessions/arch-legacy/meta"
-a48_leg="$("$AE" end -f --keep-history arch-legacy 2>&1)"
-assert_contains "archive-legacy: a pre-session-id session is minted one rather than stranded" \
-    "Minted a session id for 'arch-legacy'" "$a48_leg"
-A48_LUUID="$(printf '%s' "$a48_leg" | command grep -o 'Archived [0-9a-f-]*' | head -1 | cut -d' ' -f2)"
-assert_eq "archive-legacy: and it really was archived" "1" \
-    "$([[ -n "$A48_LUUID" && -f "$HOME/.ae/archive/$A48_LUUID/meta" ]] && echo 1 || echo 0)"
-assert_contains "archive-legacy: the archive marks the id as minted at archive time" \
-    "archive_id_origin=minted-at-end" "$(cat "$HOME/.ae/archive/$A48_LUUID/meta")"
-assert_contains "archive-legacy: and does not claim the session ran under it" \
-    "source_session_id=-" "$(cat "$HOME/.ae/archive/$A48_LUUID/meta")"
+a48_leg_rc=0
+a48_leg="$("$AE" end -f --keep-history arch-legacy 2>&1)" || a48_leg_rc=$?
+assert_eq "archive-legacy: a pre-session-id session FAILS the end" "1" \
+    "$([[ $a48_leg_rc -ne 0 ]] && echo 1 || echo 0)"
+assert_contains "archive-legacy: and says an id is what is missing" \
+    "records no valid session id" "$a48_leg"
+assert_contains "archive-legacy: ...and that nothing was destroyed" \
+    "NOTHING was deleted" "$a48_leg"
+assert_eq "archive-legacy: the session state is still there" "1" \
+    "$([[ -f "$HOME/.ae/sessions/arch-legacy/meta" ]] && echo 1 || echo 0)"
+printf 'session_id=11111111-2222-3333-4444-555555555555\n' >>"$HOME/.ae/sessions/arch-legacy/meta"
+"$AE" end -f --purge-history arch-legacy >/dev/null 2>&1 || true
 # The other arm: a session_id ae cannot parse is EVIDENCE — refuse, keep everything.
 (cd "$A48_REPO" && "$AE" --local arch-badid &) 2>/dev/null
 wait_for_session "arch-badid" 20
@@ -6633,7 +5850,7 @@ assert_eq "archive-badid: and its session_id is untouched" "not-a-uuid" \
     "$(command grep '^session_id=' "$HOME/.ae/sessions/arch-badid/meta" | cut -d= -f2-)"
 _sed_i -e "s|^session_id=.*|session_id=22222222-3333-4444-5555-666666666666|" "$HOME/.ae/sessions/arch-badid/meta"
 "$AE" end -f --keep-history arch-badid >/dev/null 2>&1 || true
-unset A48_LUUID a48_leg a48_badid a48_badid_rc
+unset a48_leg a48_leg_rc a48_badid a48_badid_rc
 fi
 
 # ── review round 2: the destructive path, through the product ────────────────────
@@ -6687,7 +5904,12 @@ assert_eq "end-freeze: a confirmed KEEP is not carried out as a PURGE" "1" \
     "$([[ $a48_flip_rc -ne 0 ]] && echo 1 || echo 0)"
 assert_contains "end-freeze: and it says the question changed under the answer" \
     "changed between the confirmation and now" "$a48_flip"
-assert_contains "end-freeze: naming what was confirmed" "Confirmed: keep" "$a48_flip"
+# It names the confirmed plan as its own LINE, the one the human read, not a
+# one-word label — so the two questions can be compared side by side.
+assert_contains "end-freeze: naming what was confirmed" \
+    "Confirmed:   - arch-flip: archive ->" "$a48_flip"
+assert_contains "end-freeze: ...beside what it would do now" \
+    "Now:         - arch-flip: NO archive" "$a48_flip"
 assert_eq "end-freeze: the session is still on disk" "1" \
     "$([[ -f "$HOME/.ae/sessions/arch-flip/meta" ]] && echo 1 || echo 0)"
 assert_contains "end-freeze: and it was caught BEFORE the stop, not after it" \
@@ -6746,12 +5968,19 @@ _sed_i -e "s|^session_id=.*|session_id=44444444-5555-6666-7777-888888888888|" "$
 "$AE" end -f --purge-history arch-thief >/dev/null 2>&1 || true
 unset a48_thief a48_thief_rc a48_owner_from a48_thief2 a48_thief2_rc A48_O2UUID
 
-# (I1) The mint fact is recorded where it is created, so a RETRY after a failed
-# publication cannot read a present id and call it launch-assigned.
+# (I1) A FAILED publication leaves a session that can still be ended. The arms that
+# stood here drove the mint-on-end path (a session with no id was given one and the
+# archive recorded `minted-at-end`); the core-owned end refuses a missing id outright
+# instead, which the arch-legacy arm above pins. What is still true, and is what this
+# proves, is the retry itself: the failure preserves everything, and the second attempt
+# publishes normally once the obstruction is gone.
 (cd "$A48_REPO" && "$AE" --local arch-retry &) 2>/dev/null
 wait_for_session "arch-retry" 20
 sleep 1
-_sed_i -e "/^session_id=/d" "$HOME/.ae/sessions/arch-retry/meta"
+# The archive DIRECTORY is keyed by the canonical (lowercase) id; the archive's
+# own `source_session_id` row echoes the meta value verbatim, so both are kept.
+A48_RRAW="$(command grep '^session_id=' "$HOME/.ae/sessions/arch-retry/meta" | cut -d= -f2-)"
+A48_RUUID="$(printf '%s' "$A48_RRAW" | tr '[:upper:]' '[:lower:]')"
 mkdir -p "$HOME/.ae/archive"
 a48_retry_rc=0
 # A standing claim on whatever id gets minted is impossible to pre-create, so the
@@ -6769,15 +5998,14 @@ rm -rf "$HOME/.ae/archive"
 rm -f "$HOME/.ae/archive"
 mkdir -p "$HOME/.ae/archive"
 assert_eq "archive-retry: the first attempt failed" "1" "$([[ $a48_retry_rc -ne 0 ]] && echo 1 || echo 0)"
-assert_contains "archive-retry: but the mint was recorded in the live meta" \
-    "session_id_origin=minted-at-end" "$(cat "$HOME/.ae/sessions/arch-retry/meta")"
-A48_RUUID="$(grep '^session_id=' "$HOME/.ae/sessions/arch-retry/meta" | cut -d= -f2- || true)"
+assert_eq "archive-retry: and left the session whole for the retry" "1" \
+    "$([[ -f "$HOME/.ae/sessions/arch-retry/meta" ]] && echo 1 || echo 0)"
 "$AE" end -f --keep-history arch-retry >/dev/null 2>&1 || true
-assert_contains "archive-retry: so the RETRY still says the id was minted, not launch-assigned" \
-    "archive_id_origin=minted-at-end" "$(cat "$HOME/.ae/archive/$A48_RUUID/meta" 2>/dev/null || echo MISSING)"
-assert_contains "archive-retry: and does not claim the session ran under it" \
-    "source_session_id=-" "$(cat "$HOME/.ae/archive/$A48_RUUID/meta" 2>/dev/null || echo MISSING)"
-unset a48_retry_rc A48_RUUID
+assert_eq "archive-retry: the RETRY publishes once the obstruction is gone" "1" \
+    "$([[ -n "$A48_RUUID" && -f "$HOME/.ae/archive/$A48_RUUID/meta" ]] && echo 1 || echo 0)"
+assert_contains "archive-retry: ...and the archive records the id the session RAN under" \
+    "source_session_id=$A48_RRAW" "$(cat "$HOME/.ae/archive/$A48_RUUID/meta" 2>/dev/null || echo MISSING)"
+unset a48_retry_rc A48_RUUID A48_RRAW
 
 # (I2) A session with no agents is still a session: its memo and events are worth
 # keeping, so it archives with an empty roster rather than being refused.
@@ -6854,9 +6082,13 @@ mkfifo "$A48_LFIFO"
 (
     exec 3>"$A48_LFIFO"
     sleep 5 # the prompt has listed exactly the sessions that existed
-    (cd "$A48_LREPO" && "$AE" --local all-sneaked >/dev/null 2>&1 &)
+    # 3>&-: a child INHERITS open descriptors, so a launch that keeps the fifo's
+    # WRITE end open holds it open forever — the reader never sees EOF and the
+    # prompt blocks (AGENTS.md, issue #4's class). The 'y' carries a NEWLINE for
+    # the same reason: a complete line does not need EOF to be read.
+    (cd "$A48_LREPO" && "$AE" --local all-sneaked >/dev/null 2>&1 3>&- &)
     sleep 5
-    printf 'y' >&3
+    printf 'y\n' >&3
     exec 3>&-
 ) &
 a48_list="$("$AE" end all <"$A48_LFIFO" 2>&1)" || true
@@ -6883,9 +6115,13 @@ mkfifo "$A48_EFIFO"
 (
     exec 3>"$A48_EFIFO"
     sleep 5 # the prompt has been built against an empty fleet
-    (cd "$A48_EREPO" && "$AE" --local all-after-empty >/dev/null 2>&1 &)
+    # 3>&-: a child INHERITS open descriptors, so a launch that keeps the fifo's
+    # WRITE end open holds it open forever — the reader never sees EOF and the
+    # prompt blocks (AGENTS.md, issue #4's class). The 'y' carries a NEWLINE for
+    # the same reason: a complete line does not need EOF to be read.
+    (cd "$A48_EREPO" && "$AE" --local all-after-empty >/dev/null 2>&1 3>&- &)
     sleep 5
-    printf 'y' >&3
+    printf 'y\n' >&3
     exec 3>&-
 ) &
 a48_empty="$("$AE" end all <"$A48_EFIFO" 2>&1)" || true
@@ -6910,8 +6146,10 @@ unset a48_tree_before a48_prev_out a48_end a48_forbidden a48_f a48_exec a48_p a4
 # to ambient stdin these hang for a human running the suite from a terminal, and pass or
 # fail by whatever the caller happened to supply — an undeclared input is a dependency.
 fi
+
 # ── ae compact, phase (a): it resolves, it refuses, it changes nothing ───────────
 if _itest_section 'ae compact, phase (a): it resolves, it refuses, it changes nothing'; then
+
 # ── P3.7 core-guard: compact is Rust-owned; bind the built core for this section ──
 _C48_CORE="$(dirname "$AE")/target/debug/ae"
 if [[ ! -x "$_C48_CORE" ]]; then
@@ -7035,6 +6273,7 @@ fi
 
 # ── compact phase (b): the handover is a fact, not a claim ──────────────────────
 if _itest_section 'compact phase (b): the handover is a fact, not a claim'; then
+
 # ── P3.7 core-guard: compact is Rust-owned; bind the built core for this section ──
 _C48_CORE="$(dirname "$AE")/target/debug/ae"
 if [[ ! -x "$_C48_CORE" ]]; then
@@ -7180,41 +6419,21 @@ assert_eq "compact-withdraw: and the withdrawn ref is not listed as outstanding 
 "$AE" end -f --keep-history comp-withdraw >/dev/null 2>&1 || true
 unset B48_REPO B48_WDIR B48_WUUID B48_REF B48_WPANE B48_XDIR B48_XREF B48_XUUID B48_XARCH b48_wd
 
-# THE ROLLBACK MUST BE OBSERVED TO RUN. _launch_rollback is called from the --from
-# reproof in SCRIPT BODY, which bash executes top-to-bottom; the definition used to sit
-# ~500 lines further down, so the call was a missing command (rc 127) and the cleanup
-# provably never happened — the failure was correctly DETECTED and nothing was undone,
-# leaving a half-built same-name session squatting the name the recovery command needs.
-# A rollback nobody has watched run is not a rollback. Driven deterministically by handing
-# the launch an expectation that cannot match, rather than racing a vanishing archive.
-C48V_REPO="$(setup_repo)"
-(cd "$C48V_REPO" && "$AE" --local comp-roll &) 2>/dev/null
-wait_for_session "comp-roll" 20
-sleep 1
-C48V_UUID="$(grep '^session_id=' "$HOME/.ae/sessions/comp-roll/meta" | cut -d= -f2- | tr '[:upper:]' '[:lower:]' || true)"
-"$AE" end -f --keep-history comp-roll >/dev/null 2>&1 || true
-sleep 1
-assert_eq "compact-rollback: (setup) the parent archive exists to inherit from" "1" \
-    "$([[ -f "$HOME/.ae/archive/${C48V_UUID}/meta" ]] && echo 1 || echo 0)"
-c48v_rc=0
-c48v="$( (cd "$C48V_REPO" && _AE_FROM_EXPECTED="not-the-proof-this-archive-yields" \
-    "$AE" --local comp-rolled --from "$C48V_UUID") 2>&1 )" || c48v_rc=$?
-sleep 2
-assert_eq "compact-rollback: a parent that no longer matches refuses the launch" "1" \
-    "$([[ $c48v_rc -ne 0 ]] && echo 1 || echo 0)"
-assert_contains "compact-rollback: and says the parent changed under the launch" \
-    "changed while this session was being created" "$c48v"
-# THE PART THAT WAS BROKEN: the handler itself. Before the definition was moved, this
-# printed 'command not found' and left every one of these behind.
-assert_eq "compact-rollback: the rollback RAN — no command-not-found" "0" \
-    "$(grep -c "command not found" <<<"$c48v" | tr -d '[:space:]')"
-assert_eq "compact-rollback: no half-built session state survives" "0" \
-    "$([[ -e "$HOME/.ae/sessions/comp-rolled" ]] && echo 1 || echo 0)"
-assert_eq "compact-rollback: and no tmux session squats the name" "1" \
-    "$(tmux has-session -t comp-rolled 2>/dev/null && echo 0 || echo 1)"
-assert_eq "compact-rollback: the archive it refused to inherit is untouched" "1" \
-    "$([[ -f "$HOME/.ae/archive/${C48V_UUID}/meta" ]] && echo 1 || echo 0)"
-unset C48V_REPO C48V_UUID c48v c48v_rc
+# RETIRED (B glue cut 2): the --from REPROOF is an in-process argument, not an input.
+# This arm drove it with _AE_FROM_EXPECTED, an env var the bash launch flow read. The
+# core takes the expectation as a function parameter — src/session_launch.rs `launch()`
+# has `expected_proof: Option<&str>`, and the ONLY caller that passes Some is
+# `relaunch()`, reached from src/lifecycle/compaction.rs when compact hands its frozen
+# proof to the child. Nothing a shell can set reaches it, so the env var is inert: the
+# launch no longer refuses, it SUCCEEDS, and (captured with $( ) and not backgrounded)
+# it attached and hung the suite. Deleted rather than left as a passing no-op.
+# What it covered still is covered: the reproof's REFUSAL TEXT and its two-line
+# Expected/Now report are unit-tested beside the code that writes them, and the ROLLBACK
+# itself — kill the tmux session, remove the directory it created and only that
+# directory — is driven through the product by the ROLLBACK section (fresh, resume and
+# ownership arms), which is where a rollback regression would show first.
+# Re-drive this the day the reproof gains a real input; do not re-add an env-var seam
+# to the core just to test it.
 
 # A CONSUMER THAT EXITS BEFORE READING MUST NOT COST THE RELAUNCH. Past the boundary the
 # archive is published and the source is gone, so the only thing left that matters is that
@@ -7523,6 +6742,7 @@ fi
 
 # ── compact (c)+(d): it hands over, it ends, it comes back ─────────────────────
 if _itest_section 'compact (c)+(d): it hands over, it ends, it comes back'; then
+
 # ── P3.7 core-guard: compact is Rust-owned; bind the built core for this section ──
 _C48_CORE="$(dirname "$AE")/target/debug/ae"
 if [[ ! -x "$_C48_CORE" ]]; then
@@ -7558,8 +6778,13 @@ assert_eq "compact-out: line 2 the archive path" "1" \
     "$(sed -n '2p' "$c48b_out" | grep -c "^Archive: .*/archive/${C48B_UUID}$" | tr -d '[:space:]')"
 assert_eq "compact-out: line 3 the digest path" "1" \
     "$(sed -n '3p' "$c48b_out" | grep -c "^Digest: .*/archive/${C48B_UUID}/digest.md$" | tr -d '[:space:]')"
+# The core SHELL-QUOTES every word it interpolates (src/lifecycle/compaction.rs
+# `recovery_command` -> `shell_quote`), so the origin and the name arrive as 'dir'
+# and 'comp-full'. That is the improvement — a session whose origin holds a space
+# used to emit a recovery line that pasted as two arguments — so the pattern
+# tolerates the quotes rather than the quoting being reverted to match it.
 assert_eq "compact-out: line 4 the recovery command, BEFORE the relaunch" "1" \
-    "$(sed -n '4p' "$c48b_out" | grep -c "^Recovery: cd .* comp-full --from ${C48B_UUID}$" | tr -d '[:space:]')"
+    "$(sed -n '4p' "$c48b_out" | grep -c "^Recovery: cd .* 'comp-full' --from ${C48B_UUID}$" | tr -d '[:space:]')"
 # THE CONTRACT STOPS AT WHAT IS TRUE AT THAT INSTANT. "Starting fresh session" was on
 # stdout and claimed a launch that can still refuse — the name is claimable in the release
 # window — so a caller could read "replaced" from a run that only archived. What stdout
@@ -7578,7 +6803,7 @@ assert_eq "compact-out: it does NOT claim a relaunch that can still refuse" "0" 
 assert_eq "compact-out: the relaunch announcement is progress, so it is on stderr" "1" \
     "$(grep -c "^Starting fresh session comp-full from archive ${C48B_UUID}" "$TMPDIR/c48b.err" | tr -d '[:space:]')"
 assert_eq "compact-out: and the recovery command reaches stderr too, so a broken stdout cannot lose it" "1" \
-    "$(grep -c "^Recovery: cd .* comp-full --from ${C48B_UUID}$" "$TMPDIR/c48b.err" | tr -d '[:space:]')"
+    "$(grep -c "^Recovery: cd .* 'comp-full' --from ${C48B_UUID}$" "$TMPDIR/c48b.err" | tr -d '[:space:]')"
 assert_eq "compact-out: end's own progress stays off the contract (no duplicate Archived)" "1" \
     "$(grep -c '^Archived ' "$c48b_out" | tr -d '[:space:]')"
 # THE ARCHIVE
@@ -7986,11 +7211,10 @@ fi
 
 # ── #59 C4: the frozen-roster branch, driven for real ────────────────────────
 if _itest_section '#59 C4: the frozen-roster branch, driven for real'; then
-# The provenance flags were previously pinned by TEXT ORDER against $AE_SOURCE
-# (`*'MAIN_RAW="$_fr_main"'*'_ROSTER_NAMES_RESTORED=true'*`), which only says "appears
-# somewhere later in the file" — deleting the in-branch assignment and appending the same
-# line at EOF left it green while the child died. These drive the ACTUAL branch:
-# _AE_FROM_ROSTER plus a real --from archive, which is the shape compact execs into.
+# What survives here after B glue cut 2 is the FRESH half — a nonconforming name
+# arriving from config is refused before any session exists — plus the fixture that
+# proves a real `--from` archive is on disk. The frozen half moved with its transport;
+# the note below says where.
 C4_BIN="$TMPDIR/c4-bin"
 mkdir -p "$C4_BIN"
 for _c4_t in claude opencode; do
@@ -7999,8 +7223,8 @@ for _c4_t in claude opencode; do
 done
 C4_REPO="$(setup_repo)"
 mkdir -p "$C4_REPO/.ae"
-# `scout` is bound but is no seat: a roster row with no seat is legal (it is exactly what
-# `use` and a frozen roster pick from), and the frozen-roster arms below name it.
+# `scout` is bound but is no seat: a roster row with no seat is legal — it is exactly what
+# `use` and a frozen roster pick from.
 printf '[profiles]\ncl = "claude"\noc = "opencode"\n\n[roster]\nboss = cl\nscout = cl\n\n[workspace]\nmain = boss\nlayout = vertical\n' >"$C4_REPO/.ae/config"
 (cd "$C4_REPO" && PATH="$C4_BIN:$PATH" "$AE" --local c4src >/dev/null 2>&1 || true)
 wait_for_session "c4src"
@@ -8017,40 +7241,17 @@ done
 assert_eq "#59 C4: an archive really exists to inherit from (fixture is real)" "1" \
     "$([[ -n "$C4_AID" && -d "$HOME/.ae/archive/$C4_AID" ]] && echo 1 || echo 0)"
 
-# (RETIRED under identity v2: "a compact-shaped child with a NONCONFORMING roster
-# LAUNCHES", and the three identity-line pins that hung off it. A v2 config cannot mint a
-# nonconforming name — [roster] keys are checked against the grammar at parse time — so a
-# frozen roster carrying one can only come from a config that was already refused, and the
-# core now refuses the child loudly with the archive still on disk for a `--from` retry.
-# The RESUME-side tolerance is untouched and is pinned by '#59 C3-2' above.)
-#
-# What the branch still owes, and what these drive: the frozen roster REALLY WINS over the
-# config. The source config says main = boss; the frozen roster says scout, which config
-# never names as a seat — so a child whose main is scout can only have come from
-# _AE_FROM_ROSTER.
-(cd "$C4_REPO" && PATH="$C4_BIN:$PATH" _AE_FROM_ROSTER='main=scout workers=-' \
-    "$AE" --local c4kid --from "$C4_AID" >/dev/null 2>&1 || true)
-wait_for_session "c4kid"
-sleep 2
-C4_KID="$HOME/.ae/sessions/c4kid"
-assert_eq "#59 C4-2: the frozen branch really fired (roster came from _AE_FROM_ROSTER)" "1" \
-    "$(command grep -qxF 'seat.main=scout' "$C4_KID/meta" 2>/dev/null &&
-       command grep -qxF 'profile.main=cl' "$C4_KID/meta" 2>/dev/null && echo 1 || echo 0)"
-assert_eq "#59 C4-2: ...and the config's own main is NOT what started" "0" \
-    "$(command grep -c '^seat.main=boss$' "$C4_KID/meta" 2>/dev/null | tr -d '[:space:]')"
-assert_eq "#59 C4-2: a compact-shaped child launched from a frozen roster RUNS" "1" \
-    "$(tmux has-session -t c4kid 2>/dev/null && echo 1 || echo 0)"
-assert_eq "#59 C4-2: ...and it carries its own identity line, naming the frozen name" "1" \
-    "$(_id59_singleton "$(_id59_decode "$C4_KID/launch.main.sh")" "You are agent scout (slot main).")"
-"$AE" end -f c4kid >/dev/null 2>&1 || true
-# A FRESH nonconforming worker is refused — and so is a frozen one now, same rule.
-C4_FROZEN_OUT="$( (cd "$C4_REPO" && PATH="$C4_BIN:$PATH" _AE_FROM_ROSTER='main=old boss (v1) workers=-' \
-    "$AE" --local c4frozenbad --from "$C4_AID" 2>&1 >/dev/null) || true )"
-assert_eq "#59 C4-2: a NONCONFORMING frozen name is refused with the grammar" "1" \
-    "$([[ "$C4_FROZEN_OUT" == *'^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$'* ]] && echo 1 || echo 0)"
-assert_eq "#59 C4-2: ...and no child session was created for it" "0" \
-    "$(tmux has-session -t c4frozenbad 2>/dev/null && echo 1 || echo 0)"
-"$AE" end -f c4frozenbad >/dev/null 2>&1 || true
+# THE FROZEN-ROSTER ARMS ARE RETIRED (B glue cut 2). They drove the branch through
+# the `_AE_FROM_ROSTER` environment variable, which was the bash launch flow's way of
+# receiving a freeze. That transport is gone: compact now hands the frozen roster to
+# `session_launch::relaunch` IN PROCESS (src/lifecycle/compaction.rs builds the
+# ExecPlan, src/session_launch.rs splits `main=… workers=…` out of it), so setting the
+# variable on an `ae` command line changes nothing and every arm that did so was
+# asserting about a dead input. What they bound — the frozen roster WINS over the
+# config, an empty frozen name falls back to the config rather than dying, and a
+# nonconforming frozen name is refused — is exercised end to end by the compact
+# sections, which drive the real freeze and the real relaunch.
+
 C4_REPO2="$(setup_repo)"
 mkdir -p "$C4_REPO2/.ae"
 printf '[profiles]\ncl = "claude"\noc = "opencode"\n\n[roster]\nboss = cl\nbad worker = oc\n\n[workspace]\nmain = boss\nworkers = bad worker\nlayout = vertical\n' >"$C4_REPO2/.ae/config"
@@ -8061,31 +7262,7 @@ assert_eq "#59 C4-2: ...and no session was created for it" "0" \
     "$(tmux has-session -t c4fresh 2>/dev/null && echo 1 || echo 0)"
 "$AE" end -f c4fresh >/dev/null 2>&1 || true
 
-# C4-1 through the same real branch: an EMPTY frozen name. The child must still come up
-# — this whole branch exists for a launch whose source session is already archived and
-# gone, so any abort here is the failure with nothing left to fall back to.
-# (RETIRED: "...and the worker beside it survived dedup untouched". The empty name used to
-# reach _dedup_worker_names, where bash rejects an empty associative subscript outright and
-# killed the child; that function is gone, and an empty frozen MAIN now simply leaves the
-# frozen branch unfired — its guard is `[[ -n "$_fr_main" ]]`. The replacing rule is the
-# arm below: the child falls back to the CONFIG roster rather than dying.)
-(cd "$C4_REPO" && PATH="$C4_BIN:$PATH" _AE_FROM_ROSTER='main= workers=scout' \
-    "$AE" --local c4empty --from "$C4_AID" >/dev/null 2>&1 || true)
-wait_for_session "c4empty"
-sleep 2
-assert_eq "#59 C4-1: an EMPTY frozen MAIN name still launches" "1" \
-    "$(tmux has-session -t c4empty 2>/dev/null && echo 1 || echo 0)"
-assert_eq "#59 C4-1: ...and it falls back to the CONFIG roster, not to nothing" "1" \
-    "$(command grep -qxF 'seat.main=boss' "$HOME/.ae/sessions/c4empty/meta" 2>/dev/null && echo 1 || echo 0)"
-"$AE" end -f c4empty >/dev/null 2>&1 || true
-(cd "$C4_REPO" && PATH="$C4_BIN:$PATH" _AE_FROM_ROSTER='main=boss workers=' \
-    "$AE" --local c4empty2 --from "$C4_AID" >/dev/null 2>&1 || true)
-wait_for_session "c4empty2"
-sleep 2
-assert_eq "#59 C4-1: an EMPTY frozen WORKER name still launches" "1" \
-    "$(tmux has-session -t c4empty2 2>/dev/null && echo 1 || echo 0)"
-"$AE" end -f c4empty2 >/dev/null 2>&1 || true
-unset C4_BIN C4_REPO C4_REPO2 C4_AID C4_KID C4_OUT C4_FROZEN_OUT _c4_t _c4_d
+unset C4_BIN C4_REPO C4_REPO2 C4_AID C4_OUT _c4_t _c4_d
 fi
 
 # ── P5 installer + wrapper (retargeted from ae-next coexistence, A22) ────────
@@ -8961,279 +8138,10 @@ unset -f _tgg
 unset TGG_ROOT TGG_BIN TGG_FIX TGG_HOME TGG_REAL_TMUX TGG_FNS
 fi
 
-# ── Slice B P-B1: oversized ask notices on an isolated real-tool rig ─────────
-if _itest_section 'Slice B P-B1: oversized ask notices on an isolated real-tool rig'; then
-# This is the product-shaped check for D1/D2: the two real TUIs receive a 9 KiB ask,
-# only the <=300-byte pointer is pasted, the visible rows reconstruct byte-for-byte,
-# and the transcript shows the agent opening its sender-owned body.  The rig is a
-# different tmux server and uses pane ids for delivery, so neither a live-session name
-# nor the harness's ambient server can be reached accidentally.
-P1_RIG_BASH=/opt/homebrew/bin/bash
-P1_RIG_OUT="$TMPDIR/pb1-rig.out"
-P1_RIG_ERR="$TMPDIR/pb1-rig.err"
-
-# Every rig command runs under the pinned bash.  The wrapper prepends the isolated
-# server and requires callers to provide -t explicitly; no helper below can target the
-# default server by accident.
-p1_tmux() {
-    "$P1_RIG_BASH" -c 'command tmux "$@"' p1-tmux -L "$P1_RIG_SRV" "$@"
-}
-
-# The real-tool rig is opt-in. This gate is deliberately the FIRST branch after the
-# section selector: no credentials, repo, config, socket, or session may exist when a
-# normal full suite does not explicitly request authenticated CLI work.
-if [[ "${AE_ITEST_RIG:-}" != 1 ]]; then
-    echo "  SKIP (P-B1 real rig): set AE_ITEST_RIG=1 to opt in; no rig side effects" >&2
-elif [[ ! -x "$P1_RIG_BASH" || -z "$(command -v claude || true)" || -z "$(command -v codex || true)" ]]; then
-    echo "  SKIP (P-B1 real rig): /opt/homebrew/bin/bash, claude and codex are required" >&2
-else
-    P1_RIG_SRV="ae-pb1-rig-$$"
-    P1_RIG_SESS="pb1-rig-$$-${RANDOM}"
-    # The rig owns credentials, repo, and server. Install an EXIT trap before any
-    # launch or credential copy so an assertion abort deletes credential copies
-    # immediately and still hands control back to suite cleanup. Normal completion
-    # calls this same function before the variables are unset.
-    P1_CLEANED=0
-    p1_cleanup() {
-        ((P1_CLEANED)) && return 0
-        P1_CLEANED=1
-        if [[ -n "${P1_RIG_SESS:-}" ]]; then p1_tmux kill-session -t "$P1_RIG_SESS" 2>/dev/null || true; fi
-        if [[ -n "${P1_RIG_REPO:-}" && -d "$P1_RIG_REPO" ]]; then rm -rf "$P1_RIG_REPO"; fi
-        if [[ -n "${P1_CLAUDE_CONFIG_DIR:-}" && -d "$P1_CLAUDE_CONFIG_DIR" ]]; then rm -rf "$P1_CLAUDE_CONFIG_DIR"; fi
-        if [[ -n "${P1_CODEX_HOME:-}" && -d "$P1_CODEX_HOME" ]]; then rm -rf "$P1_CODEX_HOME"; fi
-    }
-    p1_cleanup_on_exit() {
-        p1_cleanup
-        cleanup
-    }
-    trap p1_cleanup_on_exit EXIT
-
-    # Trust is granted by the injected per-tool stores, not by placing the repo under
-    # the operator's projects root. Keeping the disposable repo under suite TMPDIR
-    # prevents a stranded repo from polluting every checkout on an interrupted run.
-    P1_RIG_TMP_ROOT="$(cd "$TMPDIR" && pwd -P)"
-    P1_RIG_REPO="$(mktemp -d "$TMPDIR/pb1-rig-repo-XXXXXX")"
-    P1_RIG_REPO="$(cd "$P1_RIG_REPO" && pwd -P)"
-    git -C "$P1_RIG_REPO" init -q
-    git -C "$P1_RIG_REPO" config user.email "test@test"
-    git -C "$P1_RIG_REPO" config user.name "test"
-    git -C "$P1_RIG_REPO" commit -q --allow-empty -m "init"
-    assert_eq "P-B1 rig: disposable repo is under suite TMPDIR, not projects root" "1" \
-        "$([[ "$P1_RIG_REPO" == "$P1_RIG_TMP_ROOT/"* && "$P1_RIG_REPO" != "$REAL_HOME/projects/"* ]] && echo 1 || echo 0)"
-    P1_CLAUDE_CONFIG_DIR="$TMPDIR/pb1-claude-config"
-    mkdir -p "$P1_CLAUDE_CONFIG_DIR"
-    cp "$REAL_HOME/.claude.json" "$P1_CLAUDE_CONFIG_DIR/.claude.json"
-    chmod 600 "$P1_CLAUDE_CONFIG_DIR/.claude.json"
-    awk -v path="$P1_RIG_REPO" '
-        !inserted && /"projects": \{/ {
-            print
-            printf "    \"%s\": {\"hasTrustDialogAccepted\": true},\n", path
-            inserted = 1
-            next
-        }
-        { print }
-    ' "$P1_CLAUDE_CONFIG_DIR/.claude.json" >"$P1_CLAUDE_CONFIG_DIR/.claude.json.new"
-    mv "$P1_CLAUDE_CONFIG_DIR/.claude.json.new" "$P1_CLAUDE_CONFIG_DIR/.claude.json"
-    chmod 600 "$P1_CLAUDE_CONFIG_DIR/.claude.json"
-    if ! grep -Fq "\"$P1_RIG_REPO\"" "$P1_CLAUDE_CONFIG_DIR/.claude.json"; then
-        echo "P-B1 rig: Claude trust injection marker missing; refusing to launch" >&2
-        exit 1
-    fi
-    P1_CODEX_HOME="$TMPDIR/pb1-codex-home"
-    mkdir -p "$P1_CODEX_HOME"
-    chmod 700 "$P1_CODEX_HOME"
-    cp "$REAL_HOME/.codex/config.toml" "$P1_CODEX_HOME/config.toml"
-    chmod 600 "$P1_CODEX_HOME/config.toml"
-    cp "$REAL_HOME/.codex/auth.json" "$P1_CODEX_HOME/auth.json"
-    chmod 600 "$P1_CODEX_HOME/auth.json"
-    printf '\n[projects."%s"]\ntrust_level = "trusted"\n' "$P1_RIG_REPO" >>"$P1_CODEX_HOME/config.toml"
-    if ! grep -Fq "[projects.\"$P1_RIG_REPO\"]" "$P1_CODEX_HOME/config.toml"; then
-        echo "P-B1 rig: Codex trust injection marker missing; refusing to launch" >&2
-        exit 1
-    fi
-    mkdir -p "$P1_RIG_REPO/.ae"
-    # The suite's HOME is intentionally hermetic, but the real CLIs need the
-    # operator's authenticated stores.  Scope that access to each rig process;
-    # ae state remains under the suite HOME/AE_HOME.
-    P1_CLAUDE_CMD="env HOME=$REAL_HOME CLAUDE_CONFIG_DIR=$P1_CLAUDE_CONFIG_DIR claude --no-chrome --permission-mode acceptEdits"
-    P1_CODEX_CMD="env HOME=$REAL_HOME CODEX_HOME=$P1_CODEX_HOME codex --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust"
-    printf '%s\n' '[profiles]' "claude = \"$P1_CLAUDE_CMD\"" "codex = \"$P1_CODEX_CMD\"" '' '[roster]' 'lead = claude' 'worker = codex' '' '[workspace]' 'main = lead' 'workers = worker' 'layout = lead-solo' >"$P1_RIG_REPO/.ae/config"
-    (cd "$P1_RIG_REPO" && SHELL="$P1_RIG_BASH" CONFIG_FILE="$P1_RIG_REPO/.ae/config" AE_TMUX_SERVER="$P1_RIG_SRV" "$P1_RIG_BASH" "$AE" --local "$P1_RIG_SESS" >"$P1_RIG_OUT" 2>"$P1_RIG_ERR") 2>/dev/null &
-    P1_LAUNCH_PID=$!
-    P1_LAUNCH_RC=0
-    wait "$P1_LAUNCH_PID" || P1_LAUNCH_RC=$?
-    P1_RIG_READY=0
-    for _p1_i in $(seq 1 90); do
-        if p1_tmux has-session -t "$P1_RIG_SESS" 2>/dev/null; then P1_RIG_READY=1; break; fi
-        sleep 0.5
-    done
-    assert_eq "P-B1 rig: isolated session starts on its own server" "1" "$P1_RIG_READY"
-    P1_RIG_META="$HOME/.ae/sessions/$P1_RIG_SESS"
-    for _p1_i in $(seq 1 90); do
-        [[ -f "$P1_RIG_META/meta" ]] && break
-        sleep 0.5
-    done
-    assert_eq "P-B1 rig: session metadata is published" "1" "$([[ -f "$P1_RIG_META/meta" ]] && echo 1 || echo 0)"
-
-    if [[ -f "$P1_RIG_META/meta" ]]; then
-        # Metadata lands before launch pastes.  Wait on the actual launcher process so
-        # the helper probes never race the initial shell command still staged in a pane.
-        # This harness has no current terminal client, so ae's final attach is
-        # expected to fail after the detached session and launch commands exist.
-        # Assert that known harness shape rather than mistaking attach's rc for a
-        # launch failure.
-        assert_eq "P-B1 rig: detached launcher reaches the no-client attach" "1" \
-            "$([[ "$P1_LAUNCH_RC" -ne 0 ]] && echo 1 || echo 0)"
-        # Resolve ids on the rig server, then assert each is non-empty before invoking
-        # any helper.  The ask helpers are the only delivery mechanism; tmux is read-only.
-        P1_CLAUDE_PANE="$(p1_tmux list-panes -s -t "$P1_RIG_SESS" -F '#{pane_id} #{@ae_agent}' 2>/dev/null | awk '$2=="lead"{print $1; exit}')"
-        P1_CODEX_PANE="$(p1_tmux list-panes -s -t "$P1_RIG_SESS" -F '#{pane_id} #{@ae_agent}' 2>/dev/null | awk '$2=="worker"{print $1; exit}')"
-        assert_eq "P-B1 rig: resolved Claude pane id is non-empty before paste" "1" "$([[ -n "$P1_CLAUDE_PANE" ]] && echo 1 || echo 0)"
-        assert_eq "P-B1 rig: resolved Codex pane id is non-empty before paste" "1" "$([[ -n "$P1_CODEX_PANE" ]] && echo 1 || echo 0)"
-        P1_TOOLS_READY=0
-        P1_IDLE_STREAK=0
-        for _p1_i in $(seq 1 180); do
-            P1_CLAUDE_CAP="$(p1_tmux capture-pane -p -t "$P1_CLAUDE_PANE" 2>/dev/null || true)"
-            P1_CODEX_CAP="$(p1_tmux capture-pane -p -t "$P1_CODEX_PANE" 2>/dev/null || true)"
-            # Both TUIs draw an input prompt before their initial launch work is
-            # finished.  Require three consecutive idle-shaped captures so the
-            # oversized asks do not race that work and get classified as staged.
-            P1_CLAUDE_TAIL="$(printf '%s\n' "$P1_CLAUDE_CAP" | tail -10)"
-            P1_CODEX_TAIL="$(printf '%s\n' "$P1_CODEX_CAP" | tail -10)"
-            if [[ "$P1_CLAUDE_CAP" == *❯* && "$P1_CODEX_CAP" == *›* ]] \
-                && [[ "$P1_CLAUDE_TAIL" != *"Press up to edit"* ]] \
-                && [[ "$P1_CLAUDE_TAIL" != *"Running"* && "$P1_CLAUDE_TAIL" != *"✢"* ]] \
-                && [[ "$P1_CODEX_TAIL" == *"Ask Codex to do anything"* ]] \
-                && [[ "$P1_CODEX_TAIL" != *"Working"* && "$P1_CODEX_TAIL" != *"Running"* ]]; then
-                P1_IDLE_STREAK=$((P1_IDLE_STREAK + 1))
-                if ((P1_IDLE_STREAK >= 3)); then
-                    P1_TOOLS_READY=1
-                    break
-                fi
-            else
-                P1_IDLE_STREAK=0
-            fi
-            sleep 0.5
-        done
-        assert_eq "P-B1 rig: both real TUIs expose stable idle input prompts" "1" "$P1_TOOLS_READY"
-
-    P1_LONG_BODY="$(printf '%8193s' '' | tr ' ' x)"
-    # One ask into each real renderer.  The target is a pane id, never a name from the
-    # live session.  The helper EXECs the pinned core, which owns resolution, the id,
-    # the PASTE (in-process since B move 1) and the event — so the transport under test
-    # is the core's delivery path against a real TUI.
-    # AE_SENDER_OVERRIDE supplies the caller identity a paneless rig has no stamp for.
-    P1_ASK_CLAUDE_RC=0
-    AE_SEND_DEFER_SEC=90 AE_SENDER_OVERRIDE=worker "$P1_RIG_BASH" "$P1_RIG_META/ask" "$P1_CLAUDE_PANE" "$P1_LONG_BODY" >"$TMPDIR/pb1-ask-claude.out" 2>"$TMPDIR/pb1-ask-claude.err" || P1_ASK_CLAUDE_RC=$?
-    P1_ASK_CODEX_RC=0
-    AE_SEND_DEFER_SEC=90 AE_SENDER_OVERRIDE=lead "$P1_RIG_BASH" "$P1_RIG_META/ask" "$P1_CODEX_PANE" "$P1_LONG_BODY" >"$TMPDIR/pb1-ask-codex.out" 2>"$TMPDIR/pb1-ask-codex.err" || P1_ASK_CODEX_RC=$?
-        assert_eq "P-B1 rig: Claude oversized ask helper exits successfully" "0" "$P1_ASK_CLAUDE_RC"
-        assert_eq "P-B1 rig: Codex oversized ask helper exits successfully" "0" "$P1_ASK_CODEX_RC"
-        P1_ASK_N="$(grep -c '"action":"ask"' "$P1_RIG_META/events.jsonl" 2>/dev/null || true)"
-        assert_eq "P-B1 rig: both oversized asks record delivery events" "2" "$P1_ASK_N"
-        if [[ -f "$P1_RIG_META/events.jsonl" ]]; then
-
-        # Load the notice helpers from the exact current ae for receiver-side proof.
-        eval "$(awk '/^_notice_reconstruct\(\) \{/,/^\}$/' "$AE")"
-        eval "$(awk '/^_notice_prove\(\) \{/,/^\}$/' "$AE")"
-        eval "$(awk '/^_notice_compose\(\) \{/,/^\}$/' "$AE")"
-        P1_ASK_REF_CLAUDE="$(awk -F'"' '/"action":"ask"/ { for (i = 1; i <= NF; i++) if ($i == "ref") print $(i + 2) }' "$P1_RIG_META/events.jsonl" | head -1)"
-        P1_ASK_REF_CODEX="$(awk -F'"' '/"action":"ask"/ { for (i = 1; i <= NF; i++) if ($i == "ref") print $(i + 2) }' "$P1_RIG_META/events.jsonl" | tail -1)"
-        P1_BODY_CLAUDE="$(find "$P1_RIG_META/messages" -type f -name "${P1_ASK_REF_CLAUDE}.ask.*.txt" -print -quit 2>/dev/null || true)"
-        P1_BODY_CODEX="$(find "$P1_RIG_META/messages" -type f -name "${P1_ASK_REF_CODEX}.ask.*.txt" -print -quit 2>/dev/null || true)"
-        _AE_SESSION="$P1_RIG_SESS"; _AE_META_DIR="$P1_RIG_META"; _AE_SESSIONS_DIR="$(dirname "$P1_RIG_META")"
-        _notice_compose ask "$P1_ASK_REF_CLAUDE" worker "$P1_BODY_CLAUDE" "$P1_RIG_SESS"; P1_NOTICE_CLAUDE="$_NOTICE_PAYLOAD"
-        _notice_compose ask "$P1_ASK_REF_CODEX" lead "$P1_BODY_CODEX" "$P1_RIG_SESS"; P1_NOTICE_CODEX="$_NOTICE_PAYLOAD"
-        # The helper returns only after its pre-Enter proof and submit.  Wait for each
-        # real TUI to echo the submitted notice into its transcript, then reconstruct
-        # only the prompt-to-terminal-sentinel rows; status/tool rows below it are not
-        # part of the notice and must not be fed to the input-region proof function.
-        p1_transcript_prove() {
-            local tool="$1" capture="$2" intended="$3" head line rows="" started=0 orn tail candidate
-            head="${intended%% LONG BODY*}"
-            [[ "$head" != "$intended" ]] || return 1
-            if [[ "$head" =~ \[([^]]+)\] ]]; then
-                tail="⟧${BASH_REMATCH[1]}⟧"
-            else
-                return 1
-            fi
-            case "$tool" in claude) orn='❯' ;; codex) orn='›' ;; *) return 1 ;; esac
-            if [[ "$tool" == codex ]]; then
-                candidate="$(_notice_reconstruct "$tool" "$capture" "$intended")" || return 1
-                [[ "$candidate" == "$head"* && "$candidate" == *"$tail" ]] || return 1
-                [[ "$candidate" == "$intended" ]] || return 1
-                return 0
-            fi
-            while IFS= read -r line || [[ -n "$line" ]]; do
-                if ((started == 0)); then
-                    [[ "$line" == *"$orn"*"$head"* ]] || continue
-                    started=1
-                fi
-                rows+="$line"$'\n'
-                [[ "$line" == *"$tail"* ]] || continue
-                candidate="$(_notice_reconstruct "$tool" "$rows" "$intended")" || return 1
-                [[ "$candidate" == "$head"* && "$candidate" == *"$tail" ]] || return 1
-                [[ "$candidate" == "$intended" ]] || return 1
-                return 0
-            done <<<"$capture"
-            return 1
-        }
-        p1_body_read() {
-            local capture="$1" body="$2" base line
-            base="${body##*/}"
-            while IFS= read -r line || [[ -n "$line" ]]; do
-                [[ "$line" == *"$base"* ]] || continue
-                [[ "$line" == *cat* || "$line" == *Read* || "$line" == *read* ]] && return 0
-            done <<<"$capture"
-            return 1
-        }
-        P1_TRANSCRIPT_CLAUDE=0 P1_TRANSCRIPT_CODEX=0
-        P1_READ_CLAUDE=0 P1_READ_CODEX=0
-        for _p1_i in $(seq 1 60); do
-            P1_CAP_CLAUDE="$(p1_tmux capture-pane -S - -p -t "$P1_CLAUDE_PANE" 2>/dev/null || true)"
-            P1_CAP_CODEX="$(p1_tmux capture-pane -S - -p -t "$P1_CODEX_PANE" 2>/dev/null || true)"
-            p1_transcript_prove claude "$P1_CAP_CLAUDE" "$P1_NOTICE_CLAUDE" && P1_TRANSCRIPT_CLAUDE=1 || true
-            p1_transcript_prove codex "$P1_CAP_CODEX" "$P1_NOTICE_CODEX" && P1_TRANSCRIPT_CODEX=1 || true
-            p1_body_read "$P1_CAP_CLAUDE" "$P1_BODY_CLAUDE" && P1_READ_CLAUDE=1 || true
-            p1_body_read "$P1_CAP_CODEX" "$P1_BODY_CODEX" && P1_READ_CODEX=1 || true
-            ((P1_TRANSCRIPT_CLAUDE && P1_TRANSCRIPT_CODEX && P1_READ_CLAUDE && P1_READ_CODEX)) && break
-            sleep 1
-        done
-        assert_eq "P-B1 rig: Claude transcript reconstructs the exact notice" "1" "$P1_TRANSCRIPT_CLAUDE"
-        assert_eq "P-B1 rig: Codex transcript reconstructs the exact notice" "1" "$P1_TRANSCRIPT_CODEX"
-
-        assert_eq "P-B1 rig: Claude's first tool call names the sender body" "1" "$P1_READ_CLAUDE"
-        assert_eq "P-B1 rig: Codex's first tool call names the sender body" "1" "$P1_READ_CODEX"
-        else
-            assert_eq "P-B1 rig: ask helpers leave an event log" "1" "0"
-        fi
-    else
-        assert_eq "P-B1 rig: missing metadata is a launch failure, not an awk abort" "1" "0"
-    fi
-fi
-# The rig is disposable and isolated. Run the same cleanup registered in the EXIT
-# trap before unsetting its paths, then restore the suite trap. Credential copies are
-# asserted absent immediately after the opted-in run, not deferred to suite teardown.
-if [[ "${P1_CLEANED:-}" == 0 ]]; then
-    p1_cleanup
-    assert_eq "P-B1 rig: disposable repo is removed after the run" "0" \
-        "$([[ -e "$P1_RIG_REPO" ]] && echo 1 || echo 0)"
-    assert_eq "P-B1 rig: named rig session is removed after the run" "0" \
-        "$(p1_tmux has-session -t "$P1_RIG_SESS" 2>/dev/null && echo 1 || echo 0)"
-    assert_eq "P-B1 rig: Claude credential copy is deleted after the run" "0" \
-        "$([[ -e "$P1_CLAUDE_CONFIG_DIR/.claude.json" ]] && echo 1 || echo 0)"
-    assert_eq "P-B1 rig: Codex credential copies are deleted after the run" "0" \
-        "$([[ -e "$P1_CODEX_HOME/config.toml" || -e "$P1_CODEX_HOME/auth.json" ]] && echo 1 || echo 0)"
-    trap cleanup EXIT
-fi
-unset P1_RIG_BASH P1_RIG_SRV P1_RIG_SESS P1_RIG_REPO P1_RIG_OUT P1_RIG_ERR P1_RIG_READY \
-    P1_CLAUDE_CONFIG_DIR P1_CODEX_HOME P1_CLAUDE_CMD P1_CODEX_CMD \
-    P1_RIG_META P1_LAUNCH_PID P1_LAUNCH_RC P1_CLAUDE_PANE P1_CODEX_PANE P1_CLAUDE_CAP P1_CODEX_CAP \
-    P1_TOOLS_READY P1_LONG_BODY P1_ASK_CLAUDE_RC \
-    P1_ASK_CODEX_RC P1_ASK_N P1_ASK_REF_CLAUDE \
-    P1_ASK_REF_CODEX P1_BODY_CLAUDE P1_BODY_CODEX P1_NOTICE_CLAUDE P1_NOTICE_CODEX \
-    P1_CAP_CLAUDE P1_CAP_CODEX P1_READ_CLAUDE P1_READ_CODEX P1_CLEANED P1_RIG_TMP_ROOT _p1_i
-fi
+# ── Slice B P-B1: oversized ask notices on an isolated real-tool rig — RETIRED (B glue cut 2) ──────
+# 20 assertion(s) went with their subject: the core delivers to panes itself (src/deliver.rs): the input-region sensor,
+# the notice transport and the paste/submit machinery are all its, and the bash
+# bodies these assertions called are gone.
 
 # ── P5 real ae through the symlink (retargeted from ae-next coexistence, A22) ─
 if _itest_section 'P5 real ae through the symlink'; then

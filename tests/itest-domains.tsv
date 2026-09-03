@@ -37,7 +37,6 @@ end	-	P1 review B1: end a session on a DIFFERENT tmux server (named-server)
 end	-	2nd-delta B1 MIRROR: DEFAULT-server target, ended from a NAMED-ambient shell
 launch	-	4th review B1: launch INSIDE a foreign tmux pane records the REAL server
 end	-	5th review B1: -S socket vs same-basename -L server collision round-trip
-launch	-	issue #4 BLOCKER: prompt-delivery children must not inherit fd 8
 end	-	issue #4: `ae end` racing a launch must not leave a recreated session
 end	legacy-meta	5th review B2: legacy-empty meta upgrade — fail closed, then migrate, then end
 end	legacy-meta	missing-line legacy meta (pre-tmux_server era): migration must ADD, not just replace
@@ -59,16 +58,14 @@ config	-	Test 8: ae <name> use <name> override
 resume	-	Test 9: Resume from different CWD (local mode)
 doctor	-	Test 10: ae doctor
 doctor	-	Test 10b: ae doctor orphan check (P2a — lifecycle blindness)
+doctor	-	refresh reproduces the CORE's helper set, byte for byte
 doctor	watchdog-rig	Test 11: ae doctor --refresh
 watchdog	watchdog-rig	Test 11b: refresh must NOT stop a STOPPED session's stale-pid watchdog
 resume	watchdog-rig	Test 11c: resume trims events.jsonl to the newest AE_EVENTS_KEEP lines
 watchdog	watchdog-rig	Test 11d: watchdog status/start/stop reject a stale RECYCLED pid
 watchdog	-	Test 11e: status bar is AE-OWNED — the watchdog never rewrites status-right
 watchdog	-	Test 11f: agent roster (@ae_agents_status) with a LIVE watchdog
-send	input-region	input-region: REAL capture+sensor seam against live tmux (colead BLOCKER 2)
-send	input-region	input-region: CURSOR IS NOT THE REGION END (colead ROUND4 BLOCKER)
 helpers	-	goal helper: set → list → survives resume
-transfer	-	ae transfer — phase 1 failure paths
 orchestrator	-	Test: ae orchestrator (legacy hub scaffold) — config isolation + hub compat
 list	-	ae list robustness: a per-session helper returning non-zero must NOT abort
 orchestrator	-	orchestrator companion autostart: scaffold → any launch brings it up
@@ -83,13 +80,8 @@ launch	-	ROLLBACK: a failed launch must not leave debris behind
 stop	-	#33: stop targets the RECORDED server by EXACT id, and verifies
 end	-	#34: end STOPS before it SNAPSHOTS
 end	-	#34: a failed push leaves everything, and SAYS the session is stopped
-launch	-	#36: launch-time delivery waits for READINESS, not for a clock
 resume	-	#30: a resumed pane reports the TOOL, not bash
 archive	archive-family	#48: session archives, end to end
-archive	archive-family	#48 P3.3: archive publish routes through the core, AE_CORE= falls back
-archive	archive-family	#48 P3.4: --from and purge route through the core, AE_CORE= falls back
-archive	archive-family	#79 P3.5: local teardown routes through the core, AE_CORE= falls back, tombstone guards launch
-archive	archive-family	#79 P3.6: nonlocal teardown routes through the core, preserve, AE_CORE= falls back, worktrees tombstone guards launch
 archive	archive-family	purge: no archive written, and an existing one removed
 archive	archive-family	explicit lineage
 end	archive-family	git mode: the commit range is recorded, and the push outcome is the one that ran
@@ -105,6 +97,5 @@ identity	identity-59	#59 C3-2: a RESTORED roster name is fail-quiet, a FRESH one
 identity	identity-59	#59 C4: the frozen-roster branch, driven for real
 install	-	P5 installer + wrapper
 telegram	-	ae-next coexistence: Telegram ownership guard
-send	-	Slice B P-B1: oversized ask notices on an isolated real-tool rig
 install	-	P5 real ae through the symlink
 install	-	P5 upgrade + re-entry
