@@ -80,6 +80,7 @@ pub mod identity;
 pub mod interrupt;
 pub mod inventory;
 pub mod json;
+pub mod launch;
 pub mod launch_cmd;
 pub mod listing;
 pub mod liveness;
@@ -94,6 +95,7 @@ pub mod requests;
 pub mod roster;
 pub mod send;
 pub mod session;
+pub mod spawn;
 pub mod state;
 pub mod teardown;
 pub mod telegram;
@@ -886,6 +888,22 @@ pub fn run_with(
             std::io::Read::read_to_string(&mut std::io::stdin(), &mut stdin)?;
             identity::meta_init(dir, tail, &stdin, out, err)?
         }
+        cli::Request::Spawn { dir, tail } => spawn::run_spawn(
+            dir,
+            tail,
+            &calling_viewer(dir).display,
+            time::Timestamp::now(),
+            out,
+            err,
+        )?,
+        cli::Request::Retire { dir, tail } => spawn::run_retire(
+            dir,
+            tail,
+            &calling_viewer(dir).display,
+            time::Timestamp::now(),
+            out,
+            err,
+        )?,
         cli::Request::Roster { dir, tail } => identity::roster(dir, tail, out, err)?,
         cli::Request::ManifestRender { dir, tail } => render::run_manifest(dir, tail, out, err)?,
         cli::Request::Context { dir, tail } => render::run_context(dir, tail, out, err)?,

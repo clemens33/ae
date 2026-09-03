@@ -18,6 +18,7 @@ mod parity;
 mod parity_self_test;
 mod phase2;
 mod phase3;
+mod spawn;
 mod teardown;
 mod telegram;
 mod transport;

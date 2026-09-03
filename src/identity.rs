@@ -688,39 +688,59 @@ fn add_seat(
         )?;
         return Ok(EXIT_USAGE);
     };
-    let _held = match meta::lock(dir) {
-        Ok(held) => held,
-        Err(why) => return refuse(&format!("cannot take the meta lock: {why}"), err),
-    };
-    let text = match text_of(dir) {
-        Ok(text) => text,
-        Err(why) => return refuse(&why, err),
-    };
+    match add_seat_slot(dir, name, &profile, &binary, sid.as_deref()) {
+        Ok(slot) => {
+            let mut body = match record(&["slot", &slot]) {
+                Ok(line) => line,
+                Err(bad) => return refuse(&format!("the slot {bad:?} cannot be framed"), err),
+            };
+            body.push_str(&trailer(1));
+            emit(&body, out)
+        }
+        Err(why) => refuse(&why, err),
+    }
+}
+
+/// Take the lowest free `spawned.<n>` for `name` and publish the seat, under
+/// one hold of the meta lock — the decision half of `add-seat`, as a value.
+///
+/// Split out from the entry so an in-core operation (`_spawn`) allocates its
+/// seat by CALLING this rather than by re-running the binary and parsing its
+/// record back. One implementation, one lock discipline, one set of refusals.
+///
+/// # Errors
+///
+/// The refusal, phrased as [`refuse`] prints it: a bad or taken name, a v1 or
+/// doubtful roster, an unwritable meta, a control byte in a value.
+pub fn add_seat_slot(
+    dir: &Path,
+    name: &str,
+    profile: &str,
+    binary: &str,
+    sid: Option<&str>,
+) -> Result<String, String> {
+    let _held = meta::lock(dir).map_err(|why| format!("cannot take the meta lock: {why}"))?;
+    let text = text_of(dir)?;
     let current = Meta::parse(&text);
     if let Some(why) = seat_write_refusal(&current) {
-        return refuse(&why, err);
+        return Err(why);
     }
     if !config::is_agent_name(name) {
-        return refuse(
-            &format!(
-                "invalid agent name '{name}'. Names must match {}.",
-                config::AGENT_NAME_GRAMMAR
-            ),
-            err,
-        );
+        return Err(format!(
+            "invalid agent name '{name}'. Names must match {}.",
+            config::AGENT_NAME_GRAMMAR
+        ));
     }
     if current.roster().iter().any(|entry| entry.name == name) {
-        return refuse(
-            &format!("'{name}' already holds a seat — under v2 the name IS the identity."),
-            err,
-        );
+        return Err(format!(
+            "'{name}' already holds a seat — under v2 the name IS the identity."
+        ));
     }
-    for field in [&profile, &binary].into_iter().chain(sid.as_ref()) {
+    for field in [profile, binary].into_iter().chain(sid) {
         if !control_free(field) || field.contains('\n') {
-            return refuse(
-                &format!("the value {field:?} carries a control byte no meta line can round-trip."),
-                err,
-            );
+            return Err(format!(
+                "the value {field:?} carries a control byte no meta line can round-trip."
+            ));
         }
     }
     let slot = format!("spawned.{}", lowest_free_spawned(&text));
@@ -731,24 +751,17 @@ fn add_seat(
     let block = roster::render(&[SeatLines {
         slot: slot.clone(),
         name: name.to_owned(),
-        profile,
-        binary: Some(binary),
-        harness_session: sid,
+        profile: profile.to_owned(),
+        binary: Some(binary.to_owned()),
+        harness_session: sid.map(ToOwned::to_owned),
     }]);
     // `render` opens the block it builds with `schema=2`. This document already
     // declares it — that is what the gate above proved — and a second one would
     // be a DUPLICATE KEY, which `Meta::parse` invalidates: the meta would stop
     // reading as v2 the moment a seat was added to it.
     next.push_str(block.strip_prefix("schema=2\n").unwrap_or(&block));
-    if let Err(why) = publish(dir, &next) {
-        return refuse(&why, err);
-    }
-    let mut body = match record(&["slot", &slot]) {
-        Ok(line) => line,
-        Err(bad) => return refuse(&format!("the slot {bad:?} cannot be framed"), err),
-    };
-    body.push_str(&trailer(1));
-    emit(&body, out)
+    publish(dir, &next)?;
+    Ok(slot)
 }
 
 /// Read `add-seat`'s flags: `--using <profile>`, `--binary <bin>`,
@@ -855,14 +868,32 @@ fn remove_seat(
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> crate::Result<u8> {
-    let _held = match meta::lock(dir) {
-        Ok(held) => held,
-        Err(why) => return refuse(&format!("cannot take the meta lock: {why}"), err),
-    };
-    let text = match text_of(dir) {
-        Ok(text) => text,
-        Err(why) => return refuse(&why, err),
-    };
+    match remove_seat_slot(dir, name) {
+        Ok(slot) => {
+            let mut body = match record(&["slot", &slot]) {
+                Ok(line) => line,
+                Err(bad) => return refuse(&format!("the slot {bad:?} cannot be framed"), err),
+            };
+            body.push_str(&trailer(1));
+            emit(&body, out)
+        }
+        Err(why) => refuse(&why, err),
+    }
+}
+
+/// Drop every line the seat named `name` owns and return its slot — the
+/// decision half of `remove-seat`, as a value.
+///
+/// Split out for the reason [`add_seat_slot`] is: `_spawn`'s rollback and
+/// `_retire` both need the slot, and re-running the binary to read it back
+/// would put a second copy of the refusals in the caller.
+///
+/// # Errors
+///
+/// The refusal: an unknown name, a launch seat, an unwritable meta.
+pub fn remove_seat_slot(dir: &Path, name: &str) -> Result<String, String> {
+    let _held = meta::lock(dir).map_err(|why| format!("cannot take the meta lock: {why}"))?;
+    let text = text_of(dir)?;
     let current = Meta::parse(&text);
     let Some(slot) = current
         .roster()
@@ -870,15 +901,12 @@ fn remove_seat(
         .find(|entry| entry.name == name)
         .map(|entry| entry.slot.clone())
     else {
-        return refuse(&format!("no seat is named '{name}' in this session."), err);
+        return Err(format!("no seat is named '{name}' in this session."));
     };
     if slot == "main" || slot.starts_with("worker.") {
-        return refuse(
-            &format!(
-                "cannot retire '{name}' ({slot}) — it is a launch seat the workspace promised, not a spawned one; use 'ae end' to end the session."
-            ),
-            err,
-        );
+        return Err(format!(
+            "cannot retire '{name}' ({slot}) — it is a launch seat the workspace promised, not a spawned one; use 'ae end' to end the session."
+        ));
     }
     let suffix = format!(".{slot}");
     let mut next = String::new();
@@ -889,15 +917,8 @@ fn remove_seat(
         next.push_str(row);
         next.push('\n');
     }
-    if let Err(why) = publish(dir, &next) {
-        return refuse(&why, err);
-    }
-    let mut body = match record(&["slot", &slot]) {
-        Ok(line) => line,
-        Err(bad) => return refuse(&format!("the slot {bad:?} cannot be framed"), err),
-    };
-    body.push_str(&trailer(1));
-    emit(&body, out)
+    publish(dir, &next)?;
+    Ok(slot)
 }
 
 /// `_roster <dir> set-harness-session <slot> <sid>` — record one seat's

@@ -529,6 +529,41 @@ pub fn kill_pane(server: &ServerId, pane: &str) -> bool {
     run(PROGRAM, &crate::watchdog_glue::kill_pane_args(server, pane)).0
 }
 
+/// Create a spawned agent's own window and return its pane id.
+///
+/// `None` is every failure the caller must roll back on: a non-addressable
+/// server, a refused `new-window`, or a run that printed no id.
+#[must_use]
+pub fn new_window(server: &ServerId, session: &str, work_dir: &str) -> Option<String> {
+    if !addressable(server) {
+        return None;
+    }
+    let (succeeded, stdout) = run(PROGRAM, &tmux::new_window_args(server, session, work_dir));
+    tmux::interpret_new_window(succeeded, &stdout)
+}
+
+/// Set a pane's title. Returns whether tmux accepted it — a title is
+/// decoration, so every caller degrades rather than aborts.
+#[must_use]
+pub fn set_pane_title(server: &ServerId, pane: &str, title: &str) -> bool {
+    if !addressable(server) {
+        return false;
+    }
+    run(PROGRAM, &tmux::pane_title_args(server, pane, title)).0
+}
+
+/// Rename the window `pane` lives in. `name` MUST already be
+/// [`tmux::format_literal`]-escaped: a window name is a FORMAT, and `#(…)` in
+/// one runs a shell. The escape is not applied here ON PURPOSE — the sink is
+/// the one place a reviewer must be able to SEE it.
+#[must_use]
+pub fn rename_window(server: &ServerId, pane: &str, name: &str) -> bool {
+    if !addressable(server) {
+        return false;
+    }
+    run(PROGRAM, &tmux::rename_window_args(server, pane, name)).0
+}
+
 /// The last ~40 joined lines of `pane` on `server`, or `None` when the capture
 /// failed or the server is non-addressable. The bytes feed the watchdog's quiet
 /// hash and throttle scan; there is nothing to interpret, so the raw stdout is

@@ -785,6 +785,10 @@ pub enum OptionScope {
     Session,
     /// A window option: `set-option -w -t <window-id> …`.
     Window,
+    /// A PANE option: `set-option -p -t <pane-id> …`. The table `@ae_agent`
+    /// and `@ae_slot` live in — a stamp belongs to the pane, not to the window
+    /// that happens to hold it today.
+    Pane,
 }
 
 impl OptionScope {
@@ -793,6 +797,7 @@ impl OptionScope {
         match self {
             Self::Session => None,
             Self::Window => Some("-w"),
+            Self::Pane => Some("-p"),
         }
     }
 }
@@ -1359,6 +1364,72 @@ pub fn interpret_clients(succeeded: bool, stdout: &str) -> Option<Vec<ObservedCl
             })
             .collect(),
     )
+}
+
+/// The arguments creating a spawned agent's own WINDOW, printing its pane id.
+///
+/// `-d` so the caller's focus is not stolen, `-t <session>:` so tmux appends
+/// rather than replacing, `-c` so the pane starts in the work dir, and
+/// `-P -F '#{pane_id}'` so the id comes back on stdout instead of being looked
+/// up afterwards by a query that could answer about a different pane.
+///
+/// A new window per spawned agent is the frozen choice: the main window keeps
+/// the lead layout untouched and N parallel workers stay usable.
+#[must_use]
+pub fn new_window_args(server: &ServerId, session: &str, work_dir: &str) -> Vec<String> {
+    let mut args = server_args(server);
+    args.extend(
+        [
+            "new-window",
+            "-d",
+            "-t",
+            &format!("{session}:"),
+            "-c",
+            work_dir,
+            "-P",
+            "-F",
+            PANE_ID_FORMAT,
+        ]
+        .map(ToOwned::to_owned),
+    );
+    args
+}
+
+/// The `#{pane_id}` a `-P -F` run prints — the id, or `None`.
+#[must_use]
+pub fn interpret_new_window(succeeded: bool, stdout: &str) -> Option<String> {
+    if !succeeded {
+        return None;
+    }
+    let id = stdout.trim();
+    (!id.is_empty() && id.starts_with('%')).then(|| id.to_owned())
+}
+
+/// The `-F` a [`new_window_args`] run asks for.
+const PANE_ID_FORMAT: &str = "#{pane_id}";
+
+/// The arguments setting a pane's TITLE — `select-pane -t <pane> -T <title>`.
+///
+/// `select-pane -T` does not change the active pane: `-T` is a title write, and
+/// the `-t` target names the pane it writes to. Nothing here selects.
+#[must_use]
+pub fn pane_title_args(server: &ServerId, pane: &str, title: &str) -> Vec<String> {
+    let mut args = server_args(server);
+    args.extend(["select-pane", "-t", pane, "-T", title].map(ToOwned::to_owned));
+    args
+}
+
+/// The arguments renaming the window a pane lives in.
+///
+/// An explicit `rename-window` also DISABLES tmux's automatic-rename, which is
+/// the point: a worker's window keeps its role name instead of following the
+/// foreground process. `name` is [`format_literal`]-escaped by the caller —
+/// a window name is a FORMAT, and `#(cmd)` in one runs a shell.
+#[must_use]
+pub fn rename_window_args(server: &ServerId, pane: &str, name: &str) -> Vec<String> {
+    let mut args = server_args(server);
+    args.extend(["rename-window", "-t", pane, name].map(ToOwned::to_owned));
+    args
 }
 
 #[cfg(test)]

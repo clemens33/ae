@@ -166,6 +166,16 @@ pub const WATCHDOG_RUN: &str = "_watchdog-run";
 /// frozen script.
 pub const TELEGRAM_RUN: &str = "_telegram-run";
 
+/// The spawn operation: `_spawn <meta-dir> <name> --using <profile> [--]
+/// [prompt]`. The WHOLE operation — seat, window, stamps, manifest, launch
+/// script and brief. Underscored — a core entry, never human-typed (the
+/// `spawn` helper execs it).
+pub const SPAWN: &str = "_spawn";
+
+/// The retire operation: `_retire <meta-dir> <name|%pane>`. Underscored — a
+/// core entry, never human-typed (the `retire` helper execs it).
+pub const RETIRE: &str = "_retire";
+
 /// The identity v2 launch resolver: `_launch-plan [--global <f>] [--local <f>]
 /// [--main <name>] [--workers <a,b>]`. The core reads `[profiles]`/`[roster]`/
 /// `[workspace]`, validates the whole workspace, and prints the seats a launch
@@ -370,6 +380,22 @@ pub enum Request {
     /// `_meta-init <dir> --base <file> [--replace]` — validated by
     /// [`crate::identity::meta_init`]. The seat records arrive on stdin.
     MetaInit {
+        /// The session meta directory.
+        dir: PathBuf,
+        /// Everything after it, as typed.
+        tail: Vec<String>,
+    },
+    /// `_spawn <dir> <name> --using <profile> [--] [prompt]` — validated by
+    /// [`crate::spawn::parse`].
+    Spawn {
+        /// The session meta directory.
+        dir: PathBuf,
+        /// Everything after it, as typed.
+        tail: Vec<String>,
+    },
+    /// `_retire <dir> <name|%pane>` — validated by
+    /// [`crate::spawn::run_retire`].
+    Retire {
         /// The session meta directory.
         dir: PathBuf,
         /// Everything after it, as typed.
@@ -902,6 +928,20 @@ impl Request {
                     tail: tail.to_vec(),
                 },
             },
+            Some(SPAWN) => match &args[1..] {
+                [] => Self::MissingOperand(SPAWN),
+                [dir, tail @ ..] => Self::Spawn {
+                    dir: dir.into(),
+                    tail: tail.to_vec(),
+                },
+            },
+            Some(RETIRE) => match &args[1..] {
+                [] => Self::MissingOperand(RETIRE),
+                [dir, tail @ ..] => Self::Retire {
+                    dir: dir.into(),
+                    tail: tail.to_vec(),
+                },
+            },
             Some(ROSTER) => match &args[1..] {
                 [] => Self::MissingOperand(ROSTER),
                 [dir, tail @ ..] => Self::Roster {
@@ -1032,6 +1072,8 @@ impl Request {
             | Self::LaunchPlan { .. }
             | Self::MetaInit { .. }
             | Self::Roster { .. }
+            | Self::Spawn { .. }
+            | Self::Retire { .. }
             | Self::ManifestRender { .. }
             | Self::Context { .. } => None,
         }

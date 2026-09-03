@@ -598,10 +598,10 @@ pub fn wait_input_ready(server: &ServerId, pane: &str, tool: Tool, polls: u32) -
 /// staging and the Enter were accepted, never that the shell ran it.
 #[must_use]
 pub fn submit_shell_text(server: &ServerId, pane: &str, text: &str) -> bool {
-    let buffer = buffer_name(pane);
-    if !transport::load_buffer(server, &buffer, text.as_bytes())
-        || !transport::paste_buffer(server, &buffer, pane)
-    {
+    // Through the same door the message path uses, so a paste that fails after
+    // the load does not leave the staged bytes readable by `save-buffer` from
+    // any client on the server.
+    if stage_and_paste(server, &buffer_name(pane), text.as_bytes(), pane).is_err() {
         return false;
     }
     std::thread::sleep(SETTLE_OTHER);
