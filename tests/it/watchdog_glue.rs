@@ -534,3 +534,55 @@ fn an_unreadable_pane_is_refused_rather_than_taken_on_faith() {
     );
     let _ = fs::remove_dir_all(&scratch);
 }
+
+/// A writer that fails the way a closed pipe does.
+struct Broken;
+
+impl std::io::Write for Broken {
+    fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+        Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe))
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn a_daemon_that_dies_between_publish_and_watch_takes_its_pidfile_with_it() {
+    // colead gate 135cf36a: `run` published the pidfile, then hit `?` on the
+    // banner write (stdout a closed pipe) and left `.watchdog.pid` naming an
+    // exited process — `watchdog status` then reported a daemon that was not
+    // there. The release is RAII now; this arm is the failing Write that proves
+    // every exit after publish releases.
+    let scratch = scratch("pidfile-raii");
+    require_tmux(&scratch);
+    let socket = scratch.join("s");
+    let root = scratch.join("home");
+    let meta_dir = plant(&root, "raii", &socket, None);
+    assert!(
+        tmux(
+            &socket,
+            &scratch,
+            &["new-session", "-d", "-s", "raii", "cat"]
+        )
+        .0,
+        "the watched session"
+    );
+
+    let mut err = Vec::new();
+    let outcome = run(&meta_dir, quick(), &mut Broken, &mut err);
+    let pidfile = meta_dir.join(".watchdog.pid");
+    let leaked = pidfile.exists();
+    kill_server(&socket, &scratch);
+
+    assert!(
+        outcome.is_err(),
+        "the broken stdout must surface as the run's error"
+    );
+    assert!(
+        !leaked,
+        "the pidfile must not outlive the daemon that published it: {}",
+        pidfile.display()
+    );
+    let _ = fs::remove_dir_all(&scratch);
+}

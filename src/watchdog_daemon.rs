@@ -825,13 +825,11 @@ pub fn run(
         &mut deferred,
         err,
     );
-    // OWNERSHIP-CHECKED, and only on a return this daemon chose. A stop/start in
-    // quick succession can leave this cleanup running after the replacement is
-    // already registered, and removing its pidfile would be the dying process
-    // vandalising its successor (ae:13996-14000).
-    if let Some(pidfile) = &pidfile {
-        let _ = pidfile.release();
-    }
+    // The pidfile is released by `PidFile`'s Drop — ownership-checked, so a
+    // stop/start in quick succession never lets the dying process vandalise its
+    // successor's registration (ae:13996-14000) — and Drop, not an explicit call,
+    // so EVERY return after publish releases it, the `?` exits above included.
+    drop(pidfile);
     code
 }
 

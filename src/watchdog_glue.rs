@@ -396,6 +396,20 @@ impl PidFile {
     }
 }
 
+/// RAII: the registration dies with the value that published it.
+///
+/// `run` used to release only after the loop returned, so any `?` between
+/// publish and watch — the banner write hitting a closed pipe, a reap diagnostic
+/// failing — left `.watchdog.pid` naming an exited process (colead gate
+/// 135cf36a, deterministic repro). The release stays ownership-checked, so a
+/// successor that already re-published is never touched, and a second release
+/// is a no-op.
+impl Drop for PidFile {
+    fn drop(&mut self) {
+        let _ = self.release();
+    }
+}
+
 /// The pane banner the frozen wrapper printed (ae:14365-14371).
 #[must_use]
 pub fn banner(session: &str, interval_secs: u64, stale_secs: u64, max_nudges: u32) -> String {
