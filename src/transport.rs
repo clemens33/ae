@@ -320,6 +320,19 @@ fn spawn<A: AsRef<std::ffi::OsStr>>(
     if streams == Streams::InheritStderr {
         command.stderr(std::process::Stdio::inherit());
     }
+    if streams == Streams::Detached {
+        command.stdin(std::process::Stdio::null());
+        command.stdout(std::process::Stdio::null());
+        command.stderr(std::process::Stdio::null());
+        // The child is deliberately not waited for, so it is reaped by init
+        // when it finishes. Nothing here reads its result: the only report it
+        // owes is the roster row it writes.
+        return command.spawn().ok().map(|_child| std::process::Output {
+            status: std::process::ExitStatus::default(),
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+        });
+    }
     if streams == Streams::Terminal {
         // Nothing is captured, so there is nothing to return but the status —
         // and an `Output` carrying it keeps every caller of this door reading
@@ -368,6 +381,12 @@ enum Streams {
     /// it takes over the terminal, and a captured stdout is a terminal the
     /// client never gets.
     Terminal,
+    /// Started and NOT waited for. The post-launch session-id capture, whose
+    /// whole point is to outlive the launch that started it — the frozen path
+    /// backgrounded it with `&` for the same reason. Its streams are dropped:
+    /// it runs with no reader, so anything it printed would land in a pane
+    /// nobody is looking at.
+    Detached,
 }
 
 fn run(program: &str, args: &[String]) -> (bool, String) {
@@ -480,6 +499,33 @@ pub(crate) fn run_ps(argv: &crate::procs::PsArgv) -> (bool, String) {
     }
 }
 
+/// The detached-supervisor leg of the one process door — the ONLY way product
+/// code starts a process that must OUTLIVE it, and the program is FIXED here to
+/// `nohup`.
+///
+/// It exists for exactly one caller: `_stop --self`, where the process asking
+/// for the stop is running inside the pane the stop will kill. Nothing in that
+/// pane can own the kill, because the kill destroys it mid-loop; so the caller
+/// hands the whole operation to a child that has no end of the dying tty and
+/// returns immediately. `nohup` is the frozen spelling (ae's
+/// `_stop_self_supervised`) and it is POSIX — it detaches the child from the
+/// hangup the pane's death sends, which is the one thing [`Streams::Detached`]
+/// alone does not do.
+///
+/// Mirrors [`run_git`] and [`run_ps`]: the argv is a
+/// [`crate::lifecycle::DetachedArgv`] whose inner vector is private to
+/// `src/lifecycle.rs`, so only that module's fixed-shape constructor can mint
+/// one and this leg cannot be alias-imported and handed an arbitrary command
+/// line. Every stream is `/dev/null`: the child runs with no reader, and the
+/// only report it owes is the `stop-result` event it writes.
+///
+/// Returns whether the child was STARTED — never whether it succeeded. It is
+/// not waited for (that is the point), so its outcome is readable only from the
+/// event log it appends to.
+pub(crate) fn run_detached(argv: &crate::lifecycle::DetachedArgv) -> bool {
+    spawn("nohup", argv.as_args(), &[], Streams::Detached, None).is_some()
+}
+
 /// The watchdog's pane roster of `session` on `server` — richer than
 /// [`observe_agents`], carrying the pid and foreground command the cycle's
 /// dead/stale checks read. `None` on a failed run or a non-addressable server,
@@ -527,6 +573,23 @@ pub fn kill_pane(server: &ServerId, pane: &str) -> bool {
         return false;
     }
     run(PROGRAM, &crate::watchdog_glue::kill_pane_args(server, pane)).0
+}
+
+/// Kill one whole session by EXACT id on `server`, the lifecycle kill behind
+/// `ae stop`, `ae end` and `ae compact`.
+///
+/// Its result is deliberately NOT the proof: the frozen path ignores the kill's
+/// own status (`|| true`) and then asks the server whether the session is gone,
+/// because a kill that races a dying server exits non-zero having succeeded, and
+/// one that hits a prefix-matched neighbour exits zero having failed. The proof
+/// is [`verify_session_absent`]; this returns tmux's answer only so a caller can
+/// log it.
+#[must_use]
+pub fn kill_session(server: &ServerId, session_id: &str) -> bool {
+    if !addressable(server) {
+        return false;
+    }
+    run(PROGRAM, &tmux::kill_session_args(server, session_id)).0
 }
 
 /// Create a spawned agent's own window and return its pane id.
@@ -804,6 +867,53 @@ pub fn observe_clients(server: &ServerId) -> Option<Vec<tmux::ObservedClient>> {
 /// A write whose only answer is its exit status.
 fn write_run(server: &ServerId, args: &[String]) -> bool {
     addressable(server) && run(PROGRAM, args).0
+}
+
+/// The launch operation's tmux leg of the one process door — the ONLY way
+/// product code runs a tmux command that is not already a typed builder above.
+///
+/// Mirrors [`run_git`]: the argv is a [`crate::session_tmux::TmuxArgv`] whose
+/// inner vector is private to that module, so this entry cannot be
+/// alias-imported and handed an arbitrary tmux command line. It exists because
+/// creating a session — `new-session`, the layout splits, the monitor windows —
+/// is a dozen distinct commands that the read-only builders above do not cover,
+/// and spelling each as its own `pub fn` here would put a dozen more writes on
+/// a surface whose job is reading.
+///
+/// Returns whether tmux exited zero and its stdout decoded lossily. Every
+/// answer a caller reads back is a pane id or an option value, both ASCII in
+/// practice, so the lossy decode cannot change a valid one.
+#[must_use]
+pub(crate) fn run_tmux_op(argv: &crate::session_tmux::TmuxArgv) -> (bool, String) {
+    match spawn(PROGRAM, argv.as_args(), &[], Streams::Captured, None) {
+        Some(output) => (
+            output.status.success(),
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+        ),
+        None => (false, String::new()),
+    }
+}
+
+/// The DETACHED leg of the one process door — the ONLY way product code starts
+/// a child it does not wait for.
+///
+/// One caller: the post-launch session-id capture, which must outlive the
+/// launch that started it. `program` is ae's OWN binary, named by
+/// `current_exe`, and the argv is a [`crate::session_launch::capture::CaptureArgv`]
+/// whose inner vector is private to that module — so, like [`run_git`], this
+/// entry cannot be alias-imported and handed an arbitrary command line.
+///
+/// Returns whether the child was started. Nothing else is knowable: it is not
+/// waited for.
+#[must_use]
+pub(crate) fn spawn_detached(
+    program: &std::path::Path,
+    argv: &crate::session_launch::capture::CaptureArgv,
+) -> bool {
+    let Some(program) = program.to_str() else {
+        return false;
+    };
+    spawn(program, argv.as_args(), &[], Streams::Detached, None).is_some()
 }
 
 #[cfg(test)]

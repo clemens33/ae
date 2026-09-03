@@ -1834,6 +1834,28 @@ fn criterion_3_the_places_this_crate_can_read_the_world_are_the_inventoried_ones
             "src/events.rs".to_owned(),
             "src/inventory.rs".to_owned(),
             "src/lib.rs".to_owned(),
+            // The three whole lifecycle operations (B move 4) and their own
+            // doors, one per file and each for a decision the operation cannot
+            // make without looking:
+            //
+            // * `lifecycle.rs` — the `end all` / `stop all` enumeration of the
+            //   sessions root, the legacy-name arm's `lstat` of a session
+            //   directory, and the existence tests behind "is this recorded
+            //   path still there".
+            // * `lifecycle/end.rs` — the archive plan's question of whether a
+            //   meta-less directory still holds memory (the one thing that
+            //   makes a target UNARCHIVABLE rather than empty), the
+            //   conversation-file purge's walk of `~/.claude` and `~/.codex`,
+            //   and the `--assume-stopped` sweep of the tmux socket directory
+            //   plus the `TMUX_TMPDIR`/uid it is addressed by.
+            // * `lifecycle/compaction.rs` — the `AE_COMPACT_HANDOVER_SECS`
+            //   knob.
+            //
+            // Registered deliberately: an operation that deletes a session is
+            // exactly the kind that must not gain a quiet new read.
+            "src/lifecycle.rs".to_owned(),
+            "src/lifecycle/compaction.rs".to_owned(),
+            "src/lifecycle/end.rs".to_owned(),
             // The memo file read behind `memo read`/`memo tail`. Registered
             // deliberately: the file is the helper's own, but reading it is a
             // new door all the same.
@@ -1855,6 +1877,20 @@ fn criterion_3_the_places_this_crate_can_read_the_world_are_the_inventoried_ones
             // stays a no-subprocess path and still works with no git installed;
             // every failure is `None`, so a listing never fails on it.
             "src/session.rs".to_owned(),
+            // The LAUNCH operation's own reads (B move 3): the `.ending.<name>`
+            // tombstone lstats (a dangling link is a standing tombstone, so
+            // never `metadata`), the origin/work-dir existence gates, the
+            // canonicalise behind the derived-name ownership guard, the
+            // `--copy` mode's recursive tree walk, and the resume-time
+            // events.jsonl retention read. Its meta and config reads are
+            // `meta.rs`'s and `config.rs`'s inventoried doors, not new ones
+            // here. Registered deliberately.
+            "src/session_launch.rs".to_owned(),
+            // The codex capture handshake's one read (B move 3): the
+            // `codex.<slot>.sid` file codex's own `_register-sid` wrote. One
+            // read, on its own thread, and it exists so a post-launch id can
+            // reach the roster at all.
+            "src/session_launch/capture.rs".to_owned(),
             // The LOCAL-mode teardown's own reads (P3.5): the `lstat` that proves
             // the session dir is a real direct child and never a link, and the
             // sessions-root `fsync` that makes the rename-to-tombstone and its

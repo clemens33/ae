@@ -701,6 +701,56 @@ pub fn launch_plan(
     }
 }
 
+/// Read arbitrary `[workspace]` keys, layering `local` over `global` — the
+/// launch operation's own `get_config workspace.<key>` reads (`layout`, `copy`,
+/// `watchdog`/`loop`, `orchestrator`/`hub`/`meta`).
+///
+/// A separate entry from [`read_workspace`] because that one is compact's,
+/// with its own fail-closed contract on a selected-but-unreadable file. This is
+/// the LAUNCH read: a config file that cannot be read contributes nothing,
+/// exactly as the frozen `get_config` behaves, because the launch has already
+/// refused a missing config through [`read_identity`] and a second, differently
+/// shaped refusal here would be a second place the rule lives.
+///
+/// Returns the resolved value of each requested key, or `None` where no file
+/// set it. Last file to set a key wins.
+#[must_use]
+pub fn read_workspace_keys(
+    global: Option<&Path>,
+    local: Option<&Path>,
+    keys: &[&str],
+) -> Vec<Option<String>> {
+    let mut found: Vec<Option<String>> = vec![None; keys.len()];
+    for file in [global, local].into_iter().flatten() {
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "a door: reads the INI config the frozen parse_config reads — see clippy.toml"
+        )]
+        let read = std::fs::read_to_string(file);
+        let Ok(text) = read else { continue };
+        let mut section = String::new();
+        for raw in text.lines() {
+            let line = raw.trim();
+            if line.is_empty() {
+                continue;
+            }
+            if let Some(name) = section_header(line) {
+                section = name;
+                continue;
+            }
+            if section != "workspace" {
+                continue;
+            }
+            if let Some((key, value)) = parse_entry(line)
+                && let Some(index) = keys.iter().position(|wanted| *wanted == key)
+            {
+                found[index] = Some(value);
+            }
+        }
+    }
+    found
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

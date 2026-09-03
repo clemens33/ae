@@ -53,6 +53,38 @@ enum Query<'a> {
     /// over unrelated stale entries and must never make a removed workdir look
     /// retained).
     WorktreeRemove { worktree: &'a OsStr },
+    /// `worktree prune` — the frozen end path's housekeeping after a managed
+    /// worktree is removed. Best-effort: its exit status is deliberately ignored.
+    WorktreePrune,
+    /// `worktree add --detach <worktree> HEAD` — the `--worktree` launch's
+    /// working copy, run with `-C <origin>`. Detached deliberately: ae manages
+    /// no branch at creation, and a named branch would collide the second time
+    /// the same origin launches a session.
+    WorktreeAdd { worktree: &'a OsStr },
+    /// `add -A` — the end path's stage-everything before the session commit.
+    AddAll,
+    /// `commit -m <subject> -m <body>` — the frozen two-`-m` session commit.
+    Commit { subject: &'a str, body: &'a str },
+    /// `diff --quiet` — unstaged changes, judged by exit status (non-zero = dirty).
+    DiffQuiet,
+    /// `diff --cached --quiet` — staged changes, same judgement.
+    DiffCachedQuiet,
+    /// `ls-files --others --exclude-standard` — untracked, judged by output.
+    LsFilesOthers,
+    /// `remote get-url origin` — whether a push target exists at all.
+    RemoteGetUrl,
+    /// `fetch origin --quiet` — the frozen silent refresh before the reachability
+    /// test. Best-effort: the frozen path swallows its failure.
+    FetchOrigin,
+    /// `branch -r --contains HEAD` — whether HEAD is already on a remote branch.
+    BranchRemoteContains,
+    /// `merge-base HEAD origin/HEAD` — the base the pushed-file count is taken from.
+    MergeBaseOriginHead,
+    /// `diff --name-only <base> HEAD` — the files the push carries.
+    DiffNameOnly { base: &'a str },
+    /// `push -u origin HEAD:refs/heads/<branch>` — the end path's push, judged by
+    /// exit status. The branch rides as its own argv element.
+    PushHead { branch: &'a str },
 }
 
 /// A git argv minted ONLY by this module's [`argv`] builder. Its inner vector
@@ -74,6 +106,10 @@ impl GitArgv {
 
 /// Build the OS-native argv for one query, always `-C <wdir>` first so git runs
 /// in the work dir without the process ever changing directory.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one arm per fixed query shape; the whole point is that every git command line this crate can build is visible in one place"
+)]
 fn argv(wdir: &OsStr, query: &Query) -> GitArgv {
     let mut args = vec![OsString::from("-C"), wdir.to_owned()];
     match *query {
@@ -117,6 +153,75 @@ fn argv(wdir: &OsStr, query: &Query) -> GitArgv {
             args.push("remove".into());
             args.push("--force".into());
             args.push(worktree.to_owned());
+        }
+        Query::WorktreePrune => {
+            args.push("worktree".into());
+            args.push("prune".into());
+        }
+        Query::WorktreeAdd { worktree } => {
+            args.push("worktree".into());
+            args.push("add".into());
+            args.push("--detach".into());
+            args.push(worktree.to_owned());
+            args.push("HEAD".into());
+        }
+        Query::AddAll => {
+            args.push("add".into());
+            args.push("-A".into());
+        }
+        Query::Commit { subject, body } => {
+            args.push("commit".into());
+            args.push("-m".into());
+            args.push(subject.into());
+            args.push("-m".into());
+            args.push(body.into());
+        }
+        Query::DiffQuiet => {
+            args.push("diff".into());
+            args.push("--quiet".into());
+        }
+        Query::DiffCachedQuiet => {
+            args.push("diff".into());
+            args.push("--cached".into());
+            args.push("--quiet".into());
+        }
+        Query::LsFilesOthers => {
+            args.push("ls-files".into());
+            args.push("--others".into());
+            args.push("--exclude-standard".into());
+        }
+        Query::RemoteGetUrl => {
+            args.push("remote".into());
+            args.push("get-url".into());
+            args.push("origin".into());
+        }
+        Query::FetchOrigin => {
+            args.push("fetch".into());
+            args.push("origin".into());
+            args.push("--quiet".into());
+        }
+        Query::BranchRemoteContains => {
+            args.push("branch".into());
+            args.push("-r".into());
+            args.push("--contains".into());
+            args.push("HEAD".into());
+        }
+        Query::MergeBaseOriginHead => {
+            args.push("merge-base".into());
+            args.push("HEAD".into());
+            args.push("origin/HEAD".into());
+        }
+        Query::DiffNameOnly { base } => {
+            args.push("diff".into());
+            args.push("--name-only".into());
+            args.push(base.into());
+            args.push("HEAD".into());
+        }
+        Query::PushHead { branch } => {
+            args.push("push".into());
+            args.push("-u".into());
+            args.push("origin".into());
+            args.push(format!("HEAD:refs/heads/{branch}").into());
         }
     }
     GitArgv(args)
@@ -241,6 +346,127 @@ pub(crate) fn work_tree_dirty(wdir: &[u8]) -> bool {
     let wdir = OsStr::from_bytes(wdir);
     let (succeeded, out) = crate::transport::run_git(&argv(wdir, &Query::PorcelainStatus));
     succeeded && out.lines().any(|line| !line.is_empty())
+}
+
+// ---- the end path's git leg ------------------------------------------------
+//
+// `ae end` commits and pushes a managed session's work before anything is
+// deleted. Every call below is one fixed [`Query`] through the same sealed
+// [`GitArgv`] door, so the whole leg adds argv SHAPES and no new capability:
+// the work-tree path stays one OS-native element after `-C`, and a branch or
+// commit message rides as its own element with no shell anywhere.
+
+/// Whether `wdir` is inside a git work tree — the frozen end path's repo
+/// precondition, judged by exit status exactly as `git -C … rev-parse
+/// --is-inside-work-tree >/dev/null 2>&1` is.
+pub(crate) fn is_work_tree(wdir: &[u8]) -> bool {
+    !wdir.is_empty()
+        && crate::transport::run_git(&argv(OsStr::from_bytes(wdir), &Query::IsWorkTree)).0
+}
+
+/// Whether the work tree has anything to commit: unstaged changes, staged
+/// changes, or untracked files that are not ignored.
+///
+/// The frozen test is three commands OR-ed, and the untracked leg is judged by
+/// OUTPUT rather than status — `ls-files` exits zero either way.
+pub(crate) fn has_pending_work(wdir: &[u8]) -> bool {
+    let path = OsStr::from_bytes(wdir);
+    if !crate::transport::run_git(&argv(path, &Query::DiffQuiet)).0 {
+        return true;
+    }
+    if !crate::transport::run_git(&argv(path, &Query::DiffCachedQuiet)).0 {
+        return true;
+    }
+    let (_, listed) = crate::transport::run_git(&argv(path, &Query::LsFilesOthers));
+    !listed.trim().is_empty()
+}
+
+/// `git -C <wdir> add -A` then `commit -m <subject> -m <body>`. `true` only if
+/// BOTH exited zero — a failed stage must never look like a successful commit.
+pub(crate) fn commit_all(wdir: &[u8], subject: &str, body: &str) -> bool {
+    let path = OsStr::from_bytes(wdir);
+    if !crate::transport::run_git(&argv(path, &Query::AddAll)).0 {
+        return false;
+    }
+    crate::transport::run_git(&argv(path, &Query::Commit { subject, body })).0
+}
+
+/// Whether a remote named `origin` is configured — the frozen
+/// `git remote get-url origin >/dev/null 2>&1`.
+pub(crate) fn has_origin(wdir: &[u8]) -> bool {
+    crate::transport::run_git(&argv(OsStr::from_bytes(wdir), &Query::RemoteGetUrl)).0
+}
+
+/// `git fetch origin --quiet`, best-effort. The frozen path swallows its
+/// failure (`|| true`): an offline end still commits and still archives.
+pub(crate) fn fetch_origin(wdir: &[u8]) {
+    let _ = crate::transport::run_git(&argv(OsStr::from_bytes(wdir), &Query::FetchOrigin));
+}
+
+/// Whether HEAD is already contained in some remote-tracking branch — the
+/// frozen `branch -r --contains HEAD | grep -q .`, judged by OUTPUT, because
+/// git exits zero with an empty list.
+pub(crate) fn head_is_on_a_remote(wdir: &[u8]) -> bool {
+    let (succeeded, listed) =
+        crate::transport::run_git(&argv(OsStr::from_bytes(wdir), &Query::BranchRemoteContains));
+    succeeded && !listed.trim().is_empty()
+}
+
+/// How many files the unpushed commits touch, as the frozen line prints it: the
+/// count of `diff --name-only <merge-base HEAD origin/HEAD> HEAD`, with `HEAD~1`
+/// standing in when no merge base resolves.
+///
+/// A count, never an error: the frozen path prints `?` when git cannot answer,
+/// and this is a cosmetic line above a push that runs either way.
+pub(crate) fn pushed_file_count(wdir: &[u8]) -> String {
+    let path = OsStr::from_bytes(wdir);
+    let (based, out) = crate::transport::run_git(&argv(path, &Query::MergeBaseOriginHead));
+    let base = out.trim();
+    let base = if based && !base.is_empty() {
+        base.to_owned()
+    } else {
+        "HEAD~1".to_owned()
+    };
+    let (listed, names) =
+        crate::transport::run_git(&argv(path, &Query::DiffNameOnly { base: &base }));
+    if listed {
+        names.lines().filter(|l| !l.is_empty()).count().to_string()
+    } else {
+        "?".to_owned()
+    }
+}
+
+/// `git -C <wdir> push -u origin HEAD:refs/heads/<branch>` — judged by exit
+/// status. `false` is the frozen refusal: the session is STOPPED, the commit is
+/// safe locally, and nothing is deleted.
+pub(crate) fn push_head(wdir: &[u8], branch: &str) -> bool {
+    crate::transport::run_git(&argv(OsStr::from_bytes(wdir), &Query::PushHead { branch })).0
+}
+
+/// `git -C <origin> worktree prune`, best-effort — the frozen housekeeping after
+/// a managed worktree goes. Its status is ignored on purpose: pruning unrelated
+/// stale entries must never fail an end whose own removal succeeded.
+pub(crate) fn worktree_prune(origin: &[u8]) {
+    let _ = crate::transport::run_git(&argv(OsStr::from_bytes(origin), &Query::WorktreePrune));
+}
+
+/// `git -C <origin> worktree add --detach <worktree> HEAD` — the `--worktree`
+/// launch's working copy. Judged by exit status.
+///
+/// A first refusal is retried ONCE behind [`worktree_prune`], which is the
+/// frozen recovery (`ae:13310`): a previous session whose directory was removed
+/// without `worktree remove` leaves a stale admin record, and `add` refuses the
+/// path until it is pruned. The prune is global housekeeping over unrelated
+/// stale entries, which is why it runs only on the retry and never on the
+/// happy path.
+pub(crate) fn worktree_add_detached(origin: &[u8], worktree: &[u8]) -> bool {
+    let origin = OsStr::from_bytes(origin);
+    let worktree = OsStr::from_bytes(worktree);
+    if crate::transport::run_git(&argv(origin, &Query::WorktreeAdd { worktree })).0 {
+        return true;
+    }
+    let _ = crate::transport::run_git(&argv(origin, &Query::WorktreePrune));
+    crate::transport::run_git(&argv(origin, &Query::WorktreeAdd { worktree })).0
 }
 
 #[cfg(test)]

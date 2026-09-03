@@ -524,6 +524,20 @@ pub fn has_session_args(server: &ServerId, session: &str) -> Vec<String> {
     args
 }
 
+/// The arguments for the lifecycle kill — `tmux kill-session -t <session-id>`.
+///
+/// The target is a SESSION ID (`$3`), never a name, and that is the whole point
+/// of the separate builder: `-t` prefix-matches, so `kill-session -t proj` kills
+/// a live `project` and reports success. Every caller resolves the exact id
+/// through [`interpret_session_id`] first; this builder cannot enforce that, so
+/// the type of the string it is handed is the contract.
+#[must_use]
+pub fn kill_session_args(server: &ServerId, session_id: &str) -> Vec<String> {
+    let mut args = server_args(server);
+    args.extend(["kill-session", "-t", session_id].map(ToOwned::to_owned));
+    args
+}
+
 /// The roster the frozen `ae_resolve` reads:
 /// `list-panes -s -t <session> -F '#{pane_id}\t#{@ae_agent}'`.
 pub const AGENTS_FORMAT: &str = "#{pane_id}\t#{@ae_agent}";

@@ -82,12 +82,15 @@ pub mod inventory;
 pub mod json;
 pub mod launch;
 pub mod launch_cmd;
+/// The whole `end`/`stop`/`compact` operations — the frozen order, in one place.
+pub mod lifecycle;
 pub mod listing;
 pub mod liveness;
 pub mod memo;
 pub mod meta;
 pub mod netprobe;
 pub mod next;
+pub mod panes;
 pub mod procs;
 pub mod render;
 pub mod reply;
@@ -95,6 +98,8 @@ pub mod requests;
 pub mod roster;
 pub mod send;
 pub mod session;
+pub mod session_launch;
+mod session_tmux;
 pub mod spawn;
 pub mod state;
 pub mod teardown;
@@ -220,6 +225,59 @@ pub fn run(args: &[String], out: &mut impl Write, err: &mut impl Write) -> Resul
         return run_with(args, Some(&world), out, err);
     }
     run_with(args, None, out, err)
+}
+
+/// The `_say` arm: the frozen `helper_say_main`.
+///
+/// It emits a `chat` event and says so — the bridge is what forwards it, and a
+/// `say` with no bridge running is deliberately still a recorded line rather
+/// than a refusal, because the event log is where the text belongs either way.
+/// stdin is read when no text was given, which is how a multi-line reply
+/// travels; a whitespace-only payload is the usage refusal, not an empty event.
+fn run_say(
+    dir: &std::path::Path,
+    tail: &[String],
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> Result<u8> {
+    const USAGE: &str = "Usage: say <text>          # push a free-text line to the Telegram chat\n       echo \"text\" | say   # multi-line / long replies via stdin\n\nEmits a `chat` event the telegram bridge forwards. Requires the bridge running\nwith `chat` in its [telegram] include filter (see `ae telegram status`).\n";
+    let text = if tail.is_empty() {
+        let mut piped = String::new();
+        if std::io::IsTerminal::is_terminal(&std::io::stdin())
+            || std::io::Read::read_to_string(&mut std::io::stdin(), &mut piped).is_err()
+        {
+            write!(err, "{USAGE}")?;
+            return Ok(state::EXIT_USAGE);
+        }
+        piped
+    } else {
+        tail.join(" ")
+    };
+    if text.trim().is_empty() {
+        write!(err, "{USAGE}")?;
+        return Ok(state::EXIT_USAGE);
+    }
+    let viewer = calling_viewer(dir);
+    let _ = state::emit(
+        dir,
+        &tracked::event_line(&tracked::EventFields {
+            ts: time::Timestamp::now(),
+            actor: &viewer.display,
+            action: "chat",
+            target: "",
+            reference: "",
+            actor_slot: &viewer.slot,
+            actor_session: "",
+            target_slot: "",
+            target_session: "",
+            summary: &text,
+            body_file: "",
+        }),
+    );
+    let head: String = text.chars().take(60).collect();
+    let ellipsis = if text.chars().count() > 60 { "…" } else { "" };
+    writeln!(out, "Sent to Telegram bridge (chat): {head}{ellipsis}")?;
+    Ok(0)
 }
 
 /// The `_state` arm. Nothing after the directory is the READ — the caller's
@@ -868,6 +926,18 @@ pub fn run_with(
         cli::Request::Review { dir, tail } => {
             run_tracked(tracked::Kind::Review, dir, tail, out, err)?
         }
+        cli::Request::Say { dir, tail } => run_say(dir, tail, out, err)?,
+        cli::Request::Peek { dir, tail } => panes::peek(dir, tail, &own_session(dir), out, err)?,
+        cli::Request::Agents { dir, tail } => {
+            panes::agents(dir, tail, &own_session(dir), out, err)?
+        }
+        cli::Request::Focus { dir, tail } => {
+            panes::focus(dir, tail, &own_session(dir), time::Timestamp::now(), err)?
+        }
+        cli::Request::Launch { tail } => session_launch::run(tail, out, err)?,
+        cli::Request::CaptureSid { dir, slot, pane } => {
+            session_launch::capture::run(dir, slot, pane, &session_launch::recorded_server(dir))
+        }
         cli::Request::Requests { dir, mode } => {
             let rendered = requests::render(dir, *mode, &calling_viewer(dir));
             out.write_all(&rendered.stdout)?;
@@ -904,6 +974,33 @@ pub fn run_with(
             out,
             err,
         )?,
+        // The three whole lifecycle operations. They take a session NAME, so
+        // they derive the state root for themselves — the same derivation
+        // `list` uses, and the same refusal when there is none.
+        cli::Request::End { tail } => {
+            if let Some(root) = state_root() {
+                lifecycle::end::run(&root, tail, out, err)?
+            } else {
+                writeln!(err, "ae: {NO_STATE_ROOT}")?;
+                EXIT_UNAVAILABLE
+            }
+        }
+        cli::Request::Stop { tail } => {
+            if let Some(root) = state_root() {
+                lifecycle::run_stop(&root, tail, out, err)?
+            } else {
+                writeln!(err, "ae: {NO_STATE_ROOT}")?;
+                EXIT_UNAVAILABLE
+            }
+        }
+        cli::Request::Compact { tail } => {
+            if let Some(root) = state_root() {
+                lifecycle::compaction::run(&root, tail, out, err)?
+            } else {
+                writeln!(err, "ae: {NO_STATE_ROOT}")?;
+                EXIT_UNAVAILABLE
+            }
+        }
         cli::Request::Roster { dir, tail } => identity::roster(dir, tail, out, err)?,
         cli::Request::ManifestRender { dir, tail } => render::run_manifest(dir, tail, out, err)?,
         cli::Request::Context { dir, tail } => render::run_context(dir, tail, out, err)?,

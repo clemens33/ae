@@ -1118,7 +1118,7 @@ fn the_lint_relaxations_this_counter_can_see_are_the_expected_ones() {
         }
     }
 
-    // Six relaxations this counter can see, each for a different job: the
+    // Seven relaxations this counter can see, each for a different job: the
     // PRODUCT's, in `src/transport.rs`, because a tmux multiplexer that cannot
     // run tmux answers `unknown` about everything; the parity harness's door,
     // which must never judge a lane; the black-box door, which drives the
@@ -1128,16 +1128,19 @@ fn the_lint_relaxations_this_counter_can_see_are_the_expected_ones() {
     // std cannot make the one special file that blocks an ungated open, and
     // the tests that prove the `-f` gates need exactly that file); the git
     // fixture builder beside those (`cli::git_in` — the preview's git-facts
-    // tests need REAL repos, and only `git` builds a real repo); and this
-    // file's own, which has to run clippy in order to ask clippy anything.
+    // tests need REAL repos, and only `git` builds a real repo); the generated
+    // session-helper runner beside those too (`cli::helper` — a launch writes
+    // shims a pane execs BY PATH, so proving one works means running the file
+    // rather than the function behind it); and this file's own, which has to
+    // run clippy in order to ask clippy anything.
     //
-    // A seventh entry is red. A relaxation this counter CANNOT see is not — that
+    // An eighth entry is red. A relaxation this counter CANNOT see is not — that
     // is what the semantic guard above is for.
     assert_eq!(
         inventory,
         vec![
             ("src/transport.rs".to_owned(), 1),
-            ("tests/it/cli.rs".to_owned(), 3),
+            ("tests/it/cli.rs".to_owned(), 4),
             ("tests/it/parity.rs".to_owned(), 1),
             ("tests/it/parity_self_test.rs".to_owned(), 1),
         ],

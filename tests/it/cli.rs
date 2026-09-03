@@ -33,6 +33,19 @@ pub(crate) fn ae() -> std::process::Command {
     std::process::Command::new(env!("CARGO_BIN_EXE_ae"))
 }
 
+/// Run one GENERATED SESSION HELPER — a shim the launch wrote — as a black-box
+/// process. The launch suite's door: the whole point of a shim is that a pane
+/// can exec it by path, so proving it works means running the file rather than
+/// the function behind it. Lives here beside `ae()` so the capability stays in
+/// the files the boundary guard already names.
+#[allow(
+    clippy::disallowed_types,
+    reason = "the black-box tests' door: a session helper must be RUN to be proven; see clippy.toml"
+)]
+pub(crate) fn helper(path: &std::path::Path) -> std::process::Command {
+    std::process::Command::new(path)
+}
+
 // The FIFO fixture. Safe std can bind a socket and make a directory, but the
 // one special file that BLOCKS an ungated open — the case a `-f` gate exists
 // for — needs mkfifo(2), and the only route to it without libc is mkfifo(1).

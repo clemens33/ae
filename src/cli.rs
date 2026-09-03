@@ -176,6 +176,25 @@ pub const SPAWN: &str = "_spawn";
 /// core entry, never human-typed (the `retire` helper execs it).
 pub const RETIRE: &str = "_retire";
 
+/// The whole `end` operation: `_end [-f] [--purge-history|--keep-history]
+/// [--assume-stopped] <session-name|all>`. Unlike the step entries it takes a
+/// NAME rather than a session directory — an operation that can be told `all`
+/// enumerates the sessions root for itself, and derives it from the state root
+/// the same way `list` does. Underscored — a core entry, never human-typed.
+pub const END: &str = "_end";
+
+/// The whole `stop` operation: `_stop <session-name|all> [-y]`. Same
+/// name-not-directory reasoning as [`END`].
+pub const STOP: &str = "_stop";
+
+/// The whole `compact` operation: `_compact [-f] [--keep-history]
+/// [--digest-only] <session-name> [--exec-plan <path>]`. Same
+/// name-not-directory reasoning as [`END`]. The RELAUNCH stays with the caller:
+/// `--exec-plan` names a file the operation writes the frozen relaunch facts
+/// to, so the child is started from the roster the human was shown rather than
+/// from a config that may have been rewritten under the window.
+pub const COMPACT: &str = "_compact";
+
 /// The identity v2 launch resolver: `_launch-plan [--global <f>] [--local <f>]
 /// [--main <name>] [--workers <a,b>]`. The core reads `[profiles]`/`[roster]`/
 /// `[workspace]`, validates the whole workspace, and prints the seats a launch
@@ -213,6 +232,36 @@ pub const CONTEXT: &str = "_context";
 /// frozen script ever resolved a hostname. The behavior is [`crate::netprobe`].
 pub const NET_PROBE: &str = "_net-probe";
 
+/// The `say` helper's surface: `_say <dir> [text…]` — the free-text line the
+/// Telegram bridge forwards, as a `chat` event. Underscored — a core entry,
+/// never human-typed.
+pub const SAY: &str = "_say";
+
+/// The `peek` helper's surface: `_peek <dir> <target> [lines]`. Underscored — a
+/// core entry, never human-typed.
+pub const PEEK: &str = "_peek";
+
+/// The `agents` helper's surface: `_agents <dir> [--all]`. Underscored — a core
+/// entry, never human-typed.
+pub const AGENTS: &str = "_agents";
+
+/// The `focus` helper's surface: `_focus <dir> <target>`. Underscored — a core
+/// entry, never human-typed.
+pub const FOCUS: &str = "_focus";
+
+/// The whole session launch and resume: `_launch --home <ae-home> --cwd <dir>
+/// [--global <f>] [--local-config <f>] [--server-kind <k>] [--server <v>]
+/// [--attach|--no-attach] [--inside-tmux] -- <user argv…>`. The environment
+/// facts arrive as flags because the core may not read the environment; the
+/// user's own argv arrives verbatim after `--`. Underscored — a core entry,
+/// never human-typed.
+pub const LAUNCH: &str = "_launch";
+
+/// The detached post-launch capture: `_capture-sid <dir> <slot> <pane>`. Its
+/// parent is the launch, which does not wait for it. Underscored — a core
+/// entry, never human-typed.
+pub const CAPTURE_SID: &str = "_capture-sid";
+
 /// What an argv asks the binary to do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Request {
@@ -227,6 +276,49 @@ pub enum Request {
     /// `ae next`'s own and belongs beside the rule it states.
     Next {
         /// Everything after the subcommand, as typed.
+        tail: Vec<String>,
+    },
+    /// `_say <meta-dir> [text…]` — the `say` helper surface.
+    Say {
+        /// The session meta directory the helper derives from `$0`.
+        dir: PathBuf,
+        /// The text, as typed. Empty reads stdin.
+        tail: Vec<String>,
+    },
+    /// `_peek <meta-dir> <target> [lines]` — the `peek` helper surface.
+    Peek {
+        /// The session meta directory the helper derives from `$0`.
+        dir: PathBuf,
+        /// The target and its optional line count.
+        tail: Vec<String>,
+    },
+    /// `_agents <meta-dir> [--all]` — the `agents` helper surface.
+    Agents {
+        /// The session meta directory the helper derives from `$0`.
+        dir: PathBuf,
+        /// `--all`, or nothing.
+        tail: Vec<String>,
+    },
+    /// `_focus <meta-dir> <target>` — the `focus` helper surface.
+    Focus {
+        /// The session meta directory the helper derives from `$0`.
+        dir: PathBuf,
+        /// The target.
+        tail: Vec<String>,
+    },
+    /// `_capture-sid <dir> <slot> <pane>` — the detached capture child.
+    CaptureSid {
+        /// The session meta directory.
+        dir: PathBuf,
+        /// The seat whose id is being captured.
+        slot: String,
+        /// Its pane, for the TUI fallback.
+        pane: String,
+    },
+    /// `_launch …` — a whole session, created or resumed.
+    Launch {
+        /// Everything after the subcommand, as given. Validated by
+        /// [`crate::session_launch`], whose refusals are the launch's own.
         tail: Vec<String>,
     },
     /// `_requests <meta-dir> [mine|inbox|all]` — the `requests` helper surface.
@@ -399,6 +491,21 @@ pub enum Request {
         /// The session meta directory.
         dir: PathBuf,
         /// Everything after it, as typed.
+        tail: Vec<String>,
+    },
+    /// `_end …` — validated by [`crate::lifecycle::end::run`].
+    End {
+        /// Everything after the subcommand, as typed.
+        tail: Vec<String>,
+    },
+    /// `_stop …` — validated by [`crate::lifecycle::run_stop`].
+    Stop {
+        /// Everything after the subcommand, as typed.
+        tail: Vec<String>,
+    },
+    /// `_compact …` — validated by [`crate::lifecycle::compaction::run`].
+    Compact {
+        /// Everything after the subcommand, as typed.
         tail: Vec<String>,
     },
     /// `_roster <dir> <subcommand> …` — validated by
@@ -631,6 +738,46 @@ impl Request {
                 Err(UnknownFlag(token)) => Self::UsageError(token),
             },
             Some("next" | "jump") => Self::Next {
+                tail: args[1..].to_vec(),
+            },
+            Some(SAY) => match &args[1..] {
+                [] => Self::MissingOperand(SAY),
+                [dir, rest @ ..] => Self::Say {
+                    dir: dir.into(),
+                    tail: rest.to_vec(),
+                },
+            },
+            Some(PEEK) => match &args[1..] {
+                [] => Self::MissingOperand(PEEK),
+                [dir, rest @ ..] => Self::Peek {
+                    dir: dir.into(),
+                    tail: rest.to_vec(),
+                },
+            },
+            Some(AGENTS) => match &args[1..] {
+                [] => Self::MissingOperand(AGENTS),
+                [dir, rest @ ..] => Self::Agents {
+                    dir: dir.into(),
+                    tail: rest.to_vec(),
+                },
+            },
+            Some(FOCUS) => match &args[1..] {
+                [] => Self::MissingOperand(FOCUS),
+                [dir, rest @ ..] => Self::Focus {
+                    dir: dir.into(),
+                    tail: rest.to_vec(),
+                },
+            },
+            Some(CAPTURE_SID) => match &args[1..] {
+                [dir, slot, pane] => Self::CaptureSid {
+                    dir: dir.into(),
+                    slot: slot.clone(),
+                    pane: pane.clone(),
+                },
+                [_, _, _, extra, ..] => Self::UsageError(extra.clone()),
+                _ => Self::MissingOperand(CAPTURE_SID),
+            },
+            Some(LAUNCH) => Self::Launch {
                 tail: args[1..].to_vec(),
             },
             Some(REQUESTS) => Self::parse_requests(&args[1..]),
@@ -942,6 +1089,18 @@ impl Request {
                     tail: tail.to_vec(),
                 },
             },
+            // The operand is a session NAME, and the entries validate it
+            // themselves: `all`, a missing name and a bad flag are three
+            // different refusals, and argv cannot tell them apart.
+            Some(END) => Self::End {
+                tail: args[1..].to_vec(),
+            },
+            Some(STOP) => Self::Stop {
+                tail: args[1..].to_vec(),
+            },
+            Some(COMPACT) => Self::Compact {
+                tail: args[1..].to_vec(),
+            },
             Some(ROSTER) => match &args[1..] {
                 [] => Self::MissingOperand(ROSTER),
                 [dir, tail @ ..] => Self::Roster {
@@ -1043,6 +1202,12 @@ impl Request {
             | Self::Next { .. }
             | Self::LaunchCandidate(_)
             | Self::Requests { .. }
+            | Self::Say { .. }
+            | Self::Peek { .. }
+            | Self::Agents { .. }
+            | Self::Focus { .. }
+            | Self::Launch { .. }
+            | Self::CaptureSid { .. }
             | Self::State { .. }
             | Self::Goal { .. }
             | Self::Memo { .. }
@@ -1074,6 +1239,9 @@ impl Request {
             | Self::Roster { .. }
             | Self::Spawn { .. }
             | Self::Retire { .. }
+            | Self::End { .. }
+            | Self::Stop { .. }
+            | Self::Compact { .. }
             | Self::ManifestRender { .. }
             | Self::Context { .. } => None,
         }
