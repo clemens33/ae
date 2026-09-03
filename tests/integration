@@ -1039,10 +1039,20 @@ sed -e 's|^ae_core=.*|ae_core=|' -e 's|^ae_core_version=.*|ae_core_version=|' \
     "$_cb_meta/meta" >"$_cb_meta/meta.tmp" && mv "$_cb_meta/meta.tmp" "$_cb_meta/meta"
 assert_eq "core binding: a blank binding refuses and names itself" "rc=2 token=0 msg=1 reason=1" \
     "$(_cb_refuse 'no core bound')"
+# ...and `ae doctor` NAMES the session, because nothing else does: with no usable
+# pin every core-owned command refuses — `end` included — while the rest of the
+# install looks perfectly healthy. WARN, not FAIL: a refresh WITH input repairs it.
+_cb_doc="$(cd "$REPO" && "$AE" doctor 2>&1 || true)"
+assert_contains "core binding: doctor names the session with no core bound" \
+    "session test-core has no core bound; end/archive will refuse" "$_cb_doc"
+assert_contains "core binding: ...and points at the repair" \
+    "repair with 'ae doctor --refresh'" "$_cb_doc"
+unset _cb_doc
 
 # REFRESH re-pins the binding, so an operator who fixes their config does not
-# have to recreate the session — and a REMOVED input clears the pin rather than
-# leaving a stale one, which is what makes deleting the config a real rollback.
+# have to recreate the session. A REMOVED input is NOT a rollback any more (see
+# the byte-identical arms below): there is nothing behind an empty pin to roll
+# back to, so the existing one is kept rather than cleared.
 (cd "$REPO" && AE_CORE_BIN="$_cb_core" "$AE" doctor --refresh >/dev/null 2>&1 || true)
 assert_eq "core binding: refresh re-pins a repaired binding" "$_cb_core" \
     "$(grep '^ae_core=' "$_cb_meta/meta" | cut -d= -f2- || true)"
@@ -1085,12 +1095,28 @@ assert_eq "core binding: and it refuses on every later call too" "rc=2 token=0 m
 # one arm has to take it away again, or it is asserting about the harness rather than the
 # operator. `env -u`, not `AE_CORE_BIN=`: an EMPTY value is its own instruction (force the
 # bash body), and this arm is about ABSENCE.
+# fb601995 (found on 4bc9ab49): this refresh used to CLEAR both keys, print OK and
+# exit 0. Clearing was the rollback to the bash body; that body is gone, so it now
+# only produces a session where every core-owned command refuses — `end` included,
+# which leaves it UNENDABLE. A refresh with nothing to re-pin with must leave meta
+# BYTE-IDENTICAL, whatever it holds. The unusable pin written just above is the
+# first shape; a usable one is the second, and it is the one the repro broke.
+_cb_pin_before="$(grep -E '^ae_core(_version)?=' "$_cb_meta/meta" || true)"
 (cd "$REPO" && env -u AE_CORE_BIN "$AE" doctor --refresh >/dev/null 2>&1 || true)
-assert_eq "core binding: refresh with no operator input CLEARS the pin" "" \
-    "$(grep '^ae_core=' "$_cb_meta/meta" | cut -d= -f2- || true)"
-# ...and that refresh cleared it for EVERY session on this hermetic home, not just this
-# one. Since A.1 a cleared pin is not a fallback, it is a session that cannot be ended,
-# so put the suite's own core back before any later section tries to use its sessions.
+assert_eq "core binding: a no-input refresh leaves an UNUSABLE pin byte-identical" \
+    "$_cb_pin_before" "$(grep -E '^ae_core(_version)?=' "$_cb_meta/meta" || true)"
+(cd "$REPO" && AE_CORE_BIN="$_cb_core" "$AE" doctor --refresh >/dev/null 2>&1 || true)
+_cb_pin_before="$(grep -E '^ae_core(_version)?=' "$_cb_meta/meta" || true)"
+(cd "$REPO" && env -u AE_CORE_BIN "$AE" doctor --refresh >/dev/null 2>&1 || true)
+assert_eq "core binding: a no-input refresh leaves a USABLE pin byte-identical" \
+    "$_cb_pin_before" "$(grep -E '^ae_core(_version)?=' "$_cb_meta/meta" || true)"
+# The point of retaining it: the session still WORKS afterwards.
+_cb_out="$("$_cb_meta/requests" all 2>/dev/null || true)"
+assert_contains "core binding: ...and the pinned core still serves after that refresh" \
+    "CORE_TOKEN_9f3a" "$_cb_out"
+unset _cb_pin_before
+# Put the suite's own core back before any later section uses this hermetic home's
+# sessions — the arms above deliberately left this one pinned to the fake core.
 (cd "$REPO" && AE_CORE_BIN="$_ITEST_CORE_BIN" "$AE" doctor --refresh >/dev/null 2>&1 || true)
 
 # CONFIGURED BUT UNUSABLE AT CREATION. (RETIRED: "a missing binary must not fail the
@@ -1159,6 +1185,16 @@ sleep 1 # session setup writes meta shortly after tmux visibility (~200ms under 
 # Verify meta has session info
 assert_eq "resume: meta created" "1" "$([[ -f "$HOME/.ae/sessions/test-resume/meta" ]] && echo 1 || echo 0)"
 
+# A.2a, ACCEPTED DIVERGENCE (SC-017l, src/liveness.rs `decide`): `stopped` is a
+# PROVEN absence — the session's recorded server has to answer without the name.
+# The bash body inferred stopped from the session directory alone, so it did not
+# care whether the server was still there; killing the LAST session on a server
+# exits the server, and the core then answers `unknown` rather than inventing an
+# absence it cannot verify. Both halves are pinned below; an unrelated session
+# keeps the server up for the first, so the arm no longer depends on whichever
+# other section happens to be holding it alive (that is why it flaked).
+tmux new-session -d -s itest-srv-keepalive 'sleep 600' 2>/dev/null || true
+
 # Kill tmux session (simulate reboot)
 tmux kill-session -t test-resume 2>/dev/null || true
 sleep 0.5
@@ -1169,6 +1205,22 @@ assert_eq "resume: meta survives tmux kill" "1" "$([[ -f "$HOME/.ae/sessions/tes
 # ae list --all should show it as stopped (default view is running-only now)
 list_output="$("$AE" list --all 2>/dev/null)"
 assert_contains "resume: list --all shows stopped" "stopped" "$list_output"
+assert_eq "resume: a proven-absent session is not in the default view" "0" \
+    "$("$AE" list 2>/dev/null | grep -c 'test-resume')"
+
+# THE OTHER HALF. With the server gone nothing is proven, so the core reports
+# `unknown` — and unknown is listed WITH the running ones (filters.rs: Scope
+# Running covers Running+Unknown), never claimed as stopped. Unverifiable is not
+# absent: that is the rule the destructive paths depend on, stated here in the
+# read path where it is cheap to see.
+tmux kill-session -t itest-srv-keepalive 2>/dev/null || true
+sleep 0.5
+assert_contains "resume: with the server gone the session reads unknown, not stopped" \
+    "unknown" "$("$AE" list --all 2>/dev/null)"
+assert_eq "resume: ...and an unverifiable session is never reported as stopped" "0" \
+    "$("$AE" list --stopped 2>/dev/null | grep -c 'test-resume')"
+assert_contains "resume: ...it is listed with the running ones instead" "test-resume" \
+    "$("$AE" list 2>/dev/null)"
 
 # Re-launch should resume (reuse meta)
 (cd "$REPO2" && "$AE" --local test-resume &) 2>/dev/null
@@ -1291,18 +1343,28 @@ REPO3A="$(setup_repo)"
 wait_for_session "test-active"
 sleep 1
 
-# A freshly-created session is recently active → --active includes it.
-assert_contains "active: fresh session shows in --active" "test-active" \
+# A.2a, ACCEPTED DIVERGENCE: activity is the newest EVENT's timestamp, read by
+# the core — no longer the mtime of a file in the session directory. A launch on
+# its own writes no event, so the fixture emits one instead of assuming freshness.
+ACTIVE_EVENTS="$HOME/.ae/sessions/test-active/events.jsonl"
+printf '{"ts":"%s","actor":"h","action":"state","ref":"working","summary":"now"}\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >>"$ACTIVE_EVENTS"
+assert_contains "active: a session with a fresh event shows in --active" "test-active" \
     "$("$AE" list --active 2>/dev/null)"
 assert_contains "active: --busy alias works" "test-active" \
     "$("$AE" list --busy 2>/dev/null)"
 
-# Backdate its activity well past the window → --active drops it, but the
-# unfiltered list still shows it (it's still running).
-ACTIVE_EVENTS="$HOME/.ae/sessions/test-active/events.jsonl"
-touch "$ACTIVE_EVENTS" 2>/dev/null || true
+# Backdating the FILES changes nothing — that is the divergence, stated as a test
+# rather than left implicit: an old mtime with a fresh event is still active.
 _touch_ago 3600 "$ACTIVE_EVENTS" "$HOME/.ae/sessions/test-active/workspace.md" \
     "$HOME/.ae/sessions/test-active/meta" 2>/dev/null || true
+assert_contains "active: an old mtime does not make a session stale" "test-active" \
+    "$("$AE" list --active 2>/dev/null)"
+
+# Backdate the EVENT past the window → --active drops it, but the unfiltered list
+# still shows it (it's still running).
+printf '{"ts":"2026-01-01T00:00:00Z","actor":"h","action":"state","ref":"working","summary":"old"}\n' \
+    >"$ACTIVE_EVENTS"
 assert_eq "active: stale session dropped from --active" "0" \
     "$("$AE" list --active 2>/dev/null | grep -c 'test-active')"
 assert_contains "active: stale session still shown in plain list" "test-active" \
@@ -1347,7 +1409,9 @@ assert_contains "list: --needs-me shows the waiting-user session" "test-state" \
 
 # --json digest: versioned wrapper + the running session with its agents.
 json_out="$("$AE" list --json 2>/dev/null)"
-assert_contains "json: versioned wrapper" '"schema_version":1' "$json_out"
+# A.2a: the glue's v1 emitter is gone — `list --json` IS the core's, so the
+# ratified wrapper here is the core's schema_version 2.
+assert_contains "json: versioned wrapper" '"schema_version":2' "$json_out"
 assert_contains "json: includes the running session" '"name":"test-state"' "$json_out"
 assert_contains "json: marks it running" '"status":"running"' "$json_out"
 assert_contains "json: has an agents array" '"agents":[' "$json_out"
@@ -1397,6 +1461,9 @@ assert_eq "say: chat event is exactly one JSON line" "1" \
     "$(tac "$STATE_EVENTS" 2>/dev/null | grep -c '"action":"chat"')"
 
 # Stop it (kill tmux session, keep meta) → default omits it, --all/--stopped include it.
+# The keepalive keeps the recorded server answering, which is what makes the
+# absence PROVEN rather than merely unverified (SC-017l — see Test 2).
+tmux new-session -d -s itest-srv-keepalive 'sleep 600' 2>/dev/null || true
 tmux kill-session -t test-state 2>/dev/null || true
 sleep 0.5
 assert_eq "list: default hides the stopped session" "0" \
@@ -1422,6 +1489,7 @@ if command -v python3 >/dev/null 2>&1; then
     assert_eq "json: --all output is valid JSON" "ok" \
         "$("$AE" list --all --json 2>/dev/null | python3 -c 'import json,sys; json.load(sys.stdin); print("ok")' 2>/dev/null || echo "invalid")"
 fi
+tmux kill-session -t itest-srv-keepalive 2>/dev/null || true
 fi
 
 # ── P1: `ae end` resolves the target BEFORE the destructive prompt ───
@@ -3623,6 +3691,10 @@ if _itest_section 'ae list robustness: a per-session helper returning non-zero m
 #    `r="$(_agent_alert_reason …)"` killed the whole command mid-output —
 #    truncating `--json` to INVALID (no closing `]}`, exit 1) and dropping rows
 #    from the human table.
+#    A.2a: the bash emitter that had the bug is gone and `list` is the core's,
+#    so this section now pins the END-TO-END contract it always described — one
+#    unreadable session degrades (the core marks it `"degraded":true`) and the
+#    snapshot stays whole and valid — against the implementation that answers today.
 REPO_JR="$(setup_repo)"
 (cd "$REPO_JR" && "$AE" --local jsonrobust &) 2>/dev/null
 wait_for_session "jsonrobust"
@@ -3635,7 +3707,7 @@ printf '{"actor":"other:sender","target":"%s","action":"send","summary":"hi"}\n'
 json_rc="$("$AE" list --json >/dev/null 2>&1; echo $?)"
 assert_eq "list --json: exits 0 when a per-session helper returns non-zero" "0" "$json_rc"
 json_out="$("$AE" list --json 2>/dev/null || true)"
-assert_contains "list --json: emits the top-level open" '"schema_version":1' "$json_out"
+assert_contains "list --json: emits the top-level open" '"schema_version":2' "$json_out"
 if command -v python3 >/dev/null 2>&1; then
     json_valid="$(printf '%s' "$json_out" | python3 -c 'import sys,json; json.load(sys.stdin)' 2>/dev/null && echo ok || echo invalid)"
     assert_eq "list --json: stays valid JSON when a per-session helper returns non-zero" "ok" "$json_valid"

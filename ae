@@ -462,32 +462,6 @@ command_is_shell() {
     esac
 }
 
-# Format an epoch timestamp as a relative time string (e.g. "2m ago", "3h ago").
-# Empty/zero/missing input returns "-".
-format_relative_time() {
-    local ts="${1:-}"
-    [[ -n "$ts" && "$ts" =~ ^[0-9]+$ && "$ts" -gt 0 ]] || {
-        printf '%s' "-"
-        return
-    }
-    local now delta
-    now="$(date +%s 2>/dev/null || echo 0)"
-    delta=$((now - ts))
-    if ((delta < 0)); then
-        printf 'just now'
-    elif ((delta < 60)); then
-        printf '%ss ago' "$delta"
-    elif ((delta < 3600)); then
-        printf '%sm ago' $((delta / 60))
-    elif ((delta < 86400)); then
-        printf '%sh ago' $((delta / 3600))
-    elif ((delta < 604800)); then
-        printf '%sd ago' $((delta / 86400))
-    else
-        printf '>7d'
-    fi
-}
-
 # The injection boundary is TRANSPORTED, not searched for. inject_ae_context only ever
 # APPENDS (`${cmd} --append-system-prompt '<ctx>'` and friends), so the pre-injection
 # command is a literal PREFIX of the built one and the caller that injected knows it
@@ -2739,8 +2713,14 @@ _ae_core_bin_version() {
 # Evaluate the operator's core input and publish the session's binding. Called
 # from BOTH sync_session_assets preambles (launch and `doctor --refresh`), so the
 # rules live once:
-#   no input       -> both keys cleared, silently. Removing the config is a
-#                     rollback, and an absent binding is not a fault.
+#   no input       -> meta is left BYTE-IDENTICAL, whatever it already holds.
+#                     Clearing used to be the rollback to bash; there is no bash
+#                     body behind an empty pin any more, so clearing a working
+#                     pin only makes the session refuse every core-owned command
+#                     — `end` included, which leaves it unendable. An existing
+#                     usable pin therefore survives a no-input refresh untouched,
+#                     and an existing UNUSABLE one is reported by the core-pin
+#                     check in `ae doctor` rather than rewritten here.
 #   usable input   -> the PAIR is pinned: the path and the version it reported.
 #   unusable input -> the path is pinned with an EMPTY version, and a warning
 #                     goes to the launching/refreshing terminal. A helper reads
@@ -2752,8 +2732,6 @@ _ae_core_bin_version() {
 _ae_core_bind() {
     local meta_dir="$1" candidate reason="" ver=""
     if ! candidate="$(_ae_core_bin_input)"; then
-        set_session_meta_value "${meta_dir}/meta" "ae_core" ""
-        set_session_meta_value "${meta_dir}/meta" "ae_core_version" ""
         return 0
     fi
     # Absolute only: a relative path would resolve against whatever directory a
@@ -3407,40 +3385,6 @@ _meta_agent_rows() {
     return 0
 }
 
-# First `key=` value in a meta blob, into the global _META_VAL ("" if absent).
-#
-# Replaces the old echo-the-blob-into-sed idiom, which cost two processes per
-# field (the command-substitution subshell plus sed) and ran up to six times per
-# session in `ae list` — on a blob already sitting in memory. The unit suite
-# forbids that idiom returning; this comment states it in prose rather than
-# spelling the pattern, so the guard cannot be silenced by its own rationale.
-_meta_field() {
-    local blob="$1" key="$2" line
-    _META_VAL=""
-    while IFS= read -r line; do
-        if [[ "$line" == "${key}="* ]]; then
-            _META_VAL="${line#"${key}="}"
-            return 0
-        fi
-    done <<<"$blob"
-    return 0
-}
-
-# Every AE_* variable of a session's tmux environment in ONE tmux call, into the
-# caller-declared map _envmap (dynamic scope, same convention as _areason).
-# `ae list` used to spend three separate ~3ms show-environment calls per session
-# to read AE_ORIGIN, AE_MODE and AE_DIR.
-# shellcheck disable=SC2154 # _envmap is caller-declared (dynamic scope)
-_session_env_map() {
-    local name="$1" line
-    while IFS= read -r line; do
-        case "$line" in
-            AE_*=*) _envmap["${line%%=*}"]="${line#*=}" ;;
-        esac
-    done < <(tmux show-environment -t "$name" 2>/dev/null || true)
-    return 0
-}
-
 # Resolve the session's actual meta directory, checking the new path first and
 # falling back to the legacy worktree-nested path that read_session_meta() also
 # honors. Prints the resolved directory, or empty if none found.
@@ -3455,83 +3399,6 @@ _resolve_session_dir() {
     if [[ -f "${legacy}/meta" ]]; then
         printf '%s' "$legacy"
         return
-    fi
-}
-
-# Print the sub-line after a session row showing goal + current ae version +
-# last active. $1 = meta_blob (full meta file contents), $2 = session directory,
-# $3 = optional attention suffix (e.g. a declared state like "waiting-user").
-# Session git branch for the list context. Running sessions: read the live
-# @ae_branch_name tmux user option (watchdog-pushed each cycle — zero git
-# calls; full name, no display trim). Fallback (option empty, watchdog off,
-# or stopped session): one git call against the work_dir.
-_session_branch() {
-    local name="$1" workdir="$2" running="${3:-}" b=""
-    if [[ "$running" == "running" ]]; then
-        # @ae_branch_name is the watchdog's machine-value side channel: the
-        # FULL branch, untrimmed, no dirty marker (@ae_branch_status is the
-        # display segment — 24-char trim — and must never be echoed as data).
-        b="$(tmux show-options -t "$name" -qv @ae_branch_name 2>/dev/null || true)"
-    fi
-    if [[ -z "$b" && -n "$workdir" && -d "$workdir" ]]; then
-        b="$(git -C "$workdir" symbolic-ref --quiet --short HEAD 2>/dev/null ||
-            git -C "$workdir" rev-parse --short HEAD 2>/dev/null || true)"
-    fi
-    printf '%s' "$b"
-    return 0
-}
-
-# Epoch when the session's goal was last set — the newest action=goal event in
-# the session's events.jsonl. Prints 0 when unknown (no events file, no goal
-# event, or unparseable timestamp). Result via stdout; exit status incidental.
-_goal_set_epoch() {
-    local sess_dir="$1" line ts=""
-    local events="${sess_dir}/events.jsonl"
-    [[ -f "$events" ]] || {
-        printf '0'
-        return 0
-    }
-    while IFS= read -r line; do
-        [[ "$line" == \{* ]] || continue
-        _event_json_str "$line" action
-        [[ "$_EV" == "goal" ]] || continue
-        _event_json_str "$line" ts
-        ts="$_EV"
-        break
-    done < <(_ae_tac "$events" 2>/dev/null || true)
-    [[ -n "$ts" ]] || {
-        printf '0'
-        return 0
-    }
-    _ae_epoch "$ts"
-    return 0
-}
-
-_print_session_meta_line() {
-    local blob="$1" sess_dir="$2" attn="${3:-}" branch="${4:-}"
-    local ae_ver active_ts active_str goal goal_prefix="" branch_seg=""
-    _meta_field "$blob" ae_version
-    ae_ver="$_META_VAL"
-    ae_ver="${ae_ver:-?}"
-    _meta_field "$blob" goal
-    goal="$_META_VAL"
-    if [[ -n "$goal" ]]; then
-        ((${#goal} > 60)) && goal="${goal:0:59}…"
-        # Age makes a stale goal visibly stale instead of silently lying.
-        local goal_epoch goal_age=""
-        goal_epoch="$(_goal_set_epoch "$sess_dir")"
-        if [[ "$goal_epoch" =~ ^[0-9]+$ ]] && ((goal_epoch > 0)); then
-            goal_age=" ($(format_relative_time "$goal_epoch"))"
-        fi
-        goal_prefix="goal${goal_age}: ${goal} · "
-    fi
-    [[ -n "$branch" ]] && branch_seg="git:${branch} · "
-    active_ts="$(_session_active_epoch "$sess_dir")"
-    active_str="$(format_relative_time "$active_ts")"
-    if [[ -n "$attn" ]]; then
-        printf "  %s%sae %s · active %s · attn:%s\n" "$goal_prefix" "$branch_seg" "$ae_ver" "$active_str" "$attn"
-    else
-        printf "  %s%sae %s · active %s\n" "$goal_prefix" "$branch_seg" "$ae_ver" "$active_str"
     fi
 }
 
@@ -4251,84 +4118,23 @@ _session_active_epoch() {
     printf '%s' "$ts"
 }
 
-# Emit one session as a JSON object for `ae list --json`. A cmd_list helper:
-# it reads the per-iteration maps (_state/_alive/_areason) and the comma tracker
-# (json_first) from cmd_list's scope via bash dynamic scoping. For stopped
-# sessions those maps are unset, so agents render alive=false / state=null /
-# reason=null. Args: status name mode origin workdir sess_dir attn meta_blob.
-# shellcheck disable=SC2154 # _alive/_state/_areason/json_first come from cmd_list scope
-_list_session_json() {
-    local status="$1" name="$2" mode="$3" origin="$4" workdir="$5" sess_dir="$6" attn="$7" blob="$8" branch="${9:-}"
-    $json_first || printf ','
-    json_first=false
-    local na="false" at="null"
-    if [[ -n "$attn" ]]; then
-        na="true"
-        at="\"$(_json_escape "$attn")\""
-    fi
-    # Session goal (set via the 'goal' helper) — additive field; null when unset.
-    local goal gj="null"
-    _meta_field "$blob" goal
-    goal="$_META_VAL"
-    [[ -n "$goal" ]] && gj="\"$(_json_escape "$goal")\""
-    # Context fields: when the goal was set (age for staleness) + git branch.
-    local gse="null"
-    if [[ "$gj" != "null" ]]; then
-        local _ge
-        _ge="$(_goal_set_epoch "$sess_dir")"
-        if [[ "$_ge" =~ ^[0-9]+$ ]] && ((_ge > 0)); then gse="$_ge"; fi
-    fi
-    local bj="null"
-    [[ -n "$branch" ]] && bj="\"$(_json_escape "$branch")\""
-    printf '{"name":"%s","status":"%s","mode":"%s","origin":"%s","work_dir":"%s","goal":%s,"goal_set_epoch":%s,"branch":%s,"last_active_epoch":%s,"needs_attention":%s,"attention":%s,"attention_rank":%s,"agents":[' \
-        "$(_json_escape "$name")" "$status" "$(_json_escape "$mode")" "$(_json_escape "$origin")" \
-        "$(_json_escape "$workdir")" "$gj" "$gse" "$bj" "$(_session_active_epoch "$sess_dir")" "$na" "$at" "$(_attn_rank "$attn")"
-    local _afirst=true ref sid alive st rs
-    while IFS=$'\t' read -r ref sid _; do
-        [[ -n "$ref" ]] || continue
-        $_afirst || printf ','
-        _afirst=false
-        # alive = the agent process is actually running. A pane that dropped to
-        # a bare shell (marker '!') is present but the agent is dead, so it is
-        # NOT alive; a missing pane (unset) is not alive either. Only a pane
-        # running a non-shell foreground command (empty marker) counts.
-        alive="false"
-        [[ -n "${_alive[$ref]+x}" && -z "${_alive[$ref]}" ]] && alive="true"
-        st="null"
-        [[ -n "${_state[$ref]:-}" ]] && st="\"$(_json_escape "${_state[$ref]}")\""
-        rs="null"
-        [[ -n "${_areason[$ref]:-}" ]] && rs="\"$(_json_escape "${_areason[$ref]}")\""
-        printf '{"ref":"%s","alias":"%s","name":"%s","session_id":"%s","alive":%s,"state":%s,"reason":%s}' \
-            "$(_json_escape "$ref")" "$(_json_escape "${ref%%:*}")" "$(_json_escape "${ref#*:}")" \
-            "$(_json_escape "$sid")" "$alive" "$st" "$rs"
-    done <<<"$(_meta_agent_rows "$blob")"
-    printf ']}'
-}
-
 # shellcheck disable=SC2059 # format strings stored in variables intentionally
 cmd_list() {
-    # Default view = running only. Stopped sessions (often the bulk of the list)
-    # are noise for day-to-day monitoring; gate them behind --all/--stopped.
-    local show_running=true show_stopped=false only_needs_me=false only_active=false as_json=false
-    # "Recently active" window for --active (seconds). Override with the env var.
-    local active_window="${AE_LIST_ACTIVE_SECS:-300}"
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-            --all)
-                show_running=true
-                show_stopped=true
-                ;;
-            --stopped)
-                show_running=false
-                show_stopped=true
-                ;;
-            --running)
-                show_running=true
-                show_stopped=false
-                ;;
-            --needs-attn | --needs-me | --needs | --attn) only_needs_me=true ;;
-            --active | --busy) only_active=true ;;
-            --json) as_json=true ;;
+    # A.2a: `list` is the CORE's, whole. It computes liveness, branch and the
+    # attention rollup itself, so the glue keeps no second implementation to drift
+    # against — this is a thin exec with the argv verbatim, which is exactly what
+    # the public wrapper (`ae-entry`) does for the same word. Both entries then
+    # answer identically; a divergence would otherwise depend on which `ae` the
+    # caller happened to run.
+    #
+    # `-h`/`--help` is the ONE exception, and it is the wrapper's contract, not a
+    # convenience: ae-entry scans the tail for exactly those two tokens and routes
+    # them BACK here, because the core parses help only at top level and would
+    # answer a list tail with UnknownFlag rc 2. The text below is the ratified one.
+    # This block retires the day the core grows a ratified list-help.
+    local _lh
+    for _lh in "$@"; do
+        case "$_lh" in
             -h | --help)
                 cat >&2 <<'LISTHELP'
 Usage: ae list [--running | --all | --stopped | --needs-attn | --active] [--json]
@@ -4349,208 +4155,11 @@ Usage: ae list [--running | --all | --stopped | --needs-attn | --active] [--json
 LISTHELP
                 return 0
                 ;;
-            *)
-                echo "Error: unknown flag '$1' (see: ae list --help)" >&2
-                return 1
-                ;;
         esac
-        shift
     done
-    # --needs-me / --active are about live sessions; a stopped session can't
-    # need attention or be active. Force running-only so combining them with
-    # --all / --stopped doesn't leak unfiltered stopped rows.
-    if $only_needs_me || $only_active; then
-        show_running=true
-        show_stopped=false
-    fi
-    local _now
-    _now="$(date +%s 2>/dev/null || echo 0)"
-
-    # Column widths: SESSION(24) STATUS(8) MODE(10) ORIGIN(rest)
-    local hdr='%-24s  %-8s  %-10s  %s\n'
-    local indent='%-24s  %-8s  %-10s  %s\n' # same widths for target indent
-    local header_printed=false
-
-    # --json: a single digest object. schema_version lets consumers (a future
-    # monitoring agent) gate on shape; generated_at stamps the snapshot.
-    local json_first=true
-    if $as_json; then
-        printf '{"schema_version":1,"generated_at":"%s","sessions":[' "$(date -u +%FT%TZ)"
-    fi
-
-    # A listing must never abort mid-output. Per-session helpers below can
-    # return non-zero on a session's transient state (e.g. `_agent_alert_reason`
-    # when the newest scanned event only targets the agent) — and under `set -e`
-    # a bare call or a `x="$(helper)"` assignment then kills the WHOLE command.
-    # For `--json` that emits INVALID JSON (no closing `]}`, exit 1) and breaks
-    # consumers (aemonitor); for the human table it silently drops rows. Degrade
-    # a single session's fields instead. Restored before the JSON close below.
-    set +e
-
-    if $show_running; then
-        local sessions
-        sessions="$(list_ae_sessions)"
-        while IFS= read -r name; do
-            [[ -z "$name" ]] && continue
-            local sess_dir
-            sess_dir="$(_resolve_session_dir "$name")"
-            local meta_blob=""
-            [[ -n "$sess_dir" && -f "${sess_dir}/meta" ]] && meta_blob="$(<"${sess_dir}/meta")"
-            local origin mode workdir
-            # One tmux round-trip for all three AE_* values, then meta as
-            # fallback — parsed in-process instead of via echo|sed per field.
-            declare -A _envmap=()
-            _session_env_map "$name"
-            origin="${_envmap[AE_ORIGIN]:-}"
-            if [[ -z "$origin" ]]; then
-                _meta_field "$meta_blob" origin
-                origin="$_META_VAL"
-            fi
-            origin="${origin:-?}"
-            mode="${_envmap[AE_MODE]:-}"
-            if [[ -z "$mode" ]]; then
-                _meta_field "$meta_blob" mode
-                mode="$_META_VAL"
-            fi
-            mode="${mode:-?}"
-            workdir="${_envmap[AE_DIR]:-}"
-            if [[ -z "$workdir" ]]; then
-                _meta_field "$meta_blob" work_dir
-                workdir="$_META_VAL"
-            fi
-            # Per-agent declared states (single events.jsonl scan). The agent
-            # names come from meta so the scan can stop as soon as all of them
-            # are resolved instead of walking the whole log.
-            local -a _magents=()
-            local _mref
-            while IFS=$'\t' read -r _mref _ _; do
-                [[ -n "$_mref" ]] && _magents+=("$_mref")
-            done <<<"$(_meta_agent_rows "$meta_blob")"
-            declare -A _state=()
-            while IFS=$'\t' read -r sa sv; do
-                [[ -n "$sa" ]] || continue
-                _state["$sa"]="$sv"
-            done < <(_session_states "$sess_dir" ${_magents[@]+"${_magents[@]}"})
-            # Build alive map from tmux panes (one tmux call) for the agent-row
-            # display markers below. (The attention rollup builds its own maps.)
-            declare -A _alive=()
-            while IFS=$'\t' read -r ae_agent pane_cmd; do
-                [[ -n "$ae_agent" ]] || continue
-                case "$pane_cmd" in
-                    bash | fish | zsh | sh | dash) _alive["$ae_agent"]="!" ;;
-                    *) _alive["$ae_agent"]="" ;;
-                esac
-            done < <(tmux list-panes -s -t "$name" -F '#{@ae_agent}	#{pane_current_command}' 2>/dev/null)
-            # Derived needs_attention rollup via the shared single-source
-            # _session_attn_rollup (also used by `ae next` — same semantics, no
-            # divergence). Called in THIS shell (not a subshell) so it fills the
-            # _areason map --json reads from this scope via dynamic scope.
-            declare -A _areason=()
-            _session_attn_rollup "$name" "$sess_dir" "$meta_blob"
-            local attn="$_AE_ATTN_REASON"
-            # --needs-me: skip sessions with no attention signal.
-            if $only_needs_me && [[ -z "$attn" ]]; then
-                unset _state _alive _areason
-                continue
-            fi
-            # --active: skip sessions with no recent activity. "Recent" = an ae
-            # event (message/state/nudge/spawn/…) within active_window. Note this
-            # tracks ae-event recency, not raw pane churn — a silently-working
-            # agent that emits no events won't count until it uses a helper.
-            if $only_active; then
-                local _sae
-                _sae="$(_session_active_epoch "$sess_dir")"
-                if ((_now <= 0 || _sae <= 0 || _now - _sae >= active_window)); then
-                    unset _state _alive _areason
-                    continue
-                fi
-            fi
-            local sess_branch
-            sess_branch="$(_session_branch "$name" "$workdir" running)"
-            if $as_json; then
-                _list_session_json "running" "$name" "$mode" "$origin" "$workdir" \
-                    "$sess_dir" "$attn" "$meta_blob" "$sess_branch"
-                unset _alive _state _areason
-                continue
-            fi
-            if ! $header_printed; then
-                printf "$hdr" "SESSION" "STATUS" "MODE" "ORIGIN"
-                header_printed=true
-            fi
-            printf "$hdr" "$name" "running" "$mode" "$origin"
-            [[ "$mode" != "local" && -n "$workdir" ]] && printf "$indent" "" "" "" "  -> $workdir"
-            _print_session_meta_line "$meta_blob" "$sess_dir" "$attn" "$sess_branch"
-            local aname asid
-            while IFS=$'\t' read -r aname asid _; do
-                [[ -n "$aname" ]] || continue
-                local marker="${_alive[$aname]:-}"
-                printf "  %-22s  %-8s  %-12s  %s\n" "$aname" "$asid" "${_state[$aname]:--}" "$marker"
-            done <<<"$(_meta_agent_rows "$meta_blob")"
-            unset _alive _state _areason
-        done <<<"$sessions"
-    fi
-
-    if $show_stopped; then
-        while IFS= read -r name; do
-            local sess_dir
-            sess_dir="$(_resolve_session_dir "$name")"
-            local meta_blob=""
-            [[ -n "$sess_dir" && -f "${sess_dir}/meta" ]] && meta_blob="$(<"${sess_dir}/meta")"
-            local mode origin workdir
-            _meta_field "$meta_blob" mode
-            mode="$_META_VAL"
-            mode="${mode:-?}"
-            _meta_field "$meta_blob" origin
-            origin="$_META_VAL"
-            origin="${origin:--}"
-            _meta_field "$meta_blob" work_dir
-            workdir="$_META_VAL"
-            if $as_json; then
-                # Stopped: no live state/attn. Declare EMPTY maps so the agent
-                # lookups in _list_session_json resolve associatively — under
-                # `set -u` a subscript on an UNDECLARED array is treated as an
-                # arithmetic index and aborts on a non-numeric agent ref.
-                declare -A _alive=() _state=() _areason=()
-                _list_session_json "stopped" "$name" "$mode" "$origin" "$workdir" \
-                    "$sess_dir" "" "$meta_blob" "$(_session_branch "$name" "$workdir" stopped)"
-                unset _alive _state _areason
-                continue
-            fi
-            if ! $header_printed; then
-                printf "$hdr" "SESSION" "STATUS" "MODE" "ORIGIN"
-                header_printed=true
-            fi
-            printf "$hdr" "$name" "stopped" "$mode" "$origin"
-            [[ "$mode" != "local" && -n "$workdir" ]] && printf "$indent" "" "" "" "  -> $workdir"
-            _print_session_meta_line "$meta_blob" "$sess_dir" "" "$(_session_branch "$name" "$workdir" stopped)"
-            local aname asid
-            while IFS=$'\t' read -r aname asid _; do
-                [[ -n "$aname" ]] || continue
-                printf "  %-22s  %s\n" "$aname" "$asid"
-            done <<<"$(_meta_agent_rows "$meta_blob")"
-        done < <(iter_stopped_sessions)
-    fi
-
-    set -e # restore errexit for the JSON close / human fallback below
-
-    if $as_json; then
-        printf ']}\n'
-        return 0
-    fi
-
-    if ! $header_printed; then
-        if $only_needs_me; then
-            echo "No running sessions need your attention."
-        elif $only_active; then
-            echo "No recently active sessions."
-        elif $show_running && $show_stopped; then
-            echo "No ae sessions."
-        elif $show_running; then
-            echo "No running ae sessions. (try: ae list --all)"
-        else
-            echo "No stopped ae sessions."
-        fi
-    fi
+    # Every other tail — including an unknown flag, which the core reports as a
+    # usage error with exit 2 — is the core's to parse.
+    _ae_core_preflight_try --exec list "$@"
 }
 
 # ── #48 archive: pure facts ─────────────────────────────────────────────────────
@@ -8419,6 +8028,28 @@ cmd_doctor() {
     else
         doctor_report "WARN" "orphans" "${_orphan_n} session dir(s)/worktree(s) with no running session: ${_orphan_list}"
         doctor_report "WARN" "orphans-hint" "resume with 'ae <name>' or finish teardown with 'ae end <name>'"
+    fi
+
+    # Core pins, per session. Since the core became REQUIRED there is no bash body
+    # behind a blank or unbindable pin — every core-owned command on that session
+    # (end, archive, compact, and every helper) refuses with exit 2. The pin is
+    # published at launch and at `doctor --refresh`, so a session can sit there
+    # unusable with nothing else saying so: name it here. WARN, not FAIL, because
+    # `doctor --refresh` repairs it and the rest of the install is fine.
+    local _cp_bad="" _cpname _cpdir _cpbin _cpver
+    while IFS= read -r _cpname; do
+        [[ -z "$_cpname" ]] && continue
+        _cpdir="$(_resolve_session_dir "$_cpname")"
+        [[ -n "$_cpdir" && -f "${_cpdir}/meta" ]] || continue
+        _cpbin="$(grep '^ae_core=' "${_cpdir}/meta" 2>/dev/null | cut -d= -f2- || true)"
+        _cpver="$(grep '^ae_core_version=' "${_cpdir}/meta" 2>/dev/null | cut -d= -f2- || true)"
+        if [[ -z "$_cpbin" || -z "$_cpver" || ! -x "$_cpbin" ]]; then
+            _cp_bad="${_cp_bad}${_cp_bad:+, }${_cpname}"
+        fi
+    done < <(list_ae_sessions)
+    if [[ -n "$_cp_bad" ]]; then
+        doctor_report "WARN" "core-pin" "session ${_cp_bad} has no core bound; end/archive will refuse"
+        doctor_report "WARN" "core-pin-hint" "repair with 'ae doctor --refresh'"
     fi
 
     local workspace_main
@@ -13146,7 +12777,16 @@ _identity_core() {
     return 0
 }
 
-_ae_core_preflight_try() { # <subcommand> [args...]
+_ae_core_preflight_try() { # [--exec] <subcommand> [args...]
+    # --exec: EXEC the core instead of running it as a subprocess and returning
+    # its code. For a top-level command the core owns outright (`list`), where an
+    # extra bash process between the caller and the core buys nothing and would
+    # only add a second place for a signal or an exit code to be reshaped.
+    local exec_mode=0
+    if [[ "${1:-}" == --exec ]]; then
+        exec_mode=1
+        shift
+    fi
     local sub="$1"
     shift
     local bin reason=""
@@ -13164,6 +12804,7 @@ _ae_core_preflight_try() { # <subcommand> [args...]
         printf "ae: the ae core is required for '%s' — %s\n" "$sub" "$reason" >&2
         exit 2
     fi
+    ((exec_mode)) && exec "$bin" "$sub" "$@"
     # Capture the core's own exit code explicitly — a bare call would let errexit
     # abort this function on a non-zero core before `return` runs.
     local crc=0

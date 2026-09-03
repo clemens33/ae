@@ -34,6 +34,117 @@ if [[ -z "${BASH_VERSINFO[0]:-}" ]] || ((BASH_VERSINFO[0] < 4)); then
     exit 2
 fi
 
+# ── Per-block timing (AE_UNIT_TIMING=1) ──────────────────────────────
+# "Which of the 194 blocks is the four minutes in?" used to be unanswerable without
+# bisecting by hand, so nobody asked it and the suite got slower one block at a time.
+#
+# ZERO EDITS PER BLOCK, deliberately. The obvious instrumentation — a `_time_block`
+# call under every `# ── … ──` header — is 194 edits through a file other people are
+# editing, and it puts harness plumbing inside the test bodies. This does it from one
+# place instead: a DEBUG trap watches $LINENO cross the header lines that are already
+# in the file, so a block is timed because of its header and not because someone
+# remembered to annotate it. A renamed or added block needs nothing.
+#
+# The trap body is one integer comparison and no fork, and it is installed ONLY when
+# the timing report is asked for, so the default run pays nothing at all. Note what is
+# measured: the trap is not inherited by functions (no `set -T`) and a `$( )` subshell
+# gets its own throwaway copy of the counters, so what advances the clock is the
+# TOP-LEVEL statement — which is exactly the granularity a block header describes.
+# Time is charged to the block whose header was last crossed; a helper defined at the
+# top of the file and called from block 180 reports its DEFINITION line, which is
+# before every header and therefore advances nothing.
+_UB_ON=""
+_UB_N=0
+_UB_I=0
+_UB_CUR=-1
+_UB_START=0
+_UB_LINE=()
+_UB_NAME=()
+_UB_USEC=()
+# Microseconds as an integer. EPOCHREALTIME renders with the LOCALE's decimal point, so
+# the separator is stripped by class rather than by matching a literal '.'; bash 4 has
+# no EPOCHREALTIME at all and falls back to whole seconds.
+_ub_usec() {
+    if [[ -n "${EPOCHREALTIME:-}" ]]; then
+        printf '%s' "${EPOCHREALTIME//[!0-9]/}"
+    else
+        printf '%s000000' "$SECONDS"
+    fi
+}
+_ub_tick() {
+    local ln="$1" now
+    ((_UB_I < _UB_N)) || return 0
+    ((ln >= _UB_LINE[_UB_I])) || return 0
+    now="$(_ub_usec)"
+    if ((_UB_CUR >= 0)); then _UB_USEC[_UB_CUR]=$((now - _UB_START)); fi
+    # A single statement can be past several headers at once (an empty block, or the
+    # first statement after a run of them); charge the time to the last one crossed.
+    while ((_UB_I < _UB_N)) && ((ln >= _UB_LINE[_UB_I])); do
+        _UB_CUR=$_UB_I
+        _UB_I=$((_UB_I + 1))
+    done
+    _UB_START="$now"
+    return 0
+}
+_ub_report() {
+    [[ -n "$_UB_ON" ]] || return 0
+    local now i
+    now="$(_ub_usec)"
+    if ((_UB_CUR >= 0)); then _UB_USEC[_UB_CUR]=$((now - _UB_START)); fi
+    echo ""
+    echo "── slowest blocks (AE_UNIT_TIMING=1) ────────────────────────────────"
+    for ((i = 0; i < _UB_N; i++)); do
+        printf '%s\t%s\t%s\n' "${_UB_USEC[i]:-0}" "${_UB_LINE[i]}" "${_UB_NAME[i]}"
+    done | sort -rn -k1,1 | head -"${AE_UNIT_TIMING_TOP:-10}" |
+        awk -F'\t' '{printf "  %7.2fs  line %-6s %s\n", $1/1000000, $2, $3}'
+    echo ""
+}
+if [[ "${AE_UNIT_TIMING:-}" == "1" ]]; then
+    # grep -n on the FILE, so the numbers are the file's own — $LINENO is compared
+    # against them directly.
+    while IFS=: read -r _ubl _ubn; do
+        [[ "$_ubl" =~ ^[0-9]+$ ]] || continue
+        _UB_LINE+=("$_ubl")
+        _UB_NAME+=("$(printf '%s' "$_ubn" | sed 's/^# ── //; s/ *─*$//')")
+        _UB_USEC+=(0)
+    done < <(grep -n '^# ── ' "$0" || true)
+    _UB_N=${#_UB_LINE[@]}
+    if ((_UB_N > 0)); then
+        _UB_ON=1
+        _UB_START="$(_ub_usec)"
+        trap '_ub_tick $LINENO' DEBUG
+    fi
+fi
+
+# ── Slow-block gate (AE_UNIT_FULL=1 runs everything) ─────────────────
+# 125 seconds of this suite is 85 seconds of seven rigs that spawn processes, build
+# fixture installs and wait on them. Paid once per commit that is a fair price; paid on
+# every inner-loop rerun it is most of the reason people stop running the suite.
+#
+# So the DEFAULT run skips them and `AE_UNIT_FULL=1` runs them — which is the opposite
+# polarity from tests/integration's filter, deliberately. There a filter NARROWS an
+# unnarrowable gate, so the gate must ignore it; here the gate is the thing that asks
+# for more, and `just test-unit` asks. A skipped block cannot make a gate green by
+# accident, because the gate sets the variable itself.
+#
+# THE SUMMARY LINE CARRIES THE SCOPE, on the counts line and not above it: `tail -1` is
+# how a result reaches a report, and a warning on the previous line is the one that gets
+# cut off. Same reasoning as the integration suite's SCOPED RUN marker.
+#
+# The gate is used ONLY as `if _unit_slow '<what>'; then … fi` — a condition position,
+# where errexit is disabled by definition, so returning 1 to mean "skip" can never abort
+# the suite. Nothing inside a gated block may be depended on by a later one; that is a
+# property of WHICH blocks are gated (a tail region and six self-contained rigs) and it
+# is checked by running the fast suite green, not by hoping.
+_UNIT_SKIPPED_N=0
+_UNIT_SKIPPED=""
+_unit_slow() {
+    if [[ "${AE_UNIT_FULL:-}" == "1" ]]; then return 0; fi
+    _UNIT_SKIPPED_N=$((_UNIT_SKIPPED_N + 1))
+    _UNIT_SKIPPED="${_UNIT_SKIPPED}$1"$'\n'
+    return 1
+}
+
 PASS=0
 FAIL=0
 ERRORS=()
@@ -2021,7 +2132,8 @@ assert_eq "delegation: workspace manifest carries the Delegation section" "1" \
 
 # Behavioural: extract the _event_json_str body and exercise it against a synthetic
 # events.jsonl below. It is a single top-level definition since the declare-f
-# migration — its long-standing top-level site, used by cmd_list AND emitted into _lib.
+# migration — its long-standing top-level site, used by the attention rollup AND
+# emitted into _lib.
 eval "$(awk '/^_event_json_str\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
 
 # Dedupe guards: the old byte-identical mirror copies are GONE — assert they
@@ -2048,9 +2160,9 @@ _AE_META_DIR="$_state_test_dir"
 rm -rf "$_state_test_dir"
 unset _AE_META_DIR
 
-# ── _session_states + cmd_list state column (phase 3) ──────────────
+# ── _session_states + the attention rollup (phase 3) ───────────────
 
-# Structural: top-level parser + reader exist and cmd_list wires them in.
+# Structural: top-level parser + reader exist.
 assert_eq "list: top-level _event_json_str single source exists" \
     "1" \
     "$([[ "$AE_SOURCE" == *'emitted by name into every generated'* && "$AE_SOURCE" == *'_event_json_str() {'* ]] && echo 1 || echo 0)"
@@ -2059,44 +2171,41 @@ assert_eq "list: _session_states function exists" \
     "1" \
     "$([[ "$AE_SOURCE" == *'_session_states() {'* ]] && echo 1 || echo 0)"
 
-assert_eq "list: cmd_list builds per-agent state column" \
-    "1" \
-    "$([[ "$AE_SOURCE" == *'"${_state[$aname]:--}"'* ]] && echo 1 || echo 0)"
-
 # Slice 2 replaced the state-only attn loop with a severity-ranked rollup;
 # waiting-user-over-blocked is now encoded in _attn_rank (see attn_rank tests).
 assert_eq "list: attention reasons are severity-ranked via _attn_rank" \
     "1" \
     "$([[ "$AE_SOURCE" == *'_attn_rank() {'* && "$AE_SOURCE" == *'waiting-user) printf '"'"'4'"'"''* && "$AE_SOURCE" == *'blocked) printf '"'"'3'"'"''* ]] && echo 1 || echo 0)"
 
-assert_eq "list: meta line renders attn suffix when set" \
+# A.2a: `list` is the CORE's, whole — the glue keeps no filter parser, no
+# renderer and no JSON emitter to drift against it. What the glue still owns is
+# the EXEC: identical argv, so `ae-glue list …` and the wrapper's own core exec
+# answer the same. Pin the exec and the absence of a second implementation.
+_cmdlist_body="$(awk '/^cmd_list\(\) \{/{f=1} f{print} f&&/^\}$/{exit}' "$(dirname "$0")/../ae")"
+assert_eq "list: cmd_list is a thin exec of the core with the argv verbatim" \
     "1" \
-    "$([[ "$AE_SOURCE" == *'· active %s · attn:%s'* ]] && echo 1 || echo 0)"
+    "$([[ "$_cmdlist_body" == *'_ae_core_preflight_try --exec list "$@"'* ]] && echo 1 || echo 0)"
 
-# Layer 1 slice 1: list filters + default-to-running.
-assert_eq "list: default hides stopped (gated behind --all/--stopped)" \
+# `-h`/`--help` is the ONE tail the glue answers, because ae-entry routes exactly
+# those two tokens back here (the core parses help at top level only). Anything
+# else — an unknown flag included — must reach the core.
+assert_eq "list: cmd_list answers exactly -h/--help itself and passes the rest on" \
     "1" \
-    "$([[ "$AE_SOURCE" == *'local show_running=true show_stopped=false only_needs_me=false'* && "$AE_SOURCE" == *'if $show_stopped; then'* ]] && echo 1 || echo 0)"
+    "$([[ "$_cmdlist_body" == *'-h | --help)'*'LISTHELP'*'_ae_core_preflight_try --exec list "$@"'* \
+        && "$_cmdlist_body" != *'--json)'* && "$_cmdlist_body" != *'--stopped)'* ]] && echo 1 || echo 0)"
 
-assert_eq "list: --all opts stopped back in" \
+# The deleted body must not come back: no filter state, no JSON emitter, no
+# per-session renderer anywhere in the glue.
+assert_eq "list: no second list implementation survives in the glue" \
     "1" \
-    "$([[ "$AE_SOURCE" == *'--all)'*'show_running=true'*'show_stopped=true'* ]] && echo 1 || echo 0)"
-
-assert_eq "list: --stopped shows only stopped" \
-    "1" \
-    "$([[ "$AE_SOURCE" == *'--stopped)'*'show_running=false'*'show_stopped=true'* ]] && echo 1 || echo 0)"
-
-assert_eq "list: --needs-attn (and aliases) filter to attention sessions" \
-    "1" \
-    "$([[ "$AE_SOURCE" == *'--needs-attn | --needs-me | --needs | --attn) only_needs_me=true'* && "$AE_SOURCE" == *'if $only_needs_me && [[ -z "$attn" ]]; then'* ]] && echo 1 || echo 0)"
-
-assert_eq "list: unknown flag is rejected" \
-    "1" \
-    "$([[ "$AE_SOURCE" == *"unknown flag '\$1' (see: ae list --help)"* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" != *'show_stopped='* && "$AE_SOURCE" != *'_list_session_json'* \
+        && "$AE_SOURCE" != *'_print_session_meta_line'* && "$AE_SOURCE" != *'"schema_version":'* ]] && echo 1 || echo 0)"
+unset _cmdlist_body
 
 # Slice 2 / Layer-2: the derived rollup (dead via missing pane + alert reason +
-# state, highest-severity via _attn_rank) lives in the shared _session_attn_rollup
-# — the SINGLE source of attention semantics used by both cmd_list and `ae next`.
+# state, highest-severity via _attn_rank) lives in _session_attn_rollup. Since
+# A.2a its one caller is `ae next` — the core owns list's attention — and it
+# retires with `next` when the core grows that word.
 assert_eq "rollup: flags a missing pane as dead" \
     "1" \
     "$([[ "$AE_SOURCE" == *'if [[ -z "${_al[$a]+x}" ]]; then'*'r="dead"'* ]] && echo 1 || echo 0)"
@@ -2118,8 +2227,8 @@ assert_eq "rollup: picks highest-severity reason via _attn_rank" \
     "1" \
     "$([[ "$AE_SOURCE" == *'if (($(_attn_rank "$r") > $(_attn_rank "$_AE_ATTN_REASON"))); then'* ]] && echo 1 || echo 0)"
 
-# _session_attn_rollup is the shared single source, and cmd_list + cmd_next both call it.
-assert_eq "rollup: cmd_list and cmd_next share _session_attn_rollup" \
+# The rollup and its one surviving caller both still exist.
+assert_eq "rollup: cmd_next is the surviving caller of _session_attn_rollup" \
     "1" \
     "$([[ "$AE_SOURCE" == *'_session_attn_rollup() {'* && "$AE_SOURCE" == *'cmd_next() {'* ]] && echo 1 || echo 0)"
 # Rollup returns via globals (NOT stdout) so the call runs in-shell and can fill
@@ -2433,74 +2542,6 @@ assert_eq "next-cmp: equal rank+epoch, later name loses the tie" "1" \
 assert_eq "next-cmp: empty best (first candidate) always wins" "0" \
     "$(_next_better 1 0 anything 0 0 ''; echo $?)"
 
-# Slice 3: --json digest.
-assert_eq "list: --json flag parsed" \
-    "1" \
-    "$([[ "$AE_SOURCE" == *'--json) as_json=true'* ]] && echo 1 || echo 0)"
-
-assert_eq "list: --json emits a versioned digest wrapper" \
-    "1" \
-    "$([[ "$AE_SOURCE" == *'{"schema_version":1,"generated_at":"%s","sessions":['* ]] && echo 1 || echo 0)"
-
-assert_eq "list: --json renders sessions via _list_session_json" \
-    "1" \
-    "$([[ "$AE_SOURCE" == *'_list_session_json() {'* && "$AE_SOURCE" == *'_list_session_json "running"'* && "$AE_SOURCE" == *'_list_session_json "stopped"'* ]] && echo 1 || echo 0)"
-
-assert_eq "list: --json session object carries needs_attention + attention + agents" \
-    "1" \
-    "$([[ "$AE_SOURCE" == *'"needs_attention":%s,"attention":%s,"attention_rank":%s,"agents":['* ]] && echo 1 || echo 0)"
-
-assert_eq "list: --json honours --needs-me filter (skip before emit)" \
-    "1" \
-    "$([[ "$AE_SOURCE" == *'if $only_needs_me && [[ -z "$attn" ]]; then'* ]] && echo 1 || echo 0)"
-
-# --json alive means agent-process-alive: pane present AND non-shell (empty
-# marker), not merely pane-present (codex IMPORTANT).
-assert_eq "list: --json alive is process-alive (present and non-shell marker)" \
-    "1" \
-    "$([[ "$AE_SOURCE" == *'[[ -n "${_alive[$ref]+x}" && -z "${_alive[$ref]}" ]] && alive="true"'* ]] && echo 1 || echo 0)"
-
-# Stopped --json path declares empty maps so set -u subscript lookups are safe.
-assert_eq "list: stopped --json declares empty maps (set -u safety)" \
-    "1" \
-    "$([[ "$AE_SOURCE" == *'declare -A _alive=() _state=() _areason=()'* ]] && echo 1 || echo 0)"
-
-# A per-session helper returning non-zero must never abort the listing mid-output
-# (truncated/invalid --json, dropped human rows). cmd_list disables errexit
-# across the session loops and restores it before the JSON close. This invariant
-# has NO behavioral signature once the known trigger (_agent_alert_reason) ends
-# in `return 0`, so it's guarded structurally against accidental removal; the
-# behavioral repro of the original abort lives in tests/integration.
-assert_eq "list: cmd_list brackets session loops with errexit off (set -e abort safety)" \
-    "1" \
-    "$([[ "$AE_SOURCE" == *'Degrade'*'set +e'*'set -e # restore errexit for the JSON close'* ]] && echo 1 || echo 0)"
-
-assert_eq "list: --needs-me/--active imply running-only (no leaked stopped rows)" \
-    "1" \
-    "$([[ "$AE_SOURCE" == *'if $only_needs_me || $only_active; then'*'show_running=true'*'show_stopped=false'* ]] && echo 1 || echo 0)"
-
-# --active: recently-active filter.
-assert_eq "list: --active/--busy flag parsed" \
-    "1" \
-    "$([[ "$AE_SOURCE" == *'--active | --busy) only_active=true'* ]] && echo 1 || echo 0)"
-
-assert_eq "list: --active window defaults to 300s, overridable via env" \
-    "1" \
-    "$([[ "$AE_SOURCE" == *'active_window="${AE_LIST_ACTIVE_SECS:-300}"'* ]] && echo 1 || echo 0)"
-
-assert_eq "list: --active skips sessions outside the activity window" \
-    "1" \
-    "$([[ "$AE_SOURCE" == *'if $only_active; then'* && "$AE_SOURCE" == *'_now - _sae >= active_window'* ]] && echo 1 || echo 0)"
-
-assert_eq "list: --active empty result has its own message" \
-    "1" \
-    "$([[ "$AE_SOURCE" == *'No recently active sessions.'* ]] && echo 1 || echo 0)"
-
-assert_eq "list: empty --all says no ae sessions, not try --all again" \
-    "1" \
-    "$([[ "$AE_SOURCE" == *'elif $show_running && $show_stopped; then
-            echo "No ae sessions."'* ]] && echo 1 || echo 0)"
-
 # Behavioural: extract _session_states body and exercise it. _event_json_str is
 # already eval'd above (first/top-level occurrence).
 eval "$(awk '/^_session_states\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
@@ -2785,20 +2826,13 @@ assert_eq "perf: no command substitution around _event_json_str" "0" \
 assert_eq "perf: no process substitution around _parse_agent_entry" "0" \
     "$(grep -c '<(_parse_agent_entry' <<<"$AE_SOURCE" || true)"
 
-# The meta-field reader replaced the echo-into-sed idiom, which cost two
-# processes per field on a blob already in memory.
+# Meta blobs are read in-shell. The echo-into-sed idiom cost two processes per
+# field on a blob already in memory and must not come back.
 assert_eq "perf: no echo|sed meta field reads remain" "0" \
     "$(grep -cE 'echo "\$(meta_)?blob" \| sed -n' <<<"$AE_SOURCE" || true)"
 
-# The three AE_* values come from ONE tmux round-trip per session, not three.
-assert_eq "perf: session env read in a single tmux call" "1" \
-    "$([[ "$AE_SOURCE" == *'_session_env_map "$name"'* \
-        && "$AE_SOURCE" != *'tmux show-environment -t "$name" AE_ORIGIN'* \
-        && "$AE_SOURCE" != *'tmux show-environment -t "$name" AE_MODE'* \
-        && "$AE_SOURCE" != *'tmux show-environment -t "$name" AE_DIR'* ]] && echo 1 || echo 0)"
-
-# cmd_list and the rollup need the same pane map; the rollup reuses the caller's
-# rather than paying a second list-panes per session. This one is PERF-ONLY —
+# A caller that already holds a pane map hands it to the rollup rather than
+# paying a second list-panes per session. This one is PERF-ONLY —
 # the fallback branch is behaviourally identical (a mutation forcing the rebuild
 # stays green on behaviour, which is exactly why it needs a source-shape pin).
 assert_eq "perf: rollup reuses the caller's pane map when present" "1" \
@@ -2813,8 +2847,7 @@ assert_eq "perf: pane-map fallback survives for map-less callers" "1" \
 assert_eq "perf: rollup does not fork date per session" "1" \
     "$([[ "$AE_SOURCE" == *'[[ -n "${_AE_NOW:-}" ]] || _AE_NOW="$(date +%s 2>/dev/null || echo 0)"'* ]] && echo 1 || echo 0)"
 
-# ── _parse_agent_entry / _meta_field return via globals ─────────────
-eval "$(awk '/^_meta_field\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+# ── _parse_agent_entry returns via globals ──────────────────────────
 eval "$(awk '/^_parse_agent_entry\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
 
 _parse_agent_entry "claude:lead:abcdef1234567890"
@@ -2862,56 +2895,19 @@ assert_eq "meta_agent_rows: one seat row makes the blob v2 — every agent. row 
         agent.main=claude:lead:abcdef1234567890 \
         agent.worker.0=codex:stale:99999999)")"
 
-_meta_field "$(printf 'session=s\norigin=/tmp/x\nmode=local\n')" origin
-assert_eq "meta_field: reads a value" "/tmp/x" "$_META_VAL"
-
-_meta_field "$(printf 'session=s\nmode=local\n')" origin
-assert_eq "meta_field: missing key yields empty" "" "$_META_VAL"
-
-# Values containing '=' survive intact (work_dir under a path with '=' is legal).
-_meta_field "$(printf 'work_dir=/tmp/a=b\n')" work_dir
-assert_eq "meta_field: value keeps embedded '='" "/tmp/a=b" "$_META_VAL"
-
-# First match wins, matching the old `sed -n 's/^k=//p' | head -1` behaviour.
-_meta_field "$(printf 'goal=first\ngoal=second\n')" goal
-assert_eq "meta_field: first match wins" "first" "$_META_VAL"
-
-# A key that is a PREFIX of another must not be confused for it.
-_meta_field "$(printf 'work_dir=/w\ndir=/d\n')" dir
-assert_eq "meta_field: prefix keys do not collide" "/d" "$_META_VAL"
-
 # ── goal: session objective (helper + meta + list + nudge) ───────────
 
-# Wiring: helper generated, event emitted, preserve-across-resume, list + nudge.
+# Wiring: helper generated, event emitted, preserved across resume. The list
+# rendering of a goal is the core's since A.2a and is pinned in its own suite.
 assert_eq "goal: helper script generated + chmod" "1" \
     "$([[ "$AE_SOURCE" == *'declare -f _ae_core_try helper_goal_main'* && "$AE_SOURCE" == *'mv "${AE_META}/goal.tmp.$$" "${AE_META}/goal"'* ]] && echo 1 || echo 0)"
 assert_eq "goal: preserved across meta rewrite (resume)" "1" \
     "$([[ "$AE_SOURCE" == *"PRESERVED_GOAL=\"\$(grep '^goal='"* && "$AE_SOURCE" == *'echo "goal=${PRESERVED_GOAL}"'* ]] && echo 1 || echo 0)"
-assert_eq "goal: ae list JSON carries a goal field (null when unset)" "1" \
-    "$([[ "$AE_SOURCE" == *'"goal":%s'* && "$AE_SOURCE" == *'[[ -n "$goal" ]] && gj="\"$(_json_escape "$goal")\""'* ]] && echo 1 || echo 0)"
-assert_eq "goal: ae list table sub-line prefixes the goal with its age" "1" \
-    "$([[ "$AE_SOURCE" == *'goal_prefix="goal${goal_age}: ${goal} · "'* ]] && echo 1 || echo 0)"
 
-# ── list context: _session_branch + _goal_set_epoch ─────────────────
-
-assert_eq "list: --json carries goal_set_epoch + branch context fields" "1" \
-    "$([[ "$AE_SOURCE" == *'"goal":%s,"goal_set_epoch":%s,"branch":%s,'* ]] && echo 1 || echo 0)"
-
-# Behavioural: _session_branch — running path reads the watchdog's untrimmed
-# @ae_branch_name side channel VERBATIM (never the 24-char display segment);
-# fallback path asks git.
-eval "$(awk '/^_session_branch\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
-# shellcheck disable=SC2317,SC2329
-tmux() { printf 'feature/x\n'; }
-assert_eq "branch: running session reads @ae_branch_name" \
-    "feature/x" "$(_session_branch any /nonexistent running)"
-# Regression (codex IMPORTANT): a long branch must come through FULL — the
-# display option is trimmed to 24 chars and must never be echoed as data.
-# shellcheck disable=SC2317,SC2329
-tmux() { printf 'feature/session-context-list-slice-long\n'; }
-assert_eq "branch: long branch is NOT display-trimmed in list context" \
-    "feature/session-context-list-slice-long" "$(_session_branch any /nonexistent running)"
-
+# ── branch side channel: the watchdog's publisher ───────────────────
+# `list` reads the branch in the core now (_session_branch went with the bash
+# body), but the untrimmed side channel it reads is still published HERE — the
+# 24-char display option must never be the data source.
 # Structural: the watchdog publishes the untrimmed name side channel and
 # clears it with the display option (stop path + EXIT trap).
 # (Clearing moved into the shared _watchdog_clear_bar_options owner — assert the
@@ -2919,29 +2915,6 @@ assert_eq "branch: long branch is NOT display-trimmed in list context" \
 assert_eq "branch: watchdog publishes untrimmed @ae_branch_name" "1" \
     "$([[ "$AE_SOURCE" == *'_watchdog_set_status @ae_branch_name "$full"'* \
         && "$AE_SOURCE" == *'for _o in @ae_branch_status @ae_branch_name @ae_watchdog_status @ae_agents_status; do'* ]] && echo 1 || echo 0)"
-# shellcheck disable=SC2317,SC2329
-tmux() { printf '\n'; }
-# shellcheck disable=SC2317,SC2329
-git() { [[ "$3" == "symbolic-ref" ]] && printf 'main-from-git\n'; }
-_sb_dir="$(mktemp -d)"
-assert_eq "branch: empty option falls back to git on the work_dir" \
-    "main-from-git" "$(_session_branch any "$_sb_dir" running)"
-assert_eq "branch: stopped session goes straight to git" \
-    "main-from-git" "$(_session_branch any "$_sb_dir" stopped)"
-unset -f tmux git
-
-# Behavioural: _goal_set_epoch — newest action=goal event wins; 0 when absent.
-eval "$(awk '/^_goal_set_epoch\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
-_gse_dir="$(mktemp -d)"
-assert_eq "goal epoch: no events file -> 0" "0" "$(_goal_set_epoch "$_gse_dir")"
-cat >"$_gse_dir/events.jsonl" <<'GSEEV'
-{"ts":"2026-07-01T08:00:00Z","actor":"h","action":"goal","summary":"old goal"}
-{"ts":"2026-07-02T09:00:00Z","actor":"h","action":"send","summary":"noise"}
-{"ts":"2026-07-02T10:00:00Z","actor":"h","action":"goal","summary":"new goal"}
-GSEEV
-assert_eq "goal epoch: newest goal event wins (noise skipped)" \
-    "$(_ae_epoch '2026-07-02T10:00:00Z')" "$(_goal_set_epoch "$_gse_dir")"
-
 assert_eq "goal: watchdog stale nudge quotes the session goal" "1" \
     "$([[ "$AE_SOURCE" == *'goal_line="$(_watchdog_meta_value goal)"'* && "$AE_SOURCE" == *'${goal_line}Status check:'* ]] && echo 1 || echo 0)"
 
@@ -3098,6 +3071,7 @@ assert_eq "autostart: orchestrator companion fn exists with all four guards" "1"
     "$([[ "$AE_SOURCE" == *'_orchestrator_autostart_if_scaffolded() {'* && "$AE_SOURCE" == *'AE_NO_AUTOSTART'* && "$AE_SOURCE" == *'orchestrator | hub) return 0'* && "$AE_SOURCE" == *'daemon_session_running orchestrator || _st_rc=$?'* ]] && echo 1 || echo 0)"
 
 # ── daemon_session_running: error is not absence (#28) ───────────────
+if _unit_slow 'daemon_session_running: live process probes'; then
 # The old body was `tmux list-sessions 2>/dev/null | grep -Fxq`, so ANY tmux
 # failure came back as a plain false. One transient client error then read as
 # "no orchestrator running" and fired an autostart whose backgrounded duplicate died
@@ -3286,6 +3260,7 @@ assert_eq "emissions: template helper_* set == emitted helper_* set" \
 # when its prologue sources _lib + any function its prologue defines outright.
 # Then walk the call graph from its own list to a FIXPOINT — every function that
 # can run inside the artifact must have all of ITS callees available too.
+fi
 # ── EMISSION CLOSURE: analysed on the GENERATED ARTIFACTS ────────────
 # Every function an artifact can run must be defined in that artifact.
 #
@@ -3476,6 +3451,7 @@ _closure_tokens() {
 }
 
 # ── PINNED KNOWN EDGES of the end-of-life lexer ─────────────────────
+if _unit_slow 'end-of-life lexer: the pinned known edges'; then
 # These assert the WRONG-BUT-CURRENT behaviour on purpose. They are the visible
 # form of the limitation — a quote-unaware filter drops every line after a
 # quoted operand that merely looks like a heredoc opener, so a real call there
@@ -3654,6 +3630,7 @@ assert_eq "closure: every function a generated artifact can run is defined in it
     "" "$_closure_missing"
 
 
+fi
 # ── portability: no raw GNU-only coreutils outside the shims ─────────
 # Each form below fails SILENTLY on BSD/macOS — the command errors, the
 # `|| fallback` value lands, and the feature reads as "nothing found" rather
@@ -5194,6 +5171,84 @@ assert_eq "core input: an unset CONFIG_DIR is not an error" "/from/config" \
 rm -rf "$_cc_dir"
 unset _cc_dir _cc_bad
 
+# ── _ae_core_bind: NO OPERATOR INPUT NEVER TOUCHES AN EXISTING PIN ───────────
+# Clearing the pair used to be the rollback to a bash body. There is no bash body
+# any more, so clearing turns a working session into one where every core-owned
+# command refuses — `end` included, which leaves it UNENDABLE with no way back
+# except a refresh that has input. Repro that shipped: `doctor --refresh <name>`
+# on an install with no core input at all (no core/current, no workspace.core, no
+# AE_CORE_BIN) reached this function through sync_session_assets, cleared both
+# keys, printed OK and exited 0.
+eval "$(awk '/^(_ae_core_bind|set_session_meta_value|set_session_meta_values)\(\) \{/{p=1} p{print} p&&/^\}$/{p=0}' <<<"$AE_SOURCE")"
+_cb_dir="$(mktemp -d)"
+mkdir -p "$_cb_dir/core"
+: >"$_cb_dir/config"
+cat >"$_cb_dir/meta" <<CBMETA
+session=cb
+ae_core=$_AE_UNIT_CORE
+ae_core_version=$_AE_UNIT_CORE_VER
+CBMETA
+_cb_before="$(cat "$_cb_dir/meta")"
+(
+    AE_CORE_BIN='' AE_LOCAL_CONFIG='' CONFIG_FILE="$_cb_dir/config" CONFIG_DIR="$_cb_dir" \
+        _ae_core_bind "$_cb_dir"
+) >/dev/null 2>&1
+assert_eq "core bind: a USABLE pin survives a no-input refresh byte-identical" \
+    "$_cb_before" "$(cat "$_cb_dir/meta")"
+
+# An UNUSABLE existing pin is left alone too — meta is not the place that reports
+# it, `ae doctor`'s core-pin check is. Rewriting it here would only turn one
+# broken shape into another.
+cat >"$_cb_dir/meta" <<CBMETA
+session=cb
+ae_core=/nonexistent/ae-core
+ae_core_version=
+CBMETA
+_cb_before="$(cat "$_cb_dir/meta")"
+(
+    AE_CORE_BIN='' AE_LOCAL_CONFIG='' CONFIG_FILE="$_cb_dir/config" CONFIG_DIR="$_cb_dir" \
+        _ae_core_bind "$_cb_dir"
+) >/dev/null 2>&1
+assert_eq "core bind: an UNUSABLE pin is left byte-identical, never cleared" \
+    "$_cb_before" "$(cat "$_cb_dir/meta")"
+
+# The positive arm is unchanged: real input still pins the PAIR it resolved.
+cat >"$_cb_dir/meta" <<'CBMETA'
+session=cb
+ae_core=
+ae_core_version=
+CBMETA
+(
+    AE_CORE_BIN="$_AE_UNIT_CORE" AE_LOCAL_CONFIG='' CONFIG_FILE="$_cb_dir/config" \
+        CONFIG_DIR="$_cb_dir" _ae_core_bind "$_cb_dir"
+) >/dev/null 2>&1
+assert_eq "core bind: usable operator input pins the path and the version it reports" \
+    "${_AE_UNIT_CORE}|${_AE_UNIT_CORE_VER}" \
+    "$(printf '%s|%s' "$(grep '^ae_core=' "$_cb_dir/meta" | cut -d= -f2-)" \
+        "$(grep '^ae_core_version=' "$_cb_dir/meta" | cut -d= -f2-)")"
+
+# An unusable INPUT still pins the path with an EMPTY version — the shape a
+# helper reads as configured-but-unbindable, distinct from no pin at all.
+(
+    AE_CORE_BIN=/nonexistent/ae-core AE_LOCAL_CONFIG='' CONFIG_FILE="$_cb_dir/config" \
+        CONFIG_DIR="$_cb_dir" _ae_core_bind "$_cb_dir"
+) >/dev/null 2>&1
+assert_eq "core bind: unusable operator input pins the path with an empty version" \
+    "/nonexistent/ae-core|" \
+    "$(printf '%s|%s' "$(grep '^ae_core=' "$_cb_dir/meta" | cut -d= -f2-)" \
+        "$(grep '^ae_core_version=' "$_cb_dir/meta" | cut -d= -f2-)")"
+rm -rf "$_cb_dir"
+unset _cb_dir _cb_before
+
+# ── doctor: a blank or unusable session pin is NAMED ─────────────────────────
+# Since the core became required there is nothing behind an empty pin, so a
+# session can sit unusable with `ae doctor` otherwise clean. WARN, not FAIL —
+# `doctor --refresh` (with input) repairs it and the rest of the install is fine.
+assert_eq "doctor: core-pin check warns per session and names the repair" "1" \
+    "$([[ "$AE_SOURCE" == *'doctor_report "WARN" "core-pin" "session ${_cp_bad} has no core bound; end/archive will refuse"'* \
+        && "$AE_SOURCE" == *'doctor_report "WARN" "core-pin-hint" "repair with '"'"'ae doctor --refresh'"'"'"'* \
+        && "$AE_SOURCE" == *'if [[ -z "$_cpbin" || -z "$_cpver" || ! -x "$_cpbin" ]]; then'* ]] && echo 1 || echo 0)"
+
 # ── COEXISTENCE (pre-P5): the guard is SKIPPED for a default-server instance ──
 # The installed ae has no AE_TMUX_SERVER and must never be gated by the guard
 # that exists to protect it. Asserted here rather than only in the integration
@@ -5790,6 +5845,7 @@ assert_eq "F10 (behavioural): a pre-feature session matches itself" "allow" "$(_
 assert_eq "F10 (behavioural): a pre-feature session replacing a known one is refused" "refuse" "$(_aba "-" "$_aba_old")"
 assert_eq "F10 (behavioural): a modern session replacing a pre-feature one is refused" "refuse" "$(_aba "$_aba_new" "-")"
 # ── F10(a)/F10(b)/F11: A SENTINEL IS NOT AN IDENTITY ─────────────────
+if _unit_slow 'F10/F11: the sentinel-is-not-an-identity rig'; then
 # Round 9 compared "-" as a value. It is SHARED, and equality is not identity when
 # the value is shared: two pre-feature sessions both froze "-", so ending one and
 # renaming another into its name (rename preserves a missing id) satisfied the
@@ -5988,6 +6044,7 @@ rm -rf "$_ov_dir"
 unset _ctc _sis _call _allb _sru _sfm _sfa _sro _css _ov_dir _ov_A _ov_B
 unset -f _ov
 
+fi
 # ── #33 round 3: a FLAG PROVES INTENT, NOT IDENTITY ──────────────────
 # --self exists because a run-shell child has no tty to prove with. But "the
 # caller asserts this is self" is the same unearned claim as "the inherited
@@ -8379,6 +8436,7 @@ rm -rf "$_tg_obs_root"
 unset _tg_obs_root _tg_obs_record _tg_obs_event _tg_obs_status _tg_obs_doctor _tg_obs_token
 
 # ── Telegram refusal seams + hostile reader records ─────────────────
+if _unit_slow 'telegram refusal seams + hostile reader records'; then
 # The smoke fixture above proves the basic publication path. These cases make
 # the mutation controls meaningful: the mapper receives token-shaped unknown
 # input, the reader sees a hostile multiline row, and every real refusal branch
@@ -8583,6 +8641,7 @@ rm -rf "$_tg_obs_envelope"
 unset _TG_OBS_ENVELOPE_FNS _tg_obs_envelope _tg_obs_envelope_token _tg_obs_envelope_event _tg_obs_envelope_pattern
 unset _TG_OBS_REAL_FNS _tg_obs_token _tg_obs_hostile
 
+fi
 # ── Watchdog-supervised telegram bridge ──────────────────────────────
 # The per-session watchdog best-effort revives the machine-global daemon
 # if it died (closes the gap where a crash lingers until the next `ae <name>`).
@@ -13515,6 +13574,7 @@ rm -rf "$_ar48_root"
 unset _ar48_root _ar48_s1 _ar48_meta _ar48_rows _ar48_full _ar48_full_meta _ar48_hd _ar48_hd_meta
 
 # ── Slice B P-B1: notice reconstruction fixtures (D1) ─────────────────────
+if _unit_slow 'P5 product: notice rig, CalVer bump, remote installer, wrapper triple, layout'; then
 # These are the 18 raw rows captured from real Claude/Codex panes at 80/120/200
 # columns. The companion .notice is the exact one-line payload pasted into that
 # pane. Keep the raw capture as the authority for row shape: the fixture proves
@@ -17281,7 +17341,10 @@ unset _p5_fx _p5_tmp_root _p5_plat _p5_repo _p5_w _p5_ok_rc _p5_ok_out _p5_miss_
     _p5_a21v _p5_a21v_rc _p5_a21 _p5_a21_rc1 _p5_a21_rc2 \
     _p5_a21_old _p5_a21_old_sum
 
+fi
 # ── P5-PRODUCT writer-A END ───────────────────────────────────────
+
+_ub_report
 
 # ── Results ──────────────────────────────────────────────────────────
 
@@ -17292,5 +17355,12 @@ if [[ ${#ERRORS[@]} -gt 0 ]]; then
         echo ""
     done
 fi
-echo "${PASS} passed, ${FAIL} failed"
+if ((_UNIT_SKIPPED_N > 0)); then
+    echo "${PASS} passed, ${FAIL} failed" \
+        "— FAST RUN: ${_UNIT_SKIPPED_N} slow block(s) SKIPPED. NOT the full suite —" \
+        "\`just test-unit\` (AE_UNIT_FULL=1) runs them."
+    printf '%s' "$_UNIT_SKIPPED" | sed 's/^/    skipped: /' >&2
+else
+    echo "${PASS} passed, ${FAIL} failed"
+fi
 [[ $FAIL -eq 0 ]] && exit 0 || exit 1
