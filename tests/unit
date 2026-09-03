@@ -4166,7 +4166,7 @@ assert_eq "P4.1a: a failed/timed-out lock acquisition DEFERS (no bare-proceed fa
 # A pidfile-registration TIMEOUT must tear down the pane WE spawned and fail — never
 # report success leaving a live-but-unregistered daemon the next starter duplicates.
 assert_eq "P4.1a: pidfile-registration timeout tears down the spawned pane and aborts" "1" \
-    "$([[ "$_wds_fn" == *'_registered'* && "$_wds_fn" == *'kill-pane -t "$watchdog_pane"'* && "$_wds_fn" == *'did not publish a pidfile'* ]] && echo 1 || echo 0)"
+    "$([[ "$_wds_fn" == *'_registered'* && "$_wds_fn" == *'_kill_owned_pane "$watchdog_pane"'* && "$_wds_fn" == *'did not publish a pidfile'* ]] && echo 1 || echo 0)"
 # Registration must wait for a VALIDATED published pid + our tagged pane, NOT mere
 # file existence: `echo >file` yields a zero-byte pidfile mid-write; registering on
 # existence would release the lock over it, and the next starter would read no pid,
@@ -4305,7 +4305,59 @@ assert_eq "monitor: watchdog start splits to add _watchdog pane, does not create
     "$([[ "$AE_SOURCE" == *'split-window -v -b -t "$MONITOR_EVENTS_PANE"'* && "$AE_SOURCE" == *'"${META_DIR}/watchdog _run"'* ]] && echo 1 || echo 0)"
 
 assert_eq "monitor: watchdog stop kills only the _watchdog pane (window survives)" "1" \
-    "$([[ "$AE_SOURCE" == *'_monitor_find_pane _watchdog'* && "$AE_SOURCE" == *'tmux kill-pane -t "$watchdog_pane"'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'_monitor_find_pane _watchdog'* && "$AE_SOURCE" == *'_kill_owned_pane "$watchdog_pane"'* ]] && echo 1 || echo 0)"
+# Every pane kill goes through _kill_owned_pane, which reads the pane's session and
+# @ae_agent at the moment of the kill and refuses a stranger: pane ids are server-local
+# and reused after a server restart on the same socket name, so a process holding a
+# stale id (a spawn rolling back, a retire, a watchdog stopping) killed a later
+# session's freshly spawned pane in the integration suite. The ONE raw `tmux kill-pane`
+# is the guard's own.
+assert_eq "kill-pane: the only raw tmux kill-pane in ae is inside _kill_owned_pane" "1" \
+    "$(grep -c 'tmux kill-pane' <<<"$AE_SOURCE")"
+assert_eq "kill-pane: retire, spawn rollback and the watchdog sites all kill through the guard" "5" \
+    "$(grep -c '^ *\(if \[\[ -n "\$watchdog_pane" \]\]; then \)\?_kill_owned_pane "\$\(resolved\|pane_id\|legacy_pane\|watchdog_pane\)"' <<<"$AE_SOURCE")"
+# ── _kill_owned_pane FAILS CLOSED: a kill needs a POSITIVE owner match ──
+# The stranger-kill this guard prevents is a destructive act, so the absence of a
+# contradiction must not authorise it (colead gate f0a99784): a probe that fails, a
+# probe that answers no session (tmux renders an empty format for an unknown pane,
+# rc 0 — measured), a caller that cannot name the session it means, and a mismatch
+# on either fact all end with ZERO kill calls. The two positive arms prove the guard
+# still kills what it should. Every call is BARE under this suite's errexit — the
+# only shape that proves the probe's non-zero rc cannot abort the caller.
+eval "$(awk '/^_kill_owned_pane\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+_kop_log="$(mktemp)"
+_KOP_RC=0
+_KOP_ANSWER=""
+# shellcheck disable=SC2317,SC2329
+tmux() {
+    case "${1:-}" in
+        display-message)
+            printf '%s' "$_KOP_ANSWER"
+            return "$_KOP_RC"
+            ;;
+        kill-pane) printf 'kill-pane %s\n' "${3:-}" >>"$_kop_log" ;;
+    esac
+    return 0
+}
+_KOP_RC=1 _KOP_ANSWER="" _kill_owned_pane '%7' s alice 2>/dev/null
+_KOP_RC=0 _KOP_ANSWER=$'\t' _kill_owned_pane '%7' s alice 2>/dev/null
+_kop_err="$(_KOP_RC=0 _KOP_ANSWER=$'other\talice' _kill_owned_pane '%7' s alice 2>&1 >/dev/null)"
+assert_eq "kill-guard: a pane in another session is refused, loudly" "1" \
+    "$(command grep -Fc "belongs to session 'other', not 's'" <<<"$_kop_err" || true)"
+_kop_err="$(_KOP_RC=0 _KOP_ANSWER=$'s\tbob' _kill_owned_pane '%7' s alice 2>&1 >/dev/null)"
+assert_eq "kill-guard: a pane stamped for another agent is refused, loudly" "1" \
+    "$(command grep -Fc "stamped 'bob', not 'alice'" <<<"$_kop_err" || true)"
+_KOP_RC=0 _KOP_ANSWER=$'s\talice' _kill_owned_pane '%7' '' alice 2>/dev/null
+_kill_owned_pane '' s alice 2>/dev/null
+assert_eq "kill-guard: failed probe, unknown pane, mismatches, unnamed session and empty pane id kill NOTHING" "0" \
+    "$(command grep -c 'kill-pane' "$_kop_log" || true)"
+_KOP_RC=0 _KOP_ANSWER=$'s\talice' _kill_owned_pane '%7' s alice
+_KOP_RC=0 _KOP_ANSWER=$'s\t' _kill_owned_pane '%8' s
+assert_eq "kill-guard: a matching session+stamp, and a matching session with no stamp asked, kill exactly their pane" \
+    $'kill-pane %7\nkill-pane %8' "$(cat "$_kop_log")"
+unset -f tmux
+rm -f "$_kop_log"
+unset _kop_log _kop_err _KOP_RC _KOP_ANSWER
 
 assert_eq "watchdog: branch → @ae_branch_status (left), health → @ae_watchdog_status (right)" "1" \
     "$([[ "$AE_SOURCE" == *'_watchdog_branch_segment()'* && "$AE_SOURCE" == *'_watchdog_set_status @ae_branch_status "$(_watchdog_branch_segment)"'* && "$AE_SOURCE" == *'_watchdog_set_status @ae_watchdog_status "[watch ${glyph} ${cycle_active}/${cycle_total}]"'* ]] && echo 1 || echo 0)"
@@ -16916,7 +16968,12 @@ assert_eq "P5 A12 already-correct CONFIG_FILE is not mentioned" "0" \
 _p5_wrap_home 2026.8.2 "$_p5_w/cfgunset"
 _p5_cfgu_rc=0
 set +e
-HOME="$_p5_w/cfgunset" "$_p5_w/cfgunset/.ae/versions/2026.8.2/ae" _probe \
+# `env -u`, not a bare HOME= prefix: this arm claims CONFIG_FILE is UNSET, and an ae
+# agent pane EXPORTS one (this suite's own CONFIG_FILE=/dev/null then inherits that
+# export), so without the unset the wrapper sees a foreign value, names it in its
+# notice, and the "not mentioned" pin fails from inside any ae session (measured
+# 2026-09-03; the integration preamble has the same hole and the same fix).
+env -u CONFIG_FILE HOME="$_p5_w/cfgunset" "$_p5_w/cfgunset/.ae/versions/2026.8.2/ae" _probe \
     >"$_p5_w/cfgunset.out" 2>"$_p5_w/cfgunset.err"
 _p5_cfgu_rc=$?
 set -e

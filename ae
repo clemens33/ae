@@ -11796,7 +11796,7 @@ _cmd_retire() {
     _rs_out="$(META_DIR="$meta_dir" _identity_core session _roster remove-seat "$pane_agent")" || return 1
     spawned_slot="${_rs_out#slot${_IDENT_US}}"
     if [[ -n "$resolved" ]]; then
-        tmux kill-pane -t "$resolved" 2>/dev/null || true
+        _kill_owned_pane "$resolved" "${meta[session]:-}" "$pane_agent"
     fi
     # The worker's launch script — and its #27 re-run marker — are dead weight
     # once the pane is gone.
@@ -12146,7 +12146,7 @@ _spawn_rollback() {
             echo "ae: spawn rollback could not remove the seat of '${name}' (${slot}) — remove it with 'retire'." >&2
     fi
     rm -f "${meta_dir}/launch.${slot}.sh" "${meta_dir}/launch.${slot}.started"
-    tmux kill-pane -t "$pane_id" 2>/dev/null || true
+    _kill_owned_pane "$pane_id" "$session" "$name"
     regenerate_manifest "$session" "$work_dir" "$origin" "$mode" "$main_pane" "$meta_dir" 2>/dev/null || true
     return 0
 }
@@ -15111,6 +15111,44 @@ _unset_meta_kv() {
 
 _set_meta_watchdog() { _set_meta_kv "watchdog" "$1"; }
 
+# Kill a pane ONLY if it is still the pane the caller means. A pane id is server-
+# local and REUSED after a server restart on the same socket name, so a process
+# holding a stale id — a spawn rolling back, a retire, a watchdog stopping — would
+# kill a stranger: measured in the integration suite, where an earlier section's
+# leftover ae process took a later section's freshly spawned pane (%3 on the new
+# server instance) 3 seconds after it was created, seat intact, no rollback line.
+# The ownership facts are read from the PANE ITSELF at the moment of the kill, and
+# the kill is authorised by a POSITIVE match — never by the absence of a
+# contradiction. The pane's session name must equal the caller's, and when the
+# caller names an @ae_agent stamp, that must match too.
+# FAIL CLOSED on a probe that names no owner: a failing probe (rc != 0 — server gone,
+# tmux unavailable, a double that answers nothing) and an empty session on rc 0
+# (tmux renders an empty format for an unknown target rather than failing) both
+# return without killing. Measured 2026-09-03: unknown pane → rc 0, output "\t";
+# unknown server → rc 1. A pane that is not there is nothing to kill, and an
+# unreadable pane is exactly the one this guard may not take on faith — a transient
+# probe failure would otherwise recreate the stranger-kill path.
+# A refusal is loud but non-fatal: the caller's own status stands.
+_kill_owned_pane() { # <pane_id> <expected_session> [<expected_agent>]
+    local pane="$1" want_session="${2:-}" want_agent="${3:-}" have have_session have_agent rc=0
+    [[ -n "$pane" ]] || return 0
+    have="$(tmux display-message -p -t "$pane" $'#{session_name}\t#{@ae_agent}' 2>/dev/null)" || rc=$?
+    [[ $rc -eq 0 ]] || return 0
+    have_session="${have%%$'\t'*}"
+    have_agent="${have#*$'\t'}"
+    [[ -n "$have_session" ]] || return 0
+    if [[ -z "$want_session" || "$have_session" != "$want_session" ]]; then
+        echo "ae: refusing to kill pane ${pane}: it belongs to session '${have_session}', not '${want_session:-<unknown>}' (stale pane id)." >&2
+        return 0
+    fi
+    if [[ -n "$want_agent" && "$have_agent" != "$want_agent" ]]; then
+        echo "ae: refusing to kill pane ${pane}: it is stamped '${have_agent:-<unstamped>}', not '${want_agent}' (stale pane id)." >&2
+        return 0
+    fi
+    tmux kill-pane -t "$pane" 2>/dev/null || true
+    return 0
+}
+
 _monitor_find_pane() {
     # Stdout: pane_id of the pane in this session tagged with @ae_agent=$1, or empty.
     tmux list-panes -s -t "$_AE_SESSION" -F '#{pane_id} #{@ae_agent}' 2>/dev/null |
@@ -15169,7 +15207,7 @@ _watchdog_reap_legacy_one() {
             legacy_pid="$(cat "$legacy_pid_file" 2>/dev/null || true)"
             if [[ -n "$legacy_pid" ]]; then kill "$legacy_pid" 2>/dev/null || true; fi
         fi
-        tmux kill-pane -t "$legacy_pane" 2>/dev/null || true
+        _kill_owned_pane "$legacy_pane" "${_AE_SESSION:-}" "_${legacy_name}"
     fi
     rm -f "$legacy_pid_file" "$legacy_status_file"
 }
@@ -15199,7 +15237,7 @@ _watchdog_stop() {
         # Kill only the _watchdog pane; leave the _events pane and monitor window alive.
         local watchdog_pane
         watchdog_pane="$(_monitor_find_pane _watchdog)"
-        if [[ -n "$watchdog_pane" ]]; then tmux kill-pane -t "$watchdog_pane" 2>/dev/null || true; fi
+        if [[ -n "$watchdog_pane" ]]; then _kill_owned_pane "$watchdog_pane" "${_AE_SESSION:-}" _watchdog; fi
         stopped="yes"
     fi
 
@@ -15293,7 +15331,7 @@ _watchdog_start() {
         sleep 0.05
     done
     if ((_registered == 0)); then
-        tmux kill-pane -t "$watchdog_pane" 2>/dev/null || true
+        _kill_owned_pane "$watchdog_pane" "${_AE_SESSION:-}" _watchdog
         echo "Error: watchdog did not publish a pidfile within the start bound; start aborted." >&2
         exit 1
     fi
@@ -18383,7 +18421,7 @@ set -uo pipefail
 source "$(cd "$(dirname "$0")" && pwd)/_lib"
 WDPROLOGUE
         declare -f _watchdog_is_running _set_meta_kv _unset_meta_kv _set_meta_watchdog \
-            _monitor_find_pane _monitor_ensure_events_pane _watchdog_ensure_monitor _watchdog_reap_legacy_one \
+            _kill_owned_pane _monitor_find_pane _monitor_ensure_events_pane _watchdog_ensure_monitor _watchdog_reap_legacy_one \
             _watchdog_reap_legacy _watchdog_stop _watchdog_status \
             _watchdog_start _last_event_age _latest_relevant_event _agent_quiet_reason \
             _quiet_pane_decision _watchdog_capture_pane _quiet_stabilize _quiet_stabilize_allowed _quiet_cursor_advance \

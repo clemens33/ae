@@ -481,6 +481,22 @@ if [[ -f "$REAL_AE_CONFIG" ]]; then REAL_CONFIG_FPR="$(_fpr <"$REAL_AE_CONFIG")"
 AE_FPR_START="$(_fpr <"$AE")"
 export HOME="$TMPDIR/home"
 export AE_HOME="$HOME/.ae"
+# CONFIG_FILE IS INHERITED, AND HOME+AE_HOME DO NOT OVERRIDE IT. ae honours a pre-set
+# CONFIG_FILE by design, and an ae agent pane EXPORTS one pointing at the operator's real
+# ~/.ae/config — so this suite, run from inside an ae session (which is how every agent
+# here runs it), pointed the product at the human's own config while believing it had
+# isolated everything. Measured on this tree: Test 1 aborts at "Timeout waiting for
+# session test-life" because the launch refuses the operator's still-v1 [agents] config,
+# and passes 5/0 with nothing changed but `env -u CONFIG_FILE`. Unset rather than
+# re-export, so ae derives it from the isolated AE_HOME exactly as it does in production;
+# the sections that need a specific config still set it per command.
+#
+# The general rule, and the reason this is a block and not a line: the isolation preamble
+# owns EVERY ae-owned variable an agent pane exports, not just the two obvious ones. Today
+# that is AE_DIR, AE_MODE, AE_ORIGIN, AE_SESSION, CONFIG_FILE, plus TMUX/TMUX_PANE. Only
+# CONFIG_FILE is proven to break a run, so only it is cleared here — but a new inherited
+# variable belongs on this list, not in a debugging session six months from now.
+unset CONFIG_FILE
 mkdir -p "$HOME/.ae"
 
 cleanup() {
@@ -2178,6 +2194,97 @@ if _itest_section 'Test 4: Spawn persistence'; then
 REPO4="$(setup_repo)"
 (cd "$REPO4" && "$AE" --local test-spawn &) 2>/dev/null
 wait_for_session "test-spawn"
+# ── WHO KILLED THE SPAWNED PANE ──────────────────────────────────────────────
+# The open question this section keeps raising is whether the worker's pane dies on its
+# own or is killed, and a pane list cannot tell those apart: with remain-on-exit off, an
+# exited process and a kill-pane both leave the same absence. remain-on-exit WOULD
+# discriminate, and is exactly the instrument that must not be used here — a corpse keeps
+# its @ae_slot, so the assertion below would pass on a dead agent and the failure would be
+# erased by the act of measuring it. So both halves of the answer are collected without
+# touching the product's behaviour:
+#
+#   the SHIM   — a pane-killing call reaches tmux through the word `tmux`, so a script of
+#                that name first on PATH sees the ones made by processes that start AFTER
+#                it is installed. It logs only the destructive verbs and then execs the
+#                real binary, resolved BEFORE the shim is on PATH so it cannot find itself.
+#                READ THE EMPTY LOG NARROWLY: it says only that nothing started in this
+#                section after the shim went on PATH killed the pane. It is NOT proof that
+#                nothing killed it. A process that started earlier carries the pre-shim
+#                PATH and never sees the shim at all — this session's own watchdog, which
+#                `ae --local test-spawn` launched above, and any leftover process from an
+#                earlier section both fall in that blind spot. The leading hypothesis for
+#                this defect (a stale process holding a recycled pane id from a previous
+#                tmux server generation) is exactly a pre-shim process, so the shim cannot
+#                see it BY CONSTRUCTION. The evidence there is different: the pane
+#                SURVIVING, plus the guard's refusal on the stale caller's own stderr.
+#   the HOOK   — tmux's own pane-exited fires when the pane's PROCESS exits, and needs no
+#                remain-on-exit, so it reports a self-inflicted death without preserving
+#                the corpse.
+#
+# Read together: exit line and no kill line means the launched shell died by itself; a kill
+# line means the caller is named in the log. The verb is found by scanning for the first
+# non-option word, NOT by looking at $1 — every caller here reaches tmux through a wrapper
+# that prepends `-L <server>`, so the subcommand is never the first argument.
+SP_KILLLOG="$TMPDIR/spawn-kills.log"
+SP_EXITLOG="$TMPDIR/spawn-exits.log"
+: >"$SP_KILLLOG"
+: >"$SP_EXITLOG"
+SP_SHIMDIR="$TMPDIR/binspawnshim"
+mkdir -p "$SP_SHIMDIR"
+# `type -P`, NOT `command -v`, and this is the whole reason the first attempt fork-bombed
+# the machine. The suite defines `tmux` as a FUNCTION, and `command -v` answers about the
+# function — it prints the bare word `tmux`. Baking that into the shim made the shim exec
+# `tmux`, which PATH then resolved back to the shim, forever. `type -P` forces a PATH
+# search and ignores functions, builtins and aliases, so it yields the real binary. The
+# shim also refuses to run if what it was handed is not an executable file, because a
+# recursive exec is not a failure anyone reads as a bug — it presents as a hang.
+SP_REAL_TMUX="$(type -P tmux)"
+cat >"$SP_SHIMDIR/tmux" <<SPSHIM
+#!${BASH:-/bin/bash}
+_verb=""
+_skip=0
+for _a in "\$@"; do
+    if [[ "\$_skip" == 1 ]]; then
+        _skip=0
+        continue
+    fi
+    case "\$_a" in
+        -L | -S | -f | -c) _skip=1 ;;
+        -*) ;;
+        *)
+            _verb="\$_a"
+            break
+            ;;
+    esac
+done
+case "\$_verb" in
+    kill-pane | kill-window | kill-session | respawn-pane)
+        {
+            _pp="\$(ps -o ppid= -p "\$PPID" 2>/dev/null | tr -d '[:space:]')"
+            printf '%s %s\\n  by pid %s: %s\\n  parent %s: %s\\n  args: %s\\n' \\
+                "\${EPOCHREALTIME:-\$(date +%s)}" "\$_verb" \\
+                "\$PPID" "\$(ps -o command= -p "\$PPID" 2>/dev/null | tr '\\n' ' ')" \\
+                "\${_pp:-?}" "\$(ps -o command= -p "\${_pp:-1}" 2>/dev/null | tr '\\n' ' ')" \\
+                "\$*"
+        } >>"$SP_KILLLOG" 2>/dev/null || true
+        ;;
+esac
+if [[ ! -x "$SP_REAL_TMUX" ]]; then
+    echo "itest tmux shim: the real tmux was not resolved (got '$SP_REAL_TMUX')" >&2
+    exit 127
+fi
+exec "$SP_REAL_TMUX" "\$@"
+SPSHIM
+chmod 0755 "$SP_SHIMDIR/tmux"
+cat >"$SP_SHIMDIR/paneexit" <<PEEOF
+#!/bin/sh
+printf '%s pane-exited %s\\n' "\$(date +%s)" "\$1" >>"$SP_EXITLOG" 2>/dev/null || true
+PEEOF
+chmod 0755 "$SP_SHIMDIR/paneexit"
+tmux set-hook -t test-spawn pane-exited "run-shell '$SP_SHIMDIR/paneexit \"#{pane_id}\"'" 2>/dev/null || true
+SP_OLD_PATH="$PATH"
+PATH="$SP_SHIMDIR:$PATH"
+export PATH
 sleep 1
 
 # Spawn a second agent. Identity v2: the NAME is required and the profile is named by
@@ -2243,6 +2350,11 @@ if ! tmux list-panes -s -t test-spawn -F '#{@ae_slot}' 2>/dev/null | command gre
         tmux list-windows -t test-spawn -F '#{window_index}:#{window_name} panes=#{window_panes}' 2>&1
         echo "-- meta seat rows:"
         command grep -E '^(seat|profile|agent_bin)\.' "$HOME/.ae/sessions/test-spawn/meta" 2>&1
+        echo "-- destructive tmux calls from processes started after the shim (empty does"
+        echo "   NOT mean nothing killed it — a pre-shim process never reaches the shim):"
+        cat "$SP_KILLLOG"
+        echo "-- pane-exited hook (a line here means the pane's own process exited):"
+        cat "$SP_EXITLOG"
         echo "-- server timeline (0.2s per tick, every pane on the server):"
         cat "$sp0_watch"
         echo "=== SPAWN POST-MORTEM END ==="
@@ -2410,8 +2522,21 @@ assert_eq "retire: worker window gone" "0" \
     "$(tmux list-windows -t test-spawn -F '#{window_name}' 2>/dev/null | grep -c 'helper-0' || true)"
 assert_eq "retire: purges stale launch_time/launch_id for the slot" "0" \
     "$(grep -cE '^(launch_time|launch_id)\.spawned\.0=' "$HOME/.ae/sessions/test-spawn/meta" 2>/dev/null || true)"
+# THE INSTRUMENT'S OWN CONTROL, and it is not optional. The post-mortem above draws a
+# conclusion from an EMPTY kill log — a narrow one, but a shim that never worked would
+# support it just as well, and an instrument that cannot fail proves nothing. `retire`
+# kills a pane on purpose and runs after the shim is on PATH, so it is the known-positive
+# that shows the shim is installed, is being reached, and recognises the verb through the
+# `-L` wrapper. If this goes red, every "no kill line" reading above is worthless rather
+# than reassuring.
+assert_eq "instrument control: the tmux shim recorded the retire's own kill-pane" "1" \
+    "$([[ "$(command grep -c 'kill-pane' "$SP_KILLLOG" 2>/dev/null || echo 0)" -ge 1 ]] && echo 1 || echo 0)"
 
 # Clean up
+tmux set-hook -u -t test-spawn pane-exited 2>/dev/null || true
+PATH="$SP_OLD_PATH"
+export PATH
+unset SP_SHIMDIR SP_REAL_TMUX SP_OLD_PATH SP_KILLLOG SP_EXITLOG
 "$AE" end -f test-spawn 2>/dev/null || true
 sleep 0.5
 fi
@@ -6499,11 +6624,20 @@ sleep 1
 _sed_i -e "/^session_id=/d" "$HOME/.ae/sessions/arch-retry/meta"
 mkdir -p "$HOME/.ae/archive"
 a48_retry_rc=0
-# A standing claim on whatever id gets minted is impossible to pre-create, so fail the
-# publication the other way: make the archive root unwritable for one attempt.
-chmod 500 "$HOME/.ae/archive"
+# A standing claim on whatever id gets minted is impossible to pre-create, so the
+# publication has to be failed some other way — and NOT by permissions. THE ROOT'S MODE IS
+# AE-MANAGED: ~/.ae is ae's own state directory and ae normalises it on the way through, so
+# a `chmod 500` here is simply undone (measured: dr-x------ going in, drwx------ coming
+# out, publication succeeds, rc 0) and all four arms below then test nothing. Occupy the
+# PATH instead: a regular FILE where the archive root must be a directory is not something
+# a chmod can repair, so mkdir fails and the publication fails with it. Measured end to
+# end: rc 1, the session directory preserved for the retry, and the retry then publishing
+# normally once the directory is restored.
+rm -rf "$HOME/.ae/archive"
+: >"$HOME/.ae/archive"
 "$AE" end -f --keep-history arch-retry >/dev/null 2>&1 || a48_retry_rc=$?
-chmod 700 "$HOME/.ae/archive"
+rm -f "$HOME/.ae/archive"
+mkdir -p "$HOME/.ae/archive"
 assert_eq "archive-retry: the first attempt failed" "1" "$([[ $a48_retry_rc -ne 0 ]] && echo 1 || echo 0)"
 assert_contains "archive-retry: but the mint was recorded in the live meta" \
     "session_id_origin=minted-at-end" "$(cat "$HOME/.ae/sessions/arch-retry/meta")"
