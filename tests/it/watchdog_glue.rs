@@ -586,3 +586,145 @@ fn a_daemon_that_dies_between_publish_and_watch_takes_its_pidfile_with_it() {
     );
     let _ = fs::remove_dir_all(&scratch);
 }
+
+/// A session whose codex seat is still `pending`, with its own `HOME` holding
+/// the conversation log a recovery has to find.
+///
+/// Separate from [`plant`] because the two facts this arm turns on are the two
+/// that one does not carry: a seat whose tool needs a post-launch capture, and
+/// a `launch_time.<slot>` low enough that the fixture's own mtime clears it.
+fn plant_pending_codex(root: &Path, session: &str, socket: &Path, work_dir: &Path) -> PathBuf {
+    let meta_dir = root.join("sessions").join(session);
+    assert!(fs::create_dir_all(&meta_dir).is_ok(), "a session meta dir");
+    let meta = format!(
+        "mode=local\nsession={session}\ntmux_server_kind=socket\ntmux_server={socket}\n\
+         work_dir={work_dir}\nschema=2\nseat.main=lead\nprofile.main=cx\n\
+         agent_bin.main=codex\nharness_session.main=pending\nlaunch_time.main=1\n\
+         launch_id.main=tok-recover\n",
+        socket = socket.display(),
+        work_dir = work_dir.display(),
+    );
+    assert!(fs::write(meta_dir.join("meta"), meta).is_ok(), "the record");
+    meta_dir
+}
+
+#[test]
+fn a_pending_codex_seat_is_recovered_by_the_running_watchdog() {
+    // The whole point of the cut: the recovery used to be `ae _recover-pending`
+    // run out of the pane, and is now a look the daemon takes itself. Driven as
+    // a REAL process because the fact it turns on — the caller's `HOME`, where
+    // codex keeps its history — is process-wide, so a library test would have to
+    // mutate the runner's own environment to fake it.
+    let scratch = scratch("recover");
+    require_tmux(&scratch);
+    let socket = scratch.join("s");
+    let root = scratch.join("home");
+    let home = scratch.join("toolhome");
+    let project = scratch.join("project");
+    assert!(fs::create_dir_all(&project).is_ok(), "the work dir");
+    let meta_dir = plant_pending_codex(&root, "pending", &socket, &project);
+
+    // Codex partitions its logs by UTC day. Today's is where a launch that is
+    // still running wrote, and the scan reads the id out of the first line.
+    let day = ae::time::Timestamp::now().to_string()[..10].replace('-', "/");
+    let logs = home.join(".codex").join("sessions").join(&day);
+    assert!(fs::create_dir_all(&logs).is_ok(), "a codex day directory");
+    assert!(
+        fs::write(
+            logs.join("rollout-mine.jsonl"),
+            format!(
+                "{{\"id\":\"0191aaaa-bbbb-cccc\",\"cwd\":\"{}\"}}\n\
+                 {{\"text\":\"AE_CODEX_LAUNCH_ID=tok-recover\"}}\n",
+                project.display()
+            ),
+        )
+        .is_ok(),
+        "this seat's conversation"
+    );
+    // Another launch's log, in another directory and carrying no token: picking
+    // it would mean neither filter ran.
+    assert!(
+        fs::write(
+            logs.join("rollout-other.jsonl"),
+            "{\"id\":\"0191dddd-eeee-ffff\",\"cwd\":\"/nowhere\"}\n",
+        )
+        .is_ok(),
+        "a stranger's conversation"
+    );
+
+    assert!(
+        tmux(
+            &socket,
+            &scratch,
+            &["new-session", "-d", "-s", "pending", "cat"]
+        )
+        .0,
+        "the watched session"
+    );
+
+    let daemon_out = scratch.join("daemon-out");
+    let daemon_err = scratch.join("daemon-err");
+    let spawned = super::cli::ae()
+        .arg("_watchdog-run")
+        .arg(&meta_dir)
+        .args(["--interval", "1", "--tg-supervise-secs", "0"])
+        .env("HOME", &home)
+        .stdout(fs::File::create(&daemon_out).expect("a stdout sink"))
+        .stderr(fs::File::create(&daemon_err).expect("a stderr sink"))
+        .spawn();
+    let mut child = spawned.expect("the ae binary should spawn");
+
+    let recovered = |meta: &str| meta.contains("harness_session.main=0191aaaa-bbbb-cccc");
+    let deadline = Instant::now() + BUDGET;
+    let mut landed = false;
+    while Instant::now() < deadline {
+        if recovered(&fs::read_to_string(meta_dir.join("meta")).unwrap_or_default()) {
+            landed = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    // Stop the daemon the way its own docs say it stops, then make sure the
+    // process is gone whatever it decided — a leaked watchdog outlives the
+    // suite and watches a session the next arm is about to reuse.
+    let _ = tmux(&socket, &scratch, &["kill-session", "-t", "pending"]);
+    let stop = Instant::now() + BUDGET;
+    while Instant::now() < stop {
+        if matches!(child.try_wait(), Ok(Some(_))) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    let meta = fs::read_to_string(meta_dir.join("meta")).unwrap_or_default();
+    let log = events(&meta_dir);
+    let diagnostics = fs::read_to_string(&daemon_err).unwrap_or_default();
+    kill_server(&socket, &scratch);
+
+    assert!(
+        landed,
+        "the pending seat must be recovered within the budget:\n{meta}\n{diagnostics}"
+    );
+    assert!(
+        !meta.contains("0191dddd-eeee-ffff"),
+        "another launch's conversation was captured:\n{meta}"
+    );
+    assert_eq!(
+        meta.matches("harness_session.main=").count(),
+        1,
+        "the row was replaced, not appended:\n{meta}"
+    );
+    // The recovery is otherwise SILENT — the id lands in meta and nothing else
+    // would ever say it had — so the event is the durable record of it.
+    assert!(
+        log.contains("\"action\":\"recover\"") && log.contains("captured codex session id"),
+        "the recovery must be journalled:\n{log}"
+    );
+    assert!(
+        log.contains("0191aaaa-bbbb-cccc"),
+        "the event refers to the captured id:\n{log}"
+    );
+    let _ = fs::remove_dir_all(&scratch);
+}

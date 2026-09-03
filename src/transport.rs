@@ -450,12 +450,14 @@ pub(crate) fn run_git(argv: &crate::git::GitArgv) -> (bool, String) {
 /// module, so only its fixed-shape constructors can mint one and this leg cannot
 /// be alias-imported and handed an arbitrary command line.
 ///
-/// It exists because two of the watchdog pane's duties are still bash
-/// subcommands — `_recover-pending` and `telegram _supervise` — and the frozen
-/// wrapper ran exactly this binary with exactly these arguments. Returns whether
-/// it exited zero and its stdout decoded lossily; stderr is captured and
-/// dropped, because a supervise that complains must not print into a read-only
-/// watchdog pane.
+/// It exists because one of the watchdog pane's duties is still a bash
+/// subcommand — `telegram _supervise` — and the frozen wrapper ran exactly this
+/// binary with exactly these arguments. (`_recover-pending` was the other until
+/// the core grew its own recovery; see [`crate::watchdog_glue::recover`].)
+///
+/// Returns whether it exited zero and its stdout decoded lossily; stderr is
+/// captured and dropped, because a supervise that complains must not print into
+/// a read-only watchdog pane.
 pub(crate) fn run_ae(
     bin: &std::path::Path,
     argv: &crate::watchdog_glue::AeArgv,

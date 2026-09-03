@@ -11,7 +11,10 @@
 //! * kept `@ae_branch_status` / `@ae_branch_name` fresh every cycle — a git
 //!   read the daemon loop never owned;
 //! * ticked the two deferred concerns: pending tool-session-id recovery and the
-//!   Telegram bridge revive, both by running the recorded `ae` binary;
+//!   Telegram bridge revive, both by running the recorded `ae` binary. The
+//!   recovery is IN-PROCESS now — [`recover`] takes one look per pending seat
+//!   through the core's own capture — and only the bridge revive still runs a
+//!   binary;
 //! * on the lifecycle edges, reaped a pre-rename (`_shepherd` / `_loop`)
 //!   watchdog through an OWNERSHIP-CHECKED kill (ae:13219-13245).
 //!
@@ -439,20 +442,14 @@ impl AeArgv {
     }
 }
 
-/// `ae _recover-pending <session>` — the post-launch tool-session-id retry the
-/// frozen wrapper ticked every cycle (ae:14436-14443).
-#[must_use]
-pub fn recover_pending_argv(session: &str) -> AeArgv {
-    AeArgv(vec!["_recover-pending".to_owned(), session.to_owned()])
-}
-
 /// `ae telegram _supervise` — the best-effort bridge revive (ae:14448-14459).
 #[must_use]
 pub fn telegram_supervise_argv() -> AeArgv {
     AeArgv(vec!["telegram".to_owned(), "_supervise".to_owned()])
 }
 
-/// One recovered tool session id, from `_recover-pending`'s TSV.
+/// One recovered tool session id — a seat that was `pending` and is not any
+/// more.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Recovered {
     /// The agent's display reference — the event's target.
@@ -463,33 +460,35 @@ pub struct Recovered {
     pub captured: String,
 }
 
-/// Read `_recover-pending`'s rows, keeping only the ones the watchdog acts on.
+/// One recovery pass over a session's roster: a single look at every seat whose
+/// id is still pending, and the rows worth an event.
 ///
-/// The wire form is `kind\tslot\tagent\ttool\tcaptured`, and the frozen wrapper
-/// takes ONLY `ok` rows with a non-empty capture — `already` / `miss` / `skip`
-/// are doctor's business, not an event. The slot is read past positionally, as
-/// bash does.
+/// This is what `ae _recover-pending <session>` used to be. The frozen arm ran
+/// the whole selection and every capture chain in bash and reported them as TSV
+/// for this module to read back; the core owns both halves now, so the walk is
+/// a call and the "row" is a value rather than a line that has to survive a
+/// pipe. Only a seat that ACTUALLY landed an id is returned — the frozen
+/// wrapper likewise acted on `ok` rows alone and left `already` / `miss` /
+/// `skip` to doctor.
+///
+/// A look that finds nothing is not a failure: the seat stays pending and the
+/// next cycle looks again, which is what made the frozen arm's
+/// `2>/dev/null || true` the right reading of a failed run.
 #[must_use]
-pub fn interpret_recovered(stdout: &str) -> Vec<Recovered> {
+pub fn recover(dir: &Path, roster: &[crate::meta::RosterEntry]) -> Vec<Recovered> {
     let mut rows = Vec::new();
-    for line in stdout.lines() {
-        let mut fields = line.split('\t');
-        let (Some(kind), Some(_slot), Some(agent), Some(tool), Some(captured)) = (
-            fields.next(),
-            fields.next(),
-            fields.next(),
-            fields.next(),
-            fields.next(),
-        ) else {
+    for seat in crate::session_launch::capture::pending_seats(roster) {
+        let Some(captured) = crate::session_launch::capture::attempt(dir, &seat.slot) else {
             continue;
         };
-        if kind != "ok" || captured.is_empty() {
-            continue;
-        }
+        // The write goes through the roster the core owns, under its own meta
+        // lock — the same call the launch's capture child makes, so a recovery
+        // racing a late child rewrites one fact with itself.
+        crate::session_launch::capture::register(dir, &seat.slot, &captured);
         rows.push(Recovered {
-            agent: agent.to_owned(),
-            tool: tool.to_owned(),
-            captured: captured.to_owned(),
+            agent: seat.agent,
+            tool: seat.tool.as_str().to_owned(),
+            captured,
         });
     }
     rows
@@ -521,16 +520,18 @@ pub fn supervise_due(every_secs: u64, last: Option<SystemTime>, now: SystemTime)
     now.duration_since(last).unwrap_or(Duration::ZERO).as_secs() >= every_secs
 }
 
-/// The two deferred bash-only concerns, ticked once per cycle.
+/// The one deferred concern still ticked through the recorded `ae` binary: the
+/// Telegram bridge revive.
 ///
-/// A value rather than four loose locals because the supervise throttle is
+/// A value rather than three loose locals because the supervise throttle is
 /// state the tick owns, and a caller that forgot to carry it would revive the
-/// bridge on every cycle.
+/// bridge on every cycle. Pending-id recovery was the other half until the core
+/// grew its own — see [`recover`], which needs none of this.
 #[derive(Debug, Clone)]
 pub struct Deferred {
     /// The recorded `ae` binary (`ae_path` in meta), or `None` when the session
-    /// records none — in which case both ticks are no-ops, exactly as the frozen
-    /// `[[ -x "${AE_PATH_BIN:-}" ]]` guard makes them.
+    /// records none — in which case the tick is a no-op, exactly as the frozen
+    /// `[[ -x "${AE_PATH_BIN:-}" ]]` guard makes it.
     ae_bin: Option<PathBuf>,
     /// The raw `tmux_server` value, exported as `AE_TMUX_SERVER` so a supervise
     /// reaches the session's own server rather than an ambient one.
@@ -550,29 +551,6 @@ impl Deferred {
             every_secs,
             last: None,
         }
-    }
-
-    /// Whether anything can run at all — a session with no recorded `ae` path
-    /// has nothing to tick.
-    #[must_use]
-    pub fn armed(&self) -> bool {
-        self.ae_bin.is_some()
-    }
-
-    /// Run `_recover-pending` and return the rows worth an event.
-    ///
-    /// A failed run is NO rows, never an error: the frozen wrapper's
-    /// `2>/dev/null || true` reads a failure as "nothing recovered this cycle".
-    #[must_use]
-    pub fn recover(&self, session: &str) -> Vec<Recovered> {
-        let Some(bin) = self.ae_bin.as_deref() else {
-            return Vec::new();
-        };
-        let (succeeded, stdout) = transport::run_ae(bin, &recover_pending_argv(session), &[]);
-        if !succeeded {
-            return Vec::new();
-        }
-        interpret_recovered(&stdout)
     }
 
     /// Revive the Telegram bridge if the throttle allows it this cycle.
@@ -663,9 +641,8 @@ pub fn clear_pid(meta_dir: &Path, pid: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        BRANCH_DISPLAY_MAX, Deferred, PaneOwner, interpret_pane_owner, interpret_recovered,
-        kill_pane_args, pane_owner_args, recorded_ae_path, recovered_summary, supervise_due,
-        trim_display,
+        BRANCH_DISPLAY_MAX, Deferred, PaneOwner, Recovered, interpret_pane_owner, kill_pane_args,
+        pane_owner_args, recorded_ae_path, recovered_summary, supervise_due, trim_display,
     };
     use crate::inventory::ServerId;
     use crate::meta::Selector;
@@ -746,21 +723,23 @@ mod tests {
     }
 
     #[test]
-    fn only_ok_rows_with_a_capture_become_events() {
-        let wire = "skip\tmain\tlead\t\t\n\
-                    already\tworker.1\tw1\tcodex\t\n\
-                    miss\tworker.2\tw2\tgemini\t\n\
-                    ok\tworker.3\tw3\tcodex\t0191aaaa-bbbb\n\
-                    ok\tworker.4\tw4\topencode\t\n";
-        let rows = interpret_recovered(wire);
-        assert_eq!(rows.len(), 1, "one actionable row: {rows:?}");
-        assert_eq!(rows[0].agent, "w3");
-        assert_eq!(rows[0].tool, "codex");
-        assert_eq!(rows[0].captured, "0191aaaa-bbbb");
+    fn a_recovery_is_summarised_by_the_tool_and_the_head_of_its_id() {
+        let row = Recovered {
+            agent: "w3".to_owned(),
+            tool: "codex".to_owned(),
+            captured: "0191aaaa-bbbb".to_owned(),
+        };
         assert_eq!(
-            recovered_summary(&rows[0]),
+            recovered_summary(&row),
             "captured codex session id (0191aaaa)"
         );
+        // An id shorter than the abbreviation is quoted whole rather than
+        // padded — the frozen `${id:0:8}` on a short value.
+        let short = Recovered {
+            captured: "abc".to_owned(),
+            ..row
+        };
+        assert_eq!(recovered_summary(&short), "captured codex session id (abc)");
     }
 
     #[test]
@@ -781,10 +760,12 @@ mod tests {
     }
 
     #[test]
-    fn a_session_with_no_recorded_ae_path_ticks_nothing() {
+    fn a_session_with_no_recorded_ae_path_supervises_nothing() {
+        // The frozen `[[ -x "${AE_PATH_BIN:-}" ]]` guard: no recorded binary,
+        // no revive — and the throttle must not record a tick that never ran,
+        // or the first real one would be delayed by a no-op.
         let mut deferred = Deferred::new(None, None, 120);
-        assert!(!deferred.armed());
-        assert!(deferred.recover("demo").is_empty());
+        assert!(!deferred.supervise("demo", SystemTime::UNIX_EPOCH));
         assert!(!deferred.supervise("demo", SystemTime::UNIX_EPOCH));
     }
 
