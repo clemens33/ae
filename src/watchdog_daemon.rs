@@ -27,10 +27,12 @@
 //! ([`crate::watchdog::sweep_step`] / [`crate::watchdog::record_sweep`]); this
 //! module reads the heartbeat, delivers the prompt and books what happened.
 //!
-//! # What else stays in bash this slice
+//! # What still crosses to the glue
 //!
-//! The Telegram supervise and the pending tool-session-id recovery. They are not
-//! ported here and this module must not be read as replacing them.
+//! Only the Telegram supervise (`ae telegram _supervise`, through the recorded
+//! `ae_path`). The pending tool-session-id recovery is the core's own since
+//! the recovery port: [`crate::watchdog_glue::recover`] runs it in-process on
+//! every tick, from meta, for any seat still without an id.
 
 use std::io::{self, Write};
 use std::path::Path;
