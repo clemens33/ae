@@ -15,18 +15,17 @@
 //!
 //! # What is the core's, and what stays frozen
 //!
-//! The PASTE is the frozen `send` body, run by [`crate::transport::deliver`]
-//! through the session's INTERNAL `_send-deliver` helper — the same body
-//! behind a delivery-only entry point: the dead-pane guard, the provenance
-//! envelope, the per-target lock, the busy deferral and the submit
-//! verification are measured TUI behaviour this crate does not re-implement,
-//! and every loud line they print reaches the caller verbatim because the
-//! helper's stderr is inherited. That entry still STORES the delivered text
-//! beside the session (the recovery record the event points at) and prints
-//! its path instead of emitting the event. The public `send` is untouched by
-//! this: its event is pinned by its own entry point, not by anything in the
-//! environment — the P2.5a review's ruling — so the no-identity fallback
-//! below, which IS a plain `send`, records itself as it always did.
+//! The PASTE is [`crate::deliver`]'s, in this process (B move 1): the
+//! dead-pane guard, the provenance envelope, the recovery-body store, the
+//! per-target lock, the busy deferral and the submit verification are the
+//! measured TUI behaviour, ported rather than delegated. What the core no
+//! longer does is call back into bash for it — `_send-deliver` still exists
+//! in the glue and still works, but nothing here runs it.
+//!
+//! The one path that still runs a helper is the NO-IDENTITY FALLBACK below:
+//! it is a plain `send`, which records its own event, so it goes through the
+//! public helper exactly as the frozen body did — and that helper execs this
+//! same core, so the delivery is native either way.
 //!
 //! The EVENT is the core's: the `ask`/`review` line — actor, target, ref, the
 //! four routing members (`actor_slot`, `actor_session`, `target_slot`,
@@ -455,6 +454,25 @@ pub fn pick<'a>(
 /// (the frozen helper returns 0 for one, and `send` fails later if it is not
 /// there); its stamps are simply empty when they cannot be read.
 pub fn resolve(target: &str, own_session: &str, dir: &Path) -> Result<Resolved, ResolveError> {
+    resolve_on(target, own_session, dir).map(|(resolved, _)| resolved)
+}
+
+/// [`resolve`], and the SERVER the target was resolved on.
+///
+/// Delivery needs both. A pane id is server-local and a `@session:agent` target
+/// may live on a server that is not the caller's ambient one, so the paste has
+/// to be addressed to the server the resolution actually used — asking the
+/// ambient one would put the message in a DIFFERENT pane that happens to carry
+/// the same id.
+///
+/// # Errors
+///
+/// [`ResolveError`] — see its variants, exactly as [`resolve`] reports them.
+pub fn resolve_on(
+    target: &str,
+    own_session: &str,
+    dir: &Path,
+) -> Result<(Resolved, ServerId), ResolveError> {
     let (server, pane, agent) = match lookup(target, own_session)? {
         Lookup::Pane(pane) => {
             // A raw pane id is an unambiguous address on its own server, so there
@@ -494,15 +512,18 @@ pub fn resolve(target: &str, own_session: &str, dir: &Path) -> Result<Resolved, 
         }
     };
     let observed = transport::observe_viewer(&server, &pane).unwrap_or_default();
-    Ok(Resolved {
-        pane,
-        agent,
-        slot: observed
-            .slot
-            .filter(|slot| is_slot(slot))
-            .unwrap_or_default(),
-        session: observed.session.unwrap_or_default(),
-    })
+    Ok((
+        Resolved {
+            pane,
+            agent,
+            slot: observed
+                .slot
+                .filter(|slot| is_slot(slot))
+                .unwrap_or_default(),
+            session: observed.session.unwrap_or_default(),
+        },
+        server,
+    ))
 }
 
 /// The server for reading a RAW PANE target's stamps: the caller session's
@@ -666,12 +687,6 @@ pub struct Sender {
 /// event.
 const SEND_HELPER: &str = "send";
 
-/// The internal delivery-only entry to the send body: pastes, stores the
-/// recovery file and prints its path; never emits. Generated beside `send` by
-/// the same ae that bound this core, so a session whose helpers predate it is
-/// repaired by `ae doctor --refresh`.
-pub(crate) const DELIVER_HELPER: &str = "_send-deliver";
-
 /// Run a tracked request end to end. `own_session` is the session the helper
 /// serves — the one source for the event's `actor_session`, the resolver's
 /// notion of "here" AND the caller's display ref, so the three can never
@@ -697,6 +712,7 @@ pub fn run(
     own_session: &str,
     now: Timestamp,
     entropy: u64,
+    defer: std::time::Duration,
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> io::Result<u8> {
@@ -740,7 +756,7 @@ pub fn run(
         }
         return Ok(0);
     }
-    let resolved = match resolve(&parsed.target, own_session, dir) {
+    let (resolved, server) = match resolve_on(&parsed.target, own_session, dir) {
         Ok(resolved) => resolved,
         Err(why) => {
             writeln!(err, "{}", why.message())?;
@@ -754,18 +770,30 @@ pub fn run(
     };
     let reply_cmd = reply_command(dir, &target_name, &req_id, kind.reply_label());
     let message = compose(kind, &req_id, &sender.display, &parsed.body, &reply_cmd);
-    // The action and ref name the recovery file the body store writes.
-    let helper = dir.join(DELIVER_HELPER);
-    let delivery = transport::deliver(
-        &helper,
-        &target_name,
-        &message,
-        &[("_AE_EVENT_ACTION", action), ("_AE_EVENT_REF", &req_id)],
-    );
-    if delivery.code != Some(0) {
-        return delivery_code(&delivery, &helper, action, err);
-    }
-    let body_file = delivery.stdout.trim_end_matches('\n');
+    // The action and ref name the recovery file the body store writes; the
+    // envelope names the same VERIFIED sender the composed message and the
+    // event do, so a request cannot be framed as coming from someone else.
+    let request = crate::deliver::Request {
+        dir,
+        server: &server,
+        pane: &resolved.pane,
+        logged_target: &target_name,
+        target_session: &resolved.session,
+        pane_slot: &resolved.slot,
+        own_session,
+        action,
+        reference: &req_id,
+        actor: &sender.display,
+        body: &message,
+        shape: crate::deliver::Shape::Send,
+        defer,
+    };
+    let Ok(delivered) = crate::deliver::deliver(&request, err)? else {
+        // Every arm of a refused delivery has already said what happened and
+        // where the body is; nothing is recorded for one.
+        return Ok(EXIT_FAILED);
+    };
+    let body_file = delivered.body_file.as_str();
     let line = event_line(&EventFields {
         ts: now,
         actor: &sender.display,

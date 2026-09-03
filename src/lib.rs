@@ -67,6 +67,7 @@ pub mod attention;
 pub mod cli;
 mod compact;
 pub mod config;
+pub mod deliver;
 pub mod digest;
 pub mod error;
 pub mod event_text;
@@ -76,6 +77,7 @@ pub mod filters;
 pub mod git;
 pub mod goal;
 pub mod identity;
+pub mod interrupt;
 pub mod inventory;
 pub mod json;
 pub mod launch_cmd;
@@ -429,6 +431,7 @@ fn run_tracked(
         &own_session(dir),
         time::Timestamp::now(),
         entropy(),
+        send_defer(),
         out,
         err,
     )?;
@@ -445,6 +448,20 @@ fn sender_override() -> Option<String> {
     let raw = std::env::var_os("AE_SENDER_OVERRIDE");
     raw.filter(|value| !value.is_empty())
         .map(|value| value.to_string_lossy().into_owned())
+}
+
+/// `AE_SEND_DEFER_SEC`: how long a send waits for a busy target before it
+/// abandons. The frozen body's `[[ $x =~ ^[0-9]+$ ]] || x=30` — a value that
+/// is not a plain decimal is the default, not an error, because a typo in an
+/// exported tunable must not stop delivery.
+fn send_defer() -> std::time::Duration {
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: the frozen AE_SEND_DEFER_SEC tunable of the send body — see clippy.toml"
+    )]
+    let raw = std::env::var_os("AE_SEND_DEFER_SEC");
+    raw.and_then(|value| value.to_str().and_then(|text| text.parse::<u64>().ok()))
+        .map_or(deliver::DEFAULT_DEFER, std::time::Duration::from_secs)
 }
 
 /// The frozen event-field contract of the send body, read off this process's
@@ -819,6 +836,14 @@ pub fn run_with(
         cli::Request::Goal { dir, tail } => run_goal(dir, tail, out, err)?,
         cli::Request::Memo { dir, tail } => run_memo(dir, tail, out, err)?,
         cli::Request::Ask { dir, tail } => run_tracked(tracked::Kind::Ask, dir, tail, out, err)?,
+        cli::Request::Interrupt { dir, tail } => interrupt::run(
+            dir,
+            tail,
+            &calling_viewer(dir).display,
+            &own_session(dir),
+            time::Timestamp::now(),
+            err,
+        )?,
         cli::Request::Send { dir, tail } => send::run(
             dir,
             tail,
@@ -826,6 +851,7 @@ pub fn run_with(
             &calling_viewer(dir).display,
             &own_session(dir),
             time::Timestamp::now(),
+            send_defer(),
             err,
         )?,
         cli::Request::Reply { dir, tail } => reply::run(
@@ -834,6 +860,7 @@ pub fn run_with(
             calling_pane(dir).as_ref(),
             &own_session(dir),
             time::Timestamp::now(),
+            send_defer(),
             err,
         )?,
         cli::Request::Review { dir, tail } => {

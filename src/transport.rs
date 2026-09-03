@@ -223,6 +223,7 @@ pub fn deliver(
         &args,
         envs,
         Streams::InheritStderr,
+        None,
     ) {
         Some(output) => Delivery {
             code: output.status.code(),
@@ -311,6 +312,7 @@ fn spawn<A: AsRef<std::ffi::OsStr>>(
     args: &[A],
     envs: &[(&str, &str)],
     streams: Streams,
+    feed: Option<&[u8]>,
 ) -> Option<std::process::Output> {
     let mut command = std::process::Command::new(program);
     command.args(args);
@@ -328,7 +330,26 @@ fn spawn<A: AsRef<std::ffi::OsStr>>(
             stderr: Vec::new(),
         });
     }
-    command.output().ok()
+    let Some(bytes) = feed else {
+        return command.output().ok();
+    };
+    // THE BODY GOES IN ON STDIN, NOT IN ARGV. `tmux load-buffer -` is the one
+    // call that needs it, and the reason is measured: `set-buffer -- "$msg"`
+    // carried 16000 bytes and failed at 32000, `load-buffer -` carried 131000.
+    //
+    // Writing to a child while capturing its output can deadlock in general.
+    // It cannot here: `load-buffer` prints nothing, so no pipe this end owns
+    // can fill while the write is in flight, and the handle is DROPPED before
+    // the wait so the child sees EOF. A write that fails (the child died) is
+    // not fatal on its own — the exit status still decides, exactly as it does
+    // for every other call through this door.
+    command.stdin(std::process::Stdio::piped());
+    command.stdout(std::process::Stdio::piped());
+    let mut child = command.spawn().ok()?;
+    if let Some(mut sink) = child.stdin.take() {
+        let _wrote = std::io::Write::write_all(&mut sink, bytes);
+    }
+    child.wait_with_output().ok()
 }
 
 /// How the door wires a child's streams — and therefore what it can report.
@@ -350,7 +371,7 @@ enum Streams {
 }
 
 fn run(program: &str, args: &[String]) -> (bool, String) {
-    match spawn(program, args, &[], Streams::Captured) {
+    match spawn(program, args, &[], Streams::Captured, None) {
         Some(output) => (
             output.status.success(),
             String::from_utf8_lossy(&output.stdout).into_owned(),
@@ -366,7 +387,7 @@ fn run(program: &str, args: &[String]) -> (bool, String) {
 /// other failure (unproven). Everywhere else stderr is noise and [`run`] drops
 /// it; here it carries the SC-017l distinction.
 fn run_captured(program: &str, args: &[String]) -> (bool, String, String) {
-    match spawn(program, args, &[], Streams::Captured) {
+    match spawn(program, args, &[], Streams::Captured, None) {
         Some(output) => (
             output.status.success(),
             String::from_utf8_lossy(&output.stdout).into_owned(),
@@ -394,7 +415,7 @@ fn run_captured(program: &str, args: &[String]) -> (bool, String, String) {
 /// `tests/it/parity_self_test.rs`) is defence in depth, so this fixed-program
 /// leg cannot quietly become a general spawner.
 pub(crate) fn run_git(argv: &crate::git::GitArgv) -> (bool, String) {
-    match spawn("git", argv.as_os_args(), &[], Streams::Captured) {
+    match spawn("git", argv.as_os_args(), &[], Streams::Captured, None) {
         Some(output) => (
             output.status.success(),
             String::from_utf8_lossy(&output.stdout).into_owned(),
@@ -426,6 +447,7 @@ pub(crate) fn run_ae(
         argv.as_args(),
         envs,
         Streams::Captured,
+        None,
     ) {
         Some(output) => (
             output.status.success(),
@@ -449,7 +471,7 @@ pub(crate) fn run_ae(
 /// `run_ps_has_exactly_one_product_caller` in `tests/it/parity_self_test.rs` is
 /// defence in depth, so this leg cannot quietly become a general spawner.
 pub(crate) fn run_ps(argv: &crate::procs::PsArgv) -> (bool, String) {
-    match spawn("ps", argv.as_args(), &[], Streams::Captured) {
+    match spawn("ps", argv.as_args(), &[], Streams::Captured, None) {
         Some(output) => (
             output.status.success(),
             String::from_utf8_lossy(&output.stdout).into_owned(),
@@ -651,7 +673,7 @@ pub fn focus(server: &ServerId, verb: tmux::FocusVerb, session: &str) -> u8 {
         return FOCUS_FAILED;
     }
     let args = tmux::focus_args(server, verb, session);
-    match spawn(PROGRAM, &args, &[], Streams::Terminal) {
+    match spawn(PROGRAM, &args, &[], Streams::Terminal, None) {
         Some(output) => output
             .status
             .code()
@@ -663,6 +685,91 @@ pub fn focus(server: &ServerId, verb: tmux::FocusVerb, session: &str) -> u8 {
 
 /// What a focus that never ran reports — `127`, the shell's command-not-found.
 pub const FOCUS_FAILED: u8 = 127;
+
+// ---------------------------------------------------------------------------
+// Pane DELIVERY — the paste path's runs (B move 1).
+//
+// Each is one derived argument list handed to the door and one completed run
+// handed back. The ones that WRITE report a bool, because tmux's exit status
+// is the only honest answer to "did the server take it": a paste that could
+// not be staged and a paste that vanished are the same empty screen, and the
+// frozen body shipped a bug for exactly that reason (a failed `set-buffer`
+// left an empty input box that the staged-check read as a successful submit).
+// ---------------------------------------------------------------------------
+
+/// What `pane` is running and under which pid, or `None` when the read failed.
+///
+/// A pane that cannot be read is NOT a pane running a shell: the dead-pane
+/// guard fails OPEN on `None`, so an unreadable pane is delivered to rather
+/// than refused.
+#[must_use]
+pub fn observe_pane_probe(server: &ServerId, pane: &str) -> Option<tmux::ObservedPaneProbe> {
+    if !addressable(server) {
+        return None;
+    }
+    let (succeeded, stdout) = run(PROGRAM, &tmux::pane_probe_args(server, pane));
+    tmux::interpret_pane_probe(succeeded, &stdout)
+}
+
+/// `pane`'s visible screen, or `None` when the capture failed.
+///
+/// The distinction is load-bearing in BOTH directions and the two consumers
+/// resolve it oppositely: an unreadable region is UNSAFE to the pre-paste
+/// guard (defer, never clobber) and CLEAR to the post-submit check (never
+/// duplicate an already-sent message). Collapsing `None` into an empty string
+/// here would pick one of those for both.
+#[must_use]
+pub fn capture_screen(server: &ServerId, pane: &str, styling: tmux::Styling) -> Option<String> {
+    if !addressable(server) {
+        return None;
+    }
+    let (succeeded, stdout) = run(PROGRAM, &tmux::capture_screen_args(server, pane, styling));
+    succeeded.then_some(stdout)
+}
+
+/// Stage `bytes` in `server`'s buffer `buffer`, on STDIN. Whether it took.
+#[must_use]
+pub fn load_buffer(server: &ServerId, buffer: &str, bytes: &[u8]) -> bool {
+    if !addressable(server) {
+        return false;
+    }
+    let args = tmux::load_buffer_args(server, buffer);
+    spawn(PROGRAM, &args, &[], Streams::Captured, Some(bytes))
+        .is_some_and(|output| output.status.success())
+}
+
+/// Paste `buffer` into `pane`, bracketed, deleting the buffer. Whether it took.
+#[must_use]
+pub fn paste_buffer(server: &ServerId, buffer: &str, pane: &str) -> bool {
+    write_run(server, &tmux::paste_buffer_args(server, buffer, pane))
+}
+
+/// Drop a staged buffer that was never pasted. Whether it took.
+#[must_use]
+pub fn delete_buffer(server: &ServerId, buffer: &str) -> bool {
+    write_run(server, &tmux::delete_buffer_args(server, buffer))
+}
+
+/// Send one key to `pane` WITHOUT selecting it. Whether it took.
+#[must_use]
+pub fn send_key(server: &ServerId, pane: &str, key: tmux::Key) -> bool {
+    write_run(server, &tmux::send_keys_args(server, pane, key))
+}
+
+/// Every attached client's viewed pane and last-input epoch, or `None`.
+#[must_use]
+pub fn observe_clients(server: &ServerId) -> Option<Vec<tmux::ObservedClient>> {
+    if !addressable(server) {
+        return None;
+    }
+    let (succeeded, stdout) = run(PROGRAM, &tmux::list_clients_args(server));
+    tmux::interpret_clients(succeeded, &stdout)
+}
+
+/// A write whose only answer is its exit status.
+fn write_run(server: &ServerId, args: &[String]) -> bool {
+    addressable(server) && run(PROGRAM, args).0
+}
 
 #[cfg(test)]
 mod tests {

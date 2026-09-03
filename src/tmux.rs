@@ -1138,8 +1138,338 @@ pub fn interpret_window_panes(succeeded: bool, stdout: &str) -> Option<Vec<Windo
     )
 }
 
+// ---------------------------------------------------------------------------
+// Pane DELIVERY — the paste path's argv (B move 1).
+//
+// The frozen `helper_send_body` ran these by hand through the ambient `tmux`.
+// Here they are derived the way every other argument list in this module is:
+// the server is a typed parameter, so a cross-session target is addressed on
+// the server its own record names rather than on whichever one the caller's
+// environment happened to select. Nothing below interprets pane bytes — that
+// is `crate::deliver::region`'s job, and it is kept apart for the same reason
+// the interpreters above are kept apart from the builders.
+// ---------------------------------------------------------------------------
+
+/// What a pane is running and under which process — `pane_current_command`
+/// for the tool model, `pane_pid` for the dead-pane walk.
+///
+/// One `display-message` rather than two: the frozen body asked twice and
+/// could observe a pane between the answers.
+pub const PANE_PROBE_FORMAT: &str = "#{pane_current_command}\u{1f}#{pane_pid}";
+
+/// The number of fields [`PANE_PROBE_FORMAT`] renders.
+const PANE_PROBE_FIELDS: usize = 2;
+
+/// The readings of [`PANE_PROBE_FORMAT`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ObservedPaneProbe {
+    /// `#{pane_current_command}`, empty when tmux rendered nothing.
+    pub command: String,
+    /// `#{pane_pid}`, `None` when it was not a decimal number.
+    pub pid: Option<u32>,
+}
+
+/// The full argument list for one pane's [`PANE_PROBE_FORMAT`] readings.
+#[must_use]
+pub fn pane_probe_args(server: &ServerId, pane: &str) -> Vec<String> {
+    let mut args = server_args(server);
+    args.extend(["display-message", "-p", "-t", pane, PANE_PROBE_FORMAT].map(ToOwned::to_owned));
+    args
+}
+
+/// What a completed [`pane_probe_args`] run means. A failed run is `None` —
+/// a pane that cannot be read is not a pane running a shell.
+#[must_use]
+pub fn interpret_pane_probe(succeeded: bool, stdout: &str) -> Option<ObservedPaneProbe> {
+    if !succeeded {
+        return None;
+    }
+    let line = stdout.lines().next()?;
+    let fields: Vec<&str> = line.split('\u{1f}').collect();
+    if fields.len() != PANE_PROBE_FIELDS {
+        return None;
+    }
+    Some(ObservedPaneProbe {
+        command: fields[0].to_owned(),
+        pid: fields[1].parse().ok(),
+    })
+}
+
+/// Whether a capture keeps the pane's styling.
+///
+/// The two readers want different bytes and neither tolerates the other's:
+/// the start-up marker scan matches ROWS the TUI drew, and SGR between the
+/// column-0 anchor and the text would break every one of its patterns; the
+/// occupancy sensor decides `live prompt` versus `submitted echo` from the SGR
+/// state alone and is blind without it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Styling {
+    /// `capture-pane -p` — printable text only.
+    Plain,
+    /// `capture-pane -e -p -S 0` — SGR preserved, from the top of the visible
+    /// pane. NOT `-J`: joining wrapped rows would erase the two-space
+    /// continuation indent the notice proof reconstructs from.
+    Escapes,
+}
+
+/// The full argument list for capturing `pane`'s visible screen.
+#[must_use]
+pub fn capture_screen_args(server: &ServerId, pane: &str, styling: Styling) -> Vec<String> {
+    let mut args = server_args(server);
+    args.push("capture-pane".to_owned());
+    if styling == Styling::Escapes {
+        args.push("-e".to_owned());
+    }
+    args.push("-p".to_owned());
+    if styling == Styling::Escapes {
+        args.push("-S".to_owned());
+        args.push("0".to_owned());
+    }
+    args.push("-t".to_owned());
+    args.push(pane.to_owned());
+    args
+}
+
+/// The full argument list for staging a message in buffer `buffer`.
+///
+/// `-` is the buffer's SOURCE: the bytes arrive on stdin, never in argv.
+/// Measured 2026-08-15: `set-buffer -- "$msg"` carried 16000 bytes and FAILED
+/// at 32000, while `load-buffer -` carried 131000. The ceiling was not the
+/// worst of it — a failed `set-buffer` pasted nothing, the input box read
+/// empty, and the staged-check called that a successful submit.
+#[must_use]
+pub fn load_buffer_args(server: &ServerId, buffer: &str) -> Vec<String> {
+    let mut args = server_args(server);
+    args.extend(["load-buffer", "-b", buffer, "-"].map(ToOwned::to_owned));
+    args
+}
+
+/// The full argument list for pasting `buffer` into `pane` and deleting it.
+///
+/// `-p` REQUESTS bracketed paste. tmux wraps the paste in bracket controls
+/// only when the receiving application enabled that mode, so a tool that never
+/// asked sees a plain paste and nothing is lost by asking. Measured 2026-08-30
+/// on claude: plain paste lost the head in 4/4 trials, bracketed 0/6 with
+/// receiver-side byte-exact payloads.
+///
+/// `-d` deletes the buffer after the paste, so a body never outlives its
+/// delivery in the server's buffer stack.
+#[must_use]
+pub fn paste_buffer_args(server: &ServerId, buffer: &str, pane: &str) -> Vec<String> {
+    let mut args = server_args(server);
+    args.extend(["paste-buffer", "-d", "-p", "-b", buffer, "-t", pane].map(ToOwned::to_owned));
+    args
+}
+
+/// The full argument list for dropping a staged buffer that was never pasted.
+#[must_use]
+pub fn delete_buffer_args(server: &ServerId, buffer: &str) -> Vec<String> {
+    let mut args = server_args(server);
+    args.extend(["delete-buffer", "-b", buffer].map(ToOwned::to_owned));
+    args
+}
+
+/// A keystroke the delivery path sends — the closed set, so no caller can
+/// name a key of its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Key {
+    /// Submit.
+    Enter,
+    /// `Escape` — the interrupt's second cancel, for a TUI with no copy mode
+    /// to leave.
+    Escape,
+    /// `C-u` — clear the input line, the notice path's one measurable retry.
+    ClearLine,
+    /// `-X cancel` — leave copy mode. A COMMAND, not a key, and it is why
+    /// this is an enum: `send-keys -X` and `send-keys` take different argv.
+    CancelCopyMode,
+}
+
+/// The full argument list for sending one [`Key`] to `pane`.
+///
+/// `-t` addresses the pane WITHOUT selecting it. The frozen body's rule, and
+/// load-bearing: `select-pane` here changed the window's active pane and routed
+/// the human's in-flight keystrokes into the target mid-send.
+#[must_use]
+pub fn send_keys_args(server: &ServerId, pane: &str, key: Key) -> Vec<String> {
+    let mut args = server_args(server);
+    args.extend(["send-keys", "-t", pane].map(ToOwned::to_owned));
+    match key {
+        Key::Enter => args.push("Enter".to_owned()),
+        Key::Escape => args.push("Escape".to_owned()),
+        Key::ClearLine => args.push("C-u".to_owned()),
+        Key::CancelCopyMode => {
+            args.push("-X".to_owned());
+            args.push("cancel".to_owned());
+        }
+    }
+    args
+}
+
+/// Each attached client's own active pane and the epoch of its last input.
+///
+/// `#{pane_id}` on a CLIENT is the pane that client is looking at — stronger
+/// than `#{pane_active}`, which only means active-in-window.
+pub const CLIENT_FORMAT: &str = "#{pane_id}\u{1f}#{client_activity}";
+
+/// The number of fields [`CLIENT_FORMAT`] renders.
+const CLIENT_FIELDS: usize = 2;
+
+/// One attached client's [`CLIENT_FORMAT`] readings.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObservedClient {
+    /// The pane this client is viewing.
+    pub pane: String,
+    /// The epoch of its last input, or `None` when it was not a number.
+    pub activity: Option<u64>,
+}
+
+/// The full argument list for listing `server`'s attached clients.
+#[must_use]
+pub fn list_clients_args(server: &ServerId) -> Vec<String> {
+    let mut args = server_args(server);
+    args.extend(["list-clients", "-F", CLIENT_FORMAT].map(ToOwned::to_owned));
+    args
+}
+
+/// What a completed [`list_clients_args`] run means.
+///
+/// A failed run is `None` — no client was observed, which the caller reads as
+/// "no human proven present" rather than as "nobody is there". The frozen body
+/// made the same choice with `|| true`, and it is the SAFE direction only
+/// because the busy predicate, not this, is the primary guard.
+#[must_use]
+pub fn interpret_clients(succeeded: bool, stdout: &str) -> Option<Vec<ObservedClient>> {
+    if !succeeded {
+        return None;
+    }
+    Some(
+        stdout
+            .lines()
+            .filter(|line| !line.is_empty())
+            .filter_map(|line| {
+                let fields: Vec<&str> = line.split('\u{1f}').collect();
+                if fields.len() != CLIENT_FIELDS {
+                    return None;
+                }
+                Some(ObservedClient {
+                    pane: fields[0].to_owned(),
+                    activity: fields[1].parse().ok(),
+                })
+            })
+            .collect(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
+    use super::{
+        CLIENT_FORMAT, Key, ObservedClient, ObservedPaneProbe, PANE_PROBE_FORMAT, Styling,
+        capture_screen_args, interpret_clients, interpret_pane_probe, list_clients_args,
+        load_buffer_args, pane_probe_args, paste_buffer_args, send_keys_args,
+    };
+
+    #[test]
+    fn the_delivery_argv_addresses_the_named_pane_and_never_selects_it() {
+        let sock = ServerId::Selected(Selector::Socket(std::path::PathBuf::from("/tmp/s")));
+        assert_eq!(
+            pane_probe_args(&ServerId::Ambient, "%3"),
+            vec!["display-message", "-p", "-t", "%3", PANE_PROBE_FORMAT]
+        );
+        assert_eq!(
+            capture_screen_args(&ServerId::Ambient, "%3", Styling::Plain),
+            vec!["capture-pane", "-p", "-t", "%3"],
+            "the start-up marker scan wants the rows the TUI drew, unstyled"
+        );
+        assert_eq!(
+            capture_screen_args(&ServerId::Ambient, "%3", Styling::Escapes),
+            vec!["capture-pane", "-e", "-p", "-S", "0", "-t", "%3"],
+            "the occupancy sensor decides live-vs-echo from SGR state alone"
+        );
+        assert_eq!(
+            load_buffer_args(&sock, "b"),
+            vec!["-S", "/tmp/s", "load-buffer", "-b", "b", "-"],
+            "`-` is the SOURCE: the bytes ride stdin, never argv"
+        );
+        assert_eq!(
+            paste_buffer_args(&ServerId::Ambient, "b", "%3"),
+            vec!["paste-buffer", "-d", "-p", "-b", "b", "-t", "%3"],
+            "-p REQUESTS bracketing; -d leaves no body in the buffer stack"
+        );
+        assert_eq!(
+            send_keys_args(&ServerId::Ambient, "%3", Key::Enter),
+            vec!["send-keys", "-t", "%3", "Enter"]
+        );
+        assert_eq!(
+            send_keys_args(&ServerId::Ambient, "%3", Key::ClearLine),
+            vec!["send-keys", "-t", "%3", "C-u"]
+        );
+        assert_eq!(
+            send_keys_args(&ServerId::Ambient, "%3", Key::Escape),
+            vec!["send-keys", "-t", "%3", "Escape"]
+        );
+        assert_eq!(
+            send_keys_args(&ServerId::Ambient, "%3", Key::CancelCopyMode),
+            vec!["send-keys", "-t", "%3", "-X", "cancel"],
+            "a COMMAND, not a key — which is why the set is an enum"
+        );
+        assert_eq!(
+            list_clients_args(&ServerId::Ambient),
+            vec!["list-clients", "-F", CLIENT_FORMAT]
+        );
+        assert!(
+            !send_keys_args(&ServerId::Ambient, "%3", Key::Enter)
+                .iter()
+                .any(|arg| arg == "select-pane"),
+            "focus is not part of any TUI's submission contract"
+        );
+    }
+
+    #[test]
+    fn a_pane_probe_is_read_only_from_a_run_that_succeeded() {
+        assert_eq!(interpret_pane_probe(false, "claude\u{1f}123\n"), None);
+        assert_eq!(
+            interpret_pane_probe(true, "claude\u{1f}123\n"),
+            Some(ObservedPaneProbe {
+                command: "claude".into(),
+                pid: Some(123)
+            })
+        );
+        assert_eq!(
+            interpret_pane_probe(true, "bash\u{1f}not-a-pid\n"),
+            Some(ObservedPaneProbe {
+                command: "bash".into(),
+                pid: None
+            }),
+            "an unreadable pid is no pid, not no pane"
+        );
+        assert_eq!(interpret_pane_probe(true, "only-one-field\n"), None);
+        assert_eq!(interpret_pane_probe(true, ""), None);
+    }
+
+    #[test]
+    fn clients_report_the_pane_each_is_viewing_and_when_it_last_typed() {
+        assert_eq!(interpret_clients(false, "%1\u{1f}100\n"), None);
+        assert_eq!(
+            interpret_clients(true, "%1\u{1f}100\n%2\u{1f}nope\n\n"),
+            Some(vec![
+                ObservedClient {
+                    pane: "%1".into(),
+                    activity: Some(100)
+                },
+                ObservedClient {
+                    pane: "%2".into(),
+                    activity: None
+                }
+            ])
+        );
+        assert_eq!(
+            interpret_clients(true, ""),
+            Some(Vec::new()),
+            "no clients attached is an ANSWER; a failed run is not"
+        );
+    }
+
     #[test]
     fn the_format_escape_doubles_hash_then_percent() {
         use super::format_literal;

@@ -1,6 +1,6 @@
 //! The public `send` helper (P2.6): the chokepoint every other helper and
-//! several `ae`-internal paths exec into, now created and delivered by the
-//! core with the paste left to the frozen body behind `_send-deliver`.
+//! several `ae`-internal paths exec into, composed, DELIVERED and recorded by
+//! the core — the paste included, since B move 1 ([`crate::deliver`]).
 //!
 //! What the frozen `helper_send_body` does around the paste, kept exactly.
 //! `send <target> <message…>`: fewer than two words is usage; a blank message
@@ -22,30 +22,30 @@
 //! frozen body reassigns `msg` to the framed text — provenance envelope,
 //! newline, message — before its finisher runs, so the envelope leads a pane
 //! send's summary and counts against its cap, while a sink's is recorded
-//! before framing and stays bare. See [`delivered_summary`]. The text is
+//! before framing and stays bare. The framed text now comes back from the
+//! delivery in hand rather than being read out of the record it wrote. See
+//! [`delivered_summary`]. The text is
 //! handed raw to [`crate::tracked::event_line`], which renders it for the
 //! action as the frozen emitter's two arms do — flattened and capped at 200,
 //! or, under `_AE_EVENT_ACTION=chat`, lines and tabs kept under the 3500 cap.
 //!
 //! An external sink (`telegram:*`, `discord:*`, `ae:compact:*`) is event-only.
-//! Any other target is resolved as `ae_resolve` resolves it, and the message
-//! is pasted by the session's `_send-deliver` entry — dead-pane guard,
-//! provenance envelope (which takes the same `AE_SENDER_OVERRIDE`, handed on
-//! explicitly when set), per-target lock, busy deferral, submit verification,
-//! body store — whose stderr reaches the caller verbatim and whose non-zero
-//! status is the caller's, with NOTHING recorded. Only a confirmed delivery
-//! is followed by the ONE event, under [`crate::state::emit`]'s locked,
-//! synced transaction; an event that could not be written after a confirmed
-//! delivery is reported as exactly that gap and exits non-zero — and because
-//! the shim in the helper `exec`s the core, there is no bash body left to
-//! re-deliver.
+//! Any other target is resolved as `ae_resolve` resolves it and delivered by
+//! [`crate::deliver`] — dead-pane guard, provenance envelope (which takes the
+//! same `AE_SENDER_OVERRIDE` when it is set), body store, per-target lock,
+//! busy deferral, submit verification — which prints every loud line itself
+//! and records NOTHING. Only a confirmed delivery is followed by the ONE
+//! event, under [`crate::state::emit`]'s locked, synced transaction; an event
+//! that could not be written after a confirmed delivery is reported as
+//! exactly that gap and exits non-zero — and because the shim in the helper
+//! `exec`s the core, there is no bash body left to re-deliver.
 use std::io::{self, Write};
 use std::path::Path;
 
+use crate::deliver;
 use crate::state::{self, EXIT_FAILED, EXIT_USAGE};
 use crate::time::Timestamp;
 use crate::tracked::{self, EventFields};
-use crate::transport;
 
 /// The frozen usage text.
 pub const USAGE: &str = "Usage: send <agent-name|pane-id|@session:agent> <message>\n  Examples: send claude:lead \"hello\"\n           send @my-feature:claude:lead \"hello\"\n";
@@ -150,6 +150,31 @@ pub fn actor(env: &Env, display: &str) -> String {
     }
 }
 
+/// Who the provenance ENVELOPE names — the explicit override, else the pane's
+/// verified stamp, else nobody.
+///
+/// Deliberately NOT [`actor`], whose `human` fallback belongs to the EVENT.
+/// The envelope's blank is `unverified`, because bare is the human's signature:
+/// they type raw and never mark anything, so a helper-delivered message that
+/// could not bind its caller must be marked unverified rather than promoted to
+/// look like the human. That asymmetry is the whole authority model.
+///
+/// ```
+/// use ae::send::{Env, envelope_sender};
+///
+/// let bridge = Env { sender_override: Some("telegram".into()), ..Env::default() };
+/// assert_eq!(envelope_sender(&bridge, "cl:lead"), "telegram");
+/// assert_eq!(envelope_sender(&Env::default(), "cl:lead"), "cl:lead");
+/// assert_eq!(envelope_sender(&Env::default(), ""), "", "no claim to make");
+/// ```
+#[must_use]
+pub fn envelope_sender<'a>(env: &'a Env, display: &'a str) -> &'a str {
+    match env.sender_override.as_deref() {
+        Some(name) if !name.is_empty() => name,
+        _ => display,
+    }
+}
+
 /// The event's action, ref and summary, resolved from the environment and
 /// the message the way the frozen body resolves them BEFORE the paste — the
 /// shape a sink records. A pane send re-derives its summary from the delivery
@@ -190,39 +215,23 @@ pub fn fields(env: &Env, message: &str) -> (String, String, String) {
 /// nothing when the messages directory cannot be written), the summary is of
 /// the message as typed and stderr says so: a summary is not worth losing
 /// the record of a delivered message over.
-fn delivered_summary(
-    env: &Env,
-    body_file: &str,
-    message: &str,
-    action: &str,
-    target: &str,
-    err: &mut impl Write,
-) -> io::Result<String> {
-    if let Some(explicit) = env.summary.as_deref().filter(|value| !value.is_empty()) {
-        return Ok(explicit.to_owned());
+fn delivered_summary(env: &Env, framed: &str) -> String {
+    match env.summary.as_deref().filter(|value| !value.is_empty()) {
+        Some(explicit) => explicit.to_owned(),
+        None => framed.to_owned(),
     }
-    let why = if body_file.is_empty() {
-        "no recovery record was written".to_owned()
-    } else {
-        let delivered = crate::event_text::read_container(Path::new(body_file));
-        if delivered.is_empty() {
-            format!("recovery record {body_file} could not be read")
-        } else {
-            return Ok(String::from_utf8_lossy(&delivered).into_owned());
-        }
-    };
-    writeln!(
-        err,
-        "ae: {action} to {target}: {why}; the summary is of the message as typed"
-    )?;
-    Ok(message.to_owned())
 }
 
-/// The environment handed to `_send-deliver`: the action and ref the body
-/// store names the recovery file after (the ref only when there is one — an
-/// empty variable would read as none anyway), and the caller's explicit
-/// override when it gave one, so the envelope names the same actor the event
-/// does. Nothing else: the body's own provenance reading is the pane's.
+/// The environment a delivery that still runs a HELPER is given: the action
+/// and ref the body store names the recovery file after (the ref only when
+/// there is one — an empty variable would read as none anyway), and the
+/// caller's explicit override when it gave one, so the envelope names the same
+/// actor the event does. Nothing else.
+///
+/// Since B move 1 the core pastes for itself, so this is no longer on the
+/// `send` path; it is kept because the no-identity fallback and the watchdog
+/// still exec the public helper, and because the variables it names are the
+/// frozen contract any future helper caller writes.
 #[must_use]
 pub fn delivery_env<'a>(
     env: &'a Env,
@@ -244,12 +253,16 @@ pub fn delivery_env<'a>(
 }
 
 /// Send end to end. `display` is the calling pane's display ref (empty for
-/// none); `own_session` is this session's name as P2.1b derives it. Nothing
-/// is printed on success.
+/// none); `own_session` is this session's name as P2.1b derives it; `defer`
+/// is `AE_SEND_DEFER_SEC`. Nothing is printed on success.
 ///
 /// # Errors
 ///
 /// Only a failure to write `err`.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the frozen helper's inputs, spelled out rather than bundled"
+)]
 pub fn run(
     dir: &Path,
     tail: &[String],
@@ -257,6 +270,7 @@ pub fn run(
     display: &str,
     own_session: &str,
     now: Timestamp,
+    defer: std::time::Duration,
     err: &mut impl Write,
 ) -> io::Result<u8> {
     let Ok(parsed) = parse(tail) else {
@@ -291,7 +305,7 @@ pub fn run(
         }
         return Ok(0);
     }
-    let resolved = match tracked::resolve(&parsed.target, own_session, dir) {
+    let (resolved, server) = match tracked::resolve_on(&parsed.target, own_session, dir) {
         Ok(resolved) => resolved,
         Err(why) => {
             writeln!(err, "{}", why.message())?;
@@ -303,20 +317,29 @@ pub fn run(
     } else {
         resolved.agent.clone()
     };
-    let helper = dir.join(tracked::DELIVER_HELPER);
-    let delivery = transport::deliver(
-        &helper,
-        &target_name,
-        &parsed.message,
-        &delivery_env(env, &action, &reference),
-    );
-    if delivery.code != Some(0) {
-        return tracked::delivery_code(&delivery, &helper, &action, err);
-    }
-    let body_file = delivery.stdout.trim_end_matches('\n');
-    let recorded = delivered_summary(env, body_file, &parsed.message, &action, &target_name, err)?;
+    let request = deliver::Request {
+        dir,
+        server: &server,
+        pane: &resolved.pane,
+        logged_target: &target_name,
+        target_session: &resolved.session,
+        pane_slot: &resolved.slot,
+        own_session,
+        action: &action,
+        reference: &reference,
+        actor: envelope_sender(env, display),
+        body: &parsed.message,
+        shape: deliver::Shape::Send,
+        defer,
+    };
+    let Ok(delivered) = deliver::deliver(&request, err)? else {
+        // Every arm of a refused delivery has already said what happened and
+        // where the body is; nothing is recorded for one.
+        return Ok(EXIT_FAILED);
+    };
+    let recorded = delivered_summary(env, &delivered.framed);
     event.target = &target_name;
-    event.body_file = body_file;
+    event.body_file = &delivered.body_file;
     event.summary = &recorded;
     if let Err(why) = state::emit(dir, &tracked::event_line(&event)) {
         writeln!(
@@ -331,7 +354,8 @@ pub fn run(
 #[cfg(test)]
 mod tests {
     use super::{
-        Env, Parsed, Usage, actor, delivered_summary, delivery_env, extract_req_id, fields, parse,
+        Env, Parsed, Usage, actor, delivered_summary, delivery_env, envelope_sender,
+        extract_req_id, fields, parse,
     };
 
     fn words(items: &[&str]) -> Vec<String> {
@@ -460,58 +484,59 @@ mod tests {
     }
 
     #[test]
-    fn the_summary_is_of_the_delivered_text_and_says_so_when_there_is_none() {
-        let dir = std::env::temp_dir().join(format!("ae-send-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let record = dir.join("ae-1.send.txt");
-        std::fs::write(&record, "⟦ae:msg from cl:lead⟧\nhello\tthere").unwrap();
-        let record = record.to_str().unwrap();
-        let env = Env::default();
-        let mut err = Vec::new();
+    fn the_summary_is_of_the_delivered_text() {
+        let framed = "⟦ae:msg from cl:lead⟧\nhello\tthere";
         assert_eq!(
-            delivered_summary(&env, record, "hello\tthere", "send", "cl:worker", &mut err).unwrap(),
-            "⟦ae:msg from cl:lead⟧\nhello\tthere",
+            delivered_summary(&Env::default(), framed),
+            framed,
             "the framed text, raw — the emitter renders it for the action"
         );
-        assert!(err.is_empty());
         let explicit = Env {
             summary: Some("withdrawn".into()),
             ..Env::default()
         };
         assert_eq!(
-            delivered_summary(
-                &explicit,
-                record,
-                "withdrawn: --digest-only",
-                "cancel",
-                "cl:lead",
-                &mut err
-            )
-            .unwrap(),
+            delivered_summary(&explicit, framed),
             "withdrawn",
-            "an explicit summary is not overridden by the record"
+            "an explicit summary is not overridden by the delivery"
         );
-        assert!(err.is_empty());
+        let blank = Env {
+            summary: Some(String::new()),
+            ..Env::default()
+        };
         assert_eq!(
-            delivered_summary(&env, "", "as typed", "send", "cl:worker", &mut err).unwrap(),
-            "as typed"
+            delivered_summary(&blank, framed),
+            framed,
+            "an EMPTY _AE_EVENT_SUMMARY is none, as the frozen default-expansion reads it"
+        );
+    }
+
+    #[test]
+    fn the_envelope_names_the_verified_sender_and_never_guesses() {
+        let bridge = Env {
+            sender_override: Some("telegram:chat".into()),
+            ..Env::default()
+        };
+        assert_eq!(envelope_sender(&bridge, "cl:lead"), "telegram:chat");
+        assert_eq!(envelope_sender(&Env::default(), "cl:lead"), "cl:lead");
+        assert_eq!(
+            envelope_sender(&Env::default(), ""),
+            "",
+            "no pane, no override: the envelope has no claim to make, and deliver marks it unverified"
+        );
+        let empty_override = Env {
+            sender_override: Some(String::new()),
+            ..Env::default()
+        };
+        assert_eq!(
+            envelope_sender(&empty_override, "cl:lead"),
+            "cl:lead",
+            "an EMPTY override is not an override — the frozen provenance reads it that way too"
         );
         assert_eq!(
-            String::from_utf8(std::mem::take(&mut err)).unwrap(),
-            "ae: send to cl:worker: no recovery record was written; the summary is of the message as typed\n"
+            actor(&Env::default(), ""),
+            "human",
+            "the EVENT's blank is human; the envelope's is not — the asymmetry is the authority model"
         );
-        let unreadable = dir.to_str().unwrap();
-        assert_eq!(
-            delivered_summary(&env, unreadable, "as typed", "nudge", "cl:worker", &mut err)
-                .unwrap(),
-            "as typed"
-        );
-        assert_eq!(
-            String::from_utf8(err).unwrap(),
-            format!(
-                "ae: nudge to cl:worker: recovery record {unreadable} could not be read; the summary is of the message as typed\n"
-            )
-        );
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

@@ -1291,13 +1291,19 @@ fn events_tail_prints_its_opening_then_follows_what_is_appended() {
 
 // ---- tracked requests: ask / review -------------------------------------
 
-/// A real isolated server with two stamped panes in one session, a session
-/// directory whose `send` and `_send-deliver` are one STUB that records what
-/// it was handed (and under which name) and answers like the frozen entry it
-/// stands in for, and the binary run as a helper would run it. The stub is the point: the paste path is the frozen
-/// bash body, exercised live in the smoke; what these tests pin is everything
-/// the core does around it — composition, resolution, the env contract, the
-/// event — and that a refused paste leaves no event behind.
+/// A real isolated server with two stamped panes in one session, each pane
+/// RECORDING what it receives, and the binary run as a helper would run it.
+///
+/// Since B move 1 the core pastes for itself, so there is no delivery helper
+/// to stand in: what a target got is read off the target. Each pane runs
+/// `cat` into a file, which makes it an UNMODELLED tool — no input sensor, no
+/// deferral, no staged re-check — so these tests pin what the core does
+/// AROUND the paste (composition, resolution, the envelope, the recovery
+/// record, the event) while `deliver.rs`'s own suite pins the modelled TUI
+/// mechanics against a fake one.
+///
+/// A `send` stub survives for exactly one path: the no-identity fallback,
+/// which is a plain `send` and so still runs the public helper.
 struct Tracked {
     scratch_dir: std::path::PathBuf,
     sock: std::path::PathBuf,
@@ -1325,12 +1331,38 @@ impl Tracked {
             main: String::new(),
             worker: String::new(),
         };
+        // Each pane RECORDS what it is sent: `cat` appending to its own file.
+        // `exec` makes `cat` the pane's own process, so the dead-pane guard
+        // sees a live non-shell foreground, as it does for a real agent.
+        let recorder = |file: &str| format!("exec cat >> {}", scratch_dir.join(file).display());
         assert!(
             fixture
-                .tmux(&["-f", "/dev/null", "new-session", "-d", "-s", &session])
+                .tmux(&[
+                    "-f",
+                    "/dev/null",
+                    "new-session",
+                    "-d",
+                    "-x",
+                    "400",
+                    "-y",
+                    "40",
+                    "-s",
+                    &session,
+                    &recorder("received.main"),
+                ])
                 .0
         );
-        assert!(fixture.tmux(&["split-window", "-d", "-t", &session]).0);
+        assert!(
+            fixture
+                .tmux(&[
+                    "split-window",
+                    "-d",
+                    "-t",
+                    &session,
+                    &recorder("received.worker")
+                ])
+                .0
+        );
         let (_, panes) = fixture.tmux(&["list-panes", "-s", "-t", &session, "-F", "#{pane_id}"]);
         let ids: Vec<&str> = panes.lines().collect();
         assert_eq!(ids.len(), 2, "{panes}");
@@ -1366,41 +1398,29 @@ impl Tracked {
             .is_ok(),
             "a meta file"
         );
-        // One script, installed under both names: `send` (the public helper,
-        // which the frozen body makes record its own event) and
-        // `_send-deliver` (the internal delivery-only entry, which prints the
-        // recovery file's path). Which one ran is recorded, because that IS
-        // the contract under test.
+        // The public `send` helper, stubbed. Only the no-identity fallback
+        // runs it now, and what that path must show is that it ran AT ALL
+        // (with the raw body and no event names), because a plain send
+        // records its own event and the core must write none.
         let stub = r#"#!/bin/bash
 here="$(cd "$(dirname "$0")" && pwd)"
-me="$(basename "$0")"
-printf '%s\n' "$me" >"$here/send.helper"
 printf '%s\n' "$1" >"$here/send.target"
 printf '%s' "$2" >"$here/send.message"
-env | grep -E '^(_AE_DELIVER_ONLY|_AE_EVENT_ACTION|_AE_EVENT_REF|AE_SENDER_OVERRIDE)=' | LC_ALL=C sort >"$here/send.env"
-rc="${STUB_SEND_RC:-0}"
-if [[ "$rc" != 0 ]]; then echo "stub send: refused" >&2; exit "$rc"; fi
-mkdir -p "$here/messages"
-f="$here/messages/${_AE_EVENT_REF:-msg}.${_AE_EVENT_ACTION:-send}.stub.txt"
-case "${STUB_RECORD:-framed}" in
-    none) f="" ;;
-    dir) mkdir -p "$f" ;;
-    *) printf '%s\n%s' "⟦ae:msg from stub⟧" "$2" >"$f" ;;
-esac
-[[ "$me" == _send-deliver ]] && printf '%s\n' "$f"
+env | grep -E '^(_AE_EVENT_ACTION|_AE_EVENT_REF|AE_SENDER_OVERRIDE)=' | LC_ALL=C sort >"$here/send.env"
 exit 0
 "#;
-        for name in ["send", "_send-deliver"] {
-            assert!(
-                std::fs::write(fixture.dir.join(name), stub).is_ok(),
-                "the stub {name}"
-            );
-            let executable = std::fs::set_permissions(
-                fixture.dir.join(name),
+        assert!(
+            std::fs::write(fixture.dir.join("send"), stub).is_ok(),
+            "the stub send"
+        );
+        assert!(
+            std::fs::set_permissions(
+                fixture.dir.join("send"),
                 std::fs::Permissions::from_mode(0o755),
-            );
-            assert!(executable.is_ok(), "an executable stub {name}");
-        }
+            )
+            .is_ok(),
+            "an executable stub send"
+        );
         fixture.main = main;
         fixture.worker = worker;
         fixture
@@ -1448,20 +1468,108 @@ exit 0
         )
     }
 
-    /// What the stub recorded: the target, the message, and the env lines.
+    /// What the stubbed public `send` recorded: target, message, env lines.
     fn stub(&self) -> (String, String, String) {
         let read = |name: &str| std::fs::read_to_string(self.dir.join(name)).unwrap_or_default();
         (read("send.target"), read("send.message"), read("send.env"))
     }
 
-    /// The name the stub was run under: `send` or `_send-deliver`, plus `\n`.
-    fn stub_helper(&self) -> String {
-        std::fs::read_to_string(self.dir.join("send.helper")).unwrap_or_default()
+    /// What a pane RECEIVED, waiting briefly for `cat` to flush it.
+    ///
+    /// The paste and the Enter are two tmux calls and the recorder is a
+    /// separate process, so an immediate read can see a prefix. The delivery
+    /// already returned by the time this is called, so this only waits out the
+    /// pipe, never for the product.
+    fn received(&self, which: &str) -> String {
+        let path = self.scratch_dir.join(format!("received.{which}"));
+        for _ in 0..80 {
+            let seen = std::fs::read_to_string(&path).unwrap_or_default();
+            if !seen.is_empty() {
+                return seen;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        std::fs::read_to_string(&path).unwrap_or_default()
     }
 
-    fn forget_stub(&self) {
-        for name in ["send.target", "send.message", "send.env", "send.helper"] {
+    /// What a pane has received SO FAR, without waiting — for asserting that
+    /// nothing arrived, where waiting would only be waiting.
+    fn received_now(&self, which: &str) -> String {
+        std::fs::read_to_string(self.scratch_dir.join(format!("received.{which}")))
+            .unwrap_or_default()
+    }
+
+    /// Respawn a pane as a bare shell, leaving its stamps in place — a pane
+    /// whose agent has DIED.
+    fn kill_agent_in(&self, pane: &str) {
+        assert!(self.tmux(&["respawn-pane", "-k", "-t", pane, "exec sh"]).0);
+    }
+
+    /// The recovery record the last event points at, and its content.
+    fn record(&self) -> (String, String) {
+        let last = self.events().pop().unwrap_or_default();
+        let path = last
+            .split("\"body_file\":\"")
+            .nth(1)
+            .and_then(|tail| tail.split('"').next())
+            .unwrap_or_default()
+            .to_owned();
+        let content = std::fs::read_to_string(&path).unwrap_or_default();
+        (path, content)
+    }
+
+    /// A second session directory on this server whose only agent is a pane
+    /// running a plain shell while the roster records `binary` for its seat —
+    /// the shape the dead-pane guard exists for.
+    fn dead_pane_session(&self, binary: &str) -> std::path::PathBuf {
+        let session = "dead";
+        assert!(
+            self.tmux(&[
+                "-f",
+                "/dev/null",
+                "new-session",
+                "-d",
+                "-s",
+                session,
+                "exec sh"
+            ])
+            .0
+        );
+        let (_, panes) = self.tmux(&["list-panes", "-s", "-t", session, "-F", "#{pane_id}"]);
+        let pane = panes.lines().next().unwrap_or_default().to_owned();
+        assert!(
+            self.tmux(&["set-option", "-p", "-t", &pane, "@ae_slot", "main"])
+                .0
+        );
+        assert!(
+            self.tmux(&["set-option", "-p", "-t", &pane, "@ae_agent", "ghost"])
+                .0
+        );
+        let dir = self.scratch_dir.join("sessions").join(session);
+        assert!(std::fs::create_dir_all(&dir).is_ok(), "a session dir");
+        assert!(
+            std::fs::write(
+                dir.join("meta"),
+                format!(
+                    "session={session}\ntmux_server_kind=socket\ntmux_server={}\nseat.main=ghost\nagent_bin.main={binary}\n",
+                    self.sock.display()
+                ),
+            )
+            .is_ok(),
+            "a meta file"
+        );
+        dir
+    }
+
+    fn forget(&self) {
+        for name in ["send.target", "send.message", "send.env"] {
             let _ = std::fs::remove_file(self.dir.join(name));
+        }
+        for which in ["main", "worker"] {
+            // TRUNCATE, never unlink: the recorder holds the file open, so a
+            // removed inode would take every later delivery with it and the
+            // next assertion would read an empty file forever.
+            let _ = std::fs::write(self.scratch_dir.join(format!("received.{which}")), "");
         }
     }
 
@@ -1482,11 +1590,21 @@ impl Drop for Tracked {
 }
 
 /// The request id the stub was handed, out of its recorded env.
-fn stub_ref(env: &str) -> String {
-    env.lines()
-        .find_map(|line| line.strip_prefix("_AE_EVENT_REF="))
-        .unwrap_or_else(|| panic!("the stub saw a ref: {env:?}"))
+/// The `ref` of the fixture's LAST event — the request id the core minted.
+fn event_ref(fx: &Tracked) -> String {
+    let last = fx.events().pop().unwrap_or_default();
+    last.split("\"ref\":\"")
+        .nth(1)
+        .and_then(|tail| tail.split('"').next())
+        .unwrap_or_else(|| panic!("the event carries a ref: {last:?}"))
         .to_owned()
+}
+
+/// The framed text a pane received, with the trailing newline the Enter added
+/// stripped — what the core pasted, byte for byte.
+fn pasted(fx: &Tracked, which: &str) -> String {
+    let seen = fx.received(which);
+    seen.strip_suffix('\n').unwrap_or(&seen).to_owned()
 }
 
 /// One refusal case: argv after the directory, extra env, the exit code, the
@@ -1515,57 +1633,61 @@ fn ask_composes_the_frozen_message_delivers_through_send_and_writes_the_slotted_
         &[],
     );
     assert_eq!(asked, (Some(0), String::new(), String::new()));
-    let (target, message, env) = fx.stub();
-    assert_eq!(
-        target, "worker\n",
-        "the bare name resolved to the display ref"
-    );
-    let id = stub_ref(&env);
+    let events = fx.events();
+    assert_eq!(events.len(), 1, "{events:?}");
+    let id = event_ref(&fx);
     assert!(is_request_id(&id, "ae"), "{id}");
-    assert_eq!(
-        fx.stub_helper(),
-        "_send-deliver\n",
-        "a tracked request goes through the internal delivery-only entry"
-    );
-    assert_eq!(
-        env,
-        format!("_AE_EVENT_ACTION=ask\n_AE_EVENT_REF={id}\n"),
-        "the names the frozen body store reads, and NO ambient switch"
-    );
     let reply_cmd = format!(
         "{}/reply --as \"worker\" \"{id}\" \"<your reply>\"",
         fx.dir.display()
     );
-    assert_eq!(
-        message,
-        ae::tracked::compose(
-            ae::tracked::Kind::Ask,
-            &id,
-            "lead",
-            "the question",
-            &reply_cmd
-        )
+    let message = ae::tracked::compose(
+        ae::tracked::Kind::Ask,
+        &id,
+        "lead",
+        "the question",
+        &reply_cmd,
     );
     assert!(message.starts_with(&format!(
         "REQUEST {id} from lead: the question\n\nREQUIRED:"
     )));
-    let events = fx.events();
-    assert_eq!(events.len(), 1, "{events:?}");
-    let body_file = fx.dir.join("messages").join(format!("{id}.ask.stub.txt"));
+    // THE TARGET GOT IT, framed by the core from the pane's own stamp — the
+    // envelope leads, the composed request follows, byte for byte.
+    assert_eq!(
+        pasted(&fx, "worker"),
+        format!("⟦ae:msg from lead⟧\n{message}"),
+        "the worker pane received the framed request"
+    );
+    assert!(
+        fx.received_now("main").is_empty(),
+        "and the asker's own pane received nothing"
+    );
+    let (body_file, stored) = fx.record();
+    assert!(
+        body_file.starts_with(
+            &fx.dir
+                .join("messages")
+                .join(format!("{id}.ask."))
+                .display()
+                .to_string()
+        ) && std::path::Path::new(&body_file)
+            .extension()
+            .is_some_and(|ext| ext == "txt"),
+        "the record is named for the request and the action: {body_file}"
+    );
+    assert_eq!(
+        stored,
+        format!("⟦ae:msg from lead⟧\n{message}"),
+        "the record is the delivered text, not the message as typed"
+    );
     assert!(
         events[0].ends_with(&format!(
-            "\"actor\":\"lead\",\"action\":\"ask\",\"target\":\"worker\",\"ref\":\"{id}\",\"actor_slot\":\"main\",\"actor_session\":\"trask\",\"target_slot\":\"worker.0\",\"target_session\":\"trask\",\"summary\":\"the question\",\"body_file\":\"{}\"}}",
-            body_file.display()
+            "\"actor\":\"lead\",\"action\":\"ask\",\"target\":\"worker\",\"ref\":\"{id}\",\"actor_slot\":\"main\",\"actor_session\":\"trask\",\"target_slot\":\"worker.0\",\"target_session\":\"trask\",\"summary\":\"the question\",\"body_file\":\"{body_file}\"}}"
         )),
         "{}",
         events[0]
     );
     assert!(events[0].starts_with("{\"ts\":\""), "{}", events[0]);
-    assert_eq!(
-        std::fs::read_to_string(&body_file).unwrap(),
-        format!("⟦ae:msg from stub⟧\n{message}"),
-        "the event points at the stored delivered text (the stub frames as the entry does)"
-    );
     // And the core's own requests surface reads it back as pending.
     let listed = fx.run(ae::cli::REQUESTS, Some(&fx.main), &["all"], &[]);
     assert_eq!(listed.0, Some(0), "{listed:?}");
@@ -1585,16 +1707,17 @@ fn review_carries_its_instructions_and_every_target_spelling_resolves_as_the_hel
         &[],
     );
     assert_eq!(reviewed, (Some(0), String::new(), String::new()));
-    let (target, message, env) = fx.stub();
-    assert_eq!(target, "lead\n");
-    assert_eq!(fx.stub_helper(), "_send-deliver\n");
-    let id = stub_ref(&env);
+    let id = event_ref(&fx);
     assert!(is_request_id(&id, "review"), "{id}");
-    assert!(message.starts_with(&format!(
-        "REVIEW REQUEST {id} from worker: look at x\n\n{}\n\nREQUIRED",
-        ae::tracked::REVIEW_INSTRUCTIONS
-    )));
-    assert!(message.ends_with(&format!("\n{}/reply --as \"lead\" \"{id}\" \"<your review>\"\nDo not reply any other way. Do NOT use peek/peak as a reply mechanism.", fx.dir.display())));
+    let message = pasted(&fx, "main");
+    assert!(
+        message.starts_with(&format!(
+            "⟦ae:msg from worker⟧\nREVIEW REQUEST {id} from worker: look at x\n\n{}\n\nREQUIRED",
+            ae::tracked::REVIEW_INSTRUCTIONS
+        )),
+        "{message}"
+    );
+    assert!(message.ends_with(&format!("\n{}/reply --as \"lead\" \"{id}\" \"<your review>\"\nDo not reply any other way. Do NOT use peek/peak as a reply mechanism.", fx.dir.display())), "{message}");
     let events = fx.events();
     assert!(
         events[0].contains(&format!("\"actor\":\"worker\",\"action\":\"review\",\"target\":\"lead\",\"ref\":\"{id}\",\"actor_slot\":\"worker.0\",\"actor_session\":\"trrev\",\"target_slot\":\"main\",\"target_session\":\"trrev\",")),
@@ -1606,24 +1729,32 @@ fn review_carries_its_instructions_and_every_target_spelling_resolves_as_the_hel
     // ACCEPTED and moves nothing that is printed: the bare name, the session
     // qualified without an `@`, and the `@` form all reach the same pane, and
     // all three answer with the same display ref.
-    for (spelling, expected) in [
-        (fx.main.as_str(), "lead"),
-        ("lead", "lead"),
-        ("trrev:lead", "lead"),
-        ("@trrev:lead", "lead"),
-        ("@trrev:worker", "worker"),
+    for (spelling, expected, pane) in [
+        (fx.main.clone(), "lead", "main"),
+        ("lead".to_owned(), "lead", "main"),
+        ("trrev:lead".to_owned(), "lead", "main"),
+        ("@trrev:lead".to_owned(), "lead", "main"),
+        ("@trrev:worker".to_owned(), "worker", "worker"),
     ] {
-        fx.forget_stub();
-        let sent = fx.run(ae::cli::ASK, Some(&fx.worker), &[spelling, "q"], &[]);
+        fx.forget();
+        let sent = fx.run(ae::cli::ASK, Some(&fx.worker), &[&spelling, "q"], &[]);
         assert_eq!(sent.0, Some(0), "{spelling}: {sent:?}");
-        assert_eq!(fx.stub().0, format!("{expected}\n"), "{spelling}");
+        let last = fx.events().pop().unwrap_or_default();
+        assert!(
+            last.contains(&format!("\"target\":\"{expected}\"")),
+            "{spelling}: {last}"
+        );
+        assert!(
+            !fx.received_now(pane).is_empty(),
+            "{spelling}: the {pane} pane received nothing"
+        );
     }
 }
 
 #[test]
 fn a_request_that_does_not_resolve_or_is_refused_leaves_no_event_and_no_paste() {
     let fx = Tracked::new("ref");
-    let cases: [Refusal<'_>; 9] = [
+    let cases: [Refusal<'_>; 8] = [
         // IDENTITY V2: the alias-only and bare-name arms of the resolver are
         // retired, so a legacy alias addresses nothing. It is NOT FOUND, not
         // ambiguous — the roster can no longer make a target ambiguous at all,
@@ -1668,15 +1799,9 @@ fn a_request_that_does_not_resolve_or_is_refused_leaves_no_event_and_no_paste() 
         ),
         (&["worker"], &[], Some(2), ae::tracked::ASK_USAGE.to_owned()),
         (&[], &[], Some(2), ae::tracked::ASK_USAGE.to_owned()),
-        (
-            &["worker", "q"],
-            &[("STUB_SEND_RC", "3")],
-            Some(3),
-            "stub send: refused\n".to_owned(),
-        ),
     ];
     for (tail, envs, code, stderr) in cases {
-        fx.forget_stub();
+        fx.forget();
         let out = fx.run(ae::cli::ASK, Some(&fx.main), tail, envs);
         assert_eq!(out, (code, String::new(), stderr), "{tail:?}");
         assert!(
@@ -1684,40 +1809,38 @@ fn a_request_that_does_not_resolve_or_is_refused_leaves_no_event_and_no_paste() 
             "{tail:?}: an event was written: {:?}",
             fx.events()
         );
-        if envs.is_empty() {
-            assert!(fx.stub().0.is_empty(), "{tail:?}: the stub was called");
-        }
+        assert!(
+            fx.received_now("worker").is_empty() && fx.received_now("main").is_empty(),
+            "{tail:?}: something was pasted"
+        );
     }
-    // The refused paste DID reach the stub, with the composed message — the
-    // event is what was withheld.
-    assert!(fx.stub().1.starts_with("REQUEST ae-"), "{:?}", fx.stub());
-    // A session with a public `send` but no `_send-deliver` (helpers older
-    // than this core) is said so, at 1, naming the entry that is missing —
-    // and the public `send` is NOT used in its place, because that would
-    // record a second event for the request.
-    let bare = fx.scratch_dir.join("sessions").join("bare");
-    std::fs::create_dir_all(&bare).expect("a session dir");
-    std::fs::write(bare.join("meta"), "session=bare\n").expect("a meta file");
-    std::fs::copy(fx.dir.join("send"), bare.join("send")).expect("the stub send");
+    // A DEAD TARGET is refused before anything is stored or pasted: the pane's
+    // foreground is a shell while the roster expects a real binary there. The
+    // ask never reaches the pane, and no event is written.
+    fx.forget();
+    let dead = fx.dead_pane_session("claude");
     let out = ae()
         .env("TMUX", format!("{},0,0", fx.sock.display()))
         .env("TMUX_PANE", &fx.main)
         .arg(ae::cli::ASK)
-        .arg(&bare)
-        .args([&fx.main, "q"])
+        .arg(&dead)
+        .args(["ghost", "q"])
         .output()
         .expect("the ae binary should run");
     assert_eq!(out.status.code(), Some(1), "{out:?}");
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        stderr.contains("ask not delivered: could not run")
-            && stderr.contains("_send-deliver")
-            && stderr.contains("ae doctor --refresh"),
-        "{out:?}"
+    assert_eq!(
+        stderr,
+        "ae: send to ghost REFUSED — target pane is a shell, not a running agent (the agent process is gone). Nothing pasted; a stray Enter would EXECUTE the message as a shell command. Re-launch the agent, then re-send.\n",
+        "the frozen refusal, verbatim"
     );
     assert!(
-        !bare.join("send.helper").exists(),
-        "the public send must not stand in for the missing entry"
+        !dead.join("events.jsonl").exists(),
+        "a refused delivery records nothing"
+    );
+    assert!(
+        !dead.join("messages").exists(),
+        "and stores nothing: the guard is BEFORE the body store"
     );
 }
 
@@ -1725,8 +1848,9 @@ fn a_request_that_does_not_resolve_or_is_refused_leaves_no_event_and_no_paste() 
 fn no_identity_falls_back_to_a_plain_send_and_external_and_override_senders_are_event_only_or_slotless()
  {
     let fx = Tracked::new("idn");
-    // No pane: the frozen warning, then a plain send of the raw body — the
-    // helper writes its own event on that path, so the core writes none.
+    // No pane: the frozen warning, then a plain send of the raw body through
+    // the PUBLIC helper — that path records its own event, so the core writes
+    // none, and the core never pastes for it.
     let plain = fx.run(ae::cli::ASK, None, &["worker", "raw", "body"], &[]);
     assert_eq!(
         plain,
@@ -1742,21 +1866,20 @@ fn no_identity_falls_back_to_a_plain_send_and_external_and_override_senders_are_
         ("worker\n", "raw body")
     );
     assert!(env.is_empty(), "no event names: {env:?}");
-    assert_eq!(
-        fx.stub_helper(),
-        "send\n",
-        "the fallback is the PUBLIC send, which records itself"
-    );
     assert!(fx.events().is_empty());
+    assert!(
+        fx.received_now("worker").is_empty(),
+        "the core pasted nothing — the helper owns that delivery"
+    );
 
     // An external sink: no paste, no body file, the event with the literal
     // target and the caller's slot.
-    fx.forget_stub();
+    fx.forget();
     let external = fx.run(ae::cli::ASK, Some(&fx.main), &["telegram:42", "hello"], &[]);
     assert_eq!(external, (Some(0), String::new(), String::new()));
     assert!(
-        fx.stub().0.is_empty(),
-        "the stub was called for an event-only sink"
+        fx.received_now("worker").is_empty() && fx.stub().0.is_empty(),
+        "an event-only sink is delivered to nobody"
     );
     let events = fx.events();
     assert_eq!(events.len(), 1);
@@ -1770,8 +1893,9 @@ fn no_identity_falls_back_to_a_plain_send_and_external_and_override_senders_are_
         events[0]
     );
 
-    // AE_SENDER_OVERRIDE: the actor is the override, slotless, and the env
-    // reaches the helper for its provenance envelope.
+    // AE_SENDER_OVERRIDE: the actor is the override, slotless, and it is what
+    // the ENVELOPE the core pastes names too.
+    fx.forget();
     let bridged = fx.run(
         ae::cli::REVIEW,
         Some(&fx.main),
@@ -1779,13 +1903,12 @@ fn no_identity_falls_back_to_a_plain_send_and_external_and_override_senders_are_
         &[("AE_SENDER_OVERRIDE", "bridge")],
     );
     assert_eq!(bridged, (Some(0), String::new(), String::new()));
-    let (_, message, env) = fx.stub();
+    let message = pasted(&fx, "worker");
     assert!(
-        message.starts_with("REVIEW REQUEST review-")
+        message.starts_with("⟦ae:msg from bridge⟧\nREVIEW REQUEST review-")
             && message.contains(" from bridge: from the bridge\n"),
         "{message}"
     );
-    assert!(env.contains("AE_SENDER_OVERRIDE=bridge\n"), "{env}");
     let events = fx.events();
     assert_eq!(events.len(), 2);
     assert!(
@@ -1800,13 +1923,13 @@ fn no_identity_falls_back_to_a_plain_send_and_external_and_override_senders_are_
 
 // ---- tracked requests: reply ---------------------------------------------
 
-/// An `ask` from the main pane to the worker, through the stub: its id.
+/// An `ask` from the main pane to the worker: its request id.
 fn ask_from_main(fx: &Tracked, body: &str) -> String {
     let asked = fx.run(ae::cli::ASK, Some(&fx.main), &["worker", body], &[]);
     assert_eq!(asked, (Some(0), String::new(), String::new()));
-    let id = stub_ref(&fx.stub().2);
+    let id = event_ref(fx);
     assert!(is_request_id(&id, "ae"), "{id}");
-    fx.forget_stub();
+    fx.forget();
     id
 }
 
@@ -1846,29 +1969,37 @@ fn reply_routes_to_the_asker_by_stored_slot_records_the_frozen_event_and_closes_
         &[],
     );
     assert_eq!(replied, (Some(0), String::new(), String::new()));
-    let (target, message, env) = fx.stub();
-    assert_eq!(fx.stub_helper(), "_send-deliver\n");
-    assert_eq!(target, "renamed\n", "routed by slot to the current name");
-    assert_eq!(message, format!("[{id}] the answer"));
+    let message = format!("[{id}] the answer");
+    // Routed by SLOT to the pane's CURRENT name, and framed with the VERIFIED
+    // sender — the slot check decided who this reply is from, so the envelope
+    // takes its answer rather than the caller's environment.
     assert_eq!(
-        env,
-        format!("AE_SENDER_OVERRIDE=worker\n_AE_EVENT_ACTION=reply\n_AE_EVENT_REF={id}\n"),
-        "the verified sender rides to the entry as the envelope's identity"
+        pasted(&fx, "main"),
+        format!("⟦ae:msg from worker⟧\n{message}")
     );
     let events = fx.events();
     assert_eq!(events.len(), 2, "{events:?}");
-    let body_file = fx.dir.join("messages").join(format!("{id}.reply.stub.txt"));
+    let (body_file, stored) = fx.record();
+    assert!(
+        body_file.starts_with(
+            &fx.dir
+                .join("messages")
+                .join(format!("{id}.reply."))
+                .display()
+                .to_string()
+        ),
+        "{body_file}"
+    );
     assert!(
         events[1].ends_with(&format!(
-            "\"actor\":\"worker\",\"action\":\"reply\",\"target\":\"renamed\",\"ref\":\"{id}\",\"actor_slot\":\"worker.0\",\"actor_session\":\"{session}\",\"target_slot\":\"main\",\"target_session\":\"{session}\",\"summary\":\"the answer\",\"body_file\":\"{}\"}}",
-            body_file.display()
+            "\"actor\":\"worker\",\"action\":\"reply\",\"target\":\"renamed\",\"ref\":\"{id}\",\"actor_slot\":\"worker.0\",\"actor_session\":\"{session}\",\"target_slot\":\"main\",\"target_session\":\"{session}\",\"summary\":\"the answer\",\"body_file\":\"{body_file}\"}}"
         )),
         "{}",
         events[1]
     );
     assert_eq!(
-        std::fs::read_to_string(&body_file).unwrap_or_default(),
-        format!("⟦ae:msg from stub⟧\n{message}"),
+        stored,
+        format!("⟦ae:msg from worker⟧\n{message}"),
         "the reply keeps its own recovery file"
     );
     let view = requests_all(&fx);
@@ -1879,6 +2010,7 @@ fn reply_routes_to_the_asker_by_stored_slot_records_the_frozen_event_and_closes_
     // --as is DISPLAY only: it names the actor, and a disagreement with the
     // stored name is a warning after the slot has been verified.
     let id2 = ask_from_main(&fx, "again");
+    fx.forget();
     let as_reply = fx.run(
         ae::cli::REPLY,
         Some(&fx.worker),
@@ -1900,8 +2032,8 @@ fn reply_routes_to_the_asker_by_stored_slot_records_the_frozen_event_and_closes_
         events[3]
     );
     assert_eq!(
-        fx.stub().2,
-        format!("AE_SENDER_OVERRIDE=stale\n_AE_EVENT_ACTION=reply\n_AE_EVENT_REF={id2}\n"),
+        pasted(&fx, "main"),
+        format!("⟦ae:msg from stale⟧\n[{id2}] ok"),
         "the envelope names the --as identity, as the event does"
     );
 }
@@ -1920,13 +2052,10 @@ fn the_verified_sender_overwrites_an_override_inherited_from_the_caller() {
         &[("AE_SENDER_OVERRIDE", "spoof")],
     );
     assert_eq!(poisoned, (Some(0), String::new(), String::new()));
-    let (target, message, env) = fx.stub();
-    assert_eq!(target, "lead\n");
-    assert_eq!(message, format!("[{id}] clean"));
     assert_eq!(
-        env,
-        format!("AE_SENDER_OVERRIDE=worker\n_AE_EVENT_ACTION=reply\n_AE_EVENT_REF={id}\n"),
-        "the pane's verified identity, not the inherited one"
+        pasted(&fx, "main"),
+        format!("⟦ae:msg from worker⟧\n[{id}] clean"),
+        "the pane's verified identity envelopes it, not the inherited one"
     );
     let last = fx.events().pop().unwrap_or_default();
     assert!(
@@ -1936,6 +2065,7 @@ fn the_verified_sender_overwrites_an_override_inherited_from_the_caller() {
     // A `--as` reply carries the --as identity, which is also what the event
     // names — the two never disagree.
     let id2 = ask_from_main(&fx, "again");
+    fx.forget();
     let as_reply = fx.run(
         ae::cli::REPLY,
         Some(&fx.worker),
@@ -1944,8 +2074,9 @@ fn the_verified_sender_overwrites_an_override_inherited_from_the_caller() {
     );
     assert_eq!(as_reply, (Some(0), String::new(), String::new()));
     assert_eq!(
-        fx.stub().2,
-        format!("AE_SENDER_OVERRIDE=worker\n_AE_EVENT_ACTION=reply\n_AE_EVENT_REF={id2}\n")
+        pasted(&fx, "main"),
+        format!("⟦ae:msg from worker⟧\n[{id2}] ok"),
+        "an inherited override never reaches the envelope"
     );
 }
 
@@ -2004,22 +2135,34 @@ fn a_reply_is_refused_exactly_and_pastes_nothing_when_the_pane_the_id_or_the_bod
         ),
     ];
     for (pane, tail, code, stderr) in cases {
-        fx.forget_stub();
+        fx.forget();
         let out = fx.run(ae::cli::REPLY, pane, &tail, &[]);
         assert_eq!(out, (code, String::new(), stderr), "{tail:?}");
-        assert!(fx.stub().0.is_empty(), "{tail:?}: something was pasted");
+        assert!(
+            fx.received_now("main").is_empty(),
+            "{tail:?}: something was pasted"
+        );
         assert_eq!(fx.events().len(), 1, "{tail:?}: an event was written");
     }
-    // A paste the helper refused leaves the request OPEN: its status is the
-    // helper's, verbatim, and no reply is recorded.
-    fx.forget_stub();
-    let refused = fx.run(
-        ae::cli::REPLY,
-        Some(&fx.worker),
-        &[&id, "late"],
-        &[("STUB_SEND_RC", "3")],
+    // A REFUSED delivery leaves the request OPEN: the asker's agent has died
+    // and its pane dropped to a shell, so the reply is refused before it is
+    // stored and no reply is recorded.
+    fx.forget();
+    std::fs::write(
+        fx.dir.join("meta"),
+        format!(
+            "session={session}\ntmux_server_kind=socket\ntmux_server={}\nseat.main=lead\nagent_bin.main=claude\n",
+            fx.sock.display()
+        ),
+    )
+    .expect("a meta naming the seat's binary");
+    fx.kill_agent_in(&fx.main);
+    let refused = fx.run(ae::cli::REPLY, Some(&fx.worker), &[&id, "late"], &[]);
+    assert_eq!(refused.0, Some(1), "{refused:?}");
+    assert!(
+        refused.2.starts_with("ae: send to lead REFUSED —"),
+        "{refused:?}"
     );
-    assert_eq!(refused.0, Some(3), "{refused:?}");
     assert_eq!(fx.events().len(), 1);
     assert!(requests_all(&fx).contains("pending"));
 }
@@ -2056,17 +2199,20 @@ fn a_pre_migration_row_name_matches_with_the_frozen_errors_and_is_answered_at_th
         ),
     ];
     for (pane, tail, code, stderr) in old_cases {
-        fx.forget_stub();
+        fx.forget();
         let out = fx.run(ae::cli::REPLY, pane, &tail, &[]);
         assert_eq!(out, (code, String::new(), stderr), "{tail:?}");
-        assert!(fx.stub().0.is_empty(), "{tail:?}: something was pasted");
+        assert!(
+            fx.received_now("main").is_empty(),
+            "{tail:?}: something was pasted"
+        );
     }
-    fx.forget_stub();
+    fx.forget();
     let old = fx.run(ae::cli::REPLY, Some(&fx.worker), &["ae-old-1", "seen"], &[]);
     assert_eq!(old, (Some(0), String::new(), String::new()));
     assert_eq!(
-        fx.stub().0,
-        "lead\n",
+        pasted(&fx, "main"),
+        "⟦ae:msg from worker⟧\n[ae-old-1] seen",
         "the stored name, no slot to route by"
     );
     let last = fx.events().pop().unwrap_or_default();
@@ -2092,7 +2238,11 @@ fn a_bash_shaped_request_is_consumed_a_pane_less_asker_is_answered_event_only_an
     );
     let replied = fx.run(ae::cli::REPLY, Some(&fx.worker), &[id, "done"], &[]);
     assert_eq!(replied, (Some(0), String::new(), String::new()));
-    assert_eq!(fx.stub().0, "lead\n", "routed by the bash-stored slot");
+    assert_eq!(
+        pasted(&fx, "main"),
+        format!("⟦ae:msg from worker⟧\n[{id}] done"),
+        "routed by the bash-stored slot"
+    );
     assert!(
         fx.events()[1].contains(&format!(
             "\"actor\":\"worker\",\"action\":\"reply\",\"target\":\"lead\",\"ref\":\"{id}\",\"actor_slot\":\"worker.0\",\"actor_session\":\"trrb\",\"target_slot\":\"main\",\"target_session\":\"trrb\",\"summary\":\"done\""
@@ -2102,7 +2252,7 @@ fn a_bash_shaped_request_is_consumed_a_pane_less_asker_is_answered_event_only_an
     );
     assert!(requests_all(&fx).contains("replied"));
     // A follow-up is delivered and recorded, and said so — never refused.
-    fx.forget_stub();
+    fx.forget();
     let again = fx.run(ae::cli::REPLY, Some(&fx.worker), &[id, "and", "more"], &[]);
     assert_eq!(
         again,
@@ -2114,7 +2264,10 @@ fn a_bash_shaped_request_is_consumed_a_pane_less_asker_is_answered_event_only_an
             )
         )
     );
-    assert_eq!(fx.stub().1, format!("[{id}] and more"));
+    assert_eq!(
+        pasted(&fx, "main"),
+        format!("⟦ae:msg from worker⟧\n[{id}] and more")
+    );
     assert_eq!(fx.events().len(), 3);
     // An asker with no pane — a bridge naming itself through
     // AE_SENDER_OVERRIDE — is answered as the frozen send answers a sink:
@@ -2126,10 +2279,13 @@ fn a_bash_shaped_request_is_consumed_a_pane_less_asker_is_answered_event_only_an
             r#"{{"ts":"2026-08-27T10:00:01Z","actor":"telegram:42","action":"ask","target":"worker","ref":"{bridged}","target_slot":"worker.0","target_session":"trrb","summary":"from the bridge"}}"#
         ),
     );
-    fx.forget_stub();
+    fx.forget();
     let to_bridge = fx.run(ae::cli::REPLY, Some(&fx.worker), &[bridged, "hello"], &[]);
     assert_eq!(to_bridge, (Some(0), String::new(), String::new()));
-    assert!(fx.stub().0.is_empty(), "nothing is pasted to a sink");
+    assert!(
+        fx.received_now("main").is_empty() && fx.received_now("worker").is_empty(),
+        "nothing is pasted to a sink"
+    );
     let last = fx.events().pop().unwrap_or_default();
     assert!(
         last.ends_with(&format!(
@@ -2152,29 +2308,32 @@ fn send_pastes_through_the_entry_and_records_the_one_frozen_event() {
         &[],
     );
     assert_eq!(sent, (Some(0), String::new(), String::new()));
-    let (target, message, env) = fx.stub();
-    assert_eq!(fx.stub_helper(), "_send-deliver\n");
     assert_eq!(
-        (target.as_str(), message.as_str()),
-        ("worker\n", "hello there")
-    );
-    assert_eq!(
-        env, "_AE_EVENT_ACTION=send\n",
-        "no ref, no override: nothing invented"
+        pasted(&fx, "worker"),
+        "⟦ae:msg from lead⟧\nhello there",
+        "the framed text reached the pane"
     );
     let events = fx.events();
     assert_eq!(events.len(), 1, "{events:?}");
-    let body_file = fx.dir.join("messages").join("msg.send.stub.txt");
+    let (body_file, stored) = fx.record();
+    assert!(
+        body_file.starts_with(&fx.dir.join("messages").join("msg-").display().to_string())
+            && body_file.contains(".send.")
+            && std::path::Path::new(&body_file)
+                .extension()
+                .is_some_and(|ext| ext == "txt"),
+        "no ref: the record is stamped, not named for one — {body_file}"
+    );
+    assert_eq!(stored, "⟦ae:msg from lead⟧\nhello there");
     assert!(
         events[0].ends_with(&format!(
-            "\"actor\":\"lead\",\"action\":\"send\",\"target\":\"worker\",\"summary\":\"⟦ae:msg from stub⟧ hello there\",\"body_file\":\"{}\"}}",
-            body_file.display()
+            "\"actor\":\"lead\",\"action\":\"send\",\"target\":\"worker\",\"summary\":\"⟦ae:msg from lead⟧ hello there\",\"body_file\":\"{body_file}\"}}"
         )),
         "a plain send carries no routing members, as the frozen emitter writes it: {}",
         events[0]
     );
     // A request id in the text is the event's ref and names the recovery file.
-    fx.forget_stub();
+    fx.forget();
     let noted = fx.run(
         ae::cli::SEND,
         Some(&fx.main),
@@ -2182,16 +2341,15 @@ fn send_pastes_through_the_entry_and_records_the_one_frozen_event() {
         &[],
     );
     assert_eq!(noted, (Some(0), String::new(), String::new()));
-    assert_eq!(fx.stub().2, "_AE_EVENT_ACTION=send\n_AE_EVENT_REF=ae-1\n");
     let last = fx.events().pop().unwrap_or_default();
     assert!(
-        last.contains("\"action\":\"send\",\"target\":\"worker\",\"ref\":\"ae-1\",\"summary\":\"⟦ae:msg from stub⟧ [ae-1] noted\",\"body_file\":")
-            && last.contains("ae-1.send.stub.txt"),
+        last.contains("\"action\":\"send\",\"target\":\"worker\",\"ref\":\"ae-1\",\"summary\":\"⟦ae:msg from lead⟧ [ae-1] noted\",\"body_file\":")
+            && last.contains("/ae-1.send."),
         "{last}"
     );
     // A pane id resolves to that pane's stamp, as the frozen ae_resolve reads
-    // it back: the event names the agent, and so does what the entry is handed.
-    fx.forget_stub();
+    // it back: the event names the agent, and the pane still gets the text.
+    fx.forget();
     let by_id = fx.run(
         ae::cli::SEND,
         Some(&fx.main),
@@ -2199,21 +2357,16 @@ fn send_pastes_through_the_entry_and_records_the_one_frozen_event() {
         &[],
     );
     assert_eq!(by_id, (Some(0), String::new(), String::new()));
-    assert_eq!(fx.stub().0, "worker\n");
+    assert_eq!(pasted(&fx, "worker"), "⟦ae:msg from lead⟧\nby id");
     let last = fx.events().pop().unwrap_or_default();
     assert!(last.contains("\"target\":\"worker\""), "{last}");
-    // The cross-session spelling of this session resolves, and the event
-    // names what the entry was handed.
-    fx.forget_stub();
+    // The cross-session spelling of this session resolves to the same pane.
+    fx.forget();
     let spelled = fx.run(ae::cli::SEND, Some(&fx.main), &["@trsp:worker", "hi"], &[]);
     assert_eq!(spelled, (Some(0), String::new(), String::new()));
-    let handed = fx.stub().0;
-    assert!(!handed.is_empty(), "the entry was run");
+    assert_eq!(pasted(&fx, "worker"), "⟦ae:msg from lead⟧\nhi");
     let last = fx.events().pop().unwrap_or_default();
-    assert!(
-        last.contains(&format!("\"target\":\"{}\"", handed.trim_end())),
-        "{last} vs {handed}"
-    );
+    assert!(last.contains("\"target\":\"worker\""), "{last}");
 }
 
 #[test]
@@ -2236,27 +2389,26 @@ fn send_carries_the_frozen_event_fields_from_the_environment_and_the_override_to
         ],
     );
     assert_eq!(cancel, (Some(0), String::new(), String::new()));
-    let (target, message, env) = fx.stub();
     assert_eq!(
-        (target.as_str(), message.as_str()),
-        ("worker\n", "withdrawn: --digest-only")
-    );
-    assert_eq!(
-        env, "AE_SENDER_OVERRIDE=lead\n_AE_EVENT_ACTION=cancel\n_AE_EVENT_REF=ae-9\n",
-        "the explicit override rides to the envelope; the action and ref name the file"
+        pasted(&fx, "worker"),
+        "⟦ae:msg from lead⟧\nwithdrawn: --digest-only",
+        "the explicit override is the envelope's name"
     );
     let events = fx.events();
-    let body_file = fx.dir.join("messages").join("ae-9.cancel.stub.txt");
+    let (body_file, _) = fx.record();
+    assert!(
+        body_file.contains("/ae-9.cancel."),
+        "the action and ref name the record: {body_file}"
+    );
     assert!(
         events[0].ends_with(&format!(
-            "\"actor\":\"lead\",\"action\":\"cancel\",\"target\":\"worker\",\"ref\":\"ae-9\",\"actor_slot\":\"main\",\"actor_session\":\"trss\",\"target_slot\":\"worker.0\",\"target_session\":\"trss\",\"summary\":\"withdrawn\",\"body_file\":\"{}\"}}",
-            body_file.display()
+            "\"actor\":\"lead\",\"action\":\"cancel\",\"target\":\"worker\",\"ref\":\"ae-9\",\"actor_slot\":\"main\",\"actor_session\":\"trss\",\"target_slot\":\"worker.0\",\"target_session\":\"trss\",\"summary\":\"withdrawn\",\"body_file\":\"{body_file}\"}}"
         )),
         "{}",
         events[0]
     );
     // A pane-less caller naming itself, as the telegram bridge does.
-    fx.forget_stub();
+    fx.forget();
     let bridged = fx.run(
         ae::cli::SEND,
         None,
@@ -2265,19 +2417,21 @@ fn send_carries_the_frozen_event_fields_from_the_environment_and_the_override_to
     );
     assert_eq!(bridged, (Some(0), String::new(), String::new()));
     assert_eq!(
-        fx.stub().2,
-        "AE_SENDER_OVERRIDE=telegram:42\n_AE_EVENT_ACTION=send\n"
+        pasted(&fx, "worker"),
+        "⟦ae:msg from telegram:42⟧\nfrom the bridge"
     );
     let last = fx.events().pop().unwrap_or_default();
     assert!(
-        last.contains("\"actor\":\"telegram:42\",\"action\":\"send\",\"target\":\"worker\",\"summary\":\"⟦ae:msg from stub⟧ from the bridge\""),
+        last.contains("\"actor\":\"telegram:42\",\"action\":\"send\",\"target\":\"worker\",\"summary\":\"⟦ae:msg from telegram:42⟧ from the bridge\""),
         "{last}"
     );
-    // A pane-less caller with no name is `human`, and hands the entry no name.
-    fx.forget_stub();
+    // A pane-less caller with no name at all: the EVENT says `human`, the
+    // ENVELOPE says `unverified`. Bare is the human's signature, and nothing
+    // through a helper may wear it.
+    fx.forget();
     let nobody = fx.run(ae::cli::SEND, None, &["worker", "anon"], &[]);
     assert_eq!(nobody, (Some(0), String::new(), String::new()));
-    assert_eq!(fx.stub().2, "_AE_EVENT_ACTION=send\n");
+    assert_eq!(pasted(&fx, "worker"), "⟦ae:msg from unverified⟧\nanon");
     let last = fx.events().pop().unwrap_or_default();
     assert!(
         last.contains("\"actor\":\"human\",\"action\":\"send\""),
@@ -2311,51 +2465,44 @@ fn send_refuses_exactly_records_nothing_on_a_failed_delivery_and_names_the_gap_a
         ),
     ];
     for (pane, tail, code, stderr) in cases {
-        fx.forget_stub();
+        fx.forget();
         let out = fx.run(ae::cli::SEND, pane, &tail, &[]);
         assert_eq!(out, (code, String::new(), stderr), "{tail:?}");
-        assert!(fx.stub().0.is_empty(), "{tail:?}: something was pasted");
+        assert!(
+            fx.received_now("worker").is_empty(),
+            "{tail:?}: something was pasted"
+        );
         assert!(fx.events().is_empty(), "{tail:?}: an event was written");
     }
-    // A refused paste: the entry's status, verbatim, and nothing recorded.
-    fx.forget_stub();
-    let refused = fx.run(
-        ae::cli::SEND,
-        Some(&fx.main),
-        &["worker", "late"],
-        &[("STUB_SEND_RC", "3")],
+    // A DEAD TARGET: refused with the frozen line, nothing stored, nothing
+    // recorded.
+    fx.forget();
+    let dead = fx.dead_pane_session("claude");
+    let out = ae()
+        .env("TMUX", format!("{},0,0", fx.sock.display()))
+        .env("TMUX_PANE", &fx.main)
+        .arg(ae::cli::SEND)
+        .arg(&dead)
+        .args(["ghost", "late"])
+        .output()
+        .expect("the ae binary should run");
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).starts_with("ae: send to ghost REFUSED —"),
+        "{out:?}"
     );
-    assert_eq!(refused.0, Some(3), "{refused:?}");
-    assert!(fx.events().is_empty());
+    assert!(!dead.join("events.jsonl").exists());
     // An external sink: the event, nothing pasted, no body file.
-    fx.forget_stub();
+    fx.forget();
     let sink = fx.run(ae::cli::SEND, Some(&fx.main), &["telegram:42", "hi"], &[]);
     assert_eq!(sink, (Some(0), String::new(), String::new()));
-    assert!(fx.stub().0.is_empty());
+    assert!(fx.received_now("worker").is_empty());
     let last = fx.events().pop().unwrap_or_default();
     assert!(
         last.ends_with(
             "\"actor\":\"lead\",\"action\":\"send\",\"target\":\"telegram:42\",\"summary\":\"hi\"}"
         ),
         "{last}"
-    );
-    // The entry missing: said so, at 1, naming it.
-    let bare = fx.scratch_dir.join("sessions").join("bare");
-    std::fs::create_dir_all(&bare).expect("a session dir");
-    std::fs::write(bare.join("meta"), "session=bare\n").expect("a meta file");
-    let out = ae()
-        .env("TMUX", format!("{},0,0", fx.sock.display()))
-        .env("TMUX_PANE", &fx.main)
-        .arg(ae::cli::SEND)
-        .arg(&bare)
-        .args([&fx.main, "q"])
-        .output()
-        .expect("the ae binary should run");
-    assert_eq!(out.status.code(), Some(1), "{out:?}");
-    assert!(
-        String::from_utf8_lossy(&out.stderr).contains("send not delivered: could not run")
-            && String::from_utf8_lossy(&out.stderr).contains("_send-deliver"),
-        "{out:?}"
     );
 }
 
@@ -2373,66 +2520,9 @@ fn a_confirmed_delivery_whose_event_cannot_be_written_is_reported_as_that_gap() 
         "{gap:?}"
     );
     assert_eq!(
-        fx.stub().1,
-        "delivered",
+        pasted(&fx, "worker"),
+        "⟦ae:msg from lead⟧\ndelivered",
         "the paste happened, once, before the gap"
-    );
-}
-
-/// Without a readable recovery record the summary is of the message as typed,
-/// stderr says so, and the delivered message is still recorded (`STUB_RECORD`
-/// makes the stub store nothing, or an unreadable directory, where the real
-/// entry stores the framed text).
-#[test]
-fn a_send_without_a_readable_record_summarises_the_message_as_typed_and_says_so() {
-    let fx = Tracked::new("snr");
-    let none = fx.run(
-        ae::cli::SEND,
-        Some(&fx.main),
-        &["worker", "as", "typed"],
-        &[("STUB_RECORD", "none")],
-    );
-    assert_eq!(
-        none,
-        (
-            Some(0),
-            String::new(),
-            "ae: send to worker: no recovery record was written; the summary is of the message as typed\n".into()
-        )
-    );
-    let events = fx.events();
-    assert_eq!(events.len(), 1, "{events:?}");
-    assert!(
-        events[0].ends_with(
-            "\"actor\":\"lead\",\"action\":\"send\",\"target\":\"worker\",\"summary\":\"as typed\"}"
-        ),
-        "no record, no body_file: {}",
-        events[0]
-    );
-    fx.forget_stub();
-    let unreadable = fx.run(
-        ae::cli::SEND,
-        Some(&fx.main),
-        &["worker", "as", "typed"],
-        &[("STUB_RECORD", "dir")],
-    );
-    let record = fx.dir.join("messages").join("msg.send.stub.txt");
-    assert_eq!(unreadable.0, Some(0));
-    assert!(unreadable.1.is_empty());
-    assert_eq!(
-        unreadable.2,
-        format!(
-            "ae: send to worker: recovery record {} could not be read; the summary is of the message as typed\n",
-            record.display()
-        )
-    );
-    let last = fx.events().pop().unwrap_or_default();
-    assert!(
-        last.ends_with(&format!(
-            "\"summary\":\"as typed\",\"body_file\":\"{}\"}}",
-            record.display()
-        )),
-        "the unreadable record is still the pointer: {last}"
     );
 }
 
@@ -2455,10 +2545,10 @@ fn a_chat_send_keeps_its_lines_and_its_own_cap_on_the_pane_and_at_the_sink() {
     let events = fx.events();
     assert_eq!(events.len(), 1, "{events:?}");
     let expected = format!(
-        "\"action\":\"chat\",\"target\":\"worker\",\"summary\":\"⟦ae:msg from stub⟧\\nfirst {line}\\nsecond\\tline {line}\\nthird\",\"body_file\":"
+        "\"action\":\"chat\",\"target\":\"worker\",\"summary\":\"⟦ae:msg from lead⟧\\nfirst {line}\\nsecond\\tline {line}\\nthird\",\"body_file\":"
     );
     assert!(events[0].contains(&expected), "{}", events[0]);
-    fx.forget_stub();
+    fx.forget();
     let over = format!("{payload}\n{}", "y".repeat(3600));
     let sink = fx.run(
         ae::cli::SEND,
@@ -2467,7 +2557,10 @@ fn a_chat_send_keeps_its_lines_and_its_own_cap_on_the_pane_and_at_the_sink() {
         &[("_AE_EVENT_ACTION", "chat")],
     );
     assert_eq!(sink, (Some(0), String::new(), String::new()));
-    assert!(fx.stub().0.is_empty(), "a sink pastes nothing");
+    assert!(
+        fx.received_now("worker").is_empty(),
+        "a sink pastes nothing"
+    );
     let last = fx.events().pop().unwrap_or_default();
     let kept = 3500 - payload.chars().count() - 1;
     let expected = format!(

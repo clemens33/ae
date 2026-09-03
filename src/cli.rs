@@ -142,6 +142,10 @@ pub const REPLY: &str = "_reply";
 /// The `send` helper's surface — `_send <meta-dir> <target> <message…>`.
 pub const SEND: &str = "_send";
 
+/// The `interrupt` helper's surface —
+/// `_interrupt <meta-dir> <target> [message…]`.
+pub const INTERRUPT: &str = "_interrupt";
+
 /// The watchdog daemon's surface — `_watchdog-run <meta-dir> [knob flags]`.
 ///
 /// Underscored like every other core entry, and never human-typed: the bash
@@ -275,6 +279,14 @@ pub enum Request {
     /// `_send <meta-dir> <target> <message…>` — validated by
     /// [`crate::send::parse`].
     Send {
+        /// The session meta directory.
+        dir: std::path::PathBuf,
+        /// Everything after it, as typed.
+        tail: Vec<String>,
+    },
+    /// `_interrupt <meta-dir> <target> [message…]` — validated by
+    /// [`crate::interrupt::parse`].
+    Interrupt {
         /// The session meta directory.
         dir: std::path::PathBuf,
         /// Everything after it, as typed.
@@ -638,6 +650,13 @@ impl Request {
                     tail: rest.to_vec(),
                 },
             },
+            Some(INTERRUPT) => match &args[1..] {
+                [] => Self::MissingOperand(INTERRUPT),
+                [dir, rest @ ..] => Self::Interrupt {
+                    dir: PathBuf::from(dir),
+                    tail: rest.to_vec(),
+                },
+            },
             Some(MEMO) => match &args[1..] {
                 [] => Self::MissingOperand(MEMO),
                 [dir, rest @ ..] => Self::Memo {
@@ -991,6 +1010,7 @@ impl Request {
             | Self::Review { .. }
             | Self::Reply { .. }
             | Self::Send { .. }
+            | Self::Interrupt { .. }
             | Self::EventsTail { .. }
             | Self::ArchivePreview { .. }
             | Self::ArchivePublish { .. }
@@ -1140,8 +1160,8 @@ mod tests {
     use super::{
         ARCHIVE_PREVIEW, ASK, COMPACT_ARCHIVE, COMPACT_CANCEL, COMPACT_FIND_OUTSTANDING,
         COMPACT_FREEZE, COMPACT_MEMO_BASELINE, COMPACT_REVALIDATE, COMPACT_TEARDOWN, COMPACT_WAIT,
-        DEFAULT_REVALIDATE_WHEN, END_NONLOCAL_TEARDOWN, EVENTS_TAIL, GOAL, MEMO, NET_PROBE, REPLY,
-        REQUESTS, REVIEW, Request, SEND, STATE, TELEGRAM_RUN, WATCHDOG_RUN,
+        DEFAULT_REVALIDATE_WHEN, END_NONLOCAL_TEARDOWN, EVENTS_TAIL, GOAL, INTERRUPT, MEMO,
+        NET_PROBE, REPLY, REQUESTS, REVIEW, Request, SEND, STATE, TELEGRAM_RUN, WATCHDOG_RUN,
     };
     use crate::filters::{ListArgs, Scope};
     use crate::requests::Mode;
@@ -1341,6 +1361,7 @@ mod tests {
             REVIEW,
             REPLY,
             SEND,
+            INTERRUPT,
         ] {
             assert!(spelling.starts_with('_'), "{spelling}");
             assert!(
@@ -1413,6 +1434,7 @@ mod tests {
             REVIEW,
             REPLY,
             SEND,
+            INTERRUPT,
         ] {
             let request = Request::parse(&argv(&[spelling]));
             assert_eq!(request, Request::MissingOperand(spelling));

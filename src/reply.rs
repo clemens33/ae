@@ -331,12 +331,17 @@ fn admit(
     }
 }
 
-/// The environment the reply hands to `_send-deliver`: the VERIFIED sender as
-/// `AE_SENDER_OVERRIDE` — always set, so an override inherited from the
-/// caller's environment is overwritten, empty included: the frozen helper
-/// `exec env AE_SENDER_OVERRIDE="$reply_sender"` after the slot check, and
-/// the send body's provenance envelope takes that variable verbatim when it
-/// is non-empty. Leaving it to inheritance would let
+/// The environment a reply that still runs a HELPER would hand it: the
+/// VERIFIED sender as `AE_SENDER_OVERRIDE` — always set, so an override
+/// inherited from the caller's environment is overwritten, empty included.
+/// The frozen helper `exec env AE_SENDER_OVERRIDE="$reply_sender"` after the
+/// slot check, and the send body's provenance envelope took that variable
+/// verbatim when it was non-empty.
+///
+/// Since B move 1 the reply pastes for itself and hands the envelope the
+/// verified sender directly, so nothing reads this on the reply path. It
+/// stays as the written form of that rule. Leaving it to inheritance would
+/// let
 /// `AE_SENDER_OVERRIDE=spoof reply …` envelope the delivery as `spoof` after
 /// the slot had verified someone else — and would envelope a `--as` reply
 /// from the physical pane while the event named the `--as` actor. Plus the
@@ -373,6 +378,7 @@ pub fn run(
     observed: Option<&ObservedViewer>,
     own_session: &str,
     now: Timestamp,
+    defer: std::time::Duration,
     err: &mut impl Write,
 ) -> io::Result<u8> {
     let me = Replier::from_observed(observed, own_session);
@@ -429,7 +435,7 @@ pub fn run(
         }
         return Ok(0);
     }
-    let resolved = match tracked::resolve(&reply_target, own_session, dir) {
+    let (resolved, server) = match tracked::resolve_on(&reply_target, own_session, dir) {
         Ok(resolved) => resolved,
         Err(why) => {
             writeln!(err, "{}", why.message())?;
@@ -442,21 +448,32 @@ pub fn run(
         resolved.agent.clone()
     };
     let message = format!("[{}] {}", parsed.id, parsed.body);
-    let helper = dir.join(tracked::DELIVER_HELPER);
-    let delivery = transport::deliver(
-        &helper,
-        &target_name,
-        &message,
-        &delivery_env(&verified.sender, &parsed.id),
-    );
-    if delivery.code != Some(0) {
-        return tracked::delivery_code(&delivery, &helper, ACTION, err);
-    }
-    // The frozen reply prints nothing; the helper's one stdout line is the
-    // event's body_file, not the caller's.
-    let body_file = delivery.stdout.trim_end_matches('\n');
+    let request = crate::deliver::Request {
+        dir,
+        server: &server,
+        pane: &resolved.pane,
+        logged_target: &target_name,
+        target_session: &resolved.session,
+        pane_slot: &resolved.slot,
+        own_session,
+        action: ACTION,
+        reference: &parsed.id,
+        // The VERIFIED sender, and never an inherited one: the slot check
+        // above decided who this reply is from, so the envelope takes its
+        // answer rather than the caller's environment. A `--as` reply is
+        // display only and does not reach here.
+        actor: &verified.sender,
+        body: &message,
+        shape: crate::deliver::Shape::Send,
+        defer,
+    };
+    let Ok(delivered) = crate::deliver::deliver(&request, err)? else {
+        // Every arm of a refused delivery has already said what happened and
+        // where the body is; nothing is recorded for one.
+        return Ok(EXIT_FAILED);
+    };
     fields.target = &target_name;
-    fields.body_file = body_file;
+    fields.body_file = &delivered.body_file;
     if let Err(why) = state::emit(dir, &tracked::event_line(&fields)) {
         writeln!(
             err,
