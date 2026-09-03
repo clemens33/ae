@@ -214,6 +214,12 @@ pub struct Env {
     pub inside_tmux: bool,
     /// Whether to attach when the session is up.
     pub attach: bool,
+    /// The core the glue RESOLVED (`_ae_core_bind`), recorded as `ae_core` with
+    /// the version it reported — the pin every helper re-resolves from meta.
+    /// The running binary stands in only when the caller named none.
+    pub core: Option<PathBuf>,
+    /// The version the resolved core reported, when the caller measured it.
+    pub core_version: Option<String>,
     /// The glue's own path, recorded as `ae_path` — the `ae` COMMAND a helper or
     /// the watchdog re-execs (`ae telegram _supervise`, `ae _recover-pending`),
     /// which under a versioned install is a different file from the core.
@@ -273,6 +279,8 @@ fn read_env(tail: &[String]) -> Result<(Env, Vec<String>), String> {
         inside_tmux: false,
         attach: true,
         glue: None,
+        core: None,
+        core_version: None,
     };
     let mut rest = tail;
     while let [flag, after @ ..] = rest {
@@ -309,6 +317,8 @@ fn read_env(tail: &[String]) -> Result<(Env, Vec<String>), String> {
             "--server-kind" => env.server_kind.clone_from(value),
             "--server" => env.server_value.clone_from(value),
             "--glue" => env.glue = Some(value.into()),
+            "--core" => env.core = Some(value.into()),
+            "--core-version" => env.core_version = Some(value.clone()),
             _ => return Err(flag.clone()),
         }
         rest = after;
@@ -401,6 +411,8 @@ pub fn relaunch(
         inside_tmux: false,
         attach: false,
         glue: None,
+        core: None,
+        core_version: None,
     };
     let (main, workers) = split_frozen_roster(plan.roster);
     let launch_plan = Plan {
@@ -1474,9 +1486,13 @@ fn meta_document(
         // ae_path is the recorded `ae` COMMAND, which is the glue when the caller
         // named it; the core only stands in for a caller that did not.
         let ae_path = env.glue.as_ref().unwrap_or(&core);
+        let ae_core = env.core.as_ref().unwrap_or(&core);
         row("ae_path", &ae_path.display().to_string());
-        row("ae_core", &core.display().to_string());
-        row("ae_core_version", crate::VERSION);
+        row("ae_core", &ae_core.display().to_string());
+        row(
+            "ae_core_version",
+            env.core_version.as_deref().unwrap_or(crate::VERSION),
+        );
     }
     if !env.server_kind.is_empty() {
         row("tmux_server", &env.server_value);
@@ -1568,17 +1584,50 @@ fn start_agent(
     // capture the PRE-INJECTION command as the injection boundary — the launch
     // script's re-run form is built from it, and searching for it later in a
     // command carrying kilobytes of injected prose is the frozen bug class.
-    let pre = if shape.resuming {
-        resume_command(&agent.command, agent.tool, &agent.session_id)
-    } else {
-        launch::inject_session_id(&agent.command, &agent.session_id)
-    };
-    let injected = launch::inject_ae_context(&pre, dir, &agent.slot, &ctx, &agent.launch_id);
-    if let Some(warning) = &injected.warning {
-        writeln!(err, "{warning}")?;
-    }
     let prompt = launch::initial_prompt_for(agent.tool).to_owned();
-    let launch_cmd = launch::build_launch_command(&injected.cmd, &prompt, &agent.session_id, &pre);
+    // INJECT FIRST, WRAP THE DECIDER SECOND. The decider is a shell `if`, and
+    // every builder reads the tool off the FIRST WORD; a pre-wrapped resume
+    // command read as `if` → Unknown, and a resumed agent launched with no
+    // context, no identity, no nesting guard (glue cut 2 finding). The frozen
+    // order injects each branch as a plain tool command, then wraps them.
+    let (pre, injected, launch_cmd) = if shape.resuming {
+        let (resume_form, fallback_form) =
+            resume_forms(&agent.command, agent.tool, &agent.session_id);
+        let inj_r =
+            launch::inject_ae_context(&resume_form, dir, &agent.slot, &ctx, &agent.launch_id);
+        let inj_f =
+            launch::inject_ae_context(&fallback_form, dir, &agent.slot, &ctx, &agent.launch_id);
+        if let Some(warning) = &inj_r.warning {
+            writeln!(err, "{warning}")?;
+        }
+        // codex resume takes no inline prompt (delivered once its UI returns).
+        let inline = if agent.tool == ToolKind::Codex {
+            String::new()
+        } else {
+            prompt.clone()
+        };
+        let resume_cmd = launch::build_launch_command(&inj_r.cmd, &inline, "", &resume_form);
+        let fallback_cmd = launch::build_launch_command(&inj_f.cmd, &inline, "", &fallback_form);
+        let decided = if launch::id_probeable(&agent.session_id) {
+            launch::resume_decider(
+                launch::resume_probe(agent.tool, &agent.session_id).as_deref(),
+                &resume_cmd,
+                &fallback_cmd,
+            )
+        } else {
+            fallback_cmd
+        };
+        (resume_form, inj_r, decided)
+    } else {
+        let pre = launch::inject_session_id(&agent.command, &agent.session_id);
+        let injected = launch::inject_ae_context(&pre, dir, &agent.slot, &ctx, &agent.launch_id);
+        if let Some(warning) = &injected.warning {
+            writeln!(err, "{warning}")?;
+        }
+        let launch_cmd =
+            launch::build_launch_command(&injected.cmd, &prompt, &agent.session_id, &pre);
+        (pre, injected, launch_cmd)
+    };
     let script =
         match launch::write_launch_script(dir, &agent.slot, &launch_cmd, &agent.session_id, &pre) {
             Ok(script) => script,
@@ -1618,9 +1667,8 @@ fn start_agent(
 }
 
 /// The resume form of a profile's command — the frozen `resume_cmd_from_cmd`.
-fn resume_command(cmd: &str, tool: ToolKind, session_id: &str) -> String {
-    let probe = launch::resume_probe(tool, session_id);
-    let (resume, fallback) = match tool {
+fn resume_forms(cmd: &str, tool: ToolKind, session_id: &str) -> (String, String) {
+    match tool {
         ToolKind::Claude => (
             format!("{cmd} --resume {session_id}"),
             format!("{cmd} --continue"),
@@ -1645,11 +1693,6 @@ fn resume_command(cmd: &str, tool: ToolKind, session_id: &str) -> String {
             format!("{cmd} --continue"),
         ),
         ToolKind::Unknown => (cmd.to_owned(), cmd.to_owned()),
-    };
-    if launch::id_probeable(session_id) {
-        launch::resume_decider(probe.as_deref(), &resume, &fallback)
-    } else {
-        fallback
     }
 }
 

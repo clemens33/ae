@@ -241,7 +241,14 @@ pub(crate) fn run_stop(
     let mut yes = false;
     let mut is_self = false;
     let mut supervise = false;
-    for arg in tail {
+    // `--pane <id>`: the caller's own pane (the shim passes `$TMUX_PANE`, or the
+    // operator's explicit `--pane=<id>` from a run-shell child, where the
+    // inherited $TMUX_PANE names a FOREIGN pane). The core resolves it to a
+    // session itself: a target equal to it is a self-stop, and `all` with the
+    // caller inside any target is handed to the detached supervisor whole, so
+    // nothing is abandoned when the caller's pane dies mid-fleet.
+    let (pane, words) = split_pane_flag(tail);
+    for arg in &words {
         match arg.as_str() {
             "-y" | "--yes" => yes = true,
             // The caller asserts it is running INSIDE the target. Identity is
@@ -284,6 +291,26 @@ pub(crate) fn run_stop(
     }
     if supervise {
         return run_supervisor(root, &target, out, err);
+    }
+    let caller_session = if pane.is_empty() {
+        None
+    } else {
+        crate::transport::observe_pane_owner(&ServerId::Ambient, &pane).map(|owner| owner.session)
+    };
+    if let Some(own) = &caller_session {
+        if target == "all" && all_sessions(root).contains(own) {
+            if !yes {
+                writeln!(
+                    err,
+                    "Error: 'stop all' from inside session '{own}' needs -y: the stop is handed to a detached supervisor and cannot prompt."
+                )?;
+                return Ok(EXIT_FAILED);
+            }
+            return fleet_supervised(root, own, out, err);
+        }
+        if target == *own {
+            is_self = true;
+        }
     }
     if is_self {
         return self_supervised(root, &target, yes, out, err);
@@ -514,7 +541,83 @@ fn self_supervised(
 /// Calls [`stop_one`] directly, never `run_stop`: this process inherits `TMUX`
 /// from the pane that spawned it, so routing through the self path again would
 /// recurse. Calling the locked path directly makes that impossible by shape.
+/// Lift `--pane <id>` / `--pane=<id>` out of a stop tail; the rest stays in
+/// order. An empty value is no pane.
+fn split_pane_flag(tail: &[String]) -> (String, Vec<String>) {
+    let mut pane: Option<String> = None;
+    let mut words: Vec<String> = Vec::with_capacity(tail.len());
+    let mut it = tail.iter();
+    while let Some(arg) = it.next() {
+        if arg == "--pane" {
+            pane = it.next().cloned();
+        } else if let Some(value) = arg.strip_prefix("--pane=") {
+            pane = Some(value.to_owned());
+        } else {
+            words.push(arg.clone());
+        }
+    }
+    (pane.unwrap_or_default(), words)
+}
+
+/// `_stop --supervise all`: the whole fleet, one session at a time, from a
+/// process no target pane owns. Used when the caller sits inside a target.
 fn run_supervisor(
+    root: &Path,
+    name: &str,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> io::Result<u8> {
+    if name != "all" {
+        return supervise_one(root, name, out, err);
+    }
+    let mut failures = 0_u32;
+    for session in all_sessions(root) {
+        if supervise_one(root, &session, out, err)? != 0 {
+            failures += 1;
+        }
+    }
+    Ok(u8::from(failures != 0))
+}
+
+/// Hand `stop all` to the detached supervisor because the caller is inside
+/// `own`, one of the targets; print the same two lines the single self-stop
+/// prints and return.
+fn fleet_supervised(
+    root: &Path,
+    own: &str,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> io::Result<u8> {
+    let Some(argv) = supervisor_argv("all") else {
+        writeln!(
+            err,
+            "Error: could not locate this binary to detach the fleet stop."
+        )?;
+        return Ok(EXIT_FAILED);
+    };
+    let dir = sessions_dir(root).join(own);
+    emit_stop_event(
+        &dir,
+        own,
+        STOP_REQUEST_ACTION,
+        "stop all requested from inside",
+    );
+    if !crate::transport::run_detached(&argv) {
+        writeln!(
+            err,
+            "Error: could not start the detached supervisor for 'stop all'."
+        )?;
+        return Ok(EXIT_FAILED);
+    }
+    writeln!(
+        out,
+        "Stopping all ae sessions out of pane (this one included)."
+    )?;
+    writeln!(out, "  outcome: {}/events.jsonl", dir.display())?;
+    Ok(0)
+}
+
+fn supervise_one(
     root: &Path,
     name: &str,
     out: &mut impl Write,

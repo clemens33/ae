@@ -389,14 +389,18 @@ pub(crate) fn run(
         }
     }
 
-    // The four stdout contract lines, in order, and nothing else.
-    writeln!(out, "Archived {}", frozen.uuid)?;
-    writeln!(out, "Archive: {}", frozen.archive)?;
-    writeln!(out, "Digest: {}/digest.md", frozen.archive)?;
-    writeln!(out, "Recovery: {recovery}")?;
+    // The four stdout contract lines, in order, and nothing else. A CLOSED
+    // stdout (`ae compact ... | true`) must not abort here: the archive is
+    // published and the source is gone, so the relaunch below and the stderr
+    // route back are all that is left — the bash trapped SIGPIPE for exactly
+    // this (glue cut 2 finding).
+    epipe_ok(writeln!(out, "Archived {}", frozen.uuid))?;
+    epipe_ok(writeln!(out, "Archive: {}", frozen.archive))?;
+    epipe_ok(writeln!(out, "Digest: {}/digest.md", frozen.archive))?;
+    epipe_ok(writeln!(out, "Recovery: {recovery}"))?;
     // The recovery information ALSO goes to stderr, so a broken stdout cannot
     // destroy the only route back.
-    writeln!(err, "Recovery: {recovery}")?;
+    epipe_ok(writeln!(err, "Recovery: {recovery}"))?;
     writeln!(
         err,
         "kept agent conversation files (claude/codex token history; purge: ae end --purge-history)"
@@ -729,6 +733,15 @@ fn read_reply() -> Option<String> {
     match std::io::stdin().read_line(&mut buffer) {
         Ok(read) if read > 0 => Some(buffer.trim_start().to_owned()),
         _ => None,
+    }
+}
+
+/// A write to a stream the reader already closed is not a failure of the
+/// operation: the contract lines are a courtesy to a reader who is gone.
+fn epipe_ok(result: io::Result<()>) -> io::Result<()> {
+    match result {
+        Err(why) if why.kind() == io::ErrorKind::BrokenPipe => Ok(()),
+        other => other,
     }
 }
 
