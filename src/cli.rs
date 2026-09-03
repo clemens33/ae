@@ -271,6 +271,24 @@ pub const LAUNCH: &str = "_launch";
 /// entry, never human-typed.
 pub const CAPTURE_SID: &str = "_capture-sid";
 
+/// The environment report: `doctor [--refresh [all|<session>]]`. A TOP-LEVEL
+/// command, not underscored — a human types it after an install or an agent-CLI
+/// upgrade, which is the whole reason it exists. The behavior is
+/// [`crate::doctor`].
+pub const DOCTOR: &str = "doctor";
+
+/// The rename: `rename [old] <new>`. Top-level for the same reason as
+/// [`DOCTOR`]. The behavior is [`crate::rename`].
+pub const RENAME: &str = "rename";
+
+/// The launch prelude's hard-dependency gate: `_check-deps [--bash-major <n>]`.
+/// Underscored — the glue calls it before any side effect, never a human.
+pub const CHECK_DEPS: &str = "_check-deps";
+
+/// The session helper set, republished: `_shims-render <session-dir>`.
+/// Underscored — a core entry, never human-typed.
+pub const SHIMS_RENDER: &str = "_shims-render";
+
 /// What an argv asks the binary to do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Request {
@@ -661,6 +679,28 @@ pub enum Request {
     /// and it is a separate variant because [`Request::UsageError`] promises to
     /// carry the offending token verbatim — and an absence is not a token.
     MissingOperand(&'static str),
+    /// `doctor [--refresh [all|<session>]]` — validated by [`crate::doctor`].
+    Doctor {
+        /// Everything after the subcommand, as typed.
+        tail: Vec<String>,
+    },
+    /// `rename [old] <new>` — validated by [`crate::rename`].
+    Rename {
+        /// Everything after the subcommand, as typed.
+        tail: Vec<String>,
+    },
+    /// `_check-deps [--bash-major <n>]` — validated by [`crate::doctor`].
+    CheckDeps {
+        /// Everything after the subcommand, as typed.
+        tail: Vec<String>,
+    },
+    /// `_shims-render <session-dir>` — republish one session's helper shims.
+    ShimsRender {
+        /// The session directory.
+        dir: PathBuf,
+        /// Everything after it, which must be nothing.
+        tail: Vec<String>,
+    },
     /// **SC-022** — a token that is a usage error: an unknown top-level OPTION,
     /// or an unknown token in a `list`/`ls` tail. Carries the token verbatim.
     UsageError(String),
@@ -800,6 +840,22 @@ impl Request {
             },
             Some(LAUNCH) => Self::Launch {
                 tail: args[1..].to_vec(),
+            },
+            Some(DOCTOR) => Self::Doctor {
+                tail: args[1..].to_vec(),
+            },
+            Some(RENAME) => Self::Rename {
+                tail: args[1..].to_vec(),
+            },
+            Some(CHECK_DEPS) => Self::CheckDeps {
+                tail: args[1..].to_vec(),
+            },
+            Some(SHIMS_RENDER) => match &args[1..] {
+                [] => Self::MissingOperand(SHIMS_RENDER),
+                [dir, tail @ ..] => Self::ShimsRender {
+                    dir: dir.into(),
+                    tail: tail.to_vec(),
+                },
             },
             Some(REQUESTS) => Self::parse_requests(&args[1..]),
             Some(STATE) => match &args[1..] {
@@ -1235,6 +1291,10 @@ impl Request {
             | Self::Focus { .. }
             | Self::Launch { .. }
             | Self::CaptureSid { .. }
+            | Self::Doctor { .. }
+            | Self::Rename { .. }
+            | Self::CheckDeps { .. }
+            | Self::ShimsRender { .. }
             | Self::State { .. }
             | Self::Goal { .. }
             | Self::Memo { .. }

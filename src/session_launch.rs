@@ -1288,7 +1288,15 @@ fn stamp_session(server: &ServerId, env: &Env, shape: &Session, main_pane: &str)
     ] {
         let _ = transport::publish_option(server, tmux::OptionScope::Session, name, option, value);
     }
-    apply_status_bar(server, shape);
+    apply_status_bar(
+        server,
+        &shape.name,
+        &status_paths(
+            shape.mode.as_str(),
+            &shape.origin.display().to_string(),
+            &shape.work_dir.display().to_string(),
+        ),
+    );
     // The window carries the SESSION name; agent identity lives on `@ae_agent`.
     // Format-escaped, because a window name is a tmux FORMAT and `#(…)` runs a
     // shell.
@@ -1308,9 +1316,12 @@ fn stamp_session(server: &ServerId, env: &Env, shape: &Session, main_pane: &str)
 /// `@ae_watchdog_status`, `@ae_agents_status`), which tmux interpolates
 /// literally — no `#()`, no shell — so a branch name with `)` or `#` in it is
 /// harmless. The static path is `#`-escaped because it is not.
-fn apply_status_bar(server: &ServerId, shape: &Session) {
-    let name = shape.name.as_str();
-    let paths = tmux::format_literal(&status_paths(shape));
+/// `paths` is the location segment [`status_paths`] composed; `name` is the
+/// session. Takes the two facts rather than a launch `Session` because
+/// `ae rename` re-applies the same bar under a new name, and a second copy of
+/// this option list is a second thing to keep in step.
+pub(crate) fn apply_status_bar(server: &ServerId, name: &str, paths: &str) {
+    let paths = tmux::format_literal(paths);
     let session = tmux::format_literal(name);
     for (option, value) in [
         ("status-left", format!("[ae {session}] ")),
@@ -1366,12 +1377,12 @@ fn apply_status_bar(server: &ServerId, shape: &Session) {
 
 /// The location segment of the status bar — the frozen
 /// `_ae_status_left_paths`, whose shape is mode-aware.
-fn status_paths(shape: &Session) -> String {
-    match shape.mode {
-        Mode::Local => shape.work_dir.display().to_string(),
-        Mode::Git | Mode::Full => {
-            format!("{} → {}", shape.origin.display(), shape.work_dir.display())
-        }
+pub(crate) fn status_paths(mode: &str, origin: &str, work_dir: &str) -> String {
+    match Mode::parse(mode) {
+        // An unrecorded or unknown mode reads as local: the frozen `case`'s
+        // default arm shows the work dir alone rather than an arrow to nothing.
+        Some(Mode::Local) | None => work_dir.to_owned(),
+        Some(Mode::Git | Mode::Full) => format!("{origin} → {work_dir}"),
     }
 }
 

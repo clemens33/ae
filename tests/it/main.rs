@@ -13,6 +13,7 @@ mod cli;
 mod compact;
 mod daemons;
 mod deliver;
+mod doctor;
 mod fixtures;
 mod git;
 mod helper_corpus;
