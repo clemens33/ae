@@ -292,13 +292,16 @@ build_ae_context() {
 # build, the context injection, the launch script and its paste all moved with
 # it, and the bash bodies these assertions called are gone.
 
-# ── tool_kind_from_cmd ───────────────────────────────────────────────
-
-assert_eq "kind: claude" "claude" "$(tool_kind_from_cmd "claude --model opus")"
-assert_eq "kind: codex"  "codex"  "$(tool_kind_from_cmd "codex --yolo")"
-assert_eq "kind: opencode" "opencode" "$(tool_kind_from_cmd "opencode")"
-assert_eq "kind: grok" "grok" "$(tool_kind_from_cmd "grok --always-approve -m grok-build")"
-assert_eq "kind: unknown" "unknown" "$(tool_kind_from_cmd "sometool --flag")"
+# ── tool_kind_from_cmd — RETIRED (glue cut, pass 4) ──────────────────────────────
+# 5 assertion(s) went with their subject. The sensor classified a launch command by
+# its binary — stripping a leading `env`, its -u/-i options and any VAR=val words,
+# word by word from the head so a kilobyte of injected prose in the tail could never
+# be scanned. Its only caller in this script was doctor's capture retry, and the
+# core recovers pending ids in-process now (src/watchdog_glue.rs `recover`), so the
+# sensor and the two tokenizer halves under it (_cmd_binary_kind, _cmd_split_binary)
+# have no caller left. The RULE is unchanged and still tested — the core owns it
+# (`ToolKind::from_cmd`, src/config.rs) and the seat rows the launch plan prints
+# carry the classified tool, which the default-config block below now asserts.
 
 # ── extract_binary_from_cmd — RETIRED (B glue cut 2) ───────────────────────────────────────────────
 # 15 assertion(s) went with their subject: the whole launch and resume is ONE core operation now (`_launch`,
@@ -386,42 +389,79 @@ assert_eq "kind: unknown" "unknown" "$(tool_kind_from_cmd "sometool --flag")"
 eval "$(awk '/^DEFAULT_CONFIG=\047/{p=1} p{print} p&&/\047$/{exit}' <<<"$AE_SOURCE")"
 _dc_cfg="$(mktemp)"
 printf '%s\n' "$DEFAULT_CONFIG" >"$_dc_cfg"
-_dc_xdg="$(mktemp -d)"
-_dc_get() { CONFIG_FILE="$_dc_cfg" AE_LOCAL_CONFIG="" XDG_RUNTIME_DIR="$_dc_xdg" get_config "$1"; }
+# READ THROUGH THE CORE, not through a second parser. `get_config` went with the
+# rest of the glue's config reading (pass 4), and replacing it with a test-local
+# INI reader would put a SECOND implementation in front of the file the product
+# parses — a fixture that could accept a config the core refuses. `_launch-plan`
+# is the core's own resolver: it reads [profiles]/[roster]/[workspace], validates
+# the whole workspace, and prints the seats a launch would create. So the seat
+# half of this block is now asserted on what a real launch WOULD DO with the
+# shipped default, which is a stronger claim than "this key holds this string".
+# Rows are US-delimited: seat, slot, name, profile, tool, binary, harness-session,
+# command — fields 1..8, which is why the command reads as field 8.
+_dc_plan="$("$AE_CORE_BIN" _launch-plan --global "$_dc_cfg" 2>&1 || true)"
+_dc_seat() { # <slot> <field-index> -> that field of that seat's row
+    awk -v s="$1" -v f="$2" 'BEGIN{FS="\x1f"} $1=="seat" && $2==s {print $f; exit}' <<<"$_dc_plan"
+}
 # SPEC (identity v2): the seats are NAMES bound in [roster]; `main`/`workers` never
 # carry a profile again. `alias:name` in a seat is the exact spelling v2 refuses.
-assert_eq "default-config: main = the lead NAME alone (never profile:name)" "lead" "$(_dc_get workspace.main)"
+assert_eq "default-config: the shipped default is LAUNCHABLE as written" "1" \
+    "$([[ "$_dc_plan" == *"seat"* && "$_dc_plan" != *"not launchable"* ]] && echo 1 || echo 0)"
+assert_eq "default-config: main = the lead NAME alone (never profile:name)" "lead" "$(_dc_seat main 3)"
 # The standing roster is the JUDGMENT PAIR only (f07ec5f): builders and reviewers
 # are spawned per slice and retired when the work is verified, so worker.0 — the
 # colead seat — is the whole default worker list.
 assert_eq "default-config: workers = the colead seat alone (builders/reviewers are spawned)" \
-    "colead" "$(_dc_get workspace.workers)"
-assert_eq "default-config: layout = lead-pair" "lead-pair" "$(_dc_get workspace.layout)"
+    "colead" "$(_dc_seat worker.0 3)"
+assert_eq "default-config: ...and there is no second worker seat" "" "$(_dc_seat worker.1 3)"
 # v2: every seat name is bound to a profile in [roster], and the binding is what
-# carries the tool. A seat with no [roster] row would refuse the launch.
-assert_eq "default-config: [roster] binds lead → fable5" "fable5" "$(_dc_get roster.lead)"
-assert_eq "default-config: [roster] binds colead → gpt56sol" "gpt56sol" "$(_dc_get roster.colead)"
+# carries the tool. A seat with no [roster] row would refuse the launch — which is
+# now proven by the plan resolving at all, not by reading the key back.
+assert_eq "default-config: [roster] binds lead → fable5" "fable5" "$(_dc_seat main 4)"
+assert_eq "default-config: [roster] binds colead → gpt56sol" "gpt56sol" "$(_dc_seat worker.0 4)"
+assert_eq "default-config: ...and each binding carries its TOOL" "claude|codex" \
+    "$(printf '%s|%s' "$(_dc_seat main 5)" "$(_dc_seat worker.0 5)")"
+# The MODEL the lead and colead seats actually launch with, out of the resolved
+# command — the pin that a family alias or a silent model swap would break.
+assert_eq "default-config: the lead seat launches --model fable" "1" \
+    "$([[ "$(_dc_seat main 8)" == *'--model fable'* ]] && echo 1 || echo 0)"
+assert_eq "default-config: the colead seat launches gpt-5.6-sol" "1" \
+    "$([[ "$(_dc_seat worker.0 8)" == *'gpt-5.6-sol'* ]] && echo 1 || echo 0)"
+unset -f _dc_seat
+unset _dc_plan
 # The legacy section is GONE from the shipped default — a file carrying [agents] is
 # refused at launch, so shipping one would make a fresh install unlaunchable.
 assert_eq "default-config: no [agents] section survives (v2 refuses it at launch)" "0" \
     "$(printf '%s\n' "$DEFAULT_CONFIG" | grep -c '^\[agents\]')"
 assert_eq "default-config: the profiles section is the one command table" "1" \
     "$(printf '%s\n' "$DEFAULT_CONFIG" | grep -c '^\[profiles\]')"
-# STRICT model pins — a model-named PROFILE must never silently run another model.
-assert_eq "default-config: opus5 pins exact --model claude-opus-5 (family alias would drift)" "1" "$([[ "$(_dc_get profiles.opus5)" == *'--model claude-opus-5'* ]] && echo 1 || echo 0)"
-assert_eq "default-config: fable5 defined + pins --model fable (premium tier)" "1" "$([[ "$(_dc_get profiles.fable5)" == *'--model fable'* ]] && echo 1 || echo 0)"
-assert_eq "default-config: sonnet5 pins --model sonnet" "1" "$([[ "$(_dc_get profiles.sonnet5)" == *'--model sonnet'* ]] && echo 1 || echo 0)"
-assert_eq "default-config: gpt56sol pins gpt-5.6-sol" "1" "$([[ "$(_dc_get profiles.gpt56sol)" == *'gpt-5.6-sol'* ]] && echo 1 || echo 0)"
-assert_eq "default-config: gpt56terra pins gpt-5.6-terra" "1" "$([[ "$(_dc_get profiles.gpt56terra)" == *'gpt-5.6-terra'* ]] && echo 1 || echo 0)"
-assert_eq "default-config: gpt56luna pins gpt-5.6-luna" "1" "$([[ "$(_dc_get profiles.gpt56luna)" == *'gpt-5.6-luna'* ]] && echo 1 || echo 0)"
+assert_eq "default-config: layout = lead-pair" "1" \
+    "$(printf '%s\n' "$DEFAULT_CONFIG" | grep -cE '^layout = lead-pair$')"
+# STRICT model pins for the profiles NOT in the default roster. These are template
+# rows — no seat resolves them, so the core's plan cannot report on them and the
+# assertion is necessarily on the shipped text. Matched as a DEFINITION line
+# (`name = "…"`), never as a bare substring, so the commentary above each row
+# cannot satisfy the pin.
+_dc_profile() { printf '%s\n' "$DEFAULT_CONFIG" | sed -n "s/^$1 = //p"; }
+assert_eq "default-config: opus5 pins exact --model claude-opus-5 (family alias would drift)" "1" "$([[ "$(_dc_profile opus5)" == *'--model claude-opus-5'* ]] && echo 1 || echo 0)"
+assert_eq "default-config: fable5 defined + pins --model fable (premium tier)" "1" "$([[ "$(_dc_profile fable5)" == *'--model fable'* ]] && echo 1 || echo 0)"
+assert_eq "default-config: sonnet5 pins --model sonnet" "1" "$([[ "$(_dc_profile sonnet5)" == *'--model sonnet'* ]] && echo 1 || echo 0)"
+assert_eq "default-config: gpt56sol pins gpt-5.6-sol" "1" "$([[ "$(_dc_profile gpt56sol)" == *'gpt-5.6-sol'* ]] && echo 1 || echo 0)"
+assert_eq "default-config: gpt56terra pins gpt-5.6-terra" "1" "$([[ "$(_dc_profile gpt56terra)" == *'gpt-5.6-terra'* ]] && echo 1 || echo 0)"
+assert_eq "default-config: gpt56luna pins gpt-5.6-luna" "1" "$([[ "$(_dc_profile gpt56luna)" == *'gpt-5.6-luna'* ]] && echo 1 || echo 0)"
+# THE PROFILE PROBE MUST BE ABLE TO ANSWER, or the six rows above are vacuous.
+assert_eq "default-config: ...and the profile probe is not vacuous" "1" \
+    "$([[ -n "$(_dc_profile opus5)" ]] && echo 1 || echo 0)"
 # NO profile-definition line uses --model best (comments may mention the anti-pattern).
 assert_eq "default-config: no profile uses --model best (strict pins only)" "0" "$(printf '%s\n' "$DEFAULT_CONFIG" | grep -E '^[a-z0-9]+ = ' | grep -c -- '--model best')"
 # Old tier-named profiles retired.
-assert_eq "default-config: tier profile 'optimal' retired" "" "$(_dc_get profiles.optimal)"
-assert_eq "default-config: tier profile 'fast' retired" "" "$(_dc_get profiles.fast)"
+assert_eq "default-config: tier profile 'optimal' retired" "" "$(_dc_profile optimal)"
+assert_eq "default-config: tier profile 'fast' retired" "" "$(_dc_profile fast)"
 # Self-documenting default (P3): the [prompt] section is COMMENTED, so it documents the
 # hook without setting it — no instructions injected by default.
-assert_eq "default-config: [prompt] instructions stays UNSET (commented example only)" "" "$(_dc_get prompt.instructions)"
+assert_eq "default-config: [prompt] instructions stays UNSET (commented example only)" "0" \
+    "$(printf '%s\n' "$DEFAULT_CONFIG" | grep -cE '^instructions = ')"
+unset -f _dc_profile
 rm -f "$_dc_cfg"
 
 # ── config.sample parity: the repo-visible sample IS the embedded default, byte-for-byte ──
@@ -434,23 +474,16 @@ assert_eq "config-sample: exists at repo root" "1" "$([[ -f "$_cs_sample" ]] && 
 assert_eq "config-sample: byte-identical to the embedded DEFAULT_CONFIG (edit ae:DEFAULT_CONFIG, regen the sample)" "1" \
     "$(diff <(printf '%s\n' "$DEFAULT_CONFIG") "$_cs_sample" >/dev/null 2>&1 && echo 1 || echo 0)"
 
-# ── get_config: NO disk cache — every call parses fresh (cache races removed) ──────
-# The old UID-global cache file (a) served same-second config rewrites STALE (mtime
-# keying, 1s resolution — bit the integration suite: a later test read the prior
-# test's layout) and (b) raced wrong-owner across concurrent ae invocations with
-# different configs (codex repro: 99/300 cross-config reads — check/write/read was
-# not one transaction). Direct parse of the <1 KB config cannot lie.
-_gcc_tmp="$(mktemp -d)"
-_gcc_get() { CONFIG_FILE="$_gcc_tmp/config" AE_LOCAL_CONFIG="" get_config "$1"; }
-printf '[workspace]\nlayout = vertical\n' >"$_gcc_tmp/config"
-_touch_epoch 978307200 "$_gcc_tmp/config"
-assert_eq "config: first value read" "vertical" "$(_gcc_get workspace.layout)"
-printf '[workspace]\nlayout = lead-solo\n' >"$_gcc_tmp/config"
-_touch_epoch 978307200 "$_gcc_tmp/config" # SAME mtime second — only content differs
-assert_eq "config: a same-mtime rewrite is served FRESH (no stale cache)" "lead-solo" "$(_gcc_get workspace.layout)"
-assert_eq "config: NO cross-process disk cache exists (and no md5sum core dependency)" "1" \
-    "$([[ "$AE_SOURCE" != *'.ae-config-cache'* && "$AE_SOURCE" != *'md5sum <"$CONFIG_FILE"'* ]] && echo 1 || echo 0)"
-rm -rf "$_gcc_tmp"
+# ── get_config: NO disk cache — every call parses fresh — RETIRED (glue cut, pass 4) ──
+# 3 assertion(s) went with their subject: the two freshness reads and the pin that no
+# `.ae-config-cache` file or md5sum dependency exists. There is no `get_config` and no
+# `parse_config` in this script any more — the glue writes the default config on first
+# run and hands the file PATH to the core (`--global`), which parses it (src/config.rs).
+# The bug the block was written for cannot recur here, because the read it describes
+# does not happen here: a UID-global cache keyed on mtime served a same-second rewrite
+# STALE (1s resolution) and raced wrong-owner across concurrent invocations with
+# different configs (99/300 cross-config reads). If a cache is ever wanted again it is
+# the core's decision to make, against its own reader.
 
 # ── lead-default Part 2: build_ae_context slot-aware lead/worker blocks (code, NO config key) ──
 _lead_ctx="$(CONFIG_FILE=/dev/null build_ae_context "/tmp/ae" "sess" "/work" "main")"
@@ -536,13 +569,30 @@ assert_eq "final cut: the glue holds no per-tool session-id capture" "0|0|0|0" \
 # THE INSTRUMENT MUST BE ABLE TO ANSWER YES, or the two rows above are vacuous:
 # a typo in the pattern would report 0 for a body that is still there.
 assert_eq "final cut: ...and the definition probe itself is not vacuous" "1" "$(_fc_defs _cmd_spawn)"
-# The doctor recovery path keeps its OWN scanners until that command moves, so
-# this pin is deliberately about the CAPTURE dispatcher and its per-tool bodies,
-# not about every function that reads a tool's history directory. Naming the
-# survivor here is what stops the next reader from "tidying" it away as dead.
-assert_eq "final cut: ...while doctor's recovery scanner is still present, and still called" "1|1" \
-    "$(printf '%s|%s' "$(_fc_defs doctor_try_capture_session_id)" \
-        "$(grep -c 'doctor_try_capture_session_id "$tool_kind"' <<<"$AE_SOURCE" || true)")"
+# THE SURVIVOR CLAUSE IS GONE (pass 4). This pin used to name doctor's recovery
+# scanner as the one reader of a tool's history directory that was still allowed to
+# be here, so a later reader would not "tidy" it away as dead. The core recovers
+# pending ids in-process on every watchdog cycle now (src/watchdog_glue.rs
+# `recover`), so the exception has expired and the whole family is an absence:
+# doctor's retry, the walk that fed it, and the four per-tool scanners.
+assert_eq "final cut: no reader of a tool's history directory survives" "0|0|0" \
+    "$(printf '%s|%s|%s' "$(_fc_defs doctor_try_capture_session_id)" \
+        "$(_fc_defs walk_pending_session_ids)" "$(_fc_defs cmd_recover_pending)")"
+assert_eq "final cut: ...nor any per-tool session finder" "0|0|0|0" \
+    "$(printf '%s|%s|%s|%s' "$(_fc_defs find_codex_session_by_launch_id)" \
+        "$(_fc_defs find_codex_session_by_cwd)" "$(_fc_defs find_opencode_session_by_launch_id)" \
+        "$(_fc_defs find_gemini_session_by_launch_id)")"
+# ...and the glue reads no config of its own: it writes the default and hands the
+# PATH to the core. An INI parser here would be a second reader of the same file.
+assert_eq "final cut: the glue holds no INI parser" "0|0" \
+    "$(printf '%s|%s' "$(_fc_defs parse_config)" "$(_fc_defs get_config)")"
+# The `_recover-pending` word needs no refusing arm of its own — unlike `status` and
+# `orchestrator`, which are session-name-shaped. `_*)` already fails closed on any
+# internal word nobody serves, which is exactly what it was put there for.
+assert_eq "final cut: the retired internal word falls to the fail-closed _* arm" "1|0" \
+    "$(printf '%s|%s' \
+        "$(grep -c "unknown internal command" <<<"$AE_SOURCE" || true)" \
+        "$(grep -c '^    _recover-pending)' <<<"$AE_SOURCE" || true)")"
 # 2. CORE RESOLUTION FROM CONFIG. Retired because it was the only source needing
 # an INI parser. The behavioural half of this is pinned in the core-input block
 # below; this half is that the call site itself is gone, so the parser cannot be

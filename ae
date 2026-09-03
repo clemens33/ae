@@ -56,7 +56,11 @@ CONFIG_DIR="$AE_HOME"
 # CONFIG_FILE honors a pre-set env var so tests + the generated daemon
 # can point at a non-default config without rewriting the user's real one.
 CONFIG_FILE="${CONFIG_FILE:-${CONFIG_DIR}/config}"
-WORKTREES_DIR="${CONFIG_DIR}/worktrees"
+# WORKTREES_DIR is gone with the last body that read it (glue cut, pass 4). The
+# worktree root is <AE_HOME>/worktrees and it is the CORE's to derive — it does so
+# from the --home it is handed (src/inventory.rs, Roots::worktrees). A second
+# spelling here would be a second definition of the same path, and the glue has no
+# caller for it: nothing in this file creates, lists or removes a worktree.
 SESSIONS_DIR="${CONFIG_DIR}/sessions"
 
 # Per-project config override (optional)
@@ -103,59 +107,6 @@ _ae_install_tmux_shim
 # detection is needed and a macOS box with brew coreutils on PATH keeps taking
 # the GNU path. These are shared bodies: ae calls them directly AND they are
 # emitted into the generated helpers via the _lib declare -f list.
-
-# stat(1) field lookup. GNU spells it -c FORMAT, BSD -f FORMAT, with different
-# specifiers. Keys are GNU-flavoured. Prints the value; returns non-zero when
-# BOTH forms fail (file gone/unreadable) so callers can still branch on it —
-# the ones that want a default keep their `|| echo 0`.
-_ae_stat() {
-    local key="$1" file="$2"
-    case "$key" in
-        mtime) stat -c %Y "$file" 2>/dev/null || stat -f %m "$file" 2>/dev/null ;;
-        size) stat -c %s "$file" 2>/dev/null || stat -f %z "$file" 2>/dev/null ;;
-        inode) stat -c %i "$file" 2>/dev/null || stat -f %i "$file" 2>/dev/null ;;
-        uid) stat -c %u "$file" 2>/dev/null || stat -f %u "$file" 2>/dev/null ;;
-        mode) stat -c %a "$file" 2>/dev/null || stat -f %Lp "$file" 2>/dev/null ;;
-        # GNU %y is "YYYY-MM-DD HH:MM:SS.nnnnnnnnn +ZZZZ" and callers cut at the
-        # dot, so the BSD form emits that same prefix with no fraction.
-        mtime-human)
-            stat -c %y "$file" 2>/dev/null ||
-                stat -f %Sm -t '%Y-%m-%d %H:%M:%S' "$file" 2>/dev/null
-            ;;
-        *) return 1 ;;
-    esac
-}
-# First JSON string value for KEY, read from stdin. Replaces the GNU-only
-# `grep -oP '"key"\s*:\s*"\K…'` idiom — BSD grep has neither -P nor \K, so on
-# macOS every one of those returned empty and the agent session-ID capture that
-# depends on them never fired. grep -oE emits matches in source order, so
-# head -1 preserves grep -oP's first-match semantics. VCLASS is a bracket
-# expression for the value characters (default: anything but a quote).
-# A QUERY function: the result is stdout, the status is incidental. It must end
-# `return 0` — no match makes grep exit 1, and `head -1` closing the pipe early
-# on a many-match input can hand grep a SIGPIPE (141); under errexit either would
-# abort a bare caller (AGENTS.md, "only a BARE call proves set -e safety").
-_ae_json_first() {
-    local key="$1" vclass="${2:-[^\"]}"
-    grep -oE "\"${key}\"[[:space:]]*:[[:space:]]*\"${vclass}*\"" |
-        head -1 |
-        sed -e "s/^\"${key}\"[[:space:]]*:[[:space:]]*\"//" -e 's/"$//' || true
-    return 0
-}
-# Yesterday, as YYYY/MM/DD in UTC — the day-partitioned layout codex and gemini
-# use for their session logs. GNU spells the offset `-d yesterday`, BSD `-v-1d`,
-# and the two are NOT interchangeable in general: `-d` takes a free-form English
-# phrase, `-v` a fixed adjustment. Inlining the pair at each call site forced the
-# portability detector to carry a `date` allow-list, and any allow-list wide
-# enough to permit these lines also permits a NON-equivalent pair (`-d '2 days
-# ago' || -v-1d`) whose two branches silently disagree. One chokepoint instead:
-# the detector then needs no date exemption at all. Empty if neither form works.
-_ae_yesterday() {
-    date -u -d 'yesterday' +%Y/%m/%d 2>/dev/null ||
-        date -u -v-1d +%Y/%m/%d 2>/dev/null ||
-        true
-    return 0
-}
 
 # Are we ACTUALLY inside a tmux pane — not merely carrying $TMUX? (#29)
 #
@@ -217,25 +168,16 @@ _ae_inside_tmux() {
     return 1
 }
 
-# --- Function index --- (41 functions; every one has a live caller)
-#   Portability:  _ae_stat, _ae_json_first, _ae_yesterday, _ae_inside_tmux,
-#                 _ae_install_tmux_shim
-#   Config:       parse_config, get_config
+# --- Function index --- (21 functions; every one has a live caller)
+#   Portability:  _ae_inside_tmux, _ae_install_tmux_shim
 #   Names/paths:  _validate_session_name, _session_name_usable, _path_is_direct_child,
 #                 _session_path_is_safe, _require_session_path_safe
-#   Session read: read_session_meta, detect_current_session, read_launch_id_for_slot,
-#                 read_launch_time_for_slot, _autostart_session_hint
-#   Tool sensing: _cmd_split_binary, _cmd_binary_kind, tool_kind_from_cmd
+#   Session read: detect_current_session, _autostart_session_hint
 #   Core binding: _ae_core_current_input, _ae_core_bin_input, _ae_core_bin_version,
-#                 _ae_core_try (session-pinned), _ae_core_preflight_try (operator),
-#                 _identity_core
+#                 _ae_core_try (session-pinned), _ae_core_preflight_try (operator)
 #   Commands:     cmd_list, cmd_next, cmd_archive_preview, cmd_help,
-#                 cmd_recover_pending, _cmd_spawn, _cmd_retire
+#                 _cmd_spawn, _cmd_retire
 #   Launch glue:  resolve_launch_tmux_server (the typed server pair)
-#   Pending sids: doctor_try_capture_session_id, walk_pending_session_ids,
-#                 _watchdog_recover_report, find_codex_session_by_launch_id,
-#                 find_codex_session_by_cwd, find_opencode_session_by_launch_id,
-#                 find_gemini_session_by_launch_id
 #
 # NOT HERE, AND THAT IS THE POINT — the absences this file is now pinned on.
 # Each was a real body that a later reader could plausibly reintroduce, so the
@@ -261,6 +203,26 @@ _ae_inside_tmux() {
 #     The core reads the config pair it is handed and starts the companions itself.
 #     Gone with it: the whole legacy `hub` scaffold, and the two meta writers
 #     (_set_meta_kv, _set_meta_watchdog) that had already lost their last caller.
+#   * NO PENDING-SESSION-ID RECOVERY, and no per-tool history reader of any kind
+#     (pass 4). The core recovers in-process on every watchdog cycle
+#     (src/watchdog_glue.rs `recover`, driven from `tick_pane_duties`), so the
+#     `_recover-pending` arm has no caller: the daemon used to shell back into
+#     this script through meta's `ae_path` and parse a TSV. Gone with it: the four
+#     find_*_session_by_* scanners, the launch-id/launch-time readers they keyed
+#     on, doctor's capture retry, and the tool-command sensor
+#     (tool_kind_from_cmd / _cmd_binary_kind / _cmd_split_binary) that classified
+#     which scanner to run. `_recover-pending` needs no refusing arm of its own:
+#     `_*)` already fails closed on any internal word nobody serves.
+#   * NO INI PARSER. `parse_config` and `get_config` went with their last callers
+#     in the same pass. The glue still WRITES a default config on first run — that
+#     is a template, not a read — and hands the file path to the core as
+#     `--global`; parsing it is the core's (src/config.rs). This is the line
+#     AGENTS.md draws for the surviving glue: it resolves paths and facts the core
+#     cannot see for itself, and reads none of ae's own state.
+#   * NO PORTABILITY SHIMS. `_ae_stat`, `_ae_json_first` and `_ae_yesterday` are
+#     gone — the GNU-vs-BSD divergences they covered (stat -c, grep -oP, date -d)
+#     were reached only by the readers above. `_ae_inside_tmux` stays: it is a
+#     tmux/ps question, not a userland one, and the launch still needs its answer.
 
 DEFAULT_CONFIG='# ae config — auto-created on first run, yours to edit. Also mirrored in the repo as
 # config.sample. INI-style: [section] headers, key = value, "#" starts a comment.
@@ -335,58 +297,6 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
     echo "Created default config at $CONFIG_FILE" >&2
 fi
 
-# Simple INI parser — outputs section.key=value lines
-# Reads global config, then per-project .ae/config (local values shadow global)
-parse_config() {
-    local section="" file line
-    for file in "$CONFIG_FILE" "${AE_LOCAL_CONFIG:-}"; do
-        # shellcheck disable=SC2015 # safe: if file is empty or missing, continue either way
-        [[ -n "$file" ]] && [[ -f "$file" ]] || continue
-        section=""
-        while IFS= read -r line; do
-            # Trim leading/trailing whitespace (pure bash, no sed fork)
-            line="${line#"${line%%[![:space:]]*}"}"
-            line="${line%"${line##*[![:space:]]}"}"
-            [[ -z "$line" ]] && continue
-
-            if [[ "$line" =~ ^\[([a-zA-Z_-]+)\]$ ]]; then
-                section="${BASH_REMATCH[1]}"
-                continue
-            fi
-
-            # Strip comments only outside quoted values
-            if [[ "$line" =~ ^([a-zA-Z_][a-zA-Z0-9_-]*)\ *=\ *\"(.*)\"$ ]]; then
-                printf '%s\n' "${section}.${BASH_REMATCH[1]}=${BASH_REMATCH[2]}"
-            elif [[ "$line" =~ ^([a-zA-Z_][a-zA-Z0-9_-]*)\ *=\ *(.+)$ ]]; then
-                local val="${BASH_REMATCH[2]}"
-                val="${val%%#*}"
-                val="${val%"${val##*[![:space:]]}"}"
-                printf '%s\n' "${section}.${BASH_REMATCH[1]}=${val}"
-            else
-                continue
-            fi
-        done <"$file"
-    done
-}
-
-# Last match wins — local config overrides global
-# Cached via deterministic temp file so subshells share the same parsed result.
-get_config() {
-    # NO disk cache — parse on every call. The old UID-global cache file raced:
-    # (a) mtime keying (1-second resolution) served a same-second config REWRITE
-    # stale, and (b) the check/write/read was not one transaction, so two concurrent
-    # ae invocations with DIFFERENT configs could read each other's parse (codex
-    # repro: 99/300 wrong-owner reads across 300 concurrent pairs; tmp.$$ names also
-    # collide across subshells of one parent). The config is under a kilobyte and
-    # parse_config is pure bash — direct parsing costs microseconds and cannot lie.
-    local result="" entry
-    while IFS= read -r entry; do
-        if [[ "$entry" == "${1}="* ]]; then
-            result="${entry#*=}"
-        fi
-    done < <(parse_config)
-    printf '%s' "$result"
-}
 # ── The core's helper set, rewritten from bash ────────────────────────────
 # The ONE asset `ae doctor --refresh` still needs that the core has no entry for.
 #
@@ -409,46 +319,6 @@ _AE_SHIM_PASSTHROUGH=(
     focus:_focus interrupt:_interrupt spawn:_spawn retire:_retire
     watchdog:_watchdog-run events-tail:_events-tail
 )
-read_launch_id_for_slot() {
-    local meta_dir="$1" slot="$2"
-    local escaped_slot="${slot//./\\.}"
-    local launch_id=""
-    launch_id="$(grep "^launch_id\.${escaped_slot}=" "${meta_dir}/meta" 2>/dev/null | cut -d= -f2- || true)"
-    if [[ -z "$launch_id" ]]; then
-        # Backward compatibility for sessions created before generic launch_id keys.
-        launch_id="$(grep "^codex_launch_id\.${escaped_slot}=" "${meta_dir}/meta" 2>/dev/null | cut -d= -f2- || true)"
-    fi
-    if [[ -z "$launch_id" ]]; then
-        launch_id="$(grep "^opencode_launch_id\.${escaped_slot}=" "${meta_dir}/meta" 2>/dev/null | cut -d= -f2- || true)"
-    fi
-    if [[ -z "$launch_id" ]]; then
-        launch_id="$(grep "^gemini_launch_id\.${escaped_slot}=" "${meta_dir}/meta" 2>/dev/null | cut -d= -f2- || true)"
-    fi
-    printf '%s' "$launch_id"
-}
-
-read_launch_time_for_slot() {
-    local meta_dir="$1" slot="$2"
-    local escaped_slot="${slot//./\\.}"
-    local launch_time=""
-    launch_time="$(grep "^launch_time\.${escaped_slot}=" "${meta_dir}/meta" 2>/dev/null | cut -d= -f2- || true)"
-    if [[ -z "$launch_time" ]]; then
-        # Backward compatibility for sessions created before generic launch_time keys.
-        launch_time="$(grep "^codex_launch_time\.${escaped_slot}=" "${meta_dir}/meta" 2>/dev/null | cut -d= -f2- || true)"
-    fi
-    if [[ -z "$launch_time" ]]; then
-        launch_time="$(grep "^opencode_launch_time\.${escaped_slot}=" "${meta_dir}/meta" 2>/dev/null | cut -d= -f2- || true)"
-    fi
-    if [[ -z "$launch_time" ]]; then
-        launch_time="$(grep "^gemini_launch_time\.${escaped_slot}=" "${meta_dir}/meta" 2>/dev/null | cut -d= -f2- || true)"
-    fi
-    case "$launch_time" in
-        '' | *[!0-9]*)
-            launch_time=0
-            ;;
-    esac
-    printf '%s' "$launch_time"
-}
 # Detect current ae session when running inside tmux (for ae end/status without name)
 # _ae_inside_tmux, not a bare $TMUX test (#29): from a GUI terminal that inherited
 # $TMUX, display-message answers for the ORIGINAL pane — so `ae end` with no name
@@ -465,276 +335,6 @@ detect_current_session() {
     return 1
 }
 
-# Detect tool kind from command (for staleness checks on resume)
-# ae prefixes an env assignment onto some launch commands (opencode's OPENCODE_CONFIG;
-# claude's nesting guards). Tool detection matches on the BINARY, so a leading `env`,
-# its -u/-i options, and any VAR=val words come off first.
-#
-# It walks WORD BY WORD from the head and stops at the first thing that is not a
-# prefix — it must never scan the whole command, whose tail can be kilobytes of
-# injected prose containing "=" and glob characters. (Testing `$cmd == *=*` would match
-# any command whose prompt happens to contain an equals sign; the first WORD is the
-# only safe thing to look at.)
-# THE TOKENIZER. It runs once and yields one fact in four parts, and every consumer —
-# classification, prefix extraction, command reconstruction — reads THAT rather than
-# parsing its output again. The previous shape tokenized correctly and then re-split the
-# raw suffix on a literal space, so a quoted or backslash-escaped path with a space in
-# it ('/Applications/Open Code/codex') classified UNKNOWN while the same path without a
-# space worked — the giveaway that the bug lived at shell-word boundaries. Re-parsing a
-# parse is the same disease as the two capture ranges and the re-created cycle wiring:
-# one definition, all callers.
-#
-# Results (globals, because bash returns one value and this yields four — precedent:
-# _event_json_str through _EV):
-#   _CMD_PREFIX   raw text before the binary, prefix words included
-#   _CMD_BIN_RAW  the binary exactly as written (quotes and escapes intact)
-#   _CMD_BIN      the binary DECODED, for comparison
-#   _CMD_REST     raw text after the binary
-_cmd_split_binary() { # <cmd>
-    local cmd="$1"
-    local n=${#cmd} i=0 ch nxt q word wstart skip=0 bad=0
-    _CMD_PREFIX="" _CMD_BIN_RAW="" _CMD_BIN="" _CMD_REST=""
-    # VALIDATION IS SCOPED TO WHAT THIS CONSUMES — the prefix words and the binary word.
-    # The tail is passed through untouched and ae makes no claim about it. An earlier
-    # version counted trailing backslashes across the WHOLE command and was wrong both
-    # ways: `codex --yolo # note\` is valid (the backslash is inside a comment) yet was
-    # refused, suppressing all codex shaping, while `codex --yolo "unterminated` is
-    # invalid yet classified fine because the scan had already stopped at the binary.
-    # A command that was already invalid stays invalid and fails loudly at exec, which
-    # is honest: ae never promised to validate the operator's config, and writing a full
-    # shell lexer in bash is not a promise it can keep.
-    while :; do
-        while ((i < n)) && [[ "${cmd:i:1}" == " " || "${cmd:i:1}" == $'\t' ]]; do ((i += 1)); done
-        ((i < n)) || break
-        wstart=$i
-        word=""
-        q=""
-        while ((i < n)); do
-            ch="${cmd:i:1}"
-            if [[ "$q" == "'" ]]; then
-                # Single quotes: everything is literal, including backslashes.
-                if [[ "$ch" == "'" ]]; then q=""; else word+="$ch"; fi
-            elif [[ "$q" == '"' ]]; then
-                # Double quotes: bash honours \ only before " \ $ ` and newline;
-                # anywhere else the backslash is itself literal. Closing at the FIRST
-                # quote regardless — the old shape — cut a valid path in half and
-                # swallowed the following argument into the binary's span.
-                if [[ "$ch" == "\\" ]]; then
-                    ((i + 1 < n)) || {
-                        bad=1
-                        break
-                    }
-                    nxt="${cmd:i+1:1}"
-                    case "$nxt" in
-                        '"' | \\ | '$' | '`')
-                            word+="$nxt"
-                            i=$((i + 1))
-                            ;;
-                        $'\n') i=$((i + 1)) ;; # line continuation: nothing emitted
-                        *) word+="$ch" ;;
-                    esac
-                elif [[ "$ch" == '"' ]]; then
-                    q=""
-                else
-                    word+="$ch"
-                fi
-            elif [[ "$ch" == "\\" ]]; then
-                # A command may not END in a bare backslash: that is not valid shell,
-                # and silently dropping it used to hand back a confident answer for an
-                # input no shell would run.
-                ((i + 1 < n)) || {
-                    bad=1
-                    break
-                }
-                i=$((i + 1))
-                word+="${cmd:i:1}"
-            elif [[ "$ch" == "'" || "$ch" == '"' ]]; then
-                q="$ch"
-            elif [[ "$ch" == " " || "$ch" == $'\t' ]]; then
-                break
-            else
-                word+="$ch"
-            fi
-            i=$((i + 1))
-        done
-        # An unterminated quote is malformed too.
-        [[ -z "$q" ]] || bad=1
-        if ((bad)); then break; fi
-        if ((skip)); then
-            skip=0
-            continue
-        fi
-        case "$word" in
-            env) ;;       # the launcher itself
-            -i) ;;        # takes NO argument
-            -u) skip=1 ;; # ...unlike -u, which takes one
-            *=*) ;;       # VAR=value; quotes already consumed above
-            *)            # the binary
-                _CMD_PREFIX="${cmd:0:wstart}"
-                _CMD_BIN_RAW="${cmd:wstart:i-wstart}"
-                _CMD_BIN="$word"
-                _CMD_REST="${cmd:i}"
-                return 0
-                ;;
-        esac
-    done
-    # FAIL TOWARD UNKNOWN. Malformed input, or nothing but prefix words: claim no
-    # binary and hand the command back whole. An unclassified command costs a degraded
-    # launch — no context, no exact resume — while a confidently WRONG classification
-    # sends a mis-spliced command to a live pane.
-    _CMD_PREFIX="" _CMD_BIN_RAW="" _CMD_BIN=""
-    _CMD_REST="$cmd"
-    return 0
-}
-
-_cmd_binary_kind() { # <cmd> -> the bare binary name, prefix and path removed
-    _cmd_split_binary "$1"
-    printf '%s' "${_CMD_BIN##*/}"
-    return 0
-}
-
-tool_kind_from_cmd() {
-    case "$(_cmd_binary_kind "$1")" in
-        claude) echo "claude" ;;
-        codex) echo "codex" ;;
-        gemini) echo "gemini" ;;
-        grok) echo "grok" ;;
-        opencode) echo "opencode" ;;
-        *) echo "unknown" ;;
-    esac
-}
-
-# Find a codex session ID by matching an ae-injected launch marker in the session log.
-# Scans recent session files (today + yesterday to handle UTC midnight rollover).
-# Only considers files modified after $launch_time (epoch seconds) to avoid stale matches.
-# Returns the UUID of the newest matching session, or empty string.
-find_codex_session_by_launch_id() {
-    local launch_id="$1" launch_time="${2:-0}"
-    local best_id="" best_mtime=0
-    local day
-    for day in "$(date -u +%Y/%m/%d)" "$(_ae_yesterday)"; do
-        [[ -z "$day" ]] && continue
-        local dir="$HOME/.codex/sessions/${day}"
-        [[ -d "$dir" ]] || continue
-        local f
-        for f in "$dir"/*.jsonl; do
-            [[ -f "$f" ]] || continue
-            local mtime
-            mtime="$(_ae_stat mtime "$f" || echo 0)"
-            ((mtime < launch_time)) && continue
-            grep -Fq "AE_CODEX_LAUNCH_ID=${launch_id}" "$f" 2>/dev/null || continue
-            if ((mtime > best_mtime)); then
-                local first_line file_id
-                first_line="$(head -1 "$f" 2>/dev/null || true)"
-                [[ -z "$first_line" ]] && continue
-                file_id="$(echo "$first_line" | _ae_json_first id '[0-9a-f-]' 2>/dev/null || true)"
-                if [[ -n "$file_id" ]]; then
-                    best_id="$file_id"
-                    best_mtime="$mtime"
-                fi
-            fi
-        done
-    done
-    echo "$best_id"
-}
-
-# Find a codex session ID by matching CWD in session_meta JSON.
-# Scans recent session files (today + yesterday to handle UTC midnight rollover).
-# Only considers files modified after $launch_time (epoch seconds) to avoid stale matches.
-# Returns the UUID of the newest matching session, or empty string.
-find_codex_session_by_cwd() {
-    local target_cwd="$1" launch_time="${2:-0}"
-    # Normalize target CWD (resolve symlinks/worktrees)
-    target_cwd="$(realpath "$target_cwd" 2>/dev/null || echo "$target_cwd")"
-    local best_id="" best_mtime=0
-    # Scan today and yesterday (handles UTC midnight rollover)
-    local day
-    for day in "$(date -u +%Y/%m/%d)" "$(_ae_yesterday)"; do
-        [[ -z "$day" ]] && continue
-        local dir="$HOME/.codex/sessions/${day}"
-        [[ -d "$dir" ]] || continue
-        local f
-        for f in "$dir"/*.jsonl; do
-            [[ -f "$f" ]] || continue
-            # Skip files older than launch_time
-            local mtime
-            mtime="$(_ae_stat mtime "$f" || echo 0)"
-            ((mtime < launch_time)) && continue
-            # Parse first line: extract payload.cwd and payload.id
-            local first_line file_cwd file_id
-            first_line="$(head -1 "$f" 2>/dev/null || true)"
-            [[ -z "$first_line" ]] && continue
-            file_cwd="$(echo "$first_line" | _ae_json_first cwd 2>/dev/null || true)"
-            [[ -z "$file_cwd" ]] && continue
-            # Normalize file CWD
-            file_cwd="$(realpath "$file_cwd" 2>/dev/null || echo "$file_cwd")"
-            [[ "$file_cwd" != "$target_cwd" ]] && continue
-            # CWD matches — pick newest by mtime
-            if ((mtime > best_mtime)); then
-                file_id="$(echo "$first_line" | _ae_json_first id '[0-9a-f-]' 2>/dev/null || true)"
-                if [[ -n "$file_id" ]]; then
-                    best_id="$file_id"
-                    best_mtime="$mtime"
-                fi
-            fi
-        done
-    done
-    echo "$best_id"
-}
-# Find an opencode session ID by matching directory in `opencode session list --format json`.
-# Only considers sessions updated after $launch_time (epoch seconds).
-# Returns the session ID of the newest matching session, or empty string.
-find_opencode_session_by_launch_id() {
-    local launch_id="$1" launch_time="${2:-0}"
-    if ! command -v opencode &>/dev/null; then
-        return
-    fi
-    [[ "$launch_id" =~ ^[0-9a-fA-F-]+$ ]] || return
-    local launch_time_ms=$((launch_time * 1000))
-    local query
-    query="select s.id
-from session s
-join message m on m.session_id = s.id
-join part p on p.message_id = m.id and p.session_id = s.id
-where s.time_updated >= ${launch_time_ms}
-  and p.data like '%AE_OPENCODE_LAUNCH_ID=${launch_id}%'
-order by s.time_updated desc
-limit 1;"
-    opencode db "$query" --format tsv 2>/dev/null | awk 'NR > 1 && NF { print $1; exit }'
-}
-
-# Find a Gemini session ID by matching an ae-injected launch marker in local chat history.
-# Limits search to project temp dirs whose .project_root matches $target_cwd.
-find_gemini_session_by_launch_id() {
-    local target_cwd="$1" launch_id="$2" launch_time="${3:-0}"
-    target_cwd="$(realpath "$target_cwd" 2>/dev/null || echo "$target_cwd")"
-    [[ -d "$HOME/.gemini/tmp" ]] || return
-    local best_id="" best_mtime=0
-    local proj_dir root_file root chats_dir f mtime session_id
-    for proj_dir in "$HOME/.gemini/tmp"/*; do
-        [[ -d "$proj_dir" ]] || continue
-        root_file="${proj_dir}/.project_root"
-        [[ -f "$root_file" ]] || continue
-        root="$(cat "$root_file" 2>/dev/null || true)"
-        root="$(realpath "$root" 2>/dev/null || echo "$root")"
-        [[ "$root" == "$target_cwd" ]] || continue
-        chats_dir="${proj_dir}/chats"
-        [[ -d "$chats_dir" ]] || continue
-        for f in "$chats_dir"/session-*.json; do
-            [[ -f "$f" ]] || continue
-            mtime="$(_ae_stat mtime "$f" || echo 0)"
-            ((mtime < launch_time)) && continue
-            grep -Fq "AE_GEMINI_LAUNCH_ID=${launch_id}" "$f" 2>/dev/null || continue
-            session_id="$(_ae_json_first sessionId <"$f" 2>/dev/null || true)"
-            [[ -z "$session_id" ]] && continue
-            if ((mtime > best_mtime)); then
-                best_id="$session_id"
-                best_mtime="$mtime"
-            fi
-        done
-    done
-    echo "$best_id"
-}
 # Is CANDIDATE a DIRECT CHILD of PARENT, by pure string structure? Used as the
 # belt to entry validation's braces before anything is deleted. String-structural
 # rather than realpath-based on purpose: `readlink -f` is GNU-only, and this test
@@ -866,23 +466,6 @@ _require_session_path_safe() {
     return 1
 }
 
-# Read a session's metadata file (mode, origin)
-read_session_meta() {
-    local session_name="$1" key="$2"
-    local meta="${SESSIONS_DIR}/${session_name}/meta"
-    # Backward compat: try old worktree-nested path
-    if [[ ! -f "$meta" ]]; then
-        meta="${WORKTREES_DIR}/${session_name}/.ae/${session_name}/meta"
-    fi
-    if [[ -f "$meta" ]]; then
-        while IFS='=' read -r k v; do
-            if [[ "$k" == "$key" ]]; then
-                printf '%s' "$v"
-                return
-            fi
-        done <"$meta"
-    fi
-}
 # Identity v2 (P34): the roster is the CORE's answer — the glue parses no identity.
 # RESUME (the session meta exists — authoritative INCLUDING EMPTINESS, so a zero-worker
 # session never regains config workers): a v1 meta is migrated in place first
@@ -1225,150 +808,6 @@ _AE_END_TARGETS_CONFIRMED=false
 # The rendered confirmation line for the target just frozen. REPLY-style, like _EV: the
 # freeze path may not fork, because a fork cannot carry the array write back.
 _AE_END_PLAN_LINE=""
-# Try to capture a pending session ID from on-disk agent session files (no live pane needed).
-# Uses the same find_*_session_by_* helpers as start_capture_session_id, but skips the
-# pane-polling and TUI-scrape methods so it can run from doctor without an attached agent.
-# Exit codes:
-#   0 = won the race; captured ID printed to stdout
-#   2 = found a session file but lost the race to another recoverer
-#   1 = no matching session file found (real miss) or other error
-doctor_try_capture_session_id() {
-    local tool_kind="$1" slot="$2" meta_dir="$3"
-    local captured="" launch_time launch_id work_dir
-    work_dir="$(grep '^work_dir=' "$meta_dir/meta" 2>/dev/null | cut -d= -f2- || true)"
-    launch_time="$(read_launch_time_for_slot "$meta_dir" "$slot")"
-    launch_id="$(read_launch_id_for_slot "$meta_dir" "$slot")"
-    case "$tool_kind" in
-        codex)
-            if [[ -n "$launch_id" ]]; then
-                captured="$(find_codex_session_by_launch_id "$launch_id" "$launch_time" 2>/dev/null || true)"
-            fi
-            if [[ -z "$captured" && -n "$work_dir" ]]; then
-                captured="$(find_codex_session_by_cwd "$work_dir" "$launch_time" 2>/dev/null || true)"
-            fi
-            ;;
-        gemini)
-            if [[ -n "$work_dir" && -n "$launch_id" ]]; then
-                captured="$(find_gemini_session_by_launch_id "$work_dir" "$launch_id" "$launch_time" 2>/dev/null || true)"
-            fi
-            ;;
-        opencode)
-            if [[ -n "$launch_id" ]]; then
-                captured="$(find_opencode_session_by_launch_id "$launch_id" "$launch_time" 2>/dev/null || true)"
-            fi
-            ;;
-    esac
-    [[ -n "$captured" ]] || return 1
-    # Identity v2: the core writes the row (harness_session.<slot>) under meta.lock
-    # itself, so NO bash lock is held around the call — it would deadlock the core's own
-    # acquire. The check is a plain read; a re-capture racing it rewrites the same fact.
-    local escaped_slot="${slot//./\\.}" current_id
-    current_id="$(grep "^harness_session\.${escaped_slot}=" "$meta_dir/meta" 2>/dev/null | head -1 | cut -d= -f2- || true)"
-    if [[ "$current_id" != "pending" ]]; then
-        rc=2
-    elif META_DIR="$meta_dir" _identity_core session _roster set-harness-session "$slot" "$captured" >/dev/null; then
-        rc=0
-    else
-        rc=1
-    fi
-    set -e
-    case "$rc" in
-        0)
-            printf '%s' "$captured"
-            return 0
-            ;;
-        2) return 2 ;;
-        *) return 1 ;;
-    esac
-}
-
-# Walk a session's meta and try to recover any pending agent session IDs.
-# Iterate a session's meta and try to recover pending session IDs.
-# Calls report_fn for each entry: report_fn <kind> <slot> <agent_label> <tool_kind> <captured_or_empty>
-# kind is one of: ok | already | miss | skip
-# Used by both doctor (with reporting) and the watchdog (with quiet/event-based output).
-walk_pending_session_ids() {
-    local session_name="$1" report_fn="$2"
-    local meta_dir="${SESSIONS_DIR}/${session_name}"
-    [[ -f "${meta_dir}/meta" ]] || return 0
-
-    local key val slot stored_alias agent_label cmd tool_kind captured rc
-    local _esc
-    while IFS='=' read -r key val; do
-        # Identity v2: walk the pending harness_session rows; the seat's name and
-        # profile are its own rows, read by slot.
-        [[ "$key" == harness_session.* ]] || continue
-        [[ "$val" == "pending" ]] || continue
-        slot="${key#harness_session.}"
-        _esc="${slot//./\\.}"
-        agent_label="$(grep "^seat\.${_esc}=" "${meta_dir}/meta" 2>/dev/null | head -1 | cut -d= -f2- || true)"
-        stored_alias="$(grep "^profile\.${_esc}=" "${meta_dir}/meta" 2>/dev/null | head -1 | cut -d= -f2- || true)"
-        cmd="$(get_config "profiles.${stored_alias}")"
-        if [[ -z "$cmd" ]]; then
-            "$report_fn" "skip" "$slot" "$agent_label" "" ""
-            continue
-        fi
-        tool_kind="$(tool_kind_from_cmd "$cmd")"
-        case "$tool_kind" in
-            codex | gemini | opencode) ;;
-            *)
-                # claude shouldn't be pending; nothing else to recover
-                continue
-                ;;
-        esac
-        rc=0
-        captured="$(doctor_try_capture_session_id "$tool_kind" "$slot" "$meta_dir")" || rc=$?
-        case "$rc" in
-            0)
-                if [[ -n "$captured" ]]; then
-                    "$report_fn" "ok" "$slot" "$agent_label" "$tool_kind" "$captured"
-                else
-                    "$report_fn" "miss" "$slot" "$agent_label" "$tool_kind" ""
-                fi
-                ;;
-            2)
-                "$report_fn" "already" "$slot" "$agent_label" "$tool_kind" ""
-                ;;
-            *)
-                "$report_fn" "miss" "$slot" "$agent_label" "$tool_kind" ""
-                ;;
-        esac
-    done <"${meta_dir}/meta"
-}
-# watchdog reporter — TSV output: <kind>\t<slot>\t<agent_label>\t<tool_kind>\t<captured>
-# Called by the watchdog helper via 'ae _recover-pending <session>'.
-_watchdog_recover_report() {
-    local kind="$1" slot="$2" agent_label="$3" tool_kind="$4" captured="$5"
-    printf '%s\t%s\t%s\t%s\t%s\n' "$kind" "$slot" "$agent_label" "$tool_kind" "$captured"
-}
-
-# Internal: recover pending session IDs for a session and emit TSV results.
-# Used by the watchdog to keep meta up to date over time. Output format:
-#   ok\t<slot>\t<agent_label>\t<tool_kind>\t<captured_id>     # we won the race
-#   already\t<slot>\t<agent_label>\t<tool_kind>\t             # another recoverer claimed it
-#   miss\t<slot>\t<agent_label>\t<tool_kind>\t                # no matching session file found
-#   skip\t<slot>\t<agent_label>\t\t                            # alias not configured
-# The watchdog ignores non-ok rows; doctor reports each kind distinctly.
-cmd_recover_pending() {
-    local session_name="${1:-}"
-    if [[ -z "$session_name" ]]; then
-        echo "Usage: ae _recover-pending <session-name>" >&2
-        return 1
-    fi
-    # Hydrate config + origin from session meta so get_config resolves the
-    # same agent aliases that created the session, regardless of caller CWD.
-    local stored_config stored_origin
-    stored_config="$(read_session_meta "$session_name" config)"
-    stored_origin="$(read_session_meta "$session_name" origin)"
-    if [[ -n "$stored_config" && -f "$stored_config" ]]; then
-        CONFIG_FILE="$stored_config"
-    fi
-    AE_LOCAL_CONFIG=""
-    if [[ -n "$stored_origin" && -f "${stored_origin}/.ae/config" ]]; then
-        AE_LOCAL_CONFIG="${stored_origin}/.ae/config"
-    fi
-    walk_pending_session_ids "$session_name" _watchdog_recover_report
-}
 # ── Telegram bridge (machine-global chat daemon) ─────────────────────
 #
 # Forwards filtered events from every ae session on this machine to a
@@ -1627,44 +1066,6 @@ _ae_core_try() { # [--capture] <subcommand> [args...]
 # a roster write, by design — a missing core refuses (the shims exit 2). Roster records (`_launch-plan`, `_roster list`) are always EIGHT
 # fields — kind slot name profile binary tool sid command — with `-` for absent.
 _IDENT_US=$'\x1f'
-# _identity_core <preflight|session> <sub> [args...] → the core's records on stdout,
-# rc 0, only after its rc and its trailer agreed with what was received; rc 1 otherwise
-# (the core's own stderr has already said why). `session` needs META_DIR (the bound
-# core of an existing session) and _ae_core_try passes that dir as the subcommand's
-# FIRST argument itself — so a session-mode caller writes `_roster add-seat …`, never
-# `_roster "$dir" add-seat …`; `preflight` runs before or outside any session binding
-# and the caller passes the dir explicitly.
-_identity_core() {
-    local mode="$1" sub="$2"
-    shift 2
-    local out rc=0
-    # The shims refuse a missing core themselves (one line, exit 2). Inside these
-    # command substitutions that exit is the SUBSHELL's, so it lands here as a
-    # non-zero rc with the reason already on stderr.
-    if [[ "$mode" == preflight ]]; then
-        out="$(_ae_core_preflight_try "$sub" "$@")" || rc=$?
-    else
-        out="$(_ae_core_try --capture "$sub" "$@")" || rc=$?
-    fi
-    ((rc == 0)) || return 1
-    # Producer-status: rc first (above), then the trailer against the records received.
-    local last body="" n=0 count
-    last="${out##*$'\n'}"
-    if [[ "$last" != "end${_IDENT_US}"* ]]; then
-        echo "Error: core '${sub}' output carries no trailer — refusing to consume it." >&2
-        return 1
-    fi
-    count="${last#end${_IDENT_US}}"
-    [[ "$out" == *$'\n'* ]] && body="${out%$'\n'*}"
-    [[ -n "$body" ]] && n="$(printf '%s\n' "$body" | grep -c '')"
-    if [[ "$n" != "$count" ]]; then
-        echo "Error: core '${sub}' trailer says ${count} records, received ${n}." >&2
-        return 1
-    fi
-    [[ -n "$body" ]] && printf '%s\n' "$body"
-    return 0
-}
-
 _ae_core_preflight_try() { # [--exec] <subcommand> [args...]
     # --exec: EXEC the core instead of running it as a subprocess and returning
     # its code. For a top-level command the core owns outright (`list`), where an
@@ -1883,10 +1284,6 @@ case "${1:-}" in
         ;;
     _retire)
         _cmd_retire "${@:2}"
-        exit $?
-        ;;
-    _recover-pending)
-        cmd_recover_pending "${@:2}"
         exit $?
         ;;
     help | -h | --help)

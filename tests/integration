@@ -2930,8 +2930,11 @@ assert_eq "doctor-refresh: ...and it is the SAME daemon, not a silent replacemen
     "1" "$([[ -n "$wd_pid_before" && "$wd_pid_after" == "$wd_pid_before" ]] && echo 1 || echo 0)"
 assert_contains "doctor-refresh: reply helper regenerated" "Usage: reply [--as <agent>] <request-id> <message>" "$reply_output"
 assert_contains "doctor-refresh: workspace regenerated" "memo add" "$workspace_output"
-# ae_path names the GLUE, not the core: the watchdog re-execs it for
-# `telegram _supervise` and `_recover-pending`, both of which are bash arms.
+# ae_path names the GLUE, not the core. Its remaining consumer is the watchdog's
+# `telegram _supervise` re-exec — `_recover-pending` was the other until the core
+# took the recovery in-process (glue cut, pass 4), and that arm is gone. The row is
+# still refreshed because the surviving re-exec would otherwise point at a stale
+# path after an upgrade.
 assert_eq "doctor-sync: meta ae_path refreshed" "$AE" "$meta_ae_path"
 
 # THE SHIM CANARY (was the declare-f canary, #4B). Since B glue cut 2 the core
