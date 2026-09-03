@@ -1330,9 +1330,12 @@ assert_eq "hostile PATH: runaway re-exec count still refuses" "1" \
 assert_contains "hostile PATH: the refusal names the fix" "brew install bash" \
     "$(PATH="$_hostile_path" AE_BASH_REEXEC=9 "$AE" --version 2>&1 || true)"
 # Non-leakage into children is asserted structurally in tests/unit (`unset
-# AE_BASH_REEXEC`); its BEHAVIOURAL proof is the orchestrator autostart block below,
-# which spawns exactly such a child — run this suite under a hostile PATH and
-# that block exercises the real path end to end.
+# AE_BASH_REEXEC`). Its behavioural proof USED to be the orchestrator autostart
+# block, which forked exactly such a child with stderr discarded; both that block
+# and the arm that spawned it are retired (glue cut, passes 2 and 3), so this
+# suite no longer drives the marker through a real forked child. The behaviour is
+# unchanged — the candidate loop only execs a bash it has proven is >= 4 — but the
+# coverage is now structural only, and that is recorded here rather than implied.
 
 # End should clean up
 "$AE" end -f test-life 2>/dev/null || true
@@ -2652,28 +2655,9 @@ else
 fi
 fi
 
-# ── Test 6: ae status ──────────────────────────────────────────────
-if _itest_section 'Test 6: ae status'; then
+# ── Test 6: ae status — RETIRED (final glue cut) ───────────────────────────────────────────
+# 2 assertion(s) went with their subject: the command is retired (glue cut, pass 3). It read meta, tmux and the event log itself to print what 'ae list' prints from one implementation; the arm now refuses with exit 2. The replacing coverage is 'ae list' and its --json record, already pinned across Test 3, 3a-3d and the state-column chain.
 
-REPO6="$(setup_repo)"
-(cd "$REPO6" && "$AE" --local test-status &) 2>/dev/null
-wait_for_session "test-status"
-sleep 1
-
-# ae status should show pane output
-status_output="$("$AE" status test-status 2>/dev/null)"
-assert_contains "status: shows agent name" "dummy" "$status_output"
-
-# Stopped session should say stopped
-tmux kill-session -t test-status 2>/dev/null || true
-sleep 0.5
-status_output="$("$AE" status test-status 2>/dev/null)"
-assert_contains "status: stopped session" "stopped" "$status_output"
-
-# Clean up
-"$AE" end -f test-status 2>/dev/null || true
-sleep 0.5
-fi
 
 # ── Test 7: Per-project config override ───────────────────────────
 if _itest_section 'Test 7: Per-project config override'; then
@@ -3391,197 +3375,9 @@ fi
 # ── ae transfer — phase 1 failure paths — RETIRED (B glue cut 2) ───────────────────────────────────
 # 19 assertion(s) went with their subject: `ae transfer` was ruled CUT rather than ported. There is no subject left.
 
-# ── Test: ae orchestrator (legacy hub scaffold) — config isolation + hub compat ──
-if _itest_section 'Test: ae orchestrator (legacy hub scaffold) — config isolation + hub compat'; then
-# The launcher must reproduce the start-orchestrator wrapper's FULL isolation: a
-# project's ./.ae/config must NOT override the standalone config (the worker-leak
-# class codex flagged as a BLOCKER). We run the DEPRECATED `ae hub` alias with a
-# legacy AE_HUB_DIR scaffold and assert (a) isolation holds and (b) the legacy
-# scaffold keeps its `hub` session name (back-compat contract).
-HUB_DIR="$TMPDIR/meta-hub"
-mkdir -p "$HUB_DIR"
-cat >"$HUB_DIR/hub.config" <<'EOF'
-[profiles]
-dummy = "bash"
+# ── Test: ae orchestrator (legacy hub scaffold) — config isolation + hub compat — RETIRED (final glue cut) ───
+# 25 assertion(s) went with their subject: the trampoline is retired (glue cut, pass 3): the scaffold writer, --init, --help, and the whole legacy 'hub' resolution went with it. What the section really guarded — that a bare 'ae orchestrator' must not leak the reserved name and the caller's config onto a new session — is now enforced by the arm REFUSING with exit 2 instead of falling through to the launch, and is pinned in tests/unit as an absence.
 
-[roster]
-meta = dummy
-
-[workspace]
-main = meta
-copy = local
-layout = vertical
-hub = true
-EOF
-HOSTILE="$(setup_repo)"
-mkdir -p "$HOSTILE/.ae"
-cat >"$HOSTILE/.ae/config" <<'EOF'
-[profiles]
-dummy2 = "bash"
-
-[roster]
-evil = dummy2
-leaked = dummy2
-
-[workspace]
-main = evil
-workers = leaked
-layout = vertical
-EOF
-hub_launch_out="$(cd "$HOSTILE" && AE_HUB_DIR="$HUB_DIR" "$AE" hub 2>&1)"
-wait_for_session "hub"
-sleep 1
-assert_contains "hub-compat: bare launch starts detached (no attach/switch needed)" "Session 'hub' started." "$hub_launch_out"
-assert_contains "hub-compat: legacy scaffold prints the migration hint" "legacy hub scaffold" "$hub_launch_out"
-_hub_meta="$HOME/.ae/sessions/hub/meta"
-assert_contains "hub: hub-config main wins over hostile local main" "seat.main=meta" \
-    "$(cat "$_hub_meta" 2>/dev/null)"
-assert_eq "hub: hostile local 'workers' does NOT leak in" "0" \
-    "$(grep -c '^seat.worker' "$_hub_meta" 2>/dev/null || true)"
-assert_contains "hub: config pinned to the standalone hub.config" "config=$HUB_DIR/hub.config" \
-    "$(cat "$_hub_meta" 2>/dev/null)"
-assert_contains "hub: work_dir pinned to the hub dir (cd isolation)" "work_dir=$HUB_DIR" \
-    "$(cat "$_hub_meta" 2>/dev/null)"
-assert_contains "hub: meta_agent mode on via 'hub = true' alias" "meta_agent=true" \
-    "$(cat "$_hub_meta" 2>/dev/null)"
-tmux kill-session -t hub 2>/dev/null || true
-
-# Reserved-name contract: `ae hub <extra>` must be rejected, NOT turned into a
-# session named <extra> using the hub config (the generic parser's last-positional
-# -wins leak codex flagged).
-assert_eq "hub: rejects an extra positional (reserved-name leak guard)" "1" \
-    "$(AE_HUB_DIR="$HUB_DIR" "$AE" hub other 2>/dev/null; echo $?)"
-assert_eq "hub: the extra-arg name was NOT created as a session" "1" \
-    "$(tmux has-session -t other 2>/dev/null && echo 0 || echo 1)"
-
-# `ae orchestrator --init` with a RELATIVE AE_ORCHESTRATOR_DIR must still bake an ABSOLUTE
-# charter path into orchestrator.config (else `ae orchestrator` cd's in and rel/CHARTER.md
-# → rel/rel/...).
-REL_BASE="$TMPDIR/relbase"
-mkdir -p "$REL_BASE"
-(cd "$REL_BASE" && AE_ORCHESTRATOR_DIR="relstw" "$AE" orchestrator --init >/dev/null 2>&1)
-assert_contains "orchestrator --init: relative AE_ORCHESTRATOR_DIR yields an absolute CHARTER path" \
-    "$REL_BASE/relstw/CHARTER.md" "$(cat "$REL_BASE/relstw/orchestrator.config" 2>/dev/null)"
-
-# `ae help` (the in-tool discovery surface) lists the new first-class command.
-assert_contains "help: lists 'ae orchestrator'" "ae orchestrator" "$("$AE" help 2>/dev/null)"
-
-# Canonical orchestrator path: AE_ORCHESTRATOR_DIR scaffold → session named 'orchestrator'.
-STW_DIR="$TMPDIR/orchestrator-canon"
-(AE_ORCHESTRATOR_DIR="$STW_DIR" "$AE" orchestrator --init >/dev/null 2>&1)
-assert_eq "orchestrator --init: scaffolds orchestrator.config + CHARTER.md" "1" \
-    "$([[ -f "$STW_DIR/orchestrator.config" && -f "$STW_DIR/CHARTER.md" ]] && echo 1 || echo 0)"
-assert_contains "orchestrator --init: config marks orchestrator = true" "orchestrator = true" \
-    "$(cat "$STW_DIR/orchestrator.config" 2>/dev/null)"
-# Swap in the dummy agent so the session can actually launch in the harness.
-_sed_i 's|^claude = .*|claude = "bash"|' "$STW_DIR/orchestrator.config"
-stw_launch_out="$(AE_ORCHESTRATOR_DIR="$STW_DIR" "$AE" orchestrator 2>&1)"
-wait_for_session "orchestrator"
-sleep 1
-assert_contains "orchestrator: bare launch starts detached as session 'orchestrator'" "Session 'orchestrator' started." "$stw_launch_out"
-assert_contains "orchestrator: meta_agent mode on via 'orchestrator = true'" "meta_agent=true" \
-    "$(cat "$HOME/.ae/sessions/orchestrator/meta" 2>/dev/null)"
-assert_eq "orchestrator: rejects an extra positional (reserved-name leak guard)" "1" \
-    "$(AE_ORCHESTRATOR_DIR="$STW_DIR" "$AE" orchestrator other2 2>/dev/null; echo $?)"
-tmux kill-session -t orchestrator 2>/dev/null || true
-
-# AE_HOME relocates ALL ae state away from $HOME/.ae WITHOUT swapping $HOME — the
-# isolation primitive for real-agent e2e (keep real $HOME for CLI auth, isolate ae
-# state elsewhere). CONFIG_FILE stays on the dummy-agent config so the session can
-# launch; only AE_HOME moves. Regression for the e2e-AI isolation fix.
-ALT_AE_HOME="$TMPDIR/alt-aehome"
-REPO_AEH="$(setup_repo)"
-(cd "$REPO_AEH" && AE_HOME="$ALT_AE_HOME" CONFIG_FILE="$HOME/.ae/config" "$AE" --local aehome-test &) 2>/dev/null
-wait_for_session "aehome-test"
-sleep 1
-assert_eq "AE_HOME: session state lands under AE_HOME, not \$HOME/.ae" "1" \
-    "$([[ -f "$ALT_AE_HOME/sessions/aehome-test/meta" && ! -e "$HOME/.ae/sessions/aehome-test" ]] && echo 1 || echo 0)"
-tmux kill-session -t aehome-test 2>/dev/null || true
-
-# `ae orchestrator --init` under AE_HOME must scaffold into $AE_HOME/orchestrator, not live
-# ~/.ae (codex BLOCKER class: the dir previously defaulted to $HOME/.ae).
-HUB_AEH="$TMPDIR/stw-aehome"
-(cd "$TMPDIR" && AE_HOME="$HUB_AEH" "$AE" orchestrator --init >/dev/null 2>&1)
-assert_eq "AE_HOME: orchestrator --init scaffolds under AE_HOME, not \$HOME/.ae" "1" \
-    "$([[ -f "$HUB_AEH/orchestrator/orchestrator.config" && ! -e "$HOME/.ae/orchestrator" ]] && echo 1 || echo 0)"
-# The charter's helper paths must point at the ISOLATED hub session dir, never the
-# live ~/.ae (the charter-path fix that unblocks hub e2e scenarios).
-assert_eq "AE_HOME: scaffolded charter helper paths point under AE_HOME, not ~/.ae" "1" \
-    "$([[ -f "$HUB_AEH/orchestrator/CHARTER.md" ]] &&
-        grep -q "$HUB_AEH/sessions/orchestrator/say" "$HUB_AEH/orchestrator/CHARTER.md" &&
-        ! grep -q '[~]/.ae/sessions/orchestrator' "$HUB_AEH/orchestrator/CHARTER.md" && echo 1 || echo 0)"
-
-# ae end conversation-file cleanup flag: KEEP by default, --purge-history opts in.
-REPO_KEEP="$(setup_repo)"
-(cd "$REPO_KEEP" && "$AE" --local end-keep &) 2>/dev/null
-wait_for_session "end-keep"
-sleep 1
-end_keep_out="$("$AE" end -f end-keep 2>&1)"
-assert_contains "ae end (default) KEEPS agent conversation files" \
-    "kept agent conversation files" "$end_keep_out"
-REPO_PURGE="$(setup_repo)"
-(cd "$REPO_PURGE" && "$AE" --local end-purge &) 2>/dev/null
-wait_for_session "end-purge"
-sleep 1
-end_purge_out="$("$AE" end -f --purge-history end-purge 2>&1)"
-assert_eq "ae end --purge-history takes the purge path (no keep-note)" "1" \
-    "$([[ "$end_purge_out" != *'kept agent conversation files'* ]] && echo 1 || echo 0)"
-
-# Per-session config decides the default (codex IMPORTANT) — NOT the caller's cwd.
-# (A) a session whose OWN config sets purge_agent_history=true purges even when
-# ended from a cwd with no such flag.
-PURGE_CFG="$TMPDIR/purge-on.config"
-cat >"$PURGE_CFG" <<'EOF'
-[profiles]
-dummy = "bash"
-
-[roster]
-solo = dummy
-
-[workspace]
-main = solo
-purge_agent_history = true
-EOF
-REPO_A="$(setup_repo)"
-(cd "$REPO_A" && CONFIG_FILE="$PURGE_CFG" "$AE" --local end-persess-purge &) 2>/dev/null
-wait_for_session "end-persess-purge"
-sleep 1
-persess_purge_out="$("$AE" end -f end-persess-purge 2>&1)" # ended from default cwd (no flag)
-assert_eq "ae end: a session's own purge_agent_history=true purges from a no-flag cwd" "1" \
-    "$([[ "$persess_purge_out" != *'kept agent conversation files'* ]] && echo 1 || echo 0)"
-# (B) a default (keep) session ended from a cwd whose .ae/config sets purge=true
-# must still KEEP — the cwd's policy must not bleed onto an unrelated session.
-REPO_B="$(setup_repo)"
-(cd "$REPO_B" && "$AE" --local end-persess-keep &) 2>/dev/null
-wait_for_session "end-persess-keep"
-sleep 1
-PURGE_CWD="$TMPDIR/purge-cwd"
-mkdir -p "$PURGE_CWD/.ae"
-printf '[workspace]\npurge_agent_history = true\n' >"$PURGE_CWD/.ae/config"
-persess_keep_out="$(cd "$PURGE_CWD" && "$AE" end -f end-persess-keep 2>&1)"
-assert_contains "ae end: a purge=true cwd does NOT override the target's keep default" \
-    "kept agent conversation files" "$persess_keep_out"
-# (C) a session whose stored config is missing/unusable (transferred/old) must
-# still KEEP — never fall back to the caller's purge=true cwd.
-REPO_C="$(setup_repo)"
-(cd "$REPO_C" && "$AE" --local end-noconfig &) 2>/dev/null
-wait_for_session "end-noconfig"
-# Poll for META, not just the tmux session — the write lands after creation and a
-# fixed sleep races under load (the suite's own documented flake class).
-for _i in $(seq 1 25); do [[ -f "$HOME/.ae/sessions/end-noconfig/meta" ]] && break; sleep 0.4; done
-_sed_i 's|^config=.*|config=/nonexistent/ae/config|' "$HOME/.ae/sessions/end-noconfig/meta"
-noconfig_out="$(cd "$PURGE_CWD" && "$AE" end -f end-noconfig 2>&1)"
-assert_contains "ae end: session with no usable stored config KEEPS (no cwd fallback)" \
-    "kept agent conversation files" "$noconfig_out"
-
-# Destructive command rejects a stray second positional rather than dropping it.
-# rc 2, not 1: the core-owned `end` follows ae's exit-code contract, where 2 is
-# "you asked wrong" and 1 is "it went wrong" (the same measured divergence the
-# core-binding section records). What is pinned is the REFUSAL, not which of the
-# two non-zero codes carries it.
-assert_eq "ae end: rejects a second positional argument" "2" \
-    "$("$AE" end -f foo bar 2>/dev/null; echo $?)"
-fi
 
 # ── ae list robustness: a per-session helper returning non-zero must NOT abort
 if _itest_section 'ae list robustness: a per-session helper returning non-zero must NOT abort'; then

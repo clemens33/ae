@@ -217,7 +217,7 @@ _ae_inside_tmux() {
     return 1
 }
 
-# --- Function index --- (47 functions; every one has a live caller)
+# --- Function index --- (41 functions; every one has a live caller)
 #   Portability:  _ae_stat, _ae_json_first, _ae_yesterday, _ae_inside_tmux,
 #                 _ae_install_tmux_shim
 #   Config:       parse_config, get_config
@@ -229,15 +229,13 @@ _ae_inside_tmux() {
 #   Core binding: _ae_core_current_input, _ae_core_bin_input, _ae_core_bin_version,
 #                 _ae_core_try (session-pinned), _ae_core_preflight_try (operator),
 #                 _identity_core
-#   Commands:     cmd_list, cmd_status, cmd_next, cmd_archive_preview, cmd_help,
-#                 cmd_orchestrator_init, cmd_orchestrator_help, cmd_recover_pending,
-#                 _cmd_spawn, _cmd_retire, _orchestrator_scaffold_file
+#   Commands:     cmd_list, cmd_next, cmd_archive_preview, cmd_help,
+#                 cmd_recover_pending, _cmd_spawn, _cmd_retire
 #   Launch glue:  resolve_launch_tmux_server (the typed server pair)
 #   Pending sids: doctor_try_capture_session_id, walk_pending_session_ids,
 #                 _watchdog_recover_report, find_codex_session_by_launch_id,
 #                 find_codex_session_by_cwd, find_opencode_session_by_launch_id,
 #                 find_gemini_session_by_launch_id
-#   Meta writes:  _set_meta_kv, _set_meta_watchdog
 #
 # NOT HERE, AND THAT IS THE POINT — the absences this file is now pinned on.
 # Each was a real body that a later reader could plausibly reintroduce, so the
@@ -253,6 +251,16 @@ _ae_inside_tmux() {
 #     declare -f template library and no `_lib`.
 #   * NO CORE RESOLUTION FROM CONFIG. Two sources only, AE_CORE_BIN then
 #     core/current — see _ae_core_bin_input.
+#   * NO SECOND READER OF SESSION STATE. `ae status` is gone (pass 3): it read
+#     meta, tmux and the event log itself, beside the core's own readers, to print
+#     what `ae list` already prints from one implementation. The word still has an
+#     arm, and the arm REFUSES — deleting it outright would let the launch take
+#     `status` as a session name.
+#   * NO ORCHESTRATOR TRAMPOLINE. `ae orchestrator` scaffolded a config, rewrote
+#     CONFIG_FILE / AE_LOCAL_CONFIG / $PWD and fell through to the launch (pass 3).
+#     The core reads the config pair it is handed and starts the companions itself.
+#     Gone with it: the whole legacy `hub` scaffold, and the two meta writers
+#     (_set_meta_kv, _set_meta_watchdog) that had already lost their last caller.
 
 DEFAULT_CONFIG='# ae config — auto-created on first run, yours to edit. Also mirrored in the repo as
 # config.sample. INI-style: [section] headers, key = value, "#" starts a comment.
@@ -1118,39 +1126,6 @@ _AE_CP_SAW=""
 # replacement is never MESSAGED, and again after the bounded wait so a replacement is
 # never STOPPED.
 
-cmd_status() {
-    local target="${1:-}"
-    if [[ -z "$target" ]]; then
-        target="$(detect_current_session 2>/dev/null)" || {
-            echo "Usage: ae status [session-name]" >&2
-            echo "(Run inside an ae tmux session to check status without specifying the name.)" >&2
-            return 1
-        }
-    fi
-    if ! tmux has-session -t "$target" 2>/dev/null; then
-        if [[ -d "${SESSIONS_DIR}/${target}" ]]; then
-            echo "Session '$target' is stopped."
-            return 0
-        fi
-        echo "Session '$target' not found." >&2
-        return 1
-    fi
-    local found=false
-    while IFS=$'\t' read -r pane_id ae_agent; do
-        [[ -n "$ae_agent" ]] || continue
-        found=true
-        echo "── ${ae_agent} (${pane_id}) ──"
-        # || true: an EMPTY pane makes grep exit 1, and under `set -e` +
-        # pipefail that aborted cmd_status mid-document — the caller saw a
-        # truncated status AND a non-zero exit. A blank pane is not an error.
-        tmux capture-pane -t "$pane_id" -p 2>/dev/null | grep -v '^$' | tail -15 || true
-        echo ""
-    done < <(tmux list-panes -s -t "$target" -F '#{pane_id}	#{@ae_agent}' 2>/dev/null)
-    if [[ "$found" == false ]]; then
-        echo "No agent panes in session '$target'."
-    fi
-}
-
 # THREE MORE ORPHANED BLOCKS RETIRED HERE: the `ae end` target classifier, the
 # per-session server reader, and the `-S <path>` / `-L <name>` argv printer. All
 # three bodies went to the core with `end`/`stop`, and their prose had no subject
@@ -1561,130 +1536,13 @@ _cmd_retire() {
     shift
     META_DIR="$meta_dir" _ae_core_try _retire "$@"
 }
-# --- ae orchestrator: meta-agent launcher (deprecated alias: ae hub) ---
-# Copy one template file to its destination, NO overwrite, substituting a single
-# __PLACEHOLDER__ via bash param expansion (no sed → safe with '/' in the value).
-# Reports created vs skipped per file so partial dirs are handled explicitly.
-_orchestrator_scaffold_file() {
-    local src="$1" dst="$2" content
-    shift 2 # remaining args are placeholder/value pairs
-    if [[ -e "$dst" ]]; then
-        echo "  skipped (exists): $dst"
-        return 0
-    fi
-    content="$(cat "$src" 2>/dev/null)" || {
-        echo "  ERROR reading template $src" >&2
-        return 1
-    }
-    # Two-phase substitution so an inserted VALUE is never rescanned by a later
-    # placeholder (codex: sequential ${//} reprocesses inserted text). Phase 1
-    # maps every placeholder to a unique SOH-delimited sentinel (no values yet);
-    # phase 2 maps sentinels to values. A real path value can't contain a \x01, so
-    # phase-2 insertions can never collide — making it order-independent.
-    local -a _ph _val
-    local _n=0 soh=$'\x01'
-    while (($# >= 2)); do
-        _ph[_n]="$1"
-        _val[_n]="$2"
-        _n=$((_n + 1))
-        shift 2
-    done
-    local _i
-    for ((_i = 0; _i < _n; _i++)); do
-        content="${content//${_ph[_i]}/${soh}${_i}${soh}}"
-    done
-    for ((_i = 0; _i < _n; _i++)); do
-        content="${content//${soh}${_i}${soh}/${_val[_i]}}"
-    done
-    printf '%s\n' "$content" >"$dst" || {
-        echo "  ERROR writing $dst" >&2
-        return 1
-    }
-    echo "  created: $dst"
-}
-
-# Scaffold ~/.ae/orchestrator/{orchestrator.config,CHARTER.md} from contrib/aeorchestrator
-# templates. Always scaffolds the NEW orchestrator layout; an existing legacy
-# ~/.ae/meta-hub scaffold keeps working via the launch-time fallback below.
-cmd_orchestrator_init() {
-    local orchestrator_dir="${AE_ORCHESTRATOR_DIR:-$CONFIG_DIR/orchestrator}"
-    # Reject a dir that would break the INI double-quoted instructions value.
-    case "$orchestrator_dir" in
-        *'"'* | *$'\n'*)
-            echo "Error: AE_ORCHESTRATOR_DIR contains an unsupported character (quote/newline): $orchestrator_dir" >&2
-            return 1
-            ;;
-    esac
-    # Resolve template dir relative to THIS script (symlink-aware) with a
-    # realpath/echo fallback — never hard-depend on readlink being present.
-    local self tdir aemon_path charter_path helpers_dir
-    self="$(readlink -f "${BASH_SOURCE[0]:-$0}" 2>/dev/null ||
-        realpath "${BASH_SOURCE[0]:-$0}" 2>/dev/null ||
-        echo "${BASH_SOURCE[0]:-$0}")"
-    tdir="$(dirname "$self")/contrib/aeorchestrator"
-    if [[ ! -d "$tdir" ]]; then
-        echo "Error: orchestrator templates not found at $tdir." >&2
-        echo "(single-file install?) Create $orchestrator_dir/orchestrator.config + CHARTER.md by hand." >&2
-        return 1
-    fi
-    mkdir -p "$orchestrator_dir" || return 1
-    # Canonicalize to an ABSOLUTE dir so a relative AE_ORCHESTRATOR_DIR doesn't bake a
-    # relative charter path into orchestrator.config — `ae orchestrator` later cd's into the
-    # dir, so `rel/CHARTER.md` would wrongly resolve to `rel/rel/CHARTER.md`.
-    orchestrator_dir="$(cd "$orchestrator_dir" && pwd -P)" || return 1
-    charter_path="$orchestrator_dir/CHARTER.md"
-    aemon_path="$(dirname "$self")/contrib/aemonitor/aemonitor"
-    # The orchestrator session is always named `orchestrator`; its helper scripts live here.
-    # Baked into the charter so it's correct under any AE_HOME (default
-    # ~/.ae/sessions/orchestrator, isolated e2e runs $AE_HOME/sessions/orchestrator) — never
-    # the wrong (live) ~/.ae.
-    helpers_dir="$CONFIG_DIR/sessions/orchestrator"
-    echo "Scaffolding orchestrator into $orchestrator_dir:"
-    # CHARTER.md first (the config points at it).
-    _orchestrator_scaffold_file "$tdir/CHARTER.md" "$charter_path" \
-        "__AEMONITOR_PATH__" "$aemon_path" "__HELPERS_DIR__" "$helpers_dir" || return 1
-    _orchestrator_scaffold_file "$tdir/orchestrator.config" "$orchestrator_dir/orchestrator.config" "__CHARTER_PATH__" "$charter_path" || return 1
-    echo
-    echo "Done. Review/edit those files, then run: ae orchestrator"
-}
-
-cmd_orchestrator_help() {
-    cat <<'EOF'
-ae orchestrator — launch the orchestrator: your fleet's chief of staff. One ae session that
-monitors all your other ae sessions, briefs you, relays your instructions to them,
-and helps you hold an objective once you set one. `ae hub` is the deprecated alias.
-
-  ae orchestrator           ensure the session is running (detached, isolated config)
-  ae orchestrator --attach  switch/attach to it
-  ae orchestrator --init    scaffold ~/.ae/orchestrator/{orchestrator.config,CHARTER.md} (never overwrites)
-  ae orchestrator --help    this help
-
-Config dir: ~/.ae/orchestrator (or $AE_HOME/orchestrator when AE_HOME is set; override with
-AE_ORCHESTRATOR_DIR). A legacy ~/.ae/meta-hub scaffold (from 'ae hub --init') is still
-honoured at launch and keeps its `hub` session name. See contrib/aeorchestrator/README.md.
-EOF
-}
-
 # --- Dispatcher ---
-# ── Session-helper template library ──────────────────────────────────
-# Functions below are EMITTED into generated session helpers (_lib and
-# the declare-f migrated helpers) via `declare -f` at the emission sites
-# inside the SYNC_SESSION_ASSETS_BODY region. They are defined at top
-# level BEFORE the dispatcher so every execution path — launch, and
-# dispatcher subcommands like doctor --refresh (which awk-sources that
-# region) — has them loaded prior to any emission. They execute inside a
-# generated helper's runtime (after `source _lib`, which provides
-# _AE_META_DIR/_AE_SESSION/_AE_SESSIONS_DIR): ae's own code paths must
-# not call them. Shared bodies ae itself also uses (ae_json_escape,
-# _event_json_str) live at their long-standing top-level sites instead.
-# --- session meta key/value (locked) -------------------------------------
-# Shared read/write for keys in this session's meta file. Writes serialize on
-# meta.lock (same lock the watchdog's meta writer uses) so concurrent helpers
-# can't clobber each other; last-write-wins per key. Values are single-line.
-
-# — session-helper template functions (send/ask/review/reply/requests/say/
-#   memo/goal/peek/agents/focus/interrupt/spawn/retire/_register-sid/
-#   events-tail; each emitted into its generated helper, main fn last) —
+# THE SESSION-HELPER TEMPLATE LIBRARY'S HEADER RETIRED HERE (pass 3), 22 lines of
+# it: the declare-f emission contract, the SYNC_SESSION_ASSETS_BODY awk-source
+# region, the `source _lib` runtime it described, and the locked meta key/value
+# note under it. Its functions went in B glue cut 2 — the core writes every shim
+# now (src/session_launch/assets.rs) — and the prose outlived them by three cuts.
+# The absence is pinned above: NO SESSION-HELPER LOGIC.
 
 # Hand this invocation to the pinned Rust core. THE CORE IS REQUIRED.
 #
@@ -1842,25 +1700,6 @@ _ae_core_preflight_try() { # [--exec] <subcommand> [args...]
     return "$crc"
 }
 
-# — watchdog template functions (emitted into the watchdog helper; the
-#   runtime flow lives in helper_watchdog_main, emitted last) —
-_set_meta_kv() {
-    local key="$1" value="$2"
-    local meta_file="${META_DIR}/meta"
-    [[ -f "$meta_file" ]] || return 0
-    {
-        flock -w 5 200 || return 1
-        local tmp="${META_DIR}/meta.tmp.$$"
-        awk -F= -v k="$key" -v v="$value" '
-            BEGIN { updated = 0 }
-            $1 == k { print k "=" v; updated = 1; next }
-            { print }
-            END { if (!updated) print k "=" v }
-        ' "$meta_file" >"$tmp" && mv "$tmp" "$meta_file"
-    } 200>"${META_DIR}/meta.lock"
-}
-
-_set_meta_watchdog() { _set_meta_kv "watchdog" "$1"; }
 # THE TMUX-OPTION WRITER AND ITS EXACT SESSION-ID LOOKUP ARE GONE FROM HERE, and
 # the 27 lines of reasoning that stood at this spot went with them — they had no
 # subject left in this file. The glue writes no tmux option at all: the status bar,
@@ -1881,8 +1720,18 @@ case "${1:-}" in
         exit $?
         ;;
     status)
-        cmd_status "${2:-}"
-        exit $?
+        # RETIRED (glue cut, pass 3). `ae status` was the last command in this file
+        # with a full bash body reading session state directly — a second reader of
+        # meta, tmux and the event log beside the core's own, and so the next place
+        # the two would drift. CUT rather than routed: `ae list` answers the same
+        # question from one implementation, and its per-session sub-line already
+        # carries the state, goal and attention rollup this printed.
+        #
+        # REFUSED here rather than deleted outright: everything past this case falls
+        # through to the LAUNCH, which takes the last positional as a session name,
+        # so a bare `ae status` would quietly create a session called `status`.
+        echo "Error: 'ae status' was retired. Use 'ae list' (add --json for the full record)." >&2
+        exit 2
         ;;
     compact)
         # The WHOLE compact is the core's: the freeze, the confirmation, the
@@ -2000,104 +1849,26 @@ case "${1:-}" in
         fi
         _ae_core_preflight_try --exec _telegram ${_tg_args[@]+"${_tg_args[@]}"}
         ;;
-    orchestrator | hub) # 'hub' kept as the deprecated alias for the renamed meta-agent
-        # Orchestrator (meta-agent) launcher. Trampoline: handle --init/help (exit),
-        # else set up FULL config isolation (the start-orchestrator wrapper's job) and
-        # FALL THROUGH to the generic start/resume path below. We must NOT
-        # re-dispatch the subcommand here (that would re-enter this branch and
-        # recurse) — falling through reuses the generic parser instead.
-        shift
-        _orchestrator_attach=false
-        while [[ $# -gt 0 ]]; do
-            case "$1" in
-                --init)
-                    if [[ $# -gt 1 ]]; then
-                        echo "Error: 'ae orchestrator --init' takes no further arguments (got: ${*:2})" >&2
-                        exit 1
-                    fi
-                    cmd_orchestrator_init
-                    exit $?
-                    ;;
-                -h | --help | help)
-                    cmd_orchestrator_help
-                    exit 0
-                    ;;
-                --attach | --switch)
-                    _orchestrator_attach=true
-                    shift
-                    ;;
-                --detach | --no-attach)
-                    _orchestrator_attach=false
-                    shift
-                    ;;
-                *)
-                    # The orchestrator session is ALWAYS named `orchestrator` (legacy scaffold:
-                    # `hub`) with the standalone config; accepting extra args would
-                    # let `ae orchestrator foo` become session `foo` via the generic
-                    # parser (last positional wins), leaking the reserved name +
-                    # orchestrator config onto another session. Reject them.
-                    echo "Error: 'ae orchestrator' takes no positional arguments (flags: --init / --help / --attach / --detach). Got: $*" >&2
-                    echo "The orchestrator session is always named 'orchestrator' (config: \${AE_ORCHESTRATOR_DIR:-~/.ae/orchestrator}/orchestrator.config)." >&2
-                    echo "To run a normal session literally named 'orchestrator', use: ae --local orchestrator" >&2
-                    exit 1
-                    ;;
-            esac
-        done
-        if $_orchestrator_attach; then
-            ATTACH_ON_READY=true
-        else
-            ATTACH_ON_READY=false
-        fi
-        # Resolve the scaffold: canonical orchestrator layout first, then the legacy
-        # hub layout (from 'ae hub --init' before the rename). The config file
-        # found decides the SESSION NAME too — a legacy hub.config keeps running
-        # as session `hub` so its baked charter paths (~/.ae/sessions/hub) and
-        # resume state stay consistent; an orchestrator.config runs as `orchestrator`.
-        _orchestrator_session=orchestrator
-        if [[ -n "${AE_ORCHESTRATOR_DIR:-}" ]]; then
-            _orchestrator_dir="$AE_ORCHESTRATOR_DIR"
-            _orchestrator_config="$_orchestrator_dir/orchestrator.config"
-        elif [[ -f "$CONFIG_DIR/orchestrator/orchestrator.config" ]]; then
-            _orchestrator_dir="$CONFIG_DIR/orchestrator"
-            _orchestrator_config="$_orchestrator_dir/orchestrator.config"
-        elif [[ -n "${AE_HUB_DIR:-}" ]]; then
-            _orchestrator_dir="$AE_HUB_DIR"
-            _orchestrator_config="$_orchestrator_dir/hub.config"
-            _orchestrator_session=hub
-        elif [[ -f "$CONFIG_DIR/meta-hub/hub.config" ]]; then
-            _orchestrator_dir="$CONFIG_DIR/meta-hub"
-            _orchestrator_config="$_orchestrator_dir/hub.config"
-            _orchestrator_session=hub
-        else
-            _orchestrator_dir="$CONFIG_DIR/orchestrator"
-            _orchestrator_config="$_orchestrator_dir/orchestrator.config"
-        fi
-        if [[ ! -f "$_orchestrator_config" ]]; then
-            echo "Error: no orchestrator config at $_orchestrator_config." >&2
-            echo "Run 'ae orchestrator --init' to scaffold the orchestrator config + charter." >&2
-            exit 1
-        fi
-        if [[ "$_orchestrator_session" == "hub" ]]; then
-            echo "note: using legacy hub scaffold ($_orchestrator_config) — session stays 'hub'."
-            echo "      To migrate: ae end hub && ae orchestrator --init && ae orchestrator"
-        fi
-        # BLOCKER fix (codex): CONFIG_FILE alone does NOT isolate. AE_LOCAL_CONFIG
-        # was captured from the CALLER's PWD near script top (before any cd), so a
-        # project-local ./.ae/config could still override workspace.*/prompt.* and
-        # reintroduce the worker-leak. Replicate the wrapper's full isolation:
-        AE_LOCAL_CONFIG="" # drop the caller-PWD local config
-        cd "$_orchestrator_dir" || {
-            echo "Error: cannot cd to $_orchestrator_dir" >&2
-            exit 1
-        }
-        # Set CONFIG_FILE from $PWD *after* cd so it's absolute even when the dir
-        # override is relative (a relative path stored in meta would break resume).
-        CONFIG_FILE="$PWD/$(basename "$_orchestrator_config")" # standalone config wins (absolute, isolated)
-        # copy=local ⇒ work_dir/origin become $_orchestrator_dir; on resume the restore
-        # path below rebuilds AE_LOCAL_CONFIG from stored_origin (no .ae/config
-        # there), so the isolation persists across resume too.
-        set -- "$_orchestrator_session" # session name (extra args already rejected above)
-        # fall through (NO exit) to flag-parse + generic start/resume
+    orchestrator | hub)
+        # RETIRED (glue cut, pass 3). This was a TRAMPOLINE, not a command: it
+        # scaffolded a config + charter on --init, then rewrote CONFIG_FILE,
+        # AE_LOCAL_CONFIG and $PWD and fell through to the generic launch so the
+        # orchestrator ran as an ordinary session named `orchestrator`. Every part
+        # of that has one owner now, and it is not this file — the core reads the
+        # config pair it is handed (--global / --local-config), and companion
+        # autostart became the core's in final cut pass 2. Gone with the arm:
+        # cmd_orchestrator_init, cmd_orchestrator_help, _orchestrator_scaffold_file,
+        # and the legacy `hub` resolution (AE_HUB_DIR, meta-hub/hub.config, the
+        # session-stays-`hub` note) — compat for a rename that predates this line.
+        #
+        # REFUSED, not fallen through, for the reason the arm existed: a launch
+        # takes the last positional as a session name, so a bare `ae orchestrator`
+        # would create a session called `orchestrator` under the CALLER's config —
+        # the exact config leak the trampoline's isolation was there to prevent.
+        echo "Error: 'ae orchestrator' was retired from the glue." >&2
+        echo "Run it as an ordinary session against its own config:" >&2
+        echo "  cd ~/.ae/orchestrator && CONFIG_FILE=\$PWD/orchestrator.config ae --local orchestrator" >&2
+        exit 2
         ;;
     end | rm)
         # Capture then delete, in the core: the verified stop, git, the archive,

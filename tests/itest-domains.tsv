@@ -50,7 +50,6 @@ list	-	Test 3d: ae next — attention navigator (Layer 2, slice A)
 spawn-retire	spawn-request	Test 4: Spawn persistence
 requests	spawn-request	request-integrity: slot-routed reply survives a display-name CHURN (codex B1)
 end	-	Test 5: End session (worktree mode)
-list	-	Test 6: ae status
 config	-	Test 7: Per-project config override
 config	-	Test 8: ae <name> use <name> override
 resume	-	Test 9: Resume from different CWD (local mode)
@@ -64,7 +63,6 @@ watchdog	watchdog-rig	Test 11d: watchdog status/start/stop reject a stale RECYCL
 watchdog	-	Test 11e: status bar is AE-OWNED — the watchdog never rewrites status-right
 watchdog	-	Test 11f: agent roster (@ae_agents_status) with a LIVE watchdog
 helpers	-	goal helper: set → list → survives resume
-orchestrator	-	Test: ae orchestrator (legacy hub scaffold) — config isolation + hub compat
 list	-	ae list robustness: a per-session helper returning non-zero must NOT abort
 launch	session-shape	lead-default Part 3: layout = lead-solo (real tmux windows)
 launch	session-shape	session-shape: layout = lead-pair (colead seat in window 0, real tmux)

@@ -549,6 +549,35 @@ assert_eq "final cut: ...while doctor's recovery scanner is still present, and s
 # reached from resolution even if a future edit makes get_config cheaper.
 assert_eq "final cut: the core is never resolved from the config" "0" \
     "$(grep -c 'get_config workspace.core' <<<"$AE_SOURCE" || true)"
+# 3. THE SECOND READER OF SESSION STATE (pass 3). `cmd_status` read meta, tmux and
+# the event log itself to print what `ae list` prints from ONE implementation — the
+# next place the two would drift. The bodies are gone with it.
+assert_eq "final cut: no second reader of session state" "0|0" \
+    "$(printf '%s|%s' "$(_fc_defs cmd_status)" "$(_fc_defs cmd_orchestrator_init)")"
+assert_eq "final cut: ...and the orchestrator scaffold writer went with the trampoline" "0|0" \
+    "$(printf '%s|%s' "$(_fc_defs _orchestrator_scaffold_file)" "$(_fc_defs cmd_orchestrator_help)")"
+# 4. THE ARMS ARE REFUSALS, NOT ABSENCES, and the difference is load-bearing:
+# everything past the dispatcher's case falls through to the LAUNCH, which takes
+# the last positional as a session name. A deleted `status)` arm would make
+# `ae status` CREATE a session called `status`; a deleted `orchestrator)` arm would
+# create one called `orchestrator` under the caller's own config — the exact leak
+# the trampoline's isolation existed to prevent. So both words still have an arm,
+# both exit 2, and this pins that they do.
+assert_eq "final cut: the retired words still have an arm, and it refuses" "1|1|1" \
+    "$(printf '%s|%s|%s' \
+        "$(grep -c "ae status' was retired" <<<"$AE_SOURCE" || true)" \
+        "$(grep -c "ae orchestrator' was retired" <<<"$AE_SOURCE" || true)" \
+        "$(grep -c '^    orchestrator | hub)' <<<"$AE_SOURCE" || true)")"
+# ...and no legacy `hub` scaffold resolution survived with it. CODE LINES ONLY:
+# the retirement note in the arm NAMES both, so a whole-file grep finds the prose
+# explaining the absence and reports the absence as a failure — the same trap the
+# definition-shape probe above exists for, measured again here.
+_fc_code() { grep -vE '^[[:space:]]*#' <<<"$AE_SOURCE" | grep -c -- "$1" || true; }
+assert_eq "final cut: the legacy hub scaffold is gone whole" "0|0" \
+    "$(printf '%s|%s' "$(_fc_code AE_HUB_DIR)" "$(_fc_code meta-hub)")"
+assert_eq "final cut: ...and the code-line probe is not vacuous either" "1" \
+    "$([[ "$(_fc_code AE_CORE_BIN)" -gt 0 ]] && echo 1 || echo 0)"
+unset -f _fc_code
 
 unset -f _fc_defs
 
@@ -1718,37 +1747,14 @@ unset _cc_dir _cc_bad
 # ── the emit boundary sanitizes — RETIRED (final glue cut) ─────────────────────────────────────────
 # 4 assertion(s) went with their subject: the emit boundary is core-side, and its escape set is pinned in src/json.rs beside the renderer.
 
-# ── ae orchestrator: launcher scaffold + dispatcher trampoline + hub compat ──
+# ── ae orchestrator: launcher scaffold + dispatcher trampoline + hub compat — RETIRED (glue cut, pass 3) ──
+# 7 assertion(s) went with their subject: the scaffold writer, `--init`'s INI-safety
+# refusal, and the trampoline they served. `ae orchestrator` no longer scaffolds or
+# rewrites CONFIG_FILE/AE_LOCAL_CONFIG/$PWD; the arm refuses with exit 2, which is
+# pinned as an absence below. The CHARTER assertions that stood in this block are
+# NOT retired — contrib/aeorchestrator/CHARTER.md still ships, and they test that
+# file, not the glue. They continue directly beneath.
 
-# Extract the pure scaffold helpers from the script.
-eval "$(awk '
-    /^_orchestrator_scaffold_file\(\) \{/ { printing=1 }
-    /^cmd_orchestrator_init\(\) \{/ { printing=1 }
-    printing { print }
-    printing && /^\}$/ { printing=0 }
-' "$(dirname "$0")/../ae")"
-
-_stw_t="$(mktemp -d)"
-printf 'read the charter at __X__ now\n' >"$_stw_t/tpl"
-_orchestrator_scaffold_file "$_stw_t/tpl" "$_stw_t/out" "__X__" "/a/b/CHARTER.md" >/dev/null
-assert_eq "orchestrator scaffold: placeholder substituted via bash (no sed, '/'-safe)" \
-    "read the charter at /a/b/CHARTER.md now" "$(cat "$_stw_t/out")"
-# Multiple placeholder/value pairs in one call (CHARTER.md needs aemonitor + helpers).
-printf 'run __A__ and helpers in __H__\n' >"$_stw_t/tpl2"
-_orchestrator_scaffold_file "$_stw_t/tpl2" "$_stw_t/multi" "__A__" "/bin/mon" "__H__" "/iso/sessions/orchestrator" >/dev/null
-assert_eq "orchestrator scaffold: substitutes multiple placeholder pairs in one call" \
-    "run /bin/mon and helpers in /iso/sessions/orchestrator" "$(cat "$_stw_t/multi")"
-printf 'ORIGINAL\n' >"$_stw_t/keep"
-_orchestrator_scaffold_file "$_stw_t/tpl" "$_stw_t/keep" "__X__" "/a/b/c" >/dev/null
-assert_eq "orchestrator scaffold: never overwrites an existing file" "ORIGINAL" "$(cat "$_stw_t/keep")"
-assert_eq "orchestrator scaffold: created vs skipped reported per file" "skipped (exists): $_stw_t/keep" \
-    "$(_orchestrator_scaffold_file "$_stw_t/tpl" "$_stw_t/keep" "__X__" "v" | tr -d '\n' | sed 's/^ *//')"
-assert_eq "orchestrator scaffold: missing template errors (non-zero)" "1" \
-    "$(_orchestrator_scaffold_file "$_stw_t/nope" "$_stw_t/out2" "__X__" "v" >/dev/null 2>&1; echo $?)"
-assert_eq "orchestrator init: rejects ORCHESTRATOR_DIR containing a quote (INI safety)" "1" \
-    "$(AE_ORCHESTRATOR_DIR='/bad"dir' cmd_orchestrator_init >/dev/null 2>&1; echo $?)"
-rm -rf "$_stw_t"
-unset _stw_t
 
 # Charter helper paths are a placeholder (substituted to the session helper dir),
 # NOT a literal ~/.ae — so an isolated AE_HOME orchestrator can't point at the live ~/.ae.
@@ -1844,43 +1850,22 @@ assert_eq "aeorchestrator charter: snooze + quiet-hours escape hatches in the pr
 assert_eq "aeorchestrator charter: trust contract routes proactive talk through §8b gates" "1" \
     "$(grep -q 'ONLY through the §8b gates' "$_aestw_charter" && echo 1 || echo 0)"
 unset _aestw_charter
-assert_eq "orchestrator init: substitutes __HELPERS_DIR__ with the orchestrator session helper dir" "1" \
-    "$([[ "$AE_SOURCE" == *'helpers_dir="$CONFIG_DIR/sessions/orchestrator"'* \
-        && "$AE_SOURCE" == *'"__HELPERS_DIR__" "$helpers_dir"'* ]] && echo 1 || echo 0)"
-
-# Structural — the dispatcher trampoline must preserve FULL config isolation
-# (codex BLOCKER) and fall through WITHOUT re-exec (no recursion).
-assert_eq "orchestrator dispatcher: trampoline pins the standalone config (absolute)" "1" \
-    "$([[ "$AE_SOURCE" == *'CONFIG_FILE="$PWD/$(basename "$_orchestrator_config")"'* ]] && echo 1 || echo 0)"
-assert_eq "orchestrator dispatcher: clears caller-PWD AE_LOCAL_CONFIG + cd orchestrator dir" "1" \
-    "$([[ "$AE_SOURCE" == *'orchestrator | hub)'*'AE_LOCAL_CONFIG=""'*'cd "$_orchestrator_dir"'* ]] && echo 1 || echo 0)"
-assert_eq "orchestrator dispatcher: falls through (set -- session) with NO recursive exec" "1" \
-    "$([[ "$AE_SOURCE" == *'set -- "$_orchestrator_session"'* && "$AE_SOURCE" != *'exec ae orchestrator'* ]] && echo 1 || echo 0)"
-assert_eq "orchestrator dispatcher: rejects extra args (reserved-name leak guard)" "1" \
-    "$([[ "$AE_SOURCE" == *"'ae orchestrator' takes no positional arguments"* ]] && echo 1 || echo 0)"
-assert_eq "orchestrator dispatcher: routes --init, --help, and explicit attach flags" "1" \
-    "$([[ "$AE_SOURCE" == *'--init)'* && "$AE_SOURCE" == *'cmd_orchestrator_init'* && "$AE_SOURCE" == *'cmd_orchestrator_help'* && "$AE_SOURCE" == *'--attach | --switch)'* ]] && echo 1 || echo 0)"
-assert_eq "orchestrator dispatcher: bare orchestrator is detached by default, --attach opts into focus switch" "1" \
-    "$([[ "$AE_SOURCE" == *'_orchestrator_attach=false'* && "$AE_SOURCE" == *'ATTACH_ON_READY=false'* && "$AE_SOURCE" == *'ATTACH_ON_READY=true'* ]] && echo 1 || echo 0)"
-# The attach decision crosses to the core as a FLAG, and it is the only thing the
-# trampoline's --attach/--detach changes.
-assert_eq "orchestrator dispatcher: the attach choice reaches the core as a flag" "1" \
+# ── the orchestrator trampoline's structural pins — RETIRED (glue cut, pass 3) ──
+# 11 assertion(s) went with their subject: the __HELPERS_DIR__ substitution, the
+# absolute standalone CONFIG_FILE, the AE_LOCAL_CONFIG clear + cd, the no-recursive
+# fall-through, the extra-args refusal, the --init/--help/--attach routing, the
+# detached default, and the three legacy `hub` compat pins. All of them described a
+# trampoline that no longer exists — the arm refuses with exit 2 and nothing falls
+# through. The one rule they collectively protected (a bare `ae orchestrator` must
+# never leak the reserved name and the caller's config onto a new session) is now
+# pinned as an ABSENCE in the final-cut block above, where it is enforced by the
+# refusal rather than by the isolation the trampoline had to perform.
+#
+# NOT retired with them: `_launch_flags+=(--attach)` / `(--no-attach)`. The attach
+# choice still crosses to the core as a flag; it is simply no longer something this
+# arm can change, so it is pinned where the launch flags are assembled.
+assert_eq "launch: the attach choice reaches the core as a flag, in both directions" "1" \
     "$([[ "$AE_SOURCE" == *'_launch_flags+=(--attach)'* && "$AE_SOURCE" == *'_launch_flags+=(--no-attach)'* ]] && echo 1 || echo 0)"
-# The `workspace.orchestrator` config read (and its two legacy aliases) moved into
-# the launch the core performs; what stays here is the trampoline that selects the
-# orchestrator's own config file and session name, pinned above.
-
-# Hub back-compat (released name): 'ae hub' dispatches into the orchestrator branch;
-# a legacy hub scaffold resolves to hub.config AND keeps the 'hub' session name
-# (so its baked charter paths + resume state stay consistent).
-assert_eq "orchestrator compat: 'hub' is a dispatch alias of orchestrator" "1" \
-    "$([[ "$AE_SOURCE" == *'orchestrator | hub)'* ]] && echo 1 || echo 0)"
-assert_eq "orchestrator compat: legacy scaffold resolution (AE_HUB_DIR + meta-hub/hub.config → session hub)" "1" \
-    "$([[ "$AE_SOURCE" == *'_orchestrator_config="$_orchestrator_dir/hub.config"'* \
-        && "$AE_SOURCE" == *'$CONFIG_DIR/meta-hub/hub.config'* \
-        && "$AE_SOURCE" == *'_orchestrator_session=hub'* ]] && echo 1 || echo 0)"
-assert_eq "orchestrator compat: legacy path prints a migration hint" "1" \
-    "$([[ "$AE_SOURCE" == *'ae end hub && ae orchestrator --init && ae orchestrator'* ]] && echo 1 || echo 0)"
 
 # ── AE_HOME authoritative for ALL ae state (config/sessions/worktrees) ──
 # Lets an isolated run keep the real $HOME (so real agent-CLI auth works) while
@@ -1895,10 +1880,12 @@ assert_eq "AE_HOME: CONFIG_DIR derives from AE_HOME, not hardcoded \$HOME/.ae" "
 assert_eq "AE_HOME: the telegram arm hands the core CONFIG_FILE and AE_HOME, never a live-~/.ae default" "1" \
     "$([[ "$AE_SOURCE" == *'_tg_args+=(--config "$CONFIG_FILE")'* \
         && "$AE_SOURCE" == *'_tg_args+=(--home "$AE_HOME")'* ]] && echo 1 || echo 0)"
-assert_eq "AE_HOME: orchestrator dir defaults under CONFIG_DIR, not hardcoded \$HOME/.ae" "1" \
-    "$([[ "$AE_SOURCE" == *'AE_ORCHESTRATOR_DIR:-$CONFIG_DIR/orchestrator'* \
-        && "$AE_SOURCE" != *'AE_ORCHESTRATOR_DIR:-$HOME/.ae/orchestrator'* \
-        && "$AE_SOURCE" != *'AE_HUB_DIR:-$HOME/.ae/meta-hub'* ]] && echo 1 || echo 0)"
+# The orchestrator-dir row here — RETIRED (glue cut, pass 3): 1 assertion. It held
+# that the orchestrator's directory defaulted under CONFIG_DIR rather than a
+# hardcoded $HOME/.ae, which was the AE_HOME half of the trampoline's isolation.
+# There is no trampoline and no orchestrator dir in this file any more. The rule
+# itself is unchanged and still pinned by the two rows above it: every path this
+# script derives comes from CONFIG_DIR, which comes from AE_HOME.
 # The session environment is stamped by the core when it creates the session; the
 # glue hands it the home as `--home` and spells the variable once.
 assert_eq "AE_HOME: handed to the core as the launch's --home" "1" \
