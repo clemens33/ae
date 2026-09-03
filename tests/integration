@@ -503,10 +503,22 @@ export AE_HOME="$HOME/.ae"
 # owns EVERY ae-owned variable an agent pane exports, not just the two obvious ones. Today
 # that is AE_DIR, AE_MODE, AE_ORIGIN, AE_SESSION, AE_LOCAL_CONFIG and CONFIG_FILE — all
 # cleared below (an unset of an absent variable is free; an inherited one is a leak).
-# TMUX and TMUX_PANE stay: they do not name ae state, and the product's tmux shim
-# addresses the isolated server by name regardless. A new inherited variable belongs on
-# this list, not in a debugging session six months from now.
-unset AE_DIR AE_MODE AE_ORIGIN AE_SESSION AE_LOCAL_CONFIG CONFIG_FILE
+# TMUX STAYS, TMUX_PANE GOES, and the asymmetry is the whole point. TMUX names a
+# server and the product's shim addresses the isolated one by name regardless, so an
+# inherited $TMUX is harmless. TMUX_PANE names a PANE ID, and pane ids are per-server
+# small integers that COLLIDE ACROSS SERVERS: the caller's own pane and the first pane
+# of the isolated test server are both `%0` on a fresh server. The suite then hands the
+# product a pane id that resolves — on the test server — to one of the suite's OWN
+# sessions, and the product correctly believes the caller is sitting inside it.
+# Measured 3/3 each way: from a caller in pane %0 the lead-pair assertions
+# ('envelope (#39): unverified', 'ask: the paste reached the target's pane') fail
+# deterministically; from a caller in pane %129 they pass; from pane %0 with TMUX_PANE
+# unset they pass. It is a real inherited-identity leak, not flake — and it grew teeth
+# when `ae stop` began passing the caller's pane to the core, which is exactly the kind
+# of new consumer this preamble exists to stay ahead of.
+# A new inherited variable belongs on this list, not in a debugging session six months
+# from now.
+unset AE_DIR AE_MODE AE_ORIGIN AE_SESSION AE_LOCAL_CONFIG CONFIG_FILE TMUX_PANE
 mkdir -p "$HOME/.ae"
 
 cleanup() {
@@ -731,6 +743,24 @@ wait_for_session() {
     return 0
 }
 
+# THE WATCHDOG POLLS LIVE IN THE PREAMBLE, not in the first section that happened
+# to need them. They were defined inside `Test 11: ae doctor --refresh`, and
+# `Test 11f` — which is its own unit, not part of the watchdog-rig chain — then
+# ran without them: `wd_poll: command not found` four times, no settling at all,
+# and two timing-sensitive assertions failing on an unsettled daemon. A helper
+# used by more than one section belongs where every section can see it.
+wd_poll() { # wd_poll <session> <needle> [tries] — bounded status poll
+    local s="$1" needle="$2" tries="${3:-20}" i=0
+    while ((i < tries)); do
+        [[ "$("$AE" watchdog status "$s" 2>&1 || true)" == *"$needle"* ]] && return 0
+        sleep 0.5
+        i=$((i + 1))
+    done
+    return 1
+}
+wd_status() { "$AE" watchdog status "$1" 2>&1 || true; }
+wd_pid() { wd_status "$1" | sed -n 's/.*pid \([0-9]*\).*/\1/p'; }
+
 #@itest-sections-begin
 # Everything above is the preamble and always runs. Everything below is carved
 # into sections by `# ── <title> ──` banners, which is what the #64 name filter
@@ -826,9 +856,11 @@ case "\$1" in
     # IDENTITY IS NOT WHAT THIS SECTION DISCRIMINATES. Since P34 a launch cannot
     # happen without a core that answers the roster entries, so a stub that
     # refused them would only prove that this fixture cannot start a session.
-    # Delegate exactly those three to the real core and keep the token arms —
-    # the opposed control above is untouched, and '*) exit 64' still catches
-    # every subcommand the shim is actually being tested on.
+    # Delegate exactly those to the real core and keep the token arms — the
+    # opposed control above is untouched, and '*) exit 64' still catches every
+    # subcommand the shim is actually being tested on. Kept as a safety net now
+    # that the binding is repointed by substitution and no launch runs through
+    # the stub: an arm that reaches them is a fixture mistake, not a refusal.
     _launch-plan|_meta-init|_roster|_manifest-render) exec "$_ITEST_CORE_BIN" "\$@" ;;
     *) exit 64 ;;
 esac
@@ -839,25 +871,68 @@ _cb_write_core "9.9.9"
 
 # THE LAUNCH IS THE REAL CORE'S, and it has to be. Since B glue cut 2 the whole
 # launch is one core call, and the core writes its OWN path (current_exe) into
-# meta and into every helper shim — so a stub that cannot start a session cannot
-# be the thing that launches one, and a stub that delegated the launch would hand
-# the session the REAL core's path and make every token assertion below vacuous.
-# The stub binding is therefore established the way an operator repairs a broken
-# one: launch, then re-pin with `doctor --refresh`, which runs the SAME rule set
-# (`_ae_core_bind`) on the same operator input. What is under test here is the
-# generated shims, and those are what the refresh rewrites.
+# every helper shim — so a stub that cannot start a session cannot be the thing
+# that launches one, and a stub that delegated the launch would hand the session
+# the REAL core's path and make every token assertion below vacuous.
+#
+# THE BINDING IS THEN REPOINTED BY SUBSTITUTION, not by a refresh. It used to be
+# established the operator's way — `AE_CORE_BIN=<stub> ae doctor --refresh` —
+# because the refresh was bash and re-evaluated that input. Since final cut pass 2
+# `doctor` is the core's own entry: the glue's preflight EXECs whatever
+# AE_CORE_BIN names, so that command now asks the STUB to serve `doctor`, and a
+# stub able to serve `doctor --refresh` would have to be a second implementation
+# of the refresh — the one thing this suite exists to prevent. So the two facts a
+# session's binding actually consists of are edited directly: the meta PAIR that
+# `_ae_core_try` re-reads on every call, and the absolute path the core baked into
+# each generated shim. Nothing else about the session changes, and every assertion
+# below discriminates exactly as it did.
+_cb_pin_stub() { # <session-dir> — repoint meta + every generated shim at the stub
+    local dir="$1" f
+    sed -e "s|^ae_core=.*|ae_core=$_cb_core|" -e "s|^ae_core_version=.*|ae_core_version=9.9.9|" \
+        "$dir/meta" >"$dir/meta.tmp" && mv "$dir/meta.tmp" "$dir/meta"
+    # Only the `exec <core> _<entry> "$META_DIR"` shims. An ALIAS helper (peak) execs
+    # its sibling by a derived path, and its second word is not an entry name — the
+    # `_[a-z-]+` guard is what keeps the substitution off it.
+    for f in "$dir"/*; do
+        [[ -f "$f" && -x "$f" ]] || continue
+        case "${f##*/}" in launch.*) continue ;; esac
+        sed -E "s|^exec [^ ]+ (_[a-z-]+) |exec '$_cb_core' \1 |" "$f" >"$f.shim.tmp" &&
+            mv "$f.shim.tmp" "$f" && chmod 0755 "$f"
+    done
+    return 0
+}
 REPO="$(setup_repo)"
 (cd "$REPO" && "$AE" --local test-core &) 2>/dev/null
 wait_for_session "test-core"
 sleep 1
 _cb_meta="$HOME/.ae/sessions/test-core"
-(cd "$REPO" && AE_CORE_BIN="$_cb_core" "$AE" doctor --refresh test-core >/dev/null 2>&1 || true)
+_cb_pin_stub "$_cb_meta"
 
-# The binding is PINNED AS A PAIR, from the operator's input only.
+# The binding is PINNED AS A PAIR — `_ae_core_try` compares both on every call, so
+# a session pinned to a path is not pinned until the version agrees with it.
 assert_eq "core binding: meta pins the absolute core path" "$_cb_core" \
     "$(grep '^ae_core=' "$_cb_meta/meta" | cut -d= -f2- || true)"
 assert_eq "core binding: meta pins the version the binary reported" "9.9.9" \
     "$(grep '^ae_core_version=' "$_cb_meta/meta" | cut -d= -f2- || true)"
+# ...and the SHIMS moved with it. Asserted separately from the token arms below
+# because a substitution that silently matched nothing would leave every helper on
+# the real core, and "no token" would then read as a broken shim rather than a
+# broken fixture.
+_cb_foreign_shims() { # -> count of shim exec lines naming an absolute path that is NOT the stub
+    local dir="$1" f n=0
+    for f in "$dir"/*; do
+        [[ -f "$f" && -x "$f" ]] || continue
+        case "${f##*/}" in launch.*) continue ;; esac
+        command grep -qE "^exec /|^exec '/" "$f" || continue
+        command grep -q "^exec '$_cb_core' " "$f" || n=$((n + 1))
+    done
+    printf '%s' "$n"
+    return 0
+}
+assert_eq "core binding: (fixture) no generated shim still names another core" "0" \
+    "$(_cb_foreign_shims "$_cb_meta")"
+assert_eq "core binding: (fixture) ...and the substitution was not a no-op" "1" \
+    "$([[ "$(command grep -lF "exec '$_cb_core' " "$_cb_meta"/* 2>/dev/null | command grep -c . || true)" -gt 0 ]] && echo 1 || echo 0)"
 
 # POSITIVE: the core actually executes. This is the assertion every other one
 # in this block depends on being able to fail.
@@ -1087,23 +1162,38 @@ assert_contains "core binding: ...and points at the repair" \
     "repair with 'ae doctor --refresh'" "$_cb_doc"
 unset _cb_doc
 
-# REFRESH re-pins the binding, so an operator who fixes their config does not
-# have to recreate the session. A REMOVED input is NOT a rollback any more (see
-# the byte-identical arms below): there is nothing behind an empty pin to roll
-# back to, so the existing one is kept rather than cleared.
-(cd "$REPO" && AE_CORE_BIN="$_cb_core" "$AE" doctor --refresh >/dev/null 2>&1 || true)
-assert_eq "core binding: refresh re-pins a repaired binding" "$_cb_core" \
+# REFRESH REBINDS TO THE BINARY THAT RAN IT, which is what repairs the blank pin
+# left just above. The frozen bash refresh re-evaluated the operator's input; the
+# core answering here IS that input — the glue's preflight resolved AE_CORE_BIN and
+# exec'd it — so it pins itself, path and version together, and rewrites every shim
+# to match. That is one rule where there were two, and it is the reason a stub can
+# no longer establish a binding through this door: only a real core can pin itself.
+(cd "$REPO" && AE_CORE_BIN="$_ITEST_CORE_BIN" "$AE" doctor --refresh test-core >/dev/null 2>&1 || true)
+assert_eq "core binding: refresh rebinds the pin to the core that ran it" "$_ITEST_CORE_BIN" \
     "$(grep '^ae_core=' "$_cb_meta/meta" | cut -d= -f2- || true)"
+assert_eq "core binding: ...and the version with it, as a pair" \
+    "$("$_ITEST_CORE_BIN" --version 2>/dev/null | awk '{print $NF}')" \
+    "$(grep '^ae_core_version=' "$_cb_meta/meta" | cut -d= -f2- || true)"
+# ...and the SHIMS were rewritten with it, so the stub is out of the session
+# entirely. This is the assertion that makes the repair real rather than cosmetic:
+# a refresh that moved only the meta pair would leave every helper still exec'ing
+# whatever it was baked with.
+assert_eq "core binding: ...and every helper follows the new pin, not the old one" "0" \
+    "$(printf '%s' "$("$_cb_meta/requests" all 2>/dev/null || true)" | command grep -c 'CORE_TOKEN_9f3a' | tr -d '[:space:]')"
+
+# Back onto the stub for the fault arms: the token is the only thing that can prove
+# a call reached the pinned core rather than fell through to something else.
+_cb_pin_stub "$_cb_meta"
 _cb_out="$("$_cb_meta/requests" all 2>/dev/null || true)"
-assert_contains "core binding: and the core serves the call again after refresh" "CORE_TOKEN_9f3a" "$_cb_out"
+assert_contains "core binding: and the core serves the call again after re-pinning" "CORE_TOKEN_9f3a" "$_cb_out"
 
 # REPAIRED, THEN BROKEN AGAIN. Every fault is reported every time — there is no
-# once-per-session marker left to swallow the second one.
+# once-per-session marker left to swallow the second one. Only ONE fact moves
+# between these arms: the version the pinned binary reports.
 _cb_write_core "0.0.0-other"
-assert_eq "core binding: a fault after refresh is reported" "rc=2 token=0 msg=1 reason=1" \
+assert_eq "core binding: a fault after repair is reported" "rc=2 token=0 msg=1 reason=1" \
     "$(_cb_refuse '9.9.9')"
 _cb_write_core "9.9.9"
-(cd "$REPO" && AE_CORE_BIN="$_cb_core" "$AE" doctor --refresh >/dev/null 2>&1 || true)
 _cb_out="$("$_cb_meta/requests" all 2>/dev/null || true)"
 assert_contains "core binding: the repaired core serves" "CORE_TOKEN_9f3a" "$_cb_out"
 _cb_write_core "0.0.0-other"
@@ -1113,28 +1203,42 @@ assert_eq "core binding: and again on the very next call" "rc=2 token=0 msg=1 re
     "$(_cb_refuse '9.9.9')"
 _cb_write_core "9.9.9"
 
-# CONFIGURED BUT UNUSABLE AT REFRESH. Operator input that exists but cannot be
-# bound is a FAULT the operator must see — at the terminal that refreshed, and
-# again from every helper that needs the core.
+# CONFIGURED BUT UNUSABLE AT REFRESH. Operator input that exists but cannot be bound
+# is a FAULT the operator must see — and it is now caught EARLIER than it used to be.
+# The bash refresh accepted the path, recorded it with no version, and left a session
+# that refused from every helper afterwards; the glue's preflight refuses the command
+# itself, names the fact that was wrong, and exits 2 before the core is even started.
+# Nothing on disk changes, so there is no half-bound session to explain to anyone.
 printf '#!/bin/sh\nexit 0\n' >"$_cb_root/mute-core" && chmod 0755 "$_cb_root/mute-core"
-(cd "$REPO" && AE_CORE_BIN="$_cb_root/mute-core" "$AE" doctor --refresh >"$_cb_root/refresh.log" 2>&1 || true)
-assert_contains "core binding: refresh warns about input it cannot bind" "reports no version" "$(cat "$_cb_root/refresh.log")"
-assert_eq "core binding: the unusable path is still recorded" "$_cb_root/mute-core" \
-    "$(grep '^ae_core=' "$_cb_meta/meta" | cut -d= -f2- || true)"
-assert_eq "core binding: with no version, so it can never run" "" \
-    "$(grep '^ae_core_version=' "$_cb_meta/meta" | cut -d= -f2- || true)"
-# ...and the refresh VISITED EVERY SESSION on the way. The workspace render is a
-# fail-closed core call since A.2c, and a fail-closed shim EXITS rather than
-# returning — which `if fn; then` cannot catch. Before doctor_refresh_sessions ran
-# each session in a subshell, this very refresh died at the first session: the
-# later ones kept their stale pin and no verdict was printed for any of them. The
-# repair path has to outlive the fault it repairs, so the sibling sessions are the
-# assertion.
-assert_eq "core binding: a render refusal does not end the refresh at the first session" \
-    "$_cb_root/mute-core" \
-    "$(grep '^ae_core=' "$_cb_wt/meta" | cut -d= -f2- || true)"
-assert_contains "core binding: and every visited session still gets its own verdict" \
-    "refresh:test-core-wt" "$(cat "$_cb_root/refresh.log")"
+_cb_pin_before="$(grep -E '^ae_core(_version)?=' "$_cb_meta/meta" || true)"
+_cb_rc=0
+(cd "$REPO" && AE_CORE_BIN="$_cb_root/mute-core" "$AE" doctor --refresh >"$_cb_root/refresh.log" 2>&1) || _cb_rc=$?
+assert_eq "core binding: a refresh whose core input cannot be bound REFUSES" "2" "${_cb_rc:-0}"
+assert_contains "core binding: ...naming the subcommand that needed a core" \
+    "the ae core is required for 'doctor'" "$(cat "$_cb_root/refresh.log")"
+assert_contains "core binding: ...and the fact that was wrong" "reports no version" "$(cat "$_cb_root/refresh.log")"
+assert_eq "core binding: ...and no session's pin was touched" "$_cb_pin_before" \
+    "$(grep -E '^ae_core(_version)?=' "$_cb_meta/meta" || true)"
+unset _cb_rc
+
+# THE REFRESH VISITS EVERY SESSION. A fail-closed core call EXITS rather than
+# returning — which `if fn; then` cannot catch — and a refresh that died at the
+# first session used to leave the later ones with a stale pin and no verdict. The
+# repair path has to outlive the fault it repairs, so the SIBLING sessions are the
+# assertion: this home holds four (test-core plus the three mode copies), all of
+# them pinned to the stub, and one bare `doctor --refresh` has to move every one.
+(cd "$REPO" && AE_CORE_BIN="$_ITEST_CORE_BIN" "$AE" doctor --refresh >"$_cb_root/refresh-all.log" 2>&1 || true)
+assert_contains "core binding: every visited session gets its own verdict" \
+    "refresh:test-core-wt" "$(cat "$_cb_root/refresh-all.log")"
+assert_eq "core binding: ...and a sibling's pin moved too, not just the first session's" \
+    "$_ITEST_CORE_BIN" "$(grep '^ae_core=' "$_cb_wt/meta" | cut -d= -f2- || true)"
+
+# THE GATED ENTRY REFUSES A PIN IT CANNOT USE. Written straight into meta rather
+# than through a refresh, because the refresh no longer produces this shape — which
+# is exactly why it still has to be tested: meta is a file, and a half-written or
+# hand-edited one must fail closed rather than run something unverified.
+sed -e "s|^ae_core=.*|ae_core=$_cb_root/mute-core|" -e 's|^ae_core_version=.*|ae_core_version=|' \
+    "$_cb_meta/meta" >"$_cb_meta/meta.tmp" && mv "$_cb_meta/meta.tmp" "$_cb_meta/meta"
 assert_eq "core binding: the gated entry refuses, naming the unbound core" "rc=2 token=0 msg=1 reason=1" \
     "$(_cb_refuse 'could not be bound')"
 assert_eq "core binding: and it refuses on every later call too" "rc=2 token=0 msg=1 reason=1" \
@@ -1143,19 +1247,25 @@ assert_eq "core binding: and it refuses on every later call too" "rc=2 token=0 m
 # NO OPERATOR INPUT means the variable is UNSET, not "whatever the harness exported".
 # The suite exports AE_CORE_BIN for every other section (identity is core-owned), so this
 # one arm has to take it away again, or it is asserting about the harness rather than the
-# operator. `env -u`, not `AE_CORE_BIN=`: an EMPTY value is its own instruction (force the
-# bash body), and this arm is about ABSENCE.
+# operator. `env -u`, not `AE_CORE_BIN=`: an EMPTY value is its own instruction, and this
+# arm is about ABSENCE.
 # fb601995 (found on 4bc9ab49): this refresh used to CLEAR both keys, print OK and
-# exit 0. Clearing was the rollback to the bash body; that body is gone, so it now
-# only produces a session where every core-owned command refuses — `end` included,
+# exit 0, leaving a session where every core-owned command refuses — `end` included,
 # which leaves it UNENDABLE. A refresh with nothing to re-pin with must leave meta
-# BYTE-IDENTICAL, whatever it holds. The unusable pin written just above is the
-# first shape; a usable one is the second, and it is the one the repro broke.
+# BYTE-IDENTICAL, whatever it holds. It does, and now for a stronger reason: with no
+# AE_CORE_BIN and no `core/current` in this hermetic home there is no core to run the
+# refresh AT ALL, so the command refuses before it can touch anything. The unusable
+# pin written just above is the first shape; a usable one is the second, and it is
+# the one the repro broke.
 _cb_pin_before="$(grep -E '^ae_core(_version)?=' "$_cb_meta/meta" || true)"
-(cd "$REPO" && env -u AE_CORE_BIN "$AE" doctor --refresh >/dev/null 2>&1 || true)
+_cb_rc=0
+(cd "$REPO" && env -u AE_CORE_BIN "$AE" doctor --refresh >"$_cb_root/refresh-noinput.log" 2>&1) || _cb_rc=$?
+assert_eq "core binding: a no-input refresh REFUSES rather than guessing" "2" "${_cb_rc:-0}"
+assert_contains "core binding: ...and says no core is configured" \
+    "no core is configured" "$(cat "$_cb_root/refresh-noinput.log")"
 assert_eq "core binding: a no-input refresh leaves an UNUSABLE pin byte-identical" \
     "$_cb_pin_before" "$(grep -E '^ae_core(_version)?=' "$_cb_meta/meta" || true)"
-(cd "$REPO" && AE_CORE_BIN="$_cb_core" "$AE" doctor --refresh >/dev/null 2>&1 || true)
+_cb_pin_stub "$_cb_meta"
 _cb_pin_before="$(grep -E '^ae_core(_version)?=' "$_cb_meta/meta" || true)"
 (cd "$REPO" && env -u AE_CORE_BIN "$AE" doctor --refresh >/dev/null 2>&1 || true)
 assert_eq "core binding: a no-input refresh leaves a USABLE pin byte-identical" \
@@ -1164,7 +1274,7 @@ assert_eq "core binding: a no-input refresh leaves a USABLE pin byte-identical" 
 _cb_out="$("$_cb_meta/requests" all 2>/dev/null || true)"
 assert_contains "core binding: ...and the pinned core still serves after that refresh" \
     "CORE_TOKEN_9f3a" "$_cb_out"
-unset _cb_pin_before
+unset _cb_pin_before _cb_rc
 # Put the suite's own core back before any later section uses this hermetic home's
 # sessions — the arms above deliberately left this one pinned to the fake core.
 (cd "$REPO" && AE_CORE_BIN="$_ITEST_CORE_BIN" "$AE" doctor --refresh >/dev/null 2>&1 || true)
@@ -1179,10 +1289,17 @@ unset _cb_pin_before
 REPO_BAD="$(setup_repo)"
 _cb_bad_rc=0
 (cd "$REPO_BAD" && AE_CORE_BIN="$_cb_root/absent-core" "$AE" --local test-core-bad >"$_cb_root/launch-bad.log" 2>&1) || _cb_bad_rc=$?
-assert_eq "core binding: a launch whose core input cannot be bound REFUSES" "1" \
-    "$([[ $_cb_bad_rc -ne 0 ]] && echo 1 || echo 0)"
+assert_eq "core binding: a launch whose core input cannot be bound REFUSES with the usage code" "2" \
+    "$_cb_bad_rc"
+# NAMED AT `_check-deps`, NOT `_launch`, and that is the point: since final cut
+# pass 2 the launch prelude's dependency check is itself a core call, and it is the
+# FIRST one. An operator whose core input is broken hears it before the glue has
+# assembled a single launch flag, and the message names the entry that could not be
+# served rather than the one it was heading for.
 assert_contains "core binding: ...and names the core it needed, and why it could not use it" \
-    "the ae core is required for '_launch'" "$(cat "$_cb_root/launch-bad.log")"
+    "the ae core is required for '_check-deps'" "$(cat "$_cb_root/launch-bad.log")"
+assert_contains "core binding: ...naming the input it was handed" \
+    "$_cb_root/absent-core" "$(cat "$_cb_root/launch-bad.log")"
 assert_eq "core binding: ...and no session was created" "0" \
     "$(tmux has-session -t test-core-bad 2>/dev/null && echo 1 || echo 0)"
 assert_not_exists "core binding: ...and no session state was left behind" \
@@ -1871,68 +1988,13 @@ assert_eq "race (#4): at least one attempt actually completed an end" "1" \
     "$([[ "$(printf '%s' "$RACE_INCONCLUSIVE" | wc -w | tr -d ' ')" -lt 3 ]] && echo 1 || echo 0)"
 fi
 
-# ── 5th review B2: legacy-empty meta upgrade — fail closed, then migrate, then end ──
-if _itest_section '5th review B2: legacy-empty meta upgrade — fail closed, then migrate, then end'; then
-LEG="ae-leg-$$"; DEFB="ae-defb-$$"
-command tmux -L "$DEFB" new-session -d -s unrelated 2>/dev/null
-REPO_LEG="$(setup_repo)"
-(cd "$REPO_LEG" && AE_TMUX_SERVER="$LEG" "$AE" --local legsess &) 2>/dev/null
-for _i in $(seq 1 25); do command tmux -L "$LEG" has-session -t "=legsess" 2>/dev/null && break; sleep 0.4; done
-for _i in $(seq 1 25); do [[ -f "$HOME/.ae/sessions/legsess/meta" ]] && break; sleep 0.3; done
-_sed_i -e 's/^tmux_server=.*/tmux_server=/' -e '/^tmux_server_kind=/d' "$HOME/.ae/sessions/legsess/meta"   # legacy sim
-if leg_out="$(AE_TMUX_DEFAULT_SOCKET="$DEFB" "$AE" end -f legsess 2>&1)"; then leg_rc=0; else leg_rc=$?; fi
-assert_eq "legacy-empty (7th): end fails closed, naming the found server (live case refuses even --assume-stopped)" "1" \
-    "$([[ $leg_rc -ne 0 && "$leg_out" == *"no positive server record AND is LIVE on enumerable server"* \
-        && "$leg_out" == *"$LEG"* ]] && echo 1 || echo 0)"
-assert_eq "legacy-empty (5th B2): state preserved + session still alive" "1" \
-    "$([[ -d "$HOME/.ae/sessions/legsess" ]] && command tmux -L "$LEG" has-session -t "=legsess" 2>/dev/null && echo 1 || echo 0)"
-AE_TMUX_DEFAULT_SOCKET="$DEFB" "$AE" doctor --refresh legsess >/dev/null 2>&1 || true
-assert_eq "legacy-empty (5th B2): doctor --refresh migrates value + kind=socket" \
-    "$TMUX_SOCK_DIR/$LEG|socket" \
-    "$(sed -n 's/^tmux_server=//p' "$HOME/.ae/sessions/legsess/meta" 2>/dev/null)|$(sed -n 's/^tmux_server_kind=//p' "$HOME/.ae/sessions/legsess/meta" 2>/dev/null)"
-for _i in $(seq 1 15); do
-    command tmux -L "$LEG" has-session -t "=legsess" 2>/dev/null || break
-    AE_TMUX_DEFAULT_SOCKET="$DEFB" "$AE" end -f legsess >/dev/null 2>&1 || true
-    sleep 0.4
-done
-assert_eq "legacy-empty (5th B2): post-migration end succeeds on the right server" "1" \
-    "$(command tmux -L "$LEG" has-session -t "=legsess" 2>/dev/null && echo 0 || echo 1)"
-command tmux -L "$LEG" kill-server 2>/dev/null || true
-fi
+# ── 5th review B2: legacy-empty meta upgrade — fail closed, then migrate, then end — RETIRED (final glue cut) ───
+# 4 assertion(s) went with their subject: the migration was compat code for pre-tmux_server meta written by the bash era, and 'ae doctor --refresh' no longer carries it. This line never wrote such a meta: the core records tmux_server + tmux_server_kind as a typed pair at launch, from the --server-kind/--server the glue resolves, so a blank value is not a shape it can produce. Ruled retired rather than ported (fable5:lead, final cut pass 2).
 
-# ── missing-line legacy meta (pre-tmux_server era): migration must ADD, not just replace ──
-if _itest_section 'missing-line legacy meta (pre-tmux_server era): migration must ADD, not just replace'; then
-# Replace-only wrote kind=socket with NO value line — a malformed record (-S "") the
-# migration exists to prevent. Caught live: the empty-value sim above raced a not-yet-
-# written meta and produced exactly this shape. Fixture is HAND-BUILT (review: a live
-# launch as fixture races the launcher's own locked meta rewrites, and a fixed session
-# name collides across concurrent suite runs — migration enumerates the shared socket
-# dir). PID+RANDOM-qualified name, no launcher, no waits: fully deterministic.
-LEGM="legm-$$-$RANDOM"; LEGMSRV="ae-legm-$$-$RANDOM"
-mkdir -p "$HOME/.ae/sessions/$LEGM"
-cat >"$HOME/.ae/sessions/$LEGM/meta" <<LEGMEOF
-mode=local
-origin=$TMPDIR
-session=$LEGM
-session_id=legm-fixture
-work_dir=$TMPDIR
-layout=vertical
-config=$HOME/.ae/config
-main_pane=%0
-ae_path=$AE
-ae_version=test
-agent.main=dummy:lead:legm-fixture
-agent_bin.main=bash
-LEGMEOF
-command tmux -L "$LEGMSRV" new-session -d -s "$LEGM" 2>/dev/null
-AE_TMUX_DEFAULT_SOCKET="$DEFB" "$AE" doctor --refresh "$LEGM" >/dev/null 2>&1 || true
-assert_eq "legacy missing-line: migration ADDS tmux_server value + kind" \
-    "$TMUX_SOCK_DIR/$LEGMSRV|socket" \
-    "$(sed -n 's/^tmux_server=//p' "$HOME/.ae/sessions/$LEGM/meta" 2>/dev/null)|$(sed -n 's/^tmux_server_kind=//p' "$HOME/.ae/sessions/$LEGM/meta" 2>/dev/null)"
-command tmux -L "$LEGMSRV" kill-server 2>/dev/null || true
-rm -rf "$HOME/.ae/sessions/$LEGM"
-command tmux -L "$DEFB" kill-server 2>/dev/null || true
-fi
+
+# ── missing-line legacy meta (pre-tmux_server era): migration must ADD, not just replace — RETIRED (final glue cut) ───
+# 1 assertion(s) went with their subject: same subject, same ruling: refresh no longer migrates a meta that predates the typed server pair, and this line cannot write one.
+
 
 # ── 7th review B3: zero-hit stays empty; --assume-stopped is the explicit teardown ──
 if _itest_section '7th review B3: zero-hit stays empty; --assume-stopped is the explicit teardown'; then
@@ -2839,25 +2901,13 @@ REPO11="$(setup_repo)"
 wait_for_session "test-sync"
 sleep 1
 
-# Watchdog probe helpers (used both before and after refresh). Bounded polling,
-# not fixed sleeps — the launch autostarts the watchdog in the background.
-# The SESSION's `watchdog` helper is a thin shim onto the core's daemon entry
-# and takes no start/stop/status verb since B glue cut 2; the management verbs
-# are `ae watchdog <verb> [session]`, which is what the product itself calls.
-wd_poll() { # wd_poll <session> <needle> [tries] — bounded status poll
-    local s="$1" needle="$2" tries="${3:-20}" i=0
-    while ((i < tries)); do
-        [[ "$("$AE" watchdog status "$s" 2>&1 || true)" == *"$needle"* ]] && return 0
-        sleep 0.5
-        i=$((i + 1))
-    done
-    return 1
-}
-wd_status() { "$AE" watchdog status "$1" 2>&1 || true; }
-wd_pid() { wd_status "$1" | sed -n 's/.*pid \([0-9]*\).*/\1/p'; }
-
-# Settle the launch autostart so the watchdog is genuinely running before refresh,
-# then snapshot its pid — refresh must restart it (new pid), not merely leave it.
+# The watchdog probes (wd_poll/wd_status/wd_pid) are preamble helpers. Bounded
+# polling, not fixed sleeps — the launch autostarts the watchdog in the
+# background. The SESSION's `watchdog` helper is a thin shim onto the core's
+# daemon entry and takes no start/stop/status verb since B glue cut 2; the
+# management verbs are `ae watchdog <verb> [session]`, which is what the product
+# itself calls.
+# Settle the launch autostart so the watchdog is genuinely running before refresh.
 wd_poll test-sync "is running" 20 || true
 wd_pid_before="$(wd_pid test-sync)"
 
@@ -2876,20 +2926,24 @@ meta_ae_path="$(grep '^ae_path=' "$HOME/.ae/sessions/test-sync/meta" | cut -d= -
 assert_contains "doctor-refresh: reports refreshed session" "OK    refresh:test-sync" "$doctor_sync_output"
 assert_contains "doctor-refresh: summary still succeeds" "Summary: 0 failure(s)" "$doctor_sync_output"
 
-# The refresh must have cycled the running watchdog so the regenerated helper
-# body goes live: it announces the restart and comes back up under a NEW pid.
-assert_contains "doctor-refresh: announces the watchdog restart" \
-    "restarted watchdog for test-sync" "$doctor_sync_output"
+# REFRESH NO LONGER CYCLES THE RUNNING WATCHDOG — RETIRED (final glue cut): 3
+# assertions went with their subject ("announces the watchdog restart", and the
+# pid-changed pair around it). The restart existed because the daemon's BODY was
+# bash the refresh had just rewritten: a running watchdog kept its loaded
+# functions, so only a restart made the new body live. The daemon is a core
+# process now (`_watchdog-run <dir>`); refresh rewrites a one-line shim, and the
+# binary the shim execs did not change. src/watchdog_lifecycle.rs states the new
+# rule directly ("a pre-rename watchdog can outlive a `doctor --refresh` —
+# helpers are rewritten, a running daemon is not restarted") and reaps a legacy
+# daemon at the next start instead. Ruled deliberate (fable5:lead, final cut
+# pass 2). What still has to hold is that the refresh does not TAKE THE DAEMON
+# DOWN, which is what these two assert.
 wd_poll test-sync "is running" 20 || true
-assert_contains "doctor-refresh: watchdog running again after refresh" \
+assert_contains "doctor-refresh: the watchdog is still running after refresh" \
     "is running" "$(wd_status test-sync)"
 wd_pid_after="$(wd_pid test-sync)"
-assert_eq "doctor-refresh: watchdog restarted (before pid captured)" \
-    "1" "$([[ -n "$wd_pid_before" ]] && echo 1 || echo 0)"
-assert_eq "doctor-refresh: watchdog restarted (after pid captured)" \
-    "1" "$([[ -n "$wd_pid_after" ]] && echo 1 || echo 0)"
-assert_eq "doctor-refresh: watchdog pid changed across refresh" \
-    "1" "$([[ -n "$wd_pid_before" && -n "$wd_pid_after" && "$wd_pid_before" != "$wd_pid_after" ]] && echo 1 || echo 0)"
+assert_eq "doctor-refresh: ...and it is the SAME daemon, not a silent replacement" \
+    "1" "$([[ -n "$wd_pid_before" && "$wd_pid_after" == "$wd_pid_before" ]] && echo 1 || echo 0)"
 assert_contains "doctor-refresh: reply helper regenerated" "Usage: reply [--as <agent>] <request-id> <message>" "$reply_output"
 assert_contains "doctor-refresh: workspace regenerated" "memo add" "$workspace_output"
 # ae_path names the GLUE, not the core: the watchdog re-execs it for
@@ -3562,432 +3616,21 @@ assert_eq "list (human): exits 0 when a per-session helper returns non-zero" "0"
 "$AE" end -f jsonrobust 2>/dev/null || true
 fi
 
-# ── orchestrator companion autostart: scaffold → any launch brings it up ──
-if _itest_section 'orchestrator companion autostart: scaffold → any launch brings it up'; then
-mkdir -p "$HOME/.ae/orchestrator"
-cat > "$HOME/.ae/orchestrator/orchestrator.config" <<'EOF'
-[profiles]
-dummy = "bash"
+# ── orchestrator companion autostart: scaffold → any launch brings it up — RETIRED (final glue cut) ───
+# 4 assertion(s) went with their subject: the core starts both companions at launch, AFTER it has created the tmux server — the ordering the bash forked waiter existed to work around, and the race that waiter introduced (a companion revived after a human stopped it) goes with it. AE_NO_AUTOSTART crosses as `_launch --no-autostart`.
 
-[roster]
-orchestrator = dummy
 
-[workspace]
-main = orchestrator
-orchestrator = true
-watchdog = false
-EOF
-REPO_AS="$(setup_repo)"
-(cd "$REPO_AS" && "$AE" --local autostart-host &) 2>/dev/null
-wait_for_session "autostart-host"
-as_i=0
-while ! tmux has-session -t orchestrator 2>/dev/null && ((as_i < 20)); do
-    sleep 0.5
-    as_i=$((as_i + 1))
-done
-assert_eq "autostart: orchestrator companion comes up with a fleet launch" "0" \
-    "$(tmux has-session -t orchestrator 2>/dev/null; echo $?)"
-# Existing-session fast path (codex IMPORTANT): orchestrator down + re-running
-# 'ae <existing>' must bring it back (previously only the bridge was ensured).
-"$AE" stop orchestrator 2>/dev/null || true
-sleep 0.5
-(cd "$REPO_AS" && "$AE" --local autostart-host &) 2>/dev/null
-as_i=0
-while ! tmux has-session -t orchestrator 2>/dev/null && ((as_i < 20)); do
-    sleep 0.5
-    as_i=$((as_i + 1))
-done
-assert_eq "autostart: existing-session relaunch revives the orchestrator" "0" \
-    "$(tmux has-session -t orchestrator 2>/dev/null; echo $?)"
-"$AE" stop orchestrator 2>/dev/null || true
-"$AE" end -f autostart-host 2>/dev/null || true
-sleep 0.5
-# Opt-out honoured: AE_NO_AUTOSTART=1 must not bring the orchestrator back.
-REPO_AS2="$(setup_repo)"
-(cd "$REPO_AS2" && AE_NO_AUTOSTART=1 "$AE" --local autostart-off &) 2>/dev/null
-wait_for_session "autostart-off"
-sleep 2
-assert_eq "autostart: AE_NO_AUTOSTART=1 keeps the orchestrator down" "1" \
-    "$(tmux has-session -t orchestrator 2>/dev/null && echo 0 || echo 1)"
-"$AE" end -f autostart-off 2>/dev/null || true
-rm -rf "$HOME/.ae/orchestrator"
-sleep 0.5
-fi
+# ── aewatch retired: the bridge spawn kills a stale sidecar — RETIRED (final glue cut) ─────
+# 2 assertion(s) went with their subject: the bridge spawn is the core's, and it reaps its own stale sidecar.
 
-# ── aewatch retired: the bridge spawn kills a stale sidecar (RR P4) ──────────
-if _itest_section 'aewatch retired: the bridge spawn kills a stale sidecar'; then
-# The hook that used to START aewatch is gone, but a retirement that only edits
-# bytes does not help against a process ALREADY RUNNING: a live aewatch claims the
-# bridge-owner marker and kills competing bridges on every tmux server, so it would
-# kill the Rust core seconds after we launch it. The spawn therefore retires it
-# first. Drive the REAL _telegram_spawn_daemon with a fake tmux that reports the
-# sidecar present or absent and records every kill-session.
-_TG_SPAWN_FNS="$TMPDIR/tg-spawn-fns.sh"
-{
-    awk '/^_ae_core_bin_input\(\) \{/,/^\}$/' "$AE"
-    awk '/^_ae_core_bin_version\(\) \{/,/^\}$/' "$AE"
-    awk '/^_tmux_err_is_clean_dead\(\) \{/,/^\}$/' "$AE"
-    awk '/^daemon_session_running\(\) \{/,/^\}$/' "$AE"
-    # COEXISTENCE (pre-P5): the spawn calls the guard, so the fixture must carry
-    # it. A MISSING function is not a skipped check — it is rc 127, which the
-    # spawn reads as a refusal (the round-3 BLOCKER that put
-    # daemon_session_running at top level, in another shape).
-    awk '/^_telegram_coexistence_guard\(\) \{/,/^\}$/' "$AE"
-    awk '/^_telegram_spawn_daemon\(\) \{/,/^\}$/' "$AE"
-} >"$_TG_SPAWN_FNS"
 
-# _spawn_run <sidecar: present|absent> -> "<killed|nokill>|<spawned|nospawn>"
-_spawn_run() {
-    local sidecar="$1" d
-    d="$(mktemp -d "$TMPDIR/tgs.XXXXXX")"
-    printf '%s\n' '#!/bin/sh' 'echo "ae 0.0.0"' >"$d/core"
-    chmod 0700 "$d/core"
-    cat >"$d/wrapper" <<WRAP
-#!/usr/bin/env bash
-CONFIG_DIR="$d"
-CONFIG_FILE="$d/config"
-_TELEGRAM_TMUX_SESSION="ae-telegram"
-# A DEFAULT-SERVER instance: the coexistence guard gates only a named-server one,
-# and this section is about the aewatch retirement, not about coexistence. The
-# harness exports AE_TMUX_SERVER for its own isolation, so it is cleared here
-# deliberately rather than inherited by accident. The guard's own behaviour has
-# its own section ("ae-next coexistence: Telegram ownership guard").
-unset AE_TMUX_SERVER
-tmux() {
-    case "\$1" in
-        list-sessions) [[ "$sidecar" == present ]] && echo ae-aewatch; return 0 ;;
-        kill-session) echo "\$*" >>"$d/kills"; return 0 ;;
-        new-session) echo spawned >"$d/spawned"; return 0 ;;
-        *) return 0 ;;
-    esac
-}
-source "$_TG_SPAWN_FNS"
-AE_CORE_BIN="$d/core" _telegram_spawn_daemon
-WRAP
-    "${BASH:-bash}" "$d/wrapper" >/dev/null 2>&1
-    if grep -q 'ae-aewatch' "$d/kills" 2>/dev/null; then printf 'killed'; else printf 'nokill'; fi
-    if [[ -f "$d/spawned" ]]; then printf '|spawned\n'; else printf '|nospawn\n'; fi
-    rm -rf "$d"
-}
-# The case that matters: a live sidecar is retired, and the core still comes up.
-assert_eq "aewatch retired: a RUNNING sidecar is killed, then the core spawns" "killed|spawned" "$(_spawn_run present)"
-# ...and the retirement is not unconditional — no sidecar means no kill at all.
-assert_eq "aewatch retired: no sidecar -> no kill, core still spawns" "nokill|spawned" "$(_spawn_run absent)"
-fi
+# ── telegram autostart: intent + liveness are the whole decision — RETIRED (final glue cut) ───
+# 3 assertion(s) went with their subject: same subject: the core owns the intent read, the liveness probe and the decision between them.
 
-# ── telegram autostart: intent + liveness are the whole decision ──────────────
-if _itest_section 'telegram autostart: intent + liveness are the whole decision'; then
-# All THREE revive paths (launch, reattach, watchdog _supervise) funnel through
-# _telegram_autostart_if_enabled. The aewatch-vs-bash ownership arbitration that
-# used to sit at the top of it is retired with the bash bridge it arbitrated: the
-# Rust core is the only sender, so a LIVE DAEMON — not a marker file — is what
-# stops a second spawn. Drive the REAL function with stubbed lifecycle deps.
-_TG_FNS="$TMPDIR/tg-fns.sh"
-awk '/^_telegram_autostart_if_enabled\(\) \{/,/^\}$/' "$AE" >"$_TG_FNS"
 
-# _tg_run <intent: true|false> <daemon_running_rc> -> spawned|nospawn
-_tg_run() {
-    local intent="$1" runrc="$2" d
-    d="$(mktemp -d "$TMPDIR/tg.XXXXXX")"
-    cat >"$d/wrapper" <<WRAP
-#!/usr/bin/env bash
-CONFIG_DIR="$d"
-_TELEGRAM_TMUX_SESSION="ae-telegram"
-_telegram_daemon_running() { return $runrc; }
-_telegram_intent_enabled() { echo $intent; }
-_telegram_intent_enabled_uncached() { echo $intent; }
-_telegram_validate_token_file() { :; }
-_telegram_control_lock_file() { echo "$d/lock"; }
-_telegram_spawn_daemon() { echo spawned >"$d/spawned"; }
-get_config() { :; }
-source "$_TG_FNS"
-_telegram_autostart_if_enabled
-WRAP
-    "${BASH:-bash}" "$d/wrapper" >/dev/null 2>&1
-    { [[ -f "$d/spawned" ]] && echo spawned; } || echo nospawn
-    rm -rf "$d"
-}
-# Enabled and nothing running: the one revive path spawns.
-assert_eq "tg-autostart: enabled + no daemon -> the bridge is spawned" "spawned" "$(_tg_run true 1)"
-# Already running: liveness is the suppressor now (it re-checks under the lock too).
-assert_eq "tg-autostart: enabled + daemon already running -> no second spawn" "nospawn" "$(_tg_run true 0)"
-# Intent off: nothing starts, whatever the runtime looks like.
-assert_eq "tg-autostart: disabled -> never spawns" "nospawn" "$(_tg_run false 1)"
-fi
+# ── telegram autostart refusal visibility — RETIRED (final glue cut) ───────────────────────
+# 23 assertion(s) went with their subject: the autostart decision, its refusal record and the display of that record are all core-side now.
 
-# ── telegram autostart refusal visibility: durable, redacted, dual surface ──
-if _itest_section 'telegram autostart refusal visibility'; then
-# Autostart callers discard stderr, so exercise the real autostart function with
-# a refusal carrying a token-shaped SHAPE and assert the only durable values are
-# the closed category, timestamp, and action. The bridge is down while status and
-# doctor read the global record, so no live Telegram credentials are needed.
-_TG_OBS_FNS="$TMPDIR/tg-observe-fns.sh"
-{
-    awk '/^_telegram_autostart_refusal_category\(\) \{/,/^\}$/' "$AE"
-    awk '/^_telegram_load_last_autostart_refusal\(\) \{/,/^\}$/' "$AE"
-    awk '/^_telegram_record_autostart_refusal\(\) \{/,/^\}$/' "$AE"
-    awk '/^_telegram_autostart_if_enabled\(\) \{/,/^\}$/' "$AE"
-} >"$_TG_OBS_FNS"
-_tg_obs_d="$(mktemp -d "$TMPDIR/tg-observe.XXXXXX")"
-mkdir -p "$_tg_obs_d/session" "$_tg_obs_d/sessions/fixture"
-printf '[telegram]\nenabled = true\n' >"$_tg_obs_d/config"
-_tg_obs_token='123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi'
-cat >"$_tg_obs_d/wrapper" <<WRAP
-#!/usr/bin/env bash
-set -euo pipefail
-export CONFIG_DIR="$_tg_obs_d"
-export CONFIG_FILE="$_tg_obs_d/config"
-export SESSIONS_DIR="$_tg_obs_d/sessions"
-export _AE_META_DIR="$_tg_obs_d/session"
-export SESSION=fixture
-source "$_TG_OBS_FNS"
-ae_emit_event() {
-    printf '{"action":"%s","target":"%s","summary":"%s"}\n' "\$1" "\$2" "\$4" >>"$_tg_obs_d/session/events.jsonl"
-}
-_telegram_intent_enabled() { echo true; }
-_telegram_intent_enabled_uncached() { echo true; }
-_telegram_daemon_running() { return 1; }
-_telegram_validate_token_file() { :; }
-_telegram_control_lock_file() { echo "$_tg_obs_d/control.lock"; }
-_telegram_spawn_daemon() {
-    printf 'coexistence refusal token=%s\n' "$_tg_obs_token" >&2
-    return 1
-}
-_telegram_autostart_if_enabled >/dev/null 2>&1
-WRAP
-chmod 0700 "$_tg_obs_d/wrapper"
-"$_tg_obs_d/wrapper"
-_tg_obs_record="$(<"$_tg_obs_d/telegram/autostart-refusal")"
-assert_eq "tg-observe: record is category + UTC timestamp only" "1" \
-    "$([[ "$_tg_obs_record" =~ ^(aewatch-live|same-token-live|token-unreadable|probe-failed|spawn-failed)$'\t'[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] && echo 1 || echo 0)"
-assert_eq "tg-observe: record excludes token-shaped refusal text" "1" \
-    "$([[ "$_tg_obs_record" != *"$_tg_obs_token"* && "$_tg_obs_record" != *'coexistence'* ]] && echo 1 || echo 0)"
-assert_eq "tg-observe: session event is emitted" "1" \
-    "$(grep -c '"action":"telegram_autostart_refused"' "$_tg_obs_d/session/events.jsonl" 2>/dev/null || true)"
-_tg_obs_event="$(<"$_tg_obs_d/session/events.jsonl")"
-assert_eq "tg-observe: session event excludes token-shaped refusal text" "1" \
-    "$([[ "$_tg_obs_event" != *"$_tg_obs_token"* && "$_tg_obs_event" != *'coexistence'* ]] && echo 1 || echo 0)"
-_tg_obs_status="$(AE_HOME="$_tg_obs_d" CONFIG_FILE="$_tg_obs_d/config" "$AE" telegram status 2>&1)"
-_tg_obs_doctor="$(AE_HOME="$_tg_obs_d" CONFIG_FILE="$_tg_obs_d/config" "$AE" doctor 2>&1 || true)"
-assert_eq "tg-observe: status surfaces last refusal with timestamp" "1" \
-    "$([[ "$_tg_obs_status" == *'last refusal=spawn-failed at '* && "$_tg_obs_status" != *"$_tg_obs_token"* ]] && echo 1 || echo 0)"
-assert_eq "tg-observe: doctor surfaces WARN category + timestamp" "1" \
-    "$([[ "$_tg_obs_doctor" == *'WARN  telegram.autostart'*'last refusal=spawn-failed at '* && "$_tg_obs_doctor" != *"$_tg_obs_token"* ]] && echo 1 || echo 0)"
-assert_eq "tg-observe: sink outputs exclude token-shaped value" "1" \
-    "$([[ "$_tg_obs_status" != *"$_tg_obs_token"* && "$_tg_obs_doctor" != *"$_tg_obs_token"* ]] && echo 1 || echo 0)"
-assert_eq "tg-observe: atomic writer leaves no temporary record" "0" \
-    "$(find "$_tg_obs_d/telegram" -maxdepth 1 -name 'autostart-refusal.tmp.*' -print | wc -l | tr -d '[:space:]')"
-rm -rf "$_tg_obs_d"
-unset _TG_OBS_FNS _tg_obs_d _tg_obs_record _tg_obs_event _tg_obs_status _tg_obs_doctor _tg_obs_token
-
-# Real seam coverage: the mapper sees a token-shaped unknown, the loader is fed
-# a hostile multiline row, and all five refusal decisions are driven through
-# the real guard/autostart branches. Only probe observations and validation are
-# fixtures; no category discriminator is stubbed.
-_TG_OBS_REAL_FNS="$TMPDIR/tg-observe-real-fns.sh"
-{
-    awk '/^_telegram_autostart_refusal_category\(\) \{/,/^\}$/' "$AE"
-    awk '/^_telegram_load_last_autostart_refusal\(\) \{/,/^\}$/' "$AE"
-    awk '/^_telegram_record_autostart_refusal\(\) \{/,/^\}$/' "$AE"
-    awk '/^_telegram_autostart_if_enabled\(\) \{/,/^\}$/' "$AE"
-    awk '/^_telegram_expand_path\(\) \{/,/^\}$/' "$AE"
-    awk '/^_telegram_coexistence_token\(\) \{/,/^\}$/' "$AE"
-    awk '/^_telegram_coexistence_same_bot\(\) \{/,/^\}$/' "$AE"
-    awk '/^_telegram_coexistence_guard\(\) \{/,/^\}$/' "$AE"
-} >"$_TG_OBS_REAL_FNS"
-_tg_obs_real_token='123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi'
-
-_tg_obs_real_case() {
-    local case_name="$1" expected="$2" root runtime record event status doctor want_event
-    root="$(mktemp -d "$TMPDIR/tg-real.XXXXXX")"
-    runtime="$(mktemp -d "$TMPDIR/tg-runtime.XXXXXX")"
-    mkdir -p "$root/session" "$root/sessions/fixture" "$root/home/.ae"
-    printf '[telegram]\nenabled = true\ntoken_file = %s/current.token\n' "$root" >"$root/config"
-    printf '[telegram]\ntoken_file = %s/other.token\n' "$root" >"$root/home/.ae/config"
-    printf '%s\n' "$_tg_obs_real_token" >"$root/current.token"
-    chmod 600 "$root/current.token"
-    [[ "$case_name" == token-unreadable || "$case_name" == guard-token-unreadable ]] || {
-        printf '%s\n' "$_tg_obs_real_token" >"$root/other.token"
-        chmod 600 "$root/other.token"
-    }
-    cat >"$root/wrapper" <<WRAP
-#!/usr/bin/env bash
-set -euo pipefail
-export CONFIG_DIR="$root"
-export CONFIG_FILE="$root/config"
-export SESSIONS_DIR="$root/sessions"
-export _AE_META_DIR="$root/session"
-export _AE_SESSION=fixture
-export SESSION=fixture
-export HOME="$root/home"
-export AE_TELEGRAM_AUTOSTART_SESSION=fixture
-_TELEGRAM_TMUX_SESSION=ae-telegram
-source "$_TG_OBS_REAL_FNS"
-ae_emit_event() {
-    printf '{"action":"%s","target":"%s","summary":"%s"}\n' "\$1" "\$2" "\$4" >>"$root/session/events.jsonl"
-}
-get_config() {
-    case "\$CONFIG_FILE" in
-        "$root/config") printf '%s/current.token' "$root" ;;
-        "$root/home/.ae/config") printf '%s/other.token' "$root" ;;
-        *) return 0 ;;
-    esac
-}
-_telegram_intent_enabled() { echo true; }
-_telegram_intent_enabled_uncached() { echo true; }
-_telegram_daemon_running() { return 1; }
-_telegram_control_lock_file() { echo "$root/control.lock"; }
-_telegram_validate_token_file() {
-    if [[ "$case_name" == token-unreadable ]]; then
-        : >"$root/validation-refusal"
-        printf 'token validation failed: %s\n' "$_tg_obs_real_token" >&2
-        return 1
-    fi
-    return 0
-}
-_telegram_coexistence_probe() {
-    case "$case_name" in
-        aewatch-live) printf '%s\n' ae-aewatch; return 0 ;;
-        same-token-live|token-unreadable|guard-token-unreadable) printf '%s\n' ae-telegram; return 0 ;;
-        probe-failed) return 2 ;;
-        spawn-failed|unknown-category) return 1 ;;
-    esac
-}
-_telegram_spawn_daemon() {
-    if [[ "$case_name" == spawn-failed ]]; then
-        printf 'spawn refusal token=%s\n' "$_tg_obs_real_token" >&2
-        return 1
-    fi
-    _telegram_coexistence_guard
-}
-if [[ "$case_name" == unknown-category ]]; then
-    _telegram_record_autostart_refusal "$_tg_obs_real_token"
-else
-    export AE_TMUX_SERVER=named
-    _telegram_autostart_if_enabled >/dev/null 2>&1
-fi
-WRAP
-    chmod 700 "$root/wrapper"
-    "$root/wrapper" >/dev/null 2>&1
-    record="$(<"$root/telegram/autostart-refusal")"
-    event="$(<"$root/session/events.jsonl")"
-    status="$(AE_HOME="$root" CONFIG_FILE="$root/config" XDG_RUNTIME_DIR="$runtime" "$AE" telegram status 2>&1)"
-    doctor="$(AE_HOME="$root" CONFIG_FILE="$root/config" XDG_RUNTIME_DIR="$runtime" "$AE" doctor 2>&1 || true)"
-    assert_eq "tg-real[$case_name]: exact category in closed record" "1" \
-        "$([[ "$record" =~ ^(aewatch-live|same-token-live|token-unreadable|probe-failed|spawn-failed)$'\t'[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ && "$record" == "$expected"$'\t'* ]] && echo 1 || echo 0)"
-    # The pattern is built in a VARIABLE, and that is not a style choice. Written
-    # inline as `"$(grep -Fcx "{\"a\":\"b\",\"c\":\"d\"}" f)"`, the backslash-escaped
-    # quotes do not survive the nested command substitution: the word ends up
-    # UNQUOTED, `{...,...,...}` hits BRACE EXPANSION, and grep runs three times on
-    # one comma-separated fragment each — none of which is a whole line, so `-x`
-    # answers 0 and the assertion reads as "the product emitted nothing". Measured:
-    # `printf '%s\n' "$(g -Fcx "{\"a\":\"b\",\"c\":\"d\"}" f)"` invokes g three
-    # times with ARG2 = `"a":"b"`, then `"c":"d"`. An ASSIGNMENT is immune (bash does
-    # not brace-expand an assignment RHS), which is why this form is correct and the
-    # inline one is not.
-    want_event='{"action":"telegram_autostart_refused","target":"fixture","summary":"category='"$expected"'"}'
-    assert_eq "tg-real[$case_name]: exact action/category event" "1" \
-        "$(grep -Fcx -- "$want_event" "$root/session/events.jsonl" 2>/dev/null || true)"
-    assert_eq "tg-real[$case_name]: event excludes token" "1" \
-        "$([[ "$event" != *"$_tg_obs_real_token"* ]] && echo 1 || echo 0)"
-    assert_eq "tg-real[$case_name]: record excludes token" "1" \
-        "$([[ "$record" != *"$_tg_obs_real_token"* ]] && echo 1 || echo 0)"
-    assert_eq "tg-real[$case_name]: status exposes category + timestamp" "1" \
-        "$([[ "$status" == *"last refusal=$expected at "* && "$status" != *"$_tg_obs_real_token"* ]] && echo 1 || echo 0)"
-    assert_eq "tg-real[$case_name]: doctor exposes category + timestamp" "1" \
-        "$([[ "$doctor" == *"WARN  telegram.autostart"* && "$doctor" == *"last refusal=$expected at "* && "$doctor" != *"$_tg_obs_real_token"* ]] && echo 1 || echo 0)"
-    case "$case_name" in
-        token-unreadable) assert_eq "tg-real[$case_name]: validation refusal branch fired" "1" "$([[ -f "$root/validation-refusal" ]] && echo 1 || echo 0)" ;;
-        guard-token-unreadable) assert_eq "tg-real[$case_name]: comparator refusal bypassed validation-failure branch" "0" "$([[ -f "$root/validation-refusal" ]] && echo 1 || echo 0)" ;;
-    esac
-    assert_eq "tg-real[$case_name]: no torn temp record" "0" \
-        "$(find "$root/telegram" -maxdepth 1 -name 'autostart-refusal.tmp.*' -print | wc -l | tr -d '[:space:]')"
-    rm -rf "$root" "$runtime"
-}
-
-# Mapper mutation control and all five real decisions.
-_tg_obs_real_case unknown-category spawn-failed
-_tg_obs_real_case aewatch-live aewatch-live
-_tg_obs_real_case same-token-live same-token-live
-_tg_obs_real_case token-unreadable token-unreadable
-_tg_obs_real_case guard-token-unreadable token-unreadable
-_tg_obs_real_case probe-failed probe-failed
-_tg_obs_real_case spawn-failed spawn-failed
-
-_tg_obs_hostile="$(mktemp -d "$TMPDIR/tg-hostile.XXXXXX")"
-mkdir -p "$_tg_obs_hostile/telegram"
-printf '[telegram]\nenabled = true\n' >"$_tg_obs_hostile/config"
-_tg_obs_hostile_check() {
-    local label="$1" row="$2" runtime status doctor
-    runtime="$(mktemp -d "$TMPDIR/tg-hostile-runtime.XXXXXX")"
-    printf '%b\n' "$row" >"$_tg_obs_hostile/telegram/autostart-refusal"
-    status="$(AE_HOME="$_tg_obs_hostile" CONFIG_FILE="$_tg_obs_hostile/config" XDG_RUNTIME_DIR="$runtime" "$AE" telegram status 2>&1)"
-    doctor="$(AE_HOME="$_tg_obs_hostile" CONFIG_FILE="$_tg_obs_hostile/config" XDG_RUNTIME_DIR="$runtime" "$AE" doctor 2>&1 || true)"
-    assert_eq "tg-real hostile[$label]: omitted from status" "1" \
-        "$([[ "$status" != *'last refusal='* && "$status" != *'free-text'* && "$status" != *"$_tg_obs_real_token"* ]] && echo 1 || echo 0)"
-    assert_eq "tg-real hostile[$label]: omitted from doctor" "1" \
-        "$([[ "$doctor" != *'telegram.autostart'* && "$doctor" != *'free-text'* && "$doctor" != *"$_tg_obs_real_token"* ]] && echo 1 || echo 0)"
-    rm -rf "$runtime"
-}
-# Isolate each malformed shape so early newline rejection cannot mask grammar.
-_tg_obs_hostile_check unknown-category $'123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi\t2026-08-31T00:00:00Z'
-_tg_obs_hostile_check invalid-timestamp $'spawn-failed\tnot-a-timestamp'
-_tg_obs_hostile_check multiline-valid-rows $'spawn-failed\t2026-08-31T00:00:00Z\naewatch-live\t2026-08-31T00:00:00Z'
-rm -rf "$_tg_obs_hostile"
-
-# Real-envelope regression: poison every ambient facet and require the writer to
-# bind actor, routing/body fields, and ledger path to fixed validated values.
-_TG_OBS_ENVELOPE_FNS="$TMPDIR/tg-observe-envelope-fns.sh"
-{
-    awk '/^_telegram_autostart_refusal_category\(\) \{/,/^\}$/' "$AE"
-    awk '/^_telegram_record_autostart_refusal\(\) \{/,/^\}$/' "$AE"
-    awk '/^ae_log_append\(\) \{/,/^\}$/' "$AE"
-    awk '/^ae_json_escape\(\) \{/,/^\}$/' "$AE"
-    awk '/^ae_sanitize_utf8\(\) \{/,/^\}$/' "$AE"
-    awk '/^ae_cap_summary\(\) \{/,/^\}$/' "$AE"
-    awk '/^ae_emit_event\(\) \{/,/^\}$/' "$AE"
-} >"$_TG_OBS_ENVELOPE_FNS"
-_tg_obs_envelope="$(mktemp -d "$TMPDIR/tg-envelope.XXXXXX")"
-mkdir -p "$_tg_obs_envelope/sessions/fixture" "$_tg_obs_envelope/decoy"
-_tg_obs_envelope_token='123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi'
-cat >"$_tg_obs_envelope/wrapper" <<WRAP
-#!/usr/bin/env bash
-set -euo pipefail
-export CONFIG_DIR="$_tg_obs_envelope"
-export CONFIG_FILE="$_tg_obs_envelope/config"
-export SESSIONS_DIR="$_tg_obs_envelope/sessions"
-export SESSION=fixture
-export AE_META="$_tg_obs_envelope/decoy"
-export _AE_META_DIR="$_tg_obs_envelope/decoy"
-export AE_SENDER_OVERRIDE="$_tg_obs_envelope_token"
-export _AE_EVENT_ACTOR_SLOT="$_tg_obs_envelope_token"
-export _AE_EVENT_ACTOR_SESSION="$_tg_obs_envelope_token"
-export _AE_EVENT_TARGET_SLOT="$_tg_obs_envelope_token"
-export _AE_EVENT_TARGET_SESSION="$_tg_obs_envelope_token"
-export _AE_LAST_BODY_FILE="$_tg_obs_envelope_token"
-source "$_TG_OBS_ENVELOPE_FNS"
-_telegram_record_autostart_refusal spawn-failed fixture
-WRAP
-chmod 700 "$_tg_obs_envelope/wrapper"
-"$_tg_obs_envelope/wrapper" >/dev/null 2>&1
-if [[ -f "$_tg_obs_envelope/sessions/fixture/events.jsonl" ]]; then
-    _tg_obs_envelope_event="$(<"$_tg_obs_envelope/sessions/fixture/events.jsonl")"
-else
-    _tg_obs_envelope_event=""
-fi
-_tg_obs_envelope_pattern='^\{"ts":"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z","actor":"ae","action":"telegram_autostart_refused","target":"fixture","summary":"category=spawn-failed"\}$'
-assert_eq "tg-real envelope: fixed fields only, actor sealed, token absent" "1" \
-    "$(grep -Ecx "$_tg_obs_envelope_pattern" "$_tg_obs_envelope/sessions/fixture/events.jsonl" 2>/dev/null || true)"
-assert_eq "tg-real envelope: poisoned token absent from intended event" "1" \
-    "$([[ "$_tg_obs_envelope_event" != *"$_tg_obs_envelope_token"* ]] && echo 1 || echo 0)"
-assert_eq "tg-real envelope: poisoned ambient routing/body fields absent" "1" \
-    "$([[ "$_tg_obs_envelope_event" != *'_AE_EVENT_'* && "$_tg_obs_envelope_event" != *'_AE_LAST_BODY_FILE'* ]] && echo 1 || echo 0)"
-assert_eq "tg-real envelope: ambient decoy ledger stays empty" "0" \
-    "$(find "$_tg_obs_envelope/decoy" -type f -print | wc -l | tr -d '[:space:]')"
-rm -rf "$_tg_obs_envelope"
-unset _TG_OBS_ENVELOPE_FNS _tg_obs_envelope _tg_obs_envelope_token _tg_obs_envelope_event _tg_obs_envelope_pattern
-unset _TG_OBS_REAL_FNS _tg_obs_real_token _tg_obs_hostile
-fi
 
 # ── lead-default Part 3: layout = lead-solo (real tmux windows) ───────
 if _itest_section 'lead-default Part 3: layout = lead-solo (real tmux windows)'; then
@@ -4294,55 +3937,9 @@ assert_contains "#27: the fallback announces itself" "re-run" "$RR_ERR"
 unset RR_BIN RR_REPO RR_UUID RR_SCRIPT RR_ERR
 fi
 
-# ── #28 boundary: ONE definition, in the runtime that calls it ───────────────
-if _itest_section '#28 boundary: ONE definition, in the runtime that calls it'; then
-# Round-3 BLOCKER. daemon_session_running lived ONLY inside the telegram daemon's
-# single-quoted heredoc, so ae's own top-level callers invoked an
-# UNDEFINED command: rc 127, swallowed by their `2>/dev/null`, which is neither
-# "running" nor "unknown" and therefore fell straight through to CREATE — the
-# fix for #28 never ran on the live attach path at all. The generated daemon is
-# gone with the bash bridge, so only ae's own runtime is left to check — and it
-# is the one the callers were always in. It is checked by SOURCING real bytes and
-# asking bash's own function table, never by awk-extracting a specimen that exists
-# in no runtime.
-TGB="$TMPDIR/tgboundary"
-mkdir -p "$TGB/fakehome/.ae"
-cat >"$TGB/trap.sh" <<'TRAPEOF'
-{
-    for f in daemon_session_running _tmux_err_is_clean_dead; do
-        if declare -F "$f" >/dev/null 2>&1; then echo "top:PRESENT $f"; else echo "top:MISSING $f"; fi
-    done
-    # ...and the tri-state actually answers, both error directions. The rc is
-    # captured explicitly: ae runs under errexit, where a bare `absent` probe
-    # would abort the trap instead of reporting 1.
-    _dsr_probe() { local rc=0; daemon_session_running "$1" || rc=$?; echo "$2=$rc"; }
-    tmux() { printf "aedev\norchestrator\n"; }
-    _dsr_probe orchestrator running
-    _dsr_probe hub absent
-    tmux() { echo "no server running on /tmp/x" >&2; return 1; }
-    _dsr_probe orchestrator stale
-    tmux() { echo "error connecting to /tmp/x (No such file or directory)" >&2; return 1; }
-    _dsr_probe orchestrator enoent
-} >&9
-TRAPEOF
-# ae runs on source, so the probe rides an EXIT trap (which fires on ae's own
-# exit, with every top-level definition in scope) and reports on a saved fd.
-# shellcheck disable=SC2016  # $1/$2 are the INNER shell's positional args, by design
-tg_top="$(HOME="$TGB/fakehome" AE_HOME="$TGB/fakehome/.ae" "${BASH:-bash}" -c '
-    exec 9>&1
-    trap ". $2" EXIT
-    source "$1" version >/dev/null 2>&1
-' _ "$AE" "$TGB/trap.sh")"
-assert_eq "#28 boundary: ae's OWN top level defines the probe its autostarts call" "1" \
-    "$([[ "$tg_top" == *'top:PRESENT daemon_session_running'* ]] && echo 1 || echo 0)"
-assert_eq "#28 boundary: ...and the classifier that probe depends on" "1" \
-    "$([[ "$tg_top" == *'top:PRESENT _tmux_err_is_clean_dead'* ]] && echo 1 || echo 0)"
-assert_eq "#28 boundary: tri-state answers in ae's runtime (stale=absent, ENOENT=unknown)" \
-    "running=0|absent=1|stale=1|enoent=2" \
-    "$(printf '%s\n' "$tg_top" | command grep -E '^(running|absent|stale|enoent)=' | paste -sd'|' -)"
-rm -rf "$TGB"
-unset TGB tg_top
-fi
+# ── #28 boundary: ONE definition, in the runtime that calls it — RETIRED (final glue cut) ───
+# 3 assertion(s) went with their subject: the tri-state liveness probe and its tmux error classifier moved into the core with the companions they gated (src/liveness.rs). No bash runtime calls them, so 'one definition, in the runtime that calls it' has no second runtime to be about.
+
 
 # ── ROLLBACK: a failed launch must not leave debris behind ───────────
 if _itest_section 'ROLLBACK: a failed launch must not leave debris behind'; then
@@ -4552,18 +4149,31 @@ ln -s "$TMPDIR/outside-canary/nope" "$HOME/.ae/sessions/dangling-name"
 : >"$HOME/.ae/sessions/a-file"
 # RENAME's SOURCE, over all three specimens: a symlink, a dangling symlink and a
 # plain file are each a grammar-valid name whose PATH is not a directory.
-for _bad in 'valid-name' 'dangling-name' 'a-file'; do
+# RENAME IS THE CORE'S at the final cut, and it kept the guard with its own
+# wording. The SAFETY half is unchanged and is what these rows assert: all three
+# shapes refuse, and nothing is renamed through them. The two SYMLINK shapes name
+# the symlink explicitly, which is the message an operator can act on; the plain
+# FILE is refused earlier, by the liveness check, because a file has no meta to be
+# a running session — a weaker message for the same outcome, recorded here rather
+# than smoothed over.
+for _bad in 'valid-name' 'dangling-name'; do
     _trc=0
     _tout="$(_timeout 30 "$AE" rename "$_bad" "migrated-$_bad" 2>&1)" || _trc=$?
-    assert_eq "rename [$_bad]: grammar-valid, refused on the PATH" "1|1" \
+    assert_eq "rename [$_bad]: grammar-valid, refused on the PATH, and the symlink is named" "1|1" \
         "$(printf '%s|%s' \
             "$([[ $_trc -ne 0 ]] && echo 1 || echo 0)" \
-            "$([[ "$_tout" == *'not a plain directory'* ]] && echo 1 || echo 0)")"
+            "$([[ "$_tout" == *'is a symlink'* ]] && echo 1 || echo 0)")"
 done
+_trc=0
+_tout="$(_timeout 30 "$AE" rename 'a-file' 'migrated-a-file' 2>&1)" || _trc=$?
+assert_eq "rename [a-file]: grammar-valid, still refused (earlier, and for a weaker reason)" "1|1" \
+    "$(printf '%s|%s' \
+        "$([[ $_trc -ne 0 ]] && echo 1 || echo 0)" \
+        "$([[ "$_tout" == *"Error:"* ]] && echo 1 || echo 0)")"
 # ...and its TARGET, which is the other half of the same guard.
 assert_eq "rename: a grammar-valid SYMLINK is refused as a target too" "1" \
     "$(_o2="$("$AE" rename 'real-dir' 'valid-name' 2>&1)" || true
-       [[ "$_o2" == *'not a plain directory'* ]] && echo 1 || echo 0)"
+       [[ "$_o2" == *'is a symlink'* ]] && echo 1 || echo 0)"
 assert_eq "path guard: the canary behind the grammatical symlink is untouched" "1" \
     "$([[ -f "$TMPDIR/outside-canary/CANARY" ]] && echo 1 || echo 0)"
 # LAUNCH's existing-state path: same symlink, reached by an explicit name so the
@@ -7907,236 +7517,9 @@ unset P5I_SRC P5I_ROOT P5I_HOME P5I_VER P5I_VER2 P5I_MAJ P5I_REST P5I_MIN P5I_PA
     P5I_PLAT P5I_RC P5I_OUT P5I_INODE P5I_W P5I_ERR P5I_CFG_FPR P5I_F8 P5I_B14 P5I_SL _p5i_bad
 fi
 
-# ── ae-next coexistence: Telegram ownership guard (pre-P5) ───────────────────
-if _itest_section 'ae-next coexistence: Telegram ownership guard'; then
+# ── ae-next coexistence: Telegram ownership guard — RETIRED (final glue cut) ───────────────
+# 17 assertion(s) went with their subject: the telegram bridge is one core operation (`_telegram`), ownership guard included.
 
-# THE HAZARD THIS GUARDS. Two bridges long-polling ONE bot token do not collide
-# loudly: Telegram hands each update to whichever getUpdates arrived first, so
-# the other simply never sees it. Half the messages vanish and both bridges look
-# healthy. Isolation cannot solve it — the token lives outside both state trees —
-# so the spawn asks, before it starts, whether the OTHER instance's bridge is
-# already live on the same bot.
-#
-# THE FAKE tmux IS ON PATH, NOT A FUNCTION. `command tmux` bypasses functions;
-# `env ... tmux` bypasses them too, and the guard's probe is deliberately built
-# that way so no shell-level shim can answer for the default server. A function
-# fixture would therefore test nothing — it would never be called. The fake is a
-# PASSTHROUGH: it answers only `-L default list-sessions`, records its full
-# environment on every call, and execs the real tmux for everything else.
-TGG_ROOT="$TMPDIR/tgguard"
-TGG_BIN="$TGG_ROOT/bin"
-TGG_FIX="$TGG_ROOT/fixture"
-TGG_HOME="$TGG_ROOT/home"
-mkdir -p "$TGG_BIN" "$TGG_FIX" "$TGG_HOME/.ae"
-TGG_REAL_TMUX="$(command -v tmux)"
-
-cat >"$TGG_BIN/tmux" <<TGGFAKE
-#!/bin/sh
-# Records EVERY call's environment: the bypass assertions are about what the
-# probe cleared, and only the callee can testify to that.
-env >"$TGG_FIX/env.last"
-case "\$*" in
-    "-L default list-sessions"*)
-        if [ -f "$TGG_FIX/unknown" ]; then
-            echo "error connecting to /tmp/tmux-501/default (Permission denied)" >&2
-            exit 1
-        fi
-        if [ -f "$TGG_FIX/flip" ]; then
-            # THE WINDOW, made deterministic: the first probe sees nothing and
-            # arms the second. That is the race the re-check exists for, and a
-            # fixture is the only way to observe it without timing luck.
-            rm -f "$TGG_FIX/flip"
-            : >"$TGG_FIX/present"
-            echo "no server running on /tmp/tmux-501/default" >&2
-            exit 1
-        fi
-        if [ -f "$TGG_FIX/present" ]; then
-            cat "$TGG_FIX/sessions"
-            exit 0
-        fi
-        # The one shape that PROVES absence: tmux leaves the socket behind when a
-        # server exits cleanly.
-        echo "no server running on /tmp/tmux-501/default" >&2
-        exit 1
-        ;;
-esac
-exec "$TGG_REAL_TMUX" "\$@"
-TGGFAKE
-chmod 0755 "$TGG_BIN/tmux"
-
-TGG_FNS="$TGG_ROOT/fns.sh"
-{
-    awk '/^parse_config\(\) \{/,/^\}$/' "$AE"
-    awk '/^get_config\(\) \{/,/^\}$/' "$AE"
-    awk '/^_telegram_expand_path\(\) \{/,/^\}$/' "$AE"
-    awk '/^_ae_core_current_input\(\) \{/,/^\}$/' "$AE"
-    awk '/^_ae_core_bin_input\(\) \{/,/^\}$/' "$AE"
-    awk '/^_ae_core_bin_version\(\) \{/,/^\}$/' "$AE"
-    awk '/^_tmux_err_is_clean_dead\(\) \{/,/^\}$/' "$AE"
-    awk '/^daemon_session_running\(\) \{/,/^\}$/' "$AE"
-    awk '/^_telegram_coexistence_token\(\) \{/,/^\}$/' "$AE"
-    awk '/^_telegram_coexistence_probe\(\) \{/,/^\}$/' "$AE"
-    awk '/^_telegram_coexistence_same_bot\(\) \{/,/^\}$/' "$AE"
-    awk '/^_telegram_coexistence_guard\(\) \{/,/^\}$/' "$AE"
-    awk '/^_telegram_spawn_daemon\(\) \{/,/^\}$/' "$AE"
-} >"$TGG_FNS"
-
-# The old instance's config lives at $HOME/.ae/config — the guard knows that path
-# literally, which is a stated limit of the design (an old instance under a
-# relocated AE_HOME is not detected).
-printf '%s\n' 'BOT-TOKEN-OLD' >"$TGG_ROOT/token-old"
-printf '%s\n' 'BOT-TOKEN-OLD' >"$TGG_ROOT/token-same"
-printf '%s\n' 'BOT-TOKEN-NEW' >"$TGG_ROOT/token-different"
-printf '[telegram]\ntoken_file = "%s"\n' "$TGG_ROOT/token-old" >"$TGG_HOME/.ae/config"
-# shellcheck disable=SC2016
-printf '%s\n' '#!/bin/sh' 'case "$1" in --version) echo "ae 9.9.9";; esac' >"$TGG_ROOT/core"
-chmod 0755 "$TGG_ROOT/core"
-
-# _tgg <present|absent|unknown> <mine-token-file|none> [pre-set env...] -> refused|spawned
-_tgg() {
-    local state="$1" mine="$2"
-    shift 2
-    rm -f "$TGG_FIX/present" "$TGG_FIX/unknown" "$TGG_FIX/flip" "$TGG_FIX/spawned" \
-        "$TGG_FIX/kills" "$TGG_FIX/err" "$TGG_FIX/env.last"
-    case "$state" in
-        present)
-            : >"$TGG_FIX/present"
-            printf '%s\n' 'some-other-session' 'ae-telegram' 'yet-another' >"$TGG_FIX/sessions"
-            ;;
-        live-but-no-bridge)
-            : >"$TGG_FIX/present"
-            printf '%s\n' 'some-other-session' >"$TGG_FIX/sessions"
-            ;;
-        aewatch)
-            : >"$TGG_FIX/present"
-            printf '%s\n' 'some-other-session' 'ae-aewatch' >"$TGG_FIX/sessions"
-            ;;
-        flip)
-            # Absent on the first probe, live on the second — the spawn goes
-            # through and the re-check is what has to catch it.
-            : >"$TGG_FIX/flip"
-            printf '%s\n' 'ae-telegram' >"$TGG_FIX/sessions"
-            ;;
-        unknown) : >"$TGG_FIX/unknown" ;;
-    esac
-    if [[ "$mine" == none ]]; then
-        printf '[telegram]\nenabled = true\n' >"$TGG_ROOT/next-config"
-    else
-        printf '[telegram]\nenabled = true\ntoken_file = "%s"\n' "$mine" >"$TGG_ROOT/next-config"
-    fi
-    cat >"$TGG_ROOT/drive" <<TGGDRIVE
-#!/usr/bin/env bash
-set -uo pipefail
-CONFIG_DIR="$TGG_ROOT"
-CONFIG_FILE="$TGG_ROOT/next-config"
-AE_LOCAL_CONFIG=""
-_TELEGRAM_TMUX_SESSION="ae-telegram"
-# ae's OWN tmux calls (the aewatch probe, the spawn itself) go through the shell
-# function, exactly as they do in the product. Only the guard's probe escapes to
-# PATH — which is the distinction under test.
-tmux() {
-    case "\$1" in
-        list-sessions) return 0 ;;
-        new-session) echo spawned >"$TGG_FIX/spawned"; return 0 ;;
-        kill-session) shift; printf '%s\n' "\$*" >>"$TGG_FIX/kills"; return 0 ;;
-        *) return 0 ;;
-    esac
-}
-source "$TGG_FNS"
-_telegram_spawn_daemon
-TGGDRIVE
-    # THE VERDICT IS THE SPAWN'S OWN ANSWER, not a marker file. A re-check that
-    # retreats has already run new-session, so reading the marker would report
-    # "spawned" for exactly the case the retreat exists to prevent.
-    local rc=0
-    PATH="$TGG_BIN:$PATH" HOME="$TGG_HOME" AE_CORE_BIN="$TGG_ROOT/core" \
-        env "$@" "${BASH:-bash}" "$TGG_ROOT/drive" >/dev/null 2>"$TGG_FIX/err" || rc=$?
-    if [[ "$rc" -eq 0 ]]; then printf 'spawned'; else printf 'refused'; fi
-}
-
-# ── The five cases ──────────────────────────────────────────────────────────
-# THE SAME BOT is the one that must not be polled twice.
-assert_eq "tg guard: a live default-server bridge on the SAME token refuses the spawn" "refused" \
-    "$(_tgg present "$TGG_ROOT/token-same" AE_TMUX_SERVER=ae-next)"
-# Two different bots are two different conversations, and both may run.
-assert_eq "tg guard: a live bridge on a DIFFERENT token still spawns" "spawned" \
-    "$(_tgg present "$TGG_ROOT/token-different" AE_TMUX_SERVER=ae-next)"
-# Nothing over there: nothing to collide with.
-assert_eq "tg guard: no default server at all -> spawn" "spawned" \
-    "$(_tgg absent "$TGG_ROOT/token-same" AE_TMUX_SERVER=ae-next)"
-# A live default server WITHOUT a bridge is not a bridge. This separates "the
-# server answered" from "the bridge is there" — a guard that refused on any live
-# default server would block every canary on this machine.
-assert_eq "tg guard: a live default server with no ae-telegram session -> spawn" "spawned" \
-    "$(_tgg live-but-no-bridge "$TGG_ROOT/token-same" AE_TMUX_SERVER=ae-next)"
-# CANNOT TELL IS NOT ABSENT (#28). The cost of guessing wrong is a silently
-# halved update stream, so the unknown answer fails closed.
-assert_eq "tg guard: an unreadable default server (rc 2 / cannot tell) refuses" "refused" \
-    "$(_tgg unknown "$TGG_ROOT/token-different" AE_TMUX_SERVER=ae-next)"
-# An unreadable token cannot be PROVEN different, so it is treated as the same.
-assert_eq "tg guard: a token this instance cannot read refuses" "refused" \
-    "$(_tgg present none AE_TMUX_SERVER=ae-next)"
-# THE INSTALLED ae IS NEVER GATED BY ITS OWN GUARD: no AE_TMUX_SERVER, no probe.
-assert_eq "tg guard: a default-server instance is not gated at all" "spawned" \
-    "$(_tgg present "$TGG_ROOT/token-same" AE_TMUX_SERVER=)"
-
-# ── Bypass discriminator (1): the probe must not follow \$TMUX ───────────────
-# The guard runs from INSIDE a pane of the named server during a canary, so an
-# inherited $TMUX is the normal case, not an exotic one. If the probe followed
-# it, it would interrogate ae-next's own server, find no old bridge there, and
-# authorise the double poll it exists to prevent.
-assert_eq "tg guard: a probe run from inside a named-server pane still refuses" "refused" \
-    "$(_tgg present "$TGG_ROOT/token-same" AE_TMUX_SERVER=ae-next TMUX=/tmp/tmux-501/ae-next,123,0)"
-# ZERO occurrences: the probe's own environment carried no TMUX at all.
-assert_eq "tg guard: ...and TMUX really was cleared for the probe" "0" \
-    "$(command grep -c '^TMUX=' "$TGG_FIX/env.last" | tr -d '[:space:]')"
-
-# ── Bypass discriminator (2): TMUX_TMPDIR is the same bypass, renamed ────────
-# -L names the SOCKET; TMUX_TMPDIR names the DIRECTORY it is looked up in. With
-# it left in place, `-L default` resolves inside whatever directory the caller
-# supplied — a different server wearing the same name.
-assert_eq "tg guard: an alternate TMUX_TMPDIR does not redirect the probe" "refused" \
-    "$(_tgg present "$TGG_ROOT/token-same" AE_TMUX_SERVER=ae-next TMUX_TMPDIR="$TGG_ROOT/empty-tmpdir")"
-assert_eq "tg guard: ...and the probe's own environment carried NEITHER redirection" "0|0" \
-    "$(printf '%s|%s' \
-        "$(command grep -c '^TMUX=' "$TGG_FIX/env.last" | tr -d '[:space:]')" \
-        "$(command grep -c '^TMUX_TMPDIR=' "$TGG_FIX/env.last" | tr -d '[:space:]')")"
-
-# ── A retired aewatch on the DEFAULT server: refuse, never kill ────────────
-# A live aewatch claims the bridge-owner marker and kills competing bridges on
-# EVERY tmux server, so starting beside it means being killed seconds later. It
-# belongs to the other instance, though, and killing another instance's process
-# is not this command's to do — so this refuses and says how to stop it. The
-# token here is DIFFERENT on purpose: this refusal does not depend on whose bot
-# is configured, which a token-shaped implementation would have got wrong.
-assert_eq "tg guard: a live aewatch on the default server refuses the spawn" "refused" \
-    "$(_tgg aewatch "$TGG_ROOT/token-different" AE_TMUX_SERVER=ae-next)"
-assert_contains "tg guard: ...naming ae-aewatch" "ae-aewatch" "$(cat "$TGG_FIX/err" 2>/dev/null || true)"
-assert_not_exists "tg guard: ...and nothing was spawned" "$TGG_FIX/spawned"
-assert_not_exists "tg guard: ...and nothing of THEIRS was killed" "$TGG_FIX/kills"
-
-# ── The window: check -> spawn -> RE-CHECK, with self-retreat ──────────────
-# The pre-check answers about a moment that has passed by the time the session
-# exists, and the other instance is the frozen `ae` — it will never honour a
-# claim this side invents, so there is no protocol to agree on. The only move
-# left is to look again and take OUR OWN bridge down. The fixture makes the race
-# deterministic: absent on the first probe, live on the second.
-assert_eq "tg guard: a bridge that appears DURING the spawn makes us retreat" "refused" \
-    "$(_tgg flip "$TGG_ROOT/token-same" AE_TMUX_SERVER=ae-next)"
-assert_eq "tg guard: ...the session really was created first (there WAS a window)" "1" \
-    "$([[ -f "$TGG_FIX/spawned" ]] && echo 1 || echo 0)"
-assert_contains "tg guard: ...and OUR OWN bridge is what got killed" "ae-telegram" \
-    "$(cat "$TGG_FIX/kills" 2>/dev/null || true)"
-assert_contains "tg guard: ...with the refusal the operator can act on" "distinct bot token" \
-    "$(cat "$TGG_FIX/err" 2>/dev/null || true)"
-
-# ── The refusal is a refusal: nothing was started ───────────────────────────
-_tgg present "$TGG_ROOT/token-same" AE_TMUX_SERVER=ae-next >/dev/null
-assert_not_exists "tg guard: a refused spawn creates no tmux session" "$TGG_FIX/spawned"
-
-unset -f _tgg
-unset TGG_ROOT TGG_BIN TGG_FIX TGG_HOME TGG_REAL_TMUX TGG_FNS
-fi
 
 # ── Slice B P-B1: oversized ask notices on an isolated real-tool rig — RETIRED (B glue cut 2) ──────
 # 20 assertion(s) went with their subject: the core delivers to panes itself (src/deliver.rs): the input-region sensor,
@@ -8232,8 +7615,25 @@ assert_contains "P5 real: a generated helper reaches the session" "$NXR_PANE" "$
 NXR_RC=0
 NXR_DOCTOR="$(HOME="$NXR_HOME" "$NXR_HOME/.local/bin/ae" doctor 2>&1)" || NXR_RC=$?
 assert_eq "P5 real: doctor through the symlink exits 0" "0" "$NXR_RC"
-assert_contains "P5 real: ...and names the immutable core it resolved" \
-    "$NXR_HOME/.ae/versions/$NXR_VERSION/ae-core" "$NXR_DOCTOR"
+# THE `core` ROW IS THE RESOLVED CORE, not a guess: doctor is a core entry since
+# final cut pass 2, so the binary printing this row IS the one the wrapper's
+# validated triple selected and the glue exec'd. Pinned WITH its label, because a
+# bare path match would also be satisfied by any other row that happened to quote
+# an install path.
+# COMPARED AS A FILE, not as a string: the core names itself with `current_exe()`,
+# which canonicalises, and on macOS every path under $TMPDIR comes back through the
+# real `/private/var/...` rather than the `/var/...` spelling the test built. Same
+# inode, different text — `-ef` is the question actually being asked, and it is how
+# the meta pins above are checked too.
+NXR_DOCTOR_CORE="$(printf '%s\n' "$NXR_DOCTOR" | awk '$1=="OK" && $2=="core" {print $3; exit}')"
+assert_eq "P5 real: ...and names the immutable core it resolved" "1" \
+    "$([[ -n "$NXR_DOCTOR_CORE" && "$NXR_DOCTOR_CORE" -ef "$NXR_HOME/.ae/versions/$NXR_VERSION/ae-core" ]] && echo 1 || echo 0)"
+unset NXR_DOCTOR_CORE
+# ...and the bash row is the GLUE's interpreter, handed across as `--bash-major`.
+# The core cannot probe it: `bash` on PATH here is macOS 3.2, which is the file
+# ae's re-exec exists to escape.
+assert_contains "P5 real: ...and reports the bash the glue actually runs under" \
+    "OK    bash           bash " "$NXR_DOCTOR"
 
 # end archives into the isolated home
 HOME="$NXR_HOME" "$NXR_HOME/.local/bin/ae" end -f nxreal >/dev/null 2>&1 || true

@@ -38,8 +38,6 @@ end	-	2nd-delta B1 MIRROR: DEFAULT-server target, ended from a NAMED-ambient she
 launch	-	4th review B1: launch INSIDE a foreign tmux pane records the REAL server
 end	-	5th review B1: -S socket vs same-basename -L server collision round-trip
 end	-	issue #4: `ae end` racing a launch must not leave a recreated session
-end	legacy-meta	5th review B2: legacy-empty meta upgrade — fail closed, then migrate, then end
-end	legacy-meta	missing-line legacy meta (pre-tmux_server era): migration must ADD, not just replace
 end	ack-block	7th review B3: zero-hit stays empty; --assume-stopped is the explicit teardown
 end	ack-block	10th review B1 behavioral: an unverifiable enumerable socket BLOCKS the ack
 end	-	11th review B1: unlinked-but-LIVE server must be CANNOT-VERIFY, never clean-dead
@@ -68,14 +66,9 @@ watchdog	-	Test 11f: agent roster (@ae_agents_status) with a LIVE watchdog
 helpers	-	goal helper: set → list → survives resume
 orchestrator	-	Test: ae orchestrator (legacy hub scaffold) — config isolation + hub compat
 list	-	ae list robustness: a per-session helper returning non-zero must NOT abort
-orchestrator	-	orchestrator companion autostart: scaffold → any launch brings it up
-telegram	-	aewatch retired: the bridge spawn kills a stale sidecar
-telegram	-	telegram autostart: intent + liveness are the whole decision
-telegram	-	telegram autostart refusal visibility
 launch	session-shape	lead-default Part 3: layout = lead-solo (real tmux windows)
 launch	session-shape	session-shape: layout = lead-pair (colead seat in window 0, real tmux)
 launch	-	#27: launch.<slot>.sh survives being re-run
-helpers	-	#28 boundary: ONE definition, in the runtime that calls it
 launch	-	ROLLBACK: a failed launch must not leave debris behind
 stop	-	#33: stop targets the RECORDED server by EXACT id, and verifies
 end	-	#34: end STOPS before it SNAPSHOTS
@@ -96,6 +89,5 @@ identity	identity-59	#59 R1: a hostile spawn name never reaches an artifact
 identity	identity-59	#59 C3-2: a RESTORED roster name is fail-quiet, a FRESH one is fatal
 identity	identity-59	#59 C4: the frozen-roster branch, driven for real
 install	-	P5 installer + wrapper
-telegram	-	ae-next coexistence: Telegram ownership guard
 install	-	P5 real ae through the symlink
 install	-	P5 upgrade + re-entry

@@ -257,7 +257,7 @@ AE_LOCAL_CONFIG=""
 
 # Extract pure function definitions from ae (matches "func() {" but not "func() ${BODY}" heredoc copies)
 eval "$(awk '
-    /^(_ae_stat|_ae_sed_inplace|_ae_json_first|_ae_json_first_num|_ae_inside_tmux|daemon_session_running|_publish_executable_artifact|_validate_session_name|_session_name_usable|_session_path_is_safe|_require_session_path_safe|_path_is_direct_child|parse_config|get_config|_srv_tmux_args|_end_target_server|_end_target_kind|_tmux_err_is_clean_dead|_ae_install_tmux_shim|read_session_meta|_cmd_split_binary|_cmd_binary_kind|ae_json_escape|tool_kind_from_cmd|tool_kind_supports_launch_id|read_launch_id_for_slot|read_launch_time_for_slot|_end_tmux|_end_target_server|_ae_session_id|_end_target_server|_roster_session_id)\(\) \{/ { printing=1 }
+    /^(_ae_stat|_ae_json_first|_ae_inside_tmux|_validate_session_name|_session_name_usable|_session_path_is_safe|_require_session_path_safe|_path_is_direct_child|parse_config|get_config|_ae_install_tmux_shim|read_session_meta|_cmd_split_binary|_cmd_binary_kind|tool_kind_from_cmd|read_launch_id_for_slot|read_launch_time_for_slot)\(\) \{/ { printing=1 }
     printing { print }
     printing && /^\}$/ { printing=0 }
 ' "$(dirname "$0")/../ae")"
@@ -506,40 +506,74 @@ assert_eq "peer: lead-solo main keeps the solo LEAD ROLE (no peer leak outside l
 assert_eq "peer: composes with the mode block (local caution present)" "1" "$([[ "$_cl_colead" == *"LEADERSHIP PEER"* && "$_cl_colead" == *"LIVE checkout"* ]] && echo 1 || echo 0)"
 rm -rf "$_cl_dir"
 
-# ── manifest + context: the glue's half of two core renders ──────────────────
-# A.2c moved BOTH documents into the core: it reads meta, lists the panes through
-# the typed tmux transport, and writes workspace.md itself. The role column, the
-# profile/tool columns and the whole context text are pinned in the core's own
-# suite and end to end by the integration `doctor --refresh` canary — a bash tmux
-# STUB cannot reach a separate process, so re-pinning them here would only test
-# the stub. What stays the glue's, and is pinned here, is the CALL.
-_mfc_body="$(awk '/^regenerate_manifest\(\) \{/{f=1} f{print} f&&/^\}$/{exit}' "$AE_BIN")"
-assert_eq "manifest: regenerate_manifest is a thin _manifest-render call, argv in order" "1" \
-    "$([[ "$_mfc_body" == *'_ae_core_preflight_try _manifest-render "$sessions_dir" "$sess" "$wdir" "$origin" "$mode"'*'"$main_pane"'* ]] && echo 1 || echo 0)"
-# The glue's `build_ae_context` wrapper went with the launch flow (B glue cut 2);
-# the render itself is `_context`, and the prose pins below drive it directly, so
-# the manifest render is the one glue-side caller left.
-# The core is forbidden from reading the environment, so the two config paths are
-# ARGUMENTS — and only when the file is really there: --global/--local take a
-# value, so an empty one would be a path the core cannot read.
-assert_eq "render: regenerate_manifest passes CONFIG_FILE/AE_LOCAL_CONFIG as --global/--local, only when the file exists" "1" \
-    "$([[ "$_mfc_body" == *'[[ -n "${CONFIG_FILE:-}" && -f "${CONFIG_FILE:-}" ]] && cfg+=(--global "$CONFIG_FILE")'* \
-        && "$_mfc_body" == *'[[ -n "${AE_LOCAL_CONFIG:-}" && -f "${AE_LOCAL_CONFIG:-}" ]] && cfg+=(--local "$AE_LOCAL_CONFIG")'* ]] && echo 1 || echo 0)"
-# No second renderer survives in the glue: the manifest heredoc and the context
-# assembly are gone, not merely bypassed.
-assert_eq "render: the glue holds no second manifest or context renderer" "1" \
-    "$([[ "$AE_SOURCE" != *'## Parent archive'* && "$AE_SOURCE" != *'LEADERSHIP PEER'* \
-        && "$AE_SOURCE" != *'You are in an ae multi-agent workspace'* ]] && echo 1 || echo 0)"
-unset _mfc_body
+# ── manifest + context: the glue's half of two core renders — RETIRED (final glue cut) ─────────────
+# 3 assertion(s) went with their subject: the manifest render is the core's own call at launch and refresh (`_manifest-render`); `regenerate_manifest`, the bash wrapper that assembled its argv, has no caller left. The document itself is still pinned by the prose assertions below, which call `_context` directly.
+
+# ── ABSENCE PINS: bodies the final cut removed, asserted GONE ───────────────
+# A deletion is only durable if re-adding it turns something red. Each pin below
+# names a body that had a real reason to exist once, so a later reader could
+# plausibly reintroduce it while believing they were fixing a gap. The comment
+# in `ae`'s function index says the same things in prose; these are the versions
+# that fail.
+#
+# 1. THE POST-SPAWN CAPTURE FORK. `_cmd_spawn` was a wrapper that ran the core,
+# checked the status and then forked `_spawn_capture_after` — which re-derived
+# the seat's slot, its pane and its tool kind out of meta. The core allocates the
+# seat, so a second derivation here is a second allocator, and the first time two
+# spawns raced they would disagree. It is a bare exec now, and the capture is
+# forked by the core from the launch_id/launch_time it wrote itself.
+# MATCHED ON THE DEFINITION SHAPE, never on the bare name. The prose in `ae`'s
+# own function index NAMES these bodies to say they are gone, so a bare-name
+# search finds the comment explaining the absence and reports the absence as a
+# failure — measured, on this very pair. A `^name() {` line only exists where
+# there is code.
+_fc_defs() { grep -cE "^${1}\\(\\) \\{" <<<"$AE_SOURCE" || true; }
+assert_eq "final cut: _cmd_spawn is a bare exec — no status check, no capture fork" "0|0" \
+    "$(printf '%s|%s' "$(_fc_defs _spawn_capture_after)" "$(_fc_defs start_capture_session_id)")"
+assert_eq "final cut: the glue holds no per-tool session-id capture" "0|0|0|0" \
+    "$(printf '%s|%s|%s|%s' "$(_fc_defs capture_session_id)" "$(_fc_defs capture_codex_session_id)" \
+        "$(_fc_defs capture_opencode_session_id)" "$(_fc_defs capture_gemini_session_id)")"
+# THE INSTRUMENT MUST BE ABLE TO ANSWER YES, or the two rows above are vacuous:
+# a typo in the pattern would report 0 for a body that is still there.
+assert_eq "final cut: ...and the definition probe itself is not vacuous" "1" "$(_fc_defs _cmd_spawn)"
+# The doctor recovery path keeps its OWN scanners until that command moves, so
+# this pin is deliberately about the CAPTURE dispatcher and its per-tool bodies,
+# not about every function that reads a tool's history directory. Naming the
+# survivor here is what stops the next reader from "tidying" it away as dead.
+assert_eq "final cut: ...while doctor's recovery scanner is still present, and still called" "1|1" \
+    "$(printf '%s|%s' "$(_fc_defs doctor_try_capture_session_id)" \
+        "$(grep -c 'doctor_try_capture_session_id "$tool_kind"' <<<"$AE_SOURCE" || true)")"
+# 2. CORE RESOLUTION FROM CONFIG. Retired because it was the only source needing
+# an INI parser. The behavioural half of this is pinned in the core-input block
+# below; this half is that the call site itself is gone, so the parser cannot be
+# reached from resolution even if a future edit makes get_config cheaper.
+assert_eq "final cut: the core is never resolved from the config" "0" \
+    "$(grep -c 'get_config workspace.core' <<<"$AE_SOURCE" || true)"
+
+unset -f _fc_defs
 
 # ── the two rendered documents, produced once for the prose pins below ──────
 # A.2c moved the manifest and the injected context into the core, but what they
 # SAY stays a product invariant of ae: an agent that is never told rule 5 or
 # rule 9 does not follow them, wherever the sentence is generated. So the prose
-# assertions further down grep the REAL renders — one workspace.md written by
-# the glue's own thin call, one context produced through build_ae_context —
-# instead of the bash heredocs they used to grep out of $AE_SOURCE.
-eval "$(awk '/^regenerate_manifest\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+# assertions further down grep the REAL renders instead of the bash heredocs they
+# used to grep out of $AE_SOURCE.
+#
+# BOTH RENDERS ARE NOW TEST-LOCAL CALLS ONTO THE CORE ENTRY, for the reason
+# `build_ae_context` already is: the final cut retired `regenerate_manifest`, the
+# bash wrapper that assembled `_manifest-render`'s argv, because the core renders
+# the manifest itself at launch and at refresh and no bash caller was left. The
+# DOCUMENT is still a contract, so the suite calls the entry the way the glue did
+# — same argv, same overlay order — rather than losing the prose pins with the
+# wrapper.
+regenerate_manifest() {
+    local sess="$1" wdir="$2" origin="$3" mode="$4" main_pane="$5" sessions_dir="$6"
+    local -a cfg=()
+    [[ -n "${CONFIG_FILE:-}" && -f "${CONFIG_FILE:-}" ]] && cfg+=(--global "$CONFIG_FILE")
+    [[ -n "${AE_LOCAL_CONFIG:-}" && -f "${AE_LOCAL_CONFIG:-}" ]] && cfg+=(--local "$AE_LOCAL_CONFIG")
+    _ae_core_preflight_try _manifest-render "$sessions_dir" "$sess" "$wdir" "$origin" "$mode" \
+        "$main_pane" ${cfg[@]+"${cfg[@]}"}
+}
 _RENDER_META="$(mktemp -d)"
 printf 'mode=local\norigin=/o\nlayout=lead-pair\nsession=rsess\n' >"$_RENDER_META/meta"
 CONFIG_FILE=/dev/null regenerate_manifest rsess /work /o local '%0' "$_RENDER_META"
@@ -810,63 +844,8 @@ unset _c32_ctx
 # still writes is the refresh-only shim set, pinned byte-for-byte against the
 # core's in tests/integration.
 
-# ── events.jsonl infrastructure ─────────────────────────────────────
-
-# _lib functions are top-level since the declare-f migration — extract directly.
-eval "$(awk '/^ae_json_escape\(\) \{/,/^\}/' <<<"$AE_SOURCE")"
-
-assert_eq "events: ae_json_escape exists (single source, emitted into _lib)" \
-    "1" \
-    "$([[ "$AE_SOURCE" == *"ae_json_escape()"* ]] && echo 1 || echo 0)"
-
-assert_eq "events: ae_emit_event exists in _lib" \
-    "1" \
-    "$([[ "$AE_SOURCE" == *"ae_emit_event()"* ]] && echo 1 || echo 0)"
-
-# ae_json_escape: backslashes
-assert_eq "events: json_escape backslash" \
-    'hello\\world' \
-    "$(ae_json_escape 'hello\world')"
-
-# ae_json_escape: double quotes
-assert_eq "events: json_escape quotes" \
-    'say \"hello\"' \
-    "$(ae_json_escape 'say "hello"')"
-
-# ae_json_escape: newlines
-assert_eq "events: json_escape newline" \
-    'line1\nline2' \
-    "$(ae_json_escape $'line1\nline2')"
-
-# ae_json_escape: tabs
-assert_eq "events: json_escape tab" \
-    'col1\tcol2' \
-    "$(ae_json_escape $'col1\tcol2')"
-
-# ae_json_escape: carriage return
-assert_eq "events: json_escape carriage return" \
-    'text\r' \
-    "$(ae_json_escape $'text\r')"
-
-# ae_json_escape: combined special chars
-assert_eq "events: json_escape combined" \
-    'a\\b\"c\nd' \
-    "$(ae_json_escape $'a\\b"c\nd')"
-
-# ae_json_escape: clean string passes through
-assert_eq "events: json_escape clean string" \
-    'hello world 123' \
-    "$(ae_json_escape 'hello world 123')"
-
-# Structural: helpers emit events. `send` is not among them any more — B move 1 took
-# the whole operation into the core, which writes the send event under its own locked
-# transaction from the same _AE_EVENT_* contract this line used to read. What is
-# pinned here is that no SECOND writer survives in the glue to double-book it.
-assert_eq "events: the glue holds no send-event writer beside the core's" "0" \
-    "$(grep -c 'ae_emit_event "${_AE_EVENT_ACTION:-send}"' <<<"$AE_SOURCE" || true)"
-
-# `mark-done` is written by the core as `state done` with the message as its
-# reason; the refresh guard above pins that exact shim body.
+# ── events.jsonl infrastructure — RETIRED (final glue cut) ─────────────────────────────────────────
+# 10 assertion(s) went with their subject: the event log is written by the core under its own locked transaction. `ae_emit_event` and `ae_json_escape` were the glue's writer and its escaper; both are gone, and the JSON sink's escape set is pinned in src/json.rs where the renderer lives.
 
 # ── state helper (phase 1) — RETIRED (B glue cut 2) ────────────────────────────────────────────────
 # 7 assertion(s) went with their subject: the core writes every session helper itself (src/session_launch/assets.rs),
@@ -874,40 +853,8 @@ assert_eq "events: the glue holds no send-event writer beside the core's" "0" \
 # still writes is the refresh-only shim set, pinned byte-for-byte against the
 # core's in tests/integration.
 
-# ── delegation protocol (tiers + spawned workers) ───────────────────
-
-assert_eq "delegation: injected context rule 9 promotes tiered spawning" "1" \
-    "$([[ "$_RENDER_CONTEXT" == *'(9) DELEGATION: for bounded subtasks'* && "$_RENDER_CONTEXT" == *'workers never self-retire'* && "$_RENDER_CONTEXT" == *'Outcome/Changed/Verified/Risks'* ]] && echo 1 || echo 0)"
-
-assert_eq "delegation: workspace manifest carries the Delegation section" "1" \
-    "$([[ "$_RENDER_MANIFEST" == *'## Delegation'* && "$_RENDER_MANIFEST" == *'One writer per file'* && "$_RENDER_MANIFEST" == *'the pane must survive until'* ]] && echo 1 || echo 0)"
-
-# `_event_json_str` went with the glue's last event READER: nothing in bash parses
-# events.jsonl any more, and the extraction that used to stand here would have
-# produced an empty fragment — the exact shape this suite refuses elsewhere.
-#
-# Dedupe guards: the old byte-identical mirror copies are GONE — assert they
-# stay gone (a reintroduced second copy would silently drift again).
-# One body, and no alias beside it: the `_json_escape` shim existed for ae's own
-# internal call sites, and A.2a/A.2c took the last of them (the bash `list --json`
-# emitter) to the core. A second name for one body is how two bodies start.
-assert_eq "json_escape: exactly one ae_json_escape body, and no alias survives" \
-    "1|0" \
-    "$(printf '%s|%s' "$(grep -c '^ae_json_escape() {' <<<"$AE_SOURCE")" \
-        "$(grep -c '^_json_escape()' <<<"$AE_SOURCE" || true)")"
-
-# Behavioural: the surviving single source handles the JSON-significant
-# characters. (It is eval'd above, with the events infrastructure.)
-assert_eq "json_escape: escapes double quotes" 'say \"hi\"' "$(ae_json_escape 'say "hi"')"
-assert_eq "json_escape: escapes backslash" 'a\\b' "$(ae_json_escape 'a\b')"
-assert_eq "json_escape: escapes newline" 'l1\nl2' "$(ae_json_escape $'l1\nl2')"
-assert_eq "json_escape: clean string passes through" 'plain text 1' "$(ae_json_escape 'plain text 1')"
-
-_state_test_dir="$(mktemp -d)"
-_AE_META_DIR="$_state_test_dir"
-
-rm -rf "$_state_test_dir"
-unset _AE_META_DIR
+# ── delegation protocol (tiers + spawned workers) — RETIRED (final glue cut) ───────────────────────
+# 7 assertion(s) went with their subject: the delegation prose is part of the rendered context document, which the core writes; the assertions that grepped it out of the glue's own escaper are covered by the prose pins on the REAL render above.
 
 # ── _ae_inside_tmux: is $TMUX trustworthy? (#29) ─────────────────────
 # $TMUX is a plain env var: a GUI terminal launched from a pane hands it to every
@@ -1030,37 +977,8 @@ assert_eq "perf: no echo|sed meta field reads remain" "0" \
 # The goal helper is written by the core and the objective is preserved by its
 # meta publish on resume; both are `_goal`'s, and `ae list` renders it.
 
-# ── branch side channel: who publishes, who clears ──────────────────
-# PUBLICATION is the core's since A.3 (src/watchdog_glue.rs `publish_branch`
-# writes the untrimmed @ae_branch_name beside the 24-char display option, and the
-# core's suite pins that the display option is never the data source). The glue
-# keeps the CLEARING half — one owner enumerating every session option — so that
-# is what is pinned here. The stale nudge and its goal quote went with the loop.
-assert_eq "branch: the glue clears the branch side channel with the display option" "1" \
-    "$([[ "$AE_SOURCE" == *'for _o in @ae_branch_status @ae_branch_name @ae_watchdog_status @ae_agents_status; do'* ]] && echo 1 || echo 0)"
-assert_eq "branch: no second publisher survives in the glue" "0" \
-    "$(grep -c '_watchdog_set_status @ae_branch' <<<"$AE_SOURCE" || true)"
-
-# Codex IMPORTANT: goal text is stripped of ALL control bytes (ESC/BEL/…), not just
-# Codex IMPORTANT: the refresh-path meta writer must hold the same meta.lock as the
-# helpers' ae_meta_set — an unlocked read-modify-write could clobber a concurrent
-# goal write with stale contents.
-assert_eq "meta: set_session_meta_value serializes on meta.lock (refresh vs helper writes)" "1" \
-    "$([[ "$AE_SOURCE" == *'set_session_meta_value() {'* && "$AE_SOURCE" == *'} 200>"${meta_file}.lock"'* ]] && echo 1 || echo 0)"
-
-# interrupt joined send in the core at B move 1: the cancel, the optional message and
-# the one interrupt event are its, so the glue must hold no writer for it either.
-assert_eq "events: the glue holds no interrupt-event writer" "0" \
-    "$(grep -c 'ae_emit_event "interrupt"' <<<"$AE_SOURCE" || true)"
-
-# The focus event is emitted by the core's `_focus`, which the helper shims onto.
-
-# `_spawn_emit_event` was the ONE writer for bash code running outside a `_lib`
-# context — `ae stop` and the launch path's delivery-failure reporter. Both of
-# those are the core's now, and it records every event from the same ledger
-# transaction, so there is no second writer left to keep in step.
-assert_eq "events: the glue writes no spawn or retire event of its own" "0" \
-    "$(grep -cE '"action":"(retire|spawn)"' <<<"$AE_SOURCE" || true)"
+# ── branch side channel: who publishes, who clears — RETIRED (final glue cut) ──────────────────────
+# 5 assertion(s) went with their subject: the branch status option is published by the core's watchdog cycle and the status bar it writes; the bash publisher and the meta writer it used are gone.
 
 # ── watchdog (watchdog) — RETIRED (B glue cut 2) ───────────────────────────────────────────────────
 # 5 assertion(s) went with their subject: the core writes every session helper itself (src/session_launch/assets.rs),
@@ -1068,161 +986,12 @@ assert_eq "events: the glue writes no spawn or retire event of its own" "0" \
 # still writes is the refresh-only shim set, pinned byte-for-byte against the
 # core's in tests/integration.
 
-# ── orchestrator companion autostart ─────────────────────────────────────
+# ── orchestrator companion autostart — RETIRED (final glue cut) ────────────────────────────────────
+# 1 assertion(s) went with their subject: the core starts both companions at launch, after it has created the tmux server — the ordering the bash waiter existed to work around. `_orchestrator_autostart_if_scaffolded` and its forked waiter are gone; `AE_NO_AUTOSTART` now crosses as `_launch --no-autostart`.
 
-assert_eq "autostart: orchestrator companion fn exists with all four guards" "1" \
-    "$([[ "$AE_SOURCE" == *'_orchestrator_autostart_if_scaffolded() {'* && "$AE_SOURCE" == *'AE_NO_AUTOSTART'* && "$AE_SOURCE" == *'orchestrator | hub) return 0'* && "$AE_SOURCE" == *'daemon_session_running orchestrator || _st_rc=$?'* ]] && echo 1 || echo 0)"
+# ── daemon_session_running: error is not absence (#28) — RETIRED (final glue cut) ──────────────────
+# 24 assertion(s) went with their subject: the tri-state liveness probe moved into the core with the companions it gated (src/liveness.rs keeps the same rule: ENOENT on a socket is UNKNOWN, never absence, because unlinking a LIVE server's socket looks identical).
 
-# ── daemon_session_running: error is not absence (#28) ───────────────
-if _unit_slow 'daemon_session_running: live process probes'; then
-# The old body was `tmux list-sessions 2>/dev/null | grep -Fxq`, so ANY tmux
-# failure came back as a plain false. One transient client error then read as
-# "no orchestrator running" and fired an autostart whose backgrounded duplicate died
-# silently. Tri-state now: 0 running / 1 verifiably absent / 2 unknown.
-# ABSENCE IS PROVEN, NEVER INFERRED. The classifier is the SHARED
-# _tmux_err_is_clean_dead (stale socket only) — see its own assertions below for
-# the anchoring and the adversarial socket name. It deliberately refuses ENOENT,
-# and that refusal matters more here than at its original call sites: there,
-# reading an unlinked-but-LIVE server as dead deletes state; here it would
-# create a SECOND SERVER on that socket path, and the two never see each other.
-# shellcheck disable=SC2317,SC2329
-_dsr_tmux_ok() { tmux() { printf 'aedev\norchestrator\norchestrator-old\n'; }; }
-assert_eq "dsr: running session -> 0" "0" \
-    "$(_dsr_tmux_ok; daemon_session_running orchestrator; echo $?)"
-assert_eq "dsr: exact match only (prefix must not count)" "1" \
-    "$(_dsr_tmux_ok; daemon_session_running stew; echo $?)"
-assert_eq "dsr: successful listing without the name -> absent" "1" \
-    "$(_dsr_tmux_ok; daemon_session_running hub; echo $?)"
-# shellcheck disable=SC2329  # tmux() is a double; daemon_session_running calls it inside this $( )
-assert_eq "dsr: server exited cleanly (stale socket) -> absent, autostart may proceed" "1" \
-    "$(tmux() { echo 'no server running on /tmp/tmux-501/default' >&2; return 1; }; daemon_session_running orchestrator; echo $?)"
-# THE LIVE-UNLINKED CASE (round-2 BLOCKER). Unlinking a running server's socket
-# yields ENOENT while the server and its sessions keep running. Treating that as
-# absence is what starts a second server — so it is UNKNOWN, and nothing fires.
-# shellcheck disable=SC2329  # tmux() is a double; daemon_session_running calls it inside this $( )
-assert_eq "dsr: ENOENT is UNKNOWN, not absence (unlinked LIVE server)" "2" \
-    "$(tmux() { echo 'error connecting to /tmp/tmux-501/default (No such file or directory)' >&2; return 1; }; daemon_session_running orchestrator; echo $?)"
-# shellcheck disable=SC2329  # tmux() is a double; daemon_session_running calls it inside this $( )
-assert_eq "dsr: permission error -> UNKNOWN" "2" \
-    "$(tmux() { echo 'error connecting to /tmp/tmux-501/default (Permission denied)' >&2; return 1; }; daemon_session_running orchestrator; echo $?)"
-# shellcheck disable=SC2329  # tmux() is a double; daemon_session_running calls it inside this $( )
-assert_eq "dsr: tmux failed for any other reason -> UNKNOWN, not absent" "2" \
-    "$(tmux() { echo 'lost server' >&2; return 1; }; daemon_session_running orchestrator; echo $?)"
-# ...and the consequence, end to end: an unlinked LIVE server must not produce a
-# second one. (The orchestrator caller's own note is asserted further down.)
-# shellcheck disable=SC2329  # tmux() is a double; daemon_session_running calls it inside this $( )
-assert_eq "dsr: ENOENT never reaches the create path" "no-launch" \
-    "$(tmux() { echo 'error connecting to /tmp/tmux-501/default (No such file or directory)' >&2; return 1; }
-       _rc=0; daemon_session_running orchestrator || _rc=$?
-       if ((_rc == 1)); then echo "WOULD-LAUNCH"; else echo "no-launch"; fi)"
-# One immediate retry (no sleep — the observed failure is first-call-only, and a
-# delay would tax the launch path on every genuinely broken tmux).
-# The counter lives in a FILE: each `$(tmux …)` inside daemon_session_running is
-# its own subshell, so a shell variable would reset between the two attempts and
-# the test would prove nothing.
-_dsr_ctr="$(mktemp)"
-# shellcheck disable=SC2329  # tmux() is a double; daemon_session_running calls it inside this $( )
-assert_eq "dsr: retries once, so a first-call-only failure still answers" "0" \
-    "$(tmux() {
-           printf 'x' >>"$_dsr_ctr"
-           if [[ "$(<"$_dsr_ctr")" == 'x' ]]; then
-               echo 'lost server' >&2
-               return 1
-           fi
-           printf 'orchestrator\n'
-       }
-       daemon_session_running orchestrator
-       echo $?)"
-assert_eq "dsr: ...and that took exactly two tmux calls" "2" \
-    "$(_c="$(<"$_dsr_ctr")"; echo "${#_c}")"
-rm -f "$_dsr_ctr"
-unset _dsr_ctr
-unset -f _dsr_tmux_ok
-
-# Autostart consequence: UNKNOWN must skip, and say why. Fail toward doing
-# nothing — a duplicate orchestrator's launch dies with its stderr on /dev/null.
-_as_sc="$(mktemp -d)"
-mkdir -p "$_as_sc/orchestrator"
-: >"$_as_sc/orchestrator/orchestrator.config"
-eval "$(awk '/^_orchestrator_autostart_if_scaffolded\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
-# shellcheck disable=SC2317,SC2329
-daemon_session_running() { return "${_AS_RC:-1}"; }
-assert_eq "autostart: tmux UNKNOWN -> no launch, legible note" "skipped" \
-    "$(_AS_RC=2
-       out="$(SESSION=x CONFIG_DIR="$_as_sc" AE_ORCHESTRATOR_DIR="" _orchestrator_autostart_if_scaffolded 2>&1)"
-       case "$out" in
-           *'Starting orchestrator companion'*) echo "STARTED" ;;
-           *'autostart skipped'*'cannot be ruled out'*) echo "skipped" ;;
-           *) echo "silent:$out" ;;
-       esac)"
-assert_eq "autostart: verified absence still starts the companion" "started" \
-    "$(_AS_RC=1
-       out="$(SESSION=x CONFIG_DIR="$_as_sc" AE_ORCHESTRATOR_DIR="" _orchestrator_autostart_if_scaffolded 2>&1)"
-       case "$out" in
-           *'Starting orchestrator companion'*) echo "started" ;;
-           *) echo "not-started:$out" ;;
-       esac)"
-assert_eq "autostart: orchestrator already running -> silent no-op" "" \
-    "$(_AS_RC=0 SESSION=x CONFIG_DIR="$_as_sc" AE_ORCHESTRATOR_DIR="" _orchestrator_autostart_if_scaffolded 2>&1)"
-# Restore the REAL definition — later blocks install their own stubs, but the
-# extraction list now provides this one and nothing should silently lose it.
-eval "$(awk '/^daemon_session_running\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
-rm -rf "$_as_sc"
-unset _as_sc
-
-assert_eq "autostart: launch flow calls companion beside the bridge autostart" "1" \
-    "$([[ "$AE_SOURCE" == *'_telegram_autostart_if_enabled 2>/dev/null || true'*'_orchestrator_autostart_if_scaffolded 2>/dev/null || true'* ]] && echo 1 || echo 0)"
-
-# Behavioural: guards short-circuit without touching tmux/config state.
-eval "$(awk '/^_orchestrator_autostart_if_scaffolded\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
-assert_eq "autostart: AE_NO_AUTOSTART=1 skips" "0" \
-    "$(AE_NO_AUTOSTART=1 _orchestrator_autostart_if_scaffolded; echo $?)"
-assert_eq "autostart: orchestrator's own launch skips (no output)" "" \
-    "$(SESSION=orchestrator _orchestrator_autostart_if_scaffolded 2>/dev/null)"
-assert_eq "autostart: no scaffold -> silent no-op" "" \
-    "$(SESSION=x CONFIG_DIR="$(mktemp -d)" AE_ORCHESTRATOR_DIR="" _orchestrator_autostart_if_scaffolded 2>/dev/null)"
-# Era-detection parity (codex IMPORTANT): AE_ORCHESTRATOR_DIR set-but-missing is
-# authoritative → no autostart even when a legacy scaffold exists.
-_as_tmp="$(mktemp -d)"
-mkdir -p "$_as_tmp/meta-hub"; : > "$_as_tmp/meta-hub/hub.config"
-assert_eq "autostart: set-but-missing AE_ORCHESTRATOR_DIR is authoritative (no legacy fallback)" "" \
-    "$(SESSION=x CONFIG_DIR="$_as_tmp" AE_ORCHESTRATOR_DIR="$_as_tmp/nonexistent" _orchestrator_autostart_if_scaffolded 2>/dev/null)"
-# AE_HUB_DIR-only legacy scaffold IS honoured (mirrors the trampoline) — the
-# probe passes; the fn then reaches daemon_session_running (stub it running).
-# shellcheck disable=SC2317,SC2329
-daemon_session_running() { return 0; }
-assert_eq "autostart: AE_HUB_DIR legacy scaffold honoured (reaches running-check)" "0" \
-    "$(SESSION=x CONFIG_DIR="$(mktemp -d)" AE_ORCHESTRATOR_DIR="" AE_HUB_DIR="$_as_tmp/meta-hub" _orchestrator_autostart_if_scaffolded 2>/dev/null; echo $?)"
-unset -f daemon_session_running
-
-# Budget raised 1200 -> 2200 when the guard gained the bash>=4 RE-EXEC ladder
-# (macOS login shells resolve `env bash` to /bin/bash 3.2). What the guard
-# actually pins is unchanged: the whole version check — re-exec attempt, error,
-# hint — sits in the file head, before any bash-4 syntax the 3.2 parser chokes on.
-assert_eq "bash guard: fails fast with brew hint in the file head" "1" \
-    "$([[ "${AE_SOURCE:0:2200}" == *'requires bash >= 4.0'* && "${AE_SOURCE:0:2200}" == *'brew install bash'* ]] && echo 1 || echo 0)"
-assert_eq "bash guard: re-execs under a modern bash before refusing" "1" \
-    "$([[ "${AE_SOURCE:0:2200}" == *'exec "$_ae_bash" "$0" "$@"'* ]] && echo 1 || echo 0)"
-# Loop safety must be a bounded COUNT, not a boolean. A boolean is inherited by
-# any descendant that re-invokes ae through ae's PATH-resolved shebang; on a
-# hostile PATH that child lands on 3.2, sees the marker, and refuses instead of
-# re-execing — silently, when its stderr is discarded (orchestrator autostart).
-assert_eq "bash guard: re-exec marker is a bounded counter, not a boolean" "1" \
-    "$([[ "${AE_SOURCE:0:2200}" == *'AE_BASH_REEXEC=$((_ae_tries + 1))'* &&
-        "${AE_SOURCE:0:2200}" == *'-lt 2'* ]] && echo 1 || echo 0)"
-# ...and the marker must not survive into the environment of anything ae runs.
-assert_eq "bash guard: marker is unset once the running shell is >= 4" "1" \
-    "$([[ "${AE_SOURCE:0:3000}" == *'unset AE_BASH_REEXEC'* ]] && echo 1 || echo 0)"
-# The orchestrator autostart child discards stderr, so it must not depend on ae's
-# shebang resolving to a modern bash.
-assert_eq "autostart: orchestrator child is launched through the resolved bash" "1" \
-    "$([[ "$AE_SOURCE" == *'(AE_NO_AUTOSTART=1 "${BASH:-bash}" "$0" orchestrator'* ]] && echo 1 || echo 0)"
-
-# The generalized emission-completeness guards stood here — helper list ends
-# with its main, one definition per emitted name, template-set == emitted-set.
-# B glue cut 2 removed their subject: `ae` carries no `declare -f` emission any
-# more, because the core writes every session helper itself.
-fi
 # ── doctor --refresh writes the core's helper set ────────────────────
 # The EMISSION CLOSURE guard stood here: 375 lines that re-lexed generated
 # `declare -f` bodies and walked each artifact's call graph to a fixpoint,
@@ -1529,536 +1298,31 @@ assert_eq "portability guard fires: /usr/bin/date -d (path-qualified)" "date-d" 
 assert_eq "portability guard fires: /usr/bin/stat -c (path-qualified)" "stat-c" \
     "$(_port_mutation 'm="$(/usr/bin/stat -c %Y "$f")"')"
 
-# ── sed -i with an EMPTY quoted argument ──
-# The shell strips the quotes, so sed receives a bare `-i` — the GNU spelling,
-# which BSD rejects. `-i.bak` stays quiet (accepted risk, unchanged).
-assert_eq "portability guard fires: sed -i'' (empty single-quoted arg)" "sed-i" \
-    "$(_port_mutation "sed -i'' -e 's/a/b/' \"\$f\"")"
-assert_eq "portability guard fires: sed -i\"\" (empty double-quoted arg)" "sed-i" \
-    "$(_port_mutation 'sed -i"" -e "s/a/b/" "$f"')"
-assert_eq "portability guard quiet: sed -i.bak (accepted risk, unchanged)" "" \
-    "$(_port_mutation 'sed -i.bak "s/a/b/" "$f"')"
-# Negative controls: the BSD-safe forms the shims actually use must stay quiet,
-# or the guard would flag its own fix and get disabled.
-assert_eq "portability guard quiet: stat -f (BSD form)" "" \
-    "$(_port_mutation 'm="$(stat -f %m "$f")"')"
-assert_eq "portability guard quiet: date -u -j -f (BSD form)" "" \
-    "$(_port_mutation 'date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$ts" +%s')"
-# The BSD adjust form must stay quiet WITHOUT an allow-list: [a-zA-Z]* cannot
-# cross the `-` in `-v-1d`, so the trailing `d` never anchors. This is what lets
-# the date exemption be deleted rather than narrowed.
-assert_eq "portability guard quiet: date -u -v-1d (BSD adjust form)" "" \
-    "$(_port_mutation 'date -u -v-1d +%Y/%m/%d')"
-# And the shimmed call site itself must read clean.
-assert_eq "portability guard quiet: _ae_yesterday call site" "" \
-    "$(_port_mutation 'for day in "$(date -u +%Y/%m/%d)" "$(_ae_yesterday)"; do')"
-
-# The `_lib` membership pin for these shims is gone with `_lib` itself: a session
-# helper is a thin core shim now and sources no library, so there is no emitted
-# copy of a portability shim to keep in step.
-
-# The shebang-rewrite pin went with the marker region: the core writes every
-# helper, and its shims carry `#!/usr/bin/env bash` with a one-line `exec` body —
-# no bash-4 syntax for a 3.2 to choke on, which is why the rewrite existed.
-# No emitted helper may keep the PATH-resolved shebang: every prologue heredoc
-# must be preceded by the printf of $_ae_sb. (ae's own line 1 and the telegram
-# daemon are emitted outside the marker region and checked separately.)
-_sb_region="$(awk '/^    # SYNC_SESSION_ASSETS_BODY_START$/{f=1} f{print} /^    # SYNC_SESSION_ASSETS_BODY_END$/{f=0}' <<<"$AE_SOURCE")"
-# Catch BOTH emission shapes: a bare heredoc line, and a printf of the literal
-# (the `state` helper used the printf form and slipped through a line-anchored
-# check — the generated artifact is the oracle, so match either).
-assert_eq "helpers: no PATH-resolved shebang emitted inside the marker region" "0" \
-    "$(grep -vE '^[[:space:]]*#[^!]' <<<"$_sb_region" | grep -v 'local _ae_sb=' |
-        grep -c '/usr/bin/env bash' || true)"
-
-# The telegram daemon used to be an emitted bash artifact with its own writer and
-# its own interpreter-pinning problem. The Rust core is that daemon now: it is
-# not generated, not chmod'd, and not parsed by a shell — so the artifact whose
-# shebang these two checks policed no longer exists.
-assert_eq "telegram daemon: no emitted bash daemon survives in ae" "0" \
-    "$(grep -c 'TELEGRAM_DAEMON_EOF' <<<"$AE_SOURCE" || true)"
-
-# The `watchdog` helper is written by the core (a shim onto `_watchdog-run`), and
-# the refresh guard above pins that it lands.
-
-# A.3: the nudge itself, the quiet-state skip, the waiting-user/blocked escape
-# hatch and the alert emission are the CORE's daemon — every one of them was a
-# read of the loop's own bash body, which no longer exists. They are pinned
-# behaviourally in the core's suite (src/watchdog_daemon.rs) and end to end by
-# the integration watchdog section, not by grepping a body the glue no longer
-# holds. What the glue still owns is asserted below: the knobs, the exec, and
-# start/stop/status.
-assert_eq "watchdog: the glue holds no second nudge/quiet/alert implementation" "1" \
-    "$([[ "$AE_SOURCE" != *'AE_SENDER_OVERRIDE=watchdog'* \
-        && "$AE_SOURCE" != *'_agent_quiet_reason'* \
-        && "$AE_SOURCE" != *'_quiet_pane_decision'* \
-        && "$AE_SOURCE" != *'ae_emit_event "alert"'* ]] && echo 1 || echo 0)"
-
-# `command_is_shell` went with the launch flow's readiness wait: the core
-# classifies a pane that has dropped to a bare shell, on both the send and the
-# launch paths (src/deliver.rs).
-
-assert_eq "watchdog: supports start/stop/status subcommands" \
-    "1" \
-    "$([[ "$AE_SOURCE" == *'_watchdog_start'* && "$AE_SOURCE" == *'_watchdog_stop'* && "$AE_SOURCE" == *'_watchdog_status'* ]] && echo 1 || echo 0)"
+# ── sed -i with an EMPTY quoted argument — RETIRED (final glue cut) ────────────────────────────────
+# 11 assertion(s) went with their subject: the BSD/GNU in-place-edit shim went with its last callers (the watchdog's meta writes and the telegram intent record), which are core operations now.
 
 # ── A.3: `_run` is an exec of the core, and every knob crosses as a flag — RETIRED (B glue cut 2) ────
 # 4 assertion(s) went with their subject: the watchdog DAEMON is the core's (`_watchdog-run`), and the session's
 # `watchdog` helper is a thin shim onto it. Bash keeps only start/stop/status,
 # which run through `_watchdog_manage` rather than that helper.
 
-# ── status-right ownership: AE bakes the bar; the watchdog NEVER rewrites it ──────
-# The old save/prepend/restore machinery (and its dedup strip) is GONE: _watchdog_start
-# must not capture, save, or set status-right — idempotence now holds by shape, and a
-# doubled indicator is structurally impossible. The watchdog only feeds user options.
-_wds_fn="$(awk '/^_watchdog_start\(\) \{/{f=1} f{print} f && /^\}/{exit}' <<<"$AE_SOURCE")"
-assert_eq "status-right ownership: _watchdog_start never sets/reads status-right (code, not comments)" "0" \
-    "$(grep -vE '^\s*#' <<<"$_wds_fn" | grep -c 'status-right')"
-assert_eq "status-right ownership: save/prepend/restore machinery deleted" "0" \
-    "$(grep -c '_watchdog_restore_status_right\|_strip_watchdog_status_prefix\|status_right_prev' <<<"$AE_SOURCE")"
+# ── status-right ownership: AE bakes the bar; the watchdog NEVER rewrites it — RETIRED (final glue cut) ───
+# 2 assertion(s) went with their subject: the status bar is written by the core's `apply_status_bar` and the watchdog is the core's too, so the bash writer and the daemon that had to not-rewrite it are both gone.
 
-# ── P4.1a: single-starter mutual exclusion (no double-daemon on concurrent start) ──
-# The launch auto-start (_start_session_watchdog -> "${AE_META}/watchdog" start) and an
-# explicit `ae watchdog start` reach the SAME _watchdog_start; without a lock two
-# concurrent callers each read is-running=false in the check->spawn window and BOTH
-# split a daemon (measured: a burst of concurrent starts spawned 3 panes/round). The
-# claim is an flock on .watchdog.start.lock ACQUIRED BEFORE the split-window spawn and
-# HELD (fd open until exit) across a wait for the daemon's ASYNC pidfile, so a
-# serialized next starter observes a fully-established watchdog and defers. flock (not
-# mkdir) so the kernel releases it on any death — no stale-lock wedge.
-assert_eq "P4.1a: _watchdog_start takes an flock start-lock (kernel-released, no stale wedge)" "1" \
-    "$([[ "$_wds_fn" == *flock* && "$_wds_fn" == *'.watchdog.start.lock'* ]] && echo 1 || echo 0)"
-_wds_lock_ln="$(grep -n '\.watchdog\.start\.lock' <<<"$_wds_fn" | head -1 | cut -d: -f1 || true)"
-_wds_spawn_ln="$(grep -n 'split-window' <<<"$_wds_fn" | head -1 | cut -d: -f1 || true)"
-_wds_wait_ln="$(grep -n -- '-f "$PIDFILE"' <<<"$_wds_fn" | head -1 | cut -d: -f1 || true)"
-assert_eq "P4.1a: the start-lock is acquired BEFORE the split-window spawn" "1" \
-    "$([[ -n "$_wds_lock_ln" && -n "$_wds_spawn_ln" && "$_wds_lock_ln" -lt "$_wds_spawn_ln" ]] && echo 1 || echo 0)"
-assert_eq "P4.1a: the lock is HELD until the daemon publishes its pidfile (wait after spawn)" "1" \
-    "$([[ -n "$_wds_wait_ln" && -n "$_wds_spawn_ln" && "$_wds_wait_ln" -gt "$_wds_spawn_ln" ]] && echo 1 || echo 0)"
-# A FAILED/timed-out lock acquisition must DEFER (no spawn), never proceed unprotected
-# (the removed `flock ... 201 || true` fall-through restored the concurrent-spawn race).
-assert_eq "P4.1a: a failed/timed-out lock acquisition DEFERS (no bare-proceed fall-through)" "1" \
-    "$([[ "$_wds_fn" != *'201 || true'* && "$_wds_fn" == *'could not acquire the start lock'* ]] && echo 1 || echo 0)"
-# A pidfile-registration TIMEOUT must tear down the pane WE spawned and fail — never
-# report success leaving a live-but-unregistered daemon the next starter duplicates.
-assert_eq "P4.1a: pidfile-registration timeout tears down the spawned pane and aborts" "1" \
-    "$([[ "$_wds_fn" == *'_registered'* && "$_wds_fn" == *'_kill_owned_pane "$watchdog_pane"'* && "$_wds_fn" == *'did not publish a pidfile'* ]] && echo 1 || echo 0)"
-# Registration must wait for a VALIDATED published pid + our tagged pane, NOT mere
-# file existence: `echo >file` yields a zero-byte pidfile mid-write; registering on
-# existence would release the lock over it, and the next starter would read no pid,
-# delete it, and spawn a duplicate (the empty-pidfile race). Non-destructive — it
-# never deletes a partial file.
-assert_eq "P4.1a: registration waits for a validated live pid + pane (not mere existence)" "1" \
-    "$([[ "$_wds_fn" == *'kill -0 "$_rp"'* && "$_wds_fn" == *'_monitor_find_pane _watchdog'* ]] && echo 1 || echo 0)"
-# And the daemon publishes the pidfile ATOMICALLY so it never appears empty at the
-# source. The daemon is the core since A.3 (`PidFile::publish` writes a temp and
-# renames, and Drop releases it on every exit path), so the glue's obligation
-# inverted: it must never WRITE that file at all. A second writer would race the
-# owner and hand the starter above a pid it never published. Reads — the
-# existence check, the pid read, the stale cleanup — stay.
-assert_eq "P4.1a: the glue never writes the watchdog pidfile (the core owns publication)" "0" \
-    "$(grep -cE '(>[[:space:]]*"?\$\{?PIDFILE|(mv|cp)[^|]*"\$PIDFILE")' <<<"$AE_SOURCE" || true)"
+# ── P4.1a: single-starter mutual exclusion (no double-daemon on concurrent start) — RETIRED (final glue cut) ───
+# 18 assertion(s) went with their subject: watchdog start/stop/status is one core operation (`_watchdog`), and the single-starter lock lives with it. The glue holds no pidfile, no monitor pane and no reaper.
 
-# Root fix: _watchdog_is_running must require a live @ae_agent=_watchdog pane in
-# its OWN session (not just a live pid) before reporting running — a recycled pid
-# from a stale pidfile must not read as running, and a stale pidfile is cleaned.
-# start/stop/status all inherit this. Extract the fn body so the pane check must
-# live INSIDE it (the same call also appears in _watchdog_stop).
-_wir_fn="$(awk '/^_watchdog_is_running\(\) \{/{f=1} f{print} f && /^\}/{exit}' <<<"$AE_SOURCE")"
-assert_eq "watchdog: is_running requires a live _watchdog pane (not just a live pid)" "1" \
-    "$([[ "$_wir_fn" == *'_monitor_find_pane _watchdog'* ]] && echo 1 || echo 0)"
-assert_eq "watchdog: is_running cleans a stale pidfile" "1" \
-    "$([[ "$_wir_fn" == *'kill -0'* && "$_wir_fn" == *'rm -f "$PIDFILE"'* ]] && echo 1 || echo 0)"
+# ── A.1: the shim is FAIL-CLOSED — no core, no command — RETIRED (final glue cut) ──────────────────
+# 13 assertion(s) went with their subject: the watchdog helper's fail-closed shim is written by the core (src/session_launch/assets.rs) and its monitor-pane machinery went with the daemon.
 
-# doctor --refresh cycles a RUNNING watchdog so refreshed helper code goes live.
-# Structural: the restart lives in the per-session refresh path (sync_existing_
-# session_assets). Extract just that function body so the asserts can't be
-# satisfied by an unrelated match elsewhere in the source.
-_refresh_fn="$(awk '/^sync_existing_session_assets\(\) \{/{f=1} f{print} f && /^\}/{exit}' <<<"$AE_SOURCE")"
-assert_eq "doctor-refresh: restarts a running watchdog in the refresh path" "1" \
-    "$([[ "$_refresh_fn" == *'_watchdog_manage "$meta_dir" status'* ]] && echo 1 || echo 0)"
-# BLOCKER gate: never stop a stale-pid session. Require genuine liveness first —
-# exact-match tmux session on its own server AND a live @ae_agent=_watchdog pane —
-# before trusting the pid-based 'is running' status.
-assert_eq "doctor-refresh: gate proves the tmux session is live (exact match)" "1" \
-    "$([[ "$_refresh_fn" == *"list-sessions -F '#{session_name}' 2>/dev/null | grep -Fxq -- \"\$session_name\""* ]] && echo 1 || echo 0)"
-assert_eq "doctor-refresh: gate requires a live _watchdog pane" "1" \
-    "$([[ "$_refresh_fn" == *"list-panes -s -t \"\$session_name\" -F '#{@ae_agent}' 2>/dev/null | grep -Fxq -- \"_watchdog\""* \
-       && "$_refresh_fn" == *'"$wd_pane_live" == "yes"'* ]] && echo 1 || echo 0)"
-# NOT through the session's `watchdog` helper any more: that file is the core's
-# daemon shim and takes no subcommand, so the management runs in this script.
-assert_eq "doctor-refresh: only stops a genuinely-running watchdog" "1" \
-    "$([[ "$_refresh_fn" == *'"$wd_status" == *"is running"*'* \
-       && "$_refresh_fn" == *'_watchdog_manage "$meta_dir" stop'* \
-       && "$_refresh_fn" == *'_watchdog_manage "$meta_dir" start'* ]] && echo 1 || echo 0)"
-# IMPORTANT verify: poll for the restart, announce success only on confirmation,
-# and re-record watchdog=true (never leave it disabled) on failure.
-assert_eq "doctor-refresh: verifies the restart before claiming success" "1" \
-    "$([[ "$_refresh_fn" == *'wd_up="yes"'* \
-       && "$_refresh_fn" == *'_watchdog_manage "$meta_dir" status 2>/dev/null || true'* ]] && echo 1 || echo 0)"
-assert_eq "doctor-refresh: failed restart re-enables meta + warns, success is conditional" "1" \
-    "$([[ "$_refresh_fn" == *'set_session_meta_value "${meta_dir}/meta" "watchdog" "true"'* \
-       && "$_refresh_fn" == *'Warning: watchdog restart failed for ${session_name}'* \
-       && "$_refresh_fn" == *'restarted watchdog for ${session_name}'* ]] && echo 1 || echo 0)"
+# ── _kill_owned_pane FAILS CLOSED: a kill needs a POSITIVE owner match — RETIRED (final glue cut) ───
+# 10 assertion(s) went with their subject: the ownership-guarded kill belongs to the operations that kill panes — the core's watchdog, retire and end. No bash caller is left.
 
-# The per-session refresh runs in a SUBSHELL, at every call site. This is not
-# style: the core shims are fail-closed and `_ae_core_preflight_try` EXITS 2 on an
-# unusable core, which `if fn; then` cannot catch. Since A.2c the workspace render
-# is one of those shims, so without the subshell the FIRST session with an
-# unbindable core ends the whole process — every later session keeps its stale pin
-# and no verdict is printed for any of them. `doctor --refresh` is the repair path
-# the core-pin WARN sends the operator to, so it has to outlive that fault.
-_drs_fn="$(awk '/^doctor_refresh_sessions\(\) \{/{f=1} f{print} f&&/^\}$/{exit}' <<<"$AE_SOURCE")"
-assert_eq "doctor-refresh: every per-session refresh is called in a subshell (a shim exit cannot end the loop)" "3|0" \
-    "$(printf '%s|%s' \
-        "$(grep -c 'if (sync_existing_session_assets ' <<<"$_drs_fn" || true)" \
-        "$(grep -c 'if sync_existing_session_assets ' <<<"$_drs_fn" || true)")"
-# ...and the loop still reports a verdict per session, so a refusal is visible
-# rather than merely survived.
-assert_eq "doctor-refresh: a failed session is reported, not skipped silently" "1" \
-    "$([[ "$_drs_fn" == *'doctor_report "FAIL" "refresh:${session_name}" "failed to refresh session assets"'* ]] && echo 1 || echo 0)"
-unset _drs_fn
+# ── 4th review: authoritative launch server + tri-state kill verify — RETIRED (final glue cut) ─────
+# 20 assertion(s) went with their subject: the launch records its own server and the core verifies its own kills; `_end_tmux`, the target-kind/target-server readers and the tri-state tmux error classifier went with end and stop.
 
-# The events.jsonl retention pins, the watchdog auto-start resolution and the
-# events-tail emission pin all read the LAUNCH FLOW, which is the core's `_launch`
-# since B glue cut 2. The trim, the events pane, the watchdog pane and the shim
-# that runs it are written and ordered in src/session_launch.rs, and pinned there.
-# `watchdog = true` in DEFAULT_CONFIG is still this script's, so it stays:
-assert_eq "watchdog: DEFAULT_CONFIG advertises watchdog = true to new installs" "1" \
-    "$([[ "$AE_SOURCE" == *'watchdog = true'* ]] && echo 1 || echo 0)"
-# ── A.1: the shim is FAIL-CLOSED — no core, no command ──────────────────────
-# Behavioural, not structural. Every subcommand behind the shim is core-owned, so
-# each unusable shape must REFUSE (one line naming the subcommand, exit 2) rather
-# than return a not-attempted code some caller could read as "do it in bash".
-# `exit` is the contract, so the probe runs it in a subshell — which is exactly
-# the shape every capture caller in ae uses.
-_cq_probe() { # <sub> -> "rc=<n> err=<stderr>"
-    (
-        eval "$(awk '/^_ae_core_try\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
-        # shellcheck disable=SC2034  # read by the eval'd _ae_core_try, invisible to the analyser
-        META_DIR="$_cq_dir"
-        rc=0
-        err="$(_ae_core_try "$@" 2>&1 >/dev/null)" || rc=$?
-        printf 'rc=%s err=%s' "$rc" "$err"
-    )
-}
-_cq_dir="$(mktemp -d)"
-: >"$_cq_dir/meta"
-assert_eq "core shim: no binding at all refuses, naming the subcommand" \
-    "rc=2 err=ae: the ae core is required for '_events-tail' — this session has no core bound" \
-    "$(_cq_probe _events-tail)"
-printf 'ae_core=/nonexistent/core\n' >"$_cq_dir/meta"
-assert_eq "core shim: a path with no version refuses (the unbound shape doctor --refresh publishes)" \
-    "rc=2 err=ae: the ae core is required for '_requests' — the configured core could not be bound when this session was created or refreshed: /nonexistent/core" \
-    "$(_cq_probe _requests)"
-assert_eq "core shim: it refuses EVERY time — there is no once-per-session marker to spend" \
-    "rc=2 err=ae: the ae core is required for '_requests' — the configured core could not be bound when this session was created or refreshed: /nonexistent/core" \
-    "$(_cq_probe _requests)"
-printf 'ae_core=/nonexistent/core\nae_core_version=9.9.9\n' >"$_cq_dir/meta"
-assert_eq "core shim: a pinned but missing binary refuses" \
-    "rc=2 err=ae: the ae core is required for '_state' — the configured core is missing or not executable: /nonexistent/core" \
-    "$(_cq_probe _state)"
-printf 'ae_core=%s\nae_core_version=0.0.0-not-the-pin\n' "$_AE_UNIT_CORE" >"$_cq_dir/meta"
-assert_eq "core shim: a real binary whose version is not the pin refuses" "rc=2 ver-mismatch" \
-    "$(_cq_out="$(_cq_probe _goal)"; printf '%s %s' "${_cq_out%% *}" \
-        "$([[ "$_cq_out" == *"core version mismatch: this session pins 0.0.0-not-the-pin"* ]] && echo ver-mismatch || echo no)")"
-# The AE_CORE= set-but-empty escape is GONE: with a usable pinned core the shim
-# reaches the binary even under it, so nothing it says can be our refusal line.
-printf 'ae_core=%s\nae_core_version=%s\n' "$_AE_UNIT_CORE" "$_AE_UNIT_CORE_VER" >"$_cq_dir/meta"
-assert_eq "core shim: a set-but-empty AE_CORE is no longer an escape — the pinned core is still used" "0" \
-    "$(AE_CORE='' _cq_probe --capture _no-such-subcommand |
-        grep -c 'the ae core is required for' | tr -d '[:space:]')"
-rm -rf "$_cq_dir"
-unset _cq_dir
-
-# Monitor window with _events pane is always created on session start/resume,
-# independent of watchdog on/off. Watchdog start splits the window to add the _watchdog pane.
-assert_eq "monitor: ae-monitor + events pane created independently of watchdog" "1" \
-    "$([[ "$AE_SOURCE" == *'_monitor_ensure_events_pane'* && "$AE_SOURCE" == *'_ensure-monitor'* ]] && echo 1 || echo 0)"
-
-# The launch flow's unconditional `_ensure-monitor` went to the core, which
-# creates the events pane itself before it starts the watchdog pane. The
-# management path here still has the verb, because `watchdog start` needs the
-# window to split against.
-assert_eq "monitor: the management path still ensures the events pane" "1" \
-    "$([[ "$AE_SOURCE" == *'_ensure-monitor) _watchdog_ensure_monitor ;;'* ]] && echo 1 || echo 0)"
-
-assert_eq "monitor: _events pane runs events-tail" "1" \
-    "$([[ "$AE_SOURCE" == *'new-window -da -t "$_AE_SESSION" -n "ae-monitor"'* && "$AE_SOURCE" == *'/events-tail'* ]] && echo 1 || echo 0)"
-
-# The pane runs the helper with NO argument: it is the core's daemon shim now, and
-# `_run` was the bash helper's own dispatcher arm — the core rejects it.
-assert_eq "monitor: watchdog start splits to add _watchdog pane, does not create the window" "1" \
-    "$([[ "$AE_SOURCE" == *'split-window -v -b -t "$MONITOR_EVENTS_PANE"'* && "$AE_SOURCE" == *'"${META_DIR}/watchdog" 2>/dev/null'* ]] && echo 1 || echo 0)"
-
-assert_eq "monitor: watchdog stop kills only the _watchdog pane (window survives)" "1" \
-    "$([[ "$AE_SOURCE" == *'_monitor_find_pane _watchdog'* && "$AE_SOURCE" == *'_kill_owned_pane "$watchdog_pane"'* ]] && echo 1 || echo 0)"
-# Every pane kill goes through _kill_owned_pane, which reads the pane's session and
-# @ae_agent at the moment of the kill and refuses a stranger: pane ids are server-local
-# and reused after a server restart on the same socket name, so a process holding a
-# stale id (a spawn rolling back, a retire, a watchdog stopping) killed a later
-# session's freshly spawned pane in the integration suite. The ONE raw `tmux kill-pane`
-# is the guard's own.
-assert_eq "kill-pane: the only raw tmux kill-pane in ae is inside _kill_owned_pane" "1" \
-    "$(grep -c 'tmux kill-pane' <<<"$AE_SOURCE")"
-assert_eq "kill-pane: every surviving kill site goes through the guard (3: two watchdog, one legacy reaper)" "3" \
-    "$(grep -c '^ *\(if \[\[ -n "\$watchdog_pane" \]\]; then \)\?_kill_owned_pane "\$\(resolved\|pane_id\|legacy_pane\|watchdog_pane\)"' <<<"$AE_SOURCE")"
-# ── _kill_owned_pane FAILS CLOSED: a kill needs a POSITIVE owner match ──
-# The stranger-kill this guard prevents is a destructive act, so the absence of a
-# contradiction must not authorise it (colead gate f0a99784): a probe that fails, a
-# probe that answers no session (tmux renders an empty format for an unknown pane,
-# rc 0 — measured), a caller that cannot name the session it means, and a mismatch
-# on either fact all end with ZERO kill calls. The two positive arms prove the guard
-# still kills what it should. Every call is BARE under this suite's errexit — the
-# only shape that proves the probe's non-zero rc cannot abort the caller.
-eval "$(awk '/^_kill_owned_pane\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
-_kop_log="$(mktemp)"
-_KOP_RC=0
-_KOP_ANSWER=""
-# shellcheck disable=SC2317,SC2329
-tmux() {
-    case "${1:-}" in
-        display-message)
-            printf '%s' "$_KOP_ANSWER"
-            return "$_KOP_RC"
-            ;;
-        kill-pane) printf 'kill-pane %s\n' "${3:-}" >>"$_kop_log" ;;
-    esac
-    return 0
-}
-_KOP_RC=1 _KOP_ANSWER="" _kill_owned_pane '%7' s alice 2>/dev/null
-_KOP_RC=0 _KOP_ANSWER=$'\t' _kill_owned_pane '%7' s alice 2>/dev/null
-_kop_err="$(_KOP_RC=0 _KOP_ANSWER=$'other\talice' _kill_owned_pane '%7' s alice 2>&1 >/dev/null)"
-assert_eq "kill-guard: a pane in another session is refused, loudly" "1" \
-    "$(command grep -Fc "belongs to session 'other', not 's'" <<<"$_kop_err" || true)"
-_kop_err="$(_KOP_RC=0 _KOP_ANSWER=$'s\tbob' _kill_owned_pane '%7' s alice 2>&1 >/dev/null)"
-assert_eq "kill-guard: a pane stamped for another agent is refused, loudly" "1" \
-    "$(command grep -Fc "stamped 'bob', not 'alice'" <<<"$_kop_err" || true)"
-_KOP_RC=0 _KOP_ANSWER=$'s\talice' _kill_owned_pane '%7' '' alice 2>/dev/null
-_kill_owned_pane '' s alice 2>/dev/null
-assert_eq "kill-guard: failed probe, unknown pane, mismatches, unnamed session and empty pane id kill NOTHING" "0" \
-    "$(command grep -c 'kill-pane' "$_kop_log" || true)"
-_KOP_RC=0 _KOP_ANSWER=$'s\talice' _kill_owned_pane '%7' s alice
-_KOP_RC=0 _KOP_ANSWER=$'s\t' _kill_owned_pane '%8' s
-assert_eq "kill-guard: a matching session+stamp, and a matching session with no stamp asked, kill exactly their pane" \
-    $'kill-pane %7\nkill-pane %8' "$(cat "$_kop_log")"
-unset -f tmux
-rm -f "$_kop_log"
-unset _kop_log _kop_err _KOP_RC _KOP_ANSWER
-
-# The two segment PRODUCERS (the branch segment and the [watch …] health glyph)
-# are the core's daemon since A.3; their shape is pinned in the core's suite. The
-# bar that CONSUMES them is still baked by the glue, and that half is pinned just
-# below (status-left/status-right) and again in the status-bar section.
-
-assert_eq "status-left: location built mode-aware (local one path, copy/worktree two paths)" "1" \
-    "$([[ "$AE_SOURCE" == *'_ae_status_left_paths()'* && "$AE_SOURCE" == *'full) printf'* && "$AE_SOURCE" == *'git) printf'* ]] && echo 1 || echo 0)"
-
-assert_eq "status-left: \$HOME abbreviated and long paths left-truncated" "1" \
-    "$([[ "$AE_SOURCE" == *'_ae_abbrev_home()'* && "$AE_SOURCE" == *'_ae_trunc_left()'* ]] && echo 1 || echo 0)"
-
-# Footer shape: [ae <session>] · window list · [<path><git>] [watch …] — one owner (ae).
-assert_eq "status-bar: left is name-only, right carries path+git+watch (ae-owned)" "1" \
-    "$([[ "$AE_SOURCE" == *'_ae_apply_status_bar()'* && "$AE_SOURCE" == *'status-left "[ae ${sess_lit}] "'* && "$AE_SOURCE" == *'status-right "[${paths}#{@ae_branch_status}] #{@ae_watchdog_status}"'* && "$AE_SOURCE" == *'status-right-length 100'* ]] && echo 1 || echo 0)"
-# Second status line: pane borders only render with 2+ panes, so a lone agent in its
-# own window had no visible identity — line 1 shows the active pane's @ae_agent.
-_sb_fmt1="'status-format[1]' '#[align=left] #{@ae_agent}#[align=right]#{@ae_agents_status} '"
-assert_eq "status-bar: second line shows the focused pane's agent identity" "1" \
-    "$([[ "$AE_SOURCE" == *'set-option -t "$_st" status 2'* && "$AE_SOURCE" == *"$_sb_fmt1"* ]] && echo 1 || echo 0)"
-# footer-roster: agents live across MULTIPLE WINDOWS but the status bar renders in
-# every one, so a per-agent roster on line 1 gives whole-org visibility from any
-# window. Right-aligned so it never collides with the left-aligned focused identity.
-assert_eq "status-bar: line 1 carries the agent roster, right-aligned" "1" \
-    "$([[ "$AE_SOURCE" == *'#[align=right]#{@ae_agents_status}'* ]] && echo 1 || echo 0)"
-# tmux ARRAY options do not inherit per-index: session-scope status-format[1] alone
-# shadows the whole global array and line 0 (the standard bar) renders EMPTY (live
-# exhibit: first session-shape launch showed two blank green lines). The template
-# must copy the global [0] into the session BEFORE setting [1].
-assert_eq "status-bar: global status-format[0] copied to session scope (array-shadowing fix)" "1" \
-    "$([[ "$AE_SOURCE" == *"show-options -gv 'status-format[0]'"* && "$AE_SOURCE" == *"set-option -t \"\$_st\" 'status-format[0]' \"\$_fmt0\""* ]] && echo 1 || echo 0)"
-
-# ── 4th review: authoritative launch server + tri-state kill verify ──
-# The launch-server RESOLVER pins went with `resolve_launch_tmux_server`: the
-# core's `_launch` asks tmux for its own server and records the typed pair. What
-# stays here are the CONSUMERS the glue still owns — `_srv_tmux_args`, and the
-# `AE_END_SERVER` recovery override on the legacy-empty record.
-# 7th review B2: the kind is a SEPARATE KEY — a legacy -L server may literally be
-# NAMED "S:x"; value-prefix parsing selected such decoys. Kind decides, value is raw.
-assert_eq "srv-args: kind=socket → -S raw" "-S|/a b/x" "$(_srv_tmux_args socket '/a b/x' | tr '\n' '|' | sed 's/|$//')"
-assert_eq "srv-args: kind=name → -L raw" "-L|n" "$(_srv_tmux_args name 'n' | tr '\n' '|' | sed 's/|$//')"
-assert_eq "srv-args: LEGACY name that merely looks typed stays a NAME" "-L|S:evil" \
-    "$(_srv_tmux_args '' 'S:evil' | tr '\n' '|' | sed 's/|$//')"
-assert_eq "srv-args: kind=ambiguous → NOTHING (callers fail closed)" "" "$(_srv_tmux_args ambiguous '/x')"
-assert_eq "srv-args: empty pair → nothing" "" "$(_srv_tmux_args '' '')"
-# 6th review I1: the advertised recovery override is REAL — AE_END_SERVER is consumed
-# by _end_target_server, and ONLY for a legacy-empty record (never over a typed one).
-_eot() { # $1 = stubbed meta value, then env-passed AE_END_SERVER
-    local metaval="$1"
-    # shellcheck disable=SC2317,SC2329  # invoked indirectly by _end_target_server
-    read_session_meta() { printf '%s' "$metaval"; }
-    _end_target_server ghost
-    unset -f read_session_meta
-    return 0
-}
-assert_eq "end override: AE_END_SERVER honored for a legacy-empty record" "L:rescue" \
-    "$(AE_END_SERVER='L:rescue' _eot '')"
-assert_eq "end override: AE_END_SERVER ignored when meta has a typed record" "S:/real" \
-    "$(AE_END_SERVER='L:rescue' _eot 'S:/real')"
-_eok() { local mv="$1" kv="$2"
-    # shellcheck disable=SC2317,SC2329
-    read_session_meta() { case "$2" in tmux_server) printf '%s' "$mv" ;; tmux_server_kind) printf '%s' "$kv" ;; esac; }
-    _end_target_kind ghost; unset -f read_session_meta; return 0
-}
-assert_eq "end override kind: /path override types socket" "socket" "$(AE_END_SERVER='/p' _eok '' '')"
-assert_eq "end override kind: name override types name" "name" "$(AE_END_SERVER='srv' _eok '' '')"
-assert_eq "end override kind: stored kind wins when meta value present" "name" "$(AE_END_SERVER='/p' _eok 'real' 'name')"
-# The fail-closed refusal text moved to `_end` with the operation. The doctor
-# migration below is still bash's, and its two rules are what remain to pin.
-assert_eq "migration: locked write or SKIPPED (never unlocked fall-through)" "1" \
-    "$([[ "$AE_SOURCE" == *'migration SKIPPED — could not lock meta'* \
-        && "$AE_SOURCE" != *'flock -w 5 201 || true'* ]] && echo 1 || echo 0)"
-# 7th review B3: zero-hit is NOT a positive location — the record stays untouched and
-# the stopped teardown needs the explicit per-target acknowledgement flag.
-assert_eq "migration: zero-hit leaves the record and points at --assume-stopped" "1" \
-    "$([[ "$AE_SOURCE" == *'record left as-is; if it is genuinely stopped: ae end --assume-stopped'* \
-        && "$AE_SOURCE" != *'presumed stopped/default'* ]] && echo 1 || echo 0)"
-assert_eq "migration: single-hit writes BOTH keys, ADDING tmux_server when the line is absent" "1" \
-    "$([[ "$AE_SOURCE" == *'if (!seen) print "tmux_server=" v'* \
-        && "$AE_SOURCE" == *'print "tmux_server_kind=socket"'* ]] && echo 1 || echo 0)"
-# The launch-meta atomicity pins (one publication point, the `_meta-init` record
-# stream and its counted trailer, the rollback on a refused publication, the lock
-# held through asset generation) all read the launch flow, which is the core's
-# `_launch`. It publishes ONE document under its own lifecycle lock and rolls the
-# whole launch back on failure; src/session_launch.rs pins that order. The
-# `--assume-stopped` grammar went to `_end` with the rest of end.
-# 10th review B2: clean-dead detection is ANCHORED to tmux's exact diagnostic shapes.
-# The adversarial case: a server literally NAMED "no server running" — its permission
-# error CONTAINS the magic words but must NOT read as clean-dead.
-assert_eq "clean-dead: stale-socket shape accepted" "0" \
-    "$(_tmux_err_is_clean_dead 'no server running on /tmp/tmux-1000/x'; echo $?)"
-# 11th review B1: ENOENT is NOT clean-dead — unlinking a LIVE server's socket produces
-# this exact error while the server and its sessions keep running.
-assert_eq "clean-dead: ENOENT is CANNOT-VERIFY (live-unlinked regression)" "1" \
-    "$(_tmux_err_is_clean_dead 'error connecting to /tmp/tmux-1000/x (No such file or directory)'; echo $?)"
-assert_eq "clean-dead: permission error is NOT clean-dead" "1" \
-    "$(_tmux_err_is_clean_dead 'error connecting to /tmp/tmux-1000/x (Permission denied)'; echo $?)"
-assert_eq "clean-dead: ADVERSARIAL 'no server running'-named socket's perm error refused" "1" \
-    "$(_tmux_err_is_clean_dead 'error connecting to /tmp/tmux-1000/no server running (Permission denied)'; echo $?)"
-# TWO consumers now: end's verify-gone and its sweep went to the core with `_end`,
-# leaving the daemon presence probe and the pre-P5 coexistence guard — and the
-# guard is the case the shared predicate matters most for, since "cannot tell"
-# there must fail CLOSED rather than authorise a second bridge.
-assert_eq "clean-dead: the daemon probe AND the coexistence guard share the ONE classifier" "2" \
-    "$(printf '%s' "$AE_SOURCE" | command grep -c '_tmux_err_is_clean_dead "$_out"\|_tmux_err_is_clean_dead "$out"' || true)"
-assert_eq "clean-dead: no rival classifier was introduced alongside it" "0" \
-    "$(printf '%s' "$AE_SOURCE" | command grep -c '_tmux_err_is_no_server' || true)"
-# Round-3 BLOCKER: the probe must have exactly ONE definition. It used to have a
-# second — inside the telegram daemon's heredoc — while ae's own top-level
-# callers invoked it as an undefined command. The heredoc is gone with the bash
-# bridge, and the one definition is the whole story now: a second copy
-# reintroduces the drift, a zero count means it moved out of the callers' sight.
-assert_eq "dsr: exactly one definition of the probe exists in ae" "1" \
-    "$(printf '%s' "$AE_SOURCE" | command grep -c '^daemon_session_running() {' || true)"
-
-# ── CHOKEPOINT: one door for publishing executable artifacts ─────────
-# This replaces an INVENTORY of writers, which was fail-open in three ways at
-# once: it recognised two exact chmod spellings, `sort -u` collapsed a second
-# writer that happened to share the variable name $dest, and `chmod 700`,
-# `install -m 755` and `u+x` were invisible to it entirely. A registry is a
-# parallel structure that drifts away from the thing it describes; a chokepoint
-# cannot drift, because a new writer has to enter it in order to exist.
-#
-# THE INVARIANT: in COMMAND position, the only executable-mode chmod/install in
-# ae is the chokepoint's own. Everything else is either a non-executable mode or
-# a session-helper temp file. The session helpers are exempted BY SHAPE —
-# "${AE_META}/<name>.tmp.$$" and nothing else — not by name: they already
-# publish temp + chmod + mv, and they have their own guard family (emission
-# completeness, template-vs-emitted parity, the doctor --refresh canary), so
-# churning those 20+ emission sites would disturb exactly the artifacts that
-# family protects for no behavioural gain. Their three former direct writes
-# (mark-done, peak, loop) were converted to the same temp+mv shape rather than
-# exempted, so the sentence above is true of ALL of them.
-#
-# SPELLINGS COVERED: bare `chmod`, `command chmod`, an absolute path
-# (/bin/chmod, /usr/bin/chmod), a `--` separator, and `install [-m]`, in command
-# position — line start, after ; && ||, after `!`, or first inside a `{` group.
-# NOT COVERED, stated rather than implied: an executable bit acquired without a
-# mode word — `cp -p` from an executable source, a permissive umask, `install`
-# with no -m, a wrapper function that chmods on its caller's behalf, or an
-# artifact that chmods itself at run time. Those are outside the pattern this
-# guard can see; the chokepoint remains the contract, this is its enforcement.
-_pub_raw="$(printf '%s' "$AE_SOURCE" \
-    | command grep -nE '(^[[:space:]]*|[;&|{][[:space:]]*|![[:space:]]*)((command|/usr/bin/|/bin/)[[:space:]]*)?(chmod|install)([[:space:]]+--)?([[:space:]]+-m)?[[:space:]]+([0-7]{3,4}|[augo]*[+=][rwxXst]+|"\$mode")' \
-    | command grep -v '^[0-9]*:[[:space:]]*#' \
-    | command grep -vE 'chmod 0?6[0-7][0-7] ' \
-    | command grep -vE 'chmod 0700 "\$AE_META"$' || true)"
-# The session-helper exemption is DESTINATION-checked and BLOCK-LOCAL. Two holes
-# closed here, both the same same-name-collapse class:
-#   - operand-checked: an AE_META temp chmod'd here and mv'd to a machine-global
-#     path there was exempted on the strength of the chmod alone;
-#   - globally matched: a NEW writer borrowing an existing helper's name
-#     (send.tmp.$$, mv to $CONFIG_DIR) was exempted by the LEGITIMATE send
-#     helper's mv somewhere else in the file.
-# So the matching mv must be the very NEXT LINE — which is the shape every real
-# helper emission already has — and it must land the same <name> back under
-# ${AE_META}. Line numbers are carried through the pipeline for exactly this.
-_pub_left=""
-while IFS= read -r _pl; do
-    [[ -n "$_pl" ]] || continue
-    _pnum="${_pl%%:*}"
-    _ptext="${_pl#*:}"
-    _ptext="${_ptext#"${_ptext%%[![:space:]]*}"}"
-    if [[ "$_ptext" =~ ^chmod\ 0700\ \"\$\{AE_META\}/([A-Za-z0-9._-]+)\.tmp\.\$\$\"$ ]]; then
-        _pn="${BASH_REMATCH[1]}"
-        _pnext="$(printf '%s' "$AE_SOURCE" | sed -n "$((_pnum + 1))p")"
-        _pnext="${_pnext#"${_pnext%%[![:space:]]*}"}"
-        if [[ "$_pnext" == "mv \"\${AE_META}/${_pn}.tmp.\$\$\" \"\${AE_META}/${_pn}\"" ]]; then
-            continue
-        fi
-    fi
-    _pub_left+="${_ptext}"$'\n'
-done <<<"$_pub_raw"
-assert_eq "chokepoint: the only raw executable-mode chmod left in ae is its own" \
-    'if ! chmod "$mode" "$tmp"; then' "${_pub_left%$'\n'}"
-unset _pub_raw _pub_left _pl _pn _pnum _ptext _pnext
-# FOUR callers now, all in the refresh shim writer: the passthrough loop,
-# mark-done, and the two aliases. (The launch script and the DATA sibling went with
-# the launch flow; the telegram daemon retired with the bash bridge.) A wrapper
-# that enters the chokepoint is the discipline working, not a bypass; what the
-# guard forbids is a second definition or a hand-rolled publish.
-assert_eq "chokepoint: one definition, and every artifact writer enters it" "1|4" \
-    "$(_d="$(printf '%s' "$AE_SOURCE" | command grep -c '^_publish_executable_artifact() {' || true)"
-       _u="$(printf '%s' "$AE_SOURCE" | command grep -c '_publish_executable_artifact "' || true)"
-       printf '%s|%s' "$_d" "$_u")"
-# The data sibling (`_publish_data_artifact`, mode 0600) went with the opencode
-# context files it published; the core writes those now, non-executable, through
-# its own document publisher.
-
-# Behavioural: atomicity BY CONSTRUCTION (#31). The generator is passed as a
-# command, not piped in, precisely so its failure is visible before anything is
-# renamed — a pipeline producer can die after emitting a prefix, and a `cat`
-# downstream would publish that prefix over a live artifact.
-_pub_dir="$(mktemp -d)"
-# shellcheck disable=SC2317,SC2329
-_pub_good() { printf '%s\n' '#!/bin/sh' 'echo NEW'; }
-# shellcheck disable=SC2317,SC2329
-_pub_partial() { printf '%s\n' '#!/bin/sh' 'echo HALF'; return 1; }
-printf '%s\n' '#!/bin/sh' 'echo OLD' >"$_pub_dir/art"
-chmod 0700 "$_pub_dir/art"
-assert_eq "chokepoint: a good generator publishes, at the requested mode, no temp left" "NEW|700|0" \
-    "$(_publish_executable_artifact "$_pub_dir/art" 0700 _pub_good
-       _body="$(tail -1 "$_pub_dir/art")"
-       _perm="$(_ae_stat mode "$_pub_dir/art")"
-       _left="$(find "$_pub_dir" -name 'art.tmp.*' | wc -l | tr -d '[:space:]')"
-       printf '%s|%s|%s' "${_body#echo }" "$_perm" "$_left")"
-assert_eq "chokepoint: a generator that dies mid-write leaves the LIVE artifact whole" "NEW|1|0" \
-    "$(_rc=0; _publish_executable_artifact "$_pub_dir/art" 0700 _pub_partial 2>/dev/null || _rc=$?
-       _body="$(tail -1 "$_pub_dir/art")"
-       _left="$(find "$_pub_dir" -name 'art.tmp.*' | wc -l | tr -d '[:space:]')"
-       printf '%s|%s|%s' "${_body#echo }" "$_rc" "$_left")"
-rm -rf "$_pub_dir"
-unset _pub_dir
-unset -f _pub_good _pub_partial
+# ── CHOKEPOINT: one door for publishing executable artifacts — RETIRED (final glue cut) ────────────
+# 4 assertion(s) went with their subject: the glue publishes no executable artifact any more. The core writes every session helper and every launch script through its own temp+chmod+rename publisher (src/session_launch/assets.rs).
 
 # ── CALLER LEVEL: the primitive refusing is not the same as the caller
 # ── honouring the refusal (completion-without-delivery) — RETIRED (B glue cut 2) ───────────────────
@@ -2146,7 +1410,8 @@ ln -s "$_sp_out/nope" "$_sp_root/dangling-name"
 : >"$_sp_root/a-file"
 assert_eq "path-safe: physical dir and absent OK; grammatical symlink, dangling symlink, file, escape NOT" \
     "OK|OK|NO|NO|NO|NO" \
-    "$(SESSIONS_DIR="$_sp_root"
+    "$( # shellcheck disable=SC2034  # read by the eval'd _session_path_is_safe, which shellcheck cannot see
+       SESSIONS_DIR="$_sp_root"
        for _n in 'real-dir' 'absent-name' 'valid-name' 'dangling-name' 'a-file' '../escape'; do
            if _session_path_is_safe "$_n" 2>/dev/null; then printf 'OK|'; else printf 'NO|'; fi
        done | sed 's/|$//')"
@@ -2170,11 +1435,14 @@ assert_eq "path-safe: -L is tested before -e, so a dangling symlink cannot slip 
 # Ten since slice 2: `ae compact` resolves a session by name and then ENDS it, which is
 # the most consequential consumer yet — a symlinked "session" would be archived and
 # deleted through the link.
-# FOUR since B glue cut 2: the launch fall-through asks it again. The core owns
-# the name grammar and derives an unnamed launch's name, but it does not look at
-# the path OBJECT — so the half bash can still answer exactly, a name the caller
-# TYPED, is answered before the core is handed anything.
-assert_eq "path-safe: all four surviving boundaries consult it (launch, archive preview, rename x2)" "4" \
+# TWO since the final glue cut: rename went to the core with doctor, so the two
+# rename call sites left with it. What still asks in bash is the pair of entry
+# points that resolve a session by name BEFORE the core is handed anything — the
+# launch fall-through and `archive preview`. The core owns the name grammar and
+# derives an unnamed launch's name, but it does not look at the path OBJECT, so
+# the half bash can still answer exactly — a name the caller TYPED — is answered
+# here.
+assert_eq "path-safe: both surviving boundaries consult it (launch, archive preview)" "2" \
     "$(printf '%s' "$AE_SOURCE" | command grep -c '_require_session_path_safe ' || true)"
 # ...and the two stop entrypoints ask BOTH questions, in the right order: before
 # any lock, meta or event path is built from the name.
@@ -2186,14 +1454,15 @@ unset _sp_root _sp_out
 # core compares a derived name's owner against the caller's directory itself.
 rm -rf "$_snu_root" "$_snu_outside"
 unset _snu_root _snu_outside
-# Transfer is a CREATION boundary on its destination in BOTH directions (pull
-# builds sessions/<name>/ locally, push builds it on the peer), so a same-name
-# copy cannot migrate a name into compliance — it takes the strict grammar and
-# has no legacy arm at all. The escape survives only where a session is consumed
-# IN PLACE: the rename source.
-assert_eq "boundaries: rename target strict, source migratable" "1" \
-    "$([[ "$AE_SOURCE" == *'_validate_session_name "$new_name" || return 1'* \
-        && "$AE_SOURCE" == *'_session_name_usable "$old_name" || return 1'* \
+# RENAME'S HALF OF THIS WENT TO THE CORE at the final cut (strict on the target,
+# migratable on the source, one operation). What the glue still owes is that the
+# two predicates stay DISTINCT and that neither has been loosened into the other:
+# `_validate_session_name` is the creation grammar, `_session_name_usable` is the
+# consume-in-place escape that lets a pre-grammar directory still be addressed.
+# Collapsing them is the regression this row now watches for.
+assert_eq "boundaries: the strict grammar and the migratable escape are still two predicates" "1" \
+    "$([[ "$AE_SOURCE" == *'_validate_session_name() {'* \
+        && "$AE_SOURCE" == *'_session_name_usable() {'* \
         && "$AE_SOURCE" != *"cannot contain '/', ':', or '.'"* ]] && echo 1 || echo 0)"
 
 # ── DERIVED NAMES: lossy body, hash over the RAW path — RETIRED (B glue cut 2) ─────────────────────
@@ -2222,37 +1491,44 @@ assert_eq "boundaries: rename target strict, source migratable" "1" \
 # hands tmux DIRECT ARGV.
 eval "$(awk '/^(_telegram_spawn_daemon|_telegram_coexistence_guard|_telegram_coexistence_probe|_telegram_coexistence_same_bot|_telegram_coexistence_token|_ae_core_bin_input|_ae_core_current_input|_ae_core_bin_version)\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
 
-# ── COEXISTENCE (pre-P5): the core comes from three sources, in one order ────
-# env AE_CORE_BIN -> <AE_HOME>/core/current -> config workspace.core. The middle
-# one is what makes an install visible to every RE-ENTRY (a helper exec'ing its
-# recorded ae path, the watchdog's `telegram _supervise`, compact's child) with
-# no environment to go stale. Each case below differs from its neighbour by ONE
-# fact, so a precedence that silently collapsed would show up as a wrong answer
-# rather than as a still-green suite.
+# ── THE CORE COMES FROM TWO SOURCES, IN ONE ORDER ───────────────────────────
+# env AE_CORE_BIN -> <AE_HOME>/core/current. The second is what makes an install
+# visible to every RE-ENTRY (a helper exec'ing its recorded ae path, the
+# watchdog's `telegram _supervise`, compact's child) with no environment to go
+# stale. Each case below differs from its neighbour by ONE fact, so a precedence
+# that silently collapsed would show up as a wrong answer rather than as a
+# still-green suite.
+#
+# THE CONFIG KEY `workspace.core` WAS RETIRED at the final glue cut. It was the
+# only source that could not be answered without an INI parser, and keeping the
+# parser in the glue to read one key was the wrong trade. Every fixture below
+# still WRITES that key, and that is deliberate: it is the negative control. If
+# the reader ever consults the config again, the "not a source" assertions turn
+# red instead of the suite staying green on a resolution nobody asked for.
 _cc_dir="$(mktemp -d)"
 mkdir -p "$_cc_dir/core"
 printf '%s\n' '[workspace]' 'core = /from/config' >"$_cc_dir/config"
 printf '%s\n' '/from/current' >"$_cc_dir/core/current"
-assert_eq "core input: env AE_CORE_BIN outranks core/current and the config" "/from/env" \
+assert_eq "core input: env AE_CORE_BIN outranks core/current" "/from/env" \
     "$(AE_CORE_BIN=/from/env AE_LOCAL_CONFIG='' CONFIG_FILE="$_cc_dir/config" CONFIG_DIR="$_cc_dir" _ae_core_bin_input)"
-assert_eq "core input: core/current outranks the config when no env is set" "/from/current" \
+assert_eq "core input: core/current answers when no env is set" "/from/current" \
     "$(AE_CORE_BIN='' AE_LOCAL_CONFIG='' CONFIG_FILE="$_cc_dir/config" CONFIG_DIR="$_cc_dir" _ae_core_bin_input)"
 # Leading/trailing whitespace is the installer's newline and a hand edit's tab —
 # trimmed, because a path with a stray space is a path that will not execute.
 printf '%s\n' '   /from/current   ' >"$_cc_dir/core/current"
 assert_eq "core input: the current line is trimmed" "/from/current" \
     "$(AE_CORE_BIN='' AE_LOCAL_CONFIG='' CONFIG_FILE="$_cc_dir/config" CONFIG_DIR="$_cc_dir" _ae_core_bin_input)"
-# NOT ABSOLUTE = IGNORED, fail-quiet, exactly like an unusable config value. A
-# relative path would resolve against whatever directory the caller happened to
-# be in, and `~` is not expanded by this reader, so pinning either would pin a
-# core that cannot be run.
+# NOT ABSOLUTE = IGNORED, and with the config retired there is nothing under it:
+# the answer is a REFUSAL. A relative path would resolve against whatever
+# directory the caller happened to be in, and `~` is not expanded by this reader,
+# so pinning either would pin a core that cannot be run.
 # The tilde is DELIBERATELY unexpanded: this reader refuses a `~` value rather
 # than expanding one, so the literal is the fixture.
 # shellcheck disable=SC2088
 for _cc_bad in 'relative/ae' '~/.ae-next/core/0.0.0/ae' '' '   '; do
     printf '%s\n' "$_cc_bad" >"$_cc_dir/core/current"
-    assert_eq "core input: a non-absolute current ('$_cc_bad') falls through to the config" "/from/config" \
-        "$(AE_CORE_BIN='' AE_LOCAL_CONFIG='' CONFIG_FILE="$_cc_dir/config" CONFIG_DIR="$_cc_dir" _ae_core_bin_input)"
+    assert_eq "core input: an unusable current ('$_cc_bad') refuses — the config is NOT a source" "1" \
+        "$(AE_CORE_BIN='' AE_LOCAL_CONFIG='' CONFIG_FILE="$_cc_dir/config" CONFIG_DIR="$_cc_dir" _ae_core_bin_input >/dev/null 2>&1; echo $?)"
 done
 # A SYMLINK is not a pointer the installer published, and this reader is the one
 # RE-ENTRY uses — helpers, the watchdog's supervise, compact's child, a bare `ae`
@@ -2265,214 +1541,41 @@ rm -f "$_cc_dir/core/current"
 # — measured, on this very assertion.
 printf '%s\n' '/from/the-link-target' >"$_cc_dir/core/real-current"
 ln -s "$_cc_dir/core/real-current" "$_cc_dir/core/current"
-assert_eq "core input: a SYMLINKED core/current is ignored, not followed" "/from/config" \
-    "$(AE_CORE_BIN='' AE_LOCAL_CONFIG='' CONFIG_FILE="$_cc_dir/config" CONFIG_DIR="$_cc_dir" _ae_core_bin_input)"
+assert_eq "core input: a SYMLINKED core/current is ignored, not followed" "1" \
+    "$(AE_CORE_BIN='' AE_LOCAL_CONFIG='' CONFIG_FILE="$_cc_dir/config" CONFIG_DIR="$_cc_dir" _ae_core_bin_input >/dev/null 2>&1; echo $?)"
 rm -f "$_cc_dir/core/current" "$_cc_dir/core/real-current"
-assert_eq "core input: a missing core/current falls through to the config" "/from/config" \
-    "$(AE_CORE_BIN='' AE_LOCAL_CONFIG='' CONFIG_FILE="$_cc_dir/config" CONFIG_DIR="$_cc_dir" _ae_core_bin_input)"
-# Nothing anywhere is a REFUSAL (rc 1), not an empty string that a caller might
-# treat as a path.
-assert_eq "core input: no env, no current, no config -> rc 1" "1" \
-    "$(AE_CORE_BIN='' AE_LOCAL_CONFIG='' CONFIG_FILE=/dev/null CONFIG_DIR="$_cc_dir" _ae_core_bin_input >/dev/null 2>&1; echo $?)"
+# ABSENCE PIN, and the point of the whole block: a config that names a core, with
+# no env and no core/current, resolves to NOTHING. This is the assertion that
+# would have to be edited to bring the config back as a source, which is exactly
+# the edit that should be hard to make by accident.
+assert_eq "core input: a config that names a core is NOT consulted -> rc 1" "1" \
+    "$(AE_CORE_BIN='' AE_LOCAL_CONFIG='' CONFIG_FILE="$_cc_dir/config" CONFIG_DIR="$_cc_dir" _ae_core_bin_input >/dev/null 2>&1; echo $?)"
+assert_eq "core input: ...and it prints nothing, so no caller can mistake it for a path" "" \
+    "$(AE_CORE_BIN='' AE_LOCAL_CONFIG='' CONFIG_FILE="$_cc_dir/config" CONFIG_DIR="$_cc_dir" _ae_core_bin_input 2>/dev/null || true)"
+# The glue must not READ the config at all on this path. `get_config` still
+# exists for the bodies that have not moved yet (doctor's roster, telegram's
+# enabled flag), so its mere presence proves nothing — an unreadable config file
+# does: resolution still succeeds from core/current with the file unreadable.
+printf '%s\n' '/from/current' >"$_cc_dir/core/current"
+assert_eq "core input: resolution does not touch the config — an unreadable one is harmless" "/from/current" \
+    "$(AE_CORE_BIN='' AE_LOCAL_CONFIG='' CONFIG_FILE="$_cc_dir/nonexistent-config" CONFIG_DIR="$_cc_dir" _ae_core_bin_input)"
 # An unset CONFIG_DIR must not abort under `set -u` — the reader is called from
-# paths that run before any session home is derived.
-assert_eq "core input: an unset CONFIG_DIR is not an error" "/from/config" \
-    "$(AE_CORE_BIN='' AE_LOCAL_CONFIG='' CONFIG_FILE="$_cc_dir/config" CONFIG_DIR='' _ae_core_bin_input)"
+# paths that run before any session home is derived. With no CONFIG_DIR there is
+# no core/current to read, so the answer is a refusal.
+assert_eq "core input: an unset CONFIG_DIR is not an error, just no answer" "1" \
+    "$(AE_CORE_BIN='' AE_LOCAL_CONFIG='' CONFIG_FILE="$_cc_dir/config" CONFIG_DIR='' _ae_core_bin_input >/dev/null 2>&1; echo $?)"
 rm -rf "$_cc_dir"
 unset _cc_dir _cc_bad
 
-# ── _ae_core_bind: NO OPERATOR INPUT NEVER TOUCHES AN EXISTING PIN ───────────
-# Clearing the pair used to be the rollback to a bash body. There is no bash body
-# any more, so clearing turns a working session into one where every core-owned
-# command refuses — `end` included, which leaves it UNENDABLE with no way back
-# except a refresh that has input. Repro that shipped: `doctor --refresh <name>`
-# on an install with no core input at all (no core/current, no workspace.core, no
-# AE_CORE_BIN) reached this function through sync_session_assets, cleared both
-# keys, printed OK and exited 0.
-eval "$(awk '/^(_ae_core_bind|set_session_meta_value|set_session_meta_values)\(\) \{/{p=1} p{print} p&&/^\}$/{p=0}' <<<"$AE_SOURCE")"
-_cb_dir="$(mktemp -d)"
-mkdir -p "$_cb_dir/core"
-: >"$_cb_dir/config"
-cat >"$_cb_dir/meta" <<CBMETA
-session=cb
-ae_core=$_AE_UNIT_CORE
-ae_core_version=$_AE_UNIT_CORE_VER
-CBMETA
-_cb_before="$(cat "$_cb_dir/meta")"
-(
-    AE_CORE_BIN='' AE_LOCAL_CONFIG='' CONFIG_FILE="$_cb_dir/config" CONFIG_DIR="$_cb_dir" \
-        _ae_core_bind "$_cb_dir"
-) >/dev/null 2>&1
-assert_eq "core bind: a USABLE pin survives a no-input refresh byte-identical" \
-    "$_cb_before" "$(cat "$_cb_dir/meta")"
+# ── _ae_core_bind: NO OPERATOR INPUT NEVER TOUCHES AN EXISTING PIN — RETIRED (final glue cut) ──────
+# 4 assertion(s) went with their subject: the per-session core pin is written by the core at launch and rewritten by `doctor --refresh`, both core operations now. `_ae_core_bind` and the meta writers it used are gone; the rule it protected (a refresh with no input must leave an existing pin byte-identical) is pinned end-to-end in tests/integration's core-binding section.
 
-# An UNUSABLE existing pin is left alone too — meta is not the place that reports
-# it, `ae doctor`'s core-pin check is. Rewriting it here would only turn one
-# broken shape into another.
-cat >"$_cb_dir/meta" <<CBMETA
-session=cb
-ae_core=/nonexistent/ae-core
-ae_core_version=
-CBMETA
-_cb_before="$(cat "$_cb_dir/meta")"
-(
-    AE_CORE_BIN='' AE_LOCAL_CONFIG='' CONFIG_FILE="$_cb_dir/config" CONFIG_DIR="$_cb_dir" \
-        _ae_core_bind "$_cb_dir"
-) >/dev/null 2>&1
-assert_eq "core bind: an UNUSABLE pin is left byte-identical, never cleared" \
-    "$_cb_before" "$(cat "$_cb_dir/meta")"
+# ── doctor: a blank or unusable session pin is NAMED — RETIRED (final glue cut) ────────────────────
+# 1 assertion(s) went with their subject: doctor is the core's, and its report lines are pinned against the real command in tests/integration.
 
-# The positive arm is unchanged: real input still pins the PAIR it resolved.
-cat >"$_cb_dir/meta" <<'CBMETA'
-session=cb
-ae_core=
-ae_core_version=
-CBMETA
-(
-    AE_CORE_BIN="$_AE_UNIT_CORE" AE_LOCAL_CONFIG='' CONFIG_FILE="$_cb_dir/config" \
-        CONFIG_DIR="$_cb_dir" _ae_core_bind "$_cb_dir"
-) >/dev/null 2>&1
-assert_eq "core bind: usable operator input pins the path and the version it reports" \
-    "${_AE_UNIT_CORE}|${_AE_UNIT_CORE_VER}" \
-    "$(printf '%s|%s' "$(grep '^ae_core=' "$_cb_dir/meta" | cut -d= -f2-)" \
-        "$(grep '^ae_core_version=' "$_cb_dir/meta" | cut -d= -f2-)")"
+# ── COEXISTENCE (pre-P5): the guard is SKIPPED for a default-server instance — RETIRED (final glue cut) ───
+# 18 assertion(s) went with their subject: the telegram bridge is one core operation (`_telegram`), coexistence guard included.
 
-# An unusable INPUT still pins the path with an EMPTY version — the shape a
-# helper reads as configured-but-unbindable, distinct from no pin at all.
-(
-    AE_CORE_BIN=/nonexistent/ae-core AE_LOCAL_CONFIG='' CONFIG_FILE="$_cb_dir/config" \
-        CONFIG_DIR="$_cb_dir" _ae_core_bind "$_cb_dir"
-) >/dev/null 2>&1
-assert_eq "core bind: unusable operator input pins the path with an empty version" \
-    "/nonexistent/ae-core|" \
-    "$(printf '%s|%s' "$(grep '^ae_core=' "$_cb_dir/meta" | cut -d= -f2-)" \
-        "$(grep '^ae_core_version=' "$_cb_dir/meta" | cut -d= -f2-)")"
-rm -rf "$_cb_dir"
-unset _cb_dir _cb_before
-
-# ── doctor: a blank or unusable session pin is NAMED ─────────────────────────
-# Since the core became required there is nothing behind an empty pin, so a
-# session can sit unusable with `ae doctor` otherwise clean. WARN, not FAIL —
-# `doctor --refresh` (with input) repairs it and the rest of the install is fine.
-assert_eq "doctor: core-pin check warns per session and names the repair" "1" \
-    "$([[ "$AE_SOURCE" == *'doctor_report "WARN" "core-pin" "session ${_cp_bad} has no core bound; end/archive will refuse"'* \
-        && "$AE_SOURCE" == *'doctor_report "WARN" "core-pin-hint" "repair with '"'"'ae doctor --refresh'"'"'"'* \
-        && "$AE_SOURCE" == *'if [[ -z "$_cpbin" || -z "$_cpver" || ! -x "$_cpbin" ]]; then'* ]] && echo 1 || echo 0)"
-
-# ── COEXISTENCE (pre-P5): the guard is SKIPPED for a default-server instance ──
-# The installed ae has no AE_TMUX_SERVER and must never be gated by the guard
-# that exists to protect it. Asserted here rather than only in the integration
-# section because this is the case that must never probe anything at all.
-assert_eq "coexistence guard: no AE_TMUX_SERVER -> no probe, no refusal" "0" \
-    "$(AE_TMUX_SERVER='' _telegram_coexistence_guard >/dev/null 2>&1; echo $?)"
-# The refusal wording is the operator's only instruction, and both halves of it
-# are load-bearing: stop the other bridge, or give this one its own bot.
-assert_eq "coexistence guard: the refusal names both ways out" "1" \
-    "$([[ "$AE_SOURCE" == *"run 'ae telegram stop', or give ae-next a distinct bot token"* ]] && echo 1 || echo 0)"
-# The probe clears BOTH redirections. -L names the socket, TMUX_TMPDIR names the
-# DIRECTORY it lives in, and $TMUX would hand the probe this pane's server: any
-# one of the three left in place points "the default server" somewhere else.
-assert_eq "coexistence guard: the probe clears TMUX and TMUX_TMPDIR and names -L default" "1" \
-    "$([[ "$AE_SOURCE" == *"env -u TMUX -u TMUX_TMPDIR tmux -L default list-sessions -F '#{session_name}'"* ]] && echo 1 || echo 0)"
-# ...and there is NO environment knob to point it elsewhere. An env-selectable
-# default server would be a production bypass of the guard.
-assert_eq "coexistence guard: no env knob selects the probed server" "0" \
-    "$(command grep -c 'AE_COEXIST_DEFAULT_SERVER' <<<"$AE_SOURCE" || true)"
-# The block is marked for deletion at the entry flip, where one ae returns.
-assert_eq "coexistence guard: the block is marked for deletion at the entry flip" "1" \
-    "$([[ "$AE_SOURCE" == *'COEXISTENCE (pre-P5): delete at the entry flip'* ]] && echo 1 || echo 0)"
-# CHECK -> SPAWN -> RE-CHECK. The pre-check answers about a moment that has
-# passed by the time the session exists, and the other instance is the FROZEN
-# ae — it can honour no claim this side invents, so looking again and retreating
-# is the only move available. TWO call sites, not one: a single guard call is the
-# implementation this pair of assertions exists to keep from coming back.
-assert_eq "coexistence guard: the spawn asks TWICE — before and after new-session" "2" \
-    "$(command grep -c 'if ! _telegram_coexistence_guard; then' <<<"$AE_SOURCE" || true)"
-# ...and the retreat kills OUR session, never the other instance's process.
-assert_eq "coexistence guard: the retreat kills our own bridge, through our own shim" "1" \
-    "$([[ "$AE_SOURCE" == *'tmux kill-session -t "$_TELEGRAM_TMUX_SESSION" 2>/dev/null || true'* ]] && echo 1 || echo 0)"
-# The residual is DOCUMENTED rather than implied: a window in which both can poll.
-assert_eq "coexistence guard: the residual window is stated at the site" "1" \
-    "$([[ "$AE_SOURCE" == *'The window is BOUNDED by this re-check, not closed by it'* ]] && echo 1 || echo 0)"
-# A default-server aewatch is REFUSED, never killed: it belongs to the other
-# instance. The instruction has to name the session and the way to stop it.
-assert_eq "coexistence guard: a default-server aewatch is refused with an instruction" "1" \
-    "$([[ "$AE_SOURCE" == *'tmux kill-session -t ae-aewatch on the default server'* ]] && echo 1 || echo 0)"
-# The one kill of ae-aewatch that remains is the NAMED-server retirement, which
-# is our own sidecar on our own server — a different fact from the refusal above.
-assert_eq "coexistence guard: our own named-server aewatch retirement still kills" "1" \
-    "$(command grep -c 'tmux kill-session -t ae-aewatch 2>/dev/null || true' <<<"$AE_SOURCE" || true)"
-
-# No core configured at all (empty AE_CORE_BIN, empty config) — refuse, don't spawn.
-assert_eq "caller: spawn refuses when no ae core is configured" "1" \
-    "$(AE_CORE_BIN='' AE_LOCAL_CONFIG='' CONFIG_FILE=/dev/null CONFIG_DIR="$(mktemp -d)" _telegram_spawn_daemon 2>/dev/null; echo $?)"
-# Configured, but not an absolute executable: a relative path would resolve
-# against wherever the caller happened to run.
-assert_eq "caller: spawn refuses a core that is not an absolute executable" "1" \
-    "$(AE_CORE_BIN=target/release/ae AE_LOCAL_CONFIG='' CONFIG_FILE=/dev/null CONFIG_DIR="$(mktemp -d)" _telegram_spawn_daemon 2>/dev/null; echo $?)"
-# The fake cores live under a path holding a SPACE and a QUOTE, because argv
-# survival is the whole point of the direct-argv spawn below.
-_tg_core_dir="$(mktemp -d)/a b'c"
-mkdir -p "$_tg_core_dir"
-_tg_core="$_tg_core_dir/ae core"
-printf '%s\n' '#!/bin/sh' 'echo "ae 0.0.0"' >"$_tg_core"
-chmod 0700 "$_tg_core"
-_tg_mute="$_tg_core_dir/mute core"
-printf '%s\n' '#!/bin/sh' 'exit 1' >"$_tg_mute"
-chmod 0700 "$_tg_mute"
-# Executable, absolute — but it answers no version, so it is not a core.
-assert_eq "caller: spawn refuses a core that reports no version" "1" \
-    "$(AE_CORE_BIN="$_tg_mute" AE_LOCAL_CONFIG='' CONFIG_FILE=/dev/null CONFIG_DIR="$(mktemp -d)" _telegram_spawn_daemon 2>/dev/null; echo $?)"
-# shellcheck disable=SC2317,SC2329
-tmux() { case "$*" in new-session*) return 1 ;; *) return 0 ;; esac; }
-assert_eq "caller: spawn returns non-zero when tmux refuses the session" "1" \
-    "$(AE_CORE_BIN="$_tg_core" AE_LOCAL_CONFIG='' _TELEGRAM_TMUX_SESSION=ae-telegram CONFIG_FILE=/dev/null CONFIG_DIR="$(mktemp -d)" _telegram_spawn_daemon 2>/dev/null; echo $?)"
-# ...and with both healthy it still reports success, cosmetic tmux calls or not.
-# shellcheck disable=SC2317,SC2329
-tmux() { case "$*" in set-option* | rename-window*) return 1 ;; *) return 0 ;; esac; }
-assert_eq "caller: cosmetic tmux failures do NOT make a started bridge look failed" "0" \
-    "$(AE_CORE_BIN="$_tg_core" AE_LOCAL_CONFIG='' _TELEGRAM_TMUX_SESSION=ae-telegram CONFIG_FILE=/dev/null CONFIG_DIR="$(mktemp -d)" _telegram_spawn_daemon 2>/dev/null; echo $?)"
-# The daemon's argv, word for word. tmux gets the command as SEPARATE ARGUMENTS
-# and execs it directly, so a path holding a space or a quote arrives intact; a
-# one-string shell-command would be re-split by /bin/sh, and `printf %q` cannot
-# fix that portably (its $'...' output is bash-only and dash mis-parses it).
-_tg_argv_out="$(mktemp)"
-_tg_home="$(mktemp -d)/x y'z"
-mkdir -p "$_tg_home"
-# shellcheck disable=SC2317,SC2329
-tmux() {
-    if [[ "$1" == new-session ]]; then
-        shift 6 # new-session -d -s <session> -c <dir>
-        printf '%s\n' "$@" >"$_tg_argv_out"
-    fi
-    return 0
-}
-AE_CORE_BIN="$_tg_core" AE_LOCAL_CONFIG='' _TELEGRAM_TMUX_SESSION=ae-telegram \
-    CONFIG_FILE="$_tg_home/config file" CONFIG_DIR="$_tg_home" HOME="$_tg_home" \
-    _telegram_spawn_daemon >/dev/null 2>&1 || true
-assert_eq "caller: the daemon's argv survives spaces and quotes (direct argv, no shell)" \
-    "$(printf '%s\n' "$_tg_core" _telegram-run "$_tg_home" --config "$_tg_home/config file" --home "$_tg_home")" \
-    "$(cat "$_tg_argv_out")"
-# The spawn line itself: the Rust subcommand, and no revived bash daemon.
-assert_eq "caller: spawn launches the core's _telegram-run, not a bash daemon" "1" \
-    "$([[ "$AE_SOURCE" == *'"$_core" _telegram-run "$CONFIG_DIR" --config "$CONFIG_FILE" --home "$HOME"'* \
-        && "$AE_SOURCE" != *'_telegram_write_daemon'* ]] && echo 1 || echo 0)"
-unset -f tmux _telegram_spawn_daemon
-rm -rf "$_tg_core_dir" "$_tg_home" "$_tg_argv_out"
-unset _tg_core_dir _tg_core _tg_mute _tg_argv_out _tg_home
-# And the autostart warning the above unblocks is really on that branch.
-assert_eq "caller: the autostart warning is gated on the spawn's status" "1" \
-    "$([[ "$AE_SOURCE" == *'if ! _telegram_spawn_daemon 2>/dev/null; then'*'autostart failed (continuing without bridge)'* ]] && echo 1 || echo 0)"
-# The lifecycle lock is the core's on every destructive path now: end spans
-# proof->cleanup under it, launch holds it from the first tmux call through the
-# last asset write, and stop and compact take it for their own regions.
-# src/lifecycle.rs owns the one lock name all four agree on.
-
-# The two ORDERING bounds on the lock release (held through the agent launch,
-# released before the SID-capture children inherit fd 8) are the core's now: both
-# ends of that window are inside `_launch`, which drops its lifecycle guard between
-# the last asset write and `capture::start`.
-# 12th I2: flock is optional — both acquisitions degrade with a note, doctor WARNs.
 # ── #33 _lifecycle_kill_verified: all THREE arms, deterministically — RETIRED (B glue cut 2) ───────
 # 2 assertion(s) went with their subject: `ae stop` is one core operation now (`_stop`, src/lifecycle.rs), `--self`
 # and its detached supervisor included.
@@ -2529,211 +1632,8 @@ assert_eq "caller: the autostart warning is gated on the spawn's status" "1" \
 # 5 assertion(s) went with their subject: `ae stop` is one core operation now (`_stop`, src/lifecycle.rs), `--self`
 # and its detached supervisor included.
 
-# ── #33 round 11: RENAME IS A LIFECYCLE OPERATION ────────────────────
-# It never took a lifecycle lock — a gap that pre-dates #33 (it raced end and launch
-# too) and that #33 made concrete: pause a freezer before it locks `oldslot`, end
-# oldslot, rename a live identity-less session INTO that name, release, and the
-# freezer mints into the REPLACEMENT, freezes that id, and the supervisor kills it
-# reporting "verified gone". F10 rebuilt through a door nobody had locked.
-_crn="$(awk '/^cmd_rename\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
-assert_eq "rename: serialized across BOTH lifecycle locks" "1" \
-    "$([[ "$_crn" == *'} 9>"${SESSIONS_DIR}/.lifecycle.${_rn_first}.lock" 10>"${SESSIONS_DIR}/.lifecycle.${_rn_second}.lock"'* \
-        && "$_crn" == *'flock -w 15 9'* && "$_crn" == *'flock -w 15 10'* ]] && echo 1 || echo 0)"
-# ...in NAME-SORTED order. Two renames touching the same pair from opposite ends
-# would otherwise each hold one lock and wait for the other — the deadlock this
-# ordering exists to prevent, and the reason the order must be a FUNCTION of the
-# names rather than of which argument came first.
-assert_eq "rename: the two locks are taken in name-sorted order (deadlock avoidance)" "1" \
-    "$([[ "$_crn" == *'if [[ "$old_name" < "$new_name" ]]; then'*'_rn_first="$old_name"'*'_rn_second="$new_name"'* \
-        && "$_crn" == *'_rn_first="$new_name"'*'_rn_second="$old_name"'* ]] && echo 1 || echo 0)"
-# ...and every check that READS state the rename then mutates sits INSIDE the lock.
-# Validation of the names themselves stays outside — it has to, the lock paths are
-# built from them — but existence and collision are exactly the facts a concurrent
-# lifecycle operation invalidates.
-assert_eq "rename: the existence and collision checks moved inside the locked body" "1" \
-    "$(_crl="$(awk '/^_cmd_rename_locked\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
-       [[ "$_crl" == *'is not running.'* && "$_crl" == *'already exists.'* \
-        && "$_crn" != *'is not running.'* \
-        && "$_crn" == *'_validate_session_name "$new_name" || return 1'* ]] && echo 1 || echo 0)"
-unset _crn
-
-# No lifecycle-lock acquisition is left in the glue at all: end, stop, compact and
-# launch each take it inside the core.
-assert_eq "lifecycle-lock: the glue takes none of them any more" "0|0" \
-    "$(printf '%s|%s' \
-        "$(printf '%s' "$AE_SOURCE" | command grep -c '^    } 9>"\$_lc_lock"' || true)" \
-        "$(printf '%s' "$AE_SOURCE" | command grep -c '^exec 8>"\${SESSIONS_DIR}/\.lifecycle\.' || true)")"
-# The server-sweep pins (bare call so `_SWEEP_UNSURE` reaches the caller, and an
-# unreachable enumerable socket landing in it) went with `_end_sweep_servers`:
-# `_end` enumerates and classifies servers itself, and its "cannot verify" answer
-# preserves state exactly as this did.
-# 10th review B3: the shim classifies KIND before the value gate — blank value +
-# ambiguous kind still installs the REFUSING shim (behavioral, not source text).
-_shim_probe() {
-    AE_TMUX_SERVER="$1" AE_TMUX_SERVER_KIND="$2" _ae_install_tmux_shim
-    local rc=0 out
-    out="$(tmux list-sessions 2>&1)" || rc=$?
-    unset -f tmux 2>/dev/null
-    printf '%s|%s' "$rc" "${out:0:20}"
-    return 0
-}
-assert_eq "shim (10th B3): BLANK value + ambiguous kind → refusal installed, rc1" "1|ae: refusing tmux op" \
-    "$(_shim_probe '' ambiguous)"
-
-# The tri-state sweep and the clause-(c) invariant text went to `_end` with the
-# operation; src/lifecycle/end.rs carries both, and the `--assume-stopped`
-# acknowledgement is refused there while an unverifiable server stands.
-# 9th review B3: kind=ambiguous is centrally classified — the ambient tmux shim
-# fails closed loudly (the second shim lived in the generated `_lib`, which is
-# gone), and every remaining consumer refuses or no-ops rather than falling to the
-# ambient server. Three: the shim, the status-bar display, and watchdog management.
-assert_eq "ambiguous (9th B3): the tmux shim refuses with guidance" "1" \
-    "$(printf '%s' "$AE_SOURCE" | command grep -c "refusing tmux operation — this session's server record is ambiguous" || true)"
-_amb_noops=$(( $(printf '%s' "$AE_SOURCE" | command grep -c 'if \[\[ "${server_kind:-}" == "ambiguous" \]\]; then' || true) \
-    + $(printf '%s' "$AE_SOURCE" | command grep -c 'if \[\[ "$srv_kind" == "ambiguous" \]\]; then' || true) ))
-assert_eq "ambiguous (9th B3): display and watchdog management no-op or refuse" "3" "$_amb_noops"
-
-# The tri-state verify-gone pins (verified alive / verified gone / cannot verify,
-# and both kill sites branching on all three) went with `_end_verify_gone`. The
-# same three answers are `_end`/`_stop`'s now, in src/lifecycle.rs, where the one
-# "gone" predicate the three destructive operations share lives.
-# The preserve-mode messaging went with `cleanup_session`: the core's teardown
-# reports what it removed and what it kept.
-
-# session-shape: the SESSION NAME in status-left is user text in a tmux format context —
-# it must go through the format-literal escaper like the path does.
-assert_eq "status-left: session name format-literal escaped" "1" \
-    "$([[ "$AE_SOURCE" == *'sess_lit="$(_ae_tmux_format_literal "$session")"'* ]] && echo 1 || echo 0)"
-# session-shape: cmd_rename refreshes status-left (it now carries the session name) and
-# only renames window 0 when it still tracks the session name (lead-pair role naming).
-assert_eq "status-bar: cmd_rename refreshes it after a rename" "1" \
-    "$([[ "$AE_SOURCE" == *'_ae_apply_status_bar "$new_name"'* ]] && echo 1 || echo 0)"
-assert_eq "rename-window: window-0 rename skipped under lead-pair (layout FACT, not name inference)" "1" \
-    "$([[ "$AE_SOURCE" == *'if [[ "$_ren_layout" != "lead-pair" ]]; then'* ]] && echo 1 || echo 0)"
-
-# Session creation stamps the bar inside the core now; what bash still applies it
-# on are `doctor --refresh` and `rename`, both of which move a live session's
-# left-hand location text.
-assert_eq "status-bar: applied on doctor --refresh and on rename" "1" \
-    "$([[ "$AE_SOURCE" == *'_ae_apply_status_bar "$session_name"'* && "$AE_SOURCE" == *'_ae_apply_status_bar "$new_name"'* ]] && echo 1 || echo 0)"
-
-# BLOCKER regression (codex): a path/branch with tmux format metachars must not
-# expand or run a status job. _ae_apply_status_left escapes via _ae_tmux_format_literal.
-eval "$(awk '/^_ae_tmux_format_literal\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
-assert_eq "status-left: tmux #S metachar doubled (cannot expand to session name)" "a##Sb" \
-    "$(_ae_tmux_format_literal 'a#Sb')"
-assert_eq "status-left: tmux #(cmd) neutralized (no status-job shell execution)" 'x##(id)' \
-    "$(_ae_tmux_format_literal 'x#(id)')"
-assert_eq "status-left: strftime %Y/%s in a path doubled (renders verbatim, not a date)" '/tmp/%%Y/%%s' \
-    "$(_ae_tmux_format_literal '/tmp/%Y/%s')"
-# lead-default hazard fix (%142): every user-text rename-window NAME arg goes through the escaper
-# — rename-window expands #{...} at rename time, so a #-bearing agent/session name would corrupt
-# the window name / leak tmux state. The static ones (ae-telegram / workers) stay unescaped.
-# The spawn rename is the core's since B move 2 and escapes there (src/spawn.rs passes
-# the name through `tmux::format_literal` before renaming) — same rule, same reason.
-# What must hold HERE is that no unescaped rename-window of user text came back.
-assert_eq "rename-window: no unescaped user-text rename survives in the glue" "0" \
-    "$(command grep -v '^ *#' <<<"$AE_SOURCE" | command grep 'rename-window' |
-        command grep -vc '_ae_tmux_format_literal\|"ae-telegram"\|"workers"\|"leads"' || true)"
-# The launch/resume window renames are the core's; the rename command's own is not.
-assert_eq "rename-window: session-rename name escaped" "1" "$([[ "$AE_SOURCE" == *'rename-window -t "${new_name}:0" "$(_ae_tmux_format_literal "$new_name")"'* ]] && echo 1 || echo 0)"
-assert_eq "rename-window: the renamed session's window-0 title is escaped" "1" "$([[ "$AE_SOURCE" == *'rename-window -t "${new_name}:0" "$(_ae_tmux_format_literal "$new_name")"'* ]] && echo 1 || echo 0)"
-assert_eq "status-left: combined # and % both escaped" '/a##%%Y/b' \
-    "$(_ae_tmux_format_literal '/a#%Y/b')"
-assert_eq "status-left: plain path text unchanged by escape" 'feature/x' \
-    "$(_ae_tmux_format_literal 'feature/x')"
-assert_eq "status-left: escaping is wired before the tmux set-option" "1" \
-    "$([[ "$AE_SOURCE" == *'_ae_tmux_format_literal "$(_ae_status_left_paths'* ]] && echo 1 || echo 0)"
-
-# Codex BLOCKER/IMPORTANT (#, ), spaces, $() in AE_HOME/session paths): the live
-# branch + health are now tmux USER OPTIONS, not a `#(cat <path>)` directive that
-# embeds an uncontrolled path. A user-option value is interpolated literally — no
-# shell job, no `#()` directive parsing — so a branch/path containing `)`, `#`, a
-# space, or `$(…)` is safe with zero escaping. Assert the safe wiring + that the
-# fragile cat-directive helpers are gone.
-assert_eq "status-bar: live branch via #{@ae_branch_status} user option (right, in-bracket)" "1" \
-    "$([[ "$AE_SOURCE" == *'status-right "[${paths}#{@ae_branch_status}] #{@ae_watchdog_status}"'* ]] && echo 1 || echo 0)"
-assert_eq "status-bar: watch health via #{@ae_watchdog_status} user option, END of the bar" "1" \
-    "$([[ "$AE_SOURCE" == *'#{@ae_branch_status}}] #{@ae_watchdog_status}"'* || "$AE_SOURCE" == *'] #{@ae_watchdog_status}"'* ]] && echo 1 || echo 0)"
-# Same invariant, now shape-independent: ONE owner enumerates every session option
-# and the STOP path invokes it (the two used to list the options separately and
-# could drift; the roster's @ae_agents_status made that a third copy). The daemon's
-# own EXIT half is the core's since A.3 — it clears the same options on every exit
-# path, pinned in its suite — so the bash EXIT trap it used to need is gone with the
-# loop, not merely bypassed.
-assert_eq "watchdog: status user options cleared on stop via the single owner" "1" \
-    "$([[ "$AE_SOURCE" == *'for _o in @ae_branch_status @ae_branch_name @ae_watchdog_status @ae_agents_status; do'* \
-        && "$AE_SOURCE" == *'tmux set-option -t "$_sid" -u "$_o"'* \
-        && "$AE_SOURCE" == *'# Clear the live status user options so the bars fall back (left → just path).
-        _watchdog_clear_bar_options'* ]] && echo 1 || echo 0)"
-assert_eq "status bar: fragile #(cat <path>) directive helpers removed" "1" \
-    "$([[ "$AE_SOURCE" != *'_ae_tmux_cat_directive'* && "$AE_SOURCE" != *'_watchdog_cat_directive'* ]] && echo 1 || echo 0)"
-
-# The two footer git pins (the trimmed branch with its dirty star, and the
-# timeout-bounded probe) followed _watchdog_git into the core at A.3 — a bounded
-# subprocess is the core's `BranchReading`, and no bash runs git for the bar any
-# more. The glue holds no git probe for the footer at all, which is the assertion
-# that survives.
-assert_eq "footer: the glue runs no git probe for the status bar" "0" \
-    "$(grep -c '_watchdog_git' <<<"$AE_SOURCE" || true)"
-
-# The daemon TUNABLES are no longer read here. The `watchdog` helper is the core's
-# daemon shim and passes it no flags, so a value this script read could not reach
-# `_watchdog-run`; the two knobs bash still ACTS on are the start-serialization
-# pair, and they are what is pinned.
-assert_eq "watchdog: the two knobs bash still acts on are read where it acts" "1" \
-    "$([[ "$AE_SOURCE" == *'AE_WATCHDOG_START_LOCK_WAIT_SEC:-15'* \
-        && "$AE_SOURCE" == *'AE_WATCHDOG_START_REGISTER_TRIES:-200'* ]] && echo 1 || echo 0)"
-
-
-
-assert_eq "watchdog: top-level ae watchdog command exists" \
-    "1" \
-    "$([[ "$AE_SOURCE" == *'cmd_watchdog()'* && "$AE_SOURCE" == *'watchdog | loop)'* ]] && echo 1 || echo 0)"
-
-assert_eq "compat: top-level ae loop alias routes to cmd_watchdog" \
-    "1" \
-    "$([[ "$AE_SOURCE" == *'watchdog | loop)'* && "$AE_SOURCE" == *'cmd_watchdog "${2:-}" "${3:-}"'* ]] && echo 1 || echo 0)"
-
-assert_eq "watchdog: persists state in canonical meta key" \
-    "1" \
-    "$([[ "$AE_SOURCE" == *'_set_meta_watchdog()'* && "$AE_SOURCE" == *'_set_meta_kv "watchdog" "$1"'* ]] && echo 1 || echo 0)"
-
-# The watchdog-enabled resolution (meta `watchdog`, legacy `loop`, then the two
-# config keys) is read by the core when it decides whether to start the pane.
-
-
-
-
-
-# `loop` is still the deprecated spelling, written as an alias onto `watchdog` —
-# by the core at launch, and by the refresh writer here. Both shapes are pinned by
-# the refresh guard above; what stays here is that the glue writes the same one.
-assert_eq "compat: the refresh writer emits loop as an alias onto watchdog" "1" \
-    "$([[ "$AE_SOURCE" == *'_emit_helper_alias watchdog'* ]] && echo 1 || echo 0)"
-
-assert_eq "compat: transitional shepherd and legacy loop artifacts are reaped" \
-    "1" \
-    "$([[ "$AE_SOURCE" == *'_watchdog_reap_legacy_one()'* && "$AE_SOURCE" == *'_watchdog_reap_legacy_one "shepherd"'* && "$AE_SOURCE" == *'_watchdog_reap_legacy_one "loop"'* && "$AE_SOURCE" == *'legacy_pid_file="${META_DIR}/.${legacy_name}.pid"'* && "$AE_SOURCE" == *'legacy_status_file="${META_DIR}/.${legacy_name}.status"'* ]] && echo 1 || echo 0)"
-
-_reap_wires="$(printf '%s\n' "$AE_SOURCE" | grep -c '^[[:space:]]*_watchdog_reap_legacy$')"
-assert_eq "compat: legacy reaper is wired into watchdog start and stop" "1" \
-    "$([[ "$_reap_wires" -ge 2 ]] && echo 1 || echo 0)"
-unset _reap_wires
-
-assert_eq "watchdog: recovers pending session IDs via _recover-pending" \
-    "1" \
-    "$([[ "$AE_SOURCE" == *'_recover-pending'* && "$AE_SOURCE" == *'cmd_recover_pending'* ]] && echo 1 || echo 0)"
-
-assert_eq "watchdog: walk_pending_session_ids shared between doctor and watchdog" \
-    "1" \
-    "$([[ "$AE_SOURCE" == *'walk_pending_session_ids'* && "$AE_SOURCE" == *'_doctor_recover_report'* && "$AE_SOURCE" == *'_watchdog_recover_report'* ]] && echo 1 || echo 0)"
-
-# Three loop-body reads retired with A.3 and are pinned in the core's suite
-# instead: the missing-pane alert, the skip filter that ignores legacy
-# _shepherd/_loop panes, and the `recover` event for a newly captured tool session
-# id. The glue's half of the last one — the _recover-pending subcommand the daemon
-# calls back into, and the walker it shares with doctor — is pinned above.
+# ── #33 round 11: RENAME IS A LIFECYCLE OPERATION — RETIRED (final glue cut) ───────────────────────
+# 34 assertion(s) went with their subject: rename is one core operation (`rename <old> <new>`) — the lifecycle lock, the tmux rename, the meta rewrite and the status-bar reapply are all inside it, and the tmux format escaper went with the bar.
 
 # ── gen_uuid — RETIRED (B glue cut 2) ──────────────────────────────────────────────────────────────
 # 2 assertion(s) went with their subject: the whole launch and resume is ONE core operation now (`_launch`,
@@ -2782,852 +1682,41 @@ assert_eq "watchdog: walk_pending_session_ids shared between doctor and watchdog
 # 8 assertion(s) went with their subject: `ae end` is one core operation now (`_end`, src/lifecycle/end.rs) — the
 # verified stop, git, the archive and only then the removal.
 
-# ── Stage 0 — external actor protocol + session UUID ─────────────────
-# Two infrastructure changes that prepare ae for out-of-band chat bridges:
-# (1) external actor prefixes (telegram:*, discord:*) flow through the send
-#     and ask/review helpers as event-only sinks — no tmux paste, no
-#     ae_resolve failure.
-# (2) every ae session gets a stable UUID (session_id=) in meta at creation,
-#     preserved across resume + rename + transfer.
+# ── Stage 0 — external actor protocol + session UUID — RETIRED (final glue cut) ────────────────────
+# 1 assertion(s) went with their subject: the pieces this reached through (rename, the in-place meta edit) are core operations; the UUID contract itself is pinned in src/ and in tests/integration's archive sections.
 
-# The three structural pins that stood here read the frozen send body for the
-# event-only sink family, its position before target resolution, and the fall-
-# through that still resolves an ordinary name. B move 1 took all three into the
-# core (src/send.rs: an external sink is event-only, decided before resolution),
-# and the bash body they read is gone. The core pins them in its own suite; the
-# glue's remaining half — that the internal delivery entry which used to bypass
-# this rule is not generated at all — is pinned with the helper emission set.
+# ── Telegram bridge (start/stop glue) — RETIRED (final glue cut) ───────────────────────────────────
+# 42 assertion(s) went with their subject: `_telegram <start|stop|status>` is one core operation; the glue passes the config, the home and the tmux server it must not read for itself, and holds no daemon logic.
 
-# The meta a session creation writes is the core's one document; `session_id` is
-# one of its base facts.
+# ── Telegram autostart refusal visibility — RETIRED (final glue cut) ───────────────────────────────
+# 10 assertion(s) went with their subject: the refusal record is written and displayed by the core, which owns the autostart decision now.
 
-# The session_id backfill pin read the launch flow's meta build, which is the
-# core's: `_launch` preserves a resumed session's id and mints one otherwise.
+# ── Telegram refusal seams + hostile reader records — RETIRED (final glue cut) ─────────────────────
+# 17 assertion(s) went with their subject: same subject as the block above: the record's writer, its reader and its hostile-input rejection are all core-side.
 
-# Session UUID: cmd_rename only edits session= line; session_id is preserved
-# implicitly because sed doesn't touch it.
-assert_eq "session-uuid: cmd_rename preserves session_id (sed only edits session= line)" "1" \
-    "$([[ "$AE_SOURCE" == *'_ae_sed_inplace "s/^session=.*/session=${new_name}/"'* && "$AE_SOURCE" != *'_ae_sed_inplace "s/^session_id='* ]] && echo 1 || echo 0)"
+# ── Watchdog-supervised telegram bridge — RETIRED (final glue cut) ─────────────────────────────────
+# 1 assertion(s) went with their subject: both daemons are the core's, and it supervises its own.
 
-# `gen_uuid` went with the launch flow that was its only caller; the core mints
-# every id it needs.
+# ── say helper + chat event (agent → Telegram free-text, Option 1) — RETIRED (final glue cut) ──────
+# 2 assertion(s) went with their subject: the `say` helper is a core shim and the chat event is written by the core; the glue holds neither the emitter nor the summary cap it used.
 
-# ── Telegram bridge (start/stop glue) ────────────────────────────────
-# The machine-global bridge reaches ae as the `ae telegram` subcommand.
-# The DAEMON is the Rust core now, so the daemon-body invariants that
-# used to be asserted here (offset persistence, token-safe curl, session
-# discovery, the filter set, the whole inbound routing/auth surface) moved
-# to the core with its own gate. What is left in bash — and therefore
-# what is tested below — is the orchestration surface: the subcommands,
-# intent persistence, the control lock, dep + token validation, the
-# liveness probe, and the spawn that hands the core its argv.
+# ── ae_cap_summary: multibyte-safe truncation (issue #7) — RETIRED (final glue cut) ────────────────
+# 4 assertion(s) went with their subject: the event summary cap is the core's (it renders every event), and a Rust `char_indices` truncation cannot split a UTF-8 sequence the way the bash byte cap could — the hazard this block existed for is gone with the language, not merely moved.
 
-# Structural: cmd_telegram + four subcommand functions exist.
-assert_eq "telegram: cmd_telegram dispatcher defined" "1" \
-    "$([[ "$AE_SOURCE" == *'cmd_telegram() {'* ]] && echo 1 || echo 0)"
-assert_eq "telegram: cmd_telegram_setup defined"   "1" "$([[ "$AE_SOURCE" == *'cmd_telegram_setup() {'* ]] && echo 1 || echo 0)"
-assert_eq "telegram: cmd_telegram_start defined"   "1" "$([[ "$AE_SOURCE" == *'cmd_telegram_start() {'* ]] && echo 1 || echo 0)"
-assert_eq "telegram: cmd_telegram_stop defined"    "1" "$([[ "$AE_SOURCE" == *'cmd_telegram_stop() {'* ]] && echo 1 || echo 0)"
-assert_eq "telegram: cmd_telegram_status defined"  "1" "$([[ "$AE_SOURCE" == *'cmd_telegram_status() {'* ]] && echo 1 || echo 0)"
-assert_eq "telegram: cmd_telegram_help defined"    "1" "$([[ "$AE_SOURCE" == *'cmd_telegram_help() {'* ]] && echo 1 || echo 0)"
+# ── locale matrix: the cap must not leak a partial sequence ANYWHERE — RETIRED (final glue cut) ────
+# 2 assertion(s) went with their subject: same subject as the cap block above.
 
-# Structural: top-level dispatcher routes 'ae telegram <sub>'.
-assert_eq "telegram: main dispatcher routes 'telegram' subcommand" "1" \
-    "$([[ "$AE_SOURCE" == *'telegram)
-        cmd_telegram "${@:2}"
-        exit $?
-        ;;'* ]] && echo 1 || echo 0)"
+# ── the cap is ENFORCED, not just boundary-safe — RETIRED (final glue cut) ─────────────────────────
+# 2 assertion(s) went with their subject: same subject as the cap block above.
 
-# Structural: ae help mentions the new subcommand surface.
-assert_eq "telegram: cmd_help advertises 'ae telegram'" "1" \
-    "$([[ "$AE_SOURCE" == *'ae telegram <setup|start|stop|status>'* ]] && echo 1 || echo 0)"
+# ── ae_sanitize_utf8: malformed input is DATA, cleaned, not an error — RETIRED (final glue cut) ────
+# 2 assertion(s) went with their subject: the sanitizer went with the emitter; the core strips control bytes at write time in src/json.rs.
 
-# Behavioral regression: a "~/..."-style token_file in config must expand
-# against $HOME, NOT produce "$HOME/~/...". The bug was tilde-expansion of
-# the strip pattern in ${p#~/}; ${p#"~/"} keeps it literal. Drive it through
-# `ae telegram status` with a real ~/-relative token file.
-_t_tok_dir="$HOME/.ae-tg-test-$$"
-mkdir -p "$_t_tok_dir"
-printf 'x\n' >"$_t_tok_dir/tok"; chmod 600 "$_t_tok_dir/tok"
-_t_tilde_cfg="$(mktemp)"
-printf '[telegram]\nenabled = false\ntoken_file = "~/.ae-tg-test-%s/tok"\nchat_id = 1\n' "$$" >"$_t_tilde_cfg"
-_t_tilde_out="$(CONFIG_FILE="$_t_tilde_cfg" XDG_RUNTIME_DIR="$(mktemp -d)" "$AE_BIN" telegram status 2>&1)"
-assert_eq "telegram: ~/-relative token_file expands against \$HOME (no \$HOME/~ doubling)" "1" \
-    "$([[ "$_t_tilde_out" == *"token:   OK ($HOME/.ae-tg-test-$$/tok)"* ]] && echo 1 || echo 0)"
-assert_eq "telegram: token path never contains the literal \$HOME/~ artifact" "1" \
-    "$([[ "$_t_tilde_out" != *"$HOME/~"* ]] && echo 1 || echo 0)"
-rm -rf "$_t_tok_dir" "$_t_tilde_cfg"
-unset _t_tok_dir _t_tilde_cfg _t_tilde_out
+# ── the byte-count truncation must not come back (issue #7 round 2, item 3) — RETIRED (final glue cut) ───
+# 2 assertion(s) went with their subject: the byte-count hazard cannot come back in the core's renderer — see the cap block above.
 
-# The original BLOCKER guard (codex) allowed jq + curl inside the telegram
-# feature but nowhere else. The bash bridge that needed them is retired and the
-# core needs neither, so the tolerance is now ZERO: not "confined to feature
-# code", ABSENT. A reappearing `command -v jq` means someone re-added a
-# dependency gate to a feature whose only dependency is the ae core.
-assert_eq "telegram: no jq presence check survives anywhere in ae" "0" \
-    "$(grep -c "command -v jq" "$AE_BIN" || true)"
-assert_eq "telegram: no curl presence check survives anywhere in ae" "0" \
-    "$(grep -c "command -v curl" "$AE_BIN" || true)"
-assert_eq "telegram: the dep-gate helper itself is gone" "0" \
-    "$(grep -c '_telegram_missing_deps' "$AE_BIN" || true)"
-
-# IMPORTANT guard (codex): every auto-start hook invocation is strictly
-# non-fatal (`2>/dev/null || true`). Three call sites: the two launch paths
-# (resume + full-launch) and the watchdog's `_supervise` dispatch. Greps
-# the ae UNDER TEST (not a hardcoded path) so worktree runs are accurate.
-# TWO now: the launch fall-through and the reattach path both went into one call
-# ahead of the core's `_launch`, and the watchdog's supervise tick is the core's.
-_t_attach_calls=$(grep -c '_telegram_autostart_if_enabled 2>/dev/null || true' "$(dirname "$0")/../ae")
-assert_eq "telegram: every auto-start hook call uses the non-fatal guard" "2" "$_t_attach_calls"
-unset _t_attach_calls
-# There is no dep pre-check left to return early from: an unusable core reaches
-# the caller as a FAILED SPAWN, and this is the tail that must swallow it.
-assert_eq "telegram: autostart has no dependency pre-check" "0" \
-    "$(awk '/^_telegram_autostart_if_enabled\(\) \{/,/^\}$/' "$AE_BIN" | grep -c 'missing' || true)"
-assert_eq "telegram: autostart returns 0 on spawn failure" "1" \
-    "$([[ "$AE_SOURCE" == *'echo "ae telegram: autostart failed (continuing without bridge)" >&2'* ]] && echo 1 || echo 0)"
-
-# Permission validation (codex answer 7): owner check + 600 mode required.
-assert_eq "telegram: token file ownership validated" "1" \
-    "$([[ "$AE_SOURCE" == *'owner="$(_ae_stat uid "$resolved" || echo -1)"'* && "$AE_SOURCE" == *'[[ "$owner" == "${UID:-$(id -u)}" ]]'* ]] && echo 1 || echo 0)"
-assert_eq "telegram: token file mode 600 or 400 required" "1" \
-    "$([[ "$AE_SOURCE" == *'400 | 600) ;;'*'token file must be chmod 600'* ]] && echo 1 || echo 0)"
-
-# Idempotent start: existing tmux session detected via exact match (NOT
-# tmux has-session, which prefix-matches — same class of bug as 'mdk' vs
-# 'mdk-app' caught in the transfer feature). Verify the function body
-# contains both the list-sessions call AND the grep -Fxq exact match.
-assert_eq "telegram: daemon presence check uses list-sessions, not has-session" "1" \
-    "$([[ "$AE_SOURCE" == *'_telegram_daemon_running()'*"tmux list-sessions -F '#{session_name}'"* ]] && echo 1 || echo 0)"
-assert_eq "telegram: daemon presence check uses grep -Fxq for exact match" "1" \
-    "$([[ "$AE_SOURCE" == *'_telegram_daemon_running()'*'grep -Fxq -- "$_TELEGRAM_TMUX_SESSION"'* ]] && echo 1 || echo 0)"
-
-# Persisted intent (codex IMPORTANT #4): persist must be SECTION-SCOPED.
-# `ae telegram stop` writes enabled=false via _telegram_persist_intent and
-# does not require a token, so it's the cleanest behavioral driver. We run
-# it against crafted configs covering the edge cases codex flagged.
-_t_persist_run() {  # <config-content> -> prints resulting config
-    local _cfg; _cfg="$(mktemp)"
-    printf '%s' "$1" >"$_cfg"
-    CONFIG_FILE="$_cfg" XDG_RUNTIME_DIR="$(mktemp -d)" \
-        "$AE_BIN" telegram stop >/dev/null 2>&1 || true
-    cat "$_cfg"
-    rm -f "$_cfg"
-}
-
-# Case A: [telegram] with enabled=true → flipped to false IN the section.
-_t_pA="$(_t_persist_run '[telegram]
-enabled = true
-chat_id = 5
-')"
-assert_eq "telegram: persist flips enabled true→false in [telegram]" "1" \
-    "$([[ "$_t_pA" == *'[telegram]'*'enabled = false'* && "$_t_pA" != *'enabled = true'* ]] && echo 1 || echo 0)"
-unset _t_pA
-
-# Case B (the codex bug): another section has enabled=, [telegram] lacks it.
-# Must INSERT enabled into [telegram], leave the other section alone.
-_t_pB="$(_t_persist_run '[foo]
-enabled = true
-
-[telegram]
-chat_id = 5
-')"
-assert_eq "telegram: persist inserts enabled into [telegram] despite foreign enabled=" "1" \
-    "$(awk '/^\[telegram\]/{t=1} t&&/^enabled = false/{ok=1} END{print (ok?1:0)}' <<<"$_t_pB")"
-assert_eq "telegram: persist leaves the foreign [foo] enabled=true untouched" "1" \
-    "$(awk '/^\[foo\]/{f=1;next} /^\[/{f=0} f&&/^enabled = true/{ok=1} END{print (ok?1:0)}' <<<"$_t_pB")"
-unset _t_pB
-
-# Case C: [telegram] is the LAST section with no enabled → append within it (EOF).
-_t_pC="$(_t_persist_run '[profiles]
-claude = "claude"
-
-[telegram]
-chat_id = 5
-')"
-assert_eq "telegram: persist appends enabled at EOF when [telegram] is last + lacks it" "1" \
-    "$([[ "$_t_pC" == *'[telegram]'*'enabled = false'* ]] && echo 1 || echo 0)"
-unset _t_pC
-
-# Case D: no [telegram] section at all → whole block appended.
-_t_pD="$(_t_persist_run '[profiles]
-claude = "claude"
-')"
-assert_eq "telegram: persist appends a fresh [telegram] block when absent" "1" \
-    "$([[ "$_t_pD" == *'[telegram]'*'enabled = false'* ]] && echo 1 || echo 0)"
-unset _t_pD
-
-# Setup refuses to clobber an existing [telegram] block.
-assert_eq "telegram: setup refuses to clobber existing [telegram] block" "1" \
-    "$([[ "$AE_SOURCE" == *'echo "Warning: [telegram] section already exists in $CONFIG_FILE — leaving as-is."'* ]] && echo 1 || echo 0)"
-
-# Behavioral: status reports intent + runtime + core + token, even with
-# an empty config (no [telegram] block).
-_t_status_out="$(CONFIG_FILE=/dev/null "$AE_BIN" telegram status 2>&1)"
-assert_eq "telegram: status shows intent line"  "1" "$([[ "$_t_status_out" == *'intent:'*'enabled='* ]] && echo 1 || echo 0)"
-assert_eq "telegram: status shows runtime line" "1" "$([[ "$_t_status_out" == *'runtime:'*'tmux session ae-telegram'* ]] && echo 1 || echo 0)"
-assert_eq "telegram: status shows core line, not deps" "1" \
-    "$([[ "$_t_status_out" == *'core:'* && "$_t_status_out" != *'deps:'* ]] && echo 1 || echo 0)"
-assert_eq "telegram: status shows token line"   "1" "$([[ "$_t_status_out" == *'token:'* ]] && echo 1 || echo 0)"
-# The daemon's state, not the bash bridge's. state.tsv is ORPHANED — the core's
-# inbound cursor is tg_offset and its /use target is current_target, while the
-# OUTBOUND cursor is per-session (<meta>/telegram-outbound.cursor) and so has no
-# single path to print here. Reporting state.tsv described a file that would
-# stay absent forever.
-assert_eq "telegram: status reports the core's state files, never the orphaned state.tsv" "1" \
-    "$([[ "$_t_status_out" == *'state:'* && "$_t_status_out" != *'state.tsv'* ]] && echo 1 || echo 0)"
-assert_eq "telegram: status names no single global outbound cursor" "1" \
-    "$([[ "$_t_status_out" != *'telegram-outbound.cursor'* ]] && echo 1 || echo 0)"
-unset _t_status_out
-
-# Behavioral: ae telegram help is self-contained.
-_t_help_out="$("$AE_BIN" telegram help 2>&1)"
-assert_eq "telegram: help lists all four subcommands" "1" \
-    "$([[ "$_t_help_out" == *'ae telegram setup'* && "$_t_help_out" == *'ae telegram start'* && "$_t_help_out" == *'ae telegram stop'* && "$_t_help_out" == *'ae telegram status'* ]] && echo 1 || echo 0)"
-assert_eq "telegram: help promises only a core, no optional CLIs" "1" \
-    "$([[ "$_t_help_out" == *'Requires: a configured ae core'* \
-        && "$_t_help_out" != *'jq'* && "$_t_help_out" != *'curl'* ]] && echo 1 || echo 0)"
-assert_eq "telegram: help links to bridge-protocol.md" "1" \
-    "$([[ "$_t_help_out" == *'docs/internals/bridge-protocol.md'* ]] && echo 1 || echo 0)"
-unset _t_help_out
-
-# Behavioral: unknown subcommand exits non-zero and prints usage.
-_t_bogus_rc=0
-_t_bogus_out="$(CONFIG_FILE=/dev/null "$AE_BIN" telegram bogus 2>&1)" || _t_bogus_rc=$?
-assert_eq "telegram: unknown subcommand exits non-zero" "2" "$_t_bogus_rc"
-assert_eq "telegram: unknown subcommand prints help"    "1" "$([[ "$_t_bogus_out" == *'ae telegram setup'* ]] && echo 1 || echo 0)"
-unset _t_bogus_rc _t_bogus_out
-
-# Behavioral: 'telegram _supervise' (the watchdog's revive hook) must be a silent
-# no-op when the feature is disabled — it runs on a timer across sessions, so it
-# must never act, spawn, or chatter when enabled=false. (Uses the ae under test.)
-_t_sup_cfg="$(mktemp)"; printf '[telegram]\nenabled = false\n' >"$_t_sup_cfg"
-_t_sup_rc=0
-_t_sup_out="$(CONFIG_FILE="$_t_sup_cfg" XDG_RUNTIME_DIR="$(mktemp -d)" "$(dirname "$0")/../ae" telegram _supervise 2>&1)" || _t_sup_rc=$?
-assert_eq "tg-sup: _supervise exits 0 when telegram disabled" "0" "$_t_sup_rc"
-assert_eq "tg-sup: _supervise is silent when telegram disabled" "1" \
-    "$([[ -z "$_t_sup_out" ]] && echo 1 || echo 0)"
-rm -f "$_t_sup_cfg"; unset _t_sup_cfg _t_sup_rc _t_sup_out
-
-# Behavioral: ae doctor stays silent about telegram when feature is unused.
-# Each invocation gets an isolated XDG_RUNTIME_DIR so get_config's shared
-# config cache (~/.ae-config-cache-<uid>) can't bleed between cases.
-_t_cache_a="$(mktemp -d)"
-_t_doc_out_empty="$(XDG_RUNTIME_DIR="$_t_cache_a" CONFIG_FILE=/dev/null "$AE_BIN" doctor 2>&1 || true)"
-assert_eq "telegram: doctor stays silent when feature is not configured" "1" \
-    "$([[ "$_t_doc_out_empty" != *'telegram.'* ]] && echo 1 || echo 0)"
-rm -rf "$_t_cache_a"
-unset _t_doc_out_empty _t_cache_a
-
-# Behavioral: ae doctor reports telegram lines when [telegram] is present,
-# even minimal (just enabled=true with no token).
-_t_cache_b="$(mktemp -d)"
-_t_tmp_cfg="$(mktemp)"
-printf '[profiles]\nclaude = "claude"\n\n[roster]\nlead = claude\n\n[workspace]\nmain = lead\n\n[telegram]\nenabled = true\n' >"$_t_tmp_cfg"
-_t_doc_out_cfg="$(XDG_RUNTIME_DIR="$_t_cache_b" CONFIG_FILE="$_t_tmp_cfg" "$AE_BIN" doctor 2>&1 || true)"
-assert_eq "telegram: doctor reports the core, not deps, when [telegram] is configured" "1" \
-    "$([[ "$_t_doc_out_cfg" == *'telegram.core'* && "$_t_doc_out_cfg" != *'telegram.deps'* ]] && echo 1 || echo 0)"
-assert_eq "telegram: doctor warns about missing token_file" "1" \
-    "$([[ "$_t_doc_out_cfg" == *'telegram.token'* ]] && echo 1 || echo 0)"
-rm -f "$_t_tmp_cfg"; rm -rf "$_t_cache_b"
-unset _t_tmp_cfg _t_doc_out_cfg _t_cache_b
-
-# ── Telegram autostart refusal visibility ─────────────────────────────
-# Autostart stderr is intentionally discarded by every launch/supervise caller.
-# The refusal therefore crosses two durable, token-safe surfaces: the current
-# session's events.jsonl and one machine-global last-refusal record for status/
-# doctor when the bridge is down.
-eval "$(awk '
-/^_telegram_autostart_refusal_category\(\) \{/ ||
-/^_telegram_load_last_autostart_refusal\(\) \{/ ||
-/^_telegram_record_autostart_refusal\(\) \{/ ||
-/^_telegram_autostart_if_enabled\(\) \{/ { printing=1 }
-printing { print }
-printing && /^\}$/ { printing=0 }
-' "$AE_BIN")"
-_tg_obs_root="$(mktemp -d)"
-mkdir -p "$_tg_obs_root/session" "$_tg_obs_root/sessions/fixture"
-printf '[telegram]\nenabled = true\n' >"$_tg_obs_root/config"
-_tg_obs_token='123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi'
-(
-    export CONFIG_DIR="$_tg_obs_root"
-    export CONFIG_FILE="$_tg_obs_root/config"
-    export SESSIONS_DIR="$_tg_obs_root/sessions"
-    export _AE_META_DIR="$_tg_obs_root/session"
-    export SESSION=fixture
-    # shellcheck disable=SC2317,SC2329
-    ae_emit_event() {
-        printf '{"action":"%s","target":"%s","summary":"%s"}\n' "$1" "$2" "$4" \
-            >>"$_tg_obs_root/session/events.jsonl"
-    }
-    # shellcheck disable=SC2317,SC2329
-    _telegram_intent_enabled() { echo true; }
-    # shellcheck disable=SC2317,SC2329
-    _telegram_intent_enabled_uncached() { echo true; }
-    # shellcheck disable=SC2317,SC2329
-    _telegram_daemon_running() { return 1; }
-    # shellcheck disable=SC2317,SC2329
-    _telegram_validate_token_file() { :; }
-    # shellcheck disable=SC2317,SC2329
-    _telegram_control_lock_file() { echo "$_tg_obs_root/control.lock"; }
-    # The refusal text carries a token-shaped SHAPE, but the autostart surface
-    # must persist only its fixed category.
-    # shellcheck disable=SC2317,SC2329
-    _telegram_spawn_daemon() {
-        printf 'coexistence refusal token=%s\n' "$_tg_obs_token" >&2
-        return 1
-    }
-    _telegram_autostart_if_enabled >/dev/null 2>&1
-)
-_tg_obs_record="$(<"$_tg_obs_root/telegram/autostart-refusal")"
-assert_eq "tg-observe: global record is a closed category + timestamp" "1" \
-    "$([[ "$_tg_obs_record" =~ ^(aewatch-live|same-token-live|token-unreadable|probe-failed|spawn-failed)$'\t'[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] && echo 1 || echo 0)"
-assert_eq "tg-observe: global record contains no refusal text or token" "1" \
-    "$([[ "$_tg_obs_record" != *"$_tg_obs_token"* && "$_tg_obs_record" != *'coexistence'* ]] && echo 1 || echo 0)"
-assert_eq "tg-observe: event is emitted at the autostart refusal" "1" \
-    "$(grep -c '"action":"telegram_autostart_refused"' "$_tg_obs_root/session/events.jsonl" 2>/dev/null || true)"
-_tg_obs_event="$(<"$_tg_obs_root/session/events.jsonl")"
-assert_eq "tg-observe: event excludes token-shaped refusal text" "1" \
-    "$([[ "$_tg_obs_event" != *"$_tg_obs_token"* && "$_tg_obs_event" != *'coexistence'* ]] && echo 1 || echo 0)"
-_tg_obs_status="$(AE_HOME="$_tg_obs_root" CONFIG_FILE="$_tg_obs_root/config" "$AE_BIN" telegram status 2>&1)"
-_tg_obs_doctor="$(AE_HOME="$_tg_obs_root" CONFIG_FILE="$_tg_obs_root/config" "$AE_BIN" doctor 2>&1 || true)"
-assert_eq "tg-observe: status surfaces the last refusal while bridge is down" "1" \
-    "$([[ "$_tg_obs_status" == *'last refusal=spawn-failed at '* && "$_tg_obs_status" != *"$_tg_obs_token"* ]] && echo 1 || echo 0)"
-assert_eq "tg-observe: doctor adds a WARN row with category + timestamp" "1" \
-    "$([[ "$_tg_obs_doctor" == *'WARN  telegram.autostart'*'last refusal=spawn-failed at '* && "$_tg_obs_doctor" != *"$_tg_obs_token"* ]] && echo 1 || echo 0)"
-assert_eq "tg-observe: status/doctor never surface the token-shaped refusal text" "1" \
-    "$([[ "$_tg_obs_status" != *"$_tg_obs_token"* && "$_tg_obs_doctor" != *"$_tg_obs_token"* ]] && echo 1 || echo 0)"
-CONFIG_DIR="$_tg_obs_root" _telegram_load_last_autostart_refusal
-assert_eq "tg-observe: reader accepts the persisted category and timestamp" \
-    "spawn-failed" "$_TELEGRAM_LAST_REFUSAL_CATEGORY"
-assert_eq "tg-observe: successful starts do not erase the last refusal" "1" \
-    "$([[ -f "$_tg_obs_root/telegram/autostart-refusal" ]] && echo 1 || echo 0)"
-assert_eq "tg-observe: atomic publication leaves no temp refusal artifact" "0" \
-    "$(find "$_tg_obs_root/telegram" -maxdepth 1 -name 'autostart-refusal.tmp.*' -print | wc -l | tr -d '[:space:]')"
-rm -rf "$_tg_obs_root"
-unset _tg_obs_root _tg_obs_record _tg_obs_event _tg_obs_status _tg_obs_doctor _tg_obs_token
-
-# ── Telegram refusal seams + hostile reader records ─────────────────
-if _unit_slow 'telegram refusal seams + hostile reader records'; then
-# The smoke fixture above proves the basic publication path. These cases make
-# the mutation controls meaningful: the mapper receives token-shaped unknown
-# input, the reader sees a hostile multiline row, and every real refusal branch
-# drives the expected closed category into both durable surfaces.
-_TG_OBS_REAL_FNS="$TMPDIR/tg-observe-real-fns.sh"
-{
-    awk '/^_telegram_autostart_refusal_category\(\) \{/,/^\}$/' "$AE_BIN"
-    awk '/^_telegram_load_last_autostart_refusal\(\) \{/,/^\}$/' "$AE_BIN"
-    awk '/^_telegram_record_autostart_refusal\(\) \{/,/^\}$/' "$AE_BIN"
-    awk '/^_telegram_autostart_if_enabled\(\) \{/,/^\}$/' "$AE_BIN"
-    awk '/^_telegram_expand_path\(\) \{/,/^\}$/' "$AE_BIN"
-    awk '/^_telegram_coexistence_token\(\) \{/,/^\}$/' "$AE_BIN"
-    awk '/^_telegram_coexistence_same_bot\(\) \{/,/^\}$/' "$AE_BIN"
-    awk '/^_telegram_coexistence_guard\(\) \{/,/^\}$/' "$AE_BIN"
-} >"$_TG_OBS_REAL_FNS"
-_tg_obs_token='123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi'
-
-_tg_obs_real_case() {
-    local case_name="$1" expected="$2" root runtime record event status doctor
-    root="$(mktemp -d)"
-    runtime="$(mktemp -d)"
-    mkdir -p "$root/session" "$root/sessions/fixture" "$root/home/.ae"
-    printf '[telegram]\nenabled = true\ntoken_file = %s/current.token\n' "$root" >"$root/config"
-    printf '[telegram]\ntoken_file = %s/other.token\n' "$root" >"$root/home/.ae/config"
-    printf '%s\n' "$_tg_obs_token" >"$root/current.token"
-    chmod 600 "$root/current.token"
-    [[ "$case_name" == token-unreadable || "$case_name" == guard-token-unreadable ]] || {
-        printf '%s\n' "$_tg_obs_token" >"$root/other.token"
-        chmod 600 "$root/other.token"
-    }
-    cat >"$root/wrapper" <<WRAP
-#!/usr/bin/env bash
-set -euo pipefail
-export CONFIG_DIR="$root"
-export CONFIG_FILE="$root/config"
-export SESSIONS_DIR="$root/sessions"
-export _AE_META_DIR="$root/session"
-export _AE_SESSION=fixture
-export SESSION=fixture
-export HOME="$root/home"
-export AE_TELEGRAM_AUTOSTART_SESSION=fixture
-_TELEGRAM_TMUX_SESSION=ae-telegram
-source "$_TG_OBS_REAL_FNS"
-ae_emit_event() {
-    printf '{"action":"%s","target":"%s","summary":"%s"}\n' "\$1" "\$2" "\$4" >>"$root/session/events.jsonl"
-}
-get_config() {
-    case "\$CONFIG_FILE" in
-        "$root/config") printf '%s/current.token' "$root" ;;
-        "$root/home/.ae/config") printf '%s/other.token' "$root" ;;
-        *) return 0 ;;
-    esac
-}
-_telegram_intent_enabled() { echo true; }
-_telegram_intent_enabled_uncached() { echo true; }
-_telegram_daemon_running() { return 1; }
-_telegram_control_lock_file() { echo "$root/control.lock"; }
-_telegram_validate_token_file() {
-    if [[ "$case_name" == token-unreadable ]]; then
-        : >"$root/validation-refusal"
-        printf 'token validation failed: %s\n' "$_tg_obs_token" >&2
-        return 1
-    fi
-    return 0
-}
-_telegram_coexistence_probe() {
-    case "$case_name" in
-        aewatch-live) printf '%s\n' ae-aewatch; return 0 ;;
-        same-token-live|token-unreadable|guard-token-unreadable) printf '%s\n' ae-telegram; return 0 ;;
-        probe-failed) return 2 ;;
-        spawn-failed|unknown-category) return 1 ;;
-    esac
-}
-_telegram_spawn_daemon() {
-    if [[ "$case_name" == spawn-failed ]]; then
-        printf 'spawn refusal token=%s\n' "$_tg_obs_token" >&2
-        return 1
-    fi
-    _telegram_coexistence_guard
-}
-if [[ "$case_name" == unknown-category ]]; then
-    _telegram_record_autostart_refusal "$_tg_obs_token"
-else
-    export AE_TMUX_SERVER=named
-    _telegram_autostart_if_enabled >/dev/null 2>&1
-fi
-WRAP
-    chmod 700 "$root/wrapper"
-    "$root/wrapper" >/dev/null 2>&1
-    record="$(<"$root/telegram/autostart-refusal")"
-    event="$(<"$root/session/events.jsonl")"
-    status="$(AE_HOME="$root" CONFIG_FILE="$root/config" XDG_RUNTIME_DIR="$runtime" "$AE_BIN" telegram status 2>&1)"
-    doctor="$(AE_HOME="$root" CONFIG_FILE="$root/config" XDG_RUNTIME_DIR="$runtime" "$AE_BIN" doctor 2>&1 || true)"
-    assert_eq "tg-real[$case_name]: closed category + timestamp" "1" \
-        "$([[ "$record" =~ ^(aewatch-live|same-token-live|token-unreadable|probe-failed|spawn-failed)$'\t'[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ && "$record" == "$expected"$'\t'* ]] && echo 1 || echo 0)"
-    assert_eq "tg-real[$case_name]: exact event action/category" "1" \
-        "$(grep -Fcx "{\"action\":\"telegram_autostart_refused\",\"target\":\"fixture\",\"summary\":\"category=$expected\"}" "$root/session/events.jsonl" 2>/dev/null || true)"
-    assert_eq "tg-real[$case_name]: event excludes token" "1" \
-        "$([[ "$event" != *"$_tg_obs_token"* ]] && echo 1 || echo 0)"
-    assert_eq "tg-real[$case_name]: record excludes token" "1" \
-        "$([[ "$record" != *"$_tg_obs_token"* ]] && echo 1 || echo 0)"
-    assert_eq "tg-real[$case_name]: status exposes category + timestamp" "1" \
-        "$([[ "$status" == *"last refusal=$expected at "* ]] && echo 1 || echo 0)"
-    assert_eq "tg-real[$case_name]: doctor exposes category + timestamp" "1" \
-        "$([[ "$doctor" == *'WARN  telegram.autostart'*"last refusal=$expected at "* ]] && echo 1 || echo 0)"
-    case "$case_name" in
-        token-unreadable) assert_eq "tg-real[$case_name]: validation refusal branch fired" "1" "$([[ -f "$root/validation-refusal" ]] && echo 1 || echo 0)" ;;
-        guard-token-unreadable) assert_eq "tg-real[$case_name]: comparator refusal bypassed validation-failure branch" "0" "$([[ -f "$root/validation-refusal" ]] && echo 1 || echo 0)" ;;
-    esac
-    assert_eq "tg-real[$case_name]: status excludes token" "1" \
-        "$([[ "$status" != *"$_tg_obs_token"* ]] && echo 1 || echo 0)"
-    assert_eq "tg-real[$case_name]: doctor excludes token" "1" \
-        "$([[ "$doctor" != *"$_tg_obs_token"* ]] && echo 1 || echo 0)"
-    assert_eq "tg-real[$case_name]: no torn temp record" "0" \
-        "$(find "$root/telegram" -maxdepth 1 -name 'autostart-refusal.tmp.*' -print | wc -l | tr -d '[:space:]')"
-    rm -rf "$root" "$runtime"
-}
-
-# Mapper mutation control: passing the token-shaped unknown through must fail
-# the closed-enum assertion and the event/file/status/doctor sink assertions.
-_tg_obs_real_case unknown-category spawn-failed
-# Real decision seams, with only probe observations / token validation mocked.
-_tg_obs_real_case aewatch-live aewatch-live
-_tg_obs_real_case same-token-live same-token-live
-_tg_obs_real_case token-unreadable token-unreadable
-_tg_obs_real_case guard-token-unreadable token-unreadable
-_tg_obs_real_case probe-failed probe-failed
-_tg_obs_real_case spawn-failed spawn-failed
-
-_tg_obs_hostile="$(mktemp -d)"
-mkdir -p "$_tg_obs_hostile/telegram"
-printf '[telegram]\nenabled = true\n' >"$_tg_obs_hostile/config"
-_tg_obs_hostile_check() {
-    local label="$1" row="$2" runtime status doctor
-    runtime="$(mktemp -d)"
-    printf '%b\n' "$row" >"$_tg_obs_hostile/telegram/autostart-refusal"
-    status="$(AE_HOME="$_tg_obs_hostile" CONFIG_FILE="$_tg_obs_hostile/config" XDG_RUNTIME_DIR="$runtime" "$AE_BIN" telegram status 2>&1)"
-    doctor="$(AE_HOME="$_tg_obs_hostile" CONFIG_FILE="$_tg_obs_hostile/config" XDG_RUNTIME_DIR="$runtime" "$AE_BIN" doctor 2>&1 || true)"
-    assert_eq "tg-real hostile[$label]: omitted from status" "1" \
-        "$([[ "$status" != *'last refusal='* && "$status" != *'free-text'* && "$status" != *"$_tg_obs_token"* ]] && echo 1 || echo 0)"
-    assert_eq "tg-real hostile[$label]: omitted from doctor" "1" \
-        "$([[ "$doctor" != *'telegram.autostart'* && "$doctor" != *'free-text'* && "$doctor" != *"$_tg_obs_token"* ]] && echo 1 || echo 0)"
-    rm -rf "$runtime"
-}
-# Each malformed shape is isolated so one early newline rejection cannot mask
-# the category/timestamp grammar checks in the next case.
-_tg_obs_hostile_check unknown-category $'123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi\t2026-08-31T00:00:00Z'
-_tg_obs_hostile_check invalid-timestamp $'spawn-failed\tnot-a-timestamp'
-_tg_obs_hostile_check multiline-valid-rows $'spawn-failed\t2026-08-31T00:00:00Z\naewatch-live\t2026-08-31T00:00:00Z'
-rm -rf "$_tg_obs_hostile"
-
-# Real-envelope regression: poison every ambient facet and require the writer to
-# bind actor, routing/body fields, and ledger path to fixed validated values.
-_TG_OBS_ENVELOPE_FNS="$TMPDIR/tg-observe-envelope-fns.sh"
-{
-    awk '/^_telegram_autostart_refusal_category\(\) \{/,/^\}$/' "$AE_BIN"
-    awk '/^_telegram_record_autostart_refusal\(\) \{/,/^\}$/' "$AE_BIN"
-    awk '/^ae_log_append\(\) \{/,/^\}$/' "$AE_BIN"
-    awk '/^ae_json_escape\(\) \{/,/^\}$/' "$AE_BIN"
-    awk '/^ae_sanitize_utf8\(\) \{/,/^\}$/' "$AE_BIN"
-    awk '/^ae_cap_summary\(\) \{/,/^\}$/' "$AE_BIN"
-    awk '/^ae_emit_event\(\) \{/,/^\}$/' "$AE_BIN"
-} >"$_TG_OBS_ENVELOPE_FNS"
-_tg_obs_envelope="$(mktemp -d)"
-mkdir -p "$_tg_obs_envelope/sessions/fixture" "$_tg_obs_envelope/decoy"
-_tg_obs_envelope_token='123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi'
-cat >"$_tg_obs_envelope/wrapper" <<WRAP
-#!/usr/bin/env bash
-set -euo pipefail
-export CONFIG_DIR="$_tg_obs_envelope"
-export CONFIG_FILE="$_tg_obs_envelope/config"
-export SESSIONS_DIR="$_tg_obs_envelope/sessions"
-export SESSION=fixture
-export AE_META="$_tg_obs_envelope/decoy"
-export _AE_META_DIR="$_tg_obs_envelope/decoy"
-export AE_SENDER_OVERRIDE="$_tg_obs_envelope_token"
-export _AE_EVENT_ACTOR_SLOT="$_tg_obs_envelope_token"
-export _AE_EVENT_ACTOR_SESSION="$_tg_obs_envelope_token"
-export _AE_EVENT_TARGET_SLOT="$_tg_obs_envelope_token"
-export _AE_EVENT_TARGET_SESSION="$_tg_obs_envelope_token"
-export _AE_LAST_BODY_FILE="$_tg_obs_envelope_token"
-source "$_TG_OBS_ENVELOPE_FNS"
-_telegram_record_autostart_refusal spawn-failed fixture
-WRAP
-chmod 700 "$_tg_obs_envelope/wrapper"
-"$_tg_obs_envelope/wrapper" >/dev/null 2>&1
-if [[ -f "$_tg_obs_envelope/sessions/fixture/events.jsonl" ]]; then
-    _tg_obs_envelope_event="$(<"$_tg_obs_envelope/sessions/fixture/events.jsonl")"
-else
-    _tg_obs_envelope_event=""
-fi
-_tg_obs_envelope_pattern='^\{\"ts\":\"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z\",\"actor\":\"ae\",\"action\":\"telegram_autostart_refused\",\"target\":\"fixture\",\"summary\":\"category=spawn-failed\"\}$'
-assert_eq "tg-real envelope: fixed fields only, actor sealed, token absent" "1" \
-    "$(grep -Ecx "$_tg_obs_envelope_pattern" "$_tg_obs_envelope/sessions/fixture/events.jsonl" 2>/dev/null || true)"
-assert_eq "tg-real envelope: poisoned token absent from intended event" "1" \
-    "$([[ "$_tg_obs_envelope_event" != *"$_tg_obs_envelope_token"* ]] && echo 1 || echo 0)"
-assert_eq "tg-real envelope: poisoned ambient routing/body fields absent" "1" \
-    "$([[ "$_tg_obs_envelope_event" != *'_AE_EVENT_'* && "$_tg_obs_envelope_event" != *'_AE_LAST_BODY_FILE'* ]] && echo 1 || echo 0)"
-assert_eq "tg-real envelope: ambient decoy ledger stays empty" "0" \
-    "$(find "$_tg_obs_envelope/decoy" -type f -print | wc -l | tr -d '[:space:]')"
-rm -rf "$_tg_obs_envelope"
-unset _TG_OBS_ENVELOPE_FNS _tg_obs_envelope _tg_obs_envelope_token _tg_obs_envelope_event _tg_obs_envelope_pattern
-unset _TG_OBS_REAL_FNS _tg_obs_token _tg_obs_hostile
-
-fi
-# ── Watchdog-supervised telegram bridge ──────────────────────────────
-# The per-session watchdog best-effort revives the machine-global daemon
-# if it died (closes the gap where a crash lingers until the next `ae <name>`).
-
-# Internal _supervise subcommand routes to the autostart path (respects
-# [telegram] enabled, idempotent, never flips the flag).
-assert_eq "tg-sup: 'telegram _supervise' calls the autostart path" "1" \
-    "$([[ "$AE_SOURCE" == *'_supervise) _telegram_autostart_if_enabled'* ]] && echo 1 || echo 0)"
-
-
-
-# The throttled revive, its propagation of the session's tmux server AND its
-# cadence are all the core's cycle tail now: B glue cut 2 removed the bash
-# watchdog helper that read `AE_WATCHDOG_TG_SUPERVISE_SEC` and passed it on, so
-# the daemon runs on its own default. What is still bash's is the revive FUNCTION
-# the bridge autostart shares, pinned above.
-
-# ── say helper + chat event (agent → Telegram free-text, Option 1) ───
-
-# The `say` helper is a core shim onto `_say`, which owns the whole surface: args
-# or piped stdin, the empty refusal, and the `chat` event the bridge forwards. The
-# shim's bytes are pinned by the refresh guard; the behaviour is the core's.
-
-# ae_emit_event keeps chat rich (newlines + larger cap) but flattens/caps others.
-# The cap moved from `head -c N | tr` to ae_cap_summary — byte-count truncation
-# split multibyte characters and killed BSD tr under a UTF-8 locale (issue #7) —
-# so the shape is pinned on the new call, and on the ASYMMETRY that is the real
-# invariant: chat is capped WITHOUT flattening, everything else is flattened.
-assert_eq "say: ae_emit_event special-cases chat (3500, no flatten)" "1" \
-    "$([[ "$AE_SOURCE" == *'if [[ "$action" == "chat" ]]; then'* \
-        && "$AE_SOURCE" == *'ae_cap_summary "$summary" 3500'* \
-        && "$AE_SOURCE" == *'ae_cap_summary "$summary" 200'* ]] && echo 1 || echo 0)"
-
-# The flattening lives ONLY on the non-chat branch: chat newlines are the point
-# of the chat path (a human reply bound for Telegram), and a cap helper that
-# flattened unconditionally would silently destroy them.
-assert_eq "say: only the non-chat branch flattens newlines" "1" \
-    "$(awk '/if \[\[ "\$action" == "chat" \]\]; then/{c=1} c&&/^    else$/{e=1} c&&!e&&/summary\/\/\$.\\n./{bad=1} END{print (bad?0:1)}' <<<"$AE_SOURCE")"
-
-# ── ae_cap_summary: multibyte-safe truncation (issue #7) ────────────
-# The shipped bug: `head -c 200 | tr` cut at a BYTE boundary, and when an
-# em-dash (3 bytes) straddled it the partial sequence reached BSD tr under a
-# UTF-8 locale — "Illegal byte sequence", rc 1, and the whole ask failed with no
-# delivery and no event. Alignment-dependent, so the same text one byte over
-# worked. These exercise the real function, at every straddling offset.
-eval "$(awk '/^ae_cap_summary\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
-eval "$(awk '/^ae_sanitize_utf8\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
-# Locale probes must run in a shell we control, so the function goes to a file
-# rather than being re-extracted inside each locale — awk itself fails to read
-# ae under SJIS/GB18030, which would make those probes pass vacuously.
-_cap_fn_file="$(mktemp)"
-awk '/^ae_cap_summary\(\) \{/,/^\}$/' <<<"$AE_SOURCE" >"$_cap_fn_file"
-
-_cap_emdash=$'\xe2\x80\x94'
-
-# Every alignment where a 3-byte character crosses the cap: the call must
-# succeed AND the result must never end in a partial sequence.
-_cap_bad=""
-for _off in 197 198 199 200; do
-    _cap_in="$(printf "%${_off}s" "" | tr ' ' 'x')${_cap_emdash}tail"
-    ae_cap_summary "$_cap_in" 200 || _cap_bad+="rc@${_off} "
-    # A partial em-dash would leave a trailing 0xE2 or 0xE2 0x80.
-    case "$_EV_SUMMARY" in
-        *$'\xe2' | *$'\xe2\x80') _cap_bad+="partial@${_off} " ;;
-    esac
-done
-assert_eq "cap_summary: no straddling offset yields a partial character" "" "$_cap_bad"
-
-# A character positioned before the cut survives WHOLE — present in the result,
-# not as a fragment. This one is CHARACTER-COUNTING dependent: under LC_ALL=C the
-# cap is 200 BYTES, the em-dash sits past it, and its absence is correct rather
-# than a bug. Assert it in a shell whose locale we chose, not the ambient one.
-_cap_utf8_locale="$(locale -a 2>/dev/null | grep -iE '^(en_US\.)?(utf-?8|UTF-?8)$|^en_US\.UTF-8$' | head -1)"
-[[ -n "$_cap_utf8_locale" ]] || _cap_utf8_locale="en_US.UTF-8"
-assert_eq "cap_summary: under a UTF-8 locale a character before the cut is kept intact" "1" \
-    "$(LC_ALL="$_cap_utf8_locale" "${BASH:-bash}" -c '
-        source "$1"
-        em=$'"'"'\xe2\x80\x94'"'"'
-        ae_cap_summary "$(printf "%197s" "" | tr " " "x")${em}tail" 200
-        [[ "$_EV_SUMMARY" == *"$em"* ]] && echo 1 || echo 0
-    ' _ "$_cap_fn_file" 2>/dev/null)"
-
-# Short input is returned untouched (no cap, no flattening in this function).
-ae_cap_summary "plain summary" 200
-assert_eq "cap_summary: under the cap is passed through" "plain summary" "$_EV_SUMMARY"
-
-# Capping is by the stated limit.
-ae_cap_summary "$(printf '%500s' '' | tr ' ' 'y')" 200
-assert_eq "cap_summary: caps at the requested length" "200" "${#_EV_SUMMARY}"
-
-# ── locale matrix: the cap must not leak a partial sequence ANYWHERE ──
-# "not UTF-8 character aware" does not mean "counting bytes": SJIS, GB18030 and
-# eucKR are multibyte too (the em-dash probe measures 2 there), so bash slices in
-# THEIR characters while a UTF-8 byte walk-back reasons about something else.
-# Measured, not assumed: before the fix, LC_ALL=ja_JP.SJIS at offset 199 emitted
-# a tail of 78 78 e2 80 — a partial em-dash escaping into events.jsonl.
-#
-# The check is on the OUTPUT BYTES via od. A `case` glob evaluated INSIDE the
-# locale under test is not reliable — that is what hid this the first time.
-# The probe runs from a FILE, not an inline -c string. The inline form needed
-# three levels of quote nesting to carry a $'\xe2\x80\x94' literal into a child
-# shell, and it silently produced an empty result instead of a partial — a
-# locale matrix that could not fail. A file has one level of quoting.
-_cap_probe="$(mktemp)"
-cat >"$_cap_probe" <<'CAPPROBE'
-#!/usr/bin/env bash
-# argv: <fn-file> <offset>   prints the last 6 hex digits of the capped output
-source "$1"
-em=$'\xe2\x80\x94'
-pad="$(printf "%$2s" "" | tr ' ' 'x')"
-ae_cap_summary "${pad}${em}tail" 200
-printf '%s' "$_EV_SUMMARY" | od -An -tx1 | tr -d ' \n' | tail -c 6
-CAPPROBE
-chmod +x "$_cap_probe"
-
-_cap_locale_bad=""
-_cap_probe_out=""
-# Availability is read ONCE into a variable, and matched with a herestring.
-# `locale -a | grep -q` looks obvious and is wrong under `set -o pipefail`:
-# grep -q exits at the first match, locale takes SIGPIPE, and the PIPELINE
-# reports failure — so a locale that IS present tested as absent and every
-# probe was skipped. The matrix then reported "no partials" having measured
-# nothing.
-_cap_locales_avail="$(locale -a 2>/dev/null || true)"
-for _cl in en_US.UTF-8 C ja_JP.SJIS zh_CN.GB18030 ko_KR.eucKR; do
-    if [[ "$_cl" != "C" ]] && ! grep -qxiF "$_cl" <<<"$_cap_locales_avail"; then
-        _cap_skipped+="$_cl "
-        continue
-    fi
-    for _co in 197 198 199 200; do
-        _cap_tail="$(LC_ALL="$_cl" "${BASH:-bash}" "$_cap_probe" "$_cap_fn_file" "$_co" 2>/dev/null || true)"
-        _cap_probe_out+="${_cl}@${_co}=${_cap_tail} "
-        # A partial em-dash ends the output with e280, or with a bare e2.
-        case "$_cap_tail" in
-            *e280 | *e2) _cap_locale_bad+="${_cl}@${_co}(${_cap_tail}) " ;;
-        esac
-    done
-done
-rm -f "$_cap_probe"
-# A matrix that produced no output would report "no partials" forever. Count the
-# probes that actually returned something; the raw results ride along so a
-# failure says WHAT was measured, not just that something was wrong.
-_cap_probe_ran="$(printf '%s' "$_cap_probe_out" | tr ' ' '\n' | grep -c '=[0-9a-f]' || true)"
-assert_eq "cap_summary: the locale matrix actually ran" "1" \
-    "$([[ "${_cap_probe_ran:-0}" -ge 8 ]] && echo 1 || echo 0)"
-assert_eq "cap_summary: no locale leaks a partial sequence" "" "$_cap_locale_bad"
-# A skip must be visible, never silent.
-[[ -z "${_cap_skipped:-}" ]] ||
-    printf 'NOTE: cap_summary locale matrix skipped absent locales: %s\n' "$_cap_skipped" >&2
-
-# ── the cap is ENFORCED, not just boundary-safe ──────────────────────
-# Separate property from "never leaks a partial": the earlier matrix appended
-# "tail" to every fixture, which forced the truncating branch and only ever
-# asserted how the output ENDED. A string that ends exactly ON the boundary took
-# the other path — and because the length decision ran in the AMBIENT locale
-# before the fallback set LC_ALL=C, SJIS/GB18030 measured 198 ASCII + one
-# multibyte char as 200 "characters", skipped the fallback entirely, and emitted
-# 202 BYTES with the cap silently unenforced. These fixtures carry NO tail and
-# assert OUTPUT BYTE LENGTH.
-_cap_len_probe="$(mktemp)"
-cat >"$_cap_len_probe" <<'CAPLENPROBE'
-#!/usr/bin/env bash
-# argv: <fn-file> <emdash|emoji> <pad>   prints the byte length of the output
-source "$1"
-case "$2" in
-    emdash) ch=$'\xe2\x80\x94' ;;
-    emoji) ch=$'\xf0\x9f\x98\x80' ;;
-esac
-pad="$(printf "%$3s" "" | tr ' ' 'x')"
-ae_cap_summary "${pad}${ch}" 200
-printf '%s' "$_EV_SUMMARY" | wc -c | tr -d ' '
-CAPLENPROBE
-chmod +x "$_cap_len_probe"
-
-_cap_len_bad=""
-_cap_len_ran=0
-for _cl in en_US.UTF-8 C ja_JP.SJIS zh_CN.GB18030 ko_KR.eucKR; do
-    if [[ "$_cl" != "C" ]] && ! grep -qxiF "$_cl" <<<"$_cap_locales_avail"; then
-        continue
-    fi
-    for _cc in emdash emoji; do
-        _cap_len="$(LC_ALL="$_cl" "${BASH:-bash}" "$_cap_len_probe" "$_cap_fn_file" "$_cc" 198 2>/dev/null || true)"
-        [[ "$_cap_len" =~ ^[0-9]+$ ]] || {
-            _cap_len_bad+="${_cl}/${_cc}(no-result) "
-            continue
-        }
-        _cap_len_ran=$((_cap_len_ran + 1))
-        if [[ "$_cl" == en_US.UTF-8 ]]; then
-            # Character-aware: 199 characters is under the cap, so the input is
-            # returned whole — 201 bytes for a 3-byte char, 202 for a 4-byte one.
-            case "${_cc}:${_cap_len}" in
-                emdash:201 | emoji:202) ;;
-                *) _cap_len_bad+="${_cl}/${_cc}=${_cap_len} " ;;
-            esac
-        else
-            # Byte semantics: the 200-byte cut lands inside the trailing
-            # character, which is then dropped whole -> 198 bytes. Never > 200.
-            [[ "$_cap_len" == "198" ]] || _cap_len_bad+="${_cl}/${_cc}=${_cap_len} "
-        fi
-    done
-done
-rm -f "$_cap_len_probe"
-assert_eq "cap_summary: the byte-length matrix actually ran" "1" \
-    "$([[ "$_cap_len_ran" -ge 4 ]] && echo 1 || echo 0)"
-assert_eq "cap_summary: the cap is enforced in every locale (no tail)" "" "$_cap_len_bad"
-
-# ── ae_sanitize_utf8: malformed input is DATA, cleaned, not an error ──
-# Summary text is agent/user controlled and can arrive already invalid — the cap
-# is not the only way a bad byte reaches events.jsonl. rc stays 0.
-_san_case() { # <label> <printf-fmt-for-input> <expected-hex>
-    # The format string IS the fixture: every call site passes a literal with
-    # \xNN escapes, which is the only way to write these byte sequences inline.
-    # shellcheck disable=SC2059  # deliberate: $2 is a literal format from this file
-    ae_sanitize_utf8 "$(printf "$2")"
-    assert_eq "sanitize: $1" "$3" \
-        "$(printf '%s' "$_EV_CLEAN" | od -An -tx1 | tr -d ' \n')"
-}
-_san_case "reviewer specimen abc\\x80def loses the stray byte" 'abc\x80def' '616263646566'
-_san_case "a valid em-dash is preserved" 'a\xe2\x80\x94b' '61e2809462'
-_san_case "a truncated 3-byte lead is dropped" 'a\xe2\x80b' '6162'
-_san_case "a lone lead byte at the end is dropped" 'ab\xe2' '6162'
-_san_case "an overlong C0 80 is dropped" 'a\xc0\x80b' '6162'
-_san_case "a UTF-16 surrogate ED A0 80 is dropped" 'a\xed\xa0\x80b' '6162'
-_san_case "a 4-byte emoji is preserved" 'a\xf0\x9f\x98\x80b' '61f09f988062'
-_san_case "an impossible F5 lead is dropped" 'a\xf5\x80\x80\x80b' '6162'
-_san_case "pure ASCII is returned untouched" 'hello world' '68656c6c6f20776f726c64'
-
-ae_sanitize_utf8 "$(printf 'abc\x80def')"
-assert_eq "sanitize: cleaning is not an error (rc 0)" "0" "$?"
-
-# ── the byte-count truncation must not come back (issue #7 round 2, item 3) ──
-# The spawn site kept the original idiom and reproduced the abort verbatim; a second
-# copy of a fixed bug is still the bug. That site is the core's since B move 2, so what
-# survives here is the CLASS guard — no `printf '%.200s' … | tr` anywhere in the glue —
-# which is the half that would catch the idiom being reintroduced at a new site.
-assert_eq "cap: the byte-count truncate-then-tr idiom appears nowhere in the glue" "1" \
-    "$([[ "$AE_SOURCE" != *"printf '%.200s' \"\${user_prompt:-}\" | tr"* ]] && echo 1 || echo 0)"
-
-# No byte-count truncation feeding tr may return anywhere in ae: that pairing IS
-# the bug (byte cut -> partial sequence -> BSD tr aborts under a UTF-8 locale).
-#
-# THREAT MODEL, stated because it decides how far this goes: accidental
-# reintroduction — a copy-paste of the old idiom, or a new site written in the
-# old habit. Not adversarial evasion. After three rounds of chasing spellings
-# the honest position is that a regex over shell text will always have another
-# spelling, so this is a cheap tripwire and NOT what makes the invariant true.
-# What makes it true is behavioural: ae_cap_summary is exercised across five
-# locales for boundary safety AND enforced byte length, and the emit path is
-# driven end-to-end through a regenerated _lib. If this guard and those tests
-# ever disagree, the tests are right.
-#
-# COVERED, each mutation-pinned:
-#   count  : head -c N | head -c "$v" | head -c $v | head -cN (attached)
-#            printf '%.Ns' and printf "%.Ns"
-#   sink   : tr | command tr | /usr/bin/tr (any path prefix), piped DIRECTLY
-#            from the truncation
-#   layout : one line, split after |, split after \, comment-only lines
-#            interleaved in the continuation
-# NOT COVERED, deliberately, and the claim does not pretend otherwise:
-#   - an INTERVENING pipeline stage between the cut and tr (head -c200 | cat | tr)
-#   - a truncation whose result reaches tr through an intermediate VARIABLE
-#   - indirection (eval, aliases, a wrapper function under another name)
-# The spelling space is provably unbounded, so coverage is settled by
-# SUBTRACTION: the assertion below claims the direct pipe and nothing more.
-#
-# Continuations are joined first, comment-only lines dropped as they are joined:
-# a pipeline broken after `|` or `\` is one logical line to the shell, and a
-# comment sitting inside it does not end the pipeline.
-_bc_src="$(LC_ALL=C awk '
-    {
-        line = $0
-        while (line ~ /\\[[:space:]]*$/ || line ~ /\|[[:space:]]*$/) {
-            sub(/\\[[:space:]]*$/, "", line)
-            if ((getline nxt) <= 0) break
-            sub(/^[[:space:]]+/, "", nxt)
-            if (nxt ~ /^#/) continue
-            line = line " " nxt
-        }
-        print line
-    }' <<<"$AE_SOURCE")"
-_bc_cut='(head[[:space:]]+-c[[:space:]]*["'"'"']?\$?\{?[A-Za-z0-9_]+\}?["'"'"']?|printf[[:space:]]+["'"'"']%\.[0-9]+s["'"'"'])'
-_bc_tr='(command[[:space:]]+)?([A-Za-z0-9_./-]*/)?tr[[:space:]]'
-assert_eq "no byte-count truncation pipes DIRECTLY into tr (count literal/var/attached; tr bare/command/path; continued lines; intervening stages NOT claimed)" "0" \
-    "$(LC_ALL=C grep -cE "${_bc_cut}[^|]*\|[[:space:]]*${_bc_tr}" <<<"$_bc_src" || true)"
-
-# ── the emit boundary sanitizes ──
-# `_spawn_emit_event` was the second boundary and went with the launch/stop flows
-# that used it, so there is one left and a whole-file match can no longer be
-# satisfied by the other site.
-assert_eq "emit: ae_emit_event sanitizes before capping" "1" \
-    "$(awk '/^ae_emit_event\(\)/{f=1} f&&/ae_sanitize_utf8/{print 1; exit} f&&/^\}$/{print 0; exit}' <<<"$AE_SOURCE")"
-# The end-to-end round trip through the escaper used the `_event_json_str` PARSER,
-# which went with the `_lib` it was emitted into. The escaper is still bash's, so
-# what is pinned is the escape itself.
-eval "$(awk '/^ae_json_escape\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
-ae_cap_summary "$(printf '%198s' '' | tr ' ' 'x')${_cap_emdash}tail" 200
-assert_eq "cap_summary: the capped value escapes to valid JSON content" "1" \
-    "$([[ "$(ae_json_escape "$_EV_SUMMARY")" != *'"'* ]] && echo 1 || echo 0)"
-
-
-# Discoverability surfaces (a helper agents don't know about is dead weight).
-assert_eq "say: advertised in cmd_help, agent ctx, workspace.md" "1" \
-    "$([[ "$AE_SOURCE" == *'requests, peek, say, spawn'* \
-        && "$_RENDER_CONTEXT" == *"(8) ${_RENDER_META}/say <text>"* \
-        && "$_RENDER_MANIFEST" == *'Talking to the human on Telegram'* ]] && echo 1 || echo 0)"
-
-# status warns when an explicit include omits chat (silent drop otherwise).
-assert_eq "say: telegram status warns when include omits chat" "1" \
-    "$([[ "$AE_SOURCE" == *"'chat' not in include"* ]] && echo 1 || echo 0)"
-
-# The behavioural `ae_emit_event` pin (chat keeps newlines and is not capped;
-# every other action is flattened and capped) ran against a generated `_lib`.
-# There is no `_lib` any more — a session helper is a thin core shim — and `say`
-# itself is the core's `_say`, which owns that distinction and pins it.
+# ── the emit boundary sanitizes — RETIRED (final glue cut) ─────────────────────────────────────────
+# 4 assertion(s) went with their subject: the emit boundary is core-side, and its escape set is pinned in src/json.rs beside the renderer.
 
 # ── ae orchestrator: launcher scaffold + dispatcher trampoline + hub compat ──
 
@@ -3800,9 +1889,12 @@ assert_eq "AE_HOME: CONFIG_DIR derives from AE_HOME, not hardcoded \$HOME/.ae" "
     "$([[ "$AE_SOURCE" == *'AE_HOME="${AE_HOME:-${HOME}/.ae}"'* \
         && "$AE_SOURCE" == *'CONFIG_DIR="$AE_HOME"'* \
         && "$AE_SOURCE" != *'CONFIG_DIR="${HOME}/.ae"'* ]] && echo 1 || echo 0)"
-# Daemon/orchestrator/session must not escape AE_HOME back to live ~/.ae (codex BLOCKERs):
-assert_eq "AE_HOME: telegram daemon gets CONFIG_DIR as its <ae-home> (no live-~/.ae leak)" "1" \
-    "$([[ "$AE_SOURCE" == *'_telegram-run "$CONFIG_DIR" --config "$CONFIG_FILE" --home "$HOME"'* ]] && echo 1 || echo 0)"
+# Daemon/orchestrator/session must not escape AE_HOME back to live ~/.ae (codex BLOCKERs).
+# The telegram daemon's own argv went to the core with the bridge; what the glue
+# still hands it is the pair below, and `--home "$AE_HOME"` is the anti-leak half.
+assert_eq "AE_HOME: the telegram arm hands the core CONFIG_FILE and AE_HOME, never a live-~/.ae default" "1" \
+    "$([[ "$AE_SOURCE" == *'_tg_args+=(--config "$CONFIG_FILE")'* \
+        && "$AE_SOURCE" == *'_tg_args+=(--home "$AE_HOME")'* ]] && echo 1 || echo 0)"
 assert_eq "AE_HOME: orchestrator dir defaults under CONFIG_DIR, not hardcoded \$HOME/.ae" "1" \
     "$([[ "$AE_SOURCE" == *'AE_ORCHESTRATOR_DIR:-$CONFIG_DIR/orchestrator'* \
         && "$AE_SOURCE" != *'AE_ORCHESTRATOR_DIR:-$HOME/.ae/orchestrator'* \
@@ -3825,20 +1917,8 @@ assert_eq "AE_HOME: handed to the core as the launch's --home" "1" \
 # `watchdog` helper is a thin shim onto it. Bash keeps only start/stop/status,
 # which run through `_watchdog_manage` rather than that helper.
 
-# ── s19 retired: ONE bridge, and it is the Rust core ─────────────────────────
-# The aewatch-vs-bash ownership decision (a bridge-owner marker plus a fresh
-# heartbeat) existed to keep two bash senders from double-sending. It is gone
-# with the bash bridge it arbitrated: nothing stands the autostart down any
-# more, so intent + liveness are the whole decision.
-_TG_AS_FN="$(awk '/^_telegram_autostart_if_enabled\(\) \{/{f=1} f{print} f&&/^\}$/{exit}' <<<"$AE_SOURCE")"
-assert_eq "s19 retired: no bridge-ownership fallback survives in ae" "yes" \
-    "$(grep -q '_aewatch_owns_bridge' <<<"$AE_SOURCE" && echo no || echo yes)"
-assert_eq "s19 retired: autostart decides on intent + liveness alone" "yes" \
-    "$(grep -qE '_telegram_intent_enabled.*==.*"true"' <<<"$_TG_AS_FN" \
-        && grep -q '_telegram_daemon_running && return 0' <<<"$_TG_AS_FN" && echo yes || echo no)"
-assert_eq "s19 retired: status reports one backend, the core" "yes" \
-    "$([[ "$AE_SOURCE" == *'backend: ae core'* && "$AE_SOURCE" != *'backend: bash'* ]] && echo yes || echo no)"
-unset _TG_AS_FN
+# ── s19 retired: ONE bridge, and it is the Rust core — RETIRED (final glue cut) ────────────────────
+# 3 assertion(s) went with their subject: the bridge and its intent reader are the core's.
 
 # ── request-integrity Bug A: worker resume symmetry (recover from meta like main) — RETIRED (B glue cut 2) ────
 # 10 assertion(s) went with their subject: the whole launch and resume is ONE core operation now (`_launch`,
@@ -3859,17 +1939,16 @@ unset _TG_AS_FN
 # it, and the bash bodies these assertions called are gone.
 
 # ── request-integrity Bug B (foundational): @ae_slot stamping + slot helpers ─────────
-# `_valid_slot` and the launch seats' @ae_slot stamps went with the launch flow:
-# the core stamps every pane it creates and owns the slot grammar. What is still
-# this script's is the READER below.
-# The spawned pane's @ae_slot stamp is set by the core now (B move 2 stamps @ae_agent
-# and @ae_slot on the new pane before anything reads them). The glue still stamps the
-# launch seats above, and still READS the stamp — the post-spawn session-id capture
-# finds its pane by it, which is what makes the stamp load-bearing on this side too.
-# The glue no longer READS the stamp for a spawned seat: the post-spawn session-id
-# capture went to the core with the rest of the operation, and the core holds the
-# pane it just created rather than looking it back up. The pin is the ABSENCE:
-# `_cmd_spawn` is a bare core call with nothing after it.
+# THE GLUE NEITHER WRITES NOR READS @ae_slot ANY MORE, and the earlier revisions of
+# this note (which said it still stamped the launch seats, and still read the stamp
+# to find a spawned pane) are retired with the bodies they described. `_valid_slot`
+# and the launch seats' stamps went with the launch flow; the core stamps every pane
+# it creates and owns the slot grammar. The post-spawn session-id capture went to
+# the core with the rest of the operation, and the core holds the pane it just
+# created rather than looking it back up — so there is no reader left either.
+# `doctor --refresh` does not stamp live panes at all now (the two pins for that
+# were retired in B glue cut 2, above). What is left is the ABSENCE: `_cmd_spawn`
+# is a bare core call with nothing after it.
 assert_eq "spawn: the glue execs the core and does nothing after it" "yes" \
     "$(_cs="$(awk '/^_cmd_spawn\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
        [[ "$_cs" == *'_ae_core_try _spawn "$@"'* && "$_cs" != *capture* ]] && echo yes || echo no)"

@@ -125,29 +125,6 @@ _ae_stat() {
         *) return 1 ;;
     esac
 }
-
-# In-place sed. `sed -i EXPR FILE` is GNU-only — BSD reads EXPR as the backup
-# suffix and then treats FILE as the script. Temp + rename instead of branching
-# on platform: identical on both, and the target is never observable
-# half-written (GNU -i does the same thing internally).
-_ae_sed_inplace() {
-    local expr="$1" file="$2" tmp
-    tmp="${file}.sedtmp.$$"
-    # `cp -p` FIRST, then truncate-and-write into that temp: a plain redirect
-    # would create the temp at the ambient umask, so the rename would silently
-    # rewrite the target's mode/owner (GNU `sed -i` preserves them). Copying the
-    # metadata across and writing in place keeps the rename faithful.
-    cp -p "$file" "$tmp" 2>/dev/null || {
-        rm -f "$tmp"
-        return 1
-    }
-    if sed "$expr" "$file" >"$tmp" && mv "$tmp" "$file"; then
-        return 0
-    fi
-    rm -f "$tmp"
-    return 1
-}
-
 # First JSON string value for KEY, read from stdin. Replaces the GNU-only
 # `grep -oP '"key"\s*:\s*"\K…'` idiom — BSD grep has neither -P nor \K, so on
 # macOS every one of those returned empty and the agent session-ID capture that
@@ -165,16 +142,6 @@ _ae_json_first() {
         sed -e "s/^\"${key}\"[[:space:]]*:[[:space:]]*\"//" -e 's/"$//' || true
     return 0
 }
-
-# Same, for an unquoted numeric value. Same query contract.
-_ae_json_first_num() {
-    local key="$1"
-    grep -oE "\"${key}\"[[:space:]]*:[[:space:]]*[0-9]+" |
-        head -1 |
-        sed -e "s/^\"${key}\"[[:space:]]*:[[:space:]]*//" || true
-    return 0
-}
-
 # Yesterday, as YYYY/MM/DD in UTC — the day-partitioned layout codex and gemini
 # use for their session logs. GNU spells the offset `-d yesterday`, BSD `-v-1d`,
 # and the two are NOT interchangeable in general: `-d` takes a free-form English
@@ -250,20 +217,42 @@ _ae_inside_tmux() {
     return 1
 }
 
-# --- Function index ---
-#   Portability: _ae_stat, _ae_sed_inplace, _ae_yesterday, _ae_json_first, _ae_json_first_num, _ae_inside_tmux
-#   Config:     parse_config, get_config
-#   Helpers:    tool_kind_from_cmd, detect_current_session, _validate_session_name
-#   Session:    read_session_meta, list_ae_sessions, iter_stopped_sessions
-#   Commands:   cmd_list, cmd_status, cmd_next, cmd_archive_preview, cmd_rename,
-#               cmd_doctor, cmd_watchdog, cmd_telegram, cmd_orchestrator_init,
-#               cmd_recover_pending, cmd_help
-#   Core calls: _ae_core_try, _ae_core_preflight_try — launch/resume, end, stop,
-#               compact, spawn, retire, send/ask/review/reply and the archive
-#               preview are the core's operations; `ae transfer` was cut
-#   Assets:     regenerate_manifest, _refresh_session_shims (doctor --refresh only)
-#   Spawn:      _cmd_spawn, _spawn_capture_after, capture_codex_session_id
-#   Watchdog:   _watchdog_manage (start/stop/status; the daemon is the core's)
+# --- Function index --- (47 functions; every one has a live caller)
+#   Portability:  _ae_stat, _ae_json_first, _ae_yesterday, _ae_inside_tmux,
+#                 _ae_install_tmux_shim
+#   Config:       parse_config, get_config
+#   Names/paths:  _validate_session_name, _session_name_usable, _path_is_direct_child,
+#                 _session_path_is_safe, _require_session_path_safe
+#   Session read: read_session_meta, detect_current_session, read_launch_id_for_slot,
+#                 read_launch_time_for_slot, _autostart_session_hint
+#   Tool sensing: _cmd_split_binary, _cmd_binary_kind, tool_kind_from_cmd
+#   Core binding: _ae_core_current_input, _ae_core_bin_input, _ae_core_bin_version,
+#                 _ae_core_try (session-pinned), _ae_core_preflight_try (operator),
+#                 _identity_core
+#   Commands:     cmd_list, cmd_status, cmd_next, cmd_archive_preview, cmd_help,
+#                 cmd_orchestrator_init, cmd_orchestrator_help, cmd_recover_pending,
+#                 _cmd_spawn, _cmd_retire, _orchestrator_scaffold_file
+#   Launch glue:  resolve_launch_tmux_server (the typed server pair)
+#   Pending sids: doctor_try_capture_session_id, walk_pending_session_ids,
+#                 _watchdog_recover_report, find_codex_session_by_launch_id,
+#                 find_codex_session_by_cwd, find_opencode_session_by_launch_id,
+#                 find_gemini_session_by_launch_id
+#   Meta writes:  _set_meta_kv, _set_meta_watchdog
+#
+# NOT HERE, AND THAT IS THE POINT — the absences this file is now pinned on.
+# Each was a real body that a later reader could plausibly reintroduce, so the
+# suite asserts it is gone rather than trusting this comment:
+#   * NO POST-SPAWN CAPTURE FORK. `_cmd_spawn` is a bare exec. The core's spawn
+#     forks `_capture-sid` for the seat it just created, from the launch_id and
+#     launch_time it wrote itself — a second reader here would re-derive the slot
+#     and the pane out of meta and disagree the first time two spawns raced.
+#     Gone with it: capture_session_id and the codex/opencode/gemini capture and
+#     find_*_session_by_* bodies (the doctor recovery path keeps its own until
+#     that command moves).
+#   * NO SESSION-HELPER LOGIC. The core writes every shim; there is no
+#     declare -f template library and no `_lib`.
+#   * NO CORE RESOLUTION FROM CONFIG. Two sources only, AE_CORE_BIN then
+#     core/current — see _ae_core_bin_input.
 
 DEFAULT_CONFIG='# ae config — auto-created on first run, yours to edit. Also mirrored in the repo as
 # config.sample. INI-style: [section] headers, key = value, "#" starts a comment.
@@ -390,27 +379,6 @@ get_config() {
     done < <(parse_config)
     printf '%s' "$result"
 }
-
-_publish_executable_artifact() {
-    local dest="$1" mode="$2"
-    shift 2
-    local tmp="${dest}.tmp.$$"
-    if ! "$@" >"$tmp"; then
-        rm -f "$tmp"
-        echo "ae: failed to generate ${dest##*/} — previous version left intact" >&2
-        return 1
-    fi
-    if ! chmod "$mode" "$tmp"; then
-        rm -f "$tmp"
-        return 1
-    fi
-    if ! mv -f "$tmp" "$dest"; then
-        rm -f "$tmp"
-        return 1
-    fi
-    return 0
-}
-
 # ── The core's helper set, rewritten from bash ────────────────────────────
 # The ONE asset `ae doctor --refresh` still needs that the core has no entry for.
 #
@@ -433,69 +401,6 @@ _AE_SHIM_PASSTHROUGH=(
     focus:_focus interrupt:_interrupt spawn:_spawn retire:_retire
     watchdog:_watchdog-run events-tail:_events-tail
 )
-
-# The core's quoting, not bash's: `shell_quote` here is `printf %q`, which leaves
-# an ordinary path BARE, and the shims the core writes are always single-quoted.
-# Byte parity is the whole point of this family, so it gets the core's rule.
-_ae_core_quote() { # <word> -> '<word>' with every ' closed and reopened
-    local out="$1" q="'\\''"
-    out="${out//\'/$q}"
-    printf "'%s'" "$out"
-}
-
-_emit_helper_shim() { # <core> <entry> [fixed-word...] -> the shim body on stdout
-    local core="$1" entry="$2" word
-    shift 2
-    printf '%s\n' '#!/usr/bin/env bash' \
-        '# Generated by ae — do not edit. A session helper is a thin shim: it names' \
-        '# its own session directory and hands the whole argv to the ae core.' \
-        'set -euo pipefail' \
-        'META_DIR="$(cd "$(dirname "$0")" && pwd)"'
-    printf 'exec %s %s "$META_DIR"' "$(_ae_core_quote "$core")" "$entry"
-    for word in "$@"; do
-        printf ' %s' "$(_ae_core_quote "$word")"
-    done
-    printf ' "$@"\n'
-    return 0
-}
-
-_emit_helper_alias() { # <target> -> one exec to the sibling helper
-    printf '%s\n' '#!/usr/bin/env bash' \
-        "# Generated by ae — do not edit. An alias for the '${1}' helper." \
-        'set -euo pipefail' \
-        "exec \"\$(cd \"\$(dirname \"\$0\")\" && pwd)/${1}\" \"\$@\""
-    return 0
-}
-
-_refresh_session_shims() { # <meta-dir>
-    local dir="$1" core pair name entry
-    core="$(sed -n 's/^ae_core=//p' "${dir}/meta" 2>/dev/null | head -1 || true)"
-    if [[ -z "$core" ]]; then
-        echo "  WARN: no core is bound for this session — helper shims left as they are" >&2
-        return 1
-    fi
-    for pair in "${_AE_SHIM_PASSTHROUGH[@]}"; do
-        name="${pair%%:*}"
-        entry="${pair#*:}"
-        _publish_executable_artifact "${dir}/${name}" 0755 \
-            _emit_helper_shim "$core" "$entry" || return 1
-    done
-    # `mark-done` is `state done` with the message as the reason.
-    _publish_executable_artifact "${dir}/mark-done" 0755 \
-        _emit_helper_shim "$core" _state 'done' || return 1
-    _publish_executable_artifact "${dir}/peak" 0755 _emit_helper_alias peek || return 1
-    # `loop` is the deprecated spelling of the watchdog helper.
-    _publish_executable_artifact "${dir}/loop" 0755 _emit_helper_alias watchdog || return 1
-    return 0
-}
-
-tool_kind_supports_launch_id() {
-    case "$1" in
-        codex | opencode | gemini) return 0 ;;
-        *) return 1 ;;
-    esac
-}
-
 read_launch_id_for_slot() {
     local meta_dir="$1" slot="$2"
     local escaped_slot="${slot//./\\.}"
@@ -536,144 +441,6 @@ read_launch_time_for_slot() {
     esac
     printf '%s' "$launch_time"
 }
-
-# --- status-left location rendering (mode-aware session path) ---------
-# Abbreviate $HOME -> ~ for compactness. The `~` here is a literal display glyph,
-# not a path to expand — hence SC2088 is intentionally disabled.
-# shellcheck disable=SC2088
-_ae_abbrev_home() {
-    local p="$1"
-    if [[ "$p" == "$HOME" ]]; then
-        printf '~'
-    elif [[ "$p" == "$HOME/"* ]]; then
-        printf '~/%s' "${p#"$HOME"/}"
-    else
-        printf '%s' "$p"
-    fi
-}
-
-# Truncate from the LEFT (keep the meaningful tail), prefixing … when cut.
-_ae_trunc_left() {
-    local s="$1" max="${2:-40}"
-    if ((${#s} > max)); then
-        printf '…%s' "${s: -$((max - 1))}"
-    else
-        printf '%s' "$s"
-    fi
-}
-
-# Build the status-left location string from mode/origin/work_dir:
-#   local -> <work_dir>             (origin == work_dir; one path)
-#   full  -> <origin> → <work_dir>  (copy: where it was opened → the copy)
-#   git   -> <origin> ⌁ <work_dir>  (worktree: origin repo ⌁ the worktree)
-_ae_status_left_paths() {
-    local mode="$1" origin="$2" work_dir="$3"
-    local o w
-    o="$(_ae_trunc_left "$(_ae_abbrev_home "$origin")")"
-    w="$(_ae_trunc_left "$(_ae_abbrev_home "$work_dir")")"
-    case "$mode" in
-        full) printf '%s → %s' "$o" "$w" ;;
-        git) printf '%s ⌁ %s' "$o" "$w" ;;
-        *) printf '%s' "$w" ;;
-    esac
-}
-
-# Escape a string for literal use inside tmux status FORMAT TEXT (e.g. status-left).
-# Two metacharacters expand there: `#` (format introducer — `#S`/`#(cmd)`/`#{…}`) and
-# `%` (strftime — `%Y`/`%H`…). Both must be doubled (`##`, `%%`) or a path containing
-# them silently renders wrong or runs a shell job on every status redraw. Applied to
-# the static path text. (Live branch/health are tmux user-OPTION values, which are
-# interpolated literally — neither `#` nor `%` expands there — so they need no escape.)
-_ae_tmux_format_literal() {
-    local s="${1//\#/##}"
-    printf '%s' "${s//%/%%}"
-}
-
-# Render and apply the mode-aware session location to a session's status-left,
-# escaped for tmux format context, with status-left-length raised so it isn't
-# clipped (tmux default is 10). No-op if the target session isn't running. Shared
-# by session creation and `ae doctor --refresh` so a refreshed live session keeps
-# both halves of the bar in sync. server="" uses the ambient tmux (the wrapped
-# server at launch); a non-empty server (refresh path, read from meta) targets it
-# explicitly via -L.
-# Apply ae's status BAR to a session — both halves, one owner (ae; the watchdog only
-# feeds user options). Shape: [ae <session>]  0:leads 1:workers 99:ae-monitor  [<path> <git>] [watch …]
-#   left   = [ae <session>]           (name only — the window list renders after it)
-#   middle = tmux's native window list (role-named windows under lead-pair/lead-solo)
-#   right  = [<path><git>] [watch …]  (path static; git + watch via user options)
-_ae_apply_status_bar() {
-    local session="$1" mode="$2" origin="$3" work_dir="$4" server="${5:-}" server_kind="${6:-}"
-    local _t=(tmux)
-    if [[ "${server_kind:-}" == "ambiguous" ]]; then
-        # Ambiguous record → display no-op, never the ambient server.
-        return 0
-    fi
-    if [[ -n "$server" ]]; then
-        local -a _sel_t=()
-        mapfile -t _sel_t < <(_srv_tmux_args "${server_kind:-}" "$server")
-        _t=(command tmux "${_sel_t[@]}")
-    fi
-    "${_t[@]}" has-session -t "$session" 2>/dev/null || return 0
-    # Target by session ID, resolved by EXACT name match: tmux session targets
-    # prefix-match, so theming 'foo' would silently rewrite live 'foobar' if foo
-    # vanished mid-apply. Resolve through the same tmux command this function uses.
-    local _st
-    _st="$("${_t[@]}" list-sessions -F '#{session_id} #{session_name}' 2>/dev/null | _roster_session_id "$session")"
-    [[ -n "$_st" ]] || return 0
-    local paths sess_lit
-    paths="$(_ae_tmux_format_literal "$(_ae_status_left_paths "$mode" "$origin" "$work_dir")")"
-    # The SESSION NAME is user text entering a tmux FORMAT context — #-escape it like
-    # the path (a name with '#' would otherwise open a format/#() directive). With the
-    # name in status-left, window 0 is free to carry a role name under lead-pair.
-    sess_lit="$(_ae_tmux_format_literal "$session")"
-    "${_t[@]}" set-option -t "$_st" status-left "[ae ${sess_lit}] " 2>/dev/null || true
-    "${_t[@]}" set-option -t "$_st" status-left-length 40 2>/dev/null || true
-    # status-right is OWNED BY AE, baked once here — the watchdog never rewrites it
-    # (it only sets/unsets the user options below, so there is nothing to save,
-    # prepend, restore, or dedup). The path is static #-escaped text; the live parts
-    # come via user options, which tmux interpolates LITERALLY — not re-expanded, not
-    # parsed for directives — so branch names / status text with ), #, spaces, or
-    # shell metacharacters are harmless (no #() command, no shell):
-    #   @ae_branch_status   ' <branch><dirty>' — watchdog, each cycle (empty when off)
-    #   @ae_watchdog_status '[watch <glyph> a/t]' — watchdog health (empty when off)
-    "${_t[@]}" set-option -t "$_st" status-right "[${paths}#{@ae_branch_status}] #{@ae_watchdog_status}" 2>/dev/null || true
-    "${_t[@]}" set-option -t "$_st" status-right-length 100 2>/dev/null || true
-    "${_t[@]}" set-option -t "$_st" status-interval 5 2>/dev/null || true
-    # SECOND status line: the focused pane's agent identity. tmux renders pane borders
-    # (which carry #{@ae_agent}) only in windows with 2+ panes — a lone agent in its own
-    # window (lead-solo's lead, a single worker, spawned agents) had NO visible identity.
-    # Line 1 shows the active pane's @ae_agent (user option -> interpolated literally,
-    # injection-safe) so 'who am I looking at' is always answered, any pane count.
-    "${_t[@]}" set-option -t "$_st" status 2 2>/dev/null || true
-    # tmux ARRAY options do NOT inherit per-index: setting session-scope
-    # status-format[1] alone shadows the WHOLE global array, leaving index 0 (the
-    # standard bar: status-left + window list + status-right) EMPTY at session scope
-    # — the bar renders as a blank line (live exhibit: the first session-shape
-    # launch). Copy the global [0] into the session alongside our [1].
-    local _fmt0
-    _fmt0="$("${_t[@]}" show-options -gv 'status-format[0]' 2>/dev/null || true)"
-    if [[ -n "$_fmt0" ]]; then
-        "${_t[@]}" set-option -t "$_st" 'status-format[0]' "$_fmt0" 2>/dev/null || true
-    fi
-    # Right side of line 1: the per-agent roster (@ae_agents_status, watchdog-published
-    # each cycle, empty/unset when the watchdog is off). Agents live across multiple
-    # windows and this bar renders in every one, so the whole org is visible from any
-    # window. Right-aligned so it never collides with the left-aligned focused identity.
-    "${_t[@]}" set-option -t "$_st" 'status-format[1]' '#[align=left] #{@ae_agent}#[align=right]#{@ae_agents_status} ' 2>/dev/null || true
-    # WINDOW LIST: each window carries its own agents' verdict glyphs, so attention maps
-    # SPATIALLY onto the windows you already scan ('0:leads●● 1:workers⚙◌'). The
-    # right-side roster still answers WHO; this answers WHERE.
-    # @ae_window_status is a WINDOW-scoped user option (watchdog-published each cycle,
-    # empty/unset when it is off), interpolated literally like the others.
-    # OWNERSHIP: window-status-format is user-THEMING territory. ae deliberately owns it
-    # INSIDE its own sessions and writes it at SESSION scope only — a global write would
-    # leak ae's glyphs into every other tmux session the user runs. #F is preserved: it
-    # carries tmux's own zoom/activity/current markers, and dropping it would silently
-    # eat them.
-    "${_t[@]}" set-option -t "$_st" window-status-format '#I:#W#{@ae_window_status}#F' 2>/dev/null || true
-    "${_t[@]}" set-option -t "$_st" window-status-current-format '#I:#W#{@ae_window_status}#F' 2>/dev/null || true
-}
-
 # Detect current ae session when running inside tmux (for ae end/status without name)
 # _ae_inside_tmux, not a bare $TMUX test (#29): from a GUI terminal that inherited
 # $TMUX, display-message answers for the ORIGINAL pane — so `ae end` with no name
@@ -906,48 +673,6 @@ find_codex_session_by_cwd() {
     done
     echo "$best_id"
 }
-
-# Best-effort: capture Codex session ID post-launch.
-# Fallback chain: A) sid-file from register-sid, B) launch-token scan, C) CWD scan, D) pane scrape.
-capture_codex_session_id() {
-    local pane="$1" slot="$2" meta_dir="$3"
-    local sid_file="${meta_dir}/codex.${slot}.sid"
-    local captured=""
-    local work_dir launch_time launch_id
-    work_dir="$(grep '^work_dir=' "$meta_dir/meta" 2>/dev/null | cut -d= -f2- || true)"
-    launch_time="$(read_launch_time_for_slot "$meta_dir" "$slot")"
-    launch_id="$(read_launch_id_for_slot "$meta_dir" "$slot")"
-    # A) Poll for self-registered session ID (codex writes codex.SLOT.sid via developer_instructions)
-    local _attempt
-    for _attempt in 1 2 3 4 5 6; do
-        sleep 5
-        if [[ -f "$sid_file" ]]; then
-            captured="$(<"$sid_file")"
-            captured="${captured//[$'\n\r ']/}" # strip whitespace
-            rm -f "$sid_file"
-            break
-        fi
-    done
-    # B) Direct launch-token scan of codex session files
-    if [[ -z "$captured" && -n "$launch_id" ]]; then
-        captured="$(find_codex_session_by_launch_id "$launch_id" "$launch_time")"
-    fi
-    # C) Direct CWD-based scan of codex session files
-    if [[ -z "$captured" && -n "$work_dir" ]]; then
-        captured="$(find_codex_session_by_cwd "$work_dir" "$launch_time")"
-    fi
-    # D) Fallback: scrape TUI output (legacy, least reliable)
-    if [[ -z "$captured" ]]; then
-        captured="$(tmux capture-pane -t "$pane" -p 2>/dev/null |
-            grep -oE 'session id: [0-9a-f-]+' | head -1 | sed 's/^session id: //' || true)"
-    fi
-    if [[ -n "$captured" ]]; then
-        # Identity v2: the captured id is a roster row (harness_session.<slot>) — the
-        # core writes it under meta.lock; no bash lock is held around the call.
-        META_DIR="$meta_dir" _identity_core session _roster set-harness-session "$slot" "$captured" >/dev/null || true
-    fi
-}
-
 # Find an opencode session ID by matching directory in `opencode session list --format json`.
 # Only considers sessions updated after $launch_time (epoch seconds).
 # Returns the session ID of the newest matching session, or empty string.
@@ -1002,148 +727,6 @@ find_gemini_session_by_launch_id() {
     done
     echo "$best_id"
 }
-
-# Find a Gemini session ID by matching project directory and launch time.
-# Returns the newest session ID for the project after $launch_time, or empty string.
-find_gemini_session_by_cwd() {
-    local target_cwd="$1" launch_time="${2:-0}"
-    target_cwd="$(realpath "$target_cwd" 2>/dev/null || echo "$target_cwd")"
-    [[ -d "$HOME/.gemini/tmp" ]] || return
-    local best_id="" best_mtime=0
-    local proj_dir root_file root chats_dir f mtime session_id
-    for proj_dir in "$HOME/.gemini/tmp"/*; do
-        [[ -d "$proj_dir" ]] || continue
-        root_file="${proj_dir}/.project_root"
-        [[ -f "$root_file" ]] || continue
-        root="$(cat "$root_file" 2>/dev/null || true)"
-        root="$(realpath "$root" 2>/dev/null || echo "$root")"
-        [[ "$root" == "$target_cwd" ]] || continue
-        chats_dir="${proj_dir}/chats"
-        [[ -d "$chats_dir" ]] || continue
-        for f in "$chats_dir"/session-*.json; do
-            [[ -f "$f" ]] || continue
-            mtime="$(_ae_stat mtime "$f" || echo 0)"
-            ((mtime < launch_time)) && continue
-            session_id="$(_ae_json_first sessionId <"$f" 2>/dev/null || true)"
-            [[ -z "$session_id" ]] && continue
-            if ((mtime > best_mtime)); then
-                best_id="$session_id"
-                best_mtime="$mtime"
-            fi
-        done
-    done
-    echo "$best_id"
-}
-
-# Find an opencode session ID by matching directory in `opencode session list --format json`.
-# Only considers sessions updated after $launch_time (epoch seconds).
-# Returns the session ID of the newest matching session, or empty string.
-find_opencode_session_by_cwd() {
-    local target_cwd="$1" launch_time="${2:-0}"
-    target_cwd="$(realpath "$target_cwd" 2>/dev/null || echo "$target_cwd")"
-    if ! command -v opencode &>/dev/null; then
-        return
-    fi
-    local json
-    json="$(opencode session list --format json -n 20 2>/dev/null || true)"
-    [[ -z "$json" ]] && return
-    # opencode timestamps are in milliseconds
-    local launch_time_ms=$((launch_time * 1000))
-    local best_id="" best_updated=0
-    # Compact JSON to single-line-per-object, then parse with grep
-    local compact
-    # `\s` and a `\n` REPLACEMENT are BOTH GNU sed extensions — BSD reads them
-    # literally, so the split never happened, the whole array stayed on one line,
-    # and only the FIRST session was ever examined. POSIX class + a control-byte
-    # separator (inserted by bash, so sed never has to interpret an escape).
-    local _sep=$'\001'
-    compact="$(printf '%s' "$json" | tr -d '\n' |
-        sed -E "s/\}[[:space:]]*,[[:space:]]*\{/}${_sep}{/g" | tr "$_sep" '\n')"
-    local sid dir updated
-    while IFS= read -r entry; do
-        [[ -z "$entry" ]] && continue
-        sid="$(echo "$entry" | _ae_json_first id 2>/dev/null || true)"
-        [[ -z "$sid" ]] && continue
-        dir="$(echo "$entry" | _ae_json_first directory 2>/dev/null || true)"
-        [[ -z "$dir" ]] && continue
-        updated="$(echo "$entry" | _ae_json_first_num updated 2>/dev/null || true)"
-        [[ -z "$updated" ]] && continue
-        ((updated < launch_time_ms)) && continue
-        dir="$(realpath "$dir" 2>/dev/null || echo "$dir")"
-        [[ "$dir" != "$target_cwd" ]] && continue
-        if ((updated > best_updated)); then
-            best_id="$sid"
-            best_updated="$updated"
-        fi
-    done <<<"$compact"
-    echo "$best_id"
-}
-
-# Best-effort: capture OpenCode session ID post-launch.
-# Fallback chain: A) launch-token DB scan, B) CWD-based session list scan.
-capture_opencode_session_id() {
-    local pane="$1" slot="$2" meta_dir="$3"
-    local captured=""
-    local work_dir launch_time launch_id
-    work_dir="$(grep '^work_dir=' "$meta_dir/meta" 2>/dev/null | cut -d= -f2- || true)"
-    launch_time="$(read_launch_time_for_slot "$meta_dir" "$slot")"
-    launch_id="$(read_launch_id_for_slot "$meta_dir" "$slot")"
-    # Poll: opencode needs time to create the session
-    local _attempt
-    for _attempt in 1 2 3 4 5 6; do
-        sleep 5
-        if [[ -n "$launch_id" ]]; then
-            captured="$(find_opencode_session_by_launch_id "$launch_id" "$launch_time")"
-        fi
-        if [[ -z "$captured" && -n "$work_dir" ]]; then
-            captured="$(find_opencode_session_by_cwd "$work_dir" "$launch_time")"
-        fi
-        [[ -n "$captured" ]] && break
-    done
-    if [[ -n "$captured" ]]; then
-        # Identity v2: the captured id is a roster row (harness_session.<slot>) — the
-        # core writes it under meta.lock; no bash lock is held around the call.
-        META_DIR="$meta_dir" _identity_core session _roster set-harness-session "$slot" "$captured" >/dev/null || true
-    fi
-}
-
-# Best-effort: capture Gemini session ID post-launch.
-# Fallback chain: A) launch-token local chat scan, B) CWD-based local chat scan.
-capture_gemini_session_id() {
-    local pane="$1" slot="$2" meta_dir="$3"
-    local captured=""
-    local work_dir launch_time launch_id
-    work_dir="$(grep '^work_dir=' "$meta_dir/meta" 2>/dev/null | cut -d= -f2- || true)"
-    launch_time="$(read_launch_time_for_slot "$meta_dir" "$slot")"
-    launch_id="$(read_launch_id_for_slot "$meta_dir" "$slot")"
-    local _attempt
-    for _attempt in 1 2 3 4 5 6; do
-        sleep 5
-        if [[ -n "$work_dir" && -n "$launch_id" ]]; then
-            captured="$(find_gemini_session_by_launch_id "$work_dir" "$launch_id" "$launch_time")"
-        fi
-        if [[ -z "$captured" && -n "$work_dir" ]]; then
-            captured="$(find_gemini_session_by_cwd "$work_dir" "$launch_time")"
-        fi
-        [[ -n "$captured" ]] && break
-    done
-    if [[ -n "$captured" ]]; then
-        # Identity v2: the captured id is a roster row (harness_session.<slot>) — the
-        # core writes it under meta.lock; no bash lock is held around the call.
-        META_DIR="$meta_dir" _identity_core session _roster set-harness-session "$slot" "$captured" >/dev/null || true
-    fi
-}
-
-capture_session_id() {
-    local tool_kind="$1" pane="$2" slot="$3" meta_dir="$4"
-    case "$tool_kind" in
-        codex) capture_codex_session_id "$pane" "$slot" "$meta_dir" ;;
-        opencode) capture_opencode_session_id "$pane" "$slot" "$meta_dir" ;;
-        gemini) capture_gemini_session_id "$pane" "$slot" "$meta_dir" ;;
-        *) return 0 ;;
-    esac
-}
-
 # Is CANDIDATE a DIRECT CHILD of PARENT, by pure string structure? Used as the
 # belt to entry validation's braces before anything is deleted. String-structural
 # rather than realpath-based on purpose: `readlink -f` is GNU-only, and this test
@@ -1292,102 +875,6 @@ read_session_meta() {
         done <"$meta"
     fi
 }
-
-# Locked single-key meta write. Serializes on the same ${meta_file}.lock that the
-# generated helpers' ae_meta_set and the watchdog's meta writer use — without it, a
-# refresh could read old meta and mv it back OVER a concurrent helper write (e.g. an
-# agent setting the session goal mid-refresh), silently dropping that update. The
-# temp lives next to the meta file (same filesystem → atomic mv) and the read-modify-
-# write happens entirely inside the lock.
-# Write one or more keys in ONE locked temp+rename. The plural form exists because some
-# facts are only true TOGETHER: a minted session id and the record that ae minted it are
-# one fact in two keys, and writing them as two transactions leaves a window where the id
-# is present and its provenance is not — after which the id's mere presence reads as
-# launch-assigned and the next archive records that falsehood immutably.
-set_session_meta_values() { # <meta-file> <key> <value> [<key> <value>...]
-    local meta_file="$1"
-    shift
-    (($# >= 2)) && (($# % 2 == 0)) || return 1
-    local -a keys=() vals=()
-    while (($# >= 2)); do
-        keys+=("$1")
-        vals+=("$2")
-        shift 2
-    done
-    # EVERY STEP IS CHECKED, and the rename happens only after the complete new content
-    # was produced. This function may NOT lean on errexit: its callers invoke it under
-    # `!` and inside `if`, both of which suppress errexit for everything it does — the
-    # documented masking hazard, biting a WRITER rather than a query. Fail-open here does
-    # not mean "no change"; it means a TRUNCATED meta renamed over a good one.
-    #
-    # A shared writer has to be MORE defensive than the private ones it replaced, not
-    # merely equivalent: consolidating writers concentrates risk, so a hole that used to
-    # affect one path now affects every meta path in ae.
-    if [[ ! -f "$meta_file" ]]; then
-        # REFUSE. Building the "new" content from an unreadable file would write a
-        # replacement holding only the keys being set — which is data loss wearing the
-        # shape of a successful write.
-        echo "ae: cannot update '${meta_file}' — it does not exist." >&2
-        return 1
-    fi
-    {
-        flock -w 5 200 || return 1
-        local tmp="${meta_file}.tmp.$$" line i seen out=""
-        local -a current=()
-        # ONE read of the whole file, status checked. mapfile is a single operation: it
-        # either has the file's lines or it failed, with no half-read middle ground.
-        mapfile -t current <"$meta_file" || return 1
-        # Count-guarded loops, not `${arr[@]+…}`: `${!keys[@]+…}` is parsed as an
-        # INDIRECT expansion of the value of keys[@], which fails with "invalid variable
-        # name" the moment the array is non-empty. An empty meta and an empty key set both
-        # have to be ordinary cases here.
-        if ((${#current[@]} > 0)); then
-            for line in "${current[@]}"; do
-                seen=""
-                if ((${#keys[@]} > 0)); then
-                    for i in "${!keys[@]}"; do
-                        if [[ "${line%%=*}" == "${keys[$i]}" ]]; then
-                            # Replace IN PLACE, so key order is stable across rewrites.
-                            out+="${keys[$i]}=${vals[$i]}"$'\n'
-                            seen="$i"
-                            break
-                        fi
-                    done
-                fi
-                if [[ -z "$seen" ]]; then
-                    out+="${line}"$'\n'
-                else
-                    unset "keys[$seen]" "vals[$seen]"
-                fi
-            done
-        fi
-        if ((${#keys[@]} > 0)); then
-            for i in "${!keys[@]}"; do
-                out+="${keys[$i]}=${vals[$i]}"$'\n'
-            done
-        fi
-        # ONE write, status checked; anything short of complete success removes the temp
-        # and leaves the original untouched.
-        if ! printf '%s' "$out" >"$tmp"; then
-            rm -f "$tmp"
-            return 1
-        fi
-        if [[ -n "$out" && ! -s "$tmp" ]]; then
-            rm -f "$tmp"
-            return 1
-        fi
-        if ! mv "$tmp" "$meta_file"; then
-            rm -f "$tmp"
-            return 1
-        fi
-    } 200>"${meta_file}.lock"
-}
-
-# One key, through the same writer — not a second implementation of "write a meta key".
-set_session_meta_value() {
-    set_session_meta_values "$1" "$2" "$3"
-}
-
 # Identity v2 (P34): the roster is the CORE's answer — the glue parses no identity.
 # RESUME (the session meta exists — authoritative INCLUDING EMPTINESS, so a zero-worker
 # session never regains config workers): a v1 meta is migrated in place first
@@ -1414,8 +901,8 @@ _ROSTER_RECORDS=""
 # time, so one install is visible to everything at once.
 #
 # PRECEDENCE: bundle sibling ae-core (basename of $0 is exactly ae-glue AND
-# that sibling is executable) > env AE_CORE_BIN > core/current >
-# workspace.core. Installed ae-glue is INTERNAL — generated helpers exec it
+# that sibling is executable) > env AE_CORE_BIN > core/current. Installed
+# ae-glue is INTERNAL — generated helpers exec it
 # directly with no B8 sanitization — so a pane-carried AE_CORE_BIN must not
 # override the immutable sibling. Env is ignored silently when the sibling
 # fires. Checkout `ae` and every non-bundle / missing-sibling invocation skip
@@ -1455,9 +942,11 @@ _ae_core_current_input() {
 # OPERATOR-OWNED INPUTS ONLY, in precedence order: the bundle sibling ae-core
 # (when $0's basename is exactly ae-glue AND that sibling is executable — env
 # is then ignored, silently), then the AE_CORE_BIN environment variable, then
-# <AE_HOME>/core/current (what an install published — see the reader above),
-# then the config key `workspace.core`. Deliberately NOT the PATH and NOT a
-# build-layout guess such as `target/release/ae`. PATH is wrong because a helper
+# <AE_HOME>/core/current (what an install published — see the reader above).
+# Deliberately NOT the config, NOT the PATH and NOT a build-layout guess such as
+# `target/release/ae`. The config key `workspace.core` was retired at the final
+# cut: it was the only source that could not be read without an INI parser, and
+# keeping 47 lines of parser in the glue to answer one key was the wrong trade. PATH is wrong because a helper
 # runs in the AGENT's inherited environment rather than the operator's shell, so
 # it can resolve differently, or to a different VERSION than the one that
 # created the session; a build layout is wrong because it is a developer artifact
@@ -1480,9 +969,14 @@ _ae_core_bin_input() {
     if [[ -z "$candidate" ]]; then
         candidate="$(_ae_core_current_input)"
     fi
-    if [[ -z "$candidate" ]]; then
-        candidate="$(get_config workspace.core 2>/dev/null || true)"
-    fi
+    # `workspace.core` IS NO LONGER A RESOLUTION SOURCE (ruled at the final cut).
+    # It cost the glue the whole INI parser to read ONE key, and it was the only
+    # source that could not be answered without one. Two sources remain and
+    # neither needs a parser: the operator's `AE_CORE_BIN` (which is how the
+    # ae-dev namespace points at a checkout build) and the immutable
+    # `<AE_HOME>/core/current` an install publishes. An operator who had the
+    # config key set gets the same refusal as one who set nothing — named, exit
+    # 2, before any side effect — rather than a silently different core.
     [[ -n "$candidate" ]] || return 1
     printf '%s\n' "$candidate"
     return 0
@@ -1497,100 +991,7 @@ _ae_core_bin_version() {
     printf '%s\n' "${line##* }"
     return 0
 }
-
-# Evaluate the operator's core input and publish the session's binding. Called
-# from BOTH sync_session_assets preambles (launch and `doctor --refresh`), so the
-# rules live once:
-#   no input       -> meta is left BYTE-IDENTICAL, whatever it already holds.
-#                     Clearing used to be the rollback to bash; there is no bash
-#                     body behind an empty pin any more, so clearing a working
-#                     pin only makes the session refuse every core-owned command
-#                     — `end` included, which leaves it unendable. An existing
-#                     usable pin therefore survives a no-input refresh untouched,
-#                     and an existing UNUSABLE one is reported by the core-pin
-#                     check in `ae doctor` rather than rewritten here.
-#   usable input   -> the PAIR is pinned: the path and the version it reported.
-#   unusable input -> the path is pinned with an EMPTY version, and a warning
-#                     goes to the launching/refreshing terminal. A helper reads
-#                     that shape as configured-but-unusable and refuses, which
-#                     keeps it distinguishable from blank config.
-# The core is REQUIRED: either shape leaves every core-owned command refusing
-# with exit 2, so the warning here is the operator's one chance to fix it before
-# the session is useless.
-_ae_core_bind() {
-    local meta_dir="$1" candidate reason="" ver=""
-    if ! candidate="$(_ae_core_bin_input)"; then
-        return 0
-    fi
-    # Absolute only: a relative path would resolve against whatever directory a
-    # helper happened to be run from.
-    if [[ "$candidate" != /* ]]; then
-        reason="not an absolute path"
-    elif [[ ! -x "$candidate" ]]; then
-        reason="missing or not executable"
-    elif ! ver="$(_ae_core_bin_version "$candidate")"; then
-        reason="reports no version"
-    fi
-    set_session_meta_value "${meta_dir}/meta" "ae_core" "$candidate"
-    set_session_meta_value "${meta_dir}/meta" "ae_core_version" "$ver"
-    if [[ -n "$reason" ]]; then
-        printf 'ae: warning: the configured core is unusable (%s); every core-owned command will refuse: %s\n' \
-            "$reason" "$candidate" >&2
-    fi
-    return 0
-}
-
-# List all ae sessions (tagged with AE_SESSION env var)
-list_ae_sessions() {
-    local sessions="" _env
-    while IFS= read -r name; do
-        [[ -z "$name" ]] && continue
-        # Bash prefix test rather than `| grep -q`: the pipe cost a second
-        # process per session on a listing that already runs once per session.
-        _env="$(tmux show-environment -t "$name" AE_SESSION 2>/dev/null || true)"
-        if [[ "$_env" == AE_SESSION=* ]]; then
-            sessions="${sessions}${name}\n"
-        fi
-    done < <(tmux list-sessions -F '#{session_name}' 2>/dev/null || true)
-    printf '%b' "$sessions"
-}
-
-# Iterate stopped sessions (on disk but not running), de-duplicated across SESSIONS_DIR and WORKTREES_DIR
-iter_stopped_sessions() {
-    declare -A _seen=()
-    for dir in "$SESSIONS_DIR" "$WORKTREES_DIR"; do
-        [[ -d "$dir" ]] || continue
-        for entry in "$dir"/*/; do
-            [[ -d "$entry" ]] || continue
-            local name
-            name="$(basename "$entry")"
-            [[ -n "${_seen[$name]:-}" ]] && continue
-            tmux has-session -t "$name" 2>/dev/null && continue
-            _seen[$name]=1
-            echo "$name"
-        done
-    done
-}
-
 # --- Subcommands ---
-
-# Resolve the session's actual meta directory, checking the new path first and
-# falling back to the legacy worktree-nested path that read_session_meta() also
-# honors. Prints the resolved directory, or empty if none found.
-_resolve_session_dir() {
-    local name="$1"
-    local primary="${SESSIONS_DIR}/${name}"
-    if [[ -f "${primary}/meta" ]]; then
-        printf '%s' "$primary"
-        return
-    fi
-    local legacy="${WORKTREES_DIR}/${name}/.ae/${name}"
-    if [[ -f "${legacy}/meta" ]]; then
-        printf '%s' "$legacy"
-        return
-    fi
-}
-
 # `ae next` — attention navigator (Layer 2). Names the top-ranked RUNNING session
 # needing attention, with the same semantics as `ae list`'s attn marker because
 # since A.2c it is the same code: both are the core's. Read-only by default
@@ -1608,155 +1009,6 @@ cmd_next() {
     # Nothing here parses the tail — an unknown argument is the core's usage error.
     _ae_core_preflight_try --exec next "$@"
 }
-
-# Escape a string for embedding in JSON. Single source: this body is emitted
-# into every generated _lib via declare -f AND used directly by ae's own code.
-# The `_json_escape` alias that used to sit under it is gone with its last
-# caller — `list --json` is the core's, and no bash emits JSON on its own now.
-# Flatten an event summary to one line and cap its length, into _EV_SUMMARY.
-# Emitted into every generated _lib alongside ae_emit_event, its only caller.
-#
-# This replaces a `head -c N | tr` pipeline that cut at a BYTE count. When the
-# boundary landed mid-character (an em-dash is 3 bytes), the partial sequence
-# reached BSD tr under a UTF-8 locale, which refuses it — "Illegal byte
-# sequence", rc 1 — and the whole ask/send failed: no delivery, no event. It was
-# alignment-dependent, so the same text one byte over worked fine. Shipped and
-# hit live 2026-08-02. The portability campaign covered tool ABSENCE; this is
-# locale STRICTNESS, the same silent-failure family on a new axis.
-#
-# Two properties, both required: the cap must never abort (no tr, no fork at
-# all now), and it must never emit an invalid byte into events.jsonl.
-# Drop malformed UTF-8 from text bound for events.jsonl, into _EV_CLEAN.
-#
-# Summary text is agent- and user-controlled, so it can already be invalid
-# before ae ever truncates it — `abc\x80def` passed straight through and left a
-# line no UTF-8 reader will accept. AGENTS.md already names events.jsonl a
-# sanitising boundary (control bytes are stripped at write time); this extends
-# that same chokepoint to malformed sequences. It is DATA, not protocol: the
-# event still emits, rc stays 0, the summary is just clean.
-#
-# Pure bash on purpose — no iconv dependency — and the common case is O(1): a
-# summary with no high bytes is returned untouched without scanning.
-ae_sanitize_utf8() {
-    local s="$1"
-    local LC_ALL=C
-    if [[ "$s" != *[$'\x80'-$'\xff']* ]]; then
-        _EV_CLEAN="$s"
-        return 0
-    fi
-    local out="" i=0 n=${#s} b c1 c2 c3 need lo hi ok
-    while ((i < n)); do
-        printf -v b '%d' "'${s:i:1}"
-        if ((b < 0x80)); then
-            out+="${s:i:1}"
-            i=$((i + 1))
-            continue
-        fi
-        # Lead byte -> how many continuations, and the legal range of the FIRST
-        # one. The narrowed first-continuation ranges are what reject overlong
-        # encodings (C0/C1, E0 80) and UTF-16 surrogates (ED A0), which a plain
-        # 80-BF check would let through and iconv would still refuse.
-        need=0
-        lo=0x80
-        hi=0xbf
-        if ((b >= 0xc2 && b <= 0xdf)); then
-            need=1
-        elif ((b == 0xe0)); then
-            need=2
-            lo=0xa0
-        elif ((b >= 0xe1 && b <= 0xec)); then
-            need=2
-        elif ((b == 0xed)); then
-            need=2
-            hi=0x9f
-        elif ((b >= 0xee && b <= 0xef)); then
-            need=2
-        elif ((b == 0xf0)); then
-            need=3
-            lo=0x90
-        elif ((b >= 0xf1 && b <= 0xf3)); then
-            need=3
-        elif ((b == 0xf4)); then
-            need=3
-            hi=0x8f
-        else
-            i=$((i + 1)) # bare continuation byte, or an impossible lead
-            continue
-        fi
-        ok=1
-        ((i + need < n)) || ok=0
-        if ((ok)); then
-            printf -v c1 '%d' "'${s:i+1:1}"
-            ((c1 >= lo && c1 <= hi)) || ok=0
-            if ((ok && need >= 2)); then
-                printf -v c2 '%d' "'${s:i+2:1}"
-                ((c2 >= 0x80 && c2 <= 0xbf)) || ok=0
-            fi
-            if ((ok && need >= 3)); then
-                printf -v c3 '%d' "'${s:i+3:1}"
-                ((c3 >= 0x80 && c3 <= 0xbf)) || ok=0
-            fi
-        fi
-        if ((ok)); then
-            out+="${s:i:need+1}"
-            i=$((i + need + 1))
-        else
-            i=$((i + 1)) # truncated or illegal sequence: drop the lead byte
-        fi
-    done
-    _EV_CLEAN="$out"
-    return 0
-}
-
-ae_cap_summary() {
-    local s="$1" max="$2"
-    # One em-dash, spelled as its UTF-8 bytes so this works on bash 4.0 (the
-    # \u escape is 4.2+). Length 1 => bash is counting characters.
-    local _mb=$'\xe2\x80\x94'
-    # The locale must be decided BEFORE any length reasoning. An outer
-    # length test would run in the AMBIENT locale, and under SJIS/GB18030 a
-    # 198-ASCII + emoji string measures 200 "characters" — so the cap looked
-    # satisfied, the fallback never ran, and 202 bytes were emitted with the cap
-    # silently UNENFORCED. Each branch now owns its own comparison.
-    if ((${#_mb} == 1)); then
-        # Bash is UTF-8 character aware: ${#s} and the slice count CHARACTERS,
-        # so the cut lands on a character boundary by construction and there is
-        # nothing to repair. The cap is in characters here, by design.
-        if ((${#s} > max)); then
-            s="${s:0:max}"
-        fi
-    else
-        # NOT UTF-8 character aware — which does NOT mean "counting bytes".
-        # ja_JP.SJIS, zh_CN.GB18030 and ko_KR.eucKR are multibyte too: the probe
-        # measures 2 there, and bash would both MEASURE and slice in THOSE
-        # characters while the walk-back below reasons about UTF-8 bytes. Force
-        # real byte semantics for the whole fallback — comparison, slice and
-        # walk — with a FUNCTION-LOCAL LC_ALL, restored on return.
-        local LC_ALL=C
-        if ((${#s} > max)); then
-            s="${s:0:max}"
-            # Drop a trailing incomplete UTF-8 sequence: continuation bytes
-            # (0x80-BF) first, then a dangling lead byte (0xC0-F7).
-            while [[ -n "$s" && "${s: -1}" == [$'\x80'-$'\xbf'] ]]; do
-                s="${s%?}"
-            done
-            [[ -n "$s" && "${s: -1}" == [$'\xc0'-$'\xf7'] ]] && s="${s%?}"
-        fi
-    fi
-    _EV_SUMMARY="$s"
-    return 0
-}
-
-ae_json_escape() {
-    local s="$1"
-    s="${s//\\/\\\\}"
-    s="${s//\"/\\\"}"
-    s="${s//$'\n'/\\n}"
-    s="${s//$'\t'/\\t}"
-    s="${s//$'\r'/\\r}"
-    printf '%s' "$s"
-}
-
 # shellcheck disable=SC2059 # format strings stored in variables intentionally
 cmd_list() {
     # A.2a: `list` is the CORE's, whole. It computes liveness, branch and the
@@ -1899,223 +1151,15 @@ cmd_status() {
     fi
 }
 
-# ══════════════════════════════════════════════════════════════════════════
-# THE SELF/TARGET IDENTITY CONTRACT
-#
-# THREAT MODEL. Everything below defends against ACCIDENTAL MISUSE by this tool's
-# single human and the agents acting on their behalf — a stale payload, a name
-# reused between two operations, a lifecycle op landing mid-freeze, a pane that is
-# not the session it appears to be. It does NOT defend against adversarial
-# processes on the same machine: anything that can forge argv, write ae's metadata
-# or hold its locks has already won by easier routes. Findings outside this model
-# are filed as issues, not fixed inline — the contract is here to keep ordinary use
-# from destroying work, not to survive an attacker who already owns the box.
-#
-# The question every stop must answer is "may THIS process stop THAT session".
-# It decomposes differently per route:
-#
-#   NAMED ROUTE  (`ae stop <name>`) — the human named a target. Self-ness is
-#     irrelevant; stopping a session from anywhere is legitimate. It needs only
-#     the destruction facts D1..D5. It must merely never be MISCLASSIFIED as
-#     self, which would route it through the supervisor and tell the user their
-#     pane is closing when it is not.
-#
-#   IDENTITY ROUTE (`ae stop` with no name, or a target that IS us) — the kill
-#     would destroy the caller mid-operation, so C1..C5 must ALL hold before the
-#     work may be handed to the supervisor.
-#
-# This block exists because four review rounds each found a different INCOMPLETE
-# FACET of the same proof (tty-but-not-server, server-but-not-target,
-# target-but-not-enumeration) — a design being derived by adversarial iteration
-# instead of stated. Every fact below names what PROVES it and what happens when
-# it cannot be proven. A fact with no proof mechanism is a REFUSAL, never a gap
-# to be filled later.
-#
-# ── CURRENT-TARGET FACTS (identity route; ALL required) ───────────────────
-#   C1  We are inside tmux at all.
-#       PROVEN BY: $TMUX and $TMUX_PANE both set.
-#       UNPROVABLE -> not self. Env is a PRECONDITION, never evidence: every one
-#       of these variables is inherited and can be handed to us.
-#   C2  Our ambient server answers for ITSELF.
-#       PROVEN BY: socket_path + server pid, round-tripped from that socket,
-#       equal to the fields we were handed in $TMUX.
-#       UNPROVABLE -> not self. Catches a stale $TMUX (server restarted) and a
-#       forged one.
-#   C3  Our ambient server IS the target's RECORDED server.
-#       PROVEN BY: the same socket_path + pid pair asked of the target's recorded
-#       server via _end_tmux — compared as an ANSWER, not as strings, so a -L
-#       name and an -S path naming one server still match.
-#       UNPROVABLE -> not self. Missing this killed a recorded session on server
-#       A from an identically-named interactive pane on server B.
-#   C4  Our PANE resolves, on that server, to the target session itself.
-#       PROVEN BY: our pane id -> '#{session_id} #{session_name}' on that socket,
-#       both equal to the target's exact live id and its name.
-#       WHICH PANE ID: $TMUX_PANE for an interactive shell. NOT for a run-shell
-#       child — MEASURED 2026-08-11: `run-shell -t probe` hands the child
-#       TMUX_PANE=%60 (inherited from the server's own environment) while the
-#       target pane is %0. The variable is not merely absent there, it is WRONG,
-#       and trusting it is exactly why `run-shell -t alpha` resolved and killed
-#       BETA. A run-shell child therefore learns its pane the only way tmux
-#       offers: a FORMAT the server expands for the target, passed as --pane
-#       #{pane_id} and validated as ^%[0-9]+$ before use. That token is
-#       tmux-generated and shape-checked, unlike #{session_name}, which is
-#       attacker-influenced text and stays out of the recipe.
-#       UNPROVABLE -> not self.
-#   C5  Our CONTROLLING TTY is that pane's tty.
-#       PROVEN BY: ps -o tty= of this process == '#{pane_tty}'.
-#       UNPROVABLE -> not self, EXCEPT under --self, which bypasses THIS FACT AND
-#       ONLY THIS FACT, because a tmux run-shell child legitimately has no
-#       controlling terminal. The flag buys the bypass of a proof MECHANISM; it
-#       never supplies the CONCLUSION, and C1..C4 still have to hold.
-#
-# ── DESTRUCTION FACTS (both routes; ALL required) ─────────────────────────
-#   D1  Name usable AND on-disk path a physical direct child, checked at EVERY
-#       entrypoint (public dispatch + both internal). A boundary is entered,
-#       never inherited. UNPROVABLE -> refuse, nothing touched.
-#   D2  A POSITIVE recorded server. UNPROVABLE -> refuse; ae never guesses a
-#       server, and since stop destroys nothing there is nothing to acknowledge
-#       one's way past.
-#   D3  Addressed by EXACT session id on that server, never by name (`-t <name>`
-#       prefix-matches).
-#   D4  The kill is VERIFIED gone, tri-state: alive and unverifiable are BOTH
-#       failures and neither may print "Stopped".
-#   D5  The lifecycle lock is held across identity -> kill -> verify.
-#
-# ── FLEET FACTS (`ae stop all`) ───────────────────────────────────────────
-#   F1  The fleet is what ae's METADATA owns; enumerate the RECORDED servers.
-#       Ambient enumeration is a redirectable heuristic — AE_TMUX_SERVER redirects
-#       it, and using it stopped server A's session while reporting on B's.
-#   F2  An AE_SESSION-tagged session seen ambiently but ABSENT from metadata is
-#       reported LOUDLY as unmanaged: never silently stopped, never silently
-#       ignored.
-#   F3  Any mismatch or per-target failure is a loud PARTIAL FAILURE, never
-#       counted as success.
-#
-# ── INTERACTION FACTS (the caller IS one of the fleet targets) ────────────
-# C1..C5, D1..D5 and F1..F3 each hold in isolation. Both round-6 blockers lived
-# in what none of them said: what happens when the session being enumerated is
-# the session doing the enumerating. Stating the interaction is the fix.
-#   F4  THE FLEET LOOP NEVER RUNS IN A PROCESS THE FLEET LOOP CAN KILL.
-#       Rounds 4-6 tried to IDENTIFY the caller among the targets and stop it
-#       last. That rests on a false premise: "cannot prove a caller" is not
-#       "there is no caller". A child with $TMUX/$TMUX_PANE sanitised away is
-#       still PHYSICALLY IN THE PANE that dies — measured: C1 unprovable, so the
-#       caller was classed as no-one, killed inline first, and the remaining
-#       target was abandoned. And --pane is an ARGV SELECTOR, not evidence of
-#       where the caller lives: any process can pass any valid id, so without C5
-#       the wrong target gets deferred while the real caller stays inline-killable.
-#       No-tty caller attestation is impossible IN GENERAL, so ae stops attempting
-#       it: `stop all` ALWAYS hands the loop to a DETACHED supervisor.
-#       PROVEN BY: construction, not inference — the supervisor is nohup'd with
-#       all stdio detached and holds no lifecycle fd, so no session it kills can
-#       be running it. Ordering is then a nicety, never a safety property, and no
-#       flag or pane id is consulted for `all` at all.
-#       (C5/--pane machinery stays for SINGULAR self-stop, where the caller IS
-#       the named target by construction and the tty proof genuinely holds.)
-#   F5  A TARGET AE DOES NOT OWN IS A FAILURE, NOT A NOTE. An unmanaged
-#       ae-tagged session found and left running means the fleet operation did
-#       NOT do what `stop all` says. It contributes a non-zero rc, and the
-#       success-shaped summary ("No running ae sessions.") is suppressed whenever
-#       anything was found. This check KILLS NOTHING, so it stays with the caller
-#       where its rc is directly useful; F4 governs the loop that kills.
-#   F6  OWNERSHIP AND LIVENESS ARE SEPARATE QUESTIONS, and liveness is TRI-STATE.
-#       Enumerating the fleet by "has a resolvable live id" silently DROPPED every
-#       target whose recorded server was UNREACHABLE, conflating it with verified-
-#       stopped: `stop all` answered rc 0 "No running ae sessions." for a session
-#       that singular `stop` correctly refused with "cannot verify". Enumerate
-#       OWNERSHIP from metadata; then skip a target only when it is VERIFIED GONE.
-#       UNKNOWN is carried into the fleet and folded as FAILURE, never dropped.
-#   F7  HANDING OFF THE LOOP MUST NOT COST THE CALLER ITS EXIT CODE. F4 moved the
-#       kills out of process; an rc that then covered only the HANDOFF would starve
-#       every OUTSIDE caller — a script running `ae stop all` deserves a real exit
-#       status, which is F5's rc-honesty one level up. So the caller WAITS ON THE
-#       RECORD instead of on the loop: bounded (~30s) polling of each target's
-#       durable stop-result, then the outcomes fold into the rc alongside F5.
-#       PROVEN BY: the caller's SURVIVAL, which is never asked as a question — F4's
-#       abolished identity proof does not come back in disguise. A caller that WAS
-#       a target dies mid-wait having already reported all it could honestly know;
-#       a caller that was not stays and reports. Timeout is not a verdict on the
-#       sessions: the handoff rc stands, "results pending" is said out loud, and
-#       the read-back one-liner is named.
-#   F8  AN OPERATION AWAITS ITS OWN RESULTS, NOT RESULTS IN GENERAL. F7 asked "is
-#       there a stop-result newer than my baseline" — a COUNT DELTA, and a count
-#       delta carries no provenance. Measured: two concurrent `ae stop all -y` over
-#       one session, and the FIRST child's single result satisfied BOTH callers
-#       (rc 0 twice) while the second child found an empty fleet and emitted
-#       nothing. PROVEN BY: an OPERATION ID minted per invocation, stamped into
-#       BOTH stop-request and stop-result, with the poll filtering on it. One
-#       function owns the stamp so writer and reader cannot drift.
-#   F9  WHAT WAS CONFIRMED IS WHAT GETS ACTED ON — THE SET IS FROZEN AT
-#       CONFIRMATION. The supervisor re-enumerated metadata after the handoff, so
-#       the fleet it KILLED was not the fleet the human APPROVED: a session created
-#       in that gap died unconfirmed, and unawaited (measured — both died, caller
-#       rc 0). A destructive scope must never be re-derived downstream of its own
-#       confirmation. PROVEN BY: the caller freezes the list and passes it as argv;
-#       the supervisor enumerates NOTHING and may only shrink that set, never grow
-#       it. F8's id and F9's list are one payload: they are minted together, travel
-#       together, and answer the same question — WHICH operation, over WHICH set.
-#   F10 A FROZEN NAME AUTHORIZES KILLING THE INSTANCE THAT CARRIED IT AT
-#       CONFIRMATION, NEVER WHATEVER CARRIES THE NAME AT KILL TIME. F9 froze the
-#       SET but the set was made of NAMES, and a name is a slot, not a thing —
-#       classic ABA. Measured: create a session, `ae end` it completely, launch a
-#       FRESH one under the same name, then act on the frozen payload; the
-#       REPLACEMENT died and success was recorded. The window is exactly as long as
-#       a human stands at the confirmation prompt, and it falsified the promise the
-#       docs make — that a session started while you were deciding is left alone.
-#       PROVEN BY: freezing (name, session_id) pairs — the instance token ae already
-#       records, minted per launch and preserved across stop/resume, rename and
-#       transfer — and comparing the frozen value to what meta records RIGHT NOW,
-#       INSIDE the per-name lifecycle lock, immediately before the server is
-#       resolved and the kill issued. Inside is the whole fix: a check taken before
-#       the lock is acquired leaves the identical race, since a launch can complete
-#       between the check and the kill. A mismatch is a STAMPED FAILURE naming both
-#       instances, and the replacement is left running.
-#       "-" IS NEVER COMPARED AS IDENTITY. Treating it as a value that must match
-#       was still wrong, because it is a SHARED sentinel and equality is not
-#       identity when the value is shared: two pre-feature sessions both froze "-",
-#       so ending one and `ae rename`-ing another into its name (rename preserves a
-#       missing id) satisfied the comparison exactly, and the replacement died with
-#       rc 0. Two layers, and they compose:
-#         (a) MINT AT FREEZE. A session entering a fleet confirmation without an
-#             identity is GIVEN one there — under its own lifecycle lock, written
-#             durably (migration-on-touch, as with the doctor migrations and the
-#             legacy-name arm). From its first fleet contact it has a real token:
-#             stop/resume preserves it, and rename then moves something that
-#             actually denotes a session.
-#         (b) REFUSE A FROZEN "-". After (a) a dash can only be a stale or forged
-#             payload, so it is refused outright and stamped, naming this fact.
-#             Nothing is ever authorized by a sentinel two sessions can share.
-#   F11 A PAYLOAD IS ACCEPTED WHOLE, OR NOT AT ALL. The first shape check validated
-#       the odd tail AFTER the loop, so `opid oddone <id> dangling` KILLED oddone
-#       and recorded it verified-gone before returning 1 — a refusal issued after
-#       the destruction it existed to prevent. The committed seed missed it because
-#       one bare name is ZERO complete pairs: the specimen never reached the
-#       property. PROVEN BY: a preflight over the entire payload — count, every
-#       name, every token — that must pass before the first pair is acted on. This
-#       is the round-3 validate-before-act law, moved from the single target to the
-#       batch.
-# ══════════════════════════════════════════════════════════════════════════
-
-# Classify an `ae end` target BEFORE any destructive prompt. Echoes:
-#   live      — a running tmux session
-#   stopped   — no tmux session, but a session dir exists (SESSIONS_DIR/<name>)
-#   worktree  — no tmux session, no session dir, but a worktree dir exists
-#   (empty)   — not found: the caller MUST error out without prompting
-# 'all' is handled by the caller and never passed here. A name containing '/' can
-# never be a valid session/worktree basename (path-traversal guard, preserved from the
-# original elif conditions), so it classifies as not-found.
-# The tmux server a target session lives on (its own meta `tmux_server`), or empty for
-# the ambient/default server. The `ae end` path must target the session's OWN server:
-# `_ae_session_id` lists the AMBIENT server, so a plain-shell `ae end X` for an X live on
-# a NAMED server misses it, misclassifies X as stopped, deletes its state, and leaves X
-# running (orphaned). The doctor orphan check already reads per-session tmux_server; the
-# end path must too. (The prefix-match class's other axis: wrong SERVER, not just a name
-# prefix — sweep every consumer of the target name on the end path.)
-# Print "-S <path>" / "-L <name>" argv words for a (KIND, VALUE) pair. The kind is a
-# SEPARATE stored key (tmux_server_kind) — never inferred from a value prefix, because
-# a legacy -L server may literally be named "S:x" (7th review B2). Legacy metas have no
-# kind: a non-empty legacy value is a NAME (-L; released ae never wrote paths); empty or
-# kind=ambiguous prints NOTHING — callers must fail closed, never guess a server.
+# THREE MORE ORPHANED BLOCKS RETIRED HERE: the `ae end` target classifier, the
+# per-session server reader, and the `-S <path>` / `-L <name>` argv printer. All
+# three bodies went to the core with `end`/`stop`, and their prose had no subject
+# left in this file. The one rule worth keeping visible from here is the TYPED
+# PAIR: a server's KIND is a stored key (`tmux_server_kind`), never inferred from
+# the value's prefix, because a legacy `-L` server may literally be named "S:x".
+# The resolver below is the glue's remaining half of it — it decides what to
+# record; the core does the reading and the fail-closed refusals (src/meta.rs
+# ServerSelector, src/inventory.rs ServerId).
 # Where a launch ACTUALLY lands, as a TYPED PAIR in globals (kind|value).
 #
 # The core may not read the environment and does not ask tmux which server it is
@@ -2181,170 +1225,6 @@ resolve_launch_tmux_server() {
     fi
     return 0
 }
-
-_srv_tmux_args() {
-    local kind="$1" v="$2"
-    case "$kind" in
-        socket) [[ -n "$v" ]] && printf -- '-S\n%s\n' "$v" ;;
-        name) [[ -n "$v" ]] && printf -- '-L\n%s\n' "$v" ;;
-        ambiguous) : ;;
-        *) [[ -n "$v" ]] && printf -- '-L\n%s\n' "$v" ;;
-    esac
-    return 0
-}
-
-_end_target_server() {
-    local _m _k
-    _m="$(read_session_meta "$1" tmux_server 2>/dev/null || true)"
-    _k="$(read_session_meta "$1" tmux_server_kind 2>/dev/null || true)"
-    # The explicit override applies whenever the durable record is NOT positive —
-    # legacy-empty OR kind=ambiguous (8th review I1).
-    if [[ -n "${AE_END_SERVER:-}" ]] && [[ -z "$_m" || "$_k" == "ambiguous" ]]; then
-        printf '%s' "$AE_END_SERVER"
-        return 0
-    fi
-    printf '%s' "$_m"
-    return 0
-}
-
-# The stored kind for a target ('' for legacy metas). The AE_END_SERVER override types
-# itself by shape (an explicit human assertion), and only applies when the durable
-# record is legacy-empty — mirroring _end_target_server.
-_end_target_kind() {
-    local _k _m
-    _m="$(read_session_meta "$1" tmux_server 2>/dev/null || true)"
-    _k="$(read_session_meta "$1" tmux_server_kind 2>/dev/null || true)"
-    if [[ -n "${AE_END_SERVER:-}" ]] && [[ -z "$_m" || "$_k" == "ambiguous" ]]; then
-        if [[ "$AE_END_SERVER" == /* ]]; then printf 'socket'; else printf 'name'; fi
-        return 0
-    fi
-    printf '%s' "$_k"
-    return 0
-}
-
-_end_tmux() {
-    local target="$1"
-    shift
-    local srv kind
-    srv="$(_end_target_server "$target")"
-    kind="$(_end_target_kind "$target")"
-    if [[ "$kind" == "ambiguous" ]]; then
-        # An ambiguous record must never pick a server — the caller's fail-closed
-        # guards handle it; running anything here would be a guess.
-        return 1
-    fi
-    if [[ -z "$srv" ]]; then
-        # No positive record: under the invariant nothing on the end path may aim a
-        # command at a guessed server — the blank/ambiguous branch in end_session is
-        # the only consumer of that state and it never reaches here.
-        return 1
-    fi
-    local -a _sel=()
-    mapfile -t _sel < <(_srv_tmux_args "$kind" "$srv")
-    command tmux "${_sel[@]}" "$@"
-}
-
-# Exact session id for TARGET on its own server ('' when not live there). `|| true` keeps
-# this a return-0 query even when the recorded server is DOWN — a failed `list-sessions`
-# under pipefail must not set-e-abort a bare caller (AGENTS.md query-function contract).
-# Was TARGET's session VERIFIABLY killed? Tri-state, because "empty query result"
-# proves nothing when the query itself failed (4th review, B2: chmod the socket and
-# kill+list both fail — the old empty-means-gone check then cleaned up a LIVE session).
-#   0 — verified gone: a SUCCESSFUL listing lacks the name, or tmux says
-#       "no server running" (killing the last session exits the server; its stale
-#       socket file remains, so socket-absence is NOT the signal — the stderr is)
-#   1 — verified alive: a successful listing still contains the name
-#   2 — cannot verify: the server is unreachable (connect error) — callers must
-#       PRESERVE state and fail loudly rather than guess
-# Callers capture rc via `vg=0; _end_verify_gone t || vg=$?` (a bare call would
-# errexit-abort on 1/2 — AGENTS.md).
-# Best-effort sweep of the ENUMERABLE -L sockets in the tmux socket dir for a live
-# session named $1 (skipping the pinned default, which the caller already checked).
-# Prints the first matching server name, else nothing. -S sockets at arbitrary paths
-# are inherently unenumerable — this narrows the legacy-empty ambiguity, it cannot
-# close it; the residual risk is documented at the call site.
-# Is a failed tmux invocation's stderr a CLEAN-DEAD server (safe to treat the session
-# as gone) — as opposed to unreachable/unverifiable? ANCHORED to tmux's exact diagnostic
-# shapes, never substring matching (10th review B2: a server literally NAMED
-# "no server running" made its permission error contain the magic words):
-#   clean-dead:  "no server running on <path>"   — and ONLY that (stale socket)
-#   anything else — ENOENT, permission denied, refused, unknown — is NOT clean-dead.
-# Predicate: nonzero return is a QUERY result; every caller guards it (AGENTS.md).
-_tmux_err_is_clean_dead() {
-    # ONLY the stale-socket shape is clean-dead: tmux leaves the socket file behind
-    # when the server exits, so "no server running on <path>" proves a clean exit.
-    # ENOENT does NOT (11th review B1): unlinking a LIVE server's socket yields the
-    # same connect error while the server and its sessions keep running — treating it
-    # as dead deleted state under a live target. ENOENT = cannot-verify, fail closed.
-    [[ "$1" == "no server running on "* ]] && return 0
-    return 1
-}
-
-# Exact-match check for a RUNNING tmux session (not prefix — same guard as the
-# main script). Used by ae's own companion autostarts and by the telegram spawn,
-# which retires a stale aewatch sidecar through it.
-#
-# BOUNDARY (round-3 BLOCKER): this lives at TOP LEVEL, beside the classifier it
-# depends on. It previously existed ONLY inside the bash telegram daemon's
-# heredoc, so ae's own top-level callers invoked an undefined command: rc 127,
-# swallowed by their `2>/dev/null`, which reads as neither running nor unknown
-# and therefore fell straight through to CREATE. That heredoc is gone with the
-# bash bridge, and this definition is now the only one there has ever needed to
-# be — keep it at top level, where its callers actually run.
-#
-# TRI-STATE (#28), same contract as _end_verify_gone: "the query failed" is not
-# "the session is absent". The old `2>/dev/null | grep -Fxq` swallowed every
-# tmux error into a plain false, so one transient client failure (observed live
-# 2026-08-05 on the first tmux invocation from a freshly-launched terminal app)
-# read as daemon-absent and fired an orchestrator autostart whose backgrounded
-# duplicate then died silently against the session already running.
-#   0 — running
-#   1 — verifiably absent: a SUCCESSFUL listing lacks the name, or tmux itself
-#       says the server exited (the stale-socket diagnostic)
-#   2 — UNKNOWN: tmux failed for any other reason. Callers that ACT on absence
-#       must treat this as "do nothing" — fail toward the no-op.
-#
-# BOTH ERROR DIRECTIONS, because they are not symmetric:
-#   error read as ABSENCE  -> we CREATE a companion on top of a live one. For
-#       the ENOENT shape that is worse than a duplicate session: the socket is
-#       gone but the server is not (someone unlinked it), so the create lands a
-#       SECOND SERVER on that path and the two never see each other.
-#   absence read as UNKNOWN -> we skip a companion start that was wanted. The
-#       human reads one line of stderr and runs `ae orchestrator` by hand.
-# The first is silent and compounding, the second is loud and trivially
-# recoverable — so absence must be PROVEN, never inferred from an error we
-# merely failed to recognise. That is why this shares _tmux_err_is_clean_dead
-# (stale socket ONLY) rather than carrying a looser classifier of its own: the
-# live-unlinked case it excludes (11th review B1) is exactly the case that would
-# fork a second server here.
-#
-# Output is captured before matching instead of piped into `grep -q`: grep's
-# early exit SIGPIPEs tmux, and under pipefail that turns a match into a
-# nonzero pipeline (AGENTS.md). One immediate retry absorbs the transient case
-# — no sleep, because the observed failure is first-call-only and a delay would
-# tax the launch path on every genuinely broken tmux.
-# Bare calls errexit-abort on 1/2 — every caller guards (AGENTS.md).
-daemon_session_running() {
-    local _name="$1" _out="" _rc=0 _try _line
-    for _try in 1 2; do
-        _rc=0
-        _out="$(tmux list-sessions -F '#{session_name}' 2>&1)" || _rc=$?
-        if ((_rc == 0)); then
-            break
-        fi
-        if _tmux_err_is_clean_dead "$_out"; then
-            return 1
-        fi
-    done
-    ((_rc == 0)) || return 2
-    while IFS= read -r _line; do
-        if [[ "$_line" == "$_name" ]]; then
-            return 0
-        fi
-    done <<<"$_out"
-    return 1
-}
-
 # WHAT THE HUMAN ACTUALLY CONFIRMED, frozen at the prompt and keyed by target. The plan
 # is resolved from config, and config can change between the question and the answer: a
 # reviewer flipped a session's purge_agent_history while the prompt was waiting and a
@@ -2370,211 +1250,6 @@ _AE_END_TARGETS_CONFIRMED=false
 # The rendered confirmation line for the target just frozen. REPLY-style, like _EV: the
 # freeze path may not fork, because a fork cannot carry the array write back.
 _AE_END_PLAN_LINE=""
-
-doctor_extract_exec() {
-    local raw="$1"
-    local -a parts=()
-    read -r -a parts <<<"$raw"
-    local part
-    for part in "${parts[@]}"; do
-        case "$part" in
-            env) continue ;;
-            *=*) continue ;;
-            *)
-                printf '%s' "$part"
-                return 0
-                ;;
-        esac
-    done
-    return 1
-}
-
-doctor_report() {
-    local level="$1" label="$2" detail="$3"
-    printf "%-5s %-14s %s\n" "$level" "$label" "$detail"
-    case "$level" in
-        FAIL) DOCTOR_FAILURES=$((DOCTOR_FAILURES + 1)) ;;
-        WARN) DOCTOR_WARNINGS=$((DOCTOR_WARNINGS + 1)) ;;
-    esac
-}
-
-check_deps() {
-    if [[ -z "${BASH_VERSINFO[0]:-}" ]] || ((BASH_VERSINFO[0] < 4)); then
-        echo "Error: ae requires bash >= 4.0 (found ${BASH_VERSION:-unknown})." >&2
-        echo "macOS: brew install bash" >&2
-        return 1
-    fi
-    if ! command -v tmux >/dev/null 2>&1; then
-        echo "Error: tmux not found in PATH. Install tmux or run 'ae doctor' for details." >&2
-        return 1
-    fi
-}
-
-sync_existing_session_assets() {
-    local session_name="$1"
-    local meta="${SESSIONS_DIR}/${session_name}/meta"
-    if [[ ! -f "$meta" ]]; then
-        meta="${WORKTREES_DIR}/${session_name}/.ae/${session_name}/meta"
-    fi
-    if [[ ! -f "$meta" ]]; then
-        echo "session '${session_name}' not found" >&2
-        return 1
-    fi
-
-    local meta_dir work_dir origin mode main_pane config_file
-    meta_dir="$(dirname "$meta")"
-
-    # LEGACY tmux_server MIGRATION (5th review B2): pre-fix metas recorded "" even when
-    # the session lives on a foreign server — after upgrade, every exact-server consumer
-    # would read that lie as "default". Repair ONLY on positive location: the target must
-    # be live on the pinned default (→ record its socket path) or on exactly ONE
-    # enumerable -L socket (→ record that path). Ambiguous (several) or absent (stopped)
-    # records are left alone — the end path fails closed on them rather than guessing.
-    local _mig_cur
-    _mig_cur="$(grep '^tmux_server=' "$meta" 2>/dev/null | head -1 | cut -d= -f2- || true)"
-    if [[ -z "$_mig_cur" ]]; then
-        local _mig_dir _mig_hits="" _mig_n=0 _mig_sock _mig_out
-        _mig_dir="${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)"
-        for _mig_sock in "$_mig_dir"/*; do
-            [[ -S "$_mig_sock" ]] || continue
-            _mig_out="$(command tmux -S "$_mig_sock" list-sessions -F '#{session_name}' 2>/dev/null || true)"
-            if printf '%s\n' "$_mig_out" | grep -Fxq -- "$session_name"; then
-                _mig_hits="$_mig_sock"
-                _mig_n=$((_mig_n + 1))
-            fi
-        done
-        if ((_mig_n == 1)); then
-            if {
-                flock -w 5 201 || exit 1
-                awk -F= -v v="${_mig_hits}" '
-                    $1 == "tmux_server" { print "tmux_server=" v; seen = 1; next }
-                    $1 == "tmux_server_kind" { next }
-                    { print }
-                    END {
-                        # Pre-tmux_server-era metas lack the key entirely — replace-only
-                        # here wrote kind=socket with NO value line, a malformed record
-                        # (-S "") this migration exists to prevent. Add, not just replace.
-                        if (!seen) print "tmux_server=" v
-                        print "tmux_server_kind=socket"
-                    }
-                ' "$meta" >"${meta}.tmp.$$" && mv "${meta}.tmp.$$" "$meta"
-            } 201>"${meta_dir}/meta.lock"; then
-                echo "  migrated tmux_server: '' → ${_mig_hits} (kind=socket, positively located)"
-            else
-                echo "  WARN: tmux_server migration SKIPPED — could not lock meta (another writer active); record unchanged" >&2
-            fi
-        elif ((_mig_n > 1)); then
-            echo "  WARN: '${session_name}' is live on ${_mig_n} servers — tmux_server left legacy-empty (ambiguous); end will fail closed" >&2
-        else
-            # ZERO hits: NOT a positive location — recording any server here would be a
-            # guess (7th review B3: an arbitrary -S target made the old default-claim
-            # migrate-then-delete a live session). The record stays legacy-empty; a
-            # genuinely stopped session is ended with the explicit per-target
-            # acknowledgement: ae end --assume-stopped <name>.
-            echo "  '${session_name}' not live on any enumerable server — record left as-is; if it is genuinely stopped: ae end --assume-stopped ${session_name}"
-        fi
-    fi
-    work_dir="$(read_session_meta "$session_name" work_dir)"
-    origin="$(read_session_meta "$session_name" origin)"
-    mode="$(read_session_meta "$session_name" mode)"
-    main_pane="$(read_session_meta "$session_name" main_pane)"
-    config_file="$(read_session_meta "$session_name" config)"
-
-    [[ -n "$work_dir" ]] || work_dir="$origin"
-    [[ -n "$origin" ]] || origin="$work_dir"
-    [[ -n "$mode" ]] || mode="local"
-
-    # The meta pins a refresh recomputes: where this glue lives, its version, and
-    # the session's core binding — published as a PAIR (path + the version that
-    # binary reported), so a helper that later finds a different version refuses
-    # it. One rule set for launch and refresh; see _ae_core_bind.
-    set_session_meta_value "${meta_dir}/meta" "ae_path" "$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
-    set_session_meta_value "${meta_dir}/meta" "ae_version" "$AE_VERSION"
-    _ae_core_bind "$meta_dir"
-    if [[ -n "$config_file" ]]; then
-        set_session_meta_value "${meta_dir}/meta" "config" "$config_file"
-    fi
-    _refresh_session_shims "$meta_dir" || return 1
-    # The manifest is a core render. In a SUBSHELL because the core shims EXIT
-    # rather than return when no usable core is bound, and a refresh sweeping
-    # several sessions must not die on the first one (fb601995's class); the
-    # config overrides are scoped by the same subshell.
-    (
-        [[ -n "$config_file" ]] && CONFIG_FILE="$config_file"
-        AE_LOCAL_CONFIG=""
-        regenerate_manifest "$session_name" "$work_dir" "$origin" "$mode" "$main_pane" "$meta_dir"
-    ) || return 1
-
-    # Keep the status-left location in sync for an already-running session — refresh
-    # only regenerates on-disk assets, but a watchdog restart drops session/mode/
-    # location from status-right, so the left half must carry it. No-op if the
-    # session isn't running. Targets the session's own tmux server (from meta).
-    local server
-    server="$(read_session_meta "$session_name" tmux_server)"
-    server_kind="$(read_session_meta "$session_name" tmux_server_kind)"
-    _ae_apply_status_bar "$session_name" "$mode" "$origin" "$work_dir" "$server" "$server_kind"
-
-    # Cycle a RUNNING watchdog so refreshed helper code actually goes live. The
-    # running watchdog keeps its already-loaded body until restarted (refresh only
-    # rewrites the on-disk script), so a stop→start makes it re-source the fresh
-    # helper. Invoke the SESSION's own generated helper by path. Non-fatal: a failed
-    # restart must not fail the refresh, and every probe is guarded (set -e).
-    #
-    # Liveness gate (BLOCKER): 'watchdog status' trusts .watchdog.pid + kill -0,
-    # which a STOPPED session's stale pidfile satisfies if that PID was recycled by
-    # an unrelated live process — a stop would then kill that innocent process. So
-    # require genuine liveness FIRST: the tmux session exists on its own server
-    # (exact match via list-sessions|grep -Fxq, not has-session which prefix-matches)
-    # AND a pane still carries @ae_agent=_watchdog. Only then trust the status text.
-    local _wt=(tmux)
-    if [[ "${server_kind:-}" == "ambiguous" ]]; then
-        # Ambiguous record → display no-op, never the ambient server.
-        return 0
-    fi
-    if [[ -n "$server" ]]; then
-        local -a _sel_wt=()
-        mapfile -t _sel_wt < <(_srv_tmux_args "${server_kind:-}" "$server")
-        _wt=(command tmux "${_sel_wt[@]}")
-    fi
-    local sess_live="" wd_pane_live=""
-    if "${_wt[@]}" list-sessions -F '#{session_name}' 2>/dev/null | grep -Fxq -- "$session_name"; then
-        sess_live="yes"
-    fi
-    if [[ "$sess_live" == "yes" ]] &&
-        "${_wt[@]}" list-panes -s -t "$session_name" -F '#{@ae_agent}' 2>/dev/null | grep -Fxq -- "_watchdog"; then
-        wd_pane_live="yes"
-    fi
-    if [[ "$wd_pane_live" == "yes" ]]; then
-        local wd_status
-        wd_status="$(_watchdog_manage "$meta_dir" status 2>/dev/null || true)"
-        if [[ "$wd_status" == *"is running"* ]]; then
-            _watchdog_manage "$meta_dir" stop >/dev/null 2>&1 || true
-            sleep 0.3 # brief settle so the pane is gone before the fresh start
-            _watchdog_manage "$meta_dir" start >/dev/null 2>&1 || true
-            # Verify it actually came back up before claiming success (IMPORTANT):
-            # 'stop' flips meta watchdog=false, so a failed 'start' would leave the
-            # watchdog persistently disabled. Poll, then either announce success or
-            # re-record watchdog=true so the next resume revives it — never echo
-            # success unconditionally.
-            local wd_up="" _i=0
-            while ((_i < 5)); do
-                if [[ "$(_watchdog_manage "$meta_dir" status 2>/dev/null || true)" == *"is running"* ]]; then
-                    wd_up="yes"
-                    break
-                fi
-                sleep 0.5
-                _i=$((_i + 1))
-            done
-            if [[ "$wd_up" == "yes" ]]; then
-                echo "restarted watchdog for ${session_name}"
-            else
-                set_session_meta_value "${meta_dir}/meta" "watchdog" "true" || true
-                echo "Warning: watchdog restart failed for ${session_name} — re-enable recorded; it will start on next resume"
-            fi
-        fi
-    fi
-}
-
 # Try to capture a pending session ID from on-disk agent session files (no live pane needed).
 # Uses the same find_*_session_by_* helpers as start_capture_session_id, but skips the
 # pane-polling and TUI-scrape methods so it can run from doctor without an attached agent.
@@ -2685,45 +1360,6 @@ walk_pending_session_ids() {
         esac
     done <"${meta_dir}/meta"
 }
-
-# doctor reporter — emits doctor_report lines for each entry
-_doctor_recover_report() {
-    local kind="$1" slot="$2" agent_label="$3" tool_kind="$4" captured="$5"
-    case "$kind" in
-        ok)
-            doctor_report "OK" "recover:${RECOVER_SESSION_NAME}:${agent_label}" "captured ${tool_kind} session id ${captured:0:8}"
-            ;;
-        already)
-            doctor_report "OK" "recover:${RECOVER_SESSION_NAME}:${agent_label}" "already captured by another recoverer"
-            ;;
-        miss)
-            doctor_report "WARN" "recover:${RECOVER_SESSION_NAME}:${agent_label}" "no matching ${tool_kind} session file found (will retry on next launch)"
-            ;;
-        skip)
-            doctor_report "WARN" "recover:${RECOVER_SESSION_NAME}:${agent_label}" "no command configured for this agent alias"
-            ;;
-    esac
-}
-
-doctor_recover_pending_sessions() {
-    RECOVER_SESSION_NAME="$1"
-    # Hydrate config + origin from session meta (same reason as cmd_recover_pending)
-    local stored_config stored_origin
-    stored_config="$(read_session_meta "$1" config)"
-    stored_origin="$(read_session_meta "$1" origin)"
-    local prev_config="$CONFIG_FILE" prev_local="${AE_LOCAL_CONFIG:-}"
-    if [[ -n "$stored_config" && -f "$stored_config" ]]; then
-        CONFIG_FILE="$stored_config"
-    fi
-    AE_LOCAL_CONFIG=""
-    if [[ -n "$stored_origin" && -f "${stored_origin}/.ae/config" ]]; then
-        AE_LOCAL_CONFIG="${stored_origin}/.ae/config"
-    fi
-    walk_pending_session_ids "$1" _doctor_recover_report
-    CONFIG_FILE="$prev_config"
-    AE_LOCAL_CONFIG="$prev_local"
-}
-
 # watchdog reporter — TSV output: <kind>\t<slot>\t<agent_label>\t<tool_kind>\t<captured>
 # Called by the watchdog helper via 'ae _recover-pending <session>'.
 _watchdog_recover_report() {
@@ -2758,349 +1394,6 @@ cmd_recover_pending() {
     fi
     walk_pending_session_ids "$session_name" _watchdog_recover_report
 }
-
-# A per-session refresh runs in a SUBSHELL, and that is load-bearing rather than
-# tidy. The core shims are fail-closed: an unusable core makes
-# `_ae_core_preflight_try` print one line and EXIT 2, which `if fn; then` does not
-# catch — it ends the process. Since A.2c the workspace render is one of those
-# shims, so an install whose configured core reports no version used to take the
-# whole refresh down at the FIRST session, leaving every later one untouched and
-# printing no verdict for any of them. `doctor --refresh` is the REPAIR path (it
-# is what the core-pin WARN tells the operator to run), so it must survive the
-# fault it exists to repair: in a subshell that exit is the subshell's, the
-# session is reported FAIL with the shim's reason already on stderr, and the loop
-# goes on. Same reading as _identity_core's command substitutions, made explicit.
-doctor_refresh_sessions() {
-    local target="${1:-all}"
-    local refreshed=0
-
-    if [[ "$target" == "all" ]]; then
-        local meta session_name
-        declare -A seen_sessions=()
-        for meta in "${SESSIONS_DIR}"/*/meta; do
-            [[ -f "$meta" ]] || continue
-            session_name="$(basename "$(dirname "$meta")")"
-            seen_sessions["$session_name"]=1
-            if (sync_existing_session_assets "$session_name"); then
-                doctor_report "OK" "refresh:${session_name}" "refreshed session helpers and workspace"
-                doctor_recover_pending_sessions "$session_name"
-            else
-                doctor_report "FAIL" "refresh:${session_name}" "failed to refresh session assets"
-            fi
-            refreshed=1
-        done
-        for meta in "${WORKTREES_DIR}"/*/.ae/*/meta; do
-            [[ -f "$meta" ]] || continue
-            session_name="$(basename "$(dirname "$meta")")"
-            [[ -n "${seen_sessions[$session_name]:-}" ]] && continue
-            if (sync_existing_session_assets "$session_name"); then
-                doctor_report "OK" "refresh:${session_name}" "refreshed session helpers and workspace"
-                doctor_recover_pending_sessions "$session_name"
-            else
-                doctor_report "FAIL" "refresh:${session_name}" "failed to refresh session assets"
-            fi
-            refreshed=1
-        done
-        if ((refreshed == 0)); then
-            doctor_report "WARN" "refresh" "no existing sessions found in ${SESSIONS_DIR}"
-        fi
-        return 0
-    fi
-
-    if (sync_existing_session_assets "$target"); then
-        doctor_report "OK" "refresh:${target}" "refreshed session helpers and workspace"
-        doctor_recover_pending_sessions "$target"
-    else
-        doctor_report "FAIL" "refresh:${target}" "failed to refresh session assets"
-    fi
-}
-
-cmd_doctor() {
-    local refresh_target=""
-    case "${1:-}" in
-        "") ;;
-        --refresh)
-            refresh_target="${2:-all}"
-            if [[ $# -gt 2 ]]; then
-                echo "Usage: ae doctor [--refresh [all|<session>]]" >&2
-                return 1
-            fi
-            ;;
-        *)
-            echo "Usage: ae doctor [--refresh [all|<session>]]" >&2
-            return 1
-            ;;
-    esac
-
-    DOCTOR_FAILURES=0
-    DOCTOR_WARNINGS=0
-
-    echo "ae doctor"
-    echo ""
-    doctor_report "OK" "ae" "version ${AE_VERSION}"
-
-    if [[ -n "${BASH_VERSINFO[0]:-}" ]] && ((BASH_VERSINFO[0] >= 4)); then
-        doctor_report "OK" "bash" "version ${BASH_VERSION}"
-    else
-        doctor_report "FAIL" "bash" "bash >= 4.0 required"
-    fi
-
-    if command -v tmux >/dev/null 2>&1; then
-        doctor_report "OK" "tmux" "$(tmux -V 2>/dev/null || command -v tmux)"
-    else
-        doctor_report "FAIL" "tmux" "tmux not found in PATH"
-    fi
-
-    if command -v git >/dev/null 2>&1; then
-        doctor_report "OK" "git" "$(git --version 2>/dev/null || command -v git)"
-    else
-        doctor_report "FAIL" "git" "git not found in PATH"
-    fi
-
-    # flock is OPTIONAL (util-linux; absent on stock macOS): lifecycle locking
-    # degrades gracefully without it, so WARN — never FAIL (the bash+tmux+git
-    # hard-dependency contract stands).
-    if command -v flock >/dev/null 2>&1; then
-        doctor_report "OK" "flock" "$(command -v flock)"
-    else
-        doctor_report "WARN" "flock" "not found — lifecycle locking degraded AND session helpers (send/ask/state/goal) lock unguarded"
-    fi
-
-    # Userland flavour. ae routes every divergent coreutil through a shim
-    # (_ae_tac/_ae_stat/_ae_sed_inplace), so BSD is fully supported —
-    # this row just makes the active path visible when something looks off.
-    if command -v tac >/dev/null 2>&1; then
-        doctor_report "OK" "userland" "GNU coreutils"
-    elif tail -r /dev/null >/dev/null 2>&1; then
-        doctor_report "OK" "userland" "BSD/macOS (portability shims active)"
-    else
-        doctor_report "FAIL" "userland" "neither 'tac' nor 'tail -r' works — cannot read event logs newest-first"
-    fi
-
-    # timeout is OPTIONAL (coreutils; absent on stock macOS). Without it the
-    # watchdog's git probes run unbounded — a wedged git stalls a status refresh.
-    if command -v timeout >/dev/null 2>&1; then
-        doctor_report "OK" "timeout" "$(command -v timeout)"
-    else
-        doctor_report "WARN" "timeout" "not found — watchdog git probes run unbounded (brew install coreutils)"
-    fi
-
-    if [[ -f "$CONFIG_FILE" ]]; then
-        doctor_report "OK" "config" "$CONFIG_FILE"
-    else
-        doctor_report "FAIL" "config" "missing ${CONFIG_FILE}"
-    fi
-
-    case ":$PATH:" in
-        *":${HOME}/.local/bin:"*) doctor_report "OK" "PATH" "${HOME}/.local/bin" ;;
-        *) doctor_report "WARN" "PATH" "${HOME}/.local/bin not found on PATH" ;;
-    esac
-
-    if [[ -n "${AE_LOCAL_CONFIG:-}" ]]; then
-        doctor_report "OK" "local-config" "$AE_LOCAL_CONFIG"
-    else
-        doctor_report "WARN" "local-config" "no project override (.ae/config) in $(pwd)"
-    fi
-
-    mkdir -p "$SESSIONS_DIR" "$WORKTREES_DIR"
-    doctor_report "OK" "sessions" "$SESSIONS_DIR"
-    doctor_report "OK" "worktrees" "$WORKTREES_DIR"
-
-    # Orphan check: session dirs / worktrees with no matching RUNNING session. These
-    # accumulate when a wind-down DECLARES done but never runs `ae end` — the dir +
-    # worktree are left behind, and every --running-scoped sensor (ae list default, the
-    # orchestrator's charter) is structurally blind to them (the AIASSIST-115 class:
-    # half-dead for days, 17 worktrees vs 6 running). doctor is the one lane that reads
-    # on-disk state, so it surfaces the count + names and the human resumes (`ae <name>`)
-    # or finishes the teardown (`ae end <name>`). WARN, not FAIL: a deliberately stopped
-    # session is legitimately here too, and doctor cannot read intent.
-    local _orphan_n=0 _orphan_list="" _oname _osrv
-    while IFS= read -r _oname; do
-        [[ -z "$_oname" ]] && continue
-        # iter_stopped_sessions checks the AMBIENT tmux server. A session created on a
-        # NAMED server (tmux_server in its meta) is live but invisible there, so it would
-        # be a false orphan. Re-check the candidate against its OWN server (exact match)
-        # before counting it. (I1)
-        # Symmetric liveness re-check on the candidate's OWN server via the shared
-        # resolver: a NAMED server for a named candidate, the pinned DEFAULT socket for
-        # an empty one. The old named-only check false-orphaned default-server sessions
-        # when doctor ran from a named-ambient shell (3rd review, I1).
-        if _end_tmux "$_oname" has-session -t "=${_oname}" 2>/dev/null; then
-            continue
-        fi
-        _orphan_n=$((_orphan_n + 1))
-        _orphan_list="${_orphan_list}${_orphan_list:+, }${_oname}"
-    done < <(iter_stopped_sessions)
-    if ((_orphan_n == 0)); then
-        doctor_report "OK" "orphans" "no stopped or orphaned session dirs"
-    else
-        doctor_report "WARN" "orphans" "${_orphan_n} session dir(s)/worktree(s) with no running session: ${_orphan_list}"
-        doctor_report "WARN" "orphans-hint" "resume with 'ae <name>' or finish teardown with 'ae end <name>'"
-    fi
-
-    # Core pins, per session. Since the core became REQUIRED there is no bash body
-    # behind a blank or unbindable pin — every core-owned command on that session
-    # (end, archive, compact, and every helper) refuses with exit 2. The pin is
-    # published at launch and at `doctor --refresh`, so a session can sit there
-    # unusable with nothing else saying so: name it here. WARN, not FAIL, because
-    # `doctor --refresh` repairs it and the rest of the install is fine.
-    local _cp_bad="" _cpname _cpdir _cpbin _cpver
-    while IFS= read -r _cpname; do
-        [[ -z "$_cpname" ]] && continue
-        _cpdir="$(_resolve_session_dir "$_cpname")"
-        [[ -n "$_cpdir" && -f "${_cpdir}/meta" ]] || continue
-        _cpbin="$(grep '^ae_core=' "${_cpdir}/meta" 2>/dev/null | cut -d= -f2- || true)"
-        _cpver="$(grep '^ae_core_version=' "${_cpdir}/meta" 2>/dev/null | cut -d= -f2- || true)"
-        if [[ -z "$_cpbin" || -z "$_cpver" || ! -x "$_cpbin" ]]; then
-            _cp_bad="${_cp_bad}${_cp_bad:+, }${_cpname}"
-        fi
-    done < <(list_ae_sessions)
-    if [[ -n "$_cp_bad" ]]; then
-        doctor_report "WARN" "core-pin" "session ${_cp_bad} has no core bound; end/archive will refuse"
-        doctor_report "WARN" "core-pin-hint" "repair with 'ae doctor --refresh'"
-    fi
-
-    local workspace_main
-    workspace_main="$(get_config workspace.main)"
-    if [[ -n "$workspace_main" ]]; then
-        doctor_report "OK" "workspace.main" "$workspace_main"
-    else
-        doctor_report "FAIL" "workspace.main" "not set in config"
-    fi
-
-    local workers
-    workers="$(get_config workspace.workers)"
-    if [[ -n "$workers" ]]; then
-        doctor_report "OK" "workspace.workers" "$workers"
-    else
-        doctor_report "WARN" "workspace.workers" "no startup workers configured"
-    fi
-
-    declare -A doctor_agents=()
-    local entry key value
-    while IFS= read -r entry; do
-        # Identity v2: the launch recipes live in [profiles].
-        [[ "$entry" == profiles.*=* ]] || continue
-        key="${entry#profiles.}"
-        key="${key%%=*}"
-        value="${entry#*=}"
-        doctor_agents["$key"]="$value"
-    done < <(parse_config)
-
-    if [[ ${#doctor_agents[@]} -eq 0 ]]; then
-        doctor_report "FAIL" "profiles" "no [profiles] entries found"
-    else
-        local alias
-        while IFS= read -r alias; do
-            value="${doctor_agents[$alias]}"
-            local exec_name
-            exec_name="$(doctor_extract_exec "$value" || true)"
-            if [[ -z "$exec_name" ]]; then
-                doctor_report "FAIL" "agent:${alias}" "could not determine executable from '${value}'"
-                continue
-            fi
-            if command -v "$exec_name" >/dev/null 2>&1; then
-                doctor_report "OK" "agent:${alias}" "$exec_name"
-            else
-                doctor_report "FAIL" "agent:${alias}" "command '${exec_name}' not found"
-            fi
-        done < <(printf '%s\n' "${!doctor_agents[@]}" | sort)
-    fi
-
-    # Telegram bridge — feature-aware. Reports OK/WARN only; FAILs are
-    # surfaced when the user actually runs `ae telegram start`. If the user
-    # never configured the feature, we skip silently.
-    local _tg_enabled _tg_token _tg_chat _tg_present
-    _tg_enabled="$(get_config telegram.enabled 2>/dev/null || true)"
-    _tg_token="$(get_config telegram.token_file 2>/dev/null || true)"
-    _tg_chat="$(get_config telegram.chat_id 2>/dev/null || true)"
-    _tg_present="false"
-    if [[ -n "$_tg_enabled$_tg_token$_tg_chat" ]]; then
-        _tg_present="true"
-    fi
-    if [[ "$_tg_present" == "true" ]]; then
-        # The bridge is the ae core binary, so the ONE dependency to report is a
-        # usable core — resolved the machine-general way the spawn uses, not a
-        # session's meta pin.
-        local _tg_core=""
-        if _tg_core="$(_ae_core_bin_input)" &&
-            [[ "$_tg_core" == /* && -x "$_tg_core" ]] &&
-            _ae_core_bin_version "$_tg_core" >/dev/null 2>&1; then
-            doctor_report "OK" "telegram.core" "$_tg_core"
-        else
-            doctor_report "WARN" "telegram.core" "no usable ae core (set workspace.core or AE_CORE_BIN)"
-        fi
-        if [[ -n "$_tg_token" ]]; then
-            local _tg_err
-            if _tg_err="$(_telegram_validate_token_file "$_tg_token" 2>&1)"; then
-                doctor_report "OK" "telegram.token" "$(_telegram_expand_path "$_tg_token")"
-            else
-                doctor_report "WARN" "telegram.token" "$_tg_err"
-            fi
-        else
-            doctor_report "WARN" "telegram.token" "telegram.token_file not set"
-        fi
-        if [[ -n "$_tg_chat" ]]; then
-            doctor_report "OK" "telegram.chat_id" "$_tg_chat"
-        else
-            doctor_report "WARN" "telegram.chat_id" "telegram.chat_id not set"
-        fi
-        if [[ "$(_telegram_intent_enabled)" == "true" ]]; then
-            if _telegram_daemon_running; then
-                doctor_report "OK" "telegram.daemon" "running"
-            else
-                doctor_report "WARN" "telegram.daemon" "enabled but not running (will autostart on 'ae <name>')"
-            fi
-        else
-            doctor_report "OK" "telegram.intent" "enabled=false (feature off)"
-        fi
-        if _telegram_load_last_autostart_refusal; then
-            doctor_report "WARN" "telegram.autostart" "last refusal=${_TELEGRAM_LAST_REFUSAL_CATEGORY} at ${_TELEGRAM_LAST_REFUSAL_TS}"
-        fi
-    fi
-
-    if [[ -n "$refresh_target" ]]; then
-        echo ""
-        doctor_refresh_sessions "$refresh_target"
-    fi
-
-    echo ""
-    printf "Summary: %d failure(s), %d warning(s)\n" "$DOCTOR_FAILURES" "$DOCTOR_WARNINGS"
-    ((DOCTOR_FAILURES == 0))
-}
-
-cmd_watchdog() {
-    local subcmd="${1:-}"
-    local target="${2:-}"
-    if [[ -z "$subcmd" ]]; then
-        echo "Usage: ae watchdog <start|stop|status> [session-name]" >&2
-        echo "  (If run inside an ae session, session-name is optional.)" >&2
-        return 1
-    fi
-    case "$subcmd" in
-        start | stop | status) ;;
-        *)
-            echo "Usage: ae watchdog <start|stop|status> [session-name]" >&2
-            return 1
-            ;;
-    esac
-    if [[ -z "$target" ]]; then
-        target="$(detect_current_session 2>/dev/null)" || {
-            echo "Error: no session name given and not inside an ae tmux session" >&2
-            return 1
-        }
-    fi
-    local meta_dir="${SESSIONS_DIR}/${target}"
-    if [[ ! -d "$meta_dir" ]]; then
-        echo "Error: session '${target}' not found" >&2
-        return 1
-    fi
-    # NOT through the session's `watchdog` helper: that file is the core's daemon
-    # shim now and takes no subcommand. The management is this script's, and it
-    # needs only the session directory.
-    _watchdog_manage "$meta_dir" "$subcmd"
-}
-
 # ── Telegram bridge (machine-global chat daemon) ─────────────────────
 #
 # Forwards filtered events from every ae session on this machine to a
@@ -3120,216 +1413,6 @@ _TELEGRAM_TMUX_SESSION="ae-telegram"
 # Serializes start / stop / autostart(supervise) so an "is it enabled + running?"
 # check and the spawn/kill that follows are one atomic critical section. Without
 # it, a watchdog supervise tick can re-spawn a daemon the user just `stop`ped.
-_TELEGRAM_CONTROL_LOCK="${CONFIG_DIR}/telegram/control.lock"
-_telegram_control_lock_file() {
-    mkdir -p "${CONFIG_DIR}/telegram" 2>/dev/null || true
-    printf '%s' "$_TELEGRAM_CONTROL_LOCK"
-}
-
-# The only refusal categories that may cross the autostart observability boundary.
-# Keep this closed: status/doctor and the durable record must never expose the
-# coexistence guard's free-text diagnostics or anything derived from a token.
-_telegram_autostart_refusal_category() {
-    case "${1:-}" in
-        aewatch-live | same-token-live | token-unreadable | probe-failed | spawn-failed)
-            printf '%s' "$1"
-            ;;
-        *)
-            printf '%s' "spawn-failed"
-            ;;
-    esac
-}
-
-# Read the last autostart refusal, if its whole line matches the closed record
-# grammar. A malformed or hand-edited record is ignored rather than echoed: the
-# reader must not turn an arbitrary value in this file into a status/doctor sink.
-# Results are globals because callers run this directly under errexit and the
-# category/timestamp are facts, not a display string to split again.
-_telegram_load_last_autostart_refusal() {
-    _TELEGRAM_LAST_REFUSAL_CATEGORY=""
-    _TELEGRAM_LAST_REFUSAL_TS=""
-    local file="${CONFIG_DIR}/telegram/autostart-refusal" raw tab pattern
-    [[ -f "$file" && -r "$file" ]] || return 1
-    raw="$(<"$file")" || return 1
-    # The atomic writer emits one newline-terminated record. Command substitution
-    # removes that final newline; any remaining newline means more than one row.
-    [[ "$raw" != *$'\n'* ]] || return 1
-    tab=$'\t'
-    pattern="^(aewatch-live|same-token-live|token-unreadable|probe-failed|spawn-failed)${tab}([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z)$"
-    [[ "$raw" =~ $pattern ]] || return 1
-    _TELEGRAM_LAST_REFUSAL_CATEGORY="${BASH_REMATCH[1]}"
-    _TELEGRAM_LAST_REFUSAL_TS="${BASH_REMATCH[2]}"
-    return 0
-}
-
-# Persist one refusal category and mirror it into the current session's event
-# ledger when a session context is available. The global record is deliberately
-# LAST-only and survives a later successful start; it is published temp+mv in the
-# same directory so status/doctor can never observe a torn row.
-_telegram_record_autostart_refusal() {
-    local category session now dir file tmp safe_session event_meta
-    category="$(_telegram_autostart_refusal_category "${1:-spawn-failed}")"
-    session="${2:-${AE_TELEGRAM_AUTOSTART_SESSION:-${SESSION:-}}}"
-    now="$(date -u +%FT%TZ)"
-    dir="${CONFIG_DIR}/telegram"
-    file="${dir}/autostart-refusal"
-    if mkdir -p "$dir" 2>/dev/null; then
-        tmp="${file}.tmp.$$"
-        if ! printf '%s\t%s\n' "$category" "$now" >"$tmp"; then
-            rm -f "$tmp" 2>/dev/null || true
-        elif ! mv "$tmp" "$file" 2>/dev/null; then
-            rm -f "$tmp" 2>/dev/null || true
-        fi
-    fi
-
-    # Session names are optional in the observability record and are never needed
-    # to identify the refusal. Validate before using one as an event target or a
-    # path component; legacy metadata must not become a new interpolation sink.
-    safe_session=""
-    if [[ "$session" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$ ]]; then
-        safe_session="$session"
-    fi
-    event_meta=""
-    if [[ -n "$safe_session" && -n "${SESSIONS_DIR:-}" ]]; then
-        event_meta="${SESSIONS_DIR}/${safe_session}"
-    fi
-    if [[ -n "$event_meta" && -d "$event_meta" ]]; then
-        # ae_emit_event owns JSON escaping and locking. Run it in a subshell so
-        # this best-effort observability path cannot leak a temporary meta-dir
-        # override into the caller. Bind every envelope facet here: this event is
-        # an ae fact, not an ambient caller/routing/body record, and never let an
-        # event failure block launch.
-        (
-            _AE_META_DIR="$event_meta"
-            _AE_SESSION="$safe_session"
-            AE_SENDER_OVERRIDE=ae
-            unset _AE_EVENT_ACTOR_SLOT _AE_EVENT_ACTOR_SESSION _AE_EVENT_TARGET_SLOT _AE_EVENT_TARGET_SESSION _AE_LAST_BODY_FILE
-            ae_emit_event "telegram_autostart_refused" "$safe_session" "" "category=$category"
-        ) || true
-    fi
-    return 0
-}
-
-# Resolve a possibly-tilde-prefixed path against $HOME. Patterns are
-# literal-tilde matches, not shell tilde-expansion (which would happen
-# at quote-time and miss config-file values like "~/.config/...").
-# shellcheck disable=SC2088
-_telegram_expand_path() {
-    local p="$1"
-    case "$p" in
-        '~') printf '%s' "$HOME" ;;
-        '~/'*) printf '%s/%s' "$HOME" "${p#"~/"}" ;;
-        *) printf '%s' "$p" ;;
-    esac
-}
-
-# True if a value looks like a config-affirmative.
-_telegram_truthy() {
-    case "${1,,}" in
-        1 | true | yes | on) return 0 ;;
-        *) return 1 ;;
-    esac
-}
-
-# Print the configured intent: "true" if [telegram] enabled is truthy.
-_telegram_intent_enabled() {
-    local v
-    v="$(get_config telegram.enabled 2>/dev/null || true)"
-    if _telegram_truthy "$v"; then echo "true"; else echo "false"; fi
-}
-
-# Same as above but bypasses the get_config CACHE: get_config caches per
-# XDG_RUNTIME_DIR, so a watchdog process with a different runtime dir could hold a
-# stale enabled=true even after `stop` wrote false. Reuses parse_config so the
-# value semantics (inline-comment stripping, quotes, local-override last-wins)
-# match get_config exactly — just without the cache. Authoritative for the
-# under-lock re-check.
-_telegram_intent_enabled_uncached() {
-    local entry result=""
-    while IFS= read -r entry; do
-        [[ "$entry" == "telegram.enabled="* ]] && result="${entry#*=}"
-    done < <(parse_config)
-    if _telegram_truthy "$result"; then echo "true"; else echo "false"; fi
-}
-
-# Idempotent check for daemon presence — uses exact tmux session match
-# (list-sessions + grep -Fxq), not has-session which prefix-matches.
-_telegram_daemon_running() {
-    tmux list-sessions -F '#{session_name}' 2>/dev/null |
-        grep -Fxq -- "$_TELEGRAM_TMUX_SESSION"
-}
-
-# Check feature deps. Echoes missing names space-separated. Empty == OK.
-# Validate token file (path, exists, readable, mode 600, owned by user).
-# Echoes error message on failure, returns non-zero. Echoes nothing on success.
-_telegram_validate_token_file() {
-    local path="$1"
-    [[ -n "$path" ]] || {
-        echo "no telegram.token_file in config"
-        return 1
-    }
-    local resolved
-    resolved="$(_telegram_expand_path "$path")"
-    [[ -f "$resolved" ]] || {
-        echo "token file not found: $resolved"
-        return 1
-    }
-    [[ -r "$resolved" ]] || {
-        echo "token file not readable: $resolved"
-        return 1
-    }
-    local owner mode
-    owner="$(_ae_stat uid "$resolved" || echo -1)"
-    [[ "$owner" == "${UID:-$(id -u)}" ]] || {
-        echo "token file not owned by you: $resolved"
-        return 1
-    }
-    mode="$(_ae_stat mode "$resolved" || echo 000)"
-    case "$mode" in
-        400 | 600) ;;
-        *)
-            echo "token file must be chmod 600 (currently $mode): $resolved"
-            return 1
-            ;;
-    esac
-    return 0
-}
-
-# Persist the enabled flag in ~/.ae/config without disturbing other content.
-# Adds the [telegram] section if it doesn't yet exist.
-#
-# A single section-scoped awk pass handles every case: replace `enabled`
-# INSIDE [telegram], or insert it just before the next section / at EOF if
-# the section exists without it. We must NOT decide replace-vs-insert from a
-# global `grep enabled` — another section's `enabled =` would mislead that
-# check and leave [telegram] untouched (codex-flagged).
-_telegram_persist_intent() {
-    local value="$1"
-    local cfg="$CONFIG_FILE"
-    local tmp="$cfg.tmp.$$"
-    if [[ ! -f "$cfg" ]]; then
-        printf '[telegram]\nenabled = %s\n' "$value" >"$cfg"
-    elif ! grep -q '^\[telegram\]' "$cfg"; then
-        printf '\n[telegram]\nenabled = %s\n' "$value" >>"$cfg"
-    else
-        awk -v val="$value" '
-            BEGIN { in_tg = 0; done = 0 }
-            /^\[telegram\][[:space:]]*$/ { in_tg = 1; print; next }
-            /^\[/ {
-                if (in_tg && !done) { print "enabled = " val; done = 1 }
-                in_tg = 0; print; next
-            }
-            in_tg && !done && /^[[:space:]]*enabled[[:space:]]*=/ {
-                print "enabled = " val; done = 1; next
-            }
-            { print }
-            END { if (in_tg && !done) print "enabled = " val }
-        ' "$cfg" >"$tmp" && mv "$tmp" "$cfg"
-    fi
-    # (No cache to bust: get_config parses fresh on every call — the disk cache was
-    # removed after proving both stale-mtime and cross-process wrong-owner races.)
-}
-
 # Spawn the Rust core's telegram bridge in its dedicated tmux session. Caller
 # must have checked deps and validated config — this just orchestrates tmux.
 # The daemon inherits the EXACT config file ae validated (CONFIG_FILE) via
@@ -3359,219 +1442,6 @@ _telegram_persist_intent() {
 # deliberately conservative: it never stops the default-server instance from
 # starting (a plain `ae` has AE_TMUX_SERVER unset and is not gated at all), only
 # a second, named-server one.
-
-# The bot token behind a config file, or nothing. NEVER printed anywhere: it is a
-# credential, and this function exists to compare two of them, not to show them.
-_telegram_coexistence_token() {
-    local cfg="$1" file token
-    [[ -f "$cfg" ]] || return 1
-    # A SCOPED read: parse_config reads the ambient CONFIG_FILE/AE_LOCAL_CONFIG
-    # globals, so they are supplied as a COMMAND PREFIX inside the subshell
-    # $( ) already provides — this shell's own values are never touched.
-    file="$(CONFIG_FILE="$cfg" AE_LOCAL_CONFIG="" get_config telegram.token_file 2>/dev/null || true)"
-    [[ -n "$file" ]] || return 1
-    file="$(_telegram_expand_path "$file")"
-    [[ -f "$file" && -r "$file" ]] || return 1
-    token="$(head -1 "$file" 2>/dev/null || true)"
-    token="${token#"${token%%[![:space:]]*}"}"
-    token="${token%"${token##*[![:space:]]}"}"
-    [[ -n "$token" ]] || return 1
-    printf '%s\n' "$token"
-    return 0
-}
-
-# The default server's session names, or a verdict about why there are none.
-#   stdout : the session names, one per line          (rc 0)
-#   rc 1   : there is provably no server there        (the stale-socket shape)
-#   rc 2   : cannot tell                              (anything else)
-#
-# THE PROBE SELECTS THE DEFAULT SERVER EXPLICITLY, and both variables that could
-# redirect it are cleared:
-#   TMUX         a probe run from inside a pane would otherwise inherit that
-#                pane's server — and this instance's panes are exactly where the
-#                guard runs from;
-#   TMUX_TMPDIR  the socket DIRECTORY `-L default` resolves inside; leaving it
-#                set is the same bypass in another variable.
-# `-L` outranks $TMUX (measured), but only for the socket NAME; the directory is
-# TMUX_TMPDIR's, so both are needed for "the default server" to mean the one word
-# it says. There is deliberately NO environment knob pointing this elsewhere: an
-# env-selectable default server is a production bypass of the guard. Tests
-# isolate it through PATH instead.
-_telegram_coexistence_probe() {
-    local out="" rc=0 _try
-    for _try in 1 2; do
-        rc=0
-        out="$(env -u TMUX -u TMUX_TMPDIR tmux -L default list-sessions -F '#{session_name}' 2>&1)" || rc=$?
-        ((rc == 0)) && break
-        # Tri-state, as #28: only the stale-socket shape proves there is no
-        # server. Anything else is "cannot tell", and cannot tell is not absent.
-        if _tmux_err_is_clean_dead "$out"; then
-            return 1
-        fi
-    done
-    ((rc == 0)) || return 2
-    printf '%s\n' "$out"
-    return 0
-}
-
-# Do the two instances share a bot?
-#   0 = same bot, or one of the tokens cannot be read (fail CLOSED)
-#   1 = provably different bots, so both may run
-_telegram_coexistence_same_bot() {
-    local mine theirs
-    _TELEGRAM_COEXISTENCE_TOKEN_UNREADABLE=0
-    if ! mine="$(_telegram_coexistence_token "$CONFIG_FILE")"; then
-        mine=""
-        _TELEGRAM_COEXISTENCE_TOKEN_UNREADABLE=1
-    fi
-    if ! theirs="$(_telegram_coexistence_token "$HOME/.ae/config")"; then
-        theirs=""
-        _TELEGRAM_COEXISTENCE_TOKEN_UNREADABLE=1
-    fi
-    if [[ -n "$mine" && -n "$theirs" && "$mine" != "$theirs" ]]; then
-        return 1
-    fi
-    return 0
-}
-
-# 0 = go ahead, 1 = refuse (with the reason on stderr).
-#
-# Called TWICE around the spawn — see the call sites. It is one function rather
-# than a pre-check and a separate re-check because the question is identical both
-# times, and two copies of a tri-state probe is two places for the tri-state to
-# be got wrong.
-_telegram_coexistence_guard() {
-    _TELEGRAM_COEXISTENCE_REFUSAL_CATEGORY=""
-    _TELEGRAM_COEXISTENCE_TOKEN_UNREADABLE=0
-    # Only a named-server instance can be the SECOND bridge. The installed ae has
-    # no AE_TMUX_SERVER and is never gated by its own coexistence guard.
-    [[ -n "${AE_TMUX_SERVER:-}" ]] || return 0
-
-    local names rc=0 line found_bridge=0 found_aewatch=0
-    names="$(_telegram_coexistence_probe)" || rc=$?
-    if ((rc == 1)); then
-        return 0
-    fi
-    if ((rc != 0)); then
-        _TELEGRAM_COEXISTENCE_REFUSAL_CATEGORY="probe-failed"
-        echo "ae telegram: cannot tell whether another ae instance's bridge is live on the default tmux server" >&2
-        echo "ae telegram: refusing to start a second bridge on the same bot token: run 'ae telegram stop', or give ae-next a distinct bot token" >&2
-        return 1
-    fi
-    while IFS= read -r line; do
-        if [[ "$line" == "$_TELEGRAM_TMUX_SESSION" ]]; then found_bridge=1; fi
-        if [[ "$line" == "ae-aewatch" ]]; then found_aewatch=1; fi
-    done <<<"$names"
-
-    # AEWATCH FIRST, and REFUSE rather than kill. A live aewatch claims the
-    # bridge-owner marker and kills competing bridges on EVERY tmux server, so it
-    # would take ours down seconds after we start it — but it belongs to the
-    # other instance, and killing another instance's process is not this
-    # command's to do. (The named-server retirement below is different: that
-    # sidecar is on OUR server.) Ordered before the token comparison because it
-    # holds whoever's bot is configured.
-    if ((found_aewatch == 1)); then
-        _TELEGRAM_COEXISTENCE_REFUSAL_CATEGORY="aewatch-live"
-        echo "ae telegram: a retired aewatch sidecar is live on the default tmux server, and it kills competing bridges on every server. Stop it first: tmux kill-session -t ae-aewatch on the default server (or ae watchdog stop)" >&2
-        return 1
-    fi
-    ((found_bridge == 1)) || return 0
-    # A bridge IS live over there. Two different bots are two different
-    # conversations and may both run; the same bot may not.
-    if ! _telegram_coexistence_same_bot; then
-        return 0
-    fi
-    if ((_TELEGRAM_COEXISTENCE_TOKEN_UNREADABLE == 1)); then
-        _TELEGRAM_COEXISTENCE_REFUSAL_CATEGORY="token-unreadable"
-    else
-        _TELEGRAM_COEXISTENCE_REFUSAL_CATEGORY="same-token-live"
-    fi
-    echo "ae telegram: another ae instance's Telegram bridge is live on the default tmux server with the same bot token: run 'ae telegram stop', or give ae-next a distinct bot token" >&2
-    return 1
-}
-
-_telegram_spawn_daemon() {
-    _TELEGRAM_COEXISTENCE_REFUSAL_CATEGORY=""
-    # Every failure below RETURNS, and the function ends with an explicit 0.
-    # Previously the write was unchecked, new-session's rc was discarded, and a
-    # trailing `|| true` on a cosmetic tmux call forced rc 0 — so the caller's
-    # "autostart failed (continuing without bridge)" warning could never fire
-    # and a bridge that never started looked like one that had.
-    #
-    # The bridge is machine-global (one per host, not one per session), so the
-    # core is resolved the machine-general way — the same operator-input +
-    # absolute + executable + reports-a-version test _ae_core_preflight_try
-    # applies — never from a session's meta pin. The bash bridge is retired, so
-    # there is no fallback body to degrade to: an unusable core is a hard
-    # refusal here, and the caller decides how loud that is (explicit start
-    # errors, autostart warns and continues).
-    local _core
-    _core="$(_ae_core_bin_input)" || {
-        echo "ae telegram: no ae core configured (set workspace.core or AE_CORE_BIN)" >&2
-        return 1
-    }
-    [[ "$_core" == /* && -x "$_core" ]] || {
-        echo "ae telegram: ae core not an executable absolute path: $_core" >&2
-        return 1
-    }
-    _ae_core_bin_version "$_core" >/dev/null 2>&1 || {
-        echo "ae telegram: ae core reports no version: $_core" >&2
-        return 1
-    }
-    # COEXISTENCE (pre-P5): delete at the entry flip. Placed BEFORE the aewatch
-    # retirement below because the guard is a pure probe and the retirement is a
-    # KILL: refusing after it would leave the machine with no bridge at all.
-    if ! _telegram_coexistence_guard; then
-        return 1
-    fi
-    # Retire a stale aewatch sidecar first (RR P4). A RUNNING aewatch holds the old
-    # bytes whatever this file now says: it claims the bridge-owner marker and kills
-    # competing bridges on every tmux server, so it would kill the core we are about
-    # to start. Placed AFTER the core checks deliberately — an unusable core returns
-    # above, and retiring the sidecar there would leave the machine with no bridge at
-    # all. The probe is TRI-STATE and only rc 0 (verified running) fires the kill: an
-    # UNKNOWN answer (rc 2, tmux could not say) must never authorise a destructive
-    # guess (#28). The kill itself is best-effort and never fatal.
-    if daemon_session_running ae-aewatch 2>/dev/null; then
-        echo "ae telegram: retiring stale aewatch sidecar (superseded by the Rust bridge)" >&2
-        tmux kill-session -t ae-aewatch 2>/dev/null || true
-    fi
-    # <ae-home> is CONFIG_DIR, not $HOME/.ae: an isolated (AE_HOME=...) run must
-    # spawn a daemon reading THAT tree, never the live ~/.ae. --home is the real
-    # $HOME, and is used only to expand a ~/ token_file path.
-    if ! tmux new-session -d -s "$_TELEGRAM_TMUX_SESSION" -c "$HOME" \
-        "$_core" _telegram-run "$CONFIG_DIR" --config "$CONFIG_FILE" --home "$HOME" 2>/dev/null; then
-        return 1
-    fi
-    # COEXISTENCE (pre-P5): delete at the entry flip. CHECK -> SPAWN -> RE-CHECK,
-    # with SELF-RETREAT.
-    #
-    # WHY A SECOND LOOK. The pre-check answers about a moment that has already
-    # passed by the time the session exists, and the other instance is the plain
-    # `ae` — FROZEN on main, which means it will never learn to honour a claim,
-    # a lock or a marker this side invents. There is no protocol to agree on, so
-    # the only move available is to look again and, if the other bridge came up
-    # in the window, take OUR OWN down. Never theirs: killing another instance's
-    # process is not this command's to do, and it is the instance the operator
-    # did not ask to disturb.
-    #
-    # THE RESIDUAL, stated rather than papered over: between the spawn above and
-    # the probe below, both bridges can be polling the same bot for a few
-    # seconds, and each update in that window goes to whichever getUpdates
-    # arrived first. The window is BOUNDED by this re-check, not closed by it.
-    # That is accepted: the alternative is a claim protocol only one side can
-    # implement.
-    if ! _telegram_coexistence_guard; then
-        # Through the shim — our server, our session.
-        tmux kill-session -t "$_TELEGRAM_TMUX_SESSION" 2>/dev/null || true
-        return 1
-    fi
-    # Cosmetic only — these may fail without the bridge being any less started.
-    tmux set-option -t "$_TELEGRAM_TMUX_SESSION" status off 2>/dev/null || true
-    tmux rename-window -t "$_TELEGRAM_TMUX_SESSION" "ae-telegram" 2>/dev/null || true
-    return 0
-}
-
 # Best-effort idempotent autostart — called from the `ae <name>` start path.
 # Strictly non-fatal: any error path is a one-line stderr warn, returns 0.
 # Caller's session start path MUST NOT be affected by anything here.
@@ -3608,459 +1478,7 @@ _autostart_session_hint() {
     printf '%s\n' "$name"
     return 0
 }
-
-_orchestrator_autostart_if_scaffolded() {
-    [[ "${AE_NO_AUTOSTART:-}" == "1" ]] && return 0
-    case "${SESSION:-}" in orchestrator | hub) return 0 ;; esac
-    # Scaffold probe mirrors the orchestrator trampoline's era-detection EXACTLY
-    # (review finding): a set AE_ORCHESTRATOR_DIR is authoritative (set-but-missing
-    # means 'ae orchestrator' would error — don't fire a child that dies silently),
-    # then canonical, then AE_HUB_DIR (authoritative likewise), then legacy.
-    local _sconf=""
-    if [[ -n "${AE_ORCHESTRATOR_DIR:-}" ]]; then
-        _sconf="${AE_ORCHESTRATOR_DIR}/orchestrator.config"
-    elif [[ -f "$CONFIG_DIR/orchestrator/orchestrator.config" ]]; then
-        _sconf="$CONFIG_DIR/orchestrator/orchestrator.config"
-    elif [[ -n "${AE_HUB_DIR:-}" ]]; then
-        _sconf="${AE_HUB_DIR}/hub.config"
-    elif [[ -f "$CONFIG_DIR/meta-hub/hub.config" ]]; then
-        _sconf="$CONFIG_DIR/meta-hub/hub.config"
-    fi
-    [[ -n "$_sconf" && -f "$_sconf" ]] || return 0
-    # Tri-state probes (#28): only a VERIFIED absence may start a companion.
-    # An UNKNOWN answer (rc 2 — tmux failed to answer at all) cannot rule out a
-    # orchestrator that is already running, and the cost of guessing wrong is a
-    # duplicate session whose backgrounded launch dies with its stderr on
-    # /dev/null. Fail toward doing nothing, and say why.
-    local _st_rc=0 _hub_rc=0
-    daemon_session_running orchestrator || _st_rc=$?
-    if ((_st_rc == 0)); then
-        return 0
-    fi
-    daemon_session_running hub || _hub_rc=$?
-    if ((_hub_rc == 0)); then
-        return 0
-    fi
-    if ((_st_rc == 2 || _hub_rc == 2)); then
-        echo "Orchestrator autostart skipped — tmux did not answer, so a running orchestrator cannot be ruled out." >&2
-        return 0
-    fi
-    echo "Starting orchestrator companion session in the background (AE_NO_AUTOSTART=1 skips)."
-    # Launch through the interpreter we are already running under, not through
-    # ae's PATH-resolved shebang: this child's stderr goes to /dev/null, so a
-    # wrong-bash refusal would be invisible. Belt and braces with the
-    # `unset AE_BASH_REEXEC` at the top of the file.
-    (AE_NO_AUTOSTART=1 "${BASH:-bash}" "$0" orchestrator >/dev/null 2>&1 &)
-    return 0
-}
-
-_telegram_autostart_if_enabled() {
-    # The Rust core is the ONE bridge now: the aewatch stand-down guard is gone
-    # along with the bash bridge it used to suppress, so intent + liveness are
-    # the whole decision. Every revive path (launch, reattach, watchdog
-    # _supervise) still funnels here.
-    [[ "$(_telegram_intent_enabled)" == "true" ]] || return 0
-    _telegram_daemon_running && return 0
-    # No dependency pre-check: the bridge IS the ae core, so "can this machine
-    # run it" is exactly "is there a usable core", which _telegram_spawn_daemon
-    # already decides. A second gate here would duplicate that judgement and
-    # drift from it. An unusable core reaches the caller as a failed spawn, and
-    # the warn-and-continue tail below is where it surfaces.
-    local token_file err lock refusal_category autostart_session
-    autostart_session="${AE_TELEGRAM_AUTOSTART_SESSION:-${SESSION:-}}"
-    token_file="$(get_config telegram.token_file 2>/dev/null || true)"
-    if err="$(_telegram_validate_token_file "$token_file" 2>&1)"; then
-        : # ok
-    else
-        _telegram_record_autostart_refusal "token-unreadable" "$autostart_session"
-        echo "ae telegram: skipped autostart — $err" >&2
-        return 0
-    fi
-    lock="$(_telegram_control_lock_file)"
-    {
-        # Non-blocking: if a start/stop/supervise is mid-flight, skip this tick —
-        # autostart must never delay session launch. Re-check intent + running
-        # UNDER the lock so a concurrent `ae telegram stop` can't be undone (the
-        # stop-vs-supervise TOCTOU race).
-        flock -n 9 || return 0
-        # Authoritative (uncached) re-check: a same-second `stop` must win even
-        # if this process's get_config cache (possibly a different
-        # XDG_RUNTIME_DIR) still has enabled=true.
-        [[ "$(_telegram_intent_enabled_uncached)" == "true" ]] || return 0
-        _telegram_daemon_running && return 0
-        if ! _telegram_spawn_daemon 2>/dev/null; then
-            refusal_category="${_TELEGRAM_COEXISTENCE_REFUSAL_CATEGORY:-spawn-failed}"
-            _telegram_record_autostart_refusal "$refusal_category" "$autostart_session"
-            echo "ae telegram: autostart failed (continuing without bridge)" >&2
-        fi
-    } 9>"$lock"
-    return 0
-}
-
-cmd_telegram_help() {
-    cat <<'EOF'
-Usage:
-  ae telegram setup      Interactive: writes [telegram] config + token file
-  ae telegram start      Persist enabled=true and start the daemon now
-  ae telegram stop       Persist enabled=false and stop the daemon now
-  ae telegram status     Report runtime + intent state
-
-Config block in ~/.ae/config:
-  [telegram]
-  enabled = true
-  token_file = "~/.config/ae/telegram-bot.token"
-  chat_id = 123456789
-  allowed_user_ids = "123456789"
-  include = "send,ask,review,reply,done,alert,throttled,chat"   # default
-  exclude = "memo"                                             # default empty
-
-Requires: a configured ae core (workspace.core or AE_CORE_BIN) and nothing
-else. The bridge IS the ae core binary, run in tmux session `ae-telegram`;
-it forwards filtered events from every ae session on this machine.
-See docs/internals/bridge-protocol.md for the underlying contract.
-EOF
-}
-
-cmd_telegram_setup() {
-    local token_path_default="$HOME/.config/ae/telegram-bot.token"
-    mkdir -p "$(dirname "$token_path_default")"
-    echo "ae telegram setup — interactive."
-    echo
-    local token chat_id
-    # -s keeps the token off the screen/scrollback. It is not a shell-history
-    # risk here (read runs inside the script, not the user's interactive shell),
-    # but visible-on-screen is its own leak vector (over-the-shoulder, recording).
-    read -r -s -p "Bot token (from @BotFather): " token
-    echo
-    [[ -n "$token" ]] || {
-        echo "Error: token required" >&2
-        return 1
-    }
-    read -r -p "Chat ID (your Telegram numeric id): " chat_id
-    [[ -n "$chat_id" ]] || {
-        echo "Error: chat_id required" >&2
-        return 1
-    }
-    if ! [[ "$chat_id" =~ ^-?[0-9]+$ ]]; then
-        echo "Error: chat_id must be numeric" >&2
-        return 1
-    fi
-
-    local tok_target="$token_path_default"
-    read -r -p "Token file path [$tok_target]: " _tok_input
-    [[ -n "$_tok_input" ]] && tok_target="$(_telegram_expand_path "$_tok_input")"
-    mkdir -p "$(dirname "$tok_target")"
-    (
-        umask 077
-        printf '%s\n' "$token" >"$tok_target"
-    )
-    chmod 600 "$tok_target"
-
-    # Write config block (preserve user's existing content).
-    if [[ ! -f "$CONFIG_FILE" ]]; then
-        mkdir -p "$(dirname "$CONFIG_FILE")"
-        : >"$CONFIG_FILE"
-    fi
-    if grep -q '^\[telegram\]' "$CONFIG_FILE"; then
-        echo "Warning: [telegram] section already exists in $CONFIG_FILE — leaving as-is."
-        echo "Edit it manually if values changed."
-    else
-        cat >>"$CONFIG_FILE" <<EOF
-
-[telegram]
-enabled = true
-token_file = "${tok_target/#$HOME/~}"
-chat_id = $chat_id
-allowed_user_ids = "$chat_id"
-EOF
-    fi
-    echo
-    echo "Saved token to $tok_target (chmod 600)."
-    echo "Wrote [telegram] block to $CONFIG_FILE."
-    echo "Run 'ae telegram start' to spawn the daemon."
-}
-
-cmd_telegram_start() {
-    # No dependency pre-check — see _telegram_autostart_if_enabled. An unusable
-    # core fails in the spawn below, which prints WHICH of the three conditions
-    # failed; this path only adds that the start did not happen.
-    local err
-    local token_file
-    token_file="$(get_config telegram.token_file 2>/dev/null || true)"
-    if ! err="$(_telegram_validate_token_file "$token_file" 2>&1)"; then
-        echo "Error: $err" >&2
-        return 1
-    fi
-    local chat_id lock
-    chat_id="$(get_config telegram.chat_id 2>/dev/null || true)"
-    [[ -n "$chat_id" ]] || {
-        echo "Error: telegram.chat_id missing in config" >&2
-        return 1
-    }
-    lock="$(_telegram_control_lock_file)"
-    # Under the control lock so start serializes with stop/supervise (the whole
-    # start/stop/supervise trio shares it): enable + spawn happen atomically.
-    {
-        # Must hold the lock (serializes with stop/supervise). Busy → report,
-        # don't run the critical section unlocked.
-        flock -w 5 9 || {
-            echo "ae telegram: busy (start/stop/supervise in progress) — try again" >&2
-            return 1
-        }
-        _telegram_persist_intent "true"
-        if _telegram_daemon_running; then
-            echo "ae telegram: already running (tmux session $_TELEGRAM_TMUX_SESSION)"
-            return 0
-        fi
-        _telegram_spawn_daemon
-        if _telegram_daemon_running; then
-            echo "ae telegram: started (tmux session $_TELEGRAM_TMUX_SESSION)"
-            return 0
-        fi
-        echo "Error: failed to spawn daemon" >&2
-        return 1
-    } 9>"$lock"
-}
-
-cmd_telegram_stop() {
-    local lock
-    lock="$(_telegram_control_lock_file)"
-    # Hold the control lock across disable + kill so an in-flight autostart/
-    # supervise tick can't re-spawn after we've disabled (it re-checks intent
-    # under the same lock). Wait briefly, but proceed best-effort if contended.
-    {
-        # Must hold the lock to be correct — proceeding unlocked would re-open
-        # the stop-vs-supervise race. If we can't get it in 5s, report busy.
-        flock -w 5 9 || {
-            echo "ae telegram: busy (start/stop/supervise in progress) — try again" >&2
-            return 1
-        }
-        _telegram_persist_intent "false"
-        if _telegram_daemon_running; then
-            tmux kill-session -t "$_TELEGRAM_TMUX_SESSION" 2>/dev/null
-            echo "ae telegram: stopped"
-        else
-            echo "ae telegram: was not running"
-        fi
-    } 9>"$lock"
-}
-
-cmd_telegram_status() {
-    local intent runtime
-    intent="$(_telegram_intent_enabled)"
-    if _telegram_daemon_running; then runtime="running"; else runtime="stopped"; fi
-    echo "ae telegram:"
-    echo "  intent:  enabled=$intent (in $CONFIG_FILE)"
-    echo "  backend: ae core (state in $CONFIG_DIR/telegram)"
-    echo "  runtime: daemon $runtime (tmux session $_TELEGRAM_TMUX_SESSION)"
-    if _telegram_load_last_autostart_refusal; then
-        echo "  autostart: last refusal=${_TELEGRAM_LAST_REFUSAL_CATEGORY} at ${_TELEGRAM_LAST_REFUSAL_TS}"
-    fi
-    local core=""
-    if core="$(_ae_core_bin_input)" &&
-        [[ "$core" == /* && -x "$core" ]] &&
-        _ae_core_bin_version "$core" >/dev/null 2>&1; then
-        echo "  core:    $core"
-    else
-        echo "  core:    not configured (set workspace.core or AE_CORE_BIN)"
-    fi
-    local token_file err
-    token_file="$(get_config telegram.token_file 2>/dev/null || true)"
-    if [[ -n "$token_file" ]]; then
-        if err="$(_telegram_validate_token_file "$token_file" 2>&1)"; then
-            echo "  token:   OK ($(_telegram_expand_path "$token_file"))"
-        else
-            echo "  token:   ERROR — $err"
-        fi
-    else
-        echo "  token:   not configured"
-    fi
-    # The state the DAEMON owns, which is not what the bash bridge owned. Its
-    # state.tsv (one row per tracked session, the outbound fan-in cursor) is
-    # orphaned: nothing writes it any more, so reporting it described a file
-    # that would stay absent forever. The core keeps two files here instead —
-    # and deliberately no global outbound cursor, because outbound progress is
-    # PER SESSION (<meta>/telegram-outbound.cursor) and has no single path to
-    # print.
-    local _tg_state_dir="$CONFIG_DIR/telegram"
-    local _f _shown=""
-    for _f in tg_offset current_target; do
-        # `[[ ... ]] && x` as a loop body's LAST statement returns 1 when the
-        # condition is false, and ae runs under errexit — the documented footgun.
-        if [[ -f "${_tg_state_dir}/${_f}" ]]; then
-            _shown+=" $_f"
-        fi
-    done
-    if [[ -n "$_shown" ]]; then
-        echo "  state:   ${_shown# } (in $_tg_state_dir)"
-    else
-        echo "  state:   none yet (in $_tg_state_dir)"
-    fi
-    # An explicit include= that omits `chat` silently drops agents' `say`
-    # replies (outbound chat). When include is unset the default carries `chat`,
-    # so only warn when the user pinned an include without it.
-    local include_cfg
-    include_cfg="$(get_config telegram.include 2>/dev/null || true)"
-    if [[ -n "$include_cfg" ]]; then
-        local inc_words=" ${include_cfg//,/ } "
-        if [[ "$inc_words" == *" chat "* ]]; then
-            echo "  include: $include_cfg"
-        else
-            echo "  include: $include_cfg"
-            echo "           WARN: 'chat' not in include — agent 'say' replies will NOT forward to Telegram. Add 'chat' to [telegram] include."
-        fi
-    fi
-}
-
-cmd_telegram() {
-    local sub="${1:-status}"
-    shift 2>/dev/null || true
-    case "$sub" in
-        setup) cmd_telegram_setup "$@" ;;
-        start) cmd_telegram_start "$@" ;;
-        stop) cmd_telegram_stop "$@" ;;
-        status) cmd_telegram_status "$@" ;;
-        # Internal: best-effort revive used by the watchdog (step 10). Runs
-        # the same autostart path as `ae <name>` — respects [telegram] enabled,
-        # never flips the persisted flag, idempotent. Not for direct use.
-        _supervise) _telegram_autostart_if_enabled 2>/dev/null || true ;;
-        help | -h | --help) cmd_telegram_help ;;
-        *)
-            echo "Error: unknown subcommand 'telegram $sub'" >&2
-            cmd_telegram_help >&2
-            return 2
-            ;;
-    esac
-}
-
 # ── Transfer helpers (cross-machine session sync) ────────────────────
-
-cmd_rename() {
-    local old_name="" new_name=""
-    if [[ $# -ge 2 ]]; then
-        old_name="$1"
-        new_name="$2"
-    elif [[ $# -eq 1 ]]; then
-        old_name="$(detect_current_session 2>/dev/null)" || {
-            echo "Usage: ae rename [old-name] <new-name>" >&2
-            echo "(Run inside an ae tmux session to rename it without specifying the old name.)" >&2
-            return 1
-        }
-        new_name="$1"
-    else
-        echo "Usage: ae rename [old-name] <new-name>" >&2
-        return 1
-    fi
-    # The rename TARGET is a creation boundary, so it takes the one grammar —
-    # not the old slash/colon/dot blacklist, which accepted 'has space' and
-    # persisted a session that launch and resume then refused, and which left the
-    # tmux-target and sed-replacement classes open besides.
-    _validate_session_name "$new_name" || return 1
-    # The SOURCE may be a legacy name that predates the grammar: renaming is
-    # exactly the migration path out of one, so it must not be blocked.
-    _session_name_usable "$old_name" || return 1
-    # Both PATH OBJECTS, independently of either name. A grammar-valid symlink
-    # satisfies everything above; `mv` through one relocates whatever it points
-    # at, and a dangling symlink at the target is invisible to the `-d` existence
-    # check further down.
-    _require_session_path_safe "$old_name" || return 1
-    _require_session_path_safe "$new_name" || return 1
-    # LIFECYCLE SERIALIZATION, BOTH NAMES. Rename has always run outside lifecycle
-    # locking — a PRE-EXISTING gap against end and launch, not something #33
-    # introduced — and #33 made its cost concrete: pause a freezer before it locks
-    # `oldslot`, end oldslot, rename a live identity-less session INTO that name,
-    # release, and the freezer mints into the REPLACEMENT, freezes that id, and the
-    # supervisor kills it reporting "verified gone". Every check below reads state
-    # the rename then mutates, so they belong inside the lock, not in front of it.
-    #
-    # TWO locks, taken in NAME-SORTED order — the standard deadlock avoidance: two
-    # concurrent renames touching the same pair acquire them in the same sequence, so
-    # one waits instead of both holding half. Consistent with the one global order
-    # (lifecycle outside, meta.lock inside); nothing here takes meta.lock first.
-    local _rn_first _rn_second
-    if [[ "$old_name" < "$new_name" ]]; then
-        _rn_first="$old_name"
-        _rn_second="$new_name"
-    else
-        _rn_first="$new_name"
-        _rn_second="$old_name"
-    fi
-    mkdir -p "$SESSIONS_DIR"
-    {
-        if command -v flock >/dev/null 2>&1; then
-            if ! flock -w 15 9 || ! flock -w 15 10; then
-                echo "Error: another lifecycle operation (start/resume/stop/end) is in progress for '${old_name}' or '${new_name}' — retry shortly. Nothing was renamed." >&2
-                return 1
-            fi
-        else
-            echo "note: flock not found — lifecycle locking degraded (start/stop races unguarded)" >&2
-        fi
-        _cmd_rename_locked "$old_name" "$new_name"
-    } 9>"${SESSIONS_DIR}/.lifecycle.${_rn_first}.lock" 10>"${SESSIONS_DIR}/.lifecycle.${_rn_second}.lock"
-}
-
-# Everything that READS state the rename then mutates, plus the mutation itself.
-# Split out so the locked region is a single call rather than a long braced block —
-# the same shape _stop_one_session/_stop_session_locked use, and for the same reason.
-_cmd_rename_locked() {
-    local old_name="$1" new_name="$2"
-    # Check old session exists
-    if ! tmux has-session -t "$old_name" 2>/dev/null; then
-        echo "Error: session '${old_name}' is not running." >&2
-        return 1
-    fi
-    # Check new name is not already taken
-    if tmux has-session -t "$new_name" 2>/dev/null; then
-        echo "Error: session '${new_name}' already exists." >&2
-        return 1
-    fi
-    if [[ -d "${SESSIONS_DIR}/${new_name}" ]]; then
-        echo "Error: session directory '${SESSIONS_DIR}/${new_name}' already exists." >&2
-        return 1
-    fi
-
-    local old_meta="${SESSIONS_DIR}/${old_name}"
-    local new_meta="${SESSIONS_DIR}/${new_name}"
-
-    # 1. Rename tmux session
-    tmux rename-session -t "$old_name" "$new_name"
-
-    # 1b. Rename the main window to match — but NOT under lead-pair, where window 0
-    # carries the ROLE name 'leads' (the session name lives in status-left) and must
-    # survive a rename. Decide by the LAYOUT FACT from meta, never by comparing the
-    # window name to the session name — a session literally named 'lead' would fool
-    # a name check (codex session-shape finding). Meta hasn't moved yet at this step.
-    local _ren_layout
-    _ren_layout="$(grep '^layout=' "${old_meta}/meta" 2>/dev/null | head -1 | cut -d= -f2- || true)"
-    if [[ "$_ren_layout" != "lead-pair" ]]; then
-        tmux rename-window -t "${new_name}:0" "$(_ae_tmux_format_literal "$new_name")" 2>/dev/null || true
-    fi
-
-    # 2. Move session directory
-    if [[ -d "$old_meta" ]]; then
-        mv "$old_meta" "$new_meta"
-    fi
-
-    # 3. Update session= in meta file
-    if [[ -f "${new_meta}/meta" ]]; then
-        _ae_sed_inplace "s/^session=.*/session=${new_name}/" "${new_meta}/meta"
-    fi
-
-    # 4. Regenerate workspace.md (contains session name)
-    if [[ -f "${new_meta}/meta" ]]; then
-        local work_dir origin mode main_pane
-        work_dir="$(grep '^work_dir=' "${new_meta}/meta" 2>/dev/null | cut -d= -f2- || true)"
-        origin="$(grep '^origin=' "${new_meta}/meta" 2>/dev/null | cut -d= -f2- || true)"
-        mode="$(grep '^mode=' "${new_meta}/meta" 2>/dev/null | cut -d= -f2- || true)"
-        main_pane="$(grep '^main_pane=' "${new_meta}/meta" 2>/dev/null | cut -d= -f2- || true)"
-        regenerate_manifest "$new_name" "${work_dir:-.}" "${origin:-.}" "${mode:-local}" "${main_pane:-%0}" "$new_meta"
-        # 4b. Refresh status-left — it carries the SESSION NAME now, which just changed.
-        _ae_apply_status_bar "$new_name" "${mode:-local}" "${origin:-.}" "${work_dir:-.}"
-    fi
-
-    echo "Renamed '${old_name}' → '${new_name}'"
-}
-
 cmd_help() {
     echo "ae - agentic engineering: tmux multi-agent workspace"
     echo ""
@@ -4143,23 +1561,6 @@ _cmd_retire() {
     shift
     META_DIR="$meta_dir" _ae_core_try _retire "$@"
 }
-
-# Regenerate workspace.md from live tmux pane state.
-#
-# A.2c: the DOCUMENT is the core's — it reads the session's meta, lists the panes
-# through the typed tmux transport, and writes `<dir>/workspace.md` itself, so the
-# manifest and the seat context can no longer describe one session two ways. The
-# glue passes the six facts it already holds plus the two config files, for the
-# same reason build_ae_context does: the core does not read the environment.
-regenerate_manifest() {
-    local sess="$1" wdir="$2" origin="$3" mode="$4" main_pane="$5" sessions_dir="$6"
-    local -a cfg=()
-    [[ -n "${CONFIG_FILE:-}" && -f "${CONFIG_FILE:-}" ]] && cfg+=(--global "$CONFIG_FILE")
-    [[ -n "${AE_LOCAL_CONFIG:-}" && -f "${AE_LOCAL_CONFIG:-}" ]] && cfg+=(--local "$AE_LOCAL_CONFIG")
-    _ae_core_preflight_try _manifest-render "$sessions_dir" "$sess" "$wdir" "$origin" "$mode" \
-        "$main_pane" ${cfg[@]+"${cfg[@]}"}
-}
-
 # --- ae orchestrator: meta-agent launcher (deprecated alias: ae hub) ---
 # Copy one template file to its destination, NO overwrite, substituting a single
 # __PLACEHOLDER__ via bash param expansion (no sed → safe with '/' in the value).
@@ -4276,94 +1677,6 @@ EOF
 # _AE_META_DIR/_AE_SESSION/_AE_SESSIONS_DIR): ae's own code paths must
 # not call them. Shared bodies ae itself also uses (ae_json_escape,
 # _event_json_str) live at their long-standing top-level sites instead.
-
-ae_current_pane() {
-    if [[ -n "${TMUX_PANE:-}" ]]; then
-        printf '%s' "$TMUX_PANE"
-    else
-        tmux display-message -p '#{pane_id}' 2>/dev/null || true
-    fi
-}
-
-ae_current_agent() {
-    local pane
-    pane="$(ae_current_pane)"
-    [[ -n "$pane" ]] || return 0
-    tmux display-message -p -t "$pane" '#{@ae_agent}' 2>/dev/null || true
-}
-
-ae_current_agent_ref() {
-    local agent session pane
-    agent="$(ae_current_agent)"
-    [[ -n "$agent" ]] || return 0
-    pane="$(ae_current_pane)"
-    session="$(tmux display-message -p -t "${pane:-$_AE_SESSION}" '#S' 2>/dev/null || true)"
-    if [[ -n "$session" && "$session" != "$_AE_SESSION" ]]; then
-        printf '@%s:%s' "$session" "$agent"
-    else
-        printf '%s' "$agent"
-    fi
-}
-
-ae_log_append() {
-    local file="$1" line="$2"
-    {
-        flock -w 5 8 || exit 1
-        printf '%s\n' "$line" >>"$file"
-    } 8>>"${file}.lock"
-}
-
-ae_emit_event() {
-    local action="$1" target="${2:-}" ref="${3:-}" summary="${4:-}"
-    local actor
-    actor="${AE_SENDER_OVERRIDE:-$(ae_current_agent_ref)}"
-    [[ -n "$actor" ]] || actor="human"
-    local ts
-    ts="$(date -u +%FT%TZ)"
-    # Summary is capped and (for most events) flattened to one line. `chat`
-    # events carry a human reply destined for Telegram, so they keep newlines
-    # and get a larger cap (3500 — matches format_event's truncation, stays
-    # under Telegram's 4096 limit). Either way ae_json_escape below turns any
-    # newline into a literal \n, so events.jsonl stays one JSON object per line
-    # — the invariant every line-oriented consumer (cmd_list, the watchdog
-    # watchdog, the telegram tail) depends on.
-    # Sanitising boundary: drop malformed UTF-8 before anything downstream sees
-    # it. Agent/user text can arrive already invalid — truncation is not the only
-    # way a bad byte reaches events.jsonl.
-    ae_sanitize_utf8 "$summary"
-    summary="$_EV_CLEAN"
-    if [[ "$action" == "chat" ]]; then
-        # chat KEEPS its newlines and tabs — it is a human reply bound for
-        # Telegram, and ae_json_escape turns them into literal \n / \t further
-        # down, so the one-object-per-line invariant still holds. Capping is
-        # therefore the only transformation here.
-        ae_cap_summary "$summary" 3500
-        summary="$_EV_SUMMARY"
-    else
-        # Flatten first, then cap. Both substitutions are one character for
-        # one, so the cut point is identical either way.
-        summary="${summary//$'\n'/ }"
-        summary="${summary//$'\t'/ }"
-        ae_cap_summary "$summary" 200
-        summary="$_EV_SUMMARY"
-    fi
-    local json
-    json="$(printf '{"ts":"%s","actor":"%s","action":"%s"' \
-        "$(ae_json_escape "$ts")" "$(ae_json_escape "$actor")" "$(ae_json_escape "$action")")"
-    [[ -n "$target" ]] && json+="$(printf ',"target":"%s"' "$(ae_json_escape "$target")")"
-    [[ -n "$ref" ]] && json+="$(printf ',"ref":"%s"' "$(ae_json_escape "$ref")")"
-    # request-integrity: session-qualified SLOT identity (the churn-proof routing key).
-    [[ -n "${_AE_EVENT_ACTOR_SLOT:-}" ]] && json+="$(printf ',"actor_slot":"%s"' "$(ae_json_escape "$_AE_EVENT_ACTOR_SLOT")")"
-    [[ -n "${_AE_EVENT_ACTOR_SESSION:-}" ]] && json+="$(printf ',"actor_session":"%s"' "$(ae_json_escape "$_AE_EVENT_ACTOR_SESSION")")"
-    [[ -n "${_AE_EVENT_TARGET_SLOT:-}" ]] && json+="$(printf ',"target_slot":"%s"' "$(ae_json_escape "$_AE_EVENT_TARGET_SLOT")")"
-    [[ -n "${_AE_EVENT_TARGET_SESSION:-}" ]] && json+="$(printf ',"target_session":"%s"' "$(ae_json_escape "$_AE_EVENT_TARGET_SESSION")")"
-    [[ -n "$summary" ]] && json+="$(printf ',"summary":"%s"' "$(ae_json_escape "$summary")")"
-    # The summary is capped; this is where the whole thing lives.
-    [[ -n "${_AE_LAST_BODY_FILE:-}" ]] && json+="$(printf ',"body_file":"%s"' "$(ae_json_escape "$_AE_LAST_BODY_FILE")")"
-    json+="}"
-    ae_log_append "${_AE_META_DIR}/events.jsonl" "$json"
-}
-
 # --- session meta key/value (locked) -------------------------------------
 # Shared read/write for keys in this session's meta file. Writes serialize on
 # meta.lock (same lock the watchdog's meta writer uses) so concurrent helpers
@@ -4440,7 +1753,7 @@ _ae_core_try() { # [--capture] <subcommand> [args...]
 # A core call made BEFORE any session exists — the `--from` preflight runs ahead
 # of the first mkdir, so there is no per-session pin (${META_DIR}/meta) for
 # _ae_core_try to route through. This resolves the OPERATOR's core input directly
-# (the same AE_CORE_BIN / workspace.core source _ae_core_bind pins at launch, so
+# (the same AE_CORE_BIN / core/current source _ae_core_bind pins at launch, so
 # the preflight uses exactly the binary the about-to-be-created session will bind)
 # and runs it as a subprocess, returning its stdout on the caller's captured pipe
 # and its exit code. There is no version PIN to check against here — the operator
@@ -4511,7 +1824,7 @@ _ae_core_preflight_try() { # [--exec] <subcommand> [args...]
     # Absolute + executable + reports a version. A relative path would resolve
     # against wherever the caller happened to run.
     if [[ -z "$bin" ]]; then
-        reason="no core is configured (AE_CORE_BIN, ${AE_HOME:-~/.ae}/core/current, or workspace.core)"
+        reason="no core is configured (AE_CORE_BIN or ${AE_HOME:-~/.ae}/core/current)"
     elif [[ "$bin" != /* || ! -x "$bin" ]]; then
         reason="the configured core is not an absolute path to an executable: ${bin}"
     elif ! _ae_core_bin_version "$bin" >/dev/null 2>&1; then
@@ -4531,31 +1844,6 @@ _ae_core_preflight_try() { # [--exec] <subcommand> [args...]
 
 # — watchdog template functions (emitted into the watchdog helper; the
 #   runtime flow lives in helper_watchdog_main, emitted last) —
-
-_watchdog_is_running() {
-    [[ -f "$PIDFILE" ]] || return 1
-    local pid
-    pid="$(cat "$PIDFILE" 2>/dev/null)"
-    # Dead or empty pid → stale pidfile; clean it and report not running.
-    if [[ -z "$pid" ]] || ! kill -0 "$pid" 2>/dev/null; then
-        rm -f "$PIDFILE" 2>/dev/null
-        return 1
-    fi
-    # The pid is alive — but a stale pidfile can point at a RECYCLED, unrelated
-    # process (kill -0 succeeds on it). Require our OWN watchdog pane
-    # (@ae_agent=_watchdog) to be live in this session too — _monitor_find_pane is
-    # list-panes -s on our own server. No pane → not really running: clean the
-    # stale pidfile so 'status' can't lie, 'start' won't wrongly defer, and 'stop'
-    # won't kill the innocent process. Safe against a starting watchdog:
-    # _watchdog_start tags the pane before _run writes the pidfile, so whenever the
-    # pidfile exists our pane exists too.
-    if [[ -z "$(_monitor_find_pane _watchdog)" ]]; then
-        rm -f "$PIDFILE" 2>/dev/null
-        return 1
-    fi
-    return 0
-}
-
 _set_meta_kv() {
     local key="$1" value="$2"
     local meta_file="${META_DIR}/meta"
@@ -4573,385 +1861,19 @@ _set_meta_kv() {
 }
 
 _set_meta_watchdog() { _set_meta_kv "watchdog" "$1"; }
-
-# Kill a pane ONLY if it is still the pane the caller means. A pane id is server-
-# local and REUSED after a server restart on the same socket name, so a process
-# holding a stale id — a spawn rolling back, a retire, a watchdog stopping — would
-# kill a stranger: measured in the integration suite, where an earlier section's
-# leftover ae process took a later section's freshly spawned pane (%3 on the new
-# server instance) 3 seconds after it was created, seat intact, no rollback line.
-# The ownership facts are read from the PANE ITSELF at the moment of the kill, and
-# the kill is authorised by a POSITIVE match — never by the absence of a
-# contradiction. The pane's session name must equal the caller's, and when the
-# caller names an @ae_agent stamp, that must match too.
-# FAIL CLOSED on a probe that names no owner: a failing probe (rc != 0 — server gone,
-# tmux unavailable, a double that answers nothing) and an empty session on rc 0
-# (tmux renders an empty format for an unknown target rather than failing) both
-# return without killing. Measured 2026-09-03: unknown pane → rc 0, output "\t";
-# unknown server → rc 1. A pane that is not there is nothing to kill, and an
-# unreadable pane is exactly the one this guard may not take on faith — a transient
-# probe failure would otherwise recreate the stranger-kill path.
-# A refusal is loud but non-fatal: the caller's own status stands.
-_kill_owned_pane() { # <pane_id> <expected_session> [<expected_agent>]
-    local pane="$1" want_session="${2:-}" want_agent="${3:-}" have have_session have_agent rc=0
-    [[ -n "$pane" ]] || return 0
-    have="$(tmux display-message -p -t "$pane" $'#{session_name}\t#{@ae_agent}' 2>/dev/null)" || rc=$?
-    [[ $rc -eq 0 ]] || return 0
-    have_session="${have%%$'\t'*}"
-    have_agent="${have#*$'\t'}"
-    [[ -n "$have_session" ]] || return 0
-    if [[ -z "$want_session" || "$have_session" != "$want_session" ]]; then
-        echo "ae: refusing to kill pane ${pane}: it belongs to session '${have_session}', not '${want_session:-<unknown>}' (stale pane id)." >&2
-        return 0
-    fi
-    if [[ -n "$want_agent" && "$have_agent" != "$want_agent" ]]; then
-        echo "ae: refusing to kill pane ${pane}: it is stamped '${have_agent:-<unstamped>}', not '${want_agent}' (stale pane id)." >&2
-        return 0
-    fi
-    tmux kill-pane -t "$pane" 2>/dev/null || true
-    return 0
-}
-
-_monitor_find_pane() {
-    # Stdout: pane_id of the pane in this session tagged with @ae_agent=$1, or empty.
-    tmux list-panes -s -t "$_AE_SESSION" -F '#{pane_id} #{@ae_agent}' 2>/dev/null |
-        awk -v want="$1" '$2 == want { print $1; exit }'
-}
-
-# Idempotent. Creates the hidden ae-monitor window with the _events pane if
-# it doesn't already exist. Sets MONITOR_EVENTS_PANE to the pane id.
-# Called by session launch and by _watchdog_start.
-_monitor_ensure_events_pane() {
-    MONITOR_EVENTS_PANE="$(_monitor_find_pane _events)"
-    [[ -n "$MONITOR_EVENTS_PANE" ]] && return 0
-    # Pin the monitor window at a high fixed index so it stays RIGHTMOST in
-    # the tmux footer — spawned worker windows slot in between it and the main
-    # window. Fallback: append-after-current if 99 is somehow taken.
-    MONITOR_EVENTS_PANE="$(tmux new-window -d -t "${_AE_SESSION}:99" -n "ae-monitor" -P -F '#{pane_id}' \
-        "${META_DIR}/events-tail" 2>/dev/null ||
-        tmux new-window -da -t "$_AE_SESSION" -n "ae-monitor" -P -F '#{pane_id}' \
-            "${META_DIR}/events-tail" 2>/dev/null)" || {
-        echo "Error: could not create monitor window" >&2
-        return 1
-    }
-    tmux set-option -p -t "$MONITOR_EVENTS_PANE" @ae_agent "_events" 2>/dev/null || true
-    tmux select-pane -t "$MONITOR_EVENTS_PANE" -T "ae events" 2>/dev/null || true
-    tmux set-window-option -t "${_AE_SESSION}:ae-monitor" pane-border-status top 2>/dev/null || true
-    tmux select-pane -t "$MONITOR_EVENTS_PANE" -d 2>/dev/null || true
-    return 0
-}
-
-_watchdog_ensure_monitor() {
-    _monitor_ensure_events_pane || exit 1
-    exit 0
-}
-
-# Transition shim (loop → watchdog rename). The short-lived local shepherd branch
-# and released loop versions can leave OLD artifacts: .shepherd.pid / _shepherd /
-# .shepherd.status or .loop.pid / _loop / .loop.status. A 'doctor --refresh'
-# rewrites helpers but does NOT restart a running watchdog, so that legacy process
-# can outlive the rename. Reap it before we start or stop, so we never run two
-# watchdogs at once, never leave a stray legacy pane the new watchdog would
-# mis-classify as an agent, and so deprecated commands actually stop a legacy one.
-# Idempotent + silent. Keep the _shepherd reap only as a local transition aid; it
-# is not a public compatibility surface.
-_watchdog_reap_legacy_one() {
-    local legacy_name="$1"
-    local legacy_pid_file="${META_DIR}/.${legacy_name}.pid" legacy_status_file="${META_DIR}/.${legacy_name}.status"
-    local legacy_pid legacy_pane
-    legacy_pane="$(_monitor_find_pane "_${legacy_name}")"
-    # A *live* legacy watchdog is pinned to its legacy monitor pane. Only when
-    # that pane exists do we kill the recorded pid — otherwise the pid file is a
-    # stale artifact from a crashed watchdog whose pid may have been reused by an
-    # unrelated process, and killing it blindly would be wrong. With no pane, just
-    # clean up.
-    if [[ -n "$legacy_pane" ]]; then
-        if [[ -f "$legacy_pid_file" ]]; then
-            legacy_pid="$(cat "$legacy_pid_file" 2>/dev/null || true)"
-            if [[ -n "$legacy_pid" ]]; then kill "$legacy_pid" 2>/dev/null || true; fi
-        fi
-        _kill_owned_pane "$legacy_pane" "${_AE_SESSION:-}" "_${legacy_name}"
-    fi
-    rm -f "$legacy_pid_file" "$legacy_status_file"
-}
-
-_watchdog_reap_legacy() {
-    _watchdog_reap_legacy_one "shepherd"
-    _watchdog_reap_legacy_one "loop"
-}
-
-_watchdog_stop() {
-    # Reap a pre-rename watchdog first (see _watchdog_reap_legacy). Note whether one
-    # was present so we still report "stopped" even if no current watchdog ran.
-    local had_legacy="no"
-    if [[ -f "${META_DIR}/.shepherd.pid" || -n "$(_monitor_find_pane _shepherd)" || -f "${META_DIR}/.loop.pid" || -n "$(_monitor_find_pane _loop)" ]]; then
-        had_legacy="yes"
-    fi
-    _watchdog_reap_legacy
-
-    local stopped="no"
-    if _watchdog_is_running; then
-        local pid
-        pid="$(cat "$PIDFILE")"
-        kill "$pid" 2>/dev/null || true
-        rm -f "$PIDFILE"
-        # Clear the live status user options so the bars fall back (left → just path).
-        _watchdog_clear_bar_options
-        # Kill only the _watchdog pane; leave the _events pane and monitor window alive.
-        local watchdog_pane
-        watchdog_pane="$(_monitor_find_pane _watchdog)"
-        if [[ -n "$watchdog_pane" ]]; then _kill_owned_pane "$watchdog_pane" "${_AE_SESSION:-}" _watchdog; fi
-        stopped="yes"
-    fi
-
-    if [[ "$stopped" == "yes" || "$had_legacy" == "yes" ]]; then
-        echo "Watchdog stopped."
-    else
-        echo "Watchdog is not running."
-    fi
-    _set_meta_watchdog "false"
-    exit 0
-}
-
-_watchdog_status() {
-    if _watchdog_is_running; then
-        echo "Watchdog is running (pid $(cat "$PIDFILE"))."
-    else
-        echo "Watchdog is not running."
-    fi
-    exit 0
-}
-
-_watchdog_start() {
-    # A pre-rename watchdog may still be running under legacy artifacts after an
-    # upgrade + refresh (helpers are rewritten but the running watchdog is not
-    # restarted). Reap it first so we never run two watchdogs side by side.
-    _watchdog_reap_legacy
-    # Single-starter mutual exclusion (P4.1a). Both the launch auto-start
-    # (_start_session_watchdog -> "${AE_META}/watchdog" start) and an explicit
-    # `ae watchdog start` reach THIS function; without a lock two concurrent callers
-    # each read _watchdog_is_running=false in the window before either establishes
-    # its pane+pidfile, and BOTH split a _watchdog daemon. Acquire an flock on
-    # .watchdog.start.lock BEFORE the check+spawn. FAILING to acquire is NOT licence
-    # to proceed — another starter holds it and is establishing the single daemon, so
-    # we DEFER (no spawn) rather than duplicate. Only a MISSING flock binary degrades
-    # to the unguarded path (documented, optional platform). flock (not mkdir) so the
-    # kernel releases it on any death — no stale-lock wedge. The fd stays open for the
-    # rest of the function, holding the lock across the spawn+registration below.
-    if command -v flock >/dev/null 2>&1; then
-        # exec (persistent fd), not a block redirect: the lock must span the spawn
-        # and the pidfile wait. A failed open exits the helper loudly before any
-        # spawn — itself a no-spawn outcome.
-        exec 201>"${META_DIR}/.watchdog.start.lock"
-        if ! flock -w "$START_LOCK_WAIT" 201; then
-            echo "Watchdog start deferred: could not acquire the start lock (another start in progress)." >&2
-            exit 0
-        fi
-    fi
-    # Idempotent: if a current watchdog is already running, just confirm the meta
-    # flag and exit — do NOT touch status-right (its indicator must stay live).
-    if _watchdog_is_running; then
-        echo "Watchdog is already running (pid $(cat "$PIDFILE"))."
-        _set_meta_watchdog "true"
-        exit 0
-    fi
-    # Make sure the ae-monitor window with the _events pane exists; insert the
-    # _watchdog pane above it so the visual order stays watchdog-on-top / events-below.
-    _monitor_ensure_events_pane || exit 1
-    local watchdog_pane
-    # The helper is the CORE's daemon shim now — `exec <core> _watchdog-run
-    # <dir> "$@"` — so the pane runs it with NO argument. The `_run` word was the
-    # bash helper's own dispatcher arm, and the core rejects it as an unknown one.
-    watchdog_pane="$(tmux split-window -v -b -t "$MONITOR_EVENTS_PANE" -P -F '#{pane_id}' \
-        "${META_DIR}/watchdog" 2>/dev/null)" || {
-        echo "Error: could not create watchdog pane" >&2
-        exit 1
-    }
-    tmux set-option -p -t "$watchdog_pane" @ae_agent "_watchdog" 2>/dev/null || true
-    tmux select-pane -t "$watchdog_pane" -T "ae watchdog" 2>/dev/null || true
-    # Read-only: disable input on the watchdog pane (events pane was already disabled).
-    tmux select-pane -t "$watchdog_pane" -d 2>/dev/null || true
-    # The daemon (_run) publishes its pidfile ASYNCHRONOUSLY, so releasing the lock
-    # the moment the pane exists would let the next starter race that write into a
-    # duplicate spawn. HOLD the lock (fd 201, open until exit) until the daemon is
-    # established by the SAME criteria the next starter's _watchdog_is_running
-    # applies: a fully-written pidfile with a LIVE pid AND our tagged pane. The check
-    # is NON-DESTRUCTIVE (never deletes a partial file) and requires a VALIDATED pid —
-    # registering on mere file existence would release the lock over a zero-byte
-    # pidfile (the write is atomic upstream, but this belt-and-suspenders holds even
-    # if it were not), and the next starter would read no pid, delete it, and spawn a
-    # duplicate. If nothing registers within the bound the start FAILED: tear down the
-    # pane WE spawned and abort loudly while STILL holding the lock — leaving no
-    # live-but-unregistered daemon for the next starter to duplicate. Bounded so a
-    # stillborn daemon cannot wedge start; registration normally lands on the first
-    # poll.
-    local _pw _registered=0 _rp
-    for _pw in $(seq 1 "$START_REGISTER_TRIES"); do
-        if [[ -f "$PIDFILE" ]]; then
-            _rp="$(cat "$PIDFILE" 2>/dev/null || true)"
-            if [[ -n "$_rp" ]] && kill -0 "$_rp" 2>/dev/null && [[ -n "$(_monitor_find_pane _watchdog)" ]]; then
-                _registered=1
-                break
-            fi
-        fi
-        sleep 0.05
-    done
-    if ((_registered == 0)); then
-        _kill_owned_pane "$watchdog_pane" "${_AE_SESSION:-}" _watchdog
-        echo "Error: watchdog did not publish a pidfile within the start bound; start aborted." >&2
-        exit 1
-    fi
-    # status-right is OWNED BY AE (_ae_apply_status_bar bakes '[path git] [watch …]' with
-    # the #{@ae_watchdog_status} reference at the END). The watchdog never rewrites the
-    # bar — it only feeds the user option each cycle — so there is nothing to capture,
-    # save, prepend, restore, or dedup here, and start/stop are idempotent by shape.
-    _set_meta_watchdog "true"
-    echo "Watchdog started in hidden ae-monitor window. Use 'peek _watchdog' or 'peek _events' to inspect."
-    exit 0
-}
-
-# Live status is pushed into tmux user options, read by the bars as
-# #{@ae_branch_status} (status-RIGHT, after the static path) and #{@ae_watchdog_status}
-# (status-RIGHT health). User-option values are interpolated literally — no shell, no
-# #() parsing — so a branch/path with spaces, ), #, etc. is safe with no escaping.
-# Cleared on exit so the bars fall back cleanly (left → just the path).
-# EXACT session-id lookup. stdin: '<session_id> <session_name>' rows (a
-# `list-sessions -F '#{session_id} #{session_name}'` dump); $1: the wanted NAME.
-# Prints the matching session id ('$N'), or NOTHING when the session is gone.
-#
-# Why an id, and why matched here in bash rather than by a tmux target:
-#   * tmux session targets PREFIX-MATCH. Reproduced: with 'foo' absent and 'foobar'
-#     alive, `set-option -w -t 'foo:0' -u @probe` WIPED foobar's option — a dead
-#     session's cleanup silently clobbering a live neighbour's bar.
-#   * tmux's documented '=' exact-match prefix is NOT usable here: on tmux 3.4 it works
-#     for `has-session` but FAILS for `show-options`/`set-option` ("no such session:
-#     =name") and returns nothing from `display-message`. An earlier attempt to anchor
-#     with '=' looked like it fixed the clobber only because EVERY write silently failed
-#     — it broke the bar entirely and 14 integration tests caught it.
-#   * `display-message -t foo '#{session_id}'` PREFIX-MATCHES too — it happily returns
-#     foobar's id for a nonexistent 'foo' — so resolving through a tmux target would
-#     reintroduce the bug at the lookup layer.
-# Matching the name as an exact bash string over a list-sessions dump is the only step
-# tmux cannot mis-resolve; the id it yields is unique and stable for the session's life,
-# exactly like the '@N' window ids used for the window options.
-# EMPTY OUT MEANS SKIP THE WRITE: callers must not fall back to a bare target — an empty
-# '-t' would resolve to tmux's *current* session, i.e. someone else's bar.
-# ── watchdog start / stop / status, from the glue ────────────────────────
-# The one watchdog surface bash still owns. The DAEMON is the core's, and the
-# session's `watchdog` helper is now a thin shim onto it — `exec <core>
-# _watchdog-run <dir> "$@"` — so it can no longer serve `start`/`stop`/`status`
-# and this must not route through it. The three run HERE instead, against the
-# session's own tmux server, and the pane `start` creates runs that same shim
-# bare.
-#
-# In a SUBSHELL: the three bodies below end in `exit`, which is right for a
-# helper's main and wrong for a caller like `doctor --refresh` that sweeps
-# several sessions. The subshell also scopes the tmux shim and the globals the
-# bodies read (META_DIR, _AE_SESSION, PIDFILE), which are the ones the generated
-# helper's `_lib` used to supply.
-#
-# The AE_WATCHDOG_* daemon tunables are NOT read here: the shim passes the core
-# no flags, so nothing this script could read would reach the daemon. The two
-# knobs that remain are the two bash still acts on.
-_watchdog_manage() { # <meta-dir> <start|stop|status|_ensure-monitor>
-    (
-        META_DIR="$1"
-        local cmd="${2:-}" srv srv_kind
-        _AE_SESSION="$(sed -n 's/^session=//p' "${META_DIR}/meta" 2>/dev/null | head -1 || true)"
-        if [[ -z "$_AE_SESSION" ]]; then
-            echo "Error: ${META_DIR}/meta names no session" >&2
-            exit 1
-        fi
-        srv="$(sed -n 's/^tmux_server=//p' "${META_DIR}/meta" 2>/dev/null | head -1 || true)"
-        srv_kind="$(sed -n 's/^tmux_server_kind=//p' "${META_DIR}/meta" 2>/dev/null | head -1 || true)"
-        if [[ "$srv_kind" == "ambiguous" ]]; then
-            echo "ae: refusing — this session's server record is ambiguous; run 'ae doctor --refresh' first." >&2
-            exit 1
-        fi
-        if [[ -n "$srv" ]]; then
-            _AE_WT_ARGS=()
-            mapfile -t _AE_WT_ARGS < <(_srv_tmux_args "$srv_kind" "$srv")
-            tmux() { command tmux "${_AE_WT_ARGS[@]}" "$@"; }
-        fi
-        PIDFILE="${META_DIR}/.watchdog.pid"
-        # P4.1a start-serialization knobs. START_LOCK_WAIT: max seconds a starter
-        # blocks on .watchdog.start.lock before deferring (a wedged holder must not
-        # hang a start forever). START_REGISTER_TRIES: polls (x0.05s) to await the
-        # spawned daemon's pidfile before declaring the start failed. Both reject
-        # leading zeros — "08" is valid to ^[0-9]+$ and OCTAL to bash arithmetic.
-        START_LOCK_WAIT="${AE_WATCHDOG_START_LOCK_WAIT_SEC:-15}"
-        [[ "$START_LOCK_WAIT" =~ ^[1-9][0-9]*$ ]] || START_LOCK_WAIT=15
-        START_REGISTER_TRIES="${AE_WATCHDOG_START_REGISTER_TRIES:-200}"
-        [[ "$START_REGISTER_TRIES" =~ ^[1-9][0-9]*$ ]] || START_REGISTER_TRIES=200
-        case "$cmd" in
-            start) _watchdog_start ;;
-            stop) _watchdog_stop ;;
-            status) _watchdog_status ;;
-            _ensure-monitor) _watchdog_ensure_monitor ;;
-            *)
-                echo "Usage: watchdog [start|stop|status]" >&2
-                exit 1
-                ;;
-        esac
-    )
-}
-
-_roster_session_id() {
-    local want="$1" id name
-    [[ -n "$want" ]] || return 0
-    # Already an id — pass through.
-    [[ "$want" == '$'* ]] && {
-        printf '%s' "$want"
-        return 0
-    }
-    # `|| [[ -n "$id" ]]`: a final row with no trailing newline makes `read` return
-    # nonzero while still assigning — without this the LAST session in the dump is
-    # silently invisible, which for a lookup means "gone" and skips its cleanup.
-    while read -r id name || [[ -n "$id" ]]; do
-        [[ "$name" == "$want" ]] || continue
-        printf '%s' "$id"
-        return 0
-    done
-    return 0
-}
-
-# Exact session id for an arbitrary NAME on the current tmux server ('' when no session
-# of exactly that name is live). The ONE shared "name → exact id" resolver — tmux
-# targets PREFIX-MATCH (`has-session -t proj` hits a live `project`), so any liveness or
-# live-session operation must resolve here and then target by id, never by the raw name.
-# (Third occurrence of the prefix-match class after display-message lookups and option
-# writes; _roster_session_id is the shared string-matcher underneath.)
-_ae_session_id() {
-    tmux list-sessions -F '#{session_id} #{session_name}' 2>/dev/null | _roster_session_id "$1"
-    return 0
-}
-
-# The watchdog's own session id, resolved exactly — now a thin call to the shared
-# resolver above (one resolver, not a sibling copy).
-_watchdog_session_id() {
-    _ae_session_id "$_AE_SESSION"
-    return 0
-}
-
-_watchdog_clear_bar_options() {
-    local _o _wi
-    local _sid
-    _sid="$(_watchdog_session_id)"
-    [[ -n "$_sid" ]] || return 0
-    for _o in @ae_branch_status @ae_branch_name @ae_watchdog_status @ae_agents_status; do
-        tmux set-option -t "$_sid" -u "$_o" 2>/dev/null || true
-    done
-    # @ae_window_status is WINDOW-scoped: a session -u never touches it, so a stopped
-    # watchdog would freeze glyphs in the window list forever. Clear each window.
-    while read -r _wi; do
-        [[ -n "$_wi" ]] || continue
-        # By ID: an index can renumber between listing and clearing, which would skip a
-        # window and leave its glyphs frozen — the precise failure this cleanup prevents.
-        tmux set-option -w -t "$_wi" -u @ae_window_status 2>/dev/null || true
-    done < <(tmux list-windows -t "$_sid" -F '#{window_id}' 2>/dev/null || true)
-    return 0
-}
-
+# THE TMUX-OPTION WRITER AND ITS EXACT SESSION-ID LOOKUP ARE GONE FROM HERE, and
+# the 27 lines of reasoning that stood at this spot went with them — they had no
+# subject left in this file. The glue writes no tmux option at all: the status bar,
+# the per-agent roster and the window glyphs are published by the core's watchdog
+# (src/tmux.rs AGENTS_STATUS_OPTION / WINDOW_STATUS_OPTION). What the prose carried
+# is the rule that makes those writes safe, and the core states it at each of its
+# own sites rather than second-hand here: tmux session TARGETS PREFIX-MATCH, so a
+# dead 'foo' resolves to a live 'foobar' and an option write lands on someone
+# else's bar (src/lifecycle.rs:128, src/rename.rs:143, src/inventory.rs:65). The
+# documented '=' exact prefix does not close it — on tmux 3.4 it works for
+# has-session but fails for show-options/set-option — so identity is resolved by
+# matching the name exactly over a `list-sessions` dump and addressing the '$N' id
+# from then on (src/tmux.rs:86, src/telegram_lifecycle.rs:455).
 ATTACH_ON_READY=true
 case "${1:-}" in
     list | ls)
@@ -4989,14 +1911,31 @@ case "${1:-}" in
         exit $?
         ;;
     doctor)
-        cmd_doctor "${@:2}"
-        exit $?
+        # The environment report and `--refresh` are the core's. The shim writer
+        # went with them (`_shims-render <session-dir>`), so the glue no longer
+        # holds a second emitter of the helper set.
+        #
+        # THE BASH VERSION IS THE ONE FACT THE CORE CANNOT SEE FOR ITSELF, and it
+        # is the glue's own interpreter that matters: `ae` re-execs itself under a
+        # modern bash when its shebang lands on macOS's 3.2, and every generated
+        # helper runs under that same interpreter. A core probing `bash --version`
+        # would report whatever is first on PATH, which is exactly the file the
+        # re-exec exists to get away from. `${BASH_VERSINFO[0]}` is this process's
+        # answer, so the row says what the product actually runs on.
+        _ae_core_preflight_try --exec doctor --bash-major "${BASH_VERSINFO[0]}" "${@:2}"
         ;;
     stop)
         # The whole stop is the core's — `--self` and the fleet form included. It
         # forks its own detached supervisor (`_stop --supervise <name>`), so the
         # two `_stop-supervisor` entries this dispatcher used to carry have no
         # caller left and are gone.
+        #
+        # The 195-line SELF/TARGET IDENTITY CONTRACT that stood above this file's
+        # dispatcher — threat model, the named vs identity routes, the C and D
+        # facts, the F1..F11 findings ledger — is preserved verbatim in
+        # docs/internals/stop-identity-contract.md. Read it before changing what
+        # crosses to `_stop` below; the rules it states are the core's to enforce
+        # now, and this arm's only job is to hand over the one fact they start from.
         #
         # THE PANE IS THE ONE FACT THE CORE CANNOT SEE FOR ITSELF. Self-ness is
         # the question "is the target the session I am running in", and its
@@ -5030,16 +1969,36 @@ case "${1:-}" in
         _ae_core_preflight_try --exec _stop ${_stop_args[@]+"${_stop_args[@]}"}
         ;;
     rename)
-        cmd_rename "${2:-}" "${3:-}"
-        exit $?
+        # The lifecycle lock, the tmux rename, the meta rewrite and the status-bar
+        # reapply are one core operation. `[old]` stays optional: the core resolves
+        # the caller's own session when it is omitted.
+        _ae_core_preflight_try --exec rename "${@:2}"
         ;;
     watchdog | loop) # 'loop' kept as the deprecated alias for the renamed feature
-        cmd_watchdog "${2:-}" "${3:-}"
-        exit $?
+        # start/stop/status are the core's, and so is the daemon it manages. The
+        # pane crosses as a flag for the same reason it does on `stop`: the core
+        # does not read the environment, and "the session I am in" starts from
+        # $TMUX_PANE. An explicit --pane in the caller's own argv wins, so it is
+        # only appended when the caller passed none.
+        _wd_args=("${@:2}")
+        if [[ -n "${TMUX_PANE:-}" && " ${_wd_args[*]-} " != *" --pane "* ]]; then
+            _wd_args+=(--pane "$TMUX_PANE")
+        fi
+        _ae_core_preflight_try --exec _watchdog ${_wd_args[@]+"${_wd_args[@]}"}
         ;;
     telegram)
-        cmd_telegram "${@:2}"
-        exit $?
+        # setup/start/stop/status and the daemon are the core's. The environment
+        # the core will not read for itself crosses as flags: which config to
+        # honour, which home to keep state under, and which tmux server the
+        # daemon's session belongs on.
+        _tg_args=("${@:2}")
+        if [[ -n "${CONFIG_FILE:-}" ]]; then _tg_args+=(--config "$CONFIG_FILE"); fi
+        _tg_args+=(--home "$AE_HOME")
+        resolve_launch_tmux_server
+        if [[ -n "$_LAUNCH_SRV_KIND" || -n "$_LAUNCH_SRV_VALUE" ]]; then
+            _tg_args+=(--server-kind "$_LAUNCH_SRV_KIND" --server "$_LAUNCH_SRV_VALUE")
+        fi
+        _ae_core_preflight_try --exec _telegram ${_tg_args[@]+"${_tg_args[@]}"}
         ;;
     orchestrator | hub) # 'hub' kept as the deprecated alias for the renamed meta-agent
         # Orchestrator (meta-agent) launcher. Trampoline: handle --init/help (exit),
@@ -5193,7 +2152,9 @@ esac
 # a FLAG and is spelled in exactly one place — here. The user's own argv is
 # handed over VERBATIM after `--`: the grammar (and every refusal it carries) is
 # the core's, and a second parser here would be a second answer.
-check_deps || exit 1
+# THE DEPENDENCY GATE IS THE CORE'S, and it takes the ONE fact the core cannot
+# see: which bash is running this script. Everything else it checks for itself.
+_ae_core_preflight_try _check-deps --bash-major "${BASH_VERSINFO[0]}" || exit 1
 
 # The two companions are NOT the core's — a launch that quietly grew them would
 # be three operations in one. They run BEFORE the launch rather than between it
@@ -5215,31 +2176,18 @@ SESSION="$(_autostart_session_hint "$@")"
 if [[ -n "$SESSION" ]] && _session_name_usable "$SESSION" 2>/dev/null; then
     _require_session_path_safe "$SESSION" || exit 1
 fi
-# COMPANIONS RIDE ALONG WITH A LAUNCH, and both of their liveness probes need a
-# tmux SERVER to answer — but the launch that creates it is one `exec` away, so
-# asking here would query a socket that does not exist yet. That answer is the
-# tri-state UNKNOWN, not "absent" (ENOENT is deliberately NOT clean-dead — 11th
-# review B1: unlinking a LIVE server's socket looks identical), and an unknown
-# answer correctly refuses to start a companion. Measured: with the probe moved
-# ahead of the launch, a fresh server means NO companion ever starts.
-#
-# So fork a bounded waiter instead, and let it probe once the server answers. It
-# is fully detached and silent, exactly as the inline calls were; and because it
-# runs the autostarts ONLY on a server that answered, a launch that refuses
-# without ever creating one starts nothing.
-(
-    _as_i=0
-    while ((_as_i < 60)); do
-        if tmux list-sessions >/dev/null 2>&1; then break; fi
-        sleep 0.5
-        _as_i=$((_as_i + 1))
-    done
-    if tmux list-sessions >/dev/null 2>&1; then
-        _telegram_autostart_if_enabled 2>/dev/null || true
-        _orchestrator_autostart_if_scaffolded 2>/dev/null || true
-    fi
-) >/dev/null 2>&1 &
-
+# COMPANIONS RIDE ALONG WITH A LAUNCH, and the core starts both — after it has
+# created the server, which is the ordering that made this hard in bash. Their
+# liveness probes need a tmux server to answer, and the launch that creates one
+# was an `exec` away from here, so asking at this point queried a socket that did
+# not exist yet; that answer is the tri-state UNKNOWN rather than "absent" (ENOENT
+# is deliberately NOT clean-dead — 11th review B1: unlinking a LIVE server's
+# socket looks identical), and an unknown answer correctly refuses to start a
+# companion. The bash workaround was a forked bounded waiter that polled for the
+# server and then probed; it is gone, and with it the race where a waiter forked
+# by one launch could revive a companion a human had stopped in between.
+# AE_NO_AUTOSTART is the operator's opt-out and crosses as a flag below, since
+# the core does not read the environment.
 # `if`, not `[[ … ]] && …`: a false test is the statement's exit status, and at
 # TOP LEVEL under errexit that ends the script (AGENTS.md, the set -e footguns).
 _launch_flags=(--home "$AE_HOME" --cwd "$PWD")
@@ -5248,6 +2196,9 @@ if [[ -n "${CONFIG_FILE:-}" ]]; then
 fi
 if [[ -n "${AE_LOCAL_CONFIG:-}" ]]; then
     _launch_flags+=(--local-config "$AE_LOCAL_CONFIG")
+fi
+if [[ "${AE_NO_AUTOSTART:-}" == "1" ]]; then
+    _launch_flags+=(--no-autostart)
 fi
 # THE GLUE'S OWN PATH, recorded as meta's `ae_path`. The core cannot derive it:
 # `current_exe()` names the CORE, and under a versioned install those are two
@@ -5263,7 +2214,7 @@ _launch_flags+=(--glue "$(cd "$(dirname "$0")" && pwd)/$(basename "$0")")
 # the binary that is RUNNING, which is not the same question: `_ae_core_try`
 # re-resolves the pin out of meta on EVERY later call, so what belongs there is
 # the path `_ae_core_bin_input` chose — AE_CORE_BIN, then core/current, then
-# workspace.core. Where the two differ (a versioned `ae-core` that is a wrapper,
+# core/current. Where the two differ (a versioned `ae-core` that is a wrapper,
 # a symlink, an AE_CORE_BIN whose target execs a second binary) recording the
 # running one would pin the session to a core the operator never selected.
 # Resolved with the same one query the preflight below uses; a failure to resolve

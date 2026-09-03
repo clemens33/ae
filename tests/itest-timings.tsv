@@ -1,11 +1,11 @@
 # seconds<TAB>section — measured by tests/itest-par, used to order units
 # longest-first. Regenerate with: tests/itest-par --timings
 3	Test 1: Lifecycle — create, list, end
-36	core binding: requests shims to a pinned Rust core, or falls back visibly
-2	hostile PATH: ae must survive its own re-exec marker
+19	core binding: requests shims to a pinned Rust core, or falls back visibly
+1	hostile PATH: ae must survive its own re-exec marker
 5	Test 2: Resume detection
-7	identity v2: resuming a v1 meta migrates the roster in place
-5	Test 2b: Rename moves session, window, and meta
+6	identity v2: resuming a v1 meta migrates the roster in place
+4	Test 2b: Rename moves session, window, and meta
 3	Test 3: Health check in list
 4	Test 3a: --active (recently-active filter)
 1	Test 3b: state column + session attn marker in list
@@ -13,53 +13,46 @@
 1	P1 review B2: dot-component targets are rejected before any prompt
 1	P1 review B1: `ae end <prefix>` must not touch a live neighbour
 1	P1: truthful prompt + stopped-dir end-by-name regression
-2	P1 review B1: end a session on a DIFFERENT tmux server (named-server)
-3	2nd-delta B1 MIRROR: DEFAULT-server target, ended from a NAMED-ambient shell
-3	4th review B1: launch INSIDE a foreign tmux pane records the REAL server
+3	P1 review B1: end a session on a DIFFERENT tmux server (named-server)
+2	2nd-delta B1 MIRROR: DEFAULT-server target, ended from a NAMED-ambient shell
+2	4th review B1: launch INSIDE a foreign tmux pane records the REAL server
 3	5th review B1: -S socket vs same-basename -L server collision round-trip
 7	issue #4: `ae end` racing a launch must not leave a recreated session
-2	5th review B2: legacy-empty meta upgrade — fail closed, then migrate, then end
-2	missing-line legacy meta (pre-tmux_server era): migration must ADD, not just replace
-2	7th review B3: zero-hit stays empty; --assume-stopped is the explicit teardown
-2	10th review B1 behavioral: an unverifiable enumerable socket BLOCKS the ack
-3	11th review B1: unlinked-but-LIVE server must be CANNOT-VERIFY, never clean-dead
+1	7th review B3: zero-hit stays empty; --assume-stopped is the explicit teardown
+1	10th review B1 behavioral: an unverifiable enumerable socket BLOCKS the ack
+2	11th review B1: unlinked-but-LIVE server must be CANNOT-VERIFY, never clean-dead
 17	11th review B2: the lifecycle lock excludes end vs start/resume
 2	4th review B2: unreachable server → CANNOT VERIFY → state preserved, rc!=0
-2	4th review B3-probe: no-remote worktree end preserves dir + commit reachable
+3	4th review B3-probe: no-remote worktree end preserves dir + commit reachable
 4	P1 review B2: cleanup must not read a prefix-neighbor's mode after the kill
 4	Test 3c: derived rollup surfaces a watchdog alert (slice 2)
 4	Test 3d: ae next — attention navigator (Layer 2, slice A)
 26	Test 4: Spawn persistence
 26	request-integrity: slot-routed reply survives a display-name CHURN (codex B1)
-5	Test 5: End session (worktree mode)
+4	Test 5: End session (worktree mode)
 4	Test 6: ae status
 3	Test 7: Per-project config override
-4	Test 8: ae <name> use <name> override
-6	Test 9: Resume from different CWD (local mode)
-2	Test 10: ae doctor
+3	Test 8: ae <name> use <name> override
+5	Test 9: Resume from different CWD (local mode)
+1	Test 10: ae doctor
 3	Test 10b: ae doctor orphan check (P2a — lifecycle blindness)
-6	refresh reproduces the CORE's helper set, byte for byte
-5	Test 11: ae doctor --refresh
-5	Test 11b: refresh must NOT stop a STOPPED session's stale-pid watchdog
-5	Test 11c: resume trims events.jsonl to the newest AE_EVENTS_KEEP lines
-5	Test 11d: watchdog status/start/stop reject a stale RECYCLED pid
-3	Test 11e: status bar is AE-OWNED — the watchdog never rewrites status-right
-7	Test 11f: agent roster (@ae_agents_status) with a LIVE watchdog
+4	refresh reproduces the CORE's helper set, byte for byte
+4	Test 11: ae doctor --refresh
+4	Test 11b: refresh must NOT stop a STOPPED session's stale-pid watchdog
+4	Test 11c: resume trims events.jsonl to the newest AE_EVENTS_KEEP lines
+4	Test 11d: watchdog status/start/stop reject a stale RECYCLED pid
+5	Test 11e: status bar is AE-OWNED — the watchdog never rewrites status-right
+6	Test 11f: agent roster (@ae_agents_status) with a LIVE watchdog
 8	goal helper: set → list → survives resume
-26	Test: ae orchestrator (legacy hub scaffold) — config isolation + hub compat
-4	ae list robustness: a per-session helper returning non-zero must NOT abort
-7	orchestrator companion autostart: scaffold → any launch brings it up
-2	aewatch retired: the bridge spawn kills a stale sidecar
-1	telegram autostart: intent + liveness are the whole decision
-10	telegram autostart refusal visibility
+27	Test: ae orchestrator (legacy hub scaffold) — config isolation + hub compat
+3	ae list robustness: a per-session helper returning non-zero must NOT abort
 10	lead-default Part 3: layout = lead-solo (real tmux windows)
 10	session-shape: layout = lead-pair (colead seat in window 0, real tmux)
-5	#27: launch.<slot>.sh survives being re-run
-2	#28 boundary: ONE definition, in the runtime that calls it
+4	#27: launch.<slot>.sh survives being re-run
 42	ROLLBACK: a failed launch must not leave debris behind
 91	#33: stop targets the RECORDED server by EXACT id, and verifies
-4	#34: end STOPS before it SNAPSHOTS
-4	#34: a failed push leaves everything, and SAYS the session is stopped
+5	#34: end STOPS before it SNAPSHOTS
+5	#34: a failed push leaves everything, and SAYS the session is stopped
 19	#30: a resumed pane reports the TOOL, not bash
 11	#48: session archives, end to end
 11	purge: no archive written, and an existing one removed
@@ -70,12 +63,11 @@
 70	ae compact, phase (a): it resolves, it refuses, it changes nothing
 70	compact phase (b): the handover is a fact, not a claim
 70	compact (c)+(d): it hands over, it ends, it comes back
-3	tracked resolution: a paneless request routes on the recorded server, not the ambient one
+4	tracked resolution: a paneless request routes on the recorded server, not the ambient one
 10	#59: each slot's generated artifacts carry THAT slot's identity
 10	#59 R1: a hostile spawn name never reaches an artifact
 10	#59 C3-2: a RESTORED roster name is fail-quiet, a FRESH one is fatal
 10	#59 C4: the frozen-roster branch, driven for real
-22	P5 installer + wrapper
-3	ae-next coexistence: Telegram ownership guard
-10	P5 real ae through the symlink
-11	P5 upgrade + re-entry
+18	P5 installer + wrapper
+9	P5 real ae through the symlink
+10	P5 upgrade + re-entry
