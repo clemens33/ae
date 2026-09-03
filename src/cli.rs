@@ -198,6 +198,13 @@ pub enum Request {
     Help,
     /// `list` (or its `ls` spelling) with the filters its flags selected.
     List(ListArgs),
+    /// `next` (or its `jump` spelling) — the attention navigator. The tail is
+    /// validated by [`crate::next::parse`], not here: the refusal text is
+    /// `ae next`'s own and belongs beside the rule it states.
+    Next {
+        /// Everything after the subcommand, as typed.
+        tail: Vec<String>,
+    },
     /// `_requests <meta-dir> [mine|inbox|all]` — the `requests` helper surface.
     Requests {
         /// The session meta directory the frozen helper derives from `$0`.
@@ -560,6 +567,9 @@ impl Request {
             Some("list" | "ls") => match ListArgs::parse(&args[1..]) {
                 Ok(parsed) => Self::List(parsed),
                 Err(UnknownFlag(token)) => Self::UsageError(token),
+            },
+            Some("next" | "jump") => Self::Next {
+                tail: args[1..].to_vec(),
             },
             Some(REQUESTS) => Self::parse_requests(&args[1..]),
             Some(STATE) => match &args[1..] {
@@ -933,6 +943,7 @@ impl Request {
             Self::Version | Self::Help => Some(0),
             Self::UsageError(_) | Self::MissingOperand(_) => Some(2),
             Self::List(_)
+            | Self::Next { .. }
             | Self::LaunchCandidate(_)
             | Self::Requests { .. }
             | Self::State { .. }

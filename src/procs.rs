@@ -57,6 +57,20 @@ impl PsArgv {
         ])
     }
 
+    /// The argv reading ONE process's controlling tty — frozen's
+    /// `ps -o tty= -p $$`, which `ae next --attach` uses to tell a real pane
+    /// from an inherited `$TMUX`. The only parameter is a pid, so this door has
+    /// no injection surface either: a `u32` cannot be a flag.
+    #[must_use]
+    pub fn tty_of(pid: u32) -> Self {
+        Self(vec![
+            "-o".to_owned(),
+            "tty=".to_owned(),
+            "-p".to_owned(),
+            pid.to_string(),
+        ])
+    }
+
     /// The argv for the transport door to spawn. Reading is harmless;
     /// construction is what is sealed.
     #[must_use]
@@ -207,6 +221,25 @@ pub fn snapshot() -> Option<Vec<Proc>> {
         parse_table(&stdout)
     } else {
         None
+    }
+}
+
+/// This process's controlling tty, or `None` when it has none.
+///
+/// Frozen folded whitespace out of the reading and then treated `?`, `??` and
+/// `-` as "no tty" — three spellings because the answer is `ps`-flavour
+/// dependent and every one of them means the same thing. An empty answer is the
+/// fourth.
+#[must_use]
+pub fn own_tty() -> Option<String> {
+    let (succeeded, stdout) = crate::transport::run_ps(&PsArgv::tty_of(std::process::id()));
+    if !succeeded {
+        return None;
+    }
+    let tty: String = stdout.chars().filter(|ch| !ch.is_whitespace()).collect();
+    match tty.as_str() {
+        "" | "?" | "??" | "-" => None,
+        _ => Some(tty),
     }
 }
 

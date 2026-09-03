@@ -932,6 +932,113 @@ pub fn display_message_args(server: &ServerId, target: &str, text: &str) -> Vec<
     args
 }
 
+/// The `ae next --attach` verbs, and the question of which one applies.
+///
+/// Two tmux commands do the same job from different places: `switch-client`
+/// moves a client that is already attached, and `attach-session` gives a client
+/// to a terminal that has none. Frozen's `_next_focus_verb` chose between them
+/// by inside-ness and returned ONLY the verb, "so the caller passes the target
+/// as a separate quoted argv element — a session name with spaces must not be
+/// word-split". Here the target is an argv element by construction, and the
+/// verb is an enum rather than a string for the same reason: a verb that can be
+/// spelled is a verb that can be spelled wrong.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FocusVerb {
+    /// Inside tmux — `attach-session` errors with "sessions should be nested
+    /// with care" and is not what a pane wants anyway.
+    SwitchClient,
+    /// Outside tmux — there is no client to switch.
+    AttachSession,
+}
+
+impl FocusVerb {
+    /// The tmux command word.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::SwitchClient => "switch-client",
+            Self::AttachSession => "attach-session",
+        }
+    }
+
+    /// Which verb applies, given whether the caller is inside tmux.
+    #[must_use]
+    pub const fn for_inside(inside: bool) -> Self {
+        if inside {
+            Self::SwitchClient
+        } else {
+            Self::AttachSession
+        }
+    }
+}
+
+/// The arguments that focus `session` with `verb`.
+#[must_use]
+pub fn focus_args(server: &ServerId, verb: FocusVerb, session: &str) -> Vec<String> {
+    let mut args = server_args(server);
+    args.push(verb.as_str().to_owned());
+    args.push("-t".to_owned());
+    args.push(session.to_owned());
+    args
+}
+
+/// `#{pane_tty}` — the tty of every pane on the server, one per line.
+pub const PANE_TTY_FORMAT: &str = "#{pane_tty}";
+
+/// The arguments listing the ttys of ALL panes on `server` — `-a`, deliberately
+/// across every session, because the question is "is THIS terminal a pane of
+/// this server" and the answer may live in any of them.
+#[must_use]
+pub fn pane_ttys_args(server: &ServerId) -> Vec<String> {
+    let mut args = server_args(server);
+    args.extend(["list-panes", "-a", "-F", PANE_TTY_FORMAT].map(ToOwned::to_owned));
+    args
+}
+
+/// What a completed pane-tty listing means. A run that did not succeed is
+/// `None` — no answer, which frozen treats as "unanswerable, trust $TMUX".
+#[must_use]
+pub fn interpret_pane_ttys(succeeded: bool, stdout: &str) -> Option<Vec<String>> {
+    if !succeeded {
+        return None;
+    }
+    Some(
+        stdout
+            .lines()
+            .map(str::trim_end)
+            .filter(|line| !line.is_empty())
+            .map(ToOwned::to_owned)
+            .collect(),
+    )
+}
+
+/// The arguments asking `server` which session the CALLING client is in —
+/// frozen's `tmux display-message -p '#S'`, with no `-t`, so tmux answers for
+/// the client the invocation inherited.
+#[must_use]
+pub fn current_session_args(server: &ServerId) -> Vec<String> {
+    let mut args = server_args(server);
+    args.extend(["display-message", "-p", SESSION_NAME_FORMAT].map(ToOwned::to_owned));
+    args
+}
+
+/// Whether `tty` is one of `pane_ttys`, comparing with `/dev/` stripped from
+/// BOTH sides.
+///
+/// Frozen's note is the reason, and it is a portability fact rather than a
+/// nicety: "procps prints `pts/3` and BSD ps `ttys039` against tmux's
+/// `/dev/pts/3` / `/dev/ttys039`, but a ps that spelled the full path would
+/// otherwise make every genuine pane look stale".
+#[must_use]
+pub fn tty_is_a_pane(tty: &str, pane_ttys: &[String]) -> bool {
+    let bare = |value: &str| {
+        let value = value.trim();
+        value.strip_prefix("/dev/").unwrap_or(value).to_owned()
+    };
+    let mine = bare(tty);
+    !mine.is_empty() && pane_ttys.iter().any(|pane| bare(pane) == mine)
+}
+
 /// `#{session_id}\x1f#{session_name}` — the pair the id resolver reads.
 ///
 /// `\x1f` rather than a space: the frozen splits on whitespace and a session
@@ -1858,5 +1965,91 @@ mod tests {
     fn a_relative_socket_path_cannot_address_a_server() {
         assert!(is_addressable_socket(Path::new("/tmp/ae.sock")));
         assert!(!is_addressable_socket(Path::new("relative/ae.sock")));
+    }
+
+    #[test]
+    fn the_focus_verb_follows_inside_ness_and_carries_the_target_separately() {
+        use super::{FocusVerb, focus_args};
+        use crate::inventory::ServerId;
+        // Frozen's `_next_focus_verb`: attach-session errors inside tmux
+        // ("sessions should be nested with care"), and there is no client to
+        // switch outside it.
+        assert_eq!(FocusVerb::for_inside(true), FocusVerb::SwitchClient);
+        assert_eq!(FocusVerb::for_inside(false), FocusVerb::AttachSession);
+        assert_eq!(FocusVerb::SwitchClient.as_str(), "switch-client");
+        assert_eq!(FocusVerb::AttachSession.as_str(), "attach-session");
+
+        // The target is its own argv element, never concatenated: frozen took
+        // the trouble because "a session name with spaces must not be
+        // word-split", and an argument vector is where that stays true.
+        assert_eq!(
+            focus_args(&ServerId::Ambient, FocusVerb::SwitchClient, "a b"),
+            vec!["switch-client", "-t", "a b"]
+        );
+        assert_eq!(
+            focus_args(&ServerId::Ambient, FocusVerb::AttachSession, "s"),
+            vec!["attach-session", "-t", "s"]
+        );
+    }
+
+    #[test]
+    fn a_pane_tty_listing_is_a_list_and_a_failed_one_is_no_answer() {
+        use super::{interpret_pane_ttys, pane_ttys_args};
+        use crate::inventory::ServerId;
+        assert_eq!(
+            pane_ttys_args(&ServerId::Ambient),
+            vec!["list-panes", "-a", "-F", "#{pane_tty}"],
+            "-a: the question is whether THIS terminal is a pane of the server, \
+             and the answer may live in any session"
+        );
+        assert_eq!(
+            interpret_pane_ttys(true, "/dev/ttys001\n/dev/ttys002\n"),
+            Some(vec!["/dev/ttys001".to_owned(), "/dev/ttys002".to_owned()])
+        );
+        assert_eq!(
+            interpret_pane_ttys(true, ""),
+            Some(Vec::new()),
+            "a server with no panes ANSWERED"
+        );
+        assert_eq!(
+            interpret_pane_ttys(false, "/dev/ttys001\n"),
+            None,
+            "a failed run is no answer, whatever it printed"
+        );
+    }
+
+    #[test]
+    fn the_tty_comparison_strips_dev_from_both_sides_exactly_once() {
+        use super::tty_is_a_pane;
+        // procps prints `pts/3` and BSD ps `ttys039`, against tmux's absolute
+        // `/dev/…`. Frozen strips the prefix from both sides for exactly that.
+        let panes = vec!["/dev/ttys039".to_owned(), "/dev/pts/3".to_owned()];
+        assert!(tty_is_a_pane("ttys039", &panes));
+        assert!(tty_is_a_pane("pts/3", &panes));
+        assert!(
+            tty_is_a_pane("/dev/pts/3", &panes),
+            "a ps that spelled the full path must not make every pane look stale"
+        );
+        assert!(
+            !tty_is_a_pane("ttys001", &panes),
+            "a real non-pane terminal"
+        );
+        assert!(!tty_is_a_pane("", &panes), "no tty is not every tty");
+        assert!(
+            !tty_is_a_pane("ttys039", &[]),
+            "a server with no panes matches nothing"
+        );
+    }
+
+    #[test]
+    fn the_current_session_question_carries_no_target() {
+        use super::current_session_args;
+        use crate::inventory::ServerId;
+        // No `-t`: the question is which session THIS client is in, and naming
+        // a target would answer about the target instead.
+        assert_eq!(
+            current_session_args(&ServerId::Ambient),
+            vec!["display-message", "-p", "#{session_name}"]
+        );
     }
 }

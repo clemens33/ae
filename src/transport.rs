@@ -218,7 +218,12 @@ pub fn deliver(
     envs: &[(&str, &str)],
 ) -> Delivery {
     let args = [target.to_owned(), message.to_owned()];
-    match spawn(&helper.display().to_string(), &args, envs, true) {
+    match spawn(
+        &helper.display().to_string(),
+        &args,
+        envs,
+        Streams::InheritStderr,
+    ) {
         Some(output) => Delivery {
             code: output.status.code(),
             stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
@@ -305,19 +310,47 @@ fn spawn<A: AsRef<std::ffi::OsStr>>(
     program: &str,
     args: &[A],
     envs: &[(&str, &str)],
-    inherit_stderr: bool,
+    streams: Streams,
 ) -> Option<std::process::Output> {
     let mut command = std::process::Command::new(program);
     command.args(args);
     command.envs(envs.iter().copied());
-    if inherit_stderr {
+    if streams == Streams::InheritStderr {
         command.stderr(std::process::Stdio::inherit());
+    }
+    if streams == Streams::Terminal {
+        // Nothing is captured, so there is nothing to return but the status —
+        // and an `Output` carrying it keeps every caller of this door reading
+        // one shape.
+        return command.status().ok().map(|status| std::process::Output {
+            status,
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+        });
     }
     command.output().ok()
 }
 
+/// How the door wires a child's streams — and therefore what it can report.
+///
+/// A THIRD value rather than a second door: `clippy.toml` confines the whole
+/// capability to one private function, and a sibling that also said
+/// `Command::new` would be a second place the confinement has to hold.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Streams {
+    /// Both captured. Every question-shaped call: ae reads the answer.
+    Captured,
+    /// stdout captured, stderr ae's own — the send helper, whose diagnostics
+    /// belong in the pane that invoked it.
+    InheritStderr,
+    /// Every stream is ae's own. `attach-session` does not answer a question,
+    /// it takes over the terminal, and a captured stdout is a terminal the
+    /// client never gets.
+    Terminal,
+}
+
 fn run(program: &str, args: &[String]) -> (bool, String) {
-    match spawn(program, args, &[], false) {
+    match spawn(program, args, &[], Streams::Captured) {
         Some(output) => (
             output.status.success(),
             String::from_utf8_lossy(&output.stdout).into_owned(),
@@ -333,7 +366,7 @@ fn run(program: &str, args: &[String]) -> (bool, String) {
 /// other failure (unproven). Everywhere else stderr is noise and [`run`] drops
 /// it; here it carries the SC-017l distinction.
 fn run_captured(program: &str, args: &[String]) -> (bool, String, String) {
-    match spawn(program, args, &[], false) {
+    match spawn(program, args, &[], Streams::Captured) {
         Some(output) => (
             output.status.success(),
             String::from_utf8_lossy(&output.stdout).into_owned(),
@@ -361,7 +394,7 @@ fn run_captured(program: &str, args: &[String]) -> (bool, String, String) {
 /// `tests/it/parity_self_test.rs`) is defence in depth, so this fixed-program
 /// leg cannot quietly become a general spawner.
 pub(crate) fn run_git(argv: &crate::git::GitArgv) -> (bool, String) {
-    match spawn("git", argv.as_os_args(), &[], false) {
+    match spawn("git", argv.as_os_args(), &[], Streams::Captured) {
         Some(output) => (
             output.status.success(),
             String::from_utf8_lossy(&output.stdout).into_owned(),
@@ -384,7 +417,7 @@ pub(crate) fn run_git(argv: &crate::git::GitArgv) -> (bool, String) {
 /// `run_ps_has_exactly_one_product_caller` in `tests/it/parity_self_test.rs` is
 /// defence in depth, so this leg cannot quietly become a general spawner.
 pub(crate) fn run_ps(argv: &crate::procs::PsArgv) -> (bool, String) {
-    match spawn("ps", argv.as_args(), &[], false) {
+    match spawn("ps", argv.as_args(), &[], Streams::Captured) {
         Some(output) => (
             output.status.success(),
             String::from_utf8_lossy(&output.stdout).into_owned(),
@@ -497,6 +530,71 @@ pub fn display_message(server: &ServerId, target: &str, text: &str) -> bool {
     let (succeeded, _) = run(PROGRAM, &tmux::display_message_args(server, target, text));
     succeeded
 }
+
+/// Every session name `server` reports, or `None` when it did not answer.
+///
+/// The frozen `ae next --attach` re-validation: "use an exact `list-sessions`
+/// match, NOT `has-session -t` — that prefix-matches, so a vanished session with
+/// a surviving prefix-sibling would false-positive and land the focus on the
+/// wrong session". The exact match is the caller's; this only gets the names.
+#[must_use]
+pub fn session_names(server: &ServerId) -> Option<Vec<String>> {
+    if !addressable(server) {
+        return None;
+    }
+    let (succeeded, stdout) = run(PROGRAM, &tmux::list_sessions_args(server));
+    tmux::interpret_sessions(succeeded, &stdout).ok()
+}
+
+/// The session the CALLING client is in, or `None` when there is no answer.
+#[must_use]
+pub fn observe_current_session(server: &ServerId) -> Option<String> {
+    if !addressable(server) {
+        return None;
+    }
+    let (succeeded, stdout) = run(PROGRAM, &tmux::current_session_args(server));
+    tmux::interpret_session_option(succeeded, &stdout)
+}
+
+/// The ttys of every pane on `server`, or `None` when it did not answer.
+#[must_use]
+pub fn observe_pane_ttys(server: &ServerId) -> Option<Vec<String>> {
+    if !addressable(server) {
+        return None;
+    }
+    let (succeeded, stdout) = run(PROGRAM, &tmux::pane_ttys_args(server));
+    tmux::interpret_pane_ttys(succeeded, &stdout)
+}
+
+/// Hand this terminal to tmux and report what tmux exited with.
+///
+/// **The one call in this module that does not capture.** Every other door here
+/// reads an answer, so it takes the child's stdout; `attach-session` does not
+/// answer anything — it takes over the terminal — and a captured stdout is a
+/// terminal the client never gets. `switch-client` goes the same way because it
+/// is the same operation from the other side, and because a jump that printed
+/// tmux's diagnostic into a variable nobody reads would fail silently.
+///
+/// A tmux that could not be spawned at all is [`FOCUS_FAILED`], the shell's own
+/// answer for a command that did not run.
+#[must_use]
+pub fn focus(server: &ServerId, verb: tmux::FocusVerb, session: &str) -> u8 {
+    if !addressable(server) {
+        return FOCUS_FAILED;
+    }
+    let args = tmux::focus_args(server, verb, session);
+    match spawn(PROGRAM, &args, &[], Streams::Terminal) {
+        Some(output) => output
+            .status
+            .code()
+            .and_then(|code| u8::try_from(code).ok())
+            .unwrap_or(FOCUS_FAILED),
+        None => FOCUS_FAILED,
+    }
+}
+
+/// What a focus that never ran reports — `127`, the shell's command-not-found.
+pub const FOCUS_FAILED: u8 = 127;
 
 #[cfg(test)]
 mod tests {

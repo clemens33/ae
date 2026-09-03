@@ -2525,3 +2525,349 @@ fn the_telegram_daemon_entry_names_what_it_actually_needs_and_never_stutters() {
     assert_eq!(refusal.matches("telegram:").count(), 1, "{refusal}");
     std::fs::remove_dir_all(&empty).ok();
 }
+
+/// The `ae next` fixture: a real isolated server holding two ae-marked
+/// sessions, one wanting a human louder than the other.
+///
+/// Both halves are needed and neither is decoration. The tmux server makes the
+/// sessions RUNNING — the status is the whole stopped-exclusion, and a planted
+/// directory alone classifies as `unknown`, which `next` skips for a different
+/// reason and would let this fixture pass while proving nothing. The `AE_SESSION`
+/// marker is what makes them ae's rather than someone's.
+///
+/// `nx-hot` raises `dead` structurally: its roster names a seat with no pane.
+/// `nx-mild` raises `blocked` from its own ledger and carries the ONLY activity
+/// timestamp in the fixture, so severity has to beat recency for `nx-hot` to
+/// win — a selection that merely sorted by recency would answer `nx-mild`.
+struct NextFixture {
+    root: std::path::PathBuf,
+    scratch: std::path::PathBuf,
+    socket: std::path::PathBuf,
+    hot_pane: String,
+}
+
+impl NextFixture {
+    /// Build it. Every step panics loudly on failure, like the `#[test]`
+    /// callers it feeds: a fixture that quietly half-built itself would report
+    /// as a product defect somewhere further down.
+    #[allow(
+        clippy::expect_used,
+        reason = "a fixture that cannot build must panic where it broke, not later"
+    )]
+    fn plant(tag: &str) -> Self {
+        let scratch = std::path::PathBuf::from(format!("/tmp/aenx.{tag}.{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&scratch);
+        std::fs::create_dir_all(&scratch).expect("a scratch directory");
+        // `<scratch>/tmux-<uid>/default` — the exact path a bare `tmux` derives
+        // from `$TMUX_TMPDIR`, so pointing that at the scratch directory makes
+        // THIS server the ambient one. The jump test needs that shape, because
+        // it must run with `$TMUX` absent to be provably outside tmux.
+        let uid = std::os::unix::fs::MetadataExt::uid(
+            &std::fs::metadata(&scratch).expect("the scratch directory exists"),
+        );
+        let socket_dir = scratch.join(format!("tmux-{uid}"));
+        std::fs::create_dir_all(&socket_dir).expect("a socket directory");
+        // tmux refuses a socket directory anyone else can reach — "has unsafe
+        // permissions" — so the fixture makes it exactly as private as the one
+        // tmux would have made for itself.
+        std::fs::set_permissions(
+            &socket_dir,
+            std::os::unix::fs::PermissionsExt::from_mode(0o700),
+        )
+        .expect("a private socket directory");
+        let socket = socket_dir.join("default");
+        let server = ae::inventory::ServerId::Selected(ae::meta::Selector::Socket(socket.clone()));
+        let tmux = |tail: &[&str]| {
+            let mut args = ae::tmux::server_args(&server);
+            args.extend(tail.iter().map(|arg| (*arg).to_owned()));
+            run_tmux(&args, &scratch)
+        };
+
+        let root = scratch.join("home");
+        std::fs::create_dir_all(root.join("sessions")).expect("a scratch state root");
+        let pane_of = |name: &str, roster: &str| {
+            assert!(
+                tmux(&["-f", "/dev/null", "new-session", "-d", "-s", name]).0,
+                "creating {name} must succeed"
+            );
+            assert!(tmux(&["set-environment", "-t", name, "AE_SESSION", name]).0);
+            let (_, pane) = tmux(&["display-message", "-p", "-t", name, "#{pane_id}"]);
+            let pane = pane.trim().to_owned();
+            assert!(pane.starts_with('%'), "a pane id, got {pane:?}");
+            assert!(tmux(&["set-option", "-p", "-t", &pane, "@ae_slot", "main"]).0);
+            assert!(tmux(&["set-option", "-p", "-t", &pane, "@ae_agent", "lead"]).0);
+            let dir = root.join("sessions").join(name);
+            std::fs::create_dir_all(&dir).expect("a session directory");
+            std::fs::write(
+                dir.join("meta"),
+                format!(
+                    "session={name}\nmode=local\nseat.main=lead\nprofile.main=cl\n{roster}\
+                     tmux_server_kind=socket\ntmux_server={}\n",
+                    socket.display()
+                ),
+            )
+            .expect("a meta file");
+            pane
+        };
+
+        let hot_pane = pane_of("nx-hot", "seat.worker.0=gone\nprofile.worker.0=cl\n");
+        pane_of("nx-mild", "");
+        std::fs::write(
+            root.join("sessions").join("nx-mild").join("events.jsonl"),
+            "{\"ts\":\"2026-08-27T08:00:00Z\",\"actor\":\"lead\",\"action\":\"state\",\
+             \"ref\":\"blocked\",\"actor_slot\":\"main\",\"actor_session\":\"nx-mild\"}\n",
+        )
+        .expect("a planted ledger");
+
+        Self {
+            root,
+            scratch,
+            socket,
+            hot_pane,
+        }
+    }
+
+    /// `ae <tail>` against this fixture's state root, with `env` applied.
+    #[allow(
+        clippy::expect_used,
+        reason = "a lane that cannot run the product binary must say so where it failed"
+    )]
+    fn run(&self, tail: &[&str], env: &[(&str, &str)]) -> (Option<i32>, String, String) {
+        let mut command = ae();
+        // A developer running this suite from inside tmux must not lend the
+        // product their own server: every tmux fact here is the fixture's.
+        command
+            .env("AE_HOME", &self.root)
+            .env_remove("TMUX")
+            .env_remove("TMUX_PANE")
+            .args(tail);
+        for (key, value) in env {
+            command.env(key, value);
+        }
+        let out = command.output().expect("the ae binary should run");
+        (
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    }
+
+    /// `$TMUX` as tmux itself writes it, pointing at this fixture's server so
+    /// the product's BARE `tmux` is addressing it and no other.
+    fn tmux_env(&self) -> String {
+        format!("{},1,0", self.socket.display())
+    }
+
+    fn tear_down(&self) {
+        let server =
+            ae::inventory::ServerId::Selected(ae::meta::Selector::Socket(self.socket.clone()));
+        let mut args = ae::tmux::server_args(&server);
+        args.push("kill-server".to_owned());
+        let _ = run_tmux(&args, &self.scratch);
+        let _ = std::fs::remove_dir_all(&self.scratch);
+    }
+}
+
+#[test]
+fn next_names_the_top_running_session_needing_attention_under_both_spellings() {
+    let fixture = NextFixture::plant("pick");
+    let next = fixture.run(&["next"], &[]);
+    let jump = fixture.run(&["jump"], &[]);
+    fixture.tear_down();
+
+    assert_eq!(next.0, Some(0), "{next:?}");
+    assert_eq!(
+        next.1, "nx-hot  attn:dead  rank:6  gone\n",
+        "severity beats the fresher blocked session, and the line names the \
+         agent that raised the reason: {next:?}"
+    );
+    assert!(next.2.is_empty(), "{next:?}");
+    assert_eq!(jump, next, "`jump` is the same command, not a near-alias");
+}
+
+#[test]
+fn next_refuses_when_no_running_session_needs_a_human() {
+    // The whole fixture minus what makes either session ask for anything: the
+    // roster seat with no pane, and the blocked declaration.
+    let fixture = NextFixture::plant("quiet");
+    std::fs::write(
+        fixture.root.join("sessions").join("nx-hot").join("meta"),
+        format!(
+            "session=nx-hot\nmode=local\nseat.main=lead\nprofile.main=cl\n\
+             tmux_server_kind=socket\ntmux_server={}\n",
+            fixture.socket.display()
+        ),
+    )
+    .expect("a rewritten meta");
+    std::fs::remove_file(
+        fixture
+            .root
+            .join("sessions")
+            .join("nx-mild")
+            .join("events.jsonl"),
+    )
+    .expect("the planted ledger goes");
+    let quiet = fixture.run(&["next"], &[]);
+    fixture.tear_down();
+
+    assert_eq!(quiet.0, Some(1), "non-zero so it composes: {quiet:?}");
+    assert!(quiet.1.is_empty(), "the refusal is never stdout: {quiet:?}");
+    assert_eq!(
+        quiet.2, "ae next: no running session needs attention.\n",
+        "{quiet:?}"
+    );
+}
+
+#[test]
+fn the_next_argv_is_answered_before_any_session_is_looked_at() {
+    // No state root at all: `--help` and a refused word must still answer, and
+    // must not degrade into the unavailable `1`.
+    let help = ae()
+        .env_clear()
+        .args(["next", "--help"])
+        .output()
+        .expect("the ae binary should run");
+    assert_eq!(help.status.code(), Some(0), "{:?}", help.status);
+    assert!(help.stdout.is_empty(), "frozen wrote the usage to stderr");
+    let expected = [
+        "Usage: ae next [--attach]   Name the top running session needing attention.",
+        "       ae jump [--attach]   Alias for ae next.",
+        "",
+        "Read-only by default: prints \"<session>  attn:<reason>  rank:<n>  <agent>\" and",
+        "exits 0, or a message on stderr and non-zero when nothing needs attention.",
+        "--attach (alias --switch) jumps to that session: switch-client inside tmux,",
+        "attach-session outside.",
+        "",
+    ]
+    .join("\n");
+    assert_eq!(String::from_utf8_lossy(&help.stderr), expected);
+
+    let refused = ae()
+        .env_clear()
+        .args(["next", "--frobnicate"])
+        .output()
+        .expect("the ae binary should run");
+    assert_eq!(refused.status.code(), Some(2), "{:?}", refused.status);
+    assert!(refused.stdout.is_empty());
+    assert_eq!(
+        String::from_utf8_lossy(&refused.stderr),
+        "ae next: unknown argument '--frobnicate' (see: ae next --help)\n"
+    );
+}
+
+#[test]
+fn attach_refuses_a_session_the_server_it_would_jump_on_does_not_have() {
+    // The re-validation between the scan and the jump, and the reason it is an
+    // EXACT list-sessions match rather than a prefix-matching `has-session`.
+    // Here the ambient server is a second, empty one: the chosen session is as
+    // absent from it as an ended session would be, and the jump refuses instead
+    // of focusing whatever else is there.
+    let fixture = NextFixture::plant("elsewhere");
+    let elsewhere = fixture.scratch.join("e");
+    let other = ae::inventory::ServerId::Selected(ae::meta::Selector::Socket(elsewhere.clone()));
+    let mut create = ae::tmux::server_args(&other);
+    create
+        .extend(["-f", "/dev/null", "new-session", "-d", "-s", "nx-hotel"].map(ToOwned::to_owned));
+    assert!(
+        run_tmux(&create, &fixture.scratch).0,
+        "the second server must come up"
+    );
+
+    let refused = fixture.run(
+        &["next", "--attach"],
+        &[("TMUX", &format!("{},1,0", elsewhere.display()))],
+    );
+    let mut kill = ae::tmux::server_args(&other);
+    kill.push("kill-server".to_owned());
+    let _ = run_tmux(&kill, &fixture.scratch);
+    fixture.tear_down();
+
+    assert_eq!(refused.0, Some(1), "{refused:?}");
+    assert!(refused.1.is_empty(), "{refused:?}");
+    assert_eq!(
+        refused.2, "ae next: 'nx-hot' disappeared before attach.\n",
+        "a prefix sibling on the server is not the session: {refused:?}"
+    );
+}
+
+#[test]
+fn attach_jumps_on_the_ambient_server_and_tmux_own_status_is_the_command_s() {
+    // The jump itself. `TMUX_TMPDIR` points a BARE `tmux` at this fixture's
+    // server, and `$TMUX` is absent — so the caller is provably OUTSIDE tmux and
+    // the verb is `attach-session`, with no dependence on whether the lane
+    // running this test has a controlling terminal.
+    //
+    // Nothing is attached here and the test's stdin is not a terminal, so tmux
+    // refuses — which is the assertion. Frozen's last statement is tmux, so
+    // TMUX'S status is the command's: what must be shown is that the refusal
+    // came from tmux (a jump attempted on the chosen session) rather than from
+    // ae (a jump abandoned before it started).
+    let fixture = NextFixture::plant("jump");
+    let attached = fixture.run(
+        &["next", "--attach"],
+        &[("TMUX_TMPDIR", &fixture.scratch.display().to_string())],
+    );
+    fixture.tear_down();
+
+    assert!(
+        attached.1.is_empty(),
+        "the jump prints nothing of its own: {attached:?}"
+    );
+    assert_ne!(
+        attached.0,
+        Some(0),
+        "an unattached server cannot be jumped to: {attached:?}"
+    );
+    assert!(
+        !attached.2.contains("disappeared before attach")
+            && !attached.2.contains("no running session needs attention"),
+        "the selection ran and the session was there; the refusal is tmux's: {attached:?}"
+    );
+}
+
+#[test]
+fn attach_reports_being_already_there_rather_than_jumping_to_it() {
+    // Frozen's inside-ness rule has TWO halves, and this pins the second: the
+    // tty comparison that separates a real pane from an inherited `$TMUX` is
+    // allowed to be UNANSWERABLE, and then `$TMUX` is trusted "as ae always
+    // has" — a probe that cannot speak must not become a verdict.
+    //
+    // Here `ps` cannot answer: `PATH` leads to one that refuses. So the caller
+    // is taken to be inside, the client's session IS the chosen one, and the
+    // answer is the already-there line on STDOUT at 0 — never a jump.
+    let fixture = NextFixture::plant("already");
+    let bin = fixture.scratch.join("bin");
+    std::fs::create_dir_all(&bin).expect("a shim directory");
+    std::fs::write(bin.join("ps"), "#!/bin/sh\nexit 1\n").expect("a ps that refuses");
+    #[allow(
+        clippy::permissions_set_readonly_false,
+        reason = "a fixture executable"
+    )]
+    std::fs::set_permissions(
+        bin.join("ps"),
+        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+    )
+    .expect("the shim is executable");
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+
+    let already = fixture.run(
+        &["next", "--attach"],
+        &[
+            ("PATH", &path),
+            ("TMUX", &fixture.tmux_env()),
+            ("TMUX_PANE", &fixture.hot_pane.clone()),
+        ],
+    );
+    fixture.tear_down();
+
+    assert_eq!(already.0, Some(0), "{already:?}");
+    assert_eq!(
+        already.1, "ae next: already in 'nx-hot' (attn:dead).\n",
+        "frozen prints this one on stdout, not stderr: {already:?}"
+    );
+    assert!(already.2.is_empty(), "{already:?}");
+}

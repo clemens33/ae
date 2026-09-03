@@ -84,6 +84,7 @@ pub mod liveness;
 pub mod memo;
 pub mod meta;
 pub mod netprobe;
+pub mod next;
 pub mod procs;
 pub mod reply;
 pub mod requests;
@@ -199,11 +200,16 @@ pub const EXIT_UNAVAILABLE: u8 = 1;
 /// # Ok::<(), ae::Error>(())
 /// ```
 pub fn run(args: &[String], out: &mut impl Write, err: &mut impl Write) -> Result<u8> {
-    // Only a listing needs a source. Parsing twice is cheaper than making
-    // `--version` touch the disk to answer a question about itself.
-    if matches!(cli::Request::parse(args), cli::Request::List(_))
-        && let Some(root) = state_root()
-    {
+    // Only a listing needs a source, and `next` only needs one once its argv has
+    // been accepted: a refused word must not pay for a tmux scan of every
+    // session before it can say so, which is what frozen's parse-then-scan order
+    // already guaranteed.
+    let wants_world = match cli::Request::parse(args) {
+        cli::Request::List(_) => true,
+        cli::Request::Next { tail } => next::parse(&tail).is_ok(),
+        _ => false,
+    };
+    if wants_world && let Some(root) = state_root() {
         let (_snapshot, world) = current_world(&root);
         return run_with(args, Some(&world), out, err);
     }
@@ -246,6 +252,109 @@ fn run_state(
             Ok(state::EXIT_FAILED)
         }
     }
+}
+
+/// The `next`/`jump` arm — frozen `cmd_next`, over the world `list` renders.
+///
+/// The argv is answered BEFORE the world is consulted, exactly as frozen's loop
+/// ran before its scan: `ae next --bogus` is a refusal whether or not any
+/// session needs a human, and `--help` never depends on tmux being reachable.
+///
+/// Everything after the selection is the jump, and it is here rather than in
+/// [`next`] because it runs tmux — the module stays pure so the ordering rules
+/// can be tested without a server, which is the same split [`tmux`] and
+/// [`transport`] already keep.
+fn run_next(
+    tail: &[String],
+    world: Option<&listing::World>,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> Result<u8> {
+    let args = match next::parse(tail) {
+        Ok(args) => args,
+        Err(usage) => {
+            write!(err, "{}", usage.render())?;
+            return Ok(usage.code());
+        }
+    };
+    let Some(world) = world else {
+        writeln!(err, "ae: {NO_STATE_ROOT}")?;
+        return Ok(EXIT_UNAVAILABLE);
+    };
+    let Some(choice) = next::choose(world) else {
+        writeln!(err, "{}", next::NOTHING)?;
+        return Ok(next::EXIT_NONE);
+    };
+    if !args.attach {
+        write!(out, "{}", choice.line())?;
+        return Ok(0);
+    }
+
+    // The ambient server, which is what the frozen `tmux()` shim resolves to
+    // when no `AE_TMUX_SERVER` redirects it. The core has no shim — see
+    // `calling_pane` — so this is a jump to the server the invocation is
+    // already talking to, and never to one a session record names.
+    let server = inventory::ServerId::Ambient;
+
+    // Re-validate EXACTLY: the session may have ended between the scan and the
+    // jump, and a prefix-matching `has-session -t` would land the focus on a
+    // surviving sibling. A server that did not answer proves nothing is gone,
+    // but it also cannot be jumped to, so it takes the same refusal.
+    let still_there =
+        transport::session_names(&server).is_some_and(|names| names.contains(&choice.name));
+    if !still_there {
+        writeln!(err, "ae next: '{}' disappeared before attach.", choice.name)?;
+        return Ok(next::EXIT_NONE);
+    }
+
+    let inside = inside_tmux(&server, err)?;
+    if inside && transport::observe_current_session(&server).as_deref() == Some(&*choice.name) {
+        writeln!(
+            out,
+            "ae next: already in '{}' (attn:{}).",
+            choice.name,
+            choice.reason.as_str()
+        )?;
+        return Ok(0);
+    }
+    // Nothing may still be buffered when tmux takes the terminal.
+    out.flush()?;
+    err.flush()?;
+    Ok(transport::focus(
+        &server,
+        tmux::FocusVerb::for_inside(inside),
+        &choice.name,
+    ))
+}
+
+/// Whether this invocation is really inside a tmux pane — frozen's
+/// `_ae_inside_tmux`, and NOT a bare `$TMUX` test.
+///
+/// `$TMUX` is inherited, so a shell that is not a pane can carry one; with a
+/// stale value `display-message` answers for the ORIGINAL pane's session and a
+/// genuine jump would be suppressed as "already in". The tty comparison is what
+/// separates the two, and an unanswerable comparison trusts `$TMUX` as ae always
+/// has — a probe that cannot speak must not become a verdict.
+fn inside_tmux(server: &inventory::ServerId, err: &mut impl Write) -> Result<bool> {
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: whether the caller sits in a pane is $TMUX, which tmux sets in every pane's environment — see clippy.toml"
+    )]
+    let tmux_env = std::env::var_os("TMUX");
+    if tmux_env.is_none_or(|value| value.is_empty()) {
+        return Ok(false);
+    }
+    let (Some(tty), Some(panes)) = (procs::own_tty(), transport::observe_pane_ttys(server)) else {
+        return Ok(true);
+    };
+    if panes.is_empty() || tmux::tty_is_a_pane(&tty, &panes) {
+        return Ok(true);
+    }
+    writeln!(
+        err,
+        "ae: stale $TMUX inherited (this shell is not a tmux pane) — attaching normally."
+    )?;
+    Ok(false)
 }
 
 /// The `_goal` arm: `--help` and a refused argv are usage at 2; the READ is
@@ -848,6 +957,7 @@ pub fn run_with(
                 EXIT_UNAVAILABLE
             }
         }
+        cli::Request::Next { tail } => run_next(tail, world, out, err)?,
         cli::Request::LaunchCandidate(name) => {
             writeln!(err, "ae: {NO_LAUNCHER}: {name}")?;
             EXIT_UNAVAILABLE
