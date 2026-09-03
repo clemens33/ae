@@ -162,6 +162,39 @@ pub fn observe_slots(server: &ServerId, session: &str) -> Option<Vec<tmux::Obser
     tmux::interpret_slots(succeeded, &stdout)
 }
 
+/// Every pane of `session` on `server`, or `None` when the enumeration failed.
+///
+/// SC-017q sends a failed pane query to `unknown`, so the failure must stay
+/// distinguishable from "the session has no panes" — the `Option` is that
+/// distinction, and collapsing it would let an unreachable server prove every
+/// roster agent absent. A non-addressable server is `None` for the same reason
+/// [`addressable`] gives.
+#[must_use]
+pub fn observe_panes(server: &ServerId, session: &str) -> Option<Vec<tmux::ObservedPane>> {
+    if !addressable(server) {
+        return None;
+    }
+    let (succeeded, stdout) = run(PROGRAM, &tmux::list_panes_args(server, session));
+    tmux::interpret_panes(succeeded, &stdout).ok()
+}
+
+/// The branch the watchdog last published for `session`, or `None`.
+///
+/// The live half of SC-405g: a running session's watchdog pushes the work
+/// tree's branch into a session option every cycle, so reading it costs no git
+/// call at all. `None` — a failed read, a watchdog that is not running, an
+/// option nobody set — leaves the caller to fall back to the work tree, which
+/// is what the frozen `_session_branch` does.
+#[must_use]
+pub fn observe_branch(server: &ServerId, session: &str) -> Option<String> {
+    if !addressable(server) {
+        return None;
+    }
+    let args = tmux::session_option_args(server, session, tmux::BRANCH_OPTION);
+    let (succeeded, stdout) = run(PROGRAM, &args);
+    tmux::interpret_session_option(succeeded, &stdout)
+}
+
 /// What running the frozen `send` helper produced.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Delivery {

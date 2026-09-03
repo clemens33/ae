@@ -47,7 +47,7 @@
 //! marker (SC-017g's rollup). Frozen's three established empty-listing messages
 //! are retained; no message is invented for the remaining empty scopes.
 
-use crate::digest::{Digest, SessionEntry};
+use crate::digest::{Digest, SessionEntry, Status};
 use crate::filters::{ListArgs, Scope};
 use crate::inventory::FailedSource;
 use crate::liveness::Snapshot;
@@ -185,18 +185,51 @@ impl<'a> Presentation<'a> {
     /// SC-509b `degraded` fact".
     #[must_use]
     pub fn world(&self, now: Timestamp, unanswered_secs: i64) -> World {
+        self.world_with(now, unanswered_secs, &[])
+    }
+
+    /// The same world, with the runtime facts the caller observed for each
+    /// classified candidate — `runtimes[i]` describes `snapshot.sessions[i]`.
+    ///
+    /// **Still reads nothing.** The tmux observation happens in the caller, next
+    /// to the classification it must coexist with, and arrives here as data —
+    /// which is exactly what keeps [`Self::world`]'s guarantee true rather than
+    /// trading it away for the pane liveness and live branch SC-405g and
+    /// SC-017p/q put in this digest.
+    ///
+    /// A SHORT or empty slice is not an error: an index nobody observed falls
+    /// back to status-only, which is the answer "nothing was established about
+    /// this session's runtime" and the one every arm of SC-017q asks for.
+    #[must_use]
+    pub fn world_with(
+        &self,
+        now: Timestamp,
+        unanswered_secs: i64,
+        runtimes: &[SessionRuntime],
+    ) -> World {
         let sessions = self
             .snapshot
             .sessions
             .iter()
-            .map(|classified| match &classified.candidate.durable {
-                Some(record) => crate::session::entry_from(
-                    &record.snapshot,
-                    &record.name,
-                    &SessionRuntime::new(classified.status),
-                    now,
-                    unanswered_secs,
-                ),
+            .enumerate()
+            .map(|(index, classified)| match &classified.candidate.durable {
+                Some(record) => {
+                    // A runtime whose status disagrees with the classification
+                    // describes some other observation, so it is refused rather
+                    // than merged: one entry must carry ONE snapshot's facts.
+                    let unobserved = SessionRuntime::new(classified.status);
+                    let runtime = runtimes
+                        .get(index)
+                        .filter(|runtime| runtime.status == classified.status)
+                        .unwrap_or(&unobserved);
+                    crate::session::entry_from(
+                        &record.snapshot,
+                        &record.name,
+                        runtime,
+                        now,
+                        unanswered_secs,
+                    )
+                }
                 None => SessionEntry::degraded(&classified.candidate.name, classified.status),
             })
             .collect();
@@ -457,6 +490,19 @@ pub fn table_at(sessions: &[&SessionEntry], now: Timestamp) -> String {
                     (false, _) => "unknown",
                 },
             );
+            // The frozen `!` marker, restored on the trigger the paragraph above
+            // records: a pane query now fills this. It reads "no agent is in the
+            // foreground of this seat" — a pane that dropped to a bare shell, or
+            // one the enumeration positively excluded.
+            //
+            // RUNNING ONLY, as the frozen was: a stopped session's agents are
+            // `alive: false` because the session is provably gone, and marking
+            // every seat of every stopped row would say nothing a reader cannot
+            // already read in the status column. Unknown liveness stays blank —
+            // a marker is a claim, and `None` is the absence of one.
+            if session.status == Status::Running && agent.alive == Some(false) {
+                out.push_str(" !");
+            }
             out.push('\n');
         }
     }
@@ -1485,6 +1531,76 @@ mod tests {
         );
     }
 
+    /// The runtime seam: observed facts reach the entry, and a MISALIGNED
+    /// observation is refused rather than merged.
+    ///
+    /// Alignment is positional, so the one way this can go wrong silently is a
+    /// runtime describing some other session — and the failure would be a
+    /// plausible-looking digest built from two moments. The status disagreement
+    /// is the cheap detector for it, and refusing falls back to what the
+    /// classification alone establishes rather than to a guess.
+    #[test]
+    fn world_with_takes_the_observed_runtime_and_refuses_one_that_describes_another_moment() {
+        let fixture = DigestFixture::new(
+            "runtime-seam",
+            Some("mode=local\nseat.main=lead\nprofile.main=cl\n"),
+            None,
+        );
+        let snapshot = fixture.snapshot("runtime-seam");
+
+        let observed = SessionRuntime {
+            status: Status::Running,
+            branch: Some("published/branch".to_owned()),
+            agents: vec![crate::session::AgentRuntime {
+                slot: "main".to_owned(),
+                alive: Some(true),
+                alert: None,
+            }],
+        };
+        let world = Presentation::enter(&snapshot).world_with(
+            NOW,
+            DEFAULT_UNANSWERED_SECS,
+            std::slice::from_ref(&observed),
+        );
+        let entry = world.sessions.first().expect("the planted session");
+        assert_eq!(entry.branch.as_deref(), Some("published/branch"));
+        assert_eq!(
+            entry.agents.first().and_then(|agent| agent.alive),
+            Some(true)
+        );
+
+        let mismatched = SessionRuntime {
+            status: Status::Stopped,
+            ..observed
+        };
+        let refused = Presentation::enter(&snapshot).world_with(
+            NOW,
+            DEFAULT_UNANSWERED_SECS,
+            std::slice::from_ref(&mismatched),
+        );
+        let entry = refused.sessions.first().expect("the planted session");
+        assert_eq!(
+            entry.branch, None,
+            "a runtime whose status disagrees describes another observation"
+        );
+        assert_eq!(
+            entry.agents.first().and_then(|agent| agent.alive),
+            None,
+            "and its liveness is not borrowed either"
+        );
+
+        let unobserved =
+            Presentation::enter(&snapshot).world_with(NOW, DEFAULT_UNANSWERED_SECS, &[]);
+        assert_eq!(
+            unobserved
+                .sessions
+                .first()
+                .and_then(|entry| entry.agents.first().and_then(|agent| agent.alive)),
+            None,
+            "an empty slice observes nothing, which is never a verdict"
+        );
+    }
+
     #[test]
     fn sc_509b_needs_attention_selects_partial_evidence_without_printing_an_inexact_class() {
         let fixture = DigestFixture::new(
@@ -1572,7 +1688,11 @@ mod tests {
                 alias: "fake".to_owned(),
                 name: "lead".to_owned(),
                 session_id: Some("11111111".to_owned()),
-                alive: Some(false),
+                // Liveness is UNOBSERVED here on purpose: this row's subject is
+                // the id cell, and a `false` would append the `!` marker and
+                // make the assertion below about two things at once. The marker
+                // has its own case.
+                alive: None,
                 state: Some("working".to_owned()),
                 reason: None,
             }];
@@ -1589,6 +1709,52 @@ mod tests {
                 "an absent id is frozen's dash on {status:?}: {rendered}"
             );
         }
+    }
+
+    /// The frozen `!` marker: a RUNNING seat whose pane holds no agent.
+    ///
+    /// Frozen built its alive map only for running sessions (ae:4441-4448) and
+    /// printed the marker as the row's last cell, so the three cases that must
+    /// stay blank are asserted beside the one that must not — a marker that
+    /// fired on unknown liveness would be a claim built on no observation, and
+    /// one that fired on a stopped session would mark every seat ae has ever
+    /// run.
+    #[test]
+    fn a_running_seat_with_no_agent_in_its_pane_carries_frozen_s_marker() {
+        let seat = |status, alive| {
+            let mut session = SessionEntry::new("mark", status);
+            session.agents = vec![AgentEntry {
+                reference: "fake:lead".to_owned(),
+                alias: "fake".to_owned(),
+                name: "lead".to_owned(),
+                session_id: Some("11111111".to_owned()),
+                alive,
+                state: Some("working".to_owned()),
+                reason: None,
+            }];
+            row_fields(&table(&[&session]), "fake:lead")
+        };
+
+        assert_eq!(
+            seat(Status::Running, Some(false)),
+            ["fake:lead", "11111111", "working", "!"],
+            "a running seat dropped to a shell is frozen's `!`"
+        );
+        assert_eq!(
+            seat(Status::Running, Some(true)),
+            ["fake:lead", "11111111", "working"],
+            "a live agent is unmarked"
+        );
+        assert_eq!(
+            seat(Status::Running, None),
+            ["fake:lead", "11111111", "working"],
+            "unobserved liveness makes no claim either way"
+        );
+        assert_eq!(
+            seat(Status::Stopped, Some(false)),
+            ["fake:lead", "11111111", "working"],
+            "a stopped session's seats are dead by its status, not by a marker"
+        );
     }
 
     /// The id sits INSIDE the row rather than beside it, so this asserts that

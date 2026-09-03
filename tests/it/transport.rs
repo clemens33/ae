@@ -584,3 +584,110 @@ fn sc_017s_a_real_enumeration_carries_identity_and_both_liveness_conjuncts() {
         "a target naming no session is a failed query, never an empty enumeration"
     );
 }
+
+/// A durable record with a two-seat roster, so the runtime has slots to answer.
+fn plant_roster(root: &Path, name: &str, socket: &Path) {
+    let dir = root.join("sessions").join(name);
+    let written = fs::create_dir_all(&dir).and_then(|()| {
+        fs::write(
+            dir.join("meta"),
+            format!(
+                "mode=local\nseat.main=lead\nprofile.main=cl\nseat.worker.0=hand\n\
+                 profile.worker.0=cl\ntmux_server_kind=socket\ntmux_server={}\n",
+                socket.display()
+            ),
+        )
+    });
+    assert!(written.is_ok(), "a planted session with a roster");
+}
+
+/// Publish the watchdog's machine-value branch option onto `session`.
+fn publish_branch(socket: &Path, scratch: &Path, session: &str, branch: &str) {
+    let server = ServerId::Selected(Selector::Socket(socket.to_path_buf()));
+    let mut args = ae::tmux::server_args(&server);
+    args.extend(["set-option", "-t", session, "@ae_branch_name", branch].map(ToOwned::to_owned));
+    let (set, _) = run_tmux(&args, scratch);
+    assert!(set, "publishing the branch option must succeed");
+}
+
+#[test]
+fn sc_017p_the_list_route_answers_each_seat_from_the_live_panes_and_the_published_branch() {
+    // THE SLICE'S OWN ARM. Everything before it proved the SESSION status comes
+    // from a real server; nothing proved that the per-agent liveness and the
+    // live branch `ae list` prints do. Both were `null` for every agent of every
+    // session by construction, and every assertion about them passed.
+    //
+    // One server, one session, two rostered seats and three facts that can only
+    // be established against a live tmux:
+    //
+    //   * `main` runs a non-shell command  -> alive, and raises nothing;
+    //   * `worker.0` has NO pane at all, and every pane present is identified
+    //     -> SC-017p's negative proof: not alive, and the session's attention
+    //     marker becomes `dead` — the frozen rollup's "a registered agent whose
+    //     pane vanished", which no event ledger here contains;
+    //   * `@ae_branch_name` is what the digest's `branch` carries, not the git
+    //     answer for the work tree — that is SC-405g's live half.
+    let scratch = scratch("runtime");
+    require_tmux(&scratch);
+    let socket = scratch.join("t.sock");
+    start_server(&socket, &scratch, &[("live", Some("live"))]);
+    // The session's own first pane runs the login SHELL, which SC-017s puts in
+    // the not-alive set — so the alive arm needs a pane running something else.
+    // It is marked with a slot the roster does not name, because an UNMARKED
+    // pane would make the vanished-seat arm `unknown` instead of proving it.
+    let shell = only_pane_id(&socket, &scratch, "live");
+    mark_pane(&socket, &scratch, &shell, "spawned.0");
+    let agent = split(&socket, &scratch, "live", Some("sleep 60"));
+    mark_pane(&socket, &scratch, &agent, "main");
+    publish_branch(&socket, &scratch, "live", "feature/runtime");
+
+    let root = scratch.join("home");
+    plant_roster(&root, "live", &socket);
+
+    // THE REAL ROUTE: the function `ae list` calls.
+    let (_snapshot, world) = ae::current_world(&root);
+    let entry = world
+        .sessions
+        .iter()
+        .find(|entry| entry.name == "live")
+        .cloned();
+
+    // Tear down BEFORE asserting, so a failure cannot leave a server behind.
+    kill_server(&socket, &scratch);
+    let _ = fs::remove_dir_all(&scratch);
+
+    let entry = entry.expect("the planted session reaches the world");
+    let seat = |reference: &str| {
+        entry
+            .agents
+            .iter()
+            .find(|agent| agent.reference == reference)
+            .unwrap_or_else(|| panic!("no seat {reference} in {:?}", entry.agents))
+    };
+    assert_eq!(
+        seat("lead").alive,
+        Some(true),
+        "the marked pane runs a real command, so its seat is alive"
+    );
+    assert_eq!(
+        seat("hand").alive,
+        Some(false),
+        "no pane carries worker.0 and every pane is identified — a complete          enumeration that excludes the slot"
+    );
+    assert_eq!(
+        seat("hand").reason,
+        Some(ae::attention::Reason::Dead),
+        "and a vanished pane is the frozen rollup's `dead`"
+    );
+    assert_eq!(
+        entry.attention,
+        Some(ae::attention::Reason::Dead),
+        "which rolls up to the session marker a human reads as attn:dead"
+    );
+    assert_eq!(
+        entry.branch.as_deref(),
+        Some("feature/runtime"),
+        "the branch is the watchdog's published option, not a git call against \
+         a work tree this fixture does not have"
+    );
+}

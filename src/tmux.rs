@@ -865,6 +865,50 @@ pub fn unset_option_args(
     args
 }
 
+/// The session option the watchdog publishes the work tree's branch into.
+///
+/// A MACHINE value, and deliberately not `@ae_branch_status`: that one is the
+/// display segment (trimmed to 24 chars, dirty marker appended) and echoing it
+/// as data would put a decoration into the digest's `branch` field.
+pub const BRANCH_OPTION: &str = "@ae_branch_name";
+
+/// Read one session option's raw value — `show-options -t <session> -qv <name>`.
+///
+/// `-q` keeps an unset option quiet (empty stdout, exit 0) instead of an error,
+/// and `-v` prints the bare value rather than `name value`, so the reading is
+/// the value or nothing.
+///
+/// `-t <session>` PREFIX-MATCHES, exactly as [`marker_args`] does, and carries
+/// the same precondition: `session` must be a name a `list-sessions` answer from
+/// THIS server already returned exactly.
+#[must_use]
+pub fn session_option_args(server: &ServerId, session: &str, name: &str) -> Vec<String> {
+    let mut args = server_args(server);
+    args.extend(["show-options", "-t", session, "-qv", name].map(ToOwned::to_owned));
+    args
+}
+
+/// The value a completed [`session_option_args`] run reported, or `None`.
+///
+/// A failed run is no reading, and an unset option prints an empty line — both
+/// are `None` rather than an empty branch name, because a branch field carrying
+/// `""` renders as a session on a branch called nothing.
+///
+/// ```
+/// use ae::tmux::interpret_session_option;
+/// assert_eq!(interpret_session_option(true, "main\n"), Some("main".to_owned()));
+/// assert_eq!(interpret_session_option(true, "\n"), None);
+/// assert_eq!(interpret_session_option(false, "main\n"), None);
+/// ```
+#[must_use]
+pub fn interpret_session_option(succeeded: bool, stdout: &str) -> Option<String> {
+    if !succeeded {
+        return None;
+    }
+    let value = stdout.lines().next().unwrap_or_default().trim_end();
+    (!value.is_empty()).then(|| value.to_owned())
+}
+
 /// Show a transient message on `target`'s clients.
 ///
 /// `text` MUST already be [`format_literal`]-escaped: `display-message` reads

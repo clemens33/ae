@@ -551,9 +551,62 @@ pub fn current_world(root: &std::path::Path) -> (liveness::Snapshot, listing::Wo
             hook(root);
         }
     });
-    let world = listing::Presentation::enter(&snapshot)
-        .world(time::Timestamp::now(), session::DEFAULT_UNANSWERED_SECS);
+    let runtimes = observed_runtimes(&snapshot);
+    let world = listing::Presentation::enter(&snapshot).world_with(
+        time::Timestamp::now(),
+        session::DEFAULT_UNANSWERED_SECS,
+        &runtimes,
+    );
     (snapshot, world)
+}
+
+/// What tmux says RIGHT NOW about every classified candidate, in snapshot order.
+///
+/// The facts no session directory holds, and the ones the frozen `cmd_list`
+/// read straight from tmux: each running session's pane enumeration (SC-017p/q's
+/// per-agent liveness, and the vanished-pane `dead` the attention rollup raises)
+/// and the branch its watchdog publishes (SC-405g's live half).
+///
+/// **Only a RUNNING session is asked.** A `stopped` classification already
+/// proves every pane of it gone, and an `unknown` one establishes nothing that a
+/// pane query could repair — so both would spend a round-trip to learn what the
+/// status already said.
+///
+/// Every read is allowed to fail into "nothing observed": a session with no
+/// entitled server, a pane query that did not come back, an absent branch
+/// option. None of those may become a verdict, because a failed question is the
+/// one thing SC-017q says must never look like an answer.
+fn observed_runtimes(snapshot: &liveness::Snapshot) -> Vec<session::SessionRuntime> {
+    snapshot
+        .sessions
+        .iter()
+        .map(|classified| {
+            let mut runtime = session::SessionRuntime::new(classified.status);
+            if classified.status != digest::Status::Running {
+                return runtime;
+            }
+            let Some(record) = classified.candidate.durable.as_ref() else {
+                return runtime;
+            };
+            let Some(selector) = record.server.entitles() else {
+                return runtime;
+            };
+            let server = inventory::ServerId::Selected(selector.clone());
+            runtime.branch = transport::observe_branch(&server, &record.name);
+            if let (Some(panes), Some(meta)) = (
+                transport::observe_panes(&server, &record.name),
+                record.snapshot.meta.as_ref(),
+            ) {
+                let slots: Vec<String> = meta
+                    .roster()
+                    .iter()
+                    .map(|entry| entry.slot.clone())
+                    .collect();
+                runtime.agents = liveness::agent_runtimes(&panes, &slots);
+            }
+            runtime
+        })
+        .collect()
 }
 
 #[cfg(debug_assertions)]

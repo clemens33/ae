@@ -54,11 +54,14 @@
 //! backend query, through the same [`Discovery`] port phase 1 used, so it cannot
 //! contact a server phase 1 was not entitled to ask.
 
+use crate::attention::Reason;
 use crate::digest::Status;
 use crate::inventory::{
     Candidate, DiscoveredSession, Discovery, FailedSource, Inventory, QueryFailed, ServerId,
 };
 use crate::meta::ServerSelector;
+use crate::session::AgentRuntime;
+use crate::tmux::{ObservedPane, SlotObservation, slot_observation};
 
 /// One candidate, with its liveness decided.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -260,6 +263,75 @@ fn decide(candidate: &Candidate, answers: &Answers) -> Status {
     }
 }
 
+/// Whether one observed pane is running an agent — **SC-017s**, both conjuncts.
+///
+/// A pane tmux reports DEAD is not alive whatever command it names: a
+/// `remain-on-exit` pane keeps reporting the exited process, so the command
+/// alone reads `alive` for a corpse (#109). An unreadable `pane_dead` is not a
+/// readable `0` and therefore proves nothing, which is why the positive answer
+/// requires `Some(false)` rather than merely "not `Some(true)`".
+///
+/// The command half is [`crate::watchdog::command_is_shell`] — ONE definition of
+/// the shell set for the watchdog and the listing, because two would drift.
+/// An absent command reading counts as a shell for the reason SC-017s gives:
+/// absence of evidence must not become a positive alive.
+fn pane_alive(pane: &ObservedPane) -> bool {
+    pane.dead == Some(false)
+        && !crate::watchdog::command_is_shell(pane.command.as_deref().unwrap_or_default())
+}
+
+/// What a completed pane enumeration says about the roster slots in `slots`.
+///
+/// The agent half of the frozen `cmd_list`'s alive map and of
+/// `_session_attn_rollup`'s dead verdict, ported as BEHAVIOUR under SC-017p/q
+/// rather than copied:
+///
+/// * **one pane carries the slot** — its two readings decide `alive`, and the
+///   agent raises nothing. A pane that dropped to a bare shell is `alive: false`
+///   and NOT `dead`: the frozen marks it `!` in the table and leaves the
+///   attention verdict to the watchdog's alert, which is the only party that
+///   also checked for a descendant agent process.
+/// * **several panes carry it** — the association is ambiguous, so nothing is
+///   established. `unknown`, never a verdict picked from one of them.
+/// * **no pane carries it, and every pane was identified** — a COMPLETE
+///   enumeration that positively excludes the slot. That is SC-017p's negative
+///   proof, so the agent is `alive: false` and raises [`Reason::Dead`], which is
+///   the frozen's "a registered agent whose pane vanished".
+/// * **no pane carries it, but some pane carries no marker at all** — one of
+///   those could be this agent's, unstamped. `unknown`: SC-017q is explicit that
+///   unprovable liveness is never removal, and this is the arm where the frozen
+///   asserted `dead` on absence of evidence (#107).
+///
+/// A FAILED enumeration never reaches here — the caller passes no runtime at
+/// all, leaving every slot `unknown`, which is SC-017q's other half.
+#[must_use]
+pub fn agent_runtimes(panes: &[ObservedPane], slots: &[String]) -> Vec<AgentRuntime> {
+    slots
+        .iter()
+        .map(|slot| {
+            let (alive, alert) = match slot_observation(panes, slot) {
+                SlotObservation::Unique => (
+                    panes
+                        .iter()
+                        .find(|pane| pane.slot.as_deref() == Some(slot.as_str()))
+                        .map(pane_alive),
+                    None,
+                ),
+                SlotObservation::Absent { unidentified: 0 } => (Some(false), Some(Reason::Dead)),
+                // Two different unprovabilities, one answer: several panes carry
+                // the slot so the association is ambiguous, or an unmarked pane
+                // could be this agent's. Neither may become a verdict.
+                SlotObservation::Duplicated { .. } | SlotObservation::Absent { .. } => (None, None),
+            };
+            AgentRuntime {
+                slot: slot.clone(),
+                alive,
+                alert,
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(
@@ -268,14 +340,14 @@ mod tests {
                   what PRODUCT code may reach"
     )]
 
-    use super::{Answers, Snapshot, classify, decide, positively_owned};
+    use super::{Answers, ObservedPane, Reason, Snapshot, classify, decide, positively_owned};
     use crate::digest::Status;
     use crate::inventory::{
         Candidate, DiscoveredSession, Discovery, DurableRecord, FailedSource, Inventory, Layout,
         LiveSighting, MetaRead, QueryFailed, ServerId,
     };
     use crate::meta::{Selector, ServerSelector};
-    use crate::session::RecordSnapshot;
+    use crate::session::{AgentRuntime, RecordSnapshot};
     use std::cell::RefCell;
     use std::path::PathBuf;
 
@@ -1114,5 +1186,105 @@ mod tests {
                 "phase 2 consumes phase-1 facts; it must not be able to {rediscovery}"
             );
         }
+    }
+
+    fn pane(dead: Option<bool>, slot: Option<&str>, command: Option<&str>) -> ObservedPane {
+        ObservedPane {
+            dead,
+            slot: slot.map(ToOwned::to_owned),
+            command: command.map(ToOwned::to_owned),
+        }
+    }
+
+    fn only(panes: &[ObservedPane], slot: &str) -> AgentRuntime {
+        let slots = vec![slot.to_owned()];
+        let mut runtimes = super::agent_runtimes(panes, &slots);
+        assert_eq!(runtimes.len(), 1, "one slot in, one runtime out");
+        runtimes.remove(0)
+    }
+
+    #[test]
+    fn a_seat_running_its_agent_is_alive_and_raises_nothing() {
+        let observed = only(&[pane(Some(false), Some("main"), Some("claude"))], "main");
+        assert_eq!(observed.alive, Some(true));
+        assert_eq!(observed.alert, None);
+    }
+
+    #[test]
+    fn a_seat_that_dropped_to_a_shell_is_not_alive_and_still_raises_nothing() {
+        // Frozen's `!`: present, but no agent in the foreground. The DEAD
+        // verdict stays the watchdog's, which also checks for a descendant
+        // agent process — a `bash -lc <tool>` wrapper is a shell with a live
+        // agent underneath it.
+        let observed = only(&[pane(Some(false), Some("main"), Some("fish"))], "main");
+        assert_eq!(observed.alive, Some(false));
+        assert_eq!(observed.alert, None, "a shell pane is not a vanished pane");
+    }
+
+    #[test]
+    fn a_pane_tmux_reports_dead_is_not_alive_whatever_command_it_names() {
+        // #109: `remain-on-exit` keeps reporting the exited process, and `true`
+        // is not in the shell set — so the command field alone reads alive.
+        let observed = only(&[pane(Some(true), Some("main"), Some("true"))], "main");
+        assert_eq!(observed.alive, Some(false));
+    }
+
+    #[test]
+    fn an_unreadable_dead_field_proves_nothing_positive() {
+        let observed = only(&[pane(None, Some("main"), Some("claude"))], "main");
+        assert_eq!(
+            observed.alive,
+            Some(false),
+            "a positive alive needs a readable `pane_dead` of 0"
+        );
+    }
+
+    #[test]
+    fn a_slot_no_pane_carries_is_dead_only_when_every_pane_was_identified() {
+        let identified = [pane(Some(false), Some("main"), Some("claude"))];
+        let vanished = only(&identified, "worker.0");
+        assert_eq!(vanished.alive, Some(false));
+        assert_eq!(
+            vanished.alert,
+            Some(Reason::Dead),
+            "a complete enumeration that excludes the slot is SC-017p's negative proof"
+        );
+
+        // #107's arm: an unstamped pane could BE this agent, so absence of
+        // evidence must not become the removal SC-017q forbids.
+        let ambiguous = [
+            pane(Some(false), Some("main"), Some("claude")),
+            pane(Some(false), None, Some("fish")),
+        ];
+        let unknown = only(&ambiguous, "worker.0");
+        assert_eq!(unknown.alive, None);
+        assert_eq!(unknown.alert, None);
+    }
+
+    #[test]
+    fn two_panes_carrying_one_slot_establish_nothing_rather_than_picking_one() {
+        let duplicated = [
+            pane(Some(false), Some("main"), Some("claude")),
+            pane(Some(false), Some("main"), Some("fish")),
+        ];
+        let observed = only(&duplicated, "main");
+        assert_eq!(observed.alive, None);
+        assert_eq!(observed.alert, None);
+    }
+
+    #[test]
+    fn every_slot_asked_about_gets_an_answer_in_the_order_it_was_asked() {
+        let panes = [
+            pane(Some(false), Some("worker.0"), Some("codex")),
+            pane(Some(false), Some("main"), Some("claude")),
+        ];
+        let slots = ["main".to_owned(), "worker.0".to_owned()];
+        let runtimes = super::agent_runtimes(&panes, &slots);
+        assert_eq!(
+            runtimes.iter().map(|r| r.slot.as_str()).collect::<Vec<_>>(),
+            ["main", "worker.0"],
+            "the roster's order, not the enumeration's"
+        );
+        assert!(runtimes.iter().all(|r| r.alive == Some(true)));
     }
 }
