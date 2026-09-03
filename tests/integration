@@ -902,21 +902,17 @@ assert_contains "core binding: review reaches the core with target and body" "CO
 # body is what the asker reads, so neither may be touched on the way in.
 _cb_out="$("$_cb_meta/reply" ae-20260101T000000Z-deadbeef "the answer" 2>/dev/null || true)"
 assert_contains "core binding: reply reaches the core with id and body" "CORE_TOKEN_9f3a reply=ae-20260101T000000Z-deadbeef body=the answer" "$_cb_out"
-_cb_out="$(AE_CORE="" "$_cb_meta/reply" 2>&1 >/dev/null || true)"
-assert_contains "core binding: reply falls back to the bash body" "Usage: reply" "$_cb_out"
-# SEND (P2.6): the public chokepoint itself — target and body verbatim; the
-# bash body stays reachable under AE_CORE= (the escape every caller inherits).
+# SEND (P2.6): the public chokepoint itself — target and body verbatim. There is no
+# bash body behind it any more, and AE_CORE= is no longer an escape from the core.
 _cb_out="$("$_cb_meta/send" dummy "the message" 2>/dev/null || true)"
 assert_contains "core binding: send reaches the core with target and body" "CORE_TOKEN_9f3a send=dummy body=the message" "$_cb_out"
-_cb_out="$(AE_CORE="" "$_cb_meta/send" 2>&1 >/dev/null || true)"
-assert_contains "core binding: send falls back to the bash body" "Usage: send" "$_cb_out"
+_cb_out="$(AE_CORE="" "$_cb_meta/send" dummy "the message" 2>/dev/null || true)"
+assert_contains "core binding: AE_CORE= is not an escape — send still reaches the core" "CORE_TOKEN_9f3a send=dummy" "$_cb_out"
 # EVENTS-TAIL (P2.7, closes P2): the monitor pane's helper takes no argument —
-# the core is handed the meta dir the shim always passes. The bash body stays
-# reachable under AE_CORE=; it never returns on its own (banner, then a wait
-# for the container or a follow), so it runs in the background, is read for
-# its banner, and is killed — together with the one tail -f it may have started.
-# Neither run may be captured with $( ): the bash body never returns, and a
-# control that removes the shim would then hang the suite instead of failing.
+# the core is handed the meta dir the shim always passes. It never returns on its
+# own (it follows the container), so each run happens in the background, is read
+# for its first line, and is killed. Neither run may be captured with $( ): a
+# following helper never returns, and that would hang the suite instead of failing.
 _cb_tail_run() { # <out-file> <pattern> [env...] -> runs the helper in the background, bounded on the pattern
     local out="$1" pattern="$2"
     shift 2
@@ -929,29 +925,25 @@ _cb_tail_run() { # <out-file> <pattern> [env...] -> runs the helper in the backg
 }
 _cb_tail_run "$_cb_root/tail-core.out" 'CORE_TOKEN_9f3a'
 assert_contains "core binding: events-tail reaches the core with the meta dir" "CORE_TOKEN_9f3a events-tail dir=$_cb_meta" "$(cat "$_cb_root/tail-core.out")"
-_cb_tail_run "$_cb_root/tail.out" 'ae events' AE_CORE=
-assert_contains "core binding: events-tail falls back to the bash body" "ae events — session: test-core" "$(cat "$_cb_root/tail.out")"
-assert_eq "core binding: and its banner is not the core's" "0" \
-    "$(grep -c 'CORE_TOKEN_9f3a' "$_cb_root/tail.out" | tr -d '[:space:]')"
+_cb_tail_run "$_cb_root/tail.out" 'CORE_TOKEN_9f3a' AE_CORE=
+assert_contains "core binding: AE_CORE= is not an escape — events-tail still reaches the core" \
+    "CORE_TOKEN_9f3a events-tail" "$(cat "$_cb_root/tail.out")"
 
 # ARCHIVE PREVIEW (P3.1): a TOP-LEVEL command, not a helper — `ae` resolves and
 # path-checks the session, then shims `_archive-preview <dir>` with META_DIR set
-# to it. The bash body stays reachable under AE_CORE=.
+# to it. There is no bash preview behind it since A.1.
 _cb_out="$("$AE" archive preview test-core 2>/dev/null || true)"
 assert_contains "core binding: archive preview reaches the core with the session dir" "CORE_TOKEN_9f3a archive-preview dir=$_cb_meta" "$_cb_out"
 _cb_out="$(AE_CORE="" "$AE" archive preview test-core 2>/dev/null || true)"
-assert_contains "core binding: archive preview falls back to the bash body" "# ae session archive" "$_cb_out"
-assert_eq "core binding: and the bash preview is not the core's" "0" \
-    "$(grep -c 'CORE_TOKEN_9f3a' <<<"$_cb_out" | tr -d '[:space:]')"
-# THE MODE GATE (P3.2). local, worktree and copy all render a digest the core
-# reproduces byte-identically: local has no git story, and P3.2 gave the core a
-# typed Git capability (it runs `git` through the one process door with
-# OS-native argv, no shell), so worktree/copy now carry their REAL git facts
-# (HEAD, range, count) through the core too. All three route to the pinned stub
-# core; only an ABSENT or UNKNOWN mode — a shape the core has not been proven
-# against — stays on the bash body. The controls below run on the SAME pinned
-# stub core, so only the mode differs and only the gate can explain the
-# difference.
+assert_contains "core binding: AE_CORE= is not an escape — the preview still reaches the core" \
+    "CORE_TOKEN_9f3a archive-preview" "$_cb_out"
+# EVERY MODE (P3.2, widened at A.1). local, worktree and copy render a digest the
+# core reproduces byte-identically: local has no git story, and P3.2 gave the core a
+# typed Git capability (it runs `git` through the one process door with OS-native
+# argv, no shell), so worktree/copy carry their REAL git facts (HEAD, range, count)
+# through the core too. The mode GATE is gone with the bash body it protected — an
+# unknown mode routes to the core like any other. The controls below run on the SAME
+# pinned stub core, so only the mode differs.
 assert_contains "core binding: mode gate — a LOCAL preview reaches the core (positive control)" \
     "CORE_TOKEN_9f3a archive-preview" "$("$AE" archive preview test-core 2>/dev/null || true)"
 _cb_wt="$HOME/.ae/sessions/test-core-wt"
@@ -966,37 +958,27 @@ sed 's/^mode=.*/mode=copy/' "$_cb_cp/meta" >"$_cb_cp/meta.new" && mv "$_cb_cp/me
 grep -q '^mode=copy' "$_cb_cp/meta" || { echo "SETUP: test-core-cp is not copy mode"; exit 1; }
 assert_contains "core binding: mode gate — a COPY preview reaches the core (P3.2 cutover)" \
     "CORE_TOKEN_9f3a archive-preview" "$("$AE" archive preview test-core-cp 2>/dev/null || true)"
-# The negative control moves to an UNKNOWN mode: a shape the gate does not
-# recognise stays on the bash body — no core token, the real digest.
+# An UNKNOWN mode routes to the core like every other one, now that there is no
+# bash body left for the gate to protect.
 _cb_unk="$HOME/.ae/sessions/test-core-unk"
 cp -R "$_cb_meta" "$_cb_unk"
 sed 's/^mode=.*/mode=frobnicate/' "$_cb_unk/meta" >"$_cb_unk/meta.new" && mv "$_cb_unk/meta.new" "$_cb_unk/meta"
 grep -q '^mode=frobnicate' "$_cb_unk/meta" || { echo "SETUP: test-core-unk is not unknown mode"; exit 1; }
-_cb_out="$("$AE" archive preview test-core-unk 2>/dev/null || true)"
-assert_eq "core binding: mode gate — an UNKNOWN mode does NOT reach the core" "0" \
-    "$(grep -c 'CORE_TOKEN_9f3a' <<<"$_cb_out" | tr -d '[:space:]')"
-assert_contains "core binding: mode gate — an UNKNOWN mode stays on the bash body" \
-    "# ae session archive" "$_cb_out"
-_cb_out="$(AE_CORE="" "$_cb_meta/ask" 2>&1 >/dev/null || true)"
-assert_contains "core binding: ask falls back to the bash body" "Usage: ask" "$_cb_out"
-assert_eq "core binding: and not to the core" "0" \
-    "$(grep -c 'CORE_TOKEN_9f3a' <<<"$_cb_out" | tr -d '[:space:]')"
+assert_contains "core binding: an UNKNOWN mode reaches the core too (the gate is gone with the body)" \
+    "CORE_TOKEN_9f3a archive-preview" "$("$AE" archive preview test-core-unk 2>/dev/null || true)"
+_cb_out="$(AE_CORE="" "$_cb_meta/ask" dummy "q" 2>/dev/null || true)"
+assert_contains "core binding: AE_CORE= is not an escape — ask still reaches the core" \
+    "CORE_TOKEN_9f3a ask=dummy" "$_cb_out"
 
-# THE READS KEEP THEIR FALLBACK. With the core forced off for one call, each
-# read answers from the bash body — the same body that answered before P2.4 —
-# so a session with no usable core loses nothing it had. The stub never wrote
-# anything, so the goal is unset and the memo record is planted here.
+# THE READS HAVE NO FALLBACK EITHER. Every read is the core's; AE_CORE= does not
+# take it away, and a session with no usable core refuses rather than answering
+# from a second implementation nobody maintains.
 _cb_out="$(AE_CORE="" "$_cb_meta/state" 2>/dev/null || true)"
-assert_contains "core binding: the state READ falls back to the bash body" "state:" "$_cb_out"
-assert_eq "core binding: and not to the core" "0" \
-    "$(grep -c 'CORE_TOKEN_9f3a' <<<"$_cb_out" | tr -d '[:space:]')"
+assert_contains "core binding: the state READ still reaches the core under AE_CORE=" "CORE_TOKEN_9f3a state=read" "$_cb_out"
 _cb_out="$(AE_CORE="" "$_cb_meta/goal" 2>/dev/null || true)"
-assert_eq "core binding: the goal READ falls back to the bash body" "(no goal set)" "$_cb_out"
-printf '2026-01-01T00:00:00Z\tcl:lead\tp2\tthe fallback note\n' >>"$_cb_meta/memo.tsv"
+assert_contains "core binding: the goal READ still reaches the core under AE_CORE=" "CORE_TOKEN_9f3a goal=read" "$_cb_out"
 _cb_out="$(AE_CORE="" "$_cb_meta/memo" read --topic p2 2>/dev/null || true)"
-assert_contains "core binding: memo read falls back to the bash body" "the fallback note" "$_cb_out"
-_cb_out="$(AE_CORE="" "$_cb_meta/memo" tail 1 2>/dev/null || true)"
-assert_contains "core binding: memo tail falls back to the bash body" "the fallback note" "$_cb_out"
+assert_contains "core binding: memo read still reaches the core under AE_CORE=" "CORE_TOKEN_9f3a memo=read" "$_cb_out"
 
 # THE SHIM MUST NOT SWALLOW THE CORE'S EXIT STATUS. It execs, so the status is
 # the core's by construction — this pins that, because the obvious alternative
@@ -1015,61 +997,48 @@ unset _cb_rc
 # improvement rather than a regression. It is recorded because a caller testing
 # for 1 would not notice the change any other way.
 
+# EVERY UNUSABLE SHAPE IS A REFUSAL (A.1). There is no bash body behind any of
+# these helpers, so an unusable core cannot silently do a second thing: it exits 2,
+# names the subcommand, and says which fact was wrong. `requests` is the probe.
+_cb_refuse() { # <expected-reason-fragment> [env...]
+    local frag="$1" rc=0
+    shift
+    env "$@" "$_cb_meta/requests" all >"$_cb_root/out" 2>"$_cb_root/err" || rc=$?
+    printf 'rc=%s token=%s msg=%s reason=%s' "$rc" \
+        "$(grep -c 'CORE_TOKEN_9f3a' "$_cb_root/out" | tr -d '[:space:]')" \
+        "$(grep -c "the ae core is required for '_requests'" "$_cb_root/err" | tr -d '[:space:]')" \
+        "$(grep -c -- "$frag" "$_cb_root/err" | tr -d '[:space:]')"
+}
+
 # NEGATIVE 1 — version mismatch. Same binary, same path, same permissions: the
 # ONLY changed fact is the version it reports, so a token here would mean the
 # gate does not read it.
 _cb_write_core "0.0.0-other"
-rm -f "$_cb_meta/.ae_core_unusable"
-"$_cb_meta/requests" all >"$_cb_root/out" 2>"$_cb_root/err" || true
-_cb_out="$(cat "$_cb_root/out")"
-_cb_err="$(cat "$_cb_root/err")"
-assert_eq "core binding: a mismatched version does not run the core" "0" \
-    "$(grep -c 'CORE_TOKEN_9f3a' <<<"$_cb_out" | tr -d '[:space:]')"
-assert_contains "core binding: and says so, naming both versions" "9.9.9" "$_cb_err"
-assert_contains "core binding: the legacy body served the call instead" "STATUS" "$_cb_out"
-
-# The complaint is ONCE PER SESSION, not once per invocation.
-rm -f "$_cb_meta/.ae_core_unusable"
-_cb_first="$("$_cb_meta/requests" all 2>&1 >/dev/null || true)"
-_cb_second="$("$_cb_meta/requests" all 2>&1 >/dev/null || true)"
-assert_eq "core binding: the diagnostic appears the first time" "1" \
-    "$([[ -n "$_cb_first" ]] && echo 1 || echo 0)"
-assert_eq "core binding: and not the second" "" "$_cb_second"
+assert_eq "core binding: a mismatched version refuses, naming both versions" "rc=2 token=0 msg=1 reason=1" \
+    "$(_cb_refuse '9.9.9')"
+# It refuses EVERY time. The old once-per-session diagnostic existed because the
+# fallback was silent; with no fallback there is nothing to be quiet about.
+assert_eq "core binding: and it refuses again, not once per session" "rc=2 token=0 msg=1 reason=1" \
+    "$(_cb_refuse '9.9.9')"
 
 # NEGATIVE 2 — present, correct version, NOT executable.
 _cb_write_core "9.9.9"
 chmod 0644 "$_cb_core"
-rm -f "$_cb_meta/.ae_core_unusable"
-"$_cb_meta/requests" all >"$_cb_root/out" 2>"$_cb_root/err" || true
-_cb_out="$(cat "$_cb_root/out")"
-_cb_err="$(cat "$_cb_root/err")"
-assert_eq "core binding: a non-executable core does not run" "0" \
-    "$(grep -c 'CORE_TOKEN_9f3a' <<<"$_cb_out" | tr -d '[:space:]')"
-assert_contains "core binding: and is reported as such" "executable" "$_cb_err"
+assert_eq "core binding: a non-executable core refuses and is reported as such" "rc=2 token=0 msg=1 reason=1" \
+    "$(_cb_refuse 'executable')"
 chmod 0755 "$_cb_core"
 
-# NEGATIVE 3 — AE_CORE explicitly EMPTY forces legacy for ONE invocation, with
-# the binding left entirely intact. Set-but-empty is the signal; the very next
-# call with it unset must reach the core again, or this is a latch, not a switch.
-rm -f "$_cb_meta/.ae_core_unusable"
+# NEGATIVE 3 — AE_CORE set-but-empty is NOT an escape any more. It used to force
+# the bash body for one invocation; that body is gone, so the pinned core runs.
 _cb_out="$(AE_CORE="" "$_cb_meta/requests" all 2>/dev/null || true)"
-assert_eq "core binding: AE_CORE empty forces the legacy body" "0" \
-    "$(grep -c 'CORE_TOKEN_9f3a' <<<"$_cb_out" | tr -d '[:space:]')"
-_cb_out="$("$_cb_meta/requests" all 2>/dev/null || true)"
-assert_contains "core binding: and the override is per-invocation, not sticky" "CORE_TOKEN_9f3a" "$_cb_out"
+assert_contains "core binding: AE_CORE empty no longer forces anything — the core runs" "CORE_TOKEN_9f3a" "$_cb_out"
 
-# NEGATIVE 4 — no binding at all. The un-configured default: legacy, and SILENT,
-# because an absent binding is not a fault.
+# NEGATIVE 4 — no binding at all. Once the un-configured default; now a broken
+# install, and it says so rather than staying silent.
 sed -e 's|^ae_core=.*|ae_core=|' -e 's|^ae_core_version=.*|ae_core_version=|' \
     "$_cb_meta/meta" >"$_cb_meta/meta.tmp" && mv "$_cb_meta/meta.tmp" "$_cb_meta/meta"
-rm -f "$_cb_meta/.ae_core_unusable"
-"$_cb_meta/requests" all >"$_cb_root/out" 2>"$_cb_root/err" || true
-_cb_out="$(cat "$_cb_root/out")"
-_cb_err="$(cat "$_cb_root/err")"
-assert_eq "core binding: a blank binding uses the legacy body" "0" \
-    "$(grep -c 'CORE_TOKEN_9f3a' <<<"$_cb_out" | tr -d '[:space:]')"
-assert_eq "core binding: and says NOTHING, because no configuration is not a fault" "" "$_cb_err"
-assert_contains "core binding: the legacy body still works" "STATUS" "$_cb_out"
+assert_eq "core binding: a blank binding refuses and names itself" "rc=2 token=0 msg=1 reason=1" \
+    "$(_cb_refuse 'no core bound')"
 
 # REFRESH re-pins the binding, so an operator who fixes their config does not
 # have to recreate the session — and a REMOVED input clears the pin rather than
@@ -1080,30 +1049,25 @@ assert_eq "core binding: refresh re-pins a repaired binding" "$_cb_core" \
 _cb_out="$("$_cb_meta/requests" all 2>/dev/null || true)"
 assert_contains "core binding: and the core serves the call again after refresh" "CORE_TOKEN_9f3a" "$_cb_out"
 
-# REPAIRED, THEN BROKEN AGAIN. The once-per-session marker is left behind by a
-# real complaint (no manual removal anywhere in this block from here on): a
-# refresh that publishes a healthy binding must reset it, or the NEXT fault is
-# swallowed by the diagnostic of the previous one and the fallback goes silent.
+# REPAIRED, THEN BROKEN AGAIN. Every fault is reported every time — there is no
+# once-per-session marker left to swallow the second one.
 _cb_write_core "0.0.0-other"
-_cb_first="$("$_cb_meta/requests" all 2>&1 >/dev/null || true)"
-assert_contains "core binding: a fault after refresh is reported" "9.9.9" "$_cb_first"
-assert_eq "core binding: and its marker is on disk" "1" "$([[ -e "$_cb_meta/.ae_core_unusable" ]] && echo 1 || echo 0)"
+assert_eq "core binding: a fault after refresh is reported" "rc=2 token=0 msg=1 reason=1" \
+    "$(_cb_refuse '9.9.9')"
 _cb_write_core "9.9.9"
 (cd "$REPO" && AE_CORE_BIN="$_cb_core" "$AE" doctor --refresh >/dev/null 2>&1 || true)
-assert_eq "core binding: refresh resets the once-marker" "0" "$([[ -e "$_cb_meta/.ae_core_unusable" ]] && echo 1 || echo 0)"
 _cb_out="$("$_cb_meta/requests" all 2>/dev/null || true)"
 assert_contains "core binding: the repaired core serves" "CORE_TOKEN_9f3a" "$_cb_out"
 _cb_write_core "0.0.0-other"
-_cb_first="$("$_cb_meta/requests" all 2>&1 >/dev/null || true)"
-_cb_second="$("$_cb_meta/requests" all 2>&1 >/dev/null || true)"
-assert_contains "core binding: broken again after a repair is reported afresh" "9.9.9" "$_cb_first"
-assert_eq "core binding: and still only once" "" "$_cb_second"
+assert_eq "core binding: broken again after a repair is reported afresh" "rc=2 token=0 msg=1 reason=1" \
+    "$(_cb_refuse '9.9.9')"
+assert_eq "core binding: and again on the very next call" "rc=2 token=0 msg=1 reason=1" \
+    "$(_cb_refuse '9.9.9')"
 _cb_write_core "9.9.9"
 
 # CONFIGURED BUT UNUSABLE AT REFRESH. Operator input that exists but cannot be
 # bound is a FAULT the operator must see — at the terminal that refreshed, and
-# once more from the helper — while the session keeps working on the bash body.
-# It must stay distinguishable from blank config, which says nothing.
+# again from every helper that needs the core.
 printf '#!/bin/sh\nexit 0\n' >"$_cb_root/mute-core" && chmod 0755 "$_cb_root/mute-core"
 (cd "$REPO" && AE_CORE_BIN="$_cb_root/mute-core" "$AE" doctor --refresh >"$_cb_root/refresh.log" 2>&1 || true)
 assert_contains "core binding: refresh warns about input it cannot bind" "reports no version" "$(cat "$_cb_root/refresh.log")"
@@ -1111,11 +1075,10 @@ assert_eq "core binding: the unusable path is still recorded" "$_cb_root/mute-co
     "$(grep '^ae_core=' "$_cb_meta/meta" | cut -d= -f2- || true)"
 assert_eq "core binding: with no version, so it can never run" "" \
     "$(grep '^ae_core_version=' "$_cb_meta/meta" | cut -d= -f2- || true)"
-"$_cb_meta/requests" all >"$_cb_root/out" 2>"$_cb_root/err" || true
-assert_contains "core binding: the helper reports the unbound core once" "could not be bound" "$(cat "$_cb_root/err")"
-assert_contains "core binding: and the legacy body served" "STATUS" "$(cat "$_cb_root/out")"
-_cb_second="$("$_cb_meta/requests" all 2>&1 >/dev/null || true)"
-assert_eq "core binding: unbound-core diagnostic is once per session too" "" "$_cb_second"
+assert_eq "core binding: the helper refuses, naming the unbound core" "rc=2 token=0 msg=1 reason=1" \
+    "$(_cb_refuse 'could not be bound')"
+assert_eq "core binding: and it refuses on every later call too" "rc=2 token=0 msg=1 reason=1" \
+    "$(_cb_refuse 'could not be bound')"
 
 # NO OPERATOR INPUT means the variable is UNSET, not "whatever the harness exported".
 # The suite exports AE_CORE_BIN for every other section (identity is core-owned), so this
@@ -1125,20 +1088,25 @@ assert_eq "core binding: unbound-core diagnostic is once per session too" "" "$_
 (cd "$REPO" && env -u AE_CORE_BIN "$AE" doctor --refresh >/dev/null 2>&1 || true)
 assert_eq "core binding: refresh with no operator input CLEARS the pin" "" \
     "$(grep '^ae_core=' "$_cb_meta/meta" | cut -d= -f2- || true)"
+# ...and that refresh cleared it for EVERY session on this hermetic home, not just this
+# one. Since A.1 a cleared pin is not a fallback, it is a session that cannot be ended,
+# so put the suite's own core back before any later section tries to use its sessions.
+(cd "$REPO" && AE_CORE_BIN="$_ITEST_CORE_BIN" "$AE" doctor --refresh >/dev/null 2>&1 || true)
 
 # CONFIGURED BUT UNUSABLE AT CREATION. (RETIRED: "a missing binary must not fail the
 # launch — the core is optional in P2", and the three arms that read the half-built
 # session's meta and helper afterwards. Identity is core-owned since P34 and rc 125 —
 # no core attempted — is FATAL for an identity operation, so there is no launch left to
 # inspect. The replacing rule is the one pinned here: the launch REFUSES, before any
-# session exists, and says identity is why.)
+# session exists, and names the core it needed. A.1 moved the refusal one level down —
+# the shim itself exits 2 rather than reporting "not attempted" to _identity_core.)
 REPO_BAD="$(setup_repo)"
 _cb_bad_rc=0
 (cd "$REPO_BAD" && AE_CORE_BIN="$_cb_root/absent-core" "$AE" --local test-core-bad >"$_cb_root/launch-bad.log" 2>&1) || _cb_bad_rc=$?
 assert_eq "core binding: a launch whose core input cannot be bound REFUSES" "1" \
     "$([[ $_cb_bad_rc -ne 0 ]] && echo 1 || echo 0)"
-assert_contains "core binding: ...and names identity as the reason" \
-    "identity is core-owned" "$(cat "$_cb_root/launch-bad.log")"
+assert_contains "core binding: ...and names the core it needed, and why it could not use it" \
+    "the ae core is required for '_launch-plan'" "$(cat "$_cb_root/launch-bad.log")"
 assert_eq "core binding: ...and no session was created" "0" \
     "$(tmux has-session -t test-core-bad 2>/dev/null && echo 1 || echo 0)"
 assert_not_exists "core binding: ...and no session state was left behind" \
@@ -2876,9 +2844,9 @@ assert_contains "doctor-refresh: regenerated state emitted a real event" \
     '"action":"state"' "$(tail -1 "$HOME/.ae/sessions/test-sync/events.jsonl")"
 # THE OTHER SIDE OF THE SAME RULE. ae states what it knows and never invents a name, so a
 # declaration from a caller with NO pane has no actor and is refused — nothing is written.
-# This is the product's behaviour, not the glue's: the policy-frozen bash body still falls
-# back to the main agent, but it is reachable only with AE_CORE= and never through the
-# public entry, so the pin is on the core. Without this arm the canary above passes
+# This is the product's behaviour, and since A.1 it is the ONLY behaviour: the bash body
+# that fell back to the main agent is gone with every other no-core fallback, so the pin
+# is on the core and nothing else can answer. Without this arm the canary above passes
 # whichever of the two answers, which is how the disagreement stayed invisible.
 state_events_before="$(command grep -c '"action":"state"' "$HOME/.ae/sessions/test-sync/events.jsonl" | tr -d '[:space:]' || true)"
 state_nopane_rc=0
@@ -2889,14 +2857,14 @@ assert_contains "doctor-refresh: ...and says the identity is what is missing" \
 assert_eq "doctor-refresh: ...and it wrote no event" "$state_events_before" \
     "$(command grep -c '"action":"state"' "$HOME/.ae/sessions/test-sync/events.jsonl" | tr -d '[:space:]')"
 unset state_events_before state_nopane_rc state_nopane_out
-# #48: `requests` no longer carries its own copy of the pending invariant — it is
-# emitted WITH _ar_request_states, the sensor the archive digest reads. A name missing
-# from that declare -f list is invisible to the unit suite (which calls the function
-# straight out of ae) and shows up only as an empty table at runtime, so run the
-# regenerated artifact against real events.
+# A.1: `requests` carries no invariant of its own at all — it is a shim that EXECs the
+# pinned core, which owns the pending/replied rule. What the generated artifact must
+# still carry is the shim, and a missing name there is invisible to the unit suite
+# (which calls the function straight out of ae) and shows up only at runtime, so run
+# the regenerated artifact against real events.
 REQ_HELPER="$HOME/.ae/sessions/test-sync/requests"
-assert_contains "doctor-refresh: requests helper carries the shared request sensor" \
-    "_ar_request_states ()" "$(cat "$REQ_HELPER")"
+assert_contains "doctor-refresh: requests helper carries the core shim" \
+    "_ae_core_try _requests" "$(cat "$REQ_HELPER")"
 cat >>"$HOME/.ae/sessions/test-sync/events.jsonl" <<'REQEV'
 {"ts":"2026-08-01T00:00:00Z","actor":"a:one","action":"ask","ref":"canary-open","target":"b:two","summary":"still open"}
 {"ts":"2026-08-01T00:01:00Z","actor":"a:one","action":"ask","ref":"canary-done","target":"b:two","summary":"answered"}
@@ -5768,6 +5736,8 @@ seat.main=dummy
 profile.main=dummy
 agent_bin.main=bash
 harness_session.main=pending
+ae_core=$_ITEST_CORE_BIN
+ae_core_version=$("$_ITEST_CORE_BIN" --version 2>/dev/null | awk '{print $NF}')
 EOF
 : >"$A48_FRESH/sessions/pv/memo.tsv"
 : >"$A48_FRESH/sessions/pv/events.jsonl"
@@ -5875,7 +5845,7 @@ if _itest_section '#48 P3.3: archive publish routes through the core, AE_CORE= f
 # routing: a real ended session reaches the core, bash consumes its path/files/bytes
 # line into the "Archived" summary, and the override forces the reference bash body.
 # It needs the built core; a tree without one skips loudly rather than passing hollow.
-P33_CORE="$(dirname "$AE")/target/debug/ae"
+P33_CORE="${AE_CORE_BIN:-$(dirname "$AE")/target/debug/ae}"
 if [[ -x "$P33_CORE" ]]; then
     P33_VER="$("$P33_CORE" --version 2>/dev/null | awk '{print $NF}')"
     P33_MARK="$TMPDIR/p33-core-invoked"
@@ -5925,7 +5895,10 @@ if [[ -x "$P33_CORE" ]]; then
     assert_eq "p3.3 route: no publisher claim is left behind" "0" \
         "$(find "$HOME/.ae/archive" -maxdepth 1 -name '.publishing.*' | grep -c . | tr -d '[:space:]')"
 
-    # (2) AE_CORE= FALLBACK: the same binding, but the override forces the bash body.
+    # (2) NO CORE: there is no bash publisher behind this any more (A.1), so the end
+    # REFUSES. Nothing is archived, and the session is left whole for the operator to
+    # fix their install and retry. AE_CORE= is no longer an escape either — the binding
+    # is cleared instead, the only shape that can still produce "no usable core".
     : > "$P33_MARK"
     P33_REPO2="$(setup_repo)"
     (cd "$P33_REPO2" && "$AE" --local p33-fallback &) 2>/dev/null
@@ -5934,14 +5907,19 @@ if [[ -x "$P33_CORE" ]]; then
     P33_META2="$HOME/.ae/sessions/p33-fallback"
     P33_UUID2="$(grep '^session_id=' "$P33_META2/meta" | cut -d= -f2- | tr '[:upper:]' '[:lower:]')"
     { grep -v '^ae_core=' "$P33_META2/meta" | grep -v '^ae_core_version=' ; \
-      printf 'ae_core=%s\nae_core_version=%s\n' "$P33_WRAP" "$P33_VER"; } > "$P33_META2/meta.tmp"
+      printf 'ae_core=\nae_core_version=\n'; } > "$P33_META2/meta.tmp"
     mv "$P33_META2/meta.tmp" "$P33_META2/meta"
-    P33_OUT2="$(AE_CORE='' "$AE" end -f --keep-history p33-fallback 2>&1)"
-    assert_eq "p3.3 fallback: AE_CORE= did NOT invoke the core" "0" \
+    P33_RC2=0
+    P33_OUT2="$("$AE" end -f --keep-history p33-fallback 2>&1)" || P33_RC2=$?
+    assert_eq "p3.3 no-core: the core was not invoked (there was none)" "0" \
         "$([[ -s "$P33_MARK" ]] && echo 1 || echo 0)"
-    assert_contains "p3.3 fallback: the bash body still archived" "Archived $P33_UUID2" "$P33_OUT2"
-    assert_eq "p3.3 fallback: and produced a valid archive" "1" \
-        "$([[ -f "$HOME/.ae/archive/$P33_UUID2/meta" ]] && echo 1 || echo 0)"
+    assert_contains "p3.3 no-core: the end refuses, naming the required core" \
+        "the ae core is required for '_archive-publish'" "$P33_OUT2"
+    assert_eq "p3.3 no-core: it exits non-zero" "1" "$([[ $P33_RC2 -ne 0 ]] && echo 1 || echo 0)"
+    assert_not_exists "p3.3 no-core: and nothing was archived" "$HOME/.ae/archive/$P33_UUID2"
+    assert_eq "p3.3 no-core: the session state is still there" "1" \
+        "$([[ -d "$P33_META2" ]] && echo 1 || echo 0)"
+    "$AE" end -f --purge-history p33-fallback >/dev/null 2>&1 || rm -rf "$P33_META2"
 else
     echo "  SKIP #48 P3.3 core routing: no built core at ${P33_CORE} (run: cargo build)"
 fi
@@ -5955,7 +5933,7 @@ if _itest_section '#48 P3.4: --from and purge route through the core, AE_CORE= f
 # bind DIFFERENTLY: --from runs before any session exists, so it resolves the operator's
 # core input directly (AE_CORE_BIN), while purge routes through the ended session's pinned
 # core exactly as publish does. Needs the built core; a tree without one skips loudly.
-P34_CORE="$(dirname "$AE")/target/debug/ae"
+P34_CORE="${AE_CORE_BIN:-$(dirname "$AE")/target/debug/ae}"
 if [[ -x "$P34_CORE" ]]; then
     P34_VER="$("$P34_CORE" --version 2>/dev/null | awk '{print $NF}')"
     P34_FROM_MARK="$TMPDIR/p34-from-invoked"
@@ -5989,16 +5967,20 @@ if [[ -x "$P34_CORE" ]]; then
         "parent_archive_id=$P34_UUID" "$(cat "$HOME/.ae/sessions/p34-child/meta")"
     "$AE" end -f --purge-history p34-child >/dev/null 2>&1 || true
 
-    # (2) AE_CORE= forces the reference bash preflight; the child still inherits.
+    # (2) NO CORE INPUT: the preflight has no bash body behind it (A.1), so the launch
+    # REFUSES before any session exists — the whole point of running it ahead of the
+    # first mkdir. AE_CORE= is not an escape; an absent core input is.
     : > "$P34_FROM_MARK"
-    (cd "$P34_REPO" && AE_CORE='' AE_CORE_BIN="$P34_WRAP" "$AE" --local p34-child2 --from "$P34_UUID" &) 2>/dev/null
-    wait_for_session "p34-child2" 20
-    sleep 1
-    assert_eq "p3.4 fallback: AE_CORE= did NOT invoke the core for --from" "0" \
+    P34_NC_RC=0
+    P34_NC_OUT="$(cd "$P34_REPO" && env -u AE_CORE_BIN CONFIG_FILE=/dev/null \
+        "$AE" --local p34-child2 --from "$P34_UUID" 2>&1)" || P34_NC_RC=$?
+    assert_eq "p3.4 no-core: the core was not invoked for --from" "0" \
         "$([[ -s "$P34_FROM_MARK" ]] && echo 1 || echo 0)"
-    assert_contains "p3.4 fallback: and the bash preflight still inherited the parent" \
-        "parent_archive_id=$P34_UUID" "$(cat "$HOME/.ae/sessions/p34-child2/meta")"
-    "$AE" end -f --purge-history p34-child2 >/dev/null 2>&1 || true
+    assert_contains "p3.4 no-core: the launch refuses, naming the required core" \
+        "the ae core is required for '_archive-from-preflight'" "$P34_NC_OUT"
+    assert_eq "p3.4 no-core: it exits non-zero" "1" "$([[ $P34_NC_RC -ne 0 ]] && echo 1 || echo 0)"
+    assert_not_exists "p3.4 no-core: and no session state was created" "$HOME/.ae/sessions/p34-child2"
+    unset P34_NC_RC P34_NC_OUT
 
     # (3) purge routes through the ended session's PINNED core. Publish a real archive,
     # relaunch the same name pointed back at it with the core pinned in meta, then purge.
@@ -6026,7 +6008,9 @@ if [[ -x "$P34_CORE" ]]; then
     assert_eq "p3.4 route: and no purge claim is left behind" "0" \
         "$(find "$HOME/.ae/archive" -maxdepth 1 -name '.publishing.*' | grep -c . | tr -d '[:space:]')"
 
-    # (4) AE_CORE= forces the reference bash purge; the archive is still removed.
+    # (4) NO CORE: the destructive purge has no bash body behind it (A.1). The end
+    # REFUSES and the archive it was asked to delete is still there — a purge that
+    # cannot be proven durable must not be reported as done.
     : > "$P34_PURGE_MARK"
     (cd "$P34_REPO" && "$AE" --local p34-purge2 &) 2>/dev/null
     wait_for_session "p34-purge2" 20
@@ -6039,13 +6023,18 @@ if [[ -x "$P34_CORE" ]]; then
     sleep 1
     _sed_i -e "s|^session_id=.*|session_id=$P34_P2UUID|" "$P34_META2/meta"
     { grep -v '^ae_core=' "$P34_META2/meta" | grep -v '^ae_core_version=' ; \
-      printf 'ae_core=%s\nae_core_version=%s\n' "$P34_WRAP" "$P34_VER"; } > "$P34_META2/meta.tmp"
+      printf 'ae_core=\nae_core_version=\n'; } > "$P34_META2/meta.tmp"
     mv "$P34_META2/meta.tmp" "$P34_META2/meta"
-    P34_POUT2="$(AE_CORE='' "$AE" end -f --purge-history p34-purge2 2>&1)"
-    assert_eq "p3.4 fallback: AE_CORE= did NOT invoke the core for purge" "0" \
+    P34_PRC2=0
+    P34_POUT2="$("$AE" end -f --purge-history p34-purge2 2>&1)" || P34_PRC2=$?
+    assert_eq "p3.4 no-core: the core was not invoked for purge (there was none)" "0" \
         "$([[ -s "$P34_PURGE_MARK" ]] && echo 1 || echo 0)"
-    assert_contains "p3.4 fallback: the bash body still purged" "Purged archive $P34_P2UUID" "$P34_POUT2"
-    assert_not_exists "p3.4 fallback: and the archive is gone" "$HOME/.ae/archive/$P34_P2UUID"
+    assert_contains "p3.4 no-core: the end refuses, naming the required core" \
+        "the ae core is required for '_archive-purge'" "$P34_POUT2"
+    assert_eq "p3.4 no-core: it exits non-zero" "1" "$([[ $P34_PRC2 -ne 0 ]] && echo 1 || echo 0)"
+    assert_eq "p3.4 no-core: and the archive it was asked to purge is still there" "1" \
+        "$([[ -f "$HOME/.ae/archive/$P34_P2UUID/meta" ]] && echo 1 || echo 0)"
+    unset P34_PRC2
 
     unset P34_UUID P34_PUUID P34_P2UUID P34_POUT P34_POUT2 P34_META P34_META2 P34_VER P34_WRAP P34_FROM_MARK P34_PURGE_MARK P34_CORE P34_REPO
 else
@@ -6063,7 +6052,7 @@ if _itest_section '#79 P3.5: local teardown routes through the core, AE_CORE= fa
 # tombstone left; (2) AE_CORE= forces the reference bash `rm` and still removes it, no
 # core call; (3) a standing tombstone refuses a fresh launch of the same name. Needs the
 # built core; a tree without one skips loudly.
-P35_CORE="$(dirname "$AE")/target/debug/ae"
+P35_CORE="${AE_CORE_BIN:-$(dirname "$AE")/target/debug/ae}"
 if [[ -x "$P35_CORE" ]]; then
     P35_VER="$("$P35_CORE" --version 2>/dev/null | awk '{print $NF}')"
     P35_MARK="$TMPDIR/p35-teardown-invoked"
@@ -6093,20 +6082,27 @@ if [[ -x "$P35_CORE" ]]; then
     assert_not_exists "p3.5 route: the session state is gone" "$HOME/.ae/sessions/p35-end"
     assert_not_exists "p3.5 route: and no teardown tombstone is left" "$HOME/.ae/sessions/.ending.p35-end"
 
-    # (2) AE_CORE= forces the reference bash rm; the session is still removed, no core call.
+    # (2) NO CORE: there is no bash rm behind the teardown any more (A.1), so the end
+    # REFUSES and the session state survives for the operator to fix their install.
     : > "$P35_MARK"
     (cd "$P35_REPO" && "$AE" --local p35-end2 &) 2>/dev/null
     wait_for_session "p35-end2" 20
     sleep 1
     P35_META2="$HOME/.ae/sessions/p35-end2"
     { grep -v '^ae_core=' "$P35_META2/meta" | grep -v '^ae_core_version=' ; \
-      printf 'ae_core=%s\nae_core_version=%s\n' "$P35_WRAP" "$P35_VER"; } > "$P35_META2/meta.tmp"
+      printf 'ae_core=\nae_core_version=\n'; } > "$P35_META2/meta.tmp"
     mv "$P35_META2/meta.tmp" "$P35_META2/meta"
-    P35_OUT2="$(AE_CORE='' "$AE" end -f --purge-history p35-end2 2>&1)"
-    assert_eq "p3.5 fallback: AE_CORE= did NOT invoke the core for teardown" "0" \
+    P35_RC2=0
+    P35_OUT2="$("$AE" end -f --purge-history p35-end2 2>&1)" || P35_RC2=$?
+    assert_eq "p3.5 no-core: the core was not invoked (there was none)" "0" \
         "$([[ -s "$P35_MARK" ]] && echo 1 || echo 0)"
-    assert_contains "p3.5 fallback: bash still reports the end" "Ended" "$P35_OUT2"
-    assert_not_exists "p3.5 fallback: and the session state is gone" "$HOME/.ae/sessions/p35-end2"
+    assert_contains "p3.5 no-core: the end refuses, naming the required core" \
+        "the ae core is required for" "$P35_OUT2"
+    assert_eq "p3.5 no-core: it exits non-zero" "1" "$([[ $P35_RC2 -ne 0 ]] && echo 1 || echo 0)"
+    assert_eq "p3.5 no-core: and the session state is still there" "1" \
+        "$([[ -d "$P35_META2" ]] && echo 1 || echo 0)"
+    rm -rf "$P35_META2"
+    unset P35_RC2
 
     # (3) A standing tombstone refuses a fresh launch of the same name (the launch guard).
     #     _timeout guards against a regression that lets the launch proceed and attach.
@@ -6148,7 +6144,7 @@ if _itest_section '#79 P3.6: nonlocal teardown routes through the core, preserve
 # BOTH resources; (3) a no-origin worktree end preserves the workdir; (4) AE_CORE=
 # forces the reference bash path; (5) a standing worktrees/.ending.<name> refuses a
 # fresh launch. Needs the built core; a tree without one skips loudly.
-P36_CORE="$(dirname "$AE")/target/debug/ae"
+P36_CORE="${AE_CORE_BIN:-$(dirname "$AE")/target/debug/ae}"
 if [[ -x "$P36_CORE" ]]; then
     P36_VER="$("$P36_CORE" --version 2>/dev/null | awk '{print $NF}')"
     P36_MARK="$TMPDIR/p36-teardown-invoked"
@@ -6245,18 +6241,28 @@ if [[ -x "$P36_CORE" ]]; then
         "$([[ -f "$P36_PRES_ORIGIN/.ae/p36-pres/sentinel" ]] && echo 1 || echo 0)"
     rm -rf "$HOME/.ae/worktrees/p36-pres" "$P36_PRES_ORIGIN/.ae/p36-pres"
 
-    # (4) AE_CORE= forces the reference bash path; the copy is still removed, no core call.
+    # (4) NO CORE: the nonlocal teardown owns BOTH resources and has no bash path left
+    # behind it (A.1), so the end REFUSES and both survive.
     : > "$P36_MARK"
     (cd "$P36_REPO" && "$AE" --copy p36-copy2 &) 2>/dev/null
     wait_for_session "p36-copy2" 20
     sleep 1
-    _p36_pin_core p36-copy2
-    P36_OUT4="$(AE_CORE='' "$AE" end -f --purge-history p36-copy2 2>&1)"
-    assert_eq "p3.6 fallback: AE_CORE= did NOT invoke the core" "0" \
+    { grep -v '^ae_core=' "$HOME/.ae/sessions/p36-copy2/meta" | grep -v '^ae_core_version=' ; \
+      printf 'ae_core=\nae_core_version=\n'; } > "$HOME/.ae/sessions/p36-copy2/meta.tmp"
+    mv "$HOME/.ae/sessions/p36-copy2/meta.tmp" "$HOME/.ae/sessions/p36-copy2/meta"
+    P36_RC4=0
+    P36_OUT4="$("$AE" end -f --purge-history p36-copy2 2>&1)" || P36_RC4=$?
+    assert_eq "p3.6 no-core: the core was not invoked (there was none)" "0" \
         "$([[ -s "$P36_MARK" ]] && echo 1 || echo 0)"
-    assert_contains "p3.6 fallback: bash still reports the end" "Ended" "$P36_OUT4"
-    assert_not_exists "p3.6 fallback: the copy session state is gone" "$HOME/.ae/sessions/p36-copy2"
-    assert_not_exists "p3.6 fallback: the copy workdir is gone" "$HOME/.ae/worktrees/p36-copy2"
+    assert_contains "p3.6 no-core: the end refuses, naming the required core" \
+        "the ae core is required for" "$P36_OUT4"
+    assert_eq "p3.6 no-core: it exits non-zero" "1" "$([[ $P36_RC4 -ne 0 ]] && echo 1 || echo 0)"
+    assert_eq "p3.6 no-core: the copy session state survives" "1" \
+        "$([[ -d "$HOME/.ae/sessions/p36-copy2" ]] && echo 1 || echo 0)"
+    assert_eq "p3.6 no-core: and so does the copy workdir" "1" \
+        "$([[ -d "$HOME/.ae/worktrees/p36-copy2" ]] && echo 1 || echo 0)"
+    rm -rf "$HOME/.ae/sessions/p36-copy2" "$HOME/.ae/worktrees/p36-copy2"
+    unset P36_RC4
 
     # (5) A standing worktrees/.ending.<name> refuses a fresh launch (the launch guard).
     mkdir -p "$HOME/.ae/worktrees/.ending.p36-guard/messages"
@@ -8999,11 +9005,14 @@ else
 
     P1_LONG_BODY="$(printf '%8193s' '' | tr ' ' x)"
     # One ask into each real renderer.  The target is a pane id, never a name from the
-    # live session.  The generated helper owns resolution, locking, proof and eventing.
+    # live session.  Since A.1 the helper EXECs the pinned core, which owns resolution,
+    # the id and the event and calls BACK into this session's `_send-deliver` for the
+    # paste — so the transport under test is still the frozen bash send body.
+    # AE_SENDER_OVERRIDE supplies the caller identity a paneless rig has no stamp for.
     P1_ASK_CLAUDE_RC=0
-    AE_CORE='' AE_SEND_DEFER_SEC=90 AE_SENDER_OVERRIDE=worker "$P1_RIG_BASH" "$P1_RIG_META/ask" "$P1_CLAUDE_PANE" "$P1_LONG_BODY" >"$TMPDIR/pb1-ask-claude.out" 2>"$TMPDIR/pb1-ask-claude.err" || P1_ASK_CLAUDE_RC=$?
+    AE_SEND_DEFER_SEC=90 AE_SENDER_OVERRIDE=worker "$P1_RIG_BASH" "$P1_RIG_META/ask" "$P1_CLAUDE_PANE" "$P1_LONG_BODY" >"$TMPDIR/pb1-ask-claude.out" 2>"$TMPDIR/pb1-ask-claude.err" || P1_ASK_CLAUDE_RC=$?
     P1_ASK_CODEX_RC=0
-    AE_CORE='' AE_SEND_DEFER_SEC=90 AE_SENDER_OVERRIDE=lead "$P1_RIG_BASH" "$P1_RIG_META/ask" "$P1_CODEX_PANE" "$P1_LONG_BODY" >"$TMPDIR/pb1-ask-codex.out" 2>"$TMPDIR/pb1-ask-codex.err" || P1_ASK_CODEX_RC=$?
+    AE_SEND_DEFER_SEC=90 AE_SENDER_OVERRIDE=lead "$P1_RIG_BASH" "$P1_RIG_META/ask" "$P1_CODEX_PANE" "$P1_LONG_BODY" >"$TMPDIR/pb1-ask-codex.out" 2>"$TMPDIR/pb1-ask-codex.err" || P1_ASK_CODEX_RC=$?
         assert_eq "P-B1 rig: Claude oversized ask helper exits successfully" "0" "$P1_ASK_CLAUDE_RC"
         assert_eq "P-B1 rig: Codex oversized ask helper exits successfully" "0" "$P1_ASK_CODEX_RC"
         P1_ASK_N="$(grep -c '"action":"ask"' "$P1_RIG_META/events.jsonl" 2>/dev/null || true)"
