@@ -60,7 +60,7 @@ _shellcheck-pin:
 # real test safety for a clean linter page. The SC2016 and SC2329 sites carry their own
 # reasoned comments instead. Full rationale: docs/development.md.
 lint: _shellcheck-pin
-    shellcheck --severity=warning -x ae ae-entry tests/unit tests/integration tests/aemonitor tests/aewatch install \
+    shellcheck --severity=warning -x ae ae-entry tests/unit tests/integration tests/itest-par tests/aemonitor tests/aewatch install \
         tests/e2e/ai/lib.sh tests/e2e/ai/run_scenario.sh \
         $(find tests/e2e/ai/scenarios -name steps.sh) < /dev/null
 
@@ -81,7 +81,12 @@ format:
 # Run all tests
 test: test-unit test-integration test-aemonitor test-aewatch
 
-# Unit tests (pure functions, no deps)
+# THE GATE, and unnarrowed: AE_UNIT_FULL=1 runs the slow rigs the default run skips
+# (installer, wrapper triple, CalVer bump, notice rig, telegram seams). The polarity is
+# opt-IN rather than opt-out on purpose — a forgotten export can make a filtered run
+# look like a full one, but it cannot make a gate skip anything it asked for.
+#
+# Unit tests, every block — THE GATE (pure functions, no deps)
 test-unit:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -97,6 +102,26 @@ test-unit:
         command -v "$candidate" >/dev/null 2>&1 || continue
         major="$("$candidate" -c 'echo "${BASH_VERSINFO[0]}"' 2>/dev/null || echo 0)"
         if [ "${major:-0}" -ge 4 ] 2>/dev/null; then
+            exec env AE_UNIT_FULL=1 "$candidate" tests/unit
+        fi
+    done
+    echo "Error: tests/unit needs bash >= 4.0 and no candidate on PATH provides it" >&2
+    echo "       (macOS: brew install bash)" >&2
+    exit 1
+
+# INNER LOOP: the same suite without the five rigs that spawn processes and build
+# fixture installs — about a minute instead of two, and it says on its own summary line
+# that it was not the full run. `AE_UNIT_TIMING=1` adds a slowest-blocks report.
+#
+# Unit tests without the slow rigs (inner loop)
+unit:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for candidate in "${BASH:-}" bash /opt/homebrew/bin/bash /usr/local/bin/bash; do
+        [ -n "$candidate" ] || continue
+        command -v "$candidate" >/dev/null 2>&1 || continue
+        major="$("$candidate" -c 'echo "${BASH_VERSINFO[0]}"' 2>/dev/null || echo 0)"
+        if [ "${major:-0}" -ge 4 ] 2>/dev/null; then
             exec "$candidate" tests/unit
         fi
     done
@@ -104,9 +129,53 @@ test-unit:
     echo "       (macOS: brew install bash)" >&2
     exit 1
 
-# Integration tests (requires tmux, git)
+# `bash` is /bin/bash 3.2 on macOS and the suite refuses that outright (it would die
+# thousands of lines in, on an associative array, reading as a product bug), so this
+# resolves an interpreter by VERSION exactly as test-unit does.
+#
+# Integration tests, serial and unnarrowable — THE GATE (requires tmux, git; ~30 min)
 test-integration:
-    AE_ITEST_FULL=1 bash tests/integration
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for candidate in "${BASH:-}" bash /opt/homebrew/bin/bash /usr/local/bin/bash; do
+        [ -n "$candidate" ] || continue
+        command -v "$candidate" >/dev/null 2>&1 || continue
+        major="$("$candidate" -c 'echo "${BASH_VERSINFO[0]}"' 2>/dev/null || echo 0)"
+        if [ "${major:-0}" -ge 4 ] 2>/dev/null; then
+            exec env AE_ITEST_FULL=1 "$candidate" tests/integration
+        fi
+    done
+    echo "Error: tests/integration needs bash >= 4.0 and no candidate on PATH provides it" >&2
+    echo "       (macOS: brew install bash)" >&2
+    exit 1
+
+# INNER LOOP, not the gate. `just itest list send` runs only those domains; with no
+# argument it runs every section. Domains live in tests/itest-domains.tsv, and
+# `tests/itest-par --list` prints them.
+#
+# Integration sections in parallel, scoped by domain (inner loop)
+itest *domains:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for candidate in "${BASH:-}" bash /opt/homebrew/bin/bash /usr/local/bin/bash; do
+        [ -n "$candidate" ] || continue
+        command -v "$candidate" >/dev/null 2>&1 || continue
+        major="$("$candidate" -c 'echo "${BASH_VERSINFO[0]}"' 2>/dev/null || echo 0)"
+        if [ "${major:-0}" -ge 4 ] 2>/dev/null; then
+            exec "$candidate" tests/itest-par {{ domains }}
+        fi
+    done
+    echo "Error: tests/itest-par needs bash >= 4.0 and no candidate on PATH provides it" >&2
+    echo "       (macOS: brew install bash)" >&2
+    exit 1
+
+# Same assertions as `just test-integration`, minutes instead of half an hour — but the
+# sections run in several processes, so a section that only passes because of what ran
+# before it shows up HERE and not there.
+#
+# Every integration section, in parallel
+itest-all:
+    {{ just_executable() }} itest
 
 # contrib aemonitor helper tests (requires python3; deterministic fixtures)
 test-aemonitor:
