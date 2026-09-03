@@ -54,7 +54,7 @@ pub(crate) mod capture;
 pub(crate) mod name;
 
 /// The frozen usage line for the core entry.
-pub const USAGE: &str = "Usage: _launch --home <ae-home> --cwd <dir> [--global <cfg>] [--local <cfg>] [--server-kind <kind>] [--server <value>] [--attach|--no-attach] [--] [--worktree|--copy|--local] [--from <uuid>] [use <name>] [<session-name>]";
+pub const USAGE: &str = "Usage: _launch --home <ae-home> --cwd <dir> [--global <cfg>] [--local <cfg>] [--server-kind <kind>] [--server <value>] [--attach|--no-attach] [--no-autostart] [--] [--worktree|--copy|--local] [--from <uuid>] [use <name>] [<session-name>]";
 
 /// How long a freshly created pane's shell is given to draw its prompt before
 /// anything is pasted — the frozen `sleep 0.3` at `ae:14130`.
@@ -224,6 +224,10 @@ pub struct Env {
     /// the watchdog re-execs (`ae telegram _supervise`, `ae _recover-pending`),
     /// which under a versioned install is a different file from the core.
     pub glue: Option<PathBuf>,
+    /// `--no-autostart`: start NEITHER companion. The frozen
+    /// `AE_NO_AUTOSTART=1`, which the core cannot read for itself — the
+    /// operator's opt-out crosses as a flag like every other environment fact.
+    pub no_autostart: bool,
 }
 
 impl Env {
@@ -278,6 +282,7 @@ fn read_env(tail: &[String]) -> Result<(Env, Vec<String>), String> {
         server_value: String::new(),
         inside_tmux: false,
         attach: true,
+        no_autostart: false,
         glue: None,
         core: None,
         core_version: None,
@@ -301,6 +306,11 @@ fn read_env(tail: &[String]) -> Result<(Env, Vec<String>), String> {
             }
             "--inside-tmux" => {
                 env.inside_tmux = true;
+                rest = after;
+                continue;
+            }
+            "--no-autostart" => {
+                env.no_autostart = true;
                 rest = after;
                 continue;
             }
@@ -410,6 +420,9 @@ pub fn relaunch(
         server_value: plan.server_value.to_owned(),
         inside_tmux: false,
         attach: false,
+        // A relaunch IS a launch (compact's child), so the companions are
+        // decided exactly as they are for one typed by hand.
+        no_autostart: false,
         glue: None,
         core: None,
         core_version: None,
@@ -1159,6 +1172,23 @@ fn build(
         start_watchdog_pane(env, shape, &dir, &server, anchor);
     }
 
+    // ---- the companions ----
+    //
+    // LAST, and after the session exists, deliberately: both guards are
+    // TRI-STATE, and a tmux probe taken before any server is running answers
+    // UNKNOWN — which refuses every time and would silently disable both
+    // companions on a cold machine. The session created above is what makes the
+    // server answerable. Both are best-effort and strictly non-fatal (the frozen
+    // path ran each behind `2>/dev/null || true`): a session that is up is never
+    // failed by a bridge that is not.
+    //
+    // This runs on RESUME too — same path, same order — which is what makes a
+    // reattach revive a bridge that died since the last launch.
+    if !env.no_autostart {
+        autostart_telegram(env, shape, &dir, &server, err);
+        autostart_orchestrator(env, shape, &server, out, err);
+    }
+
     let _ = transport::run_tmux_op(&argv(&server, &Op::SelectPane { pane: &main_pane }));
     if !env.attach {
         writeln!(
@@ -1793,7 +1823,7 @@ fn wait_for_agent_start(server: &ServerId, pane: &str, tool: ToolKind) {
 /// Pinned at window index 99 so it stays RIGHTMOST in the footer — spawned
 /// worker windows slot in between it and the main window. Falls back to
 /// append-after-current when 99 is somehow taken.
-fn ensure_events_pane(server: &ServerId, session: &str, dir: &Path) -> Option<String> {
+pub(crate) fn ensure_events_pane(server: &ServerId, session: &str, dir: &Path) -> Option<String> {
     if let Some(existing) = monitor_pane(server, session, "_events") {
         return Some(existing);
     }
@@ -1868,6 +1898,98 @@ fn start_watchdog_pane(env: &Env, shape: &Session, dir: &Path, server: &ServerId
     let _ = transport::set_pane_title(server, &pane, "ae watchdog");
     let _ = transport::run_tmux_op(&argv(server, &Op::DisablePane { pane: &pane }));
     let _ = meta::rewrite(dir, "watchdog", Some("true"));
+}
+
+/// The Telegram bridge, revived if `[telegram] enabled` asks for one.
+///
+/// The config read is the GLOBAL one — the file the daemon itself will be
+/// handed as `--config`. An origin-local `.ae/config` is deliberately not
+/// overlaid here: the frozen glue decided intent from the overlay but started
+/// the daemon on the global file, so a project-local `enabled = true` produced a
+/// bridge reading a config that never said so.
+fn autostart_telegram(
+    env: &Env,
+    shape: &Session,
+    dir: &Path,
+    server: &ServerId,
+    err: &mut impl Write,
+) {
+    let mut paths = crate::telegram::bridge::Paths::under(&env.home);
+    if let Some(global) = &env.global {
+        paths.config.clone_from(global);
+    }
+    let _ = crate::telegram_lifecycle::autostart(&paths, server, &shape.name, dir, err);
+}
+
+/// The orchestrator companion, started in the background when a scaffold exists.
+///
+/// Opt-in purely by EXISTING STATE — a scaffold from `ae orchestrator --init`,
+/// canonical or the legacy hub layout — so there is no new config key and a
+/// machine that never scaffolded one is never touched. The `AE_ORCHESTRATOR_DIR`
+/// / `AE_HUB_DIR` overrides the frozen probe honoured are dropped: the core does
+/// not read the environment, and an override nobody in this process can see is
+/// not a probe, it is a guess.
+fn autostart_orchestrator(
+    env: &Env,
+    shape: &Session,
+    server: &ServerId,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) {
+    // The recursion guard, and it is structural rather than an environment
+    // variable: the companion IS an `ae orchestrator` launch, which lands right
+    // here, and a session already named for the scaffold does not start itself.
+    if matches!(shape.name.as_str(), "orchestrator" | "hub") {
+        return;
+    }
+    // The SCAFFOLD decides the session name: a legacy `hub.config` keeps running
+    // as `hub`, because its baked charter paths and its resume state are that
+    // name's. Canonical first, exactly as the frozen probe ordered them.
+    let scaffolds = [
+        (
+            "orchestrator",
+            env.home.join("orchestrator/orchestrator.config"),
+        ),
+        ("hub", env.home.join("meta-hub/hub.config")),
+    ];
+    let Some((session, _)) = scaffolds
+        .iter()
+        .find(|(_, config)| crate::lifecycle::path_exists(config))
+    else {
+        return;
+    };
+    // TRI-STATE (#28): only a VERIFIED absence may start a companion. An
+    // unanswerable server cannot rule out an orchestrator that is already
+    // running, and the cost of guessing wrong is a duplicate session whose
+    // detached launch dies with its output on /dev/null. `verify_session_absent`
+    // is the probe with that third answer — and it reads a cleanly EXITED server
+    // as absence, which a plain enumeration cannot.
+    let mut unknown = false;
+    for (name, _) in &scaffolds {
+        match transport::verify_session_absent(server, name) {
+            tmux::StopProbe::Present => return,
+            tmux::StopProbe::Unknown => unknown = true,
+            tmux::StopProbe::Absent => {}
+        }
+    }
+    if unknown {
+        let _ = writeln!(
+            err,
+            "Orchestrator autostart skipped — tmux did not answer, so a running orchestrator cannot be ruled out."
+        );
+        return;
+    }
+    // The child is the GLUE (`ae orchestrator` is a bash trampoline that
+    // resolves the scaffold and falls through to a launch), so with no recorded
+    // glue there is nothing to run.
+    let Some(glue) = &env.glue else {
+        return;
+    };
+    let _ = writeln!(
+        out,
+        "Starting orchestrator companion session in the background (AE_NO_AUTOSTART=1 skips)."
+    );
+    let _ = transport::run_detached(&crate::lifecycle::orchestrator_argv(glue, session));
 }
 
 /// Create a detached window running `command`, and report its pane id.

@@ -10,6 +10,7 @@ mod archive_publish;
 mod archive_purge;
 mod cli;
 mod compact;
+mod daemons;
 mod deliver;
 mod fixtures;
 mod git;

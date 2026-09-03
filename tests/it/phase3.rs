@@ -1905,6 +1905,16 @@ fn criterion_3_the_places_this_crate_can_read_the_world_are_the_inventoried_ones
             // reads is a secret, and where it sends the result is the public
             // internet.
             "src/telegram.rs".to_owned(),
+            // The bridge LIFECYCLE's own reads: the INI config it decides
+            // intent from and rewrites, the two state files `status` reports
+            // on, the autostart-refusal record, and the config's own mode so an
+            // atomic rewrite does not re-permission it. The credential check is
+            // `telegram.rs`'s inventoried door, not a second one here — the
+            // lifecycle asks the DAEMON'S loader whether a start can work, so
+            // there is one reader of the token and it is the one with the
+            // custody rules. Registered deliberately: a command that can start a
+            // daemon holding a secret is not one to gain a quiet new read.
+            "src/telegram_lifecycle.rs".to_owned(),
             // The orchestrator heartbeat's `lstat` (P4.2): the one read the watchdog
             // daemon takes for itself, proving `meta-agent-state.json` is a
             // non-symlink regular file before its mtime is trusted as liveness.
