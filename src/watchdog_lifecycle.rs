@@ -393,7 +393,13 @@ fn stop(
 fn daemon_command(meta_dir: &Path, knobs: &[String]) -> Option<Vec<String>> {
     let helper = meta_dir.join(HELPER);
     if lifecycle::path_exists(&helper) {
-        return Some(vec![helper.display().to_string(), "_run".to_owned()]);
+        // The core-written shim is `exec <core> _watchdog-run <meta> "$@"`: the
+        // entry and the meta dir are already inside it, so ONLY the knobs
+        // follow — an extra word arrives as an unknown argument and the daemon
+        // dies before it publishes a pidfile (measured, glue cut 3).
+        let mut command = vec![helper.display().to_string()];
+        command.extend(knobs.iter().cloned());
+        return Some(command);
     }
     let core = std::env::current_exe().ok()?;
     let mut command = vec![

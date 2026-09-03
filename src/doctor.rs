@@ -31,7 +31,7 @@ use std::path::{Path, PathBuf};
 use crate::state::{EXIT_FAILED, EXIT_USAGE};
 
 /// The frozen usage line, quoted verbatim by every refusal that raises it.
-pub const USAGE: &str = "Usage: ae doctor [--refresh [all|<session>]]";
+pub const USAGE: &str = "Usage: ae doctor [--refresh [all|<session>]] [--bash-major <n>]";
 
 /// The `_shims-render` usage line.
 pub const SHIMS_USAGE: &str = "Usage: _shims-render <session-dir>";
@@ -191,6 +191,12 @@ pub struct ProfileFacts {
 pub struct Facts {
     /// The version of the binary answering.
     pub version: String,
+    /// The binary answering — the core the glue resolved and exec'd, so this
+    /// is the resolved core path the operator wants to see.
+    pub core: Option<PathBuf>,
+    /// The major version of the bash the glue runs under, when the glue said
+    /// (`--bash-major <n>`); the core cannot see it for itself.
+    pub bash_major: Option<u32>,
     /// `tmux`, resolved on `PATH`.
     pub tmux: Option<PathBuf>,
     /// `git`, resolved on `PATH`.
@@ -227,6 +233,19 @@ pub fn report(facts: &Facts) -> Report {
 /// The rows about the INSTALL: the binary, its dependencies, its config.
 fn install_rows(facts: &Facts, out: &mut Report) {
     out.push(Level::Ok, "ae", &format!("version {}", facts.version));
+    match &facts.core {
+        Some(path) => out.push(Level::Ok, "core", &path.display().to_string()),
+        None => out.push(Level::Warn, "core", "this binary cannot name its own path"),
+    }
+    match facts.bash_major {
+        Some(major) if major >= 4 => out.push(Level::Ok, "bash", &format!("bash {major}")),
+        Some(major) => out.push(
+            Level::Fail,
+            "bash",
+            &format!("bash {major} (ae needs bash >= 4)"),
+        ),
+        None => {}
+    }
 
     for (label, found) in [("tmux", &facts.tmux), ("git", &facts.git)] {
         match found {
@@ -455,7 +474,12 @@ fn is_executable_file(path: &Path) -> bool {
 /// hands them in exactly as it does for a launch, because the core does not
 /// read the environment to find them.
 #[must_use]
-pub fn gather(root: &Path, global: Option<&Path>, local: Option<&Path>) -> Facts {
+pub fn gather(
+    root: &Path,
+    global: Option<&Path>,
+    local: Option<&Path>,
+    bash_major: Option<u32>,
+) -> Facts {
     let roots = crate::inventory::Roots::under(root);
     let config = global.map_or_else(|| root.join("config"), Path::to_path_buf);
     let read = crate::config::read_identity(Some(&config), local);
@@ -486,6 +510,8 @@ pub fn gather(root: &Path, global: Option<&Path>, local: Option<&Path>) -> Facts
 
     Facts {
         version: crate::VERSION.to_owned(),
+        core: std::env::current_exe().ok(),
+        bash_major,
         tmux: resolve_on_path("tmux"),
         git: resolve_on_path("git"),
         config,
@@ -548,6 +574,7 @@ struct Args {
     refresh: Option<String>,
     global: Option<PathBuf>,
     local: Option<PathBuf>,
+    bash_major: Option<u32>,
 }
 
 /// Read `doctor`'s flags. The offending word on refusal.
@@ -570,6 +597,13 @@ fn parse(tail: &[String]) -> Result<Args, String> {
                     }
                 }
             }
+            "--bash-major" => match after {
+                [value, tail @ ..] => {
+                    args.bash_major = Some(value.parse().map_err(|_| word.clone())?);
+                    rest = tail;
+                }
+                [] => return Err(word.clone()),
+            },
             "--global" | "--local" => match after {
                 [value, tail @ ..] => {
                     if word == "--global" {
@@ -609,7 +643,12 @@ pub fn run(
     let _ = std::fs::create_dir_all(roots.sessions());
     let _ = std::fs::create_dir_all(roots.worktrees());
 
-    let facts = gather(root, args.global.as_deref(), args.local.as_deref());
+    let facts = gather(
+        root,
+        args.global.as_deref(),
+        args.local.as_deref(),
+        args.bash_major,
+    );
     let mut document = report(&facts);
     if let Some(target) = &args.refresh {
         refresh(root, target, args.global.as_deref(), &mut document);
@@ -857,6 +896,8 @@ mod tests {
     fn facts() -> Facts {
         Facts {
             version: "2026.9.1".to_owned(),
+            core: Some(PathBuf::from("/opt/ae/versions/1/ae-core")),
+            bash_major: None,
             tmux: Some(PathBuf::from("/usr/bin/tmux")),
             git: Some(PathBuf::from("/usr/bin/git")),
             config: PathBuf::from("/home/me/.ae/config"),
