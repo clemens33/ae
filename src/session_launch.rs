@@ -214,6 +214,10 @@ pub struct Env {
     pub inside_tmux: bool,
     /// Whether to attach when the session is up.
     pub attach: bool,
+    /// The glue's own path, recorded as `ae_path` — the `ae` COMMAND a helper or
+    /// the watchdog re-execs (`ae telegram _supervise`, `ae _recover-pending`),
+    /// which under a versioned install is a different file from the core.
+    pub glue: Option<PathBuf>,
 }
 
 impl Env {
@@ -268,6 +272,7 @@ fn read_env(tail: &[String]) -> Result<(Env, Vec<String>), String> {
         server_value: String::new(),
         inside_tmux: false,
         attach: true,
+        glue: None,
     };
     let mut rest = tail;
     while let [flag, after @ ..] = rest {
@@ -303,6 +308,7 @@ fn read_env(tail: &[String]) -> Result<(Env, Vec<String>), String> {
             "--local-config" => env.local = Some(value.into()),
             "--server-kind" => env.server_kind.clone_from(value),
             "--server" => env.server_value.clone_from(value),
+            "--glue" => env.glue = Some(value.into()),
             _ => return Err(flag.clone()),
         }
         rest = after;
@@ -394,6 +400,7 @@ pub fn relaunch(
         server_value: plan.server_value.to_owned(),
         inside_tmux: false,
         attach: false,
+        glue: None,
     };
     let (main, workers) = split_frozen_roster(plan.roster);
     let launch_plan = Plan {
@@ -689,7 +696,7 @@ fn launch(
     if let Some(workers) = &plan.workers {
         cfg.workers = Some(workers.clone());
     }
-    let seats = match config::launch_plan(&cfg, plan.main.as_deref()) {
+    let mut seats = match config::launch_plan(&cfg, plan.main.as_deref()) {
         Ok(resolved) => resolved.seats,
         Err(violations) => {
             write!(err, "{}", config::render_violations(&violations))?;
@@ -795,6 +802,24 @@ fn launch(
     } else {
         config_layout
     };
+    // A RESUME RESTORES THE ROSTER IT SAVED. The seat names (and profiles) in
+    // meta are the session's identity; config is only where a FRESH launch reads
+    // them from. Re-deriving on resume renamed `seat.main=chief` to the config's
+    // current value and silently discarded a rename (glue cut 2 finding).
+    if resuming {
+        for seat in &mut seats {
+            if let Some(saved) =
+                meta_value(&dir, &format!("seat.{}", seat.slot)).filter(|v| !v.is_empty())
+            {
+                seat.name = saved;
+            }
+            if let Some(saved) =
+                meta_value(&dir, &format!("profile.{}", seat.slot)).filter(|v| !v.is_empty())
+            {
+                seat.profile = saved;
+            }
+        }
+    }
     if resuming && let Some(saved) = meta_value(&dir, "layout").filter(|v| !v.is_empty()) {
         layout = saved;
     }
@@ -1255,6 +1280,17 @@ fn apply_status_bar(server: &ServerId, shape: &Session) {
         ("status-right-length", "100".to_owned()),
         ("status-interval", "5".to_owned()),
         ("status", "2".to_owned()),
+        // The per-window glyph the watchdog publishes into @ae_window_status
+        // renders only through these two (ae:673-674); without them it is
+        // published and never shown.
+        (
+            "window-status-format",
+            "#I:#W#{@ae_window_status}#F".to_owned(),
+        ),
+        (
+            "window-status-current-format",
+            "#I:#W#{@ae_window_status}#F".to_owned(),
+        ),
     ] {
         let _ = transport::publish_option(server, tmux::OptionScope::Session, name, option, &value);
     }
@@ -1435,7 +1471,10 @@ fn meta_document(
         // The core binding, pinned per session as a PAIR: a helper that found a
         // binary whose version disagreed with the session's would be running a
         // different contract than the one this session was built against.
-        row("ae_path", &core.display().to_string());
+        // ae_path is the recorded `ae` COMMAND, which is the glue when the caller
+        // named it; the core only stands in for a caller that did not.
+        let ae_path = env.glue.as_ref().unwrap_or(&core);
+        row("ae_path", &ae_path.display().to_string());
         row("ae_core", &core.display().to_string());
         row("ae_core_version", crate::VERSION);
     }
