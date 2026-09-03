@@ -203,6 +203,30 @@ the justfile — and each carries its reasoning at the pin site. This section is
 the *why*, not a second source of truth: when they disagree, the file wins and this section
 is stale.
 
+### Finishing #79 (ruled 2026-09-03)
+
+Epic #79 was closed on the claim that "the remaining Bash is minimal tmux/pane glue". It
+was not measured: at that close `ae` was 18,673 lines beside 25,191 lines of production
+Rust, and every core-owned domain still carried a bash fallback (`AE_CORE=` set-empty, the
+not-attempted 125 protocol) or a duplicate reader of the same session state — where 10 of
+the 11 identity-slice bugs lived. The human ruled the destination the epic already named:
+**B — the Rust binary calls `tmux` itself; bash keeps only generated `launch.<slot>.sh`
+and the interactive helper shims.** Path: ordered deletion slices (A.0 suites self-isolate
+→ A.1 delete every no-core fallback, core REQUIRED → A.2 readers to the core, four
+sub-slices → A.3 watchdog helper execs `_watchdog-run` → A.4 launch, transitional → A.5
+cut `transfer`, move doctor), then one vertical move per remaining operation (send
+delivery, spawn/retire, launch, end/compact effects, watchdog pane). Do not port bash into
+Rust as it is; port behaviour, drop features on the way.
+
+Development runs in a separate namespace, **`ae-dev`** (`~/.local/bin/ae-dev`: own
+`~/.ae-dev` home and config, tmux server `-L ae-dev`, binaries from the checkout). The
+released `ae` keeps serving `~/.ae` and its v1 sessions untouched; the new line never reads
+old state (P5's fresh start, applied again), so no compat code and no upgrade preflight.
+
+Cycle rules under this work: scoped integration runs in the inner loop, one full pass per
+slice; commit on lint + unit + scoped green, the full pass and the single cross-model round
+run after the commit on the integrated diff (nothing is pushed); fixes roll forward.
+
 ### Toolchain: pins, not channels
 
 | What | Pin | Declared in |
