@@ -396,6 +396,17 @@ release:
         echo "Error: uncommitted or untracked changes" >&2; exit 1
     fi
 
+    # THE BRANCH IS A PRE-FLIGHT QUESTION, not a late one. It used to be asked
+    # after the bump, the compile, the bundles, the badge rewrite and the
+    # changelog — so a release started on a feature branch mutated Cargo.toml,
+    # Cargo.lock, README.md, docs/index.md and CHANGELOG.md, built two bundles,
+    # and only then refused, leaving a half-mutated worktree to clean up by
+    # hand. Nothing above this line has written anything.
+    BRANCH=$(git rev-parse --abbrev-ref HEAD)
+    if [ "$BRANCH" != "{{default_branch}}" ]; then
+        echo "Error: releases must be from {{default_branch}} (currently on $BRANCH)" >&2; exit 1
+    fi
+
     # PUBLICATION RIGHTS, PROVED BEFORE ANYTHING IS IRREVERSIBLE. Now that the
     # release is built and attached from here, `gh` is a hard prerequisite
     # rather than the best-effort afterthought it was when a runner published.
@@ -492,27 +503,16 @@ release:
     RELEASE_BODY="${RELEASE_BODY:-Release $TAG}"
 
     # Commit
-    BRANCH=$(git rev-parse --abbrev-ref HEAD)
-    if [ "$BRANCH" != "{{default_branch}}" ]; then
-        echo "Error: releases must be from {{default_branch}} (currently on $BRANCH)" >&2; exit 1
-    fi
-
     git add CHANGELOG.md
     git add -u
     git diff --cached --quiet || git commit -m "chore(release): $TAG"
 
-    # Tag + push
-    git tag "$TAG"
-    git push {{GIT_REMOTE}} "$TAG"
-    git push {{GIT_REMOTE}} {{default_branch}}
-
-    # GitHub release. NOT best-effort any more: the tag is pushed, so the assets
-    # have to land, and push rights were proved in the pre-flight — a failure
-    # here is a real failure and is reported as one rather than as a warning
-    # nobody reads. The three assets are the ones `install` fetches, so a
-    # release object without them is a broken install command.
-    NOTES_FILE="$(mktemp "${TMPDIR:-/tmp}/ae-release-notes.XXXXXX")"
-    trap 'rm -f "$NOTES_FILE"' EXIT
+    # EVERYTHING THE PUBLICATION NEEDS IS PREPARED BEFORE ANYTHING IS PUSHED.
+    # A missing asset or an unwritable notes file must fail while the only state
+    # is local. The notes go beside the assets rather than into a mktemp: `dist`
+    # already exists and is writable at this point, and leaving the file there
+    # means a manual retry has the exact body this run would have published.
+    NOTES_FILE="dist/RELEASE_NOTES.md"
     printf '%s\n' "$RELEASE_BODY" > "$NOTES_FILE"
     ASSETS=(
         "dist/ae-$VERSION-darwin-arm64.tar.gz"
@@ -522,16 +522,43 @@ release:
     for asset in "${ASSETS[@]}"; do
         [ -f "$asset" ] || { echo "Error: $asset is missing — just bundles did not produce it" >&2; exit 1; }
     done
+
+    # THE REMOTE TAG IS CREATED BY THE RELEASE, NEVER PUSHED AHEAD OF IT. A
+    # `git push <tag>` that succeeds and a `gh release create` that then fails
+    # publishes a version with nothing behind it — `install` resolves the latest
+    # release, finds no SHA256SUMS, and the advertised one-liner is broken for
+    # everyone until a human notices. `gh release create --target` creates the
+    # tag object and the release in ONE API call, so the failure mode is "no
+    # remote tag" instead of "tag with no assets". The local tag is still made
+    # first: `just bump` derives the next sequence from local tags and git-cliff
+    # is asked for `--tag "$TAG"`, so it has to exist here either way.
+    #
+    # The BRANCH is pushed first because the tag has to name a commit the remote
+    # already has. If the publication then fails, main carries a release commit
+    # with no release — visible, recoverable, and the retry line is printed.
+    git tag "$TAG"
+    git push {{GIT_REMOTE}} {{default_branch}}
+    SHA=$(git rev-parse "$TAG^{commit}")
+
     # A re-run after a partial failure meets an existing release object. Upload
     # into it rather than refusing — the shape the publish job used, for the
     # same reason.
-    if gh release view "$TAG" -R "$REPO" >/dev/null 2>&1; then
-        gh release upload "$TAG" "${ASSETS[@]}" --clobber -R "$REPO"
-    else
-        gh release create "$TAG" "${ASSETS[@]}" \
-            -R "$REPO" \
-            --title "ae $VERSION" \
-            --notes-file "$NOTES_FILE"
+    publish() {
+        if gh release view "$TAG" -R "$REPO" >/dev/null 2>&1; then
+            gh release upload "$TAG" "${ASSETS[@]}" --clobber -R "$REPO"
+        else
+            gh release create "$TAG" "${ASSETS[@]}" \
+                -R "$REPO" \
+                --target "$SHA" \
+                --title "ae $VERSION" \
+                --notes-file "$NOTES_FILE"
+        fi
+    }
+    if ! publish; then
+        echo "Error: publishing $TAG failed. The commit is pushed; the tag is LOCAL only." >&2
+        echo "       Nothing is published, so nothing is broken for installers. Retry with:" >&2
+        echo "       gh release create $TAG ${ASSETS[*]} -R $REPO --target $SHA --title 'ae $VERSION' --notes-file $NOTES_FILE" >&2
+        exit 1
     fi
 
     echo "Released $TAG"
@@ -576,7 +603,10 @@ bundle version platform binary:
         got="$("$binary" --version)"
         [ "$got" = "$want" ] || { echo "Error: --version printed '$got', want '$want'" >&2; exit 1; }
     else
-        LC_ALL=C grep -qa -- "$version" "$binary" ||
+        # -F IS LOAD-BEARING. Without it the dots in a CalVer version are BRE
+        # wildcards, so `2026.9.1` matches the bytes `2026x9y1` and a wrong or
+        # corrupted foreign core passes the only proof this host can make.
+        LC_ALL=C grep -Fqa -- "$version" "$binary" ||
             { echo "Error: $binary carries no '$version' string — it is not a $version core" >&2; exit 1; }
         echo "==> $platform is foreign to this host: version proven by byte search, not by running it"
     fi

@@ -427,14 +427,23 @@ the network.
 
 **The order of `just release` is the safety property, and it is pinned by
 `tests/it/gate.rs`.** Everything that can refuse does so in the pre-flight, before a version
-file is written and long before a tag exists: a dirty tree, a `gh` account whose
-`repos/<owner>/<repo>` reports `permissions.push=false` (an account can be authenticated,
-hold the `repo` scope, and still be read-only on this repository), and a missing musl cross
-toolchain. The bundles are then built and proven BEFORE the tag, so a failed cross build
-costs a `git checkout` of two version files rather than an orphan tag with no assets behind
-it. Once the tag is pushed, `gh release create` is no longer best-effort — a failure there
-is reported as a failure, and a re-run uploads into the existing release object instead of
-refusing.
+file is written and long before a tag exists: a dirty tree, the wrong branch, a `gh` account
+whose `repos/<owner>/<repo>` reports `permissions.push=false` (an account can be
+authenticated, hold the `repo` scope, and still be read-only on this repository), and a
+missing musl cross toolchain. The bundles are then built and proven BEFORE anything is
+pushed, so a failed cross build costs a `git checkout` of two version files rather than an
+orphan tag, and the notes file and every asset are checked to exist while the only state is
+still local.
+
+**THE REMOTE TAG IS CREATED BY THE RELEASE, never pushed ahead of it.** `git push <tag>`
+followed by a `gh release create` that fails publishes a version with nothing behind it:
+`install` resolves the latest release, finds no `SHA256SUMS`, and the advertised one-liner
+is broken for everyone until a human notices. So the branch is pushed first — the tag has to
+name a commit the remote already has — and `gh release create --target <sha>` then creates
+the tag object and the release in ONE API call with the assets attached. The failure mode is
+"no remote tag" rather than "tag with no assets", the local tag is left in place, and the
+retry command is printed. A re-run that meets an existing release object uploads into it
+with `--clobber` rather than refusing. `gate.rs` refuses a `git push` of the tag outright.
 
 **`.github/workflows/release.yml` is retained but dispatch-only** (`workflow_dispatch`, no
 tag trigger). It is no longer the publisher; it is the lane where a musl binary can actually

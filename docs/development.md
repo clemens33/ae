@@ -123,20 +123,28 @@ The bump is recover-or-refuse: durable backups restore version files on a handle
 an untrappable interruption leaves `.ae-bump-recovery`, and the next bump stops until it is
 recovered with `just bump-recover`.
 
-1. Pre-flight: clean working tree; `gh` authenticated **and** `repos/<owner>/<repo>` reporting `permissions.push=true`; the musl cross compiler present; fetch tags, pull rebase.
+1. Pre-flight: clean working tree; on `main`; `gh` authenticated **and** `repos/<owner>/<repo>` reporting `permissions.push=true`; the musl cross compiler present; fetch tags, pull rebase.
 2. `just check` (shellcheck + shfmt).
 3. `just test` (the Rust suite; minutes).
 4. `just bump` updates the version — `Cargo.toml` and `Cargo.lock`, which since slice Z3 are the only files that hold one — and rewrites the README and docs/index release badges. It refuses to proceed if the pre-release badge or the obsolete checkout-install prose is still standing in either file; a real build-from-source section is not what it is looking for.
 5. `just bundles` builds both halves into `dist/` and proves them.
 6. `git-cliff` → `CHANGELOG.md` + release-body.
-7. Commit, tag, push, then `gh release create` with the three assets and the changelog section as `--notes-file`.
+7. Commit, tag locally, write the notes file and check every asset, push the branch, then `gh release create --target <sha>` with the three assets and the changelog section as `--notes-file`.
 
 **Why the order is what it is.** Everything that can refuse refuses in step 1, before a
 version file is written and long before a tag exists — an authenticated `gh` account is not
 the same thing as one that can push here, which is why the API is asked rather than the
-login trusted. The bundles are built in step 5, still before the tag, so a failed cross
-build costs a `git checkout` of two version files rather than an orphan tag with no assets
-behind it. `tests/it/gate.rs` pins that order.
+login trusted, and the branch is checked there rather than after five files have been
+rewritten. The bundles are built in step 5, still before anything is pushed.
+
+**The remote tag is created by the release, not pushed ahead of it.** A `git push <tag>`
+that lands and a `gh release create` that then fails publishes a version with nothing behind
+it: `install` resolves the latest release, finds no `SHA256SUMS`, and the install one-liner
+is broken for everyone. So step 7 pushes only the branch and lets
+`gh release create --target <sha>` create the tag object and the release in one call with
+the assets attached. If that call fails, the remote has no tag, the local one survives, and
+the retry command is printed; a re-run against an existing release uploads into it with
+`--clobber`. `tests/it/gate.rs` pins the whole order and refuses a `git push` of the tag.
 
 **What `just bundles` proves, and what it does not.** It builds `darwin-arm64` natively and
 `linux-x86_64-musl` against the Homebrew cross toolchain, both `--locked`; runs `--version`

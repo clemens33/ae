@@ -541,6 +541,11 @@ fn the_bundle_recipe_is_the_one_definition_of_a_bundle_and_both_release_legs_cal
         r#"chmod 0555 "$root/ae-core" "$root/install""#,
         r#"chmod 0444 "$root/SHA256SUMS""#,
         r#"chmod 0555 "$root""#,
+        // -F IS LOAD-BEARING on the foreign-member proof: without it the dots
+        // in a CalVer version are BRE wildcards, so `2026.9.1` matches the
+        // bytes `2026x9y1` and a wrong core passes the only check this host
+        // can make of a binary it cannot run.
+        r#"LC_ALL=C grep -Fqa -- "$version" "$binary""#,
     ] {
         assert_eq!(
             recipe.matches(pin).count(),
@@ -694,25 +699,50 @@ fn a_release_builds_both_bundles_locally_and_proves_its_rights_before_the_bump()
             .unwrap_or_else(|| panic!("the release recipe must run `{needle}`"))
     };
     let rights = step(".permissions.push");
+    let branch = step("releases must be from");
     let bump = step("just bump");
     let build = step("just bundles");
-    let tag = step("git tag");
+    let assets = step("just bundles did not produce it");
+    let push = step("git push");
     let publish = step("gh release create");
     assert!(
-        rights < bump,
-        "push rights are proved before the bump writes a version file"
+        rights < bump && branch < bump,
+        "push rights and the branch are proved before the bump writes a version file"
     );
     assert!(
-        bump < build && build < tag,
-        "both bundles are built and proven after the bump and before the tag"
+        bump < build,
+        "the bundles are built from the version the bump just wrote"
     );
     assert!(
-        tag < publish,
-        "the release object is created only once the tag exists"
+        build < assets && assets < push,
+        "the notes and every asset exist before anything is pushed"
+    );
+    assert!(
+        push < publish,
+        "the branch is pushed before the release names one of its commits"
     );
     assert!(
         release.iter().any(|line| line.contains("--notes-file")),
         "the release body reaches gh as a file, not as an argv-sized string"
+    );
+
+    // THE REMOTE TAG IS THE RELEASE'S, NOT A PUSH'S. A `git push <tag>` that
+    // lands ahead of a `gh release create` that fails publishes a version with
+    // no assets behind it — `install` resolves the latest release, finds no
+    // SHA256SUMS, and the advertised one-liner is broken for everyone. Creating
+    // the tag with `--target`, in the same API call as the release, makes the
+    // failure mode "no remote tag" instead.
+    assert!(
+        !release
+            .iter()
+            .any(|line| line.contains("git push") && line.contains("\"$TAG\"")),
+        "the tag must never be pushed ahead of the release that carries its assets"
+    );
+    assert!(
+        release
+            .iter()
+            .any(|line| line.contains("gh release create") && line.contains("--target")),
+        "`gh release create --target` is what creates the remote tag"
     );
 
     // The tag-triggered workflow is retained as a MANUAL Linux run-proof lane.
