@@ -1041,6 +1041,42 @@ pub fn current_session_args(server: &ServerId) -> Vec<String> {
     args
 }
 
+/// The arguments asking `server` for its own socket path — frozen's
+/// `tmux display-message -p '#{socket_path}'`, the probe that decides WHERE a
+/// launch actually lands.
+///
+/// No `-t`: the question is about the SERVER, not about a pane, and a target
+/// would only narrow it to whichever pane the server last touched.
+#[must_use]
+pub fn socket_path_args(server: &ServerId) -> Vec<String> {
+    let mut args = server_args(server);
+    args.extend(["display-message", "-p", "#{socket_path}"].map(ToOwned::to_owned));
+    args
+}
+
+/// The arguments asking `server` for its own process id — the other half of the
+/// round trip that PROVES a relative socket path.
+#[must_use]
+pub fn server_pid_args(server: &ServerId) -> Vec<String> {
+    let mut args = server_args(server);
+    args.extend(["display-message", "-p", "#{pid}"].map(ToOwned::to_owned));
+    args
+}
+
+/// The single value a `display-message -p` answer carries: its first line,
+/// trimmed, and only when the query SUCCEEDED.
+///
+/// SC-017k's rule one layer down — a failed query has no answer, and an empty
+/// answer from a successful one is not a value either.
+#[must_use]
+pub fn interpret_display_value(succeeded: bool, stdout: &str) -> Option<String> {
+    if !succeeded {
+        return None;
+    }
+    let value = stdout.lines().next().unwrap_or_default().trim();
+    (!value.is_empty()).then(|| value.to_owned())
+}
+
 /// Whether `tty` is one of `pane_ttys`, comparing with `/dev/` stripped from
 /// BOTH sides.
 ///

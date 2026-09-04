@@ -1,9 +1,24 @@
-//! The PREAMBLE entry, black-box: the whole surface `ae-glue`'s `case`
-//! statement used to answer.
+//! The public entry, black-box: the whole surface `ae-glue`'s `case` statement
+//! used to answer, and since slice Z3 the whole surface `ae-entry` answered too.
 //!
-//! The subject is the real binary, because the subject IS argv handling: what
-//! the wrapper hands over, which word routes where, what a cut word does
-//! instead of becoming a session name, and what a first run leaves behind.
+//! The subject is the real binary, because the subject IS what a human typed at
+//! `ae`: which environment DOOR supplies which fact, which word routes where,
+//! what a cut word does instead of becoming a session name, and what a first run
+//! leaves behind.
+//!
+//! THERE IS NO PREAMBLE TO SPELL ANY MORE. Every flag the wrapper used to hand
+//! over is an environment variable this rig sets, or the working directory it
+//! runs in — which is exactly the contract the product now has with a shell.
+//!
+//! ONE DOOR IS NOT BLACK-BOXED HERE, and the reason is that it has no black-box
+//! surface: `TMUX_PANE` only changes an answer when it names a pane that is a
+//! REAL ae agent's on the resolved server, and every refusal short of that is
+//! the same sentence with the door set or unset (measured). Planting one costs
+//! a full launch with an agent in it, which is the bash suite's job. What is
+//! pinned here instead is the half that can be: the router appends `--pane` for
+//! `stop` and `watchdog` and only when the caller named none
+//! (`src/entry.rs`'s `the_pane_is_appended_only_when_the_caller_named_none`),
+//! and the read itself is one documented door in `src/doors.rs`.
 
 #![allow(
     clippy::disallowed_methods,
@@ -49,36 +64,38 @@ impl Rig {
         self.home.join("sessions")
     }
 
-    /// The preamble this rig implies, as the wrapper would spell it.
-    fn preamble(&self) -> Vec<String> {
-        vec![
-            "--home".to_owned(),
-            self.home.display().to_string(),
-            "--cwd".to_owned(),
-            self.project.display().to_string(),
-            "--global".to_owned(),
-            self.config().display().to_string(),
-            "--bash-major".to_owned(),
-            "5".to_owned(),
-            "--no-attach".to_owned(),
-            "--no-autostart".to_owned(),
-        ]
-    }
-
-    /// Run the product with this rig's preamble, then `--`, then `argv`.
+    /// Run the product as a shell would: this rig's doors in the environment,
+    /// its project as the working directory, and `argv` verbatim.
+    ///
+    /// The CHECKOUT shape, which is what a test binary under `target/` is: it
+    /// honours `AE_HOME`, `CONFIG_FILE` and the server pair, so the rig can
+    /// isolate every one of them.
     fn run(&self, argv: &[&str]) -> (Option<i32>, String, String) {
-        self.run_with(&self.preamble(), argv)
+        self.run_on(None, argv)
     }
 
-    /// The same, with an arbitrary preamble — what the parse arms need.
-    fn run_with(&self, preamble: &[String], argv: &[&str]) -> (Option<i32>, String, String) {
-        let out = ae()
+    /// The same, with the tmux server pair declared — the door the launch needs
+    /// so it lands on this rig's own server and not the developer's.
+    fn run_on(&self, server: Option<&Path>, argv: &[&str]) -> (Option<i32>, String, String) {
+        let mut command = ae();
+        command
             .env_remove("TMUX")
             .env_remove("TMUX_PANE")
             .env("AE_HOME", &self.home)
+            .env("CONFIG_FILE", self.config())
+            .env("AE_NO_AUTOSTART", "1")
             .env("TMUX_TMPDIR", &self.scratch)
-            .args(preamble)
-            .arg("--")
+            .current_dir(&self.project);
+        if let Some(socket) = server {
+            command
+                .env("AE_TMUX_SERVER_KIND", "socket")
+                .env("AE_TMUX_SERVER", socket);
+        } else {
+            command
+                .env_remove("AE_TMUX_SERVER_KIND")
+                .env_remove("AE_TMUX_SERVER");
+        }
+        let out = command
             .args(argv)
             .output()
             .unwrap_or_else(|why| panic!("the ae binary should run: {why}"));
@@ -120,87 +137,144 @@ fn skip() -> bool {
     !present
 }
 
-fn words(list: &[&str]) -> Vec<String> {
-    list.iter().map(|word| (*word).to_owned()).collect()
-}
-
 // ---------------------------------------------------------------------------
 // (1) the preamble parse
 // ---------------------------------------------------------------------------
 
-/// The wrapper's contract, end to end: the facts before `--`, the user's argv
-/// after it, and an entry that still answers.
+/// The entry's contract, end to end: the facts come from the environment, the
+/// argv is the caller's alone, and an entry still answers.
 #[test]
-fn the_preamble_carries_the_wrappers_facts_and_the_user_argv_follows_it() {
+fn the_doors_carry_the_facts_and_the_argv_is_the_users_alone() {
     let rig = Rig::new("carry");
     let (code, stdout, stderr) = rig.run(&["version"]);
     assert_eq!(code, Some(0), "stderr: {stderr}");
     assert_eq!(stdout, format!("{}\n", ae::version_line()));
-    // The preamble alone writes NOTHING: only a launch seeds a config.
+    // The doors alone write NOTHING: only a launch seeds a config.
     assert!(!rig.config().exists(), "a version query created state");
 }
 
-/// A preamble that is present and wrong is a usage error, never a launch.
+/// `version` answers AHEAD of every gate, including the doors themselves.
 ///
-/// The wrapper is the only caller, so a malformed one is a broken install —
-/// answering it with a session named after one of its words would hide exactly
-/// the failure that needs to be loud.
+/// It is how a broken install is diagnosed, so it may not depend on anything an
+/// install can break: not the state root, not a config, not tmux.
 #[test]
-fn a_missing_home_is_a_usage_error() {
-    let rig = Rig::new("nohome");
-    let (code, stdout, stderr) = rig.run_with(
-        &words(&["--cwd", &rig.project.display().to_string()]),
-        &["list"],
+fn version_answers_with_no_environment_at_all() {
+    for word in ["version", "--version", "-V"] {
+        let out = ae()
+            .env_clear()
+            .arg(word)
+            .output()
+            .unwrap_or_else(|why| panic!("the ae binary should run: {why}"));
+        assert_eq!(out.status.code(), Some(0), "{word}");
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            format!("{}\n", ae::version_line()),
+            "{word}"
+        );
+        assert!(out.stderr.is_empty(), "{word}");
+    }
+}
+
+/// THE `AE_HOME` DOOR relocates every piece of state, and `CONFIG_FILE` names
+/// the global config independently of it. Both are CHECKOUT-shape doors.
+///
+/// The two are asserted through different surfaces because they REACH
+/// different ones: `AE_HOME` is the state root every command derives from, so
+/// `doctor` shows it; `CONFIG_FILE` is the global config a LAUNCH reads and
+/// seeds, and doctor reports the default beside its own root rather than the
+/// launch's file (a gap that predates this slice — nothing appends `--global`
+/// to doctor's argv, and nothing did through the wrapper either).
+#[test]
+fn the_home_and_config_doors_are_honoured_by_a_checkout_build() {
+    let rig = Rig::new("homedoor");
+    assert!(std::fs::create_dir_all(&rig.home).is_ok(), "an ae home");
+    let (_, stdout, stderr) = rig.run(&["doctor"]);
+    let report = format!("{stdout}{stderr}");
+    assert!(
+        report.contains(&rig.sessions().display().to_string()),
+        "AE_HOME names the state root: {report}"
     );
-    assert_eq!(code, Some(2), "stdout: {stdout}\nstderr: {stderr}");
-    assert!(stderr.contains("--home and --cwd are required"), "{stderr}");
-    assert!(stderr.contains("Usage: ae-core --home"), "{stderr}");
+
+    if skip() {
+        return;
+    }
+    // CONFIG_FILE, through the surface that reads it: a first launch SEEDS the
+    // global config, and it seeds the file this door names rather than the
+    // default beside the home.
+    let elsewhere = rig.scratch.join("elsewhere.config");
+    let sock = rig.sock.clone();
+    let mut command = ae();
+    command
+        .env_remove("TMUX")
+        .env_remove("TMUX_PANE")
+        .env("AE_HOME", &rig.home)
+        .env("CONFIG_FILE", &elsewhere)
+        .env("AE_NO_AUTOSTART", "1")
+        .env("TMUX_TMPDIR", &rig.scratch)
+        .env("AE_TMUX_SERVER_KIND", "socket")
+        .env("AE_TMUX_SERVER", &sock)
+        .current_dir(&rig.project);
+    let out = command
+        .args(["--local", "cfgdoor"])
+        .output()
+        .unwrap_or_else(|why| panic!("the ae binary should run: {why}"));
+    assert!(
+        elsewhere.exists(),
+        "the launch seeded the config CONFIG_FILE named: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        !rig.config().exists(),
+        "and never the default beside the home"
+    );
+}
+
+/// A MACHINE THAT CANNOT SAY WHERE ITS STATE LIVES is refused before anything —
+/// the one door with no default behind it.
+#[test]
+fn no_home_and_no_ae_home_is_the_one_refusal_the_doors_can_make() {
+    let out = ae()
+        .env_clear()
+        .arg("list")
+        .output()
+        .unwrap_or_else(|why| panic!("the ae binary should run: {why}"));
+    assert_eq!(out.status.code(), Some(1), "{:?}", out.status);
+    assert!(out.stdout.is_empty(), "a refusal must not reach stdout");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains(ae::NO_STATE_ROOT),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// THE FROZEN PREAMBLE IS GONE, and its flags are ordinary argv now.
+///
+/// This is the one shape that must NOT be quietly tolerated: `--home /x` used
+/// to be a fact the wrapper spoke, and a compat arm accepting it would leave
+/// two ways to say where ae's state lives — the exact second answer slice Z1
+/// removed from bash and slice Z3 removes from the flag surface.
+#[test]
+fn a_preamble_flag_is_no_longer_a_flag_ae_answers_to() {
+    let rig = Rig::new("nopreamble");
+    let (code, stdout, stderr) = rig.run(&["--home", "/x", "--cwd", "/y", "--", "list"]);
+    assert_ne!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        !stderr.contains("Usage: ae-core --home"),
+        "the preamble usage line is gone with the parse: {stderr}"
+    );
     assert!(
         stdout.is_empty(),
         "a refusal must not reach stdout: {stdout}"
     );
-    assert!(!rig.sessions().exists(), "a refused preamble built state");
+    assert!(!rig.sessions().exists(), "a refused argv built state");
 }
 
-/// The same for the other half of the pair, and for a flag with no value.
+/// NOTHING CHANGES FOR AN INTERNAL ENTRY CALLED BARE. Every session helper is a
+/// link to this binary and reaches the core with no ambient fact at all, so the
+/// entry grammar must keep parsing exactly as it did.
 #[test]
-fn a_missing_cwd_or_a_dangling_flag_is_a_usage_error() {
-    let rig = Rig::new("nocwd");
-    let (code, _, stderr) = rig.run_with(
-        &words(&["--home", &rig.home.display().to_string()]),
-        &["list"],
-    );
-    assert_eq!(code, Some(2), "{stderr}");
-    assert!(stderr.contains("--home and --cwd are required"), "{stderr}");
-
-    let out = ae()
-        .env_remove("TMUX")
-        .args(["--home"])
-        .output()
-        .unwrap_or_else(|why| panic!("the ae binary should run: {why}"));
-    assert_eq!(out.status.code(), Some(2));
-    let text = String::from_utf8_lossy(&out.stderr);
-    assert!(text.contains("offending word: --home"), "{text}");
-}
-
-/// An unknown flag INSIDE the preamble is refused with the word that caused it.
-#[test]
-fn an_unknown_preamble_flag_names_itself() {
-    let rig = Rig::new("unknownflag");
-    let mut preamble = rig.preamble();
-    preamble.push("--frobnicate".to_owned());
-    preamble.push("x".to_owned());
-    let (code, _, stderr) = rig.run_with(&preamble, &["list"]);
-    assert_eq!(code, Some(2), "{stderr}");
-    assert!(stderr.contains("offending word: --frobnicate"), "{stderr}");
-}
-
-/// NOTHING CHANGES FOR AN ENTRY CALLED BARE. Every session helper shim execs
-/// the core directly, with no preamble at all, and must keep parsing exactly as
-/// it did.
-#[test]
-fn an_entry_invoked_without_a_preamble_keeps_its_own_grammar() {
-    let rig = Rig::new("nopreamble");
+fn an_internal_entry_keeps_its_own_grammar_and_pays_for_no_door() {
+    let rig = Rig::new("internal");
     let dir = rig.sessions().join("s1");
     assert!(std::fs::create_dir_all(&dir).is_ok(), "a session dir");
     assert!(
@@ -208,18 +282,69 @@ fn an_entry_invoked_without_a_preamble_keeps_its_own_grammar() {
         "meta"
     );
     let out = ae()
-        .env_remove("TMUX")
-        .env_remove("TMUX_PANE")
+        .env_clear()
         .arg("_requests")
         .arg(&dir)
         .arg("all")
         .output()
         .unwrap_or_else(|why| panic!("the ae binary should run: {why}"));
-    assert_ne!(
+    // env_clear is the assertion: an internal entry carries its own operands,
+    // so it must answer with no HOME, no AE_HOME and no PATH to find tmux on.
+    assert_eq!(
         out.status.code(),
-        Some(2),
-        "a bare helper entry must not be read as a preamble: {}",
+        Some(0),
+        "an internal entry must not need a door: {}",
         String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// An unserved `_` word FAILS CLOSED rather than becoming a session named after
+/// ae's own namespace.
+#[test]
+fn an_unserved_internal_word_is_refused_by_name() {
+    let rig = Rig::new("unserved");
+    let (code, stdout, stderr) = rig.run(&["_recover-pending"]);
+    assert_eq!(code, Some(2), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(stderr.contains("unknown internal command"), "{stderr}");
+    assert!(stderr.contains("_recover-pending"), "{stderr}");
+    assert!(!rig.sessions().exists(), "a refused word built state");
+}
+
+/// THE SERVER PAIR IS READ BY *SET*, NOT BY NONEMPTY, and a pair that cannot be
+/// typed is a refusal rather than a fallback.
+///
+/// `AE_TMUX_SERVER_KIND=ambiguous AE_TMUX_SERVER=` is exactly the shape the
+/// socket probe mints for a relative path it could not prove. A nonempty test
+/// read that set-empty half as an absent one: the pair was dropped, the AMBIENT
+/// server was resolved, and a launch landed on a server nobody asked for — the
+/// one outcome `ambiguous` exists to prevent. This is the whole rule in one
+/// invocation, and it needs no tmux to state it.
+#[test]
+fn an_untypeable_server_pair_refuses_and_never_falls_back() {
+    let rig = Rig::new("ambiguous");
+    let mut command = ae();
+    command
+        .env_remove("TMUX")
+        .env_remove("TMUX_PANE")
+        .env("AE_HOME", &rig.home)
+        .env("CONFIG_FILE", rig.config())
+        .env("AE_TMUX_SERVER_KIND", "ambiguous")
+        .env("AE_TMUX_SERVER", "")
+        .current_dir(&rig.project);
+    let out = command
+        .args(["--local", "nowhere"])
+        .output()
+        .unwrap_or_else(|why| panic!("the ae binary should run: {why}"));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(2), "{stderr}");
+    assert!(stderr.contains("not a tmux server kind"), "{stderr}");
+    assert!(
+        stderr.contains("will not fall back to the ambient server"),
+        "{stderr}"
+    );
+    assert!(
+        !rig.sessions().join("nowhere").exists(),
+        "a refused pair built state"
     );
 }
 
@@ -245,15 +370,14 @@ fn a_launch_candidate_becomes_a_session_from_the_preamble_facts() {
         .is_ok(),
         "a config"
     );
-    let mut preamble = rig.preamble();
-    preamble.extend(words(&[
-        "--server-kind",
-        "socket",
-        "--server",
-        &rig.sock.display().to_string(),
-    ]));
-    let (code, stdout, stderr) = rig.run_with(&preamble, &["--local", "entryone"]);
-    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let sock = rig.sock.clone();
+    let (code, stdout, stderr) = rig.run_on(Some(&sock), &["--local", "entryone"]);
+    // The ATTACH is what decides the code, and it cannot succeed here: `ae
+    // <name>` always attaches — the wrapper passed `--attach` unconditionally
+    // and there is no door that says otherwise — and a test process has no
+    // terminal to hand to tmux. The session is what this row is about, and it
+    // is built before the attach is even attempted.
+    assert_ne!(code, Some(2), "not a usage error: {stdout}\n{stderr}");
     assert!(
         rig.sessions().join("entryone").join("meta").exists(),
         "{stdout}"
@@ -274,18 +398,12 @@ fn no_argv_at_all_launches_rather_than_printing_help() {
         return;
     }
     let rig = Rig::new("bare");
-    let mut preamble = rig.preamble();
-    preamble.extend(words(&[
-        "--server-kind",
-        "socket",
-        "--server",
-        &rig.sock.display().to_string(),
-    ]));
-    let (code, stdout, stderr) = rig.run_with(&preamble, &[]);
-    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let sock = rig.sock.clone();
+    let (code, stdout, stderr) = rig.run_on(Some(&sock), &[]);
+    assert_ne!(code, Some(2), "not a usage error: {stdout}\n{stderr}");
     // Help would have printed the command list and written nothing. This ran
-    // the launch prelude and DERIVED a name from the preamble's cwd, which is
-    // the whole difference the preamble makes to an empty argv.
+    // the launch prelude and DERIVED a name from the WORKING DIRECTORY, which
+    // is the whole difference between `ae` and the core's own empty argv.
     assert!(!stdout.contains("Usage:"), "help was printed: {stdout}");
     assert!(rig.config().exists(), "the launch prelude did not run");
     let started: Vec<String> = std::fs::read_dir(rig.sessions())
@@ -299,7 +417,7 @@ fn no_argv_at_all_launches_rather_than_printing_help() {
     assert_eq!(started.len(), 1, "one derived session: {started:?}");
     assert!(
         started[0].contains("project"),
-        "the name is derived from the preamble cwd: {started:?}"
+        "the name is derived from the cwd door: {started:?}"
     );
 }
 
@@ -421,16 +539,22 @@ fn list_help_is_the_ratified_filter_text_on_stderr() {
 #[test]
 fn the_first_run_seeds_the_config_only_after_the_dependency_check() {
     let rig = Rig::new("seed");
-    // A bash the gate REFUSES. Everything else about the invocation is a launch.
-    let mut refused = rig.preamble();
-    for word in &mut refused {
-        if word == "5" {
-            "3".clone_into(word);
-        }
-    }
-    let (code, _, stderr) = rig.run_with(&refused, &["seedme"]);
-    assert_eq!(code, Some(1), "{stderr}");
-    assert!(stderr.contains("ae requires bash >= 4.0"), "{stderr}");
+    // A machine with NO TMUX. That is the whole dependency gate now — the bash
+    // row went with `ae-entry`, which is the interpreter it was about — and it
+    // is still the thing that must refuse before the first write.
+    let out = ae()
+        .env_remove("TMUX")
+        .env_remove("TMUX_PANE")
+        .env("AE_HOME", &rig.home)
+        .env("CONFIG_FILE", rig.config())
+        .env("PATH", "/nonexistent")
+        .current_dir(&rig.project)
+        .arg("seedme")
+        .output()
+        .unwrap_or_else(|why| panic!("the ae binary should run: {why}"));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "{stderr}");
+    assert!(stderr.contains("tmux"), "{stderr}");
     assert!(
         !rig.config().exists(),
         "the config was seeded before the gate refused"
@@ -578,25 +702,18 @@ fn the_human_words_reach_the_core_entries_behind_them() {
 /// cannot see, since probing `bash --version` would report whatever is first on
 /// PATH rather than the interpreter ae re-exec'd into.
 #[test]
-fn doctor_reports_the_bash_the_wrapper_named() {
+fn doctor_names_the_binary_answering_and_no_interpreter() {
     let rig = Rig::new("doctor");
     let (_, stdout, stderr) = rig.run(&["doctor"]);
+    let report = format!("{stdout}{stderr}");
+    // The row that replaced it: WHICH core answered. A checkout build is
+    // writable by construction, so the deviation is not claimed here — that
+    // warning belongs to a published version directory, and `shape` decides
+    // which of the two this is.
+    assert!(report.contains("core "), "no core row:\n{report}");
     assert!(
-        format!("{stdout}{stderr}").contains("bash 5"),
-        "the preamble's --bash-major did not reach doctor:\n{stdout}{stderr}"
-    );
-    // And a different value reaches it as that value, so the row is the
-    // wrapper's answer rather than anything the core measured for itself.
-    let mut older = rig.preamble();
-    for word in &mut older {
-        if word == "5" {
-            "3".clone_into(word);
-        }
-    }
-    let (_, stdout, stderr) = rig.run_with(&older, &["doctor"]);
-    assert!(
-        format!("{stdout}{stderr}").contains("bash 3 (ae needs bash >= 4)"),
-        "{stdout}{stderr}"
+        !report.contains("bash "),
+        "ae ships no interpreter, so no row may report one:\n{report}"
     );
 }
 
@@ -626,4 +743,121 @@ fn archive_preview_outside_a_session_asks_for_a_name() {
 fn the_sessions_root_is_derived_from_the_preamble_home() {
     let rig = Rig::new("root");
     assert_eq!(rig.sessions(), Path::new(&rig.home).join("sessions"));
+}
+
+// ---------------------------------------------------------------------------
+// (5) the remaining doors, each through the surface that consumes it
+// ---------------------------------------------------------------------------
+
+/// The SERVER PAIR decides which tmux server a launch lands on, and the session
+/// records the one it was handed rather than asking tmux afterwards.
+#[test]
+fn the_server_pair_door_decides_where_a_launch_lands() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::new("pairdoor");
+    assert!(std::fs::create_dir_all(&rig.home).is_ok(), "an ae home");
+    assert!(
+        std::fs::write(
+            rig.config(),
+            "[profiles]\nidle = \"sleep 600\"\n\n[roster]\nlead = idle\n\n\
+             [workspace]\nmain = lead\nlayout = vertical\nwatchdog = false\n",
+        )
+        .is_ok(),
+        "a config"
+    );
+    let sock = rig.sock.clone();
+    let (_, stdout, stderr) = rig.run_on(Some(&sock), &["--local", "pairone"]);
+    let meta = rig.sessions().join("pairone").join("meta");
+    let Ok(text) = std::fs::read_to_string(&meta) else {
+        panic!("a meta at {}: {stdout}{stderr}", meta.display());
+    };
+    assert!(
+        text.contains(&format!("tmux_server={}", sock.display())),
+        "the pair the door declared is the pair the session records: {text}"
+    );
+    assert!(text.contains("tmux_server_kind=socket"), "{text}");
+}
+
+/// The CWD door: a launch with no name derives one from the working directory,
+/// and `$PWD` is honoured only when it names the same directory.
+///
+/// `$PWD` is the LOGICAL spelling — what keeps `/tmp` from becoming
+/// `/private/tmp` on macOS — but it is an ordinary variable a program that
+/// `chdir`s without updating it leaves stale. A lying one must not decide where
+/// ae thinks it is.
+#[test]
+fn the_cwd_door_prefers_the_logical_pwd_only_when_it_agrees() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::new("cwddoor");
+    let sock = rig.sock.clone();
+    let mut command = ae();
+    command
+        .env_remove("TMUX")
+        .env_remove("TMUX_PANE")
+        .env("AE_HOME", &rig.home)
+        .env("CONFIG_FILE", rig.config())
+        .env("AE_NO_AUTOSTART", "1")
+        .env("TMUX_TMPDIR", &rig.scratch)
+        .env("AE_TMUX_SERVER_KIND", "socket")
+        .env("AE_TMUX_SERVER", &sock)
+        // A PWD that names a real directory this process is NOT in.
+        .env("PWD", "/")
+        .current_dir(&rig.project);
+    let out = command
+        .output()
+        .unwrap_or_else(|why| panic!("the ae binary should run: {why}"));
+    let started: Vec<String> = std::fs::read_dir(rig.sessions())
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| !name.starts_with(".lifecycle."))
+        .collect();
+    assert_eq!(
+        started.len(),
+        1,
+        "one derived session: {started:?} ({})",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        started[0].contains("project"),
+        "the stale PWD did not decide where ae thinks it is: {started:?}"
+    );
+}
+
+/// The `AE_NO_AUTOSTART` door: `=1` starts NEITHER companion, however the config
+/// asks.
+#[test]
+fn the_no_autostart_door_starts_neither_companion() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::new("autostart");
+    assert!(std::fs::create_dir_all(&rig.home).is_ok(), "an ae home");
+    assert!(
+        std::fs::write(
+            rig.config(),
+            "[profiles]\nidle = \"sleep 600\"\n\n[roster]\nlead = idle\n\n\
+             [workspace]\nmain = lead\nlayout = vertical\nwatchdog = true\n",
+        )
+        .is_ok(),
+        "a config that ASKS for the watchdog"
+    );
+    let sock = rig.sock.clone();
+    // `run_on` sets AE_NO_AUTOSTART=1.
+    let (_, stdout, stderr) = rig.run_on(Some(&sock), &["--local", "quiet"]);
+    assert!(
+        rig.sessions().join("quiet").join("meta").exists(),
+        "the session was built: {stdout}{stderr}"
+    );
+    let (ok, windows) = rig.tmux(&["list-windows", "-t", "quiet", "-F", "#{window_name}"]);
+    assert!(ok, "{windows}");
+    assert!(
+        !windows.lines().any(|line| line.contains("watchdog")),
+        "the door suppressed the companion the config asked for: {windows}"
+    );
 }

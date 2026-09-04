@@ -317,6 +317,15 @@ fn spawn<A: AsRef<std::ffi::OsStr>>(
     let mut command = std::process::Command::new(program);
     command.args(args);
     command.envs(envs.iter().copied());
+    // B42, ported from the wrapper's pre-exec `unset`: `AE_VERSION` is the
+    // TARGET PIN of `ae upgrade` and nothing else's input. Left in place it
+    // would be inherited by the tmux server a launch creates, and every `ae`
+    // run from inside that session would then upgrade to a version the operator
+    // pinned once, months ago. The core cannot unset a variable in its own
+    // process — `std::env::remove_var` is `unsafe` under edition 2024 and
+    // `unsafe_code` is forbidden — so the scope is enforced at the one door
+    // every child leaves through.
+    command.env_remove("AE_VERSION");
     if streams == Streams::InheritStderr {
         command.stderr(std::process::Stdio::inherit());
     }
@@ -734,6 +743,34 @@ pub fn observe_current_session(server: &ServerId) -> Option<String> {
     }
     let (succeeded, stdout) = run(PROGRAM, &tmux::current_session_args(server));
     tmux::interpret_session_option(succeeded, &stdout)
+}
+
+/// The socket path `server` names for itself, or `None` when it did not answer.
+///
+/// The first half of frozen's `resolve_launch_tmux_server`: ae may not ask
+/// "which server am I on" at record time, so it asks the server itself while it
+/// can still be reached.
+#[must_use]
+pub fn observe_socket_path(server: &ServerId) -> Option<String> {
+    if !addressable(server) {
+        return None;
+    }
+    let (succeeded, stdout) = run(PROGRAM, &tmux::socket_path_args(server));
+    tmux::interpret_display_value(succeeded, &stdout)
+}
+
+/// The process id `server` reports, or `None` when it did not answer.
+///
+/// Used ONLY to prove a relative socket path: the candidate resolved from the
+/// caller's working directory must be the SAME server, and identical pids are
+/// what says so.
+#[must_use]
+pub fn observe_server_pid(server: &ServerId) -> Option<String> {
+    if !addressable(server) {
+        return None;
+    }
+    let (succeeded, stdout) = run(PROGRAM, &tmux::server_pid_args(server));
+    tmux::interpret_display_value(succeeded, &stdout)
 }
 
 /// The ttys of every pane on `server`, or `None` when it did not answer.

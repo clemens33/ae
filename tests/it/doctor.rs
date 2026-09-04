@@ -293,16 +293,20 @@ fn shims_render_refuses_a_directory_that_is_not_there() {
 }
 
 #[test]
-fn check_deps_refuses_an_old_bash_and_passes_a_current_one() {
+fn check_deps_takes_no_argument_and_passes_on_a_machine_with_tmux() {
+    // `--bash-major` went with `ae-entry` in slice Z3: ae ships no interpreter,
+    // so there is no version of one to supply and none to refuse on. What the
+    // gate still does — refuse a machine with no tmux before any side effect —
+    // is unchanged.
     let rig = Rig::new("deps");
-    let (code, _, stderr) = rig.run(&[ae::cli::CHECK_DEPS, "--bash-major", "3"]);
-    assert_eq!(code, Some(1));
-    assert!(stderr.contains("bash >= 4.0"), "{stderr}");
+    let (code, _, stderr) = rig.run(&[ae::cli::CHECK_DEPS, "--bash-major", "5"]);
+    assert_eq!(code, Some(2), "a flag nothing supplies is a usage error");
+    assert!(stderr.contains("Usage: _check-deps"), "{stderr}");
 
     if skip() {
         return;
     }
-    let (code, _, stderr) = rig.run(&[ae::cli::CHECK_DEPS, "--bash-major", "5"]);
+    let (code, _, stderr) = rig.run(&[ae::cli::CHECK_DEPS]);
     assert_eq!(code, Some(0), "tmux is present: {stderr}");
 }
 

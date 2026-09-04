@@ -744,6 +744,19 @@ pub enum Request {
     LaunchCandidate(String),
 }
 
+/// Whether the core serves `word` as an entry of its own.
+///
+/// Asked of ONE word, and answered by [`Request::parse`] itself rather than by
+/// a second list beside it: a served word with no operands answers
+/// [`Request::MissingOperand`], and only a word nothing serves falls through to
+/// [`Request::LaunchCandidate`]. A hand-written table here would be a second
+/// definition of the entry set, free to drift from the parse.
+#[must_use]
+pub fn serves(word: &str) -> bool {
+    let argv = [word.to_owned()];
+    !matches!(Request::parse(&argv), Request::LaunchCandidate(_))
+}
+
 impl Request {
     /// Classify `args` — argv WITHOUT the program name.
     ///

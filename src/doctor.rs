@@ -12,6 +12,12 @@
 //! under bash 3.2, locking is the core's own `flock(2)`, and there is no shim
 //! layer to name. They are dropped rather than reported as permanently OK.
 //!
+//! Slice Z3 took the last one: `ae-entry` is deleted, so there is no
+//! interpreter in the product at all and nothing left to report a version of.
+//! What arrived in its place is the row that matters now — whether the
+//! published core is still READ-ONLY, because every session helper is a symlink
+//! to it and a writable target is one redirection away from being truncated.
+//!
 //! What is kept is what the report is FOR: the two hard dependencies (`tmux`,
 //! `git`), whether the config parses and names a startup roster whose profiles
 //! resolve to real executables, whether the state root's sessions are coherent,
@@ -31,13 +37,13 @@ use std::path::{Path, PathBuf};
 use crate::state::{EXIT_FAILED, EXIT_USAGE};
 
 /// The frozen usage line, quoted verbatim by every refusal that raises it.
-pub const USAGE: &str = "Usage: ae doctor [--refresh [all|<session>]] [--bash-major <n>]";
+pub const USAGE: &str = "Usage: ae doctor [--refresh [all|<session>]]";
 
 /// The `_shims-render` usage line.
 pub const SHIMS_USAGE: &str = "Usage: _shims-render <session-dir>";
 
 /// The `_check-deps` usage line.
-pub const CHECK_DEPS_USAGE: &str = "Usage: _check-deps [--bash-major <n>]";
+pub const CHECK_DEPS_USAGE: &str = "Usage: _check-deps";
 
 /// The frozen `check_deps` refusal for a missing tmux.
 pub const NO_TMUX: &str =
@@ -191,12 +197,24 @@ pub struct ProfileFacts {
 pub struct Facts {
     /// The version of the binary answering.
     pub version: String,
-    /// The binary answering — the core the glue resolved and exec'd, so this
-    /// is the resolved core path the operator wants to see.
+    /// The binary answering — `current_exe()`, which since slice Z3 IS the
+    /// public `ae`, so this is the resolved core path the operator wants to see.
     pub core: Option<PathBuf>,
-    /// The major version of the bash the glue runs under, when the glue said
-    /// (`--bash-major <n>`); the core cannot see it for itself.
-    pub bash_major: Option<u32>,
+    /// Whether that binary is WRITABLE. The installer publishes it 0555, and
+    /// the reason is a live hazard rather than hygiene: every session helper is
+    /// a symlink to it, and `>`, `chmod` and `sed -i` all FOLLOW a symlink — so
+    /// a writable core is one redirection away from being truncated by
+    /// something that meant to replace a helper. `None` when it could not be
+    /// classified at all.
+    pub core_writable: Option<bool>,
+    /// Whether this binary was PUBLISHED by the installer — the shape that
+    /// makes a writable core a deviation rather than the normal state.
+    ///
+    /// A checkout build is writable by construction: `cargo build` rewrites it.
+    /// Warning about that on every run would train an operator to skip the row
+    /// that matters, so the deviation is only claimed where there is a
+    /// published mode to deviate FROM.
+    pub core_published: bool,
     /// `tmux`, resolved on `PATH`.
     pub tmux: Option<PathBuf>,
     /// `git`, resolved on `PATH`.
@@ -233,18 +251,17 @@ pub fn report(facts: &Facts) -> Report {
 /// The rows about the INSTALL: the binary, its dependencies, its config.
 fn install_rows(facts: &Facts, out: &mut Report) {
     out.push(Level::Ok, "ae", &format!("version {}", facts.version));
-    match &facts.core {
-        Some(path) => out.push(Level::Ok, "core", &path.display().to_string()),
-        None => out.push(Level::Warn, "core", "this binary cannot name its own path"),
-    }
-    match facts.bash_major {
-        Some(major) if major >= 4 => out.push(Level::Ok, "bash", &format!("bash {major}")),
-        Some(major) => out.push(
-            Level::Fail,
-            "bash",
-            &format!("bash {major} (ae needs bash >= 4)"),
+    match (&facts.core, facts.core_writable.filter(|_| facts.core_published)) {
+        (Some(path), Some(true)) => out.push(
+            Level::Warn,
+            "core",
+            &format!(
+                "{} is writable — the installer publishes it read-only (0555), and every session helper is a symlink to it, so one stray redirection truncates the binary every session on this machine is bound to",
+                path.display()
+            ),
         ),
-        None => {}
+        (Some(path), _) => out.push(Level::Ok, "core", &path.display().to_string()),
+        (None, _) => out.push(Level::Warn, "core", "this binary cannot name its own path"),
     }
 
     for (label, found) in [("tmux", &facts.tmux), ("git", &facts.git)] {
@@ -457,6 +474,22 @@ pub fn resolve_on_path(program: &str) -> Option<PathBuf> {
         .find(|candidate| is_executable_file(candidate))
 }
 
+/// Whether anyone may WRITE `path` — `None` when it cannot be classified.
+///
+/// Any write bit, not the caller's: the published mode is 0555, so a set bit is
+/// a deviation from what `install` wrote whoever it belongs to.
+fn is_writable(path: &Path) -> Option<bool> {
+    use std::os::unix::fs::PermissionsExt as _;
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: doctor reports whether the published core is still read-only, which is a fact about the file's mode — see clippy.toml"
+    )]
+    let probe = std::fs::symlink_metadata(path);
+    probe
+        .ok()
+        .map(|meta| meta.permissions().mode() & 0o222 != 0)
+}
+
 /// Whether `path` is a file anyone may execute.
 fn is_executable_file(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt as _;
@@ -474,12 +507,7 @@ fn is_executable_file(path: &Path) -> bool {
 /// hands them in exactly as it does for a launch, because the core does not
 /// read the environment to find them.
 #[must_use]
-pub fn gather(
-    root: &Path,
-    global: Option<&Path>,
-    local: Option<&Path>,
-    bash_major: Option<u32>,
-) -> Facts {
+pub fn gather(root: &Path, global: Option<&Path>, local: Option<&Path>) -> Facts {
     let roots = crate::inventory::Roots::under(root);
     let config = global.map_or_else(|| root.join("config"), Path::to_path_buf);
     let read = crate::config::read_identity(Some(&config), local);
@@ -508,10 +536,15 @@ pub fn gather(
         .collect();
     profiles.sort_by(|left, right| left.profile.cmp(&right.profile));
 
+    let core = crate::shape::resolved_exe();
     Facts {
         version: crate::VERSION.to_owned(),
-        core: std::env::current_exe().ok(),
-        bash_major,
+        core_writable: core.as_deref().and_then(is_writable),
+        core_published: matches!(
+            crate::shape::current(),
+            crate::shape::Shape::Installed { .. }
+        ),
+        core,
         tmux: resolve_on_path("tmux"),
         git: resolve_on_path("git"),
         config,
@@ -574,7 +607,6 @@ struct Args {
     refresh: Option<String>,
     global: Option<PathBuf>,
     local: Option<PathBuf>,
-    bash_major: Option<u32>,
 }
 
 /// Read `doctor`'s flags. The offending word on refusal.
@@ -597,13 +629,6 @@ fn parse(tail: &[String]) -> Result<Args, String> {
                     }
                 }
             }
-            "--bash-major" => match after {
-                [value, tail @ ..] => {
-                    args.bash_major = Some(value.parse().map_err(|_| word.clone())?);
-                    rest = tail;
-                }
-                [] => return Err(word.clone()),
-            },
             "--global" | "--local" => match after {
                 [value, tail @ ..] => {
                     if word == "--global" {
@@ -643,12 +668,7 @@ pub fn run(
     let _ = std::fs::create_dir_all(roots.sessions());
     let _ = std::fs::create_dir_all(roots.worktrees());
 
-    let facts = gather(
-        root,
-        args.global.as_deref(),
-        args.local.as_deref(),
-        args.bash_major,
-    );
+    let facts = gather(root, args.global.as_deref(), args.local.as_deref());
     let mut document = report(&facts);
     if let Some(target) = &args.refresh {
         refresh(root, target, args.global.as_deref(), &mut document);
@@ -804,40 +824,19 @@ fn or_dot(value: String) -> String {
     }
 }
 
-/// `_check-deps [--bash-major <n>]` — the launch prelude's gate.
+/// `_check-deps` — the launch prelude's gate.
 ///
 /// tmux is ae's one PATH dependency at launch, and its absence is fatal before
-/// any side effect. The bash major version is passed in rather than measured:
-/// the glue knows its own `BASH_VERSINFO[0]` for free, and the core would have
-/// to spawn a shell to learn it. With no `--bash-major` the check is simply not
-/// made, because a version nobody supplied is not a version to refuse on.
+/// any side effect. `--bash-major` went with `ae-entry`: ae ships no bash, so
+/// there is no interpreter version to refuse on and the flag has no supplier.
 ///
 /// # Errors
 ///
 /// Propagates a write failure on the caller's streams.
 pub fn check_deps(tail: &[String], err: &mut impl Write) -> crate::Result<u8> {
-    let mut bash_major: Option<u32> = None;
-    let mut rest: &[String] = tail;
-    while let [word, after @ ..] = rest {
-        let ("--bash-major", [value, next @ ..]) = (word.as_str(), after) else {
-            writeln!(err, "{CHECK_DEPS_USAGE}")?;
-            return Ok(EXIT_USAGE);
-        };
-        let Ok(parsed) = value.parse::<u32>() else {
-            writeln!(err, "{CHECK_DEPS_USAGE}")?;
-            return Ok(EXIT_USAGE);
-        };
-        bash_major = Some(parsed);
-        rest = next;
-    }
-    if let Some(major) = bash_major
-        && major < 4
-    {
-        writeln!(
-            err,
-            "Error: ae requires bash >= 4.0 (found {major}).\nmacOS: brew install bash"
-        )?;
-        return Ok(EXIT_FAILED);
+    if !tail.is_empty() {
+        writeln!(err, "{CHECK_DEPS_USAGE}")?;
+        return Ok(EXIT_USAGE);
     }
     if resolve_on_path("tmux").is_none() {
         writeln!(err, "{NO_TMUX}")?;
@@ -897,7 +896,8 @@ mod tests {
         Facts {
             version: "2026.9.1".to_owned(),
             core: Some(PathBuf::from("/opt/ae/versions/1/ae-core")),
-            bash_major: None,
+            core_writable: Some(false),
+            core_published: true,
             tmux: Some(PathBuf::from("/usr/bin/tmux")),
             git: Some(PathBuf::from("/usr/bin/git")),
             config: PathBuf::from("/home/me/.ae/config"),
@@ -1094,21 +1094,58 @@ mod tests {
     }
 
     #[test]
-    fn check_deps_refuses_a_bash_older_than_four() {
+    fn check_deps_takes_no_arguments_at_all() {
+        // `--bash-major` went with `ae-entry`. Nothing supplies it any more, so
+        // a caller that still does is a caller against a version that is gone.
         let mut err = Vec::new();
-        let code = check_deps(&["--bash-major".to_owned(), "3".to_owned()], &mut err).unwrap();
-        assert_eq!(code, EXIT_FAILED);
+        let code = check_deps(&["--bash-major".to_owned(), "5".to_owned()], &mut err).unwrap();
+        assert_eq!(code, EXIT_USAGE);
         assert!(
-            String::from_utf8_lossy(&err).contains("bash >= 4.0"),
+            String::from_utf8_lossy(&err).contains(CHECK_DEPS_USAGE),
             "{}",
             String::from_utf8_lossy(&err)
         );
     }
 
     #[test]
-    fn check_deps_refuses_an_unparseable_version_as_usage() {
-        let mut err = Vec::new();
-        let code = check_deps(&["--bash-major".to_owned(), "four".to_owned()], &mut err).unwrap();
-        assert_eq!(code, EXIT_USAGE);
+    fn a_writable_core_is_a_warning_and_a_read_only_one_is_not() {
+        let mut writable = facts();
+        writable.core_writable = Some(true);
+        let checkout = Facts {
+            core_published: false,
+            ..writable.clone()
+        };
+        let row = report(&writable)
+            .rows
+            .into_iter()
+            .find(|row| row.label == "core")
+            .expect("a core row");
+        assert_eq!(row.level, Level::Warn);
+        assert!(row.detail.contains("writable"), "{}", row.detail);
+
+        let row = report(&facts())
+            .rows
+            .into_iter()
+            .find(|row| row.label == "core")
+            .expect("a core row");
+        assert_eq!(row.level, Level::Ok);
+
+        // A checkout build is writable because `cargo build` writes it. There
+        // is no published mode to deviate from, so there is nothing to warn.
+        let row = report(&checkout)
+            .rows
+            .into_iter()
+            .find(|row| row.label == "core")
+            .expect("a core row");
+        assert_eq!(row.level, Level::Ok);
+    }
+
+    #[test]
+    fn no_row_reports_on_an_interpreter_ae_no_longer_ships() {
+        let document = report(&facts());
+        assert!(
+            !document.rows.iter().any(|row| row.label == "bash"),
+            "ae ships no bash, so there is no bash row to fill"
+        );
     }
 }
