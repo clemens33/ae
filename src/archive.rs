@@ -1,4 +1,4 @@
-//! `ae archive preview [session]` — the read-only lifecycle tracer (P3.1–P3.2).
+//! `ae archive preview [session]` — the read-only lifecycle tracer.
 //!
 //! **This module WRITES NOTHING.** No archive, claim, lock, event, temp file,
 //! or live-state mutation. It reads a session's `meta`, `memo.tsv`,
@@ -15,7 +15,7 @@ use crate::event_text::{self, extract};
 use crate::meta;
 use crate::state::EXIT_FAILED;
 
-/// A UUID as `_ar_canonical_uuid` reads it: 8-4-4-4-12 hex, lowercased;
+/// The canonical UUID grammar: 8-4-4-4-12 hex, lowercased;
 /// anything else is empty (not a UUID).
 #[must_use]
 pub(crate) fn canonical_uuid(value: &str) -> String {
@@ -32,9 +32,8 @@ pub(crate) fn canonical_uuid(value: &str) -> String {
     value.to_ascii_lowercase()
 }
 
-/// Whether `path` is a regular file — the frozen `[[ -f "$file" ]]` gate,
-/// following symlinks (a symlink to a regular file is `-f`, a symlink to a FIFO
-/// or a directory is not).
+/// Whether `path` is a regular file, following symlinks (a symlink to a regular
+/// file counts, a symlink to a FIFO or a directory does not).
 #[must_use]
 pub(crate) fn regular_file(path: &Path) -> bool {
     #[allow(
@@ -63,7 +62,7 @@ fn nonregular_existing(path: &Path) -> bool {
 pub(crate) enum ConfigNode {
     /// The node's own name does not exist — `lstat` reports `NotFound`.
     Absent,
-    /// A regular file, following a final symlink to one (the frozen `-f`).
+    /// A regular file, following a final symlink to one.
     Regular,
     /// Present but not a usable regular file — a directory, FIFO, socket,
     /// device, or a symlink to one of those or to nothing — OR a permission/I/O
@@ -89,7 +88,7 @@ pub(crate) fn classify_config_node(path: &Path) -> ConfigNode {
 }
 
 /// If `file` (a basename under `dir`) EXISTS but is not a regular file, write
-/// the one named P3.1 refusal to `err` and return `true` (the caller stops the
+/// the one named refusal to `err` and return `true` (the caller stops the
 /// whole preview at `rc=1`).
 fn refuse_if_nonregular(
     dir: &Path,
@@ -116,8 +115,8 @@ fn meta_get(meta_bytes: &[u8], key: &str) -> String {
         .unwrap_or_default()
 }
 
-/// `-` when empty, else the value — the frozen `${x:--}` the readers apply to
-/// facts that may be absent.
+/// `-` when empty, else the value — what the readers apply to facts that may be
+/// absent.
 fn or_dash(value: &str) -> &str {
     if value.is_empty() { "-" } else { value }
 }
@@ -147,8 +146,7 @@ struct EventFacts {
     skipped: u64,
 }
 
-/// The four git facts the `## Git outcome` section renders, computed exactly as
-/// the frozen `_ar_preview_once` composes them: `base` is the meta's
+/// The four git facts the `## Git outcome` section renders: `base` is the meta's
 /// `git_base_commit` for EVERY mode (or `-`); `final_commit`, `range` and
 /// `count` come from running git for a non-local session and are `-` for a
 /// local one.
@@ -305,10 +303,10 @@ fn ifs_tab_read4(line: &str) -> (String, String, String, String) {
 /// spawned.N (2,N), then anything else (3), stable within a rank.
 fn roster_slots(meta_bytes: &[u8]) -> Vec<String> {
     let mut keyed: Vec<(u8, i64, usize, String)> = Vec::new();
-    // Split like `awk`, NOT like `while read`: the frozen `_ar_roster_slots` is
-    // awk, which processes a final record with no trailing newline, so a meta
-    // whose last line is `agent.main=…` (or a bare `agent.main`) still names a
-    // slot. `terminated_lines`/`read_lines` model `while read` and drop that
+    // Split on records, NOT on terminated lines: a final record with no trailing
+    // newline still counts, so a meta whose last line is `agent.main=…` (or a
+    // bare `agent.main`) still names a slot. `terminated_lines`/`read_lines`
+    // require the terminator and drop that
     // record — right for the event and memo readers, wrong here. A trailing
     // newline yields a final empty chunk, which carries no `agent.` prefix and is
     // skipped, so this matches awk on both shapes. `meta_get` already keeps the
@@ -324,9 +322,8 @@ fn roster_slots(meta_bytes: &[u8]) -> Vec<String> {
         else {
             continue;
         };
-        // The frozen `_ar_roster_slots` accepts EVERY `^agent\.` line, `=` or
-        // not: `awk -F=` yields the whole line as field 1 when there is no `=`,
-        // so a bare `agent.main` still names the slot `main`.
+        // EVERY `^agent\.` line counts, `=` or not: with no `=` the whole line
+        // is the field, so a bare `agent.main` still names the slot `main`.
         let slot = rest.split_once('=').map_or(rest, |(s, _)| s).to_owned();
         let (rank, num) = if slot == "main" {
             (0u8, 0i64)
@@ -565,11 +562,11 @@ fn fingerprint(dir: &Path) -> String {
 /// own length + each counted file's size.
 fn selection(dir: &Path, digest_chars: u64) -> (u64, u64) {
     // `files` starts at 2 (meta + digest.md always written); `bytes` starts at
-    // the digest's CHARACTER count, exactly as the frozen `${#digest}` under a
-    // UTF-8 locale — an em-dash is one, not three.
+    // the digest's CHARACTER count, not its byte count — an em-dash is one, not
+    // three.
     let mut files = 2u64;
     let mut bytes = digest_chars;
-    // meta is always present in an archive and counted (the frozen `if -f meta`).
+    // meta is always present in an archive and counted.
     bytes += file_size(&dir.join("meta"));
     for name in ["memo.tsv", "events.jsonl"] {
         files += 1;
@@ -585,7 +582,7 @@ fn selection(dir: &Path, digest_chars: u64) -> (u64, u64) {
 }
 
 /// The `.txt` entries directly under `messages/`, each a regular non-symlink
-/// file — the frozen `for f in "${dir}/messages"/*.txt; [[ -f "$f" && ! -L "$f" ]]`.
+/// file.
 fn read_message_entries(messages: &Path) -> Vec<std::path::PathBuf> {
     #[allow(
         clippy::disallowed_methods,
@@ -625,7 +622,7 @@ fn file_size(path: &Path) -> u64 {
 }
 
 /// Whether a message body file is present for a pending request's `body_file`
-/// pointer: the frozen `[[ -n "$body" && -f "$msgs/${body##*/}" ]]`.
+/// pointer.
 fn payload_present(messages: &Path, body_file: &str) -> bool {
     if body_file.is_empty() {
         return false;
@@ -817,20 +814,19 @@ pub fn preview(dir: &Path, out: &mut impl Write, err: &mut impl Write) -> io::Re
         .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
 
     // A preview must not leave its session directory to render linked or
-    // special-node bytes (colead ruling, P3.1): an EXISTING non-regular
+    // special-node bytes: an EXISTING non-regular
     // `meta`/`memo.tsv`/`events.jsonl` is a named rc=1 refusal — no digest, no
     // writes — while an ABSENT optional file keeps its empty behavior. Meta is
-    // guarded first, before the id read that would otherwise follow it. This is
-    // an intentional, platform-deterministic divergence from the frozen `[[ -f ]]`
-    // (which follows a symlink to a regular file, and treats a FIFO/dir as
-    // absent); see the module docs.
+    // guarded first, before the id read that would otherwise follow it. The
+    // classification is intentional and platform-deterministic: a symlink to a
+    // regular file is regular, and a FIFO or directory is a refusal rather than
+    // an absence. See the module docs.
     if refuse_if_nonregular(dir, meta::FILE, &name, err)? {
         return Ok(EXIT_FAILED);
     }
 
-    // The archive id and the raw session_id are computed ONCE, before the loop,
-    // exactly as the frozen `cmd_archive_preview` reads them before its first
-    // fingerprint.
+    // The archive id and the raw session_id are computed ONCE, before the loop
+    // and before the first fingerprint.
     let id_meta = read_meta();
     let raw_id = meta_get(&id_meta, "session_id");
     let aid = canonical_uuid(&raw_id);
@@ -860,7 +856,7 @@ pub fn preview(dir: &Path, out: &mut impl Write, err: &mut impl Write) -> io::Re
         // Meta is re-read INSIDE the attempt, as `_ar_preview_once` re-reads it:
         // the roster, goal and mode the digest renders come from the meta of THIS
         // attempt, and the roster is validated and stripped here (a roster ae
-        // cannot parse fails the whole preview with the frozen line, never a
+        // cannot parse fails the whole preview with a named refusal, never a
         // partial digest). Reading it once before the loop would render stale
         // roster/goal alongside fresh memo/events while both fingerprints saw only
         // the new meta and declared success.

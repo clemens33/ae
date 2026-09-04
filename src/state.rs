@@ -1,21 +1,18 @@
 //! The `state` helper's WRITE path — the first place the core appends to a
 //! session's event container.
 //!
-//! A declaration is what the frozen `helper_state_main` writes: one `state`
-//! event — `{"ts","actor","action":"state","ref":<value>,"summary":<reason>}`
-//! — and, for `done`, a second legacy `{"action":"done","summary":<reason>}`
-//! line that a watchdog started before the state helper existed still
-//! understands. The dual emit stays until every running watchdog has
-//! restarted.
+//! A declaration writes one `state` event —
+//! `{"ts","actor","action":"state","ref":<value>,"summary":<reason>}` — and,
+//! for `done`, a second `{"action":"done","summary":<reason>}` line that an
+//! older watchdog still understands. The dual emit stays until every running
+//! watchdog has restarted.
 //!
-//! The no-argument READ form (P2.4) is here too: what `ae_latest_state_for`
-//! finds — the newest `{`-prefixed line in the container whose `actor` is the
-//! caller and whose `action` is `state` or the legacy `done` — rendered as
-//! `<actor> state: <value>[ — <reason>]  (since <ts>)`, or `(none declared)`.
-//! Read through [`crate::event_text`]'s frozen primitives, so the reversal,
-//! the line filter and the member extraction are the ones `requests` already
-//! shares with the bash body. See [`read_line`] for the one deliberate
-//! rendering difference.
+//! The no-argument READ form is here too: the newest `{`-prefixed line in the
+//! container whose `actor` is the caller and whose `action` is `state` or a
+//! bare `done`, rendered as `<actor> state: <value>[ — <reason>]  (since
+//! <ts>)`, or `(none declared)`. Read through [`crate::event_text`], so the
+//! reversal, the line filter and the member extraction are the ones `requests`
+//! shares.
 use std::fs::{File, OpenOptions, TryLockError};
 use std::io::{self, Write};
 use std::path::Path;
@@ -43,7 +40,7 @@ pub const CHAT_SUMMARY_CAP: usize = 3500;
 /// The four states, exactly as the helper spells them.
 pub const VALUES: [&str; 4] = ["working", "waiting-user", "blocked", "done"];
 
-/// The frozen `helper_state_usage` text, byte for byte.
+/// The usage text.
 pub const USAGE: &str = "Usage: state <working|waiting-user|blocked|done> [reason]\n       state                              # print current state\n\n  working       actively making progress\n  waiting-user  needs human input\n  blocked       stuck on external dep — REASON REQUIRED\n  done          complete or paused\n";
 
 /// The refusal when the caller has no pane identity.
@@ -53,7 +50,7 @@ pub const NO_IDENTITY: &str =
 /// The exit status of every refusal and failure on this path: it went wrong.
 pub const EXIT_FAILED: u8 = 1;
 
-/// The exit status of a usage error, shared with the frozen helper.
+/// The exit status of a usage error.
 pub const EXIT_USAGE: u8 = 2;
 
 /// A parsed declaration: the value and the reason as the caller typed it.
@@ -68,7 +65,7 @@ pub struct Declaration {
 /// Why argv was refused.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Usage {
-    /// `blocked` with no reason — the frozen helper's own error line first.
+    /// `blocked` with no reason.
     BlockedNeedsReason,
     /// Not one of [`VALUES`].
     UnknownValue(String),
@@ -122,7 +119,7 @@ pub fn parse(tail: &[String]) -> Result<Command, Usage> {
 /// The newest declaration an actor made, as `ae_latest_state_for` finds it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Latest {
-    /// The `ref` of a `state` event, or `done` for a legacy `done` event.
+    /// The `ref` of a `state` event, or `done` for a bare `done` event.
     pub value: Vec<u8>,
     /// The `summary` — empty when the event carries none.
     pub reason: Vec<u8>,
@@ -131,13 +128,12 @@ pub struct Latest {
 }
 
 /// Scan the container newest-first and stop at the first line that is
-/// `actor`'s `state` (value = `ref`, reason = `summary`) or legacy `done`
+/// `actor`'s `state` (value = `ref`, reason = `summary`) or bare `done`
 /// (value = `done`) event.
 ///
-/// Every step is the frozen body's: `_ae_tac` ([`event_text::reversed`] — a
-/// torn last record is glued onto the line before it, not repaired), the
-/// `while read` loop over complete lines, the `{`-prefix filter, and
-/// `_event_json_str` for each member ([`event_text::extract`] — the FIRST
+/// The steps: [`event_text::reversed`] (a torn last record is glued onto the
+/// line before it, not repaired), the walk over complete lines, the
+/// `{`-prefix filter, and [`event_text::extract`] for each member (the FIRST
 /// occurrence of the key, unescaped the emitter's way). Another action by the
 /// same actor is skipped, not a stop.
 ///
@@ -187,15 +183,11 @@ pub fn latest(container: &[u8], actor: &str) -> Option<Latest> {
 }
 
 /// The stdout of `state` with nothing to declare: `<actor> state: (none
-/// declared)`, or `<actor> state: <value>[ — <reason>]  (since <ts>)` — the
-/// frozen printf, two spaces before the parenthesis included.
+/// declared)`, or `<actor> state: <value>[ — <reason>]  (since <ts>)`, two
+/// spaces before the parenthesis included.
 ///
-/// One deliberate difference. The frozen body hands its three fields to
-/// `IFS=$'\t' read -r st reason ts`, and tab is an IFS *whitespace*
-/// character: a run of tabs is one delimiter, so an EMPTY reason vanishes and
-/// the timestamp slides into its place — a reason-less `working` renders as
-/// `working — 2026-…Z  (since )` (measured on the frozen body). This renders
-/// the fields as read: `working  (since 2026-…Z)`.
+/// An EMPTY reason keeps its place rather than letting the timestamp slide
+/// into it: a reason-less `working` renders `working  (since 2026-…Z)`.
 ///
 /// ```
 /// use ae::state::{Latest, read_line};
@@ -252,8 +244,7 @@ pub fn summary_of(reason: &str) -> String {
         .collect()
 }
 
-/// The summary as the frozen emitter renders it FOR THIS ACTION — both of
-/// `ae_emit_event`'s arms.
+/// The summary as it is rendered FOR THIS ACTION.
 #[must_use]
 pub fn summary_for(action: &str, text: &str) -> String {
     if action == "chat" {
@@ -263,7 +254,7 @@ pub fn summary_for(action: &str, text: &str) -> String {
     }
 }
 
-/// One event line, `\n` included, in the frozen emitter's shape and order:
+/// One event line, `\n` included, in the emitter's shape and order:
 /// `ts`, `actor`, `action`, then `ref` and `summary` only when non-empty.
 #[must_use]
 pub fn event_line(
@@ -289,8 +280,8 @@ pub fn event_line(
     line
 }
 
-/// The bytes one declaration appends: the `state` line, plus the legacy
-/// `done` line for `done`.
+/// The bytes one declaration appends: the `state` line, plus the bare `done`
+/// line for `done`.
 #[must_use]
 pub fn event_body(ts: Timestamp, actor: &str, declaration: &Declaration) -> String {
     let summary = summary_of(&declaration.reason);
@@ -805,8 +796,7 @@ mod tests {
     fn a_held_lock_fails_the_declaration_at_the_bound_with_no_bytes_written() {
         let dir = scratch("held");
         let lock_path = dir.join("events.jsonl.lock");
-        // Another open file description holding the same flock: exactly what a
-        // bash `flock 8` on the same path is.
+        // Another open file description holding the same flock.
         let holder = acquire(&lock_path, Duration::from_millis(10)).unwrap();
         let started = std::time::Instant::now();
         let waited = acquire(&lock_path, Duration::from_millis(150));

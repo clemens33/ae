@@ -170,9 +170,7 @@ pub struct ObservedPane {
 /// [`PANE_FIELDS`] fields still yields an [`ObservedPane`] — one with no usable
 /// reading at all — rather than being dropped. Dropping it would delete the
 /// pane whose existence is what keeps a missing roster agent `unknown` instead
-/// of `dead`, which is the same defect as the frozen script's
-/// `[[ -n "$ae_agent" ]] || continue` (#107), and the same one this
-/// module already refused when the format had a single field.
+/// of `dead`.
 ///
 /// **ARITY IS EXACT, AND THAT IS A GUARD RATHER THAN TIDINESS.** None of the
 /// three fields may legitimately contain [`FIELD_SEPARATOR`], so a line with more than
@@ -254,9 +252,8 @@ pub fn is_addressable_socket(path: &Path) -> bool {
 }
 
 /// The format the viewer query asks for: the calling pane's routing slot, its
-/// tmux session and its display ref — the three readings `ae_current_slot`,
-/// `#S` and `ae_current_agent` take in the frozen helper, in ONE round trip
-/// rather than three, so the pane cannot change identity between them.
+/// tmux session and its display ref — three readings in ONE round trip rather
+/// than three, so the pane cannot change identity between them.
 pub const VIEWER_FORMAT: &str = "#{@ae_slot} | #{session_name} | #{@ae_agent}";
 
 /// The number of fields [`VIEWER_FORMAT`] yields.
@@ -303,8 +300,8 @@ pub fn interpret_viewer(succeeded: bool, stdout: &str) -> Option<ObservedViewer>
     })
 }
 
-/// The arguments for the frozen resolver's session check —
-/// `tmux has-session -t "$search_session"` before a cross-session lookup.
+/// The arguments for the resolver's session check — `tmux has-session -t
+/// <session>` before a cross-session lookup.
 #[must_use]
 pub fn has_session_args(server: &ServerId, session: &str) -> Vec<String> {
     let mut args = server_args(server);
@@ -320,7 +317,7 @@ pub fn kill_session_args(server: &ServerId, session_id: &str) -> Vec<String> {
     args
 }
 
-/// The roster the frozen `ae_resolve` reads:
+/// The roster the name resolver reads:
 /// `list-panes -s -t <session> -F '#{pane_id} | #{@ae_agent}'`.
 pub const AGENTS_FORMAT: &str = "#{pane_id} | #{@ae_agent}";
 
@@ -332,7 +329,7 @@ pub fn agents_args(server: &ServerId, session: &str) -> Vec<String> {
     args
 }
 
-/// The roster the frozen `ae_slot_resolver` reads: `list-panes -s -t <session>
+/// The roster the slot resolver reads: `list-panes -s -t <session>
 /// -F '#{pane_id}|#{@ae_slot}|#{@ae_agent}'` — `|`, not tab, because the middle
 /// field is empty on an unstamped pane and tab is an IFS whitespace character
 /// there.
@@ -392,8 +389,7 @@ pub fn interpret_slots(succeeded: bool, stdout: &str) -> Option<Vec<ObservedSlot
 }
 
 /// One pane of the roster: its id and its `@ae_agent` stamp (empty when the
-/// pane is unstamped — the frozen loop reads such a line with an empty second
-/// field and matches nothing on it).
+/// pane is unstamped, which matches nothing).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ObservedAgent {
     /// `#{pane_id}`, e.g. `%3`.
@@ -402,8 +398,8 @@ pub struct ObservedAgent {
     pub agent: String,
 }
 
-/// What a completed roster run means: `None` when the run failed (the frozen
-/// loop reads nothing from a `2>/dev/null` failure and resolves nothing);
+/// What a completed roster run means: `None` when the run failed, which
+/// resolves nothing;
 /// otherwise every line, split at its FIRST [`FIELD_SEPARATOR`], in the order
 /// tmux printed.
 ///
@@ -447,8 +443,8 @@ pub const WATCH_PANE_FORMAT: &str =
 const WATCH_PANE_FIELDS: usize = 5;
 
 /// The arguments enumerating every pane of `session` on `server` for the
-/// watchdog — `list-panes -s -t <session> -F <WATCH_PANE_FORMAT>`, the frozen
-/// watchdog's own enumeration widened to the fields its cycle reads.
+/// watchdog — `list-panes -s -t <session> -F <WATCH_PANE_FORMAT>`, widened to
+/// the fields the cycle reads.
 #[must_use]
 pub fn watch_panes_args(server: &ServerId, session: &str) -> Vec<String> {
     let mut args = server_args(server);
@@ -528,9 +524,8 @@ pub fn interpret_watch_panes(succeeded: bool, stdout: &str) -> Option<Vec<WatchP
 }
 
 /// The arguments capturing `pane`'s recent output for the watchdog's hash and
-/// throttle scan — `capture-pane -p -J -S -40 -E - -t <pane>`, the frozen
-/// watchdog's exact flags: print to stdout, join wrapped lines, start 40 lines
-/// back, end at the last line.
+/// throttle scan — `capture-pane -p -J -S -40 -E - -t <pane>`: print to stdout,
+/// join wrapped lines, start 40 lines back, end at the last line.
 #[must_use]
 pub fn capture_pane_args(server: &ServerId, pane: &str) -> Vec<String> {
     let mut args = server_args(server);
@@ -591,8 +586,7 @@ impl OptionScope {
     }
 }
 
-/// Escape text that is about to enter a tmux FORMAT context — the frozen
-/// `_ae_tmux_format_literal`, `#` then `%`.
+/// Escape text that is about to enter a tmux FORMAT context — `#` then `%`.
 #[must_use]
 pub fn format_literal(text: &str) -> String {
     text.replace('#', "##").replace('%', "%%")
@@ -822,7 +816,7 @@ pub fn session_ids_args(server: &ServerId) -> Vec<String> {
 /// resolving it by prefix would reintroduce the hazard it removes. `None` for a
 /// failed run and for a name the server does not hold — and the caller must then
 /// write NOTHING, because `-t ""` lands on tmux's CURRENT session, which is some
-/// other user's bar (the frozen guards exactly this).
+/// other user's bar.
 ///
 /// ```
 /// use ae::tmux::interpret_session_id;
@@ -1833,7 +1827,7 @@ mod tests {
 
     #[test]
     fn the_pane_format_asks_for_identity_and_never_for_the_display_field() {
-        // `@ae_agent` is DISPLAY and the frozen script associated on it (#106).
+        // `@ae_agent` is DISPLAY, so identity is never associated on it.
         let args = list_panes_args(&ServerId::Ambient, "s").join(" ");
         assert!(args.contains("#{@ae_slot}"));
         assert!(args.contains("#{pane_dead}"), "{args}");
@@ -1882,7 +1876,7 @@ mod tests {
 
     #[test]
     fn an_exited_pane_keeps_both_facts_that_tell_it_apart_from_a_live_one() {
-        // #109 IN ONE ASSERTION. A `remain-on-exit` pane reports the EXITED
+        // A `remain-on-exit` pane reports the EXITED
         // process's command, and `true` is not in shell set — so the
         // command field alone reads like a live agent. The only thing that
         // separates it from a live pane is `pane_dead`, and this pins that the
