@@ -1681,6 +1681,8 @@ agent_bin.main=claude
         // The contrast with `first_value` IS the point, so both are asserted on
         // the same inputs: `first_value` answers "what does the first record
         // say", which is right where a later duplicate is harmless; this
+        // answers "does the file say ONE thing", which is what a flag guarding
+        // behavior needs.
         let once = b"session=x\nmeta_agent=true\n";
         assert_eq!(sole_value(once, "meta_agent"), Some(b"true".as_slice()));
         assert_eq!(first_value(once, "meta_agent"), Some(b"true".as_slice()));

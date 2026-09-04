@@ -183,6 +183,8 @@ pub fn run(args: &[String], out: &mut impl Write, err: &mut impl Write) -> Resul
     // TWO WORDS ARE OWED AN ANSWER ON A BROKEN INSTALL, and they are the ONLY
     // two, which is why they sit ahead of the gate: `version` is how a mismatch
     // is diagnosed, so it may not depend on the thing it diagnoses, and
+    // `upgrade` is how one is repaired. This is the wrapper's own ordering,
+    // kept.
     match args.first().map(String::as_str) {
         Some("version" | "--version" | "-V") => {
             writeln!(out, "{}", version_line())?;
@@ -277,6 +279,7 @@ fn run_dispatch(args: &[String], out: &mut impl Write, err: &mut impl Write) -> 
     // Only a listing needs a source, and `next` only needs one once its argv has
     // been accepted: a refused word must not pay for a tmux scan of every
     // session before it can say so, which is what frozen's parse-then-scan order
+    // already guaranteed.
     let wants_world = match cli::Request::parse(args) {
         // The sweep reads the same world `list` renders — that IS its input.
         cli::Request::List(_) | cli::Request::Monitor { .. } => true,
@@ -1057,6 +1060,7 @@ pub fn run_with(
         // The frozen helper writes its table and its refusal to the streams a
         // pane reads, and so does this: the refusal is a DIAGNOSTIC and never
         // reaches stdout, which is why a refused invocation's stdout is empty
+        // rather than a bare header.
         cli::Request::State { dir, tail } => run_state(dir, tail, out, err)?,
         cli::Request::Goal { dir, tail } => run_goal(dir, tail, out, err)?,
         cli::Request::Memo { dir, tail } => run_memo(dir, tail, out, err)?,

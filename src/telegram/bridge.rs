@@ -683,6 +683,8 @@ mod tests {
         // BEST EFFORT, and "ignored" is the load-bearing half: the menu is
         // cosmetic — every command works typed out — so a daemon that refused
         // to start because Telegram would not take the menu would trade the
+        // whole bridge for a nicety. Both directions are asserted, because
+        // "attempted" and "survivable" are different claims.
         use crate::telegram::tests::{Fake, Reply};
 
         let fake = Fake::one(Reply::json(400, r#"{"ok":false,"description":"nope"}"#));

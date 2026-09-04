@@ -312,6 +312,9 @@ pub fn run_spawn(
     // THE SAME GRAMMAR AS A LAUNCH SEAT, before any effect. config.rs enforces the
     // one-simple-command lexer for the initial roster only; a profile selected at
     // spawn used to reach `bash -lc` unvalidated, so `bad = "touch m; tail -f
+    // /dev/null"` executed the semicolon command and then reported the spawn
+    // incomplete with the seat left in meta (colead gate b5d60fec, repro). Tool
+    // and binary now come from the one validated parse.
     let lexed = match crate::launch_cmd::lex_simple_command(&command) {
         Ok(lexed) => lexed,
         Err(why) => {
@@ -434,6 +437,7 @@ pub fn run_spawn(
     // The capture tools need the launch instant to filter stale sessions, so it
     // is recorded BEFORE the capture child is started — the child reads it back
     // out of meta, and a capture with no floor would accept a conversation this
+    // spawn did not create.
     if launch::supports_launch_id(tool) {
         let _ = meta::rewrite(
             dir,
@@ -578,6 +582,8 @@ fn deliver_brief(
     // The tool is the CONFIGURED one, not the pane's live command: that is the
     // fact the frozen `_wait_input_ready` is handed, and it is right for the
     // same reason `ae_target_tool` prefers `agent_bin.<slot>` — a wrapper, an
+    // interpreter or a `.exe` launcher makes the live command say something
+    // else while the box on screen is still the tool's.
     let tool = match kind {
         ToolKind::Claude => Tool::Claude,
         ToolKind::Codex => Tool::Codex,

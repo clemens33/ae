@@ -290,6 +290,7 @@ fn the_lint_relaxations_this_counter_can_see_are_the_expected_ones() {
     // The capability boundary is `clippy.toml`'s `disallowed-types`, which
     // resolves TYPES: UFCS, `as` aliases and re-imports are all the same type to
     // it. That is what makes it close the CLASS, where a filter over method
+    // names closed one spelling of it.
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut inventory = Vec::new();
     for file in rust_sources() {
@@ -309,6 +310,24 @@ fn the_lint_relaxations_this_counter_can_see_are_the_expected_ones() {
     // Ten relaxations this counter can see, each for a different job: the
     // PRODUCT's three — `src/transport.rs`, because a tmux multiplexer that
     // cannot run tmux answers `unknown` about everything, `src/run.rs`, the
+    // pane's own `exec` of its tool, and `src/upgrade.rs`, the `exec` that
+    // hands the terminal to the immutable sibling installer; the parity
+    // harness's door,
+    // which must never judge a lane; the black-box door, which drives the
+    // PRODUCT binary and where asserting on what it printed is the whole point
+    // (`cli::ae` is private to its module, so the harness cannot reach a child
+    // through it); the black-box FIFO fixture beside it (`cli::mkfifo` — safe
+    // std cannot make the one special file that blocks an ungated open, and
+    // the tests that prove the `-f` gates need exactly that file); the
+    // by-name door beside it (`cli::helper_by_name` — a helper's identity IS
+    // `argv[0]`, so proving the bare-name refusal needs a process started AS
+    // the name, which no path spelling produces); the git
+    // fixture builder beside those (`cli::git_in` — the preview's git-facts
+    // tests need REAL repos, and only `git` builds a real repo); the generated
+    // session-helper runner beside those too (`cli::helper` — a launch writes
+    // shims a pane execs BY PATH, so proving one works means running the file
+    // rather than the function behind it); and this file's own, which has to
+    // run clippy in order to ask clippy anything.
     assert_eq!(
         inventory,
         vec![
@@ -344,6 +363,8 @@ fn a_child_process_is_run_in_exactly_one_place_and_is_wrapped_there() {
     // DEFENCE IN DEPTH, and demoted deliberately. This filters three method
     // SPELLINGS, and a review walked past exactly that by writing
     // `std::process::Command::output(&mut command)` — semantically identical,
+    // matching none of them. Adding `::output` to the list would have closed
+    // that spelling, not the class.
     let code = strip_literals(&strip_comments(&harness_source()));
     let wiring = body_of(&code, "mod raw");
 

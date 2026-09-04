@@ -288,6 +288,9 @@ pub fn table_at(sessions: &[&SessionEntry], now: Timestamp) -> String {
             // Frozen rendered the short session id on BOTH grammars — running
             // (ae@72c7293:4254) and stopped (ae:4299) — and our table omitted it
             // entirely, which run 2 semantic-fails independently of every health
+            // or state question. It sits between the reference and the semantic
+            // fields, and it is the SAME helper the digest consumes so the two
+            // surfaces cannot drift.
             push_padded(&mut out, agent.display_session_id(), ID_WIDTH);
             // Per-agent HEALTH is deliberately NOT a column here.
             out.push_str(
@@ -834,6 +837,7 @@ mod tests {
         // CONTENT, not layout — and proven through ISOLATED WORLDS rather than
         // by finding a session's line: each session is rendered ALONE, so
         // "carries the marker" needs no idea of where its line begins or what
+        // separates its columns.
         let world = world();
         for session in &world.sessions {
             let alone = table(&[session]);

@@ -800,6 +800,10 @@ mod tests {
     // ─── the fake getUpdates server ──────────────────────────────────────
     //
     // THE PRODUCT GATE. Everything above this line tests a decision; what
+    // follows drives the real client against a real socket, because the
+    // properties at stake — that the offset does not move, that a body is
+    // capped while it streams, that a restart re-delivers nothing — are
+    // properties of the whole cycle and cannot be asserted on a pure function.
 
     /// A `getUpdates` envelope carrying these update objects.
     fn result(updates: &[String]) -> String {
@@ -1749,6 +1753,9 @@ mod tests {
         // `/session <ref> ask <agent> <msg>` promises a TRACKED REQUEST: a
         // request id, an `ask` event, and a reply command embedded in the
         // message — which is the route the agent's answer takes back to the
+        // chat. An earlier version validated the verb and then ran `send`
+        // anyway, so the request was never opened and the documented reply
+        // route could not happen. The operator was told it worked.
         let dir = temp("verb");
         let mut inbox = Inbox::new(&dir, Knobs::default());
         let recorder = Recorder::default();

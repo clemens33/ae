@@ -1847,6 +1847,8 @@ mod tests {
         // The trap this pairs with criterion 21: `missing` is what the reader
         // says when no selector fact is available to it, so a record it could
         // not read at all is `missing` — never `ambiguous`, which is reserved
+        // for bytes that WERE readable and admit no single positive mapping,
+        // and never something outside the four-value domain.
         let scratch = Scratch::new("loss-is-missing");
         let absent = scratch.session("absent-meta");
         let unreadable = scratch.session("unreadable-meta");
@@ -1946,6 +1948,7 @@ mod tests {
         // The `?` this replaced aborted the WHOLE scan, so an unlistable
         // `<AE_HOME>/sessions` also cost every candidate in every worktree —
         // the same defect the nested arm was already written to avoid, in the
+        // one place the early-return had been there all along.
         let scratch = Scratch::new("root-is-a-file");
         fs::write(scratch.0.join("sessions"), "not a directory").expect("a hostile fixture");
         let nested = scratch.nested("checkout", "survivor");

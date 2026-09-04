@@ -343,6 +343,9 @@ mod tests {
     // The fixture and both renderings were MEASURED on the frozen awk program
     // (`helper_memo_render`, macOS awk, 2026-08-27), record by record: a
     // three-field line is skipped, a five-field line renders its fourth field
+    // only, an empty line is skipped, an empty text renders as an empty line,
+    // a carriage return stays inside the text, and an unterminated last record
+    // still renders.
     const FIXTURE: &[u8] = b"2026-01-01T00:00:00Z\tcl:lead\tgeneral\tplain note\n\
 2026-01-01T00:00:01Z\tcl:lead\tp2\ttopic note\n\
 short\tline\tonly\n\

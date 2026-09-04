@@ -128,6 +128,8 @@ fn sc_022_an_unknown_option_exits_two_and_diagnoses_on_stderr() {
     // WHAT THIS MEASURES CHANGED IN SLICE Z3. Until Z3 the binary was reached by
     // `ae-entry`, which prepended a preamble, so a top-level `--frobnicate` fell
     // through the router into the LAUNCH grammar; called without a preamble, as
+    // this test used to call it, the same word reached `cli::Request::parse`
+    // instead. Two parsers answered depending on a path no human could choose.
     let out = ae()
         .arg("--frobnicate")
         .output()
@@ -225,6 +227,11 @@ fn criterion_1_the_real_list_and_ls_surfaces_answer_over_a_real_state_root() {
             // THE STATUS IS `unknown`, AND THAT IS THE WHOLE POINT. The
             // transport is real now and it really ran: these sessions record a
             // server that is not running, so the query FAILED — and SC-017l says
+            // an unanswerable query is `unknown`, never `stopped`. If the
+            // transport reported a SUCCESSFUL EMPTY query instead of a failure,
+            // every one of these rows would say `stopped`: ae would be asserting
+            // these sessions are gone on the strength of a question that got no
+            // answer. That is #105 restated at the entry point.
             assert!(
                 stdout.contains("unknown"),
                 "{spelling}/json={json}: an unverifiable session must be unknown: {stdout}"
@@ -278,6 +285,7 @@ fn criterion_1_the_opposed_control_is_that_the_phase_2_baseline_still_refused() 
     // A POSITIVE WITHOUT AN OPPOSED CONTROL PROVES LESS THAN IT LOOKS. The arm
     // above shows `list` and `ls` answer today; this one shows they did NOT
     // before, so the change is attributable to this work rather than to a
+    // refusal that was never reachable in the first place.
     let Some(removal) = git(&[
         "log",
         "-S",
@@ -390,6 +398,11 @@ fn an_unknown_list_flag_exits_two_not_one() {
 // ── the internal helper surfaces (`_requests`, `_events-tail`, `_state`) ─────
 //
 // The LIBRARY behind them used to be compared against a frozen corpus of bash
+// invocations; that corpus and its module retired with the bash. What is proved
+// here is what always mattered about these surfaces and is now the whole of it —
+// the argv, the exit-code mapping, which stream each answer lands on, and the
+// fact that the follow surface actually follows. It invokes the BINARY rather
+// than the library, which is what makes it a claim about the product.
 
 /// A session meta directory with the events container these tests need.
 fn plant_events(root: &std::path::Path, session: &str, lines: &[&str]) -> std::path::PathBuf {
@@ -906,6 +919,7 @@ fn state_refuses_without_a_pane_identity_and_writes_nothing() {
     // The READ needs no identity: it asks about `human`, as the frozen body
     // does from any shell — and a reason-less declaration keeps its
     // timestamp, where the frozen body's `IFS=$'\t' read` slides it into the
+    // reason (measured: `working — 2026-…Z  (since )`).
     let read = |dir: &std::path::Path| {
         let out = ae()
             .env_remove("TMUX_PANE")
@@ -1147,6 +1161,7 @@ fn events_tail_prints_its_opening_then_follows_what_is_appended() {
     // THE ONLY TEST OF THE FOLLOW. Everything else about this surface is a pure
     // function over bytes; the loop that keeps reading is not, and a monitor
     // pane that shows the replay and then goes deaf would pass every other
+    // test in the tree.
     use std::io::Read as _;
     use std::sync::mpsc;
     use std::time::Duration;
@@ -1323,6 +1338,7 @@ impl Tracked {
         // The meta records the socket the fixture's tmux runs on, as a real
         // launch does: target resolution reads this recorded selector (not the
         // caller's ambient server) and FAILS CLOSED without it, so a serverless
+        // meta would be an unrealistic fixture, not a passing one.
         assert!(
             std::fs::write(
                 fixture.dir.join("meta"),
@@ -2499,6 +2515,7 @@ fn the_telegram_daemon_entry_names_what_it_actually_needs_and_never_stutters() {
     // Two presentation defects a unit test cannot see, both found by running
     // the binary: the shared missing-operand line told a machine-global entry
     // to supply a SESSION meta directory, and the startup refusal printed
+    // "telegram: telegram:" because the error type already names its subsystem.
     let missing = ae().arg("_telegram-run").output().expect("the binary runs");
     assert_eq!(missing.status.code(), Some(2));
     let said = String::from_utf8_lossy(&missing.stderr);
@@ -2791,6 +2808,7 @@ fn attach_jumps_on_the_ambient_server_and_tmux_own_status_is_the_command_s() {
     // The jump itself. `TMUX_TMPDIR` points a BARE `tmux` at this fixture's
     // server, and `$TMUX` is absent — so the caller is provably OUTSIDE tmux and
     // the verb is `attach-session`, with no dependence on whether the lane
+    // running this test has a controlling terminal.
     let fixture = NextFixture::plant("jump");
     let attached = fixture.run(
         &["next", "--attach"],
@@ -2819,6 +2837,7 @@ fn attach_reports_being_already_there_rather_than_jumping_to_it() {
     // Frozen's inside-ness rule has TWO halves, and this pins the second: the
     // tty comparison that separates a real pane from an inherited `$TMUX` is
     // allowed to be UNANSWERABLE, and then `$TMUX` is trusted "as ae always
+    // has" — a probe that cannot speak must not become a verdict.
     let fixture = NextFixture::plant("already");
     let bin = fixture.scratch.join("bin");
     std::fs::create_dir_all(&bin).expect("a shim directory");

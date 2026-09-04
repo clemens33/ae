@@ -111,6 +111,7 @@ impl AgentEntry {
         // Unconditional: an `AgentEntry` exists only because the roster was READ
         // (membership is roster-defined), so the
         // question "was this member readable" is answered yes by the entry's
+        // existence. A session that lost its roster renders no agent entries.
         fields.push((
             "session_id".to_owned(),
             Value::str(self.display_session_id()),

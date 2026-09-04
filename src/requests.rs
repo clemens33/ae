@@ -360,6 +360,7 @@ pub fn states(container: &[u8]) -> Vec<Request> {
             // Candidates were appended newest-first, so the FIRST that passes
             // both tests is the newest that counts — and an invalid newer one
             // cannot bury a valid older one, because validity is decided here
+            // and not during the scan.
             let cancel = cancelled
                 .iter()
                 .filter(after)
@@ -931,6 +932,7 @@ mod tests {
         // IS, not contract, and BOTH orders are recorded rather than related:
         // this build resolves by KIND (cancellation wins) rather than by
         // recency, so the two agree — but that agreement is a property of the
+        // current resolver and not of anything ruled.
         assert_eq!(states(&cancel_then_reply)[0].status, Status::Cancelled);
         assert_eq!(states(&reply_then_cancel)[0].status, Status::Cancelled);
     }
@@ -1164,6 +1166,9 @@ mod tests {
         // THE ORDER IS BY THE SURVIVING OPENING, NOT BY THE FIRST ONE. r1 was
         // asked at t1 and re-asked at t3; the row keeps the t3 opening, and its
         // POSITION follows t3 too — so r2 (t2) precedes r1 (t3) even though r1's
+        // earliest ask is the oldest event in the container. Ordinary logs never
+        // show this, because a ref is opened once and the ordering collapses to
+        // chronological.
         assert_eq!(rows[0].id, b"r2");
         assert_eq!(rows[1].id, b"r1");
         assert_eq!(

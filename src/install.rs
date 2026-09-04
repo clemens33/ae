@@ -860,6 +860,8 @@ fn replay(journal: &Journal, path: &Path) -> Result<(), String> {
         // `remove_dir` never removes content, so its failure is not a failed
         // reversal: an absent directory is already undone, and a NON-EMPTY one
         // holds something this install did not put there — a retained version
+        // directory, or an operator's own file. Both are the designed final
+        // state.
         let _ = std::fs::remove_dir(created);
     }
     std::fs::remove_file(path).map_err(|why| format!("could not remove the journal: {why}"))

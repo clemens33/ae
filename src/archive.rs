@@ -308,6 +308,11 @@ fn roster_slots(meta_bytes: &[u8]) -> Vec<String> {
     // Split like `awk`, NOT like `while read`: the frozen `_ar_roster_slots` is
     // awk, which processes a final record with no trailing newline, so a meta
     // whose last line is `agent.main=…` (or a bare `agent.main`) still names a
+    // slot. `terminated_lines`/`read_lines` model `while read` and drop that
+    // record — right for the event and memo readers, wrong here. A trailing
+    // newline yields a final empty chunk, which carries no `agent.` prefix and is
+    // skipped, so this matches awk on both shapes. `meta_get` already keeps the
+    // remainder (SC parity), so the ref lookup agrees with the slot list.
     for (index, line) in meta_bytes.split(|&byte| byte == b'\n').enumerate() {
         let text = String::from_utf8_lossy(line);
         // Identity v2 (P1, read side): a `seat.<slot>` row names a slot exactly as
@@ -533,6 +538,7 @@ fn fingerprint(dir: &Path) -> String {
         // `symlink_metadata`, never following: a non-regular meta/memo/events is
         // already refused before the render loop (see `preview`), so this only
         // ever fingerprints a regular file or an absent one, and the read, size
+        // and fingerprint decisions all stay on the same lstat classification.
         let meta = std::fs::symlink_metadata(&path)
             .ok()
             .filter(std::fs::Metadata::is_file);
@@ -813,6 +819,11 @@ pub fn preview(dir: &Path, out: &mut impl Write, err: &mut impl Write) -> io::Re
     // A preview must not leave its session directory to render linked or
     // special-node bytes (colead ruling, P3.1): an EXISTING non-regular
     // `meta`/`memo.tsv`/`events.jsonl` is a named rc=1 refusal — no digest, no
+    // writes — while an ABSENT optional file keeps its empty behavior. Meta is
+    // guarded first, before the id read that would otherwise follow it. This is
+    // an intentional, platform-deterministic divergence from the frozen `[[ -f ]]`
+    // (which follows a symlink to a regular file, and treats a FIFO/dir as
+    // absent); see the module docs.
     if refuse_if_nonregular(dir, meta::FILE, &name, err)? {
         return Ok(EXIT_FAILED);
     }
@@ -849,6 +860,10 @@ pub fn preview(dir: &Path, out: &mut impl Write, err: &mut impl Write) -> io::Re
         // Meta is re-read INSIDE the attempt, as `_ar_preview_once` re-reads it:
         // the roster, goal and mode the digest renders come from the meta of THIS
         // attempt, and the roster is validated and stripped here (a roster ae
+        // cannot parse fails the whole preview with the frozen line, never a
+        // partial digest). Reading it once before the loop would render stale
+        // roster/goal alongside fresh memo/events while both fingerprints saw only
+        // the new meta and declared success.
         let meta_bytes = read_meta();
         let roster = match roster(&meta_bytes) {
             Ok(pairs) => pairs,

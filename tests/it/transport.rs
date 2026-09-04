@@ -127,6 +127,9 @@ fn sc_017k_one_real_query_answers_present_absent_and_prefix_candidates_by_exact_
     // THE ARM THAT MAKES EVERY `unknown` ASSERTION IN THIS SUITE MEAN SOMETHING,
     // and — since the prefix candidate joined it — the arm that proves each
     // answer is bound to the RIGHT candidate rather than merely being the right
+    // set of answers. ONE server, ONE query, THREE candidates recorded on it,
+    // asserted PER NAME. A transport returning the correct statuses attached to
+    // the wrong sessions dies here by name.
     let scratch = scratch("live");
     require_tmux(&scratch);
     let socket = scratch.join("t.sock");
@@ -175,6 +178,8 @@ fn sc_017l_a_socket_that_is_not_a_server_is_unknown_and_never_stopped() {
     // THE ARM THAT CATCHES A TRANSPORT WHICH TREATS FAILURE AS ABSENCE. Empty
     // output from a failed query and empty output from a live server with no
     // sessions are the same bytes; only the exit status tells them apart. A
+    // transport that dropped it would report every session here `stopped` — ae
+    // asserting they are gone on the strength of a question that got no answer.
     let scratch = scratch("dead");
     // SELF-STANDING, DELIBERATELY.
     require_tmux(&scratch);
@@ -544,6 +549,7 @@ fn sc_017p_the_list_route_answers_each_seat_from_the_live_panes_and_the_publishe
     // THE SLICE'S OWN ARM. Everything before it proved the SESSION status comes
     // from a real server; nothing proved that the per-agent liveness and the
     // live branch `ae list` prints do. Both were `null` for every agent of every
+    // session by construction, and every assertion about them passed.
     let scratch = scratch("runtime");
     require_tmux(&scratch);
     let socket = scratch.join("t.sock");

@@ -401,6 +401,9 @@ fn revalidate(
     // The roster is an AUTHORIZED FACT, not merely a resolvable one: it was PRINTED at the
     // prompt as what the child will start, so a config rewritten during the window that now
     // resolves to a DIFFERENT roster must refuse — proving merely that SOME roster resolves
+    // would let a child start agents nobody approved. Edits made BEFORE compact are adopted;
+    // only a change DURING the window is caught here. Mirrors the frozen `_compact_revalidate`
+    // roster gate, and reads the current roster from the same config `resolve_workspace` did.
     let now_main = workspace.main.as_deref().unwrap_or_default();
     let now_roster = roster_string(now_main, workspace.workers.as_deref());
     if now_roster != frozen.roster {
@@ -652,6 +655,10 @@ pub(crate) fn teardown_step(
 // ── The semantic handover: wait for BOTH facts, or withdraw (slice B) ────────────
 //
 // The handover is delivered through the session's own `ask` (bash, pane-side) as a tracked
+// request from the reserved compact actor `ae:compact:<uuid>`, carrying a memo BASELINE in
+// its body. These two cores own the WAIT and the WITHDRAWAL — the stateful half the clean
+// cut keeps in Rust — and read the ledger and memo the frozen `_compact_wait_handover` /
+// `_compact_cancel_outstanding` read. Bash branches on the exit code alone.
 
 /// The poll interval between reads while waiting.
 const HANDOVER_POLL: Duration = Duration::from_secs(2);
@@ -1271,6 +1278,10 @@ mod tests {
     // ---- verify_stopped selector guard (C1) ----
     //
     // The recorded-server QUERY tri-state (present → Alive, answered-absent and
+    // clean-dead → Stopped, any other failure → Unknown) is the pure
+    // `crate::tmux::interpret_stopped`, unit-tested at its own site. Here we cover
+    // only what `verify_stopped` itself decides BEFORE any query: a non-positive
+    // selector fails closed without asking a server at all.
 
     #[test]
     fn stop_missing_or_ambiguous_selector_is_unknown() {

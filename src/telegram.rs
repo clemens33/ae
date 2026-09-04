@@ -774,6 +774,7 @@ impl Api {
             // A 200 with `ok:true` and no array to go with it is not a quiet
             // empty poll — it is a response this reader does not understand,
             // and treating it as "no updates" would advance nothing while
+            // reporting health.
             _ => Err(SendFailure::Malformed),
         }
     }
@@ -1154,6 +1155,7 @@ impl Outbound {
         // A FULL WINDOW WITH NO COMPLETE LINE IN IT is a record longer than the
         // pass can hold, and it would otherwise wedge the bridge in SILENCE:
         // every later pass reads the same prefix, finds no line, advances
+        // nothing and reports a clean, empty success forever. Say so instead.
         if as_bytes_count(window.len()) >= MAX_PASS_BYTES
             && complete_lines(&window).next().is_none()
         {

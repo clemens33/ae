@@ -162,6 +162,7 @@ pub fn follow(dir: &Path, out: &mut impl Write) -> io::Result<std::convert::Infa
     // `None` is "the replay window has not been taken yet", which is NOT the
     // same as offset zero: a container that exists but is still empty has
     // offset zero forever, and conflating the two re-entered the replay branch
+    // on every poll.
     let mut consumed: Option<usize> = None;
     loop {
         let body = read_container(&container);

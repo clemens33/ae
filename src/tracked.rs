@@ -334,6 +334,9 @@ pub fn lookup(target: &str, own_session: &str) -> Result<Lookup, ResolveError> {
     // Identity v2 makes a stamp the BARE NAME, and `_validate_agent_name`
     // forbids a `:` inside one — so `<session>:<name>` is free to mean across
     // sessions without the `@`, unambiguously, and `aedev:lead` addresses the
+    // same pane `@aedev:lead` does. The consequence is deliberate and is the
+    // point: `fable5:lead` is now a session named `fable5`, not an alias, so it
+    // no longer reaches a pane stamped `lead`.
     if let Some((session, name)) = target.split_once(':')
         && !session.is_empty()
         && !name.is_empty()
@@ -409,6 +412,8 @@ pub fn resolve_on(
             // A raw pane id is an unambiguous address on its own server, so there
             // is nothing to enumerate and no name to collide: the recorded server
             // only lets its stamps be read, and an unusable one leaves them empty
+            // (the frozen "stamps are simply empty when they cannot be read")
+            // rather than refusing. No mis-route is possible, so this never fails.
             let server = pane_server(dir);
             let observed = transport::observe_viewer(&server, &pane).unwrap_or_default();
             let agent = match (observed.agent, observed.session) {

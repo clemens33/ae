@@ -369,6 +369,7 @@ mod tests {
         // Three opposed cells, run twice: once with a positive NAME selector and
         // once with a positive SOCKET selector, because the typed halves address
         // different servers and a classifier that flattened them would pass with
+        // one and fail with the other.
         for (selector, server, spelling) in [
             (positive("B"), named("B"), "name:B"),
             (
@@ -840,6 +841,8 @@ mod tests {
         // An unreadable meta yields a MISSING selector — phase 1 derives no
         // pointer from bytes nobody could read — so this pairing is the only
         // consistent one, and it is `unknown` for the selector, not for the
+        // damage. The two axes stay orthogonal; they are just not independent
+        // in THIS direction, because the same failed read causes both.
         let mut damaged = record("damaged", ServerSelector::Missing);
         damaged.meta_read = MetaRead::Unreadable;
         let candidates = vec![
@@ -991,6 +994,7 @@ mod tests {
         // The MISSING-ANSWER branch, reached directly because no fixture can
         // reach it through `classify`: `Answers::gather` enumerates exactly the
         // servers the candidates name, so a candidate whose server has no entry
+        // is an internal inconsistency rather than a reachable state.
         let no_answers = Answers(Vec::new());
         let candidate = durable("orphan", positive("never-asked"));
         assert_eq!(

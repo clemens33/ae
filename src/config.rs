@@ -659,6 +659,8 @@ pub fn launch_plan(
     // A roster row bound to no seat is NOT a violation (ruled 2026-09-02, reversing
     // the v5 "dormant refuses" ruling): `[roster]` is the set of named agents this
     // workspace MAY launch, main/workers pick the defaults, and `use <name>` picks
+    // another — which is only possible if an unseated row is legal. Its profile is
+    // still validated above, so a typo in the binding is still caught.
     if violations.is_empty() {
         Ok(LaunchPlan { seats })
     } else {

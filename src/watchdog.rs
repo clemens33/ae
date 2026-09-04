@@ -826,6 +826,8 @@ pub fn sweep_step(
     // 1. The verdict. A FRESH heartbeat is the only healthy reading; Stale and
     //    Untrusted both mean "not sweeping", and the startup grace is what
     //    decides whether that is worth an alert yet. The grace runs from the
+    //    first DELIVERED prompt and the comparison is bash's strict `>`, so an
+    //    age exactly equal to the window is still starting up.
     let grace_secs = prior.first_delivered.map(|at| secs_between(seen.now, at));
     let verdict = match (seen.heartbeat, grace_secs) {
         (Heartbeat::Fresh, _) => SweepVerdict::MetaSweeping,
@@ -1378,6 +1380,7 @@ mod tests {
         // The ONE property that a ts-ordered implementation would get wrong while
         // every other test still passed: the newest APPENDED event carries an
         // OLDER timestamp than the one before it (clock skew, or a container
+        // stitched from two generations).
         let events = log(&[
             r#"{"ts":"2026-08-29T04:09:00Z","actor":"opus5:builder","action":"state","ref":"waiting-user"}"#,
             r#"{"ts":"2026-08-29T04:00:00Z","actor":"fable5:lead","action":"send","target":"opus5:builder","summary":"answered"}"#,
@@ -1393,6 +1396,12 @@ mod tests {
     // ---- Quiet detection --------------------------------------------------
     //
     // PANE_SPECIMEN is written from the renderings CAPTURED in the bash comment
+    // above `_watchdog_quiet_hash` (ae:15680-15700), plus the near-misses that
+    // must survive. AWK_ORACLE is not what this port is expected to produce —
+    // it is what the FROZEN BASH AWK actually produced when run over that
+    // specimen (2026-08-29, `awk -f <the awk, extracted verbatim from ae>`), so
+    // the expectation comes from the behavior authority and not from a second
+    // reading of it by the same author.
 
     const PANE_SPECIMEN: &str = r#"some ordinary prose from the agent
 

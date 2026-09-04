@@ -279,6 +279,7 @@ pub fn reap_legacy(
             // The recorded pid is deliberately NOT signalled here: the legacy
             // daemon IS the process in that pane, so the ownership-checked
             // `kill-pane` takes it with the pane, and a bare kill of a recorded
+            // pid is the stranger-kill this module exists to refuse.
             kill_owned_pane(server, &pane, session, Some(&stamp), err)?;
         }
         let _ = std::fs::remove_file(meta_dir.join(format!(".{name}.pid")));
@@ -617,6 +618,7 @@ mod tests {
         // The frozen `[[ -x "${AE_PATH_BIN:-}" ]]` guard, in its new subject: a
         // meta directory with no grandparent names no ae home, so there is no
         // config to read intent from — and the throttle must not record a tick
+        // that never ran, or the first real one would be delayed by a no-op.
         let mut deferred = Deferred::new(std::path::Path::new("meta"), None, 120);
         let server = named("nothing");
         assert!(!deferred.supervise(&server, "demo", SystemTime::UNIX_EPOCH));

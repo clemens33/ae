@@ -88,6 +88,11 @@ fn the_locked_agent_has_exactly_one_construction_site() {
     // TWO SITES SINCE SLICE Z4, and the second is deliberate rather than a
     // second set of defaults: `src/upgrade.rs` builds an agent with the same
     // lock except for `max_redirects`, because a GitHub release download
+    // answers with a 302 to its object store and there is no token in that URL
+    // to leak to it. What keeps the difference honest is the SHA-256 proof of
+    // the downloaded bundle — a redirect that lands somewhere unexpected is a
+    // checksum refusal, not an install. Both are listed rather than one
+    // exempted: a third agent is a line in a review, not a diff nobody read.
     assert_eq!(
         sites,
         vec!["telegram.rs", "upgrade.rs"],
@@ -236,6 +241,9 @@ fn the_one_durable_write_syncs_both_the_file_and_its_directory() {
     // An fsync is not observable from inside the process that issued it, so
     // this is a source-level guard and claims nothing more. What it protects is
     // the difference between atomic and durable: a rename is atomic for a
+    // reader while the directory entry is still unwritten, and a checkpoint that
+    // rolls back on power loss turns this bridge's honest one-item crash window
+    // into an unbounded one.
     let telegram = product("telegram.rs");
     let write = telegram
         .split_once("pub(crate) fn durable_write(")
@@ -360,6 +368,7 @@ fn the_append_only_invariant_is_recorded_where_it_is_spent() {
     // FIX 3 is resolved by PROOF rather than by a guard, so the artifact this
     // test protects is the proof itself: an unreachable case whose reasoning is
     // not written down becomes a mystery the next reader either re-derives or
+    // "fixes" with speculative machinery.
     let telegram = product_with_comments("telegram.rs");
     let start = telegram
         .split_once("fn start(")
@@ -394,6 +403,8 @@ fn every_read_goes_through_one_open_that_classifies_first() {
     // FIX 4 and FIX 6 together, and the strengthening is the point: it is no
     // longer "the credential reader classifies first", it is "there is ONE open
     // in this module and it classifies first". Four readers — config, token,
+    // cursor, event log — and one hardened pattern, so a fifth cannot acquire
+    // its own spelling by accident.
     let telegram = product("telegram.rs");
     assert_eq!(
         telegram.matches("fs::File::open").count(),
@@ -491,6 +502,10 @@ fn the_daemon_drops_the_word_channel_before_it_joins_the_poller() {
 // ─── the give-up's hard/transient split, against a real tmux server ──────
 //
 // The only branch of the inbound bridge's refusal classifier that a unit test
+// cannot reach: "hard" requires an enumeration that RAN and ANSWERED. The unit
+// side proves the fail-safe direction (every failure is transient); this proves
+// the arm that makes that direction mean something — without it, `Refusal::Hard`
+// is produced by nothing and the short bound is dead policy.
 
 /// A short scratch dir — `/tmp` directly, for `sun_path`'s 104 bytes on macOS.
 fn tg_scratch(tag: &str) -> std::path::PathBuf {

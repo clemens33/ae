@@ -170,6 +170,7 @@ pub fn launch_plan(
         // `-` is the shell-safe spelling of "none": a caller passing an empty
         // argument is easy to write and easy to lose, and both must mean the
         // same thing or a frozen roster with no workers would silently keep
+        // the config's.
         cfg.workers = Some(if workers == NONE {
             String::new()
         } else {
@@ -838,6 +839,9 @@ fn list(
     // FAIL CLOSED on a roster in doubt, BEFORE emitting a record: `Meta::parse`
     // drops the seats an anomaly touches, so the list would be shorter than the
     // file — and the resume that consumes this list republishes it through
+    // `_meta-init --replace`, deleting the dropped seats and their metadata for
+    // good (colead, integrated gate). Refusing here leaves the meta exactly as
+    // it is, for a human to repair.
     let doubts = identity_doubts(&current);
     if !doubts.is_empty() {
         return refuse(

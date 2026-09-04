@@ -302,6 +302,7 @@ fn resolve_plan(root: &Path, name: &str, purge_cli: Option<bool>) -> Plan {
         // CLEAN CUT, as `_compact-freeze` already rules for the same state: a
         // session with no valid id is unsupported old state, refused with a
         // refresh/migrate instruction rather than minted an id on the way to
+        // an immutable archive.
         return Plan {
             action: Action::Unavailable,
             detail: "it records no valid session id — refresh or migrate the session, then retry"
@@ -396,6 +397,11 @@ fn end_one(
     // ══ THE INVARIANT: ae NEVER deletes session state unless
     //    (a) the target was positively identified on ITS OWN recorded server
     //        and its kill was verified, or
+    //    (b) the human passed --assume-stopped for THIS single target, and the
+    //        full enumerable sweep found nothing AND left no unverifiable
+    //        socket standing, or
+    //    (c) the target's POSITIVE record names a server that verifiably lacks
+    //        the session.
     let selector = server_of(&bytes);
     let mut session_id: Option<String> = None;
     let mut server = None;

@@ -592,6 +592,7 @@ pub fn run(
     // ── The pane's own duties, which were the bash wrapper's until slice A.3 ──
     // Order is the frozen one (ae:14346-14372): the pidfile FIRST, because the
     // start path's registration wait is what releases the start lock; then the
+    // bars, so a pane that is up says so before its first cycle; then the banner.
     let pidfile = match crate::watchdog_glue::PidFile::publish(meta_dir) {
         Ok(published) => Some(published),
         Err(why) => {
@@ -633,6 +634,7 @@ pub fn run(
     // The pidfile is released by `PidFile`'s Drop — ownership-checked, so a
     // stop/start in quick succession never lets the dying process vandalise its
     // successor's registration (ae:13996-14000) — and Drop, not an explicit call,
+    // so EVERY return after publish releases it, the `?` exits above included.
     drop(pidfile);
     code
 }
@@ -1691,6 +1693,8 @@ mod tests {
         // The answer is APPLIED, and applied THROUGH the adopt — a decision
         // nothing assigns is a decision that did not happen, and a move that
         // assigns without retracting and resetting is the pair of defects the
+        // re-review found. `adopt_server` takes the old server BY VALUE, so the
+        // compiler already forbids keeping it; these hold the rest.
         assert_eq!(
             source
                 .matches(concat!("server = ", "adopt_server("))

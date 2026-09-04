@@ -1883,6 +1883,8 @@ mod tests {
         // #109 IN ONE ASSERTION. A `remain-on-exit` pane reports the EXITED
         // process's command, and `true` is not in shell set — so the
         // command field alone reads like a live agent. The only thing that
+        // separates it from a live pane is `pane_dead`, and this pins that the
+        // read carries it rather than discarding it.
         let exited = interpret_panes(true, "1 | worker | true\n").expect("success");
         assert_eq!(exited, vec![pane(Some(true), Some("worker"), Some("true"))]);
         assert_eq!(

@@ -997,6 +997,9 @@ impl ae::inventory::Discovery for Down {
 // ---- criterion 3: presentation output does not re-derive any planted snapshot fact ---
 //
 // Live gate blob 8cccbe44: one fixed snapshot, two opposed external worlds AFTER
+// `presentation enter`, through the real `ae::current_world` → `Presentation::enter`
+// → `list`/`ls` route. An injected `World` never observed those bytes, so a
+// re-derivation on the real path was invisible.
 
 /// One row's planted external facts.
 #[derive(Clone, Copy)]
@@ -1665,6 +1668,11 @@ fn is_product_line(file: &str, line: usize) -> bool {
     // THE CUT IS THE TEST MODULE, NOT THE FIRST `#[cfg(test)]`, and the
     // difference is a hole this tripwire used to have. A module that gates an
     // individual ITEM on `#[cfg(test)]` — `src/telegram.rs` gates its loopback
+    // egress seam that way, near the top of the file — put every line after that
+    // item on the test side of an "up to the first marker" cut, and the guard
+    // then inventoried the first eighty lines of the file and reported the rest
+    // as tests. A new product door below it was invisible, which is the one
+    // thing this test exists to prevent.
     let Some(module) = text.find("\nmod tests {") else {
         return true;
     };
@@ -1677,6 +1685,16 @@ fn criterion_3_the_places_this_crate_can_read_the_world_are_the_inventoried_ones
     // A TRIPWIRE OVER ENTRY POINTS, AND ITS LIMIT IS THE TEST. `clippy.toml`
     // names twelve resolved paths; safe std still exposes `canonicalize`,
     // `read_link`, `OpenOptions::open` and `DirEntry` observations, and a
+    // discarded call to any of them slips straight past. (`symlink_metadata`
+    // WAS on that unlisted list and is now the twelfth entry — the example
+    // moved because the door did, which is what the list is for.)
+    // `unsafe_code = "forbid"` still closes the LIBC route. The other premise —
+    // empty dependency tables, closing the THIRD-PARTY route — FELL on
+    // 2026-08-29 when ureq and rustls arrived with the Telegram bridge, so this
+    // list now describes ae's own source and not the compiled artifact. Neither
+    // premise ever closed an unlisted safe-std route, and reading them as
+    // covering the enumeration is what let an earlier version of this file call
+    // a name list a boundary.
     let sites = world_reading_sites();
     assert!(
         !sites.is_empty(),
@@ -1701,10 +1719,16 @@ fn criterion_3_the_places_this_crate_can_read_the_world_are_the_inventoried_ones
             // The archive PUBLISHER's reads (P3.3): the coherent snapshot of
             // meta/memo/events under their locks, the messages/*.txt staging
             // classification, the staged-tree validation stats, and the
+            // directory `fsync` that makes the rename durable. The doors moved
+            // here in P3.4 into the ONE shared archive store that publish,
+            // inherit (`--from`) and purge all read the world through — so this
+            // single file, not three, is the inventoried reader for all of them.
             "src/archive/store.rs".to_owned(),
             // The OPAQUE event-container read and existence test, shared by the
             // `requests` and `events-tail` surfaces. One file rather than two:
             // both surfaces read the same container the same quiet way, so the
+            // read sits with the framing in `event_text` and neither surface
+            // module opens anything itself.
             "src/compact.rs".to_owned(),
             // The minimal `[workspace]` config reader (P3.7a): the INI read
             // behind compact's roster and purge-policy resolution.
@@ -1722,6 +1746,11 @@ fn criterion_3_the_places_this_crate_can_read_the_world_are_the_inventoried_ones
             // THE INSTALLER'S OWN DOORS (slice Z4): the bundle members read to
             // be hashed, the `lstat` that classifies every member and every
             // publication destination WITHOUT following a link, the journal
+            // read that a rollback replays, and the enumeration of a
+            // transaction-private tree whose 0555 members have to be re-moded
+            // before they can be removed. Registered deliberately: this is the
+            // only module that writes into `~/.ae/versions`, and the only one
+            // that hashes anything at all.
             "src/install.rs".to_owned(),
             "src/inventory.rs".to_owned(),
             "src/lib.rs".to_owned(),
@@ -1740,6 +1769,9 @@ fn criterion_3_the_places_this_crate_can_read_the_world_are_the_inventoried_ones
             // The two document renders' own reads (A.2c): the INI config behind
             // the profile inventory and `prompt.instructions`, and the `[[ -f
             // ]]` that decides whether a parent archive's digest is still on
+            // machine. Its meta reads are `meta.rs`'s inventoried door, not new
+            // ones here. Registered deliberately — a render that reaches the
+            // world is a line in a review, not a diff nobody read.
             "src/rename.rs".to_owned(),
             "src/render.rs".to_owned(),
             // The git branch read: `HEAD` under the session's own work tree,
@@ -1750,6 +1782,11 @@ fn criterion_3_the_places_this_crate_can_read_the_world_are_the_inventoried_ones
             // The LAUNCH operation's own reads (B move 3): the `.ending.<name>`
             // tombstone lstats (a dangling link is a standing tombstone, so
             // never `metadata`), the origin/work-dir existence gates, the
+            // canonicalise behind the derived-name ownership guard, the
+            // `--copy` mode's recursive tree walk, and the resume-time
+            // events.jsonl retention read. Its meta and config reads are
+            // `meta.rs`'s and `config.rs`'s inventoried doors, not new ones
+            // here. Registered deliberately.
             "src/session_launch.rs".to_owned(),
             // The post-launch session-id capture's reads (B move 3, widened to
             // every capture tool): the `codex.<slot>.sid` file codex's own
@@ -1758,6 +1795,9 @@ fn criterion_3_the_places_this_crate_can_read_the_world_are_the_inventoried_ones
             // THE INSTALL SELF-VALIDATION (slice Z3): the three `lstat`s that
             // prove the version directory's members are regular non-symlink
             // files, and the manifest read that proves the directory is the one
+            // `install` published. `symlink_metadata`, never `metadata` — a
+            // member that is a link to a mutable file outside the immutable
+            // directory passes every follow-test and is then EXECUTED as ours.
             "src/shape.rs".to_owned(),
             // The LOCAL-mode teardown's own reads (P3.5): the `lstat` that
             // proves the session dir is a real direct child and never a link,
@@ -1766,10 +1806,20 @@ fn criterion_3_the_places_this_crate_can_read_the_world_are_the_inventoried_ones
             // The outbound Telegram bridge's own reads (P4.3): the event log's
             // identity and length, the log body read from the cursor, the
             // durable cursor itself, and the two reads behind the credentials —
+            // the INI config and the bot-token file. Registered deliberately,
+            // and it is the door with the highest stakes on this list: what it
+            // reads is a secret, and where it sends the result is the public
+            // internet.
             "src/telegram.rs".to_owned(),
             // The bridge LIFECYCLE's own reads: the INI config it decides
             // intent from and rewrites, the two state files `status` reports
             // on, the autostart-refusal record, and the config's own mode so an
+            // atomic rewrite does not re-permission it. The credential check is
+            // `telegram.rs`'s inventoried door, not a second one here — the
+            // lifecycle asks the DAEMON'S loader whether a start can work, so
+            // there is one reader of the token and it is the one with the
+            // custody rules. Registered deliberately: a command that can start a
+            // daemon holding a secret is not one to gain a quiet new read.
             "src/telegram_lifecycle.rs".to_owned(),
             // `ae upgrade` READS NOTHING since slice Z4, and its absence from
             // this list is the change.
@@ -1946,6 +1996,9 @@ fn sc_017q_the_entry_point_reports_unknown_agents_rather_than_dead_ones() {
     // END TO END, and the reason it holds is the INJECTION, not the build. An
     // earlier version of this comment said "this build has no transport, so no
     // pane can be observed" — a claim about the product, which stopped being
+    // true the moment a real transport landed, while the test kept passing for
+    // an entirely different reason and would have taught the next reader the
+    // wrong one.
     let root = std::env::temp_dir().join(format!("ae-p3-agents-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     let dir = root.join("sessions").join("AlphaR");

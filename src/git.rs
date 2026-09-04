@@ -306,6 +306,10 @@ pub(crate) fn work_tree_dirty(wdir: &[u8]) -> bool {
 // ---- the end path's git leg ------------------------------------------------
 //
 // `ae end` commits and pushes a managed session's work before anything is
+// deleted. Every call below is one fixed [`Query`] through the same sealed
+// [`GitArgv`] door, so the whole leg adds argv SHAPES and no new capability:
+// the work-tree path stays one OS-native element after `-C`, and a branch or
+// commit message rides as its own element with no shell anywhere.
 
 /// Whether `wdir` is inside a git work tree — the frozen end path's repo
 /// precondition, judged by exit status exactly as `git -C … rev-parse

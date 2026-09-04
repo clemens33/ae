@@ -864,6 +864,7 @@ mod tests {
         // This test previously asserted Display, which is the bug it was named
         // for: an event that says "I am routed" and then fails to say where
         // must not be answerable by a name a display-only counterpart also
+        // carries. Either half alone, on either side.
         for keys in [r#""actor_slot":"main""#, r#""actor_session":"my-feature""#] {
             let line = format!(
                 r#"{{"ts":"2026-05-19T07:29:45Z","actor":"claude:lead","action":"send","target":"codex:coworker",{keys}}}"#
@@ -1828,6 +1829,7 @@ mod tests {
         // `nudge` is the load-bearing entry: the watchdog writes it, it names
         // the agent as TARGET, and it is what PRECEDES an alert — so a reader
         // that let it carry a verdict would answer from the question instead of
+        // from the answer.
         for action in ["state", "send", "nudge", "ask", "reply", "memo", "recover"] {
             assert_eq!(
                 event(action, Some("agent process dead — dropped to shell")).alert_meaning(),
@@ -1872,6 +1874,9 @@ mod tests {
         // Added after moving this comparison onto the type: mutating the routed
         // arm to compare the SLOT ONLY survived the nextest lane, because the
         // only assertion covering it was the doctest — and nextest does not run
+        // doctests. `just rust-check` caught it, the fast lane did not. Same
+        // slot in another session is another agent, and that is the whole point
+        // of a churn-proof key.
         let here = Identity::Routed {
             slot: "main",
             session: "s",

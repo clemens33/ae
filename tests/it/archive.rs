@@ -158,6 +158,11 @@ fn a_non_regular_event_container_is_a_named_refusal_and_never_blocks() {
     // A preview must not leave its session directory to render linked or
     // special-node bytes (colead ruling, P3.1). events.jsonl replaced by, in
     // turn: a FIFO (an ungated open would block on it forever), a directory, a
+    // symlink to a REGULAR file (the escape the follow variants would render), a
+    // symlink to a directory, and a symlink to a FIFO. Each must return promptly
+    // (never block), refuse by name at rc=1 with NO digest on stdout, and write
+    // nothing. This is the intentional divergence from the frozen `[[ -f ]]`,
+    // which follows the symlink-to-regular and treats the FIFO/dir as absent.
     let scratch = Scratch::new("hostile");
     for kind in [
         "fifo",
@@ -453,6 +458,7 @@ fn a_doubtful_v2_roster_refuses_the_whole_preview() {
     // A slot claimed by BOTH prefixes, a seat with no name, a repeated seat
     // key, or one NAME on two seats refuses the whole preview: a roster in
     // doubt is a FAILED archive, never a partial one — the exact two-line
+    // refusal, nothing rendered, nothing written.
     let scratch = Scratch::new("v2doubt");
     let both =
         "archive: slot 'main' is named by both agent.main and seat.main; the roster is in doubt.";

@@ -100,6 +100,7 @@ pub fn compose(
     // The store publishes `<stem>.<action>.<unique>.txt` and nothing else, so
     // this is a check on ae's own writer, not a user-supplied filename — the
     // case-insensitive comparison clippy suggests would accept a name this
+    // path can never produce.
     if std::path::Path::new(name)
         .extension()
         .is_none_or(|ext| ext != "txt")

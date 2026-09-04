@@ -566,6 +566,7 @@ fn criterion_13_the_degraded_cells_are_reachable_rather_than_asserted() {
     // A fresh recorder, not the matrix one with another entry appended: the
     // double answers with the FIRST world it holds for a server, so a second
     // `live` for the same server is shadowed and the fixture would silently
+    // describe an empty B.
     let snapshot = classify(
         inventory(vec![candidate]),
         &Recorder::new().live(named("B"), &[("both", Some("both"))]),
@@ -1014,6 +1015,7 @@ fn criterion_20_typed_name_and_socket_routing_reach_two_different_real_servers()
     // Two ISOLATED tmux servers, addressed by the product's own derived
     // arguments. A mock that received the right argv would prove the mapping;
     // this proves the mapping ARRIVES — each server answers with its own
+    // sessions and neither can answer for the other.
     let scratch = PathBuf::from(format!("/tmp/ae-p2-{}", std::process::id()));
     let _ = fs::remove_dir_all(&scratch);
     assert!(fs::create_dir_all(&scratch).is_ok(), "a short scratch dir");
@@ -1185,6 +1187,10 @@ fn criterion_14_the_named_read_functions_appear_only_where_they_should() {
     // A TRIPWIRE, AND ITS LIMIT IS PART OF THE TEST. This scans for three
     // NAMES. It cannot see a filesystem observation spelled some other way —
     // `Path::exists`, `metadata`, `File::open`, a helper that wraps any of them
+    // — and an earlier version of this guard claimed "exactly one filesystem
+    // call outside the tests" while enforcing only these three. That claim was
+    // broader than its enforcement, and a second observation lived inside it
+    // for a whole review cycle.
     let modules = product_source();
     assert!(
         modules.iter().any(|(name, _)| name == "liveness.rs")
