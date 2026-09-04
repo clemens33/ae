@@ -80,14 +80,6 @@ impl Reason {
         }
     }
 
-    /// The inverse of [`Reason::as_str`].
-    #[must_use]
-    pub fn from_str_exact(text: &str) -> Option<Self> {
-        Self::BY_SEVERITY
-            .into_iter()
-            .find(|reason| reason.as_str() == text)
-    }
-
     /// The session-level marker: the single most-actionable reason across the
     /// session's agents, or `None` when nothing needs attention.
     ///
@@ -160,10 +152,7 @@ mod tests {
     }
 
     #[test]
-    fn every_reason_round_trips_through_its_published_spelling() {
-        for reason in Reason::BY_SEVERITY {
-            assert_eq!(Reason::from_str_exact(reason.as_str()), Some(reason));
-        }
+    fn every_reason_publishes_the_spelling_the_digest_carries() {
         assert_eq!(
             Reason::BY_SEVERITY.map(Reason::as_str),
             [
@@ -187,13 +176,6 @@ mod tests {
                 format!("attn:{reason}"),
                 format!("attn:{}", reason.as_str())
             );
-        }
-    }
-
-    #[test]
-    fn text_that_is_not_a_documented_reason_is_not_one() {
-        for other in ["", "DEAD", "waiting_user", "working", "done", "idle"] {
-            assert_eq!(Reason::from_str_exact(other), None, "{other:?}");
         }
     }
 

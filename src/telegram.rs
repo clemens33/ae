@@ -574,14 +574,6 @@ impl fmt::Display for SendFailure {
 
 impl std::error::Error for SendFailure {}
 
-impl SendFailure {
-    /// Whether retrying the same event could plausibly succeed.
-    #[must_use]
-    pub fn is_transient(self) -> bool {
-        !matches!(self, Self::Status(StatusClass::ClientError, _))
-    }
-}
-
 // ─── the locked client ───────────────────────────────────────────────────
 
 /// A Telegram API client bound to one bot token and one chat.
@@ -1875,14 +1867,6 @@ mod tests {
                 Err(SendFailure::Status(class, status))
             );
         }
-    }
-
-    #[test]
-    fn a_client_error_is_not_transient_and_everything_else_is() {
-        assert!(!SendFailure::Status(StatusClass::ClientError, 400).is_transient());
-        assert!(SendFailure::Status(StatusClass::ServerError, 503).is_transient());
-        assert!(SendFailure::Timeout.is_transient());
-        assert!(SendFailure::Rejected.is_transient());
     }
 
     // ─── hostile responses ───────────────────────────────────────────────
