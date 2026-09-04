@@ -1,11 +1,8 @@
 //! `telegram start|stop|status` — the machine-global bridge's LIFECYCLE.
 //!
-//! P4.3 gave the core the bridge itself (`_telegram-run`, see
-//! [`crate::telegram::bridge`]) and left bash managing it: `cmd_telegram_start`
-//! / `_stop` / `_status`, `_telegram_spawn_daemon` and
-//! `_telegram_autostart_if_enabled` owned the intent flag, the
-//! control lock, the tmux session and the autostart. This module is that
-//! management, ported.
+//! The bridge itself is [`crate::telegram::bridge`] (`_telegram-run`); this
+//! module owns the intent flag, the control lock, the tmux session and the
+//! autostart around it.
 
 use std::io::{self, Write};
 use std::path::Path;
@@ -17,10 +14,10 @@ use crate::state::{EXIT_FAILED, EXIT_USAGE};
 use crate::telegram::bridge::Paths;
 use crate::{lifecycle, tmux, transport};
 
-/// The frozen usage line, plus the two path and two server flags.
+/// The usage line, plus the two path and two server flags.
 pub const USAGE: &str = "Usage: ae telegram <start|stop|status> [--config <file>] [--home <dir>] [--server-kind <kind>] [--server <value>]";
 
-/// The tmux session the bridge runs in — the frozen `_TELEGRAM_TMUX_SESSION`.
+/// The tmux session the bridge runs in.
 pub const TMUX_SESSION: &str = "ae-telegram";
 
 /// The bridge's own state directory under `<ae-home>`.
@@ -35,10 +32,10 @@ const CONTROL_LOCK: &str = "control.lock";
 /// The last-refusal record's name inside it.
 const REFUSAL_FILE: &str = "autostart-refusal";
 
-/// How long `start`/`stop` wait for the control lock — the frozen `flock -w 5`.
+/// How long `start`/`stop` wait for the control lock.
 const CONTROL_WAIT: Duration = Duration::from_secs(5);
 
-/// The two state files `status` reports on, in the frozen order.
+/// The two state files `status` reports on, in order.
 const STATE_FILES: [&str; 2] = ["tg_offset", "current_target"];
 
 /// What the argv asked for.
@@ -150,7 +147,7 @@ pub fn run(
             return Ok(EXIT_USAGE);
         }
     };
-    // The frozen dispatcher defaulted a bare `ae telegram` to `status`.
+    // A bare `ae telegram` is `status`.
     match action.unwrap_or(Action::Status) {
         Action::Status => status(&paths, &server, out),
         Action::Start => start(&paths, &server, out, err),
@@ -450,7 +447,7 @@ fn record_refusal(paths: &Paths, refusal: Refusal, session: &str, session_dir: &
     }
     // A session name is optional in the record and is never needed to identify
     // the refusal — so it is validated before it becomes an event target, rather
-    // than letting legacy metadata become a new interpolation sink.
+    // than letting stored metadata become a new interpolation sink.
     if !lifecycle::name_is_valid(session) {
         return;
     }
@@ -575,7 +572,7 @@ pub fn persist_intent(config: &Path, value: bool) -> io::Result<()> {
     publish(config, next.as_bytes(), mode)
 }
 
-/// The config text with `[telegram] enabled` set — the frozen awk pass, ported.
+/// The config text with `[telegram] enabled` set.
 #[must_use]
 pub fn rewritten(current: Option<&str>, value: bool) -> String {
     let value = if value { "true" } else { "false" };
@@ -814,8 +811,8 @@ mod tests {
             interpret_refusal("spawn-failed\t2026-09-03T10:11:12Z\n"),
             Some(("spawn-failed", "2026-09-03T10:11:12Z".to_owned()))
         );
-        // The retired categories still DISPLAY: a machine that ran the frozen
-        // glue can hold one, and refusing it would hide a refusal that happened.
+        // A category this ae does not write still DISPLAYS: a machine can hold
+        // an older record, and refusing it would hide a refusal that happened.
         assert!(interpret_refusal("aewatch-live\t2026-09-03T10:11:12Z\n").is_some());
         for raw in [
             "",

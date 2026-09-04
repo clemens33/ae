@@ -1,20 +1,19 @@
-//! The public entry, black-box: the whole surface `ae-glue`'s `case` statement
-//! used to answer, and since slice Z3 the whole surface `ae-entry` answered too.
+//! The public entry, black-box: the whole surface a human types at `ae`.
 //!
 //! The subject is the real binary, because the subject IS what a human typed at
 //! `ae`: which environment DOOR supplies which fact, which word routes where,
 //! what a cut word does instead of becoming a session name, and what a first run
 //! leaves behind.
 //!
-//! THERE IS NO PREAMBLE TO SPELL ANY MORE. Every flag the wrapper used to hand
-//! over is an environment variable this rig sets, or the working directory it
-//! runs in — which is exactly the contract the product now has with a shell.
+//! THERE IS NO PREAMBLE TO SPELL. Every fact the product reads is an
+//! environment variable this rig sets, or the working directory it runs in —
+//! which is the whole contract ae has with a shell.
 //!
 //! ONE DOOR IS NOT BLACK-BOXED HERE, and the reason is that it has no black-box
 //! surface: `TMUX_PANE` only changes an answer when it names a pane that is a
 //! REAL ae agent's on the resolved server, and every refusal short of that is
 //! the same sentence with the door set or unset (measured). Planting one costs
-//! a full launch with an agent in it, which is the bash suite's job. What is
+//! a full launch with an agent in it. What is
 //! pinned here instead is the half that can be: the router appends `--pane` for
 //! `stop` and `watchdog` and only when the caller named none
 //! (`src/entry.rs`'s `the_pane_is_appended_only_when_the_caller_named_none`),
@@ -281,7 +280,7 @@ fn no_home_and_no_ae_home_is_the_one_refusal_the_doors_can_make() {
     );
 }
 
-/// THE FROZEN PREAMBLE IS GONE, and its flags are ordinary argv now.
+/// A preamble flag is ordinary argv, and ae does not answer to it.
 #[test]
 fn a_preamble_flag_is_no_longer_a_flag_ae_answers_to() {
     let rig = Rig::new("nopreamble");
@@ -393,8 +392,8 @@ fn a_launch_candidate_becomes_a_session_from_the_preamble_facts() {
     let sock = rig.sock.clone();
     let (code, stdout, stderr) = rig.run_on(Some(&sock), &["--local", "entryone"]);
     // The ATTACH is what decides the code, and it cannot succeed here: `ae
-    // <name>` always attaches — the wrapper passed `--attach` unconditionally
-    // and there is no door that says otherwise — and a test process has no
+    // <name>` always attaches, and there is no door that says otherwise — and
+    // a test process has no
     // terminal to hand to tmux. The session is what this row is about, and it
     // is built before the attach is even attempted.
     assert_ne!(code, Some(2), "not a usage error: {stdout}\n{stderr}");
@@ -568,7 +567,7 @@ fn the_first_run_seeds_the_config_only_after_the_dependency_check() {
             "the config was seeded before the gate refused"
         );
 
-        // The same launch with a bash the gate accepts writes it, and says so on
+        // The same launch with a PATH the gate accepts writes it, and says so on
         // STDERR — the launch's stdout belongs to the session it is about to become.
         let (_, stdout, stderr) = rig.run(&["seedme"]);
         assert!(rig.config().exists(), "{stderr}");
@@ -704,9 +703,8 @@ fn the_human_words_reach_the_core_entries_behind_them() {
     }
 }
 
-/// `ae doctor` is told which bash ran the wrapper — the one fact the core
-/// cannot see, since probing `bash --version` would report whatever is first on
-/// PATH rather than the interpreter ae re-exec'd into.
+/// `ae doctor` names the binary answering and no interpreter: ae ships none, so
+/// there is no interpreter version for it to report.
 #[test]
 fn doctor_names_the_binary_answering_and_no_interpreter() {
     let rig = Rig::new("doctor");

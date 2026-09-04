@@ -1,7 +1,7 @@
 //! The identity v2 core entries: `_launch-plan`, `_meta-init` and `_roster`.
 //!
-//! These are the four things bash may no longer decide for itself once a
-//! session's identity is alias-free — which config the workspace resolves to,
+//! Four things the core decides for an alias-free session identity — which
+//! config the workspace resolves to,
 //! what the first meta says, how a seat is added or removed, and what the
 //! roster currently is. Each is an underscored core entry (never human-typed)
 //! and each speaks ONE framing, described below.
@@ -463,8 +463,8 @@ pub fn roster(
     }
 }
 
-/// Every anomaly that puts the roster's IDENTITY in doubt, rendered: a retired
-/// v1 row, one name on two seats, a malformed roster row or line, and a
+/// Every anomaly that puts the roster's IDENTITY in doubt, rendered: a v1
+/// row, one name on two seats, a malformed roster row or line, and a
 /// duplicate or unreadable key under an identity prefix.
 fn identity_doubts(current: &Meta) -> Vec<String> {
     current
@@ -658,10 +658,10 @@ struct AddSeatFlags {
     sid: Option<String>,
 }
 
-/// The refusal a retired v1 roster earns.
+/// The refusal a v1 roster earns.
 ///
-/// ae does not migrate `agent.<slot>` into a v2 seat any more, so the only way
-/// forward from one is a fresh session. Names the session, because the operator
+/// ae does not migrate `agent.<slot>` into a v2 seat, so the only way forward
+/// from one is a fresh session. Names the session, because the operator
 /// meets this through a helper that does not repeat which one it acted on.
 fn fresh_start_refusal(dir: &Path) -> String {
     let session = dir
@@ -1070,9 +1070,9 @@ mod tests {
                 vec!["end", "2"],
             ]
         );
-        // The uniform arity is the contract one bash `read` of eight variables
-        // depends on: a record that grew or shrank would silently shift the
-        // command into the wrong variable.
+        // The uniform arity is the contract a fixed-field reader depends on: a
+        // record that grew or shrank would silently shift the command into the
+        // wrong field.
         for record in &records[..2] {
             assert_eq!(record.len(), 8, "{record:?}");
         }
@@ -1189,7 +1189,7 @@ mod tests {
 
     #[test]
     fn a_replace_publish_takes_a_pre_grammar_name_verbatim_and_a_create_refuses_it() {
-        // #59 C3-2, the resume half: the name came out of the session's own meta,
+        // The resume half: the name came out of the session's own meta,
         // not from a human, and refusing it would strand the session. A fresh
         // launch (no --replace) still holds the grammar.
         let scratch = seeded("restored");
@@ -1304,7 +1304,7 @@ mod tests {
         );
         assert_eq!((code, err.as_str()), (0, ""));
         assert_eq!(out, format!("slot{US}spawned.0\nend{US}1\n"));
-        // A bash-era row nobody cleaned up still CLAIMS its index: allocating
+        // A stale row nobody cleaned up still CLAIMS its index: allocating
         // over it would let a fresh seat inherit a stale launch id.
         std::fs::write(
             scratch.dir().join("meta"),
@@ -1550,7 +1550,7 @@ mod tests {
                 vec!["end", "2"],
             ]
         );
-        // A profile whose command is no longer one simple command is
+        // A profile whose command is not one simple command is
         // unresolved too: it is defined, and it still may not reach a pane.
         let broken = scratch.file(
             "broken",
@@ -1566,9 +1566,9 @@ mod tests {
 
     #[test]
     fn list_refuses_a_roster_in_doubt_and_leaves_the_meta_untouched() {
-        // Colead, integrated gate: one name on two seats used to list the main
-        // seat alone with rc 0 — and the resume consuming that list republished
-        // it, deleting both worker seats for good.
+        // One name on two seats must REFUSE: a list showing the main seat alone
+        // would be consumed by a resume and republished, deleting both worker
+        // seats for good.
         let doubtful = [
             (
                 "schema=2\nseat.main=lead\nprofile.main=fable5\nagent_bin.main=claude\n\

@@ -1,12 +1,8 @@
-//! Pane DELIVERY, in the core (B move 1).
+//! Pane DELIVERY, in the core.
 //!
-//! What the frozen `helper_send_body` and `ae_submit_pasted_message` did, done
-//! here: the dead-pane refusal, the provenance envelope, the recovery-body
-//! store, the per-target lock, the busy/human-presence deferral, the bracketed
-//! paste, the oversize notice with its on-screen proof, and the submit
-//! verification. The callback into bash (`_send-deliver`) is no longer on this
-//! path; the glue's copy stays until it is cut, and is not read by anything
-//! here.
+//! The dead-pane refusal, the provenance envelope, the recovery-body store, the
+//! per-target lock, the busy/human-presence deferral, the bracketed paste, the
+//! oversize notice with its on-screen proof, and the submit verification.
 
 pub mod notice;
 pub mod region;
@@ -132,8 +128,8 @@ pub enum Failure {
     Unconfirmed {
         /// The published recovery body, still readable.
         body_file: String,
-        /// Whether the failure was the notice's on-screen proof, which is the
-        /// arm the frozen body records a `delivery-failed` event for.
+        /// Whether the failure was the notice's on-screen proof — the arm that
+        /// records a `delivery-failed` event.
         notice: bool,
     },
 }
@@ -427,12 +423,11 @@ pub fn input_ready(server: &ServerId, pane: &str, tool: Tool) -> bool {
         .is_some_and(|screen| region::composed_ui(&screen))
 }
 
-/// How often the launch readiness wait re-reads the pane — the frozen
-/// `_wait_input_ready`'s `sleep 0.5`.
+/// How often the launch readiness wait re-reads the pane.
 const READY_POLL: Duration = Duration::from_millis(500);
 
-/// Wait, bounded, until `pane` will accept a paste — the frozen
-/// `_wait_input_ready`, whose `polls` this counts in the same units.
+/// Wait, bounded, until `pane` will accept a paste; `polls` counts
+/// [`READY_POLL`] periods.
 #[must_use]
 pub fn wait_input_ready(server: &ServerId, pane: &str, tool: Tool, polls: u32) -> bool {
     for _ in 0..polls {
@@ -612,8 +607,8 @@ fn clear_is_measurable(server: &ServerId, pane: &str, tool: Tool) -> bool {
     }
 }
 
-/// The tmux buffer this delivery stages in — the frozen `ae-send-$$`, made
-/// per-pane as well as per-process so two concurrent deliveries from one
+/// The tmux buffer this delivery stages in, named per-pane as well as
+/// per-process so two concurrent deliveries from one
 /// process cannot share one.
 fn buffer_name(pane: &str) -> String {
     let sanitized: String = pane
@@ -643,7 +638,7 @@ pub fn store_body(
     let stem = if is_name_safe(reference) {
         reference.to_owned()
     } else {
-        // The frozen fallback is a UTC stamp.
+        // The fallback is a UTC stamp.
         let stamp = crate::time::Timestamp::now().to_string();
         format!(
             "msg-{}",
@@ -695,7 +690,7 @@ pub fn store_body(
     Err(last)
 }
 
-/// The name grammar the frozen store screens a ref and an action against.
+/// The name grammar the store screens a ref and an action against.
 fn is_name_safe(text: &str) -> bool {
     !text.is_empty()
         && text
@@ -818,7 +813,7 @@ mod tests {
     )]
     fn a_legacy_v1_meta_supplies_no_recorded_binary_and_is_not_an_empty_v2_session() {
         // The delivery path reads `agent_bin.<slot>` THROUGH the roster, so a
-        // meta this ae no longer serves must answer nothing rather than panic
+        // meta this ae does not serve must answer nothing rather than panic
         // or invent a tool. The three arms are the ones that can be confused.
         let dir = std::env::temp_dir().join(format!("ae-deliver-legacy-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);

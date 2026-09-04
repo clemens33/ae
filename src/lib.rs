@@ -33,7 +33,7 @@ pub mod inventory;
 pub mod json;
 pub mod launch;
 pub mod launch_cmd;
-/// The whole `end`/`stop`/`compact` operations — the frozen order, in one place.
+/// The whole `end`/`stop`/`compact` operations, in one place.
 pub mod lifecycle;
 pub mod listing;
 pub mod liveness;
@@ -183,8 +183,7 @@ pub fn run(args: &[String], out: &mut impl Write, err: &mut impl Write) -> Resul
     // TWO WORDS ARE OWED AN ANSWER ON A BROKEN INSTALL, and they are the ONLY
     // two, which is why they sit ahead of the gate: `version` is how a mismatch
     // is diagnosed, so it may not depend on the thing it diagnoses, and
-    // `upgrade` is how one is repaired. This is the wrapper's own ordering,
-    // kept.
+    // `upgrade` is how one is repaired.
     match args.first().map(String::as_str) {
         Some("version" | "--version" | "-V") => {
             writeln!(out, "{}", version_line())?;
@@ -432,7 +431,8 @@ fn current_session_name(preamble: &entry::Preamble) -> Option<String> {
     lifecycle::dir_exists(&preamble.sessions().join(&name)).then_some(name)
 }
 
-/// Whether `name` may be used for an EXISTING session — the migration shape.
+/// Whether `name` may be used for an EXISTING session: the grammar, or a
+/// pre-grammar name that is already a direct-child directory.
 fn session_name_usable(preamble: &entry::Preamble, name: &str) -> bool {
     if session_launch::name::is_session_name(name) {
         return true;
@@ -529,7 +529,7 @@ fn seed_default_config(path: &std::path::Path, err: &mut impl Write) -> Result<O
     Ok(None)
 }
 
-/// Whether `path` is a regular file — the frozen `[[ -f ]]`, symlinks followed.
+/// Whether `path` is a regular file, symlinks followed.
 fn regular_file(path: &std::path::Path) -> bool {
     #[allow(
         clippy::disallowed_methods,
@@ -539,7 +539,7 @@ fn regular_file(path: &std::path::Path) -> bool {
     probe.is_ok_and(|meta| meta.is_file())
 }
 
-/// The `_say` arm: the frozen `helper_say_main`.
+/// The `_say` arm.
 fn run_say(
     dir: &std::path::Path,
     tail: &[String],
@@ -648,8 +648,8 @@ fn run_next(
         return Ok(0);
     }
 
-    // The ambient server, which is what the frozen `tmux()` shim resolves to
-    // when no `AE_TMUX_SERVER` redirects it.
+    // The ambient server: where a call lands when no `AE_TMUX_SERVER` redirects
+    // it.
     let server = inventory::ServerId::Ambient;
 
     // Re-validate EXACTLY: the session may have ended between the scan and the
@@ -722,7 +722,7 @@ fn run_goal(
     }
 }
 
-/// The `_ask`/`_review` arm: the frozen `ae_tracked_send`, with the paste
+/// The `_ask`/`_review` arm, with the paste
 /// delegated to the session's own `send` helper — see [`tracked`].
 fn run_tracked(
     kind: tracked::Kind,
@@ -783,8 +783,8 @@ fn send_defer() -> std::time::Duration {
         .map_or(deliver::DEFAULT_DEFER, std::time::Duration::from_secs)
 }
 
-/// The frozen event-field contract of the send body, read off this process's
-/// environment exactly where `ae_emit_event` and `helper_send_body` read it:
+/// The event-field contract of the send body, read off this process's
+/// environment:
 /// `AE_SENDER_OVERRIDE` and the seven `_AE_EVENT_*` members, an unset or empty
 /// variable being none.
 fn send_env() -> send::Env {
@@ -810,8 +810,7 @@ fn send_env() -> send::Env {
 }
 
 /// Sixty-four bits nobody chose: `RandomState` is seeded from the OS per
-/// process, which is the same quality the frozen `uuidgen | cut` suffix has,
-/// and needs no door.
+/// process, and needs no door.
 fn entropy() -> u64 {
     use std::hash::{BuildHasher, RandomState};
     RandomState::new().hash_one(std::process::id())
@@ -891,8 +890,7 @@ fn calling_pane(dir: &std::path::Path) -> Option<tmux::ObservedViewer> {
     transport::observe_viewer(&viewer_server(dir), pane.to_str()?)
 }
 
-/// `session=` in `<dir>/meta` — what the frozen `_lib` reads into
-/// `_AE_SESSION`, empty-or-missing folded to `None`.
+/// `session=` in `<dir>/meta`, empty-or-missing folded to `None`.
 fn session_key(dir: &std::path::Path) -> Option<String> {
     #[allow(
         clippy::disallowed_methods,
@@ -1057,8 +1055,7 @@ pub fn run_with(
             writeln!(err, "ae: {command} needs {operand}")?;
             request.exit_code().unwrap_or(2)
         }
-        // The frozen helper writes its table and its refusal to the streams a
-        // pane reads, and so does this: the refusal is a DIAGNOSTIC and never
+        // The refusal is a DIAGNOSTIC and never
         // reaches stdout, which is why a refused invocation's stdout is empty
         // rather than a bare header.
         cli::Request::State { dir, tail } => run_state(dir, tail, out, err)?,

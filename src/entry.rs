@@ -1,10 +1,9 @@
 //! The product's ENTRY: the ambient facts an invocation carries, and the
-//! dispatch that used to be `ae-glue`'s `case` statement.
+//! dispatch every word is routed by.
 
 use std::path::PathBuf;
 
-/// The config `ae` writes on a first run, verbatim from the glue's
-/// `DEFAULT_CONFIG` heredoc.
+/// The config `ae` writes on a first run.
 pub const DEFAULT_CONFIG: &str = r##"# ae config — auto-created on first run, yours to edit. Also mirrored in the repo as
 # config.sample. INI-style: [section] headers, key = value, "#" starts a comment.
 # New sessions read this whole file. Stopping + resuming an existing session (ae stop <name>;
@@ -171,7 +170,7 @@ pub struct Preamble {
     pub home: PathBuf,
     /// The caller's working directory.
     pub cwd: PathBuf,
-    /// The global config file, when the wrapper selected one.
+    /// The global config file, when one was selected.
     pub global: Option<PathBuf>,
     /// The origin-local `.ae/config`, when there is one.
     pub local: Option<PathBuf>,
@@ -243,8 +242,7 @@ impl Preamble {
         argv
     }
 
-    /// The typed server pair, or nothing when the wrapper resolved neither
-    /// half.
+    /// The typed server pair, or nothing when neither half resolved.
     fn server_argv(&self) -> Vec<String> {
         if self.server_kind.is_empty() && self.server_value.is_empty() {
             return Vec::new();
@@ -524,8 +522,8 @@ mod tests {
 
     #[test]
     fn doctor_carries_no_interpreter_fact_any_more() {
-        // `--bash-major` went with the bash: ae ships no interpreter, so there
-        // is no version of one to relay and doctor has no bash row to fill.
+        // ae ships no interpreter, so there is no version of one to relay and
+        // doctor has no interpreter row to fill.
         assert_eq!(
             route(&preamble(), &argv(&["doctor", "--refresh"]), None),
             Route::Core(argv(&["doctor", "--refresh"]))

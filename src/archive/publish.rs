@@ -1,5 +1,5 @@
 //! `_archive-publish <dir> <push-outcome> <push-ref> <preserved> <workdir> <archived-at>`
-//! — the archive publisher and its `.publishing.<uuid>` claim (P3.3).
+//! — the archive publisher and its `.publishing.<uuid>` claim.
 //!
 //! Reached IN PROCESS by `lifecycle::end`'s archive step and by `compact`, and
 //! still addressable as the `_archive-publish` entry; each caller reads back the
@@ -26,10 +26,10 @@ use super::{
 };
 use crate::state::EXIT_FAILED;
 
-/// The Bash-compatible `flock -w 5` wait the writers use.
+/// The five-second lock wait the writers use.
 const LOCK_WAIT: Duration = Duration::from_secs(5);
 
-/// The operation facts Bash owns and hands the publisher — everything the core
+/// The operation facts the caller hands the publisher — everything the core
 /// does NOT derive itself.
 pub(crate) struct Ops<'a> {
     pub(crate) push_outcome: &'a str,
@@ -59,9 +59,9 @@ pub(crate) fn run(
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> io::Result<u8> {
-    // The timestamp is Bash's (std cannot format one without a time dependency),
-    // but argv is not trusted merely because the normal caller is Bash: the exact
-    // frozen UTC shape is validated before it reaches an immutable archive.
+    // The timestamp comes from the caller (std cannot format one without a time
+    // dependency), and argv is not trusted for being the normal caller's: the
+    // exact UTC shape is validated before it reaches an immutable archive.
     if !is_archived_at(ops.archived_at) {
         writeln!(
             err,
@@ -176,7 +176,7 @@ pub(crate) fn run(
 }
 
 /// Under our atomic claim, stage → validate → durably publish, then report the
-/// `target\tfiles\tbytes` line a bash consumer reads.
+/// `target\tfiles\tbytes` line the consumer reads.
 fn publish_under_claim(
     root: &Path,
     target: &Path,
@@ -367,8 +367,8 @@ fn stage_and_validate(
     Ok(())
 }
 
-/// Compose the archive `meta` file — the frozen `_ar_build_meta` key order and
-/// values, from the coherent snapshot and the shared, already-validated facts.
+/// Compose the archive `meta` file — its key order and values, from the
+/// coherent snapshot and the shared, already-validated facts.
 fn compose_meta(facts: &StagedFacts) -> String {
     let meta = facts.meta_bytes;
     let g = |key: &str| meta_get(meta, key);
@@ -417,7 +417,7 @@ fn compose_meta(facts: &StagedFacts) -> String {
     let _ = writeln!(out, "memo_topic_count={topics}");
     let _ = writeln!(out, "pending_request_count={pending}");
     // The roster is already parsed and stripped to alias:name; agents first, then
-    // the per-slot binaries — the frozen two-pass order.
+    // the per-slot binaries, in two passes.
     for (slot, refname) in facts.roster {
         let _ = writeln!(out, "agent.{slot}={refname}");
     }
@@ -456,7 +456,7 @@ fn derive_git(meta_bytes: &[u8], push_outcome: &str, workdir: &[u8]) -> GitFacts
     }
 }
 
-/// Whether `s` is EXACTLY the frozen archive instant `YYYY-MM-DDTHH:MM:SSZ`: 20
+/// Whether `s` is EXACTLY the archive instant `YYYY-MM-DDTHH:MM:SSZ`: 20
 /// ASCII bytes, digits in the field positions, the fixed separators, and cheap
 /// in-range field values (a control byte, a newline, or a wrong width is
 /// refused).

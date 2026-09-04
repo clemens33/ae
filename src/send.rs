@@ -1,44 +1,40 @@
-//! The public `send` helper (P2.6): the chokepoint every other helper and
-//! several `ae`-internal paths exec into, composed, DELIVERED and recorded by
-//! the core — the paste included, since B move 1 ([`crate::deliver`]).
+//! The public `send` helper: the chokepoint every other helper and several
+//! `ae`-internal paths exec into, composed, DELIVERED and recorded by the core
+//! — the paste included ([`crate::deliver`]).
 //!
-//! What the frozen `helper_send_body` does around the paste, kept exactly.
 //! `send <target> <message…>`: fewer than two words is usage; a blank message
-//! is refused. The EVENT's fields come from the caller's environment where
-//! the frozen emitter read them, and nowhere else — this is the contract the
-//! bash `ask`/`review`/`reply` fallback bodies, `ae cancel`, the watchdog's
-//! `nudge` and the telegram bridge all exec `send` under, ruled preserved
-//! (colead, 2026-08-27): `AE_SENDER_OVERRIDE` names the actor (the explicit,
-//! never ambient, door for callers with no pane); `_AE_EVENT_ACTION` (else
-//! `send`), `_AE_EVENT_REF` (else the `[ae-…]`/`[review-…]` id found in the
-//! text, else none), `_AE_EVENT_SUMMARY` (else the text) and the four routing
-//! members `_AE_EVENT_ACTOR_SLOT`/`_ACTOR_SESSION`/`_TARGET_SLOT`/
-//! `_TARGET_SESSION`, each present in the event only when non-empty. With no
-//! override the actor is the pane's verified stamp, and `human` when there is
-//! no pane. No NEW authority exists: nothing on the argv names an actor, and
-//! nothing in the environment selects how the body finishes.
+//! is refused. The EVENT's fields come from the caller's environment and
+//! nowhere else — this is the contract the `ask`/`review`/`reply` fallback
+//! bodies, `ae cancel`, the watchdog's `nudge` and the telegram bridge all exec
+//! `send` under: `AE_SENDER_OVERRIDE` names the actor (the explicit, never
+//! ambient, door for callers with no pane); `_AE_EVENT_ACTION` (else `send`),
+//! `_AE_EVENT_REF` (else the `[ae-…]`/`[review-…]` id found in the text, else
+//! none), `_AE_EVENT_SUMMARY` (else the text) and the four routing members
+//! `_AE_EVENT_ACTOR_SLOT`/`_ACTOR_SESSION`/`_TARGET_SLOT`/`_TARGET_SESSION`,
+//! each present in the event only when non-empty. With no override the actor is
+//! the pane's verified stamp, and `human` when there is no pane. No NEW
+//! authority exists: nothing on the argv names an actor, and nothing in the
+//! environment selects how the body finishes.
 //!
 //! The default summary is of what was DELIVERED, not of what was typed: the
-//! frozen body reassigns `msg` to the framed text — provenance envelope,
-//! newline, message — before its finisher runs, so the envelope leads a pane
-//! send's summary and counts against its cap, while a sink's is recorded
-//! before framing and stays bare. The framed text now comes back from the
-//! delivery in hand rather than being read out of the record it wrote. See
-//! [`delivered_summary`]. The text is
-//! handed raw to [`crate::tracked::event_line`], which renders it for the
-//! action as the frozen emitter's two arms do — flattened and capped at 200,
-//! or, under `_AE_EVENT_ACTION=chat`, lines and tabs kept under the 3500 cap.
+//! framed text — provenance envelope, newline, message — is what the finisher
+//! sees, so the envelope leads a pane send's summary and counts against its
+//! cap, while a sink's is recorded before framing and stays bare. The framed
+//! text comes back from the delivery in hand rather than being read out of the
+//! record it wrote. See [`delivered_summary`]. The text is handed raw to
+//! [`crate::tracked::event_line`], which renders it for the action in two arms
+//! — flattened and capped at 200, or, under `_AE_EVENT_ACTION=chat`, lines and
+//! tabs kept under the 3500 cap.
 //!
 //! An external sink (`telegram:*`, `discord:*`, `ae:compact:*`) is event-only.
-//! Any other target is resolved as `ae_resolve` resolves it and delivered by
-//! [`crate::deliver`] — dead-pane guard, provenance envelope (which takes the
-//! same `AE_SENDER_OVERRIDE` when it is set), body store, per-target lock,
-//! busy deferral, submit verification — which prints every loud line itself
-//! and records NOTHING. Only a confirmed delivery is followed by the ONE
-//! event, under [`crate::state::emit`]'s locked, synced transaction; an event
-//! that could not be written after a confirmed delivery is reported as
-//! exactly that gap and exits non-zero — and because the shim in the helper
-//! `exec`s the core, there is no bash body left to re-deliver.
+//! Any other target is resolved and delivered by [`crate::deliver`] —
+//! dead-pane guard, provenance envelope (which takes the same
+//! `AE_SENDER_OVERRIDE` when it is set), body store, per-target lock, busy
+//! deferral, submit verification — which prints every loud line itself and
+//! records NOTHING. Only a confirmed delivery is followed by the ONE event,
+//! under [`crate::state::emit`]'s locked, synced transaction; an event that
+//! could not be written after a confirmed delivery is reported as exactly that
+//! gap and exits non-zero.
 use std::io::{self, Write};
 use std::path::Path;
 
@@ -47,7 +43,7 @@ use crate::state::{self, EXIT_FAILED, EXIT_USAGE};
 use crate::time::Timestamp;
 use crate::tracked::{self, EventFields};
 
-/// The frozen usage text.
+/// The usage text.
 pub const USAGE: &str = "Usage: send <agent-name|pane-id|@session:agent> <message>\n  Examples: send claude:lead \"hello\"\n           send @my-feature:claude:lead \"hello\"\n";
 
 /// The default action.
@@ -81,7 +77,7 @@ pub fn parse(tail: &[String]) -> Result<Parsed, Usage> {
     }
 }
 
-/// The frozen event-field contract, as read off the caller's environment.
+/// The event-field contract, as read off the caller's environment.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Env {
     /// `AE_SENDER_OVERRIDE`.
@@ -102,7 +98,7 @@ pub struct Env {
     pub target_session: String,
 }
 
-/// The frozen `ae_extract_req_id`: the first `[ae-…]` or `[review-…]`
+/// The first `[ae-…]` or `[review-…]`
 /// bracket in `text` whose id is one or more of `A-Za-z0-9._:-`, or `None`.
 ///
 /// ```
@@ -136,8 +132,8 @@ pub fn extract_req_id(text: &str) -> Option<String> {
     None
 }
 
-/// The frozen emitter's actor: the explicit override, else the pane's
-/// display ref, else `human`.
+/// The actor: the explicit override, else the pane's display ref, else
+/// `human`.
 #[must_use]
 pub fn actor(env: &Env, display: &str) -> String {
     match env.sender_override.as_deref() {
@@ -173,8 +169,7 @@ pub fn envelope_sender<'a>(env: &'a Env, display: &'a str) -> &'a str {
 }
 
 /// The event's action, ref and summary, resolved from the environment and the
-/// message the way the frozen body resolves them BEFORE the paste — the shape a
-/// sink records.
+/// message, resolved BEFORE the paste — the shape a sink records.
 #[must_use]
 pub fn fields(env: &Env, message: &str) -> (String, String, String) {
     let action = env
@@ -274,8 +269,8 @@ pub fn run(
         body_file: "",
     };
     if tracked::is_external(&parsed.target) {
-        // An event-only sink: the frozen body records and exits, pasting
-        // nothing and storing nothing.
+        // An event-only sink: record and exit, pasting nothing and storing
+        // nothing.
         if let Err(why) = state::emit(dir, &tracked::event_line(&event)) {
             writeln!(err, "ae: {action} to {} not recorded: {why}", parsed.target)?;
             return Ok(EXIT_FAILED);
