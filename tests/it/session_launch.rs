@@ -281,6 +281,39 @@ impl Rig {
         std::fs::read_to_string(self.dir(session).join("meta")).unwrap_or_default()
     }
 
+    /// Every AGENT window of `session` as `(index, name, pane count)`, in tmux
+    /// order.
+    ///
+    /// The unit a LEAD layout is about: which window a seat lands in, and what
+    /// that window is called. The `ae-monitor` window is dropped — it holds the
+    /// watchdog and the event tail, is parked at a high index precisely so it
+    /// never mixes with the agent windows, and a layout has no opinion about it.
+    fn windows(&self, session: &str) -> Vec<(String, String, usize)> {
+        let (_, listed) = self.tmux(&[
+            "list-windows",
+            "-t",
+            session,
+            "-F",
+            "#{window_index}|#{window_name}|#{window_panes}",
+        ]);
+        listed
+            .lines()
+            .map(|line| {
+                let mut fields = line.splitn(3, '|');
+                (
+                    fields.next().unwrap_or_default().to_owned(),
+                    fields.next().unwrap_or_default().to_owned(),
+                    fields
+                        .next()
+                        .unwrap_or_default()
+                        .parse::<usize>()
+                        .unwrap_or_default(),
+                )
+            })
+            .filter(|window| window.1 != "ae-monitor")
+            .collect()
+    }
+
     fn panes(&self, session: &str) -> Vec<(String, String, String)> {
         let (_, listed) = self.tmux(&[
             "list-panes",
@@ -964,5 +997,172 @@ fn a_typed_server_pair_still_reaches_its_own_server() {
     assert!(
         stdout.contains(&format!("Attach with: tmux -L {named} attach -t lnnamed")),
         "{stdout}"
+    );
+}
+
+/// The roster + workspace a LEAD layout needs: one sleeper profile, `count`
+/// workers beside the lead, and the layout under test.
+fn lead_config(layout: &str, workers: &[&str]) -> String {
+    let mut cfg = String::from("[profiles]\nidle = \"sleep 600\"\n\n[roster]\nlead = idle\n");
+    for worker in workers {
+        let _ = writeln!(cfg, "{worker} = idle");
+    }
+    let _ = write!(
+        cfg,
+        "\n[workspace]\nmain = lead\nworkers = {}\nlayout = {layout}\nwatchdog = false\n",
+        workers.join(", ")
+    );
+    cfg
+}
+
+/// The two LEAD layouts seat each agent in the window their layout names.
+///
+/// `lead-solo` keeps window 0 for the lead alone and puts every worker in the
+/// second window. `lead-pair` seats the FIRST worker beside the lead in window
+/// 0 — the leadership pair is two EQUAL seats, which is the whole point of the
+/// layout — and the rest go to the second window.
+///
+/// The window names are fixed role LITERALS, `leads` and `workers`. An agent
+/// name would reach `rename-window`'s format sink, where `#` runs a shell.
+///
+/// The layout is pinned into meta at launch because META WINS on resume: a
+/// session keeps the shape it was started with even after the config moves on.
+#[test]
+fn the_lead_layouts_seat_each_agent_in_the_window_their_layout_names() {
+    if skip() {
+        return;
+    }
+
+    // ── lead-solo: the lead is alone in window 0, both workers share window 1.
+    let solo = Rig::new("solo", &[], None);
+    assert!(
+        std::fs::write(&solo.config, lead_config("lead-solo", &["w1", "w2"])).is_ok(),
+        "a lead-solo config"
+    );
+    let (code, stdout, stderr) = solo.launch(&["--local", "lsolo"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert_eq!(
+        solo.windows("lsolo"),
+        vec![
+            ("0".to_owned(), "lsolo".to_owned(), 1),
+            ("1".to_owned(), "workers".to_owned(), 2),
+        ],
+        "the lead is alone, and the workers share the role-named second window"
+    );
+    assert!(
+        solo.meta("lsolo").contains("layout=lead-solo"),
+        "the layout is pinned, so a resume keeps this shape:\n{}",
+        solo.meta("lsolo")
+    );
+
+    // ── lead-pair: the colead joins the lead in window 0 as an equal seat.
+    let pair = Rig::new("pair", &[], None);
+    assert!(
+        std::fs::write(
+            &pair.config,
+            lead_config("lead-pair", &["colead", "builder", "reviewer"]),
+        )
+        .is_ok(),
+        "a lead-pair config"
+    );
+    let (code, stdout, stderr) = pair.launch(&["--local", "lpair"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert_eq!(
+        pair.windows("lpair"),
+        vec![
+            ("0".to_owned(), "leads".to_owned(), 2),
+            ("1".to_owned(), "workers".to_owned(), 2),
+        ],
+        "both leadership seats are in window 0, and both windows carry a ROLE name"
+    );
+    // The colead really is the FIRST worker slot, and it really is in the
+    // lead's window — a shape assertion alone would pass if the panes were
+    // stamped the other way round.
+    let (_, colead) = pair.tmux(&[
+        "list-panes",
+        "-t",
+        "lpair:0",
+        "-F",
+        "#{@ae_slot}|#{@ae_agent}",
+    ]);
+    assert!(
+        colead.lines().any(|row| row == "worker.0|colead"),
+        "the colead seat is in window 0: {colead}"
+    );
+    assert!(
+        pair.meta("lpair").contains("layout=lead-pair"),
+        "the layout is pinned:\n{}",
+        pair.meta("lpair")
+    );
+}
+
+/// The status bar is AE-OWNED, and its first line still RENDERS.
+///
+/// ae bakes both lines once at launch; the live segments arrive as USER OPTIONS
+/// the watchdog feeds, so nothing ever rewrites `status-right` itself. The
+/// regression this pins is tmux's array-option rule: setting `status-format[1]`
+/// at session scope SHADOWS THE WHOLE ARRAY and leaves index 0 — the standard
+/// bar — empty, which shipped once as two blank green lines. The launch copies
+/// the global [0] in alongside its own [1] for exactly that reason, so the
+/// assertion has to be that line 0 renders, not merely that it is set.
+#[test]
+fn the_status_bar_is_ae_owned_and_its_first_line_still_renders() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("bar");
+    let (code, stdout, stderr) = rig.launch(&["--local", "lnbar"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+
+    let option = |name: &str| {
+        rig.tmux(&["show-options", "-v", "-t", "lnbar", name])
+            .1
+            .trim_end_matches('\n')
+            .to_owned()
+    };
+    assert_eq!(option("status-left"), "[ae lnbar] ");
+    // The watch segment is a user option at the END, referenced exactly once:
+    // the retired save/prepend/restore doubled it on every watchdog restart.
+    let right = option("status-right");
+    assert!(
+        right.starts_with('[') && right.ends_with("] #{@ae_watchdog_status}"),
+        "the ae-baked shape: {right}"
+    );
+    assert_eq!(
+        right.matches("#{@ae_watchdog_status}").count(),
+        1,
+        "exactly one watch reference: {right}"
+    );
+    assert!(
+        option("status-format[1]").contains("#{@ae_agent}"),
+        "the second line is the focused agent's identity"
+    );
+    assert!(
+        !option("status-format[0]").is_empty(),
+        "the standard bar is present at session scope"
+    );
+    // PRESENT is not RENDERED. `#{T:…}` expands the option the way tmux draws
+    // it, which is the only reading that can tell a copied bar from a blank one.
+    let (_, drawn) = rig.tmux(&[
+        "display-message",
+        "-p",
+        "-t",
+        "lnbar:0",
+        "#{T:status-format[0]}",
+    ]);
+    assert!(
+        drawn.contains("lnbar"),
+        "line 0 draws the session rather than a blank line: {drawn:?}"
+    );
+    // The per-window glyph renders only through these, at SESSION scope — and
+    // the GLOBAL table stays the operator's.
+    assert!(
+        option("window-status-format").contains("#{@ae_window_status}"),
+        "the window glyph has somewhere to render"
+    );
+    let (_, global) = rig.tmux(&["show-options", "-gv", "window-status-format"]);
+    assert!(
+        !global.contains("@ae_window_status"),
+        "ae does not theme the global window table: {global}"
     );
 }

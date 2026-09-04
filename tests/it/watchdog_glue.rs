@@ -851,3 +851,96 @@ fn a_watchdog_tick_revives_the_telegram_bridge_in_process() {
         "a started bridge records no refusal: {refusal}"
     );
 }
+
+/// The daemon publishes the agent ROSTER on the session and a GLYPH on every
+/// window that holds an agent.
+///
+/// Two options, two scopes, two consumers: `@ae_agents_status` is the fleet
+/// line in the second status row, and `@ae_window_status` is the per-window
+/// mark the window list draws. Both are USER OPTIONS rather than text baked
+/// into a format, so an agent name can never reach the format sink — and the
+/// entry is the BARE name, because the alias prefix that used to lead it was
+/// retired with identity v2.
+///
+/// The RETRACTION is not driven here: this daemon is stopped by killing the
+/// session it watches, and a killed session has no options left to inspect.
+/// `clear_published` is the stop path's (`watchdog_lifecycle`), its two exits
+/// are pinned structurally in `watchdog_daemon`'s own suite, and the `-u` argv
+/// it issues is pinned in `tmux`.
+#[test]
+fn the_agent_roster_and_the_window_glyph_are_published_by_a_running_daemon() {
+    let scratch = scratch("roster");
+    require_tmux(&scratch);
+    let socket = scratch.join("s");
+    let root = scratch.join("home");
+    let meta_dir = plant(&root, "rostered", &socket, None);
+
+    assert!(
+        tmux(
+            &socket,
+            &scratch,
+            &["new-session", "-d", "-s", "rostered", "cat"]
+        )
+        .0,
+        "the watched session"
+    );
+    for (option, value) in [("@ae_agent", "lead"), ("@ae_slot", "main")] {
+        assert!(
+            tmux(
+                &socket,
+                &scratch,
+                &["set-option", "-p", "-t", "rostered", option, value]
+            )
+            .0
+        );
+    }
+    // The window table a launch bakes, so the glyph has somewhere to render.
+    assert!(
+        tmux(
+            &socket,
+            &scratch,
+            &[
+                "set-option",
+                "-t",
+                "rostered",
+                "window-status-format",
+                "#I:#W#{@ae_window_status}#F",
+            ],
+        )
+        .0
+    );
+
+    let read = |args: &[&str]| tmux(&socket, &scratch, args).1.trim().to_owned();
+    let seen = std::cell::RefCell::new((String::new(), String::new()));
+    let reached = watch_until(&meta_dir, &socket, &scratch, "rostered", || {
+        let agents = read(&["show-options", "-v", "-t", "rostered", "@ae_agents_status"]);
+        let window = read(&[
+            "show-options",
+            "-wv",
+            "-t",
+            "rostered:0",
+            "@ae_window_status",
+        ]);
+        if agents.is_empty() || window.is_empty() {
+            return false;
+        }
+        *seen.borrow_mut() = (agents, window);
+        true
+    });
+    let (agents, window) = seen.into_inner();
+    assert!(reached, "the daemon published both bars within the budget");
+
+    // `<name><glyph>`: the bare name, then one status mark, and no alias.
+    assert!(
+        agents.starts_with("lead") && agents.chars().count() > "lead".chars().count(),
+        "the roster entry is the bare name plus a glyph: {agents:?}"
+    );
+    assert!(
+        !agents.contains(':'),
+        "no alias prefix leaks in: {agents:?}"
+    );
+    assert!(
+        !window.is_empty() && !window.contains("lead"),
+        "the window carries a glyph, not a roster: {window:?}"
+    );
+}
