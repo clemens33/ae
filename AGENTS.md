@@ -175,7 +175,7 @@ Name resolution takes the exact name, `%pane-id`, or `session:agent` / `@session
 | **Exact resume** | `--resume UUID` | `resume UUID` (subcommand) | `--resume UUID` | `--conversation UUID` | `--resume UUID` | `--session ID` |
 | **Resume fallback** | `--continue` | fresh start | `--resume latest` | `--continue` | `--continue` | `--continue` |
 | **TUI modelled for delivery** | yes | yes | no | no | no | no |
-| **`_run` re-run** | exact resume when an id is recorded for the seat, otherwise the tool's fallback above | same | same | same | same | same |
+| **`_run` re-run** | exact resume when the recorded id passes the tool's store probe (or the tool has no probe); a gone conversation takes the fallback above | same | same | same | same | same |
 
 - A drawn input box is not an initialized tool. Paste-driven delivery is gated by
   `src/deliver.rs::input_ready` / `wait_input_ready`; a timeout is a loud, durable failure.
@@ -238,7 +238,7 @@ Each is one rule with one owner. Change the owner, not a copy.
 | Published dir 0555, members 0555/0444; `~/.local/bin/ae` is the current pointer | `src/install.rs` |
 | A harness session id is a NAME: the purge proves it against the archive UUID grammar before it builds a path | `src/lifecycle/end.rs::purge_conversation_files`; grammar in `src/archive.rs::canonical_uuid` |
 | A monitor sweep may act only on the CALLER'S own session (`$TMUX_PANE`) | `src/monitor.rs` |
-| Every tmux format uses the printable pipe separator, never a control byte — tmux 3.4 octal-escapes those | `src/tmux.rs::FIELD_SEPARATOR` (module-wide; `WATCH_PANE_SEPARATOR` is the watchdog alias) |
+| Every tmux format uses a printable pipe separator, never a control byte — tmux 3.4 octal-escapes those. Each format literal is written out; `SLOTS_FORMAT` deliberately uses an unspaced pipe | `src/tmux.rs` (`FIELD_SEPARATOR` is the parser delimiter) + the control-char-free test over every format constant |
 | The server pair is read by SET, not by nonempty; an untypeable pair is refused | `src/doors.rs` |
 | Control bytes never reach JSON raw: they are written as JSON escapes | `src/json.rs` |
 | Exit codes: `0` success, `2` usage error, `1` everything else | `src/cli.rs` + `src/lib.rs::run`; `src/main.rs` only maps the byte |
