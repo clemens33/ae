@@ -168,6 +168,12 @@ dirname. Names and argv are the compatibility contract.
 | `_register-sid` | codex's own session-id handshake. The one helper no human types |
 | `watchdog`, `events-tail`, `loop` | The two monitor panes' whole command (`loop` = deprecated alias) |
 
+**Bodies between agents are caveman-terse.** Rule 10 of the context document: what you pass
+through `send`/`ask`/`review`/`reply`/`memo`, a spawn brief or an `interrupt` is read by another
+agent and costs its context, so drop filler and keep file:line, commands, errors, ids and
+verdict words exact. Nothing else is covered: replies to the human, `say`, commits, code and
+docs follow whatever your own instructions define.
+
 **Call a helper by its FULL PATH.** No `/` in `argv[0]` means no session to derive, and the
 core exits 2 rather than guessing. That is why they are not on `PATH`.
 Name resolution takes the exact name, `%pane-id`, or `session:agent` / `@session:agent`.
