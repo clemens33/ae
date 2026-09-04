@@ -5608,7 +5608,10 @@ fi
 if _itest_section 'ae compact, phase (a): it resolves, it refuses, it changes nothing'; then
 
 # ── P3.7 core-guard: compact is Rust-owned; bind the built core for this section ──
-_C48_CORE="$(dirname "$AE")/target/debug/ae"
+# `$AE` IS that core since slice Z3 — it was the wrapper beside it, so this
+# derived a sibling path. Kept as a guard rather than deleted: a missing binary
+# must still SKIP loudly instead of running the section against nothing.
+_C48_CORE="$_ITEST_CORE_BIN"
 if [[ ! -x "$_C48_CORE" ]]; then
     echo "  SKIP (compact is Rust-owned): no built core at ${_C48_CORE} — build it first (cargo build)." >&2
 else
@@ -5732,7 +5735,10 @@ fi
 if _itest_section 'compact phase (b): the handover is a fact, not a claim'; then
 
 # ── P3.7 core-guard: compact is Rust-owned; bind the built core for this section ──
-_C48_CORE="$(dirname "$AE")/target/debug/ae"
+# `$AE` IS that core since slice Z3 — it was the wrapper beside it, so this
+# derived a sibling path. Kept as a guard rather than deleted: a missing binary
+# must still SKIP loudly instead of running the section against nothing.
+_C48_CORE="$_ITEST_CORE_BIN"
 if [[ ! -x "$_C48_CORE" ]]; then
     echo "  SKIP (compact is Rust-owned): no built core at ${_C48_CORE} — build it first (cargo build)." >&2
 else
@@ -6201,7 +6207,10 @@ fi
 if _itest_section 'compact (c)+(d): it hands over, it ends, it comes back'; then
 
 # ── P3.7 core-guard: compact is Rust-owned; bind the built core for this section ──
-_C48_CORE="$(dirname "$AE")/target/debug/ae"
+# `$AE` IS that core since slice Z3 — it was the wrapper beside it, so this
+# derived a sibling path. Kept as a guard rather than deleted: a missing binary
+# must still SKIP loudly instead of running the section against nothing.
+_C48_CORE="$_ITEST_CORE_BIN"
 if [[ ! -x "$_C48_CORE" ]]; then
     echo "  SKIP (compact is Rust-owned): no built core at ${_C48_CORE} — build it first (cargo build)." >&2
 else
@@ -6428,7 +6437,8 @@ fi
 
 # ── tracked resolution: a paneless request routes on the recorded server ──
 if _itest_section 'tracked resolution: a paneless request routes on the recorded server, not the ambient one'; then
-_TR_CORE="$(dirname "$AE")/target/debug/ae"
+# `$AE` IS the core since slice Z3; see the compact sections' guard.
+_TR_CORE="$_ITEST_CORE_BIN"
 if [[ ! -x "$_TR_CORE" ]]; then
     echo "  SKIP (tracked resolution is Rust-owned): no built core at ${_TR_CORE} — build it first (cargo build)." >&2
 else
@@ -6849,7 +6859,9 @@ assert_eq "P5 install: neither retired pointer is published" "0" \
 # The published directory refuses writes THROUGH the link, which is what makes a
 # stray `> $SESSION_DIR/send` an EACCES instead of a truncated core.
 P5I_STRAY=0
-: >"$P5I_HOME/.local/bin/ae" 2>/dev/null || P5I_STRAY=$?
+# STDERR FIRST: redirections apply left to right, so the failed one would
+# otherwise report on the real stderr before `2>/dev/null` is in place.
+: 2>/dev/null >"$P5I_HOME/.local/bin/ae" || P5I_STRAY=$?
 assert_eq "P5 install: a redirect through the command link is refused" "1" \
     "$([[ "$P5I_STRAY" -ne 0 ]] && echo 1 || echo 0)"
 

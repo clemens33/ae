@@ -2183,7 +2183,7 @@ unset -f _gate_lint_exec_text _gate_lint_redirect_ok
 # The slow-block gate that opened here stays: the P5 product rig below (CalVer
 # bump, remote installer, wrapper pair, layout) is what made this block slow,
 # and it is still here.
-if _unit_slow 'P5 product: CalVer bump, remote installer, wrapper pair, layout'; then
+if _unit_slow 'P5 product: CalVer bump, remote installer, published layout'; then
 
 # ── CalVer bump: isolated tag/date fixtures ──────────────────────────
 #
@@ -2856,13 +2856,17 @@ assert_eq "remote installer acceptance: the retired pointers are not published" 
 # core survives it — the hazard AGENTS.md states in prose, measured.
 _remote_stray_before="$(wc -c <"$_remote_home/.ae/versions/2026.8.1/ae-core" | tr -d '[:space:]')"
 _remote_stray_rc=0
-: >"$_remote_home/.local/bin/ae" 2>/dev/null || _remote_stray_rc=$?
+# STDERR FIRST, deliberately: redirections are applied left to right, so a
+# `>file 2>/dev/null` reports the failed redirect on the REAL stderr before the
+# second one is in place, and the suite prints a "Permission denied" line that
+# looks like a defect. The failure is the assertion below, not the message.
+: 2>/dev/null >"$_remote_home/.local/bin/ae" || _remote_stray_rc=$?
 assert_eq "remote installer: a stray redirect through the command link is refused" "1" \
     "$([[ "$_remote_stray_rc" -ne 0 ]] && echo 1 || echo 0)"
 assert_eq "remote installer: ...and the published core is byte-unchanged" "$_remote_stray_before" \
     "$(wc -c <"$_remote_home/.ae/versions/2026.8.1/ae-core" | tr -d '[:space:]')"
 _remote_new_rc=0
-: >"$_remote_home/.ae/versions/2026.8.1/newfile" 2>/dev/null || _remote_new_rc=$?
+: 2>/dev/null >"$_remote_home/.ae/versions/2026.8.1/newfile" || _remote_new_rc=$?
 assert_eq "remote installer: a new entry inside the version directory is refused" "1" \
     "$([[ "$_remote_new_rc" -ne 0 ]] && echo 1 || echo 0)"
 unset _remote_stray_before _remote_stray_rc _remote_new_rc
