@@ -102,6 +102,8 @@ Other rules of the loop:
   send, the busy/dead-pane refusal, and the submit verification.
 - No `--force`, `--no-verify` or `-f` to get past a check. Fix the cause.
 - No secrets in tracked files. `$ENV_VAR` placeholders only.
+- **A parser of hostile persisted state gets cargo-fuzz BEFORE it cuts over.** Session
+  meta, journals, archives and anything hand-editable are hostile input.
 
 ## Toolchain pins
 
@@ -173,7 +175,7 @@ Name resolution takes the exact name, `%pane-id`, or `session:agent` / `@session
 | **Exact resume** | `--resume UUID` | `resume UUID` (subcommand) | `--resume UUID` | `--conversation UUID` | `--resume UUID` | `--session ID` |
 | **Resume fallback** | `--continue` | fresh start | `--resume latest` | `--continue` | `--continue` | `--continue` |
 | **TUI modelled for delivery** | yes | yes | no | no | no | no |
-| **`_run` re-run** | resumes | fresh | fresh | resumes | resumes | fresh |
+| **`_run` re-run** | exact resume when an id is recorded for the seat, otherwise the tool's fallback above | same | same | same | same | same |
 
 - A drawn input box is not an initialized tool. Paste-driven delivery is gated by
   `src/deliver.rs::input_ready` / `wait_input_ready`; a timeout is a loud, durable failure.
@@ -227,7 +229,7 @@ Each is one rule with one owner. Change the owner, not a copy.
 |---|---|
 | Session name `^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$`, checked before any side effect | `src/session_launch/name.rs::is_session_name` |
 | Agent name `^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`; it reaches a system prompt, so it is an allowlist | `src/config.rs::is_agent_name` |
-| That name is re-validated at the interpolation site, fail-quiet | `src/launch.rs::inject_ae_context` |
+| That name is re-validated at the interpolation site, fail-quiet | `src/render.rs::context_document` |
 | Dispatch is on `argv[0]`'s basename; no `/` means exit 2, never a guess | `src/shim.rs` |
 | `current_exe()` has exactly ONE caller | `src/shape.rs::resolved_exe` |
 | `launch.<slot>.started` decides create-vs-resume, before the exec | `src/run.rs` |
@@ -236,11 +238,11 @@ Each is one rule with one owner. Change the owner, not a copy.
 | Published dir 0555, members 0555/0444; `~/.local/bin/ae` is the current pointer | `src/install.rs` |
 | A harness session id is a NAME: the purge proves it against the archive UUID grammar before it builds a path | `src/lifecycle/end.rs::purge_conversation_files`; grammar in `src/archive.rs::canonical_uuid` |
 | A monitor sweep may act only on the CALLER'S own session (`$TMUX_PANE`) | `src/monitor.rs` |
-| Every tmux format uses the printable pipe separator, never a control byte — tmux 3.4 octal-escapes those | `src/tmux.rs::WATCH_PANE_SEPARATOR` |
+| Every tmux format uses the printable pipe separator, never a control byte — tmux 3.4 octal-escapes those | `src/tmux.rs::FIELD_SEPARATOR` (module-wide; `WATCH_PANE_SEPARATOR` is the watchdog alias) |
 | The server pair is read by SET, not by nonempty; an untypeable pair is refused | `src/doors.rs` |
-| Control bytes are stripped from JSON at write time | `src/json.rs` |
+| Control bytes never reach JSON raw: they are written as JSON escapes | `src/json.rs` |
 | Exit codes: `0` success, `2` usage error, `1` everything else | `src/cli.rs` + `src/lib.rs::run`; `src/main.rs` only maps the byte |
-| Archive on `ae end` is MANDATORY: a failed archive fails the end with state intact | `src/archive/publish.rs` |
+| Archive on `ae end` is MANDATORY: a failed archive fails the end with state intact | `src/lifecycle/end.rs::archive_step`, ordered before cleanup; `src/archive/publish.rs` only publishes |
 | An archive under `~/.ae/archive/<uuid>/` is INERT — data only, never an executable file | `src/archive/store.rs` (`write_file_0600`, `mkdir_0700`) |
 
 Role doctrine: [docs/gatekeeping.md](docs/gatekeeping.md) before gating or reviewing;
