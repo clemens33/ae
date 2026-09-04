@@ -763,8 +763,8 @@ mod tests {
                   what PRODUCT code may reach"
     )]
 
-    //! Each test names the pre-registered criterion of
-    //! `docs/migration/p1-phase1-gate.md` it answers. The gate was authored
+    //! Each test names the pre-registered criterion of the retired phase-1
+    //! gate document it answers. That gate was authored
     //! against the ROWS, without reading this module, so a criterion it cannot
     //! run is a contract gap and is reported as one rather than reinterpreted
     //! into something passable.

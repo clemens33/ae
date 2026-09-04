@@ -1,12 +1,12 @@
-# Evidence artifacts are byte-exact captures: their recorded SHA256SUMS must
-# survive clone/checkout. Disable ALL text normalization for them - pty logs
-# legitimately contain CRLF, and autocrlf=input silently rewrote four D04b
-# scripted-client.log blobs so the committed bytes no longer matched the
-# recorded hashes (caught at commit ce8965e; a fresh clone would have failed
-# the gate). Never remove without re-verifying every SHA256SUMS from a clone.
-docs/migration/evidence/batch-c-artifacts/** -text
-# Batch H captures include pty output, and a pty turns every newline into CRLF. Without
-# this the committed blob differs from the working bytes the SHA256SUMS were taken over —
-# the exact incident that made the committed-bytes check exist.
-docs/migration/evidence/batch-h-artifacts/** -text
-docs/migration/evidence/l-artifacts/** -text
+# Frozen captures are byte-exact: a test compares the committed bytes, so
+# checkout must not rewrite them. Disable ALL text normalization for them.
+#
+# This is not hypothetical. `autocrlf=input` silently rewrote four captured
+# pty logs so the committed blobs no longer matched their recorded SHA256SUMS
+# (caught at commit ce8965e; a fresh clone would have failed the gate). The
+# evidence tree those lived in is retired, but the rule outlived it: the list
+# goldens under tests/fixtures moved out of that tree in slice Z4 and are
+# `include_str!`d and compared byte for byte by `src/listing.rs`.
+#
+# Never remove without re-checking every byte-exact comparison from a CLONE.
+tests/fixtures/** -text

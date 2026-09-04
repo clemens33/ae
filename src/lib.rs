@@ -5,11 +5,14 @@
 //!
 //! # Where the behavior comes from
 //!
-//! Every module here is built from RATIFIED rows of
-//! `docs/migration/semantic-contract.md`, and each names its rows in its own
-//! module docs. The bash implementation is **not** an oracle: it may be read to
-//! understand a mechanism, but it never defines an expected output. A behavior
-//! with no row stops the work and goes to the seats — which is why several
+//! Every module here was built from RATIFIED rows of the rewrite's semantic
+//! contract, and each still names its rows in its own module docs. That
+//! document and the bash it described are both retired; the row identifiers
+//! stay because they are what a module's own docs say it implements, and git
+//! keeps the text. While it was live the rule was: the bash implementation is
+//! **not** an oracle — it may be read to understand a mechanism, but it never
+//! defines an expected output, and a behavior with no row stops the work and
+//! goes to the seats — which is why several
 //! fields of the `list --json` digest are *inputs* to [`session::entry_for`]
 //! rather than things it reads. See that module's docs for the list.
 //!

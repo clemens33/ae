@@ -236,7 +236,7 @@ pub const CONTEXT: &str = "_context";
 /// Underscored like every other core entry, and for the same reason: it is run
 /// by a CI step (and, later, a `doctor` check), never typed at a session. Its
 /// authority is the pre-P5 coexistence design
-/// (`docs/migration/coexistence.md`, item 4) rather than a semantic-contract
+/// (a coexistence rule of the Rust rewrite, since retired with its notes) rather than a semantic-contract
 /// row — there is no row because there is no bash predecessor: nothing in the
 /// frozen script ever resolved a hostname. The behavior is [`crate::netprobe`].
 /// The orchestrator's sweep: `_monitor sweep <session-dir> [flags]`. Underscored

@@ -357,7 +357,7 @@ jobs:
       # laptop — there is no musl toolchain there. This is the only place the
       # artifact and a real resolver exist together, so this is the proof of
       # record. It costs no credential and opens no connection: `_net-probe`
-      # resolves and reports (docs/migration/coexistence.md, item 5).
+      # resolves and reports.
       #
       # THE NEGATIVE CONTROL RUNS FIRST, and it is not decoration: a probe that
       # answered `ok` unconditionally would pass the positive case forever. A
