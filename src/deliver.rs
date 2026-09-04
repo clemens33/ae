@@ -15,8 +15,9 @@ use std::time::{Duration, Instant, SystemTime};
 use crate::inventory::ServerId;
 use crate::state;
 use crate::tmux::{Key, Styling};
+use crate::tool::{InputModel, ToolKind};
 use crate::transport;
-use region::{Occupancy, Tool};
+use region::Occupancy;
 
 /// How long a send waits for a busy target before abandoning —
 /// `AE_SEND_DEFER_SEC`'s default.
@@ -29,11 +30,11 @@ const DEFER_POLL: Duration = Duration::from_millis(400);
 /// the pane.
 const VIEW_GRACE: i64 = 4;
 
-/// The pause between the paste and the Enter, for claude.
-const SETTLE_CLAUDE: Duration = Duration::from_millis(300);
+/// The pause between the paste and the Enter for a border-delimited composer.
+const SETTLE_BORDER_DELIMITED: Duration = Duration::from_millis(300);
 
 /// The same pause for every other tool.
-const SETTLE_OTHER: Duration = Duration::from_millis(100);
+const SETTLE_DEFAULT: Duration = Duration::from_millis(100);
 
 /// The pause before each staged re-read after Enter.
 const VERIFY_POLL: Duration = Duration::from_millis(300);
@@ -189,7 +190,7 @@ pub fn deliver(
     err: &mut impl Write,
 ) -> io::Result<Result<Delivered, Failure>> {
     let probe = transport::observe_pane_probe(request.server, request.pane).unwrap_or_default();
-    let tool = target_tool(request, &probe.command);
+    let input = target_input(request, &probe.command);
     // Interpreted-sink guard: refuse to paste into a pane whose agent has DIED
     // and dropped to a shell — a stray Enter would EXECUTE the message as a
     // shell command.
@@ -217,7 +218,7 @@ pub fn deliver(
         return Ok(Err(Failure::Lock));
     };
     let prepared = notice::prepare(
-        tool,
+        input.model,
         request.action,
         request.reference,
         envelope_actor(request),
@@ -235,7 +236,7 @@ pub fn deliver(
         )?;
         return Ok(Err(Failure::NoticeRefused { body_file }));
     };
-    if request.shape == Shape::Send && !wait_for_quiet(request, tool) {
+    if request.shape == Shape::Send && !wait_for_quiet(request, input.model) {
         writeln!(
             err,
             "ae: send to {} ABANDONED — target stayed busy / human input or attention (not clear within {}s; AE_SEND_DEFER_SEC overrides). Re-send.",
@@ -254,7 +255,7 @@ pub fn deliver(
         notice::Mode::Direct => framed.as_str(),
         notice::Mode::Notice(pointer) => pointer.as_str(),
     };
-    match submit(request, tool, payload, &mode, &body_file, &framed, err)? {
+    match submit(request, input, payload, &mode, &body_file, &framed, err)? {
         Ok(()) => Ok(Ok(Delivered { body_file, framed })),
         Err(failure) => {
             // The submit's own line said WHICH step failed; this one names the
@@ -324,12 +325,32 @@ fn dead_pane_line(request: &Request<'_>) -> String {
     }
 }
 
-/// The tool whose input box this pane draws — `ae_target_tool`.
-fn target_tool(request: &Request<'_>, command: &str) -> Tool {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TargetInput {
+    model: InputModel,
+    diagnostic: &'static str,
+}
+
+/// The input-box grammar this pane draws — `ae_target_tool`.
+fn target_input(request: &Request<'_>, command: &str) -> TargetInput {
     let recorded = recorded_binary(request.dir, request.pane_slot);
-    match Tool::from_name(&recorded) {
-        Tool::Other => Tool::from_name(command),
-        known => known,
+    choose_input(&recorded, command)
+}
+
+fn choose_input(recorded: &str, command: &str) -> TargetInput {
+    let recorded = ToolKind::from_binary_name(recorded).adapter();
+    let adapter = if recorded.input.model.is_modelled() {
+        recorded
+    } else {
+        ToolKind::from_binary_name(command).adapter()
+    };
+    TargetInput {
+        model: adapter.input.model,
+        diagnostic: if adapter.input.model.is_modelled() {
+            adapter.name
+        } else {
+            "other"
+        },
     }
 }
 
@@ -380,10 +401,10 @@ fn pane_agent_is_dead(request: &Request<'_>, probe: &crate::tmux::ObservedPanePr
 }
 
 /// Wait until the target's input box is safe to paste into, or give up.
-fn wait_for_quiet(request: &Request<'_>, tool: Tool) -> bool {
+fn wait_for_quiet(request: &Request<'_>, model: InputModel) -> bool {
     let started = Instant::now();
     loop {
-        if !input_busy(request.server, request.pane, tool)
+        if !input_busy(request.server, request.pane, model)
             && !recently_viewed(request.server, request.pane)
         {
             return true;
@@ -397,23 +418,23 @@ fn wait_for_quiet(request: &Request<'_>, tool: Tool) -> bool {
 
 /// Is it UNSAFE to paste into this pane right now — `_paste_input_busy`?
 #[must_use]
-pub fn input_busy(server: &ServerId, pane: &str, tool: Tool) -> bool {
-    if !tool.is_modelled() {
+pub fn input_busy(server: &ServerId, pane: &str, model: InputModel) -> bool {
+    if !model.is_modelled() {
         return false;
     }
-    read_occupancy(server, pane, tool) != Occupancy::Idle
+    read_occupancy(server, pane, model) != Occupancy::Idle
 }
 
 /// Is our pasted message STILL STAGED — `_paste_still_staged`?
 #[must_use]
-pub fn still_staged(server: &ServerId, pane: &str, tool: Tool) -> bool {
-    tool.is_modelled() && read_occupancy(server, pane, tool) == Occupancy::Occupied
+pub fn still_staged(server: &ServerId, pane: &str, model: InputModel) -> bool {
+    model.is_modelled() && read_occupancy(server, pane, model) == Occupancy::Occupied
 }
 
 /// Capture and read the pane's input box.
-fn read_occupancy(server: &ServerId, pane: &str, tool: Tool) -> Occupancy {
+fn read_occupancy(server: &ServerId, pane: &str, model: InputModel) -> Occupancy {
     match transport::capture_screen(server, pane, Styling::Escapes) {
-        Some(region) => region::occupancy(&region, tool),
+        Some(region) => region::occupancy(&region, model),
         None => Occupancy::Unreadable,
     }
 }
@@ -440,9 +461,9 @@ fn recently_viewed(server: &ServerId, pane: &str) -> bool {
 /// Is this tool provably still starting up — `_spawn_input_ready`'s first
 /// question, asked for every tool.
 #[must_use]
-pub fn tool_initializing(server: &ServerId, pane: &str, tool: Tool) -> bool {
+pub fn tool_initializing(server: &ServerId, pane: &str, model: InputModel) -> bool {
     match transport::capture_screen(server, pane, Styling::Plain) {
-        Some(capture) => region::initializing(&capture, tool),
+        Some(capture) => region::initializing(&capture, model),
         None => false,
     }
 }
@@ -450,12 +471,12 @@ pub fn tool_initializing(server: &ServerId, pane: &str, tool: Tool) -> bool {
 /// Whether `pane` is ready to be pasted into at launch or spawn time —
 /// `_spawn_input_ready`.
 #[must_use]
-pub fn input_ready(server: &ServerId, pane: &str, tool: Tool) -> bool {
-    if tool_initializing(server, pane, tool) {
+pub fn input_ready(server: &ServerId, pane: &str, model: InputModel) -> bool {
+    if tool_initializing(server, pane, model) {
         return false;
     }
-    if tool.is_modelled() {
-        return !input_busy(server, pane, tool);
+    if model.is_modelled() {
+        return !input_busy(server, pane, model);
     }
     transport::capture_screen(server, pane, Styling::Plain)
         .is_some_and(|screen| region::composed_ui(&screen))
@@ -467,9 +488,9 @@ const READY_POLL: Duration = Duration::from_millis(500);
 /// Wait, bounded, until `pane` will accept a paste; `polls` counts
 /// [`READY_POLL`] periods.
 #[must_use]
-pub fn wait_input_ready(server: &ServerId, pane: &str, tool: Tool, polls: u32) -> bool {
+pub fn wait_input_ready(server: &ServerId, pane: &str, model: InputModel, polls: u32) -> bool {
     for _ in 0..polls {
-        if input_ready(server, pane, tool) {
+        if input_ready(server, pane, model) {
             return true;
         }
         std::thread::sleep(READY_POLL);
@@ -486,7 +507,7 @@ pub fn submit_shell_text(server: &ServerId, pane: &str, text: &str) -> bool {
     if stage_and_paste(server, &buffer_name(pane), text.as_bytes(), pane).is_err() {
         return false;
     }
-    std::thread::sleep(SETTLE_OTHER);
+    std::thread::sleep(SETTLE_DEFAULT);
     transport::send_key(server, pane, Key::Enter)
 }
 
@@ -524,13 +545,15 @@ pub fn stage_and_paste(
 
 fn submit(
     request: &Request<'_>,
-    tool: Tool,
+    input: TargetInput,
     payload: &str,
     mode: &notice::Mode,
     body_file: &str,
     framed: &str,
     err: &mut impl Write,
 ) -> io::Result<Result<(), Failure>> {
+    let model = input.model;
+    let diagnostic = input.diagnostic;
     let buffer = buffer_name(request.pane);
     let server = request.server;
     let pane = request.pane;
@@ -539,8 +562,7 @@ fn submit(
         Err(StageFailure::Load) => {
             writeln!(
                 err,
-                "ae: paste transport FAILED for pane {pane} ({}) — could not stage {} bytes. Nothing was sent.",
-                tool.as_str(),
+                "ae: paste transport FAILED for pane {pane} ({diagnostic}) — could not stage {} bytes. Nothing was sent.",
                 payload.chars().count()
             )?;
             return Ok(Err(Failure::Paste {
@@ -550,8 +572,7 @@ fn submit(
         Err(StageFailure::Paste) => {
             writeln!(
                 err,
-                "ae: paste FAILED into pane {pane} ({}) — nothing was sent.",
-                tool.as_str()
+                "ae: paste FAILED into pane {pane} ({diagnostic}) — nothing was sent."
             )?;
             return Ok(Err(Failure::Paste {
                 body_file: body_file.to_owned(),
@@ -559,12 +580,11 @@ fn submit(
         }
     }
     if let notice::Mode::Notice(pointer) = mode
-        && !prove_notice(server, pane, tool, pointer, &buffer)
+        && !prove_notice(server, pane, model, pointer, &buffer)
     {
         writeln!(
             err,
-            "ae: notice UNCONFIRMED to pane {pane} ({}) — recovery body preserved at {body_file}. Nothing was submitted; re-send.",
-            tool.as_str()
+            "ae: notice UNCONFIRMED to pane {pane} ({diagnostic}) — recovery body preserved at {body_file}. Nothing was submitted; re-send."
         )?;
         return Ok(Err(Failure::Unconfirmed {
             body_file: body_file.to_owned(),
@@ -572,20 +592,18 @@ fn submit(
             notice: true,
         }));
     }
-    if submit_staged(server, pane, tool) {
+    if submit_staged(server, pane, model) {
         return Ok(Ok(()));
     }
     if request.shape == Shape::Send {
         writeln!(
             err,
-            "ae: submit UNCONFIRMED to pane {pane} ({}) — message may not have sent.",
-            tool.as_str()
+            "ae: submit UNCONFIRMED to pane {pane} ({diagnostic}) — message may not have sent."
         )?;
     } else {
         writeln!(
             err,
-            "ae: submit UNCONFIRMED to pane {pane} ({}) — message may not have sent. Re-send.",
-            tool.as_str()
+            "ae: submit UNCONFIRMED to pane {pane} ({diagnostic}) — message may not have sent. Re-send."
         )?;
     }
     Ok(Err(Failure::Unconfirmed {
@@ -604,37 +622,43 @@ fn submit(
 /// box. Every first-message delivery presses through here so the retry and the
 /// verdict have ONE owner.
 #[must_use]
-pub fn submit_staged(server: &ServerId, pane: &str, tool: Tool) -> bool {
-    let settle = if tool == Tool::Claude {
-        SETTLE_CLAUDE
+pub fn submit_staged(server: &ServerId, pane: &str, model: InputModel) -> bool {
+    let settle = if model == InputModel::BorderDelimited {
+        SETTLE_BORDER_DELIMITED
     } else {
-        SETTLE_OTHER
+        SETTLE_DEFAULT
     };
     std::thread::sleep(settle);
     let _ = transport::send_key(server, pane, Key::Enter);
     for _ in 0..VERIFY_RETRIES {
         std::thread::sleep(VERIFY_POLL);
-        if !still_staged(server, pane, tool) {
+        if !still_staged(server, pane, model) {
             return true;
         }
         let _ = transport::send_key(server, pane, Key::Enter);
     }
     std::thread::sleep(VERIFY_POLL);
-    !still_staged(server, pane, tool)
+    !still_staged(server, pane, model)
 }
 
 /// Prove the staged notice on screen before any Enter.
-fn prove_notice(server: &ServerId, pane: &str, tool: Tool, pointer: &str, buffer: &str) -> bool {
+fn prove_notice(
+    server: &ServerId,
+    pane: &str,
+    model: InputModel,
+    pointer: &str,
+    buffer: &str,
+) -> bool {
     for attempt in 0..2 {
         std::thread::sleep(NOTICE_POLL);
         let region = transport::capture_screen(server, pane, Styling::Escapes).unwrap_or_default();
-        if notice::prove(tool, &region, pointer) {
+        if notice::prove(model, &region, pointer) {
             return true;
         }
         if attempt != 0 {
             return false;
         }
-        if !clear_is_measurable(server, pane, tool) {
+        if !clear_is_measurable(server, pane, model) {
             return false;
         }
         if stage_and_paste(server, buffer, pointer.as_bytes(), pane).is_err() {
@@ -645,13 +669,13 @@ fn prove_notice(server: &ServerId, pane: &str, tool: Tool, pointer: &str, buffer
 }
 
 /// Did C-u demonstrably empty the input box — `_notice_clear_measurable`?
-fn clear_is_measurable(server: &ServerId, pane: &str, tool: Tool) -> bool {
+fn clear_is_measurable(server: &ServerId, pane: &str, model: InputModel) -> bool {
     if !transport::send_key(server, pane, Key::ClearLine) {
         return false;
     }
     std::thread::sleep(NOTICE_POLL);
     match transport::capture_screen(server, pane, Styling::Escapes) {
-        Some(region) if !region.is_empty() => region::occupancy(&region, tool) == Occupancy::Idle,
+        Some(region) if !region.is_empty() => region::occupancy(&region, model) == Occupancy::Idle,
         _ => false,
     }
 }
@@ -776,9 +800,11 @@ fn lock_target(dir: &Path, pane: &str) -> Option<std::fs::File> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Failure, Request, Shape, UNVERIFIED, buffer_name, frame, is_name_safe, store_body,
+        Failure, Request, Shape, TargetInput, UNVERIFIED, buffer_name, choose_input, frame,
+        is_name_safe, store_body,
     };
     use crate::inventory::ServerId;
+    use crate::tool::InputModel;
 
     fn request<'a>(actor: &'a str, body: &'a str, shape: Shape) -> Request<'a> {
         Request {
@@ -796,6 +822,31 @@ mod tests {
             shape,
             defer: super::DEFAULT_DEFER,
         }
+    }
+
+    #[test]
+    fn input_selection_prefers_a_modelled_record_and_falls_back_with_exact_diagnostics() {
+        assert_eq!(
+            choose_input("claude", "codex"),
+            TargetInput {
+                model: InputModel::BorderDelimited,
+                diagnostic: "claude",
+            }
+        );
+        assert_eq!(
+            choose_input("gemini", "codex"),
+            TargetInput {
+                model: InputModel::StyleDelimited,
+                diagnostic: "codex",
+            }
+        );
+        assert_eq!(
+            choose_input("gemini", "gemini"),
+            TargetInput {
+                model: InputModel::Unmodelled,
+                diagnostic: "other",
+            }
+        );
     }
 
     #[test]

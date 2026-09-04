@@ -8,8 +8,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use crate::launch;
-use crate::launch_cmd::ToolKind;
-use crate::tool::{ResumeForm, StoreProbe};
+use crate::tool::{ResumeForm, StoreProbe, ToolKind};
 
 /// Which form of the tool command a run builds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -591,6 +591,40 @@ fn product_halves() -> Vec<(String, String)> {
     halves
 }
 
+/// Lexical guard for direct `ToolKind::Variant` decisions in each production
+/// half. Aliases, glob-imported variants, and code after the first test module
+/// are outside what this source-text check can prove.
+#[test]
+fn per_tool_branches_live_only_in_the_adapter_rows() {
+    let variants = [
+        "Claude", "Codex", "Gemini", "Agy", "Grok", "OpenCode", "Unknown",
+    ];
+    let halves = product_halves();
+    let adapter = halves
+        .iter()
+        .find(|(name, _)| name == "src/tool.rs")
+        .map_or_else(
+            || panic!("the adapter source was not scanned"),
+            |(_, code)| code,
+        );
+    for variant in variants {
+        let needle = format!("ToolKind::{variant}");
+        assert!(
+            adapter.contains(&needle),
+            "the adapter does not own {needle}; the guard would miss that variant"
+        );
+        for (name, code) in &halves {
+            if name == "src/tool.rs" {
+                continue;
+            }
+            assert!(
+                !code.contains(&needle),
+                "{name} branches on {needle}; production tool decisions belong in src/tool.rs"
+            );
+        }
+    }
+}
+
 #[test]
 fn a_live_session_file_is_named_in_exactly_one_place() {
     // A second spelling of `events.jsonl` or `memo.tsv` is how a reader and a

@@ -7,8 +7,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::launch_cmd::ToolKind;
-use crate::tool::{CommandForm, ContextChannel, IdStyle, InitialTurn, SessionFlags};
+use crate::tool::{CommandForm, ContextChannel, IdStyle, InitialTurn, SessionFlags, ToolKind};
 
 /// The POSIX single-quoted form of `text` — safe in any shell word position.
 #[must_use]
@@ -41,12 +40,6 @@ fn launch_marker_text(prefix: Option<&str>, launch_id: &str, slot: &str) -> Stri
     prefix.map_or_else(String::new, |prefix| {
         format!("\nAE_{prefix}_LAUNCH_ID={launch_id}\nAE_{prefix}_SLOT={slot}")
     })
-}
-
-/// Does this tool need a post-launch capture handshake?
-#[must_use]
-pub const fn supports_launch_id(tool: ToolKind) -> bool {
-    tool.adapter().capture.is_needed()
 }
 
 /// Does this tool take an ae-generated session id at LAUNCH?
@@ -498,7 +491,7 @@ mod tests {
         initial_turn_with_brief, inject_ae_context, inject_session_id, opencode_context_files,
         shell_quote, strip_agy_session_flags, strip_grok_session_flags, strip_session_flags,
     };
-    use crate::launch_cmd::ToolKind;
+    use crate::tool::ToolKind;
     use std::path::PathBuf;
 
     fn scratch(tag: &str) -> PathBuf {

@@ -19,7 +19,7 @@
 
 use std::path::Path;
 
-use super::region::Tool;
+use crate::tool::InputModel;
 
 /// The framed-body size above which a notice replaces the paste.
 pub const LIMIT: u64 = 8192;
@@ -52,7 +52,7 @@ pub struct Refused;
     reason = "the frozen preparer's inputs, spelled out rather than bundled"
 )]
 pub fn prepare(
-    tool: Tool,
+    model: InputModel,
     action: &str,
     reference: &str,
     actor: &str,
@@ -62,7 +62,7 @@ pub fn prepare(
     bytes: u64,
     reply_dir: &Path,
 ) -> Result<Mode, Refused> {
-    if !tool.is_modelled() || bytes <= LIMIT {
+    if !model.is_modelled() || bytes <= LIMIT {
         return Ok(Mode::Direct);
     }
     compose(
@@ -141,7 +141,7 @@ pub fn compose(
 
 /// Rejoin a one-line notice out of a captured input box — `_notice_reconstruct`.
 #[must_use]
-pub fn reconstruct(tool: Tool, capture: &str, intended: &str) -> Option<String> {
+pub fn reconstruct(model: InputModel, capture: &str, intended: &str) -> Option<String> {
     let rows: Vec<String> = capture.lines().map(strip_csi).collect();
     // The head includes the request id, which disambiguates a whole-pane
     // capture carrying several historical notices in its transcript.
@@ -149,10 +149,10 @@ pub fn reconstruct(tool: Tool, capture: &str, intended: &str) -> Option<String> 
     if head != GENERIC_HEAD && !head_is_wellformed(&head) {
         return None;
     }
-    let ornament = match tool {
-        Tool::Claude => '❯',
-        Tool::Codex => '›',
-        Tool::Other => return None,
+    let ornament = match model {
+        InputModel::BorderDelimited => '❯',
+        InputModel::StyleDelimited => '›',
+        InputModel::Unmodelled => return None,
     };
     for (index, row) in rows.iter().enumerate() {
         let Some(at) = row.find(&head) else { continue };
@@ -173,10 +173,10 @@ pub fn reconstruct(tool: Tool, capture: &str, intended: &str) -> Option<String> 
         let mut candidate = line.to_owned();
         for rest in &rows[index + 1..] {
             let rest = rest.trim_end_matches(' ');
-            if tool == Tool::Codex && super::region::is_blank(rest) {
+            if model == InputModel::StyleDelimited && super::region::is_blank(rest) {
                 break;
             }
-            if tool == Tool::Claude && is_rule(rest) {
+            if model == InputModel::BorderDelimited && is_rule(rest) {
                 break;
             }
             let Some(part) = rest.strip_prefix("  ") else {
@@ -197,8 +197,8 @@ pub fn reconstruct(tool: Tool, capture: &str, intended: &str) -> Option<String> 
 
 /// Does the pane show EXACTLY the notice that was staged — `_notice_prove`?
 #[must_use]
-pub fn prove(tool: Tool, capture: &str, intended: &str) -> bool {
-    let Some(candidate) = reconstruct(tool, capture, intended) else {
+pub fn prove(model: InputModel, capture: &str, intended: &str) -> bool {
+    let Some(candidate) = reconstruct(model, capture, intended) else {
         return false;
     };
     let head = head_of(intended);
@@ -285,8 +285,8 @@ fn strip_csi(row: &str) -> String {
 mod tests {
     use std::path::Path;
 
-    use super::super::region::Tool;
     use super::{LIMIT, Mode, NOTICE_CAP, Refused, compose, prepare, prove, reconstruct};
+    use crate::tool::InputModel;
 
     fn body(name: &str) -> std::path::PathBuf {
         Path::new("/m/sessions/s/messages").join(name)
@@ -420,9 +420,9 @@ mod tests {
     #[test]
     fn only_an_oversize_body_to_a_modelled_tool_becomes_a_pointer() {
         let file = body("ae-1.ask.abc.txt");
-        let call = |tool, bytes| {
+        let call = |model, bytes| {
             prepare(
-                tool,
+                model,
                 "ask",
                 "ae-1",
                 "lead",
@@ -434,21 +434,27 @@ mod tests {
             )
         };
         assert_eq!(
-            call(Tool::Claude, LIMIT),
+            call(InputModel::BorderDelimited, LIMIT),
             Ok(Mode::Direct),
             "at the limit, not over it"
         );
-        assert!(matches!(call(Tool::Claude, LIMIT + 1), Ok(Mode::Notice(_))));
-        assert!(matches!(call(Tool::Codex, LIMIT + 1), Ok(Mode::Notice(_))));
+        assert!(matches!(
+            call(InputModel::BorderDelimited, LIMIT + 1),
+            Ok(Mode::Notice(_))
+        ));
+        assert!(matches!(
+            call(InputModel::StyleDelimited, LIMIT + 1),
+            Ok(Mode::Notice(_))
+        ));
         assert_eq!(
-            call(Tool::Other, LIMIT + 1),
+            call(InputModel::Unmodelled, LIMIT + 1),
             Ok(Mode::Direct),
             "an unmodelled TUI has no sensor, so the on-screen proof cannot be taken"
         );
         let unnameable = Path::new("/m/messages/r.ask.a.log");
         assert_eq!(
             prepare(
-                Tool::Claude,
+                InputModel::BorderDelimited,
                 "ask",
                 "ae-1",
                 "lead",
@@ -489,20 +495,20 @@ mod tests {
             &["bc.txt — read it first ⟧ae-1⟧"],
         );
         assert_eq!(
-            reconstruct(Tool::Claude, &inside, intended).as_deref(),
+            reconstruct(InputModel::BorderDelimited, &inside, intended).as_deref(),
             Some(intended)
         );
-        assert!(prove(Tool::Claude, &inside, intended));
+        assert!(prove(InputModel::BorderDelimited, &inside, intended));
         // The wrap falls AT a space: exactly one is reinserted.
         let at_space = wrapped(
             "⟦ae:msg from lead⟧[ae-1] LONG BODY 9000 B in your session dir:",
             &["messages/ae-1.ask.abc.txt — read it first ⟧ae-1⟧"],
         );
         assert_eq!(
-            reconstruct(Tool::Claude, &at_space, intended).as_deref(),
+            reconstruct(InputModel::BorderDelimited, &at_space, intended).as_deref(),
             Some(intended)
         );
-        assert!(prove(Tool::Claude, &at_space, intended));
+        assert!(prove(InputModel::BorderDelimited, &at_space, intended));
     }
 
     #[test]
@@ -513,23 +519,33 @@ mod tests {
             "⟦ae:msg from lead⟧[ae-1] LONG BODY 9000 B in your session dir: messages/ae-1.ask.a",
             &["bc.txt — read it first"],
         );
-        assert!(!prove(Tool::Claude, &clipped, intended));
+        assert!(!prove(InputModel::BorderDelimited, &clipped, intended));
         // The head is not on any prompt row: a transcript line carrying the
         // same bytes is not the input box.
         let transcript = format!(
             "{intended}\n\u{1b}[1m❯\u{1b}[0m\u{a0}\n{}\n",
             "─".repeat(60)
         );
-        assert_eq!(reconstruct(Tool::Claude, &transcript, intended), None);
-        assert!(!prove(Tool::Claude, &transcript, intended));
+        assert_eq!(
+            reconstruct(InputModel::BorderDelimited, &transcript, intended),
+            None
+        );
+        assert!(!prove(InputModel::BorderDelimited, &transcript, intended));
         // An unmodelled tool has no ornament to anchor on.
-        assert!(!prove(Tool::Other, &wrapped(intended, &[]), intended));
+        assert!(!prove(
+            InputModel::Unmodelled,
+            &wrapped(intended, &[]),
+            intended
+        ));
     }
 
     #[test]
     fn a_codex_box_ends_at_a_blank_row_where_a_claude_box_ends_at_its_border() {
         let intended = "⟦ae:msg from lead⟧[ae-1] LONG BODY 9000 B: /m/x.ask.a.txt — read it first; reply: /m/reply ae-1 ⟧ae-1⟧";
         let region = "transcript\n\u{1b}[1m›\u{1b}[0m ⟦ae:msg from lead⟧[ae-1] LONG BODY 9000 B: /m/x.ask.a.txt — read it first; reply: /m/reply\n  ae-1 ⟧ae-1⟧\n\n  gpt  ~/x\n";
-        assert!(prove(Tool::Codex, region, intended), "{region:?}");
+        assert!(
+            prove(InputModel::StyleDelimited, region, intended),
+            "{region:?}"
+        );
     }
 }

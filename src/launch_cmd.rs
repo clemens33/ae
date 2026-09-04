@@ -42,8 +42,7 @@ impl Split {
     }
 }
 
-/// Compatibility path for callers migrated off the command parser in phase 3.
-pub use crate::tool::ToolKind;
+use crate::tool::ToolKind;
 
 /// Split `cmd` at its binary word, or `None` when it is malformed or carries
 /// nothing but prefix words.

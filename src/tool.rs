@@ -173,6 +173,38 @@ impl CaptureSpec {
     }
 }
 
+/// Which observable input-box grammar a harness draws.
+///
+/// Public delivery probes accept this behaviour directly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputModel {
+    /// A prompt bounded by a structural bottom border.
+    BorderDelimited,
+    /// A styled prompt bounded by the last blank row before its footer.
+    StyleDelimited,
+    /// No input-box grammar is modelled.
+    Unmodelled,
+}
+
+impl InputModel {
+    /// Whether ae can prove this input box idle or occupied.
+    #[must_use]
+    pub const fn is_modelled(self) -> bool {
+        !matches!(self, Self::Unmodelled)
+    }
+}
+
+/// Input-readiness and first-turn behaviour for one harness.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct InputSpec {
+    /// The grammar used to observe the input box.
+    pub(crate) model: InputModel,
+    /// Whether launch waits for the harness process to replace the pane shell.
+    pub(crate) wait_for_process: bool,
+    /// Whether a resumed seat receives its initial turn through a paste.
+    pub(crate) paste_initial_on_resume: bool,
+}
+
 /// Everything ae needs to know about one agent harness.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ToolAdapter {
@@ -190,6 +222,8 @@ pub(crate) struct ToolAdapter {
     pub(crate) resume: ResumeSpec,
     /// Post-launch conversation-id capture behaviour.
     pub(crate) capture: CaptureSpec,
+    /// Input observation and first-turn delivery behaviour.
+    pub(crate) input: InputSpec,
 }
 
 const CLAUDE: ToolAdapter = ToolAdapter {
@@ -215,6 +249,11 @@ const CLAUDE: ToolAdapter = ToolAdapter {
         probe: StoreProbe::ProjectTranscript,
     },
     capture: CaptureSpec::None,
+    input: InputSpec {
+        model: InputModel::BorderDelimited,
+        wait_for_process: true,
+        paste_initial_on_resume: false,
+    },
 };
 
 const CODEX: ToolAdapter = ToolAdapter {
@@ -237,6 +276,11 @@ const CODEX: ToolAdapter = ToolAdapter {
         probe: StoreProbe::DatedRollouts,
     },
     capture: CaptureSpec::HandshakeRolloutOrTui,
+    input: InputSpec {
+        model: InputModel::StyleDelimited,
+        wait_for_process: true,
+        paste_initial_on_resume: true,
+    },
 };
 
 const GEMINI: ToolAdapter = ToolAdapter {
@@ -259,6 +303,11 @@ const GEMINI: ToolAdapter = ToolAdapter {
         probe: StoreProbe::RecordedId,
     },
     capture: CaptureSpec::ChatHistory,
+    input: InputSpec {
+        model: InputModel::Unmodelled,
+        wait_for_process: false,
+        paste_initial_on_resume: false,
+    },
 };
 
 const AGY: ToolAdapter = ToolAdapter {
@@ -282,6 +331,11 @@ const AGY: ToolAdapter = ToolAdapter {
         probe: StoreProbe::ConversationDatabase,
     },
     capture: CaptureSpec::ConversationDatabaseOrLog,
+    input: InputSpec {
+        model: InputModel::Unmodelled,
+        wait_for_process: false,
+        paste_initial_on_resume: false,
+    },
 };
 
 const GROK: ToolAdapter = ToolAdapter {
@@ -309,6 +363,11 @@ const GROK: ToolAdapter = ToolAdapter {
         probe: StoreProbe::RecordedId,
     },
     capture: CaptureSpec::None,
+    input: InputSpec {
+        model: InputModel::Unmodelled,
+        wait_for_process: false,
+        paste_initial_on_resume: false,
+    },
 };
 
 const OPENCODE: ToolAdapter = ToolAdapter {
@@ -331,6 +390,11 @@ const OPENCODE: ToolAdapter = ToolAdapter {
         probe: StoreProbe::RecordedId,
     },
     capture: CaptureSpec::SessionList,
+    input: InputSpec {
+        model: InputModel::Unmodelled,
+        wait_for_process: true,
+        paste_initial_on_resume: false,
+    },
 };
 
 const UNKNOWN: ToolAdapter = ToolAdapter {
@@ -350,6 +414,11 @@ const UNKNOWN: ToolAdapter = ToolAdapter {
         probe: StoreProbe::RecordedId,
     },
     capture: CaptureSpec::None,
+    input: InputSpec {
+        model: InputModel::Unmodelled,
+        wait_for_process: false,
+        paste_initial_on_resume: false,
+    },
 };
 
 const KNOWN: [&ToolAdapter; 6] = [&CLAUDE, &CODEX, &GEMINI, &AGY, &GROK, &OPENCODE];
@@ -444,6 +513,11 @@ mod tests {
                         probe: StoreProbe::ProjectTranscript,
                     },
                     capture: CaptureSpec::None,
+                    input: InputSpec {
+                        model: InputModel::BorderDelimited,
+                        wait_for_process: true,
+                        paste_initial_on_resume: false,
+                    },
                 },
                 ToolAdapter {
                     kind: ToolKind::Codex,
@@ -465,6 +539,11 @@ mod tests {
                         probe: StoreProbe::DatedRollouts,
                     },
                     capture: CaptureSpec::HandshakeRolloutOrTui,
+                    input: InputSpec {
+                        model: InputModel::StyleDelimited,
+                        wait_for_process: true,
+                        paste_initial_on_resume: true,
+                    },
                 },
                 ToolAdapter {
                     kind: ToolKind::Gemini,
@@ -486,6 +565,11 @@ mod tests {
                         probe: StoreProbe::RecordedId,
                     },
                     capture: CaptureSpec::ChatHistory,
+                    input: InputSpec {
+                        model: InputModel::Unmodelled,
+                        wait_for_process: false,
+                        paste_initial_on_resume: false,
+                    },
                 },
                 ToolAdapter {
                     kind: ToolKind::Agy,
@@ -508,6 +592,11 @@ mod tests {
                         probe: StoreProbe::ConversationDatabase,
                     },
                     capture: CaptureSpec::ConversationDatabaseOrLog,
+                    input: InputSpec {
+                        model: InputModel::Unmodelled,
+                        wait_for_process: false,
+                        paste_initial_on_resume: false,
+                    },
                 },
                 ToolAdapter {
                     kind: ToolKind::Grok,
@@ -533,6 +622,11 @@ mod tests {
                         probe: StoreProbe::RecordedId,
                     },
                     capture: CaptureSpec::None,
+                    input: InputSpec {
+                        model: InputModel::Unmodelled,
+                        wait_for_process: false,
+                        paste_initial_on_resume: false,
+                    },
                 },
                 ToolAdapter {
                     kind: ToolKind::OpenCode,
@@ -554,6 +648,11 @@ mod tests {
                         probe: StoreProbe::RecordedId,
                     },
                     capture: CaptureSpec::SessionList,
+                    input: InputSpec {
+                        model: InputModel::Unmodelled,
+                        wait_for_process: true,
+                        paste_initial_on_resume: false,
+                    },
                 },
             ]
         );
@@ -580,6 +679,11 @@ mod tests {
                     probe: StoreProbe::RecordedId,
                 },
                 capture: CaptureSpec::None,
+                input: InputSpec {
+                    model: InputModel::Unmodelled,
+                    wait_for_process: false,
+                    paste_initial_on_resume: false,
+                },
             }
         );
     }

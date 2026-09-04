@@ -20,9 +20,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::inventory::ServerId;
-use crate::launch_cmd::ToolKind;
 use crate::time::Timestamp;
-use crate::tool::{CaptureSpec, InitialTurn};
+use crate::tool::{CaptureSpec, InitialTurn, ToolKind};
 
 /// How many times a capture looks.
 const POLLS: u32 = 6;
@@ -98,7 +97,7 @@ pub(crate) fn start(dir: &Path, targets: &[Target]) {
         return;
     };
     for target in targets {
-        if !crate::launch::supports_launch_id(target.tool) {
+        if !target.tool.adapter().capture.is_needed() {
             continue;
         }
         let _ = crate::transport::spawn_detached(&exe, &argv(dir, target));
@@ -154,7 +153,7 @@ pub fn pending_seats(roster: &[crate::meta::RosterEntry]) -> Vec<Pending> {
         .filter(|entry| is_pending(entry.harness_session.as_deref()))
         .filter_map(|entry| {
             let tool = ToolKind::from_binary_name(entry.binary.as_deref().unwrap_or_default());
-            crate::launch::supports_launch_id(tool).then(|| Pending {
+            tool.adapter().capture.is_needed().then(|| Pending {
                 slot: entry.slot.clone(),
                 agent: entry.name.clone(),
                 tool,

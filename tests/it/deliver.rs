@@ -23,9 +23,10 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use ae::deliver::{self, region::Tool};
+use ae::deliver;
 use ae::inventory::ServerId;
 use ae::meta::Selector;
+use ae::tool::InputModel;
 
 use super::cli::ae;
 use super::phase2::run_tmux;
@@ -303,7 +304,7 @@ fn a_send_defers_while_the_input_box_holds_a_draft_and_abandons_loudly() {
     // is the proof; a second read would race the pane's redraw (measured on
     // the macos-15 lane: first read OCCUPIED, immediate re-read not).
     let seen = (0..100).any(|_| {
-        deliver::input_busy(&rig.server(), &rig.pane, Tool::Claude) || {
+        deliver::input_busy(&rig.server(), &rig.pane, InputModel::BorderDelimited) || {
             std::thread::sleep(Duration::from_millis(50));
             false
         }
@@ -400,21 +401,21 @@ fn a_codex_that_is_still_starting_is_not_ready_however_its_box_looks() {
     let rig = Rig::new("boot", "codex", 3);
     let server = rig.server();
     assert!(
-        deliver::tool_initializing(&server, &rig.pane, Tool::Codex),
+        deliver::tool_initializing(&server, &rig.pane, InputModel::StyleDelimited),
         "the start-up rows are on screen"
     );
     assert!(
-        !deliver::input_ready(&server, &rig.pane, Tool::Codex),
+        !deliver::input_ready(&server, &rig.pane, InputModel::StyleDelimited),
         "provably still starting: NOT ready"
     );
     // The same screen tells a tool ae does not model nothing at all.
     assert!(
-        !deliver::tool_initializing(&server, &rig.pane, Tool::Claude),
+        !deliver::tool_initializing(&server, &rig.pane, InputModel::BorderDelimited),
         "the markers are codex's; nothing is claimed about any other tool"
     );
     let mut became_ready = false;
     for _ in 0..120 {
-        if deliver::input_ready(&server, &rig.pane, Tool::Codex) {
+        if deliver::input_ready(&server, &rig.pane, InputModel::StyleDelimited) {
             became_ready = true;
             break;
         }
@@ -422,7 +423,7 @@ fn a_codex_that_is_still_starting_is_not_ready_however_its_box_looks() {
     }
     assert!(became_ready, "the settled box is ready");
     assert!(
-        !deliver::tool_initializing(&server, &rig.pane, Tool::Codex),
+        !deliver::tool_initializing(&server, &rig.pane, InputModel::StyleDelimited),
         "and the markers are gone"
     );
 }
@@ -502,7 +503,7 @@ fn a_message_interrupt_lands_unframed_even_with_a_draft_in_the_box() {
             .0
     );
     for _ in 0..100 {
-        if deliver::input_busy(&rig.server(), &rig.pane, Tool::Claude) {
+        if deliver::input_busy(&rig.server(), &rig.pane, InputModel::BorderDelimited) {
             break;
         }
         std::thread::sleep(Duration::from_millis(50));

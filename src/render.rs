@@ -6,8 +6,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use crate::inventory::ServerId;
-use crate::launch_cmd::ToolKind;
 use crate::meta::{self, Meta, ServerSelector};
+use crate::tool::ToolKind;
 use crate::transport;
 
 /// Exit code for a usage error, as [`crate::cli`] defines it.

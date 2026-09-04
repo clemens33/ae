@@ -24,16 +24,15 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use crate::deliver::region::Tool;
 use crate::deliver::{self, Shape};
 use crate::inventory::ServerId;
 use crate::launch;
-use crate::launch_cmd::ToolKind;
 use crate::meta::{self, Meta, ServerSelector};
 use crate::session_launch::capture;
 use crate::state::{EXIT_FAILED, EXIT_USAGE};
 use crate::store;
 use crate::time::Timestamp;
+use crate::tool::ToolKind;
 use crate::tracked::{self, EventFields};
 use crate::transport;
 use crate::watchdog_glue;
@@ -348,7 +347,7 @@ pub fn run_spawn(
     // The launch token is a CAPTURE fact of the tools with no launch-time id
     // flag, not a roster row — but it is RECORDED before the pane exists, so
     // that `_run` can name it in the context it injects.
-    if launch::supports_launch_id(tool)
+    if tool.adapter().capture.is_needed()
         && meta::rewrite(
             dir,
             &format!("launch_id.{slot}"),
@@ -432,7 +431,7 @@ pub fn run_spawn(
     // is recorded BEFORE the capture child is started — the child reads it back
     // out of meta, and a capture with no floor would accept a conversation this
     // spawn did not create.
-    if launch::supports_launch_id(tool) {
+    if tool.adapter().capture.is_needed() {
         let _ = meta::rewrite(
             dir,
             &format!("launch_time.{slot}"),
@@ -528,10 +527,7 @@ fn stamp_pane(server: &ServerId, pane: &str, name: &str, slot: &str) {
 /// Wait, briefly, for the tool's process to replace the pane's shell — the
 /// frozen `wait_for_agent_start`.
 fn wait_for_agent_start(server: &ServerId, pane: &str, tool: ToolKind) {
-    if !matches!(
-        tool,
-        ToolKind::Claude | ToolKind::Codex | ToolKind::OpenCode
-    ) {
+    if !tool.adapter().input.wait_for_process {
         return;
     }
     for _ in 0..START_POLLS {
@@ -570,13 +566,9 @@ fn deliver_brief(
     // The tool is the CONFIGURED one, not the pane's live command: a wrapper, an
     // interpreter or a `.exe` launcher makes the live command say something
     // else while the box on screen is still the tool's.
-    let tool = match kind {
-        ToolKind::Claude => Tool::Claude,
-        ToolKind::Codex => Tool::Codex,
-        _ => Tool::Other,
-    };
+    let model = kind.adapter().input.model;
     // DO NOT paste into a state we could not confirm idle.
-    if !deliver::wait_input_ready(&facts.server, pane, tool, BRIEF_READY_POLLS) {
+    if !deliver::wait_input_ready(&facts.server, pane, model, BRIEF_READY_POLLS) {
         return Ok(Some(
             "input never reached a confirmed-idle state (busy, modal, or unreadable)".to_owned(),
         ));

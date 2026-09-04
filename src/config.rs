@@ -410,7 +410,7 @@ pub struct Seat {
     /// stripped, `env` prefix peeled.
     pub binary: String,
     /// Which harness that is.
-    pub tool: crate::launch_cmd::ToolKind,
+    pub tool: crate::tool::ToolKind,
 }
 
 /// The seats a launch will create, main first, workers in config order.
@@ -909,10 +909,10 @@ mod tests {
         assert_eq!(plan.seats[0].name, "lead");
         assert_eq!(plan.seats[0].profile, "fable5");
         assert_eq!(plan.seats[0].binary, "claude");
-        assert_eq!(plan.seats[0].tool, crate::launch_cmd::ToolKind::Claude);
+        assert_eq!(plan.seats[0].tool, crate::tool::ToolKind::Claude);
         assert_eq!(plan.seats[1].slot, "worker.0");
         assert_eq!(plan.seats[1].name, "colead");
-        assert_eq!(plan.seats[1].tool, crate::launch_cmd::ToolKind::Codex);
+        assert_eq!(plan.seats[1].tool, crate::tool::ToolKind::Codex);
         assert!(plan.seats[1].command.starts_with("codex --yolo"));
     }
 
@@ -1185,7 +1185,7 @@ mod tests {
         assert_eq!(seat.assign_span, "A=1  B=2");
         assert_eq!(seat.argv_span, "env -u C claude --model\tfable");
         assert_eq!(seat.binary, "claude", "env prefix peeled by the parse");
-        assert_eq!(seat.tool, crate::launch_cmd::ToolKind::Claude);
+        assert_eq!(seat.tool, crate::tool::ToolKind::Claude);
     }
 
     #[test]

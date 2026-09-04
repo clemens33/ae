@@ -7,6 +7,8 @@
 //! it takes a capture and answers a question about it, so the whole model is
 //! unit-testable against recorded frames.
 
+use crate::tool::InputModel;
+
 /// One run of captured text sharing an SGR intensity state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Segment {
@@ -29,46 +31,6 @@ pub enum Occupancy {
     Idle,
     /// No live prompt in view, or nothing to read.
     Unreadable,
-}
-
-/// The tools whose input box ae models.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Tool {
-    /// Claude Code.
-    Claude,
-    /// Codex.
-    Codex,
-    /// Anything else — unmodelled.
-    Other,
-}
-
-impl Tool {
-    /// The tool a `pane_current_command` or a recorded `agent_bin` names.
-    #[must_use]
-    pub fn from_name(name: &str) -> Self {
-        match name {
-            "claude" => Self::Claude,
-            "codex" => Self::Codex,
-            _ => Self::Other,
-        }
-    }
-
-    /// The tool's name, which is what every diagnostic line in this path
-    /// interpolates.
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Claude => "claude",
-            Self::Codex => "codex",
-            Self::Other => "other",
-        }
-    }
-
-    /// Whether ae models this tool's input box at all.
-    #[must_use]
-    pub fn is_modelled(self) -> bool {
-        !matches!(self, Self::Other)
-    }
 }
 
 /// Where the input box ENDS, and how that row is recognised.
@@ -301,13 +263,13 @@ fn content_end(segments: &[Segment], prompt_line: usize, stop_at: StopAt) -> usi
 
 /// Read `region` as `tool`'s input box — `_input_region_occupied`.
 #[must_use]
-pub fn occupancy(region: &str, tool: Tool) -> Occupancy {
+pub fn occupancy(region: &str, model: InputModel) -> Occupancy {
     if region.is_empty() {
         return Occupancy::Unreadable;
     }
     let segments = parse(region);
-    match tool {
-        Tool::Codex => {
+    match model {
+        InputModel::StyleDelimited => {
             // The live prompt is the bottom-most row whose first non-blank cell
             // is `›` in BOLD-and-NOT-DIM state; a submitted transcript echo is
             // the same ornament bold AND dim.
@@ -330,7 +292,7 @@ pub fn occupancy(region: &str, tool: Tool) -> Occupancy {
             // unstyled `[Pasted Content N chars]` staging token.
             verdict(&text)
         }
-        Tool::Claude => {
+        InputModel::BorderDelimited => {
             // STRUCTURE, because styling cannot identify claude's live prompt:
             // the submitted echo, the idle prompt and the mid-generation prompt
             // differ in colour and NONE of them is SGR-dim.
@@ -353,7 +315,7 @@ pub fn occupancy(region: &str, tool: Tool) -> Occupancy {
             }
             verdict(&text)
         }
-        Tool::Other => Occupancy::Idle,
+        InputModel::Unmodelled => Occupancy::Idle,
     }
 }
 
@@ -383,8 +345,8 @@ fn verdict(text: &str) -> Occupancy {
 /// Is `capture` a codex that is PROVABLY still starting up —
 /// `_tool_initializing`?
 #[must_use]
-pub fn initializing(capture: &str, tool: Tool) -> bool {
-    if tool != Tool::Codex || capture.is_empty() {
+pub fn initializing(capture: &str, model: InputModel) -> bool {
+    if model != InputModel::StyleDelimited || capture.is_empty() {
         return false;
     }
     capture
@@ -474,7 +436,8 @@ fn digits(text: &str) -> (usize, &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::{Occupancy, Segment, Tool, composed_ui, initializing, occupancy, parse};
+    use super::{Occupancy, Segment, composed_ui, initializing, occupancy, parse};
+    use crate::tool::InputModel;
 
     /// A row as `capture-pane -e` renders it: the styling matters, and it is
     /// spelled the way tmux legally spells it rather than one canonical way.
@@ -570,22 +533,31 @@ mod tests {
 
     #[test]
     fn claude_is_idle_on_a_bare_ornament_and_occupied_on_anything_else() {
-        assert_eq!(occupancy(&claude_frame(""), Tool::Claude), Occupancy::Idle);
         assert_eq!(
-            occupancy(&claude_frame("[Pasted text #1 +40 lines]"), Tool::Claude),
+            occupancy(&claude_frame(""), InputModel::BorderDelimited),
+            Occupancy::Idle
+        );
+        assert_eq!(
+            occupancy(
+                &claude_frame("[Pasted text #1 +40 lines]"),
+                InputModel::BorderDelimited
+            ),
             Occupancy::Occupied,
             "the staging token is just content — the CLASS is the rule, not the text"
         );
         assert_eq!(
-            occupancy(&claude_frame("half a que"), Tool::Claude),
+            occupancy(&claude_frame("half a que"), InputModel::BorderDelimited),
             Occupancy::Occupied
         );
         assert_eq!(
-            occupancy("nothing but transcript\n", Tool::Claude),
+            occupancy("nothing but transcript\n", InputModel::BorderDelimited),
             Occupancy::Unreadable,
             "no live prompt in view is INDETERMINATE, never idle"
         );
-        assert_eq!(occupancy("", Tool::Claude), Occupancy::Unreadable);
+        assert_eq!(
+            occupancy("", InputModel::BorderDelimited),
+            Occupancy::Unreadable
+        );
     }
 
     #[test]
@@ -594,7 +566,7 @@ mod tests {
         let region =
             format!("transcript\n\u{1b}[1m❯\u{1b}[0m\u{a0}\nstill unsent\n{border}\n  model\n");
         assert_eq!(
-            occupancy(&region, Tool::Claude),
+            occupancy(&region, InputModel::BorderDelimited),
             Occupancy::Occupied,
             "a draft whose first row is blank keeps its real rows BELOW the prompt"
         );
@@ -610,7 +582,7 @@ mod tests {
             "transcript\n\u{1b}[1m❯\u{1b}[0m\u{a0}\n─ user-pasted heading\nreal unsent text\n{border}\n  model\n"
         );
         assert_eq!(
-            occupancy(&region, Tool::Claude),
+            occupancy(&region, InputModel::BorderDelimited),
             Occupancy::Occupied,
             "morphology AND width, together: that row is neither"
         );
@@ -625,13 +597,16 @@ mod tests {
     #[test]
     fn codex_reads_its_live_prompt_by_style_and_ignores_its_submitted_echo() {
         assert_eq!(
-            occupancy(&codex_frame("\u{1b}[1m›\u{1b}[0m ", ""), Tool::Codex),
+            occupancy(
+                &codex_frame("\u{1b}[1m›\u{1b}[0m ", ""),
+                InputModel::StyleDelimited
+            ),
             Occupancy::Idle
         );
         assert_eq!(
             occupancy(
                 &codex_frame("\u{1b}[1m›\u{1b}[0m ", "[Pasted Content 1469 chars]"),
-                Tool::Codex
+                InputModel::StyleDelimited
             ),
             Occupancy::Occupied,
             "the unstyled staging token is content — the read that once said clear"
@@ -642,7 +617,7 @@ mod tests {
                     "\u{1b}[1m›\u{1b}[0m ",
                     "\u{1b}[2mtry \"explain this\"\u{1b}[0m"
                 ),
-                Tool::Codex
+                InputModel::StyleDelimited
             ),
             Occupancy::Idle,
             "a DIM placeholder suggestion is not user content"
@@ -650,7 +625,7 @@ mod tests {
         assert_eq!(
             occupancy(
                 "\u{1b}[1;2m› \u{1b}[0mjust a submitted echo\n\n  gpt\n",
-                Tool::Codex
+                InputModel::StyleDelimited
             ),
             Occupancy::Unreadable,
             "bold AND dim is an echo, not a live prompt"
@@ -658,7 +633,7 @@ mod tests {
         assert_eq!(
             occupancy(
                 &codex_frame("\u{1b}[1m›\u{1b}[0m ", "a › typed by the user"),
-                Tool::Codex
+                InputModel::StyleDelimited
             ),
             Occupancy::Occupied,
             "only the ANCHOR ornament is stripped; a typed one is content"
@@ -668,14 +643,10 @@ mod tests {
     #[test]
     fn an_unmodelled_tool_is_idle_so_delivery_to_it_is_never_blocked() {
         assert_eq!(
-            occupancy(&claude_frame("busy"), Tool::Other),
+            occupancy(&claude_frame("busy"), InputModel::Unmodelled),
             Occupancy::Idle
         );
-        assert_eq!(Tool::from_name("opencode.exe"), Tool::Other);
-        assert_eq!(Tool::from_name("claude"), Tool::Claude);
-        assert_eq!(Tool::from_name("codex"), Tool::Codex);
-        assert_eq!(Tool::Other.as_str(), "other");
-        assert!(!Tool::Other.is_modelled() && Tool::Claude.is_modelled());
+        assert!(!InputModel::Unmodelled.is_modelled() && InputModel::BorderDelimited.is_modelled());
     }
 
     #[test]
@@ -691,36 +662,45 @@ mod tests {
     fn the_start_up_markers_are_rows_the_tui_draws_not_text_on_the_screen() {
         let progress = "• Starting MCP servers (0/7): assistant-all-tools\n";
         let header = "│ model:       loading   /model to change │\n";
-        assert!(initializing(progress, Tool::Codex));
-        assert!(initializing(header, Tool::Codex));
+        assert!(initializing(progress, InputModel::StyleDelimited));
+        assert!(initializing(header, InputModel::StyleDelimited));
         assert!(initializing(
             &format!("chrome\n{progress}box\n"),
-            Tool::Codex
+            InputModel::StyleDelimited
         ));
         // A QUOTED frame is indented, and that is the whole difference: these
         // strings are in this project's own docs, so a substring scan reads
         // "initializing" forever in the pane of an agent reading them.
-        assert!(!initializing(&format!("  {progress}"), Tool::Codex));
-        assert!(!initializing(&format!("  {header}"), Tool::Codex));
+        assert!(!initializing(
+            &format!("  {progress}"),
+            InputModel::StyleDelimited
+        ));
+        assert!(!initializing(
+            &format!("  {header}"),
+            InputModel::StyleDelimited
+        ));
         // An ASCII pipe is a markdown table row, not the TUI's box.
         assert!(!initializing(
             "| model:       loading   /model to change |\n",
-            Tool::Codex
+            InputModel::StyleDelimited
         ));
         // The counter is what makes the progress row a CLASS.
-        assert!(!initializing("• Starting MCP servers (): x\n", Tool::Codex));
+        assert!(!initializing(
+            "• Starting MCP servers (): x\n",
+            InputModel::StyleDelimited
+        ));
         assert!(!initializing(
             "•Starting MCP servers (0/7): x\n",
-            Tool::Codex
+            InputModel::StyleDelimited
         ));
         // Settled: the value is a model, not `loading`.
         assert!(!initializing(
             "│ model:       gpt-5.6 xhigh   /model to change │\n",
-            Tool::Codex
+            InputModel::StyleDelimited
         ));
         // And the markers are CODEX's.
-        assert!(!initializing(progress, Tool::Claude));
-        assert!(!initializing(progress, Tool::Other));
-        assert!(!initializing("", Tool::Codex));
+        assert!(!initializing(progress, InputModel::BorderDelimited));
+        assert!(!initializing(progress, InputModel::Unmodelled));
+        assert!(!initializing("", InputModel::StyleDelimited));
     }
 }

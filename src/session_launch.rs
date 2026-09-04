@@ -11,13 +11,12 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::config::{self, IdentityConfig, Seat};
-use crate::deliver::region::Tool;
 use crate::inventory::ServerId;
 use crate::launch::{self, PENDING};
-use crate::launch_cmd::ToolKind;
 use crate::meta::{self, Meta, ServerSelector};
 use crate::session_tmux::{Op, Split, argv, interpret_pane_id};
 use crate::state::{EXIT_FAILED, EXIT_USAGE};
+use crate::tool::ToolKind;
 use crate::{deliver, roster, tmux, transport};
 
 pub(crate) mod assets;
@@ -1591,7 +1590,7 @@ fn start_agent(
         &crate::run::pane_command(core, dir, &agent.slot),
     );
     wait_for_agent_start(server, &agent.pane, agent.tool);
-    if launch::supports_launch_id(agent.tool) {
+    if agent.tool.adapter().capture.is_needed() {
         let _ = meta::rewrite(
             dir,
             &format!("launch_time.{}", agent.slot),
@@ -1615,7 +1614,7 @@ fn start_agent(
 /// Measured 2026-09-04: two codex seats resumed while both were still `pending`
 /// then raced onto ONE rollout and recorded the SAME id twice.
 fn launch_token(tool: ToolKind, stored: Option<String>) -> String {
-    if !launch::supports_launch_id(tool) {
+    if !tool.adapter().capture.is_needed() {
         return String::new();
     }
     stored
@@ -1636,7 +1635,7 @@ fn launch_token(tool: ToolKind, stored: Option<String>) -> String {
 /// pending slots would find nothing, and the seat would stay unresumable for
 /// the rest of its life.
 const fn launch_turn_is_pasted(tool: ToolKind, resuming_seat: bool) -> bool {
-    resuming_seat && matches!(tool, ToolKind::Codex)
+    resuming_seat && tool.adapter().input.paste_initial_on_resume
 }
 
 /// The gated, loud, DURABLE launch-prompt delivery.
@@ -1647,12 +1646,8 @@ fn deliver_launch_prompt(
     prompt: &str,
     err: &mut impl Write,
 ) -> io::Result<()> {
-    let tool = match agent.tool {
-        ToolKind::Claude => Tool::Claude,
-        ToolKind::Codex => Tool::Codex,
-        _ => Tool::Other,
-    };
-    let reason = if deliver::wait_input_ready(server, &agent.pane, tool, LAUNCH_READY_POLLS) {
+    let model = agent.tool.adapter().input.model;
+    let reason = if deliver::wait_input_ready(server, &agent.pane, model, LAUNCH_READY_POLLS) {
         // NO select-pane: `paste-buffer -t` writes to the NAMED pane, and
         // selecting mid-send routes the human's in-flight keystrokes into the
         // target — acute under lead-pair, where two agents share window 0.
@@ -1667,7 +1662,7 @@ fn deliver_launch_prompt(
             // ONLY thing that will ever create a rollout to capture. So the
             // press is PROVEN, and a turn left in the box falls through to the
             // durable failure below rather than passing as delivered.
-            Ok(()) if deliver::submit_staged(server, &agent.pane, tool) => return Ok(()),
+            Ok(()) if deliver::submit_staged(server, &agent.pane, model) => return Ok(()),
             Ok(()) => "submit UNCONFIRMED — the turn is staged unsent in the input box".to_owned(),
             Err(failure) => format!("submit UNCONFIRMED ({failure:?}) — it may be staged unsent"),
         }
@@ -1710,10 +1705,7 @@ fn deliver_launch_prompt(
 
 /// Wait, briefly, for the tool's process to replace the pane's shell.
 fn wait_for_agent_start(server: &ServerId, pane: &str, tool: ToolKind) {
-    if !matches!(
-        tool,
-        ToolKind::Claude | ToolKind::Codex | ToolKind::OpenCode
-    ) {
+    if !tool.adapter().input.wait_for_process {
         return;
     }
     // The pane runs the CORE before it runs the tool: `_run` composes the
@@ -2183,7 +2175,7 @@ fn launching_capture(launching: &[Launching], resuming: bool) -> Vec<capture::Ta
     launching
         .iter()
         .filter(|agent| !agent.pane.is_empty())
-        .filter(|agent| launch::supports_launch_id(agent.tool))
+        .filter(|agent| agent.tool.adapter().capture.is_needed())
         // On a resume, only the slots still `pending` are re-captured: capture
         // is post-launch and may have failed a previous attempt, and without a
         // retry those slots stay pending forever.
