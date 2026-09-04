@@ -148,6 +148,10 @@ impl Rig {
         let out = ae()
             .env_remove("TMUX")
             .env_remove("TMUX_PANE")
+            // THE RIG'S OWN HOME, not the runner's per-call one: `launch` and
+            // `plan` must agree about where an agent tool keeps its
+            // conversation store, and neither may be the developer's.
+            .env("HOME", &self.scratch)
             .env("TMUX_TMPDIR", &self.scratch)
             .arg(ae::cli::LAUNCH)
             .args([
@@ -226,6 +230,7 @@ impl Rig {
         let out = ae()
             .env_remove("TMUX")
             .env_remove("TMUX_PANE")
+            .env("HOME", &self.scratch)
             .current_dir(&self.project)
             .arg(ae::cli::RUN)
             .arg("--print")
@@ -578,8 +583,10 @@ fn a_resume_reruns_with_the_resume_variant() {
     );
 
     // Plant the transcript claude would have written, and the same seat resumes
-    // the SAME conversation.
-    let home = std::env::var("HOME").unwrap_or_default();
+    // the SAME conversation. Under the RIG'S home: this used to write into the
+    // developer's own `~/.claude/projects` and delete it again, which worked
+    // only because the child inherited their `$HOME`.
+    let home = rig.scratch.display().to_string();
     // The PHYSICAL path, because the probe asks `getcwd(2)` — which is what
     // claude's own `process.cwd()` asks, and on macOS `/tmp` is a symlink.
     let key: String = std::fs::canonicalize(&rig.project)

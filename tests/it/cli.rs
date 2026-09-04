@@ -15,15 +15,152 @@ use super::parity::capture::ExitOutcome;
 use super::parity::capture::raw;
 use crate::phase2::run_tmux;
 
+/// The environment a hermetic run must NOT inherit.
+///
+/// `TMUX`/`TMUX_PANE` make the binary believe it is inside the CALLER'S pane,
+/// which is how a launch reaches `switch-client`. The rest are the checkout
+/// shape's own doors: inheriting them would let a fixture read the developer's
+/// config or pin a version.
+const AMBIENT: [&str; 4] = ["TMUX", "TMUX_PANE", "CONFIG_FILE", "AE_VERSION"];
+
+/// A scratch path this run owns, never created — see [`ae`].
+fn run_scratch() -> std::path::PathBuf {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    std::path::PathBuf::from(format!(
+        "/tmp/ae-hermetic-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ))
+}
+
 // ONE OF THREE DOORS — `clippy.toml` denies `std::process::Command` crate-wide
 // and `doors::the_capability_boundary_holds_against_any_lint_relaxation`
 // pins the complete inventory of exceptions by asking the compiler for it.
+// The door is this ALIAS, so the runner can be built in layers without each
+// signature reopening it.
 #[allow(
     clippy::disallowed_types,
     reason = "black-box tests must run the product binary; see clippy.toml"
 )]
-pub(crate) fn ae() -> std::process::Command {
-    std::process::Command::new(env!("CARGO_BIN_EXE_ae"))
+pub(crate) type Runner = std::process::Command;
+
+fn binary() -> Runner {
+    Runner::new(env!("CARGO_BIN_EXE_ae"))
+}
+
+/// The black-box runner, HERMETIC BY DEFAULT.
+///
+/// `$HOME` and `$AE_HOME` name a scratch path that does not exist, and the
+/// server pair is SET — not dropped — at a socket under a directory that does
+/// not exist either. Both halves are necessary and the difference is the whole
+/// lesson: an UNSET pair does not mean "no tmux", it means the AMBIENT server,
+/// which is the developer's own. (`TMUX_TMPDIR` is set too, and is not the
+/// mechanism: measured 2026-09-04, tmux still answered on the default socket.)
+///
+/// So a fixture whose argv reaches the LAUNCH grammar cannot build anything:
+/// every tmux operation is aimed at a socket that cannot be created, and there
+/// is no server to make a session on and no client to switch.
+///
+/// This is not hypothetical. `sc_022_a_top_level_session_name_is_never_an_unknown_command`
+/// passes a bare session name, which IS a launch; with the inherited
+/// environment it created a real session on the developer's default tmux server
+/// and switched their client to it, twice on 2026-09-04.
+///
+/// A fixture that wants a real server sets its own pair — by flag, as
+/// `_launch` fixtures do, or by `.env(…)`, which wins. See [`ae_hermetic`] for
+/// one that also needs the scratch path.
+pub(crate) fn ae() -> Runner {
+    ae_in(&run_scratch())
+}
+
+/// [`ae`], plus the scratch it was pointed at, for a fixture that asserts
+/// nothing was written there.
+pub(crate) fn ae_hermetic() -> (Runner, std::path::PathBuf) {
+    let dir = run_scratch();
+    (ae_in(&dir), dir)
+}
+
+/// The server pair a hermetic run is pinned to: a socket in a directory that is
+/// never created, so tmux cannot answer and cannot be started.
+fn dead_socket(dir: &std::path::Path) -> std::path::PathBuf {
+    dir.join("no-server").join("tmux.sock")
+}
+
+fn ae_in(dir: &std::path::Path) -> Runner {
+    let mut command = binary();
+    for name in AMBIENT {
+        command.env_remove(name);
+    }
+    command
+        .env("HOME", dir)
+        .env("AE_HOME", dir.join(".ae"))
+        .env("TMUX_TMPDIR", dir)
+        .env("AE_TMUX_SERVER_KIND", "socket")
+        .env("AE_TMUX_SERVER", dead_socket(dir));
+    command
+}
+
+#[test]
+fn the_black_box_runner_cannot_see_the_developers_own_home_or_tmux() {
+    // THE GUARD ON THE RUNNER ITSELF. Every other black-box fixture rests on
+    // this, and the failure it prevents is invisible from inside a passing
+    // test: a fixture that reaches the real state root still asserts whatever
+    // it asserted, and the damage is somewhere else entirely.
+    let (command, dir) = ae_hermetic();
+    let seen: std::collections::HashMap<String, Option<String>> = command
+        .get_envs()
+        .map(|(key, value)| {
+            (
+                key.to_string_lossy().into_owned(),
+                value.map(|value| value.to_string_lossy().into_owned()),
+            )
+        })
+        .collect();
+
+    for door in AMBIENT {
+        assert_eq!(
+            seen.get(door),
+            Some(&None),
+            "{door} is not dropped by the runner"
+        );
+    }
+    for (key, expected) in [
+        ("HOME", dir.clone()),
+        ("AE_HOME", dir.join(".ae")),
+        ("TMUX_TMPDIR", dir.clone()),
+        ("AE_TMUX_SERVER", dead_socket(&dir)),
+    ] {
+        assert_eq!(
+            seen.get(key).cloned().flatten(),
+            Some(expected.display().to_string()),
+            "{key} does not name the run's own scratch"
+        );
+    }
+    // The point, stated as the comparison it is.
+    let mine = std::env::var("HOME").unwrap_or_default();
+    assert_ne!(
+        seen.get("HOME").cloned().flatten(),
+        Some(mine),
+        "the runner hands the child the developer's own HOME"
+    );
+    assert_eq!(
+        seen.get("AE_TMUX_SERVER_KIND").cloned().flatten(),
+        Some("socket".to_owned()),
+        "the server pair is not TYPED, so the value is not read as a socket"
+    );
+    // THE HALF THAT WAS MISSING THE FIRST TIME: an unset pair is not "no tmux",
+    // it is the AMBIENT server. The pair is set, and its directory is absent.
+    assert!(
+        !dead_socket(&dir)
+            .parent()
+            .is_some_and(std::path::Path::exists),
+        "the run's socket directory exists, so a server can be started in it"
+    );
+    // And the scratch is NOT created: a forgetful fixture meets a missing state
+    // root rather than a usable one.
+    assert!(!dir.exists(), "the runner created its scratch");
+    // Two runners never share one, so one fixture cannot see another's writes.
+    assert_ne!(ae_hermetic().1, ae_hermetic().1);
 }
 
 /// Run one GENERATED SESSION HELPER — a shim the launch wrote — as a black-box
@@ -170,7 +307,15 @@ fn an_unknown_list_flag_is_a_usage_error() {
 
 #[test]
 fn sc_022_a_top_level_session_name_is_never_an_unknown_command() {
-    let out = ae()
+    // THE EXHIBIT for the runner's isolation. This word reaches the LAUNCH
+    // grammar, and with an inherited `$HOME` and `$TMUX` this test CREATED a
+    // real session in the developer's `~/.ae` on their default tmux server and
+    // switched their client to it (measured 2026-09-04). `ae()` is hermetic
+    // now, so the launch refuses on a state root that is not there — which is
+    // still not a usage error, and still says nothing about an unknown
+    // command.
+    let (mut command, root) = ae_hermetic();
+    let out = command
         .arg("my-feature")
         .output()
         .expect("the ae binary should run");
@@ -186,6 +331,24 @@ fn sc_022_a_top_level_session_name_is_never_an_unknown_command() {
         !stderr.contains("unknown"),
         "the row forbids this phrase for such a token: {stderr}"
     );
+    // THE REGRESSION GUARD, in the two places the damage showed. No tmux server
+    // was started for a fixture that only tests the router, and no session
+    // survived anywhere the fixture could reach.
+    assert!(
+        !dead_socket(&root)
+            .parent()
+            .is_some_and(std::path::Path::exists),
+        "a tmux server was started: {stderr}"
+    );
+    assert!(
+        !root
+            .join(".ae")
+            .join("sessions")
+            .join("my-feature")
+            .exists(),
+        "the fixture built a session: {stderr}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
