@@ -8,22 +8,16 @@
 //! prints ready-to-send report lines. Empty output IS the answer: nothing
 //! needed reporting.
 //!
-//! It replaces `contrib/aemonitor`, a 366-line Python sidecar that read
-//! `ae list --json` out of a subprocess and re-derived the attention vocabulary
-//! for itself. Three things went with that port, and each was a defect rather
-//! than a feature:
+//! Three properties are deliberate:
 //!
-//! * **The JSON round trip.** The sidecar parsed the digest and refused any
-//!   `schema_version` but `1` — and the core has emitted `2` since the identity
-//!   slice, so the shipped helper failed closed against the shipped `ae`. This
-//!   reads [`World`] directly, so there is no document between the fact and its
-//!   reader and no version for the two to disagree about.
-//! * **The duplicated rank table.** `RANK` mirrored ae's severity order in
-//!   Python and silently IGNORED any reason ae later added — which is exactly
-//!   what happened to `unanswered`. [`Reason`] is the one definition now, so a
-//!   new reason is reported the day it exists.
-//! * **`--notify-cmd <path>`.** An arbitrary program, chosen by whoever wrote
-//!   the charter. Delivery goes through the session's OWN `say` helper, at the
+//! * **No JSON round trip.** This reads [`World`] directly, so there is no
+//!   document between the fact and its reader and no `schema_version` for the
+//!   two to disagree about.
+//! * **One rank table.** [`Reason`] is the one definition, so a new reason is
+//!   reported the day it exists rather than being silently dropped by a
+//!   mirrored copy of the severity order.
+//! * **No arbitrary notify program.** Delivery goes through the session's OWN
+//!   `say` helper, at the
 //!   fixed name [`SAY_HELPER`] joined onto the session directory — the
 //!   [`crate::watchdog_daemon`]'s rule for the same hazard, and the reason
 //!   [`Notice`] has one constructor. That constructor seals the PROGRAM

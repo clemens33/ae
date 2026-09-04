@@ -442,9 +442,8 @@ fn a_codex_box_takes_the_same_paste_and_confirms_it() {
     );
 }
 
-/// The per-target lock is the frozen path, so a bash `flock` on it and this
-/// one exclude each other — which is what keeps the glue's `_send-deliver`
-/// safe while it still exists.
+/// The per-target lock is a real file lock, so an external `flock` on it and
+/// this one exclude each other.
 #[test]
 fn a_held_target_lock_makes_the_delivery_wait_and_then_say_so() {
     let rig = Rig::new("lock", "claude", 0);

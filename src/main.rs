@@ -1,8 +1,8 @@
 //! The `ae` binary. Thin by design: argv in, exit code out, presentation of the
 //! one top-level error. Everything testable lives in the library.
 //!
-//! `argv[0]` is kept, not skipped: since slice Z2 every session helper is a
-//! symlink to this binary, and the name it was invoked under is what says which
+//! `argv[0]` is kept, not skipped: every session helper is a symlink to this
+//! binary, and the name it was invoked under is what says which
 //! helper this is and which session it belongs to.
 
 use std::io::Write;

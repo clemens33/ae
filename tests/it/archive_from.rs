@@ -1,8 +1,8 @@
 //! `ae _archive-from-preflight` — the read-only `--from` inheritance preflight
-//! (P3.4), black-box against the built binary.
+//! black-box against the built binary.
 //!
 //! The preflight proves an archive is a real, validated, not-mid-flight ae
-//! archive and hands Bash exactly the tuple it consumes — `aid\thandover\t
+//! archive and hands back exactly the tuple the caller consumes — `aid\thandover\t
 //! pending`, no trailing newline — or refuses with a named `Error:` and rc 1. It
 //! shares ONE validator/root/claim implementation with publish and purge
 //! (`src/archive/store.rs`), so these opposed controls also guard that the shared
@@ -127,7 +127,7 @@ fn a_real_archive_preflights_and_prints_the_frozen_tuple() {
         "a valid archive preflights: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    // Exactly three tab fields, NO trailing newline (bash captures it with `$(...)`
+    // Exactly three tab fields, NO trailing newline (a caller captures the line
     // and splits on the tabs); field 0 is the canonical id and the counts parse.
     let stdout = String::from_utf8(out.stdout).unwrap();
     assert!(!stdout.ends_with('\n'), "no trailing newline: {stdout:?}");

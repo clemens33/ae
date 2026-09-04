@@ -430,7 +430,7 @@ mod tests {
 
     #[test]
     fn sc_017a_amended_the_default_shows_no_stopped_session() {
-        // The default is no longer "running only" but "not stopped history" —
+        // The default is not "running only" but "not stopped history" —
         // running plus unknown.
         let corpus = corpus();
         let shown = Selection::default().select(&corpus, NOW);

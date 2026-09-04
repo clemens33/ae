@@ -1,11 +1,7 @@
-//! `_peek`, `_agents` and `_focus`: the three read-mostly pane surfaces the
-//! session helpers still needed in bash.
+//! `_peek`, `_agents` and `_focus`: the three read-mostly pane surfaces.
 //!
-//! Ported from `ae`'s `helper_peek_main`, `helper_agents_main` and
-//! `helper_focus_main`. None of them had any logic worth keeping in bash — a
-//! resolve, one tmux call, and a `printf` table — and every one of them was the
-//! last reason its helper had to `source _lib`. Under the B move the helpers
-//! are shims, so these are the entries they exec.
+//! Each is a resolve, one tmux call, and a table: the entries the `peek`,
+//! `agents` and `focus` helpers dispatch to.
 //!
 //! `focus` is the ONE surface allowed to select a pane. The launch and delivery
 //! paths deliberately do not: `paste-buffer -t` writes to the NAMED pane, and
@@ -18,16 +14,16 @@ use crate::session_tmux::{Op, argv};
 use crate::state::{EXIT_FAILED, EXIT_USAGE};
 use crate::{tracked, transport};
 
-/// The frozen `peek` usage, both lines.
+/// The `peek` usage, both lines.
 pub const PEEK_USAGE: &str = "Usage: peek <agent-name|pane-id|@session:agent> [lines]\n  Examples: peek codex:reviewer\n           peek @my-feature:claude:lead 50\n";
 
-/// The frozen `focus` usage, both lines.
+/// The `focus` usage, both lines.
 pub const FOCUS_USAGE: &str = "Usage: focus <agent-name|pane-id|@session:agent>\n  Examples: focus codex:reviewer\n           focus @my-feature:claude:lead\n";
 
-/// The frozen capture ceiling and floor: at most 2000 lines, at least 1.
+/// The capture ceiling and floor: at most 2000 lines, at least 1.
 const MAX_LINES: u32 = 2000;
 
-/// The frozen default window.
+/// The default window.
 const DEFAULT_LINES: u32 = 80;
 
 /// `_peek <dir> <target> [lines]` — the recent output of another agent's pane.
@@ -49,7 +45,7 @@ pub fn peek(
     let lines = match rest.first() {
         None => DEFAULT_LINES,
         Some(word) => {
-            // The frozen guard is `^[0-9]+$` — a bare digit run, so a signed or
+            // The guard is `^[0-9]+$` — a bare digit run, so a signed or
             // spaced value is a refusal rather than a silently clamped window.
             let Ok(value) = word.parse::<u64>() else {
                 writeln!(err, "Error: lines must be a number, got '{word}'")?;

@@ -344,8 +344,7 @@ impl SessionEntry {
             self.goal_set_epoch,
             self.knowledge.events.is_complete(),
         );
-        // Legacy shape: the runtime has not yet supplied watchdog/git branch
-        // observation.
+        // The runtime has not supplied watchdog or git-branch observation.
         if self.degraded {
             if let Some(branch) = self.branch.as_deref() {
                 fields.push(("branch".to_owned(), Value::str(branch)));
@@ -555,8 +554,7 @@ mod tests {
         }
     }
 
-    /// Frozen truncated with `${sid:0:8}`, and bash substring expansion counts
-    /// CHARACTERS — its own comment says "8-char short session id".
+    /// The short session id is EIGHT CHARACTERS, not eight bytes.
     #[test]
     fn the_short_session_id_truncates_on_a_character_boundary() {
         let mut agent = AgentEntry {

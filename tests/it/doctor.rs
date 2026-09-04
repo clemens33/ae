@@ -157,7 +157,7 @@ fn doctor_reads_the_real_state_root_and_reports_a_stopped_session_as_an_orphan()
     // Six warnings, and the count is pinned so a new row shows up here:
     // local-config, workspace.workers, orphans + its hint, core-pin + its hint.
     assert!(stdout.ends_with("failure(s), 6 warning(s)\n"), "{stdout}");
-    // The two roots are CREATED by the report, as the frozen `mkdir -p` did.
+    // The two roots are CREATED by the report.
     assert!(rig.home.join("worktrees").is_dir(), "the worktrees root");
 }
 
@@ -292,8 +292,8 @@ fn shims_render_refuses_a_directory_that_is_not_there() {
 
 #[test]
 fn check_deps_takes_no_argument_and_passes_on_a_machine_with_tmux() {
-    // `--bash-major` went with `ae-entry` in slice Z3: ae ships no interpreter,
-    // so there is no version of one to supply and none to refuse on.
+    // ae ships no interpreter, so there is no version of one to supply and none
+    // to refuse on.
     let rig = Rig::new("deps");
     let (code, _, stderr) = rig.run(&[ae::cli::CHECK_DEPS, "--bash-major", "5"]);
     assert_eq!(code, Some(2), "a flag nothing supplies is a usage error");

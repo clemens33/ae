@@ -1068,7 +1068,7 @@ mod tests {
 
     #[test]
     fn a_pane_tmux_reports_dead_is_not_alive_whatever_command_it_names() {
-        // #109: `remain-on-exit` keeps reporting the exited process, and `true`
+        // `remain-on-exit` keeps reporting the exited process, and `true`
         // is not in the shell set — so the command field alone reads alive.
         let observed = only(&[pane(Some(true), Some("main"), Some("true"))], "main");
         assert_eq!(observed.alive, Some(false));
@@ -1095,7 +1095,7 @@ mod tests {
             "a complete enumeration that excludes the slot is a negative proof"
         );
 
-        // #107's arm: an unstamped pane could BE this agent, so absence of
+        // An unstamped pane could BE this agent, so absence of
         // evidence must not become removal.
         let ambiguous = [
             pane(Some(false), Some("main"), Some("claude")),

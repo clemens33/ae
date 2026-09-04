@@ -1,13 +1,12 @@
-//! Slice Z2's two deletions, proven black-box: the helper LINKS and the pane's
-//! own `_run`.
+//! The helper LINKS and the pane's own `_run`, proven black-box.
 //!
 //! Both subjects only exist as processes. A helper is a symlink whose identity
 //! is `argv[0]`, so proving it means EXECUTING the link rather than calling the
 //! function behind it; and a launch command now exists nowhere but in the
 //! `execve` the pane makes, so proving it means either running a tool that
 //! reports its own argv, or asking `_run --print` for the plan it would exec.
-//! No tmux is needed for either — which is the point: the bash that used to
-//! hold both of these is gone, and what replaced it is testable without a pane.
+//! No tmux is needed for either — which is the point: the plan is provable
+//! without a pane.
 
 #![allow(
     clippy::disallowed_methods,

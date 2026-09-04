@@ -1,10 +1,10 @@
 //! The one top-level presentation error.
 //!
-//! #80: "start with one top-level presentation error; domain error types are
-//! permitted where recovery/semantics differ — a single crate-wide enum is a
-//! default, not law". This is that default. It is hand-written because "no
-//! error dependency exists until a real error does": `thiserror` earns its
-//! place when the enum has enough variants to make the boilerplate cost real.
+//! One top-level presentation error; domain error types are permitted where
+//! recovery or semantics differ — a single crate-wide enum is a default, not
+//! law. It is hand-written because no error dependency exists until a real
+//! error does: `thiserror` earns its place when the enum has enough variants to
+//! make the boilerplate cost real.
 
 use std::fmt;
 use std::io;

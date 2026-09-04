@@ -1,7 +1,7 @@
 //! The two daemons' LIFECYCLE, against a real tmux server.
 //!
 //! `_watchdog` and `_telegram` start and stop long-lived processes, and the
-//! whole risk in porting them out of bash is in what the guards do with a real
+//! whole risk is in what the guards do with a real
 //! server's answers: a `start` that cannot see a running daemon spawns a second
 //! one, and a `stop` that cannot see a pane reports a kill it did not perform.
 //! So both arms drive the product entries against a live server rather than a

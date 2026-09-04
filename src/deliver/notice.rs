@@ -256,8 +256,7 @@ fn strip_csi(row: &str) -> String {
         out.push_str(&rest[..at]);
         let after = &rest[at + 1..];
         let Some(body) = after.strip_prefix('[') else {
-            // Not a CSI: drop the ESC and carry on, as the frozen `sed` does
-            // for anything its pattern misses.
+            // Not a CSI: drop the ESC and carry on.
             rest = after;
             continue;
         };

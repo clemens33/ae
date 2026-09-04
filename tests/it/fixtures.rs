@@ -1,8 +1,8 @@
 //! The reader against hand-built session directories.
 //!
 //! Every fixture is named for the contract row it exercises, and every
-//! expectation below is read off that row's SHOULD text — never off a bash run.
-//! See `tests/fixtures/README.md` for the map and for what replaces these.
+//! expectation below is read off that row's SHOULD text — never off a recorded
+//! run. See `tests/fixtures/README.md` for the map.
 
 #![allow(
     clippy::disallowed_methods,

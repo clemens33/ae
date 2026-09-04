@@ -106,8 +106,8 @@ fn split_first_token(s: &str) -> Option<(&str, &str)> {
 }
 
 /// Whether a process named `agent_bin` is a descendant of `pane_pid` in the
-/// snapshot — the pure port of the bash ancestor walk, done once for the whole
-/// table instead of per candidate.
+/// snapshot — one ancestor walk for the whole table rather than one per
+/// candidate.
 #[must_use]
 pub fn has_descendant_named(procs: &[Proc], pane_pid: u32, agent_bin: &str) -> bool {
     let mut children: HashMap<u32, Vec<usize>> = HashMap::new();

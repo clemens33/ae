@@ -7,7 +7,7 @@
 //! directory IS the answer, and it is the only way to reach the installed arm
 //! at all.
 //!
-//! What is planted is exactly what `install` publishes (slice Z3): a version
+//! What is planted is exactly what `install` publishes: a version
 //! directory named for the crate version holding `ae-core`, `install` and a
 //! two-line `SHA256SUMS`, under `<HOME>/.ae/versions/`.
 
@@ -342,9 +342,6 @@ fn upgrade_takes_no_argument_and_refuses_before_it_runs_anything() {
     assert!(stderr.contains("AE_VERSION"), "{stderr}");
     assert!(!stderr.contains("installer ran"), "{stderr}");
 }
-
-// RETIRED (slice Z4): `upgrade` no longer becomes the sibling installer, so
-// there is no member to prove before executing it.
 
 #[test]
 fn doctor_warns_when_the_published_core_is_writable_and_not_when_it_is_not() {

@@ -382,8 +382,8 @@ fn a_spawn_that_cannot_store_its_task_rolls_the_whole_thing_back() {
     let rig = Rig::new("rollback");
     let windows_before = rig.windows().len();
     // `messages` as a FILE: the recovery-body store cannot create its
-    // directory, so the spawn fails at the one step the frozen order makes
-    // terminal — after the seat and the pane exist.
+    // directory, so the spawn fails at the one step that is terminal — after
+    // the seat and the pane exist.
     assert!(
         std::fs::write(rig.dir.join("messages"), "not a directory").is_ok(),
         "the blocker"
@@ -493,7 +493,7 @@ fn a_retire_purges_the_seat_and_refuses_what_is_not_its_to_take() {
     );
 }
 
-/// The argv grammar refuses what the frozen helper refuses, before any effect.
+/// The argv grammar refuses before any effect.
 #[test]
 fn the_spawn_grammar_refuses_a_missing_profile_and_a_hostile_name() {
     let probe = PathBuf::from(format!("/tmp/aesp-probe4.{}", std::process::id()));

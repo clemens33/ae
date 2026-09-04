@@ -476,7 +476,7 @@ fn sc_017s_a_real_enumeration_carries_identity_and_both_liveness_conjuncts() {
         "exactly one pane is present and anonymous: {out:?}"
     );
 
-    // THE #109 ARM.
+    // THE EXITED-PANE ARM.
     assert_eq!(
         gone.dead,
         Some(true),

@@ -1,12 +1,12 @@
 //! The `goal` helper: `goal <text>`, `goal --clear`, `goal` and `goal --help`.
 //!
-//! What the frozen `helper_goal_main` does, kept exactly: the text is made one
+//! The text is made one
 //! printable line (newlines and tabs to spaces, every other control byte
 //! dropped), written as `goal=<text>` into the session's `meta` under
 //! `meta.lock`, and announced with a `goal` event whose summary is the text;
 //! `--clear` removes the key and announces `goal cleared`. The no-argument
-//! READ (P2.4) prints the FIRST `goal=` record's value or `(no goal set)` —
-//! `ae_meta_get`'s `grep | head -1 | cut` — and `--help`/`-h` print the usage
+//! READ prints the FIRST `goal=` record's value or `(no goal set)`, and
+//! `--help`/`-h` print the usage
 //! and take the usage exit.
 //!
 //! Two storage transactions, deliberately NOT one: the meta rewrite (a locked
@@ -24,7 +24,7 @@ use crate::requests::Viewer;
 use crate::state::{self, EXIT_FAILED, EXIT_USAGE};
 use crate::time::Timestamp;
 
-/// The frozen `helper_goal_usage` text.
+/// The usage text.
 pub const USAGE: &str = "Usage: goal            # show the session goal\n       goal <text>     # set it (one line)\n       goal --clear    # remove it\n";
 
 /// The meta key.
@@ -86,10 +86,9 @@ pub fn parse(tail: &[String]) -> Result<Command, Usage> {
 ///
 /// # Errors
 ///
-/// A meta that exists but could not be read. The frozen body hides that
-/// behind the same `|| true` and prints `(no goal set)`; this says what
-/// happened instead, because "no goal" and "could not look" are different
-/// answers.
+/// A meta that exists but could not be read. It is REPORTED rather than
+/// rendered as `(no goal set)`, because "no goal" and "could not look" are
+/// different answers.
 pub fn show(dir: &Path) -> io::Result<Vec<u8>> {
     let text = match meta::read_bytes(dir) {
         Ok(text) => text,

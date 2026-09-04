@@ -1,9 +1,7 @@
 //! The GATE's own hazards — the two files ae still builds itself with.
 //!
-//! Slice Z4 retired the bash suites, and three guards in them had no subject in
-//! `src` to move to: they are about the `justfile` and the `install` script,
-//! which are text this crate never runs but every release does. They come here
-//! rather than disappearing, because each one is a bug that already shipped.
+//! Three guards over the `justfile` and the `install` script — text this crate
+//! never runs but every release does. Each one is a bug that already shipped.
 //!
 //! Every guard is a PURE FUNCTION of file text, and each is exercised against
 //! deliberately broken input as well as the real file. A rule that matches
@@ -481,7 +479,7 @@ fn the_bundle_recipe_is_the_one_definition_of_a_bundle_and_both_release_legs_cal
         2,
         "both legs check ae-core's version against the tag"
     );
-    // No wrapper survives to have a version word or to be copied into a bundle.
+    // No second binary has a version word or is copied into a bundle.
     for retired in ["_AE_ENTRY_VERSION", "AE_VERSION=", r#"$root/ae""#] {
         assert_eq!(
             release.matches(retired).count(),

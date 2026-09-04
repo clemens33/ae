@@ -186,8 +186,8 @@ pub(super) fn validate_tree(path: &Path, aid: &str) -> Result<(), String> {
         }
     }
 
-    // Meta/digest consistency: the same checks the frozen validator makes, cheap
-    // insurance against a future divergence in the two renderers.
+    // Meta/digest consistency: cheap insurance against a future divergence in
+    // the two renderers.
     let meta_bytes = read_file(&path.join("meta"))
         .map_err(|why| format!("archive: staged meta unreadable: {why}"))?;
     let digest = read_file(&path.join("digest.md"))
@@ -225,8 +225,8 @@ pub(super) fn validate_tree(path: &Path, aid: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// The `(files, bytes)` totals of a published tree — the diagnostic a bash
-/// consumer reads back after a publish.
+/// The `(files, bytes)` totals of a published tree — the diagnostic the caller
+/// reads back after a publish.
 pub(super) fn count_tree(target: &Path) -> (u64, u64) {
     let mut files = 0u64;
     let mut bytes = 0u64;

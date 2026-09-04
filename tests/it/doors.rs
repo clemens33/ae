@@ -13,12 +13,8 @@
 //! * a child process is run in exactly one place in the test harness, and is
 //!   wrapped there.
 //!
-//! Slice Z4 moved these out of the parity harness's self-tests. The harness
-//! existed to run a bash lane beside a core lane and compare the artifacts, and
-//! it went with the bash it was comparing — but these guards were never about
-//! that comparison. What survives of the harness is its ONE door,
-//! [`super::parity`]'s `Invocation` + `capture::raw`, which is the thing the
-//! last test below is about.
+//! The suite has ONE child-process door, [`super::parity`]'s `Invocation` +
+//! `capture::raw`, and the last test below is about that door.
 
 #![allow(
     clippy::disallowed_methods,

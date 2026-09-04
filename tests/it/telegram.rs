@@ -85,7 +85,7 @@ fn the_locked_agent_has_exactly_one_construction_site() {
     // Sorted: `read_dir` order is a filesystem fact, not a contract (measured:
     // the two lanes disagree on it).
     sites.sort();
-    // TWO SITES SINCE SLICE Z4, and the second is deliberate rather than a
+    // TWO SITES, and the second is deliberate rather than a
     // second set of defaults: `src/upgrade.rs` builds an agent with the same
     // lock except for `max_redirects`, because a GitHub release download
     // answers with a 302 to its object store and there is no token in that URL

@@ -1,4 +1,4 @@
-//! `ae _archive-purge` — the `--purge-history` archive deletion (P3.4), black-box
+//! `ae _archive-purge` — the `--purge-history` archive deletion, black-box
 //! against the built binary.
 //!
 //! Purge is a PRIVACY promise, so these are opposed controls: the success path
@@ -144,7 +144,7 @@ fn a_provably_owned_archive_is_purged_and_no_claim_is_left() {
         "an owned archive purges: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    // The removed target is printed for the bash consumer (no trailing newline).
+    // The removed target is printed for the consumer (no trailing newline).
     let stdout = String::from_utf8(out.stdout).unwrap();
     assert_eq!(
         stdout,

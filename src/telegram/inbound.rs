@@ -1605,7 +1605,7 @@ mod tests {
         assert_eq!(load_offset(&path).unwrap(), 0, "absence is a fresh start");
         store_offset(&path, 4_242).unwrap();
         assert_eq!(load_offset(&path).unwrap(), 4_242);
-        // The frozen one-decimal-line format, so a bash-era file is inherited
+        // One decimal line, so a file written by an older bridge is inherited
         // rather than ignored.
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "4242\n");
         std::fs::remove_dir_all(&dir).ok();
@@ -1613,9 +1613,9 @@ mod tests {
 
     #[test]
     fn a_damaged_offset_is_refused_rather_than_read_as_zero() {
-        // The frozen bash falls back to 0 here, which asks Telegram for its
-        // whole retained backlog — a wholesale replay, which is exactly the
-        // bound this module promises not to break.
+        // Falling back to 0 would ask Telegram for its whole retained backlog
+        // — a wholesale replay, which is exactly the bound this module promises
+        // not to break.
         for junk in ["", "  ", "-1\n", "12x\n", "nine\n", "1 2\n"] {
             assert_eq!(parse_offset(junk), None, "{junk:?}");
         }

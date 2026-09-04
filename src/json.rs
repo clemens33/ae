@@ -7,7 +7,7 @@
 //! 2. **Rendering is infallible by construction**: a
 //!    [`Value`] tree renders to a `String` that always closes, so no
 //!    per-session failure can truncate the document mid-array.
-//! 3. #80's "no dependency exists until a real one does" — and the first real
+//! 3. **No dependency exists until a real one does** — and the first real
 //!    dependency also costs the `--allow license-not-encountered` relaxation in
 //!    `just rust-deny`, which is a deliberate change, not a side effect.
 //!

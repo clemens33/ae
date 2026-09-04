@@ -1,5 +1,5 @@
 //! `ae _archive-publish` — the archive publisher and its `.publishing.<uuid>`
-//! claim (P3.3), black-box against the built binary.
+//! claim, black-box against the built binary.
 //!
 //! These drive the core the way `_end_archive_step` does — `_archive-publish
 //! <session-dir> <push-outcome> <push-ref> <preserved> <workdir> <archived-at>`,
@@ -8,7 +8,7 @@
 //! requires: an exact payload with no executable bit, refusal of an existing
 //! target and a standing claim, classified-source refusal, a validated timestamp,
 //! a handled failure that cleans its own claim while leaving the source
-//! untouched, and the `target\tfiles\tbytes` line a bash consumer reads back.
+//! untouched, and the `target\tfiles\tbytes` line the consumer reads back.
 
 #![allow(
     clippy::disallowed_methods,
@@ -147,7 +147,7 @@ fn publishes_a_complete_archive_and_prints_the_bash_diagnostic() {
     assert_eq!(out.status.code(), Some(0), "publish rc");
 
     let target = scratch.home().join("archive").join(AID);
-    // The tab-separated line a bash consumer reads: <target>\t<files>\t<bytes>.
+    // The tab-separated line the consumer reads: <target>\t<files>\t<bytes>.
     let stdout = String::from_utf8(out.stdout).unwrap();
     let line = stdout.trim_end_matches('\n');
     let fields: Vec<&str> = line.split('\t').collect();

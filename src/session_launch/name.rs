@@ -34,8 +34,8 @@ pub(crate) fn is_session_name(name: &str) -> bool {
 }
 
 /// The name a launch with no name derives from `cwd`, with `home` stripped from
-/// its head — the frozen `default_session_name`, whose hash length defaults to
-/// 6 and widens to 12 in the collision advice.
+/// its head. The hash length defaults to 6 and widens to 12 in the collision
+/// advice.
 pub(crate) fn default_session_name(cwd: &str, home: &str, hash_len: usize) -> String {
     let digest = md5_hex(cwd.as_bytes());
     let hash: String = digest.chars().take(hash_len).collect();
@@ -78,8 +78,7 @@ pub(crate) fn default_session_name(cwd: &str, home: &str, hash_len: usize) -> St
 }
 
 /// Whether `candidate` is a DIRECT child of `parent`, by pure string structure
-/// — the frozen `_path_is_direct_child`, the belt to entry validation's braces
-/// before anything is deleted.
+/// — the belt to entry validation's braces before anything is deleted.
 pub(crate) fn is_direct_child(parent: &str, candidate: &str) -> bool {
     if parent.is_empty() || candidate.is_empty() {
         return false;

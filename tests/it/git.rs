@@ -1,9 +1,9 @@
-//! `ae _archive-preview` git facts against REAL temporary repositories (P3.2).
+//! `ae _archive-preview` git facts against REAL temporary repositories.
 //!
 //! The preview derives `Final commit`, `Commit range` and `Commit count` by
 //! running `git` for a non-local session. These black-box tests build real
-//! repos and assert the digest's git lines, covering the shapes the frozen
-//! `_ar_git_head`/`_ar_git_range` handle: ordinary history, detached HEAD, a
+//! repos and assert the digest's git lines, covering the shapes the reader
+//! handles: ordinary history, detached HEAD, a
 //! linked-worktree `.git` pointer, a non-ancestor base, a missing repo, and —
 //! the point of the OS-native argv door — a work dir or base that would be an
 //! injection if a shell were ever involved.

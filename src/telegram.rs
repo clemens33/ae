@@ -387,8 +387,7 @@ pub fn load_settings(config: &Path, home: &Path) -> Result<Settings, Credentials
     })
 }
 
-/// Split an `allowed_user_ids` value the way the frozen bash does: on commas
-/// AND spaces, discarding empties.
+/// Split an `allowed_user_ids` value on commas AND spaces, discarding empties.
 fn parse_id_list(value: &str) -> Vec<String> {
     value
         .split([',', ' ', '\t'])
@@ -404,9 +403,8 @@ fn section_header(line: &str) -> Option<String> {
     Some(inner.trim().to_owned())
 }
 
-/// `key = value` → `(key, value)`, with the same tolerance the frozen bash
-/// parser has: an optionally quoted value, and an unquoted one truncated at a
-/// `#` comment.
+/// `key = value` → `(key, value)`, tolerantly: an optionally quoted value, and
+/// an unquoted one truncated at a `#` comment.
 fn setting(line: &str) -> Option<(String, String)> {
     let (key, rest) = line.split_once('=')?;
     let key = key.trim();
