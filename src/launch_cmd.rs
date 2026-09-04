@@ -54,12 +54,6 @@ pub enum ToolKind {
     /// Gemini CLI.
     Gemini,
     /// Antigravity CLI (`agy`).
-    ///
-    /// Gemini-shaped on the channel its context rides — no append-style
-    /// system-prompt flag, so the context is a `-i` USER TURN — and its own
-    /// tool everywhere else: it resumes with `--conversation <id>` rather than
-    /// `--resume`, and keeps one `SQLite` conversation per id under
-    /// `~/.gemini/antigravity-cli/` instead of gemini's per-project chat JSON.
     Agy,
     /// Grok Build.
     Grok,
@@ -108,7 +102,7 @@ impl ToolKind {
 }
 
 /// Split `cmd` at its binary word, or `None` when it is malformed or carries
-/// nothing but prefix words. See the module doc for the exact grammar.
+/// nothing but prefix words.
 #[must_use]
 pub fn split_binary(cmd: &str) -> Option<Split> {
     let chars: Vec<char> = cmd.chars().collect();
@@ -253,11 +247,9 @@ pub struct SimpleCommand {
     /// first command-line word; the harness is [`SimpleCommand::binary`].
     pub words: Vec<String>,
     /// The RAW leading-assignment span, byte-exact from the source (internal
-    /// whitespace kept), empty when there are no assignments. This is
-    /// `cmd.assign` — the launcher evals `<assign> exec <argv> <suffix>`.
+    /// whitespace kept), empty when there are no assignments.
     pub assign_span: String,
-    /// The RAW command-vector span, byte-exact from the source. This is
-    /// `cmd.argv`.
+    /// The RAW command-vector span, byte-exact from the source.
     pub argv_span: String,
     /// The resolved binary the pane will actually run (quoting resolved, path
     /// stripped, a contextual `env` prefix peeled) — the harness word.
@@ -287,15 +279,8 @@ struct Word {
     assignment: bool,
 }
 
-/// Enforce the one-simple-command grammar over the WHOLE line: optional
-/// leading `NAME=value` assignments, then exactly one argv vector of words.
-/// Outside quoted words the shell control operators, a word-initial `#`,
-/// redirections, command/process substitution and grouping are REFUSED;
-/// quotes, backslash escapes, parameter expansion (`$HOME`, `${VAR}`), tilde
-/// and glob characters are KEPT for the pane shell to resolve inside that one
-/// command. Substitution stays active inside `"…"` AND inside `${…}`, so `$(`
-/// and backticks are refused there too. A suffix appended after the last word
-/// of such a line binds to the command and to nothing else — the whole point.
+/// Enforce the one-simple-command grammar over the WHOLE line: optional leading
+/// `NAME=value` assignments, then exactly one argv vector of words.
 ///
 /// # Errors
 ///
@@ -356,11 +341,6 @@ pub fn lex_simple_command(cmd: &str) -> Result<SimpleCommand, Refusal> {
 
 /// Scan ONE word from `chars` starting at `start` (which is not whitespace),
 /// returning its quote-resolved value and the index one past its last char.
-/// Enforces the one-simple-command grammar within the word: refuses the control
-/// operators, a word-initial `#`, redirections, substitution and grouping
-/// outside quotes; keeps quotes, escapes and parameter expansion. Substitution
-/// stays active inside `"…"` and inside `${…}`, so `$(`/backtick are refused
-/// there too.
 fn scan_word(chars: &[char], start: usize) -> Result<(String, usize), Refusal> {
     let n = chars.len();
     let mut i = start;
@@ -449,11 +429,10 @@ fn scan_word(chars: &[char], start: usize) -> Result<(String, usize), Refusal> {
 /// Scan a `${…}` parameter expansion starting at the `$`, returning the index
 /// of its closing `}`.
 ///
-/// **The decision is not made here.** [`crate::words::scan_param`] is the one
-/// definition of the parameter grammar, and this is its refusal vocabulary
-/// translated: the module that RUNS a launch command and the module that
-/// VALIDATES one accept exactly the same spans, which is what keeps a profile
-/// from planning green and then exiting 1 in its own pane.
+/// The grammar is [`crate::words::scan_param`]'s and this is only its refusal
+/// vocabulary: the module that RUNS a launch command and the one that VALIDATES
+/// it must accept the same spans, or a profile plans green and exits 1 in its
+/// own pane.
 fn scan_param_expansion(chars: &[char], dollar: usize) -> Result<usize, Refusal> {
     use crate::words::ParamFault;
 
@@ -466,15 +445,9 @@ fn scan_param_expansion(chars: &[char], dollar: usize) -> Result<usize, Refusal>
         })
 }
 
-/// The harness word an argv actually runs: a contextual `env` prefix (its
-/// `-i`, `-u NAME` options and `VAR=value` words) is peeled, then the next word
-/// is the binary, quoting resolved and path stripped. Unlike the frozen
-/// [`split_binary`] parity primitive, this does NOT skip a non-assignment word
-/// merely because it contains `=` (so `--flag=foo` or `-i` as the command word
-/// classifies as itself, not the word after it). `None` when the peel consumes
-/// the whole argv (`env`, `env -i`, `env A=1`) or the command word is empty
-/// (`''`): there is nothing to run, and the caller refuses — an empty
-/// `agent_bin` would otherwise reach the meta (colead IMPORTANT-2).
+/// The harness word an argv actually runs: a contextual `env` prefix (its `-i`,
+/// `-u NAME` options and `VAR=value` words) is peeled, then the next word is
+/// the binary, quoting resolved and path stripped.
 fn launch_binary(argv: &[Word]) -> Option<String> {
     let unq: Vec<&str> = argv.iter().map(|w| w.unquoted.as_str()).collect();
     let mut i = 0;
@@ -555,9 +528,7 @@ mod tests {
                 "gemini",
                 ToolKind::Gemini,
             ),
-            // The operator's live agy profile (2026-09-04). `agy` is the
-            // Antigravity CLI and is its OWN tool, not a gemini spelling: the
-            // binary word is what classifies, and the two share no flag.
+            // The operator's live agy profile (2026-09-04).
             ("agy --dangerously-skip-permissions", "agy", ToolKind::Agy),
             // The env launcher and its two option shapes.
             (
@@ -817,9 +788,6 @@ mod tests {
         // …and colead Z2 BLOCKER-3, the validator half: a form the runner
         // cannot expand is refused HERE, at plan time, where the operator can
         // still fix the profile — never accepted here and refused there.
-        // `${OUTER${INNER}}` is not a bash parameter form at all (bash: "bad
-        // substitution"), so refusing it in both lexers is also more correct
-        // than accepting it in one.
         for cmd in [
             "claude ${OUTER${INNER}}",
             "claude ${24}fallback",

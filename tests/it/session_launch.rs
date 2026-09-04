@@ -20,9 +20,7 @@ use super::cli::{ae, git_in, helper};
 use super::phase2::run_tmux;
 
 /// A TUI-shaped fake agent: it records its argv, then sits there drawing the
-/// ornament the input sensor reads. Nothing here is claude-specific — the
-/// FILE NAME decides the classification, so the same body serves as `claude`
-/// and as `codex`.
+/// ornament the input sensor reads.
 const FAKE_AGENT: &str = r#"#!/usr/bin/perl
 use strict;
 use warnings;
@@ -117,10 +115,6 @@ impl Rig {
     }
 
     /// The same rig with a bare sleeper as its agent.
-    ///
-    /// A perl TUI exists for the input sensor, and a test that never reads a
-    /// pane pays for it in contention with every other launch arm. Two of them
-    /// run here — this session and the companion it starts — so both are cheap.
     fn idle(tag: &str) -> Self {
         let rig = Self::new(tag, &[], None);
         assert!(
@@ -145,11 +139,6 @@ impl Rig {
 
     /// The same launch with an ARBITRARY server pair — what the flag-validation
     /// arms need.
-    ///
-    /// `TMUX_TMPDIR` points at this rig's scratch so that a launch which falls
-    /// back to the ambient server falls back into the rig rather than onto the
-    /// developer's own tmux. Proving that a bad pair does NOT build a session
-    /// means letting it try.
     fn launch_with_server(
         &self,
         kind: &str,
@@ -233,9 +222,6 @@ impl Rig {
 
     /// `_run --print` for one seat: the JSON plan the pane's own command would
     /// exec, without execing it.
-    ///
-    /// The only way to read a pane's argv without a pane, now that the argv
-    /// exists nowhere but in the `execve` itself.
     fn plan(&self, session: &str, slot: &str) -> String {
         let out = ae()
             .env_remove("TMUX")
@@ -256,10 +242,6 @@ impl Rig {
     }
 
     /// Plant the orchestrator scaffold the companion autostart opts in on.
-    ///
-    /// Its agent is a bare sleeper rather than the TUI fake: what this proves is
-    /// that the companion is LAUNCHED, under its own config, and a second perl
-    /// TUI would only add contention to a suite that already runs several.
     fn scaffold_orchestrator(&self) -> PathBuf {
         let dir = self.home.join("orchestrator");
         assert!(std::fs::create_dir_all(&dir).is_ok(), "a scaffold dir");
@@ -283,11 +265,6 @@ impl Rig {
 
     /// Every AGENT window of `session` as `(index, name, pane count)`, in tmux
     /// order.
-    ///
-    /// The unit a LEAD layout is about: which window a seat lands in, and what
-    /// that window is called. The `ae-monitor` window is dropped — it holds the
-    /// watchdog and the event tail, is parked at a high index precisely so it
-    /// never mixes with the agent windows, and a layout has no opinion about it.
     fn windows(&self, session: &str) -> Vec<(String, String, usize)> {
         let (_, listed) = self.tmux(&[
             "list-windows",
@@ -338,9 +315,7 @@ impl Rig {
 
     /// Wait briefly for the fake agent to record that it started.
     fn launch_argv(&self) -> String {
-        // 20s, not 5. The wait is over as soon as the file appears, so a
-        // generous bound costs nothing when the machine is idle — and a bound
-        // that a loaded machine can miss is a flaky test, not a product fact.
+        // 20s, not 5.
         for _ in 0..800 {
             let seen = std::fs::read_to_string(&self.launched).unwrap_or_default();
             if !seen.is_empty() {
@@ -354,12 +329,6 @@ impl Rig {
 
 impl Drop for Rig {
     /// Kill the server, then keep removing the scratch until it STAYS removed.
-    ///
-    /// One removal is not enough: a launch leaves DETACHED children behind it —
-    /// the id capture, and the orchestrator companion, which is a whole second
-    /// launch — and a child still writing recreates the tree a moment after the
-    /// first `remove_dir_all` succeeds. That left a `/tmp/aeln.<pid>.<tag>`
-    /// skeleton behind every run of the companion arm.
     fn drop(&mut self) {
         let _ = self.tmux(&["kill-server"]);
         for _ in 0..40 {
@@ -396,9 +365,7 @@ fn a_local_launch_builds_the_whole_session() {
     let rig = Rig::new("local", &["claude"], None);
     let (code, stdout, stderr) = rig.launch(&["--local", "lnlocal"]);
     assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
-    // The hint names a command that EXISTS. It used to say `ae orchestrator
-    // --attach`, which is a retired word that now refuses — and which named the
-    // companion rather than the session just started.
+    // The hint names a command that EXISTS.
     assert!(
         stdout.contains(&format!(
             "Attach with: tmux -S {} attach -t lnlocal",
@@ -470,9 +437,7 @@ fn a_local_launch_builds_the_whole_session() {
         "slice Z2 writes no bash into a session directory"
     );
     // The ARGV the agent actually got, and the same argv reported without a
-    // pane. A fresh claude bakes its own id. The wait is the argv's: the tool
-    // reports itself only after `_run` has become it, so a recorded argv is
-    // proof the marker below was already written.
+    // pane.
     let argv = rig.launch_argv();
     assert!(
         dir.join("launch.main.started").is_file(),
@@ -540,7 +505,7 @@ fn a_helper_link_is_the_core_with_its_own_session() {
     );
 
     // The agent draws its transcript when its own process gets there, which is
-    // not when the launch returns. Peek until it has, within a bound.
+    // not when the launch returns.
     let mut seen = String::new();
     for _ in 0..200 {
         let out = helper(&dir.join("peek"))
@@ -604,9 +569,7 @@ fn a_resume_reruns_with_the_resume_variant() {
         "the resume announces itself: {stdout}"
     );
     // THE RESUME DECISION IS THE CORE'S NOW, and it is the start marker plus a
-    // probe rather than a shell `if` in a generated script. With no transcript
-    // on disk for this id, the probe says no and the pane runs the CWD-heuristic
-    // fallback — which is exactly what the script's `else` branch did.
+    // probe rather than a shell `if` in a generated script.
     let plan = rig.plan("lnres", "main");
     assert!(plan.contains(r#""mode":"resume""#), "{plan}");
     assert!(
@@ -615,7 +578,7 @@ fn a_resume_reruns_with_the_resume_variant() {
     );
 
     // Plant the transcript claude would have written, and the same seat resumes
-    // the SAME conversation. The probe is a file test; this is the file.
+    // the SAME conversation.
     let home = std::env::var("HOME").unwrap_or_default();
     // The PHYSICAL path, because the probe asks `getcwd(2)` — which is what
     // claude's own `process.cwd()` asks, and on macOS `/tmp` is a symlink.
@@ -720,14 +683,6 @@ fn a_codex_launch_captures_the_session_id_it_registers() {
 }
 
 /// The orchestrator companion, started BY THE CORE.
-///
-/// The bug this pins: the autostart ran `env AE_NO_AUTOSTART=1 <glue>
-/// orchestrator`, and the glue's `orchestrator` arm is a RETIRED word that
-/// refuses with exit 2 — on a stderr the detached child sends to `/dev/null`.
-/// So the companion had not started since the glue cut, and nothing said so.
-///
-/// The rig passes no glue path at all (the flag is gone), so a companion that
-/// appears here can only have been launched by the core itself.
 #[test]
 fn a_scaffold_starts_the_orchestrator_companion_from_the_core() {
     if skip() {
@@ -744,7 +699,7 @@ fn a_scaffold_starts_the_orchestrator_companion_from_the_core() {
 
     // The child is DETACHED, and its two observable facts do not land together:
     // tmux lists a session the moment it is created, while the meta is
-    // published further down the launch. Waiting on the RECORD waits for both.
+    // published further down the launch.
     let recorded = format!("config={}", config.display());
     let mut meta = String::new();
     for _ in 0..160 {
@@ -788,12 +743,6 @@ fn a_scaffold_starts_the_orchestrator_companion_from_the_core() {
 }
 
 /// `--glue` is GONE, and an unknown flag is refused exactly as before.
-///
-/// The flag existed to record `ae_path` in meta — the `ae` COMMAND the watchdog
-/// re-exec'd for its Telegram revive. That revive is in-process now, so the row
-/// had no reader and the flag had no subject. No compat arm: a caller still
-/// passing it is refused before any side effect, which is the whole point of
-/// reading the preamble first.
 #[test]
 fn the_retired_glue_flag_is_refused_before_any_side_effect() {
     let out = ae()
@@ -818,14 +767,6 @@ fn the_retired_glue_flag_is_refused_before_any_side_effect() {
 
 /// A resume whose spawned seat names a profile the CURRENT config defines as
 /// two commands.
-///
-/// The bug: the restore read `cfg.profile()` and handed the string to the pane
-/// shell. `config::launch_plan` lexes the `[roster]` seats and `_spawn` lexes
-/// the profile it is given, but nothing lexed THIS one — so a profile holding
-/// `touch m ; tail -f /dev/null` ran both halves on resume, which is the defect
-/// the spawn gate closed, reached through the restore.
-///
-/// `marker` is the proof: it exists only if a second command ran.
 fn resumable_rig(tag: &str, session: &str, profile: &str) -> (Rig, PathBuf) {
     let rig = Rig::idle(tag);
     let marker = rig.home.join("MARKER");
@@ -835,8 +776,7 @@ fn resumable_rig(tag: &str, session: &str, profile: &str) -> (Rig, PathBuf) {
     config.push_str("\n[profiles]\n");
     config.push_str(&profile.replace("__MARKER__", &marker.display().to_string()));
     assert!(std::fs::write(&rig.config, config).is_ok(), "a bad profile");
-    // A STOPPED session: meta on disk, nothing running. That is what a resume
-    // reads its roster out of.
+    // A STOPPED session: meta on disk, nothing running.
     let dir = rig.dir(session);
     assert!(std::fs::create_dir_all(&dir).is_ok(), "a session dir");
     assert!(
@@ -907,16 +847,6 @@ fn a_restored_spawned_seat_with_a_valid_profile_still_resumes() {
 }
 
 /// An unusable `--server-kind` is refused before anything is built.
-///
-/// The bug: an unknown kind fell through to the ambient server, so the launch
-/// exited 0 having created the session on the DEFAULT tmux while recording the
-/// unusable pair in meta. Nothing could act on it afterwards — every lifecycle
-/// operation refuses the record it is handed — so the session was a phantom:
-/// running, ae's by its marker, and unmanageable.
-///
-/// `ambiguous` is the case that matters: it is what the glue emits for a socket
-/// path it could not canonicalise, which is a statement that the caller's own
-/// server could not be identified. There is nothing to substitute for it.
 #[test]
 fn an_unusable_server_pair_is_refused_before_the_session_is_built() {
     if skip() {
@@ -1016,17 +946,6 @@ fn lead_config(layout: &str, workers: &[&str]) -> String {
 }
 
 /// The two LEAD layouts seat each agent in the window their layout names.
-///
-/// `lead-solo` keeps window 0 for the lead alone and puts every worker in the
-/// second window. `lead-pair` seats the FIRST worker beside the lead in window
-/// 0 — the leadership pair is two EQUAL seats, which is the whole point of the
-/// layout — and the rest go to the second window.
-///
-/// The window names are fixed role LITERALS, `leads` and `workers`. An agent
-/// name would reach `rename-window`'s format sink, where `#` runs a shell.
-///
-/// The layout is pinned into meta at launch because META WINS on resume: a
-/// session keeps the shape it was started with even after the config moves on.
 #[test]
 fn the_lead_layouts_seat_each_agent_in_the_window_their_layout_names() {
     if skip() {
@@ -1097,14 +1016,6 @@ fn the_lead_layouts_seat_each_agent_in_the_window_their_layout_names() {
 }
 
 /// The status bar is AE-OWNED, and its first line still RENDERS.
-///
-/// ae bakes both lines once at launch; the live segments arrive as USER OPTIONS
-/// the watchdog feeds, so nothing ever rewrites `status-right` itself. The
-/// regression this pins is tmux's array-option rule: setting `status-format[1]`
-/// at session scope SHADOWS THE WHOLE ARRAY and leaves index 0 — the standard
-/// bar — empty, which shipped once as two blank green lines. The launch copies
-/// the global [0] in alongside its own [1] for exactly that reason, so the
-/// assertion has to be that line 0 renders, not merely that it is set.
 #[test]
 fn the_status_bar_is_ae_owned_and_its_first_line_still_renders() {
     if skip() {
@@ -1141,8 +1052,7 @@ fn the_status_bar_is_ae_owned_and_its_first_line_still_renders() {
         !option("status-format[0]").is_empty(),
         "the standard bar is present at session scope"
     );
-    // PRESENT is not RENDERED. `#{T:…}` expands the option the way tmux draws
-    // it, which is the only reading that can tell a copied bar from a blank one.
+    // PRESENT is not RENDERED.
     let (_, drawn) = rig.tmux(&[
         "display-message",
         "-p",

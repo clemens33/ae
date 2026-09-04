@@ -7,28 +7,6 @@
 //! and the core does in Rust what the script did in bash: read the seat, build
 //! the tool command with the SAME builders the launch always used, decide
 //! create-vs-resume, then `exec` the tool.
-//!
-//! # Why `exec`, and why one argv
-//!
-//! `execve` replaces this process, so `pane_current_command` reports the TOOL
-//! rather than bash or ae — which is the fact the send path's whole TUI model
-//! rests on. The frozen script had the same requirement and met it by making
-//! both branches of its shell `if` end in `exec`; here there is no shell to
-//! replace, and no `||` chain that would leave one behind.
-//!
-//! # What moved with it
-//!
-//! The two decisions the script left to the pane's shell are the core's now:
-//! the create-vs-resume marker test, and the resume PROBE (does this recorded
-//! conversation actually exist on disk). Both were shell tests written into the
-//! script; both are ordinary filesystem questions.
-//!
-//! # What is read fresh, and why that is an improvement
-//!
-//! The command is composed at RUN time from the session meta and the config,
-//! not baked at launch time. A seat whose harness session id was captured
-//! minutes after the launch — codex, gemini and opencode all are — used to
-//! carry a script that could never mention it. Here the id is simply read.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -65,10 +43,6 @@ pub struct Plan {
     /// The tool the seat launches.
     pub tool: ToolKind,
     /// Does the prefix start from an EMPTY environment (`env -i`)?
-    ///
-    /// Peeling `-i` without honouring it was a silent inheritance: the pane's
-    /// whole environment reached a tool the operator had asked to start clean
-    /// (colead Z2 BLOCKER-1).
     pub clear: bool,
     /// Names the `env -u` prefix removes.
     pub unset: Vec<String>,
@@ -112,11 +86,6 @@ impl Plan {
 /// Forget whatever a previous occupant of `slot` left behind: the start marker
 /// and the recorded first message.
 ///
-/// Both are keyed by SLOT, and a spawned slot number is reused after a retire —
-/// so a seat that inherited them would resume a conversation belonging to the
-/// agent it replaces. An absent artifact is success: absence is the state being
-/// established.
-///
 /// # Errors
 ///
 /// A removal that failed for any reason but absence.
@@ -132,9 +101,6 @@ pub fn clear_slot(dir: &Path, slot: &str) -> std::io::Result<()> {
 
 /// Record the first user message this seat's tool is to be launched with.
 ///
-/// Only a spawn writes one, and only for a tool whose brief must ride the
-/// launch command itself; [`build`] reads it back in the create branch.
-///
 /// # Errors
 ///
 /// The publication failure, named.
@@ -143,12 +109,6 @@ pub fn publish_prompt(dir: &Path, slot: &str, text: &str) -> Result<(), String> 
 }
 
 /// The line a pane runs — the core, this entry, the session and the seat.
-///
-/// It is pasted into the pane's own shell, so every operand is shell-quoted;
-/// what the shell then execs is the core, once, with nothing after it to
-/// interpret. A human who arrow-ups this line gets the same create-once,
-/// resume-later semantics the generated script gave them, because the decision
-/// is the marker rather than anything baked into the words.
 #[must_use]
 pub fn pane_command(core: &Path, dir: &Path, slot: &str) -> String {
     format!(
@@ -173,19 +133,12 @@ pub fn started_marker(dir: &Path, slot: &str) -> PathBuf {
 }
 
 /// The optional first user message a spawn recorded for this seat.
-///
-/// Only codex has one: it needs a user turn to act on its
-/// `developer_instructions`, and a spawn's brief rides in it. Every other tool
-/// takes its brief through the readiness-gated paste the spawn does itself.
 #[must_use]
 pub fn prompt_file(dir: &Path, slot: &str) -> PathBuf {
     dir.join(format!("launch.{}.prompt", launch::safe_slot(slot)))
 }
 
 /// `_run <session-dir> <slot>` — build this seat's command and become it.
-///
-/// Returns only on failure, or when `print` asked for the plan instead of the
-/// agent: a successful run is an `execve`.
 ///
 /// # Errors
 ///
@@ -211,12 +164,8 @@ pub fn run(
         return Ok(0);
     }
     // BEFORE the exec, because after it there is no "after" — and REFUSING when
-    // it cannot be written, which the frozen script's
-    // `: > marker 2>/dev/null || true` did not. The marker is the whole
-    // create-once discriminator: a run that starts the agent without it leaves
-    // a seat that a re-run creates a SECOND time, and for the upfront-UUID
-    // tools that second create collides on `--session-id` and the pane dies.
-    // Costing one launch is the cheap half of that trade (colead Z2 BLOCKER-2).
+    // it cannot be written, which the frozen script's `: > marker 2>/dev/null
+    // || true` did not.
     let marker = started_marker(dir, slot);
     if plan.mode == Mode::Create {
         if let Err(why) = publish_marker(&marker) {
@@ -251,17 +200,6 @@ pub fn run(
 
 /// Create the start marker DURABLY, or say why it could not be.
 ///
-/// Write, `fsync`, rename — the shape `launch::publish` froze, plus the file
-/// sync generated data does not need and this artifact does: the marker's whole
-/// content is its EXISTENCE, so bytes still in the page cache are a seat that
-/// re-creates instead of resuming. The failure this guard exists for is the
-/// ordinary one — an unwritable session directory, a read-only or full
-/// filesystem — and every step above reports it by name.
-///
-/// What it does NOT claim: the rename's own directory entry is not synced, so
-/// this is durability against a failed write, not against a power cut between
-/// the rename and the `exec`.
-///
 /// # Errors
 ///
 /// The path that could not be written and the reason, ready to print.
@@ -279,7 +217,7 @@ fn publish_marker(marker: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Replace this process with the planned command. Returns only on failure.
+/// Replace this process with the planned command.
 fn exec(plan: &Plan) -> std::io::Error {
     use std::os::unix::process::CommandExt as _;
 
@@ -338,25 +276,12 @@ pub fn build(dir: &Path, slot: &str) -> Result<Plan, String> {
 }
 
 /// The composed shell command line — the frozen builders, in the frozen order.
-///
-/// A tool command is injected as a PLAIN TOOL COMMAND, never as something with
-/// a shell construct in front of it: every builder reads the tool off the first
-/// word, so a resume form that was wrapped before it was injected classified as
-/// `Unknown` and launched with no context and no identity (the glue-cut-2
-/// finding). Nothing wraps anything here any more, which is what lets the
-/// resume arm be chosen before it is injected rather than after.
 fn compose(dir: &Path, slot: &str, seat: &Seat, ctx: &str, mode: Mode) -> String {
     if mode == Mode::Resume {
         let (resume_form, fallback_form) =
             resume_forms(&seat.command, seat.tool, &seat.harness_session);
         // DECIDE, THEN INJECT — which is the frozen order read forward, not a
-        // departure from it. The frozen path had to inject BOTH forms because
-        // the decider was a shell `if` that carried both arms into the pane;
-        // injecting after the wrap was the bug it was written against (a
-        // pre-wrapped resume command classified as `Unknown` and launched with
-        // no context and no identity). With the decision made here there is one
-        // arm, so injecting it once is the same rule with the second arm gone —
-        // and opencode's context pair is published once rather than twice.
+        // departure from it.
         let form = if resumable(seat.tool, &seat.harness_session) {
             resume_form
         } else {
@@ -375,25 +300,6 @@ fn compose(dir: &Path, slot: &str, seat: &Seat, ctx: &str, mode: Mode) -> String
 }
 
 /// Should this seat be resumed with the id its meta records?
-///
-/// TWO QUESTIONS, and only one of them is a probe. The first is whether there
-/// is an id at all: a seat with none — a capture tool whose id never arrived,
-/// or a `pending` placeholder — has nothing to resume BY, and the fallback form
-/// is what a tool offers for exactly that (`--continue`, `--resume latest`).
-/// The second is whether the recorded conversation still exists, and it can
-/// only be asked where the tool leaves evidence on disk: claude writes a
-/// transcript per conversation, codex writes a dated session log. Where that
-/// evidence exists, a missing file means the id names a conversation that is
-/// gone and the fallback is the right form.
-///
-/// **A tool with NO probe answers YES.** The absence of a probe is not evidence
-/// of absence — it is ae having no way to look — and the recorded id is still
-/// this seat's own conversation. grok, gemini and opencode therefore resume
-/// with `--resume <id>`, `--resume <id>` and `--session <id>` whenever meta
-/// holds one, which is what their rows in AGENTS.md's capability table have
-/// always said. The frozen decider read the other way (its `None` arm emitted
-/// the FALLBACK), so those three never resumed by id however good the id was;
-/// that was a defect, ruled and fixed here rather than ported.
 fn resumable(tool: ToolKind, id: &str) -> bool {
     if !launch::id_probeable(id) {
         return false;
@@ -427,9 +333,7 @@ fn resumable(tool: ToolKind, id: &str) -> bool {
         }
         // agy keeps ONE SQLite file per conversation, named for the id, in one
         // flat directory (measured 2026-09-04) — so the file's existence is the
-        // answer, with no walk and no guess. This is why agy has a probe where
-        // gemini has none: gemini's chats sit under a per-project digest ae
-        // does not compute, agy's do not sit under anything.
+        // answer, with no walk and no guess.
         ToolKind::Agy => {
             let Some(home) = env_lookup("HOME") else {
                 return false;
@@ -445,10 +349,6 @@ fn resumable(tool: ToolKind, id: &str) -> bool {
 }
 
 /// Is there a `*<id>*.jsonl` anywhere within `depth` levels of `root`?
-///
-/// The frozen `find -maxdepth 4 -name '*<uuid>*.jsonl' -print -quit`, walked
-/// directly. Unreadable entries are absence, not an error: the question is
-/// "can this be resumed", and an answer of "no" costs a fresh conversation.
 fn contains_id(root: &Path, id: &str, depth: usize) -> bool {
     if depth == 0 {
         return false;
@@ -503,9 +403,7 @@ pub fn resume_forms(cmd: &str, tool: ToolKind, session_id: &str) -> (String, Str
         ),
         // agy resumes by `--conversation <id>` and falls back to `--continue`
         // (`agy --help`, 1.1.25, measured 2026-09-04 — it has no `--resume` at
-        // all). Both forms are stripped first with the agy-aware stripper, so
-        // an operator's own `--conversation` or `-c` cannot stack with, or be
-        // read instead of, the one ae is putting on.
+        // all).
         ToolKind::Agy => (
             format!(
                 "{} --conversation {session_id}",
@@ -534,31 +432,6 @@ struct EnvPrefix {
 
 /// Peel the environment prefix off a split command line.
 ///
-/// TWO forms, and the shell applies them in this order: the bare leading
-/// `NAME=value` assignments a shell reads before the command word, and then
-/// ONE `env` command with its `-i`, `-u NAME` and `NAME=value` operands. Both are
-/// what ae itself composes (claude's nesting guard, opencode's config pointer),
-/// and the vocabulary is EXACTLY [`crate::launch_cmd`]'s `launch_binary` —
-/// deliberately, down to the spellings it does not know. `env --` and
-/// `env --ignore-environment` are not peeled here BECAUSE they are not peeled
-/// there: a word one module treats as an operand and the other as the binary is
-/// a command classified as one tool and `exec`ed as another. Widen both or
-/// neither.
-///
-/// The two forms ask about assignment-shape on DIFFERENT TEXT, and that is not
-/// an inconsistency but the reason the two modules agree. The shell's own
-/// prefix is decided before quote removal, so it reads [`crate::words::Word`]'s
-/// `assignment` flag and a quoted `'A=1'` is the command word. `env`'s operands
-/// are parsed by `env` itself, out of an argv the shell has already unquoted,
-/// so they are decided on the VALUE and `env 'A=1' claude` does assign. Both
-/// answers are `launch_binary`'s, word for word.
-///
-/// The bare form was missing, and its absence was not a degraded launch but a
-/// wrong one: `A=1 codex --yolo` classified as codex, planned as codex, and
-/// then `exec`ed a binary literally named `A=1` (colead Z2 BLOCKER-1). `-i` was
-/// consumed and dropped on the floor, which is the same defect pointed the
-/// other way — the environment the operator asked to clear was inherited whole.
-///
 /// # Errors
 ///
 /// A command line that is nothing but an environment prefix — there is no
@@ -568,7 +441,7 @@ fn peel_env(words: Vec<crate::words::Word>) -> Result<(EnvPrefix, Vec<String>), 
     let mut prefix = EnvPrefix::default();
     let mut rest = words.into_iter().peekable();
     // A shell's own prefix: assignments up to the command word, decided AS
-    // WRITTEN. A quoted `'A=1'` is not one of them — it is the binary.
+    // WRITTEN.
     while rest.peek().is_some_and(|word| word.assignment) {
         let Some(word) = rest.next() else { break };
         let Some((name, value)) = word.value.split_once('=') else {
@@ -577,17 +450,11 @@ fn peel_env(words: Vec<crate::words::Word>) -> Result<(EnvPrefix, Vec<String>), 
         prefix.assign.push((name.to_owned(), value.to_owned()));
     }
     // EXACTLY ONE `env`, because `launch_binary` peels exactly one. A second is
-    // a COMMAND WORD to the classifier, so `env env claude` is a profile whose
-    // binary is `env` and whose tool kind is therefore unknown. A loop here
-    // consumed both words and `exec`ed claude — classified as one thing and run
-    // as another, which is the B1 defect in its general form: the seat got none
-    // of claude's context or TUI handling while a claude sat in its pane.
-    // Widen both or neither.
+    // a COMMAND WORD to the classifier, so a loop here would run a tool the
+    // classifier had typed as something else. Widen both or neither.
     if rest.peek().is_some_and(|word| word.value == "env") {
         rest.next();
-        // `env`'s own operands. An unrecognised one ENDS the peel: it is the
-        // command word, and a prefix that guessed at it would exec something
-        // the operator did not write.
+        // `env`'s own operands.
         while let Some(word) = rest.peek() {
             match word.value.as_str() {
                 "-i" => {
@@ -670,12 +537,9 @@ fn read_seat(dir: &Path, slot: &str) -> Result<Seat, String> {
         ));
     };
     // The profile is read FRESH here, so the launch-time validation of it is a
-    // fact about a file that may since have changed. Re-ask the SAME validator
-    // rather than trust the older answer: without this a profile edited after
-    // its session started reached the `exec` unvalidated, and a construct the
-    // validator refuses — brace expansion, a word-initial comment — ran with
-    // whatever literal meaning this lexer happened to give it (colead Z2
-    // BLOCKER-3).
+    // fact about a file that may since have changed. Re-ask the SAME validator:
+    // a profile edited after its session started otherwise reaches the `exec`
+    // unvalidated.
     if let Err(why) = crate::launch_cmd::lex_simple_command(command) {
         return Err(format!(
             "profile '{profile}' is not one simple command — {why} — '{name}' cannot be launched"
@@ -817,7 +681,6 @@ mod tests {
         // The B3 defect pointed at B1: `words::split` erased quoting, so
         // peel_env re-derived assignment-shape from the DECODED value and
         // called `'A=1'` an assignment where the validator calls it the binary.
-        // The two off-diagonals, pinned side by side.
         let words = crate::words::split_words("'A=1' codex --yolo", &|_| None).expect("splits");
         let (prefix, argv) = peel_env(words).expect("peels");
         assert_eq!(prefix.assign, [], "a quoted word assigns nothing");
@@ -866,9 +729,7 @@ mod tests {
     #[test]
     fn the_binary_this_peel_leaves_is_the_one_the_classifier_named() {
         // The classifier decides `agent_bin` and the tool kind; this peel
-        // decides what is `exec`ed. A command classified as one binary and run
-        // as another is the B1 defect in its general form, so the invariant is
-        // pinned over every prefix shape rather than over the one that shipped.
+        // decides what is `exec`ed.
         for cmd in [
             "claude",
             "/usr/bin/claude --flag",
@@ -889,11 +750,7 @@ mod tests {
             "\"A=1\" codex",
             "A=\"1 2\" codex",
             "env 'A=1' codex",
-            // A SECOND `env` is a command word, not a second prefix. Both
-            // modules stop at it, so the seat is classified as `env` (tool kind
-            // unknown) and `env claude` is what runs — consistent, which is the
-            // whole invariant. Peeling both here classified the seat as `env`
-            // and exec'ed `claude`.
+            // A SECOND `env` is a command word, not a second prefix.
             "env env claude",
             "A=1 env env claude",
             "env -i env -u B claude",

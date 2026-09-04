@@ -6,34 +6,6 @@
 //! working-directory modes, the tmux session and its layout, the meta publish,
 //! the session assets, the pane commands and their readiness-gated paste, the
 //! monitor panes, and the attach.
-//!
-//! # What this module is NOT a port of
-//!
-//! * **`sync_session_assets`** (422 lines) and its `_lib` library. Under the B
-//!   move a session helper is a shim that execs the core, so there is no helper
-//!   LOGIC left in bash to generate. See [`assets`].
-//! * **The `ae orchestrator` / `ae hub` trampoline** (`ae:12782`), the Telegram
-//!   and orchestrator autostarts, and `ae transfer`. Each is its own operation
-//!   with its own move; a launch that quietly grew them would be three moves in
-//!   one diff.
-//!
-//! # The order is the contract
-//!
-//! 1. every refusal that can be decided from argv and the filesystem, BEFORE
-//!    the first tmux call or the first `mkdir` — a bad launch leaves nothing;
-//! 2. the working copy;
-//! 3. the lifecycle lock, held from the first tmux call through the last asset
-//!    write, so a concurrent `ae end` cannot delete a half-built session
-//!    directory that the next atomic rename would then recreate;
-//! 4. the session, its panes and their stamps;
-//! 5. the meta, published as ONE document — the first observable meta is the
-//!    complete one;
-//! 6. the assets;
-//! 7. the pane commands and the prompts;
-//! 8. the monitor panes, then the attach.
-//!
-//! Any failure from step 4 onwards ROLLS BACK: the tmux session is killed, and
-//! the session directory is removed only when THIS attempt created it.
 
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -60,10 +32,7 @@ pub const USAGE: &str = "Usage: _launch --home <ae-home> --cwd <dir> [--global <
 /// anything is pasted — the frozen `sleep 0.3` at `ae:14130`.
 const SHELL_SETTLE: Duration = Duration::from_millis(300);
 
-/// How many polls the launch prompt's readiness wait takes. The frozen
-/// `_deliver_launch_prompt` waits 90 half-seconds — past codex's own 30-second
-/// per-server MCP `startup_timeout_sec`, deliberately, so the window does not
-/// expire at the moment the tool gives up and settles.
+/// How many polls the launch prompt's readiness wait takes.
 const LAUNCH_READY_POLLS: u32 = 90;
 
 /// How many polls the tool-process wait takes — the frozen `10`.
@@ -123,7 +92,7 @@ impl Mode {
 /// What the user's own argv said — the frozen `_launch_parse_flags`.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Plan {
-    /// The mode flag, when one was given. Absent means config, then `local`.
+    /// The mode flag, when one was given.
     pub mode: Option<Mode>,
     /// The session name, when one was typed.
     pub name: Option<String>,
@@ -131,10 +100,7 @@ pub struct Plan {
     pub main: Option<String>,
     /// `--from <uuid>` — the archive this session explicitly continues.
     pub from: Option<String>,
-    /// The FROZEN worker list, when a relaunch supplies one. Never settable
-    /// from the launch line: `-` and the empty string both mean NO workers,
-    /// which is a different thing from the field being absent (that keeps the
-    /// config's own list).
+    /// The FROZEN worker list, when a relaunch supplies one.
     pub workers: Option<String>,
 }
 
@@ -216,13 +182,10 @@ pub struct Env {
     pub attach: bool,
     /// The core the glue RESOLVED (`_ae_core_bind`), recorded as `ae_core` with
     /// the version it reported — the pin every helper re-resolves from meta.
-    /// The running binary stands in only when the caller named none.
     pub core: Option<PathBuf>,
     /// The version the resolved core reported, when the caller measured it.
     pub core_version: Option<String>,
-    /// `--no-autostart`: start NEITHER companion. The frozen
-    /// `AE_NO_AUTOSTART=1`, which the core cannot read for itself — the
-    /// operator's opt-out crosses as a flag like every other environment fact.
+    /// `--no-autostart`: start NEITHER companion.
     pub no_autostart: bool,
 }
 
@@ -238,12 +201,6 @@ impl Env {
     }
 
     /// The server every tmux call in this launch addresses.
-    ///
-    /// The mapping is [`ServerId::from_typed_flags`] and nothing else — the
-    /// same rule `read_env` refused on, so the fallback below is unreachable
-    /// for anything that got past the parse. Spelling it twice is how the two
-    /// drift apart, and the drift is what let `--server-kind ambiguous` record
-    /// an unusable pair in meta while building the session somewhere else.
     fn server(&self) -> ServerId {
         ServerId::from_typed_flags(&self.server_kind, &self.server_value)
             .unwrap_or(ServerId::Ambient)
@@ -263,11 +220,6 @@ impl Env {
 }
 
 /// Why a preamble could not be read.
-///
-/// Two shapes, because they read differently to an operator: a word ae does not
-/// know is answered with the usage line and the word, while a pair ae knows and
-/// REFUSES is answered with the reason and nothing else — printing "offending
-/// word: Error: …" in front of a full sentence helps nobody.
 enum EnvError {
     /// A flag ae has no arm for, or one missing its value.
     OffendingWord(String),
@@ -346,10 +298,7 @@ fn read_env(tail: &[String]) -> Result<(Env, Vec<String>), EnvError> {
     }
     // BEFORE ANY EFFECT, and it is the reason this lives in the parse: a kind
     // ae cannot type used to fall through to the ambient server, so the launch
-    // built the session THERE and recorded the unusable pair in meta. The
-    // result was a session on one server described by a record naming another —
-    // and since every lifecycle operation now refuses that record, nothing
-    // could rename, stop or watch it afterwards.
+    // built the session THERE and recorded the unusable pair in meta.
     if let Err(why) = ServerId::from_typed_flags(&env.server_kind, &env.server_value) {
         // The refusal says what could not be used; this line says what to do:
         // the pair arrives from the glue's AE_TMUX_SERVER* re-export, so the
@@ -403,11 +352,6 @@ pub fn run(tail: &[String], out: &mut impl Write, err: &mut impl Write) -> crate
 }
 
 /// The facts a `compact` relaunch carries across the boundary.
-///
-/// THE ROSTER IS THE FROZEN ONE. The child starts the agents the human was
-/// SHOWN at the prompt, never a config re-read after the boundary: the source
-/// session is already archived and gone by then, so a child that started the
-/// wrong roster could not be undone.
 pub struct Relaunch<'a> {
     /// The ae home the child's state lives under.
     pub home: &'a Path,
@@ -421,9 +365,7 @@ pub struct Relaunch<'a> {
     pub config: &'a str,
     /// The archive the child inherits.
     pub uuid: &'a str,
-    /// The `--from` proof compact took at the boundary, `\t`-separated. The
-    /// child re-proves the archive and compares BYTE FOR BYTE: between the two
-    /// proofs the archive could have been purged, claimed or corrupted.
+    /// The `--from` proof compact took at the boundary, `\t`-separated.
     pub proof: &'a str,
     /// `main=<name> workers=<a,b|->` — the roster the freeze resolved.
     pub roster: &'a str,
@@ -473,9 +415,6 @@ pub fn relaunch(
 }
 
 /// Split `main=<name> workers=<a,b|->` into its two overrides.
-///
-/// A missing `main=` yields `None`, which lets the config's own answer stand —
-/// the frozen gate fires only when the freeze actually resolved one.
 fn split_frozen_roster(roster: &str) -> (Option<String>, Option<String>) {
     let Some(rest) = roster.strip_prefix("main=") else {
         return (None, None);
@@ -501,8 +440,7 @@ struct Session {
     resuming: bool,
     /// Whether THIS attempt created the session directory — the ownership fact
     /// the rollback keys on, recorded at the `mkdir` and never derived from
-    /// `resuming`. A half-written directory from an earlier attempt reads as
-    /// fresh, and the old proxy would have deleted it.
+    /// `resuming`.
     dir_created: bool,
 }
 
@@ -561,10 +499,7 @@ fn launch(
     }
 
     let meta_present = node_exists(&dir.join("meta"));
-    // DERIVED-NAME OWNERSHIP. A name the user TYPED means "that session,
-    // wherever I am". A name ae DERIVED means "the session for this directory",
-    // and reusing it is only correct if the existing session belongs here — the
-    // derived body is lossy, so a name match is evidence, not proof.
+    // DERIVED-NAME OWNERSHIP.
     if derived && meta_present {
         let recorded = meta_value(&dir, "origin");
         match recorded.as_deref() {
@@ -862,10 +797,7 @@ fn launch(
     } else {
         config_layout
     };
-    // A RESUME RESTORES THE ROSTER IT SAVED. The seat names (and profiles) in
-    // meta are the session's identity; config is only where a FRESH launch reads
-    // them from. Re-deriving on resume renamed `seat.main=chief` to the config's
-    // current value and silently discarded a rename (glue cut 2 finding).
+    // A RESUME RESTORES THE ROSTER IT SAVED.
     if resuming {
         for seat in &mut seats {
             if let Some(saved) =
@@ -894,10 +826,6 @@ fn launch(
     // run the string. A profile holding `touch m ; tail -f /dev/null` therefore
     // executed BOTH commands on resume — the same defect the spawn gate closed
     // (colead gate b5d60fec), reached through the restore instead.
-    //
-    // The refusal is the WHOLE resume, before the first tmux or filesystem
-    // effect, because a session that starts with one seat silently dropped is a
-    // session whose roster no longer matches its meta.
     if resuming {
         for entry in spawned_entries(&dir) {
             // An unconfigured profile is not a refusal: the seat is preserved
@@ -982,10 +910,7 @@ fn build(
         )?;
         return Ok(EXIT_FAILED);
     }
-    // The LIFECYCLE LOCK: mutual exclusion with `ae end`. Held from here through
-    // the last asset write — released before the launch prompts, because the
-    // capture threads below outlive this call and an inherited hold would make
-    // an immediate `ae end` time out on a launch that already finished.
+    // The LIFECYCLE LOCK: mutual exclusion with `ae end`.
     let Ok(lifecycle) = crate::state::acquire(
         &sessions.join(format!(".lifecycle.{}.lock", shape.name)),
         LIFECYCLE_WAIT,
@@ -1043,7 +968,7 @@ fn build(
     }
     apply_layout(&server, shape, &panes, workers);
 
-    // Pane stamps. `@ae_agent` IS the bare name under identity v2.
+    // Pane stamps.
     for (index, seat) in seats.iter().enumerate() {
         stamp_pane(&server, &panes[index], &seat.name, &seat.slot);
     }
@@ -1087,8 +1012,6 @@ fn build(
             // VERBATIM at its original index — a later resume with the profile
             // configured restores the worker, and preserving the index keeps
             // the slot key stable for any in-flight request addressed to it.
-            // It gets no pane and is never launched: an EMPTY pane is what the
-            // rest of this function reads as "seat only".
             let command = cfg.profile(&entry.profile).unwrap_or_default().to_owned();
             let pane = if command.is_empty() {
                 String::new()
@@ -1238,9 +1161,6 @@ fn build(
     // server answerable. Both are best-effort and strictly non-fatal (the frozen
     // path ran each behind `2>/dev/null || true`): a session that is up is never
     // failed by a bridge that is not.
-    //
-    // This runs on RESUME too — same path, same order — which is what makes a
-    // reattach revive a bridge that died since the last launch.
     if !env.no_autostart {
         autostart_telegram(env, shape, &dir, &server, err);
         autostart_orchestrator(env, shape, &server, out, err);
@@ -1299,10 +1219,6 @@ fn new_window(server: &ServerId, target: &str, name: &str, work_dir: &str) -> Op
 }
 
 /// Kill the session this launch created — the rollback's first step.
-///
-/// By EXACT id, never by name: `kill-session -t` prefix-matches, so killing
-/// `proj` would take a live `project` with it and report success. A session id
-/// that cannot be resolved means there is nothing this launch may kill.
 fn kill_session(server: &ServerId, name: &str) -> bool {
     match transport::observe_session_id(server, name) {
         Some(id) => transport::kill_session(server, &id),
@@ -1356,8 +1272,6 @@ fn stamp_session(server: &ServerId, env: &Env, shape: &Session, main_pane: &str)
         ),
     );
     // The window carries the SESSION name; agent identity lives on `@ae_agent`.
-    // Format-escaped, because a window name is a tmux FORMAT and `#(…)` runs a
-    // shell.
     let _ = transport::run_tmux_op(&argv(
         server,
         &Op::RenameWindow {
@@ -1369,15 +1283,6 @@ fn stamp_session(server: &ServerId, env: &Env, shape: &Session, main_pane: &str)
 }
 
 /// The two status lines ae owns.
-///
-/// The live segments arrive as USER OPTIONS (`@ae_branch_status`,
-/// `@ae_watchdog_status`, `@ae_agents_status`), which tmux interpolates
-/// literally — no `#()`, no shell — so a branch name with `)` or `#` in it is
-/// harmless. The static path is `#`-escaped because it is not.
-/// `paths` is the location segment [`status_paths`] composed; `name` is the
-/// session. Takes the two facts rather than a launch `Session` because
-/// `ae rename` re-applies the same bar under a new name, and a second copy of
-/// this option list is a second thing to keep in step.
 pub(crate) fn apply_status_bar(server: &ServerId, name: &str, paths: &str) {
     let paths = tmux::format_literal(paths);
     let session = tmux::format_literal(name);
@@ -1406,8 +1311,8 @@ pub(crate) fn apply_status_bar(server: &ServerId, name: &str, paths: &str) {
         let _ = transport::publish_option(server, tmux::OptionScope::Session, name, option, &value);
     }
     // tmux ARRAY options do not inherit per index: setting `status-format[1]`
-    // alone shadows the WHOLE global array and leaves index 0 — the standard bar
-    // — empty at session scope. Copy the global [0] in alongside ours.
+    // alone shadows the WHOLE global array and leaves index 0 — the standard
+    // bar — empty at session scope.
     let (found, global) = transport::run_tmux_op(&argv(
         server,
         &Op::ShowGlobalOption {
@@ -1507,10 +1412,6 @@ fn stamp_pane(server: &ServerId, pane: &str, name: &str, slot: &str) {
 
 /// Build the WHOLE initial meta — base facts, then the v2 roster block.
 ///
-/// One document, published in one rename: a direct write left the file visible
-/// EMPTY between open and write, and post-publish appends left the roster
-/// observably half-built, so meta existence was not a readiness fact.
-///
 /// # Errors
 ///
 /// The refusal text when a resolved value carries a byte that would corrupt a
@@ -1531,11 +1432,7 @@ fn meta_document(
         .first()
         .map(|agent| agent.pane.clone())
         .unwrap_or_default();
-    // Launch facts that must survive every rewrite. `git_base_commit` is
-    // recorded ONCE, at the launch that created the tree: a resume that
-    // re-derived it would silently re-base the session's commit range on
-    // today's HEAD and make the archive's range a lie. Lineage is the same —
-    // decided once, at birth.
+    // Launch facts that must survive every rewrite.
     let preserved = |key: &str| meta_value(&dir, key).filter(|v| !v.is_empty());
     let session_id = preserved("session_id").unwrap_or_else(launch::generate_uuid);
     let git_base = preserved("git_base_commit").or_else(|| {
@@ -1582,12 +1479,6 @@ fn meta_document(
         // The core binding, pinned per session as a PAIR: a helper that found a
         // binary whose version disagreed with the session's would be running a
         // different contract than the one this session was built against.
-        //
-        // `ae_path` — the recorded `ae` COMMAND — is NOT written any more. Its
-        // one reader was the watchdog's Telegram revive, which shelled back
-        // into the glue through it; the revive is the core's own call now, so
-        // the row named a binary nobody ran. The flag that fed it (`--glue`)
-        // went with it, and an unknown flag is refused exactly as before.
         let ae_core = env.core.as_ref().unwrap_or(&core);
         row("ae_core", &ae_core.display().to_string());
         row(
@@ -1662,18 +1553,6 @@ fn seat_label(seat: &roster::SeatLines) -> String {
 
 /// Hand one agent's pane the command that BECOMES its agent, and wait for the
 /// tool to take the pane over.
-///
-/// `Ok(Ok(()))` started; `Ok(Err(reason))` is the launch-failing refusal the
-/// caller rolls back on. A prompt that could not be DELIVERED is not one of
-/// them: it is loud and durable, exactly as the frozen path reports it, but the
-/// pane is live and the session stands.
-///
-/// Everything this function used to compose — the context injection, the
-/// session-id or resume form, the re-run script and the shell `if` that chose
-/// between them — is [`crate::run`]'s now, and runs IN the pane from this
-/// session's own state. What is left here is the three things only the
-/// launching process can do: guarantee the seat's start marker says what this
-/// launch means, paste the line, and wait for the tool to own the pane.
 fn start_agent(
     shape: &Session,
     dir: &Path,
@@ -1683,11 +1562,7 @@ fn start_agent(
     err: &mut impl Write,
 ) -> io::Result<Result<(), String>> {
     // THE MARKER IS THE CREATE-VS-RESUME DISCRIMINATOR, so a fresh seat must
-    // not inherit one. A stale marker that cannot be removed would make `_run`
-    // resume a conversation this launch is not resuming, which is a wrong
-    // conversation rather than a missing one — hence a refusal, not a best
-    // effort. A RESUMING launch leaves the marker exactly as it found it: that
-    // is what says the seat has a conversation at all.
+    // not inherit one.
     if !shape.resuming
         && let Err(why) = crate::run::clear_slot(dir, &agent.slot)
     {
@@ -1716,8 +1591,7 @@ fn start_agent(
         );
     }
     // codex resume takes no inline prompt, so the prompt is delivered once its
-    // UI returns. Every other shape carries it inline, inside the command
-    // `_run` composed.
+    // UI returns.
     let prompt = launch::initial_prompt_for(agent.tool);
     if !prompt.is_empty()
         && agent.tool == ToolKind::Codex
@@ -1730,9 +1604,6 @@ fn start_agent(
 }
 
 /// The gated, loud, DURABLE launch-prompt delivery.
-///
-/// It runs where stderr reaches a pane nobody reads, so a failure is preserved
-/// next to the session AND recorded as an event — the frozen contract, kept.
 fn deliver_launch_prompt(
     dir: &Path,
     server: &ServerId,
@@ -1808,9 +1679,7 @@ fn wait_for_agent_start(server: &ServerId, pane: &str, tool: ToolKind) {
     }
     // The pane runs the CORE before it runs the tool: `_run` composes the
     // command and `exec`s it, so for a moment `pane_current_command` is ae's
-    // own binary. That is "not started yet" in exactly the way the generated
-    // script's `bash` used to be — and without this the not-a-shell arm below
-    // would answer READY the instant the paste took.
+    // own binary.
     let core = crate::shape::resolved_exe()
         .and_then(|path| {
             path.file_name()
@@ -1833,10 +1702,6 @@ fn wait_for_agent_start(server: &ServerId, pane: &str, tool: ToolKind) {
 }
 
 /// The monitor window's events pane, created if it is not already there.
-///
-/// Pinned at window index 99 so it stays RIGHTMOST in the footer — spawned
-/// worker windows slot in between it and the main window. Falls back to
-/// append-after-current when 99 is somehow taken.
 pub(crate) fn ensure_events_pane(server: &ServerId, session: &str, dir: &Path) -> Option<String> {
     if let Some(existing) = monitor_pane(server, session, "_events") {
         return Some(existing);
@@ -1866,9 +1731,6 @@ pub(crate) fn ensure_events_pane(server: &ServerId, session: &str, dir: &Path) -
 
 /// The watchdog pane, split ABOVE the events pane so the visual order stays
 /// watchdog-on-top / events-below.
-///
-/// Skipped when the session's own `watchdog` value, or the config's, says off —
-/// the frozen precedence: per-session meta, then config, then default-on.
 fn start_watchdog_pane(env: &Env, shape: &Session, dir: &Path, server: &ServerId, anchor: &str) {
     let recorded = meta_value(dir, "watchdog").or_else(|| meta_value(dir, "loop"));
     let configured = config::read_workspace_keys(
@@ -1915,12 +1777,6 @@ fn start_watchdog_pane(env: &Env, shape: &Session, dir: &Path, server: &ServerId
 }
 
 /// The Telegram bridge, revived if `[telegram] enabled` asks for one.
-///
-/// The config read is the GLOBAL one — the file the daemon itself will be
-/// handed as `--config`. An origin-local `.ae/config` is deliberately not
-/// overlaid here: the frozen glue decided intent from the overlay but started
-/// the daemon on the global file, so a project-local `enabled = true` produced a
-/// bridge reading a config that never said so.
 fn autostart_telegram(
     env: &Env,
     shape: &Session,
@@ -1936,13 +1792,6 @@ fn autostart_telegram(
 }
 
 /// The orchestrator companion, started in the background when a scaffold exists.
-///
-/// Opt-in purely by EXISTING STATE — a scaffold from `ae orchestrator --init`,
-/// canonical or the legacy hub layout — so there is no new config key and a
-/// machine that never scaffolded one is never touched. The `AE_ORCHESTRATOR_DIR`
-/// / `AE_HUB_DIR` overrides the frozen probe honoured are dropped: the core does
-/// not read the environment, and an override nobody in this process can see is
-/// not a probe, it is a guess.
 fn autostart_orchestrator(
     env: &Env,
     shape: &Session,
@@ -1956,9 +1805,9 @@ fn autostart_orchestrator(
     if matches!(shape.name.as_str(), "orchestrator" | "hub") {
         return;
     }
-    // The SCAFFOLD decides the session name: a legacy `hub.config` keeps running
-    // as `hub`, because its baked charter paths and its resume state are that
-    // name's. Canonical first, exactly as the frozen probe ordered them.
+    // The SCAFFOLD decides the session name: a legacy `hub.config` keeps
+    // running as `hub`, because its baked charter paths and its resume state
+    // are that name's.
     let scaffolds = [
         (
             "orchestrator",
@@ -1972,12 +1821,7 @@ fn autostart_orchestrator(
     else {
         return;
     };
-    // TRI-STATE (#28): only a VERIFIED absence may start a companion. An
-    // unanswerable server cannot rule out an orchestrator that is already
-    // running, and the cost of guessing wrong is a duplicate session whose
-    // detached launch dies with its output on /dev/null. `verify_session_absent`
-    // is the probe with that third answer — and it reads a cleanly EXITED server
-    // as absence, which a plain enumeration cannot.
+    // TRI-STATE (#28): only a VERIFIED absence may start a companion.
     let mut unknown = false;
     for (name, _) in &scaffolds {
         match transport::verify_session_absent(server, name) {
@@ -2045,15 +1889,6 @@ fn monitor_pane(server: &ServerId, session: &str, agent: &str) -> Option<String>
 }
 
 /// The command that actually attaches to `session` on `server`.
-///
-/// It used to say `ae orchestrator --attach`, which is not a command any more:
-/// the orchestrator trampoline was retired in the glue cut and that word now
-/// REFUSES. It was wrong before that too — it named the companion session
-/// rather than the one just started, so a human who followed it landed
-/// somewhere else or nowhere.
-///
-/// The server is spelled out because a session on a named or socket server is
-/// invisible to a bare `tmux attach`, and this line is meant to be pasted.
 fn attach_hint(server: &ServerId, session: &str) -> String {
     let session = paste_safe(session);
     match server {
@@ -2070,11 +1905,6 @@ fn attach_hint(server: &ServerId, session: &str) -> String {
 
 /// `word` as it can be pasted into a shell: bare when nothing in it is
 /// significant there, quoted when anything is.
-///
-/// Unconditional quoting would be just as CORRECT and worse to read — a session
-/// name is allowlisted to `[A-Za-z0-9_-]` and can never need it, so quoting one
-/// only teaches the reader that ae does not know its own grammar. A socket path
-/// is not allowlisted, so it is checked rather than assumed.
 fn paste_safe(word: &str) -> String {
     let plain = !word.is_empty()
         && word
@@ -2101,10 +1931,6 @@ fn attach(server: &ServerId, env: &Env, session: &str) -> u8 {
 // ---------------------------------------------------------------------------
 
 /// Whether `path` is any node at all, LINK INCLUDED.
-///
-/// `symlink_metadata`, never `metadata`: a dangling symlink is a standing
-/// tombstone, and `[[ -e ]]` alone reads one as absent. The teardown checks its
-/// tombstones with `lstat` too, so the guard and the core agree.
 fn node_exists(path: &Path) -> bool {
     #[allow(
         clippy::disallowed_methods,
@@ -2125,12 +1951,6 @@ fn dir_exists(path: &Path) -> bool {
 }
 
 /// Whether two spellings name the same directory.
-///
-/// CANONICAL paths, not raw strings: a symlinked alias and a trailing slash are
-/// the same place, and a raw comparison refused the rightful owner and pointed
-/// it at a duplicate. A path that cannot be canonicalised falls back to its raw
-/// spelling rather than answering "different", which would be a refusal built
-/// on a failed read.
 fn same_directory(one: &str, other: &str) -> bool {
     canonical(one) == canonical(other)
 }
@@ -2169,12 +1989,6 @@ fn write_private(path: &Path, text: &str) -> io::Result<()> {
 }
 
 /// Undo a launch that failed after the tmux session existed, and SAY SO.
-///
-/// One helper, because a rollback that announces itself at one failure site and
-/// stays quiet at the next teaches an operator that silence means success. The
-/// order is what an operator reads top to bottom: what happened, why, and what
-/// was done about it — the announcement, then the caller's own reason, then
-/// [`rollback_dir`]'s verdict on the session state.
 fn rollback_launch(
     shape: &Session,
     dir: &Path,
@@ -2190,12 +2004,6 @@ fn rollback_launch(
 }
 
 /// Remove the session directory — but ONLY when this attempt created it.
-///
-/// THREE INDEPENDENT GUARDS stand between a failure and a recursive delete,
-/// because the consequence of getting it wrong is unbounded: the name was
-/// validated at entry, the path must still test as a direct child of the
-/// sessions root, and the ownership flag must say this attempt created it. Any
-/// one failing means nothing is deleted.
 fn rollback_dir(shape: &Session, dir: &Path, err: &mut impl Write) -> io::Result<()> {
     let Some(root) = dir.parent().map(|p| p.display().to_string()) else {
         return Ok(());
@@ -2224,12 +2032,6 @@ fn rollback_dir(shape: &Session, dir: &Path, err: &mut impl Write) -> io::Result
 }
 
 /// A recursive copy of `from` into `to` — the frozen `cp -a`, minus one thing.
-///
-/// Symlinks are recreated as symlinks and permission bits are preserved.
-/// TIMESTAMPS ARE NOT: std offers no portable `utimensat`, and reaching for one
-/// would mean `unsafe`, which the crate forbids. A working copy's mtimes are
-/// build-system input, so a build in a `--copy` session may do more work than
-/// the frozen path would have caused — recorded here rather than discovered.
 ///
 /// # Errors
 ///
@@ -2272,10 +2074,6 @@ fn copy_tree(from: &Path, to: &Path) -> io::Result<()> {
 }
 
 /// Cap `events.jsonl` to its newest lines on resume.
-///
-/// Under the event log's own lock, so a concurrent append cannot land between
-/// the read and the rename and be lost, and strictly non-fatally — a failed
-/// trim must never break a resume.
 fn trim_events(dir: &Path) {
     let path = dir.join("events.jsonl");
     let Ok(_guard) = crate::state::acquire(&dir.join("events.jsonl.lock"), Duration::from_secs(5))
@@ -2314,10 +2112,6 @@ struct Spawned {
 }
 
 /// The `spawned.<n>` seats a resuming session's meta records, in slot order.
-///
-/// Each survivor keeps its ORIGINAL index: a retire leaves a hole, and
-/// renumbering would break the slot key and orphan any in-flight slotted
-/// request addressed to it.
 fn spawned_entries(dir: &Path) -> Vec<Spawned> {
     let Ok(bytes) = meta::read_bytes(dir) else {
         return Vec::new();
@@ -2369,11 +2163,6 @@ fn launching_capture(launching: &[Launching], resuming: bool) -> Vec<capture::Ta
 // ---------------------------------------------------------------------------
 
 /// The tmux server the session at `dir` records, or the ambient one.
-///
-/// TOLERANT, and it must stay that way: its callers are OBSERVERS — the pane
-/// surfaces, the capture child — for which a record that names no server is
-/// answered correctly by the ambient one. A lifecycle operation that ACTS on a
-/// session wants [`recorded_server_resolved`] instead.
 #[must_use]
 pub fn recorded_server(dir: &Path) -> ServerId {
     let Ok(bytes) = meta::read_bytes(dir) else {
@@ -2391,22 +2180,6 @@ pub fn recorded_server(dir: &Path) -> ServerId {
 pub const AMBIGUOUS_SERVER: &str = "records a tmux server ae cannot resolve — its meta rows 'tmux_server_kind' / 'tmux_server' do not name exactly one server";
 
 /// The tmux server the session at `dir` records, REFUSING an ambiguous record.
-///
-/// `None` is the fail-closed answer, and only for [`ServerSelector::Ambiguous`]:
-/// an unknown kind, a typed empty value, a relative socket path, an empty kind
-/// beside a value, or duplicate selector keys. Such a record names a server ae
-/// cannot identify, and falling back to the ambient one is not a smaller
-/// answer — it is a DIFFERENT server, where a same-named session belonging to
-/// somebody else will answer to a rename, a kill or a watchdog.
-///
-/// [`ServerSelector::Missing`] is NOT refused, and that is the whole reason
-/// this is not simply `entitles()`. A launch records the two rows only when the
-/// caller resolved a server (`meta_document`, from `--server-kind`), and the
-/// glue resolves none for a caller that is not inside tmux and sets no
-/// `AE_TMUX_SERVER` — so a session started from a plain terminal legitimately
-/// records nothing, and the ambient server is exactly the one it is on.
-/// Refusing that would make `rename` and the watchdog commands fail for the
-/// most ordinary session there is.
 #[must_use]
 pub fn recorded_server_resolved(dir: &Path) -> Option<ServerId> {
     let Ok(bytes) = meta::read_bytes(dir) else {
@@ -2427,12 +2200,6 @@ pub fn sibling_session_dir(dir: &Path, session: &str) -> PathBuf {
 }
 
 /// Every ae session currently running on the same server as the one at `dir`.
-///
-/// Asked of TMUX, not of the sessions root: the answer wanted is "which of
-/// these can I address right now", and a durable record whose server is down is
-/// not one. The trade is recorded — a session on a DIFFERENT tmux server is not
-/// listed, where the frozen `agents --all` walked `~/.ae/sessions/*/meta` and
-/// would have found it.
 #[must_use]
 pub fn running_ae_sessions(dir: &Path) -> Vec<String> {
     use crate::inventory::Discovery as _;
@@ -2467,10 +2234,6 @@ pub struct FromProof {
 }
 
 /// Prove the archive `raw_uuid` names is inheritable, BEFORE any side effect.
-///
-/// One call into the archive module's own preflight, whose refusals are its to
-/// word; this only reshapes the tab-separated proof into the three facts the
-/// meta records.
 ///
 /// # Errors
 ///
@@ -2512,11 +2275,6 @@ mod tests {
 
     /// A resume caps `events.jsonl` at its NEWEST lines, and the cut falls
     /// exactly at the retention boundary.
-    ///
-    /// The log is the session's whole activity history and an unbounded one is
-    /// read on every `ae list`. Asserting the count alone would pass for a
-    /// trim that kept the OLDEST lines, so the boundary is pinned from both
-    /// sides: the first kept line and the last dropped one.
     #[test]
     fn a_trim_keeps_the_newest_events_and_cuts_at_the_boundary() {
         let dir = scratch("trim");

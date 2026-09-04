@@ -18,27 +18,6 @@
 //! Runs in ITS OWN DETACHED PROCESS, never on the launch's thread: the frozen
 //! path backgrounded it with `&` for the same reason, so a tool that takes half
 //! a minute to print its id does not delay the attach.
-//!
-//! # The second caller: the watchdog's recovery
-//!
-//! A capture child can die before its tool answers — the machine sleeps, the
-//! session is resumed, the process is killed with the pane it was launched
-//! beside — and the seat then stays `pending` for the rest of the session. The
-//! watchdog closes that gap: every cycle it takes ONE look at each pending seat
-//! ([`pending_seats`] + [`attempt`]) and registers whatever it finds. No
-//! sleeping and no polling there, because the next tick IS the retry.
-//!
-//! # What is NOT ported
-//!
-//! * **opencode's launch-token DB scan.** It queried the `part` table for
-//!   `AE_OPENCODE_LAUNCH_ID`, and since opencode's context moved to
-//!   `OPENCODE_CONFIG` nothing pastes that marker any more — the marker never
-//!   reaches a message part (measured; AGENTS.md records it as inert). The
-//!   directory match was already the effective path, so it is the only one
-//!   here.
-//! * **the legacy `<tool>_launch_id.<slot>` / `<tool>_launch_time.<slot>` meta
-//!   keys.** The core writes only the generic spelling, and the Rust line never
-//!   reads pre-Rust state.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -80,11 +59,6 @@ impl CaptureArgv {
 
 /// The FIXED argv of `opencode session list`, minted only by
 /// [`opencode_list_argv`].
-///
-/// Sealed the way [`crate::procs::PsArgv`] is: the inner vector is private to
-/// this module and the one constructor takes no caller input at all, so the
-/// `opencode` leg of the process door cannot be alias-imported and handed an
-/// arbitrary command line.
 pub struct OpenCodeArgv(Vec<String>);
 
 impl OpenCodeArgv {
@@ -107,10 +81,6 @@ fn opencode_list_argv() -> OpenCodeArgv {
 }
 
 /// The argv that captures one target: `_capture-sid <dir> <slot> <pane>`.
-///
-/// The TOOL is deliberately absent: the capture child reads it back out of
-/// `agent_bin.<slot>`, so the roster the core owns stays the one answer to
-/// "what is sitting in that seat" rather than a fact copied into an argv.
 fn argv(dir: &Path, target: &Target) -> CaptureArgv {
     CaptureArgv(vec![
         crate::cli::CAPTURE_SID.to_owned(),
@@ -121,12 +91,6 @@ fn argv(dir: &Path, target: &Target) -> CaptureArgv {
 }
 
 /// Start one DETACHED capture per target that needs one.
-///
-/// A child process, not a thread: the launch returns as soon as the session is
-/// up — `--no-attach` returns immediately — and a thread would die with it,
-/// which is exactly why the frozen path backgrounded a subshell with `&`. A
-/// capture that never answers leaves the slot `pending`, which is what
-/// `pending` means.
 pub(crate) fn start(dir: &Path, targets: &[Target]) {
     // RESOLVED, never raw: this becomes a detached child's `argv[0]`, and on
     // macOS an unresolved answer is whichever link the caller typed — a helper
@@ -144,9 +108,6 @@ pub(crate) fn start(dir: &Path, targets: &[Target]) {
 }
 
 /// `_capture-sid <dir> <slot> <pane>` — the detached child's whole job.
-///
-/// Answers 0 whatever happens: nothing reads its status, and a capture that
-/// found no id is not a failure of the session it was launched for.
 pub fn run(dir: &Path, slot: &str, pane: &str, server: &ServerId) -> u8 {
     let Some(facts) = facts(dir, slot) else {
         return 0;
@@ -184,15 +145,6 @@ pub struct Pending {
 
 /// The seats one recovery pass tries: an id still unrecorded, in a seat whose
 /// tool has no launch-time id flag.
-///
-/// Both halves are the frozen `walk_pending_session_ids`' selection, ported to
-/// the roster the core owns: it took `harness_session.<slot>` rows reading
-/// `pending` and kept only codex, gemini and opencode — claude and grok launch
-/// with an ae-generated id, so a seat holding one is never waiting for a
-/// capture. The empty spelling counts as pending beside the frozen literal:
-/// [`crate::meta`] reads an empty metadata row as ABSENT metadata, so a seat
-/// whose id was never written and one whose row says `pending` reach here as
-/// `None` and `Some("pending")` for the same reason.
 #[must_use]
 pub fn pending_seats(roster: &[crate::meta::RosterEntry]) -> Vec<Pending> {
     roster
@@ -215,28 +167,6 @@ fn is_pending(id: Option<&str>) -> bool {
 }
 
 /// ONE look for a seat's id: no sleeping, no pane, no handshake file.
-///
-/// What the watchdog runs per tick, and the reason it is not [`run`]: the
-/// launch's capture may sleep for half a minute because it is a detached child
-/// nobody waits on, while this is a step inside a daemon cycle that must not
-/// hold up a nudge. There is no polling to lose — the watchdog ticks again.
-///
-/// The methods are the frozen `doctor_try_capture_session_id`'s: the history
-/// scans, and only those. Codex's `codex.<slot>.sid` handshake is excluded
-/// because the file carries no launch time of its own, so a leftover from an
-/// earlier launch of the same slot would read as this one's; the TUI scrape is
-/// excluded because it is a guess at a header, and because a recovery must work
-/// for a seat whose pane is long past its banner.
-///
-/// Within a tool, the chain is the CAPTURE's, not the frozen recovery's — one
-/// scan per tool, shared with [`run`], rather than two that can drift apart.
-/// Two arms are therefore wider here than in bash: gemini falls back to the
-/// project root when the seat carries no launch token, and opencode matches on
-/// the session's directory rather than on a token nothing pastes any more
-/// (AGENTS.md records that scan as inert). Both are already what the launch's
-/// own child does, and both stay floored by `launch_time.<slot>` and rooted in
-/// this session's working directory, so neither widens what a capture may
-/// match — only which caller may match it.
 #[must_use]
 pub fn attempt(dir: &Path, slot: &str) -> Option<String> {
     let facts = facts(dir, slot)?;
@@ -261,8 +191,7 @@ struct Facts {
     tool: ToolKind,
     /// The session's working directory, which every cwd match compares against.
     work_dir: String,
-    /// The launch instant, in epoch seconds. `0` when unrecorded, which widens
-    /// the scan rather than closing it — the frozen default.
+    /// The launch instant, in epoch seconds.
     launch_time: i64,
     /// The launch token, empty when none was minted.
     launch_id: String,
@@ -293,9 +222,6 @@ fn facts(dir: &Path, slot: &str) -> Option<Facts> {
 }
 
 /// The caller's own `HOME`, where every tool keeps its conversation history.
-///
-/// Not `AE_HOME`: these are the TOOL's directories, not ae's state root, and
-/// the two are unrelated even when both are derived from the same variable.
 fn home_dir() -> Option<PathBuf> {
     #[allow(
         clippy::disallowed_methods,
@@ -327,36 +253,6 @@ fn sid_file(dir: &Path, slot: &str) -> PathBuf {
 }
 
 /// `_register-sid <meta-dir> <slot> [<session-id>]` — codex's own handshake.
-///
-/// THE LINK THAT WAS DEAD. Codex's `developer_instructions` have always told it
-/// to run `<session-dir>/_register-sid <slot>` as its first action, and
-/// [`capture_codex`] has always polled for what that run writes — but the shim
-/// left the helper set with the `declare -f` template library, and no core
-/// entry replaced it, so the instruction named a file that was not there and
-/// every capture fell through to the scans below it.
-///
-/// Two shapes, because a codex that KNOWS its id and one that does not are
-/// different facts:
-///
-/// * **With an id** the caller is the authority: the id is validated as a
-///   lowercase UUID and written, with no meta read at all. Validation is not
-///   politeness — the value lands in a file the capture reads back as a session
-///   id and writes into the roster, so a malformed one would pin a seat to a
-///   conversation that does not exist.
-/// * **Without one** the core does what the frozen helper did: scans codex's
-///   own history for this seat, floored by `launch_time.<slot>` and filtered by
-///   the launch token, and writes what it finds. That is [`scan_codex`], which
-///   the capture and the watchdog's recovery already share.
-///
-/// The write is temp + rename, so the polling capture never reads a half-written
-/// id.
-///
-/// The INSTRUCTION deliberately names only the seat, never the id: a model
-/// asked for its own session id can produce a well-formed one it invented, and
-/// a validator sees shape, not truth — a hallucinated UUID would pin the seat
-/// to a conversation that does not exist, which is worse than falling through
-/// to the scan. The id argument is for a caller that has one from somewhere
-/// trustworthy.
 ///
 /// # Errors
 ///
@@ -411,10 +307,6 @@ pub fn register_sid(
 pub const REGISTER_SID_USAGE: &str = "Usage: _register-sid <meta-dir> <slot> [<session-id>]";
 
 /// Whether `value` is a lowercase 8-4-4-4-12 hex UUID.
-///
-/// Lowercase deliberately: ae's ids and every agent history filename are
-/// lowercase-only, and macOS `uuidgen` is not — so accepting either spelling
-/// would let a value be recorded that no scan can ever match again.
 #[must_use]
 fn is_lowercase_uuid(value: &str) -> bool {
     let groups = [8, 4, 4, 4, 12];
@@ -435,12 +327,6 @@ fn is_lowercase_uuid(value: &str) -> bool {
 }
 
 /// Poll for the self-registered id, then the two history scans, then the TUI.
-///
-/// The order is the frozen chain's: the handshake is what ae ASKED for, the
-/// scans are what it can find without being told, and the scrape is a guess at
-/// a header. The handshake sleeps BEFORE its first look, unlike the scans
-/// below — codex cannot have written the file at t=0, and an immediate read
-/// could only find a leftover from an earlier launch of the same slot.
 fn capture_codex(
     dir: &Path,
     slot: &str,
@@ -476,9 +362,6 @@ fn capture_codex(
 
 /// One look through codex's own history: the launch token first, this
 /// directory's newest conversation second.
-///
-/// Split out of [`capture_codex`] because it is the half that neither sleeps
-/// nor needs a pane, which is exactly the half [`attempt`] may run.
 fn scan_codex(home: &Path, facts: &Facts) -> Option<String> {
     let days = day_dirs(Timestamp::now());
     if !facts.launch_id.is_empty()
@@ -510,9 +393,6 @@ pub(crate) fn scrape_session_id(screen: &str) -> Option<String> {
 }
 
 /// The newest codex session whose log carries this launch token.
-///
-/// `days` are the `YYYY/MM/DD` directories to look in — today and yesterday, so
-/// a launch either side of UTC midnight is still found.
 #[must_use]
 pub(crate) fn find_codex_by_launch_id(
     home: &Path,
@@ -571,11 +451,6 @@ fn codex_logs(home: &Path, days: &[String]) -> Vec<PathBuf> {
 
 /// Poll gemini's local chat history: the launch token first, the project root
 /// alone as the fallback.
-///
-/// Unlike codex's handshake this LOOKS FIRST and sleeps only between attempts.
-/// A scan cannot return a stale answer — every candidate must be newer than
-/// `launch_time.<slot>` and rooted in this session's own working directory — so
-/// the frozen leading `sleep 5` bought nothing but latency.
 fn capture_gemini(home: &Path, facts: &Facts) -> Option<String> {
     for attempt in 0..POLLS {
         if attempt > 0 {
@@ -630,10 +505,6 @@ pub(crate) fn find_gemini_by_cwd(home: &Path, work_dir: &str, launch_time: i64) 
 
 /// Every `chats/session-*.json` under a `~/.gemini/tmp/<project>` whose
 /// `.project_root` names this working directory.
-///
-/// The project directory name is a digest gemini computes, so it is never
-/// derived here — the `.project_root` file inside it is the only claim about
-/// which directory a chat belongs to.
 fn gemini_chats(home: &Path, work_dir: &str) -> Vec<PathBuf> {
     let target = canonical(work_dir);
     let mut found = Vec::new();
@@ -663,22 +534,12 @@ fn gemini_chats(home: &Path, work_dir: &str) -> Vec<PathBuf> {
 // ---------------------------------------------------------------------------
 
 /// agy's conversation store, relative to the caller's `HOME`.
-///
-/// One `SQLite` file per conversation, named for the id, in one flat directory —
-/// so the FILE STEM is the id and nothing has to be parsed out of the database.
-/// Shared with the resume probe in [`crate::run`], which asks the same
-/// directory whether a recorded id still names a conversation.
 pub const AGY_CONVERSATIONS: &str = ".gemini/antigravity-cli/conversations";
 
 /// agy's per-process CLI log directory, relative to the caller's `HOME`.
 pub(crate) const AGY_LOGS: &str = ".gemini/antigravity-cli/log";
 
 /// Poll agy's conversation store: the launch token first, its CLI log second.
-///
-/// Looks first and sleeps only between attempts, for the same reason as
-/// gemini's scan — every candidate is floored by `launch_time.<slot>`, so an
-/// immediate look cannot return a stale answer and a leading sleep buys
-/// nothing but latency.
 fn capture_agy(home: &Path, facts: &Facts) -> Option<String> {
     for attempt in 0..POLLS {
         if attempt > 0 {
@@ -691,30 +552,13 @@ fn capture_agy(home: &Path, facts: &Facts) -> Option<String> {
     None
 }
 
-/// One look for this seat's agy conversation. The two halves are ALTERNATIVES,
-/// chosen by whether the seat has a launch token — never a chain.
+/// One look for this seat's agy conversation.
 ///
-/// They read DIFFERENT FILES because agy splits the two facts across them
-/// (measured 2026-09-04, 1.1.25): the conversation database carries the injected
-/// context — and so the launch token — but never the working directory, while
-/// the CLI log carries `workspaceDirs=[…]` and the id of the conversation that
-/// run created, but never the token.
-///
-/// # A token miss is PENDING, never a fallback
-///
-/// This was a shipped defect, and the shape of it is worth keeping: the token
-/// search used to fall THROUGH to the workspace search on a miss. Two agy seats
-/// in one working directory, started in the same second, then had one positive
-/// answer between them — the workspace — and the seat that had not yet written
-/// its token registered its SIBLING's conversation. From there the roster is
-/// cross-wired and the resume puts two agents into one transcript.
-///
-/// So: a seat that HAS a token is answered by the token and by nothing else.
-/// A miss costs a cycle, not a conversation — the token lands in the database as
-/// soon as the first turn persists, and the watchdog looks again every tick.
-/// The workspace search is for a seat with NO token at all (a legacy meta, a
-/// seat whose launch predates the marker), where it is the only question that
-/// can be asked, and even there it refuses to guess between two candidates.
+/// The two halves are ALTERNATIVES chosen by whether the seat has a launch
+/// token, never a chain: a token miss stays PENDING. Falling through to the
+/// workspace search once gave two agy seats in one working directory a single
+/// positive answer between them, and the seat that had not yet written its
+/// token registered its sibling's conversation.
 fn scan_agy(home: &Path, facts: &Facts) -> Option<String> {
     if !facts.launch_id.is_empty() {
         return find_agy_by_launch_id(home, &facts.launch_id, facts.launch_time);
@@ -726,12 +570,6 @@ fn scan_agy(home: &Path, facts: &Facts) -> Option<String> {
 }
 
 /// The newest agy conversation whose database carries the launch token.
-///
-/// The token is searched for in the file's BYTES, not its text: a conversation
-/// database is `SQLite` and is not valid UTF-8, so the reader every other scan
-/// uses answers `None` for all of them. No working-directory filter is applied
-/// or needed — the token is minted per launch, so a database holding it is this
-/// seat's conversation wherever it was started.
 #[must_use]
 pub(crate) fn find_agy_by_launch_id(
     home: &Path,
@@ -764,24 +602,6 @@ pub(crate) fn find_agy_by_launch_id(
 
 /// The ONE conversation an agy run in this working directory created, read out
 /// of agy's own CLI log — or nothing, when there is more than one.
-///
-/// The log is the only place agy records which directory a conversation belongs
-/// to. One log per CLI process, plain UTF-8, carrying `workspaceDirs=[<dir>]`
-/// once at start-up and `Created conversation <id>` for each conversation that
-/// run began. The FIRST created id of a run is this launch's, because a launch's
-/// own conversation is the first one its process creates; a later one is a
-/// conversation somebody started by hand in the same pane.
-///
-/// # Exactly one, or none
-///
-/// A workspace does not identify a SEAT — two agy agents in one ae session share
-/// a working directory — so where two runs match, this cannot say which is the
-/// caller's and does not try. It is not "the newest wins": between two seats
-/// started in the same second, newest is a coin toss whose losing side
-/// cross-wires the roster. Candidates are counted by conversation id (two logs
-/// naming the same conversation are one candidate, which is what a re-read of
-/// the same run looks like), and two distinct ids answer `None`. Pending is
-/// recoverable; a wrong id is not.
 #[must_use]
 pub(crate) fn find_agy_by_cwd(home: &Path, work_dir: &str, launch_time: i64) -> Option<String> {
     let target = canonical(work_dir);
@@ -815,10 +635,6 @@ pub(crate) fn find_agy_by_cwd(home: &Path, work_dir: &str, launch_time: i64) -> 
 }
 
 /// Does this log's `workspaceDirs=[…]` name `target`?
-///
-/// agy can be given several directories (`--add-dir`), so the field is a list
-/// and every entry is compared canonically — the same rule gemini's
-/// `.project_root` match uses, for the same reason.
 fn agy_log_workspace_matches(text: &str, target: &str) -> bool {
     let mut rest = text;
     while let Some(at) = rest.find("workspaceDirs=[") {
@@ -849,10 +665,6 @@ fn agy_log_created_conversation(text: &str) -> Option<String> {
 }
 
 /// Every `<id>.db` in agy's conversation store.
-///
-/// The `-wal` and `-shm` siblings `SQLite` writes beside a live database are
-/// excluded by the extension test: neither is a conversation, and a stem
-/// ending in `.db-wal` is not an id.
 fn agy_conversations(home: &Path) -> Vec<PathBuf> {
     entries(&home.join(AGY_CONVERSATIONS))
         .into_iter()
@@ -861,10 +673,6 @@ fn agy_conversations(home: &Path) -> Vec<PathBuf> {
 }
 
 /// A conversation database's id: its file stem, when that reads like one.
-///
-/// The class is the same one the codex scan uses on a JSON value, and it is not
-/// decoration: it is what stops a stray `notes.db` in the same directory from
-/// being registered as a conversation id.
 fn agy_conversation_id(path: &Path) -> Option<String> {
     let stem = path.file_stem()?.to_str()?;
     let looks_like_an_id = !stem.is_empty()
@@ -875,9 +683,6 @@ fn agy_conversation_id(path: &Path) -> Option<String> {
 }
 
 /// Every `cli-*.log` in agy's log directory.
-///
-/// `cli.log` itself is a symlink to the newest one and is skipped by the
-/// prefix test — following it would read the same file twice under two mtimes.
 fn agy_logs(home: &Path) -> Vec<PathBuf> {
     entries(&home.join(AGY_LOGS))
         .into_iter()
@@ -892,50 +697,16 @@ fn agy_logs(home: &Path) -> Vec<PathBuf> {
 }
 
 /// The most a single conversation database is worth scanning for a token.
-///
-/// A conversation grows without bound — the operator's own store held one at
-/// 6.7 MB after a day's work — and this search runs SIX TIMES per launch and
-/// again on every watchdog tick. Slurping the file was the first shape and it is
-/// the wrong one twice over: it holds the whole database in memory at once, and
-/// it pays for the whole file when the marker is in the first kilobyte.
-///
-/// So the scan streams, stops at the first match, and refuses a file larger than
-/// this outright rather than reading it in full. 16 MiB is well above the
-/// largest conversation measured (6.7 MB, 2026-09-04) and far below a size worth
-/// walking repeatedly; a database past it is a conversation ae will not identify
-/// by token, which costs a `pending` seat and never a wrong one.
 const AGY_SCAN_CAP: u64 = 16 * 1024 * 1024;
 
 /// How much of a conversation database is held at once while scanning it.
 const AGY_SCAN_CHUNK: usize = 64 * 1024;
 
 /// Does `path` contain `needle`, reading at most [`AGY_SCAN_CAP`] bytes?
-///
-/// The text reader cannot serve here: a conversation database is `SQLite` and is
-/// not valid UTF-8, so `read_to_string` answers `None` for every one of them.
-///
-/// Read in chunks, keeping `needle.len() - 1` bytes of the previous chunk in
-/// front of each new one, so a marker LYING ACROSS A CHUNK BOUNDARY is still
-/// found — the defect a naive chunked search ships with, and the reason the
-/// overlap is derived from the needle rather than fixed.
 fn file_contains(path: &Path, needle: &[u8]) -> bool {
     use std::io::Read as _;
 
     // ONE stat, TWO facts, and both are decided BEFORE the open.
-    //
-    // `is_file` is not a tidiness check: `open(2)` on a FIFO BLOCKS until a
-    // writer appears, and this runs inside the watchdog's cycle. A named pipe
-    // called `<uuid>.db` in the store reports a length of 0, would sail through
-    // a size-only gate, and hang the daemon on the open — so the node is
-    // classified first and anything that is not a regular file is not opened at
-    // all. Symlinks are FOLLOWED here deliberately (`metadata`, not
-    // `symlink_metadata`): what must not block is the open, and the open
-    // reaches the target, so the target is what has to be regular.
-    //
-    // What a pre-check cannot close is the race — the node could be replaced
-    // between the stat and the open — and there is no non-blocking open in std
-    // to close it with. Named rather than papered over: the store is the
-    // caller's own home, so the exposure is a machine already writing there.
     let Some((regular, size)) = file_facts(path) else {
         return false;
     };
@@ -954,12 +725,9 @@ fn file_contains(path: &Path, needle: &[u8]) -> bool {
     let Ok(file) = opened else {
         return false;
     };
-    // THE STAT IS NOT THE BOUND. A conversation is a LIVE database: it can grow
-    // between the stat above and the last read below, and a file that measured
-    // 1 KB can feed this loop for as long as agy keeps writing. `take` is the
-    // bound that holds whatever the file does — one byte past the cap, so
-    // exceeding it is observable rather than indistinguishable from a file that
-    // ends exactly there.
+    // THE STAT IS NOT THE BOUND. A conversation is a LIVE database and can
+    // grow between the stat above and the last read below, so `take` is the
+    // bound that holds whatever the file does.
     match scan_stream(file.take(AGY_SCAN_CAP.saturating_add(1)), needle) {
         Scan::Found => true,
         Scan::Absent => false,
@@ -983,11 +751,6 @@ enum Scan {
 
 /// Search `reader` for `needle` in chunks, spending at most [`AGY_SCAN_CAP`]
 /// bytes.
-///
-/// Takes a READER rather than a path so the budget is provable without a file
-/// that lies about its length: an endless stream is the shape a growing
-/// database presents, and the only honest way to show the loop ends is to run
-/// it against one.
 fn scan_stream<R: std::io::Read>(mut reader: R, needle: &[u8]) -> Scan {
     let Some(overlap) = needle.len().checked_sub(1) else {
         return Scan::Absent;
@@ -1017,8 +780,7 @@ fn scan_stream<R: std::io::Read>(mut reader: R, needle: &[u8]) -> Scan {
             return Scan::Found;
         }
         // Carry the tail forward: the next chunk is read BEHIND it, so a needle
-        // straddling the seam sits contiguously in the next pass. A read too
-        // short to fill even the carry is left to accumulate instead.
+        // straddling the seam sits contiguously in the next pass.
         if filled > overlap {
             buffer.copy_within(filled - overlap..filled, 0);
             filled = overlap;
@@ -1027,11 +789,6 @@ fn scan_stream<R: std::io::Read>(mut reader: R, needle: &[u8]) -> Scan {
 }
 
 /// Say that a conversation was too big to search, and where.
-///
-/// Visible where a look can still be retried: the watchdog's recovery runs in
-/// the daemon, whose stderr reaches its pane. The launch's own capture is
-/// detached with its streams dropped, so there it is silent — said plainly
-/// rather than pretended otherwise.
 fn skipped(path: &Path, size: u64) {
     eprintln!(
         "ae: agy capture skipped {} ({size} bytes over the {AGY_SCAN_CAP}-byte scan cap)",
@@ -1041,9 +798,6 @@ fn skipped(path: &Path, size: u64) {
 
 /// Whether `path` is a regular file, and how long it is — from ONE stat, and
 /// without opening the node.
-///
-/// The two facts travel together because both gate the same open and a second
-/// stat would be a second answer to race against.
 fn file_facts(path: &Path) -> Option<(bool, u64)> {
     #[allow(
         clippy::disallowed_methods,
@@ -1059,9 +813,6 @@ fn file_facts(path: &Path) -> Option<(bool, u64)> {
 // ---------------------------------------------------------------------------
 
 /// Poll `opencode session list` for a session in this working directory.
-///
-/// Looks first and sleeps between attempts, for the same reason as gemini's
-/// scan: the `updated` filter makes an immediate look safe.
 fn capture_opencode(facts: &Facts) -> Option<String> {
     for attempt in 0..POLLS {
         if attempt > 0 {
@@ -1079,9 +830,7 @@ fn scan_opencode(facts: &Facts) -> Option<String> {
     if facts.work_dir.is_empty() {
         return None;
     }
-    // opencode timestamps are MILLISECONDS. Saturating, because a meta holding
-    // a nonsense epoch must not overflow into a negative lower bound that
-    // matches everything.
+    // opencode timestamps are MILLISECONDS.
     let since = facts.launch_time.saturating_mul(1000);
     // A failed run is "no answer", never an empty one: opencode may not be
     // installed at all, which the frozen path checked with `command -v`.
@@ -1094,13 +843,6 @@ fn scan_opencode(facts: &Facts) -> Option<String> {
 
 /// The newest session in `listed` whose `directory` is `work_dir` and whose
 /// `updated` is at or after `since` (milliseconds).
-///
-/// `listed` is opencode's own `--format json`. It is split into per-session
-/// records and read field by field rather than parsed as one document, exactly
-/// as the frozen path did: the interesting keys (`id`, `directory`, `updated`)
-/// are read as the first occurrence in each record, so a nested `time.updated`
-/// is found without this code knowing opencode's schema — and a log line
-/// printed before the JSON cannot make the whole answer unreadable.
 #[must_use]
 pub(crate) fn pick_opencode_session(listed: &str, work_dir: &str, since: i64) -> Option<String> {
     let target = canonical(work_dir);
@@ -1126,10 +868,6 @@ pub(crate) fn pick_opencode_session(listed: &str, work_dir: &str, since: i64) ->
 }
 
 /// Split a JSON array of objects into its records, on the `},{` boundary.
-///
-/// Newlines are folded out first, so a pretty-printed array splits the same way
-/// a compact one does. The record text keeps its brackets and braces — nothing
-/// downstream reads them.
 fn json_records(listed: &str) -> Vec<&str> {
     let folded: String = listed
         .chars()
@@ -1180,9 +918,6 @@ fn json_records(listed: &str) -> Vec<&str> {
 
 /// Today and yesterday as `YYYY/MM/DD` in UTC — the day-partitioned layout
 /// codex uses, and the frozen `_ae_yesterday` chokepoint's whole job.
-///
-/// Yesterday is included because a launch shortly before UTC midnight writes
-/// into the previous day's directory while the capture runs in the next one.
 fn day_dirs(now: Timestamp) -> Vec<String> {
     [
         now,
@@ -1199,11 +934,6 @@ fn day_dirs(now: Timestamp) -> Vec<String> {
 }
 
 /// The candidate with the greatest mtime whose text `read` accepts.
-///
-/// Candidates older than `launch_time` are skipped before anything is read: a
-/// conversation that predates this launch is not this launch's, however well it
-/// matches. Ties keep the first in sorted order, which is the glob order the
-/// frozen loops saw.
 fn newest<F>(mut candidates: Vec<PathBuf>, launch_time: i64, read: F) -> Option<String>
 where
     F: Fn(&str) -> Option<String>,
@@ -1268,10 +998,6 @@ fn mtime(path: &Path) -> Option<i64> {
 }
 
 /// One directory spelling, canonicalised, falling back to its raw form.
-///
-/// Canonical rather than raw: a worktree reached through a symlink and the same
-/// place spelled with a trailing slash are one directory, and the frozen path
-/// ran `realpath` on both sides of every comparison for exactly that reason.
 fn canonical(path: &str) -> String {
     #[allow(
         clippy::disallowed_methods,
@@ -1293,9 +1019,6 @@ pub(crate) fn first_string_field(text: &str, key: &str) -> Option<String> {
 
 /// The first `"key": "<value>"` in `text` whose value is only hex digits and
 /// dashes — the frozen `_ae_json_first <key> '[0-9a-f-]'`.
-///
-/// The class is not decoration: it is what stops a `"id": "session_meta"` row
-/// from being read as a conversation id.
 #[must_use]
 pub(crate) fn first_hex_field(text: &str, key: &str) -> Option<String> {
     first_field(text, key, |ch| {
@@ -1325,11 +1048,6 @@ pub(crate) fn first_num_field(text: &str, key: &str) -> Option<i64> {
 }
 
 /// The shared scanner behind the two string readers.
-///
-/// It keeps looking after a rejected match, because the frozen `grep -oE`
-/// did: a pattern that fails at one occurrence of the key matches at the next,
-/// and a value outside the class is a non-match rather than an answer of
-/// "absent".
 fn first_field<F>(text: &str, key: &str, allowed: F) -> Option<String>
 where
     F: Fn(char) -> bool,
@@ -1356,8 +1074,7 @@ where
 }
 
 /// What follows a key's `:` separator, or nothing when the key is not followed
-/// by one. Blanks are spaces and tabs only — a JSON member never spans a line
-/// here, and the frozen per-line `grep` could not either.
+/// by one.
 fn separator(after: &str) -> Option<&str> {
     let rest = after.trim_start_matches([' ', '\t']);
     let rest = rest.strip_prefix(':')?;
@@ -1526,15 +1243,13 @@ mod tests {
         let logs = home.join(AGY_LOGS);
         let id = "643393ad-eb92-4b9e-ab7a-0fe7b1221fa1";
 
-        // A conversation database is `SQLite`: BINARY, and not valid UTF-8. The
-        // text reader every other scan uses answers None for it, so the byte
-        // search is the capability under test and not an implementation detail.
+        // A conversation database is `SQLite`: BINARY, and not valid UTF-8.
         write_bytes(
             &store.join(format!("{id}.db")),
             b"SQLite format 3\x00\xff\xfe AE_AGY_LAUNCH_ID=tok-1 \xc3\x28",
         );
         // Another launch's conversation, and the sidecars SQLite writes beside
-        // a live database. Neither is this seat's.
+        // a live database.
         write_bytes(
             &store.join("11111111-2222-4333-8444-555555555555.db"),
             b"\xffAE_AGY_LAUNCH_ID=tok-9",
@@ -1588,12 +1303,10 @@ mod tests {
 
     #[test]
     fn two_agy_seats_in_one_directory_stay_pending_rather_than_take_each_other_s() {
-        // THE CROSS-WIRING DEFECT, pinned. Two agy seats in one ae session share
-        // a working directory. The sibling has already written its conversation
-        // and its log; THIS seat has a token and nothing on disk yet. A chain
-        // that fell through from the token miss to the workspace search answered
-        // with the sibling's id, and the roster then pointed two agents at one
-        // transcript — which a resume makes permanent.
+        // THE CROSS-WIRING DEFECT, pinned. Two agy seats share a working
+        // directory; the sibling has a conversation on disk and this seat has
+        // only a token. A chain that fell through answered with the sibling's
+        // id, and a resume makes that permanent.
         let root = scratch("agy-siblings");
         let home = root.join("home");
         let work = root.join("project");
@@ -1645,9 +1358,7 @@ mod tests {
     #[test]
     fn a_stream_that_never_ends_is_bounded_rather_than_followed() {
         // A conversation database is LIVE, so its length at stat time is not a
-        // bound on what a read loop will be handed. The endless stream is that
-        // hazard in its purest form: without the budget this call does not
-        // return, so the test passing at all IS the assertion.
+        // bound on what a read loop will be handed.
         let marker = b"AE_AGY_LAUNCH_ID=tok-1";
         assert_eq!(
             scan_stream(std::io::repeat(0x00), marker),
@@ -1669,13 +1380,7 @@ mod tests {
     fn a_node_that_is_not_a_regular_file_is_never_opened() {
         // `open(2)` on a FIFO BLOCKS until a writer appears, and this runs in
         // the watchdog's cycle — so a named pipe called `<uuid>.db` would hang
-        // the daemon. A FIFO cannot be made here (`mkfifo(1)` needs a child
-        // process, and `std::process::Command` is a crate-wide disallowed type
-        // whose only doors are in the it-target), so the FIFO itself is pinned
-        // by `capture::an_agy_fifo_in_the_store_is_skipped_and_does_not_block`
-        // over there. What is constructible here is the rest of the class, and
-        // the guard does not distinguish between them: it opens a regular file
-        // and nothing else.
+        // the daemon.
         let root = scratch("agy-nodes");
         let marker = b"AE_AGY_LAUNCH_ID=tok-1";
 
@@ -1699,11 +1404,7 @@ mod tests {
     #[test]
     fn a_marker_lying_across_a_chunk_boundary_is_still_found_and_a_huge_file_is_skipped() {
         // The chunked scan's OWN defect class: a needle split by the seam
-        // between two reads. One offset does not prove it — a marker that lands
-        // just inside the first buffer is found by a scan with no carry at all —
-        // so the marker is walked across EVERY position that crosses the seam,
-        // and a scan that drops its overlap misses at least one of them.
-        // Verified against a deliberately broken carry before this was trusted.
+        // between two reads.
         let root = scratch("agy-chunks");
         let marker = b"AE_AGY_LAUNCH_ID=tok-1";
         let seam = marker.len() - 1 + AGY_SCAN_CHUNK;

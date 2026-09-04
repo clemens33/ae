@@ -163,17 +163,12 @@ fn an_agy_seat_captures_the_conversation_whose_database_carries_its_launch_token
         .join(".gemini")
         .join("antigravity-cli")
         .join("conversations");
-    // The conversation this launch started. Its NAME is the id — nothing is
-    // parsed out of the file — and the token sits in the injected context agy
-    // recorded. The bytes around it are not UTF-8, which is the point: a real
-    // conversation store is SQLite, and the text reader every other scan uses
-    // answers None for all of it.
+    // The conversation this launch started.
     rig.write_bytes(
         &store.join("643393ad-eb92-4b9e-ab7a-0fe7b1221fa1.db"),
         b"SQLite format 3\x00\xff\xfe\x00AE_AGY_LAUNCH_ID=tok-1\x00\xc3\x28",
     );
-    // Another conversation, newer, holding a DIFFERENT launch's token. Picking
-    // it would mean the token filter never ran.
+    // Another conversation, newer, holding a DIFFERENT launch's token.
     rig.write_bytes(
         &store.join("11111111-2222-4333-8444-555555555555.db"),
         b"\x00\xffAE_AGY_LAUNCH_ID=tok-9\x00",
@@ -203,17 +198,6 @@ fn an_agy_seat_captures_the_conversation_whose_database_carries_its_launch_token
 }
 
 /// A FIFO in the conversation store is SKIPPED, and the capture still answers.
-///
-/// `open(2)` on a named pipe blocks until a writer appears. A pipe called
-/// `<uuid>.db` reports a length of 0, so a size-only gate waves it through and
-/// the open hangs — in the launch's detached child, and worse, in the
-/// watchdog's own cycle, where one bad node stops every nudge on the machine.
-///
-/// The pipe is named to sort FIRST, so it is visited before the real
-/// conversation: if the guard were missing, this test would never reach the
-/// assertion, and its timeout would be the failure. The real conversation is
-/// there so a PASS means "skipped the pipe and carried on" rather than the
-/// weaker "found nothing", which a blocked open could also look like.
 #[test]
 fn an_agy_fifo_in_the_store_is_skipped_and_does_not_block() {
     let rig = Rig::new("agyfifo", "agy", 1);
@@ -295,8 +279,7 @@ fn an_agy_seat_with_no_token_falls_back_to_the_cli_log_for_its_own_workspace() {
 fn an_opencode_seat_captures_the_newest_session_in_its_own_directory() {
     let rig = Rig::new("opencode", "opencode", 1);
     // `updated` is milliseconds, so everything here is at or after the seat's
-    // `launch_time.main=1`. The elsewhere entry is the newest of the three:
-    // picking it would mean the directory filter never ran.
+    // `launch_time.main=1`.
     rig.fake_opencode(&format!(
         r#"[{{"id":"ses_old","directory":"{project}","time":{{"updated":2000}}}},
   {{"id":"ses_new","directory":"{project}","time":{{"updated":5000}}}},
@@ -318,8 +301,7 @@ fn an_opencode_seat_captures_the_newest_session_in_its_own_directory() {
 fn a_seat_holding_a_tool_that_needs_no_capture_is_left_alone() {
     // claude takes an ae-generated id at LAUNCH, so there is nothing to capture
     // and nothing to wait for: the child must answer immediately and touch
-    // nothing. A prepared gemini history is present to prove the arm is chosen
-    // by the SEAT's tool and not by whatever happens to be lying around.
+    // nothing.
     let rig = Rig::new("claude", "claude", 1);
     let project = rig.home.join(".gemini").join("tmp").join("digest");
     rig.write(
@@ -337,16 +319,6 @@ fn a_seat_holding_a_tool_that_needs_no_capture_is_left_alone() {
 }
 
 /// The `_register-sid` handshake, end to end through the shim it names.
-///
-/// THE LINK THAT WAS DEAD. Codex's `developer_instructions` have always told it
-/// to run `<session-dir>/_register-sid <slot>` as its first action, and the
-/// capture has always polled for `codex.<slot>.sid` — but the shim left the
-/// helper set with the `declare -f` template library and no core entry replaced
-/// it, so the instruction named a file that was not there and every codex seat
-/// fell through to the history scans below it.
-///
-/// Nothing here writes that file but the shim, and codex's history directory is
-/// empty, so the id the capture reports can have come from nowhere else.
 #[test]
 fn the_register_sid_handshake_is_the_id_the_capture_reports() {
     use super::cli::helper;
