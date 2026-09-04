@@ -70,6 +70,7 @@ pub mod config;
 pub mod deliver;
 pub mod digest;
 pub mod doctor;
+pub mod entry;
 pub mod error;
 pub mod event_text;
 pub mod events;
@@ -215,6 +216,21 @@ pub const EXIT_UNAVAILABLE: u8 = 1;
 /// # Ok::<(), ae::Error>(())
 /// ```
 pub fn run(args: &[String], out: &mut impl Write, err: &mut impl Write) -> Result<u8> {
+    // THE PREAMBLE FIRST, because it changes what the rest of the argv MEANS —
+    // an empty tail after it is a launch, not the help an empty argv gets here.
+    // Absent one, nothing below changes: every internal entry a session helper
+    // execs still parses exactly as it did.
+    if let Some(preamble) = entry::split(args) {
+        return run_entry(preamble, out, err);
+    }
+    run_dispatch(args, out, err)
+}
+
+/// The ordinary argv dispatch: [`cli::Request::parse`] and the world it needs.
+///
+/// Split out of [`run`] so the entry router can reach it for a translated argv
+/// without re-entering the preamble detection it has already answered.
+fn run_dispatch(args: &[String], out: &mut impl Write, err: &mut impl Write) -> Result<u8> {
     // Only a listing needs a source, and `next` only needs one once its argv has
     // been accepted: a refused word must not pay for a tmux scan of every
     // session before it can say so, which is what frozen's parse-then-scan order
@@ -229,6 +245,320 @@ pub fn run(args: &[String], out: &mut impl Write, err: &mut impl Write) -> Resul
         return run_with(args, Some(&world), out, err);
     }
     run_with(args, None, out, err)
+}
+
+/// `$TMUX_PANE` — the pane THIS process sits in, or `None`.
+///
+/// The one environmental fact the preamble does not carry, and it does not need
+/// to: since Z1 the core IS the entry process, so the variable tmux sets in
+/// every pane is right here. Two words consume it (`stop` and `watchdog`), both
+/// to answer "is the target the session I am running in".
+fn calling_pane_id() -> Option<String> {
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: the pane ae was invoked from is TMUX_PANE, which tmux sets in every pane's environment — see clippy.toml"
+    )]
+    let pane = std::env::var_os("TMUX_PANE");
+    pane.filter(|value| !value.is_empty())
+        .map(|value| value.to_string_lossy().into_owned())
+}
+
+/// The preamble route: what `ae` itself answers, once the wrapper has handed
+/// over the facts the core may not read for itself.
+fn run_entry(
+    parsed: std::result::Result<(entry::Preamble, Vec<String>), String>,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> Result<u8> {
+    let (preamble, argv) = match parsed {
+        Ok(pair) => pair,
+        Err(why) => {
+            writeln!(err, "{why}")?;
+            err.flush()?;
+            return Ok(entry::EXIT_USAGE);
+        }
+    };
+    let code = match entry::route(&preamble, &argv, calling_pane_id().as_deref()) {
+        entry::Route::Help => {
+            write!(out, "{}", entry::HELP)?;
+            0
+        }
+        entry::Route::Version => {
+            writeln!(out, "{}", version_line())?;
+            0
+        }
+        // STDERR and 0, as the glue had it: the text is a diagnostic, and a
+        // human who asked for it still asked correctly.
+        entry::Route::ListHelp => {
+            write!(err, "{}", entry::LIST_HELP)?;
+            0
+        }
+        entry::Route::Retired(text) => {
+            write!(err, "{text}")?;
+            entry::EXIT_USAGE
+        }
+        entry::Route::UnknownInternal(word) => {
+            writeln!(err, "ae: unknown internal command '{word}'.")?;
+            entry::EXIT_USAGE
+        }
+        entry::Route::ArchiveUsage => {
+            write!(err, "{}", entry::ARCHIVE_USAGE)?;
+            entry::EXIT_FAILED
+        }
+        entry::Route::ArchivePreview(name) => {
+            return run_archive_preview(&preamble, name.as_deref(), out, err);
+        }
+        entry::Route::Core(effective) => return run_dispatch(&effective, out, err),
+        entry::Route::Launch(user) => return run_launch(&preamble, &user, out, err),
+    };
+    out.flush()?;
+    err.flush()?;
+    Ok(code)
+}
+
+/// `ae archive preview [name]` — resolve the target, path-check it, then hand
+/// the resolved directory to the read-only tracer.
+///
+/// The NAME half is answered here because the tracer takes a directory: the
+/// grammar, the migration arm for a legacy name, the existence of the state,
+/// and the path object are four different refusals, and the tracer sees none of
+/// them.
+fn run_archive_preview(
+    preamble: &entry::Preamble,
+    name: Option<&str>,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> Result<u8> {
+    let named = name
+        .map(ToOwned::to_owned)
+        .or_else(|| current_session_name(preamble));
+    let Some(target) = named else {
+        write!(err, "{}", entry::ARCHIVE_PREVIEW_USAGE)?;
+        err.flush()?;
+        return Ok(entry::EXIT_FAILED);
+    };
+    if !session_name_usable(preamble, &target) {
+        writeln!(err, "ae: '{target}' is not a usable session name.")?;
+        err.flush()?;
+        return Ok(entry::EXIT_FAILED);
+    }
+    let dir = preamble.sessions().join(&target);
+    if !lifecycle::dir_exists(&dir) {
+        writeln!(err, "ae: no session state for '{target}'.")?;
+        err.flush()?;
+        return Ok(entry::EXIT_FAILED);
+    }
+    if !session_path_is_safe(preamble, &target) {
+        write_unsafe_path(&dir, err)?;
+        err.flush()?;
+        return Ok(entry::EXIT_FAILED);
+    }
+    let code = archive::preview(&dir, out, err)?;
+    out.flush()?;
+    err.flush()?;
+    Ok(code)
+}
+
+/// The launch fall-through: the prelude the glue ran, then `_launch`.
+///
+/// THE ORDER IS THE CONTRACT, and each step is where it is for a reason:
+///
+/// 1. the dependency gate, which takes the one fact the core cannot see —
+///    which bash ran the wrapper;
+/// 2. the default config, the FIRST WRITE of the run and deliberately after
+///    the gate: a launch cannot proceed without a config, but an install that
+///    cannot serve a launch must not leave one behind;
+/// 3. the PATH OBJECT at the named session, ahead of every side effect — the
+///    grammar says nothing about what is on disk, and a symlink named
+///    `valid-name` satisfies every naming rule while the reuse paths and the
+///    rollback's own removal run straight through it;
+/// 4. the launch itself, the user's argv handed over verbatim.
+fn run_launch(
+    preamble: &entry::Preamble,
+    user: &[String],
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> Result<u8> {
+    let deps = doctor::check_deps(&preamble.check_deps_argv(), err)?;
+    if deps != 0 {
+        err.flush()?;
+        return Ok(deps);
+    }
+    if let Some(global) = preamble.global.as_ref()
+        && let Some(code) = seed_default_config(global, err)?
+    {
+        err.flush()?;
+        return Ok(code);
+    }
+    // The NAME grammar is the launch's own and answers first, so a traversal
+    // name is refused as a name rather than as a path object and the message
+    // says what is actually wrong. Only a name ae would otherwise USE reaches
+    // the path question.
+    let hint = entry::session_hint(user);
+    if !hint.is_empty()
+        && session_name_usable(preamble, &hint)
+        && !session_path_is_safe(preamble, &hint)
+    {
+        write_unsafe_path(&preamble.sessions().join(&hint), err)?;
+        err.flush()?;
+        return Ok(entry::EXIT_FAILED);
+    }
+    run_dispatch(&preamble.launch_argv(user), out, err)
+}
+
+/// The two lines an unsafe session path is refused with.
+fn write_unsafe_path(path: &std::path::Path, err: &mut impl Write) -> Result<()> {
+    writeln!(
+        err,
+        "Error: {} is not a plain directory (symlink, file, or outside the sessions root).",
+        path.display()
+    )?;
+    writeln!(
+        err,
+        "       Refusing to use it — a symlinked session directory is an escape wearing a valid name."
+    )?;
+    Ok(())
+}
+
+/// The session the CALLER is sitting in, or `None`.
+///
+/// Only asked when the wrapper proved we are genuinely inside a pane: `$TMUX`
+/// is an ordinary variable a GUI terminal inherits, and answering for the
+/// ORIGINAL pane is how a nameless command used to target someone else's
+/// session. The answer must also name real ae state — a plain tmux session that
+/// ae never created is not one of ours.
+fn current_session_name(preamble: &entry::Preamble) -> Option<String> {
+    if !preamble.inside_tmux {
+        return None;
+    }
+    let server =
+        inventory::ServerId::from_typed_flags(&preamble.server_kind, &preamble.server_value)
+            .ok()?;
+    let name = transport::observe_current_session(&server)?;
+    lifecycle::dir_exists(&preamble.sessions().join(&name)).then_some(name)
+}
+
+/// Whether `name` may be used for an EXISTING session — the migration shape.
+///
+/// Anything the grammar accepts, or a legacy name that IS ALREADY a real
+/// physical direct-child directory. Sessions created before the grammar existed
+/// stay usable; traversal is accepted by neither arm, because the second
+/// requires a direct child that is a directory in its own right rather than a
+/// symlink pointing anywhere.
+fn session_name_usable(preamble: &entry::Preamble, name: &str) -> bool {
+    if session_launch::name::is_session_name(name) {
+        return true;
+    }
+    entry::is_direct_child_name(name)
+        && lstat_kind(&preamble.sessions().join(name)) == Some(PathKind::Directory)
+}
+
+/// Whether the on-disk object at `<sessions>/<name>` is safe to treat as that
+/// session's directory — a PATH question, answered INDEPENDENTLY of the name.
+///
+/// That independence is the point: folding it into the name check did not work,
+/// because the name check RETURNS on a grammar accept, so every grammar-valid
+/// symlink skipped it completely.
+fn session_path_is_safe(preamble: &entry::Preamble, name: &str) -> bool {
+    if !entry::is_direct_child_name(name) {
+        return false;
+    }
+    // ABSENT is safe (nothing to escape through yet); a symlink of ANY kind is
+    // not, DANGLING INCLUDED — which is why this is an lstat and not an
+    // existence test. `-e` reads a dangling link as absent and waves it
+    // through.
+    match lstat_kind(&preamble.sessions().join(name)) {
+        None | Some(PathKind::Directory) => true,
+        Some(PathKind::Symlink | PathKind::Other) => false,
+    }
+}
+
+/// What an lstat says a path IS — `None` for a path that is not there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PathKind {
+    /// A symlink, dangling or not. Classified before anything else.
+    Symlink,
+    /// A real directory.
+    Directory,
+    /// A file, socket, device — anything else.
+    Other,
+}
+
+/// `lstat(2)`: classifies the node itself, never what it points at.
+fn lstat_kind(path: &std::path::Path) -> Option<PathKind> {
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: the session-path guard must see a DANGLING symlink as standing, which only lstat does — see clippy.toml"
+    )]
+    let probe = std::fs::symlink_metadata(path);
+    let meta = probe.ok()?;
+    if meta.file_type().is_symlink() {
+        return Some(PathKind::Symlink);
+    }
+    Some(if meta.is_dir() {
+        PathKind::Directory
+    } else {
+        PathKind::Other
+    })
+}
+
+/// Write the default config, once, if there is none.
+///
+/// `Ok(None)` is "nothing to do, or done"; `Ok(Some(code))` is a refusal the
+/// caller returns. Published temp-then-rename in the destination's own
+/// directory, so a writer that dies mid-write leaves no half-written config for
+/// the very next step to parse.
+fn seed_default_config(path: &std::path::Path, err: &mut impl Write) -> Result<Option<u8>> {
+    if regular_file(path) {
+        return Ok(None);
+    }
+    let Some(file_name) = path.file_name() else {
+        writeln!(err, "ae: {} is not a config file path.", path.display())?;
+        return Ok(Some(entry::EXIT_FAILED));
+    };
+    if let Some(parent) = path.parent()
+        && let Err(why) = std::fs::create_dir_all(parent)
+    {
+        writeln!(err, "ae: could not create {} ({why}).", parent.display())?;
+        return Ok(Some(entry::EXIT_FAILED));
+    }
+    let mut temp_name = file_name.to_os_string();
+    temp_name.push(format!(".tmp.{}", std::process::id()));
+    let temp = path.with_file_name(temp_name);
+    let written = std::fs::File::create(&temp)
+        .and_then(|mut file| file.write_all(entry::DEFAULT_CONFIG.as_bytes()));
+    if let Err(why) = written {
+        let _ = std::fs::remove_file(&temp);
+        writeln!(
+            err,
+            "ae: could not write the default config at {} ({why}).",
+            path.display()
+        )?;
+        return Ok(Some(entry::EXIT_FAILED));
+    }
+    if let Err(why) = std::fs::rename(&temp, path) {
+        let _ = std::fs::remove_file(&temp);
+        writeln!(
+            err,
+            "ae: could not publish the default config at {} ({why}).",
+            path.display()
+        )?;
+        return Ok(Some(entry::EXIT_FAILED));
+    }
+    // STDERR, not stdout: the launch's stdout belongs to the session it is
+    // about to become.
+    writeln!(err, "Created default config at {}", path.display())?;
+    Ok(None)
+}
+
+/// Whether `path` is a regular file — the frozen `[[ -f ]]`, symlinks followed.
+fn regular_file(path: &std::path::Path) -> bool {
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: the first-run config seeding asks whether a config is already there — see clippy.toml"
+    )]
+    let probe = std::fs::metadata(path);
+    probe.is_ok_and(|meta| meta.is_file())
 }
 
 /// The `_say` arm: the frozen `helper_say_main`.

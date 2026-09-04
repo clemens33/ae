@@ -14,6 +14,7 @@ mod compact;
 mod daemons;
 mod deliver;
 mod doctor;
+mod entry;
 mod fixtures;
 mod git;
 mod helper_corpus;
