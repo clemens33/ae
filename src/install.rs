@@ -794,7 +794,7 @@ fn publish_version_dir(bundle: &Bundle, version_dir: &Path) -> Result<(), String
             stage.display()
         )
     })?;
-    let staged = stage_members(bundle, &stage).and_then(|()| apply_modes(&stage));
+    let staged = stage_members(bundle, &stage).and_then(|()| apply_member_modes(&stage));
     if let Err(why) = staged {
         let _ = remove_private_tree(&stage);
         return Err(why);
@@ -806,7 +806,7 @@ fn publish_version_dir(bundle: &Bundle, version_dir: &Path) -> Result<(), String
             version_dir.display()
         ));
     }
-    Ok(())
+    seal_dir(version_dir)
 }
 
 /// Copy the three members into the stage.
@@ -827,6 +827,12 @@ fn stage_members(bundle: &Bundle, stage: &Path) -> Result<(), String> {
 /// The DIRECTORY is moded last: 0555 refuses an entry create, so moding it
 /// first would make the member `chmod`s fail on a fresh publish.
 fn apply_modes(dir: &Path) -> Result<(), String> {
+    apply_member_modes(dir)?;
+    seal_dir(dir)
+}
+
+/// The three members' modes, without touching the directory they sit in.
+fn apply_member_modes(dir: &Path) -> Result<(), String> {
     use std::os::unix::fs::PermissionsExt as _;
     for (name, mode) in [
         (crate::shape::CORE, MEMBER_MODE),
@@ -836,6 +842,15 @@ fn apply_modes(dir: &Path) -> Result<(), String> {
         std::fs::set_permissions(dir.join(name), std::fs::Permissions::from_mode(mode))
             .map_err(|why| format!("could not set the published mode on {name}: {why}"))?;
     }
+    Ok(())
+}
+
+/// The directory's own read-only mode: the LAST step of a publish, after the
+/// rename. macOS refuses to rename a directory it may not write (measured on
+/// the macos-15 lane: `rename` of a 0555 stage fails with EACCES even within
+/// one parent), so the stage is renamed writable and sealed in place.
+fn seal_dir(dir: &Path) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt as _;
     std::fs::set_permissions(dir, std::fs::Permissions::from_mode(MEMBER_MODE)).map_err(|why| {
         format!(
             "could not set the published mode on {}: {why}",

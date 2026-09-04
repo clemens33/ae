@@ -80,11 +80,14 @@ fn the_locked_agent_has_exactly_one_construction_site() {
     // `Agent` built anywhere is a second set of defaults — and ureq's defaults
     // are proxy-from-environment, cleartext-allowed, ten-redirects, which is
     // three ways to send a URL containing the bot token somewhere else.
-    let sites: Vec<String> = all_sources()
+    let mut sites: Vec<String> = all_sources()
         .iter()
         .filter(|(_, text)| text.contains("Agent::new_with_config"))
         .map(|(path, _)| path.rsplit('/').next().unwrap_or(path).to_owned())
         .collect();
+    // Sorted: `read_dir` order is a filesystem fact, not a contract (measured:
+    // the two lanes disagree on it).
+    sites.sort();
     // TWO SITES SINCE SLICE Z4, and the second is deliberate rather than a
     // second set of defaults: `src/upgrade.rs` builds an agent with the same
     // lock except for `max_redirects`, because a GitHub release download
@@ -95,7 +98,7 @@ fn the_locked_agent_has_exactly_one_construction_site() {
     // exempted: a third agent is a line in a review, not a diff nobody read.
     assert_eq!(
         sites,
-        vec!["upgrade.rs", "telegram.rs"],
+        vec!["telegram.rs", "upgrade.rs"],
         "the locked ureq Agent is built somewhere this test does not name"
     );
 
