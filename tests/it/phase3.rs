@@ -1,9 +1,7 @@
 //! Phase 3 end to end: one classified snapshot in, the surfaces an operator or
 //! a consumer sees out.
 //!
-//! Gate: the retired phase-3 gate document, blob
-//! `8cccbe44787d4ea6007ad9cf9d1cc83a3d03936c` — fifteen criteria. Each test
-//! names the one it answers.
+//! Fifteen criteria, one per test; each test names the one it answers.
 
 #![allow(
     clippy::disallowed_methods,
@@ -1665,14 +1663,12 @@ fn is_product_line(file: &str, line: usize) -> bool {
     let Ok(text) = std::fs::read_to_string(&path) else {
         return false;
     };
-    // THE CUT IS THE TEST MODULE, NOT THE FIRST `#[cfg(test)]`, and the
-    // difference is a hole this tripwire used to have. A module that gates an
-    // individual ITEM on `#[cfg(test)]` — `src/telegram.rs` gates its loopback
-    // egress seam that way, near the top of the file — put every line after that
-    // item on the test side of an "up to the first marker" cut, and the guard
-    // then inventoried the first eighty lines of the file and reported the rest
-    // as tests. A new product door below it was invisible, which is the one
-    // thing this test exists to prevent.
+    // THE CUT IS THE TEST MODULE, NOT THE FIRST `#[cfg(test)]`. A module that
+    // gates an individual ITEM on `#[cfg(test)]` — `src/telegram.rs` gates its
+    // loopback egress seam that way, near the top of the file — would put every
+    // line after that item on the test side of an "up to the first marker" cut,
+    // hiding every product door below it. That is the one thing this test
+    // exists to prevent.
     let Some(module) = text.find("\nmod tests {") else {
         return true;
     };
@@ -1716,13 +1712,13 @@ fn criterion_3_the_places_this_crate_can_read_the_world_are_the_inventoried_ones
             // meta/memo reads, the messages/*.txt selection glob, and the
             // fingerprint/size stats.
             "src/archive.rs".to_owned(),
-            // The archive PUBLISHER's reads (P3.3): the coherent snapshot of
+            // The archive PUBLISHER's reads: the coherent snapshot of
             // meta/memo/events under their locks, the messages/*.txt staging
             // classification, the staged-tree validation stats, and the
-            // directory `fsync` that makes the rename durable. The doors moved
-            // here in P3.4 into the ONE shared archive store that publish,
-            // inherit (`--from`) and purge all read the world through — so this
-            // single file, not three, is the inventoried reader for all of them.
+            // directory `fsync` that makes the rename durable. This is the ONE
+            // shared archive store that publish, inherit (`--from`) and purge
+            // all read the world through — so this single file, not three, is
+            // the inventoried reader for all of them.
             "src/archive/store.rs".to_owned(),
             // The OPAQUE event-container read and existence test, shared by the
             // `requests` and `events-tail` surfaces. One file rather than two:
@@ -1730,20 +1726,20 @@ fn criterion_3_the_places_this_crate_can_read_the_world_are_the_inventoried_ones
             // read sits with the framing in `event_text` and neither surface
             // module opens anything itself.
             "src/compact.rs".to_owned(),
-            // The minimal `[workspace]` config reader (P3.7a): the INI read
+            // The minimal `[workspace]` config reader: the INI read
             // behind compact's roster and purge-policy resolution.
             "src/config.rs".to_owned(),
             // `ae doctor`'s ONE own door: the `command -v` resolution of the
             // hard dependencies — the `PATH` variable, and the executable bit
             // of each candidate.
             "src/doctor.rs".to_owned(),
-            // THE ENTRY'S ENVIRONMENT DOORS (slice Z3): `HOME`, `PWD`,
+            // THE ENTRY'S ENVIRONMENT DOORS: `HOME`, `PWD`,
             // `AE_HOME`, `CONFIG_FILE`, the `AE_TMUX_SERVER` pair,
             // `AE_NO_AUTOSTART`, `TMUX`, `TMUX_PANE`, the `<cwd>/.ae/config`
             "src/doors.rs".to_owned(),
             "src/event_text.rs".to_owned(),
             "src/events.rs".to_owned(),
-            // THE INSTALLER'S OWN DOORS (slice Z4): the bundle members read to
+            // THE INSTALLER'S OWN DOORS: the bundle members read to
             // be hashed, the `lstat` that classifies every member and every
             // publication destination WITHOUT following a link, the journal
             // read that a rollback replays, and the enumeration of a
@@ -1788,23 +1784,23 @@ fn criterion_3_the_places_this_crate_can_read_the_world_are_the_inventoried_ones
             // `meta.rs`'s and `config.rs`'s inventoried doors, not new ones
             // here. Registered deliberately.
             "src/session_launch.rs".to_owned(),
-            // The post-launch session-id capture's reads (B move 3, widened to
-            // every capture tool): the `codex.<slot>.sid` file codex's own
+            // The post-launch session-id capture's reads, for every capture
+            // tool: the `codex.<slot>.sid` file codex's own
             // `_register-sid` wrote, the day-partitioned `~/.codex/sessions`
             "src/session_launch/capture.rs".to_owned(),
-            // THE INSTALL SELF-VALIDATION (slice Z3): the three `lstat`s that
+            // THE INSTALL SELF-VALIDATION: the three `lstat`s that
             // prove the version directory's members are regular non-symlink
             // files, and the manifest read that proves the directory is the one
             // `install` published. `symlink_metadata`, never `metadata` — a
             // member that is a link to a mutable file outside the immutable
             // directory passes every follow-test and is then EXECUTED as ours.
             "src/shape.rs".to_owned(),
-            // The LOCAL-mode teardown's own reads (P3.5): the `lstat` that
+            // The LOCAL-mode teardown's own reads: the `lstat` that
             // proves the session dir is a real direct child and never a link,
             // and the sessions-root `fsync` that makes the rename-to-tombstone
             // and its removal durable.
             "src/teardown.rs".to_owned(),
-            // The outbound Telegram bridge's own reads (P4.3): the event log's
+            // The outbound Telegram bridge's own reads: the event log's
             // identity and length, the log body read from the cursor, the
             // durable cursor itself, and the two reads behind the credentials —
             // the INI config and the bot-token file. Registered deliberately,
@@ -1822,10 +1818,8 @@ fn criterion_3_the_places_this_crate_can_read_the_world_are_the_inventoried_ones
             // custody rules. Registered deliberately: a command that can start a
             // daemon holding a secret is not one to gain a quiet new read.
             "src/telegram_lifecycle.rs".to_owned(),
-            // `ae upgrade` READS NOTHING since slice Z4, and its absence from
-            // this list is the change.
             "src/watchdog_daemon.rs".to_owned(),
-            // The watchdog PANE's own pidfile read (A.3): the ownership check
+            // The watchdog PANE's own pidfile read: the ownership check
             // that decides whether this daemon may still remove its own
             // registration.
             "src/watchdog_glue.rs".to_owned(),

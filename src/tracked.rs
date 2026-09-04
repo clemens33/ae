@@ -1,12 +1,10 @@
-//! Tracked requests — the `ask` and `review` helpers (P2.5a, the request-write
-//! tracer).
+//! Tracked requests — the `ask` and `review` helpers.
 //!
-//! What the frozen `ae_tracked_send` does, kept exactly, up to the paste:
-//! the body is refused when blank; the caller is `AE_SENDER_OVERRIDE` or the
-//! pane's own stamp (no identity at all falls back to a plain `send`, with the
-//! frozen warning); an external sink (`telegram:*`, `discord:*`,
-//! `ae:compact:*`) is event-only; any other target is resolved the way
-//! `ae_resolve` resolves it — `%pane` passthrough, `@session:agent` across
+//! Up to the paste: the body is refused when blank; the caller is
+//! `AE_SENDER_OVERRIDE` or the pane's own stamp (no identity at all falls back
+//! to a plain `send`, with a warning); an external sink (`telegram:*`,
+//! `discord:*`, `ae:compact:*`) is event-only; any other target is resolved —
+//! `%pane` passthrough, `@session:agent` across
 //! sessions, exact `alias:name`, else a unique alias, else a unique bare name;
 //! a request id is minted (`<prefix>-<YYYYMMDDTHHMMSSZ>-<8 hex>`); the message
 //! is composed with the header, the optional review instructions and the
@@ -33,14 +31,14 @@ pub enum Kind {
     Review,
 }
 
-/// The frozen `ask` usage text.
+/// The `ask` usage text.
 pub const ASK_USAGE: &str = "Usage: ask <agent-name|pane-id|@session:agent> <question>\n  Like send, but embeds your identity and reply command in the message.\n";
 
-/// The frozen `review` usage text.
+/// The `review` usage text.
 pub const REVIEW_USAGE: &str = "Usage: review <agent-name|pane-id|@session:agent> <request>\n  Ask another agent for a critical review and require a reply via send.\n";
 
-/// The frozen `REVIEW_INSTRUCTIONS` literal — its continuation lines carry
-/// the four spaces of source indentation the bash literal carries.
+/// The review instructions — its continuation lines carry four spaces of
+/// indentation.
 pub const REVIEW_INSTRUCTIONS: &str = "Review instructions:\n    - Focus on correctness, regressions, edge cases, missing tests, and callers/docs needing updates.\n    - Findings first. Keep summaries brief.\n    - Use severity labels: BLOCKER, IMPORTANT, NIT.\n    - If no issues are found, say \"No findings\" explicitly.";
 
 impl Kind {
@@ -136,7 +134,7 @@ pub fn is_blank(body: &str) -> bool {
         .all(|c| c.is_ascii_whitespace() || c == '\u{b}')
 }
 
-/// The frozen refusal for a blank body — two lines, stderr, exit
+/// The refusal for a blank body — two lines, stderr, exit
 /// [`EXIT_FAILED`], nothing sent.
 #[must_use]
 pub fn refusal(action: &str) -> String {
@@ -145,11 +143,11 @@ pub fn refusal(action: &str) -> String {
     )
 }
 
-/// The frozen warning when the caller has no identity, before the fallback
+/// The warning when the caller has no identity, before the fallback
 /// to a plain `send`.
 pub const NO_IDENTITY_WARNING: &str = "Warning: could not detect caller identity (no @ae_agent on this pane). Using 'send' instead.\n";
 
-/// Whether `target` is an event-only sink the frozen helper never resolves:
+/// Whether `target` is an event-only sink that is never resolved:
 /// `telegram:*`, `discord:*` or exactly the `ae:compact:` prefix — a
 /// whitelist, because the failure this family can produce is a silent no-op
 /// delivery, so an `ae:`-shaped typo must still fail loudly.
@@ -192,8 +190,7 @@ pub fn reply_command(dir: &Path, target_name: &str, req_id: &str, label: &str) -
     )
 }
 
-/// The delivered text, before the provenance envelope the frozen `send` body
-/// prepends: `<header> <id> from <sender>: <body>`, the instructions block
+/// The delivered text, before the provenance envelope `send` prepends: `<header> <id> from <sender>: <body>`, the instructions block
 /// for a review, and the REQUIRED footer.
 ///
 /// ```
@@ -221,9 +218,9 @@ pub fn compose(kind: Kind, req_id: &str, sender: &str, body: &str, reply_cmd: &s
     text
 }
 
-// ---- resolution: ae_resolve, ported --------------------------------------
+// ---- resolution -----------------------------------------------------------
 
-/// What the frozen resolver leaves in `AE_RESOLVED_*`.
+/// What the resolver produces.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Resolved {
     /// The pane id.
@@ -237,7 +234,7 @@ pub struct Resolved {
     pub session: String,
 }
 
-/// Why a target did not resolve — each with the frozen error line.
+/// Why a target did not resolve — each with its own error line.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResolveError {
     /// `@something` without a `:`.
@@ -331,12 +328,11 @@ pub fn lookup(target: &str, own_session: &str) -> Result<Lookup, ResolveError> {
             explicit: true,
         });
     }
-    // Identity v2 makes a stamp the BARE NAME, and `_validate_agent_name`
-    // forbids a `:` inside one — so `<session>:<name>` is free to mean across
-    // sessions without the `@`, unambiguously, and `aedev:lead` addresses the
-    // same pane `@aedev:lead` does. The consequence is deliberate and is the
-    // point: `fable5:lead` is now a session named `fable5`, not an alias, so it
-    // no longer reaches a pane stamped `lead`.
+    // A stamp is the BARE NAME and the agent-name grammar forbids a `:` inside
+    // one — so `<session>:<name>` means across sessions without the `@`,
+    // unambiguously, and `aedev:lead` addresses the same pane `@aedev:lead`
+    // does. `fable5:lead` is therefore a session named `fable5`, and does not
+    // reach a pane stamped `lead`.
     if let Some((session, name)) = target.split_once(':')
         && !session.is_empty()
         && !name.is_empty()
@@ -391,8 +387,8 @@ pub fn pick<'a>(
 /// # Errors
 ///
 /// [`ResolveError`] — see its variants. A pane named by id always resolves
-/// (the frozen helper returns 0 for one, and `send` fails later if it is not
-/// there); its stamps are simply empty when they cannot be read.
+/// (`send` fails later if it is not there); its stamps are simply empty when
+/// they cannot be read.
 pub fn resolve(target: &str, own_session: &str, dir: &Path) -> Result<Resolved, ResolveError> {
     resolve_on(target, own_session, dir).map(|(resolved, _)| resolved)
 }
@@ -412,8 +408,8 @@ pub fn resolve_on(
             // A raw pane id is an unambiguous address on its own server, so there
             // is nothing to enumerate and no name to collide: the recorded server
             // only lets its stamps be read, and an unusable one leaves them empty
-            // (the frozen "stamps are simply empty when they cannot be read")
-            // rather than refusing. No mis-route is possible, so this never fails.
+            // (stamps are simply empty when they cannot be read) rather than
+            // refusing. No mis-route is possible, so this never fails.
             let server = pane_server(dir);
             let observed = transport::observe_viewer(&server, &pane).unwrap_or_default();
             let agent = match (observed.agent, observed.session) {
@@ -634,7 +630,7 @@ pub fn run(
         return Ok(EXIT_FAILED);
     }
     let Some(sender) = sender else {
-        // The frozen fallback: a plain send, which writes its own event.
+        // The fallback: a plain send, which writes its own event.
         let helper = dir.join(SEND_HELPER);
         write!(err, "{NO_IDENTITY_WARNING}")?;
         let delivery = transport::deliver(&helper, &parsed.target, &parsed.body, &[]);
@@ -643,8 +639,8 @@ pub fn run(
     };
     let req_id = request_id(kind.id_prefix(), now, entropy);
     if is_external(&parsed.target) {
-        // An event-only sink: the frozen send emits and exits, pasting nothing
-        // and storing nothing.
+        // An event-only sink: emit and exit, pasting nothing and storing
+        // nothing.
         let line = event_line(&EventFields {
             ts: now,
             actor: &sender.display,

@@ -1,11 +1,9 @@
 //! The launch-command builders: what a pane is told to run, and the
 //! re-runnable script that runs it.
 //!
-//! Ported from `ae`'s `inject_session_id`, `inject_ae_context`,
-//! `initial_prompt_for_cmd`, `build_launch_command`, `launch_rerun_command`,
-//! `_emit_launch_script` and `write_launch_script` — the composition half of a
-//! spawn (and, when the launch move lands, of a launch). Every decision below
-//! is the frozen one; the reasoning is kept at the site that needs it.
+//! The composition half of a spawn or a launch: the session-id injection, the
+//! context injection, the initial user turn, the launch command and the
+//! re-runnable script. The reasoning is kept at the site that needs it.
 
 use std::path::{Path, PathBuf};
 
@@ -28,13 +26,12 @@ pub fn shell_quote(text: &str) -> String {
 }
 
 /// Escape a value about to be interpolated into a SINGLE-QUOTED shell word
-/// that the caller closes itself — the frozen `${ctx//\'/\'\\\'\'}`.
+/// that the caller closes itself.
 fn single_quote_escape(text: &str) -> String {
     text.replace('\'', "'\\''")
 }
 
-/// Does this tool need a post-launch capture handshake — the frozen
-/// `tool_kind_supports_launch_id`?
+/// Does this tool need a post-launch capture handshake?
 #[must_use]
 pub const fn supports_launch_id(tool: ToolKind) -> bool {
     matches!(
@@ -49,11 +46,10 @@ pub const fn takes_launch_session_id(tool: ToolKind) -> bool {
     matches!(tool, ToolKind::Claude | ToolKind::Grok)
 }
 
-/// The absent session id, as the frozen roster spells it.
+/// The absent session id, as the roster spells it.
 pub const PENDING: &str = "pending";
 
-/// A fresh RFC 4122 version-4 UUID, lowercase and hyphenated — the frozen
-/// `gen_uuid`.
+/// A fresh RFC 4122 version-4 UUID, lowercase and hyphenated.
 #[must_use]
 pub fn generate_uuid() -> String {
     use std::hash::{BuildHasher, RandomState};
@@ -79,14 +75,13 @@ pub fn generate_uuid() -> String {
 
 // ---- flag stripping -------------------------------------------------------
 
-/// Split on runs of spaces, dropping empties — what the frozen strippers'
-/// trailing `s/ +/ /g; s/^ //; s/ $//` collapses to.
+/// Split on runs of spaces, dropping empties.
 fn words(cmd: &str) -> Vec<&str> {
     cmd.split(' ').filter(|word| !word.is_empty()).collect()
 }
 
-/// Strip `--session-id`, `--resume` and `--continue` — the frozen
-/// `strip_session_flags`, whole-token so `--continue-on-error` survives.
+/// Strip `--session-id`, `--resume` and `--continue`, whole-token so
+/// `--continue-on-error` survives.
 #[must_use]
 pub fn strip_session_flags(cmd: &str) -> String {
     let words = words(cmd);
@@ -110,7 +105,7 @@ pub fn strip_session_flags(cmd: &str) -> String {
     kept.join(" ")
 }
 
-/// Strip grok's session surface — the frozen `strip_grok_session_flags`.
+/// Strip grok's session surface.
 #[must_use]
 pub fn strip_grok_session_flags(cmd: &str) -> String {
     let words = words(cmd);
@@ -209,8 +204,7 @@ pub fn strip_agy_session_flags(cmd: &str) -> String {
 
 // ---- session id injection -------------------------------------------------
 
-/// Put ae's generated session id on the command — the frozen
-/// `inject_session_id`.
+/// Put ae's generated session id on the command.
 #[must_use]
 pub fn inject_session_id(cmd: &str, session_id: &str) -> String {
     let session_id = if session_id == PENDING {
@@ -370,8 +364,7 @@ pub fn inject_ae_context(
 const WAIT_SUFFIX: &str =
     " --- IMPORTANT: This is context only. Do NOT act on it. Wait for the user to give you a task.";
 
-/// Publish opencode's context pair and return the config path — the frozen
-/// `_opencode_context_files`.
+/// Publish opencode's context pair and return the config path.
 ///
 /// # Errors
 ///
@@ -389,7 +382,7 @@ pub fn opencode_context_files(meta_dir: &Path, slot: &str, ctx: &str) -> Result<
     Ok(cfg_file)
 }
 
-/// The frozen `${slot//[^A-Za-z0-9._-]/_}` — a slot is a filename component.
+/// `[^A-Za-z0-9._-]` becomes `_`: a slot is a filename component.
 #[must_use]
 pub fn safe_slot(slot: &str) -> String {
     slot.chars()
@@ -433,7 +426,7 @@ fn publish(dest: &Path, bytes: &[u8], mode: u32) -> Result<(), String> {
 // ---- the initial user turn ------------------------------------------------
 
 /// The first USER message a tool needs, for tools whose context does not ride
-/// a system-prompt channel — the frozen `initial_prompt_for_cmd`, reworded.
+/// a system-prompt channel.
 ///
 /// **codex needs a turn, and the turn must be PASSIVE.** Measured against
 /// codex-cli 0.153.2 on 2026-09-04, launched with ae's exact argv shape but no
@@ -444,12 +437,11 @@ fn publish(dest: &Path, bytes: &[u8], mode: u32) -> Result<(), String> {
 /// first USER turn is what makes the rollout exist; that is why this turn is
 /// sent, and why it cannot simply be dropped.
 ///
-/// The wording is the other half of the measurement. It used to be the bare
-/// word `Go` — an imperative with no object, which codex obeyed by inventing
-/// work for itself. So the turn now names the ONE action it exists to cause,
-/// the `_register-sid` handshake, and then tells the agent to wait. It is the
-/// user-turn twin of `WAIT_SUFFIX`, which does the same job for the tools whose
-/// whole context arrives as a turn.
+/// The wording is the other half of the measurement. An imperative with no
+/// object — a bare `Go` — makes codex invent work for itself, so the turn names
+/// the ONE action it exists to cause, the `_register-sid` handshake, and then
+/// tells the agent to wait. It is the user-turn twin of `WAIT_SUFFIX`, which
+/// does the same job for the tools whose whole context arrives as a turn.
 ///
 /// The command is spelled out here rather than referred to, because a turn that
 /// points at the system prompt is a turn the agent has to go looking for.
@@ -498,8 +490,7 @@ pub fn id_probeable(id: &str) -> bool {
 
 // ---- the launch command ---------------------------------------------------
 
-/// The command a pane runs to start its agent — the frozen
-/// `build_launch_command`, minus the shell it no longer has.
+/// The command a pane runs to start its agent.
 #[must_use]
 pub fn build_launch_command(cmd: &str, prompt: &str) -> String {
     // opencode's resume rides its own flag surface and it has no inline first
