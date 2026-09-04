@@ -398,10 +398,11 @@ pub fn ignored(shape: &Shape) -> Vec<String> {
     let mut note = |name: &str, value: &std::ffi::OsStr| {
         out.push(format!("{name}={}", value.to_string_lossy()));
     };
-    if let Some(value) = read("AE_HOME").filter(|value| Path::new(value) != home) {
+    if let Some(value) = read("AE_HOME").filter(|value| !same_place(Path::new(value), home)) {
         note("AE_HOME", &value);
     }
-    if let Some(value) = read("CONFIG_FILE").filter(|value| Path::new(value) != home.join("config"))
+    if let Some(value) =
+        read("CONFIG_FILE").filter(|value| !same_place(Path::new(value), &home.join("config")))
     {
         note("CONFIG_FILE", &value);
     }
@@ -411,6 +412,47 @@ pub fn ignored(shape: &Shape) -> Vec<String> {
         }
     }
     out
+}
+
+/// Whether two paths name the same PLACE, not merely the same text.
+///
+/// The shape is positional and so is this test. `<home>` is derived from a
+/// resolved `current_exe()`, while an inherited `AE_HOME` is whatever the
+/// caller typed — and one directory reached by two names is ordinary, since
+/// `/tmp` and `/var` are `/private/...` on macOS. Comparing the spellings
+/// would report a value as IGNORED while it named the very directory in use,
+/// which is the one thing this notice must never say. A path that will not
+/// resolve falls back to its own text: somewhere that does not exist is not
+/// the state root.
+fn same_place(left: &Path, right: &Path) -> bool {
+    left == right || resolved_place(left) == resolved_place(right)
+}
+
+/// `path` with every link on the way to it resolved.
+///
+/// The path itself NEED NOT EXIST: `CONFIG_FILE` names a file an install
+/// writes on demand, so resolving only whole paths would make a missing config
+/// compare by spelling and put a spurious line in the notice. The deepest
+/// thing that does exist is the directory holding it, so that is what is
+/// resolved and the name is kept as written.
+fn resolved_place(path: &Path) -> PathBuf {
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: an aggregated notice about paths has to compare places, not spellings"
+    )]
+    let whole = std::fs::canonicalize(path);
+    if let Ok(whole) = whole {
+        return whole;
+    }
+    let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
+        return path.to_path_buf();
+    };
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: the same comparison, one directory up, for a file that does not exist yet"
+    )]
+    let holder = std::fs::canonicalize(parent);
+    holder.map_or_else(|_| path.to_path_buf(), |holder| holder.join(name))
 }
 
 /// The one line [`ignored`] is reported with, or `None` when there is nothing

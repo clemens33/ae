@@ -1077,51 +1077,19 @@ unset _cb_rc
 # improvement rather than a regression. It is recorded because a caller testing
 # for 1 would not notice the change any other way.
 
-# EVERY UNUSABLE SHAPE IS A REFUSAL. There is no bash body behind any entry point,
-# so an unusable core cannot silently do a second thing: it exits 2, says which fact
-# was wrong, and names the repair.
+# THE UNUSABLE-CORE REFUSALS — RETIRED (slice Z3). Three shapes were pinned here:
+# a core that reports no version, one that is not executable, and a RELATIVE path.
+# All three were facts about an operator INPUT — `AE_CORE_BIN` — that a wrapper
+# read, proved and then exec'd. There is no input and no wrapper: `ae` IS the
+# binary, so "the configured core is unusable" is not a state the product can be
+# in, and a stub run directly answers with the shell's 126/127, which says nothing
+# about ae. Running them anyway would pin the SHELL's behaviour under an ae label.
 #
-# THE CARRIER IS THE WRAPPER, since slice Z1. The per-call gate that read a session's
-# `ae_core`/`ae_core_version` pair on every call went with the glue; what refuses now
-# is the wrapper's own binding, once per invocation, BEFORE the core is started and
-# before any side effect. Same three unusable shapes, checked at the boundary that
-# still exists — and this is the CHECKOUT arm, which is why the operator's
-# AE_CORE_BIN is the input. (The BUNDLE arm's stricter pair check, where the sibling
-# outranks every variable, is the P5 sections' subject.)
-#
-# The helpers deliberately carry no gate at all: since slice Z2 each one IS the
+# The helpers deliberately carry no gate either: since slice Z2 each one IS the
 # core, reached through a symlink the core published at its own absolute path
 # (src/session_launch/assets.rs). The binding is the LINK — baked, not re-resolved.
 # That is sound where it lands, because a published version directory is immutable,
 # so the linked path cannot become a different binary under a live session.
-_cb_refuse() { # <expected-reason-fragment> <core-path>
-    local frag="$1" core="$2" rc=0
-    env "$core" ls >"$_cb_root/out" 2>"$_cb_root/err" || rc=$?
-    printf 'rc=%s reason=%s repair=%s' "$rc" \
-        "$(grep -c -- "$frag" "$_cb_root/err" | tr -d '[:space:]')" \
-        "$(grep -c "just install" "$_cb_root/err" | tr -d '[:space:]')"
-}
-
-# NEGATIVE 1 — present, executable, but it reports NO VERSION. Same path, same
-# permissions: the only changed fact is what `--version` prints.
-printf '#!/bin/sh\nexit 0\n' >"$_cb_root/mute-core" && chmod 0755 "$_cb_root/mute-core"
-assert_eq "core binding: a core that reports no version refuses, and says so" "rc=2 reason=1 repair=1" \
-    "$(_cb_refuse 'reports no version' "$_cb_root/mute-core")"
-# It refuses EVERY time. The old once-per-session diagnostic existed because the
-# fallback was silent; with no fallback there is nothing to be quiet about.
-assert_eq "core binding: and it refuses again, not once per session" "rc=2 reason=1 repair=1" \
-    "$(_cb_refuse 'reports no version' "$_cb_root/mute-core")"
-
-# NEGATIVE 2 — present, reports a version, NOT executable.
-chmod 0644 "$_cb_root/mute-core"
-assert_eq "core binding: a non-executable core refuses and is reported as such" "rc=2 reason=1 repair=1" \
-    "$(_cb_refuse 'not executable' "$_cb_root/mute-core")"
-chmod 0755 "$_cb_root/mute-core"
-
-# NEGATIVE 3 — a RELATIVE path. It would resolve against whatever directory the
-# caller happened to be in, so it is refused rather than tried.
-assert_eq "core binding: a relative core path refuses before anything runs" "rc=2 reason=1 repair=1" \
-    "$(_cb_refuse 'not an absolute path' 'relative/ae')"
 
 # NEGATIVE 3 — AE_CORE set-but-empty is NOT an escape any more. It used to force
 # the bash body for one invocation; that body is gone, so the pinned core runs.
@@ -1163,42 +1131,23 @@ assert_eq "core binding: ...and the version with it, as a pair" \
 assert_eq "core binding: ...and every helper follows the new pin, not the old one" "0" \
     "$(printf '%s' "$("$_cb_meta/requests" all 2>/dev/null || true)" | command grep -c 'CORE_TOKEN_9f3a' | tr -d '[:space:]')"
 
-# Back onto the stub for the fault arms: the token is the only thing that can prove
-# a call reached the pinned core rather than fell through to something else.
+# Back onto the stub, so the sibling-session arm below starts from the state a
+# broken pin leaves behind: the token is the only thing that can prove a call
+# reached the pinned core rather than fell through to something else.
 _cb_pin_stub "$_cb_meta"
 _cb_out="$("$_cb_meta/requests" all 2>/dev/null || true)"
 assert_contains "core binding: and the core serves the call again after re-pinning" "CORE_TOKEN_9f3a" "$_cb_out"
 
-# REPAIRED, THEN BROKEN AGAIN. Every fault is reported every time — there is no
-# once-per-session marker left to swallow the second one. Only ONE fact moves
-# between these arms: whether the bound core is executable.
-chmod 0644 "$_cb_root/mute-core"
-assert_eq "core binding: a fault after repair is reported" "rc=2 reason=1 repair=1" \
-    "$(_cb_refuse 'not executable' "$_cb_root/mute-core")"
-chmod 0755 "$_cb_root/mute-core"
-_cb_out="$("$_cb_meta/requests" all 2>/dev/null || true)"
-assert_contains "core binding: the repaired core serves" "CORE_TOKEN_9f3a" "$_cb_out"
-chmod 0644 "$_cb_root/mute-core"
-assert_eq "core binding: broken again after a repair is reported afresh" "rc=2 reason=1 repair=1" \
-    "$(_cb_refuse 'not executable' "$_cb_root/mute-core")"
-assert_eq "core binding: and again on the very next call" "rc=2 reason=1 repair=1" \
-    "$(_cb_refuse 'not executable' "$_cb_root/mute-core")"
-chmod 0755 "$_cb_root/mute-core"
-
-# CONFIGURED BUT UNUSABLE AT REFRESH. Operator input that exists but cannot be bound
-# is a FAULT the operator must see — and it is now caught EARLIER than it used to be.
-# The bash refresh accepted the path, recorded it with no version, and left a session
-# that refused from every helper afterwards; the wrapper refuses the invocation
-# itself, names the fact that was wrong, and exits 2 before the core is even started.
-# Nothing on disk changes, so there is no half-bound session to explain to anyone.
-_cb_pin_before="$(grep -E '^ae_core(_version)?=' "$_cb_meta/meta" || true)"
-_cb_rc=0
-(cd "$REPO" && "$_cb_root/mute-core" doctor --refresh >"$_cb_root/refresh.log" 2>&1) || _cb_rc=$?
-assert_eq "core binding: a refresh whose core input cannot be bound REFUSES" "2" "${_cb_rc:-0}"
-assert_contains "core binding: ...and the fact that was wrong" "reports no version" "$(cat "$_cb_root/refresh.log")"
-assert_eq "core binding: ...and no session's pin was touched" "$_cb_pin_before" \
-    "$(grep -E '^ae_core(_version)?=' "$_cb_meta/meta" || true)"
-unset _cb_rc
+# THE FAULT ARMS — RETIRED (slice Z3). Five assertions went with `_cb_refuse` and
+# the `mute-core` fixture: a fault reported after a repair, the repaired core
+# serving, the same fault reported afresh twice, and a refresh whose core input
+# could not be bound refusing with exit 2 while touching no session's pin.
+# All five moved ONE fact — whether the bound core was executable — through a
+# wrapper that read `AE_CORE_BIN`, proved it, and exec'd it. There is no such
+# input and no such wrapper: `ae` IS the binary, and a binary that is not
+# executable never runs to report anything. What is left of the class is the
+# shell's own 126, which says nothing about ae, and the doctor WARN on a
+# published core that is writable, which the core's own suite pins.
 
 # THE REFRESH VISITS EVERY SESSION. A fail-closed core call EXITS rather than
 # returning — which `if fn; then` cannot catch — and a refresh that died at the
@@ -1217,66 +1166,48 @@ assert_contains "core binding: every visited session gets its own verdict" \
 assert_eq "core binding: ...and a sibling's pin moved too, not just the first session's" \
     "$_ITEST_CORE_BIN" "$(grep '^ae_core=' "$_cb_wt/meta" | cut -d= -f2- || true)"
 
-# NO OPERATOR INPUT means the variable is UNSET, not "whatever the harness exported".
-# The suite exports AE_CORE_BIN for every other section (identity is core-owned), so this
-# one arm has to take it away again, or it is asserting about the harness rather than the
-# operator. `env -u`, not `AE_CORE_BIN=`: an EMPTY value is its own instruction, and this
-# arm is about ABSENCE.
-# fb601995 (found on 4bc9ab49): this refresh used to CLEAR both keys, print OK and
-# exit 0, leaving a session where every core-owned command refuses — `end` included,
-# which leaves it UNENDABLE. A refresh with nothing to re-pin with must leave meta
-# BYTE-IDENTICAL, whatever it holds. It does, and now for a stronger reason: with no
-# AE_CORE_BIN and no `core/current` in this hermetic home there is no core to run the
-# refresh AT ALL, so the command refuses before it can touch anything. The unusable
-# pin written just above is the first shape; a usable one is the second, and it is
-# the one the repro broke.
-_cb_pin_before="$(grep -E '^ae_core(_version)?=' "$_cb_meta/meta" || true)"
-_cb_rc=0
-(cd "$REPO" && env -u AE_CORE_BIN "$AE" doctor --refresh >"$_cb_root/refresh-noinput.log" 2>&1) || _cb_rc=$?
-assert_eq "core binding: a no-input refresh REFUSES rather than guessing" "2" "${_cb_rc:-0}"
-assert_contains "core binding: ...and says no core is configured" \
-    "no core is configured" "$(cat "$_cb_root/refresh-noinput.log")"
-assert_eq "core binding: a no-input refresh leaves an UNUSABLE pin byte-identical" \
-    "$_cb_pin_before" "$(grep -E '^ae_core(_version)?=' "$_cb_meta/meta" || true)"
+# THE NO-INPUT REFRESH IS RETIRED (slice Z3, ruled with the core half). Both arms
+# — rc 2 and "no core is configured" — tested a state that cannot occur: they were
+# the WRAPPER's refusal when AE_CORE_BIN was unset and `<AE_HOME>/core/current` was
+# absent. The core IS the binary, `current_exe()` always names it, and a bare
+# `--refresh` defaults to "all" in the core's own parse. An arm with no subject
+# that still passes is worse than a deleted one: it reads as coverage of a guard
+# nobody has.
+#
+# WHAT REPLACES IT is the Z3 statement of what "pinned" MEANS, and it has a bash-
+# visible surface: after a refresh, the session's `ae_core` row is the path of the
+# binary that RAN the refresh, and every helper link in that directory resolves to
+# that same path. It fails loudly if argv[0] dispatch or the link publish regresses.
 _cb_pin_stub "$_cb_meta"
-_cb_pin_before="$(grep -E '^ae_core(_version)?=' "$_cb_meta/meta" || true)"
-(cd "$REPO" && env -u AE_CORE_BIN "$AE" doctor --refresh >/dev/null 2>&1 || true)
-assert_eq "core binding: a no-input refresh leaves a USABLE pin byte-identical" \
-    "$_cb_pin_before" "$(grep -E '^ae_core(_version)?=' "$_cb_meta/meta" || true)"
-# The point of retaining it: the session still WORKS afterwards.
+(cd "$REPO" && "$_ITEST_CORE_BIN" doctor --refresh test-core >/dev/null 2>&1 || true)
+assert_eq "core binding: a refresh pins the binary that ran it" "$_ITEST_CORE_BIN" \
+    "$(grep '^ae_core=' "$_cb_meta/meta" | cut -d= -f2- || true)"
+_cb_link_bad=0
+for _cb_link in send ask state memo peek agents; do
+    [[ -L "$_cb_meta/$_cb_link" ]] || _cb_link_bad=1
+    [[ "$(readlink "$_cb_meta/$_cb_link")" == "$_ITEST_CORE_BIN" ]] || _cb_link_bad=1
+done
+assert_eq "core binding: ...and every helper link resolves to that same binary" "0" "$_cb_link_bad"
+# The point of retaining the pin: the session still WORKS afterwards, and it is
+# the NEWLY pinned core answering. The stub cannot answer any more — its token
+# left with the links that pointed at it, which is what "repointed" has to mean.
 _cb_out="$("$_cb_meta/requests" all 2>/dev/null || true)"
-assert_contains "core binding: ...and the pinned core still serves after that refresh" \
-    "CORE_TOKEN_9f3a" "$_cb_out"
-unset _cb_pin_before _cb_rc
+assert_contains "core binding: ...and the newly pinned core serves the session" \
+    "STATUS   TYPE" "$_cb_out"
+assert_eq "core binding: ...with no trace of the core it replaced" "0" \
+    "$(printf '%s' "$_cb_out" | command grep -c 'CORE_TOKEN_9f3a' | tr -d '[:space:]')"
+unset _cb_link _cb_link_bad
 # Put the suite's own core back before any later section uses this hermetic home's
 # sessions — the arms above deliberately left this one pinned to the fake core.
 (cd "$REPO" && "$_ITEST_CORE_BIN" doctor --refresh >/dev/null 2>&1 || true)
 
-# CONFIGURED BUT UNUSABLE AT CREATION. (RETIRED: "a missing binary must not fail the
-# launch — the core is optional in P2", and the three arms that read the half-built
-# session's meta and helper afterwards. Identity is core-owned since P34 and rc 125 —
-# no core attempted — is FATAL for an identity operation, so there is no launch left to
-# inspect. The replacing rule is the one pinned here: the launch REFUSES, before any
-# session exists, and names the core it needed. A.1 moved the refusal one level down —
-# the shim itself exits 2 rather than reporting "not attempted" to _identity_core.)
-REPO_BAD="$(setup_repo)"
-_cb_bad_rc=0
-(cd "$REPO_BAD" && "$_cb_root/absent-core" --local test-core-bad >"$_cb_root/launch-bad.log" 2>&1) || _cb_bad_rc=$?
-assert_eq "core binding: a launch whose core input cannot be bound REFUSES with the usage code" "2" \
-    "$_cb_bad_rc"
-# REFUSED AT THE BINDING, before a single preamble flag is assembled and before the
-# core is started at all — which since slice Z1 is the only place a refusal can come
-# from. The message says which FACT was wrong about the operator's input, and names
-# the repair; it does not name a subcommand, because nothing has been dispatched.
-assert_contains "core binding: ...and names the core it needed, and why it could not use it" \
-    "is missing or not executable" "$(cat "$_cb_root/launch-bad.log")"
-assert_contains "core binding: ...naming the input it was handed" \
-    "$_cb_root/absent-core" "$(cat "$_cb_root/launch-bad.log")"
-assert_eq "core binding: ...and no session was created" "0" \
-    "$(tmux has-session -t test-core-bad 2>/dev/null && echo 1 || echo 0)"
-assert_not_exists "core binding: ...and no session state was left behind" \
-    "$HOME/.ae/sessions/test-core-bad"
-unset _cb_bad_rc
+# THE LAUNCH-WITH-AN-UNBINDABLE-CORE ARM — RETIRED (slice Z3), for the same reason
+# as the three above and one more: the fixture ran an ABSENT path, so what it now
+# measures is the shell failing to exec, not ae refusing. A launch cannot be handed
+# a core to fail on, because the launch IS the core. What survives of the rule is
+# stronger and lives in the launch's own refusals: an invalid session name, an
+# invalid roster, a duplicate seat — each refused before the first side effect, and
+# each pinned where the refusal is.
 
 "$AE" end test-core --force >/dev/null 2>&1 || true
 fi
@@ -2712,7 +2643,9 @@ REPO10="$(setup_repo)"
 (cd "$REPO10" && "$AE" doctor > "$TMPDIR/doctor.out" 2>/dev/null)
 doctor_output="$(cat "$TMPDIR/doctor.out")"
 assert_contains "doctor: prints header" "ae doctor" "$doctor_output"
-assert_contains "doctor: checks bash" "OK    bash" "$doctor_output"
+# The bash ROW went with `ae-entry` (slice Z3). doctor reported it because the
+# entry was a bash script with a `bash >= 4` re-exec ladder; `ae` is a static
+# binary that needs no shell, so a bash version is not a fact about this install.
 assert_contains "doctor: checks tmux" "OK    tmux" "$doctor_output"
 assert_contains "doctor: checks git" "OK    git" "$doctor_output"
 assert_contains "doctor: checks dummy agent" "OK    agent:dummy" "$doctor_output"
@@ -6790,8 +6723,8 @@ assert_eq "#59 C4-2: ...and no session was created for it" "0" \
 unset C4_BIN C4_REPO C4_REPO2 C4_AID C4_OUT _c4_t _c4_d
 fi
 
-# ── P5 installer + wrapper (retargeted from ae-next coexistence, A22) ────────
-if _itest_section 'P5 installer + wrapper'; then
+# ── P5 installer + published layout (retargeted from ae-next coexistence, A22) ────────
+if _itest_section 'P5 installer + published layout'; then
 
 # Surface: the root installer and the THREE-member bundle it publishes. Live
 # invariants: first install layout, the published modes, the command link, the
@@ -7407,23 +7340,26 @@ _nxu_sha() {
         shasum -a 256 "$1" | awk 'NR == 1 { print $1; exit }'
     fi
 }
-# ONE REAL BINARY PER VERSION, behind a version-announcing shim. The shim is what
-# makes two bundles of different CalVer versions out of one build; the per-version
-# COPY behind it is what makes the session's recorded core discriminate between
-# them. The core records `current_exe()` — the binary that is actually running —
-# so a shim shared by both versions would record the same file for both and every
-# pin assertion below would be vacuous.
+# ONE VERSION IS REAL, THE OTHER IS A VERSION-ANNOUNCING SHIM, and slice Z3 is why
+# it cannot be the other way round. `install` refuses a bundle whose core does not
+# report the version being published, and the core refuses to RUN out of a version
+# directory whose name is not the version it reports — so two working versions need
+# two builds, which this suite does not do. The real binary is v1, because v1 is the
+# one that has to launch a session and be pinned by it; v2 only has to be published,
+# pointed at, and asked its version, which a shim answers honestly.
 _nxu_make_bundle() {
     local version="$1" root dir digest
     root="ae-${version}-${NXU_PLAT}"
     dir="$NXU_ROOT/$root"
     rm -rf "$dir"
     mkdir -p "$dir"
-    cp "$NXU_REAL_CORE" "$NXU_ROOT/real-${version}"
-    chmod 0755 "$NXU_ROOT/real-${version}"
-    printf '%s\n' '#!/bin/sh' \
-        "case \"\$1\" in --version) echo \"ae ${version}\";; *) exec \"$NXU_ROOT/real-${version}\" \"\$@\";; esac" \
-        >"$dir/ae-core"
+    if [[ "$version" == "$NXU_V1" ]]; then
+        cp "$NXU_REAL_CORE" "$dir/ae-core"
+    else
+        printf '%s\n' '#!/bin/sh' \
+            "case \"\$1\" in --version) echo \"ae ${version}\";; *) exit 70;; esac" \
+            >"$dir/ae-core"
+    fi
     cp "$NXU_SRC/install" "$dir/install"
     chmod 0755 "$dir/ae-core" "$dir/install"
     printf '%s  ae-core\n%s  install\n' \
@@ -7481,7 +7417,7 @@ sleep 2
 # pinned the v1 CORE, and recorded the v1 version — which is what an upgrade must
 # not disturb.
 assert_eq "P5 upgrade: the v1 session pinned v1 core" "1" \
-    "$([[ "$(command grep '^ae_core=' "$NXU_META1/meta" 2>/dev/null | cut -d= -f2- || true)" -ef "$NXU_ROOT/real-$NXU_V1" ]] && echo 1 || echo 0)"
+    "$([[ "$(command grep '^ae_core=' "$NXU_META1/meta" 2>/dev/null | cut -d= -f2- || true)" -ef "$NXU_HOME/.ae/versions/$NXU_V1/ae-core" ]] && echo 1 || echo 0)"
 assert_eq "P5 upgrade: ...and recorded its version" "$NXU_V1" \
     "$(command grep '^ae_core_version=' "$NXU_META1/meta" 2>/dev/null | cut -d= -f2- || true)"
 
@@ -7495,24 +7431,25 @@ assert_eq "P5 upgrade: the command link now names the v2 core" \
 assert_eq "P5 upgrade: the v1 leaf is still there" "1" \
     "$([[ -x "$NXU_HOME/.ae/versions/$NXU_V1/ae-core" ]] && echo 1 || echo 0)"
 assert_eq "P5 upgrade: the live v1 session's pin did not move" "1" \
-    "$([[ "$(command grep '^ae_core=' "$NXU_META1/meta" 2>/dev/null | cut -d= -f2- || true)" -ef "$NXU_ROOT/real-$NXU_V1" ]] && echo 1 || echo 0)"
+    "$([[ "$(command grep '^ae_core=' "$NXU_META1/meta" 2>/dev/null | cut -d= -f2- || true)" -ef "$NXU_HOME/.ae/versions/$NXU_V1/ae-core" ]] && echo 1 || echo 0)"
 assert_eq "P5 upgrade: ...and that binary still reports v1" "$NXU_V1" \
     "$("$NXU_HOME/.ae/versions/$NXU_V1/ae-core" --version 2>/dev/null | awk '{print $NF}')"
 
-# ── A new session gets the new core ──────────────────────────────────────
-(cd "$NXU_GIT" && HOME="$NXU_HOME" "$NXU_HOME/.local/bin/ae" --local nxup2 >/dev/null 2>&1 &) 2>/dev/null
-NXU_I=0
-NXU_META2="$NXU_HOME/.ae/sessions/nxup2"
-while [[ ! -f "$NXU_META2/meta" ]]; do
-    sleep 0.5
-    NXU_I=$((NXU_I + 1))
-    if ((NXU_I >= 40)); then break; fi
+# ── The live session keeps the core it was built against ─────────────────
+# WHAT A NEW SESSION PINS is not asserted here, and the omission is deliberate:
+# it would need the v2 core to be a real ae, which needs a second build. The
+# claim itself is covered — 'P5 real' pins that a session records the published
+# core it launched from, and the link assertion above pins which core that now
+# is. What only THIS section can show is the other half: the session that was
+# already running does not follow the pointer.
+NXU_LINK_BAD=0
+for NXU_H in send ask state memo peek agents; do
+    [[ -L "$NXU_META1/$NXU_H" ]] || NXU_LINK_BAD=1
+    [[ "$(readlink "$NXU_META1/$NXU_H")" -ef "$NXU_HOME/.ae/versions/$NXU_V1/ae-core" ]] || NXU_LINK_BAD=1
 done
-sleep 2
-assert_eq "P5 upgrade: a NEW session pins v2 core" "1" \
-    "$([[ "$(command grep '^ae_core=' "$NXU_META2/meta" 2>/dev/null | cut -d= -f2- || true)" -ef "$NXU_ROOT/real-$NXU_V2" ]] && echo 1 || echo 0)"
-assert_eq "P5 upgrade: ...while the older session still pins v1" "1" \
-    "$([[ "$(command grep '^ae_core=' "$NXU_META1/meta" 2>/dev/null | cut -d= -f2- || true)" -ef "$NXU_ROOT/real-$NXU_V1" ]] && echo 1 || echo 0)"
+assert_eq "P5 upgrade: the live session's helpers still resolve to the v1 core" "0" "$NXU_LINK_BAD"
+assert_contains "P5 upgrade: ...and one of them still answers" "$(command grep '^main_pane=' "$NXU_META1/meta" | cut -d= -f2-)" \
+    "$(HOME="$NXU_HOME" "$NXU_META1/agents" 2>/dev/null || true)"
 
 # ── Re-entry: the link with no environment at all ───────────────────────
 # The re-entry test used to resolve `core/current` through the wrapper's reader
@@ -7525,12 +7462,13 @@ assert_eq "P5 re-entry: the link with no env answers as the upgraded core" "ae $
 assert_eq "P5 re-entry: ...and the link still resolves to a real file" "1" \
     "$([[ -x "$NXU_HOME/.local/bin/ae" ]] && echo 1 || echo 0)"
 
-HOME="$NXU_HOME" "$NXU_HOME/.local/bin/ae" end -f nxup1 >/dev/null 2>&1 || true
-HOME="$NXU_HOME" "$NXU_HOME/.local/bin/ae" end -f nxup2 >/dev/null 2>&1 || true
+# The command link is the v2 SHIM now, which cannot end a session — the v1 core
+# that owns this one is still exactly where the session recorded it.
+HOME="$NXU_HOME" "$NXU_HOME/.ae/versions/$NXU_V1/ae-core" end -f nxup1 >/dev/null 2>&1 || true
 chmod -R u+w "$NXU_ROOT" 2>/dev/null || true
 unset -f _nxu_sha _nxu_make_bundle _nxu_install
 unset NXU_SRC NXU_ROOT NXU_HOME NXU_V1 NXU_V2 NXU_MAJ NXU_REST NXU_MIN NXU_PAT \
-    NXU_PLAT NXU_REAL_CORE NXU_RC NXU_GIT NXU_I NXU_META1 NXU_META2
+    NXU_PLAT NXU_REAL_CORE NXU_RC NXU_GIT NXU_I NXU_META1 NXU_LINK_BAD NXU_H
 fi
 
 # ── Results ──────────────────────────────────────────────────────────

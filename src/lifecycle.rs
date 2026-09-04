@@ -456,7 +456,7 @@ impl DetachedArgv {
 /// supervisor could only be started through a `PATH` lookup, which may resolve
 /// to a different `ae` than the one holding the contract.
 fn supervisor_argv(name: &str) -> Option<DetachedArgv> {
-    let own = std::env::current_exe().ok()?;
+    let own = crate::shape::resolved_exe()?;
     Some(DetachedArgv(vec![
         own.to_string_lossy().into_owned(),
         crate::cli::STOP.to_owned(),
@@ -502,7 +502,7 @@ pub(crate) struct Companion<'a> {
 /// companion could only be started through a `PATH` lookup, which may resolve
 /// to a different `ae` than the one holding the contract.
 pub(crate) fn orchestrator_argv(plan: &Companion<'_>) -> Option<DetachedArgv> {
-    let own = std::env::current_exe().ok()?;
+    let own = crate::shape::resolved_exe()?;
     let mut argv = vec![
         own.to_string_lossy().into_owned(),
         crate::cli::LAUNCH.to_owned(),

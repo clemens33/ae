@@ -86,6 +86,6 @@ identity	identity-59	#59: each slot's generated artifacts carry THAT slot's iden
 identity	identity-59	#59 R1: a hostile spawn name never reaches an artifact
 identity	identity-59	#59 C3-2: a RESTORED roster name is fail-quiet, a FRESH one is fatal
 identity	identity-59	#59 C4: the frozen-roster branch, driven for real
-install	-	P5 installer + wrapper
+install	-	P5 installer + published layout
 install	-	P5 real ae through the symlink
 install	-	P5 upgrade + re-entry
