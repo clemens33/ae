@@ -215,6 +215,11 @@ pub enum Request {
         /// Everything after the subcommand, as typed.
         tail: Vec<String>,
     },
+    /// `orchestrator` with the flags its tail named.
+    Orchestrator {
+        /// Everything after the subcommand, as typed.
+        tail: Vec<String>,
+    },
     /// `_say <meta-dir> [text…]` — the `say` helper surface.
     Say {
         /// The session meta directory the helper derives from `$0`.
@@ -713,6 +718,9 @@ impl Request {
                 Err(UnknownFlag(token)) => Self::UsageError(token),
             },
             Some("next" | "jump") => Self::Next {
+                tail: args[1..].to_vec(),
+            },
+            Some("orchestrator") => Self::Orchestrator {
                 tail: args[1..].to_vec(),
             },
             Some(SAY) => match &args[1..] {
@@ -1227,6 +1235,7 @@ impl Request {
             Self::UsageError(_) | Self::MissingOperand(_) => Some(2),
             Self::List(_)
             | Self::Next { .. }
+            | Self::Orchestrator { .. }
             | Self::LaunchCandidate(_)
             | Self::Requests { .. }
             | Self::Say { .. }

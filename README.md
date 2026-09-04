@@ -85,7 +85,14 @@ ae list --needs-attn           # only sessions needing attention (alias: --attn)
 ae list --all                  # include stopped sessions
 ae list --json                 # machine-readable digest (for scripts/agents)
 ae next                        # name the top session needing attention (--attach jumps to it)
+ae orchestrator --popup        # pick a session, then an agent, in a tmux menu; Enter lands in its pane
 watch -n 10 'ae list'          # live dashboard
+```
+
+Bind the picker to a key (tmux 3.4+); `switch-client -l` (prefix + `L`) is the way back:
+
+```tmux
+bind o run-shell "ae orchestrator --popup"
 ```
 
 `ae status` was retired. `ae list` answers the same question from one implementation, and

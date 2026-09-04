@@ -85,6 +85,9 @@ Usage:
                          List sessions (running by default). 'ae list --help' has the
                          full filter set and what --json carries
   ae next [--attach]     Name the top session needing attention (--attach jumps to it)
+  ae orchestrator --popup
+                         Pick a session, then one of its agents, in a tmux menu and
+                         hand this client to that agent's pane (needs tmux 3.4+)
   ae doctor [--refresh [name|all]]
                          Check local environment and optionally refresh existing session helpers
   ae rename [old] <new>  Rename a running session
@@ -144,8 +147,8 @@ pub const LIST_HELP: &str = r"Usage: ae list [--running | --all | --stopped | --
 pub const RETIRED_STATUS: &str =
     "Error: 'ae status' was retired. Use 'ae list' (add --json for the full record).\n";
 
-/// `ae orchestrator` / `ae hub` — CUT, and the arm is the refusal.
-pub const RETIRED_ORCHESTRATOR: &str = "Error: 'ae orchestrator' was retired.\nRun it as an ordinary session against its own config:\n  cd ~/.ae/orchestrator && CONFIG_FILE=$PWD/orchestrator.config ae --local orchestrator\n";
+/// `ae hub` — not a command, and the arm is the refusal that says so.
+pub const RETIRED_ORCHESTRATOR: &str = "Error: 'ae hub' was retired.\nThe fleet picker is 'ae orchestrator --popup'.\nAn orchestrator AGENT is an ordinary session against its own config:\n  cd ~/.ae/orchestrator && CONFIG_FILE=$PWD/orchestrator.config ae --local orchestrator\n";
 
 /// `ae transfer` — CUT rather than ported, and the arm is the refusal.
 pub const RETIRED_TRANSFER: &str = "Error: 'ae transfer' was cut, not ported — ae does no cross-machine session sync.\nMove the WORK instead: 'ae end <name>' commits and pushes it to the 'ae/<name>' branch,\nthen start a session from that branch on the other machine.\n";
@@ -336,7 +339,8 @@ pub fn route(preamble: &Preamble, argv: &[String], pane: Option<&str>) -> Route 
         )),
         Some("end" | "rm") => Route::Core(with_head(crate::cli::END, &tail())),
         Some("status") => Route::Retired(RETIRED_STATUS),
-        Some("orchestrator" | "hub") => Route::Retired(RETIRED_ORCHESTRATOR),
+        Some("orchestrator") => Route::Core(with_head("orchestrator", &tail())),
+        Some("hub") => Route::Retired(RETIRED_ORCHESTRATOR),
         Some("transfer") => Route::Retired(RETIRED_TRANSFER),
         Some("help" | "-h" | "--help") => Route::Help,
         Some("version" | "--version" | "-V") => Route::Version,
@@ -449,12 +453,24 @@ mod tests {
 
     #[test]
     fn the_cut_words_refuse_instead_of_becoming_session_names() {
-        for word in ["status", "orchestrator", "hub", "transfer"] {
+        for word in ["status", "hub", "transfer"] {
             let Route::Retired(text) = route(&preamble(), &argv(&[word]), None) else {
                 panic!("'{word}' must refuse, not launch");
             };
             assert!(text.starts_with("Error: "), "{text}");
         }
+    }
+
+    #[test]
+    fn the_orchestrator_word_reaches_the_core_and_hub_refuses() {
+        assert_eq!(
+            route(&preamble(), &argv(&["orchestrator", "--popup"]), None),
+            Route::Core(argv(&["orchestrator", "--popup"]))
+        );
+        assert_eq!(
+            route(&preamble(), &argv(&["orchestrator"]), None),
+            Route::Core(argv(&["orchestrator"]))
+        );
     }
 
     #[test]

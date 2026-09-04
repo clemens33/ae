@@ -42,6 +42,7 @@ pub mod meta;
 pub mod monitor;
 pub mod netprobe;
 pub mod next;
+pub mod orchestrator;
 pub mod panes;
 pub mod procs;
 pub mod rename;
@@ -286,13 +287,194 @@ fn run_dispatch(args: &[String], out: &mut impl Write, err: &mut impl Write) -> 
         // The sweep reads the same world `list` renders — that IS its input.
         cli::Request::List(_) | cli::Request::Monitor { .. } => true,
         cli::Request::Next { tail } => next::parse(&tail).is_ok(),
+        cli::Request::Orchestrator { tail } => orchestrator::parse(&tail).is_ok(),
         _ => false,
     };
     if wants_world && let Some(root) = state_root() {
-        let (_snapshot, world) = current_world(&root);
+        let (snapshot, world) = current_world(&root);
+        // The picker is the one caller that needs BOTH halves: the world for
+        // the rows, and the snapshot for the server a session off this one was
+        // recorded on.
+        if let cli::Request::Orchestrator { tail } = cli::Request::parse(args) {
+            return run_orchestrator(&tail, &snapshot, &world, err);
+        }
         return run_with(args, Some(&world), out, err);
     }
     run_with(args, None, out, err)
+}
+
+/// `ae orchestrator --popup` — gate the tmux version, then hand tmux the menu.
+fn run_orchestrator(
+    tail: &[String],
+    snapshot: &liveness::Snapshot,
+    world: &listing::World,
+    err: &mut impl Write,
+) -> Result<u8> {
+    if let Err(usage) = orchestrator::parse(tail) {
+        write!(err, "{}", usage.render())?;
+        err.flush()?;
+        return Ok(usage.code());
+    }
+    // The server this invocation may ASK — the declared pair when one redirects
+    // ae (the ae-dev namespace), the ambient one otherwise. The menu is drawn
+    // for that server's client, and `switch-client` reaches nothing outside it.
+    // Which is why a session elsewhere becomes a disabled row.
+    let Some(server) = doors::probe_target(doors::declared_server(shape::current()).as_ref())
+    else {
+        writeln!(
+            err,
+            "ae orchestrator: the declared tmux server is ambiguous, so ae will not guess one."
+        )?;
+        err.flush()?;
+        return Ok(EXIT_UNAVAILABLE);
+    };
+    let found = transport::observe_tmux_version(&server).unwrap_or_default();
+    if !tmux_floor::clears(&found) {
+        write!(
+            err,
+            "{}",
+            tmux_floor::refusal("orchestrator", &found, &server)
+        )?;
+        err.flush()?;
+        return Ok(tmux_floor::EXIT_REFUSED);
+    }
+    // A FAILED listing is not an empty one. Treating it as empty would paint
+    // every session as remote and print attach commands for sessions that are
+    // right here.
+    let Some(panes) = transport::observe_fleet_panes(&server) else {
+        writeln!(
+            err,
+            "ae orchestrator: {} did not list its panes, so ae cannot say which sessions this \
+             client can reach.",
+            tmux_floor::server_label(&server)
+        )?;
+        err.flush()?;
+        return Ok(EXIT_UNAVAILABLE);
+    };
+    let recorded = recorded_servers(snapshot);
+    let mut sockets = SocketPaths::asking(transport::observe_socket_path);
+    let located = placements(&recorded, &server, world, &panes, &mut sockets);
+    let menu = orchestrator::menu(world, &located, world.now);
+    if !transport::display_menu(&server, &menu) {
+        writeln!(
+            err,
+            "ae orchestrator: tmux refused to draw the menu (no attached client?)."
+        )?;
+        err.flush()?;
+        return Ok(EXIT_UNAVAILABLE);
+    }
+    Ok(0)
+}
+
+/// Where each session of `world` sits, from `caller`'s point of view.
+///
+/// A NAME is not an address. `switch-client` targets a session by name on the
+/// server it is given, so a session ae recorded on some other server, with a
+/// same-named stranger on this one, would otherwise get an enabled row whose
+/// jump lands in the stranger — carrying the recorded session's goal and
+/// attention. The two servers are therefore compared by the SOCKET PATH each
+/// one reports for itself, and a session ae cannot prove is here is a row that
+/// cannot be chosen.
+fn placements(
+    recorded: &[(String, inventory::ServerId)],
+    caller: &inventory::ServerId,
+    world: &listing::World,
+    panes: &[tmux::FleetPane],
+    sockets: &mut SocketPaths,
+) -> Vec<orchestrator::Located> {
+    let here = sockets.of(caller);
+    world
+        .sessions
+        .iter()
+        .map(|session| {
+            let recorded = recorded_server(recorded, &session.name);
+            let same_server = here.is_some() && sockets.of(&recorded) == here;
+            let mine: Vec<&tmux::FleetPane> = panes
+                .iter()
+                .filter(|pane| pane.session == session.name)
+                .collect();
+            let placement = if same_server && !mine.is_empty() {
+                orchestrator::Placement::Here(
+                    mine.iter()
+                        .filter(|pane| !pane.agent.is_empty())
+                        .map(|pane| orchestrator::AgentPane {
+                            agent: pane.agent.clone(),
+                            pane: pane.pane.clone(),
+                        })
+                        .collect(),
+                )
+            } else {
+                orchestrator::Placement::Elsewhere(orchestrator::attach_command(
+                    &recorded,
+                    &session.name,
+                ))
+            };
+            orchestrator::Located {
+                session: session.name.clone(),
+                placement,
+            }
+        })
+        .collect()
+}
+
+/// The socket path each server answers with, asked once per server.
+///
+/// One read per DISTINCT server, however many sessions name it: a fleet on one
+/// server is one question, not one per row.
+struct SocketPaths {
+    /// Who is asked. A parameter so the collision the cache exists to catch can
+    /// be proven without two real servers.
+    resolve: fn(&inventory::ServerId) -> Option<String>,
+    seen: Vec<(inventory::ServerId, Option<String>)>,
+}
+
+impl SocketPaths {
+    /// A cache that asks `resolve`.
+    const fn asking(resolve: fn(&inventory::ServerId) -> Option<String>) -> Self {
+        Self {
+            resolve,
+            seen: Vec::new(),
+        }
+    }
+
+    /// What `server` calls its own socket, or `None` when it did not answer.
+    fn of(&mut self, server: &inventory::ServerId) -> Option<String> {
+        if let Some((_, path)) = self.seen.iter().find(|(known, _)| known == server) {
+            return path.clone();
+        }
+        let path = (self.resolve)(server);
+        self.seen.push((server.clone(), path.clone()));
+        path
+    }
+}
+
+/// Each classified candidate's name and the server its record entitles ae to
+/// ask — the snapshot half of a placement, taken once.
+fn recorded_servers(snapshot: &liveness::Snapshot) -> Vec<(String, inventory::ServerId)> {
+    snapshot
+        .sessions
+        .iter()
+        .map(|classified| {
+            let server = classified
+                .candidate
+                .durable
+                .as_ref()
+                .and_then(|record| record.server.entitles())
+                .map_or(inventory::ServerId::Ambient, |selector| {
+                    inventory::ServerId::Selected(selector.clone())
+                });
+            (classified.candidate.name.clone(), server)
+        })
+        .collect()
+}
+
+/// The server `name` was RECORDED on, or the ambient one when no record
+/// entitles ae to name a server for it.
+fn recorded_server(recorded: &[(String, inventory::ServerId)], name: &str) -> inventory::ServerId {
+    recorded
+        .iter()
+        .find(|(known, _)| known == name)
+        .map_or(inventory::ServerId::Ambient, |(_, server)| server.clone())
 }
 
 /// The human route: what `ae` itself answers, once the doors have said what
@@ -1312,6 +1494,18 @@ pub fn run_with(
             }
         }
         cli::Request::Next { tail } => run_next(tail, world, out, err)?,
+        // A parsed `--popup` is answered in `run_dispatch`, which has the
+        // snapshot this arm does not: reaching here with one means there was no
+        // state root to read a world from at all.
+        cli::Request::Orchestrator { tail } => {
+            if let Err(usage) = orchestrator::parse(tail) {
+                write!(err, "{}", usage.render())?;
+                usage.code()
+            } else {
+                writeln!(err, "ae: {NO_STATE_ROOT}")?;
+                EXIT_UNAVAILABLE
+            }
+        }
         cli::Request::LaunchCandidate(name) => {
             writeln!(err, "ae: {NO_LAUNCHER}: {name}")?;
             EXIT_UNAVAILABLE
@@ -1362,6 +1556,115 @@ mod tests {
                 SessionEntry::new("old", Status::Stopped),
             ],
         )
+    }
+
+    /// A resolver that gives each NAMED server its own socket, the way tmux
+    /// does, and refuses to answer for anything else.
+    fn socket_of(server: &crate::inventory::ServerId) -> Option<String> {
+        match server {
+            crate::inventory::ServerId::Selected(crate::meta::Selector::Name(name)) => {
+                Some(format!("/sockets/{name}"))
+            }
+            _ => None,
+        }
+    }
+
+    fn named(name: &str) -> crate::inventory::ServerId {
+        crate::inventory::ServerId::Selected(crate::meta::Selector::Name(name.to_owned()))
+    }
+
+    fn pane_of(session: &str, pane: &str, agent: &str) -> crate::tmux::FleetPane {
+        crate::tmux::FleetPane {
+            session: session.to_owned(),
+            pane: pane.to_owned(),
+            agent: agent.to_owned(),
+        }
+    }
+
+    #[test]
+    fn a_same_named_session_on_this_server_is_not_the_one_ae_recorded_elsewhere() {
+        use crate::orchestrator::Placement;
+
+        // The hazard: `switch-client -t foo` names a SESSION on whichever server
+        // it is given, so a stranger called `foo` here would take the jump — and
+        // the row would be wearing the recorded session's goal and attention.
+        let mut entry = SessionEntry::new("foo", crate::digest::Status::Running);
+        entry.goal = Some("the recorded one".to_owned());
+        let world = World::new(Timestamp::from_epoch(1_780_000_000), vec![entry]);
+        let recorded = [("foo".to_owned(), named("B"))];
+        let stranger = [pane_of("foo", "%7", "lead")];
+        let mut sockets = super::SocketPaths::asking(socket_of);
+
+        let located = super::placements(&recorded, &named("A"), &world, &stranger, &mut sockets);
+        let [only] = located.as_slice() else {
+            panic!("one session, one placement");
+        };
+        let Placement::Elsewhere(attach) = &only.placement else {
+            panic!("a session recorded on another server is not reachable from here");
+        };
+        assert_eq!(attach, "tmux -L B attach -t foo");
+
+        // …and the same session, recorded on the server that IS this one, is.
+        let mut sockets = super::SocketPaths::asking(socket_of);
+        let located = super::placements(
+            &[("foo".to_owned(), named("A"))],
+            &named("A"),
+            &world,
+            &stranger,
+            &mut sockets,
+        );
+        let Placement::Here(agents) = &located[0].placement else {
+            panic!("a session on this very server is reachable");
+        };
+        assert_eq!(agents.len(), 1);
+        assert_eq!(agents[0].pane, "%7");
+    }
+
+    #[test]
+    fn a_server_that_will_not_name_its_socket_proves_nothing_and_reaches_nothing() {
+        use crate::orchestrator::Placement;
+
+        // Unproven is not the same as proven-here. A caller whose own socket is
+        // unknown cannot match anything, and neither can a record's.
+        let entry = SessionEntry::new("foo", crate::digest::Status::Running);
+        let world = World::new(Timestamp::from_epoch(1_780_000_000), vec![entry]);
+        let here = [pane_of("foo", "%1", "lead")];
+        for (recorded, caller) in [
+            (crate::inventory::ServerId::Ambient, named("A")),
+            (named("A"), crate::inventory::ServerId::Ambient),
+        ] {
+            let mut sockets = super::SocketPaths::asking(socket_of);
+            let located = super::placements(
+                &[("foo".to_owned(), recorded.clone())],
+                &caller,
+                &world,
+                &here,
+                &mut sockets,
+            );
+            assert!(
+                matches!(located[0].placement, Placement::Elsewhere(_)),
+                "{recorded:?} from {caller:?} must not be treated as reachable"
+            );
+        }
+    }
+
+    #[test]
+    fn one_server_is_asked_for_its_socket_once_however_many_sessions_name_it() {
+        let world = World::new(
+            Timestamp::from_epoch(1_780_000_000),
+            (0..5)
+                .map(|index| SessionEntry::new(format!("s{index}"), crate::digest::Status::Running))
+                .collect(),
+        );
+        let recorded: Vec<(String, crate::inventory::ServerId)> = (0..5)
+            .map(|index| (format!("s{index}"), named("A")))
+            .collect();
+        let panes: Vec<crate::tmux::FleetPane> = (0..5)
+            .map(|index| pane_of(&format!("s{index}"), &format!("%{index}"), "lead"))
+            .collect();
+        let mut sockets = super::SocketPaths::asking(socket_of);
+        let _located = super::placements(&recorded, &named("A"), &world, &panes, &mut sockets);
+        assert_eq!(sockets.seen.len(), 1, "one server, one question");
     }
 
     #[test]

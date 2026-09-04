@@ -677,6 +677,187 @@ pub fn display_message_args(server: &ServerId, target: &str, text: &str) -> Vec<
     args
 }
 
+/// The format the fleet picker asks for: which session a pane belongs to, its
+/// id, and the agent stamped on it.
+pub const FLEET_PANE_FORMAT: &str = "#{session_name} | #{pane_id} | #{@ae_agent}";
+
+/// How many [`FIELD_SEPARATOR`]-separated fields [`FLEET_PANE_FORMAT`] makes.
+const FLEET_PANE_FIELDS: usize = 3;
+
+/// One stamped pane of one session, as the caller's own server reports it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FleetPane {
+    /// The session the pane belongs to.
+    pub session: String,
+    /// The `%<n>` pane id.
+    pub pane: String,
+    /// The `@ae_agent` stamp, empty on a pane no agent owns.
+    pub agent: String,
+}
+
+/// The arguments listing EVERY pane on `server` — `-a`, deliberately, because
+/// one listing answers "which of ae's sessions are reachable from this client,
+/// and what are their panes" for the whole fleet at once.
+#[must_use]
+pub fn fleet_panes_args(server: &ServerId) -> Vec<String> {
+    let mut args = server_args(server);
+    args.extend(["list-panes", "-a", "-F", FLEET_PANE_FORMAT].map(ToOwned::to_owned));
+    args
+}
+
+/// What a completed fleet-pane listing means.
+///
+/// A line with the wrong field count is dropped rather than guessed at: the
+/// last field may legitimately hold the separator, so the split is bounded and
+/// a short line is corruption.
+#[must_use]
+pub fn interpret_fleet_panes(succeeded: bool, stdout: &str) -> Option<Vec<FleetPane>> {
+    if !succeeded {
+        return None;
+    }
+    Some(
+        stdout
+            .lines()
+            // Only the carriage return goes: an UNSTAMPED pane ends the line
+            // with the separator and an empty field, and trimming that away
+            // would drop the pane rather than report it stampless.
+            .map(|line| line.trim_end_matches('\r'))
+            .filter(|line| !line.is_empty())
+            .filter_map(|line| {
+                let fields: Vec<&str> = line.splitn(FLEET_PANE_FIELDS, FIELD_SEPARATOR).collect();
+                let [session, pane, agent] = fields.as_slice() else {
+                    return None;
+                };
+                Some(FleetPane {
+                    session: (*session).to_owned(),
+                    pane: (*pane).to_owned(),
+                    agent: agent.trim_end().to_owned(),
+                })
+            })
+            .collect(),
+    )
+}
+
+/// Escape text that is about to enter a tmux MENU format.
+///
+/// Measured on tmux 3.7b: `display-menu` expands an item's name and its title
+/// with the plain format expander, which reads `#` and leaves `%` alone — a
+/// `%%` written for the status line renders in a menu as two characters. So
+/// this escapes `#` and nothing else, and [`format_literal`] stays the escape
+/// for the time-expanded contexts that do collapse `%%`.
+#[must_use]
+pub fn menu_literal(text: &str) -> String {
+    text.replace('#', "##")
+}
+
+/// What choosing one menu row does.
+pub enum MenuAction {
+    /// Run this tmux command — built from ids this crate validated, never from
+    /// text a session named itself.
+    Run(String),
+    /// Open a second menu.
+    Open(Menu),
+    /// Nothing: the row is drawn dim and cannot be chosen.
+    Disabled,
+}
+
+/// One row of a tmux menu.
+pub struct MenuItem {
+    /// The visible text, unescaped — [`display_menu_args`] escapes it.
+    pub label: String,
+    /// The single-key shortcut, or empty for none.
+    pub key: String,
+    /// What choosing the row does.
+    pub action: MenuAction,
+}
+
+/// A menu ae asks tmux to draw.
+pub struct Menu {
+    /// The bordered title, unescaped.
+    pub title: String,
+    /// The rows, in the order they are drawn.
+    pub items: Vec<MenuItem>,
+}
+
+/// Where every ae menu is drawn — the centre of the client, which is the one
+/// position that needs neither a mouse nor a pane geometry to be sensible.
+const MENU_POSITION: [&str; 4] = ["-x", "C", "-y", "C"];
+
+/// tmux's marker for a row that is drawn dim and cannot be chosen.
+const DISABLED_PREFIX: char = '-';
+
+/// End of flags, before the first item.
+///
+/// Measured on tmux 3.7b: `display-menu` reads its flags with getopt, so a
+/// FIRST item whose name carries the [`DISABLED_PREFIX`] is read as a flag and
+/// the whole call fails with `unknown flag -g`. The separator ends the flags
+/// before any name is read, whatever the rows turn out to be.
+const END_OF_FLAGS: &str = "--";
+
+/// The arguments that draw `menu` on `server`'s current client.
+///
+/// No `-c` and no `-t`: the client is the one this invocation's `$TMUX` already
+/// selects, which is what a key binding and a popup both want.
+#[must_use]
+pub fn display_menu_args(server: &ServerId, menu: &Menu) -> Vec<String> {
+    let mut args = server_args(server);
+    args.push("display-menu".to_owned());
+    args.extend(MENU_POSITION.map(ToOwned::to_owned));
+    args.push("-T".to_owned());
+    args.push(menu_literal(&menu.title));
+    args.push(END_OF_FLAGS.to_owned());
+    for item in &menu.items {
+        args.extend(item_words(item));
+    }
+    args
+}
+
+/// One row as the three arguments tmux reads it from.
+fn item_words(item: &MenuItem) -> Vec<String> {
+    let label = menu_literal(&item.label);
+    match &item.action {
+        MenuAction::Run(command) => vec![label, item.key.clone(), command.clone()],
+        MenuAction::Open(inner) => vec![label, item.key.clone(), menu_command(inner)],
+        // The leading hyphen is tmux's own dim-and-unselectable marker; the two
+        // empty arguments keep the row a triplet like every other.
+        MenuAction::Disabled => vec![
+            format!("{DISABLED_PREFIX}{label}"),
+            String::new(),
+            String::new(),
+        ],
+    }
+}
+
+/// `menu` as ONE tmux command word — what a row that opens a second menu runs.
+#[must_use]
+pub fn menu_command(menu: &Menu) -> String {
+    let mut words = vec!["display-menu".to_owned()];
+    words.extend(MENU_POSITION.map(ToOwned::to_owned));
+    words.push("-T".to_owned());
+    words.push(menu_literal(&menu.title));
+    words.push(END_OF_FLAGS.to_owned());
+    for item in &menu.items {
+        words.extend(item_words(item));
+    }
+    words
+        .iter()
+        .map(|word| single_quoted(word))
+        .collect::<Vec<String>>()
+        .join(" ")
+}
+
+/// `word` as one token of a tmux command line.
+///
+/// tmux's parser reads single quotes exactly as a shell does — no expansion
+/// and no escape inside — so a value carrying one could not be re-quoted, and
+/// dropping it is the only representation left. Nothing loses text to that in
+/// practice: labels arrive with their quotes already removed, and the commands
+/// are built from grammar-checked session names and pane ids that cannot hold
+/// one.
+fn single_quoted(word: &str) -> String {
+    format!("'{}'", word.replace('\'', ""))
+}
+
 /// The `ae next --attach` verbs, and the question of which one applies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FocusVerb {
@@ -706,6 +887,32 @@ impl FocusVerb {
             Self::AttachSession
         }
     }
+}
+
+/// The command that hands the calling client to `session`, as ONE tmux command
+/// word — what a menu row runs.
+///
+/// The target is UNQUOTED and safe because it is not free text: the caller
+/// proves the name against the session grammar first, and that grammar admits
+/// no space, quote or semicolon. A quote could not survive the nesting anyway,
+/// since tmux's single quotes admit no escape inside them.
+#[must_use]
+pub fn switch_command(session: &str) -> String {
+    format!("{} -t {session}", FocusVerb::SwitchClient.as_str())
+}
+
+/// The command that hands the calling client to `pane` of `session`.
+///
+/// The WINDOW before the pane: a worker lives in its own, and `select-pane`
+/// alone does not change which window is viewed — the order the `focus` helper
+/// uses. tmux resolves all three ids when the command runs, so a pane that died
+/// in the meantime fails the jump rather than landing it somewhere else.
+#[must_use]
+pub fn jump_command(session: &str, pane: &str) -> String {
+    format!(
+        "{} ; select-window -t {pane} ; select-pane -t {pane}",
+        switch_command(session)
+    )
 }
 
 /// The arguments that focus `session` with `verb`.
@@ -1402,14 +1609,15 @@ mod tests {
     #[test]
     fn no_tmux_format_carries_a_control_character() {
         use super::{
-            AGENTS_FORMAT, CLIENT_FORMAT, PANE_FORMAT, PANE_ID_FORMAT, PANE_PROBE_FORMAT,
-            PANE_TTY_FORMAT, SESSION_ID_FORMAT, SESSION_NAME_FORMAT, SLOTS_FORMAT, VERSION_FORMAT,
-            VIEWER_FORMAT, WATCH_PANE_FORMAT, WINDOW_PANE_FORMAT,
+            AGENTS_FORMAT, CLIENT_FORMAT, FLEET_PANE_FORMAT, PANE_FORMAT, PANE_ID_FORMAT,
+            PANE_PROBE_FORMAT, PANE_TTY_FORMAT, SESSION_ID_FORMAT, SESSION_NAME_FORMAT,
+            SLOTS_FORMAT, VERSION_FORMAT, VIEWER_FORMAT, WATCH_PANE_FORMAT, WINDOW_PANE_FORMAT,
         };
 
         for format in [
             AGENTS_FORMAT,
             CLIENT_FORMAT,
+            FLEET_PANE_FORMAT,
             PANE_FORMAT,
             PANE_ID_FORMAT,
             PANE_PROBE_FORMAT,
@@ -2058,6 +2266,66 @@ mod tests {
     fn a_relative_socket_path_cannot_address_a_server() {
         assert!(is_addressable_socket(Path::new("/tmp/ae.sock")));
         assert!(!is_addressable_socket(Path::new("relative/ae.sock")));
+    }
+
+    #[test]
+    fn a_failed_fleet_listing_is_a_failure_and_an_empty_one_is_an_empty_server() {
+        use super::{FLEET_PANE_FORMAT, FleetPane, fleet_panes_args, interpret_fleet_panes};
+        use crate::inventory::ServerId;
+        use crate::meta::Selector;
+
+        assert_eq!(
+            fleet_panes_args(&ServerId::Selected(Selector::Name("ae-dev".to_owned()))),
+            vec!["-L", "ae-dev", "list-panes", "-a", "-F", FLEET_PANE_FORMAT]
+        );
+        // The two must never collapse into one: a failed read that read as an
+        // empty server would say every session is somewhere else.
+        assert_eq!(interpret_fleet_panes(false, ""), None);
+        assert_eq!(interpret_fleet_panes(false, "hub | %1 | lead\n"), None);
+        assert_eq!(interpret_fleet_panes(true, ""), Some(Vec::new()));
+
+        let listing = "hub | %1 | lead\nhub | %2 | \nhub | %3 | a | b\ntruncated\n";
+        assert_eq!(
+            interpret_fleet_panes(true, listing),
+            Some(vec![
+                FleetPane {
+                    session: "hub".to_owned(),
+                    pane: "%1".to_owned(),
+                    agent: "lead".to_owned(),
+                },
+                FleetPane {
+                    session: "hub".to_owned(),
+                    pane: "%2".to_owned(),
+                    agent: String::new(),
+                },
+                // The split is BOUNDED, so a separator inside the last field is
+                // part of the stamp rather than a fourth field.
+                FleetPane {
+                    session: "hub".to_owned(),
+                    pane: "%3".to_owned(),
+                    agent: "a | b".to_owned(),
+                },
+            ]),
+            "a line with too few fields is corruption, not a pane"
+        );
+    }
+
+    #[test]
+    fn a_menu_jump_spells_its_verb_with_the_one_focus_verb_and_takes_the_window_first() {
+        use super::{FocusVerb, jump_command, switch_command};
+
+        // The verb has ONE owner; a second spelling here could drift from it.
+        assert!(switch_command("hub").starts_with(FocusVerb::SwitchClient.as_str()));
+        assert_eq!(switch_command("hub"), "switch-client -t hub");
+        let jump = jump_command("hub", "%12");
+        assert_eq!(
+            jump,
+            "switch-client -t hub ; select-window -t %12 ; select-pane -t %12"
+        );
+        assert!(jump.starts_with(&switch_command("hub")));
+        let window = jump.find("select-window").expect("a window step");
+        let pane = jump.find("select-pane").expect("a pane step");
+        assert!(window < pane, "{jump}");
     }
 
     #[test]

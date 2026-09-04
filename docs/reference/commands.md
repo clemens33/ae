@@ -9,6 +9,9 @@ ae list [--all|--stopped|--needs-attn]
 ae upgrade             Install the latest tagged immutable release; no extra arguments
 ae next [--attach]     Name the top running session needing attention (read-only;
                        alias: ae jump). --attach jumps to it. Non-zero when none.
+ae orchestrator --popup
+                       Pick a session, then one of its agents, in a tmux menu; the
+                       chosen agent's pane gets the client. Needs tmux >= 3.4
 ae doctor              Check local environment and ae config
 ae doctor --refresh [name|all]
                        Regenerate helper scripts and workspace.md in existing sessions
@@ -48,7 +51,7 @@ otherwise create a session called `status`.
 | Word | What now |
 |---|---|
 | `ae status [name]` | Refuses (exit 2). `ae list` answers the same question from one implementation, and its per-session sub-line already carries the state, goal and attention rollup `status` printed. Inside a session, the `peek` helper shows one agent's recent output |
-| `ae orchestrator` / `ae hub` | Refuses (exit 2), and prints the replacement recipe. The orchestrator is an ordinary ae session against its own config — see [the orchestrator](#the-orchestrator-companion) below |
+| `ae hub` | Refuses (exit 2). The fleet picker is [`ae orchestrator --popup`](#ae-orchestrator---popup); an orchestrator AGENT is an ordinary ae session against its own config — see [the orchestrator](#the-orchestrator-companion) |
 | `ae transfer <name> <ssh-target>` | Gone, no arm. Cross-machine session sync was ruled cut rather than ported |
 
 Any other `_`-prefixed word nobody serves also fails closed with exit 2, for the same
@@ -195,6 +198,89 @@ $ ae next --attach
 # → switches your tmux client to my-feature (the blocked session)
 ```
 
+## `ae orchestrator --popup`
+
+The fleet picker, drawn by tmux itself. No daemon, no polling, no dependency: one
+`display-menu` built from the same [`ae list`](#ae-list) digest, thrown away when you
+choose.
+
+```text
+$ ae orchestrator --popup
+┌─ ae fleet — 3 running ──────────────────────────────────────────────────┐
+│ gamma              dead         tmux -L ae-dev2 attach -t gamma         │
+│ alpha              -             2ag ship the S0 picker                 │ (1)
+│ beta               stale         3ag port the watchdog                  │ (2)
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+Sessions come in **attention order** — `dead > stale > waiting-user > blocked >
+throttled > unanswered`, then the quiet ones — and ties break on the name, ascending, so
+the list is the same on every invocation. Each row carries the session name, the attention
+word (`-` when nothing wants a human, `?` when the evidence behind the marker was
+incomplete), how many agents the roster holds, and the goal, cut to fit. At most 30 rows;
+a note names how many were left out.
+
+Choosing a session opens its agents, each with its declared state, its own attention
+reason and its pane id:
+
+```text
+┌─ alpha — attn:- — active 13m ───────────────────────────┐
+│ lead                   working      -            %0 (1) │
+│ helper                 blocked      blocked      %1 (2) │
+└─────────────────────────────────────────────────────────┘
+```
+
+Choosing an agent runs `switch-client`, then `select-window`, then `select-pane` on the
+recorded ids — the window first, because a worker lives in its own and `select-pane` alone
+does not change which window is viewed. tmux resolves all three when you choose, so a pane
+that died in the meantime fails the jump instead of landing you somewhere else. The core's
+own monitor panes (`_watchdog`, `_events`) are stamped outside the agent grammar and are
+not listed.
+
+**Coming back is tmux's own.** `switch-client -l` (prefix + `L`) returns the client to the
+session it came from; within one session, `last-pane` (prefix + `;`) is the equivalent. ae
+remembers nothing about where you were — a second answer to a question tmux already answers
+is a second chance to disagree with it.
+
+**One server only, and proven.** `switch-client` cannot cross tmux servers, and it targets a
+session by NAME on the server it is given — so a session ae recorded elsewhere, with a
+same-named stranger here, would otherwise take your jump. The picker compares the socket
+path each server reports for itself, and a session it cannot prove is on this one becomes a
+row you cannot choose, showing the `tmux … attach -t <name>` command that reaches it — with
+its attention word intact, because a session ae cannot reach can still be the one that needs
+you.
+
+### Bind it
+
+```tmux
+bind o run-shell "ae orchestrator --popup"
+```
+
+Measured on tmux 3.7b: `run-shell` needs neither `-c` nor `-t`. The command inherits the
+pane it was bound from, and `display-menu` with no target draws on that pane's client. The
+plain form above is the working one.
+
+### The tmux floor
+
+The picker needs **tmux 3.4 or newer**, and asks the SERVER (`display-message -p
+'#{version}'`) rather than the `tmux` binary on `PATH`: a long-lived server keeps running
+the binary that started it, and the two disagree exactly when an upgrade has happened.
+Below the floor it refuses at exit 1, naming what it found, what it needs and which server
+it asked. It never starts or restarts a server for you.
+
+```text
+$ ae orchestrator --popup
+ae orchestrator: this tmux is too old to draw the menu.
+  found:    3.3a
+  required: 3.4 or newer
+  server:   the current server ($TMUX)
+Upgrade tmux (macOS: brew upgrade tmux; Debian/Ubuntu: apt install tmux), then start a
+NEW server with the upgraded binary — ae never restarts a running server for you.
+```
+
+Bare `ae orchestrator` prints the usage at exit 2: the word is reserved for the hub session
+and does nothing yet.
+
 ## `ae doctor`
 
 Pre-flight + post-upgrade self-test. Walks a fixed checklist of `OK / WARN / FAIL` items and
@@ -287,17 +373,15 @@ is a monitor + relay + focus aide: per its charter it never ends/stops/edits
 another session on its own, and only suggests — it dispatches nothing without
 your say-so.
 
-**`ae orchestrator` is no longer a command.** It was a trampoline, not an operation: it
-scaffolded a config and a charter on `--init`, then rewrote the config path and the working
-directory and fell through to the generic launch, so the orchestrator ran as an ordinary
-session that happened to be named `orchestrator`. Everything it did has an owner now, and it
-is not bash. Run it as what it always was:
+**The orchestrator AGENT is not a command.** `ae orchestrator` is the
+[fleet picker](#ae-orchestrator---popup) above, and `ae hub` refuses. The agent is an
+ordinary ae session against its own config:
 
 ```bash
 cd ~/.ae/orchestrator && CONFIG_FILE=$PWD/orchestrator.config ae --local orchestrator
 ```
 
-That is exactly what the retired command prints when you reach for it.
+That is exactly what `ae hub` prints when you reach for it.
 
 **Setting it up.** There is no `--init` any more. Copy the two templates from
 [`contrib/aeorchestrator`](../../contrib/aeorchestrator/) into `~/.ae/orchestrator/` yourself
