@@ -1,71 +1,11 @@
 //! Which sessions EXIST, before anything asks whether they are running.
 //!
-//! **SC-017j** — the inventory is the union of (a) durable session state under
-//! SC-400d's two readable layouts and (b) positively identified ae-owned live
+//! the inventory is the union of (a) durable session state under
+//! two readable layouts and (b) positively identified ae-owned live
 //! tmux sessions on a server ae is already entitled to query. Archives are inert
 //! and never enter it. Every durable candidate survives into classification: a
 //! failed liveness query, a prefix-only name match, or a live exact-name session
 //! whose ownership marker is missing cannot delete the candidate.
-//!
-//! # The invariant this module exists to hold
-//!
-//! > A candidate never disappears because a liveness query failed,
-//! > prefix-matched, or found a live session without its marker.
-//!
-//! Collapsing discovery into liveness is what produced #105, where two disjoint
-//! enumerators each removed the same durable directory for a different reason.
-//! So **nothing here classifies liveness** — [`Candidate`] carries no status at
-//! all, and there is no code path from this module to `digest`'s status type.
-//!
-//! Three structural consequences, all deliberate:
-//!
-//! * **The state DIRECTORY establishes the candidate; the `meta` only fills it
-//!   in.** SC-400d: "presence of the state directory is sufficient for
-//!   discovery". The record is built from the directory and the read only
-//!   populates fields, so an absent, unreadable or malformed `meta` costs facts
-//!   and never a candidate. What the read outcome WAS is carried ([`MetaRead`]),
-//!   because SC-509b derives degradation from it later and re-running discovery
-//!   to re-learn it would be the expensive kind of forgetting.
-//! * **Identity is the root-qualified state directory, never the leaf.**
-//!   SC-400d: equal leaves across paths never deduplicate. The `<session-name>`
-//!   leaf is the inventory NAME; the path is the identity.
-//! * **Discovery completes before reconciliation.** SC-017j says so in those
-//!   words, and the reason is visible in the code: every sighting is gathered
-//!   first, so which server answered first cannot decide which candidate a
-//!   sighting joins.
-//!
-//! # Entitlement — a finite, pointer-derived set
-//!
-//! ae may enumerate a tmux server only when it already holds a pointer to it:
-//! the ambient server this invocation's ordinary transport selected, or a
-//! positive, unambiguous selector recorded by a durable candidate (SC-405l).
-//! A missing or ambiguous selector confers no entitlement. Sweeping arbitrary
-//! socket paths or server names is not a way to gain one.
-//!
-//! A live session on a server outside that set is **absent by epistemic limit**
-//! — not stopped, not unknown, not there at all — and becomes visible later when
-//! an ambient selection or a durable record supplies the pointer.
-//!
-//! # What this module must be TOLD
-//!
-//! * **The ambient server.** SC-017j consumes the selection this invocation's
-//!   transport already made; it does not ratify the environment control that
-//!   makes it (`AE_TMUX_SERVER` is SC-1410c, still unclassified).
-//! * **How to enumerate a server.** [`Discovery`] is the seam: this crate has no
-//!   tmux transport yet, and phase 2 owns the one it grows. It is a CALLED port
-//!   rather than injected data on purpose — entitlement that filters a list
-//!   somebody else gathered is satisfied by a sweeper that queries everything
-//!   and discards the surplus, and the trace is where that shows. Here the only
-//!   servers ever contacted are the ones [`entitled_servers`] returned, and a
-//!   recording double can prove it.
-//!
-//!   The port is enumeration-shaped — server in, sessions out. There is no
-//!   `has_session(server, name)`, so phase 1 CANNOT ask an existence question
-//!   about a durable candidate even by accident; that shape is what turned a
-//!   prefix match into a deletion in #105.
-//! * **The state root.** SC-404 derives the roots from `AE_HOME`; which value
-//!   `AE_HOME` has is SC-1410a, also unclassified, so [`Roots`] is handed the
-//!   home rather than reading the environment.
 
 use std::fs;
 use std::io;
@@ -74,16 +14,10 @@ use std::path::{Path, PathBuf};
 use crate::meta::{Selector, ServerSelector};
 use crate::session::RecordSnapshot;
 
-/// The nested state directory inside a worktree — SC-400d's legacy layout.
+/// The nested state directory inside a worktree — legacy layout.
 const WORKTREE_STATE_DIR: &str = ".ae";
 
-/// The ae state roots for one invocation, derived from `AE_HOME` (SC-404).
-///
-/// **The archive is deliberately not reachable from this type.** SC-017j says
-/// archives never enter the inventory, and the cheapest way to hold that is to
-/// give the inventory reader no way to name the archive root at all — a rule
-/// that cannot be expressed in the code that must obey it is a rule that gets
-/// obeyed until someone is in a hurry.
+/// The ae state roots for one invocation, derived from `AE_HOME`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Roots {
     sessions: PathBuf,
@@ -91,8 +25,8 @@ pub struct Roots {
 }
 
 impl Roots {
-    /// The roots under `ae_home` — SC-404's default derivation, both of
-    /// SC-400d's layouts.
+    /// The roots under `ae_home` — default derivation, both of
+    /// layouts.
     #[must_use]
     pub fn under<P: Into<PathBuf>>(ae_home: P) -> Self {
         let home = ae_home.into();
@@ -115,11 +49,7 @@ impl Roots {
     }
 }
 
-/// Which SC-400d layout a durable candidate was found in.
-///
-/// Part of its provenance rather than a formatting detail: the two layouts spell
-/// a session's name in different places, and a candidate that forgot which one
-/// it came from could not say why its name is what it is.
+/// Which durable layout a candidate was found in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Layout {
     /// `<AE_HOME>/sessions/<session-name>/`.
@@ -131,81 +61,40 @@ pub enum Layout {
 }
 
 /// What happened when the record was read.
-///
-/// Re-exported from the module that PERFORMS the read: the outcome and the read
-/// must not be able to disagree, and the only way to guarantee that is for the
-/// same call to produce both.
 pub use crate::session::MetaRead;
 
-/// Durable session state found under one of SC-400d's roots.
+/// Durable session state found under one of roots.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DurableRecord {
     /// The state directory. THE identity of this candidate, root-qualified, so
     /// two paths sharing a leaf are two candidates.
     pub path: PathBuf,
-    /// The `<session-name>` leaf — the inventory name (SC-400d).
-    ///
-    /// Lossy for a non-UTF-8 name; the bytes survive in `path`, which is what
-    /// any later read must use. A name ae cannot spell is still a candidate:
-    /// dropping it would be exactly the disappearance this module forbids.
+    /// The `<session-name>` leaf — the inventory name.
     pub name: String,
     /// Which layout it was found in.
     pub layout: Layout,
-    /// The SC-405l normalized server selector.
+    /// The normalized server selector.
     pub server: ServerSelector,
     /// What reading its `meta` did — see [`MetaRead`].
     pub meta_read: MetaRead,
     /// Everything the record said, read ONCE, at discovery.
-    ///
-    /// **The phase-2 gate's criterion 14 binds the whole phase, not just
-    /// classification**, and this field is what makes that possible: the digest
-    /// is assembled from these bytes rather than from a second read at emission
-    /// time. A second observation would let a record that was unreadable here
-    /// become readable before rendering and repair its own loss fact, and would
-    /// print record facts beside a liveness answer that never held at the same
-    /// moment.
-    ///
-    /// This costs no extra I/O. The selector above already required opening the
-    /// `meta`; carrying what that read produced is strictly cheaper than
-    /// reading it again later.
     pub snapshot: RecordSnapshot,
 }
 
 /// A tmux server ae holds a pointer to.
-///
-/// Two ways to hold one, and they are never assumed equivalent: SC-017j rules
-/// that "unproved equivalence between selector spellings never authorizes a
-/// merge", so an ambient server and a recorded `name`/`socket` selector are
-/// distinct identities here even when a human can see they address the same
-/// tmux.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ServerId {
     /// The server this invocation's ordinary transport already selected, with
-    /// no explicit selector of its own. SC-1410c owns how it was selected; this
-    /// phase consumes the selection.
+    /// no explicit selector of its own. Selection happens elsewhere; this
+    /// phase consumes it.
     Ambient,
-    /// A server named by a positive, unambiguous durable selector (SC-405l).
+    /// A server named by a positive, unambiguous durable selector.
     Selected(Selector),
 }
 
 impl ServerId {
     /// The server a `--server-kind <kind> --server <value>` pair names, or the
     /// refusal to guess one.
-    ///
-    /// ONE rule, shared by every entry that takes those two flags, because the
-    /// failure it prevents is the same everywhere: a kind ae cannot type used to
-    /// fall through to [`ServerId::Ambient`], so a caller that asked for one
-    /// server silently got another. `_launch` then CREATED the session there
-    /// while recording the unusable pair in meta — a session on a server no
-    /// later lifecycle operation will act on, because those refuse the record
-    /// they are handed. `telegram` had the same hole with a different cost: a
-    /// second bridge beside the one `status` and `stop` look for.
-    ///
-    /// Ambient is the answer for a caller that names NEITHER flag, and only
-    /// that. `ambiguous` — what the glue emits for a socket path it could not
-    /// canonicalise — is refused with every other unknown kind: it is a
-    /// statement that the caller's own server could not be identified, and
-    /// there is nothing to substitute for it.
     ///
     /// # Errors
     ///
@@ -238,30 +127,14 @@ pub struct DiscoveredSession {
     /// The exact session name the server reported.
     pub name: String,
     /// The `AE_SESSION` marker the server holds for it, if any.
-    ///
-    /// Presence is the ownership evidence SC-017j names ("whose ownership
-    /// marker is missing"), and it is what the incumbent tests. Whether a marker
-    /// that is PRESENT but names a different session is still positive evidence
-    /// is SC-017l's "missing/mismatched" wording — a phase-2 question, and one
-    /// this phase deliberately does not answer: guessing it here could only
-    /// REMOVE a live session from the inventory, which is the direction this
-    /// whole ruling exists to forbid.
     pub marker: Option<String>,
 }
 
 /// A server query that did not answer.
-///
-/// Carries nothing yet. The REASON matters to SC-017l, which turns it into
-/// `unknown` one phase later; inventing a reason taxonomy here would be writing
-/// that row's content early.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QueryFailed;
 
 /// The one tmux question phase 1 is allowed to ask.
-///
-/// Enumeration only, and only of a server [`entitled_servers`] returned. There
-/// is deliberately no existence check: SC-017j lets ae enumerate an entitled
-/// server and read ownership for the names that come back, and nothing else.
 pub trait Discovery {
     /// Every session `server` reports, with its ownership marker.
     ///
@@ -287,14 +160,6 @@ pub struct LiveSighting {
 }
 
 /// Which sources established a candidate.
-///
-/// **SC-509b needs this and it is not the same question as damage.** Source
-/// membership says whether a durable record EXISTS; [`MetaRead`] says whether it
-/// could be read. Collapsing them would let the digest report a destroyed record
-/// as a session that never had one.
-///
-/// Derived from the two source fields, never stored beside them: a provenance
-/// that can disagree with the sources it describes is one that eventually will.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Provenance {
     /// Durable state only — no entitled server reported it.
@@ -306,9 +171,6 @@ pub enum Provenance {
 }
 
 /// One inventory candidate: durable state, a live sighting, or both.
-///
-/// Deliberately carries no status. Liveness is SC-017k/SC-017l's question, one
-/// phase later, and a status field here would be a place to answer it early.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Candidate {
     /// The session name this candidate is known by.
@@ -341,9 +203,6 @@ impl Candidate {
     }
 
     /// A candidate that exists only because a live session was seen.
-    ///
-    /// SC-017j: it "remains visible"; the absence of a durable record is the
-    /// separate SC-509b `degraded` fact, not a reason to drop it.
     #[must_use]
     pub fn tmux_only(sighting: LiveSighting) -> Self {
         Self {
@@ -360,24 +219,17 @@ impl Candidate {
     }
 }
 
-/// A logical source whose terminal enumeration failed — SC-017o.
+/// A logical source whose terminal enumeration failed.
 ///
-/// The row names three classes, and each is a place where ae asked a question
-/// and got no answer. What they have in common is the fact worth recording:
-/// **absence in this snapshot is not proof**. A listing that silently omits an
-/// unknowable number of sessions asserts a completeness it did not establish,
-/// which is the confident-empty shape #105 exists to remove.
+/// Absence in this snapshot is not proof: a listing that silently omits an
+/// unknowable number of sessions asserts a completeness it did not establish.
 ///
-/// What is NOT here matters as much. A missing durable root or an absent `.ae`
-/// subtree is an AUTHORITATIVE EMPTY SOURCE — it answered, and the answer was
-/// "nothing". Archives and servers outside the entitled set were never required.
-/// And a candidate directory that WAS discovered, whose `meta` will not read,
-/// stays that candidate's own SC-405i/SC-509b record-loss fact: it never becomes
-/// enumeration incompleteness, because nothing about the enumeration failed.
-///
-/// A loss fact names the SOURCE, never a session: the useful fact is not which
-/// sessions were lost — nobody can know that — but that some may have been.
-/// Guessing an identity here would be the fabrication SC-017o forbids.
+/// A missing durable root or an absent `.ae` subtree is NOT one of these — it
+/// answered, and the answer was "nothing". Neither is a discovered candidate
+/// whose `meta` will not read: that is its own record-loss fact, because nothing
+/// about the enumeration failed. A loss names the SOURCE and never a session,
+/// since the useful fact is not which sessions were lost but that some may
+/// have been.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FailedSource {
     /// `<AE_HOME>/sessions` exists and would not enumerate.
@@ -392,20 +244,11 @@ pub enum FailedSource {
 }
 
 /// What the durable scan found, and which sources failed to answer.
-///
-/// The loss list is the third member of a family this build has now separated
-/// four times: **never-asked is not unreachable**, **record-absent is not
-/// record-unreadable**, **unlistable is not absent**, and now **a source that
-/// failed is not a source that answered "nothing"**. Each pair is two epistemic
-/// states that a tidier design would render identically.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct DurableScan {
     /// Every durable candidate found.
     pub records: Vec<DurableRecord>,
-    /// Durable sources whose enumeration failed (SC-017o).
-    ///
-    /// Never candidates and never a source of one — nothing can be named inside
-    /// a directory that will not enumerate.
+    /// Durable sources whose enumeration failed.
     pub incomplete: Vec<FailedSource>,
 }
 
@@ -419,29 +262,22 @@ impl From<Vec<DurableRecord>> for DurableScan {
     }
 }
 
-/// Every durable candidate under `roots`, both SC-400d layouts, path order.
+/// Every durable candidate under `roots`, both layouts, path order.
 ///
 /// A candidate is a state DIRECTORY: `<sessions>/<name>/`, or
 /// `<worktrees>/<worktree>/.ae/<name>/` where the two names may differ and the
-/// inner one is the inventory name. A bare worktree directory with no nested
-/// state directory is not a candidate.
+/// inner one is the inventory name. The `meta` inside each is read for its
+/// selector ONLY, and a read that fails costs the selector rather than the
+/// candidate.
 ///
-/// The `meta` inside each is read for its SC-405l selector ONLY, and a read that
-/// fails costs the selector rather than the candidate: the record is built from
-/// the directory first, and the read fills fields into it.
-///
-/// **No source failure ends the scan** (SC-017o: "discovery continues and every
-/// candidate found from other sources survives"). This function is therefore
-/// infallible by construction — there is no `Result` left to return, because
-/// every way it can fail is a fact it records and carries on from. An earlier
-/// shape propagated the canonical root's error with `?`, which meant an
-/// unlistable `<AE_HOME>/sessions` also cost every candidate in every worktree:
-/// the exact "one bad subtree must not cost every candidate elsewhere" property
-/// that the nested arm was already written to hold.
+/// No source failure ends the scan, so this is infallible by construction: every
+/// way it can fail is a fact it records and carries on from. An earlier shape
+/// propagated the canonical root's error with `?`, which let an unlistable
+/// `<AE_HOME>/sessions` cost every candidate in every worktree.
 ///
 /// The order is by path, not by traversal: `read_dir` order is a filesystem fact
-/// that differs between platforms and between runs. This is internal determinism
-/// only — the ORDER a listing shows is SC-017n's, applied later.
+/// that differs between platforms and between runs. Display order is applied
+/// later and separately.
 #[must_use]
 pub fn durable_records(roots: &Roots) -> DurableScan {
     let mut scan = DurableScan::default();
@@ -461,7 +297,7 @@ pub fn durable_records(roots: &Roots) -> DurableScan {
     match child_dirs(roots.worktrees()) {
         Ok(worktrees) => {
             for worktree in worktrees {
-                // SC-400d: the candidate is the NESTED state directory. A bare
+                // the candidate is the NESTED state directory. A bare
                 // worktree is a checkout, not a session — and an absent `.ae` is
                 // likewise an authoritative empty answer, not a loss.
                 let state_root = worktree.join(WORKTREE_STATE_DIR);
@@ -492,7 +328,7 @@ pub fn durable_records(roots: &Roots) -> DurableScan {
 fn child_dirs(dir: &Path) -> io::Result<Vec<PathBuf>> {
     #[allow(
         clippy::disallowed_methods,
-        reason = "a door: SC-400d root enumeration — see clippy.toml"
+        reason = "a door: the durable-root enumeration — see clippy.toml"
     )]
     let listing = fs::read_dir(dir);
     let entries = match listing {
@@ -506,18 +342,12 @@ fn child_dirs(dir: &Path) -> io::Result<Vec<PathBuf>> {
         // A file here is not a session (the lifecycle locks live beside the
         // session dirs). An entry whose TYPE cannot be read is KEPT: inability
         // to verify is not absence, and the cost of being wrong is a spurious
-        // row rather than a vanished session.
         if entry.file_type().is_ok_and(|kind| !kind.is_dir()) {
             continue;
         }
         // A dot-directory is ae's own infrastructure, never a session: `.locks`
         // holds the lifecycle locks and sits right beside the session dirs. A
         // session name can never begin with `.` — the name grammar starts at
-        // `[A-Za-z0-9]` — so this excludes internals without excluding any
-        // legal session, and it is a NAME test rather than a hardcoded list so
-        // a future internal directory needs no change here.
-        // An unreadable name is KEPT, exactly as an unreadable type is: the
-        // test is "provably internal", not "not provably a session".
         if entry
             .file_name()
             .to_str()
@@ -531,9 +361,6 @@ fn child_dirs(dir: &Path) -> io::Result<Vec<PathBuf>> {
 }
 
 /// The durable record for the state directory at `path`.
-///
-/// The record exists before the `meta` is opened, which is what makes an
-/// unreadable one cost facts instead of the candidate.
 fn record_at(path: PathBuf, layout: Layout) -> DurableRecord {
     let name = path
         .file_name()
@@ -548,16 +375,13 @@ fn record_at(path: PathBuf, layout: Layout) -> DurableRecord {
         meta_read: MetaRead::Absent,
         snapshot: RecordSnapshot::default(),
     };
-    // ONE read of this record, here, feeding both the selector and every SC-509
+    // ONE read of this record, here, feeding both the selector and every
     // field the digest will need. The meta had to be opened for the selector
     // anyway; what changes is that nothing downstream opens it again.
     record.snapshot = RecordSnapshot::read(&record.path);
     // BOTH facts from the ONE read. Absent and unreadable are different facts
-    // and stay different (SC-405l as amended: both normalize the SELECTOR to
+    // and stay different (both normalize the SELECTOR to
     // `missing`, and only the record-read fact tells them apart) — and telling
-    // them apart is the READ's job, because it is the only thing that saw the
-    // error. Asking the filesystem again here answered "absent" for a directory
-    // the process may not traverse, inventing a fact about bytes that exist.
     record.meta_read = record.snapshot.meta_read;
     if let Some(meta) = &record.snapshot.meta {
         // No selector is derived from bytes nobody could read — the alternative
@@ -568,12 +392,6 @@ fn record_at(path: PathBuf, layout: Layout) -> DurableRecord {
 }
 
 /// The servers ae is entitled to enumerate, most-ambient first.
-///
-/// SC-017j's finite, pointer-derived set: the ambient server this invocation's
-/// transport selected, plus every distinct positive, unambiguous selector a
-/// durable candidate recorded. Missing and ambiguous selectors contribute
-/// nothing. There is no third source — an arbitrary socket path or server name
-/// is not a pointer ae holds.
 #[must_use]
 pub fn entitled_servers(ambient: Option<&ServerId>, durable: &[DurableRecord]) -> Vec<ServerId> {
     let mut entitled: Vec<ServerId> = Vec::new();
@@ -597,41 +415,23 @@ pub fn entitled_servers(ambient: Option<&ServerId>, durable: &[DurableRecord]) -
 pub struct Inventory {
     /// Every candidate, durable and live-only.
     pub candidates: Vec<Candidate>,
-    /// Every logical source whose enumeration failed — SC-017o.
+    /// Every logical source whose enumeration failed.
     ///
-    /// ONE list for all three classes, deliberately. The row asks whether ALL
-    /// SC-017j enumerations completed, and a completeness answer derived from
-    /// several lists is one that goes wrong the day a fourth source class is
-    /// added to only some of them. [`Inventory::complete`] reads this and
-    /// nothing else.
-    ///
-    /// Nothing renders it yet — the stderr diagnostic and the digest's
-    /// `inventory_complete` are SC-017o's phase-2/3 surfaces. It is never a
-    /// candidate source: a failed source names no identity, and inventing one is
-    /// what the row forbids.
+    /// ONE list for all three classes, deliberately: a completeness answer
+    /// derived from several lists goes wrong the day a fourth source class is
+    /// added to only some of them. Never a candidate source — a failed source
+    /// names no identity, and inventing one is the fabrication this prevents.
     pub incomplete: Vec<FailedSource>,
 }
 
 impl Inventory {
-    /// Whether every SC-017j enumeration completed — SC-017o's snapshot fact.
-    ///
-    /// Derived, never stored: a boolean that can disagree with the loss facts
-    /// beside it is one that eventually will. Answerable for an EMPTY inventory,
-    /// which is the case the row calls out — "nothing found" and "nothing found,
-    /// and I could not look everywhere" are different snapshots, and only one of
-    /// them is evidence of absence.
+    /// Whether every enumeration completed — snapshot fact.
     #[must_use]
     pub const fn complete(&self) -> bool {
         self.incomplete.is_empty()
     }
 
     /// The entitled servers that did not answer.
-    ///
-    /// A fact about the QUERY, never about a session: SC-017l turns it into
-    /// `unknown` one phase later, and nothing here may read it as a status. Kept
-    /// reachable because discarding it would make phase 2 ask the same dead
-    /// server again to learn what this pass already knows. A server ae was never
-    /// entitled to ask is NOT in here — never asked is not unreachable.
     pub fn unreachable(&self) -> impl Iterator<Item = &ServerId> {
         self.incomplete.iter().filter_map(|source| match source {
             FailedSource::Server(server) => Some(server),
@@ -642,7 +442,7 @@ impl Inventory {
     }
 }
 
-/// Take the SC-017j inventory: durable records unioned with what the entitled
+/// Take the inventory: durable records unioned with what the entitled
 /// servers report.
 ///
 /// Every durable record becomes a candidate and stays one — this function starts
@@ -650,10 +450,10 @@ impl Inventory {
 /// servers and for no others, so "ae does not gain entitlement by sweeping" is a
 /// property of the call sequence rather than of a filter applied afterwards.
 ///
-/// **Discovery completes before reconciliation** (SC-017j). Every sighting is
+/// **Discovery completes before reconciliation**. Every sighting is
 /// gathered first, so no join can depend on which server answered first.
 ///
-/// A sighting joins a durable candidate only on SC-017j's join witness: that
+/// A sighting joins a durable candidate only on join witness: that
 /// candidate's selector is positive, the sighting came from that very server,
 /// its name exactly equals the candidate's inventory name, and **exactly one**
 /// durable candidate matches that tuple. Zero matches leave a live-only
@@ -698,7 +498,7 @@ pub fn take<D: Discovery + ?Sized>(
     let mut sighted: Vec<LiveSighting> = Vec::new();
     for server in entitled {
         let Ok(sessions) = discovery.enumerate(&server) else {
-            // SC-017o's third source class. The snapshot is incomplete; every
+            // third source class. The snapshot is incomplete; every
             // candidate from every other source survives untouched.
             inventory.incomplete.push(FailedSource::Server(server));
             continue;
@@ -730,11 +530,6 @@ pub fn take<D: Discovery + ?Sized>(
 
 /// The single durable candidate `sighting` positively joins, if exactly one
 /// does.
-///
-/// SC-017j's witness is the (recorded server, exact inventory name) tuple, and
-/// its cardinality rule is explicit: with more than one match, NONE merges.
-/// Picking one would invent an identity out of a witness the row says is not
-/// identity.
 fn join_witness(candidates: &[Candidate], sighting: &LiveSighting) -> Option<usize> {
     let mut found = None;
     for (at, candidate) in candidates.iter().enumerate() {
@@ -788,10 +583,6 @@ mod tests {
     }
 
     /// A tmux world that RECORDS every server it is asked about.
-    ///
-    /// Criterion 13: a candidate-absence assertion cannot tell a sweeper from a
-    /// non-sweeper, because a sweeper can query and then discard. The trace is
-    /// the only observable that can.
     struct Servers {
         worlds: Vec<(ServerId, Result<Vec<DiscoveredSession>, QueryFailed>)>,
         trace: RefCell<Vec<ServerId>>,
@@ -857,9 +648,6 @@ mod tests {
     }
 
     /// `.locks` sits beside the session directories and is not a session.
-    ///
-    /// It shipped as the FIRST row of `ae list` — a lifecycle-lock directory
-    /// rendered as a session with an unknown status, above every real one.
     #[test]
     fn a_dot_directory_beside_the_sessions_is_not_a_candidate() {
         let scratch = Scratch::new("dot-dirs");
@@ -947,11 +735,6 @@ mod tests {
     }
 
     /// Candidate identities as a SET.
-    ///
-    /// Criterion 18: collection order is an open choice, so no test here pins
-    /// it. Durable candidates are compared by PATH — criterion 6's "two
-    /// independently addressable candidates" is exactly the distinction a
-    /// name-keyed comparison would erase.
     fn identities(inventory: &Inventory) -> Vec<String> {
         let mut seen: Vec<String> = inventory.candidates.iter().map(identity).collect();
         seen.sort();
@@ -1007,13 +790,6 @@ mod tests {
     }
 
     /// This module's own source, comments stripped, TESTS EXCLUDED.
-    ///
-    /// The structural guards below ask the source a question the runtime cannot
-    /// answer — non-access has no signal. Excluding the test half is
-    /// load-bearing: every needle they forbid appears in the tests that forbid
-    /// it, so a whole-file scan would report the guard itself and pass for the
-    /// wrong reason forever after someone "fixed" it. The split is asserted, so
-    /// a guard that scanned nothing fails instead of passing.
     fn module_source() -> String {
         let source = include_str!("inventory.rs");
         let code: String = source
@@ -1084,13 +860,13 @@ mod tests {
         );
     }
 
-    // ---- criterion 2: both SC-400d durable layouts -------------------------
+    // ---- criterion 2: both durable layouts ---------------------------------
 
     #[test]
     fn criterion_2_both_durable_layouts_are_discovered_and_the_inner_leaf_is_the_name() {
         let scratch = Scratch::new("two-layouts");
         let canonical = scratch.session("canonical-one");
-        // The outer worktree name DIFFERS from the inner session leaf — SC-400d
+        // The outer worktree name DIFFERS from the inner session leaf
         // says the two may differ and the inner one is the inventory name.
         let nested = scratch.nested("feature-checkout", "nested-session");
         let bare = scratch.bare_worktree("no-state-here");
@@ -1119,8 +895,6 @@ mod tests {
         // The third instance of one family tonight: never-asked is not
         // unreachable, record-absent is not record-unreadable, and a state
         // directory ae could not LIST is not one that is not there. A session
-        // living in here is invisible, so the INCOMPLETENESS is the fact — the
-        // alternative is a confident listing that omits it and says nothing.
         let scratch = Scratch::new("unlistable");
         let kept = scratch.session("elsewhere");
         let good = scratch.nested("readable-checkout", "seen");
@@ -1169,7 +943,7 @@ mod tests {
 
     #[test]
     fn a_bare_worktree_is_absence_rather_than_loss() {
-        // SC-400d: a worktree with no nested state directory is simply not a
+        // a worktree with no nested state directory is simply not a
         // candidate. Recording it as an incompleteness would make the loss list
         // fire on the NORMAL case and stop meaning anything.
         let scratch = Scratch::new("bare-not-loss");
@@ -1242,8 +1016,6 @@ mod tests {
             // A DIRECTORY named `meta`. chmod is not enough on its own — a run
             // as root reads a 0000 file happily, and the test would then pass
             // without ever creating the condition it names. EISDIR holds for
-            // every uid, so the condition is real wherever this runs, and it is
-            // ASSERTED before anything is concluded from it.
             fs::create_dir_all(dir.join("meta")).expect("a meta that cannot be read as a file");
             let failure = fs::read(dir.join("meta")).expect_err("the read must genuinely fail");
             assert!(
@@ -1284,13 +1056,6 @@ mod tests {
         // THE CELL A SECOND OBSERVATION GETS WRONG. The bytes exist; the
         // process may not reach them. Anything that answers "is there a meta?"
         // by asking the filesystem a second time gets `false` here and reports
-        // ABSENT — inventing the loss of a record that was never lost, and
-        // collapsing phase-1 criteria 21 and 23's two states into one.
-        //
-        // Deliberately NOT the EISDIR fixture: that one leaves the path
-        // observable, so a second look still says "something is there" and the
-        // bug hides. The failure has to be in the TRAVERSAL for the two
-        // observations to disagree.
         let scratch = Scratch::new("unsearchable");
         let dir = scratch.session("locked");
         fs::write(dir.join("meta"), "mode=local\n").expect("real bytes on disk");
@@ -1602,9 +1367,6 @@ mod tests {
         // The trace above covers the tmux half. The filesystem half is not
         // observable from behavior — non-access has no signal — so it is asked
         // of the SOURCE. Weaker than the compiler probe in the parity self-test
-        // (this one reads text), and it is here because the alternative is no
-        // check at all on the half of criterion 13 that names socket
-        // directories.
         let module = module_source();
         assert_eq!(
             module.matches("fs::").count(),
@@ -1833,10 +1595,7 @@ mod tests {
     fn criterion_21_source_membership_and_record_read_loss_are_independent_facts() {
         // Four fixtures, and the point is which pairs must AGREE and which must
         // DIFFER. (b), (c) and (d) all normalize the selector to `missing` —
-        // that is SC-405l as amended, and criterion 23 requires it. What keeps
-        // them apart is the read-loss axis alone. Satisfy this by making their
-        // SELECTORS differ and criterion 23 breaks; collapse the read facts and
-        // this one breaks. Both at once is the only correct answer.
+        // criterion 23 requires it. What keeps
         let scratch = Scratch::new("four-facts");
         let readable = scratch.session("b-readable-no-selector");
         fs::write(readable.join("meta"), "mode=local\n").expect("a readable meta");
@@ -1961,13 +1720,6 @@ mod tests {
         // THE ARM A COUNT PASSES AND A FLAG DOES NOT. Every single-failure arm
         // is satisfied by an implementation reporting a constant 1, or keeping
         // only the first loss. Two failures at once is what tells those apart.
-        //
-        // FIXTURE VALIDITY, and it is not incidental: with BOTH durable roots
-        // unlistable there are no durable candidates, hence no recorded
-        // selectors, hence no entitlement except the ambient server. A healthy
-        // source planted on any other server would be one THE PRODUCT COULD NOT
-        // REACH — the fixture would build, every assertion would pass, and it
-        // would prove nothing. The trace is asserted below so that stays true.
         let scratch = Scratch::new("both-roots");
         fs::write(scratch.0.join("sessions"), "not a directory").expect("a hostile fixture");
         fs::write(scratch.0.join("worktrees"), "not a directory").expect("a hostile fixture");
@@ -2024,11 +1776,6 @@ mod tests {
         // A loss signal that fires on the normal case has stopped meaning
         // anything. Each of these ANSWERED — the answer was "nothing" — or was
         // never ae's to ask.
-        //
-        // The two missing-root controls are SEPARATE on purpose: a single
-        // fixture with neither root present cannot tell "absent canonical is
-        // handled" from "absent worktrees is handled", so an implementation that
-        // called one of them incomplete would pass a combined control.
         let no_canonical = Scratch::new("control-missing-canonical");
         no_canonical.bare_worktree("a-checkout");
         assert!(
@@ -2124,7 +1871,6 @@ mod tests {
         // The explicit NON-requirement: nothing here imposes an order between
         // durable and server discovery. A `Discovery` that answers from facts
         // gathered earlier is as legal as one that shells out on the spot, and
-        // must produce the same inventory.
         let gathered_earlier = Servers::new().live(ServerId::Ambient, &[("early", Some("early"))]);
         let _ = gathered_earlier.enumerate(&ServerId::Ambient);
         assert_eq!(
@@ -2149,15 +1895,13 @@ mod tests {
         );
     }
 
-    // ---- criterion 23: the entitlement half of SC-405l ---------------------
+    // ---- criterion 23: the entitlement half of the selector ----------------
 
     #[test]
     fn criterion_23_an_absent_or_unreadable_meta_normalizes_to_missing_not_to_a_fifth_state() {
         // The trap this pairs with criterion 21: `missing` is what the reader
         // says when no selector fact is available to it, so a record it could
         // not read at all is `missing` — never `ambiguous`, which is reserved
-        // for bytes that WERE readable and admit no single positive mapping,
-        // and never something outside the four-value domain.
         let scratch = Scratch::new("loss-is-missing");
         let absent = scratch.session("absent-meta");
         let unreadable = scratch.session("unreadable-meta");
@@ -2210,7 +1954,7 @@ mod tests {
 
     #[test]
     fn criterion_23_a_name_and_a_socket_of_the_same_spelling_are_two_servers() {
-        // SC-017j: unproved equivalence between selector spellings never
+        // unproved equivalence between selector spellings never
         // authorizes a merge. These two are not proven equivalent, so they are
         // two entitlements and two queries.
         let durable = scan(vec![
@@ -2259,14 +2003,12 @@ mod tests {
         // The `?` this replaced aborted the WHOLE scan, so an unlistable
         // `<AE_HOME>/sessions` also cost every candidate in every worktree —
         // the same defect the nested arm was already written to avoid, in the
-        // one place the early-return had been there all along.
         let scratch = Scratch::new("root-is-a-file");
         fs::write(scratch.0.join("sessions"), "not a directory").expect("a hostile fixture");
         let nested = scratch.nested("checkout", "survivor");
         // The fixture must prove the ENUMERATION returned an error, not merely
         // that something looks odd. A file where a directory belongs fails
         // read_dir with NotADirectory for every uid; a chmod would depend on who
-        // is running the suite, and would pass vacuously as root.
         assert!(
             fs::read_dir(scratch.0.join("sessions")).is_err(),
             "the enumeration operation itself must fail"
@@ -2310,8 +2052,6 @@ mod tests {
         // THE POINT OF THIS ARM: you cannot count what you could not see. The
         // `.ae` subtrees under an unlistable worktrees root were never
         // discovered, so inventing a loss fact per undiscovered subtree would be
-        // reporting a number nobody established — the same fabrication SC-017o
-        // forbids for identities, one level up.
         assert!(
             !inventory
                 .incomplete
@@ -2377,9 +2117,8 @@ mod tests {
     #[test]
     fn sc_017o_a_discovered_candidate_with_an_unreadable_meta_is_not_enumeration_loss() {
         // The row draws this line explicitly: once the directory was
-        // discovered, its meta is SC-405i/SC-509b's record-loss fact and never
+        // discovered, its meta is record-loss fact and never
         // becomes snapshot incompleteness. The enumeration succeeded — it found
-        // exactly the thing whose contents are damaged.
         let scratch = Scratch::new("meta-not-enumeration");
         let damaged = scratch.session("damaged");
         fs::create_dir_all(damaged.join("meta")).expect("an unreadable meta");
@@ -2409,8 +2148,6 @@ mod tests {
         // APFS enforces UTF-8 filenames and refuses this one with EILSEQ, so on
         // macOS the arm below cannot be built at all. The skip is STATED rather
         // than silent: the assertion runs on the Linux leg, where ext4 takes any
-        // byte sequence, and a test that quietly proves nothing on half the
-        // matrix is worse than one that says which half.
         #[cfg(unix)]
         let unspellable = {
             use std::ffi::OsStr;
@@ -2436,12 +2173,6 @@ mod tests {
     #[test]
     fn the_durable_reader_guarantees_sorted_output_rather_than_traversal_order() {
         // The property is DETERMINISM, and the reader guarantees it by sorting.
-        // Asserting a remembered order would be the trap criterion 18 warns
-        // about — it fails a correct change. Asserting sortedness cannot.
-        //
-        // No case-only pair in the fixture: APFS folds `Alpha` into `alpha` and
-        // the two would be ONE directory, which is a filesystem fact rather than
-        // anything this reader decides.
         let scratch = Scratch::new("order");
         for name in ["zulu", "alpha", "mike", "alpha-2"] {
             scratch.session(name);

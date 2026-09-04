@@ -5,46 +5,6 @@
 //! what the first meta says, how a seat is added or removed, and what the
 //! roster currently is. Each is an underscored core entry (never human-typed)
 //! and each speaks ONE framing, described below.
-//!
-//! # The record framing
-//!
-//! Every entry's stdout is records of US-separated (`\x1f`) fields, one per
-//! line, `\n`-terminated, free text LAST — and every stdout ends with the
-//! trailer record `end<US><count>`. The separator is `\x1f` rather than a tab
-//! for the reason AGENTS.md's TSV hazard names: tab is IFS whitespace, so a run
-//! of tabs is ONE delimiter and an empty field silently vanishes, shifting every
-//! field after it. `\x1f` delimits exactly once, and a reader that counts fields
-//! sees an empty one as an empty one.
-//!
-//! The trailer is what makes a TRUNCATED read distinguishable from a short one.
-//! A caller that reads records until EOF cannot tell "two seats" from "two
-//! seats and then the writer died"; a caller that requires the trailer, and
-//! checks its count against the records it read, can. Nothing is written to
-//! stdout until every record is built, so a refusal never leaves a partial
-//! document behind a non-zero exit.
-//!
-//! A field that CONTAINS the separator or a newline would forge or split a
-//! record, so it is refused rather than emitted — the same framing guard
-//! `_compact-freeze` applies to its tuple, one separator up.
-//!
-//! # Exit codes
-//!
-//! `0` ok, [`EXIT_REFUSED`] (1) refusal — the reason on stderr and nothing
-//! published, [`EXIT_USAGE`] (2) usage. The two failure codes stay distinct for
-//! the crate's standing reason: "you asked wrong" and "it went wrong" are
-//! different answers to the caller.
-//!
-//! # What each entry owns
-//!
-//! | Entry | What it decides |
-//! |---|---|
-//! | `_launch-plan` | which seats a launch creates, from `[profiles]` + `[roster]` + `[workspace]` |
-//! | `_meta-init` | the session's FIRST meta, published as one document |
-//! | `_roster add-seat` | the slot a spawn takes, allocated under the meta lock |
-//! | `_roster remove-seat` | every line a retire drops |
-//! | `_roster set-harness-session` | one seat's captured conversation id |
-//! | `_roster migrate` | a v1 roster's one-way move to v2 |
-//! | `_roster list` | what the roster currently is, resolved against the config |
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -197,23 +157,6 @@ fn launch_flags(tail: &[String]) -> Result<LaunchFlags, String> {
 /// `_launch-plan [--global <f>] [--local <f>] [--main <name>] [--workers <a,b>]`
 /// — resolve the workspace into the seats a launch will create.
 ///
-/// One record per seat, in plan order (main first, then workers in config
-/// order), in the UNIFORM eight-field roster shape every `_roster` record also
-/// uses: `kind<US>slot<US>name<US>profile<US>binary<US>tool<US>sid<US>command`.
-/// The kind is `seat`, and the sid is [`NONE`] — a plan describes seats that
-/// have not launched yet, so none of them has a captured conversation id.
-///
-/// Eight fields ALWAYS, so one `IFS=$US read` of eight variables reads every
-/// record shape this module prints; `-` is the absent value, never an empty
-/// field. The command is LAST because it is the free text — an
-/// operator-authored shell line, the one field whose content this entry does
-/// not constrain.
-///
-/// Every refusal is the config's, rendered by the module that found it: a
-/// [`config::ConfigError`] prints its own `Display`, and a non-launchable
-/// roster prints [`config::render_violations`] — the FULL list, so the operator
-/// fixes the config once instead of once per run.
-///
 /// # Errors
 ///
 /// [`crate::Error::Io`] when `out` or `err` cannot be written.
@@ -237,7 +180,6 @@ pub fn launch_plan(
         // `-` is the shell-safe spelling of "none": a caller passing an empty
         // argument is easy to write and easy to lose, and both must mean the
         // same thing or a frozen roster with no workers would silently keep
-        // the config's.
         cfg.workers = Some(if workers == NONE {
             String::new()
         } else {
@@ -314,16 +256,6 @@ fn meta_init_flags(tail: &[String]) -> Result<MetaInitFlags, String> {
 
 /// Parse `_meta-init`'s stdin: `seat<US>slot<US>name<US>profile<US>binary<US>sid`
 /// records and the `end<US><count>` trailer.
-///
-/// Everything the caller could get wrong is checked BEFORE anything is read or
-/// published: the tag, the arity, the trailer's presence and its count, the
-/// agent-name grammar, and uniqueness of both names and slots. A seat with a
-/// duplicated name or slot is an identity in doubt, and publishing one would
-/// produce exactly the meta [`Meta::parse`] answers an empty roster for.
-///
-/// [`NONE`] in the binary or sid field means the seat has none — the same
-/// spelling `_roster list` prints for an absent one, so a listed seat can be
-/// handed straight back here.
 ///
 /// # Errors
 ///
@@ -433,22 +365,6 @@ fn optional(field: &str) -> Option<String> {
 
 /// `_meta-init <dir> --base <file> [--replace]` — publish a session's whole
 /// meta as ONE document.
-///
-/// The base facts are bash's (mode, origin, work dir, the session's own keys);
-/// the roster block is [`roster::render`]'s. They are concatenated and handed
-/// to [`meta::init`] — or, with `--replace`, to [`meta::replace`] — so the first
-/// version any reader can observe is the complete one. A per-seat append is the
-/// shape that once left a roster observably half-built, and it is unreachable
-/// here by construction.
-///
-/// The base file must be empty or end in `\n`: concatenating a roster block
-/// onto an unterminated last record would fuse two keys into one line.
-///
-/// On success the base file is unlinked — it has been consumed, and a stale one
-/// left beside a live meta is a document a later run could publish again. A
-/// failed unlink is reported and does NOT fail the entry: the meta is published,
-/// and reporting failure would invite a retry that a create-only publish now
-/// refuses.
 ///
 /// # Errors
 ///
@@ -577,7 +493,6 @@ fn identity_doubts(current: &Meta) -> Vec<String> {
     // A v1 `agent.<slot>` row inside a schema=2 meta is a seat the v2 reader
     // would silently omit — and a resume would then delete. The core never
     // writes one after migration, so its presence is a hand edit or a torn
-    // migration: a doubt, not a row to skip.
     if current.schema() == Some("2") {
         doubts.extend(
             current
@@ -591,11 +506,6 @@ fn identity_doubts(current: &Meta) -> Vec<String> {
 }
 
 /// The meta's text.
-///
-/// [`meta::read_bytes`] rather than [`Meta::read`], and not by accident: three
-/// of these entries rewrite the WHOLE document, so they need its bytes as well
-/// as its parse, and reading twice would let the two disagree. The parse comes
-/// from [`parsed`], over the same text.
 ///
 /// # Errors
 ///
@@ -651,17 +561,6 @@ fn key_of(record: &str) -> &str {
 /// `_roster <dir> add-seat <name> --using <profile> --binary <bin> [--session <sid>]`
 /// — take the lowest free `spawned.<n>` and append the seat.
 ///
-/// Read, decide and publish happen under ONE hold of the meta lock, because
-/// the decision is the allocation: two concurrent spawns that each read the
-/// document before either wrote would allocate the same index and one would
-/// vanish. That is why this is not a [`meta::rewrite`] per key.
-///
-/// The index is the lowest `n` no key in the document ends `.spawned.<n>` with
-/// — the frozen bash rule, widened from its `agent.spawned.<n>=` grep to every
-/// key family, so a `launch_id.spawned.3` left behind by a half-finished retire
-/// cannot be overwritten by a fresh seat. Indices are NOT renumbered: a retire
-/// leaves a gap, and the next add fills it.
-///
 /// # Errors
 ///
 /// [`crate::Error::Io`] when `out` or `err` cannot be written.
@@ -703,10 +602,6 @@ fn add_seat(
 
 /// Take the lowest free `spawned.<n>` for `name` and publish the seat, under
 /// one hold of the meta lock — the decision half of `add-seat`, as a value.
-///
-/// Split out from the entry so an in-core operation (`_spawn`) allocates its
-/// seat by CALLING this rather than by re-running the binary and parsing its
-/// record back. One implementation, one lock discipline, one set of refusals.
 ///
 /// # Errors
 ///
@@ -758,7 +653,6 @@ pub fn add_seat_slot(
     // `render` opens the block it builds with `schema=2`. This document already
     // declares it — that is what the gate above proved — and a second one would
     // be a DUPLICATE KEY, which `Meta::parse` invalidates: the meta would stop
-    // reading as v2 the moment a seat was added to it.
     next.push_str(block.strip_prefix("schema=2\n").unwrap_or(&block));
     publish(dir, &next)?;
     Ok(slot)
@@ -799,12 +693,6 @@ struct AddSeatFlags {
 }
 
 /// Why a meta may not be WRITTEN to as a v2 roster, or `None` when it may.
-///
-/// Two gates, both fail-closed. The schema marker must say `2`: appending v2
-/// seat rows to a v1 document would make it mixed, and a mixed slot contributes
-/// no agent at all. And no anomaly may put the roster's identity in doubt —
-/// adding a seat to a roster whose existing seats cannot be read means the
-/// uniqueness check above was answered by an incomplete list.
 fn seat_write_refusal(current: &Meta) -> Option<String> {
     if current.schema() != Some("2") {
         return Some(match current.schema() {
@@ -828,11 +716,6 @@ fn seat_write_refusal(current: &Meta) -> Option<String> {
 }
 
 /// The lowest `n` no key in `text` ends `.spawned.<n>` with.
-///
-/// The suffix is matched WHOLE, so `agent_bin.spawned.30` does not occupy index
-/// `3`. Every key family counts, not just the frozen grep's `agent.spawned.<n>=`
-/// — a `launch_id.spawned.<n>` or `harness_session.spawned.<n>` left behind by a
-/// half-finished retire is still a claim on that index.
 fn lowest_free_spawned(text: &str) -> usize {
     let keys: Vec<&str> = records(text).into_iter().map(key_of).collect();
     let mut index = 0usize;
@@ -846,18 +729,6 @@ fn lowest_free_spawned(text: &str) -> usize {
 }
 
 /// `_roster <dir> remove-seat <name>` — drop every line the seat owns.
-///
-/// Resolution is name → slot through the parsed roster, so a seat whose
-/// identity is in doubt (dropped by [`Meta::parse`]) is not resolvable and the
-/// retire refuses rather than guessing which slot was meant.
-///
-/// `main` and `worker.*` are refused: they are LAUNCH seats, promised by the
-/// config, and removing one would leave a session whose meta disagrees with the
-/// workspace that created it. Ending a session is `ae end`'s job.
-///
-/// Every line whose key ends `.<slot>` goes — which is how bash-era rows the v2
-/// vocabulary never names (`launch_id.<slot>`, `launch_time.<slot>`, a tool's
-/// `*_launch_id.<slot>`) are dropped with the seat instead of outliving it.
 ///
 /// # Errors
 ///
@@ -883,10 +754,6 @@ fn remove_seat(
 
 /// Drop every line the seat named `name` owns and return its slot — the
 /// decision half of `remove-seat`, as a value.
-///
-/// Split out for the reason [`add_seat_slot`] is: `_spawn`'s rollback and
-/// `_retire` both need the slot, and re-running the binary to read it back
-/// would put a second copy of the refusals in the caller.
 ///
 /// # Errors
 ///
@@ -923,17 +790,6 @@ pub fn remove_seat_slot(dir: &Path, name: &str) -> Result<String, String> {
 
 /// `_roster <dir> set-harness-session <slot> <sid>` — record one seat's
 /// captured conversation id.
-///
-/// The slot must already BE a seat: writing `harness_session.<slot>` for a slot
-/// no seat holds would leave a metadata row waiting for a seat that never
-/// arrives, which [`Meta::parse`] files as an unknown key and the session
-/// degrades on.
-///
-/// One key, so this is [`meta::rewrite`] — which takes the lock itself. The
-/// read that validates the slot is deliberately OUTSIDE that lock: nothing here
-/// allocates, so a racing writer can only make the answer stale, never wrong,
-/// and holding the lock across both would need a second acquisition that blocks
-/// against the first.
 ///
 /// # Errors
 ///
@@ -972,21 +828,6 @@ fn set_harness_session(
 
 /// `_roster <dir> migrate [--global <f>] [--local <f>]` — move a v1 roster to
 /// v2, once.
-///
-/// A meta that already declares `schema=2` is DONE, not an error: migrate is
-/// the step a resume runs unconditionally, and a second run must be a no-op
-/// rather than a refusal that stops a launch. It prints `end<US>0` and exits 0.
-///
-/// Otherwise [`roster::migrate`] resolves each legacy alias to a profile of the
-/// same name, checked against `[profiles]` — and refuses with the FULL list, so
-/// the operator fixes the config once.
-///
-/// The rewrite keeps every non-roster record BYTE-IDENTICAL and in order.
-/// Only three key families go: `agent.<slot>` and `agent_bin.<slot>` (which
-/// [`roster::render`] re-emits, the binary included), and the `schema` marker
-/// itself, because render writes a fresh `schema=2` and two of them would be a
-/// duplicate key that invalidates the value — leaving a document that had just
-/// been migrated reading as though it had not been.
 ///
 /// # Errors
 ///
@@ -1046,23 +887,6 @@ fn migrate(
 /// `_roster <dir> list [--global <f>] [--local <f>]` — what the roster is now,
 /// resolved against the config.
 ///
-/// v2 only: a v1 meta is refused rather than rendered, because the two schemas
-/// spell identity differently and a listing that flattened them would publish an
-/// `alias:name` as though it were a v2 name.
-///
-/// Every record is the uniform eight fields
-/// `kind<US>slot<US>name<US>profile<US>binary<US>tool<US>sid<US>command`, `-`
-/// for any absent value. The kind says which half of the row is trustworthy:
-///
-/// * `seat` — the seat's profile is defined in `[profiles]` AND its command is
-///   one simple command, so the binary, tool and command are the LAUNCHABLE
-///   facts, freshly lexed from the config rather than copied from the meta.
-/// * `unresolved` — the profile is gone from the config, or its command no
-///   longer lexes. Nothing launchable can be said, so the tool and command are
-///   `-`, and the binary is the META's recorded one: it is what the seat last
-///   ran, and it is what the launcher hands back to `_meta-init` to re-emit the
-///   seat verbatim.
-///
 /// # Errors
 ///
 /// [`crate::Error::Io`] when `out` or `err` cannot be written.
@@ -1092,9 +916,6 @@ fn list(
     // FAIL CLOSED on a roster in doubt, BEFORE emitting a record: `Meta::parse`
     // drops the seats an anomaly touches, so the list would be shorter than the
     // file — and the resume that consumes this list republishes it through
-    // `_meta-init --replace`, deleting the dropped seats and their metadata for
-    // good (colead, integrated gate). Refusing here leaves the meta exactly as
-    // it is, for a human to repair.
     let doubts = identity_doubts(&current);
     if !doubts.is_empty() {
         return refuse(
@@ -1345,7 +1166,6 @@ mod tests {
         // `-` is no workers: `colead` is then a [roster] row bound to no seat,
         // which is LEGAL (ruled 2026-09-02 — it is what `use <name>` selects),
         // and the plan is main alone. That the worker row is gone is the
-        // evidence the override REPLACED rather than merged with the config's list.
         let (code, out, err) = plan(&["--global", &path, "--workers", "-"]);
         assert_eq!((code, err.as_str()), (0, ""));
         let records = rows(&out);
@@ -1990,7 +1810,7 @@ mod tests {
         for spelling in [LAUNCH_PLAN, META_INIT, ROSTER] {
             // `_validate_session_name` forbids a leading `_`, so no legal
             // session name can reach these arms — the property that keeps
-            // SC-022's "a bare word is a launch candidate" whole.
+            // "a bare word is a launch candidate" whole.
             assert!(spelling.starts_with('_'), "{spelling}");
         }
         assert_eq!(

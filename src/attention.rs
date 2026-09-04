@@ -1,9 +1,9 @@
 //! Why a session wants a human, and which reason wins.
 //!
-//! **SC-017g** — the attention marker is "the single most-actionable reason by
+//! the attention marker is "the single most-actionable reason by
 //! documented severity: dead > stale > waiting-user > blocked > throttled >
-//! unanswered, derived as a rollup across the session's agents". **SC-509**
-//! carries the same fact twice in the digest: `attention` (the name) and
+//! unanswered, derived as a rollup across the session's agents". The digest
+//! carries the same fact twice: `attention` (the name) and
 //! `attention_rank` (the number, `dead` 6 → `unanswered` 1).
 //!
 //! Severity is therefore not a comparison written at each call site — it is the
@@ -11,9 +11,7 @@
 
 use std::fmt;
 
-/// A reason a session needs attention, per SC-017g.
-///
-/// Ordered by severity, so `max()` *is* the rollup.
+/// A reason a session needs attention.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Reason {
     /// Rank 1 — an inter-agent `ask`/`review` went unanswered past the
@@ -32,7 +30,7 @@ pub enum Reason {
 }
 
 impl Reason {
-    /// Every reason, most severe first — the SC-017g order, written once.
+    /// Every reason, most severe first — the order, written once.
     pub const BY_SEVERITY: [Self; 6] = [
         Self::Dead,
         Self::Stale,
@@ -42,7 +40,7 @@ impl Reason {
         Self::Unanswered,
     ];
 
-    /// The numeric severity SC-509 publishes as `attention_rank`.
+    /// The numeric severity published as `attention_rank`.
     ///
     /// ```
     /// use ae::attention::Reason;
@@ -63,17 +61,12 @@ impl Reason {
     }
 
     /// Whether this is the maximum class in the severity set.
-    ///
-    /// Kept beside [`Self::BY_SEVERITY`] and [`Self::rank`] so source-aware
-    /// callers cannot retain a stale `dead` special case when the set grows.
-    /// This says nothing about source completeness: a partial ledger record may
-    /// be superseded or cleared by an unread later record.
     #[must_use]
     pub fn is_severity_maximum(self) -> bool {
         self == Self::BY_SEVERITY[0]
     }
 
-    /// The spelling SC-509 publishes as `attention`, and `ae list` shows after
+    /// The spelling published as `attention`, and shown by `ae list` after
     /// `attn:`.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
@@ -96,7 +89,7 @@ impl Reason {
     }
 
     /// The session-level marker: the single most-actionable reason across the
-    /// session's agents (SC-017g), or `None` when nothing needs attention.
+    /// session's agents, or `None` when nothing needs attention.
     ///
     /// ```
     /// use ae::attention::Reason;

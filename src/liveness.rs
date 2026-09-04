@@ -1,6 +1,6 @@
 //! Whether a candidate is running — and what ae says when it cannot tell.
 //!
-//! **SC-017k** — a durable candidate is `running` only when a SUCCESSFUL query of
+//! a durable candidate is `running` only when a SUCCESSFUL query of
 //! its own recorded server returns the EXACT session name with positive
 //! ae-ownership; it is `stopped` only when that same successful query proves the
 //! exact name absent. An unreachable, missing or ambiguous recorded server, a
@@ -12,47 +12,6 @@
 //! whose value differs from the session name is still a tag; identity is settled
 //! by the exact name match against the session's own recorded server, which is a
 //! stronger check than re-reading it out of a variable that never carried it.
-//!
-//! # What is NOT a liveness fact
-//!
-//! Ambient-server membership. Prefix success. Which renderer block printed the
-//! row. All three were how #105 answered the question, and none of them survives
-//! into this module: the classifier takes a candidate's own typed selector, asks
-//! that server, and matches the exact name. There is no ambient fallback to
-//! write, because nothing here knows which server is ambient.
-//!
-//! # The snapshot proof, and why it is never re-queried
-//!
-//! A candidate that phase 1 saw ALIVE — tmux-only, or dual-provenance where
-//! SC-017j coalesced a positively owned exact-name sighting from that
-//! candidate's own recorded server — is `running` on that discovery fact alone.
-//! SC-017k says so for both shapes, and the reason is **monotonicity**: a later
-//! or redundant query may not retroactively replace an accepted snapshot fact,
-//! or adding a durable record to a session ae just watched answer would let a
-//! redundant failure turn it `unknown`. Learning more would reduce what is
-//! known.
-//!
-//! That is held by construction here — a candidate with a positively owned
-//! sighting is never put in the query set at all, so there is no code path on
-//! which a second answer could overwrite the first.
-//!
-//! # Ownership: the phase-2 half of a question phase 1 deferred
-//!
-//! Phase 1 admits a live session to the inventory on marker PRESENCE, and said
-//! why in [`crate::inventory::DiscoveredSession::marker`]: guessing stricter
-//! there could only REMOVE a session from the inventory. Phase 2 now applies the
-//! SAME test rather than a stricter one — the two phases agreeing is the point.
-//! The stricter phase-2 rule was not a safer version of this one; it was a
-//! different question (identity) asked of evidence that does not answer it, and
-//! it made `running` unreachable for every session ae has ever created.
-//!
-//! # No rediscovery
-//!
-//! This module reads no file and enumerates no root. Every durable fact it uses
-//! — the typed selector, the read outcome, the provenance — was established by
-//! phase 1 and arrives in the [`Inventory`]. The only I/O it can reach is the
-//! backend query, through the same [`Discovery`] port phase 1 used, so it cannot
-//! contact a server phase 1 was not entitled to ask.
 
 use crate::attention::Reason;
 use crate::digest::Status;
@@ -67,10 +26,6 @@ use crate::tmux::{ObservedPane, SlotObservation, slot_observation};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Classified {
     /// The candidate exactly as phase 1 established it.
-    ///
-    /// Kept rather than consumed: SC-509's digest still needs the identity, and
-    /// phase 3 needs the name. Nothing here mutates it — a classifier that
-    /// rewrote its own input would make the phase boundary unobservable.
     pub candidate: Candidate,
     /// What ae knows about whether it is running.
     pub status: Status,
@@ -81,17 +36,12 @@ pub struct Classified {
 pub struct Snapshot {
     /// One entry per phase-1 candidate. Same identities, same count.
     pub sessions: Vec<Classified>,
-    /// SC-017o's loss facts, carried through unchanged.
-    ///
-    /// Classification neither clears nor recomputes these: they are facts about
-    /// ENUMERATION, decided before this phase ran, and an incomplete snapshot is
-    /// not a session-level condition. Mapping one to `unknown` would turn "I
-    /// could not look everywhere" into a claim about a particular session.
+    /// loss facts, carried through unchanged.
     pub incomplete: Vec<FailedSource>,
 }
 
 impl Snapshot {
-    /// Whether every SC-017j enumeration completed — SC-017o's `inventory_complete`.
+    /// Whether every enumeration completed — `inventory_complete`.
     #[must_use]
     pub const fn complete(&self) -> bool {
         self.incomplete.is_empty()
@@ -100,22 +50,6 @@ impl Snapshot {
 
 /// Whether `marker` is positive ae-ownership evidence for a session called
 /// `name`.
-///
-/// The marker answers ONE question — "is this tmux session ae's?" — and its
-/// presence is the answer. It is a tag, not a name: the real producer writes
-/// `AE_SESSION=1`, so a rule requiring the value to equal the session name can
-/// never be satisfied by any session ae has ever created, and every session
-/// classifies `unknown` for want of evidence that exists. Measured on a live
-/// machine 2026-08-26: five real sessions, all tagged, all `unknown`, the whole
-/// status column dead.
-///
-/// The identity question the old rule was reaching for is already answered
-/// upstream and better: the caller matched this session by EXACT name against
-/// its OWN recorded server's `list-sessions`. Re-deriving identity from a tag
-/// that does not carry it added no safety and cost the entire feature.
-///
-/// `name` is retained because ownership is asked ABOUT a session and a future
-/// marker grammar may carry identity; it is deliberately unused today.
 #[must_use]
 pub fn positively_owned(name: &str, marker: Option<&str>) -> bool {
     let _ = name;
@@ -123,10 +57,6 @@ pub fn positively_owned(name: &str, marker: Option<&str>) -> bool {
 }
 
 /// The snapshot fact a candidate already carries, if it is proof of life.
-///
-/// SC-017k's two reuse cases are one predicate: a positively owned exact-name
-/// sighting IS the successful own-server query for this snapshot, whether or not
-/// a durable record was later matched to it.
 fn already_proven_running(candidate: &Candidate) -> bool {
     candidate.live.as_ref().is_some_and(|live| {
         live.name == candidate.name && positively_owned(&live.name, Some(&live.marker))
@@ -141,7 +71,7 @@ fn already_proven_running(candidate: &Candidate) -> bool {
 /// A backend failure decides one candidate's status and never the set's fate.
 ///
 /// Grouping is by recorded server, so N candidates on one server cost one query
-/// — SC-017k permits exactly that, and requires what this preserves: every
+/// — that is permitted, and requires what this preserves: every
 /// candidate's answer still comes from its own server and its own exact name.
 ///
 /// ```
@@ -183,10 +113,6 @@ struct Answers(Vec<(ServerId, Result<Vec<DiscoveredSession>, QueryFailed>)>);
 
 impl Answers {
     /// Query every server that some candidate still needs an answer from.
-    ///
-    /// A candidate already carrying a snapshot proof contributes no server here,
-    /// which is what makes the monotonicity rule structural rather than a check:
-    /// its answer cannot be replaced by a query that is never made.
     fn gather<D: Discovery + ?Sized>(candidates: &[Candidate], backend: &D) -> Self {
         let mut answers: Vec<(ServerId, Result<Vec<DiscoveredSession>, QueryFailed>)> = Vec::new();
         for candidate in candidates {
@@ -221,26 +147,26 @@ impl Answers {
 
 /// The status of one candidate, given what its own server said.
 fn decide(candidate: &Candidate, answers: &Answers) -> Status {
-    // SC-017k's snapshot proof, for tmux-only and dual-provenance alike.
+    // snapshot proof, for tmux-only and dual-provenance alike.
     if already_proven_running(candidate) {
         return Status::Running;
     }
     let Some(record) = &candidate.durable else {
         // Live-only, and the sighting was not positive proof — a marker that is
         // missing or names another session. There is no recorded server to ask,
-        // so nothing can be established either way. SC-017l: unknown.
+        // so nothing can be established either way: unknown.
         return Status::Unknown;
     };
     let selector = match &record.server {
         ServerSelector::Positive(selector) => selector,
-        // SC-405l missing or ambiguous. No target is derived from those bytes —
+        // The selector is missing or ambiguous. No target is derived from those
         // an ambiguous pointer is not a pointer, and guessing one would query a
         // server ae was never entitled to ask.
         ServerSelector::Missing | ServerSelector::Ambiguous => return Status::Unknown,
     };
     let server = ServerId::Selected(selector.clone());
     match answers.get(&server) {
-        // The query failed. Inability to verify is not absence (SC-816/SC-835c).
+        // The query failed. Inability to verify is not absence.
         Some(Err(QueryFailed)) | None => Status::Unknown,
         Some(Ok(sessions)) => {
             // EXACT name. A prefix sibling answers for nobody but itself — that
@@ -263,47 +189,13 @@ fn decide(candidate: &Candidate, answers: &Answers) -> Status {
     }
 }
 
-/// Whether one observed pane is running an agent — **SC-017s**, both conjuncts.
-///
-/// A pane tmux reports DEAD is not alive whatever command it names: a
-/// `remain-on-exit` pane keeps reporting the exited process, so the command
-/// alone reads `alive` for a corpse (#109). An unreadable `pane_dead` is not a
-/// readable `0` and therefore proves nothing, which is why the positive answer
-/// requires `Some(false)` rather than merely "not `Some(true)`".
-///
-/// The command half is [`crate::watchdog::command_is_shell`] — ONE definition of
-/// the shell set for the watchdog and the listing, because two would drift.
-/// An absent command reading counts as a shell for the reason SC-017s gives:
-/// absence of evidence must not become a positive alive.
+/// Whether one observed pane is running an agent, both conjuncts.
 fn pane_alive(pane: &ObservedPane) -> bool {
     pane.dead == Some(false)
         && !crate::watchdog::command_is_shell(pane.command.as_deref().unwrap_or_default())
 }
 
 /// What a completed pane enumeration says about the roster slots in `slots`.
-///
-/// The agent half of the frozen `cmd_list`'s alive map and of
-/// `_session_attn_rollup`'s dead verdict, ported as BEHAVIOUR under SC-017p/q
-/// rather than copied:
-///
-/// * **one pane carries the slot** — its two readings decide `alive`, and the
-///   agent raises nothing. A pane that dropped to a bare shell is `alive: false`
-///   and NOT `dead`: the frozen marks it `!` in the table and leaves the
-///   attention verdict to the watchdog's alert, which is the only party that
-///   also checked for a descendant agent process.
-/// * **several panes carry it** — the association is ambiguous, so nothing is
-///   established. `unknown`, never a verdict picked from one of them.
-/// * **no pane carries it, and every pane was identified** — a COMPLETE
-///   enumeration that positively excludes the slot. That is SC-017p's negative
-///   proof, so the agent is `alive: false` and raises [`Reason::Dead`], which is
-///   the frozen's "a registered agent whose pane vanished".
-/// * **no pane carries it, but some pane carries no marker at all** — one of
-///   those could be this agent's, unstamped. `unknown`: SC-017q is explicit that
-///   unprovable liveness is never removal, and this is the arm where the frozen
-///   asserted `dead` on absence of evidence (#107).
-///
-/// A FAILED enumeration never reaches here — the caller passes no runtime at
-/// all, leaving every slot `unknown`, which is SC-017q's other half.
 #[must_use]
 pub fn agent_runtimes(panes: &[ObservedPane], slots: &[String]) -> Vec<AgentRuntime> {
     slots
@@ -418,18 +310,6 @@ mod tests {
         /// **HAZARD, and it is deliberate.** An UNREGISTERED server answers
         /// `Ok(vec![])` — a SUCCESSFUL EMPTY query, which is the proof that a
         /// name is absent and therefore the route to `stopped`.
-        ///
-        /// Seven tests rely on that: `Backend::new()` with no worlds means
-        /// "every server answers, and everything is empty", which is exactly
-        /// what a stopped-everywhere fixture needs. So the fallback stays.
-        ///
-        /// The cost is that A MISTYPED SERVER NAME IS INDISTINGUISHABLE FROM A
-        /// REGISTERED EMPTY ONE. A test that means to ask server B, typos it,
-        /// and asserts `stopped` PASSES — while proving nothing about B. Same
-        /// family as the shadowed second `live()` for one server: a fixture
-        /// convenience that is right in the common case and silently wrong when
-        /// a name is wrong. If a test's claim depends on WHICH server answered,
-        /// assert `contacted()` as well as the status.
         fn enumerate(&self, server: &ServerId) -> Result<Vec<DiscoveredSession>, QueryFailed> {
             self.trace.borrow_mut().push(server.clone());
             self.worlds
@@ -497,7 +377,6 @@ mod tests {
         // Three opposed cells, run twice: once with a positive NAME selector and
         // once with a positive SOCKET selector, because the typed halves address
         // different servers and a classifier that flattened them would pass with
-        // one and fail with the other.
         for (selector, server, spelling) in [
             (positive("B"), named("B"), "name:B"),
             (
@@ -592,7 +471,6 @@ mod tests {
                 // A present-but-empty marker, which is what an unset variable
                 // can render as. A DIFFERENT value is no longer a non-proof:
                 // the tag says "ae's", and identity was settled by the exact
-                // name match upstream.
                 Some(""),
                 Status::Unknown,
                 "marker present but empty",
@@ -617,9 +495,6 @@ mod tests {
         // THE MARKER IS A TAG, NOT A NAME. The real producer writes
         // `AE_SESSION=1`, so requiring the value to equal the session name made
         // the predicate unsatisfiable in the field and killed the whole status
-        // column — five live sessions, all tagged, all `unknown`. Identity is
-        // established upstream by an EXACT name match against this session's own
-        // recorded server; the tag only answers "is this ae's?".
         assert!(positively_owned("mdk", Some("mdk")), "a name is a value");
         assert!(
             positively_owned("mdk", Some("1")),
@@ -856,14 +731,11 @@ mod tests {
         // Deliberately NOT asserted: whether the query happened at all. This
         // implementation does not make it, but criterion 10 and criterion 21
         // both leave a redundant query an OPEN CHOICE — it may not CHANGE the
-        // classification, and that is what the assertion above tests. A test
-        // pinning the call count would reject a correct classifier for a choice
-        // no row makes.
     }
 
     #[test]
     fn a_dual_candidate_whose_sighting_is_not_positively_owned_follows_the_query_rule() {
-        // SC-017k's exception to the exception: only a POSITIVELY OWNED matched
+        // exception to the exception: only a POSITIVELY OWNED matched
         // sighting is the snapshot proof.
         let mut unowned = durable("api", positive("B"));
         unowned.live = Some(sighting(named("B"), "api", ""));
@@ -984,8 +856,6 @@ mod tests {
         // An unreadable meta yields a MISSING selector — phase 1 derives no
         // pointer from bytes nobody could read — so this pairing is the only
         // consistent one, and it is `unknown` for the selector, not for the
-        // damage. The two axes stay orthogonal; they are just not independent
-        // in THIS direction, because the same failed read causes both.
         let mut damaged = record("damaged", ServerSelector::Missing);
         damaged.meta_read = MetaRead::Unreadable;
         let candidates = vec![
@@ -1079,7 +949,7 @@ mod tests {
 
     #[test]
     fn an_incomplete_snapshot_never_becomes_a_session_level_condition() {
-        // SC-017o: incompleteness is snapshot state, not a synthetic session and
+        // incompleteness is snapshot state, not a synthetic session and
         // not a status.
         let snapshot = classify(
             Inventory {
@@ -1139,14 +1009,6 @@ mod tests {
         // The MISSING-ANSWER branch, reached directly because no fixture can
         // reach it through `classify`: `Answers::gather` enumerates exactly the
         // servers the candidates name, so a candidate whose server has no entry
-        // is an internal inconsistency rather than a reachable state.
-        //
-        // It is still worth pinning, and it has to be pinned HERE. An earlier
-        // version of this test used a registered-and-failing server — which is
-        // the branch above — so if this arm had returned `stopped`, that test
-        // would have passed while naming a branch it never touched. A test whose
-        // name describes a branch it cannot reach is the same class as a shape
-        // that does not contain what its name says.
         let no_answers = Answers(Vec::new());
         let candidate = durable("orphan", positive("never-asked"));
         assert_eq!(
@@ -1215,7 +1077,6 @@ mod tests {
         // Frozen's `!`: present, but no agent in the foreground. The DEAD
         // verdict stays the watchdog's, which also checks for a descendant
         // agent process — a `bash -lc <tool>` wrapper is a shell with a live
-        // agent underneath it.
         let observed = only(&[pane(Some(false), Some("main"), Some("fish"))], "main");
         assert_eq!(observed.alive, Some(false));
         assert_eq!(observed.alert, None, "a shell pane is not a vanished pane");
@@ -1247,11 +1108,11 @@ mod tests {
         assert_eq!(
             vanished.alert,
             Some(Reason::Dead),
-            "a complete enumeration that excludes the slot is SC-017p's negative proof"
+            "a complete enumeration that excludes the slot is a negative proof"
         );
 
         // #107's arm: an unstamped pane could BE this agent, so absence of
-        // evidence must not become the removal SC-017q forbids.
+        // evidence must not become removal.
         let ambiguous = [
             pane(Some(false), Some("main"), Some("claude")),
             pane(Some(false), None, Some("fish")),

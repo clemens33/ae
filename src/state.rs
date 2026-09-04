@@ -16,34 +16,6 @@
 //! the line filter and the member extraction are the ones `requests` already
 //! shares with the bash body. See [`read_line`] for the one deliberate
 //! rendering difference.
-//!
-//! # The safety rules this path exists to keep (P2.2 ruling)
-//!
-//! * **The actor is the calling pane and nothing else.** It is the
-//!   [`Viewer`] P2.1b reads from `TMUX_PANE`; there is no `--actor` and no
-//!   `human` fallback. An unidentified caller is refused at 1 and writes
-//!   nothing — the frozen helper writes `actor:"human"` from any shell, which
-//!   is a state nobody declared.
-//! * **One lock, the same lock.** `<container>.lock` is held exclusively with
-//!   `flock(2)` advisory semantics — the lock `ae_log_append` takes with
-//!   `flock -w 5 8` — for at most [`LOCK_WAIT`], and held through the whole
-//!   append, so a bash writer and this one never interleave lines.
-//! * **No success without the bytes, and no bytes without success.** The
-//!   frozen helper prints `Marked …` BEFORE it emits, so its caller can be told
-//!   a state it never recorded. This path prints only after the append is
-//!   durable (`fdatasync` returned); any lock or append failure is non-zero,
-//!   on stderr, with no success line — and the append is a transaction under
-//!   the held lock: on failure the container is cut back to its prior length,
-//!   so neither a truncated record nor an unacknowledged valid state is left
-//!   behind ([`commit`]).
-//!
-//! # Not a read door
-//!
-//! `clippy.toml`'s eleven disallowed entry points and the criterion-3
-//! inventory over them are about READING the world; `OpenOptions::open` for
-//! append is not among them, so this module is deliberately absent from that
-//! inventory. What keeps the write conspicuous is that this is the only
-//! `OpenOptions` in product code — a second one is a review question.
 use std::fs::{File, OpenOptions, TryLockError};
 use std::io::{self, Write};
 use std::path::Path;
@@ -258,14 +230,6 @@ pub fn read_line(actor: &str, latest: Option<&Latest>) -> Vec<u8> {
 }
 
 /// `state` with nothing to declare, for `viewer`.
-///
-/// The actor asked about is the pane's display ref, or `human` for a caller
-/// with none — the frozen `[[ -n "$self" ]] || self="human"`, minus
-/// `ae_current_agent_ref`'s guess at the server's current pane. A missing,
-/// unreadable or non-regular container is no declaration, as
-/// `ae_latest_state_for`'s `[[ -f ]] || return 0` and `2>/dev/null` make it —
-/// and the `-f` gate sits inside [`event_text::read_container`], before the
-/// open, so a FIFO in the container's place answers empty instead of blocking.
 #[must_use]
 pub fn read(dir: &Path, viewer: &Viewer) -> Vec<u8> {
     let actor = if viewer.is_known() {
@@ -458,10 +422,6 @@ pub fn emit(dir: &Path, line: &str) -> io::Result<()> {
 }
 
 /// Take the exclusive advisory lock on `path`, retrying for up to `wait`.
-///
-/// The returned handle IS the lock: dropping it releases. `flock(2)` locks
-/// belong to the open file description, so a bash `flock` on the same path
-/// and this one exclude each other.
 pub(crate) fn acquire(path: &Path, wait: Duration) -> io::Result<File> {
     let file = OpenOptions::new().append(true).create(true).open(path)?;
     let started = Instant::now();
@@ -520,22 +480,6 @@ impl Sink for File {
 
 /// Write `bytes` so that afterwards the container holds either all of them,
 /// durably, or none of them.
-///
-/// `write_all` can fail after a prefix, and a sync can fail after the whole
-/// body is down; in both cases the container is cut back to the length it had
-/// before, under the lock the caller still holds, so a failed declaration
-/// neither leaves a truncated record for the next reader to choke on nor a
-/// valid state its caller was told was not recorded. The error reported is
-/// the write's.
-///
-/// **The rollback is itself synced.** A sync can fail AFTER the body reached
-/// durable storage; if the cut back to `before` were only in the page cache, a
-/// crash would resurrect the rejected record — durable on disk, refused to its
-/// caller. So the rollback is truncate THEN sync, and only then is the
-/// container "none of them, durably". A rollback whose truncate or sync fails
-/// is reported instead of the write's error, naming both and saying the
-/// container's state is unknown, because then it really is and the caller
-/// must hear that rather than the tidier lie.
 fn commit(sink: &mut impl Sink, bytes: &[u8]) -> io::Result<()> {
     let before = sink.len()?;
     match sink.put(bytes).and_then(|()| sink.sync()) {
@@ -929,7 +873,6 @@ mod tests {
         // `_ae_tac` does not invent a newline: the unterminated remainder lands
         // first and runs into the line before it. The bash body then reads the
         // FIRST `"actor":"` on that glued line — the remainder's — so a torn
-        // record can answer. Modelling it as repaired would read differently.
         let mut body = container(&[
             r#"{"ts":"t1","actor":"cl:lead","action":"state","ref":"working","summary":"whole"}"#,
         ]);

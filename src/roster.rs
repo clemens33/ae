@@ -132,15 +132,6 @@ pub fn migrate(
     // Migrate a POSITIVELY-v1 roster only, and fail closed otherwise. Three
     // gates, in order — each refuses without guessing:
     //
-    // 1. A ROSTER-DOUBTING anomaly (a slot claimed by both schemas, one name on
-    //    two seats, a malformed roster row, or a duplicate roster key) makes the
-    //    roster untrustworthy. An UnknownKey does NOT: a real v1 meta carries
-    //    session/layout/config/ae_core rows the reader files as UnknownKey, and
-    //    rejecting on those would refuse every live session (colead BLOCKER-1).
-    // 2. Any v2 row already present means this is not a clean v1 roster to
-    //    migrate — a half-migrated meta would silently drop its v2 seats.
-    // 3. No v1 row at all (an empty meta, or a clean v2 one) is nothing to
-    //    migrate — a clean v2 meta must REFUSE, not read back as an empty roster.
     let doubts: Vec<&Anomaly> = meta
         .anomalies()
         .iter()
@@ -226,16 +217,6 @@ pub fn migrate(
 
 /// Whether an anomaly makes the ROSTER itself untrustworthy for migration, at
 /// the provenance grain (colead round-2 BLOCKER-2):
-///
-/// - the identity-doubting three (a slot both schemas claim, one name on two
-///   seats, a malformed roster row) — always;
-/// - ANY `MalformedLine`: a bare `agent.<slot>` or `seat.<slot>` with no `=`
-///   is filed as one, and it is a raw seat claim the migration would silently
-///   drop — the line's key is not in the anomaly, so every one refuses;
-/// - a duplicate key, or an `UnknownKey`, ON an identity prefix — a v1-attached
-///   `profile.<slot>` / `harness_session.<slot>` is a v2 fact beside a v1 row;
-/// - an `UnknownKey` elsewhere is tolerated: a real v1 meta is full of them
-///   (`session`/`layout`/`config`/`ae_core` rows).
 pub(crate) fn roster_doubting(a: &Anomaly) -> bool {
     const IDENTITY_PREFIXES: [&str; 5] = [
         "agent.",

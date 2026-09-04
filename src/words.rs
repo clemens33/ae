@@ -6,56 +6,8 @@
 //! reports the tool. So the one shell service the launch actually used has to
 //! be here: split a command line into words, honouring quotes, escapes and
 //! parameter expansion.
-//!
-//! # The grammar, and what is deliberately NOT in it
-//!
-//! Quoting matches [`crate::launch_cmd`]'s lexer exactly, so the module that
-//! CLASSIFIES a profile command and the one that RUNS it never disagree about
-//! where a word ends: single quotes are wholly literal, double quotes escape
-//! only `"`, `\`, `$`, `` ` `` and a newline, and a bare backslash escapes one
-//! character.
-//!
-//! `$NAME`, `${NAME}` and the four conditional forms `${NAME:-word}`,
-//! `${NAME-word}`, `${NAME:+word}` and `${NAME+word}` expand from the process
-//! environment because operators really do write `$HOME` in a profile command —
-//! [`crate::launch_cmd`]'s own module doc says so. An unset name expands to
-//! nothing, exactly as the `bash -lc` this replaces did. Inside the operand of
-//! a conditional form a nested expansion and a backslash escape are honoured;
-//! a quote character is an ordinary byte there, which is the one place this
-//! lexer's VALUE differs from bash's while its ACCEPT set does not.
-//!
-//! Everything else a shell would do is REFUSED, never silently skipped:
-//! command substitution, control operators, redirection, subshells, brace
-//! expansion and a word-initial comment all end the parse with the character
-//! named. A profile command that needs a pipeline is a profile command that
-//! needs a wrapper script, and refusing loudly beats `exec`ing a tool with `|`
-//! as an argument. Two shell behaviours are dropped rather than refused, both
-//! stated here because they are silent: an expanded value is NOT field-split
-//! into more words, and no word is glob-expanded.
-//!
-//! # One grammar, one definition
-//!
-//! [`crate::launch_cmd::lex_simple_command`] VALIDATES a profile command and
-//! this module RUNS it, so the two must accept exactly the same language: a
-//! construct the validator accepts and this lexer refuses is a seat that plans
-//! green and then exits 1 in its own pane, and a construct this lexer accepts
-//! and the validator refuses is a construct that reaches an `exec` unvalidated.
-//! Both were live divergences (colead Z2 BLOCKER-3). The shared decision is
-//! [`scan_param`], which the validator calls for every `${…}` span it meets, and
-//! the refusal set below, which mirrors the validator's character for
-//! character. `_run` re-validates the freshly-read profile through the
-//! validator before it composes anything, so the two answers cannot drift apart
-//! at run time either.
 
 /// One lexed word: what the source said, and what the `exec` receives.
-///
-/// The two are not interchangeable, and which one a question is asked of is a
-/// decision. QUOTING is only visible in [`Word::raw`], and one question turns on
-/// it: is this word a leading `NAME=value` assignment? A shell decides that
-/// before quote removal, so `'A=1' claude` runs a binary named `A=1` rather than
-/// setting `A` — and [`crate::launch_cmd`] decides it the same way, on its own
-/// raw word. [`Word::assignment`] is that answer, computed once here so no
-/// consumer can re-derive it from the value and disagree.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Word {
     /// Byte-exact source span of the word, quoting and escapes included.
@@ -158,8 +110,6 @@ fn one_word(
             // Brace expansion and grouping, which the VALIDATOR refuses as
             // `Refusal::Grouping`. Without this arm a profile edited after its
             // launch to `claude {a,b}` reached the `exec` with a literal
-            // `{a,b}` argument — accepted here, refused there (colead Z2
-            // BLOCKER-3).
             ch @ ('{' | '}') => {
                 return Err(format!(
                     "'{ch}' in a launch command — ae execs the tool directly and runs no shell, so brace expansion and grouping are not available here"
@@ -242,9 +192,6 @@ fn double_quoted(
 }
 
 /// Why a `${…}` span is refused — the shared vocabulary of the two lexers.
-///
-/// [`crate::launch_cmd`] maps each variant onto its own `Refusal`, so the
-/// validator and this lexer refuse the same spans for the same reasons.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParamFault {
     /// An active substitution nested inside the braces: `$(`, `` ` ``, `<(` or
@@ -284,12 +231,6 @@ pub struct Param {
 }
 
 /// Scan the `${…}` that starts at `dollar`, deciding whether ae implements it.
-///
-/// **This is the one definition of the parameter grammar.** It answers for both
-/// lexers: [`crate::launch_cmd::lex_simple_command`] calls it to decide whether
-/// a profile command is launchable, and [`split`] calls it to evaluate the span
-/// it just approved. A form only one of them knew about is exactly the class of
-/// defect this function exists to make impossible.
 ///
 /// # Errors
 ///
@@ -331,8 +272,6 @@ pub fn scan_param(chars: &[char], dollar: usize) -> Result<Param, ParamFault> {
         Some('+') => Op::Alternate { colon },
         // `:=` and `:?` assign to or exit the shell; `#`, `%`, `/`, `^`, `,`
         // and the offset form are string operators ae does not implement.
-        // Refused HERE means refused at plan time too, which is where an
-        // operator can still fix the profile.
         _ => return Err(ParamFault::Unsupported),
     };
     Ok(Param {
@@ -344,13 +283,6 @@ pub fn scan_param(chars: &[char], dollar: usize) -> Result<Param, ParamFault> {
 }
 
 /// The index of the `}` that closes the `${` at `dollar`.
-///
-/// The frozen `scan_param_expansion` body, moved here so the validator and the
-/// runner share it. Refuses EVERY active substitution nested inside — `$(`,
-/// backtick, and the process substitutions `<(` / `>(` (bash runs all of them
-/// there — measured: `${X:-$(printf HIT)}` executes, and `${X:-<(printf HIT)}`
-/// yields a readable fd that prints HIT) — and an unclosed `${`. A backslash
-/// escapes the next char, so `\<(` is plain bytes.
 fn brace_span(chars: &[char], dollar: usize) -> Result<usize, ParamFault> {
     let n = chars.len();
     // dollar -> '$', dollar+1 -> '{'.
@@ -398,8 +330,6 @@ fn fault_message(fault: &ParamFault) -> String {
 }
 
 /// `$NAME`, `${NAME}` or a conditional form, starting at the `$` itself.
-///
-/// Returns the expanded text and the index one past the expansion.
 fn expansion(
     chars: &[char],
     dollar: usize,
@@ -453,8 +383,6 @@ fn expansion(
 }
 
 /// Does the conditional form treat this value as set?
-///
-/// The `:` forms count an empty value as unset; the bare forms do not.
 fn present(value: Option<&str>, colon: bool) -> bool {
     match value {
         Some(text) => !colon || !text.is_empty(),
@@ -463,11 +391,6 @@ fn present(value: Option<&str>, colon: bool) -> bool {
 }
 
 /// Expand the operand of a conditional form.
-///
-/// A backslash escape and a nested expansion are honoured; every other byte —
-/// a quote character included — is itself. The module doc states that
-/// narrowing: the ACCEPT set is shared with the validator, the value of this
-/// one span is deliberately simpler than bash's.
 fn operand(
     chars: &[char],
     (start, end): (usize, usize),

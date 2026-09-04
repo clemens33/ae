@@ -2,17 +2,17 @@
 //!
 //! Hand-written rather than a dependency for three reasons, in order of weight:
 //!
-//! 1. **SC-510d names the escape set** ae writes (`\"` `\\` `\n` `\t` `\r`).
+//! 1. **The escape set** ae writes is (`\"` `\\` `\n` `\t` `\r`).
 //!    A contract about bytes on disk is a contract this crate should own.
-//! 2. **SC-506 is satisfied by construction** when rendering is infallible: a
+//! 2. **Rendering is infallible by construction**: a
 //!    [`Value`] tree renders to a `String` that always closes, so no
 //!    per-session failure can truncate the document mid-array.
 //! 3. #80's "no dependency exists until a real one does" — and the first real
 //!    dependency also costs the `--allow license-not-encountered` relaxation in
 //!    `just rust-deny`, which is a deliberate change, not a side effect.
 //!
-//! The parse half is deliberately tolerant: SC-511b says readers ignore keys
-//! they do not understand, and SC-511c says the event schema grows by adding
+//! The parse half is deliberately tolerant: readers ignore keys
+//! they do not understand, and the event schema grows by adding
 //! optional keys. A parser that knew only today's keys would break on the first
 //! additive change it is contractually required to survive.
 
@@ -20,11 +20,6 @@ use std::fmt;
 use std::fmt::Write as _;
 
 /// A JSON value, in the subset ae's own formats use.
-///
-/// Objects keep their fields as an ordered list rather than a map so rendering
-/// is deterministic: [`Value::obj`] preserves insertion order instead of
-/// hashing. That is a property of this type, not a schema contract — list-digest
-/// member order is an open choice (phase-3 criterion 15 / SC-509).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Value {
     /// A string.
@@ -34,11 +29,6 @@ pub enum Value {
     Num(i64),
     /// A numeric literal this crate does not interpret — a float, an exponent,
     /// or an integer too large for [`Value::Num`] — kept verbatim.
-    ///
-    /// It exists for the READ direction only. SC-511c says the schema grows by
-    /// adding optional keys, and SC-511b says a reader ignores the ones it does
-    /// not understand: refusing a line because some future key carried `1.5`
-    /// would break exactly the compatibility those rows promise.
     Raw(String),
     /// A boolean.
     Bool(bool),
@@ -70,9 +60,6 @@ impl Value {
     }
 
     /// The string behind a [`Value::Str`], or `None` for every other shape.
-    ///
-    /// Readers use this rather than matching: an unknown key whose value is a
-    /// number is *ignored*, not an error (SC-511b).
     #[must_use]
     pub fn as_str(&self) -> Option<&str> {
         match self {
@@ -96,7 +83,7 @@ impl Value {
         self.get(key).and_then(Self::as_str)
     }
 
-    /// Render into `out`. Infallible — see the SC-506 note on this module.
+    /// Render into `out`. Infallible — see the note on this module.
     pub fn render_into(&self, out: &mut String) {
         match self {
             Self::Str(s) => {
@@ -146,11 +133,6 @@ impl Value {
 
     /// True when both values carry the same members and values, ignoring object
     /// field order. Arrays remain order-sensitive.
-    ///
-    /// List-digest member *order* is an open choice (phase-3 criterion 15).
-    /// Tests that need the member set compare with this rather than `==` or
-    /// rendered bytes. Insertion-order preservation is a separate determinism
-    /// property of [`Value::obj`].
     #[cfg(test)]
     #[must_use]
     pub(crate) fn same_members(&self, other: &Self) -> bool {
@@ -182,12 +164,6 @@ impl fmt::Display for Value {
 }
 
 /// Escape `s` into `out` as the body of a JSON string (no surrounding quotes).
-///
-/// SC-510d pins the set ae *writes*: `\"` `\\` `\n` `\t` `\r`. The remaining C0
-/// control bytes are escaped as `\u00XX` because a raw control byte inside a
-/// string is not legal JSON, and AGENTS.md's JSON-emitter row calls for
-/// handling control bytes at write time — escaping preserves the byte while
-/// keeping the document parseable.
 pub fn escape_into(s: &str, out: &mut String) {
     for ch in s.chars() {
         match ch {
@@ -252,11 +228,6 @@ pub fn parse(input: &str) -> Result<Value, ParseError> {
 }
 
 /// How deep a value may nest before the parser refuses it.
-///
-/// Not a contract row: a recursive-descent parser recurses, and an event log is
-/// a file on disk that a defect elsewhere could fill with `[[[[…`. A bounded
-/// refusal degrades one line; a stack overflow aborts the process, which is the
-/// one thing SC-506 says the document must never do.
 const MAX_DEPTH: usize = 64;
 
 struct Parser<'a> {
@@ -381,7 +352,6 @@ impl Parser<'_> {
         // RFC 8259: int = "0" / (digit1-9 *DIGIT). A leading zero is not a
         // stylistic quirk to tolerate — `010` is octal in several languages and
         // 10 in others, so accepting it means accepting a value whose meaning
-        // depends on who reads it next. `0` and `-0` are legal; `01` is not.
         if self.pos - digits_from > 1 && self.src.get(digits_from) == Some(&b'0') {
             return Err(self.err("no leading zero"));
         }
@@ -410,10 +380,8 @@ impl Parser<'_> {
         }
         let token = self.slice(start, self.pos)?;
         // An integer that fits is a number this crate understands; anything
-        // else is carried verbatim rather than refused (SC-511b/c). No separate
+        // else is carried verbatim rather than refused. No separate
         // "is it integral" flag is needed: `i64::from_str` accepts only an
-        // optional sign and digits, so every float and exponent lands in the
-        // fallback by itself.
         token
             .parse::<i64>()
             .map_or_else(|_| Ok(Value::Raw(token.to_owned())), |n| Ok(Value::Num(n)))
@@ -499,10 +467,6 @@ impl Parser<'_> {
 }
 
 /// How many bytes the UTF-8 character starting with `lead` occupies.
-///
-/// The input is a `&str`, so the byte is always a legal lead byte; a
-/// continuation byte would only be reached through a bug here, and `1` keeps
-/// that bug a parse error instead of a panic.
 fn utf8_len(lead: u8) -> usize {
     match lead {
         0xc0..=0xdf => 2,
@@ -519,7 +483,7 @@ mod tests {
 
     #[test]
     fn sc_510d_escapes_the_documented_set() {
-        // SC-510d: the escape set is \" \\ \n \t \r.
+        // the escape set is \" \\ \n \t \r.
         let mut out = String::new();
         escape_into("a\"b\\c\nd\te\rf", &mut out);
         assert_eq!(out, r#"a\"b\\c\nd\te\rf"#);
@@ -546,8 +510,6 @@ mod tests {
         // Determinism of this type: `Value::obj` preserves insertion order
         // rather than hashing. A HashMap-backed object would make two renders
         // of the same construction incomparable. List-digest member order is a
-        // separate, open choice (phase-3 criterion 15); this test does not
-        // document a schema order.
         let v = Value::obj([
             ("schema_version", Value::Num(1)),
             ("generated_at", Value::str("2026-05-29T14:00:00Z")),
@@ -610,7 +572,7 @@ mod tests {
 
     #[test]
     fn sc_511b_unknown_keys_of_any_type_are_tolerated() {
-        // SC-511b: readers ignore keys they do not understand. SC-511c: the
+        // readers ignore keys they do not understand, and the
         // schema grows by ADDING optional keys — one day, keys whose values are
         // not strings.
         let line = r#"{"ts":"t","actor":"a","action":"send","future":{"n":[1,2,null,true]}}"#;
@@ -661,7 +623,7 @@ mod tests {
 
     #[test]
     fn the_two_escapes_ae_never_writes_are_still_understood() {
-        // SC-510d pins what ae WRITES. A reader that met \b or \f from any
+        // What ae WRITES is pinned. A reader that met \b or \f from any
         // other producer should decode it, not reject the line.
         let parsed =
             parse(r#"{"s":"a\bb\fc"}"#).expect("the backspace and form-feed escapes parse");
@@ -783,7 +745,7 @@ mod tests {
 
     #[test]
     fn a_number_this_crate_does_not_interpret_is_kept_verbatim() {
-        // SC-511c: additive keys are fine — including, one day, a non-integral
+        // additive keys are fine — including, one day, a non-integral
         // one. Refusing the line would break the compatibility the row promises.
         let parsed = parse(r#"{"a":1.5,"b":2e3,"c":99999999999999999999}"#)
             .expect("a float-valued additive key must not break the reader");

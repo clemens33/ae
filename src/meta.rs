@@ -1,29 +1,29 @@
-//! The session `meta` file — SC-405a, SC-405b, SC-405c, and nothing else.
+//! The session `meta` file, and nothing else.
 //!
 //! Wired only after the seats ratified those three rows. Before that this
 //! module did not exist: the digest's `mode`/`origin`/`work_dir`/`goal` and its
 //! `agents[]` roster sat unread rather than being guessed from the bash writer.
 //!
-//! * **SC-405a** — `key=value`, split on the FIRST equals; values are single-line.
-//! * **SC-405b** — `mode`, `origin`, `work_dir`, `goal` are meta keys.
-//! * **SC-405c** — `agent.<slot>` carries `alias:name:provider-session-id`
-//!   (SC-1207b, session id optional per the roster authority) and
+//! * `key=value`, split on the FIRST equals; values are single-line.
+//! * `mode`, `origin`, `work_dir`, `goal` are meta keys.
+//! * `agent.<slot>` carries `alias:name:provider-session-id`
+//!   (the session id is optional) and
 //!   `agent_bin.<slot>` the recorded binary.
 //!
-//! * **SC-405d** — every OTHER key is tolerated silently and never degrades.
+//! * every OTHER key is tolerated silently and never degrades.
 //!   Unknown keys are the normal state of a real meta, so degrading on them
 //!   would make the flag constant-true. They are still recorded as an
 //!   [`Anomaly`], because seeing them costs nothing and a future tool may want
-//!   them; SC-405h was REJECTED, so no list of them lives here to go stale.
-//! * **SC-405e** — a malformed line, a malformed roster value or a DUPLICATE
+//!   them, and no list of them lives here to go stale.
+//! * a malformed line, a malformed roster value or a DUPLICATE
 //!   key is different: the reader could not take a value the writer meant to
-//!   give. Those degrade (SC-509b), and a duplicated key INVALIDATES its field
+//!   give. Those degrade, and a duplicated key INVALIDATES its field
 //!   rather than publishing an occurrence, because precedence is still
 //!   unclassified and picking one would be fabricating the answer.
 //!
 //! Two fields that look like meta keys and are not: `goal_set_epoch` is derived
-//! from the latest goal EVENT (SC-405f) and `branch` is a live tmux/git fact
-//! (SC-405g). Neither is read here.
+//! from the latest goal EVENT and `branch` is a live tmux/git fact
+//! . Neither is read here.
 
 use std::fmt;
 use std::fs;
@@ -33,17 +33,17 @@ use std::path::{Path, PathBuf};
 /// The file this module reads, inside a session directory.
 pub const FILE: &str = "meta";
 
-/// The roster key prefixes (SC-405c). The four context keys of SC-405b are
+/// The roster key prefixes. The four context keys are
 /// matched literally where they are absorbed, next to their fields.
 const ROSTER_PREFIX: &str = "agent.";
-/// SC-405l's two selector keys, matched literally where they are absorbed.
+/// two selector keys, matched literally where they are absorbed.
 const SERVER_KEY: &str = "tmux_server";
 const SERVER_KIND_KEY: &str = "tmux_server_kind";
 const ROSTER_BIN_PREFIX: &str = "agent_bin.";
 /// Identity schema v2 (alias-free): the seat's NAME, its execution PROFILE and
 /// the harness's own conversation id live under three keys instead of one
 /// `alias:name:sid` value. New KEYS, deliberately: a v1 parser meets them as
-/// SC-405d-unknown and answers an EMPTY roster (fail closed), where a `name:sid`
+/// unknown and answers an EMPTY roster (fail closed), where a `name:sid`
 /// value under the old key would have been misparsed as alias=name, name=sid.
 const SEAT_PREFIX: &str = "seat.";
 const PROFILE_PREFIX: &str = "profile.";
@@ -52,7 +52,7 @@ const HARNESS_SESSION_PREFIX: &str = "harness_session.";
 const SCHEMA_KEY: &str = "schema";
 
 /// Which identity schema wrote a roster entry. Kept per entry because the two
-/// spell the DISPLAY ref differently and pre-SC-511a ledgers pair on it.
+/// spell the DISPLAY ref differently and pre-routing-key ledgers pair on it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RosterSchema {
     /// `agent.<slot>=alias:name[:sid]` — the alias is the identity's first half.
@@ -62,7 +62,7 @@ pub enum RosterSchema {
     V2,
 }
 
-/// One agent, as the roster records it (SC-405c + SC-1207b, and identity v2).
+/// One agent, as the roster records it, in either identity schema.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RosterEntry {
     /// `main` / `worker.<n>` / `spawned.<n>` — the key's suffix.
@@ -84,11 +84,6 @@ pub struct RosterEntry {
 
 impl RosterEntry {
     /// The DISPLAY ref this agent is known by in the ledger and on panes.
-    ///
-    /// v2: the bare name — the identity. v1: `alias:name`, kept EXACTLY so that
-    /// pre-SC-511a events (which carry no routing key and pair on the display
-    /// string) still pair for a session or archive written under v1. A reader
-    /// never rewrites a legacy string; it only stops producing new ones.
     #[must_use]
     pub fn reference(&self) -> String {
         match (self.schema, self.profile.as_deref()) {
@@ -98,11 +93,7 @@ impl RosterEntry {
     }
 }
 
-/// The two spellings a positive server selector normalizes to (SC-405l).
-///
-/// The TYPE is part of the fact, not a rendering detail: `-L name` and
-/// `-S /path` address different servers, and a normalizer that flattened both
-/// to a string would let one spelling stand in for the other.
+/// The two spellings a positive server selector normalizes to.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Selector {
     /// `positive(name:<nonempty>)`.
@@ -111,17 +102,8 @@ pub enum Selector {
     Socket(PathBuf),
 }
 
-/// What a durable record says about its tmux server — SC-405l's typed knowledge
+/// What a durable record says about its tmux server — typed knowledge
 /// fact, normalized from the two-key legacy form.
-///
-/// Exactly one of four values, and only `Positive` confers SC-017j entitlement
-/// or supports SC-017k liveness. `Missing` and `Ambiguous` leave the candidate
-/// inventoried and route liveness through SC-017l's `unknown` — they are not
-/// failures to retry, they are the ratified shape of not knowing.
-///
-/// **Fail closed.** Every combination the row does not name explicitly is
-/// `Ambiguous`, because the cost of guessing wrong is querying a server ae was
-/// never entitled to query.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ServerSelector {
     /// A positive, unambiguous selector.
@@ -144,10 +126,6 @@ impl ServerSelector {
 }
 
 /// Something in the meta this reader is not authorised to interpret.
-///
-/// Every variant maps to a row that is still open, and carries the 1-based line
-/// so the report can point at it.
-/// A v2 metadata row waiting for its seat.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PendingRow {
     slot: String,
@@ -155,7 +133,7 @@ struct PendingRow {
     key: String,
     line: usize,
     /// A later duplicate of this metadata key was met: its VALUE is invalidated
-    /// (SC-405e), but the provenance survives so a still-later v1/mixed claim
+    /// , but the provenance survives so a still-later v1/mixed claim
     /// can reclassify the row as an unknown key — the same answer the v1-first
     /// order gives.
     duplicated: bool,
@@ -172,26 +150,26 @@ struct SlotClaim {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Anomaly {
-    /// SC-405d, UNCLASSIFIED — a key outside SC-405b/c.
+    /// UNCLASSIFIED — a key outside the context and roster sets.
     UnknownKey {
         /// The key as written.
         key: String,
         /// 1-based line number.
         line: usize,
     },
-    /// SC-405e, UNCLASSIFIED — a line with no `=` at all.
+    /// UNCLASSIFIED — a line with no `=` at all.
     MalformedLine {
         /// 1-based line number.
         line: usize,
     },
-    /// SC-405e, UNCLASSIFIED — a key that appears more than once.
+    /// UNCLASSIFIED — a key that appears more than once.
     DuplicateKey {
         /// The key as written.
         key: String,
         /// 1-based line number of the repeat.
         line: usize,
     },
-    /// SC-405c — a roster value that is not `alias:name[:session-id]`, or an
+    /// a roster value that is not `alias:name[:session-id]`, or an
     /// identity-v2 `seat.<slot>` with an empty name.
     MalformedRosterEntry {
         /// The key as written.
@@ -250,12 +228,6 @@ impl fmt::Display for Anomaly {
 }
 
 /// A parsed session `meta`.
-///
-/// A roster entry exists only once its `agent.<slot>` has been read and
-/// validated, so a [`RosterEntry`] with no identity is unrepresentable. An
-/// `agent_bin.<slot>` seen first waits in `pending_binaries` instead of
-/// creating a half-built entry — which is why [`Meta::roster`] needs no filter,
-/// and why there is no predicate here asking whether an agent has a name.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Meta {
     mode: Option<String>,
@@ -263,10 +235,6 @@ pub struct Meta {
     work_dir: Option<String>,
     goal: Option<String>,
     /// The frozen executable version recorded when ae created the session.
-    ///
-    /// This belongs to the human list subline, not the SC-509 digest.  Keeping
-    /// it here means presentation receives the value read from this session's
-    /// meta rather than substituting the version of the binary doing the read.
     ae_version: Option<String>,
     roster: Vec<RosterEntry>,
     /// `agent_bin.<slot>` values whose `agent.<slot>` / `seat.<slot>` has not
@@ -274,11 +242,11 @@ pub struct Meta {
     pending_binaries: Vec<(String, String)>,
     /// Identity v2 metadata rows (`profile.<slot>`, `harness_session.<slot>`)
     /// read before their `seat.<slot>` — same rule as the binaries. They keep
-    /// their key and line because a v1 claim turns them into SC-405d unknowns.
+    /// their key and line because a v1 claim turns them into unknown keys.
     pending_profiles: Vec<PendingRow>,
     pending_harness: Vec<PendingRow>,
     /// Provenance (key + line) of every v2 metadata row that ATTACHED to a V2
-    /// seat, kept so the row can be reclassified as SC-405d unknown if its
+    /// seat, kept so the row can be reclassified as an unknown key if its
     /// slot later turns out mixed — the same answer the other order gives.
     attached: Vec<PendingRow>,
     /// Every `agent.<slot>` / `seat.<slot>` KEY met so far — `=` or not, valid
@@ -293,12 +261,12 @@ pub struct Meta {
     doubtful_names: Vec<String>,
     /// The raw `schema=` value, where the writer recorded one.
     schema: Option<String>,
-    /// SC-405l's two selector keys, kept RAW. `None` is absent; `Some("")` is
+    /// two selector keys, kept RAW. `None` is absent; `Some("")` is
     /// present-and-empty, and the row makes those two different answers.
     server_value: Option<String>,
     server_kind: Option<String>,
-    /// Whether either selector key appeared more than once. SC-405l makes a
-    /// duplicate ambiguous whether or not the repeats agree, so what the second
+    /// Whether either selector key appeared more than once. A duplicate is
+    /// ambiguous whether or not the repeats agree, so what the second
     /// one SAID is not kept.
     server_duplicated: bool,
     anomalies: Vec<Anomaly>,
@@ -310,8 +278,8 @@ impl Meta {
     /// # Errors
     ///
     /// Returns the underlying [`io::Error`] — an absent meta included.
-    /// **SC-405i** makes that absence DEGRADE the session, in deliberate
-    /// contrast with SC-519's quiet treatment of an absent event log: a fresh
+    /// That absence DEGRADES the session, in deliberate
+    /// contrast with quiet treatment of an absent event log: a fresh
     /// session has no events yet, but a session with no meta has lost its
     /// context and its whole roster at once.
     pub fn read(dir: &Path) -> io::Result<Self> {
@@ -323,7 +291,7 @@ impl Meta {
         Ok(Self::parse(&text))
     }
 
-    /// Parse meta text (SC-405a).
+    /// Parse meta text.
     ///
     /// ```
     /// let meta = ae::meta::Meta::parse("mode=local\nwork_dir=/tmp/x\n");
@@ -342,7 +310,7 @@ impl Meta {
             if raw.is_empty() {
                 continue;
             }
-            // SC-405a: split on the FIRST equals. A value may contain more.
+            // split on the FIRST equals. A value may contain more.
             let Some((key, value)) = raw.split_once('=') else {
                 // A bare `agent.main` / `seat.main` is still a CLAIM on the
                 // slot (the frozen `_ar_roster_slots` names the slot from it),
@@ -356,13 +324,9 @@ impl Meta {
             let already_seen = seen.iter().any(|previous| previous == key);
             meta.note_claim(key, line, already_seen);
             if already_seen {
-                // SC-405e is UNCLASSIFIED: nobody has ruled whether the first
+                // UNCLASSIFIED: nobody has ruled whether the first
                 // or the last occurrence wins. Publishing either one would be
                 // FABRICATION — the digest would carry a value the contract
-                // does not say is the value. So the field is INVALIDATED: the
-                // reader reports a duplicate and emits nothing for that key at
-                // all, and the session degrades. When the seats rule
-                // precedence, this becomes a choice instead of a refusal.
                 meta.anomalies.push(Anomaly::DuplicateKey {
                     key: key.to_owned(),
                     line,
@@ -386,8 +350,8 @@ impl Meta {
             "goal" => self.goal = None,
             "ae_version" => self.ae_version = None,
             SCHEMA_KEY => self.schema = None,
-            // A repeated selector key is AMBIGUOUS by SC-405l, which is a
-            // stronger statement than SC-405e's invalidation: the flag survives
+            // A repeated selector key is AMBIGUOUS, which is a
+            // stronger statement than invalidation: the flag survives
             // even if the repeats agreed.
             SERVER_KEY | SERVER_KIND_KEY => self.server_duplicated = true,
             _ => {
@@ -417,7 +381,7 @@ impl Meta {
                     .or_else(|| key.strip_prefix(SEAT_PREFIX))
                 {
                     // A doubly-named slot is a slot whose identity is in doubt,
-                    // and SC-405k says agents[] membership is roster-defined —
+                    // and agents[] membership is roster-defined —
                     // so it contributes no agent rather than a guessed one.
                     self.roster.retain(|entry| entry.slot != slot);
                 }
@@ -432,7 +396,7 @@ impl Meta {
             "work_dir" => self.work_dir = Some(value.to_owned()),
             "goal" => self.goal = Some(value.to_owned()),
             "ae_version" => self.ae_version = Some(value.to_owned()),
-            // SC-405l supersedes SC-405d for exactly this family: these two are
+            // The selector family is the one exception: these two are
             // read and normalized rather than tolerated-and-ignored. Every
             // OTHER unknown key stays uninterpreted below.
             SERVER_KEY => self.server_value = Some(value.to_owned()),
@@ -457,7 +421,7 @@ impl Meta {
                         self.absorb_seat(key, slot, value, line);
                     }
                 } else {
-                    // SC-405d, unclassified: recorded, never interpreted.
+                    // Unclassified: recorded, never interpreted.
                     self.anomalies.push(Anomaly::UnknownKey {
                         key: key.to_owned(),
                         line,
@@ -467,7 +431,7 @@ impl Meta {
         }
     }
 
-    /// SC-405c + SC-1207b: `alias:name` with an optional provider session id.
+    /// `alias:name` with an optional provider session id.
     fn absorb_roster(&mut self, key: &str, slot: &str, value: &str, line: usize) {
         let parts: Vec<&str> = value.split(':').collect();
         let (alias, name, session_id) = match parts.as_slice() {
@@ -494,11 +458,6 @@ impl Meta {
         // v2 metadata on a v1 slot is already uninterpreted by `note_claim`
         // (which fired for this `agent.<slot>` KEY before this absorb, so a
         // malformed or bare v1 claim reclassifies it too). The alias and sid
-        // encoded in `agent.<slot>` are the identity, byte-stable.
-        // A v2 seat already carrying this NAME is an identity in doubt (v2's
-        // identity is the bare name); the v1 row keeps its `alias:name` ref.
-        // Two v1 rows sharing a name are two refs (`a:x`, `b:x`) — frozen, no
-        // anomaly.
         if self
             .roster
             .iter()
@@ -529,7 +488,6 @@ impl Meta {
         // The name is the identity, so it must be UNIQUE across the roster —
         // against every other seat, v1 rows included (their name half is what a
         // bare-name address matches). A collision drops every v2 seat carrying
-        // the name, now and later; a v1 row is never removed by it.
         if self.doubtful_names.iter().any(|n| n == value) {
             self.anomalies.push(Anomaly::DuplicateName {
                 name: value.to_owned(),
@@ -606,8 +564,6 @@ impl Meta {
                 // A v1 claim — VALID, malformed or bare — makes the slot v1, so
                 // its v2 metadata (pending or attached) is uninterpreted NOW,
                 // at the single point where "a v1 key landed" is known. This is
-                // what makes metadata-then-malformed/bare-v1 match the reverse
-                // order.
                 self.uninterpret_pending(slot);
             }
             RosterSchema::V2 => self.claims[at].v2_claims += 1,
@@ -632,7 +588,7 @@ impl Meta {
     }
 
     /// Flag every open metadata row for `key` value-invalidated, keeping its
-    /// provenance. SC-405e for a v2 metadata key: the value is gone, the row is
+    /// provenance. For a v2 metadata key the value is gone, the row is
     /// not — a later v1/mixed claim still reclassifies it as an unknown key.
     fn mark_metadata_duplicated(&mut self, key: &str) {
         for list in [
@@ -672,7 +628,7 @@ impl Meta {
         });
     }
 
-    /// Pending AND attached v2 metadata for `slot` becomes SC-405d unknown
+    /// Pending AND attached v2 metadata for `slot` becomes unknown
     /// keys: the slot turned out not to be a v2 seat (a v1 claim, or a mixed
     /// one) — the same answer whichever order the rows came in.
     fn uninterpret_pending(&mut self, slot: &str) {
@@ -769,7 +725,7 @@ impl Meta {
         Some(self.pending_binaries.swap_remove(at).1)
     }
 
-    /// The normalized server selector — SC-405l, read side only.
+    /// The normalized server selector, read side only.
     ///
     /// The row's mapping, transcribed rather than paraphrased:
     ///
@@ -826,25 +782,25 @@ impl Meta {
         }
     }
 
-    /// SC-405b — the copy mode the session was started in.
+    /// the copy mode the session was started in.
     #[must_use]
     pub fn mode(&self) -> Option<&str> {
         self.mode.as_deref()
     }
 
-    /// SC-405b — where the session came from.
+    /// where the session came from.
     #[must_use]
     pub fn origin(&self) -> Option<&str> {
         self.origin.as_deref()
     }
 
-    /// SC-405b — the working directory its agents run in.
+    /// the working directory its agents run in.
     #[must_use]
     pub fn work_dir(&self) -> Option<&str> {
         self.work_dir.as_deref()
     }
 
-    /// SC-405b — the session's one-line objective.
+    /// the session's one-line objective.
     #[must_use]
     pub fn goal(&self) -> Option<&str> {
         self.goal.as_deref()
@@ -857,12 +813,8 @@ impl Meta {
         self.ae_version.as_deref()
     }
 
-    /// SC-405c — the roster, in the order the meta lists its `agent.<slot>`
+    /// the roster, in the order the meta lists its `agent.<slot>`
     /// keys.
-    ///
-    /// No filtering: an entry only exists here once it has an identity, so
-    /// there is no half-built one to screen out. A `agent_bin.<slot>` with no
-    /// `agent.<slot>` never became an entry in the first place.
     #[must_use]
     pub fn roster(&self) -> &[RosterEntry] {
         &self.roster
@@ -876,9 +828,6 @@ impl Meta {
     }
 
     /// Everything this reader met and is not authorised to interpret.
-    ///
-    /// Non-empty means the session is degraded-with-reason until SC-405d and
-    /// SC-405e close.
     #[must_use]
     pub fn anomalies(&self) -> &[Anomaly] {
         &self.anomalies
@@ -904,12 +853,6 @@ const LOCK: &str = "meta.lock";
 
 /// The meta file's raw bytes — the read behind the frozen `ae_meta_get`,
 /// which greps the file rather than parsing it.
-///
-/// Not [`Meta::read`]: that parser serves the digest, where a duplicated key is
-/// an anomaly the contract has not ruled on (SC-405e) and so contributes
-/// nothing. A helper asked for its own key answers with the FIRST record, as
-/// its bash body always has — [`first_value`] — and the bytes it prints are
-/// the file's, not a decoded string's.
 ///
 /// # Errors
 ///
@@ -947,26 +890,6 @@ pub fn first_value<'a>(text: &'a [u8], key: &str) -> Option<&'a [u8]> {
 }
 
 /// The value of `key` when the meta names it EXACTLY ONCE, or `None`.
-///
-/// The fail-closed reading of a flat record file, for the keys where a
-/// duplicate is not a tie to break but a record whose meaning is in doubt. It
-/// is the same answer [`Meta::parse`] reaches for the keys it absorbs (SC-405e:
-/// a duplicated key contributes NOTHING, because no row says whether the first
-/// or the last occurrence wins, and publishing either would be fabrication).
-/// This is that rule for a key `Meta` leaves uninterpreted.
-///
-/// Distinct from [`first_value`] on purpose, and the caller picks: `first_value`
-/// answers "what does the first record say", which is right where a later
-/// duplicate is harmless; this answers "does the file say ONE thing", which is
-/// what a flag guarding behavior needs.
-///
-/// # Bash parity
-///
-/// The frozen helpers read such a flag as `grep '^key=' meta | cut -d= -f2-`
-/// captured into a scalar, so two records make a value with a NEWLINE in it,
-/// which equals neither one alone. Any duplicate therefore fails every `==`
-/// comparison bash makes against it — `None` here is that same answer, reached
-/// by a route that does not depend on a shell's field splitting.
 #[must_use]
 pub fn sole_value<'a>(text: &'a [u8], key: &str) -> Option<&'a [u8]> {
     let mut found = None;
@@ -987,17 +910,6 @@ pub fn sole_value<'a>(text: &'a [u8], key: &str) -> Option<&'a [u8]> {
 
 /// `text` with `key` set to `value`, or removed when `value` is `None` — the
 /// frozen helpers' awk, byte for byte (measured against it):
-///
-/// * a record is what precedes each `\n`; a final unterminated remainder is
-///   a record too, and comes out terminated, as awk's `print` terminates it;
-/// * a record's key is everything before its first `=` (a record without one
-///   is its own key), compared exactly — so a CR before the `\n` is part of
-///   the last field, never of the key;
-/// * EVERY matching record is replaced by `key=value\n` on a set, and every
-///   one is dropped on an unset — a duplicated key stays duplicated, because
-///   a rewrite that healed a degraded meta would hide the degradation;
-/// * every other record is emitted VERBATIM, its CR included;
-/// * a set whose key matched nothing appends `key=value\n`.
 #[must_use]
 pub fn rewritten(text: &str, key: &str, value: Option<&str>) -> String {
     let mut out = String::new();
@@ -1062,8 +974,6 @@ impl RewriteError {
 /// rename, and the directory is synced after it, because a synced inode
 /// behind an unsynced directory entry is a meta that can revert on a crash
 /// while the event announcing it survives.
-///
-/// `value` is written as given; the caller makes it one line.
 ///
 /// # Errors
 ///
@@ -1131,14 +1041,6 @@ pub fn init(dir: &Path, content: &str) -> Result<(), RewriteError> {
 /// The whole meta, published OVER whatever is there — [`init`]'s sibling for a
 /// caller that MEANS to replace an existing document.
 ///
-/// Same lock, same temp + fsync + rename, same all-or-nothing visibility: a
-/// reader sees the old meta or the complete new one. The difference from
-/// [`init`] is the one gate, and it is deliberate rather than a relaxation —
-/// `init` refuses over an existing meta because initialisation is a create, and
-/// a caller that has already read the current document and assembled its
-/// successor is doing something else. `_meta-init --replace` is that caller:
-/// it re-publishes a session's identity from base facts it just staged.
-///
 /// # Errors
 ///
 /// [`RewriteError::NotWritten`] when the lock is not acquired or any write,
@@ -1155,18 +1057,6 @@ pub fn replace(dir: &Path, content: &str) -> Result<(), RewriteError> {
 /// [`init`] and [`replace`] take for themselves — and hold it until the
 /// returned handle is dropped.
 ///
-/// For the callers those three cannot serve: a read-decide-publish step whose
-/// DECISION must not race another writer. `_roster add-seat` allocates the
-/// lowest free `spawned.<n>` from the document it is about to append to, and
-/// two of them under two separate locks would allocate the same index; the
-/// roster migrate rewrites every line of a document it first had to read.
-/// Neither is expressible as a key-at-a-time [`rewrite`].
-///
-/// Pair it with [`publish_locked`], which publishes WITHOUT re-taking the lock:
-/// `acquire` locks a fresh open file description each time, so a second
-/// acquisition from the same process blocks against the first rather than
-/// nesting.
-///
 /// # Errors
 ///
 /// The underlying [`io::Error`] — the lock not acquired within
@@ -1179,10 +1069,6 @@ pub fn lock(dir: &Path) -> io::Result<fs::File> {
 /// [`lock`]. The publish itself is [`init`]'s and [`replace`]'s: temp, fsync,
 /// rename, directory fsync.
 ///
-/// Takes no lock of its own, and so must never be called without one held —
-/// the handle from [`lock`] is the evidence, and keeping it alive across this
-/// call is what makes the read-decide-publish step atomic.
-///
 /// # Errors
 ///
 /// [`RewriteError::NotWritten`] when any write, sync or rename fails;
@@ -1194,18 +1080,6 @@ pub fn publish_locked(dir: &Path, content: &str) -> Result<(), RewriteError> {
 
 /// The staged BASE-FACTS document `_meta-init` consumes: the `key=value` lines
 /// bash wrote for a session before its roster block existed, read from `path`.
-///
-/// A meta read, in the module that owns meta documents — deliberately here
-/// rather than in the identity entries, so the crate keeps ONE inventoried
-/// place where a meta document is read off the filesystem. It is a whole
-/// separate function from [`read_bytes`] because the target is different: that
-/// one reads a session's own `meta` by its directory, this one reads a path a
-/// caller was handed.
-///
-/// Text, not bytes: a meta is a record file of `key=value` lines, the
-/// [`init`]/[`replace`] publishers take `&str`, and a base file that is not
-/// UTF-8 is not a document worth publishing a session's identity from — the
-/// decode failure is reported as the refusal it is.
 ///
 /// # Errors
 ///
@@ -1321,7 +1195,7 @@ mod tests {
         );
         // DUPLICATE PARITY: every matching record is replaced, so a duplicated
         // key stays duplicated — a rewrite that healed a degraded meta would
-        // hide the degradation SC-405 reports.
+        // hide the degradation the reader reports.
         assert_eq!(rewritten("k=1\nk=2\n", "k", Some("3")), "k=3\nk=3\n");
         assert_eq!(rewritten("k=1\nk=2\n", "k", None), "");
     }
@@ -1417,7 +1291,6 @@ agent_bin.main=claude
         // kind absent/empty x value absent/empty. `missing` means NO SELECTOR
         // FACT IS AVAILABLE — not a claim that readable bytes positively omitted
         // the keys — so all four land in the same place, and none of them is
-        // `ambiguous`: nothing here was readable-and-contradictory.
         for (text, why) in [
             ("mode=local\n", "kind absent, value absent"),
             ("tmux_server=\n", "kind absent, value empty"),
@@ -1507,7 +1380,7 @@ agent_bin.main=claude
 
     #[test]
     fn sc_405l_reading_the_selector_never_loses_the_rest_of_the_meta() {
-        // The family left SC-405d's catch-all; nothing else did.
+        // The family left catch-all; nothing else did.
         let meta = Meta::parse(
             "mode=local\ntmux_server_kind=name\ntmux_server=work\nae_path=/usr/local/bin/ae\n",
         );
@@ -1661,7 +1534,7 @@ agent_bin.main=claude
     }
 
     /// Identity v2 (P1). The tracer that preceded this test pinned the v1
-    /// parser's answer to these keys — SC-405d-unknown, EMPTY roster, i.e. fail
+    /// parser's answer to these keys — unknown, EMPTY roster, i.e. fail
     /// closed (git history: `identity_v2_keys_are_unknown_to_the_v1_parser_...`).
     /// The v2 parser reads them as a seat: the NAME is the identity, the profile
     /// and the harness session are metadata, and the display ref is the bare name.
@@ -1747,7 +1620,7 @@ agent_bin.main=claude
     #[test]
     fn identity_v2_a_slot_claimed_by_both_schemas_contributes_no_agent() {
         // Either order: the second claim drops the slot and pins the anomaly, and
-        // a third claim cannot resurrect it. SC-405k — membership is roster-
+        // a third claim cannot resurrect it. Membership is roster-
         // defined, so an identity in doubt is no identity.
         for (text, second_line) in [
             ("agent.main=fable5:lead\nseat.main=lead\n", 2),
@@ -1769,7 +1642,7 @@ agent_bin.main=claude
             meta.roster().is_empty(),
             "no resurrection after a mixed claim"
         );
-        // The third line is BOTH a duplicate key (SC-405e) and a mixed claim; the
+        // The third line is BOTH a duplicate key and a mixed claim; the
         // duplicate check runs first and refuses to absorb it at all.
         assert!(
             meta.anomalies()
@@ -1809,7 +1682,7 @@ agent_bin.main=claude
 
     #[test]
     fn identity_v1_rows_keep_their_alias_name_display_ref() {
-        // Pre-SC-511a ledgers pair on the display string; a reader that changed
+        // Pre-routing-key ledgers pair on the display string; a reader that
         // it would unpair every legacy state event. v1 stays v1 on the read side.
         let meta = Meta::parse("agent.main=fable5:lead:sid\n");
         assert_eq!(meta.roster()[0].schema, RosterSchema::V1);
@@ -1820,7 +1693,7 @@ agent_bin.main=claude
 
     /// Colead P1 gate BLOCKER-1: v2 metadata rows must never rewrite a v1
     /// identity, in EITHER order. The one rule: on a v1 (or mixed) slot they are
-    /// SC-405d unknown keys — exactly what a v1 parser would have called them.
+    /// unknown keys — exactly what a v1 parser would have called them.
     #[test]
     fn identity_v1_ref_and_sid_are_byte_stable_under_v2_metadata_in_both_orders() {
         for text in [
@@ -2235,7 +2108,7 @@ agent_bin.main=claude
 
     #[test]
     fn sc_405e_every_retained_scalar_key_invalidates_the_same_way() {
-        // One field tested is one field proven. The four SC-405b keys and the
+        // One field tested is one field proven. The four context keys and the
         // frozen human-subline version all go through the same refusal.
         type Accessor = fn(&Meta) -> Option<&str>;
         let read: [(&str, Accessor); 5] = [
@@ -2264,7 +2137,7 @@ agent_bin.main=claude
 
     #[test]
     fn sc_405e_a_doubly_named_slot_contributes_no_agent() {
-        // SC-405k: membership is roster-defined, so a slot whose identity is in
+        // membership is roster-defined, so a slot whose identity is in
         // doubt supplies no agent rather than a guessed one.
         let meta = Meta::parse(concat!(
             "agent.main=claude:lead\n",
@@ -2370,8 +2243,6 @@ agent_bin.main=claude
         // The contrast with `first_value` IS the point, so both are asserted on
         // the same inputs: `first_value` answers "what does the first record
         // say", which is right where a later duplicate is harmless; this
-        // answers "does the file say ONE thing", which is what a flag guarding
-        // behavior needs.
         let once = b"session=x\nmeta_agent=true\n";
         assert_eq!(sole_value(once, "meta_agent"), Some(b"true".as_slice()));
         assert_eq!(first_value(once, "meta_agent"), Some(b"true".as_slice()));

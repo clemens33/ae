@@ -1,55 +1,5 @@
 //! The two renders the core owes the pane glue: `workspace.md` and the
 //! per-agent system-prompt context.
-//!
-//! # What these are ports OF
-//!
-//! `regenerate_manifest` and `build_ae_context` in the frozen `ae` script.
-//! Both are pure TEXT builders over three inputs — the session's `meta`
-//! records, the operator's INI config, and (for the manifest) the panes tmux
-//! reports — and the bash bodies are the behaviour spec this module was
-//! written against. A2.c's job is to give them a Rust owner so the bash
-//! bodies can be deleted, so the acceptance test is BYTE IDENTITY on the same
-//! inputs, not "close enough".
-//!
-//! # Why the templates are stored whole
-//!
-//! Both documents are long frozen prose with a handful of substitution
-//! points. Reassembling them from dozens of `push_str` calls would make every
-//! future diff against the bash original unreadable, so the manifest is one
-//! verbatim template with the frozen `${name}` markers left exactly where the
-//! heredoc had them, and [`expand`] is the one small scanner that fills them.
-//! A scanner, never a sequence of `replace` calls: `${sess}` is a prefix of
-//! nothing here, but `${sessions_dir}` and a future `${session}` would collide
-//! under sequential replacement, and that is the class of bug a template
-//! engine exists to make impossible.
-//!
-//! # The one deliberate divergence: an unrecognised `mode`
-//!
-//! The frozen `regenerate_manifest` declares `local copy_desc` and then reads
-//! `${copy_desc}` in its heredoc. Under bash >= 4 — which is the only bash `ae`
-//! runs, since it re-execs itself under one — a `case` that matches none of
-//! `git`/`full`/`local` leaves that local DECLARED BUT UNSET, and `set -u`
-//! kills the function with `copy_desc: unbound variable` BEFORE the redirection
-//! opens the file. The manifest is then not regenerated at all, silently as far
-//! as any caller is concerned (the last one wraps the call in
-//! `2>/dev/null || true`). Measured 2026-09-03 against this tree's own body.
-//!
-//! [`manifest_document`] renders the document with an EMPTY description
-//! instead. That is a divergence and it is recorded here rather than hidden:
-//! every production call site passes a mode `ae` itself generated, so the path
-//! is unreachable in the product, and a render that refuses is strictly worse
-//! than one that omits a sentence. `build_ae_context` has no such hole — its
-//! locals are all initialised, and an unknown mode there legitimately yields no
-//! working-tree block.
-//!
-//! # Fail-quiet, in both renders
-//!
-//! An absent or unreadable `meta` yields empty values and the generic
-//! fallbacks — the frozen bodies read it through `grep … 2>/dev/null || true`
-//! and never fail on it. The identity sentence is the sharpest case: a name
-//! that fails [`crate::config::is_agent_name`] produces NO identity line
-//! rather than a hostile one, silently, because `meta` is a file that
-//! predates the grammar and is hand-editable.
 
 use std::fmt::Write as _;
 use std::io::Write;
@@ -382,9 +332,6 @@ fn row(meta_bytes: &[u8], key: &str) -> String {
 }
 
 /// `$(_ar_root)` — `${AE_HOME:-${HOME}/.ae}/archive`.
-///
-/// The archive path is DERIVED from the root and the id, never stored: an
-/// absolute path recorded at launch would rot the moment `AE_HOME` moved.
 fn archive_root() -> PathBuf {
     // Both variables unset is the frozen expansion's degenerate case — the
     // empty `${HOME}` leaves `/.ae`. Reproduced rather than refused, because a
@@ -421,10 +368,6 @@ fn tool_label(cmd: &str) -> String {
 
 /// The tmux server this session's panes are read on: its recorded selector
 /// when usable, else the ambient one.
-///
-/// The frozen body calls bare `tmux`, which inside a session is the shim
-/// honouring `$AE_TMUX_SERVER`; the core has no such shim and reads the same
-/// server out of the session's own meta, which the launch pinned from it.
 fn pane_server(meta_bytes: &[u8]) -> ServerId {
     match Meta::parse(&String::from_utf8_lossy(meta_bytes)).server_selector() {
         ServerSelector::Positive(selector) => ServerId::Selected(selector),
@@ -453,9 +396,6 @@ fn section_header(line: &str) -> Option<&str> {
 /// (a `#` inside included); anything else is cut at its first `#` and then
 /// right-trimmed, and may legitimately end up EMPTY — `k = # note` prints
 /// `section.k=`, which is what the frozen body prints.
-///
-/// Only SPACES may sit either side of the `=`: the frozen regex spells `\ *`,
-/// not `[[:space:]]*`, so a tab there makes the line no entry at all.
 fn config_entry(line: &str) -> Option<(&str, String)> {
     let mut chars = line.char_indices();
     let (_, first) = chars.next()?;
@@ -484,12 +424,6 @@ fn config_entry(line: &str) -> Option<(&str, String)> {
 
 /// Every `<section>.<key>=<value>` the frozen `parse_config` would print, in
 /// file order across `files` — global first, then the local overlay.
-///
-/// A file that is absent or unreadable contributes nothing, silently, as the
-/// frozen `[[ -f ]]` guard makes it. An UNTERMINATED last line contributes
-/// nothing either: `while read` returns non-zero on it and the body never
-/// runs, so a config whose final line has no newline is one entry short — the
-/// port keeps that rather than quietly improving on it.
 fn config_entries(files: &[PathBuf]) -> Vec<(String, String)> {
     let mut entries = Vec::new();
     for file in files {
@@ -537,10 +471,6 @@ fn config_value(entries: &[(String, String)], key: &str) -> String {
 
 /// The `[profiles]` keys, in the order `parse_config` prints them, joined
 /// `, ` — the spawn section's "Available profiles" line.
-///
-/// A profile the local config REDEFINES appears twice, because the frozen loop
-/// appends every matching entry rather than de-duplicating. Kept: this is a
-/// render, and the frozen render says that.
 fn profile_inventory(entries: &[(String, String)]) -> String {
     let mut names = Vec::new();
     for (key, _) in entries {
@@ -553,9 +483,6 @@ fn profile_inventory(entries: &[(String, String)]) -> String {
 
 /// The `## Parent archive` section, or the empty string when this session
 /// continues nothing.
-///
-/// Rendered for EVERY agent, not just the lead — the lead alone is instructed
-/// to read the digest, but the pointer belongs in the manifest everyone reads.
 fn parent_block(meta_bytes: &[u8]) -> String {
     let parent = row(meta_bytes, "parent_archive_id");
     if parent.is_empty() {
@@ -588,12 +515,6 @@ fn or_zero(value: &str) -> &str {
 
 /// The `workspace.md` document for one session — the frozen
 /// `regenerate_manifest`, byte for byte on the same inputs.
-///
-/// The five session facts are PASSED, not read from `meta`, because two of the
-/// frozen call sites hold a fact the file does not yet: a rename renders under
-/// the new name before meta carries it, and a launch renders before meta is
-/// complete. What IS read from meta is what the frozen body reads from it —
-/// the layout, and each pane's `profile.<slot>` / `agent_bin.<slot>`.
 #[must_use]
 pub fn manifest_document(
     dir: &Path,
@@ -689,8 +610,6 @@ pub fn context_document(
     // WHO AM I (#59). The roster row `seat.<slot>=<name>` IS the identity, and
     // the name is re-checked against the grammar HERE — not only at the
     // creation boundaries — because meta is a file: it survives `ae transfer`
-    // and is hand-editable. Silent on a violation: a non-conforming row must
-    // still launch its agent, just without an identity line.
     let identity = (!slot.is_empty())
         .then(|| row(&meta_bytes, &format!("seat.{slot}")))
         .filter(|name| !name.is_empty() && crate::config::is_agent_name(name));
@@ -800,10 +719,6 @@ fn flags(tail: &[String], allow_out: bool) -> Result<Flags, String> {
 /// `_manifest-render <dir> <session> <work-dir> <origin> <mode> <main-pane>
 /// [--global <f>] [--local <f>] [--out <path>]` — write the session's
 /// `workspace.md`.
-///
-/// `--out` names a different destination (`-` is stdout); without it the
-/// document lands on `<dir>/workspace.md`, which is where the frozen body
-/// writes it.
 ///
 /// # Errors
 ///

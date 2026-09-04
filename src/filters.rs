@@ -1,26 +1,26 @@
-//! Which sessions `ae list` shows — SC-017a–f and SC-017i, as pure functions.
+//! Which sessions `ae list` shows, as pure functions.
 //!
-//! | Row | Flag | Shows |
-//! |---|---|---|
-//! | SC-017a | *(none)* | running sessions only — "stopped history is opt-in noise" |
-//! | SC-017i | `--running` | the explicit spelling of that default |
-//! | SC-017b | `--all` | running sessions, **then** stopped |
-//! | SC-017c | `--stopped` | stopped sessions only |
-//! | SC-017d | `--needs-attn` | attention sessions; `--needs-me`/`--needs`/`--attn` |
-//! | SC-017e | `--active` | recent activity — an ae event within ~5 min, `AE_LIST_ACTIVE_SECS` tunes, `--busy` alias |
-//! | SC-017f | `--json` | honours the active filters |
+//! | Flag | Shows |
+//! |---|---|
+//! | *(none)* | running sessions only — stopped history is opt-in noise |
+//! | `--running` | the explicit spelling of that default |
+//! | `--all` | running sessions, **then** stopped |
+//! | `--stopped` | stopped sessions only |
+//! | `--needs-attn` | attention sessions; `--needs-me`/`--needs`/`--attn` |
+//! | `--active` | recent activity — an ae event within ~5 min, `AE_LIST_ACTIVE_SECS` tunes, `--busy` alias |
+//! | `--json` | honours the active filters |
 //!
-//! SC-017f is why this module exists at all: the digest and the table must not
+//! `--json` is why this module exists at all: the digest and the table must not
 //! each carry their own idea of what "the active filters" selected. Selection
 //! happens once, over the model, and both renderings consume the result.
 //!
-//! Two rows govern how flags COMBINE, and they say different things because the
+//! Flags COMBINE in two ways, because they are of two different kinds:
 //! flags are of two different kinds:
 //!
-//! * **SC-521 as amended** — `--running` / `--stopped` / `--all` are the same
+//! * **same dimension** — `--running` / `--stopped` / `--all` are
 //!   dimension and therefore ALTERNATIVES: the last distinct selector wins, and
 //!   repeating one changes nothing.
-//! * **SC-521's original clause** — across dimensions the filters INTERSECT
+//! * **across dimensions** — the filters INTERSECT
 //!   literally, so `--stopped --needs-attn` selects nothing rather than
 //!   erroring, because each attention/activity row reads "running sessions
 //!   only" on its own terms.
@@ -32,45 +32,22 @@ use crate::digest::{SessionEntry, Status};
 use crate::time::Timestamp;
 
 /// The `--active` window when nothing tunes it.
-///
-/// **SC-523** makes 300s normative — the row was ratified after this slice
-/// asked the question, and it also says implementations MAY take the value as a
-/// caller parameter, which is what [`Selection::active_within_secs`] is. What
-/// `AE_LIST_ACTIVE_SECS` does when unset, overridden or malformed stays with
-/// SC-1410k, so nothing here reads the environment.
 pub const DEFAULT_ACTIVE_WINDOW_SECS: i64 = 300;
 
 /// Which half of the world a listing covers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Scope {
-    /// SC-017a / SC-017i — running sessions only. The default.
+    /// running sessions only. The default.
     #[default]
     Running,
-    /// SC-017b — running sessions, then stopped ones.
+    /// running sessions, then stopped ones.
     All,
-    /// SC-017c — stopped sessions only.
+    /// stopped sessions only.
     Stopped,
 }
 
 impl Scope {
     /// The status groups this scope shows, in the order they are shown in.
-    ///
-    /// **SC-017m** ratifies the composition, **SC-017n** the group order
-    /// (running, unknown, stopped):
-    ///
-    /// | scope | groups |
-    /// |---|---|
-    /// | default / `--running` | running, unknown |
-    /// | `--stopped` | stopped |
-    /// | `--all` | running, unknown, stopped |
-    ///
-    /// `--running` includes [`Status::Unknown`] DELIBERATELY. Unknown is not
-    /// stopped history — it is a session whose liveness ae failed to establish
-    /// — so leaving it out of the default listing would HIDE exactly the
-    /// session a human most needs to see. That is the bug the whole ruling
-    /// exists to kill, and it is the shape this function had before: an array
-    /// literal is not exhaustiveness-checked, so a variant added to `Status`
-    /// fell out of every scope here and the compiler still reported success.
     const fn order(self) -> &'static [Status] {
         match self {
             Self::Running => &[Status::Running, Status::Unknown],
@@ -85,19 +62,15 @@ impl Scope {
 pub struct Selection {
     /// Which sessions are in scope at all.
     pub scope: Scope,
-    /// SC-017d — keep only sessions carrying an attention reason.
+    /// keep only sessions carrying an attention reason.
     pub needs_attention: bool,
-    /// SC-017e — keep only sessions with an ae event within this many seconds.
+    /// keep only sessions with an ae event within this many seconds.
     /// `None` does not filter on activity.
     pub active_within_secs: Option<i64>,
 }
 
 impl Selection {
-    /// The default listing: running sessions only (SC-017a).
-    ///
-    /// SC-017i makes `--running` the explicit spelling of the default, so this
-    /// IS [`Selection::default`] and a mutation swapping one for the other is
-    /// equivalent by contract — the row is what makes them the same thing.
+    /// The default listing: running sessions only.
     #[must_use]
     pub fn running() -> Self {
         Self::default()
@@ -106,8 +79,8 @@ impl Selection {
     /// Apply the active filters to `sessions`, as of `now`.
     ///
     /// Returns borrowed entries in the order they should be shown: running
-    /// sessions first, then unknown ones, then stopped ones (SC-017b/SC-017n),
-    /// restricted to the groups the scope carries (SC-017m), each group keeping
+    /// sessions first, then unknown ones, then stopped ones,
+    /// restricted to the groups the scope carries, each group keeping
     /// the order it arrived in.
     ///
     /// ```
@@ -128,8 +101,8 @@ impl Selection {
         sessions: &'a [SessionEntry],
         now: Timestamp,
     ) -> Vec<&'a SessionEntry> {
-        // SC-017b/SC-017m/SC-017n name a composition AND an order, so the
-        // scope carries both rather than leaving two call sites to agree by
+        // The scope names a composition AND an order, so it carries both
+        // rather than leaving two call sites to agree by
         // coincidence. See [`Scope::order`].
         self.scope
             .order()
@@ -140,16 +113,9 @@ impl Selection {
                     .filter(|session| session.status == *status)
                     .filter(|session| self.keeps(session, now))
                     .collect();
-                // **SC-017n** — the PRODUCT sorts. Raw byte / `LC_ALL=C` order
+                // the PRODUCT sorts. Raw byte / `LC_ALL=C` order
                 // by name within the group, so tmux emission order, filesystem
                 // glob order, root traversal, locale collation and creation
-                // order never become output contracts by accident. Rust compares
-                // `str` by bytes, which IS the C order the row names, and the
-                // session-name grammar is ASCII so the two cannot diverge.
-                //
-                // STABLE, so identities whose names are byte-identical keep the
-                // order they arrived in: SC-017n supplies no tie-breaker, and
-                // inventing one would be contract this row does not write.
                 group.sort_by(|left, right| left.name.as_bytes().cmp(right.name.as_bytes()));
                 group
             })
@@ -157,22 +123,6 @@ impl Selection {
     }
 
     /// Whether the attention and activity filters keep `session`.
-    ///
-    /// **SC-521c** ratifies the schema-v2 domain: both flags test their positive
-    /// fact on `running` OR `unknown` — every session not known stopped — and a
-    /// stopped session never satisfies either live-scope predicate. So
-    /// `--stopped --needs-attn` and `--stopped --active` select nothing in
-    /// either argument order, and `--all` with either keeps matching running
-    /// AND unknown sessions. There is no invented usage error.
-    ///
-    /// The predicate stays POSITIVE on both sides: being `unknown` does not
-    /// admit a session, it only stops disqualifying one. Liveness uncertainty
-    /// never erases an independently established record fact, and it never
-    /// invents one either — a session ae cannot verify must still carry the
-    /// attention or activity fact to be kept.
-    ///
-    /// Supersedes SC-521a's "matching running sessions" domain for version 2
-    /// only; the selector-intersection and no-relabel conclusions stand.
     fn keeps(&self, session: &SessionEntry, now: Timestamp) -> bool {
         if self.needs_attention && !(live_scope(session.status) && session.needs_attention()) {
             return false;
@@ -186,13 +136,8 @@ impl Selection {
     }
 }
 
-/// Whether a status is in SC-521c's live scope — every session not known
+/// Whether a status is in live scope — every session not known
 /// stopped.
-///
-/// Named rather than inlined because it is the whole of SC-521c's change and it
-/// has two call sites: two places that spell the same domain separately are two
-/// places for it to drift, and the version-1 shape drifted exactly that way by
-/// naming `Running` in both.
 const fn live_scope(status: Status) -> bool {
     match status {
         Status::Running | Status::Unknown => true,
@@ -201,12 +146,6 @@ const fn live_scope(status: Status) -> bool {
 }
 
 /// Whether `session` saw an ae event within `window` seconds of `now`.
-///
-/// A session that has never been active is not recently active.
-///
-/// **SC-524**: a future timestamp counts as ACTIVE. Clock skew fails toward the
-/// loud false-positive — a session shown active — rather than silently hiding a
-/// live one. The row states that as doctrine, not preference.
 fn is_active(session: &SessionEntry, now: Timestamp, window: i64) -> bool {
     session.last_active_epoch.is_some_and(|epoch| {
         let age = Timestamp::from_epoch(epoch).seconds_until(now);
@@ -215,16 +154,11 @@ fn is_active(session: &SessionEntry, now: Timestamp, window: i64) -> bool {
 }
 
 /// The `list` argv, once read: which sessions, and in which rendering.
-///
-/// The flag grammar is SC-017a–f and SC-017i, including the aliases each row
-/// names. It lives here rather than in [`crate::cli`] because it is the same
-/// contract as the selection itself: `--needs-attn` is not a separate feature
-/// from [`Selection::needs_attention`], it is its spelling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ListArgs {
     /// The filters the flags selected.
     pub selection: Selection,
-    /// SC-017f — whether to render the machine-readable digest.
+    /// whether to render the machine-readable digest.
     pub json: bool,
 }
 
@@ -243,8 +177,6 @@ impl std::error::Error for UnknownFlag {}
 impl ListArgs {
     /// Read `list`'s flags — argv AFTER the `list` / `ls` word.
     ///
-    /// The default is SC-017a: running sessions only, tabular.
-    ///
     /// # Errors
     ///
     /// Returns [`UnknownFlag`] for an argument no row names. What the binary
@@ -262,24 +194,23 @@ impl ListArgs {
         let mut parsed = Self::default();
         for arg in args {
             match arg.as_ref() {
-                // SC-017i / SC-017b / SC-017c — one dimension, so these are
-                // ALTERNATIVES (SC-521 amended): assignment, not accumulation,
+                // one dimension, so these are
+                // ALTERNATIVES: assignment, not accumulation,
                 // which makes the last distinct selector win and a repeat a
-                // no-op without either being special-cased.
                 "--running" => parsed.selection.scope = Scope::Running,
                 "--all" => parsed.selection.scope = Scope::All,
                 "--stopped" => parsed.selection.scope = Scope::Stopped,
-                // SC-017d, with the three aliases the row names.
+                // The attention filter, with its three aliases.
                 "--needs-attn" | "--needs-me" | "--needs" | "--attn" => {
                     parsed.selection.needs_attention = true;
                 }
-                // SC-017e, with its `--busy` alias. The window is the row's
+                // The activity filter, with its `--busy` alias. The window is
                 // "~5 min"; a caller that reads AE_LIST_ACTIVE_SECS overwrites
                 // it, because this function does not read the environment.
                 "--active" | "--busy" => {
                     parsed.selection.active_within_secs = Some(DEFAULT_ACTIVE_WINDOW_SECS);
                 }
-                // SC-017f.
+                // The JSON rendering.
                 "--json" => parsed.json = true,
                 other => return Err(UnknownFlag(other.to_owned())),
             }
@@ -330,7 +261,7 @@ mod tests {
 
     #[test]
     fn sc_017m_each_scope_shows_exactly_this_composition_in_this_order() {
-        // Transcription of the ratified rows, read off SC-017m/SC-017n and not
+        // Transcription of the ratified order, and not
         // off the implementation.
         assert_eq!(
             Scope::Running.order(),
@@ -355,9 +286,6 @@ mod tests {
         // THE anti-silent-hole mechanism. Rust checks `match` for
         // exhaustiveness and nothing else, so the arrays in `Scope::order` will
         // compile forever after a variant is added to `Status` — dropping that
-        // state from every listing while the build stays green. This test is
-        // what goes red instead. (`Status::ALL`'s own completeness is guarded
-        // by a `match` in digest.rs, so the two together close the loop.)
         for status in Status::ALL {
             assert!(
                 [Scope::Running, Scope::All, Scope::Stopped]
@@ -509,10 +437,9 @@ mod tests {
 
     #[test]
     fn sc_017a_amended_the_default_shows_no_stopped_session() {
-        // SC-017m AMENDS this row's composition: the default is no longer
+        // The default is no longer
         // "running only" but "not stopped history" — running plus unknown. What
-        // SC-017a still fixes, and what this asserts, is that a stopped session
-        // never appears in the bare listing.
+        // still holds, and what this asserts, is that a stopped session
         let corpus = corpus();
         let shown = Selection::default().select(&corpus, NOW);
         assert!(
@@ -545,7 +472,7 @@ mod tests {
     fn sc_017b_all_shows_running_sessions_then_unknown_ones_then_stopped_ones() {
         // The row names an ORDER, not just a wider set: the stopped session
         // that comes first in the corpus must still come last in the listing,
-        // and SC-017n puts unknown between the two groups.
+        // and unknown sits between the two groups.
         let selection = Selection {
             scope: Scope::All,
             ..Selection::default()
@@ -625,16 +552,15 @@ mod tests {
             ..Selection::default()
         };
         let shown = selection.select(&sessions, NOW);
-        // MEMBERSHIP is what this row is about. The sequence is SC-017n's C-byte
+        // MEMBERSHIP is what this row is about. The sequence is C-byte
         // order, which is why it no longer matches the order they were supplied
         // in — a test that pinned supplied order would now be asserting the very
-        // thing SC-017n says must never reach output.
         assert_eq!(names(&shown), ["four-minutes-ago", "just-now"]);
     }
 
     #[test]
     fn sc_017e_the_window_is_a_parameter_so_the_env_can_tune_it() {
-        // AE_LIST_ACTIVE_SECS tunes it; the exact default belongs to SC-1410k.
+        // AE_LIST_ACTIVE_SECS tunes it; the exact default is set elsewhere.
         let sessions = vec![active("ten-minutes-ago", Status::Running, 600)];
         let wide = Selection {
             active_within_secs: Some(3600),

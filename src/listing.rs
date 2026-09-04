@@ -1,51 +1,9 @@
-//! The two renderings of `ae list` — SC-017f, SC-017g, SC-017h, SC-509.
+//! The two renderings of `ae list`.
 //!
-//! # One selection, two renderings
-//!
-//! **SC-017f** — `--json` honours the active filters. That is why nothing here
-//! filters: [`crate::filters::Selection::select`] runs ONCE and both renderings
-//! consume its result. A second selection path is a second chance to disagree,
-//! and the row exists precisely to forbid the disagreement.
-//!
-//! The machine rendering is [`crate::digest::Digest`] verbatim — SC-509's
-//! versioned object, SC-506's always-closing document. This module calls it; it
-//! does not re-derive the shape.
-//!
-//! # The injected world
-//!
-//! [`World`] is the phase boundary. Enumeration is SC-017j's (phase 1),
-//! liveness SC-017k/l's (phase 2), and both are ratified and implemented — so
-//! the sessions arriving as a parameter is no longer a placeholder for an
-//! undecided surface but the thing that keeps THIS module unable to re-derive
-//! them. Presentation gets facts and presents them.
-//!
-//! The shipped binary wires that source itself: [`crate::run`] derives the state
-//! root, discovers, classifies and renders. The old "no session source is
-//! wired" refusal is gone.
-//!
-//! # PROVISIONAL — the tabular LAYOUT is not ratified
-//!
-//! **SC-017h names content, not form.** Its authority (commands.md:56-59) is a
-//! single sentence: a tabular view "with per-agent health, declared state, and
-//! a session-level `attn:<reason>` marker when a session needs attention". No
-//! columns, no field order and no widths.
-//!
-//! **PER-AGENT HEALTH IS NOT IN THIS VIEW, deliberately.** Nothing on the list
-//! path populates it, so the column rendered `unknown` for every agent of every
-//! session — an always-unknown cell is not a three-way distinction, it is noise
-//! occupying the place a reader looks for state. The fact still ships, on the
-//! digest's `alive` member, where it is genuinely three-way. The column returns
-//! with a pane query that fills it. Ratified with the seats for this slice:
-//!
-//! * what [`table`] SHOWS is pinned — the row's three nouns plus frozen's
-//!   per-session goal/git/version/activity subline;
-//! * what it LOOKS LIKE is **provisional and unratified** — only layout bytes
-//!   remain open; capture-backed residual bytes are not layout.
-//!
-//! Two things follow, and both are deliberate. An agent's own attention reason
-//! is NOT rendered: SC-017h names three nouns and `attn:` is the SESSION-level
-//! marker (SC-017g's rollup). Frozen's three established empty-listing messages
-//! are retained; no message is invented for the remaining empty scopes.
+//! Nothing here filters: [`crate::filters::Selection::select`] runs ONCE and
+//! both renderings consume its result. A second selection path is a second
+//! chance to disagree. The machine rendering is [`crate::digest::Digest`]
+//! verbatim; this module calls it and does not re-derive the shape.
 
 use crate::digest::{Digest, SessionEntry, Status};
 use crate::filters::{ListArgs, Scope};
@@ -55,35 +13,14 @@ use crate::session::SessionRuntime;
 use crate::time::Timestamp;
 
 /// The facts a listing needs that no session directory holds.
-///
-/// The completed phase-2 snapshot, projected for presentation: sessions with
-/// their classified status, and SC-017o's loss facts. See the module docs for
-/// why it arrives as a value rather than being fetched.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct World {
-    /// The moment the listing is taken as of — SC-509's `generated_at`, and
-    /// SC-017e's "now" for the activity window.
+    /// The moment the listing is taken as of — `generated_at`, and
+    /// "now" for the activity window.
     pub now: Timestamp,
     /// Every session known to the caller, before any filter runs.
     pub sessions: Vec<SessionEntry>,
-    /// **SC-017o** — HOW MANY distinct logical sources failed to enumerate.
-    ///
-    /// A property of the SNAPSHOT, not of the selection: filtering changes which
-    /// sessions are shown and can never change whether ae managed to look
-    /// everywhere. It passes through [`render`] untouched, so every filter's
-    /// document carries the same answer and every human view the same warning.
-    ///
-    /// **A COUNT, AND NOT THE PATHS, ON PURPOSE.** SC-017o's human surface needs
-    /// the number and its machine surface needs the boolean; neither needs a
-    /// path. And what presentation cannot NAME, it cannot re-derive: with no
-    /// state root and no record path anywhere in its input, a renderer that
-    /// wanted to re-check a fact has nothing to open. That is a narrower claim
-    /// than "no syscall can occur" — a gratuitous one stays expressible — but it
-    /// is the claim that matters, because a re-derivation of the facts being
-    /// presented needs an address for them.
-    ///
-    /// [`World::inventory_complete`] derives the boolean from this, so the two
-    /// can never disagree.
+    /// HOW MANY distinct logical sources failed to enumerate.
     pub losses: usize,
 }
 
@@ -98,24 +35,20 @@ impl World {
         }
     }
 
-    /// The same world, carrying what SC-017o's loss facts amount to.
-    ///
-    /// Takes the FACTS and keeps their cardinality, through the same counter the
-    /// boundary uses — so "one source recorded twice is one loss" is decided in
-    /// one place rather than twice.
+    /// The same world, carrying what loss facts amount to.
     #[must_use]
     pub fn with_losses(mut self, losses: &[FailedSource]) -> Self {
         self.losses = distinct_losses(losses);
         self
     }
 
-    /// SC-017o's `inventory_complete` — derived, never stored.
+    /// `inventory_complete` — derived, never stored.
     #[must_use]
     pub const fn inventory_complete(&self) -> bool {
         self.losses == 0
     }
 
-    /// How many DISTINCT logical sources failed — SC-017o's human count.
+    /// How many DISTINCT logical sources failed — human count.
     #[must_use]
     pub const fn loss_count(&self) -> usize {
         self.losses
@@ -123,25 +56,6 @@ impl World {
 }
 
 /// The phase-3 boundary — **the first operation on a classified snapshot**.
-///
-/// This type exists so the boundary is a PRODUCTION fact rather than a line in a
-/// test. An earlier version had the suite append a "presentation enter" marker
-/// to its own log AFTER calling the projection, which cannot establish a
-/// sequence: everything the projection did happened before the marker and was
-/// invisible to it. A test log is narration; an invoked entry point is an
-/// observation.
-///
-/// [`Presentation::enter`] does no filtering, no sorting and no formatting — it
-/// only borrows the snapshot — so no phase-3 work can precede it.
-/// [`Presentation::at_entry`] is what the snapshot said AT that moment, in the
-/// order it said it, which is what makes reordering or dropping anything at the
-/// boundary observable.
-///
-/// **There is no wrapper around this, deliberately.** A `world_of(snapshot, …)`
-/// convenience used to exist, and it was a place work could hide: a caller that
-/// mangled a clone and then entered with the changed value was invisible to a
-/// test that entered directly, because the test was below the real route. The
-/// route and the boundary are now the same call, so "below it" is not a place.
 pub struct Presentation<'a> {
     snapshot: &'a Snapshot,
 }
@@ -154,9 +68,6 @@ impl<'a> Presentation<'a> {
     }
 
     /// The identities and statuses this boundary received, IN ORDER.
-    ///
-    /// Unsorted on purpose: a fingerprint that sorted its own input could not
-    /// tell an untouched snapshot from one reordered before the boundary.
     #[must_use]
     pub fn at_entry(&self) -> Vec<(String, &'static str)> {
         self.snapshot
@@ -172,17 +83,7 @@ impl<'a> Presentation<'a> {
     }
 
     /// The world this snapshot describes — one entry per classified candidate,
-    /// carrying SC-017o's completeness fact forward.
-    ///
-    /// **Reads nothing.** Every SC-509 field comes from the record snapshot
-    /// phase 1 captured at discovery ([`crate::session::RecordSnapshot`]), so the
-    /// digest's record facts and the liveness printed beside them are one
-    /// observation of the world rather than two.
-    ///
-    /// A tmux-only candidate has no directory to read, so it is SC-509b
-    /// `degraded` by construction — SC-017j: "a positively live tmux-only
-    /// candidate remains visible; loss of its durable record is the separate
-    /// SC-509b `degraded` fact".
+    /// carrying completeness fact forward.
     #[must_use]
     pub fn world(&self, now: Timestamp, unanswered_secs: i64) -> World {
         self.world_with(now, unanswered_secs, &[])
@@ -190,16 +91,6 @@ impl<'a> Presentation<'a> {
 
     /// The same world, with the runtime facts the caller observed for each
     /// classified candidate — `runtimes[i]` describes `snapshot.sessions[i]`.
-    ///
-    /// **Still reads nothing.** The tmux observation happens in the caller, next
-    /// to the classification it must coexist with, and arrives here as data —
-    /// which is exactly what keeps [`Self::world`]'s guarantee true rather than
-    /// trading it away for the pane liveness and live branch SC-405g and
-    /// SC-017p/q put in this digest.
-    ///
-    /// A SHORT or empty slice is not an error: an index nobody observed falls
-    /// back to status-only, which is the answer "nothing was established about
-    /// this session's runtime" and the one every arm of SC-017q asks for.
     #[must_use]
     pub fn world_with(
         &self,
@@ -236,7 +127,7 @@ impl<'a> Presentation<'a> {
         World {
             now,
             sessions,
-            // SC-017o's fact crosses as a COUNT of distinct failed sources,
+            // fact crosses as a COUNT of distinct failed sources,
             // never as the paths — see [`World::losses`].
             losses: distinct_losses(&self.snapshot.incomplete),
         }
@@ -244,10 +135,6 @@ impl<'a> Presentation<'a> {
 }
 
 /// How many DISTINCT logical sources failed.
-///
-/// Counted HERE, at the boundary, because presentation must not hold the loss
-/// paths — see [`World::losses`]. Distinct by source key: the row's fact is how
-/// many sources were lost, not how many records exist.
 fn distinct_losses(losses: &[FailedSource]) -> usize {
     let mut seen: Vec<&FailedSource> = Vec::new();
     for loss in losses {
@@ -259,20 +146,6 @@ fn distinct_losses(losses: &[FailedSource]) -> usize {
 }
 
 /// What `ae list` writes to STDERR for `world`, if anything.
-///
-/// **SC-017o** — a human listing keeps its partial table and says, explicitly,
-/// that it could not look everywhere. The message carries at least the NUMBER of
-/// failed logical sources, because the useful fact is not WHICH sessions were
-/// lost — nobody can know that — but that absence in this snapshot is not proof.
-///
-/// Emitted for EVERY human view, not just `--all`: a warning that appears only
-/// under one filter is a warning most invocations never see, and the filter a
-/// human happened to type has nothing to do with whether ae managed to
-/// enumerate. Wording, whether paths are named, and exit status are open
-/// choices; the count is not.
-///
-/// `None` for a complete snapshot — silence is the correct answer when nothing
-/// was lost, and a diagnostic that always fires stops carrying information.
 #[must_use]
 pub fn diagnostic(world: &World) -> Option<String> {
     let lost = world.loss_count();
@@ -291,7 +164,7 @@ pub fn diagnostic(world: &World) -> Option<String> {
 /// The returned string is the complete payload including its final newline. A
 /// tabular listing retains frozen's established empty-state messages for every
 /// scope and filter combination.
-/// A `--json` listing is never empty: SC-509's document exists whether or not
+/// A `--json` listing is never empty: document exists whether or not
 /// any session survived the filters.
 ///
 /// ```
@@ -308,7 +181,7 @@ pub fn diagnostic(world: &World) -> Option<String> {
 ///     ],
 /// );
 ///
-/// // SC-017a: the default shows running sessions only — in both renderings.
+/// // The default shows running sessions only — in both renderings.
 /// let json = render(&ListArgs::parse(&["--json"])?, &world);
 /// assert!(json.contains(r#""name":"live""#));
 /// assert!(!json.contains(r#""name":"old""#));
@@ -317,7 +190,7 @@ pub fn diagnostic(world: &World) -> Option<String> {
 /// ```
 #[must_use]
 pub fn render(args: &ListArgs, world: &World) -> String {
-    // SC-017f: ONE selection. Both arms below read this same answer.
+    // ONE selection. Both arms below read this same answer.
     let selected = args.selection.select(&world.sessions, world.now);
     if args.json {
         let mut out = Digest::new(
@@ -328,7 +201,7 @@ pub fn render(args: &ListArgs, world: &World) -> String {
             world.inventory_complete(),
         )
         .render();
-        // The newline is a stdout convention, not part of SC-509's object —
+        // The newline is a stdout convention, not part of object —
         // which is why it is added at the boundary and not inside `Digest`.
         out.push('\n');
         out
@@ -340,11 +213,6 @@ pub fn render(args: &ListArgs, world: &World) -> String {
 }
 
 /// Frozen's three observed messages for an empty human selection.
-///
-/// Attention deliberately wins over activity, matching the predecessor's
-/// ordered checks when both filters were named. Frozen `ae:4313-4321` is the
-/// authority for the two source-derived messages whose empty states have no
-/// capture oracle in the phase-4 corpus.
 const fn frozen_empty_listing(args: &ListArgs) -> &'static str {
     if args.selection.needs_attention {
         "No running sessions need your attention.\n"
@@ -359,44 +227,13 @@ const fn frozen_empty_listing(args: &ListArgs) -> &'static str {
     }
 }
 
-/// The tabular view — SC-017h's three nouns.
-///
-/// **The layout is PROVISIONAL and unratified** (see the module docs). What is
-/// contractual is that an exact session maximum carries `attn:<reason>`.
-/// `--needs-attn` may still select a row on its partial-evidence `true`, but human
-/// output never fabricates an inexact class. Each agent line carries that
-/// agent's reference, its short session id and its DECLARED STATE. Health is
-/// not among them — see the module docs for why it moved to the digest.
-/// Column widths for the human table.
-///
-/// Fixed rather than computed from the widest row: a listing whose columns move
-/// when an unrelated session appears is harder to scan across runs, not easier.
-/// An over-long value pushes its row out rather than being truncated — losing a
-/// character of a session name to keep a column straight is the wrong trade.
+/// The tabular view — three nouns.
 const NAME_WIDTH: usize = 26;
 const STATUS_WIDTH: usize = 10;
 const AGENT_WIDTH: usize = 24;
 const ID_WIDTH: usize = 10;
 
 /// Append `value`, padded to at least `width` with a single trailing space.
-///
-/// Width is counted in CHARS, not bytes: a multi-byte name would otherwise be
-/// padded by its UTF-8 length and under-indent its column.
-///
-/// # What alignment is claimed, and what is not
-///
-/// Columns align for **ASCII** values, which is every value that can occupy an
-/// aligned column here: session names, agent names, aliases and ids are ASCII
-/// by enforced grammar, so newly created sessions always line up. The origin is
-/// the one field that may hold arbitrary Unicode, and it is LAST on the row —
-/// nothing follows it that could be pushed out of true.
-///
-/// A char is not a terminal cell. A legacy or hand-edited name containing
-/// double-width, combining or zero-width characters will therefore pad to the
-/// wrong visible column. That is **best-effort, not a guarantee**: correcting
-/// it needs a Unicode width table — a dependency and a class of its own
-/// failures — bought for a cosmetic gain on metadata the current grammar can no
-/// longer produce. Revisit if such a name is ever observed in the wild.
 fn push_padded(out: &mut String, value: &str, width: usize) {
     out.push_str(value);
     for _ in value.chars().count()..width {
@@ -410,15 +247,10 @@ pub fn table(sessions: &[&SessionEntry]) -> String {
     // `render` is the product route and supplies its snapshot time to
     // `table_at`. This compatibility entry point preserves its deterministic
     // epoch-zero clock: nonzero activity timestamps therefore have frozen's
-    // future-time spelling, `just now`, rather than an ambient-clock result.
     table_at(sessions, Timestamp::from_epoch(0))
 }
 
 /// The tabular view at the snapshot time that supplied `sessions`.
-///
-/// Frozen bash's subline was clock-relative, so the production route must pass
-/// the same snapshot clock that selected the sessions. The header, columns and
-/// agent-row layout remain provisional; the subline is residual phase-4 output.
 #[must_use]
 pub fn table_at(sessions: &[&SessionEntry], now: Timestamp) -> String {
     let mut out = String::new();
@@ -426,7 +258,6 @@ pub fn table_at(sessions: &[&SessionEntry], now: Timestamp) -> String {
         // Columns are PADDED, not tab-separated. A tab renders at whatever stop
         // the terminal happens to have, so a name one character longer shifted
         // every field after it and nothing lined up down the page. `--json` is
-        // the machine surface; this one is for a human scanning a column.
         push_padded(&mut out, &session.name, NAME_WIDTH);
         push_padded(&mut out, session.status.as_str(), STATUS_WIDTH);
         // The filter may have selected this row on readable partial evidence, but
@@ -442,12 +273,6 @@ pub fn table_at(sessions: &[&SessionEntry], now: Timestamp) -> String {
         // ORIGIN — where this session came from. Kept because it is what makes
         // a session identifiable at a glance when several projects each have
         // one; the copy MODE is not, and is deliberately not rendered.
-        // ORIGIN IS APPENDED LAST AND VERBATIM. All padding is already in place
-        // by this point, so the origin's own bytes are never adjusted — a path
-        // may legally end in a space, and the earlier shape stripped it while
-        // tidying the row, silently rendering a DIFFERENT path than the one the
-        // session records. Trailing whitespace is trimmed only on the branch
-        // where no origin follows it.
         match session
             .origin
             .as_deref()
@@ -468,21 +293,10 @@ pub fn table_at(sessions: &[&SessionEntry], now: Timestamp) -> String {
             // Frozen rendered the short session id on BOTH grammars — running
             // (ae@72c7293:4254) and stopped (ae:4299) — and our table omitted it
             // entirely, which run 2 semantic-fails independently of every health
-            // or state question. It sits between the reference and the semantic
-            // fields, and it is the SAME helper the digest consumes so the two
-            // surfaces cannot drift.
             push_padded(&mut out, agent.display_session_id(), ID_WIDTH);
             // Per-agent HEALTH is deliberately NOT a column here. Nothing
             // populates it on the list path — it rendered `unknown` for every
             // agent of every session — and an always-unknown column is not a
-            // three-way distinction, it is noise occupying the place where a
-            // reader looks for state. The health that a human acts on already
-            // reaches this view as the session's `attn:` marker. Restore a
-            // per-agent column when a pane query actually fills it.
-            // SC-017h's amended declared-state cell is three-way: an exact
-            // declaration, an exact no-declaration, or unreadable event input.
-            // The last spelling cannot reuse `-`, which means the reader did
-            // establish there was no declaration.
             out.push_str(
                 match (session.agent_state_is_exact(), agent.state.as_deref()) {
                     (true, Some(state)) => state,
@@ -493,13 +307,6 @@ pub fn table_at(sessions: &[&SessionEntry], now: Timestamp) -> String {
             // The frozen `!` marker, restored on the trigger the paragraph above
             // records: a pane query now fills this. It reads "no agent is in the
             // foreground of this seat" — a pane that dropped to a bare shell, or
-            // one the enumeration positively excluded.
-            //
-            // RUNNING ONLY, as the frozen was: a stopped session's agents are
-            // `alive: false` because the session is provably gone, and marking
-            // every seat of every stopped row would say nothing a reader cannot
-            // already read in the status column. Unknown liveness stays blank —
-            // a marker is a claim, and `None` is the absence of one.
             if session.status == Status::Running && agent.alive == Some(false) {
                 out.push_str(" !");
             }
@@ -510,12 +317,6 @@ pub fn table_at(sessions: &[&SessionEntry], now: Timestamp) -> String {
 }
 
 /// Append the retained, frozen-bash session summary.
-///
-/// The current table carries the session attention marker on its semantic
-/// session row. It intentionally does not repeat that marker here: phase 4
-/// classifies the frozen marker as semantic while this whole subline is
-/// residual, so duplicating it would turn a retained semantic fact into a
-/// residual divergence.
 fn push_frozen_session_subline(out: &mut String, session: &SessionEntry, now: Timestamp) {
     out.push_str("  ");
     if let Some(goal) = session.goal.as_deref().filter(|goal| !goal.is_empty()) {
@@ -541,8 +342,6 @@ fn push_frozen_session_subline(out: &mut String, session: &SessionEntry, now: Ti
         // Branch acquisition HAS landed (see `session::branch_at`), so this arm
         // no longer stands for "unimplemented". It now means the work tree
         // answered nothing: not a repository, moved or unreadable, or a `HEAD`
-        // whose bytes were refused by the rendering guard. A healthy `None` is
-        // therefore still a value placeholder rather than a missing atom.
         out.push_str("git:? · ");
     }
     out.push_str("ae ");
@@ -593,12 +392,6 @@ fn frozen_relative_time(now: Timestamp, timestamp: Option<i64>) -> String {
 #[cfg(test)]
 mod tests {
     /// The whitespace-collapsed fields of the row mentioning `needle`.
-    ///
-    /// Column WIDTHS are layout and change when a column is added or dropped;
-    /// the fields present and their ORDER are the contract. Asserting on
-    /// collapsed fields keeps these gates pinned to the second without making
-    /// every one of them a padding test that must be rewritten whenever the
-    /// table is re-laid out.
     fn row_fields(rendered: &str, needle: &str) -> Vec<String> {
         rendered
             .lines()
@@ -905,7 +698,7 @@ mod tests {
     #[test]
     fn sc_509_the_json_rendering_is_the_digest_verbatim_plus_a_newline() {
         // Not a second shape: the bytes are `Digest::render` exactly, so a
-        // change to SC-509's schema cannot be silently absorbed here.
+        // change to schema cannot be silently absorbed here.
         let rendered = render(&args(&["--json"]), &world());
         let expected = crate::digest::Digest::new(
             NOW,
@@ -968,14 +761,6 @@ mod tests {
     fn sc_017f_json_honours_the_filters_and_never_widens_them() {
         // The row's actual content: --json is a RENDERING. For every filter, the
         // two renderings must cover the same sessions.
-        //
-        // Asserted through EXPECTED SELECTION DATA rather than by parsing rows:
-        // the digest names the sessions it selected, and the tabular rendering
-        // must equal the rendering of exactly those, in that order. Both sides
-        // move together under any format change, so nothing here knows what
-        // separates a column or where a line starts — and the claim is stronger
-        // than the old per-name membership check, which could not see a session
-        // rendered twice or two renderings that disagreed about order.
         let world = world();
         for flags in [
             vec![],
@@ -1021,7 +806,7 @@ mod tests {
 
     #[test]
     fn sc_521a_an_empty_intersection_is_still_a_complete_document() {
-        // SC-506/SC-509: selecting nothing produces a document, not silence.
+        // selecting nothing produces a document, not silence.
         let value = json_of(&["--stopped", "--needs-attn", "--json"]);
         assert_eq!(
             value.get("schema_version"),
@@ -1031,7 +816,7 @@ mod tests {
         assert_eq!(
             value.get("inventory_complete"),
             Some(&json::Value::Bool(true)),
-            "SC-017o: an empty SELECTION is not an incomplete enumeration"
+            "an empty SELECTION is not an incomplete enumeration"
         );
     }
 
@@ -1066,7 +851,6 @@ mod tests {
         // CONTENT, not layout — and proven through ISOLATED WORLDS rather than
         // by finding a session's line: each session is rendered ALONE, so
         // "carries the marker" needs no idea of where its line begins or what
-        // separates its columns.
         let world = world();
         for session in &world.sessions {
             let alone = table(&[session]);
@@ -1083,7 +867,7 @@ mod tests {
             }
         }
 
-        // And the marker survives the full listing: SC-017g's rollup reaches
+        // And the marker survives the full listing: rollup reaches
         // exactly the sessions that need it, and no others.
         let flagged = world
             .sessions
@@ -1114,9 +898,6 @@ mod tests {
         // Membership over the whole document. Whether each agent's OWN nouns
         // reach it is proven agent-by-agent in
         // `sc_017h_every_listed_session_brings_its_agents_health_and_declared_state`,
-        // where isolation makes `contains` mean THAT agent. What is proven here
-        // is that a multi-agent roster loses nobody — including the unhealthy
-        // one, which is the agent a listing is most tempting to skip.
         let world = world();
         let rendered = table(&world.sessions.iter().collect::<Vec<_>>());
         for listed in world.sessions.iter().flat_map(|session| &session.agents) {
@@ -1131,11 +912,6 @@ mod tests {
     }
 
     /// An origin's own bytes survive the row exactly.
-    ///
-    /// The first shape of this renderer appended the origin and THEN tidied the
-    /// row's trailing whitespace, so a path legitimately ending in a space was
-    /// silently rendered as a different path. Padding now happens before the
-    /// origin, and nothing after it touches those bytes.
     #[test]
     fn an_origin_keeps_its_exact_bytes_including_a_trailing_space() {
         for origin in [
@@ -1168,12 +944,6 @@ mod tests {
     }
 
     /// The delivery slice's presentation contract, in one gate.
-    ///
-    /// Each assertion here corresponds to a defect found by running the binary
-    /// against real sessions: an origin that was never rendered, columns that
-    /// were tab-separated and so lined up at whatever stop the terminal had,
-    /// and a health column nothing populated. The agent row asserts THREE cells —
-    /// reference, short session id, declared state — which is what it renders.
     #[test]
     fn the_listing_carries_origin_aligns_its_columns_and_shows_no_unpopulated_health() {
         let mut short = SessionEntry::new("s", Status::Running);
@@ -1228,10 +998,6 @@ mod tests {
     fn sc_017h_an_agent_that_declared_nothing_is_not_rendered_as_blank() {
         // CONTENT, not form. Contractual: "declared nothing" is a visible
         // answer, and it is not the same answer as "declared the empty string".
-        // WHICH glyph stands in, and what separates the fields, is provisional
-        // layout (see the module docs) and stays unpinned here.
-        // An ISOLATED WORLD — one session, one agent — so the whole rendering
-        // can be reasoned about without picking a line out of it.
         let rendered_with = |state: Option<&str>| {
             let mut session = SessionEntry::new("solo-session", Status::Running);
             session.agents = vec![agent("claude:lead", Some(true), state)];
@@ -1264,15 +1030,8 @@ mod tests {
 
     #[test]
     fn sc_017h_the_agent_level_reason_is_not_the_session_marker() {
-        // SC-017h names three nouns and `attn:` is the SESSION rollup, so an
+        // The header names three nouns and `attn:` is the SESSION rollup, so an
         // agent's OWN reason is not rendered at all.
-        //
-        // Tested as that semantic rule rather than by finding the agent's line:
-        // toggling the reason through every value must change NO byte of the
-        // rendering, and the session's single marker must survive. Asking "is
-        // there an `attn:` on the agent's line" assumes the agent HAS a line —
-        // a layout fact, and one a two-line card would break while changing
-        // nothing about the rule.
         let mut session = SessionEntry::new("s", Status::Running);
         session.attention = Some(Reason::Dead);
         session.agents = vec![agent("claude:lead", Some(false), Some("working"))];
@@ -1306,7 +1065,7 @@ mod tests {
                 "{name} survived the filters: {nothing_selected:?}"
             );
         }
-        // The JSON rendering is the opposite, and IS ratified: SC-506/SC-509's
+        // The JSON rendering is the opposite, and IS ratified: the
         // document exists whether or not anything survived.
         assert!(!render(&args(&["--stopped", "--needs-attn", "--json"]), &world()).is_empty());
     }
@@ -1316,12 +1075,6 @@ mod tests {
         // ISOLATED WORLDS, one agent at a time. What is asserted is that the
         // agent's nouns are THERE — never which line they landed on, what
         // separates them, or what order the columns come in. Rendering the agent
-        // ALONE is what lets `contains` mean "this agent's health" instead of
-        // "somebody's": with two agents in the tree, `alive` is in the document
-        // either way, and that is exactly what row-parsing used to buy.
-        //
-        // Which sessions are listed under which filter is a different claim, and
-        // `sc_017f_json_honours_the_filters_and_never_widens_them` carries it.
         let world = world();
         for session in &world.sessions {
             for listed in &session.agents {
@@ -1332,9 +1085,6 @@ mod tests {
                 // PER-AGENT HEALTH IS NO LONGER A TABLE CELL — it is a digest
                 // member, gated in `phase3::sc_017r`. Nothing on the list path
                 // populates it, so the column said `unknown` for every agent of
-                // every session. What this surface still owes each agent is its
-                // reference and its DECLARED STATE, and that is what is gated
-                // here.
                 assert!(alone.contains(&listed.reference), "{alone}");
                 if let Some(declared) = listed.state.as_deref() {
                     assert!(alone.contains(declared), "{alone}");
@@ -1375,13 +1125,9 @@ mod tests {
         );
     }
 
-    // ---- SC-509b: source knowledge survives aggregate degradation ----------
+    // ---- source knowledge survives aggregate degradation -------------------
 
     /// One durable record projected through the real presentation boundary.
-    ///
-    /// The fixture writes only phase-1 inputs. Its tests never manufacture a
-    /// `SessionEntry`, because the point is the provenance attached while
-    /// projecting a captured record snapshot.
     struct DigestFixture(std::path::PathBuf);
 
     impl DigestFixture {
@@ -1531,12 +1277,6 @@ mod tests {
 
     /// The runtime seam: observed facts reach the entry, and a MISALIGNED
     /// observation is refused rather than merged.
-    ///
-    /// Alignment is positional, so the one way this can go wrong silently is a
-    /// runtime describing some other session — and the failure would be a
-    /// plausible-looking digest built from two moments. The status disagreement
-    /// is the cheap detector for it, and refusing falls back to what the
-    /// classification alone establishes rather than to a guess.
     #[test]
     fn world_with_takes_the_observed_runtime_and_refuses_one_that_describes_another_moment() {
         let fixture = DigestFixture::new(
@@ -1627,18 +1367,8 @@ mod tests {
         );
         assert!(!human.contains("attn:blocked"));
         // The dash in the id cell is the RULED outcome for an arm that NO standing
-        // authority reaches. SC-509 governs this member's PRESENCE and disclaims
+        // authority reaches. PRESENCE is what is governed, and the row disclaims
         // value authority in its own next sentence — what a member's legitimate
-        // empty value IS stays with the row that owns it. Default parity would
-        // decide the value, but the governed corpus carries a MEASURED ZERO of
-        // two-field entries, so parity has no specimen here either. Frozen's
-        // `_parse_agent_entry` leaks the agent NAME into the session id when the
-        // entry carries only two fields: `${rest#*:}` has nothing to match without
-        // a second colon, so it returns `rest` whole — measured, not read.
-        // The dated ruling therefore FILLS that gap; it excepts no default,
-        // because on this arm there was none to except.
-        // Authority: SC-509's dated in-row two-field `session_id` ruling
-        // (fix-known-defect, 2026-08-25) + ae@72c7293:3150-3161.
         assert!(
             row_fields(&human, "claude:lead") == ["claude:lead", "-", "unknown"],
             "the malformed event hides stale blocked state behind the human unknown: {human}"
@@ -1660,7 +1390,6 @@ mod tests {
         // THE SAME two-field entry on the machine surface, from the same parsed
         // fixture: the member is PRESENT and is the string dash — never `null`,
         // never the leaked name. One fixture covering both surfaces is what stops
-        // them drifting apart unnoticed, which is the defect this slice repaired.
         assert_eq!(
             agents[0].get("session_id"),
             Some(&json::Value::Str("-".to_owned()))
@@ -1674,9 +1403,6 @@ mod tests {
     /// session: arms/A1/c05-recover-ref-ro renders `fake:lead` with `11111111`
     /// under `ta1c`/stopped, and the same case's digest carries those eight
     /// characters. Dash specimens exist on every status.
-    ///
-    /// This does NOT reproduce frozen's stopped omission of health and state:
-    /// all four facts are owed on every status, so the row is asserted whole.
     #[test]
     fn the_agent_row_carries_frozen_s_short_session_id_on_every_status() {
         for status in [Status::Running, Status::Stopped, Status::Unknown] {
@@ -1689,7 +1415,6 @@ mod tests {
                 // Liveness is UNOBSERVED here on purpose: this row's subject is
                 // the id cell, and a `false` would append the `!` marker and
                 // make the assertion below about two things at once. The marker
-                // has its own case.
                 alive: None,
                 state: Some("working".to_owned()),
                 reason: None,
@@ -1710,13 +1435,6 @@ mod tests {
     }
 
     /// The frozen `!` marker: a RUNNING seat whose pane holds no agent.
-    ///
-    /// Frozen built its alive map only for running sessions (ae:4441-4448) and
-    /// printed the marker as the row's last cell, so the three cases that must
-    /// stay blank are asserted beside the one that must not — a marker that
-    /// fired on unknown liveness would be a claim built on no observation, and
-    /// one that fired on a stopped session would mark every seat ae has ever
-    /// run.
     #[test]
     fn a_running_seat_with_no_agent_in_its_pane_carries_frozen_s_marker() {
         let seat = |status, alive| {
@@ -1802,7 +1520,6 @@ mod tests {
         // The short session id now sits between the reference and the semantic
         // fields, on every status, because frozen rendered it on both grammars
         // (ae@72c7293:4254 running, ae:4299 stopped) and our table omitted it.
-        // This fixture records no id, so the cell is frozen's dash.
         assert_eq!(
             row_fields(&table(&[&session]), "claude:lead"),
             ["claude:lead", "-", "blocked"],
@@ -1811,9 +1528,8 @@ mod tests {
 
         session.agents[0].state = None;
         // TWO dashes, two different facts: the first is an absent session id,
-        // the second is SC-017h's exact no-declaration. They are told apart by
+        // the second is exact no-declaration. They are told apart by
         // POSITION, exactly as frozen told them apart — its stopped grammar put
-        // the id where its running grammar put the state default.
         assert_eq!(
             row_fields(&table(&[&session]), "claude:lead"),
             ["claude:lead", "-", "-"],
@@ -1932,13 +1648,9 @@ mod tests {
         assert_eq!(agents[0].get_str("reason"), Some("blocked"));
     }
 
-    // ---- SC-522: one clock for the stamp and for the relation it justifies ---
+    // ---- one clock for the stamp and for the relation it justifies ---------
 
     /// A real session directory whose only event is an `ask` nobody answered.
-    ///
-    /// Written to disk and read back through [`RecordSnapshot::read`] on purpose:
-    /// the proof below is about the CLOCK, so every other input has to travel the
-    /// production path rather than be hand-assembled around it.
     struct Unanswered(std::path::PathBuf);
 
     impl Unanswered {
@@ -1994,13 +1706,8 @@ mod tests {
         }
     }
 
-    /// The stamp and the three SC-017g members, read out of ONE rendered
+    /// The stamp and the three attention members, read out of ONE rendered
     /// document, EXACTLY as the document holds them.
-    ///
-    /// Returns the raw members rather than normalised values. An absent member,
-    /// a null and a zero are three different documents, and a helper that folded
-    /// them together would let the threshold arm below pass for the wrong reason
-    /// — which is what an earlier version of it did.
     fn attention_beside_its_stamp(
         document: &json::Value,
     ) -> (
@@ -2012,11 +1719,11 @@ mod tests {
         let stamped = Timestamp::parse(
             document
                 .get_str("generated_at")
-                .expect("SC-509 stamps every document"),
+                .expect("every document is stamped"),
         )
         .expect("the stamp is the documented spelling");
         let Some(json::Value::Arr(sessions)) = document.get("sessions") else {
-            panic!("SC-509 renders sessions as an array")
+            panic!("sessions render as an array")
         };
         let session = sessions.first().expect("the one selected session");
         (
@@ -2030,38 +1737,14 @@ mod tests {
     #[test]
     fn sc_522_the_stamp_and_the_attention_it_justifies_cannot_describe_two_moments() {
         // **THE PRECONDITION, not a convenience.** `unanswered` is RELATIONAL on
-        // the reader's clock — SC-522 makes it true only once the age EXCEEDS the
+        // the reader's clock — it is true only once the age EXCEEDS the
         // threshold — while `generated_at` is that same clock printed. Sample
-        // twice and the document can assert a stamp that contradicts the
-        // attention beside it: a reader cannot tell which moment the digest
-        // describes, and the two halves were never true together.
-        //
-        // The expectation is DERIVED FROM THE DOCUMENT'S OWN STAMP rather than
-        // from the local variable. Asserting both against `now` independently
-        // would pass on two coincidences; recomputing the relation from the stamp
-        // that was actually printed is what closes the hole.
-        //
-        // **WHAT THIS DOES AND DOES NOT ESTABLISH**, scoped rather than swept
-        // (pubfp's sharpening, and it is the accurate statement): the guarantee
-        // is OBSERVATIONAL. What is foreclosed is a second clock whose value
-        // DIFFERS — used for the entries it disagrees with the parsed
-        // `generated_at` at an exact-threshold arm, used for the stamp it
-        // disagrees with the supplied `World.now`. Two samplings landing in the
-        // same second pass this test, and correctly so: they are
-        // indistinguishable in the document and therefore not a contradiction in
-        // it. So this pins SELF-CONSISTENCY, not the call count. The call count
-        // is a separate, and weaker, fact about `current_world`.
         let asked_at = Timestamp::from_epoch(1_780_000_000);
         let fixture = Unanswered::new("sc522", asked_at);
         let snapshot = fixture.snapshot();
 
         // Both arms read the SAME bytes. Only the supplied clock moves, so any
         // difference in the answer is the clock's doing and nothing else's.
-        //
-        // `--all` rather than `--needs-attn` is load-bearing: this proof compares
-        // the session's FIELDS across the boundary, so the session has to be
-        // present in both arms. Under `--needs-attn` the threshold arm selects
-        // nothing and there would be no fields left to disagree about.
         for (label, offset) in [
             ("at the threshold", DEFAULT_UNANSWERED_SECS),
             ("one second past it", DEFAULT_UNANSWERED_SECS + 1),
@@ -2096,12 +1779,7 @@ mod tests {
 
             // FLIPPED by colead's ruling (2026-08-24). This arm previously
             // asserted the two optional members were ABSENT below the threshold,
-            // and that enforced the wrong letter: absence is SC-509b's spelling
-            // for a fact that could not be READ, so a quiet entry that omits them
-            // makes loss and legitimate-none the same bytes. Both members are now
-            // PRESENT on both sides of the boundary, and only their VALUES move —
-            // which is a stronger statement of the same relation, because the
-            // member set no longer changes with the clock.
+            // and that enforced the wrong letter: absence is spelling
             assert_eq!(
                 attention,
                 Some(&if implied {

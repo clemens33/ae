@@ -1,7 +1,7 @@
 //! The one timestamp shape ae's formats use.
 //!
-//! SC-510a pins every event's `ts` as **ISO 8601 UTC, second precision**, and
-//! SC-509 shows `generated_at` in the same form. Two rows, one shape, so one
+//! Every event's `ts` is ISO 8601 UTC at second precision, and
+//! `generated_at` uses the same form. Two uses, one shape, so one
 //! type: a [`Timestamp`] is epoch seconds that knows how to read and write that
 //! spelling and nothing else.
 //!
@@ -17,7 +17,7 @@ use std::fmt;
 ///
 /// ```
 /// use ae::time::Timestamp;
-/// let t = Timestamp::parse("2026-05-29T14:00:00Z").expect("the SC-509 example parses");
+/// let t = Timestamp::parse("2026-05-29T14:00:00Z").expect("the example parses");
 /// assert_eq!(t.to_string(), "2026-05-29T14:00:00Z");
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -31,9 +31,6 @@ impl Timestamp {
     }
 
     /// The epoch seconds behind this timestamp.
-    ///
-    /// SC-509's `goal_set_epoch` and `last_active_epoch` are epochs, not
-    /// strings, so this is a first-class accessor rather than an escape hatch.
     #[must_use]
     pub const fn epoch(self) -> i64 {
         self.0
@@ -41,8 +38,8 @@ impl Timestamp {
 
     /// Read the documented spelling: `YYYY-MM-DDTHH:MM:SSZ`.
     ///
-    /// Strict on purpose. SC-510a says what ae writes; accepting fractional
-    /// seconds or a numeric offset would be a *tolerance* no row grants, and
+    /// Strict on purpose. Accepting fractional
+    /// seconds or a numeric offset would be a *tolerance* nothing grants, and
     /// tolerance in a reader is how an undocumented format quietly becomes the
     /// format. A caller that meets something else gets `None` and degrades —
     /// it never guesses.
@@ -80,10 +77,6 @@ impl Timestamp {
         // The ONE date check, and it is exact: any month or day the calendar
         // does not have — 13, 00, 2026-02-30, 1900-02-29 — normalises to some
         // other date on the way back, so it fails to round-trip. A range check
-        // in front of this would reject the same inputs one line earlier while
-        // being able to drift out of step with the arithmetic it guards; the
-        // two-digit fields make overflow impossible, so there is nothing left
-        // for it to catch.
         if civil_from_days(days) != (year, month, day) {
             return None;
         }
@@ -91,11 +84,6 @@ impl Timestamp {
     }
 
     /// This instant, from the system clock.
-    ///
-    /// Pre-1970 clocks read as their negative epoch rather than failing: a
-    /// digest whose `generated_at` is wrong because the host clock is wrong is
-    /// still a digest, and refusing to emit one would be a worse answer than
-    /// reporting what the machine believes.
     #[must_use]
     pub fn now() -> Self {
         let now = std::time::SystemTime::now();
@@ -108,9 +96,6 @@ impl Timestamp {
     }
 
     /// Whole seconds from `self` to `later`, saturating rather than wrapping.
-    ///
-    /// Negative when `later` precedes `self` — a clock that went backwards is a
-    /// fact to report, not a value to clamp.
     #[must_use]
     pub const fn seconds_until(self, later: Self) -> i64 {
         later.0.saturating_sub(self.0)
@@ -180,7 +165,7 @@ mod tests {
 
     #[test]
     fn the_events_md_example_round_trips() {
-        // SC-510a: ISO 8601 UTC, second precision.
+        // ISO 8601 UTC, second precision.
         let t = Timestamp::parse("2026-05-19T07:29:45Z").expect("the documented form parses");
         assert_eq!(t.to_string(), "2026-05-19T07:29:45Z");
     }
@@ -229,8 +214,8 @@ mod tests {
 
     #[test]
     fn a_shape_the_contract_does_not_document_is_refused() {
-        // SC-510a documents ONE spelling. A reader that also accepts these
-        // would be ratifying formats no row contains.
+        // ONE spelling is documented. A reader that also accepts these
+        // would be ratifying formats nothing contains.
         for other in [
             "2026-05-19T07:29:45.500Z",
             "2026-05-19T07:29:45+02:00",
@@ -276,7 +261,6 @@ mod tests {
         // This module's docs claim the whole proleptic Gregorian range, and the
         // negative-year branches of both functions exist to deliver it. Every
         // other test here sits after 1900, so cargo-mutants could rewrite those
-        // branches untouched. A claim no test defends is a comment.
         for day in days_from_civil(-5, 1, 1)..days_from_civil(5, 1, 1) {
             let (y, m, d) = civil_from_days(day);
             assert_eq!(days_from_civil(y, m, d), day, "{y}-{m:02}-{d:02}");
