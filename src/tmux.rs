@@ -90,6 +90,27 @@ use crate::meta::Selector;
 /// only field this phase needs is the one it matches EXACTLY.
 pub const SESSION_NAME_FORMAT: &str = "#{session_name}";
 
+/// The separator every multi-field format in this module renders between its
+/// fields.
+///
+/// **Printable, because a control character does not survive the round trip.**
+/// tmux 3.4 escapes control characters in `-F` and `display-message` output
+/// while tmux 3.5+ emits them raw — measured on both: `\x1f` comes back as the
+/// four literal bytes `\037`, and a TAB comes back as `_`. Every interpreter
+/// below splits on the bytes it asked tmux for, so a control separator makes
+/// the WHOLE reading unparseable on tmux 3.4 — which is Ubuntu 24.04's tmux,
+/// and CI's. It shipped that way: the dead-pane probe and the session-id
+/// resolver both went blind on Linux while macOS stayed green, so `send`
+/// deferred for 30s instead of refusing a dead pane and `telegram stop`
+/// reported success without killing anything.
+///
+/// ` | ` rather than one punctuation byte: no ae-controlled field can contain
+/// it. Pane, window and session ids are tmux's own `%N`/`@N`/`$N`; session
+/// names, `@ae_slot` and `@ae_agent` are ASCII allowlists; pids, epochs and
+/// `pane_dead` are numeric. The one free-text field, `pane_current_command`,
+/// is LAST in every format that carries it.
+const FIELD_SEPARATOR: &str = " | ";
+
 /// The ae-ownership marker, read from a session's own tmux environment.
 pub const OWNERSHIP_VARIABLE: &str = "AE_SESSION";
 
@@ -254,9 +275,9 @@ pub fn interpret_marker(succeeded: bool, stdout: &str) -> Option<String> {
 /// shell set — so the command field ALONE proves a dead agent alive, which is
 /// #109. Putting it before every ae- or system-controlled field means nothing
 /// upstream can shift it out of position.
-pub const PANE_FORMAT: &str = "#{pane_dead}\t#{@ae_slot}\t#{pane_current_command}";
+pub const PANE_FORMAT: &str = "#{pane_dead} | #{@ae_slot} | #{pane_current_command}";
 
-/// How many tab-separated fields [`PANE_FORMAT`] produces per pane.
+/// How many [`FIELD_SEPARATOR`]-separated fields [`PANE_FORMAT`] produces per pane.
 pub const PANE_FIELDS: usize = 3;
 
 /// The full argument list for enumerating one session's panes.
@@ -339,9 +360,9 @@ pub struct ObservedPane {
 /// module already refused when the format had a single field.
 ///
 /// **ARITY IS EXACT, AND THAT IS A GUARD RATHER THAN TIDINESS.** None of the
-/// three fields may legitimately contain a tab, so a line with more than
+/// three fields may legitimately contain [`FIELD_SEPARATOR`], so a line with more than
 /// [`PANE_FIELDS`] fields is a reading nothing should trust. It matters because
-/// a slot carrying an embedded tab could otherwise split into a PREFIX that
+/// a slot carrying an embedded separator could otherwise split into a PREFIX that
 /// matches a real roster slot while pushing the rest of that slot into the
 /// command field — forging a non-shell command for a pane that is running a
 /// shell, which is a fabricated `alive` for the wrong agent. Refusing the whole
@@ -365,7 +386,7 @@ fn read_pane(line: &str) -> ObservedPane {
         slot: None,
         command: None,
     };
-    let fields: Vec<&str> = line.trim_end_matches('\r').split('\t').collect();
+    let fields: Vec<&str> = line.trim_end_matches('\r').split(FIELD_SEPARATOR).collect();
     if fields.len() != PANE_FIELDS {
         return blank;
     }
@@ -443,11 +464,11 @@ pub fn is_addressable_socket(path: &Path) -> bool {
 /// `#S` and `ae_current_agent` take in the frozen helper, in ONE round trip
 /// rather than three, so the pane cannot change identity between them.
 ///
-/// Tab-separated. None of the three may contain a tab: slots are a closed
+/// [`FIELD_SEPARATOR`]-separated. None of the three may contain it: slots are a closed
 /// grammar, session and agent names are ASCII allowlists. An unset user option
 /// expands to the empty string (measured), which is why the interpreter treats
 /// empty and unset alike.
-pub const VIEWER_FORMAT: &str = "#{@ae_slot}\t#{session_name}\t#{@ae_agent}";
+pub const VIEWER_FORMAT: &str = "#{@ae_slot} | #{session_name} | #{@ae_agent}";
 
 /// The number of fields [`VIEWER_FORMAT`] yields.
 const VIEWER_FIELDS: usize = 3;
@@ -500,7 +521,7 @@ pub fn interpret_viewer(succeeded: bool, stdout: &str) -> Option<ObservedViewer>
     if line.contains('\n') {
         return None;
     }
-    let fields: Vec<&str> = line.split('\t').collect();
+    let fields: Vec<&str> = line.split(FIELD_SEPARATOR).collect();
     if fields.len() != VIEWER_FIELDS {
         return None;
     }
@@ -539,8 +560,8 @@ pub fn kill_session_args(server: &ServerId, session_id: &str) -> Vec<String> {
 }
 
 /// The roster the frozen `ae_resolve` reads:
-/// `list-panes -s -t <session> -F '#{pane_id}\t#{@ae_agent}'`.
-pub const AGENTS_FORMAT: &str = "#{pane_id}\t#{@ae_agent}";
+/// `list-panes -s -t <session> -F '#{pane_id} | #{@ae_agent}'`.
+pub const AGENTS_FORMAT: &str = "#{pane_id} | #{@ae_agent}";
 
 /// The full argument list for that roster.
 #[must_use]
@@ -623,15 +644,16 @@ pub struct ObservedAgent {
 
 /// What a completed roster run means: `None` when the run failed (the frozen
 /// loop reads nothing from a `2>/dev/null` failure and resolves nothing);
-/// otherwise every line, split at its FIRST tab, in the order tmux printed.
+/// otherwise every line, split at its FIRST [`FIELD_SEPARATOR`], in the order
+/// tmux printed.
 ///
 /// ```
 /// use ae::tmux::{ObservedAgent, interpret_agents};
 ///
-/// let rows = interpret_agents(true, "%1\tcl:lead\n%2\t\n").unwrap();
+/// let rows = interpret_agents(true, "%1 | cl:lead\n%2 | \n").unwrap();
 /// assert_eq!(rows[0], ObservedAgent { pane: "%1".into(), agent: "cl:lead".into() });
 /// assert_eq!(rows[1], ObservedAgent { pane: "%2".into(), agent: String::new() });
-/// assert!(interpret_agents(false, "%1\tcl:lead\n").is_none());
+/// assert!(interpret_agents(false, "%1 | cl:lead\n").is_none());
 /// ```
 #[must_use]
 pub fn interpret_agents(succeeded: bool, stdout: &str) -> Option<Vec<ObservedAgent>> {
@@ -642,7 +664,7 @@ pub fn interpret_agents(succeeded: bool, stdout: &str) -> Option<Vec<ObservedAge
         stdout
             .lines()
             .map(|line| {
-                let (pane, agent) = line.split_once('\t').unwrap_or((line, ""));
+                let (pane, agent) = line.split_once(FIELD_SEPARATOR).unwrap_or((line, ""));
                 ObservedAgent {
                     pane: pane.to_owned(),
                     agent: agent.to_owned(),
@@ -662,7 +684,7 @@ pub fn interpret_agents(succeeded: bool, stdout: &str) -> Option<Vec<ObservedAge
 ///
 /// tmux 3.4 escapes control characters in `-F` output as octal while tmux 3.5+
 /// emits them raw. A printable separator stays byte-identical across versions.
-const WATCH_PANE_SEPARATOR: &str = " | ";
+const WATCH_PANE_SEPARATOR: &str = FIELD_SEPARATOR;
 pub const WATCH_PANE_FORMAT: &str =
     "#{pane_id} | #{@ae_slot} | #{@ae_agent} | #{pane_pid} | #{pane_current_command}";
 
@@ -1094,12 +1116,12 @@ pub fn tty_is_a_pane(tty: &str, pane_ttys: &[String]) -> bool {
     !mine.is_empty() && pane_ttys.iter().any(|pane| bare(pane) == mine)
 }
 
-/// `#{session_id}\x1f#{session_name}` — the pair the id resolver reads.
+/// `#{session_id} | #{session_name}` — the pair the id resolver reads.
 ///
-/// `\x1f` rather than a space: the frozen splits on whitespace and a session
-/// name cannot contain one (`_validate_session_name`), but a delimiter that
+/// [`FIELD_SEPARATOR`] rather than a space: the frozen splits on whitespace and
+/// a session name cannot contain one (`is_session_name`), but a delimiter that
 /// cannot appear in either field is one fewer thing to be true.
-pub const SESSION_ID_FORMAT: &str = "#{session_id}\u{1f}#{session_name}";
+pub const SESSION_ID_FORMAT: &str = "#{session_id} | #{session_name}";
 
 /// The arguments listing `server`'s sessions as id/name pairs.
 #[must_use]
@@ -1119,7 +1141,7 @@ pub fn session_ids_args(server: &ServerId) -> Vec<String> {
 ///
 /// ```
 /// use ae::tmux::interpret_session_id;
-/// let listing = "$0\u{1f}other\n$3\u{1f}demo\n";
+/// let listing = "$0 | other\n$3 | demo\n";
 /// assert_eq!(interpret_session_id(true, listing, "demo"), Some("$3".to_owned()));
 /// assert_eq!(interpret_session_id(true, listing, "dem"), None);
 /// assert_eq!(interpret_session_id(false, listing, "demo"), None);
@@ -1130,18 +1152,18 @@ pub fn interpret_session_id(succeeded: bool, stdout: &str, name: &str) -> Option
         return None;
     }
     stdout.lines().find_map(|line| {
-        let (id, held) = line.split_once('\u{1f}')?;
+        let (id, held) = line.split_once(FIELD_SEPARATOR)?;
         (held == name && !id.is_empty()).then(|| id.to_owned())
     })
 }
 
-/// `#{pane_id}\x1f#{window_id}\x1f#{@ae_agent}` — the window-grouping read.
+/// `#{pane_id} | #{window_id} | #{@ae_agent}` — the window-grouping read.
 ///
 /// A SEPARATE enumeration from [`WATCH_PANE_FORMAT`], deliberately: the frozen
 /// keeps the window id out of the main cycle's format because that format is a
 /// pinned parity contract with the aewatch sidecar (ae:17035-17037). One cheap
 /// extra `list-panes` costs less than breaking it.
-pub const WINDOW_PANE_FORMAT: &str = "#{pane_id}\u{1f}#{window_id}\u{1f}#{@ae_agent}";
+pub const WINDOW_PANE_FORMAT: &str = "#{pane_id} | #{window_id} | #{@ae_agent}";
 
 /// The number of fields [`WINDOW_PANE_FORMAT`] yields.
 const WINDOW_PANE_FIELDS: usize = 3;
@@ -1179,7 +1201,7 @@ pub fn interpret_window_panes(succeeded: bool, stdout: &str) -> Option<Vec<Windo
         stdout
             .lines()
             .filter_map(|line| {
-                let fields: Vec<&str> = line.split('\u{1f}').collect();
+                let fields: Vec<&str> = line.split(FIELD_SEPARATOR).collect();
                 if fields.len() != WINDOW_PANE_FIELDS {
                     return None;
                 }
@@ -1210,7 +1232,14 @@ pub fn interpret_window_panes(succeeded: bool, stdout: &str) -> Option<Vec<Windo
 ///
 /// One `display-message` rather than two: the frozen body asked twice and
 /// could observe a pane between the answers.
-pub const PANE_PROBE_FORMAT: &str = "#{pane_current_command}\u{1f}#{pane_pid}";
+///
+/// **`pane_pid` is FIRST.** `pane_current_command` is the free-text half, so it
+/// goes last and is read with a bounded `splitn`: a command carrying
+/// [`FIELD_SEPARATOR`] stays intact instead of failing the whole probe. The
+/// direction matters — an unreadable probe is what the dead-pane guard must
+/// never be handed, because it defaults to an empty command, which reads as a
+/// shell.
+pub const PANE_PROBE_FORMAT: &str = "#{pane_pid} | #{pane_current_command}";
 
 /// The number of fields [`PANE_PROBE_FORMAT`] renders.
 const PANE_PROBE_FIELDS: usize = 2;
@@ -1240,13 +1269,13 @@ pub fn interpret_pane_probe(succeeded: bool, stdout: &str) -> Option<ObservedPan
         return None;
     }
     let line = stdout.lines().next()?;
-    let fields: Vec<&str> = line.split('\u{1f}').collect();
+    let fields: Vec<&str> = line.splitn(PANE_PROBE_FIELDS, FIELD_SEPARATOR).collect();
     if fields.len() != PANE_PROBE_FIELDS {
         return None;
     }
     Some(ObservedPaneProbe {
-        command: fields[0].to_owned(),
-        pid: fields[1].parse().ok(),
+        command: fields[1].to_owned(),
+        pid: fields[0].parse().ok(),
     })
 }
 
@@ -1365,7 +1394,7 @@ pub fn send_keys_args(server: &ServerId, pane: &str, key: Key) -> Vec<String> {
 ///
 /// `#{pane_id}` on a CLIENT is the pane that client is looking at — stronger
 /// than `#{pane_active}`, which only means active-in-window.
-pub const CLIENT_FORMAT: &str = "#{pane_id}\u{1f}#{client_activity}";
+pub const CLIENT_FORMAT: &str = "#{pane_id} | #{client_activity}";
 
 /// The number of fields [`CLIENT_FORMAT`] renders.
 const CLIENT_FIELDS: usize = 2;
@@ -1403,7 +1432,7 @@ pub fn interpret_clients(succeeded: bool, stdout: &str) -> Option<Vec<ObservedCl
             .lines()
             .filter(|line| !line.is_empty())
             .filter_map(|line| {
-                let fields: Vec<&str> = line.split('\u{1f}').collect();
+                let fields: Vec<&str> = line.split(FIELD_SEPARATOR).collect();
                 if fields.len() != CLIENT_FIELDS {
                     return None;
                 }
@@ -1548,16 +1577,16 @@ mod tests {
 
     #[test]
     fn a_pane_probe_is_read_only_from_a_run_that_succeeded() {
-        assert_eq!(interpret_pane_probe(false, "claude\u{1f}123\n"), None);
+        assert_eq!(interpret_pane_probe(false, "123 | claude\n"), None);
         assert_eq!(
-            interpret_pane_probe(true, "claude\u{1f}123\n"),
+            interpret_pane_probe(true, "123 | claude\n"),
             Some(ObservedPaneProbe {
                 command: "claude".into(),
                 pid: Some(123)
             })
         );
         assert_eq!(
-            interpret_pane_probe(true, "bash\u{1f}not-a-pid\n"),
+            interpret_pane_probe(true, "not-a-pid | bash\n"),
             Some(ObservedPaneProbe {
                 command: "bash".into(),
                 pid: None
@@ -1565,14 +1594,22 @@ mod tests {
             "an unreadable pid is no pid, not no pane"
         );
         assert_eq!(interpret_pane_probe(true, "only-one-field\n"), None);
+        assert_eq!(
+            interpret_pane_probe(true, "7 | odd | command\n"),
+            Some(ObservedPaneProbe {
+                command: "odd | command".into(),
+                pid: Some(7)
+            }),
+            "the free-text command is last, so it may carry the separator"
+        );
         assert_eq!(interpret_pane_probe(true, ""), None);
     }
 
     #[test]
     fn clients_report_the_pane_each_is_viewing_and_when_it_last_typed() {
-        assert_eq!(interpret_clients(false, "%1\u{1f}100\n"), None);
+        assert_eq!(interpret_clients(false, "%1 | 100\n"), None);
         assert_eq!(
-            interpret_clients(true, "%1\u{1f}100\n%2\u{1f}nope\n\n"),
+            interpret_clients(true, "%1 | 100\n%2 | nope\n\n"),
             Some(vec![
                 ObservedClient {
                     pane: "%1".into(),
@@ -1718,7 +1755,7 @@ mod tests {
                 super::WINDOW_PANE_FORMAT
             ]
         );
-        let listing = "%1\u{1f}@0\u{1f}cl:lead\n%2\u{1f}@0\u{1f}\n%3 @1 cl:x\n";
+        let listing = "%1 | @0 | cl:lead\n%2 | @0 | \n%3 @1 cl:x\n";
         let panes = interpret_window_panes(true, listing).expect("a successful run");
         assert_eq!(
             panes,
@@ -1737,6 +1774,42 @@ mod tests {
             "the space-delimited line is corruption, not a pane"
         );
         assert!(interpret_window_panes(false, listing).is_none());
+    }
+
+    /// Every format this module hands tmux is read back by splitting on the
+    /// bytes it asked for, and tmux 3.4 does not hand control characters back
+    /// unchanged: measured on tmux 3.4 and tmux 3.7b, `\x1f` returns as the
+    /// four literal bytes `\037` and a TAB returns as `_`. A control byte in
+    /// any of these constants is a reader that goes silently blind on Linux
+    /// while macOS stays green, so the SET is pinned printable here rather
+    /// than each parser being trusted to notice for itself.
+    #[test]
+    fn no_tmux_format_carries_a_control_character() {
+        use super::{
+            AGENTS_FORMAT, CLIENT_FORMAT, PANE_FORMAT, PANE_ID_FORMAT, PANE_PROBE_FORMAT,
+            PANE_TTY_FORMAT, SESSION_ID_FORMAT, SESSION_NAME_FORMAT, SLOTS_FORMAT, VIEWER_FORMAT,
+            WATCH_PANE_FORMAT, WINDOW_PANE_FORMAT,
+        };
+
+        for format in [
+            AGENTS_FORMAT,
+            CLIENT_FORMAT,
+            PANE_FORMAT,
+            PANE_ID_FORMAT,
+            PANE_PROBE_FORMAT,
+            PANE_TTY_FORMAT,
+            SESSION_ID_FORMAT,
+            SESSION_NAME_FORMAT,
+            SLOTS_FORMAT,
+            VIEWER_FORMAT,
+            WATCH_PANE_FORMAT,
+            WINDOW_PANE_FORMAT,
+        ] {
+            assert!(
+                !format.chars().any(char::is_control),
+                "{format:?} carries a control character, which tmux 3.4 escapes"
+            );
+        }
     }
 
     #[test]
@@ -1889,7 +1962,7 @@ mod tests {
         );
         // A stamped agent pane.
         assert_eq!(
-            interpret_viewer(true, "main\taerewrite\tcl:lead\n"),
+            interpret_viewer(true, "main | aerewrite | cl:lead\n"),
             Some(ObservedViewer {
                 slot: Some("main".to_owned()),
                 session: Some("aerewrite".to_owned()),
@@ -1898,7 +1971,7 @@ mod tests {
         );
         // An unstamped pane: unset options expand to empty, and empty is None.
         assert_eq!(
-            interpret_viewer(true, "\taerewrite\t\n"),
+            interpret_viewer(true, " | aerewrite | \n"),
             Some(ObservedViewer {
                 slot: None,
                 session: Some("aerewrite".to_owned()),
@@ -1906,23 +1979,23 @@ mod tests {
             })
         );
         // A failed run, a short line and a long line are all no identity.
-        assert_eq!(interpret_viewer(false, "main\ts\ta:b\n"), None);
+        assert_eq!(interpret_viewer(false, "main | s | a:b\n"), None);
         // MORE THAN ONE RECORD is no identity either: a second line, however
         // well-formed the first, is content the query never asked for, and
         // reading the first would let it pick the record.
         assert_eq!(
-            interpret_viewer(true, "main\ts\ta:b\nworker.0\ts\ta:c\n"),
+            interpret_viewer(true, "main | s | a:b\nworker.0 | s | a:c\n"),
             None
         );
-        assert_eq!(interpret_viewer(true, "main\ts\ta:b\n\n"), None);
-        assert_eq!(interpret_viewer(true, "main\ts\ta:b\nx"), None);
+        assert_eq!(interpret_viewer(true, "main | s | a:b\n\n"), None);
+        assert_eq!(interpret_viewer(true, "main | s | a:b\nx"), None);
         // One record with or without its terminating newline is the same record.
         assert_eq!(
-            interpret_viewer(true, "main\ts\ta:b"),
-            interpret_viewer(true, "main\ts\ta:b\n")
+            interpret_viewer(true, "main | s | a:b"),
+            interpret_viewer(true, "main | s | a:b\n")
         );
-        assert_eq!(interpret_viewer(true, "main\ts\n"), None);
-        assert_eq!(interpret_viewer(true, "main\ts\ta:b\textra\n"), None);
+        assert_eq!(interpret_viewer(true, "main | s\n"), None);
+        assert_eq!(interpret_viewer(true, "main | s | a:b | extra\n"), None);
         assert_eq!(interpret_viewer(true, ""), None);
     }
 
@@ -2149,7 +2222,7 @@ mod tests {
                 "-t",
                 "my-feature",
                 "-F",
-                "#{pane_dead}\t#{@ae_slot}\t#{pane_current_command}"
+                "#{pane_dead} | #{@ae_slot} | #{pane_current_command}"
             ]
         );
     }
@@ -2171,7 +2244,7 @@ mod tests {
     fn pane_dead_comes_first_so_nothing_upstream_can_shift_it() {
         // ORDER IS THE SAFETY PROPERTY. `pane_dead` is the conjunct whose loss
         // fabricates an `alive`; no ae- or system-controlled field precedes it.
-        let fields: Vec<&str> = super::PANE_FORMAT.split('\t').collect();
+        let fields: Vec<&str> = super::PANE_FORMAT.split(super::FIELD_SEPARATOR).collect();
         assert_eq!(fields.len(), super::PANE_FIELDS);
         assert_eq!(fields[0], "#{pane_dead}");
         assert_eq!(fields[2], "#{pane_current_command}", "free-est text last");
@@ -2179,7 +2252,7 @@ mod tests {
 
     #[test]
     fn a_failed_pane_query_is_a_failure_whatever_it_printed() {
-        for payload in ["", "0\tmain\tclaude\n", "can't find window: nosuch\n"] {
+        for payload in ["", "0 | main | claude\n", "can't find window: nosuch\n"] {
             assert_eq!(
                 interpret_panes(false, payload),
                 Err(QueryFailed),
@@ -2191,10 +2264,10 @@ mod tests {
     #[test]
     fn an_unmarked_pane_is_a_pane_and_not_a_dropped_line() {
         // MEASURED against a real server. A three-pane session whose middle pane
-        // carries no marker prints `0\tmain\tzsh\n0\t\tzsh\n1\t\ttrue\n`:
+        // carries no marker prints `0 | main | zsh\n0 |  | zsh\n1 |  | true\n`:
         // the unmarked pane is an EMPTY MIDDLE FIELD, not a missing line.
         assert_eq!(
-            interpret_panes(true, "0\tmain\tzsh\n0\t\tzsh\n1\t\ttrue\n"),
+            interpret_panes(true, "0 | main | zsh\n0 |  | zsh\n1 |  | true\n"),
             Ok(vec![
                 pane(Some(false), Some("main"), Some("zsh")),
                 pane(Some(false), None, Some("zsh")),
@@ -2217,9 +2290,9 @@ mod tests {
         // separates it from a live pane is `pane_dead`, and this pins that the
         // read carries it rather than discarding it.
         //
-        // Measured, not invented: `1\t\ttrue` is real output from a real
+        // Measured, not invented: `1 |  | true` is real output from a real
         // server whose pane ran `true` under `remain-on-exit on`.
-        let exited = interpret_panes(true, "1\tworker\ttrue\n").expect("success");
+        let exited = interpret_panes(true, "1 | worker | true\n").expect("success");
         assert_eq!(exited, vec![pane(Some(true), Some("worker"), Some("true"))]);
         assert_eq!(
             exited[0].dead,
@@ -2247,17 +2320,17 @@ mod tests {
         // trailing-trim is what makes the whitespace case land, so the case is
         // the guard on the trim.
         assert_eq!(
-            interpret_panes(true, "0\t\tzsh\n"),
+            interpret_panes(true, "0 |  | zsh\n"),
             Ok(vec![pane(Some(false), None, Some("zsh"))]),
             "an empty slot field is no identity"
         );
         assert_eq!(
-            interpret_panes(true, "0\t   \tzsh\n"),
+            interpret_panes(true, "0 |     | zsh\n"),
             Ok(vec![pane(Some(false), None, Some("zsh"))]),
             "and neither is a whitespace-only one — same answer, different bytes"
         );
         assert_eq!(
-            interpret_panes(true, "0\tmain\t   \n"),
+            interpret_panes(true, "0 | main |    \n"),
             Ok(vec![pane(Some(false), Some("main"), None)]),
             "the command field normalizes the same way, and SC-017s puts an \
              unreadable command in the not-alive set for the same reason"
@@ -2269,22 +2342,22 @@ mod tests {
         // SC-017s: an empty or absent reading is NOT alive, because absence of
         // evidence is not evidence. Each field fails independently.
         assert_eq!(
-            interpret_panes(true, "0\tmain\t\n"),
+            interpret_panes(true, "0 | main | \n"),
             Ok(vec![pane(Some(false), Some("main"), None)]),
             "an empty command is no command, not a non-shell one"
         );
         assert_eq!(
-            interpret_panes(true, "\tmain\tclaude\n"),
+            interpret_panes(true, " | main | claude\n"),
             Ok(vec![pane(None, Some("main"), Some("claude"))]),
             "an empty pane_dead is no reading, and must not pass for `0`"
         );
         assert_eq!(
-            interpret_panes(true, "2\tmain\tclaude\n"),
+            interpret_panes(true, "2 | main | claude\n"),
             Ok(vec![pane(None, Some("main"), Some("claude"))]),
             "and neither does anything else that is not 0 or 1"
         );
         assert_eq!(
-            interpret_panes(true, "0\t\tclaude\n"),
+            interpret_panes(true, "0 |  | claude\n"),
             Ok(vec![pane(Some(false), None, Some("claude"))]),
             "an empty slot is no identity; the other two readings survive it"
         );
@@ -2297,7 +2370,7 @@ mod tests {
         // while the remainder was pushed into the command field, forging a
         // non-shell command for a pane running a shell — a fabricated `alive`
         // attached to the wrong agent. Refusing the line answers `unknown`.
-        let forged = interpret_panes(true, "0\tmain\tevil\tzsh\n").expect("success");
+        let forged = interpret_panes(true, "0 | main | evil | zsh\n").expect("success");
         assert_eq!(
             forged,
             vec![pane(None, None, None)],
@@ -2309,7 +2382,7 @@ mod tests {
             "a blank line is a pane with no reading, never a dropped pane"
         );
         assert_eq!(
-            interpret_panes(true, "0\tmain\n"),
+            interpret_panes(true, "0 | main\n"),
             Ok(vec![pane(None, None, None)]),
             "and too few fields is refused for the same reason as too many"
         );
@@ -2356,8 +2429,8 @@ mod tests {
         // format swallowed this test whole, and only a test-NAME diff against
         // HEAD found it. A count that holds while a name vanishes is the shape
         // that hides a deletion.
-        let panes =
-            interpret_panes(true, "0\t\tzsh\n0\tmain\tclaude\n").expect("a successful enumeration");
+        let panes = interpret_panes(true, "0 |  | zsh\n0 | main | claude\n")
+            .expect("a successful enumeration");
         assert_eq!(
             slot_observation(&panes, ""),
             SlotObservation::Absent { unidentified: 1 },
