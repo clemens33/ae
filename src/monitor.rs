@@ -26,7 +26,9 @@
 //!   the charter. Delivery goes through the session's OWN `say` helper, at the
 //!   fixed name [`SAY_HELPER`] joined onto the session directory — the
 //!   [`crate::watchdog_daemon`]'s rule for the same hazard, and the reason
-//!   [`Notice`] has one constructor.
+//!   [`Notice`] has one constructor. That constructor seals the PROGRAM
+//!   relative to the directory; [`is_session_dir`] seals the DIRECTORY, so the
+//!   two together are what closes the hazard rather than either alone.
 //!
 //! # The delivery-aware dedup (the guarantee worth stating)
 //!
@@ -77,6 +79,11 @@ pub const DEFAULT_LIVENESS_SWEEPS: u64 = 36;
 pub const USAGE: &str = "Usage: _monitor sweep <session-dir> [--now EPOCH] [--quiet-secs N] \
                          [--liveness-sweeps N] [--init] [--dry-run] [--no-notify] \
                          [--format text|json]\n";
+
+/// The rule a sweep TARGET must satisfy, quoted verbatim by the one refusal
+/// that raises it.
+pub const TARGET_RULE: &str =
+    "a sweep target must be a direct child of <AE_HOME>/sessions holding a meta file";
 
 /// The subcommand — the only one, and named so the argv stays open.
 pub const SWEEP: &str = "sweep";
@@ -748,6 +755,45 @@ impl Notice {
     }
 }
 
+/// Whether `dir` is a session directory THIS INSTALL owns — the guard every
+/// effectful step of a sweep sits behind.
+///
+/// A sweep does three things inside the directory it is handed: it takes a lock
+/// there, it writes [`STATE_NAME`] there, and it EXECUTES [`SAY_HELPER`] there.
+/// The directory arrives as argv, so [`Notice`]'s single constructor is only
+/// half the seal it claims to be: it makes the program unforgeable RELATIVE TO
+/// the directory, and this makes the directory itself unforgeable. Without it
+/// `_monitor sweep <any path>` writes state into a stranger's directory and
+/// runs whatever `say` it finds there — the `--notify-cmd <path>` hazard the
+/// port set out to close, reached through the other operand.
+///
+/// **A DIRECT child, and canonicalised on both sides.** Canonicalising resolves
+/// `/tmp` versus `/private/tmp` and every other link on the way before the
+/// comparison, and it resolves a symlink planted UNDER the sessions root to
+/// what it points at — which is the safe direction, because the result is then
+/// no longer a direct child and is refused. Depth is the second half: a nested
+/// path under a real session is not a session, and neither is the root itself.
+fn is_session_dir(root: &Path, dir: &Path) -> bool {
+    let (Ok(target), Ok(sessions)) = (
+        std::fs::canonicalize(dir),
+        std::fs::canonicalize(crate::lifecycle::sessions_dir(root)),
+    ) else {
+        return false;
+    };
+    if target.parent() != Some(sessions.as_path()) {
+        return false;
+    }
+    // The meta file is what makes a directory a SESSION rather than any
+    // directory someone created under the root. `symlink_metadata`, never
+    // following: a `meta` that is a link is not the record ae wrote.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: the sweep's target guard — the meta file is what says a directory is a session"
+    )]
+    let probe = std::fs::symlink_metadata(target.join(crate::meta::FILE));
+    probe.is_ok_and(|found| found.is_file())
+}
+
 /// Run one sweep for the session at `dir` and report what it found.
 ///
 /// # Errors
@@ -760,6 +806,13 @@ pub fn run(
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> std::io::Result<u8> {
+    // AHEAD OF EVERY EFFECT — the lock, the write and the `say` all live inside
+    // `dir`, so the target is proven before the first one of them.
+    if !crate::state_root().is_some_and(|root| is_session_dir(&root, dir)) {
+        writeln!(err, "ae: monitor: {TARGET_RULE}: {}", dir.display())?;
+        return Ok(crate::state::EXIT_USAGE);
+    }
+
     let cur = observe(world, args.now, args.quiet_secs);
     let state_path = dir.join(STATE_NAME);
 
