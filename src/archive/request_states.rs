@@ -230,6 +230,33 @@ mod tests {
         "\n",
     );
 
+    /// THE SHAPE `compact --digest-only` ACTUALLY WRITES, which is why it is in
+    /// this corpus: `tracked::run` records the compact sender's session but its
+    /// slot is empty, so the opening is half-routed; the withdrawal goes out
+    /// through the plain event writer with no routing member at all. A reader
+    /// that only compares routing keys leaves this request open forever.
+    const COMPACT_WITHDRAWN: &str = concat!(
+        r#"{"ts":"2026-05-29T09:00:00Z","actor":"ae:compact:0199c0de","action":"ask","#,
+        r#""target":"cl:lead","ref":"ae-4","actor_session":"demo","summary":"hand over"}"#,
+        "\n",
+        r#"{"ts":"2026-05-29T09:05:00Z","actor":"ae:compact:0199c0de","action":"cancel","#,
+        r#""ref":"ae-4","summary":"withdrawn: --digest-only"}"#,
+        "\n",
+    );
+
+    /// A withdrawal, then a straggler reply: the withdrawal already ended it.
+    const WITHDRAWN_THEN_ANSWERED: &str = concat!(
+        r#"{"ts":"2026-05-29T09:00:00Z","actor":"cl:lead","action":"ask","#,
+        r#""target":"cl:hand","ref":"ae-6","summary":"q"}"#,
+        "\n",
+        r#"{"ts":"2026-05-29T09:05:00Z","actor":"cl:lead","action":"cancel","#,
+        r#""target":"cl:hand","ref":"ae-6","summary":"withdrawn"}"#,
+        "\n",
+        r#"{"ts":"2026-05-29T09:10:00Z","actor":"cl:hand","action":"reply","#,
+        r#""target":"cl:lead","ref":"ae-6","summary":"too late"}"#,
+        "\n",
+    );
+
     /// One ask nobody touched.
     const OPEN: &str = concat!(
         r#"{"ts":"2026-05-29T09:00:00Z","actor":"cl:lead","action":"ask","#,
@@ -293,7 +320,7 @@ mod tests {
     }
 
     #[test]
-    fn a_withdrawal_closes_the_request_for_two_readers_and_not_the_third() {
+    fn a_withdrawal_closes_the_request_for_every_reader() {
         assert!(
             view_pending(WITHDRAWN).is_empty(),
             "the view treats a valid withdrawal as terminal"
@@ -302,16 +329,22 @@ mod tests {
             digest_pending(WITHDRAWN).is_empty(),
             "so does the digest, on its own cancel-authorization policy"
         );
-        // KNOWN BUG, pinned rather than described: `session::pending_requests`
-        // has no `cancel` arm at all, so a WITHDRAWN request stays open to it —
-        // and that reader is the one behind `SessionRead::unanswered`, so the
-        // session keeps reporting `attn: unanswered` with nobody waiting. This
-        // is not one of the two deliberate policy differences above: those are
-        // about WHO may withdraw, this reader does not know withdrawals exist.
-        assert_eq!(
-            session_pending(WITHDRAWN),
-            ["ae-1"],
-            "when this flips, the bug is fixed — update this expectation, not the reader's caller"
-        );
+        // The reader behind `SessionRead::unanswered`: a withdrawn request is
+        // not one anybody is waiting on, so it contributes no attention.
+        assert!(session_pending(WITHDRAWN).is_empty());
+    }
+
+    #[test]
+    fn the_withdrawal_compact_actually_writes_closes_it_for_every_reader() {
+        assert!(view_pending(COMPACT_WITHDRAWN).is_empty());
+        assert!(digest_pending(COMPACT_WITHDRAWN).is_empty());
+        assert!(session_pending(COMPACT_WITHDRAWN).is_empty());
+    }
+
+    #[test]
+    fn a_reply_after_a_withdrawal_does_not_reopen_it_for_any_reader() {
+        assert!(view_pending(WITHDRAWN_THEN_ANSWERED).is_empty());
+        assert!(digest_pending(WITHDRAWN_THEN_ANSWERED).is_empty());
+        assert!(session_pending(WITHDRAWN_THEN_ANSWERED).is_empty());
     }
 }

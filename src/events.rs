@@ -105,7 +105,9 @@ impl RoutingMember {
 /// What a `ref` means, per the COMPLETE action table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RefMeaning<'a> {
-    /// `ask` / `review` / `reply` — the request id pairing the three.
+    /// `ask` / `review` / `reply` / `cancel` — the request id pairing the
+    /// four. A withdrawal names the request it takes back, exactly as a reply
+    /// names the one it answers.
     RequestId(&'a str),
     /// `memo` — the topic the memo was filed under.
     MemoTopic(&'a str),
@@ -196,6 +198,55 @@ impl Identity<'_> {
             (Self::Display(left), Self::Display(right)) => left == right,
             _ => false,
         }
+    }
+}
+
+/// The party that OPENED a request, as a request reader describes it.
+pub(crate) struct Asker<'a> {
+    /// How the reader names the opener.
+    pub identity: Identity<'a>,
+    /// The display name exactly as the opening record carries it.
+    pub display: &'a [u8],
+    /// Slot ABSENT and session PRESENT — the opener meant to route and gave
+    /// only half a key. Not the same as [`Identity::Unassociated`], which a
+    /// present-but-empty slot also produces.
+    pub slotless: bool,
+}
+
+/// A candidate withdrawal, described the same way.
+pub(crate) struct Withdrawal<'a> {
+    /// How the reader names the canceller. In the display-name arm below this
+    /// IS the name compared, so the record's raw actor bytes are not needed
+    /// separately: a cancel that reaches that arm carries no routing member,
+    /// and its identity is exactly its display name.
+    pub identity: Identity<'a>,
+    /// NO routing member at all — all FOUR absent. A cancel carrying a target
+    /// slot or session is carrying routing data, so an actor-pair check alone
+    /// is not this question.
+    pub unrouted: bool,
+}
+
+/// Whether `cancel` is AUTHORIZED to withdraw a request opened by `asker`.
+///
+/// Routing keys against routing keys, with ONE exception: a cancel that carries
+/// no routing member at all is a pre-routing-key record, and may match an
+/// opener that does carry one by display name. That exception is what lets
+/// `compact --digest-only` withdraw its own handover, which it opens with a
+/// session and no slot and cancels with neither.
+///
+/// This answers WHO may withdraw, and only that. Whether a given cancel is a
+/// candidate for a given opening at all — the same ref, and after it — is the
+/// caller's, because each reader scans in its own direction.
+#[must_use]
+pub(crate) fn withdraws(asker: &Asker<'_>, cancel: &Withdrawal<'_>) -> bool {
+    match cancel.identity {
+        Identity::Display(actor)
+            if cancel.unrouted
+                && (matches!(asker.identity, Identity::Routed { .. }) || asker.slotless) =>
+        {
+            !actor.is_empty() && asker.display == actor.as_bytes()
+        }
+        identity => asker.identity.matches(identity),
     }
 }
 
@@ -295,7 +346,7 @@ impl Event {
             return RefMeaning::Undefined;
         };
         match self.action.as_str() {
-            "ask" | "review" | "reply" => RefMeaning::RequestId(value),
+            "ask" | "review" | "reply" | "cancel" => RefMeaning::RequestId(value),
             "memo" => RefMeaning::MemoTopic(value),
             "recover" => RefMeaning::CapturedSessionId(value),
             "state" => RefMeaning::DeclaredState(value),
@@ -798,6 +849,7 @@ mod tests {
             ("ask", RefMeaning::RequestId("r-1")),
             ("review", RefMeaning::RequestId("r-1")),
             ("reply", RefMeaning::RequestId("r-1")),
+            ("cancel", RefMeaning::RequestId("r-1")),
             ("memo", RefMeaning::MemoTopic("r-1")),
             ("recover", RefMeaning::CapturedSessionId("r-1")),
             // `state` carries the declared work state.

@@ -502,25 +502,21 @@ impl Opening {
 
     /// **RULED (operational lead, 2026-08-27)** — see the module docs.
     fn withdrawn_by(&self, cancel: &Closing) -> bool {
-        let asker = self.asker();
-        let slotless_sender =
-            matches!(self.from_slot, Key::Absent) && !matches!(self.from_session, Key::Absent);
-        // "No routing member at all" means all FOUR: a Display actor identity
-        // only says the actor pair is absent, and a cancel carrying a target
-        // slot or session is carrying routing data.
-        let slotless_cancel = matches!(cancel.actor_slot, Key::Absent)
-            && matches!(cancel.actor_session, Key::Absent)
-            && matches!(cancel.target_slot, Key::Absent)
-            && matches!(cancel.target_session, Key::Absent);
-        match cancel.actor_identity() {
-            Identity::Display(actor)
-                if slotless_cancel
-                    && (matches!(asker, Identity::Routed { .. }) || slotless_sender) =>
-            {
-                !actor.is_empty() && self.from == actor.as_bytes()
-            }
-            identity => asker.matches(identity),
-        }
+        crate::events::withdraws(
+            &crate::events::Asker {
+                identity: self.asker(),
+                display: &self.from,
+                slotless: matches!(self.from_slot, Key::Absent)
+                    && !matches!(self.from_session, Key::Absent),
+            },
+            &crate::events::Withdrawal {
+                identity: cancel.actor_identity(),
+                unrouted: matches!(cancel.actor_slot, Key::Absent)
+                    && matches!(cancel.actor_session, Key::Absent)
+                    && matches!(cancel.target_slot, Key::Absent)
+                    && matches!(cancel.target_session, Key::Absent),
+            },
+        )
     }
 }
 

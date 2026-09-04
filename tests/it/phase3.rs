@@ -1720,11 +1720,9 @@ fn criterion_3_the_places_this_crate_can_read_the_world_are_the_inventoried_ones
             // all read the world through — so this single file, not three, is
             // the inventoried reader for all of them.
             "src/archive/store.rs".to_owned(),
-            // The OPAQUE event-container read and existence test, shared by the
-            // `requests` and `events-tail` surfaces. One file rather than two:
-            // both surfaces read the same container the same quiet way, so the
-            // read sits with the framing in `event_text` and neither surface
-            // module opens anything itself.
+            // Compact's own door: the stored request body a handover reply
+            // names, read after its regular-file gate. An arbitrary path, not a
+            // session file, which is why it is compact's and not the store's.
             "src/compact.rs".to_owned(),
             // The minimal `[workspace]` config reader: the INI read
             // behind compact's roster and purge-policy resolution.
@@ -1797,13 +1795,11 @@ fn criterion_3_the_places_this_crate_can_read_the_world_are_the_inventoried_ones
             // member that is a link to a mutable file outside the immutable
             // directory passes every follow-test and is then EXECUTED as ours.
             "src/shape.rs".to_owned(),
-            // The live session store's doors: the `[[ -f ]]` gate and the
-            // read behind `memo read`/`memo tail`, and the event container's
-            // existence test and quiet read. Each gate comes BEFORE its open on
-            // purpose — a FIFO opened without one blocks the reader for good.
-            // `src/event_text.rs` LEFT this list when the container pair moved
-            // here: the framing layer now reads nothing at all, which is why
-            // this list is one shorter than it was.
+            // The live session store's doors, and every read of a live
+            // session's files: the `[[ -f ]]` gate and the read behind
+            // `memo read`/`memo tail`, and the event container's existence test
+            // and quiet read. Each gate comes BEFORE its open on purpose — a
+            // FIFO opened without one blocks the reader for good.
             "src/store.rs".to_owned(),
             // The LOCAL-mode teardown's own reads: the `lstat` that
             // proves the session dir is a real direct child and never a link,

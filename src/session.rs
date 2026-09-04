@@ -643,10 +643,10 @@ fn declared_reason(state: &str) -> Option<Reason> {
     }
 }
 
-/// The `ask`/`review` events with no qualifying reply, oldest first.
+/// The `ask`/`review` events nothing has closed, oldest first.
 fn pending_requests(events: &[Event]) -> Vec<PendingRequest> {
-    // One forward pass over an append-only log, so a reply that appears BEFORE its
-    // request finds nothing open and closes nothing.
+    // One forward pass over an append-only log, so a reply or a withdrawal that
+    // appears BEFORE its request finds nothing open and closes nothing.
     let mut open: Vec<&Event> = Vec::new();
     for event in events {
         let RefMeaning::RequestId(id) = event.ref_meaning() else {
@@ -658,6 +658,7 @@ fn pending_requests(events: &[Event]) -> Vec<PendingRequest> {
                 open.push(event);
             }
             "reply" => open.retain(|request| !closes(request, event, id)),
+            "cancel" => open.retain(|request| !withdrawn(request, event, id)),
             _ => {}
         }
     }
@@ -675,6 +676,34 @@ fn pending_requests(events: &[Event]) -> Vec<PendingRequest> {
         .collect();
     pending.sort_by_key(|request| request.sent_at);
     pending
+}
+
+/// Whether `cancel` withdraws `request` — its own asker, taking it back.
+///
+/// A withdrawal is terminal: nobody is waiting on a request its sender
+/// retracted, so it contributes no `unanswered` attention and a straggler reply
+/// cannot reopen it (the forward pass has already dropped it).
+///
+/// Who may withdraw is [`crate::events::withdraws`]'s one definition, not a
+/// rule of this reader's own: `compact --digest-only` opens its handover with a
+/// session but no slot and withdraws it with neither, and a reader that only
+/// compared routing keys would leave that request open forever.
+fn withdrawn(request: &Event, cancel: &Event, cancel_ref: &str) -> bool {
+    request.reference.as_deref() == Some(cancel_ref)
+        && crate::events::withdraws(
+            &crate::events::Asker {
+                identity: request.actor_identity(),
+                display: request.actor.as_bytes(),
+                slotless: !request.actor_slot.is_present() && request.actor_session.is_present(),
+            },
+            &crate::events::Withdrawal {
+                identity: cancel.actor_identity(),
+                unrouted: !cancel.actor_slot.is_present()
+                    && !cancel.actor_session.is_present()
+                    && !cancel.target_slot.is_present()
+                    && !cancel.target_session.is_present(),
+            },
+        )
 }
 
 /// Whether `reply` closes `request` — the mirror match, in full.
@@ -1032,6 +1061,101 @@ mod tests {
                 "coworker",
                 "reply",
                 r#","target":"lead","ref":"ae-1""#,
+            ),
+            event(
+                &at(2400),
+                "lead",
+                "ask",
+                r#","target":"coworker","ref":"ae-1""#,
+            ),
+        ];
+        assert_eq!(read(&lines).pending.len(), 1);
+    }
+
+    #[test]
+    fn a_withdrawal_by_the_asker_ends_the_request_and_its_attention() {
+        let ask = event(
+            &at(7200),
+            "lead",
+            "ask",
+            r#","target":"coworker","ref":"ae-1""#,
+        );
+        let cancel = event(
+            &at(3600),
+            "lead",
+            "cancel",
+            r#","target":"coworker","ref":"ae-1""#,
+        );
+        let read = read(&[ask.clone(), cancel]);
+        assert!(read.pending.is_empty(), "nobody is waiting on it");
+        assert_eq!(
+            read.attention_contribution(Timestamp::now(), DEFAULT_UNANSWERED_SECS),
+            None,
+            "a withdrawn request must not keep its session marked unanswered"
+        );
+    }
+
+    #[test]
+    fn the_withdrawal_compact_writes_ends_the_request_and_its_attention() {
+        // The production shape, not a tidy one: `tracked::run` records the
+        // compact sender's session and leaves its slot empty, so the opening is
+        // half-routed; the withdrawal goes out through the plain event writer
+        // with no routing member at all. Comparing routing keys alone would
+        // leave this open, and the session would report `attn: unanswered` for
+        // a handover nobody is waiting on.
+        let lines = [
+            event(
+                &at(7200),
+                "ae:compact:0199c0de",
+                "ask",
+                r#","target":"lead","ref":"ae-1","actor_session":"demo""#,
+            ),
+            event(
+                &at(3600),
+                "ae:compact:0199c0de",
+                "cancel",
+                r#","ref":"ae-1""#,
+            ),
+        ];
+        let read = read(&lines);
+        assert!(read.pending.is_empty());
+        assert_eq!(
+            read.attention_contribution(Timestamp::now(), DEFAULT_UNANSWERED_SECS),
+            None
+        );
+    }
+
+    #[test]
+    fn a_withdrawal_by_someone_else_leaves_the_request_open() {
+        let lines = [
+            event(
+                &at(7200),
+                "lead",
+                "ask",
+                r#","target":"coworker","ref":"ae-1""#,
+            ),
+            event(
+                &at(3600),
+                "bystander",
+                "cancel",
+                r#","target":"coworker","ref":"ae-1""#,
+            ),
+        ];
+        assert_eq!(
+            read(&lines).pending.len(),
+            1,
+            "only the asker takes it back"
+        );
+    }
+
+    #[test]
+    fn a_withdrawal_that_predates_its_request_does_not_end_it() {
+        let lines = [
+            event(
+                &at(3000),
+                "lead",
+                "cancel",
+                r#","target":"coworker","ref":"ae-1""#,
             ),
             event(
                 &at(2400),
