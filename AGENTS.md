@@ -28,7 +28,7 @@ stay readable.
   what publishes a version directory is `src/install.rs`, and the script is a 79-line
   bootstrap that exists because a machine with no ae has no core to run.
 - Config is INI-style with a simple regex parser, and it is the core's (`src/config.rs`) — no bash reads a key of it, and `install` writes only a default config where none exists. Don't add TOML/YAML/JSON parsing.
-- Core ae requires only `tmux` and `git` — the core is a static binary and needs no shell at all; `bash` is a prerequisite of `install`, not of `ae`. Optional features may declare their own hard dependencies (e.g. the orchestrator companion session needs an agent CLI; `contrib/aemonitor` needs Python 3), but those deps must never be required for the rest of ae to work — `ae list`, `ae <name>`, etc. continue to function on a machine without them. (`ae telegram` used to need `jq` + `curl`; the Rust-core bridge needs neither — it is the ae core binary.)
+- Core ae requires only `tmux` and `git` — the core is a static binary and needs no shell at all; `bash` is a prerequisite of `install`, not of `ae`. Optional features may declare their own hard dependencies (e.g. the orchestrator companion session needs an agent CLI), but those deps must never be required for the rest of ae to work — `ae list`, `ae <name>`, etc. continue to function on a machine without them. **There is no Python in the product at all**: `ae telegram` used to need `jq` + `curl` and the orchestrator's sweep used to be `contrib/aemonitor`, a Python 3 sidecar over `ae list --json`; the bridge is the core binary and the sweep is the core entry `ae _monitor`, so both dependencies are gone rather than optional.
 - Session state lives in `~/.ae/sessions/`; archived session memory lives in
   `~/.ae/archive/<session-uuid>/` and is INERT — data only, never an executable file.
   Working directories stay clean.
@@ -40,7 +40,7 @@ stay readable.
 The single-file / pure-bash / tmux-runtime contract is a *decision with reasons*, not dogma. Re-evaluate it when a trigger fires — and only then:
 
 1. **The bash bug tax recurs.** Two or more shipped bugs of the `set -e`/escaping class *after* the hazards checklist and the declare-f testability refactor landed → doctrine failed; move the affected component to a typed language.
-2. **State outgrows bash.** Core ae needs real data structures (nested, typed, or concurrent state), or a sidecar needs to *write* ae's state rather than read it → extract that component (the aemonitor precedent: Python sidecar in `contrib/`, optional dep).
+2. **State outgrows bash.** Core ae needs real data structures (nested, typed, or concurrent state), or a sidecar needs to *write* ae's state rather than read it → extract that component (the aemonitor precedent: Python sidecar in `contrib/`, optional dep). *Both halves of that precedent have since been overtaken — the core is typed now, so the extraction target is the core itself: aemonitor came back in as `ae _monitor` in slice Z4.*
 3. **The product changes shape.** The long-lived daemon side (watchdog, orchestrator, telegram) outgrows the tmux-wrapper side → that half becomes a proper sidecar/daemon (uv/PEP 723 single-file Python or a small Go/Rust binary), integrated via the install script and `ae doctor` checks, with bash kept for the tmux glue where it is best-in-class. (Direction already agreed for watchdog + telegram.)
 4. **Someone besides the author uses it.** Contributor onboarding and packaging change the whole calculus — revisit everything above.
 
@@ -76,7 +76,7 @@ install             — the bootstrap: download a release bundle, prove it again
                       (51 of code) since slice Z4 moved the publication into the core, and
                       still the product's ONLY bash file
 docs/               — user + internals documentation (getting-started, reference, internals)
-contrib/            — optional sidecars: aewatch (retired Python watchdog+bridge; archival), aeorchestrator, aemonitor
+contrib/            — optional sidecars: aewatch (retired Python watchdog+bridge; archival), aeorchestrator (config + charter templates, no code)
 Cargo.toml          — Rust package: one crate, bin + lib, both named `ae` (no workspace)
 rust-toolchain.toml — compiler pin: channel, profile, components, both targets
 clippy.toml         — the tests-only relaxation of the unwrap/expect rule

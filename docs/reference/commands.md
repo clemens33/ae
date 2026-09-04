@@ -265,9 +265,9 @@ orchestrator, and a **heartbeat** check catches a *live-but-not-sweeping* orches
 stall, upstream throttle, wedge) — the orchestrator's sweep helper rewrites
 `~/.ae/sessions/<orchestrator>/meta-agent-state.json` on each real sweep, and if that mtime
 stops advancing past ~`2×AE_WATCHDOG_SWEEP_SEC` the watchdog raises one alert (cleared on
-recovery). This is the file [`contrib/aemonitor`](../../contrib/aemonitor/) writes
-by default; if you override its `--state` path for the orchestrator, point it at this same
-file or the watchdog heartbeat will false-alarm. The sweep nudges use `action=nudge`,
+recovery). That sweep helper is the core entry `ae _monitor sweep <session-dir>`, and the
+file name is one constant shared by the writer and the watchdog that stats it, so the two
+cannot drift apart. The sweep nudges use `action=nudge`,
 which is **not in the default telegram include set**, so routine sweeps don't
 reach your phone (a custom `include` containing `nudge` would forward them).
 
@@ -300,8 +300,8 @@ That is exactly what the retired command prints when you reach for it.
 **Setting it up.** There is no `--init` any more. Copy the two templates from
 [`contrib/aeorchestrator`](../../contrib/aeorchestrator/) into `~/.ae/orchestrator/` yourself
 — `orchestrator.config` and `CHARTER.md` — and replace the charter path placeholder in the
-config with the real path. The charter wires the deterministic sweep to
-[`aemonitor`](../../contrib/aemonitor/), defines the objective-armed focus aide, and tells the
+config with the real path. The charter wires the deterministic sweep to the core entry
+`ae _monitor sweep`, defines the objective-armed focus aide, and tells the
 agent its only channel to you is `say`. The config marks the session with `[workspace]
 orchestrator = true`, which is what gives its main agent the sweep cadence described above.
 

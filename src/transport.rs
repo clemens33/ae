@@ -500,6 +500,33 @@ pub(crate) fn run_opencode(argv: &crate::session_launch::capture::OpenCodeArgv) 
     }
 }
 
+/// The orchestrator-report leg of the one process door — the ONLY way product
+/// code runs a session's `say` helper, and the program is not chosen here at
+/// all: it arrives inside a [`crate::monitor::Notice`], whose fields are private
+/// to `src/monitor.rs` and whose one constructor joins the literal `say` onto a
+/// session directory. So this entry cannot be alias-imported and handed an
+/// arbitrary command line, exactly as [`run_git`] and [`run_ps`] cannot.
+///
+/// It exists because the sweep's dedup is DELIVERY-AWARE: a change is marked
+/// notified only once the report about it actually landed, so the sweep has to
+/// know whether `say` exited zero. That is the whole return value — `true` for
+/// a zero exit, `false` for anything else, a spawn that never happened
+/// included, and the sweep treats every `false` as "retry next sweep".
+///
+/// stderr is INHERITED, like [`deliver`]'s: `say`'s own refusals belong in the
+/// pane that ran the sweep, verbatim, rather than being swallowed by the caller
+/// that chose to run it.
+pub(crate) fn run_say(notice: &crate::monitor::Notice) -> bool {
+    spawn(
+        &notice.helper().display().to_string(),
+        &notice.args(),
+        &[],
+        Streams::InheritStderr,
+        None,
+    )
+    .is_some_and(|output| output.status.success())
+}
+
 /// The detached-supervisor leg of the one process door — the ONLY way product
 /// code starts a process that must OUTLIVE it, and the program is FIXED here to
 /// `nohup`.

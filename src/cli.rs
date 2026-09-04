@@ -239,6 +239,12 @@ pub const CONTEXT: &str = "_context";
 /// (`docs/migration/coexistence.md`, item 4) rather than a semantic-contract
 /// row — there is no row because there is no bash predecessor: nothing in the
 /// frozen script ever resolved a hostname. The behavior is [`crate::netprobe`].
+/// The orchestrator's sweep: `_monitor sweep <session-dir> [flags]`. Underscored
+/// like every other core entry — it is run by the orchestrator agent on its
+/// cadence, and the session it sweeps for is the directory it is handed, the
+/// same way every helper surface takes one. The behavior is [`crate::monitor`].
+pub const MONITOR: &str = "_monitor";
+
 pub const NET_PROBE: &str = "_net-probe";
 
 /// The `say` helper's surface: `_say <dir> [text…]` — the free-text line the
@@ -595,6 +601,16 @@ pub enum Request {
         dir: PathBuf,
         /// Everything after it, as typed.
         tail: Vec<String>,
+    },
+    /// `_monitor sweep <session-dir> [flags]` — one orchestrator sweep over the
+    /// world `list` renders, against the session's own state file.
+    Monitor {
+        /// The session directory: its state file, and the `say` it delivers
+        /// through.
+        dir: PathBuf,
+        /// Every tunable and switch, defaulted to the values a flagless call
+        /// keeps.
+        args: crate::monitor::Args,
     },
     /// `_net-probe <host> [--port <n>]` — resolve a name and report what the
     /// resolver did.
@@ -1059,6 +1075,21 @@ impl Request {
             Some(TELEGRAM) => Self::Telegram {
                 tail: args[1..].to_vec(),
             },
+            Some(MONITOR) => match &args[1..] {
+                [word, dir, flags @ ..] if word == crate::monitor::SWEEP => {
+                    match monitor_args(flags) {
+                        Ok(parsed) => Self::Monitor {
+                            dir: dir.into(),
+                            args: parsed,
+                        },
+                        Err(word) => Self::UsageError(word),
+                    }
+                }
+                // A subcommand that is not `sweep` is the offending word; a
+                // `sweep` with no directory is the missing operand it is.
+                [word, ..] if word != crate::monitor::SWEEP => Self::UsageError(word.clone()),
+                _ => Self::MissingOperand(MONITOR),
+            },
             Some(NET_PROBE) => match &args[1..] {
                 [] => Self::MissingOperand(NET_PROBE),
                 [host, flags @ ..] => match net_probe_port(flags) {
@@ -1418,6 +1449,7 @@ impl Request {
             | Self::TelegramRun { .. }
             | Self::Watchdog { .. }
             | Self::Telegram { .. }
+            | Self::Monitor { .. }
             | Self::NetProbe { .. }
             | Self::CompactFreeze { .. }
             | Self::CompactRevalidate { .. }
@@ -1447,6 +1479,53 @@ impl Request {
 /// same answer: the offending word, which the caller turns into SC-022's usage
 /// exit. Silently defaulting a knob bash meant to set would make the daemon run
 /// a cadence nobody chose, and a watchdog is not a place to guess.
+/// Read `_monitor sweep`'s flags.
+///
+/// Three of them are switches and the rest take a value, so this cannot reuse
+/// the watchdog's every-flag-takes-a-value loop. The rule is the same one: an
+/// unrecognised flag, a missing value and an unparseable number are all the
+/// offending word, never a silent default for a knob the caller meant to set.
+fn monitor_args(flags: &[String]) -> std::result::Result<crate::monitor::Args, String> {
+    let mut args = crate::monitor::Args {
+        now: crate::time::Timestamp::now().epoch(),
+        ..crate::monitor::Args::default()
+    };
+    let mut rest = flags;
+    while let [flag, tail @ ..] = rest {
+        match flag.as_str() {
+            "--init" => args.init = true,
+            "--dry-run" => args.dry_run = true,
+            "--no-notify" => args.notify = false,
+            _ => {
+                let Some((value, after)) = tail.split_first() else {
+                    return Err(flag.clone());
+                };
+                match flag.as_str() {
+                    "--now" => {
+                        args.now = value.parse::<i64>().map_err(|_| value.clone())?;
+                    }
+                    "--quiet-secs" => {
+                        args.quiet_secs = value.parse::<i64>().map_err(|_| value.clone())?;
+                    }
+                    "--liveness-sweeps" => {
+                        args.liveness_sweeps = value.parse::<u64>().map_err(|_| value.clone())?;
+                    }
+                    "--format" => match value.as_str() {
+                        "text" => args.format = crate::monitor::Format::Text,
+                        "json" => args.format = crate::monitor::Format::Json,
+                        _ => return Err(value.clone()),
+                    },
+                    _ => return Err(flag.clone()),
+                }
+                rest = after;
+                continue;
+            }
+        }
+        rest = tail;
+    }
+    Ok(args)
+}
+
 fn watchdog_knobs(flags: &[String]) -> std::result::Result<crate::watchdog_daemon::Knobs, String> {
     let mut knobs = crate::watchdog_daemon::Knobs::default();
     let mut rest = flags;
