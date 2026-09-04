@@ -163,7 +163,8 @@ impl Rig {
     }
 
     /// `_run` for real: it `exec`s the fixture tool, which reports its argv.
-    fn exec(&self) -> Vec<String> {
+    /// Returns that argv and whatever `_run` said before it became the tool.
+    fn exec(&self) -> (Vec<String>, String) {
         let _ = std::fs::remove_file(&self.out);
         let out = ae()
             .env_remove("TMUX")
@@ -181,13 +182,15 @@ impl Rig {
             "_run: {}",
             String::from_utf8_lossy(&out.stderr)
         );
+        let said = String::from_utf8_lossy(&out.stderr).into_owned();
         let dumped = std::fs::read_to_string(&self.out)
             .unwrap_or_else(|why| panic!("the tool should have reported its argv: {why}"));
-        dumped
+        let argv = dumped
             .split(RS)
             .filter(|word| !word.is_empty())
             .map(ToOwned::to_owned)
-            .collect()
+            .collect();
+        (argv, said)
     }
 
     fn tool(&self, name: &str) -> String {
@@ -442,7 +445,11 @@ fn a_first_run_creates_a_second_resumes_and_the_marker_is_the_difference() {
 
     // FIRST RUN: the create form, and the environment deltas really applied —
     // `CLAUDECODE` was set for the ae process and is gone from the tool's.
-    let argv = rig.exec();
+    let (argv, said) = rig.exec();
+    assert!(
+        !said.contains("re-run"),
+        "a first run announces no resume: {said}"
+    );
     assert!(
         argv.contains(&"--session-id".to_owned()) && argv.contains(&"u-3".to_owned()),
         "{argv:?}"
@@ -463,8 +470,11 @@ fn a_first_run_creates_a_second_resumes_and_the_marker_is_the_difference() {
     );
 
     // SECOND RUN: the SAME line, and it resumes rather than creating a second
-    // conversation — which is the whole reason the marker exists.
-    let argv = rig.exec();
+    // conversation — which is the whole reason the marker exists. It says so
+    // on the way, because a human who arrow-upped the pane's command is owed an
+    // answer to "did that start a second conversation?".
+    let (argv, said) = rig.exec();
+    assert!(said.contains(ae::run::RESUMING), "{said}");
     assert!(
         !argv.contains(&"--session-id".to_owned()),
         "a re-run must not collide on a create-once id: {argv:?}"

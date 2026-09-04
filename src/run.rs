@@ -156,6 +156,9 @@ pub fn pane_command(core: &Path, dir: &Path, slot: &str) -> String {
 /// The exit code for a `_run` that could not build or start its agent.
 const EXIT_FAILED: u8 = 1;
 
+/// What a resuming run says before it becomes its tool.
+pub const RESUMING: &str = "ae: re-run — resuming this agent, not creating a second session.";
+
 /// The marker whose presence means "this seat has already been launched once".
 #[must_use]
 pub fn started_marker(dir: &Path, slot: &str) -> PathBuf {
@@ -207,6 +210,14 @@ pub fn run(
     let marker = started_marker(dir, slot);
     if plan.mode == Mode::Create {
         let _ = std::fs::File::create(&marker);
+    } else {
+        // The frozen script said this on its re-run branch, and it is worth
+        // saying on every resume: a human who arrow-upped the pane's command
+        // gets an answer to "did that just start a second conversation?", and a
+        // resumed pane says why it is not empty. It survives on screen only
+        // until the tool draws over it.
+        writeln!(err, "{RESUMING}")?;
+        err.flush()?;
     }
     let why = exec(&plan);
     // Reached only because the exec did NOT happen, so this seat has not been
