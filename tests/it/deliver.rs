@@ -299,17 +299,16 @@ fn a_send_defers_while_the_input_box_holds_a_draft_and_abandons_loudly() {
         rig.tmux(&["send-keys", "-t", &rig.pane, "-l", "half a question"])
             .0
     );
-    // The sensor must SEE it before the send is asked to.
-    for _ in 0..100 {
-        if deliver::input_busy(&rig.server(), &rig.pane, Tool::Claude) {
-            break;
+    // The sensor must SEE it before the send is asked to. The polled reading
+    // is the proof; a second read would race the pane's redraw (measured on
+    // the macos-15 lane: first read OCCUPIED, immediate re-read not).
+    let seen = (0..100).any(|_| {
+        deliver::input_busy(&rig.server(), &rig.pane, Tool::Claude) || {
+            std::thread::sleep(Duration::from_millis(50));
+            false
         }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    assert!(
-        deliver::input_busy(&rig.server(), &rig.pane, Tool::Claude),
-        "a draft in the box reads OCCUPIED"
-    );
+    });
+    assert!(seen, "a draft in the box reads OCCUPIED");
     let (code, stderr) = rig.run(
         ae::cli::SEND,
         &["tui", "overwrite me"],
