@@ -1,6 +1,78 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [v2026.9.2] - 2026-09-04
+
+### Bug Fixes
+
+- **tmux**: Printable field separator so every format survives tmux 3.4
+- **install**: Resolve a dangling link target through its own nearest ancestor
+- **ci**: The version directory is sealed after the rename, and the agent-site inventory is order-free
+- **agy**: A token miss stays pending, the scan is bounded, and a purge names agy
+- **agy**: The operand delimiter ends the strip
+- **purge,agy**: A recorded id is a name, and the scan bound is a real one
+- **monitor**: A sweep target is a session directory or it is refused
+- **docs**: A comment that stops mid-sentence says less than none
+- **docs**: The last eight truncations, found by a stricter audit
+- **docs**: Complete the truncated attach comment in the entry suite
+- **doors**: The relaxation inventory names all nine files again
+- **monitor**: A sweep may only act on the caller's own session
+
+### Documentation
+
+- **migration**: Final phase-4 evidence as left by the human before the tree is retired
+- Retire docs/migration — the rewrite it documented is complete (history keeps the evidence)
+- **agents**: The printable tmux format separator governs every format, with the Linux measurement
+- **z4**: The test surface is Rust, and the bash hazards are install and your shell
+- **z4**: No pointer names a retired tree, and the byte-exact rule follows its files
+- Align runtime shape with Rust core
+- **session**: Rustdoc shape, and entry_from gets its own doc back
+- **events**: Rustdoc shape for the event record and its readers
+- **list**: Rustdoc shape for the session readers and the listing
+- **tmux,deliver**: Rustdoc shape for the tmux boundary and the send path
+- **watchdog**: Rustdoc shape for the watchdog and its daemon
+- **telegram**: Rustdoc shape for the bridge
+- **core**: Rustdoc shape for lifecycle, install, doctor and the leaf modules
+- **src**: One sentence per item, and the rest of the argument goes
+- **tests**: The test name carries the intent, the comment carries the instrument
+- **launch**: The six freed files get the same rustdoc shape
+- The last six files, and every pointer at a file that is gone
+
+### Features
+
+- **z4**: The installer's logic is the core's; install is a 79-line bootstrap
+- **monitor**: The orchestrator sweep is a core entry, and the last Python goes
+- **agy**: The Antigravity CLI is a first-class ae tool
+- **roster**: A v1 meta is a fresh start, not a migration
+- **meta**: The v1 roster reader is gone; a legacy meta is reported, not read
+
+### Other
+
+- Merge branch 'z4-install'
+- Merge branch 'z4-monitor'
+- Merge branch 'ci-linux'
+- **z4**: The gate is one command, and the lint has one file left
+- Merge branch 'z4-tests'
+- **release**: A release is built and published from one machine
+- **release**: The remote tag is created by the release, not pushed ahead of it
+- Merge branch 'z4-monitor-fix'
+- The bash bootstrap is inside the gate, on both runners
+- Merge branch 'z4-ci-gate'
+- Merge branch 'z4-docs-nit'
+- Make release workflow proof-only
+
+### Refactoring
+
+- Two methods with no caller go, and the third is not one
+
+### Testing
+
+- The list goldens live under tests/fixtures; the bash-parity helper corpus test retires with the evidence tree
+- Point the list goldens at tests/fixtures and drop the retired corpus module
+- **z4**: The bash suites retire into tests/it
+- **z4**: The parity harness keeps its door, the boundary guards get their own module
+- Isolate tmux fixtures
+- One table for the request-pairing matrix, and six twins dropped
 ## [v2026.9.1] - 2026-09-04
 
 ### Bug Fixes
