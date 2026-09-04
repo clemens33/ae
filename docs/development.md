@@ -156,9 +156,13 @@ resolves a real name through musl's NSS-less `getaddrinfo`. `just bundle` is hon
 the same gap: it asks a native member for its `--version` and says so out loud when it
 degrades to a byte search for a foreign one.
 
-`.github/workflows/release.yml` is kept as a **dispatch-only** lane for that Linux run
-proof. Dispatch it at a tag — `gh workflow run release.yml --ref v<version>` — because every
-step derives the version from `GITHUB_REF_NAME`.
+`.github/workflows/release.yml` is kept as a **dispatch-only, proof-only** lane for that Linux
+run proof and the macOS build proof. It uploads the runner-built bundles as workflow artifacts
+for inspection alongside the assets published by `just release`; those tarballs are not expected
+to be byte-identical to the laptop-built assets, and `SHA256SUMS` remains the reference for the
+published files rather than a reproducibility claim. It never creates, updates or overwrites
+release assets. Dispatch it at a tag — `gh workflow run release.yml --ref v<version>` — because
+every step derives the version from `GITHUB_REF_NAME`.
 
 ## Cross-model code review
 

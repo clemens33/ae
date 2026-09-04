@@ -374,8 +374,8 @@ changelog:
 
 # THE WHOLE RELEASE HAPPENS HERE, on this machine. GitHub Actions is no longer
 # on the critical path: `just bundles` builds and proves both platform halves
-# locally, and `gh release create` attaches them. The tag-triggered workflow is
-# retained as a manually dispatched Linux run-proof lane, not as the publisher.
+# locally, and `gh release create` attaches them. The dispatch-only workflow is
+# retained as a proof lane with artifact uploads, not as the publisher.
 #
 # THE ORDER IS THE SAFETY PROPERTY. Everything that can refuse — a dirty tree,
 # a gh account without push rights, a missing cross toolchain — refuses in the
@@ -452,8 +452,8 @@ release:
     cargo check --locked
 
     # Gate 3: the artifacts themselves. Both platform halves and the
-    # release-level SHA256SUMS, built and proven HERE — this is what replaced
-    # the tag-triggered workflow. It runs BEFORE the tag deliberately: a failed
+    # release-level SHA256SUMS, built and proven HERE — this is what the release
+    # gate guards. It runs BEFORE the tag deliberately: a failed
     # cross build or a musl binary that is not static costs a `git checkout` of
     # two version files, not an orphan tag with nothing behind it.
     just bundles
@@ -637,9 +637,9 @@ bundle version platform binary:
 # Both release halves, and the release-level SHA256SUMS over them, built HERE.
 #
 # THIS IS THE RECIPE THAT TAKES GITHUB ACTIONS OFF THE CRITICAL PATH. It emits
-# exactly the three files .github/workflows/release.yml used to publish, so a
-# release no longer waits on a runner and `install` verifies the same bytes it
-# always did.
+# exactly the two platform tarballs and one SHA256SUMS manifest that `just release`
+# publishes; the workflow legs build those tarballs separately as proof artifacts, so a
+# release no longer waits on a runner and `install` verifies the same bytes it always did.
 #
 # It does NOT restate what a bundle is. `just bundle` remains the one
 # definition, called once per platform — the same two calls the two workflow

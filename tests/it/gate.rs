@@ -645,7 +645,7 @@ fn a_release_builds_both_bundles_locally_and_proves_its_rights_before_the_bump()
         "`gh release create --target` is what creates the remote tag"
     );
 
-    // The tag-triggered workflow is retained as a MANUAL Linux run-proof lane.
+    // The dispatch-only workflow is retained as a MANUAL Linux run-proof lane.
     let workflow = read(&root().join(".github/workflows/release.yml"));
     assert!(
         workflow.contains("on:\n  workflow_dispatch:"),
@@ -671,6 +671,45 @@ fn a_release_builds_both_bundles_locally_and_proves_its_rights_before_the_bump()
             "{file} must name the musl linker its runner actually has"
         );
     }
+}
+
+#[test]
+fn the_release_workflow_is_a_manual_proof_lane_with_artifacts_only() {
+    let workflow = read(&root().join(".github/workflows/release.yml"));
+    let header = workflow
+        .split_once("on:\n")
+        .map_or(workflow.as_str(), |(header, _)| header);
+    assert!(
+        !["gh release upload", "gh release create", "contents: write"]
+            .iter()
+            .any(|banned| header.contains(banned)),
+        "the workflow header must not mention release mutation or write permission"
+    );
+    assert!(
+        workflow.contains("on:\n  workflow_dispatch:"),
+        "the release workflow is dispatch-only"
+    );
+    assert!(
+        !workflow.contains("  push:\n    tags:"),
+        "the release workflow must not be tag-triggered — `just release` publishes"
+    );
+    assert_eq!(
+        workflow.matches("uses: actions/upload-artifact@").count(),
+        2,
+        "both proof legs must upload their bundles as workflow artifacts"
+    );
+    assert!(
+        !workflow.contains("gh release upload"),
+        "the proof-only workflow must not upload or overwrite release assets"
+    );
+    assert!(
+        !workflow.contains("contents: write"),
+        "the proof-only workflow must not request release write permission"
+    );
+    assert!(
+        !workflow.contains("gh release create"),
+        "the proof-only workflow must not create a GitHub release"
+    );
 }
 
 /// One command in `dir`, with `PATH` led by that fixture's own `bin`.

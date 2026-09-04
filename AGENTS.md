@@ -86,7 +86,7 @@ tests/it/           — the single integration-test target (main.rs + `mod` subm
                       is the two guards over the justfile and `install`; `parity.rs` is
                       the suite's one child-process door
 tests/fixtures/     — frozen inputs the Rust suites read (session shapes, list goldens)
-.github/workflows/  — rust lanes and tag-triggered prebuilt release lanes, both platforms
+.github/workflows/  — rust lanes and dispatch-only prebuilt release-proof lanes, both platforms
 README.md           — user docs
 VISION.md           — what ae is, and where it is going
 AGENTS.md           — this file
@@ -426,7 +426,7 @@ positional as a session name — a bare `ae status` would otherwise create a ses
 | `just rust-cov` | coverage **report**, not a gate |
 | `just rust-build-release` | native release binary (`--locked`) + foreign-target compile smoke |
 | `just rust-watch` | optional bacon loop; bacon is deliberately not part of the bootstrap |
-| `.github/workflows/release.yml` | tag-triggered prebuilt bundles: static musl Linux + native Apple Silicon macOS, checksum manifest, GitHub Release upload |
+| `.github/workflows/release.yml` | dispatch-only prebuilt proof artifacts: static musl Linux + native Apple Silicon macOS bundles retained for inspection alongside release assets |
 
 Coverage becomes a gate the day a threshold is ratified, and not before. An unratified
 number that blocks a merge is a number nobody agreed to.
@@ -470,13 +470,17 @@ the tag object and the release in ONE API call with the assets attached. The fai
 retry command is printed. A re-run that meets an existing release object uploads into it
 with `--clobber` rather than refusing. `gate.rs` refuses a `git push` of the tag outright.
 
-**`.github/workflows/release.yml` is retained but dispatch-only** (`workflow_dispatch`, no
-tag trigger). It is no longer the publisher; it is the lane where a musl binary can actually
-RUN — it executes the cross-built core, checks its version, proves it static, and runs both
+**`.github/workflows/release.yml` is retained as a dispatch-only, proof-only lane**
+(`workflow_dispatch`, no tag trigger). It never creates, updates or overwrites release assets:
+both build legs run their proofs and upload the runner-built bundles as workflow artifacts for
+inspection alongside the assets published by `just release`. Those tarballs are not expected to
+be byte-identical to the laptop-built assets; `SHA256SUMS` remains the reference for the
+published files, not a reproducibility claim. The Linux leg executes the cross-built core,
+checks its version, proves it static, and runs both
 `_net-probe` controls against the shipped binary, the reserved `.invalid` name refusing and
-`api.telegram.org` resolving. Dispatch it AT A TAG (`gh workflow run release.yml --ref
-v<version>`); every step derives the version from `GITHUB_REF_NAME`, so a branch dispatch
-refuses at the first `--version` assertion before any release object exists.
+`api.telegram.org` resolving; the macOS leg builds and checks the native Apple Silicon bundle.
+Dispatch it AT A TAG (`gh workflow run release.yml --ref v<version>`); every step derives the
+version from `GITHUB_REF_NAME`, so a branch dispatch refuses at the first `--version` assertion.
 
 **The canonical installer takes no path overrides.** It installs to `~/.ae/versions` and
 `~/.local/bin/ae`, derived from `HOME` and nothing else. Fixed publication paths avoid
@@ -784,8 +788,8 @@ The bootstrap contract, in full — nothing else is assumed to exist:
   `file` reports static. **The RUN proof stays on the Linux CI leg**
   (`.github/workflows/rust.yml`): a macOS kernel cannot exec an ELF binary, so executing the
   core, checking its exit codes and resolving a real name through musl's NSS-less
-  `getaddrinfo` are all CI's, and the tag-triggered release lane is kept — dispatch-only —
-  for the same reason. `just bundle` follows the same honesty rule: it asks a NATIVE member
+  `getaddrinfo` are all CI's, and the manual dispatch-only release-proof lane is kept for the
+  same reason. `just bundle` follows the same honesty rule: it asks a NATIVE member
   for its `--version` and degrades OUT LOUD to a byte search for the version string in a
   foreign one, rather than pretending it ran something it cannot.
 - **NSS caveat — flagged for P4 (daemons), and now LIVE: the Telegram bridge resolves
