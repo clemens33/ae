@@ -9,9 +9,9 @@ Rust tests, and this docs site.
 ```
 justfile            — dev/release pipeline (just check, just test, just release)
 cliff.toml          — git-cliff config (CalVer-compatible changelog)
-tests/unit          — pure-function unit tests (bash, no deps)
-tests/integration   — integration tests (requires tmux, git)
-tests/it/           — Rust integration target
+tests/it/           — the single Rust integration target; `doors.rs`, `gate.rs` and
+                      `parity.rs` are about the repository rather than the product
+tests/fixtures/     — frozen inputs the suites read (session shapes, list goldens)
 install             — the bootstrap (download, verify, extract, `ae-core _install`); the
                       product's only bash file, 79 lines
 Cargo.toml          — Rust package (bin + lib, both `ae`)
@@ -52,8 +52,8 @@ linter page. The SC2016 and SC2329 sites carry their own reasoned comments inste
 just check            # shellcheck + shfmt (diff mode)
 just format           # shfmt -w
 just test             # unit + integration
-just test-unit        # pure-function unit tests (bash only, no tmux)
-just test-integration # tmux + git required
+just test             # the whole test surface (= just rust-check)
+just check            # shellcheck + shfmt over install, the one bash file
 just install          # checkout-mode immutable versioned install
 just rust-setup       # install pinned Rust toolchain and dev tools
 just rust-check       # Rust fmt, clippy, nextest, and doctests
@@ -65,44 +65,45 @@ just docs-build       # build the static site into ./site
 
 ## Tests
 
-The Rust suite is where behaviour is tested: `cargo nextest` for units and the single
-`tests/it` integration target, plus `cargo test --doc` for the doctests, both run by `just
-rust-check`. `just rust-mutants` asks the harder question — whether those tests would ever go
-red.
+**The whole test surface is Rust.** `just rust-check` is format, lint, `cargo nextest` over
+the unit tests and the single `tests/it` integration target, and `cargo test --doc` for the
+doctests. `just test` is that same command — there is no inner-loop/gate split any more,
+because the whole suite now costs what one scoped bash domain used to. `just rust-mutants`
+asks the harder question: whether those tests would ever go red.
 
-The bash suites cover what is still bash. `tests/unit` exercises the public wrapper and the
-installer contract with a tiny `assert_eq` harness. The session-helper template library it
-used to reconstruct is gone, and since slice Z2 so are the four-line shims that replaced it;
-what it asserts about them now is the **link set** — that a refreshed session directory holds
-exactly the core's list of names, never `>= N`, so an artifact quietly appearing or vanishing
-is a failure rather than a different number, and that every one of them is a symlink to the
-core the session is pinned to. Retired sections stay in the file as one-line tombstones
-naming their subject and why it left, rather than being deleted silently.
+Slice Z4 retired the bash suites. Every `tests/integration` section and every live
+`tests/unit` block was matched against a Rust test that already proved the same invariant,
+or ported as one. What was ported is BEHAVIOUR, not test count: one strong end-to-end test
+per invariant, driving the real binary against a real tmux server, rather than a
+transliteration of a 40-assertion bash section.
 
-`tests/integration` spins up real tmux sessions, exercises the full lifecycle (create, send,
-ask, reply, stop, resume, end), and tears down. Requires tmux and git. The `doctor --refresh`
-scenario is the canary for the link set: it clobbers a helper, refreshes, and pins the link
-targets against what the core links at launch, so the refresh entry and the launch entry
-cannot drift. It includes a watchdog stop → start cycle, since a refresh replaces on-disk
-links only and a running daemon keeps the process it already is.
+`tests/it` runs against real servers. Its rigs create a tmux session on their own socket
+under a short `/tmp` path (`sun_path` is 104 bytes on macOS), launch real panes, and tear
+everything down in a `Drop` so a failed assertion cannot leave a server behind for the next
+timing-sensitive test. `doctor::doctor_refresh_republishes_the_shims_the_manifest_and_the_core_pin`
+is the canary for the link set: it clobbers a helper, refreshes, and pins the link targets
+against what the core links at launch, so the refresh entry and the launch entry cannot
+drift. It asserts the set is EXACTLY the core's list, never `>= N`, so an artifact quietly
+appearing or vanishing is a failure rather than a different number.
 
-Two lanes, two purposes. `just test-unit` and `just test-integration` are the **gate**: the
-full serial run, unnarrowable, ~30 minutes for the integration half. The three below are the
-**inner loop** — same assertions, minutes instead:
+Three modules are about the REPOSITORY rather than the product:
 
-```bash
-just unit                # unit tests without the five slow rigs (~1 min);
-                         #   AE_UNIT_FULL=1 restores them. The summary line says
-                         #   when it was not the full run
-just itest <domain>...   # only those domains' integration sections (seconds).
-                         #   Domains live in tests/itest-domains.tsv;
-                         #   `tests/itest-par --list` prints them
-just itest-all           # every section, sharded across cores (~4 min)
-```
+* `tests/it/doors.rs` — the capability boundary. `clippy.toml` denies
+  `std::process::Command` and a short list of `std::fs` readers outside a named few files;
+  these tests ask clippy itself, under `--force-warn`, whether that still holds, and pin
+  that `git` and `ps` each have exactly one product caller.
+* `tests/it/gate.rs` — the two build files ae owns. It proves the `lint` recipe redirects
+  shellcheck's stdin (issue #67: the linter reads fd 0, an agent harness hands it a socket,
+  and the process then blocks forever), that `install` carries no GNU-only coreutils, that
+  the `bundle` recipe is the one definition of a bundle, and that `just bump` derives its
+  sequence from the tags.
+* `tests/it/parity.rs` — the suite's ONE child-process door. It was the plumbing of a
+  bash-versus-core parity harness; the harness went with the bash it compared against, and
+  the door stayed because every real-server test runs through it.
 
-`itest-all` runs the sections in several processes, so a section that only passes because of
-what ran before it fails **here** and not in the serial gate. That is the point of having
-both: run the domain you touched in the loop, the serial gate once per slice.
+Every guard in those three is exercised against deliberately broken input as well as the
+real file. A rule that matches nothing is indistinguishable from a clean tree, so the red
+cases are the half that makes a green run mean something.
 
 ## Releases
 
@@ -115,7 +116,7 @@ recovered with `just bump-recover`.
 
 1. Pre-flight: clean working tree, fetch tags, pull rebase.
 2. `just check` (shellcheck + shfmt).
-3. `just test` (unit + integration).
+3. `just test` (the Rust suite; minutes).
 4. `just bump` updates the version — `Cargo.toml` and `Cargo.lock`, which since slice Z3 are the only files that hold one — and rewrites the README and docs/index release badges. It refuses to proceed if the pre-release badge or the obsolete checkout-install prose is still standing in either file; a real build-from-source section is not what it is looking for.
 5. `git-cliff` → `CHANGELOG.md` + release-body.
 6. Commit, tag, push, `gh release`.

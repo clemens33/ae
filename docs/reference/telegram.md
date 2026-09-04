@@ -18,7 +18,7 @@ See the [bridge protocol](../internals/bridge-protocol.md) for the substrate it 
 
 ## Dependencies
 
-The bridge needs **only a configured ae core** — it *is* the ae core binary, run in a background tmux session. There are no extra CLI dependencies: the old bash bridge's `jq` + `curl` requirement is gone. On a machine with no usable core, the public wrapper refuses every operational command — `ae telegram start`, `ae <name>`, `ae list`, and `ae stop` alike — before glue runs, naming `ae upgrade` as the repair path. `ae upgrade` and `ae version` remain available so repair and version queries survive breakage.
+The bridge needs **only a configured ae core** — it *is* the ae core binary, run in a background tmux session. There are no extra CLI dependencies. On a machine with no usable core, the public command refuses every operational command — `ae telegram start`, `ae <name>`, `ae list`, and `ae stop` alike — before any operational code runs, naming `ae upgrade` as the repair path. `ae upgrade` and `ae version` remain available so repair and version queries survive breakage.
 
 ```bash
 ae doctor              # reports telegram.core OK/WARN when telegram is configured
@@ -179,15 +179,13 @@ To have the bridge alive before the first `ae <name>` of a session, run `ae tele
 ## State files
 
 There is **one** bridge implementation: the ae core binary, run in the
-`ae-telegram` tmux session. The former bash daemon and the opt-in aewatch
-in-process bridge are both retired — a single sender, no ownership handoff, no
-backend switch.
+`ae-telegram` tmux session.
 
 | Path | Purpose |
 |---|---|
 | `~/.ae/telegram/tg_offset` | Durable inbound `getUpdates` cursor. Advances only *after* an update is durably routed — at-least-once (see **Replay safety**, above) |
 | `~/.ae/telegram/current_target` | The active `/use` inbound routing target |
-| `~/.ae/telegram/autostart-refusal` | Last autostart refusal as a fixed category (`aewatch-live`, `same-token-live`, `token-unreadable`, `probe-failed`, or `spawn-failed`) plus its UTC timestamp; retained after a later successful start |
+| `~/.ae/telegram/autostart-refusal` | Last autostart refusal as a fixed category (`same-token-live`, `token-unreadable`, `probe-failed`, or `spawn-failed`) plus its UTC timestamp; retained after a later successful start |
 | `<session-meta>/telegram-outbound.cursor` | Per-session outbound forward cursor `(inode, byte_offset)`, written beside each session's `events.jsonl` so restarts don't replay events. There is deliberately **no** single global outbound file — progress is per session |
 | `~/.ae/telegram/control.lock` | Serializes `start` / `stop` / `supervise` so concurrent watchdogs across sessions don't fight |
 | `~/.config/ae/telegram-bot.token` | The Bot API token (chmod 600, owner-only) |

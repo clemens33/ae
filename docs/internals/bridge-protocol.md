@@ -106,23 +106,6 @@ grep '^session_id=' ~/.ae/sessions/<name>/meta | cut -d= -f2-
 
 The session UUID is generated at first session creation, preserved on resume, preserved across rename, and copied during transfer. Bridges discovering sessions on a host can scan `~/.ae/sessions/*/meta` for `session_id` and key their internal state on that value.
 
-## Bridge ownership
-
-> **Superseded at P4.3 (2026-08-29).** ae has **one** bridge: the Rust core, run
-> in the `ae-telegram` tmux session. The bash telegram daemon and the in-process
-> aewatch bridge are both retired, so there is no second owner to coordinate
-> with, no `bridge-owner` marker and no handoff. Everything in this section is
-> **archival protocol history**, kept because it is the contract an *external*
-> bridge implementation was told to honour — see the closing note.
-
-ae once drove a session's outbound path from either of two bridge implementations — the bash `ae-telegram` daemon or the in-process aewatch bridge. Only one could send at a time, coordinated by a durable marker rather than a lock — a lock can't span the bash/Python boundary or a process handoff:
-
-- The owning bridge writes `$AE_HOME/aewatch/bridge-owner` and keeps `$AE_HOME/aewatch/heartbeat` fresh (touched each tick).
-- Any bridge — or a bash reviver — treats the marker as authoritative only while the heartbeat is fresh (age ≤ 90s). A stale heartbeat means the owner is gone and the marker suppresses no one.
-- Handoff order is strict: claim the marker → stop the other bridge → only then send. There is no window in which both send, and the shared `~/.ae/telegram/` offset files mean the taking-over bridge resumes from the last durable offset.
-
-A bridge implementer coexisting with ae's own bridge no longer has a marker to read: ae's Rust bridge does not write `bridge-owner`, and nothing in ae reads it. An external bridge that wants to coexist should key on the single `ae-telegram` session and on the durable state it owns — `~/.ae/telegram/tg_offset` for the inbound offset and `<meta>/telegram-outbound.cursor` per session for outbound — rather than on the retired marker protocol above.
-
 ## Allowed and disallowed assumptions
 
 **Allowed:**
@@ -147,6 +130,6 @@ The protocol has no explicit version field today. The schema is the version. Add
 
 ## Open work
 
-This document covers the bridge substrate: `events.jsonl` as a tail target, `AE_SENDER_OVERRIDE` for caller identity, the `telegram:` / `discord:` event-only target prefixes, `session_id`, and bridge ownership. New write helpers add new event actions as they ship (bridges ignore unknown actions).
+This document covers the bridge substrate: `events.jsonl` as a tail target, `AE_SENDER_OVERRIDE` for caller identity, the `telegram:` / `discord:` event-only target prefixes, and `session_id`. New write helpers add new event actions as they ship (bridges ignore unknown actions).
 
 The bridge daemon itself — its deploy story, auth model, rate-limit handling, and platform priority — is tracked in [issue #1](https://github.com/clemens33/ae/issues/1) and out of scope here.

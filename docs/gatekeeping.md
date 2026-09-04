@@ -109,6 +109,23 @@ days you are tired, rushed, or running on a smaller model.
    (hid the s18 violation), env assumed shared across processes (the s19 design
    BLOCKER). Name the blind spot out loud, then check that region by hand.
 
+**Verification mechanics, as of slice Z4.** `just rust-check` is the whole gate — format,
+clippy under `-D warnings`, `cargo nextest` and the doctests — and `just test` is that same
+command. `just check` is shellcheck and shfmt over `install`, the one bash file left. There
+is no scoped inner loop to run first and no serial full pass to run after: the split existed
+because the bash integration suite cost half an hour, and it does not exist any more.
+
+Two consequences for a gate read. **A green run is now cheap, so "I ran the suite" says
+less than it used to** — ask which test would have gone RED, and if the answer is none, the
+slice has no proof whatever the summary line says. And **the blind dimensions moved**: the
+Rust rigs drive real tmux servers and real panes, so the "fakes don't run the real thing"
+class is narrower than it was, while the classes that survive are timing (a rig that waits
+on a bounded poll can pass on an idle machine and flake on a loaded one), isolation (every
+rig owns a socket under a short `/tmp` path and tears down in a `Drop`, so a leak is a
+`Drop` that did not run), and scope (`tests/it/doors.rs` and `tests/it/gate.rs` read
+repository TEXT — they prove a rule is written, never that it holds at run time, and each
+says so in its own doc comment).
+
 ## The second protocol — reviewing a CLAIM, a CRITERION, or a body of EVIDENCE
 
 The protocol above reads a diff against an invariant. This one is for the other half of the

@@ -1,6 +1,6 @@
 # Lead handover — running ae development after phase 3
 
-> **Historical handover evidence — superseded as live operating doctrine on 2026-08-31.** The trust map, first-looks guidance, and list-incident routing below predate Rust-core ownership of `list`. [AGENTS.md](../AGENTS.md)'s command-ownership table and [gatekeeping.md](gatekeeping.md) are the current authorities.
+> **Historical handover evidence — superseded as live operating doctrine on 2026-08-31.** The trust map, first-looks guidance, and list-incident routing below predate Rust-core ownership of `list`. [AGENTS.md](../AGENTS.md)'s command-ownership table and [gatekeeping.md](gatekeeping.md) are the current authorities. **Read every path below as a name, not a location:** `contrib/aewatch`, the bash test suites and `docs/migration/` are all deleted, and the per-row supersession notes say what replaced them.
 
 Written 2026-07-07 by the phase-3 session lead (Fable 5) for any lead model taking
 over ae development sessions. `AGENTS.md` is the contract; `gatekeeping.md` is the

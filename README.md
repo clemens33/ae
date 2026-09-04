@@ -220,8 +220,8 @@ resumed; upgrades never hot-rewrite running sessions.
 
 ## Requirements
 
-- **bash >= 4.0** (macOS ships 3.2 — `brew install bash` and put brew's bin dir ahead of `/bin` on `PATH`)
-- [tmux](https://github.com/tmux/tmux) and [git](https://git-scm.com/)
+- **bash >= 4.0** (only to run `install`; macOS ships 3.2 — `brew install bash` and put brew's bin dir ahead of `/bin` on `PATH`)
+- [tmux](https://github.com/tmux/tmux) and [git](https://git-scm.com/) for the core runtime
 - [just](https://github.com/casey/just) only to build from source (`just install`)
 - At least one AI coding agent CLI (see *Works with*, above)
 
@@ -233,19 +233,19 @@ out with its own code rather than shelling out to `flock` or `timeout`.
 `ae doctor` reports the userland it detected along with the rest of the
 environment.
 
-`ae` runs under bash, but your interactive shell can be anything (fish, zsh, …). Run **`ae doctor`** after installing ae or upgrading any agent CLI -- it checks bash/tmux/git, your config, and whether configured agents are on `PATH`. Resume/session capture for external CLIs is best-effort and depends on each tool's upstream behavior; `ae doctor` is your first stop when something looks off. More: **[docs/troubleshooting.md](docs/troubleshooting.md)**.
+Your interactive shell can be anything (fish, zsh, …). Run **`ae doctor`** after installing ae or upgrading any agent CLI -- it checks tmux/git, your config, and whether configured agents are on `PATH`. Resume/session capture for external CLIs is best-effort and depends on each tool's upstream behavior; `ae doctor` is your first stop when something looks off. More: **[docs/troubleshooting.md](docs/troubleshooting.md)**.
 
 ## Development
 
 Requires [just](https://github.com/casey/just):
 
 ```bash
-just check            # lint (shellcheck) + format check (shfmt)
-just test             # unit + integration tests
+just check            # lint (shellcheck) + format check (shfmt) for the installer
+just test             # Rust format, lint, and tests
 just release          # check → test → CalVer bump → changelog → tag → gh release
 ```
 
-The Rust lanes live beside them on `main`, prefixed `rust-` and touching nothing the Bash recipes own. Prerequisites are honest: [rustup](https://rustup.rs) and just, nothing else.
+The Rust test gate is the whole test surface. Prerequisites are honest: [rustup](https://rustup.rs) and just, nothing else.
 
 ```bash
 just rust-setup       # pinned toolchain + dev tools (idempotent; installs nothing on a second run)

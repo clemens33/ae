@@ -2,8 +2,8 @@
 
 Distilled 2026-07-07 by the phase-3 session lead (Fable 5); patterns 11–13 added
 2026-07-16 from the input-region campaign retro. These are the patterns behind ae's
-design rulings — how independent processes (bash watchdogs, a Python sidecar, tmux
-sessions, revive hooks) and agents coordinate safely with no central broker. Each
+design rulings — how independent processes (the Rust core, tmux sessions, revive
+hooks) and agents coordinate safely with no central broker. Each
 earned its place by surviving adversarial review; several were carved by it.
 Companion: `gatekeeping.md` (how to review against these).
 
@@ -17,15 +17,13 @@ entirely (another session's supervisor) — it shares nothing with B's launcher.
 *Form:* `owner-marker` file (atomic write: temp + rename; content = owner pid + stamp)
 **plus** a freshness signal (heartbeat mtime ≤ N seconds). Marker without freshness is
 an incomplete fact (gatekeeping B4): a crashed owner would squat forever.
-*Exhibit:* `$AE_HOME/aewatch/bridge-owner` + heartbeat ≤ 90s (s19).
-
 ## 2. One guard at the chokepoint
 
 When N code paths can revive/start a thing, do not gate N call sites — find (or make)
 the single function they all flow through and put one ownership guard at its top.
 N-site gating guarantees the N+1th future path ships ungated.
 
-*Exhibit:* every bash-bridge revive path (launch hook, reattach hook, watchdog
+*Exhibit:* every Telegram autostart path (launch hook, reattach hook, watchdog
 `_supervise`) funnels through `_telegram_autostart_if_enabled`; the s19 guard is one
 line at its top. The explicit human command (`ae telegram start`) deliberately
 bypasses with a warning — human intent outranks the guard, but says so.
@@ -38,9 +36,6 @@ the new system dies, the fact decays and the old machinery revives the old syste
 automatically. The degraded path costs zero new code and is exercised by the same
 mechanisms that ran production yesterday.
 
-*Exhibit:* aewatch dies → heartbeat stales → the next bash `_supervise` tick revives
-the bash bridge → single sender again. The "enemy" revive paths became the safety net.
-
 ## 4. Fail-closed handoff ordering
 
 Taking over a live role: **claim the fact → complete the fact → verify the fact →
@@ -48,14 +43,6 @@ stop the predecessor (all scopes) → only then act.** Any step fails → back o
 and leave the predecessor running. A brief gap with *nobody* acting is acceptable;
 a window with *two* actors is not — durable shared offsets (pattern 8) make the gap
 lossless.
-
-*Exhibit:* s19 handoff — write marker (fail-closed on write), refresh + verify
-marker-plus-fresh-heartbeat, kill the bash bridge on *every* discovered tmux server
-(not just the ambient one — gatekeeping B3), then first send. Implementation
-caveat: the shipped code fail-closes before kill/send at every step, but a
-heartbeat-write *exception* is contained by the daemon loop's crash-containment
-and decay-stop path rather than a local marker rollback — the pattern above is
-the ideal; the exhibit reaches its safety via two composed mechanisms.
 
 ## 5. Decouple liveness cadence from work cadence
 
@@ -70,11 +57,11 @@ irreversible action, not just at loop entry (B7a).
 
 ## 6. Default-mode zero-diff
 
-New subsystems arrive behind an explicit opt-in (`AE_WATCHDOG_IMPL=uv`); the unset
-path stays byte-identical. This is a *provable* claim: structural unit guards, plus a
-gate-time diff read, plus — where possible — an integration test of the default path
-with the new component absent. It keeps `main` shippable through a long migration and
-keeps rollback trivial (unset the flag).
+New subsystems arrive behind an explicit opt-in; the default path stays byte-identical.
+This is a *provable* claim: structural guards, plus a gate-time diff read, plus — where
+possible — an integration test of the default path with the new component absent. It
+keeps `main` shippable while a new component is introduced and keeps rollback trivial
+(disable the opt-in).
 
 ## 7. Dual-run parity oracle
 
@@ -98,9 +85,9 @@ and accept occasional duplicates on crash-mid-send. Exactly-once needs a transac
 you don't have; silent loss is the failure mode users can't detect. Duplicates are
 annoying; loss is invisible — pick annoying.
 
-*Exhibit:* shared `$AE_HOME/telegram/{state.tsv,tg_offset,current_target}` across
-bash↔aewatch handoffs (outbound position, inbound offset, *and* routing target);
-truncation-reset guards for shrunk-same-inode files.
+*Exhibit:* durable `$AE_HOME/telegram/{tg_offset,current_target}` and per-session
+`telegram-outbound.cursor` across bridge restarts (outbound position, inbound offset,
+*and* routing target); truncation-reset guards for shrunk-same-inode files.
 
 ## 9. Routing key, address, spec, truth — never conflate
 
