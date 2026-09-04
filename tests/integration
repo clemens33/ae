@@ -3869,12 +3869,17 @@ assert_eq "#27: the pane's own first launch CREATED that session" "CREATE $RR_UU
 # the exec of the first run, which is why the second run can see it.
 assert_eq "#27: the first run left the started marker behind" "1" \
     "$([[ -e "$RR_DIR/launch.main.started" ]] && echo 1 || echo 0)"
-# Re-run it exactly as the human would.
-RR_ERR="$(PATH="$RR_BIN:$PATH" "$RR_CORE" _run "$RR_DIR" main 2>&1 >/dev/null || true)"
+# Re-run it exactly as the human would — FROM THE PANE'S OWN DIRECTORY. That is
+# not decoration: the resume probe reads the RUNNING PROCESS's cwd (`working_dir`
+# in src/run.rs is `current_dir()`), because the transcript claude keeps is filed
+# under the directory the conversation happened in. Re-run from anywhere else and
+# the probe asks about a different directory, misses, and the pane silently takes
+# the no-transcript fallback. A human arrow-ing up is in the work dir; so is this.
+RR_ERR="$( (cd "$RR_REPO" && PATH="$RR_BIN:$PATH" "$RR_CORE" _run "$RR_DIR" main) 2>&1 >/dev/null || true)"
 assert_eq "#27: re-running the pane command RESUMES the ORIGINAL id" "RESUME $RR_UUID" \
     "$(tail -1 "$TMPDIR/rr.log" 2>/dev/null || true)"
 assert_eq "#27: ...and a second re-run still resumes it" "RESUME $RR_UUID" \
-    "$(PATH="$RR_BIN:$PATH" "$RR_CORE" _run "$RR_DIR" main >/dev/null 2>&1 || true
+    "$( (cd "$RR_REPO" && PATH="$RR_BIN:$PATH" "$RR_CORE" _run "$RR_DIR" main) >/dev/null 2>&1 || true
        tail -1 "$TMPDIR/rr.log" 2>/dev/null || true)"
 assert_eq "#27: the collision was never hit" "0" \
     "$(command grep -c '^COLLIDE ' "$TMPDIR/rr.log" 2>/dev/null || true)"
@@ -3889,7 +3894,7 @@ assert_eq "#27: (setup) the stub really wrote the transcript the probe reads" "1
     "$([[ -f "$RR_PROJ/$RR_UUID.jsonl" ]] && echo 1 || echo 0)"
 rm -f "$RR_PROJ/$RR_UUID.jsonl"
 RR_FB_RC=0
-PATH="$RR_BIN:$PATH" "$RR_CORE" _run "$RR_DIR" main >/dev/null 2>&1 || RR_FB_RC=$?
+(cd "$RR_REPO" && PATH="$RR_BIN:$PATH" "$RR_CORE" _run "$RR_DIR" main) >/dev/null 2>&1 || RR_FB_RC=$?
 assert_eq "#27: with the transcript gone the re-run falls back instead of resuming" "NOID" \
     "$(tail -1 "$TMPDIR/rr.log" 2>/dev/null || true)"
 assert_eq "#27: ...and the fallback still starts the tool rather than failing" "0" "$RR_FB_RC"
