@@ -1022,10 +1022,13 @@ fn build(
             _ => split(&server, &shape.name, &work_dir, Split::Vertical),
         };
         let Some(pane) = created else {
-            let _ = kill_session(&server, &shape.name);
-            rollback_dir(shape, &dir, err)?;
-            writeln!(err, "Error: could not create a pane for worker {index}")?;
-            return Ok(EXIT_FAILED);
+            return rollback_launch(
+                shape,
+                &dir,
+                &server,
+                &format!("Error: could not create a pane for worker {index}"),
+                err,
+            );
         };
         panes.push(pane);
     }
@@ -1130,12 +1133,7 @@ fn build(
     // ---- the meta, published as ONE document ----
     let document = match meta_document(env, shape, &launching, meta_agent, parent) {
         Ok(document) => document,
-        Err(why) => {
-            let _ = kill_session(&server, &shape.name);
-            rollback_dir(shape, &dir, err)?;
-            writeln!(err, "Error: {why}")?;
-            return Ok(EXIT_FAILED);
-        }
+        Err(why) => return rollback_launch(shape, &dir, &server, &format!("Error: {why}"), err),
     };
     let published = if shape.resuming {
         meta::replace(&dir, &document)
@@ -1143,30 +1141,30 @@ fn build(
         meta::init(&dir, &document)
     };
     if published.is_err() {
-        let _ = kill_session(&server, &shape.name);
-        rollback_dir(shape, &dir, err)?;
-        writeln!(err, "Error: the session meta could not be published.")?;
-        return Ok(EXIT_FAILED);
+        return rollback_launch(
+            shape,
+            &dir,
+            &server,
+            "Error: the session meta could not be published.",
+            err,
+        );
     }
 
     // ---- assets ----
     let core = match std::env::current_exe() {
         Ok(path) => path,
         Err(why) => {
-            let _ = kill_session(&server, &shape.name);
-            rollback_dir(shape, &dir, err)?;
-            writeln!(
+            return rollback_launch(
+                shape,
+                &dir,
+                &server,
+                &format!("Error: the core could not name its own binary ({why})."),
                 err,
-                "Error: the core could not name its own binary ({why})."
-            )?;
-            return Ok(EXIT_FAILED);
+            );
         }
     };
     if let Err(why) = assets::write_helpers(&dir, &core) {
-        let _ = kill_session(&server, &shape.name);
-        rollback_dir(shape, &dir, err)?;
-        writeln!(err, "Error: {why}")?;
-        return Ok(EXIT_FAILED);
+        return rollback_launch(shape, &dir, &server, &format!("Error: {why}"), err);
     }
     let manifest = crate::render::manifest_document(
         &dir,
@@ -1178,13 +1176,13 @@ fn build(
         &env.config_files(),
     );
     if let Err(why) = assets::publish_document(&dir.join("workspace.md"), &manifest) {
-        let _ = kill_session(&server, &shape.name);
-        rollback_dir(shape, &dir, err)?;
-        writeln!(
+        return rollback_launch(
+            shape,
+            &dir,
+            &server,
+            &format!("Error: could not write the workspace manifest ({why})."),
             err,
-            "Error: could not write the workspace manifest ({why})."
-        )?;
-        return Ok(EXIT_FAILED);
+        );
     }
 
     // Resume-only event retention, before the events pane starts tailing: the
@@ -1203,14 +1201,7 @@ fn build(
             continue;
         }
         if let Err(why) = start_agent(shape, &dir, &core, agent, &server, err)? {
-            let _ = kill_session(&server, &shape.name);
-            rollback_dir(shape, &dir, err)?;
-            writeln!(
-                err,
-                "ae: launch failed — rolling back '{}'. ({why})",
-                shape.name
-            )?;
-            return Ok(EXIT_FAILED);
+            return rollback_launch(shape, &dir, &server, &format!("Error: {why}"), err);
         }
     }
 
@@ -2165,6 +2156,27 @@ fn write_private(path: &Path, text: &str) -> io::Result<()> {
     let mut file = std::fs::File::create(path)?;
     file.write_all(text.as_bytes())?;
     file.set_permissions(std::fs::Permissions::from_mode(0o600))
+}
+
+/// Undo a launch that failed after the tmux session existed, and SAY SO.
+///
+/// One helper, because a rollback that announces itself at one failure site and
+/// stays quiet at the next teaches an operator that silence means success. The
+/// order is what an operator reads top to bottom: what happened, why, and what
+/// was done about it — the announcement, then the caller's own reason, then
+/// [`rollback_dir`]'s verdict on the session state.
+fn rollback_launch(
+    shape: &Session,
+    dir: &Path,
+    server: &ServerId,
+    why: &str,
+    err: &mut impl Write,
+) -> crate::Result<u8> {
+    writeln!(err, "ae: launch failed — rolling back '{}'.", shape.name)?;
+    writeln!(err, "{why}")?;
+    let _ = kill_session(server, &shape.name);
+    rollback_dir(shape, dir, err)?;
+    Ok(EXIT_FAILED)
 }
 
 /// Remove the session directory — but ONLY when this attempt created it.
