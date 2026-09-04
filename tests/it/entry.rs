@@ -396,6 +396,8 @@ fn a_launch_candidate_becomes_a_session_from_the_preamble_facts() {
     // The ATTACH is what decides the code, and it cannot succeed here: `ae
     // <name>` always attaches — the wrapper passed `--attach` unconditionally
     // and there is no door that says otherwise — and a test process has no
+    // terminal to hand to tmux. The session is what this row is about, and it
+    // is built before the attach is even attempted.
     assert_ne!(code, Some(2), "not a usage error: {stdout}\n{stderr}");
     assert!(
         rig.sessions().join("entryone").join("meta").exists(),
