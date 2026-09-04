@@ -77,6 +77,31 @@ impl Rig {
         self.run(&["_install", "--from", &from.to_string_lossy()])
     }
 
+    /// [`Rig::install`] started but not waited for — the second half of the
+    /// exclusion proof, which needs two publishers alive at once.
+    fn spawn_install(&self, from: &Path) -> std::process::Child {
+        #[allow(
+            clippy::disallowed_types,
+            reason = "the black-box door: two concurrent publishers are two real processes"
+        )]
+        let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_ae"));
+        command
+            .env_remove("AE_HOME")
+            .env_remove("CONFIG_FILE")
+            .env_remove("AE_VERSION")
+            .env_remove("TMUX")
+            .env("HOME", &self.home)
+            .args(["_install", "--from", &from.to_string_lossy()])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap_or_else(|why| panic!("the product binary should run: {why}"))
+    }
+
+    fn lock(&self) -> PathBuf {
+        self.home.join(".ae").join(".ae-install.lock")
+    }
+
     fn run(&self, argv: &[&str]) -> (Option<i32>, String, String) {
         #[allow(
             clippy::disallowed_types,
@@ -435,8 +460,12 @@ fn an_interrupted_install_is_reversed_by_the_next_run_which_then_completes() {
 // ─── switching versions ──────────────────────────────────────────────────
 
 #[test]
-fn a_second_install_repoints_the_link_and_leaves_the_first_version_intact() {
-    // A21.
+fn a_second_install_repoints_the_link_and_sweeps_the_version_nothing_records() {
+    // A21, as amended by the migration ruling: a publish repoints every session
+    // onto the new core BEFORE it repoints the link, so by the time the sweep
+    // runs, nothing records the superseded version and it goes. One installed
+    // version, one pointer, no accumulation — and no relink-to-yesterday
+    // rollback, which is the cost this buys the guarantee with.
     let rig = Rig::new("switch");
     assert_eq!(rig.install(&rig.bundle("2026.8.1")).0, Some(0));
     assert_eq!(rig.install(&rig.bundle("2026.8.2")).0, Some(0));
@@ -448,11 +477,97 @@ fn a_second_install_repoints_the_link_and_leaves_the_first_version_intact() {
     );
     for name in ["ae-core", "install", "SHA256SUMS"] {
         assert!(
-            rig.version_dir("2026.8.1").join(name).is_file(),
-            "the old version lost {name}"
+            rig.version_dir("2026.8.2").join(name).is_file(),
+            "the published version lost {name}"
         );
     }
+    assert!(
+        !present(&rig.version_dir("2026.8.1")),
+        "the superseded version directory survived the sweep"
+    );
     assert!(!present(&rig.journal()), "a switch left a journal");
+}
+
+// ─── one publisher at a time ─────────────────────────────────────────────
+
+#[test]
+fn a_publish_that_cannot_take_the_install_lock_writes_nothing() {
+    // The exclusion is the LOCK, not the journal — the journal is rollback
+    // state and is removed at the commit, which is BEFORE the version sweep
+    // deletes anything. With the lock unavailable the publish must refuse at
+    // the top, while refusing is still free.
+    let rig = Rig::new("locked");
+    assert!(
+        std::fs::create_dir_all(rig.lock()).is_ok(),
+        "a lock path nothing can open"
+    );
+
+    let (code, _, stderr) = rig.install(&rig.bundle("2026.8.1"));
+    assert_ne!(
+        code,
+        Some(0),
+        "published without holding the lock: {stderr}"
+    );
+    assert!(stderr.contains("in progress"), "{stderr}");
+    assert!(
+        stderr.contains(&rig.lock().to_string_lossy().into_owned()),
+        "the refusal does not name the lock: {stderr}"
+    );
+    assert!(
+        !present(&rig.versions()),
+        "a refused publish wrote a version"
+    );
+    assert!(!present(&rig.link()), "a refused publish moved the link");
+}
+
+#[test]
+fn two_publishers_at_once_leave_one_complete_install_and_no_journal() {
+    // A SMOKE TEST, and honest about it: two real publishers cannot be posed
+    // at a chosen instant from out here, so this cannot prove the window is
+    // closed — the deterministic guard is
+    // `a_publish_that_cannot_take_the_install_lock_writes_nothing` above,
+    // which proves the lock is taken at all. What this adds is the end state
+    // no interleaving may produce: both publishes report success, the link
+    // resolves into a version directory that is still whole, and no journal
+    // is left behind. Measured: it fails 3 runs of 3 with the lock taken on
+    // the wrong path.
+    let rig = Rig::new("concurrent");
+    let (first, second) = (rig.bundle("2026.8.1"), rig.bundle("2026.8.2"));
+    let (mut one, mut two) = (rig.spawn_install(&first), rig.spawn_install(&second));
+    for (label, child) in [("first", &mut one), ("second", &mut two)] {
+        let status = child
+            .wait()
+            .unwrap_or_else(|why| panic!("a publisher should be waitable: {why}"));
+        assert!(
+            status.success(),
+            "the {label} concurrent publisher failed ({status})"
+        );
+    }
+
+    let target = std::fs::read_link(rig.link()).unwrap_or_else(|why| {
+        panic!("the command link should point somewhere after two publishes: {why}")
+    });
+    assert!(
+        target.is_file(),
+        "the link points at {} which the other publisher removed",
+        target.display()
+    );
+    let published = rig.versions().join(
+        target
+            .parent()
+            .and_then(Path::file_name)
+            .unwrap_or_else(|| panic!("the link should sit inside a version directory")),
+    );
+    for name in ["ae-core", "install", "SHA256SUMS"] {
+        assert!(
+            published.join(name).is_file(),
+            "the surviving version lost {name}"
+        );
+    }
+    assert!(
+        !present(&rig.journal()),
+        "two publishers left a journal behind"
+    );
 }
 
 #[test]
@@ -492,6 +607,11 @@ fn upgrade_refuses_a_bad_pin_before_it_reaches_the_network() {
     )]
     let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_ae"));
     let out = command
+        // A checkout build refuses a state root that is not the one a publish
+        // would write to, and this test is about the PIN — so it may not
+        // inherit the developer's own `AE_HOME` and earn the other refusal.
+        .env_remove("AE_HOME")
+        .env_remove("CONFIG_FILE")
         .env("HOME", &rig.home)
         .env("AE_VERSION", "not-a-version")
         .arg("upgrade")

@@ -214,7 +214,7 @@ fn fetch(agent: &ureq::Agent, url: &str, cap: u64) -> Result<Vec<u8>, String> {
 
 // ─── extraction ──────────────────────────────────────────────────────────
 
-/// THE FIFTH PRODUCT CROSSING of `clippy.toml`'s `Command` deny.
+/// A PRODUCT CROSSING of `clippy.toml`'s `Command` deny — the archive door.
 fn tar(args: &[&str]) -> std::io::Result<std::process::Output> {
     #[allow(
         clippy::disallowed_types,
@@ -278,8 +278,24 @@ pub fn run(
         err.flush()?;
         return Ok(crate::entry::EXIT_USAGE);
     };
+    // BEFORE THE DOWNLOAD AND BEFORE ANY MUTATION. A publish is `$HOME`-pinned
+    // end to end, and it is no longer only a file copy: it migrates, repoints
+    // and relinks every session under `$HOME/.ae` and then deletes version
+    // directories there. A checkout run whose state root is somewhere else —
+    // `ae-dev` is the whole point of that door — would therefore reach straight
+    // past its own namespace into the real fleet. That was documented and not
+    // prevented, which is not good enough now that a publish writes to every
+    // session it finds.
+    if let Some(escape) = namespace_escape(&home) {
+        writeln!(err, "{escape}")?;
+        err.flush()?;
+        return Ok(crate::entry::EXIT_USAGE);
+    }
     match upgrade(&home, out) {
         Ok(published) => {
+            for note in &published.notes {
+                writeln!(out, "ae: {note}")?;
+            }
             writeln!(
                 out,
                 "ae: installed {} under {}",
@@ -296,6 +312,34 @@ pub fn run(
             Ok(crate::entry::EXIT_FAILED)
         }
     }
+}
+
+/// The refusal a checkout run earns when its state root is not the one a
+/// publish would write to, or `None` when the two agree.
+///
+/// Only the CHECKOUT shape can differ: an installed ae ignores `AE_HOME`
+/// outright, and the bootstrap runs the bundle's own core with a plain `$HOME`.
+/// So this refuses exactly the case where an operator pointed ae at a second
+/// namespace and then asked it to upgrade — and it names both roots, because
+/// the whole confusion is that they are not the same.
+fn namespace_escape(home: &Path) -> Option<String> {
+    let shape = crate::shape::current();
+    if !shape.honours_environment() {
+        return None;
+    }
+    let pinned = home.join(".ae");
+    let effective = crate::doors::state_root(shape)?;
+    if effective == pinned {
+        return None;
+    }
+    Some(format!(
+        "ae: refusing to upgrade — this is a checkout build whose state root is {}, \
+         but a publish always writes to {} and would migrate, repoint and prune the \
+         sessions THERE.\nae: run the installed ae ({}) to upgrade it, or unset AE_HOME.",
+        effective.display(),
+        pinned.display(),
+        home.join(".local").join("bin").join("ae").display()
+    ))
 }
 
 /// Download, verify, extract, publish.
@@ -338,7 +382,72 @@ fn upgrade(
         .map_err(|why| format!("could not stage {archive}: {why}"))?;
     let root = format!("ae-{version}-{platform}");
     extract(&archive_path, scratch.path(), &root)?;
-    crate::install::install_from(&scratch.path().join(&root), home)
+    delegate(&scratch.path().join(&root), home, &version)
+}
+
+/// Hand the extracted bundle to ITS OWN core, exactly as the bootstrap does.
+///
+/// THE PUBLISH BELONGS TO THE NEW CORE, not to this one. A publish is no longer
+/// a file copy: it steps every session's meta through the migration chain. The
+/// steps for versions N..M live in the core being INSTALLED — this process only
+/// knows the chain as of its own release, so an in-process `install_from` would
+/// migrate tomorrow's sessions with yesterday's rules, and on the first real
+/// schema change would simply have no step to run.
+///
+/// The core is trusted the same way `install` trusts it: the archive was
+/// checksummed against the release manifest before extraction, the listing was
+/// proved to name nothing but its own members, and the core re-verifies every
+/// member's digest before it publishes anything. Running it is also not a new
+/// capability — [`crate::install::verify`] already runs a bundle core to ask
+/// its version.
+///
+/// A core too old to know `_install` would fail here; none ever was, because
+/// `_install` predates `upgrade`.
+fn delegate(root: &Path, home: &Path, version: &str) -> Result<crate::install::Published, String> {
+    let core = root.join(crate::shape::CORE);
+    let out =
+        run_core(&core, root, home).map_err(|why| format!("could not run the new core: {why}"))?;
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    if !out.status.success() {
+        // The new core's own refusal, verbatim: it named the session, the
+        // journal or the digest that stopped it, and rewording that here would
+        // lose the only thing the operator can act on.
+        let said = stderr.trim();
+        return Err(if said.is_empty() {
+            format!("the new core refused the install ({})", out.status)
+        } else {
+            said.to_owned()
+        });
+    }
+    // Its notes are the operator's, and the caller prints them. The `ae: `
+    // prefix is this process's own convention, added when they are printed.
+    let notes = stdout
+        .lines()
+        .filter_map(|line| line.strip_prefix("ae: "))
+        .filter(|line| !line.starts_with("installed "))
+        .map(ToOwned::to_owned)
+        .collect();
+    Ok(crate::install::Published {
+        version_dir: home.join(".ae").join(crate::shape::VERSIONS).join(version),
+        version: version.to_owned(),
+        notes,
+    })
+}
+
+/// A PRODUCT CROSSING of `clippy.toml`'s `Command` deny — the handover door.
+fn run_core(core: &Path, root: &Path, home: &Path) -> std::io::Result<std::process::Output> {
+    #[allow(
+        clippy::disallowed_types,
+        reason = "upgrade's handover door: the digest-verified new core performs its own publish, because the migration chain that publish runs belongs to the version being installed"
+    )]
+    let mut command = std::process::Command::new(core);
+    command
+        .arg(crate::cli::INSTALL)
+        .arg("--from")
+        .arg(root)
+        .env("HOME", home)
+        .output()
 }
 
 /// List, prove, then unpack.

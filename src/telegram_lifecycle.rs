@@ -394,6 +394,56 @@ pub fn daemon_running(server: &ServerId) -> Option<bool> {
     }
 }
 
+/// Restart a RUNNING bridge on `core` — the upgrade's daemon step.
+///
+/// The bridge is machine-global (one tmux session per tmux server), so this is
+/// called once per server, not once per ae session. A bridge that is NOT
+/// running is left alone: an upgrade is not a licence to start a daemon the
+/// operator stopped.
+///
+/// `Ok(false)` means there was nothing running to restart.
+///
+/// # Errors
+///
+/// One line: the control lock was not free, tmux would not say whether a
+/// bridge is running, or the replacement did not come up.
+pub fn restart_on(paths: &Paths, server: &ServerId, core: &Path) -> Result<bool, String> {
+    let Ok(_held) = control_lock(&paths.ae_home, CONTROL_WAIT) else {
+        return Err("busy (start/stop/supervise in progress)".to_owned());
+    };
+    match daemon_running(server) {
+        Some(false) => return Ok(false),
+        None => {
+            return Err(
+                "tmux did not answer, so a running bridge could not be ruled out".to_owned(),
+            );
+        }
+        Some(true) => {}
+    }
+    // By ID, never by name: `kill-session -t <name>` PREFIX-MATCHES, so a
+    // neighbour called `ae-telegram-old` is what a name target can take.
+    //
+    // The id is also the PROOF. "a session called ae-telegram exists" is true
+    // of the bridge this function was asked to replace, so a kill that silently
+    // failed, followed by a spawn that could not take the taken name, would
+    // read as a successful restart while the OLD bridge — on the OLD core —
+    // long-polls the same bot token. The replacement must carry a DIFFERENT id.
+    let before = transport::observe_session_id(server, TMUX_SESSION);
+    if let Some(id) = &before
+        && !transport::kill_session(server, id)
+    {
+        return Err("the running bridge could not be killed".to_owned());
+    }
+    spawn_daemon_on(paths, server, core);
+    match transport::observe_session_id(server, TMUX_SESSION) {
+        None => Err("the replacement bridge did not come up".to_owned()),
+        Some(after) if Some(&after) == before.as_ref() => {
+            Err("the bridge still carries the id it had, so it was not replaced".to_owned())
+        }
+        Some(_) => Ok(true),
+    }
+}
+
 /// Start the bridge in its own tmux session, and dress that session.
 fn spawn_daemon(paths: &Paths, server: &ServerId) {
     // RESOLVED, never raw: the daemon's command is direct argv, and an
@@ -401,6 +451,12 @@ fn spawn_daemon(paths: &Paths, server: &ServerId) {
     let Some(core) = crate::shape::resolved_exe() else {
         return;
     };
+    spawn_daemon_on(paths, server, &core);
+}
+
+/// [`spawn_daemon`] with the core NAMED — the upgrade knows which binary it
+/// wants the bridge on, and it is not the one this process is running.
+fn spawn_daemon_on(paths: &Paths, server: &ServerId, core: &Path) {
     let command = vec![
         core.display().to_string(),
         crate::cli::TELEGRAM_RUN.to_owned(),

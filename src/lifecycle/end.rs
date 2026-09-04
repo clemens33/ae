@@ -392,6 +392,12 @@ fn end_one(
         return Ok(false);
     };
     let dir = sessions_dir(root).join(name);
+    // The chain, under the lifecycle lock this end already holds. A refusal is
+    // REPORTED, never fatal — the whole point of an end is that a session can
+    // always be torn down, whatever shape its meta is in.
+    if let Some(note) = crate::migrate::session_noted(&dir, name) {
+        writeln!(err, "{note}")?;
+    }
     let bytes = meta::read_bytes(&dir).unwrap_or_default();
 
     // ══ THE INVARIANT: ae NEVER deletes session state unless

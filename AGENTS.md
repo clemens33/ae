@@ -62,6 +62,12 @@ The loop, in order:
 5. `just release` — local, one machine: gates, CalVer bump, both bundles, tag, push,
    assets. Nothing waits on a runner.
 
+An upgrade is not a binary swap: it migrates, repoints and relinks EVERY session before it
+moves the command link, then prunes unreferenced versions. A publish is `$HOME`-pinned, so a
+checkout run whose state root differs REFUSES `ae upgrade` before downloading anything.
+Live upgrade probes therefore go in a sandboxed `$HOME`, never `ae-dev`. Why:
+[docs/upgrade.md](docs/upgrade.md).
+
 Other rules of the loop:
 
 - **Live probes go in the `ae-dev` namespace** — `~/.local/bin/ae-dev`: own `~/.ae-dev` home
@@ -82,9 +88,10 @@ Other rules of the loop:
 
 - `unsafe_code` is **forbid**. There is no exception worth having.
 - No `unwrap()` / `expect()` in production code. `-D warnings` makes it fail the gate.
-- No `std::process::Command` outside the enumerated doors. The PRODUCT has four —
-  `src/transport.rs`, `src/run.rs`, `src/upgrade.rs`, `src/install.rs` — and the suite has
-  twelve, across `tests/it/`'s `cli.rs`, `install.rs`, `shape.rs`, `parity.rs` and `doors.rs`.
+- No `std::process::Command` outside the enumerated doors. The PRODUCT has five sites over
+  four files — `src/transport.rs`, `src/run.rs`, `src/upgrade.rs` (TWICE: `tar`, and the
+  downloaded core's own `_install`), `src/install.rs` — and the suite has fourteen, across
+  `tests/it/`'s `cli.rs`, `install.rs`, `migrate.rs`, `shape.rs`, `parity.rs` and `doors.rs`.
   `tests/it/doors.rs` pins the exact per-file counts, so a new door is a review, not a diff.
   Same for the world-reading methods in `clippy.toml`'s `disallowed-methods`: each lives at a
   named door carrying its reason.
@@ -241,6 +248,7 @@ Each is one rule with one owner. Change the owner, not a copy.
 | The install gate is STRUCTURAL and hashes nothing. Every command and helper passes it EXCEPT `version` and `upgrade`, which diagnose and repair a broken install | `src/shape.rs`, ordered in `src/lib.rs::run` |
 | The one hashing site: both members re-digested against `SHA256SUMS` before publication | `src/install.rs` |
 | Published dir 0555, members 0555/0444; `~/.local/bin/ae` is the current pointer | `src/install.rs` |
+| Every session meta carries `meta_version=<N>`; the chain steps N->N+1 and runs wherever the core touches a session. A meta with no row but `schema=2` IS version 2 — the pre-chain shape — and is stamped in place, never refused; only a meta with NEITHER key is refused, at resume, and merely REPORTED at stop and end, which must never be blocked. A publish migrates and repoints EVERY session before it moves the command link, then deletes every `versions/<V>` no meta records | `src/migrate.rs` (`placed` owns the rule for the chain and for `ae list` alike), called from `src/install.rs::publish_steps`, `src/session_launch.rs`, `src/lifecycle.rs` and `src/lifecycle/end.rs` |
 | A harness session id is a NAME: the purge proves it against the archive UUID grammar before it builds a path | `src/lifecycle/end.rs::purge_conversation_files`; grammar in `src/archive.rs::canonical_uuid` |
 | A monitor sweep may act only on the CALLER'S own session (`$TMUX_PANE`) | `src/monitor.rs` |
 | Every tmux format uses a printable pipe separator, never a control byte — tmux 3.4 octal-escapes those. Each format literal is written out; `SLOTS_FORMAT` deliberately uses an unspaced pipe | `src/tmux.rs` (`FIELD_SEPARATOR` is the parser delimiter) + the control-char-free test over every format constant |

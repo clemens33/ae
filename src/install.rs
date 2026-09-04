@@ -18,6 +18,20 @@ pub const MANIFEST_MODE: u32 = 0o444;
 /// The journal's own name, inside the ae home it describes.
 pub const JOURNAL: &str = ".ae-install.journal";
 
+/// The publisher's mutual exclusion, beside the journal.
+///
+/// THE JOURNAL IS NOT THIS. The journal is ROLLBACK state: it exists while the
+/// publish is reversible and is removed the moment it commits. Exclusion has to
+/// outlast that, because the version sweep runs AFTER the commit — and with the
+/// journal as the only exclusion, publisher A could remove its journal, let
+/// publisher B publish B and move the command link, and then prune with a
+/// keep-set of {A}, deleting B out from under the live link. Measured with a
+/// delayed-prune probe: an existing target became a missing one.
+pub const LOCK: &str = ".ae-install.lock";
+
+/// How long a publisher waits for another to finish.
+const LOCK_WAIT: std::time::Duration = std::time::Duration::from_mins(1);
+
 /// The journal's format word.
 pub const JOURNAL_FORMAT: &str = "3";
 
@@ -90,6 +104,12 @@ impl Paths {
     #[must_use]
     pub fn journal(&self) -> PathBuf {
         self.home.join(JOURNAL)
+    }
+
+    /// `<home>/.ae-install.lock`.
+    #[must_use]
+    pub fn lock(&self) -> PathBuf {
+        self.home.join(LOCK)
     }
 }
 
@@ -372,8 +392,12 @@ fn core_version(core: &Path) -> Result<String, String> {
         .ok_or_else(|| "the bundle core printed no version line".to_owned())
 }
 
-/// THE FOURTH PRODUCT CROSSING of `clippy.toml`'s `Command` deny, and the only
-/// one that is neither tmux nor an `exec`.
+/// A PRODUCT CROSSING of `clippy.toml`'s `Command` deny — the only one that is
+/// neither tmux nor an `exec`.
+///
+/// Named, not numbered. The ordinals these comments used to carry drifted the
+/// moment a door was added: `tests/it/doors.rs` is the count of record, and it
+/// asks the compiler rather than reading prose.
 fn run_core(core: &Path) -> std::io::Result<std::process::Output> {
     #[allow(
         clippy::disallowed_types,
@@ -529,6 +553,10 @@ pub struct Published {
     pub version_dir: PathBuf,
     /// The version published.
     pub version: String,
+    /// What the session sweep and the version-directory sweep did, one line
+    /// each, for the command that prints them. Empty on a first install: there
+    /// are no sessions and no other version to prune.
+    pub notes: Vec<String>,
 }
 
 /// Publish `bundle` under `paths`, atomically, and repoint the command link.
@@ -545,6 +573,14 @@ pub fn publish(bundle: &Bundle, paths: &Paths) -> Result<Published, String> {
     // B14: creating the home can make a dangling ancestor of the command path
     // live.
     validate_bin_destination(&paths.link, &paths.home)?;
+    // ONE PUBLISHER AT A TIME, from here until after the version sweep. Held
+    // across the commit, not released by it — see [`LOCK`].
+    let _held = crate::state::acquire(&paths.lock(), LOCK_WAIT).map_err(|why| {
+        format!(
+            "another ae install or upgrade is in progress ({}): {why}",
+            paths.lock().display()
+        )
+    })?;
     recover_existing(paths)?;
 
     let (link_had, link_old) = current_link(&paths.link);
@@ -562,13 +598,28 @@ pub fn publish(bundle: &Bundle, paths: &Paths) -> Result<Published, String> {
         .map_err(|why| format!("could not write install journal: {why}"))?;
 
     match publish_steps(bundle, paths, &mut journal) {
-        Ok(published) => {
+        Ok(mut published) => {
+            // THE COMMIT. Everything above is reversible by [`replay`], and the
+            // journal's `link_old` names the version directory it would relink
+            // to. So the version sweep may not run until the journal is GONE:
+            // a prune inside the transaction can delete its own rollback
+            // target, and a later recovery would then relink the ae command to
+            // a directory that is not there.
             std::fs::remove_file(&path).map_err(|why| {
                 format!(
                     "install succeeded but the journal could not be removed; it is preserved at {}: {why}",
                     path.display()
                 )
             })?;
+            // STILL UNDER THE PUBLISHER LOCK: the journal is gone, so this
+            // publish is committed and irreversible, but no other publisher may
+            // move the command link while the sweep decides what nothing points
+            // at any more.
+            published.notes.extend(crate::migrate::prune_versions(
+                &paths.home,
+                &paths.link,
+                &bundle.version,
+            ));
             Ok(published)
         }
         Err(why) => {
@@ -594,16 +645,24 @@ fn publish_steps(
     let version_dir = versions.join(&bundle.version);
     publish_version_dir(bundle, &version_dir)?;
 
+    // BEFORE the repoint, and after the new core is whole on disk: every
+    // session is stepped, re-pointed and re-linked onto it, and the daemons of
+    // the running ones are restarted. A session that cannot be migrated fails
+    // here, while `~/.local/bin/ae` still names the core that built it.
+    let core = version_dir.join(crate::shape::CORE);
+    let notes = crate::migrate::onto(&paths.home, &core, &bundle.version)?;
+
     let parent = paths
         .link
         .parent()
         .ok_or_else(|| format!("ae command path has no parent: {}", paths.link.display()))?;
     mkdir_recorded(parent, journal, paths)?;
     validate_bin_destination(&paths.link, &paths.home)?;
-    relink(&paths.link, &version_dir.join(crate::shape::CORE))?;
+    relink(&paths.link, &core)?;
     Ok(Published {
         version_dir,
         version: bundle.version.clone(),
+        notes,
     })
 }
 
@@ -740,8 +799,22 @@ fn relink(link: &Path, target: &Path) -> Result<(), String> {
 /// symlink.
 fn mkdir_all_plain(path: &Path) -> Result<(), String> {
     for missing in missing_chain(path)?.iter().rev() {
-        std::fs::create_dir(missing)
-            .map_err(|why| format!("could not create directory {}: {why}", missing.display()))?;
+        match std::fs::create_dir(missing) {
+            Ok(()) => {}
+            // ANOTHER PROCESS GOT THERE FIRST. This runs BEFORE the publisher
+            // lock — the lock file lives inside the home, so the home has to
+            // exist to be locked — and two first installs racing would
+            // otherwise turn "the directory you wanted is there" into a failed
+            // publish. Existing IS the postcondition; the ordering that matters
+            // is enforced by the lock, immediately below.
+            Err(why) if why.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(why) => {
+                return Err(format!(
+                    "could not create directory {}: {why}",
+                    missing.display()
+                ));
+            }
+        }
     }
     Ok(())
 }
@@ -906,6 +979,15 @@ fn append_line(path: &Path, line: &str) -> std::io::Result<()> {
 /// The tree could not be removed even after its members were re-moded.
 pub fn remove_private_tree(path: &Path) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt as _;
+    // A SYMLINK IS NEVER RE-MODED, here or below. `set_permissions` FOLLOWS
+    // one, so chmodding a link changes the mode of whatever it points at —
+    // measured: pruning a version whose member linked to an external 0600 file
+    // left that file 0644, and a link to another installed core would have
+    // stripped its published mode. Only a verified real member is chmodded; a
+    // link is simply unlinked, which needs no mode on the link at all.
+    if door::lstat(path).is_ok_and(|meta| meta.file_type().is_symlink()) {
+        return std::fs::remove_file(path);
+    }
     let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755));
     #[allow(
         clippy::disallowed_methods,
@@ -915,7 +997,12 @@ pub fn remove_private_tree(path: &Path) -> std::io::Result<()> {
     if let Ok(entries) = entries {
         for entry in entries.flatten() {
             let child = entry.path();
-            if door::lstat(&child).is_ok_and(|meta| meta.file_type().is_dir()) {
+            let Ok(meta) = door::lstat(&child) else {
+                continue;
+            };
+            if meta.file_type().is_symlink() {
+                let _ = std::fs::remove_file(&child);
+            } else if meta.file_type().is_dir() {
                 remove_private_tree(&child)?;
             } else {
                 let _ = std::fs::set_permissions(&child, std::fs::Permissions::from_mode(0o644));
@@ -954,6 +1041,9 @@ pub fn run(
     };
     match install_from(Path::new(dir), &home) {
         Ok(published) => {
+            for note in &published.notes {
+                writeln!(out, "ae: {note}")?;
+            }
             writeln!(
                 out,
                 "ae: installed {} under {}",
@@ -1009,6 +1099,37 @@ mod tests {
                 "accepted a hostile HOME: {hostile}"
             );
         }
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the fixture builds a real directory; the boundary is on product code"
+    )]
+    fn a_directory_another_process_created_first_is_not_a_failed_publish() {
+        // The home has to exist before the lock inside it can be taken, so
+        // this one step runs UNSERIALISED. Two first installs racing must not
+        // turn "the directory is there" into a refusal — existing is the
+        // postcondition, and the lock immediately after is what orders the
+        // rest.
+        // `/tmp` is a SYMLINK on macOS and `missing_chain` refuses to create
+        // through one, so the fixture starts at the real directory.
+        let base = Path::new("/private/tmp");
+        let base = if base.is_dir() {
+            base
+        } else {
+            Path::new("/tmp")
+        };
+        let root = base.join(format!("ae-mkdir-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let deep = root.join("a").join("b");
+        assert!(mkdir_all_plain(&deep).is_ok(), "a fresh chain");
+        assert!(
+            mkdir_all_plain(&deep).is_ok(),
+            "the same chain, already there"
+        );
+        assert!(deep.is_dir());
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

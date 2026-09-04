@@ -397,6 +397,11 @@ fn a_local_launch_builds_the_whole_session() {
         "seat.main=lead",
         "profile.main=claude",
         "tmux_server_kind=socket",
+        // THE SHAPE ROW, asserted on a meta a real launch published. A unit
+        // test over the chain's own parser cannot see this: delete the row's
+        // emission and every such test stays green while every new session
+        // becomes unresumable, because a missing row IS the refusal.
+        "meta_version=2",
     ] {
         assert!(meta.contains(row), "meta is missing {row}:\n{meta}");
     }
@@ -407,6 +412,13 @@ fn a_local_launch_builds_the_whole_session() {
     assert!(
         meta.contains("ae_core="),
         "the core is pinned per session:\n{meta}"
+    );
+    // The row the launch writes IS the version this core migrates to — spelled
+    // from the module rather than from the literal above, so a bump to the
+    // chain that forgets the writer fails here.
+    assert!(
+        meta.contains(&format!("meta_version={}", ae::migrate::CURRENT)),
+        "the launch wrote a shape row this ae does not read:\n{meta}"
     );
 
     // The HELPERS, every one a LINK to the core this session is pinned to.
@@ -789,10 +801,11 @@ fn resumable_rig(tag: &str, session: &str, profile: &str) -> (Rig, PathBuf) {
         std::fs::write(
             dir.join("meta"),
             format!(
-                "session={session}\nmode=local\nlayout=vertical\nwork_dir={home}\n\
-                 origin={home}\nschema=2\nseat.main=lead\nprofile.main=idle\n\
-                 agent_bin.main=sleep\nseat.spawned.0=helper\nprofile.spawned.0=bad\n\
-                 agent_bin.spawned.0=sleep\n",
+                "meta_version={version}\nsession={session}\nmode=local\nlayout=vertical\n\
+                 work_dir={home}\norigin={home}\nschema=2\nseat.main=lead\n\
+                 profile.main=idle\nagent_bin.main=sleep\nseat.spawned.0=helper\n\
+                 profile.spawned.0=bad\nagent_bin.spawned.0=sleep\n",
+                version = ae::migrate::CURRENT,
                 home = rig.project.display(),
             ),
         )

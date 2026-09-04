@@ -223,6 +223,11 @@ pub struct SessionEntry {
     pub goal: Option<String>,
     /// The ae version captured when this session was created.
     pub ae_version: Option<String>,
+    /// Whether this session is BEHIND the core reading it — its `meta_version`
+    /// is not the current one, or its pinned `ae_core` is not the binary this
+    /// process is. Human listing only: it is a fact about the READER as much as
+    /// about the session, so it is not a document field.
+    pub behind: bool,
     /// When that goal was last set — "age it for staleness".
     pub goal_set_epoch: Option<i64>,
     /// The session's live git branch.
@@ -254,6 +259,7 @@ impl SessionEntry {
             work_dir: None,
             goal: None,
             ae_version: None,
+            behind: false,
             goal_set_epoch: None,
             branch: None,
             last_active_epoch: None,

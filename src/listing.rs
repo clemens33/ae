@@ -349,6 +349,11 @@ fn push_frozen_session_subline(out: &mut String, session: &SessionEntry, now: Ti
             .filter(|version| !version.is_empty())
             .unwrap_or("?"),
     );
+    // The upgrade marker: this session's shape or its pinned core is not the
+    // one reading it. One word, beside the version it is about.
+    if session.behind {
+        out.push_str(" (old)");
+    }
     out.push_str(" · active ");
     out.push_str(&frozen_relative_time(now, session.last_active_epoch));
     out.push('\n');
@@ -584,12 +589,63 @@ mod tests {
     }
 
     #[test]
+    fn a_session_behind_the_running_core_is_marked_beside_its_version() {
+        // The marker rides the version atom because that is what it is about:
+        // a session whose shape or whose pinned core is not this one's.
+        for (behind, expected) in [
+            (false, "  git:? \u{b7} ae 0.2.1 \u{b7} active -\n"),
+            (true, "  git:? \u{b7} ae 0.2.1 (old) \u{b7} active -\n"),
+        ] {
+            let mut entry = SessionEntry::new("behind", Status::Running);
+            entry.ae_version = Some("0.2.1".to_owned());
+            entry.behind = behind;
+            let world = World::new(NOW, vec![entry]);
+            assert_eq!(
+                successor_subline_bytes(&render(&args(&[]), &world)),
+                expected.as_bytes(),
+                "behind={behind}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_session_that_pre_dates_the_migration_chain_reads_as_behind() {
+        // The two halves of the marker, at the site that decides it: a meta
+        // with no version row is behind whatever its `ae_core` says, and a
+        // current one whose core this process cannot compare against is not.
+        assert!(crate::session::is_behind(&crate::meta::Meta::parse(
+            "mode=local\nae_version=0.2.1\n"
+        )));
+        assert!(crate::session::is_behind(&crate::meta::Meta::parse(
+            "meta_version=1\nmode=local\n"
+        )));
+        assert!(crate::session::is_behind(&crate::meta::Meta::parse(
+            &format!(
+                "meta_version={}\nae_core_version=0.0.1\n",
+                crate::migrate::CURRENT
+            )
+        )));
+        // The RUNNING version reads as current, and a path that merely spells
+        // this machine differently is not consulted at all.
+        assert!(!crate::session::is_behind(&crate::meta::Meta::parse(
+            &format!(
+                "meta_version={}\nae_core_version={}\nae_core=/private/tmp/x/ae-core\n",
+                crate::migrate::CURRENT,
+                crate::VERSION
+            )
+        )));
+        assert!(!crate::session::is_behind(&crate::meta::Meta::parse(
+            &format!("meta_version={}\nmode=local\n", crate::migrate::CURRENT)
+        )));
+    }
+
+    #[test]
     fn formatter_sc_405g_degraded_unobserved_branch_omits_the_git_atom() {
         // Meta is readable in both cases, so the retained version remains
         // visible.
         let event_loss_fixture = DigestFixture::new(
             "subline-event-loss",
-            Some("mode=local\nae_version=0.2.1\n"),
+            Some("meta_version=2\nmode=local\nae_version=0.2.1\n"),
             Some("not an event\n"),
         );
         let event_loss = entry_for(
@@ -601,7 +657,7 @@ mod tests {
         );
         let duplicate_goal_fixture = DigestFixture::new(
             "subline-duplicate-goal",
-            Some("mode=local\ngoal=first\ngoal=second\nae_version=0.2.1\n"),
+            Some("meta_version=2\nmode=local\ngoal=first\ngoal=second\nae_version=0.2.1\n"),
             None,
         );
         let duplicate_goal = entry_for(
