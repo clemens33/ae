@@ -274,26 +274,33 @@ pub fn build(dir: &Path, slot: &str) -> Result<Plan, String> {
 
 /// The composed shell command line — the frozen builders, in the frozen order.
 ///
-/// INJECT FIRST, DECIDE SECOND. Every builder reads the tool off the first word
-/// of the command, so a resume form that was wrapped before it was injected
-/// classified as `Unknown` and launched with no context and no identity — the
-/// glue-cut-2 finding, and the reason both branches are injected as plain tool
-/// commands here before either is chosen.
+/// A tool command is injected as a PLAIN TOOL COMMAND, never as something with
+/// a shell construct in front of it: every builder reads the tool off the first
+/// word, so a resume form that was wrapped before it was injected classified as
+/// `Unknown` and launched with no context and no identity (the glue-cut-2
+/// finding). Nothing wraps anything here any more, which is what lets the
+/// resume arm be chosen before it is injected rather than after.
 fn compose(dir: &Path, slot: &str, seat: &Seat, ctx: &str, mode: Mode) -> String {
     if mode == Mode::Resume {
         let (resume_form, fallback_form) =
             resume_forms(&seat.command, seat.tool, &seat.harness_session);
-        let inj_r = launch::inject_ae_context(&resume_form, dir, slot, ctx, &seat.launch_id);
-        let inj_f = launch::inject_ae_context(&fallback_form, dir, slot, ctx, &seat.launch_id);
+        // DECIDE, THEN INJECT — which is the frozen order read forward, not a
+        // departure from it. The frozen path had to inject BOTH forms because
+        // the decider was a shell `if` that carried both arms into the pane;
+        // injecting after the wrap was the bug it was written against (a
+        // pre-wrapped resume command classified as `Unknown` and launched with
+        // no context and no identity). With the decision made here there is one
+        // arm, so injecting it once is the same rule with the second arm gone —
+        // and opencode's context pair is published once rather than twice.
+        let form = if resumable(seat.tool, &seat.harness_session) {
+            resume_form
+        } else {
+            fallback_form
+        };
+        let injected = launch::inject_ae_context(&form, dir, slot, ctx, &seat.launch_id);
         // A resume carries no inline first message: codex's is delivered once
         // its UI returns, and no other tool has one.
-        let resume_cmd = launch::build_launch_command(&inj_r.cmd, "");
-        let fallback_cmd = launch::build_launch_command(&inj_f.cmd, "");
-        return if resumable(seat.tool, &seat.harness_session) {
-            resume_cmd
-        } else {
-            fallback_cmd
-        };
+        return launch::build_launch_command(&injected.cmd, "");
     }
     let pre = launch::inject_session_id(&seat.command, &seat.harness_session);
     let injected = launch::inject_ae_context(&pre, dir, slot, ctx, &seat.launch_id);
