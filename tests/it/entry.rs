@@ -31,7 +31,7 @@ use std::time::Duration;
 #[cfg(unix)]
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
-use super::cli::{Scratch, ae};
+use super::cli::{OwnedScratch, ae};
 use super::parity::{Invocation, capture::raw};
 use super::phase2::{run_tmux, tmux_present};
 
@@ -40,7 +40,7 @@ const IDLE_CONFIG: &str = "[profiles]\nidle = \"sleep 600\"\n\n[roster]\nlead = 
 
 /// An isolated ae home and a project directory.
 struct Rig {
-    scratch: Scratch,
+    scratch: OwnedScratch,
     home: PathBuf,
     project: PathBuf,
     sock: PathBuf,
@@ -48,7 +48,7 @@ struct Rig {
 
 impl Rig {
     fn new(tag: &str) -> Self {
-        let mut scratch = Scratch::existing(PathBuf::from(format!(
+        let mut scratch = OwnedScratch::existing(PathBuf::from(format!(
             "/tmp/aeentry.{}.{tag}",
             std::process::id()
         )));
@@ -215,10 +215,13 @@ fn assert_no_tmux_processes(scratch: &Path) {
     );
     let out = probe.join("stdout");
     let err = probe.join("stderr");
-    // The injected agent prompt also contains the scratch path and the word
-    // "tmux"; anchor the executable so it cannot look like a server process.
-    let pattern = format!("(^|/)tmux.*{}", scratch.display());
-    let invocation = Invocation::new("pgrep").arg("-fl").arg(pattern);
+    // Any process carrying this scratch path is a leak, including a fake agent
+    // that outlives its tmux server.
+    let pattern = scratch.display().to_string();
+    let search = pattern
+        .strip_prefix('/')
+        .map_or_else(|| pattern.clone(), |rest| format!("[/]{rest}"));
+    let invocation = Invocation::new("pgrep").arg("-fl").arg(search);
     let status = raw::run(&invocation, Path::new("/tmp"), &out, &err)
         .unwrap_or_else(|why| panic!("pgrep must run: {why}"));
     let matches = std::fs::read_to_string(&out).unwrap_or_default();
@@ -227,7 +230,7 @@ fn assert_no_tmux_processes(scratch: &Path) {
             status.outcome(),
             super::parity::capture::ExitOutcome::Code(1)
         ),
-        "tmux process remained for {}: {matches}",
+        "process remained for {}: {matches}",
         scratch.display()
     );
     let _ = std::fs::remove_dir_all(&probe);

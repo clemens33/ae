@@ -87,12 +87,17 @@ pub(crate) type Command = std::process::Command;
 
 pub(crate) struct Runner {
     command: Command,
-    scratch: Option<Scratch>,
+    scratch: Option<OwnedScratch>,
+    spawned: bool,
 }
 
 impl Runner {
-    fn new(command: Command, scratch: Option<Scratch>) -> Self {
-        Self { command, scratch }
+    fn new(command: Command, scratch: Option<OwnedScratch>) -> Self {
+        Self {
+            command,
+            scratch,
+            spawned: false,
+        }
     }
 
     pub(crate) fn arg<S>(&mut self, arg: S) -> &mut Self
@@ -162,16 +167,22 @@ impl Runner {
     }
 
     pub(crate) fn spawn(&mut self) -> std::io::Result<OwnedChild> {
-        let Some(scratch) = self.scratch.take() else {
+        if self.spawned {
             return Err(std::io::Error::other("runner already spawned a child"));
-        };
+        }
+        let scratch = self.scratch.take();
         match self.command.spawn() {
-            Ok(child) => Ok(OwnedChild {
-                child: Some(child),
-                scratch: Some(scratch),
-            }),
+            Ok(child) => {
+                self.spawned = true;
+                Ok(OwnedChild {
+                    child: Some(child),
+                    scratch,
+                })
+            }
             Err(error) => {
-                drop(scratch);
+                // No child exists on an unsuccessful spawn, so keep the
+                // owner available for a caller's fallback or retry.
+                self.scratch = scratch;
                 Err(error)
             }
         }
@@ -195,7 +206,7 @@ impl std::ops::DerefMut for Runner {
 /// A child keeps the command's scratch alive until it exits or is stopped.
 pub(crate) struct OwnedChild {
     child: Option<std::process::Child>,
-    scratch: Option<Scratch>,
+    scratch: Option<OwnedScratch>,
 }
 
 impl OwnedChild {
@@ -243,13 +254,14 @@ impl Drop for OwnedChild {
 }
 
 /// Owns a fixture scratch directory and tears down its tmux children before
-/// removing it. The path may start absent: that is the runner's default.
-pub(crate) struct Scratch {
+/// removing it. The path may start absent: that is the runner's default. Only
+/// paths under the system temp directory carrying this process's id are owned.
+pub(crate) struct OwnedScratch {
     path: std::path::PathBuf,
     tmux_servers: Vec<std::path::PathBuf>,
 }
 
-impl Scratch {
+impl OwnedScratch {
     pub(crate) fn absent(path: std::path::PathBuf) -> Self {
         Self {
             path,
@@ -258,6 +270,10 @@ impl Scratch {
     }
 
     pub(crate) fn existing(path: std::path::PathBuf) -> Self {
+        assert!(
+            owns_scratch_path(&path),
+            "scratch path must be process-owned temp storage"
+        );
         let _ = std::fs::remove_dir_all(&path);
         assert!(
             std::fs::create_dir_all(&path).is_ok(),
@@ -278,7 +294,7 @@ impl Scratch {
     }
 }
 
-impl std::ops::Deref for Scratch {
+impl std::ops::Deref for OwnedScratch {
     type Target = std::path::Path;
 
     fn deref(&self) -> &Self::Target {
@@ -286,20 +302,26 @@ impl std::ops::Deref for Scratch {
     }
 }
 
-impl AsRef<std::path::Path> for Scratch {
+impl AsRef<std::path::Path> for OwnedScratch {
     fn as_ref(&self) -> &std::path::Path {
         self.path()
     }
 }
 
-impl AsRef<std::ffi::OsStr> for Scratch {
+impl AsRef<std::ffi::OsStr> for OwnedScratch {
     fn as_ref(&self) -> &std::ffi::OsStr {
         self.path().as_os_str()
     }
 }
 
-impl Drop for Scratch {
+impl Drop for OwnedScratch {
     fn drop(&mut self) {
+        // An absent scratch is deliberately inert: no child can have a live
+        // cwd there, and raw::run cannot create capture files inside it.
+        if !self.path.exists() || !owns_scratch_path(&self.path) {
+            return;
+        }
+
         for (index, socket) in self.tmux_servers.iter().enumerate() {
             let out = self.path.join(format!(".cleanup-{index}-out"));
             let err = self.path.join(format!(".cleanup-{index}-err"));
@@ -348,7 +370,7 @@ impl Drop for Scratch {
     }
 }
 
-fn binary(scratch: Option<Scratch>) -> Runner {
+fn binary(scratch: Option<OwnedScratch>) -> Runner {
     Runner::new(Command::new(env!("CARGO_BIN_EXE_ae")), scratch)
 }
 
@@ -374,18 +396,42 @@ fn binary(scratch: Option<Scratch>) -> Runner {
 /// `_launch` fixtures do, or by `.env(…)`, which wins. See [`ae_hermetic`] for
 /// one that also needs the scratch path.
 pub(crate) fn ae() -> Runner {
-    let scratch = Scratch::absent(run_scratch());
+    let scratch = OwnedScratch::absent(run_scratch());
     let dir = scratch.path().to_owned();
     isolated(binary(Some(scratch)), &dir)
 }
 
 /// [`ae`], plus an owner for the scratch it was pointed at, for a fixture that
 /// asserts nothing was written there. The owner removes it even on panic.
-pub(crate) fn ae_hermetic() -> (Runner, Scratch) {
+pub(crate) fn ae_hermetic() -> (Runner, OwnedScratch) {
     let dir = run_scratch();
-    let scratch = Scratch::absent(dir.clone());
+    let scratch = OwnedScratch::absent(dir.clone());
     let command = isolated(binary(None), &dir);
     (command, scratch)
+}
+
+fn owns_scratch_path(path: &std::path::Path) -> bool {
+    let pid = std::process::id().to_string();
+    // The suite deliberately names `/tmp` so its post-gate audit can inspect
+    // one stable directory. On macOS, `temp_dir()` is the more specific
+    // per-user root, while `/tmp` and its canonical spelling remain the system
+    // temp root.
+    let in_system_temp = path.starts_with(std::env::temp_dir())
+        || path.starts_with("/tmp")
+        || path.starts_with("/private/tmp");
+    in_system_temp
+        && path.components().count() >= 3
+        && path.components().any(|component| {
+            let component = component.as_os_str().to_string_lossy();
+            component.match_indices(&pid).any(|(start, _)| {
+                let end = start + pid.len();
+                let left_boundary =
+                    start == 0 || !component.as_bytes()[start - 1].is_ascii_alphanumeric();
+                let right_boundary =
+                    end == component.len() || !component.as_bytes()[end].is_ascii_alphanumeric();
+                left_boundary && right_boundary
+            })
+        })
 }
 
 /// The server pair a hermetic run is pinned to: a socket in a directory that is
@@ -476,6 +522,30 @@ fn the_black_box_runner_cannot_see_the_developers_own_home_or_tmux() {
     assert!(!dir.exists(), "the runner created its scratch");
     // Two runners never share one, so one fixture cannot see another's writes.
     assert_ne!(ae_hermetic().1.path(), ae_hermetic().1.path());
+
+    // The cleanup floor is exercised in both directions: a correctly named
+    // process-owned path is accepted, while a broad or pid-less path is not.
+    assert!(!owns_scratch_path(std::path::Path::new("/tmp")));
+    assert!(owns_scratch_path(std::path::Path::new(&format!(
+        "/tmp/ae-hermetic-{}-0",
+        std::process::id()
+    ))));
+    assert!(!owns_scratch_path(std::path::Path::new(
+        "/tmp/ae-hermetic-without-a-process-id"
+    )));
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_nanos());
+    let unowned = std::path::PathBuf::from(format!("/tmp/ae-unowned-guard-no-process-{nonce}"));
+    assert!(
+        std::fs::create_dir_all(&unowned).is_ok(),
+        "an unowned scratch"
+    );
+    let guard = OwnedScratch::absent(unowned.clone());
+    drop(guard);
+    let remains = unowned.is_dir();
+    let _ = std::fs::remove_dir_all(&unowned);
+    assert!(remains, "an unowned scratch was removed");
 }
 
 /// Run one GENERATED SESSION HELPER — a shim the launch wrote — as a black-box
@@ -485,7 +555,7 @@ fn the_black_box_runner_cannot_see_the_developers_own_home_or_tmux() {
     reason = "the black-box tests' door: a session helper must be RUN to be proven; see clippy.toml"
 )]
 pub(crate) fn helper(path: &std::path::Path) -> Runner {
-    let scratch = Scratch::absent(run_scratch());
+    let scratch = OwnedScratch::absent(run_scratch());
     let dir = scratch.path().to_owned();
     isolated(Runner::new(Command::new(path), Some(scratch)), &dir)
 }
@@ -496,7 +566,7 @@ pub(crate) fn helper(path: &std::path::Path) -> Runner {
     reason = "the black-box tests' second door: a helper reached by name is a process started AS that name; see clippy.toml"
 )]
 pub(crate) fn helper_by_name(name: &str) -> Runner {
-    let scratch = Scratch::absent(run_scratch());
+    let scratch = OwnedScratch::absent(run_scratch());
     let dir = scratch.path().to_owned();
     isolated(Runner::new(Command::new(name), Some(scratch)), &dir)
 }

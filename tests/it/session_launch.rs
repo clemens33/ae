@@ -16,7 +16,7 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use super::cli::{Scratch, ae, git_in, helper};
+use super::cli::{OwnedScratch, ae, git_in, helper};
 use super::phase2::run_tmux;
 
 /// A TUI-shaped fake agent: it records its argv, then sits there drawing the
@@ -50,7 +50,7 @@ const IDLE_CONFIG: &str = "[profiles]\nidle = \"sleep 600\"\n\n[roster]\nlead = 
 
 /// One isolated ae home, one project directory, one tmux server.
 struct Rig {
-    scratch: Scratch,
+    scratch: OwnedScratch,
     sock: PathBuf,
     home: PathBuf,
     project: PathBuf,
@@ -63,7 +63,7 @@ impl Rig {
     /// `codex.<slot>.sid` handshake file into the session directory.
     fn new(tag: &str, tools: &[&str], sid_for: Option<&str>) -> Self {
         use std::os::unix::fs::PermissionsExt;
-        let mut scratch = Scratch::existing(PathBuf::from(format!(
+        let mut scratch = OwnedScratch::existing(PathBuf::from(format!(
             "/tmp/aeln.{}.{tag}",
             std::process::id()
         )));
