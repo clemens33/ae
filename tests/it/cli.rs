@@ -984,6 +984,30 @@ fn memo_read_and_tail_render_the_frozen_shape_and_report_an_unreadable_file() {
     std::fs::create_dir_all(blocked.join("memo.tsv")).expect("a directory where the file goes");
     assert_eq!(run(&blocked, &["read"]), empty);
     assert_eq!(run(&blocked, &["tail", "1"]), empty);
+
+    // The ONE loud answer, which is what separates it from the quiet three: a
+    // REGULAR memo file that exists and cannot be read. Skipped where the
+    // platform does not enforce the mode (root reads it anyway), because a test
+    // that passes by not testing is worse than one that is not there.
+    let unreadable = root.join("sessions").join("r3");
+    std::fs::create_dir_all(&unreadable).expect("a session dir");
+    let path = unreadable.join("memo.tsv");
+    std::fs::write(&path, "2026-01-01T00:00:00Z\tlead\tgeneral\tsecret\n").expect("a record");
+    std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o000))
+        .expect("mode 000");
+    if std::fs::read(&path).is_err() {
+        for tail in [vec!["read"], vec!["tail", "1"]] {
+            let (code, stdout, stderr) = run(&unreadable, &tail);
+            assert_eq!(code, Some(1), "{tail:?}");
+            assert_eq!(stdout, "", "nothing is printed for a read that failed");
+            assert!(
+                stderr.starts_with("ae: memo not read: could not read memo.tsv: "),
+                "{tail:?}: {stderr}"
+            );
+        }
+    }
+    std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o644))
+        .expect("mode 644");
 }
 
 #[test]

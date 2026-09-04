@@ -830,9 +830,9 @@ fn run_memo(
             return Ok(state::EXIT_USAGE);
         }
         Ok(memo::Command::View(view)) => {
-            return match memo::read(dir, &view) {
-                Ok(bytes) => {
-                    out.write_all(&bytes)?;
+            return match store::open(dir).memo_bytes() {
+                Ok(container) => {
+                    out.write_all(&memo::view(&container, &view))?;
                     Ok(0)
                 }
                 Err(why) => {

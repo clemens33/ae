@@ -112,6 +112,35 @@ impl SessionStore {
         self.dir.join(MEMO)
     }
 
+    /// The memo container's bytes.
+    ///
+    /// The `[[ -f ]]` gate comes BEFORE the open and is the whole difference
+    /// between the two quiet answers and the loud one: absent, a directory, a
+    /// FIFO or a socket is no bytes at all, and is never opened — a FIFO opened
+    /// without the gate blocks the reader for good. Only a REGULAR file that
+    /// then cannot be read is an error.
+    ///
+    /// # Errors
+    ///
+    /// A regular memo file that exists and could not be read.
+    pub fn memo_bytes(&self) -> io::Result<Vec<u8>> {
+        let path = self.memo_path();
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "a door: the `[[ -f \"$MEMO_FILE\" ]]` gate, before the memo file is opened — see clippy.toml"
+        )]
+        let regular = path.is_file();
+        if !regular {
+            return Ok(Vec::new());
+        }
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "a door: the memo file read behind `memo read` and `memo tail` — see clippy.toml"
+        )]
+        let bytes = std::fs::read(&path)?;
+        Ok(bytes)
+    }
+
     /// Append one event line to the container under its lock. This is the only
     /// way anything writes the event ledger.
     ///
@@ -230,6 +259,7 @@ fn commit(sink: &mut impl Sink, bytes: &[u8]) -> io::Result<()> {
 )]
 mod tests {
     use super::{EVENTS, LOCK_WAIT, MEMO, Sink, commit, lock, lock_path, open};
+    use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
     use std::time::Duration;
 
@@ -286,6 +316,44 @@ mod tests {
         for path in [store.events_path(), store.memo_path()] {
             assert!(lock_path(&path).exists(), "each file took its own lock");
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_memo_gate_answers_quietly_for_anything_that_is_not_a_regular_file() {
+        let dir = scratch("memo");
+        let store = open(&dir);
+        assert_eq!(store.memo_bytes().unwrap(), b"", "no memo file yet");
+        std::fs::write(store.memo_path(), b"t1\tcl:lead\tgeneral\tnote\n").unwrap();
+        assert_eq!(
+            store.memo_bytes().unwrap(),
+            b"t1\tcl:lead\tgeneral\tnote\n",
+            "a regular file is read whole"
+        );
+        // Anything that is not a regular file is the empty answer, never
+        // opened: a directory, a socket (bound here from safe std — the FIFO
+        // that would BLOCK an ungated open needs mkfifo and is covered
+        // black-box).
+        std::fs::remove_file(store.memo_path()).unwrap();
+        std::fs::create_dir_all(store.memo_path()).unwrap();
+        assert_eq!(store.memo_bytes().unwrap(), b"", "a directory");
+        std::fs::remove_dir_all(store.memo_path()).unwrap();
+        let socket = std::os::unix::net::UnixListener::bind(store.memo_path()).unwrap();
+        assert_eq!(store.memo_bytes().unwrap(), b"", "a socket");
+        drop(socket);
+        std::fs::remove_file(store.memo_path()).unwrap();
+        // A REGULAR file that cannot be read is the one reported case.
+        std::fs::write(store.memo_path(), b"x").unwrap();
+        std::fs::set_permissions(store.memo_path(), std::fs::Permissions::from_mode(0o000))
+            .unwrap();
+        if std::fs::read(store.memo_path()).is_err() {
+            assert!(
+                store.memo_bytes().is_err(),
+                "a regular memo file that exists but cannot be read is reported"
+            );
+        }
+        std::fs::set_permissions(store.memo_path(), std::fs::Permissions::from_mode(0o644))
+            .unwrap();
         let _ = std::fs::remove_dir_all(&dir);
     }
 

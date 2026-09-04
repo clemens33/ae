@@ -232,32 +232,17 @@ pub fn render(container: &[u8], topic: Option<&str>) -> Vec<u8> {
     out
 }
 
-/// The stdout of a [`View`] over the memo file at `dir`.
+/// The stdout of a [`View`] over `container`.
 ///
-/// # Errors
-///
-/// A regular memo file that could not be read. Anything `[[ -f ]]` rejects —
-/// absent, a directory, a FIFO, a socket — is empty output, not an error, and
-/// is never opened.
-pub fn read(dir: &Path, view: &View) -> io::Result<Vec<u8>> {
-    let path = store::open(dir).memo_path();
-    #[allow(
-        clippy::disallowed_methods,
-        reason = "a door: the frozen `[[ -f \"$MEMO_FILE\" ]]` gate, before the memo file is opened — see clippy.toml"
-    )]
-    let regular = path.is_file();
-    if !regular {
-        return Ok(Vec::new());
+/// Pure: the bytes come from [`crate::store::SessionStore::memo_bytes`], which
+/// owns the `[[ -f ]]` gate and the read. An empty container renders as no
+/// output, which is also what the gate's quiet answer produces.
+#[must_use]
+pub fn view(container: &[u8], view: &View) -> Vec<u8> {
+    match view {
+        View::All(topic) => render(container, topic.as_deref()),
+        View::Tail(count) => render(&crate::event_text::last_records(container, *count), None),
     }
-    #[allow(
-        clippy::disallowed_methods,
-        reason = "a door: the memo file read behind `memo read` and `memo tail` — see clippy.toml"
-    )]
-    let container = std::fs::read(&path)?;
-    Ok(match view {
-        View::All(topic) => render(&container, topic.as_deref()),
-        View::Tail(count) => render(&crate::event_text::last_records(&container, *count), None),
-    })
 }
 
 #[cfg(test)]
@@ -266,9 +251,8 @@ pub fn read(dir: &Path, view: &View) -> io::Result<Vec<u8>> {
     reason = "tests read back what the door wrote and check their own fixtures; the boundary is on product code — see clippy.toml"
 )]
 mod tests {
-    use super::{Add, Command, DEFAULT_TAIL, Usage, View, one_line, parse, read, record, render};
+    use super::{Add, Command, DEFAULT_TAIL, Usage, View, one_line, parse, record, render, view};
     use crate::time::Timestamp;
-    use std::os::unix::fs::PermissionsExt;
 
     fn words(items: &[&str]) -> Vec<String> {
         items.iter().map(|item| (*item).to_owned()).collect()
@@ -376,60 +360,26 @@ short\tline\tonly\n\
     }
 
     #[test]
-    fn read_renders_the_file_or_its_tail_and_says_so_when_it_cannot_read_one() {
-        let dir = std::path::PathBuf::from(format!("/tmp/ae-memo-read-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+    fn a_view_renders_the_whole_container_or_its_tail() {
+        // The gate and the read are the store's (see its `memo_bytes` tests);
+        // what is left here is pure, so the fixture IS the file.
+        assert_eq!(view(b"", &View::All(None)), b"", "nothing to show");
+        assert_eq!(view(b"", &View::Tail(2)), b"");
+        assert_eq!(view(FIXTURE, &View::All(None)), RENDERED_ALL.as_bytes());
         assert_eq!(
-            read(&dir, &View::All(None)).unwrap(),
-            b"",
-            "no memo file yet is nothing to show"
-        );
-        assert_eq!(read(&dir, &View::Tail(2)).unwrap(), b"");
-        std::fs::write(dir.join("memo.tsv"), FIXTURE).unwrap();
-        assert_eq!(
-            read(&dir, &View::All(None)).unwrap(),
-            RENDERED_ALL.as_bytes()
-        );
-        assert_eq!(
-            read(&dir, &View::All(Some("p2".to_owned()))).unwrap(),
+            view(FIXTURE, &View::All(Some("p2".to_owned()))),
             RENDERED_P2.as_bytes()
         );
         assert_eq!(
-            read(&dir, &View::Tail(2)).unwrap(),
+            view(FIXTURE, &View::Tail(2)),
             RENDERED_TAIL_2.as_bytes(),
             "tail -n 2 counts the unterminated record"
         );
-        assert_eq!(read(&dir, &View::Tail(0)).unwrap(), b"");
+        assert_eq!(view(FIXTURE, &View::Tail(0)), b"");
         assert_eq!(
-            read(&dir, &View::Tail(usize::MAX)).unwrap(),
+            view(FIXTURE, &View::Tail(usize::MAX)),
             RENDERED_ALL.as_bytes()
         );
-        // Anything that is not a regular file is the empty answer, never
-        // opened: a
-        // directory, a socket (bound here from safe std — the FIFO that would
-        // BLOCK an ungated open needs mkfifo and is covered black-box).
-        std::fs::remove_file(dir.join("memo.tsv")).unwrap();
-        std::fs::create_dir_all(dir.join("memo.tsv")).unwrap();
-        assert_eq!(read(&dir, &View::All(None)).unwrap(), b"", "a directory");
-        std::fs::remove_dir_all(dir.join("memo.tsv")).unwrap();
-        let socket = std::os::unix::net::UnixListener::bind(dir.join("memo.tsv")).unwrap();
-        assert_eq!(read(&dir, &View::Tail(1)).unwrap(), b"", "a socket");
-        drop(socket);
-        std::fs::remove_file(dir.join("memo.tsv")).unwrap();
-        // A REGULAR file that cannot be read is the one reported case.
-        std::fs::write(dir.join("memo.tsv"), FIXTURE).unwrap();
-        std::fs::set_permissions(dir.join("memo.tsv"), std::fs::Permissions::from_mode(0o000))
-            .unwrap();
-        if std::fs::read(dir.join("memo.tsv")).is_err() {
-            assert!(
-                read(&dir, &View::All(None)).is_err(),
-                "a regular memo file that exists but cannot be read is reported"
-            );
-        }
-        std::fs::set_permissions(dir.join("memo.tsv"), std::fs::Permissions::from_mode(0o644))
-            .unwrap();
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

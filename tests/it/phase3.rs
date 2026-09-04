@@ -1756,8 +1756,6 @@ fn criterion_3_the_places_this_crate_can_read_the_world_are_the_inventoried_ones
             "src/lifecycle.rs".to_owned(),
             "src/lifecycle/compaction.rs".to_owned(),
             "src/lifecycle/end.rs".to_owned(),
-            // The memo file read behind `memo read`/`memo tail`.
-            "src/memo.rs".to_owned(),
             "src/meta.rs".to_owned(),
             // The orchestrator sweep's ONE own door: its state file, which is
             // also the watchdog's heartbeat.
@@ -1795,6 +1793,12 @@ fn criterion_3_the_places_this_crate_can_read_the_world_are_the_inventoried_ones
             // member that is a link to a mutable file outside the immutable
             // directory passes every follow-test and is then EXECUTED as ours.
             "src/shape.rs".to_owned(),
+            // The live session store's ONE own door: the `[[ -f ]]` gate and
+            // the read behind `memo read`/`memo tail`. The gate comes BEFORE
+            // the open on purpose — a FIFO opened without it blocks the reader
+            // for good — so the two are one door, in the module that owns the
+            // file's name.
+            "src/store.rs".to_owned(),
             // The LOCAL-mode teardown's own reads: the `lstat` that
             // proves the session dir is a real direct child and never a link,
             // and the sessions-root `fsync` that makes the rename-to-tombstone
