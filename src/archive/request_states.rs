@@ -1,18 +1,16 @@
 //! `_ar_request_states` — the digest's own request-status pass.
 //!
-//! This is a FAITHFUL port of the frozen bash reader, NOT [`crate::requests`].
-//! Two differences matter and both are deliberate:
+//! This is NOT [`crate::requests`]. Two differences matter and both are
+//! deliberate:
 //!
 //! * the digest keeps only ONE opening per ref — the newest `ask`/`review`,
 //!   found by scanning the container newest-first and taking the first seen;
-//! * cancel authorization is the frozen `_ar_request_states` policy (the
-//!   request's own SENDER by exact actor bytes, or slot+session when the
-//!   opening and the cancel both carry a slot) — the INTERIM policy, not the
-//!   later slotless-sender ruling that lives in [`crate::requests`]. For a
+//! * cancel authorization here is the request's own SENDER by exact actor
+//!   bytes, or slot+session when the opening and the cancel both carry a slot —
+//!   not the slotless-sender rule that lives in [`crate::requests`]. For a
 //!   `compact --digest-only` withdrawal the two agree (the cancel's actor
 //!   equals the opening's sender bytes), so the digest never had the view's
-//!   pending-forever bug; matching the frozen reader here is what keeps the
-//!   preview byte-identical.
+//!   pending-forever bug, and the preview stays byte-identical.
 //!
 //! A reply closes the request only on the FULL mirror (actor is the request's
 //! target, target is the request's sender) — by slot+session when both the
@@ -71,7 +69,7 @@ fn field(line: &[u8], key: &str) -> String {
 }
 
 /// The FULL mirror, by slot+session when both the request's target and the
-/// reply's actor carry a slot, else by name — the frozen reply test.
+/// reply's actor carry a slot, else by name.
 fn reply_closes(opening: &Opening, reply: &Reply) -> bool {
     if !opening.target_slot.is_empty() && !reply.actor_slot.is_empty() {
         reply.actor_slot == opening.target_slot
@@ -94,7 +92,7 @@ fn cancel_closes(opening: &Opening, cancel: &Cancel) -> bool {
 }
 
 pub(super) fn request_states(event_bytes: &[u8]) -> Vec<RequestRow> {
-    // Newest-first, as the frozen reader scans with `_ae_tac`.
+    // Newest-first.
     let reversed = reversed(event_bytes);
     let mut order: Vec<String> = Vec::new();
     let mut openings: std::collections::HashMap<String, Opening> = std::collections::HashMap::new();
@@ -159,8 +157,8 @@ pub(super) fn request_states(event_bytes: &[u8]) -> Vec<RequestRow> {
         }
     }
 
-    // The frozen output loop iterates the openings OLDEST-first (it reverses its
-    // newest-first `order`).
+    // The output loop iterates the openings OLDEST-first, reversing the
+    // newest-first `order`.
     let mut rows = Vec::new();
     for reference in order.iter().rev() {
         let opening = &openings[reference];

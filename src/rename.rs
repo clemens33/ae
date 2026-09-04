@@ -14,7 +14,7 @@ use crate::session_tmux::{Op, argv};
 use crate::state::{EXIT_FAILED, EXIT_USAGE};
 use crate::transport;
 
-/// The frozen usage, both lines.
+/// The usage, both lines.
 pub const USAGE: &str = "Usage: ae rename [old-name] <new-name>";
 
 /// The second usage line, printed only for the one-operand form: it explains
@@ -239,7 +239,7 @@ fn republish(dir: &Path, name: &str, server: &ServerId) {
     );
 }
 
-/// A missing path fact renders as `.`, the frozen default.
+/// A missing path fact renders as `.`.
 fn or_dot(value: String) -> String {
     if value.is_empty() {
         ".".to_owned()
@@ -248,15 +248,14 @@ fn or_dot(value: String) -> String {
     }
 }
 
-/// The session the caller is sitting in — the frozen
-/// `detect_current_session`: the ambient server's current session, and only
-/// when it is a real session directory.
+/// The session the caller is sitting in: the ambient server's current session,
+/// and only when it is a real session directory.
 fn current_session(root: &Path) -> Option<String> {
     let name = transport::observe_current_session(&ServerId::Ambient)?;
     crate::lifecycle::dir_exists(&crate::lifecycle::sessions_dir(root).join(&name)).then_some(name)
 }
 
-/// Whether `path` is a symlink — the frozen `_require_session_path_safe`.
+/// Whether `path` is a symlink.
 fn is_symlink(path: &Path) -> bool {
     #[allow(
         clippy::disallowed_methods,

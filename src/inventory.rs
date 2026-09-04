@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use crate::meta::{Selector, ServerSelector};
 use crate::session::RecordSnapshot;
 
-/// The nested state directory inside a worktree — legacy layout.
+/// The nested state directory inside a worktree — the older layout.
 const WORKTREE_STATE_DIR: &str = ".ae";
 
 /// The ae state roots for one invocation, derived from `AE_HOME`.
@@ -42,7 +42,7 @@ impl Roots {
         &self.sessions
     }
 
-    /// The legacy worktree root, `<AE_HOME>/worktrees`.
+    /// The worktree root, `<AE_HOME>/worktrees`.
     #[must_use]
     pub fn worktrees(&self) -> &Path {
         &self.worktrees
@@ -516,9 +516,9 @@ mod tests {
                   what PRODUCT code may reach"
     )]
 
-    //! Each test names the pre-registered criterion of the retired phase-1
-    //! gate document it answers. That gate was authored
-    //! against the ROWS, without reading this module, so a criterion it cannot
+    //! Each test names the pre-registered criterion it answers. The criteria
+    //! were authored
+    //! against the ROWS, without reading this module, so one that cannot
     //! run is a contract gap and is reported as one rather than reinterpreted
     //! into something passable.
 
@@ -646,7 +646,7 @@ mod tests {
             dir
         }
 
-        /// A legacy candidate: `<home>/worktrees/<worktree>/.ae/<session>/`.
+        /// A nested candidate: `<home>/worktrees/<worktree>/.ae/<session>/`.
         fn nested(&self, worktree: &str, session: &str) -> PathBuf {
             let dir = self
                 .0

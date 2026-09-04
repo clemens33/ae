@@ -1,9 +1,8 @@
 //! The shell-word lexer that turns a composed launch command into an argv.
 //!
-//! Until slice Z2 a pane ran `bash -lc '<launch command>'`, so the shell did
-//! this work. The pane's command is now the core itself, and the core `exec`s
-//! the tool DIRECTLY — which is the whole reason `pane_current_command` still
-//! reports the tool. So the one shell service the launch actually used has to
+//! The pane's command is the core itself, and the core `exec`s the tool
+//! DIRECTLY — which is the whole reason `pane_current_command` reports the
+//! tool. So the one shell service a launch command needs has to
 //! be here: split a command line into words, honouring quotes, escapes and
 //! parameter expansion.
 
@@ -485,8 +484,8 @@ mod tests {
             "a \"unterminated",
             "a \\",
             // Brace expansion and grouping, and a word-initial comment: the
-            // VALIDATOR refuses all three, and this lexer used to accept them
-            // and hand the literal bytes to an `exec` (colead Z2 BLOCKER-3).
+            // VALIDATOR refuses all three, so the literal bytes never reach an
+            // `exec`.
             "claude {a,b}",
             "claude }",
             "claude # note",

@@ -1,8 +1,7 @@
 //! What this binary IS — and therefore whose environment it trusts.
 //!
-//! Slice Z3 deletes `ae-entry`. The public `ae` is a symlink to THIS binary, so
-//! the two things the wrapper decided from its own file name are decided here
-//! from [`std::env::current_exe`]:
+//! The public `ae` is a symlink to THIS binary, so two things are decided from
+//! [`std::env::current_exe`]:
 //!
 //! * **INSTALLED** — the resolved executable is `<root>/.ae/versions/<V>/ae-core`,
 //!   a directory the canonical installer published. ae state is `<root>/.ae`,
@@ -12,7 +11,7 @@
 //!   A refusal naming both, never a demotion.
 //! * **CHECKOUT** — anywhere else. `AE_HOME`, `CONFIG_FILE` and the
 //!   `AE_TMUX_SERVER` pair are HONOURED. That is the `ae-dev` namespace and the
-//!   two bash suites, which are its only callers.
+//!   test suite, its only callers.
 
 use std::path::{Path, PathBuf};
 

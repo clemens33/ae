@@ -435,8 +435,8 @@ fn a_local_launch_builds_the_whole_session() {
         "the manifest names the roster"
     );
 
-    // NO LAUNCH SCRIPT: the pane's command is the core, and there is no bash
-    // left anywhere in the session directory.
+    // NO LAUNCH SCRIPT: the pane's command is the core, and no shell file is
+    // written into the session directory.
     assert!(
         !dir.join("launch.main.sh").exists(),
         "slice Z2 writes no bash into a session directory"
@@ -583,9 +583,8 @@ fn a_resume_reruns_with_the_resume_variant() {
     );
 
     // Plant the transcript claude would have written, and the same seat resumes
-    // the SAME conversation. Under the RIG'S home: this used to write into the
-    // developer's own `~/.claude/projects` and delete it again, which worked
-    // only because the child inherited their `$HOME`.
+    // the SAME conversation. Under the RIG'S home, so nothing is written into
+    // the developer's own `~/.claude/projects`.
     let home = rig.scratch.display().to_string();
     // The PHYSICAL path, because the probe asks `getcwd(2)` — which is what
     // claude's own `process.cwd()` asks, and on macOS `/tmp` is a symlink.
@@ -722,8 +721,8 @@ fn a_scaffold_starts_the_orchestrator_companion_from_the_core() {
         "the companion must be up on the rig's own server: {seen:?}"
     );
 
-    // ISOLATION is the whole point of the retired trampoline: the companion
-    // must run under the SCAFFOLD's config and directory, never the caller's.
+    // ISOLATION: the companion must run under the SCAFFOLD's config and
+    // directory, never the caller's.
     assert!(
         meta.contains(&recorded),
         "the companion read the scaffold's config:\n{meta}"
@@ -1039,8 +1038,8 @@ fn the_status_bar_is_ae_owned_and_its_first_line_still_renders() {
             .to_owned()
     };
     assert_eq!(option("status-left"), "[ae lnbar] ");
-    // The watch segment is a user option at the END, referenced exactly once:
-    // the retired save/prepend/restore doubled it on every watchdog restart.
+    // The watch segment is a user option at the END, referenced exactly once,
+    // so a watchdog restart cannot double it.
     let right = option("status-right");
     assert!(
         right.starts_with('[') && right.ends_with("] #{@ae_watchdog_status}"),

@@ -6,11 +6,10 @@
 //!
 //! **Identity v2** — [`read_identity`] and [`launch_plan`]: the `[profiles]`
 //! inventory, the `[roster]` name→profile bindings and the workspace seats, read
-//! with the same per-line grammar the frozen bash `parse_config` uses and
-//! validated BOTH directions into a typed [`LaunchPlan`] before any session
-//! side effect exists. The identity plan (alias-free names, profile as metadata)
-//! is the authority for the rules pinned here; the bash glue no longer parses
-//! identity from config once P4 lands.
+//! with one per-line grammar and validated BOTH directions into a typed
+//! [`LaunchPlan`] before any session side effect exists. The identity plan
+//! (alias-free names, profile as metadata) is the authority for the rules
+//! pinned here.
 //!
 //! Still not a general config framework: `[prompt]`, `[telegram]`, the layout
 //! and copy-mode keys stay with the glue's reader.
@@ -106,7 +105,7 @@ fn parse_entry(line: &str) -> Option<(&str, String)> {
 }
 
 /// [`parse_entry`] with the key grammar as a parameter: `[roster]` keys are
-/// agent NAMES (digit-leading allowed), every other section keeps the frozen
+/// agent NAMES (digit-leading allowed), every other section keeps the
 /// config-key grammar.
 fn parse_entry_with(line: &str, key_ok: fn(&str) -> bool) -> Option<(&str, String)> {
     let eq = line.find('=')?;
@@ -154,7 +153,7 @@ fn entry_value(line: &str) -> Option<String> {
     Some(val.to_owned())
 }
 
-/// The frozen key grammar `^[a-zA-Z_][a-zA-Z0-9_-]*`.
+/// The key grammar `^[a-zA-Z_][a-zA-Z0-9_-]*`.
 fn is_config_key(s: &str) -> bool {
     let mut bytes = s.bytes();
     match bytes.next() {
@@ -164,8 +163,7 @@ fn is_config_key(s: &str) -> bool {
     bytes.all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
-/// The agent-name grammar, spelled as the frozen `_validate_agent_name` prints
-/// it.
+/// The agent-name grammar, spelled as a refusal prints it.
 pub const AGENT_NAME_GRAMMAR: &str = "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$";
 
 /// Whether `name` is an agent name: a letter or digit, then up to 63 of
@@ -349,7 +347,7 @@ fn overlay_identity(file: &Path, cfg: &mut IdentityConfig) -> Result<(), ConfigE
                 });
             }
         } else if !is_config_key(key) {
-            // The frozen tolerance: a non-key line contributes nothing.
+            // A non-key line contributes nothing.
             continue;
         }
         if section == "workspace" && key != "main" && key != "workers" {
@@ -1086,8 +1084,8 @@ mod tests {
 
     #[test]
     fn a_roster_comment_and_an_empty_value_are_not_bad_names() {
-        // Colead IMPORTANT-3: a commented-out binding (an `=` inside it) is
-        // SKIPPED like the frozen parser, never a hard config refusal.
+        // A commented-out binding (an `=` inside it) is SKIPPED, never a hard
+        // config refusal.
         let (_f, cfg) = v2(
             "[profiles]\ncc = \"claude\"\n[roster]\n# old = fable5\nlead = cc\n\
              [workspace]\nmain = lead\n",

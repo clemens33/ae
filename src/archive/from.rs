@@ -1,12 +1,12 @@
 //! `_archive-from-preflight <archive-root> <raw-uuid>` — the read-only `--from`
-//! preflight (P3.4).
+//! preflight.
 //!
-//! Bash routes the frozen `_ar_from_preflight` through this before any launch side
-//! effect: it proves an archive is a real, validated, not-mid-flight ae archive
-//! and hands back only the two counts Bash already consumes — `aid\thandover\t
-//! pending` — as ONE observation, frozen against the id they were proved with. A
-//! caller re-reading the counts afterwards would be a second observation of a
-//! file another process may be deleting. `AE_CORE=` falls back to the frozen body.
+//! Runs before any launch side effect: it proves an archive is a real,
+//! validated, not-mid-flight ae archive and hands back only the two counts the
+//! caller consumes — `aid\thandover\tpending` — as ONE observation, frozen
+//! against the id they were proved with. A caller re-reading the counts
+//! afterwards would be a second observation of a file another process may be
+//! deleting.
 //!
 //! It reuses the one shared archive [`store`](super::store): the same real-root
 //! classifier, the same `.publishing.<aid>` claim path, and the same

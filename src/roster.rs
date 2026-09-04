@@ -3,8 +3,8 @@
 //! The core side of `_meta-init`: given the seats a launch resolved, render the
 //! `schema=2` + `seat.<slot>` + `profile.<slot>` + `harness_session.<slot>` +
 //! `agent_bin.<slot>` lines that [`crate::meta::init`] publishes in one rename.
-//! `agent.<slot>` is never written again, and it is no longer read into a seat:
-//! a v1 meta is a session to start over from, not one to migrate.
+//! `agent.<slot>` is never written, and never read into a seat: a v1 meta is a
+//! session to start over from, not one to migrate.
 
 use crate::meta::Anomaly;
 
@@ -43,8 +43,8 @@ pub fn render(seats: &[SeatLines]) -> String {
     out
 }
 
-/// Whether an anomaly makes the ROSTER itself untrustworthy for migration, at
-/// the provenance grain (colead round-2 BLOCKER-2):
+/// Whether an anomaly makes the ROSTER itself untrustworthy, at the provenance
+/// grain:
 pub(crate) fn roster_doubting(a: &Anomaly) -> bool {
     const IDENTITY_PREFIXES: [&str; 5] = [
         "agent.",

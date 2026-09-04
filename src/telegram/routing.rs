@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 /// telegram state directory.
 pub const TARGET_FILE: &str = "current_target";
 
-/// The canonical orchestrator session name (#52 policy ruling).
+/// The canonical orchestrator session name.
 const ORCHESTRATOR: &str = "orchestrator";
 
 /// The deprecated alias, still accepted.
@@ -460,9 +460,9 @@ pub fn parse_reply_target(quoted: &str) -> Option<(String, String)> {
         return None;
     }
     let actor = match rest.split_once("  ") {
-        // The frozen shape: skip the action, take the actor.
+        // The long shape: skip the action, take the actor.
         Some((_, after)) => split_word(after).0,
-        // The Rust shape: the actor is all there is.
+        // The short shape: the actor is all there is.
         None => split_word(rest).0,
     };
     if actor.is_empty() {
@@ -487,8 +487,8 @@ fn render_list(sessions: &[RunningSession], now: i64) -> String {
     out
 }
 
-/// The frozen telegram daemon's age wording, which is NOT the listing's: this
-/// surface calls anything under ninety seconds "just now".
+/// The bridge's age wording, which is NOT the listing's: this surface calls
+/// anything under ninety seconds "just now".
 fn relative_age(now: i64, at: Option<i64>) -> String {
     let Some(at) = at else {
         return "-".to_owned();
@@ -804,9 +804,9 @@ mod tests {
 
     #[test]
     fn the_reply_header_is_read_in_both_the_rust_and_the_frozen_bash_shapes() {
-        // The Rust renderer emits `[session] actor`; the frozen bash emitted
-        // `[session] action  actor → target`, and those messages are still
-        // replyable in the operator's chat on flip day.
+        // The renderer emits `[session] actor`; a header shaped
+        // `[session] action  actor → target` is still read, so older messages
+        // in the operator's chat stay replyable.
         assert_eq!(
             parse_reply_target("[work] codex:dev\nbody"),
             Some(("work".to_owned(), "codex:dev".to_owned()))
@@ -979,7 +979,7 @@ mod tests {
             !help.contains("hub"),
             "the deprecated name is being taught: {help}"
         );
-        // An empty message is help too, exactly as the frozen bridge had it.
+        // An empty message is help too.
         assert!(matches!(
             decide(plain("   "), &[], &Sticky::Unset, NOW),
             Route::Answer(_)

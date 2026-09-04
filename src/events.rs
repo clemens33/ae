@@ -11,7 +11,7 @@
 //! key stays inert, and an unknown key is data this reader steps over.
 //!
 //! PRESENCE of a routing member is decided BEFORE any empty-string
-//! normalization. Structurally absent members permit the legacy display
+//! normalization. Structurally absent members permit the display
 //! fallback; any present member that does not fully and freshly match — stale,
 //! partial, or empty — is [`Identity::Unassociated`], which matches nothing.
 //!
@@ -32,7 +32,7 @@ use crate::attention::Reason;
 use crate::json::{self, Value};
 use crate::time::Timestamp;
 
-/// The bash-era event container, kept readable across every flip.
+/// The event container's file name, kept readable across every flip.
 pub const LEGACY_CONTAINER: &str = "events.jsonl";
 
 /// One record from the event log.
@@ -156,10 +156,9 @@ impl Identity<'_> {
     /// **This lives on the type because the type's own doc already asserts the
     /// rule** — "`Unassociated` matches nothing, including another
     /// `Unassociated`" — and a rule stated beside a type but implemented in
-    /// another module is a rule with two homes. The frozen script warns about
-    /// exactly this at its own sensor: `_ar_request_states` exists as ONE
-    /// definition because two copies had already diverged, one checking both
-    /// ends of a reply and the other only the actor end.
+    /// another module is a rule with two homes. The request sensor makes the
+    /// same point: it is ONE definition because two copies of it drift, one
+    /// checking both ends of a reply and the other only the actor end.
     ///
     /// Routing keys compare to routing keys — that is the whole point of a
     /// churn-proof key. When NEITHER side carries one, the display name is all
@@ -938,7 +937,8 @@ mod tests {
         // / ONE present-empty member / ALL routing members present-empty.
         let base = r#""ts":"2026-05-19T07:29:45Z","actor":"claude:lead","action":"send","target":"codex:coworker""#;
 
-        // 1. Structurally ABSENT: the legacy fallback pre-routing-key records need.
+        // 1. Structurally ABSENT: the display fallback a record with no routing
+        // key needs.
         let absent = Event::parse_line(&format!("{{{base}}}")).expect("parses");
         assert_eq!(absent.actor_slot, RoutingMember::Absent);
         assert_eq!(absent.actor_identity(), Identity::Display("claude:lead"));
@@ -1698,9 +1698,7 @@ mod tests {
         assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
     }
 
-    /// Every alert summary the frozen watchdog can actually emit, taken from
-    /// the `ae_emit_event "alert"` call sites in `ae` @72c7293 and from
-    /// `aewatch`.
+    /// Every alert summary the watchdog can actually emit.
     const INCUMBENT_ALERT_SUMMARIES: [(&str, Reason); 7] = [
         ("agent process dead — dropped to shell", Reason::Dead),
         (

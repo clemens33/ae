@@ -1,9 +1,7 @@
 //! Session helpers as LINKS to the core.
 //!
-//! Slice Z2 removed the last generated bash from a session directory. A helper
-//! is no longer a four-line shim that execs the core; it IS the core, reached
-//! through a symlink named `send`, `ask`, `watchdog` and so on. The dispatch
-//! that used to be the shim's `exec` line is this module: the core reads the
+//! A helper IS the core, reached through a symlink named `send`, `ask`,
+//! `watchdog` and so on. The dispatch is this module: the core reads the
 //! BASENAME of `argv[0]`, and derives the session directory from its dirname.
 
 use std::path::{Component, Path, PathBuf};
