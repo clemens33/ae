@@ -61,7 +61,7 @@ allow-panic-in-tests = true
 # That the deny is still in force is checked SEMANTICALLY, not by reading the
 # source for exemptions: see
 # `the_capability_boundary_holds_against_any_lint_relaxation` in
-# tests/it/parity_self_test.rs, which runs clippy under `--force-warn` — a flag
+# tests/it/doors.rs, which runs clippy under `--force-warn` — a flag
 # no `allow`, group `allow`, `cfg_attr`, `expect` or crate-root `#![allow]` can
 # override.
 disallowed-types = ["std::process::Command"]
