@@ -95,17 +95,21 @@ pub(super) fn request_states(event_bytes: &[u8]) -> Vec<RequestRow> {
     // Newest-first.
     let reversed = reversed(event_bytes);
     let mut order: Vec<String> = Vec::new();
-    let mut openings: std::collections::HashMap<String, Opening> = std::collections::HashMap::new();
+    let mut openings: std::collections::HashMap<String, (usize, Opening)> =
+        std::collections::HashMap::new();
     // Candidates newest-first, in scan order (already newest-first here).
-    let mut replies: std::collections::HashMap<String, Vec<Reply>> =
+    let mut replies: std::collections::HashMap<String, Vec<(usize, Reply)>> =
         std::collections::HashMap::new();
-    let mut cancels: std::collections::HashMap<String, Vec<Cancel>> =
+    let mut cancels: std::collections::HashMap<String, Vec<(usize, Cancel)>> =
         std::collections::HashMap::new();
+    // The scan is newest-first, so a SMALLER ordinal is a LATER record.
+    let mut scan = 0_usize;
 
     for line in crate::event_text::read_lines(&reversed) {
         if line.first() != Some(&b'{') {
             continue;
         }
+        scan += 1;
         let reference = field(line, "ref");
         if reference.is_empty() {
             continue;
@@ -119,39 +123,48 @@ pub(super) fn request_states(event_bytes: &[u8]) -> Vec<RequestRow> {
                 let summary = field(line, "summary").replace('\n', " ");
                 openings.insert(
                     reference.clone(),
-                    Opening {
-                        kind: field(line, "action"),
-                        sender: field(line, "actor"),
+                    (
+                        scan,
+                        Opening {
+                            kind: field(line, "action"),
+                            sender: field(line, "actor"),
+                            target: field(line, "target"),
+                            actor_slot: field(line, "actor_slot"),
+                            target_slot: field(line, "target_slot"),
+                            actor_session: field(line, "actor_session"),
+                            target_session: field(line, "target_session"),
+                            summary,
+                            ts: field(line, "ts"),
+                            body_file: field(line, "body_file"),
+                        },
+                    ),
+                );
+                order.push(reference);
+            }
+            "reply" => {
+                replies.entry(reference).or_default().push((
+                    scan,
+                    Reply {
+                        actor: field(line, "actor"),
                         target: field(line, "target"),
                         actor_slot: field(line, "actor_slot"),
                         target_slot: field(line, "target_slot"),
                         actor_session: field(line, "actor_session"),
                         target_session: field(line, "target_session"),
-                        summary,
-                        ts: field(line, "ts"),
-                        body_file: field(line, "body_file"),
+                        summary: field(line, "summary"),
                     },
-                );
-                order.push(reference);
-            }
-            "reply" => {
-                replies.entry(reference).or_default().push(Reply {
-                    actor: field(line, "actor"),
-                    target: field(line, "target"),
-                    actor_slot: field(line, "actor_slot"),
-                    target_slot: field(line, "target_slot"),
-                    actor_session: field(line, "actor_session"),
-                    target_session: field(line, "target_session"),
-                    summary: field(line, "summary"),
-                });
+                ));
             }
             "cancel" => {
-                cancels.entry(reference).or_default().push(Cancel {
-                    actor: field(line, "actor"),
-                    actor_slot: field(line, "actor_slot"),
-                    actor_session: field(line, "actor_session"),
-                    summary: field(line, "summary"),
-                });
+                cancels.entry(reference).or_default().push((
+                    scan,
+                    Cancel {
+                        actor: field(line, "actor"),
+                        actor_slot: field(line, "actor_slot"),
+                        actor_session: field(line, "actor_session"),
+                        summary: field(line, "summary"),
+                    },
+                ));
             }
             _ => {}
         }
@@ -159,47 +172,60 @@ pub(super) fn request_states(event_bytes: &[u8]) -> Vec<RequestRow> {
 
     // The output loop iterates the openings OLDEST-first, reversing the
     // newest-first `order`.
-    let mut rows = Vec::new();
-    for reference in order.iter().rev() {
-        let opening = &openings[reference];
-        let mut status = "pending";
-        let mut summary = opening.summary.clone();
+    order
+        .iter()
+        .rev()
+        .map(|reference| {
+            let (opened_at, opening) = &openings[reference];
+            row_for(reference, *opened_at, opening, &replies, &cancels)
+        })
+        .collect()
+}
 
-        // Newest valid reply, then newest valid withdrawal (candidates are
-        // newest-first, so the first that passes is the newest that counts).
-        let rep = replies
-            .get(reference)
-            .into_iter()
-            .flatten()
-            .find(|c| reply_closes(opening, c))
-            .map(|c| c.summary.clone());
-        let can = cancels
-            .get(reference)
-            .into_iter()
-            .flatten()
-            .find(|c| cancel_closes(opening, c))
-            .map(|c| c.summary.clone());
+/// One row: the opening, plus whichever terminal event ended it.
+fn row_for(
+    reference: &str,
+    opened_at: usize,
+    opening: &Opening,
+    replies: &std::collections::HashMap<String, Vec<(usize, Reply)>>,
+    cancels: &std::collections::HashMap<String, Vec<(usize, Cancel)>>,
+) -> RequestRow {
+    // A terminal event ends only an opening it FOLLOWS. The scan is
+    // newest-first, so "after the opening" is a SMALLER ordinal — without this
+    // an old withdrawal reaches forward and closes a request that was asked
+    // again on the same ref. Candidates are newest-first, so the first that
+    // passes both tests is the newest that counts.
+    let rep = replies
+        .get(reference)
+        .into_iter()
+        .flatten()
+        .filter(|(at, _)| *at < opened_at)
+        .find(|(_, candidate)| reply_closes(opening, candidate))
+        .map(|(_, candidate)| candidate.summary.clone());
+    let can = cancels
+        .get(reference)
+        .into_iter()
+        .flatten()
+        .filter(|(at, _)| *at < opened_at)
+        .find(|(_, candidate)| cancel_closes(opening, candidate))
+        .map(|(_, candidate)| candidate.summary.clone());
 
-        if let Some(text) = can {
-            status = "cancelled";
-            summary = text;
-        } else if let Some(text) = rep {
-            status = "replied";
-            summary = text;
-        }
-
-        rows.push(RequestRow {
-            status: status.to_owned(),
-            kind: opening.kind.clone(),
-            reference: reference.clone(),
-            from: opening.sender.clone(),
-            to: opening.target.clone(),
-            ts: opening.ts.clone(),
-            body_file: opening.body_file.clone(),
-            summary,
-        });
+    // A valid withdrawal wins over any reply, however late.
+    let (status, summary) = match (can, rep) {
+        (Some(text), _) => ("cancelled", text),
+        (None, Some(text)) => ("replied", text),
+        (None, None) => ("pending", opening.summary.clone()),
+    };
+    RequestRow {
+        status: status.to_owned(),
+        kind: opening.kind.clone(),
+        reference: reference.to_owned(),
+        from: opening.sender.clone(),
+        to: opening.target.clone(),
+        ts: opening.ts.clone(),
+        body_file: opening.body_file.clone(),
+        summary,
     }
-    rows
 }
 
 #[cfg(test)]
@@ -241,6 +267,19 @@ mod tests {
         "\n",
         r#"{"ts":"2026-05-29T09:05:00Z","actor":"ae:compact:0199c0de","action":"cancel","#,
         r#""ref":"ae-4","summary":"withdrawn: --digest-only"}"#,
+        "\n",
+    );
+
+    /// A withdrawal, then a fresh ask on the same ref: the new opening is open.
+    const REOPENED: &str = concat!(
+        r#"{"ts":"2026-05-29T09:00:00Z","actor":"cl:lead","action":"ask","#,
+        r#""target":"cl:hand","ref":"ae-5","summary":"q"}"#,
+        "\n",
+        r#"{"ts":"2026-05-29T09:05:00Z","actor":"cl:lead","action":"cancel","#,
+        r#""target":"cl:hand","ref":"ae-5","summary":"withdrawn"}"#,
+        "\n",
+        r#"{"ts":"2026-05-29T09:10:00Z","actor":"cl:lead","action":"ask","#,
+        r#""target":"cl:hand","ref":"ae-5","summary":"asked again"}"#,
         "\n",
     );
 
@@ -339,6 +378,16 @@ mod tests {
         assert!(view_pending(COMPACT_WITHDRAWN).is_empty());
         assert!(digest_pending(COMPACT_WITHDRAWN).is_empty());
         assert!(session_pending(COMPACT_WITHDRAWN).is_empty());
+    }
+
+    #[test]
+    fn a_fresh_ask_after_a_withdrawal_is_open_again_to_every_reader() {
+        // A terminal event ends only an opening it FOLLOWS, in all three
+        // readers: re-asking a withdrawn ref opens it again, and the earlier
+        // withdrawal does not reach forward to close it.
+        assert_eq!(view_pending(REOPENED), ["ae-5"]);
+        assert_eq!(digest_pending(REOPENED), ["ae-5"]);
+        assert_eq!(session_pending(REOPENED), ["ae-5"]);
     }
 
     #[test]
