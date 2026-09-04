@@ -47,8 +47,8 @@ fn freeze(ae_home: &Path, dir: &Path, keep_history: bool) -> std::process::Outpu
     .expect("compact-freeze returned")
 }
 
-/// Build `<AE_HOME>/sessions/<name>` with a local meta and a `[workspace]` config.
-/// `origin` is `AE_HOME` itself (a real, canonicalizable dir).
+/// Build `<AE_HOME>/sessions/<name>` with a local meta and a `[workspace]`
+/// config.
 fn local_session(s: &Scratch, name: &str, mode: &str, config_body: &str) -> PathBuf {
     let sessions = s.0.join("sessions");
     let dir = sessions.join(name);
@@ -152,10 +152,8 @@ fn archive_step_refuses_a_replacement_session() {
 
 #[test]
 fn archive_step_refuses_a_tuple_whose_name_was_altered() {
-    // The altered-name attack: the real live session is `sess`, but the authorization
-    // tuple's name field is rewritten to an absent `ghost`. Revalidation must refuse on the
-    // name-vs-operand mismatch before any stop query, so the stop check can never prove the
-    // WRONG name stopped while `sess` runs on. Read-only: nothing is archived.
+    // The altered-name attack: the real live session is `sess`, but the
+    // authorization tuple's name field is rewritten to an absent `ghost`.
     let s = Scratch::new("arch-altered-name");
     let dir = local_session(&s, "sess", "local", "[workspace]\nmain = cl\n");
     let tuple = tuple_of(s.0.as_path(), &dir);
@@ -268,10 +266,9 @@ fn a_local_session_emits_the_frozen_tuple() {
 
 #[test]
 fn a_fifo_global_config_is_refused_without_hanging() {
-    // A recorded global config that is a FIFO must be refused by CLASSIFICATION, never
-    // opened: an ungated `read_to_string` on a writerless FIFO blocks forever. The
-    // bounded runner (10s) turns any such hang into a test failure, so a clean code-1
-    // refusal is positive proof the open never happened.
+    // A recorded global config that is a FIFO must be refused by
+    // CLASSIFICATION, never opened: an ungated `read_to_string` on a writerless
+    // FIFO blocks forever.
     let s = Scratch::new("fifo");
     let dir = s.0.join("sessions").join("sess");
     std::fs::create_dir_all(&dir).unwrap();
@@ -307,8 +304,8 @@ fn a_managed_mode_is_refused_clearly() {
     assert!(stdout(&out).is_empty(), "no tuple on refusal");
 }
 
-/// Seed a compact handover ask (slotless compact actor → main) into `<dir>/events.jsonl`,
-/// with a stored body carrying memo baseline 0. Returns the ref.
+/// Seed a compact handover ask (slotless compact actor → main) into
+/// `<dir>/events.jsonl`, with a stored body carrying memo baseline 0.
 fn seed_handover(dir: &Path) -> String {
     let reference = "ae-20260829T000000Z-abcd1234";
     std::fs::create_dir_all(dir.join("messages")).unwrap();
@@ -324,8 +321,7 @@ fn seed_handover(dir: &Path) -> String {
 
 #[test]
 fn compact_wait_succeeds_end_to_end_when_both_facts_are_present() {
-    // The full CLI path: parse → dispatch → wait_step. A reply and a fresh handover memo
-    // are both present, so a --timeout 0 poll succeeds on its single read.
+    // The full CLI path: parse → dispatch → wait_step.
     let s = Scratch::new("wait-e2e");
     let dir = s.0.join("sessions").join("sess");
     std::fs::create_dir_all(&dir).unwrap();

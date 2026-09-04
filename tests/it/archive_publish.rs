@@ -46,7 +46,7 @@ impl Drop for Scratch {
 }
 
 /// Build a session `<home>/sessions/<name>` with a roster, a memo, one pending
-/// request event and its message body. Returns the session dir.
+/// request event and its message body.
 fn session(home: &Path, name: &str) -> PathBuf {
     let dir = home.join("sessions").join(name);
     std::fs::create_dir_all(dir.join("messages")).expect("mkdir session");
@@ -117,8 +117,7 @@ fn mode_of(path: &Path) -> u32 {
 
 /// A digest of the session dir's content — every file's relative path and bytes
 /// (or `None` when unreadable) — to prove a failed publish left the source
-/// byte-for-byte untouched. `.lock` files are excluded: acquiring a lock may
-/// create one, which the assignment classes as lock infrastructure, not source.
+/// byte-for-byte untouched.
 fn source_snapshot(dir: &Path) -> Vec<(String, Option<Vec<u8>>)> {
     let mut out = Vec::new();
     let mut stack = vec![dir.to_owned()];
@@ -238,7 +237,7 @@ fn a_standing_claim_is_refused_and_never_guess_cleaned() {
 fn a_nonregular_core_source_is_refused() {
     let scratch = Scratch::new("nonreg");
     let dir = session(scratch.home(), "demo");
-    // events.jsonl becomes a symlink: a classified source the publisher refuses.
+    // Events.jsonl becomes a symlink: a classified source the publisher refuses.
     std::fs::remove_file(dir.join("events.jsonl")).unwrap();
     std::os::unix::fs::symlink("/etc/hosts", dir.join("events.jsonl")).unwrap();
 
@@ -344,10 +343,7 @@ fn a_symlink_message_is_skipped_and_the_digest_reads_unavailable() {
 fn a_fifo_core_source_is_refused_without_blocking() {
     let scratch = Scratch::new("fifo");
     let dir = session(scratch.home(), "demo");
-    // meta is replaced by a FIFO. Classification must refuse it BEFORE any read,
-    // so the publisher never opens it — a read would block indefinitely (no
-    // writer) while all three source locks are held. The bounded runner proves
-    // the process returns promptly instead of hanging.
+    // meta is replaced by a FIFO.
     std::fs::remove_file(dir.join("meta")).unwrap();
     crate::cli::mkfifo(&dir.join("meta"));
 
@@ -369,8 +365,7 @@ fn a_symlinked_messages_dir_is_skipped_and_never_followed() {
     let scratch = Scratch::new("symdir");
     let dir = session(scratch.home(), "demo");
     // messages/ ITSELF is a symlink to an external directory holding a payload
-    // that must NEVER be staged. `read_dir` would follow the link and copy the
-    // external *.txt in; classification of the root refuses to follow it.
+    // that must NEVER be staged.
     let external = scratch.home().join("external-msgs");
     std::fs::create_dir_all(&external).unwrap();
     std::fs::write(external.join("leak.txt"), b"must not be archived").unwrap();
@@ -404,7 +399,7 @@ fn a_symlinked_messages_dir_is_skipped_and_never_followed() {
 fn an_unreadable_core_ledger_refuses_rather_than_publish_empty() {
     let scratch = Scratch::new("unreadledger");
     let dir = session(scratch.home(), "demo");
-    // memo.tsv is a REGULAR file that cannot be read: it passes the non-regular
+    // Memo.tsv is a REGULAR file that cannot be read: it passes the non-regular
     // gate but must REFUSE — an immutable archive must never publish with a
     // ledger silently emptied by an unwrap_or_default.
     std::fs::set_permissions(dir.join("memo.tsv"), std::fs::Permissions::from_mode(0o000)).unwrap();
@@ -432,9 +427,7 @@ fn an_unreadable_messages_dir_refuses_as_unknown_loss() {
     let scratch = Scratch::new("unreadmsgdir");
     let dir = session(scratch.home(), "demo");
     // messages/ is a REAL directory that cannot be enumerated (0o000): unknown
-    // loss, not a classified absence. It must REFUSE rather than silently publish
-    // an archive with no message bodies — the sharper boundary a symlinked/absent
-    // root does not cross.
+    // loss, not a classified absence.
     let msgs = dir.join("messages");
     std::fs::set_permissions(&msgs, std::fs::Permissions::from_mode(0o000)).unwrap();
 

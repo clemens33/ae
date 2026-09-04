@@ -44,9 +44,9 @@ impl Drop for Scratch {
     }
 }
 
-/// Build a session `<home>/sessions/<name>` (`session_id=AID`) and PUBLISH it, so
-/// every from-preflight below runs against a real, validator-approved archive at
-/// `<home>/archive/<AID>`. Returns the archive root `<home>/archive`.
+/// Build a session `<home>/sessions/<name>` (`session_id=AID`) and PUBLISH it,
+/// so every from-preflight below runs against a real, validator-approved
+/// archive at `<home>/archive/<AID>`.
 fn published_archive(home: &Path, name: &str) -> PathBuf {
     let dir = home.join("sessions").join(name);
     std::fs::create_dir_all(dir.join("messages")).expect("mkdir session");

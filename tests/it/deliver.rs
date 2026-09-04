@@ -30,16 +30,7 @@ use ae::meta::Selector;
 use super::cli::ae;
 use super::phase2::run_tmux;
 
-/// The fake TUI. Draws a claude- or codex-shaped input box, keeps the staged
-/// bytes visible in it, and appends each SUBMITTED body to a file byte for
-/// byte.
-///
-/// Bracketed paste is ENABLED (`\e[?2004h`) so tmux's `paste-buffer -p`
-/// actually brackets, and the markers are stripped from the staged bytes: a
-/// newline INSIDE a paste is content, a newline outside it submits. That is
-/// the protocol the measurement of 2026-08-30 is about — plain paste lost the
-/// head in 4/4 trials, bracketed 0/6 — so a rig that did not bracket would be
-/// testing a different thing.
+/// The fake TUI.
 const FAKE_TUI: &str = r#"#!/usr/bin/perl
 use strict;
 use warnings;
@@ -270,11 +261,6 @@ impl Drop for Rig {
 
 /// A MULTI-LINE body reaches a modelled TUI byte for byte, and the recovery
 /// record holds the same bytes.
-///
-/// This is the bracketed-paste protocol under test, not just "a send works":
-/// the fake TUI enables bracketed paste, so tmux's `paste-buffer -p` brackets,
-/// and the newlines INSIDE the body stay content instead of submitting it
-/// three times. Plain paste is what lost the head in 4/4 measured trials.
 #[test]
 fn a_multi_line_body_reaches_a_modelled_tui_byte_for_byte() {
     let rig = Rig::new("exact", "claude", 0);
@@ -306,9 +292,6 @@ fn a_multi_line_body_reaches_a_modelled_tui_byte_for_byte() {
 
 /// A send DEFERS while the target's input box holds unsent content, and
 /// abandons LOUDLY at the bound rather than clobbering it.
-///
-/// The draft is typed straight at the pane, as a human would type it: the
-/// point is that ae reads the SCREEN and refuses to paste over what it sees.
 #[test]
 fn a_send_defers_while_the_input_box_holds_a_draft_and_abandons_loudly() {
     let rig = Rig::new("busy", "claude", 0);
@@ -413,11 +396,6 @@ fn a_dead_agent_pane_is_refused_before_the_body_store() {
 }
 
 /// AN IDLE INPUT BOX IS NOT AN INITIALIZED APPLICATION.
-///
-/// The fake codex draws the two measured NOT-ready rows for a while with no
-/// input box at all, then settles into one. Readiness must be false for the
-/// whole of the first phase and true in the second — the markers are what
-/// makes the difference, and their absence is not itself proof of anything.
 #[test]
 fn a_codex_that_is_still_starting_is_not_ready_however_its_box_looks() {
     let rig = Rig::new("boot", "codex", 3);
@@ -587,12 +565,6 @@ fn interrupt_refuses_exactly_and_records_nothing_for_a_refusal() {
 }
 
 /// A BODY NEVER OUTLIVES ITS DELIVERY IN THE SERVER'S BUFFER STACK.
-///
-/// `paste-buffer -d` consumes the buffer only when the paste succeeds. A pane
-/// that died between the load and the paste used to leave the staged body
-/// readable by `save-buffer` from any client of the server — one leaked body
-/// per failed or raced delivery (colead gate 0b570acd). The failure arm must
-/// delete what it staged; the success arm must leave nothing either.
 #[test]
 fn a_paste_that_fails_after_the_load_leaves_no_buffer_behind() {
     let rig = Rig::new("leak", "claude", 0);
@@ -606,8 +578,7 @@ fn a_paste_that_fails_after_the_load_leaves_no_buffer_behind() {
     );
 
     // The server must OUTLIVE the pane: killing the last pane exits the server,
-    // and then the load itself fails (nothing staged, nothing to leak). The leak
-    // needs a live server and a dead target, which is the raced-delivery shape.
+    // and then the load itself fails (nothing staged, nothing to leak).
     assert!(
         rig.tmux(&["new-session", "-d", "-s", "keepalive", "sleep", "60"])
             .0,

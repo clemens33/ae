@@ -134,10 +134,8 @@ fn a_local_session_is_removed_and_no_tombstone_is_left() {
 
 #[test]
 fn a_session_outside_the_configured_root_is_refused() {
-    // LOAD-BEARING control for B1: AE_HOME points at one tree, the session lives in
-    // another. The dir is structurally valid — real dir, valid name, byte-exact
-    // local meta — so ONLY the configured-root authority refuses it. Remove that
-    // check and this goes red (the outside-root dir would be deleted).
+    // LOAD-BEARING control for B1: AE_HOME points at one tree, the session
+    // lives in another.
     let home = Scratch::new("authhome");
     std::fs::create_dir_all(home.sessions()).expect("configured sessions root");
     let elsewhere = Scratch::new("authelse");
@@ -490,7 +488,7 @@ fn a_git_teardown_removes_the_worktree_and_canonical() {
 
 #[test]
 fn a_git_refusal_retains_both_resources() {
-    // origin is a real repo but the managed dir is NOT a registered worktree, so git
+    // Origin is a real repo but the managed dir is NOT a registered worktree, so git
     // worktree remove refuses; the managed dir is still a real dir, so BOTH resources
     // are retained (retriable) and nothing is deleted.
     let s = Scratch::new("gitrefuse");
@@ -512,11 +510,8 @@ fn a_git_refusal_retains_both_resources() {
 
 #[test]
 fn a_git_managed_symlink_is_refused_before_git_and_leaves_the_external_worktree_intact() {
-    // BLOCKER regression: the managed child under worktrees/ is a SYMLINK pointing at
-    // a worktree registered OUTSIDE the configured root. `git worktree remove --force`
-    // resolves the link and would delete the external worktree at the target. The core
-    // must lstat the managed child FIRST and refuse to hand a link to git — the
-    // external worktree, its tracked content, the symlink and canonical state all stay.
+    // BLOCKER regression: the managed child under worktrees/ is a SYMLINK
+    // pointing at a worktree registered OUTSIDE the configured root.
     let s = Scratch::new("gitmanagedsym");
     let origin = s.0.join("origin");
     std::fs::create_dir_all(&origin).unwrap();
@@ -540,7 +535,7 @@ fn a_git_managed_symlink_is_refused_before_git_and_leaves_the_external_worktree_
         external.join("tracked").exists(),
         "sanity: the external worktree has its tracked content"
     );
-    // worktrees/demo is a SYMLINK to that external worktree; meta.work_dir names the
+    // Worktrees/demo is a SYMLINK to that external worktree; meta.work_dir names the
     // lexical managed child byte-exact (the symlink path itself).
     std::fs::create_dir_all(s.worktrees()).unwrap();
     let managed = s.worktrees().join("demo");

@@ -41,12 +41,6 @@ fn socket_of(scratch: &Path) -> PathBuf {
 }
 
 /// Kill the arm's server and remove its scratch, WHATEVER ended the arm.
-///
-/// A failed assertion skips every line after it, and the frozen shape of these
-/// tests (kill at the end) then leaves a tmux server and its `sleep` children
-/// behind for a minute — on a machine where the next timing-sensitive test is
-/// already running. That cascade is how one real failure becomes three
-/// mysterious ones, so the cleanup is a `Drop` rather than a last line.
 struct Cleanup {
     socket: PathBuf,
     scratch: PathBuf,
@@ -100,11 +94,6 @@ fn plant_script(path: &Path, body: &str) {
 /// A session meta dir naming `socket` as its server, with the two helpers the
 /// start path runs: a `watchdog` that publishes a pidfile and then stays alive,
 /// and an `events-tail` for the monitor window.
-///
-/// The watchdog stand-in is REAL rather than stubbed at the transport, because
-/// the registration wait judges a start by a pidfile a live process published —
-/// a fixture that wrote the file itself would prove the polling and nothing
-/// about the contract between the pane and the starter.
 fn plant_session(root: &Path, session: &str, socket: &Path) -> PathBuf {
     let meta_dir = root.join("sessions").join(session);
     assert!(fs::create_dir_all(&meta_dir).is_ok(), "a session meta dir");
@@ -207,8 +196,7 @@ fn a_watchdog_starts_once_reports_its_pid_and_stops_with_its_pane() {
         (0, format!("Watchdog is running (pid {pid}).").as_str())
     );
 
-    // IDEMPOTENCE: a second start does not spawn a second daemon. The pid is the
-    // proof — a duplicate would have published its own.
+    // IDEMPOTENCE: a second start does not spawn a second daemon.
     let (code, out, _) = watchdog(&root, &["start", "wdlife"]);
     assert_eq!(code, 0);
     assert!(
@@ -261,7 +249,7 @@ fn the_watchdog_entry_refuses_a_session_it_cannot_name_or_find() {
     assert_eq!(code, 1);
     assert!(err.contains("session 'nope' not found"), "{err}");
 
-    // A name that is not a NAME. The refusal comes before any path is joined.
+    // A name that is not a NAME.
     let (code, _, err) = watchdog(&root, &["status", "../../etc"]);
     assert_eq!(code, 1);
     assert!(err.contains("not found"), "{err}");

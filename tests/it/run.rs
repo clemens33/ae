@@ -41,9 +41,7 @@ struct Rig {
     config: PathBuf,
     out: PathBuf,
     bin: PathBuf,
-    /// The rig's own `HOME`. The resume PROBE reads a tool's session store
-    /// under it, so a test that plants one — or deliberately does not — has to
-    /// own the directory it is planted in.
+    /// The rig's own `HOME`.
     home: PathBuf,
 }
 
@@ -129,8 +127,7 @@ impl Rig {
     }
 
     /// Mark the seat as having run once, which is what makes the next `_run` a
-    /// RESUME. `_run` writes this itself; a test that wants only the resume
-    /// half writes it directly rather than launching a tool to get it.
+    /// RESUME.
     fn started(&self) {
         assert!(
             std::fs::write(self.dir.join("launch.main.started"), "").is_ok(),
@@ -139,9 +136,6 @@ impl Rig {
     }
 
     /// Plant the evidence a tool's own resume probe looks for.
-    ///
-    /// Only claude, codex and agy leave any, and where a tool leaves none there
-    /// is nothing to plant — the recorded id is the whole answer.
     fn transcript(&self, tool: &str, id: &str) {
         match tool {
             "claude" => {
@@ -229,7 +223,6 @@ impl Rig {
     }
 
     /// `_run` for real: it `exec`s the fixture tool, which reports its argv.
-    /// Returns that argv and whatever `_run` said before it became the tool.
     fn exec(&self) -> (Vec<String>, String) {
         let _ = std::fs::remove_file(&self.out);
         let out = ae()
@@ -265,9 +258,6 @@ impl Rig {
     }
 
     /// Replace the config so the seat's `custom` profile runs `cmd` verbatim.
-    ///
-    /// The profile is what `_run` reads FRESH on every run, so this is also how
-    /// a test changes one after its session has started.
     fn only_profile(&self, cmd: &str) {
         assert!(
             std::fs::write(
@@ -362,10 +352,7 @@ fn an_alias_link_prepends_its_own_fixed_word() {
     let reason = "the slice landed";
 
     // The SAME words through both links, and they part company on the word
-    // `mark-done` inserts. Through `state` the reason is read as the state
-    // VALUE and refused as a usage error; through `mark-done` the value is
-    // already `done`, the reason is a reason, and the only thing left to refuse
-    // is the identity a test process outside a pane does not have.
+    // `mark-done` inserts.
     let via_state = helper(&state)
         .env_remove("TMUX_PANE")
         .arg(reason)
@@ -445,8 +432,7 @@ fn a_helper_reached_by_name_refuses_and_names_the_full_path_rule() {
 #[test]
 fn each_tool_gets_the_argv_its_capability_row_promises() {
     // claude: an ae-generated id at launch, and the context on its own
-    // append-style flag. The nesting guard is an ENVIRONMENT delta, not an
-    // `env` word: there is no shell left to read one.
+    // append-style flag.
     let rig = Rig::new("claude");
     rig.seat("claude", "u-1");
     let argv = rig.planned_argv();
@@ -694,9 +680,7 @@ fn a_first_run_creates_a_second_resumes_and_the_marker_is_the_difference() {
     );
 
     // SECOND RUN: the SAME line, and it resumes rather than creating a second
-    // conversation — which is the whole reason the marker exists. It says so
-    // on the way, because a human who arrow-upped the pane's command is owed an
-    // answer to "did that start a second conversation?".
+    // conversation — which is the whole reason the marker exists.
     let (argv, said) = rig.exec();
     assert!(said.contains(ae::run::RESUMING), "{said}");
     assert!(
@@ -749,10 +733,6 @@ fn a_bare_leading_assignment_is_an_environment_delta_and_never_the_binary() {
     // `A=1 codex --yolo` CLASSIFIES as codex — `split_binary` has always
     // skipped an assignment word — but `_run` peeled assignments only after a
     // literal `env`, so the exec ran a binary named `A=1`.
-    // CODEX deliberately: ae prepends its own `env` prefix to a claude command,
-    // and that prefix hid the defect — the assignment was peeled as one of
-    // `env`'s own operands. Codex gets no prefix, so the profile's assignment
-    // is the FIRST word of the composed line, which is where the peel failed.
     let rig = Rig::new("assign");
     rig.only_profile(&format!("AE_Z2_MARK=set {} --flag", rig.tool("codex")));
     rig.seat("custom", "");
@@ -772,9 +752,7 @@ fn a_bare_leading_assignment_is_an_environment_delta_and_never_the_binary() {
 fn a_quoted_leading_assignment_is_the_binary_on_both_sides() {
     // The off-diagonal the peel itself could create: `words` decodes `'A=1'` to
     // `A=1`, so a peel that re-derives assignment-shape from the VALUE assigns
-    // where `lex_simple_command` — and bash — run a binary of that name. Both
-    // halves are pinned here, on one rig, so the difference is the quoting and
-    // nothing else.
+    // where `lex_simple_command` — and bash — run a binary of that name.
     let rig = Rig::new("quoted");
     rig.seat("custom", "");
 
@@ -845,10 +823,7 @@ fn an_env_dash_i_starts_the_tool_from_an_empty_environment() {
 
 #[test]
 fn a_start_marker_that_cannot_be_published_refuses_before_the_exec() {
-    // The marker is the whole create-vs-resume discriminator. Writing it best
-    // effort meant a transient failure produced TWO runs that both took the
-    // create branch — and for claude and grok the second one collides on a
-    // create-once `--session-id`.
+    // The marker is the whole create-vs-resume discriminator.
     let rig = Rig::new("marker");
     rig.seat("claude", "u-1");
     rig.chmod(0o555);
@@ -880,8 +855,6 @@ fn a_start_marker_that_cannot_be_published_refuses_before_the_exec() {
 #[test]
 fn the_profile_read_at_run_time_is_validated_by_the_plan_time_validator() {
     // A profile edited after its session started reached the exec unvalidated.
-    // `lex_simple_command` refuses brace expansion and a word-initial comment;
-    // `_run` used to hand both to the tool as literal bytes.
     let rig = Rig::new("offdiag1");
     rig.seat("custom", "");
     for (profile, named) in [

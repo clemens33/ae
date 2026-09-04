@@ -121,10 +121,6 @@ fn require_tmux(scratch: &Path) {
 
 /// A session meta dir naming `socket` as its server, with a `send` helper that
 /// records what it was asked to deliver and succeeds.
-///
-/// The helper is REAL — the daemon spawns it — because a nudge's delivery is
-/// judged by that process's exit status, and a fixture that stubbed the
-/// transport would prove the decision without proving the delivery.
 fn plant(root: &Path, session: &str, socket: &Path, work_dir: Option<&Path>) -> PathBuf {
     let meta_dir = root.join("sessions").join(session);
     assert!(fs::create_dir_all(&meta_dir).is_ok(), "a session meta dir");
@@ -159,10 +155,6 @@ fn plant(root: &Path, session: &str, socket: &Path, work_dir: Option<&Path>) -> 
 }
 
 /// Knobs that make one real cycle answer the question, not one real minute.
-///
-/// `stale_secs = 0` is not a cheat: the composite still requires an UNCHANGED
-/// hash, which only holds on the second cycle, so the nudge arm still proves the
-/// cross-cycle bookkeeping rather than a first-look verdict.
 fn quick() -> Knobs {
     Knobs {
         interval_secs: 1,
@@ -219,10 +211,7 @@ fn events(meta_dir: &Path) -> String {
 
 #[test]
 fn a_stale_pane_is_nudged_by_a_pane_running_only_the_core() {
-    // THE CUT'S HEADLINE. With the bash wrapper gone there is no `send` between
-    // the decision and the pane but the daemon's own spawn of the session
-    // helper, so this arm proves the whole path: observe, account, deliver,
-    // record.
+    // THE CUT'S HEADLINE.
     let scratch = scratch("nudge");
     require_tmux(&scratch);
     let socket = scratch.join("s");
@@ -265,8 +254,7 @@ fn a_stale_pane_is_nudged_by_a_pane_running_only_the_core() {
     kill_server(&socket, &scratch);
     assert!(reached, "the nudge must be delivered within the budget");
     // The EVENT is the send helper's to write — the daemon hands it the actor
-    // and the action, and this fixture records what it was handed. Asserting
-    // the envelope proves the contract the real helper reads.
+    // and the action, and this fixture records what it was handed.
     assert!(
         receipt.starts_with("watchdog nudge lead"),
         "the nudge arrives as the watchdog's, tagged as a nudge: {receipt:?}"
@@ -329,9 +317,7 @@ fn a_pane_that_dropped_to_a_shell_is_alerted_once() {
 
 #[test]
 fn the_branch_pair_is_published_on_the_session_the_daemon_watches() {
-    // The bash wrapper's per-cycle git read (ae:14432-14433). Both options,
-    // because they are different values for different consumers: the machine one
-    // is untrimmed and undecorated, the display one carries the dirty marker.
+    // The bash wrapper's per-cycle git read (ae:14432-14433).
     let scratch = scratch("branch");
     require_tmux(&scratch);
     let socket = scratch.join("s");
@@ -399,9 +385,7 @@ fn the_branch_pair_is_published_on_the_session_the_daemon_watches() {
 #[test]
 fn the_legacy_reap_refuses_a_pane_that_belongs_to_someone_else() {
     // A pane id is server-local and REUSED, so the reap may not act on an id
-    // alone. Two arms against ONE real server: a pane in a FOREIGN session
-    // (a real stale-id collision, since the ids share a numbering space) and a
-    // pane in the right session carrying the WRONG stamp. Both must survive.
+    // alone.
     let scratch = scratch("reap");
     require_tmux(&scratch);
     let socket = scratch.join("s");
@@ -484,8 +468,7 @@ fn the_legacy_reap_refuses_a_pane_that_belongs_to_someone_else() {
 
 #[test]
 fn the_legacy_reap_takes_the_pane_it_does_own_and_its_artifacts_with_it() {
-    // The POSITIVE half. A guard that only ever refuses is a guard that has
-    // stopped reaping, and the refusal arms above cannot tell the two apart.
+    // The POSITIVE half.
     let scratch = scratch("reaped");
     require_tmux(&scratch);
     let socket = scratch.join("s");
@@ -546,7 +529,7 @@ fn the_legacy_reap_takes_the_pane_it_does_own_and_its_artifacts_with_it() {
 fn an_unreadable_pane_is_refused_rather_than_taken_on_faith() {
     // The FAIL-CLOSED half, and the one a mock cannot exhibit: measured on a
     // real server, an unknown pane answers rc 0 with an empty session and an
-    // unknown server answers rc 1. Both are "no owner named".
+    // unknown server answers rc 1.
     let scratch = scratch("unread");
     require_tmux(&scratch);
     let socket = scratch.join("s");
@@ -584,11 +567,9 @@ impl std::io::Write for Broken {
 
 #[test]
 fn a_daemon_that_dies_between_publish_and_watch_takes_its_pidfile_with_it() {
-    // colead gate 135cf36a: `run` published the pidfile, then hit `?` on the
+    // Colead gate 135cf36a: `run` published the pidfile, then hit `?` on the
     // banner write (stdout a closed pipe) and left `.watchdog.pid` naming an
     // exited process — `watchdog status` then reported a daemon that was not
-    // there. The release is RAII now; this arm is the failing Write that proves
-    // every exit after publish releases.
     let scratch = scratch("pidfile-raii");
     require_tmux(&scratch);
     let socket = scratch.join("s");
@@ -625,10 +606,6 @@ fn a_daemon_that_dies_between_publish_and_watch_takes_its_pidfile_with_it() {
 
 /// A session whose codex seat is still `pending`, with its own `HOME` holding
 /// the conversation log a recovery has to find.
-///
-/// Separate from [`plant`] because the two facts this arm turns on are the two
-/// that one does not carry: a seat whose tool needs a post-launch capture, and
-/// a `launch_time.<slot>` low enough that the fixture's own mtime clears it.
 fn plant_pending_codex(root: &Path, session: &str, socket: &Path, work_dir: &Path) -> PathBuf {
     let meta_dir = root.join("sessions").join(session);
     assert!(fs::create_dir_all(&meta_dir).is_ok(), "a session meta dir");
@@ -647,10 +624,7 @@ fn plant_pending_codex(root: &Path, session: &str, socket: &Path, work_dir: &Pat
 #[test]
 fn a_pending_codex_seat_is_recovered_by_the_running_watchdog() {
     // The whole point of the cut: the recovery used to be `ae _recover-pending`
-    // run out of the pane, and is now a look the daemon takes itself. Driven as
-    // a REAL process because the fact it turns on — the caller's `HOME`, where
-    // codex keeps its history — is process-wide, so a library test would have to
-    // mutate the runner's own environment to fake it.
+    // run out of the pane, and is now a look the daemon takes itself.
     let scratch = scratch("recover");
     require_tmux(&scratch);
     let socket = scratch.join("s");
@@ -661,8 +635,7 @@ fn a_pending_codex_seat_is_recovered_by_the_running_watchdog() {
     assert!(fs::create_dir_all(&project).is_ok(), "the work dir");
     let meta_dir = plant_pending_codex(&root, "pending", &socket, &project);
 
-    // Codex partitions its logs by UTC day. Today's is where a launch that is
-    // still running wrote, and the scan reads the id out of the first line.
+    // Codex partitions its logs by UTC day.
     let day = ae::time::Timestamp::now().to_string()[..10].replace('-', "/");
     let logs = home.join(".codex").join("sessions").join(&day);
     assert!(fs::create_dir_all(&logs).is_ok(), "a codex day directory");
@@ -767,18 +740,6 @@ fn a_pending_codex_seat_is_recovered_by_the_running_watchdog() {
 }
 
 /// The Telegram bridge revive, run BY THE DAEMON ITSELF.
-///
-/// The bug this pins: the tick ran `<ae_path> telegram _supervise` through the
-/// recorded glue, and `_supervise` is a word `telegram`'s parser never
-/// accepted — it takes `start|stop|status` and nothing else. So every throttle
-/// window spent a fork on a usage error whose status was discarded, and a
-/// bridge that died between launches was never revived. The revive is the
-/// core's own call now, and `ae_path` has no reader left at all.
-///
-/// OFFLINE BY CONSTRUCTION: the config names a chat but no `allowed_user_ids`,
-/// so the bridge it starts registers no commands and runs no inbound poll, and
-/// with no `chat` event to forward the outbound pump never sends either. What
-/// is proven here is that the tick STARTED it.
 #[test]
 fn a_watchdog_tick_revives_the_telegram_bridge_in_process() {
     use std::os::unix::fs::PermissionsExt as _;
@@ -793,8 +754,7 @@ fn a_watchdog_tick_revives_the_telegram_bridge_in_process() {
     let meta_dir = plant(&root, "tgrev", &socket, Some(&work_dir));
 
     // The intent the revive reads, and the credentials it validates before it
-    // spawns anything. The token's mode is load-bearing: any group or other bit
-    // is refused as spent, which would make this a refusal test by accident.
+    // spawns anything.
     let token = root.join("token");
     assert!(
         fs::write(&token, "111:fake-token-never-used\n").is_ok(),
@@ -892,19 +852,6 @@ fn a_watchdog_tick_revives_the_telegram_bridge_in_process() {
 
 /// The daemon publishes the agent ROSTER on the session and a GLYPH on every
 /// window that holds an agent.
-///
-/// Two options, two scopes, two consumers: `@ae_agents_status` is the fleet
-/// line in the second status row, and `@ae_window_status` is the per-window
-/// mark the window list draws. Both are USER OPTIONS rather than text baked
-/// into a format, so an agent name can never reach the format sink — and the
-/// entry is the BARE name, because the alias prefix that used to lead it was
-/// retired with identity v2.
-///
-/// The RETRACTION is not driven here: this daemon is stopped by killing the
-/// session it watches, and a killed session has no options left to inspect.
-/// `clear_published` is the stop path's (`watchdog_lifecycle`), its two exits
-/// are pinned structurally in `watchdog_daemon`'s own suite, and the `-u` argv
-/// it issues is pinned in `tmux`.
 #[test]
 fn the_agent_roster_and_the_window_glyph_are_published_by_a_running_daemon() {
     let scratch = scratch("roster");

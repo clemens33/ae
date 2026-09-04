@@ -21,7 +21,7 @@ use ae::meta::{Anomaly, Meta};
 use ae::session::{AgentRuntime, DEFAULT_UNANSWERED_SECS, SessionRead, SessionRuntime, entry_for};
 use ae::time::Timestamp;
 
-/// The moment every fixture is read as of: SC-509's own worked example stamp.
+/// The moment every fixture is read as of: own worked example stamp.
 fn now() -> Timestamp {
     match Timestamp::parse("2026-05-29T14:00:00Z") {
         Some(stamp) => stamp,
@@ -181,7 +181,7 @@ fn sc_017e_the_activity_clock_is_the_newest_event_not_the_last_line() {
         "the fixture's newest event sits in the middle of the file"
     );
 
-    // SC-017e: "an ae event within ~5 min". 13:57 is 3 minutes before 14:00.
+    // "an ae event within ~5 min". 13:57 is 3 minutes before 14:00.
     let sessions = vec![entry("sc-017e-activity-clock")];
     let active = Selection {
         active_within_secs: Some(ae::filters::DEFAULT_ACTIVE_WINDOW_SECS),
@@ -222,8 +222,7 @@ fn sc_017g_and_511b_a_renamed_replier_still_closes_its_request() {
 #[test]
 fn sc_518_a_reply_addressed_to_a_third_party_does_not_close_the_request() {
     // The half the seats reopened after slice 1: right responder, wrong
-    // recipient. Both sides carry routing keys, so the mirror is checked on
-    // them — and the reply's target is spawned.0, not the asker's main.
+    // recipient.
     let read = SessionRead::open(&fixture("sc-518-reply-to-someone-else")).expect("reads");
     assert_eq!(read.pending.len(), 1);
     assert_eq!(read.pending[0].id, "ae-20260529T090000Z-dddd4444");
@@ -273,7 +272,7 @@ fn sc_520_a_malformed_record_is_skipped_reported_and_degrades_the_session() {
         RefMeaning::MemoTopic("after-the-damage"),
         "a bad line does not stop the scan"
     );
-    // SC-520: generation + offset + reason retained internally...
+    // Generation + offset + reason retained internally...
     assert_eq!(drain.skipped[0].generation, 0);
     assert!(drain.skipped[0].offset > 0);
 
@@ -313,7 +312,7 @@ fn sc_405b_and_c_the_meta_supplies_the_context_fields_and_the_roster() {
 #[test]
 fn sc_510c_declared_states_reach_the_agents_and_roll_up() {
     let built = entry("sc-405c-roster");
-    // lead declared working at 13:00 then waiting-user at 13:40; coworker
+    // Lead declared working at 13:00 then waiting-user at 13:40; coworker
     // declared blocked at 13:30.
     assert_eq!(built.agents[0].state.as_deref(), Some("waiting-user"));
     assert_eq!(built.agents[0].reason, Some(Reason::WaitingUser));
@@ -373,8 +372,6 @@ fn sc_405e_a_meta_shape_the_reader_could_not_take_degrades() {
 fn sc_405j_a_routed_event_with_a_stale_session_stays_unassociated() {
     // The display name matches the roster exactly; the routing key's session
     // does not, because the session was renamed after the event was written.
-    // Attributing it by name would be a false attribution, so the state is lost
-    // loudly instead — the known limitation until SC-977's stable identity.
     let built = entry("sc-405j-stale-session");
     assert!(
         !built.degraded,
@@ -392,12 +389,12 @@ fn sc_405f_the_goal_epoch_comes_from_the_latest_goal_event() {
     assert_eq!(
         built.goal.as_deref(),
         Some("ship the login flow"),
-        "the goal TEXT is a meta key (SC-405b)"
+        "the goal TEXT is a meta key"
     );
     assert_eq!(
         built.goal_set_epoch,
         Timestamp::parse("2026-05-29T11:30:00Z").map(Timestamp::epoch),
-        "the EPOCH is the latest goal event (SC-405f), not the earlier one"
+        "the EPOCH is the latest goal event, not the earlier one"
     );
 }
 
@@ -501,8 +498,8 @@ fn dr_001_a_partial_record_is_left_for_the_writer_to_finish() {
     );
     assert_eq!(drain.cursor.generation, 0);
 
-    // SC-520 is about a malformed COMPLETE record; a buffered unterminated tail
-    // is not one (SC-975b), so this session is NOT degraded.
+    // A malformed COMPLETE record is loss; a buffered unterminated tail
+    // is not one, so this session is NOT degraded.
     assert!(!entry("dr-001-partial-tail").degraded);
 }
 
@@ -589,11 +586,6 @@ fn sc_509_and_017f_the_digest_carries_exactly_what_the_filters_selected() {
 }
 
 /// Every fixture directory, by name, in sorted order.
-///
-/// The NAMES, not a count: a count passes when one fixture is deleted and
-/// another added, which is the exact edit a corpus rots through. Each name is
-/// also the row it exercises, so this list doubles as the map the README
-/// carries in prose.
 const FIXTURES: [&str; 19] = [
     "dr-001-partial-tail",
     "sc-017e-activity-clock",
@@ -639,11 +631,11 @@ fn the_fixture_corpus_is_exactly_the_named_set() {
 
 #[test]
 fn every_fixture_directory_is_read_without_a_panic() {
-    // Never panics, by SC-506's construction — whatever the directory holds.
+    // Never panics, by construction — whatever the directory holds.
     for name in FIXTURES {
         let built = entry(name);
         assert_eq!(built.name, name);
-        // SC-509b: identity survives every degradation, and `agents` is always
+        // Identity survives every degradation, and `agents` is always
         // an array whether or not the read went well.
         assert!(matches!(
             built.to_json().get("agents"),

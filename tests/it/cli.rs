@@ -18,13 +18,6 @@ use crate::phase2::run_tmux;
 // ONE OF THREE DOORS — `clippy.toml` denies `std::process::Command` crate-wide
 // and `doors::the_capability_boundary_holds_against_any_lint_relaxation`
 // pins the complete inventory of exceptions by asking the compiler for it.
-//
-// This one is not a parity concern: these tests drive the PRODUCT binary and
-// asserting on what it printed is their whole job, where the parity harness
-// must never judge a lane. `ae` is private to this module, so nothing in the
-// harness can reach a child process through it. The third door is the product's
-// own, in `src/transport.rs`; a binary this file runs may therefore spawn tmux
-// of its own accord, which is what makes the liveness assertions below real.
 #[allow(
     clippy::disallowed_types,
     reason = "black-box tests must run the product binary; see clippy.toml"
@@ -34,10 +27,7 @@ pub(crate) fn ae() -> std::process::Command {
 }
 
 /// Run one GENERATED SESSION HELPER — a shim the launch wrote — as a black-box
-/// process. The launch suite's door: the whole point of a shim is that a pane
-/// can exec it by path, so proving it works means running the file rather than
-/// the function behind it. Lives here beside `ae()` so the capability stays in
-/// the files the boundary guard already names.
+/// process.
 #[allow(
     clippy::disallowed_types,
     reason = "the black-box tests' door: a session helper must be RUN to be proven; see clippy.toml"
@@ -47,11 +37,6 @@ pub(crate) fn helper(path: &std::path::Path) -> std::process::Command {
 }
 
 /// Run a session helper reached BY NAME, through `PATH`.
-///
-/// The other black-box door for the same subject, and the only spelling that
-/// produces it: a helper's identity is `argv[0]`, so "invoked by name" is a
-/// process whose `argv[0]` is the bare name — which `Command::new(<path>)`
-/// cannot make. It exists to prove the refusal, not to run a helper.
 #[allow(
     clippy::disallowed_types,
     reason = "the black-box tests' second door: a helper reached by name is a process started AS that name; see clippy.toml"
@@ -60,11 +45,7 @@ pub(crate) fn helper_by_name(name: &str) -> std::process::Command {
     std::process::Command::new(name)
 }
 
-// The FIFO fixture. Safe std can bind a socket and make a directory, but the
-// one special file that BLOCKS an ungated open — the case a `-f` gate exists
-// for — needs mkfifo(2), and the only route to it without libc is mkfifo(1).
-// A fixture door, registered with the black-box door in the parity self-test's
-// inventory; it never runs the product.
+// The FIFO fixture.
 #[allow(
     clippy::disallowed_types,
     reason = "the FIFO fixture: safe std cannot make a FIFO, mkfifo(1) can; see clippy.toml"
@@ -79,12 +60,7 @@ pub(crate) fn mkfifo(path: &std::path::Path) {
 }
 
 /// Run `git` with `args` in `repo` for TEST FIXTURE SETUP — a repo the git it-
-/// tests build to exercise the preview's git facts. Config is fully isolated
-/// (`GIT_CONFIG_GLOBAL`/`SYSTEM=/dev/null`, identity via env) so the run does not
-/// touch, or depend on, the developer's git config. This reuses this file's
-/// existing `Command` door rather than opening a new one; asserting on the
-/// preview's OWN git facts is what the tests do, so a setup helper is not the
-/// subject. Returns stdout, trimmed.
+/// tests build to exercise the preview's git facts.
 #[allow(
     clippy::disallowed_types,
     clippy::expect_used,
@@ -113,8 +89,7 @@ pub(crate) fn git_in(repo: &std::path::Path, args: &[&str]) -> String {
 }
 
 /// Wait at most `limit` for a spawned `child`: `Some(output)` if it exited,
-/// `None` if it had to be killed. A test whose subject can hang must have a
-/// red that ARRIVES, not one that stalls the lane.
+/// `None` if it had to be killed.
 pub(crate) fn bounded(
     mut child: std::process::Child,
     limit: std::time::Duration,
@@ -153,17 +128,6 @@ fn sc_022_an_unknown_option_exits_two_and_diagnoses_on_stderr() {
     // WHAT THIS MEASURES CHANGED IN SLICE Z3. Until Z3 the binary was reached by
     // `ae-entry`, which prepended a preamble, so a top-level `--frobnicate` fell
     // through the router into the LAUNCH grammar; called without a preamble, as
-    // this test used to call it, the same word reached `cli::Request::parse`
-    // instead. Two parsers answered depending on a path no human could choose.
-    // Z3 deletes the wrapper: the binary IS the public `ae`, the launch grammar
-    // is the parser a top-level option reaches, and it is the one whose answer
-    // this row is about.
-    //
-    // The exit code is the point. `--frobnicate` is asking wrong, and the crate
-    // contract keeps 2 distinct from 1 so a caller can tell that from "it went
-    // wrong" — so the launch grammar's usage refusals exit 2, and the message
-    // still names the four flags a launch does define rather than only the word
-    // that was not one of them.
     let out = ae()
         .arg("--frobnicate")
         .output()
@@ -184,10 +148,6 @@ fn sc_022_an_unknown_option_exits_two_and_diagnoses_on_stderr() {
 }
 
 /// The half of SC-022 the DISPATCHER owns, through the public binary.
-///
-/// An unknown `list` tail is a token the router hands to a DIFFERENT parser
-/// that defines its own flag set. Both halves of the row now answer 2; this one
-/// pins that the launch grammar is not the only path there.
 #[test]
 fn an_unknown_list_flag_is_a_usage_error() {
     let out = ae()
@@ -228,11 +188,7 @@ fn sc_022_a_top_level_session_name_is_never_an_unknown_command() {
 
 #[test]
 fn criterion_1_the_real_list_and_ls_surfaces_answer_over_a_real_state_root() {
-    // THE REFUSAL IS GONE. The shipped binary is invoked exactly as an operator
-    // would invoke it, against a state root planted on disk, and it renders —
-    // human and JSON, `list` and `ls`. The phase-2 baseline refused here with
-    // `no session source is wired`; nothing in this build can print that,
-    // because the constant no longer exists.
+    // THE REFUSAL IS GONE.
     let root = scratch("entry-point");
     plant_session(&root, "AlphaR");
     plant_session(&root, "ZetaR");
@@ -249,9 +205,8 @@ fn criterion_1_the_real_list_and_ls_surfaces_answer_over_a_real_state_root() {
             let stderr = String::from_utf8(out.stderr).expect("stderr should be utf-8");
 
             // Per-surface (gate blob 8cccbe44 / OC-P3-HUMAN-DIAGNOSTIC vs
-            // OC-P3-JSON-WARNING): incomplete-human rc is open; JSON process
-            // rc is retained. These planted sessions record a server this
-            // invocation cannot query, so the snapshot is incomplete.
+            // OC-P3-JSON-WARNING): incomplete-human rc is open; JSON process rc
+            // is retained.
             if json {
                 assert_eq!(
                     out.status.code(),
@@ -270,15 +225,6 @@ fn criterion_1_the_real_list_and_ls_surfaces_answer_over_a_real_state_root() {
             // THE STATUS IS `unknown`, AND THAT IS THE WHOLE POINT. The
             // transport is real now and it really ran: these sessions record a
             // server that is not running, so the query FAILED — and SC-017l says
-            // an unanswerable query is `unknown`, never `stopped`. If the
-            // transport reported a SUCCESSFUL EMPTY query instead of a failure,
-            // every one of these rows would say `stopped`: ae would be asserting
-            // these sessions are gone on the strength of a question that got no
-            // answer. That is #105 restated at the entry point.
-            //
-            // The opposed arm — a server that DOES answer, making the same route
-            // say `running` and `stopped` — is in `transport.rs`. Without it this
-            // assertion would also pass on a transport that can never succeed.
             assert!(
                 stdout.contains("unknown"),
                 "{spelling}/json={json}: an unverifiable session must be unknown: {stdout}"
@@ -294,10 +240,7 @@ fn criterion_1_the_real_list_and_ls_surfaces_answer_over_a_real_state_root() {
                     "{spelling}: the successor document is what reached stdout: {stdout}"
                 );
                 // INCOMPLETE, and correctly so: these sessions record a server,
-                // ae is entitled to ask it, and this build cannot. SC-017o makes
-                // an entitled server whose enumeration fails a loss, so the
-                // snapshot says it could not look everywhere — rather than
-                // reporting a complete picture it did not establish.
+                // ae is entitled to ask it, and this build cannot.
                 assert!(
                     stdout.contains(r#""inventory_complete":false"#),
                     "{spelling}: a build that cannot query must not claim completeness: {stdout}"
@@ -314,10 +257,6 @@ fn criterion_1_the_real_list_and_ls_surfaces_answer_over_a_real_state_root() {
 }
 
 /// Run `git` with `args` and return its stdout, or `None` if it could not run.
-///
-/// Through the parity harness's pinned door rather than a second `Command` in
-/// this file: `the_doors_to_a_child_process_are_the_inventoried_ones` counts
-/// relaxations per file, and this needs no new one.
 fn git(args: &[&str]) -> Option<String> {
     let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let scratch = std::env::temp_dir().join(format!("ae-git-{}", std::process::id()));
@@ -339,13 +278,6 @@ fn criterion_1_the_opposed_control_is_that_the_phase_2_baseline_still_refused() 
     // A POSITIVE WITHOUT AN OPPOSED CONTROL PROVES LESS THAN IT LOOKS. The arm
     // above shows `list` and `ls` answer today; this one shows they did NOT
     // before, so the change is attributable to this work rather than to a
-    // refusal that was never reachable in the first place.
-    //
-    // The baseline is DERIVED, not written down: the most recent commit that
-    // changed the refusal constant in `src/lib.rs` is the one that removed it,
-    // so its parent is the last tree that still had it. A hardcoded sha would
-    // rot the first time history is rewritten, and would say nothing about WHY
-    // that commit is the boundary.
     let Some(removal) = git(&[
         "log",
         "-S",
@@ -410,15 +342,6 @@ fn a_machine_that_cannot_say_where_its_state_lives_is_told_so() {
 }
 
 /// A scratch state root, short-lived and per-test.
-///
-/// `/tmp` DIRECTLY rather than `std::env::temp_dir()`, because a socket path
-/// lives under here now. `sun_path` is 104 bytes on macOS and `temp_dir()`
-/// eats most of them, so `<root>/no-server.sock` can exceed the limit — and
-/// then tmux fails for PATH LENGTH rather than for the absence this fixture
-/// means to assert. That is the right answer for the wrong reason, which is
-/// worse than the premise it was meant to replace: it would survive a transport
-/// that had stopped being able to look at all. `phase2.rs` and `transport.rs`
-/// use `/tmp` for the same reason.
 fn scratch(tag: &str) -> std::path::PathBuf {
     let dir = std::path::PathBuf::from(format!("/tmp/ae-cli-{}-{tag}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -430,29 +353,6 @@ fn scratch(tag: &str) -> std::path::PathBuf {
 }
 
 /// A durable session the product will discover for itself.
-///
-/// The meta carries a POSITIVE server selector, and that is load-bearing rather
-/// than decorative: without one, SC-405l normalizes the selector to `missing`,
-/// the classifier never asks anything, and the liveness query branch is never
-/// reached. A fixture like that cannot tell a transport that FAILS from one that
-/// answers successfully-empty — and those two differ by exactly the `unknown`
-/// versus `stopped` this test exists to pin. The mutation lane found that hole;
-/// the selector closes it.
-///
-/// THE SERVER MUST NOT EXIST, and that premise is now ASSERTED rather than
-/// argued. It became contingent the moment the transport stopped being inert: a
-/// fixture recording a server ae actually queries depends on nobody running one
-/// by that address, or the query SUCCEEDS, legitimately reports these sessions
-/// absent, and renders `stopped` against an assertion of not-stopped.
-///
-/// A named server could only NARROW that — a per-process name is unlikely to be
-/// occupied, never proven unoccupied, and pids are reused. A socket path inside
-/// this test's own scratch directory is STRUCTURAL: the directory was created
-/// empty moments ago, the path is checked absent here, and no other process has
-/// a reason to bind it. The residual on the old form was in the safe direction
-/// (a collision can only fabricate an alarm, never mask a defect) but the red
-/// would have been unexplainable — a developer cannot tell ae breaking from
-/// someone's stray tmux server.
 fn plant_session(root: &std::path::Path, name: &str) {
     let dir = root.join("sessions").join(name);
     let server = root.join("no-server.sock");
@@ -490,11 +390,6 @@ fn an_unknown_list_flag_exits_two_not_one() {
 // ── the internal helper surfaces (`_requests`, `_events-tail`, `_state`) ─────
 //
 // The LIBRARY behind them used to be compared against a frozen corpus of bash
-// invocations; that corpus and its module retired with the bash. What is proved
-// here is what always mattered about these surfaces and is now the whole of it —
-// the argv, the exit-code mapping, which stream each answer lands on, and the
-// fact that the follow surface actually follows. It invokes the BINARY rather
-// than the library, which is what makes it a claim about the product.
 
 /// A session meta directory with the events container these tests need.
 fn plant_events(root: &std::path::Path, session: &str, lines: &[&str]) -> std::path::PathBuf {
@@ -540,10 +435,7 @@ fn requests_all_prints_the_table_on_stdout_and_says_nothing_else() {
 #[test]
 fn requests_mine_and_inbox_answer_for_the_pane_tmux_pane_names() {
     // A REAL isolated server, created and stamped through the harness's pinned
-    // process door (`-S` addressing). The product runs a BARE `tmux`, which
-    // takes its socket from `$TMUX`, so pointing that at the same socket is
-    // what makes the product's ambient server this one and no other. Short
-    // path on purpose — `sun_path` is 104 bytes on macOS.
+    // process door (`-S` addressing).
     let scratch_dir = std::path::PathBuf::from(format!("/tmp/aeid.{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&scratch_dir);
     std::fs::create_dir_all(&scratch_dir).expect("a scratch directory");
@@ -666,8 +558,7 @@ fn goal_set_and_clear_rewrite_meta_and_announce_and_fail_loudly_without_a_meta()
         "the lock bash takes"
     );
 
-    // Usage: 2, and nothing touched. `--help` is the same exit and text, as
-    // the frozen body answers it.
+    // Usage: 2, and nothing touched.
     for tail in [
         vec!["--clear", "extra"],
         vec!["\u{1b}"],
@@ -687,8 +578,7 @@ fn goal_set_and_clear_rewrite_meta_and_announce_and_fail_loudly_without_a_meta()
         2
     );
 
-    // FAILURE CONTROL: no meta file. The set fails at 1, says so, and emits
-    // no event — nothing was recorded, so nothing is announced.
+    // FAILURE CONTROL: no meta file.
     let bare = root.join("sessions").join("g2");
     std::fs::create_dir_all(&bare).expect("a session dir");
     let out = ae()
@@ -931,8 +821,6 @@ fn a_fifo_in_a_containers_place_is_the_frozen_empty_answer_and_not_a_hang() {
     // The frozen bodies gate every container read on `[[ -f ]]`; the core's
     // first cut opened first and asked later, and a FIFO — no writer, ever —
     // left it blocked with no stdout, no stderr and no exit (found in review).
-    // Every read surface over a container is exercised, under a bound, so a
-    // regression is a red that arrives rather than a lane that stalls.
     let root = scratch("fifo");
     let dir = root.join("sessions").join("f1");
     std::fs::create_dir_all(&dir).expect("a session dir");
@@ -1018,7 +906,6 @@ fn state_refuses_without_a_pane_identity_and_writes_nothing() {
     // The READ needs no identity: it asks about `human`, as the frozen body
     // does from any shell — and a reason-less declaration keeps its
     // timestamp, where the frozen body's `IFS=$'\t' read` slides it into the
-    // reason (measured: `working — 2026-…Z  (since )`).
     let read = |dir: &std::path::Path| {
         let out = ae()
             .env_remove("TMUX_PANE")
@@ -1171,7 +1058,6 @@ fn state_declares_for_the_pane_and_a_held_lock_fails_it_at_the_bound() {
 #[test]
 fn requests_defaults_to_mine_and_refuses_at_one_with_no_identity() {
     // The default mode is `mine`, and outside a pane `mine` cannot be answered.
-    // `1` here is PINNED by 24 corpus rows and must not drift to the usage `2`.
     let root = scratch("requests-default");
     let dir = plant_events(&root, "tg1", &[PLANTED_ASK]);
 
@@ -1224,10 +1110,9 @@ fn a_helper_surface_asked_wrong_exits_two_and_prints_nothing() {
 
 #[test]
 fn the_underscore_spellings_are_commands_and_never_launch_candidates() {
-    // SC-022's grammar is not narrowed by these two: a leading underscore is
+    // Grammar is not narrowed by these two: a leading underscore is
     // not a legal session name, so nothing that WAS a launch candidate stopped
-    // being one. Both directions are asserted — the spelling dispatches, and it
-    // never falls through to the launcher's message.
+    // being one.
     for spelling in [ae::cli::REQUESTS, ae::cli::EVENTS_TAIL] {
         let out = ae()
             .arg(spelling)
@@ -1241,13 +1126,6 @@ fn the_underscore_spellings_are_commands_and_never_launch_candidates() {
         assert_eq!(out.status.code(), Some(2), "{spelling}");
     }
     // And the ARGV help names them, so a shipped surface is discoverable.
-    //
-    // `ae::help_text()` and not what `ae --help` prints: since slice Z3 the
-    // binary IS the public `ae`, so `--help` answers with the human command
-    // list ([`ae::entry::HELP`]) exactly as it did through the wrapper, and
-    // that list has never named the underscore entries — they are reached
-    // through a session helper, not typed. The argv help is where they belong
-    // and where this row can still see them.
     let help = ae::help_text();
     for spelling in [ae::cli::REQUESTS, ae::cli::EVENTS_TAIL] {
         assert!(help.contains(spelling), "help omits {spelling}: {help}");
@@ -1269,11 +1147,6 @@ fn events_tail_prints_its_opening_then_follows_what_is_appended() {
     // THE ONLY TEST OF THE FOLLOW. Everything else about this surface is a pure
     // function over bytes; the loop that keeps reading is not, and a monitor
     // pane that shows the replay and then goes deaf would pass every other
-    // test in the tree.
-    //
-    // Shaped like the corpus instrument: start it, let it produce, kill it.
-    // Reads happen on a worker thread behind `recv_timeout` so a surface that
-    // produces too little fails the test instead of hanging the suite.
     use std::io::Read as _;
     use std::sync::mpsc;
     use std::time::Duration;
@@ -1300,8 +1173,7 @@ fn events_tail_prints_its_opening_then_follows_what_is_appended() {
     let mut piped = child.stdout.take().expect("stdout was piped");
 
     // One reader thread for both reads, in order: the opening, then the follow
-    // line. Appending happens here, between them, so the record genuinely
-    // arrives after the process was already running.
+    // line.
     let (sender, receiver) = mpsc::channel();
     let want = (opening.len(), followed.len());
     std::thread::spawn(move || {
@@ -1316,10 +1188,7 @@ fn events_tail_prints_its_opening_then_follows_what_is_appended() {
     let got_opening = receiver.recv_timeout(Duration::from_secs(15));
 
     // THE APPEND IS TORN ON PURPOSE, and this is the part that matters most: a
-    // writer is not atomic, so the follow WILL read a record mid-write. Half of
-    // it lands, at least one poll goes by, then the rest. The single complete
-    // line asserted below is only what arrives if the follow refuses to yield an
-    // unterminated record — emit the fragment and these bytes are wrong.
+    // writer is not atomic, so the follow WILL read a record mid-write.
     let (half, rest) = appended.split_at(appended.len() / 2);
     let open_for_append = || {
         std::fs::OpenOptions::new()
@@ -1374,17 +1243,6 @@ fn events_tail_prints_its_opening_then_follows_what_is_appended() {
 
 /// A real isolated server with two stamped panes in one session, each pane
 /// RECORDING what it receives, and the binary run as a helper would run it.
-///
-/// Since B move 1 the core pastes for itself, so there is no delivery helper
-/// to stand in: what a target got is read off the target. Each pane runs
-/// `cat` into a file, which makes it an UNMODELLED tool — no input sensor, no
-/// deferral, no staged re-check — so these tests pin what the core does
-/// AROUND the paste (composition, resolution, the envelope, the recovery
-/// record, the event) while `deliver.rs`'s own suite pins the modelled TUI
-/// mechanics against a fake one.
-///
-/// A `send` stub survives for exactly one path: the no-identity fallback,
-/// which is a plain `send` and so still runs the public helper.
 struct Tracked {
     scratch_dir: std::path::PathBuf,
     sock: std::path::PathBuf,
@@ -1413,8 +1271,6 @@ impl Tracked {
             worker: String::new(),
         };
         // Each pane RECORDS what it is sent: `cat` appending to its own file.
-        // `exec` makes `cat` the pane's own process, so the dead-pane guard
-        // sees a live non-shell foreground, as it does for a real agent.
         let recorder = |file: &str| format!("exec cat >> {}", scratch_dir.join(file).display());
         assert!(
             fixture
@@ -1467,7 +1323,6 @@ impl Tracked {
         // The meta records the socket the fixture's tmux runs on, as a real
         // launch does: target resolution reads this recorded selector (not the
         // caller's ambient server) and FAILS CLOSED without it, so a serverless
-        // meta would be an unrealistic fixture, not a passing one.
         assert!(
             std::fs::write(
                 fixture.dir.join("meta"),
@@ -1479,10 +1334,7 @@ impl Tracked {
             .is_ok(),
             "a meta file"
         );
-        // The public `send` helper, stubbed. Only the no-identity fallback
-        // runs it now, and what that path must show is that it ran AT ALL
-        // (with the raw body and no event names), because a plain send
-        // records its own event and the core must write none.
+        // The public `send` helper, stubbed.
         let stub = r#"#!/bin/bash
 here="$(cd "$(dirname "$0")" && pwd)"
 printf '%s\n' "$1" >"$here/send.target"
@@ -1556,11 +1408,6 @@ exit 0
     }
 
     /// What a pane RECEIVED, waiting briefly for `cat` to flush it.
-    ///
-    /// The paste and the Enter are two tmux calls and the recorder is a
-    /// separate process, so an immediate read can see a prefix. The delivery
-    /// already returned by the time this is called, so this only waits out the
-    /// pipe, never for the product.
     fn received(&self, which: &str) -> String {
         let path = self.scratch_dir.join(format!("received.{which}"));
         for _ in 0..80 {
@@ -1671,7 +1518,6 @@ impl Drop for Tracked {
 }
 
 /// The request id the stub was handed, out of its recorded env.
-/// The `ref` of the fixture's LAST event — the request id the core minted.
 fn event_ref(fx: &Tracked) -> String {
     let last = fx.events().pop().unwrap_or_default();
     last.split("\"ref\":\"")
@@ -1806,10 +1652,7 @@ fn review_carries_its_instructions_and_every_target_spelling_resolves_as_the_hel
         events[0]
     );
 
-    // THE THREE SPELLINGS OF ONE PANE, plus its id. Identity v2 widens what is
-    // ACCEPTED and moves nothing that is printed: the bare name, the session
-    // qualified without an `@`, and the `@` form all reach the same pane, and
-    // all three answer with the same display ref.
+    // THE THREE SPELLINGS OF ONE PANE, plus its id.
     for (spelling, expected, pane) in [
         (fx.main.clone(), "lead", "main"),
         ("lead".to_owned(), "lead", "main"),
@@ -1837,9 +1680,7 @@ fn a_request_that_does_not_resolve_or_is_refused_leaves_no_event_and_no_paste() 
     let fx = Tracked::new("ref");
     let cases: [Refusal<'_>; 8] = [
         // IDENTITY V2: the alias-only and bare-name arms of the resolver are
-        // retired, so a legacy alias addresses nothing. It is NOT FOUND, not
-        // ambiguous — the roster can no longer make a target ambiguous at all,
-        // because a name is one seat.
+        // retired, so a legacy alias addresses nothing.
         (
             &["cl", "q"],
             &[],
@@ -1896,8 +1737,7 @@ fn a_request_that_does_not_resolve_or_is_refused_leaves_no_event_and_no_paste() 
         );
     }
     // A DEAD TARGET is refused before anything is stored or pasted: the pane's
-    // foreground is a shell while the roster expects a real binary there. The
-    // ask never reaches the pane, and no event is written.
+    // foreground is a shell while the roster expects a real binary there.
     fx.forget();
     let dead = fx.dead_pane_session("claude");
     let out = ae()
@@ -2507,8 +2347,7 @@ fn send_carries_the_frozen_event_fields_from_the_environment_and_the_override_to
         "{last}"
     );
     // A pane-less caller with no name at all: the EVENT says `human`, the
-    // ENVELOPE says `unverified`. Bare is the human's signature, and nothing
-    // through a helper may wear it.
+    // ENVELOPE says `unverified`.
     fx.forget();
     let nobody = fx.run(ae::cli::SEND, None, &["worker", "anon"], &[]);
     assert_eq!(nobody, (Some(0), String::new(), String::new()));
@@ -2660,7 +2499,6 @@ fn the_telegram_daemon_entry_names_what_it_actually_needs_and_never_stutters() {
     // Two presentation defects a unit test cannot see, both found by running
     // the binary: the shared missing-operand line told a machine-global entry
     // to supply a SESSION meta directory, and the startup refusal printed
-    // "telegram: telegram:" because the error type already names its subsystem.
     let missing = ae().arg("_telegram-run").output().expect("the binary runs");
     assert_eq!(missing.status.code(), Some(2));
     let said = String::from_utf8_lossy(&missing.stderr);
@@ -2681,8 +2519,7 @@ fn the_telegram_daemon_entry_names_what_it_actually_needs_and_never_stutters() {
     );
 
     // A startup refusal: one "telegram:", named once, with the path that is
-    // wrong and nothing else. NO NETWORK — the refusal happens before any
-    // client is built.
+    // wrong and nothing else.
     let empty = std::env::temp_dir().join(format!("ae-tg-entry-{}", std::process::id()));
     std::fs::create_dir_all(&empty).expect("a temp ae home");
     let refused = ae()
@@ -2702,17 +2539,6 @@ fn the_telegram_daemon_entry_names_what_it_actually_needs_and_never_stutters() {
 
 /// The `ae next` fixture: a real isolated server holding two ae-marked
 /// sessions, one wanting a human louder than the other.
-///
-/// Both halves are needed and neither is decoration. The tmux server makes the
-/// sessions RUNNING — the status is the whole stopped-exclusion, and a planted
-/// directory alone classifies as `unknown`, which `next` skips for a different
-/// reason and would let this fixture pass while proving nothing. The `AE_SESSION`
-/// marker is what makes them ae's rather than someone's.
-///
-/// `nx-hot` raises `dead` structurally: its roster names a seat with no pane.
-/// `nx-mild` raises `blocked` from its own ledger and carries the ONLY activity
-/// timestamp in the fixture, so severity has to beat recency for `nx-hot` to
-/// win — a selection that merely sorted by recency would answer `nx-mild`.
 struct NextFixture {
     root: std::path::PathBuf,
     scratch: std::path::PathBuf,
@@ -2721,9 +2547,7 @@ struct NextFixture {
 }
 
 impl NextFixture {
-    /// Build it. Every step panics loudly on failure, like the `#[test]`
-    /// callers it feeds: a fixture that quietly half-built itself would report
-    /// as a product defect somewhere further down.
+    /// Build it.
     #[allow(
         clippy::expect_used,
         reason = "a fixture that cannot build must panic where it broke, not later"
@@ -2734,8 +2558,7 @@ impl NextFixture {
         std::fs::create_dir_all(&scratch).expect("a scratch directory");
         // `<scratch>/tmux-<uid>/default` — the exact path a bare `tmux` derives
         // from `$TMUX_TMPDIR`, so pointing that at the scratch directory makes
-        // THIS server the ambient one. The jump test needs that shape, because
-        // it must run with `$TMUX` absent to be provably outside tmux.
+        // THIS server the ambient one.
         let uid = std::os::unix::fs::MetadataExt::uid(
             &std::fs::metadata(&scratch).expect("the scratch directory exists"),
         );
@@ -2896,14 +2719,6 @@ fn next_refuses_when_no_running_session_needs_a_human() {
 fn the_next_argv_is_answered_before_any_session_is_looked_at() {
     // A state root that holds NOTHING: `--help` and a refused word must still
     // answer, and must not degrade into the unavailable `1`.
-    //
-    // The root is named rather than absent, which is a Z3 change of instrument
-    // and not of subject. `ae` derives every path from `AE_HOME` or `HOME`, and
-    // with neither there is no ae to run at all — the wrapper died on an
-    // unbound `$HOME` under `set -u` in exactly the same case, and the core now
-    // says so with `NO_STATE_ROOT` instead. Pointing at an empty directory
-    // tests what this row is about — that the argv is answered before anything
-    // is enumerated — more directly than removing the root did.
     let help = ae()
         .env_clear()
         .env("AE_HOME", "/nonexistent/ae")
@@ -2943,9 +2758,6 @@ fn the_next_argv_is_answered_before_any_session_is_looked_at() {
 fn attach_refuses_a_session_the_server_it_would_jump_on_does_not_have() {
     // The re-validation between the scan and the jump, and the reason it is an
     // EXACT list-sessions match rather than a prefix-matching `has-session`.
-    // Here the ambient server is a second, empty one: the chosen session is as
-    // absent from it as an ended session would be, and the jump refuses instead
-    // of focusing whatever else is there.
     let fixture = NextFixture::plant("elsewhere");
     let elsewhere = fixture.scratch.join("e");
     let other = ae::inventory::ServerId::Selected(ae::meta::Selector::Socket(elsewhere.clone()));
@@ -2979,13 +2791,6 @@ fn attach_jumps_on_the_ambient_server_and_tmux_own_status_is_the_command_s() {
     // The jump itself. `TMUX_TMPDIR` points a BARE `tmux` at this fixture's
     // server, and `$TMUX` is absent — so the caller is provably OUTSIDE tmux and
     // the verb is `attach-session`, with no dependence on whether the lane
-    // running this test has a controlling terminal.
-    //
-    // Nothing is attached here and the test's stdin is not a terminal, so tmux
-    // refuses — which is the assertion. Frozen's last statement is tmux, so
-    // TMUX'S status is the command's: what must be shown is that the refusal
-    // came from tmux (a jump attempted on the chosen session) rather than from
-    // ae (a jump abandoned before it started).
     let fixture = NextFixture::plant("jump");
     let attached = fixture.run(
         &["next", "--attach"],
@@ -3014,11 +2819,6 @@ fn attach_reports_being_already_there_rather_than_jumping_to_it() {
     // Frozen's inside-ness rule has TWO halves, and this pins the second: the
     // tty comparison that separates a real pane from an inherited `$TMUX` is
     // allowed to be UNANSWERABLE, and then `$TMUX` is trusted "as ae always
-    // has" — a probe that cannot speak must not become a verdict.
-    //
-    // Here `ps` cannot answer: `PATH` leads to one that refuses. So the caller
-    // is taken to be inside, the client's session IS the chosen one, and the
-    // answer is the already-there line on STDOUT at 0 — never a jump.
     let fixture = NextFixture::plant("already");
     let bin = fixture.scratch.join("bin");
     std::fs::create_dir_all(&bin).expect("a shim directory");

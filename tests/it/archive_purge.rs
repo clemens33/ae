@@ -46,9 +46,9 @@ impl Drop for Scratch {
     }
 }
 
-/// Build a session `<home>/sessions/<name>` (`session_id=AID`, `source_session=name`)
-/// with the core files and the archive root beside it — but do NOT publish. The
-/// session dir is what purge receives; it derives `<home>/archive` from it.
+/// Build a session `<home>/sessions/<name>` (`session_id=AID`,
+/// `source_session=name`) with the core files and the archive root beside it —
+/// but do NOT publish.
 fn build_session(home: &Path, name: &str) -> PathBuf {
     let dir = home.join("sessions").join(name);
     std::fs::create_dir_all(dir.join("messages")).expect("mkdir session");
@@ -165,7 +165,7 @@ fn a_provably_owned_archive_is_purged_and_no_claim_is_left() {
 fn purging_the_parent_this_session_launched_from_is_refused() {
     let scratch = Scratch::new("parent");
     let dir = published(scratch.home(), "demo");
-    // parent-id == the id being purged: refused before the root is even touched.
+    // Parent-id == the id being purged: refused before the root is even touched.
     let out = purge(&dir, AID, "demo", AID);
     assert_eq!(out.status.code(), Some(1), "purging the parent refuses");
     assert!(
@@ -311,9 +311,7 @@ fn an_unvalidatable_tree_is_refused_and_left_in_place() {
 fn an_extra_top_level_file_is_refused_and_left_in_place() {
     let scratch = Scratch::new("extrafile");
     let dir = published(scratch.home(), "demo");
-    // An UNRECOGNISED top-level file (e.g. a leaked launch script or secret). The
-    // validator must reject the whole tree — purge deletes it recursively, so an
-    // unvalidated file here is bytes it would remove without ever examining them.
+    // An UNRECOGNISED top-level file (e.g. a leaked launch script or secret).
     let extra = scratch.archive_root().join(AID).join("launch.main.sh");
     std::fs::write(&extra, b"#!/bin/sh\necho leaked\n").unwrap();
 
@@ -337,8 +335,8 @@ fn an_extra_top_level_file_is_refused_and_left_in_place() {
 fn an_extra_top_level_directory_is_refused_and_left_in_place() {
     let scratch = Scratch::new("extradir");
     let dir = published(scratch.home(), "demo");
-    // An UNRECOGNISED top-level directory: same hazard, and recursive removal is
-    // exactly what would wipe it. Refuse and leave it.
+    // An UNRECOGNISED top-level directory: same hazard, and recursive removal
+    // is exactly what would wipe it.
     let extra = scratch.archive_root().join(AID).join("evil");
     std::fs::create_dir_all(&extra).unwrap();
     std::fs::write(extra.join("payload"), b"do not delete unexamined").unwrap();

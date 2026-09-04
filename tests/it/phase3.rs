@@ -4,19 +4,6 @@
 //! Gate: the retired phase-3 gate document, blob
 //! `8cccbe44787d4ea6007ad9cf9d1cc83a3d03936c` — fifteen criteria. Each test
 //! names the one it answers.
-//!
-//! # The reference snapshot
-//!
-//! Four candidates per status group, named to be hostile to every order that is
-//! NOT the ratified one: `AlphaR`, `ZetaR`, `alpha10R`, `alpha9R` (and the `U`
-//! and `S` suffixes for unknown and stopped). Those names separate C-byte order
-//! from case-folded order (`AlphaR` before `ZetaR` before `alpha*` only if case
-//! is significant), from natural-number order (`alpha10R` before `alpha9R` only
-//! if digits are compared as text), and from creation order (they are planted
-//! backwards).
-//!
-//! Per group the four rows carry independent attention/activity facts:
-//! attention-only, activity-only, both, neither.
 
 #![allow(
     clippy::disallowed_methods,
@@ -70,10 +57,6 @@ struct Planted {
 }
 
 /// The reference snapshot, as a manifest plus the entries themselves.
-///
-/// The manifest exists so every later assertion can be read against what was
-/// PLANTED rather than against what came out — a fixture that describes itself
-/// only through its output cannot tell you it planted the wrong thing.
 struct Reference {
     manifest: Vec<Planted>,
     entries: Vec<SessionEntry>,
@@ -232,13 +215,6 @@ fn entry_of(row: &Planted) -> SessionEntry {
 }
 
 /// Invoke the real `list`/`ls` surface and return `(stdout, stderr, code)`.
-///
-/// Criterion 12 forbids a warning that only `--all` sees, and criterion 11
-/// binds BOTH command spellings. Neither obligation is on `render` — they are on
-/// the surface an operator invokes, and a test that called the renderer directly
-/// could not see a filter gate or an alias gap at all. That is the
-/// universal-obligation-checked-on-a-particular shape, so these go through the
-/// entry point.
 fn invoke_over(spelling: &str, flags: &[&str], world: Option<&World>) -> (String, String, u8) {
     let mut argv = vec![spelling.to_owned()];
     argv.extend(flags.iter().map(|flag| (*flag).to_owned()));
@@ -262,13 +238,8 @@ fn args(tokens: &[&str]) -> ListArgs {
 }
 
 /// The identity sequence a HUMAN listing shows.
-///
-/// A session row starts at column zero; an agent row is indented. Layout beyond
-/// that is an open choice (criterion 15), so nothing here reads a column
-/// position or a width.
 fn human_rows(text: &str) -> Vec<(String, String)> {
-    // These are messages, not zero-width session rows. Match the whole payload
-    // rather than a prefix so a future row cannot be silently discarded.
+    // These are messages, not zero-width session rows.
     if matches!(
         text,
         "No running ae sessions. (try: ae list --all)\n"
@@ -572,9 +543,7 @@ fn criterion_8_the_two_filters_intersect_rather_than_uniting() {
 
 #[test]
 fn criterion_10_every_adversarial_supply_order_differs_from_the_required_one() {
-    // CALIBRATION FIRST. Criterion 9 means nothing unless the orders it is
-    // supposed to defeat actually differ from the answer — an arm whose control
-    // agrees is inconclusive, not a pass.
+    // CALIBRATION FIRST.
     let required = Reference::new(Supply::Creation)
         .expected(&[Status::Running, Status::Unknown, Status::Stopped], |_| {
             true
@@ -699,8 +668,7 @@ fn criterion_12_every_human_view_warns_with_the_distinct_source_count() {
             for flags in every_human_view() {
                 let (stdout, stderr, code) = invoke_over(spelling, &flags, Some(&world));
                 // Per-surface (gate blob 8cccbe44): incomplete-human rc is
-                // open; this loop is human-only. Pin rc only on the complete
-                // control.
+                // open; this loop is human-only.
                 if expected.is_none() {
                     assert_eq!(code, 0, "{spelling} {flags:?}");
                 }
@@ -736,9 +704,8 @@ fn criterion_12_every_human_view_warns_with_the_distinct_source_count() {
 
 #[test]
 fn criterion_12_the_count_is_not_hardcoded_because_two_sources_read_two() {
-    // The control the criterion names: a boolean or a constant would satisfy the
-    // one-loss arm above. Two distinct sources must read `2`, and the same
-    // source twice must still read `1`.
+    // The control the criterion names: a boolean or a constant would satisfy
+    // the one-loss arm above.
     let reference = Reference::new(Supply::Creation);
     let one = reference.incomplete_world(&[FailedSource::CanonicalRoot("/a".into())]);
     let two = reference.incomplete_world(&[
@@ -776,11 +743,7 @@ fn criterion_13_every_document_carries_version_2_and_the_completeness_boolean() 
             let mut json_flags = flags.clone();
             json_flags.push("--json");
             // Deliberately NOT asserted: whether the machine surface also warns
-            // on stderr. Criterion 13 lists JSON stderr warning policy as an
-            // OPEN CHOICE, so an implementation that emits the required document
-            // AND a warning beside it is correct — and a test rejecting it would
-            // fail criterion 15, which fails the gate itself. This build happens
-            // not to warn there; that is a choice, not a contract.
+            // on stderr.
             let (text, _stderr, _) = invoke_over(spelling, &json_flags, Some(&world));
             let document = match json::parse(text.trim_end()) {
                 Ok(document) => document,
@@ -885,8 +848,7 @@ fn criterion_14_flipping_completeness_changes_only_the_warning_and_the_boolean()
 #[test]
 fn criterion_15_this_suite_asserts_no_unratified_presentation_choice() {
     // The gate FAILS ITSELF if a test rejects a correct implementation over an
-    // open choice. These are the ones phase 3 lists, checked against this
-    // file's own source.
+    // open choice.
     let source = include_str!("phase3.rs");
     let code: String = source
         .lines()
@@ -902,11 +864,8 @@ fn criterion_15_this_suite_asserts_no_unratified_presentation_choice() {
         concat!("col", "umn_width"),
         concat!("\\u{1b}", "["),
         // Incomplete-human diagnostic wording is an open choice (criterion 12);
-        // the COUNT is not, and `contains(&count.to_string())` is how this
-        // file checks it. Per-surface (gate blob 8cccbe44): incomplete-human
-        // rc is open, JSON process rc is retained. The grep does not forbid
-        // `assert_eq!(code, 0)` because JSON legs must keep that shape; it
-        // requires the retained-JSON phrase below so a wholesale drop fails.
+        // the COUNT is not, and `contains(&count.to_string())` is how this file
+        // checks it.
         concat!("warning: inv", "entory incomplete"),
         // JSON object field order is an open choice: nothing may compare a
         // whole rendered object to a literal, or treat compact `"k":v` order
@@ -954,11 +913,7 @@ fn describe(reference: &Reference) -> String {
 #[test]
 fn criterion_2_presentation_starts_from_one_completed_classified_snapshot() {
     // THE MARKER IS THE PRODUCTION ENTRY POINT, not a line this test appends
-    // afterwards. An earlier version called the projection and THEN logged
-    // "presentation enter", so everything the projection did happened before the
-    // marker and was invisible: a reverse sort inserted inside it still passed.
-    // `Presentation::enter` is now the first phase-3 operation, and
-    // `at_entry()` is what it received, in the order it received it.
+    // afterwards.
     let root = std::env::temp_dir().join(format!("ae-p3-seq-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     for name in ["AlphaR", "ZetaR", "alpha10R"] {
@@ -966,27 +921,14 @@ fn criterion_2_presentation_starts_from_one_completed_classified_snapshot() {
         let written = std::fs::create_dir_all(&dir).and_then(|()| {
             std::fs::write(
                 dir.join("meta"),
-                // NO SERVER SELECTOR, deliberately. This criterion is about the
-                // SEQUENCE — that presentation receives the completed classified
-                // set — and its assertions are status-agnostic. Recording a
-                // server would make the real route spawn a real `tmux` once the
-                // transport exists: a child process, and a dependency on tmux
-                // being installed, bought for a query whose ANSWER this test
-                // never reads. With no selector the candidates are `unknown`
-                // because SC-405l normalizes to `missing`, the route is
-                // identical, and the coverage is unchanged.
+                // NO SERVER SELECTOR, deliberately.
                 "mode=local\nagent.main=cl:lead\n",
             )
         });
         assert!(written.is_ok(), "a planted session");
     }
 
-    // THE REAL ROUTE. `ae::current_world` is what the CLI calls; it returns the
-    // classified snapshot beside the world it produced, so both sides of the
-    // boundary are observed ON THE PATH THE PRODUCT TAKES. Entering presentation
-    // directly here would observe a boundary this test chose — and anything the
-    // caller did between classification and entry would be invisible, which is
-    // exactly how the previous version passed with a reversal inserted above it.
+    // THE REAL ROUTE.
     let (snapshot, world) = ae::current_world(&root);
     let classified: Vec<(String, &str)> = snapshot
         .sessions
@@ -1055,12 +997,8 @@ impl ae::inventory::Discovery for Down {
 // ---- criterion 3: presentation output does not re-derive any planted snapshot fact ---
 //
 // Live gate blob 8cccbe44: one fixed snapshot, two opposed external worlds AFTER
-// `presentation enter`, through the real `ae::current_world` → `Presentation::enter`
-// → `list`/`ls` route. An injected `World` never observed those bytes, so a
-// re-derivation on the real path was invisible.
 
-/// One row's planted external facts. Attention and activity ride the event
-/// stream; goal and mode ride the durable `meta`.
+/// One row's planted external facts.
 #[derive(Clone, Copy)]
 struct ExternalFacts {
     name: &'static str,
@@ -1170,7 +1108,6 @@ fn write_session(dir: &Path, facts: ExternalFacts) {
         facts.name
     );
     // Recent events sit well inside the 300s activity window of NOW and NOW+1.
-    // Old events sit far outside it, so the opposed clock cannot flip --active.
     let events = match (facts.attention, facts.active) {
         (true, true) => format!("{}\n", event_line(-10, "state", r#","ref":"blocked""#)),
         (false, true) => format!("{}\n", event_line(-10, "done", "")),
@@ -1287,8 +1224,7 @@ fn assert_facts_via_product(paths: &[PathBuf], world: &[ExternalFacts]) {
     }
 }
 
-/// Identity + status per view, human and JSON. Filtering membership and order
-/// live in the row sequence; durable fields ride the JSON payload below.
+/// Identity + status per view, human and JSON.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PresentedView {
     label: String,
@@ -1365,8 +1301,7 @@ fn project(snapshot: &ae::liveness::Snapshot, now: Timestamp) -> World {
     ae::listing::Presentation::enter(snapshot).world(now, DEFAULT_UNANSWERED_SECS)
 }
 
-/// Oppose every planted axis under `root`. Called from the after-classify hook
-/// so the disk changes on `current_world`'s path, not after it returns.
+/// Oppose every planted axis under `root`.
 fn oppose_external_world(root: &Path) {
     for facts in WORLD_B {
         write_session(&root.join("sessions").join(facts.name), facts);
@@ -1411,10 +1346,6 @@ fn snapshot_names(snapshot: &ae::liveness::Snapshot) -> Vec<String> {
 #[test]
 fn criterion_3_presentation_output_does_not_rederive_any_planted_snapshot_fact() {
     // THE REAL ROUTE is `current_world`: classify, then Presentation::enter.
-    // Mutating the disk AFTER that function returns and calling enter on the
-    // carried snapshot is below the list/ls caller — a reread between classify
-    // and enter is invisible. The opposed world is planted by a hook that
-    // `current_world` itself runs in that window.
     let root = c3_root("fixed");
     plant(&root, &WORLD_A);
 
@@ -1466,9 +1397,7 @@ fn criterion_3_presentation_output_does_not_rederive_any_planted_snapshot_fact()
         "durable goal/mode/attention/activity bytes reached the JSON surface"
     );
 
-    // Opposed clock. NOW is even; NOW+1 is odd. Both keep every active row
-    // inside the 300s window and every inactive row outside it. Clock is a
-    // world() parameter after enter, so this arm re-projects the SAME snapshot.
+    // Opposed clock.
     let clock_base = presented(&project(&snapshot_b, NOW));
     let world_clock = project(&snapshot_b, Timestamp::from_epoch(NOW.epoch() + 1));
     assert_eq!(
@@ -1487,10 +1416,7 @@ fn criterion_3_presentation_output_does_not_rederive_any_planted_snapshot_fact()
 
 #[test]
 fn criterion_3_a_new_listing_through_the_real_route_sees_every_opposed_axis() {
-    // CALIBRATION. The arm above is a non-difference. A non-difference is
-    // vacuous unless a NEW listing on the same real route, after the same
-    // opposed plant, actually moves — per axis, through the primitives that
-    // supplied the facts. If this fails, the main arm's agreement proves nothing.
+    // CALIBRATION.
     let root = c3_root("fresh");
     plant(&root, &WORLD_A);
     let (snapshot_a, world_a) = ae::current_world(&root);
@@ -1585,9 +1511,7 @@ fn criterion_3_a_new_listing_through_the_real_route_sees_every_opposed_axis() {
 fn criterion_10_a_non_c_locale_collates_these_names_differently_and_output_does_not() {
     // The product cannot consult a locale — Rust compares `str` by bytes — but
     // the arm is only meaningful if a locale that WOULD disagree exists and is
-    // demonstrated to disagree on these exact names. An arm whose control agrees
-    // is inconclusive, not a pass, so this fails loudly rather than passing when
-    // no such locale is available.
+    // demonstrated to disagree on these exact names.
     let scratch = std::env::temp_dir().join(format!("ae-p3-loc-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&scratch);
     assert!(std::fs::create_dir_all(&scratch).is_ok(), "a scratch dir");
@@ -1640,7 +1564,7 @@ fn criterion_10_a_non_c_locale_collates_these_names_differently_and_output_does_
     // The product's answer is the C one, and it did not consult anything.
     let reference = Reference::new(Supply::CaseFolded);
     let (stdout, _, _) = invoke_over("list", &["--running"], Some(&reference.world()));
-    // The active view carries running THEN unknown (SC-017m), so the running
+    // The active view carries running THEN unknown, so the running
     // group is its prefix — and that prefix must be exactly what `sort` under
     // LC_ALL=C produced for the same names.
     let shown = names(&human_rows(&stdout));
@@ -1668,13 +1592,6 @@ fn criterion_10_a_non_c_locale_collates_these_names_differently_and_output_does_
 
 /// Every `(file, line)` where this crate may read the outside world, as CLIPPY
 /// reports it under `--force-warn`.
-///
-/// Asked of the compiler rather than of the source text, because the thing being
-/// bounded is a CAPABILITY and not a spelling: `Path::exists` is a filesystem
-/// observation under none of the names a reader would think to grep for, and an
-/// alias or UFCS call defeats a text scan entirely. `--force-warn` cannot be
-/// silenced by any `allow`, `expect` or crate-root attribute, so the doors it
-/// reports are the doors that exist.
 fn world_reading_sites() -> Vec<(String, usize)> {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned());
@@ -1748,16 +1665,6 @@ fn is_product_line(file: &str, line: usize) -> bool {
     // THE CUT IS THE TEST MODULE, NOT THE FIRST `#[cfg(test)]`, and the
     // difference is a hole this tripwire used to have. A module that gates an
     // individual ITEM on `#[cfg(test)]` — `src/telegram.rs` gates its loopback
-    // egress seam that way, near the top of the file — put every line after that
-    // item on the test side of an "up to the first marker" cut, and the guard
-    // then inventoried the first eighty lines of the file and reported the rest
-    // as tests. A new product door below it was invisible, which is the one
-    // thing this test exists to prevent.
-    //
-    // So: find the test module, then step back to the `#[cfg(test)]` that
-    // introduces it (an inner `#![allow(...)]` can sit between the attribute and
-    // the `mod`, as `src/state.rs` does, so the two are found separately). A file
-    // with no test module is product all the way down.
     let Some(module) = text.find("\nmod tests {") else {
         return true;
     };
@@ -1770,20 +1677,6 @@ fn criterion_3_the_places_this_crate_can_read_the_world_are_the_inventoried_ones
     // A TRIPWIRE OVER ENTRY POINTS, AND ITS LIMIT IS THE TEST. `clippy.toml`
     // names twelve resolved paths; safe std still exposes `canonicalize`,
     // `read_link`, `OpenOptions::open` and `DirEntry` observations, and a
-    // discarded call to any of them slips straight past. (`symlink_metadata`
-    // WAS on that unlisted list and is now the twelfth entry — the example
-    // moved because the door did, which is what the list is for.)
-    // `unsafe_code = "forbid"` still closes the LIBC route. The other premise —
-    // empty dependency tables, closing the THIRD-PARTY route — FELL on
-    // 2026-08-29 when ureq and rustls arrived with the Telegram bridge, so this
-    // list now describes ae's own source and not the compiled artifact. Neither
-    // premise ever closed an unlisted safe-std route, and reading them as
-    // covering the enumeration is what let an earlier version of this file call
-    // a name list a boundary.
-    //
-    // The live criterion 3 residual is explicit: a source-name inventory is NOT
-    // a capability boundary and makes no zero-access claim. This test stays as
-    // the cheap early warning for the eleven named doors, and claims only them.
     let sites = world_reading_sites();
     assert!(
         !sites.is_empty(),
@@ -1803,202 +1696,87 @@ fn criterion_3_the_places_this_crate_can_read_the_world_are_the_inventoried_ones
         vec![
             // The read-only archive-preview tracer's own reads: the `-f`-gated
             // meta/memo reads, the messages/*.txt selection glob, and the
-            // fingerprint/size stats. Registered deliberately — a new read
-            // surface is a line in a review, not a diff nobody read.
+            // fingerprint/size stats.
             "src/archive.rs".to_owned(),
             // The archive PUBLISHER's reads (P3.3): the coherent snapshot of
             // meta/memo/events under their locks, the messages/*.txt staging
             // classification, the staged-tree validation stats, and the
-            // directory `fsync` that makes the rename durable. The doors moved
-            // here in P3.4 into the ONE shared archive store that publish,
-            // inherit (`--from`) and purge all read the world through — so this
-            // single file, not three, is the inventoried reader for all of them.
             "src/archive/store.rs".to_owned(),
             // The OPAQUE event-container read and existence test, shared by the
             // `requests` and `events-tail` surfaces. One file rather than two:
             // both surfaces read the same container the same quiet way, so the
-            // read sits with the framing in `event_text` and neither surface
-            // module opens anything itself.
-            //
-            // compact's freeze/resolve step (P3.7a): the `metadata` that proves
-            // the recorded origin exists and is a directory before it becomes the
-            // fresh session's cwd. Its meta read is `meta.rs`'s door and its config
-            // read is `config.rs`'s, not new ones here — this file's only own door
-            // is that origin gate. Registered deliberately.
             "src/compact.rs".to_owned(),
-            // The minimal `[workspace]` config reader (P3.7a): the INI read behind
-            // compact's roster and purge-policy resolution. A new read surface —
-            // a line in a review, not a diff nobody read.
+            // The minimal `[workspace]` config reader (P3.7a): the INI read
+            // behind compact's roster and purge-policy resolution.
             "src/config.rs".to_owned(),
             // `ae doctor`'s ONE own door: the `command -v` resolution of the
             // hard dependencies — the `PATH` variable, and the executable bit
-            // of each candidate. Its session facts read through `inventory.rs`
-            // and `meta.rs`, which are already here. Registered deliberately:
-            // a report that reaches the world is a line in a review.
+            // of each candidate.
             "src/doctor.rs".to_owned(),
             // THE ENTRY'S ENVIRONMENT DOORS (slice Z3): `HOME`, `PWD`,
             // `AE_HOME`, `CONFIG_FILE`, the `AE_TMUX_SERVER` pair,
             // `AE_NO_AUTOSTART`, `TMUX`, `TMUX_PANE`, the `<cwd>/.ae/config`
-            // existence test and the `canonicalize` behind both the logical-cwd
-            // check and the relative-socket proof. Every one of them used to be
-            // a flag `ae-entry` spoke; deleting the wrapper moved the reads here
-            // rather than removing them, which is exactly the kind of migration
-            // this list exists to make visible. Registered deliberately: this is
-            // now the widest environment surface in the crate.
             "src/doors.rs".to_owned(),
             "src/event_text.rs".to_owned(),
             "src/events.rs".to_owned(),
             // THE INSTALLER'S OWN DOORS (slice Z4): the bundle members read to
             // be hashed, the `lstat` that classifies every member and every
             // publication destination WITHOUT following a link, the journal
-            // read that a rollback replays, and the enumeration of a
-            // transaction-private tree whose 0555 members have to be re-moded
-            // before they can be removed. Registered deliberately: this is the
-            // only module that writes into `~/.ae/versions`, and the only one
-            // that hashes anything at all.
             "src/install.rs".to_owned(),
             "src/inventory.rs".to_owned(),
             "src/lib.rs".to_owned(),
             // The three whole lifecycle operations (B move 4) and their own
             // doors, one per file and each for a decision the operation cannot
             // make without looking:
-            //
-            // * `lifecycle.rs` — the `end all` / `stop all` enumeration of the
-            //   sessions root, the legacy-name arm's `lstat` of a session
-            //   directory, and the existence tests behind "is this recorded
-            //   path still there".
-            // * `lifecycle/end.rs` — the archive plan's question of whether a
-            //   meta-less directory still holds memory (the one thing that
-            //   makes a target UNARCHIVABLE rather than empty), the
-            //   conversation-file purge's walk of `~/.claude` and `~/.codex`,
-            //   and the `--assume-stopped` sweep of the tmux socket directory
-            //   plus the `TMUX_TMPDIR`/uid it is addressed by.
-            // * `lifecycle/compaction.rs` — the `AE_COMPACT_HANDOVER_SECS`
-            //   knob.
-            //
-            // Registered deliberately: an operation that deletes a session is
-            // exactly the kind that must not gain a quiet new read.
             "src/lifecycle.rs".to_owned(),
             "src/lifecycle/compaction.rs".to_owned(),
             "src/lifecycle/end.rs".to_owned(),
-            // The memo file read behind `memo read`/`memo tail`. Registered
-            // deliberately: the file is the helper's own, but reading it is a
-            // new door all the same.
+            // The memo file read behind `memo read`/`memo tail`.
             "src/memo.rs".to_owned(),
             "src/meta.rs".to_owned(),
             // The orchestrator sweep's ONE own door: its state file, which is
-            // also the watchdog's heartbeat. It reads nothing else — the fleet
-            // it diffs arrives as the `World` `list` renders, injected by the
-            // caller, so the sweep re-derives no session fact of its own.
-            // Registered deliberately.
+            // also the watchdog's heartbeat.
             "src/monitor.rs".to_owned(),
             // The two document renders' own reads (A.2c): the INI config behind
-            // the profile inventory and `prompt.instructions`, and the `[[ -f ]]`
-            // that decides whether a parent archive's digest is still on this
-            // machine. Its meta reads are `meta.rs`'s inventoried door, not new
-            // ones here. Registered deliberately — a render that reaches the
-            // world is a line in a review, not a diff nobody read.
-            // `ae rename`'s ONE own door: the `lstat` that classifies each
-            // session path as a link or not, before a move that would
-            // otherwise relocate whatever a link points at. Every other read
-            // it makes is `meta.rs`'s or `lifecycle.rs`'s. Registered
-            // deliberately.
+            // the profile inventory and `prompt.instructions`, and the `[[ -f
+            // ]]` that decides whether a parent archive's digest is still on
             "src/rename.rs".to_owned(),
             "src/render.rs".to_owned(),
             // The git branch read: `HEAD` under the session's own work tree,
             // plus the `.git` pointer file a worktree uses instead of a
-            // directory. Registered deliberately — the branch is a fact about
-            // the world and reading it is a new door, so it belongs on this
-            // list rather than being routed around the tripwire that named it.
-            // It reads git's files instead of launching `git` so that `list`
-            // stays a no-subprocess path and still works with no git installed;
-            // every failure is `None`, so a listing never fails on it.
-            // The PANE's own command (slice Z2): `_run` composes a seat's tool
-            // command in the pane and `exec`s it, so it reads the environment
-            // that `bash -lc` used to expand a profile command against, the
-            // working directory claude derives its transcript path from, the
-            // tool's own session store the resume probe answers from, and the
-            // spawn's recorded first message. These are exactly the reads the
-            // generated `launch.<slot>.sh` made as shell tests; deleting the
-            // script moved them here rather than removing them. Registered
-            // deliberately.
+            // directory.
             "src/run.rs".to_owned(),
             "src/session.rs".to_owned(),
             // The LAUNCH operation's own reads (B move 3): the `.ending.<name>`
             // tombstone lstats (a dangling link is a standing tombstone, so
             // never `metadata`), the origin/work-dir existence gates, the
-            // canonicalise behind the derived-name ownership guard, the
-            // `--copy` mode's recursive tree walk, and the resume-time
-            // events.jsonl retention read. Its meta and config reads are
-            // `meta.rs`'s and `config.rs`'s inventoried doors, not new ones
-            // here. Registered deliberately.
             "src/session_launch.rs".to_owned(),
-            // The post-launch session-id capture's reads (B move 3, widened
-            // to every capture tool): the `codex.<slot>.sid` file codex's own
+            // The post-launch session-id capture's reads (B move 3, widened to
+            // every capture tool): the `codex.<slot>.sid` file codex's own
             // `_register-sid` wrote, the day-partitioned `~/.codex/sessions`
-            // logs and gemini's `~/.gemini/tmp/*/chats` history that the
-            // launch-token and cwd scans walk, the seat's `HOME`, and the
-            // `canonicalize` every cwd match compares through. All of them run
-            // in a DETACHED child whose only product is one roster row, and
-            // they exist so a post-launch id can reach the roster at all.
-            // Registered deliberately: a scan of another tool's private
-            // history directory is exactly the kind of read that must be a
-            // line in a review.
             "src/session_launch/capture.rs".to_owned(),
             // THE INSTALL SELF-VALIDATION (slice Z3): the three `lstat`s that
             // prove the version directory's members are regular non-symlink
             // files, and the manifest read that proves the directory is the one
-            // `install` published. `symlink_metadata`, never `metadata` — a
-            // member that is a link to a mutable file outside the immutable
-            // directory passes every follow-test and is then EXECUTED as ours.
-            // Registered deliberately: it runs before every effect of every
-            // installed invocation, which is the strongest position a read can
-            // hold.
             "src/shape.rs".to_owned(),
-            // The LOCAL-mode teardown's own reads (P3.5): the `lstat` that proves
-            // the session dir is a real direct child and never a link, and the
-            // sessions-root `fsync` that makes the rename-to-tombstone and its
-            // removal durable. The meta read it validates identity through is
-            // `meta.rs`'s inventoried door, not a new one here.
+            // The LOCAL-mode teardown's own reads (P3.5): the `lstat` that
+            // proves the session dir is a real direct child and never a link,
+            // and the sessions-root `fsync` that makes the rename-to-tombstone
             "src/teardown.rs".to_owned(),
             // The outbound Telegram bridge's own reads (P4.3): the event log's
             // identity and length, the log body read from the cursor, the
             // durable cursor itself, and the two reads behind the credentials —
-            // the INI config and the bot-token file. Registered deliberately,
-            // and it is the door with the highest stakes on this list: what it
-            // reads is a secret, and where it sends the result is the public
-            // internet.
             "src/telegram.rs".to_owned(),
             // The bridge LIFECYCLE's own reads: the INI config it decides
             // intent from and rewrites, the two state files `status` reports
             // on, the autostart-refusal record, and the config's own mode so an
-            // atomic rewrite does not re-permission it. The credential check is
-            // `telegram.rs`'s inventoried door, not a second one here — the
-            // lifecycle asks the DAEMON'S loader whether a start can work, so
-            // there is one reader of the token and it is the one with the
-            // custody rules. Registered deliberately: a command that can start a
-            // daemon holding a secret is not one to gain a quiet new read.
             "src/telegram_lifecycle.rs".to_owned(),
             // `ae upgrade` READS NOTHING since slice Z4, and its absence from
-            // this list is the change. It used to `lstat` the sibling installer
-            // before becoming it; there is no handover any more — it downloads,
-            // verifies and calls `install::publish` in process, so every read on
-            // that path is `src/install.rs`'s and is registered there.
-            // The orchestrator heartbeat's `lstat` (P4.2): the one read the watchdog
-            // daemon takes for itself, proving `meta-agent-state.json` is a
-            // non-symlink regular file before its mtime is trusted as liveness.
-            // `symlink_metadata`, never `metadata` — the frozen bash `[[ -f ]]`
-            // FOLLOWS a link, and a followed link is how a wedged orchestrator gets
-            // silenced by a state file somebody else keeps touching. Its meta
-            // and event-container reads are `meta.rs`'s and `event_text.rs`'s
-            // inventoried doors, not new ones here. Registered deliberately.
+            // this list is the change.
             "src/watchdog_daemon.rs".to_owned(),
             // The watchdog PANE's own pidfile read (A.3): the ownership check
             // that decides whether this daemon may still remove its own
-            // registration. One read, and it exists so a dying daemon cannot
-            // delete a replacement's pidfile. Its writes (the atomic publish,
-            // and the legacy-artifact removals) are not doors — nothing in the
-            // named twelve is a write. Registered deliberately.
+            // registration.
             "src/watchdog_glue.rs".to_owned(),
         ],
         "the set of places product code can reach the twelve named entry points changed"
@@ -2009,19 +1787,6 @@ fn criterion_3_the_places_this_crate_can_read_the_world_are_the_inventoried_ones
 fn the_presentation_input_declares_no_path_typed_field() {
     // WHAT THIS ASSERTS, AND IT IS NOT WHAT ITS PREDECESSOR CLAIMED. It checks
     // one fact: neither `World` nor `SessionEntry` DECLARES a path-typed field.
-    // That is true, and it is worth keeping — a path field would be an address
-    // handed to presentation for free.
-    //
-    // IT DOES NOT MEAN PRESENTATION CANNOT ADDRESS AE'S STATE, and the previous
-    // version of this test said exactly that. colead disproved it twice: a
-    // `type StateAddress = PathBuf` alias defeats a text scan for `PathBuf`, and
-    // — with no new field at all — `render` can COMPOSE the SC-400d
-    // worktree-nested record path from `SessionEntry.work_dir` plus `.ae` plus
-    // the session name. `work_dir` is payload contractually and an address
-    // operationally, and no scan of field TYPES can see that.
-    //
-    // So this is a narrow structural fact, not a boundary. Live criterion 3
-    // does not claim zero post-boundary access; this test does not pretend to.
     let module = product_module("listing.rs");
     let world = module
         .split_once("pub struct World {")
@@ -2038,7 +1803,7 @@ fn the_presentation_input_declares_no_path_typed_field() {
     }
     assert!(
         world.contains("losses: usize"),
-        "SC-017o's fact crosses as a COUNT, which is what removed the last declared path"
+        "the fact crosses as a COUNT, which is what removed the last declared path"
     );
 }
 
@@ -2057,13 +1822,9 @@ fn product_module(name: &str) -> String {
         .map_or(code.clone(), |(module, _)| module.to_owned())
 }
 
-// ---- SC-017p/q/r + SC-509e: three-valued agent liveness ----------------
+// ---- three-valued agent liveness ---------------------------------------
 //
 // RESTORED. These four were deleted by a slice-to-end-of-file in the phase-3
-// blocker fix (1f92bca2), which replaced everything after the criterion-3 tests
-// because they had been appended below them. The suite went 451 to 448 and the
-// drop was reported as green. A test count that FALLS after a change described
-// as adding one is a contradiction; that number is now part of every report.
 
 #[test]
 fn sc_509e_the_agent_liveness_field_is_present_even_when_null() {
@@ -2108,10 +1869,6 @@ fn sc_509e_the_agent_liveness_field_is_present_even_when_null() {
 }
 
 /// The health cell the product renders for an agent with this liveness.
-///
-/// Read FROM the product rather than written down: SC-017r leaves the words or
-/// glyphs an OPEN CHOICE, so a test demanding the string "unknown" would reject
-/// a correct glyph renderer, and criterion 15 fails the gate itself for that.
 fn health_cell(alive: Option<bool>) -> String {
     let mut entry = SessionEntry::new("s", Status::Running);
     entry.agents = vec![AgentEntry {
@@ -2124,12 +1881,7 @@ fn health_cell(alive: Option<bool>) -> String {
     let world = World::new(NOW, vec![entry]);
     let (machine, _, _) = invoke_over("list", &["--all", "--json"], Some(&world));
     // HEALTH IS A JSON MEMBER, NOT A TABLE COLUMN — and that is a deliberate
-    // change, not an omission. Nothing on the list path fills per-agent health,
-    // so the column rendered `unknown` for every agent of every session; an
-    // always-unknown column is not a three-way distinction, it is noise sitting
-    // where a reader looks for state. The three-way distinction this gate exists
-    // to protect is real and still enforced — here, on the member that carries
-    // it. Restore the column together with a pane query that populates it.
+    // change, not an omission.
     let member = machine
         .split(r#""alive":"#)
         .nth(1)
@@ -2194,16 +1946,6 @@ fn sc_017q_the_entry_point_reports_unknown_agents_rather_than_dead_ones() {
     // END TO END, and the reason it holds is the INJECTION, not the build. An
     // earlier version of this comment said "this build has no transport, so no
     // pane can be observed" — a claim about the product, which stopped being
-    // true the moment a real transport landed, while the test kept passing for
-    // an entirely different reason and would have taught the next reader the
-    // wrong one.
-    //
-    // What actually holds it: `Down` fixes the SESSION transport, and no pane
-    // observation exists at any transport yet (SC-017p's positive and negative
-    // proofs are unbuilt), so this observes the agent surface alone. When a pane
-    // transport lands, THIS comment is the one that goes stale next, and the
-    // repair is the same — name what the test injects, never what the build
-    // happens to lack.
     let root = std::env::temp_dir().join(format!("ae-p3-agents-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     let dir = root.join("sessions").join("AlphaR");
@@ -2231,10 +1973,7 @@ fn sc_017q_the_entry_point_reports_unknown_agents_rather_than_dead_ones() {
         .lines()
         .find(|line| line.starts_with(char::is_whitespace) && line.contains("cl:lead"))
         .unwrap_or_else(|| panic!("the agent row must be rendered: {human}"));
-    // The TABLE's third field is the declared state. An unobservable agent must
-    // not have its liveness leak into that cell — the row still reports what the
-    // agent DECLARED, and says nothing it cannot support about whether the pane
-    // is there. That fact is what the digest's `alive` member is for.
+    // The TABLE's third field is the declared state.
     assert_eq!(
         agent_row.split_whitespace().nth(2),
         Some("-"),

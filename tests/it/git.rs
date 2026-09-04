@@ -56,8 +56,7 @@ fn repo_with_commits(scratch: &Scratch, name: &str, n: usize) -> (PathBuf, Vec<S
     (repo, shas)
 }
 
-/// Write a session `meta` and return its dir. `work_dir` and `git_base` are
-/// written verbatim (a test controls exactly what the core reads).
+/// Write a session `meta` and return its dir.
 fn session(scratch: &Scratch, name: &str, mode: &str, work_dir: &str, git_base: &str) -> PathBuf {
     let dir = scratch.path().join(format!("session-{name}"));
     std::fs::create_dir_all(&dir).expect("mkdir session");
@@ -123,7 +122,7 @@ fn worktree_facts_match_a_real_repo() {
 
 #[test]
 fn copy_mode_also_derives_git_facts() {
-    // copy is non-local too, so it runs git — proving the widened gate reaches
+    // Copy is non-local too, so it runs git — proving the widened gate reaches
     // more than worktree.
     let scratch = Scratch::new("copy");
     let (repo, shas) = repo_with_commits(&scratch, "repo", 2);
@@ -180,7 +179,7 @@ fn a_linked_worktree_pointer_is_followed() {
 
 #[test]
 fn a_non_ancestor_base_yields_dash_range() {
-    // base is NOT an ancestor of HEAD, so merge-base --is-ancestor fails and the
+    // Base is NOT an ancestor of HEAD, so merge-base --is-ancestor fails and the
     // range/count fall to '-', while final is still HEAD.
     let scratch = Scratch::new("nonanc");
     let (repo, shas) = repo_with_commits(&scratch, "repo", 3);

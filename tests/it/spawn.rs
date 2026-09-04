@@ -24,9 +24,7 @@ use std::time::Duration;
 use super::cli::ae;
 use super::phase2::run_tmux;
 
-/// A claude-shaped fake agent. Ignores its argv (a launch command carries
-/// kilobytes of injected prose), draws the ornament the input sensor reads,
-/// and appends every SUBMITTED body to `__RECEIVED__`.
+/// A claude-shaped fake agent.
 const FAKE_CLAUDE: &str = r#"#!/usr/bin/perl
 use strict;
 use warnings;
@@ -324,8 +322,6 @@ fn a_spawn_seats_stamps_launches_and_briefs_its_agent() {
     assert!(manifest.contains("| helper |"), "{manifest}");
 
     // NO LAUNCH SCRIPT — the pane runs the core, and the core became the tool.
-    // What is left on disk is the start marker `_run` wrote before its exec,
-    // which is what makes a re-run of that same line resume instead of create.
     assert!(
         !rig.dir.join("launch.spawned.0.sh").exists(),
         "slice Z2 writes no bash into a session directory"
@@ -533,12 +529,6 @@ fn the_spawn_grammar_refuses_a_missing_profile_and_a_hostile_name() {
 }
 
 /// THE SAME GRAMMAR AS A LAUNCH SEAT, BEFORE ANY EFFECT.
-///
-/// config.rs runs the one-simple-command lexer over the initial roster only; a
-/// profile selected at spawn reached `bash -lc` unvalidated, so a profile with
-/// a semicolon executed its first command, then the spawn reported itself
-/// incomplete with the seat left in meta (colead gate b5d60fec). The profile
-/// must refuse with no seat, no pane and no side effect of the command itself.
 #[test]
 fn a_profile_that_is_not_one_simple_command_is_refused_before_any_effect() {
     let rig = Rig::new("semicolon");

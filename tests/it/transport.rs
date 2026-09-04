@@ -5,26 +5,6 @@
 //! run rather than an empty one, and that an unaddressable socket never reaches
 //! the wire. What is here needs a server that actually answers — because the
 //! fact this slice added is that ae's answer now comes from one.
-//!
-//! # What each arm is for
-//!
-//! SC-017k grants `running`/`stopped` only to a SUCCESSFUL query; SC-017l sends
-//! every failure to `unknown`. Those two rows are only distinguishable with BOTH
-//! arms present:
-//!
-//! * a server that ANSWERS, so `running` and `stopped` are reachable at all —
-//!   without it, "every session is unknown" passes every unknown assertion in
-//!   the suite while ae has silently stopped being able to look;
-//! * a server that does NOT answer, so a transport which mistook silence for
-//!   absence would be caught — that transport reports `stopped`, and `stopped`
-//!   is ae asserting a session is gone on the strength of a question that got no
-//!   answer.
-//!
-//! Neither is worth much alone. The pair is the test.
-//!
-//! Everything runs through `ae::current_world` — the function `ae list` itself
-//! calls — rather than through a hand-assembled inventory, so what is observed
-//! is the route the product takes.
 
 #![allow(
     clippy::disallowed_methods,
@@ -45,11 +25,6 @@ use super::parity::{Invocation, capture::raw};
 use super::phase2::{run_tmux, tmux_present};
 
 /// A short-lived scratch directory, short enough to hold a socket path.
-///
-/// `sun_path` is 104 bytes on macOS and the usual temp dir eats most of it, so
-/// this is `/tmp` directly — the same reason `phase2.rs`'s real-server arms do
-/// it. Nextest gives every test its own process, so the pid keeps two of these
-/// from colliding.
 fn scratch(tag: &str) -> PathBuf {
     let dir = PathBuf::from(format!("/tmp/ae-tr-{tag}-{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
@@ -87,10 +62,6 @@ impl Drop for Cleanup {
 }
 
 /// A durable session record naming `socket` as its server.
-///
-/// A POSITIVE selector, which is load-bearing: SC-405l normalizes a missing one
-/// to `missing`, and the classifier then never queries anything at all — so a
-/// fixture without it cannot tell a working transport from a broken one.
 fn plant(root: &Path, name: &str, socket: &Path) {
     let dir = root.join("sessions").join(name);
     let written = fs::create_dir_all(&dir).and_then(|()| {
@@ -156,27 +127,6 @@ fn sc_017k_one_real_query_answers_present_absent_and_prefix_candidates_by_exact_
     // THE ARM THAT MAKES EVERY `unknown` ASSERTION IN THIS SUITE MEAN SOMETHING,
     // and — since the prefix candidate joined it — the arm that proves each
     // answer is bound to the RIGHT candidate rather than merely being the right
-    // set of answers. ONE server, ONE query, THREE candidates recorded on it,
-    // asserted PER NAME. A transport returning the correct statuses attached to
-    // the wrong sessions dies here by name.
-    //
-    // WHY `ali` IS THE WHOLE POINT AND NOT A FOURTH VARIATION. tmux's `-t`
-    // PREFIX-MATCHES: `has-session -t ali` SUCCEEDS when only `alive` exists,
-    // and reading that as "ali is running" is not a neighbour of issue #105, it
-    // IS #105. ae never asks tmux whether a name exists — `enumerate` reads a
-    // marker only for names `list-sessions` already returned, and the exact
-    // match happens on ae's side in `liveness` — so this is expected to hold.
-    // That expectation was traced by READING before this arm existed, and a
-    // mechanism verified by reading is not a mechanism under test.
-    //
-    // IT HAD TO BE TESTED HERE. A fake backend cannot exhibit a prefix sibling,
-    // so no amount of classifier testing reaches it; this slice is the first
-    // code where the real adapter can get it wrong. And the earlier fixture
-    // population could not have caught it at any size: alive, gone, unowned,
-    // mismatched, owned, marked, bare — no name a prefix of another, so the
-    // defect was excluded BY VOCABULARY rather than by assertion, and adding
-    // arms over those names would have raised confidence without raising
-    // coverage.
     let scratch = scratch("live");
     require_tmux(&scratch);
     let socket = scratch.join("t.sock");
@@ -215,7 +165,7 @@ fn sc_017k_one_real_query_answers_present_absent_and_prefix_candidates_by_exact_
     );
     assert!(
         complete,
-        "SC-017o: an entitled server that answered is not a failed source, so the \
+        "an entitled server that answered is not a failed source, so the \
          snapshot no longer claims it could not look everywhere"
     );
 }
@@ -225,23 +175,8 @@ fn sc_017l_a_socket_that_is_not_a_server_is_unknown_and_never_stopped() {
     // THE ARM THAT CATCHES A TRANSPORT WHICH TREATS FAILURE AS ABSENCE. Empty
     // output from a failed query and empty output from a live server with no
     // sessions are the same bytes; only the exit status tells them apart. A
-    // transport that dropped it would report every session here `stopped` — ae
-    // asserting they are gone on the strength of a question that got no answer.
-    //
-    // Two shapes, because "not a server" has more than one: nothing at the path
-    // at all, and something at the path that is not a socket. Both are failures
-    // and neither is absence.
-    //
-    // The opposed control is the test above: it proves this same route CAN say
-    // `running` and `stopped`, so `unknown` here is a decision rather than the
-    // only answer the code is capable of.
     let scratch = scratch("dead");
-    // SELF-STANDING, DELIBERATELY. Without this, a machine with no tmux still
-    // passes — but by the SPAWN-FAILURE path, not the completed-non-zero one
-    // this arm names. Both are failures and both yield `unknown`, so the test
-    // stays green while silently testing a different mechanism than its name
-    // claims. A test that degrades into a neighbouring case without saying so
-    // is worse than one that is skipped loudly.
+    // SELF-STANDING, DELIBERATELY.
     require_tmux(&scratch);
     let missing = scratch.join("nothing-here.sock");
     let not_a_socket = scratch.join("a-plain-file.sock");
@@ -270,17 +205,13 @@ fn sc_017l_a_socket_that_is_not_a_server_is_unknown_and_never_stopped() {
     );
     assert!(
         !complete,
-        "SC-017o: an entitled server ae could not enumerate is a loss the snapshot reports"
+        "an entitled server ae could not enumerate is a loss the snapshot reports"
     );
 }
 
 #[test]
 fn sc_017l_a_session_the_server_reports_without_ae_s_marker_is_unknown() {
-    // PRESENT BUT NOT PROVABLY AE'S. The query SUCCEEDED and the exact name came
-    // back, so `stopped` is off the table — the session is demonstrably there.
-    // What is missing is ownership evidence, and SC-017l names both ways it can
-    // be missing: no marker at all, and a marker naming something else. Neither
-    // supports `running`, and guessing either way is the direction that asserts.
+    // PRESENT BUT NOT PROVABLY AE'S.
     let scratch = scratch("owner");
     require_tmux(&scratch);
     let socket = scratch.join("t.sock");
@@ -310,10 +241,7 @@ fn sc_017l_a_session_the_server_reports_without_ae_s_marker_is_unknown() {
 
     assert_eq!(unowned, "unknown", "no marker is not proof of ownership");
     // A marker whose VALUE is some other string is still ae's tag, and the tag
-    // is the whole claim it makes. This session's identity was already settled
-    // by the exact name match against its own recorded server, so re-deriving
-    // it from the variable added nothing — and demanding it made `running`
-    // unreachable for every real session, which is what shipped.
+    // is the whole claim it makes.
     assert_eq!(
         mismatched, "running",
         "the marker tags a session as ae's; it does not name one"
@@ -327,9 +255,6 @@ fn sc_017l_a_session_the_server_reports_without_ae_s_marker_is_unknown() {
 #[test]
 fn the_transport_reports_the_names_and_markers_the_server_holds() {
     // THE PORT'S OWN CONTRACT, asked directly rather than through three phases.
-    // `Discovery::enumerate` promises every session the server reports WITH the
-    // marker that server holds for it — two queries per name, not one, because
-    // the enumeration cannot see a session's own environment.
     let scratch = scratch("port");
     require_tmux(&scratch);
     let socket = scratch.join("t.sock");
@@ -375,23 +300,11 @@ fn the_transport_reports_the_names_and_markers_the_server_holds() {
     );
 }
 
-// ---- SC-017p/SC-017q: the PURE pane half, against a real server -----------
+// ---- the PURE pane half, against a real server ---------------------------
 //
 // THIS IS NOT THE TRANSPORT'S TEST, and the distinction is deliberate. The
-// product transport has no pane query and must not grow one this slice: no
-// ratified row defines "positively recognizes its agent process as live", so
-// there is no liveness verdict to wire a pane observation to, and a seam built
-// toward an unratified predicate is a decision rather than preparation.
-//
-// What IS ratified is the derivation and the reading, so that is what these
-// prove — through the harness's pinned door, exactly as `phase2.rs`'s criterion
-// 20 proves the session half. The value is that tmux's real output is checked
-// against what `src/tmux.rs` assumes, rather than against what its author
-// believed while writing the parser.
 
 /// Give the pane at `target` the `@ae_slot` marker `slot`.
-///
-/// `target` is a PANE ID (`%N`), never an index — see [`split`].
 fn mark_pane(socket: &Path, scratch: &Path, target: &str, slot: &str) {
     let server = ServerId::Selected(Selector::Socket(socket.to_path_buf()));
     let mut args = ae::tmux::server_args(&server);
@@ -401,20 +314,6 @@ fn mark_pane(socket: &Path, scratch: &Path, target: &str, slot: &str) {
 }
 
 /// Add a pane to `session`, optionally running `command` in it.
-///
-/// Returns the new pane's ID (`%N`), asked of tmux rather than assumed.
-///
-/// PANE INDICES ARE NOT IDENTIFIERS, measured twice on the way here. First: a
-/// split inserts relative to the ACTIVE pane, so creation order is not index
-/// order, and hard-coded indices marked the wrong pane. Then: two consecutive
-/// `split-window -d` calls BOTH reported index 1, because inserting renumbers
-/// the panes after it — so even an index captured at creation is stale by the
-/// next split. `pane_id` is unique and stable for the pane's lifetime; index is
-/// a position, and positions move.
-///
-/// Both bugs were invisible as fixture bugs: the first surfaced as an assertion
-/// about an exited pane reading a live one, which looks exactly like a product
-/// defect in the field this slice exists to add.
 fn split(socket: &Path, scratch: &Path, session: &str, command: Option<&str>) -> String {
     let server = ServerId::Selected(Selector::Socket(socket.to_path_buf()));
     let mut args = ae::tmux::server_args(&server);
@@ -444,13 +343,6 @@ fn split(socket: &Path, scratch: &Path, session: &str, command: Option<&str>) ->
 }
 
 /// The pane id of a session that has exactly one pane.
-///
-/// NIT 1, and it was MY OWN LESSON surviving in my own fixture: after teaching
-/// `split` to return a pane id because indices are not identifiers, this test
-/// still reached the first pane as `marked.0`. That spelling is correct only
-/// while nothing has been inserted before it — which is exactly the assumption
-/// two measured bugs already broke. Asked of tmux, and asserted to be the only
-/// pane, so it cannot silently become the wrong one.
 fn only_pane_id(socket: &Path, scratch: &Path, session: &str) -> String {
     let server = ServerId::Selected(Selector::Socket(socket.to_path_buf()));
     let mut args = ae::tmux::server_args(&server);
@@ -467,10 +359,6 @@ fn only_pane_id(socket: &Path, scratch: &Path, session: &str) -> String {
 }
 
 /// Wait until `session` reports a dead pane, or fail loudly.
-///
-/// BOUNDED POLLING, NOT A SLEEP. The pane's process exits on its own schedule;
-/// a fixed delay is a guess at how long that takes, and the failure mode of a
-/// guess that is too short is a flaky test that blames the product.
 fn wait_for_a_dead_pane(socket: &Path, scratch: &Path, session: &str) {
     let server = ServerId::Selected(Selector::Socket(socket.to_path_buf()));
     let mut args = ae::tmux::server_args(&server);
@@ -487,11 +375,6 @@ fn wait_for_a_dead_pane(socket: &Path, scratch: &Path, session: &str) {
 
 /// Wait until `pane` reports `pane_current_command` == `command` with `pane_dead` == 0,
 /// or fail loudly.
-///
-/// `split-window <cmd>` returns as soon as the pane exists; tmux can still report
-/// the launch shell for a moment before it has exec'd the command. A positive
-/// liveness arm asserted in that window proves nothing and fails deterministically
-/// on a fast machine (colead gate 82f5b511). Bounded polling, not a sleep.
 fn wait_for_pane_command(socket: &Path, scratch: &Path, pane: &str, command: &str) {
     let server = ServerId::Selected(Selector::Socket(socket.to_path_buf()));
     let mut args = ae::tmux::server_args(&server);
@@ -516,10 +399,6 @@ fn wait_for_pane_command(socket: &Path, scratch: &Path, pane: &str, command: &st
 }
 
 /// Turn on `remain-on-exit`, so a pane whose process exits is RETAINED.
-///
-/// Neither ae nor the successor sets this; SC-017s records it as
-/// operator-configurable. It is what makes an exited pane observable at all,
-/// and therefore what makes #109 reproducible instead of theoretical.
 fn retain_exited_panes(socket: &Path, scratch: &Path) {
     let server = ServerId::Selected(Selector::Socket(socket.to_path_buf()));
     let mut args = ae::tmux::server_args(&server);
@@ -531,18 +410,6 @@ fn retain_exited_panes(socket: &Path, scratch: &Path) {
 #[test]
 fn sc_017s_a_real_enumeration_carries_identity_and_both_liveness_conjuncts() {
     // WHAT THIS PROVES AGAINST A REAL SERVER, and why each arm is here.
-    //
-    // The parser's correctness turns on tmux's actual bytes, not on what its
-    // author believed while writing it. Three facts are checked against a live
-    // server rather than a fixture: an unmarked pane arrives as an EMPTY MIDDLE
-    // FIELD (not a dropped line), a marker SET to the empty string is
-    // indistinguishable from unset, and — the one that matters — AN EXITED PANE
-    // REPORTS A NON-SHELL COMMAND.
-    //
-    // That last one is #109. A `remain-on-exit` pane whose process has exited
-    // keeps reporting the exited process's command, so `pane_current_command`
-    // ALONE says a dead agent is alive. Only `pane_dead` separates them, and
-    // this asserts the read carries it.
     let scratch = scratch("panes");
     require_tmux(&scratch);
     let socket = scratch.join("t.sock");
@@ -602,9 +469,7 @@ fn sc_017s_a_real_enumeration_carries_identity_and_both_liveness_conjuncts() {
         "exactly one pane is present and anonymous: {out:?}"
     );
 
-    // THE #109 ARM. The exited pane's command is NOT in SC-017s's shell set, so
-    // the command field alone would read alive; `pane_dead` is the only thing
-    // that says otherwise, and it survived the read.
+    // THE #109 ARM.
     assert_eq!(
         gone.dead,
         Some(true),
@@ -679,27 +544,13 @@ fn sc_017p_the_list_route_answers_each_seat_from_the_live_panes_and_the_publishe
     // THE SLICE'S OWN ARM. Everything before it proved the SESSION status comes
     // from a real server; nothing proved that the per-agent liveness and the
     // live branch `ae list` prints do. Both were `null` for every agent of every
-    // session by construction, and every assertion about them passed.
-    //
-    // One server, one session, two rostered seats and three facts that can only
-    // be established against a live tmux:
-    //
-    //   * `main` runs a non-shell command  -> alive, and raises nothing;
-    //   * `worker.0` has NO pane at all, and every pane present is identified
-    //     -> SC-017p's negative proof: not alive, and the session's attention
-    //     marker becomes `dead` — the frozen rollup's "a registered agent whose
-    //     pane vanished", which no event ledger here contains;
-    //   * `@ae_branch_name` is what the digest's `branch` carries, not the git
-    //     answer for the work tree — that is SC-405g's live half.
     let scratch = scratch("runtime");
     require_tmux(&scratch);
     let socket = scratch.join("t.sock");
     let _cleanup = Cleanup::new(&socket, &scratch);
     start_server(&socket, &scratch, &[("live", Some("live"))]);
-    // The session's own first pane runs the login SHELL, which SC-017s puts in
+    // The session's own first pane runs the login SHELL, which the reader puts in
     // the not-alive set — so the alive arm needs a pane running something else.
-    // It is marked with a slot the roster does not name, because an UNMARKED
-    // pane would make the vanished-seat arm `unknown` instead of proving it.
     let shell = only_pane_id(&socket, &scratch, "live");
     mark_pane(&socket, &scratch, &shell, "spawned.0");
     let agent = split(&socket, &scratch, "live", Some("sleep 60"));

@@ -76,10 +76,7 @@ fn all_sources() -> Vec<(String, String)> {
 
 #[test]
 fn the_locked_agent_has_exactly_one_construction_site() {
-    // R2's guard, in the shape of the watchdog delivery-site guard. A second
-    // `Agent` built anywhere is a second set of defaults — and ureq's defaults
-    // are proxy-from-environment, cleartext-allowed, ten-redirects, which is
-    // three ways to send a URL containing the bot token somewhere else.
+    // R2's guard, in the shape of the watchdog delivery-site guard.
     let mut sites: Vec<String> = all_sources()
         .iter()
         .filter(|(_, text)| text.contains("Agent::new_with_config"))
@@ -91,11 +88,6 @@ fn the_locked_agent_has_exactly_one_construction_site() {
     // TWO SITES SINCE SLICE Z4, and the second is deliberate rather than a
     // second set of defaults: `src/upgrade.rs` builds an agent with the same
     // lock except for `max_redirects`, because a GitHub release download
-    // answers with a 302 to its object store and there is no token in that URL
-    // to leak to it. What keeps the difference honest is the SHA-256 proof of
-    // the downloaded bundle — a redirect that lands somewhere unexpected is a
-    // checksum refusal, not an install. Both are listed rather than one
-    // exempted: a third agent is a line in a review, not a diff nobody read.
     assert_eq!(
         sites,
         vec!["telegram.rs", "upgrade.rs"],
@@ -149,14 +141,6 @@ fn the_failure_type_cannot_hold_a_url_and_therefore_cannot_leak_the_token() {
     // The strongest guarantee in this module, and the reason it is structural
     // rather than careful: the request URL contains `/bot<TOKEN>/`, and
     // `ureq::Error` has variants that quote the URI back. If `SendFailure`
-    // cannot HOLD a string, no caller — not one written later, not one written
-    // carelessly — can format a token out of it.
-    //
-    // THE COMPILER OWNS MOST OF THIS CLAIM, and this scan owns the remainder.
-    // `SendFailure` is `Copy` (asserted at the type, in src/telegram.rs), so an
-    // owned `String`/`PathBuf`/boxed-error payload does not compile — measured
-    // as a control, not assumed. What `Copy` still admits is a `&'static str`,
-    // and that is what the scan below is actually for.
     let telegram = product("telegram.rs");
     assert!(
         telegram.contains("holds_no_owned_text::<SendFailure>()"),
@@ -189,12 +173,9 @@ fn the_failure_type_cannot_hold_a_url_and_therefore_cannot_leak_the_token() {
 
 #[test]
 fn the_bridge_writes_to_no_log_of_its_own() {
-    // ureq's internal `debug!` lines carry the request URI (redacted to
+    // Ureq's internal `debug!` lines carry the request URI (redacted to
     // `/******` unless TRACE is enabled — which is a property of ureq's
     // formatter, not a guarantee we control). ae installs no `log`
-    // implementation, so those macros compile to nothing at run time. The day
-    // one is installed, this test is the reminder that the bridge's URLs
-    // acquire somewhere to go.
     for (path, text) in all_sources() {
         for installer in ["set_logger", "set_boxed_logger", "log::set"] {
             assert!(
@@ -226,8 +207,7 @@ fn the_destination_is_a_constant_and_the_test_seam_is_compiled_out() {
         1,
         "more than one production URL literal"
     );
-    // The credentials reader knows two keys. A third would be an operator-
-    // settable place to send the token.
+    // The credentials reader knows two keys.
     let keys: Vec<&str> = telegram
         .lines()
         .filter(|line| line.contains("=> token_file = ") || line.contains("=> chat_id = "))
@@ -256,15 +236,6 @@ fn the_one_durable_write_syncs_both_the_file_and_its_directory() {
     // An fsync is not observable from inside the process that issued it, so
     // this is a source-level guard and claims nothing more. What it protects is
     // the difference between atomic and durable: a rename is atomic for a
-    // reader while the directory entry is still unwritten, and a checkpoint that
-    // rolls back on power loss turns this bridge's honest one-item crash window
-    // into an unbounded one.
-    //
-    // It moved from `store_cursor` to `durable_write` when the INBOUND offset
-    // acquired the same need. That is a strengthening, not a relocation: one
-    // implementation now carries the property for both checkpoints, and the
-    // two assertions below are what stop either of them from growing a second
-    // spelling of it.
     let telegram = product("telegram.rs");
     let write = telegram
         .split_once("pub(crate) fn durable_write(")
@@ -288,9 +259,7 @@ fn the_one_durable_write_syncs_both_the_file_and_its_directory() {
          empty file"
     );
 
-    // BOTH checkpoints must go through it. A second durable write would be a
-    // second thing to get right, and the one that got it wrong would be the one
-    // nobody re-read.
+    // BOTH checkpoints must go through it.
     let store_cursor = telegram
         .split_once("pub fn store_cursor(")
         .and_then(|(_, rest)| rest.split_once("\n}"))
@@ -336,14 +305,6 @@ fn the_response_body_is_bounded_without_consulting_content_length() {
 }
 
 /// The one live test, and it is gated twice.
-///
-/// `#[ignore]` keeps it out of every ordinary run, and the environment check
-/// keeps it a no-op even when someone runs `--ignored` on a machine with no
-/// bridge configured. It NEVER requires credentials: absent config, absent
-/// token file and an unparseable config all end the test quietly. A suite that
-/// cannot pass without a secret is a suite nobody else can run.
-///
-/// `AE_TELEGRAM_LIVE_SMOKE=1 cargo test --test it -- --ignored live_smoke`
 #[test]
 #[ignore = "live: posts a real Telegram message; needs AE_TELEGRAM_LIVE_SMOKE=1 and existing credentials"]
 fn live_smoke_posts_one_message_to_the_configured_chat() {
@@ -371,13 +332,7 @@ fn live_smoke_posts_one_message_to_the_configured_chat() {
 
 #[test]
 fn the_event_log_is_read_through_one_descriptor_and_never_looked_up_twice() {
-    // FIX 2, and it is a STRUCTURAL assertion on purpose. A TOCTOU that has been
-    // closed by construction cannot be exercised behaviourally: there is no
-    // longer a moment between the two lookups to rotate the file in, and a test
-    // that manufactured one would be testing a seam rather than the product.
-    // What CAN be asserted is that the second lookup does not exist — the shape
-    // the bug needed — and the control for it is reverting to the two-step,
-    // which turns this red.
+    // FIX 2, and it is a STRUCTURAL assertion on purpose.
     let telegram = product("telegram.rs");
     assert!(
         !telegram.contains("fs::metadata(&self.log)"),
@@ -405,7 +360,6 @@ fn the_append_only_invariant_is_recorded_where_it_is_spent() {
     // FIX 3 is resolved by PROOF rather than by a guard, so the artifact this
     // test protects is the proof itself: an unreachable case whose reasoning is
     // not written down becomes a mystery the next reader either re-derives or
-    // "fixes" with speculative machinery.
     let telegram = product_with_comments("telegram.rs");
     let start = telegram
         .split_once("fn start(")
@@ -440,12 +394,6 @@ fn every_read_goes_through_one_open_that_classifies_first() {
     // FIX 4 and FIX 6 together, and the strengthening is the point: it is no
     // longer "the credential reader classifies first", it is "there is ONE open
     // in this module and it classifies first". Four readers — config, token,
-    // cursor, event log — and one hardened pattern, so a fifth cannot acquire
-    // its own spelling by accident.
-    //
-    // The ORDER is the property: `open(2)` on a FIFO blocks until a writer
-    // appears, so a check performed after the open is not a check. Both the
-    // cursor and the log live in a meta directory other processes write to.
     let telegram = product("telegram.rs");
     assert_eq!(
         telegram.matches("fs::File::open").count(),
@@ -498,10 +446,7 @@ fn every_read_goes_through_one_open_that_classifies_first() {
 
 #[test]
 fn the_durable_write_temp_cannot_follow_a_planted_symlink() {
-    // FIX 5. `create_new(true)` is `O_EXCL`; `create(true).truncate(true)` is
-    // the shape that follows a symlink and truncates its target. The temp name
-    // is predictable by necessity, so this is the only thing standing between a
-    // planted link and whatever it points at.
+    // FIX 5.
     let telegram = product("telegram.rs");
     let write = telegram
         .split_once("pub(crate) fn durable_write(")
@@ -529,19 +474,6 @@ fn the_daemon_drops_the_word_channel_before_it_joins_the_poller() {
     // A SHUTDOWN DEADLOCK, guarded structurally because it cannot be reached
     // behaviourally: `run` builds the production client, so no test in this
     // suite executes the ordering below.
-    //
-    // The inbound thread may be blocked awaiting confirmation of a give-up
-    // notice, and that wait is UNBOUNDED by design (a bounded one abandons the
-    // word in the channel and lets the next retry queue another, which is how
-    // one give-up became many notices). It ends when the answer channel
-    // disconnects — and the answer's sender lives inside the queued word, which
-    // the word RECEIVER owns. So while `inbox_words` is alive the word is
-    // alive, nothing wakes the thread, and `join` never returns.
-    //
-    // Dropping before the join ends that wait with a rejection, which is also
-    // the correct answer: a bridge on its way out must not advance its offset
-    // past a notice it never sent. This asserts the ORDER, which is the whole
-    // property — the drop existing further down the scope would not do.
     let bridge = product("telegram/bridge.rs");
     let dropped = bridge
         .find("drop(inbox_words)")
@@ -559,10 +491,6 @@ fn the_daemon_drops_the_word_channel_before_it_joins_the_poller() {
 // ─── the give-up's hard/transient split, against a real tmux server ──────
 //
 // The only branch of the inbound bridge's refusal classifier that a unit test
-// cannot reach: "hard" requires an enumeration that RAN and ANSWERED. The unit
-// side proves the fail-safe direction (every failure is transient); this proves
-// the arm that makes that direction mean something — without it, `Refusal::Hard`
-// is produced by nothing and the short bound is dead policy.
 
 /// A short scratch dir — `/tmp` directly, for `sun_path`'s 104 bytes on macOS.
 fn tg_scratch(tag: &str) -> std::path::PathBuf {
@@ -605,8 +533,7 @@ fn a_pane_a_real_server_does_not_list_is_the_only_thing_that_counts_as_hard() {
     let socket = scratch.join("s.sock");
     let dir = plant_session(&scratch, &socket);
 
-    // ARM 1 — no server at all. The enumeration cannot run, and a probe that
-    // could not run is not evidence of death.
+    // ARM 1 — no server at all.
     let refusal = Helper.deliver(Verb::Send, "work", &dir, "cl:lead", "hello", "42");
     assert!(
         matches!(refusal, Delivered::No(Refusal::Transient)),
@@ -614,7 +541,7 @@ fn a_pane_a_real_server_does_not_list_is_the_only_thing_that_counts_as_hard() {
     );
 
     // ARM 2 — a real server, really answering, with a pane that is NOT the
-    // target. This is the one shape that earns the short bound.
+    // target.
     let server = ae::inventory::ServerId::Selected(ae::meta::Selector::Socket(socket.clone()));
     let mut create = ae::tmux::server_args(&server);
     create.extend(["new-session", "-d", "-s", "work"].map(ToOwned::to_owned));
@@ -627,8 +554,7 @@ fn a_pane_a_real_server_does_not_list_is_the_only_thing_that_counts_as_hard() {
         "a server that answered and does not hold the target is the hard case: {refusal:?}"
     );
 
-    // ARM 3 — the same server, now holding a pane stamped as the target. A pane
-    // that is THERE is never hard, however the delivery failed.
+    // ARM 3 — the same server, now holding a pane stamped as the target.
     let mut stamp = ae::tmux::server_args(&server);
     stamp.extend(["set-option", "-p", "-t", "work", "@ae_agent", "cl:lead"].map(ToOwned::to_owned));
     let (stamped, _) = super::phase2::run_tmux(&stamp, &scratch);
@@ -641,11 +567,7 @@ fn a_pane_a_real_server_does_not_list_is_the_only_thing_that_counts_as_hard() {
     );
 
     // ARM 4 — the same real server, seen through the World the router resolves
-    // against. `Machine::running` is what turns a chat's "work" into a session
-    // dir, and it is gated on the record's OWN server answering (SC-947); a
-    // liveness check that answered from an ambient server would be an answer
-    // about a different machine's-worth of state. Nothing but a real server can
-    // tell that apart from an empty world.
+    // against.
     let machine = ae::telegram::bridge::Machine::under(ae::inventory::Roots::under(&scratch));
     let running = machine.running();
     assert_eq!(
@@ -674,16 +596,6 @@ fn a_pane_a_real_server_does_not_list_is_the_only_thing_that_counts_as_hard() {
 
 /// B3: an unusable `--server-kind` is refused, never answered with the ambient
 /// server.
-///
-/// The bridge is ONE per machine, and its identity is the tmux server it runs
-/// on. A caller that asked for a server ae could not resolve used to get the
-/// ambient one silently — so `start` could raise a second bridge beside the one
-/// a later `status` and `stop` would look for. Two long polls on one bot token
-/// is the failure that costs updates: Telegram hands each to whichever asked
-/// first.
-///
-/// `ambiguous` is not a hypothetical spelling: it is what the glue emits for a
-/// socket path it could not canonicalise.
 #[test]
 fn an_unresolvable_server_kind_is_refused_rather_than_answered_with_the_ambient_one() {
     let home = tg_scratch("serverkind");

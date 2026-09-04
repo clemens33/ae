@@ -36,8 +36,7 @@ use super::cli::ae;
 use super::parity::{Invocation, capture::raw};
 use super::phase2::{run_tmux, tmux_present};
 
-/// An isolated ae home and a project directory. No tmux server unless a test
-/// asks for one — most of this suite never needs to reach that far.
+/// An isolated ae home and a project directory.
 struct Rig {
     scratch: PathBuf,
     home: PathBuf,
@@ -77,10 +76,6 @@ impl Rig {
 
     /// Run the product as a shell would: this rig's doors in the environment,
     /// its project as the working directory, and `argv` verbatim.
-    ///
-    /// The CHECKOUT shape, which is what a test binary under `target/` is: it
-    /// honours `AE_HOME`, `CONFIG_FILE` and the server pair, so the rig can
-    /// isolate every one of them.
     fn run(&self, argv: &[&str]) -> (Option<i32>, String, String) {
         self.run_on(None, argv)
     }
@@ -204,9 +199,6 @@ fn the_doors_carry_the_facts_and_the_argv_is_the_users_alone() {
 }
 
 /// `version` answers AHEAD of every gate, including the doors themselves.
-///
-/// It is how a broken install is diagnosed, so it may not depend on anything an
-/// install can break: not the state root, not a config, not tmux.
 #[test]
 fn version_answers_with_no_environment_at_all() {
     for word in ["version", "--version", "-V"] {
@@ -226,14 +218,7 @@ fn version_answers_with_no_environment_at_all() {
 }
 
 /// THE `AE_HOME` DOOR relocates every piece of state, and `CONFIG_FILE` names
-/// the global config independently of it. Both are CHECKOUT-shape doors.
-///
-/// The two are asserted through different surfaces because they REACH
-/// different ones: `AE_HOME` is the state root every command derives from, so
-/// `doctor` shows it; `CONFIG_FILE` is the global config a LAUNCH reads and
-/// seeds, and doctor reports the default beside its own root rather than the
-/// launch's file (a gap that predates this slice — nothing appends `--global`
-/// to doctor's argv, and nothing did through the wrapper either).
+/// the global config independently of it.
 #[test]
 fn the_home_and_config_doors_are_honoured_by_a_checkout_build() {
     let rig = Rig::new("homedoor");
@@ -298,11 +283,6 @@ fn no_home_and_no_ae_home_is_the_one_refusal_the_doors_can_make() {
 }
 
 /// THE FROZEN PREAMBLE IS GONE, and its flags are ordinary argv now.
-///
-/// This is the one shape that must NOT be quietly tolerated: `--home /x` used
-/// to be a fact the wrapper spoke, and a compat arm accepting it would leave
-/// two ways to say where ae's state lives — the exact second answer slice Z1
-/// removed from bash and slice Z3 removes from the flag surface.
 #[test]
 fn a_preamble_flag_is_no_longer_a_flag_ae_answers_to() {
     let rig = Rig::new("nopreamble");
@@ -319,9 +299,7 @@ fn a_preamble_flag_is_no_longer_a_flag_ae_answers_to() {
     assert!(!rig.sessions().exists(), "a refused argv built state");
 }
 
-/// NOTHING CHANGES FOR AN INTERNAL ENTRY CALLED BARE. Every session helper is a
-/// link to this binary and reaches the core with no ambient fact at all, so the
-/// entry grammar must keep parsing exactly as it did.
+/// NOTHING CHANGES FOR AN INTERNAL ENTRY CALLED BARE.
 #[test]
 fn an_internal_entry_keeps_its_own_grammar_and_pays_for_no_door() {
     let rig = Rig::new("internal");
@@ -362,13 +340,6 @@ fn an_unserved_internal_word_is_refused_by_name() {
 
 /// THE SERVER PAIR IS READ BY *SET*, NOT BY NONEMPTY, and a pair that cannot be
 /// typed is a refusal rather than a fallback.
-///
-/// `AE_TMUX_SERVER_KIND=ambiguous AE_TMUX_SERVER=` is exactly the shape the
-/// socket probe mints for a relative path it could not prove. A nonempty test
-/// read that set-empty half as an absent one: the pair was dropped, the AMBIENT
-/// server was resolved, and a launch landed on a server nobody asked for — the
-/// one outcome `ambiguous` exists to prevent. This is the whole rule in one
-/// invocation, and it needs no tmux to state it.
 #[test]
 fn an_untypeable_server_pair_refuses_and_never_falls_back() {
     let rig = Rig::new("ambiguous");
@@ -425,8 +396,6 @@ fn a_launch_candidate_becomes_a_session_from_the_preamble_facts() {
     // The ATTACH is what decides the code, and it cannot succeed here: `ae
     // <name>` always attaches — the wrapper passed `--attach` unconditionally
     // and there is no door that says otherwise — and a test process has no
-    // terminal to hand to tmux. The session is what this row is about, and it
-    // is built before the attach is even attempted.
     assert_ne!(code, Some(2), "not a usage error: {stdout}\n{stderr}");
     assert!(
         rig.sessions().join("entryone").join("meta").exists(),
@@ -451,9 +420,7 @@ fn no_argv_at_all_launches_rather_than_printing_help() {
     let sock = rig.sock.clone();
     let (code, stdout, stderr) = rig.run_on(Some(&sock), &[]);
     assert_ne!(code, Some(2), "not a usage error: {stdout}\n{stderr}");
-    // Help would have printed the command list and written nothing. This ran
-    // the launch prelude and DERIVED a name from the WORKING DIRECTORY, which
-    // is the whole difference between `ae` and the core's own empty argv.
+    // Help would have printed the command list and written nothing.
     assert!(!stdout.contains("Usage:"), "help was printed: {stdout}");
     assert!(rig.config().exists(), "the launch prelude did not run");
     let started: Vec<String> = std::fs::read_dir(rig.sessions())
@@ -475,10 +442,7 @@ fn no_argv_at_all_launches_rather_than_printing_help() {
 // (3) the refusals
 // ---------------------------------------------------------------------------
 
-/// A CUT WORD CREATES NO SESSION. Everything the router does not recognise
-/// falls through to a launch, and a launch takes the last positional as a
-/// session name — so a deleted arm does not error, it quietly creates a session
-/// named after the word.
+/// A CUT WORD CREATES NO SESSION.
 #[test]
 fn a_cut_word_refuses_and_creates_no_session() {
     let rig = Rig::new("cut");
@@ -557,9 +521,6 @@ fn help_is_the_command_set_and_names_no_retired_word() {
 }
 
 /// `ae list --help` is the core's too — on STDERR and exit 0, as it was.
-///
-/// It is routed OUT of the flag parser deliberately: the core parses `--help`
-/// only at top level and would answer a `list` tail with a usage error.
 #[test]
 fn list_help_is_the_ratified_filter_text_on_stderr() {
     let rig = Rig::new("listhelp");
@@ -583,16 +544,11 @@ fn list_help_is_the_ratified_filter_text_on_stderr() {
 
 /// THE ORDER IS THE CONTRACT: the config is the first write of the run, and it
 /// happens only after the dependency gate has passed.
-///
-/// An install that cannot serve a launch must not leave a config behind, or a
-/// diagnosis starts from a home the failing run invented.
 #[test]
 fn the_first_run_seeds_the_config_only_after_the_dependency_check() {
     let scratch = {
         let rig = Rig::new("seed");
-        // A machine with NO TMUX. That is the whole dependency gate now — the bash
-        // row went with `ae-entry`, which is the interpreter it was about — and it
-        // is still the thing that must refuse before the first write.
+        // A machine with NO TMUX.
         let out = ae()
             .env_remove("TMUX")
             .env_remove("TMUX_PANE")
@@ -666,10 +622,6 @@ fn an_existing_config_is_left_exactly_as_it_was() {
 // ---------------------------------------------------------------------------
 
 /// A SYMLINK NAMED `valid-name` satisfies every naming rule.
-///
-/// Both reuse paths and the rollback's own removal would then run THROUGH the
-/// link, out of the sessions root — so the path object is checked before any
-/// side effect, and independently of the grammar the name already passed.
 #[test]
 fn a_symlinked_session_directory_is_refused_before_anything_happens() {
     let rig = Rig::new("symlink");
@@ -730,8 +682,7 @@ fn a_name_the_grammar_refuses_is_the_launchs_refusal_not_the_paths() {
 // ---------------------------------------------------------------------------
 
 /// The human words reach the core entries behind them, environmental facts
-/// appended. Each of these is proven by the entry's OWN refusal arriving —
-/// which only happens if the translation ran.
+/// appended.
 #[test]
 fn the_human_words_reach_the_core_entries_behind_them() {
     let rig = Rig::new("words");
@@ -760,10 +711,7 @@ fn doctor_names_the_binary_answering_and_no_interpreter() {
     let rig = Rig::new("doctor");
     let (_, stdout, stderr) = rig.run(&["doctor"]);
     let report = format!("{stdout}{stderr}");
-    // The row that replaced it: WHICH core answered. A checkout build is
-    // writable by construction, so the deviation is not claimed here — that
-    // warning belongs to a published version directory, and `shape` decides
-    // which of the two this is.
+    // The row that replaced it: WHICH core answered.
     assert!(report.contains("core "), "no core row:\n{report}");
     assert!(
         !report.contains("bash "),
@@ -836,11 +784,6 @@ fn the_server_pair_door_decides_where_a_launch_lands() {
 
 /// The CWD door: a launch with no name derives one from the working directory,
 /// and `$PWD` is honoured only when it names the same directory.
-///
-/// `$PWD` is the LOGICAL spelling — what keeps `/tmp` from becoming
-/// `/private/tmp` on macOS — but it is an ordinary variable a program that
-/// `chdir`s without updating it leaves stale. A lying one must not decide where
-/// ae thinks it is.
 #[test]
 fn the_cwd_door_prefers_the_logical_pwd_only_when_it_agrees() {
     if skip() {

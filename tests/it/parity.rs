@@ -1,45 +1,4 @@
 //! The test suite's ONE door to a child process.
-//!
-//! # What this is
-//!
-//! An [`Invocation`] — a program, its arguments and its environment — and the
-//! single function that runs one, wiring its streams straight to files. Seven
-//! modules in this target reach a real `tmux`, `git` or `just` through it.
-//!
-//! # Why it is a door and not a convenience
-//!
-//! `std::process::Command` is a DENIED TYPE crate-wide (`clippy.toml`). Two
-//! places relax it, and they do different jobs: this one, and `tests/it/cli.rs`,
-//! whose black-box tests must run the product binary and whose factory is
-//! private to that module, so nothing here can reach a child through it. That
-//! is a capability boundary rather than a naming convention ONLY because this
-//! crate forbids `unsafe_code`; the premise is written down at the pin site,
-//! because it can stop being true. `tests/it/doors.rs` asks clippy itself
-//! whether the boundary still holds, and pins that a child is run in exactly
-//! ONE place here.
-//!
-//! # The bytes are never in this process
-//!
-//! A child's stdout and stderr go straight to their artifact files: the file
-//! descriptors are handed over before the child starts, and nothing here ever
-//! owns a byte of them. That is a stronger statement than "the bytes are behind
-//! a private field", because possession is capability — code that holds bytes
-//! in order to write them can equally compare them to something it expects, and
-//! no Rust mechanism grants write-only access to a value you must serialise. So
-//! the value is never obtained.
-//!
-//! What is unavoidably held is the child's exit STATUS: something must turn it
-//! into the `exit` artifact's text, and [`capture::raw::RawStatus`] is
-//! deliberately the whole of it — a private field, no `Debug`, one method.
-//!
-//! # History
-//!
-//! This was the plumbing of a PARITY harness: it ran one corpus through a bash
-//! lane and a core lane and kept both sets of raw artifacts side by side, so
-//! that a later stage could ask whether they agreed. Slice Z4 retired the bash
-//! it was comparing against, and the lane, corpus, manifest and pairing
-//! machinery went with it. The door stayed, because every real-server test in
-//! this target runs through it.
 
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
@@ -82,9 +41,6 @@ impl Invocation {
 
     /// Drop the inherited environment, keeping only what [`Invocation::env`]
     /// sets.
-    ///
-    /// A lane that inherits the operator's environment is a lane whose result
-    /// depends on whose laptop ran it.
     #[must_use]
     pub(crate) fn env_cleared(mut self) -> Self {
         self.env_cleared = true;
@@ -95,14 +51,6 @@ impl Invocation {
 /// Where a child's evidence enters this harness.
 pub(crate) mod capture {
     /// Whether a child exited with a code, or was killed.
-    ///
-    /// `Signalled` rather than a number: the signal itself is not portable to
-    /// record here, and a capture that guesses is worse than one that says it
-    /// does not know.
-    ///
-    /// No `Debug`, `PartialEq` or `Eq`. A caller may branch on the variant it
-    /// asked for; it may not compare two outcomes to each other, which is the
-    /// shape a verdict would take.
     #[derive(Clone, Copy)]
     pub(crate) enum ExitOutcome {
         /// The process exited with this status code.
@@ -114,23 +62,6 @@ pub(crate) mod capture {
     pub(crate) mod raw {
         //! The one place a child process is run — and the only thing this
         //! harness ever holds of what one produced.
-        //!
-        //! # The bytes are never in this process
-        //!
-        //! A lane's stdout and stderr go from the child STRAIGHT to their
-        //! artifact files: the file descriptors are handed over before the
-        //! child starts, and nothing here ever owns a byte of them. That is a
-        //! stronger statement than "the bytes are behind a private field",
-        //! because possession is capability — code that holds bytes in order to
-        //! write them can equally compare them to something it expects, and no
-        //! Rust mechanism grants write-only access to a value you must
-        //! serialise. So the value is never obtained.
-        //!
-        //! What is unavoidably held is the child's exit STATUS: something must
-        //! turn it into the `exit` artifact's text. [`RawStatus`] is that
-        //! something, and it is deliberately the whole of it — a private field,
-        //! no `Debug` (`std::process::ExitStatus` has one, and
-        //! `format!("{status:?}")` is a read), and exactly one method.
 
         use std::fs::File;
         use std::io;
@@ -144,17 +75,6 @@ pub(crate) mod capture {
         pub(crate) struct RawStatus(ExitStatus);
 
         /// Build and run `invocation` in `cwd`, streams wired to `out` and `err`.
-        ///
-        /// The `Command` is built HERE rather than handed in, and that is the
-        /// point rather than tidiness: both of reviewer4's round-4 injections
-        /// open with `let output = command.output()?;`, and a caller that has no
-        /// `command` cannot write that line. What remains — building a fresh
-        /// `Command` from scratch somewhere else — is what the one-call-site pin
-        /// is for.
-        ///
-        /// `stdin` is nulled explicitly. `Command::output` does that for you and
-        /// `Command::status` does NOT: it inherits, and a lane that read from a
-        /// terminal would hang a test run instead of finishing.
         ///
         /// # Errors
         ///

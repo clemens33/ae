@@ -77,10 +77,6 @@ impl Install {
     }
 
     /// A directory that stands in for a session, with one helper LINK in it.
-    ///
-    /// A helper is a symlink to the core and its `argv[0]` dirname IS the
-    /// session — which is the whole reason a helper must pay the install gate:
-    /// it is another way to reach this same binary.
     fn helper(&self, name: &str) -> PathBuf {
         let dir = self.scratch.join("sess");
         let _ = std::fs::create_dir_all(&dir);
@@ -324,11 +320,7 @@ fn version_and_upgrade_answer_on_a_broken_install() {
     assert_eq!(code, Some(0), "version answers anyway");
     assert_eq!(stdout, format!("{}\n", ae::version_line()));
 
-    // `upgrade` reaches its OWN vocabulary rather than the gate's. Slice Z4
-    // ended the handover — there is no sibling installer to exec, the download
-    // is `upgrade`'s own — so what proves it ran past the gate is that a bad
-    // pin is refused in the pin's words. Kept offline deliberately: a test that
-    // reached github would be a test that fails on a train.
+    // `upgrade` reaches its OWN vocabulary rather than the gate's.
     let (code, stdout, stderr) = rig.run(&[("AE_VERSION", "not-a-version")], &["upgrade"]);
     assert_eq!(code, Some(1), "{stdout}{stderr}");
     assert!(
@@ -352,12 +344,7 @@ fn upgrade_takes_no_argument_and_refuses_before_it_runs_anything() {
 }
 
 // RETIRED (slice Z4): `upgrade` no longer becomes the sibling installer, so
-// there is no member to prove before executing it. `ae upgrade` downloads its
-// own bundle and publishes it through `install::publish`, and what protects
-// that path is the SHA-256 proof of what was downloaded — pinned in
-// `tests/it/install.rs`, which is where the publication now lives. The sibling
-// `install` is still a bundle member and still published; nothing executes it
-// on ae's behalf.
+// there is no member to prove before executing it.
 
 #[test]
 fn doctor_warns_when_the_published_core_is_writable_and_not_when_it_is_not() {
@@ -390,10 +377,7 @@ fn doctor_warns_when_the_published_core_is_writable_and_not_when_it_is_not() {
     );
 }
 
-/// **B1.** The gate is not a property of the PUBLIC words — it is a property of
-/// the invocation, and the core's own `_` namespace is the most effectful part
-/// of it. `_shims-render` on a core nobody can vouch for published 21 helper
-/// links and answered 0.
+/// **B1.**
 #[test]
 fn an_internal_entry_pays_the_install_gate_and_publishes_nothing() {
     let rig = Install::plant("internal");
@@ -411,8 +395,7 @@ fn an_internal_entry_pays_the_install_gate_and_publishes_nothing() {
     assert_eq!(published, 0, "a refused render published {published} links");
 }
 
-/// **B1, the other half.** Every session helper is a link to this binary, so a
-/// helper that skipped the gate was 21 routes around it per session.
+/// **B1, the other half.**
 #[test]
 fn a_session_helper_pays_the_install_gate_too() {
     let rig = Install::plant("helpergate");
@@ -427,9 +410,7 @@ fn a_session_helper_pays_the_install_gate_too() {
     );
 }
 
-/// **B2.** A published core run against a foreign `$HOME` used to classify as a
-/// CHECKOUT, which honours `AE_HOME` — so an install could be pointed at
-/// somebody else's state root and would build sessions there.
+/// **B2.**
 #[test]
 fn a_published_core_refuses_a_foreign_home_instead_of_adopting_it() {
     let rig = Install::plant("foreignhome");
@@ -463,19 +444,7 @@ fn a_published_core_refuses_a_foreign_home_instead_of_adopting_it() {
     );
 }
 
-/// **B3.** `current_exe()` HAS ONE CALLER, and it is [`ae::shape`].
-///
-/// The two answers differ on macOS — the OS hands back the path this process
-/// was EXEC'D BY, which for `ae` and for all 21 helpers is a SYMLINK — so a raw
-/// call at an execution boundary bakes the caller's invocation path into a pane
-/// command or a child's `argv[0]`, where the helper dispatch reads its basename
-/// back as a different entry. `shape::resolved_exe` canonicalises; nothing else
-/// may ask.
-///
-/// A TEXT SCAN, and it says so: it reads code lines only (a line whose trimmed
-/// start is `//` is prose, and the module docs discuss `current_exe` at
-/// length). It cannot see an aliased re-export, which is why the rule is also
-/// stated where `resolved_exe` lives.
+/// **B3.**
 #[test]
 fn only_shape_asks_the_os_where_this_binary_is() {
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");

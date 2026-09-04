@@ -963,7 +963,7 @@ fn a_typed_server_pair_still_reaches_its_own_server() {
     }
     let rig = Rig::idle("kindok");
 
-    // socket: the rig's own, which every other arm here already depends on.
+    // Socket: the rig's own, which every other arm here already depends on.
     let (code, stdout, stderr) = rig.launch_with_server(
         "socket",
         &rig.sock.display().to_string(),
@@ -984,7 +984,7 @@ fn a_typed_server_pair_still_reaches_its_own_server() {
         "{stdout}"
     );
 
-    // name: a `-L` server, which nothing else here exercises.
+    // Name: a `-L` server, which nothing else here exercises.
     let named = format!("aeln{}", std::process::id());
     let (code, stdout, stderr) = rig.launch_with_server("name", &named, &["--local", "lnnamed"]);
     assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");

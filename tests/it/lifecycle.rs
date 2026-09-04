@@ -39,9 +39,6 @@ struct Rig {
 
 impl Rig {
     /// A live session named `lc<tag>` whose meta points at this rig's socket.
-    ///
-    /// The socket lives under a short `/tmp` path: `sun_path` is 104 bytes on
-    /// macOS and `std::env::temp_dir()` alone eats about half of that.
     fn new(tag: &str) -> Self {
         let home = PathBuf::from(format!("/tmp/aelc.{}.{tag}", std::process::id()));
         let _ = std::fs::remove_dir_all(&home);
@@ -166,10 +163,7 @@ fn an_end_that_keeps_its_history_archives_before_it_removes() {
 #[test]
 fn an_end_whose_archive_cannot_be_published_leaves_the_whole_session() {
     let rig = Rig::new("noarch");
-    // A regular FILE where the archive directory would go. The publisher must
-    // refuse it (an archive is immutable and this is not even a tree), and the
-    // end must then stop with everything still on disk — including the memory
-    // it exists to preserve.
+    // A regular FILE where the archive directory would go.
     std::fs::create_dir_all(rig.home.join("archive")).expect("an archive root");
     std::fs::write(rig.archive(), b"not a directory\n").expect("the obstruction");
     std::fs::write(rig.dir.join("memo.tsv"), b"x\tkeep me\n").expect("some memory");
@@ -227,11 +221,6 @@ fn a_self_stop_returns_from_the_pane_it_kills() {
     // THE SHAPE THAT NEEDS THE SUPERVISOR, driven the way it actually happens:
     // the command runs in a shell INSIDE the target's own pane, so the process
     // asking for the stop is the one the stop destroys.
-    //
-    // Two facts are proven, and the first is why the detachment exists: the
-    // caller reaches its LAST line (its stdout is on disk, complete) before the
-    // pane dies, and the session goes away afterwards anyway — by a process
-    // that was never in it.
     let rig = Rig::new("self");
     let caller_out = rig.home.join("selfout");
     let command = format!(
@@ -274,8 +263,7 @@ fn a_self_stop_returns_from_the_pane_it_kills() {
     assert!(gone, "the session is gone");
 
     // The supervisor — not the dead caller — recorded the outcome, and the
-    // request that preceded it. After a self-stop this log is the only account
-    // a human whose pane vanished has.
+    // request that preceded it.
     let mut events = String::new();
     for _ in 0..100 {
         events = std::fs::read_to_string(rig.dir.join("events.jsonl")).unwrap_or_default();
@@ -290,7 +278,7 @@ fn a_self_stop_returns_from_the_pane_it_kills() {
         events.contains("verified gone on its recorded server"),
         "{events}"
     );
-    // stop destroys nothing, self-stop included.
+    // Stop destroys nothing, self-stop included.
     assert!(exists(&rig.dir), "the session dir stays");
     assert!(!exists(&rig.archive()), "a stop archives nothing");
 }
@@ -298,8 +286,7 @@ fn a_self_stop_returns_from_the_pane_it_kills() {
 #[test]
 fn a_self_stop_with_no_terminal_names_the_flag_instead_of_asking() {
     // A non-interactive caller inside the session has no one to ask, and
-    // silently killing the session would be worse than refusing. `rig.run`
-    // gives the child a null stdin, which is exactly that caller.
+    // silently killing the session would be worse than refusing.
     let rig = Rig::new("selfnotty");
     let (code, out, err) = rig.run(&["_stop", "--self", &rig.name]);
     assert_eq!(code, Some(1), "stdout: {out}\nstderr: {err}");
@@ -337,10 +324,7 @@ fn self_is_a_claim_about_one_session_and_cannot_be_combined_with_all() {
 fn a_stopped_session_still_ends_the_ordinary_way() {
     // The stop-now-end-later flow, and the reason it needs no acknowledgement:
     // the target's POSITIVE record names a server that verifiably lacks the
-    // session, which is clause (c) of the invariant. Killing the last session
-    // exits the server, so the only proof available is its clean-dead
-    // diagnostic — and "the server answered without it" and "the server is
-    // unreachable" must not be read as the same thing.
+    // session, which is clause (c) of the invariant.
     let rig = Rig::new("later");
     let (code, _, err) = rig.run(&["_stop", &rig.name]);
     assert_eq!(code, Some(0), "{err}");
@@ -358,8 +342,7 @@ fn compact_hands_the_relaunch_the_frozen_roster() {
     let rig = Rig::new("compact");
     let plan = rig.home.join("plan");
     // `--digest-only` is the one explicit degradation: it skips the semantic
-    // handover, which needs a live agent to answer. Everything the boundary
-    // does — revalidate, stop, archive, teardown — still runs.
+    // handover, which needs a live agent to answer.
     let (code, out, err) = rig.run(&[
         "_compact",
         "-f",
@@ -382,9 +365,7 @@ fn compact_hands_the_relaunch_the_frozen_roster() {
     assert!(!exists(&rig.dir), "the source session is gone");
     assert!(!rig.session_is_live(), "the tmux session is gone");
 
-    // THE FROZEN ROSTER, not a config re-read. The plan carries the answer the
-    // freeze resolved and the prompt showed, so a config rewritten between the
-    // freeze and the relaunch cannot change which agents the child starts.
+    // THE FROZEN ROSTER, not a config re-read.
     let record = std::fs::read_to_string(&plan).expect("the exec plan is published");
     let fields: Vec<&str> = record.trim_end().split('\u{1f}').collect();
     assert_eq!(fields.len(), 6, "{record:?}");
@@ -477,15 +458,13 @@ fn end_all_never_accepts_the_per_target_acknowledgement() {
 }
 
 /// Without `--exec-plan`, compact starts the child ITSELF — in this process,
-/// from the frozen roster, on the server its parent ran on. No glue exec, and
-/// the four-line stdout contract is untouched.
+/// from the frozen roster, on the server its parent ran on.
 #[test]
 fn compact_relaunches_the_child_in_process() {
     let rig = Rig::new("relaunch");
     // The child is a REAL launch, so its main must be an agent NAME bound in
     // `[roster]` — the shared fixture's config names a profile directly, which
-    // the v2 grammar refuses. Written before the compact, so the freeze
-    // resolves the roster the child will actually be held to.
+    // the v2 grammar refuses.
     std::fs::write(
         rig.home.join("config"),
         "[profiles]\nfake = \"sh\"\n\n[roster]\nfake = fake\n\n[workspace]\nmain = fake\nlayout = vertical\nwatchdog = false\n",
@@ -522,11 +501,6 @@ fn compact_relaunches_the_child_in_process() {
 // ---------------------------------------------------------------------------
 
 /// A rig whose "ambient" tmux server is nobody else's.
-///
-/// `TMUX_TMPDIR` moves the default socket under this rig's own directory, so a
-/// command that falls back to the ambient server here reaches a server this
-/// test created — which is the only honest way to prove what an ambient
-/// FALLBACK would have done to a stranger's session.
 struct AmbientRig {
     home: PathBuf,
 }
@@ -540,11 +514,6 @@ impl AmbientRig {
     }
 
     /// tmux with the OPERATOR'S ENVIRONMENT DROPPED.
-    ///
-    /// `TMUX_TMPDIR` only decides the default socket when `TMUX` is unset —
-    /// and a suite run from inside a tmux pane inherits `TMUX`, which names the
-    /// developer's own server. Clearing the environment and re-adding the three
-    /// variables tmux actually needs is what makes "ambient" mean this rig.
     fn tmux(&self, tail: &[&str]) -> (bool, String) {
         let mut invocation = super::parity::Invocation::new("tmux")
             .env_cleared()
@@ -601,11 +570,7 @@ impl AmbientRig {
             self.tmux(&["new-session", "-d", "-s", name, "sh"]).0,
             "the ambient session '{name}' starts"
         );
-        // THE ISOLATION GUARD, checked before anything acts. These tests exist
-        // to watch an ambient fallback take a session that is not its own, and
-        // a leaked `TMUX` would point that fallback at the developer's real
-        // server. A default server holding anything but this rig's session is
-        // not this rig's server, and nothing may proceed against it.
+        // THE ISOLATION GUARD, checked before anything acts.
         let live = self.sessions();
         assert_eq!(
             live,
@@ -641,11 +606,6 @@ impl Drop for AmbientRig {
 }
 
 /// B2: an unresolvable server record must not be answered with the ambient one.
-///
-/// The bug, and terra's repro: `tmux_server_kind=ambiguous` normalised to
-/// `ServerSelector::Ambiguous`, the caller retagged that `ServerId::Ambient`,
-/// and the rename then went looking for the name on a server the record never
-/// named. An unrelated session of the same name answers — and gets renamed.
 #[test]
 fn an_ambiguous_server_record_refuses_the_rename_rather_than_taking_an_ambient_session() {
     let rig = AmbientRig::new("ambrn");
@@ -659,8 +619,7 @@ fn an_ambiguous_server_record_refuses_the_rename_rather_than_taking_an_ambient_s
     );
     assert!(err.contains("Nothing was renamed"), "{err}");
 
-    // THE POINT. Pre-fix the ambient session was renamed by a record that never
-    // named this server.
+    // THE POINT.
     let live = rig.sessions();
     assert!(
         live.iter().any(|name| name == "ambold"),
@@ -675,11 +634,6 @@ fn an_ambiguous_server_record_refuses_the_rename_rather_than_taking_an_ambient_s
 }
 
 /// The control: a record with NO server rows is not the same defect.
-///
-/// A launch writes the two rows only when its caller resolved a server, and the
-/// glue resolves none from a plain terminal — so a missing selector is the most
-/// ordinary session there is, and the ambient server is exactly the one it runs
-/// on. Refusing it would strand every such session.
 #[test]
 fn a_session_that_records_no_server_still_renames_on_the_ambient_one() {
     let rig = AmbientRig::new("ambok");
@@ -715,13 +669,6 @@ fn an_ambiguous_server_record_refuses_every_watchdog_command() {
 }
 
 /// I1: a handover that never happened is RECORDED as not having happened.
-///
-/// The self-stop writes `stop-request` before it detaches, because a human
-/// whose pane vanished has to be able to tell "ae was asked and something went
-/// wrong" from "ae was never asked". When the detach itself failed, that record
-/// was all there was — and a request with no result is indistinguishable from a
-/// stop still in flight. The caller here has an empty `PATH`, so the `nohup`
-/// the detach runs cannot be found and `run_detached` reports false.
 #[test]
 fn a_supervisor_that_never_started_is_recorded_as_a_failed_stop() {
     let rig = Rig::new("nosuper");
@@ -764,13 +711,6 @@ fn a_supervisor_that_never_started_is_recorded_as_a_failed_stop() {
 }
 
 /// I2: `stop all` from inside a target ASKS, when there is a terminal to ask on.
-///
-/// The detached supervisor cannot prompt — but the process that hands over to
-/// it is alive, holds the caller's terminal, and is the one taking down every
-/// session a typo away. It used to refuse outright and demand `-y`, which made
-/// the most destructive form of the command the one form that never confirmed.
-///
-/// Driven through a real tmux pane, because a prompt needs a real terminal.
 #[test]
 fn stop_all_from_inside_a_target_prompts_on_a_terminal() {
     let rig = AmbientRig::new("stpall");
@@ -783,9 +723,7 @@ fn stop_all_from_inside_a_target_prompts_on_a_terminal() {
             .0
     );
 
-    // The command runs as a PANE's process, so its stdin is a tty. Its own
-    // output goes to files: the prompt has to be read by this test, not by the
-    // terminal emulator.
+    // The command runs as a PANE's process, so its stdin is a tty.
     let script = rig.home.join("runner.sh");
     let log = rig.home.join("stop-out");
     std::fs::write(
@@ -875,13 +813,6 @@ fn stop_all_from_inside_a_target_with_no_terminal_still_needs_the_flag() {
 }
 
 /// The lifecycle lock EXCLUDES an end from a concurrent start or resume.
-///
-/// The lock is taken before the target is classified and held through the last
-/// removal, because the window between the proof and the cleanup spans
-/// commit/fetch/push — and a launch landing in that window made cleanup delete
-/// state out from under a freshly LIVE session (issue #4). A held lock must
-/// therefore be a loud REFUSAL that preserves everything, not a wait that
-/// eventually deletes.
 #[test]
 fn a_held_lifecycle_lock_refuses_the_end_and_preserves_the_whole_session() {
     let rig = Rig::new("lock");

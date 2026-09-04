@@ -34,14 +34,6 @@ use ae::json::{self, Value};
 
 /// One of reviewer4's round-4 injections against the parity harness, byte for
 /// byte.
-///
-/// It judged the RAW `std::process::Output` inside the capture site, before the
-/// bytes ever became an opaque capture. No name rule could have caught it, and
-/// it is kept here because of the line it OPENS with — `let output =
-/// command.output()?;` — which is what
-/// [`a_child_process_is_run_in_exactly_one_place_and_is_wrapped_there`] exists
-/// to make unbuildable. The harness it was written against is gone; the door it
-/// went through is not.
 const RAW_STATUS_JUDGEMENT: &str = "        let output = command.output()?;
         if std::env::var_os(\"AE_PARITY_STATUS_JUDGE\").is_some() && !output.status.success() {
             return Err(io::Error::other(\"lane status differed\"));
@@ -77,36 +69,12 @@ fn rust_sources() -> Vec<std::path::PathBuf> {
 }
 
 /// Every file clippy reports a `std::process::Command` in — asked SEMANTICALLY.
-///
-/// # Why this replaces the counting as the claim
-///
-/// `--force-warn` cannot be overridden by ANY relaxation: a plain `allow`, a
-/// GROUP `allow` such as `clippy::style` or `clippy::all`, a `cfg_attr` wrapping
-/// either, an `expect`, or a crate-root `#![allow]`. That is what the flag was
-/// stabilised for, and it is why this asks the compiler instead of the text.
-///
-/// The counter below it enumerates relaxation FORMS, and enumerations in this
-/// slice have now been beaten four times — a field-name list, a method-name
-/// list, an outer-attribute prefix, and finally `#[allow(clippy::style)]`, which
-/// relaxes `disallowed_types` by naming a GROUP the lint belongs to and no lint
-/// name at all. A textual guard cannot see that without enumerating the group
-/// graph too, which is the fifth shape waiting to happen.
-///
-/// # What this still does not cover
-///
-/// `RUSTFLAGS` or `--cap-lints` applied from OUTSIDE the tree, and anything that
-/// changes what this guard itself runs. That is a nameable class rather than
-/// "any relaxation nobody enumerated", and it is residual 4 in `parity.rs`.
 fn command_sites_reported_by_clippy() -> Vec<String> {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned());
 
     // Its own target dir: the outer test run holds the normal one, and a guard
     // that blocks on someone else's lock is a guard that times out.
-    // `--force-warn` is passed to the driver, so a cached result was produced
-    // under the same flag and replays its diagnostics (measured — a run that
-    // silently reported nothing because cargo considered the crate fresh would
-    // be the vacuous-gate failure this whole file exists to avoid).
     #[allow(
         clippy::disallowed_types,
         reason = "the guard's own door: it must run clippy to ask clippy anything"
@@ -174,8 +142,7 @@ fn command_sites_reported_by_clippy() -> Vec<String> {
 fn the_capability_boundary_holds_against_any_lint_relaxation() {
     let sites = command_sites_reported_by_clippy();
 
-    // Non-vacuity FIRST. If the probe reports nothing, the interesting question
-    // is not whether the doors moved — it is whether the probe ran at all.
+    // Non-vacuity FIRST.
     assert!(
         !sites.is_empty(),
         "the force-warn probe reported no `Command` anywhere; it did not run, and \
@@ -184,25 +151,6 @@ fn the_capability_boundary_holds_against_any_lint_relaxation() {
 
     // Asked of the compiler, so no `allow` of any shape can hide a site from it:
     // these ARE the places this crate can start a child process.
-    //
-    // THREE product entries, and each is stated where it is used.
-    // `src/transport.rs` runs tmux: ae cannot answer SC-017k/SC-017l without
-    // it, and before it existed every session ae listed read `unknown` by
-    // construction. `src/run.rs` is the pane's own `exec` — it BECOMES the
-    // tool rather than starting a child, which is the fact
-    // `pane_current_command` rests on, and it arrived with slice Z2 when the
-    // generated `launch.<slot>.sh` that used to hold that `exec` was deleted.
-    // `src/install.rs` and `src/upgrade.rs` are slice Z4's, when the
-    // installer's logic moved out of bash. `install.rs` runs the
-    // DIGEST-VERIFIED bundle core ONCE, with one fixed argument, to ask which
-    // version it is — the version directory is named for that answer, and the
-    // install gate compares the two on every later invocation, so asking here
-    // turns a mis-named publish into an install-time refusal instead of a
-    // bricked install. `upgrade.rs` no longer `exec`s the sibling installer at
-    // all; its door is `tar`, listing and then unpacking the bundle it
-    // downloaded, and the listing pass is what makes running it safe.
-    // All four are listed rather than exempted because the value of this guard
-    // is that adding a door is a line in a review, not a diff nobody read.
     assert_eq!(
         sites,
         vec![
@@ -220,18 +168,8 @@ fn the_capability_boundary_holds_against_any_lint_relaxation() {
     );
 }
 
-/// `transport::run_git` is the FIXED-PROGRAM git leg of the one process door: it
-/// chooses the binary (`git`) so a caller only chooses arguments. The PRIMARY
-/// boundary is a TYPE: `run_git` takes a `git::GitArgv` whose inner vector is
-/// private to `src/git.rs`, so an alias-import (`use … run_git as invoke_git;`)
-/// is inert — it cannot mint the argv it would need. This guard is defence in
-/// depth beside that seal: within `src/`, the INVOCATION form `run_git(` appears
-/// in exactly two files — `transport.rs`, which DEFINES it, and `git.rs`, its
-/// one product caller. A third file gaining a call is a line in a review, not a
-/// diff nobody read. The token is `run_git(` (with the open paren) on purpose: a
-/// doc-link that merely NAMES the function — good docs — carries no paren and is
-/// not a caller. (Test code is out of scope: a test may drive the door; product
-/// code may not widen who holds it.)
+/// `transport::run_git` is the FIXED-PROGRAM git leg of the one process door:
+/// it chooses the binary (`git`) so a caller only chooses arguments.
 #[test]
 fn run_git_has_exactly_one_product_caller() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -261,14 +199,7 @@ fn run_git_has_exactly_one_product_caller() {
 }
 
 /// `transport::run_ps` is the FIXED-PROGRAM `ps` leg of the one process door —
-/// the watchdog's per-cycle process-table snapshot. Same seal as [`run_git`]: it
-/// takes a `procs::PsArgv` whose inner vector is private to `src/procs.rs`, and
-/// that argv carries NO caller input at all (the snapshot spelling is a
-/// constant), so there is nothing to inject even in principle. This guard is
-/// defence in depth beside that seal: within `src/`, the INVOCATION form
-/// `run_ps(` appears in exactly two files — `transport.rs`, which DEFINES it,
-/// and `procs.rs`, its one product caller (`snapshot`). A third file gaining a
-/// call is a line in a review, not a diff nobody read.
+/// the watchdog's per-cycle process-table snapshot.
 #[test]
 fn run_ps_has_exactly_one_product_caller() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -298,47 +229,16 @@ fn run_ps_has_exactly_one_product_caller() {
 }
 
 /// reviewer4's round-6 bypasses of this guard, from their tree, byte for byte.
-///
-/// Both were rustfmt-clean, clippy-clean and left all three boundary tests
-/// green with a USED UFCS back door underneath. They are here because the guard
-/// they beat was looking for the outer attribute `#[allow(` rather than for the
-/// LINT RELAXATION, and an enumeration that has been beaten twice should carry
-/// the two it missed.
 const CFG_ATTR_EXEMPTION: &str = "#[cfg_attr(all(), allow(clippy::disallowed_types))]";
 
-/// The second. See [`CFG_ATTR_EXEMPTION`].
+/// The second.
 const EXPECT_EXEMPTION: &str =
     "#[expect(clippy::disallowed_types, reason = \"review exemption red proof\")]";
 
 /// How many times `text` relaxes the disallowed-types lint.
-///
-/// Counts the RELAXATION, not the attribute that carries it: `allow(...)` and
-/// `expect(...)` are found wherever they are nested — inside `cfg_attr`, inside
-/// an inner `#![...]`, inside anything else that has not been invented yet —
-/// because the outer wrapper is precisely what the previous version enumerated
-/// and precisely what was laundered past.
-///
-/// Comments are stripped first, and string literals blanked: naming the
-/// attribute in prose — as `parity.rs`'s residual list does — or quoting one as
-/// test data — as the two constants above do — is documentation, not a door. An
-/// attribute cannot be inside a string literal and still be an attribute. This
-/// guard caught both of those on its first run after each change, which is the
-/// right failure to have had twice.
-///
-/// **This is an enumeration, it closes only what it enumerates, and it has been
-/// PROVEN incomplete.** `#[allow(clippy::style)]` relaxes `disallowed_types` by
-/// naming a GROUP the lint belongs to — no lint name appears at all, so nothing
-/// here sees it, and a review used exactly that with a working third `Command`
-/// site in `src/`, green in every lane including this counter.
-///
-/// It is kept as defence in depth because it reads well in a failure and costs
-/// nothing. The CLAIM is
-/// [`the_capability_boundary_holds_against_any_lint_relaxation`], which asks
-/// clippy under `--force-warn` and cannot be relaxed by any attribute at all.
 fn lint_relaxations(text: &str) -> usize {
     // Assembled from halves so this file's own source does not contain the
-    // needles. A guard that counts a token must not itself be a place that
-    // token can hide, and excluding its own file would be exactly that.
+    // needles.
     let relaxations = [
         concat!("allow(clippy::", "disallowed_types"),
         concat!("expect(clippy::", "disallowed_types"),
@@ -390,23 +290,6 @@ fn the_lint_relaxations_this_counter_can_see_are_the_expected_ones() {
     // The capability boundary is `clippy.toml`'s `disallowed-types`, which
     // resolves TYPES: UFCS, `as` aliases and re-imports are all the same type to
     // it. That is what makes it close the CLASS, where a filter over method
-    // names closed one spelling of it.
-    //
-    // What a deny cannot stop is a second RELAXATION of the lint. `forbid`
-    // would, and would also block the door itself — so this counts them instead.
-    //
-    // DEMOTED, and provably so. This counts relaxation FORMS, and a review beat
-    // it with `#[allow(clippy::style)]` — a GROUP allow, which relaxes
-    // `disallowed_types` while naming no lint at all — carrying a working third
-    // `Command` site. It also does not see a crate-root `#![allow]` in a new
-    // file, or a feature-gated `cfg_attr`.
-    //
-    // The CLAIM is now
-    // `the_capability_boundary_holds_against_any_lint_relaxation`, which asks
-    // the compiler under `--force-warn` and no attribute can override. This
-    // remains only as defence in depth: a changed inventory is worth seeing
-    // even when the semantic guard would also catch it, and it names the file.
-    //
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut inventory = Vec::new();
     for file in rust_sources() {
@@ -426,52 +309,6 @@ fn the_lint_relaxations_this_counter_can_see_are_the_expected_ones() {
     // Ten relaxations this counter can see, each for a different job: the
     // PRODUCT's three — `src/transport.rs`, because a tmux multiplexer that
     // cannot run tmux answers `unknown` about everything, `src/run.rs`, the
-    // pane's own `exec` of its tool, and `src/upgrade.rs`, the `exec` that
-    // hands the terminal to the immutable sibling installer; the parity
-    // harness's door,
-    // which must never judge a lane; the black-box door, which drives the
-    // PRODUCT binary and where asserting on what it printed is the whole point
-    // (`cli::ae` is private to its module, so the harness cannot reach a child
-    // through it); the black-box FIFO fixture beside it (`cli::mkfifo` — safe
-    // std cannot make the one special file that blocks an ungated open, and
-    // the tests that prove the `-f` gates need exactly that file); the
-    // by-name door beside it (`cli::helper_by_name` — a helper's identity IS
-    // `argv[0]`, so proving the bare-name refusal needs a process started AS
-    // the name, which no path spelling produces); the git
-    // fixture builder beside those (`cli::git_in` — the preview's git-facts
-    // tests need REAL repos, and only `git` builds a real repo); the generated
-    // session-helper runner beside those too (`cli::helper` — a launch writes
-    // shims a pane execs BY PATH, so proving one works means running the file
-    // rather than the function behind it); and this file's own, which has to
-    // run clippy in order to ask clippy anything.
-    //
-    // A TENTH DOOR arrived with slice Z3 and is the installed shape's:
-    // `tests/it/shape.rs` runs a COPY of the product binary planted in a
-    // fixture version directory, twice, because the fact under test is
-    // `current_exe()` — where the binary SITS — and no library call can produce
-    // it. `cli::ae()` cannot be used: it names the built binary under `target/`,
-    // which is a CHECKOUT by construction and so the wrong arm entirely.
-    //
-    // TWO MORE ARRIVED WITH SLICE Z4, when the installer's logic moved out of
-    // bash. `src/install.rs` runs the DIGEST-VERIFIED bundle core once to ask
-    // which version it is, because the version directory is named for that
-    // answer and the install gate compares the two on every later invocation.
-    // `src/upgrade.rs`'s door changed job rather than arriving: it used to
-    // `exec` the sibling installer, and now runs `tar` to list and unpack the
-    // bundle it downloaded — a deliberate non-dependency, gated by the listing
-    // pass that proves every entry before anything is extracted.
-    // `tests/it/install.rs` is the black-box door for both: an install is what
-    // a real process does to a real `$HOME`.
-    //
-    // A THIRD SITE IN THAT FILE is the bash bootstrap's: `install.rs`'s
-    // `command()` runs `bash` over the repository's own `install`, and `tar` to
-    // pack the fixture bundle its shimmed `curl` serves. Everything the
-    // bootstrap owns happens BEFORE there is a core — resolve the platform,
-    // prove the archive against the release manifest, extract, exec — so there
-    // is no library call that could stand in for the process.
-    //
-    // A further entry is red. A relaxation this counter CANNOT see is not —
-    // that is what the semantic guard above is for.
     assert_eq!(
         inventory,
         vec![
@@ -507,13 +344,6 @@ fn a_child_process_is_run_in_exactly_one_place_and_is_wrapped_there() {
     // DEFENCE IN DEPTH, and demoted deliberately. This filters three method
     // SPELLINGS, and a review walked past exactly that by writing
     // `std::process::Command::output(&mut command)` — semantically identical,
-    // matching none of them. Adding `::output` to the list would have closed
-    // that spelling, not the class.
-    //
-    // What closes the class is the denied TYPE in `clippy.toml`, which resolves
-    // paths. This test survives underneath it because a second call site inside
-    // the harness is worth seeing even when it is legitimately allowed, and
-    // because it reads well in a failure. It is not the boundary.
     let code = strip_literals(&strip_comments(&harness_source()));
     let wiring = body_of(&code, "mod raw");
 
@@ -552,10 +382,6 @@ fn harness_source() -> String {
 }
 
 /// `source` with line and block comments removed, string literals intact.
-///
-/// The exclusion is the point: the harness's own docs have to be able to SAY
-/// "no `#[test]` lives here" without the guard reading its own prose as the
-/// violation. The first-pass version of this test failed on exactly that.
 fn strip_comments(source: &str) -> String {
     let src: Vec<char> = source.chars().collect();
     let mut out = String::with_capacity(source.len());
@@ -592,10 +418,6 @@ fn strip_comments(source: &str) -> String {
 }
 
 /// `code` with the CONTENTS of string and char literals blanked out.
-///
-/// `join("stdout")` names an artifact file; it is not the harness reading one.
-/// Blanking the contents keeps that distinction — and keeps a `;` or a `"`
-/// inside a literal from desynchronising the statement split below.
 fn strip_literals(code: &str) -> String {
     let src: Vec<char> = code.chars().collect();
     let mut out = String::with_capacity(code.len());
@@ -625,15 +447,6 @@ fn strip_literals(code: &str) -> String {
 }
 
 /// The half-open byte range of the brace-delimited body that follows `header`.
-///
-/// Brace matching is exact here, and it is exact because of WHERE it runs: on
-/// source whose comments are gone and whose literal contents have been blanked.
-/// A `{` in a doc comment, or the `{}` of a format string, cannot desynchronise
-/// it, because by this point neither still exists.
-///
-/// `header` must name exactly one site. A second one would be a second place
-/// evidence is allowed to live, which is the thing this whole rule exists to
-/// deny — so it fails loudly rather than picking the first.
 fn body_of(code: &str, header: &str) -> Range<usize> {
     let sites = code.matches(header).count();
     assert_eq!(

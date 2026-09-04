@@ -24,8 +24,7 @@ fn cases_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/archive-preview")
 }
 
-/// A temp dir removed on drop. Its own module so a panicking test still cleans
-/// up (Drop runs while unwinding).
+/// A temp dir removed on drop.
 struct Scratch(PathBuf);
 impl Scratch {
     fn new(tag: &str) -> Self {
@@ -100,7 +99,7 @@ fn snapshot(root: &Path) -> BTreeMap<PathBuf, u64> {
 }
 
 /// Run the preview, bounded: a subject that could hang must fail with a red
-/// that ARRIVES, not one that stalls the lane. `None` if it had to be killed.
+/// that ARRIVES, not one that stalls the lane.
 fn bounded_preview(dir: &Path) -> Option<std::process::Output> {
     let child = crate::cli::ae()
         .arg("_archive-preview")
@@ -159,11 +158,6 @@ fn a_non_regular_event_container_is_a_named_refusal_and_never_blocks() {
     // A preview must not leave its session directory to render linked or
     // special-node bytes (colead ruling, P3.1). events.jsonl replaced by, in
     // turn: a FIFO (an ungated open would block on it forever), a directory, a
-    // symlink to a REGULAR file (the escape the follow variants would render), a
-    // symlink to a directory, and a symlink to a FIFO. Each must return promptly
-    // (never block), refuse by name at rc=1 with NO digest on stdout, and write
-    // nothing. This is the intentional divergence from the frozen `[[ -f ]]`,
-    // which follows the symlink-to-regular and treats the FIFO/dir as absent.
     let scratch = Scratch::new("hostile");
     for kind in [
         "fifo",
@@ -217,7 +211,7 @@ fn a_non_regular_event_container_is_a_named_refusal_and_never_blocks() {
 fn a_non_regular_meta_is_a_named_refusal_without_blocking() {
     // meta as a FIFO: a non-regular meta is refused BY NAME before the id read
     // would follow it (not misreported as a missing UUID), and the refusal must
-    // not hang on the FIFO. `nonregular_existing` lstats, so it never opens it.
+    // not hang on the FIFO.
     let scratch = Scratch::new("metafifo");
     let dir = scratch.path().join(session_name("ordinary"));
     copy_tree(&cases_root().join("ordinary").join("session"), &dir);
@@ -241,10 +235,7 @@ fn a_non_regular_meta_is_a_named_refusal_without_blocking() {
 fn a_roster_ae_cannot_parse_refuses_the_whole_preview() {
     // `_ar_build_meta` REFUSES a roster it cannot parse — a bad slot or a ref
     // that is not `alias:name[:session-id]` fails the whole preview (rc=1) with
-    // the frozen line, then the composer's own refusal, and writes nothing. A
-    // read tracer that rendered a plausible-but-wrong roster would be worse than
-    // one that refuses. `<name>` in the second line is the session directory's
-    // basename.
+    // the frozen line, then the composer's own refusal, and writes nothing.
     let scratch = Scratch::new("refuse");
     let cases = [
         (
@@ -307,9 +298,7 @@ fn a_roster_ae_cannot_parse_refuses_the_whole_preview() {
 fn a_symlinked_regular_source_is_refused_not_followed() {
     // The safety core of the P3.1 ruling: a symlink to a REGULAR file — the one
     // shape the frozen `[[ -f ]]` would follow and render — is refused for meta
-    // and for memo.tsv (events is covered by the hostile-container test). The
-    // preview must not read a byte through the link, so: rc=1, a named refusal on
-    // stderr, no digest on stdout, and nothing written into the session.
+    // and for memo.tsv (events is covered by the hostile-container test).
     let scratch = Scratch::new("symlink-refuse");
     for (file, needle) in [
         ("meta", "has a non-regular meta"),
@@ -336,7 +325,7 @@ fn a_symlinked_regular_source_is_refused_not_followed() {
 }
 
 /// A minimal local-mode session whose `meta` is written verbatim (so a test can
-/// control the final newline). Events is an empty regular file.
+/// control the final newline).
 fn minimal_session(scratch: &Scratch, tag: &str, meta: &str) -> PathBuf {
     let dir = scratch.path().join(tag);
     std::fs::create_dir_all(&dir).expect("mkdir session");
@@ -348,10 +337,7 @@ fn minimal_session(scratch: &Scratch, tag: &str, meta: &str) -> PathBuf {
 #[test]
 fn a_roster_record_on_the_final_unterminated_line_is_not_dropped() {
     // The frozen `_ar_roster_slots` is awk: it processes a final record with no
-    // trailing newline. A meta whose LAST line is a valid `agent.main=…` (no LF)
-    // must still render that slot; one whose last line is a bare `agent.main`
-    // must refuse, not silently succeed with an empty roster. Expected outputs
-    // captured from the frozen `ae archive preview`.
+    // trailing newline.
     const HEAD: &str = "session=nolf\nsession_id=e795c9e9-1111-2222-3333-444455556666\n\
                         session_id_origin=session\nmode=local\n";
     let scratch = Scratch::new("nolf");
@@ -402,12 +388,7 @@ const ORDINARY_WORKER: &str = "agent.worker.0=cx:worker";
 
 #[test]
 fn an_identity_v2_seat_is_the_roster_ref() {
-    // Identity v2 (P1, read side). A `seat.<slot>=<name>` row names a slot
-    // exactly as `agent.<slot>` does and the digest's ref is the bare NAME —
-    // the profile and harness-session rows are metadata the digest never
-    // renders. Nothing writes v2 meta before the P4 cutover, so the frozen
-    // fixtures are untouched and the v1 rows beside a seat render exactly as
-    // before.
+    // Identity v2 (P1, read side).
     let scratch = Scratch::new("v2seat");
     let dir = ordinary_with(
         &scratch,
@@ -434,9 +415,7 @@ fn an_identity_v2_seat_is_the_roster_ref() {
         "v1 rows beside it are untouched:\n{stdout}"
     );
 
-    // CONTROLS for the uniqueness rule below. Two v2 seats with DISTINCT names
-    // render both; a v1 duplicate row keeps the frozen behaviour (the slot
-    // rendered once per row, no refusal) — the v2 rule must not leak into v1.
+    // CONTROLS for the uniqueness rule below.
     let dir = ordinary_with(
         &scratch,
         "distinct-names",
@@ -474,7 +453,6 @@ fn a_doubtful_v2_roster_refuses_the_whole_preview() {
     // A slot claimed by BOTH prefixes, a seat with no name, a repeated seat
     // key, or one NAME on two seats refuses the whole preview: a roster in
     // doubt is a FAILED archive, never a partial one — the exact two-line
-    // refusal, nothing rendered, nothing written.
     let scratch = Scratch::new("v2doubt");
     let both =
         "archive: slot 'main' is named by both agent.main and seat.main; the roster is in doubt.";

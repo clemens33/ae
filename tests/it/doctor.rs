@@ -261,9 +261,7 @@ fn shims_render_publishes_a_set_a_pane_can_exec() {
     let (code, _, stderr) = rig.run(&[ae::cli::SHIMS_RENDER, &dir.display().to_string()]);
     assert_eq!(code, Some(0), "{stderr}");
 
-    // RUN one: the whole point of a shim is that a pane execs it by path. A
-    // word `state` does not know is the cheapest proof that the CORE parsed the
-    // argv — the shim itself parses nothing.
+    // RUN one: the whole point of a shim is that a pane execs it by path.
     let out = helper(&dir.join("state"))
         .env_remove("TMUX_PANE")
         .arg("not-a-state")
@@ -295,9 +293,7 @@ fn shims_render_refuses_a_directory_that_is_not_there() {
 #[test]
 fn check_deps_takes_no_argument_and_passes_on_a_machine_with_tmux() {
     // `--bash-major` went with `ae-entry` in slice Z3: ae ships no interpreter,
-    // so there is no version of one to supply and none to refuse on. What the
-    // gate still does — refuse a machine with no tmux before any side effect —
-    // is unchanged.
+    // so there is no version of one to supply and none to refuse on.
     let rig = Rig::new("deps");
     let (code, _, stderr) = rig.run(&[ae::cli::CHECK_DEPS, "--bash-major", "5"]);
     assert_eq!(code, Some(2), "a flag nothing supplies is a usage error");
@@ -339,8 +335,6 @@ fn rename_moves_the_tmux_session_the_directory_and_the_meta_together() {
     let manifest = std::fs::read_to_string(moved.join("workspace.md")).unwrap_or_default();
     assert!(manifest.contains("Session: after"), "{manifest}");
     // The status bar carries it too.
-    // `show-options` does not take the `=` exact-match target form (measured):
-    // it answers "no such session". The plain name is the only spelling here.
     let (_, left) = rig.tmux(&["show-options", "-v", "-t", "after", "status-left"]);
     assert!(left.contains("[ae after]"), "{left}");
 }
