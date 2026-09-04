@@ -11,21 +11,16 @@ allow-panic-in-tests = true
 # `use ... as C`, and spellings nobody has thought of yet — a filter over method
 # names closes one spelling, not the class.
 #
-# THREE DOORS, each with a different job, and each pinned at its own site:
-#   1. `src/transport.rs`'s `run` — THE PRODUCT'S, and the only one outside the
-#      test target. ae is a tmux multiplexer: it cannot answer a liveness
-#      question (SC-017k/SC-017l) without running tmux, and before this door
-#      existed every session ae listed read `unknown` by construction. The
-#      capability is confined to one private function taking a derived argument
-#      list; `src/tmux.rs` stays pure, so the two decisions that can be WRONG —
-#      which server an argument list addresses, and what a completed run means —
-#      are still unit-testable without a process.
-#   2. `tests/it/parity.rs`'s `mod raw` — the parity harness's, which runs a lane
-#      and must never hold a byte it produced.
-#   3. `tests/it/cli.rs`'s `ae()` — the black-box tests', which must run the
-#      product binary and whose whole job is asserting on what it printed.
-# A fourth is a decision, not a detail: the deny is what makes adding one show up
-# in review rather than in a diff nobody read.
+# THE DOORS are inventoried by `tests/it/doors.rs`, which asserts the exact
+# number of relaxation sites per file and goes red when one appears or
+# vanishes. Product doors, one site each: `src/transport.rs` (`run`, the tmux
+# child every liveness answer needs), `src/run.rs` (the exec of the agent
+# tool), `src/upgrade.rs` (the `tar` extraction), `src/install.rs` (running
+# the verified core to ask its version). Suite doors: `tests/it/cli.rs` (the
+# black-box `ae()` runner and its helpers), `tests/it/install.rs`,
+# `tests/it/shape.rs`, `tests/it/parity.rs` (`mod raw`), `tests/it/doors.rs`.
+# Each carries its reason at the site; the test, not this comment, is the
+# count of record.
 #
 # WHY THIS WAS A BOUNDARY AND WHAT IT IS NOW — READ THIS BEFORE CITING IT.
 # The claim below used to be that the deny was a CAPABILITY boundary, resting on
