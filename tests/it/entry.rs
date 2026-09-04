@@ -31,7 +31,7 @@ use std::time::Duration;
 #[cfg(unix)]
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
-use super::cli::ae;
+use super::cli::{Scratch, ae};
 use super::parity::{Invocation, capture::raw};
 use super::phase2::{run_tmux, tmux_present};
 
@@ -40,17 +40,18 @@ const IDLE_CONFIG: &str = "[profiles]\nidle = \"sleep 600\"\n\n[roster]\nlead = 
 
 /// An isolated ae home and a project directory.
 struct Rig {
-    scratch: PathBuf,
+    scratch: Scratch,
     home: PathBuf,
     project: PathBuf,
     sock: PathBuf,
-    ambient_sock: PathBuf,
 }
 
 impl Rig {
     fn new(tag: &str) -> Self {
-        let scratch = PathBuf::from(format!("/tmp/aeentry.{}.{tag}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&scratch);
+        let mut scratch = Scratch::existing(PathBuf::from(format!(
+            "/tmp/aeentry.{}.{tag}",
+            std::process::id()
+        )));
         let home = scratch.join("aehome");
         let project = scratch.join("project");
         assert!(std::fs::create_dir_all(&project).is_ok(), "a project dir");
@@ -59,9 +60,11 @@ impl Rig {
         let uid = std::fs::metadata(&scratch).map_or(0, |metadata| metadata.uid());
         #[cfg(not(unix))]
         let uid = 0;
+        let sock = scratch.join("sock");
+        scratch.add_tmux_server(sock.clone());
+        scratch.add_tmux_server(scratch.join(format!("tmux-{uid}")).join("default"));
         Self {
-            sock: scratch.join("sock"),
-            ambient_sock: scratch.join(format!("tmux-{uid}")).join("default"),
+            sock,
             scratch,
             home,
             project,
@@ -93,7 +96,7 @@ impl Rig {
         assert!(std::fs::create_dir_all(&bin).is_ok(), "a fake bin dir");
         for tool in ["claude", "codex"] {
             let body = format!(
-                "#!/usr/bin/perl\nuse strict;\nuse warnings;\nopen(my $marker, '>>', '{}') or die; print $marker '{}\\n'; close($marker); sleep 600;\n",
+                "#!/usr/bin/perl\nuse strict;\nuse warnings;\nsystem(\"stty raw -echo 2>/dev/null\");\nbinmode(STDIN, ':raw');\nbinmode(STDOUT, ':raw');\n$| = 1;\nopen(my $marker, '>>', '{}') or die; print $marker '{}\\n'; close($marker);\nif ($0 =~ /codex$/ && $ENV{{AE_HOME}}) {{\n    if (opendir(my $sessions, \"$ENV{{AE_HOME}}/sessions\")) {{\n        for my $name (readdir($sessions)) {{\n            next if $name =~ /^\\./;\n            my $sid = \"$ENV{{AE_HOME}}/sessions/$name/codex.worker.0.sid\";\n            if (open(my $file, '>', $sid)) {{ print $file \"0199c0de-1234-4890-abcd-ef0123456789\\n\"; close($file); last; }}\n        }}\n        closedir($sessions);\n    }}\n}}\nprint \"\\e[?2004h\";\nprint \"\\e[H\\e[2J\";\nprint \"\\e[1m\\xe2\\x9d\\xaf\\e[0m\\xc2\\xa0\\r\\n\";\nprint ((\"\\xe2\\x94\\x80\" x 400), \"\\r\\n\");\nsleep 600;\n",
                 marker.display(),
                 tool,
             );
@@ -133,6 +136,7 @@ impl Rig {
         command
             .env_remove("TMUX")
             .env_remove("TMUX_PANE")
+            .env("HOME", &self.scratch)
             .env("AE_HOME", &self.home)
             .env("CONFIG_FILE", self.config())
             .env("AE_NO_AUTOSTART", "1")
@@ -166,6 +170,7 @@ impl Rig {
         command
             .env_remove("TMUX")
             .env_remove("TMUX_PANE")
+            .env("HOME", &self.scratch)
             .env("AE_HOME", &self.home)
             .env("CONFIG_FILE", self.config())
             .env("AE_NO_AUTOSTART", "1")
@@ -197,30 +202,6 @@ impl Rig {
         ));
         args.extend(tail.iter().map(|arg| (*arg).to_owned()));
         run_tmux(&args, &self.scratch)
-    }
-}
-
-impl Drop for Rig {
-    fn drop(&mut self) {
-        // A test may use either the explicitly selected socket or the ambient
-        // server selected through TMUX_TMPDIR.
-        for (label, socket) in [("selected", &self.sock), ("ambient", &self.ambient_sock)] {
-            let out = self.scratch.join(format!("cleanup-{label}-out"));
-            let err = self.scratch.join(format!("cleanup-{label}-err"));
-            let invocation = Invocation::new("tmux")
-                .arg("-S")
-                .arg(socket)
-                .arg("kill-server");
-            let _ = raw::run(&invocation, &self.scratch, &out, &err);
-        }
-        for _ in 0..40 {
-            let _ = std::fs::remove_dir_all(&self.scratch);
-            if !self.scratch.exists() {
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        }
-        let _ = std::fs::remove_dir_all(&self.scratch);
     }
 }
 
@@ -696,7 +677,7 @@ fn the_first_run_seeds_the_config_only_after_the_dependency_check() {
             leftovers.is_empty(),
             "temp files left behind: {leftovers:?}"
         );
-        rig.scratch.clone()
+        rig.scratch.path().to_owned()
     };
     assert_no_tmux_processes(&scratch);
 }
