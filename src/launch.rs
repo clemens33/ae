@@ -200,6 +200,18 @@ pub fn strip_grok_session_flags(cmd: &str) -> String {
 /// channel, not a session flag, and agy's flag parser takes the LAST spelling —
 /// which is ae's, because ae appends. An operator's own initial prompt loses to
 /// the workspace context, which is the outcome the injection wants.
+///
+/// **`--` ends the strip.** agy is a Go `flag` program, so `--` terminates ITS
+/// parsing too: a word after it is an operand, and `agy -- --continue` asks for
+/// the literal operand `--continue`, not for a resume. A stripper that lexed
+/// past the delimiter would delete an operand the operator explicitly protected,
+/// so everything from `--` onward is copied through untouched.
+///
+/// What this does NOT fix, said plainly rather than implied: ae APPENDS its own
+/// `--conversation <id>` and `-i <ctx>` to the end of the command, so a profile
+/// that ends inside an operand list would have them appended as operands too.
+/// That is true of every tool ae composes for, not just agy, and a profile whose
+/// command ends in `--` is unsupported for all of them.
 #[must_use]
 pub fn strip_agy_session_flags(cmd: &str) -> String {
     let words = words(cmd);
@@ -207,6 +219,10 @@ pub fn strip_agy_session_flags(cmd: &str) -> String {
     let mut index = 0;
     while index < words.len() {
         let word = words[index];
+        if word == "--" {
+            kept.extend_from_slice(&words[index..]);
+            break;
+        }
         if word.starts_with("--conversation=") {
             index += 1;
             continue;
@@ -617,6 +633,18 @@ mod tests {
         assert_eq!(
             inject_session_id("agy --conversation ID -c --flag", PENDING),
             "agy --flag"
+        );
+        // `--` ends the strip: agy is a Go `flag` program, so a word past the
+        // delimiter is an OPERAND and `--continue` there is a literal argument,
+        // not a resume. Deleting it would lose what the operator protected.
+        assert_eq!(
+            strip_agy_session_flags("agy -c -- --continue --conversation ID"),
+            "agy -- --continue --conversation ID"
+        );
+        // And the delimiter does not disarm the stripper ahead of itself.
+        assert_eq!(
+            strip_agy_session_flags("agy --conversation OLD -- keep --continue"),
+            "agy -- keep --continue"
         );
     }
 
