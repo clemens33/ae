@@ -76,14 +76,41 @@ impl Install {
         );
     }
 
+    /// A directory that stands in for a session, with one helper LINK in it.
+    ///
+    /// A helper is a symlink to the core and its `argv[0]` dirname IS the
+    /// session — which is the whole reason a helper must pay the install gate:
+    /// it is another way to reach this same binary.
+    fn helper(&self, name: &str) -> PathBuf {
+        let dir = self.scratch.join("sess");
+        let _ = std::fs::create_dir_all(&dir);
+        let link = dir.join(name);
+        let _ = std::fs::remove_file(&link);
+        assert!(
+            std::os::unix::fs::symlink(self.core(), &link).is_ok(),
+            "a helper link"
+        );
+        link
+    }
+
     /// Run the planted core AS the installed `ae`, with `HOME` pointing at the
     /// fixture and `extra` on top.
     fn run(&self, extra: &[(&str, &str)], argv: &[&str]) -> (Option<i32>, String, String) {
+        self.run_as(&self.core(), extra, argv)
+    }
+
+    /// The same, invoked through `program` — a helper link, or the core itself.
+    fn run_as(
+        &self,
+        program: &Path,
+        extra: &[(&str, &str)],
+        argv: &[&str],
+    ) -> (Option<i32>, String, String) {
         #[allow(
             clippy::disallowed_types,
             reason = "the black-box door: an INSTALLED shape is a process whose current_exe() sits in a version directory, which only running that file produces"
         )]
-        let mut command = std::process::Command::new(self.core());
+        let mut command = std::process::Command::new(program);
         command
             .env_remove("TMUX")
             .env_remove("TMUX_PANE")
@@ -364,5 +391,138 @@ fn doctor_warns_when_the_published_core_is_writable_and_not_when_it_is_not() {
     assert!(
         report.contains("WARN"),
         "a warning, never a refusal — doctor has to RUN to say it: {report}"
+    );
+}
+
+/// **B1.** The gate is not a property of the PUBLIC words — it is a property of
+/// the invocation, and the core's own `_` namespace is the most effectful part
+/// of it. `_shims-render` on a core nobody can vouch for published 21 helper
+/// links and answered 0.
+#[test]
+fn an_internal_entry_pays_the_install_gate_and_publishes_nothing() {
+    let rig = Install::plant("internal");
+    rig.write_manifest("nonsense\n");
+    let session = rig.scratch.join("render");
+    assert!(std::fs::create_dir_all(&session).is_ok(), "a session dir");
+
+    let (code, stdout, stderr) = rig.run(&[], &["_shims-render", &session.display().to_string()]);
+    assert_eq!(code, Some(2), "{stdout}{stderr}");
+    assert!(stderr.contains("SHA256SUMS"), "{stderr}");
+    assert!(stderr.contains("ae upgrade"), "{stderr}");
+    let published = std::fs::read_dir(&session)
+        .map(std::iter::Iterator::count)
+        .unwrap_or_default();
+    assert_eq!(published, 0, "a refused render published {published} links");
+}
+
+/// **B1, the other half.** Every session helper is a link to this binary, so a
+/// helper that skipped the gate was 21 routes around it per session.
+#[test]
+fn a_session_helper_pays_the_install_gate_too() {
+    let rig = Install::plant("helpergate");
+    rig.write_manifest("nonsense\n");
+    let send = rig.helper("send");
+
+    let (code, stdout, stderr) = rig.run_as(&send, &[], &["someone", "hello"]);
+    assert_eq!(code, Some(2), "{stdout}{stderr}");
+    assert!(
+        stderr.contains("SHA256SUMS"),
+        "a helper must refuse for the SAME reason the public word does: {stderr}"
+    );
+}
+
+/// **B2.** A published core run against a foreign `$HOME` used to classify as a
+/// CHECKOUT, which honours `AE_HOME` — so an install could be pointed at
+/// somebody else's state root and would build sessions there.
+#[test]
+fn a_published_core_refuses_a_foreign_home_instead_of_adopting_it() {
+    let rig = Install::plant("foreignhome");
+    let fake = rig.scratch.join("fakehome");
+    let foreign = rig.scratch.join("foreign-ae");
+    assert!(std::fs::create_dir_all(&fake).is_ok(), "a second home");
+
+    let (code, stdout, stderr) = rig.run(
+        &[
+            ("HOME", &fake.display().to_string()),
+            ("AE_HOME", &foreign.display().to_string()),
+        ],
+        &["doctor"],
+    );
+    assert_eq!(code, Some(2), "{stdout}{stderr}");
+    assert!(
+        !foreign.join("sessions").exists(),
+        "a refused invocation built state under the foreign root"
+    );
+    // BOTH roots are named: which of the two is the mistake is the caller's to
+    // know, and the published one is the resolved spelling this core answers
+    // `current_exe()` with.
+    let published = std::fs::canonicalize(&rig.home).unwrap_or_else(|_| rig.home.clone());
+    assert!(
+        stderr.contains(&published.join(".ae").display().to_string()),
+        "the published root is unnamed: {stderr}"
+    );
+    assert!(
+        stderr.contains(&fake.display().to_string()),
+        "the inherited HOME is unnamed: {stderr}"
+    );
+}
+
+/// **B3.** `current_exe()` HAS ONE CALLER, and it is [`ae::shape`].
+///
+/// The two answers differ on macOS — the OS hands back the path this process
+/// was EXEC'D BY, which for `ae` and for all 21 helpers is a SYMLINK — so a raw
+/// call at an execution boundary bakes the caller's invocation path into a pane
+/// command or a child's `argv[0]`, where the helper dispatch reads its basename
+/// back as a different entry. `shape::resolved_exe` canonicalises; nothing else
+/// may ask.
+///
+/// A TEXT SCAN, and it says so: it reads code lines only (a line whose trimmed
+/// start is `//` is prose, and the module docs discuss `current_exe` at
+/// length). It cannot see an aliased re-export, which is why the rule is also
+/// stated where `resolved_exe` lives.
+#[test]
+fn only_shape_asks_the_os_where_this_binary_is() {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut offenders = Vec::new();
+    let mut scanned = 0_usize;
+    let mut pending = vec![src.clone()];
+    while let Some(dir) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                pending.push(path);
+                continue;
+            }
+            if path.extension().is_none_or(|ext| ext != "rs") {
+                continue;
+            }
+            if path.file_name().is_some_and(|name| name == "shape.rs") {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            scanned += 1;
+            for (number, line) in text.lines().enumerate() {
+                if line.trim_start().starts_with("//") {
+                    continue;
+                }
+                if line.contains("env::current_exe(") || line.contains("use std::env::current_exe")
+                {
+                    offenders.push(format!("{}:{}", path.display(), number + 1));
+                }
+            }
+        }
+    }
+    assert!(
+        scanned > 10,
+        "the scan found only {scanned} sources; it did not run"
+    );
+    assert!(
+        offenders.is_empty(),
+        "current_exe() belongs to shape::resolved_exe, which resolves it: {offenders:?}"
     );
 }

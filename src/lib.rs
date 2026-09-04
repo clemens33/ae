@@ -236,8 +236,14 @@ pub fn run_program(
             Ok(entry::EXIT_USAGE)
         }
         // A helper carries no preamble: the pane execs the link directly, so
-        // the translated argv goes straight to the ordinary dispatch.
+        // the translated argv goes straight to the ordinary dispatch — through
+        // the gate, which is the ONE thing a helper still pays. Every helper is
+        // a link to this binary, so a helper that skipped it was a route around
+        // the install check for 21 names per session.
         shim::Invocation::Helper { helper, dir } => {
+            if let Some(code) = install_gate(err)? {
+                return Ok(code);
+            }
             run_dispatch(&shim::translate(helper, &dir, args), out, err)
         }
     }
@@ -274,16 +280,11 @@ fn invocation_dir() -> std::path::PathBuf {
 /// # Ok::<(), ae::Error>(())
 /// ```
 pub fn run(args: &[String], out: &mut impl Write, err: &mut impl Write) -> Result<u8> {
-    // TWO WORDS ARE OWED AN ANSWER ON A BROKEN INSTALL, and both therefore sit
-    // AHEAD of the version-directory gate: `version` is how a mismatch is
-    // diagnosed, so it may not depend on the thing it diagnoses, and `upgrade`
-    // is how one is repaired. This is the wrapper's own ordering, kept.
-    //
-    // The third arm is the core's OWN namespace. A `_`-prefixed word is an
-    // internal entry: it carries its operands, consumes no ambient fact, and is
-    // never a session name — so it dispatches straight through, which is also
-    // what keeps `_run`, the command every pane execs, from paying for the tmux
-    // probes below. An unserved one FAILS CLOSED rather than becoming a launch.
+    // TWO WORDS ARE OWED AN ANSWER ON A BROKEN INSTALL, and they are the ONLY
+    // two, which is why they sit ahead of the gate: `version` is how a mismatch
+    // is diagnosed, so it may not depend on the thing it diagnoses, and
+    // `upgrade` is how one is repaired. This is the wrapper's own ordering,
+    // kept.
     match args.first().map(String::as_str) {
         Some("version" | "--version" | "-V") => {
             writeln!(out, "{}", version_line())?;
@@ -291,28 +292,34 @@ pub fn run(args: &[String], out: &mut impl Write, err: &mut impl Write) -> Resul
             return Ok(0);
         }
         Some("upgrade") => return upgrade::run(&args[1..], out, err),
-        Some(word) if word.starts_with('_') => {
-            if !cli::serves(word) {
-                writeln!(err, "ae: unknown internal command '{word}'.")?;
-                err.flush()?;
-                return Ok(entry::EXIT_USAGE);
-            }
-            return run_dispatch(args, out, err);
-        }
         _ => {}
     }
-    let shape = shape::current();
-    if let shape::Shape::Installed {
-        version_dir,
-        version,
-        ..
-    } = shape
-        && let Err(broken) = shape::validate(&shape::OnDisk(version_dir), version, VERSION)
-    {
-        writeln!(err, "{broken}")?;
-        err.flush()?;
-        return Ok(entry::EXIT_USAGE);
+    // THE GATE, above every remaining word. It used to sit BELOW the `_` arm,
+    // which meant the core's own namespace was exempt from the check that says
+    // this binary is the one `install` published: on a planted install whose
+    // manifest had been replaced with nonsense, `_shims-render <dir>` answered
+    // 0 and published 21 helper links (measured, pre-fix). What the `_` arm
+    // still skips is the TMUX PROBES below, which is what keeps `_run` — the
+    // command every pane execs — cheap. The gate is not a probe: three lstats
+    // and one small read, no tmux and no state.
+    if let Some(code) = install_gate(err)? {
+        return Ok(code);
     }
+    // The core's OWN namespace. A `_`-prefixed word is an internal entry: it
+    // carries its operands, consumes no ambient fact, and is never a session
+    // name — so it dispatches straight through. An unserved one FAILS CLOSED
+    // rather than becoming a launch.
+    if let Some(word) = args.first().map(String::as_str)
+        && word.starts_with('_')
+    {
+        if !cli::serves(word) {
+            writeln!(err, "ae: unknown internal command '{word}'.")?;
+            err.flush()?;
+            return Ok(entry::EXIT_USAGE);
+        }
+        return run_dispatch(args, out, err);
+    }
+    let shape = shape::current();
     // ONE aggregated notice, and only on this path: an agent's `send` would
     // otherwise turn one stale export into a line of noise in every pane.
     if let Some(line) = doors::notice(&doors::ignored(shape)) {
@@ -323,6 +330,46 @@ pub fn run(args: &[String], out: &mut impl Write, err: &mut impl Write) -> Resul
         return Ok(EXIT_UNAVAILABLE);
     };
     run_entry(&preamble, args, out, err)
+}
+
+/// The structural install gate — the ONE place every effectful invocation
+/// proves this binary is the one `install` published.
+///
+/// `Some(code)` is a refusal already written to `err`; `None` means carry on.
+///
+/// EVERY EFFECTFUL PATH PASSES IT: the public commands, the core's own `_`
+/// namespace, and the 21 session-helper links, which are all links to this same
+/// binary and reach it through [`run_program`]. Only `version` and `upgrade`
+/// stand ahead of it, because one diagnoses a broken install and the other
+/// repairs it.
+///
+/// VALIDATION ONLY, deliberately. No tmux, no state read, no probe: this runs
+/// on `_run`, which every pane execs, and on every `send` an agent types, so it
+/// costs what [`shape::validate`] costs and nothing more.
+fn install_gate(err: &mut impl Write) -> Result<Option<u8>> {
+    match shape::current() {
+        shape::Shape::Installed {
+            version_dir,
+            version,
+            ..
+        } => {
+            if let Err(broken) = shape::validate(&shape::OnDisk(version_dir), version, VERSION) {
+                writeln!(err, "{broken}")?;
+                err.flush()?;
+                return Ok(Some(entry::EXIT_USAGE));
+            }
+        }
+        shape::Shape::Displaced { home, declared } => {
+            writeln!(err, "{}", shape::displaced_refusal(home, declared))?;
+            err.flush()?;
+            return Ok(Some(entry::EXIT_USAGE));
+        }
+        // A checkout has no published directory to vouch for. `ae-dev` and the
+        // two bash suites are its only callers, and they build the binary they
+        // run.
+        shape::Shape::Checkout => {}
+    }
+    Ok(None)
 }
 
 /// Every ambient fact this invocation carries, read from the doors.

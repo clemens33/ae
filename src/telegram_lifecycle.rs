@@ -349,9 +349,12 @@ fn status(paths: &Paths, server: &ServerId, out: &mut impl Write) -> crate::Resu
     if let Some((category, at)) = last_refusal(&state_dir) {
         writeln!(out, "  autostart: last refusal={category} at {at}")?;
     }
-    match std::env::current_exe() {
-        Ok(core) => writeln!(out, "  core:    {}", core.display())?,
-        Err(_) => writeln!(out, "  core:    unknown (this process cannot name itself)")?,
+    // The RESOLVED path, so the row names the binary a daemon would actually
+    // be started as rather than the link this status happened to be typed
+    // through.
+    match crate::shape::resolved_exe() {
+        Some(core) => writeln!(out, "  core:    {}", core.display())?,
+        None => writeln!(out, "  core:    unknown (this process cannot name itself)")?,
     }
     // The token row reports the DAEMON's own verdict, not a second opinion: the
     // same loader, so a status that says OK is a start that will not refuse.
@@ -486,7 +489,9 @@ pub fn daemon_running(server: &ServerId) -> Option<bool> {
 /// never ride argv — the daemon reads `token_file` / `chat_id` out of the
 /// `--config` file itself.
 fn spawn_daemon(paths: &Paths, server: &ServerId) {
-    let Ok(core) = std::env::current_exe() else {
+    // RESOLVED, never raw: the daemon's command is direct argv, and an
+    // unresolved macOS answer would hand tmux whichever link started it.
+    let Some(core) = crate::shape::resolved_exe() else {
         return;
     };
     let command = vec![
