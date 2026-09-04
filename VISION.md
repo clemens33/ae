@@ -39,13 +39,14 @@ listed in AGENTS.md and has not changed.
 
 ## The shape today
 
-**One typed core, one Bash file.** The public `ae` command is a small wrapper that
-validates a matched, immutable pair — wrapper and Rust core — out of one versioned
-directory, then execs the core once with the facts it cannot see for itself. The core owns
-state, lifecycle, the daemons and every command. That wrapper is now the whole of ae's
-Bash: a session's helpers are symlinks to the core and a pane's command is a core entry, so
-nothing generated is a script any more. Rust calls the `tmux` CLI directly — bash was
-always the glue, never the API.
+**One typed core, no wrapper.** The public `ae` command is a symlink straight into a
+versioned, read-only install directory — `~/.local/bin/ae` → `~/.ae/versions/<V>/ae-core`.
+There is no pair to validate any more: the core decides INSTALLED vs CHECKOUT from where
+its own binary resolves to, not from a second file agreeing with it. The core owns state,
+lifecycle, the daemons and every command; a session's helpers are symlinks to it and a
+pane's command is a core entry, so nothing generated is a script any more. Rust calls the
+`tmux` CLI directly — bash was always the glue, never the API, and the one bash file left
+in the product is the installer itself.
 
 **Why the core is Rust.** Agents author most of this code, and a restrictive compiler is a
 free review lane that never gets tired: a `Result` must be consumed, so the silent-abort
@@ -61,10 +62,13 @@ their panes run it directly through a link named for the job. Python contrib is 
 analytics sidecars stay Python contrib indefinitely.
 
 **Install preserves the user-level contract.** After Bash >= 4, tmux, and git are present,
-one command installs a checksum-verified three-member bundle (`ae`, `ae-core`,
-`install`). It needs no Rust runtime, run-time package manager, or service; macOS is built
-natively on `macos-15`, while Linux amd64 release bundles are static musl. Building from source
-instead compiles a native binary for the current machine.
+one command installs a checksum-verified three-member bundle (`ae-core`, `install`,
+`SHA256SUMS`), publishes it read-only under `~/.ae/versions/<V>/`, and points
+`~/.local/bin/ae` straight at that version's `ae-core` — the public command is the
+bundle's core member, not a separate file. It needs no Rust runtime, run-time package
+manager, or service; macOS is built natively on `macos-15`, while Linux amd64 release
+bundles are static musl. Building from source instead compiles a native binary for the
+current machine.
 
 ## Where it is going
 
@@ -72,9 +76,10 @@ instead compiles a native binary for the current machine.
   pane-side block retires as soon as the core can own it outright. The bash-hazards checklist
   in AGENTS.md governs what is left.
 - **Upgrading carries running sessions across.** `ae upgrade` already installs a release and
-  repoints the wrapper, but a running session is only reported and left pinned until someone
-  stops and resumes it by hand. The next step is doing that part too: inventory what is
-  running, switch, and bring exactly that set back — without ending or archiving anything.
+  repoints `~/.local/bin/ae` at the new `ae-core`, but a running session is only reported and
+  left pinned until someone stops and resumes it by hand. The next step is doing that part
+  too: inventory what is running, switch, and bring exactly that set back — without ending or
+  archiving anything.
 - **Ownership grain is the mutation domain, never the file.** One logical operation — one
   command, one transaction — is owned wholly by one side. Per-file single-writer is not
   enough: it still permits a split transaction across events, meta, requests, claims and

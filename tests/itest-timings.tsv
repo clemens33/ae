@@ -2,8 +2,6 @@
 # longest-first. Regenerate with: tests/itest-par --timings
 3	Test 1: Lifecycle — create, list, end
 7	core binding: requests shims to a pinned Rust core, or falls back visibly
-1	server pair: a SET-EMPTY half is a DECLARED server, not an absent one
-2	hostile PATH: ae must survive its own re-exec marker
 5	Test 2: Resume detection
 6	identity v2: resuming a v1 meta migrates the roster in place
 4	Test 2b: Rename moves session, window, and meta

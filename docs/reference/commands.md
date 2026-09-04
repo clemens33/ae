@@ -156,11 +156,11 @@ To request a specific release, set a CalVer pin in the environment:
 AE_VERSION=2026.8.2 ae upgrade
 ```
 
-The public wrapper dispatches this repair path before its wrapper/core
-pair gate, so a broken installed generation can still repair itself. Its
-immutable sibling installer downloads the selected release, verifies its
-checksum before extraction, and atomically publishes the matched immutable
-version and current selectors.
+`ae upgrade` execs its immutable sibling `install`, published beside `ae-core` in the same
+version directory, so a broken installed generation can still repair itself. `install`
+downloads the selected release, verifies its checksum before extraction, publishes the new
+immutable version read-only under `~/.ae/versions/<V>/`, and atomically repoints
+`~/.local/bin/ae` directly at that version's `ae-core`.
 
 Stopped session directories are untouched and consume the current version on
 their next resume. Running sessions are reported by name as deferred until
@@ -202,10 +202,11 @@ config parses and names a startup roster whose profiles resolve to real executab
 the state root's sessions are coherent, and whether each session's recorded core agrees with
 the binary answering right now.
 
-The report is the core's. The wrapper hands it the one fact the core cannot see — which bash
-is running the wrapper, passed as `--bash-major` — because `ae` re-execs itself under a
-modern bash when its shebang lands on macOS's 3.2, and a core probing `bash --version` would
-report whatever is first on `PATH` instead.
+The report is the core's. Its bash-version row is fed through a `--bash-major` flag rather
+than the core probing `bash --version` itself, which would report whatever is first on
+`PATH` instead of what actually invoked it — a distinction that mattered when a Bash
+wrapper re-exec'd itself under a modern bash on macOS's 3.2. That wrapper is gone as of
+Z3; what now supplies `--bash-major` to a directly-run `ae-core` is being reworked with it.
 
 Three rows the frozen bash `doctor` printed are **dropped rather than reported as
 permanently OK**: `flock` and `timeout` are no longer ae's dependencies (the core locks with
@@ -333,10 +334,13 @@ ae telegram status      # report intent + runtime + core + token validation
 Machine-global daemon that bridges every ae session on this host to one Telegram chat. Single instance per machine (one `ae-telegram` tmux session). Outbound forwards filtered events to chat. Inbound (when `allowed_user_ids` is set) offers three ways to reach an agent: **reply** to a forwarded event (routes to that agent), the compact **`@session:agent <msg>`** prefix, and a sticky **`/use <session> <agent>`** default for plain messages — plus the explicit `/list` and `/session <name|id-prefix> send|ask <agent> <msg>`. All paths share the same session/agent revalidation. Inbound is from the configured private chat only — auth requires matching `from.id` + `chat.id` + a private chat.
 
 `setup`, `start`, `stop` and `status` are core operations, and the daemon is the ae core
-binary running `_telegram-run` — no `jq`, no `curl`, no extra CLI dependency. The wrapper's
-preamble passes only what the core will not read for itself: which config to honour, which
-home to keep state under, and which tmux server the daemon's session belongs on. See the [Telegram
-bridge](telegram.md) page for setup, config schema, inbound trust boundary, and lifecycle.
+binary running `_telegram-run` — no `jq`, no `curl`, no extra CLI dependency. What the core
+does not read for itself — which config to honour, which home to keep state under, and
+which tmux server the daemon's session belongs on — used to arrive as the wrapper's
+preamble. Slice Z3 deleted the wrapper and each of those facts became an env DOOR the core
+reads directly (`CONFIG_FILE`, `AE_HOME`, `AE_TMUX_SERVER` with its kind). See the
+[Telegram bridge](telegram.md) page for setup, config schema, inbound trust boundary, and
+lifecycle.
 
 ## `ae rename [old] <new>`
 
@@ -394,7 +398,7 @@ from a script running inside the session).
 ### Stopping every session (`ae stop all`)
 
 `ae stop all` stops every session **ae's own metadata owns**, using each
-session's recorded tmux server metadata. The public wrapper ignores ambient
+session's recorded tmux server metadata rather than ambient
 `AE_TMUX_SERVER` for operational commands.
 
 The loop always runs *outside* the calling process, whether or not the caller is one of

@@ -6,7 +6,7 @@
 [![tmux](https://img.shields.io/badge/requires-tmux-1BB91F.svg)](https://github.com/tmux/tmux)
 [![Install: curl | bash](https://img.shields.io/badge/install-curl%20%7C%20bash-orange.svg)](#install)
 
-**ae** runs AI coding agents side-by-side in tmux. They know about each other, communicate by name, and survive reboots. One public command, a Rust core, and one Bash wrapper between them.
+**ae** runs AI coding agents side-by-side in tmux. They know about each other, communicate by name, and survive reboots. One public command — a symlink straight to a versioned Rust core, nothing between them.
 
 Works with any CLI-based agentic harness.
 
@@ -27,11 +27,12 @@ Works with any CLI-based agentic harness.
 curl -fsSL https://raw.githubusercontent.com/clemens33/ae/main/install | bash
 ```
 
-The installer downloads the platform bundle and `SHA256SUMS` to temporary files,
-verifies the bundle before extraction, then atomically publishes an immutable
-versioned install under `~/.ae/versions` and points `~/.local/bin/ae` at its
-public wrapper. Make sure `~/.local/bin` is on your `PATH`, then run `ae doctor`.
-Set `AE_VERSION=2026.8.2` to pin a release.
+The installer downloads the platform bundle (`ae-core`, `install`, `SHA256SUMS`) and
+verifies it against the manifest before extraction, then publishes it read-only under
+`~/.ae/versions/<V>/` and points `~/.local/bin/ae` straight at that version's `ae-core` —
+one symlink, no separate wrapper or pointer file to keep in sync. Switching versions later
+is one atomic rename of that symlink. Make sure `~/.local/bin` is on your `PATH`, then run
+`ae doctor`. Set `AE_VERSION=2026.8.2` to pin a release.
 
 | Platform | Bundle | Status |
 |---|---|---|
@@ -185,7 +186,11 @@ No custom protocols, no frameworks. Just system prompts and bash scripts agents 
 
 ## One public command, typed core
 
-`ae` is a small public wrapper over a versioned Rust core. `--copy` and `--worktree` give agents isolated workspaces when you want them.
+`ae` IS the versioned Rust core: `~/.local/bin/ae` is a symlink straight to
+`~/.ae/versions/<V>/ae-core`, published read-only. There is no wrapper between them —
+the core tells INSTALLED from CHECKOUT by where its own binary resolves to, not by a
+second file agreeing with it. `--copy` and `--worktree` give agents isolated workspaces
+when you want them.
 
 Everything else is **optional**, never required for core commands:
 
@@ -197,8 +202,8 @@ Everything else is **optional**, never required for core commands:
 
 Both daemons are Rust, start to finish: the watchdog pane runs core `_watchdog-run`, the bridge runs core `_telegram-run`, and `ae watchdog`/`ae telegram` are core operations. Neither needs `jq` or `curl`. Autostart controls are per component: set `watchdog = false` in workspace config to disable the workspace watchdog; set `enabled = false` in Telegram config to disable Telegram; set `AE_NO_AUTOSTART=1` to start neither companion with a launch.
 
-A public entry cannot reach coreless Bash mode: it validates the matched wrapper and core
-before execution, and refuses when no core can be bound. See **[VISION.md](VISION.md)**.
+There is no coreless mode to fall back to: the public `ae` command is the core binary
+itself, so there is nothing separate to bind. See **[VISION.md](VISION.md)**.
 
 ### Upgrade
 
@@ -206,7 +211,12 @@ before execution, and refuses when no core can be bound. See **[VISION.md](VISIO
 ae upgrade
 ```
 
-`ae upgrade` installs the latest release (or an `AE_VERSION` pin) through its immutable sibling installer, verifies the checksum before extraction, and atomically repoints the public wrapper and `core/current`. A stopped session consumes the current version on its next resume. A running session is reported by name and stays pinned until it is stopped and resumed; upgrades never hot-rewrite running sessions.
+`ae upgrade` execs its immutable sibling `install`, which downloads the latest release
+(or an `AE_VERSION` pin), verifies the checksum before extraction, publishes the new
+version read-only under `~/.ae/versions/<V>/`, and atomically repoints `~/.local/bin/ae`
+directly at its `ae-core`. A stopped session consumes the current version on its next
+resume. A running session is reported by name and stays pinned until it is stopped and
+resumed; upgrades never hot-rewrite running sessions.
 
 ## Requirements
 

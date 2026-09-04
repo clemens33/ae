@@ -2,20 +2,26 @@
 
 ## Topology
 
-The public `~/.local/bin/ae` wrapper selects one immutable `~/.ae/versions/<V>/` set: `ae`
-(the wrapper, built from `ae-entry`), `ae-core` (Rust lifecycle/state core), and `install`
-(the immutable sibling used by `ae upgrade`). `~/.ae/current` points at that set and
-`~/.ae/core/current` points at its core. It was a four-member set until slice Z1 deleted
-`ae-glue`.
+`~/.local/bin/ae` is a plain symlink into one immutable `~/.ae/versions/<V>/` set: `ae-core`
+(Rust lifecycle/state core), `install` (the immutable sibling used by `ae upgrade`), and
+`SHA256SUMS` (the manifest covering the other two, by bare basename, `ae-core` first). The
+version directory and its executable members are published 0555, the manifest 0444, so the
+installed core cannot be written through any path that reaches it. The symlink points
+directly at that version's `ae-core` — there is no `ae` wrapper member, no `~/.ae/current`,
+and no `~/.ae/core/current`; a second pointer at a single target is a second answer waiting
+to disagree, and slice Z3 deleted both along with `ae-entry`, the last of ae's Bash besides
+the installer itself. Switching versions is one atomic rename of the `~/.local/bin/ae`
+symlink. The core tells INSTALLED from CHECKOUT by comparing its own resolved location
+against `~/.ae/versions/<V>/ae-core`, not by reading a second file that has to agree with it.
 
-The diagrams and sections below model what happens after the wrapper execs the core. They
-are not a model of the wrapper/core/installer topology itself.
+The diagrams and sections below model what happens once `ae` — now the core itself — runs.
+They are not a model of the versioned-install topology above.
 
 ## Mental model
 
 ```mermaid
 flowchart LR
-    User[You] -->|one exec after wrapper/core validation| AE[ae-core]
+    User[You] -->|runs the ae-core binary directly| AE[ae-core]
     AE --> Cfg[~/.ae/config<br/>INI parser]
     AE --> Tmux[(tmux session)]
     AE --> SessDir[~/.ae/sessions/&lt;name&gt;/<br/>helpers + meta + events.jsonl]
@@ -63,15 +69,16 @@ flowchart TB
 
 The regenerate step runs on a new launch or resume, never against an already-running session. After an installed upgrade, stopped sessions bind the new generation on resume while running sessions stay pinned; no migration ceremony is needed.
 
-## The public wrapper
+## The public command
 
-`ae-entry` is the whole of ae's Bash and nothing more: the versioned-pair validation,
-`version` and `upgrade`, the `bash >= 4` re-exec, the core binding, the sensor that answers
-whether the caller is really inside a tmux pane, the typed tmux server pair, and ONE exec of
-the core with a fixed preamble followed by `--` and the caller's argv verbatim. There is no
-dispatcher, no help text, no name grammar and no config writer left in bash: the core reads
-every fact and performs every effect. The wrapper's own header lists the ABSENCES the test
-suite asserts, which is the place to look before adding anything back.
+There is no wrapper. `~/.local/bin/ae` is a symlink straight to `~/.ae/versions/<V>/ae-core`,
+and running `ae` runs that binary directly — no re-exec, no pair to validate, no preamble
+handed across a process boundary. `version` prints the crate version; `upgrade` execs the
+immutable sibling `install` published beside it in the same version directory, which
+publishes the new version and atomically repoints `~/.local/bin/ae` at it. The one bash file
+left in the product is `install` itself — everything else the old `ae-entry` wrapper did
+(dispatcher, help text, name grammar, config writer, the facts it used to hand the core
+across the exec) is gone with it, not replaced.
 
 ## Per-session state on disk
 
