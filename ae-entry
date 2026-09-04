@@ -503,16 +503,40 @@ _ae_install_tmux_shim() {
         }
         return 0
     fi
-    [[ -n "${AE_TMUX_SERVER:-}" ]] || return 0
-    if [[ "${AE_TMUX_SERVER_KIND:-}" == "socket" ]]; then
-        tmux() { command tmux -S "$AE_TMUX_SERVER" "$@"; }
-    elif [[ "${AE_TMUX_SERVER_KIND:-}" == "name" ]]; then
-        tmux() { command tmux -L "$AE_TMUX_SERVER" "$@"; }
-    elif [[ "$AE_TMUX_SERVER" == /* ]]; then
-        tmux() { command tmux -S "$AE_TMUX_SERVER" "$@"; }
-    else
-        tmux() { command tmux -L "$AE_TMUX_SERVER" "$@"; }
+    # SET IS THE TEST HERE TOO, and for the same reason as in the resolver: a
+    # declared pair that cannot be routed must NOT leave the ambient server in
+    # place. It used to: `AE_TMUX_SERVER_KIND=name AE_TMUX_SERVER=` failed the
+    # old `-n "$AE_TMUX_SERVER"` gate, no shim was installed, the resolver's
+    # first branch then asked the AMBIENT server for its socket path and got a
+    # confident answer — so a broken re-export landed a session on a server
+    # nobody asked for, instead of the refusal the core issues when the pair
+    # reaches it.
+    if [[ -z "${AE_TMUX_SERVER+x}" && -z "${AE_TMUX_SERVER_KIND+x}" ]]; then
+        return 0
     fi
+    local _srv="${AE_TMUX_SERVER-}" _kind="${AE_TMUX_SERVER_KIND-}"
+    if [[ -z "${AE_TMUX_SERVER_KIND+x}" ]]; then
+        # An UNSET kind is typed from the value's shape — the resolver's rule,
+        # stated once more here because the two must agree about which server
+        # this is.
+        if [[ "$_srv" == /* ]]; then _kind="socket"; else _kind="name"; fi
+    fi
+    if [[ -n "$_srv" ]]; then
+        if [[ "$_kind" == "socket" ]]; then
+            tmux() { command tmux -S "$AE_TMUX_SERVER" "$@"; }
+            return 0
+        elif [[ "$_kind" == "name" ]]; then
+            tmux() { command tmux -L "$AE_TMUX_SERVER" "$@"; }
+            return 0
+        fi
+    fi
+    # Declared but unroutable. Refuse rather than substitute; the pair still
+    # crosses the preamble verbatim and the core says exactly what is wrong
+    # with it.
+    tmux() {
+        echo "ae: refusing tmux operation — AE_TMUX_SERVER/AE_TMUX_SERVER_KIND do not name a usable server." >&2
+        return 1
+    }
     return 0
 }
 
@@ -586,12 +610,19 @@ _ae_inside_tmux() {
 resolve_launch_tmux_server() {
     _LAUNCH_SRV_KIND=""
     _LAUNCH_SRV_VALUE=""
+    # THE PAIR IS RESOLVED OR IT IS NOT, and neither half's emptiness answers
+    # that: `ambiguous` with an empty value is a resolved REFUSAL, and testing
+    # the strings instead of this flag silently dropped it (see the SET rule
+    # below). The crossing gate in _ae_entry_exec_core reads this and nothing
+    # else.
+    _LAUNCH_SRV_SET=0
     local _sp _pid _cand _cpid
     _sp="$(tmux display-message -p '#{socket_path}' 2>/dev/null || true)"
     if [[ -n "$_sp" ]]; then
         if [[ "$_sp" == /* ]]; then
             _LAUNCH_SRV_KIND="socket"
             _LAUNCH_SRV_VALUE="$_sp"
+            _LAUNCH_SRV_SET=1
             return 0
         fi
         _pid="$(tmux display-message -p '#{pid}' 2>/dev/null || true)"
@@ -604,19 +635,31 @@ resolve_launch_tmux_server() {
             if [[ -n "$_cpid" && "$_cpid" == "$_pid" ]]; then
                 _LAUNCH_SRV_KIND="socket"
                 _LAUNCH_SRV_VALUE="$_cand"
+                _LAUNCH_SRV_SET=1
                 return 0
             fi
         fi
         _LAUNCH_SRV_KIND="ambiguous"
         _LAUNCH_SRV_VALUE="$_sp"
+        _LAUNCH_SRV_SET=1
         return 0
     fi
-    if [[ -n "${AE_TMUX_SERVER:-}" ]]; then
+    if [[ -n "${AE_TMUX_SERVER+x}" || -n "${AE_TMUX_SERVER_KIND+x}" ]]; then
+        # SET IS THE TEST, NOT NONEMPTY — the same rule the bundle sanitizer
+        # applies to the same two variables. An empty value is not an absent
+        # one: `AE_TMUX_SERVER_KIND=ambiguous AE_TMUX_SERVER=` is a refusal the
+        # upstream probe minted about a server whose path it could not prove,
+        # and a `-n "$AE_TMUX_SERVER"` gate dropped the whole pair on the floor
+        # and let the launch proceed on the ambient server — the exact outcome
+        # `ambiguous` exists to prevent. EITHER variable being set resolves the
+        # pair; BOTH halves then cross verbatim and the core answers.
+        #
         # The re-export path carries the kind SEPARATELY (AE_TMUX_SERVER_KIND).
         # A kind that IS set is passed through VERBATIM — including `ambiguous`,
-        # and including a word this script has never heard of. Only an UNSET kind
-        # is typed from the value's shape. Never strip prefixes from the value: a
-        # legacy -L server may literally be named "S:evil".
+        # including the empty string, and including a word this script has never
+        # heard of. Only an UNSET kind is typed from the value's shape. Never
+        # strip prefixes from the value: a legacy -L server may literally be
+        # named "S:evil".
         #
         # WHY VERBATIM. `ambiguous` is a REFUSAL, minted upstream by the one place
         # that can tell: the socket-path probe above, when a relative path could
@@ -627,14 +670,15 @@ resolve_launch_tmux_server() {
         # reads the kind first and REFUSES one it cannot type: exit 2, before any
         # effect, and explicitly rather than falling back to the ambient server.
         # This script's job is to hand over what it was told, not to improve it.
-        if [[ -n "${AE_TMUX_SERVER_KIND:-}" ]]; then
+        if [[ -n "${AE_TMUX_SERVER_KIND+x}" ]]; then
             _LAUNCH_SRV_KIND="$AE_TMUX_SERVER_KIND"
         elif [[ "$AE_TMUX_SERVER" == /* ]]; then
             _LAUNCH_SRV_KIND="socket"
         else
             _LAUNCH_SRV_KIND="name"
         fi
-        _LAUNCH_SRV_VALUE="$AE_TMUX_SERVER"
+        _LAUNCH_SRV_VALUE="${AE_TMUX_SERVER:-}"
+        _LAUNCH_SRV_SET=1
         return 0
     fi
     # DELIBERATELY a bare $TMUX test, unlike the client-semantics probe above:
@@ -645,6 +689,7 @@ resolve_launch_tmux_server() {
     if [[ -n "${TMUX:-}" ]]; then
         _LAUNCH_SRV_KIND="socket"
         _LAUNCH_SRV_VALUE="${TMUX%%,*}"
+        _LAUNCH_SRV_SET=1
     fi
     return 0
 }
@@ -676,7 +721,7 @@ _ae_entry_exec_core() {
         pre+=(--local-config "$PWD/.ae/config")
     fi
     resolve_launch_tmux_server
-    if [ -n "$_LAUNCH_SRV_KIND" ] || [ -n "$_LAUNCH_SRV_VALUE" ]; then
+    if [ "$_LAUNCH_SRV_SET" -eq 1 ]; then
         pre+=(--server-kind "$_LAUNCH_SRV_KIND" --server "$_LAUNCH_SRV_VALUE")
     fi
     # Attach vs switch-client is decided by whether the CALLER is in a pane, and

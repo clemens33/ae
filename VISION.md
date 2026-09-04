@@ -27,7 +27,7 @@ listed in AGENTS.md and has not changed.
 - **Simplicity is the feature.** The whole tool must stay understandable in one sitting.
 - **Daily productivity over feature completeness.** If it does not save time on every use,
   it does not belong. Resisting features is the work.
-- **One command to install after prerequisites.** A checksum-verified four-member bundle
+- **One command to install after prerequisites.** A checksum-verified three-member bundle
   needs no Rust runtime, run-time package manager, or service to keep alive. Bash >= 4,
   tmux, and git remain required and are not bundled.
 - **Your repo stays clean.** Session state lives in `~/.ae/sessions/`, archives in

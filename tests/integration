@@ -1278,6 +1278,60 @@ unset _cb_bad_rc
 "$AE" end test-core --force >/dev/null 2>&1 || true
 fi
 
+# ── server pair: a SET-EMPTY half is a declared server ────────────────
+if _itest_section 'server pair: a SET-EMPTY half is a DECLARED server, not an absent one'; then
+
+# THE EXIT CODE IS THE ASSERTION. `resolve_launch_tmux_server` gated the pair on
+# the two strings being NONEMPTY, so `AE_TMUX_SERVER_KIND=ambiguous
+# AE_TMUX_SERVER=` — exactly the shape the socket probe mints when it cannot
+# prove a relative path — never reached the preamble at all. The core then saw no
+# server, resolved the AMBIENT one, and the run continued to a different failure:
+# rc 1 for the argv, where the refusal owed rc 2 before any effect. A pair that
+# is dropped does not announce itself; the code it changes does.
+#
+# End to end deliberately. The unit suite pins the flags the wrapper EMITS; this
+# pins that what the core is handed produces the refusal, through the real
+# binary. `--from` with a non-UUID gives every arm the same rc-1 remainder, so
+# the control proves the command reaches its argv error when the pair is genuinely
+# absent — without which "rc 2" would pass for a wrapper that refused everything.
+_sp_repo="$(setup_repo)"
+_sp_dir="$HOME/.ae/serverpair"
+mkdir -p "$_sp_dir"
+_sp_run() {
+    _sp_rc=0
+    (cd "$_sp_repo" && env -u TMUX -u TMUX_PANE -u AE_TMUX_SERVER -u AE_TMUX_SERVER_KIND \
+        "$@" "$AE" sp-never --from not-an-archive) \
+        >"$_sp_dir/out" 2>"$_sp_dir/err" || _sp_rc=$?
+    return 0
+}
+
+_sp_run AE_TMUX_SERVER_KIND=ambiguous AE_TMUX_SERVER=''
+assert_eq "server pair: ambiguous with a set-empty value refuses with the usage code" "2" "$_sp_rc"
+assert_contains "server pair: ...and says the kind is the thing it cannot resolve" \
+    "is not a tmux server kind" "$(cat "$_sp_dir/err")"
+assert_contains "server pair: ...and states it will not use the ambient server instead" \
+    "will not fall back to the ambient server" "$(cat "$_sp_dir/err")"
+
+_sp_run AE_TMUX_SERVER_KIND='' AE_TMUX_SERVER=work
+assert_eq "server pair: a set-empty kind beside a value refuses too" "2" "$_sp_rc"
+assert_contains "server pair: ...and says the kind is what is missing" \
+    "without a --server-kind" "$(cat "$_sp_dir/err")"
+
+_sp_run AE_TMUX_SERVER_KIND=name AE_TMUX_SERVER=''
+assert_eq "server pair: a kind beside a set-empty value refuses too" "2" "$_sp_rc"
+
+# THE OPPOSED CONTROL: with neither variable set there is no declared pair, the
+# ambient server is the right answer, and the command must get all the way to its
+# own argv error. Without this arm every assertion above is satisfied by a wrapper
+# that refuses unconditionally.
+_sp_run
+assert_eq "server pair: neither variable set reaches the command's own error" "1" "$_sp_rc"
+assert_contains "server pair: ...and that error is the argv one, not a server one" \
+    "archive UUID" "$(cat "$_sp_dir/err")"
+assert_not_exists "server pair: no arm created a session" "$HOME/.ae/sessions/sp-never"
+unset _sp_rc
+fi
+
 # ── hostile PATH: ae must survive its own re-exec marker ──────────────
 if _itest_section 'hostile PATH: ae must survive its own re-exec marker'; then
 # On a macOS login shell path_helper puts /bin first, so ae's own
