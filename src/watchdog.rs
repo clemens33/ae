@@ -1949,7 +1949,7 @@ tail line
     fn a_zero_cadence_removes_the_branch_rather_than_emptying_it() {
         // The disabled cadence, with its own control: the SAME inputs that
         // produce a wedge alert on the frozen cadence produce NO BRANCH at all
-        // on `0` — the
+        // on `0` — the caller falls through to the normal watchdog.
         let prior = SweepState {
             first_delivered: Some(at(0)),
             ..SweepState::default()

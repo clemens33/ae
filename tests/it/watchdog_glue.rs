@@ -570,6 +570,8 @@ fn a_daemon_that_dies_between_publish_and_watch_takes_its_pidfile_with_it() {
     // Colead gate 135cf36a: `run` published the pidfile, then hit `?` on the
     // banner write (stdout a closed pipe) and left `.watchdog.pid` naming an
     // exited process — `watchdog status` then reported a daemon that was not
+    // there. The release is RAII now, and this arm is the failing write that
+    // proves every exit after publish releases.
     let scratch = scratch("pidfile-raii");
     require_tmux(&scratch);
     let socket = scratch.join("s");

@@ -193,6 +193,7 @@ impl ListArgs {
                 // One dimension, so these are
                 // ALTERNATIVES: assignment, not accumulation,
                 // which makes the last distinct selector win and a repeat a
+                // no-op.
                 "--running" => parsed.selection.scope = Scope::Running,
                 "--all" => parsed.selection.scope = Scope::All,
                 "--stopped" => parsed.selection.scope = Scope::Stopped,

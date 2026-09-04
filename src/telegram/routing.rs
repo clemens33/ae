@@ -607,6 +607,7 @@ mod tests {
         // MIDDLE rung, which the last-resort fallback hides: with a
         // `hub` and some other meta-agent session both running, `hub` must win
         // — otherwise "the alias is still accepted" degrades into "whichever
+        // session the scan happened to list first".
         let world = vec![orchestrator("brain"), orchestrator("hub")];
         assert_eq!(
             find_orchestrator(&world).map(|session| session.name.clone()),

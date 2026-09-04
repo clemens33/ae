@@ -936,6 +936,7 @@ mod tests {
         // Configuration is the one where this can go wrong: with no
         // allow-list there is no inbound thread, so there is no sender — and a
         // pump that read "no sender" as "the poller died" would exit on its
+        // first iteration and take the outbound-only bridge down.
         use crate::telegram::tests::{Fake, Reply};
         use std::sync::atomic::AtomicBool;
 

@@ -308,6 +308,8 @@ fn the_transport_reports_the_names_and_markers_the_server_holds() {
 // ---- the PURE pane half, against a real server ---------------------------
 //
 // THIS IS NOT THE TRANSPORT'S TEST, and the distinction is deliberate. The
+// product transport has no pane query and must not grow one: no ratified row
+// defines "positively recognizes its agent process as live".
 
 /// Give the pane at `target` the `@ae_slot` marker `slot`.
 fn mark_pane(socket: &Path, scratch: &Path, target: &str, slot: &str) {

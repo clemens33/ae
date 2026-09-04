@@ -1802,6 +1802,7 @@ fn criterion_3_the_places_this_crate_can_read_the_world_are_the_inventoried_ones
             // The LOCAL-mode teardown's own reads (P3.5): the `lstat` that
             // proves the session dir is a real direct child and never a link,
             // and the sessions-root `fsync` that makes the rename-to-tombstone
+            // and its removal durable.
             "src/teardown.rs".to_owned(),
             // The outbound Telegram bridge's own reads (P4.3): the event log's
             // identity and length, the log body read from the cursor, the
@@ -1875,6 +1876,8 @@ fn product_module(name: &str) -> String {
 // ---- three-valued agent liveness ---------------------------------------
 //
 // RESTORED. These four were deleted by a slice-to-end-of-file in the phase-3
+// blocker fix (1f92bca2), and the suite count FELL while the change was
+// described as adding one.
 
 #[test]
 fn sc_509e_the_agent_liveness_field_is_present_even_when_null() {
