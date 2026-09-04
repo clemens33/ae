@@ -19,11 +19,11 @@
 //!    could print a token out of. [`Token`] has a redacting [`fmt::Debug`] and
 //!    no [`fmt::Display`], so the secret itself cannot reach a format string by
 //!    accident either.
-//! 2. **The cursor is a byte offset, so the ledger must be append-only.** It
-//!    is: `crate::state`'s locked `OpenOptions::append(true)` is the only
-//!    production writer, and replacement always changes the inode. The full
-//!    proof, and the trigger that would invalidate it, are at
-//!    [`Outbound::start`].
+//! 2. **The cursor is a byte offset, so the ledger must be append-only between
+//!    retention passes.** It is: [`crate::store::SessionStore::append_event`]
+//!    is the only production append path, and resume retention replaces the
+//!    ledger with a new inode. The full proof, and the trigger that would
+//!    invalidate it, are at [`Outbound::start`].
 //! 3. **Telegram's answer is untrusted network input.** It is parsed with
 //!    [`crate::json`], whose `MAX_DEPTH` already bounds recursion, and it is
 //!    read through a hard byte cap that does not consult `Content-Length` —
@@ -1219,21 +1219,27 @@ impl Outbound {
 
     /// Where this pass starts reading.
     ///
-    /// # THE INVARIANT THIS RESTS ON: `events.jsonl` IS APPEND-ONLY
+    /// # THE INVARIANT THIS RESTS ON: `events.jsonl` IS APPEND-ONLY BETWEEN RETENTION PASSES
     ///
     /// A byte offset is only a position in a document that never rewrites its
     /// past. The heuristic above cannot tell a same-inode file whose bytes were
     /// REPLACED from one that merely grew. That case is unreachable in ae, and
     /// the reason is a property of the producer:
     ///
-    /// * the ONLY production writer of the ledger is [`crate::store::SessionStore::append_event`] ->
+    /// * the ONLY production append writer of the ledger is [`crate::store::SessionStore::append_event`] ->
     ///   `append_locked` -> `append`, which opens with `OpenOptions::append(true)`
     ///   under the container's `flock`;
+    /// * resume retention through [`crate::store::SessionStore::retain_events`]
+    ///   replaces the ledger by renaming a staged file, which gives it a NEW
+    ///   INODE; the identity check above already resets the cursor for that
+    ///   case, so no cursor change is needed here;
     /// * `compact` only READS the ledger, never opens it for writing;
     /// * measured across `src/`, no product-side `fs::write`, `truncate(true)`,
-    ///   `remove_file` or `rename` of the ledger exists;
+    ///   `remove_file` or `rename` of the ledger exists outside that retention
+    ///   step;
     /// * replacement therefore always arrives as a NEW INODE — rotation, a
-    ///   restored archive — and that case IS handled above.
+    ///   restored archive, or resume retention — and that case IS handled
+    ///   above.
     ///
     /// No fingerprint and no lock are added here on purpose: a guard against an
     /// unreachable case is speculative machinery.

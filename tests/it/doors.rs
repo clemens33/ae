@@ -591,6 +591,56 @@ fn product_halves() -> Vec<(String, String)> {
     halves
 }
 
+/// The bodies of production functions, with braces inside literals ignored.
+/// This is enough structure for the mutation guard below to associate a
+/// direct filesystem operation with the session container that it targets.
+fn function_bodies(code: &str) -> Vec<&str> {
+    let structural = strip_literals(code);
+    let mut bodies = Vec::new();
+    for (start, _) in structural.match_indices("fn ") {
+        let Some(open_offset) = structural[start..].find('{') else {
+            continue;
+        };
+        let open = start + open_offset;
+        let mut depth = 0usize;
+        for (offset, byte) in structural[open..].bytes().enumerate() {
+            if byte == b'{' {
+                depth += 1;
+            } else if byte == b'}' {
+                depth -= 1;
+                if depth == 0 {
+                    bodies.push(&code[start..=open + offset]);
+                    break;
+                }
+            }
+        }
+    }
+    bodies
+}
+
+/// Find a direct mutation of a live event or memo container in one function.
+/// This is a conservative lexical tripwire over known path/mutator spellings,
+/// not a data-flow proof: a co-occurrence in one function is enough to reject
+/// a likely direct writer, while aliases and unrelated paths can escape it.
+fn direct_session_mutation(code: &str) -> Option<&str> {
+    let targets = [
+        "events_path()",
+        "memo_path()",
+        "store::EVENTS",
+        "store::MEMO",
+    ];
+    let mutators = [
+        "fs::write(",
+        "File::create(",
+        "OpenOptions::new(",
+        "fs::rename(",
+    ];
+    function_bodies(code).into_iter().find(|body| {
+        targets.iter().any(|target| body.contains(target))
+            && mutators.iter().any(|mutator| body.contains(mutator))
+    })
+}
+
 /// Lexical guard for direct `ToolKind::Variant` decisions in each production
 /// half. Aliases, glob-imported variants, and code after the first test module
 /// are outside what this source-text check can prove.
@@ -674,20 +724,36 @@ fn a_live_session_file_is_named_in_exactly_one_place() {
 }
 
 #[test]
-fn the_only_writer_of_a_session_file_is_the_store() {
-    // What `src/telegram.rs`'s append-only proof rests on, checked rather than
-    // asserted in prose: the locked-append primitive is private to the store,
-    // so `append_event` and `append_memo` are the only ways in. If this goes
-    // red, that proof — and the byte-offset cursor built on it — is no longer
-    // sound.
+fn known_session_file_mutations_stay_with_the_store() {
+    // What `src/telegram.rs`'s cursor proof rests on, checked rather than
+    // asserted in prose: the locked append primitive is private, and the
+    // retention rename is owned by the store. This conservative lexical
+    // tripwire catches known direct write/rename forms before they can drift
+    // outside that facade; it is not a complete data-flow analysis.
+    // Controls FIRST: prove the tripwire catches both direct mutations before
+    // asking it about the production tree. A planted line must make this test
+    // red.
+    for planted in [
+        "fn planted(dir: &Path) { std::fs::write(crate::store::open(dir).events_path(), b\"\"); }",
+        "fn planted(dir: &Path) { std::fs::rename(temp, crate::store::open(dir).events_path()).ok(); }",
+    ] {
+        assert!(
+            direct_session_mutation(planted).is_some(),
+            "the direct session mutation control was not detected"
+        );
+    }
     for (name, code) in product_halves() {
-        if name == "src/store.rs" {
+        if name == "src/store.rs" || name == "src/archive/store.rs" {
             continue;
         }
         assert!(
+            direct_session_mutation(&code).is_none(),
+            "{name} mutates a session container directly; use SessionStore"
+        );
+        assert!(
             !code.contains("append_locked"),
             "{name} reaches the locked-append primitive directly; \
-             every session-file write goes through SessionStore"
+             every known session-file mutation goes through SessionStore"
         );
     }
 }

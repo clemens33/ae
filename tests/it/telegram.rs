@@ -380,6 +380,7 @@ fn the_append_only_invariant_is_recorded_where_it_is_spent() {
         .expect("the append-only invariant must be documented at start()");
     for citation in [
         "crate::store::SessionStore::append_event",
+        "crate::store::SessionStore::retain_events",
         "append_locked",
         "OpenOptions::append(true)",
         "compact",

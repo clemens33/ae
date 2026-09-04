@@ -2104,35 +2104,7 @@ fn copy_tree(from: &Path, to: &Path) -> io::Result<()> {
 
 /// Cap `events.jsonl` to its newest lines on resume.
 fn trim_events(dir: &Path) {
-    let path = crate::store::open(dir).events_path();
-    let Ok(_guard) = crate::store::lock(&crate::store::lock_path(&path), Duration::from_secs(5))
-    else {
-        return;
-    };
-    #[allow(
-        clippy::disallowed_methods,
-        reason = "a door: the resume-time event-log retention reads the log it is about to trim — see clippy.toml"
-    )]
-    let read = std::fs::read_to_string(&path);
-    let Ok(text) = read else { return };
-    let lines: Vec<&str> = text.lines().collect();
-    if lines.len() <= EVENTS_KEEP {
-        return;
-    }
-    let mut kept = String::new();
-    for line in &lines[lines.len() - EVENTS_KEEP..] {
-        kept.push_str(line);
-        kept.push('\n');
-    }
-    let temp = dir.join(format!(
-        "{}.trim.{}",
-        crate::store::EVENTS,
-        std::process::id()
-    ));
-    if std::fs::write(&temp, kept).is_ok() && std::fs::rename(&temp, &path).is_ok() {
-        return;
-    }
-    let _ = std::fs::remove_file(&temp);
+    crate::store::open(dir).retain_events(EVENTS_KEEP);
 }
 
 /// One spawned seat recovered from a resuming session's own meta.

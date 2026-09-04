@@ -1,18 +1,23 @@
 //! A live session's files, and the only writes to them.
 //!
-//! Two invariants live here, and both are structural rather than agreed:
+//! The path/lock invariant is structural. Write ownership lives in this
+//! facade and is defended by a conservative source tripwire rather than
+//! convention:
 //!
 //! * **one spelling.** A session file's name, and the `.lock` beside it, are
 //!   written HERE and nowhere else. A second spelling of a lock is how one
-//!   mutual exclusion silently becomes two, so `tests/it/doors.rs` fails the
-//!   build when a production line names one of these files itself.
-//! * **one locked append.** [`SessionStore::append_event`] and
-//!   [`SessionStore::append_memo`] are the only writers of a session file, and
-//!   the primitive under them is private so no third writer can exist. Each
-//!   append is one transaction: take `<file>.lock`, append, `fdatasync`, and on
-//!   any failure cut the file back to the length it had. A caller is told
-//!   "recorded" only once the bytes are durable, which is what lets
-//!   [`crate::telegram`] treat the ledger as append-only and read it by offset.
+//!   mutual exclusion silently becomes two, so `tests/it/doors.rs` trips when
+//!   production code names one of these files in one of its guarded forms.
+//! * **one locked append, one retention transaction.**
+//!   [`SessionStore::append_event`] and [`SessionStore::append_memo`] are the
+//!   only appenders of a session file, and [`SessionStore::retain_events`] is
+//!   the only replacement of the event container. The primitives under them
+//!   are private, so the owned append and replacement paths stay explicit.
+//!   Each append is one transaction: take `<file>.lock`, append, `fdatasync`,
+//!   and on any failure cut the file back to the length it had. A caller is
+//!   told "recorded" only once the bytes are durable, which is what lets
+//!   [`crate::telegram`] read the ledger by offset between the explicit
+//!   resume-time retention replacements.
 //!
 //! [`open`] does no IO. It is a directory, so holding a store commits a caller
 //! to nothing and costs nothing.
@@ -225,7 +230,7 @@ impl SessionStore {
     }
 
     /// Append one event line to the container under its lock. This is the only
-    /// way anything writes the event ledger.
+    /// append path for the event ledger.
     ///
     /// # Errors
     ///
@@ -242,14 +247,56 @@ impl SessionStore {
     pub fn append_memo(&self, record: &[u8]) -> Result<(), Error> {
         append_locked(&self.memo_path(), record)
     }
+
+    /// Cap the event container to its newest `keep` lines on resume.
+    ///
+    /// The lock is held from the read through the staged sibling's rename, so
+    /// an appender cannot land bytes between the snapshot and replacement. A
+    /// failed lock, read, write or rename leaves the original container alone
+    /// and is deliberately ignored: resume retention has always been a best
+    /// effort step.
+    pub fn retain_events(&self, keep: usize) {
+        let path = self.events_path();
+        let Ok(_held) = lock(&lock_path(&path), LOCK_WAIT) else {
+            return;
+        };
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "a door: the resume-time event-log retention reads the log it is about to trim — see clippy.toml"
+        )]
+        let read = std::fs::read_to_string(&path);
+        let Ok(text) = read else {
+            return;
+        };
+        let lines: Vec<&str> = text.lines().collect();
+        if lines.len() <= keep {
+            return;
+        }
+        let mut retained = String::new();
+        for line in &lines[lines.len() - keep..] {
+            retained.push_str(line);
+            retained.push('\n');
+        }
+        let temp = self.events_trim_path();
+        if std::fs::write(&temp, retained).is_ok() && std::fs::rename(&temp, &path).is_ok() {
+            return;
+        }
+        let _ = std::fs::remove_file(&temp);
+    }
+
+    /// The staged sibling used by [`Self::retain_events`].
+    fn events_trim_path(&self) -> PathBuf {
+        self.dir
+            .join(format!("{EVENTS}.trim.{}", std::process::id()))
+    }
 }
 
 /// Append `bytes` to `path` under `<path>.lock`: the lock is the file's own
 /// `.lock` sibling, taken with `flock -w 5` and held through the append.
 ///
-/// PRIVATE on purpose. Every session-file write goes through one of the two
-/// methods above, which is what makes "the ledger is append-only" a structural
-/// fact rather than a convention.
+/// PRIVATE on purpose. Every session-ledger append goes through one of the two
+/// methods above; the explicit retention replacement is the only other
+/// producer-owned mutation.
 fn append_locked(path: &Path, bytes: &[u8]) -> Result<(), Error> {
     let lock_path = lock_path(path);
     let _held = lock(&lock_path, LOCK_WAIT)
