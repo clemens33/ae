@@ -440,7 +440,7 @@ pub fn roster(
     let Some((subcommand, rest)) = tail.split_first() else {
         writeln!(
             err,
-            "ae: {} needs a subcommand: add-seat, remove-seat, set-harness-session, migrate or list",
+            "ae: {} needs a subcommand: add-seat, remove-seat, set-harness-session or list",
             crate::cli::ROSTER
         )?;
         return Ok(EXIT_USAGE);
@@ -449,7 +449,6 @@ pub fn roster(
         ("add-seat", [name, flags @ ..]) => add_seat(dir, name, flags, out, err),
         ("remove-seat", [name]) => remove_seat(dir, name, out, err),
         ("set-harness-session", [slot, sid]) => set_harness_session(dir, slot, sid, out, err),
-        ("migrate", flags) => migrate(dir, flags, out, err),
         ("list", flags) => list(dir, flags, out, err),
         ("add-seat" | "remove-seat" | "set-harness-session", _) => {
             writeln!(
@@ -600,7 +599,7 @@ pub fn add_seat_slot(
     let _held = meta::lock(dir).map_err(|why| format!("cannot take the meta lock: {why}"))?;
     let text = text_of(dir)?;
     let current = Meta::parse(&text);
-    if let Some(why) = seat_write_refusal(&current) {
+    if let Some(why) = seat_write_refusal(dir, &current) {
         return Err(why);
     }
     if !config::is_agent_name(name) {
@@ -671,18 +670,31 @@ struct AddSeatFlags {
     sid: Option<String>,
 }
 
+/// The refusal a retired v1 roster earns.
+///
+/// ae does not migrate `agent.<slot>` into a v2 seat any more, so the only way
+/// forward from one is a fresh session. Names the session, because the operator
+/// meets this through a helper that does not repeat which one it acted on.
+fn fresh_start_refusal(dir: &Path) -> String {
+    let session = dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("this session");
+    format!(
+        "session {session:?} carries the retired v1 roster (agent.<slot>). \
+         ae no longer migrates it: end the session and start a fresh one \
+         (`ae end {session}`, then `ae {session}`)."
+    )
+}
+
 /// Why a meta may not be WRITTEN to as a v2 roster, or `None` when it may.
-fn seat_write_refusal(current: &Meta) -> Option<String> {
+fn seat_write_refusal(dir: &Path, current: &Meta) -> Option<String> {
     if current.schema() != Some("2") {
         return Some(match current.schema() {
             Some(other) => format!(
-                "this session's meta declares schema={other}, not 2 — migrate it first ('{} <dir> migrate').",
-                crate::cli::ROSTER
+                "this session's meta declares schema={other}, not 2 — ae cannot write to it."
             ),
-            None => format!(
-                "this session's meta declares no schema, so it is a v1 roster — migrate it first ('{} <dir> migrate').",
-                crate::cli::ROSTER
-            ),
+            None => fresh_start_refusal(dir),
         });
     }
     let doubts = identity_doubts(current);
@@ -805,64 +817,6 @@ fn set_harness_session(
     emit(&trailer(0), out)
 }
 
-/// `_roster <dir> migrate [--global <f>] [--local <f>]` — move a v1 roster to
-/// v2, once.
-///
-/// # Errors
-///
-/// [`crate::Error::Io`] when `out` or `err` cannot be written.
-fn migrate(
-    dir: &Path,
-    flags: &[String],
-    out: &mut impl Write,
-    err: &mut impl Write,
-) -> crate::Result<u8> {
-    let files = match config_files(flags) {
-        Ok(files) => files,
-        Err(word) => return usage(crate::cli::ROSTER, &word, err),
-    };
-    let cfg = match files.read() {
-        Ok(cfg) => cfg,
-        Err(why) => {
-            writeln!(err, "{why}")?;
-            return Ok(EXIT_REFUSED);
-        }
-    };
-    let _held = match meta::lock(dir) {
-        Ok(held) => held,
-        Err(why) => return refuse(&format!("cannot take the meta lock: {why}"), err),
-    };
-    let text = match text_of(dir) {
-        Ok(text) => text,
-        Err(why) => return refuse(&why, err),
-    };
-    let current = Meta::parse(&text);
-    if current.schema() == Some("2") {
-        return emit(&trailer(0), out);
-    }
-    let seats = match roster::migrate(&current, |profile| cfg.profile(profile).is_some()) {
-        Ok(seats) => seats,
-        Err(refusals) => {
-            write!(err, "{}", roster::render_refusals(&refusals))?;
-            return Ok(EXIT_REFUSED);
-        }
-    };
-    let mut next = String::new();
-    for row in records(&text) {
-        let key = key_of(row);
-        if key == "schema" || key.starts_with("agent.") || key.starts_with("agent_bin.") {
-            continue;
-        }
-        next.push_str(row);
-        next.push('\n');
-    }
-    next.push_str(&roster::render(&seats));
-    if let Err(why) = publish(dir, &next) {
-        return refuse(&why, err);
-    }
-    emit(&trailer(0), out)
-}
-
 /// `_roster <dir> list [--global <f>] [--local <f>]` — what the roster is now,
 /// resolved against the config.
 ///
@@ -885,10 +839,12 @@ fn list(
     };
     if current.schema() != Some("2") {
         return refuse(
-            &format!(
-                "this session's meta is not an identity v2 roster (schema={}); migrate it first.",
-                current.schema().unwrap_or("absent")
-            ),
+            &match current.schema() {
+                Some(other) => format!(
+                    "this session's meta declares schema={other}, not 2 — ae cannot read its roster."
+                ),
+                None => fresh_start_refusal(dir),
+            },
             err,
         );
     }
@@ -1436,7 +1392,7 @@ mod tests {
             ],
         );
         assert_eq!(code, EXIT_REFUSED);
-        assert!(err.contains("migrate it first"), "{err}");
+        assert!(err.contains("retired v1 roster"), "{err}");
         // A roster in doubt may not be written to: the uniqueness check above
         // would have been answered by an incomplete list.
         let doubtful = Scratch::new("add-doubt");
@@ -1534,99 +1490,6 @@ mod tests {
         assert_eq!(code, EXIT_REFUSED);
         assert!(out.is_empty());
         assert!(err.contains("is not a seat"), "{err}");
-    }
-
-    #[test]
-    fn migrate_keeps_every_non_roster_line_byte_identical_and_in_order() {
-        let scratch = Scratch::new("migrate");
-        let cfg = scratch.file("config", CONFIG);
-        scratch.file(
-            "meta",
-            "mode=local\n\
-             work_dir=/tmp/y\n\
-             agent.main=fable5:lead:e1\n\
-             agent_bin.main=claude\n\
-             launch_id.main=uuid-1\n\
-             agent.worker.0=gpt56:colead\n\
-             agent_bin.worker.0=codex\n\
-             goal=ship it\n",
-        );
-        let (code, out, err) = roster(
-            scratch.dir(),
-            &["migrate", "--global", &cfg.to_string_lossy()],
-        );
-        assert_eq!((code, err.as_str()), (0, ""));
-        assert_eq!(out, format!("end{US}0\n"));
-        assert_eq!(
-            scratch.meta(),
-            "mode=local\n\
-             work_dir=/tmp/y\n\
-             launch_id.main=uuid-1\n\
-             goal=ship it\n\
-             schema=2\n\
-             seat.main=lead\nprofile.main=fable5\nagent_bin.main=claude\nharness_session.main=e1\n\
-             seat.worker.0=colead\nprofile.worker.0=gpt56\nagent_bin.worker.0=codex\n",
-            "the non-roster lines kept their bytes AND their order"
-        );
-        // A second migrate is a NO-OP, not a refusal: a resume runs it
-        // unconditionally, and refusing would stop the launch.
-        let before = scratch.meta();
-        let (code, out, err) = roster(
-            scratch.dir(),
-            &["migrate", "--global", &cfg.to_string_lossy()],
-        );
-        assert_eq!((code, out, err.as_str()), (0, format!("end{US}0\n"), ""));
-        assert_eq!(scratch.meta(), before);
-    }
-
-    #[test]
-    fn migrate_refuses_a_half_migrated_meta_and_an_undefined_profile_touching_nothing() {
-        let scratch = Scratch::new("migrate-refuse");
-        let cfg = scratch.file("config", CONFIG);
-        let path = cfg.to_string_lossy().into_owned();
-        // schema=2 BESIDE v1 agent rows: `schema()` says 2, so this takes the
-        // already-migrated branch and reports success without touching a thing.
-        let mixed = Scratch::new("migrate-mixed");
-        let before = "schema=2\nagent.main=fable5:lead\n";
-        mixed.file("meta", before);
-        let (code, out, err) = roster(mixed.dir(), &["migrate", "--global", &path]);
-        assert_eq!((code, out, err.as_str()), (0, format!("end{US}0\n"), ""));
-        assert_eq!(mixed.meta(), before, "the no-op branch published nothing");
-        // schema=1 beside v1 rows and an alias no [profiles] defines: refused
-        // with the full list, and the v1 meta is left byte-identical.
-        let unbound = "schema=1\nagent.main=ghost:lead\nagent.worker.0=alsogone:colead\n";
-        scratch.file("meta", unbound);
-        let (code, out, err) = roster(scratch.dir(), &["migrate", "--global", &path]);
-        assert_eq!(code, EXIT_REFUSED);
-        assert!(out.is_empty());
-        assert!(
-            err.contains("'ghost'") && err.contains("'alsogone'"),
-            "{err}"
-        );
-        assert_eq!(scratch.meta(), unbound);
-    }
-
-    #[test]
-    fn migrate_leaves_exactly_one_schema_marker_when_the_v1_meta_declared_one() {
-        let scratch = Scratch::new("migrate-schema");
-        let cfg = scratch.file("config", CONFIG);
-        scratch.file("meta", "schema=1\nagent.main=fable5:lead\n");
-        let (code, _, err) = roster(
-            scratch.dir(),
-            &["migrate", "--global", &cfg.to_string_lossy()],
-        );
-        assert_eq!((code, err.as_str()), (0, ""));
-        let meta = scratch.meta();
-        // Two `schema=` records would be a DUPLICATE KEY, which `Meta::parse`
-        // invalidates — the just-migrated meta would read as though it had not
-        // been, and every later write would refuse it.
-        assert_eq!(meta.matches("schema=").count(), 1, "{meta}");
-        assert!(meta.contains("schema=2\n"), "{meta}");
-        assert_eq!(
-            crate::meta::Meta::parse(&meta).schema(),
-            Some("2"),
-            "the migrated meta reads back as v2"
-        );
     }
 
     #[test]
@@ -1757,7 +1620,12 @@ mod tests {
         let (code, out, err) = roster(v1.dir(), &["list"]);
         assert_eq!(code, EXIT_REFUSED);
         assert!(out.is_empty());
-        assert!(err.contains("not an identity v2 roster"), "{err}");
+        assert!(err.contains("retired v1 roster"), "{err}");
+        assert!(err.contains("start a fresh one"), "{err}");
+        assert!(
+            err.contains("list-v1"),
+            "the refusal names the session: {err}"
+        );
         let gone = Scratch::new("list-gone");
         let (code, _, err) = roster(gone.dir(), &["list"]);
         assert_eq!(code, EXIT_REFUSED);
