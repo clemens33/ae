@@ -204,10 +204,17 @@ pub fn run(
     // the frozen script's `: > marker 2>/dev/null || true` was: a marker that
     // cannot be written costs a second run that creates instead of resuming,
     // and refusing to start the agent at all costs more.
+    let marker = started_marker(dir, slot);
     if plan.mode == Mode::Create {
-        let _ = std::fs::File::create(started_marker(dir, slot));
+        let _ = std::fs::File::create(&marker);
     }
     let why = exec(&plan);
+    // Reached only because the exec did NOT happen, so this seat has not been
+    // launched after all: take the marker back rather than leave a seat that
+    // never started looking like one that did.
+    if plan.mode == Mode::Create {
+        let _ = std::fs::remove_file(&marker);
+    }
     writeln!(err, "ae: could not start {} ({why})", plan.argv[0])?;
     err.flush()?;
     Ok(EXIT_FAILED)

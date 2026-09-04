@@ -777,12 +777,14 @@ fn rollback(
     Ok(())
 }
 
-/// The slot's launch script and its re-run marker — dead weight once the pane
-/// is gone.
+/// The slot's start marker and recorded first message — dead weight once the
+/// pane is gone, and a hazard once the slot number is handed to someone else.
+///
+/// Best effort HERE, unlike the claim a spawn makes on the same two files: a
+/// retire that leaves them behind loses nothing, because the next occupant
+/// refuses rather than inherits.
 fn drop_launch_artifacts(dir: &Path, slot: &str) {
-    let safe = launch::safe_slot(slot);
-    let _ = std::fs::remove_file(dir.join(format!("launch.{safe}.sh")));
-    let _ = std::fs::remove_file(dir.join(format!("launch.{safe}.started")));
+    let _ = crate::run::clear_slot(dir, slot);
 }
 
 // ---- retire ---------------------------------------------------------------
