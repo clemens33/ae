@@ -6,7 +6,7 @@
 [![tmux](https://img.shields.io/badge/requires-tmux-1BB91F.svg)](https://github.com/tmux/tmux)
 [![Install: curl | bash](https://img.shields.io/badge/install-curl%20%7C%20bash-orange.svg)](#install)
 
-**ae** runs AI coding agents side-by-side in tmux. They know about each other, communicate by name, and survive reboots. One public command, a Rust core, and only the pane glue left in Bash.
+**ae** runs AI coding agents side-by-side in tmux. They know about each other, communicate by name, and survive reboots. One public command, a Rust core, and one Bash wrapper between them.
 
 Works with any CLI-based agentic harness.
 
@@ -185,7 +185,7 @@ No custom protocols, no frameworks. Just system prompts and bash scripts agents 
 
 ## One public command, typed core
 
-`ae` is a small public wrapper over a versioned Rust core and the Bash pane glue. `--copy` and `--worktree` give agents isolated workspaces when you want them.
+`ae` is a small public wrapper over a versioned Rust core. `--copy` and `--worktree` give agents isolated workspaces when you want them.
 
 Everything else is **optional**, never required for core commands:
 
@@ -195,10 +195,10 @@ Everything else is **optional**, never required for core commands:
 | the orchestrator companion ([contrib/aeorchestrator](contrib/aeorchestrator)) | the fleet's chief of staff: monitors every session, relays and reports, guards an objective once you set one. An ordinary ae session against its own config, started for you alongside the first launch | an agent CLI |
 | [contrib/aemonitor](contrib/aemonitor) | deterministic sweep helper the orchestrator uses | Python 3 stdlib |
 
-Both daemons are Rust, start to finish: the watchdog pane runs core `_watchdog-run`, the bridge runs core `_telegram-run`, and `ae watchdog`/`ae telegram` are core operations the glue routes to. Neither needs `jq` or `curl`. Autostart controls are per component: set `watchdog = false` in workspace config to disable the workspace watchdog; set `enabled = false` in Telegram config to disable Telegram; set `AE_NO_AUTOSTART=1` to start neither companion with a launch.
+Both daemons are Rust, start to finish: the watchdog pane runs core `_watchdog-run`, the bridge runs core `_telegram-run`, and `ae watchdog`/`ae telegram` are core operations. Neither needs `jq` or `curl`. Autostart controls are per component: set `watchdog = false` in workspace config to disable the workspace watchdog; set `enabled = false` in Telegram config to disable Telegram; set `AE_NO_AUTOSTART=1` to start neither companion with a launch.
 
-A public entry cannot reach coreless Bash mode: it validates the matched wrapper, core, and
-glue before execution. See **[VISION.md](VISION.md)**.
+A public entry cannot reach coreless Bash mode: it validates the matched wrapper and core
+before execution, and refuses when no core can be bound. See **[VISION.md](VISION.md)**.
 
 ### Upgrade
 

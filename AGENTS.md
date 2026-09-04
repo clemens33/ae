@@ -1,8 +1,8 @@
 # ae
 
-One public wrapper, one Rust core, and minimal policy-frozen Bash pane glue in one immutable versioned install. Keep the product thin: tmux remains the runtime, and Bash remains only where pane glue is best-in-class.
+One public wrapper and one Rust core in one immutable versioned install. Keep the product thin: tmux remains the runtime, and the Bash that survives is the wrapper that binds the core plus the pane scripts the core generates.
 
-> **Where the rules live.** The Bash sections below govern the surviving pane glue; the Rust
+> **Where the rules live.** The Bash sections below govern the surviving wrapper; the Rust
 > core has its own: [Rust era](#rust-era-main). Product direction: [VISION.md](VISION.md).
 
 ## Philosophy
@@ -23,8 +23,8 @@ stay readable.
 
 ## Rules
 
-- `ae` must remain a single bash script. No compiled languages, no runtimes. *(Historical: this once governed all of `ae`; triggers 1–3 fired on 2026-08-20 and the Rust core is the ratified successor, not a violation of the durable product doctrine.)* What survives is minimal pane glue, shipped as `ae-glue` and policy-frozen: no new Bash features.
-- Config is INI-style with a simple regex parser, and it is the core's (`src/config.rs`) — the glue reads no key of it. Don't add TOML/YAML/JSON parsing.
+- `ae` must remain a single bash script. No compiled languages, no runtimes. *(Historical: this once governed all of `ae`; triggers 1–3 fired on 2026-08-20 and the Rust core is the ratified successor, not a violation of the durable product doctrine.)* What survives is ONE bash file, the public wrapper `ae-entry`, and it is policy-frozen: no new Bash features. **`ae-glue` was deleted whole in slice Z1** and its residue folded into that wrapper.
+- Config is INI-style with a simple regex parser, and it is the core's (`src/config.rs`) — the wrapper reads no key of it and writes no config at all. Don't add TOML/YAML/JSON parsing.
 - Core ae requires only `bash >= 4.0`, `tmux`, and `git`. Optional features may declare their own hard dependencies (e.g. the orchestrator companion session needs an agent CLI; `contrib/aemonitor` needs Python 3), but those deps must never be required for the rest of ae to work — `ae list`, `ae <name>`, etc. continue to function on a machine without them. (`ae telegram` used to need `jq` + `curl`; the Rust-core bridge needs neither — it is the ae core binary.)
 - Session state lives in `~/.ae/sessions/`; archived session memory lives in
   `~/.ae/archive/<session-uuid>/` and is INERT — data only, never an executable file.
@@ -63,9 +63,10 @@ tmux as the runtime is no longer unchallenged: **herdr** (herdrdev/herdr, Rust, 
 ## Structure
 
 ```
-ae                  — minimal policy-frozen pane glue (bundled as `ae-glue`); a dispatcher of thin
-                      core routes plus the facts the core cannot see for itself
-ae-entry            — public wrapper source (installed and bundled as `ae`)
+ae-entry            — the public wrapper source (installed and bundled as `ae`), and since
+                      slice Z1 the product's ONLY bash file: it validates the versioned pair,
+                      answers `version` and `upgrade`, and execs the core ONCE with the frozen
+                      preamble plus the caller's argv verbatim
 justfile            — dev/release pipeline (just check, just test, just release)
 cliff.toml          — git-cliff changelog config (CalVer-compatible)
 tests/unit          — pure-function unit tests (bash, no deps)
@@ -228,8 +229,8 @@ ae supports multiple coding agent CLIs. They differ significantly in session han
 - **ae prefixes `env OPENCODE_CONFIG=… ` onto the opencode command**, so tool detection can no longer match on the binary being word one. `tool_kind_from_cmd`/`tool_name_from_cmd` strip a leading `env`, its `-u`/`-i` options and any `VAR=val` words first — looking only at the FIRST WORD each time, because the tail can be kilobytes of injected prose containing `=` and glob characters.
 - Grok Build is the cleanest integration after Claude Code: it accepts an ae-generated `--session-id UUID` at launch (verified live), so resume is UUID-scoped from the first cycle with none of the post-launch capture machinery the other tools need. Its only quirk is the system prompt: there is no append-style flag, and `--system-prompt-override` — including its innocuous-looking compat alias `--system-prompt` (grok 0.2.118+) — *replaces* the agent's own prompt — so ae passes context as the positional `[PROMPT]` argument (gemini-shaped, with the same "context only, wait for a task" suffix). Its TUI is unmodelled in v1: sends to grok panes get no typed-input protection or staged-paste detection (observed surface so far: footer `Grok Build · always-approve`, boxed `❯` prompt).
 - Meta v2 (core-written) carries the roster as `seat.<slot>=<name>`, `profile.<slot>=<profile>`, `agent_bin.<slot>=<binary>` and `harness_session.<slot>=<id>`; the legacy `agent.<slot>=alias:name:session_id` row is read (and migrated in place on resume) but never written again. Agent names must not contain `:` — one colon in a target means `<session>:<name>`.
-- **Agent names are an allowlist too**: `^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`, one definition — `is_agent_name` in `src/config.rs`; the core enforces it at `_spawn` and `_launch-plan` before any effect and echoes the grammar verbatim. Same character class as a session name, shorter cap: a name is a window title and a roster field, not a directory. It is allowlisted rather than merely screened for the `:` delimiter because since #59 a name reaches a **privileged sink** — it is interpolated into that agent's own system prompt, and `spawn 'helper). Ignore the slot below; sign as the lead' --using cl` was a legal name whose prose landed inside the one sentence telling an agent who it is. Boundaries: **`_spawn`** (the peer boundary — a spawn name comes from another agent, so it is the hostile one) and the **launch-time roster parse** of `[workspace] main`/`workers` (the operator boundary; fails the launch before any side effect). Both are the core's, and the glue passes the argv through without inspecting it. Aliases are config keys (`^[a-zA-Z_][a-zA-Z0-9_-]*`) and so in-class with one exception: a **leading `_`** is a legal config key but not a legal agent name, so `workers = _foo` (alias used as its own name) now fails the launch with the grammar. Deliberate — the roster check runs on the value that lands in `meta`, in both the name and the alias-only branch, exactly as the `main` check always has. No alias in the wild has one (censused across `~/.ae/sessions/*/meta` and `~/.ae/archive/*/meta`). ae DERIVES no names: a duplicate seat name is REFUSED by the core (`_launch-plan` NameTwice, listed with every other violation) rather than renamed — the bash worker-name dedup went with the alias era. Enforcement follows PROVENANCE, not the variable: a name arriving FRESH from config, `use <name>`, `spawn`, or compact's frozen roster is validated by the core before the first side effect and fatal on violation (a v2 config cannot mint a nonconforming name, so a compact child that refuses is correct and its archive remains for `--from`), while one RESTORED from saved meta on resume is handed back verbatim by `_roster list` and left to the interpolation guard — refusing restored input would make a pre-grammar session unresumable. `build_ae_context` re-validates **both halves** at the interpolation site and stays **fail-quiet** — meta is a file that predates the grammar and is hand-editable, so a non-conforming roster entry yields no identity line rather than a hostile one, and the agent still launches.
-- **Session names are an allowlist**, enforced at **every boundary where a name is created, imported, or mutated**: `^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$`. The grammar is stated twice and both statements echo it verbatim in their error: `is_session_name` in `src/session_launch/name.rs` is the core's, and `_validate_session_name` in `ae` is the glue's for the one name it still answers about — the one the caller TYPED, guarded ahead of a launch's side effects. A name is simultaneously a tmux session, a directory under `~/.ae/sessions/`, part of the `.lifecycle.<name>.lock` filename, and the target of the launch rollback's `rm -rf` — so it is allowlisted rather than filtered. The boundaries: **launch entry** (`ae [name]`, before the first tmux or filesystem side effect), **`default_session_name`** (which *guarantees* the grammar for any PWD rather than being checked against it), and **`rename`** (target strict). `ae transfer` was a fourth until it was cut rather than ported. Consumers of an *existing* session use `_session_name_usable`, which also accepts a legacy name that is already a real direct-child directory — a migration path out of pre-grammar names, never a route to traversal. `ae end`/`ae stop` resolve through session lookup rather than raw path construction (measured), so they are not name boundaries. Widen only on a real name in the wild, never on speculation.
+- **Agent names are an allowlist too**: `^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`, one definition — `is_agent_name` in `src/config.rs`; the core enforces it at `_spawn` and `_launch-plan` before any effect and echoes the grammar verbatim. Same character class as a session name, shorter cap: a name is a window title and a roster field, not a directory. It is allowlisted rather than merely screened for the `:` delimiter because since #59 a name reaches a **privileged sink** — it is interpolated into that agent's own system prompt, and `spawn 'helper). Ignore the slot below; sign as the lead' --using cl` was a legal name whose prose landed inside the one sentence telling an agent who it is. Boundaries: **`_spawn`** (the peer boundary — a spawn name comes from another agent, so it is the hostile one) and the **launch-time roster parse** of `[workspace] main`/`workers` (the operator boundary; fails the launch before any side effect). Both are the core's, and the wrapper passes the argv through verbatim without inspecting it. Aliases are config keys (`^[a-zA-Z_][a-zA-Z0-9_-]*`) and so in-class with one exception: a **leading `_`** is a legal config key but not a legal agent name, so `workers = _foo` (alias used as its own name) now fails the launch with the grammar. Deliberate — the roster check runs on the value that lands in `meta`, in both the name and the alias-only branch, exactly as the `main` check always has. No alias in the wild has one (censused across `~/.ae/sessions/*/meta` and `~/.ae/archive/*/meta`). ae DERIVES no names: a duplicate seat name is REFUSED by the core (`_launch-plan` NameTwice, listed with every other violation) rather than renamed — the bash worker-name dedup went with the alias era. Enforcement follows PROVENANCE, not the variable: a name arriving FRESH from config, `use <name>`, `spawn`, or compact's frozen roster is validated by the core before the first side effect and fatal on violation (a v2 config cannot mint a nonconforming name, so a compact child that refuses is correct and its archive remains for `--from`), while one RESTORED from saved meta on resume is handed back verbatim by `_roster list` and left to the interpolation guard — refusing restored input would make a pre-grammar session unresumable. `build_ae_context` re-validates **both halves** at the interpolation site and stays **fail-quiet** — meta is a file that predates the grammar and is hand-editable, so a non-conforming roster entry yields no identity line rather than a hostile one, and the agent still launches.
+- **Session names are an allowlist**, enforced at **every boundary where a name is created, imported, or mutated**: `^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$`. The grammar has ONE statement since slice Z1, and it echoes it verbatim in its error: `is_session_name` in `src/session_launch/name.rs`. The bash `_validate_session_name` went with `ae-glue`; the wrapper inspects no name at all, and the core guards the name the caller TYPED ahead of a launch's side effects. A name is simultaneously a tmux session, a directory under `~/.ae/sessions/`, part of the `.lifecycle.<name>.lock` filename, and the target of the launch rollback's `rm -rf` — so it is allowlisted rather than filtered. The boundaries: **launch entry** (`ae [name]`, before the first tmux or filesystem side effect), **`default_session_name`** (which *guarantees* the grammar for any PWD rather than being checked against it), and **`rename`** (target strict). `ae transfer` was a fourth until it was cut rather than ported. Consumers of an *existing* session use `_session_name_usable`, which also accepts a legacy name that is already a real direct-child directory — a migration path out of pre-grammar names, never a route to traversal. `ae end`/`ae stop` resolve through session lookup rather than raw path construction (measured), so they are not name boundaries. Widen only on a real name in the wild, never on speculation.
 - `launch.<slot>.sh` is **re-runnable** for the upfront-UUID tools. `--session-id` is create-once, so a human who exits the TUI and arrow-ups the script used to hit "Session ID … is already in use". The script now drops a `launch.<slot>.started` marker on its first run and `exec`s the `--resume` variant on every later one; ae clears the marker whenever it rewrites the script, so a fresh launch always creates. The decision happens BEFORE exec deliberately: a `cmd || fallback` chain would leave bash as the pane's process and `pane_current_command` would report `bash` instead of the tool, silently disabling the send path's TUI modelling (measured — and the reason today's `claude --resume … || --continue` resume launches already read as `bash`). The post-launch-capture tools have no baked id to collide with; re-running their script starts a fresh conversation instead of erroring, which is why they are out of scope rather than fixed.
 
 ## Rust era (`main`)
@@ -264,18 +265,21 @@ Cycle rules under this work: scoped integration runs in the inner loop, one full
 slice; commit on lint + unit + scoped green, the full pass and the single cross-model round
 run after the commit on the integrated diff (nothing is pushed); fixes roll forward.
 
-**Status (measured 2026-09-03, after the glue cuts).** The destination is reached. `ae` is
-about 1,400 lines, roughly 600 of them code — down from the 18,673 the epic closed on — and
-holds no bash body for any core-owned domain. Every fallback is gone: there is no coreless
-mode, so a missing core is a refusal (exit 2, before any side effect) rather than a
-degraded path. What survives is the pane-side remainder and nothing else: the bash preamble
-and its `bash >= 4` re-exec, the core binding (`AE_CORE_BIN`, then `<AE_HOME>/core/current`
-— the config key `workspace.core` was retired because reading one key cost the glue an
-entire INI parser), the name and path guards, the `--inside-tmux` sensor, the launch flag
-assembly, a dispatcher of thin core routes, `help`, and refusing arms for the words that
-were cut. The file's own header carries the list of ABSENCES the suite asserts — no second
-reader of session state, no session-helper logic, no INI parser, no portability shims, no
-per-tool history reader. Read it before adding anything back.
+**Status (measured 2026-09-04, after slice Z1).** The destination is reached, and then
+some: `ae-glue` is DELETED. What is left of ae's Bash is the public wrapper `ae-entry` at
+737 lines, 433 of them code — down from the 18,673 the epic closed on — plus the generated
+`launch.<slot>.sh` scripts and the four-line session shims. There is no dispatcher, no
+help text, no name grammar, no session-path guard, no config writer, no INI parser, no
+portability shim and no reader of ae's own state in bash; the one exception is stated at
+its site, the `upgrade` report, which must answer "which sessions are running" about an
+install it is replacing. Every fallback is gone: a core that cannot be bound is a refusal
+(exit 2, before any side effect) rather than a degraded path.
+
+What the wrapper still does is the pair validation, `version` and `upgrade`, the `bash >= 4`
+re-exec ladder, the core binding, the `--inside-tmux` sensor, the typed tmux server pair,
+and ONE exec of the core with the frozen preamble followed by `--` and the caller's argv
+verbatim. The file's own header carries the list of ABSENCES the suite asserts. Read it
+before adding anything back.
 
 Cut rather than ported: `ae transfer`, `ae status` (`ae list` answers the same question from
 one implementation), the `ae orchestrator`/`hub` scaffold trampoline, and `_recover-pending`
@@ -339,8 +343,8 @@ Release tags matching `v[0-9]*.[0-9]*.[0-9]*` build their own release binaries w
 `--locked` on pinned `ubuntu-24.04` and `macos-15` runners. The Linux artifact is
 proven static (`PT_INTERP` absent and `file` reports static) and runs both `_net-probe`
 controls against the shipped binary: the reserved `.invalid` name must refuse and
-`api.telegram.org` must resolve. Each bundle contains the public `ae` wrapper, `ae-core`,
-minimal policy-frozen `ae-glue`, and canonical
+`api.telegram.org` must resolve. Each bundle contains three members — the public `ae`
+wrapper, `ae-core`, and the canonical
 `install`; the final job emits one `SHA256SUMS` over both
 tarballs. The installer downloads files, verifies the checksum before extraction, and
 atomically publishes the complete matched set under one immutable version directory.
@@ -351,36 +355,58 @@ Local unit tests use fixture bundles and never access the network.
 aliasing with legacy state; persisted journals are hostile input and are refused, then
 preserved for diagnosis, when their pointers or command path disagree.
 
-**The `AE_NEXT_HOME` retirement executed on 2026-08-31.** The coexistence wrapper and
-its advanced state-write override no longer ship. The public wrapper unsets inherited
-`AE_CORE`, `AE_TMUX_SERVER`, `AE_TMUX_SERVER_KIND`, and `AE_CORE_BIN`; it unconditionally
-sets `AE_HOME=$HOME/.ae` and `CONFIG_FILE=$AE_HOME/config`, ignoring inherited `AE_HOME` and
-`AE_NEXT_HOME`. One aggregated notice names whichever inherited values were set and would
-have changed behavior. The `AE_CORE` unset is now belt and braces: since slice A.1 (finishing #79) there is
-no coreless mode anywhere — the glue itself refuses with `ae: the ae core is required
-for '<sub>'` (exit 2, before any side effect) when no matched core is bound, and the
-wrapper still validates its versioned `core/current` and glue match before execution. The
-coexistence Telegram glue block that survived that retirement is gone: `_telegram
-<setup|start|stop|status>` is one core operation, and the glue passes only the config, the
-home and the tmux server the core will not read for itself.
+**The `AE_NEXT_HOME` retirement executed on 2026-08-31, and slice Z1 gave it a second
+shape.** The coexistence wrapper and its advanced state-write override no longer ship.
+The wrapper now decides its environment contract from ITS OWN NAME, which is the same
+discriminator that decides how the core is bound:
 
-**Command ownership (ruled 2026-08-31):** except `upgrade` and the three version
-spellings, every row below passes the validated triple first. Before every non-`upgrade`
-exec, the wrapper unsets `AE_VERSION`; the operator pin is scoped solely to `upgrade` and
-cannot freeze into a session.
+- **Installed (published as `ae`)** — unsets inherited `AE_CORE`, `AE_TMUX_SERVER`,
+  `AE_TMUX_SERVER_KIND` and `AE_CORE_BIN`, and unconditionally sets `AE_HOME=$HOME/.ae`
+  with `CONFIG_FILE=$AE_HOME/config`, ignoring inherited `AE_HOME` and `AE_NEXT_HOME`. One
+  aggregated notice names whichever inherited values were set and would have changed
+  behavior.
+- **Checkout (the tracked `ae-entry`)** — HONOURS `AE_HOME`, `CONFIG_FILE` and
+  `AE_CORE_BIN`, defaulting `AE_HOME` to `$HOME/.ae`. That is the `ae-dev` namespace
+  (`~/.local/bin/ae-dev`: own `~/.ae-dev`, own tmux server, core from the checkout build)
+  and the two bash suites, which are its only callers.
+
+Both shapes EXPORT `AE_HOME` and `CONFIG_FILE`: the preamble's `--home` feeds the launch
+and the telegram daemon, but the core derives its state root for every other command from
+the environment. There is no coreless mode anywhere — a core that cannot be bound is a
+refusal (exit 2, before any side effect), never a degraded path.
+
+**Command ownership (ruled 2026-08-31; reduced to two wrapper-owned words in slice Z1):**
+except `upgrade` and the three version spellings, every invocation passes the validated
+PAIR first (wrapper `_AE_ENTRY_VERSION` == `ae-core --version`) and then reaches the core
+as one exec. Before that exec the wrapper unsets `AE_VERSION`; the operator pin is scoped
+solely to `upgrade` and cannot freeze into a session.
 
 | Invocation | Owner / gate order |
 |---|---|
-| `list` or `ls` without a help token in its tail | Rust core, after the validated triple |
-| `list` or `ls` whose tail contains exact `-h` or `--help` | `ae-glue` `LISTHELP`, after the validated triple; temporary until core has ratified list-help |
-| `upgrade` | immutable sibling `install`, before the triple gate so repair survives breakage; caller `AE_VERSION` is the target pin |
-| `version`, `--version`, or `-V` | public wrapper `_AE_ENTRY_VERSION`, before the triple gate |
-| `_*` | policy-frozen `ae-glue`, after the validated triple |
-| every other invocation | policy-frozen `ae-glue`, after the validated triple |
+| `upgrade` | immutable sibling `install`, before the pair gate so repair survives breakage; caller `AE_VERSION` is the target pin |
+| `version`, `--version`, or `-V` | public wrapper `_AE_ENTRY_VERSION`, before the pair gate |
+| every other invocation, `_*` and a bare `ae` included | Rust core, after the validated pair, as `ae-core <preamble> -- <argv verbatim>` |
 
-When `ae-glue` is installed with an executable `ae-core` sibling, its core binding uses that
-sibling unconditionally (ignoring `AE_CORE_BIN`). In every other shape, resolution is
-`AE_CORE_BIN`, then immutable `core/current`, then config `workspace.core`.
+The frozen preamble is the wrapper's whole vocabulary, and every flag in it is a fact the
+core cannot see for itself:
+
+```
+ae-core --home H --cwd C [--global G] [--local-config L] \
+        [--server-kind K --server V] [--inside-tmux] [--bash-major N] \
+        [--attach|--no-attach] [--no-autostart] -- <user argv...>
+```
+
+Not passed, each absence a decision: `--pane` (the core reads `TMUX_PANE` itself now that
+it IS the entry process), `--core` and `--core-version` (the core is `current_exe()`,
+which under both shapes is exactly the binary the wrapper resolved and exec'd).
+
+**Core binding.** An INSTALLED bundle binds its own immutable sibling `ae-core` — proven
+a regular, non-symlink, executable member, proven `-ef` the published `core/current`
+pointer, and proven to report the wrapper's own version — so no operator variable can
+outrank the core the bundle shipped with. A CHECKOUT binds `AE_CORE_BIN`, then
+`<AE_HOME>/core/current`, requiring only that the result is an absolute path to an
+executable that reports a version: the checkout's core is built from the tree beside the
+wrapper, and a developer one bump behind is owed a working `ae-dev` rather than a refusal.
 
 ### Lint policy: `[lints]` + `-D warnings`
 
@@ -584,24 +610,29 @@ The bootstrap contract, in full — nothing else is assumed to exist:
 
 ### Deferred, with the trigger recorded
 
-- **Version scheme.** `_AE_ENTRY_VERSION` in `ae-entry`, `AE_VERSION` in `ae`, and Cargo's
-  package version are unified NOW, deliberately pre-promotion: all use SemVer-compatible CalVer
-  `YYYY.M.N`. `just bump` derives N from matching Git tags (`vYYYY.M.N`), resets monthly,
-  refuses duplicate tags, and updates `ae-entry`, `ae`, `Cargo.toml`, and `Cargo.lock` together.
+- **Version scheme.** `_AE_ENTRY_VERSION` in `ae-entry` and Cargo's package version are
+  unified NOW, deliberately pre-promotion: both use SemVer-compatible CalVer `YYYY.M.N`.
+  `just bump` derives N from matching Git tags (`vYYYY.M.N`), resets monthly, refuses
+  duplicate tags, and updates `ae-entry`, `Cargo.toml`, and `Cargo.lock` together. The third
+  version word, `AE_VERSION` in `ae-glue`, went with that file in slice Z1 — the install is
+  now a PAIR, and the wrapper unsets `AE_VERSION` before every exec of the core so an
+  operator pin cannot freeze into a session.
 - **`panic = "abort"`** in the release profile forecloses `catch_unwind`. Revisit if the
   long-lived watchdog or telegram loop needs to survive a panic in one iteration rather than
   take the process down. Cheap to flip; recorded so it stays a decision.
 - **`cliff.toml` is excluded from taplo** — a bash-era file whose reformat would be an
   unrelated diff in a frozen area. It joins the lane when someone reformats it deliberately.
 
-## Bash hazards for surviving pane glue (read before editing `ae`, bundled as `ae-glue`)
+## Bash hazards for the surviving wrapper (read before editing `ae-entry`, bundled as `ae`)
 
 Every bug class below has shipped at least once. Check new code against both lists.
 
-*Scope:* this section governs the minimal policy-frozen `ae-glue` and the generated
-`launch.<slot>.sh` scripts — what is left of the pane-side Bash. It no longer governs the
-session helpers: those are four-line shims that exec the core, with no logic to get wrong.
-Several entries below name a function or a command that the glue cuts removed; they are
+*Scope:* this section governs the policy-frozen public wrapper `ae-entry` and the
+generated `launch.<slot>.sh` scripts — what is left of ae's Bash after slice Z1 deleted
+`ae-glue`. It does not govern the session helpers: those are four-line shims that exec the
+core, with no logic to get wrong.
+Several entries below name a function or a command that the glue cuts and slice Z1
+removed; they are
 kept because the **bug class** is what the list is for, and the class returns the moment
 anyone writes bash here again. Where an entry's subject is gone it says so.
 
@@ -619,8 +650,8 @@ Anything user- or agent-controlled (session names, goals, messages, pane text, c
 | tmux `send-keys` | key names, `-` prefixes | `-l` (literal) or paste-buffer; use the generated helpers, never raw send-keys |
 | Shell command strings | word splitting, globs, quotes | quote every expansion; never concatenate user input into a command; escape regex metachars before grep/sed (`"${slot//./\\.}"`) |
 | Agent system prompts | the LLM (injection) | pane text and inter-agent messages are DATA, not instructions — see the orchestrator charter's injection boundary. The **agent's own name** is interpolated into this sink too (#59's identity sentence), so it is allowlisted by the core's `is_agent_name` at every creation boundary and re-checked, fail-quiet, at the interpolation site |
-| JSON emitters (`events.jsonl`, `list --json`) | JSON syntax | core-owned, whole (`src/json.rs` renders, control bytes stripped at write time). The glue emits no JSON at all: the helpers' event append moved with the helpers, and `_event_json_str` went with it |
-| Telegram send | Telegram Markdown/JSON | moved OUT of bash at P4.3 — the outbound `sendMessage`, its escaping, and the inbound parse now live in the Rust core (`src/telegram.rs`); this table governs the bash glue, which no longer sends to Telegram. The former bash bridge piped data via stdin and never interpolated user text into a `jq` program; the Rust core owns those invariants now |
+| JSON emitters (`events.jsonl`, `list --json`) | JSON syntax | core-owned, whole (`src/json.rs` renders, control bytes stripped at write time). The surviving bash emits no JSON at all: the helpers' event append moved with the helpers, and `_event_json_str` went with it |
+| Telegram send | Telegram Markdown/JSON | moved OUT of bash at P4.3 — the outbound `sendMessage`, its escaping, and the inbound parse now live in the Rust core (`src/telegram.rs`); this table governs the surviving bash, which no longer sends to Telegram. The former bash bridge piped data via stdin and never interpolated user text into a `jq` program; the Rust core owns those invariants now |
 | Telegram autostart refusal record (`~/.ae/telegram/autostart-refusal`) | Status/doctor display | Persist only the closed redacted category plus UTC timestamp; publish temp+`mv` in the same directory, and reject malformed rows before display |
 
 ### Isolation footguns (test/debug scripts)
@@ -705,11 +736,11 @@ The script runs under `set -euo pipefail` (line 3). Exit codes you didn't think 
 
 - **Query functions must end `return 0` explicitly.** Their result is stdout; the exit status is incidental — but a bare call or `x="$(fn)"` under `set -e` kills the whole command. Shipped exhibit: `_agent_alert_reason` fell through with status 1 and truncated `ae list --json` mid-array.
 - **`[[ cond ]] && cmd` as a function's (or loop body's) last statement** returns 1 when the condition is false. Add `|| true` or restructure.
-- **Long emitters must not abort mid-output.** A bash loop that prints a document — `ae list`'s JSON array was the exhibit — must bracket itself with `set +e` … `set -e` so one bad record degrades instead of truncating the snapshot. No such emitter is left in the glue: `list` is a thin exec and the core renders the array, where a partial document is not a reachable state.
+- **Long emitters must not abort mid-output.** A bash loop that prints a document — `ae list`'s JSON array was the exhibit — must bracket itself with `set +e` … `set -e` so one bad record degrades instead of truncating the snapshot. No such emitter is left in bash: the wrapper execs the core and the core renders the array, where a partial document is not a reachable state.
 - **`local x="$(fn)"` swallows the exit status** (`local` returns 0); split declaration and assignment when you need the status — and remember the split form re-arms `set -e`.
 - **Producers in process substitution** end silently: `< <(cmd)` doesn't abort the reader — guard with `|| true` only when failure is genuinely optional.
 - **`set -u` + associative arrays:** subscripting an *undeclared* array is an arithmetic eval on the key → abort on non-numeric refs. `declare -A map=()` before any lookup (see the stopped-sessions JSON path).
-- **Only a BARE call proves `set -e` safety — a green suite does not.** A failing command aborts *only* in statement position: `$(fn)`, `if fn`, `fn && …`, `fn || …` all mask it. `tests/unit` runs `set -euo pipefail` and still cannot catch this, because it reaches these functions exclusively through `$(…)` in `assert_eq` arguments. Entry points used to differ — `ae` enabled errexit and the send-path helpers did not — so the same function was safe through one caller and aborted through another. Every generated helper now sets `-euo pipefail` and holds one `exec`, so the glue's own functions are the only remaining subject. Probe it *bare* under `set -euo pipefail`; that is the only shape that shows it. Shipped exhibit: `_sgr_parse`'s `((line++))` yields the *old* value, so it returns 1 at zero and a bare call aborts mid-parse — invisible through five review rounds until a new caller (`_cmd_spawn`, under `ae`'s errexit) reached it. (`((x++))` → `x=$((x + 1))`.)
+- **Only a BARE call proves `set -e` safety — a green suite does not.** A failing command aborts *only* in statement position: `$(fn)`, `if fn`, `fn && …`, `fn || …` all mask it. `tests/unit` runs `set -euo pipefail` and still cannot catch this, because it reaches these functions exclusively through `$(…)` in `assert_eq` arguments. Entry points used to differ — `ae` enabled errexit and the send-path helpers did not — so the same function was safe through one caller and aborted through another. Every generated helper now sets `-euo pipefail` and holds one `exec`, so the wrapper's own functions are the only remaining subject. Probe it *bare* under `set -euo pipefail`; that is the only shape that shows it. Shipped exhibit: `_sgr_parse`'s `((line++))` yields the *old* value, so it returns 1 at zero and a bare call aborts mid-parse — invisible through five review rounds until a new caller (`_cmd_spawn`, under `ae`'s errexit) reached it. (`((x++))` → `x=$((x + 1))`.)
 - **A probe built to detect an errexit abort must not put the subject in a context that
   disables errexit.** The note above tells you `||`, `&&` and `if` mask errexit. It does
   not tell you that your TEST for masking will itself be masked — and `( subject ) ||

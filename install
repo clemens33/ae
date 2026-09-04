@@ -4,10 +4,10 @@
 # Safe to fetch as the small, one-line bootstrap command. Release payloads are
 # downloaded to files, checked against SHA256SUMS, and extracted only after the
 # checksum matches. Local-bundle path: AE_BUNDLE + AE_SUMS. Checkout mode (this
-# file next to ae-entry and the tracked glue) is the `just install` role.
+# file next to ae-entry and Cargo.toml) is the `just install` role.
 #
 # Fixed publication paths, derived from HOME and nothing else:
-#   ~/.ae/versions/<V>/{ae,ae-core,ae-glue,install}
+#   ~/.ae/versions/<V>/{ae,ae-core,install}
 #   ~/.ae/core/current
 #   ~/.local/bin/ae
 set -euo pipefail
@@ -374,11 +374,11 @@ remote_script_here() {
 remote_is_checkout() {
     local here
     here="$(remote_script_here "${BASH_SOURCE[0]:-$0}")" || return 1
-    [ -f "$here/ae-entry" ] && [ -f "$here/ae" ] && [ -f "$here/Cargo.toml" ]
+    [ -f "$here/ae-entry" ] && [ -f "$here/Cargo.toml" ]
 }
 
 remote_checkout_stage() {
-    local dest="$1" here built wrap_version glue_version core_version
+    local dest="$1" here built wrap_version core_version
     here="$(remote_script_here "${BASH_SOURCE[0]:-$0}")" || {
         remote_die "checkout mode: could not resolve installer location"
         return 1
@@ -387,25 +387,11 @@ remote_checkout_stage() {
         remote_die "checkout mode: no ae-entry at $here/ae-entry"
         return 1
     }
-    [ -f "$here/ae" ] || {
-        remote_die "checkout mode: no glue at $here/ae"
-        return 1
-    }
     wrap_version="$(grep -m1 '^_AE_ENTRY_VERSION=' "$here/ae-entry" | cut -d'"' -f2)"
-    glue_version="$(grep -m1 '^AE_VERSION=' "$here/ae" | cut -d'"' -f2)"
     [ -n "$wrap_version" ] || {
         remote_die "could not read _AE_ENTRY_VERSION from $here/ae-entry"
         return 1
     }
-    [ -n "$glue_version" ] || {
-        remote_die "could not read AE_VERSION from $here/ae"
-        return 1
-    }
-    if [ "$wrap_version" != "$glue_version" ]; then
-        remote_die "version mismatch: wrapper is $wrap_version, glue is $glue_version.
-They move together. Run \`just bump\` in the checkout (it owns all four files)."
-        return 1
-    fi
     if [ -n "${AE_CORE_BIN:-}" ]; then
         built="$AE_CORE_BIN"
         [ -f "$built" ] || {
@@ -428,17 +414,16 @@ They move together. Run \`just bump\` in the checkout (it owns all four files)."
         remote_die "the core reported no version: $built"
         return 1
     }
-    if [ "$core_version" != "$glue_version" ]; then
-        remote_die "version mismatch: the core reports $core_version, ae is $glue_version.
-They move together. Rebuild the core, or run \`just bump\` in the checkout (it owns all four files)."
+    if [ "$core_version" != "$wrap_version" ]; then
+        remote_die "version mismatch: the core reports $core_version, ae-entry is $wrap_version.
+They move together. Rebuild the core, or run \`just bump\` in the checkout (it owns them together)."
         return 1
     fi
     mkdir -p "$dest"
     cp "$here/ae-entry" "$dest/ae"
-    cp "$here/ae" "$dest/ae-glue"
     cp "$built" "$dest/ae-core"
     cp "$here/install" "$dest/install"
-    chmod 0755 "$dest/ae" "$dest/ae-glue" "$dest/ae-core" "$dest/install"
+    chmod 0755 "$dest/ae" "$dest/ae-core" "$dest/install"
     printf '%s\n' "$core_version"
 }
 
@@ -1195,7 +1180,7 @@ remote_test_failure() {
 remote_main() {
     local platform requested version repository release_ref sums archive archive_path
     local root extracted version_dir versions core_root current_pointer config link
-    local stage file source core_version glue_version wrap_version staged_version list_file entry temp pointer_target suffix
+    local stage file source core_version wrap_version staged_version list_file entry temp pointer_target suffix
     local home link_parent core_had=0 core_old="" core_mode="" current_had=0 current_old=""
     local link_had=0 link_old="" config_had=0
     remote_reset_state
@@ -1238,7 +1223,7 @@ remote_main() {
     elif remote_is_checkout; then
         version="$requested"
         if [ "$version" = "latest" ]; then
-            version="$(grep -m1 '^AE_VERSION=' "$(remote_script_here "${BASH_SOURCE[0]:-$0}")/ae" | cut -d'"' -f2)"
+            version="$(grep -m1 '^_AE_ENTRY_VERSION=' "$(remote_script_here "${BASH_SOURCE[0]:-$0}")/ae-entry" | cut -d'"' -f2)"
         fi
         if ! remote_version_ok "$version"; then
             remote_die "could not derive a CalVer version from the checkout"
@@ -1316,7 +1301,7 @@ remote_main() {
         fi
         while IFS= read -r entry; do
             case "$entry" in
-                "$root/" | "$root/ae" | "$root/ae-core" | "$root/ae-glue" | "$root/install") ;;
+                "$root/" | "$root/ae" | "$root/ae-core" | "$root/install") ;;
                 *)
                     remote_die "archive contains an unexpected path: $entry"
                     return 1
@@ -1329,7 +1314,7 @@ remote_main() {
         fi
         source="$extracted/$root"
     fi
-    for file in ae ae-core ae-glue install; do
+    for file in ae ae-core install; do
         if [ ! -f "$source/$file" ]; then
             remote_die "archive is missing $file"
             return 1
@@ -1341,10 +1326,6 @@ remote_main() {
     done
     if [ ! -x "$source/ae" ]; then
         remote_die "archive wrapper is not executable"
-        return 1
-    fi
-    if [ ! -x "$source/ae-glue" ]; then
-        remote_die "archive glue is not executable"
         return 1
     fi
     if [ ! -x "$source/ae-core" ]; then
@@ -1364,19 +1345,14 @@ remote_main() {
         remote_die "archive core reports $core_version, expected $version"
         return 1
     fi
-    glue_version="$(grep -m1 '^AE_VERSION=' "$source/ae-glue" | cut -d'"' -f2)"
-    [ -n "$glue_version" ] || {
-        remote_die "could not read AE_VERSION from archive glue"
-        return 1
-    }
     wrap_version="$(grep -m1 '^_AE_ENTRY_VERSION=' "$source/ae" | cut -d'"' -f2)"
     [ -n "$wrap_version" ] || {
         remote_die "could not read _AE_ENTRY_VERSION from archive wrapper"
         return 1
     }
-    if [ "$wrap_version" != "$core_version" ] || [ "$core_version" != "$glue_version" ]; then
-        remote_die "version mismatch: wrapper is $wrap_version, the core reports $core_version, glue is $glue_version.
-They move together. Rebuild the core, or run \`just bump\` in the checkout (it owns all four files)."
+    if [ "$wrap_version" != "$core_version" ]; then
+        remote_die "version mismatch: wrapper is $wrap_version, the core reports $core_version.
+They move together. Rebuild the core, or run \`just bump\` in the checkout (it owns them together)."
         return 1
     fi
 
@@ -1446,22 +1422,22 @@ They move together. Rebuild the core, or run \`just bump\` in the checkout (it o
     version_dir="$versions/$version"
     remote_require_dir "$version_dir" "installed version directory"
     if [ -d "$version_dir" ]; then
-        for file in ae ae-core ae-glue install; do
+        for file in ae ae-core install; do
             if ! remote_require_regular_file "$version_dir/$file" "installed version member"; then
                 return 1
             fi
         done
-        for file in ae ae-core ae-glue install; do
+        for file in ae ae-core install; do
             if ! cmp -s "$source/$file" "$version_dir/$file"; then
                 remote_die "version $version is already installed with different bytes"
                 return 1
             fi
         done
-        chmod 0555 "$version_dir" "$version_dir/ae" "$version_dir/ae-core" "$version_dir/ae-glue" "$version_dir/install"
+        chmod 0555 "$version_dir" "$version_dir/ae" "$version_dir/ae-core" "$version_dir/install"
     else
         stage="$(mktemp -d "$versions/.stage.XXXXXX")"
         _REMOTE_STAGE="$stage"
-        for file in ae ae-core ae-glue install; do
+        for file in ae ae-core install; do
             cp "$source/$file" "$stage/$file"
             chmod 0555 "$stage/$file"
         done
