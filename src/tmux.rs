@@ -718,6 +718,23 @@ pub fn focus_args(server: &ServerId, verb: FocusVerb, session: &str) -> Vec<Stri
     args
 }
 
+/// `#{version}` — the running server's own version, as tmux spells it
+/// (`3.4`, `3.5a`, `next-3.6`, `master`).
+pub const VERSION_FORMAT: &str = "#{version}";
+
+/// The arguments asking `server` which tmux version it IS.
+///
+/// The SERVER is asked rather than the `tmux -V` binary on `PATH`: a long-lived
+/// server keeps running the binary that started it, so the two disagree exactly
+/// when an upgrade has happened and the answer matters most. Read the result
+/// with [`interpret_display_value`].
+#[must_use]
+pub fn version_args(server: &ServerId) -> Vec<String> {
+    let mut args = server_args(server);
+    args.extend(["display-message", "-p", VERSION_FORMAT].map(ToOwned::to_owned));
+    args
+}
+
 /// `#{pane_tty}` — the tty of every pane on the server, one per line.
 pub const PANE_TTY_FORMAT: &str = "#{pane_tty}";
 
@@ -1386,8 +1403,8 @@ mod tests {
     fn no_tmux_format_carries_a_control_character() {
         use super::{
             AGENTS_FORMAT, CLIENT_FORMAT, PANE_FORMAT, PANE_ID_FORMAT, PANE_PROBE_FORMAT,
-            PANE_TTY_FORMAT, SESSION_ID_FORMAT, SESSION_NAME_FORMAT, SLOTS_FORMAT, VIEWER_FORMAT,
-            WATCH_PANE_FORMAT, WINDOW_PANE_FORMAT,
+            PANE_TTY_FORMAT, SESSION_ID_FORMAT, SESSION_NAME_FORMAT, SLOTS_FORMAT, VERSION_FORMAT,
+            VIEWER_FORMAT, WATCH_PANE_FORMAT, WINDOW_PANE_FORMAT,
         };
 
         for format in [
@@ -1400,6 +1417,7 @@ mod tests {
             SESSION_ID_FORMAT,
             SESSION_NAME_FORMAT,
             SLOTS_FORMAT,
+            VERSION_FORMAT,
             VIEWER_FORMAT,
             WATCH_PANE_FORMAT,
             WINDOW_PANE_FORMAT,
@@ -2040,6 +2058,29 @@ mod tests {
     fn a_relative_socket_path_cannot_address_a_server() {
         assert!(is_addressable_socket(Path::new("/tmp/ae.sock")));
         assert!(!is_addressable_socket(Path::new("relative/ae.sock")));
+    }
+
+    #[test]
+    fn the_version_is_asked_of_the_server_rather_than_of_the_binary_on_path() {
+        use super::{VERSION_FORMAT, interpret_display_value, version_args};
+        use crate::inventory::ServerId;
+        use crate::meta::Selector;
+
+        // `-V` would answer for whichever tmux is first on PATH; this asks the
+        // server that is actually going to draw the menu.
+        assert_eq!(
+            version_args(&ServerId::Ambient),
+            vec!["display-message", "-p", VERSION_FORMAT]
+        );
+        assert_eq!(
+            version_args(&ServerId::Selected(Selector::Name("ae-dev".to_owned()))),
+            vec!["-L", "ae-dev", "display-message", "-p", VERSION_FORMAT]
+        );
+        assert_eq!(
+            interpret_display_value(true, "3.7b\n"),
+            Some("3.7b".to_owned())
+        );
+        assert_eq!(interpret_display_value(false, "3.7b\n"), None);
     }
 
     #[test]

@@ -500,6 +500,16 @@ pub fn observe_server_pid(server: &ServerId) -> Option<String> {
     tmux::interpret_display_value(succeeded, &stdout)
 }
 
+/// The version `server` is RUNNING, or `None` when it did not answer.
+#[must_use]
+pub fn observe_tmux_version(server: &ServerId) -> Option<String> {
+    if !addressable(server) {
+        return None;
+    }
+    let (succeeded, stdout) = run(PROGRAM, &tmux::version_args(server));
+    tmux::interpret_display_value(succeeded, &stdout)
+}
+
 /// The ttys of every pane on `server`, or `None` when it did not answer.
 #[must_use]
 pub fn observe_pane_ttys(server: &ServerId) -> Option<Vec<String>> {
