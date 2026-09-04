@@ -103,7 +103,7 @@ How this project is built and reviewed, distilled from lived sessions — load t
 1. Parses `~/.ae/config` for agent commands and layout
 2. Uses current dir (default `--local`), full copy (`--copy`), or git worktree (`--worktree`)
 3. Creates tmux session with main agent (+ workers if configured)
-4. Generates session helpers and workspace manifest in `~/.ae/sessions/<name>/`
+4. Links the session helpers and renders the workspace manifest in `~/.ae/sessions/<name>/`
 5. Launches agents with workspace context injected into their system prompts
 6. Attaches
 
@@ -117,9 +117,9 @@ lineage is never inferred from a name. See docs/internals/architecture.md.
 
 ## Session helpers
 
-The core writes these scripts into `~/.ae/sessions/<name>/` for agents and humans to use.
-Every one is a thin shim over a core entry — the names and the argv are the compatibility
-contract, because every agent in a live workspace calls them by name.
+The core LINKS these names into `~/.ae/sessions/<name>/` for agents and humans to use.
+Every one is a symlink to the ae core binary itself — the names and the argv are the
+compatibility contract, because every agent in a live workspace calls them by name.
 
 | Helper | Purpose |
 |--------|---------|
@@ -143,49 +143,92 @@ contract, because every agent in a live workspace calls them by name.
 | `spawn <name> --using <profile> [prompt]` | Add a new agent to the workspace; oversized Claude/Codex task prompts use a sender-owned `messages/*.txt` notice |
 | `retire <name>` \| `retire %pane` | Remove a spawned agent (kills pane, cleans meta, updates manifest); exact name only — `main`/`worker` seats refuse ("use 'ae end'") |
 
-Every helper is core-owned end to end — name resolution, tmux server support, lock serialization, the event append, and the pane delivery `send` performs. The `_lib` library the helpers used to source is gone, and so is `_send-deliver`, the internal entry through which the core once called back into a bash send body. Name resolution supports the exact agent name, `%pane-id`, and cross-session `session:agent` / `@session:agent` syntax — alias-only and partial matching are gone. `agents --all` lists agents across all running ae sessions.
+Every helper is core-owned end to end — name resolution, tmux server support, lock serialization, the event append, and the pane delivery `send` performs. Since slice Z2 there is nothing in front of the core at all: calling a helper IS calling the core, which reads the name it was invoked under and the directory it was invoked from. Name resolution supports the exact agent name, `%pane-id`, and cross-session `session:agent` / `@session:agent` syntax — alias-only and partial matching are gone. `agents --all` lists agents across all running ae sessions.
 
-Two more shims sit in the same directory and are not agent-facing: `watchdog` and `events-tail` are the whole command of the two monitor panes, so each must be an executable file tmux can run rather than a shell line that would have to quote a core path. `loop` is the deprecated spelling of `watchdog`, kept as an alias for sessions created before the rename.
+**Call a helper by its full path.** The session directory is `argv[0]`'s dirname, so a helper reached by bare name — through `PATH`, or copied somewhere convenient — has no session to act on and refuses with exit 2 rather than guessing at one. The helpers are deliberately not on `PATH` for that reason.
 
-### How helpers are generated (thin shims)
+**Never write through a helper path.** A helper is a link to the ae core binary, and
+`>`, `>>`, `chmod`, `cp` and `sed -i` all FOLLOW a symlink — so `> <session-dir>/send`
+does not replace a helper, it truncates the core binary that every session on the machine
+is bound to, and `chmod` on one re-modes that binary. It fails far from the write: the
+next `ae` command reports a core that is empty or that prints whatever you wrote. Reading
+through a link is fine; only writers bite. To replace a helper, `rm -f` it first and then
+create the new file, which is what `write_helpers` does for its own publish (symlink to a
+temp beside the destination, then rename). This is a live hazard for test fixtures above
+all — a fixture that plants a "stale helper" is exactly the shape that corrupts the core —
+and it shipped once, as 19 phantom failures in an unrelated domain. Z3 will make the
+published core read-only and have `ae doctor` warn when the resolved core is writable;
+until then the rule is the only guard.
 
-There is no helper logic in bash to generate any more, so there is no generator either. One
-writer emits the whole set — `src/session_launch/assets.rs`, reached at launch and again
-through the core's `_shims-render <session-dir>`, which is what `ae doctor --refresh` runs.
-A helper is four lines: the shebang, `set -euo pipefail`, its own directory derived from
-`$0`, and `exec <core> <entry> "$META_DIR" "$@"`. `mark-done` prepends `done`; `peak` and
-`loop` exec their sibling rather than re-deriving the directory, so the derivation has
-exactly one home.
+Two more links sit in the same directory and are not agent-facing: `watchdog` and `events-tail` are the whole command of the two monitor panes, so each must be a filesystem entry tmux can run rather than a shell line that would have to quote a core path. `loop` is the deprecated spelling of `watchdog`, kept as an alias for sessions created before the rename.
+
+### How helpers are generated (links, not scripts)
+
+There is no helper logic in bash to generate any more, and since slice Z2 there is no
+helper BODY either. One writer emits the whole set — `src/session_launch/assets.rs`,
+reached at launch and again through the core's `_shims-render <session-dir>`, which is what
+`ae doctor --refresh` runs.
+
+A helper is a **symlink to the core binary**. Its target is the absolute path the core
+resolved for itself, byte-identical to the `ae_core` row in that session's meta, and all 21
+names point at that one target — `mark-done`, `peak` and `loop` included. The aliasing that
+used to live in a generated body (a prepended `done`, a sibling `exec`) is now a line in the
+dispatch table.
+
+**The core dispatches on `argv[0]`, not on `current_exe()`.** It takes
+`std::env::args().next()`, splits the basename to pick the entry and the dirname to derive
+the session directory. `current_exe()` would resolve the link and every helper would answer
+as `ae-core`, which is exactly the bug that shape invites. Two consequences are contract:
+
+- **Full path or nothing.** A helper invoked with no `/` in `argv[0]` — found on `PATH`,
+  copied to a bin directory — has no directory to derive, so it refuses with exit 2 and one
+  line naming the rule. It does not fall back to a search, a cwd guess, or the newest
+  session; a helper that guessed its session would deliver another workspace's message.
+- **The directory is the session.** Moving or copying a link moves the session it addresses
+  with it, which is why the links are published into the session directory and nowhere else.
+
+Each link is published as a symlink at a temp name beside the destination, then renamed over
+— the shape `_publish_executable_artifact` froze, minus the `chmod`, because a symlink's own
+mode is not meaningful and what has to be executable is the target. A session missing a
+helper is not a session, so the first link that cannot be published fails the launch and the
+caller rolls back — agents never start unable to talk to each other.
 
 The `declare -f` template library that stood in `ae` — the column-0 template functions, the
 `SYNC_SESSION_ASSETS_BODY` awk-source region, the `<TAG>PROLOGUE` heredocs, and the `_lib`
-runtime they emitted — is **history**. It was the right shape while the logic was bash; it
-has no subject now. The `set -euo pipefail` line survived the move on purpose: the directory
-derivation above the `exec` is a command substitution, and a failed `cd` must not reach the
-core as an empty first argument.
+runtime they emitted — is **history**, and so is the four-line shim that replaced it: the
+shebang, the `set -euo pipefail`, the `META_DIR` command substitution and the single `exec`.
+Nothing in a session directory is a script any more. The hazard that kept `set -euo
+pipefail` in the shim — a failed `cd` reaching the core as an empty first argument — went
+with the substitution that could fail.
 
-Each shim is published temp + chmod + rename, the shape `_publish_executable_artifact`
-froze: a writer that dies mid-write leaves the previous artifact whole rather than a
-truncated executable the session would then run. A session missing a helper is not a
-session, so the first artifact that cannot be published fails the launch and the caller
-rolls back — agents never start unable to talk to each other.
-
-The `_publish_executable_artifact` chokepoint in `ae` and the unit guard that policed its
-raw alternatives (`chmod`, `install -m` and friends in command position) went with the last
-bash writer of an executable artifact. The contract they enforced is unchanged and now lives
-in one Rust function: generate to a temp beside the destination, set the mode there, rename.
-What the guard could never see is worth remembering if a bash writer ever returns — an
-executable bit acquired without a mode word (`cp -p` from an executable source, a permissive
-umask, `install` with no `-m`, an artifact that chmods itself at run time) was always outside
-its reach. The chokepoint was the contract; the guard was partial enforcement of it.
+What the retired `_publish_executable_artifact` guard could never see is still worth
+remembering if a bash writer ever returns here: an executable bit acquired without a mode
+word (`cp -p` from an executable source, a permissive umask, `install` with no `-m`, an
+artifact that chmods itself at run time) was always outside its reach. The chokepoint was
+the contract; the guard was partial enforcement of it.
 
 The set is pinned twice. `tests/unit` asserts the refreshed directory holds **exactly** the
 core's list — never `>= N`, because exactness is what makes an artifact quietly appearing or
-vanishing a failure rather than a different number — and `tests/integration` pins the bytes
-`doctor --refresh` writes against the bytes the core writes at launch, so the two entries
-cannot drift. A refresh replaces on-disk scripts only: a **running** watchdog or Telegram
-daemon keeps the process it already is until it is stopped and started. See
+vanishing a failure rather than a different number — and `tests/integration` pins the LINK
+TARGETS `doctor --refresh` writes against the link targets the core writes at launch, so the
+two entries cannot drift. A refresh replaces on-disk links only: a **running** watchdog or
+Telegram daemon keeps the process it already is until it is stopped and started. See
 docs/development.md for the test-side details.
+
+### How an agent is launched (`_run`)
+
+There is no `launch.<slot>.sh`. A pane's whole command is the core entry
+`<core> _run <session-dir> <slot>`, and the core does in-process what the generated script
+used to do in bash: read meta, build the tool command, decide create-vs-resume, apply the
+env prefix, and then `exec` the tool — `CommandExt::exec`, so the pane's process IS the
+tool and `pane_current_command` still reports it rather than a shell.
+
+`launch.<slot>.started` survives as the create-vs-resume discriminator, and it is now
+`_run`'s own file: written before the exec on the first run of a seat, so a second run of
+the same pane command resumes the conversation instead of colliding on a create-once
+`--session-id`. A FRESH launch clears it, and so does a spawn for the slot it creates; a
+session RESUME deliberately does not, because there the marker is what says this seat
+already has a conversation.
 
 ## Agent tool capabilities
 
@@ -202,7 +245,7 @@ ae supports multiple coding agent CLIs. They differ significantly in session han
 | **Config flags preserved on resume** | Yes (flags stay, `--resume` appended) | Yes (flags before `resume` subcommand) | Yes (flags stay, `--resume` appended) | Yes (flags stay, `--resume`/`--continue` appended) | Yes (flags stay, `--session` appended) |
 | **TUI modelled for delivery** | Yes — input-busy + staged detection; bracketed paste measured 2026-08-30 (plain head loss 4/4, bracketed 0/6, receiver byte-exact) | Yes — busy detection (staged detection: see input-region work) | No | No (v1) — sends deliver unprotected: no typed-input protection, no staged detection, no throttle patterns until its TUI is observed live | No |
 | **Launch-time input-ready detection** | Idle-input sensor; no separate start-up marker observed | `model: loading` header **and** `Starting MCP servers (n/m)` progress line are NOT-ready markers (measured 2026-08-15, v0.147.0: input box drawn at t=0.5s, settled t=3.0s) | None — falls back to the composed-UI grep, but nothing rides on it: context arrives via OPENCODE_CONFIG, not a paste | **EXEMPT — no readiness detection.** Its TUI is unmodelled, so launch delivery is ungated and a slow start can land a paste into an unready pane. Accepted risk, not a pretend gate | None — falls back to the composed-UI grep |
-| **`launch.<slot>.sh` re-run** | Resumes — first run creates, later runs `--resume` the same UUID | Starts FRESH (no id to bake, so nothing collides — the conversation is simply lost) | Starts FRESH | Resumes — same as claude | Starts FRESH |
+| **`_run` re-run** | Resumes — first run creates, later runs exec the `--resume` variant when the conversation is still there and the tool's own fallback when it is not | Starts FRESH (no id to bake, so nothing collides — the conversation is simply lost) | Starts FRESH | Resumes — same as claude | Starts FRESH |
 
 **Key constraints to know:**
 - **An idle input box is not an initialized application.** Every tool whose task rides a *paste*
@@ -221,7 +264,7 @@ ae supports multiple coding agent CLIs. They differ significantly in session han
   in a run where no key was ever sent). It is a terminal state, not a sign of interrupted input.
 
 - tmux 3.4 escapes control characters in `-F` output as octal; tmux 3.5+ emits them raw; the watchdog pane-listing format uses a printable separator with the free command field last (measured 2026-08-30).
-- Codex has no `--session-name` or `--session-id` flag. The only way to get its UUID is post-launch (from `~/.codex/sessions/YYYY/MM/DD/*.jsonl` filenames). ae works around this by instructing codex via `developer_instructions` to run `<session-dir>/_register-sid` as its first action, and the core polls for the `codex.<slot>.sid` file that handshake writes before falling back to the scans. **Measured 2026-09-03: `_register-sid` is no longer written into the session directory** — it left the helper set with the `declare -f` template library, and the unit suite's exact-set assertion records that. The instruction still names it, so the handshake link is currently dead and capture relies on the scans below it. Fix the pair together, or drop the instruction.
+- Codex has no `--session-name` or `--session-id` flag. The only way to get its UUID is post-launch (from `~/.codex/sessions/YYYY/MM/DD/*.jsonl` filenames). ae works around this by instructing codex via `developer_instructions` to run `<session-dir>/_register-sid` as its first action, and the core polls for the `codex.<slot>.sid` file that handshake writes before falling back to the scans. It left the helper set with the `declare -f` template library once, which broke the handshake silently — the instruction named a file that was not there — and it is back in the set for exactly that reason. It is the one helper no human types, and since slice Z2 it is a link like every other.
 - Every capture scan is filtered by the seat's recorded `launch_time.<slot>`, so a stale conversation in the same directory cannot be captured as this one. Capture runs in its own detached process — a tool that takes half a minute to answer must not delay the attach — and a capture child that dies before its tool answers is not a lost seat: the watchdog takes ONE look at each pending seat per cycle and registers whatever it finds. No sleeping, no polling; the next tick is the retry.
 - Gemini persists a local `sessionId` in `~/.gemini/tmp/<project>/chats/session-*.json`, and current Gemini CLI accepts `--resume <UUID>` in addition to `latest`/index. ae now captures that UUID via launch-token scan and uses exact resume when available; fallback remains `--resume latest` if capture fails.
 - OpenCode is TUI-only with no system-prompt FLAG, but it is no longer paste-driven. ae writes a per-slot config + context file into the session meta dir and launches `env OPENCODE_CONFIG=<meta>/opencode.<slot>.json opencode …`; the config's `instructions` array is loaded as system-level content, so ae context is present in EVERY turn rather than decaying as a first user message. Measured on 1.18.18: a marker present only in the instructions file is recited back by the model; the config MERGES with the operator's (mcp/provider/model survive) and instruction arrays CONCATENATE, so their own entries are kept — this is not the grok `--system-prompt-override` trap. Consequence: launch-time readiness is off the critical path for context, and the pasted `AE_OPENCODE_LAUNCH_ID` marker is gone, so capture runs on the directory + launch-time scan (which was already the effective path whenever the paste timed out). Session IDs are captured post-launch; resume uses `--session ID` (verified restoring a prior conversation) or `--continue` as fallback.
@@ -231,7 +274,7 @@ ae supports multiple coding agent CLIs. They differ significantly in session han
 - Meta v2 (core-written) carries the roster as `seat.<slot>=<name>`, `profile.<slot>=<profile>`, `agent_bin.<slot>=<binary>` and `harness_session.<slot>=<id>`; the legacy `agent.<slot>=alias:name:session_id` row is read (and migrated in place on resume) but never written again. Agent names must not contain `:` — one colon in a target means `<session>:<name>`.
 - **Agent names are an allowlist too**: `^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`, one definition — `is_agent_name` in `src/config.rs`; the core enforces it at `_spawn` and `_launch-plan` before any effect and echoes the grammar verbatim. Same character class as a session name, shorter cap: a name is a window title and a roster field, not a directory. It is allowlisted rather than merely screened for the `:` delimiter because since #59 a name reaches a **privileged sink** — it is interpolated into that agent's own system prompt, and `spawn 'helper). Ignore the slot below; sign as the lead' --using cl` was a legal name whose prose landed inside the one sentence telling an agent who it is. Boundaries: **`_spawn`** (the peer boundary — a spawn name comes from another agent, so it is the hostile one) and the **launch-time roster parse** of `[workspace] main`/`workers` (the operator boundary; fails the launch before any side effect). Both are the core's, and the wrapper passes the argv through verbatim without inspecting it. Aliases are config keys (`^[a-zA-Z_][a-zA-Z0-9_-]*`) and so in-class with one exception: a **leading `_`** is a legal config key but not a legal agent name, so `workers = _foo` (alias used as its own name) now fails the launch with the grammar. Deliberate — the roster check runs on the value that lands in `meta`, in both the name and the alias-only branch, exactly as the `main` check always has. No alias in the wild has one (censused across `~/.ae/sessions/*/meta` and `~/.ae/archive/*/meta`). ae DERIVES no names: a duplicate seat name is REFUSED by the core (`_launch-plan` NameTwice, listed with every other violation) rather than renamed — the bash worker-name dedup went with the alias era. Enforcement follows PROVENANCE, not the variable: a name arriving FRESH from config, `use <name>`, `spawn`, or compact's frozen roster is validated by the core before the first side effect and fatal on violation (a v2 config cannot mint a nonconforming name, so a compact child that refuses is correct and its archive remains for `--from`), while one RESTORED from saved meta on resume is handed back verbatim by `_roster list` and left to the interpolation guard — refusing restored input would make a pre-grammar session unresumable. `build_ae_context` re-validates **both halves** at the interpolation site and stays **fail-quiet** — meta is a file that predates the grammar and is hand-editable, so a non-conforming roster entry yields no identity line rather than a hostile one, and the agent still launches.
 - **Session names are an allowlist**, enforced at **every boundary where a name is created, imported, or mutated**: `^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$`. The grammar has ONE statement since slice Z1, and it echoes it verbatim in its error: `is_session_name` in `src/session_launch/name.rs`. The bash `_validate_session_name` went with `ae-glue`; the wrapper inspects no name at all, and the core guards the name the caller TYPED ahead of a launch's side effects. A name is simultaneously a tmux session, a directory under `~/.ae/sessions/`, part of the `.lifecycle.<name>.lock` filename, and the target of the launch rollback's `rm -rf` — so it is allowlisted rather than filtered. The boundaries: **launch entry** (`ae [name]`, before the first tmux or filesystem side effect), **`default_session_name`** (which *guarantees* the grammar for any PWD rather than being checked against it), and **`rename`** (target strict). `ae transfer` was a fourth until it was cut rather than ported. Consumers of an *existing* session use `_session_name_usable`, which also accepts a legacy name that is already a real direct-child directory — a migration path out of pre-grammar names, never a route to traversal. `ae end`/`ae stop` resolve through session lookup rather than raw path construction (measured), so they are not name boundaries. Widen only on a real name in the wild, never on speculation.
-- `launch.<slot>.sh` is **re-runnable** for the upfront-UUID tools. `--session-id` is create-once, so a human who exits the TUI and arrow-ups the script used to hit "Session ID … is already in use". The script now drops a `launch.<slot>.started` marker on its first run and `exec`s the `--resume` variant on every later one; ae clears the marker whenever it rewrites the script, so a fresh launch always creates. The decision happens BEFORE exec deliberately: a `cmd || fallback` chain would leave bash as the pane's process and `pane_current_command` would report `bash` instead of the tool, silently disabling the send path's TUI modelling (measured — and the reason today's `claude --resume … || --continue` resume launches already read as `bash`). The post-launch-capture tools have no baked id to collide with; re-running their script starts a fresh conversation instead of erroring, which is why they are out of scope rather than fixed.
+- **`_run` is re-runnable** for the upfront-UUID tools. `--session-id` is create-once, so a human who exits the TUI and arrow-ups the pane command used to hit "Session ID … is already in use". `_run` drops a `launch.<slot>.started` marker on its first run for the seat and takes the resume path on every later one; a fresh launch (and a spawn, for the slot it creates) clears the marker, so a create always creates. The marker decides create-vs-resume; the tool's own probe then decides WHICH resume — `--resume <uuid>` while the conversation is still on disk, the tool's fallback (`--continue` for claude) once it is not, so a re-run after a pruned transcript starts the agent instead of failing on an id nothing answers to. Every resume says so on stderr before the exec, because a human who arrow-ups a pane command needs to know they got their conversation back rather than a second one. The decision happens BEFORE the exec deliberately: a `cmd || fallback` chain would leave a shell as the pane's process and `pane_current_command` would report `bash` instead of the tool, silently disabling the send path's TUI modelling (measured — and the reason the pre-Z2 `claude --resume … || --continue` resume launches already read as `bash`). The post-launch-capture tools have no baked id to collide with; re-running `_run` for one of them starts a fresh conversation instead of erroring, which is why they are out of scope rather than fixed.
 
 ## Rust era (`main`)
 
@@ -265,10 +308,14 @@ Cycle rules under this work: scoped integration runs in the inner loop, one full
 slice; commit on lint + unit + scoped green, the full pass and the single cross-model round
 run after the commit on the integrated diff (nothing is pushed); fixes roll forward.
 
-**Status (measured 2026-09-04, after slice Z1).** The destination is reached, and then
-some: `ae-glue` is DELETED. What is left of ae's Bash is the public wrapper `ae-entry` at
-737 lines, 433 of them code — down from the 18,673 the epic closed on — plus the generated
-`launch.<slot>.sh` scripts and the four-line session shims. There is no dispatcher, no
+**Status (measured 2026-09-04, after slice Z2).** The destination is reached, and then
+some: `ae-glue` is DELETED, and so is every line of bash a session used to carry. What is
+left of ae's Bash is the public wrapper `ae-entry` at 737 lines, 433 of them code — down
+from the 18,673 the epic closed on — and nothing else. Slice Z2 took the last two: the
+session helpers are symlinks to the core (`argv[0]` dispatch, full-path rule) and
+`launch.<slot>.sh` is replaced by the core entry `_run`, which execs the tool itself. A
+session directory now holds links, meta and data — no script, no shebang, no interpreter.
+There is no dispatcher, no
 help text, no name grammar, no session-path guard, no config writer, no INI parser, no
 portability shim and no reader of ae's own state in bash; the one exception is stated at
 its site, the `upgrade` report, which must answer "which sessions are running" about an
@@ -637,10 +684,10 @@ The bootstrap contract, in full — nothing else is assumed to exist:
 
 Every bug class below has shipped at least once. Check new code against both lists.
 
-*Scope:* this section governs the policy-frozen public wrapper `ae-entry` and the
-generated `launch.<slot>.sh` scripts — what is left of ae's Bash after slice Z1 deleted
-`ae-glue`. It does not govern the session helpers: those are four-line shims that exec the
-core, with no logic to get wrong.
+*Scope:* this section governs the policy-frozen public wrapper `ae-entry`, which after
+slice Z2 is the whole of ae's Bash. It governs no generated artifact any more: the session
+helpers are symlinks to the core and a pane's command is the core entry `_run`, so there is
+no script in a session directory for a bash bug class to live in.
 Several entries below name a function or a command that the glue cuts and slice Z1
 removed; they are
 kept because the **bug class** is what the list is for, and the class returns the moment
@@ -750,7 +797,7 @@ The script runs under `set -euo pipefail` (line 3). Exit codes you didn't think 
 - **`local x="$(fn)"` swallows the exit status** (`local` returns 0); split declaration and assignment when you need the status — and remember the split form re-arms `set -e`.
 - **Producers in process substitution** end silently: `< <(cmd)` doesn't abort the reader — guard with `|| true` only when failure is genuinely optional.
 - **`set -u` + associative arrays:** subscripting an *undeclared* array is an arithmetic eval on the key → abort on non-numeric refs. `declare -A map=()` before any lookup (see the stopped-sessions JSON path).
-- **Only a BARE call proves `set -e` safety — a green suite does not.** A failing command aborts *only* in statement position: `$(fn)`, `if fn`, `fn && …`, `fn || …` all mask it. `tests/unit` runs `set -euo pipefail` and still cannot catch this, because it reaches these functions exclusively through `$(…)` in `assert_eq` arguments. Entry points used to differ — `ae` enabled errexit and the send-path helpers did not — so the same function was safe through one caller and aborted through another. Every generated helper now sets `-euo pipefail` and holds one `exec`, so the wrapper's own functions are the only remaining subject. Probe it *bare* under `set -euo pipefail`; that is the only shape that shows it. Shipped exhibit: `_sgr_parse`'s `((line++))` yields the *old* value, so it returns 1 at zero and a bare call aborts mid-parse — invisible through five review rounds until a new caller (`_cmd_spawn`, under `ae`'s errexit) reached it. (`((x++))` → `x=$((x + 1))`.)
+- **Only a BARE call proves `set -e` safety — a green suite does not.** A failing command aborts *only* in statement position: `$(fn)`, `if fn`, `fn && …`, `fn || …` all mask it. `tests/unit` runs `set -euo pipefail` and still cannot catch this, because it reaches these functions exclusively through `$(…)` in `assert_eq` arguments. Entry points used to differ — `ae` enabled errexit and the send-path helpers did not — so the same function was safe through one caller and aborted through another. Generated helpers were the second entry point and are gone entirely since slice Z2, so the wrapper's own functions are the only remaining subject. Probe it *bare* under `set -euo pipefail`; that is the only shape that shows it. Shipped exhibit: `_sgr_parse`'s `((line++))` yields the *old* value, so it returns 1 at zero and a bare call aborts mid-parse — invisible through five review rounds until a new caller (`_cmd_spawn`, under `ae`'s errexit) reached it. (`((x++))` → `x=$((x + 1))`.)
 - **A probe built to detect an errexit abort must not put the subject in a context that
   disables errexit.** The note above tells you `||`, `&&` and `if` mask errexit. It does
   not tell you that your TEST for masking will itself be masked — and `( subject ) ||

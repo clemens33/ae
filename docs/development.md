@@ -72,19 +72,20 @@ rust-check`. `just rust-mutants` asks the harder question — whether those test
 red.
 
 The bash suites cover what is still bash. `tests/unit` exercises the public wrapper and the
-installer contract with a tiny `assert_eq` harness. The session-helper
-template library it used to reconstruct is gone with the helpers themselves; what it asserts
-about them now is the **shim set** — that a refreshed session directory holds exactly the
-core's list, never `>= N`, so an artifact quietly appearing or vanishing is a failure rather
-than a different number. Retired sections stay in the file as one-line tombstones naming
-their subject and why it left, rather than being deleted silently.
+installer contract with a tiny `assert_eq` harness. The session-helper template library it
+used to reconstruct is gone, and since slice Z2 so are the four-line shims that replaced it;
+what it asserts about them now is the **link set** — that a refreshed session directory holds
+exactly the core's list of names, never `>= N`, so an artifact quietly appearing or vanishing
+is a failure rather than a different number, and that every one of them is a symlink to the
+core the session is pinned to. Retired sections stay in the file as one-line tombstones
+naming their subject and why it left, rather than being deleted silently.
 
 `tests/integration` spins up real tmux sessions, exercises the full lifecycle (create, send,
 ask, reply, stop, resume, end), and tears down. Requires tmux and git. The `doctor --refresh`
-scenario is the canary for the shim set: it clobbers the generated helpers, refreshes, and
-pins the bytes byte-for-byte against what the core writes at launch, so the refresh entry and
-the launch entry cannot drift. It includes a watchdog stop → start cycle, since a refresh
-replaces on-disk scripts only and a running daemon keeps the process it already is.
+scenario is the canary for the link set: it clobbers a helper, refreshes, and pins the link
+targets against what the core links at launch, so the refresh entry and the launch entry
+cannot drift. It includes a watchdog stop → start cycle, since a refresh replaces on-disk
+links only and a running daemon keeps the process it already is.
 
 Two lanes, two purposes. `just test-unit` and `just test-integration` are the **gate**: the
 full serial run, unnarrowable, ~30 minutes for the integration half. The three below are the
