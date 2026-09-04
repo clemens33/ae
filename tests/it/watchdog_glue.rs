@@ -1,19 +1,18 @@
 //! The watchdog PANE, against a real tmux server.
 //!
-//! Slice A.3 makes `helper_watchdog_main`'s `_run` a pane that execs
-//! `ae-core _watchdog-run`, so the question this file answers is the only one
-//! that matters about that cut: does a session whose pane runs ONLY the core
-//! still behave as it did with the bash wrapper around it?
+//! The pane execs `ae-core _watchdog-run`, so the question this file answers is
+//! the only one that matters: does a session whose pane runs ONLY the core
+//! carry out every duty the pane owns?
 //!
-//! Four arms, one per duty that had no proof before this slice:
+//! Four arms, one per duty:
 //!
 //! * a stale pane is NUDGED — the loop's own work, kept here because it is what
 //!   the pane exists to do and a refactor that broke it would otherwise be
 //!   caught by nothing;
 //! * a pane that dropped to a shell is ALERTED;
-//! * the branch pair is PUBLISHED on the session, which was the bash wrapper's
-//!   per-cycle git read;
-//! * the legacy reap REFUSES a foreign pane — the ownership guard, driven
+//! * the branch pair is PUBLISHED on the session — the pane's per-cycle git
+//!   read;
+//! * the pre-rename reap REFUSES a foreign pane — the ownership guard, driven
 //!   against a real server where a pane id genuinely belongs to someone else.
 //!
 //! The daemon runs on its own thread and is stopped by killing the session it
@@ -272,7 +271,7 @@ fn a_pane_that_dropped_to_a_shell_is_alerted_once() {
     let meta_dir = plant(&root, "died", &socket, None);
 
     // The pane's foreground command is a shell and no descendant is named
-    // `claude` (the roster's `agent_bin.main`) — the frozen dead check exactly.
+    // `claude` (the roster's `agent_bin.main`) — the dead check exactly.
     assert!(
         tmux(
             &socket,
@@ -317,7 +316,7 @@ fn a_pane_that_dropped_to_a_shell_is_alerted_once() {
 
 #[test]
 fn the_branch_pair_is_published_on_the_session_the_daemon_watches() {
-    // The bash wrapper's per-cycle git read.
+    // The pane's per-cycle git read.
     let scratch = scratch("branch");
     require_tmux(&scratch);
     let socket = scratch.join("s");
@@ -625,8 +624,7 @@ fn plant_pending_codex(root: &Path, session: &str, socket: &Path, work_dir: &Pat
 
 #[test]
 fn a_pending_codex_seat_is_recovered_by_the_running_watchdog() {
-    // The whole point of the cut: the recovery used to be `ae _recover-pending`
-    // run out of the pane, and is now a look the daemon takes itself.
+    // The recovery is a look the daemon takes itself, in-process.
     let scratch = scratch("recover");
     require_tmux(&scratch);
     let socket = scratch.join("s");

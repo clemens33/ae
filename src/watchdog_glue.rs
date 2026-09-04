@@ -1,22 +1,20 @@
-//! What the watchdog PANE still did in bash after the core owned the loop.
+//! What the watchdog PANE does around the core daemon child.
 //!
-//! Slice A.3's cut: `helper_watchdog_main`'s `_run` becomes a pane that execs
-//! `ae-core _watchdog-run`, so everything that wrapper did AROUND the core child
-//! has to be here — otherwise a session whose pane runs only the core silently
-//! loses it. The frozen wrapper did five things:
+//! The pane execs `ae-core _watchdog-run`, so everything the pane owns AROUND
+//! that child lives here — otherwise a session whose pane runs only the core
+//! silently loses it. Five duties:
 //!
-//! * published its pid ATOMICALLY, so a serialized starter can never read a
+//! * publish its pid ATOMICALLY, so a serialized starter can never read a
 //!   half-written pidfile and spawn a duplicate;
-//! * printed the pane's banner;
-//! * kept `@ae_branch_status` / `@ae_branch_name` fresh every cycle — a git
-//!   read the daemon loop never owned;
-//! * ticked the two deferred concerns: pending tool-session-id recovery and the
-//!   Telegram bridge revive, both by running the recorded `ae` binary. The
-//!   recovery is IN-PROCESS now — [`recover`] takes one look per pending seat
-//!   through the core's own capture — and only the bridge revive still runs a
-//!   binary;
-//! * on the lifecycle edges, reaped a pre-rename (`_shepherd` / `_loop`)
-//!   watchdog through an OWNERSHIP-CHECKED kill.
+//! * print the pane's banner;
+//! * keep `@ae_branch_status` / `@ae_branch_name` fresh every cycle — a git
+//!   read the daemon loop does not own;
+//! * tick the two deferred concerns: pending tool-session-id recovery and the
+//!   Telegram bridge revive. The recovery is IN-PROCESS — [`recover`] takes one
+//!   look per pending seat through the core's own capture — and only the bridge
+//!   revive runs a binary;
+//! * on the lifecycle edges, reap a pre-rename (`_shepherd` / `_loop`) watchdog
+//!   through an OWNERSHIP-CHECKED kill.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -30,7 +28,7 @@ use crate::transport;
 /// trimmed.
 pub const BRANCH_STATUS_OPTION: &str = "@ae_branch_status";
 
-/// The frozen display trim for a branch name.
+/// The display trim for a branch name.
 pub const BRANCH_DISPLAY_MAX: usize = 24;
 
 /// The pre-rename watchdog names a session can still carry, newest first.
@@ -39,8 +37,7 @@ pub const LEGACY_WATCHDOG_NAMES: [&str; 2] = ["shepherd", "loop"];
 /// The daemon's pidfile, relative to the session's meta dir.
 const PIDFILE_NAME: &str = ".watchdog.pid";
 
-/// Flatten and trim `text` to `max` display characters, the frozen
-/// `_watchdog_trim`.
+/// Flatten and trim `text` to `max` display characters.
 #[must_use]
 pub fn trim_display(text: &str, max: usize) -> String {
     let flat: String = text
@@ -54,7 +51,7 @@ pub fn trim_display(text: &str, max: usize) -> String {
     format!("{kept}~")
 }
 
-/// The two branch facts the frozen segment publishes, from ONE git reading.
+/// The two branch facts the status segment publishes, from ONE git reading.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BranchReading {
     /// The FULL, untrimmed branch (or short sha on a detached HEAD), with no
@@ -167,9 +164,8 @@ pub fn interpret_pane_owner(succeeded: bool, stdout: &str) -> Option<PaneOwner> 
         return None;
     }
     let line = stdout.lines().next().unwrap_or_default();
-    // The frozen `${have%%\t*}` / `${have#*\t}` pair: with no tab BOTH expand to
-    // the whole string, so a tabless reading is kept faithfully rather than
-    // reinterpreted here.
+    // With no tab, BOTH halves are the whole string: a tabless reading is kept
+    // faithfully rather than reinterpreted here.
     let (session, agent) = line.split_once('\t').unwrap_or((line, line));
     if session.is_empty() {
         return None;
@@ -277,8 +273,8 @@ pub fn reap_legacy(
             .map(|seen| seen.pane.clone());
         if let Some(pane) = pane {
             found.push(name);
-            // The recorded pid is deliberately NOT signalled here: the legacy
-            // daemon IS the process in that pane, so the ownership-checked
+            // The recorded pid is deliberately NOT signalled here: the
+            // pre-rename daemon IS the process in that pane, so the ownership-checked
             // `kill-pane` takes it with the pane, and a bare kill of a recorded
             // pid is the stranger-kill this module exists to refuse.
             kill_owned_pane(server, &pane, session, Some(&stamp), err)?;
@@ -342,7 +338,7 @@ impl Drop for PidFile {
     }
 }
 
-/// The pane banner the frozen wrapper printed.
+/// The pane banner the watchdog pane prints at startup.
 #[must_use]
 pub fn banner(session: &str, interval_secs: u64, stale_secs: u64, max_nudges: u32) -> String {
     let stale_min = stale_secs / 60;
@@ -414,8 +410,7 @@ pub fn supervise_due(every_secs: u64, last: Option<SystemTime>, now: SystemTime)
 pub struct Deferred {
     /// The ae home this session's state lives under, and the config the
     /// `[telegram]` section is read from — `None` when neither could be
-    /// derived, in which case the tick is a no-op exactly as the frozen
-    /// `[[ -x "${AE_PATH_BIN:-}" ]]` guard made it.
+    /// derived, in which case the tick is a no-op.
     paths: Option<crate::telegram::bridge::Paths>,
     /// This session's own directory — where a refusal's event mirror lands.
     dir: PathBuf,
@@ -589,7 +584,7 @@ mod tests {
             "captured codex session id (0191aaaa)"
         );
         // An id shorter than the abbreviation is quoted whole rather than
-        // padded — the frozen `${id:0:8}` on a short value.
+        // padded.
         let short = Recovered {
             captured: "abc".to_owned(),
             ..row
@@ -616,8 +611,7 @@ mod tests {
 
     #[test]
     fn a_session_directory_with_no_derivable_home_supervises_nothing() {
-        // The frozen `[[ -x "${AE_PATH_BIN:-}" ]]` guard, in its new subject: a
-        // meta directory with no grandparent names no ae home, so there is no
+        // A meta directory with no grandparent names no ae home, so there is no
         // config to read intent from — and the throttle must not record a tick
         // that never ran, or the first real one would be delayed by a no-op.
         let mut deferred = Deferred::new(std::path::Path::new("meta"), None, 120);
@@ -652,7 +646,7 @@ mod tests {
     #[test]
     fn a_legacy_v1_meta_gives_the_watchdog_no_seats_to_recover() {
         // The daemon hands `recover` the roster it read this cycle. A meta this
-        // ae no longer serves parses to an EMPTY roster, so the cycle finds no
+        // ae does not serve parses to an EMPTY roster, so the cycle finds no
         // pending seat, does no work, and does not panic — the same answer as a
         // session with no roster at all, which is what the digest's `degraded`
         // flag exists to tell apart.

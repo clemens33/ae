@@ -1,11 +1,8 @@
 //! `watchdog start|stop|status` — the per-session daemon's LIFECYCLE.
 //!
-//! Slice A.3 gave the core the watchdog's whole body (`_watchdog-run`, see
-//! [`crate::watchdog_daemon`]) and left bash managing it: `cmd_watchdog`
-//! resolved a session and shelled into the generated `watchdog`
-//! helper, whose `_watchdog_start` / `_watchdog_stop` / `_watchdog_status`
-//! owned the pane, the pidfile, the start lock and the meta
-//! flag. This module is that management, ported.
+//! The daemon's body is [`crate::watchdog_daemon`] (`_watchdog-run`); this
+//! module resolves a session and owns the pane, the pidfile, the start lock and
+//! the meta flag around it.
 
 use std::io::Write;
 use std::path::Path;
@@ -16,7 +13,7 @@ use crate::session_tmux::{Op, Split, argv, interpret_pane_id};
 use crate::state::{EXIT_FAILED, EXIT_USAGE};
 use crate::{lifecycle, meta, session_launch, tmux, transport, watchdog_daemon, watchdog_glue};
 
-/// The frozen usage, both lines, plus the knob passthrough.
+/// The usage, both lines, plus the knob passthrough.
 pub const USAGE: &str = "Usage: ae watchdog <start|stop|status> [session-name] [--pane <id>] [-- <knob flags>]\n  (If run inside an ae session, session-name is optional.)";
 
 /// The `@ae_agent` stamp the watchdog's pane carries.
@@ -28,16 +25,13 @@ const HELPER: &str = "watchdog";
 /// The pane title, so the monitor window's border names it.
 const PANE_TITLE: &str = "ae watchdog";
 
-/// The start lock's name under the session's meta dir — the frozen
-/// `.watchdog.start.lock`.
+/// The start lock's name under the session's meta dir.
 const START_LOCK: &str = ".watchdog.start.lock";
 
-/// How long a starter blocks on the start lock before DEFERRING — the frozen
-/// `AE_WATCHDOG_START_LOCK_WAIT_SEC` default.
+/// How long a starter blocks on the start lock before DEFERRING.
 const START_LOCK_WAIT: Duration = Duration::from_secs(15);
 
-/// How many polls the registration wait takes, and the pause between them —
-/// the frozen `AE_WATCHDOG_START_REGISTER_TRIES` default of 200 × `sleep 0.05`.
+/// How many polls the registration wait takes, and the pause between them.
 const REGISTER_TRIES: u32 = 200;
 const REGISTER_POLL: Duration = Duration::from_millis(50);
 
@@ -144,7 +138,7 @@ pub fn run(
         return Ok(EXIT_FAILED);
     }
     // The name is about to become a directory under the sessions root, so it is
-    // checked against the grammar (or the legacy already-a-directory arm) before
+    // checked against the grammar (or the already-a-directory arm) before
     // it is joined to anything.
     if !lifecycle::name_is_usable(root, &target) {
         writeln!(err, "Error: session '{target}' not found")?;
@@ -173,7 +167,7 @@ pub fn run(
     }
 }
 
-/// `watchdog status` — the frozen two lines, plus the honest third.
+/// `watchdog status` — running, stopped, or the honest unknown.
 fn status(
     server: &ServerId,
     session: &str,
@@ -183,8 +177,8 @@ fn status(
     match presence(server, session, meta_dir) {
         Presence::Running(pid) => writeln!(out, "Watchdog is running (pid {pid}).")?,
         Presence::Stopped => writeln!(out, "Watchdog is not running.")?,
-        // Bash could not say this: an unanswerable server read as absence and
-        // `status` reported "not running" about a session it had not seen.
+        // An unanswerable server is NOT absence: reporting "not running" about
+        // a session tmux never spoke for would be a lie.
         Presence::Unknown => writeln!(
             out,
             "Watchdog state unknown — tmux did not answer, so a running watchdog cannot be ruled out."
@@ -363,7 +357,7 @@ fn daemon_command(meta_dir: &Path, knobs: &[String]) -> Option<Vec<String>> {
     Some(command)
 }
 
-/// [`observe`], plus the frozen stale-pidfile cleanup.
+/// [`observe`], plus the stale-pidfile cleanup.
 #[must_use]
 pub fn presence(server: &ServerId, session: &str, meta_dir: &Path) -> Presence {
     let seen = observe(server, session, meta_dir);
