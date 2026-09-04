@@ -307,27 +307,29 @@ fn the_lint_relaxations_this_counter_can_see_are_the_expected_ones() {
         }
     }
 
-    // Ten relaxations this counter can see, each for a different job: the
-    // PRODUCT's three — `src/transport.rs`, because a tmux multiplexer that
-    // cannot run tmux answers `unknown` about everything, `src/run.rs`, the
-    // pane's own `exec` of its tool, and `src/upgrade.rs`, the `exec` that
-    // hands the terminal to the immutable sibling installer; the parity
-    // harness's door,
-    // which must never judge a lane; the black-box door, which drives the
-    // PRODUCT binary and where asserting on what it printed is the whole point
-    // (`cli::ae` is private to its module, so the harness cannot reach a child
-    // through it); the black-box FIFO fixture beside it (`cli::mkfifo` — safe
-    // std cannot make the one special file that blocks an ungated open, and
-    // the tests that prove the `-f` gates need exactly that file); the
-    // by-name door beside it (`cli::helper_by_name` — a helper's identity IS
-    // `argv[0]`, so proving the bare-name refusal needs a process started AS
-    // the name, which no path spelling produces); the git
-    // fixture builder beside those (`cli::git_in` — the preview's git-facts
-    // tests need REAL repos, and only `git` builds a real repo); the generated
-    // session-helper runner beside those too (`cli::helper` — a launch writes
-    // shims a pane execs BY PATH, so proving one works means running the file
-    // rather than the function behind it); and this file's own, which has to
-    // run clippy in order to ask clippy anything.
+    // Sixteen relaxations over nine files, each for a job no library call can
+    // do. The PRODUCT's four: `src/transport.rs`, because a tmux multiplexer
+    // that cannot run tmux answers `unknown` about everything; `src/run.rs`,
+    // the pane's own `exec` of its tool; `src/upgrade.rs`, which runs `tar` to
+    // list and unpack the bundle it downloaded; and `src/install.rs`, which
+    // runs the digest-verified bundle core once to ask which version it is,
+    // because the directory is named for that answer.
+    //
+    // The suite's twelve: the parity harness's one, which must never judge a
+    // lane; `cli.rs`'s five, which drive the PRODUCT binary (`ae`), make the
+    // one special file safe std cannot (`mkfifo`, and an ungated open on it is
+    // what the `-f` gates exist to refuse), start a helper AS its own name
+    // (`helper_by_name`, since a helper's identity IS `argv[0]`), build a real
+    // repo (`git_in`), and run a written shim BY PATH (`helper`);
+    // `install.rs`'s three, an install being what a real process does to a
+    // real `$HOME`, plus `bash` over the repository's own `install` and `tar`
+    // to pack the fixture bundle its shimmed `curl` serves; `shape.rs`'s two,
+    // which plant a COPY of the binary in a fixture version directory because
+    // the fact under test is where the binary SITS; and this file's own, which
+    // has to run clippy in order to ask clippy anything.
+    //
+    // A further entry is red. A relaxation this counter CANNOT see is not —
+    // that is what the semantic guard above is for.
     assert_eq!(
         inventory,
         vec![
