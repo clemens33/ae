@@ -493,7 +493,7 @@ fn launch(
         }
     }
 
-    let meta_present = node_exists(&dir.join("meta"));
+    let meta_present = node_exists(&dir.join(crate::store::META));
     // THE CHAIN, before anything reads a field of this meta: a resume or a
     // reattach is ae touching a session, and a shape it cannot place is one it
     // must not act on.
@@ -913,7 +913,7 @@ fn build(
         return Ok(EXIT_FAILED);
     }
     // The LIFECYCLE LOCK: mutual exclusion with `ae end`.
-    let Ok(lifecycle) = crate::state::acquire(
+    let Ok(lifecycle) = crate::store::lock(
         &sessions.join(format!(".lifecycle.{}.lock", shape.name)),
         LIFECYCLE_WAIT,
     ) else {
@@ -1671,9 +1671,8 @@ fn deliver_launch_prompt(
     };
     let file = dir.join(format!("undelivered.launch-{}.txt", agent.slot));
     let preserved = write_private(&file, prompt).is_ok();
-    let _ = crate::state::emit(
-        dir,
-        &crate::tracked::event_line(&crate::tracked::EventFields {
+    let _ = crate::store::open(dir).append_event(&crate::tracked::event_line(
+        &crate::tracked::EventFields {
             ts: crate::time::Timestamp::now(),
             actor: "ae",
             action: LAUNCH_FAILED_ACTION,
@@ -1690,8 +1689,8 @@ fn deliver_launch_prompt(
                 agent.pane
             ),
             body_file: "",
-        }),
-    );
+        },
+    ));
     writeln!(
         err,
         "ae: LAUNCH PROMPT NOT DELIVERED to {} (pane {}): {reason}",
@@ -2125,7 +2124,11 @@ fn trim_events(dir: &Path) {
         kept.push_str(line);
         kept.push('\n');
     }
-    let temp = dir.join(format!("events.jsonl.trim.{}", std::process::id()));
+    let temp = dir.join(format!(
+        "{}.trim.{}",
+        crate::store::EVENTS,
+        std::process::id()
+    ));
     if std::fs::write(&temp, kept).is_ok() && std::fs::rename(&temp, &path).is_ok() {
         return;
     }
@@ -2372,7 +2375,7 @@ mod tests {
             .unwrap()
             .filter_map(Result::ok)
             .map(|entry| entry.file_name().to_string_lossy().into_owned())
-            .filter(|name| name.starts_with("events.jsonl.trim."))
+            .filter(|name| name.starts_with(&format!("{}.trim.", crate::store::EVENTS)))
             .collect();
         assert!(residue.is_empty(), "no trim temp is left: {residue:?}");
 

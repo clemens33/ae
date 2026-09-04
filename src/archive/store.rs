@@ -19,6 +19,8 @@ use super::meta_get;
 /// today and are still spelled here rather than taken from [`crate::store`]:
 /// an archive is immutable, so renaming a live file must never rename what is
 /// already published.
+pub(super) const META: &str = "meta";
+/// The archived session record. See [`MEMO`].
 pub(super) const MEMO: &str = "memo.tsv";
 /// The archived event ledger. See [`MEMO`].
 pub(super) const EVENTS: &str = "events.jsonl";
@@ -104,7 +106,7 @@ pub(super) fn is_direct_child(root: &Path, cand: &Path) -> bool {
 /// archive id, the version, a named source session, and the three counts a
 /// human-edited pair would disagree on.
 fn reject_unknown_top_level(path: &Path) -> Result<(), String> {
-    let allowed = ["meta", "digest.md", MEMO, EVENTS, "messages"];
+    let allowed = [META, "digest.md", MEMO, EVENTS, "messages"];
     let top = read_dir(path).map_err(|why| {
         format!(
             "archive: cannot enumerate '{}' ({why}) — refusing an incompletely-read tree.",
@@ -139,7 +141,7 @@ pub(super) fn validate_tree(path: &Path, aid: &str) -> Result<(), String> {
 
     reject_unknown_top_level(path)?;
 
-    for name in ["meta", "digest.md", MEMO, EVENTS] {
+    for name in [META, "digest.md", MEMO, EVENTS] {
         let meta =
             symlink_meta(&path.join(name)).map_err(|_| format!("archive: '{name}' is missing."))?;
         if meta.file_type().is_symlink() || !meta.is_file() {
@@ -196,7 +198,7 @@ pub(super) fn validate_tree(path: &Path, aid: &str) -> Result<(), String> {
 
     // Meta/digest consistency: cheap insurance against a future divergence in
     // the two renderers.
-    let meta_bytes = read_file(&path.join("meta"))
+    let meta_bytes = read_file(&path.join(META))
         .map_err(|why| format!("archive: staged meta unreadable: {why}"))?;
     let digest = read_file(&path.join("digest.md"))
         .map_err(|why| format!("archive: staged digest unreadable: {why}"))?;

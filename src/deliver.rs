@@ -13,7 +13,6 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
 use crate::inventory::ServerId;
-use crate::state;
 use crate::tmux::{Key, Styling};
 use crate::tool::{InputModel, ToolKind};
 use crate::transport;
@@ -794,7 +793,7 @@ fn lock_target(dir: &Path, pane: &str) -> Option<std::fs::File> {
         .chars()
         .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
         .collect();
-    state::acquire(&root.join(format!("send-lock-{sanitized}")), LOCK_WAIT).ok()
+    crate::store::lock(&root.join(format!("send-lock-{sanitized}")), LOCK_WAIT).ok()
 }
 
 #[cfg(test)]

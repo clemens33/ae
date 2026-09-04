@@ -575,7 +575,7 @@ pub fn publish(bundle: &Bundle, paths: &Paths) -> Result<Published, String> {
     validate_bin_destination(&paths.link, &paths.home)?;
     // ONE PUBLISHER AT A TIME, from here until after the version sweep. Held
     // across the commit, not released by it — see [`LOCK`].
-    let _held = crate::state::acquire(&paths.lock(), LOCK_WAIT).map_err(|why| {
+    let _held = crate::store::lock(&paths.lock(), LOCK_WAIT).map_err(|why| {
         format!(
             "another ae install or upgrade is in progress ({}): {why}",
             paths.lock().display()

@@ -307,7 +307,7 @@ fn stage_and_validate(
     // meta and the two ledgers come from the coherent snapshot; the meta is the
     // composed archive meta, not the live one.
     let meta_out = compose_meta(facts);
-    write_file_0600(&payload.join("meta"), meta_out.as_bytes())
+    write_file_0600(&payload.join(super::store::META), meta_out.as_bytes())
         .map_err(|why| format!("archive: could not write meta: {why}"))?;
     write_file_0600(&payload.join(super::store::MEMO), facts.memo_bytes)
         .map_err(|why| format!("archive: could not write memo.tsv: {why}"))?;

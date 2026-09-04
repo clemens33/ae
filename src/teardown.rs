@@ -302,7 +302,7 @@ fn prove_identified_session_dir(
 
 /// Read `<dir>/meta` ONLY if it is a real plain file.
 fn read_identity_meta(dir: &Path, err: &mut impl Write) -> io::Result<Result<Vec<u8>, u8>> {
-    let meta_path = dir.join("meta");
+    let meta_path = dir.join(crate::store::META);
     match symlink_meta(&meta_path) {
         Ok(m) if m.file_type().is_file() => {}
         Ok(_) => {

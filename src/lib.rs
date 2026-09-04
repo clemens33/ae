@@ -1079,7 +1079,7 @@ fn session_key(dir: &std::path::Path) -> Option<String> {
         clippy::disallowed_methods,
         reason = "a door: the session name a helper serves, read the way _lib reads _AE_SESSION — see clippy.toml"
     )]
-    let raw = std::fs::read(dir.join("meta"));
+    let raw = std::fs::read(dir.join(crate::store::META));
     raw.ok().and_then(|meta| {
         String::from_utf8_lossy(&meta)
             .lines()
@@ -1538,9 +1538,9 @@ mod tests {
             "named",
             "no meta: the directory's name"
         );
-        std::fs::write(dir.join("meta"), "name=x\nsession=renamed\n").unwrap();
+        std::fs::write(dir.join(crate::store::META), "name=x\nsession=renamed\n").unwrap();
         assert_eq!(super::own_session(&dir), "renamed");
-        std::fs::write(dir.join("meta"), "session=\n").unwrap();
+        std::fs::write(dir.join(crate::store::META), "session=\n").unwrap();
         assert_eq!(super::own_session(&dir), "named", "an empty key is no key");
         let _ = std::fs::remove_dir_all(&root);
     }

@@ -91,12 +91,7 @@ pub fn parse(tail: &[String]) -> Result<Command, Usage> {
 /// rendered as `(no goal set)`, because "no goal" and "could not look" are
 /// different answers.
 pub fn show(dir: &Path) -> io::Result<Vec<u8>> {
-    let text = match meta::read_bytes(dir) {
-        Ok(text) => text,
-        Err(why) if why.kind() == io::ErrorKind::NotFound => Vec::new(),
-        Err(why) => return Err(why),
-    };
-    Ok(shown(meta::first_value(&text, KEY)))
+    Ok(shown(store::open(dir).goal()?.as_deref()))
 }
 
 /// The line `show` prints for a value: the bytes plus a newline, or

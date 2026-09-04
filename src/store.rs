@@ -27,6 +27,9 @@ pub const EVENTS: &str = "events.jsonl";
 /// The memo container.
 pub const MEMO: &str = "memo.tsv";
 
+/// The session's own record — roster, mode, origin, goal.
+pub const META: &str = "meta";
+
 /// What a file's lock is called: its own name plus this. Appending it by hand
 /// is how two writers end up on two different locks.
 pub const LOCK_SUFFIX: &str = ".lock";
@@ -110,6 +113,37 @@ impl SessionStore {
     #[must_use]
     pub fn memo_path(&self) -> PathBuf {
         self.dir.join(MEMO)
+    }
+
+    /// The meta file's path.
+    #[must_use]
+    pub fn meta_path(&self) -> PathBuf {
+        self.dir.join(META)
+    }
+
+    /// The meta file's lock, derived from its name like every other.
+    #[must_use]
+    pub fn meta_lock(&self) -> PathBuf {
+        lock_path(&self.meta_path())
+    }
+
+    /// The session's goal — the FIRST `goal=` record in meta, which is what
+    /// `ae_meta_get`'s `grep | head -1 | cut` reads and what the helper prints.
+    ///
+    /// `None` is a session nobody has given a goal, and so is a session with no
+    /// meta at all: not having been asked is not a failure to look.
+    ///
+    /// # Errors
+    ///
+    /// A meta file that exists and could not be read — reported, never rendered
+    /// as "no goal", because those are different answers.
+    pub fn goal(&self) -> io::Result<Option<Vec<u8>>> {
+        let text = match crate::meta::read_bytes(&self.dir) {
+            Ok(text) => text,
+            Err(why) if why.kind() == io::ErrorKind::NotFound => Vec::new(),
+            Err(why) => return Err(why),
+        };
+        Ok(crate::meta::first_value(&text, crate::goal::KEY).map(<[u8]>::to_vec))
     }
 
     /// Whether the event container exists yet — the wait in `events-tail`,
@@ -307,7 +341,7 @@ fn commit(sink: &mut impl Sink, bytes: &[u8]) -> io::Result<()> {
     reason = "tests read back what the door wrote; the boundary is on product code — see clippy.toml"
 )]
 mod tests {
-    use super::{EVENTS, LOCK_WAIT, MEMO, Sink, commit, lock, lock_path, open};
+    use super::{EVENTS, LOCK_WAIT, MEMO, META, Sink, commit, lock, lock_path, open};
     use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
     use std::time::Duration;
@@ -336,7 +370,14 @@ mod tests {
             lock_path(&store.memo_path()).file_name().unwrap(),
             "memo.tsv.lock"
         );
-        assert_eq!((EVENTS, MEMO), ("events.jsonl", "memo.tsv"));
+        // The data file and the lock beside it derive from ONE name, so
+        // neither can move without the other. Equal strings would not say that:
+        // the lock is asserted to BE the derived path, not to look like it.
+        assert_eq!(store.meta_path(), Path::new("/sessions/demo/meta"));
+        assert_eq!(store.meta_lock(), lock_path(&store.meta_path()));
+        assert_eq!(store.meta_lock().file_name().unwrap(), "meta.lock");
+        assert_eq!(crate::meta::FILE, META, "one spelling, re-exported");
+        assert_eq!((EVENTS, MEMO, META), ("events.jsonl", "memo.tsv", "meta"));
     }
 
     #[test]

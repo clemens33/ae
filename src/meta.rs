@@ -26,8 +26,10 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-/// The file this module reads, inside a session directory.
-pub const FILE: &str = "meta";
+/// The file this module reads. The NAME is [`crate::store::META`] — one
+/// spelling for the data file and the lock beside it, so neither can move
+/// without the other.
+pub use crate::store::META as FILE;
 
 /// The roster key prefixes.
 const ROSTER_PREFIX: &str = "agent.";
@@ -255,7 +257,7 @@ impl Meta {
             clippy::disallowed_methods,
             reason = "a door: the meta read itself — see clippy.toml"
         )]
-        let text = fs::read_to_string(dir.join(FILE))?;
+        let text = fs::read_to_string(crate::store::open(dir).meta_path())?;
         Ok(Self::parse(&text))
     }
 
@@ -672,10 +674,6 @@ fn take_pending(pending: &mut Vec<PendingRow>, slot: &str) -> Option<PendingRow>
     Some(pending.swap_remove(at))
 }
 
-/// The lock every meta write takes: `meta.lock` beside the file, with a
-/// five-second bound.
-const LOCK: &str = "meta.lock";
-
 /// The meta file's raw bytes — the read behind a single-key lookup, which
 /// scans the file rather than parsing it.
 ///
@@ -687,7 +685,7 @@ pub fn read_bytes(dir: &Path) -> io::Result<Vec<u8>> {
         clippy::disallowed_methods,
         reason = "a door: the raw meta read behind a helper's own-key lookup — see clippy.toml"
     )]
-    let bytes = fs::read(dir.join(FILE));
+    let bytes = fs::read(crate::store::open(dir).meta_path());
     bytes
 }
 
@@ -807,9 +805,12 @@ impl RewriteError {
 /// or any read, write, sync or rename failure. [`RewriteError::Unknown`] when
 /// the rename returned but the directory sync did not.
 pub fn rewrite(dir: &Path, key: &str, value: Option<&str>) -> Result<(), RewriteError> {
-    let path = dir.join(FILE);
-    let _held = crate::state::acquire(&dir.join(LOCK), crate::state::LOCK_WAIT)
-        .map_err(RewriteError::NotWritten)?;
+    let path = crate::store::open(dir).meta_path();
+    let _held = crate::store::lock(
+        &crate::store::open(dir).meta_lock(),
+        crate::store::LOCK_WAIT,
+    )
+    .map_err(RewriteError::NotWritten)?;
     #[allow(
         clippy::disallowed_methods,
         reason = "a door: the meta read, for its locked rewrite — see clippy.toml"
@@ -833,9 +834,12 @@ pub fn rewrite(dir: &Path, key: &str, value: Option<&str>) -> Result<(), Rewrite
 /// exists, or any write/sync/rename fails; [`RewriteError::Unknown`] when the
 /// rename returned but the directory sync did not.
 pub fn init(dir: &Path, content: &str) -> Result<(), RewriteError> {
-    let path = dir.join(FILE);
-    let _held = crate::state::acquire(&dir.join(LOCK), crate::state::LOCK_WAIT)
-        .map_err(RewriteError::NotWritten)?;
+    let path = crate::store::open(dir).meta_path();
+    let _held = crate::store::lock(
+        &crate::store::open(dir).meta_lock(),
+        crate::store::LOCK_WAIT,
+    )
+    .map_err(RewriteError::NotWritten)?;
     #[allow(
         clippy::disallowed_methods,
         reason = "a door: init must not clobber a live meta, so it lstats the target (never following) before publishing — see clippy.toml"
@@ -863,9 +867,12 @@ pub fn init(dir: &Path, content: &str) -> Result<(), RewriteError> {
 /// sync or rename fails; [`RewriteError::Unknown`] when the rename returned but
 /// the directory sync did not.
 pub fn replace(dir: &Path, content: &str) -> Result<(), RewriteError> {
-    let path = dir.join(FILE);
-    let _held = crate::state::acquire(&dir.join(LOCK), crate::state::LOCK_WAIT)
-        .map_err(RewriteError::NotWritten)?;
+    let path = crate::store::open(dir).meta_path();
+    let _held = crate::store::lock(
+        &crate::store::open(dir).meta_lock(),
+        crate::store::LOCK_WAIT,
+    )
+    .map_err(RewriteError::NotWritten)?;
     publish_bytes(dir, &path, content.as_bytes())
 }
 
@@ -876,9 +883,12 @@ pub fn replace(dir: &Path, content: &str) -> Result<(), RewriteError> {
 /// # Errors
 ///
 /// The underlying [`io::Error`] — the lock not acquired within
-/// [`crate::state::LOCK_WAIT`], or the lock file not openable.
+/// [`crate::store::LOCK_WAIT`], or the lock file not openable.
 pub fn lock(dir: &Path) -> io::Result<fs::File> {
-    crate::state::acquire(&dir.join(LOCK), crate::state::LOCK_WAIT)
+    crate::store::lock(
+        &crate::store::open(dir).meta_lock(),
+        crate::store::LOCK_WAIT,
+    )
 }
 
 /// Publish `content` as the whole meta, for a caller that ALREADY HOLDS
@@ -890,7 +900,11 @@ pub fn lock(dir: &Path) -> io::Result<fs::File> {
 /// [`RewriteError::Unknown`] when the rename returned but the directory sync
 /// did not.
 pub fn publish_locked(dir: &Path, content: &str) -> Result<(), RewriteError> {
-    publish_bytes(dir, &dir.join(FILE), content.as_bytes())
+    publish_bytes(
+        dir,
+        &crate::store::open(dir).meta_path(),
+        content.as_bytes(),
+    )
 }
 
 /// The staged BASE-FACTS document `_meta-init` consumes: the `key=value` lines

@@ -148,7 +148,7 @@ fn purge_owned(
             ),
         );
     }
-    let meta_bytes = read_file(&target.join("meta")).unwrap_or_default();
+    let meta_bytes = read_file(&target.join(super::store::META)).unwrap_or_default();
     let meta_id = meta_get(&meta_bytes, "archive_id");
     if meta_id != aid {
         return precommit_fail(

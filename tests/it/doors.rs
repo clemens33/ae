@@ -650,12 +650,26 @@ fn a_live_session_file_is_named_in_exactly_one_place() {
             "\"events.jsonl.lock\"",
             "\"memo.tsv\"",
             "\"memo.tsv.lock\"",
+            "\"meta.lock\"",
         ] {
             assert!(
                 !code.contains(literal),
                 "{name} spells {literal} itself; a live session file is named in src/store.rs"
             );
         }
+        // `meta` is checked as a RAW string rather than in one path-building
+        // spelling, because it reaches paths through arrays and variables too
+        // and a `.join("meta")` check sees none of those. The one production
+        // occurrence outside the two owners is a `[workspace]` CONFIG KEY that
+        // happens to be spelled the same, so it is pinned by count: a second
+        // one is a review, not a diff.
+        let occurrences = code.matches("\"meta\"").count();
+        let allowed = usize::from(name == "src/session_launch.rs");
+        assert_eq!(
+            occurrences, allowed,
+            "{name} spells \"meta\" {occurrences} time(s); the file is named in src/store.rs \
+             and an archive's copy of it in src/archive/store.rs"
+        );
     }
 }
 

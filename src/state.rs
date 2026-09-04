@@ -22,11 +22,6 @@ use crate::requests::Viewer;
 use crate::store;
 use crate::time::Timestamp;
 
-/// The lock bound and the lock primitive are [`crate::store`]'s; other modules
-/// still reach them through this one.
-pub use crate::store::LOCK_WAIT;
-pub(crate) use crate::store::lock as acquire;
-
 /// The reason cap, in CHARACTERS — `ae_cap_summary … 200` counts characters
 /// under a UTF-8 locale, and so does this.
 pub const SUMMARY_CAP: usize = 200;
@@ -295,7 +290,7 @@ pub fn event_body(ts: Timestamp, actor: &str, declaration: &Declaration) -> Stri
 pub enum Failure {
     /// No pane identity — nothing was opened.
     NoIdentity,
-    /// The lock was not acquired within [`LOCK_WAIT`], or could not be opened.
+    /// The lock was not acquired within [`crate::store::LOCK_WAIT`], or could not be opened.
     Lock(String, io::Error),
     /// The container could not be opened or the write did not complete.
     Append(String, io::Error),
@@ -309,7 +304,7 @@ impl Failure {
             Self::NoIdentity => NO_IDENTITY.to_owned(),
             Self::Lock(path, why) => format!(
                 "ae: state not recorded: could not lock {path} within {}s: {why}",
-                LOCK_WAIT.as_secs()
+                store::LOCK_WAIT.as_secs()
             ),
             Self::Append(path, why) => {
                 format!("ae: state not recorded: could not append to {path}: {why}")
@@ -348,16 +343,6 @@ pub fn declare(
         "Marked {} {}{reason}\n",
         viewer.display, declaration.value
     ))
-}
-
-/// Append one event line to `dir`'s container, reporting the store's failure as
-/// one [`io::Error`] naming the step.
-///
-/// # Errors
-///
-/// The lock was not taken, or the append did not complete.
-pub fn emit(dir: &Path, line: &str) -> io::Result<()> {
-    store::open(dir).append_event(line).map_err(io::Error::from)
 }
 
 #[cfg(test)]

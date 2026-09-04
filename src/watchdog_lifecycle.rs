@@ -201,7 +201,7 @@ fn start(
     // check-and-spawn — never two watchdogs side by side.
     watchdog_glue::reap_legacy(server, session, meta_dir, err)?;
     // SINGLE-STARTER MUTUAL EXCLUSION.
-    let held = crate::state::acquire(&meta_dir.join(START_LOCK), START_LOCK_WAIT);
+    let held = crate::store::lock(&meta_dir.join(START_LOCK), START_LOCK_WAIT);
     let Ok(_held) = held else {
         writeln!(
             err,

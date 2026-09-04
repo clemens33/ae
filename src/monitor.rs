@@ -778,9 +778,9 @@ pub fn run(
     // The lock covers read-decide-write, exactly as the Python's `flock` did:
     // two sweeps racing would each read the same prior state and each report
     // the same change.
-    let lock = crate::state::acquire(
+    let lock = crate::store::lock(
         &dir.join(format!("{STATE_NAME}.lock")),
-        crate::state::LOCK_WAIT,
+        crate::store::LOCK_WAIT,
     );
     let _lock = match lock {
         Ok(handle) => handle,

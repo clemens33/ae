@@ -49,7 +49,7 @@ pub(crate) fn worktrees_dir(root: &Path) -> PathBuf {
 pub(crate) fn lock(root: &Path, name: &str) -> io::Result<fs::File> {
     let sessions = sessions_dir(root);
     fs::create_dir_all(&sessions)?;
-    crate::state::acquire(
+    crate::store::lock(
         &sessions.join(format!(".lifecycle.{name}.lock")),
         LIFECYCLE_WAIT,
     )
@@ -468,9 +468,8 @@ pub(crate) fn orchestrator_argv(plan: &Companion<'_>) -> Option<DetachedArgv> {
 
 /// Append one line to the target's event log, best-effort.
 fn emit_stop_event(dir: &Path, name: &str, action: &str, summary: &str) {
-    let _ = crate::state::emit(
-        dir,
-        &crate::tracked::event_line(&crate::tracked::EventFields {
+    let _ = crate::store::open(dir).append_event(&crate::tracked::event_line(
+        &crate::tracked::EventFields {
             ts: crate::time::Timestamp::now(),
             actor: "human",
             action,
@@ -482,8 +481,8 @@ fn emit_stop_event(dir: &Path, name: &str, action: &str, summary: &str) {
             target_session: "",
             summary,
             body_file: "",
-        }),
-    );
+        },
+    ));
 }
 
 /// `_stop --self <name>`: hand the whole stop to a detached supervisor and

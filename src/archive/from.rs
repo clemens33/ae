@@ -80,7 +80,7 @@ pub(crate) fn run(
     }
 
     // meta and digest must be present, regular, non-symlink and readable.
-    for f in ["meta", "digest.md"] {
+    for f in [super::store::META, "digest.md"] {
         let fp = path.join(f);
         let regular = symlink_meta(&fp).is_ok_and(|m| m.is_file() && !m.file_type().is_symlink());
         if !regular || read_file(&fp).is_err() {
@@ -98,7 +98,7 @@ pub(crate) fn run(
     }
 
     // The counts leave with the id they were proved against — read once, here.
-    let meta_bytes = read_file(&path.join("meta")).unwrap_or_default();
+    let meta_bytes = read_file(&path.join(super::store::META)).unwrap_or_default();
     let handover = meta_get(&meta_bytes, "handover_count");
     let pending = meta_get(&meta_bytes, "pending_request_count");
     if !is_count(&handover) || !is_count(&pending) {

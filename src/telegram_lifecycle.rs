@@ -489,7 +489,7 @@ fn spawn_daemon_on(paths: &Paths, server: &ServerId, core: &Path) {
 fn control_lock(ae_home: &Path, wait: Duration) -> io::Result<std::fs::File> {
     let dir = ae_home.join(STATE_DIR);
     std::fs::create_dir_all(&dir)?;
-    crate::state::acquire(&dir.join(CONTROL_LOCK), wait)
+    crate::store::lock(&dir.join(CONTROL_LOCK), wait)
 }
 
 /// Persist one refusal category, and mirror it into the launching session's
