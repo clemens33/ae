@@ -92,9 +92,12 @@ fn same_directory(left: &Path, right: &Path) -> bool {
 
 /// Where this invocation's state lives — **SC-404**'s derivation, shape-aware.
 ///
-/// INSTALLED: `<HOME>/.ae`, taken from the binary's own published location, so
-/// an install is self-locating and an inherited `AE_HOME` is not consulted at
-/// all. CHECKOUT: `AE_HOME` if it names something, else `<HOME>/.ae`.
+/// PUBLISHED: `<root>/.ae`, taken from the binary's own location, so an install
+/// is self-locating and an inherited `AE_HOME` is not consulted at all. That
+/// covers the DISPLACED shape too: it is refused at the gate before it reaches
+/// here, and a path that somehow did must still use the position rather than
+/// the `$HOME` the refusal is about. CHECKOUT: `AE_HOME` if it names something,
+/// else `<HOME>/.ae`.
 ///
 /// An empty `AE_HOME` is treated as unset rather than as the filesystem root:
 /// deriving `/sessions` from a variable someone exported blank is a worse
@@ -102,8 +105,8 @@ fn same_directory(left: &Path, right: &Path) -> bool {
 /// given — normalising a path the operator supplied is a decision no row makes.
 #[must_use]
 pub fn state_root(shape: &Shape) -> Option<PathBuf> {
-    if let Shape::Installed { home, .. } = shape {
-        return Some(home.clone());
+    if let Some(home) = shape.published_home() {
+        return Some(home.to_path_buf());
     }
     ae_home().or_else(|| home().map(|home| home.join(".ae")))
 }
@@ -386,7 +389,7 @@ pub fn inside_tmux(
 /// Empty for a CHECKOUT, which honours all four.
 #[must_use]
 pub fn ignored(shape: &Shape) -> Vec<String> {
-    let Shape::Installed { home, .. } = shape else {
+    let Some(home) = shape.published_home() else {
         return Vec::new();
     };
     #[allow(

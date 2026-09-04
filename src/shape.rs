@@ -4,13 +4,26 @@
 //! the two things the wrapper decided from its own file name are decided here
 //! from [`std::env::current_exe`]:
 //!
-//! * **INSTALLED** — the resolved executable is `<HOME>/.ae/versions/<V>/ae-core`,
-//!   a directory the canonical installer published. ae state is `<HOME>/.ae` and
-//!   nothing an inherited variable says can move it; the version directory is
-//!   validated before any effect.
+//! * **INSTALLED** — the resolved executable is `<root>/.ae/versions/<V>/ae-core`,
+//!   a directory the canonical installer published. ae state is `<root>/.ae`,
+//!   READ OFF THE EXECUTABLE'S OWN PATH, and nothing an inherited variable says
+//!   can move it; the version directory is validated before any effect.
+//! * **DISPLACED** — the same position, but `$HOME` names a different root.
+//!   A refusal naming both, never a demotion.
 //! * **CHECKOUT** — anywhere else. `AE_HOME`, `CONFIG_FILE` and the
 //!   `AE_TMUX_SERVER` pair are HONOURED. That is the `ae-dev` namespace and the
 //!   two bash suites, which are its only callers.
+//!
+//! # `$HOME` is compared, never trusted to derive
+//!
+//! The installed root used to be `<$HOME>/.ae` and the position was tested
+//! against it, so an inherited `HOME` decided which SHAPE a published core was:
+//! `HOME=/tmp/fake AE_HOME=/tmp/foreign <real>/.ae/versions/<V>/ae-core doctor`
+//! classified CHECKOUT and built its sessions under `/tmp/foreign` (measured).
+//! That is C51's degradation reached through a variable instead of a missing
+//! sibling. The root is now derived from the canonical executable path alone —
+//! `.../.ae/versions/<V>/ae-core` names its own `.ae` — and `$HOME` is only ever
+//! compared against it.
 //!
 //! # Why the position and not the health
 //!
@@ -65,51 +78,124 @@ pub enum Shape {
         /// That directory's name, which must be the version this binary reports.
         version: String,
     },
+    /// Published by the installer, but run against a `$HOME` that names a
+    /// different root.
+    ///
+    /// Neither a working install nor a checkout: a REFUSAL, carried as a shape
+    /// so the gate can state both roots ([`displaced_refusal`]). It is a shape
+    /// rather than an error return because the classification is what knows
+    /// both halves, and a caller that forgot to ask would otherwise get the
+    /// permissive answer.
+    Displaced {
+        /// `<root>/.ae`, derived from where this binary SITS.
+        home: PathBuf,
+        /// The inherited `$HOME`, which names somewhere else.
+        declared: PathBuf,
+    },
     /// Anything else: a build in a checkout, run by `ae-dev` or the suites.
     Checkout,
 }
 
 impl Shape {
     /// Whether inherited `AE_HOME` / `CONFIG_FILE` / `AE_TMUX_SERVER*` are read.
+    ///
+    /// A DISPLACED shape says no, like an installed one: the disagreement is
+    /// refused, and a refusal that first adopted the variable it is refusing
+    /// over would be no refusal at all.
     #[must_use]
     pub fn honours_environment(&self) -> bool {
         matches!(self, Self::Checkout)
+    }
+
+    /// The state root this binary's own POSITION derives, if it has one.
+    ///
+    /// Both published shapes answer, and they answer the same way — the
+    /// displaced one is refused at the gate, and any path that ever reached
+    /// past it must still use the position rather than the `$HOME` it
+    /// disagreed with.
+    #[must_use]
+    pub fn published_home(&self) -> Option<&Path> {
+        match self {
+            Self::Installed { home, .. } | Self::Displaced { home, .. } => Some(home),
+            Self::Checkout => None,
+        }
     }
 }
 
 /// Classify `exe` — an already-resolved `current_exe()` — against `home`, the
 /// value of `$HOME`.
 ///
-/// POSITIONAL AND TOTAL: `<home>/.ae/versions/<anything>/ae-core` is installed,
-/// everything else is a checkout. The directory's NAME is not checked here —
-/// a wrong name is a broken install that must refuse, and refusing is
-/// [`validate`]'s job, not classification's.
+/// POSITIONAL AND TOTAL, and the position is the EXECUTABLE'S ALONE:
+/// `<root>/.ae/versions/<anything>/ae-core` is an install whose state root is
+/// `<root>/.ae`, and everything else is a checkout. The directory's NAME is not
+/// checked here — a wrong name is a broken install that must refuse, and
+/// refusing is [`validate`]'s job, not classification's.
+///
+/// `home` is COMPARED and never derived from: an install run against a
+/// different `$HOME` is [`Shape::Displaced`], a refusal. An ABSENT `$HOME`
+/// disagrees with nothing, so a published core still classifies installed and
+/// answers from its own position — which is the safe root, not a borrowed one.
 #[must_use]
 pub fn classify(exe: &Path, home: Option<&Path>) -> Shape {
-    let (Some(home), Some(file)) = (home, exe.file_name()) else {
+    let Some((ae_home, version_dir, version)) = published_position(exe) else {
         return Shape::Checkout;
     };
-    if file != CORE {
-        return Shape::Checkout;
+    if let Some(declared) = home
+        && declared.join(".ae") != ae_home
+    {
+        return Shape::Displaced {
+            home: ae_home,
+            declared: declared.to_path_buf(),
+        };
     }
-    let Some(version_dir) = exe.parent() else {
-        return Shape::Checkout;
-    };
-    let Some(versions) = version_dir.parent() else {
-        return Shape::Checkout;
-    };
-    let ae_home = home.join(".ae");
-    if versions != ae_home.join(VERSIONS) {
-        return Shape::Checkout;
-    }
-    let Some(version) = version_dir.file_name().and_then(|name| name.to_str()) else {
-        return Shape::Checkout;
-    };
     Shape::Installed {
         home: ae_home,
-        version_dir: version_dir.to_path_buf(),
-        version: version.to_owned(),
+        version_dir,
+        version,
     }
+}
+
+/// The `<root>/.ae`, the version directory and its name, as `exe`'s own path
+/// spells them — or `None` when this binary is not sitting in one.
+///
+/// Every component is named: the member is `ae-core`, its grandparent
+/// directory is `versions`, and that one's parent is `.ae`. A path that merely
+/// ends in the right two words (`/opt/versions/9/ae-core`) is not an install.
+fn published_position(exe: &Path) -> Option<(PathBuf, PathBuf, String)> {
+    if exe.file_name()? != CORE {
+        return None;
+    }
+    let version_dir = exe.parent()?;
+    let versions = version_dir.parent()?;
+    if versions.file_name()? != VERSIONS {
+        return None;
+    }
+    let ae_home = versions.parent()?;
+    if ae_home.file_name()? != ".ae" {
+        return None;
+    }
+    let version = version_dir.file_name()?.to_str()?;
+    Some((
+        ae_home.to_path_buf(),
+        version_dir.to_path_buf(),
+        version.to_owned(),
+    ))
+}
+
+/// The refusal a [`Shape::Displaced`] carries: two lines naming BOTH roots.
+///
+/// Not a [`Broken`], because `ae upgrade` is not the repair. Nothing is wrong
+/// with the install; it is being pointed at somebody else's state, and the fix
+/// is to correct the caller — which of the two roots is the mistake is the
+/// caller's to know, so both are printed.
+#[must_use]
+pub fn displaced_refusal(home: &Path, declared: &Path) -> String {
+    format!(
+        "ae: this core is published under {} but HOME names {}\n\
+         ae: an installed ae never adopts a foreign state root — run the ae published under that HOME, or correct HOME.",
+        home.display(),
+        declared.display()
+    )
 }
 
 /// Why an installed version directory was refused.
@@ -385,8 +471,8 @@ mod tests {
             "/w/ae/target/debug/ae",
             // The right name in the wrong place.
             "/opt/ae/ae-core",
-            // Another user's install.
-            "/u/you/.ae/versions/2026.9.1/ae-core",
+            // The two words without the `.ae` that makes them ae's.
+            "/opt/versions/2026.9.1/ae-core",
             // The version directory itself, without the member name.
             "/u/me/.ae/versions/2026.9.1",
             // One level too deep.
@@ -398,10 +484,56 @@ mod tests {
                 "{exe}"
             );
         }
+    }
+
+    /// The position is the whole answer: an absent `$HOME` disagrees with
+    /// nothing, so a published core is still installed and still answers from
+    /// its own directory. It used to fall to CHECKOUT here, which handed
+    /// `AE_HOME` the state root of an install.
+    #[test]
+    fn a_published_core_with_no_home_to_compare_is_still_installed() {
         assert_eq!(
             classify(Path::new("/u/me/.ae/versions/2026.9.1/ae-core"), None),
-            Shape::Checkout,
-            "no HOME to compare against"
+            Shape::Installed {
+                home: PathBuf::from("/u/me/.ae"),
+                version_dir: PathBuf::from("/u/me/.ae/versions/2026.9.1"),
+                version: "2026.9.1".to_owned(),
+            }
+        );
+    }
+
+    /// **B2.** A published core run against a foreign `$HOME` is a REFUSAL, not
+    /// a checkout — the whole point being that a checkout honours `AE_HOME`,
+    /// which is how `HOME=/fake AE_HOME=/foreign <real-install>/ae-core doctor`
+    /// built its sessions under `/foreign`.
+    #[test]
+    fn a_published_core_against_a_foreign_home_is_displaced_and_honours_nothing() {
+        let shape = classify(
+            Path::new("/u/you/.ae/versions/2026.9.1/ae-core"),
+            Some(Path::new("/u/me")),
+        );
+        assert_eq!(
+            shape,
+            Shape::Displaced {
+                home: PathBuf::from("/u/you/.ae"),
+                declared: PathBuf::from("/u/me"),
+            }
+        );
+        assert!(
+            !shape.honours_environment(),
+            "a displaced core must not adopt the environment it is refusing over"
+        );
+        assert_eq!(
+            shape.published_home(),
+            Some(Path::new("/u/you/.ae")),
+            "the position, never the inherited home"
+        );
+        let refusal = displaced_refusal(Path::new("/u/you/.ae"), Path::new("/u/me"));
+        assert!(refusal.contains("/u/you/.ae"), "{refusal}");
+        assert!(refusal.contains("/u/me"), "{refusal}");
+        assert!(
+            !refusal.contains("ae upgrade"),
+            "upgrade is not the repair for a foreign HOME: {refusal}"
         );
     }
 
@@ -525,10 +657,13 @@ mod tests {
             .join("9.9.9")
             .join(CORE);
 
-        assert_eq!(
-            classify(&exe, Some(link.as_path())),
-            Shape::Checkout,
-            "the raw spelling cannot match a resolved exe"
+        assert!(
+            matches!(
+                classify(&exe, Some(link.as_path())),
+                Shape::Displaced { .. }
+            ),
+            "the raw spelling cannot match a resolved exe — and the position is \
+             still an install, so the mismatch is a refusal rather than a checkout"
         );
         assert!(
             matches!(
