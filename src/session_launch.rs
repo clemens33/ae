@@ -499,6 +499,13 @@ fn launch(
     }
 
     let meta_present = node_exists(&dir.join("meta"));
+    // THE CHAIN, before anything reads a field of this meta: a resume or a
+    // reattach is ae touching a session, and a shape it cannot place is one it
+    // must not act on.
+    if meta_present && let Err(refusal) = crate::migrate::session(&dir) {
+        writeln!(err, "Error: {}", refusal.line(&session))?;
+        return Ok(EXIT_FAILED);
+    }
     // DERIVED-NAME OWNERSHIP.
     if derived && meta_present {
         let recorded = meta_value(&dir, "origin");
@@ -1464,6 +1471,9 @@ fn meta_document(
         body.push_str(value);
         body.push('\n');
     };
+    // The SHAPE row, first: it says how everything below it is to be read, and
+    // its absence is what tells a later ae that this meta pre-dates the chain.
+    row(crate::migrate::KEY, &crate::migrate::CURRENT.to_string());
     row("mode", shape.mode.as_str());
     row("origin", &shape.origin.display().to_string());
     row("session", &shape.name);

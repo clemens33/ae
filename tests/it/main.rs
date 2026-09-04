@@ -21,6 +21,7 @@ mod gate;
 mod git;
 mod install;
 mod lifecycle;
+mod migrate;
 mod monitor;
 mod parity;
 mod phase2;

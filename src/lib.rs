@@ -39,6 +39,7 @@ pub mod listing;
 pub mod liveness;
 pub mod memo;
 pub mod meta;
+pub mod migrate;
 pub mod monitor;
 pub mod netprobe;
 pub mod next;

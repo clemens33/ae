@@ -47,6 +47,15 @@ const PROFILE_PREFIX: &str = "profile.";
 const HARNESS_SESSION_PREFIX: &str = "harness_session.";
 /// `schema=<n>` — the identity schema the writer used.
 const SCHEMA_KEY: &str = "schema";
+/// The VERSION of the core a session is pinned to, and the shape its meta is
+/// written in. Both are READ rather than tolerated: `ae list` marks a session
+/// left behind by an upgrade, and it can only do that if it knows these two.
+///
+/// The version, never the `ae_core` PATH. A path comparison looked equivalent
+/// and was not: the installer records `$HOME/.ae/versions/…` as written, while
+/// `resolved_exe` canonicalizes, so on macOS every session read as behind
+/// because `/tmp` and `/private/tmp` are the same directory spelled twice.
+const CORE_KEY: &str = "ae_core_version";
 
 /// One agent, as the roster records it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -208,6 +217,10 @@ pub struct Meta {
     goal: Option<String>,
     /// The frozen executable version recorded when ae created the session.
     ae_version: Option<String>,
+    /// The version of the core binary this session's helpers are pinned to.
+    ae_core: Option<String>,
+    /// The raw `meta_version=` value — the shape this document is written in.
+    declared_version: Option<String>,
     roster: Vec<RosterEntry>,
     /// `agent_bin.<slot>` values whose `agent.<slot>` / `seat.<slot>` has not
     /// been read yet.
@@ -307,6 +320,8 @@ impl Meta {
             "work_dir" => self.work_dir = None,
             "goal" => self.goal = None,
             "ae_version" => self.ae_version = None,
+            CORE_KEY => self.ae_core = None,
+            crate::migrate::KEY => self.declared_version = None,
             SCHEMA_KEY => self.schema = None,
             // A repeated selector key is AMBIGUOUS, which is a
             // stronger statement than invalidation: the flag survives
@@ -345,6 +360,8 @@ impl Meta {
             "work_dir" => self.work_dir = Some(value.to_owned()),
             "goal" => self.goal = Some(value.to_owned()),
             "ae_version" => self.ae_version = Some(value.to_owned()),
+            CORE_KEY => self.ae_core = Some(value.to_owned()),
+            crate::migrate::KEY => self.declared_version = Some(value.to_owned()),
             // The selector family is the one exception: these two are read and
             // normalized rather than tolerated-and-ignored.
             SERVER_KEY => self.server_value = Some(value.to_owned()),
@@ -613,6 +630,18 @@ impl Meta {
     #[must_use]
     pub fn ae_version(&self) -> Option<&str> {
         self.ae_version.as_deref()
+    }
+
+    /// The version of the core binary this session's helpers are pinned to.
+    #[must_use]
+    pub fn ae_core_version(&self) -> Option<&str> {
+        self.ae_core.as_deref()
+    }
+
+    /// The shape this meta declares — see [`crate::migrate`].
+    #[must_use]
+    pub fn meta_version(&self) -> Option<&str> {
+        self.declared_version.as_deref()
     }
 
     /// The roster, in the order the meta lists its `agent.<slot>`

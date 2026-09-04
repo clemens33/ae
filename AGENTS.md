@@ -136,6 +136,34 @@ Pins, not channels. CI, laptop and agent sandbox must resolve to the same compil
 | `just rust-build-release` / `bundles` | native release binary (native only, a bare clone must build) / both platform bundles + `SHA256SUMS` into `dist/` (needs the musl cross toolchain) |
 | `just release` | the whole release, locally. Pre-flight refuses before any state is written |
 
+`ae upgrade` (and `ae _install`, the same publish) is not only a binary swap: between the
+new version directory and the repointed link it migrates EVERY session under
+`<HOME>/.ae/sessions`, running or stopped — the chain, then `ae_core`/`ae_core_version`/
+`ae_version` rewritten, then the helper links re-rendered, then the watchdog and the
+Telegram bridge of a running one restarted on the new core. Agent panes are never touched:
+they run the agent tool, not ae.
+
+`<HOME>/.ae`, not `<AE_HOME>`. A publish is `$HOME`-pinned end to end — the version
+directories and `~/.local/bin/ae` are — and in the INSTALLED shape, the only one an upgrade
+happens in, the two are the same directory. A checkout run with `AE_HOME` elsewhere would
+publish into `$HOME/.ae` and migrate the sessions there; that is why a live upgrade probe
+belongs in a sandboxed `$HOME`, not in the `ae-dev` namespace.
+
+Nothing is written until every session has been asked, so a session that cannot be migrated
+aborts the publish, by name, with the old link intact and no session repointed. After the
+journal is removed — not before, because the prune can otherwise delete the rollback target
+the journal names — every unreferenced `versions/<V>` is deleted, so there is one installed
+version and no relink-to-yesterday rollback. `ae list` marks a session the publish did not
+reach.
+
+**`ae upgrade` hands the publish to the DOWNLOADED core** (`<bundle>/ae-core _install
+--from`), the way the `install` bootstrap already does. The migration steps for versions
+N..M live in the core being INSTALLED; a publish run in-process by the OLD core would
+migrate with the rules of the release it is replacing, and on the first real schema change
+would have no step to run at all. One consequence is unavoidable and one-time: upgrading
+FROM a core that predates this ruling runs that core's publish, which has no sweep, so those
+sessions arrive unmigrated and are refused on resume until they are ended.
+
 ## Session helpers
 
 The core LINKS 21 names into `~/.ae/sessions/<name>/`. Every one is a **symlink to the core
@@ -241,6 +269,7 @@ Each is one rule with one owner. Change the owner, not a copy.
 | The install gate is STRUCTURAL and hashes nothing. Every command and helper passes it EXCEPT `version` and `upgrade`, which diagnose and repair a broken install | `src/shape.rs`, ordered in `src/lib.rs::run` |
 | The one hashing site: both members re-digested against `SHA256SUMS` before publication | `src/install.rs` |
 | Published dir 0555, members 0555/0444; `~/.local/bin/ae` is the current pointer | `src/install.rs` |
+| Every session meta carries `meta_version=<N>`; the chain steps N->N+1 and runs wherever the core touches a session. A missing row is the pre-version past: REFUSED at resume, REPORTED at stop and end, which must never be blocked. A publish migrates and repoints EVERY session before it moves the command link, then deletes every `versions/<V>` no meta records | `src/migrate.rs`, called from `src/install.rs::publish_steps`, `src/session_launch.rs`, `src/lifecycle.rs` and `src/lifecycle/end.rs` |
 | A harness session id is a NAME: the purge proves it against the archive UUID grammar before it builds a path | `src/lifecycle/end.rs::purge_conversation_files`; grammar in `src/archive.rs::canonical_uuid` |
 | A monitor sweep may act only on the CALLER'S own session (`$TMUX_PANE`) | `src/monitor.rs` |
 | Every tmux format uses a printable pipe separator, never a control byte — tmux 3.4 octal-escapes those. Each format literal is written out; `SLOTS_FORMAT` deliberately uses an unspaced pipe | `src/tmux.rs` (`FIELD_SEPARATOR` is the parser delimiter) + the control-char-free test over every format constant |

@@ -710,6 +710,12 @@ fn stop_one(
         return Ok(StopOutcome::Failed);
     };
     let dir = sessions_dir(root).join(name);
+    // The chain, under the lifecycle lock this stop already holds. A refusal is
+    // REPORTED, never fatal: a session whose shape ae cannot place is exactly
+    // the one an operator needs to be able to stop.
+    if let Some(note) = crate::migrate::session_noted(&dir, name) {
+        writeln!(err, "{note}")?;
+    }
     let Ok(bytes) = meta::read_bytes(&dir) else {
         writeln!(err, "Session '{name}' not found.")?;
         return Ok(StopOutcome::Failed);

@@ -435,8 +435,12 @@ fn an_interrupted_install_is_reversed_by_the_next_run_which_then_completes() {
 // ─── switching versions ──────────────────────────────────────────────────
 
 #[test]
-fn a_second_install_repoints_the_link_and_leaves_the_first_version_intact() {
-    // A21.
+fn a_second_install_repoints_the_link_and_sweeps_the_version_nothing_records() {
+    // A21, as amended by the migration ruling: a publish repoints every session
+    // onto the new core BEFORE it repoints the link, so by the time the sweep
+    // runs, nothing records the superseded version and it goes. One installed
+    // version, one pointer, no accumulation — and no relink-to-yesterday
+    // rollback, which is the cost this buys the guarantee with.
     let rig = Rig::new("switch");
     assert_eq!(rig.install(&rig.bundle("2026.8.1")).0, Some(0));
     assert_eq!(rig.install(&rig.bundle("2026.8.2")).0, Some(0));
@@ -448,10 +452,14 @@ fn a_second_install_repoints_the_link_and_leaves_the_first_version_intact() {
     );
     for name in ["ae-core", "install", "SHA256SUMS"] {
         assert!(
-            rig.version_dir("2026.8.1").join(name).is_file(),
-            "the old version lost {name}"
+            rig.version_dir("2026.8.2").join(name).is_file(),
+            "the published version lost {name}"
         );
     }
+    assert!(
+        !present(&rig.version_dir("2026.8.1")),
+        "the superseded version directory survived the sweep"
+    );
     assert!(!present(&rig.journal()), "a switch left a journal");
 }
 

@@ -23,14 +23,56 @@ use crate::phase2::run_tmux;
 /// config or pin a version.
 const AMBIENT: [&str; 4] = ["TMUX", "TMUX_PANE", "CONFIG_FILE", "AE_VERSION"];
 
-/// A scratch path this run owns, never created — see [`ae`].
+/// How long a hermetic scratch may sit in `/tmp` before the next test process
+/// sweeps it. Long enough that a concurrent run's directories are never taken.
+const STALE_AFTER: std::time::Duration = std::time::Duration::from_hours(1);
+
+/// A scratch path this run owns, never created BY THE RUNNER — see [`ae`].
+///
+/// The product creates it when a fixture's argv reaches a command that writes:
+/// a launch stages a default config, and the tools it starts drop `.claude`,
+/// `.codex` and a shell history beside it. That those directories now appear
+/// under `/tmp` is the isolation WORKING — every one of them used to be written
+/// into the developer's own home.
+///
+/// Nothing can remove them at process exit: `ae()` hands back a `Command`, not
+/// a guard, and there is no after-all-tests hook. So each test process sweeps
+/// what earlier ones left, on age rather than on liveness — there is no
+/// portable "is this pid gone" here, and [`STALE_AFTER`] is far longer than a
+/// suite run.
 fn run_scratch() -> std::path::PathBuf {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    std::path::PathBuf::from(format!(
-        "/tmp/ae-hermetic-{}-{}",
-        std::process::id(),
-        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-    ))
+    let nth = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if nth == 0 {
+        sweep_stale_scratches();
+    }
+    std::path::PathBuf::from(format!("/tmp/ae-hermetic-{}-{nth}", std::process::id()))
+}
+
+/// Remove every hermetic scratch older than [`STALE_AFTER`].
+fn sweep_stale_scratches() {
+    let Ok(entries) = std::fs::read_dir("/tmp") else {
+        return;
+    };
+    let now = std::time::SystemTime::now();
+    for entry in entries.flatten() {
+        if !entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with("ae-hermetic-")
+        {
+            continue;
+        }
+        let old = entry
+            .metadata()
+            .and_then(|meta| meta.modified())
+            .ok()
+            .and_then(|at| now.duration_since(at).ok())
+            .is_some_and(|age| age > STALE_AFTER);
+        if old {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+    }
 }
 
 // ONE OF THREE DOORS — `clippy.toml` denies `std::process::Command` crate-wide

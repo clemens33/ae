@@ -529,6 +529,10 @@ pub struct Published {
     pub version_dir: PathBuf,
     /// The version published.
     pub version: String,
+    /// What the session sweep and the version-directory sweep did, one line
+    /// each, for the command that prints them. Empty on a first install: there
+    /// are no sessions and no other version to prune.
+    pub notes: Vec<String>,
 }
 
 /// Publish `bundle` under `paths`, atomically, and repoint the command link.
@@ -562,13 +566,22 @@ pub fn publish(bundle: &Bundle, paths: &Paths) -> Result<Published, String> {
         .map_err(|why| format!("could not write install journal: {why}"))?;
 
     match publish_steps(bundle, paths, &mut journal) {
-        Ok(published) => {
+        Ok(mut published) => {
+            // THE COMMIT. Everything above is reversible by [`replay`], and the
+            // journal's `link_old` names the version directory it would relink
+            // to. So the version sweep may not run until the journal is GONE:
+            // a prune inside the transaction can delete its own rollback
+            // target, and a later recovery would then relink the ae command to
+            // a directory that is not there.
             std::fs::remove_file(&path).map_err(|why| {
                 format!(
                     "install succeeded but the journal could not be removed; it is preserved at {}: {why}",
                     path.display()
                 )
             })?;
+            published
+                .notes
+                .extend(crate::migrate::prune_versions(&paths.home, &bundle.version));
             Ok(published)
         }
         Err(why) => {
@@ -594,16 +607,24 @@ fn publish_steps(
     let version_dir = versions.join(&bundle.version);
     publish_version_dir(bundle, &version_dir)?;
 
+    // BEFORE the repoint, and after the new core is whole on disk: every
+    // session is stepped, re-pointed and re-linked onto it, and the daemons of
+    // the running ones are restarted. A session that cannot be migrated fails
+    // here, while `~/.local/bin/ae` still names the core that built it.
+    let core = version_dir.join(crate::shape::CORE);
+    let notes = crate::migrate::onto(&paths.home, &core, &bundle.version)?;
+
     let parent = paths
         .link
         .parent()
         .ok_or_else(|| format!("ae command path has no parent: {}", paths.link.display()))?;
     mkdir_recorded(parent, journal, paths)?;
     validate_bin_destination(&paths.link, &paths.home)?;
-    relink(&paths.link, &version_dir.join(crate::shape::CORE))?;
+    relink(&paths.link, &core)?;
     Ok(Published {
         version_dir,
         version: bundle.version.clone(),
+        notes,
     })
 }
 
@@ -954,6 +975,9 @@ pub fn run(
     };
     match install_from(Path::new(dir), &home) {
         Ok(published) => {
+            for note in &published.notes {
+                writeln!(out, "ae: {note}")?;
+            }
             writeln!(
                 out,
                 "ae: installed {} under {}",

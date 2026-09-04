@@ -280,6 +280,9 @@ pub fn run(
     };
     match upgrade(&home, out) {
         Ok(published) => {
+            for note in &published.notes {
+                writeln!(out, "ae: {note}")?;
+            }
             writeln!(
                 out,
                 "ae: installed {} under {}",
@@ -338,7 +341,72 @@ fn upgrade(
         .map_err(|why| format!("could not stage {archive}: {why}"))?;
     let root = format!("ae-{version}-{platform}");
     extract(&archive_path, scratch.path(), &root)?;
-    crate::install::install_from(&scratch.path().join(&root), home)
+    delegate(&scratch.path().join(&root), home, &version)
+}
+
+/// Hand the extracted bundle to ITS OWN core, exactly as the bootstrap does.
+///
+/// THE PUBLISH BELONGS TO THE NEW CORE, not to this one. A publish is no longer
+/// a file copy: it steps every session's meta through the migration chain. The
+/// steps for versions N..M live in the core being INSTALLED — this process only
+/// knows the chain as of its own release, so an in-process `install_from` would
+/// migrate tomorrow's sessions with yesterday's rules, and on the first real
+/// schema change would simply have no step to run.
+///
+/// The core is trusted the same way `install` trusts it: the archive was
+/// checksummed against the release manifest before extraction, the listing was
+/// proved to name nothing but its own members, and the core re-verifies every
+/// member's digest before it publishes anything. Running it is also not a new
+/// capability — [`crate::install::verify`] already runs a bundle core to ask
+/// its version.
+///
+/// A core too old to know `_install` would fail here; none ever was, because
+/// `_install` predates `upgrade`.
+fn delegate(root: &Path, home: &Path, version: &str) -> Result<crate::install::Published, String> {
+    let core = root.join(crate::shape::CORE);
+    let out =
+        run_core(&core, root, home).map_err(|why| format!("could not run the new core: {why}"))?;
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    if !out.status.success() {
+        // The new core's own refusal, verbatim: it named the session, the
+        // journal or the digest that stopped it, and rewording that here would
+        // lose the only thing the operator can act on.
+        let said = stderr.trim();
+        return Err(if said.is_empty() {
+            format!("the new core refused the install ({})", out.status)
+        } else {
+            said.to_owned()
+        });
+    }
+    // Its notes are the operator's, and the caller prints them. The `ae: `
+    // prefix is this process's own convention, added when they are printed.
+    let notes = stdout
+        .lines()
+        .filter_map(|line| line.strip_prefix("ae: "))
+        .filter(|line| !line.starts_with("installed "))
+        .map(ToOwned::to_owned)
+        .collect();
+    Ok(crate::install::Published {
+        version_dir: home.join(".ae").join(crate::shape::VERSIONS).join(version),
+        version: version.to_owned(),
+        notes,
+    })
+}
+
+/// THE SIXTH PRODUCT CROSSING of `clippy.toml`'s `Command` deny.
+fn run_core(core: &Path, root: &Path, home: &Path) -> std::io::Result<std::process::Output> {
+    #[allow(
+        clippy::disallowed_types,
+        reason = "upgrade's handover door: the digest-verified new core performs its own publish, because the migration chain that publish runs belongs to the version being installed"
+    )]
+    let mut command = std::process::Command::new(core);
+    command
+        .arg(crate::cli::INSTALL)
+        .arg("--from")
+        .arg(root)
+        .env("HOME", home)
+        .output()
 }
 
 /// List, prove, then unpack.

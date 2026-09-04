@@ -425,6 +425,29 @@ fn safe_branch(branch: &str) -> Option<&str> {
     Some(branch)
 }
 
+/// Whether a session records a shape or a core this ae is not.
+///
+/// Both halves are compared against THIS process: `meta_version` against the
+/// chain's current version, and `ae_core_version` against the version this
+/// binary is. A session ae cannot place at all (no `meta_version`) is behind by
+/// definition. A session that records no core version at all says nothing, so
+/// that half stays silent rather than guessing.
+///
+/// The VERSION, never the `ae_core` path — see `meta.rs`'s `CORE_KEY`: a path
+/// comparison marked every session on macOS, where `/tmp` and `/private/tmp`
+/// name one directory.
+pub(crate) fn is_behind(meta: &crate::meta::Meta) -> bool {
+    if meta
+        .meta_version()
+        .and_then(|value| value.parse::<u32>().ok())
+        != Some(crate::migrate::CURRENT)
+    {
+        return true;
+    }
+    meta.ae_core_version()
+        .is_some_and(|recorded| recorded != crate::VERSION)
+}
+
 /// The digest entry for a record already read.
 #[must_use]
 pub fn entry_from(
@@ -446,6 +469,7 @@ pub fn entry_from(
         entry.work_dir = meta.work_dir().map(ToOwned::to_owned);
         entry.goal = meta.goal().map(ToOwned::to_owned);
         entry.ae_version = meta.ae_version().map(ToOwned::to_owned);
+        entry.behind = is_behind(meta);
         // A runtime observation wins when one exists; otherwise read the work tree.
         if entry.branch.is_none() {
             entry.branch = meta.work_dir().and_then(|dir| branch_at(Path::new(dir)));

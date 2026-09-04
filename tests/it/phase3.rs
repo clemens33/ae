@@ -1763,6 +1763,11 @@ fn criterion_3_the_places_this_crate_can_read_the_world_are_the_inventoried_ones
             // The memo file read behind `memo read`/`memo tail`.
             "src/memo.rs".to_owned(),
             "src/meta.rs".to_owned(),
+            // The upgrade's version-directory sweep: it enumerates
+            // `<home>/versions` to find the directories no session records any
+            // more. Its session enumeration and its meta reads are the
+            // `lifecycle.rs` and `meta.rs` doors, not new ones.
+            "src/migrate.rs".to_owned(),
             // The orchestrator sweep's ONE own door: its state file, which is
             // also the watchdog's heartbeat.
             "src/monitor.rs".to_owned(),
