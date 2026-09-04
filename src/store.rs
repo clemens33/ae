@@ -21,7 +21,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-/// The event container, the bash era's name for it, kept across every flip.
+/// The event container's file name, kept across every flip.
 pub const EVENTS: &str = "events.jsonl";
 
 /// The memo container.

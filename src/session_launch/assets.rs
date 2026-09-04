@@ -1,19 +1,13 @@
 //! What a session directory holds besides its meta: the helper LINKS and the
 //! workspace manifest.
 //!
-//! Slice Z2 finished the move the B ruling started. A helper was a four-line
-//! bash shim that exec'd the core; it is now a SYMLINK to the core binary, and
-//! the shim's one `exec` line lives in [`crate::shim`], which reads the helper's
-//! identity and its session directory off `argv[0]`. Helper names and argv are
-//! unchanged, which is the compatibility contract that matters — every agent in
-//! a live workspace calls them by name.
+//! A helper is a SYMLINK to the core binary, and the dispatch behind it lives
+//! in [`crate::shim`], which reads the helper's identity and its session
+//! directory off `argv[0]`. Helper names and argv are the compatibility
+//! contract that matters — every agent in a live workspace calls them by name.
+//! There is no shell file in a session directory.
 //!
-//! The 422-line `sync_session_assets` generator, the `_lib` library it emitted,
-//! the `declare -f` template pattern behind both, and now the shim bodies
-//! themselves are all gone: there is no bash left in a session directory.
-//!
-//! Each artifact is published temp + rename, the frozen
-//! `_publish_executable_artifact` shape: a writer that dies mid-publish leaves
+//! Each artifact is published temp + rename: a writer that dies mid-publish leaves
 //! the previous artifact whole rather than a half-made one a session would then
 //! run.
 

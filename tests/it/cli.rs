@@ -32,8 +32,8 @@ const STALE_AFTER: std::time::Duration = std::time::Duration::from_hours(1);
 /// The product creates it when a fixture's argv reaches a command that writes:
 /// a launch stages a default config, and the tools it starts drop `.claude`,
 /// `.codex` and a shell history beside it. That those directories now appear
-/// under `/tmp` is the isolation WORKING — every one of them used to be written
-/// into the developer's own home.
+/// under `/tmp` is the isolation WORKING: none of them reaches the developer's
+/// own home.
 ///
 /// Nothing can remove them at process exit: `ae()` hands back a `Command`, not
 /// a guard, and there is no after-all-tests hook. So each test process sweeps

@@ -1,9 +1,5 @@
 //! The session `meta` file, and nothing else.
 //!
-//! Wired only after the seats ratified those three rows. Before that this
-//! module did not exist: the digest's `mode`/`origin`/`work_dir`/`goal` and its
-//! `agents[]` roster sat unread rather than being guessed from the bash writer.
-//!
 //! * `key=value`, split on the FIRST equals; values are single-line.
 //! * `mode`, `origin`, `work_dir`, `goal` are meta keys.
 //! * `agent.<slot>` carries `alias:name:provider-session-id`
@@ -91,7 +87,7 @@ pub enum Selector {
 }
 
 /// What a durable record says about its tmux server — typed knowledge
-/// fact, normalized from the two-key legacy form.
+/// fact, normalized from both recorded forms.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ServerSelector {
     /// A positive, unambiguous selector.
@@ -163,7 +159,7 @@ pub enum Anomaly {
         /// 1-based line number.
         line: usize,
     },
-    /// The retired v1 roster row `agent.<slot>`, which this ae does not read
+    /// The v1 roster row `agent.<slot>`, which this ae does not read
     /// into a seat.
     LegacyRoster {
         /// The slot as written.
@@ -215,7 +211,7 @@ pub struct Meta {
     origin: Option<String>,
     work_dir: Option<String>,
     goal: Option<String>,
-    /// The frozen executable version recorded when ae created the session.
+    /// The executable version recorded when ae created the session.
     ae_version: Option<String>,
     /// The version of the core binary this session's helpers are pinned to.
     ae_core: Option<String>,
@@ -285,8 +281,7 @@ impl Meta {
             // Split on the FIRST equals.
             let Some((key, value)) = raw.split_once('=') else {
                 // A bare `agent.main` / `seat.main` is still a CLAIM on the
-                // slot (the frozen `_ar_roster_slots` names the slot from it),
-                // so it is noted before the line is refused.
+                // slot, so it is noted before the line is refused.
                 meta.note_claim(raw, line, false);
                 meta.anomalies.push(Anomaly::MalformedLine { line });
                 continue;
@@ -392,10 +387,10 @@ impl Meta {
         }
     }
 
-    /// Record a retired v1 roster row: it names no seat this ae will serve.
+    /// Record a v1 roster row: it names no seat this ae will serve.
     ///
-    /// The row is REPORTED rather than dropped. A silent drop would render a
-    /// legacy session identically to a healthy one whose roster is empty, and
+    /// The row is REPORTED rather than dropped. A silent drop would render a v1
+    /// session identically to a healthy one whose roster is empty, and
     /// those are the two facts a reader most needs told apart.
     fn note_legacy(&mut self, slot: &str, line: usize) {
         self.anomalies.push(Anomaly::LegacyRoster {
@@ -584,7 +579,7 @@ impl Meta {
         }
         let value = self.server_value.as_deref().unwrap_or_default();
         match self.server_kind.as_deref() {
-            // Absent kind: the legacy one-key form, which named a server.
+            // Absent kind: the one-key form, which named a server.
             None if !value.is_empty() => ServerSelector::Positive(Selector::Name(value.to_owned())),
             None => ServerSelector::Missing,
             // Present but EMPTY.
@@ -677,12 +672,12 @@ fn take_pending(pending: &mut Vec<PendingRow>, slot: &str) -> Option<PendingRow>
     Some(pending.swap_remove(at))
 }
 
-/// The lock the frozen `ae_meta_set`/`ae_meta_unset` take: `meta.lock` beside
-/// the file, `flock -w 5`.
+/// The lock every meta write takes: `meta.lock` beside the file, with a
+/// five-second bound.
 const LOCK: &str = "meta.lock";
 
-/// The meta file's raw bytes — the read behind the frozen `ae_meta_get`,
-/// which greps the file rather than parsing it.
+/// The meta file's raw bytes — the read behind a single-key lookup, which
+/// scans the file rather than parsing it.
 ///
 /// # Errors
 ///
@@ -798,8 +793,8 @@ impl RewriteError {
 }
 
 /// Set (`Some`) or remove (`None`) `key` in the `meta` at `dir`, under
-/// `meta.lock`, by rewriting a temp file and renaming it over — the frozen
-/// `ae_meta_set`/`ae_meta_unset`, made durable: the temp is synced before the
+/// `meta.lock`, by rewriting a temp file and renaming it over, durably: the
+/// temp is synced before the
 /// rename, and the directory is synced after it, because a synced inode
 /// behind an unsynced directory entry is a meta that can revert on a crash
 /// while the event announcing it survives.
@@ -807,8 +802,8 @@ impl RewriteError {
 /// # Errors
 ///
 /// [`RewriteError::NotWritten`] when nothing visible changed — the lock not
-/// acquired within the bound, an absent meta on a SET (the frozen helper
-/// returns 1; an unset of an absent meta is `Ok`, as its helper returns 0),
+/// acquired within the bound, an absent meta on a SET (an unset of an absent
+/// meta is `Ok`),
 /// or any read, write, sync or rename failure. [`RewriteError::Unknown`] when
 /// the rename returned but the directory sync did not.
 pub fn rewrite(dir: &Path, key: &str, value: Option<&str>) -> Result<(), RewriteError> {
@@ -899,7 +894,7 @@ pub fn publish_locked(dir: &Path, content: &str) -> Result<(), RewriteError> {
 }
 
 /// The staged BASE-FACTS document `_meta-init` consumes: the `key=value` lines
-/// bash wrote for a session before its roster block existed, read from `path`.
+/// written for a session before its roster block exists, read from `path`.
 ///
 /// # Errors
 ///
@@ -956,8 +951,8 @@ mod tests {
 
     #[test]
     fn a_rewrite_replaces_appends_or_drops_byte_for_byte_as_the_awk_does() {
-        // Every expectation here was MEASURED against the frozen awk
-        // (`ae_meta_set` / `ae_meta_unset`) on the same input, not derived.
+        // Every expectation is written out, not derived from the same code
+        // that produces it.
         use super::rewritten;
         let text = "mode=local\ngoal=old\nsession=s\n";
         assert_eq!(
@@ -1675,9 +1670,9 @@ agent_bin.main=claude
 
     #[test]
     fn a_retired_v1_roster_row_names_no_seat_and_says_so_out_loud() {
-        // The human ruling: this ae does not read `agent.<slot>` into a seat,
-        // and a legacy session is one to start over from. The row is REPORTED
-        // rather than dropped — a silent drop would render a legacy session
+        // This ae does not read `agent.<slot>` into a seat, and a v1 session is
+        // one to start over from. The row is REPORTED rather than dropped — a
+        // silent drop would render a v1 session
         // identically to a healthy one whose roster is simply empty.
         let meta = Meta::parse(concat!(
             "mode=local\n",

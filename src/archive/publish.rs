@@ -25,7 +25,7 @@ use super::{
 };
 use crate::state::EXIT_FAILED;
 
-/// The operation facts Bash owns and hands the publisher — everything the core
+/// The operation facts the caller hands the publisher — everything the core
 /// does NOT derive itself.
 pub(crate) struct Ops<'a> {
     pub(crate) push_outcome: &'a str,

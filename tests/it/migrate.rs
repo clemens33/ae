@@ -95,7 +95,7 @@ impl Rig {
         dir
     }
 
-    /// A session in the RETIRED v1 shape: no `meta_version`, no `schema=2`,
+    /// A session in the v1 shape: no `meta_version`, no `schema=2`,
     /// and the `agent.<slot>` rows v2 replaced. This is the only meta the chain
     /// cannot place, and the rig has to be able to build one because
     /// `session()` above writes `schema=2` — as every real session does.
@@ -254,7 +254,7 @@ fn a_session_that_carries_only_schema_2_is_stamped_and_otherwise_untouched() {
 
 #[test]
 fn a_session_with_neither_key_is_the_one_the_chain_cannot_place() {
-    // The retired v1 roster: it says nothing about its shape in either word.
+    // The v1 roster: it says nothing about its shape in either word.
     let rig = Rig::new("neither");
     let dir = rig.legacy_session("v1");
     let refused = ae::migrate::session(&dir).expect_err("the pre-version past");
