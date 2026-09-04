@@ -112,6 +112,40 @@ impl SessionStore {
         self.dir.join(MEMO)
     }
 
+    /// Whether the event container exists yet — the wait in `events-tail`,
+    /// which exists because a fresh session has no container until its first
+    /// event.
+    #[must_use]
+    pub fn has_container(&self) -> bool {
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "a door: the lazily-created event container's existence test — see clippy.toml"
+        )]
+        let present = self.events_path().is_file();
+        present
+    }
+
+    /// The event container's bytes, or none at all.
+    ///
+    /// The QUIET read, and deliberately not [`Self::memo_bytes`]'s louder one:
+    /// anything that is not a readable regular file — absent, a directory, a
+    /// FIFO, a regular file this process may not open — is no bytes and no
+    /// complaint. That is the frozen `2>/dev/null` answer every event reader
+    /// was built on, and a reader that started reporting it would turn a
+    /// missing container into a failed `requests` table.
+    #[must_use]
+    pub fn container(&self) -> Vec<u8> {
+        if !self.has_container() {
+            return Vec::new();
+        }
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "a door: the opaque event-container read shared by every read surface — see clippy.toml"
+        )]
+        let body = std::fs::read(self.events_path());
+        body.unwrap_or_default()
+    }
+
     /// The memo container's bytes.
     ///
     /// The `[[ -f ]]` gate comes BEFORE the open and is the whole difference
@@ -139,6 +173,21 @@ impl SessionStore {
         )]
         let bytes = std::fs::read(&path)?;
         Ok(bytes)
+    }
+
+    /// The memo container's bytes, or none at all — the QUIET read of the same
+    /// file [`Self::memo_bytes`] reads loudly.
+    ///
+    /// The compaction handover watches the memo file's LENGTH across a wait, so
+    /// a file it cannot read has to answer "no growth yet" and keep waiting; a
+    /// mid-flight compaction must not fail on a transient read. The `memo`
+    /// helper wants the opposite, because a memo file that exists and cannot be
+    /// read is the one thing worth saying out loud rather than rendering as an
+    /// empty session memory. Same file, two callers, two answers — spelled out
+    /// here so the difference stays a decision.
+    #[must_use]
+    pub fn memo_bytes_or_empty(&self) -> Vec<u8> {
+        self.memo_bytes().unwrap_or_default()
     }
 
     /// Append one event line to the container under its lock. This is the only

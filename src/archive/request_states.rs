@@ -201,3 +201,117 @@ pub(super) fn request_states(event_bytes: &[u8]) -> Vec<RequestRow> {
     }
     rows
 }
+
+#[cfg(test)]
+mod tests {
+    use super::request_states;
+    use crate::events::{Cursor, Drain, Event};
+    use crate::requests::{Status, states};
+    use crate::session::SessionRead;
+
+    /// One ask, then a withdrawal of it by the same sender.
+    const WITHDRAWN: &str = concat!(
+        r#"{"ts":"2026-05-29T09:00:00Z","actor":"cl:lead","action":"ask","#,
+        r#""target":"cl:hand","ref":"ae-1","summary":"q"}"#,
+        "\n",
+        r#"{"ts":"2026-05-29T09:05:00Z","actor":"cl:lead","action":"cancel","#,
+        r#""target":"cl:hand","ref":"ae-1","summary":"withdrawn"}"#,
+        "\n",
+    );
+
+    /// One ask, then the target's reply to the asker — the full mirror every
+    /// reader agrees closes a request.
+    const ANSWERED: &str = concat!(
+        r#"{"ts":"2026-05-29T09:00:00Z","actor":"cl:lead","action":"ask","#,
+        r#""target":"cl:hand","ref":"ae-2","summary":"q"}"#,
+        "\n",
+        r#"{"ts":"2026-05-29T09:05:00Z","actor":"cl:hand","action":"reply","#,
+        r#""target":"cl:lead","ref":"ae-2","summary":"a"}"#,
+        "\n",
+    );
+
+    /// One ask nobody touched.
+    const OPEN: &str = concat!(
+        r#"{"ts":"2026-05-29T09:00:00Z","actor":"cl:lead","action":"ask","#,
+        r#""target":"cl:hand","ref":"ae-3","summary":"q"}"#,
+        "\n",
+    );
+
+    /// What [`SessionRead`] holds open, which is what feeds the `unanswered`
+    /// attention marker.
+    fn session_pending(container: &str) -> Vec<String> {
+        let events: Vec<Event> = container
+            .lines()
+            .map(|line| Event::parse_line(line).expect("a fixture event"))
+            .collect();
+        SessionRead::from_drain(&Drain {
+            events,
+            cursor: Cursor::default(),
+            skipped: Vec::new(),
+            drained: true,
+        })
+        .pending
+        .iter()
+        .map(|request| request.id.clone())
+        .collect()
+    }
+
+    /// The digest's own reader, as its callers consume it.
+    fn digest_pending(container: &str) -> Vec<String> {
+        request_states(container.as_bytes())
+            .into_iter()
+            .filter(|row| row.status == "pending")
+            .map(|row| row.reference)
+            .collect()
+    }
+
+    /// The view's reader, reduced to the same shape.
+    fn view_pending(container: &str) -> Vec<String> {
+        states(container.as_bytes())
+            .into_iter()
+            .filter(|request| request.status == Status::Pending)
+            .map(|request| String::from_utf8_lossy(&request.id).into_owned())
+            .collect()
+    }
+
+    // THE THREE READERS ON ONE CORPUS. This pin lives beside the digest's
+    // reader because this file is where the deliberate differences are already
+    // written down; what it adds is the MEASURED answer of all three, so a
+    // later unification is a diff against a fact rather than against a memory.
+    #[test]
+    fn an_open_request_is_open_to_every_reader() {
+        assert_eq!(view_pending(OPEN), ["ae-3"]);
+        assert_eq!(digest_pending(OPEN), ["ae-3"]);
+        assert_eq!(session_pending(OPEN), ["ae-3"]);
+    }
+
+    #[test]
+    fn a_full_mirror_reply_closes_the_request_for_every_reader() {
+        assert!(view_pending(ANSWERED).is_empty());
+        assert!(digest_pending(ANSWERED).is_empty());
+        assert!(session_pending(ANSWERED).is_empty());
+    }
+
+    #[test]
+    fn a_withdrawal_closes_the_request_for_two_readers_and_not_the_third() {
+        assert!(
+            view_pending(WITHDRAWN).is_empty(),
+            "the view treats a valid withdrawal as terminal"
+        );
+        assert!(
+            digest_pending(WITHDRAWN).is_empty(),
+            "so does the digest, on its own cancel-authorization policy"
+        );
+        // KNOWN BUG, pinned rather than described: `session::pending_requests`
+        // has no `cancel` arm at all, so a WITHDRAWN request stays open to it —
+        // and that reader is the one behind `SessionRead::unanswered`, so the
+        // session keeps reporting `attn: unanswered` with nobody waiting. This
+        // is not one of the two deliberate policy differences above: those are
+        // about WHO may withdraw, this reader does not know withdrawals exist.
+        assert_eq!(
+            session_pending(WITHDRAWN),
+            ["ae-1"],
+            "when this flips, the bug is fixed — update this expectation, not the reader's caller"
+        );
+    }
+}

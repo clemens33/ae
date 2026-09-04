@@ -807,7 +807,7 @@ pub fn preview(dir: &Path, out: &mut impl Write, err: &mut impl Write) -> io::Re
             Vec::new()
         }
     };
-    let read_events = || event_text::read_container(&crate::store::open(dir).events_path());
+    let read_events = || crate::store::open(dir).container();
 
     let name = dir
         .file_name()

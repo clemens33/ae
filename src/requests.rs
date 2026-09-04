@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use crate::event_text::{
-    Member, event_line, extract, member, pad_left_aligned, read_container, read_lines, reversed,
+    Member, event_line, extract, member, pad_left_aligned, read_lines, reversed,
 };
 use crate::events::Identity;
 use crate::tmux::ObservedViewer;
@@ -276,7 +276,7 @@ pub fn render(dir: &Path, mode: Mode, viewer: &Viewer) -> Output {
             code: EXIT_NO_IDENTITY,
         };
     }
-    let container = read_container(&crate::store::open(dir).events_path());
+    let container = crate::store::open(dir).container();
     Output {
         stdout: table(&container, mode, viewer),
         stderr: Vec::new(),

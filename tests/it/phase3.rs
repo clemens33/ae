@@ -1737,7 +1737,6 @@ fn criterion_3_the_places_this_crate_can_read_the_world_are_the_inventoried_ones
             // `AE_HOME`, `CONFIG_FILE`, the `AE_TMUX_SERVER` pair,
             // `AE_NO_AUTOSTART`, `TMUX`, `TMUX_PANE`, the `<cwd>/.ae/config`
             "src/doors.rs".to_owned(),
-            "src/event_text.rs".to_owned(),
             "src/events.rs".to_owned(),
             // THE INSTALLER'S OWN DOORS: the bundle members read to
             // be hashed, the `lstat` that classifies every member and every
@@ -1798,11 +1797,13 @@ fn criterion_3_the_places_this_crate_can_read_the_world_are_the_inventoried_ones
             // member that is a link to a mutable file outside the immutable
             // directory passes every follow-test and is then EXECUTED as ours.
             "src/shape.rs".to_owned(),
-            // The live session store's ONE own door: the `[[ -f ]]` gate and
-            // the read behind `memo read`/`memo tail`. The gate comes BEFORE
-            // the open on purpose — a FIFO opened without it blocks the reader
-            // for good — so the two are one door, in the module that owns the
-            // file's name.
+            // The live session store's doors: the `[[ -f ]]` gate and the
+            // read behind `memo read`/`memo tail`, and the event container's
+            // existence test and quiet read. Each gate comes BEFORE its open on
+            // purpose — a FIFO opened without one blocks the reader for good.
+            // `src/event_text.rs` LEFT this list when the container pair moved
+            // here: the framing layer now reads nothing at all, which is why
+            // this list is one shorter than it was.
             "src/store.rs".to_owned(),
             // The LOCAL-mode teardown's own reads: the `lstat` that
             // proves the session dir is a real direct child and never a link,

@@ -9,8 +9,8 @@ use std::path::Path;
 use std::time::Duration;
 
 use crate::event_text::{
-    char_count, char_prefix, char_slice, container_exists, event_line, extract, last_records,
-    pad_left_aligned, read_container, read_lines,
+    char_count, char_prefix, char_slice, event_line, extract, last_records, pad_left_aligned,
+    read_lines,
 };
 
 /// How many records the replay shows.
@@ -153,8 +153,8 @@ pub fn follow(dir: &Path, out: &mut impl Write) -> io::Result<std::convert::Infa
     out.write_all(&banner(&label))?;
     out.flush()?;
 
-    let container = crate::store::open(dir).events_path();
-    while !container_exists(&container) {
+    let store = crate::store::open(dir);
+    while !store.has_container() {
         std::thread::sleep(POLL);
     }
 
@@ -164,7 +164,7 @@ pub fn follow(dir: &Path, out: &mut impl Write) -> io::Result<std::convert::Infa
     // on every poll.
     let mut consumed: Option<usize> = None;
     loop {
-        let body = read_container(&container);
+        let body = store.container();
         match consumed {
             None => {
                 // The first read IS the replay window; everything after it
@@ -203,9 +203,7 @@ fn complete_len(bytes: &[u8]) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        REPLAY_RECORDS, banner, complete_len, cut_summary, format_event, read_container, replay,
-    };
+    use super::{REPLAY_RECORDS, banner, complete_len, cut_summary, format_event, replay};
     use std::fs;
     use std::path::PathBuf;
 
@@ -401,18 +399,13 @@ mod tests {
         // One answer for "no container" and for "no permission": no lines, no
         // complaint.
         let scratch = Scratch::new("nolog");
-        let missing = read_container(&crate::store::open(&scratch.0).events_path());
+        let missing = crate::store::open(&scratch.0).container();
         assert!(missing.is_empty());
         assert!(replay(&missing).is_empty());
         // A directory where the container should be reads the same way.
         fs::create_dir_all(crate::store::open(&scratch.0).events_path())
             .expect("a directory in its place");
-        assert!(
-            replay(&read_container(
-                &crate::store::open(&scratch.0).events_path()
-            ))
-            .is_empty()
-        );
+        assert!(replay(&crate::store::open(&scratch.0).container()).is_empty());
     }
 
     #[test]

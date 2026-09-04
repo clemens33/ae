@@ -20,7 +20,6 @@
 use std::io::{self, Write};
 use std::path::Path;
 
-use crate::event_text::read_container;
 use crate::requests::{Key, Request, Status, is_slot, states};
 use crate::state::{EXIT_FAILED, EXIT_USAGE};
 use crate::store;
@@ -123,7 +122,7 @@ impl Replier {
 /// `requests` shows.
 #[must_use]
 pub fn find(dir: &Path, id: &str) -> Option<Request> {
-    let container = read_container(&store::open(dir).events_path());
+    let container = store::open(dir).container();
     states(&container)
         .into_iter()
         .find(|request| request.id == id.as_bytes())

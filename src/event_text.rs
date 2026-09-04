@@ -1,37 +1,9 @@
-//! The opaque event-text layer the generated `requests` and `events-tail`
-//! helpers read their bytes through.
+//! The opaque event-text layer the `requests` and `events-tail` read
+//! surfaces frame their bytes with. It reads nothing: the bytes come from
+//! [`crate::store::SessionStore::container`], which owns the file's name,
+//! its existence test and the quiet read.
 
 use std::borrow::Cow;
-
-/// The container's bytes, or none at all.
-#[must_use]
-pub fn read_container(path: &std::path::Path) -> Vec<u8> {
-    if !container_exists(path) {
-        return Vec::new();
-    }
-    #[allow(
-        clippy::disallowed_methods,
-        reason = "a door: the opaque event-container read shared by the helper \
-                  read surfaces, and by `send` for a delivery's recovery \
-                  record — see clippy.toml"
-    )]
-    let body = std::fs::read(path);
-    body.unwrap_or_default()
-}
-
-/// Whether the container exists yet — the wait in `events-tail`, which exists
-/// because a fresh session has no container
-/// until its first event.
-#[must_use]
-pub fn container_exists(path: &std::path::Path) -> bool {
-    #[allow(
-        clippy::disallowed_methods,
-        reason = "a door: the lazily-created event container's existence test — \
-                  see clippy.toml"
-    )]
-    let present = path.is_file();
-    present
-}
 
 /// The records `tac` and `tail` count: every byte up to and including a `\n`,
 /// plus a final unterminated remainder when the container does not end in one.

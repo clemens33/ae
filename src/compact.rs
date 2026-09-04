@@ -694,7 +694,13 @@ fn read_body_regular(path_bytes: &[u8]) -> Option<Vec<u8>> {
     if !crate::archive::regular_file(path) {
         return None;
     }
-    Some(event_text::read_container(path))
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: the stored request body a handover reply names, read after its \
+                  regular-file gate — see clippy.toml"
+    )]
+    let body = std::fs::read(path);
+    Some(body.unwrap_or_default())
 }
 
 /// A `reply` for the EXACT ref, from the `main` slot of the FROZEN session.
@@ -728,7 +734,7 @@ fn memo_after(memo: &[u8], baseline: usize) -> bool {
 /// The request `reference` names, from the live ledger, or `None` if the ledger has no such
 /// request.
 fn request_by_ref(dir: &Path, reference: &str) -> Option<requests::Request> {
-    let container = event_text::read_container(&store::open(dir).events_path());
+    let container = store::open(dir).container();
     requests::states(&container)
         .into_iter()
         .find(|r| r.id == reference.as_bytes())
@@ -765,15 +771,13 @@ pub(crate) fn wait_step(
         return Ok(EXIT_FAILED);
     };
     let store = store::open(dir);
-    let events_path = store.events_path();
-    let memo_path = store.memo_path();
 
     let deadline = Instant::now() + Duration::from_secs(timeout_secs);
     let mut saw_reply;
     let mut saw_memo;
     loop {
-        saw_reply = reply_seen(&event_text::read_container(&events_path), reference, &name);
-        saw_memo = memo_after(&event_text::read_container(&memo_path), baseline);
+        saw_reply = reply_seen(&store.container(), reference, &name);
+        saw_memo = memo_after(&store.memo_bytes_or_empty(), baseline);
         if saw_reply && saw_memo {
             writeln!(
                 err,
@@ -866,7 +870,7 @@ fn compact_actor(dir: &Path) -> String {
 /// size, the pre-delivery boundary the driver embeds in the handover request
 /// body.
 pub(crate) fn memo_baseline_step(dir: &Path, out: &mut impl Write) -> io::Result<u8> {
-    let memo = event_text::read_container(&store::open(dir).memo_path());
+    let memo = store::open(dir).memo_bytes_or_empty();
     write!(out, "{}", memo.len())?;
     Ok(0)
 }
@@ -879,7 +883,7 @@ pub(crate) fn find_outstanding_step(dir: &Path, out: &mut impl Write) -> io::Res
     if actor.is_empty() {
         return Ok(0);
     }
-    let container = event_text::read_container(&store::open(dir).events_path());
+    let container = store::open(dir).container();
     if let Some(req) = requests::states(&container)
         .into_iter()
         .find(|r| r.status == requests::Status::Pending && r.from == actor.as_bytes())
@@ -1538,7 +1542,7 @@ mod tests {
     }
 
     fn status_of(dir: &Path) -> requests::Status {
-        let container = event_text::read_container(&store::open(dir).events_path());
+        let container = store::open(dir).container();
         requests::states(&container)
             .into_iter()
             .find(|r| r.id == REF.as_bytes())
@@ -1758,10 +1762,10 @@ mod tests {
         let mut err = Vec::new();
         assert_eq!(cancel_step(&dir, REF, &mut err).unwrap(), 0);
         assert_eq!(status_of(&dir), requests::Status::Cancelled);
-        let before = event_text::read_container(&dir.join("events.jsonl"));
+        let before = store::open(&dir).container();
         let mut err2 = Vec::new();
         assert_eq!(cancel_step(&dir, REF, &mut err2).unwrap(), 0);
-        let after = event_text::read_container(&dir.join("events.jsonl"));
+        let after = store::open(&dir).container();
         assert_eq!(before, after, "no second cancel event appended");
         assert_eq!(status_of(&dir), requests::Status::Cancelled);
     }

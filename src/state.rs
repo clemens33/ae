@@ -227,7 +227,7 @@ pub fn read(dir: &Path, viewer: &Viewer) -> Vec<u8> {
     } else {
         "human"
     };
-    let container = event_text::read_container(&store::open(dir).events_path());
+    let container = store::open(dir).container();
     read_line(actor, latest(&container, actor).as_ref())
 }
 
