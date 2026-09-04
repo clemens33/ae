@@ -6,89 +6,21 @@
 //! which is a detail rather than a decision: it hands a derived argument list to
 //! `tmux`, waits, and hands the completed run back to be interpreted. It derives
 //! no argv of its own and interprets no bytes of its own.
-//!
-//! # The door
-//!
-//! `clippy.toml` denies `std::process::Command` crate-wide with a small
-//! enumerated set of exceptions. This is the third, and the first outside a test
-//! harness. It is deliberate: a session multiplexer that cannot run tmux cannot
-//! answer the question it exists to answer, and until this landed every liveness
-//! answer was `unknown` by construction. The boundary keeps its value precisely
-//! because crossing it stays conspicuous — one function, one file, and an
-//! inventory in `tests/it/doors.rs` that goes red when the set of
-//! crossings changes.
-//!
-//! The door is a capability, not a licence: everything a caller could want to do
-//! with a child process other than run tmux — and, since P2.5a, the session's
-//! own frozen `send` helper — is still denied everywhere, including here,
-//! because [`spawn`] is private and its callers take argument lists nothing
-//! outside this crate can supply.
-//!
-//! # The second program: the session's send helpers
-//!
-//! A tracked request (`ask`, `review`) is composed by the core and DELIVERED by
-//! the frozen `send` body — the TUI-modelled paste path with its dead-pane
-//! guard, provenance envelope, per-target lock, busy deferral and submit
-//! verification, none of which this crate re-implements. [`deliver`] runs a
-//! session helper — the internal `_send-deliver`, that body behind its
-//! delivery-only entry point, or the public `send` for the no-identity
-//! fallback — inherits its stderr so every loud line reaches the caller
-//! verbatim, and hands back its exit status and its stdout (for
-//! `_send-deliver`, the one line naming the stored body's path). The event is
-//! then the core's to write, under its own locked transaction.
-//!
-//! # The exit status decides; the payload never does
-//!
-//! **SC-017k** grants `running`/`stopped` only to a SUCCESSFUL query, and
-//! **SC-017l** sends every failure to `unknown`. This module is where that can
-//! be lost, because it is the last place the two facts are still separable:
-//! empty stdout from a live server with no sessions and empty stdout from a
-//! `tmux` that could not be spawned at all are the same bytes. So the run's
-//! SUCCESS leaves here beside its bytes and goes to
-//! [`crate::tmux::interpret_sessions`], which fails the query on the status
-//! before it looks at anything.
-//!
-//! A transport that answered `Ok(Vec::new())` for an unreachable server would
-//! make every session recorded on it `stopped` — ae asserting sessions are gone
-//! on the strength of a question it never asked, which is #105 restated one
-//! layer down. A child that could not be SPAWNED (no `tmux` on `PATH`, no
-//! permission to execute it) is that same failure and is reported the same way:
-//! a failed run, never an empty answer.
 
 use crate::inventory::{DiscoveredSession, Discovery, QueryFailed, ServerId};
 use crate::meta::Selector;
 use crate::tmux;
 
 /// The program ae runs to talk to a tmux server.
-///
-/// A bare name, resolved on `PATH` by the OS at spawn time. ae does not read
-/// `PATH` itself — `std::env::var` is denied in product code by the same
-/// `clippy.toml` that denies `Command`, and resolving a program name is exactly
-/// the job the exec already does correctly.
 const PROGRAM: &str = "tmux";
 
 /// The real tmux transport: [`Discovery`], answered by running `tmux`.
-///
-/// Carries nothing. Which server to ask arrives as the [`ServerId`] parameter,
-/// because entitlement is decided by [`crate::inventory`] and a transport that
-/// held a server of its own would be a second place that decision could live.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Tmux;
 
 impl Discovery for Tmux {
     /// Every session `server` reports, each with the ownership marker that
     /// server holds for it.
-    ///
-    /// One `list-sessions` for the server, then one `show-environment` per name
-    /// it returned. Grouping candidates so that a server is asked once is
-    /// [`crate::liveness`]'s job and already done before this is called; the
-    /// per-name reads are the marker half of SC-017j, which needs the session's
-    /// own environment and cannot be answered by the enumeration.
-    ///
-    /// A marker read that fails yields no marker rather than no session: the
-    /// name was returned by a query that DID succeed, so it is present, and
-    /// SC-017l routes present-but-not-provably-ours to `unknown` — never to
-    /// `stopped`, which would claim a session that just answered is gone.
     fn enumerate(&self, server: &ServerId) -> Result<Vec<DiscoveredSession>, QueryFailed> {
         if !addressable(server) {
             return Err(QueryFailed);
@@ -109,11 +41,6 @@ impl Discovery for Tmux {
 /// Whether `server` has a session `name` — the frozen resolver's
 /// `tmux has-session -t` before a cross-session lookup (prefix-matched, as
 /// tmux does). A non-addressable server is `false`, never put on the wire.
-///
-/// The server is a PARAMETER for the same reason [`observe_agents`] takes one:
-/// an `@session:agent` target may live on a server that is not the caller's
-/// ambient one, so the existence probe must ask the TARGET session's recorded
-/// server.
 #[must_use]
 pub fn session_exists(server: &ServerId, name: &str) -> bool {
     addressable(server) && run(PROGRAM, &tmux::has_session_args(server, name)).0
@@ -121,12 +48,6 @@ pub fn session_exists(server: &ServerId, name: &str) -> bool {
 
 /// Whether `name` is verifiably STOPPED on its recorded `server` — the frozen
 /// `_end_verify_gone` tri-state the destructive compact gate crosses.
-///
-/// Distinct from [`session_exists`] and [`Tmux::enumerate`] because it must read
-/// tmux's stderr: a clean server exit (its last session gone) proves the session
-/// is stopped, and only the `no server running on …` diagnostic distinguishes
-/// that from an unreachable server. A non-addressable server is
-/// [`tmux::StopProbe::Unknown`] — never put on the wire, never read as absence.
 #[must_use]
 pub fn verify_session_absent(server: &ServerId, name: &str) -> tmux::StopProbe {
     if !addressable(server) {
@@ -139,12 +60,6 @@ pub fn verify_session_absent(server: &ServerId, name: &str) -> tmux::StopProbe {
 /// The pane roster of `session` on `server`, or `None` when the enumeration
 /// failed — see [`tmux::interpret_agents`]. A non-addressable server (a relative
 /// socket) is `None` rather than put on the wire, as [`addressable`] rules.
-///
-/// The server is a PARAMETER because a target session need not live on the
-/// caller's ambient server: a PANE-LESS caller (compact delivering a handover)
-/// has no `TMUX` pointing at the recorded server, so enumerating the ambient
-/// server finds nothing. The caller passes the session's recorded selector; an
-/// in-pane caller's ambient IS that server, so the two agree there.
 #[must_use]
 pub fn observe_agents(server: &ServerId, session: &str) -> Option<Vec<tmux::ObservedAgent>> {
     if !addressable(server) {
@@ -163,12 +78,6 @@ pub fn observe_slots(server: &ServerId, session: &str) -> Option<Vec<tmux::Obser
 }
 
 /// Every pane of `session` on `server`, or `None` when the enumeration failed.
-///
-/// SC-017q sends a failed pane query to `unknown`, so the failure must stay
-/// distinguishable from "the session has no panes" — the `Option` is that
-/// distinction, and collapsing it would let an unreachable server prove every
-/// roster agent absent. A non-addressable server is `None` for the same reason
-/// [`addressable`] gives.
 #[must_use]
 pub fn observe_panes(server: &ServerId, session: &str) -> Option<Vec<tmux::ObservedPane>> {
     if !addressable(server) {
@@ -179,12 +88,6 @@ pub fn observe_panes(server: &ServerId, session: &str) -> Option<Vec<tmux::Obser
 }
 
 /// The branch the watchdog last published for `session`, or `None`.
-///
-/// The live half of SC-405g: a running session's watchdog pushes the work
-/// tree's branch into a session option every cycle, so reading it costs no git
-/// call at all. `None` — a failed read, a watchdog that is not running, an
-/// option nobody set — leaves the caller to fall back to the work tree, which
-/// is what the frozen `_session_branch` does.
 #[must_use]
 pub fn observe_branch(server: &ServerId, session: &str) -> Option<String> {
     if !addressable(server) {
@@ -237,16 +140,6 @@ pub fn deliver(
 }
 
 /// The calling pane's identity readings, from the AMBIENT server.
-///
-/// A pane's identity readings from `server`, or `None` when the read failed. A
-/// non-addressable server is `None` rather than put on the wire.
-///
-/// The WHO-AM-I caller passes [`ServerId::Ambient`] deliberately: a generated
-/// helper is invoked inside the session it serves, and the frozen helper it
-/// replaces runs a bare `tmux` for exactly this read — a pane asking who it is
-/// has already been placed by tmux. A TARGET pane resolved for a pane-less
-/// caller lives on the RECORDED server instead, which is why the server is a
-/// parameter rather than always ambient.
 #[must_use]
 pub fn observe_viewer(server: &ServerId, pane: &str) -> Option<tmux::ObservedViewer> {
     if !addressable(server) {
@@ -257,13 +150,6 @@ pub fn observe_viewer(server: &ServerId, pane: &str) -> Option<tmux::ObservedVie
 }
 
 /// Whether `server` is something this transport may put on the wire.
-///
-/// Only sockets can fail this, and only by being relative — SC-405l's
-/// `ambiguous`, which [`crate::meta`] already refuses when it parses a selector.
-/// Asked again here because a relative socket addresses a DIFFERENT server
-/// depending on the directory ae was invoked from, and an answer that depends on
-/// the caller's working directory is not the recorded server's answer. Refusing
-/// is `unknown`, which is what SC-017l says an unusable pointer is worth.
 fn addressable(server: &ServerId) -> bool {
     match server {
         ServerId::Selected(Selector::Socket(path)) => tmux::is_addressable_socket(path),
@@ -272,37 +158,6 @@ fn addressable(server: &ServerId) -> bool {
 }
 
 /// Run `program` with `args`; report whether it succeeded, and what it printed.
-///
-/// The two returned facts are what [`crate::tmux`]'s interpreters consume, in
-/// that order of authority: the `bool` is the decision and the `String` is
-/// evidence that only means anything once the `bool` has allowed it to.
-///
-/// **A spawn failure is `(false, String::new())`** — indistinguishable, by
-/// design, from a tmux that ran and failed. Both are "no answer", and inventing
-/// a distinction here would put a reason taxonomy in the one place that must not
-/// have opinions.
-///
-/// stderr is captured and dropped. tmux writes `no server running on …` there,
-/// and `ae list` must show ae's own diagnostic (SC-017o) rather than leaking the
-/// text of a subprocess it chose to run. stdin is not inherited: `output()`
-/// nulls it, so a child that reads cannot block a listing forever.
-///
-/// The stdout bytes are decoded LOSSILY, matching how
-/// [`crate::inventory`] derives a durable record's name from a directory entry.
-/// The two strings this crate compares are then produced the same way, so a name
-/// that survives one survives the other — a stricter decode here would turn one
-/// odd name on a server into `unknown` for every session on it, and a different
-/// decode would be a way for two spellings of the same name to stop matching.
-// THE PRODUCT'S DOOR — the only place PRODUCT code may name
-// `std::process::Command`. Two others exist crate-wide, both in the test target:
-// the parity harness's (`tests/it/parity.rs`, `mod raw`) and the black-box CLI
-// tests' (`tests/it/cli.rs`), which must run the product binary. `clippy.toml`
-// denies the TYPE everywhere else, which resolves paths rather than text and so
-// holds against UFCS, aliases and re-imports alike.
-// `doors::the_capability_boundary_holds_against_any_lint_relaxation`
-// asks clippy under `--force-warn` for the complete list of crossings; the
-// counter beside it names them by file. The first is the claim, the second is
-// defence in depth — they are not the same strength.
 #[allow(
     clippy::disallowed_types,
     reason = "the product's door: ae cannot answer a liveness question without running tmux, nor deliver a tracked request without the session's send helper, nor derive an archive preview's git facts without running git"
@@ -320,11 +175,6 @@ fn spawn<A: AsRef<std::ffi::OsStr>>(
     // B42, ported from the wrapper's pre-exec `unset`: `AE_VERSION` is the
     // TARGET PIN of `ae upgrade` and nothing else's input. Left in place it
     // would be inherited by the tmux server a launch creates, and every `ae`
-    // run from inside that session would then upgrade to a version the operator
-    // pinned once, months ago. The core cannot unset a variable in its own
-    // process — `std::env::remove_var` is `unsafe` under edition 2024 and
-    // `unsafe_code` is forbidden — so the scope is enforced at the one door
-    // every child leaves through.
     command.env_remove("AE_VERSION");
     if streams == Streams::InheritStderr {
         command.stderr(std::process::Stdio::inherit());
@@ -358,13 +208,6 @@ fn spawn<A: AsRef<std::ffi::OsStr>>(
     // THE BODY GOES IN ON STDIN, NOT IN ARGV. `tmux load-buffer -` is the one
     // call that needs it, and the reason is measured: `set-buffer -- "$msg"`
     // carried 16000 bytes and failed at 32000, `load-buffer -` carried 131000.
-    //
-    // Writing to a child while capturing its output can deadlock in general.
-    // It cannot here: `load-buffer` prints nothing, so no pipe this end owns
-    // can fill while the write is in flight, and the handle is DROPPED before
-    // the wait so the child sees EOF. A write that fails (the child died) is
-    // not fatal on its own — the exit status still decides, exactly as it does
-    // for every other call through this door.
     command.stdin(std::process::Stdio::piped());
     command.stdout(std::process::Stdio::piped());
     let mut child = command.spawn().ok()?;
@@ -375,10 +218,6 @@ fn spawn<A: AsRef<std::ffi::OsStr>>(
 }
 
 /// How the door wires a child's streams — and therefore what it can report.
-///
-/// A THIRD value rather than a second door: `clippy.toml` confines the whole
-/// capability to one private function, and a sibling that also said
-/// `Command::new` would be a second place the confinement has to hold.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Streams {
     /// Both captured. Every question-shaped call: ae reads the answer.
@@ -398,6 +237,12 @@ enum Streams {
     Detached,
 }
 
+/// Run `program`, and report whether it succeeded and what it printed.
+///
+/// A spawn failure is `(false, String::new())` — indistinguishable, by design,
+/// from a program that ran and failed. Both are "no answer", and a reason
+/// taxonomy does not belong in the one place that must have no opinions. stderr
+/// is captured and dropped so tmux's own complaint never leaks into ae's output.
 fn run(program: &str, args: &[String]) -> (bool, String) {
     match spawn(program, args, &[], Streams::Captured, None) {
         Some(output) => (
@@ -413,7 +258,7 @@ fn run(program: &str, args: &[String]) -> (bool, String) {
 /// it is the stop verification, which reads tmux's `no server running on …`
 /// diagnostic to tell a clean server exit (proof the session is gone) from any
 /// other failure (unproven). Everywhere else stderr is noise and [`run`] drops
-/// it; here it carries the SC-017l distinction.
+/// it; here it carries the distinction.
 fn run_captured(program: &str, args: &[String]) -> (bool, String, String) {
     match spawn(program, args, &[], Streams::Captured, None) {
         Some(output) => (
@@ -437,11 +282,6 @@ fn run_captured(program: &str, args: &[String]) -> (bool, String, String) {
 /// every value the preview reads back (a 40-hex sha, a decimal count) is ASCII,
 /// so the lossy decode cannot change a valid answer, and an invalid one is
 /// rejected anyway.
-///
-/// `src/git.rs` is the only caller; the type seal above is the boundary, and a
-/// structural guard (`run_git_has_exactly_one_product_caller` in
-/// `tests/it/doors.rs`) is defence in depth, so this fixed-program
-/// leg cannot quietly become a general spawner.
 pub(crate) fn run_git(argv: &crate::git::GitArgv) -> (bool, String) {
     match spawn("git", argv.as_os_args(), &[], Streams::Captured, None) {
         Some(output) => (
@@ -461,10 +301,6 @@ pub(crate) fn run_git(argv: &crate::git::GitArgv) -> (bool, String) {
 /// unlike git there is nothing to inject even in principle. Returns whether `ps`
 /// exited zero and its stdout decoded lossily; the watchdog's dead-check treats
 /// a failed run (`false`) as UNKNOWN and never as a dead agent.
-///
-/// `src/procs.rs` is the only caller; the type seal is the boundary and
-/// `run_ps_has_exactly_one_product_caller` in `tests/it/doors.rs` is
-/// defence in depth, so this leg cannot quietly become a general spawner.
 pub(crate) fn run_ps(argv: &crate::procs::PsArgv) -> (bool, String) {
     match spawn("ps", argv.as_args(), &[], Streams::Captured, None) {
         Some(output) => (
@@ -477,19 +313,6 @@ pub(crate) fn run_ps(argv: &crate::procs::PsArgv) -> (bool, String) {
 
 /// The `opencode` leg of the one process door — the ONLY way product code runs
 /// `opencode`, the program FIXED here so a caller chooses nothing at all.
-///
-/// It exists because opencode is the one capture tool that will not tell ae its
-/// conversation id and keeps no readable history file either: the id has to be
-/// asked for, and `opencode session list --format json` is the question the
-/// frozen path asked. Mirrors [`run_ps`]: the argv is a
-/// [`crate::session_launch::capture::OpenCodeArgv`] whose inner vector is
-/// private to that module, and it carries NO caller input (the whole command
-/// line is a constant), so there is nothing to inject even in principle.
-///
-/// Returns whether it exited zero and its stdout decoded lossily. A `false` is
-/// "no answer" — opencode may not be installed, which the frozen path checked
-/// with `command -v` — and the capture treats it as such rather than as an
-/// empty session list.
 pub(crate) fn run_opencode(argv: &crate::session_launch::capture::OpenCodeArgv) -> (bool, String) {
     match spawn("opencode", argv.as_args(), &[], Streams::Captured, None) {
         Some(output) => (
@@ -506,16 +329,6 @@ pub(crate) fn run_opencode(argv: &crate::session_launch::capture::OpenCodeArgv) 
 /// to `src/monitor.rs` and whose one constructor joins the literal `say` onto a
 /// session directory. So this entry cannot be alias-imported and handed an
 /// arbitrary command line, exactly as [`run_git`] and [`run_ps`] cannot.
-///
-/// It exists because the sweep's dedup is DELIVERY-AWARE: a change is marked
-/// notified only once the report about it actually landed, so the sweep has to
-/// know whether `say` exited zero. That is the whole return value — `true` for
-/// a zero exit, `false` for anything else, a spawn that never happened
-/// included, and the sweep treats every `false` as "retry next sweep".
-///
-/// stderr is INHERITED, like [`deliver`]'s: `say`'s own refusals belong in the
-/// pane that ran the sweep, verbatim, rather than being swallowed by the caller
-/// that chose to run it.
 pub(crate) fn run_say(notice: &crate::monitor::Notice) -> bool {
     spawn(
         &notice.helper().display().to_string(),
@@ -530,26 +343,6 @@ pub(crate) fn run_say(notice: &crate::monitor::Notice) -> bool {
 /// The detached-supervisor leg of the one process door — the ONLY way product
 /// code starts a process that must OUTLIVE it, and the program is FIXED here to
 /// `nohup`.
-///
-/// It exists for exactly one caller: `_stop --self`, where the process asking
-/// for the stop is running inside the pane the stop will kill. Nothing in that
-/// pane can own the kill, because the kill destroys it mid-loop; so the caller
-/// hands the whole operation to a child that has no end of the dying tty and
-/// returns immediately. `nohup` is the frozen spelling (ae's
-/// `_stop_self_supervised`) and it is POSIX — it detaches the child from the
-/// hangup the pane's death sends, which is the one thing [`Streams::Detached`]
-/// alone does not do.
-///
-/// Mirrors [`run_git`] and [`run_ps`]: the argv is a
-/// [`crate::lifecycle::DetachedArgv`] whose inner vector is private to
-/// `src/lifecycle.rs`, so only that module's fixed-shape constructor can mint
-/// one and this leg cannot be alias-imported and handed an arbitrary command
-/// line. Every stream is `/dev/null`: the child runs with no reader, and the
-/// only report it owes is the `stop-result` event it writes.
-///
-/// Returns whether the child was STARTED — never whether it succeeded. It is
-/// not waited for (that is the point), so its outcome is readable only from the
-/// event log it appends to.
 pub(crate) fn run_detached(argv: &crate::lifecycle::DetachedArgv) -> bool {
     spawn("nohup", argv.as_args(), &[], Streams::Detached, None).is_some()
 }
@@ -569,12 +362,6 @@ pub fn observe_watch_panes(server: &ServerId, session: &str) -> Option<Vec<tmux:
 
 /// Who a pane says it belongs to — `#{session_name}` and `@ae_agent`, read from
 /// the PANE ITSELF at the moment a kill is being authorised.
-///
-/// `None` is the REFUSAL: a failed run and a successful one that names no
-/// session both mean "no owner named", and a kill may be authorised by neither.
-/// The argv and the interpreter are
-/// [`crate::watchdog_glue`]'s — see that module's docs for why they sit there
-/// rather than beside their siblings in [`crate::tmux`].
 #[must_use]
 pub fn observe_pane_owner(
     server: &ServerId,
@@ -591,10 +378,6 @@ pub fn observe_pane_owner(
 }
 
 /// Kill one pane by exact id. Returns whether tmux accepted it.
-///
-/// UNGUARDED on purpose: the ownership check that authorises a kill is
-/// [`crate::watchdog_glue::kill_owned_pane`]'s, and putting a second copy here
-/// would make two places responsible for one rule. Nothing else may call this.
 #[must_use]
 pub fn kill_pane(server: &ServerId, pane: &str) -> bool {
     if !addressable(server) {
@@ -605,13 +388,6 @@ pub fn kill_pane(server: &ServerId, pane: &str) -> bool {
 
 /// Kill one whole session by EXACT id on `server`, the lifecycle kill behind
 /// `ae stop`, `ae end` and `ae compact`.
-///
-/// Its result is deliberately NOT the proof: the frozen path ignores the kill's
-/// own status (`|| true`) and then asks the server whether the session is gone,
-/// because a kill that races a dying server exits non-zero having succeeded, and
-/// one that hits a prefix-matched neighbour exits zero having failed. The proof
-/// is [`verify_session_absent`]; this returns tmux's answer only so a caller can
-/// log it.
 #[must_use]
 pub fn kill_session(server: &ServerId, session_id: &str) -> bool {
     if !addressable(server) {
@@ -621,9 +397,6 @@ pub fn kill_session(server: &ServerId, session_id: &str) -> bool {
 }
 
 /// Create a spawned agent's own window and return its pane id.
-///
-/// `None` is every failure the caller must roll back on: a non-addressable
-/// server, a refused `new-window`, or a run that printed no id.
 #[must_use]
 pub fn new_window(server: &ServerId, session: &str, work_dir: &str) -> Option<String> {
     if !addressable(server) {
@@ -669,12 +442,6 @@ pub fn capture_pane(server: &ServerId, pane: &str) -> Option<String> {
 }
 
 /// The id tmux holds for the session named exactly `name` on `server`.
-///
-/// Every watchdog WRITE targets this id rather than the name, because `-t`
-/// prefix-matches and a session whose name prefixes another's would take the
-/// other's publication. `None` — a failed run, a non-addressable server, or a
-/// name the server does not hold — means the caller writes NOTHING: an empty
-/// target lands on tmux's CURRENT session, which belongs to somebody else.
 #[must_use]
 pub fn observe_session_id(server: &ServerId, name: &str) -> Option<String> {
     if !addressable(server) {
@@ -695,11 +462,6 @@ pub fn observe_window_panes(server: &ServerId, session: &str) -> Option<Vec<tmux
 }
 
 /// Publish one user option on `target`, which must be an exact id.
-///
-/// The VALUE needs no escaping: a tmux user option interpolates literally, with
-/// no format parsing and no `#()`. The option NAME and the target are ours.
-/// Returns whether tmux accepted it — a failed publication is a stale bar, not a
-/// reason to stop watching, so every caller degrades rather than aborts.
 #[must_use]
 pub fn publish_option(
     server: &ServerId,
@@ -733,11 +495,6 @@ pub fn clear_option(server: &ServerId, scope: tmux::OptionScope, target: &str, n
 }
 
 /// Show a transient message on `target`'s clients.
-///
-/// `text` MUST already be [`tmux::format_literal`]-escaped — `display-message`
-/// reads a FORMAT, and `#(…)` in one runs a shell. This function does not escape
-/// for the caller ON PURPOSE: an escape applied here would be invisible at the
-/// call site, and the sink is the one place a reviewer must be able to SEE it.
 #[must_use]
 pub fn display_message(server: &ServerId, target: &str, text: &str) -> bool {
     if !addressable(server) {
@@ -748,11 +505,6 @@ pub fn display_message(server: &ServerId, target: &str, text: &str) -> bool {
 }
 
 /// Every session name `server` reports, or `None` when it did not answer.
-///
-/// The frozen `ae next --attach` re-validation: "use an exact `list-sessions`
-/// match, NOT `has-session -t` — that prefix-matches, so a vanished session with
-/// a surviving prefix-sibling would false-positive and land the focus on the
-/// wrong session". The exact match is the caller's; this only gets the names.
 #[must_use]
 pub fn session_names(server: &ServerId) -> Option<Vec<String>> {
     if !addressable(server) {
@@ -773,10 +525,6 @@ pub fn observe_current_session(server: &ServerId) -> Option<String> {
 }
 
 /// The socket path `server` names for itself, or `None` when it did not answer.
-///
-/// The first half of frozen's `resolve_launch_tmux_server`: ae may not ask
-/// "which server am I on" at record time, so it asks the server itself while it
-/// can still be reached.
 #[must_use]
 pub fn observe_socket_path(server: &ServerId) -> Option<String> {
     if !addressable(server) {
@@ -787,10 +535,6 @@ pub fn observe_socket_path(server: &ServerId) -> Option<String> {
 }
 
 /// The process id `server` reports, or `None` when it did not answer.
-///
-/// Used ONLY to prove a relative socket path: the candidate resolved from the
-/// caller's working directory must be the SAME server, and identical pids are
-/// what says so.
 #[must_use]
 pub fn observe_server_pid(server: &ServerId) -> Option<String> {
     if !addressable(server) {
@@ -811,16 +555,6 @@ pub fn observe_pane_ttys(server: &ServerId) -> Option<Vec<String>> {
 }
 
 /// Hand this terminal to tmux and report what tmux exited with.
-///
-/// **The one call in this module that does not capture.** Every other door here
-/// reads an answer, so it takes the child's stdout; `attach-session` does not
-/// answer anything — it takes over the terminal — and a captured stdout is a
-/// terminal the client never gets. `switch-client` goes the same way because it
-/// is the same operation from the other side, and because a jump that printed
-/// tmux's diagnostic into a variable nobody reads would fail silently.
-///
-/// A tmux that could not be spawned at all is [`FOCUS_FAILED`], the shell's own
-/// answer for a command that did not run.
 #[must_use]
 pub fn focus(server: &ServerId, verb: tmux::FocusVerb, session: &str) -> u8 {
     if !addressable(server) {
@@ -842,20 +576,8 @@ pub const FOCUS_FAILED: u8 = 127;
 
 // ---------------------------------------------------------------------------
 // Pane DELIVERY — the paste path's runs (B move 1).
-//
-// Each is one derived argument list handed to the door and one completed run
-// handed back. The ones that WRITE report a bool, because tmux's exit status
-// is the only honest answer to "did the server take it": a paste that could
-// not be staged and a paste that vanished are the same empty screen, and the
-// frozen body shipped a bug for exactly that reason (a failed `set-buffer`
-// left an empty input box that the staged-check read as a successful submit).
-// ---------------------------------------------------------------------------
 
 /// What `pane` is running and under which pid, or `None` when the read failed.
-///
-/// A pane that cannot be read is NOT a pane running a shell: the dead-pane
-/// guard fails OPEN on `None`, so an unreadable pane is delivered to rather
-/// than refused.
 #[must_use]
 pub fn observe_pane_probe(server: &ServerId, pane: &str) -> Option<tmux::ObservedPaneProbe> {
     if !addressable(server) {
@@ -866,12 +588,6 @@ pub fn observe_pane_probe(server: &ServerId, pane: &str) -> Option<tmux::Observe
 }
 
 /// `pane`'s visible screen, or `None` when the capture failed.
-///
-/// The distinction is load-bearing in BOTH directions and the two consumers
-/// resolve it oppositely: an unreadable region is UNSAFE to the pre-paste
-/// guard (defer, never clobber) and CLEAR to the post-submit check (never
-/// duplicate an already-sent message). Collapsing `None` into an empty string
-/// here would pick one of those for both.
 #[must_use]
 pub fn capture_screen(server: &ServerId, pane: &str, styling: tmux::Styling) -> Option<String> {
     if !addressable(server) {
@@ -927,18 +643,6 @@ fn write_run(server: &ServerId, args: &[String]) -> bool {
 
 /// The launch operation's tmux leg of the one process door — the ONLY way
 /// product code runs a tmux command that is not already a typed builder above.
-///
-/// Mirrors [`run_git`]: the argv is a [`crate::session_tmux::TmuxArgv`] whose
-/// inner vector is private to that module, so this entry cannot be
-/// alias-imported and handed an arbitrary tmux command line. It exists because
-/// creating a session — `new-session`, the layout splits, the monitor windows —
-/// is a dozen distinct commands that the read-only builders above do not cover,
-/// and spelling each as its own `pub fn` here would put a dozen more writes on
-/// a surface whose job is reading.
-///
-/// Returns whether tmux exited zero and its stdout decoded lossily. Every
-/// answer a caller reads back is a pane id or an option value, both ASCII in
-/// practice, so the lossy decode cannot change a valid one.
 #[must_use]
 pub(crate) fn run_tmux_op(argv: &crate::session_tmux::TmuxArgv) -> (bool, String) {
     match spawn(PROGRAM, argv.as_args(), &[], Streams::Captured, None) {
@@ -952,15 +656,6 @@ pub(crate) fn run_tmux_op(argv: &crate::session_tmux::TmuxArgv) -> (bool, String
 
 /// The DETACHED leg of the one process door — the ONLY way product code starts
 /// a child it does not wait for.
-///
-/// One caller: the post-launch session-id capture, which must outlive the
-/// launch that started it. `program` is ae's OWN binary, named by
-/// `current_exe`, and the argv is a [`crate::session_launch::capture::CaptureArgv`]
-/// whose inner vector is private to that module — so, like [`run_git`], this
-/// entry cannot be alias-imported and handed an arbitrary command line.
-///
-/// Returns whether the child was started. Nothing else is knowable: it is not
-/// waited for.
 #[must_use]
 pub(crate) fn spawn_detached(
     program: &std::path::Path,
@@ -984,10 +679,6 @@ mod tests {
         // THE CONTROL, AND IT COMES FIRST. Without it a `run` that answered
         // `(false, "")` unconditionally would pass every other test in this
         // file, and the transport would report every server unreachable while
-        // looking perfectly well tested.
-        //
-        // `/bin/echo` is required to exist rather than probed for: a skipped
-        // control is a control that never ran.
         assert_eq!(
             run("/bin/echo", &["ok".to_owned()]),
             (true, "ok\n".to_owned()),
@@ -998,10 +689,8 @@ mod tests {
     #[test]
     fn a_program_that_cannot_be_spawned_is_a_failed_run_and_not_an_empty_one() {
         // The bytes are the same as a successful empty query's. The BOOL is
-        // what tells them apart, and it is the half SC-017l depends on: this
-        // pair reaching `interpret_sessions` yields `QueryFailed`, and a
-        // transport that returned `(true, "")` here would report every session
-        // on the server `stopped`.
+        // what tells them apart, and it is the half the session reader depends
+        // on: this pair reaching `interpret_sessions` yields `QueryFailed`, and a
         let (succeeded, stdout) = run("ae-no-such-program-exists-anywhere", &[]);
         assert!(!succeeded, "a program that is not there did not run");
         assert!(stdout.is_empty());
@@ -1016,20 +705,6 @@ mod tests {
     fn a_child_that_ran_and_failed_is_a_failed_run_though_its_output_reads_like_an_answer() {
         // THE SHAPE THIS SLICE EXISTS TO KILL, and the one the two arms beside
         // it cannot reach. They cover Ok + success, and Err + never-spawned.
-        // NEITHER covers Ok + `success() == false` — a child that RAN TO
-        // COMPLETION and exited non-zero — which is precisely what
-        // `tmux list-sessions` does against a server that is not there.
-        //
-        // A mutant mapping every completed wait to `(true, stdout)` passes both
-        // of the others, and integration only catches it on a machine where
-        // tmux happens to be installed. So it is pinned here, at the unit
-        // level, where nothing external decides whether the arm runs.
-        //
-        // The stdout is deliberately NON-EMPTY and plausible. An empty payload
-        // would let this pass for the wrong reason — the temptation is not
-        // ignoring a status beside no bytes, it is ignoring a status beside
-        // bytes that look like an answer. Fed to `interpret_sessions` with the
-        // status dropped, "plausible" becomes a SESSION NAMED `plausible`.
         let (succeeded, stdout) = run(
             "/bin/sh",
             &["-c".to_owned(), "echo plausible; exit 1".to_owned()],
@@ -1054,22 +729,6 @@ mod tests {
         // THE ARM NEITHER OF THE OTHERS REACHES, and it was found by the
         // reviewer attacking cold rather than by my own mutation list — which
         // is the argument for cold attacks in one sentence.
-        //
-        // A signalled child has NO exit code: `status.code()` is `None`. The
-        // natural spelling of this check — "is the code zero?" — has to decide
-        // what `None` means, and `code().map_or(true, |c| c == 0)` reads it as
-        // SUCCESS. That mutant leaves the entire suite green: the exit-1 arm
-        // beside this one still HAS a code, so it cannot see the difference.
-        //
-        // What it would cost in production: a tmux killed mid-query returns
-        // empty stdout and "success", which is `Ok(vec![])` — a successful
-        // query proving every name absent. Every session on that server goes
-        // `stopped`. That is #105 arriving through a door none of my own
-        // attacks knocked on.
-        //
-        // `success()` is the spelling that is right for free, because it asks
-        // whether the child SUCCEEDED rather than what number it returned.
-        // This arm exists to keep it that way.
         let (succeeded, stdout) = run("/bin/sh", &["-c".to_owned(), "kill -TERM $$".to_owned()]);
         assert!(
             !succeeded,
@@ -1088,8 +747,6 @@ mod tests {
         // WHAT THIS PINS IS THE OUTCOME, NOT THE REFUSAL. `tmux -S rel/x` would
         // also fail, so this test cannot distinguish the guard from tmux's own
         // answer, and it does not claim to. The guard exists for the case the
-        // test cannot stage: a relative path that DOES resolve, to a different
-        // server for every directory ae is invoked from.
         let relative = ServerId::Selected(Selector::Socket(PathBuf::from("relative/ae.sock")));
         assert_eq!(Tmux.enumerate(&relative), Err(QueryFailed));
     }

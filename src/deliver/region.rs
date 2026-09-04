@@ -6,40 +6,8 @@
 //! the half where every shipped delivery bug lived. Nothing here runs tmux:
 //! it takes a capture and answers a question about it, so the whole model is
 //! unit-testable against recorded frames.
-//!
-//! # The three answers, and why two of them are not the same
-//!
-//! [`Occupancy`] has THREE values, and collapsing the last two is the bug this
-//! module exists to prevent. `Occupied` and `Idle` are readings; `Unreadable`
-//! is the absence of one, and its two consumers resolve it OPPOSITELY:
-//!
-//! * pre-paste ([`super::input_busy`]) treats it as UNSAFE — defer, never
-//!   clobber. The exhibit: a helper paste clipped a human's half-typed
-//!   question.
-//! * post-submit ([`super::still_staged`]) treats it as CLEAR — never raise a
-//!   false alarm that makes the sender re-send an already-delivered message.
-//!   The exhibit is the F4 duplication class.
-//!
-//! A single boolean would have to pick one of those for both.
-//!
-//! # Style AND structure, never one alone
-//!
-//! The live prompt is found by BOTH rules together, because each alone shipped
-//! a bug. Structure alone (the ornament is its row's first non-blank cell,
-//! bottom-most row wins) reads codex's SUBMITTED echo as live — it is
-//! line-leading too. Style alone (bold-and-not-dim) matched bold assistant
-//! PROSE containing a `›`, so a delivered message read as staged and the
-//! sender pressed Enter again.
-//!
-//! And the styling is parsed as SGR STATE, never as byte literals: tmux
-//! legally serialises one visual state many ways (`\e[1m›`, `\e[0;1m›`,
-//! `\e[2m…\e[1m›`), so an exact-byte anchor mis-reads real panes.
 
 /// One run of captured text sharing an SGR intensity state.
-///
-/// A segment NEVER spans a newline: [`Segment::line`] is its row in the
-/// region, which is what lets the prompt rule be STRUCTURAL (line-leading)
-/// rather than a wildcard.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Segment {
     /// SGR 1 is active.
@@ -65,11 +33,6 @@ pub enum Occupancy {
 }
 
 /// The tools whose input box ae models.
-///
-/// Only these two. Everything else — gemini, opencode, a plain shell, a test
-/// dummy — has no reliable input predicate, and failing closed there would
-/// break every send to them. Fail-closed applies WITHIN a modelled tool, not
-/// to unknown ones.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tool {
     /// Claude Code.
@@ -121,14 +84,6 @@ enum StopAt {
 }
 
 /// Parse a captured region into styled segments — `_sgr_parse`.
-///
-/// Only intensity is tracked: 1 = bold on, 2 = dim on, 0/21/22 = both off. An
-/// extended-colour introducer (38/48) has its arguments SKIPPED so a nested
-/// `1`/`2` parameter is never mistaken for bold or dim.
-///
-/// OSC sequences are consumed whole. `capture-pane -e` preserves them (claude's
-/// status footer uses hyperlinks), and a zero-width hyperlink left in the text
-/// would inflate a row until the input border looked like occupied content.
 #[must_use]
 pub fn parse(region: &str) -> Vec<Segment> {
     let mut segments = Vec::new();
@@ -195,9 +150,6 @@ pub fn parse(region: &str) -> Vec<Segment> {
 }
 
 /// Consume an OSC through BEL or ST, returning what follows.
-///
-/// An UNTERMINATED OSC must not eat the next capture row: a row boundary ends
-/// the control and the row counter advances normally.
 fn consume_osc<'a>(mut rest: &'a str, line: &mut usize) -> &'a str {
     while let Some(ch) = rest.chars().next() {
         if ch == '\u{7}' {
@@ -216,10 +168,6 @@ fn consume_osc<'a>(mut rest: &'a str, line: &mut usize) -> &'a str {
 }
 
 /// Consume a non-CSI escape's intermediates and its one final byte.
-///
-/// The WHOLE sequence, never just the ESC: a designator's final (`B` of
-/// `\e(B`) leaking into a text run reads as input content, and a false
-/// OCCUPIED is the duplication class.
 fn consume_escape(mut rest: &str) -> &str {
     while let Some(ch) = rest.chars().next() {
         let intermediate = (' '..='/').contains(&ch);
@@ -270,14 +218,6 @@ struct Prompt {
 }
 
 /// Find the live input prompt — `_input_region_prompt_seg`.
-///
-/// STRUCTURE: the ornament is the FIRST non-whitespace cell of its ROW, and the
-/// BOTTOM-MOST such row wins. Leading whitespace is not content — tmux legally
-/// paints the cells before a live ornament as their own run.
-///
-/// `live_only` additionally requires bold-and-not-dim (codex, whose submitted
-/// echo is bold AND dim). Ornaments are matched as literal PREFIXES, never a
-/// bracket class: they are multibyte, and a bracket expression matches per-byte.
 fn prompt(segments: &[Segment], live_only: bool, ornaments: &[&'static str]) -> Option<Prompt> {
     let last = segments.last()?;
     for line in (0..=last.line).rev() {
@@ -306,25 +246,12 @@ fn prompt(segments: &[Segment], live_only: bool, ornaments: &[&'static str]) -> 
 }
 
 /// Is this row the input box's structural BORDER — `_input_region_is_border`?
-///
-/// POSITIVE identification on two measured properties together: the printable
-/// content is ENTIRELY U+2500, AND it spans the full width of the region (the
-/// box is drawn edge to edge, so it is always the widest row; text rows are
-/// shorter because tmux strips their trailing blanks).
-///
-/// A first-cell glyph test is NOT enough and shipped as a clobber: a user
-/// pasting `─ user-pasted heading` into a draft truncated the region there and
-/// the unsent body below it read IDLE.
 fn is_border(row: &str, max_width: usize) -> bool {
     !row.is_empty() && row.chars().all(|ch| ch == '─') && row.chars().count() == max_width
 }
 
 /// Where the input box ends — `_input_region_content_end`. Rows at or below
 /// the returned line are not input.
-///
-/// This bound is load-bearing in BOTH directions: too high clobbers a draft,
-/// too low counts chrome as content, which makes every idle pane read OCCUPIED
-/// and defers every send.
 fn content_end(segments: &[Segment], prompt_line: usize, stop_at: StopAt) -> usize {
     let Some(last) = segments.last() else {
         return 0;
@@ -376,11 +303,6 @@ fn content_end(segments: &[Segment], prompt_line: usize, stop_at: StopAt) -> usi
 }
 
 /// Read `region` as `tool`'s input box — `_input_region_occupied`.
-///
-/// An empty region is [`Occupancy::Unreadable`], as is a region with no live
-/// prompt in it (mid-generation, a modal, an abnormal frame). An unmodelled
-/// tool is [`Occupancy::Idle`]: it has no predicate, and the callers that must
-/// not act on that short-circuit before they get here.
 #[must_use]
 pub fn occupancy(region: &str, tool: Tool) -> Occupancy {
     if region.is_empty() {
@@ -451,9 +373,6 @@ fn after_first(text: &str, needle: char) -> String {
 }
 
 /// Whether what was gathered from the box counts as content.
-///
-/// NBSP is folded to a space first — a real idle claude row draws one right
-/// after `❯` — and then every space, tab and newline is dropped.
 fn verdict(text: &str) -> Occupancy {
     let stripped: String = text
         .replace('\u{a0}', " ")
@@ -469,23 +388,6 @@ fn verdict(text: &str) -> Occupancy {
 
 /// Is `capture` a codex that is PROVABLY still starting up —
 /// `_tool_initializing`?
-///
-/// AN IDLE INPUT BOX IS NOT AN INITIALIZED APPLICATION. Measured 2026-08-15 on
-/// codex v0.147.0, cold, with a real MCP config: the input box is drawn at
-/// t=0.5s while the header still reads `model: loading`, MCP servers are still
-/// starting at t=2.5s, and it settles at t=3.0s. The readiness predicate
-/// answered READY from t=0.5s, so the bounded wait built to protect the paste
-/// never waited.
-///
-/// These are NEGATIVE markers: their ABSENCE is not proof of readiness.
-/// Requiring a positive banner instead would fail every spawn the day codex
-/// stops printing one.
-///
-/// SHAPE, NOT SUBSTRING, at COLUMN 0 with no leading-whitespace tolerance —
-/// and that is measured, not a guess. Codex renders a copied start-up frame
-/// inside a message as INDENTED continuation rows, and these exact strings are
-/// quoted in this project's own docs, so a substring scan reads "initializing"
-/// forever in the pane of an agent reading them.
 #[must_use]
 pub fn initializing(capture: &str, tool: Tool) -> bool {
     if tool != Tool::Codex || capture.is_empty() {
@@ -522,9 +424,6 @@ fn mcp_progress(line: &str) -> bool {
 
 /// `^│[[:space:]]*model:[[:space:]]+loading([[:space:]].*)?/model to change`
 /// — inside the box, carrying the live affordance beside the value.
-///
-/// U+2502, never an ASCII pipe: a pipe would match a markdown table row and put
-/// this project's own capability matrix back in scope.
 fn model_loading(line: &str) -> bool {
     /// The live affordance the header row carries beside its value.
     const AFFORDANCE: &str = "/model to change";
@@ -549,11 +448,6 @@ fn model_loading(line: &str) -> bool {
 
 /// Does this capture show a composed TUI — the frozen spawn readiness grep
 /// for a tool ae does not model, `'❯|bypass permissions|for shortcuts'`.
-///
-/// Weak by construction, and knowingly so: one incidental glyph is enough, and
-/// claude's trust dialog once matched on its bare `❯ 1. Yes, I trust this
-/// folder` while the tool could not yet act on input. It is kept for
-/// unmodelled tools only, because the alternative there is no gate at all.
 #[must_use]
 pub fn composed_ui(capture: &str) -> bool {
     capture.contains('❯')
@@ -562,12 +456,6 @@ pub fn composed_ui(capture: &str) -> bool {
 }
 
 /// A POSIX `[[:space:]]` character.
-///
-/// Deliberately NOT `char::is_whitespace`, which also matches NBSP: the frozen
-/// sensor's blank tests are POSIX classes, and claude's idle prompt row draws
-/// an NBSP right after its ornament. Treating that as blank would turn an
-/// unreadable region into an idle one, which flips the pre-paste guard from
-/// defer to paste — the clobber direction.
 fn is_space(ch: char) -> bool {
     matches!(ch, ' ' | '\t' | '\n' | '\u{b}' | '\u{c}' | '\r')
 }

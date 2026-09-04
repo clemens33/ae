@@ -45,16 +45,6 @@ pub struct Refused;
 
 /// Decide the mode for this delivery — `_notice_prepare`.
 ///
-/// Only the two modelled tools get a notice: an unmodelled TUI has no input
-/// sensor, so the on-screen proof a notice depends on cannot be taken, and
-/// pasting the whole body is what it always got.
-///
-/// `bytes` is the framed body's own length, not a `wc -c` of the file the
-/// frozen helper measured. They are the same number — the body store writes
-/// those exact bytes and nothing else — and taking it from the value in hand
-/// keeps a delivery decision from depending on a file read that can fail for
-/// reasons that have nothing to do with the message.
-///
 /// # Errors
 ///
 /// [`Refused`]: the composed pointer would exceed [`NOTICE_CAP`], or the body
@@ -93,12 +83,6 @@ pub fn prepare(
 
 /// Compose the pointer that replaces an oversized framed body —
 /// `_notice_compose`.
-///
-/// The body file is sender-owned; only its PATH crosses the pane. A
-/// same-session recipient gets the session-relative `messages/*.txt` grammar
-/// and its own reply helper; a cross-session one gets the absolute sender path
-/// and the sender's reply helper, because `messages/` would name a different
-/// directory in the recipient's session.
 #[allow(
     clippy::too_many_arguments,
     reason = "the frozen composer's inputs, spelled out rather than bundled"
@@ -118,7 +102,6 @@ pub fn compose(
     // The store publishes `<stem>.<action>.<unique>.txt` and nothing else, so
     // this is a check on ae's own writer, not a user-supplied filename — the
     // case-insensitive comparison clippy suggests would accept a name this
-    // path can never produce.
     if std::path::Path::new(name)
         .extension()
         .is_none_or(|ext| ext != "txt")
@@ -158,15 +141,12 @@ pub fn compose(
 }
 
 /// Rejoin a one-line notice out of a captured input box — `_notice_reconstruct`.
-///
-/// Returns `None` when no prompt row carrying the notice's head was found.
 #[must_use]
 pub fn reconstruct(tool: Tool, capture: &str, intended: &str) -> Option<String> {
     let rows: Vec<String> = capture.lines().map(strip_csi).collect();
     // The head includes the request id, which disambiguates a whole-pane
     // capture carrying several historical notices in its transcript. Message
     // and spawn heads are deliberately distinct: a spawn is an instruction, not
-    // transcript chat.
     let head = head_of(intended);
     if head != GENERIC_HEAD && !head_is_wellformed(&head) {
         return None;
@@ -218,11 +198,6 @@ pub fn reconstruct(tool: Tool, capture: &str, intended: &str) -> Option<String> 
 }
 
 /// Does the pane show EXACTLY the notice that was staged — `_notice_prove`?
-///
-/// Sentinels first: the head catches a clipped start, and the trailing
-/// `⟧<id>⟧` terminal catches a clipped end, before the full byte compare that
-/// decides. Both are cheap; neither is sufficient, which is why the compare
-/// still happens.
 #[must_use]
 pub fn prove(tool: Tool, capture: &str, intended: &str) -> bool {
     let Some(candidate) = reconstruct(tool, capture, intended) else {

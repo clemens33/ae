@@ -12,36 +12,6 @@
 //! is composed with the header, the optional review instructions and the
 //! REQUIRED reply footer whose command names the resolved target, the id and
 //! the reply label.
-//!
-//! # What is the core's, and what stays frozen
-//!
-//! The PASTE is [`crate::deliver`]'s, in this process (B move 1): the
-//! dead-pane guard, the provenance envelope, the recovery-body store, the
-//! per-target lock, the busy deferral and the submit verification are the
-//! measured TUI behaviour, ported rather than delegated. What the core no
-//! longer does is call back into bash for it — `_send-deliver` still exists
-//! in the glue and still works, but nothing here runs it.
-//!
-//! The one path that still runs a helper is the NO-IDENTITY FALLBACK below:
-//! it is a plain `send`, which records its own event, so it goes through the
-//! public helper exactly as the frozen body did — and that helper execs this
-//! same core, so the delivery is native either way.
-//!
-//! The EVENT is the core's: the `ask`/`review` line — actor, target, ref, the
-//! four routing members (`actor_slot`, `actor_session`, `target_slot`,
-//! `target_session`), the capped summary and `body_file` — is written under
-//! [`crate::state::emit`]'s locked, synced transaction, AFTER the paste and
-//! the body store, in the frozen order. Bash `reply` then finds the request by
-//! `ref` and routes by the stored slots — which is the proof this tracer
-//! exists to give.
-//!
-//! # Loud failure, in the frozen shape
-//!
-//! A refused body, a target that does not resolve, a paste the helper refused
-//! or could not confirm: stderr, non-zero, and no event — the frozen helper
-//! wrote nothing in those cases either. The one new sentence is the gap
-//! between the two steps: a request that was delivered but whose event could
-//! not be written is reported as exactly that, never as "nothing was sent".
 use std::io::{self, Write};
 use std::path::Path;
 
@@ -277,11 +247,6 @@ pub enum ResolveError {
     /// The named session is not on the server.
     SessionNotFound(String),
     /// More than one pane carries the target identity.
-    ///
-    /// Under identity v2 the roster cannot produce this: a name is one seat,
-    /// and matching is exact. What remains is the pane layer — two panes
-    /// stamped identically, which no ae code path creates and a hand-edited
-    /// `@ae_agent` can. Refusing beats picking the first one silently.
     Ambiguous {
         /// The name as typed.
         target: String,
@@ -375,13 +340,6 @@ pub fn lookup(target: &str, own_session: &str) -> Result<Lookup, ResolveError> {
     // Identity v2 makes a stamp the BARE NAME, and `_validate_agent_name`
     // forbids a `:` inside one — so `<session>:<name>` is free to mean across
     // sessions without the `@`, unambiguously, and `aedev:lead` addresses the
-    // same pane `@aedev:lead` does. The consequence is deliberate and is the
-    // point: `fable5:lead` is now a session named `fable5`, not an alias, so it
-    // no longer reaches a pane stamped `lead`.
-    //
-    // BOTH halves must be non-empty and there must be exactly one colon.
-    // Anything else stays a plain name and fails as one — a caller who typed no
-    // `@` should not be answered with a shape error about the `@` form.
     if let Some((session, name)) = target.split_once(':')
         && !session.is_empty()
         && !name.is_empty()
@@ -402,21 +360,6 @@ pub fn lookup(target: &str, own_session: &str) -> Result<Lookup, ResolveError> {
 
 /// The pick over a roster: the pane whose `@ae_agent` stamp IS the target,
 /// exactly. Nothing partial.
-///
-/// **The alias-only and bare-name arms are retired (identity v2).** They
-/// existed because a v1 stamp was `alias:name` and neither half alone addressed
-/// a pane; under v2 the stamp is the bare name, which is the whole identity, so
-/// a prefix match can only ever be a guess. Retiring them is what makes
-/// `fable5:lead` stop resolving a pane stamped `lead` — and it is why a target
-/// with one colon is now read as `<session>:<name>` in [`lookup`] instead.
-///
-/// A name is one seat, so the ROSTER can no longer make a target ambiguous.
-/// [`ResolveError::Ambiguous`] survives for the pane layer alone: two panes
-/// stamped identically. Answering that with the first one would route a message
-/// to a pane nobody chose.
-///
-/// The display ref is unchanged — `@session:` prefixed when `session` is not
-/// `own_session`. Accepted input widened; output did not move.
 ///
 /// # Errors
 ///
@@ -459,12 +402,6 @@ pub fn resolve(target: &str, own_session: &str, dir: &Path) -> Result<Resolved, 
 
 /// [`resolve`], and the SERVER the target was resolved on.
 ///
-/// Delivery needs both. A pane id is server-local and a `@session:agent` target
-/// may live on a server that is not the caller's ambient one, so the paste has
-/// to be addressed to the server the resolution actually used — asking the
-/// ambient one would put the message in a DIFFERENT pane that happens to carry
-/// the same id.
-///
 /// # Errors
 ///
 /// [`ResolveError`] — see its variants, exactly as [`resolve`] reports them.
@@ -478,8 +415,6 @@ pub fn resolve_on(
             // A raw pane id is an unambiguous address on its own server, so there
             // is nothing to enumerate and no name to collide: the recorded server
             // only lets its stamps be read, and an unusable one leaves them empty
-            // (the frozen "stamps are simply empty when they cannot be read")
-            // rather than refusing. No mis-route is possible, so this never fails.
             let server = pane_server(dir);
             let observed = transport::observe_viewer(&server, &pane).unwrap_or_default();
             let agent = match (observed.agent, observed.session) {
@@ -499,9 +434,6 @@ pub fn resolve_on(
             // Enumerate on the TARGET session's own recorded server, not the
             // caller's: `@session:agent` may name a session on a different tmux
             // server, and a same-session target resolves to the same server anyway.
-            // FAILS CLOSED — enumerating a colliding name on the wrong (ambient)
-            // server would mis-route silently, so a session with no usable server
-            // pointer refuses here rather than falling back.
             let server = named_server(dir, &session, own_session)?;
             if explicit && !transport::session_exists(&server, &session) {
                 return Err(ResolveError::SessionNotFound(session));
@@ -547,15 +479,6 @@ fn pane_server(dir: &Path) -> ServerId {
 /// own recorded server, from its meta (the caller's own directory for an
 /// unqualified name, a sibling directory under the same sessions root for
 /// `@session:agent`).
-///
-/// FAILS CLOSED, two ways: a session whose meta cannot be read is
-/// [`ResolveError::SessionNotFound`] (it is not a session ae can locate); one
-/// whose selector is Missing/Ambiguous is [`ResolveError::UnresolvableServer`].
-/// Never a silent fall back to the ambient server — the ambient server is the
-/// caller's, and enumerating a colliding name on it (pane-less, or cross-server)
-/// is the exact mis-route this refuses. A real launch records an absolute socket
-/// selector, so only legacy/corrupted meta reaches the refusal, which
-/// `doctor --refresh` repairs.
 pub(crate) fn named_server(
     dir: &Path,
     session: &str,
@@ -1113,7 +1036,6 @@ mod tests {
         // AMBIGUITY IS NOW THE PANE LAYER'S ALONE. A v2 roster cannot produce
         // it (a name is one seat), so the only way in is two panes stamped
         // identically — which no ae path creates and a hand-edited `@ae_agent`
-        // can. First-one-wins would route to a pane nobody chose.
         let twins = roster(&[("%1", "lead"), ("%2", "lead")]);
         assert_eq!(
             pick(&twins, "lead", "s", "s"),

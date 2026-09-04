@@ -18,27 +18,6 @@
 //! and the `reply` event records the replier (`--as`, else the pane), the
 //! routed target, the ref, the replier's slot and tmux session, the asker's
 //! slot and session, and the message.
-//!
-//! # What is the core's, and what stays frozen
-//!
-//! As for `ask`/`review`: the PASTE is the frozen send body behind the
-//! internal `_send-deliver` entry ([`crate::tracked`] explains the split); the
-//! EVENT is the core's, written AFTER the paste under [`crate::state::emit`]'s
-//! locked, synced transaction — so a delivery the helper refused or could not
-//! confirm leaves the request OPEN, and nothing records a reply that did not
-//! arrive. An asker with no pane (an `AE_SENDER_OVERRIDE` sink such as
-//! `telegram:<chat>`) is answered the way the frozen `send` answers such a
-//! target: event only, which is how the bridge reads its replies.
-//!
-//! # One ruling, stated
-//!
-//! A request that already has a reply is NOT refused. The frozen helper never
-//! refused one, and the ledgers show follow-up replies to a single id in
-//! ordinary use (ten refs across some 460 replies in the sessions and archives
-//! on the authoring machine); refusing would break that workflow rather than
-//! port it. The follow-up is delivered and recorded, the replier is told on
-//! stderr that a reply was already on file, and the `requests` surface keeps
-//! showing the request as replied.
 use std::io::{self, Write};
 use std::path::Path;
 
@@ -164,13 +143,6 @@ pub struct Verified {
 }
 
 /// The frozen check, in its two branches.
-///
-/// A request with a non-empty stored `target_slot` is verified by slot and
-/// session — the stored `target_session`, defaulting to this session when the
-/// row has none (R1: an empty stored session must not fail open to a same-slot
-/// pane in another tmux session); `--as` is advisory display after that check.
-/// A request without one name-matches: `--as` must equal the stored target,
-/// and without `--as` the pane's display ref must.
 ///
 /// # Errors
 ///
@@ -405,8 +377,6 @@ pub fn run(
     // The asker's panes are enumerated on THAT session's recorded tmux server —
     // the same door `tracked::resolve` uses — never the ambient one. Under the
     // ambient server the roster came back empty whenever the session lived on
-    // its own socket, the slot lookup silently fell back to the STORED name, and
-    // a churned name then missed (v1's alias-prefix matching hid exactly this).
     let reply_target = route(&request, own_session, |search| {
         tracked::named_server(dir, search, own_session)
             .ok()
@@ -461,7 +431,6 @@ pub fn run(
         // The VERIFIED sender, and never an inherited one: the slot check
         // above decided who this reply is from, so the envelope takes its
         // answer rather than the caller's environment. A `--as` reply is
-        // display only and does not reach here.
         actor: &verified.sender,
         body: &message,
         shape: crate::deliver::Shape::Send,

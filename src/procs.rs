@@ -1,33 +1,6 @@
 //! The process-table snapshot and its descendant tree — the one non-tmux read
 //! the watchdog's dead-check needs, kept PURE here and spawned through the
 //! single sealed `ps` door in [`crate::transport`].
-//!
-//! # Why a process table at all
-//!
-//! A pane whose foreground command is a shell is not proof its agent died: a
-//! `bash -lc <tool>` wrapper shows a shell in the foreground while the real
-//! agent runs underneath. The frozen bash `_pane_has_descendant_named`
-//! (ae:16224-16248) resolves that by asking whether a process *named* the
-//! agent binary is a descendant of the pane's pid — `pgrep -x` plus a
-//! `ps -o ppid=` ancestor walk, never `/proc` (macOS has none, and on Linux
-//! `/proc/<pid>/stat` field 4 shifts on a comm containing a space).
-//!
-//! # The clean-cut shape
-//!
-//! Rather than spawn `ps` once per agent, the daemon takes ONE process-table
-//! snapshot per cycle and builds the descendant relationships in Rust for every
-//! pane (colead's ruling). [`crate::transport`] owns the spawn (the sealed
-//! `run_ps` door); this module owns the FIXED argv it runs and every byte of
-//! interpretation.
-//!
-//! # Failure is UNKNOWN, never dead
-//!
-//! A snapshot that could not be taken (spawn/exit failure) or could not be
-//! parsed (malformed output) yields [`Descendancy::Unknown`], and the dead-check
-//! treats Unknown as NOT dead. The direction is deliberate: a missed dead is
-//! silent and self-heals next cycle, but a FALSE dead spams a live agent with a
-//! process-died alert. So parse refuses strictly — any row that is not
-//! `<pid> <ppid> <comm>` fails the whole table to `None` rather than guessing.
 
 use std::collections::{HashMap, HashSet};
 
@@ -36,13 +9,6 @@ use std::collections::{HashMap, HashSet};
 /// can fabricate a `ps` command line and hand it to [`crate::transport::run_ps`].
 /// Unlike git there is NO caller input at all — the argv is a constant, so this
 /// door has no injection surface to seal beyond the type itself.
-///
-/// `ps -A -o pid=,ppid=,comm=` is the one spelling supported on BOTH targets:
-/// `-A` selects every process (POSIX, GNU and BSD), and the `=` empty header
-/// suppresses the column titles per field. `comm` is a full executable path on
-/// macOS (basename it) and the 15-char-truncated command name on Linux; every
-/// agent binary name is shorter than that truncation, so a bare basename compare
-/// is exact on both.
 pub struct PsArgv(Vec<String>);
 
 impl PsArgv {
@@ -102,11 +68,6 @@ pub enum Descendancy {
 /// Parse `ps -A -o pid=,ppid=,comm=` output into rows, or `None` if ANY
 /// non-blank line is not `<pid> <ppid> <comm>` with numeric pids and a
 /// non-empty command.
-///
-/// Blank lines (a trailing newline) are skipped, not refused. Everything from
-/// the third field to end of line is the command, trimmed — so a macOS full
-/// path that happens to contain a space is preserved intact rather than
-/// splitting the row.
 #[allow(
     clippy::similar_names,
     reason = "pid and ppid are the canonical process-table field names; renaming them to satisfy the lint would obscure the domain, not clarify it"
@@ -151,11 +112,6 @@ fn split_first_token(s: &str) -> Option<(&str, &str)> {
 /// Whether a process named `agent_bin` is a descendant of `pane_pid` in the
 /// snapshot — the pure port of the bash ancestor walk, done once for the whole
 /// table instead of per candidate.
-///
-/// The name compare is by basename (macOS `comm` is a path) and tolerant of a
-/// trailing `.exe` on either side (`pane_current_command` reports `opencode.exe`
-/// for a binary the roster calls `opencode`). A malformed table that formed a
-/// ppid cycle cannot loop the walk — a visited set bounds it.
 #[must_use]
 pub fn has_descendant_named(procs: &[Proc], pane_pid: u32, agent_bin: &str) -> bool {
     let mut children: HashMap<u32, Vec<usize>> = HashMap::new();
@@ -225,11 +181,6 @@ pub fn snapshot() -> Option<Vec<Proc>> {
 }
 
 /// This process's controlling tty, or `None` when it has none.
-///
-/// Frozen folded whitespace out of the reading and then treated `?`, `??` and
-/// `-` as "no tty" — three spellings because the answer is `ps`-flavour
-/// dependent and every one of them means the same thing. An empty answer is the
-/// fourth.
 #[must_use]
 pub fn own_tty() -> Option<String> {
     let (succeeded, stdout) = crate::transport::run_ps(&PsArgv::tty_of(std::process::id()));

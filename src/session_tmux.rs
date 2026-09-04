@@ -19,10 +19,6 @@ use crate::inventory::ServerId;
 use crate::tmux::server_args;
 
 /// The `-P -F` format every pane-creating call here prints.
-///
-/// Spelled again rather than borrowed from [`crate::tmux`], where the same
-/// constant is private to the watchdog's window builder: one shared constant
-/// across two modules would make widening it there a silent change here.
 const PANE_ID_FORMAT: &str = "#{pane_id}";
 
 /// A tmux argv minted ONLY by this module's [`argv`] builder.
@@ -64,10 +60,6 @@ pub(crate) enum Op<'a> {
     /// reads a pane id back from it, and a command, because the session exists
     /// only to hold that process. The Telegram bridge's, and the frozen
     /// `_telegram_spawn_daemon`'s (ae:7977).
-    ///
-    /// The command is DIRECT ARGV, never one shell string: tmux execs a
-    /// multi-word command itself, so a path carrying a space, a quote or a
-    /// newline survives byte-for-byte instead of being re-split by `/bin/sh`.
     NewDaemonSession {
         /// The session name — a constant here, never operator input.
         name: &'a str,

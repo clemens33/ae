@@ -6,77 +6,6 @@
 //! WHICH server an argument list addresses, and WHAT a completed run means —
 //! unit-testable without a process anywhere near them; the exec is a detail
 //! around them, behind the one door `clippy.toml` opens in product code.
-//!
-//! # Handover: what exists here, and what the next slice must add
-//!
-//! **The pure half is done and proven.** Typed `Selector` to argv is here
-//! ([`server_args`], [`list_sessions_args`], [`marker_args`]); completed-run
-//! interpretation is here ([`interpret_sessions`], [`interpret_marker`]), with
-//! the exit status deciding and the payload bytes never doing so. Both halves
-//! are exercised against two REAL isolated tmux servers — one `-L` named, one
-//! `-S` socket — each answering only with its own session, plus a real
-//! `AE_SESSION` round trip and a socket-that-is-not-a-server failure arm. See
-//! `tests/it/phase2.rs`, criterion 20.
-//!
-//! **The exec has LANDED.** [`crate::transport::Tmux`] runs these argument lists
-//! and feeds these interpreters, so what this module derives now reaches a real
-//! server on the ordinary `ae list` route. It is one deliberate crossing of the
-//! `std::process::Command` deny — a third door, enumerated in `clippy.toml`
-//! beside the two test ones — and it changed nothing here: the transport derives
-//! no argv of its own and interprets no bytes of its own.
-//!
-//! **What that unlocked, and what it did not:**
-//!
-//! * SC-017k/SC-017l — DONE. Session liveness is no longer universally
-//!   `unknown`: [`interpret_sessions`] receives a real answer, and a candidate is
-//!   `running` or `stopped` on it. A server that does not answer is still
-//!   `unknown`, which is the row's whole point.
-//! * SC-017o — DONE for the same reason: an entitled server that can be
-//!   enumerated stops counting as a failed source, so `inventory_complete` is no
-//!   longer false on every machine that records a server.
-//! * SC-017p/SC-017q/SC-017s — the DERIVATION AND THE READING ARE HERE NOW
-//!   ([`list_panes_args`], [`interpret_panes`], [`slot_observation`]).
-//!   Association is SC-602's `@ae_slot`; ambiguity is representable rather than
-//!   collapsed; and both of SC-017s's conjuncts — `#{pane_dead}` and
-//!   `#{pane_current_command}` — are carried out of the read intact.
-//!
-//!   **THE PREDICATE IS RATIFIED.** An earlier version of this handover said no
-//!   ratified row defined "positively recognizes its agent process as live", and
-//!   told the next seat the work was blocked. SC-017s supplies it: the pane
-//!   proves `alive` iff `pane_dead` is `0` AND the command is outside the closed
-//!   shell set `bash`/`zsh`/`fish`/`sh`/`dash` AND the empty string. That
-//!   sentence was true when written and expired without anyone touching this
-//!   file — which is the argument for saying what a module OBSERVES rather than
-//!   what the world happens to lack.
-//!
-//!   **WHAT IS STILL OPEN, and it is not the predicate:**
-//!   * the PRODUCT ROUTE from this observation to an `alive` verdict — argv,
-//!     interpretation and association are here, and nothing wires them to a
-//!     status. That sequencing is a separate decision.
-//!   * SC-017p's `dead` half. SC-017s grants `alive` ONLY: a shell foreground
-//!     proves nothing and leaves the agent `unknown` (SC-017q). The watchdog's
-//!     dead test is a CONJUNCTION of shell-foreground and no-agent-descendant,
-//!     and negating one conjunct is sound in one direction only.
-//!   * the process-inspection capability, which stays RESERVED and unused.
-//!     SC-017s observes tmux format fields and asserts nothing about processes
-//!     or ancestry; a symmetric dead predicate would re-import the unratified
-//!     SC-906 and the ancestry observation with it. Do not reach for `pgrep` or
-//!     a parent walk here — if a change seems to need one, that is the signal to
-//!     stop, not to add it.
-//!
-//!   A known FALSE NEGATIVE is recorded in SC-017s rather than fixed: under
-//!   SC-812 a `cmd || fallback` resume chain leaves bash as the pane process, so
-//!   a genuinely live agent reports `bash` and lands in `unknown`.
-//!
-//! # Why the exit status decides and the bytes do not
-//!
-//! **SC-017k** grants `running`/`stopped` only to a SUCCESSFUL query, and
-//! **SC-017l** sends every failure to `unknown`. A failed `tmux list-sessions`
-//! can still print something — a partial line, a warning, nothing at all — and
-//! empty output from a failed query looks exactly like empty output from a
-//! server with no sessions. One of those proves absence and the other proves
-//! nothing, so [`interpret_sessions`] takes the transport result FIRST and reads
-//! the bytes only after it knows they mean anything.
 
 use std::path::Path;
 
@@ -84,42 +13,16 @@ use crate::inventory::{QueryFailed, ServerId};
 use crate::meta::Selector;
 
 /// The format `list-sessions` is asked for: one exact session name per line.
-///
-/// `#{session_name}` and nothing else. A format that also carried, say, the
-/// pane count would make every parse position-dependent for no gain, and the
-/// only field this phase needs is the one it matches EXACTLY.
 pub const SESSION_NAME_FORMAT: &str = "#{session_name}";
 
 /// The separator every multi-field format in this module renders between its
 /// fields.
-///
-/// **Printable, because a control character does not survive the round trip.**
-/// tmux 3.4 escapes control characters in `-F` and `display-message` output
-/// while tmux 3.5+ emits them raw — measured on both: `\x1f` comes back as the
-/// four literal bytes `\037`, and a TAB comes back as `_`. Every interpreter
-/// below splits on the bytes it asked tmux for, so a control separator makes
-/// the WHOLE reading unparseable on tmux 3.4 — which is Ubuntu 24.04's tmux,
-/// and CI's. It shipped that way: the dead-pane probe and the session-id
-/// resolver both went blind on Linux while macOS stayed green, so `send`
-/// deferred for 30s instead of refusing a dead pane and `telegram stop`
-/// reported success without killing anything.
-///
-/// ` | ` rather than one punctuation byte: no ae-controlled field can contain
-/// it. Pane, window and session ids are tmux's own `%N`/`@N`/`$N`; session
-/// names, `@ae_slot` and `@ae_agent` are ASCII allowlists; pids, epochs and
-/// `pane_dead` are numeric. The one free-text field, `pane_current_command`,
-/// is LAST in every format that carries it.
 const FIELD_SEPARATOR: &str = " | ";
 
 /// The ae-ownership marker, read from a session's own tmux environment.
 pub const OWNERSHIP_VARIABLE: &str = "AE_SESSION";
 
 /// The arguments that address `server`, before any subcommand.
-///
-/// The typed selector IS the routing: `-L` addresses a server by name and `-S`
-/// by socket path, and they are different servers even when the strings match.
-/// [`ServerId::Ambient`] adds nothing — the ordinary transport's own server is
-/// whatever `tmux` alone talks to, and SC-1410c owns how that was selected.
 #[must_use]
 pub fn server_args(server: &ServerId) -> Vec<String> {
     match server {
@@ -142,11 +45,6 @@ pub fn list_sessions_args(server: &ServerId) -> Vec<String> {
 }
 
 /// The full argument list for reading one session's ownership marker.
-///
-/// `-t <name>` is an EXACT target here only because the name came from
-/// `list-sessions` on this same server; tmux itself would prefix-match it. That
-/// is why nothing in this crate ever asks tmux whether a name exists — see
-/// [`crate::liveness`], where the exact match is done on ae's side of the wire.
 #[must_use]
 pub fn marker_args(server: &ServerId, session: &str) -> Vec<String> {
     let mut args = server_args(server);
@@ -164,7 +62,7 @@ pub fn marker_args(server: &ServerId, session: &str) -> Vec<String> {
 /// [`QueryFailed`] whenever the run did not succeed, whatever it printed. A
 /// non-zero tmux is "no server running on …" as often as anything else, and
 /// "there is no server" is not the same fact as "the server says there are no
-/// sessions" — SC-017l is explicit that the first one is `unknown`.
+/// sessions" — the first one is explicitly `unknown`.
 pub fn interpret_sessions(succeeded: bool, stdout: &str) -> Result<Vec<String>, QueryFailed> {
     if !succeeded {
         return Err(QueryFailed);
@@ -178,14 +76,6 @@ pub fn interpret_sessions(succeeded: bool, stdout: &str) -> Result<Vec<String>, 
 }
 
 /// What a stop-verification `list-sessions` proved about one session.
-///
-/// The tri-state the destructive compact gate needs, and the SC-017l distinction
-/// the generic [`interpret_sessions`] deliberately collapses: for LIVENESS, a
-/// server that did not answer is `unknown`, full stop. For a STOP CHECK, one
-/// failure shape is not "no answer" but a definitive one — killing the LAST
-/// session on a server exits the server, and the stale-socket diagnostic it
-/// leaves behind PROVES the session is gone. This is the frozen bash
-/// `_end_verify_gone` tri-state, ported.
 #[derive(Debug, PartialEq, Eq)]
 pub enum StopProbe {
     /// The server answered and the session is STILL among its sessions.
@@ -202,16 +92,6 @@ pub enum StopProbe {
 }
 
 /// What a completed stop-verification `list-sessions` means for `name`.
-///
-/// A SUCCESSFUL run is authoritative: the name is [`StopProbe::Present`] or
-/// [`StopProbe::Absent`] by whether it appears. A FAILED run is
-/// [`StopProbe::Absent`] ONLY for the exact stale-socket diagnostic and
-/// [`StopProbe::Unknown`] otherwise — anchored to tmux's shape as a first-line
-/// prefix, never a substring, because a server literally NAMED `no server
-/// running` once made a permission error contain the words (frozen bash's
-/// 10th-review B2). ENOENT and permission-denied are `Unknown`: unlinking a LIVE
-/// server's socket yields a connect error while the server keeps running (frozen
-/// bash's 11th-review B1), so only the stale-socket shape proves a clean exit.
 #[must_use]
 pub fn interpret_stopped(succeeded: bool, stdout: &str, stderr: &str, name: &str) -> StopProbe {
     if succeeded {
@@ -234,12 +114,6 @@ pub fn interpret_stopped(succeeded: bool, stdout: &str, stderr: &str, name: &str
 }
 
 /// The ownership marker a completed `show-environment` run reported.
-///
-/// `AE_SESSION=<value>` is the marker; tmux spells an UNSET variable
-/// `-AE_SESSION`, which is evidence of absence rather than a value, and a failed
-/// run is no evidence at all. Both answer `None`, and [`crate::liveness`] treats
-/// that as ownership not established — never as proof the session is not ae's,
-/// because those differ and only one of them could ever justify `stopped`.
 #[must_use]
 pub fn interpret_marker(succeeded: bool, stdout: &str) -> Option<String> {
     if !succeeded {
@@ -255,44 +129,12 @@ pub fn interpret_marker(succeeded: bool, stdout: &str) -> Option<String> {
 }
 
 /// The format `list-panes` is asked for: three fields per pane, tab-separated.
-///
-/// **`@ae_slot`, not `@ae_agent`** — SC-602 rules that the slot option carries
-/// IDENTITY and `@ae_agent` is display. The frozen script associated on the
-/// display field (`cmd_list`'s alive map is keyed on `#{@ae_agent}`, ae:4207),
-/// which is a second defect in the code SC-017p/q/r already indict (#106).
-///
-/// **`pane_dead` and `pane_current_command` are SC-017s's fields**, and that row
-/// is why they are here: it ratifies the only route to `alive`, reading exactly
-/// these two beside the identity marker, in one query that was already being
-/// made. They were deliberately ABSENT while the predicate was unratified —
-/// carrying them then would have been a decision wearing the shape of a format
-/// string. The row made the decision; the field list follows it.
-///
-/// **`pane_dead` IS FIRST, and the order is a safety argument rather than
-/// taste.** It is the conjunct whose loss produces a FALSE ALIVE: measured on a
-/// real server, a `remain-on-exit` pane whose process has exited reports
-/// `pane_dead=1` with `pane_current_command=true`, and `true` is not in the
-/// shell set — so the command field ALONE proves a dead agent alive, which is
-/// #109. Putting it before every ae- or system-controlled field means nothing
-/// upstream can shift it out of position.
 pub const PANE_FORMAT: &str = "#{pane_dead} | #{@ae_slot} | #{pane_current_command}";
 
 /// How many [`FIELD_SEPARATOR`]-separated fields [`PANE_FORMAT`] produces per pane.
 pub const PANE_FIELDS: usize = 3;
 
 /// The full argument list for enumerating one session's panes.
-///
-/// `-s` is session-wide: every pane in the session, not just the active
-/// window's. SC-017p's negative proof needs the COMPLETE enumeration, and a
-/// window-scoped answer would prove absence from one window while reading like
-/// absence from the session.
-///
-/// **`-t <session>` PREFIX-MATCHES, and that is measured rather than assumed**:
-/// against a server holding `probe`, `list-panes -s -t prob` returns `probe`'s
-/// panes and exits 0. So this argument list is exact only when `session` is a
-/// name a `list-sessions` answer from THIS server already returned exactly —
-/// the same precondition as [`marker_args`], and the same hazard that makes a
-/// prefix sibling issue #105 rather than a neighbour of it.
 #[must_use]
 pub fn list_panes_args(server: &ServerId, session: &str) -> Vec<String> {
     let mut args = server_args(server);
@@ -306,40 +148,14 @@ pub fn list_panes_args(server: &ServerId, session: &str) -> Vec<String> {
 }
 
 /// One pane the server reported, as three readings.
-///
-/// A pane with no usable reading is still A PANE. Every line of a successful
-/// enumeration becomes one of these, whatever it contained — dropping a line
-/// would delete exactly the evidence SC-017q needs to refuse a `dead`.
-///
-/// NO VERDICT IS COMPUTED HERE. SC-017s's predicate (`pane_dead` is `0` AND the
-/// command is outside the closed shell set, the empty string included) is
-/// deliberately NOT applied in this module: the route from observation to an
-/// `alive` verdict is a separate, unsequenced decision. What this type
-/// guarantees is that both conjuncts SURVIVE the read, so no downstream
-/// predicate can be forced to guess one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ObservedPane {
     /// `#{pane_dead}` — `Some(true)` for a dead pane, `Some(false)` for a live
     /// one, `None` when the field was not a readable `0`/`1`.
-    ///
-    /// SC-017s's first conjunct, and the one that stops #109: an exited pane
-    /// retained by `remain-on-exit` keeps reporting the exited process's
-    /// command, so the command field alone would read `alive` for a dead agent.
     pub dead: Option<bool>,
     /// The `@ae_slot` value, when the pane carries a usable one.
-    ///
-    /// `None` covers unset AND set-to-empty, which are byte-identical in a
-    /// format expansion (measured), so ae does not pretend to tell apart two
-    /// states tmux reports identically.
     pub slot: Option<String>,
     /// `#{pane_current_command}`, when the field carried one.
-    ///
-    /// `None` for an empty reading. SC-017s puts the empty string IN the
-    /// not-alive set for the reason this crate keeps rediscovering: an
-    /// unreadable field is the absence of evidence, and reading absence as
-    /// positive proof is #105 itself. The frozen script's set omitted it
-    /// (ae:4201-4206 versus `command_is_shell` at ae:428-434), so an absent
-    /// reading fell to the non-shell arm and yielded a positive alive.
     pub command: Option<String>,
 }
 
@@ -348,8 +164,8 @@ pub struct ObservedPane {
 /// # Errors
 ///
 /// [`QueryFailed`] whenever the run did not succeed, whatever it printed —
-/// SC-017q sends a failed pane query to `unknown`, exactly as SC-017l does for
-/// sessions. Measured: a `-t` naming no session exits 1.
+/// A failed pane query goes to `unknown`, exactly as a failed session query
+/// does. Measured: a `-t` naming no session exits 1.
 ///
 /// **EVERY LINE IS A PANE.** A line that does not split into exactly
 /// [`PANE_FIELDS`] fields still yields an [`ObservedPane`] — one with no usable
@@ -366,7 +182,7 @@ pub struct ObservedPane {
 /// matches a real roster slot while pushing the rest of that slot into the
 /// command field — forging a non-shell command for a pane that is running a
 /// shell, which is a fabricated `alive` for the wrong agent. Refusing the whole
-/// line answers `unknown` instead (SC-017q), which is the direction that cannot
+/// line answers `unknown` instead, which is the direction that cannot
 /// assert.
 pub fn interpret_panes(succeeded: bool, stdout: &str) -> Result<Vec<ObservedPane>, QueryFailed> {
     if !succeeded {
@@ -376,10 +192,6 @@ pub fn interpret_panes(succeeded: bool, stdout: &str) -> Result<Vec<ObservedPane
 }
 
 /// One enumeration line as an [`ObservedPane`].
-///
-/// Unreadable in any respect yields the all-`None` pane: present, and saying
-/// nothing. Each field is independent — an unreadable command does not discard
-/// a perfectly good `pane_dead`.
 fn read_pane(line: &str) -> ObservedPane {
     let blank = ObservedPane {
         dead: None,
@@ -393,8 +205,8 @@ fn read_pane(line: &str) -> ObservedPane {
     let usable = |value: &str| Some(value.to_owned()).filter(|v| !v.is_empty());
     ObservedPane {
         // `0`/`1` and nothing else. A field that is neither is not a reading
-        // saying "alive" — it is no reading, and SC-017s refuses to build a
-        // positive proof on one.
+        // saying "alive" — it is no reading, and no positive proof is built on
+        // one.
         dead: match fields[0] {
             "0" => Some(false),
             "1" => Some(true),
@@ -406,13 +218,6 @@ fn read_pane(line: &str) -> ObservedPane {
 }
 
 /// What an enumeration says about one roster slot.
-///
-/// FACTS, NOT A VERDICT. Which of these licenses `alive`, `dead` or `unknown` is
-/// SC-017p/q's question and is answered where liveness is decided — not here.
-/// [`Self::Absent`] carries the unidentified-pane COUNT rather than a boolean
-/// conclusion for that reason: whether zero unidentified panes is enough to
-/// prove a roster agent absent is a reading of SC-017p, and this type refuses to
-/// make it on the caller's behalf.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SlotObservation {
     /// Exactly one observed pane carries this slot.
@@ -430,10 +235,6 @@ pub enum SlotObservation {
 }
 
 /// What `panes` says about `slot`.
-///
-/// EXACT equality against the roster slot. tmux prefix-matches targets, ae does
-/// not: the comparison happens on ae's side of the wire, which is the same rule
-/// [`crate::liveness`] applies to session names and for the same reason.
 #[must_use]
 pub fn slot_observation(panes: &[ObservedPane], slot: &str) -> SlotObservation {
     let carrying = panes
@@ -450,10 +251,6 @@ pub fn slot_observation(panes: &[ObservedPane], slot: &str) -> SlotObservation {
 }
 
 /// Whether `path` can address a tmux server at all.
-///
-/// A relative socket path is SC-405l's `ambiguous`, refused before it becomes a
-/// selector; this is the same question asked at the wire, so a path that arrived
-/// some other way cannot become a target here either.
 #[must_use]
 pub fn is_addressable_socket(path: &Path) -> bool {
     path.is_absolute()
@@ -463,23 +260,12 @@ pub fn is_addressable_socket(path: &Path) -> bool {
 /// tmux session and its display ref — the three readings `ae_current_slot`,
 /// `#S` and `ae_current_agent` take in the frozen helper, in ONE round trip
 /// rather than three, so the pane cannot change identity between them.
-///
-/// [`FIELD_SEPARATOR`]-separated. None of the three may contain it: slots are a closed
-/// grammar, session and agent names are ASCII allowlists. An unset user option
-/// expands to the empty string (measured), which is why the interpreter treats
-/// empty and unset alike.
 pub const VIEWER_FORMAT: &str = "#{@ae_slot} | #{session_name} | #{@ae_agent}";
 
 /// The number of fields [`VIEWER_FORMAT`] yields.
 const VIEWER_FIELDS: usize = 3;
 
 /// The arguments that read [`VIEWER_FORMAT`] off `pane` on `server`.
-///
-/// `display-message -p` prints the expansion instead of showing it, and `-t`
-/// names the pane whose options and session are expanded. There is no
-/// no-target form: a query that let tmux pick "the current pane" would answer
-/// with whichever pane the server last touched, which the frozen helper does
-/// and which is a misattribution rather than an identity.
 #[must_use]
 pub fn viewer_args(server: &ServerId, pane: &str) -> Vec<String> {
     let mut args = server_args(server);
@@ -499,19 +285,6 @@ pub struct ObservedViewer {
 }
 
 /// What a completed viewer query means.
-///
-/// A failed run is no identity (`None`): a pane that does not exist, a server
-/// that is not there, or a `tmux` that could not be spawned all leave the
-/// caller unidentified, and the requests surface then refuses `mine`/`inbox`
-/// the way the frozen helper does outside a pane.
-///
-/// **Exactly one record.** `display-message -p` prints one expansion and one
-/// `\n`; stdout is that line with at most its terminating `\n`, and it must
-/// split into exactly [`VIEWER_FIELDS`] fields. Anything beyond — a second
-/// line, an embedded newline in a user option somebody set by hand — is a
-/// reading nothing should trust, for the same reason [`interpret_panes`]
-/// refuses odd arity: taking "the first line" would let injected content
-/// choose which record is read.
 #[must_use]
 pub fn interpret_viewer(succeeded: bool, stdout: &str) -> Option<ObservedViewer> {
     if !succeeded {
@@ -535,9 +308,6 @@ pub fn interpret_viewer(succeeded: bool, stdout: &str) -> Option<ObservedViewer>
 
 /// The arguments for the frozen resolver's session check —
 /// `tmux has-session -t "$search_session"` before a cross-session lookup.
-///
-/// tmux PREFIX-MATCHES `-t` here, exactly as it does for the frozen helper;
-/// this is that check, not a stricter one.
 #[must_use]
 pub fn has_session_args(server: &ServerId, session: &str) -> Vec<String> {
     let mut args = server_args(server);
@@ -546,12 +316,6 @@ pub fn has_session_args(server: &ServerId, session: &str) -> Vec<String> {
 }
 
 /// The arguments for the lifecycle kill — `tmux kill-session -t <session-id>`.
-///
-/// The target is a SESSION ID (`$3`), never a name, and that is the whole point
-/// of the separate builder: `-t` prefix-matches, so `kill-session -t proj` kills
-/// a live `project` and reports success. Every caller resolves the exact id
-/// through [`interpret_session_id`] first; this builder cannot enforce that, so
-/// the type of the string it is handed is the contract.
 #[must_use]
 pub fn kill_session_args(server: &ServerId, session_id: &str) -> Vec<String> {
     let mut args = server_args(server);
@@ -676,14 +440,11 @@ pub fn interpret_agents(succeeded: bool, stdout: &str) -> Option<Vec<ObservedAge
 
 /// The watchdog's per-pane reading — richer than [`PANE_FORMAT`]'s liveness
 /// three, and deliberately its OWN format so widening it never touches the
-/// SC-017s contract that [`interpret_panes`] answers. Five fields, printable
+/// contract that [`interpret_panes`] answers. Five fields, printable
 /// ` | ` delimited: the first four fields — a `%`-prefixed pane id, an
 /// allowlisted `@ae_slot`/`@ae_agent`, and a numeric pid — cannot contain that
 /// sequence. `pane_current_command` is free text, so it is last and may carry
 /// the separator verbatim.
-///
-/// tmux 3.4 escapes control characters in `-F` output as octal while tmux 3.5+
-/// emits them raw. A printable separator stays byte-identical across versions.
 const WATCH_PANE_SEPARATOR: &str = FIELD_SEPARATOR;
 pub const WATCH_PANE_FORMAT: &str =
     "#{pane_id} | #{@ae_slot} | #{@ae_agent} | #{pane_pid} | #{pane_current_command}";
@@ -840,33 +601,12 @@ impl OptionScope {
 
 /// Escape text that is about to enter a tmux FORMAT context — the frozen
 /// `_ae_tmux_format_literal` (ae:1233-1236), `#` then `%`.
-///
-/// `#` introduces a format: `#{…}` interpolates and **`#(cmd)` RUNS A SHELL**.
-/// `%` is strftime. Doubling each makes tmux render it literally.
-///
-/// `#` is doubled first because the frozen helper doubles it first, and keeping
-/// the same order keeps the two readable side by side. The two passes actually
-/// COMMUTE — each introduces only the character it matched, which the other pass
-/// does not match — so the order is a convention, NOT a correctness requirement.
-/// Recorded because the opposite is the intuitive guess: a control that swapped
-/// the order left every test green, which is what sent me to check.
-///
-/// This is for [`display_message_args`] and nothing else. A tmux USER option's
-/// VALUE is interpolated literally — no format parsing, no `#()` — so
-/// [`set_option_args`] must NOT escape, or every `#` in a roster label would
-/// render doubled.
 #[must_use]
 pub fn format_literal(text: &str) -> String {
     text.replace('#', "##").replace('%', "%%")
 }
 
 /// Set one user option on `target`, which MUST be an exact id.
-///
-/// `-t` PREFIX-MATCHES a name, so a session called `demo` can receive the option
-/// meant for `demo2`. Every caller resolves an id first (`$N` for a session, `@N`
-/// for a window) — the frozen watchdog does the same, and its comment records
-/// why a window INDEX is not good enough either: closing a window renumbers the
-/// ones after it, so glyphs land on the wrong window and cleanup misses one.
 #[must_use]
 pub fn set_option_args(
     server: &ServerId,
@@ -885,11 +625,6 @@ pub fn set_option_args(
 }
 
 /// Remove one user option from `target` — `set-option -u`.
-///
-/// UNSET, never set-to-empty: an option that outlives what it described keeps
-/// asserting it. The frozen makes the same distinction for an empty roster
-/// (ae:17026-17031) — "a roster outliving its agents would keep asserting a
-/// fleet that no longer exists".
 #[must_use]
 pub fn unset_option_args(
     server: &ServerId,
@@ -907,21 +642,9 @@ pub fn unset_option_args(
 }
 
 /// The session option the watchdog publishes the work tree's branch into.
-///
-/// A MACHINE value, and deliberately not `@ae_branch_status`: that one is the
-/// display segment (trimmed to 24 chars, dirty marker appended) and echoing it
-/// as data would put a decoration into the digest's `branch` field.
 pub const BRANCH_OPTION: &str = "@ae_branch_name";
 
 /// Read one session option's raw value — `show-options -t <session> -qv <name>`.
-///
-/// `-q` keeps an unset option quiet (empty stdout, exit 0) instead of an error,
-/// and `-v` prints the bare value rather than `name value`, so the reading is
-/// the value or nothing.
-///
-/// `-t <session>` PREFIX-MATCHES, exactly as [`marker_args`] does, and carries
-/// the same precondition: `session` must be a name a `list-sessions` answer from
-/// THIS server already returned exactly.
 #[must_use]
 pub fn session_option_args(server: &ServerId, session: &str, name: &str) -> Vec<String> {
     let mut args = server_args(server);
@@ -951,11 +674,6 @@ pub fn interpret_session_option(succeeded: bool, stdout: &str) -> Option<String>
 }
 
 /// Show a transient message on `target`'s clients.
-///
-/// `text` MUST already be [`format_literal`]-escaped: `display-message` reads
-/// its argument as a FORMAT, and `#(…)` in a format runs a shell command. The
-/// text this carries is an `alias:name` plus a summary, so the sink is reachable
-/// from named agents rather than being theoretical.
 #[must_use]
 pub fn display_message_args(server: &ServerId, target: &str, text: &str) -> Vec<String> {
     let mut args = server_args(server);
@@ -974,15 +692,6 @@ pub fn display_message_args(server: &ServerId, target: &str, text: &str) -> Vec<
 }
 
 /// The `ae next --attach` verbs, and the question of which one applies.
-///
-/// Two tmux commands do the same job from different places: `switch-client`
-/// moves a client that is already attached, and `attach-session` gives a client
-/// to a terminal that has none. Frozen's `_next_focus_verb` chose between them
-/// by inside-ness and returned ONLY the verb, "so the caller passes the target
-/// as a separate quoted argv element — a session name with spaces must not be
-/// word-split". Here the target is an argv element by construction, and the
-/// verb is an enum rather than a string for the same reason: a verb that can be
-/// spelled is a verb that can be spelled wrong.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FocusVerb {
     /// Inside tmux — `attach-session` errors with "sessions should be nested
@@ -1066,9 +775,6 @@ pub fn current_session_args(server: &ServerId) -> Vec<String> {
 /// The arguments asking `server` for its own socket path — frozen's
 /// `tmux display-message -p '#{socket_path}'`, the probe that decides WHERE a
 /// launch actually lands.
-///
-/// No `-t`: the question is about the SERVER, not about a pane, and a target
-/// would only narrow it to whichever pane the server last touched.
 #[must_use]
 pub fn socket_path_args(server: &ServerId) -> Vec<String> {
     let mut args = server_args(server);
@@ -1087,9 +793,6 @@ pub fn server_pid_args(server: &ServerId) -> Vec<String> {
 
 /// The single value a `display-message -p` answer carries: its first line,
 /// trimmed, and only when the query SUCCEEDED.
-///
-/// SC-017k's rule one layer down — a failed query has no answer, and an empty
-/// answer from a successful one is not a value either.
 #[must_use]
 pub fn interpret_display_value(succeeded: bool, stdout: &str) -> Option<String> {
     if !succeeded {
@@ -1101,11 +804,6 @@ pub fn interpret_display_value(succeeded: bool, stdout: &str) -> Option<String> 
 
 /// Whether `tty` is one of `pane_ttys`, comparing with `/dev/` stripped from
 /// BOTH sides.
-///
-/// Frozen's note is the reason, and it is a portability fact rather than a
-/// nicety: "procps prints `pts/3` and BSD ps `ttys039` against tmux's
-/// `/dev/pts/3` / `/dev/ttys039`, but a ps that spelled the full path would
-/// otherwise make every genuine pane look stale".
 #[must_use]
 pub fn tty_is_a_pane(tty: &str, pane_ttys: &[String]) -> bool {
     let bare = |value: &str| {
@@ -1117,10 +815,6 @@ pub fn tty_is_a_pane(tty: &str, pane_ttys: &[String]) -> bool {
 }
 
 /// `#{session_id} | #{session_name}` — the pair the id resolver reads.
-///
-/// [`FIELD_SEPARATOR`] rather than a space: the frozen splits on whitespace and
-/// a session name cannot contain one (`is_session_name`), but a delimiter that
-/// cannot appear in either field is one fewer thing to be true.
 pub const SESSION_ID_FORMAT: &str = "#{session_id} | #{session_name}";
 
 /// The arguments listing `server`'s sessions as id/name pairs.
@@ -1158,11 +852,6 @@ pub fn interpret_session_id(succeeded: bool, stdout: &str, name: &str) -> Option
 }
 
 /// `#{pane_id} | #{window_id} | #{@ae_agent}` — the window-grouping read.
-///
-/// A SEPARATE enumeration from [`WATCH_PANE_FORMAT`], deliberately: the frozen
-/// keeps the window id out of the main cycle's format because that format is a
-/// pinned parity contract with the aewatch sidecar (ae:17035-17037). One cheap
-/// extra `list-panes` costs less than breaking it.
 pub const WINDOW_PANE_FORMAT: &str = "#{pane_id} | #{window_id} | #{@ae_agent}";
 
 /// The number of fields [`WINDOW_PANE_FORMAT`] yields.
@@ -1217,28 +906,9 @@ pub fn interpret_window_panes(succeeded: bool, stdout: &str) -> Option<Vec<Windo
 
 // ---------------------------------------------------------------------------
 // Pane DELIVERY — the paste path's argv (B move 1).
-//
-// The frozen `helper_send_body` ran these by hand through the ambient `tmux`.
-// Here they are derived the way every other argument list in this module is:
-// the server is a typed parameter, so a cross-session target is addressed on
-// the server its own record names rather than on whichever one the caller's
-// environment happened to select. Nothing below interprets pane bytes — that
-// is `crate::deliver::region`'s job, and it is kept apart for the same reason
-// the interpreters above are kept apart from the builders.
-// ---------------------------------------------------------------------------
 
 /// What a pane is running and under which process — `pane_current_command`
 /// for the tool model, `pane_pid` for the dead-pane walk.
-///
-/// One `display-message` rather than two: the frozen body asked twice and
-/// could observe a pane between the answers.
-///
-/// **`pane_pid` is FIRST.** `pane_current_command` is the free-text half, so it
-/// goes last and is read with a bounded `splitn`: a command carrying
-/// [`FIELD_SEPARATOR`] stays intact instead of failing the whole probe. The
-/// direction matters — an unreadable probe is what the dead-pane guard must
-/// never be handed, because it defaults to an empty command, which reads as a
-/// shell.
 pub const PANE_PROBE_FORMAT: &str = "#{pane_pid} | #{pane_current_command}";
 
 /// The number of fields [`PANE_PROBE_FORMAT`] renders.
@@ -1280,12 +950,6 @@ pub fn interpret_pane_probe(succeeded: bool, stdout: &str) -> Option<ObservedPan
 }
 
 /// Whether a capture keeps the pane's styling.
-///
-/// The two readers want different bytes and neither tolerates the other's:
-/// the start-up marker scan matches ROWS the TUI drew, and SGR between the
-/// column-0 anchor and the text would break every one of its patterns; the
-/// occupancy sensor decides `live prompt` versus `submitted echo` from the SGR
-/// state alone and is blind without it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Styling {
     /// `capture-pane -p` — printable text only.
@@ -1315,12 +979,6 @@ pub fn capture_screen_args(server: &ServerId, pane: &str, styling: Styling) -> V
 }
 
 /// The full argument list for staging a message in buffer `buffer`.
-///
-/// `-` is the buffer's SOURCE: the bytes arrive on stdin, never in argv.
-/// Measured 2026-08-15: `set-buffer -- "$msg"` carried 16000 bytes and FAILED
-/// at 32000, while `load-buffer -` carried 131000. The ceiling was not the
-/// worst of it — a failed `set-buffer` pasted nothing, the input box read
-/// empty, and the staged-check called that a successful submit.
 #[must_use]
 pub fn load_buffer_args(server: &ServerId, buffer: &str) -> Vec<String> {
     let mut args = server_args(server);
@@ -1329,15 +987,6 @@ pub fn load_buffer_args(server: &ServerId, buffer: &str) -> Vec<String> {
 }
 
 /// The full argument list for pasting `buffer` into `pane` and deleting it.
-///
-/// `-p` REQUESTS bracketed paste. tmux wraps the paste in bracket controls
-/// only when the receiving application enabled that mode, so a tool that never
-/// asked sees a plain paste and nothing is lost by asking. Measured 2026-08-30
-/// on claude: plain paste lost the head in 4/4 trials, bracketed 0/6 with
-/// receiver-side byte-exact payloads.
-///
-/// `-d` deletes the buffer after the paste, so a body never outlives its
-/// delivery in the server's buffer stack.
 #[must_use]
 pub fn paste_buffer_args(server: &ServerId, buffer: &str, pane: &str) -> Vec<String> {
     let mut args = server_args(server);
@@ -1370,10 +1019,6 @@ pub enum Key {
 }
 
 /// The full argument list for sending one [`Key`] to `pane`.
-///
-/// `-t` addresses the pane WITHOUT selecting it. The frozen body's rule, and
-/// load-bearing: `select-pane` here changed the window's active pane and routed
-/// the human's in-flight keystrokes into the target mid-send.
 #[must_use]
 pub fn send_keys_args(server: &ServerId, pane: &str, key: Key) -> Vec<String> {
     let mut args = server_args(server);
@@ -1391,9 +1036,6 @@ pub fn send_keys_args(server: &ServerId, pane: &str, key: Key) -> Vec<String> {
 }
 
 /// Each attached client's own active pane and the epoch of its last input.
-///
-/// `#{pane_id}` on a CLIENT is the pane that client is looking at — stronger
-/// than `#{pane_active}`, which only means active-in-window.
 pub const CLIENT_FORMAT: &str = "#{pane_id} | #{client_activity}";
 
 /// The number of fields [`CLIENT_FORMAT`] renders.
@@ -1417,11 +1059,6 @@ pub fn list_clients_args(server: &ServerId) -> Vec<String> {
 }
 
 /// What a completed [`list_clients_args`] run means.
-///
-/// A failed run is `None` — no client was observed, which the caller reads as
-/// "no human proven present" rather than as "nobody is there". The frozen body
-/// made the same choice with `|| true`, and it is the SAFE direction only
-/// because the busy predicate, not this, is the primary guard.
 #[must_use]
 pub fn interpret_clients(succeeded: bool, stdout: &str) -> Option<Vec<ObservedClient>> {
     if !succeeded {
@@ -1446,14 +1083,6 @@ pub fn interpret_clients(succeeded: bool, stdout: &str) -> Option<Vec<ObservedCl
 }
 
 /// The arguments creating a spawned agent's own WINDOW, printing its pane id.
-///
-/// `-d` so the caller's focus is not stolen, `-t <session>:` so tmux appends
-/// rather than replacing, `-c` so the pane starts in the work dir, and
-/// `-P -F '#{pane_id}'` so the id comes back on stdout instead of being looked
-/// up afterwards by a query that could answer about a different pane.
-///
-/// A new window per spawned agent is the frozen choice: the main window keeps
-/// the lead layout untouched and N parallel workers stay usable.
 #[must_use]
 pub fn new_window_args(server: &ServerId, session: &str, work_dir: &str) -> Vec<String> {
     let mut args = server_args(server);
@@ -1488,9 +1117,6 @@ pub fn interpret_new_window(succeeded: bool, stdout: &str) -> Option<String> {
 const PANE_ID_FORMAT: &str = "#{pane_id}";
 
 /// The arguments setting a pane's TITLE — `select-pane -t <pane> -T <title>`.
-///
-/// `select-pane -T` does not change the active pane: `-T` is a title write, and
-/// the `-t` target names the pane it writes to. Nothing here selects.
 #[must_use]
 pub fn pane_title_args(server: &ServerId, pane: &str, title: &str) -> Vec<String> {
     let mut args = server_args(server);
@@ -1499,11 +1125,6 @@ pub fn pane_title_args(server: &ServerId, pane: &str, title: &str) -> Vec<String
 }
 
 /// The arguments renaming the window a pane lives in.
-///
-/// An explicit `rename-window` also DISABLES tmux's automatic-rename, which is
-/// the point: a worker's window keeps its role name instead of following the
-/// foreground process. `name` is [`format_literal`]-escaped by the caller —
-/// a window name is a FORMAT, and `#(cmd)` in one runs a shell.
 #[must_use]
 pub fn rename_window_args(server: &ServerId, pane: &str, name: &str) -> Vec<String> {
     let mut args = server_args(server);
@@ -2229,10 +1850,9 @@ mod tests {
 
     #[test]
     fn the_pane_format_asks_for_identity_and_never_for_the_display_field() {
-        // `@ae_agent` is DISPLAY (SC-602) and the frozen script associated on it
-        // (#106). The two SC-017s fields ARE here now — the row that ratified
+        // `@ae_agent` is DISPLAY and the frozen script associated on it
+        // (#106). The two slot fields ARE here now — the ruling that ratified
         // the predicate is what put them here, and their absence beforehand was
-        // the same decision in the other direction.
         let args = list_panes_args(&ServerId::Ambient, "s").join(" ");
         assert!(args.contains("#{@ae_slot}"));
         assert!(args.contains("#{pane_dead}"), "{args}");
@@ -2285,13 +1905,8 @@ mod tests {
     #[test]
     fn an_exited_pane_keeps_both_facts_that_tell_it_apart_from_a_live_one() {
         // #109 IN ONE ASSERTION. A `remain-on-exit` pane reports the EXITED
-        // process's command, and `true` is not in SC-017s's shell set — so the
+        // process's command, and `true` is not in shell set — so the
         // command field alone reads like a live agent. The only thing that
-        // separates it from a live pane is `pane_dead`, and this pins that the
-        // read carries it rather than discarding it.
-        //
-        // Measured, not invented: `1 |  | true` is real output from a real
-        // server whose pane ran `true` under `remain-on-exit on`.
         let exited = interpret_panes(true, "1 | worker | true\n").expect("success");
         assert_eq!(exited, vec![pane(Some(true), Some("worker"), Some("true"))]);
         assert_eq!(
@@ -2311,14 +1926,6 @@ mod tests {
         // RESTORED BY NAME, and not merely as bookkeeping. This name vanished in
         // the three-field rewrite; its EMPTY-field half survived inside
         // `an_unreadable_field_...`, but the WHITESPACE-ONLY field had no
-        // assertion anywhere, which panereview found by reading for the input
-        // rather than for the name. A vanished name is worth restoring only when
-        // something it covered is actually uncovered — here something was.
-        //
-        // Both spellings must reach the same answer: a slot is either usable or
-        // it is absent, and "present but blank" is not a third thing. The
-        // trailing-trim is what makes the whitespace case land, so the case is
-        // the guard on the trim.
         assert_eq!(
             interpret_panes(true, "0 |  | zsh\n"),
             Ok(vec![pane(Some(false), None, Some("zsh"))]),
@@ -2332,14 +1939,14 @@ mod tests {
         assert_eq!(
             interpret_panes(true, "0 | main |    \n"),
             Ok(vec![pane(Some(false), Some("main"), None)]),
-            "the command field normalizes the same way, and SC-017s puts an \
+            "the command field normalizes the same way, and an unassociated \
              unreadable command in the not-alive set for the same reason"
         );
     }
 
     #[test]
     fn an_unreadable_field_is_no_reading_rather_than_a_convenient_one() {
-        // SC-017s: an empty or absent reading is NOT alive, because absence of
+        // an empty or absent reading is NOT alive, because absence of
         // evidence is not evidence. Each field fails independently.
         assert_eq!(
             interpret_panes(true, "0 | main | \n"),
@@ -2368,8 +1975,6 @@ mod tests {
         // A TAB CANNOT BE SMUGGLED THROUGH A FIELD. If a slot carried one, the
         // line would split into four: the prefix could match a real roster slot
         // while the remainder was pushed into the command field, forging a
-        // non-shell command for a pane running a shell — a fabricated `alive`
-        // attached to the wrong agent. Refusing the line answers `unknown`.
         let forged = interpret_panes(true, "0 | main | evil | zsh\n").expect("success");
         assert_eq!(
             forged,
@@ -2407,28 +2012,6 @@ mod tests {
         // A ROSTER SLOT CAN BE EMPTY: `absorb_roster` validates alias and name
         // and never the slot, so `agent.=cl:lead` in a hand-edited meta yields a
         // roster entry whose slot is "".
-        //
-        // It must associate to nothing, and today it does — but only because
-        // `read_pane` normalizes an empty field to `None`, so no pane ever
-        // carries `Some("")`. THAT CORRECTNESS LIVES IN THE RELATION BETWEEN TWO
-        // FUNCTIONS AND IN NEITHER OF THEM, which is invisible to a review that
-        // reads either alone. Remove the normalization and an empty slot matches
-        // EVERY unmarked pane: a corrupt roster entry reading its health off
-        // somebody else's pane, which SC-017p forbids by name.
-        //
-        // NAMED FOR THE FACT, NOT THE FILTER — a test named after the guard gets
-        // deleted by whoever deletes the guard, believing they are tidying.
-        //
-        // THE PANES COME FROM `interpret_panes`, NOT FROM THE HELPER. A first
-        // draft built the post-normalization value by hand and stayed green
-        // under the very deletion it existed to catch; grok46 caught that in
-        // review. A fixture that builds the conclusion cannot observe the step
-        // that produces it.
-        //
-        // DELETED AND RESTORED ONCE: a block rewrite for SC-017s's three-field
-        // format swallowed this test whole, and only a test-NAME diff against
-        // HEAD found it. A count that holds while a name vanishes is the shape
-        // that hides a deletion.
         let panes = interpret_panes(true, "0 |  | zsh\n0 | main | claude\n")
             .expect("a successful enumeration");
         assert_eq!(
@@ -2467,7 +2050,7 @@ mod tests {
     #[test]
     fn absence_carries_how_many_panes_identified_nothing() {
         // The COUNT, not a conclusion. Whether zero unidentified panes proves a
-        // roster agent absent is SC-017p's reading and is made where liveness is
+        // roster agent absent is reading and is made where liveness is
         // decided; this reports what was seen.
         assert_eq!(
             slot_observation(&[slotted("other")], "main"),
@@ -2476,7 +2059,7 @@ mod tests {
         assert_eq!(
             slot_observation(&[slotted("other"), unslotted()], "main"),
             SlotObservation::Absent { unidentified: 1 },
-            "an unassociated pane is exactly the fact SC-017q needs"
+            "an unassociated pane is exactly the fact the reader needs"
         );
         assert_eq!(
             slot_observation(&[], "main"),

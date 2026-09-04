@@ -48,9 +48,6 @@ pub struct Usage;
 
 /// Parse the argv after the meta directory.
 ///
-/// Unlike `send`, a MESSAGE IS OPTIONAL: `interrupt <target>` is a bare
-/// cancel, which is the common case.
-///
 /// # Errors
 ///
 /// [`Usage`] for no target at all.
@@ -98,7 +95,6 @@ pub fn run(
         // Cancel keystrokes only. Nothing is pasted, so nothing can be
         // executed, so there is no dead-pane question to ask and no body to
         // store. Delivered by hand rather than through the paste path, which
-        // exists to carry a message.
         let _ = transport::send_key(&server, &resolved.pane, crate::tmux::Key::CancelCopyMode);
         let _ = transport::send_key(&server, &resolved.pane, crate::tmux::Key::Escape);
         return record(dir, &target_name, "", now, actor, err);
@@ -124,10 +120,6 @@ pub fn run(
             // A message interrupt must NOT record success on an unconfirmed
             // submit: the delivery has already said what happened and where
             // the body is. One arm is recorded anyway — an oversize NOTICE
-            // whose on-screen proof failed. `interrupt` is a public-only
-            // entry, so unlike `send` there is no second writer to
-            // double-book the ledger, and a pointer that was staged but never
-            // submitted is worth a line in it.
             if let deliver::Failure::Unconfirmed {
                 body_file,
                 notice: true,

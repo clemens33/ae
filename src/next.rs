@@ -5,34 +5,6 @@
 //! rollup `ae list` reads — precisely so the two could never disagree about what
 //! wants attention; this module inherits that property by construction, because
 //! it selects over the very [`World`] the list path renders.
-//!
-//! # What is selected, and in what order
-//!
-//! Only a RUNNING session is a candidate. Frozen iterated `list_ae_sessions`,
-//! which asks tmux and therefore cannot return a stopped one; here the exclusion
-//! is [`Status::Running`], which is the same fact after phase 2 established it.
-//!
-//! Among the candidates that need attention, `_next_better` is a total order:
-//! higher severity rank first, then more-recent activity, then name ascending —
-//! "so equal-rank/equal-mtime ties are stable and scriptable, not tmux-list
-//! order". [`choose`] is that comparison and nothing else.
-//!
-//! **Recency is the digest's `last_active_epoch`, not a stat of a file.** Frozen
-//! read the mtime of `events.jsonl` because that is what bash could get cheaply;
-//! the core already publishes when the session last did anything ae could see,
-//! and a second derivation of one fact is the disagreement this module exists to
-//! avoid. The two answers coincide in practice — a ledger's last event is what
-//! last touched the file — and where they can drift, this is the ratified one.
-//!
-//! # The agent named on the line
-//!
-//! Frozen printed the agent that RAISED the winning reason. Here that is the
-//! first roster agent whose own reason equals the session's rollup. One reason
-//! has no such agent: `unanswered` is a PAIR fact the core keeps at session
-//! level (see [`crate::session`]), never on an agent, so a session whose only
-//! attention is an unanswered request names no agent. Frozen named the request's
-//! target; the digest does not carry it, and inventing a second owner for a fact
-//! the contract deliberately made non-local is not worth the field.
 
 use crate::attention::Reason;
 use crate::digest::{SessionEntry, Status};
@@ -99,11 +71,6 @@ impl Usage {
 }
 
 /// Read `ae next`'s flags, in the order frozen read them.
-///
-/// **Left to right, first answer wins.** Frozen's loop returns at the word it is
-/// looking at, so `--help` after a word it refuses never runs, and a word it
-/// refuses after `--help` never gets read. A parser that gathered every flag
-/// first and decided afterwards would answer both of those differently.
 ///
 /// # Errors
 ///
@@ -198,10 +165,6 @@ pub fn choose(world: &World) -> Option<Choice> {
 }
 
 /// Frozen's `_next_better`: rank, then recency, then name ascending.
-///
-/// Written as one expression over the same triple frozen compared, because the
-/// order is the contract — a sort key assembled elsewhere would put the
-/// tie-break somewhere a reader of this module cannot see it.
 fn better(candidate: (Reason, i64, &String), incumbent: (Reason, i64, &String)) -> bool {
     let (rank, epoch, name) = candidate;
     let (best_rank, best_epoch, best_name) = incumbent;
@@ -216,11 +179,6 @@ fn epoch_of(session: &SessionEntry) -> i64 {
 }
 
 /// The agent whose own reason IS the session's rollup, in roster order.
-///
-/// Empty when none does. That is not a defect to paper over with the first
-/// agent: the line's last field answers "who", and naming an agent that did not
-/// raise the reason would be a wrong answer where an empty one is merely a
-/// missing one.
 fn raiser(session: &SessionEntry, reason: Reason) -> String {
     session
         .agents

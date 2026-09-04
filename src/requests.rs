@@ -1,4 +1,4 @@
-//! The `requests` read surface — SC-212c, SC-518, SC-1306d, SC-211d.
+//! The `requests` read surface.
 //!
 //! Two things, kept apart the way the frozen implementation keeps them apart:
 //! the request SENSOR ([`states`]) and the TABLE the helper prints
@@ -7,158 +7,6 @@
 //! source says why — the two copies had already drifted once, one checking both
 //! ends of a reply and the other only the actor end. So the sensor is a public
 //! function here, not a private detail of the table.
-//!
-//! # The frozen argv, and the successor spelling
-//!
-//! The corpus rows invoke a per-session script: `<AE_HOME>/sessions/tg1/requests
-//! all`. The successor spelling ruled for it (lead ruling on D1, 2026-08-24) is
-//!
-//! ```text
-//! <AE_HOME>/sessions/<name>/requests [mine|inbox|all]
-//!   ->  ae _requests <AE_HOME>/sessions/<name> [mine|inbox|all]
-//! ```
-//!
-//! The leading underscore is load-bearing: `_validate_session_name` forbids a
-//! leading `_`, so an underscore-prefixed subcommand can never shadow a legal
-//! session name and SC-022's "a top-level bare word is a launch candidate"
-//! loses nothing. This mapping is a FIXED DECLARED INPUT to a parity run, not
-//! something a runner improvises per row — phase-4 criterion 14 requires the
-//! effective normalised argv of every invocation.
-//!
-//! # What this surface deliberately does not do
-//!
-//! `mine` and `inbox` filter against the CALLER's pane identity. The binary
-//! reads it from the pane `TMUX_PANE` names, in one `display-message` round
-//! trip ([`crate::tmux::viewer_args`]), and [`Viewer::from_pane`] applies the
-//! frozen helper's rules to the readings. Without a `TMUX_PANE` there is no
-//! identity and both modes take the frozen "could not detect current agent
-//! identity" refusal, which 24 corpus rows pin at `rc=1`.
-//!
-//! Two places this is deliberately NOT the frozen helper, both Rust-native
-//! decisions under the delivery-first ruling rather than parity gaps:
-//!
-//! * **No `TMUX_PANE` means no identity.** The frozen `ae_current_pane` falls
-//!   back to a bare `tmux display-message -p '#{pane_id}'`, which on a live
-//!   server answers with whatever pane the server last touched — an identity
-//!   that is somebody's, not necessarily the caller's. Refusing is the
-//!   deterministic answer.
-//! * **Mixed identity never matches.** A routed viewer (slot + session) against
-//!   a keyless row, or the reverse, is no match — SC-518 strict, the rule
-//!   [`crate::events::Identity`] already applies to closure. The frozen filter
-//!   falls back to display-name matching whenever EITHER side lacks a slot.
-//!   Only rows written by unstamped panes can tell the two apart.
-//!
-//! # Pending, replied, cancelled
-//!
-//! **SC-518 and SC-518a together, and a terminal must satisfy BOTH.**
-//!
-//! - the NEWEST `ask`/`review` per `ref` opens the request shown;
-//! - **SC-518 (identity)** — a `reply` closes it only on a FULL MIRROR: the
-//!   reply's actor is the request's target AND the reply's target is the
-//!   request's sender, each compared by [`Identity::matches`]. Routing keys
-//!   compare to routing keys, display names to display names, and a MIXED pair
-//!   matches nothing — as does an `Unassociated` side, including against another
-//!   `Unassociated`. Two events that each failed to say where they came from
-//!   have not thereby said the same thing;
-//! - **SC-518a (order)** — a terminal terminates only the NEWEST PRECEDING
-//!   opening with that ref. A terminal that PRECEDES its opening closes
-//!   nothing: causality is not a matching condition that `ref` equality can
-//!   satisfy. A later re-`ask` opens a NEW lifecycle and an earlier terminal
-//!   cannot reach forward into it;
-//! - a `cancel` is a terminal and not a third thing, so **SC-518a's order rule
-//!   governs it exactly as it governs a reply**. Its AUTHORIZATION has no
-//!   contract row — SC-518 defines a REPLY MIRROR, and a cancel has no target
-//!   end to mirror — and is RULED instead (operational lead, 2026-08-27, under
-//!   the delivery-first mandate): a cancel withdraws a request when its actor
-//!   identity is the request's own sender by the strict [`Identity::matches`]
-//!   the reply mirror uses, AND — the one arm that rule cannot express — a
-//!   SLOTLESS cancel (no routing member at all) withdraws a request whose
-//!   opening is ROUTED, or is a SLOTLESS-SENDER opening (actor session
-//!   present, actor slot ABSENT), when the cancel's non-empty actor bytes
-//!   equal the opening's actor bytes. Non-empty slot data stays under strict
-//!   slot + session matching; an empty or a different actor stays pending;
-//!   present-but-empty slot data still names nobody. The arm exists for one
-//!   real writer: `ae compact --digest-only` withdraws its handover request as
-//!   the reserved `ae:compact:<uuid>` actor from a COMMAND with no pane, while
-//!   the request it withdraws was asked under that same override from the
-//!   human's pane — and BOTH writers give such an ask the pane's session and
-//!   no slot ("external senders have none", `ae_tracked_send`), so its opening
-//!   is half a key. The frozen `requests` rendered that `cancelled`; the
-//!   strict mirror alone rendered it `pending` forever. Ruled
-//!   at [`Opening::withdrawn_by`] and GATED: the former `#[ignore]`d
-//!   diagnostics are gates now, with the ruling's own discriminators beside
-//!   them. Precedence between a cancel and a reply that BOTH follow one
-//!   opening remains unruled and stays out of the gate (below);
-//! - every candidate is retained and validated afterwards. Keeping only the
-//!   newest raw one lets an INVALID newer event discard a VALID older one —
-//!   measured in the frozen tree: ask, valid withdrawal, then a stranger's
-//!   cancel rendered `pending`.
-//!
-//! The safety direction is the ruling's reason, and it is worth stating because
-//! it decides every close call above: a false PENDING is LOUD and costs a human
-//! a second glance, while a false CLOSURE silently erases a real request.
-//!
-//! # WHERE THIS DIVERGES FROM THE FROZEN CAPTURES, DELIBERATELY
-//!
-//! Twelve corpus rows. Frozen bash entered its routed comparison on exactly two
-//! selectors — `request.target_slot` nonempty AND `reply.actor_slot` nonempty,
-//! all four keys compared only after that — and fell back to display names
-//! otherwise, so it closed five of the six mixed shapes. And it matched on `ref`
-//! with no ordering test at all, so it let a reply close a request it preceded.
-//! The seats ruled both DEFECTS on 2026-08-24. This surface therefore no longer
-//! reproduces `A7` 405j pair session-only / keyless / one-empty / all-empty,
-//! `G5/m6-mixed-routed-display`, or `G5/m2-wrong-ref` — each `-ro` and `-rw`.
-//!
-//! That divergence used to be asserted as precisely as the parity was, against
-//! the frozen bash corpus: the twelve had to differ, to differ only in the
-//! status token and the summary, and to be the ONLY rows that differed. Both
-//! the corpus and the bash it captured are retired, so what stands now is the
-//! RULING above and the successor tests named below — which was always the
-//! point of writing the ruling down.
-//!
-//! # WHAT IS STILL UNRULED, NAMED SO IT IS NOT DECIDED BY ACCIDENT
-//!
-//! Four shapes, and the corpus can never speak to three of them — it contains
-//! **zero** `cancel` events across all 6,862 files, so no future capture will
-//! settle those either. Each is pinned by a successor test instead, because a
-//! successor test is the only evidence they will ever have:
-//!
-//! 1. **the inverse mixed pair** — a display-only opening and a routed reply.
-//!    Every corpus specimen mixes the OTHER way, so "both directions" is a
-//!    ruling and not a measurement, and the test exercises the direction the
-//!    corpus lacks so a directional implementation fails;
-//! 2. **a re-ask after a terminal** — the re-ask is `pending` and the earlier
-//!    lifecycle stays closed by its own terminal;
-//! 3. **cancel causality** — a cancel before its opening closes nothing;
-//! 4. **a `cancel` AND a `reply` both after one opening.** SC-518a ATTACHES
-//!    terminals to openings; it does not choose between two that both attach to
-//!    one. **Undecided, and the frozen behavior here is MEASURED IS AND NEVER
-//!    NORMATIVE** (colead ruling, 2026-08-24). This module has to do something,
-//!    so it resolves by KIND — cancellation wins, on frozen's reason that a
-//!    straggler answer must not reopen a request nobody is waiting on.
-//!
-//!    **THE GATE SAYS NOTHING ABOUT THIS SHAPE, and the second attempt is why.**
-//!    A test asserting only that the outcome is INDEPENDENT of the two
-//!    terminals' arrival order looks neutral and is not: "the later terminal
-//!    wins" is a legitimate unresolved policy, under which the two orders
-//!    DISAGREE, so an equality assertion forbids it. Arrival-order independence
-//!    is itself a precedence law — resolve-by-kind rather than resolve-by-
-//!    recency — one level up from the winner it declines to name. There is
-//!    therefore no outcome-neutral gating assertion available here at all, and
-//!    the whole shape lives in an `#[ignore]`d diagnostic. If the product needs
-//!    a winner, that is a separate joint ruling to request.
-//!
-//! And one CHOICE consequent on the ruling rather than contained in it: the
-//! `mine`/`inbox` filter uses the same identity rule as closure, because "is
-//! this row's sender me?" is the same question. No corpus row constrains it —
-//! all 24 of those rows are identity refusals — so it is named at
-//! [`Request::shown_to`] where a seat can overrule it visibly.
-//!
-//! # SC-1306d
-//!
-//! The scan is snapshot-semantic. This module reads the container once and
-//! answers from those bytes, so a reply appended after the read leaves this
-//! invocation's row `pending` and a clean rerun reports `replied`.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -170,7 +18,7 @@ use crate::event_text::{
 use crate::events::Identity;
 use crate::tmux::ObservedViewer;
 
-/// `requests [mine|inbox|all]` — SC-212c's signature, defaulting to `mine`.
+/// `requests [mine|inbox|all]` — signature, defaulting to `mine`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Mode {
     /// Requests this agent opened.
@@ -215,9 +63,6 @@ impl Mode {
 }
 
 /// Who is asking — the pane identity the frozen helper reads from tmux.
-///
-/// Empty [`Viewer::display`] is "could not detect", which is the state this
-/// build is always in; see the module docs.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Viewer {
     /// `ae_current_slot` — the routing key.
@@ -230,31 +75,12 @@ pub struct Viewer {
 
 impl Viewer {
     /// Whether an identity was detected at all.
-    ///
-    /// The frozen helper tests `-z "$self"` — the DISPLAY ref — and refuses
-    /// before printing the header. A slot without a display ref is not an
-    /// identity for this test, which is why this reads one field and not three.
     #[must_use]
     pub fn is_known(&self) -> bool {
         !self.display.is_empty()
     }
 
     /// The viewer a pane's readings make, by the frozen helper's rules.
-    ///
-    /// * No `@ae_agent` is no identity at all (`ae_current_agent_ref` returns
-    ///   nothing, and the helper refuses on `-z "$self"`).
-    /// * No session is no identity either. Every real pane has a non-empty
-    ///   `#{session_name}`, so an empty one is a malformed reading — and
-    ///   treating it as "the helper's own session" would silently drop the
-    ///   cross-session qualification that keeps `@other:cl:lead` from being
-    ///   read as `cl:lead`. Fail closed.
-    /// * The display ref is the agent, prefixed `@<session>:` when the pane's
-    ///   session is not `own_session` — the helper's cross-session spelling.
-    /// * The routing half exists only when the slot is one of the closed
-    ///   grammar `main`/`worker.<n>`/`spawned.<n>` (`_valid_slot`) AND the
-    ///   session was read; otherwise the viewer is a display identity, which is
-    ///   what the helper's "fall back to name matching" for an unstamped pane
-    ///   means in [`crate::events::Identity`]'s terms.
     #[must_use]
     pub fn from_pane(observed: &ObservedViewer, own_session: &str) -> Self {
         let (Some(agent), Some(session)) = (observed.agent.as_deref(), observed.session.as_deref())
@@ -281,12 +107,6 @@ impl Viewer {
     }
 
     /// This viewer, classified by the same rule the rows are.
-    ///
-    /// A pane either has both routing halves or neither: `ae_current_slot` and
-    /// the tmux session are read together, so the `Unassociated` middle is not
-    /// reachable from a real pane. It is still spelled out rather than assumed,
-    /// because a viewer assembled from partial data must not silently become a
-    /// display-name match.
     fn identity(&self) -> Identity<'_> {
         match (self.slot.is_empty(), self.session.is_empty()) {
             (false, false) => Identity::Routed {
@@ -300,14 +120,6 @@ impl Viewer {
 }
 
 /// One request, as the sensor emits it.
-///
-/// The frozen sensor emits a unit-separated row — `\x1f`, deliberately not tabs,
-/// because tab is an IFS *whitespace* character and an empty field between two
-/// tabs silently shifts every later field left. A struct has no framing to get
-/// wrong, so the separator does not survive the port; the FIELD SET and its
-/// order do, and the row's own reason for existing (`summary` last, because free
-/// text with no separator in it must land intact) is a property of the frozen
-/// serialisation rather than of the data.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Request {
     /// `pending`, `replied` or `cancelled`.
@@ -325,11 +137,6 @@ pub struct Request {
     /// The opening event's `body_file`.
     pub body_file: Vec<u8>,
     /// Routing key of the sender.
-    ///
-    /// A three-state member, not bytes. Under the ruled identity rule an ABSENT
-    /// key and one present-but-EMPTY are different identities — the first falls
-    /// back to a display name, the second names nobody — so a published row that
-    /// flattened them would have thrown away what the comparison reads.
     pub from_slot: Key,
     /// Routing key of the target.
     pub to_slot: Key,
@@ -342,7 +149,7 @@ pub struct Request {
     pub summary: Vec<u8>,
 }
 
-/// The three terminal states of a request — SC-518.
+/// The three terminal states of a request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Status {
     /// No valid closing event.
@@ -367,17 +174,6 @@ impl Status {
 
 impl Request {
     /// Whether `mode` shows this row to `viewer`.
-    ///
-    /// **The SAME identity rule as closure**, and that is a CHOICE consequent on
-    /// the SC-518 ruling rather than a thing the ruling says. "Is this row's
-    /// sender me?" is an identity comparison between two participants, so
-    /// answering it by a different rule than "did this reply come from the
-    /// agent I asked?" would put two identity semantics in one module — and the
-    /// frozen source's own warning is about exactly that kind of second copy.
-    ///
-    /// No corpus row constrains it: all 24 `mine`/`inbox` rows are identity
-    /// refusals, so the filter never ran with a viewer at all. Named here as a
-    /// choice so a seat can overrule it visibly.
     #[must_use]
     pub fn shown_to(&self, mode: Mode, viewer: &Viewer) -> bool {
         match mode {
@@ -447,23 +243,13 @@ pub fn is_slot(text: &str) -> bool {
 }
 
 /// The refusal for `mine`/`inbox` when no identity could be detected.
-///
-/// Frozen bytes; the 24 A6 corpus rows pin them together with `rc=1`.
 pub const NO_IDENTITY: &str =
     "Error: could not detect current agent identity; use 'requests all' outside an ae pane";
 
 /// The exit status of the identity refusal.
-///
-/// **PINNED, not chosen.** 24 corpus rows record `rc=1` for it. The crate's
-/// usage code stays `2` and belongs to the bad-mode token, which no corpus row
-/// exercises — that split is the lead's D2 ruling, and it is why this constant
-/// lives here rather than being folded into the usage path.
 pub const EXIT_NO_IDENTITY: u8 = 1;
 
 /// The header line, byte for byte.
-///
-/// Not a literal: the same [`write_row`] the rows go through, so a change to the
-/// column widths cannot move the rows without moving the header with them.
 #[must_use]
 pub fn header() -> Vec<u8> {
     let mut out = Vec::new();
@@ -486,15 +272,6 @@ pub struct Output {
 }
 
 /// Render the surface over the session meta directory `dir`.
-///
-/// Infallible on purpose. The frozen sensor tests `[[ -f "$file" ]]` and returns
-/// no rows when the container is absent, and its reader is
-/// `_ae_tac "$file" 2>/dev/null || true` — so an existing container that cannot
-/// be read produces no rows, no diagnostic and `rc=0`, exactly like an absent
-/// one. That is SC-519's quiet-empty direction for this surface and NOT
-/// SC-509b's degraded direction, which belongs to the typed reader in
-/// [`crate::events`]: this table has nowhere to publish a degradation and the
-/// frozen bytes show none.
 #[must_use]
 pub fn render(dir: &Path, mode: Mode, viewer: &Viewer) -> Output {
     if mode.needs_identity() && !viewer.is_known() {
@@ -525,24 +302,12 @@ pub fn table(container: &[u8], mode: Mode, viewer: &Viewer) -> Vec<u8> {
 }
 
 /// THE request sensor — one definition, chronological, one row per request.
-///
-/// Reads `container` through the reversed framing the frozen helper reads it
-/// through (see [`crate::event_text::reversed`]), so the scan is newest-first
-/// and the opening `ask` — the oldest record for a ref — is reached last, which
-/// is exactly why every terminal candidate has to be retained rather than
-/// decided on sight.
 #[must_use]
 pub fn states(container: &[u8]) -> Vec<Request> {
     let stream = reversed(container);
     // Every retained record carries its SCAN ORDINAL — its position in the
     // container, i.e. LEDGER ORDER, which is APPEND ORDER and NEVER `ts`
     // (colead ruling, 2026-08-24). `ts` is read and published as a field and is
-    // never compared: a writer's clock is not the ledger, and two records
-    // sharing a timestamp still have an order while two records with skewed
-    // clocks do not have the order their timestamps claim.
-    //
-    // The scan runs newest first, so a SMALLER ordinal is a NEWER event — which
-    // is the only comparison SC-518a needs.
     let mut opened: HashMap<Vec<u8>, (usize, Opening)> = HashMap::new();
     let mut replies: HashMap<Vec<u8>, Vec<(usize, Closing)>> = HashMap::new();
     let mut cancels: HashMap<Vec<u8>, Vec<(usize, Closing)>> = HashMap::new();
@@ -588,21 +353,15 @@ pub fn states(container: &[u8]) -> Vec<Request> {
         .filter_map(|reference| {
             let (opened_at, opening) = opened.remove(&reference)?;
             let no_candidates = Vec::new();
-            // **SC-518a** — a terminal event terminates only the newest opening
+            // a terminal event terminates only the newest opening
             // that PRECEDES it. The row shown for a ref is its newest opening,
             // so a terminal attaches to it exactly when the terminal came
-            // after it: no newer opening can sit between them. A terminal
-            // BEFORE this opening belonged to an earlier lifecycle of the same
-            // ref and cannot reach forward into this one.
-            //
-            // `after` reads as `<` because the scan is newest-first.
             let after = |(at, _): &&(usize, Closing)| *at < opened_at;
             let cancelled = cancels.get(&reference).unwrap_or(&no_candidates);
             let answered = replies.get(&reference).unwrap_or(&no_candidates);
             // Candidates were appended newest-first, so the FIRST that passes
             // both tests is the newest that counts — and an invalid newer one
             // cannot bury a valid older one, because validity is decided here
-            // and not during the scan.
             let cancel = cancelled
                 .iter()
                 .filter(after)
@@ -613,14 +372,6 @@ pub fn states(container: &[u8]) -> Vec<Request> {
                 .find(|(_, candidate)| opening.answered_by(candidate));
             // A valid withdrawal wins over any reply, however late: a straggler
             // answer must not reopen a request nobody is waiting on.
-            //
-            // **UNRULED, AND NAMED AS SUCH.** Which KIND wins when a valid
-            // cancel and a valid reply both follow one opening is a different
-            // question from SC-518a, which decides which OPENING a terminal
-            // attaches to. There is no corpus specimen — the 6,862-file corpus
-            // contains no `cancel` event at all — so this keeps the frozen
-            // precedence together with the frozen reason, and the choice is
-            // recorded in the module docs rather than made invisibly.
             let (status, summary) = match (cancel, reply) {
                 (Some((_, closing)), _) => (Status::Cancelled, closing.summary.clone()),
                 (None, Some((_, closing))) => (Status::Replied, closing.summary.clone()),
@@ -646,12 +397,6 @@ pub fn states(container: &[u8]) -> Vec<Request> {
 
 /// One routing member, owned — [`Member`]'s three states, kept past the life of
 /// the line they were read from.
-///
-/// [`Member`] is a VIEW: it borrows from the event line on the fast path, which
-/// is right for an extractor and useless for a sensor that outlives the scan.
-/// The three states survive the copy because they are what the identity rule
-/// compares; collapsing `Absent` and `Empty` into "no bytes" here would undo
-/// exactly what [`Member`] exists to preserve.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Key {
     /// The key is not in the record.
@@ -685,25 +430,6 @@ impl Key {
 
 /// This side's participant, as [`Identity`] names one — or `Unassociated` when
 /// the bytes cannot be one.
-///
-/// **The classification and the comparison both live in [`crate::events`]**, on
-/// the type whose own doc has always stated the rule. There is no second copy
-/// here: this function only converts what an OPAQUE read produced into the input
-/// that shared rule takes. `session.rs` and this module now reach the same
-/// [`Identity::matches`], which is what the seats ruled when they ruled SC-518
-/// strict.
-///
-/// **The UTF-8 gate is a decision, and it is the ruling's own direction.**
-/// [`Identity`] compares `&str`; this surface reads arbitrary bytes. A routing
-/// member or display name that is not valid UTF-8 was never written by `ae` —
-/// slots are `main`/`worker.<n>`/`spawned.<n>`, and both agent and session names
-/// are ASCII allowlists — so this is unreachable through any real writer, and
-/// no corpus fixture contains one. When it happens anyway the value cannot be
-/// established as an identity, and SC-518's direction says what to do with an
-/// identity you cannot establish: refuse to close. It answers
-/// [`Identity::Unassociated`], which matches nothing. Comparing the raw bytes
-/// instead would let two equally-unreadable slots close a request on the
-/// strength of two values neither of which names an agent.
 fn identity_of<'a>(slot: &'a Key, session: &'a Key, display: &'a [u8]) -> Identity<'a> {
     let text = |bytes: &'a [u8]| std::str::from_utf8(bytes).ok();
     match (slot, session) {
@@ -774,7 +500,7 @@ impl Opening {
         identity_of(&self.to_slot, &self.to_session, &self.to)
     }
 
-    /// **SC-518, strict** — the full mirror: the reply's actor is this
+    /// **Strict** — the full mirror: the reply's actor is this
     /// request's TARGET and the reply's target is this request's SENDER, with
     /// both comparisons made by [`Identity::matches`]. A mixed pair closes
     /// nothing.
@@ -799,9 +525,6 @@ impl Opening {
     /// withdrawn from a pane-less command under the same override —
     /// `ae compact --digest-only` — where the override's bytes are the only
     /// identity the two events share.
-    ///
-    /// SC-518a's ORDER rule governs cancel unchanged: the arm withdraws only
-    /// the opening the cancel follows.
     fn withdrawn_by(&self, cancel: &Closing) -> bool {
         let asker = self.asker();
         let slotless_sender =
@@ -848,13 +571,6 @@ impl Closing {
 }
 
 /// The frozen sensor's `${_EV//$'\n'/ }` on every summary it stores.
-///
-/// PROVABLY A NO-OP through the frozen extractor, which already turns a `\n`
-/// escape into a space, and a RAW newline inside a value would have ended the
-/// line before the extractor ever saw it. Kept because the frozen code keeps
-/// it and because this module's summaries are the last field of a line-framed
-/// row: the day a value reaches here with a newline in it, one newline must not
-/// become two rows.
 fn fold_newlines(mut value: Vec<u8>) -> Vec<u8> {
     for byte in &mut value {
         if *byte == b'\n' {
@@ -926,7 +642,6 @@ mod tests {
         // Transcribed from the frozen capture
         // arms/A1/c01-healthy-ro/out/requests-all.stdout, whose first line this
         // is. Spelled out rather than built from the same widths the code uses,
-        // because a header derived from the code under test asserts nothing.
         assert_eq!(
             text(&header()),
             "STATUS   TYPE     ID                           FROM                 TO                   SUMMARY\n"
@@ -943,10 +658,7 @@ mod tests {
         let scratch = Scratch::new("absent");
         let out = render(&scratch.0, Mode::All, &Viewer::default());
         assert_eq!(out.stdout, header());
-        assert!(
-            out.stderr.is_empty(),
-            "SC-519: absent is quiet, not degraded"
-        );
+        assert!(out.stderr.is_empty(), "absent is quiet, not degraded");
         assert_eq!(out.code, 0);
     }
 
@@ -1026,19 +738,6 @@ mod tests {
     #[test]
     fn sc_518_a_keyless_request_is_not_closed_by_a_routed_reply() {
         // GAP 1, THE ASYMMETRIC DIRECTION — the shape the corpus does not have.
-        //
-        // Every mixed specimen in the corpus mixes ONE way: a fully routed
-        // opening and an under-routed reply. So "mixed matches nothing in BOTH
-        // directions" is a RULING and not a measurement, and a test that only
-        // exercised the corpus's direction would pass on an implementation that
-        // is directional. This is the other direction: a keyless (Display)
-        // opening and a fully routed reply whose display names mirror it
-        // perfectly. It closes NOTHING.
-        //
-        // Note what makes it sharp: the names DO mirror. An implementation that
-        // reaches for the display fallback whenever either side lacks a key
-        // closes this, and that is exactly the frozen defect the ruling
-        // reverses.
         let body = container(&[
             ASK,
             r#"{"ts":"t2","actor":"a:worker","action":"reply","target":"a:lead","ref":"r1","actor_slot":"worker.0","actor_session":"s","target_slot":"main","target_session":"s","summary":"routed reply"}"#,
@@ -1053,7 +752,6 @@ mod tests {
         // The control that makes the assertion mean something: the SAME opening
         // closed by a keyless reply, which is Display to Display and DOES
         // close. Without this arm the test would also pass on an
-        // implementation that never closes anything.
         let both_keyless = container(&[
             ASK,
             r#"{"ts":"t2","actor":"a:worker","action":"reply","target":"a:lead","ref":"r1","summary":"keyless reply"}"#,
@@ -1066,13 +764,6 @@ mod tests {
         // GAP 5 (lexec's): the ONE shape where Empty and Absent diverge, and the
         // one a reader who thinks they are the same gets wrong while passing
         // every byte the corpus owns.
-        //
-        // Against a ROUTED opening both fail, which is why all four corpus
-        // shapes agree. Against a DISPLAY-only opening they separate: an absent
-        // pair is a Display identity and closes, while a present-and-empty pair
-        // is Unassociated and closes nothing — a writer that meant to route and
-        // did not say where has not thereby named the agent whose display name
-        // happens to sit beside it.
         let keyless_reply = r#"{"ts":"t2","actor":"a:worker","action":"reply","target":"a:lead","ref":"r1","summary":"absent keys"}"#;
         let empty_reply = r#"{"ts":"t2","actor":"a:worker","action":"reply","target":"a:lead","ref":"r1","actor_slot":"","actor_session":"","target_slot":"","target_session":"","summary":"empty keys"}"#;
 
@@ -1105,14 +796,6 @@ mod tests {
         // THE THIRD SHAPE IN THE Unassociated FAMILY, and the corpus cannot see
         // it either. `Empty` and `Absent` have a sibling: exactly ONE routing
         // member present. Against a ROUTED opening it fails like everything
-        // else, which is why the A7 slot-only capture reads the same under both
-        // the frozen rule and the ruling. Against a DISPLAY-only opening the
-        // difference appears: `Unassociated` matches nothing, so it must NOT
-        // fall through to the display name sitting beside it.
-        //
-        // Found by red-proof: an implementation that treats a half key as a
-        // display identity passes every other test in this module and every one
-        // of the 168 corpus rows.
         let half_keyed_reply = r#"{"ts":"t2","actor":"a:worker","action":"reply","target":"a:lead","ref":"r1","actor_slot":"worker.0","target_slot":"main","summary":"half a key"}"#;
         // ASK is keyless, so its participants are Display identities.
         assert_eq!(
@@ -1140,19 +823,7 @@ mod tests {
     fn an_identity_that_is_not_valid_utf8_names_nobody() {
         // THE UTF-8 GATE, as a test rather than as a paragraph. `Identity`
         // compares `&str` and this surface reads arbitrary bytes, so the
-        // conversion needs a decision for the impossible case — and SC-518's
-        // direction supplies it: an identity you cannot establish does not close
-        // a request.
-        //
-        // Unreachable through any real writer (slots are `main`/`worker.<n>`/
-        // `spawned.<n>`, agent and session names are ASCII allowlists, and no
-        // fixture in the corpus carries one), which is exactly why it needs an
-        // assertion: nothing else in the tree would ever notice if it silently
-        // fell back to a display match.
-        //
-        // The two undecodable slots below are byte-IDENTICAL. A byte comparison
-        // would close on them; the gate refuses, because two equally unreadable
-        // values name no agent between them.
+        // conversion needs a decision for the impossible case — and the
         let mut ask = Vec::from(
             &br#"{"ts":"t1","actor":"a:lead","action":"ask","target":"a:worker","ref":"r1","actor_slot":"main","actor_session":"s","target_slot":""#[..],
         );
@@ -1198,7 +869,6 @@ mod tests {
         // The control, and it is what makes the assertion about ORDER: the same
         // two records the other way round DO close. Without this arm the test
         // would pass on an implementation whose identity rule rejected the
-        // reply for an unrelated reason.
         let ask_first = container(&[
             ASK,
             r#"{"ts":"t2","actor":"a:worker","action":"reply","target":"a:lead","ref":"r1","summary":"answered after it was asked"}"#,
@@ -1211,7 +881,6 @@ mod tests {
         // GAP 2. Identity is perfect throughout, so this test can ONLY fail on
         // the ordering rule — which is the point: a re-ask whose reply is also
         // identity-invalid would be pending for two reasons and could not tell
-        // you which rule you had broken.
         let body = container(&[
             ASK,
             r#"{"ts":"t2","actor":"a:worker","action":"reply","target":"a:lead","ref":"r1","summary":"the first answer"}"#,
@@ -1243,20 +912,6 @@ mod tests {
     #[test]
     fn sc_518a_a_cancel_before_its_opening_has_no_effect_whatever_authorization_says() {
         // GAP 3, AND OUTCOME-NEUTRAL BY CONSTRUCTION.
-        //
-        // SC-518a's ORDER rule is ruled and does govern cancel. Cancel
-        // AUTHORIZATION is not ruled at all, so this test must not depend on
-        // whether a given cancel would have been authorised — a gating test that
-        // fails under a future authorization policy has ratified one BY
-        // ENFORCEMENT whatever its comment says (semantic-contract.md, and the
-        // rule came out of this very slice).
-        //
-        // The neutral formulation: a cancel placed BEFORE its opening leaves the
-        // row IDENTICAL to a container that has no cancel in it at all. That is
-        // exactly what "closes nothing" means, and it holds under every possible
-        // authorization ruling, because a terminal that never reaches its
-        // opening cannot be authorised to do anything to it. Whole rows are
-        // compared, not statuses, so the summary cannot move either.
         let re_ask = r#"{"ts":"t3","actor":"a:lead","action":"ask","target":"a:worker","ref":"r1","summary":"asked again"}"#;
         let own =
             r#"{"ts":"t2","actor":"a:lead","action":"cancel","ref":"r1","summary":"withdrawn"}"#;
@@ -1277,7 +932,6 @@ mod tests {
         // The same rule from the re-ask side: an earlier lifecycle's cancel
         // cannot reach forward, so the re-asked row is identical to the row of a
         // container holding only the re-ask. Also neutral — it says nothing
-        // about what the cancel did to the lifecycle it COULD reach.
         let only_re_ask = states(&container(&[re_ask]));
         for cancel in [own, stranger, anonymous] {
             let re_asked = states(&container(&[ASK, cancel, re_ask]));
@@ -1290,24 +944,6 @@ mod tests {
 
     /// **NON-GATING DIAGNOSTIC** — a `cancel` AND a `reply` both attached to one
     /// opening. GAP 4, and the gate now says NOTHING about it.
-    ///
-    /// My first attempt at this asserted that the outcome does not depend on the
-    /// two terminals' arrival order, on the reasoning that naming no winner made
-    /// it neutral. `gpt56terra:pubfp` showed that it does not: **"the later
-    /// terminal wins" is a legitimate unresolved resolver policy**, and under it
-    /// `cancel`-then-`reply` yields `Replied` while `reply`-then-`cancel` yields
-    /// `Cancelled` — so the two are NOT equal, and an equality assertion fails
-    /// that policy. Equality across arrival orders is itself a rule about which
-    /// terminal controls the row: it rules out recency-based precedence. Which
-    /// is exactly the undecided question, one level up from the one I thought I
-    /// was avoiding.
-    ///
-    /// So there is no outcome-neutral gating assertion available for this shape.
-    /// Both terminals attaching is already gated by the single-terminal tests,
-    /// and the only observable of it here — the row being terminal at all — is
-    /// witnessed by the ratified REPLY on its own. Nothing is lost by moving the
-    /// whole shape out of the gate, and a precedence law would have been
-    /// smuggled in by keeping any part of it.
     #[test]
     #[ignore = "records unratified two-terminal precedence behavior; not a gate"]
     fn diagnostic_two_terminals_on_one_opening() {
@@ -1324,7 +960,6 @@ mod tests {
         // IS, not contract, and BOTH orders are recorded rather than related:
         // this build resolves by KIND (cancellation wins) rather than by
         // recency, so the two agree — but that agreement is a property of the
-        // current resolver and not of anything ruled.
         assert_eq!(states(&cancel_then_reply)[0].status, Status::Cancelled);
         assert_eq!(states(&reply_then_cancel)[0].status, Status::Cancelled);
     }
@@ -1357,9 +992,6 @@ mod tests {
         // The measured regression the frozen sensor's retain-then-validate shape
         // exists to prevent: keeping only the newest RAW candidate and
         // validating it afterwards rendered this `pending`.
-        //
-        // The identical shape with two cancels is gated just below, now that
-        // cancel authorization is ruled.
         let replies = container(&[
             ASK,
             r#"{"ts":"t2","actor":"a:worker","action":"reply","target":"a:lead","ref":"r1","summary":"valid answer"}"#,
@@ -1513,7 +1145,7 @@ mod tests {
         }
     }
 
-    /// SC-518a's order rule under the ruled arm, in the positive: it withdraws
+    /// order rule under the ruled arm, in the positive: it withdraws
     /// only the opening it FOLLOWS, and a re-ask opens a lifecycle an earlier
     /// withdrawal cannot reach.
     #[test]
@@ -1564,14 +1196,6 @@ mod tests {
         // THE ORDER IS BY THE SURVIVING OPENING, NOT BY THE FIRST ONE. r1 was
         // asked at t1 and re-asked at t3; the row keeps the t3 opening, and its
         // POSITION follows t3 too — so r2 (t2) precedes r1 (t3) even though r1's
-        // earliest ask is the oldest event in the container. Ordinary logs never
-        // show this, because a ref is opened once and the ordering collapses to
-        // chronological.
-        //
-        // Not derived from a reading: the frozen `_ar_request_states`, extracted
-        // at 72c7293 and run over these exact bytes, emits r2 before r1. The
-        // corpus does not cover a re-asked ref, so this expectation is IS from a
-        // source-plus-execution read of the frozen sensor and NOT from a capture.
         assert_eq!(rows[0].id, b"r2");
         assert_eq!(rows[1].id, b"r1");
         assert_eq!(

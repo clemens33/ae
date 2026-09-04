@@ -227,11 +227,6 @@ fn delivered_summary(env: &Env, framed: &str) -> String {
 /// there is one — an empty variable would read as none anyway), and the
 /// caller's explicit override when it gave one, so the envelope names the same
 /// actor the event does. Nothing else.
-///
-/// Since B move 1 the core pastes for itself, so this is no longer on the
-/// `send` path; it is kept because the no-identity fallback and the watchdog
-/// still exec the public helper, and because the variables it names are the
-/// frozen contract any future helper caller writes.
 #[must_use]
 pub fn delivery_env<'a>(
     env: &'a Env,
