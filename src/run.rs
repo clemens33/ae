@@ -425,6 +425,21 @@ fn resumable(tool: ToolKind, id: &str) -> bool {
             };
             contains_id(&Path::new(&home).join(".codex/sessions"), id, 4)
         }
+        // agy keeps ONE SQLite file per conversation, named for the id, in one
+        // flat directory (measured 2026-09-04) — so the file's existence is the
+        // answer, with no walk and no guess. This is why agy has a probe where
+        // gemini has none: gemini's chats sit under a per-project digest ae
+        // does not compute, agy's do not sit under anything.
+        ToolKind::Agy => {
+            let Some(home) = env_lookup("HOME") else {
+                return false;
+            };
+            crate::lifecycle::path_exists(
+                &Path::new(&home)
+                    .join(crate::session_launch::capture::AGY_CONVERSATIONS)
+                    .join(format!("{id}.db")),
+            )
+        }
         _ => true,
     }
 }
@@ -485,6 +500,18 @@ pub fn resume_forms(cmd: &str, tool: ToolKind, session_id: &str) -> (String, Str
         ToolKind::Gemini => (
             format!("{cmd} --resume {session_id}"),
             format!("{cmd} --resume latest"),
+        ),
+        // agy resumes by `--conversation <id>` and falls back to `--continue`
+        // (`agy --help`, 1.1.25, measured 2026-09-04 — it has no `--resume` at
+        // all). Both forms are stripped first with the agy-aware stripper, so
+        // an operator's own `--conversation` or `-c` cannot stack with, or be
+        // read instead of, the one ae is putting on.
+        ToolKind::Agy => (
+            format!(
+                "{} --conversation {session_id}",
+                launch::strip_agy_session_flags(cmd)
+            ),
+            format!("{} --continue", launch::strip_agy_session_flags(cmd)),
         ),
         ToolKind::OpenCode => (
             format!("{cmd} --session {session_id}"),

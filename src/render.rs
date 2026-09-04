@@ -412,6 +412,7 @@ fn tool_label(cmd: &str) -> String {
         ToolKind::Claude => "claude code".to_owned(),
         ToolKind::Codex => "codex".to_owned(),
         ToolKind::Gemini => "gemini cli".to_owned(),
+        ToolKind::Agy => "antigravity cli".to_owned(),
         ToolKind::Grok => "grok build".to_owned(),
         ToolKind::OpenCode => "opencode".to_owned(),
         ToolKind::Unknown => cmd.to_owned(),

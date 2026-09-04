@@ -44,7 +44,7 @@ impl Split {
     }
 }
 
-/// Which harness a command launches — the five ae models, or none.
+/// Which harness a command launches — the six ae models, or none.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolKind {
     /// Claude Code.
@@ -53,6 +53,14 @@ pub enum ToolKind {
     Codex,
     /// Gemini CLI.
     Gemini,
+    /// Antigravity CLI (`agy`).
+    ///
+    /// Gemini-shaped on the channel its context rides — no append-style
+    /// system-prompt flag, so the context is a `-i` USER TURN — and its own
+    /// tool everywhere else: it resumes with `--conversation <id>` rather than
+    /// `--resume`, and keeps one `SQLite` conversation per id under
+    /// `~/.gemini/antigravity-cli/` instead of gemini's per-project chat JSON.
+    Agy,
     /// Grok Build.
     Grok,
     /// `OpenCode`.
@@ -69,6 +77,7 @@ impl ToolKind {
             "claude" => Self::Claude,
             "codex" => Self::Codex,
             "gemini" => Self::Gemini,
+            "agy" => Self::Agy,
             "grok" => Self::Grok,
             "opencode" => Self::OpenCode,
             _ => Self::Unknown,
@@ -90,6 +99,7 @@ impl ToolKind {
             Self::Claude => "claude",
             Self::Codex => "codex",
             Self::Gemini => "gemini",
+            Self::Agy => "agy",
             Self::Grok => "grok",
             Self::OpenCode => "opencode",
             Self::Unknown => "unknown",
@@ -545,6 +555,10 @@ mod tests {
                 "gemini",
                 ToolKind::Gemini,
             ),
+            // The operator's live agy profile (2026-09-04). `agy` is the
+            // Antigravity CLI and is its OWN tool, not a gemini spelling: the
+            // binary word is what classifies, and the two share no flag.
+            ("agy --dangerously-skip-permissions", "agy", ToolKind::Agy),
             // The env launcher and its two option shapes.
             (
                 "env OPENCODE_CONFIG=/x/y.json opencode",
@@ -628,6 +642,7 @@ mod tests {
             (ToolKind::Claude, "claude"),
             (ToolKind::Codex, "codex"),
             (ToolKind::Gemini, "gemini"),
+            (ToolKind::Agy, "agy"),
             (ToolKind::Grok, "grok"),
             (ToolKind::OpenCode, "opencode"),
             (ToolKind::Unknown, "unknown"),

@@ -1,15 +1,16 @@
 //! Post-launch session-id capture for the tools with no launch-time id flag.
 //!
 //! Ported from `ae`'s `start_capture_session_id` / `capture_session_id` and the
-//! three `capture_*_session_id` chains under them. Codex, opencode and gemini
-//! all learn their conversation id only after they start, so ae asks each of
-//! them a different way:
+//! three `capture_*_session_id` chains under them. Codex, opencode, gemini and
+//! agy all learn their conversation id only after they start, so ae asks each
+//! of them a different way:
 //!
 //! | Tool | How the id is found |
 //! |---|---|
 //! | codex | the `codex.<slot>.sid` file its own `developer_instructions` write, then a launch-token scan of `~/.codex/sessions/<day>/*.jsonl`, then a cwd scan of the same files, then its TUI header |
 //! | opencode | `opencode session list --format json`, matched on the session's `directory` |
 //! | gemini | `~/.gemini/tmp/<project>/chats/session-*.json`, matched on the launch token, then on the project root alone |
+//! | agy | `~/.gemini/antigravity-cli/conversations/<id>.db`, matched on the launch token in the file's BYTES, then on the CLI log that names both the workspace and the conversation it created |
 //!
 //! Every scan is filtered by the seat's `launch_time.<slot>`, so a stale
 //! conversation in the same directory cannot be captured as this one.
@@ -157,6 +158,7 @@ pub fn run(dir: &Path, slot: &str, pane: &str, server: &ServerId) -> u8 {
         ToolKind::Gemini => home
             .as_deref()
             .and_then(|home| capture_gemini(home, &facts)),
+        ToolKind::Agy => home.as_deref().and_then(|home| capture_agy(home, &facts)),
         _ => None,
     };
     if let Some(id) = captured {
@@ -242,6 +244,7 @@ pub fn attempt(dir: &Path, slot: &str) -> Option<String> {
     match facts.tool {
         ToolKind::Codex => home.as_deref().and_then(|home| scan_codex(home, &facts)),
         ToolKind::Gemini => home.as_deref().and_then(|home| scan_gemini(home, &facts)),
+        ToolKind::Agy => home.as_deref().and_then(|home| scan_agy(home, &facts)),
         ToolKind::OpenCode => scan_opencode(&facts),
         _ => None,
     }
@@ -656,6 +659,220 @@ fn gemini_chats(home: &Path, work_dir: &str) -> Vec<PathBuf> {
 }
 
 // ---------------------------------------------------------------------------
+// agy (Antigravity CLI)
+// ---------------------------------------------------------------------------
+
+/// agy's conversation store, relative to the caller's `HOME`.
+///
+/// One `SQLite` file per conversation, named for the id, in one flat directory —
+/// so the FILE STEM is the id and nothing has to be parsed out of the database.
+/// Shared with the resume probe in [`crate::run`], which asks the same
+/// directory whether a recorded id still names a conversation.
+pub const AGY_CONVERSATIONS: &str = ".gemini/antigravity-cli/conversations";
+
+/// agy's per-process CLI log directory, relative to the caller's `HOME`.
+pub(crate) const AGY_LOGS: &str = ".gemini/antigravity-cli/log";
+
+/// Poll agy's conversation store: the launch token first, its CLI log second.
+///
+/// Looks first and sleeps only between attempts, for the same reason as
+/// gemini's scan — every candidate is floored by `launch_time.<slot>`, so an
+/// immediate look cannot return a stale answer and a leading sleep buys
+/// nothing but latency.
+fn capture_agy(home: &Path, facts: &Facts) -> Option<String> {
+    for attempt in 0..POLLS {
+        if attempt > 0 {
+            std::thread::sleep(POLL);
+        }
+        if let Some(id) = scan_agy(home, facts) {
+            return Some(id);
+        }
+    }
+    None
+}
+
+/// One look for this seat's agy conversation: the launch token first, the CLI
+/// log's workspace second.
+///
+/// The two halves read DIFFERENT FILES because agy splits the two facts across
+/// them (measured 2026-09-04, 1.1.25): the conversation database carries the
+/// injected context — and so the launch token — but never the working
+/// directory, while the CLI log carries `workspaceDirs=[…]` and the id of the
+/// conversation that run created, but never the token. Token first, because it
+/// is the only half that separates two agy seats sharing one working directory.
+fn scan_agy(home: &Path, facts: &Facts) -> Option<String> {
+    if facts.work_dir.is_empty() {
+        return None;
+    }
+    if !facts.launch_id.is_empty()
+        && let Some(id) = find_agy_by_launch_id(home, &facts.launch_id, facts.launch_time)
+    {
+        return Some(id);
+    }
+    find_agy_by_cwd(home, &facts.work_dir, facts.launch_time)
+}
+
+/// The newest agy conversation whose database carries the launch token.
+///
+/// The token is searched for in the file's BYTES, not its text: a conversation
+/// database is `SQLite` and is not valid UTF-8, so the reader every other scan
+/// uses answers `None` for all of them. No working-directory filter is applied
+/// or needed — the token is minted per launch, so a database holding it is this
+/// seat's conversation wherever it was started.
+#[must_use]
+pub(crate) fn find_agy_by_launch_id(
+    home: &Path,
+    launch_id: &str,
+    launch_time: i64,
+) -> Option<String> {
+    let marker = format!("AE_AGY_LAUNCH_ID={launch_id}").into_bytes();
+    let mut best: Option<(i64, String)> = None;
+    let mut candidates = agy_conversations(home);
+    candidates.sort();
+    for path in candidates {
+        let Some(at) = mtime(&path) else {
+            continue;
+        };
+        if at < launch_time {
+            continue;
+        }
+        if best.as_ref().is_some_and(|(seen, _)| at <= *seen) {
+            continue;
+        }
+        let Some(id) = agy_conversation_id(&path) else {
+            continue;
+        };
+        let Some(bytes) = read_bytes(&path) else {
+            continue;
+        };
+        if contains_bytes(&bytes, &marker) {
+            best = Some((at, id));
+        }
+    }
+    best.map(|(_, found)| found)
+}
+
+/// The newest conversation an agy run in THIS working directory created,
+/// read out of agy's own CLI log.
+///
+/// The log is the only place agy records which directory a conversation belongs
+/// to. One log per CLI process, plain UTF-8, carrying
+/// `workspaceDirs=[<dir>]` once at start-up and `Created conversation <id>`
+/// for each conversation that run began. The FIRST created id is taken, because
+/// a launch's own conversation is the first one its process creates; a later
+/// one is a conversation the human started by hand in the same pane.
+#[must_use]
+pub(crate) fn find_agy_by_cwd(home: &Path, work_dir: &str, launch_time: i64) -> Option<String> {
+    let target = canonical(work_dir);
+    newest(agy_logs(home), launch_time, |text| {
+        if !agy_log_workspace_matches(text, &target) {
+            return None;
+        }
+        agy_log_created_conversation(text)
+    })
+}
+
+/// Does this log's `workspaceDirs=[…]` name `target`?
+///
+/// agy can be given several directories (`--add-dir`), so the field is a list
+/// and every entry is compared canonically — the same rule gemini's
+/// `.project_root` match uses, for the same reason.
+fn agy_log_workspace_matches(text: &str, target: &str) -> bool {
+    let mut rest = text;
+    while let Some(at) = rest.find("workspaceDirs=[") {
+        let after = &rest[at + "workspaceDirs=[".len()..];
+        let Some(end) = after.find(']') else {
+            return false;
+        };
+        if after[..end]
+            .split_whitespace()
+            .any(|dir| canonical(dir) == target)
+        {
+            return true;
+        }
+        rest = &after[end..];
+    }
+    false
+}
+
+/// The first `Created conversation <id>` in a CLI log.
+fn agy_log_created_conversation(text: &str) -> Option<String> {
+    const KEY: &str = "Created conversation ";
+    let at = text.find(KEY)?;
+    let id: String = text[at + KEY.len()..]
+        .chars()
+        .take_while(|ch| ch.is_ascii_hexdigit() || *ch == '-')
+        .collect();
+    (!id.is_empty()).then_some(id)
+}
+
+/// Every `<id>.db` in agy's conversation store.
+///
+/// The `-wal` and `-shm` siblings `SQLite` writes beside a live database are
+/// excluded by the extension test: neither is a conversation, and a stem
+/// ending in `.db-wal` is not an id.
+fn agy_conversations(home: &Path) -> Vec<PathBuf> {
+    entries(&home.join(AGY_CONVERSATIONS))
+        .into_iter()
+        .filter(|path| path.extension().is_some_and(|ext| ext == "db"))
+        .collect()
+}
+
+/// A conversation database's id: its file stem, when that reads like one.
+///
+/// The class is the same one the codex scan uses on a JSON value, and it is not
+/// decoration: it is what stops a stray `notes.db` in the same directory from
+/// being registered as a conversation id.
+fn agy_conversation_id(path: &Path) -> Option<String> {
+    let stem = path.file_stem()?.to_str()?;
+    let looks_like_an_id = !stem.is_empty()
+        && stem
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() || byte == b'-');
+    looks_like_an_id.then(|| stem.to_owned())
+}
+
+/// Every `cli-*.log` in agy's log directory.
+///
+/// `cli.log` itself is a symlink to the newest one and is skipped by the
+/// prefix test — following it would read the same file twice under two mtimes.
+fn agy_logs(home: &Path) -> Vec<PathBuf> {
+    entries(&home.join(AGY_LOGS))
+        .into_iter()
+        .filter(|path| {
+            path.extension().is_some_and(|ext| ext == "log")
+                && path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("cli-"))
+        })
+        .collect()
+}
+
+/// One file's bytes, or nothing when it cannot be read.
+///
+/// The text reader cannot serve here: a conversation database is `SQLite` and is
+/// not valid UTF-8, so `read_to_string` answers `None` for every one of them.
+fn read_bytes(path: &Path) -> Option<Vec<u8>> {
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: a capture reads the tool's own conversation store, which is binary — see clippy.toml"
+    )]
+    let read = std::fs::read(path);
+    read.ok()
+}
+
+/// Is `needle` a subsequence of `haystack`?
+fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
+    if needle.is_empty() || needle.len() > haystack.len() {
+        return false;
+    }
+    haystack
+        .windows(needle.len())
+        .any(|window| window == needle)
+}
+
+// ---------------------------------------------------------------------------
 // opencode
 // ---------------------------------------------------------------------------
 
@@ -989,6 +1206,10 @@ mod tests {
     }
 
     fn write(path: &Path, body: &str) {
+        write_bytes(path, body.as_bytes());
+    }
+
+    fn write_bytes(path: &Path, body: &[u8]) {
         std::fs::create_dir_all(path.parent().expect("a parent")).expect("dirs");
         std::fs::write(path, body).expect("a fixture file");
     }
@@ -1112,6 +1333,76 @@ mod tests {
             pick_opencode_session("opencode: not logged in", &work, 0),
             None
         );
+    }
+
+    #[test]
+    fn an_agy_conversation_is_matched_by_its_launch_token_and_by_the_cli_log() {
+        let root = scratch("agy");
+        let home = root.join("home");
+        let work = root.join("project");
+        std::fs::create_dir_all(&work).expect("a project dir");
+        let store = home.join(AGY_CONVERSATIONS);
+        let logs = home.join(AGY_LOGS);
+        let id = "643393ad-eb92-4b9e-ab7a-0fe7b1221fa1";
+
+        // A conversation database is `SQLite`: BINARY, and not valid UTF-8. The
+        // text reader every other scan uses answers None for it, so the byte
+        // search is the capability under test and not an implementation detail.
+        write_bytes(
+            &store.join(format!("{id}.db")),
+            b"SQLite format 3\x00\xff\xfe AE_AGY_LAUNCH_ID=tok-1 \xc3\x28",
+        );
+        // Another launch's conversation, and the sidecars SQLite writes beside
+        // a live database. Neither is this seat's.
+        write_bytes(
+            &store.join("11111111-2222-4333-8444-555555555555.db"),
+            b"\xffAE_AGY_LAUNCH_ID=tok-9",
+        );
+        write_bytes(
+            &store.join(format!("{id}.db-wal")),
+            b"AE_AGY_LAUNCH_ID=tok-1",
+        );
+        // A file whose stem is not an id at all — the class check, not decoration.
+        write_bytes(&store.join("notes.db"), b"AE_AGY_LAUNCH_ID=tok-1");
+
+        write(
+            &logs.join("cli-20260904_180410.log"),
+            &format!(
+                "server.go:285] Creating CLI server backend: product=antigravity \
+                 workspaceDirs=[{work}] appDataDir=/x\n\
+                 server.go:1137] Created conversation {id}\n\
+                 server.go:1137] Created conversation 99999999-9999-4999-8999-999999999999\n",
+                work = work.display()
+            ),
+        );
+        // A newer run in ANOTHER workspace, and the `cli.log` pointer that
+        // names the same file a second time.
+        write(
+            &logs.join("cli-20260904_181500.log"),
+            "workspaceDirs=[/nowhere]\nCreated conversation deadbeef-0000-4000-8000-000000000000\n",
+        );
+        write(
+            &logs.join("cli.log"),
+            "workspaceDirs=[/nowhere]\nCreated conversation deadbeef-0000-4000-8000-000000000000\n",
+        );
+
+        let work = work.display().to_string();
+        assert_eq!(
+            find_agy_by_launch_id(&home, "tok-1", 0).as_deref(),
+            Some(id)
+        );
+        assert_eq!(find_agy_by_launch_id(&home, "tok-2", 0), None);
+        // The log fallback takes the FIRST conversation the matching run
+        // created, never a later hand-started one and never another workspace's.
+        assert_eq!(find_agy_by_cwd(&home, &work, 0).as_deref(), Some(id));
+        // The launch-time floor keeps a conversation that predates this launch
+        // out of BOTH halves.
+        let future = i64::MAX / 2;
+        assert_eq!(find_agy_by_launch_id(&home, "tok-1", future), None);
+        assert_eq!(find_agy_by_cwd(&home, &work, future), None);
+        // A home with no agy state at all is quiet.
+        assert_eq!(find_agy_by_cwd(&root.join("empty"), &work, 0), None);
+        assert_eq!(find_agy_by_launch_id(&root.join("empty"), "tok-1", 0), None);
     }
 
     #[test]

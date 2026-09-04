@@ -63,6 +63,12 @@ impl Rig {
     }
 
     fn write(&self, path: &Path, body: &str) {
+        self.write_bytes(path, body.as_bytes());
+    }
+
+    /// A fixture file that is NOT text: agy's conversation store is `SQLite`, and
+    /// a capture that could only read UTF-8 would never see one.
+    fn write_bytes(&self, path: &Path, body: &[u8]) {
         assert!(
             std::fs::create_dir_all(path.parent().unwrap_or(&self.scratch)).is_ok(),
             "a fixture parent"
@@ -146,6 +152,105 @@ fn a_gemini_seat_captures_the_session_id_out_of_its_own_chat_history() {
         meta.matches("harness_session.main=").count(),
         1,
         "the row was replaced, not appended:\n{meta}"
+    );
+}
+
+#[test]
+fn an_agy_seat_captures_the_conversation_whose_database_carries_its_launch_token() {
+    let rig = Rig::new("agy", "agy", 1);
+    let store = rig
+        .home
+        .join(".gemini")
+        .join("antigravity-cli")
+        .join("conversations");
+    // The conversation this launch started. Its NAME is the id — nothing is
+    // parsed out of the file — and the token sits in the injected context agy
+    // recorded. The bytes around it are not UTF-8, which is the point: a real
+    // conversation store is SQLite, and the text reader every other scan uses
+    // answers None for all of it.
+    rig.write_bytes(
+        &store.join("643393ad-eb92-4b9e-ab7a-0fe7b1221fa1.db"),
+        b"SQLite format 3\x00\xff\xfe\x00AE_AGY_LAUNCH_ID=tok-1\x00\xc3\x28",
+    );
+    // Another conversation, newer, holding a DIFFERENT launch's token. Picking
+    // it would mean the token filter never ran.
+    rig.write_bytes(
+        &store.join("11111111-2222-4333-8444-555555555555.db"),
+        b"\x00\xffAE_AGY_LAUNCH_ID=tok-9\x00",
+    );
+    // The sidecars SQLite writes beside a live database are not conversations.
+    rig.write_bytes(
+        &store.join("643393ad-eb92-4b9e-ab7a-0fe7b1221fa1.db-wal"),
+        b"AE_AGY_LAUNCH_ID=tok-1",
+    );
+
+    let (code, stderr) = rig.capture();
+    assert_eq!((code, stderr.as_str()), (Some(0), ""));
+    let meta = rig.meta();
+    assert!(
+        meta.contains("harness_session.main=643393ad-eb92-4b9e-ab7a-0fe7b1221fa1"),
+        "{meta}"
+    );
+    assert!(
+        !meta.contains("11111111") && !meta.contains("db-wal"),
+        "another launch's conversation was captured:\n{meta}"
+    );
+    assert_eq!(
+        meta.matches("harness_session.main=").count(),
+        1,
+        "the row was replaced, not appended:\n{meta}"
+    );
+}
+
+#[test]
+fn an_agy_seat_with_no_token_falls_back_to_the_cli_log_for_its_own_workspace() {
+    let rig = Rig::new("agylog", "agy", 1);
+    // No `launch_id.<slot>`, so the token half cannot run: this is the arm a
+    // seat launched before the marker existed, or one whose context never
+    // reached the transcript, comes down to.
+    rig.write(
+        &rig.session.join("meta"),
+        &format!(
+            "session=cap\nwork_dir={}\nmode=local\nschema=2\nseat.main=lead\n\
+             profile.main=tool\nagent_bin.main=agy\nharness_session.main=pending\n\
+             launch_time.main=1\n",
+            rig.project.display()
+        ),
+    );
+    let logs = rig.home.join(".gemini").join("antigravity-cli").join("log");
+    // agy's own log shape: the workspace once at start-up, then the id of each
+    // conversation that run created.
+    rig.write(
+        &logs.join("cli-20260904_180410.log"),
+        &format!(
+            "I0904 server.go:285] Creating CLI server backend: product=antigravity \
+             workspaceDirs=[{}] appDataDir=/x cascadeManager=true\n\
+             I0904 server.go:1137] Created conversation 643393ad-eb92-4b9e-ab7a-0fe7b1221fa1\n\
+             I0904 server.go:1137] Created conversation 99999999-9999-4999-8999-999999999999\n",
+            rig.project.display()
+        ),
+    );
+    // A run in ANOTHER directory is not this seat's, however recent.
+    rig.write(
+        &logs.join("cli-20260904_181500.log"),
+        "I0904 server.go:285] Creating CLI server backend: workspaceDirs=[/nowhere] appDataDir=/x\n\
+         I0904 server.go:1137] Created conversation deadbeef-0000-4000-8000-000000000000\n",
+    );
+
+    let (code, stderr) = rig.capture();
+    assert_eq!((code, stderr.as_str()), (Some(0), ""));
+    let meta = rig.meta();
+    assert!(
+        meta.contains("harness_session.main=643393ad-eb92-4b9e-ab7a-0fe7b1221fa1"),
+        "{meta}"
+    );
+    assert!(
+        !meta.contains("deadbeef"),
+        "another workspace's conversation was captured:\n{meta}"
+    );
+    assert!(
+        !meta.contains("99999999"),
+        "a later hand-started conversation was captured instead of the launch's:\n{meta}"
     );
 }
 

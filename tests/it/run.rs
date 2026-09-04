@@ -61,7 +61,7 @@ impl Rig {
         }
         let out = scratch.join("argv");
         let mut profiles = String::from("[profiles]\n");
-        for tool in ["claude", "codex", "gemini", "grok", "opencode"] {
+        for tool in ["claude", "codex", "gemini", "grok", "opencode", "agy"] {
             let path = bin.join(tool);
             let body = REPORTING_TOOL.replace("__OUT__", &out.display().to_string());
             assert!(std::fs::write(&path, body).is_ok(), "the fixture {tool}");
@@ -140,8 +140,8 @@ impl Rig {
 
     /// Plant the evidence a tool's own resume probe looks for.
     ///
-    /// Only claude and codex leave any, and where a tool leaves none there is
-    /// nothing to plant — the recorded id is the whole answer.
+    /// Only claude, codex and agy leave any, and where a tool leaves none there
+    /// is nothing to plant — the recorded id is the whole answer.
     fn transcript(&self, tool: &str, id: &str) {
         match tool {
             "claude" => {
@@ -168,6 +168,19 @@ impl Rig {
                 assert!(
                     std::fs::write(dir.join(format!("rollout-{id}.jsonl")), "{}\n").is_ok(),
                     "a session log"
+                );
+            }
+            // agy keeps ONE file per conversation, named for the id, in one
+            // flat directory — so the evidence is that file and nothing else.
+            "agy" => {
+                let dir = self.home.join(".gemini/antigravity-cli/conversations");
+                assert!(
+                    std::fs::create_dir_all(&dir).is_ok(),
+                    "a conversation store"
+                );
+                assert!(
+                    std::fs::write(dir.join(format!("{id}.db")), "").is_ok(),
+                    "a conversation"
                 );
             }
             _ => {}
@@ -497,6 +510,24 @@ fn each_tool_gets_the_argv_its_capability_row_promises() {
     assert!(argv[3].contains("This is context only"), "{}", argv[3]);
     assert_eq!(argv.len(), 4, "{argv:?}");
 
+    // agy: `-i`, gemini-shaped down to the wait suffix, because `agy --help`
+    // (1.1.25, measured 2026-09-04) has no append-style system-prompt flag at
+    // all — and no launch-time id flag either, so nothing is baked.
+    let rig = Rig::new("agy");
+    rig.seat("agy", "");
+    let argv = rig.planned_argv();
+    assert_eq!(
+        argv[..3],
+        [rig.tool("agy"), "--flag".to_owned(), "-i".to_owned()]
+    );
+    assert!(argv[3].contains("This is context only"), "{}", argv[3]);
+    assert!(argv[3].contains("AE_AGY_LAUNCH_ID=tok-1"), "{}", argv[3]);
+    assert!(
+        !argv.iter().any(|word| word == "--session-id"),
+        "agy takes no id at launch: {argv:?}"
+    );
+    assert_eq!(argv.len(), 4, "{argv:?}");
+
     // grok: an ae-generated id, and the context as the POSITIONAL prompt —
     // never `--system-prompt-override`, which would replace grok's own.
     let rig = Rig::new("grok");
@@ -553,6 +584,7 @@ fn a_recorded_id_is_the_resume_target_for_every_tool() {
             &["--resume", "u-9"][..],
             &["--resume", "latest"][..],
         ),
+        ("agy", &["--conversation", "u-9"][..], &["--continue"][..]),
         ("grok", &["--resume", "u-9"][..], &["--continue"][..]),
         ("opencode", &["--session", "u-9"][..], &["--continue"][..]),
     ] {
@@ -600,7 +632,11 @@ fn a_recorded_id_is_the_resume_target_for_every_tool() {
 fn a_probe_that_can_run_and_fails_still_falls_back() {
     // The other half of the rule: where a tool DOES leave evidence, a recorded
     // id whose conversation is gone is not a resume target either.
-    for (tool, gone) in [("claude", "--continue"), ("codex", "resume")] {
+    for (tool, gone) in [
+        ("claude", "--continue"),
+        ("codex", "resume"),
+        ("agy", "--continue"),
+    ] {
         let rig = Rig::new(&format!("gone-{tool}"));
         rig.seat(tool, "u-9");
         rig.started();
@@ -614,11 +650,11 @@ fn a_probe_that_can_run_and_fails_still_falls_back() {
         } else {
             assert!(
                 argv.iter().any(|word| word == gone),
-                "claude takes its cwd heuristic rather than a missing transcript: {argv:?}"
+                "{tool} takes its fallback rather than a missing conversation: {argv:?}"
             );
         }
         assert!(
-            !carries(&argv, &["--resume", "u-9"]),
+            !carries(&argv, &["--resume", "u-9"]) && !carries(&argv, &["--conversation", "u-9"]),
             "{tool} does not ask for what is not there: {argv:?}"
         );
     }

@@ -60,7 +60,7 @@ fn single_quote_escape(text: &str) -> String {
 pub const fn supports_launch_id(tool: ToolKind) -> bool {
     matches!(
         tool,
-        ToolKind::Codex | ToolKind::OpenCode | ToolKind::Gemini
+        ToolKind::Codex | ToolKind::OpenCode | ToolKind::Gemini | ToolKind::Agy
     )
 }
 
@@ -187,6 +187,51 @@ pub fn strip_grok_session_flags(cmd: &str) -> String {
     kept.join(" ")
 }
 
+/// Strip agy's session surface: `--conversation <id>`, `--continue` and `-c`.
+///
+/// agy resumes by a flag NEITHER generic stripper knows — `--conversation`, not
+/// `--resume` — and its `-c` is the short spelling of `--continue`, so the
+/// generic stripper would leave an operator-pinned conversation standing on a
+/// FRESH launch and stack a second `--conversation` on a resume. Measured
+/// against `agy --help` (1.1.25, 2026-09-04): those three are the whole of it,
+/// there is no `-s`/`-r`, and `--conversation` always takes a value.
+///
+/// `-i`/`--prompt-interactive` is deliberately NOT stripped: it is the context
+/// channel, not a session flag, and agy's flag parser takes the LAST spelling —
+/// which is ae's, because ae appends. An operator's own initial prompt loses to
+/// the workspace context, which is the outcome the injection wants.
+#[must_use]
+pub fn strip_agy_session_flags(cmd: &str) -> String {
+    let words = words(cmd);
+    let mut kept: Vec<&str> = Vec::with_capacity(words.len());
+    let mut index = 0;
+    while index < words.len() {
+        let word = words[index];
+        if word.starts_with("--conversation=") {
+            index += 1;
+            continue;
+        }
+        match word {
+            // The flag GOES whether or not it had a value, which is grok's
+            // stripper's rule rather than the generic one's. The generic
+            // stripper leaves a trailing `--resume` standing because its frozen
+            // regex needed the separator to be there at all; here a trailing
+            // `--conversation` that survived would swallow the `--conversation`
+            // ae is about to append and resume a conversation named
+            // `--conversation`.
+            "--conversation" => {
+                index += usize::from(index + 1 < words.len()) + 1;
+            }
+            "--continue" | "-c" => index += 1,
+            _ => {
+                kept.push(word);
+                index += 1;
+            }
+        }
+    }
+    kept.join(" ")
+}
+
 // ---- session id injection -------------------------------------------------
 
 /// Put ae's generated session id on the command — the frozen
@@ -202,7 +247,14 @@ pub fn inject_session_id(cmd: &str, session_id: &str) -> String {
     } else {
         session_id
     };
-    let clean = strip_session_flags(cmd);
+    let clean = if ToolKind::from_cmd(cmd) == ToolKind::Agy {
+        // agy's session surface is spelled differently, so the generic
+        // stripper leaves it standing; a fresh launch that inherited an
+        // operator's `--conversation` would resume someone else's transcript.
+        strip_agy_session_flags(cmd)
+    } else {
+        strip_session_flags(cmd)
+    };
     if session_id.is_empty() {
         return clean;
     }
@@ -284,6 +336,25 @@ pub fn inject_ae_context(
                 String::new()
             } else {
                 format!("\nAE_GEMINI_LAUNCH_ID={launch_id}\nAE_GEMINI_SLOT={slot}")
+            };
+            let full = format!("{ctx}{marker}{WAIT_SUFFIX}");
+            Injected {
+                cmd: format!("{cmd} -i '{}'", single_quote_escape(&full)),
+                warning: None,
+            }
+        }
+        // agy has NO append-style system-prompt flag either — `agy --help`
+        // (1.1.25, measured 2026-09-04) lists none at all — so the context
+        // rides `-i/--prompt-interactive` as a USER TURN, gemini-shaped down to
+        // the wait suffix. The marker keeps ITS OWN spelling because it is what
+        // the agy capture greps for, in a different store: the token is written
+        // into the conversation's own SQLite file, and a shared name would let
+        // a gemini seat's token match an agy seat's conversation.
+        ToolKind::Agy => {
+            let marker = if launch_id.is_empty() {
+                String::new()
+            } else {
+                format!("\nAE_AGY_LAUNCH_ID={launch_id}\nAE_AGY_SLOT={slot}")
             };
             let full = format!("{ctx}{marker}{WAIT_SUFFIX}");
             Injected {
@@ -472,9 +543,9 @@ pub fn build_launch_command(cmd: &str, prompt: &str) -> String {
 )]
 mod tests {
     use super::{
-        build_launch_command, generate_uuid, id_probeable, initial_prompt_for, inject_ae_context,
-        inject_session_id, opencode_context_files, shell_quote, strip_grok_session_flags,
-        strip_session_flags,
+        PENDING, build_launch_command, generate_uuid, id_probeable, initial_prompt_for,
+        inject_ae_context, inject_session_id, opencode_context_files, shell_quote,
+        strip_agy_session_flags, strip_grok_session_flags, strip_session_flags,
     };
     use crate::launch_cmd::ToolKind;
     use std::path::PathBuf;
@@ -518,6 +589,34 @@ mod tests {
         assert_eq!(
             strip_grok_session_flags("grok -sUUID -r ID -c --always-approve"),
             "grok --always-approve"
+        );
+        // The agy trap: its resume flag is spelled `--conversation`, which
+        // neither stripper above knows, and its `-c` is `--continue`.
+        assert_eq!(
+            strip_agy_session_flags("agy --conversation ID -c --dangerously-skip-permissions"),
+            "agy --dangerously-skip-permissions"
+        );
+        assert_eq!(
+            strip_agy_session_flags("agy --conversation=ID --continue --effort high"),
+            "agy --effort high"
+        );
+        assert_eq!(
+            strip_agy_session_flags("agy --conversation"),
+            "agy",
+            "a trailing --conversation GOES: left standing it would swallow the one ae appends"
+        );
+        // The context channel is NOT a session flag: ae appends its own `-i`
+        // and agy takes the last, so the operator's initial prompt survives the
+        // strip and simply loses to the workspace context.
+        assert_eq!(
+            strip_agy_session_flags("agy -i 'hello' --mode plan"),
+            "agy -i 'hello' --mode plan"
+        );
+        // A fresh agy launch is stripped by the agy-aware stripper, so an
+        // operator's pinned conversation cannot survive into it.
+        assert_eq!(
+            inject_session_id("agy --conversation ID -c --flag", PENDING),
+            "agy --flag"
         );
     }
 
@@ -610,6 +709,7 @@ mod tests {
         for tool in [
             ToolKind::Claude,
             ToolKind::Gemini,
+            ToolKind::Agy,
             ToolKind::Grok,
             ToolKind::OpenCode,
             ToolKind::Unknown,
