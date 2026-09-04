@@ -28,7 +28,8 @@ reasoning, the retired rules and every measurement narrative are in
 ```
 src/                — Rust sources. main.rs thin (argv in, exit code out); lib.rs and one
                       module per domain hold everything testable
-tests/it/           — the one integration-test target; the retired Bash suites live here.
+tests/it/           — the one integration-test target. The behaviours of the retired bash
+                      suites are pinned here as Rust tests.
                       doors.rs = capability boundary; gate.rs = justfile/install guards;
                       parity.rs = the one child-process door. Unit tests sit beside the code
 tests/fixtures/     — frozen inputs the suites read (session shapes, list goldens)
@@ -81,9 +82,12 @@ Other rules of the loop:
 
 - `unsafe_code` is **forbid**. There is no exception worth having.
 - No `unwrap()` / `expect()` in production code. `-D warnings` makes it fail the gate.
-- No `std::process::Command` outside the three doors (`src/transport.rs::run`,
-  `tests/it/parity.rs`, `tests/it/cli.rs`). Same for the world-reading methods in
-  `clippy.toml`'s `disallowed-methods` — they live at named doors with a reason at the site.
+- No `std::process::Command` outside the enumerated doors. The PRODUCT has four —
+  `src/transport.rs`, `src/run.rs`, `src/upgrade.rs`, `src/install.rs` — and the suite has
+  twelve, across `tests/it/`'s `cli.rs`, `install.rs`, `shape.rs`, `parity.rs` and `doors.rs`.
+  `tests/it/doors.rs` pins the exact per-file counts, so a new door is a review, not a diff.
+  Same for the world-reading methods in `clippy.toml`'s `disallowed-methods`: each lives at a
+  named door carrying its reason.
 - No clap, serde, anyhow, thiserror, chrono or nix. Adding any runtime dependency is a
   ruling, not a commit. See docs/history.md §11 for the researched line and its triggers.
 - **No new Bash.** `install` is policy-frozen. There is no other bash file and none may
@@ -230,7 +234,7 @@ Each is one rule with one owner. Change the owner, not a copy.
 | The install gate is STRUCTURAL and hashes nothing. Every command and helper passes it EXCEPT `version` and `upgrade`, which diagnose and repair a broken install | `src/shape.rs`, ordered in `src/lib.rs::run` |
 | The one hashing site: both members re-digested against `SHA256SUMS` before publication | `src/install.rs` |
 | Published dir 0555, members 0555/0444; `~/.local/bin/ae` is the current pointer | `src/install.rs` |
-| A harness session id is a NAME: purge proves it against the archive UUID grammar first | `src/archive/purge.rs`, `src/archive.rs::canonical_uuid` |
+| A harness session id is a NAME: the purge proves it against the archive UUID grammar before it builds a path | `src/lifecycle/end.rs::purge_conversation_files`; grammar in `src/archive.rs::canonical_uuid` |
 | A monitor sweep may act only on the CALLER'S own session (`$TMUX_PANE`) | `src/monitor.rs` |
 | Every tmux format uses the printable pipe separator, never a control byte — tmux 3.4 octal-escapes those | `src/tmux.rs::WATCH_PANE_SEPARATOR` |
 | The server pair is read by SET, not by nonempty; an untypeable pair is refused | `src/doors.rs` |

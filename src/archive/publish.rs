@@ -1,10 +1,11 @@
 //! `_archive-publish <dir> <push-outcome> <push-ref> <preserved> <workdir> <archived-at>`
 //! — the archive publisher and its `.publishing.<uuid>` claim (P3.3).
 //!
-//! The bash `_end_archive_step` boundary runs this in place of the frozen
-//! `_ar_publish`, then reads back the one line this prints — `target\tfiles\tbytes`
-//! — and reports "Archived …". `AE_CORE=` falls back to the frozen body. Plan,
-//! mint, purge and teardown stay in bash; this core only PUBLISHES.
+//! Reached IN PROCESS by `lifecycle::end`'s archive step and by `compact`, and
+//! still addressable as the `_archive-publish` entry; each caller reads back the
+//! one line `run` prints — `target\tfiles\tbytes` — and reports "Archived …".
+//! This module only PUBLISHES: plan, mint, purge and teardown belong to those
+//! callers.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
