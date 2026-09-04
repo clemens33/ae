@@ -60,7 +60,7 @@ _shellcheck-pin:
 # real test safety for a clean linter page. The SC2016 and SC2329 sites carry their own
 # reasoned comments instead. Full rationale: docs/development.md.
 lint: _shellcheck-pin
-    shellcheck --severity=warning -x ae ae-entry tests/unit tests/integration tests/itest-par tests/aemonitor tests/aewatch install \
+    shellcheck --severity=warning -x ae-entry tests/unit tests/integration tests/itest-par tests/aemonitor tests/aewatch install \
         tests/e2e/ai/lib.sh tests/e2e/ai/run_scenario.sh \
         $(find tests/e2e/ai/scenarios -name steps.sh) < /dev/null
 
@@ -70,11 +70,11 @@ lint: _shellcheck-pin
 
 # Check formatting (shfmt, diff mode)
 format-check:
-    shfmt -d -i 4 -ci ae ae-entry install < /dev/null
+    shfmt -d -i 4 -ci ae-entry install < /dev/null
 
 # Auto-format
 format:
-    shfmt -w -i 4 -ci ae ae-entry install
+    shfmt -w -i 4 -ci ae-entry install
 
 # ── Testing ──────────────────────────────────────────────────────────
 
@@ -188,7 +188,7 @@ test-aewatch:
 
 # FAST commit inner loop: AEWATCH_FAST=1 skips the subprocess-backed bash-oracle
 # dual-runs, leaving the pure-Python surface (seconds, not minutes). NOT the phase
-# gate — run `just test-aewatch` (+ contracts validate + check + git diff -- ae)
+# gate — run `just test-aewatch` (+ contracts validate + check + git diff -- ae-entry)
 # for that.
 test-aewatch-fast:
     AEWATCH_FAST=1 bash tests/aewatch
@@ -202,14 +202,14 @@ test-ai *args="tests/e2e/ai/scenarios":
 
 # Show current version
 version:
-    @grep -m1 '^AE_VERSION=' ae | cut -d'"' -f2
+    @grep -m1 '^_AE_ENTRY_VERSION=' ae-entry | cut -d'"' -f2
 
 # Restore a previously interrupted CalVer bump from durable backups.
 bump-recover:
     #!/usr/bin/env bash
     set -euo pipefail
     RECOVERY_DIR=".ae-bump-recovery"
-    paths=(ae ae-entry Cargo.toml Cargo.lock)
+    paths=(ae-entry Cargo.toml Cargo.lock)
     staged=()
     if [[ ! -d "$RECOVERY_DIR" ]]; then
         echo "Error: ${RECOVERY_DIR} is not present; nothing to recover" >&2
@@ -316,7 +316,7 @@ bump:
             rm -f "$RECOVERY_DIR"/*.orig "$RECOVERY_DIR"/*.orig.tmp.* "$RECOVERY_DIR"/backups-ready.tmp.* || true
             return 0
         fi
-        for path in ae ae-entry Cargo.toml Cargo.lock; do
+        for path in ae-entry Cargo.toml Cargo.lock; do
             name="${path##*/}"
             if [[ ! -f "$RECOVERY_DIR/${name}.orig" ]]; then
                 recovery_rc=1
@@ -352,13 +352,13 @@ bump:
     trap cleanup EXIT
     backup_files() {
         local path name backup_tmp
-        for path in ae ae-entry Cargo.toml Cargo.lock; do
+        for path in ae-entry Cargo.toml Cargo.lock; do
             name="${path##*/}"
             backup_tmp="$RECOVERY_DIR/${name}.orig.tmp.$$"
             cp -p "$path" "$backup_tmp"
             mv "$backup_tmp" "$RECOVERY_DIR/${name}.orig"
         done
-        for path in ae ae-entry Cargo.toml Cargo.lock; do
+        for path in ae-entry Cargo.toml Cargo.lock; do
             name="${path##*/}"
             if ! cmp -s "$RECOVERY_DIR/${name}.orig" "$path"; then
                 echo "Error: backup verification failed for ${path}" >&2
@@ -369,17 +369,13 @@ bump:
         mv "$RECOVERY_DIR/backups-ready.tmp.$$" "$RECOVERY_DIR/backups-ready"
     }
     backup_files
-    for path in ae ae-entry Cargo.toml Cargo.lock; do
+    for path in ae-entry Cargo.toml Cargo.lock; do
         name="${path##*/}"
         cp -p "$path" "$TMP_DIR/$name"
     done
 
-    # Redirect into mode-preserving copies: replacing ae or ae-entry with a
+    # Redirect into a mode-preserving copy: replacing ae-entry with a
     # freshly-created redirection target would silently drop its executable bit.
-    cp -p "$TMP_DIR/ae" "$TMP_DIR/ae.next"
-    sed "s/^AE_VERSION=\".*\"/AE_VERSION=\"$VERSION\"/" \
-        "$TMP_DIR/ae" >"$TMP_DIR/ae.next"
-    mv "$TMP_DIR/ae.next" "$TMP_DIR/ae"
     cp -p "$TMP_DIR/ae-entry" "$TMP_DIR/ae-entry.next"
     sed "s/^_AE_ENTRY_VERSION=\".*\"/_AE_ENTRY_VERSION=\"$VERSION\"/" \
         "$TMP_DIR/ae-entry" >"$TMP_DIR/ae-entry.next"
@@ -438,7 +434,6 @@ bump:
     ' "$TMP_DIR/Cargo.lock" >"$TMP_DIR/Cargo.lock.next"
     mv "$TMP_DIR/Cargo.lock.next" "$TMP_DIR/Cargo.lock"
 
-    grep -q '^AE_VERSION="'"$VERSION"'"$' "$TMP_DIR/ae"
     grep -q '^_AE_ENTRY_VERSION="'"$VERSION"'"$' "$TMP_DIR/ae-entry"
     grep -q '^version = "'"$VERSION"'"$' "$TMP_DIR/Cargo.toml"
     awk -v version="$VERSION" '
@@ -471,7 +466,7 @@ bump:
         }
     ' "$TMP_DIR/Cargo.lock"
 
-    for path in ae ae-entry Cargo.toml Cargo.lock; do
+    for path in ae-entry Cargo.toml Cargo.lock; do
         name="${path##*/}"
         if ! mv "$TMP_DIR/$name" "$path"; then
             echo "Error: could not publish ${path}; recover-or-refuse marker retained if recovery fails" >&2
@@ -516,7 +511,7 @@ release:
     # Re-parse and compile after bump before any changelog or tag publication.
     cargo check --locked
 
-    # Update the release badges. `just bump` preserves ae and ae-entry executable bits.
+    # Update the release badges. `just bump` preserves the ae-entry executable bit.
     sed_i() {
         local f="$1"; shift
         cp -p "$f" "$f.tmp.$$" || return 1
@@ -554,8 +549,7 @@ release:
         echo "Error: pre-release badge or checkout-install prose remains; edit it deliberately before tagging" >&2
         exit 1
     fi
-    # Guard the guard: a release must never publish either executable source without its bit.
-    [ -x ae ] || { echo "Error: ae lost its executable bit during version bump" >&2; exit 1; }
+    # Guard the guard: a release must never publish the executable source without its bit.
     [ -x ae-entry ] || { echo "Error: ae-entry lost its executable bit during version bump" >&2; exit 1; }
 
     # Generate changelog

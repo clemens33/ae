@@ -1,6 +1,6 @@
 # Install
 
-ae has one public command: an immutable Rust core with the Bash pane glue it still needs.
+ae has one public command: a small Bash wrapper over an immutable Rust core.
 
 ## Requirements
 
@@ -18,7 +18,7 @@ curl -fsSL https://raw.githubusercontent.com/clemens33/ae/main/install | bash
 It supports macOS Apple Silicon (`darwin-arm64`) and Linux x86_64, including
 WSL2. Intel macOS, Linux ARM, and Windows/MSYS are rejected. The bundle and
 `SHA256SUMS` are downloaded to temporary files and verified before extraction;
-the matched four-member set — `ae`, `ae-core`, `ae-glue`, and `install` — is then
+the matched three-member set — `ae`, `ae-core`, and `install` — is then
 published atomically under `~/.ae/versions`, and `~/.local/bin/ae` is pointed at
 its public wrapper. Make sure `~/.local/bin` is on your `PATH`. Set
 `AE_VERSION=2026.8.2` to pin a release.
@@ -55,7 +55,7 @@ Stopped sessions consume the current version only on their next resume. Running 
 
 ## Uninstall
 
-**Stop every ae session first.** Running sessions pin `ae_path` to `~/.ae/versions/V/ae-glue`; deleting immutable versions while they run strands their helpers (`spawn`, `retire`, `watchdog`, and re-entry). The default uninstall removes only the public selector and leaves immutable version leaves in place:
+**Stop every ae session first.** Running sessions pin `ae_core` to `~/.ae/versions/V/ae-core`; deleting immutable versions while they run strands their helpers (`spawn`, `retire`, `watchdog`, and re-entry). The default uninstall removes only the public selector and leaves immutable version leaves in place:
 
 ```bash
 # Default: remove only the public selector; keep immutable version leaves.

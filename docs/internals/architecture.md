@@ -3,18 +3,19 @@
 ## Topology
 
 The public `~/.local/bin/ae` wrapper selects one immutable `~/.ae/versions/<V>/` set: `ae`
-(wrapper), `ae-core` (Rust lifecycle/state core), `ae-glue` (minimal policy-frozen Bash
-pane glue), and `install` (the immutable sibling used by `ae upgrade`). `~/.ae/current`
-points at that set and `~/.ae/core/current` points at its core.
+(the wrapper, built from `ae-entry`), `ae-core` (Rust lifecycle/state core), and `install`
+(the immutable sibling used by `ae upgrade`). `~/.ae/current` points at that set and
+`~/.ae/core/current` points at its core. It was a four-member set until slice Z1 deleted
+`ae-glue`.
 
-The diagrams and sections below model the surviving `ae-glue` pane internals. They are not
-a model of the whole product or its wrapper/core/installer topology.
+The diagrams and sections below model what happens after the wrapper execs the core. They
+are not a model of the wrapper/core/installer topology itself.
 
 ## Mental model
 
 ```mermaid
 flowchart LR
-    User[You] -->|glue dispatch after wrapper/core validation| AE[ae-glue pane internals]
+    User[You] -->|one exec after wrapper/core validation| AE[ae-core]
     AE --> Cfg[~/.ae/config<br/>INI parser]
     AE --> Tmux[(tmux session)]
     AE --> SessDir[~/.ae/sessions/&lt;name&gt;/<br/>helpers + meta + events.jsonl]
@@ -48,7 +49,7 @@ flowchart TB
 
     subgraph Resume ["Resume"]
         direction TB
-        R1[Read meta<br/>recover ae_path, slots]
+        R1[Read meta<br/>recover ae_core, slots]
         R2[Reattach tmux session<br/>+ relaunch agents w/ --resume]
         R1 --> R2
     end
@@ -62,15 +63,15 @@ flowchart TB
 
 The regenerate step runs on a new launch or resume, never against an already-running session. After an installed upgrade, stopped sessions bind the new generation on resume while running sessions stay pinned; no migration ceremony is needed.
 
-## The Bash pane glue
+## The public wrapper
 
-`ae` is the pane-side remainder and nothing more: the bash preamble and its `bash >= 4`
-re-exec, the core binding, the name and path guards, the sensor that answers whether the
-caller is really inside a tmux pane, the launch flag assembly, a dispatcher of thin core
-routes, and refusing arms for the words that were cut. It holds no bash body for any
-core-owned domain and reads none of ae's own state — the core does every read and every
-effect. Its own header lists the ABSENCES the test suite asserts, which is the place to look
-before adding anything back.
+`ae-entry` is the whole of ae's Bash and nothing more: the versioned-pair validation,
+`version` and `upgrade`, the `bash >= 4` re-exec, the core binding, the sensor that answers
+whether the caller is really inside a tmux pane, the typed tmux server pair, and ONE exec of
+the core with a fixed preamble followed by `--` and the caller's argv verbatim. There is no
+dispatcher, no help text, no name grammar and no config writer left in bash: the core reads
+every fact and performs every effect. The wrapper's own header lists the ABSENCES the test
+suite asserts, which is the place to look before adding anything back.
 
 ## Per-session state on disk
 

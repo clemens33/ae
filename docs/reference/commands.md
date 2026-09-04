@@ -41,9 +41,9 @@ detect the current session automatically.
 ### Retired words
 
 Three commands were cut rather than ported to the Rust core. Two keep a **refusing arm** in
-the glue instead of being deleted, because anything the dispatcher does not match falls
-through to a launch and a launch takes the last positional as a session name — a bare `ae
-status` would otherwise create a session called `status`.
+the core instead of being deleted, because anything the core does not match falls through to
+a launch and a launch takes the last positional as a session name — a bare `ae status` would
+otherwise create a session called `status`.
 
 | Word | What now |
 |---|---|
@@ -156,8 +156,8 @@ To request a specific release, set a CalVer pin in the environment:
 AE_VERSION=2026.8.2 ae upgrade
 ```
 
-The public wrapper dispatches this repair path before its wrapper/core/glue
-triple gate, so a broken installed generation can still repair itself. Its
+The public wrapper dispatches this repair path before its wrapper/core
+pair gate, so a broken installed generation can still repair itself. Its
 immutable sibling installer downloads the selected release, verifies its
 checksum before extraction, and atomically publishes the matched immutable
 version and current selectors.
@@ -199,13 +199,13 @@ $ ae next --attach
 Pre-flight + post-upgrade self-test. Walks a fixed checklist of `OK / WARN / FAIL` items and
 returns non-zero if anything failed: the two hard dependencies (`tmux`, `git`), whether the
 config parses and names a startup roster whose profiles resolve to real executables, whether
-the state root's sessions are coherent, and whether each session's recorded core and glue
-agree with the binary answering right now.
+the state root's sessions are coherent, and whether each session's recorded core agrees with
+the binary answering right now.
 
-The report is the core's. The glue hands it the one fact the core cannot see — which bash is
-running the glue — because `ae` re-execs itself under a modern bash when its shebang lands on
-macOS's 3.2, and a core probing `bash --version` would report whatever is first on `PATH`
-instead.
+The report is the core's. The wrapper hands it the one fact the core cannot see — which bash
+is running the wrapper, passed as `--bash-major` — because `ae` re-execs itself under a
+modern bash when its shebang lands on macOS's 3.2, and a core probing `bash --version` would
+report whatever is first on `PATH` instead.
 
 Three rows the frozen bash `doctor` printed are **dropped rather than reported as
 permanently OK**: `flock` and `timeout` are no longer ae's dependencies (the core locks with
@@ -287,7 +287,7 @@ your say-so.
 scaffolded a config and a charter on `--init`, then rewrote the config path and the working
 directory and fell through to the generic launch, so the orchestrator ran as an ordinary
 session that happened to be named `orchestrator`. Everything it did has an owner now, and it
-is not the glue. Run it as what it always was:
+is not bash. Run it as what it always was:
 
 ```bash
 cd ~/.ae/orchestrator && CONFIG_FILE=$PWD/orchestrator.config ae --local orchestrator
@@ -333,9 +333,9 @@ ae telegram status      # report intent + runtime + core + token validation
 Machine-global daemon that bridges every ae session on this host to one Telegram chat. Single instance per machine (one `ae-telegram` tmux session). Outbound forwards filtered events to chat. Inbound (when `allowed_user_ids` is set) offers three ways to reach an agent: **reply** to a forwarded event (routes to that agent), the compact **`@session:agent <msg>`** prefix, and a sticky **`/use <session> <agent>`** default for plain messages — plus the explicit `/list` and `/session <name|id-prefix> send|ask <agent> <msg>`. All paths share the same session/agent revalidation. Inbound is from the configured private chat only — auth requires matching `from.id` + `chat.id` + a private chat.
 
 `setup`, `start`, `stop` and `status` are core operations, and the daemon is the ae core
-binary running `_telegram-run` — no `jq`, no `curl`, no extra CLI dependency. The glue passes
-only what the core will not read for itself: which config to honour, which home to keep state
-under, and which tmux server the daemon's session belongs on. See the [Telegram
+binary running `_telegram-run` — no `jq`, no `curl`, no extra CLI dependency. The wrapper's
+preamble passes only what the core will not read for itself: which config to honour, which
+home to keep state under, and which tmux server the daemon's session belongs on. See the [Telegram
 bridge](telegram.md) page for setup, config schema, inbound trust boundary, and lifecycle.
 
 ## `ae rename [old] <new>`
@@ -774,7 +774,7 @@ Everything ae does is one core operation reached through a `_`-prefixed entry: `
 `_watchdog`, `_telegram`, and the two daemon bodies `_watchdog-run` and `_telegram-run`.
 The public words above and the session helpers are thin routes to them.
 
-Don't call them directly — the glue refuses any `_`-prefixed word it does not serve, with
+Don't call them directly — the core refuses any `_`-prefixed word it does not serve, with
 exit 2 and before any side effect, so a typo cannot quietly become a session name.
 
 Two entries retired with the glue cuts and are listed so an old note does not mislead:

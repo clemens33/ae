@@ -40,9 +40,6 @@ jobs:
           wrapper_version="$(grep -m1 '^_AE_ENTRY_VERSION=' ae-entry | cut -d'"' -f2)"
           [ -n "$wrapper_version" ] || { echo "::error::ae-entry _AE_ENTRY_VERSION is empty"; exit 1; }
           [ "$wrapper_version" = "$version" ] || { echo "::error::ae-entry _AE_ENTRY_VERSION is '$wrapper_version', want '$version'"; exit 1; }
-          glue_version="$(grep -m1 '^AE_VERSION=' ae | cut -d'"' -f2)"
-          [ -n "$glue_version" ] || { echo "::error::ae AE_VERSION is empty"; exit 1; }
-          [ "$glue_version" = "$version" ] || { echo "::error::ae AE_VERSION is '$glue_version', want '$version'"; exit 1; }
 
           command -v readelf >/dev/null || { echo "::error::readelf is required"; exit 1; }
           headers="$(readelf -l "$bin")"
@@ -68,10 +65,9 @@ jobs:
           mkdir "$root"
           cp "$bin" "$root/ae-core"
           cp ae-entry "$root/ae"
-          cp ae "$root/ae-glue"
-          cmp ae "$root/ae-glue"
+          cmp ae-entry "$root/ae"
           cp install "$root/install"
-          chmod 0555 "$root" "$root/ae" "$root/ae-core" "$root/ae-glue" "$root/install"
+          chmod 0555 "$root" "$root/ae" "$root/ae-core" "$root/install"
           tar -czf "$root.tar.gz" "$root"
 
       - name: Upload Linux bundle
@@ -104,19 +100,15 @@ jobs:
           wrapper_version="$(grep -m1 '^_AE_ENTRY_VERSION=' ae-entry | cut -d'"' -f2)"
           [ -n "$wrapper_version" ] || { echo "::error::ae-entry _AE_ENTRY_VERSION is empty"; exit 1; }
           [ "$wrapper_version" = "$version" ] || { echo "::error::ae-entry _AE_ENTRY_VERSION is '$wrapper_version', want '$version'"; exit 1; }
-          glue_version="$(grep -m1 '^AE_VERSION=' ae | cut -d'"' -f2)"
-          [ -n "$glue_version" ] || { echo "::error::ae AE_VERSION is empty"; exit 1; }
-          [ "$glue_version" = "$version" ] || { echo "::error::ae AE_VERSION is '$glue_version', want '$version'"; exit 1; }
           "$bin" _net-probe localhost >/dev/null
 
           root="ae-$version-darwin-arm64"
           mkdir "$root"
           cp "$bin" "$root/ae-core"
           cp ae-entry "$root/ae"
-          cp ae "$root/ae-glue"
-          cmp ae "$root/ae-glue"
+          cmp ae-entry "$root/ae"
           cp install "$root/install"
-          chmod 0555 "$root" "$root/ae" "$root/ae-core" "$root/ae-glue" "$root/install"
+          chmod 0555 "$root" "$root/ae" "$root/ae-core" "$root/install"
           tar -czf "$root.tar.gz" "$root"
 
       - name: Upload macOS bundle

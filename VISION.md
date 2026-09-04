@@ -40,11 +40,11 @@ listed in AGENTS.md and has not changed.
 ## The shape today
 
 **One typed core, a thin Bash remainder.** The public `ae` command is a small wrapper that
-validates a matched, immutable triple — wrapper, Rust core, Bash pane glue — and runs it out
-of one versioned directory. The core owns state, lifecycle, and the daemons. Bash keeps only
-what it is best at: pane-side artifacts (`launch.<slot>.sh`, interactive shims) and the tmux
-mechanics around new-session and attach. Rust calls the `tmux` CLI directly — bash was always
-the glue, never the API.
+validates a matched, immutable pair — wrapper and Rust core — out of one versioned
+directory, then execs the core once with the facts it cannot see for itself. The core owns
+state, lifecycle, the daemons and every command. Bash keeps only what it is best at: that
+wrapper and the pane-side artifacts the core writes (`launch.<slot>.sh`, interactive shims).
+Rust calls the `tmux` CLI directly — bash was always the glue, never the API.
 
 **Why the core is Rust.** Agents author most of this code, and a restrictive compiler is a
 free review lane that never gets tired: a `Result` must be consumed, so the silent-abort
@@ -55,12 +55,12 @@ type system's bug-class elimination wins. Python stays wrong for the core: inter
 on every helper call, against a hot path where helpers are called constantly. The reasoning
 that decided it is recorded under "Revisit triggers" in AGENTS.md.
 
-**Daemons are core-owned.** The watchdog and the Telegram bridge run inside the core; Bash
-keeps the start/stop/tick pane glue. Python contrib is reference and incubator only, and
+**Daemons are core-owned.** The watchdog and the Telegram bridge run inside the core, and
+their panes are four-line shims that exec it. Python contrib is reference and incubator only, and
 analytics sidecars stay Python contrib indefinitely.
 
 **Install preserves the user-level contract.** After Bash >= 4, tmux, and git are present,
-one command installs a checksum-verified four-member bundle (`ae`, `ae-core`, `ae-glue`,
+one command installs a checksum-verified three-member bundle (`ae`, `ae-core`,
 `install`). It needs no Rust runtime, run-time package manager, or service; macOS is built
 natively on `macos-15`, while Linux amd64 release bundles are static musl. Building from source
 instead compiles a native binary for the current machine.

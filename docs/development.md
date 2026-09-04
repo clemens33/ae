@@ -1,15 +1,14 @@
 # Development
 
-ae ships one public wrapper over an immutable versioned Rust core and minimal policy-frozen
-Bash pane glue.
-The repo contains that product, its installer and release lanes, glue/installer tests, Rust
-tests, and this docs site.
+ae ships one public wrapper over an immutable versioned Rust core.
+The repo contains that product, its installer and release lanes, wrapper/installer tests,
+Rust tests, and this docs site.
 
 ## Layout
 
 ```
-ae                  — the Bash pane glue (bundled as `ae-glue`)
-ae-entry            — public wrapper source (installed and bundled as `ae`)
+ae-entry            — public wrapper source (installed and bundled as `ae`); the product's
+                      only bash file
 justfile            — dev/release pipeline (just check, just test, just release)
 cliff.toml          — git-cliff config (CalVer-compatible changelog)
 tests/unit          — pure-function unit tests (bash, no deps)
@@ -72,8 +71,8 @@ The Rust suite is where behaviour is tested: `cargo nextest` for units and the s
 rust-check`. `just rust-mutants` asks the harder question — whether those tests would ever go
 red.
 
-The bash suites cover what is still bash. `tests/unit` exercises the pane glue and the
-public-wrapper/installer contract with a tiny `assert_eq` harness. The session-helper
+The bash suites cover what is still bash. `tests/unit` exercises the public wrapper and the
+installer contract with a tiny `assert_eq` harness. The session-helper
 template library it used to reconstruct is gone with the helpers themselves; what it asserts
 about them now is the **shim set** — that a refreshed session directory holds exactly the
 core's list, never `>= N`, so an artifact quietly appearing or vanishing is a failure rather
@@ -143,7 +142,7 @@ Review invocations run **read-only** — a `--full-auto` reviewer is a tree muta
 
 ## Philosophy reminders
 
-- ae is a public wrapper, a Rust core, and the Bash pane glue; no new Bash features return to the glue.
+- ae is a public wrapper over a Rust core; no new Bash features return to the wrapper.
 - Config is INI-style, parsed by the core (`src/config.rs`). Don't add TOML/YAML/JSON parsing.
 - The installed runtime is an immutable matched set; checkout development additionally needs rustup and just. (Docs tooling remains optional.)
 - Session state lives in `~/.ae/sessions/`. Working directories stay clean.
