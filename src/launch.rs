@@ -8,6 +8,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::launch_cmd::ToolKind;
+use crate::tool::{CommandForm, ContextChannel, IdStyle, InitialTurn, SessionFlags};
 
 /// The POSIX single-quoted form of `text` — safe in any shell word position.
 #[must_use]
@@ -43,7 +44,7 @@ pub const fn supports_launch_id(tool: ToolKind) -> bool {
 /// Does this tool take an ae-generated session id at LAUNCH?
 #[must_use]
 pub const fn takes_launch_session_id(tool: ToolKind) -> bool {
-    matches!(tool, ToolKind::Claude | ToolKind::Grok)
+    tool.adapter().launch.takes_session_id()
 }
 
 /// The absent session id, as the roster spells it.
@@ -202,6 +203,15 @@ pub fn strip_agy_session_flags(cmd: &str) -> String {
     kept.join(" ")
 }
 
+/// Strip the session grammar selected by a tool adapter.
+pub(crate) fn strip_session_grammar(cmd: &str, grammar: SessionFlags) -> String {
+    match grammar {
+        SessionFlags::Common => strip_session_flags(cmd),
+        SessionFlags::Conversation => strip_agy_session_flags(cmd),
+        SessionFlags::ShortAliases => strip_grok_session_flags(cmd),
+    }
+}
+
 // ---- session id injection -------------------------------------------------
 
 /// Put ae's generated session id on the command.
@@ -212,26 +222,17 @@ pub fn inject_session_id(cmd: &str, session_id: &str) -> String {
     } else {
         session_id
     };
-    let clean = if ToolKind::from_cmd(cmd) == ToolKind::Agy {
-        // agy's session surface is spelled differently, so the generic
-        // stripper leaves it standing; a fresh launch that inherited an
-        // operator's `--conversation` would resume someone else's transcript.
-        strip_agy_session_flags(cmd)
-    } else {
-        strip_session_flags(cmd)
-    };
+    let adapter = ToolKind::from_cmd(cmd).adapter();
+    let clean = strip_session_grammar(cmd, adapter.launch.session_flags);
     if session_id.is_empty() {
         return clean;
     }
-    match ToolKind::from_cmd(cmd) {
-        // Re-normalised with the grok-complete stripper so a pre-existing
-        // -s/-r/-c cannot stack with, or swallow, the launch --session-id.
-        ToolKind::Grok => format!(
-            "{} --session-id {session_id}",
-            strip_grok_session_flags(cmd)
+    match adapter.launch.id {
+        IdStyle::Flag { flag, grammar } => format!(
+            "{} {flag} {session_id}",
+            strip_session_grammar(cmd, grammar)
         ),
-        ToolKind::Claude => format!("{clean} --session-id {session_id}"),
-        _ => clean,
+        IdStyle::None => clean,
     }
 }
 
@@ -259,15 +260,12 @@ pub fn inject_ae_context(
     launch_id: &str,
 ) -> Injected {
     let dir = meta_dir.display();
-    match ToolKind::from_cmd(cmd) {
-        ToolKind::Claude => Injected {
-            cmd: format!(
-                "{cmd} --append-system-prompt '{}'",
-                single_quote_escape(ctx)
-            ),
+    match ToolKind::from_cmd(cmd).adapter().launch.context {
+        ContextChannel::SystemPromptFlag(flag) => Injected {
+            cmd: format!("{cmd} {flag} '{}'", single_quote_escape(ctx)),
             warning: None,
         },
-        ToolKind::Codex => {
+        ContextChannel::DeveloperInstructions => {
             let slot_arg = if slot.is_empty() {
                 String::new()
             } else {
@@ -292,50 +290,27 @@ pub fn inject_ae_context(
                 warning: None,
             }
         }
-        ToolKind::Gemini => {
+        ContextChannel::UserTurn { flag, marker } => {
             let marker = if launch_id.is_empty() {
                 String::new()
             } else {
-                format!("\nAE_GEMINI_LAUNCH_ID={launch_id}\nAE_GEMINI_SLOT={slot}")
+                marker.map_or_else(String::new, |marker| {
+                    format!("\nAE_{marker}_LAUNCH_ID={launch_id}\nAE_{marker}_SLOT={slot}")
+                })
             };
             let full = format!("{ctx}{marker}{WAIT_SUFFIX}");
+            let turn = single_quote_escape(&full);
             Injected {
-                cmd: format!("{cmd} -i '{}'", single_quote_escape(&full)),
-                warning: None,
-            }
-        }
-        // agy has NO append-style system-prompt flag either — `agy --help`
-        // (1.1.25, measured 2026-09-04) lists none at all — so the context
-        // rides `-i/--prompt-interactive` as a USER TURN, gemini-shaped down to
-        // the wait suffix. The marker keeps ITS OWN spelling because it is what
-        // the agy capture greps for, in a different store: the token is written
-        // into the conversation's own SQLite file, and a shared name would let
-        // a gemini seat's token match an agy seat's conversation.
-        ToolKind::Agy => {
-            let marker = if launch_id.is_empty() {
-                String::new()
-            } else {
-                format!("\nAE_AGY_LAUNCH_ID={launch_id}\nAE_AGY_SLOT={slot}")
-            };
-            let full = format!("{ctx}{marker}{WAIT_SUFFIX}");
-            Injected {
-                cmd: format!("{cmd} -i '{}'", single_quote_escape(&full)),
-                warning: None,
-            }
-        }
-        // grok has NO append-style system-prompt flag:
-        // `--system-prompt-override` REPLACES the agent's own prompt, which its
-        // tooling depends on.
-        ToolKind::Grok => {
-            let full = format!("{ctx}{WAIT_SUFFIX}");
-            Injected {
-                cmd: format!("{cmd} '{}'", single_quote_escape(&full)),
+                cmd: flag.map_or_else(
+                    || format!("{cmd} '{turn}'"),
+                    |flag| format!("{cmd} {flag} '{turn}'"),
+                ),
                 warning: None,
             }
         }
         // No wait-suffix here: "this is context only" exists because gemini and
         // grok receive a USER TURN.
-        ToolKind::OpenCode => match opencode_context_files(meta_dir, slot, ctx) {
+        ContextChannel::ConfigFile => match opencode_context_files(meta_dir, slot, ctx) {
             Ok(config) => Injected {
                 cmd: format!(
                     "env OPENCODE_CONFIG={} {cmd}",
@@ -353,7 +328,7 @@ pub fn inject_ae_context(
                 )),
             },
         },
-        ToolKind::Unknown => Injected {
+        ContextChannel::None => Injected {
             cmd: cmd.to_owned(),
             warning: None,
         },
@@ -447,7 +422,7 @@ fn publish(dest: &Path, bytes: &[u8], mode: u32) -> Result<(), String> {
 /// points at the system prompt is a turn the agent has to go looking for.
 #[must_use]
 pub fn initial_prompt_for(tool: ToolKind, meta_dir: &Path, slot: &str) -> String {
-    if !matches!(tool, ToolKind::Codex) {
+    if tool.adapter().launch.initial_turn != InitialTurn::RegisterSessionId {
         return String::new();
     }
     let slot_arg = if slot.is_empty() {
@@ -493,20 +468,18 @@ pub fn id_probeable(id: &str) -> bool {
 /// The command a pane runs to start its agent.
 #[must_use]
 pub fn build_launch_command(cmd: &str, prompt: &str) -> String {
-    // opencode's resume rides its own flag surface and it has no inline first
-    // message; nothing is appended to it, ever.
-    if ToolKind::from_cmd(cmd) == ToolKind::OpenCode {
-        return cmd.to_owned();
-    }
-    // Keep Claude Code from detecting nesting when ae runs from inside a claude
-    // session, and disable the input-box ghost SUGGESTION: the input-region
-    // sensor is content-based and needs "idle == bare ornament" to hold.
-    let mut launch_cmd = if ToolKind::from_cmd(cmd) == ToolKind::Claude {
-        format!(
+    let mut launch_cmd = match ToolKind::from_cmd(cmd).adapter().launch.command {
+        // Keep Claude Code from detecting nesting when ae runs from inside a
+        // claude session, and disable the input-box ghost SUGGESTION: the
+        // content-based input-region sensor needs "idle == bare ornament" to
+        // hold.
+        CommandForm::SanitizedEnvironment => format!(
             "env -u CLAUDECODE -u CLAUDE_CODE_SESSION CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=0 {cmd}"
-        )
-    } else {
-        cmd.to_owned()
+        ),
+        CommandForm::InlinePrompt => cmd.to_owned(),
+        // OpenCode's resume rides its own flag surface and it has no inline
+        // first message; nothing is appended to it, ever.
+        CommandForm::NoInlinePrompt => return cmd.to_owned(),
     };
     if !prompt.is_empty() {
         launch_cmd.push(' ');
@@ -621,6 +594,11 @@ mod tests {
         assert_eq!(
             inject_session_id("grok -r --effort high", uuid),
             format!("grok --effort high --session-id {uuid}")
+        );
+        assert_eq!(
+            inject_session_id("grok -r --effort high", PENDING),
+            "grok -r --effort high",
+            "without an id only the common long-form grammar is stripped"
         );
         assert_eq!(inject_session_id("codex --yolo", uuid), "codex --yolo");
         assert_eq!(

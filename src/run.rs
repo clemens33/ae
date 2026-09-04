@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 
 use crate::launch;
 use crate::launch_cmd::ToolKind;
+use crate::tool::{ResumeForm, StoreProbe};
 
 /// Which form of the tool command a run builds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -297,10 +298,10 @@ fn resumable(tool: ToolKind, id: &str) -> bool {
     if !launch::id_probeable(id) {
         return false;
     }
-    match tool {
+    match tool.adapter().resume.probe {
         // Claude keeps a transcript per conversation at a path derived from the
         // working directory, so the file's existence IS the answer.
-        ToolKind::Claude => {
+        StoreProbe::ProjectTranscript => {
             let (Some(home), Some(cwd)) = (env_lookup("HOME"), working_dir()) else {
                 return false;
             };
@@ -318,7 +319,7 @@ fn resumable(tool: ToolKind, id: &str) -> bool {
             )
         }
         // Codex records under dated directories, so the id is searched for.
-        ToolKind::Codex => {
+        StoreProbe::DatedRollouts => {
             let Some(home) = env_lookup("HOME") else {
                 return false;
             };
@@ -327,7 +328,7 @@ fn resumable(tool: ToolKind, id: &str) -> bool {
         // agy keeps ONE SQLite file per conversation, named for the id, in one
         // flat directory (measured 2026-09-04) — so the file's existence is the
         // answer, with no walk and no guess.
-        ToolKind::Agy => {
+        StoreProbe::ConversationDatabase => {
             let Some(home) = env_lookup("HOME") else {
                 return false;
             };
@@ -337,7 +338,7 @@ fn resumable(tool: ToolKind, id: &str) -> bool {
                     .join(format!("{id}.db")),
             )
         }
-        _ => true,
+        StoreProbe::RecordedId => true,
     }
 }
 
@@ -374,41 +375,27 @@ fn contains_id(root: &Path, id: &str, depth: usize) -> bool {
 /// conversation cannot be found.
 #[must_use]
 pub fn resume_forms(cmd: &str, tool: ToolKind, session_id: &str) -> (String, String) {
-    match tool {
-        ToolKind::Claude => (
-            format!("{cmd} --resume {session_id}"),
-            format!("{cmd} --continue"),
+    match tool.adapter().resume.form {
+        ResumeForm::Flags { exact, fallback } => (
+            format!("{cmd} {exact} {session_id}"),
+            format!("{cmd} {fallback}"),
         ),
-        ToolKind::Grok => (
-            format!(
-                "{} --resume {session_id}",
-                launch::strip_grok_session_flags(cmd)
-            ),
-            format!("{} --continue", launch::strip_grok_session_flags(cmd)),
-        ),
-        ToolKind::Codex => (
-            format!("{} resume {session_id}", launch::strip_session_flags(cmd)),
-            launch::strip_session_flags(cmd),
-        ),
-        ToolKind::Gemini => (
-            format!("{cmd} --resume {session_id}"),
-            format!("{cmd} --resume latest"),
-        ),
-        // agy resumes by `--conversation <id>` and falls back to `--continue`
-        // (`agy --help`, 1.1.25, measured 2026-09-04 — it has no `--resume` at
-        // all).
-        ToolKind::Agy => (
-            format!(
-                "{} --conversation {session_id}",
-                launch::strip_agy_session_flags(cmd)
-            ),
-            format!("{} --continue", launch::strip_agy_session_flags(cmd)),
-        ),
-        ToolKind::OpenCode => (
-            format!("{cmd} --session {session_id}"),
-            format!("{cmd} --continue"),
-        ),
-        ToolKind::Unknown => (cmd.to_owned(), cmd.to_owned()),
+        ResumeForm::StrippedFlags {
+            grammar,
+            exact,
+            fallback,
+        } => {
+            let clean = launch::strip_session_grammar(cmd, grammar);
+            (
+                format!("{clean} {exact} {session_id}"),
+                format!("{clean} {fallback}"),
+            )
+        }
+        ResumeForm::Subcommand(exact) => {
+            let clean = launch::strip_session_flags(cmd);
+            (format!("{clean} {exact} {session_id}"), clean)
+        }
+        ResumeForm::None => (cmd.to_owned(), cmd.to_owned()),
     }
 }
 

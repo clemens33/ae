@@ -347,15 +347,10 @@ fn is_file(path: &Path) -> bool {
 /// falling back to the command itself (not to its binary word) exactly as the
 /// frozen `case`'s `*)` arm does.
 fn tool_label(cmd: &str) -> String {
-    match ToolKind::from_cmd(cmd) {
-        ToolKind::Claude => "claude code".to_owned(),
-        ToolKind::Codex => "codex".to_owned(),
-        ToolKind::Gemini => "gemini cli".to_owned(),
-        ToolKind::Agy => "antigravity cli".to_owned(),
-        ToolKind::Grok => "grok build".to_owned(),
-        ToolKind::OpenCode => "opencode".to_owned(),
-        ToolKind::Unknown => cmd.to_owned(),
-    }
+    ToolKind::from_cmd(cmd)
+        .adapter()
+        .label
+        .map_or_else(|| cmd.to_owned(), str::to_owned)
 }
 
 /// The tmux server this session's panes are read on: its recorded selector

@@ -42,62 +42,8 @@ impl Split {
     }
 }
 
-/// Which harness a command launches — the six ae models, or none.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ToolKind {
-    /// Claude Code.
-    Claude,
-    /// Codex.
-    Codex,
-    /// Gemini CLI.
-    Gemini,
-    /// Antigravity CLI (`agy`).
-    Agy,
-    /// Grok Build.
-    Grok,
-    /// `OpenCode`.
-    OpenCode,
-    /// Anything else, or a command with no classifiable binary.
-    Unknown,
-}
-
-impl ToolKind {
-    /// The tool kind for a bare binary name.
-    #[must_use]
-    pub fn from_binary_name(name: &str) -> Self {
-        match name {
-            "claude" => Self::Claude,
-            "codex" => Self::Codex,
-            "gemini" => Self::Gemini,
-            "agy" => Self::Agy,
-            "grok" => Self::Grok,
-            "opencode" => Self::OpenCode,
-            _ => Self::Unknown,
-        }
-    }
-
-    /// Classify a whole command line: `Unknown` when it has no binary.
-    #[must_use]
-    pub fn from_cmd(cmd: &str) -> Self {
-        split_binary(cmd).map_or(Self::Unknown, |split| {
-            Self::from_binary_name(split.binary_name())
-        })
-    }
-
-    /// The kind's spelling.
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Claude => "claude",
-            Self::Codex => "codex",
-            Self::Gemini => "gemini",
-            Self::Agy => "agy",
-            Self::Grok => "grok",
-            Self::OpenCode => "opencode",
-            Self::Unknown => "unknown",
-        }
-    }
-}
+/// Compatibility path for callers migrated off the command parser in phase 3.
+pub use crate::tool::ToolKind;
 
 /// Split `cmd` at its binary word, or `None` when it is malformed or carries
 /// nothing but prefix words.
