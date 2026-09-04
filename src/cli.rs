@@ -1,9 +1,7 @@
 //! Argv parsing: the one place that turns a command line into an intent.
 //!
-//! Deliberately hand-rolled. A CLI argument parser is a dependency the skeleton
-//! does not need, and #80's rule for the error crate — "no dependency exists
-//! until a real error does" — applies here too. When the real command surface
-//! arrives (P1+), revisit with a measured need.
+//! Deliberately hand-rolled. A CLI argument parser is a dependency this crate
+//! does not need — no dependency exists until a measured need does.
 
 use std::path::PathBuf;
 
@@ -282,9 +280,9 @@ pub enum Request {
     },
     /// `_requests <meta-dir> [mine|inbox|all]` — the `requests` helper surface.
     Requests {
-        /// The session meta directory the frozen helper derives from `$0`.
+        /// The session meta directory the helper derives from `$0`.
         dir: PathBuf,
-        /// SC-212c's mode, defaulting to `mine`.
+        /// The mode, defaulting to `mine`.
         mode: Mode,
     },
     /// `_events-tail <meta-dir>` — the `events-tail` helper surface.
@@ -351,7 +349,7 @@ pub enum Request {
         tail: Vec<String>,
     },
     EventsTail {
-        /// The session meta directory the frozen helper derives from `$0`.
+        /// The session meta directory the helper derives from `$0`.
         dir: PathBuf,
     },
     /// `_archive-preview <session-dir>` — the read-only archive preview tracer.
@@ -364,7 +362,7 @@ pub enum Request {
     ArchivePublish {
         /// The session directory `ae` resolved and path-checked before shimming.
         dir: PathBuf,
-        /// The git push outcome Bash recorded (`not-managed` when unmanaged).
+        /// The git push outcome the caller recorded (`not-managed` when unmanaged).
         push_outcome: String,
         /// The pushed ref, or `-`.
         push_ref: String,
@@ -372,7 +370,7 @@ pub enum Request {
         preserved: String,
         /// The work dir whose HEAD/range the core derives, or `-`.
         workdir: String,
-        /// The archive instant Bash captured (`date -u`), validated by the core.
+        /// The archive instant the caller captured, validated by the core.
         archived_at: String,
     },
     /// `_archive-from-preflight <archive-root> <raw-uuid>` — the read-only
@@ -406,7 +404,7 @@ pub enum Request {
     WatchdogRun {
         /// The session's meta directory.
         dir: PathBuf,
-        /// Every tunable, defaulted to the frozen values a flagless call keeps.
+        /// Every tunable, defaulted to the values a flagless call keeps.
         knobs: crate::watchdog_daemon::Knobs,
     },
     /// `_telegram-run <ae-home> [--config <p>] [--home <p>] [knob flags]` — run
@@ -507,7 +505,7 @@ pub enum Request {
     /// `_compact-freeze <session-dir> [--keep-history]` — resolves and emits
     /// the frozen compact tuple.
     CompactFreeze {
-        /// The session directory the frozen helper derives from `$0`.
+        /// The session directory the helper derives from `$0`.
         dir: PathBuf,
         /// `--keep-history`: override a config that opts into purging agent history.
         keep_history: bool,
@@ -534,7 +532,7 @@ pub enum Request {
         dir: PathBuf,
         /// The frozen tuple (`0x1f`-separated) from `_compact-freeze` — the authorization.
         tuple: String,
-        /// The ISO-8601 UTC instant bash supplies (std cannot format one).
+        /// The ISO-8601 UTC instant the caller supplies (std cannot format one).
         archived_at: String,
         /// Git push outcome, `-` for a local compact.
         push_outcome: String,
@@ -634,8 +632,8 @@ pub enum Request {
         /// Everything after it, which must be nothing.
         tail: Vec<String>,
     },
-    /// **SC-022** — a token that is a usage error: an unknown top-level OPTION,
-    /// or an unknown token in a `list`/`ls` tail.
+    /// A token that is a usage error: an unknown top-level OPTION, or an unknown
+    /// token in a `list`/`ls` tail.
     UsageError(String),
     /// A top-level NON-option token: a session name under the start grammar.
     LaunchCandidate(String),
@@ -651,14 +649,13 @@ pub fn serves(word: &str) -> bool {
 impl Request {
     /// Classify `args` — argv WITHOUT the program name.
     ///
-    /// # SC-022 — the two kinds of unrecognised token
+    /// # The two kinds of unrecognised token
     ///
     /// A token `list` does not know is a [`Request::UsageError`]. So is an
     /// unknown top-level OPTION — a `-`/`--` token the dispatcher does not
     /// define. A top-level token that is NOT option-shaped is neither: it is a
     /// session name under the start grammar, and becomes a
-    /// [`Request::LaunchCandidate`]. The row rules that direction explicitly, so
-    /// the shape of this function is the shape of the row.
+    /// [`Request::LaunchCandidate`].
     ///
     /// ```
     /// use ae::cli::Request;
@@ -673,7 +670,7 @@ impl Request {
     /// assert_eq!(args.selection.scope, Scope::All);
     /// assert_eq!(Request::parse(&["list".to_owned()]), Request::List(ListArgs::default()));
     ///
-    /// // SC-022: option-shaped is a usage error; a bare word is a session name.
+    /// // Option-shaped is a usage error; a bare word is a session name.
     /// assert_eq!(
     ///     Request::parse(&["--frobnicate".to_owned()]),
     ///     Request::UsageError("--frobnicate".to_owned())
@@ -1160,8 +1157,8 @@ impl Request {
                 [dir] => Self::ArchivePreview { dir: dir.into() },
                 [_, extra, ..] => Self::UsageError(extra.clone()),
             },
-            // SC-022, in the order the row states it: option-shaped first,
-            // because everything left over is a name and not an error.
+            // Option-shaped first, because everything left over is a name and
+            // not an error.
             Some(other) if other.starts_with('-') => Self::UsageError(other.to_owned()),
             Some(other) => Self::LaunchCandidate(other.to_owned()),
         }
@@ -1434,7 +1431,7 @@ mod tests {
     use crate::filters::{ListArgs, Scope};
     use crate::requests::Mode;
 
-    /// Every flag the rows name, as one list — used to prove DELEGATION rather
+    /// Every documented flag, as one list — used to prove DELEGATION rather
     /// than to re-test the grammar, which is [`crate::filters`]'s job.
     const EVERY_DOCUMENTED_FLAG: [&str; 10] = [
         "--running",
@@ -1475,7 +1472,7 @@ mod tests {
     #[test]
     fn sc_022_an_unknown_option_is_carried_verbatim() {
         // One token, alone: what argv does with tokens AFTER a recognised one
-        // is explicitly unruled by SC-022, so nothing here may depend on it.
+        // is deliberately unruled, so nothing here may depend on it.
         assert_eq!(
             Request::parse(&argv(&["--frobnicate"])),
             Request::UsageError("--frobnicate".to_owned())
@@ -1537,7 +1534,7 @@ mod tests {
 
     #[test]
     fn ls_is_the_same_command_as_list_for_every_argv_tail() {
-        // SC-021 makes `ls` an alias of `list` — one command, two spellings.
+        // `ls` is an alias of `list` — one command, two spellings.
         let tails: [&[&str]; 5] = [
             &[],
             &["--all"],
@@ -1575,8 +1572,8 @@ mod tests {
     #[test]
     fn sc_521_the_whole_tail_is_parsed_not_just_the_first_flag() {
         // Only the first argument decides the COMMAND; inside `list` every
-        // flag counts, and SC-521b's last-distinct-selector rule needs all of
-        // them to have been seen.
+        // flag counts, and the last-distinct-selector rule needs all of them
+        // to have been seen.
         let Request::List(args) = Request::parse(&argv(&["list", "--all", "--stopped", "--json"]))
         else {
             panic!("a list request");
@@ -1608,7 +1605,8 @@ mod tests {
 
     #[test]
     fn the_helper_spellings_all_begin_with_an_underscore() {
-        // Not decoration: this is the property that keeps SC-022 whole.
+        // Not decoration: this is the property that keeps the usage-error rule
+        // whole.
         for spelling in [
             REQUESTS,
             EVENTS_TAIL,
@@ -1833,7 +1831,8 @@ mod tests {
 
     #[test]
     fn compact_revalidate_parses_dir_tuple_and_optional_keep_history() {
-        // No --when: the default single-gate label, so a legacy caller is not mislabelled.
+        // No --when: the default single-gate label, so a caller that omits it
+        // is not mislabelled.
         assert_eq!(
             Request::parse(&argv(&[COMPACT_REVALIDATE, "/s/d", "t\u{1f}u"])),
             Request::CompactRevalidate {
@@ -2135,8 +2134,8 @@ mod tests {
 
     #[test]
     fn telegram_run_derives_both_paths_from_ae_home_when_they_are_not_given() {
-        // The conventional layout is not restated by the caller: bash knows
-        // AE_HOME, and everything else follows from it.
+        // The conventional layout is not restated by the caller: AE_HOME is
+        // given, and everything else follows from it.
         let Request::TelegramRun { paths, knobs } =
             Request::parse(&argv(&[TELEGRAM_RUN, "/home/me/.ae"]))
         else {
@@ -2200,8 +2199,8 @@ mod tests {
 
     #[test]
     fn watchdog_run_defaults_every_knob_a_flagless_call_omits() {
-        // The frozen cadence is what a bash side that reads no env passes: this
-        // entry must run it rather than invent one.
+        // A flagless call passes the default cadence: this entry must run it
+        // rather than invent one.
         assert_eq!(
             Request::parse(&argv(&[WATCHDOG_RUN, "/s/demo"])),
             Request::WatchdogRun {
@@ -2257,9 +2256,9 @@ mod tests {
 
     #[test]
     fn a_configured_zero_sweep_reaches_the_daemon_as_a_zero() {
-        // SC-1405b is a VALUE, not an omission: `0` means "no sweep branch",
-        // and defaulting it to the frozen 300 would start prompting a session
-        // whose operator turned the cadence off.
+        // A `0` is a VALUE, not an omission: it means "no sweep branch", and
+        // defaulting it to 300 would start prompting a session whose operator
+        // turned the cadence off.
         let Request::WatchdogRun { knobs, .. } =
             Request::parse(&argv(&[WATCHDOG_RUN, "/s/demo", "--sweep-secs", "0"]))
         else {
@@ -2277,7 +2276,7 @@ mod tests {
 
     #[test]
     fn a_knob_the_daemon_cannot_read_is_a_usage_error_not_a_default() {
-        // Silently defaulting a knob bash meant to set would run a cadence
+        // Silently defaulting a knob the caller meant to set would run a cadence
         // nobody chose — and a watchdog is not a place to guess.
         assert_eq!(
             Request::parse(&argv(&[WATCHDOG_RUN, "/s/demo", "--interval", "soon"])),
@@ -2296,7 +2295,7 @@ mod tests {
             Request::parse(&argv(&[WATCHDOG_RUN])),
             Request::MissingOperand(WATCHDOG_RUN)
         );
-        // SC-022: a usage error is 2, kept distinct from "it went wrong".
+        // A usage error is 2, kept distinct from "it went wrong".
         assert_eq!(
             Request::parse(&argv(&[WATCHDOG_RUN, "/s/demo", "--interval", "soon"])).exit_code(),
             Some(2)

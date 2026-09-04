@@ -262,11 +262,7 @@ fn version_prints_the_version_line_and_exits_zero() {
 
 #[test]
 fn sc_022_an_unknown_option_exits_two_and_diagnoses_on_stderr() {
-    // WHAT THIS MEASURES CHANGED IN SLICE Z3. Until Z3 the binary was reached by
-    // `ae-entry`, which prepended a preamble, so a top-level `--frobnicate` fell
-    // through the router into the LAUNCH grammar; called without a preamble, as
-    // this test used to call it, the same word reached `cli::Request::parse`
-    // instead. Two parsers answered depending on a path no human could choose.
+    // One parser answers `--frobnicate`, whatever path reaches the binary.
     let out = ae()
         .arg("--frobnicate")
         .output()
@@ -286,7 +282,8 @@ fn sc_022_an_unknown_option_exits_two_and_diagnoses_on_stderr() {
     );
 }
 
-/// The half of SC-022 the DISPATCHER owns, through the public binary.
+/// The half of the usage-error rule the DISPATCHER owns, through the public
+/// binary.
 #[test]
 fn an_unknown_list_flag_is_a_usage_error() {
     let out = ae()
@@ -388,13 +385,13 @@ fn criterion_1_the_real_list_and_ls_surfaces_answer_over_a_real_state_root() {
                 "{spelling}/json={json}: the planted sessions did not reach output: {stdout}"
             );
             // THE STATUS IS `unknown`, AND THAT IS THE WHOLE POINT. The
-            // transport is real now and it really ran: these sessions record a
-            // server that is not running, so the query FAILED — and SC-017l says
-            // an unanswerable query is `unknown`, never `stopped`. If the
+            // transport really ran: these sessions record a server that is not
+            // running, so the query FAILED — and an unanswerable query is
+            // `unknown`, never `stopped`. If the
             // transport reported a SUCCESSFUL EMPTY query instead of a failure,
             // every one of these rows would say `stopped`: ae would be asserting
-            // these sessions are gone on the strength of a question that got no
-            // answer. That is #105 restated at the entry point.
+            // these sessions are gone on the strength of a question that got
+            // no answer.
             assert!(
                 stdout.contains("unknown"),
                 "{spelling}/json={json}: an unverifiable session must be unknown: {stdout}"
@@ -560,12 +557,10 @@ fn an_unknown_list_flag_exits_two_not_one() {
 
 // ── the internal helper surfaces (`_requests`, `_events-tail`, `_state`) ─────
 //
-// The LIBRARY behind them used to be compared against a frozen corpus of bash
-// invocations; that corpus and its module retired with the bash. What is proved
-// here is what always mattered about these surfaces and is now the whole of it —
-// the argv, the exit-code mapping, which stream each answer lands on, and the
-// fact that the follow surface actually follows. It invokes the BINARY rather
-// than the library, which is what makes it a claim about the product.
+// What is proved here is the argv, the exit-code mapping, which stream each
+// answer lands on, and the fact that the follow surface actually follows. It
+// invokes the BINARY rather than the library, which is what makes it a claim
+// about the product.
 
 /// A session meta directory with the events container these tests need.
 fn plant_events(root: &std::path::Path, session: &str, lines: &[&str]) -> std::path::PathBuf {
@@ -819,13 +814,13 @@ fn goal_reads_the_first_record_or_no_goal_and_reports_an_unreadable_meta() {
     assert_eq!(run(&dir, &["--clear"]).0, Some(0));
     assert_eq!(run(&dir, &[]), none, "and so does the clear");
 
-    // No meta at all is no goal — the frozen grep's `|| true`.
+    // No meta at all is no goal.
     let bare = root.join("sessions").join("r2");
     std::fs::create_dir_all(&bare).expect("a session dir");
     assert_eq!(run(&bare, &[]), none);
 
-    // But a meta that exists and cannot be read is reported, where the frozen
-    // body would have printed `(no goal set)` over the failure.
+    // But a meta that exists and cannot be read is REPORTED, never rendered as
+    // `(no goal set)` over the failure.
     let unreadable = root.join("sessions").join("r3");
     std::fs::create_dir_all(unreadable.join("meta")).expect("a directory where the meta goes");
     let failed = run(&unreadable, &[]);
@@ -948,15 +943,15 @@ fn memo_read_and_tail_render_the_frozen_shape_and_report_an_unreadable_file() {
         )
     };
     let empty = (Some(0), String::new(), String::new());
-    // No memo file at all is empty output at 0, as in bash.
+    // No memo file at all is empty output at 0.
     let dir = root.join("sessions").join("r1");
     std::fs::create_dir_all(&dir).expect("a session dir");
     assert_eq!(run(&dir, &["read"]), empty);
     assert_eq!(run(&dir, &["tail", "3"]), empty);
 
-    // One record the binary wrote, one a bash writer wrote: the frozen
-    // renderer's exact shape over both; the bare call is `read`; a topic
-    // filter that matches nothing is empty; `tail 1` is the last record.
+    // One record the binary wrote, one written externally: the renderer's exact
+    // shape over both; the bare call is `read`; a topic filter that matches
+    // nothing is empty; `tail 1` is the last record.
     assert_eq!(run(&dir, &["add", "--topic", "p2", "one\tline"]), empty);
     let tsv = std::fs::read_to_string(dir.join("memo.tsv")).unwrap();
     let ts = tsv.split('\t').next().unwrap().to_owned();
@@ -984,8 +979,7 @@ fn memo_read_and_tail_render_the_frozen_shape_and_report_an_unreadable_file() {
         );
     }
 
-    // A directory in the file's place is what `[[ -f ]] || exit 0` rejects:
-    // empty at 0, as in bash, and never opened.
+    // A directory in the file's place is REJECTED: empty at 0, and never opened.
     let blocked = root.join("sessions").join("r2");
     std::fs::create_dir_all(blocked.join("memo.tsv")).expect("a directory where the file goes");
     assert_eq!(run(&blocked, &["read"]), empty);
@@ -994,9 +988,9 @@ fn memo_read_and_tail_render_the_frozen_shape_and_report_an_unreadable_file() {
 
 #[test]
 fn a_fifo_in_a_containers_place_is_the_frozen_empty_answer_and_not_a_hang() {
-    // The frozen bodies gate every container read on `[[ -f ]]`; the core's
-    // first cut opened first and asked later, and a FIFO — no writer, ever —
-    // left it blocked with no stdout, no stderr and no exit (found in review).
+    // Every container read is gated on the path being a regular file: a FIFO —
+    // no writer, ever — would otherwise block with no stdout, no stderr and no
+    // exit.
     let root = scratch("fifo");
     let dir = root.join("sessions").join("f1");
     std::fs::create_dir_all(&dir).expect("a session dir");
@@ -1079,10 +1073,9 @@ fn state_refuses_without_a_pane_identity_and_writes_nothing() {
         );
     }
 
-    // The READ needs no identity: it asks about `human`, as the frozen body
-    // does from any shell — and a reason-less declaration keeps its
-    // timestamp, where the frozen body's `IFS=$'\t' read` slides it into the
-    // reason (measured: `working — 2026-…Z  (since )`).
+    // The READ needs no identity: it asks about `human` from any shell — and a
+    // reason-less declaration keeps its timestamp rather than sliding it into
+    // the reason.
     let read = |dir: &std::path::Path| {
         let out = ae()
             .env_remove("TMUX_PANE")
@@ -1165,7 +1158,7 @@ fn state_declares_for_the_pane_and_a_held_lock_fails_it_at_the_bound() {
     let done = run(&["done", "all", "green"]);
     let container = std::fs::read_to_string(dir.join("events.jsonl")).unwrap_or_default();
 
-    // Now hold the lock the way a bash writer does and try again.
+    // Now hold the lock the way a concurrent writer does and try again.
     let lock = std::fs::OpenOptions::new()
         .append(true)
         .open(dir.join("events.jsonl.lock"))
@@ -1858,8 +1851,8 @@ fn review_carries_its_instructions_and_every_target_spelling_resolves_as_the_hel
 fn a_request_that_does_not_resolve_or_is_refused_leaves_no_event_and_no_paste() {
     let fx = Tracked::new("ref");
     let cases: [Refusal<'_>; 8] = [
-        // IDENTITY V2: the alias-only and bare-name arms of the resolver are
-        // retired, so a legacy alias addresses nothing.
+        // The resolver has no alias-only or bare-name arm, so an alias
+        // addresses nothing.
         (
             &["cl", "q"],
             &[],
@@ -1948,7 +1941,7 @@ fn a_request_that_does_not_resolve_or_is_refused_leaves_no_event_and_no_paste() 
 fn no_identity_falls_back_to_a_plain_send_and_external_and_override_senders_are_event_only_or_slotless()
  {
     let fx = Tracked::new("idn");
-    // No pane: the frozen warning, then a plain send of the raw body through
+    // No pane: a warning, then a plain send of the raw body through
     // the PUBLIC helper — that path records its own event, so the core writes
     // none, and the core never pastes for it.
     let plain = fx.run(ae::cli::ASK, None, &["worker", "raw", "body"], &[]);
@@ -2140,9 +2133,9 @@ fn reply_routes_to_the_asker_by_stored_slot_records_the_frozen_event_and_closes_
 
 #[test]
 fn the_verified_sender_overwrites_an_override_inherited_from_the_caller() {
-    // The frozen helper `exec env AE_SENDER_OVERRIDE="$reply_sender"` AFTER the
-    // slot check; a caller's own override must not survive into the entry,
-    // where it would become the provenance envelope.
+    // The verified sender is set AFTER the slot check; a caller's own override
+    // must not survive into the entry, where it would become the provenance
+    // envelope.
     let fx = Tracked::new("rv");
     let id = ask_from_main(&fx, "q");
     let poisoned = fx.run(
@@ -2269,9 +2262,8 @@ fn a_reply_is_refused_exactly_and_pastes_nothing_when_the_pane_the_id_or_the_bod
 
 #[test]
 fn a_pre_migration_row_name_matches_with_the_frozen_errors_and_is_answered_at_the_stored_name() {
-    // A pre-migration row (no routing members) name-matches, with the frozen
-    // errors, and is answered at the stored name because there is no slot to
-    // route by.
+    // A row with no routing members name-matches and is answered at the stored
+    // name, because there is no slot to route by.
     let fx = Tracked::new("ro");
     append_event(
         &fx,
@@ -2328,7 +2320,7 @@ fn a_pre_migration_row_name_matches_with_the_frozen_errors_and_is_answered_at_th
 fn a_bash_shaped_request_is_consumed_a_pane_less_asker_is_answered_event_only_and_a_follow_up_is_noted()
  {
     let fx = Tracked::new("rb");
-    // The frozen ae_emit_event's member order, as bash `ask` writes it.
+    // The event member order an external `ask` writer produces.
     let id = "ae-20260827T100000Z-0badf00d";
     append_event(
         &fx,
@@ -2370,7 +2362,7 @@ fn a_bash_shaped_request_is_consumed_a_pane_less_asker_is_answered_event_only_an
     );
     assert_eq!(fx.events().len(), 3);
     // An asker with no pane — a bridge naming itself through
-    // AE_SENDER_OVERRIDE — is answered as the frozen send answers a sink:
+    // AE_SENDER_OVERRIDE — is answered as a sink:
     // the event, nothing pasted, no body file.
     let bridged = "ae-20260827T100001Z-0badf00e";
     append_event(
@@ -2447,8 +2439,8 @@ fn send_pastes_through_the_entry_and_records_the_one_frozen_event() {
             && last.contains("/ae-1.send."),
         "{last}"
     );
-    // A pane id resolves to that pane's stamp, as the frozen ae_resolve reads
-    // it back: the event names the agent, and the pane still gets the text.
+    // A pane id resolves to that pane's stamp: the event names the agent, and
+    // the pane still gets the text.
     fx.forget();
     let by_id = fx.run(
         ae::cli::SEND,
@@ -2573,8 +2565,7 @@ fn send_refuses_exactly_records_nothing_on_a_failed_delivery_and_names_the_gap_a
         );
         assert!(fx.events().is_empty(), "{tail:?}: an event was written");
     }
-    // A DEAD TARGET: refused with the frozen line, nothing stored, nothing
-    // recorded.
+    // A DEAD TARGET: refused, nothing stored, nothing recorded.
     fx.forget();
     let dead = fx.dead_pane_session("claude");
     let out = ae()
@@ -2625,7 +2616,7 @@ fn a_confirmed_delivery_whose_event_cannot_be_written_is_reported_as_that_gap() 
     );
 }
 
-/// `_AE_EVENT_ACTION=chat` takes the frozen emitter's chat arm on both paths:
+/// `_AE_EVENT_ACTION=chat` takes the emitter's chat arm on both paths:
 /// the summary keeps its newlines and tabs and is capped at 3500 characters,
 /// neither flattened nor cut at 200 — on the pane path the record's envelope
 /// line stays a line of its own.
