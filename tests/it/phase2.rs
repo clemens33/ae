@@ -1,7 +1,7 @@
 //! Phase 2 end to end: phase-1 facts in, classified liveness and a
 //! schema-version-2 digest out.
 //!
-//! Gate: `docs/migration/p1-phase2-gate.md`, blob
+//! Gate: the retired phase-2 gate document, blob
 //! `29db943aa85319534301332052105ba16df03b4d`. Each test names the criterion it
 //! answers. The unit-level halves live beside their code in `src/liveness.rs`
 //! and `src/tmux.rs`; what is here is what needs a real filesystem, a real tmux,

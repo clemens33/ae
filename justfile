@@ -10,9 +10,10 @@ default_branch := "main"
 # Run all quality checks
 check: lint format-check
 
-# The contrib aemonitor/aewatch helpers are Python, not shell; only their bash
-# runners are linted here. The e2e-ai harness + scenario drivers are linted but
-# NEVER run by `check`.
+# THE SUBJECT IS THE BASH THAT STILL EXISTS, and after slice Z4 that is ONE file.
+# The bash suites are retired into `tests/it` and the contrib sidecars' runners
+# went with the sidecars, so what is left to lint is `install` — the bootstrap
+# that has to run before there is a core to run.
 #
 # `< /dev/null` IS THE FIX FOR #67, not tidiness. shellcheck reads stdin when fd
 # 0 is open, and an agent harness hands its tool calls a UNIX SOCKET. If that
@@ -22,8 +23,8 @@ check: lint format-check
 # nothing in between: a race on the peer's close, not slowness. Every input is
 # already named on the argv, so this costs nothing and removes the race.
 # Reproduce on demand with a fifo no one ever closes; a plain rerun passes by
-# luck most of the time. tests/unit pins the redirect structurally, because it
-# reads like line-noise to the next person tidying the recipe.
+# luck most of the time. `tests/it/gate.rs` pins the redirect structurally,
+# because it reads like line-noise to the next person tidying the recipe.
 
 # Enforce the linter pin. Kept OUT of `lint` deliberately: the #67 gate requires the
 # lint recipe to contain exactly ONE `shellcheck` token, so that the `< /dev/null` on
@@ -55,14 +56,10 @@ _shellcheck-pin:
 # Lint with shellcheck.
 # SEVERITY FLOOR: warning and error are the gate; everything BELOW warning — info and
 # style — is advisory and is NOT enforced. State it plainly: a green run here does NOT
-# mean the raw linter reports nothing. It leaves 93 info notes standing, 55 SC2031 and 38 SC2030, all in the
-# suites, where the subshells are deliberate isolation and restructuring them would trade
-# real test safety for a clean linter page. The SC2016 and SC2329 sites carry their own
-# reasoned comments instead. Full rationale: docs/development.md.
+# mean the raw linter reports nothing. The SC2016 and SC2329 sites carry their own reasoned comments
+# instead. Full rationale: docs/development.md.
 lint: _shellcheck-pin
-    shellcheck --severity=warning -x tests/unit tests/integration tests/itest-par tests/aemonitor tests/aewatch install \
-        tests/e2e/ai/lib.sh tests/e2e/ai/run_scenario.sh \
-        $(find tests/e2e/ai/scenarios -name steps.sh) < /dev/null
+    shellcheck --severity=warning -x install < /dev/null
 
 # `< /dev/null` here is insurance, not a fix: shfmt reads stdin only when given
 # no paths, and it is given two. Deliberately NOT pinned by a test — pinning
@@ -78,124 +75,16 @@ format:
 
 # ── Testing ──────────────────────────────────────────────────────────
 
-# Run all tests
-test: test-unit test-integration test-aemonitor test-aewatch
-
-# THE GATE, and unnarrowed: AE_UNIT_FULL=1 runs the slow rigs the default run skips
-# (installer, wrapper triple, CalVer bump, notice rig, telegram seams). The polarity is
-# opt-IN rather than opt-out on purpose — a forgotten export can make a filtered run
-# look like a full one, but it cannot make a gate skip anything it asked for.
+# THE GATE, and it is one command. Slice Z4 retired the bash suites into
+# `tests/it` and the contrib sidecars moved into the core, so ae's whole test
+# surface is Rust: `just rust-check` is format, lint and every test together.
 #
-# Unit tests, every block — THE GATE (pure functions, no deps)
-test-unit:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    # tests/unit needs bash >= 4 (`local -A`, associative arrays). macOS ships 3.2 as
-    # /bin/bash, so a bare `bash` here dies at the first declaration and `just` reports
-    # it as a test failure rather than as a missing interpreter. Resolve by VERSION, not
-    # by path: hardcoding a brew prefix would be wrong on Linux and on a non-brew mac.
-    # Scope is deliberately this recipe only — test-integration and test-aemonitor were
-    # measured running fine under /bin/bash, and widening without a failing case would
-    # be a change with no evidence behind it.
-    for candidate in "${BASH:-}" bash /opt/homebrew/bin/bash /usr/local/bin/bash; do
-        [ -n "$candidate" ] || continue
-        command -v "$candidate" >/dev/null 2>&1 || continue
-        major="$("$candidate" -c 'echo "${BASH_VERSINFO[0]}"' 2>/dev/null || echo 0)"
-        if [ "${major:-0}" -ge 4 ] 2>/dev/null; then
-            exec env AE_UNIT_FULL=1 "$candidate" tests/unit
-        fi
-    done
-    echo "Error: tests/unit needs bash >= 4.0 and no candidate on PATH provides it" >&2
-    echo "       (macOS: brew install bash)" >&2
-    exit 1
+# Minutes, not the half hour the serial bash integration suite cost. There is no
+# inner-loop/gate split any more because there is nothing left to narrow — the
+# fast lane and the gate are the same command, which is the point.
 
-# INNER LOOP: the same suite without the five rigs that spawn processes and build
-# fixture installs — about a minute instead of two, and it says on its own summary line
-# that it was not the full run. `AE_UNIT_TIMING=1` adds a slowest-blocks report.
-#
-# Unit tests without the slow rigs (inner loop)
-unit:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    for candidate in "${BASH:-}" bash /opt/homebrew/bin/bash /usr/local/bin/bash; do
-        [ -n "$candidate" ] || continue
-        command -v "$candidate" >/dev/null 2>&1 || continue
-        major="$("$candidate" -c 'echo "${BASH_VERSINFO[0]}"' 2>/dev/null || echo 0)"
-        if [ "${major:-0}" -ge 4 ] 2>/dev/null; then
-            exec "$candidate" tests/unit
-        fi
-    done
-    echo "Error: tests/unit needs bash >= 4.0 and no candidate on PATH provides it" >&2
-    echo "       (macOS: brew install bash)" >&2
-    exit 1
-
-# `bash` is /bin/bash 3.2 on macOS and the suite refuses that outright (it would die
-# thousands of lines in, on an associative array, reading as a product bug), so this
-# resolves an interpreter by VERSION exactly as test-unit does.
-#
-# Integration tests, serial and unnarrowable — THE GATE (requires tmux, git; ~30 min)
-test-integration:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    for candidate in "${BASH:-}" bash /opt/homebrew/bin/bash /usr/local/bin/bash; do
-        [ -n "$candidate" ] || continue
-        command -v "$candidate" >/dev/null 2>&1 || continue
-        major="$("$candidate" -c 'echo "${BASH_VERSINFO[0]}"' 2>/dev/null || echo 0)"
-        if [ "${major:-0}" -ge 4 ] 2>/dev/null; then
-            exec env AE_ITEST_FULL=1 "$candidate" tests/integration
-        fi
-    done
-    echo "Error: tests/integration needs bash >= 4.0 and no candidate on PATH provides it" >&2
-    echo "       (macOS: brew install bash)" >&2
-    exit 1
-
-# INNER LOOP, not the gate. `just itest list send` runs only those domains; with no
-# argument it runs every section. Domains live in tests/itest-domains.tsv, and
-# `tests/itest-par --list` prints them.
-#
-# Integration sections in parallel, scoped by domain (inner loop)
-itest *domains:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    for candidate in "${BASH:-}" bash /opt/homebrew/bin/bash /usr/local/bin/bash; do
-        [ -n "$candidate" ] || continue
-        command -v "$candidate" >/dev/null 2>&1 || continue
-        major="$("$candidate" -c 'echo "${BASH_VERSINFO[0]}"' 2>/dev/null || echo 0)"
-        if [ "${major:-0}" -ge 4 ] 2>/dev/null; then
-            exec "$candidate" tests/itest-par {{ domains }}
-        fi
-    done
-    echo "Error: tests/itest-par needs bash >= 4.0 and no candidate on PATH provides it" >&2
-    echo "       (macOS: brew install bash)" >&2
-    exit 1
-
-# Same assertions as `just test-integration`, minutes instead of half an hour — but the
-# sections run in several processes, so a section that only passes because of what ran
-# before it shows up HERE and not there.
-#
-# Every integration section, in parallel
-itest-all:
-    {{ just_executable() }} itest
-
-# contrib aemonitor helper tests (requires python3; deterministic fixtures)
-test-aemonitor:
-    bash tests/aemonitor
-
-# contrib aewatch sidecar tests (stdlib unittest; skips if Python < 3.11).
-# This is the FULL PHASE GATE — it runs the slow bash-vs-python dual-run oracle.
-test-aewatch:
-    bash tests/aewatch
-
-# FAST commit inner loop: AEWATCH_FAST=1 skips the subprocess-backed bash-oracle
-# dual-runs, leaving the pure-Python surface (seconds, not minutes). NOT the phase
-# gate — run `just test-aewatch` (+ contracts validate + check) for that.
-test-aewatch-fast:
-    AEWATCH_FAST=1 bash tests/aewatch
-
-# AI-driven e2e (OPT-IN: needs AE_E2E_AI=1, runs REAL agents against your real
-# subscription — real tokens, your live rate budget). NOT part of `check`/`test`.
-test-ai *args="tests/e2e/ai/scenarios":
-    AE_E2E_AI={{ env_var_or_default("AE_E2E_AI", "") }} tests/e2e/ai/run_scenario.sh {{ args }}
+# Run all tests — THE GATE
+test: rust-check
 
 # ── Version ──────────────────────────────────────────────────────────
 
@@ -631,9 +520,24 @@ bundle version platform binary:
 
 # ── Install ──────────────────────────────────────────────────────────
 
-# Checkout-mode installation through the canonical versioned installer.
+# Checkout-mode installation through the same door a release install uses.
+#
+# NOT `./install`: since slice Z4 that script is a fetch-only bootstrap and
+# would download a release over the developer's own build. Bundling the local
+# binary first keeps `bundle` the ONE spelling of what a bundle is, and the
+# checkout then publishes through `_install` exactly as a downloaded one does.
 install:
-    ./install
+    #!/usr/bin/env bash
+    set -euo pipefail
+    version="$(just version)"
+    case "$(uname -s):$(uname -m)" in
+        Darwin:arm64) platform=darwin-arm64 ;;
+        Linux:x86_64) platform=linux-x86_64-musl ;;
+        *) echo 'Error: unsupported platform' >&2; exit 1 ;;
+    esac
+    cargo build --release --locked
+    just bundle "$version" "$platform" target/release/ae
+    ./target/release/ae _install --from "ae-$version-$platform"
 
 # ── Docs ─────────────────────────────────────────────────────────────
 # Optional. Requires `pip install mkdocs-material`.

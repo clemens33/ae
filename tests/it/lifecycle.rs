@@ -873,3 +873,43 @@ fn stop_all_from_inside_a_target_with_no_terminal_still_needs_the_flag() {
         "nothing was stopped: {live:?}"
     );
 }
+
+/// The lifecycle lock EXCLUDES an end from a concurrent start or resume.
+///
+/// The lock is taken before the target is classified and held through the last
+/// removal, because the window between the proof and the cleanup spans
+/// commit/fetch/push — and a launch landing in that window made cleanup delete
+/// state out from under a freshly LIVE session (issue #4). A held lock must
+/// therefore be a loud REFUSAL that preserves everything, not a wait that
+/// eventually deletes.
+#[test]
+fn a_held_lifecycle_lock_refuses_the_end_and_preserves_the_whole_session() {
+    let rig = Rig::new("lock");
+    let lock_path = rig
+        .home
+        .join("sessions")
+        .join(format!(".lifecycle.{}.lock", rig.name));
+    let held = std::fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(&lock_path)
+        .expect("the lock file opens");
+    held.try_lock().expect("this test takes the lock first");
+
+    let (code, _, stderr) = rig.run(&["_end", "-f", &rig.name]);
+    assert_eq!(code, Some(1), "the end fails rather than waiting forever");
+    assert!(
+        stderr.contains("another lifecycle operation (start/resume/end) is in progress")
+            && stderr.contains("State preserved."),
+        "the refusal says why and what it kept: {stderr}"
+    );
+    assert!(rig.dir.join("meta").is_file(), "the meta is still there");
+    assert!(rig.session_is_live(), "and the session was never stopped");
+
+    // Released, the very same end goes through — so the refusal was the lock
+    // and not some other property of this session.
+    drop(held);
+    let (code, stdout, stderr) = rig.run(&["_end", "-f", &rig.name]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(!rig.dir.exists(), "the uncontended end removed the session");
+}

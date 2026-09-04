@@ -2491,3 +2491,69 @@ fn from_preflight(root: &Path, raw_uuid: &str) -> Result<FromProof, String> {
         pending: fields.next().unwrap_or_default().to_owned(),
     })
 }
+
+#[cfg(test)]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "a fixture builds and inspects a real directory; the capability boundary is \
+              about what PRODUCT code may reach"
+)]
+mod tests {
+    use super::{EVENTS_KEEP, trim_events};
+    use std::fmt::Write as _;
+    use std::path::PathBuf;
+
+    fn scratch(tag: &str) -> PathBuf {
+        let dir = PathBuf::from(format!("/tmp/ae-launch-{}-{tag}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// A resume caps `events.jsonl` at its NEWEST lines, and the cut falls
+    /// exactly at the retention boundary.
+    ///
+    /// The log is the session's whole activity history and an unbounded one is
+    /// read on every `ae list`. Asserting the count alone would pass for a
+    /// trim that kept the OLDEST lines, so the boundary is pinned from both
+    /// sides: the first kept line and the last dropped one.
+    #[test]
+    fn a_trim_keeps_the_newest_events_and_cuts_at_the_boundary() {
+        let dir = scratch("trim");
+        let seeded = EVENTS_KEEP + 200;
+        let mut text = String::new();
+        for index in 1..=seeded {
+            let _ = writeln!(text, "{{\"seq\":{index}}}");
+        }
+        std::fs::write(dir.join("events.jsonl"), &text).unwrap();
+
+        trim_events(&dir);
+
+        let kept = std::fs::read_to_string(dir.join("events.jsonl")).unwrap();
+        let lines: Vec<&str> = kept.lines().collect();
+        assert_eq!(lines.len(), EVENTS_KEEP);
+        assert_eq!(lines.first().copied(), Some("{\"seq\":201}"));
+        assert_eq!(
+            lines.last().copied(),
+            Some(format!("{{\"seq\":{seeded}}}").as_str())
+        );
+        assert!(!kept.contains("{\"seq\":200}"), "the boundary line is cut");
+        // The temp the rename came from does not survive the operation.
+        let residue: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with("events.jsonl.trim."))
+            .collect();
+        assert!(residue.is_empty(), "no trim temp is left: {residue:?}");
+
+        // A log already under the cap is left exactly as it was.
+        std::fs::write(dir.join("events.jsonl"), "{\"seq\":1}\n").unwrap();
+        trim_events(&dir);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("events.jsonl")).unwrap(),
+            "{\"seq\":1}\n"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

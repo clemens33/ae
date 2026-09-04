@@ -1,7 +1,7 @@
 //! Phase 3 end to end: one classified snapshot in, the surfaces an operator or
 //! a consumer sees out.
 //!
-//! Gate: `docs/migration/p1-phase3-gate.md`, blob
+//! Gate: the retired phase-3 gate document, blob
 //! `8cccbe44787d4ea6007ad9cf9d1cc83a3d03936c` — fifteen criteria. Each test
 //! names the one it answers.
 //!

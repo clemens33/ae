@@ -15,7 +15,7 @@
 //! answer the question it exists to answer, and until this landed every liveness
 //! answer was `unknown` by construction. The boundary keeps its value precisely
 //! because crossing it stays conspicuous — one function, one file, and an
-//! inventory in `tests/it/parity_self_test.rs` that goes red when the set of
+//! inventory in `tests/it/doors.rs` that goes red when the set of
 //! crossings changes.
 //!
 //! The door is a capability, not a licence: everything a caller could want to do
@@ -299,7 +299,7 @@ fn addressable(server: &ServerId) -> bool {
 // tests' (`tests/it/cli.rs`), which must run the product binary. `clippy.toml`
 // denies the TYPE everywhere else, which resolves paths rather than text and so
 // holds against UFCS, aliases and re-imports alike.
-// `parity_self_test::the_capability_boundary_holds_against_any_lint_relaxation`
+// `doors::the_capability_boundary_holds_against_any_lint_relaxation`
 // asks clippy under `--force-warn` for the complete list of crossings; the
 // counter beside it names them by file. The first is the claim, the second is
 // defence in depth — they are not the same strength.
@@ -440,7 +440,7 @@ fn run_captured(program: &str, args: &[String]) -> (bool, String, String) {
 ///
 /// `src/git.rs` is the only caller; the type seal above is the boundary, and a
 /// structural guard (`run_git_has_exactly_one_product_caller` in
-/// `tests/it/parity_self_test.rs`) is defence in depth, so this fixed-program
+/// `tests/it/doors.rs`) is defence in depth, so this fixed-program
 /// leg cannot quietly become a general spawner.
 pub(crate) fn run_git(argv: &crate::git::GitArgv) -> (bool, String) {
     match spawn("git", argv.as_os_args(), &[], Streams::Captured, None) {
@@ -463,7 +463,7 @@ pub(crate) fn run_git(argv: &crate::git::GitArgv) -> (bool, String) {
 /// a failed run (`false`) as UNKNOWN and never as a dead agent.
 ///
 /// `src/procs.rs` is the only caller; the type seal is the boundary and
-/// `run_ps_has_exactly_one_product_caller` in `tests/it/parity_self_test.rs` is
+/// `run_ps_has_exactly_one_product_caller` in `tests/it/doors.rs` is
 /// defence in depth, so this leg cannot quietly become a general spawner.
 pub(crate) fn run_ps(argv: &crate::procs::PsArgv) -> (bool, String) {
     match spawn("ps", argv.as_args(), &[], Streams::Captured, None) {

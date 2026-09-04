@@ -12,7 +12,7 @@
 //! real name, and requires an answer.
 //!
 //! Its authority is the pre-P5 coexistence design
-//! (`docs/migration/coexistence.md`, item 3), not a semantic-contract row: there
+//! (a coexistence rule of the Rust rewrite, since retired with its notes), not a semantic-contract row: there
 //! is no row because there is no bash predecessor — nothing in the frozen script
 //! ever resolved a hostname. The output shape is quoted from that item verbatim:
 //! *"resolves `host:port` with `std::net::ToSocketAddrs`; prints `ok <n>` or

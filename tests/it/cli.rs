@@ -16,7 +16,7 @@ use super::parity::capture::raw;
 use crate::phase2::run_tmux;
 
 // ONE OF THREE DOORS — `clippy.toml` denies `std::process::Command` crate-wide
-// and `parity_self_test::the_capability_boundary_holds_against_any_lint_relaxation`
+// and `doors::the_capability_boundary_holds_against_any_lint_relaxation`
 // pins the complete inventory of exceptions by asking the compiler for it.
 //
 // This one is not a parity concern: these tests drive the PRODUCT binary and
@@ -489,12 +489,12 @@ fn an_unknown_list_flag_exits_two_not_one() {
 
 // ── the internal helper surfaces (`_requests`, `_events-tail`, `_state`) ─────
 //
-// The LIBRARY behind them is compared against every frozen corpus row in
-// `super::helper_corpus`. What is proved here is the other half — the argv, the
-// exit-code mapping, which stream each answer lands on, and the fact that the
-// follow surface actually follows. A parity run invokes the binary, not the
-// library, so this is the half that makes the corpus comparison a claim about
-// the product.
+// The LIBRARY behind them used to be compared against a frozen corpus of bash
+// invocations; that corpus and its module retired with the bash. What is proved
+// here is what always mattered about these surfaces and is now the whole of it —
+// the argv, the exit-code mapping, which stream each answer lands on, and the
+// fact that the follow surface actually follows. It invokes the BINARY rather
+// than the library, which is what makes it a claim about the product.
 
 /// A session meta directory with the events container these tests need.
 fn plant_events(root: &std::path::Path, session: &str, lines: &[&str]) -> std::path::PathBuf {

@@ -1,6 +1,6 @@
 # Watchdog
 
-The watchdog is a per-session monitor that lives inside the hidden `ae-monitor` tmux window. Its live loop is the Rust core's `_watchdog-run`, launched by the generated watchdog helper (the `ae` helper region around `ae:16204-16254`). It walks every registered agent pane on a fixed cycle, classifies each agent's state, and reacts: nudges idle agents, alerts on dead ones, pauses nudging when upstream rate limits are visible, and respects explicit completion signals.
+The watchdog is a per-session monitor that lives inside the hidden `ae-monitor` tmux window. Its live loop is the Rust core's `_watchdog-run`, launched by the session's `watchdog` helper. It walks every registered agent pane on a fixed cycle, classifies each agent's state, and reacts: nudges idle agents, alerts on dead ones, pauses nudging when upstream rate limits are visible, and respects explicit completion signals.
 
 Bash is process start/stop/tick glue only: it starts and stops the core child, refreshes the git-branch display, and runs the deferred pending-session-id recovery and Telegram-supervision ticks. The old Bash loop remains only as a rollback path when no usable core is pinned; it is not part of the live path.
 
@@ -13,7 +13,7 @@ Bash is process start/stop/tick glue only: it starts and stops the core child, r
 
 The `_watchdog` pane runs the core directly: its command is the session's `watchdog` link, which is the core binary under another name, dispatching to `_watchdog-run`. There is no wrapper around it any more.
 
-## Implementations: Rust core (live), Bash glue, and archived alternatives
+## Implementations: Rust core (live) and Bash glue
 
 The live implementation is the Rust core. `_watchdog-run` owns the fixed cycle,
 all liveness/stale/throttle/quiet decisions, and their effects. The surrounding
@@ -26,39 +26,9 @@ pinned core is unavailable, not selected as a second live implementation.
 | Rust core watchdog (live) | `_watchdog-run` child in the session's `_watchdog` pane | Per-cycle observation, state-machine decisions, nudges, alerts, and status publication |
 | Bash wrapper/glue (live) | Generated helper wrapper around the core child | Process start/stop, git-branch refresh, pending tool-session-id recovery, and Telegram-supervision ticks |
 
-### Archived implementations: Bash loop and aewatch (P4.3 history; not active)
-
-> **ARCHIVAL / ROLLBACK ONLY.** The following comparison and history record the
-> former Bash/aewatch arrangement. The Bash loop is retained only as the
-> rollback path described above; aewatch is retired and is not selectable.
-
-> **RETIRED at P4.3 (2026-08-29).** The aewatch sidecar is no longer selectable:
-> `AE_WATCHDOG_IMPL=uv` selects nothing, and the **bash per-session watchdog
-> described below was the one watchdog**. Its Telegram-bridge half was
-> superseded by the Rust core, which is now the single bridge. The rest of this
-> section is kept as archival design history — read it as what the two-backend
-> arrangement WAS, not as a choice available today.
-
-Two implementations reproduced the same watchdog behavior. The **archived Bash watchdog** described in this comparison was active then and needed nothing beyond `bash` + `tmux`. The **aewatch sidecar** was an optional Python reproduction of the watchdog *and* the [Telegram bridge](../reference/telegram.md), once enabled per shell with `AE_WATCHDOG_IMPL=uv`.
-
-| | archived Bash watchdog (rollback-only) | aewatch sidecar (retired; `AE_WATCHDOG_IMPL=uv` selects nothing) |
-|---|---|---|
-| Runtime | a `bash` subprocess in each session's `_watchdog` pane | one `uv` / PEP 723 Python process (`contrib/aewatch/aewatch`, stdlib-only) |
-| Scope | per session | one daemon per `AE_HOME`, sweeping every discovered session |
-| Home | the session's `ae-monitor` window | a dedicated `ae-aewatch` tmux session on the root server |
-| Liveness | the `_watchdog` pane + pid | a heartbeat file (`$AE_HOME/aewatch/heartbeat`) touched each tick |
-
-*Archival, all three paragraphs below — the selection they describe no longer exists.*
-
-**Selection was exclusive and decided once, at session start.** `_start_session_watchdog` read the effective `AE_WATCHDOG_IMPL`: `uv` started (or reused) the aewatch daemon and did *not* start the bash `_watchdog`; anything else started the bash watchdog. A component — watchdog or bridge — never ran twice against the same session. Since P4.3 the selection is gone: every session starts the bash watchdog, and a stale `ae-aewatch` session is killed when the bridge spawns.
-
-**Reuse was heartbeat-aware.** Launching under `=uv` reused a running `ae-aewatch` session only when its heartbeat was fresh; a stale or wedged daemon was replaced, not trusted.
-
-**There is no longer a bridge fallback, because there is no longer a second bridge.** This is the paragraph P4.3 invalidated: aewatch used to own the Telegram bridge while it held the `bridge-owner` marker with a fresh heartbeat (age ≤ 90s), and a dead daemon let the next bash `telegram _supervise` revive the bash bridge. **The Rust core is now the bridge** — one implementation, no marker, no handoff, nothing to fall back to or from. See [the bridge protocol](bridge-protocol.md), whose two-owner section is likewise archival.
-
 ## Live Rust core loop
 
-The sections below describe the Rust core's per-cycle state machine and effects. They preserve the behavior formerly cross-checked with the retired Python sidecar; the historical source remains only for rollback.
+The sections below describe the Rust core's per-cycle state machine and effects.
 
 ## Tunables
 

@@ -68,15 +68,12 @@ tmux as the runtime is no longer unchallenged: **herdr** (herdrdev/herdr, Rust, 
 ```
 justfile            — dev/release pipeline (just check, just test, just release)
 cliff.toml          — git-cliff changelog config (CalVer-compatible)
-tests/unit          — pure-function unit tests (bash, no deps)
-tests/integration   — integration tests (requires tmux, git)
-tests/itest-par     — parallel sharded runner for tests/integration (`just itest-all`, `just itest <domain>`); tests/itest-domains.tsv tags every section with a domain and records order-dependent chains, tests/itest-timings.tsv holds measured seconds per section
 install             — the bootstrap: download a release bundle, prove it against the release
                       manifest, extract, and run `ae-core _install --from <tmp>`. 79 lines
                       (51 of code) since slice Z4 moved the publication into the core, and
                       still the product's ONLY bash file
 docs/               — user + internals documentation (getting-started, reference, internals)
-contrib/            — optional sidecars: aewatch (retired Python watchdog+bridge; archival), aeorchestrator (config + charter templates, no code)
+contrib/            — optional sidecars: aeorchestrator (config + charter templates, no code)
 Cargo.toml          — Rust package: one crate, bin + lib, both named `ae` (no workspace)
 rust-toolchain.toml — compiler pin: channel, profile, components, both targets
 clippy.toml         — the tests-only relaxation of the unwrap/expect rule
@@ -84,7 +81,11 @@ deny.toml           — supply-chain policy (advisories, licenses, bans, sources
 taplo.toml          — TOML fmt/lint scope
 .cargo/             — repo-owned cargo config (aliases) + cargo-mutants config
 src/                — Rust sources: main.rs (thin) + lib.rs (everything testable), one module per domain
-tests/it/           — the single integration-test target (main.rs + `mod` submodules)
+tests/it/           — the single integration-test target (main.rs + `mod` submodules).
+                      `doors.rs` is the capability boundary asked of the tree; `gate.rs`
+                      is the two guards over the justfile and `install`; `parity.rs` is
+                      the suite's one child-process door
+tests/fixtures/     — frozen inputs the Rust suites read (session shapes, list goldens)
 .github/workflows/  — rust lanes and tag-triggered prebuilt release lanes, both platforms
 README.md           — user docs
 VISION.md           — what ae is, and where it is going
@@ -213,11 +214,13 @@ word (`cp -p` from an executable source, a permissive umask, `install` with no `
 artifact that chmods itself at run time) was always outside its reach. The chokepoint was
 the contract; the guard was partial enforcement of it.
 
-The set is pinned twice. `tests/unit` asserts the refreshed directory holds **exactly** the
-core's list — never `>= N`, because exactness is what makes an artifact quietly appearing or
-vanishing a failure rather than a different number — and `tests/integration` pins the LINK
-TARGETS `doctor --refresh` writes against the link targets the core writes at launch, so the
-two entries cannot drift. A refresh replaces on-disk links only: a **running** watchdog or
+The set is pinned twice, and both pins are Rust since slice Z4.
+`doctor::doctor_refresh_republishes_the_shims_the_manifest_and_the_core_pin` asserts the
+refreshed directory holds **exactly** the core's list — never `>= N`, because exactness is
+what makes an artifact quietly appearing or vanishing a failure rather than a different
+number — and it pins the LINK TARGETS `doctor --refresh` writes against the link targets
+`session_launch::a_local_launch_builds_the_whole_session` proves the core writes at launch,
+so the two entries cannot drift. A refresh replaces on-disk links only: a **running** watchdog or
 Telegram daemon keeps the process it already is until it is stopped and started. See
 docs/development.md for the test-side details.
 
@@ -310,9 +313,18 @@ Development runs in a separate namespace, **`ae-dev`** (`~/.local/bin/ae-dev`: o
 released `ae` keeps serving `~/.ae` and its v1 sessions untouched; the new line never reads
 old state (P5's fresh start, applied again), so no compat code and no upgrade preflight.
 
-Cycle rules under this work: scoped integration runs in the inner loop, one full pass per
-slice; commit on lint + unit + scoped green, the full pass and the single cross-model round
-run after the commit on the integrated diff (nothing is pushed); fixes roll forward.
+Cycle rules under this work: `just rust-check` IS the cycle, at both grains — slice Z4
+retired the split, because the whole suite now costs what one scoped bash domain used to.
+Commit on it green; the single cross-model round runs after the commit on the integrated
+diff (nothing is pushed); fixes roll forward.
+
+**Status (measured 2026-09-04, after slice Z4).** The destination is passed, and the last
+bash that was not the product went with it. `install` is 79 lines — a bootstrap that
+downloads a bundle, proves it against the release manifest and hands it to
+`ae-core _install` — and it is the ONLY bash file in the repository. The two bash test
+suites are retired into `tests/it`, the sidecars are core entries, and `just test` is
+`just rust-check`: one command, minutes, no inner-loop/gate split. What follows was written
+after slice Z3 and still holds.
 
 **Status (measured 2026-09-04, after slice Z3).** The destination is passed. `ae-glue` is
 DELETED, every line of bash a session used to carry is DELETED, and so is the public
@@ -379,7 +391,8 @@ positional as a session name — a bare `ae status` would otherwise create a ses
 |---|---|
 | `just rust-setup` | bootstrap: toolchain + pinned tools. Idempotent — a second run installs nothing |
 | `just rust-check` | **the gate**: `rust-fmt-check` + `rust-lint` + `rust-test` |
-| `just unit` / `just itest <domain>` / `just itest-all` | the bash inner loop: fast unit default (~1 min; `AE_UNIT_FULL=1` for all), one domain of integration sections (seconds), the parallel full pass (~4 min). `just test` stays the serial full set |
+| `just test` | the whole test surface, and since slice Z4 it is exactly `rust-check`. There is no inner-loop/gate split any more because there is nothing left to narrow: the fast lane and the gate are the same command |
+| `just check` | the bash lane: shellcheck + shfmt over `install`, which is now the only bash file there is |
 | `just rust-fmt` / `rust-fmt-check` | `cargo fmt` + `taplo fmt` (both languages of the build) |
 | `just rust-lint` | `cargo clippy --locked --all-targets --all-features -- -D warnings` + `taplo lint` |
 | `just rust-test` | `cargo nextest run --locked` **and** `cargo test --doc --locked` |
@@ -480,8 +493,8 @@ The doors, and nothing else: `AE_HOME`, `CONFIG_FILE`, `PWD`, `AE_TMUX_SERVER` a
 in both shapes — the core IS the binary, so there is nothing for an operator to point at —
 and it was dropped rather than kept as a no-op. `AE_VERSION` is scoped solely to `upgrade`,
 where it is the target pin. The `ae-dev` namespace (`~/.local/bin/ae-dev`: own `~/.ae-dev`,
-own tmux server, `exec`s the checkout's `target/debug/ae`) and the two bash suites are the
-only callers that set the doors deliberately.
+own tmux server, `exec`s the checkout's `target/debug/ae`) and the Rust suites' own
+fixtures are the only callers that set the doors deliberately.
 
 **Command ownership (ruled 2026-08-31; finished in slice Z3).** The table below used to
 split words between a wrapper and a core. It no longer splits anything — the core owns every
@@ -530,6 +543,19 @@ the core's now, and the rule is pinned where the reader lives.
   retires a whole lane.
 - **One integration-test target** (`[[test]] name = "it"`, `tests/it/main.rs` + `mod`
   submodules): one binary to link, one home for shared helpers, no per-file target explosion.
+- **It is the WHOLE suite since slice Z4.** The bash suites are retired: every
+  `tests/integration` section and every live `tests/unit` block was matched against a Rust
+  test that already proved the same invariant, or ported as one. What was ported is
+  BEHAVIOUR, not test count — one strong end-to-end test per invariant, against the real
+  binary through a real tmux server, rather than a transliteration of a 40-assertion bash
+  section. Three subjects were dropped outright, each because the thing it tested was
+  deleted in Z1/Z2/Z3 and there is nothing left to regress.
+- **Three modules are about the REPOSITORY rather than the product**, and they are named so
+  that is obvious: `tests/it/doors.rs` asks clippy whether the capability boundary still
+  holds and pins the one child-process door; `tests/it/gate.rs` guards the two build files
+  ae still owns, the `justfile` and `install`; `tests/it/parity.rs` IS that door. Each
+  guard there is exercised against deliberately broken input as well as the real file — a
+  rule that matches nothing is indistinguishable from a clean tree.
 - **cargo-mutants is the agent-specific lane.** Agents write tests that *pass*; a green suite
   is not evidence it would ever go red. `.cargo/mutants.toml` runs nextest (one test tool,
   one set of semantics) with a timeout multiplier against the measured baseline, so a hanging
@@ -733,16 +759,23 @@ Every bug class below has shipped at least once. Check new code against both lis
 the second is not a figure of speech — it is where these classes now bite most often. The
 product's bash is down to the installer: `ae-glue` went in slice Z1, the generated session
 artifacts in Z2, and the public wrapper `ae-entry` in Z3, so there is no dispatcher, no
-helper body, no pane script and no wrapper left for a bug class to live in. What is left
-is the file that has to run before a core exists, and every measurement, probe and fixture
-an agent writes during a session.
+helper body, no pane script and no wrapper left for a bug class to live in. Slice Z4 took
+the last of it that was not the product — the bash TEST SUITES, `tests/unit` and
+`tests/integration` and the sharded runner over them — into `tests/it`. What is left is
+the 79-line file that has to run before a core exists, and every measurement, probe and
+fixture an agent writes during a session.
+
+That second half is now the LARGER half, and the list below is written for it. A suite
+whose isolation preamble could clobber a real `~/.ae` is gone; the one-off you are about
+to type has no preamble at all.
 Several entries below name a function or a command that one of those cuts removed; they
 are kept because the **bug class** is what the list is for, and the class returns the
 moment anyone writes bash here again. Where an entry's subject is gone it says so.
 
 Its measured facts (TUI markers, tool behavior, userland divergences) are **empirical
-evidence** for the semantic contract, never its normative authority — see
-`docs/migration/semantic-contract.md`.
+evidence**, never normative authority. What a behaviour MUST be is stated in this file and
+in `docs/gatekeeping.md`; a measurement here is the reason a rule reads as it does, and a
+new measurement changes the rule only through a decision someone wrote down.
 
 ### Interpreted sinks
 
@@ -760,7 +793,7 @@ Anything user- or agent-controlled (session names, goals, messages, pane text, c
 
 ### Isolation footguns (test/debug scripts)
 
-- **Single-statement export expansion** — `export HOME="$TMP/home" AE_HOME="$HOME/.ae"` binds `AE_HOME` to the *OLD* (real!) home: bash expands all words before any assignment. This clobbered the real `~/.ae/config` twice (2026-07-02/03). Always separate statements: `export HOME=…; export AE_HOME="$HOME/.ae"` — or better, assign both from the literal temp path. Ad-hoc debug scripts must copy `tests/integration`'s isolation preamble verbatim; the harness tripwire only protects suite runs, not one-offs.
+- **Single-statement export expansion** — `export HOME="$TMP/home" AE_HOME="$HOME/.ae"` binds `AE_HOME` to the *OLD* (real!) home: bash expands all words before any assignment. This clobbered the real `~/.ae/config` twice (2026-07-02/03). Always separate statements: `export HOME=…; export AE_HOME="$HOME/.ae"` — or better, assign both from the literal temp path. There is no suite preamble left to copy: slice Z4 retired the bash suites and their tripwire with them, so an ad-hoc script is on its own and this is the whole of its protection. The Rust suites do not have the footgun — a `Command` takes its environment as a map, not as a line the shell expands left to right — which is precisely why the class now belongs to the shell you type in.
 
 ### TSV framing: an empty field vanishes
 
@@ -844,7 +877,7 @@ The script runs under `set -euo pipefail` (line 3). Exit codes you didn't think 
 - **`local x="$(fn)"` swallows the exit status** (`local` returns 0); split declaration and assignment when you need the status — and remember the split form re-arms `set -e`.
 - **Producers in process substitution** end silently: `< <(cmd)` doesn't abort the reader — guard with `|| true` only when failure is genuinely optional.
 - **`set -u` + associative arrays:** subscripting an *undeclared* array is an arithmetic eval on the key → abort on non-numeric refs. `declare -A map=()` before any lookup (see the stopped-sessions JSON path).
-- **Only a BARE call proves `set -e` safety — a green suite does not.** A failing command aborts *only* in statement position: `$(fn)`, `if fn`, `fn && …`, `fn || …` all mask it. `tests/unit` runs `set -euo pipefail` and still cannot catch this, because it reaches these functions exclusively through `$(…)` in `assert_eq` arguments. Entry points used to differ — `ae` enabled errexit and the send-path helpers did not — so the same function was safe through one caller and aborted through another. Generated helpers were the second entry point and are gone entirely since slice Z2, so the wrapper's own functions are the only remaining subject. Probe it *bare* under `set -euo pipefail`; that is the only shape that shows it. Shipped exhibit: `_sgr_parse`'s `((line++))` yields the *old* value, so it returns 1 at zero and a bare call aborts mid-parse — invisible through five review rounds until a new caller (`_cmd_spawn`, under `ae`'s errexit) reached it. (`((x++))` → `x=$((x + 1))`.)
+- **Only a BARE call proves `set -e` safety — a green suite does not.** A failing command aborts *only* in statement position: `$(fn)`, `if fn`, `fn && …`, `fn || …` all mask it. The bash suite that could have caught it never did, because it reached these functions exclusively through `$(…)` in its assertion arguments — and slice Z4 retired that suite, so there is no bash test lane at all now. Entry points used to differ — `ae` enabled errexit and the send-path helpers did not — so the same function was safe through one caller and aborted through another. Generated helpers were the second entry point and are gone entirely since slice Z2, and the wrapper went in Z3, so the only remaining subject is `install` and the shell you type in. Probe it *bare* under `set -euo pipefail`; that is the only shape that shows it. Shipped exhibit: `_sgr_parse`'s `((line++))` yields the *old* value, so it returns 1 at zero and a bare call aborts mid-parse — invisible through five review rounds until a new caller (`_cmd_spawn`, under `ae`'s errexit) reached it. (`((x++))` → `x=$((x + 1))`.)
 - **A probe built to detect an errexit abort must not put the subject in a context that
   disables errexit.** The note above tells you `||`, `&&` and `if` mask errexit. It does
   not tell you that your TEST for masking will itself be masked — and `( subject ) ||

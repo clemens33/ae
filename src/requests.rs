@@ -109,9 +109,12 @@
 //! reproduces `A7` 405j pair session-only / keyless / one-empty / all-empty,
 //! `G5/m6-mixed-routed-display`, or `G5/m2-wrong-ref` — each `-ro` and `-rw`.
 //!
-//! That divergence is asserted as precisely as the parity is, in
-//! `tests/it/helper_corpus.rs`: the twelve must differ, must differ only in the
-//! status token and the summary, and must be the ONLY rows that differ.
+//! That divergence used to be asserted as precisely as the parity was, against
+//! the frozen bash corpus: the twelve had to differ, to differ only in the
+//! status token and the summary, and to be the ONLY rows that differed. Both
+//! the corpus and the bash it captured are retired, so what stands now is the
+//! RULING above and the successor tests named below — which was always the
+//! point of writing the ruling down.
 //!
 //! # WHAT IS STILL UNRULED, NAMED SO IT IS NOT DECIDED BY ACCIDENT
 //!
