@@ -83,7 +83,164 @@ fn sweep_stale_scratches() {
     clippy::disallowed_types,
     reason = "black-box tests must run the product binary; see clippy.toml"
 )]
-pub(crate) type Runner = std::process::Command;
+pub(crate) type Command = std::process::Command;
+
+pub(crate) struct Runner {
+    command: Command,
+    scratch: Option<Scratch>,
+}
+
+impl Runner {
+    fn new(command: Command, scratch: Option<Scratch>) -> Self {
+        Self { command, scratch }
+    }
+
+    pub(crate) fn arg<S>(&mut self, arg: S) -> &mut Self
+    where
+        S: AsRef<std::ffi::OsStr>,
+    {
+        self.command.arg(arg);
+        self
+    }
+
+    pub(crate) fn args<I, S>(&mut self, args: I) -> &mut Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<std::ffi::OsStr>,
+    {
+        self.command.args(args);
+        self
+    }
+
+    pub(crate) fn env<K, V>(&mut self, key: K, value: V) -> &mut Self
+    where
+        K: AsRef<std::ffi::OsStr>,
+        V: AsRef<std::ffi::OsStr>,
+    {
+        self.command.env(key, value);
+        self
+    }
+
+    pub(crate) fn env_remove<K>(&mut self, key: K) -> &mut Self
+    where
+        K: AsRef<std::ffi::OsStr>,
+    {
+        self.command.env_remove(key);
+        self
+    }
+
+    pub(crate) fn current_dir<P>(&mut self, dir: P) -> &mut Self
+    where
+        P: AsRef<std::path::Path>,
+    {
+        self.command.current_dir(dir);
+        self
+    }
+
+    pub(crate) fn stdin<S>(&mut self, cfg: S) -> &mut Self
+    where
+        S: Into<std::process::Stdio>,
+    {
+        self.command.stdin(cfg);
+        self
+    }
+
+    pub(crate) fn stdout<S>(&mut self, cfg: S) -> &mut Self
+    where
+        S: Into<std::process::Stdio>,
+    {
+        self.command.stdout(cfg);
+        self
+    }
+
+    pub(crate) fn stderr<S>(&mut self, cfg: S) -> &mut Self
+    where
+        S: Into<std::process::Stdio>,
+    {
+        self.command.stderr(cfg);
+        self
+    }
+
+    pub(crate) fn spawn(&mut self) -> std::io::Result<OwnedChild> {
+        let Some(scratch) = self.scratch.take() else {
+            return Err(std::io::Error::other("runner already spawned a child"));
+        };
+        match self.command.spawn() {
+            Ok(child) => Ok(OwnedChild {
+                child: Some(child),
+                scratch: Some(scratch),
+            }),
+            Err(error) => {
+                drop(scratch);
+                Err(error)
+            }
+        }
+    }
+}
+
+impl std::ops::Deref for Runner {
+    type Target = Command;
+
+    fn deref(&self) -> &Self::Target {
+        &self.command
+    }
+}
+
+impl std::ops::DerefMut for Runner {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.command
+    }
+}
+
+/// A child keeps the command's scratch alive until it exits or is stopped.
+pub(crate) struct OwnedChild {
+    child: Option<std::process::Child>,
+    scratch: Option<Scratch>,
+}
+
+impl OwnedChild {
+    pub(crate) fn wait_with_output(mut self) -> std::io::Result<std::process::Output> {
+        let Some(child) = self.child.take() else {
+            return Err(std::io::Error::other("child already reaped"));
+        };
+        let result = child.wait_with_output();
+        drop(self.scratch.take());
+        result
+    }
+}
+
+impl std::ops::Deref for OwnedChild {
+    type Target = std::process::Child;
+
+    fn deref(&self) -> &Self::Target {
+        let Some(child) = self.child.as_ref() else {
+            panic!("owned child already reaped");
+        };
+        child
+    }
+}
+
+impl std::ops::DerefMut for OwnedChild {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        let Some(child) = self.child.as_mut() else {
+            panic!("owned child already reaped");
+        };
+        child
+    }
+}
+
+impl Drop for OwnedChild {
+    fn drop(&mut self) {
+        if let Some(child) = self.child.as_mut()
+            && !matches!(child.try_wait(), Ok(Some(_)))
+        {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        drop(self.child.take());
+        drop(self.scratch.take());
+    }
+}
 
 /// Owns a fixture scratch directory and tears down its tmux children before
 /// removing it. The path may start absent: that is the runner's default.
@@ -156,10 +313,13 @@ impl Drop for Scratch {
         // A pane's command can outlive the server's shutdown briefly. Stop
         // processes carrying this exact scratch path before waiting for them.
         let pattern = self.path.display().to_string();
+        let search = pattern
+            .strip_prefix('/')
+            .map_or_else(|| pattern.clone(), |rest| format!("[/]{rest}"));
         let out = self.path.join(".cleanup-pkill-out");
         let err = self.path.join(".cleanup-pkill-err");
         let _ = raw::run(
-            &Invocation::new("pkill").arg("-f").arg(&pattern),
+            &Invocation::new("pkill").arg("-f").arg(&search),
             &self.path,
             &out,
             &err,
@@ -172,7 +332,7 @@ impl Drop for Scratch {
         let err = self.path.join(".cleanup-pgrep-err");
         for _ in 0..40 {
             let status = raw::run(
-                &Invocation::new("pgrep").arg("-fl").arg(&pattern),
+                &Invocation::new("pgrep").arg("-fl").arg(&search),
                 &self.path,
                 &out,
                 &err,
@@ -188,8 +348,8 @@ impl Drop for Scratch {
     }
 }
 
-fn binary() -> Runner {
-    Runner::new(env!("CARGO_BIN_EXE_ae"))
+fn binary(scratch: Option<Scratch>) -> Runner {
+    Runner::new(Command::new(env!("CARGO_BIN_EXE_ae")), scratch)
 }
 
 /// The black-box runner, HERMETIC BY DEFAULT.
@@ -214,15 +374,17 @@ fn binary() -> Runner {
 /// `_launch` fixtures do, or by `.env(…)`, which wins. See [`ae_hermetic`] for
 /// one that also needs the scratch path.
 pub(crate) fn ae() -> Runner {
-    ae_in(&run_scratch())
+    let scratch = Scratch::absent(run_scratch());
+    let dir = scratch.path().to_owned();
+    isolated(binary(Some(scratch)), &dir)
 }
 
 /// [`ae`], plus an owner for the scratch it was pointed at, for a fixture that
 /// asserts nothing was written there. The owner removes it even on panic.
 pub(crate) fn ae_hermetic() -> (Runner, Scratch) {
     let dir = run_scratch();
-    let scratch = Scratch::absent(dir);
-    let command = ae_in(scratch.path());
+    let scratch = Scratch::absent(dir.clone());
+    let command = isolated(binary(None), &dir);
     (command, scratch)
 }
 
@@ -230,10 +392,6 @@ pub(crate) fn ae_hermetic() -> (Runner, Scratch) {
 /// never created, so tmux cannot answer and cannot be started.
 fn dead_socket(dir: &std::path::Path) -> std::path::PathBuf {
     dir.join("no-server").join("tmux.sock")
-}
-
-fn ae_in(dir: &std::path::Path) -> Runner {
-    isolated(binary(), dir)
 }
 
 /// Apply the suite's baseline environment to any child process. Individual
@@ -300,6 +458,11 @@ fn the_black_box_runner_cannot_see_the_developers_own_home_or_tmux() {
         Some("socket".to_owned()),
         "the server pair is not TYPED, so the value is not read as a socket"
     );
+    assert_eq!(
+        seen.get("SHELL").cloned().flatten(),
+        Some("/bin/sh".to_owned()),
+        "the baseline child shell is not fixed"
+    );
     // THE HALF THAT WAS MISSING THE FIRST TIME: an unset pair is not "no tmux",
     // it is the AMBIENT server. The pair is set, and its directory is absent.
     assert!(
@@ -321,8 +484,10 @@ fn the_black_box_runner_cannot_see_the_developers_own_home_or_tmux() {
     clippy::disallowed_types,
     reason = "the black-box tests' door: a session helper must be RUN to be proven; see clippy.toml"
 )]
-pub(crate) fn helper(path: &std::path::Path) -> std::process::Command {
-    isolated(std::process::Command::new(path), &run_scratch())
+pub(crate) fn helper(path: &std::path::Path) -> Runner {
+    let scratch = Scratch::absent(run_scratch());
+    let dir = scratch.path().to_owned();
+    isolated(Runner::new(Command::new(path), Some(scratch)), &dir)
 }
 
 /// Run a session helper reached BY NAME, through `PATH`.
@@ -330,8 +495,10 @@ pub(crate) fn helper(path: &std::path::Path) -> std::process::Command {
     clippy::disallowed_types,
     reason = "the black-box tests' second door: a helper reached by name is a process started AS that name; see clippy.toml"
 )]
-pub(crate) fn helper_by_name(name: &str) -> std::process::Command {
-    isolated(std::process::Command::new(name), &run_scratch())
+pub(crate) fn helper_by_name(name: &str) -> Runner {
+    let scratch = Scratch::absent(run_scratch());
+    let dir = scratch.path().to_owned();
+    isolated(Runner::new(Command::new(name), Some(scratch)), &dir)
 }
 
 // The FIFO fixture.
@@ -380,7 +547,7 @@ pub(crate) fn git_in(repo: &std::path::Path, args: &[&str]) -> String {
 /// Wait at most `limit` for a spawned `child`: `Some(output)` if it exited,
 /// `None` if it had to be killed.
 pub(crate) fn bounded(
-    mut child: std::process::Child,
+    mut child: OwnedChild,
     limit: std::time::Duration,
 ) -> Option<std::process::Output> {
     let started = std::time::Instant::now();
