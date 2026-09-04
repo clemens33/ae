@@ -149,29 +149,27 @@ fn version_prints_the_version_line_and_exits_zero() {
 }
 
 #[test]
-fn sc_022_an_unknown_option_is_diagnosed_on_stderr_with_stdout_empty() {
-    // WHAT THIS MEASURES CHANGED IN SLICE Z3, and the test moved with it rather
-    // than being weakened. Until Z3 the binary was reached by `ae-entry`, which
-    // prepended a preamble; a top-level `--frobnicate` therefore fell through
-    // the router into the LAUNCH grammar and was refused there — naming the
-    // four flags a launch does define — at exit 1. Called without a preamble,
-    // as this test used to call it, the same word reached `cli::Request::parse`
-    // instead and exited 2. That second path was never a path a human could
-    // take, and Z3 deletes it: the binary IS the public `ae` now, so what this
-    // asserts is the surface the operator actually gets.
+fn sc_022_an_unknown_option_exits_two_and_diagnoses_on_stderr() {
+    // WHAT THIS MEASURES CHANGED IN SLICE Z3. Until Z3 the binary was reached by
+    // `ae-entry`, which prepended a preamble, so a top-level `--frobnicate` fell
+    // through the router into the LAUNCH grammar; called without a preamble, as
+    // this test used to call it, the same word reached `cli::Request::parse`
+    // instead. Two parsers answered depending on a path no human could choose.
+    // Z3 deletes the wrapper: the binary IS the public `ae`, the launch grammar
+    // is the parser a top-level option reaches, and it is the one whose answer
+    // this row is about.
     //
-    // RESIDUAL, recorded rather than papered over: SC-022 rules that an unknown
-    // top-level OPTION exits 2, and the launch grammar's usage refusals exit 1.
-    // The gap predates this slice — the shipped bash product answered 1 here
-    // too — and closing it means re-coding every launch-plan refusal, which is
-    // a ruling and not a test edit. The half of SC-022 the DISPATCHER owns (an
-    // unknown `list`/`ls` tail) is unaffected and still exits 2; see
-    // `an_unknown_list_flag_is_a_usage_error`.
+    // The exit code is the point. `--frobnicate` is asking wrong, and the crate
+    // contract keeps 2 distinct from 1 so a caller can tell that from "it went
+    // wrong" — so the launch grammar's usage refusals exit 2, and the message
+    // still names the four flags a launch does define rather than only the word
+    // that was not one of them.
     let out = ae()
         .arg("--frobnicate")
         .output()
         .expect("the ae binary should run");
 
+    assert_eq!(out.status.code(), Some(2), "exit status: {:?}", out.status);
     assert!(
         out.stdout.is_empty(),
         "stdout must stay empty for a machine caller, got {:?}",
@@ -179,14 +177,17 @@ fn sc_022_an_unknown_option_is_diagnosed_on_stderr_with_stdout_empty() {
     );
     let stderr = String::from_utf8(out.stderr).expect("stderr should be utf-8");
     assert!(stderr.contains("--frobnicate"), "stderr: {stderr}");
-    assert_ne!(out.status.code(), Some(0), "exit status: {:?}", out.status);
+    assert!(
+        stderr.contains("--worktree"),
+        "and it names what a launch does accept: {stderr}"
+    );
 }
 
 /// The half of SC-022 the DISPATCHER owns, through the public binary.
 ///
-/// An unknown `list` tail is a token the router hands to a parser that DOES
-/// define its flag set, so there is no launch grammar underneath to soften it:
-/// stderr, empty stdout, exit 2.
+/// An unknown `list` tail is a token the router hands to a DIFFERENT parser
+/// that defines its own flag set. Both halves of the row now answer 2; this one
+/// pins that the launch grammar is not the only path there.
 #[test]
 fn an_unknown_list_flag_is_a_usage_error() {
     let out = ae()

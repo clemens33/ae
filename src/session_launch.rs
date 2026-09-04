@@ -385,9 +385,18 @@ pub fn run(tail: &[String], out: &mut impl Write, err: &mut impl Write) -> crate
     };
     let plan = match parse_plan(&args) {
         Ok(plan) => plan,
+        // EXIT_USAGE, not EXIT_FAILED: every refusal `parse_plan` makes is a
+        // caller who asked wrong — an unknown flag, `use` with no agent name, a
+        // second `--from` — and the crate's exit contract keeps 2 ("you asked
+        // wrong") distinct from 1 ("it went wrong") precisely so a script can
+        // tell them apart. SC-022 rules the same for an unknown top-level
+        // option, and since slice Z3 this is where one lands: the wrapper is
+        // gone, so `ae --frobnicate` reaches the launch grammar as the first
+        // parser that defines a flag set, and answering 1 there made the row
+        // unsatisfiable through the public binary.
         Err(line) => {
             writeln!(err, "{line}")?;
-            return Ok(EXIT_FAILED);
+            return Ok(EXIT_USAGE);
         }
     };
     launch(&env, &plan, None, out, err)
