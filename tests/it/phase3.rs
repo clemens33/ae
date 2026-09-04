@@ -1836,6 +1836,16 @@ fn criterion_3_the_places_this_crate_can_read_the_world_are_the_inventoried_ones
             // and `meta.rs`, which are already here. Registered deliberately:
             // a report that reaches the world is a line in a review.
             "src/doctor.rs".to_owned(),
+            // THE ENTRY'S ENVIRONMENT DOORS (slice Z3): `HOME`, `PWD`,
+            // `AE_HOME`, `CONFIG_FILE`, the `AE_TMUX_SERVER` pair,
+            // `AE_NO_AUTOSTART`, `TMUX`, `TMUX_PANE`, the `<cwd>/.ae/config`
+            // existence test and the `canonicalize` behind both the logical-cwd
+            // check and the relative-socket proof. Every one of them used to be
+            // a flag `ae-entry` spoke; deleting the wrapper moved the reads here
+            // rather than removing them, which is exactly the kind of migration
+            // this list exists to make visible. Registered deliberately: this is
+            // now the widest environment surface in the crate.
+            "src/doors.rs".to_owned(),
             "src/event_text.rs".to_owned(),
             "src/events.rs".to_owned(),
             "src/inventory.rs".to_owned(),
@@ -1920,6 +1930,16 @@ fn criterion_3_the_places_this_crate_can_read_the_world_are_the_inventoried_ones
             // history directory is exactly the kind of read that must be a
             // line in a review.
             "src/session_launch/capture.rs".to_owned(),
+            // THE INSTALL SELF-VALIDATION (slice Z3): the three `lstat`s that
+            // prove the version directory's members are regular non-symlink
+            // files, and the manifest read that proves the directory is the one
+            // `install` published. `symlink_metadata`, never `metadata` — a
+            // member that is a link to a mutable file outside the immutable
+            // directory passes every follow-test and is then EXECUTED as ours.
+            // Registered deliberately: it runs before every effect of every
+            // installed invocation, which is the strongest position a read can
+            // hold.
+            "src/shape.rs".to_owned(),
             // The LOCAL-mode teardown's own reads (P3.5): the `lstat` that proves
             // the session dir is a real direct child and never a link, and the
             // sessions-root `fsync` that makes the rename-to-tombstone and its
@@ -1944,6 +1964,12 @@ fn criterion_3_the_places_this_crate_can_read_the_world_are_the_inventoried_ones
             // custody rules. Registered deliberately: a command that can start a
             // daemon holding a secret is not one to gain a quiet new read.
             "src/telegram_lifecycle.rs".to_owned(),
+            // `ae upgrade`'s ONE own door: the `lstat` plus mode test that
+            // proves the sibling installer is a regular, non-symlink,
+            // executable member BEFORE ae becomes it. Registered deliberately —
+            // it is the highest-authority path in the product, and a member
+            // that is a symlink to a mutable file passes every follow-test.
+            "src/upgrade.rs".to_owned(),
             // The orchestrator heartbeat's `lstat` (P4.2): the one read the watchdog
             // daemon takes for itself, proving `meta-agent-state.json` is a
             // non-symlink regular file before its mtime is trusted as liveness.

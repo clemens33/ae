@@ -1,32 +1,25 @@
-//! The product's ENTRY: the preamble the wrapper speaks, and the dispatch that
-//! used to be `ae-glue`'s `case` statement.
+//! The product's ENTRY: the ambient facts an invocation carries, and the
+//! dispatch that used to be `ae-glue`'s `case` statement.
 //!
-//! # The preamble
+//! # There is no preamble any more
 //!
-//! Slice Z1 deletes the bash dispatcher. The public wrapper now validates its
-//! versioned pair and execs the core ONCE, handing over every fact the core is
-//! not allowed to read for itself as a flag, then `--`, then the user's own
-//! argv verbatim:
+//! Slice Z1 deleted the bash dispatcher and froze a PREAMBLE — a flag line the
+//! wrapper spoke so the core could learn what only bash could see. Slice Z3
+//! deletes the wrapper itself: the public `ae` IS this binary, so there is
+//! nothing in front of it and nothing to relay. Every flag of that line is now
+//! an environment DOOR read at its own documented site ([`crate::doors`]), and
+//! [`Preamble`] is what those doors resolved to — a value, not a parse.
 //!
-//! ```text
-//! ae-core --home H --cwd C [--global G] [--local-config L]
-//!         [--server-kind K --server V] [--inside-tmux] [--bash-major N]
-//!         [--attach|--no-attach] [--no-autostart] -- <user argv…>
-//! ```
-//!
-//! That line is the CONTRACT and it is frozen. The flags before `--` are the
-//! wrapper's facts; everything after is the user's, untouched. The preamble is
-//! recognised by its FIRST WORD — a top-level token that is one of its flags —
-//! so an invocation without one keeps the argv grammar it always had, and every
-//! internal entry a session helper execs (`_send`, `_state`, …) still works
-//! called bare.
+//! `--bash-major` went with the interpreter: ae ships no bash, so there is no
+//! version of it to report and no re-exec ladder to report it from.
 //!
 //! # Why the routing lives here and not in [`crate::cli`]
 //!
 //! [`crate::cli::Request::parse`] answers "which core entry is this argv", and
-//! it must keep answering that for a helper shim that execs the core directly.
-//! This module answers a different question — "what did a HUMAN type at `ae`" —
-//! and the two differ in three places that matter:
+//! it must keep answering that for the session helpers, which reach the core
+//! through a link and skip this module entirely. This module answers a
+//! different question — "what did a HUMAN type at `ae`" — and the two differ in
+//! three places that matter:
 //!
 //! * an EMPTY argv is a LAUNCH here and [`crate::cli::Request::Help`] there,
 //!   because `ae` with no words starts the default session and always has;
@@ -40,11 +33,13 @@
 //! everything this router does not recognise falls through to a LAUNCH, and a
 //! launch takes the last positional as a session name. A deleted `status` arm
 //! does not error — it quietly creates a session called `status`.
+//!
+//! The core's OWN namespace never reaches here. A first word starting with `_`
+//! is an internal entry, carries its own operands, and consumes no ambient
+//! fact, so [`crate::run`] dispatches it directly — which is also what keeps
+//! `_run`, the command every pane execs, from paying for the tmux probes.
 
 use std::path::PathBuf;
-
-/// The usage line the preamble refuses with — the frozen contract, spelled once.
-pub const USAGE: &str = "Usage: ae-core --home <ae-home> --cwd <dir> [--global <cfg>] [--local-config <cfg>] [--server-kind <kind> --server <value>] [--inside-tmux] [--bash-major <n>] [--attach|--no-attach] [--no-autostart] -- <argv…>";
 
 /// The config `ae` writes on a first run, verbatim from the glue's
 /// `DEFAULT_CONFIG` heredoc.
@@ -233,24 +228,8 @@ pub const EXIT_USAGE: u8 = 2;
 /// The exit code an operation that could not be carried out takes.
 pub const EXIT_FAILED: u8 = 1;
 
-/// Every word the preamble defines. The FIRST argv token being one of these is
-/// what puts an invocation in preamble mode, so the list is the detector as
-/// well as the parse table — one definition, not two.
-const PREAMBLE_FLAGS: &[&str] = &[
-    "--home",
-    "--cwd",
-    "--global",
-    "--local-config",
-    "--server-kind",
-    "--server",
-    "--inside-tmux",
-    "--bash-major",
-    "--attach",
-    "--no-attach",
-    "--no-autostart",
-];
-
-/// The facts the wrapper hands over, and nothing the core could read itself.
+/// The ambient facts an invocation carries — every one of them resolved from a
+/// door in [`crate::doors`], and none of them readable from the argv.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Preamble {
     /// `AE_HOME` — where every piece of ae state lives.
@@ -267,10 +246,6 @@ pub struct Preamble {
     pub server_value: String,
     /// Whether the caller is genuinely inside a tmux pane (attach vs switch).
     pub inside_tmux: bool,
-    /// The major version of the bash running the wrapper — the one fact the
-    /// core cannot see, since probing `bash --version` would report whatever is
-    /// first on PATH rather than the interpreter ae actually re-exec'd into.
-    pub bash_major: Option<String>,
     /// Whether to attach once the session is up.
     pub attach: bool,
     /// The operator's `AE_NO_AUTOSTART=1`: start NEITHER companion.
@@ -290,7 +265,6 @@ impl Default for Preamble {
             server_kind: String::new(),
             server_value: String::new(),
             inside_tmux: false,
-            bash_major: None,
             attach: true,
             no_autostart: false,
         }
@@ -300,9 +274,9 @@ impl Default for Preamble {
 impl Preamble {
     /// The launch's own preamble, rebuilt as `_launch`'s flags.
     ///
-    /// Deliberately NOT `--core`: under this shape the wrapper execs the core
-    /// directly, so `current_exe()` names exactly the binary the wrapper
-    /// resolved and a flag would only be a second, staler answer.
+    /// Deliberately NOT `--core`: the launch re-enters this very process, so
+    /// `current_exe()` already names the binary, and a flag would only be a
+    /// second, staler answer.
     #[must_use]
     pub fn launch_argv(&self, user: &[String]) -> Vec<String> {
         let mut argv = vec![crate::cli::LAUNCH.to_owned()];
@@ -353,21 +327,6 @@ impl Preamble {
         ]
     }
 
-    /// `--bash-major <n>`, for the two entries that consume it.
-    fn bash_major_argv(&self) -> Vec<String> {
-        match &self.bash_major {
-            Some(major) => vec!["--bash-major".to_owned(), major.clone()],
-            None => Vec::new(),
-        }
-    }
-
-    /// `_check-deps`' own argv — the gate a launch passes before anything is
-    /// written.
-    #[must_use]
-    pub fn check_deps_argv(&self) -> Vec<String> {
-        self.bash_major_argv()
-    }
-
     /// The sessions root under this home.
     #[must_use]
     pub fn sessions(&self) -> PathBuf {
@@ -375,100 +334,7 @@ impl Preamble {
     }
 }
 
-/// Read the preamble, then the user's argv after `--`.
-///
-/// `None` means this invocation carries no preamble at all — its first word is
-/// not one of [`PREAMBLE_FLAGS`] — and the caller keeps the argv grammar the
-/// core has always had. `Some(Err(_))` is a preamble that IS present and wrong,
-/// which is a usage error and never a launch: the wrapper is the only caller,
-/// so a malformed one is a broken install, not a session name.
-///
-/// ```
-/// use ae::entry::split;
-/// let argv: Vec<String> = ["--home", "/h", "--cwd", "/c", "--", "list"]
-///     .iter()
-///     .map(|w| (*w).to_owned())
-///     .collect();
-/// let (preamble, user) = split(&argv).expect("a preamble").expect("a valid one");
-/// assert_eq!(preamble.home, std::path::PathBuf::from("/h"));
-/// assert_eq!(user, vec!["list".to_owned()]);
-/// assert!(split(&["list".to_owned()]).is_none());
-/// ```
-///
-/// # Errors
-///
-/// The operator-facing refusal, already phrased: an unknown flag, a flag with
-/// no value, or a missing `--home`/`--cwd`.
-#[must_use]
-pub fn split(args: &[String]) -> Option<Result<(Preamble, Vec<String>), String>> {
-    let first = args.first()?;
-    if !PREAMBLE_FLAGS.contains(&first.as_str()) {
-        return None;
-    }
-    Some(read(args))
-}
-
-/// The preamble parse proper. Separate from [`split`] so the detection rule and
-/// the grammar are two readable things rather than one nested one.
-fn read(args: &[String]) -> Result<(Preamble, Vec<String>), String> {
-    let mut preamble = Preamble::default();
-    let mut rest = args;
-    while let [flag, after @ ..] = rest {
-        match flag.as_str() {
-            "--" => {
-                rest = after;
-                break;
-            }
-            "--inside-tmux" => {
-                preamble.inside_tmux = true;
-                rest = after;
-                continue;
-            }
-            "--attach" => {
-                preamble.attach = true;
-                rest = after;
-                continue;
-            }
-            "--no-attach" => {
-                preamble.attach = false;
-                rest = after;
-                continue;
-            }
-            "--no-autostart" => {
-                preamble.no_autostart = true;
-                rest = after;
-                continue;
-            }
-            _ => {}
-        }
-        let Some((value, after)) = after.split_first() else {
-            return Err(format!("{USAGE}\nae: offending word: {flag}"));
-        };
-        match flag.as_str() {
-            "--home" => preamble.home = value.into(),
-            "--cwd" => preamble.cwd = value.into(),
-            "--global" => preamble.global = Some(value.into()),
-            "--local-config" => preamble.local = Some(value.into()),
-            "--server-kind" => preamble.server_kind.clone_from(value),
-            "--server" => preamble.server_value.clone_from(value),
-            "--bash-major" => preamble.bash_major = Some(value.clone()),
-            _ => return Err(format!("{USAGE}\nae: offending word: {flag}")),
-        }
-        rest = after;
-    }
-    // BOTH are required, and this is where a broken wrapper is caught: the home
-    // is what every path below is derived from and the cwd is what a nameless
-    // launch derives its NAME from, so a missing one would not fail — it would
-    // silently mean the filesystem root.
-    if preamble.home.as_os_str().is_empty() || preamble.cwd.as_os_str().is_empty() {
-        return Err(format!(
-            "{USAGE}\nae: offending word: --home and --cwd are required"
-        ));
-    }
-    Ok((preamble, rest.to_vec()))
-}
-
-/// What a preamble invocation resolves to.
+/// What a human-typed invocation resolves to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Route {
     /// `ae help` — [`HELP`] on stdout, exit 0.
@@ -479,8 +345,6 @@ pub enum Route {
     ListHelp,
     /// One of the four cut words: the text on stderr, exit 2.
     Retired(&'static str),
-    /// An underscore word no entry serves: fail closed rather than launch.
-    UnknownInternal(String),
     /// `ae archive preview [name]` — the name still has to be resolved and
     /// path-checked against the live world, which is the caller's job.
     ArchivePreview(Option<String>),
@@ -494,6 +358,9 @@ pub enum Route {
 }
 
 /// Which route the user's argv takes — the glue's `case` statement, whole.
+///
+/// A `_`-prefixed first word never arrives: [`crate::run`] dispatches the core's
+/// own namespace before this is called.
 ///
 /// `pane` is `$TMUX_PANE`, which only two words need: `stop` and `watchdog`
 /// both answer "is the target the session I am in", and that question starts
@@ -527,13 +394,7 @@ pub fn route(preamble: &Preamble, argv: &[String], pane: Option<&str>) -> Route 
             Some("preview") => Route::ArchivePreview(argv.get(2).cloned()),
             _ => Route::ArchiveUsage,
         },
-        // The bash version is the one fact the core cannot see for itself, and
-        // it goes BEFORE the caller's tail exactly as the glue passed it.
-        Some("doctor") => {
-            let mut words = preamble.bash_major_argv();
-            words.extend(tail());
-            Route::Core(with_head(crate::cli::DOCTOR, &words))
-        }
+        Some("doctor") => Route::Core(with_head(crate::cli::DOCTOR, &tail())),
         Some("stop") => Route::Core(with_head(crate::cli::STOP, &with_pane(&tail(), pane))),
         Some("rename") => Route::Core(with_head(crate::cli::RENAME, &tail())),
         // `loop` is the deprecated spelling of the renamed feature, kept as an
@@ -551,13 +412,6 @@ pub fn route(preamble: &Preamble, argv: &[String], pane: Option<&str>) -> Route 
         Some("transfer") => Route::Retired(RETIRED_TRANSFER),
         Some("help" | "-h" | "--help") => Route::Help,
         Some("version" | "--version" | "-V") => Route::Version,
-        // The two internal entries the glue served. Everything else underscored
-        // FAILS CLOSED: `_`-prefixed words are ae's own namespace and are never
-        // a session name, so an unserved one is a caller bug and not a launch.
-        Some(word @ (crate::cli::SPAWN | crate::cli::RETIRE)) => {
-            Route::Core(with_head(word, &tail()))
-        }
-        Some(word) if word.starts_with('_') => Route::UnknownInternal(word.to_owned()),
         _ => Route::Launch(argv.to_vec()),
     }
 }
@@ -654,97 +508,11 @@ pub fn is_direct_child_name(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        DEFAULT_CONFIG, HELP, LIST_HELP, Preamble, Route, is_direct_child_name, route,
-        session_hint, split,
+        DEFAULT_CONFIG, HELP, LIST_HELP, Preamble, Route, is_direct_child_name, route, session_hint,
     };
 
     fn argv(words: &[&str]) -> Vec<String> {
         words.iter().map(|word| (*word).to_owned()).collect()
-    }
-
-    #[test]
-    fn a_first_word_that_is_not_a_preamble_flag_is_not_a_preamble() {
-        assert!(split(&argv(&["list"])).is_none());
-        assert!(split(&argv(&["_send", "/s/x", "a", "b"])).is_none());
-        assert!(split(&argv(&[])).is_none());
-        // `--local` is a LAUNCH flag and rides after `--`; it must not be
-        // mistaken for the preamble's `--local-config`.
-        assert!(split(&argv(&["--local", "name"])).is_none());
-    }
-
-    #[test]
-    fn the_preamble_stops_at_the_separator_and_the_rest_is_the_users() {
-        let words = argv(&[
-            "--home",
-            "/h",
-            "--cwd",
-            "/c",
-            "--global",
-            "/h/config",
-            "--local-config",
-            "/c/.ae/config",
-            "--server-kind",
-            "name",
-            "--server",
-            "ae-dev",
-            "--inside-tmux",
-            "--bash-major",
-            "5",
-            "--no-attach",
-            "--no-autostart",
-            "--",
-            "--worktree",
-            "feature",
-        ]);
-        let (preamble, user) = split(&words).unwrap().unwrap();
-        assert_eq!(preamble.home, std::path::PathBuf::from("/h"));
-        assert_eq!(preamble.cwd, std::path::PathBuf::from("/c"));
-        assert_eq!(
-            preamble.global.unwrap(),
-            std::path::PathBuf::from("/h/config")
-        );
-        assert_eq!(
-            preamble.local.unwrap(),
-            std::path::PathBuf::from("/c/.ae/config")
-        );
-        assert_eq!(preamble.server_kind, "name");
-        assert_eq!(preamble.server_value, "ae-dev");
-        assert!(preamble.inside_tmux);
-        assert_eq!(preamble.bash_major.as_deref(), Some("5"));
-        assert!(!preamble.attach);
-        assert!(preamble.no_autostart);
-        assert_eq!(user, argv(&["--worktree", "feature"]));
-    }
-
-    #[test]
-    fn a_missing_home_or_cwd_is_a_usage_error() {
-        let missing_home = split(&argv(&["--cwd", "/c", "--", "list"])).unwrap();
-        let why = missing_home.unwrap_err();
-        assert!(why.contains("--home and --cwd are required"), "{why}");
-        let missing_cwd = split(&argv(&["--home", "/h", "--", "list"])).unwrap();
-        assert!(missing_cwd.is_err());
-    }
-
-    #[test]
-    fn an_unknown_flag_or_a_flag_with_no_value_is_a_usage_error() {
-        // The unknown flag has to come AFTER a real one: the first word is what
-        // selects preamble mode at all.
-        let unknown = split(&argv(&["--home", "/h", "--frobnicate", "x"])).unwrap();
-        assert!(unknown.unwrap_err().contains("--frobnicate"));
-        let dangling = split(&argv(&["--home"])).unwrap();
-        assert!(dangling.unwrap_err().contains("--home"));
-    }
-
-    #[test]
-    fn attach_is_the_default_and_no_attach_overrides_it() {
-        let (on, _) = split(&argv(&["--home", "/h", "--cwd", "/c"]))
-            .unwrap()
-            .unwrap();
-        assert!(on.attach);
-        let (off, _) = split(&argv(&["--home", "/h", "--cwd", "/c", "--no-attach"]))
-            .unwrap()
-            .unwrap();
-        assert!(!off.attach);
     }
 
     fn preamble() -> Preamble {
@@ -772,15 +540,15 @@ mod tests {
     }
 
     #[test]
-    fn an_unserved_underscore_word_fails_closed() {
-        assert_eq!(
-            route(&preamble(), &argv(&["_recover-pending", "x"]), None),
-            Route::UnknownInternal("_recover-pending".to_owned())
-        );
-        // The two the glue served still pass through.
+    fn an_underscore_word_never_reaches_the_router() {
+        // The core's own namespace is dispatched before `route` is called, so
+        // an internal word arriving here would be a caller bug. What this pins
+        // is that the router has no arm claiming one: `_spawn` falls through to
+        // the launch arm exactly like any other unrecognised word, and it is
+        // `run` that keeps it from ever getting here.
         assert_eq!(
             route(&preamble(), &argv(&["_spawn", "/s/x", "helper"]), None),
-            Route::Core(argv(&["_spawn", "/s/x", "helper"]))
+            Route::Launch(argv(&["_spawn", "/s/x", "helper"]))
         );
     }
 
@@ -838,12 +606,12 @@ mod tests {
     }
 
     #[test]
-    fn doctor_is_told_which_bash_is_running_the_wrapper() {
-        let mut with_bash = preamble();
-        with_bash.bash_major = Some("5".to_owned());
+    fn doctor_carries_no_interpreter_fact_any_more() {
+        // `--bash-major` went with the bash: ae ships no interpreter, so there
+        // is no version of one to relay and doctor has no bash row to fill.
         assert_eq!(
-            route(&with_bash, &argv(&["doctor", "--refresh"]), None),
-            Route::Core(argv(&["doctor", "--bash-major", "5", "--refresh"]))
+            route(&preamble(), &argv(&["doctor", "--refresh"]), None),
+            Route::Core(argv(&["doctor", "--refresh"]))
         );
         assert_eq!(
             route(&preamble(), &argv(&["doctor"]), None),

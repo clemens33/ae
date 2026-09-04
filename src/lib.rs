@@ -70,6 +70,7 @@ pub mod config;
 pub mod deliver;
 pub mod digest;
 pub mod doctor;
+pub mod doors;
 pub mod entry;
 pub mod error;
 pub mod event_text;
@@ -104,6 +105,7 @@ pub mod send;
 pub mod session;
 pub mod session_launch;
 mod session_tmux;
+pub mod shape;
 pub mod shim;
 pub mod spawn;
 pub mod state;
@@ -114,6 +116,7 @@ pub mod time;
 pub mod tmux;
 pub mod tracked;
 pub mod transport;
+pub mod upgrade;
 pub mod watchdog;
 pub mod watchdog_daemon;
 pub mod watchdog_glue;
@@ -271,14 +274,92 @@ fn invocation_dir() -> std::path::PathBuf {
 /// # Ok::<(), ae::Error>(())
 /// ```
 pub fn run(args: &[String], out: &mut impl Write, err: &mut impl Write) -> Result<u8> {
-    // THE PREAMBLE FIRST, because it changes what the rest of the argv MEANS —
-    // an empty tail after it is a launch, not the help an empty argv gets here.
-    // Absent one, nothing below changes: every internal entry a session helper
-    // execs still parses exactly as it did.
-    if let Some(preamble) = entry::split(args) {
-        return run_entry(preamble, out, err);
+    // TWO WORDS ARE OWED AN ANSWER ON A BROKEN INSTALL, and both therefore sit
+    // AHEAD of the version-directory gate: `version` is how a mismatch is
+    // diagnosed, so it may not depend on the thing it diagnoses, and `upgrade`
+    // is how one is repaired. This is the wrapper's own ordering, kept.
+    //
+    // The third arm is the core's OWN namespace. A `_`-prefixed word is an
+    // internal entry: it carries its operands, consumes no ambient fact, and is
+    // never a session name — so it dispatches straight through, which is also
+    // what keeps `_run`, the command every pane execs, from paying for the tmux
+    // probes below. An unserved one FAILS CLOSED rather than becoming a launch.
+    match args.first().map(String::as_str) {
+        Some("version" | "--version" | "-V") => {
+            writeln!(out, "{}", version_line())?;
+            out.flush()?;
+            return Ok(0);
+        }
+        Some("upgrade") => return upgrade::run(&args[1..], out, err),
+        Some(word) if word.starts_with('_') => {
+            if !cli::serves(word) {
+                writeln!(err, "ae: unknown internal command '{word}'.")?;
+                err.flush()?;
+                return Ok(entry::EXIT_USAGE);
+            }
+            return run_dispatch(args, out, err);
+        }
+        _ => {}
     }
-    run_dispatch(args, out, err)
+    let shape = shape::current();
+    if let shape::Shape::Installed {
+        version_dir,
+        version,
+        ..
+    } = shape
+        && let Err(broken) = shape::validate(&shape::OnDisk(version_dir), version, VERSION)
+    {
+        writeln!(err, "{broken}")?;
+        err.flush()?;
+        return Ok(entry::EXIT_USAGE);
+    }
+    // ONE aggregated notice, and only on this path: an agent's `send` would
+    // otherwise turn one stale export into a line of noise in every pane.
+    if let Some(line) = doors::notice(&doors::ignored(shape)) {
+        writeln!(err, "{line}")?;
+    }
+    let Some(preamble) = resolve_facts(shape, err)? else {
+        err.flush()?;
+        return Ok(EXIT_UNAVAILABLE);
+    };
+    run_entry(&preamble, args, out, err)
+}
+
+/// Every ambient fact this invocation carries, read from the doors.
+///
+/// `None` is the one thing that cannot be recovered from: no state root, which
+/// means neither `AE_HOME` nor `HOME` said where ae lives. The wrapper caught
+/// the same case as an empty `--home` and refused for the same reason — a home
+/// nobody named would silently mean the filesystem root.
+///
+/// THE TMUX PROBES RUN HERE, eagerly, exactly as the wrapper ran them for every
+/// invocation: one `display-message` outside a pane, three inside it. Making
+/// them lazy would need a second table of which words consume a server, and a
+/// table that drifts from [`entry::route`] is worse than a subprocess.
+fn resolve_facts(shape: &shape::Shape, err: &mut impl Write) -> Result<Option<entry::Preamble>> {
+    let Some(home) = doors::state_root(shape) else {
+        // [`NO_STATE_ROOT`] and its code, VERBATIM: the condition the dispatch
+        // already refuses, said one layer earlier because the entry cannot
+        // build a single fact without it. Two spellings of one condition would
+        // make the answer depend on which path reached it first.
+        writeln!(err, "ae: {NO_STATE_ROOT}")?;
+        return Ok(None);
+    };
+    let cwd = doors::cwd();
+    let declared = doors::declared_server(shape);
+    let (server_kind, server_value) = doors::resolve_launch_server(declared.as_ref());
+    let inside_tmux = doors::inside_tmux(doors::probe_target(declared.as_ref()).as_ref(), err)?;
+    Ok(Some(entry::Preamble {
+        global: Some(doors::config_file(shape, &home)),
+        local: doors::local_config(&cwd),
+        home,
+        cwd,
+        server_kind,
+        server_value,
+        inside_tmux,
+        attach: true,
+        no_autostart: doors::no_autostart(),
+    }))
 }
 
 /// The ordinary argv dispatch: [`cli::Request::parse`] and the world it needs.
@@ -302,38 +383,15 @@ fn run_dispatch(args: &[String], out: &mut impl Write, err: &mut impl Write) -> 
     run_with(args, None, out, err)
 }
 
-/// `$TMUX_PANE` — the pane THIS process sits in, or `None`.
-///
-/// The one environmental fact the preamble does not carry, and it does not need
-/// to: since Z1 the core IS the entry process, so the variable tmux sets in
-/// every pane is right here. Two words consume it (`stop` and `watchdog`), both
-/// to answer "is the target the session I am running in".
-fn calling_pane_id() -> Option<String> {
-    #[allow(
-        clippy::disallowed_methods,
-        reason = "a door: the pane ae was invoked from is TMUX_PANE, which tmux sets in every pane's environment — see clippy.toml"
-    )]
-    let pane = std::env::var_os("TMUX_PANE");
-    pane.filter(|value| !value.is_empty())
-        .map(|value| value.to_string_lossy().into_owned())
-}
-
-/// The preamble route: what `ae` itself answers, once the wrapper has handed
-/// over the facts the core may not read for itself.
+/// The human route: what `ae` itself answers, once the doors have said what
+/// this invocation carries.
 fn run_entry(
-    parsed: std::result::Result<(entry::Preamble, Vec<String>), String>,
+    preamble: &entry::Preamble,
+    argv: &[String],
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> Result<u8> {
-    let (preamble, argv) = match parsed {
-        Ok(pair) => pair,
-        Err(why) => {
-            writeln!(err, "{why}")?;
-            err.flush()?;
-            return Ok(entry::EXIT_USAGE);
-        }
-    };
-    let code = match entry::route(&preamble, &argv, calling_pane_id().as_deref()) {
+    let code = match entry::route(preamble, argv, doors::calling_pane_id().as_deref()) {
         entry::Route::Help => {
             write!(out, "{}", entry::HELP)?;
             0
@@ -352,19 +410,15 @@ fn run_entry(
             write!(err, "{text}")?;
             entry::EXIT_USAGE
         }
-        entry::Route::UnknownInternal(word) => {
-            writeln!(err, "ae: unknown internal command '{word}'.")?;
-            entry::EXIT_USAGE
-        }
         entry::Route::ArchiveUsage => {
             write!(err, "{}", entry::ARCHIVE_USAGE)?;
             entry::EXIT_FAILED
         }
         entry::Route::ArchivePreview(name) => {
-            return run_archive_preview(&preamble, name.as_deref(), out, err);
+            return run_archive_preview(preamble, name.as_deref(), out, err);
         }
         entry::Route::Core(effective) => return run_dispatch(&effective, out, err),
-        entry::Route::Launch(user) => return run_launch(&preamble, &user, out, err),
+        entry::Route::Launch(user) => return run_launch(preamble, &user, out, err),
     };
     out.flush()?;
     err.flush()?;
@@ -418,8 +472,8 @@ fn run_archive_preview(
 ///
 /// THE ORDER IS THE CONTRACT, and each step is where it is for a reason:
 ///
-/// 1. the dependency gate, which takes the one fact the core cannot see —
-///    which bash ran the wrapper;
+/// 1. the dependency gate, which refuses a machine with no tmux before
+///    anything is written;
 /// 2. the default config, the FIRST WRITE of the run and deliberately after
 ///    the gate: a launch cannot proceed without a config, but an install that
 ///    cannot serve a launch must not leave one behind;
@@ -434,7 +488,7 @@ fn run_launch(
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> Result<u8> {
-    let deps = doctor::check_deps(&preamble.check_deps_argv(), err)?;
+    let deps = doctor::check_deps(&[], err)?;
     if deps != 0 {
         err.flush()?;
         return Ok(deps);
@@ -760,7 +814,7 @@ fn run_next(
         return Ok(next::EXIT_NONE);
     }
 
-    let inside = inside_tmux(&server, err)?;
+    let inside = doors::inside_tmux(Some(&server), err)?;
     if inside && transport::observe_current_session(&server).as_deref() == Some(&*choice.name) {
         writeln!(
             out,
@@ -778,36 +832,6 @@ fn run_next(
         tmux::FocusVerb::for_inside(inside),
         &choice.name,
     ))
-}
-
-/// Whether this invocation is really inside a tmux pane — frozen's
-/// `_ae_inside_tmux`, and NOT a bare `$TMUX` test.
-///
-/// `$TMUX` is inherited, so a shell that is not a pane can carry one; with a
-/// stale value `display-message` answers for the ORIGINAL pane's session and a
-/// genuine jump would be suppressed as "already in". The tty comparison is what
-/// separates the two, and an unanswerable comparison trusts `$TMUX` as ae always
-/// has — a probe that cannot speak must not become a verdict.
-fn inside_tmux(server: &inventory::ServerId, err: &mut impl Write) -> Result<bool> {
-    #[allow(
-        clippy::disallowed_methods,
-        reason = "a door: whether the caller sits in a pane is $TMUX, which tmux sets in every pane's environment — see clippy.toml"
-    )]
-    let tmux_env = std::env::var_os("TMUX");
-    if tmux_env.is_none_or(|value| value.is_empty()) {
-        return Ok(false);
-    }
-    let (Some(tty), Some(panes)) = (procs::own_tty(), transport::observe_pane_ttys(server)) else {
-        return Ok(true);
-    };
-    if panes.is_empty() || tmux::tty_is_a_pane(&tty, &panes) {
-        return Ok(true);
-    }
-    writeln!(
-        err,
-        "ae: stale $TMUX inherited (this shell is not a tmux pane) — attaching normally."
-    )?;
-    Ok(false)
 }
 
 /// The `_goal` arm: `--help` and a refused argv are usage at 2; the READ is
@@ -1061,30 +1085,10 @@ fn own_session(dir: &std::path::Path) -> String {
     })
 }
 
-/// Where this invocation's state lives — **SC-404**'s default derivation.
-///
-/// `AE_HOME` if it names something, else `<HOME>/.ae`. An empty value is
-/// treated as unset rather than as the root of the filesystem: the alternative
-/// is deriving `/sessions` from a variable someone exported blank, which is a
-/// worse answer than saying the root cannot be derived.
-///
-/// **SC-1410a is UNCLASSIFIED** — the variable's unset/override/malformed
-/// semantics are not ratified. This implements only what SC-404 already says
-/// (the derivation and its default) and refuses rather than guessing where the
-/// row is silent. A relative `AE_HOME` is used as given; nothing here rewrites
-/// it, because normalising a path the operator supplied is a decision no row
-/// makes.
+/// Where this invocation's state lives — [`doors::state_root`] for this
+/// process's [`shape`], which is the one derivation.
 pub(crate) fn state_root() -> Option<std::path::PathBuf> {
-    let named = |key: &str| {
-        #[allow(
-            clippy::disallowed_methods,
-            reason = "a door: SC-404's state-root derivation — see clippy.toml"
-        )]
-        let raw = std::env::var_os(key);
-        raw.filter(|value| !value.is_empty())
-            .map(std::path::PathBuf::from)
-    };
-    named("AE_HOME").or_else(|| named("HOME").map(|home| home.join(".ae")))
+    doors::state_root(shape::current())
 }
 
 /// The classified snapshot AND the world `ae list` shows right now — the real
@@ -1621,10 +1625,13 @@ mod tests {
 
     #[test]
     fn the_help_the_binary_prints_is_the_help_text() {
-        // Both routes — the flag and the bare invocation — and no second copy.
+        // THE DISPATCH, not the human entry. `run` answers what a HUMAN typed
+        // at `ae`, where an empty argv is a launch and every word is resolved
+        // against the real environment; these four rows are about the argv
+        // table underneath it, which `run_with` is the seam for.
         for words in [vec!["--help"], vec!["-h"], vec!["help"], vec![]] {
             let (mut out, mut err) = (Vec::new(), Vec::new());
-            let code = run(&argv(&words), &mut out, &mut err).unwrap();
+            let code = run_with(&argv(&words), None, &mut out, &mut err).unwrap();
             assert_eq!(code, 0, "{words:?}");
             assert_eq!(String::from_utf8(out).unwrap(), help_text(), "{words:?}");
             assert!(err.is_empty(), "{words:?}");
@@ -1634,7 +1641,7 @@ mod tests {
     #[test]
     fn sc_022_an_unknown_option_is_diagnosed_on_stderr_with_stdout_empty() {
         let (mut out, mut err) = (Vec::new(), Vec::new());
-        let code = run(&["--nope".to_owned()], &mut out, &mut err).unwrap();
+        let code = run_with(&["--nope".to_owned()], None, &mut out, &mut err).unwrap();
         assert_eq!(code, 2);
         assert!(out.is_empty(), "stdout must stay empty: {out:?}");
         assert!(String::from_utf8(err).unwrap().contains("--nope"));
@@ -1646,7 +1653,7 @@ mod tests {
         // does with a launch candidate, it must not be `2`, and it must not
         // call the token an unknown command.
         let (mut out, mut err) = (Vec::new(), Vec::new());
-        let code = run(&["my-feature".to_owned()], &mut out, &mut err).unwrap();
+        let code = run_with(&["my-feature".to_owned()], None, &mut out, &mut err).unwrap();
         assert_ne!(code, 2, "a session name is not a usage error");
         assert!(out.is_empty(), "stdout must stay empty: {out:?}");
         let message = String::from_utf8(err).unwrap();
@@ -1659,15 +1666,40 @@ mod tests {
     }
 
     #[test]
-    fn run_with_no_arguments_prints_help() {
+    fn the_version_word_answers_ahead_of_every_gate() {
+        // `version` diagnoses a broken install, so it may not depend on the
+        // thing it diagnoses: no shape classification, no version-directory
+        // validation and no environment door runs before it.
+        for word in ["version", "--version", "-V"] {
+            let (mut out, mut err) = (Vec::new(), Vec::new());
+            let code = run(&[word.to_owned()], &mut out, &mut err).unwrap();
+            assert_eq!(code, 0, "{word}");
+            assert_eq!(String::from_utf8(out).unwrap(), version_line() + "\n");
+            assert!(err.is_empty(), "{word}");
+        }
+    }
+
+    #[test]
+    fn an_unserved_internal_word_fails_closed_rather_than_launching() {
         let (mut out, mut err) = (Vec::new(), Vec::new());
-        let code = run(&[], &mut out, &mut err).unwrap();
-        assert_eq!(code, 0);
-        let text = String::from_utf8(out).unwrap();
-        assert!(
-            text.contains("Usage: ae"),
-            "help text missing usage: {text}"
-        );
+        let code = run(&["_recover-pending".to_owned()], &mut out, &mut err).unwrap();
+        assert_eq!(code, crate::entry::EXIT_USAGE);
+        assert!(out.is_empty(), "stdout must stay empty: {out:?}");
+        let message = String::from_utf8(err).unwrap();
+        assert!(message.contains("unknown internal command"), "{message}");
+        assert!(message.contains("_recover-pending"), "{message}");
+    }
+
+    #[test]
+    fn a_served_internal_word_reaches_the_dispatch_without_the_doors() {
+        // `_run` is the command every pane execs. It must not classify the
+        // shape, resolve a tmux server or read a config to find out it was
+        // called with no operands.
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let code = run(&[crate::cli::RUN.to_owned()], &mut out, &mut err).unwrap();
+        assert_ne!(code, 0);
+        assert!(out.is_empty(), "stdout must stay empty: {out:?}");
+        assert!(!String::from_utf8(err).unwrap().contains("unknown internal"));
     }
 
     /// A sink that refuses every write, so the fallible path is a tested path

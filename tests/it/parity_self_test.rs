@@ -898,23 +898,29 @@ fn the_capability_boundary_holds_against_any_lint_relaxation() {
     // Asked of the compiler, so no `allow` of any shape can hide a site from it:
     // these ARE the places this crate can start a child process.
     //
-    // Two product entries, and both are stated where they are used.
+    // THREE product entries, and each is stated where it is used.
     // `src/transport.rs` runs tmux: ae cannot answer SC-017k/SC-017l without
     // it, and before it existed every session ae listed read `unknown` by
     // construction. `src/run.rs` is the pane's own `exec` — it BECOMES the
     // tool rather than starting a child, which is the fact
     // `pane_current_command` rests on, and it arrived with slice Z2 when the
     // generated `launch.<slot>.sh` that used to hold that `exec` was deleted.
-    // Both are listed rather than exempted because the value of this guard is
-    // that adding a door is a line in a review, not a diff nobody read.
+    // `src/upgrade.rs` is the second `exec` and arrived with slice Z3, when
+    // `ae-entry` — which used to run the installer — was deleted: `ae upgrade`
+    // BECOMES the immutable sibling installer, so the installer's exit status
+    // is ae's and no surviving parent can misreport a repair.
+    // All three are listed rather than exempted because the value of this guard
+    // is that adding a door is a line in a review, not a diff nobody read.
     assert_eq!(
         sites,
         vec![
             "src/run.rs".to_owned(),
             "src/transport.rs".to_owned(),
+            "src/upgrade.rs".to_owned(),
             "tests/it/cli.rs".to_owned(),
             "tests/it/parity.rs".to_owned(),
             "tests/it/parity_self_test.rs".to_owned(),
+            "tests/it/shape.rs".to_owned(),
         ],
         "the set of places this crate can start a child process changed"
     );
@@ -1123,10 +1129,12 @@ fn the_lint_relaxations_this_counter_can_see_are_the_expected_ones() {
         }
     }
 
-    // Eight relaxations this counter can see, each for a different job: the
-    // PRODUCT's two — `src/transport.rs`, because a tmux multiplexer that
-    // cannot run tmux answers `unknown` about everything, and `src/run.rs`,
-    // the pane's own `exec` of its tool; the parity harness's door,
+    // Ten relaxations this counter can see, each for a different job: the
+    // PRODUCT's three — `src/transport.rs`, because a tmux multiplexer that
+    // cannot run tmux answers `unknown` about everything, `src/run.rs`, the
+    // pane's own `exec` of its tool, and `src/upgrade.rs`, the `exec` that
+    // hands the terminal to the immutable sibling installer; the parity
+    // harness's door,
     // which must never judge a lane; the black-box door, which drives the
     // PRODUCT binary and where asserting on what it printed is the whole point
     // (`cli::ae` is private to its module, so the harness cannot reach a child
@@ -1143,16 +1151,25 @@ fn the_lint_relaxations_this_counter_can_see_are_the_expected_ones() {
     // rather than the function behind it); and this file's own, which has to
     // run clippy in order to ask clippy anything.
     //
-    // A ninth entry is red. A relaxation this counter CANNOT see is not — that
-    // is what the semantic guard above is for.
+    // A TENTH DOOR arrived with slice Z3 and is the installed shape's:
+    // `tests/it/shape.rs` runs a COPY of the product binary planted in a
+    // fixture version directory, twice, because the fact under test is
+    // `current_exe()` — where the binary SITS — and no library call can produce
+    // it. `cli::ae()` cannot be used: it names the built binary under `target/`,
+    // which is a CHECKOUT by construction and so the wrong arm entirely.
+    //
+    // An eleventh entry is red. A relaxation this counter CANNOT see is not —
+    // that is what the semantic guard above is for.
     assert_eq!(
         inventory,
         vec![
             ("src/run.rs".to_owned(), 1),
             ("src/transport.rs".to_owned(), 1),
+            ("src/upgrade.rs".to_owned(), 1),
             ("tests/it/cli.rs".to_owned(), 5),
             ("tests/it/parity.rs".to_owned(), 1),
             ("tests/it/parity_self_test.rs".to_owned(), 1),
+            ("tests/it/shape.rs".to_owned(), 2),
         ],
         "the enumerated lint relaxations changed"
     );

@@ -25,6 +25,7 @@ mod phase2;
 mod phase3;
 mod run;
 mod session_launch;
+mod shape;
 mod spawn;
 mod teardown;
 mod telegram;

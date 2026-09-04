@@ -149,8 +149,48 @@ fn version_prints_the_version_line_and_exits_zero() {
 }
 
 #[test]
-fn sc_022_an_unknown_option_exits_two_and_diagnoses_on_stderr() {
+fn sc_022_an_unknown_option_is_diagnosed_on_stderr_with_stdout_empty() {
+    // WHAT THIS MEASURES CHANGED IN SLICE Z3, and the test moved with it rather
+    // than being weakened. Until Z3 the binary was reached by `ae-entry`, which
+    // prepended a preamble; a top-level `--frobnicate` therefore fell through
+    // the router into the LAUNCH grammar and was refused there — naming the
+    // four flags a launch does define — at exit 1. Called without a preamble,
+    // as this test used to call it, the same word reached `cli::Request::parse`
+    // instead and exited 2. That second path was never a path a human could
+    // take, and Z3 deletes it: the binary IS the public `ae` now, so what this
+    // asserts is the surface the operator actually gets.
+    //
+    // RESIDUAL, recorded rather than papered over: SC-022 rules that an unknown
+    // top-level OPTION exits 2, and the launch grammar's usage refusals exit 1.
+    // The gap predates this slice — the shipped bash product answered 1 here
+    // too — and closing it means re-coding every launch-plan refusal, which is
+    // a ruling and not a test edit. The half of SC-022 the DISPATCHER owns (an
+    // unknown `list`/`ls` tail) is unaffected and still exits 2; see
+    // `an_unknown_list_flag_is_a_usage_error`.
     let out = ae()
+        .arg("--frobnicate")
+        .output()
+        .expect("the ae binary should run");
+
+    assert!(
+        out.stdout.is_empty(),
+        "stdout must stay empty for a machine caller, got {:?}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let stderr = String::from_utf8(out.stderr).expect("stderr should be utf-8");
+    assert!(stderr.contains("--frobnicate"), "stderr: {stderr}");
+    assert_ne!(out.status.code(), Some(0), "exit status: {:?}", out.status);
+}
+
+/// The half of SC-022 the DISPATCHER owns, through the public binary.
+///
+/// An unknown `list` tail is a token the router hands to a parser that DOES
+/// define its flag set, so there is no launch grammar underneath to soften it:
+/// stderr, empty stdout, exit 2.
+#[test]
+fn an_unknown_list_flag_is_a_usage_error() {
+    let out = ae()
+        .arg("list")
         .arg("--frobnicate")
         .output()
         .expect("the ae binary should run");
@@ -158,7 +198,7 @@ fn sc_022_an_unknown_option_exits_two_and_diagnoses_on_stderr() {
     assert_eq!(out.status.code(), Some(2), "exit status: {:?}", out.status);
     assert!(
         out.stdout.is_empty(),
-        "stdout must stay empty for a machine caller, got {:?}",
+        "stdout must stay empty: {:?}",
         String::from_utf8_lossy(&out.stdout)
     );
     let stderr = String::from_utf8(out.stderr).expect("stderr should be utf-8");
@@ -1199,15 +1239,28 @@ fn the_underscore_spellings_are_commands_and_never_launch_candidates() {
         );
         assert_eq!(out.status.code(), Some(2), "{spelling}");
     }
-    // And help names them, so a shipped surface is discoverable.
+    // And the ARGV help names them, so a shipped surface is discoverable.
+    //
+    // `ae::help_text()` and not what `ae --help` prints: since slice Z3 the
+    // binary IS the public `ae`, so `--help` answers with the human command
+    // list ([`ae::entry::HELP`]) exactly as it did through the wrapper, and
+    // that list has never named the underscore entries — they are reached
+    // through a session helper, not typed. The argv help is where they belong
+    // and where this row can still see them.
+    let help = ae::help_text();
+    for spelling in [ae::cli::REQUESTS, ae::cli::EVENTS_TAIL] {
+        assert!(help.contains(spelling), "help omits {spelling}: {help}");
+    }
+    // The human list is the other half of the same fact: it is what `--help`
+    // prints, and it names the SESSION HELPERS rather than the entries.
     let out = ae()
         .arg("--help")
         .output()
         .expect("the ae binary should run");
-    let help = String::from_utf8(out.stdout).expect("stdout should be utf-8");
-    for spelling in [ae::cli::REQUESTS, ae::cli::EVENTS_TAIL] {
-        assert!(help.contains(spelling), "help omits {spelling}: {help}");
-    }
+    assert_eq!(
+        String::from_utf8(out.stdout).expect("stdout should be utf-8"),
+        ae::entry::HELP
+    );
 }
 
 #[test]
@@ -2840,10 +2893,19 @@ fn next_refuses_when_no_running_session_needs_a_human() {
 
 #[test]
 fn the_next_argv_is_answered_before_any_session_is_looked_at() {
-    // No state root at all: `--help` and a refused word must still answer, and
-    // must not degrade into the unavailable `1`.
+    // A state root that holds NOTHING: `--help` and a refused word must still
+    // answer, and must not degrade into the unavailable `1`.
+    //
+    // The root is named rather than absent, which is a Z3 change of instrument
+    // and not of subject. `ae` derives every path from `AE_HOME` or `HOME`, and
+    // with neither there is no ae to run at all — the wrapper died on an
+    // unbound `$HOME` under `set -u` in exactly the same case, and the core now
+    // says so with `NO_STATE_ROOT` instead. Pointing at an empty directory
+    // tests what this row is about — that the argv is answered before anything
+    // is enumerated — more directly than removing the root did.
     let help = ae()
         .env_clear()
+        .env("AE_HOME", "/nonexistent/ae")
         .args(["next", "--help"])
         .output()
         .expect("the ae binary should run");
@@ -2864,6 +2926,7 @@ fn the_next_argv_is_answered_before_any_session_is_looked_at() {
 
     let refused = ae()
         .env_clear()
+        .env("AE_HOME", "/nonexistent/ae")
         .args(["next", "--frobnicate"])
         .output()
         .expect("the ae binary should run");
