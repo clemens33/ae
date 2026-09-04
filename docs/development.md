@@ -1,8 +1,8 @@
 # Development
 
-ae ships one public wrapper over an immutable versioned Rust core.
-The repo contains that product, its installer and release lanes, wrapper/installer tests,
-Rust tests, and this docs site.
+ae ships an immutable versioned Rust core, with `~/.local/bin/ae` pointing directly to it.
+The repo contains that product, its installer and release lanes, the Rust test suite,
+and this docs site.
 
 ## Layout
 
@@ -143,7 +143,8 @@ Review invocations run **read-only** — a `--full-auto` reviewer is a tree muta
 
 ## Philosophy reminders
 
-- ae is a public wrapper over a Rust core; no new Bash features return to the wrapper.
+- ae's Rust core owns runtime behavior; the only Bash file is the policy-frozen `install`
+  bootstrap.
 - Config is INI-style, parsed by the core (`src/config.rs`). Don't add TOML/YAML/JSON parsing.
 - The installed runtime is an immutable matched set; checkout development additionally needs rustup and just. (Docs tooling remains optional.)
 - Session state lives in `~/.ae/sessions/`. Working directories stay clean.

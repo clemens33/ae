@@ -2,7 +2,7 @@
 
 **Run AI coding agents side-by-side in tmux. They know about each other, communicate by name, and survive reboots.**
 
-`ae` is one public Bash wrapper over an immutable versioned Rust core. It turns tmux into a multi-agent workspace: pair Claude Code with Codex for cross-model review, spin up a reviewer on demand, and wake to a complete event log after a long task.
+`ae` is a symlink to an immutable versioned Rust core. It turns tmux into a multi-agent workspace: pair Claude Code with Codex for cross-model review, spin up a reviewer on demand, and wake to a complete event log after a long task.
 
 [![Release: 2026.9.1](https://img.shields.io/badge/release-2026.9.1-blue.svg)](https://github.com/clemens33/ae/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/clemens33/ae/blob/main/LICENSE)
@@ -15,7 +15,7 @@
 - **Everything survives reboots.** Sessions, spawned agents, conversation history. Pick up exactly where you left off.
 - **One window to your whole fleet.** The optional [orchestrator companion](reference/commands.md#the-orchestrator-companion) meta-agent — your fleet's chief of staff — watches every session and relays to them — talk to *it* from your phone over [Telegram](reference/telegram.md#orchestrator-centric-routing-talk-to-the-meta-agent-not-ten-sessions) instead of juggling ten panes.
 - **Nothing touches your repo.** Session state lives in `~/.ae/sessions/`. Your working directory stays clean.
-- **Small versioned runtime.** The public wrapper validates its matched Rust core out of one immutable version directory before running it.
+- **Small versioned runtime.** `~/.local/bin/ae` points directly to its matched Rust core in one immutable version directory.
 
 > Install with the one-liner in [getting started](getting-started/install.md); it downloads the
 > current release, verifies its checksum before extracting, and publishes one immutable
@@ -41,7 +41,7 @@
 └──────────────────────────────┴──ae-mysession/send "claude...─┘
 ```
 
-Two agents in own tmux windows, talking to each other through generated shell helpers. A hidden monitor window streams the event log and runs the optional watchdog that keeps everything healthy.
+Two agents in own tmux windows, talking to each other through helpers linked to the Rust core. A hidden monitor window streams the event log and runs the optional watchdog that keeps everything healthy.
 
 ## Next
 

@@ -2,7 +2,9 @@
 
 The watchdog is a per-session monitor that lives inside the hidden `ae-monitor` tmux window. Its live loop is the Rust core's `_watchdog-run`, launched by the session's `watchdog` helper. It walks every registered agent pane on a fixed cycle, classifies each agent's state, and reacts: nudges idle agents, alerts on dead ones, pauses nudging when upstream rate limits are visible, and respects explicit completion signals.
 
-Bash is process start/stop/tick glue only: it starts and stops the core child, refreshes the git-branch display, and runs the deferred pending-session-id recovery and Telegram-supervision ticks. The old Bash loop remains only as a rollback path when no usable core is pinned; it is not part of the live path.
+The watchdog's live path is entirely in the Rust core. `_watchdog-run` owns the fixed
+cycle, liveness decisions, alerts, nudges, pending session-id recovery, and Telegram
+supervision.
 
 ## Lifecycle
 
@@ -11,20 +13,20 @@ Bash is process start/stop/tick glue only: it starts and stops the core child, r
 - **Persists across resume.** The state is recorded in session meta.
 - **Self-terminates** if the tmux session or `meta` file disappears.
 
-The `_watchdog` pane runs the core directly: its command is the session's `watchdog` link, which is the core binary under another name, dispatching to `_watchdog-run`. There is no wrapper around it any more.
+The `_watchdog` pane runs the core directly: its command is the session's `watchdog` link,
+which is a symlink to the core binary under another name, dispatching to `_watchdog-run`.
+There is no generated script or shell process between tmux and the core.
 
-## Implementations: Rust core (live) and Bash glue
+## Implementation: Rust core
 
-The live implementation is the Rust core. `_watchdog-run` owns the fixed cycle,
-all liveness/stale/throttle/quiet decisions, and their effects. The surrounding
-Bash wrapper is live only for process start/stop and the narrow tick glue listed
-above. The old Bash loop is rollback-only; it is retained for a session whose
-pinned core is unavailable, not selected as a second live implementation.
+The Rust core owns all liveness, stale, throttle, and quiet decisions, together with
+their effects. A session's `watchdog` helper is one of the core symlinks generated at
+launch; refreshing a session replaces the on-disk link, while a running watchdog keeps
+the process it already has until it is stopped and started.
 
 | Component | Runtime | Ownership |
 |---|---|---|
-| Rust core watchdog (live) | `_watchdog-run` child in the session's `_watchdog` pane | Per-cycle observation, state-machine decisions, nudges, alerts, and status publication |
-| Bash wrapper/glue (live) | Generated helper wrapper around the core child | Process start/stop, git-branch refresh, pending tool-session-id recovery, and Telegram-supervision ticks |
+| Rust core watchdog | `_watchdog-run` in the session's `_watchdog` pane | Per-cycle observation, state-machine decisions, nudges, alerts, status publication, pending tool-session-id recovery, and Telegram supervision |
 
 ## Live Rust core loop
 
