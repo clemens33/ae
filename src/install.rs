@@ -269,6 +269,13 @@ pub fn validate_bin_destination(link: &Path, home: &Path) -> Result<(), String> 
     Ok(())
 }
 
+/// How many dangling symlinks [`resolve_nearest`] will follow before it stops.
+///
+/// A dangling link may point at another dangling link, and two of them may
+/// point at each other. The budget bounds the walk without needing to track the
+/// links already seen.
+const RESOLVE_LINK_BUDGET: u8 = 8;
+
 /// `path` with its nearest EXISTING ancestor resolved and the missing tail
 /// re-appended.
 ///
@@ -276,6 +283,10 @@ pub fn validate_bin_destination(link: &Path, home: &Path) -> Result<(), String> 
 /// DANGLING symlink ancestor is exactly the case that matters: it names a
 /// destination that is not there today and will be tomorrow.
 fn resolve_nearest(path: &Path) -> PathBuf {
+    resolve_nearest_within(path, RESOLVE_LINK_BUDGET)
+}
+
+fn resolve_nearest_within(path: &Path, budget: u8) -> PathBuf {
     let mut cursor = path.to_path_buf();
     let mut tail: Vec<std::ffi::OsString> = Vec::new();
     while !door::present(&cursor) {
@@ -288,7 +299,7 @@ fn resolve_nearest(path: &Path) -> PathBuf {
         tail.push(name);
         cursor = parent;
     }
-    let resolved = resolve_existing(&cursor);
+    let resolved = resolve_existing(&cursor, budget);
     let mut out = resolved;
     for name in tail.iter().rev() {
         out.push(name);
@@ -297,7 +308,19 @@ fn resolve_nearest(path: &Path) -> PathBuf {
 }
 
 /// One existing (or dangling-symlink) path, resolved as far as it can be.
-fn resolve_existing(path: &Path) -> PathBuf {
+///
+/// **A dangling target is resolved through its own nearest existing ancestor,
+/// not returned raw.** `canonicalize` fails on a path that is not there yet, and
+/// returning the link's target verbatim made the two sides of the
+/// [`validate_bin_destination`] comparison disagree about spelling whenever the
+/// home sat under a symlinked ancestor: on macOS a fixture home in `/tmp`
+/// resolved to `/private/tmp/…/.ae` while the dangling `~/.local -> ~/.ae/bin`
+/// stayed `/tmp/…/.ae/bin`, so the prefix test could never match and the guard
+/// did not fire. Measured: with the home under `/private/tmp` the same install
+/// refused correctly, and under `/tmp` it published a version directory first
+/// and was only caught later, incidentally, by the symlinked-ancestor check in
+/// [`missing_chain`].
+fn resolve_existing(path: &Path, budget: u8) -> PathBuf {
     let is_link = door::lstat(path).is_ok_and(|meta| meta.file_type().is_symlink());
     if is_link {
         let Ok(target) = std::fs::read_link(path) else {
@@ -308,7 +331,13 @@ fn resolve_existing(path: &Path) -> PathBuf {
         } else {
             path.parent().unwrap_or(Path::new("/")).join(target)
         };
-        return std::fs::canonicalize(&absolute).unwrap_or(absolute);
+        return std::fs::canonicalize(&absolute).unwrap_or_else(|_| {
+            if budget == 0 {
+                absolute
+            } else {
+                resolve_nearest_within(&absolute, budget - 1)
+            }
+        });
     }
     std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
