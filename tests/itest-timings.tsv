@@ -1,8 +1,9 @@
 # seconds<TAB>section — measured by tests/itest-par, used to order units
 # longest-first. Regenerate with: tests/itest-par --timings
-2	Test 1: Lifecycle — create, list, end
-14	core binding: requests shims to a pinned Rust core, or falls back visibly
-1	hostile PATH: ae must survive its own re-exec marker
+3	Test 1: Lifecycle — create, list, end
+7	core binding: requests shims to a pinned Rust core, or falls back visibly
+1	server pair: a SET-EMPTY half is a DECLARED server, not an absent one
+2	hostile PATH: ae must survive its own re-exec marker
 5	Test 2: Resume detection
 6	identity v2: resuming a v1 meta migrates the roster in place
 4	Test 2b: Rename moves session, window, and meta
@@ -15,44 +16,44 @@
 1	P1: truthful prompt + stopped-dir end-by-name regression
 2	P1 review B1: end a session on a DIFFERENT tmux server (named-server)
 2	2nd-delta B1 MIRROR: DEFAULT-server target, ended from a NAMED-ambient shell
-2	4th review B1: launch INSIDE a foreign tmux pane records the REAL server
-2	5th review B1: -S socket vs same-basename -L server collision round-trip
-6	issue #4: `ae end` racing a launch must not leave a recreated session
+3	4th review B1: launch INSIDE a foreign tmux pane records the REAL server
+3	5th review B1: -S socket vs same-basename -L server collision round-trip
+7	issue #4: `ae end` racing a launch must not leave a recreated session
 1	7th review B3: zero-hit stays empty; --assume-stopped is the explicit teardown
 1	10th review B1 behavioral: an unverifiable enumerable socket BLOCKS the ack
 2	11th review B1: unlinked-but-LIVE server must be CANNOT-VERIFY, never clean-dead
-17	11th review B2: the lifecycle lock excludes end vs start/resume
-1	4th review B2: unreachable server → CANNOT VERIFY → state preserved, rc!=0
+18	11th review B2: the lifecycle lock excludes end vs start/resume
+2	4th review B2: unreachable server → CANNOT VERIFY → state preserved, rc!=0
 2	4th review B3-probe: no-remote worktree end preserves dir + commit reachable
-3	P1 review B2: cleanup must not read a prefix-neighbor's mode after the kill
-3	Test 3c: derived rollup surfaces a watchdog alert (slice 2)
-3	Test 3d: ae next — attention navigator (Layer 2, slice A)
-26	Test 4: Spawn persistence
-26	request-integrity: slot-routed reply survives a display-name CHURN (codex B1)
+4	P1 review B2: cleanup must not read a prefix-neighbor's mode after the kill
+4	Test 3c: derived rollup surfaces a watchdog alert (slice 2)
+4	Test 3d: ae next — attention navigator (Layer 2, slice A)
+23	Test 4: Spawn persistence
+23	request-integrity: slot-routed reply survives a display-name CHURN (codex B1)
 4	Test 5: End session (worktree mode)
 3	Test 7: Per-project config override
 3	Test 8: ae <name> use <name> override
 6	Test 9: Resume from different CWD (local mode)
 1	Test 10: ae doctor
-2	Test 10b: ae doctor orphan check (P2a — lifecycle blindness)
-3	refresh reproduces the CORE's helper set, byte for byte
-4	Test 11: ae doctor --refresh
-4	Test 11b: refresh must NOT stop a STOPPED session's stale-pid watchdog
-4	Test 11c: resume trims events.jsonl to the newest AE_EVENTS_KEEP lines
-4	Test 11d: watchdog status/start/stop reject a stale RECYCLED pid
+3	Test 10b: ae doctor orphan check (P2a — lifecycle blindness)
+4	refresh reproduces the CORE's helper set, link for link
+3	Test 11: ae doctor --refresh
+3	Test 11b: refresh must NOT stop a STOPPED session's stale-pid watchdog
+3	Test 11c: resume trims events.jsonl to the newest AE_EVENTS_KEEP lines
+3	Test 11d: watchdog status/start/stop reject a stale RECYCLED pid
 4	Test 11e: status bar is AE-OWNED — the watchdog never rewrites status-right
-4	Test 11f: agent roster (@ae_agents_status) with a LIVE watchdog
+5	Test 11f: agent roster (@ae_agents_status) with a LIVE watchdog
 7	goal helper: set → list → survives resume
-2	ae list robustness: a per-session helper returning non-zero must NOT abort
-10	orchestrator companion autostart: scaffold → any launch brings it up
-11	lead-default Part 3: layout = lead-solo (real tmux windows)
-11	session-shape: layout = lead-pair (colead seat in window 0, real tmux)
-5	#27: launch.<slot>.sh survives being re-run
-42	ROLLBACK: a failed launch must not leave debris behind
-91	#33: stop targets the RECORDED server by EXACT id, and verifies
+4	ae list robustness: a per-session helper returning non-zero must NOT abort
+12	orchestrator companion autostart: scaffold → any launch brings it up
+10	lead-default Part 3: layout = lead-solo (real tmux windows)
+10	session-shape: layout = lead-pair (colead seat in window 0, real tmux)
+4	#27: a pane command survives being re-run
+40	ROLLBACK: a failed launch must not leave debris behind
+92	#33: stop targets the RECORDED server by EXACT id, and verifies
 4	#34: end STOPS before it SNAPSHOTS
 4	#34: a failed push leaves everything, and SAYS the session is stopped
-20	#30: a resumed pane reports the TOOL, not bash
+18	#30: a resumed pane reports the TOOL, not bash
 11	#48: session archives, end to end
 11	purge: no archive written, and an existing one removed
 11	explicit lineage
@@ -63,10 +64,10 @@
 70	compact phase (b): the handover is a fact, not a claim
 70	compact (c)+(d): it hands over, it ends, it comes back
 3	tracked resolution: a paneless request routes on the recorded server, not the ambient one
-10	#59: each slot's generated artifacts carry THAT slot's identity
-10	#59 R1: a hostile spawn name never reaches an artifact
-10	#59 C3-2: a RESTORED roster name is fail-quiet, a FRESH one is fatal
-10	#59 C4: the frozen-roster branch, driven for real
-15	P5 installer + wrapper
-8	P5 real ae through the symlink
+9	#59: each slot's generated artifacts carry THAT slot's identity
+9	#59 R1: a hostile spawn name never reaches an artifact
+9	#59 C3-2: a RESTORED roster name is fail-quiet, a FRESH one is fatal
+9	#59 C4: the frozen-roster branch, driven for real
+19	P5 installer + wrapper
+6	P5 real ae through the symlink
 12	P5 upgrade + re-entry
