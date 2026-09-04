@@ -4,23 +4,39 @@
 # Safe to fetch as the small, one-line bootstrap command. Release payloads are
 # downloaded to files, checked against SHA256SUMS, and extracted only after the
 # checksum matches. Local-bundle path: AE_BUNDLE + AE_SUMS. Checkout mode (this
-# file next to ae-entry and Cargo.toml) is the `just install` role.
+# file next to Cargo.toml and src/main.rs) is the `just install` role.
 #
 # Fixed publication paths, derived from HOME and nothing else:
-#   ~/.ae/versions/<V>/{ae,ae-core,install}
-#   ~/.ae/core/current
-#   ~/.local/bin/ae
+#   ~/.ae/versions/<V>/{ae-core,install,SHA256SUMS}
+#   ~/.local/bin/ae  ->  ~/.ae/versions/<V>/ae-core
+#
+# Z3: THE PUBLIC `ae` IS THE CORE. There is no wrapper to publish, so there is
+# no pair to validate and no text pointer beside the version directory — the
+# COMMAND LINK IS THE CURRENT POINTER, and switching versions is one atomic
+# rename of it. `~/.ae/core/current` and `~/.ae/current` are retired: a second
+# pointer at a single target is a second answer waiting to disagree.
+#
+# The version directory is published 0555 with its members 0555/0444, so the
+# installed core cannot be written through ANY path that reaches it — a stray
+# `> $SESSION_DIR/send` through a helper symlink gets EACCES instead of
+# truncating the binary every session on the machine is bound to. The core
+# validates that shape, and SHA256SUMS, against itself before any effect.
 set -euo pipefail
 
 REMOTE_REPOSITORY_DEFAULT="https://github.com/clemens33/ae"
 
-# C72 RULING (1): core/current is a TEXT POINTER, not an executable. Its mode is
-# ratified here at 0644 and applied to the temp before the publishing mv, so a
-# fresh publish is deterministic instead of "whatever mktemp gave" (0600). The
-# versions/<V> members' 0555 is a different object and is not this constant.
-# The same value is the ONLY honest fallback for a legacy journal that predates
-# core_mode — see remote_journal_load.
-REMOTE_CORE_POINTER_MODE=0644
+# The modes the version directory and its members are published at, ratified
+# here and applied to the STAGE before the publishing mv, so a fresh publish is
+# deterministic instead of "whatever mktemp gave". The directory carries the
+# member mode too: 0555 on a directory is what makes an entry create or unlink
+# inside it fail with EACCES.
+REMOTE_MEMBER_MODE=0555
+REMOTE_MANIFEST_MODE=0444
+
+# The three members every version directory and every release bundle holds.
+# Order is publication order and manifest order; SHA256SUMS is written last
+# because it describes the other two.
+REMOTE_MEMBERS=(ae-core install SHA256SUMS)
 
 remote_die() {
     echo "ae installer: $*" >&2
@@ -134,6 +150,41 @@ remote_latest_archive() {
     ' "$sums"
 }
 
+# The version directory's own manifest, and the bundle's third member: one
+# sha256 line per EXECUTABLE member, in the text spelling both sha256sum and
+# shasum emit, with bare basenames relative to the directory holding it. It
+# does NOT cover itself — a manifest that signed its own bytes would still be
+# rewritable by anyone who could rewrite a member, and what actually keeps this
+# honest is the 0555 directory it is published into.
+#
+# Exactly two lines, ae-core first. The core reads this file to validate its own
+# installation, so the shape is a contract with src/, not a local convenience:
+# widen it there and here in the same change or not at all.
+remote_manifest_write() {
+    local dir="$1" name sum
+    for name in ae-core install; do
+        sum="$(remote_sha256 "$dir/$name")" || return 1
+        printf '%s  %s\n' "$sum" "$name"
+    done >"$dir/SHA256SUMS"
+}
+
+# Prove a staged or extracted directory against the manifest it carries, before
+# a single byte of it is published. The line count is checked as well as the two
+# entries: an extra row is a member we do not know about, and "the two we asked
+# for matched" would pass it silently.
+remote_manifest_verify() {
+    local dir="$1" name lines
+    remote_require_regular_file "$dir/SHA256SUMS" "bundle manifest" || return 1
+    lines="$(awk 'END { print NR }' "$dir/SHA256SUMS")"
+    if [ "$lines" != 2 ]; then
+        remote_die "bundle manifest must hold exactly two entries, found $lines: $dir/SHA256SUMS"
+        return 1
+    fi
+    for name in ae-core install; do
+        remote_verify_checksum "$dir/SHA256SUMS" "$dir/$name" "$name" || return 1
+    done
+}
+
 remote_require_dir() {
     local path="$1" label="$2"
     if [ -L "$path" ]; then
@@ -142,18 +193,6 @@ remote_require_dir() {
     fi
     if [ -e "$path" ] && [ ! -d "$path" ]; then
         remote_die "$label is not a directory: $path"
-        return 1
-    fi
-}
-
-remote_require_regular_or_absent() {
-    local path="$1" label="$2"
-    if [ -L "$path" ]; then
-        remote_die "$label is a symlink, refusing to write through it: $path"
-        return 1
-    fi
-    if [ -e "$path" ] && [ ! -f "$path" ]; then
-        remote_die "$label is not a regular file: $path"
         return 1
     fi
 }
@@ -211,34 +250,10 @@ remote_flag_ok() {
     [ "$1" = 0 ] || [ "$1" = 1 ]
 }
 
-# C72: a journal that records a regular file's BYTES but not its MODE cannot
-# restore the world it inverted. Four octal digits always, so the setuid/setgid/
-# sticky triad is carried rather than silently dropped.
-remote_mode_ok() {
-    case "$1" in
-        [0-7][0-7][0-7][0-7]) return 0 ;;
-    esac
-    return 1
-}
-
-# GNU vs BSD userland (AGENTS.md): `stat -c` does not exist on BSD and `stat -f`
-# does not exist on GNU, and the raw call fails SILENTLY through a `|| fallback`
-# — the empty result then reads as "no mode" instead of "broken". Branch on
-# uname the way remote_atomic_symlink_replace already does in this file.
-# BSD %Mp is the high triad and %Lp the low three digits; GNU %a prints the
-# whole thing, three digits when the high triad is zero. Normalise to four.
-remote_file_mode() {
-    local path="$1" mode=""
-    case "$(uname -s)" in
-        Darwin) mode="$(stat -f '%Mp%Lp' "$path" 2>/dev/null || true)" ;;
-        *) mode="$(stat -c '%a' "$path" 2>/dev/null || true)" ;;
-    esac
-    case "$mode" in
-        [0-7][0-7][0-7]) mode="0$mode" ;;
-    esac
-    remote_mode_ok "$mode" || return 1
-    printf '%s\n' "$mode"
-}
+# Z3: the mode helpers went with core/current. The only regular file this
+# installer ever had to restore was that text pointer, and the journal's whole
+# file-restore arm (bytes AND mode, C72) went with it — what is left to invert
+# is the command SYMLINK, whose own mode is not meaningful.
 
 # Resolve a path via the nearest existing (or symlink) ancestor, then re-append
 # the missing tail. Catches a dangling ancestor whose target is the ae home
@@ -371,27 +386,49 @@ remote_script_here() {
     (cd -P "$(dirname "$src")" && pwd)
 }
 
+# Z3: `ae-entry` was half of the checkout signature and is deleted, so the
+# signature is the Rust checkout itself. Cargo.toml ALONE is any Rust project;
+# paired with src/main.rs and an installer named `install` sitting beside both,
+# it is this one. A release bundle carries neither, which is what the branch
+# actually has to tell apart.
 remote_is_checkout() {
     local here
     here="$(remote_script_here "${BASH_SOURCE[0]:-$0}")" || return 1
-    [ -f "$here/ae-entry" ] && [ -f "$here/Cargo.toml" ]
+    [ -f "$here/Cargo.toml" ] && [ -f "$here/src/main.rs" ]
+}
+
+# The checkout's version, and since Z3 the ONLY version word in the product:
+# Cargo.toml's [package] version, which `just bump` owns. The wrapper that held
+# the second half of the pair is gone, so there is nothing left to agree with —
+# the core either reports this string or the stage is refused.
+remote_crate_version() {
+    local here="$1" version
+    [ -f "$here/Cargo.toml" ] || {
+        remote_die "checkout mode: no Cargo.toml at $here/Cargo.toml"
+        return 1
+    }
+    version="$(awk '
+        /^\[/ { in_package = ($0 == "[package]") }
+        in_package && /^version[[:space:]]*=/ {
+            gsub(/^version[[:space:]]*=[[:space:]]*"|"[[:space:]]*$/, "")
+            print
+            exit
+        }
+    ' "$here/Cargo.toml")"
+    if ! remote_version_ok "$version"; then
+        remote_die "could not read a CalVer version from $here/Cargo.toml"
+        return 1
+    fi
+    printf '%s\n' "$version"
 }
 
 remote_checkout_stage() {
-    local dest="$1" here built wrap_version core_version
+    local dest="$1" here built crate_version core_version
     here="$(remote_script_here "${BASH_SOURCE[0]:-$0}")" || {
         remote_die "checkout mode: could not resolve installer location"
         return 1
     }
-    [ -f "$here/ae-entry" ] || {
-        remote_die "checkout mode: no ae-entry at $here/ae-entry"
-        return 1
-    }
-    wrap_version="$(grep -m1 '^_AE_ENTRY_VERSION=' "$here/ae-entry" | cut -d'"' -f2)"
-    [ -n "$wrap_version" ] || {
-        remote_die "could not read _AE_ENTRY_VERSION from $here/ae-entry"
-        return 1
-    }
+    crate_version="$(remote_crate_version "$here")" || return 1
     if [ -n "${AE_CORE_BIN:-}" ]; then
         built="$AE_CORE_BIN"
         [ -f "$built" ] || {
@@ -414,16 +451,19 @@ remote_checkout_stage() {
         remote_die "the core reported no version: $built"
         return 1
     }
-    if [ "$core_version" != "$wrap_version" ]; then
-        remote_die "version mismatch: the core reports $core_version, ae-entry is $wrap_version.
-They move together. Rebuild the core, or run \`just bump\` in the checkout (it owns them together)."
+    if [ "$core_version" != "$crate_version" ]; then
+        remote_die "version mismatch: the core reports $core_version, Cargo.toml is $crate_version.
+Rebuild the core, or run \`just bump\` in the checkout (it owns the crate version)."
         return 1
     fi
     mkdir -p "$dest"
-    cp "$here/ae-entry" "$dest/ae"
     cp "$built" "$dest/ae-core"
     cp "$here/install" "$dest/install"
-    chmod 0755 "$dest/ae" "$dest/ae-core" "$dest/install"
+    chmod 0755 "$dest/ae-core" "$dest/install"
+    # The stage is a BUNDLE, so it carries the same third member a release
+    # tarball does and is verified through the same door below.
+    remote_manifest_write "$dest" || return 1
+    chmod 0644 "$dest/SHA256SUMS"
     printf '%s\n' "$core_version"
 }
 
@@ -446,12 +486,6 @@ _REMOTE_FIXED_HOME=""
 _REMOTE_FIXED_LINK=""
 _REMOTE_J_FORMAT=""
 _REMOTE_J_VERSION=""
-_REMOTE_J_CORE_POINTER=""
-_REMOTE_J_CORE_HAD=0
-_REMOTE_J_CORE_OLD=""
-_REMOTE_J_CURRENT_POINTER=""
-_REMOTE_J_CURRENT_HAD=0
-_REMOTE_J_CURRENT_OLD=""
 _REMOTE_J_LINK=""
 _REMOTE_J_LINK_HAD=0
 _REMOTE_J_LINK_OLD=""
@@ -469,14 +503,6 @@ remote_reset_state() {
     _REMOTE_FIXED_LINK=""
     _REMOTE_J_FORMAT=""
     _REMOTE_J_VERSION=""
-    _REMOTE_J_CORE_POINTER=""
-    _REMOTE_J_CORE_HAD=0
-    _REMOTE_J_CORE_OLD=""
-    _REMOTE_J_CORE_MODE=""
-    _REMOTE_J_CORE_MODE_SEEN=0
-    _REMOTE_J_CURRENT_POINTER=""
-    _REMOTE_J_CURRENT_HAD=0
-    _REMOTE_J_CURRENT_OLD=""
     _REMOTE_J_LINK=""
     _REMOTE_J_LINK_HAD=0
     _REMOTE_J_LINK_OLD=""
@@ -638,23 +664,20 @@ remote_journal_value_ok() {
     esac
 }
 
+# Z3 made this record SMALLER, and that is the point: the objects a publish
+# mutates outside the version directory are now the command link and the config,
+# so those are the only two the inverse has to restore. format=2 states that —
+# a format=1 journal names fields this parser no longer knows and is refused by
+# the unknown-field arm rather than half-replayed.
 remote_journal_create() {
-    local journal="$1" home="$2" version="$3" core_pointer="$4" core_had="$5" core_old="$6"
-    local current_pointer="$7" current_had="$8" current_old="$9" link="${10}" link_had="${11}"
-    local link_old="${12}" config="${13}" config_had="${14}" core_mode="${15}" tmp
+    local journal="$1" home="$2" version="$3" link="$4" link_had="$5"
+    local link_old="$6" config="$7" config_had="$8" tmp
     local value
-    for value in "$journal" "$home" "$version" "$core_pointer" "$current_pointer" "$link" "$config" \
-        "$core_old" "$current_old" "$link_old"; do
+    for value in "$journal" "$home" "$version" "$link" "$config" "$link_old"; do
         remote_journal_value_ok "$value" || return 1
     done
     if ! remote_version_ok "$version"; then
         remote_die "cannot journal an invalid version: $version"
-        return 1
-    fi
-    # C72: refuse at CREATION, not at restore. A journal written without a
-    # usable mode promises an inverse it cannot perform.
-    if [ "$core_had" = 1 ] && ! remote_mode_ok "$core_mode"; then
-        remote_die "cannot journal an unreadable core/current mode: $core_pointer"
         return 1
     fi
     if [ -e "$journal" ] || [ -L "$journal" ]; then
@@ -666,16 +689,9 @@ remote_journal_create() {
         return 1
     }
     if ! {
-        printf 'format=1\n'
+        printf 'format=2\n'
         printf 'version=%s\n' "$version"
         printf 'home=%s\n' "$home"
-        printf 'core_pointer=%s\n' "$core_pointer"
-        printf 'core_had=%s\n' "$core_had"
-        printf 'core_old=%s\n' "$core_old"
-        printf 'core_mode=%s\n' "$core_mode"
-        printf 'current_pointer=%s\n' "$current_pointer"
-        printf 'current_had=%s\n' "$current_had"
-        printf 'current_old=%s\n' "$current_old"
         printf 'link=%s\n' "$link"
         printf 'link_had=%s\n' "$link_had"
         printf 'link_old=%s\n' "$link_old"
@@ -783,14 +799,6 @@ remote_journal_load() {
     _REMOTE_J_FORMAT=""
     _REMOTE_J_VERSION=""
     _REMOTE_JOURNAL_HOME=""
-    _REMOTE_J_CORE_POINTER=""
-    _REMOTE_J_CORE_HAD=""
-    _REMOTE_J_CORE_OLD=""
-    _REMOTE_J_CORE_MODE=""
-    _REMOTE_J_CORE_MODE_SEEN=0
-    _REMOTE_J_CURRENT_POINTER=""
-    _REMOTE_J_CURRENT_HAD=""
-    _REMOTE_J_CURRENT_OLD=""
     _REMOTE_J_LINK=""
     _REMOTE_J_LINK_HAD=""
     _REMOTE_J_LINK_OLD=""
@@ -803,16 +811,6 @@ remote_journal_load() {
             format) _REMOTE_J_FORMAT="$value" ;;
             version) _REMOTE_J_VERSION="$value" ;;
             home) _REMOTE_JOURNAL_HOME="$value" ;;
-            core_pointer) _REMOTE_J_CORE_POINTER="$value" ;;
-            core_had) _REMOTE_J_CORE_HAD="$value" ;;
-            core_old) _REMOTE_J_CORE_OLD="$value" ;;
-            core_mode)
-                _REMOTE_J_CORE_MODE="$value"
-                _REMOTE_J_CORE_MODE_SEEN=1
-                ;;
-            current_pointer) _REMOTE_J_CURRENT_POINTER="$value" ;;
-            current_had) _REMOTE_J_CURRENT_HAD="$value" ;;
-            current_old) _REMOTE_J_CURRENT_OLD="$value" ;;
             link) _REMOTE_J_LINK="$value" ;;
             link_had) _REMOTE_J_LINK_HAD="$value" ;;
             link_old) _REMOTE_J_LINK_OLD="$value" ;;
@@ -821,44 +819,20 @@ remote_journal_load() {
             created_dir) _REMOTE_J_CREATED+=("$value") ;;
             "") ;;
             *)
-                remote_die "install journal has an unknown field: $key"
+                remote_die "install journal has an unknown field: $key (a journal from an older installer names retired fields; remove $journal and rerun)"
                 return 1
                 ;;
         esac
     done <"$journal"
-    if [ "$_REMOTE_J_FORMAT" != 1 ] || [ -z "$_REMOTE_J_VERSION" ] ||
+    if [ "$_REMOTE_J_FORMAT" != 2 ] || [ -z "$_REMOTE_J_VERSION" ] ||
         [ "$_REMOTE_JOURNAL_HOME" != "$expected_home" ] ||
-        [ "$_REMOTE_J_CORE_POINTER" != "$expected_home/core/current" ] ||
-        [ "$_REMOTE_J_CURRENT_POINTER" != "$expected_home/current" ] ||
         [ "$_REMOTE_J_CONFIG" != "$expected_home/config" ] ||
-        ! remote_flag_ok "$_REMOTE_J_CORE_HAD" || ! remote_flag_ok "$_REMOTE_J_CURRENT_HAD" ||
         ! remote_flag_ok "$_REMOTE_J_LINK_HAD" || ! remote_flag_ok "$_REMOTE_J_CONFIG_HAD"; then
         remote_die "install journal is malformed or for another home: $journal"
         return 1
     fi
     if ! remote_version_ok "$_REMOTE_J_VERSION"; then
         remote_die "install journal version is invalid: $journal"
-        return 1
-    fi
-    # C72: the mode is part of the PRE record, so it is validated with the rest
-    # of it — before any restore, never at the point of use.
-    #
-    # C72 RULING (2): a LEGACY journal predating core_mode restores at the
-    # ratified publish mode, and that is a DISTINCT, LOUD branch — never a
-    # silent default, which would also swallow a parser miss. The discriminator
-    # is whether the KEY was present, not whether its VALUE is usable: absent
-    # key = legacy, present-but-unusable = corrupt record, and those two get
-    # different answers deliberately.
-    if [ "$_REMOTE_J_CORE_HAD" = 1 ]; then
-        if [ "$_REMOTE_J_CORE_MODE_SEEN" -eq 0 ]; then
-            _REMOTE_J_CORE_MODE="$REMOTE_CORE_POINTER_MODE"
-            echo "ae installer: legacy install journal carries no core_mode; restoring $_REMOTE_J_CORE_POINTER at the ratified publish mode $REMOTE_CORE_POINTER_MODE: $journal" >&2
-        elif ! remote_mode_ok "$_REMOTE_J_CORE_MODE"; then
-            remote_die "install journal core/current mode is invalid: $journal"
-            return 1
-        fi
-    elif [ -n "$_REMOTE_J_CORE_MODE" ]; then
-        remote_die "install journal records a core/current mode with no core/current: $journal"
         return 1
     fi
     remote_validate_bin_destination "$_REMOTE_J_LINK" "$expected_home" || return 1
@@ -890,7 +864,7 @@ remote_journal_load() {
                     # rmdir removes only an empty directory and fails harmlessly;
                     # rm -rf destroys content, so it is never a journal operation.
                     case "$path" in
-                        "$expected_home/versions" | "$expected_home/core" | "$link_parent" | "$link_ancestor") ;;
+                        "$expected_home/versions" | "$link_parent" | "$link_ancestor") ;;
                         *)
                             remote_die "install journal directory path is not one of the emitted directories: $path"
                             return 1
@@ -950,63 +924,6 @@ remote_restore_symlink() {
     fi
 }
 
-remote_restore_file() {
-    local path="$1" had="$2" value="$3" label="$4" mode="$5" tmp
-    # lstat, do not follow: a directory at the destination makes `mv -f file dir`
-    # return 0 and nest the file, after which recovery reports success and
-    # deletes the journal having restored nothing.
-    if [ -d "$path" ] && [ ! -L "$path" ]; then
-        echo "ae installer: rollback cannot restore $label over a directory: $path" >&2
-        return 1
-    fi
-    if [ "$had" -eq 0 ]; then
-        if ! rm -f "$path"; then
-            echo "ae installer: rollback could not remove $label: $path" >&2
-            return 1
-        fi
-        return 0
-    fi
-    tmp="$(mktemp "${path}.ae-recover.XXXXXX")" || {
-        echo "ae installer: rollback could not stage $label: $path" >&2
-        return 1
-    }
-    if ! printf '%s\n' "$value" >"$tmp"; then
-        rm -f "$tmp" || true
-        echo "ae installer: rollback could not restore $label: $path" >&2
-        return 1
-    fi
-    # C72. mktemp publishes 0600 and the recorded PRE mode is frequently not
-    # 0600, so restoring bytes alone hands back a DIFFERENT file — which the
-    # cutover's C45 selector-identity check correctly refuses. Same
-    # temp+mode+mv shape the product uses everywhere else: the mode lands on
-    # the temp, so the published file is never visible at the wrong mode.
-    if ! chmod "$mode" "$tmp"; then
-        rm -f "$tmp" || true
-        echo "ae installer: rollback could not restore $label mode $mode: $path" >&2
-        return 1
-    fi
-    # LOAD-BEARING. The directory refusal above lets a symlink through (`-L`
-    # first, do not follow). Measured: `mv -f file symlink-to-dir` returns 0
-    # and nests the file inside the target, leaving the symlink intact — the
-    # same silent-success / journal-deleted hole as a real directory. Refusing
-    # a real directory is not sufficient on its own; this rm is what closes
-    # the symlink case. Do not tidy it away because the following mv looks
-    # atomic. The non-atomic window (dest absent, then mv) fails loudly and
-    # preserves the journal; nesting reports success and deletes it.
-    if [ -e "$path" ] || [ -L "$path" ]; then
-        if ! rm -f "$path"; then
-            rm -f "$tmp" || true
-            echo "ae installer: rollback could not remove $label: $path" >&2
-            return 1
-        fi
-    fi
-    if ! mv -f "$tmp" "$path"; then
-        rm -f "$tmp" || true
-        echo "ae installer: rollback could not restore $label: $path" >&2
-        return 1
-    fi
-}
-
 remote_recover_journal() {
     local journal="$1" expected_home recovery_rc=0 item path index kind owned
     if ! remote_fixed_paths; then
@@ -1021,12 +938,6 @@ remote_recover_journal() {
         return 1
     fi
     if ! remote_restore_symlink "$_REMOTE_J_LINK" "$_REMOTE_J_LINK_HAD" "$_REMOTE_J_LINK_OLD" command-link; then
-        recovery_rc=1
-    fi
-    if ! remote_restore_symlink "$_REMOTE_J_CURRENT_POINTER" "$_REMOTE_J_CURRENT_HAD" "$_REMOTE_J_CURRENT_OLD" current-pointer; then
-        recovery_rc=1
-    fi
-    if ! remote_restore_file "$_REMOTE_J_CORE_POINTER" "$_REMOTE_J_CORE_HAD" "$_REMOTE_J_CORE_OLD" core/current "$_REMOTE_J_CORE_MODE"; then
         recovery_rc=1
     fi
     # C102: collect the OWNED paths first. An `intent` row whose `rmdir`
@@ -1179,10 +1090,9 @@ remote_test_failure() {
 
 remote_main() {
     local platform requested version repository release_ref sums archive archive_path
-    local root extracted version_dir versions core_root current_pointer config link
-    local stage file source core_version wrap_version staged_version list_file entry temp pointer_target suffix
-    local home link_parent core_had=0 core_old="" core_mode="" current_had=0 current_old=""
-    local link_had=0 link_old="" config_had=0
+    local root extracted version_dir versions config link
+    local stage file source core_version staged_version list_file entry temp suffix
+    local home link_parent link_had=0 link_old="" config_had=0
     remote_reset_state
     remote_fixed_paths || return 1
     home="$_REMOTE_FIXED_HOME"
@@ -1223,7 +1133,7 @@ remote_main() {
     elif remote_is_checkout; then
         version="$requested"
         if [ "$version" = "latest" ]; then
-            version="$(grep -m1 '^_AE_ENTRY_VERSION=' "$(remote_script_here "${BASH_SOURCE[0]:-$0}")/ae-entry" | cut -d'"' -f2)"
+            version="$(remote_crate_version "$(remote_script_here "${BASH_SOURCE[0]:-$0}")")" || return 1
         fi
         if ! remote_version_ok "$version"; then
             remote_die "could not derive a CalVer version from the checkout"
@@ -1301,7 +1211,7 @@ remote_main() {
         fi
         while IFS= read -r entry; do
             case "$entry" in
-                "$root/" | "$root/ae" | "$root/ae-core" | "$root/install") ;;
+                "$root/" | "$root/ae-core" | "$root/install" | "$root/SHA256SUMS") ;;
                 *)
                     remote_die "archive contains an unexpected path: $entry"
                     return 1
@@ -1314,7 +1224,7 @@ remote_main() {
         fi
         source="$extracted/$root"
     fi
-    for file in ae ae-core install; do
+    for file in "${REMOTE_MEMBERS[@]}"; do
         if [ ! -f "$source/$file" ]; then
             remote_die "archive is missing $file"
             return 1
@@ -1324,10 +1234,6 @@ remote_main() {
             return 1
         fi
     done
-    if [ ! -x "$source/ae" ]; then
-        remote_die "archive wrapper is not executable"
-        return 1
-    fi
     if [ ! -x "$source/ae-core" ]; then
         remote_die "archive core is not executable"
         return 1
@@ -1336,6 +1242,10 @@ remote_main() {
         remote_die "archive installer is not executable"
         return 1
     fi
+    # The manifest is proven against the members BEFORE the core is executed to
+    # ask its version, so nothing unverified runs on this path. The checkout
+    # stage carries its own manifest and comes through the same door.
+    remote_manifest_verify "$source" || return 1
     if ! core_version="$("$source/ae-core" --version 2>/dev/null | head -1)"; then
         remote_die "archive core did not run"
         return 1
@@ -1345,20 +1255,8 @@ remote_main() {
         remote_die "archive core reports $core_version, expected $version"
         return 1
     fi
-    wrap_version="$(grep -m1 '^_AE_ENTRY_VERSION=' "$source/ae" | cut -d'"' -f2)"
-    [ -n "$wrap_version" ] || {
-        remote_die "could not read _AE_ENTRY_VERSION from archive wrapper"
-        return 1
-    }
-    if [ "$wrap_version" != "$core_version" ]; then
-        remote_die "version mismatch: wrapper is $wrap_version, the core reports $core_version.
-They move together. Rebuild the core, or run \`just bump\` in the checkout (it owns them together)."
-        return 1
-    fi
 
     versions="$home/versions"
-    core_root="$home/core"
-    current_pointer="$home/current"
     config="$home/config"
     remote_validate_bin_destination "$link" "$home" || return 1
     mkdir -p "$home"
@@ -1367,31 +1265,11 @@ They move together. Rebuild the core, or run \`just bump\` in the checkout (it o
     remote_validate_bin_destination "$link" "$home" || return 1
     remote_require_dir "$home" "ae home"
     remote_require_dir "$versions" "version directory"
-    remote_require_dir "$core_root" "core directory"
-    remote_require_regular_or_absent "$core_root/current" "core/current"
-    if [ -e "$current_pointer" ] && [ ! -L "$current_pointer" ]; then
-        remote_die "current is not the published ae pointer: $current_pointer"
-        return 1
-    fi
     if ! remote_acquire_lock "$home"; then
         return 1
     fi
     if ! remote_recover_existing_journal "$home"; then
         return 1
-    fi
-    if [ -L "$current_pointer" ]; then
-        current_had=1
-        current_old="$(readlink "$current_pointer")"
-    fi
-    if [ -f "$core_root/current" ]; then
-        core_had=1
-        core_old="$(cat "$core_root/current")"
-        # C72: read the mode in the SAME breath as the bytes. A PRE record that
-        # captures one and not the other cannot restore the world it inverted.
-        if ! core_mode="$(remote_file_mode "$core_root/current")"; then
-            remote_die "could not read the mode of $core_root/current"
-            return 1
-        fi
     fi
     if [ -L "$link" ]; then
         link_had=1
@@ -1401,9 +1279,8 @@ They move together. Rebuild the core, or run \`just bump\` in the checkout (it o
         config_had=1
     fi
     _REMOTE_JOURNAL="$home/.ae-install.journal"
-    if ! remote_journal_create "$_REMOTE_JOURNAL" "$home" "$version" "$core_root/current" "$core_had" "$core_old" \
-        "$current_pointer" "$current_had" "$current_old" "$link" "$link_had" "$link_old" \
-        "$config" "$config_had" "$core_mode"; then
+    if ! remote_journal_create "$_REMOTE_JOURNAL" "$home" "$version" \
+        "$link" "$link_had" "$link_old" "$config" "$config_had"; then
         return 1
     fi
     remote_test_failure journal
@@ -1415,33 +1292,40 @@ They move together. Rebuild the core, or run \`just bump\` in the checkout (it o
     if ! remote_mkdir_recorded "$versions" mkdir-versions; then
         return 1
     fi
-    if ! remote_mkdir_recorded "$core_root" mkdir-core; then
-        return 1
-    fi
 
     version_dir="$versions/$version"
     remote_require_dir "$version_dir" "installed version directory"
     if [ -d "$version_dir" ]; then
-        for file in ae ae-core install; do
+        for file in "${REMOTE_MEMBERS[@]}"; do
             if ! remote_require_regular_file "$version_dir/$file" "installed version member"; then
                 return 1
             fi
         done
-        for file in ae ae-core install; do
+        for file in "${REMOTE_MEMBERS[@]}"; do
             if ! cmp -s "$source/$file" "$version_dir/$file"; then
                 remote_die "version $version is already installed with different bytes"
                 return 1
             fi
         done
-        chmod 0555 "$version_dir" "$version_dir/ae" "$version_dir/ae-core" "$version_dir/install"
+        # Re-assert the published modes on a re-install of the same bytes: the
+        # directory is the only thing standing between the installed core and a
+        # stray write, so it is restated rather than assumed.
+        chmod "$REMOTE_MEMBER_MODE" "$version_dir/ae-core" "$version_dir/install"
+        chmod "$REMOTE_MANIFEST_MODE" "$version_dir/SHA256SUMS"
+        chmod "$REMOTE_MEMBER_MODE" "$version_dir"
     else
         stage="$(mktemp -d "$versions/.stage.XXXXXX")"
         _REMOTE_STAGE="$stage"
-        for file in ae ae-core install; do
+        for file in ae-core install; do
             cp "$source/$file" "$stage/$file"
-            chmod 0555 "$stage/$file"
+            chmod "$REMOTE_MEMBER_MODE" "$stage/$file"
         done
-        chmod 0555 "$stage"
+        cp "$source/SHA256SUMS" "$stage/SHA256SUMS"
+        chmod "$REMOTE_MANIFEST_MODE" "$stage/SHA256SUMS"
+        # The directory mode lands on the STAGE, so the version directory is
+        # never visible at a writable mode — the same temp+mode+rename shape
+        # every other publish in this file uses.
+        chmod "$REMOTE_MEMBER_MODE" "$stage"
         # C100: the only injection point that reaches the STAGE caller of the
         # cleanup chokepoint. Everything after the mv has already emptied
         # _REMOTE_STAGE, so a later hook exercises _REMOTE_TMP and nothing else.
@@ -1451,27 +1335,18 @@ They move together. Rebuild the core, or run \`just bump\` in the checkout (it o
     fi
     remote_test_failure stage
 
-    pointer_target="$version_dir/ae-core"
-    temp="$(mktemp "$core_root/.current.XXXXXX")"
-    printf '%s\n' "$pointer_target" >"$temp"
-    # C72 RULING (1): the mode lands on the TEMP, so the pointer is never
-    # visible at mktemp's 0600. Same temp+mode+mv shape as the restore path.
-    chmod "$REMOTE_CORE_POINTER_MODE" "$temp"
-    mv "$temp" "$core_root/current"
-    remote_test_failure core
-
-    temp="$home/.current.$$"
-    rm -f "$temp"
-    ln -s "$version_dir" "$temp"
-    remote_atomic_symlink_replace "$temp" "$current_pointer"
-    remote_test_failure current
-
+    # THE COMMAND LINK IS THE CURRENT POINTER. Its target is the ABSOLUTE path
+    # of the version directory's core, with no intermediate `current` symlink to
+    # resolve through: the core decides it is INSTALLED by comparing its
+    # canonical current_exe() against <home>/versions/<V>/ae-core, and an
+    # indirection would leave that test answering about a path no version
+    # directory owns. Switching versions is this one rename and nothing else.
     link_parent="$(dirname "$link")"
     remote_mkdir_recorded "$link_parent" mkdir-link-parent
     remote_validate_bin_destination "$link" "$home" || return 1
     temp="$link_parent/.ae.$$"
     rm -f "$temp"
-    ln -s "$home/current/ae" "$temp"
+    ln -s "$version_dir/ae-core" "$temp"
     remote_atomic_symlink_replace "$temp" "$link"
     remote_test_failure link
 

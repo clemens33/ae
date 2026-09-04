@@ -60,7 +60,7 @@ _shellcheck-pin:
 # real test safety for a clean linter page. The SC2016 and SC2329 sites carry their own
 # reasoned comments instead. Full rationale: docs/development.md.
 lint: _shellcheck-pin
-    shellcheck --severity=warning -x ae-entry tests/unit tests/integration tests/itest-par tests/aemonitor tests/aewatch install \
+    shellcheck --severity=warning -x tests/unit tests/integration tests/itest-par tests/aemonitor tests/aewatch install \
         tests/e2e/ai/lib.sh tests/e2e/ai/run_scenario.sh \
         $(find tests/e2e/ai/scenarios -name steps.sh) < /dev/null
 
@@ -70,11 +70,11 @@ lint: _shellcheck-pin
 
 # Check formatting (shfmt, diff mode)
 format-check:
-    shfmt -d -i 4 -ci ae-entry install < /dev/null
+    shfmt -d -i 4 -ci install < /dev/null
 
 # Auto-format
 format:
-    shfmt -w -i 4 -ci ae-entry install
+    shfmt -w -i 4 -ci install
 
 # ── Testing ──────────────────────────────────────────────────────────
 
@@ -188,8 +188,7 @@ test-aewatch:
 
 # FAST commit inner loop: AEWATCH_FAST=1 skips the subprocess-backed bash-oracle
 # dual-runs, leaving the pure-Python surface (seconds, not minutes). NOT the phase
-# gate — run `just test-aewatch` (+ contracts validate + check + git diff -- ae-entry)
-# for that.
+# gate — run `just test-aewatch` (+ contracts validate + check) for that.
 test-aewatch-fast:
     AEWATCH_FAST=1 bash tests/aewatch
 
@@ -200,16 +199,17 @@ test-ai *args="tests/e2e/ai/scenarios":
 
 # ── Version ──────────────────────────────────────────────────────────
 
-# Show current version
+# Show current version. Since slice Z3 the crate is the ONLY place a version
+# word lives — the wrapper that held the other half of the pair is deleted.
 version:
-    @grep -m1 '^_AE_ENTRY_VERSION=' ae-entry | cut -d'"' -f2
+    @awk '/^\[/ { in_package = ($0 == "[package]") } in_package && /^version = "/ { gsub(/^version = "|"$/, ""); print; exit }' Cargo.toml
 
 # Restore a previously interrupted CalVer bump from durable backups.
 bump-recover:
     #!/usr/bin/env bash
     set -euo pipefail
     RECOVERY_DIR=".ae-bump-recovery"
-    paths=(ae-entry Cargo.toml Cargo.lock)
+    paths=(Cargo.toml Cargo.lock)
     staged=()
     if [[ ! -d "$RECOVERY_DIR" ]]; then
         echo "Error: ${RECOVERY_DIR} is not present; nothing to recover" >&2
@@ -273,6 +273,10 @@ bump-recover:
 # The sequence is tag-derived, so a stale working tree version cannot cause a
 # duplicate publication. Version files use durable backups and recover-or-refuse
 # publication; stdout remains the VERSION-only contract for just release.
+#
+# Z3: it owns Cargo.toml and Cargo.lock, and nothing else. There is no second
+# version word to move in step — `ae-entry` was deleted with the rest of the
+# product's bash, and with it the whole class of "the pair disagrees" failure.
 bump:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -316,7 +320,7 @@ bump:
             rm -f "$RECOVERY_DIR"/*.orig "$RECOVERY_DIR"/*.orig.tmp.* "$RECOVERY_DIR"/backups-ready.tmp.* || true
             return 0
         fi
-        for path in ae-entry Cargo.toml Cargo.lock; do
+        for path in Cargo.toml Cargo.lock; do
             name="${path##*/}"
             if [[ ! -f "$RECOVERY_DIR/${name}.orig" ]]; then
                 recovery_rc=1
@@ -352,13 +356,13 @@ bump:
     trap cleanup EXIT
     backup_files() {
         local path name backup_tmp
-        for path in ae-entry Cargo.toml Cargo.lock; do
+        for path in Cargo.toml Cargo.lock; do
             name="${path##*/}"
             backup_tmp="$RECOVERY_DIR/${name}.orig.tmp.$$"
             cp -p "$path" "$backup_tmp"
             mv "$backup_tmp" "$RECOVERY_DIR/${name}.orig"
         done
-        for path in ae-entry Cargo.toml Cargo.lock; do
+        for path in Cargo.toml Cargo.lock; do
             name="${path##*/}"
             if ! cmp -s "$RECOVERY_DIR/${name}.orig" "$path"; then
                 echo "Error: backup verification failed for ${path}" >&2
@@ -369,17 +373,11 @@ bump:
         mv "$RECOVERY_DIR/backups-ready.tmp.$$" "$RECOVERY_DIR/backups-ready"
     }
     backup_files
-    for path in ae-entry Cargo.toml Cargo.lock; do
+    for path in Cargo.toml Cargo.lock; do
         name="${path##*/}"
         cp -p "$path" "$TMP_DIR/$name"
     done
 
-    # Redirect into a mode-preserving copy: replacing ae-entry with a
-    # freshly-created redirection target would silently drop its executable bit.
-    cp -p "$TMP_DIR/ae-entry" "$TMP_DIR/ae-entry.next"
-    sed "s/^_AE_ENTRY_VERSION=\".*\"/_AE_ENTRY_VERSION=\"$VERSION\"/" \
-        "$TMP_DIR/ae-entry" >"$TMP_DIR/ae-entry.next"
-    mv "$TMP_DIR/ae-entry.next" "$TMP_DIR/ae-entry"
     cp -p "$TMP_DIR/Cargo.toml" "$TMP_DIR/Cargo.toml.next"
     awk -v version="$VERSION" '
         !done && /^version = "/ { print "version = \"" version "\""; done=1; next }
@@ -434,7 +432,6 @@ bump:
     ' "$TMP_DIR/Cargo.lock" >"$TMP_DIR/Cargo.lock.next"
     mv "$TMP_DIR/Cargo.lock.next" "$TMP_DIR/Cargo.lock"
 
-    grep -q '^_AE_ENTRY_VERSION="'"$VERSION"'"$' "$TMP_DIR/ae-entry"
     grep -q '^version = "'"$VERSION"'"$' "$TMP_DIR/Cargo.toml"
     awk -v version="$VERSION" '
         function flush(    i, name, source) {
@@ -466,7 +463,7 @@ bump:
         }
     ' "$TMP_DIR/Cargo.lock"
 
-    for path in ae-entry Cargo.toml Cargo.lock; do
+    for path in Cargo.toml Cargo.lock; do
         name="${path##*/}"
         if ! mv "$TMP_DIR/$name" "$path"; then
             echo "Error: could not publish ${path}; recover-or-refuse marker retained if recovery fails" >&2
@@ -511,7 +508,7 @@ release:
     # Re-parse and compile after bump before any changelog or tag publication.
     cargo check --locked
 
-    # Update the release badges. `just bump` preserves the ae-entry executable bit.
+    # Update the release badges.
     sed_i() {
         local f="$1"; shift
         cp -p "$f" "$f.tmp.$$" || return 1
@@ -549,9 +546,6 @@ release:
         echo "Error: pre-release badge or checkout-install prose remains; edit it deliberately before tagging" >&2
         exit 1
     fi
-    # Guard the guard: a release must never publish the executable source without its bit.
-    [ -x ae-entry ] || { echo "Error: ae-entry lost its executable bit during version bump" >&2; exit 1; }
-
     # Generate changelog
     TAG="v$VERSION"
     git-cliff --tag "$TAG" -o CHANGELOG.md
@@ -586,6 +580,54 @@ release:
     fi
 
     echo "Released $TAG"
+
+# ── Bundle ───────────────────────────────────────────────────────────
+
+# Build one release bundle: ae-core + install + SHA256SUMS, tarred as
+# ae-<version>-<platform>.tar.gz in the current directory.
+#
+# ONE SPELLING, and that is the whole point of the recipe. The release workflow
+# calls this rather than open-coding the same cp/chmod/tar on each platform leg,
+# so a change to what a bundle IS cannot land on one platform and miss the
+# other — and the shape is runnable on a laptop, where the suites pin it.
+#
+# The bundle's SHA256SUMS covers its two EXECUTABLE members by bare basename.
+# It is a different file from the release-level SHA256SUMS, which covers the
+# tarballs: this one is copied verbatim into ~/.ae/versions/<v>/ at install time
+# and is what the installed core validates itself against.
+bundle version platform binary:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    version="{{ version }}"
+    platform="{{ platform }}"
+    binary="{{ binary }}"
+    [ -x "$binary" ] || { echo "Error: $binary is not an executable core" >&2; exit 1; }
+    want="ae $version"
+    got="$("$binary" --version)"
+    [ "$got" = "$want" ] || { echo "Error: --version printed '$got', want '$want'" >&2; exit 1; }
+    root="ae-$version-$platform"
+    # C83: a bundle root is published 0555, so `rm -rf` on a previous run's
+    # directory fails "Permission denied" — a 0555 directory refuses the unlink
+    # of its own entries. Make it writable first, the same way the installer
+    # does for its own private trees.
+    [ ! -e "$root" ] || chmod -R u+w "$root" 2>/dev/null || true
+    rm -rf "$root"
+    mkdir "$root"
+    cp "$binary" "$root/ae-core"
+    cp install "$root/install"
+    if command -v sha256sum >/dev/null 2>&1; then
+        sums() { sha256sum "$@"; }
+    else
+        sums() { shasum -a 256 "$@"; }
+    fi
+    # Bare basenames: the manifest is read relative to the directory holding it,
+    # in the version directory as well as here, so it must not carry a path.
+    ( cd "$root" && sums ae-core install > SHA256SUMS )
+    chmod 0555 "$root/ae-core" "$root/install"
+    chmod 0444 "$root/SHA256SUMS"
+    chmod 0555 "$root"
+    tar -czf "$root.tar.gz" "$root"
+    echo "==> $root.tar.gz"
 
 # ── Install ──────────────────────────────────────────────────────────
 
