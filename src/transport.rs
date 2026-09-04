@@ -500,6 +500,33 @@ pub fn observe_server_pid(server: &ServerId) -> Option<String> {
     tmux::interpret_display_value(succeeded, &stdout)
 }
 
+/// Every stamped pane of every session on `server`, or `None` when the
+/// listing failed — the fleet picker's one tmux read.
+#[must_use]
+pub fn observe_fleet_panes(server: &ServerId) -> Option<Vec<tmux::FleetPane>> {
+    if !addressable(server) {
+        return None;
+    }
+    let (succeeded, stdout) = run(PROGRAM, &tmux::fleet_panes_args(server));
+    tmux::interpret_fleet_panes(succeeded, &stdout)
+}
+
+/// Draw `menu` on `server`'s current client, and report whether tmux drew it.
+#[must_use]
+pub fn display_menu(server: &ServerId, menu: &tmux::Menu) -> bool {
+    addressable(server) && run(PROGRAM, &tmux::display_menu_args(server, menu)).0
+}
+
+/// The version `server` is RUNNING, or `None` when it did not answer.
+#[must_use]
+pub fn observe_tmux_version(server: &ServerId) -> Option<String> {
+    if !addressable(server) {
+        return None;
+    }
+    let (succeeded, stdout) = run(PROGRAM, &tmux::version_args(server));
+    tmux::interpret_display_value(succeeded, &stdout)
+}
+
 /// The ttys of every pane on `server`, or `None` when it did not answer.
 #[must_use]
 pub fn observe_pane_ttys(server: &ServerId) -> Option<Vec<String>> {

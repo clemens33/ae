@@ -448,8 +448,7 @@ fn a_cut_word_refuses_and_creates_no_session() {
     let rig = Rig::new("cut");
     for (word, expected) in [
         ("status", "Use 'ae list'"),
-        ("orchestrator", "Run it as an ordinary session"),
-        ("hub", "Run it as an ordinary session"),
+        ("hub", "An orchestrator AGENT is an ordinary session"),
         ("transfer", "no cross-machine session sync"),
     ] {
         let (code, stdout, stderr) = rig.run(&[word]);
@@ -464,6 +463,25 @@ fn a_cut_word_refuses_and_creates_no_session() {
         // And the prelude never ran: a refusal writes nothing on its way out.
         assert!(!rig.config().exists(), "'{word}' seeded a config");
     }
+}
+
+/// `ae orchestrator` came BACK as the fleet picker, so the bare word prints its
+/// usage rather than a refusal — and, like a refusal, it makes no session.
+#[test]
+fn the_bare_orchestrator_prints_its_usage_and_creates_no_session() {
+    let rig = Rig::new("orch");
+    let (code, stdout, stderr) = rig.run(&["orchestrator"]);
+    assert_eq!(code, Some(2), "{stdout}{stderr}");
+    assert!(
+        stderr.starts_with("Usage: ae orchestrator --popup"),
+        "{stderr}"
+    );
+    assert!(stdout.is_empty(), "printed to stdout: {stdout}");
+    assert!(
+        !rig.sessions().join("orchestrator").exists(),
+        "the bare word created a session directory"
+    );
+    assert!(!rig.config().exists(), "the bare word seeded a config");
 }
 
 /// An underscore word nobody serves fails CLOSED for the same reason.
@@ -499,6 +517,7 @@ fn help_is_the_command_set_and_names_no_retired_word() {
     for row in [
         "  ae list [",
         "  ae next [",
+        "  ae orchestrator --popup",
         "  ae doctor [",
         "  ae rename ",
         "  ae watchdog ",
@@ -512,7 +531,7 @@ fn help_is_the_command_set_and_names_no_retired_word() {
     ] {
         assert!(ae::entry::HELP.contains(row), "help is missing {row}");
     }
-    for retired in ["ae status", "ae orchestrator", "ae transfer"] {
+    for retired in ["ae status", "ae hub", "ae transfer"] {
         assert!(
             !ae::entry::HELP.contains(retired),
             "help still advertises the retired {retired}"
