@@ -770,9 +770,12 @@ resolve_launch_tmux_server() {
         # shape turns that refusal into `socket` or `name` — a confident answer
         # derived from the very string the upstream probe already declined to
         # trust — and the launch then records a server it cannot verify. The core
-        # reads the kind first and refuses one it cannot type (exit 2), which is
-        # the whole point of carrying the pair: this script's job is to hand over
-        # what it was told, not to improve it.
+        # reads the kind first and REFUSES one it cannot type: exit 2, before any
+        # effect, and explicitly rather than falling back to the ambient server,
+        # which is exactly where an unverifiable pair used to land a session ae
+        # could then neither find nor stop. That refusal is the whole point of
+        # carrying the pair: this script's job is to hand over what it was told,
+        # not to improve it.
         if [[ -n "${AE_TMUX_SERVER_KIND:-}" ]]; then
             _LAUNCH_SRV_KIND="$AE_TMUX_SERVER_KIND"
         elif [[ "$AE_TMUX_SERVER" == /* ]]; then
@@ -1421,10 +1424,11 @@ _launch_core="$(_ae_core_bin_input 2>/dev/null || true)"
 if [[ -n "$_launch_core" ]]; then
     _launch_flags+=(--core "$_launch_core")
 fi
-# The server crosses as a TYPED PAIR — the core reads the kind first and ignores
-# a value it cannot type, and it never asks tmux where it is. RESOLVED here, by
-# the resolver that owns the question, so meta records where the launch really
-# lands rather than whatever the environment happened to say.
+# The server crosses as a TYPED PAIR — the core reads the kind first and REFUSES
+# one it cannot type (exit 2, before any effect) rather than falling back to the
+# ambient server, and it never asks tmux where it is. RESOLVED here, by the
+# resolver that owns the question, so meta records where the launch really lands
+# rather than whatever the environment happened to say.
 resolve_launch_tmux_server
 if [[ -n "$_LAUNCH_SRV_KIND" || -n "$_LAUNCH_SRV_VALUE" ]]; then
     _launch_flags+=(--server-kind "$_LAUNCH_SRV_KIND" --server "$_LAUNCH_SRV_VALUE")
