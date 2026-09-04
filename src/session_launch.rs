@@ -940,7 +940,6 @@ struct Launching {
     profile: String,
     binary: String,
     tool: ToolKind,
-    command: String,
     session_id: String,
     launch_id: String,
     pane: String,
@@ -1063,7 +1062,6 @@ fn build(
             profile: seat.profile.clone(),
             binary: seat.binary.clone(),
             tool: seat.tool,
-            command: seat.command.clone(),
             session_id,
             launch_id,
             pane: panes[index].clone(),
@@ -1104,7 +1102,6 @@ fn build(
                 profile: entry.profile,
                 binary: entry.binary,
                 tool,
-                command,
                 session_id: entry.harness_session,
                 launch_id: String::new(),
                 pane,
@@ -1205,7 +1202,7 @@ fn build(
         if agent.pane.is_empty() {
             continue;
         }
-        if let Err(why) = start_agent(env, shape, &dir, agent, &server, err)? {
+        if let Err(why) = start_agent(shape, &dir, &core, agent, &server, err)? {
             let _ = kill_session(&server, &shape.name);
             rollback_dir(shape, &dir, err)?;
             writeln!(
@@ -1661,93 +1658,52 @@ fn seat_label(seat: &roster::SeatLines) -> String {
     format!("{}={}", seat.slot, seat.name)
 }
 
-/// Compose one agent's launch command, publish its script, and paste it.
+/// Hand one agent's pane the command that BECOMES its agent, and wait for the
+/// tool to take the pane over.
 ///
 /// `Ok(Ok(()))` started; `Ok(Err(reason))` is the launch-failing refusal the
 /// caller rolls back on. A prompt that could not be DELIVERED is not one of
 /// them: it is loud and durable, exactly as the frozen path reports it, but the
 /// pane is live and the session stands.
+///
+/// Everything this function used to compose — the context injection, the
+/// session-id or resume form, the re-run script and the shell `if` that chose
+/// between them — is [`crate::run`]'s now, and runs IN the pane from this
+/// session's own state. What is left here is the three things only the
+/// launching process can do: guarantee the seat's start marker says what this
+/// launch means, paste the line, and wait for the tool to own the pane.
 fn start_agent(
-    env: &Env,
     shape: &Session,
     dir: &Path,
+    core: &Path,
     agent: &Launching,
     server: &ServerId,
     err: &mut impl Write,
 ) -> io::Result<Result<(), String>> {
-    let ctx = crate::render::context_document(
-        dir,
-        &shape.name,
-        &shape.work_dir.display().to_string(),
-        &agent.slot,
-        &env.config_files(),
-    );
-    // FRESH bakes the id in; RESUME asks for the recorded conversation. Both
-    // capture the PRE-INJECTION command as the injection boundary — the launch
-    // script's re-run form is built from it, and searching for it later in a
-    // command carrying kilobytes of injected prose is the frozen bug class.
-    let prompt = launch::initial_prompt_for(agent.tool).to_owned();
-    // INJECT FIRST, WRAP THE DECIDER SECOND. The decider is a shell `if`, and
-    // every builder reads the tool off the FIRST WORD; a pre-wrapped resume
-    // command read as `if` → Unknown, and a resumed agent launched with no
-    // context, no identity, no nesting guard (glue cut 2 finding). The frozen
-    // order injects each branch as a plain tool command, then wraps them.
-    let (pre, injected, launch_cmd) = if shape.resuming {
-        let (resume_form, fallback_form) =
-            resume_forms(&agent.command, agent.tool, &agent.session_id);
-        let inj_r =
-            launch::inject_ae_context(&resume_form, dir, &agent.slot, &ctx, &agent.launch_id);
-        let inj_f =
-            launch::inject_ae_context(&fallback_form, dir, &agent.slot, &ctx, &agent.launch_id);
-        if let Some(warning) = &inj_r.warning {
-            writeln!(err, "{warning}")?;
-        }
-        // codex resume takes no inline prompt (delivered once its UI returns).
-        let inline = if agent.tool == ToolKind::Codex {
-            String::new()
-        } else {
-            prompt.clone()
-        };
-        let resume_cmd = launch::build_launch_command(&inj_r.cmd, &inline, "", &resume_form);
-        let fallback_cmd = launch::build_launch_command(&inj_f.cmd, &inline, "", &fallback_form);
-        let decided = if launch::id_probeable(&agent.session_id) {
-            launch::resume_decider(
-                launch::resume_probe(agent.tool, &agent.session_id).as_deref(),
-                &resume_cmd,
-                &fallback_cmd,
-            )
-        } else {
-            fallback_cmd
-        };
-        (resume_form, inj_r, decided)
-    } else {
-        let pre = launch::inject_session_id(&agent.command, &agent.session_id);
-        let injected = launch::inject_ae_context(&pre, dir, &agent.slot, &ctx, &agent.launch_id);
-        if let Some(warning) = &injected.warning {
-            writeln!(err, "{warning}")?;
-        }
-        let launch_cmd =
-            launch::build_launch_command(&injected.cmd, &prompt, &agent.session_id, &pre);
-        (pre, injected, launch_cmd)
-    };
-    let script =
-        match launch::write_launch_script(dir, &agent.slot, &launch_cmd, &agent.session_id, &pre) {
-            Ok(script) => script,
-            Err(why) => {
-                writeln!(
-                    err,
-                    "ae: could not write the launch script for '{}' ({why}) — agent not started",
-                    agent.slot
-                )?;
-                return Ok(Err(format!("no launch script for {}", agent.slot)));
-            }
-        };
+    // THE MARKER IS THE CREATE-VS-RESUME DISCRIMINATOR, so a fresh seat must
+    // not inherit one. A stale marker that cannot be removed would make `_run`
+    // resume a conversation this launch is not resuming, which is a wrong
+    // conversation rather than a missing one — hence a refusal, not a best
+    // effort. A RESUMING launch leaves the marker exactly as it found it: that
+    // is what says the seat has a conversation at all.
+    if !shape.resuming
+        && let Err(why) = crate::run::clear_slot(dir, &agent.slot)
+    {
+        writeln!(
+            err,
+            "ae: could not clear the start marker for '{}' ({why}) — agent not started",
+            agent.slot
+        )?;
+        return Ok(Err(format!("stale start marker for {}", agent.slot)));
+    }
+    let resuming_seat =
+        crate::lifecycle::path_exists(&crate::run::started_marker(dir, &agent.slot));
     // Fire and forget: the reader here IS a shell, and an unconfirmed submit
     // must not abort a launch that may well have taken.
     let _ = deliver::submit_shell_text(
         server,
         &agent.pane,
-        &launch::shell_quote(&script.display().to_string()),
+        &crate::run::pane_command(core, dir, &agent.slot),
     );
     wait_for_agent_start(server, &agent.pane, agent.tool);
     if launch::supports_launch_id(agent.tool) {
@@ -1758,44 +1714,17 @@ fn start_agent(
         );
     }
     // codex resume takes no inline prompt, so the prompt is delivered once its
-    // UI returns. Every other shape carried it inline already.
+    // UI returns. Every other shape carries it inline, inside the command
+    // `_run` composed.
+    let prompt = launch::initial_prompt_for(agent.tool);
     if !prompt.is_empty()
         && agent.tool == ToolKind::Codex
-        && launch::is_resume(&injected.cmd, &agent.session_id, &pre)
+        && resuming_seat
+        && launch::id_probeable(&agent.session_id)
     {
-        deliver_launch_prompt(dir, server, agent, &prompt, err)?;
+        deliver_launch_prompt(dir, server, agent, prompt, err)?;
     }
     Ok(Ok(()))
-}
-
-/// The resume form of a profile's command — the frozen `resume_cmd_from_cmd`.
-fn resume_forms(cmd: &str, tool: ToolKind, session_id: &str) -> (String, String) {
-    match tool {
-        ToolKind::Claude => (
-            format!("{cmd} --resume {session_id}"),
-            format!("{cmd} --continue"),
-        ),
-        ToolKind::Grok => (
-            format!(
-                "{} --resume {session_id}",
-                launch::strip_grok_session_flags(cmd)
-            ),
-            format!("{} --continue", launch::strip_grok_session_flags(cmd)),
-        ),
-        ToolKind::Codex => (
-            format!("{} resume {session_id}", launch::strip_session_flags(cmd)),
-            launch::strip_session_flags(cmd),
-        ),
-        ToolKind::Gemini => (
-            format!("{cmd} --resume {session_id}"),
-            format!("{cmd} --resume latest"),
-        ),
-        ToolKind::OpenCode => (
-            format!("{cmd} --session {session_id}"),
-            format!("{cmd} --continue"),
-        ),
-        ToolKind::Unknown => (cmd.to_owned(), cmd.to_owned()),
-    }
 }
 
 /// The gated, loud, DURABLE launch-prompt delivery.
@@ -1875,6 +1804,18 @@ fn wait_for_agent_start(server: &ServerId, pane: &str, tool: ToolKind) {
     ) {
         return;
     }
+    // The pane runs the CORE before it runs the tool: `_run` composes the
+    // command and `exec`s it, so for a moment `pane_current_command` is ae's
+    // own binary. That is "not started yet" in exactly the way the generated
+    // script's `bash` used to be — and without this the not-a-shell arm below
+    // would answer READY the instant the paste took.
+    let core = std::env::current_exe()
+        .ok()
+        .and_then(|path| {
+            path.file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+        })
+        .unwrap_or_default();
     for _ in 0..START_POLLS {
         let current = transport::observe_pane_probe(server, pane)
             .map(|probe| probe.command)
@@ -1883,7 +1824,7 @@ fn wait_for_agent_start(server: &ServerId, pane: &str, tool: ToolKind) {
         if current.strip_suffix(".exe").unwrap_or(&current) == tool.as_str() {
             return;
         }
-        if !crate::watchdog::command_is_shell(&current) {
+        if !crate::watchdog::command_is_shell(&current) && (core.is_empty() || current != core) {
             return;
         }
         std::thread::sleep(START_POLL);

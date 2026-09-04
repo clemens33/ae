@@ -377,21 +377,22 @@ pub fn run_spawn(
             }
         };
     // The launch token is a CAPTURE fact of the tools with no launch-time id
-    // flag, not a roster row — but it is written before the pane exists, so the
-    // injected context can name it.
-    let launch_id = if launch::supports_launch_id(tool) {
-        let token = launch::generate_uuid();
-        if meta::rewrite(dir, &format!("launch_id.{slot}"), Some(&token)).is_err() {
-            writeln!(
-                err,
-                "ae: could not record the launch token of '{}'.",
-                parsed.name
-            )?;
-        }
-        token
-    } else {
-        String::new()
-    };
+    // flag, not a roster row — but it is RECORDED before the pane exists, so
+    // that `_run` can name it in the context it injects.
+    if launch::supports_launch_id(tool)
+        && meta::rewrite(
+            dir,
+            &format!("launch_id.{slot}"),
+            Some(&launch::generate_uuid()),
+        )
+        .is_err()
+    {
+        writeln!(
+            err,
+            "ae: could not record the launch token of '{}'.",
+            parsed.name
+        )?;
+    }
 
     // New window per spawned agent: the main window keeps the lead layout
     // untouched and N parallel workers stay usable.
@@ -410,20 +411,25 @@ pub fn run_spawn(
     // pasted into it.
     std::thread::sleep(SHELL_SETTLE);
 
-    let ctx = crate::render::context_document(
-        dir,
-        &facts.session,
-        &facts.work_dir,
-        &slot,
-        &facts.config_files(),
-    );
-    let pre = launch::inject_session_id(&command, &session_id);
-    let injected = launch::inject_ae_context(&pre, dir, &slot, &ctx, &launch_id);
-    if let Some(warning) = &injected.warning {
-        writeln!(err, "{warning}")?;
+    // Everything a launch command is made of — the context injection, the
+    // session id, the create-vs-resume decision — is composed by `_run` IN the
+    // pane, from this session's own state. What must be true on disk before the
+    // paste is this process's to establish, and both halves refuse rather than
+    // proceed: a spawned slot NUMBER is reused after a retire, so an inherited
+    // marker or first message belongs to the agent this seat replaces.
+    if let Err(why) = crate::run::clear_slot(dir, &slot) {
+        rollback(dir, &facts, &slot, &pane, &parsed.name, err)?;
+        writeln!(
+            err,
+            "Error: '{}' could not claim slot {slot} ({why}) — spawn rolled back.",
+            parsed.name
+        )?;
+        return Ok(EXIT_FAILED);
     }
     // For a tool with no system-prompt channel the context AND the brief travel
-    // as the launch command's inline first message.
+    // as the launch command's inline first message, so the brief is RECORDED
+    // for `_run` to compose. Every other tool takes its brief through the
+    // readiness-gated paste below, and records nothing.
     let inline = launch::initial_prompt_for(tool);
     let initial = if inline.is_empty() {
         String::new()
@@ -432,41 +438,37 @@ pub fn run_spawn(
     };
     // Publish the recoverable text BEFORE anything can paste it. A storage
     // failure is terminal for the spawn.
-    if !initial.is_empty()
-        && let Err(why) = deliver::store_body(dir, &format!("spawn-{slot}"), SPAWN_ACTION, &initial)
-    {
-        rollback(dir, &facts, &slot, &pane, &parsed.name, err)?;
-        writeln!(
-            err,
-            "Error: '{}' task body could not be stored ({why}) — spawn rolled back.",
-            parsed.name
-        )?;
-        return Ok(EXIT_FAILED);
-    }
-    let launch_cmd = launch::build_launch_command(&injected.cmd, &initial, &session_id, &pre);
-    let script = match launch::write_launch_script(dir, &slot, &launch_cmd, &session_id, &pre) {
-        Ok(script) => script,
-        Err(why) => {
+    if !initial.is_empty() {
+        let stored = deliver::store_body(dir, &format!("spawn-{slot}"), SPAWN_ACTION, &initial)
+            .and_then(|_| crate::run::publish_prompt(dir, &slot, &initial));
+        if let Err(why) = stored {
             rollback(dir, &facts, &slot, &pane, &parsed.name, err)?;
             writeln!(
                 err,
-                "ae: could not write the launch script for '{slot}' ({why}) — agent not started"
-            )?;
-            writeln!(
-                err,
-                "Error: '{}' could not be launched — spawn rolled back.",
+                "Error: '{}' task body could not be stored ({why}) — spawn rolled back.",
                 parsed.name
             )?;
             return Ok(EXIT_FAILED);
         }
+    }
+    let core = match std::env::current_exe() {
+        Ok(core) => core,
+        Err(why) => {
+            rollback(dir, &facts, &slot, &pane, &parsed.name, err)?;
+            writeln!(
+                err,
+                "Error: the core could not name its own binary ({why}) — spawn rolled back."
+            )?;
+            return Ok(EXIT_FAILED);
+        }
     };
-    // The launch command is pasted into a SHELL, which is the one delivery in
-    // ae whose reader is meant to be a shell. Fire and forget: an unconfirmed
-    // submit must not abort a launch that may well have taken.
+    // The pane command is pasted into a SHELL, which is the one delivery in ae
+    // whose reader is meant to be a shell. Fire and forget: an unconfirmed
+    // submit must not abort a spawn that may well have taken.
     let _ = deliver::submit_shell_text(
         &facts.server,
         &pane,
-        &launch::shell_quote(&script.display().to_string()),
+        &crate::run::pane_command(&core, dir, &slot),
     );
     wait_for_agent_start(&facts.server, &pane, tool);
     // The capture tools need the launch instant to filter stale sessions, so it

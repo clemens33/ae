@@ -323,13 +323,16 @@ fn a_spawn_seats_stamps_launches_and_briefs_its_agent() {
     let manifest = std::fs::read_to_string(rig.dir.join("workspace.md")).unwrap_or_default();
     assert!(manifest.contains("| helper |"), "{manifest}");
 
-    // The LAUNCH SCRIPT, re-runnable, and the argv the agent actually got.
-    let script = std::fs::read_to_string(rig.dir.join("launch.spawned.0.sh")).unwrap_or_default();
-    assert!(script.starts_with("#!/bin/bash\n"), "{script}");
-    assert!(script.contains("launch.spawned.0.started"), "{script}");
+    // NO LAUNCH SCRIPT — the pane runs the core, and the core became the tool.
+    // What is left on disk is the start marker `_run` wrote before its exec,
+    // which is what makes a re-run of that same line resume instead of create.
     assert!(
-        script.contains("CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=0"),
-        "{script}"
+        !rig.dir.join("launch.spawned.0.sh").exists(),
+        "slice Z2 writes no bash into a session directory"
+    );
+    assert!(
+        rig.dir.join("launch.spawned.0.started").is_file(),
+        "the seat records that it has been launched once"
     );
     let argv = rig.launch_argv();
     assert!(

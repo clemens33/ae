@@ -291,6 +291,11 @@ pub const RENAME: &str = "rename";
 /// Underscored — the glue calls it before any side effect, never a human.
 pub const CHECK_DEPS: &str = "_check-deps";
 
+/// The pane's own command: `_run [--print] <session-dir> <slot>`.
+/// Underscored — a pane runs it, and a human re-runs the same line from that
+/// pane; it is never typed as a subcommand of `ae`.
+pub const RUN: &str = "_run";
+
 /// The session helper set, republished: `_shims-render <session-dir>`.
 /// Underscored — a core entry, never human-typed.
 pub const SHIMS_RENDER: &str = "_shims-render";
@@ -709,6 +714,16 @@ pub enum Request {
         /// Everything after the subcommand, as typed.
         tail: Vec<String>,
     },
+    /// `_run [--print] <session-dir> <slot>` — compose one seat's tool command
+    /// and become it. Validated by [`crate::run`], whose refusals are its own.
+    Run {
+        /// The session directory.
+        dir: PathBuf,
+        /// The seat to launch.
+        slot: String,
+        /// Report the composed plan instead of running it.
+        print: bool,
+    },
     /// `_shims-render <session-dir>` — republish one session's helper shims.
     ShimsRender {
         /// The session directory.
@@ -879,6 +894,7 @@ impl Request {
             Some(CHECK_DEPS) => Self::CheckDeps {
                 tail: args[1..].to_vec(),
             },
+            Some(RUN) => Self::parse_run(&args[1..]),
             Some(SHIMS_RENDER) => match &args[1..] {
                 [] => Self::MissingOperand(SHIMS_RENDER),
                 [dir, tail @ ..] => Self::ShimsRender {
@@ -1289,6 +1305,33 @@ impl Request {
         }
     }
 
+    /// `_run [--print] <session-dir> <slot>`.
+    ///
+    /// `--print` is a REPORT: it composes the same plan and prints it instead
+    /// of becoming it, which is the only way to read a pane's argv without a
+    /// pane. It is accepted in either operand position because a human typing
+    /// it is editing a line the pane already holds.
+    fn parse_run(tail: &[String]) -> Self {
+        let mut print = false;
+        let mut operands: Vec<&String> = Vec::new();
+        for word in tail {
+            if word == "--print" {
+                print = true;
+            } else {
+                operands.push(word);
+            }
+        }
+        match operands.as_slice() {
+            [dir, slot] => Self::Run {
+                dir: PathBuf::from(*dir),
+                slot: (*slot).clone(),
+                print,
+            },
+            [_, _, extra, ..] => Self::UsageError((*extra).clone()),
+            _ => Self::MissingOperand(RUN),
+        }
+    }
+
     /// The exit code **argv alone** decides, where argv decides one.
     ///
     /// `None` is the honest answer for a request whose outcome depends on
@@ -1325,6 +1368,7 @@ impl Request {
             | Self::Rename { .. }
             | Self::CheckDeps { .. }
             | Self::ShimsRender { .. }
+            | Self::Run { .. }
             | Self::State { .. }
             | Self::Goal { .. }
             | Self::Memo { .. }

@@ -1888,6 +1888,16 @@ fn criterion_3_the_places_this_crate_can_read_the_world_are_the_inventoried_ones
             // It reads git's files instead of launching `git` so that `list`
             // stays a no-subprocess path and still works with no git installed;
             // every failure is `None`, so a listing never fails on it.
+            // The PANE's own command (slice Z2): `_run` composes a seat's tool
+            // command in the pane and `exec`s it, so it reads the environment
+            // that `bash -lc` used to expand a profile command against, the
+            // working directory claude derives its transcript path from, the
+            // tool's own session store the resume probe answers from, and the
+            // spawn's recorded first message. These are exactly the reads the
+            // generated `launch.<slot>.sh` made as shell tests; deleting the
+            // script moved them here rather than removing them. Registered
+            // deliberately.
+            "src/run.rs".to_owned(),
             "src/session.rs".to_owned(),
             // The LAUNCH operation's own reads (B move 3): the `.ending.<name>`
             // tombstone lstats (a dangling link is a standing tombstone, so
