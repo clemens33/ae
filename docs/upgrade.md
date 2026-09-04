@@ -45,12 +45,20 @@ After the journal is removed — not before, because the journal's `link_old` na
 directory a rollback would relink to — every `versions/<V>` no session records is deleted.
 One installed version is the consequence, and so is the loss of relink-to-yesterday.
 
-Two things guard it. A publisher lock is held from before the first mutation until after the
-sweep: the journal is rollback state and is gone by then, so exclusion cannot rest on it, and
-without the lock one publisher could prune another's freshly published version out from under
-the live command link. And the session census is FALLIBLE: an unreadable sessions root or an
-unreadable meta skips the whole sweep with a warning, because a keep-set built from a partial
-reading authorises deleting the core a session is running on.
+Three things guard it. A publisher lock is held from before the first mutation until after
+the sweep: the journal is rollback state and is gone by then, so exclusion cannot rest on it,
+and without the lock one publisher could prune another's freshly published version out from
+under the live command link. The session census is TYPED as well as fallible: a state root
+with no `sessions/` directory answers "none", every other failure — including one entry that
+vanished mid-walk — is an error that skips the whole sweep with a warning, because a keep-set
+built from a partial reading authorises deleting the core a session is running on.
+
+And the sweep never deletes the directory the command link resolves into, read immediately
+before the deletions rather than with the rest of the keep-set. That floor is there for the
+one publisher the lock cannot exclude: a core older than the lock does not take it, so during
+the release that introduces it a second, older publish could repoint the command in the
+middle of this one. Everything else a stale keep-set gets wrong costs disk space. That would
+cost the command.
 
 ## Why a live probe does not go in `ae-dev`
 

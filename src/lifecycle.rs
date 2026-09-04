@@ -142,7 +142,7 @@ pub(crate) fn kill_verified(
 /// `list_ae_sessions` + `iter_stopped_sessions` union that `end all` and
 /// `stop all` enumerate, in directory order made deterministic by a sort.
 pub(crate) fn all_sessions(root: &Path) -> Vec<String> {
-    census(root).unwrap_or_default()
+    census(root).ok().flatten().unwrap_or_default()
 }
 
 /// [`all_sessions`], but a census that could not be TAKEN says so.
@@ -158,18 +158,27 @@ pub(crate) fn all_sessions(root: &Path) -> Vec<String> {
 /// therefore be different values.
 ///
 /// An entry whose `file_type` cannot be read is a failure too, for the same
-/// reason: skipping it silently drops a session from the keep-set.
+/// reason: skipping it silently drops a session from the keep-set. That is why
+/// a missing sessions ROOT is `Ok(None)` rather than an empty list: it is the
+/// one reading where "found nothing" and "could not look" genuinely coincide,
+/// and it must not be spelled the same way as a `NotFound` raised by an entry
+/// that vanished mid-walk — that one is a partial reading like any other.
 ///
 /// # Errors
 ///
-/// The underlying [`io::Error`] — the root could not be enumerated, or one of
-/// its entries could not be classified.
-pub(crate) fn census(root: &Path) -> io::Result<Vec<String>> {
+/// The underlying [`io::Error`] — the root could not be enumerated for any
+/// reason but its absence, or one of its entries could not be classified.
+pub(crate) fn census(root: &Path) -> io::Result<Option<Vec<String>>> {
     #[allow(
         clippy::disallowed_methods,
         reason = "a door: `end all` / `stop all` enumerate the sessions root — the frozen list_ae_sessions + iter_stopped_sessions union"
     )]
-    let entries = fs::read_dir(sessions_dir(root))?;
+    let entries = match fs::read_dir(sessions_dir(root)) {
+        Ok(entries) => entries,
+        // A state root that has never had a session. Not a failure to look.
+        Err(why) if why.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(why) => return Err(why),
+    };
     let mut names: Vec<String> = Vec::new();
     for entry in entries {
         let entry = entry?;
@@ -182,7 +191,7 @@ pub(crate) fn census(root: &Path) -> io::Result<Vec<String>> {
         }
     }
     names.sort();
-    Ok(names)
+    Ok(Some(names))
 }
 
 /// Whether `path` is a directory, following symlinks.
@@ -791,5 +800,43 @@ mod tests {
     fn the_roots_are_the_inventory_roots() {
         assert_eq!(sessions_dir(Path::new("/x")), Path::new("/x/sessions"));
         assert_eq!(worktrees_dir(Path::new("/x")), Path::new("/x/worktrees"));
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the fixture builds and re-modes a real root; the boundary is on product code"
+    )]
+    fn an_absent_sessions_root_is_a_different_answer_from_an_unreadable_one() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        // The distinction the version sweep spends: `None` is "this root has
+        // never had a session" and is safe to treat as empty, while an error is
+        // a reading that FAILED. They must not both arrive as a `NotFound`
+        // error kind either — an entry that vanishes mid-walk raises that too,
+        // and it is a partial reading, not an absent root.
+        let root =
+            std::path::PathBuf::from(format!("/tmp/ae-census-{}-{}", std::process::id(), line!()));
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(matches!(super::census(&root), Ok(None)), "an absent root");
+
+        let sessions = sessions_dir(&root);
+        assert!(std::fs::create_dir_all(sessions.join("one")).is_ok());
+        assert_eq!(
+            super::census(&root).ok().flatten(),
+            Some(vec!["one".to_owned()]),
+            "a root with one session"
+        );
+
+        assert!(
+            std::fs::set_permissions(&sessions, std::fs::Permissions::from_mode(0o000)).is_ok()
+        );
+        let unreadable = super::census(&root);
+        let _ = std::fs::set_permissions(&sessions, std::fs::Permissions::from_mode(0o755));
+        assert!(
+            unreadable.is_err(),
+            "an unreadable root answered {unreadable:?}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

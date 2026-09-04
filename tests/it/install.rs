@@ -522,10 +522,15 @@ fn a_publish_that_cannot_take_the_install_lock_writes_nothing() {
 
 #[test]
 fn two_publishers_at_once_leave_one_complete_install_and_no_journal() {
-    // The window the lock has to cover is the WHOLE publish, cleanup included:
-    // the version sweep deletes directories no session records, and a second
-    // publisher that ran inside that window would be sweeping a set the first
-    // one is still changing. Both must succeed and the survivor must be whole.
+    // A SMOKE TEST, and honest about it: two real publishers cannot be posed
+    // at a chosen instant from out here, so this cannot prove the window is
+    // closed — the deterministic guard is
+    // `a_publish_that_cannot_take_the_install_lock_writes_nothing` above,
+    // which proves the lock is taken at all. What this adds is the end state
+    // no interleaving may produce: both publishes report success, the link
+    // resolves into a version directory that is still whole, and no journal
+    // is left behind. Measured: it fails 3 runs of 3 with the lock taken on
+    // the wrong path.
     let rig = Rig::new("concurrent");
     let (first, second) = (rig.bundle("2026.8.1"), rig.bundle("2026.8.2"));
     let (mut one, mut two) = (rig.spawn_install(&first), rig.spawn_install(&second));

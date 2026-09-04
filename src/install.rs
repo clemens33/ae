@@ -615,9 +615,11 @@ pub fn publish(bundle: &Bundle, paths: &Paths) -> Result<Published, String> {
             // publish is committed and irreversible, but no other publisher may
             // move the command link while the sweep decides what nothing points
             // at any more.
-            published
-                .notes
-                .extend(crate::migrate::prune_versions(&paths.home, &bundle.version));
+            published.notes.extend(crate::migrate::prune_versions(
+                &paths.home,
+                &paths.link,
+                &bundle.version,
+            ));
             Ok(published)
         }
         Err(why) => {
@@ -797,8 +799,22 @@ fn relink(link: &Path, target: &Path) -> Result<(), String> {
 /// symlink.
 fn mkdir_all_plain(path: &Path) -> Result<(), String> {
     for missing in missing_chain(path)?.iter().rev() {
-        std::fs::create_dir(missing)
-            .map_err(|why| format!("could not create directory {}: {why}", missing.display()))?;
+        match std::fs::create_dir(missing) {
+            Ok(()) => {}
+            // ANOTHER PROCESS GOT THERE FIRST. This runs BEFORE the publisher
+            // lock — the lock file lives inside the home, so the home has to
+            // exist to be locked — and two first installs racing would
+            // otherwise turn "the directory you wanted is there" into a failed
+            // publish. Existing IS the postcondition; the ordering that matters
+            // is enforced by the lock, immediately below.
+            Err(why) if why.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(why) => {
+                return Err(format!(
+                    "could not create directory {}: {why}",
+                    missing.display()
+                ));
+            }
+        }
     }
     Ok(())
 }
@@ -1083,6 +1099,37 @@ mod tests {
                 "accepted a hostile HOME: {hostile}"
             );
         }
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the fixture builds a real directory; the boundary is on product code"
+    )]
+    fn a_directory_another_process_created_first_is_not_a_failed_publish() {
+        // The home has to exist before the lock inside it can be taken, so
+        // this one step runs UNSERIALISED. Two first installs racing must not
+        // turn "the directory is there" into a refusal — existing is the
+        // postcondition, and the lock immediately after is what orders the
+        // rest.
+        // `/tmp` is a SYMLINK on macOS and `missing_chain` refuses to create
+        // through one, so the fixture starts at the real directory.
+        let base = Path::new("/private/tmp");
+        let base = if base.is_dir() {
+            base
+        } else {
+            Path::new("/tmp")
+        };
+        let root = base.join(format!("ae-mkdir-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let deep = root.join("a").join("b");
+        assert!(mkdir_all_plain(&deep).is_ok(), "a fresh chain");
+        assert!(
+            mkdir_all_plain(&deep).is_ok(),
+            "the same chain, already there"
+        );
+        assert!(deep.is_dir());
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

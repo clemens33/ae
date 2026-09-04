@@ -293,7 +293,7 @@ fn the_version_sweep_keeps_the_published_one_and_every_one_a_session_records() {
     // A session whose core lives somewhere else entirely protects nothing here.
     rig.session("foreign", "/usr/local/bin/ae", Some(ae::migrate::CURRENT));
 
-    let notes = ae::migrate::prune_versions(&rig.root(), "2026.3.3");
+    let notes = ae::migrate::prune_versions(&rig.root(), &rig.link(), "2026.3.3");
     assert!(
         present(&rig.versions().join("2026.3.3")),
         "the published version was pruned"
@@ -326,7 +326,7 @@ fn an_unreadable_sessions_root_stops_the_version_sweep_rather_than_emptying_it()
         "an unreadable sessions root"
     );
 
-    let notes = ae::migrate::prune_versions(&rig.root(), "2026.9.9");
+    let notes = ae::migrate::prune_versions(&rig.root(), &rig.link(), "2026.9.9");
     let _ = fs::set_permissions(&sessions, fs::Permissions::from_mode(0o755));
 
     assert!(
@@ -355,7 +355,7 @@ fn a_meta_the_sweep_cannot_read_stops_it_too_rather_than_being_skipped() {
         "an unreadable meta"
     );
 
-    let notes = ae::migrate::prune_versions(&rig.root(), "2026.9.9");
+    let notes = ae::migrate::prune_versions(&rig.root(), &rig.link(), "2026.9.9");
     let _ = fs::set_permissions(&meta, fs::Permissions::from_mode(0o644));
 
     assert!(
@@ -366,6 +366,36 @@ fn a_meta_the_sweep_cannot_read_stops_it_too_rather_than_being_skipped() {
     assert!(
         notes[0].contains("opaque"),
         "the warning names no session: {notes:?}"
+    );
+}
+
+#[test]
+fn the_version_the_command_link_names_is_never_swept_even_if_no_meta_records_it() {
+    // The floor under the publisher lock. A core older than that lock takes no
+    // lock, so during the rollout that adds it one could repoint the command
+    // between this keep-set being built and the sweep running. Everything else
+    // a stale keep-set gets wrong costs disk space; deleting the directory the
+    // live `ae` resolves into costs the command itself.
+    let rig = Rig::new("linkfloor");
+    let live = rig.plant_version("2026.1.1");
+    let orphan = rig.plant_version("2026.1.2");
+    assert!(
+        fs::create_dir_all(rig.link().parent().unwrap_or(&rig.home)).is_ok(),
+        "a bin dir"
+    );
+    assert!(
+        std::os::unix::fs::symlink(live.join("ae-core"), rig.link()).is_ok(),
+        "a command link"
+    );
+
+    let notes = ae::migrate::prune_versions(&rig.root(), &rig.link(), "2026.9.9");
+    assert!(
+        present(&live),
+        "the sweep deleted what the command link names: {notes:?}"
+    );
+    assert!(
+        !present(&orphan),
+        "the floor kept a version nothing names: {notes:?}"
     );
 }
 
@@ -382,7 +412,7 @@ fn a_state_root_with_no_sessions_directory_still_sweeps_old_versions() {
         "the rig planted a sessions root"
     );
 
-    let notes = ae::migrate::prune_versions(&rig.root(), "2026.9.9");
+    let notes = ae::migrate::prune_versions(&rig.root(), &rig.link(), "2026.9.9");
     assert!(!present(&stale), "nothing was swept: {notes:?}");
     assert!(
         notes.iter().all(|note| !note.starts_with("WARNING:")),
@@ -416,7 +446,7 @@ fn the_version_sweep_never_re_modes_a_symlink_it_removes() {
         "a member that is a link out"
     );
 
-    let notes = ae::migrate::prune_versions(&rig.root(), "2026.9.9");
+    let notes = ae::migrate::prune_versions(&rig.root(), &rig.link(), "2026.9.9");
     assert!(!present(&stale), "the version was not removed: {notes:?}");
     assert!(
         present(&outside),

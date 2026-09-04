@@ -41,6 +41,14 @@
 //! prune re-reads every meta rather than trusting the sweep, and the loser is
 //! a session naming a deleted core, which `ae doctor --refresh` repairs.
 //!
+//! The publisher lock ([`crate::install::LOCK`]) excludes another publish, but
+//! only one that TAKES it: a core older than that lock does not, so during the
+//! release that introduces it two publishes on one machine can still overlap.
+//! The floor under that is [`prune_versions`], which re-reads the command link
+//! immediately before it deletes anything and never removes the directory that
+//! link resolves into. A stale keep-set can then cost disk space; it cannot
+//! cost the `ae` command.
+//!
 //! LOCK ORDER, because two locks meet here. The sweep takes the per-session
 //! LIFECYCLE lock (so an end or a launch cannot land inside a migration) and
 //! then, inside [`session`] and [`repoint`], the META lock. `stop` and `end`
@@ -359,20 +367,17 @@ const CORE_ROWS: [&str; 2] = ["ae_core", "ae_core_version"];
 /// delete would leave a session naming a binary that is gone.
 const LEGACY_PATH_ROW: &str = "ae_path";
 
-/// [`crate::lifecycle::census`] with ONE failure downgraded: a state root with
-/// no `sessions/` directory at all has no sessions, and saying so is not a
-/// guess. That is a first install, and it is the one reading where "found
-/// nothing" and "could not look" genuinely coincide. Every other error stays an
-/// error, because it means the directory is there and ae could not read it.
+/// [`crate::lifecycle::census`] with its one absent case read as empty: a state
+/// root with no `sessions/` directory has no sessions, and saying so is not a
+/// guess. That case is TYPED, not sniffed from an error kind — an entry that
+/// vanishes mid-walk raises `NotFound` too, and reading THAT as "no sessions"
+/// would hand the version sweep a keep-set missing a live session's core.
 ///
 /// # Errors
 ///
-/// Whatever the census hit, unless it was a missing sessions root.
+/// Whatever the census hit. Only the absent root is not an error.
 fn taken(root: &Path) -> std::io::Result<Vec<String>> {
-    match crate::lifecycle::census(root) {
-        Err(why) if why.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
-        other => other,
-    }
+    crate::lifecycle::census(root).map(Option::unwrap_or_default)
 }
 
 /// Bring every session under `root` onto `core`, and restart the daemons of
@@ -614,7 +619,8 @@ fn restart_watchdog(root: &Path, server: &ServerId, name: &str, dir: &Path) -> S
 
 // ─── the version-directory sweep ─────────────────────────────────────────
 
-/// Delete every `versions/<V>` no session meta names, keeping `published`.
+/// Delete every `versions/<V>` no session meta names, keeping `published` and
+/// whatever `link` currently resolves into.
 ///
 /// This runs AFTER the command link is repointed, which is what makes it safe:
 /// by then every session's `ae_core` has been rewritten, so the set of
@@ -622,11 +628,24 @@ fn restart_watchdog(root: &Path, server: &ServerId, name: &str, dir: &Path) -> S
 /// never a candidate even when no session names it — a first install has no
 /// sessions at all.
 ///
+/// `link` is the second floor, and it is there for the one publisher this
+/// process cannot exclude: a core older than the publisher lock takes no lock,
+/// so during the rollout that added it, one could repoint the command between
+/// this keep-set being built and this sweep running. Deleting the directory the
+/// live `ae` resolves into is the one outcome worth a second reading of the
+/// world — whatever else a stale keep-set gets wrong costs disk space, and this
+/// would cost the command.
+///
 /// Best effort: a directory that will not go is reported and the rest are
 /// still swept. A failed cleanup is disk space, not a broken install.
 #[must_use]
-pub fn prune_versions(root: &Path, published: &str) -> Vec<String> {
+pub fn prune_versions(root: &Path, link: &Path, published: &str) -> Vec<String> {
     let mut keep: Vec<String> = vec![published.to_owned()];
+    if let Some(current) = current_link_version(link)
+        && !keep.contains(&current)
+    {
+        keep.push(current);
+    }
     // A CENSUS THAT FAILED IS NOT AN EMPTY CENSUS. Everything below decides
     // what to DELETE from what it did not find, so a keep-set built from a
     // partial reading is a keep-set that authorises removing the core a session
@@ -678,6 +697,20 @@ pub fn prune_versions(root: &Path, published: &str) -> Vec<String> {
         }
     }
     notes
+}
+
+/// The `<V>` the command link resolves into right now, or `None` when it names
+/// nothing this sweep would touch.
+///
+/// Read immediately before the deletions, not with the rest of the keep-set:
+/// the whole point is that it may have changed since.
+fn current_link_version(link: &Path) -> Option<String> {
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: the version sweep asks what the command link names right now, because that directory may never be deleted"
+    )]
+    let target = std::fs::read_link(link).ok()?;
+    version_of(&target.to_string_lossy())
 }
 
 /// The `<V>` a recorded `ae_core` path names, read from the path's SHAPE:
