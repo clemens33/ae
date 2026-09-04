@@ -568,3 +568,96 @@ fn a_subcommand_or_flag_the_sweep_does_not_know_is_a_usage_error() {
         assert!(out.stdout.is_empty(), "{tail:?}: stdout must stay empty");
     }
 }
+
+#[test]
+fn a_sweep_target_outside_the_sessions_root_is_refused_before_anything_is_written() {
+    // THE TARGET GUARD. A sweep takes a lock, writes its state file and
+    // EXECUTES `say` inside the directory it is handed — and that directory
+    // arrives as argv. The failure this pins ran a planted `say` out of a
+    // stranger's directory, wrote state there and reported success: `Notice`'s
+    // one constructor seals the PROGRAM relative to the directory, so the
+    // directory has to be sealed too or the seal is half of one.
+    let scratch = scratch("foreign");
+    let socket = scratch.join("s");
+    let _cleanup = Cleanup {
+        socket: socket.clone(),
+        scratch: scratch.clone(),
+    };
+    let root = scratch.join("home");
+    let log = scratch.join("said");
+    let real = plant_session(&root, "monfg", &socket, &[]);
+    let sessions = root.join("sessions");
+
+    // Three shapes that are not a session directory, and none of them is
+    // refused for want of a `meta`: a directory ae does not own at all, the
+    // sessions root itself, and a path NESTED under a real session — DIRECT
+    // child, not descendant.
+    let foreign = scratch.join("foreign");
+    assert!(
+        fs::create_dir_all(&foreign).is_ok(),
+        "a directory ae does not own"
+    );
+    let nested = real.join("inner");
+    assert!(
+        fs::create_dir_all(&nested).is_ok(),
+        "a path under a real session"
+    );
+    for dir in [&foreign, &sessions, &nested] {
+        assert!(
+            fs::write(dir.join("meta"), "session=monfg\n").is_ok(),
+            "the marker alone must not be enough"
+        );
+        plant_say(dir, &log, 0);
+    }
+
+    for dir in [&foreign, &sessions, &nested] {
+        let named = dir.display().to_string();
+        let (code, out, err) = sweep(&root, dir, &["--liveness-sweeps", "1", "--format", "json"]);
+        // `2` and not `1`: naming a directory ae does not own is asking wrong,
+        // not a sweep that went wrong.
+        assert_eq!(code, Some(2), "{named}: {err}");
+        assert!(out.is_empty(), "{named}: stdout must stay empty");
+        assert!(
+            err.contains(ae::monitor::TARGET_RULE),
+            "the refusal must quote the rule: {named}: {err}"
+        );
+        assert!(
+            err.contains(&named),
+            "and name the directory it is about: {err}"
+        );
+        assert!(
+            !dir.join(ae::monitor::STATE_NAME).exists(),
+            "{named}: a refused target is written nothing at all"
+        );
+    }
+    assert_eq!(said(&log), "", "and no refused target runs a `say`");
+}
+
+#[test]
+fn a_real_session_directory_still_sweeps_under_the_target_guard() {
+    // The other half of the guard, and the one a too-strict rule breaks: the
+    // orchestrator's own session directory is a direct child of the sessions
+    // root and holds a meta, so it sweeps, delivers and leaves the heartbeat
+    // the watchdog reads.
+    let scratch = scratch("target-ok");
+    let socket = scratch.join("s");
+    let _cleanup = Cleanup {
+        socket: socket.clone(),
+        scratch: scratch.clone(),
+    };
+    let root = scratch.join("home");
+    let log = scratch.join("said");
+    let dir = plant_session(&root, "monok", &socket, &[]);
+    plant_say(&dir, &log, 0);
+
+    let (code, out, err) = sweep(&root, &dir, &["--liveness-sweeps", "1", "--format", "json"]);
+    assert_eq!(code, Some(0), "{err}");
+    let ping = "🛰️ still watching 0 sessions · all healthy";
+    assert_eq!(report(&out), vec![ping.to_owned()]);
+    assert!(delivered(&out), "and it believes the ping landed: {out}");
+    assert_eq!(said(&log), format!("{ping}\n--\n"), "as it did");
+    assert!(
+        dir.join(ae::monitor::STATE_NAME).exists(),
+        "the heartbeat the watchdog reads is there"
+    );
+}
