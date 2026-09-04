@@ -16,7 +16,7 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use super::cli::{ae, git_in, helper};
+use super::cli::{OwnedScratch, ae, git_in, helper};
 use super::phase2::run_tmux;
 
 /// A TUI-shaped fake agent: it records its argv, then sits there drawing the
@@ -50,7 +50,7 @@ const IDLE_CONFIG: &str = "[profiles]\nidle = \"sleep 600\"\n\n[roster]\nlead = 
 
 /// One isolated ae home, one project directory, one tmux server.
 struct Rig {
-    scratch: PathBuf,
+    scratch: OwnedScratch,
     sock: PathBuf,
     home: PathBuf,
     project: PathBuf,
@@ -63,9 +63,10 @@ impl Rig {
     /// `codex.<slot>.sid` handshake file into the session directory.
     fn new(tag: &str, tools: &[&str], sid_for: Option<&str>) -> Self {
         use std::os::unix::fs::PermissionsExt;
-        let scratch = PathBuf::from(format!("/tmp/aeln.{}.{tag}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&scratch);
-        assert!(std::fs::create_dir_all(&scratch).is_ok(), "a scratch dir");
+        let mut scratch = OwnedScratch::existing(PathBuf::from(format!(
+            "/tmp/aeln.{}.{tag}",
+            std::process::id()
+        )));
         let home = scratch.join("aehome");
         let project = scratch.join("project");
         assert!(std::fs::create_dir_all(&project).is_ok(), "a project dir");
@@ -104,9 +105,11 @@ impl Rig {
             .is_ok(),
             "a config"
         );
+        let sock = scratch.join("sock");
+        scratch.add_tmux_server(sock.clone());
         Self {
-            sock: scratch.join("sock"),
             scratch,
+            sock,
             home,
             project,
             config,
@@ -329,21 +332,6 @@ impl Rig {
             std::thread::sleep(Duration::from_millis(25));
         }
         std::fs::read_to_string(&self.launched).unwrap_or_default()
-    }
-}
-
-impl Drop for Rig {
-    /// Kill the server, then keep removing the scratch until it STAYS removed.
-    fn drop(&mut self) {
-        let _ = self.tmux(&["kill-server"]);
-        for _ in 0..40 {
-            let _ = std::fs::remove_dir_all(&self.scratch);
-            if !self.scratch.exists() {
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        }
-        let _ = std::fs::remove_dir_all(&self.scratch);
     }
 }
 

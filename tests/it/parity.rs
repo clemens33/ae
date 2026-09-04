@@ -116,6 +116,9 @@ pub(crate) mod capture {
             for (key, value) in &invocation.env {
                 command.env(key, value);
             }
+            if invocation.program == "tmux" {
+                command.env("SHELL", "/bin/sh");
+            }
             command
                 .stdin(Stdio::null())
                 .stdout(Stdio::from(File::create(out)?))

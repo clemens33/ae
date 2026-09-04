@@ -27,7 +27,7 @@ const AMBIENT: [&str; 4] = ["TMUX", "TMUX_PANE", "CONFIG_FILE", "AE_VERSION"];
 /// sweeps it. Long enough that a concurrent run's directories are never taken.
 const STALE_AFTER: std::time::Duration = std::time::Duration::from_hours(1);
 
-/// A scratch path this run owns, never created BY THE RUNNER — see [`ae`].
+/// A scratch path this run names; the runner never creates it, but a child may.
 ///
 /// The product creates it when a fixture's argv reaches a command that writes:
 /// a launch stages a default config, and the tools it starts drop `.claude`,
@@ -35,11 +35,10 @@ const STALE_AFTER: std::time::Duration = std::time::Duration::from_hours(1);
 /// under `/tmp` is the isolation WORKING: none of them reaches the developer's
 /// own home.
 ///
-/// Nothing can remove them at process exit: `ae()` hands back a `Command`, not
-/// a guard, and there is no after-all-tests hook. So each test process sweeps
-/// what earlier ones left, on age rather than on liveness — there is no
-/// portable "is this pid gone" here, and [`STALE_AFTER`] is far longer than a
-/// suite run.
+/// The owner normally removes it after its child exits. The first allocation
+/// also sweeps what an interrupted process left, on age rather than liveness —
+/// there is no portable "is this pid gone" here, and [`STALE_AFTER`] is far
+/// longer than a suite run.
 fn run_scratch() -> std::path::PathBuf {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let nth = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -84,10 +83,295 @@ fn sweep_stale_scratches() {
     clippy::disallowed_types,
     reason = "black-box tests must run the product binary; see clippy.toml"
 )]
-pub(crate) type Runner = std::process::Command;
+pub(crate) type Command = std::process::Command;
 
-fn binary() -> Runner {
-    Runner::new(env!("CARGO_BIN_EXE_ae"))
+pub(crate) struct Runner {
+    command: Command,
+    scratch: Option<OwnedScratch>,
+    spawned: bool,
+}
+
+impl Runner {
+    fn new(command: Command, scratch: Option<OwnedScratch>) -> Self {
+        Self {
+            command,
+            scratch,
+            spawned: false,
+        }
+    }
+
+    pub(crate) fn arg<S>(&mut self, arg: S) -> &mut Self
+    where
+        S: AsRef<std::ffi::OsStr>,
+    {
+        self.command.arg(arg);
+        self
+    }
+
+    pub(crate) fn args<I, S>(&mut self, args: I) -> &mut Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<std::ffi::OsStr>,
+    {
+        self.command.args(args);
+        self
+    }
+
+    pub(crate) fn env<K, V>(&mut self, key: K, value: V) -> &mut Self
+    where
+        K: AsRef<std::ffi::OsStr>,
+        V: AsRef<std::ffi::OsStr>,
+    {
+        self.command.env(key, value);
+        self
+    }
+
+    pub(crate) fn env_remove<K>(&mut self, key: K) -> &mut Self
+    where
+        K: AsRef<std::ffi::OsStr>,
+    {
+        self.command.env_remove(key);
+        self
+    }
+
+    pub(crate) fn current_dir<P>(&mut self, dir: P) -> &mut Self
+    where
+        P: AsRef<std::path::Path>,
+    {
+        self.command.current_dir(dir);
+        self
+    }
+
+    pub(crate) fn stdin<S>(&mut self, cfg: S) -> &mut Self
+    where
+        S: Into<std::process::Stdio>,
+    {
+        self.command.stdin(cfg);
+        self
+    }
+
+    pub(crate) fn stdout<S>(&mut self, cfg: S) -> &mut Self
+    where
+        S: Into<std::process::Stdio>,
+    {
+        self.command.stdout(cfg);
+        self
+    }
+
+    pub(crate) fn stderr<S>(&mut self, cfg: S) -> &mut Self
+    where
+        S: Into<std::process::Stdio>,
+    {
+        self.command.stderr(cfg);
+        self
+    }
+
+    pub(crate) fn spawn(&mut self) -> std::io::Result<OwnedChild> {
+        if self.spawned {
+            return Err(std::io::Error::other("runner already spawned a child"));
+        }
+        let scratch = self.scratch.take();
+        match self.command.spawn() {
+            Ok(child) => {
+                self.spawned = true;
+                Ok(OwnedChild {
+                    child: Some(child),
+                    scratch,
+                })
+            }
+            Err(error) => {
+                // No child exists on an unsuccessful spawn, so keep the
+                // owner available for a caller's fallback or retry.
+                self.scratch = scratch;
+                Err(error)
+            }
+        }
+    }
+}
+
+impl std::ops::Deref for Runner {
+    type Target = Command;
+
+    fn deref(&self) -> &Self::Target {
+        &self.command
+    }
+}
+
+impl std::ops::DerefMut for Runner {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.command
+    }
+}
+
+/// A child keeps the command's scratch alive until it exits or is stopped.
+pub(crate) struct OwnedChild {
+    child: Option<std::process::Child>,
+    scratch: Option<OwnedScratch>,
+}
+
+impl OwnedChild {
+    pub(crate) fn wait_with_output(mut self) -> std::io::Result<std::process::Output> {
+        let Some(child) = self.child.take() else {
+            return Err(std::io::Error::other("child already reaped"));
+        };
+        let result = child.wait_with_output();
+        drop(self.scratch.take());
+        result
+    }
+}
+
+impl std::ops::Deref for OwnedChild {
+    type Target = std::process::Child;
+
+    fn deref(&self) -> &Self::Target {
+        let Some(child) = self.child.as_ref() else {
+            panic!("owned child already reaped");
+        };
+        child
+    }
+}
+
+impl std::ops::DerefMut for OwnedChild {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        let Some(child) = self.child.as_mut() else {
+            panic!("owned child already reaped");
+        };
+        child
+    }
+}
+
+impl Drop for OwnedChild {
+    fn drop(&mut self) {
+        if let Some(child) = self.child.as_mut()
+            && !matches!(child.try_wait(), Ok(Some(_)))
+        {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        drop(self.child.take());
+        drop(self.scratch.take());
+    }
+}
+
+/// Owns a fixture scratch directory and tears down its tmux children before
+/// removing it. The path may start absent: that is the runner's default. Only
+/// paths under the system temp directory carrying this process's id are owned.
+pub(crate) struct OwnedScratch {
+    path: std::path::PathBuf,
+    tmux_servers: Vec<std::path::PathBuf>,
+}
+
+impl OwnedScratch {
+    pub(crate) fn absent(path: std::path::PathBuf) -> Self {
+        Self {
+            path,
+            tmux_servers: Vec::new(),
+        }
+    }
+
+    pub(crate) fn existing(path: std::path::PathBuf) -> Self {
+        assert!(
+            owns_scratch_path(&path),
+            "scratch path must be process-owned temp storage"
+        );
+        let _ = std::fs::remove_dir_all(&path);
+        assert!(
+            std::fs::create_dir_all(&path).is_ok(),
+            "a scratch directory"
+        );
+        Self {
+            path,
+            tmux_servers: Vec::new(),
+        }
+    }
+
+    pub(crate) fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+
+    pub(crate) fn add_tmux_server(&mut self, socket: std::path::PathBuf) {
+        self.tmux_servers.push(socket);
+    }
+}
+
+impl std::ops::Deref for OwnedScratch {
+    type Target = std::path::Path;
+
+    fn deref(&self) -> &Self::Target {
+        self.path()
+    }
+}
+
+impl AsRef<std::path::Path> for OwnedScratch {
+    fn as_ref(&self) -> &std::path::Path {
+        self.path()
+    }
+}
+
+impl AsRef<std::ffi::OsStr> for OwnedScratch {
+    fn as_ref(&self) -> &std::ffi::OsStr {
+        self.path().as_os_str()
+    }
+}
+
+impl Drop for OwnedScratch {
+    fn drop(&mut self) {
+        // An absent scratch is deliberately inert: no child can have a live
+        // cwd there, and raw::run cannot create capture files inside it.
+        if !self.path.exists() || !owns_scratch_path(&self.path) {
+            return;
+        }
+
+        for (index, socket) in self.tmux_servers.iter().enumerate() {
+            let out = self.path.join(format!(".cleanup-{index}-out"));
+            let err = self.path.join(format!(".cleanup-{index}-err"));
+            let invocation = Invocation::new("tmux")
+                .arg("-S")
+                .arg(socket)
+                .arg("kill-server");
+            let _ = raw::run(&invocation, &self.path, &out, &err);
+        }
+
+        // A pane's command can outlive the server's shutdown briefly. Stop
+        // processes carrying this exact scratch path before waiting for them.
+        let pattern = self.path.display().to_string();
+        let search = pattern
+            .strip_prefix('/')
+            .map_or_else(|| pattern.clone(), |rest| format!("[/]{rest}"));
+        let out = self.path.join(".cleanup-pkill-out");
+        let err = self.path.join(".cleanup-pkill-err");
+        let _ = raw::run(
+            &Invocation::new("pkill").arg("-f").arg(&search),
+            &self.path,
+            &out,
+            &err,
+        );
+
+        // A successful kill request does not mean every pane child has exited.
+        // Wait for processes whose argv names this owned scratch before unlinking
+        // files they may still hold open.
+        let out = self.path.join(".cleanup-pgrep-out");
+        let err = self.path.join(".cleanup-pgrep-err");
+        for _ in 0..40 {
+            let status = raw::run(
+                &Invocation::new("pgrep").arg("-fl").arg(&search),
+                &self.path,
+                &out,
+                &err,
+            );
+            let alive =
+                status.is_ok_and(|status| !matches!(status.outcome(), ExitOutcome::Code(1)));
+            if !alive {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
+fn binary(scratch: Option<OwnedScratch>) -> Runner {
+    Runner::new(Command::new(env!("CARGO_BIN_EXE_ae")), scratch)
 }
 
 /// The black-box runner, HERMETIC BY DEFAULT.
@@ -112,14 +396,42 @@ fn binary() -> Runner {
 /// `_launch` fixtures do, or by `.env(…)`, which wins. See [`ae_hermetic`] for
 /// one that also needs the scratch path.
 pub(crate) fn ae() -> Runner {
-    ae_in(&run_scratch())
+    let scratch = OwnedScratch::absent(run_scratch());
+    let dir = scratch.path().to_owned();
+    isolated(binary(Some(scratch)), &dir)
 }
 
-/// [`ae`], plus the scratch it was pointed at, for a fixture that asserts
-/// nothing was written there.
-pub(crate) fn ae_hermetic() -> (Runner, std::path::PathBuf) {
+/// [`ae`], plus an owner for the scratch it was pointed at, for a fixture that
+/// asserts nothing was written there. The owner removes it even on panic.
+pub(crate) fn ae_hermetic() -> (Runner, OwnedScratch) {
     let dir = run_scratch();
-    (ae_in(&dir), dir)
+    let scratch = OwnedScratch::absent(dir.clone());
+    let command = isolated(binary(None), &dir);
+    (command, scratch)
+}
+
+fn owns_scratch_path(path: &std::path::Path) -> bool {
+    let pid = std::process::id().to_string();
+    // The suite deliberately names `/tmp` so its post-gate audit can inspect
+    // one stable directory. On macOS, `temp_dir()` is the more specific
+    // per-user root, while `/tmp` and its canonical spelling remain the system
+    // temp root.
+    let in_system_temp = path.starts_with(std::env::temp_dir())
+        || path.starts_with("/tmp")
+        || path.starts_with("/private/tmp");
+    in_system_temp
+        && path.components().count() >= 3
+        && path.components().any(|component| {
+            let component = component.as_os_str().to_string_lossy();
+            component.match_indices(&pid).any(|(start, _)| {
+                let end = start + pid.len();
+                let left_boundary =
+                    start == 0 || !component.as_bytes()[start - 1].is_ascii_alphanumeric();
+                let right_boundary =
+                    end == component.len() || !component.as_bytes()[end].is_ascii_alphanumeric();
+                left_boundary && right_boundary
+            })
+        })
 }
 
 /// The server pair a hermetic run is pinned to: a socket in a directory that is
@@ -128,8 +440,9 @@ fn dead_socket(dir: &std::path::Path) -> std::path::PathBuf {
     dir.join("no-server").join("tmux.sock")
 }
 
-fn ae_in(dir: &std::path::Path) -> Runner {
-    let mut command = binary();
+/// Apply the suite's baseline environment to any child process. Individual
+/// fixtures may then override only the pane/server facts they are testing.
+fn isolated(mut command: Runner, dir: &std::path::Path) -> Runner {
     for name in AMBIENT {
         command.env_remove(name);
     }
@@ -138,7 +451,8 @@ fn ae_in(dir: &std::path::Path) -> Runner {
         .env("AE_HOME", dir.join(".ae"))
         .env("TMUX_TMPDIR", dir)
         .env("AE_TMUX_SERVER_KIND", "socket")
-        .env("AE_TMUX_SERVER", dead_socket(dir));
+        .env("AE_TMUX_SERVER", dead_socket(dir))
+        .env("SHELL", "/bin/sh");
     command
 }
 
@@ -167,9 +481,9 @@ fn the_black_box_runner_cannot_see_the_developers_own_home_or_tmux() {
         );
     }
     for (key, expected) in [
-        ("HOME", dir.clone()),
+        ("HOME", dir.path().to_owned()),
         ("AE_HOME", dir.join(".ae")),
-        ("TMUX_TMPDIR", dir.clone()),
+        ("TMUX_TMPDIR", dir.path().to_owned()),
         ("AE_TMUX_SERVER", dead_socket(&dir)),
     ] {
         assert_eq!(
@@ -190,6 +504,11 @@ fn the_black_box_runner_cannot_see_the_developers_own_home_or_tmux() {
         Some("socket".to_owned()),
         "the server pair is not TYPED, so the value is not read as a socket"
     );
+    assert_eq!(
+        seen.get("SHELL").cloned().flatten(),
+        Some("/bin/sh".to_owned()),
+        "the baseline child shell is not fixed"
+    );
     // THE HALF THAT WAS MISSING THE FIRST TIME: an unset pair is not "no tmux",
     // it is the AMBIENT server. The pair is set, and its directory is absent.
     assert!(
@@ -198,11 +517,35 @@ fn the_black_box_runner_cannot_see_the_developers_own_home_or_tmux() {
             .is_some_and(std::path::Path::exists),
         "the run's socket directory exists, so a server can be started in it"
     );
-    // And the scratch is NOT created: a forgetful fixture meets a missing state
-    // root rather than a usable one.
+    // The runner itself does NOT create the scratch: a forgetful fixture meets a
+    // missing state root rather than a usable one.
     assert!(!dir.exists(), "the runner created its scratch");
     // Two runners never share one, so one fixture cannot see another's writes.
-    assert_ne!(ae_hermetic().1, ae_hermetic().1);
+    assert_ne!(ae_hermetic().1.path(), ae_hermetic().1.path());
+
+    // The cleanup floor is exercised in both directions: a correctly named
+    // process-owned path is accepted, while a broad or pid-less path is not.
+    assert!(!owns_scratch_path(std::path::Path::new("/tmp")));
+    assert!(owns_scratch_path(std::path::Path::new(&format!(
+        "/tmp/ae-hermetic-{}-0",
+        std::process::id()
+    ))));
+    assert!(!owns_scratch_path(std::path::Path::new(
+        "/tmp/ae-hermetic-without-a-process-id"
+    )));
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_nanos());
+    let unowned = std::path::PathBuf::from(format!("/tmp/ae-unowned-guard-no-process-{nonce}"));
+    assert!(
+        std::fs::create_dir_all(&unowned).is_ok(),
+        "an unowned scratch"
+    );
+    let guard = OwnedScratch::absent(unowned.clone());
+    drop(guard);
+    let remains = unowned.is_dir();
+    let _ = std::fs::remove_dir_all(&unowned);
+    assert!(remains, "an unowned scratch was removed");
 }
 
 /// Run one GENERATED SESSION HELPER — a shim the launch wrote — as a black-box
@@ -211,8 +554,10 @@ fn the_black_box_runner_cannot_see_the_developers_own_home_or_tmux() {
     clippy::disallowed_types,
     reason = "the black-box tests' door: a session helper must be RUN to be proven; see clippy.toml"
 )]
-pub(crate) fn helper(path: &std::path::Path) -> std::process::Command {
-    std::process::Command::new(path)
+pub(crate) fn helper(path: &std::path::Path) -> Runner {
+    let scratch = OwnedScratch::absent(run_scratch());
+    let dir = scratch.path().to_owned();
+    isolated(Runner::new(Command::new(path), Some(scratch)), &dir)
 }
 
 /// Run a session helper reached BY NAME, through `PATH`.
@@ -220,8 +565,10 @@ pub(crate) fn helper(path: &std::path::Path) -> std::process::Command {
     clippy::disallowed_types,
     reason = "the black-box tests' second door: a helper reached by name is a process started AS that name; see clippy.toml"
 )]
-pub(crate) fn helper_by_name(name: &str) -> std::process::Command {
-    std::process::Command::new(name)
+pub(crate) fn helper_by_name(name: &str) -> Runner {
+    let scratch = OwnedScratch::absent(run_scratch());
+    let dir = scratch.path().to_owned();
+    isolated(Runner::new(Command::new(name), Some(scratch)), &dir)
 }
 
 // The FIFO fixture.
@@ -270,7 +617,7 @@ pub(crate) fn git_in(repo: &std::path::Path, args: &[&str]) -> String {
 /// Wait at most `limit` for a spawned `child`: `Some(output)` if it exited,
 /// `None` if it had to be killed.
 pub(crate) fn bounded(
-    mut child: std::process::Child,
+    mut child: OwnedChild,
     limit: std::time::Duration,
 ) -> Option<std::process::Output> {
     let started = std::time::Instant::now();
@@ -370,9 +717,9 @@ fn sc_022_a_top_level_session_name_is_never_an_unknown_command() {
         !stderr.contains("unknown"),
         "the row forbids this phrase for such a token: {stderr}"
     );
-    // THE REGRESSION GUARD, in the two places the damage showed. No tmux server
-    // was started for a fixture that only tests the router, and no session
-    // survived anywhere the fixture could reach.
+    // THE REGRESSION GUARD, at the two configured destinations the damage showed.
+    // No server was started at this run's socket, and no session was built at
+    // this run's state path.
     assert!(
         !dead_socket(&root)
             .parent()
@@ -387,7 +734,6 @@ fn sc_022_a_top_level_session_name_is_never_an_unknown_command() {
             .exists(),
         "the fixture built a session: {stderr}"
     );
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
