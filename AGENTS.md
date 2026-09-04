@@ -438,8 +438,27 @@ mode is a repairable fact about an install, not a reason to refuse to run.
 **The `AE_NEXT_HOME` retirement executed on 2026-08-31; slice Z1 reshaped it and slice Z3
 finished it.** There is no wrapper left to decide an environment contract, so the core reads
 every fact the frozen preamble used to carry at an env DOOR of its own, and decides its SHAPE
-from a canonical `current_exe()`: under `$HOME/.ae/versions/<V>/` it is INSTALLED, anywhere
-else it is a CHECKOUT.
+from a canonical `current_exe()` ALONE: a binary sitting at `<root>/.ae/versions/<V>/ae-core`
+is INSTALLED and its state root is that `<root>/.ae`, read off its own path; anywhere else is
+a CHECKOUT. `$HOME` is COMPARED against that position, never used to derive it — an install
+run against a `$HOME` naming a different root is DISPLACED, a refusal naming both, because
+deriving the root from `$HOME` let `HOME=/fake AE_HOME=/foreign <real-install>/ae-core` demote
+a published core to a checkout and build its sessions under `/foreign` (measured, slice Z3
+follow-up).
+
+**The install gate is passed by EVERY effectful invocation**, not by the public words alone:
+the core's own `_` namespace and all 21 session-helper links are links to this same binary and
+pay it too. It is VALIDATION ONLY — no tmux probe, no state read — which is what keeps `_run`
+cheap. `version` and `upgrade` remain the only two words ahead of it, one diagnosing a broken
+install and the other repairing it. Skipping it for the `_` namespace let `_shims-render`
+publish 21 helper links out of a core whose manifest was nonsense (measured, same follow-up).
+
+`current_exe()` HAS ONE CALLER, `shape::resolved_exe`, and a guard test in `tests/it` keeps it
+that way. macOS answers with the path the process was EXEC'D BY — a symlink, for `ae` and for
+every helper — so a raw call at an execution boundary bakes the caller's own invocation path
+into a pane command or a detached child's `argv[0]`, where the basename dispatch reads it back
+as a different entry: a spawn typed as `<session>/spawn` built the pane command
+`<session>/spawn _run <dir> <slot>`, which comes back as `_spawn`.
 
 The doors, and nothing else: `AE_HOME`, `CONFIG_FILE`, `PWD`, `AE_TMUX_SERVER` and
 `AE_TMUX_SERVER_KIND`, `AE_NO_AUTOSTART`, `TMUX`, `TMUX_PANE`, `HOME`. `AE_CORE_BIN` is DEAD

@@ -127,7 +127,11 @@ fn argv(dir: &Path, target: &Target) -> CaptureArgv {
 /// capture that never answers leaves the slot `pending`, which is what
 /// `pending` means.
 pub(crate) fn start(dir: &Path, targets: &[Target]) {
-    let Ok(exe) = std::env::current_exe() else {
+    // RESOLVED, never raw: this becomes a detached child's `argv[0]`, and on
+    // macOS an unresolved answer is whichever link the caller typed — a helper
+    // name, which the shim dispatch would read as that helper instead of
+    // `_capture-sid`.
+    let Some(exe) = crate::shape::resolved_exe() else {
         return;
     };
     for target in targets {

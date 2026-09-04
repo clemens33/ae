@@ -452,16 +452,18 @@ pub fn run_spawn(
             return Ok(EXIT_FAILED);
         }
     }
-    let core = match std::env::current_exe() {
-        Ok(core) => core,
-        Err(why) => {
-            rollback(dir, &facts, &slot, &pane, &parsed.name, err)?;
-            writeln!(
-                err,
-                "Error: the core could not name its own binary ({why}) — spawn rolled back."
-            )?;
-            return Ok(EXIT_FAILED);
-        }
+    // RESOLVED, never raw. This path becomes the pane's own command
+    // (`<core> _run <dir> <slot>`), and macOS answers `current_exe()` with the
+    // path this process was EXEC'D BY — so a spawn typed as `<session>/spawn`
+    // built a pane command whose `argv[0]` basename was `spawn`, which the
+    // helper dispatch reads back as `_spawn` and the seat never launches.
+    let Some(core) = crate::shape::resolved_exe() else {
+        rollback(dir, &facts, &slot, &pane, &parsed.name, err)?;
+        writeln!(
+            err,
+            "Error: the core could not name its own binary — spawn rolled back."
+        )?;
+        return Ok(EXIT_FAILED);
     };
     // The pane command is pasted into a SHELL, which is the one delivery in ae
     // whose reader is meant to be a shell. Fire and forget: an unconfirmed

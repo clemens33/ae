@@ -466,3 +466,63 @@ fn a_published_core_refuses_a_foreign_home_instead_of_adopting_it() {
         "the inherited HOME is unnamed: {stderr}"
     );
 }
+
+/// **B3.** `current_exe()` HAS ONE CALLER, and it is [`ae::shape`].
+///
+/// The two answers differ on macOS — the OS hands back the path this process
+/// was EXEC'D BY, which for `ae` and for all 21 helpers is a SYMLINK — so a raw
+/// call at an execution boundary bakes the caller's invocation path into a pane
+/// command or a child's `argv[0]`, where the helper dispatch reads its basename
+/// back as a different entry. `shape::resolved_exe` canonicalises; nothing else
+/// may ask.
+///
+/// A TEXT SCAN, and it says so: it reads code lines only (a line whose trimmed
+/// start is `//` is prose, and the module docs discuss `current_exe` at
+/// length). It cannot see an aliased re-export, which is why the rule is also
+/// stated where `resolved_exe` lives.
+#[test]
+fn only_shape_asks_the_os_where_this_binary_is() {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut offenders = Vec::new();
+    let mut scanned = 0_usize;
+    let mut pending = vec![src.clone()];
+    while let Some(dir) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                pending.push(path);
+                continue;
+            }
+            if path.extension().is_none_or(|ext| ext != "rs") {
+                continue;
+            }
+            if path.file_name().is_some_and(|name| name == "shape.rs") {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            scanned += 1;
+            for (number, line) in text.lines().enumerate() {
+                if line.trim_start().starts_with("//") {
+                    continue;
+                }
+                if line.contains("env::current_exe(") || line.contains("use std::env::current_exe")
+                {
+                    offenders.push(format!("{}:{}", path.display(), number + 1));
+                }
+            }
+        }
+    }
+    assert!(
+        scanned > 10,
+        "the scan found only {scanned} sources; it did not run"
+    );
+    assert!(
+        offenders.is_empty(),
+        "current_exe() belongs to shape::resolved_exe, which resolves it: {offenders:?}"
+    );
+}

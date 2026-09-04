@@ -411,7 +411,9 @@ fn daemon_command(meta_dir: &Path, knobs: &[String]) -> Option<Vec<String>> {
         command.extend(knobs.iter().cloned());
         return Some(command);
     }
-    let core = std::env::current_exe().ok()?;
+    // RESOLVED, never raw: this is the daemon's own command word, and an
+    // unresolved macOS answer would name whichever link started it.
+    let core = crate::shape::resolved_exe()?;
     let mut command = vec![
         core.display().to_string(),
         crate::cli::WATCHDOG_RUN.to_owned(),
