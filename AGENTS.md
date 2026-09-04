@@ -149,6 +149,12 @@ happens in, the two are the same directory. A checkout run with `AE_HOME` elsewh
 publish into `$HOME/.ae` and migrate the sessions there; that is why a live upgrade probe
 belongs in a sandboxed `$HOME`, not in the `ae-dev` namespace.
 
+The row is younger than the sessions, so most metas do not carry one yet: a meta that says
+`schema=2` has already given its shape in the older word, is PLACED at 2, and gets the row
+stamped in silently on first touch. Only a meta that says NEITHER is refused. Getting this
+backwards would have made the release that adds the chain the release that made every
+running session unresumable.
+
 Nothing is written until every session has been asked, so a session that cannot be migrated
 aborts the publish, by name, with the old link intact and no session repointed. After the
 journal is removed — not before, because the prune can otherwise delete the rollback target
@@ -269,7 +275,7 @@ Each is one rule with one owner. Change the owner, not a copy.
 | The install gate is STRUCTURAL and hashes nothing. Every command and helper passes it EXCEPT `version` and `upgrade`, which diagnose and repair a broken install | `src/shape.rs`, ordered in `src/lib.rs::run` |
 | The one hashing site: both members re-digested against `SHA256SUMS` before publication | `src/install.rs` |
 | Published dir 0555, members 0555/0444; `~/.local/bin/ae` is the current pointer | `src/install.rs` |
-| Every session meta carries `meta_version=<N>`; the chain steps N->N+1 and runs wherever the core touches a session. A missing row is the pre-version past: REFUSED at resume, REPORTED at stop and end, which must never be blocked. A publish migrates and repoints EVERY session before it moves the command link, then deletes every `versions/<V>` no meta records | `src/migrate.rs`, called from `src/install.rs::publish_steps`, `src/session_launch.rs`, `src/lifecycle.rs` and `src/lifecycle/end.rs` |
+| Every session meta carries `meta_version=<N>`; the chain steps N->N+1 and runs wherever the core touches a session. A meta with no row but `schema=2` IS version 2 — the pre-chain shape — and is stamped in place, never refused; only a meta with NEITHER key is refused, at resume, and merely REPORTED at stop and end, which must never be blocked. A publish migrates and repoints EVERY session before it moves the command link, then deletes every `versions/<V>` no meta records | `src/migrate.rs` (`placed` owns the rule for the chain and for `ae list` alike), called from `src/install.rs::publish_steps`, `src/session_launch.rs`, `src/lifecycle.rs` and `src/lifecycle/end.rs` |
 | A harness session id is a NAME: the purge proves it against the archive UUID grammar before it builds a path | `src/lifecycle/end.rs::purge_conversation_files`; grammar in `src/archive.rs::canonical_uuid` |
 | A monitor sweep may act only on the CALLER'S own session (`$TMUX_PANE`) | `src/monitor.rs` |
 | Every tmux format uses a printable pipe separator, never a control byte — tmux 3.4 octal-escapes those. Each format literal is written out; `SLOTS_FORMAT` deliberately uses an unspaced pipe | `src/tmux.rs` (`FIELD_SEPARATOR` is the parser delimiter) + the control-char-free test over every format constant |

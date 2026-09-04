@@ -95,6 +95,23 @@ impl Rig {
         dir
     }
 
+    /// A session in the RETIRED v1 shape: no `meta_version`, no `schema=2`,
+    /// and the `agent.<slot>` rows v2 replaced. This is the only meta the chain
+    /// cannot place, and the rig has to be able to build one because
+    /// `session()` above writes `schema=2` — as every real session does.
+    fn legacy_session(&self, name: &str) -> PathBuf {
+        let dir = self.root().join("sessions").join(name);
+        assert!(fs::create_dir_all(&dir).is_ok(), "a session dir");
+        let mut meta = String::new();
+        let _ = write!(
+            meta,
+            "mode=local\nsession={name}\nwork_dir=/w\nae_version=0.0.1\n\
+             ae_core=/nowhere/ae-core\nagent.main=lead:lead:\n"
+        );
+        assert!(fs::write(dir.join("meta"), meta).is_ok(), "a v1 meta");
+        dir
+    }
+
     /// A version directory with one member, standing in for a published one.
     fn plant_version(&self, version: &str) -> PathBuf {
         let dir = self.versions().join(version);
@@ -184,7 +201,7 @@ fn a_session_at_the_current_version_is_left_byte_for_byte_alone() {
 #[test]
 fn a_session_with_no_version_row_is_refused_by_name_with_the_fresh_start_line() {
     let rig = Rig::new("preversion");
-    let dir = rig.session("old", "/nowhere/ae-core", None);
+    let dir = rig.legacy_session("old");
     let refused = ae::migrate::session(&dir).expect_err("the pre-version past");
     assert_eq!(refused, ae::migrate::Refusal::Absent);
     let line = refused.line("old");
@@ -196,6 +213,57 @@ fn a_session_with_no_version_row_is_refused_by_name_with_the_fresh_start_line() 
     let noted = ae::migrate::session_noted(&dir, "old").expect("a reported refusal");
     assert!(noted.starts_with("note: "), "{noted}");
     assert!(noted.contains("ae end old"), "{noted}");
+}
+
+#[test]
+fn a_session_that_carries_only_schema_2_is_stamped_and_otherwise_untouched() {
+    // THE INSTALLED BASE. `meta_version` is younger than the sessions, so every
+    // session that existed before the chain has none — 28 of 28 on the machine
+    // this was written for. They all say `schema=2`, which is the same shape in
+    // the older word, so they are PLACED at 2 rather than refused, and the row
+    // is written in on first touch.
+    let rig = Rig::new("stamp");
+    let dir = rig.session("prechain", "/nowhere/ae-core", None);
+    let before = meta_of(&dir);
+    assert!(
+        !before.contains(ae::migrate::KEY),
+        "the fixture is not pre-chain"
+    );
+
+    assert_eq!(
+        ae::migrate::session(&dir),
+        Ok(Some(ae::migrate::Stepped::Stamped))
+    );
+    let after = meta_of(&dir);
+    assert!(
+        after.contains(&format!("{}={}", ae::migrate::KEY, ae::migrate::CURRENT)),
+        "the row was not stamped in: {after}"
+    );
+    // OTHERWISE BYTE-IDENTICAL: a stamp adds one row and touches nothing else.
+    assert_eq!(
+        after,
+        format!("{before}{}={}\n", ae::migrate::KEY, ae::migrate::CURRENT),
+        "the stamp rewrote more than the row it came to add"
+    );
+    // And it is idempotent: the second touch has nothing to do.
+    assert_eq!(ae::migrate::session(&dir), Ok(None));
+    assert_eq!(meta_of(&dir), after);
+    // Nothing is reported to an operator about a no-op.
+    assert_eq!(ae::migrate::session_noted(&dir, "prechain"), None);
+}
+
+#[test]
+fn a_session_with_neither_key_is_the_one_the_chain_cannot_place() {
+    // The retired v1 roster: it says nothing about its shape in either word.
+    let rig = Rig::new("neither");
+    let dir = rig.legacy_session("v1");
+    let refused = ae::migrate::session(&dir).expect_err("the pre-version past");
+    assert_eq!(refused, ae::migrate::Refusal::Absent);
+    assert!(refused.line("v1").contains("ae end v1"), "{refused:?}");
+    assert!(
+        !meta_of(&dir).contains(ae::migrate::KEY),
+        "a refused meta was written to"
+    );
 }
 
 #[test]
@@ -298,6 +366,47 @@ fn a_publish_repoints_every_stopped_session_before_it_repoints_the_command_link(
 }
 
 #[test]
+fn a_publish_stamps_every_pre_chain_session_and_counts_them_in_one_line() {
+    // THE RELEASE THAT ADDS THE CHAIN, as it will actually be met: every
+    // session on the machine carries `schema=2` and no version row. All of them
+    // must come through stamped, none refused, and the operator must be told
+    // once with a number rather than once per session.
+    let rig = Rig::new("stampsweep");
+    let sessions: Vec<PathBuf> = ["one", "two", "three"]
+        .iter()
+        .map(|name| rig.session(name, "/nowhere/ae-core", None))
+        .collect();
+    // One session already carries the row, so the count is of the stamped ones
+    // and not simply of every session.
+    let already = rig.session("four", "/nowhere/ae-core", Some(ae::migrate::CURRENT));
+
+    let (code, stdout, stderr) = rig.install(&rig.bundle("2026.9.9"));
+    assert_eq!(code, Some(0), "the publish failed: {stdout}{stderr}");
+
+    let published = rig.versions().join("2026.9.9").join("ae-core");
+    for dir in sessions.iter().chain(std::iter::once(&already)) {
+        let meta = meta_of(dir);
+        assert!(
+            meta.contains(&format!("{}={}", ae::migrate::KEY, ae::migrate::CURRENT)),
+            "a session came through the publish unstamped: {meta}"
+        );
+        assert_eq!(
+            value_of(&meta, "ae_core").as_deref(),
+            Some(published.to_string_lossy().as_ref()),
+            "a stamped session was not repointed: {meta}"
+        );
+    }
+    // ONE line, carrying the number.
+    let stamped: Vec<&str> = stdout
+        .lines()
+        .filter(|line| line.contains("stamped"))
+        .collect();
+    assert_eq!(stamped.len(), 1, "{stdout}");
+    assert!(stamped[0].contains('3'), "the count is wrong: {stamped:?}");
+    assert!(stamped[0].contains("schema=2"), "{stamped:?}");
+}
+
+#[test]
 fn a_session_the_chain_refuses_aborts_the_publish_with_the_old_link_intact() {
     let rig = Rig::new("refuse");
     // A first publish, so there is a command link with something to lose.
@@ -305,7 +414,7 @@ fn a_session_the_chain_refuses_aborts_the_publish_with_the_old_link_intact() {
     assert_eq!(code, Some(0), "the first install failed: {stdout}{stderr}");
     let first = rig.versions().join("2026.9.9").join("ae-core");
 
-    let refused = rig.session("legacy", "/nowhere/ae-core", None);
+    let refused = rig.legacy_session("legacy");
     let before = meta_of(&refused);
 
     let (code, stdout, stderr) = rig.install(&rig.bundle("2026.9.10"));
@@ -358,7 +467,7 @@ fn a_refusal_late_in_the_sweep_leaves_the_sessions_before_it_untouched() {
     let first = rig.versions().join("2026.9.9").join("ae-core");
 
     let early = rig.session("aaa", &first.to_string_lossy(), Some(ae::migrate::CURRENT));
-    rig.session("zzz", "/nowhere/ae-core", None);
+    rig.legacy_session("zzz");
     let before = meta_of(&early);
 
     let (code, stdout, stderr) = rig.install(&rig.bundle("2026.9.10"));
@@ -497,22 +606,28 @@ fn plant_running(
         .0,
         "a stand-in bridge"
     );
-    let mut out = Vec::new();
-    let mut err = Vec::new();
-    let code = ae::watchdog_lifecycle::run(
-        root,
-        &["start".to_owned(), session.to_owned()],
-        &mut out,
-        &mut err,
-    )
-    .unwrap_or_else(|why| panic!("the entry writes to in-memory buffers: {why}"));
-    assert_eq!(
-        code,
-        0,
-        "the watchdog did not start: {}",
-        String::from_utf8_lossy(&err)
-    );
-    dir
+    // The start is RETRIED once. `watchdog start` waits a bounded number of
+    // polls for the daemon to publish a pidfile, and this fixture's daemon is a
+    // shell script in a freshly split tmux pane: under a full suite run, that
+    // pane can lose the race to a loaded machine. Retrying is not weakening the
+    // proof — the test still requires a pid here and a DIFFERENT pid after the
+    // sweep — it just refuses to report a scheduling delay as a product defect.
+    let mut last = String::new();
+    for _ in 0..2 {
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let code = ae::watchdog_lifecycle::run(
+            root,
+            &["start".to_owned(), session.to_owned()],
+            &mut out,
+            &mut err,
+        )
+        .unwrap_or_else(|why| panic!("the entry writes to in-memory buffers: {why}"));
+        last = String::from_utf8_lossy(&err).into_owned();
+        if code == 0 && ae::watchdog_glue::read_pid(&dir).is_some() {
+            return dir;
+        }
+    }
+    panic!("the watchdog did not start after two tries: {last}");
 }
 
 #[test]

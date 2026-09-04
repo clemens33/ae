@@ -1,10 +1,16 @@
 //! `meta_version`, and the chain that steps a session meta forward.
 //!
 //! Every session meta carries `meta_version=<N>`. The row is written at launch
-//! and it is the ONE fact that says which shape the rest of the file is in. A
-//! meta without it pre-dates the chain: those are refused rather than guessed
-//! at, because a reader that guesses a shape publishes a session it has not
-//! actually understood.
+//! and it is the ONE fact that says which shape the rest of the file is in.
+//!
+//! A meta without it is not automatically a refusal, and getting that wrong
+//! would have been expensive: the row is younger than the sessions, so on the
+//! machine this was written for, 28 of 28 live sessions had none. What they DO
+//! have is `schema=2`, which is the same statement in the older word — so such
+//! a meta is PLACED at 2 and the row is stamped in on first touch, silently.
+//! Only a meta that says neither has told us nothing, and that one is refused
+//! rather than guessed at, because a reader that guesses a shape acts on a
+//! session it has not understood.
 //!
 //! The chain steps N -> N+1, one [`Step`] at a time, and stops at
 //! [`CURRENT`]. Today it holds NO steps: `CURRENT` is 2, every live session is
@@ -16,7 +22,8 @@
 //!
 //! It runs wherever the core TOUCHES a session:
 //!
-//! * resume/attach ([`crate::session_launch`]) — a refusal stops the launch;
+//! * resume/attach ([`crate::session_launch`]) — a refusal stops the launch, and
+//!   a placed meta is stamped there, which is the first touch most sessions get;
 //! * `stop` and `end` ([`crate::lifecycle`]) — a refusal is REPORTED and the
 //!   operation continues, because a session that cannot be migrated is exactly
 //!   the one an operator needs to be able to tear down;
@@ -59,6 +66,25 @@ pub const KEY: &str = "meta_version";
 
 /// The shape this core reads and writes.
 pub const CURRENT: u32 = 2;
+
+/// The shape a meta is at when it declares no [`KEY`] but does declare
+/// `schema=2`.
+///
+/// THE PRE-CHAIN v2 SHAPE, and the reason this constant exists. The row was
+/// introduced by the chain, so every session that existed before it has none —
+/// 28 of 28 on the machine this was written on. Refusing those would have meant
+/// that installing the release which added the chain made every running session
+/// unresumable, which is the exact opposite of what the chain is for. A meta
+/// that says `schema=2` has already told us its shape; it simply said it with
+/// the older word. So it is PLACED at 2 and the row is stamped in on first
+/// touch, silently. Only a meta that says NEITHER is the pre-version past.
+const PRE_CHAIN: u32 = 2;
+
+/// The key that carried the shape before [`KEY`] existed.
+const SCHEMA_KEY: &str = "schema";
+
+/// The one value of [`SCHEMA_KEY`] that places a meta.
+const SCHEMA_V2: &str = "2";
 
 /// One link of the chain: a meta at `from`, rewritten to `from + 1`.
 ///
@@ -134,13 +160,49 @@ impl Refusal {
     }
 }
 
-/// A meta the chain moved, and where it moved it from.
+/// What the chain did to a meta that was not already current in writing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stepped {
+    /// It declared no version, `schema=2` placed it at [`PRE_CHAIN`], and the
+    /// row was written in. Nothing else about the meta changed.
+    Stamped,
+    /// It declared `from`, and the chain walked it to [`CURRENT`].
+    From(u32),
+}
+
+/// A meta the chain wrote, and what it did to it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Migrated {
-    /// The version the meta declared before the chain ran.
-    pub from: u32,
+    /// What was done.
+    pub what: Stepped,
     /// The whole meta, at [`CURRENT`].
     pub text: String,
+}
+
+/// The version a meta is at, from the two keys that can say so.
+///
+/// ONE OWNER for the placement rule, because two readers apply it: the chain,
+/// which acts on the answer, and `ae list`, which only reports it. A marker
+/// that called a `schema=2` session "old" while the chain called it current
+/// would be two answers to one question.
+#[must_use]
+pub fn placed(row: Option<&str>, schema: Option<&str>) -> Option<u32> {
+    match row {
+        Some(value) => version_of_row(value).ok(),
+        None => (schema == Some(SCHEMA_V2)).then_some(PRE_CHAIN),
+    }
+}
+
+/// A `meta_version` value, parsed. A plain decimal and nothing else: a `2 ` or
+/// a `v2` is a writer this reader does not know, not a version it may round
+/// down to.
+fn version_of_row(value: &str) -> Result<u32, Refusal> {
+    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(Refusal::Unreadable(format!("{value:?} is not a version")));
+    }
+    value
+        .parse()
+        .map_err(|_| Refusal::Unreadable(format!("{value:?} is out of range")))
 }
 
 /// Step `text` to [`CURRENT`], or say why it cannot be.
@@ -159,12 +221,21 @@ pub struct Migrated {
 /// A [`Refusal`]: an absent, duplicated or unparsable row, a version with no
 /// step, a version ahead of this core, or a step that refused the meta.
 pub fn migrate(text: &str) -> Result<Option<Migrated>, Refusal> {
-    let from = declared(text)?;
-    if from == CURRENT {
-        return Ok(None);
-    }
+    let (from, written) = declared(text)?;
     if from > CURRENT {
         return Err(Refusal::Ahead(from));
+    }
+    if from == CURRENT {
+        if written {
+            return Ok(None);
+        }
+        // PLACED, not stepped: `schema=2` already said this shape with the
+        // older word, so the row is written in and NOTHING else about the meta
+        // is touched.
+        return Ok(Some(Migrated {
+            what: Stepped::Stamped,
+            text: crate::meta::rewritten(text, KEY, Some(&CURRENT.to_string())),
+        }));
     }
     let mut at = from;
     let mut carried = text.to_owned();
@@ -177,14 +248,19 @@ pub fn migrate(text: &str) -> Result<Option<Migrated>, Refusal> {
         carried = crate::meta::rewritten(&carried, KEY, Some(&at.to_string()));
     }
     Ok(Some(Migrated {
-        from,
+        what: Stepped::From(from),
         text: carried,
     }))
 }
 
-/// The version `text` declares.
-fn declared(text: &str) -> Result<u32, Refusal> {
+/// The version `text` is at, and whether it SAYS so in a [`KEY`] row.
+///
+/// `false` means the version came from `schema=2` and the row has still to be
+/// written in.
+fn declared(text: &str) -> Result<(u32, bool), Refusal> {
     let mut found: Option<&str> = None;
+    let mut schema: Option<&str> = None;
+    let mut schemas = 0_u32;
     for record in text.split('\n') {
         // One trailing carriage return is line ENDING, not value — the same
         // rule `Meta::parse` applies. Without it a CRLF meta parses as `2\r`
@@ -200,6 +276,11 @@ fn declared(text: &str) -> Result<u32, Refusal> {
             }
             continue;
         };
+        if key == SCHEMA_KEY {
+            schemas += 1;
+            schema = Some(value);
+            continue;
+        }
         if key != KEY {
             continue;
         }
@@ -210,17 +291,16 @@ fn declared(text: &str) -> Result<u32, Refusal> {
         }
         found = Some(value);
     }
-    let Some(value) = found else {
-        return Err(Refusal::Absent);
-    };
-    // A plain decimal, and nothing else: a `2 ` or a `v2` is a writer this
-    // reader does not know, not a version it may round down to.
-    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
-        return Err(Refusal::Unreadable(format!("{value:?} is not a version")));
+    if let Some(value) = found {
+        return version_of_row(value).map(|version| (version, true));
     }
-    value
-        .parse()
-        .map_err(|_| Refusal::Unreadable(format!("{value:?} is out of range")))
+    // A meta that names `schema` twice has not said which one counts, and
+    // `Meta::parse` invalidates the field for exactly that reason. It places
+    // nothing, so such a meta falls through to the refusal below.
+    let schema = schema.filter(|_| schemas == 1);
+    placed(None, schema)
+        .map(|version| (version, false))
+        .ok_or(Refusal::Absent)
 }
 
 /// Run the chain over the session directory at `dir`, publishing the result
@@ -231,7 +311,7 @@ fn declared(text: &str) -> Result<u32, Refusal> {
 /// # Errors
 ///
 /// A [`Refusal`] — the chain's, or the read/write that could not happen.
-pub fn session(dir: &Path) -> Result<Option<u32>, Refusal> {
+pub fn session(dir: &Path) -> Result<Option<Stepped>, Refusal> {
     let _held = crate::meta::lock(dir).map_err(|why| Refusal::Io(format!("meta.lock: {why}")))?;
     let text = crate::meta::read_base(&dir.join(crate::meta::FILE)).map_err(|why| {
         if why.kind() == std::io::ErrorKind::NotFound {
@@ -245,7 +325,7 @@ pub fn session(dir: &Path) -> Result<Option<u32>, Refusal> {
     };
     crate::meta::publish_locked(dir, &migrated.text)
         .map_err(|why| Refusal::Io(format!("meta could not be written: {}", why.cause())))?;
-    Ok(Some(migrated.from))
+    Ok(Some(migrated.what))
 }
 
 /// Run the chain where a refusal must NOT stop the caller — `stop` and `end`.
@@ -256,8 +336,12 @@ pub fn session(dir: &Path) -> Result<Option<u32>, Refusal> {
 #[must_use]
 pub fn session_noted(dir: &Path, name: &str) -> Option<String> {
     match session(dir) {
-        Ok(None) | Err(Refusal::Missing) => None,
-        Ok(Some(from)) => Some(format!(
+        // A stamp is not news. It is the pre-chain v2 shape being written down
+        // in the words this ae uses, on a session that was always version 2 —
+        // telling the operator about it on every stop and every end would be
+        // noise about a no-op.
+        Ok(None | Some(Stepped::Stamped)) | Err(Refusal::Missing) => None,
+        Ok(Some(Stepped::From(from))) => Some(format!(
             "note: session {name:?} was migrated from {KEY}={from} to {CURRENT}."
         )),
         Err(refusal) => Some(format!("note: {}", refusal.line(name))),
@@ -326,6 +410,10 @@ pub fn onto(root: &Path, core: &Path, version: &str) -> Result<Vec<String>, Stri
     // the operator the sessions that DID move rather than a claim that none
     // did.
     let mut repointed: Vec<String> = Vec::new();
+    // Stamps are COUNTED, not listed: on the release that adds the chain every
+    // session on the machine takes one, and 28 identical lines say less than
+    // one line with a number on it.
+    let mut stamped = 0_usize;
     for name in crate::lifecycle::all_sessions(root) {
         let dir = crate::lifecycle::sessions_dir(root).join(&name);
         // The lifecycle lock, so a resume or an end cannot land inside a
@@ -340,7 +428,10 @@ pub fn onto(root: &Path, core: &Path, version: &str) -> Result<Vec<String>, Stri
         };
         match session(&dir) {
             Ok(None) => {}
-            Ok(Some(from)) => notes.push(format!("migrated {name} from {KEY}={from} to {CURRENT}")),
+            Ok(Some(Stepped::Stamped)) => stamped += 1,
+            Ok(Some(Stepped::From(from))) => {
+                notes.push(format!("migrated {name} from {KEY}={from} to {CURRENT}"));
+            }
             // A directory under `sessions` with no meta is not a session: there
             // is nothing to step, nothing to repoint and no reason to fail an
             // upgrade over it.
@@ -356,6 +447,12 @@ pub fn onto(root: &Path, core: &Path, version: &str) -> Result<Vec<String>, Stri
             .map_err(|why| format!("session {name:?}: {why}.{}", already(&repointed, version)))?;
         repointed.push(name.clone());
         notes.extend(restart_daemons(root, &dir, &name, core, &mut bridges));
+    }
+    if stamped > 0 {
+        notes.insert(
+            0,
+            format!("stamped {KEY}={CURRENT} into {stamped} session(s) that carried only schema=2"),
+        );
     }
     Ok(notes)
 }
@@ -584,8 +681,30 @@ mod tests {
     }
 
     #[test]
+    fn a_meta_that_says_only_schema_2_is_placed_at_two_and_stamped() {
+        // The pre-chain v2 shape, which is what every session predating the
+        // chain actually looks like. Placed, never refused.
+        let text = "mode=local\nschema=2\nseat.main=lead\n";
+        let migrated = migrate(text).expect("placed").expect("a stamp");
+        assert_eq!(migrated.what, Stepped::Stamped);
+        assert_eq!(migrated.text, format!("{text}{KEY}={CURRENT}\n"));
+        // Idempotent, and the placement rule is the one `ae list` uses.
+        assert_eq!(migrate(&migrated.text), Ok(None));
+        assert_eq!(placed(None, Some("2")), Some(CURRENT));
+        assert_eq!(placed(None, Some("3")), None);
+        assert_eq!(placed(None, None), None);
+        assert_eq!(placed(Some("2"), None), Some(2));
+        // A `schema` named twice says nothing, so it places nothing.
+        assert_eq!(
+            migrate("schema=2\nschema=2\n").expect_err("ambiguous"),
+            Refusal::Absent
+        );
+    }
+
+    #[test]
     fn a_meta_with_no_version_row_earns_the_fresh_start_refusal() {
-        let refused = migrate("mode=local\nwork_dir=/w\n").expect_err("the pre-version past");
+        let refused =
+            migrate("mode=local\nwork_dir=/w\nagent.main=lead\n").expect_err("the v1 past");
         assert_eq!(refused, Refusal::Absent);
         let line = refused.line("proj");
         assert!(line.contains("ae end proj"), "{line}");
@@ -596,6 +715,7 @@ mod tests {
     fn a_version_row_that_does_not_say_one_number_is_unreadable() {
         for hostile in [
             "meta_version=2\nmeta_version=2\n",
+            "schema=2\nmeta_version=v2\n",
             "meta_version=\n",
             "meta_version=v2\n",
             "meta_version=2 \n",
@@ -648,7 +768,7 @@ mod tests {
 
     #[test]
     fn the_row_a_launch_writes_reads_back_as_the_current_version() {
-        assert_eq!(declared(&format!("{KEY}={CURRENT}\n")), Ok(CURRENT));
+        assert_eq!(declared(&format!("{KEY}={CURRENT}\n")), Ok((CURRENT, true)));
     }
 
     #[test]

@@ -427,21 +427,20 @@ fn safe_branch(branch: &str) -> Option<&str> {
 
 /// Whether a session records a shape or a core this ae is not.
 ///
-/// Both halves are compared against THIS process: `meta_version` against the
-/// chain's current version, and `ae_core_version` against the version this
-/// binary is. A session ae cannot place at all (no `meta_version`) is behind by
-/// definition. A session that records no core version at all says nothing, so
-/// that half stays silent rather than guessing.
+/// Both halves are compared against THIS process: the version the chain PLACES
+/// the meta at, and `ae_core_version` against the version this binary is. A
+/// session ae cannot place at all — neither `meta_version` nor `schema=2` — is
+/// behind by definition. A session that records no core version at all says
+/// nothing, so that half stays silent rather than guessing.
 ///
 /// The VERSION, never the `ae_core` path — see `meta.rs`'s `CORE_KEY`: a path
 /// comparison marked every session on macOS, where `/tmp` and `/private/tmp`
 /// name one directory.
 pub(crate) fn is_behind(meta: &crate::meta::Meta) -> bool {
-    if meta
-        .meta_version()
-        .and_then(|value| value.parse::<u32>().ok())
-        != Some(crate::migrate::CURRENT)
-    {
+    // PLACED by the chain's own rule, so the marker and the chain give one
+    // answer: a meta with no version row but `schema=2` is the pre-chain v2
+    // shape, which is current, not old.
+    if crate::migrate::placed(meta.meta_version(), meta.schema()) != Some(crate::migrate::CURRENT) {
         return true;
     }
     meta.ae_core_version()
