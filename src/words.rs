@@ -47,26 +47,65 @@
 //! validator before it composes anything, so the two answers cannot drift apart
 //! at run time either.
 
-/// Split `cmd` into words.
+/// One lexed word: what the source said, and what the `exec` receives.
+///
+/// The two are not interchangeable, and which one a question is asked of is a
+/// decision. QUOTING is only visible in [`Word::raw`], and one question turns on
+/// it: is this word a leading `NAME=value` assignment? A shell decides that
+/// before quote removal, so `'A=1' claude` runs a binary named `A=1` rather than
+/// setting `A` — and [`crate::launch_cmd`] decides it the same way, on its own
+/// raw word. [`Word::assignment`] is that answer, computed once here so no
+/// consumer can re-derive it from the value and disagree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Word {
+    /// Byte-exact source span of the word, quoting and escapes included.
+    pub raw: String,
+    /// The word after quote removal and expansion — what is `exec`ed.
+    pub value: String,
+    /// Is this a `NAME=value` assignment *as written*? Decided on
+    /// [`Word::raw`], so a quoted `'A=1'` is a command word, as in bash and as
+    /// in [`crate::launch_cmd::lex_simple_command`].
+    pub assignment: bool,
+}
+
+/// Split `cmd` into words, keeping each word's source span beside its value.
 ///
 /// # Errors
 ///
 /// The reason, ready to print after `ae: `: an unterminated quote, a trailing
 /// backslash, or a shell construct this lexer does not implement.
-pub fn split(cmd: &str, env: &impl Fn(&str) -> Option<String>) -> Result<Vec<String>, String> {
+pub fn split_words(cmd: &str, env: &impl Fn(&str) -> Option<String>) -> Result<Vec<Word>, String> {
     let chars: Vec<char> = cmd.chars().collect();
-    let mut words: Vec<String> = Vec::new();
+    let mut words: Vec<Word> = Vec::new();
     let mut index = 0;
     while index < chars.len() {
         if chars[index] == ' ' || chars[index] == '\t' {
             index += 1;
             continue;
         }
-        let (word, next) = one_word(&chars, index, env)?;
-        words.push(word);
+        let (value, next) = one_word(&chars, index, env)?;
+        let raw: String = chars[index..next].iter().collect();
+        words.push(Word {
+            assignment: crate::launch_cmd::is_assignment(&raw),
+            raw,
+            value,
+        });
         index = next;
     }
     Ok(words)
+}
+
+/// Split `cmd` into the values alone — [`split_words`] for a caller that has no
+/// question about quoting.
+///
+/// # Errors
+///
+/// As [`split_words`].
+pub fn split(cmd: &str, env: &impl Fn(&str) -> Option<String>) -> Result<Vec<String>, String> {
+    Ok(split_words(cmd, env)?
+        .into_iter()
+        .map(|word| word.value)
+        .collect())
 }
 
 /// Lex one word starting at `start`, returning it and the index after it.

@@ -733,6 +733,54 @@ fn a_bare_leading_assignment_is_an_environment_delta_and_never_the_binary() {
 }
 
 #[test]
+fn a_quoted_leading_assignment_is_the_binary_on_both_sides() {
+    // The off-diagonal the peel itself could create: `words` decodes `'A=1'` to
+    // `A=1`, so a peel that re-derives assignment-shape from the VALUE assigns
+    // where `lex_simple_command` — and bash — run a binary of that name. Both
+    // halves are pinned here, on one rig, so the difference is the quoting and
+    // nothing else.
+    let rig = Rig::new("quoted");
+    rig.seat("custom", "");
+
+    rig.only_profile(&format!("'AE_Z2_MARK=set' {} --flag", rig.tool("codex")));
+    let plan = rig.plan();
+    assert!(
+        plan.contains(r#""env_set":{}"#),
+        "a quoted word assigns nothing: {plan}"
+    );
+    assert_eq!(
+        rig.planned_argv()[0],
+        "AE_Z2_MARK=set",
+        "the quoted word IS the binary"
+    );
+    assert_eq!(
+        ae::launch_cmd::lex_simple_command(&format!(
+            "'AE_Z2_MARK=set' {} --flag",
+            rig.tool("codex")
+        ))
+        .map(|parsed| parsed.binary),
+        Ok("AE_Z2_MARK=set".to_owned()),
+        "…which is what the validator says too"
+    );
+    // So the run refuses the way an exec of a missing binary refuses, rather
+    // than silently launching codex with an environment the operator did not
+    // ask for.
+    let out = rig.run_raw(&[]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "{stderr}");
+    assert!(
+        stderr.contains("could not start AE_Z2_MARK=set"),
+        "{stderr}"
+    );
+
+    // The same line WITHOUT the quotes is an ordinary assignment.
+    rig.only_profile(&format!("AE_Z2_MARK=set {} --flag", rig.tool("codex")));
+    let plan = rig.plan();
+    assert!(plan.contains(r#""env_set":{"AE_Z2_MARK":"set"}"#), "{plan}");
+    assert_eq!(rig.planned_argv()[0], rig.tool("codex"), "{plan}");
+}
+
+#[test]
 fn an_env_dash_i_starts_the_tool_from_an_empty_environment() {
     // `-i` was peeled and then dropped, so a profile that asked for a clean
     // environment inherited the pane's whole one.
