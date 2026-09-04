@@ -18,6 +18,20 @@ pub const MANIFEST_MODE: u32 = 0o444;
 /// The journal's own name, inside the ae home it describes.
 pub const JOURNAL: &str = ".ae-install.journal";
 
+/// The publisher's mutual exclusion, beside the journal.
+///
+/// THE JOURNAL IS NOT THIS. The journal is ROLLBACK state: it exists while the
+/// publish is reversible and is removed the moment it commits. Exclusion has to
+/// outlast that, because the version sweep runs AFTER the commit — and with the
+/// journal as the only exclusion, publisher A could remove its journal, let
+/// publisher B publish B and move the command link, and then prune with a
+/// keep-set of {A}, deleting B out from under the live link. Measured with a
+/// delayed-prune probe: an existing target became a missing one.
+pub const LOCK: &str = ".ae-install.lock";
+
+/// How long a publisher waits for another to finish.
+const LOCK_WAIT: std::time::Duration = std::time::Duration::from_mins(1);
+
 /// The journal's format word.
 pub const JOURNAL_FORMAT: &str = "3";
 
@@ -90,6 +104,12 @@ impl Paths {
     #[must_use]
     pub fn journal(&self) -> PathBuf {
         self.home.join(JOURNAL)
+    }
+
+    /// `<home>/.ae-install.lock`.
+    #[must_use]
+    pub fn lock(&self) -> PathBuf {
+        self.home.join(LOCK)
     }
 }
 
@@ -372,8 +392,12 @@ fn core_version(core: &Path) -> Result<String, String> {
         .ok_or_else(|| "the bundle core printed no version line".to_owned())
 }
 
-/// THE FOURTH PRODUCT CROSSING of `clippy.toml`'s `Command` deny, and the only
-/// one that is neither tmux nor an `exec`.
+/// A PRODUCT CROSSING of `clippy.toml`'s `Command` deny — the only one that is
+/// neither tmux nor an `exec`.
+///
+/// Named, not numbered. The ordinals these comments used to carry drifted the
+/// moment a door was added: `tests/it/doors.rs` is the count of record, and it
+/// asks the compiler rather than reading prose.
 fn run_core(core: &Path) -> std::io::Result<std::process::Output> {
     #[allow(
         clippy::disallowed_types,
@@ -549,6 +573,14 @@ pub fn publish(bundle: &Bundle, paths: &Paths) -> Result<Published, String> {
     // B14: creating the home can make a dangling ancestor of the command path
     // live.
     validate_bin_destination(&paths.link, &paths.home)?;
+    // ONE PUBLISHER AT A TIME, from here until after the version sweep. Held
+    // across the commit, not released by it — see [`LOCK`].
+    let _held = crate::state::acquire(&paths.lock(), LOCK_WAIT).map_err(|why| {
+        format!(
+            "another ae install or upgrade is in progress ({}): {why}",
+            paths.lock().display()
+        )
+    })?;
     recover_existing(paths)?;
 
     let (link_had, link_old) = current_link(&paths.link);
@@ -579,6 +611,10 @@ pub fn publish(bundle: &Bundle, paths: &Paths) -> Result<Published, String> {
                     path.display()
                 )
             })?;
+            // STILL UNDER THE PUBLISHER LOCK: the journal is gone, so this
+            // publish is committed and irreversible, but no other publisher may
+            // move the command link while the sweep decides what nothing points
+            // at any more.
             published
                 .notes
                 .extend(crate::migrate::prune_versions(&paths.home, &bundle.version));
@@ -927,6 +963,15 @@ fn append_line(path: &Path, line: &str) -> std::io::Result<()> {
 /// The tree could not be removed even after its members were re-moded.
 pub fn remove_private_tree(path: &Path) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt as _;
+    // A SYMLINK IS NEVER RE-MODED, here or below. `set_permissions` FOLLOWS
+    // one, so chmodding a link changes the mode of whatever it points at —
+    // measured: pruning a version whose member linked to an external 0600 file
+    // left that file 0644, and a link to another installed core would have
+    // stripped its published mode. Only a verified real member is chmodded; a
+    // link is simply unlinked, which needs no mode on the link at all.
+    if door::lstat(path).is_ok_and(|meta| meta.file_type().is_symlink()) {
+        return std::fs::remove_file(path);
+    }
     let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755));
     #[allow(
         clippy::disallowed_methods,
@@ -936,7 +981,12 @@ pub fn remove_private_tree(path: &Path) -> std::io::Result<()> {
     if let Ok(entries) = entries {
         for entry in entries.flatten() {
             let child = entry.path();
-            if door::lstat(&child).is_ok_and(|meta| meta.file_type().is_dir()) {
+            let Ok(meta) = door::lstat(&child) else {
+                continue;
+            };
+            if meta.file_type().is_symlink() {
+                let _ = std::fs::remove_file(&child);
+            } else if meta.file_type().is_dir() {
                 remove_private_tree(&child)?;
             } else {
                 let _ = std::fs::set_permissions(&child, std::fs::Permissions::from_mode(0o644));

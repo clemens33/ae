@@ -142,30 +142,47 @@ pub(crate) fn kill_verified(
 /// `list_ae_sessions` + `iter_stopped_sessions` union that `end all` and
 /// `stop all` enumerate, in directory order made deterministic by a sort.
 pub(crate) fn all_sessions(root: &Path) -> Vec<String> {
+    census(root).unwrap_or_default()
+}
+
+/// [`all_sessions`], but a census that could not be TAKEN says so.
+///
+/// The difference is not cosmetic, and it is why this exists. `end all` and
+/// `stop all` may treat an unreadable sessions root as nothing to do: they act
+/// on what they found, and finding nothing means doing nothing. The upgrade
+/// sweep may NOT. It decides which version directories no session records any
+/// more, and an empty answer there authorises DELETING the core a session is
+/// running on — measured: with the sessions root at mode 000 the publish
+/// returned success, removed the old version, and left every meta naming a file
+/// that was gone. A census that failed and a census that found nothing must
+/// therefore be different values.
+///
+/// An entry whose `file_type` cannot be read is a failure too, for the same
+/// reason: skipping it silently drops a session from the keep-set.
+///
+/// # Errors
+///
+/// The underlying [`io::Error`] — the root could not be enumerated, or one of
+/// its entries could not be classified.
+pub(crate) fn census(root: &Path) -> io::Result<Vec<String>> {
     #[allow(
         clippy::disallowed_methods,
         reason = "a door: `end all` / `stop all` enumerate the sessions root — the frozen list_ae_sessions + iter_stopped_sessions union"
     )]
-    let entries = fs::read_dir(sessions_dir(root));
-    let Ok(entries) = entries else {
-        return Vec::new();
-    };
-    let mut names: Vec<String> = entries
-        .flatten()
-        .filter_map(|entry| {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            if name.starts_with('.') {
-                return None;
-            }
-            entry
-                .file_type()
-                .ok()
-                .filter(std::fs::FileType::is_dir)
-                .map(|_| name)
-        })
-        .collect();
+    let entries = fs::read_dir(sessions_dir(root))?;
+    let mut names: Vec<String> = Vec::new();
+    for entry in entries {
+        let entry = entry?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with('.') {
+            continue;
+        }
+        if entry.file_type()?.is_dir() {
+            names.push(name);
+        }
+    }
     names.sort();
-    names
+    Ok(names)
 }
 
 /// Whether `path` is a directory, following symlinks.

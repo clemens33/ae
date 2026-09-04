@@ -307,6 +307,132 @@ fn the_version_sweep_keeps_the_published_one_and_every_one_a_session_records() {
     assert!(notes[0].contains("2026.1.1"), "{notes:?}");
 }
 
+#[test]
+fn an_unreadable_sessions_root_stops_the_version_sweep_rather_than_emptying_it() {
+    // BLOCKER: a census that FAILED is not a census that found nothing. With
+    // the sessions root unreadable, an inventory that swallowed the error
+    // returned no sessions, so nothing "recorded" the old version and the
+    // publish deleted the core every session was running on.
+    let rig = Rig::new("blindprune");
+    let stale = rig.plant_version("2026.1.1");
+    rig.session(
+        "held",
+        &stale.join("ae-core").to_string_lossy(),
+        Some(ae::migrate::CURRENT),
+    );
+    let sessions = rig.root().join("sessions");
+    assert!(
+        fs::set_permissions(&sessions, fs::Permissions::from_mode(0o000)).is_ok(),
+        "an unreadable sessions root"
+    );
+
+    let notes = ae::migrate::prune_versions(&rig.root(), "2026.9.9");
+    let _ = fs::set_permissions(&sessions, fs::Permissions::from_mode(0o755));
+
+    assert!(
+        present(&stale),
+        "a pinned version was deleted blind: {notes:?}"
+    );
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    assert!(notes[0].starts_with("WARNING:"), "{notes:?}");
+    assert!(notes[0].contains("could not be enumerated"), "{notes:?}");
+}
+
+#[test]
+fn a_meta_the_sweep_cannot_read_stops_it_too_rather_than_being_skipped() {
+    // The same rule one level down: a session whose pin is unreadable has not
+    // been ruled OUT of use, and pruning past it is guessing.
+    let rig = Rig::new("blindmeta");
+    let stale = rig.plant_version("2026.1.1");
+    let dir = rig.session(
+        "opaque",
+        &stale.join("ae-core").to_string_lossy(),
+        Some(ae::migrate::CURRENT),
+    );
+    let meta = dir.join("meta");
+    assert!(
+        fs::set_permissions(&meta, fs::Permissions::from_mode(0o000)).is_ok(),
+        "an unreadable meta"
+    );
+
+    let notes = ae::migrate::prune_versions(&rig.root(), "2026.9.9");
+    let _ = fs::set_permissions(&meta, fs::Permissions::from_mode(0o644));
+
+    assert!(
+        present(&stale),
+        "a version was pruned past an unreadable pin"
+    );
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    assert!(
+        notes[0].contains("opaque"),
+        "the warning names no session: {notes:?}"
+    );
+}
+
+#[test]
+fn a_state_root_with_no_sessions_directory_still_sweeps_old_versions() {
+    // The other side of the fallible census: "could not look" must refuse, but
+    // a state root that has never had a session is not that. It is a first
+    // install, and refusing there would leave every fresh machine accumulating
+    // version directories forever.
+    let rig = Rig::new("firstinstall");
+    let stale = rig.plant_version("2026.1.1");
+    assert!(
+        !rig.root().join("sessions").exists(),
+        "the rig planted a sessions root"
+    );
+
+    let notes = ae::migrate::prune_versions(&rig.root(), "2026.9.9");
+    assert!(!present(&stale), "nothing was swept: {notes:?}");
+    assert!(
+        notes.iter().all(|note| !note.starts_with("WARNING:")),
+        "a missing sessions root was read as unreadable: {notes:?}"
+    );
+}
+
+#[test]
+fn the_version_sweep_never_re_modes_a_symlink_it_removes() {
+    // `set_permissions` FOLLOWS a link, so re-moding a version's members before
+    // unlinking them reached OUT of the directory being removed: an external
+    // 0600 file came back 0644, and a link to another installed core would have
+    // lost its published mode.
+    let rig = Rig::new("symmode");
+    let outside = rig.scratch.join("private");
+    assert!(
+        fs::write(
+            &outside, "secret
+"
+        )
+        .is_ok(),
+        "an external file"
+    );
+    assert!(
+        fs::set_permissions(&outside, fs::Permissions::from_mode(0o600)).is_ok(),
+        "its own mode"
+    );
+    let stale = rig.plant_version("2026.1.1");
+    assert!(
+        std::os::unix::fs::symlink(&outside, stale.join("pointer")).is_ok(),
+        "a member that is a link out"
+    );
+
+    let notes = ae::migrate::prune_versions(&rig.root(), "2026.9.9");
+    assert!(!present(&stale), "the version was not removed: {notes:?}");
+    assert!(
+        present(&outside),
+        "the sweep followed the link and deleted through it"
+    );
+    assert_eq!(
+        fs::symlink_metadata(&outside)
+            .expect("the external file")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o600,
+        "the sweep chmodded through a symlink"
+    );
+}
+
 // ─── the publish, black-box ──────────────────────────────────────────────
 
 #[test]
@@ -480,6 +606,87 @@ fn a_refusal_late_in_the_sweep_leaves_the_sessions_before_it_untouched() {
         meta_of(&early),
         before,
         "a session before the refusal was repointed anyway"
+    );
+}
+
+#[test]
+fn a_session_whose_helpers_cannot_be_relinked_is_reported_as_partially_relinked() {
+    // The meta is rewritten BEFORE the helpers are, so a helper failure leaves
+    // that session repointed. Reporting it as untouched — which is what
+    // recording the repoint after the helpers did — sends the operator looking
+    // in the wrong place, and the sessions that DID move go unnamed with it.
+    let rig = Rig::new("partial");
+    let (code, stdout, stderr) = rig.install(&rig.bundle("2026.9.9"));
+    assert_eq!(code, Some(0), "the first install failed: {stdout}{stderr}");
+    let first = rig.versions().join("2026.9.9").join("ae-core");
+
+    rig.session("aaa", &first.to_string_lossy(), Some(ae::migrate::CURRENT));
+    let blocked = rig.session("zzz", &first.to_string_lossy(), Some(ae::migrate::CURRENT));
+    // A helper name occupied by a directory that is not empty: `send` cannot be
+    // unlinked and cannot be replaced by a symlink.
+    let occupied = blocked.join("send");
+    assert!(
+        fs::create_dir_all(&occupied).is_ok(),
+        "an occupied helper name"
+    );
+    assert!(fs::write(occupied.join("keep"), "x").is_ok(), "its content");
+
+    let (code, stdout, stderr) = rig.install(&rig.bundle("2026.9.10"));
+    assert_eq!(code, Some(1), "the publish did not fail: {stdout}{stderr}");
+    assert!(
+        stderr.contains("PARTIALLY relinked"),
+        "the abort does not say the session moved half way: {stderr}"
+    );
+    // The COUNT is the finding: the half-moved session has to appear in the
+    // list of sessions that already name the new version, alongside the one
+    // that moved whole. Recording the repoint after the helpers rather than
+    // before them leaves it out, and an operator reads "aaa" and stops there.
+    assert!(
+        stderr.contains("2 session(s) already name 2026.9.10: aaa, zzz"),
+        "the abort does not count the half-moved session among the moved: {stderr}"
+    );
+    assert_eq!(
+        value_of(&meta_of(&blocked), "ae_core_version").as_deref(),
+        Some("2026.9.10"),
+        "the fixture did not reach the helper step"
+    );
+    assert!(
+        std::fs::read_link(rig.link())
+            .is_ok_and(|target| target.starts_with(rig.versions().join("2026.9.9"))),
+        "the command link moved despite the abort"
+    );
+}
+
+// ─── the namespace a publish would actually write to ─────────────────────
+
+#[test]
+fn a_checkout_run_whose_state_root_is_elsewhere_refuses_to_upgrade() {
+    // A publish is `$HOME`-pinned: it writes `$HOME/.ae` and repoints
+    // `$HOME/.local/bin/ae`, whatever `AE_HOME` says. So a checkout build
+    // pointed at a second namespace and asked to upgrade would have migrated,
+    // repointed and PRUNED the sessions of the other root. It refuses instead,
+    // naming both, and it does so before anything is downloaded.
+    let (mut command, dir) = super::cli::ae_hermetic();
+    let elsewhere = dir.join("elsewhere");
+    let out = command
+        .env("AE_HOME", &elsewhere)
+        .arg("upgrade")
+        .output()
+        .unwrap_or_else(|why| panic!("the product binary should run: {why}"));
+
+    assert_eq!(out.status.code(), Some(2), "{:?}", out.status);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains(&elsewhere.to_string_lossy().into_owned()),
+        "the refusal does not name the state root in use: {stderr}"
+    );
+    assert!(
+        stderr.contains(&dir.join(".ae").to_string_lossy().into_owned()),
+        "the refusal does not name the root a publish would write: {stderr}"
+    );
+    assert!(
+        !present(&elsewhere) && !present(&dir.join(".ae")),
+        "the refusal wrote to one of the roots it named"
     );
 }
 

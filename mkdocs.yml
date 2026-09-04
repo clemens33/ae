@@ -61,6 +61,7 @@ nav:
       - Events: internals/events.md
       - Bridge protocol: internals/bridge-protocol.md
       - Monitor window: internals/monitor.md
+  - Upgrades: upgrade.md
   - Troubleshooting: troubleshooting.md
   - Development: development.md
 

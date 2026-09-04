@@ -359,6 +359,22 @@ const CORE_ROWS: [&str; 2] = ["ae_core", "ae_core_version"];
 /// delete would leave a session naming a binary that is gone.
 const LEGACY_PATH_ROW: &str = "ae_path";
 
+/// [`crate::lifecycle::census`] with ONE failure downgraded: a state root with
+/// no `sessions/` directory at all has no sessions, and saying so is not a
+/// guess. That is a first install, and it is the one reading where "found
+/// nothing" and "could not look" genuinely coincide. Every other error stays an
+/// error, because it means the directory is there and ae could not read it.
+///
+/// # Errors
+///
+/// Whatever the census hit, unless it was a missing sessions root.
+fn taken(root: &Path) -> std::io::Result<Vec<String>> {
+    match crate::lifecycle::census(root) {
+        Err(why) if why.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        other => other,
+    }
+}
+
 /// Bring every session under `root` onto `core`, and restart the daemons of
 /// the running ones.
 ///
@@ -383,8 +399,14 @@ pub fn onto(root: &Path, core: &Path, version: &str) -> Result<Vec<String>, Stri
     // could repoint the first sessions and then refuse on the fourth, leaving
     // them pointing into a version directory the publish is about to roll back
     // — which is the one outcome "aborts before the repoint" must not mean.
-    for name in crate::lifecycle::all_sessions(root) {
-        let dir = crate::lifecycle::sessions_dir(root).join(&name);
+    let census = taken(root).map_err(|why| {
+        format!(
+            "the sessions under {} could not be enumerated ({why}); nothing was migrated and the ae command was not moved",
+            crate::lifecycle::sessions_dir(root).display()
+        )
+    })?;
+    for name in &census {
+        let dir = crate::lifecycle::sessions_dir(root).join(name);
         let text = match crate::meta::read_bytes(&dir) {
             Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
             // No meta, or one this process cannot read: pass two decides what
@@ -395,10 +417,10 @@ pub fn onto(root: &Path, core: &Path, version: &str) -> Result<Vec<String>, Stri
             // already repointed every session before this one.
             Err(why) if why.kind() == std::io::ErrorKind::NotFound => continue,
             Err(why) => {
-                return Err(Refusal::Io(format!("meta could not be read: {why}")).line(&name));
+                return Err(Refusal::Io(format!("meta could not be read: {why}")).line(name));
             }
         };
-        migrate(&text).map_err(|refusal| refusal.line(&name))?;
+        migrate(&text).map_err(|refusal| refusal.line(name))?;
     }
 
     let mut notes = Vec::new();
@@ -414,7 +436,7 @@ pub fn onto(root: &Path, core: &Path, version: &str) -> Result<Vec<String>, Stri
     // session on the machine takes one, and 28 identical lines say less than
     // one line with a number on it.
     let mut stamped = 0_usize;
-    for name in crate::lifecycle::all_sessions(root) {
+    for name in census {
         let dir = crate::lifecycle::sessions_dir(root).join(&name);
         // The lifecycle lock, so a resume or an end cannot land inside a
         // migration. A session whose lock is held is a session in the middle
@@ -439,13 +461,28 @@ pub fn onto(root: &Path, core: &Path, version: &str) -> Result<Vec<String>, Stri
                 notes.push(format!("skipped {name}: no meta"));
                 continue;
             }
-            Err(refusal) => return Err(refusal.line(&name)),
+            Err(refusal) => {
+                return Err(format!(
+                    "{}{}",
+                    refusal.line(&name),
+                    already(&repointed, version)
+                ));
+            }
         }
         repoint(&dir, core, version)
             .map_err(|why| format!("session {name:?}: {why}.{}", already(&repointed, version)))?;
-        crate::session_launch::assets::write_helpers(&dir, core)
-            .map_err(|why| format!("session {name:?}: {why}.{}", already(&repointed, version)))?;
+        // RECORDED HERE, not after the helpers. The meta already names the new
+        // core at this point, so a helper failure below leaves this session
+        // repointed — reporting it as untouched would send an operator looking
+        // in the wrong place.
         repointed.push(name.clone());
+        crate::session_launch::assets::write_helpers(&dir, core).map_err(|why| {
+            format!(
+                "session {name:?}: {why}. Its meta already names {version} while some of its \
+                 helpers still name the old core, so it is PARTIALLY relinked.{}",
+                already(&repointed, version)
+            )
+        })?;
         notes.extend(restart_daemons(root, &dir, &name, core, &mut bridges));
     }
     if stamped > 0 {
@@ -590,10 +627,33 @@ fn restart_watchdog(root: &Path, server: &ServerId, name: &str, dir: &Path) -> S
 #[must_use]
 pub fn prune_versions(root: &Path, published: &str) -> Vec<String> {
     let mut keep: Vec<String> = vec![published.to_owned()];
-    for name in crate::lifecycle::all_sessions(root) {
+    // A CENSUS THAT FAILED IS NOT AN EMPTY CENSUS. Everything below decides
+    // what to DELETE from what it did not find, so a keep-set built from a
+    // partial reading is a keep-set that authorises removing the core a session
+    // is running on. Both the enumeration and every meta read are therefore
+    // fatal to the whole sweep, not to one entry: the sweep is skipped and the
+    // operator is told, which costs disk space and nothing else.
+    let census = match taken(root) {
+        Ok(census) => census,
+        Err(why) => {
+            return vec![format!(
+                "WARNING: no version was removed — the sessions root could not be enumerated ({why}), so ae cannot tell which versions are still in use"
+            )];
+        }
+    };
+    for name in census {
         let dir = crate::lifecycle::sessions_dir(root).join(&name);
-        let Ok(bytes) = crate::meta::read_bytes(&dir) else {
-            continue;
+        let bytes = match crate::meta::read_bytes(&dir) {
+            Ok(bytes) => bytes,
+            // A directory with no meta records no core. Anything else is a
+            // session whose pin ae could not read, and pruning past it would be
+            // guessing.
+            Err(why) if why.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(why) => {
+                return vec![format!(
+                    "WARNING: no version was removed — session {name:?} has a meta ae could not read ({why}), so its core cannot be ruled out of use"
+                )];
+            }
         };
         let Some(value) = crate::meta::first_value(&bytes, CORE_ROWS[0]) else {
             continue;

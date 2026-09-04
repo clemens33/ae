@@ -214,7 +214,7 @@ fn fetch(agent: &ureq::Agent, url: &str, cap: u64) -> Result<Vec<u8>, String> {
 
 // ─── extraction ──────────────────────────────────────────────────────────
 
-/// THE FIFTH PRODUCT CROSSING of `clippy.toml`'s `Command` deny.
+/// A PRODUCT CROSSING of `clippy.toml`'s `Command` deny — the archive door.
 fn tar(args: &[&str]) -> std::io::Result<std::process::Output> {
     #[allow(
         clippy::disallowed_types,
@@ -278,6 +278,19 @@ pub fn run(
         err.flush()?;
         return Ok(crate::entry::EXIT_USAGE);
     };
+    // BEFORE THE DOWNLOAD AND BEFORE ANY MUTATION. A publish is `$HOME`-pinned
+    // end to end, and it is no longer only a file copy: it migrates, repoints
+    // and relinks every session under `$HOME/.ae` and then deletes version
+    // directories there. A checkout run whose state root is somewhere else —
+    // `ae-dev` is the whole point of that door — would therefore reach straight
+    // past its own namespace into the real fleet. That was documented and not
+    // prevented, which is not good enough now that a publish writes to every
+    // session it finds.
+    if let Some(escape) = namespace_escape(&home) {
+        writeln!(err, "{escape}")?;
+        err.flush()?;
+        return Ok(crate::entry::EXIT_USAGE);
+    }
     match upgrade(&home, out) {
         Ok(published) => {
             for note in &published.notes {
@@ -299,6 +312,34 @@ pub fn run(
             Ok(crate::entry::EXIT_FAILED)
         }
     }
+}
+
+/// The refusal a checkout run earns when its state root is not the one a
+/// publish would write to, or `None` when the two agree.
+///
+/// Only the CHECKOUT shape can differ: an installed ae ignores `AE_HOME`
+/// outright, and the bootstrap runs the bundle's own core with a plain `$HOME`.
+/// So this refuses exactly the case where an operator pointed ae at a second
+/// namespace and then asked it to upgrade — and it names both roots, because
+/// the whole confusion is that they are not the same.
+fn namespace_escape(home: &Path) -> Option<String> {
+    let shape = crate::shape::current();
+    if !shape.honours_environment() {
+        return None;
+    }
+    let pinned = home.join(".ae");
+    let effective = crate::doors::state_root(shape)?;
+    if effective == pinned {
+        return None;
+    }
+    Some(format!(
+        "ae: refusing to upgrade — this is a checkout build whose state root is {}, \
+         but a publish always writes to {} and would migrate, repoint and prune the \
+         sessions THERE.\nae: run the installed ae ({}) to upgrade it, or unset AE_HOME.",
+        effective.display(),
+        pinned.display(),
+        home.join(".local").join("bin").join("ae").display()
+    ))
 }
 
 /// Download, verify, extract, publish.
@@ -394,7 +435,7 @@ fn delegate(root: &Path, home: &Path, version: &str) -> Result<crate::install::P
     })
 }
 
-/// THE SIXTH PRODUCT CROSSING of `clippy.toml`'s `Command` deny.
+/// A PRODUCT CROSSING of `clippy.toml`'s `Command` deny — the handover door.
 fn run_core(core: &Path, root: &Path, home: &Path) -> std::io::Result<std::process::Output> {
     #[allow(
         clippy::disallowed_types,

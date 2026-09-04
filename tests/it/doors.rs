@@ -308,7 +308,7 @@ fn the_lint_relaxations_this_counter_can_see_are_the_expected_ones() {
         }
     }
 
-    // Eighteen relaxations over ten files, each for a job no library call can
+    // Nineteen relaxations over ten files, each for a job no library call can
     // do. The PRODUCT's five: `src/transport.rs`, because a tmux multiplexer
     // that cannot run tmux answers `unknown` about everything; `src/run.rs`,
     // the pane's own `exec` of its tool; `src/upgrade.rs` TWICE — `tar`, to
@@ -318,15 +318,17 @@ fn the_lint_relaxations_this_counter_can_see_are_the_expected_ones() {
     // `src/install.rs`, which runs the digest-verified bundle core once to ask
     // which version it is, because the directory is named for that answer.
     //
-    // The suite's thirteen: the parity harness's one, which must never judge a
+    // The suite's fourteen: the parity harness's one, which must never judge a
     // lane; `cli.rs`'s five, which drive the PRODUCT binary (`ae`), make the
     // one special file safe std cannot (`mkfifo`, and an ungated open on it is
     // what the `-f` gates exist to refuse), start a helper AS its own name
     // (`helper_by_name`, since a helper's identity IS `argv[0]`), build a real
     // repo (`git_in`), and run a written shim BY PATH (`helper`);
-    // `install.rs`'s three, an install being what a real process does to a
-    // real `$HOME`, plus `bash` over the repository's own `install` and `tar`
-    // to pack the fixture bundle its shimmed `curl` serves; `shape.rs`'s two,
+    // `install.rs`'s four: an install being what a real process does to a real
+    // `$HOME`, a SECOND publisher started while the first still runs, an
+    // `upgrade` refusal being a real process's exit status, and the bootstrap,
+    // which is `bash` over the repository's own `install` with `tar` packing
+    // the fixture bundle its shimmed `curl` serves; `shape.rs`'s two,
     // which plant a COPY of the binary in a fixture version directory because
     // the fact under test is where the binary SITS; `migrate.rs`'s one, which
     // publishes into a real `$HOME` to prove that a real install repoints real
@@ -344,7 +346,7 @@ fn the_lint_relaxations_this_counter_can_see_are_the_expected_ones() {
             ("src/upgrade.rs".to_owned(), 2),
             ("tests/it/cli.rs".to_owned(), 5),
             ("tests/it/doors.rs".to_owned(), 1),
-            ("tests/it/install.rs".to_owned(), 3),
+            ("tests/it/install.rs".to_owned(), 4),
             ("tests/it/migrate.rs".to_owned(), 1),
             ("tests/it/parity.rs".to_owned(), 1),
             ("tests/it/shape.rs".to_owned(), 2),

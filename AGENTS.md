@@ -62,6 +62,12 @@ The loop, in order:
 5. `just release` — local, one machine: gates, CalVer bump, both bundles, tag, push,
    assets. Nothing waits on a runner.
 
+An upgrade is not a binary swap: it migrates, repoints and relinks EVERY session before it
+moves the command link, then prunes unreferenced versions. A publish is `$HOME`-pinned, so a
+checkout run whose state root differs REFUSES `ae upgrade` before downloading anything.
+Live upgrade probes therefore go in a sandboxed `$HOME`, never `ae-dev`. Why:
+[docs/upgrade.md](docs/upgrade.md).
+
 Other rules of the loop:
 
 - **Live probes go in the `ae-dev` namespace** — `~/.local/bin/ae-dev`: own `~/.ae-dev` home
@@ -82,9 +88,10 @@ Other rules of the loop:
 
 - `unsafe_code` is **forbid**. There is no exception worth having.
 - No `unwrap()` / `expect()` in production code. `-D warnings` makes it fail the gate.
-- No `std::process::Command` outside the enumerated doors. The PRODUCT has four —
-  `src/transport.rs`, `src/run.rs`, `src/upgrade.rs`, `src/install.rs` — and the suite has
-  twelve, across `tests/it/`'s `cli.rs`, `install.rs`, `shape.rs`, `parity.rs` and `doors.rs`.
+- No `std::process::Command` outside the enumerated doors. The PRODUCT has five sites over
+  four files — `src/transport.rs`, `src/run.rs`, `src/upgrade.rs` (TWICE: `tar`, and the
+  downloaded core's own `_install`), `src/install.rs` — and the suite has fourteen, across
+  `tests/it/`'s `cli.rs`, `install.rs`, `migrate.rs`, `shape.rs`, `parity.rs` and `doors.rs`.
   `tests/it/doors.rs` pins the exact per-file counts, so a new door is a review, not a diff.
   Same for the world-reading methods in `clippy.toml`'s `disallowed-methods`: each lives at a
   named door carrying its reason.
@@ -135,40 +142,6 @@ Pins, not channels. CI, laptop and agent sandbox must resolve to the same compil
 | `just rust-mutants` | does the suite discriminate? CI runs it diff-bounded per push. `rust-cov` reports, never gates |
 | `just rust-build-release` / `bundles` | native release binary (native only, a bare clone must build) / both platform bundles + `SHA256SUMS` into `dist/` (needs the musl cross toolchain) |
 | `just release` | the whole release, locally. Pre-flight refuses before any state is written |
-
-`ae upgrade` (and `ae _install`, the same publish) is not only a binary swap: between the
-new version directory and the repointed link it migrates EVERY session under
-`<HOME>/.ae/sessions`, running or stopped — the chain, then `ae_core`/`ae_core_version`/
-`ae_version` rewritten, then the helper links re-rendered, then the watchdog and the
-Telegram bridge of a running one restarted on the new core. Agent panes are never touched:
-they run the agent tool, not ae.
-
-`<HOME>/.ae`, not `<AE_HOME>`. A publish is `$HOME`-pinned end to end — the version
-directories and `~/.local/bin/ae` are — and in the INSTALLED shape, the only one an upgrade
-happens in, the two are the same directory. A checkout run with `AE_HOME` elsewhere would
-publish into `$HOME/.ae` and migrate the sessions there; that is why a live upgrade probe
-belongs in a sandboxed `$HOME`, not in the `ae-dev` namespace.
-
-The row is younger than the sessions, so most metas do not carry one yet: a meta that says
-`schema=2` has already given its shape in the older word, is PLACED at 2, and gets the row
-stamped in silently on first touch. Only a meta that says NEITHER is refused. Getting this
-backwards would have made the release that adds the chain the release that made every
-running session unresumable.
-
-Nothing is written until every session has been asked, so a session that cannot be migrated
-aborts the publish, by name, with the old link intact and no session repointed. After the
-journal is removed — not before, because the prune can otherwise delete the rollback target
-the journal names — every unreferenced `versions/<V>` is deleted, so there is one installed
-version and no relink-to-yesterday rollback. `ae list` marks a session the publish did not
-reach.
-
-**`ae upgrade` hands the publish to the DOWNLOADED core** (`<bundle>/ae-core _install
---from`), the way the `install` bootstrap already does. The migration steps for versions
-N..M live in the core being INSTALLED; a publish run in-process by the OLD core would
-migrate with the rules of the release it is replacing, and on the first real schema change
-would have no step to run at all. One consequence is unavoidable and one-time: upgrading
-FROM a core that predates this ruling runs that core's publish, which has no sweep, so those
-sessions arrive unmigrated and are refused on resume until they are ended.
 
 ## Session helpers
 
