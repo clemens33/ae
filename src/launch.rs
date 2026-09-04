@@ -433,13 +433,55 @@ fn publish(dest: &Path, bytes: &[u8], mode: u32) -> Result<(), String> {
 // ---- the initial user turn ------------------------------------------------
 
 /// The first USER message a tool needs, for tools whose context does not ride
-/// a system-prompt channel — the frozen `initial_prompt_for_cmd`.
+/// a system-prompt channel — the frozen `initial_prompt_for_cmd`, reworded.
+///
+/// **codex needs a turn, and the turn must be PASSIVE.** Measured against
+/// codex-cli 0.153.2 on 2026-09-04, launched with ae's exact argv shape but no
+/// positional prompt: after 30s NO rollout exists under
+/// `~/.codex/sessions/<day>/` at all, and the TUI header carries no session id
+/// either — so neither the launch-token scan nor the header scrape has anything
+/// to find, and the seat's `harness_session` would stay `pending` for good. The
+/// first USER turn is what makes the rollout exist; that is why this turn is
+/// sent, and why it cannot simply be dropped.
+///
+/// The wording is the other half of the measurement. It used to be the bare
+/// word `Go` — an imperative with no object, which codex obeyed by inventing
+/// work for itself. So the turn now names the ONE action it exists to cause,
+/// the `_register-sid` handshake, and then tells the agent to wait. It is the
+/// user-turn twin of `WAIT_SUFFIX`, which does the same job for the tools whose
+/// whole context arrives as a turn.
+///
+/// The command is spelled out here rather than referred to, because a turn that
+/// points at the system prompt is a turn the agent has to go looking for.
 #[must_use]
-pub const fn initial_prompt_for(tool: ToolKind) -> &'static str {
-    match tool {
-        ToolKind::Codex => "Go",
-        _ => "",
+pub fn initial_prompt_for(tool: ToolKind, meta_dir: &Path, slot: &str) -> String {
+    if !matches!(tool, ToolKind::Codex) {
+        return String::new();
     }
+    let slot_arg = if slot.is_empty() {
+        String::new()
+    } else {
+        format!(" {slot}")
+    };
+    format!(
+        "ae: this is your workspace context, delivered at start. Run {}/_register-sid{slot_arg} once so this session can resume, then WAIT — do not start any work until a task arrives from the human or a peer.",
+        meta_dir.display()
+    )
+}
+
+/// The spawn turn: the passive launch turn, then the brief it is waiting for.
+///
+/// A spawn's brief rides the SAME turn as the launch prompt for codex, and only
+/// for codex — every other tool takes its context on a separate channel and its
+/// brief as a second, pasted turn. So the join has to say that the task the
+/// launch turn told the agent to wait for is the text right after it; a bare
+/// separator leaves the agent holding a "WAIT" and a task at once.
+#[must_use]
+pub fn initial_turn_with_brief(prompt: &str, brief: &str) -> String {
+    if prompt.is_empty() {
+        return String::new();
+    }
+    format!("{prompt} --- That task has arrived, from the peer that spawned you: {brief}")
 }
 
 // ---- the resume predicate -------------------------------------------------
@@ -490,8 +532,8 @@ pub fn build_launch_command(cmd: &str, prompt: &str) -> String {
 mod tests {
     use super::{
         PENDING, build_launch_command, generate_uuid, id_probeable, initial_prompt_for,
-        inject_ae_context, inject_session_id, opencode_context_files, shell_quote,
-        strip_agy_session_flags, strip_grok_session_flags, strip_session_flags,
+        initial_turn_with_brief, inject_ae_context, inject_session_id, opencode_context_files,
+        shell_quote, strip_agy_session_flags, strip_grok_session_flags, strip_session_flags,
     };
     use crate::launch_cmd::ToolKind;
     use std::path::PathBuf;
@@ -662,8 +704,23 @@ mod tests {
     }
 
     #[test]
-    fn only_codex_needs_a_first_user_turn() {
-        assert_eq!(initial_prompt_for(ToolKind::Codex), "Go");
+    fn only_codex_needs_a_first_user_turn_and_that_turn_is_passive() {
+        let dir = PathBuf::from("/meta");
+        let turn = initial_prompt_for(ToolKind::Codex, &dir, "spawned.0");
+        // The ONE action the turn exists to cause, spelled out rather than
+        // referred to — codex creates no rollout until a user turn lands.
+        assert!(turn.contains("/meta/_register-sid spawned.0"), "{turn}");
+        // And nothing else: the bare `Go` it replaced made codex invent work.
+        assert!(
+            turn.contains("do not start any work until a task arrives"),
+            "{turn}"
+        );
+        assert!(!turn.starts_with("Go"), "{turn}");
+        // An empty slot leaves the command bare rather than trailing a space.
+        assert!(
+            initial_prompt_for(ToolKind::Codex, &dir, "").contains("/meta/_register-sid once"),
+            "no slot, no argument"
+        );
         for tool in [
             ToolKind::Claude,
             ToolKind::Gemini,
@@ -672,8 +729,25 @@ mod tests {
             ToolKind::OpenCode,
             ToolKind::Unknown,
         ] {
-            assert_eq!(initial_prompt_for(tool), "", "{tool:?}");
+            assert_eq!(initial_prompt_for(tool, &dir, "spawned.0"), "", "{tool:?}");
         }
+    }
+
+    #[test]
+    fn a_spawn_brief_arrives_as_the_task_the_passive_turn_waits_for() {
+        let dir = PathBuf::from("/meta");
+        let turn = initial_prompt_for(ToolKind::Codex, &dir, "spawned.1");
+        let joined = initial_turn_with_brief(&turn, "review the diff");
+        assert!(joined.starts_with(&turn), "{joined}");
+        assert!(
+            joined.ends_with(
+                "That task has arrived, from the peer that spawned you: review the diff"
+            ),
+            "{joined}"
+        );
+        // A tool with no first turn has no joined turn either: its brief is
+        // pasted separately.
+        assert_eq!(initial_turn_with_brief("", "review the diff"), "");
     }
 
     #[test]
@@ -685,8 +759,8 @@ mod tests {
         );
         // codex: the generic tail with the inline first message quoted onto it.
         assert_eq!(
-            build_launch_command("codex -c developer_instructions='x'", "Go --- task"),
-            "codex -c developer_instructions='x' 'Go --- task'"
+            build_launch_command("codex -c developer_instructions='x'", "ae: ctx --- task"),
+            "codex -c developer_instructions='x' 'ae: ctx --- task'"
         );
         // opencode: returned untouched — its context rides OPENCODE_CONFIG and
         // there is nothing to paste.

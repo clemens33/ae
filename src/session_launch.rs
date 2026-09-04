@@ -988,11 +988,13 @@ fn build(
                 PENDING.to_owned()
             }
         });
-        let launch_id = if !shape.resuming && launch::supports_launch_id(seat.tool) {
-            launch::generate_uuid()
-        } else {
-            String::new()
-        };
+        let launch_id = launch_token(
+            seat.tool,
+            shape
+                .resuming
+                .then(|| meta_value(&dir, &format!("launch_id.{}", seat.slot)))
+                .flatten(),
+        );
         launching.push(Launching {
             slot: seat.slot.clone(),
             name: seat.name.clone(),
@@ -1031,6 +1033,8 @@ fn build(
                 }
             };
             let tool = ToolKind::from_cmd(&command);
+            let launch_id =
+                launch_token(tool, meta_value(&dir, &format!("launch_id.{}", entry.slot)));
             launching.push(Launching {
                 slot: entry.slot,
                 name: entry.name,
@@ -1038,7 +1042,7 @@ fn build(
                 binary: entry.binary,
                 tool,
                 session_id: entry.harness_session,
-                launch_id: String::new(),
+                launch_id,
                 pane,
             });
         }
@@ -1590,17 +1594,46 @@ fn start_agent(
             Some(&crate::time::Timestamp::now().epoch().to_string()),
         );
     }
-    // codex resume takes no inline prompt, so the prompt is delivered once its
-    // UI returns.
-    let prompt = launch::initial_prompt_for(agent.tool);
-    if !prompt.is_empty()
-        && agent.tool == ToolKind::Codex
-        && resuming_seat
-        && launch::id_probeable(&agent.session_id)
-    {
-        deliver_launch_prompt(dir, server, agent, prompt, err)?;
+    let prompt = launch::initial_prompt_for(agent.tool, dir, &agent.slot);
+    if !prompt.is_empty() && launch_turn_is_pasted(agent.tool, resuming_seat) {
+        deliver_launch_prompt(dir, server, agent, &prompt, err)?;
     }
     Ok(Ok(()))
+}
+
+/// The launch TOKEN this seat launches with: the one it already has, else a
+/// fresh one, and none at all for a tool with no post-launch capture.
+///
+/// The token is what tells two seats apart INSIDE the tool's own store, so it
+/// has to outlive a resume the way `harness_session` does. It used to be minted
+/// on a fresh launch alone and dropped everywhere else, which left every resumed
+/// seat with an empty token, no `AE_..._LAUNCH_ID` in its instructions, and a
+/// capture reduced to matching the newest log in the working directory.
+/// Measured 2026-09-04: two codex seats resumed while both were still `pending`
+/// then raced onto ONE rollout and recorded the SAME id twice.
+fn launch_token(tool: ToolKind, stored: Option<String>) -> String {
+    if !launch::supports_launch_id(tool) {
+        return String::new();
+    }
+    stored
+        .filter(|id| !id.is_empty())
+        .unwrap_or_else(launch::generate_uuid)
+}
+
+/// Must this seat's first turn be PASTED rather than baked into its argv?
+///
+/// `_run` appends the inline first message on the CREATE path alone; EVERY
+/// resume composes with an empty prompt — the exact one, and equally the fresh
+/// fallback a seat whose recorded id no longer probes has to take. So the start
+/// marker decides this, and the id must not: a codex seat resumed while its
+/// `harness_session` is still `pending` takes that fallback, and gating on a
+/// probeable id would leave it with NO user turn at all. It would then write no
+/// rollout (see `launch::initial_prompt_for` for the measurement), so the
+/// re-capture that `launching_capture` deliberately schedules for exactly those
+/// pending slots would find nothing, and the seat would stay unresumable for
+/// the rest of its life.
+const fn launch_turn_is_pasted(tool: ToolKind, resuming_seat: bool) -> bool {
+    resuming_seat && matches!(tool, ToolKind::Codex)
 }
 
 /// The gated, loud, DURABLE launch-prompt delivery.
@@ -1626,10 +1659,13 @@ fn deliver_launch_prompt(
             prompt.as_bytes(),
             &agent.pane,
         ) {
-            Ok(()) => {
-                let _ = transport::send_key(server, &agent.pane, tmux::Key::Enter);
-                return Ok(());
-            }
+            // A bare Enter is not a submit: a booting TUI swallows it, and for
+            // a seat resumed while its id is still `pending` this turn is the
+            // ONLY thing that will ever create a rollout to capture. So the
+            // press is PROVEN, and a turn left in the box falls through to the
+            // durable failure below rather than passing as delivered.
+            Ok(()) if deliver::submit_staged(server, &agent.pane, tool) => return Ok(()),
+            Ok(()) => "submit UNCONFIRMED — the turn is staged unsent in the input box".to_owned(),
             Err(failure) => format!("submit UNCONFIRMED ({failure:?}) — it may be staged unsent"),
         }
     } else {
@@ -2262,7 +2298,7 @@ fn from_preflight(root: &Path, raw_uuid: &str) -> Result<FromProof, String> {
               about what PRODUCT code may reach"
 )]
 mod tests {
-    use super::{EVENTS_KEEP, trim_events};
+    use super::{EVENTS_KEEP, ToolKind, launch_token, launch_turn_is_pasted, trim_events};
     use std::fmt::Write as _;
     use std::path::PathBuf;
 
@@ -2271,6 +2307,47 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    /// EVERY codex resume needs the turn pasted, including the one whose id is
+    /// still `pending` and which therefore launches by the fresh fallback.
+    #[test]
+    fn every_codex_resume_gets_the_turn_pasted_and_no_fresh_start_does() {
+        assert!(launch_turn_is_pasted(ToolKind::Codex, true));
+        assert!(
+            !launch_turn_is_pasted(ToolKind::Codex, false),
+            "a create bakes the turn into argv; pasting it too would double it"
+        );
+        for tool in [
+            ToolKind::Claude,
+            ToolKind::Gemini,
+            ToolKind::Agy,
+            ToolKind::Grok,
+            ToolKind::OpenCode,
+            ToolKind::Unknown,
+        ] {
+            assert!(!launch_turn_is_pasted(tool, true), "{tool:?}");
+        }
+    }
+
+    /// A seat KEEPS its launch token across a resume; only a seat without one
+    /// is given a fresh one, and a tool with no capture is given none.
+    #[test]
+    fn a_resumed_seat_keeps_the_launch_token_that_names_it_in_the_tools_store() {
+        assert_eq!(
+            launch_token(ToolKind::Codex, Some("tok-1".to_owned())),
+            "tok-1",
+            "dropping it leaves the capture matching by working directory alone"
+        );
+        let minted = launch_token(ToolKind::Codex, None);
+        assert!(!minted.is_empty() && minted != "tok-1");
+        assert!(
+            !launch_token(ToolKind::Codex, Some(String::new())).is_empty(),
+            "an empty row is no token at all: mint one"
+        );
+        for tool in [ToolKind::Claude, ToolKind::Grok, ToolKind::Unknown] {
+            assert_eq!(launch_token(tool, Some("tok-1".to_owned())), "", "{tool:?}");
+        }
     }
 
     /// A resume caps `events.jsonl` at its NEWEST lines, and the cut falls

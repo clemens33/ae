@@ -295,7 +295,7 @@ fn compose(dir: &Path, slot: &str, seat: &Seat, ctx: &str, mode: Mode) -> String
     let pre = launch::inject_session_id(&seat.command, &seat.harness_session);
     let injected = launch::inject_ae_context(&pre, dir, slot, ctx, &seat.launch_id);
     let prompt =
-        read_prompt(dir, slot).unwrap_or_else(|| launch::initial_prompt_for(seat.tool).to_owned());
+        read_prompt(dir, slot).unwrap_or_else(|| launch::initial_prompt_for(seat.tool, dir, slot));
     launch::build_launch_command(&injected.cmd, &prompt)
 }
 

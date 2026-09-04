@@ -537,22 +537,7 @@ fn submit(
             notice: true,
         }));
     }
-    let settle = if tool == Tool::Claude {
-        SETTLE_CLAUDE
-    } else {
-        SETTLE_OTHER
-    };
-    std::thread::sleep(settle);
-    let _ = transport::send_key(server, pane, Key::Enter);
-    for _ in 0..VERIFY_RETRIES {
-        std::thread::sleep(VERIFY_POLL);
-        if !still_staged(server, pane, tool) {
-            return Ok(Ok(()));
-        }
-        let _ = transport::send_key(server, pane, Key::Enter);
-    }
-    std::thread::sleep(VERIFY_POLL);
-    if !still_staged(server, pane, tool) {
+    if submit_staged(server, pane, tool) {
         return Ok(Ok(()));
     }
     writeln!(
@@ -564,6 +549,34 @@ fn submit(
         body_file: body_file.to_owned(),
         notice: false,
     }))
+}
+
+/// Press Enter, and PROVE the paste left the input box. False means it is
+/// still staged after every retry.
+///
+/// A booting TUI swallows the Enter often enough that a single bare press is
+/// not a submit — it is a hope. Measured live on 2026-09-04: two codex seats
+/// resumed at once, one Enter took and the other left its turn sitting in the
+/// box. Every first-message delivery presses through here so the retry and the
+/// verdict have ONE owner.
+#[must_use]
+pub fn submit_staged(server: &ServerId, pane: &str, tool: Tool) -> bool {
+    let settle = if tool == Tool::Claude {
+        SETTLE_CLAUDE
+    } else {
+        SETTLE_OTHER
+    };
+    std::thread::sleep(settle);
+    let _ = transport::send_key(server, pane, Key::Enter);
+    for _ in 0..VERIFY_RETRIES {
+        std::thread::sleep(VERIFY_POLL);
+        if !still_staged(server, pane, tool) {
+            return true;
+        }
+        let _ = transport::send_key(server, pane, Key::Enter);
+    }
+    std::thread::sleep(VERIFY_POLL);
+    !still_staged(server, pane, tool)
 }
 
 /// Prove the staged notice on screen before any Enter.

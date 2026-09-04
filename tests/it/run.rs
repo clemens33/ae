@@ -463,7 +463,7 @@ fn each_tool_gets_the_argv_its_capability_row_promises() {
     );
 
     // codex: no launch-time id flag exists, so nothing is baked; the context
-    // rides `developer_instructions` and the inline first user turn is `Go`.
+    // rides `developer_instructions` and a passive inline first user turn.
     let rig = Rig::new("codex");
     rig.seat("codex", "");
     let argv = rig.planned_argv();
@@ -478,10 +478,10 @@ fn each_tool_gets_the_argv_its_capability_row_promises() {
         "{}",
         argv[3]
     );
-    assert_eq!(
-        argv[4], "Go",
-        "codex needs a user turn to act on its instructions"
-    );
+    // The turn stays (codex-cli 0.153.2 writes no rollout without one) and it
+    // is PASSIVE — the reason is pinned at `launch::initial_prompt_for`.
+    assert!(argv[4].contains("/_register-sid main"), "{}", argv[4]);
+    assert!(argv[4].contains("do not start any work"), "{}", argv[4]);
     assert_eq!(argv.len(), 5, "{argv:?}");
 
     // gemini: `-i`, with the wait suffix that keeps a USER TURN from being

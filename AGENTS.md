@@ -179,6 +179,11 @@ Name resolution takes the exact name, `%pane-id`, or `session:agent` / `@session
 
 - A drawn input box is not an initialized tool. Paste-driven delivery is gated by
   `src/deliver.rs::input_ready` / `wait_input_ready`; a timeout is a loud, durable failure.
+- **codex's rollout does not exist until the first USER turn.** Measured on codex-cli
+  0.153.2 (2026-09-04): ae's exact argv with no positional prompt writes nothing under
+  `~/.codex/sessions/<day>/` for 30s, and the header carries no session id before that
+  turn either — so both the token scan and the header scrape have nothing to find. The
+  turn stays, and it is PASSIVE: wording and reason at `src/launch.rs::initial_prompt_for`.
 - **agy's trust modal blocks the pane** until a human answers, and its trust list is
   exact-path. ae's context survives it (argv), a pasted brief would not.
 - Meta v2 roster: `seat.<slot>` / `profile.<slot>` / `agent_bin.<slot>` / `harness_session.<slot>`.

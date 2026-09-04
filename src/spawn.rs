@@ -397,12 +397,8 @@ pub fn run_spawn(
     // For a tool with no system-prompt channel the context AND the brief travel
     // as the launch command's inline first message, so the brief is RECORDED
     // for `_run` to compose.
-    let inline = launch::initial_prompt_for(tool);
-    let initial = if inline.is_empty() {
-        String::new()
-    } else {
-        format!("{inline} --- {brief}")
-    };
+    let inline = launch::initial_prompt_for(tool, dir, &slot);
+    let initial = launch::initial_turn_with_brief(&inline, &brief);
     // Publish the recoverable text BEFORE anything can paste it.
     if !initial.is_empty() {
         let stored = deliver::store_body(dir, &format!("spawn-{slot}"), SPAWN_ACTION, &initial)
