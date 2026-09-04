@@ -204,6 +204,11 @@ pub enum Refusal {
     /// `(`, `)`, or a `{`/`}` not introduced by `$` outside quotes —
     /// grouping or brace expansion, either of which detaches the suffix.
     Grouping(String),
+    /// A `${…}` parameter form ae does not implement — refused HERE because
+    /// `_run` cannot expand it either, and a form only the validator accepted
+    /// was a seat that planned green and then exited 1 in its own pane (colead
+    /// Z2 BLOCKER-3).
+    Parameter,
     /// Assignments only, or nothing: there is no command word.
     NoCommand,
 }
@@ -222,6 +227,7 @@ impl std::fmt::Display for Refusal {
                 write!(f, "command substitution ('{op}') outside quotes")
             }
             Self::Grouping(op) => write!(f, "grouping or brace expansion ('{op}') outside quotes"),
+            Self::Parameter => write!(f, "a ${{…}} parameter form ae does not implement"),
             Self::NoCommand => write!(f, "no command word (assignments only, or empty)"),
         }
     }
@@ -430,43 +436,24 @@ fn scan_word(chars: &[char], start: usize) -> Result<(String, usize), Refusal> {
     Ok((unquoted, i))
 }
 
-/// Scan a `${…}` parameter expansion starting at the `$`. Returns the index of
-/// its closing `}`. Refuses EVERY active substitution nested inside it — `$(`,
-/// backtick, and the process substitutions `<(` / `>(` (bash runs all of them
-/// there — measured: `${X:-$(printf HIT)}` executes, and `${X:-<(printf HIT)}`
-/// yields a readable fd that prints HIT) — and an unclosed `${`. A backslash
-/// escapes the next char, so `\<(` is plain bytes.
+/// Scan a `${…}` parameter expansion starting at the `$`, returning the index
+/// of its closing `}`.
+///
+/// **The decision is not made here.** [`crate::words::scan_param`] is the one
+/// definition of the parameter grammar, and this is its refusal vocabulary
+/// translated: the module that RUNS a launch command and the module that
+/// VALIDATES one accept exactly the same spans, which is what keeps a profile
+/// from planning green and then exiting 1 in its own pane.
 fn scan_param_expansion(chars: &[char], dollar: usize) -> Result<usize, Refusal> {
-    let n = chars.len();
-    // dollar -> '$', dollar+1 -> '{'.
-    let mut j = dollar + 2;
-    let mut depth = 1usize;
-    while j < n {
-        match chars[j] {
-            '\\' => j += 1, // skip the escaped char
-            '`' => return Err(Refusal::Substitution("`".to_owned())),
-            '$' if chars.get(j + 1) == Some(&'(') => {
-                return Err(Refusal::Substitution("$(".to_owned()));
-            }
-            c @ ('<' | '>') if chars.get(j + 1) == Some(&'(') => {
-                return Err(Refusal::Substitution(format!("{c}(")));
-            }
-            '$' if chars.get(j + 1) == Some(&'{') => {
-                depth += 1;
-                j += 1;
-            }
-            '{' => depth += 1,
-            '}' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Ok(j);
-                }
-            }
-            _ => {}
-        }
-        j += 1;
-    }
-    Err(Refusal::Grouping("${".to_owned()))
+    use crate::words::ParamFault;
+
+    crate::words::scan_param(chars, dollar)
+        .map(|param| param.close)
+        .map_err(|fault| match fault {
+            ParamFault::Substitution(op) => Refusal::Substitution(op),
+            ParamFault::Unclosed => Refusal::Grouping("${".to_owned()),
+            ParamFault::Unsupported => Refusal::Parameter,
+        })
 }
 
 /// The harness word an argv actually runs: a contextual `env` prefix (its
@@ -503,7 +490,7 @@ fn launch_binary(argv: &[Word]) -> Option<String> {
 
 /// `NAME=…` with a shell variable name before the `=` (the raw word, so a
 /// quoted `'A=1'` is a command word, as in bash).
-fn is_assignment(word: &str) -> bool {
+pub(crate) fn is_assignment(word: &str) -> bool {
     let Some((name, _)) = word.split_once('=') else {
         return false;
     };
@@ -800,6 +787,43 @@ mod tests {
     }
 
     #[test]
+    fn the_parameter_grammar_is_the_one_the_runner_can_expand() {
+        // `${VAR}` is parameter expansion, not grouping, and `$VAR` is fine.
+        assert!(lex_simple_command("claude --dir ${HOME}/x --y $Y").is_ok());
+        // The four conditional forms `crate::words` DOES expand stay accepted…
+        for cmd in [
+            "claude ${X:-default}",
+            "claude ${X-default}",
+            "claude ${X:+alternate}",
+            "claude ${X+alternate}",
+        ] {
+            assert!(lex_simple_command(cmd).is_ok(), "{cmd:?}");
+        }
+        // …and colead Z2 BLOCKER-3, the validator half: a form the runner
+        // cannot expand is refused HERE, at plan time, where the operator can
+        // still fix the profile — never accepted here and refused there.
+        // `${OUTER${INNER}}` is not a bash parameter form at all (bash: "bad
+        // substitution"), so refusing it in both lexers is also more correct
+        // than accepting it in one.
+        for cmd in [
+            "claude ${OUTER${INNER}}",
+            "claude ${24}fallback",
+            "claude ${X:=assign}",
+            "claude ${X:?fail}",
+            "claude ${#X}",
+            "claude ${X#prefix}",
+            "claude ${X/a/b}",
+        ] {
+            assert_eq!(lex_simple_command(cmd), Err(Refusal::Parameter), "{cmd:?}");
+        }
+        // An unclosed `${` is still grouping, not a parameter form.
+        assert_eq!(
+            lex_simple_command("claude ${HOME"),
+            Err(Refusal::Grouping("${".to_owned()))
+        );
+    }
+
+    #[test]
     fn anything_but_one_simple_command_is_refused_with_its_reason() {
         let cases = [
             ("claude --x # note", Refusal::Comment),
@@ -842,15 +866,6 @@ mod tests {
         for (cmd, want) in cases {
             assert_eq!(lex_simple_command(cmd), Err(want), "{cmd:?}");
         }
-        // `${VAR}` is parameter expansion, not grouping; `$VAR` is fine; an
-        // unclosed `${` is refused.
-        assert!(lex_simple_command("claude --dir ${HOME}/x --y $Y").is_ok());
-        assert!(lex_simple_command("claude ${X:-default}").is_ok());
-        assert!(lex_simple_command("claude ${OUTER${INNER}}").is_ok());
-        assert_eq!(
-            lex_simple_command("claude ${HOME"),
-            Err(Refusal::Grouping("${".to_owned()))
-        );
         // Colead P2 BLOCKER-2: an active substitution nested in ${…} is refused
         // (bash runs it — measured X=HIT reaches env), quoted or not.
         assert_eq!(
