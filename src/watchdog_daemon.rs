@@ -20,19 +20,18 @@ use crate::watchdog::{
     record_sweep, shows_throttle, stale_composite, sweep_step,
 };
 
-/// The event actor every watchdog emission carries (ae:16515 and its siblings).
+/// The event actor every watchdog emission carries.
 const ACTOR: &str = "watchdog";
 
 /// The panes that are not agents: unstamped, tmux's own null, this daemon, the
-/// events pane, and the two legacy names a pre-rename session can still carry
-/// (ae:16481-16483).
+/// events pane, and the two legacy names a pre-rename session can still carry.
 const NON_AGENT_PANES: [&str; 5] = ["(null)", "_watchdog", "_events", "_shepherd", "_loop"];
 
 /// The bound on consecutive unusable process snapshots before the daemon says
 /// so.
 const UNKNOWN_ALERT_CYCLES: u32 = 5;
 
-/// The tunables, all of them (ae:16331-16373).
+/// The tunables, all of them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Knobs {
     /// Seconds slept at the end of every cycle.
@@ -51,9 +50,9 @@ pub struct Knobs {
     pub quiet_tries: usize,
     /// How many panes may pay that beat in one cycle.
     pub quiet_panes_per_cycle: usize,
-    /// The orchestrator sweep cadence, retry and bound (ae:16435-16448).
+    /// The orchestrator sweep cadence, retry and bound.
     pub sweep: SweepKnobs,
-    /// Seconds between best-effort Telegram bridge revives (ae:14297-14299).
+    /// Seconds between best-effort Telegram bridge revives.
     pub tg_supervise_secs: u64,
 }
 
@@ -75,17 +74,17 @@ impl Default for Knobs {
 }
 
 /// What one pane carries from cycle to cycle (bash's per-pane associative
-/// arrays, ae:16409-16430, gathered into one value).
+/// arrays, gathered into one value).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PaneState {
     /// Dead is LATCHED: once alerted, the pane is skipped every later cycle and
-    /// there is no watchdog-emitted clear (ae:16490-16495).
+    /// there is no watchdog-emitted clear.
     pub dead_latched: bool,
     /// The previous cycle's filtered pane hash; `None` before the first.
     pub prev_hash: Option<u64>,
     /// When the hash last changed, in epoch seconds; `None` if it never has.
     pub last_hash_change: Option<i64>,
-    /// DELIVERIES, never attempts (ae:16874-16899).
+    /// DELIVERIES, never attempts.
     pub nudge_count: u32,
     /// Consecutive throttled cycles.
     pub throttle_streak: u32,
@@ -119,7 +118,7 @@ pub struct Observation {
     pub quiet: Option<QuietKind>,
     /// Whether a process named the agent binary runs under the pane.
     pub descendancy: Descendancy,
-    /// Age of the newest event this agent is the ACTOR of (ae:15520-15537).
+    /// Age of the newest event this agent is the ACTOR of.
     pub last_actor_event_age_secs: u64,
     /// The orchestrator sweep reading, `Some` ONLY for the orchestrator main
     /// agent with the cadence enabled.
@@ -127,7 +126,7 @@ pub struct Observation {
 }
 
 /// The roster glyph a pane earned this cycle — derived only from branches that
-/// were actually judged (ae:16985-17032).
+/// were actually judged.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verdict {
     /// The agent's process is gone, or its pane is.
@@ -145,7 +144,7 @@ pub enum Verdict {
 }
 
 impl Verdict {
-    /// The glyph the frozen roster publishes for this verdict (ae:16086-16218).
+    /// The glyph the frozen roster publishes for this verdict.
     #[must_use]
     pub const fn glyph(self) -> &'static str {
         match self {
@@ -173,13 +172,13 @@ pub enum Effect {
     },
     /// Deliver one nudge through the session's own send helper.
     Nudge,
-    /// A line for the human, which bash publishes with `display-message`
-    /// (ae:16516 and siblings) — the watchdog interprets, bash shows.
+    /// A line for the human, which bash publishes with `display-message` — the
+    /// watchdog interprets, bash shows.
     Notify(String),
-    /// Deliver one SWEEP prompt to the orchestrator (ae:16833-16841).
+    /// Deliver one SWEEP prompt to the orchestrator.
     SweepNudge,
     /// Reconcile the durable event log against a wedge alert this daemon does
-    /// not remember raising (ae:16768-16774) — the post-restart clear.
+    /// not remember raising — the post-restart clear.
     ReconcileWedge,
 }
 
@@ -194,7 +193,7 @@ pub struct Accounting {
     pub verdict: Verdict,
 }
 
-/// `idle <n>m`, or `no recent events` when the age is absurd (ae:16862-16867).
+/// `idle <n>m`, or `no recent events` when the age is absurd.
 #[must_use]
 pub fn stale_display(event_age_secs: u64) -> String {
     let minutes = event_age_secs / 60;
@@ -205,9 +204,9 @@ pub fn stale_display(event_age_secs: u64) -> String {
     }
 }
 
-/// The nudge, exactly as ae:16884-16893 composes it: the session goal when the
-/// meta carries one, then the status sentence, then the path to this session's
-/// own `state` helper.
+/// The nudge, exactly as the frozen script composes it: the session goal when
+/// the meta carries one, then the status sentence, then the path to this
+/// session's own `state` helper.
 #[must_use]
 pub fn nudge_text(goal: Option<&str>, meta_dir: &Path) -> String {
     let prefix = goal.map_or_else(String::new, |goal| format!("Session goal: {goal}. "));
@@ -238,7 +237,7 @@ fn book_unknown(next: &mut PaneState, effects: &mut Vec<Effect>, descendancy: De
     }
 }
 
-/// The throttled branch (ae:16787-16818).
+/// The throttled branch.
 fn book_throttle(
     next: &mut PaneState,
     effects: &mut Vec<Effect>,
@@ -266,8 +265,7 @@ fn book_throttle(
     next.nudge_count = 0;
 }
 
-/// What a stale pane earns: a nudge, the one max-nudges alert, or nothing
-/// (ae:16858-16922).
+/// What a stale pane earns: a nudge, the one max-nudges alert, or nothing.
 fn book_stale(
     prior: &PaneState,
     next: &mut PaneState,
@@ -294,8 +292,7 @@ fn book_stale(
     }
 }
 
-/// The orchestrator main's sweep branch (ae:16738-16897), or `None` when this pane
-/// is not it.
+/// The orchestrator main's sweep branch, or `None` when this pane is not it.
 fn book_sweep(
     prior: &PaneState,
     next: &mut PaneState,
@@ -447,7 +444,7 @@ fn sweep_effects(booked: Vec<SweepEffect>) -> Vec<Effect> {
     out
 }
 
-/// Book a nudge attempt's outcome (ae:16894-16913).
+/// Book a nudge attempt's outcome.
 #[must_use]
 pub fn record_nudge(
     state: &mut PaneState,
@@ -486,7 +483,7 @@ pub fn age_secs(now_epoch: i64, at_epoch: i64) -> u64 {
 }
 
 /// The age of the newest event this agent is the ACTOR of — bash's
-/// `_last_event_age` (ae:15520-15537).
+/// `_last_event_age`.
 #[must_use]
 pub fn last_actor_event_age(events: &[Event], agent: &str, now_epoch: i64) -> u64 {
     events
@@ -496,7 +493,7 @@ pub fn last_actor_event_age(events: &[Event], agent: &str, now_epoch: i64) -> u6
         .map_or(NO_EVENT_AGE, |event| age_secs(now_epoch, event.ts.epoch()))
 }
 
-/// What bash prints when an agent has no event at all (ae:15523).
+/// What bash prints when an agent has no event at all.
 pub const NO_EVENT_AGE: u64 = 999_999;
 
 // ---------------------------------------------------------------------------
@@ -505,11 +502,11 @@ pub const NO_EVENT_AGE: u64 = 999_999;
 /// The generated helper a nudge is delivered through.
 const HELPER_NAME: &str = "send";
 
-/// The orchestrator's heartbeat, at the FIXED name `<meta-dir>/meta-agent-state.json`
-/// (ae:16747).
+/// The orchestrator's heartbeat, at the FIXED name
+/// `<meta-dir>/meta-agent-state.json`.
 pub(crate) const HEARTBEAT_NAME: &str = "meta-agent-state.json";
 
-/// The sweep prompt, exactly as ae:16836-16840 composes it.
+/// The sweep prompt, exactly as the frozen script composes it.
 const SWEEP_PROMPT: &str = "Run your sweep now: ae list --json, diff your state file, and report \
                             ONLY new/changed attention to Clemens via say (stay silent if nothing \
                             changed). Stay in 'working'.";
@@ -589,10 +586,10 @@ pub fn run(
         session: &session,
     };
 
-    // ── The pane's own duties, which were the bash wrapper's until slice A.3 ──
-    // Order is the frozen one (ae:14346-14372): the pidfile FIRST, because the
-    // start path's registration wait is what releases the start lock; then the
-    // bars, so a pane that is up says so before its first cycle; then the banner.
+    // ── The pane's own duties, which were the bash wrapper's until slice A.3
+    // ── Order is the frozen one: the pidfile FIRST, because the start path's
+    // registration wait is what releases the start lock; then the bars, so a
+    // pane that is up says so before its first cycle; then the banner.
     let pidfile = match crate::watchdog_glue::PidFile::publish(meta_dir) {
         Ok(published) => Some(published),
         Err(why) => {
@@ -601,7 +598,7 @@ pub fn run(
             None
         }
     };
-    // The pre-rename reap, which was `_watchdog_start`'s first act (ae:13302-13306).
+    // The pre-rename reap, which was `_watchdog_start`'s first act.
     crate::watchdog_glue::reap_legacy(&server, &session, meta_dir, err)?;
     announce_start(&server, &session, meta.work_dir());
     write!(
@@ -633,14 +630,14 @@ pub fn run(
     );
     // The pidfile is released by `PidFile`'s Drop — ownership-checked, so a
     // stop/start in quick succession never lets the dying process vandalise its
-    // successor's registration (ae:13996-14000) — and Drop, not an explicit call,
-    // so EVERY return after publish releases it, the `?` exits above included.
+    // successor's registration — and Drop, not an explicit call, so EVERY
+    // return after publish releases it, the `?` exits above included.
     drop(pidfile);
     code
 }
 
 /// Publish the two things a pane that is UP says before its first cycle: the
-/// starting health segment and the branch pair (ae:14361-14362).
+/// starting health segment and the branch pair.
 fn announce_start(server: &crate::inventory::ServerId, session: &str, work_dir: Option<&str>) {
     let Some(session_id) = transport::observe_session_id(server, session) else {
         return;
@@ -743,8 +740,8 @@ fn watch(
                     };
                     cycle.run(&mut carry, err)?;
                     // The pane's own per-cycle duties, in the frozen wrapper's
-                    // order (ae:14431-14459): the branch pair, which is a git
-                    // read no cycle owns, then the recovery and the revive.
+                    // order: the branch pair, which is a git read no cycle
+                    // owns, then the recovery and the revive.
                     tick_pane_duties(&server, meta_dir, session, meta, deferred, journal, err)?;
                 }
             }
@@ -967,8 +964,8 @@ pub(crate) fn clear_published(server: &crate::inventory::ServerId, session: &str
         ok &= transport::clear_option(server, OptionScope::Session, &session_id, name);
     }
     // The branch pair is published by THIS daemon too since slice A.3, so it is
-    // retracted with everything else: a stopped watchdog that left `@ae_branch_*`
-    // behind would keep asserting a branch nobody is watching (ae:14010).
+    // retracted with everything else: a stopped watchdog that left
+    // `@ae_branch_*` behind would keep asserting a branch nobody is watching.
     ok &= crate::watchdog_glue::clear_branch(server, &session_id);
     let Some(panes) = transport::observe_window_panes(server, session) else {
         return false;
@@ -1074,7 +1071,7 @@ impl Cycle<'_> {
             let agent_bin = self.agent_bin(&slot);
 
             // The main loop tolerates a failed capture the way bash does (`||
-            // true` at ae:16702): an unreadable pane hashes as empty here.
+            // true`): an unreadable pane hashes as empty here.
             let capture = transport::capture_pane(self.server, &pane.pane_id).unwrap_or_default();
             let hash = quiet_hash(&capture);
             let carried = entry_mut(&mut carry.panes, &pane.pane_id);
@@ -1130,9 +1127,9 @@ impl Cycle<'_> {
             by_pane.push((pane.pane_id.clone(), booked.verdict));
         }
         carry.quiet.end(index);
-        // The roster is composed from the PRIOR debounce state, then the state is
-        // advanced — the frozen order (ae:16999-17022), so a slot's first absent
-        // cycle renders neutral and only the second renders ✖.
+        // The roster is composed from the PRIOR debounce state, then the state
+        // is advanced — the frozen order, so a slot's first absent cycle
+        // renders neutral and only the second renders ✖.
         let roster = self.roster_line(&by_slot, &carry.missing);
         self.sweep_missing(&live, &mut carry.missing, err)?;
         self.publish(&roster, bar_glyph(dead, stale), active, total, &by_pane);
@@ -1167,8 +1164,8 @@ impl Cycle<'_> {
             tmux::WATCHDOG_STATUS_OPTION,
             &format!("[watch {glyph} {active}/{total}]"),
         );
-        // An EMPTY roster is UNSET, never published as "": a roster outliving its
-        // agents would keep asserting a fleet that no longer exists (ae:17026).
+        // An EMPTY roster is UNSET, never published as "": a roster outliving
+        // its agents would keep asserting a fleet that no longer exists.
         let _ = if roster.is_empty() {
             transport::clear_option(
                 self.server,
@@ -1297,7 +1294,7 @@ impl Cycle<'_> {
             }
             Effect::SweepNudge => self.sweep_nudge(on, state, err),
             Effect::ReconcileWedge => {
-                // The DURABLE half of the wedge clear (ae:16768-16774).
+                // The DURABLE half of the wedge clear.
                 if crate::session::alert_reason_in(on.events, self.session, on.slot, agent)
                     .is_some()
                 {
@@ -1319,7 +1316,7 @@ impl Cycle<'_> {
         }
     }
 
-    /// Deliver one sweep prompt and book what happened (ae:16833-16895).
+    /// Deliver one sweep prompt and book what happened.
     fn sweep_nudge(
         &self,
         on: &Acting<'_>,
@@ -1385,7 +1382,7 @@ impl Cycle<'_> {
         .record(action, agent, summary, err)
     }
 
-    /// Roster agents with no live pane (ae:16929-16939).
+    /// Roster agents with no live pane.
     fn sweep_missing(
         &self,
         live: &[String],
@@ -1400,9 +1397,9 @@ impl Cycle<'_> {
                 }
                 continue;
             }
-            // The GLYPH debounce is keyed by SLOT (ae:17015-17021) while the
-            // ALERT is keyed by the display ref, exactly as the frozen splits
-            // them: two registrations can share a ref, but never a slot.
+            // The GLYPH debounce is keyed by SLOT while the ALERT is keyed by
+            // the display ref, exactly as the frozen splits them: two
+            // registrations can share a ref, but never a slot.
             let state = entry_mut(missing, &entry.slot);
             state.streak = state.streak.saturating_add(1);
             if !state.alerted {
@@ -1420,7 +1417,7 @@ impl Cycle<'_> {
     }
 
     /// The transient alert the frozen shows beside every watchdog event
-    /// (`display-message -d 10000`, ae:16516 and siblings).
+    /// (`display-message -d 10000`).
     fn notify(&self, agent: &str, text: &str) {
         let Some(session_id) = transport::observe_session_id(self.server, self.session) else {
             return;
@@ -1431,7 +1428,7 @@ impl Cycle<'_> {
 }
 
 /// The roster line for `@ae_agents_status`: `<label><glyph>`, space-joined, in
-/// META ORDER (ae:16986-17024).
+/// META ORDER.
 fn roster_line(
     roster: &[RosterEntry],
     by_slot: &[(String, Verdict)],
@@ -1462,7 +1459,7 @@ fn roster_line(
         .join(" ")
 }
 
-/// `opus5:builder` -> `builder`, with control bytes stripped (ae:16205-16218).
+/// `opus5:builder` -> `builder`, with control bytes stripped.
 fn roster_label(reference: &str) -> String {
     reference
         .rsplit(':')
@@ -1510,7 +1507,7 @@ fn read_events(meta_dir: &Path) -> Vec<Event> {
 }
 
 /// Whether the meta declares this session the fleet orchestrator — bash's
-/// `META_AGENT` (ae:16458, compared at ae:16739).
+/// `META_AGENT`.
 fn is_meta_agent(meta_bytes: &[u8]) -> bool {
     crate::meta::sole_value(meta_bytes, "meta_agent") == Some(b"true".as_slice())
 }
@@ -1533,7 +1530,7 @@ fn session_name(meta_bytes: &[u8], meta_dir: &Path) -> String {
         )
 }
 
-/// The watchdog bar's glyph, from the cycle's COUNTS (ae:16974-16984).
+/// The watchdog bar's glyph, from the cycle's COUNTS.
 fn bar_glyph(dead: usize, stale: usize) -> &'static str {
     if dead > 0 {
         Verdict::Dead.glyph()
@@ -1957,8 +1954,8 @@ mod tests {
 
     #[test]
     fn a_throttle_clears_even_for_an_agent_that_is_quiet() {
-        // The clear runs BEFORE the quiet branch returns (ae:16713-16723), so a
-        // quiet agent does not carry a stale throttle streak forever.
+        // The clear runs BEFORE the quiet branch returns, so a quiet agent does
+        // not carry a stale throttle streak forever.
         let prior = PaneState {
             throttle_streak: 2,
             ..PaneState::default()

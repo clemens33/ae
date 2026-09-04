@@ -1,7 +1,7 @@
 //! Session names: the grammar, and the name a nameless launch derives.
 //!
-//! Ported from `ae`'s `_validate_session_name` (ae:10020) and
-//! `default_session_name` (ae:9946-ish) — the two halves of one rule. The
+//! Ported from `ae`'s `_validate_session_name` and
+//! `default_session_name`-ish) — the two halves of one rule. The
 //! grammar is an ALLOWLIST because a session name becomes a tmux session, a
 //! directory under `~/.ae/sessions`, part of `.lifecycle.<name>.lock`, a
 //! neighbour in tmux format strings, and the target of the launch rollback's

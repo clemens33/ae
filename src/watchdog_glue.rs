@@ -3,10 +3,10 @@
 //! Slice A.3's cut: `helper_watchdog_main`'s `_run` becomes a pane that execs
 //! `ae-core _watchdog-run`, so everything that wrapper did AROUND the core child
 //! has to be here — otherwise a session whose pane runs only the core silently
-//! loses it. The frozen wrapper (ae:14355-14477) did five things:
+//! loses it. The frozen wrapper did five things:
 //!
 //! * published its pid ATOMICALLY, so a serialized starter can never read a
-//!   half-written pidfile and spawn a duplicate (ae:14352-14356);
+//!   half-written pidfile and spawn a duplicate;
 //! * printed the pane's banner;
 //! * kept `@ae_branch_status` / `@ae_branch_name` fresh every cycle — a git
 //!   read the daemon loop never owned;
@@ -16,7 +16,7 @@
 //!   through the core's own capture — and only the bridge revive still runs a
 //!   binary;
 //! * on the lifecycle edges, reaped a pre-rename (`_shepherd` / `_loop`)
-//!   watchdog through an OWNERSHIP-CHECKED kill (ae:13219-13245).
+//!   watchdog through an OWNERSHIP-CHECKED kill.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -30,7 +30,7 @@ use crate::transport;
 /// trimmed.
 pub const BRANCH_STATUS_OPTION: &str = "@ae_branch_status";
 
-/// The frozen display trim for a branch name (ae:13868).
+/// The frozen display trim for a branch name.
 pub const BRANCH_DISPLAY_MAX: usize = 24;
 
 /// The pre-rename watchdog names a session can still carry, newest first.
@@ -40,7 +40,7 @@ pub const LEGACY_WATCHDOG_NAMES: [&str; 2] = ["shepherd", "loop"];
 const PIDFILE_NAME: &str = ".watchdog.pid";
 
 /// Flatten and trim `text` to `max` display characters, the frozen
-/// `_watchdog_trim` (ae:13830-13839).
+/// `_watchdog_trim`.
 #[must_use]
 pub fn trim_display(text: &str, max: usize) -> String {
     let flat: String = text
@@ -121,8 +121,9 @@ pub fn publish_branch(server: &ServerId, session_id: &str, reading: Option<&Bran
     );
 }
 
-/// Retract both branch options — the exit half of `_watchdog_clear_bar_options`
-/// (ae:14010), which unsets rather than blanking so the bar falls back cleanly.
+/// Retract both branch options — the exit half of
+/// `_watchdog_clear_bar_options`, which unsets rather than blanking so the bar
+/// falls back cleanly.
 #[must_use]
 pub fn clear_branch(server: &ServerId, session_id: &str) -> bool {
     let mut ok = true;
@@ -341,7 +342,7 @@ impl Drop for PidFile {
     }
 }
 
-/// The pane banner the frozen wrapper printed (ae:14365-14371).
+/// The pane banner the frozen wrapper printed.
 #[must_use]
 pub fn banner(session: &str, interval_secs: u64, stale_secs: u64, max_nudges: u32) -> String {
     let stale_min = stale_secs / 60;
@@ -389,7 +390,7 @@ pub fn recover(dir: &Path, roster: &[crate::meta::RosterEntry]) -> Vec<Recovered
     rows
 }
 
-/// The event summary a recovery is recorded with (ae:14440).
+/// The event summary a recovery is recorded with.
 #[must_use]
 pub fn recovered_summary(row: &Recovered) -> String {
     let short: String = row.captured.chars().take(8).collect();

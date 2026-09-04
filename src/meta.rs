@@ -124,6 +124,7 @@ struct SlotClaim {
     claims: usize,
 }
 
+/// Everything the reader SAW in a meta and could not take at face value.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Anomaly {
     /// UNCLASSIFIED — a key outside the context and roster sets.

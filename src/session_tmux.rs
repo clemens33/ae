@@ -1,9 +1,9 @@
 //! The launch operation's tmux argv — the sealed builder behind
 //! [`crate::transport::run_tmux_op`].
 //!
-//! Ported from the tmux calls the frozen launch path makes directly
-//! (`ae:13342`-`13475`, `_watchdog_start` at `ae:12427`, `_monitor_ensure_events_pane`):
-//! `new-session`, `set-environment`, `split-window`, `new-window`,
+//! Ported from the tmux calls the frozen launch path made directly, in
+//! `_watchdog_start` and `_monitor_ensure_events_pane`: `new-session`,
+//! `set-environment`, `split-window`, `new-window`,
 //! `select-layout`, `select-pane`, `select-window`, `show-options -g`.
 //!
 //! Same shape as [`crate::git`] and for the same reason: the inner vector of

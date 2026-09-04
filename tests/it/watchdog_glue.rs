@@ -317,7 +317,7 @@ fn a_pane_that_dropped_to_a_shell_is_alerted_once() {
 
 #[test]
 fn the_branch_pair_is_published_on_the_session_the_daemon_watches() {
-    // The bash wrapper's per-cycle git read (ae:14432-14433).
+    // The bash wrapper's per-cycle git read.
     let scratch = scratch("branch");
     require_tmux(&scratch);
     let socket = scratch.join("s");

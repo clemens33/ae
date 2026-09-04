@@ -11,74 +11,40 @@ use crate::filters::{ListArgs, UnknownFlag};
 use crate::requests::Mode;
 
 /// The subcommand that carries the `requests` helper surface.
-///
-/// **The leading underscore is the whole argument for this spelling** (lead
-/// ruling on D1, 2026-08-24). `_validate_session_name` forbids a leading `_`, so
-/// an underscore-prefixed subcommand can never shadow a legal session name and
-/// SC-022's "a top-level bare word is a launch candidate" loses nothing to it.
-/// A `requests` spelling would have taken a real name out of the launch grammar;
-/// a `--session` flag would have invented an option no row names. `ae` already
-/// spells its internal surfaces this way — `_register-sid`, `_recover-pending`.
 pub const REQUESTS: &str = "_requests";
 
-/// The subcommand that carries the `events-tail` helper surface. Same
-/// underscore reasoning as [`REQUESTS`].
+/// The subcommand that carries the `events-tail` helper surface.
 pub const EVENTS_TAIL: &str = "_events-tail";
 
-/// `ae archive preview`'s successor: `_archive-preview <session-dir>`. Unlike
-/// the helper surfaces this is a TOP-LEVEL command's core entry — `ae` resolves
-/// and path-checks the session name, then shims here with the resolved dir. The
-/// underscore keeps it off the human-typed surface and out of session-name
-/// space (`_validate_session_name` forbids a leading `_`).
+/// `ae archive preview`'s successor: `_archive-preview <session-dir>`.
 pub const ARCHIVE_PREVIEW: &str = "_archive-preview";
 
 /// `ae end`'s archive publisher: `_archive-publish <session-dir> <push-outcome>
-/// <push-ref> <preserved> <workdir> <archived-at>`. The frozen `_end_archive_step`
-/// shims here in place of `_ar_publish`; the five operands after the dir are the
-/// operation facts Bash owns (the core derives the commit facts itself). Like
-/// [`ARCHIVE_PREVIEW`] it is underscored — a core entry, never human-typed.
+/// <push-ref> <preserved> <workdir> <archived-at>`.
 pub const ARCHIVE_PUBLISH: &str = "_archive-publish";
 
 /// `--from`'s read-only preflight: `_archive-from-preflight <archive-root>
-/// <raw-uuid>`. Bash routes the frozen `_ar_from_preflight` here before any launch
-/// side effect; the core proves the archive and prints `aid\thandover\tpending`.
-/// Underscored — a core entry, never human-typed.
+/// <raw-uuid>`.
 pub const ARCHIVE_FROM_PREFLIGHT: &str = "_archive-from-preflight";
 
 /// `--purge-history`'s archive deletion: `_archive-purge <session-dir> <aid>
-/// <source-session> <parent-id>`. Bash routes the frozen `_ar_purge_archive`
-/// here; the core proves ownership, then deletes under the shared claim and
-/// makes the deletion durable before it reports success. Underscored — a core
-/// entry, never human-typed.
+/// <source-session> <parent-id>`.
 pub const ARCHIVE_PURGE: &str = "_archive-purge";
 
 /// Local-mode canonical session-state removal: `_end-local-teardown
-/// <session-dir>`. Bash routes here from `cleanup_session` for a `mode=local`
-/// session whose name is grammar-valid; the core renames the dir to a sibling
-/// tombstone and durably removes it. The session dir is `_ae_core_try`'s injected
-/// meta directory. Underscored — a core entry, never human-typed.
+/// <session-dir>`.
 pub const END_LOCAL_TEARDOWN: &str = "_end-local-teardown";
 
 /// Nonlocal canonical + workdir teardown: `_end-nonlocal-teardown <session-dir>
-/// [--preserve]`. Bash routes here from `cleanup_session` for a `mode=full`
-/// (copy) or `mode=git` (worktree) session; the core removes the managed workdir
-/// (copy tombstone, or a sealed `git worktree remove`) and then the canonical
-/// state. `--preserve` keeps the workdir byte-for-byte and removes canonical state
-/// only. Underscored — a core entry, never human-typed.
+/// [--preserve]`.
 pub const END_NONLOCAL_TEARDOWN: &str = "_end-nonlocal-teardown";
 
-/// compact's freeze/resolve step: `_compact-freeze <session-dir> [--keep-history]`.
-/// The pinned core resolves the session's frozen tuple (identity, mode, origin,
-/// config-derived roster and purge policy, archive path) BEFORE anything is messaged
-/// or archived, and emits it. `--keep-history` overrides a config that opts into
-/// purging agent history. Pure read-only. Underscored — a core entry, never
-/// human-typed.
+/// compact's freeze/resolve step: `_compact-freeze <session-dir>
+/// [--keep-history]`.
 pub const COMPACT_FREEZE: &str = "_compact-freeze";
 
-/// compact's authorization gate: `_compact-revalidate <dir> <tuple> [--when <label>]
-/// [--keep-history]`. Proves the live session is still the one the freeze authorized, at both
-/// the after-confirmation and after-handover-wait crossings. Pure read-only. Underscored — a
-/// core entry, never typed.
+/// compact's authorization gate: `_compact-revalidate <dir> <tuple> [--when
+/// <label>] [--keep-history]`.
 pub const COMPACT_REVALIDATE: &str = "_compact-revalidate";
 
 /// The gate label when the driver passes no `--when` — the single-gate wording the entry had
@@ -87,40 +53,27 @@ pub const COMPACT_REVALIDATE: &str = "_compact-revalidate";
 pub const DEFAULT_REVALIDATE_WHEN: &str = "before the handover";
 
 /// compact's destructive stage 1: `_compact-archive <dir> <tuple> <archived-at>
-/// <push-outcome> <push-ref> <preserved> <workdir> [--keep-history]`. Revalidates the
-/// frozen authorization, proves the session stopped on its recorded server, makes the
-/// archive durable (publishing, or reusing an equivalent existing one), and prints the
-/// recovery command — before any teardown. Underscored — a core entry, never typed.
+/// <push-outcome> <push-ref> <preserved> <workdir> [--keep-history]`.
 pub const COMPACT_ARCHIVE: &str = "_compact-archive";
 
-/// compact's destructive stage 2: `_compact-teardown <dir> <tuple> [--keep-history]`.
-/// Re-proves the authorization and the stop, requires the durable archive, removes the
-/// live session, and prints the exec plan. Underscored — a core entry, never typed.
+/// compact's destructive stage 2: `_compact-teardown <dir> <tuple>
+/// [--keep-history]`.
 pub const COMPACT_TEARDOWN: &str = "_compact-teardown";
 
-/// compact's semantic-handover wait: `_compact-wait <dir> <ref> [--timeout <secs>]`.
-/// Bounded poll for BOTH the reply and a new handover memo; on timeout it leaves the
-/// request as found (only `--digest-only` withdraws). Underscored — a core entry, never
-/// typed.
+/// compact's semantic-handover wait: `_compact-wait <dir> <ref> [--timeout
+/// <secs>]`.
 pub const COMPACT_WAIT: &str = "_compact-wait";
 
-/// compact's `--digest-only` withdrawal: `_compact-cancel <dir> <ref>`. Emits the
-/// Rust-owned slotless cancel event that withdraws an outstanding compact handover request.
-/// Underscored — a core entry, never typed.
+/// compact's `--digest-only` withdrawal: `_compact-cancel <dir> <ref>`.
 pub const COMPACT_CANCEL: &str = "_compact-cancel";
 
-/// compact's pre-delivery memo boundary: `_compact-memo-baseline <dir>`. Prints the current
-/// `memo.tsv` byte size — the offset a handover memo must be appended past. Underscored — a
-/// core entry, never typed.
+/// compact's pre-delivery memo boundary: `_compact-memo-baseline <dir>`.
 pub const COMPACT_MEMO_BASELINE: &str = "_compact-memo-baseline";
 
-/// compact's retry-reuse lookup: `_compact-find-outstanding <dir>`. Prints the ref of a
-/// still-pending compact handover request, so a re-run reuses it instead of delivering a
-/// duplicate. Underscored — a core entry, never typed.
+/// compact's retry-reuse lookup: `_compact-find-outstanding <dir>`.
 pub const COMPACT_FIND_OUTSTANDING: &str = "_compact-find-outstanding";
 
 /// The `state` helper's surface — `_state <meta-dir> [<value> [reason…]]`.
-/// Underscored like [`REQUESTS`]: launched by the generated helper, not typed.
 pub const STATE: &str = "_state";
 
 /// The `goal` helper's surface — `_goal <meta-dir> [<text…>|--clear|--help]`.
@@ -147,170 +100,105 @@ pub const SEND: &str = "_send";
 pub const INTERRUPT: &str = "_interrupt";
 
 /// The watchdog daemon's surface — `_watchdog-run <meta-dir> [knob flags]`.
-///
-/// Underscored like every other core entry, and never human-typed: the bash
-/// `watchdog` helper's `_run` execs this. EVERY tunable arrives as a FLAG
-/// because this crate's clippy policy disallows reading the environment — bash
-/// reads `AE_WATCHDOG_*` (with its `AE_LOOP_*` fallback) and passes what it
-/// read, so the names are spelled in exactly one place and it is the frozen
-/// script.
 pub const WATCHDOG_RUN: &str = "_watchdog-run";
 
 /// The telegram bridge daemon's surface —
 /// `_telegram-run <ae-home> [--config <p>] [--home <p>] [knob flags]`.
-///
-/// Underscored like every other core entry, and never human-typed: the bash
-/// `telegram` glue execs this. The PATHS are arguments for the same reason the
-/// watchdog's knobs are — this crate's clippy policy disallows reading the
-/// environment, so `AE_HOME` is spelled in exactly one place and it is the
-/// frozen script.
 pub const TELEGRAM_RUN: &str = "_telegram-run";
 
-/// The spawn operation: `_spawn <meta-dir> <name> --using <profile> [--]
-/// [prompt]`. The WHOLE operation — seat, window, stamps, manifest, launch
-/// script and brief. Underscored — a core entry, never human-typed (the
-/// `spawn` helper execs it).
-/// The two daemons' LIFECYCLE, as whole core operations: `_watchdog
-/// <start|stop|status> [session] [--pane <id>]` and `_telegram
-/// <start|stop|status> [--config <f>] [--home <d>]`. The bodies are
-/// [`WATCHDOG_RUN`] and [`TELEGRAM_RUN`]; these START and STOP them. Underscored
-/// like every other core entry — the `watchdog` / `telegram` words a human types
-/// stay the glue's, and a leading `_` can never shadow a session name.
+/// The watchdog daemon's LIFECYCLE: `_watchdog <start|stop|status> [session]
+/// [--pane <id>]`. The body is [`WATCHDOG_RUN`]; this starts and stops it.
 pub const WATCHDOG: &str = "_watchdog";
+
+/// The telegram bridge's LIFECYCLE: `_telegram <start|stop|status> [--config
+/// <f>] [--home <d>]`. The body is [`TELEGRAM_RUN`]; this starts and stops it.
 pub const TELEGRAM: &str = "_telegram";
 
+/// The spawn operation: `_spawn <meta-dir> <name> --using <profile> [--]
+/// [prompt]`.
 pub const SPAWN: &str = "_spawn";
 
-/// The retire operation: `_retire <meta-dir> <name|%pane>`. Underscored — a
-/// core entry, never human-typed (the `retire` helper execs it).
+/// The retire operation: `_retire <meta-dir> <name|%pane>`.
 pub const RETIRE: &str = "_retire";
 
 /// The whole `end` operation: `_end [-f] [--purge-history|--keep-history]
-/// [--assume-stopped] <session-name|all>`. Unlike the step entries it takes a
-/// NAME rather than a session directory — an operation that can be told `all`
-/// enumerates the sessions root for itself, and derives it from the state root
-/// the same way `list` does. Underscored — a core entry, never human-typed.
+/// [--assume-stopped] <session-name|all>`.
 pub const END: &str = "_end";
 
-/// The whole `stop` operation: `_stop <session-name|all> [-y]`. Same
-/// name-not-directory reasoning as [`END`].
+/// The whole `stop` operation: `_stop <session-name|all> [-y]`.
 pub const STOP: &str = "_stop";
 
 /// The whole `compact` operation: `_compact [-f] [--keep-history]
-/// [--digest-only] <session-name> [--exec-plan <path>]`. Same
-/// name-not-directory reasoning as [`END`]. The RELAUNCH stays with the caller:
-/// `--exec-plan` names a file the operation writes the frozen relaunch facts
-/// to, so the child is started from the roster the human was shown rather than
-/// from a config that may have been rewritten under the window.
+/// [--digest-only] <session-name> [--exec-plan <path>]`.
 pub const COMPACT: &str = "_compact";
 
 /// The identity v2 launch resolver: `_launch-plan [--global <f>] [--local <f>]
-/// [--main <name>] [--workers <a,b>]`. The core reads `[profiles]`/`[roster]`/
-/// `[workspace]`, validates the whole workspace, and prints the seats a launch
-/// creates. Underscored — a core entry, never human-typed.
+/// [--main <name>] [--workers <a,b>]`.
 pub const LAUNCH_PLAN: &str = "_launch-plan";
 
 /// The identity v2 first-meta publisher: `_meta-init <dir> --base <file>
-/// [--replace]`. Bash stages the base facts in a file and pipes the seat records
-/// on stdin; the core concatenates the roster block and publishes ONE document.
-/// Underscored — a core entry, never human-typed.
+/// [--replace]`.
 pub const META_INIT: &str = "_meta-init";
 
 /// The identity v2 roster surface: `_roster <dir> <add-seat|remove-seat|
-/// set-harness-session|migrate|list> …`. Every write happens under the meta
-/// lock. Underscored — a core entry, never human-typed.
+/// set-harness-session|migrate|list> …`.
 pub const ROSTER: &str = "_roster";
 
 /// The `workspace.md` render: `_manifest-render <dir> <session> <work-dir>
 /// <origin> <mode> <main-pane> [--global <f>] [--local <f>] [--out <path>]`.
-/// Underscored — a core entry, never human-typed.
 pub const MANIFEST_RENDER: &str = "_manifest-render";
 
 /// The per-seat system-prompt render: `_context <dir> <session> <work-dir>
-/// <slot> [--global <f>] [--local <f>]`. Underscored — a core entry, never
-/// human-typed.
+/// <slot> [--global <f>] [--local <f>]`.
 pub const CONTEXT: &str = "_context";
 
-/// The musl DNS/NSS instrument — `_net-probe <host> [--port <n>]`.
-///
-/// Underscored like every other core entry, and for the same reason: it is run
-/// by a CI step (and, later, a `doctor` check), never typed at a session. Its
-/// authority is the pre-P5 coexistence design
-/// (a coexistence rule of the Rust rewrite, since retired with its notes) rather than a semantic-contract
-/// row — there is no row because there is no bash predecessor: nothing in the
-/// frozen script ever resolved a hostname. The behavior is [`crate::netprobe`].
-/// The orchestrator's sweep: `_monitor sweep <session-dir> [flags]`. Underscored
-/// like every other core entry — it is run by the orchestrator agent on its
-/// cadence, and the session it sweeps for is the directory it is handed, the
-/// same way every helper surface takes one. The behavior is [`crate::monitor`].
+/// The orchestrator's sweep: `_monitor sweep <session-dir> [flags]`.
 pub const MONITOR: &str = "_monitor";
 
+/// The musl DNS/NSS instrument — `_net-probe <host> [--port <n>]`.
 pub const NET_PROBE: &str = "_net-probe";
 
 /// The `say` helper's surface: `_say <dir> [text…]` — the free-text line the
-/// Telegram bridge forwards, as a `chat` event. Underscored — a core entry,
-/// never human-typed.
+/// Telegram bridge forwards, as a `chat` event.
 pub const SAY: &str = "_say";
 
-/// The `peek` helper's surface: `_peek <dir> <target> [lines]`. Underscored — a
-/// core entry, never human-typed.
+/// The `peek` helper's surface: `_peek <dir> <target> [lines]`.
 pub const PEEK: &str = "_peek";
 
-/// The `agents` helper's surface: `_agents <dir> [--all]`. Underscored — a core
-/// entry, never human-typed.
+/// The `agents` helper's surface: `_agents <dir> [--all]`.
 pub const AGENTS: &str = "_agents";
 
-/// The `focus` helper's surface: `_focus <dir> <target>`. Underscored — a core
-/// entry, never human-typed.
+/// The `focus` helper's surface: `_focus <dir> <target>`.
 pub const FOCUS: &str = "_focus";
 
 /// The whole session launch and resume: `_launch --home <ae-home> --cwd <dir>
 /// [--global <f>] [--local-config <f>] [--server-kind <k>] [--server <v>]
-/// [--attach|--no-attach] [--inside-tmux] -- <user argv…>`. The environment
-/// facts arrive as flags because the core may not read the environment; the
-/// user's own argv arrives verbatim after `--`. Underscored — a core entry,
-/// never human-typed.
+/// [--attach|--no-attach] [--inside-tmux] -- <user argv…>`.
 pub const LAUNCH: &str = "_launch";
 
-/// The detached post-launch capture: `_capture-sid <dir> <slot> <pane>`. Its
-/// parent is the launch, which does not wait for it. Underscored — a core
-/// entry, never human-typed.
+/// The detached post-launch capture: `_capture-sid <dir> <slot> <pane>`.
 pub const CAPTURE_SID: &str = "_capture-sid";
 
 /// Codex's own session-id handshake: `_register-sid <meta-dir> <slot>
-/// [<session-id>]`. Underscored — the CODEX AGENT runs it through its session
-/// shim, never a human. The behavior is
-/// [`crate::session_launch::capture::register_sid`].
+/// [<session-id>]`.
 pub const REGISTER_SID: &str = "_register-sid";
 
-/// The environment report: `doctor [--refresh [all|<session>]]`. A TOP-LEVEL
-/// command, not underscored — a human types it after an install or an agent-CLI
-/// upgrade, which is the whole reason it exists. The behavior is
-/// [`crate::doctor`].
+/// The environment report: `doctor [--refresh [all|<session>]]`.
 pub const DOCTOR: &str = "doctor";
 
-/// The rename: `rename [old] <new>`. Top-level for the same reason as
-/// [`DOCTOR`]. The behavior is [`crate::rename`].
+/// The rename: `rename [old] <new>`.
 pub const RENAME: &str = "rename";
 
 /// The launch prelude's hard-dependency gate: `_check-deps [--bash-major <n>]`.
-/// Underscored — the glue calls it before any side effect, never a human.
 pub const CHECK_DEPS: &str = "_check-deps";
 
 /// The pane's own command: `_run [--print] <session-dir> <slot>`.
-/// Underscored — a pane runs it, and a human re-runs the same line from that
-/// pane; it is never typed as a subcommand of `ae`.
 pub const RUN: &str = "_run";
 
 /// The session helper set, republished: `_shims-render <session-dir>`.
-/// Underscored — a core entry, never human-typed.
 pub const SHIMS_RENDER: &str = "_shims-render";
 
 /// The publication half of the installer: `_install --from <bundle-dir>`.
-///
-/// Underscored — the bootstrap `install` script runs it on the core it has just
-/// extracted, and `ae upgrade` reaches the same code in process. A human types
-/// `install` or `ae upgrade`, never this. The behavior is [`crate::install`].
 pub const INSTALL: &str = "_install";
 
 /// What an argv asks the binary to do.
@@ -322,9 +210,7 @@ pub enum Request {
     Help,
     /// `list` (or its `ls` spelling) with the filters its flags selected.
     List(ListArgs),
-    /// `next` (or its `jump` spelling) — the attention navigator. The tail is
-    /// validated by [`crate::next::parse`], not here: the refusal text is
-    /// `ae next`'s own and belongs beside the rule it states.
+    /// `next` (or its `jump` spelling) — the attention navigator.
     Next {
         /// Everything after the subcommand, as typed.
         tail: Vec<String>,
@@ -333,7 +219,7 @@ pub enum Request {
     Say {
         /// The session meta directory the helper derives from `$0`.
         dir: PathBuf,
-        /// The text, as typed. Empty reads stdin.
+        /// The text, as typed.
         tail: Vec<String>,
     },
     /// `_peek <meta-dir> <target> [lines]` — the `peek` helper surface.
@@ -377,8 +263,7 @@ pub enum Request {
     },
     /// `_launch …` — a whole session, created or resumed.
     Launch {
-        /// Everything after the subcommand, as given. Validated by
-        /// [`crate::session_launch`], whose refusals are the launch's own.
+        /// Everything after the subcommand, as given.
         tail: Vec<String>,
     },
     /// `_watchdog <start|stop|status> [session] [--pane <id>]` — validated by
@@ -401,9 +286,6 @@ pub enum Request {
         mode: Mode,
     },
     /// `_events-tail <meta-dir>` — the `events-tail` helper surface.
-    /// `_state <meta-dir> [<value> [reason…]]` — the `state` helper. The tail
-    /// is validated by [`crate::state::parse`], not here: the usage text is the
-    /// helper's own and belongs beside the rule it states.
     State {
         /// The session meta directory.
         dir: std::path::PathBuf,
@@ -514,8 +396,7 @@ pub enum Request {
     /// `_end-local-teardown <session-dir>` — removes the canonical session state
     /// of a local-mode session via the rename-to-tombstone commit boundary.
     EndLocalTeardown {
-        /// The session directory (`_ae_core_try`'s injected meta dir). The core
-        /// derives the name and sessions root from it and validates both.
+        /// The session directory (`_ae_core_try`'s injected meta dir).
         dir: PathBuf,
     },
     /// `_watchdog-run <meta-dir> [knob flags]` — run the watchdog daemon for a
@@ -542,7 +423,7 @@ pub enum Request {
         tail: Vec<String>,
     },
     /// `_meta-init <dir> --base <file> [--replace]` — validated by
-    /// [`crate::identity::meta_init`]. The seat records arrive on stdin.
+    /// [`crate::identity::meta_init`].
     MetaInit {
         /// The session meta directory.
         dir: PathBuf,
@@ -615,15 +496,14 @@ pub enum Request {
     /// `_net-probe <host> [--port <n>]` — resolve a name and report what the
     /// resolver did.
     NetProbe {
-        /// The host to resolve. A NAME is the whole point: an IP literal is
-        /// answered without a resolver ever being asked.
+        /// The host to resolve.
         host: String,
         /// The port the resolved authority carries, defaulted to
         /// [`crate::netprobe::DEFAULT_PORT`].
         port: u16,
     },
-    /// `_compact-freeze <session-dir> [--keep-history]` — resolves and emits the
-    /// frozen compact tuple. Pure read-only.
+    /// `_compact-freeze <session-dir> [--keep-history]` — resolves and emits
+    /// the frozen compact tuple.
     CompactFreeze {
         /// The session directory the frozen helper derives from `$0`.
         dir: PathBuf,
@@ -637,9 +517,9 @@ pub enum Request {
         dir: PathBuf,
         /// The frozen tuple from `_compact-freeze`.
         tuple: String,
-        /// The driver's label for WHICH gate this is (e.g. "after confirmation", "after the
-        /// handover wait"), so a refusal names the crossing. Defaults to "before the handover"
-        /// when the flag is absent, preserving the single-gate wording for any legacy caller.
+        /// The driver's label for WHICH gate this is (e.g. "after
+        /// confirmation", "after the handover wait"), so a refusal names the
+        /// crossing.
         when: String,
         /// `--keep-history`, carried from the original invocation.
         keep_history: bool,
@@ -706,21 +586,13 @@ pub enum Request {
     /// `_end-nonlocal-teardown <session-dir> [--preserve]` — removes the managed
     /// workdir (copy/worktree) and then the canonical state of a nonlocal session.
     EndNonlocalTeardown {
-        /// The session directory (`_ae_core_try`'s injected meta dir). The core
-        /// derives the name and both roots from the configured state root and
-        /// validates the dir is that exact managed child.
+        /// The session directory (`_ae_core_try`'s injected meta dir).
         dir: PathBuf,
         /// `--preserve`: keep the workdir byte-for-byte (a no-origin session whose
         /// committed work lives only there), removing canonical state only.
         preserve: bool,
     },
     /// A usage error about a MISSING operand rather than an offending token.
-    ///
-    /// The successor spelling's own error class: the frozen helpers read their
-    /// meta directory from `$0`, so "you gave me no directory" is a state they
-    /// cannot be in and no row rules. It exits `2` like every other usage error,
-    /// and it is a separate variant because [`Request::UsageError`] promises to
-    /// carry the offending token verbatim — and an absence is not a token.
     MissingOperand(&'static str),
     /// `doctor [--refresh [all|<session>]]` — validated by [`crate::doctor`].
     Doctor {
@@ -738,7 +610,7 @@ pub enum Request {
         tail: Vec<String>,
     },
     /// `_run [--print] <session-dir> <slot>` — compose one seat's tool command
-    /// and become it. Validated by [`crate::run`], whose refusals are its own.
+    /// and become it.
     Run {
         /// The session directory.
         dir: PathBuf,
@@ -761,25 +633,13 @@ pub enum Request {
         tail: Vec<String>,
     },
     /// **SC-022** — a token that is a usage error: an unknown top-level OPTION,
-    /// or an unknown token in a `list`/`ls` tail. Carries the token verbatim.
+    /// or an unknown token in a `list`/`ls` tail.
     UsageError(String),
     /// A top-level NON-option token: a session name under the start grammar.
-    ///
-    /// **SC-022 rules this is NEVER an unknown-subcommand error.** It is a
-    /// launch candidate, and launching is not this slice's work — so the
-    /// variant exists to keep the misclassification impossible rather than to
-    /// implement anything. There is deliberately no "unknown command" phrase in
-    /// this crate for such a token to fall into.
     LaunchCandidate(String),
 }
 
 /// Whether the core serves `word` as an entry of its own.
-///
-/// Asked of ONE word, and answered by [`Request::parse`] itself rather than by
-/// a second list beside it: a served word with no operands answers
-/// [`Request::MissingOperand`], and only a word nothing serves falls through to
-/// [`Request::LaunchCandidate`]. A hand-written table here would be a second
-/// definition of the entry set, free to drift from the parse.
 #[must_use]
 pub fn serves(word: &str) -> bool {
     let argv = [word.to_owned()];
@@ -788,23 +648,6 @@ pub fn serves(word: &str) -> bool {
 
 impl Request {
     /// Classify `args` — argv WITHOUT the program name.
-    ///
-    /// An empty argv is [`Request::Help`]: a multiplexer that prints nothing
-    /// when invoked bare is a multiplexer nobody can discover.
-    ///
-    /// # `list` / `ls`
-    ///
-    /// The flag grammar is **not** repeated here — it is
-    /// [`ListArgs::parse`](crate::filters::ListArgs::parse), which owns
-    /// SC-017a–f, SC-017i and SC-521a/b. This function only decides that the
-    /// word `list` (or `ls`) hands the REST of argv to that parser, so there is
-    /// exactly one place where a flag means something.
-    ///
-    /// **SC-021** — `ls` is an alias of `list`, so the two are one command with
-    /// two spellings rather than two commands that happen to agree. The row's
-    /// authority is the S1 surface INVENTORY, not commands.md, where `ls`
-    /// appears nowhere: the row records that documentation gap as its own
-    /// finding.
     ///
     /// # SC-022 — the two kinds of unrecognised token
     ///
@@ -1337,14 +1180,6 @@ impl Request {
     }
 
     /// `_requests <meta-dir> [mine|inbox|all]`.
-    ///
-    /// A mode token that is not one of the three is a usage error at `2`, not
-    /// the frozen helper's `1` (lead ruling on D2): no corpus row exercises this
-    /// path, and where the corpus pins nothing and the crate's exit-code
-    /// contract speaks, the contract wins — `1` for both conflates "you asked
-    /// wrong" with "it went wrong", which is the distinction `2` exists for.
-    /// The IDENTITY refusal keeps its pinned `1`; that one is
-    /// [`crate::requests::EXIT_NO_IDENTITY`] and is not decided from argv.
     fn parse_requests(tail: &[String]) -> Self {
         let (dir, token) = match tail {
             [] => return Self::MissingOperand(REQUESTS),
@@ -1358,19 +1193,12 @@ impl Request {
                 mode,
             },
             // `token` is necessarily `Some` on this arm: `Mode::parse(None)` is
-            // the documented `mine` default and cannot fail. The fallback is
-            // written rather than unwrapped so the impossible case stays
-            // harmless instead of becoming a panic in a read surface.
+            // the documented `mine` default and cannot fail.
             None => Self::UsageError(token.unwrap_or_default().to_owned()),
         }
     }
 
     /// `_run [--print] <session-dir> <slot>`.
-    ///
-    /// `--print` is a REPORT: it composes the same plan and prints it instead
-    /// of becoming it, which is the only way to read a pane's argv without a
-    /// pane. It is accepted in either operand position because a human typing
-    /// it is editing a line the pane already holds.
     fn parse_run(tail: &[String]) -> Self {
         let mut print = false;
         let mut operands: Vec<&String> = Vec::new();
@@ -1393,21 +1221,6 @@ impl Request {
     }
 
     /// The exit code **argv alone** decides, where argv decides one.
-    ///
-    /// `None` is the honest answer for a request whose outcome depends on
-    /// something the command line does not contain: a `list` needs a session
-    /// source, a launch candidate needs a launcher. Returning a number for
-    /// those would publish an implementation's current behavior as though it
-    /// were the contract, which is exactly the mistake this type refuses to
-    /// make available.
-    ///
-    /// SC-022 fixes the one error code: `2` for a usage error, kept distinct
-    /// from `1` so a caller can tell "you asked wrong" from "it went wrong".
-    /// [`Request::MissingOperand`] is the same class and takes the same code.
-    ///
-    /// The helper surfaces answer `None` for the same reason `list` does:
-    /// `_requests` may still refuse for want of an identity (a pinned `1`), and
-    /// `_events-tail` has no completion at all — argv decides neither.
     #[must_use]
     pub fn exit_code(&self) -> Option<u8> {
         match self {
@@ -1474,17 +1287,6 @@ impl Request {
 }
 
 /// Read the watchdog's knob flags — every one `--flag <number>`, in any order.
-///
-/// An unrecognised flag, a missing value and an unparseable number are all the
-/// same answer: the offending word, which the caller turns into SC-022's usage
-/// exit. Silently defaulting a knob bash meant to set would make the daemon run
-/// a cadence nobody chose, and a watchdog is not a place to guess.
-/// Read `_monitor sweep`'s flags.
-///
-/// Three of them are switches and the rest take a value, so this cannot reuse
-/// the watchdog's every-flag-takes-a-value loop. The rule is the same one: an
-/// unrecognised flag, a missing value and an unparseable number are all the
-/// offending word, never a silent default for a knob the caller meant to set.
 fn monitor_args(flags: &[String]) -> std::result::Result<crate::monitor::Args, String> {
     let mut args = crate::monitor::Args {
         now: crate::time::Timestamp::now().epoch(),
@@ -1543,16 +1345,11 @@ fn watchdog_knobs(flags: &[String]) -> std::result::Result<crate::watchdog_daemo
             "--quiet-beat-ms" => knobs.quiet_beat_ms = number(value)?,
             "--quiet-tries" => knobs.quiet_tries = size(value)?,
             "--quiet-panes-per-cycle" => knobs.quiet_panes_per_cycle = size(value)?,
-            // The orchestrator cadence (ae:16435-16448). `--sweep-secs 0` is a
-            // MEANINGFUL value, not an omission: SC-1405b makes it "no sweep
-            // branch at all", so bash passing a configured zero must reach the
-            // daemon as a zero rather than fall back to the frozen 300.
+            // The orchestrator cadence.
             "--sweep-secs" => knobs.sweep.sweep_secs = number(value)?,
             "--sweep-retry-secs" => knobs.sweep.retry_secs = number(value)?,
             "--sweep-retry-max" => knobs.sweep.retry_max = count(value)?,
-            // The deferred Telegram revive's cadence (ae:14297-14299). Zero is
-            // MEANINGFUL — it disables supervision — so it must reach the daemon
-            // as a zero rather than fall back to the frozen 120.
+            // The deferred Telegram revive's cadence.
             "--tg-supervise-secs" => knobs.tg_supervise_secs = number(value)?,
             _ => return Err(flag.clone()),
         }
@@ -1562,13 +1359,6 @@ fn watchdog_knobs(flags: &[String]) -> std::result::Result<crate::watchdog_daemo
 }
 
 /// Read `_telegram-run`'s paths and knobs.
-///
-/// The two PATH flags default to the conventional layout under `<ae-home>`
-/// rather than being required: bash passes them when it has them, and a human
-/// running the daemon by hand should not have to restate what `AE_HOME` already
-/// implies. Everything else follows the watchdog's rule — an unrecognised flag,
-/// a missing value and an unparseable number are all the offending word, never
-/// a silent default for a knob the caller meant to set.
 fn telegram_options(
     ae_home: &str,
     flags: &[String],
@@ -1610,12 +1400,6 @@ fn telegram_options(
 }
 
 /// Read `_net-probe`'s only flag: `--port <n>`.
-///
-/// The watchdog's rule again — an unrecognised flag, a missing value and a
-/// number that is not a port are all the offending word, never a silent
-/// default. A caller who typed `--port` meant a port, and resolving 443 because
-/// their value did not parse would report an answer about an authority nobody
-/// asked for.
 fn net_probe_port(flags: &[String]) -> std::result::Result<u16, String> {
     match flags {
         [] => Ok(crate::netprobe::DEFAULT_PORT),
@@ -1703,9 +1487,7 @@ mod tests {
     #[test]
     fn sc_022_a_top_level_bare_word_is_a_session_name_not_an_error() {
         // The colead veto, as a test: there is no unknown-subcommand phrase for
-        // such a token to fall into. It is a launch candidate under the start
-        // grammar, and launching is out of this slice — but MISCLASSIFYING it
-        // would put a phrase into the contract that the row forbids.
+        // such a token to fall into.
         for word in ["my-feature", "frobnicate", "list-ish", "9lives"] {
             assert_eq!(
                 Request::parse(&argv(&[word])),
@@ -1754,8 +1536,6 @@ mod tests {
     #[test]
     fn ls_is_the_same_command_as_list_for_every_argv_tail() {
         // SC-021 makes `ls` an alias of `list` — one command, two spellings.
-        // Tails, not just the bare word: an alias that dispatches the same but
-        // parses its arguments differently is not an alias.
         let tails: [&[&str]; 5] = [
             &[],
             &["--all"],
@@ -1779,9 +1559,7 @@ mod tests {
     #[test]
     fn every_documented_flag_reaches_the_one_parser_that_owns_it() {
         // DELEGATION, not the grammar: what each flag MEANS is pinned in
-        // `filters`. What is pinned here is that `list` hands argv to that
-        // parser untouched — a second grammar in this module is exactly the
-        // drift this asserts against.
+        // `filters`.
         for flag in EVERY_DOCUMENTED_FLAG {
             let expected = ListArgs::parse(&[flag]).expect("a documented flag");
             assert_eq!(
@@ -1829,9 +1607,6 @@ mod tests {
     #[test]
     fn the_helper_spellings_all_begin_with_an_underscore() {
         // Not decoration: this is the property that keeps SC-022 whole.
-        // `_validate_session_name` forbids a leading underscore, so no legal
-        // session name can reach these arms — a `requests`/`events-tail`
-        // spelling would have taken two real names out of the launch grammar.
         for spelling in [
             REQUESTS,
             EVENTS_TAIL,
@@ -1927,7 +1702,7 @@ mod tests {
     #[test]
     fn state_takes_a_directory_and_keeps_the_rest_for_the_state_module() {
         // argv is not validated here: the usage text is the helper's own and
-        // lives beside the rule in `crate::state`. The parser only splits.
+        // lives beside the rule in `crate::state`.
         assert_eq!(
             Request::parse(&argv(&[STATE, "/s/tg1", "blocked", "on", "x"])),
             Request::State {
@@ -1944,8 +1719,8 @@ mod tests {
 
     #[test]
     fn a_bad_mode_token_is_the_usage_code_and_not_the_frozen_one() {
-        // D2's split: the pinned `1` belongs to the identity refusal, which argv
-        // cannot see. An unrecognised mode is a usage error like any other.
+        // D2's split: the pinned `1` belongs to the identity refusal, which
+        // argv cannot see.
         let request = Request::parse(&argv(&[REQUESTS, "/s/tg1", "bogus"]));
         assert_eq!(request, Request::UsageError("bogus".to_owned()));
         assert_eq!(request.exit_code(), Some(2));
@@ -1967,9 +1742,7 @@ mod tests {
     #[test]
     fn a_directory_is_taken_verbatim_however_it_is_spelled() {
         // The runner hands over whatever `<AE_HOME>/sessions/<name>` expanded
-        // to. Nothing here normalises it: rewriting an operator's path is a
-        // decision no row makes, and a mode-shaped directory name is still a
-        // directory because position decides, not shape.
+        // to.
         for path in ["/s/tg1", "relative/tg1", "all", "--json", ""] {
             assert_eq!(
                 Request::parse(&argv(&[REQUESTS, path, "all"])),
@@ -2028,10 +1801,9 @@ mod tests {
 
     #[test]
     fn nonlocal_teardown_usage_error_names_the_first_unexpected_token() {
-        // --preserve is a VALID token here, so for `<dir> --preserve <extra>` the
-        // offending token the UsageError must carry is <extra>, never the valid
-        // --preserve. This is the parser's offending-token convention: name the
-        // first token past the grammar, verbatim.
+        // --preserve is a VALID token here, so for `<dir> --preserve <extra>`
+        // the offending token the UsageError must carry is <extra>, never the
+        // valid --preserve.
         assert_eq!(
             Request::parse(&argv(&[
                 END_NONLOCAL_TEARDOWN,
@@ -2485,8 +2257,7 @@ mod tests {
     fn a_configured_zero_sweep_reaches_the_daemon_as_a_zero() {
         // SC-1405b is a VALUE, not an omission: `0` means "no sweep branch",
         // and defaulting it to the frozen 300 would start prompting a session
-        // whose operator turned the cadence off. The control is the pair —
-        // omitting the flag is what yields 300.
+        // whose operator turned the cadence off.
         let Request::WatchdogRun { knobs, .. } =
             Request::parse(&argv(&[WATCHDOG_RUN, "/s/demo", "--sweep-secs", "0"]))
         else {

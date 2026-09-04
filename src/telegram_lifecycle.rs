@@ -2,8 +2,8 @@
 //!
 //! P4.3 gave the core the bridge itself (`_telegram-run`, see
 //! [`crate::telegram::bridge`]) and left bash managing it: `cmd_telegram_start`
-//! / `_stop` / `_status` (ae:8202-8330), `_telegram_spawn_daemon` (ae:7926) and
-//! `_telegram_autostart_if_enabled` (ae:8076) owned the intent flag, the
+//! / `_stop` / `_status`, `_telegram_spawn_daemon` and
+//! `_telegram_autostart_if_enabled` owned the intent flag, the
 //! control lock, the tmux session and the autostart. This module is that
 //! management, ported.
 

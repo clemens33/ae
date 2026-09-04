@@ -2,9 +2,9 @@
 //!
 //! Slice A.3 gave the core the watchdog's whole body (`_watchdog-run`, see
 //! [`crate::watchdog_daemon`]) and left bash managing it: `cmd_watchdog`
-//! (ae:7498) resolved a session and shelled into the generated `watchdog`
+//! resolved a session and shelled into the generated `watchdog`
 //! helper, whose `_watchdog_start` / `_watchdog_stop` / `_watchdog_status`
-//! (ae:11464-11588) owned the pane, the pidfile, the start lock and the meta
+//! owned the pane, the pidfile, the start lock and the meta
 //! flag. This module is that management, ported.
 
 use std::io::Write;
@@ -16,7 +16,7 @@ use crate::session_tmux::{Op, Split, argv, interpret_pane_id};
 use crate::state::{EXIT_FAILED, EXIT_USAGE};
 use crate::{lifecycle, meta, session_launch, tmux, transport, watchdog_daemon, watchdog_glue};
 
-/// The frozen usage, both lines (ae:7501-7502), plus the knob passthrough.
+/// The frozen usage, both lines, plus the knob passthrough.
 pub const USAGE: &str = "Usage: ae watchdog <start|stop|status> [session-name] [--pane <id>] [-- <knob flags>]\n  (If run inside an ae session, session-name is optional.)";
 
 /// The `@ae_agent` stamp the watchdog's pane carries.
@@ -25,11 +25,11 @@ const AGENT_STAMP: &str = "_watchdog";
 /// The generated helper the pane runs, and its internal subcommand.
 const HELPER: &str = "watchdog";
 
-/// The pane title, so the monitor window's border names it (ae:11552).
+/// The pane title, so the monitor window's border names it.
 const PANE_TITLE: &str = "ae watchdog";
 
 /// The start lock's name under the session's meta dir — the frozen
-/// `.watchdog.start.lock` (ae:11536).
+/// `.watchdog.start.lock`.
 const START_LOCK: &str = ".watchdog.start.lock";
 
 /// How long a starter blocks on the start lock before DEFERRING — the frozen

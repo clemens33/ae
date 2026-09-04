@@ -72,10 +72,6 @@ fn require_tmux(scratch: &Path) {
 }
 
 /// Write `body` at `path` and make it executable.
-///
-/// `fs::write` TRUNCATES through a symlink, and a session helper is a symlink
-/// to the core — so this only ever runs against a fixture directory that has
-/// none, and it creates the file rather than replacing one.
 fn plant_script(path: &Path, body: &str) {
     let _ = fs::remove_file(path);
     assert!(fs::write(path, body).is_ok(), "the script");
@@ -90,10 +86,6 @@ fn plant_script(path: &Path, body: &str) {
 }
 
 /// A `say` that records every report it is handed and exits `code`.
-///
-/// The recording is what makes "delivered" a fact rather than an inference: the
-/// sweep's own `delivered` field says what it BELIEVES, and the log says what
-/// actually reached the operator's channel.
 fn plant_say(dir: &Path, log: &Path, code: u8) {
     plant_script(
         &dir.join("say"),
@@ -132,11 +124,6 @@ fn plant_session(root: &Path, name: &str, socket: &Path, events: &[&str]) -> Pat
 }
 
 /// Bring `name` up on `socket` as a session ae will own.
-///
-/// The `AE_SESSION` marker is NOT decoration: a session tmux reports without it
-/// classifies as `unknown`, never `running`, and the sweep only looks at running
-/// ones. A fixture that skipped it would prove the sweep silent for the wrong
-/// reason.
 fn start_session(socket: &Path, scratch: &Path, name: &str) {
     assert!(
         tmux(
@@ -215,10 +202,7 @@ fn delivered(stdout: &str) -> bool {
 
 #[test]
 fn a_repeated_attention_state_is_reported_once_and_its_change_is_reported_again() {
-    // THE DEDUP CONTRACT. An agent that is blocked is worth one message; an
-    // agent that is STILL blocked on the next sweep is worth none. The failure
-    // this pins is the one the orchestrator had before the helper existed:
-    // every five minutes, the same alert.
+    // THE DEDUP CONTRACT.
     let scratch = scratch("dedup");
     require_tmux(&scratch);
     let socket = scratch.join("s");
@@ -244,7 +228,7 @@ fn a_repeated_attention_state_is_reported_once_and_its_change_is_reported_again(
     assert!(delivered(&out), "say exited zero: {err}");
     assert_eq!(said(&log), "⚠ mondd · lead needs you: blocked\n--\n");
 
-    // Nothing changed. Nothing is said.
+    // Nothing changed.
     let (code, out, err) = sweep(&root, &dir, &["--format", "json"]);
     assert_eq!(code, Some(0), "{err}");
     assert!(
@@ -300,10 +284,7 @@ fn a_repeated_attention_state_is_reported_once_and_its_change_is_reported_again(
 
 #[test]
 fn a_report_that_was_not_delivered_is_reported_again_until_it_lands() {
-    // THE GUARANTEE THE DEDUP IS ONLY SAFE UNDER. `last_seen` advances every
-    // sweep; `notified` advances only after `say` exits zero. Without that
-    // asymmetry the dedup would swallow the one alert whose delivery failed —
-    // silently, and forever.
+    // THE GUARANTEE THE DEDUP IS ONLY SAFE UNDER.
     let scratch = scratch("retry");
     require_tmux(&scratch);
     let socket = scratch.join("s");
@@ -329,7 +310,7 @@ fn a_report_that_was_not_delivered_is_reported_again_until_it_lands() {
         );
     }
 
-    // The channel comes back. It lands, and then it stops.
+    // The channel comes back.
     plant_say(&dir, &log, 0);
     let (_, out, err) = sweep(&root, &dir, &["--format", "json"]);
     assert_eq!(report(&out), expected, "{err}");
@@ -344,9 +325,7 @@ fn a_report_that_was_not_delivered_is_reported_again_until_it_lands() {
 #[test]
 fn the_state_round_trips_through_the_file_the_watchdog_reads_as_a_heartbeat() {
     // The state file is not private bookkeeping: the watchdog stats it to tell
-    // an orchestrator that is LIVE from one that is still SWEEPING. So the name
-    // is a two-party contract, and a sweep that wrote anywhere else would leave
-    // the wedge check watching a file nobody writes.
+    // an orchestrator that is LIVE from one that is still SWEEPING.
     let scratch = scratch("state");
     require_tmux(&scratch);
     let socket = scratch.join("s");
@@ -482,7 +461,7 @@ fn no_notify_prints_without_delivering_and_without_marking_anything_notified() {
     assert_eq!(said(&log), "", "--no-notify runs no helper at all");
 
     // An UNCONFIRMED report is not a delivered one: the next sweep says it
-    // again. This is the same rule as a failed send, reached the other way.
+    // again.
     let (_, out, _) = sweep(&root, &dir, &["--no-notify"]);
     assert_eq!(out, "⚠ monnn · lead needs you: blocked\n");
 }
@@ -490,9 +469,7 @@ fn no_notify_prints_without_delivering_and_without_marking_anything_notified() {
 #[test]
 fn the_sweep_command_the_charter_prints_is_the_one_the_binary_accepts() {
     // The charter is INSTRUCTION, not documentation: the orchestrator runs the
-    // command in its fence verbatim. A rename here that did not reach that
-    // fence would leave every installed orchestrator running a word the binary
-    // refuses — silently, because nobody reads a charter after installing it.
+    // command in its fence verbatim.
     let charter = Path::new(env!("CARGO_MANIFEST_DIR")).join("contrib/aeorchestrator/CHARTER.md");
     let text = fs::read_to_string(&charter).expect("the charter ships with the repo");
     let quoted = text
@@ -571,12 +548,7 @@ fn a_subcommand_or_flag_the_sweep_does_not_know_is_a_usage_error() {
 
 #[test]
 fn a_sweep_target_outside_the_sessions_root_is_refused_before_anything_is_written() {
-    // THE TARGET GUARD. A sweep takes a lock, writes its state file and
-    // EXECUTES `say` inside the directory it is handed — and that directory
-    // arrives as argv. The failure this pins ran a planted `say` out of a
-    // stranger's directory, wrote state there and reported success: `Notice`'s
-    // one constructor seals the PROGRAM relative to the directory, so the
-    // directory has to be sealed too or the seal is half of one.
+    // THE TARGET GUARD.
     let scratch = scratch("foreign");
     let socket = scratch.join("s");
     let _cleanup = Cleanup {

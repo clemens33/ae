@@ -171,7 +171,7 @@ pub struct ObservedPane {
 /// reading at all — rather than being dropped. Dropping it would delete the
 /// pane whose existence is what keeps a missing roster agent `unknown` instead
 /// of `dead`, which is the same defect as the frozen script's
-/// `[[ -n "$ae_agent" ]] || continue` (ae:4202, #107), and the same one this
+/// `[[ -n "$ae_agent" ]] || continue` (#107), and the same one this
 /// module already refused when the format had a single field.
 ///
 /// **ARITY IS EXACT, AND THAT IS A GUARD RATHER THAN TIDINESS.** None of the
@@ -438,6 +438,8 @@ pub fn interpret_agents(succeeded: bool, stdout: &str) -> Option<Vec<ObservedAge
 /// three, and deliberately its OWN format so widening it never touches the
 /// contract that [`interpret_panes`] answers.
 const WATCH_PANE_SEPARATOR: &str = FIELD_SEPARATOR;
+
+/// The `-F` string itself, in the field order [`interpret_watch_panes`] reads.
 pub const WATCH_PANE_FORMAT: &str =
     "#{pane_id} | #{@ae_slot} | #{@ae_agent} | #{pane_pid} | #{pane_current_command}";
 
@@ -554,17 +556,17 @@ pub fn capture_pane_args(server: &ServerId, pane: &str) -> Vec<String> {
 // ---------------------------------------------------------------------------
 
 /// The session-scoped user option carrying the watchdog bar, `[watch <glyph>
-/// <active>/<total>]` (ae:16983).
+/// <active>/<total>]`.
 pub const WATCHDOG_STATUS_OPTION: &str = "@ae_watchdog_status";
 
-/// The session-scoped user option carrying the roster line (ae:17024).
+/// The session-scoped user option carrying the roster line.
 pub const AGENTS_STATUS_OPTION: &str = "@ae_agents_status";
 
-/// The WINDOW-scoped user option carrying that window's glyphs (ae:17047).
+/// The WINDOW-scoped user option carrying that window's glyphs.
 pub const WINDOW_STATUS_OPTION: &str = "@ae_window_status";
 
 /// How long a transient watchdog alert stays on screen, in milliseconds — the
-/// frozen `display-message -d 10000` (ae:16516 and siblings).
+/// frozen `display-message -d 10000`.
 const DISPLAY_MESSAGE_MS: &str = "10000";
 
 /// Which option table a name lives in.
@@ -590,7 +592,7 @@ impl OptionScope {
 }
 
 /// Escape text that is about to enter a tmux FORMAT context — the frozen
-/// `_ae_tmux_format_literal` (ae:1233-1236), `#` then `%`.
+/// `_ae_tmux_format_literal`, `#` then `%`.
 #[must_use]
 pub fn format_literal(text: &str) -> String {
     text.replace('#', "##").replace('%', "%%")
@@ -820,7 +822,7 @@ pub fn session_ids_args(server: &ServerId) -> Vec<String> {
 /// resolving it by prefix would reintroduce the hazard it removes. `None` for a
 /// failed run and for a name the server does not hold — and the caller must then
 /// write NOTHING, because `-t ""` lands on tmux's CURRENT session, which is some
-/// other user's bar (the frozen guards exactly this at ae:16960).
+/// other user's bar (the frozen guards exactly this).
 ///
 /// ```
 /// use ae::tmux::interpret_session_id;

@@ -37,7 +37,7 @@ enum Query<'a> {
     /// printed value.
     Branch,
     /// `rev-parse --short HEAD` — the detached-HEAD fallback the frozen branch
-    /// segment reaches for when `symbolic-ref` names nothing (ae:13866).
+    /// segment reaches for when `symbolic-ref` names nothing.
     ShortHead,
     /// `status --porcelain --untracked-files=no` — the dirty marker.
     PorcelainStatus,

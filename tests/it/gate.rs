@@ -31,9 +31,6 @@ fn read(path: &Path) -> String {
 /// The EXECUTABLE text of one justfile recipe: body lines only, full-line
 /// comments and blanks dropped, backslash continuations folded so one command
 /// is one line.
-///
-/// A `#` line is only a comment when no fold is in progress — mid-continuation
-/// it is argument text, not commentary.
 fn recipe_text(justfile: &str, header: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut buf = String::new();
@@ -71,10 +68,6 @@ fn recipe_text(justfile: &str, header: &str) -> Vec<String> {
 }
 
 /// Whether a bare `shellcheck` word starts at `at` in `line`.
-///
-/// A shell TOKEN boundary, not an identifier one: an identifier boundary
-/// treats `-` and `.` as separators, so `pcre-shellcheck` would match the name
-/// inside a longer one.
 fn bare_word_at(line: &str, at: usize, word: &str) -> bool {
     let boundary = |ch: char| !ch.is_ascii_alphanumeric() && !"_.@/-".contains(ch);
     let before = line[..at].chars().next_back().is_none_or(boundary);
@@ -95,31 +88,6 @@ fn bare_word_count(text: &str, word: &str) -> usize {
 }
 
 /// Whether the `lint` recipe PROTECTS shellcheck's stdin.
-///
-/// The linter reads stdin when fd 0 is open, and an agent harness hands its
-/// tool calls a UNIX SOCKET. If that socket's peer has not closed by the time
-/// the read happens it never returns EOF and the process blocks FOREVER at 0.0%
-/// CPU — wedges observed at 4h40m, 8h40m, 16h52m and 18h33m beside successful
-/// runs of the same command, with nothing in between: a race on the peer's
-/// close, not slowness. Every input is already on the argv, so `< /dev/null`
-/// costs nothing and removes the race.
-///
-/// SOURCE SHAPE ONLY, and the name says so: this proves the redirect is
-/// WRITTEN, not that a wedge cannot occur. The behaviour is falsifiable only
-/// against a fifo that is never closed — a rig no test can own without risking
-/// the hang it is testing for.
-///
-/// Two ways a guard of this kind lies, both closed below because both were
-/// demonstrated against its first version:
-///
-/// * a COMMENT is not evidence — a commented redirect satisfies any grep over
-///   raw text while the real command runs unprotected, so comments are stripped
-///   before anything is asserted;
-/// * a SECOND CALL hides behind the first — the tail test alone passes
-///   `shellcheck ae; shellcheck install < /dev/null`, where the protected
-///   command is not the one doing the work. So the count of `shellcheck` tokens
-///   in EXECUTABLE text must be exactly one, and that one line must BE the
-///   command rather than merely contain it.
 fn lint_redirect_ok(justfile: &str) -> bool {
     let lines = recipe_text(justfile, "lint:");
     let joined = lines.join("\n");
@@ -130,24 +98,6 @@ fn lint_redirect_ok(justfile: &str) -> bool {
 }
 
 /// Whether one line IS the shellcheck command and carries the stdin redirect.
-///
-/// Every shell control operator hands the redirect to a LATER command while
-/// shellcheck keeps the inherited fd — `&& true`, `|| true`, `| cat` and
-/// `& wait` all did exactly that against an earlier version of this predicate —
-/// so the segment between the token and the redirect must carry none of `;`,
-/// `&`, `|`.
-///
-/// The `<` must also be BARE, or the explicit `0<`. A NUMERIC fd prefix
-/// redirects the wrong descriptor and leaves stdin exactly as inherited:
-/// measured, `printf X | bash -c 'cat 2< /dev/null'` still prints X, and
-/// `1< /dev/null` only makes stdout read-only, which a run with no findings
-/// never notices. Both spellings keep the wedge while reading green.
-///
-/// Deliberately loud in the false-positive direction: a legitimate `2>&1` on
-/// this line is rejected, its `&` being indistinguishable here from a
-/// backgrounding one. If that day comes, split the redirection onto its own
-/// construct or widen this with a case that is MEASURED — do not delete the
-/// check to make a recipe pass.
 fn bearing(line: &str) -> bool {
     let Some(rest) = line.strip_prefix("shellcheck") else {
         return false;
@@ -163,12 +113,6 @@ fn bearing(line: &str) -> bool {
 }
 
 /// Whether the pin recipe asks whether shellcheck EXISTS before probing it.
-///
-/// Under `set -e` with pipefail, `have="$(shellcheck --version | awk …)"`
-/// ABORTS at rc 127 when the binary is absent: the probe's stderr is already
-/// redirected, so the recipe dies with a bare exit code and none of the install
-/// guidance ever prints — on exactly the fresh machine that needs it. ORDER is
-/// the invariant, not mere presence, so a later reordering is caught too.
 fn pin_availability_ok(justfile: &str) -> bool {
     let lines = recipe_text(justfile, "_shellcheck-pin:");
     let first = |needle: &str, tail: &str| {
@@ -206,9 +150,7 @@ fn the_lint_recipe_protects_shellchecks_stdin() {
     ));
     // RED — the plain regression this exists to catch.
     assert!(!lint_redirect_ok("lint:\n    shellcheck -x install\n"));
-    // RED — the control-operator family. Each has exactly one `shellcheck`
-    // token, starts the line with it and still ends in `< /dev/null`, but the
-    // redirect belongs to the command AFTER the operator.
+    // RED — the control-operator family.
     for tail in ["&& true", "|| true", "| cat", "& wait"] {
         assert!(
             !lint_redirect_ok(&format!(
@@ -251,10 +193,6 @@ fn the_pin_recipe_asks_whether_shellcheck_exists_before_probing_it() {
 }
 
 /// The joined, comment-free text the portability rules read.
-///
-/// `||`- and `\`-continued lines are folded so a GNU call and its BSD fallback
-/// on the next line read as ONE line; otherwise every multi-line fallback
-/// trips.
 fn installer_lines(source: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut buf = String::new();
@@ -279,30 +217,25 @@ fn installer_lines(source: &str) -> Vec<String> {
 #[derive(Clone, Copy)]
 enum Tail {
     /// The flag takes an argument, which GNU allows ATTACHED — `stat -c%Y`,
-    /// `date -dyesterday`. Nothing may be required after the letter.
+    /// `date -dyesterday`.
     Arg,
     /// The flag takes NO argument, so cluster letters may legally FOLLOW it:
     /// `grep -Po` as well as `grep -oP`.
     NoArg,
     /// The argument must be separate — but `-i''` and `-i""` DO count, because
     /// the shell strips the quotes and what reaches sed is a bare `-i`, the
-    /// GNU-only spelling that breaks BSD. `-i.bak` stays deliberately quiet.
+    /// GNU-only spelling that breaks BSD.
     WordFinal,
 }
 
 /// Whether `line` calls `cmd` with `flag` set, options in ANY order.
-///
-/// `date -u -d` and `sed -E -i` are the same GNU-only calls as `date -d` and
-/// `sed -i`; a pattern anchored to the canonical order lets them through
-/// unflagged, which is how two of these shipped.
 fn calls_with_flag(line: &str, cmd: &str, flag: char, tail: Tail) -> bool {
     let mut from = 0;
     while let Some(at) = line[from..].find(cmd).map(|index| index + from) {
         from = at + cmd.len();
         // A command token begins at start of line, after whitespace, or after a
         // shell operator, and may carry a PATH prefix — so `/usr/bin/date -d`
-        // is caught while `iso-date -d` is not. The prefix must end in `/`,
-        // which no suffix-named command does.
+        // is caught while `iso-date -d` is not.
         let before = line[..at].chars().next_back();
         let starts = match before {
             None => true,
@@ -350,15 +283,6 @@ fn cluster_hits(cluster: &str, flag: char, tail: Tail) -> bool {
 }
 
 /// Every GNU-only form `source` still carries, by label.
-///
-/// Each form fails SILENTLY on BSD/macOS: the command errors, the `|| fallback`
-/// value lands, and the feature reads as "nothing found" rather than "broken".
-/// That whole class shipped — see AGENTS.md, "GNU vs BSD userland".
-///
-/// The subject is `install`, and since slice Z3 it is the whole subject: the
-/// one bash file ae still ships, running on both userlands, on the
-/// highest-authority path there is — a silently-wrong install is not a
-/// diagnosable one.
 fn portability_flags(source: &str) -> Vec<&'static str> {
     let lines: Vec<String> = installer_lines(source)
         .into_iter()
@@ -368,10 +292,8 @@ fn portability_flags(source: &str) -> Vec<&'static str> {
         .filter(|line| !line.contains("port-ok:"))
         .collect();
     let mut bad = Vec::new();
-    // An `unless` is a REVIEWED pair on the same line — an explicit `command -v`
-    // test or the portable spelling beside the GNU one. There is deliberately no
-    // generic `GNU || BSD` allow: it could not tell an EQUIVALENT pair from a
-    // mismatched one, and `stat -c %Y fileA || stat -f %z fileB` passed it.
+    // An `unless` is a REVIEWED pair on the same line — an explicit `command
+    // -v` test or the portable spelling beside the GNU one.
     let mut flag = |label: &'static str, hit: &dyn Fn(&str) -> bool, unless: &str| {
         if lines
             .iter()
@@ -406,9 +328,8 @@ fn portability_flags(source: &str) -> Vec<&'static str> {
         &|line| word_call(line, "md5sum"),
         "command -v md5sum",
     );
-    // `/proc/sys/kernel/random/uuid` is the one allowed read: existence-guarded,
-    // with a uuidgen fallback. Any OTHER /proc path is Linux-only and silently
-    // empty.
+    // `/proc/sys/kernel/random/uuid` is the one allowed read:
+    // existence-guarded, with a uuidgen fallback.
     flag(
         "proc",
         &|line| line.contains("/proc/"),
@@ -469,19 +390,14 @@ fn the_installer_carries_no_gnu_only_coreutils_and_no_unreviewed_exemption() {
         Vec::<&str>::new(),
         "install must run on BSD userland as written"
     );
-    // Marker budget. Each `port-ok:` is a reviewed, irreducible exception. The
-    // only one ae ever carried was `ae transfer`'s ssh heredoc, which ran on the
-    // REMOTE host; transfer was cut, so the budget is ZERO.
+    // Marker budget.
     assert_eq!(
         source.matches("port-ok:").count(),
         0,
         "a new inline exemption needs review, not a passing suite"
     );
 
-    // The guard must FIRE, not merely pass. Each case feeds ONE offending line
-    // through the real rule set — the option-ordered spellings included, because
-    // `date -u -d` and `sed -E -i` are exactly what an order-anchored pattern
-    // let through.
+    // The guard must FIRE, not merely pass.
     for (line, label) in [
         (r#"ts="$(date -d "$x" +%s)""#, "date-d"),
         (r#"ts="$(date -u -d "2 hours ago" +%FT%TZ)""#, "date-d"),
@@ -533,7 +449,7 @@ fn the_bundle_recipe_is_the_one_definition_of_a_bundle_and_both_release_legs_cal
     let justfile = read(&root().join("justfile"));
     let recipe = recipe_text(&justfile, "bundle version platform binary:").join("\n");
     // The three members and their published modes are DEFINED here, so a second
-    // open-coded tar elsewhere could drift silently. That is what these refuse.
+    // open-coded tar elsewhere could drift silently.
     for pin in [
         r#"cp "$binary" "$root/ae-core""#,
         r#"cp install "$root/install""#,
@@ -602,11 +518,6 @@ fn cargo_musl_linker(config: &str) -> String {
 }
 
 /// ONE NAME FOR THE CROSS COMPILER, in the two files that have to agree.
-///
-/// `.cargo/config.toml` pins the linker rustc invokes for the musl target and
-/// the justfile pins `CC_x86_64_unknown_linux_musl` for the C ring compiles.
-/// They are the same program, and a laptop that links the Linux half with one
-/// while compiling C with another produces an artifact nobody chose.
 #[test]
 fn the_musl_cross_compiler_has_one_spelling_in_the_justfile_and_the_cargo_config() {
     let justfile = read(&root().join("justfile"));
@@ -623,8 +534,8 @@ fn the_musl_cross_compiler_has_one_spelling_in_the_justfile_and_the_cargo_config
         "`.cargo/config.toml`'s musl linker and the justfile's RUST_MUSL_CC must name one compiler"
     );
 
-    // RED — each parser must read its OWN section, not any line that looks
-    // like one. A rule that matches anything cannot notice drift.
+    // RED — each parser must read its OWN section, not any line that looks like
+    // one.
     assert_eq!(
         cargo_musl_linker("[target.aarch64-apple-darwin]\nlinker = \"wrong\"\n"),
         "",
@@ -647,12 +558,6 @@ fn the_musl_cross_compiler_has_one_spelling_in_the_justfile_and_the_cargo_config
 
 /// A RELEASE IS BUILT AND PUBLISHED HERE, and it refuses before it can half
 /// finish (human ruling, 2026-09-04: agents release locally, Actions optional).
-///
-/// The ordering is the safety property. Push rights are proved before the bump
-/// writes a version file; the bundles are built and proven before a tag exists;
-/// only then is anything pushed or attached. A release that dies after
-/// `git push --tags` has published a version with no assets behind it, and
-/// every assertion here is one step of the order that prevents it.
 #[test]
 fn a_release_builds_both_bundles_locally_and_proves_its_rights_before_the_bump() {
     let justfile = read(&root().join("justfile"));
@@ -726,12 +631,7 @@ fn a_release_builds_both_bundles_locally_and_proves_its_rights_before_the_bump()
         "the release body reaches gh as a file, not as an argv-sized string"
     );
 
-    // THE REMOTE TAG IS THE RELEASE'S, NOT A PUSH'S. A `git push <tag>` that
-    // lands ahead of a `gh release create` that fails publishes a version with
-    // no assets behind it — `install` resolves the latest release, finds no
-    // SHA256SUMS, and the advertised one-liner is broken for everyone. Creating
-    // the tag with `--target`, in the same API call as the release, makes the
-    // failure mode "no remote tag" instead.
+    // THE REMOTE TAG IS THE RELEASE'S, NOT A PUSH'S.
     assert!(
         !release
             .iter()
@@ -746,8 +646,6 @@ fn a_release_builds_both_bundles_locally_and_proves_its_rights_before_the_bump()
     );
 
     // The tag-triggered workflow is retained as a MANUAL Linux run-proof lane.
-    // Re-arming its push trigger would put Actions back on the critical path,
-    // which is the thing the ruling removed.
     let workflow = read(&root().join(".github/workflows/release.yml"));
     assert!(
         workflow.contains("on:\n  workflow_dispatch:"),
@@ -803,16 +701,6 @@ fn in_fixture(dir: &Path, program: &str, args: &[&str], env: &[(&str, &str)]) ->
 
 /// `just bump` derives the next calendar-version sequence from the repository's OWN tags,
 /// and moves both version-bearing files or neither.
-///
-/// The scheme is SemVer-compatible calendar versioning, `YYYY.M.N`: N is one past the highest
-/// tag of the current month, it RESETS when the month rolls over, and the month
-/// is never zero-padded — a padded `v2026.09.1` would sort and compare as a
-/// different version from the `2026.9.1` the crate carries.
-///
-/// The fixture is its own git repository with its own tags, and a `date` shim
-/// supplies a deterministic UTC year and month, so nothing here depends on when
-/// it runs. The recipe under test is the REAL one, copied in beside the two
-/// files it edits.
 #[test]
 fn just_bump_derives_the_next_sequence_from_the_tags_and_refuses_a_stale_recovery() {
     let root = root();
@@ -900,9 +788,7 @@ fn just_bump_derives_the_next_sequence_from_the_tags_and_refuses_a_stale_recover
     let (code, stdout) = bump("2026", "09");
     assert_eq!((code, stdout.trim()), (0, "2026.9.3"));
 
-    // A STALE recovery marker refuses before any edit. The marker is how an
-    // interrupted bump says the two files may disagree, so starting another one
-    // over it would publish a version derived from a tree nobody has inspected.
+    // A STALE recovery marker refuses before any edit.
     tag("v2026.9.3");
     let before = crate_version();
     assert!(

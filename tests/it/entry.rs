@@ -124,8 +124,7 @@ impl Rig {
 impl Drop for Rig {
     fn drop(&mut self) {
         // A test may use either the explicitly selected socket or the ambient
-        // server selected through TMUX_TMPDIR. Use the raw harness door here:
-        // teardown must not panic while unwinding an assertion failure.
+        // server selected through TMUX_TMPDIR.
         for (label, socket) in [("selected", &self.sock), ("ambient", &self.ambient_sock)] {
             let out = self.scratch.join(format!("cleanup-{label}-out"));
             let err = self.scratch.join(format!("cleanup-{label}-err"));

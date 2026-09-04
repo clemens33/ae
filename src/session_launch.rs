@@ -1,7 +1,7 @@
 //! `_launch`: a whole session, created or resumed, as ONE core operation.
 //!
-//! Ported from the frozen script's launch path — the dispatcher's fall-through
-//! (`ae:12911` onwards): `_launch_parse_flags`, the name derivation and its
+//! Ported from the frozen script's launch path, the dispatcher's
+//! fall-through: `_launch_parse_flags`, the name derivation and its
 //! ownership guard, the teardown tombstones, the `--from` preflight, the
 //! working-directory modes, the tmux session and its layout, the meta publish,
 //! the session assets, the pane commands and their readiness-gated paste, the
@@ -29,7 +29,7 @@ pub(crate) mod name;
 pub const USAGE: &str = "Usage: _launch --home <ae-home> --cwd <dir> [--global <cfg>] [--local <cfg>] [--server-kind <kind>] [--server <value>] [--attach|--no-attach] [--no-autostart] [--] [--worktree|--copy|--local] [--from <uuid>] [use <name>] [<session-name>]";
 
 /// How long a freshly created pane's shell is given to draw its prompt before
-/// anything is pasted — the frozen `sleep 0.3` at `ae:14130`.
+/// anything is pasted — the frozen `sleep 0.3`.
 const SHELL_SETTLE: Duration = Duration::from_millis(300);
 
 /// How many polls the launch prompt's readiness wait takes.
@@ -1297,8 +1297,8 @@ pub(crate) fn apply_status_bar(server: &ServerId, name: &str, paths: &str) {
         ("status-interval", "5".to_owned()),
         ("status", "2".to_owned()),
         // The per-window glyph the watchdog publishes into @ae_window_status
-        // renders only through these two (ae:673-674); without them it is
-        // published and never shown.
+        // renders only through these two; without them it is published and
+        // never shown.
         (
             "window-status-format",
             "#I:#W#{@ae_window_status}#F".to_owned(),

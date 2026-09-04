@@ -70,7 +70,7 @@ const ABSENT_SESSION_ID: &str = "-";
 /// The literal an unresolved id is recorded as, before capture succeeds.
 const PENDING_SESSION_ID: &str = "pending";
 
-/// Frozen's short-id width, in CHARACTERS (ae@72c7293:3143, 3158).
+/// Frozen's short-id width, in CHARACTERS, 3158).
 const SHORT_SESSION_ID_CHARS: usize = 8;
 
 impl AgentEntry {
@@ -556,8 +556,7 @@ mod tests {
     }
 
     /// Frozen truncated with `${sid:0:8}`, and bash substring expansion counts
-    /// CHARACTERS — its own comment at ae@72c7293:3143 says "8-char short
-    /// session id".
+    /// CHARACTERS — its own comment says "8-char short session id".
     #[test]
     fn the_short_session_id_truncates_on_a_character_boundary() {
         let mut agent = AgentEntry {

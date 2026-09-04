@@ -196,9 +196,7 @@ fn a_verified_bundle_publishes_the_layout_and_the_modes_that_make_it_immutable()
         !present(&rig.journal()),
         "a completed install left a journal"
     );
-    // B21: the installer publishes no config. A config is the launch's to
-    // create, and an installer that seeded one would have to be able to put an
-    // operator's back.
+    // B21: the installer publishes no config.
     assert!(
         !present(&rig.home.join(".ae").join("config")),
         "the installer wrote a config"
@@ -209,8 +207,7 @@ fn a_verified_bundle_publishes_the_layout_and_the_modes_that_make_it_immutable()
 fn the_published_directory_refuses_a_stray_write_through_the_command_link() {
     // The hazard AGENTS.md states in prose, measured: a helper is a symlink to
     // the published core and `>` FOLLOWS a symlink, so a stray redirect would
-    // truncate the binary every session on the machine is bound to. A 0555
-    // directory is what turns that into EACCES.
+    // truncate the binary every session on the machine is bound to.
     let rig = Rig::new("immutable");
     assert_eq!(rig.install(&rig.bundle("2026.8.1")).0, Some(0));
     let core = rig.version_dir("2026.8.1").join("ae-core");
@@ -292,7 +289,7 @@ fn a_version_already_installed_with_different_bytes_is_refused() {
 fn a_command_destination_that_resolves_into_the_ae_home_is_refused() {
     // B14, and the time-dependence is the point: `~/.local` is a DANGLING link
     // into the home when the installer starts, and creating `~/.ae` is what
-    // makes it live. Resolving the ANCESTOR is what catches it.
+    // makes it live.
     let rig = Rig::new("b14");
     let _ = std::fs::remove_dir_all(rig.home.join(".ae"));
     assert!(
@@ -314,8 +311,7 @@ fn a_command_destination_that_resolves_into_the_ae_home_is_refused() {
 
 #[test]
 fn a_directory_where_the_command_link_belongs_is_refused() {
-    // F8. A rename onto a directory NESTS instead of replacing and reports
-    // success, so the leaf is lstat'ed before anything is published.
+    // F8.
     let rig = Rig::new("f8");
     assert!(std::fs::create_dir_all(rig.link()).is_ok(), "a directory");
     let (code, _, stderr) = rig.install(&rig.bundle("2026.8.1"));
@@ -354,8 +350,7 @@ fn a_bad_argv_is_a_usage_error_that_touches_nothing() {
 fn a_hostile_journal_is_refused_and_preserved_for_diagnosis() {
     // The journal is replayed by a LATER process and its replay removes
     // directories and rewrites the command link, so every field is checked
-    // against a fact this installer already knows. A record it will not accept
-    // is preserved and refuses the run — never half-replayed.
+    // against a fact this installer already knows.
     let ae_home = |rig: &Rig| rig.home.join(".ae");
     for (tag, body) in [
         // A journal from another installer: the retired bash field set.
@@ -401,7 +396,7 @@ fn a_hostile_journal_is_refused_and_preserved_for_diagnosis() {
 fn an_interrupted_install_is_reversed_by_the_next_run_which_then_completes() {
     // A signal leaves the journal on disk — there is no trap to run, and none
     // is wanted: the next run finds a DEAD pid, replays the record, and starts
-    // its own install. The recorded link is restored to what it named before.
+    // its own install.
     let rig = Rig::new("recover");
     let bundle = rig.bundle("2026.8.1");
     assert_eq!(rig.install(&bundle).0, Some(0));
@@ -441,9 +436,7 @@ fn an_interrupted_install_is_reversed_by_the_next_run_which_then_completes() {
 
 #[test]
 fn a_second_install_repoints_the_link_and_leaves_the_first_version_intact() {
-    // A21. Switching versions is ONE atomic rename of the command link; the
-    // version directory it stops naming is not touched, so the previous ae is
-    // still there to point back at.
+    // A21.
     let rig = Rig::new("switch");
     assert_eq!(rig.install(&rig.bundle("2026.8.1")).0, Some(0));
     assert_eq!(rig.install(&rig.bundle("2026.8.2")).0, Some(0));
@@ -491,9 +484,7 @@ fn reinstalling_the_same_bytes_restates_the_published_modes() {
 
 #[test]
 fn upgrade_refuses_a_bad_pin_before_it_reaches_the_network() {
-    // `AE_VERSION` is the target pin and the ONLY input `ae upgrade` takes. A
-    // value that is not a CalVer tag is refused where it is read, so a typo
-    // never becomes a request for a release that cannot exist.
+    // `AE_VERSION` is the target pin and the ONLY input `ae upgrade` takes.
     let rig = Rig::new("pin");
     #[allow(
         clippy::disallowed_types,
@@ -533,15 +524,12 @@ const BOOTSTRAP_PLATFORM: &str = if cfg!(all(target_os = "macos", target_arch = 
     ""
 };
 
-/// The version the fixture release carries. Not the crate's: the bundle core
-/// here is a stub, and a version that could be confused with a real one would
-/// make a stale assertion look right.
+/// The version the fixture release carries.
 const BOOTSTRAP_VERSION: &str = "2026.9.99";
 
 const RELEASES: &str = "https://github.com/clemens33/ae/releases";
 
-/// How the bootstrap was started. `File` is `bash install`; `Pipe` is the
-/// advertised one-liner, where bash reads the script off a pipe it cannot seek.
+/// How the bootstrap was started.
 enum Entry {
     File,
     Pipe,
@@ -558,10 +546,6 @@ fn command(program: &str) -> std::process::Command {
 
 /// A fixture release, a `curl` that serves it off the disk, and the `$HOME` and
 /// `$TMPDIR` a run is confined to.
-///
-/// NOTHING HERE OPENS A SOCKET. The shim answers from a directory and exits 22
-/// — curl's own "not found" — for anything else, so a run that reached past it
-/// fails rather than downloading.
 struct Bootstrap {
     scratch: PathBuf,
     /// The bundle's own manifest, kept to compare against what the core was
@@ -584,10 +568,7 @@ impl Bootstrap {
             assert!(std::fs::create_dir_all(dir).is_ok(), "a fixture directory");
         }
 
-        // The bundle's three members. The core is a stub that records what it
-        // was handed — the real one is what the rest of this file drives — and
-        // the sibling is the repository's own `install`, which is the member a
-        // release actually ships.
+        // The bundle's three members.
         write_exec(
             &root.join("ae-core"),
             r#"#!/bin/sh
@@ -625,11 +606,7 @@ cp "$root/SHA256SUMS" "$AE_FIXTURE_REACHED.manifest"
             .unwrap_or_else(|why| panic!("tar should run: {why}"));
         assert!(packed.success(), "the fixture archive should pack");
 
-        // The RELEASE manifest, which is what `curl` serves first. The decoy
-        // line is a DIFFERENT platform at a DIFFERENT version on purpose: the
-        // scan that picks a version has to filter on the platform, and a filter
-        // that stopped working would pick 2026.1.1 and ask for an archive this
-        // release does not have.
+        // The RELEASE manifest, which is what `curl` serves first.
         let digest = ae::install::sha256_hex(&read(&archive));
         let decoy = if BOOTSTRAP_PLATFORM == "darwin-arm64" {
             "linux-x86_64-musl"
@@ -646,8 +623,7 @@ cp "$root/SHA256SUMS" "$AE_FIXTURE_REACHED.manifest"
             "the release manifest"
         );
 
-        // The curl that never leaves the disk. It selects the URL by scheme
-        // rather than by position, so `--retry 3` cannot be mistaken for one.
+        // The curl that never leaves the disk.
         write_exec(
             &scratch.join("bin").join("curl"),
             r#"#!/bin/sh
@@ -831,19 +807,6 @@ fn archive_name() -> String {
 
 /// The bootstrap, black-box: both entries reach the core with a bundle that was
 /// PROVEN first.
-///
-/// `install` is the only bash file ae still ships and the one file no Rust test
-/// ran — the rest of this module starts at `ae _install --from <bundle>`, which
-/// is where the bootstrap ENDS. What it owns before that hand-off is the whole
-/// of the one-liner's safety: resolve the platform, fetch the release manifest,
-/// fetch the archive, prove the archive against that manifest, and only then
-/// extract and run. Each of those is asserted here against a `curl` that serves
-/// a directory, so the test never opens a socket, and against a `$HOME` and
-/// `$TMPDIR` of its own, so it never touches the real one.
-///
-/// The tamper control at the end is what makes the two runs above mean
-/// something: without it a bootstrap that skipped the checksum entirely would
-/// pass this test twice over.
 #[test]
 fn the_bootstrap_proves_the_bundle_then_hands_the_extracted_root_to_the_core() {
     assert!(

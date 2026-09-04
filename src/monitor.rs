@@ -29,23 +29,6 @@
 //!   [`Notice`] has one constructor. That constructor seals the PROGRAM
 //!   relative to the directory; [`is_session_dir`] seals the DIRECTORY, so the
 //!   two together are what closes the hazard rather than either alone.
-//!
-//! # The delivery-aware dedup (the guarantee worth stating)
-//!
-//! `last_seen` advances every sweep; `notified` advances only after `say`
-//! exits zero. So a change that was SEEN but not DELIVERED is re-reported next
-//! sweep until it lands, and a failed or forgotten send can never permanently
-//! swallow an alert. That asymmetry is the whole contract — see
-//! [`Outcome::commit`].
-//!
-//! # Where the state lives
-//!
-//! `<session-dir>/meta-agent-state.json`, and the name is
-//! [`crate::watchdog_daemon::HEARTBEAT_NAME`] rather than a second literal:
-//! the watchdog reads that file's mtime as proof the orchestrator is still
-//! sweeping, so a monitor writing anywhere else would leave the wedge check
-//! watching a file nobody writes. One constant, and the compiler keeps the two
-//! agreed.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
@@ -57,8 +40,7 @@ use crate::json::{self, Value};
 use crate::listing::World;
 use crate::watchdog_daemon::HEARTBEAT_NAME;
 
-/// The state document's version. Bumping it makes every older file read as
-/// empty, which is a clean restart and not a migration.
+/// The state document's version.
 pub const SCHEMA: i64 = 1;
 
 /// The state file's name, under the session directory — the watchdog's
@@ -90,8 +72,7 @@ pub const SWEEP: &str = "sweep";
 
 /// An attention key is `<session>\x1f<ref>`: attention is keyed PER AGENT so a
 /// same-session handoff (one blocked agent clearing as another blocks) is two
-/// events rather than one deduped non-event. `\x1f` is a unit separator, which
-/// no session or agent name may contain.
+/// events rather than one deduped non-event.
 const SEP: char = '\u{1f}';
 
 /// Longest report field kept whole; anything longer is truncated to
@@ -105,8 +86,7 @@ const SANITIZE_KEEP: usize = 117;
 /// does with its answer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Args {
-    /// "Now", in epoch seconds. A parameter so a test is a fact rather than a
-    /// race.
+    /// "Now", in epoch seconds.
     pub now: i64,
     /// Idle seconds before a live, non-`done` session counts as quiet.
     pub quiet_secs: i64,
@@ -118,9 +98,7 @@ pub struct Args {
     pub init: bool,
     /// Compute and print, mutate nothing.
     pub dry_run: bool,
-    /// Deliver through the session's `say` helper. Off means print only, and
-    /// `notified` does not advance — an unconfirmed report is not a delivered
-    /// one.
+    /// Deliver through the session's `say` helper.
     pub notify: bool,
     /// How the answer is printed.
     pub format: Format,
@@ -130,7 +108,6 @@ pub struct Args {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Format {
     /// One report line each, and nothing at all when there is nothing to say.
-    /// What the orchestrator runs.
     #[default]
     Text,
     /// `{"delivered":…,"report":[…]}` — always a document, so a test can tell
@@ -160,18 +137,13 @@ pub struct Observed {
     /// Every agent of it that is asking for attention, as `(ref, reason)`.
     pub attn: Vec<(String, Reason)>,
     /// Whether the session is SESSION-LEVEL quiet: live, holding a non-`done`
-    /// agent, and with no ae activity for `quiet_secs`. Not per-agent — ae does
-    /// not publish per-agent activity — which is why the report phrases it as a
-    /// possibility and never as a definite "waiting".
+    /// agent, and with no ae activity for `quiet_secs`.
     pub quiet: bool,
     /// How many agents it holds.
     pub agents: usize,
 }
 
 /// What the world says right now, in the order [`World`] holds it.
-///
-/// Only RUNNING sessions: a stopped or unknown one has no attention to report
-/// and its disappearance is the fleet `ended` line's business.
 #[must_use]
 pub fn observe(world: &World, now: i64, quiet_secs: i64) -> Vec<Observed> {
     world
@@ -181,8 +153,7 @@ pub fn observe(world: &World, now: i64, quiet_secs: i64) -> Vec<Observed> {
         .map(|session| {
             let idle = now - session.last_active_epoch.unwrap_or(0);
             // `alive` is three-valued and only a POSITIVE sighting counts: an
-            // unknown pane is not proof of a live agent. A missing state is not
-            // `done`, so it counts.
+            // unknown pane is not proof of a live agent.
             let live_not_done = session.agents.iter().any(|agent| {
                 agent.alive == Some(true) && agent.state.as_deref().unwrap_or("") != "done"
             });
@@ -211,7 +182,7 @@ pub struct Attn {
     pub first_seen: i64,
     /// The last sweep that saw it — advances unconditionally.
     pub last_seen: i64,
-    /// Whether a report naming it was DELIVERED. Advances only on success.
+    /// Whether a report naming it was DELIVERED.
     pub notified: bool,
     /// Whether this entry is the all-clear rather than a live attention.
     pub cleared: bool,
@@ -229,11 +200,6 @@ pub struct Quiet {
 }
 
 /// The whole state file.
-///
-/// Every map is a [`BTreeMap`], so the document's field order and the report's
-/// cleared/ended ordering are the same on every machine and every run. A
-/// deduping state file whose ordering wandered would produce diffs nobody can
-/// read.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct State {
     /// The sweep that wrote this file.
@@ -299,11 +265,6 @@ impl State {
 
     /// The document read back, or `None` for anything this reader will not
     /// trust: unparseable, not an object, or a schema it does not know.
-    ///
-    /// `None` means START CLEAN — never "assume the fields are absent". A
-    /// corrupt file that read as an empty state would silently re-arm
-    /// first-run suppression; a corrupt file that reads as NOTHING is a first
-    /// run, which is a state this module already handles honestly.
     #[must_use]
     pub fn parse(text: &str) -> Option<Self> {
         let doc = json::parse(text).ok()?;
@@ -369,9 +330,6 @@ fn flag(value: &Value, key: &str) -> bool {
 /// A value from another agent is untrusted text: control characters become one
 /// space, the result is trimmed, and anything past [`SANITIZE_CAP`] characters
 /// is cut.
-///
-/// Report lines go to Telegram and to a pane; a newline in one of them would
-/// forge a second line, and a control byte would drive the terminal.
 #[must_use]
 pub fn sanitize(text: &str) -> String {
     let mut clean = String::with_capacity(text.len());
@@ -396,9 +354,7 @@ pub fn sanitize(text: &str) -> String {
     cut
 }
 
-/// What a delivery attempt amounted to. Three states, because "not attempted"
-/// and "attempted and failed" commit differently: only the second holds the
-/// fleet baseline back so a `started`/`ended` line re-fires.
+/// What a delivery attempt amounted to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Delivery {
     /// `--no-notify`, `--dry-run`, or nothing to say.
@@ -412,7 +368,7 @@ pub enum Delivery {
 /// One sweep's answer: the lines to send, and the state that would follow.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Outcome {
-    /// The report, one line each. Empty is the normal case.
+    /// The report, one line each.
     pub report: Vec<String>,
     /// The state to write — after [`Outcome::commit`] has been told how the
     /// delivery went.
@@ -436,19 +392,6 @@ impl Outcome {
     }
 
     /// Fold the delivery result into the state about to be written.
-    ///
-    /// **The asymmetry is the contract.** `last_seen` already advanced for
-    /// everything this sweep saw, whatever happened next; `notified` advances
-    /// HERE, and only on [`Delivery::Succeeded`]. So a report that was produced
-    /// and not delivered leaves every key it named un-notified and is produced
-    /// again next sweep.
-    ///
-    /// A FAILED delivery also rolls the fleet baseline back, so `started` and
-    /// `ended` re-fire too — they are the one class that is not tracked
-    /// per-key and would otherwise be lost by the very sweep that failed to
-    /// send them. Not on a first run: there the inventory is deliberately
-    /// suppressed, and restoring an empty baseline would make the retry
-    /// announce every existing session as newly started.
     pub fn commit(&mut self, delivery: Delivery) {
         match delivery {
             Delivery::Succeeded => {
@@ -485,10 +428,6 @@ struct Acc {
 }
 
 /// (a) ATTENTION, per agent, delivery-aware.
-///
-/// Four reasons to report and one to stay silent, and the silent one is the
-/// only case where `notified` survives: an entry that was already delivered
-/// under the same reason at the same rank.
 fn attention_pass(acc: &mut Acc, session: &Observed, prior: &State, now: i64) {
     for (reference, why) in &session.attn {
         let key = format!("{}{SEP}{reference}", session.name);
@@ -539,10 +478,6 @@ fn attention_pass(acc: &mut Acc, session: &Observed, prior: &State, now: i64) {
 }
 
 /// (c) QUIET, session-level.
-///
-/// An attention signal supersedes it: a session already asking for the operator
-/// does not also need "may need you". Suppressed on a first run, and SEEDED as
-/// known — otherwise a failed first-attention delivery's retry would surface it.
 fn quiet_pass(acc: &mut Acc, session: &Observed, prior: &State, args: &Args, first_run: bool) {
     if !session.quiet || !session.attn.is_empty() {
         return;
@@ -571,9 +506,6 @@ fn quiet_pass(acc: &mut Acc, session: &Observed, prior: &State, args: &Args, fir
 }
 
 /// (a-cleared) An attention key that is gone.
-///
-/// A key whose SESSION ended is covered by the `ended` line and just drops; one
-/// whose session still runs is an all-clear, retried until it is delivered.
 fn cleared_pass(acc: &mut Acc, prior: &State, live_names: &BTreeSet<&str>, now: i64) {
     for (key, entry) in &prior.attention {
         if acc.live_keys.contains(key) {
@@ -604,9 +536,7 @@ fn cleared_pass(acc: &mut Acc, prior: &State, live_names: &BTreeSet<&str>, now: 
 }
 
 /// `--init`: the state becomes the current snapshot with everything marked
-/// known, and nothing is reported at all. The first-install path, so a fresh
-/// orchestrator does not announce a fleet the operator has been running all
-/// week.
+/// known, and nothing is reported at all.
 fn seed(acc: &mut Acc, cur: &[Observed], now: i64) {
     acc.next.attention.clear();
     acc.next.quiet.clear();
@@ -642,11 +572,6 @@ fn seed(acc: &mut Acc, cur: &[Observed], now: i64) {
 }
 
 /// Diff `cur` against `prior` and compose the report.
-///
-/// `prior` is `None` on a FIRST RUN — by the file's absence, never by its maps
-/// being empty. An initialised fleet that happens to hold nothing is not a
-/// first run, and treating it as one would re-arm the inventory suppression
-/// every time the fleet emptied.
 #[must_use]
 pub fn sweep(prior: Option<&State>, cur: &[Observed], args: &Args) -> Outcome {
     let empty = State::default();
@@ -672,8 +597,7 @@ pub fn sweep(prior: Option<&State>, cur: &[Observed], args: &Args) -> Outcome {
             .insert(session.name.clone(), session.agents);
         attention_pass(&mut acc, session, prior, now);
         quiet_pass(&mut acc, session, prior, args, first_run);
-        // (b) FLEET — started. Conservative on purpose: no agent-count churn,
-        // no active/idle narration. Suppressed on a first run.
+        // (b) FLEET — started.
         if !prior.sessions.contains_key(&session.name) && !first_run {
             acc.lines.push(format!(
                 "▶ {} started ({} agents)",
@@ -720,14 +644,6 @@ pub fn sweep(prior: Option<&State>, cur: &[Observed], args: &Args) -> Outcome {
 }
 
 /// The one program a sweep may run: `<session-dir>/say`, and one argument.
-///
-/// A newtype with ONE constructor, for the reason [`crate::watchdog_daemon`]'s
-/// send helper has one — the program a daemon EXECUTES must never come from
-/// meta, config, an environment variable or pane content, and the Python this
-/// replaces took it as `--notify-cmd <any path>` from a hand-edited charter.
-/// Joining a literal onto the session directory makes the path unforgeable by
-/// construction, so "every reviewer must check every call site" becomes "there
-/// is one constructor".
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Notice {
     helper: PathBuf,
@@ -744,7 +660,7 @@ impl Notice {
         }
     }
 
-    /// The program to run. Reading is harmless; CONSTRUCTION is what is sealed.
+    /// The program to run.
     pub(crate) fn helper(&self) -> &Path {
         &self.helper
     }
@@ -757,22 +673,6 @@ impl Notice {
 
 /// Whether `dir` is a session directory THIS INSTALL owns — the guard every
 /// effectful step of a sweep sits behind.
-///
-/// A sweep does three things inside the directory it is handed: it takes a lock
-/// there, it writes [`STATE_NAME`] there, and it EXECUTES [`SAY_HELPER`] there.
-/// The directory arrives as argv, so [`Notice`]'s single constructor is only
-/// half the seal it claims to be: it makes the program unforgeable RELATIVE TO
-/// the directory, and this makes the directory itself unforgeable. Without it
-/// `_monitor sweep <any path>` writes state into a stranger's directory and
-/// runs whatever `say` it finds there — the `--notify-cmd <path>` hazard the
-/// port set out to close, reached through the other operand.
-///
-/// **A DIRECT child, and canonicalised on both sides.** Canonicalising resolves
-/// `/tmp` versus `/private/tmp` and every other link on the way before the
-/// comparison, and it resolves a symlink planted UNDER the sessions root to
-/// what it points at — which is the safe direction, because the result is then
-/// no longer a direct child and is refused. Depth is the second half: a nested
-/// path under a real session is not a session, and neither is the root itself.
 fn is_session_dir(root: &Path, dir: &Path) -> bool {
     let (Ok(target), Ok(sessions)) = (
         std::fs::canonicalize(dir),
@@ -784,8 +684,7 @@ fn is_session_dir(root: &Path, dir: &Path) -> bool {
         return false;
     }
     // The meta file is what makes a directory a SESSION rather than any
-    // directory someone created under the root. `symlink_metadata`, never
-    // following: a `meta` that is a link is not the record ae wrote.
+    // directory someone created under the root.
     #[allow(
         clippy::disallowed_methods,
         reason = "a door: the sweep's target guard — the meta file is what says a directory is a session"
@@ -818,7 +717,7 @@ pub fn run(
 
     // The lock covers read-decide-write, exactly as the Python's `flock` did:
     // two sweeps racing would each read the same prior state and each report
-    // the same change. Dropping the handle releases it.
+    // the same change.
     let lock = crate::state::acquire(
         &dir.join(format!("{STATE_NAME}.lock")),
         crate::state::LOCK_WAIT,
@@ -887,9 +786,6 @@ fn read_state(path: &Path) -> Option<State> {
 /// Publish `content` at `path`: a temp beside it, then a rename, then a
 /// directory sync — so the first observable version is a complete one and a
 /// crashed sweep cannot leave a half-written state file behind.
-///
-/// Mode `0600`: the file names every session on the machine and what each is
-/// waiting for.
 fn publish(path: &Path, content: &str) -> std::io::Result<()> {
     let dir = path.parent().unwrap_or(Path::new("."));
     let temp = dir.join(format!(".{STATE_NAME}.{}", std::process::id()));
@@ -911,8 +807,7 @@ fn publish(path: &Path, content: &str) -> std::io::Result<()> {
         let _ = std::fs::remove_file(&temp);
     }
     staged?;
-    // Visible now. Publish the directory entry too, so the sweep the watchdog
-    // reads a heartbeat from cannot be lost to a crash between the two.
+    // Visible now.
     std::fs::OpenOptions::new()
         .read(true)
         .open(dir)
@@ -939,12 +834,6 @@ mod tests {
     }
 
     /// A prior state that already knows `sessions`.
-    ///
-    /// NOT `State::default()`: that is a state file which has seen nothing, so
-    /// every live session is genuinely new to it and earns a `started` line.
-    /// First-run suppression keys on the file's ABSENCE, never on its maps being
-    /// empty — these two priors are different facts and the tests keep them
-    /// apart.
     fn known(sessions: &[(&str, usize)]) -> State {
         State {
             sessions: sessions
@@ -1024,8 +913,7 @@ mod tests {
         assert_eq!(report, vec!["⚠ alpha · lead needs you: blocked".to_owned()]);
         assert_eq!(next.sessions.len(), 2, "the baseline is still seeded");
 
-        // Second sweep, same fleet: silent. The inventory was taken, not
-        // reported, so nothing arrives late.
+        // Second sweep, same fleet: silent.
         let (report, _) = run(
             Some(&next),
             vec![
@@ -1120,8 +1008,7 @@ mod tests {
     #[test]
     fn a_done_or_unproven_agent_never_makes_a_session_quiet() {
         // `done` is a finished agent, and an `alive` ae could not establish is
-        // not a live one. Either would turn an idle, finished session into a
-        // recurring "may need you".
+        // not a live one.
         for agents in [
             vec![agent("lead", Some("done"), None)],
             vec![AgentEntry {
@@ -1196,7 +1083,7 @@ mod tests {
     #[test]
     fn attention_is_keyed_per_agent_so_a_handoff_is_two_events() {
         // One blocked agent clearing as another blocks is a CHANGE the operator
-        // needs. Keyed per session it would dedup to nothing at all.
+        // needs.
         let (_, first) = run(
             Some(&State::default()),
             vec![session(
@@ -1232,8 +1119,7 @@ mod tests {
 
     #[test]
     fn an_attention_whose_session_ended_drops_without_a_second_line() {
-        // The `ended` line already says it. A per-agent all-clear beside it
-        // would be the same news twice.
+        // The `ended` line already says it.
         let (_, first) = run(
             Some(&State::default()),
             vec![session(
@@ -1252,8 +1138,7 @@ mod tests {
     fn every_reason_the_core_knows_reaches_a_report() {
         // The Python this replaces carried its own rank table and silently
         // IGNORED any reason ae later added — which is what happened to
-        // `unanswered`. One definition means a new reason is reported the day
-        // it exists.
+        // `unanswered`.
         for why in Reason::BY_SEVERITY {
             let (report, _) = run(
                 Some(&known(&[("alpha", 1)])),
@@ -1343,9 +1228,8 @@ mod tests {
 
     #[test]
     fn a_hostile_name_cannot_forge_a_line_or_drive_a_terminal() {
-        // Report lines go to Telegram and to a pane, and a session or agent name
-        // is another agent's text. A newline in one would forge a second report
-        // line; an escape would drive the terminal it lands in.
+        // Report lines go to Telegram and to a pane, and a session or agent
+        // name is another agent's text.
         assert_eq!(sanitize("a\nb"), "a b");
         assert_eq!(sanitize("a\r\n\tb"), "a b", "a RUN is one space");
         assert_eq!(sanitize("\u{1b}[31mred"), "[31mred");
@@ -1369,7 +1253,7 @@ mod tests {
     #[test]
     fn the_json_format_is_a_document_even_when_there_is_nothing_to_say() {
         // A test — and an operator — must be able to tell "reported nothing"
-        // from "did not run". Empty stdout cannot carry that distinction.
+        // from "did not run".
         assert_eq!(Args::default().format, Format::Text);
         let observed = Observed {
             name: "alpha".to_owned(),

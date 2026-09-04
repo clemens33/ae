@@ -20,7 +20,7 @@ use crate::events::Event;
 use crate::procs::Descendancy;
 
 /// The shells the dead-check treats as "no agent in the foreground" — bash's
-/// `command_is_shell` (ae:428).
+/// `command_is_shell`.
 #[must_use]
 pub fn command_is_shell(cmd: &str) -> bool {
     matches!(cmd, "bash" | "zsh" | "fish" | "sh" | "dash" | "")
@@ -34,10 +34,10 @@ pub fn classify_dead(current_command: &str, descendant: Descendancy) -> bool {
 }
 
 /// The throttle phrases keyed by agent BINARY — the catalogs of bash's
-/// `_buf_shows_throttle` (ae:16256-16301), at MODULE level rather than inside
+/// `_buf_shows_throttle`, at MODULE level rather than inside
 /// [`shows_throttle`]: a `const` declared after that function's empty-buffer
-/// guard is `clippy::items_after_statements`, and this crate gates on
-/// `-D warnings`.
+/// guard is `clippy::items_after_statements`, and this crate gates on `-D
+/// warnings`.
 const CLAUDE: &[&str] = &[
     "Server is temporarily limiting requests",
     "API Error: Overloaded",
@@ -52,8 +52,8 @@ const GEMINI: &[&str] = &["RESOURCE_EXHAUSTED", "Quota exceeded"];
 /// The pair that applies to EVERY tool — an unknown binary matches only these.
 const GENERIC: &[&str] = &["429 Too Many Requests", "503 Service Unavailable"];
 
-/// Whether the captured pane buffer shows upstream throttling for the agent whose
-/// binary is `agent_bin` — bash's `_buf_shows_throttle` (ae:16256-16301).
+/// Whether the captured pane buffer shows upstream throttling for the agent
+/// whose binary is `agent_bin` — bash's `_buf_shows_throttle`.
 #[must_use]
 pub fn shows_throttle(buf: &str, agent_bin: &str) -> bool {
     if buf.is_empty() {
@@ -75,7 +75,7 @@ pub fn shows_throttle(buf: &str, agent_bin: &str) -> bool {
 }
 
 /// Whether an agent is STALE — the composite the watchdog's branches 4, 5 and 6
-/// have to ALL decline before branch 7 fires (ae:16821-16867).
+/// have to ALL decline before branch 7 fires.
 #[must_use]
 pub fn stale_composite(
     hash_unchanged: bool,
@@ -107,7 +107,7 @@ const NUDGE_SENTENCE: &str = "Status check: if you have more work, continue. \
 /// The invitation the nudge ends with.
 const NUDGE_TAIL: &str = "/state <waiting-user|blocked|done> \"<reason>\"";
 
-/// The optional prefix a nudge carries when the session has a goal (ae:16887).
+/// The optional prefix a nudge carries when the session has a goal.
 const NUDGE_GOAL_PREFIX: &str = "Session goal: ";
 
 /// The state words a `state` echo can name — the alternation in the awk's
@@ -297,7 +297,7 @@ pub fn quiet_hash(buf: &str) -> u64 {
 const NUDGE_ACTOR: &str = "watchdog";
 const NUDGE_ACTION: &str = "nudge";
 
-/// Whether an event is RELEVANT to `agent` — bash's match at ae:15570-15572.
+/// Whether an event is RELEVANT to `agent` — bash's match.
 fn mentions(event: &Event, agent: &str, cross_session: &str) -> bool {
     if event.actor == agent {
         return true;
@@ -309,9 +309,9 @@ fn mentions(event: &Event, agent: &str, cross_session: &str) -> bool {
 }
 
 /// The newest event relevant to `agent`, plus whether the walk stepped past any
-/// of the watchdog's own nudges to reach it — bash's `_latest_relevant_event`
-/// (ae:15549-15590), which is the SELECTION half of the quiet decision that
-/// [`quiet_reason`] then classifies.
+/// of the watchdog's own nudges to reach it — bash's `_latest_relevant_event`,
+/// which is the SELECTION half of the quiet decision that [`quiet_reason`] then
+/// classifies.
 #[must_use]
 pub fn latest_relevant_event<'a>(
     events: &'a [Event],
@@ -334,7 +334,7 @@ pub fn latest_relevant_event<'a>(
 }
 
 /// A self-declared state that tells the watchdog to stop nudging — bash's
-/// `_agent_quiet_reason` (ae:15592-15657) reduced to its three answers.
+/// `_agent_quiet_reason` reduced to its three answers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QuietKind {
     /// `done` — complete or paused.
@@ -351,8 +351,8 @@ pub fn quiet_reason(latest: &Event, agent: &str, looked_past_nudge: bool) -> Opt
     if latest.actor != agent {
         return None; // inbound: news, and news ends a quiet state
     }
-    // `declared_state` already folds in the legacy `action = done` record, which
-    // bash maps to `done` at ae:15637.
+    // `declared_state` already folds in the legacy `action = done` record,
+    // which bash maps to `done`.
     let kind = match latest.declared_state()? {
         "done" => QuietKind::Done,
         "waiting-user" => QuietKind::WaitingUser,
@@ -366,7 +366,7 @@ pub fn quiet_reason(latest: &Event, agent: &str, looked_past_nudge: bool) -> Opt
 }
 
 /// The declaration's identity, as [`quiet_pane_decision`] compares it —
-/// `action|ts|ref|actor|summary`, bash's key at ae:15656.
+/// `action|ts|ref|actor|summary`, bash's key.
 #[must_use]
 pub fn declaration_key(event: &Event) -> String {
     format!(
@@ -406,7 +406,7 @@ pub fn quiet_pane_decision(cur_hash: u64, armed: Option<(&str, u64)>, decl_key: 
 }
 
 /// The settled baseline for a pane, or `None` if it never held still — bash's
-/// `_quiet_stabilize` (ae:15862-15884), with the captures hoisted out.
+/// `_quiet_stabilize`, with the captures hoisted out.
 #[must_use]
 pub fn quiet_stabilize(samples: &[&str], tries: usize) -> Option<u64> {
     let mut captures = samples.iter();
@@ -422,13 +422,13 @@ pub fn quiet_stabilize(samples: &[&str], tries: usize) -> Option<u64> {
 }
 
 /// Whether a pane may pay the stabilization beat this cycle — bash's
-/// `_quiet_stabilize_allowed` (ae:15846-15851).
+/// `_quiet_stabilize_allowed`.
 #[must_use]
 pub const fn quiet_stabilize_allowed(spent: usize, max: usize, idx: usize, cursor: usize) -> bool {
     spent < max && idx >= cursor
 }
 
-/// Where the next cycle starts — bash's `_quiet_cursor_advance` (ae:15855-15863).
+/// Where the next cycle starts — bash's `_quiet_cursor_advance`.
 #[must_use]
 pub const fn quiet_cursor_advance(cursor: usize, spent: usize, max: usize, seen: usize) -> usize {
     if spent < max || cursor > seen {
@@ -485,9 +485,9 @@ impl QuietCycle {
 }
 
 // ---------------------------------------------------------------------------
-// The orchestrator (meta-agent) sweep cadence — ae:16727-16899.
+// The orchestrator (meta-agent) sweep cadence —.
 
-/// The orchestrator sweep tunables — ae:16435-16448, with the frozen defaults.
+/// The orchestrator sweep tunables —, with the frozen defaults.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SweepKnobs {
     /// Seconds between sweep prompts.
@@ -517,7 +517,7 @@ impl SweepKnobs {
         self.sweep_secs > 0
     }
 
-    /// The heartbeat window: `SWEEP_SECS * 2 + 60` (ae:16750).
+    /// The heartbeat window: `SWEEP_SECS * 2 + 60`.
     #[must_use]
     pub const fn wedge_secs(&self) -> u64 {
         self.sweep_secs.saturating_mul(2).saturating_add(60)
@@ -584,7 +584,7 @@ pub enum Heartbeat {
     Untrusted,
 }
 
-/// Classify an ALREADY-VALIDATED heartbeat mtime — ae:16748-16758.
+/// Classify an ALREADY-VALIDATED heartbeat mtime —.
 #[must_use]
 pub fn classify_heartbeat(
     mtime: Option<SystemTime>,
@@ -616,15 +616,15 @@ pub fn heartbeat_offset(mtime: Option<SystemTime>, now: SystemTime) -> Option<He
 /// The roster slot the orchestrator cadence belongs to.
 pub const MAIN_SLOT: &str = "main";
 
-/// Whether this pane is the one the sweep cadence applies to — bash's
-/// `[[ "$META_AGENT" == "true" && "$agent" == "$META_MAIN_AGENT" ]]`
-/// (ae:16738), keyed by SLOT rather than by display name.
+/// Whether this pane is the one the sweep cadence applies to — bash's `[[
+/// "$META_AGENT" == "true" && "$agent" == "$META_MAIN_AGENT" ]]`, keyed by SLOT
+/// rather than by display name.
 #[must_use]
 pub fn is_sweep_target(meta_agent: bool, slot: &str) -> bool {
     meta_agent && slot == MAIN_SLOT
 }
 
-/// What the orchestrator's row shows this cycle — ae:16755-16765.
+/// What the orchestrator's row shows this cycle —.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SweepVerdict {
     /// A fresh heartbeat — the orchestrator is sweeping.
@@ -637,7 +637,7 @@ pub enum SweepVerdict {
 }
 
 impl SweepVerdict {
-    /// The glyph the frozen roster publishes for this verdict (ae:16202-16204).
+    /// The glyph the frozen roster publishes for this verdict.
     #[must_use]
     pub const fn glyph(self) -> &'static str {
         match self {
@@ -648,7 +648,7 @@ impl SweepVerdict {
     }
 }
 
-/// Which "not sweeping" the wedge alert is reporting — ae:16780-16784.
+/// Which "not sweeping" the wedge alert is reporting —.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WedgeDetail {
     /// A trusted heartbeat exists but stopped advancing this long ago.
@@ -748,15 +748,14 @@ pub enum SweepEffect {
     Alert(SweepAlert),
     /// ONCE per daemon lifetime, on the first fresh heartbeat seen with no
     /// latched wedge: read the DURABLE event log and, if it still shows an
-    /// active alert for this agent, emit [`SweepAlert::ClearWedge`]'s event
-    /// (ae:16768-16774).
+    /// active alert for this agent, emit [`SweepAlert::ClearWedge`]'s event.
     ReconcileWedge,
 }
 
 /// What the orchestrator pane carries from cycle to cycle — bash's
 /// `last_sweep_nudge` / `first_sweep_nudge` / `sweep_nudge_fails` /
-/// `meta_wedge_alerted` / `sweep_unreachable_alerted` / `meta_reconciled`
-/// (ae:16409-16430), gathered into one value.
+/// `meta_wedge_alerted` / `sweep_unreachable_alerted` / `meta_reconciled`,
+/// gathered into one value.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SweepState {
     /// When the cadence was last satisfied.
@@ -809,8 +808,8 @@ pub struct SweepAccounting {
     pub verdict: SweepVerdict,
 }
 
-/// Account for the orchestrator main in one cycle — ae:16738-16897, and the only
-/// place any of it is decided.
+/// Account for the orchestrator main in one cycle —, and the only place any of
+/// it is decided.
 #[must_use]
 pub fn sweep_step(
     prior: &SweepState,
@@ -882,7 +881,7 @@ pub fn sweep_step(
     })
 }
 
-/// Book a sweep prompt's outcome — ae:16833-16895.
+/// Book a sweep prompt's outcome —.
 pub fn record_sweep(
     state: &mut SweepState,
     delivered: bool,
@@ -1304,9 +1303,9 @@ mod tests {
 
     #[test]
     fn a_declaration_and_the_nudge_answering_it_in_the_same_second_both_survive() {
-        // The bug bash records at ae:15540-15547: second-resolution timestamps
-        // make these two compare EQUAL, so a ts-bounded look-back skipped the
-        // declaration along with the nudge.
+        // The bug bash records: second-resolution timestamps make these two
+        // compare EQUAL, so a ts-bounded look-back skipped the declaration
+        // along with the nudge.
         let events = log(&[
             r#"{"ts":"2026-08-29T04:00:00Z","actor":"opus5:builder","action":"state","ref":"waiting-user","summary":"review"}"#,
             r#"{"ts":"2026-08-29T04:00:00Z","actor":"watchdog","action":"nudge","target":"opus5:builder","summary":"idle 15m"}"#,
@@ -1396,7 +1395,7 @@ mod tests {
     // ---- Quiet detection --------------------------------------------------
     //
     // PANE_SPECIMEN is written from the renderings CAPTURED in the bash comment
-    // above `_watchdog_quiet_hash` (ae:15680-15700), plus the near-misses that
+    // above `_watchdog_quiet_hash`, plus the near-misses that
     // must survive. AWK_ORACLE is not what this port is expected to produce —
     // it is what the FROZEN BASH AWK actually produced when run over that
     // specimen (2026-08-29, `awk -f <the awk, extracted verbatim from ae>`), so
@@ -1451,7 +1450,8 @@ the agent Marked opus5:builder done in passing
 tail line
 "#;
 
-    /// The nudge exactly as ae:16893 composes it, meta-dir path and all.
+    /// The nudge exactly as the frozen script composes it, meta-dir path and
+    /// all.
     const RAW_NUDGE: &str = "Status check: if you have more work, continue. \
          Otherwise declare your state so I stop nudging: \
          /Users/ckriech/.ae/sessions/aerewrite/state \

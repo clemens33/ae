@@ -242,6 +242,9 @@ fn push_padded(out: &mut String, value: &str, width: usize) {
     out.push(' ');
 }
 
+/// The tabular view with no snapshot time of its own, so every relative age
+/// reads from the epoch. `render` is the product route and passes a real one
+/// to [`table_at`].
 #[must_use]
 pub fn table(sessions: &[&SessionEntry]) -> String {
     // `render` is the product route and supplies its snapshot time to
@@ -286,11 +289,11 @@ pub fn table_at(sessions: &[&SessionEntry], now: Timestamp) -> String {
             out.push_str("  ");
             push_padded(&mut out, &agent.reference, AGENT_WIDTH);
             // Frozen rendered the short session id on BOTH grammars — running
-            // (ae@72c7293:4254) and stopped (ae:4299) — and our table omitted it
-            // entirely, which run 2 semantic-fails independently of every health
-            // or state question. It sits between the reference and the semantic
-            // fields, and it is the SAME helper the digest consumes so the two
-            // surfaces cannot drift.
+            // and stopped — and our table omitted it entirely, which run 2
+            // semantic-fails independently of every health or state question.
+            // It sits between the reference and the semantic fields, and it is
+            // the SAME helper the digest consumes so the two surfaces cannot
+            // drift.
             push_padded(&mut out, agent.display_session_id(), ID_WIDTH);
             // Per-agent HEALTH is deliberately NOT a column here.
             out.push_str(
@@ -1371,10 +1374,9 @@ mod tests {
         );
     }
 
-    /// Frozen rendered the short session id on BOTH agent grammars — running at
-    /// ae@72c7293:4254 and stopped at ae:4299 — and our table omitted it
-    /// entirely, which run 2 semantic-fails independently of every health or
-    /// state question.
+    /// Frozen rendered the short session id on BOTH agent grammars — running
+    /// and stopped — and our table omitted it entirely, which run 2
+    /// semantic-fails independently of every health or state question.
     #[test]
     fn the_agent_row_carries_frozen_s_short_session_id_on_every_status() {
         for status in [Status::Running, Status::Stopped, Status::Unknown] {
@@ -1487,7 +1489,7 @@ mod tests {
         }];
         // The short session id now sits between the reference and the semantic
         // fields, on every status, because frozen rendered it on both grammars
-        // (ae@72c7293:4254 running, ae:4299 stopped) and our table omitted it.
+        // (running, stopped) and our table omitted it.
         assert_eq!(
             row_fields(&table(&[&session]), "lead"),
             ["lead", "-", "blocked"],
