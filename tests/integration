@@ -27,32 +27,34 @@ ERRORS=()
 # The suite always runs from its own path — a scoped run no longer re-execs a copy
 # (see the filter block below), so there is no case where $0 is not the real file and
 # no AE_ITEST_ROOT hand-off. The environment cannot influence which tree is tested.
-# THE PRODUCT'S ONE BASH FILE, and since slice Z1 the whole of its bash: `ae-glue` was
-# deleted and the public wrapper absorbed its residue, so the suite drives `ae-entry`
-# directly. It runs in the wrapper's CHECKOUT shape — the shape that honours AE_HOME,
-# CONFIG_FILE and AE_CORE_BIN — which is exactly what this suite's isolation needs and
-# what `~/.local/bin/ae-dev` uses. An INSTALLED bundle ignores all three and says so;
-# that half is the unit suite's P5 fixtures.
-AE="$(cd "$(dirname "$0")/.." && pwd)/ae-entry"
-# The wrapper execs the REAL core built from this tree (an install guarantees a matched
-# one in production). A caller's AE_CORE_BIN wins; the core-binding section below still
-# overrides per command with its stub. Built here if missing, so `bash tests/integration`
-# on a fresh clone does not fail for want of a binary.
-if [[ -z "${AE_CORE_BIN:-}" ]]; then
-    _itest_core="$(cd "$(dirname "$0")/.." && pwd)/target/debug/ae"
-    if [[ ! -x "$_itest_core" ]]; then
-        (cd "$(dirname "$0")/.." && cargo build --locked --quiet) || {
-            echo "tests/integration: could not build the core (cargo build --locked)" >&2
-            exit 1
-        }
-    fi
-    export AE_CORE_BIN="$_itest_core"
+# THE PRODUCT HAS NO BASH FILE. Slice Z3 deleted `ae-entry`, the last one, so `ae`
+# IS the core and this suite drives that binary directly — the checkout build from
+# this tree, in the CHECKOUT shape the core decides from its own location, which is
+# the shape that honours AE_HOME and CONFIG_FILE and is exactly what this suite's
+# isolation needs. It is also what `~/.local/bin/ae-dev` runs. An INSTALLED core
+# ignores those and pins ~/.ae; that half is the unit suite's P5 fixtures.
+#
+# Built here if missing, so `bash tests/integration` on a fresh clone does not fail
+# for want of a binary.
+#
+# AE_CORE_BIN IS DEAD in both shapes, and dropping it is the point rather than a
+# tidy-up: the core is the binary that is running, so "which core" is answered by
+# WHICH FILE YOU EXEC and by nothing else. A section that wants a stub core rebinds
+# AE to the stub and restores it from _ITEST_CORE_BIN afterwards — the same
+# discipline as before, one variable shorter, and with no way for an exported
+# value to disagree with the process.
+_itest_core="$(cd "$(dirname "$0")/.." && pwd)/target/debug/ae"
+if [[ ! -x "$_itest_core" ]]; then
+    (cd "$(dirname "$0")/.." && cargo build --locked --quiet) || {
+        echo "tests/integration: could not build the core (cargo build --locked)" >&2
+        exit 1
+    }
 fi
-# The one value every section must be able to get back to. Identity is core-owned since
-# P34, so a section that ends with a bare `unset AE_CORE_BIN` does not return to "no
-# opinion" — it strands every LATER section with no core, and their launches die on
-# `the ae core is required for '_launch-plan'`. Sections rebind and then restore this.
-_ITEST_CORE_BIN="$AE_CORE_BIN"
+unset AE_CORE_BIN
+AE="$_itest_core"
+# The one value every section must be able to get back to. A section that rebinds AE
+# to a stub must restore it from here, or every LATER section runs the stub.
+_ITEST_CORE_BIN="$AE"
 
 # ── Test-name filter (#64) ───────────────────────────────────────────────────
 # One ~5800-line script with no filter costs 25-40 minutes to answer one
@@ -1075,51 +1077,19 @@ unset _cb_rc
 # improvement rather than a regression. It is recorded because a caller testing
 # for 1 would not notice the change any other way.
 
-# EVERY UNUSABLE SHAPE IS A REFUSAL. There is no bash body behind any entry point,
-# so an unusable core cannot silently do a second thing: it exits 2, says which fact
-# was wrong, and names the repair.
+# THE UNUSABLE-CORE REFUSALS — RETIRED (slice Z3). Three shapes were pinned here:
+# a core that reports no version, one that is not executable, and a RELATIVE path.
+# All three were facts about an operator INPUT — `AE_CORE_BIN` — that a wrapper
+# read, proved and then exec'd. There is no input and no wrapper: `ae` IS the
+# binary, so "the configured core is unusable" is not a state the product can be
+# in, and a stub run directly answers with the shell's 126/127, which says nothing
+# about ae. Running them anyway would pin the SHELL's behaviour under an ae label.
 #
-# THE CARRIER IS THE WRAPPER, since slice Z1. The per-call gate that read a session's
-# `ae_core`/`ae_core_version` pair on every call went with the glue; what refuses now
-# is the wrapper's own binding, once per invocation, BEFORE the core is started and
-# before any side effect. Same three unusable shapes, checked at the boundary that
-# still exists — and this is the CHECKOUT arm, which is why the operator's
-# AE_CORE_BIN is the input. (The BUNDLE arm's stricter pair check, where the sibling
-# outranks every variable, is the P5 sections' subject.)
-#
-# The helpers deliberately carry no gate at all: since slice Z2 each one IS the
+# The helpers deliberately carry no gate either: since slice Z2 each one IS the
 # core, reached through a symlink the core published at its own absolute path
 # (src/session_launch/assets.rs). The binding is the LINK — baked, not re-resolved.
 # That is sound where it lands, because a published version directory is immutable,
 # so the linked path cannot become a different binary under a live session.
-_cb_refuse() { # <expected-reason-fragment> <core-path>
-    local frag="$1" core="$2" rc=0
-    env AE_CORE_BIN="$core" "$AE" ls >"$_cb_root/out" 2>"$_cb_root/err" || rc=$?
-    printf 'rc=%s reason=%s repair=%s' "$rc" \
-        "$(grep -c -- "$frag" "$_cb_root/err" | tr -d '[:space:]')" \
-        "$(grep -c "just install" "$_cb_root/err" | tr -d '[:space:]')"
-}
-
-# NEGATIVE 1 — present, executable, but it reports NO VERSION. Same path, same
-# permissions: the only changed fact is what `--version` prints.
-printf '#!/bin/sh\nexit 0\n' >"$_cb_root/mute-core" && chmod 0755 "$_cb_root/mute-core"
-assert_eq "core binding: a core that reports no version refuses, and says so" "rc=2 reason=1 repair=1" \
-    "$(_cb_refuse 'reports no version' "$_cb_root/mute-core")"
-# It refuses EVERY time. The old once-per-session diagnostic existed because the
-# fallback was silent; with no fallback there is nothing to be quiet about.
-assert_eq "core binding: and it refuses again, not once per session" "rc=2 reason=1 repair=1" \
-    "$(_cb_refuse 'reports no version' "$_cb_root/mute-core")"
-
-# NEGATIVE 2 — present, reports a version, NOT executable.
-chmod 0644 "$_cb_root/mute-core"
-assert_eq "core binding: a non-executable core refuses and is reported as such" "rc=2 reason=1 repair=1" \
-    "$(_cb_refuse 'not executable' "$_cb_root/mute-core")"
-chmod 0755 "$_cb_root/mute-core"
-
-# NEGATIVE 3 — a RELATIVE path. It would resolve against whatever directory the
-# caller happened to be in, so it is refused rather than tried.
-assert_eq "core binding: a relative core path refuses before anything runs" "rc=2 reason=1 repair=1" \
-    "$(_cb_refuse 'not an absolute path' 'relative/ae')"
 
 # NEGATIVE 3 — AE_CORE set-but-empty is NOT an escape any more. It used to force
 # the bash body for one invocation; that body is gone, so the pinned core runs.
@@ -1148,7 +1118,7 @@ unset _cb_doc
 # it — so it pins itself, path and version together, and re-links every helper to
 # match. That is one rule where there were two, and it is the reason a stub can
 # no longer establish a binding through this door: only a real core can pin itself.
-(cd "$REPO" && AE_CORE_BIN="$_ITEST_CORE_BIN" "$AE" doctor --refresh test-core >/dev/null 2>&1 || true)
+(cd "$REPO" && "$_ITEST_CORE_BIN" doctor --refresh test-core >/dev/null 2>&1 || true)
 assert_eq "core binding: refresh rebinds the pin to the core that ran it" "$_ITEST_CORE_BIN" \
     "$(grep '^ae_core=' "$_cb_meta/meta" | cut -d= -f2- || true)"
 assert_eq "core binding: ...and the version with it, as a pair" \
@@ -1161,42 +1131,23 @@ assert_eq "core binding: ...and the version with it, as a pair" \
 assert_eq "core binding: ...and every helper follows the new pin, not the old one" "0" \
     "$(printf '%s' "$("$_cb_meta/requests" all 2>/dev/null || true)" | command grep -c 'CORE_TOKEN_9f3a' | tr -d '[:space:]')"
 
-# Back onto the stub for the fault arms: the token is the only thing that can prove
-# a call reached the pinned core rather than fell through to something else.
+# Back onto the stub, so the sibling-session arm below starts from the state a
+# broken pin leaves behind: the token is the only thing that can prove a call
+# reached the pinned core rather than fell through to something else.
 _cb_pin_stub "$_cb_meta"
 _cb_out="$("$_cb_meta/requests" all 2>/dev/null || true)"
 assert_contains "core binding: and the core serves the call again after re-pinning" "CORE_TOKEN_9f3a" "$_cb_out"
 
-# REPAIRED, THEN BROKEN AGAIN. Every fault is reported every time — there is no
-# once-per-session marker left to swallow the second one. Only ONE fact moves
-# between these arms: whether the bound core is executable.
-chmod 0644 "$_cb_root/mute-core"
-assert_eq "core binding: a fault after repair is reported" "rc=2 reason=1 repair=1" \
-    "$(_cb_refuse 'not executable' "$_cb_root/mute-core")"
-chmod 0755 "$_cb_root/mute-core"
-_cb_out="$("$_cb_meta/requests" all 2>/dev/null || true)"
-assert_contains "core binding: the repaired core serves" "CORE_TOKEN_9f3a" "$_cb_out"
-chmod 0644 "$_cb_root/mute-core"
-assert_eq "core binding: broken again after a repair is reported afresh" "rc=2 reason=1 repair=1" \
-    "$(_cb_refuse 'not executable' "$_cb_root/mute-core")"
-assert_eq "core binding: and again on the very next call" "rc=2 reason=1 repair=1" \
-    "$(_cb_refuse 'not executable' "$_cb_root/mute-core")"
-chmod 0755 "$_cb_root/mute-core"
-
-# CONFIGURED BUT UNUSABLE AT REFRESH. Operator input that exists but cannot be bound
-# is a FAULT the operator must see — and it is now caught EARLIER than it used to be.
-# The bash refresh accepted the path, recorded it with no version, and left a session
-# that refused from every helper afterwards; the wrapper refuses the invocation
-# itself, names the fact that was wrong, and exits 2 before the core is even started.
-# Nothing on disk changes, so there is no half-bound session to explain to anyone.
-_cb_pin_before="$(grep -E '^ae_core(_version)?=' "$_cb_meta/meta" || true)"
-_cb_rc=0
-(cd "$REPO" && AE_CORE_BIN="$_cb_root/mute-core" "$AE" doctor --refresh >"$_cb_root/refresh.log" 2>&1) || _cb_rc=$?
-assert_eq "core binding: a refresh whose core input cannot be bound REFUSES" "2" "${_cb_rc:-0}"
-assert_contains "core binding: ...and the fact that was wrong" "reports no version" "$(cat "$_cb_root/refresh.log")"
-assert_eq "core binding: ...and no session's pin was touched" "$_cb_pin_before" \
-    "$(grep -E '^ae_core(_version)?=' "$_cb_meta/meta" || true)"
-unset _cb_rc
+# THE FAULT ARMS — RETIRED (slice Z3). Five assertions went with `_cb_refuse` and
+# the `mute-core` fixture: a fault reported after a repair, the repaired core
+# serving, the same fault reported afresh twice, and a refresh whose core input
+# could not be bound refusing with exit 2 while touching no session's pin.
+# All five moved ONE fact — whether the bound core was executable — through a
+# wrapper that read `AE_CORE_BIN`, proved it, and exec'd it. There is no such
+# input and no such wrapper: `ae` IS the binary, and a binary that is not
+# executable never runs to report anything. What is left of the class is the
+# shell's own 126, which says nothing about ae, and the doctor WARN on a
+# published core that is writable, which the core's own suite pins.
 
 # THE REFRESH VISITS EVERY SESSION. A fail-closed core call EXITS rather than
 # returning — which `if fn; then` cannot catch — and a refresh that died at the
@@ -1209,164 +1160,76 @@ _cb_wt="$HOME/.ae/sessions/test-core-wt"
 rm -rf "$_cb_wt"
 cp -R "$_cb_meta" "$_cb_wt"
 _cb_pin_stub "$_cb_wt"
-(cd "$REPO" && AE_CORE_BIN="$_ITEST_CORE_BIN" "$AE" doctor --refresh >"$_cb_root/refresh-all.log" 2>&1 || true)
+(cd "$REPO" && "$_ITEST_CORE_BIN" doctor --refresh >"$_cb_root/refresh-all.log" 2>&1 || true)
 assert_contains "core binding: every visited session gets its own verdict" \
     "refresh:test-core-wt" "$(cat "$_cb_root/refresh-all.log")"
 assert_eq "core binding: ...and a sibling's pin moved too, not just the first session's" \
     "$_ITEST_CORE_BIN" "$(grep '^ae_core=' "$_cb_wt/meta" | cut -d= -f2- || true)"
 
-# NO OPERATOR INPUT means the variable is UNSET, not "whatever the harness exported".
-# The suite exports AE_CORE_BIN for every other section (identity is core-owned), so this
-# one arm has to take it away again, or it is asserting about the harness rather than the
-# operator. `env -u`, not `AE_CORE_BIN=`: an EMPTY value is its own instruction, and this
-# arm is about ABSENCE.
-# fb601995 (found on 4bc9ab49): this refresh used to CLEAR both keys, print OK and
-# exit 0, leaving a session where every core-owned command refuses — `end` included,
-# which leaves it UNENDABLE. A refresh with nothing to re-pin with must leave meta
-# BYTE-IDENTICAL, whatever it holds. It does, and now for a stronger reason: with no
-# AE_CORE_BIN and no `core/current` in this hermetic home there is no core to run the
-# refresh AT ALL, so the command refuses before it can touch anything. The unusable
-# pin written just above is the first shape; a usable one is the second, and it is
-# the one the repro broke.
-_cb_pin_before="$(grep -E '^ae_core(_version)?=' "$_cb_meta/meta" || true)"
-_cb_rc=0
-(cd "$REPO" && env -u AE_CORE_BIN "$AE" doctor --refresh >"$_cb_root/refresh-noinput.log" 2>&1) || _cb_rc=$?
-assert_eq "core binding: a no-input refresh REFUSES rather than guessing" "2" "${_cb_rc:-0}"
-assert_contains "core binding: ...and says no core is configured" \
-    "no core is configured" "$(cat "$_cb_root/refresh-noinput.log")"
-assert_eq "core binding: a no-input refresh leaves an UNUSABLE pin byte-identical" \
-    "$_cb_pin_before" "$(grep -E '^ae_core(_version)?=' "$_cb_meta/meta" || true)"
+# THE NO-INPUT REFRESH IS RETIRED (slice Z3, ruled with the core half). Both arms
+# — rc 2 and "no core is configured" — tested a state that cannot occur: they were
+# the WRAPPER's refusal when AE_CORE_BIN was unset and `<AE_HOME>/core/current` was
+# absent. The core IS the binary, `current_exe()` always names it, and a bare
+# `--refresh` defaults to "all" in the core's own parse. An arm with no subject
+# that still passes is worse than a deleted one: it reads as coverage of a guard
+# nobody has.
+#
+# WHAT REPLACES IT is the Z3 statement of what "pinned" MEANS, and it has a bash-
+# visible surface: after a refresh, the session's `ae_core` row is the path of the
+# binary that RAN the refresh, and every helper link in that directory resolves to
+# that same path. It fails loudly if argv[0] dispatch or the link publish regresses.
 _cb_pin_stub "$_cb_meta"
-_cb_pin_before="$(grep -E '^ae_core(_version)?=' "$_cb_meta/meta" || true)"
-(cd "$REPO" && env -u AE_CORE_BIN "$AE" doctor --refresh >/dev/null 2>&1 || true)
-assert_eq "core binding: a no-input refresh leaves a USABLE pin byte-identical" \
-    "$_cb_pin_before" "$(grep -E '^ae_core(_version)?=' "$_cb_meta/meta" || true)"
-# The point of retaining it: the session still WORKS afterwards.
+(cd "$REPO" && "$_ITEST_CORE_BIN" doctor --refresh test-core >/dev/null 2>&1 || true)
+assert_eq "core binding: a refresh pins the binary that ran it" "$_ITEST_CORE_BIN" \
+    "$(grep '^ae_core=' "$_cb_meta/meta" | cut -d= -f2- || true)"
+_cb_link_bad=0
+for _cb_link in send ask state memo peek agents; do
+    [[ -L "$_cb_meta/$_cb_link" ]] || _cb_link_bad=1
+    [[ "$(readlink "$_cb_meta/$_cb_link")" == "$_ITEST_CORE_BIN" ]] || _cb_link_bad=1
+done
+assert_eq "core binding: ...and every helper link resolves to that same binary" "0" "$_cb_link_bad"
+# The point of retaining the pin: the session still WORKS afterwards, and it is
+# the NEWLY pinned core answering. The stub cannot answer any more — its token
+# left with the links that pointed at it, which is what "repointed" has to mean.
 _cb_out="$("$_cb_meta/requests" all 2>/dev/null || true)"
-assert_contains "core binding: ...and the pinned core still serves after that refresh" \
-    "CORE_TOKEN_9f3a" "$_cb_out"
-unset _cb_pin_before _cb_rc
+assert_contains "core binding: ...and the newly pinned core serves the session" \
+    "STATUS   TYPE" "$_cb_out"
+assert_eq "core binding: ...with no trace of the core it replaced" "0" \
+    "$(printf '%s' "$_cb_out" | command grep -c 'CORE_TOKEN_9f3a' | tr -d '[:space:]')"
+unset _cb_link _cb_link_bad
 # Put the suite's own core back before any later section uses this hermetic home's
 # sessions — the arms above deliberately left this one pinned to the fake core.
-(cd "$REPO" && AE_CORE_BIN="$_ITEST_CORE_BIN" "$AE" doctor --refresh >/dev/null 2>&1 || true)
+(cd "$REPO" && "$_ITEST_CORE_BIN" doctor --refresh >/dev/null 2>&1 || true)
 
-# CONFIGURED BUT UNUSABLE AT CREATION. (RETIRED: "a missing binary must not fail the
-# launch — the core is optional in P2", and the three arms that read the half-built
-# session's meta and helper afterwards. Identity is core-owned since P34 and rc 125 —
-# no core attempted — is FATAL for an identity operation, so there is no launch left to
-# inspect. The replacing rule is the one pinned here: the launch REFUSES, before any
-# session exists, and names the core it needed. A.1 moved the refusal one level down —
-# the shim itself exits 2 rather than reporting "not attempted" to _identity_core.)
-REPO_BAD="$(setup_repo)"
-_cb_bad_rc=0
-(cd "$REPO_BAD" && AE_CORE_BIN="$_cb_root/absent-core" "$AE" --local test-core-bad >"$_cb_root/launch-bad.log" 2>&1) || _cb_bad_rc=$?
-assert_eq "core binding: a launch whose core input cannot be bound REFUSES with the usage code" "2" \
-    "$_cb_bad_rc"
-# REFUSED AT THE BINDING, before a single preamble flag is assembled and before the
-# core is started at all — which since slice Z1 is the only place a refusal can come
-# from. The message says which FACT was wrong about the operator's input, and names
-# the repair; it does not name a subcommand, because nothing has been dispatched.
-assert_contains "core binding: ...and names the core it needed, and why it could not use it" \
-    "is missing or not executable" "$(cat "$_cb_root/launch-bad.log")"
-assert_contains "core binding: ...naming the input it was handed" \
-    "$_cb_root/absent-core" "$(cat "$_cb_root/launch-bad.log")"
-assert_eq "core binding: ...and no session was created" "0" \
-    "$(tmux has-session -t test-core-bad 2>/dev/null && echo 1 || echo 0)"
-assert_not_exists "core binding: ...and no session state was left behind" \
-    "$HOME/.ae/sessions/test-core-bad"
-unset _cb_bad_rc
+# THE LAUNCH-WITH-AN-UNBINDABLE-CORE ARM — RETIRED (slice Z3), for the same reason
+# as the three above and one more: the fixture ran an ABSENT path, so what it now
+# measures is the shell failing to exec, not ae refusing. A launch cannot be handed
+# a core to fail on, because the launch IS the core. What survives of the rule is
+# stronger and lives in the launch's own refusals: an invalid session name, an
+# invalid roster, a duplicate seat — each refused before the first side effect, and
+# each pinned where the refusal is.
 
 "$AE" end test-core --force >/dev/null 2>&1 || true
 fi
 
 # ── server pair: a SET-EMPTY half is a declared server ────────────────
-if _itest_section 'server pair: a SET-EMPTY half is a DECLARED server, not an absent one'; then
-
-# THE EXIT CODE IS THE ASSERTION. `resolve_launch_tmux_server` gated the pair on
-# the two strings being NONEMPTY, so `AE_TMUX_SERVER_KIND=ambiguous
-# AE_TMUX_SERVER=` — exactly the shape the socket probe mints when it cannot
-# prove a relative path — never reached the preamble at all. The core then saw no
-# server, resolved the AMBIENT one, and the run continued to a different failure:
-# rc 1 for the argv, where the refusal owed rc 2 before any effect. A pair that
-# is dropped does not announce itself; the code it changes does.
-#
-# End to end deliberately. The unit suite pins the flags the wrapper EMITS; this
-# pins that what the core is handed produces the refusal, through the real
-# binary. `--from` with a non-UUID gives every arm the same rc-1 remainder, so
-# the control proves the command reaches its argv error when the pair is genuinely
-# absent — without which "rc 2" would pass for a wrapper that refused everything.
-_sp_repo="$(setup_repo)"
-_sp_dir="$HOME/.ae/serverpair"
-mkdir -p "$_sp_dir"
-_sp_run() {
-    _sp_rc=0
-    (cd "$_sp_repo" && env -u TMUX -u TMUX_PANE -u AE_TMUX_SERVER -u AE_TMUX_SERVER_KIND \
-        "$@" "$AE" sp-never --from not-an-archive) \
-        >"$_sp_dir/out" 2>"$_sp_dir/err" || _sp_rc=$?
-    return 0
-}
-
-_sp_run AE_TMUX_SERVER_KIND=ambiguous AE_TMUX_SERVER=''
-assert_eq "server pair: ambiguous with a set-empty value refuses with the usage code" "2" "$_sp_rc"
-assert_contains "server pair: ...and says the kind is the thing it cannot resolve" \
-    "is not a tmux server kind" "$(cat "$_sp_dir/err")"
-assert_contains "server pair: ...and states it will not use the ambient server instead" \
-    "will not fall back to the ambient server" "$(cat "$_sp_dir/err")"
-
-_sp_run AE_TMUX_SERVER_KIND='' AE_TMUX_SERVER=work
-assert_eq "server pair: a set-empty kind beside a value refuses too" "2" "$_sp_rc"
-assert_contains "server pair: ...and says the kind is what is missing" \
-    "without a --server-kind" "$(cat "$_sp_dir/err")"
-
-_sp_run AE_TMUX_SERVER_KIND=name AE_TMUX_SERVER=''
-assert_eq "server pair: a kind beside a set-empty value refuses too" "2" "$_sp_rc"
-
-# THE OPPOSED CONTROL: with neither variable set there is no declared pair, the
-# ambient server is the right answer, and the command must get all the way to its
-# own argv error. Without this arm every assertion above is satisfied by a wrapper
-# that refuses unconditionally.
-_sp_run
-assert_eq "server pair: neither variable set reaches the command's own error" "1" "$_sp_rc"
-assert_contains "server pair: ...and that error is the argv one, not a server one" \
-    "archive UUID" "$(cat "$_sp_dir/err")"
-assert_not_exists "server pair: no arm created a session" "$HOME/.ae/sessions/sp-never"
-unset _sp_rc
-fi
+# ── server pair: a SET-EMPTY half — RETIRED (slice Z3) ───────────────────────
+# The rule stands and its subject does not. `AE_TMUX_SERVER_KIND=ambiguous
+# AE_TMUX_SERVER=` — the shape the socket probe mints for a relative path it could
+# not prove — was dropped by a `${VAR:-}` test in the wrapper, so no `--server-kind`
+# reached the frozen preamble and the core resolved the AMBIENT server: the one
+# outcome `ambiguous` exists to prevent. There is no preamble and no wrapper to
+# drop it at. The pair is an env DOOR the core reads by SET rather than by
+# nonempty, and it refuses an untypeable pair itself — pinned in the core's suite,
+# where the reader now lives.
 
 # ── hostile PATH: ae must survive its own re-exec marker ──────────────
-if _itest_section 'hostile PATH: ae must survive its own re-exec marker'; then
-# On a macOS login shell path_helper puts /bin first, so ae's own
-# `#!/usr/bin/env bash` resolves to 3.2 and ae re-execs itself under a modern
-# bash. Anything ae then spawns that re-invokes ae through that same shebang
-# INHERITS the marker. While the marker was a boolean, the child saw it, skipped
-# the re-exec that would have saved it, and refused — and the orchestrator autostart
-# child discards stderr, so it died in silence and the orchestrator never came up.
-# The absolute-path ladder is what makes this recoverable: brew's bash is found
-# even though it is not on PATH here.
-_hostile_path="/usr/bin:/bin:/usr/sbin:/sbin"
-assert_eq "hostile PATH: ae runs with no marker" "0" \
-    "$(PATH="$_hostile_path" "$AE" --version >/dev/null 2>&1; echo $?)"
-assert_eq "hostile PATH: ae runs when a STALE re-exec marker is inherited" "0" \
-    "$(PATH="$_hostile_path" AE_BASH_REEXEC=1 "$AE" --version >/dev/null 2>&1; echo $?)"
-# Loop safety survives the recovery: a runaway count still refuses, loudly.
-assert_eq "hostile PATH: runaway re-exec count still refuses" "1" \
-    "$(PATH="$_hostile_path" AE_BASH_REEXEC=9 "$AE" --version >/dev/null 2>&1; echo $?)"
-assert_contains "hostile PATH: the refusal names the fix" "brew install bash" \
-    "$(PATH="$_hostile_path" AE_BASH_REEXEC=9 "$AE" --version 2>&1 || true)"
-# Non-leakage into children is asserted structurally in tests/unit (`unset
-# AE_BASH_REEXEC`). Its behavioural proof USED to be the orchestrator autostart
-# block, which forked exactly such a child with stderr discarded; both that block
-# and the arm that spawned it are retired (glue cut, passes 2 and 3), so this
-# suite no longer drives the marker through a real forked child. The behaviour is
-# unchanged — the candidate loop only execs a bash it has proven is >= 4 — but the
-# coverage is now structural only, and that is recorded here rather than implied.
-
-# End should clean up
-"$AE" end -f test-life 2>/dev/null || true
-sleep 0.5
-assert_eq "lifecycle: tmux session gone after end" "1" "$(tmux has-session -t test-life 2>/dev/null && echo 0 || echo 1)"
-assert_not_exists "lifecycle: session dir cleaned" "$HOME/.ae/sessions/test-life"
-fi
+# ── hostile PATH: the bash re-exec marker — RETIRED (slice Z3) ───────────────
+# `ae` was a bash script whose `#!/usr/bin/env bash` resolved to macOS's 3.2 on a
+# login shell's PATH, so it re-exec'd itself under a modern bash and carried a
+# bounded attempt COUNT to survive a marker inherited by a descendant. `ae` is a
+# binary. There is no shebang, no interpreter to pick wrong, no marker, and no
+# ladder — the whole failure mode left with the file.
 
 # ── Test 2: Resume detection ─────────────────────────────────────────
 if _itest_section 'Test 2: Resume detection'; then
@@ -2780,7 +2643,9 @@ REPO10="$(setup_repo)"
 (cd "$REPO10" && "$AE" doctor > "$TMPDIR/doctor.out" 2>/dev/null)
 doctor_output="$(cat "$TMPDIR/doctor.out")"
 assert_contains "doctor: prints header" "ae doctor" "$doctor_output"
-assert_contains "doctor: checks bash" "OK    bash" "$doctor_output"
+# The bash ROW went with `ae-entry` (slice Z3). doctor reported it because the
+# entry was a bash script with a `bash >= 4` re-exec ladder; `ae` is a static
+# binary that needs no shell, so a bash version is not a fact about this install.
 assert_contains "doctor: checks tmux" "OK    tmux" "$doctor_output"
 assert_contains "doctor: checks git" "OK    git" "$doctor_output"
 assert_contains "doctor: checks dummy agent" "OK    agent:dummy" "$doctor_output"
@@ -5743,11 +5608,14 @@ fi
 if _itest_section 'ae compact, phase (a): it resolves, it refuses, it changes nothing'; then
 
 # ── P3.7 core-guard: compact is Rust-owned; bind the built core for this section ──
-_C48_CORE="$(dirname "$AE")/target/debug/ae"
+# `$AE` IS that core since slice Z3 — it was the wrapper beside it, so this
+# derived a sibling path. Kept as a guard rather than deleted: a missing binary
+# must still SKIP loudly instead of running the section against nothing.
+_C48_CORE="$_ITEST_CORE_BIN"
 if [[ ! -x "$_C48_CORE" ]]; then
     echo "  SKIP (compact is Rust-owned): no built core at ${_C48_CORE} — build it first (cargo build)." >&2
 else
-export AE_CORE_BIN="$_C48_CORE"
+AE="$_C48_CORE"
 _C48_BEFORE=$((PASS + FAIL))   # coverage baseline — see the sentinel at the end of this section
 C48_REPO="$(setup_repo)"
 (cd "$C48_REPO" && "$AE" --local comp-ok &) 2>/dev/null
@@ -5859,7 +5727,7 @@ assert_eq "compact: the value survives untouched" "not-a-uuid" \
 _sed_i -e "s|^session_id=.*|session_id=${c48_mint_id}|" "$HOME/.ae/sessions/comp-mint/meta"
 "$AE" end -f --keep-history comp-mint >/dev/null 2>&1 || true
 unset c48_ok_rc C48_REPO C48_GREPO C48_UUID c48_ok c48_pane c48_self_out c48_purge c48_purge_rc c48_git c48_git_rc c48_mint c48_mint_id c48_mint_rc c48_badid c48_badid_rc
-export AE_CORE_BIN="$_ITEST_CORE_BIN"; unset _C48_CORE
+AE="$_ITEST_CORE_BIN"; unset _C48_CORE
 fi  # ── P3.7 core-guard end ──
 fi
 
@@ -5867,11 +5735,14 @@ fi
 if _itest_section 'compact phase (b): the handover is a fact, not a claim'; then
 
 # ── P3.7 core-guard: compact is Rust-owned; bind the built core for this section ──
-_C48_CORE="$(dirname "$AE")/target/debug/ae"
+# `$AE` IS that core since slice Z3 — it was the wrapper beside it, so this
+# derived a sibling path. Kept as a guard rather than deleted: a missing binary
+# must still SKIP loudly instead of running the section against nothing.
+_C48_CORE="$_ITEST_CORE_BIN"
 if [[ ! -x "$_C48_CORE" ]]; then
     echo "  SKIP (compact is Rust-owned): no built core at ${_C48_CORE} — build it first (cargo build)." >&2
 else
-export AE_CORE_BIN="$_C48_CORE"
+AE="$_C48_CORE"
 # DELIVERY FAILURE: a main agent whose pane is gone. compact must refuse before anything
 # is asked of anyone — no request recorded, nothing stopped, nothing archived.
 B48_REPO="$(setup_repo)"
@@ -6327,7 +6198,7 @@ assert_eq "compact-snapshot: and it really is the child, not the survivor" "1" \
     "$(grep -c "^parent_archive_id=${C48S_UUID}$" "$HOME/.ae/sessions/comp-snap/meta" 2>/dev/null | tr -d '[:space:]')"
 "$AE" end -f --keep-history comp-snap >/dev/null 2>&1 || true
 unset C48S_REPO C48S_UUID
-export AE_CORE_BIN="$_ITEST_CORE_BIN"; unset _C48_CORE
+AE="$_ITEST_CORE_BIN"; unset _C48_CORE
 fi  # ── P3.7 core-guard end ──
 fi
 
@@ -6336,11 +6207,14 @@ fi
 if _itest_section 'compact (c)+(d): it hands over, it ends, it comes back'; then
 
 # ── P3.7 core-guard: compact is Rust-owned; bind the built core for this section ──
-_C48_CORE="$(dirname "$AE")/target/debug/ae"
+# `$AE` IS that core since slice Z3 — it was the wrapper beside it, so this
+# derived a sibling path. Kept as a guard rather than deleted: a missing binary
+# must still SKIP loudly instead of running the section against nothing.
+_C48_CORE="$_ITEST_CORE_BIN"
 if [[ ! -x "$_C48_CORE" ]]; then
     echo "  SKIP (compact is Rust-owned): no built core at ${_C48_CORE} — build it first (cargo build)." >&2
 else
-export AE_CORE_BIN="$_C48_CORE"
+AE="$_C48_CORE"
 # The happy path proves the WHOLE boundary in one run: the five-line stdout contract
 # in order, the archive published with the session's own semantics inside it, the
 # source gone, and a genuinely NEW session under the same name that knows its parent.
@@ -6553,7 +6427,7 @@ _C48_EXPECTED="$(awk '
     END { print n + 0 }' "$0")"
 assert_eq "compact-coverage: every arm in this section actually ran" "$_C48_EXPECTED" "$_C48_RAN"
 unset _C48_BEFORE _C48_RAN _C48_EXPECTED
-export AE_CORE_BIN="$_ITEST_CORE_BIN"; unset _C48_CORE
+AE="$_ITEST_CORE_BIN"; unset _C48_CORE
 fi  # ── P3.7 core-guard end ──
 fi
 
@@ -6563,11 +6437,12 @@ fi
 
 # ── tracked resolution: a paneless request routes on the recorded server ──
 if _itest_section 'tracked resolution: a paneless request routes on the recorded server, not the ambient one'; then
-_TR_CORE="$(dirname "$AE")/target/debug/ae"
+# `$AE` IS the core since slice Z3; see the compact sections' guard.
+_TR_CORE="$_ITEST_CORE_BIN"
 if [[ ! -x "$_TR_CORE" ]]; then
     echo "  SKIP (tracked resolution is Rust-owned): no built core at ${_TR_CORE} — build it first (cargo build)." >&2
 else
-export AE_CORE_BIN="$_TR_CORE"
+AE="$_TR_CORE"
 # The compact handover delivers its ask PANELESS (no TMUX_PANE). The resolver must read the
 # TARGET session's OWN recorded tmux server to enumerate it: pane-less there is no ambient
 # TMUX pointing at the custom server, so an ambient enumeration would miss it entirely, and
@@ -6610,7 +6485,7 @@ assert_eq "tracked-resolution: the refused ask recorded nothing new" "$tr_before
     "$(awk '/"action":"ask"/ { n++ } END { print n + 0 }' "$TR_A/events.jsonl")"
 command tmux -L "$TR_SRV" kill-server 2>/dev/null || true
 unset TR_SRV TR_RA TR_RB TR_A TR_B tr_rc tr_bad tr_bad_rc tr_before
-export AE_CORE_BIN="$_ITEST_CORE_BIN"; unset _TR_CORE
+AE="$_ITEST_CORE_BIN"; unset _TR_CORE
 fi
 fi
 
@@ -6858,21 +6733,24 @@ assert_eq "#59 C4-2: ...and no session was created for it" "0" \
 unset C4_BIN C4_REPO C4_REPO2 C4_AID C4_OUT _c4_t _c4_d
 fi
 
-# ── P5 installer + wrapper (retargeted from ae-next coexistence, A22) ────────
-if _itest_section 'P5 installer + wrapper'; then
+# ── P5 installer + published layout (retargeted from ae-next coexistence, A22) ────────
+if _itest_section 'P5 installer + published layout'; then
 
-# Surface: root install, ae-entry, four-member bundle. Coexistence isolation
-# (AE_NEXT_HOME, ~/.ae-next, shared-extract parity) is retired. Live invariants
-# ported: first install layout, 0555, core/current, command link, identical
-# re-run, different-bytes refuse, version-mismatch refuse, upgrade beside old,
-# config untouched, B8 inherited-env, missing-core refuse, F8 directory-leaf,
-# B14 dangling .local, core/current symlink refuse.
+# Surface: the root installer and the THREE-member bundle it publishes. Live
+# invariants: first install layout, the published modes, the command link, the
+# identical re-run, the different-bytes refuse, an upgrade beside the old
+# version, config untouched, F8 directory-leaf and B14 dangling .local.
+#
+# Retired with slice Z3: everything that was the WRAPPER's — the four-member
+# bundle, the pair validation, the inherited-env sanitisation, the core-binding
+# refusals and the `core/current` pointer in all its shapes. There is one binary
+# and one pointer now, and the pointer is the command link.
 
-P5I_SRC="$(dirname "$AE")"
+P5I_SRC="$(cd "$(dirname "$0")/.." && pwd)"
 P5I_ROOT="$TMPDIR/p5inst"
 P5I_HOME="$P5I_ROOT/home"
 mkdir -p "$P5I_HOME"
-P5I_VER="$(command grep -m1 '^_AE_ENTRY_VERSION=' "$AE" | cut -d'"' -f2 || true)"
+P5I_VER="$(command "$AE" --version 2>/dev/null | awk '{print $NF}' || true)"
 P5I_MAJ="${P5I_VER%%.*}"
 P5I_REST="${P5I_VER#*.}"
 P5I_MIN="${P5I_REST%%.*}"
@@ -6914,22 +6792,15 @@ _p5i_make_bundle() {
     dir="$P5I_ROOT/$root"
     rm -rf "$dir"
     mkdir -p "$dir"
-    cp "$P5I_SRC/ae-entry" "$dir/ae"
-    _sed_i -e "s/^_AE_ENTRY_VERSION=.*/_AE_ENTRY_VERSION=\"${version}\"/" "$dir/ae"
-    # ONE FIXTURE MEMBER ANSWERS EVERYTHING since slice Z1: the wrapper execs the
-    # core for every command, so the stub core carries its own `--version` (which the
-    # pair validation reads), the `_probe` these assertions consume, and a launch
-    # marker. The caller's argv follows the frozen preamble's `--`.
+    # ONE FIXTURE MEMBER ANSWERS EVERYTHING, and since slice Z3 it is reached
+    # DIRECTLY: no wrapper, no frozen preamble, so the caller's argv is the argv.
+    # The stub carries its own `--version` (which the installer reads to prove the
+    # bundle), the `_probe` these assertions consume, and a launch marker.
     cat >"$dir/ae-core" <<EOF
 #!/usr/bin/env bash
 if [ "\${1:-}" = "--version" ]; then echo "ae ${version}"; exit 0; fi
 ${extra_core:+# different bytes}
-_seen=0
-_argv=()
-for _w in "\$@"; do
-    if [ "\$_seen" = 1 ]; then _argv[\${#_argv[@]}]="\$_w"; continue; fi
-    if [ "\$_w" = "--" ]; then _seen=1; fi
-done
+_argv=("\$@")
 if [ "\${_argv[0]:-}" = "_probe" ]; then
     echo "AE_HOME=\${AE_HOME-UNSET}"
     echo "CONFIG_FILE=\${CONFIG_FILE-UNSET}"
@@ -6940,7 +6811,13 @@ fi
 echo "launched \${_argv[0]:-}"
 EOF
     cp "$P5I_SRC/install" "$dir/install"
-    chmod "$pack_mode" "$dir/ae" "$dir/ae-core" "$dir/install"
+    # The bundle's own manifest: bare basenames, ae-core first, exactly the two
+    # executable members — the same file `just bundle` writes and the installed
+    # core validates itself against.
+    printf '%s  ae-core\n%s  install\n' \
+        "$(_p5i_sha "$dir/ae-core")" "$(_p5i_sha "$dir/install")" >"$dir/SHA256SUMS"
+    chmod "$pack_mode" "$dir/ae-core" "$dir/install"
+    chmod "$pack_mode" "$dir/SHA256SUMS"
     chmod "$pack_mode" "$dir"
     tar -czf "$P5I_ROOT/${root}.tar.gz" -C "$P5I_ROOT" "$root"
     chmod u+w "$dir" 2>/dev/null || true
@@ -6960,26 +6837,33 @@ _p5i_install() {
 P5I_RC=0
 P5I_OUT="$(_p5i_install "$P5I_VER")" || P5I_RC=$?
 assert_eq "P5 install: a first install succeeds" "0" "$P5I_RC"
-assert_eq "P5 install: version dir members exist" "1" \
-    "$([[ -f "$P5I_HOME/.ae/versions/$P5I_VER/ae" && -f "$P5I_HOME/.ae/versions/$P5I_VER/ae-core" && -f "$P5I_HOME/.ae/versions/$P5I_VER/install" ]] && echo 1 || echo 0)"
+assert_eq "P5 install: the three version dir members exist, and only those" "1|0" \
+    "$(printf '%s|%s' \
+        "$([[ -f "$P5I_HOME/.ae/versions/$P5I_VER/ae-core" && -f "$P5I_HOME/.ae/versions/$P5I_VER/install" && -f "$P5I_HOME/.ae/versions/$P5I_VER/SHA256SUMS" ]] && echo 1 || echo 0)" \
+        "$([[ -e "$P5I_HOME/.ae/versions/$P5I_VER/ae" ]] && echo 1 || echo 0)")"
 assert_eq "P5 install: the installed core is 0555" "555" \
     "$(_p5i_mode "$P5I_HOME/.ae/versions/$P5I_VER/ae-core")"
+assert_eq "P5 install: the installed manifest is 0444" "444" \
+    "$(_p5i_mode "$P5I_HOME/.ae/versions/$P5I_VER/SHA256SUMS")"
 assert_eq "P5 install: its version directory is 0555" "555" \
     "$(_p5i_mode "$P5I_HOME/.ae/versions/$P5I_VER")"
-# C72 RULING (1): core/current is a text pointer, ratified 0644 — deterministic,
-# not "whatever mktemp gave". This is the fresh-publish control; the rollback
-# half is proven against a PRE world this same publication produces.
-assert_eq "P5 install: the core pointer is the ratified 0644" "644" \
-    "$(_p5i_mode "$P5I_HOME/.ae/core/current")"
-assert_eq "P5 install: core/current holds the expanded absolute path" \
+# THE COMMAND LINK IS THE ONLY POINTER. `core/current` was a regular text file
+# and `~/.ae/current` a directory symlink; both are retired, and their absence
+# is asserted rather than assumed — a reappearing second pointer is exactly the
+# regression that would read as harmless in a diff.
+assert_eq "P5 install: the command link names the versioned ae-core, absolutely" \
     "$P5I_HOME/.ae/versions/$P5I_VER/ae-core" \
-    "$(cat "$P5I_HOME/.ae/core/current")"
-assert_eq "P5 install: current points at the version dir" \
-    "$P5I_HOME/.ae/versions/$P5I_VER" \
-    "$(readlink "$P5I_HOME/.ae/current" 2>/dev/null || true)"
-assert_eq "P5 install: the command is linked at ~/.local/bin/ae" \
-    "$P5I_HOME/.ae/current/ae" \
     "$(readlink "$P5I_HOME/.local/bin/ae" 2>/dev/null || true)"
+assert_eq "P5 install: neither retired pointer is published" "0" \
+    "$([[ -e "$P5I_HOME/.ae/current" || -e "$P5I_HOME/.ae/core" ]] && echo 1 || echo 0)"
+# The published directory refuses writes THROUGH the link, which is what makes a
+# stray `> $SESSION_DIR/send` an EACCES instead of a truncated core.
+P5I_STRAY=0
+# STDERR FIRST: redirections apply left to right, so the failed one would
+# otherwise report on the real stderr before `2>/dev/null` is in place.
+: 2>/dev/null >"$P5I_HOME/.local/bin/ae" || P5I_STRAY=$?
+assert_eq "P5 install: a redirect through the command link is refused" "1" \
+    "$([[ "$P5I_STRAY" -ne 0 ]] && echo 1 || echo 0)"
 
 # ── identical re-run + different-bytes refuse ────────────────────────────
 P5I_INODE="$(_p5i_inode "$P5I_HOME/.ae/versions/$P5I_VER/ae-core")"
@@ -7013,12 +6897,9 @@ assert_eq "P5 upgrade: the new version is installed" "1" \
     "$([[ -f "$P5I_HOME/.ae/versions/$P5I_VER2/ae-core" ]] && echo 1 || echo 0)"
 assert_eq "P5 upgrade: the OLD version is still there, untouched" "$P5I_INODE" \
     "$(_p5i_inode "$P5I_HOME/.ae/versions/$P5I_VER/ae-core")"
-assert_eq "P5 upgrade: current now points at the new one" \
-    "$P5I_HOME/.ae/versions/$P5I_VER2" \
-    "$(readlink "$P5I_HOME/.ae/current" 2>/dev/null || true)"
-assert_eq "P5 upgrade: core/current names the new ae-core" \
+assert_eq "P5 upgrade: the command link now names the new ae-core" \
     "$P5I_HOME/.ae/versions/$P5I_VER2/ae-core" \
-    "$(cat "$P5I_HOME/.ae/core/current")"
+    "$(readlink "$P5I_HOME/.local/bin/ae" 2>/dev/null || true)"
 
 # A8: installer never edits an existing config
 mkdir -p "$P5I_HOME/.ae"
@@ -7056,10 +6937,7 @@ HOME="$P5I_C85" AE_VERSION="$P5I_VER" TMPDIR="$P5I_TMP" \
     AE_SUMS="$P5I_ROOT/ae-${P5I_VER}-${P5I_PLAT}-SHA256SUMS" \
     "${BASH:-bash}" "$P5I_SRC/install" >/dev/null 2>&1 || P5I_RC=$?
 assert_eq "C85: the 0555-packaged PRE install succeeds" "0" "$P5I_RC"
-P5I_C85_CORE="$(cat "$P5I_C85/.ae/core/current")"
-P5I_C85_CUR="$(readlink "$P5I_C85/.ae/current")"
 P5I_C85_LNK="$(readlink "$P5I_C85/.local/bin/ae")"
-P5I_C85_MODE="$(_p5i_mode "$P5I_C85/.ae/core/current")"
 _p5i_make_bundle "$P5I_VER2" "" 0555
 P5I_RC=0
 P5I_OUT="$(HOME="$P5I_C85" AE_VERSION="$P5I_VER2" TMPDIR="$P5I_TMP" \
@@ -7071,12 +6949,9 @@ assert_eq "C85: the injected post-publication failure is nonzero" "1" \
     "$([[ "$P5I_RC" -ne 0 ]] && echo 1 || echo 0)"
 assert_eq "C85: the unwind never reports a permission failure" "0" \
     "$(printf '%s' "$P5I_OUT" | grep -c -i 'permission denied' || true)"
-assert_eq "C85: the unwind restores core/current" "$P5I_C85_CORE" \
-    "$(cat "$P5I_C85/.ae/core/current")"
-assert_eq "C85: ...at its recorded mode" "$P5I_C85_MODE" \
-    "$(_p5i_mode "$P5I_C85/.ae/core/current")"
-assert_eq "C85: the unwind restores the current pointer" "$P5I_C85_CUR" \
-    "$(readlink "$P5I_C85/.ae/current")"
+# ONE OBJECT TO RESTORE. The unwind used to put back three — a text pointer with
+# its mode, a directory symlink, and the command link — and it now puts back the
+# one that is left, which is also the only one a publication ever moved.
 assert_eq "C85: the unwind restores the command link" "$P5I_C85_LNK" \
     "$(readlink "$P5I_C85/.local/bin/ae")"
 assert_eq "C85: the unwind leaves no extraction residue" "0" \
@@ -7245,197 +7120,28 @@ assert_eq "C102 control: the empty core directory we created is reversed" "0" \
 assert_eq "C102 control: the journal is deleted — the inverse completed honestly" "0" \
     "$([[ -e "$P5I_C102C/.ae/.ae-install.journal" ]] && echo 1 || echo 0)"
 
-# ── C51/C62/C67: the bundle triple refuses a MUTABLE EXTERNAL member ─────
-# `-f` and `-x` both FOLLOW symlinks, so before this lift a version-dir member
-# that was a symlink to a mutable external file passed every check and was then
-# grepped or EXECUTED as if it were ours. Each arm swaps exactly one member and
-# restores it, so the three reds are independent and the green control is the
-# unmutated wrapper run at the top.
-P5I_LIFT="$P5I_ROOT/lifthome"
-mkdir -p "$P5I_LIFT"
-_p5i_make_bundle "$P5I_VER"
-P5I_RC=0
-HOME="$P5I_LIFT" AE_VERSION="$P5I_VER" TMPDIR="$P5I_TMP" \
-    AE_BUNDLE="$P5I_ROOT/ae-${P5I_VER}-${P5I_PLAT}.tar.gz" \
-    AE_SUMS="$P5I_ROOT/ae-${P5I_VER}-${P5I_PLAT}-SHA256SUMS" \
-    "${BASH:-bash}" "$P5I_SRC/install" >/dev/null 2>&1 || P5I_RC=$?
-assert_eq "C51/C62/C67: the lift fixture installs" "0" "$P5I_RC"
-P5I_VD="$P5I_LIFT/.ae/versions/$P5I_VER"
-chmod u+w "$P5I_VD"
-P5I_RC=0
-HOME="$P5I_LIFT" "$P5I_LIFT/.local/bin/ae" _probe >/dev/null 2>&1 || P5I_RC=$?
-assert_eq "C51/C62/C67 control: the unmutated bundle wrapper runs" "0" "$P5I_RC"
-
-# C51 — sibling ae-core GONE, core/current pointed at an external SAME-VERSION
-# core. Keying bundle mode off `[ -x ae-core ]` skipped the identity refusal
-# entirely and this degraded silently into checkout semantics.
-mkdir -p "$P5I_ROOT/extcore"
-cp "$P5I_VD/ae-core" "$P5I_ROOT/extcore/ae-core"
-chmod 0755 "$P5I_ROOT/extcore/ae-core"
-mv "$P5I_VD/ae-core" "$P5I_ROOT/ae-core.away"
-printf '%s\n' "$P5I_ROOT/extcore/ae-core" >"$P5I_LIFT/.ae/core/current"
-P5I_RC=0
-P5I_OUT="$(HOME="$P5I_LIFT" "$P5I_LIFT/.local/bin/ae" _probe 2>&1)" || P5I_RC=$?
-assert_eq "C51: a bundle with no sibling ae-core is refused" "2" "$P5I_RC"
-assert_contains "C51: ...naming the bundle's own core" "ae-core" "$P5I_OUT"
-mv "$P5I_ROOT/ae-core.away" "$P5I_VD/ae-core"
-printf '%s\n' "$P5I_VD/ae-core" >"$P5I_LIFT/.ae/core/current"
-P5I_RC=0
-HOME="$P5I_LIFT" "$P5I_LIFT/.local/bin/ae" _probe >/dev/null 2>&1 || P5I_RC=$?
-assert_eq "C51: ...and the restored bundle is green again" "0" "$P5I_RC"
-
-# C62 — the sibling ae-core is a SYMLINK to a mutable external core of the same
-# version. `-f`/`-x` both FOLLOW, so without an lstat first the bundle would EXECUTE
-# a file nobody published, at the same version, and pass every other check. The
-# subject moved from ae-glue to ae-core with slice Z1; the defect class did not.
-cp "$P5I_VD/ae-core" "$P5I_ROOT/extcore"
-chmod 0755 "$P5I_ROOT/extcore"
-mv "$P5I_VD/ae-core" "$P5I_ROOT/ae-core.away2"
-ln -s "$P5I_ROOT/extcore" "$P5I_VD/ae-core"
-P5I_RC=0
-P5I_OUT="$(HOME="$P5I_LIFT" "$P5I_LIFT/.local/bin/ae" _probe 2>&1)" || P5I_RC=$?
-assert_eq "C62: a symlinked bundle core is refused" "2" "$P5I_RC"
-assert_contains "C62: ...naming ae upgrade" "ae upgrade" "$P5I_OUT"
-rm -f "$P5I_VD/ae-core"
-mv "$P5I_ROOT/ae-core.away2" "$P5I_VD/ae-core"
-
-# C67 — install is a SYMLINK to an executable sentinel, on the PRE-TRIPLE
-# upgrade path. The sentinel must never run.
-printf '%s\n' '#!/usr/bin/env bash' ": >\"$P5I_ROOT/sentinel-ran\"" >"$P5I_ROOT/sentinel"
-chmod 0755 "$P5I_ROOT/sentinel"
-mv "$P5I_VD/install" "$P5I_ROOT/install.away"
-ln -s "$P5I_ROOT/sentinel" "$P5I_VD/install"
-P5I_RC=0
-P5I_OUT="$(HOME="$P5I_LIFT" "$P5I_LIFT/.local/bin/ae" upgrade 2>&1)" || P5I_RC=$?
-assert_eq "C67: a symlinked sibling installer is refused" "1" \
-    "$([[ "$P5I_RC" -ne 0 ]] && echo 1 || echo 0)"
-assert_eq "C67: ...and the sentinel never ran" "0" \
-    "$([[ -e "$P5I_ROOT/sentinel-ran" ]] && echo 1 || echo 0)"
-rm -f "$P5I_VD/install"
-mv "$P5I_ROOT/install.away" "$P5I_VD/install"
-chmod 0555 "$P5I_VD"
-
-# ── C105 + C112: the public entry tells the TRUTH about repair ───────────
-# Two defects with the same shape: the wrapper knew what was wrong and did not say
-# it.
-#   C105  the corrupt-member refusal hardcoded "ae upgrade" — an unrunnable
-#         instruction whenever the sibling installer is the missing member.
-#   C112  and none of it may cost the recovery arms: `version` diagnoses a
-#         broken pair and `upgrade` repairs it, so both must still work with the
-#         core gone entirely.
-# RETIRED WITH THE GLUE (slice Z1): C104, which was an installed wrapper whose
-# ae-glue was missing falling into the CHECKOUT arm, where `-f "$_here/ae"` was
-# satisfied by the wrapper ITSELF — it selected itself as its own glue. There is no
-# glue to select and no arm to fall into: the shape comes from the wrapper's own
-# name and the core is bound or refused. Its sibling-absent half survives as C51
-# above, on the member that still exists.
-# Every rc assertion below is EXACT: the whole point is discriminating rc2 (a
-# refusal) from rc1 (the silent set -e death), and "nonzero" cannot see that.
-chmod u+w "$P5I_VD"
-P5I_AE="$P5I_LIFT/.local/bin/ae"
-
-# C112 — a bundle whose core is gone AND whose pointer is empty. The two recovery
-# arms are owed an answer BEFORE any sibling check.
-mv "$P5I_VD/ae-core" "$P5I_ROOT/c112-core.away"
-printf '' >"$P5I_LIFT/.ae/core/current"
-for P5I_SPELL in version --version -V; do
-    P5I_RC=0
-    # stdout ONLY: this fixture's environment carries AE_HOME/AE_TMUX_SERVER, so
-    # the wrapper's B8 aggregated notice is expected on stderr and is asserted in
-    # the B8 section. Folding it in here would test the harness, not the arm.
-    P5I_OUT="$(HOME="$P5I_LIFT" "$P5I_AE" "$P5I_SPELL" 2>/dev/null)" || P5I_RC=$?
-    assert_eq "C112: '$P5I_SPELL' answers rc0 with glue gone and core broken" "0" "$P5I_RC"
-    assert_eq "C112: '$P5I_SPELL' prints the wrapper version exactly" "ae $P5I_VER" "$P5I_OUT"
-done
-# `upgrade` must REACH the sibling installer. A regular executable member that
-# only leaves a marker proves arrival without performing an install.
-mv "$P5I_VD/install" "$P5I_ROOT/c112-install.away"
-printf '%s\n' '#!/usr/bin/env bash' ": >\"$P5I_ROOT/c112-install-ran\"" >"$P5I_VD/install"
-chmod 0555 "$P5I_VD/install"
-P5I_RC=0
-HOME="$P5I_LIFT" "$P5I_AE" upgrade >/dev/null 2>&1 || P5I_RC=$?
-assert_eq "C112: bare upgrade REACHES the sibling installer" "1" \
-    "$([[ -e "$P5I_ROOT/c112-install-ran" ]] && echo 1 || echo 0)"
-rm -f "$P5I_VD/install"
-mv "$P5I_ROOT/c112-install.away" "$P5I_VD/install"
-# An ordinary session command in that same state still refuses, with guidance.
-P5I_RC=0
-P5I_OUT="$(HOME="$P5I_LIFT" "$P5I_AE" ls 2>&1)" || P5I_RC=$?
-assert_eq "C112: an ordinary command still refuses rc2" "2" "$P5I_RC"
-assert_contains "C112: ...with bundle repair guidance" "ae upgrade" "$P5I_OUT"
-mv "$P5I_ROOT/c112-core.away" "$P5I_VD/ae-core"
-printf '%s\n' "$P5I_VD/ae-core" >"$P5I_LIFT/.ae/core/current"
-
-# C105 — corrupt core AND missing installer. "ae upgrade" is unrunnable here,
-# so it must not be the advice; the derived repair is.
-mv "$P5I_VD/ae-core" "$P5I_ROOT/c105-core.away"
-ln -s "$P5I_ROOT/extcore" "$P5I_VD/ae-core"
-mv "$P5I_VD/install" "$P5I_ROOT/c105-install.away"
-P5I_RC=0
-P5I_OUT="$(HOME="$P5I_LIFT" "$P5I_AE" _probe 2>&1)" || P5I_RC=$?
-assert_eq "C105: corrupt core with NO installer refuses rc2" "2" "$P5I_RC"
-assert_eq "C105: ...and never advises the repair it cannot run" "0" \
-    "$(printf '%s' "$P5I_OUT" | command grep -c 'ae upgrade' | tr -d '[:space:]')"
-assert_contains "C105: ...it advises reinstalling this version" "reinstall this version" "$P5I_OUT"
-# Control: restore the installer and the SAME corrupt core names ae upgrade
-# again — the refusal follows the derived repair, not the corruption.
-mv "$P5I_ROOT/c105-install.away" "$P5I_VD/install"
-P5I_RC=0
-P5I_OUT="$(HOME="$P5I_LIFT" "$P5I_AE" _probe 2>&1)" || P5I_RC=$?
-assert_eq "C105 control: corrupt core WITH an installer still refuses rc2" "2" "$P5I_RC"
-assert_contains "C105 control: ...and names ae upgrade" "ae upgrade" "$P5I_OUT"
-rm -f "$P5I_VD/ae-core"
-mv "$P5I_ROOT/c105-core.away" "$P5I_VD/ae-core"
-
-# C104 EXTENSION — the version read. It is a PIPELINE, and before the guarded
-# assignment it ENDED the wrapper at rc1 instead of reaching the refusal written
-# one line below it. Its glue half retired with the glue; the core half is here.
-mv "$P5I_VD/ae-core" "$P5I_ROOT/c104x-core.away"
-printf '%s\n' '#!/usr/bin/env bash' 'exit 1' >"$P5I_VD/ae-core"
-chmod 0555 "$P5I_VD/ae-core"
-P5I_RC=0
-P5I_OUT="$(HOME="$P5I_LIFT" "$P5I_AE" _probe 2>&1)" || P5I_RC=$?
-assert_eq "C104x: a core whose --version fails refuses rc2, not rc1" "2" "$P5I_RC"
-assert_contains "C104x: ...naming the silent core" "reported no version" "$P5I_OUT"
-assert_contains "C104x: ...with the derived repair" "ae upgrade" "$P5I_OUT"
-rm -f "$P5I_VD/ae-core"
-mv "$P5I_ROOT/c104x-core.away" "$P5I_VD/ae-core"
-
-# The green control for the whole section: everything restored, the bundle runs.
-P5I_RC=0
-HOME="$P5I_LIFT" "$P5I_AE" _probe >/dev/null 2>&1 || P5I_RC=$?
-assert_eq "C104/C105/C112 control: the restored bundle runs again" "0" "$P5I_RC"
-chmod 0555 "$P5I_VD"
-
-# ── B8: inherited hostile env loses ──────────────────────────────────────
-P5I_W="$(HOME="$P5I_HOME" AE_HOME=/tmp/evil-home CONFIG_FILE=/tmp/evil-config \
-    AE_CORE_BIN=/tmp/evil-core AE_TMUX_SERVER=ae-next \
-    "$P5I_HOME/.local/bin/ae" _probe 2>/dev/null || true)"
-assert_contains "P5 wrapper: inherited AE_HOME loses" "AE_HOME=$P5I_HOME/.ae" "$P5I_W"
-assert_contains "P5 wrapper: inherited CONFIG_FILE loses" "CONFIG_FILE=$P5I_HOME/.ae/config" "$P5I_W"
-assert_contains "P5 wrapper: inherited AE_CORE_BIN is unset" "AE_CORE_BIN=UNSET" "$P5I_W"
-assert_contains "P5 wrapper: inherited AE_TMUX_SERVER is unset" "AE_TMUX_SERVER=UNSET" "$P5I_W"
-P5I_ERR="$(HOME="$P5I_HOME" AE_CORE_BIN=/tmp/evil-core \
-    "$P5I_HOME/.local/bin/ae" _probe 2>&1 >/dev/null || true)"
-assert_contains "P5 wrapper: ...and names AE_CORE_BIN on stderr" "AE_CORE_BIN" "$P5I_ERR"
-
-# ── no / unusable core: refuse ───────────────────────────────────────────
-mv "$P5I_HOME/.ae/core/current" "$P5I_HOME/.ae/core/current.away"
-P5I_RC=0
-P5I_W="$(HOME="$P5I_HOME" "$P5I_HOME/.local/bin/ae" _probe 2>&1)" || P5I_RC=$?
-assert_eq "P5 wrapper: no installed core -> exit 2" "2" "$P5I_RC"
-assert_contains "P5 wrapper: ...naming ae upgrade" "ae upgrade" "$P5I_W"
-assert_eq "P5 wrapper: ...and the target glue never ran" "0" \
-    "$([[ "$P5I_W" == *"AE_HOME:"* ]] && echo 1 || echo 0)"
-: >"$P5I_ROOT/not-executable"
-chmod 0644 "$P5I_ROOT/not-executable"
-for _p5i_bad in '' 'relative/ae' "$P5I_ROOT/not-executable"; do
-    printf '%s\n' "$_p5i_bad" >"$P5I_HOME/.ae/core/current"
-    P5I_RC=0
-    HOME="$P5I_HOME" "$P5I_HOME/.local/bin/ae" _probe >/dev/null 2>&1 || P5I_RC=$?
-    assert_eq "P5 wrapper: an unusable core/current is exit 2" "2" "$P5I_RC"
-done
-mv "$P5I_HOME/.ae/core/current.away" "$P5I_HOME/.ae/core/current"
+# ── THE WRAPPER'S BUNDLE CONTRACT — RETIRED (slice Z3) ───────────────────
+# Four families lived here and all four had the same subject: a bash wrapper that
+# had to choose, prove and exec a core.
+#
+#   * C51/C62/C67 — a version-dir member that was a SYMLINK to a mutable external
+#     file passed `-f` and `-x`, which both follow, and was then grepped or
+#     executed as if it were ours. The wrapper lstat'd first. There is no wrapper
+#     to fool: the member IS the command, published 0555 in a 0555 directory.
+#   * C105/C112 — the public entry told the truth about repair (`ae upgrade` for a
+#     bundle, `just install` for a checkout) and classification never refused, so
+#     `version` and `upgrade` stayed answerable on a broken install. Both are the
+#     core's arms now and are pinned in its suite.
+#   * B8 — inherited AE_CORE/AE_CORE_BIN/AE_TMUX_SERVER* lost to the installed
+#     shape, with one aggregated notice. The shape is decided from current_exe()
+#     and the door is the core's.
+#   * the no-core and unusable-`core/current` refusals — there is no pointer file
+#     to be unusable, and a core that cannot be found is a core that is not
+#     running.
+#
+# What the whole family protected — that an installed `ae` runs the core of the
+# version it was published with — is now structural: `~/.local/bin/ae` IS that
+# core, by absolute path, and the first-install section above asserts it.
 
 # ── F8 directory leaf ────────────────────────────────────────────────────
 P5I_F8="$P5I_ROOT/f8home"
@@ -7462,19 +7168,13 @@ P5I_OUT="$(HOME="$P5I_B14" AE_VERSION="$P5I_VER" \
 assert_eq "P5 install: dangling .local->.ae is refused" "1" \
     "$([[ "$P5I_RC" -ne 0 ]] && echo 1 || echo 0)"
 assert_eq "P5 install: ...and published nothing inside ~/.ae" "1" \
-    "$([[ ! -e "$P5I_B14/.ae/current" && ! -L "$P5I_B14/.ae/current" ]] && echo 1 || echo 0)"
+    "$([[ ! -e "$P5I_B14/.ae/versions" && ! -L "$P5I_B14/.ae/versions" ]] && echo 1 || echo 0)"
 
-# ── core/current as a symlink is refused ─────────────────────────────────
-P5I_SL="$P5I_ROOT/slhome"
-mkdir -p "$P5I_SL/.ae/core"
-ln -s /dev/null "$P5I_SL/.ae/core/current"
-P5I_RC=0
-P5I_OUT="$(HOME="$P5I_SL" AE_VERSION="$P5I_VER" \
-    AE_BUNDLE="$P5I_ROOT/ae-${P5I_VER}-${P5I_PLAT}.tar.gz" \
-    AE_SUMS="$P5I_ROOT/ae-${P5I_VER}-${P5I_PLAT}-SHA256SUMS" \
-    "${BASH:-bash}" "$P5I_SRC/install" 2>&1)" || P5I_RC=$?
-assert_eq "P5 install: a symlinked core/current is refused" "1" \
-    "$([[ "$P5I_RC" -ne 0 ]] && echo 1 || echo 0)"
+# ── the core/current symlink refusal — RETIRED (slice Z3) ────────────────
+# The installer wrote a regular text pointer there and refused to write THROUGH a
+# symlink someone had planted. The pointer is retired, so there is nothing at
+# that path to plant a symlink over. The equivalent live guard is the command
+# link's own destination validation, two arms above.
 
 chmod -R u+w "$P5I_ROOT" 2>/dev/null || true
 unset -f _p5i_mode _p5i_inode _p5i_sha _p5i_make_bundle _p5i_install
@@ -7494,11 +7194,11 @@ fi
 # ── P5 real ae through the symlink (retargeted from ae-next coexistence, A22) ─
 if _itest_section 'P5 real ae through the symlink'; then
 
-# Real installer (checkout mode), real ae-entry, real glue, real Rust core, a
-# real session. Coexistence isolation (ae-next server, ~/.ae-next vs ~/.ae) is
-# retired: P5 is the public entry. Isolated HOME so the harness tree is untouched.
+# Real installer (checkout mode), real Rust core, a real session — and since
+# slice Z3 that list is the whole product: the installed `ae` IS the core, reached
+# through the command symlink. Isolated HOME so the harness tree is untouched.
 
-NXR_SRC="$(dirname "$AE")"
+NXR_SRC="$(cd "$(dirname "$0")/.." && pwd)"
 NXR_CORE=""
 if [[ -x "$NXR_SRC/target/debug/ae" ]]; then
     NXR_CORE="$NXR_SRC/target/debug/ae"
@@ -7508,10 +7208,10 @@ elif command -v cargo >/dev/null 2>&1; then
     (cd "$NXR_SRC" && cargo build --locked >/dev/null 2>&1) || true
     NXR_CORE="$NXR_SRC/target/debug/ae"
 fi
-NXR_VERSION="$(command grep -m1 '^_AE_ENTRY_VERSION=' "$AE" | cut -d'"' -f2 || true)"
+NXR_VERSION="$(command grep -m1 '^version = "' "$NXR_SRC/Cargo.toml" | cut -d'"' -f2 || true)"
 assert_eq "P5 real: the core binary exists (cargo build --locked)" "1" \
     "$([[ -x "$NXR_CORE" ]] && echo 1 || echo 0)"
-assert_eq "P5 real: ...and it is the version the wrapper is" "$NXR_VERSION" \
+assert_eq "P5 real: ...and it reports the crate version, the one version word" "$NXR_VERSION" \
     "$("$NXR_CORE" --version 2>/dev/null | awk '{print $NF}')"
 
 NXR_ROOT="$TMPDIR/p5real"
@@ -7526,11 +7226,8 @@ assert_eq "P5 real: checkout install succeeds" "0" "$NXR_RC"
 # wrong version cannot pass on rc alone.
 assert_contains "P5 real: the installer announced the version it published" \
     "ae: installed $NXR_VERSION" "$NXR_OUT"
-assert_eq "P5 real: the install published core/current" \
+assert_eq "P5 real: the command link IS the published core" \
     "$NXR_HOME/.ae/versions/$NXR_VERSION/ae-core" \
-    "$(cat "$NXR_HOME/.ae/core/current" 2>/dev/null || true)"
-assert_eq "P5 real: the command is linked at ~/.local/bin/ae" \
-    "$NXR_HOME/.ae/current/ae" \
     "$(readlink "$NXR_HOME/.local/bin/ae" 2>/dev/null || true)"
 
 # Dummy agent so a session can launch without a real CLI.
@@ -7568,7 +7265,7 @@ assert_eq "P5 real: the session state is under the isolated ~/.ae" "1" \
 # would fail here rather than ship a row nothing reads.
 assert_eq "P5 real: meta records no ae_path — nothing re-execs the glue" "0" \
     "$(command grep -c '^ae_path=' "$NXR_META/meta" 2>/dev/null || true)"
-assert_eq "P5 real: meta pins the immutable sibling core" "1" \
+assert_eq "P5 real: meta pins the immutable published core" "1" \
     "$([[ "$(command grep '^ae_core=' "$NXR_META/meta" 2>/dev/null | cut -d= -f2- || true)" -ef "$NXR_HOME/.ae/versions/$NXR_VERSION/ae-core" ]] && echo 1 || echo 0)"
 assert_eq "P5 real: meta pins the version it reported" "$NXR_VERSION" \
     "$(command grep '^ae_core_version=' "$NXR_META/meta" 2>/dev/null | cut -d= -f2- || true)"
@@ -7601,8 +7298,8 @@ unset NXR_DOCTOR_CORE
 # ...and the bash row is the GLUE's interpreter, handed across as `--bash-major`.
 # The core cannot probe it: `bash` on PATH here is macOS 3.2, which is the file
 # ae's re-exec exists to escape.
-assert_contains "P5 real: ...and reports the bash the glue actually runs under" \
-    "OK    bash           bash " "$NXR_DOCTOR"
+# The `bash` row went with the bash: doctor reports on tmux and git, and on the
+# core itself. There is no interpreter left for it to have an opinion about.
 
 # end archives into the isolated home
 HOME="$NXR_HOME" "$NXR_HOME/.local/bin/ae" end -f nxreal >/dev/null 2>&1 || true
@@ -7620,15 +7317,15 @@ fi
 # ── P5 upgrade + re-entry (retargeted from ae-next coexistence, A22) ─────────
 if _itest_section 'P5 upgrade + re-entry'; then
 
-# An upgrade installs a new version beside the old and repoints current. A
-# session that pinned the old glue/core must keep those bytes; a new session
-# and every re-entry (core/current reader) must get the new one.
+# An upgrade installs a new version beside the old and repoints the ONE pointer
+# there is — the command link. A session that pinned the old core must keep those
+# bytes; a new session must get the new one.
 
-NXU_SRC="$(dirname "$AE")"
+NXU_SRC="$(cd "$(dirname "$0")/.." && pwd)"
 NXU_ROOT="$TMPDIR/p5up"
 NXU_HOME="$NXU_ROOT/home"
 mkdir -p "$NXU_HOME"
-NXU_V1="$(command grep -m1 '^_AE_ENTRY_VERSION=' "$AE" | cut -d'"' -f2 || true)"
+NXU_V1="$(command grep -m1 '^version = "' "$NXU_SRC/Cargo.toml" | cut -d'"' -f2 || true)"
 NXU_MAJ="${NXU_V1%%.*}"
 NXU_REST="${NXU_V1#*.}"
 NXU_MIN="${NXU_REST%%.*}"
@@ -7655,28 +7352,31 @@ _nxu_sha() {
         shasum -a 256 "$1" | awk 'NR == 1 { print $1; exit }'
     fi
 }
-# ONE REAL BINARY PER VERSION, behind a version-announcing shim. The shim is what
-# makes two bundles of different CalVer versions out of one build; the per-version
-# COPY behind it is what makes the session's recorded core discriminate between
-# them. Since slice Z1 the core records `current_exe()` — the binary that is
-# actually running — rather than a path the wrapper hands it, so a shim shared by
-# both versions would record the same file for both and every pin assertion below
-# would be vacuous.
+# ONE VERSION IS REAL, THE OTHER IS A VERSION-ANNOUNCING SHIM, and slice Z3 is why
+# it cannot be the other way round. `install` refuses a bundle whose core does not
+# report the version being published, and the core refuses to RUN out of a version
+# directory whose name is not the version it reports — so two working versions need
+# two builds, which this suite does not do. The real binary is v1, because v1 is the
+# one that has to launch a session and be pinned by it; v2 only has to be published,
+# pointed at, and asked its version, which a shim answers honestly.
 _nxu_make_bundle() {
     local version="$1" root dir digest
     root="ae-${version}-${NXU_PLAT}"
     dir="$NXU_ROOT/$root"
     rm -rf "$dir"
     mkdir -p "$dir"
-    cp "$NXU_REAL_CORE" "$NXU_ROOT/real-${version}"
-    chmod 0755 "$NXU_ROOT/real-${version}"
-    cp "$NXU_SRC/ae-entry" "$dir/ae"
-    _sed_i -e "s/^_AE_ENTRY_VERSION=.*/_AE_ENTRY_VERSION=\"${version}\"/" "$dir/ae"
-    printf '%s\n' '#!/bin/sh' \
-        "case \"\$1\" in --version) echo \"ae ${version}\";; *) exec \"$NXU_ROOT/real-${version}\" \"\$@\";; esac" \
-        >"$dir/ae-core"
+    if [[ "$version" == "$NXU_V1" ]]; then
+        cp "$NXU_REAL_CORE" "$dir/ae-core"
+    else
+        printf '%s\n' '#!/bin/sh' \
+            "case \"\$1\" in --version) echo \"ae ${version}\";; *) exit 70;; esac" \
+            >"$dir/ae-core"
+    fi
     cp "$NXU_SRC/install" "$dir/install"
-    chmod 0755 "$dir/ae" "$dir/ae-core" "$dir/install"
+    chmod 0755 "$dir/ae-core" "$dir/install"
+    printf '%s  ae-core\n%s  install\n' \
+        "$(_nxu_sha "$dir/ae-core")" "$(_nxu_sha "$dir/install")" >"$dir/SHA256SUMS"
+    chmod 0644 "$dir/SHA256SUMS"
     tar -czf "$NXU_ROOT/${root}.tar.gz" -C "$NXU_ROOT" "$root"
     digest="$(_nxu_sha "$NXU_ROOT/${root}.tar.gz")"
     printf '%s  %s.tar.gz\n' "$digest" "$root" >"$NXU_ROOT/${root}-SHA256SUMS"
@@ -7712,7 +7412,7 @@ _nxu_install "$NXU_V1" >/dev/null || NXU_RC=$?
 assert_eq "P5 upgrade: v1 install succeeds" "0" "$NXU_RC"
 assert_eq "P5 upgrade: v1 is the published core" \
     "$NXU_HOME/.ae/versions/$NXU_V1/ae-core" \
-    "$(cat "$NXU_HOME/.ae/core/current" 2>/dev/null || true)"
+    "$(readlink "$NXU_HOME/.local/bin/ae" 2>/dev/null || true)"
 
 NXU_GIT="$(setup_repo)"
 (cd "$NXU_GIT" && HOME="$NXU_HOME" "$NXU_HOME/.local/bin/ae" --local nxup1 >/dev/null 2>&1 &) 2>/dev/null
@@ -7729,7 +7429,7 @@ sleep 2
 # pinned the v1 CORE, and recorded the v1 version — which is what an upgrade must
 # not disturb.
 assert_eq "P5 upgrade: the v1 session pinned v1 core" "1" \
-    "$([[ "$(command grep '^ae_core=' "$NXU_META1/meta" 2>/dev/null | cut -d= -f2- || true)" -ef "$NXU_ROOT/real-$NXU_V1" ]] && echo 1 || echo 0)"
+    "$([[ "$(command grep '^ae_core=' "$NXU_META1/meta" 2>/dev/null | cut -d= -f2- || true)" -ef "$NXU_HOME/.ae/versions/$NXU_V1/ae-core" ]] && echo 1 || echo 0)"
 assert_eq "P5 upgrade: ...and recorded its version" "$NXU_V1" \
     "$(command grep '^ae_core_version=' "$NXU_META1/meta" 2>/dev/null | cut -d= -f2- || true)"
 
@@ -7737,52 +7437,50 @@ assert_eq "P5 upgrade: ...and recorded its version" "$NXU_V1" \
 NXU_RC=0
 _nxu_install "$NXU_V2" >/dev/null || NXU_RC=$?
 assert_eq "P5 upgrade: v2 install succeeds" "0" "$NXU_RC"
-assert_eq "P5 upgrade: current now names v2" \
-    "$NXU_HOME/.ae/versions/$NXU_V2" \
-    "$(readlink "$NXU_HOME/.ae/current" 2>/dev/null || true)"
+assert_eq "P5 upgrade: the command link now names the v2 core" \
+    "$NXU_HOME/.ae/versions/$NXU_V2/ae-core" \
+    "$(readlink "$NXU_HOME/.local/bin/ae" 2>/dev/null || true)"
 assert_eq "P5 upgrade: the v1 leaf is still there" "1" \
     "$([[ -x "$NXU_HOME/.ae/versions/$NXU_V1/ae-core" ]] && echo 1 || echo 0)"
 assert_eq "P5 upgrade: the live v1 session's pin did not move" "1" \
-    "$([[ "$(command grep '^ae_core=' "$NXU_META1/meta" 2>/dev/null | cut -d= -f2- || true)" -ef "$NXU_ROOT/real-$NXU_V1" ]] && echo 1 || echo 0)"
+    "$([[ "$(command grep '^ae_core=' "$NXU_META1/meta" 2>/dev/null | cut -d= -f2- || true)" -ef "$NXU_HOME/.ae/versions/$NXU_V1/ae-core" ]] && echo 1 || echo 0)"
 assert_eq "P5 upgrade: ...and that binary still reports v1" "$NXU_V1" \
     "$("$NXU_HOME/.ae/versions/$NXU_V1/ae-core" --version 2>/dev/null | awk '{print $NF}')"
 
-# ── A new session gets the new core ──────────────────────────────────────
-(cd "$NXU_GIT" && HOME="$NXU_HOME" "$NXU_HOME/.local/bin/ae" --local nxup2 >/dev/null 2>&1 &) 2>/dev/null
-NXU_I=0
-NXU_META2="$NXU_HOME/.ae/sessions/nxup2"
-while [[ ! -f "$NXU_META2/meta" ]]; do
-    sleep 0.5
-    NXU_I=$((NXU_I + 1))
-    if ((NXU_I >= 40)); then break; fi
+# ── The live session keeps the core it was built against ─────────────────
+# WHAT A NEW SESSION PINS is not asserted here, and the omission is deliberate:
+# it would need the v2 core to be a real ae, which needs a second build. The
+# claim itself is covered — 'P5 real' pins that a session records the published
+# core it launched from, and the link assertion above pins which core that now
+# is. What only THIS section can show is the other half: the session that was
+# already running does not follow the pointer.
+NXU_LINK_BAD=0
+for NXU_H in send ask state memo peek agents; do
+    [[ -L "$NXU_META1/$NXU_H" ]] || NXU_LINK_BAD=1
+    [[ "$(readlink "$NXU_META1/$NXU_H")" -ef "$NXU_HOME/.ae/versions/$NXU_V1/ae-core" ]] || NXU_LINK_BAD=1
 done
-sleep 2
-assert_eq "P5 upgrade: a NEW session pins v2 core" "1" \
-    "$([[ "$(command grep '^ae_core=' "$NXU_META2/meta" 2>/dev/null | cut -d= -f2- || true)" -ef "$NXU_ROOT/real-$NXU_V2" ]] && echo 1 || echo 0)"
-assert_eq "P5 upgrade: ...while the older session still pins v1" "1" \
-    "$([[ "$(command grep '^ae_core=' "$NXU_META1/meta" 2>/dev/null | cut -d= -f2- || true)" -ef "$NXU_ROOT/real-$NXU_V1" ]] && echo 1 || echo 0)"
+assert_eq "P5 upgrade: the live session's helpers still resolve to the v1 core" "0" "$NXU_LINK_BAD"
+assert_contains "P5 upgrade: ...and one of them still answers" "$(command grep '^main_pane=' "$NXU_META1/meta" | cut -d= -f2-)" \
+    "$(HOME="$NXU_HOME" "$NXU_META1/agents" 2>/dev/null || true)"
 
-# ── Re-entry: core/current with empty AE_CORE_BIN ───────────────────────
-# The published pointer is what a re-entry with no environment resolves through,
-# and after an upgrade it must name the NEW core. (The bundle arm never reads it
-# for resolution — an installed wrapper runs its own sibling — but the pointer is
-# still the identity the pair check proves against, so it has to be right.)
-eval "$(awk '/^(_ae_core_current_input|_ae_core_bin_input)\(\) \{/,/^\}$/' "$AE")"
-assert_eq "P5 re-entry: core/current names the upgraded core" \
-    "$NXU_HOME/.ae/versions/$NXU_V2/ae-core" \
-    "$(cat "$NXU_HOME/.ae/core/current")"
-assert_eq "P5 re-entry: empty env through core/current resolves v2" "1" \
-    "$([[ "$(AE_CORE_BIN='' AE_HOME="$NXU_HOME/.ae" _ae_core_bin_input)" -ef "$NXU_HOME/.ae/versions/$NXU_V2/ae-core" ]] && echo 1 || echo 0)"
-assert_eq "P5 re-entry: ...and never an empty one" "0" \
-    "$(AE_CORE_BIN='' AE_HOME="$NXU_HOME/.ae" _ae_core_bin_input | command grep -c '^$' || true)"
-unset -f _ae_core_current_input _ae_core_bin_input
+# ── Re-entry: the link with no environment at all ───────────────────────
+# The re-entry test used to resolve `core/current` through the wrapper's reader
+# with an empty AE_CORE_BIN. Both are gone: the command link IS the resolution, so
+# a re-entry with no environment is just running it. Prove it reaches v2 — with
+# the environment emptied, which is the case the wrapper's reader existed for.
+assert_eq "P5 re-entry: the link with no env answers as the upgraded core" "ae $NXU_V2" \
+    "$(env -u AE_CORE_BIN -u AE_HOME HOME="$NXU_HOME" \
+        "$NXU_HOME/.local/bin/ae" --version 2>/dev/null || true)"
+assert_eq "P5 re-entry: ...and the link still resolves to a real file" "1" \
+    "$([[ -x "$NXU_HOME/.local/bin/ae" ]] && echo 1 || echo 0)"
 
-HOME="$NXU_HOME" "$NXU_HOME/.local/bin/ae" end -f nxup1 >/dev/null 2>&1 || true
-HOME="$NXU_HOME" "$NXU_HOME/.local/bin/ae" end -f nxup2 >/dev/null 2>&1 || true
+# The command link is the v2 SHIM now, which cannot end a session — the v1 core
+# that owns this one is still exactly where the session recorded it.
+HOME="$NXU_HOME" "$NXU_HOME/.ae/versions/$NXU_V1/ae-core" end -f nxup1 >/dev/null 2>&1 || true
 chmod -R u+w "$NXU_ROOT" 2>/dev/null || true
 unset -f _nxu_sha _nxu_make_bundle _nxu_install
 unset NXU_SRC NXU_ROOT NXU_HOME NXU_V1 NXU_V2 NXU_MAJ NXU_REST NXU_MIN NXU_PAT \
-    NXU_PLAT NXU_REAL_CORE NXU_RC NXU_GIT NXU_I NXU_META1 NXU_META2
+    NXU_PLAT NXU_REAL_CORE NXU_RC NXU_GIT NXU_I NXU_META1 NXU_LINK_BAD NXU_H
 fi
 
 # ── Results ──────────────────────────────────────────────────────────

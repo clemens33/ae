@@ -7,14 +7,13 @@ Rust tests, and this docs site.
 ## Layout
 
 ```
-ae-entry            — public wrapper source (installed and bundled as `ae`); the product's
-                      only bash file
 justfile            — dev/release pipeline (just check, just test, just release)
 cliff.toml          — git-cliff config (CalVer-compatible changelog)
 tests/unit          — pure-function unit tests (bash, no deps)
 tests/integration   — integration tests (requires tmux, git)
 tests/it/           — Rust integration target
-install             — canonical checksum-verifying versioned installer
+install             — canonical checksum-verifying versioned installer; the product's
+                      only bash file
 Cargo.toml          — Rust package (bin + lib, both `ae`)
 src/                — Rust core sources
 README.md           — short user-facing intro
@@ -117,7 +116,7 @@ recovered with `just bump-recover`.
 1. Pre-flight: clean working tree, fetch tags, pull rebase.
 2. `just check` (shellcheck + shfmt).
 3. `just test` (unit + integration).
-4. `just bump` updates all four version-bearing files — `_AE_ENTRY_VERSION` in `ae-entry`, `AE_VERSION` in `ae`, the Cargo package and lockfile — and rewrites the README and docs/index release badges. It refuses to proceed if the pre-release badge or the obsolete checkout-install prose is still standing in either file; a real build-from-source section is not what it is looking for.
+4. `just bump` updates the version — `Cargo.toml` and `Cargo.lock`, which since slice Z3 are the only files that hold one — and rewrites the README and docs/index release badges. It refuses to proceed if the pre-release badge or the obsolete checkout-install prose is still standing in either file; a real build-from-source section is not what it is looking for.
 5. `git-cliff` → `CHANGELOG.md` + release-body.
 6. Commit, tag, push, `gh release`.
 

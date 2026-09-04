@@ -1,6 +1,7 @@
 # Install
 
-ae has one public command: a small Bash wrapper over an immutable Rust core.
+ae has one public command: `~/.local/bin/ae` is a symlink straight to an immutable,
+versioned Rust core binary. There is no wrapper in between.
 
 ## Requirements
 
@@ -18,10 +19,14 @@ curl -fsSL https://raw.githubusercontent.com/clemens33/ae/main/install | bash
 It supports macOS Apple Silicon (`darwin-arm64`) and Linux x86_64, including
 WSL2. Intel macOS, Linux ARM, and Windows/MSYS are rejected. The bundle and
 `SHA256SUMS` are downloaded to temporary files and verified before extraction;
-the matched three-member set — `ae`, `ae-core`, and `install` — is then
-published atomically under `~/.ae/versions`, and `~/.local/bin/ae` is pointed at
-its public wrapper. Make sure `~/.local/bin` is on your `PATH`. Set
-`AE_VERSION=2026.8.2` to pin a release.
+the matched three-member set — `ae-core`, `install`, and `SHA256SUMS` — is then
+published read-only under `~/.ae/versions/<V>/` (the version directory and its
+executable members 0555, the manifest 0444, so nothing can write through them
+once installed), and `~/.local/bin/ae` is pointed straight at that version's
+`ae-core` — a plain symlink, and the only pointer: there is no separate
+`core/current` or `~/.ae/current` to keep in sync. Switching versions later is
+one atomic rename of that symlink. Make sure `~/.local/bin` is on your `PATH`.
+Set `AE_VERSION=2026.8.2` to pin a release.
 
 ## Build from source
 
@@ -33,7 +38,7 @@ cd ~/.local/share/ae
 just install
 ```
 
-This runs the same canonical installer from a checkout, publishing a versioned immutable artifact under `~/.ae/versions` and atomically pointing `~/.local/bin/ae` at its public wrapper. It compiles a native binary for this machine; static musl is a property of the CI-built release bundles.
+This runs the same canonical installer from a checkout, publishing a versioned immutable artifact under `~/.ae/versions` and atomically pointing `~/.local/bin/ae` at that version's `ae-core`. It compiles a native binary for this machine; static musl is a property of the CI-built release bundles.
 
 ## Verify
 
@@ -41,7 +46,7 @@ This runs the same canonical installer from a checkout, publishing a versioned i
 ae doctor
 ```
 
-Walks a fixed checklist: bash version, tmux/git on `PATH`, config file, registered agent executables, sessions directory, and so on. Prints `OK / WARN / FAIL` per line and exits non-zero if anything failed.
+Walks a fixed checklist: tmux/git on `PATH`, config file, registered agent executables, sessions directory, and so on. The bash-version row went with ae's last bash; what doctor checks about the core itself is that a PUBLISHED one is not writable. Prints `OK / WARN / FAIL` per line and exits non-zero if anything failed.
 
 ## Upgrading
 
@@ -49,7 +54,7 @@ Walks a fixed checklist: bash version, tmux/git on `PATH`, config file, register
 ae upgrade
 ```
 
-`ae upgrade` invokes its immutable sibling installer. It downloads the latest release (or an `AE_VERSION` pin), verifies checksums before extraction, installs a new immutable version, then atomically repoints the public wrapper and `core/current`.
+`ae upgrade` execs its immutable sibling `install`. It downloads the latest release (or an `AE_VERSION` pin), verifies checksums before extraction, publishes a new immutable version read-only under `~/.ae/versions/<V>/`, then atomically repoints `~/.local/bin/ae` directly at that version's `ae-core`.
 
 Stopped sessions consume the current version only on their next resume. Running sessions are reported by name and deferred until stop and resume; an upgrade never hot-rewrites their loaded helpers or daemon bodies.
 

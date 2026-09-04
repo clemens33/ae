@@ -679,16 +679,13 @@ pub fn run(
 
 /// Republish one session's assets, or every session's.
 fn refresh(root: &Path, target: &str, global: Option<&Path>, document: &mut Report) {
-    let core = match std::env::current_exe() {
-        Ok(core) => core,
-        Err(why) => {
-            document.push(
-                Level::Fail,
-                "refresh",
-                &format!("the core could not name its own binary ({why})"),
-            );
-            return;
-        }
+    let Some(core) = crate::shape::resolved_exe() else {
+        document.push(
+            Level::Fail,
+            "refresh",
+            "the core could not name its own binary",
+        );
+        return;
     };
     let mut found = discovered(root);
     found.sort_by(|left, right| left.0.cmp(&right.0));
@@ -868,12 +865,9 @@ pub fn shims_render(dir: &Path, tail: &[String], err: &mut impl Write) -> crate:
         )?;
         return Ok(EXIT_FAILED);
     }
-    let core = match std::env::current_exe() {
-        Ok(core) => core,
-        Err(why) => {
-            writeln!(err, "ae: the core could not name its own binary ({why}).")?;
-            return Ok(EXIT_FAILED);
-        }
+    let Some(core) = crate::shape::resolved_exe() else {
+        writeln!(err, "ae: the core could not name its own binary.")?;
+        return Ok(EXIT_FAILED);
     };
     match crate::session_launch::assets::write_helpers(dir, &core) {
         Ok(()) => Ok(0),

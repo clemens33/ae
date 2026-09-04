@@ -1160,17 +1160,19 @@ fn build(
     }
 
     // ---- assets ----
-    let core = match std::env::current_exe() {
-        Ok(path) => path,
-        Err(why) => {
-            return rollback_launch(
-                shape,
-                &dir,
-                &server,
-                &format!("Error: the core could not name its own binary ({why})."),
-                err,
-            );
-        }
+    // RESOLVED, not as invoked: the helper links published below must name the
+    // immutable core, not `~/.local/bin/ae`. macOS answers `current_exe()` with
+    // the path this process was exec'd BY, so on an installed machine the raw
+    // answer is the command symlink — and a session whose helpers pointed at it
+    // would follow the next `ae upgrade` to a core it was never built against.
+    let Some(core) = crate::shape::resolved_exe() else {
+        return rollback_launch(
+            shape,
+            &dir,
+            &server,
+            "Error: the core could not name its own binary.",
+            err,
+        );
     };
     if let Err(why) = assets::write_helpers(&dir, &core) {
         return rollback_launch(shape, &dir, &server, &format!("Error: {why}"), err);
@@ -1576,7 +1578,7 @@ fn meta_document(
     );
     row("main_pane", &main_pane);
     row("ae_version", crate::VERSION);
-    if let Ok(core) = std::env::current_exe() {
+    if let Some(core) = crate::shape::resolved_exe() {
         // The core binding, pinned per session as a PAIR: a helper that found a
         // binary whose version disagreed with the session's would be running a
         // different contract than the one this session was built against.
@@ -1809,8 +1811,7 @@ fn wait_for_agent_start(server: &ServerId, pane: &str, tool: ToolKind) {
     // own binary. That is "not started yet" in exactly the way the generated
     // script's `bash` used to be — and without this the not-a-shell arm below
     // would answer READY the instant the paste took.
-    let core = std::env::current_exe()
-        .ok()
+    let core = crate::shape::resolved_exe()
         .and_then(|path| {
             path.file_name()
                 .map(|name| name.to_string_lossy().into_owned())

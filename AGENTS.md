@@ -1,9 +1,10 @@
 # ae
 
-One public wrapper and one Rust core in one immutable versioned install. Keep the product thin: tmux remains the runtime, and the Bash that survives is the wrapper that binds the core plus the pane scripts the core generates.
+One Rust core in one immutable versioned install, published read-only. Keep the product thin: tmux remains the runtime, and the only Bash the product still ships is the installer that publishes it.
 
-> **Where the rules live.** The Bash sections below govern the surviving wrapper; the Rust
-> core has its own: [Rust era](#rust-era-main). Product direction: [VISION.md](VISION.md).
+> **Where the rules live.** The Bash sections below govern the installer and the ad-hoc
+> shell you type; the Rust core has its own: [Rust era](#rust-era-main). Product direction:
+> [VISION.md](VISION.md).
 
 ## Philosophy
 
@@ -23,9 +24,9 @@ stay readable.
 
 ## Rules
 
-- `ae` must remain a single bash script. No compiled languages, no runtimes. *(Historical: this once governed all of `ae`; triggers 1–3 fired on 2026-08-20 and the Rust core is the ratified successor, not a violation of the durable product doctrine.)* What survives is ONE bash file, the public wrapper `ae-entry`, and it is policy-frozen: no new Bash features. **`ae-glue` was deleted whole in slice Z1** and its residue folded into that wrapper.
-- Config is INI-style with a simple regex parser, and it is the core's (`src/config.rs`) — the wrapper reads no key of it and writes no config at all. Don't add TOML/YAML/JSON parsing.
-- Core ae requires only `bash >= 4.0`, `tmux`, and `git`. Optional features may declare their own hard dependencies (e.g. the orchestrator companion session needs an agent CLI; `contrib/aemonitor` needs Python 3), but those deps must never be required for the rest of ae to work — `ae list`, `ae <name>`, etc. continue to function on a machine without them. (`ae telegram` used to need `jq` + `curl`; the Rust-core bridge needs neither — it is the ae core binary.)
+- `ae` must remain a single bash script. No compiled languages, no runtimes. *(Historical: this once governed all of `ae`; triggers 1–3 fired on 2026-08-20 and the Rust core is the ratified successor, not a violation of the durable product doctrine.)* What survives is ONE bash file and it is not `ae` at all — it is `install`, the thing that has to run before there is a core to run. **`ae-glue` was deleted whole in slice Z1**, its residue folded into the wrapper `ae-entry`, and **`ae-entry` itself was deleted in slice Z3**: the published `ae` is a symlink straight at the versioned core. `install` is policy-frozen — no new Bash features.
+- Config is INI-style with a simple regex parser, and it is the core's (`src/config.rs`) — no bash reads a key of it, and `install` writes only a default config where none exists. Don't add TOML/YAML/JSON parsing.
+- Core ae requires only `tmux` and `git` — the core is a static binary and needs no shell at all; `bash` is a prerequisite of `install`, not of `ae`. Optional features may declare their own hard dependencies (e.g. the orchestrator companion session needs an agent CLI; `contrib/aemonitor` needs Python 3), but those deps must never be required for the rest of ae to work — `ae list`, `ae <name>`, etc. continue to function on a machine without them. (`ae telegram` used to need `jq` + `curl`; the Rust-core bridge needs neither — it is the ae core binary.)
 - Session state lives in `~/.ae/sessions/`; archived session memory lives in
   `~/.ae/archive/<session-uuid>/` and is INERT — data only, never an executable file.
   Working directories stay clean.
@@ -63,16 +64,13 @@ tmux as the runtime is no longer unchallenged: **herdr** (herdrdev/herdr, Rust, 
 ## Structure
 
 ```
-ae-entry            — the public wrapper source (installed and bundled as `ae`), and since
-                      slice Z1 the product's ONLY bash file: it validates the versioned pair,
-                      answers `version` and `upgrade`, and execs the core ONCE with the frozen
-                      preamble plus the caller's argv verbatim
 justfile            — dev/release pipeline (just check, just test, just release)
 cliff.toml          — git-cliff changelog config (CalVer-compatible)
 tests/unit          — pure-function unit tests (bash, no deps)
 tests/integration   — integration tests (requires tmux, git)
 tests/itest-par     — parallel sharded runner for tests/integration (`just itest-all`, `just itest <domain>`); tests/itest-domains.tsv tags every section with a domain and records order-dependent chains, tests/itest-timings.tsv holds measured seconds per section
-install             — canonical checksum-verifying versioned installer (checkout or release entry)
+install             — canonical checksum-verifying versioned installer (checkout or release
+                      entry), and since slice Z3 the product's ONLY bash file
 docs/               — user + internals documentation (getting-started, reference, internals)
 contrib/            — optional sidecars: aewatch (retired Python watchdog+bridge; archival), aeorchestrator, aemonitor
 Cargo.toml          — Rust package: one crate, bin + lib, both named `ae` (no workspace)
@@ -156,9 +154,13 @@ through a link is fine; only writers bite. To replace a helper, `rm -f` it first
 create the new file, which is what `write_helpers` does for its own publish (symlink to a
 temp beside the destination, then rename). This is a live hazard for test fixtures above
 all — a fixture that plants a "stale helper" is exactly the shape that corrupts the core —
-and it shipped once, as 19 phantom failures in an unrelated domain. Z3 will make the
-published core read-only and have `ae doctor` warn when the resolved core is writable;
-until then the rule is the only guard.
+and it shipped once, as 19 phantom failures in an unrelated domain. **Slice Z3 made the
+filesystem enforce it**: a published version directory is 0555 and its members 0555/0444,
+so a stray `> <session-dir>/send` on an installed machine now fails with `EACCES` and the
+core is byte-identical afterwards, and `ae doctor` WARNs when the resolved core is
+writable. The rule still binds where the modes cannot reach — a checkout build, a fixture
+tree, anything not published by `install` — which is exactly where the 19 failures came
+from.
 
 Two more links sit in the same directory and are not agent-facing: `watchdog` and `events-tail` are the whole command of the two monitor panes, so each must be a filesystem entry tmux can run rather than a shell line that would have to quote a core path. `loop` is the deprecated spelling of `watchdog`, kept as an alias for sessions created before the rename.
 
@@ -308,25 +310,27 @@ Cycle rules under this work: scoped integration runs in the inner loop, one full
 slice; commit on lint + unit + scoped green, the full pass and the single cross-model round
 run after the commit on the integrated diff (nothing is pushed); fixes roll forward.
 
-**Status (measured 2026-09-04, after slice Z2).** The destination is reached, and then
-some: `ae-glue` is DELETED, and so is every line of bash a session used to carry. What is
-left of ae's Bash is the public wrapper `ae-entry` at 737 lines, 433 of them code — down
-from the 18,673 the epic closed on — and nothing else. Slice Z2 took the last two: the
-session helpers are symlinks to the core (`argv[0]` dispatch, full-path rule) and
-`launch.<slot>.sh` is replaced by the core entry `_run`, which execs the tool itself. A
-session directory now holds links, meta and data — no script, no shebang, no interpreter.
-There is no dispatcher, no
-help text, no name grammar, no session-path guard, no config writer, no INI parser, no
-portability shim and no reader of ae's own state in bash; the one exception is stated at
-its site, the `upgrade` report, which must answer "which sessions are running" about an
-install it is replacing. Every fallback is gone: a core that cannot be bound is a refusal
-(exit 2, before any side effect) rather than a degraded path.
+**Status (measured 2026-09-04, after slice Z3).** The destination is passed. `ae-glue` is
+DELETED, every line of bash a session used to carry is DELETED, and so is the public
+wrapper: **there is no bash in the PRODUCT at all.** `ae-entry` was 737 lines when slice
+Z2 ended, down from the 18,673 the epic closed on; slice Z3 took it to zero with
+`git rm ae-entry`. What is left of ae's Bash is `install` — 1,366 lines, 1,139 of them
+code — which is not `ae` and never runs during one: it is the thing that has to work
+before a core exists to run.
 
-What the wrapper still does is the pair validation, `version` and `upgrade`, the `bash >= 4`
-re-exec ladder, the core binding, the `--inside-tmux` sensor, the typed tmux server pair,
-and ONE exec of the core with the frozen preamble followed by `--` and the caller's argv
-verbatim. The file's own header carries the list of ABSENCES the suite asserts. Read it
-before adding anything back.
+Slice Z2 took the last two session artefacts: the helpers are symlinks to the core
+(`argv[0]` dispatch, full-path rule) and `launch.<slot>.sh` is replaced by the core entry
+`_run`, which execs the tool itself. A session directory holds links, meta and data — no
+script, no shebang, no interpreter. Slice Z3 took the entry itself: `~/.local/bin/ae` is a
+symlink straight at `~/.ae/versions/<V>/ae-core`, so calling `ae` IS calling the core.
+
+There is no dispatcher, no help text, no name grammar, no session-path guard, no config
+writer, no INI parser, no portability shim, no `bash >= 4` re-exec ladder, no pair
+validation and no reader of ae's own state in bash. The `upgrade` report — the one
+exception Z2 recorded, "which sessions are running" about an install being replaced — is
+the core's now; `install` answers only about the filesystem it is publishing to. Every
+fallback is gone: the core is not bound, it IS the binary, and a version directory it
+cannot validate is a refusal (exit 2, before any side effect) rather than a degraded path.
 
 Cut rather than ported: `ae transfer`, `ae status` (`ae list` answers the same question from
 one implementation), the `ae orchestrator`/`hub` scaffold trampoline, and `_recover-pending`
@@ -390,80 +394,84 @@ Release tags matching `v[0-9]*.[0-9]*.[0-9]*` build their own release binaries w
 `--locked` on pinned `ubuntu-24.04` and `macos-15` runners. The Linux artifact is
 proven static (`PT_INTERP` absent and `file` reports static) and runs both `_net-probe`
 controls against the shipped binary: the reserved `.invalid` name must refuse and
-`api.telegram.org` must resolve. Each bundle contains three members — the public `ae`
-wrapper, `ae-core`, and the canonical
-`install`; the final job emits one `SHA256SUMS` over both
-tarballs. The installer downloads files, verifies the checksum before extraction, and
-atomically publishes the complete matched set under one immutable version directory.
-Local unit tests use fixture bundles and never access the network.
+`api.telegram.org` must resolve. Each bundle holds three members — `ae-core`, the canonical
+`install`, and a `SHA256SUMS` naming exactly those two; the final job emits one `SHA256SUMS`
+over both tarballs. There is ONE spelling of that payload, the justfile's `bundle` recipe,
+and both release legs call it rather than restating a `cp`/`chmod`/`tar` sequence of their
+own. The installer downloads files, verifies the checksum before extraction, and atomically
+publishes the complete matched set under one immutable version directory. Local unit tests
+use fixture bundles and never access the network.
 
 **The canonical installer takes no path overrides.** It installs to `~/.ae/versions` and
 `~/.local/bin/ae`, derived from `HOME` and nothing else. Fixed publication paths avoid
 aliasing with legacy state; persisted journals are hostile input and are refused, then
 preserved for diagnosis, when their pointers or command path disagree.
 
-**The `AE_NEXT_HOME` retirement executed on 2026-08-31, and slice Z1 gave it a second
-shape.** The coexistence wrapper and its advanced state-write override no longer ship.
-The wrapper now decides its environment contract from ITS OWN NAME, which is the same
-discriminator that decides how the core is bound:
+**The published shape (slice Z3).** A version directory holds the three bundle members and
+nothing else, and it is read-only to its own owner:
 
-- **Installed (published as `ae`)** — unsets inherited `AE_CORE`, `AE_TMUX_SERVER`,
-  `AE_TMUX_SERVER_KIND` and `AE_CORE_BIN`, and unconditionally sets `AE_HOME=$HOME/.ae`
-  with `CONFIG_FILE=$AE_HOME/config`, ignoring inherited `AE_HOME` and `AE_NEXT_HOME`. One
-  aggregated notice names whichever inherited values were set and would have changed
-  behavior.
-- **Checkout (the tracked `ae-entry`)** — HONOURS `AE_HOME`, `CONFIG_FILE` and
-  `AE_CORE_BIN`, defaulting `AE_HOME` to `$HOME/.ae`. That is the `ae-dev` namespace
-  (`~/.local/bin/ae-dev`: own `~/.ae-dev`, own tmux server, core from the checkout build)
-  and the two bash suites, which are its only callers.
+```
+~/.ae/versions/<V>/ae-core      0555   the binary
+~/.ae/versions/<V>/install      0555   the installer that published it
+~/.ae/versions/<V>/SHA256SUMS   0444   two lines, "<sha256><SP><SP><name>", ae-core then install
+~/.ae/versions/<V>/             0555   the directory itself
+~/.local/bin/ae -> ~/.ae/versions/<V>/ae-core   an absolute-path symlink
+```
 
-Both shapes EXPORT `AE_HOME` and `CONFIG_FILE`: the preamble's `--home` feeds the launch
-and the telegram daemon, but the core derives its state root for every other command from
-the environment. There is no coreless mode anywhere — a core that cannot be bound is a
-refusal (exit 2, before any side effect), never a degraded path.
+Three consequences are contract. **The command symlink IS the current pointer** — switching
+versions is re-pointing it atomically, and both `~/.ae/core/current` and `~/.ae/current` are
+RETIRED, their absence asserted rather than assumed. **A 0555 directory refuses entry create
+and unlink**, so a stray `> $SESSION/send` through a helper link fails with `EACCES` and the
+core stays byte-identical — the hazard the session-helper rule could only warn about is now
+enforced by the filesystem. **The manifest's exact bytes are a two-party contract**: the
+installer writes them and the core parses them, so `remote_manifest_write` and the `bundle`
+recipe must emit the same file.
 
-**Command ownership (ruled 2026-08-31; reduced to two wrapper-owned words in slice Z1):**
-except `upgrade` and the three version spellings, every invocation passes the validated
-PAIR first (wrapper `_AE_ENTRY_VERSION` == `ae-core --version`) and then reaches the core
-as one exec. Before that exec the wrapper unsets `AE_VERSION`; the operator pin is scoped
-solely to `upgrade` and cannot freeze into a session.
+**Validation is STRUCTURAL, and the core does no hashing — ever.** It proves three regular
+non-symlink members, a manifest that parses and names exactly `ae-core` and `install`, and a
+directory whose basename equals its own crate version. No SHA-256 primitive, no dependency,
+no shelling out: a 2.4 MB digest on every helper call is a cost the product will not pay,
+and the installer already verified the bytes at publication under an immutable directory.
+Modes are NOT a refusal — `ae doctor` WARNs when a PUBLISHED core is writable, because a
+mode is a repairable fact about an install, not a reason to refuse to run.
 
-| Invocation | Owner / gate order |
+**The `AE_NEXT_HOME` retirement executed on 2026-08-31; slice Z1 reshaped it and slice Z3
+finished it.** There is no wrapper left to decide an environment contract, so the core reads
+every fact the frozen preamble used to carry at an env DOOR of its own, and decides its SHAPE
+from a canonical `current_exe()`: under `$HOME/.ae/versions/<V>/` it is INSTALLED, anywhere
+else it is a CHECKOUT.
+
+The doors, and nothing else: `AE_HOME`, `CONFIG_FILE`, `PWD`, `AE_TMUX_SERVER` and
+`AE_TMUX_SERVER_KIND`, `AE_NO_AUTOSTART`, `TMUX`, `TMUX_PANE`, `HOME`. `AE_CORE_BIN` is DEAD
+in both shapes — the core IS the binary, so there is nothing for an operator to point at —
+and it was dropped rather than kept as a no-op. `AE_VERSION` is scoped solely to `upgrade`,
+where it is the target pin. The `ae-dev` namespace (`~/.local/bin/ae-dev`: own `~/.ae-dev`,
+own tmux server, `exec`s the checkout's `target/debug/ae`) and the two bash suites are the
+only callers that set the doors deliberately.
+
+**Command ownership (ruled 2026-08-31; finished in slice Z3).** The table below used to
+split words between a wrapper and a core. It no longer splits anything — the core owns every
+invocation, `_*` and a bare `ae` included, because calling `ae` IS calling the core. Two
+words are still worth naming, because each reaches something outside the running binary:
+
+| Invocation | What it reaches |
 |---|---|
-| `upgrade` | immutable sibling `install`, before the pair gate so repair survives breakage; caller `AE_VERSION` is the target pin |
-| `version`, `--version`, or `-V` | public wrapper `_AE_ENTRY_VERSION`, before the pair gate |
-| every other invocation, `_*` and a bare `ae` included | Rust core, after the validated pair, as `ae-core <preamble> -- <argv verbatim>` |
+| `upgrade` | the immutable sibling `<H>/versions/<V>/install`, exec'd with `argv[0]` = `install` and NO arguments; the caller's `AE_VERSION` crosses as the target pin. Repair therefore survives a broken install, because the installer is a member of it |
+| `version`, `--version`, or `-V` | the crate version, which since slice Z3 is the ONLY version word in the product (`_AE_ENTRY_VERSION` went with `ae-entry`) |
 
-The frozen preamble is the wrapper's whole vocabulary, and every flag in it is a fact the
-core cannot see for itself:
-
-```
-ae-core --home H --cwd C [--global G] [--local-config L] \
-        [--server-kind K --server V] [--inside-tmux] [--bash-major N] \
-        [--attach|--no-attach] [--no-autostart] -- <user argv...>
-```
-
-Not passed, each absence a decision: `--pane` (the core reads `TMUX_PANE` itself now that
-it IS the entry process), `--core` and `--core-version` (the core is `current_exe()`,
-which under both shapes is exactly the binary the wrapper resolved and exec'd).
+The frozen preamble is GONE — `--home`, `--cwd`, `--global`, `--local-config`, `--server-kind`,
+`--server`, `--inside-tmux`, `--bash-major`, `--attach`/`--no-attach`, `--no-autostart` and the
+`--` separator with them. Each was a fact a wrapper knew and the core could not see; the core
+is the entry process now and reads every one of them for itself.
 
 **The server pair is read by SET, not by nonempty**, in both places that read it —
 `resolve_launch_tmux_server` and the tmux shim. `AE_TMUX_SERVER_KIND=ambiguous
 AE_TMUX_SERVER=` is the shape the socket probe mints for a relative socket path it could
-not prove, and a `${VAR:-}` test read that set-empty half as an absent one: the pair was
-dropped, no `--server-kind` reached the preamble, and the core resolved the AMBIENT server
-— the one outcome `ambiguous` exists to prevent. EITHER variable being set now resolves
-the pair, BOTH halves cross verbatim, and the core issues the refusal. A pair that cannot
-be routed makes the shim refuse every tmux call rather than fall back, so bash never asks
-a server the caller did not name.
-
-**Core binding.** An INSTALLED bundle binds its own immutable sibling `ae-core` — proven
-a regular, non-symlink, executable member, proven `-ef` the published `core/current`
-pointer, and proven to report the wrapper's own version — so no operator variable can
-outrank the core the bundle shipped with. A CHECKOUT binds `AE_CORE_BIN`, then
-`<AE_HOME>/core/current`, requiring only that the result is an absolute path to an
-executable that reports a version: the checkout's core is built from the tree beside the
-wrapper, and a developer one bump behind is owed a working `ae-dev` rather than a refusal.
+not prove, and a nonempty test read that set-empty half as an absent one: the pair was
+dropped and the AMBIENT server resolved — the one outcome `ambiguous` exists to prevent.
+EITHER variable being set resolves the pair, BOTH halves are read verbatim, and an
+untypeable pair is refused rather than routed. The bug class outlived its bash: the door is
+the core's now, and the rule is pinned where the reader lives.
 
 ### Lint policy: `[lints]` + `-D warnings`
 
@@ -667,31 +675,36 @@ The bootstrap contract, in full — nothing else is assumed to exist:
 
 ### Deferred, with the trigger recorded
 
-- **Version scheme.** `_AE_ENTRY_VERSION` in `ae-entry` and Cargo's package version are
-  unified NOW, deliberately pre-promotion: both use SemVer-compatible CalVer `YYYY.M.N`.
-  `just bump` derives N from matching Git tags (`vYYYY.M.N`), resets monthly, refuses
-  duplicate tags, and updates `ae-entry`, `Cargo.toml`, and `Cargo.lock` together. The third
-  version word, `AE_VERSION` in `ae-glue`, went with that file in slice Z1 — the install is
-  now a PAIR, and the wrapper unsets `AE_VERSION` before every exec of the core so an
-  operator pin cannot freeze into a session.
+- **Version scheme.** SemVer-compatible CalVer `YYYY.M.N`, and since slice Z3 there is
+  exactly ONE word of it: Cargo's package version. `just bump` derives N from matching Git
+  tags (`vYYYY.M.N`), resets monthly, refuses duplicate tags, and updates `Cargo.toml` and
+  `Cargo.lock` — nothing else, because nothing else holds a version. The other two words
+  are gone: `AE_VERSION` in `ae-glue` went with that file in slice Z1, and
+  `_AE_ENTRY_VERSION` went with `ae-entry` in Z3. The core reports the crate version and
+  refuses to run out of a version directory that is not named for it, so the version word
+  and the published path are checked against each other on every invocation rather than
+  kept in step by a release recipe. `AE_VERSION` survives only as the operator's target pin
+  for `upgrade`.
 - **`panic = "abort"`** in the release profile forecloses `catch_unwind`. Revisit if the
   long-lived watchdog or telegram loop needs to survive a panic in one iteration rather than
   take the process down. Cheap to flip; recorded so it stays a decision.
 - **`cliff.toml` is excluded from taplo** — a bash-era file whose reformat would be an
   unrelated diff in a frozen area. It joins the lane when someone reformats it deliberately.
 
-## Bash hazards for the surviving wrapper (read before editing `ae-entry`, bundled as `ae`)
+## Bash hazards (read before editing `install` — or before typing a one-off command)
 
 Every bug class below has shipped at least once. Check new code against both lists.
 
-*Scope:* this section governs the policy-frozen public wrapper `ae-entry`, which after
-slice Z2 is the whole of ae's Bash. It governs no generated artifact any more: the session
-helpers are symlinks to the core and a pane's command is the core entry `_run`, so there is
-no script in a session directory for a bash bug class to live in.
-Several entries below name a function or a command that the glue cuts and slice Z1
-removed; they are
-kept because the **bug class** is what the list is for, and the class returns the moment
-anyone writes bash here again. Where an entry's subject is gone it says so.
+*Scope:* **`install`, and the ad-hoc shell you are typing into.** Those are the two, and
+the second is not a figure of speech — it is where these classes now bite most often. The
+product's bash is down to the installer: `ae-glue` went in slice Z1, the generated session
+artifacts in Z2, and the public wrapper `ae-entry` in Z3, so there is no dispatcher, no
+helper body, no pane script and no wrapper left for a bug class to live in. What is left
+is the file that has to run before a core exists, and every measurement, probe and fixture
+an agent writes during a session.
+Several entries below name a function or a command that one of those cuts removed; they
+are kept because the **bug class** is what the list is for, and the class returns the
+moment anyone writes bash here again. Where an entry's subject is gone it says so.
 
 Its measured facts (TUI markers, tool behavior, userland divergences) are **empirical
 evidence** for the semantic contract, never its normative authority — see

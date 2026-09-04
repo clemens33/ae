@@ -26,6 +26,21 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends musl-tools
 
+      # First-party actions only (AGENTS.md), so `just` is installed the same way
+      # the rust lanes install it: READ the pin out of the justfile, never
+      # restate it. The bundle shape lives in a recipe now, so both platform
+      # legs need the tool that runs it.
+      - name: Install just (pinned)
+        run: |
+          set -euo pipefail
+          want="$(grep -m1 -E '^JUST_VERSION := ' justfile | cut -d'"' -f2)"
+          [ -n "$want" ] || { echo "::error::JUST_VERSION not found in justfile"; exit 1; }
+          if just --version 2>/dev/null | grep -Fqx "just $want"; then
+            echo "just $want already present"
+          else
+            cargo install --locked --version "$want" just
+          fi
+
       - name: Build release binary
         run: cargo build --release --locked --target x86_64-unknown-linux-musl
 
@@ -37,9 +52,6 @@ jobs:
           want="ae $version"
           got="$($bin --version)"
           [ "$got" = "$want" ] || { echo "::error::--version printed '$got', want '$want'"; exit 1; }
-          wrapper_version="$(grep -m1 '^_AE_ENTRY_VERSION=' ae-entry | cut -d'"' -f2)"
-          [ -n "$wrapper_version" ] || { echo "::error::ae-entry _AE_ENTRY_VERSION is empty"; exit 1; }
-          [ "$wrapper_version" = "$version" ] || { echo "::error::ae-entry _AE_ENTRY_VERSION is '$wrapper_version', want '$version'"; exit 1; }
 
           command -v readelf >/dev/null || { echo "::error::readelf is required"; exit 1; }
           headers="$(readelf -l "$bin")"
@@ -61,14 +73,7 @@ jobs:
           [ "$invalid_code" -eq 1 ] || { echo "::error::.invalid probe exited $invalid_code, want 1"; exit 1; }
           "$bin" _net-probe api.telegram.org >/dev/null
 
-          root="ae-$version-linux-x86_64-musl"
-          mkdir "$root"
-          cp "$bin" "$root/ae-core"
-          cp ae-entry "$root/ae"
-          cmp ae-entry "$root/ae"
-          cp install "$root/install"
-          chmod 0555 "$root" "$root/ae" "$root/ae-core" "$root/install"
-          tar -czf "$root.tar.gz" "$root"
+          just bundle "$version" linux-x86_64-musl "$bin"
 
       - name: Upload Linux bundle
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -86,6 +91,21 @@ jobs:
         with:
           fetch-depth: 1
 
+      # First-party actions only (AGENTS.md), so `just` is installed the same way
+      # the rust lanes install it: READ the pin out of the justfile, never
+      # restate it. The bundle shape lives in a recipe now, so both platform
+      # legs need the tool that runs it.
+      - name: Install just (pinned)
+        run: |
+          set -euo pipefail
+          want="$(grep -m1 -E '^JUST_VERSION := ' justfile | cut -d'"' -f2)"
+          [ -n "$want" ] || { echo "::error::JUST_VERSION not found in justfile"; exit 1; }
+          if just --version 2>/dev/null | grep -Fqx "just $want"; then
+            echo "just $want already present"
+          else
+            cargo install --locked --version "$want" just
+          fi
+
       - name: Build release binary
         run: cargo build --release --locked
 
@@ -97,19 +117,9 @@ jobs:
           want="ae $version"
           got="$($bin --version)"
           [ "$got" = "$want" ] || { echo "::error::--version printed '$got', want '$want'"; exit 1; }
-          wrapper_version="$(grep -m1 '^_AE_ENTRY_VERSION=' ae-entry | cut -d'"' -f2)"
-          [ -n "$wrapper_version" ] || { echo "::error::ae-entry _AE_ENTRY_VERSION is empty"; exit 1; }
-          [ "$wrapper_version" = "$version" ] || { echo "::error::ae-entry _AE_ENTRY_VERSION is '$wrapper_version', want '$version'"; exit 1; }
           "$bin" _net-probe localhost >/dev/null
 
-          root="ae-$version-darwin-arm64"
-          mkdir "$root"
-          cp "$bin" "$root/ae-core"
-          cp ae-entry "$root/ae"
-          cmp ae-entry "$root/ae"
-          cp install "$root/install"
-          chmod 0555 "$root" "$root/ae" "$root/ae-core" "$root/install"
-          tar -czf "$root.tar.gz" "$root"
+          just bundle "$version" darwin-arm64 "$bin"
 
       - name: Upload macOS bundle
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

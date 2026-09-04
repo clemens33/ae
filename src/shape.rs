@@ -267,11 +267,26 @@ impl VersionDir for OnDisk<'_> {
 /// `current_exe`, deliberately, and NOT `argv[0]`: the two answer different
 /// questions and slice Z2 pinned the difference. `argv[0]` says which SESSION
 /// HELPER this is ([`crate::shim`]); `current_exe` says which BINARY is
-/// running, which is the only thing that can decide the shape — a helper link
-/// in a session directory resolves through to the very same installed core.
+/// running, which is the only thing that can decide the shape.
+///
+/// RESOLVED HERE, not by the OS. `current_exe` is only as resolved as the
+/// platform makes it: Linux answers from `/proc/self/exe`, which is the real
+/// file, while macOS answers the path this process was EXEC'D BY — the symlink,
+/// not its target. Slice Z3 makes that difference decide the product: `ae` is
+/// `~/.local/bin/ae`, a link, and every session helper is another link, so on
+/// macOS an unresolved answer names a file called `ae` or `send` and the
+/// positional test below sees a CHECKOUT for every installed invocation on the
+/// machine. Canonicalising here is what makes the two platforms answer the same
+/// question.
 #[must_use]
 pub fn resolved_exe() -> Option<PathBuf> {
-    std::env::current_exe().ok()
+    let exe = std::env::current_exe().ok()?;
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: the shape is positional, and macOS hands back the link it was exec'd by rather than the file it reached"
+    )]
+    let resolved = std::fs::canonicalize(&exe);
+    Some(resolved.unwrap_or(exe))
 }
 
 /// This process's shape, resolved once.
@@ -283,11 +298,32 @@ pub fn resolved_exe() -> Option<PathBuf> {
 pub fn current() -> &'static Shape {
     static CELL: std::sync::OnceLock<Shape> = std::sync::OnceLock::new();
     CELL.get_or_init(|| {
+        // BOTH SIDES CANONICAL, or the comparison is of SPELLINGS and not of
+        // positions. `current_exe()` resolves every link on the way to this
+        // binary; `$HOME` resolves nothing, and one directory reached by two
+        // names is ordinary — `/tmp` and `/var` are `/private/...` on macOS,
+        // and a `/home` mounted through a link is the same shape on Linux.
+        // A home spelled the other way classifies a PUBLISHED core as a
+        // checkout, which hands an inherited `AE_HOME` the state root the
+        // install owns: exactly the C51 degradation at the public boundary
+        // that this module's positional rule exists to refuse.
+        let home = crate::doors::home().map(|home| canonical_home(&home));
         classify(
             resolved_exe().unwrap_or_default().as_path(),
-            crate::doors::home().as_deref(),
+            home.as_deref(),
         )
     })
+}
+
+/// `$HOME` resolved the way `current_exe()` resolves, or unchanged when the OS
+/// will not say — an unresolvable home is a checkout, which is the safe answer.
+fn canonical_home(home: &Path) -> PathBuf {
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: the shape is positional, so the position has to be read the same way on both sides of the comparison"
+    )]
+    let resolved = std::fs::canonicalize(home);
+    resolved.unwrap_or_else(|_| home.to_path_buf())
 }
 
 #[cfg(test)]
@@ -467,5 +503,41 @@ mod tests {
                 .0
                 .contains("cannot be read")
         );
+    }
+
+    /// A home reached through a symlink is the SAME home, and an install under
+    /// it is INSTALLED. Without this, `$HOME=/tmp/x` against a `current_exe()`
+    /// of `/private/tmp/x/.ae/versions/V/ae-core` classifies as a checkout, and
+    /// the public boundary quietly starts honouring an inherited `AE_HOME`.
+    #[test]
+    fn a_home_reached_through_a_link_is_still_installed() {
+        let root = std::env::temp_dir().join(format!("ae-shape-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let real = root.join("real");
+        std::fs::create_dir_all(&real).expect("scratch");
+        let link = root.join("link");
+        std::os::unix::fs::symlink(&real, &link).expect("symlink");
+
+        let exe = std::fs::canonicalize(&real)
+            .expect("canonical")
+            .join(".ae")
+            .join(VERSIONS)
+            .join("9.9.9")
+            .join(CORE);
+
+        assert_eq!(
+            classify(&exe, Some(link.as_path())),
+            Shape::Checkout,
+            "the raw spelling cannot match a resolved exe"
+        );
+        assert!(
+            matches!(
+                classify(&exe, Some(canonical_home(&link).as_path())),
+                Shape::Installed { ref version, .. } if version == "9.9.9"
+            ),
+            "the resolved spelling must"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
