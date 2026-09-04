@@ -29,7 +29,11 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
+
 use super::cli::ae;
+use super::parity::{Invocation, capture::raw};
 use super::phase2::{run_tmux, tmux_present};
 
 /// An isolated ae home and a project directory. No tmux server unless a test
@@ -39,6 +43,7 @@ struct Rig {
     home: PathBuf,
     project: PathBuf,
     sock: PathBuf,
+    ambient_sock: PathBuf,
 }
 
 impl Rig {
@@ -48,8 +53,14 @@ impl Rig {
         let home = scratch.join("aehome");
         let project = scratch.join("project");
         assert!(std::fs::create_dir_all(&project).is_ok(), "a project dir");
+        // tmux derives its default socket directory from this same effective UID.
+        #[cfg(unix)]
+        let uid = std::fs::metadata(&scratch).map_or(0, |metadata| metadata.uid());
+        #[cfg(not(unix))]
+        let uid = 0;
         Self {
             sock: scratch.join("sock"),
+            ambient_sock: scratch.join(format!("tmux-{uid}")).join("default"),
             scratch,
             home,
             project,
@@ -117,7 +128,18 @@ impl Rig {
 
 impl Drop for Rig {
     fn drop(&mut self) {
-        let _ = self.tmux(&["kill-server"]);
+        // A test may use either the explicitly selected socket or the ambient
+        // server selected through TMUX_TMPDIR. Use the raw harness door here:
+        // teardown must not panic while unwinding an assertion failure.
+        for (label, socket) in [("selected", &self.sock), ("ambient", &self.ambient_sock)] {
+            let out = self.scratch.join(format!("cleanup-{label}-out"));
+            let err = self.scratch.join(format!("cleanup-{label}-err"));
+            let invocation = Invocation::new("tmux")
+                .arg("-S")
+                .arg(socket)
+                .arg("kill-server");
+            let _ = raw::run(&invocation, &self.scratch, &out, &err);
+        }
         for _ in 0..40 {
             let _ = std::fs::remove_dir_all(&self.scratch);
             if !self.scratch.exists() {
@@ -127,6 +149,34 @@ impl Drop for Rig {
         }
         let _ = std::fs::remove_dir_all(&self.scratch);
     }
+}
+
+/// Confirm that a rig's detached tmux command is gone after its Drop guard.
+fn assert_no_tmux_processes(scratch: &Path) {
+    let probe = PathBuf::from(format!("/tmp/aeentry-pgrep.{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&probe);
+    assert!(
+        std::fs::create_dir_all(&probe).is_ok(),
+        "a pgrep scratch dir"
+    );
+    let out = probe.join("stdout");
+    let err = probe.join("stderr");
+    // The injected agent prompt also contains the scratch path and the word
+    // "tmux"; anchor the executable so it cannot look like a server process.
+    let pattern = format!("(^|/)tmux.*{}", scratch.display());
+    let invocation = Invocation::new("pgrep").arg("-fl").arg(pattern);
+    let status = raw::run(&invocation, Path::new("/tmp"), &out, &err)
+        .unwrap_or_else(|why| panic!("pgrep must run: {why}"));
+    let matches = std::fs::read_to_string(&out).unwrap_or_default();
+    assert!(
+        matches!(
+            status.outcome(),
+            super::parity::capture::ExitOutcome::Code(1)
+        ),
+        "tmux process remained for {}: {matches}",
+        scratch.display()
+    );
+    let _ = std::fs::remove_dir_all(&probe);
 }
 
 fn skip() -> bool {
@@ -538,58 +588,62 @@ fn list_help_is_the_ratified_filter_text_on_stderr() {
 /// diagnosis starts from a home the failing run invented.
 #[test]
 fn the_first_run_seeds_the_config_only_after_the_dependency_check() {
-    let rig = Rig::new("seed");
-    // A machine with NO TMUX. That is the whole dependency gate now — the bash
-    // row went with `ae-entry`, which is the interpreter it was about — and it
-    // is still the thing that must refuse before the first write.
-    let out = ae()
-        .env_remove("TMUX")
-        .env_remove("TMUX_PANE")
-        .env("AE_HOME", &rig.home)
-        .env("CONFIG_FILE", rig.config())
-        .env("PATH", "/nonexistent")
-        .current_dir(&rig.project)
-        .arg("seedme")
-        .output()
-        .unwrap_or_else(|why| panic!("the ae binary should run: {why}"));
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert_eq!(out.status.code(), Some(1), "{stderr}");
-    assert!(stderr.contains("tmux"), "{stderr}");
-    assert!(
-        !rig.config().exists(),
-        "the config was seeded before the gate refused"
-    );
+    let scratch = {
+        let rig = Rig::new("seed");
+        // A machine with NO TMUX. That is the whole dependency gate now — the bash
+        // row went with `ae-entry`, which is the interpreter it was about — and it
+        // is still the thing that must refuse before the first write.
+        let out = ae()
+            .env_remove("TMUX")
+            .env_remove("TMUX_PANE")
+            .env("AE_HOME", &rig.home)
+            .env("CONFIG_FILE", rig.config())
+            .env("PATH", "/nonexistent")
+            .current_dir(&rig.project)
+            .arg("seedme")
+            .output()
+            .unwrap_or_else(|why| panic!("the ae binary should run: {why}"));
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(1), "{stderr}");
+        assert!(stderr.contains("tmux"), "{stderr}");
+        assert!(
+            !rig.config().exists(),
+            "the config was seeded before the gate refused"
+        );
 
-    // The same launch with a bash the gate accepts writes it, and says so on
-    // STDERR — the launch's stdout belongs to the session it is about to become.
-    let (_, stdout, stderr) = rig.run(&["seedme"]);
-    assert!(rig.config().exists(), "{stderr}");
-    assert!(
-        stderr.contains(&format!(
-            "Created default config at {}",
-            rig.config().display()
-        )),
-        "{stderr}"
-    );
-    assert!(!stdout.contains("Created default config"), "{stdout}");
+        // The same launch with a bash the gate accepts writes it, and says so on
+        // STDERR — the launch's stdout belongs to the session it is about to become.
+        let (_, stdout, stderr) = rig.run(&["seedme"]);
+        assert!(rig.config().exists(), "{stderr}");
+        assert!(
+            stderr.contains(&format!(
+                "Created default config at {}",
+                rig.config().display()
+            )),
+            "{stderr}"
+        );
+        assert!(!stdout.contains("Created default config"), "{stdout}");
 
-    let written = std::fs::read_to_string(rig.config()).unwrap_or_default();
-    assert_eq!(written, ae::entry::DEFAULT_CONFIG);
-    for section in ["[profiles]", "[roster]", "[workspace]", "[prompt]"] {
-        assert!(written.contains(section), "the template lost {section}");
-    }
-    // No temp file is left beside it.
-    let leftovers: Vec<PathBuf> = std::fs::read_dir(&rig.home)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| path.to_string_lossy().contains(".tmp."))
-        .collect();
-    assert!(
-        leftovers.is_empty(),
-        "temp files left behind: {leftovers:?}"
-    );
+        let written = std::fs::read_to_string(rig.config()).unwrap_or_default();
+        assert_eq!(written, ae::entry::DEFAULT_CONFIG);
+        for section in ["[profiles]", "[roster]", "[workspace]", "[prompt]"] {
+            assert!(written.contains(section), "the template lost {section}");
+        }
+        // No temp file is left beside it.
+        let leftovers: Vec<PathBuf> = std::fs::read_dir(&rig.home)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| path.to_string_lossy().contains(".tmp."))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "temp files left behind: {leftovers:?}"
+        );
+        rig.scratch.clone()
+    };
+    assert_no_tmux_processes(&scratch);
 }
 
 /// A config that is already there is never rewritten — the seeding is a first

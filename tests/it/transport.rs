@@ -41,6 +41,7 @@ use ae::meta::Selector;
 use ae::tmux::{interpret_panes, list_panes_args};
 use ae::transport::Tmux;
 
+use super::parity::{Invocation, capture::raw};
 use super::phase2::{run_tmux, tmux_present};
 
 /// A short-lived scratch directory, short enough to hold a socket path.
@@ -54,6 +55,35 @@ fn scratch(tag: &str) -> PathBuf {
     let _ = fs::remove_dir_all(&dir);
     assert!(fs::create_dir_all(&dir).is_ok(), "a short scratch dir");
     dir
+}
+
+/// Kill the test's private tmux server even when an assertion unwinds before
+/// the arm's ordinary teardown reaches its explicit kill.
+struct Cleanup {
+    socket: PathBuf,
+    scratch: PathBuf,
+}
+
+impl Cleanup {
+    fn new(socket: &Path, scratch: &Path) -> Self {
+        Self {
+            socket: socket.to_owned(),
+            scratch: scratch.to_owned(),
+        }
+    }
+}
+
+impl Drop for Cleanup {
+    fn drop(&mut self) {
+        let out = self.scratch.join("cleanup-out");
+        let err = self.scratch.join("cleanup-err");
+        let invocation = Invocation::new("tmux")
+            .arg("-S")
+            .arg(&self.socket)
+            .arg("kill-server");
+        let _ = raw::run(&invocation, &self.scratch, &out, &err);
+        let _ = fs::remove_dir_all(&self.scratch);
+    }
 }
 
 /// A durable session record naming `socket` as its server.
@@ -150,6 +180,7 @@ fn sc_017k_one_real_query_answers_present_absent_and_prefix_candidates_by_exact_
     let scratch = scratch("live");
     require_tmux(&scratch);
     let socket = scratch.join("t.sock");
+    let _cleanup = Cleanup::new(&socket, &scratch);
     start_server(&socket, &scratch, &[("alive", Some("alive"))]);
 
     let root = scratch.join("home");
@@ -253,6 +284,7 @@ fn sc_017l_a_session_the_server_reports_without_ae_s_marker_is_unknown() {
     let scratch = scratch("owner");
     require_tmux(&scratch);
     let socket = scratch.join("t.sock");
+    let _cleanup = Cleanup::new(&socket, &scratch);
     start_server(
         &socket,
         &scratch,
@@ -301,6 +333,7 @@ fn the_transport_reports_the_names_and_markers_the_server_holds() {
     let scratch = scratch("port");
     require_tmux(&scratch);
     let socket = scratch.join("t.sock");
+    let _cleanup = Cleanup::new(&socket, &scratch);
     start_server(
         &socket,
         &scratch,
@@ -513,6 +546,7 @@ fn sc_017s_a_real_enumeration_carries_identity_and_both_liveness_conjuncts() {
     let scratch = scratch("panes");
     require_tmux(&scratch);
     let socket = scratch.join("t.sock");
+    let _cleanup = Cleanup::new(&socket, &scratch);
     start_server(&socket, &scratch, &[("marked", Some("marked"))]);
     // Captured BEFORE any split, while "the only pane" is a checkable fact.
     let original = only_pane_id(&socket, &scratch, "marked");
@@ -660,6 +694,7 @@ fn sc_017p_the_list_route_answers_each_seat_from_the_live_panes_and_the_publishe
     let scratch = scratch("runtime");
     require_tmux(&scratch);
     let socket = scratch.join("t.sock");
+    let _cleanup = Cleanup::new(&socket, &scratch);
     start_server(&socket, &scratch, &[("live", Some("live"))]);
     // The session's own first pane runs the login SHELL, which SC-017s puts in
     // the not-alive set — so the alive arm needs a pane running something else.

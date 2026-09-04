@@ -62,6 +62,35 @@ fn tmux(socket: &Path, scratch: &Path, words: &[&str]) -> (bool, String) {
     run_tmux(&args, scratch)
 }
 
+/// Kill the test's private tmux server even when an assertion unwinds before
+/// the arm's ordinary teardown reaches its explicit kill.
+struct Cleanup {
+    socket: PathBuf,
+    scratch: PathBuf,
+}
+
+impl Cleanup {
+    fn new(socket: &Path, scratch: &Path) -> Self {
+        Self {
+            socket: socket.to_owned(),
+            scratch: scratch.to_owned(),
+        }
+    }
+}
+
+impl Drop for Cleanup {
+    fn drop(&mut self) {
+        let out = self.scratch.join("cleanup-out");
+        let err = self.scratch.join("cleanup-err");
+        let invocation = Invocation::new("tmux")
+            .arg("-S")
+            .arg(&self.socket)
+            .arg("kill-server");
+        let _ = raw::run(&invocation, &self.scratch, &out, &err);
+        let _ = fs::remove_dir_all(&self.scratch);
+    }
+}
+
 /// Run one `git -C <dir>` through the parity harness's raw door — the test
 /// target's own, because `clippy.toml` confines `Command` to three files and a
 /// fourth is a decision, not a fixture detail.
@@ -197,6 +226,7 @@ fn a_stale_pane_is_nudged_by_a_pane_running_only_the_core() {
     let scratch = scratch("nudge");
     require_tmux(&scratch);
     let socket = scratch.join("s");
+    let _cleanup = Cleanup::new(&socket, &scratch);
     let root = scratch.join("home");
     let meta_dir = plant(&root, "nudged", &socket, None);
 
@@ -249,6 +279,7 @@ fn a_pane_that_dropped_to_a_shell_is_alerted_once() {
     let scratch = scratch("dead");
     require_tmux(&scratch);
     let socket = scratch.join("s");
+    let _cleanup = Cleanup::new(&socket, &scratch);
     let root = scratch.join("home");
     let meta_dir = plant(&root, "died", &socket, None);
 
@@ -304,6 +335,7 @@ fn the_branch_pair_is_published_on_the_session_the_daemon_watches() {
     let scratch = scratch("branch");
     require_tmux(&scratch);
     let socket = scratch.join("s");
+    let _cleanup = Cleanup::new(&socket, &scratch);
     let root = scratch.join("home");
     let work = scratch.join("repo");
     assert!(fs::create_dir_all(&work).is_ok(), "a work dir");
@@ -373,6 +405,7 @@ fn the_legacy_reap_refuses_a_pane_that_belongs_to_someone_else() {
     let scratch = scratch("reap");
     require_tmux(&scratch);
     let socket = scratch.join("s");
+    let _cleanup = Cleanup::new(&socket, &scratch);
     let server = server_of(&socket);
     let root = scratch.join("home");
     let meta_dir = plant(&root, "ours", &socket, None);
@@ -456,6 +489,7 @@ fn the_legacy_reap_takes_the_pane_it_does_own_and_its_artifacts_with_it() {
     let scratch = scratch("reaped");
     require_tmux(&scratch);
     let socket = scratch.join("s");
+    let _cleanup = Cleanup::new(&socket, &scratch);
     let server = server_of(&socket);
     let root = scratch.join("home");
     let meta_dir = plant(&root, "ours", &socket, None);
@@ -516,6 +550,7 @@ fn an_unreadable_pane_is_refused_rather_than_taken_on_faith() {
     let scratch = scratch("unread");
     require_tmux(&scratch);
     let socket = scratch.join("s");
+    let _cleanup = Cleanup::new(&socket, &scratch);
     let server = server_of(&socket);
     assert!(tmux(&socket, &scratch, &["new-session", "-d", "-s", "solo"]).0);
 
@@ -557,6 +592,7 @@ fn a_daemon_that_dies_between_publish_and_watch_takes_its_pidfile_with_it() {
     let scratch = scratch("pidfile-raii");
     require_tmux(&scratch);
     let socket = scratch.join("s");
+    let _cleanup = Cleanup::new(&socket, &scratch);
     let root = scratch.join("home");
     let meta_dir = plant(&root, "raii", &socket, None);
     assert!(
@@ -618,6 +654,7 @@ fn a_pending_codex_seat_is_recovered_by_the_running_watchdog() {
     let scratch = scratch("recover");
     require_tmux(&scratch);
     let socket = scratch.join("s");
+    let _cleanup = Cleanup::new(&socket, &scratch);
     let root = scratch.join("home");
     let home = scratch.join("toolhome");
     let project = scratch.join("project");
@@ -749,6 +786,7 @@ fn a_watchdog_tick_revives_the_telegram_bridge_in_process() {
     let scratch = scratch("tgrevive");
     require_tmux(&scratch);
     let socket = scratch.join("s");
+    let _cleanup = Cleanup::new(&socket, &scratch);
     let root = scratch.join("home");
     let work_dir = scratch.join("project");
     assert!(fs::create_dir_all(&work_dir).is_ok(), "the work dir");
@@ -872,6 +910,7 @@ fn the_agent_roster_and_the_window_glyph_are_published_by_a_running_daemon() {
     let scratch = scratch("roster");
     require_tmux(&scratch);
     let socket = scratch.join("s");
+    let _cleanup = Cleanup::new(&socket, &scratch);
     let root = scratch.join("home");
     let meta_dir = plant(&root, "rostered", &socket, None);
 

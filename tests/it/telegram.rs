@@ -728,8 +728,13 @@ fn an_unresolvable_server_kind_is_refused_rather_than_answered_with_the_ambient_
 #[test]
 fn a_caller_that_names_no_server_still_gets_the_ambient_one() {
     let home = tg_scratch("noserver");
+    // `telegram status` only queries the bridge and never starts a server; the
+    // isolated TMUX_TMPDIR still keeps that query off the human's default.
     let out = super::cli::ae()
         .env("AE_HOME", &home)
+        .env_remove("TMUX")
+        .env_remove("TMUX_PANE")
+        .env("TMUX_TMPDIR", &home)
         .args([ae::cli::TELEGRAM, "status"])
         .output()
         .unwrap_or_else(|why| panic!("the ae binary should run: {why}"));
