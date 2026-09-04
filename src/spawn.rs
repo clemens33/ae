@@ -10,7 +10,8 @@
 //!    never racy and a concurrent spawn cannot take the same index;
 //! 2. the window is created, its pane stamped and its window renamed;
 //! 3. `workspace.md` is regenerated from the live panes;
-//! 4. the launch script is published and pasted into the pane's shell;
+//! 4. the slot's start marker is claimed and the pane command is pasted into
+//!    the pane's shell, where the core composes the agent and becomes it;
 //! 5. the BRIEF is delivered only after the TUI proves it will accept input.
 //!
 //! Any failure after step 1 ROLLS BACK: the seat goes, the launch artifacts go,

@@ -4,7 +4,7 @@
 //! (`ae:12911` onwards): `_launch_parse_flags`, the name derivation and its
 //! ownership guard, the teardown tombstones, the `--from` preflight, the
 //! working-directory modes, the tmux session and its layout, the meta publish,
-//! the session assets, the launch scripts and their readiness-gated paste, the
+//! the session assets, the pane commands and their readiness-gated paste, the
 //! monitor panes, and the attach.
 //!
 //! # What this module is NOT a port of
@@ -29,7 +29,7 @@
 //! 5. the meta, published as ONE document — the first observable meta is the
 //!    complete one;
 //! 6. the assets;
-//! 7. the launch scripts and the prompts;
+//! 7. the pane commands and the prompts;
 //! 8. the monitor panes, then the attach.
 //!
 //! Any failure from step 4 onwards ROLLS BACK: the tmux session is killed, and

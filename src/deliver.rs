@@ -588,7 +588,8 @@ pub fn wait_input_ready(server: &ServerId, pane: &str, tool: Tool, polls: u32) -
 ///
 /// The LAUNCH-COMMAND paste, which is the one delivery in ae that legitimately
 /// targets a SHELL: the pane has not started its agent yet, and the text is the
-/// path of the launch script it must run. So none of [`deliver`]'s guards apply
+/// core command that composes its agent and becomes it. So none of
+/// [`deliver`]'s guards apply
 /// — the dead-pane refusal exists precisely to keep a message out of a shell,
 /// and here the shell is the intended reader.
 ///

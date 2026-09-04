@@ -305,10 +305,18 @@ fn compose(dir: &Path, slot: &str, seat: &Seat, ctx: &str, mode: Mode) -> String
 /// Is the recorded conversation actually there to resume?
 ///
 /// The frozen `resume_probe` wrote this as a shell test the pane evaluated;
-/// with no pane shell left it is the same question asked directly. Its answer
-/// for a tool ae cannot probe is unchanged and deliberate: NO. A probe ae
-/// cannot run is not evidence, and the fallback form is the one that works
-/// without evidence.
+/// with no pane shell left it is the same question asked directly.
+///
+/// **Only claude and codex have a probe, so only they can answer YES.** grok,
+/// gemini and opencode take the fallback form on every resume — `--continue`,
+/// `--resume latest`, `--continue` — however good the recorded id is. That is
+/// the frozen decider's behaviour carried over unchanged (its `None` arm
+/// emitted the FALLBACK), and it is carried over deliberately rather than
+/// improved here, because this slice ports the decision and does not re-rule
+/// it. It DISAGREES with the capability table in AGENTS.md, which says grok's
+/// resume is UUID-scoped from the first cycle and gemini uses exact resume once
+/// captured; the disagreement predates slice Z2 and belongs to whoever rules on
+/// it. Flagged here so the next reader sees the conflict rather than the code.
 fn resumable(tool: ToolKind, id: &str) -> bool {
     if !launch::id_probeable(id) {
         return false;
