@@ -47,9 +47,7 @@ struct Args {
     force: bool,
     keep_history: bool,
     digest_only: bool,
-    /// Where to write the [`ExecPlan`] the caller relaunches from. Optional:
-    /// without it the operation still completes, and the recovery line on
-    /// stderr is the route back.
+    /// Where to write the [`ExecPlan`] the caller relaunches from.
     exec_plan: Option<PathBuf>,
 }
 
@@ -88,7 +86,7 @@ pub(crate) fn run(
 
     // ── phase (a): freeze ───────────────────────────────────────────────────
     // CLEAN CUT: the core resolves and freezes the authorization tuple, or
-    // refuses a session it cannot classify. There is no fallback.
+    // refuses a session it cannot classify.
     let mut tuple = Vec::new();
     if compact::freeze(&dir, args.keep_history, &mut tuple, err)? != 0 {
         return Ok(EXIT_FAILED);
@@ -103,12 +101,11 @@ pub(crate) fn run(
     };
 
     // The server the SOURCE ran on, read HERE — while its meta is still on
-    // disk. The teardown removes the session directory before the boundary, so
-    // a read after it finds nothing and the child would land on the caller's
+    // disk.
     let (child_server_kind, child_server_value) = recorded_server(&dir);
 
     // STDERR: compact's STDOUT is a contract — the four boundary lines, in
-    // order, and nothing else. Everything before the boundary is diagnostics.
+    // order, and nothing else.
     writeln!(
         err,
         "compact: {} ({}) resolved and frozen.",
@@ -145,9 +142,7 @@ pub(crate) fn run(
                 writeln!(err, "Aborted.")?;
                 return Ok(0);
             }
-            // EOF IS NOT CONSENT — AND NOT A CRASH. The exit STATUS is the only
-            // channel that tells "the operator said no" (0) from "the question
-            // never reached anyone" (1).
+            // EOF IS NOT CONSENT — AND NOT A CRASH.
             None => {
                 writeln!(
                     err,
@@ -184,9 +179,7 @@ pub(crate) fn run(
         // its baseline) rather than delivering a duplicate.
         let mut pending = outstanding(&dir)?;
         if args.digest_only {
-            // The ONLY degradation, and it is explicit. Withdraw anything
-            // outstanding so no later archive reports an open request nobody is
-            // waiting on.
+            // The ONLY degradation, and it is explicit.
             if !pending.is_empty() {
                 if compact::cancel_step(&dir, &pending, err)? != 0 {
                     return Ok(EXIT_FAILED);
@@ -284,9 +277,7 @@ pub(crate) fn run(
         {
             return Ok(EXIT_FAILED);
         }
-        // STOP on the recorded server, by EXACT id. Empty id = not live there;
-        // the archive step's own verify-stopped gate then either proves it
-        // stopped or refuses, rather than acting on a live session.
+        // STOP on the recorded server, by EXACT id.
         let bytes = meta::read_bytes(&dir).unwrap_or_default();
         if let ServerSelector::Positive(selector) = server_of(&bytes) {
             let server = ServerId::Selected(selector);
@@ -297,8 +288,7 @@ pub(crate) fn run(
             }
         }
         // ARCHIVE: revalidate + PROVE stopped + publish + print the recovery
-        // command. Local mode manages no branch, so the git facts are recorded
-        // honestly as not-managed.
+        // command.
         let archived_at = Timestamp::now().to_string();
         let mut recovery = Vec::new();
         let code = compact::archive_step(
@@ -330,8 +320,7 @@ pub(crate) fn run(
     }
 
     // ── phase (e): the boundary ─────────────────────────────────────────────
-    // THE ARCHIVE IS PUBLISHED AND THE SOURCE IS GONE. Everything from here is
-    // unrecoverable-by-rollback, so the recovery line is emitted BEFORE the
+    // THE ARCHIVE IS PUBLISHED AND THE SOURCE IS GONE.
     let (plan_name, plan_uuid) = plan_line
         .split_once('\u{1f}')
         .unwrap_or((frozen.name.as_str(), frozen.uuid.as_str()));
@@ -353,9 +342,7 @@ pub(crate) fn run(
     let proof = String::from_utf8_lossy(&proof).trim_end().to_owned();
     let recovery = recovery_command(&frozen);
 
-    // The exec plan the relaunch is driven from. THE ROSTER IS THE FROZEN ONE:
-    // written from the freeze artifact and never re-derived from a config that
-    // may have been rewritten under the window.
+    // The exec plan the relaunch is driven from.
     if let Some(path) = args.exec_plan.as_ref() {
         let record = [
             plan_name,
@@ -378,9 +365,7 @@ pub(crate) fn run(
         }
     }
 
-    // The four stdout contract lines, in order, and nothing else. A CLOSED
-    // stdout (`ae compact ... | true`) must not abort here: the archive is
-    // published and the source is gone, so the relaunch below and the stderr
+    // The four stdout contract lines, in order, and nothing else.
     epipe_ok(writeln!(out, "Archived {}", frozen.uuid))?;
     epipe_ok(writeln!(out, "Archive: {}", frozen.archive))?;
     epipe_ok(writeln!(out, "Digest: {}/digest.md", frozen.archive))?;
@@ -396,9 +381,7 @@ pub(crate) fn run(
         err,
         "Starting fresh session {plan_name} from archive {plan_uuid}..."
     )?;
-    // THE RELAUNCH, in this process. `--exec-plan` is the one shape that does
-    // NOT relaunch: a caller that asked for the plan file has said it will
-    // drive the child itself, and starting one here as well would give it two.
+    // THE RELAUNCH, in this process.
     if args.exec_plan.is_some() {
         return Ok(0);
     }
@@ -416,7 +399,6 @@ pub(crate) fn run(
     };
     // A child that will not start is NOT a failed compact: the archive is
     // published and proven, and the recovery command above is the route back.
-    // Say so loudly and keep the boundary's exit code.
     let mut sink = Vec::new();
     if !matches!(
         crate::session_launch::relaunch(&child, &mut sink, err),
@@ -433,7 +415,7 @@ pub(crate) fn run(
 }
 
 /// The tmux server a session's meta records, as the launch entry's two flags
-/// spell it. Empty/empty when the record names none.
+/// spell it.
 fn recorded_server(dir: &Path) -> (String, String) {
     let bytes = meta::read_bytes(dir).unwrap_or_default();
     match server_of(&bytes) {
@@ -519,9 +501,7 @@ fn parse(tail: &[String]) -> Result<Args, String> {
     Ok(args)
 }
 
-/// The fields of the frozen tuple this ORCHESTRATION reads. The destructive
-/// gates parse their own copy from the same line — this is the presentation and
-/// relaunch half, not a second authority.
+/// The fields of the frozen tuple this ORCHESTRATION reads.
 struct Frozen {
     name: String,
     uuid: String,
@@ -700,20 +680,18 @@ fn write_plan(path: &Path, record: &str) -> io::Result<()> {
     std::fs::rename(&temp, path)
 }
 
-/// Randomness for the tracked request's id. Mirrors the crate's one source.
+/// Randomness for the tracked request's id.
 fn entropy() -> u64 {
     use std::hash::{BuildHasher as _, RandomState};
     RandomState::new().hash_one(std::process::id())
 }
 
-/// Read the confirmation. A LINE, not a raw keystroke — see
-/// [`super::end`]'s `read_reply` for why. `None` is EOF, which is never
-/// consent.
+/// Read the confirmation.
 fn read_reply() -> Option<String> {
     let mut buffer = String::new();
     // A LINE, not to EOF: a human at a terminal answers and presses Enter, and
     // reading to EOF there would block forever waiting for a ^D they were never
-    // asked for. An empty read and a failed read are the same answer — nobody
+    // asked for.
     match std::io::stdin().read_line(&mut buffer) {
         Ok(read) if read > 0 => Some(buffer.trim_start().to_owned()),
         _ => None,

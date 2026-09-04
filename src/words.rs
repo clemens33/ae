@@ -14,9 +14,7 @@ pub struct Word {
     pub raw: String,
     /// The word after quote removal and expansion — what is `exec`ed.
     pub value: String,
-    /// Is this a `NAME=value` assignment *as written*? Decided on
-    /// [`Word::raw`], so a quoted `'A=1'` is a command word, as in bash and as
-    /// in [`crate::launch_cmd::lex_simple_command`].
+    /// Is this a `NAME=value` assignment *as written*?
     pub assignment: bool,
 }
 
@@ -108,8 +106,7 @@ fn one_word(
                 ));
             }
             // Brace expansion and grouping, which the VALIDATOR refuses as
-            // `Refusal::Grouping`. Without this arm a profile edited after its
-            // launch to `claude {a,b}` reached the `exec` with a literal
+            // `Refusal::Grouping`.
             ch @ ('{' | '}') => {
                 return Err(format!(
                     "'{ch}' in a launch command — ae execs the tool directly and runs no shell, so brace expansion and grouping are not available here"
@@ -236,6 +233,7 @@ pub struct Param {
 ///
 /// The [`ParamFault`] met, which the caller phrases in its own terms.
 ///
+///
 /// # Panics
 ///
 /// Never: `dollar` is only ever the index of a `$` whose next char is `{`.
@@ -254,7 +252,7 @@ pub fn scan_param(chars: &[char], dollar: usize) -> Result<Param, ParamFault> {
     let name: String = chars[body..index].iter().collect();
     if name.is_empty() {
         // `${1}`, `${#x}`, `${!x}`, `${}` — positional parameters, length,
-        // indirection. None of them is a value ae can produce without a shell.
+        // indirection.
         return Err(ParamFault::Unsupported);
     }
     if index == close {
@@ -285,7 +283,7 @@ pub fn scan_param(chars: &[char], dollar: usize) -> Result<Param, ParamFault> {
 /// The index of the `}` that closes the `${` at `dollar`.
 fn brace_span(chars: &[char], dollar: usize) -> Result<usize, ParamFault> {
     let n = chars.len();
-    // dollar -> '$', dollar+1 -> '{'.
+    // Dollar -> '$', dollar+1 -> '{'.
     let mut index = dollar + 2;
     let mut depth = 1usize;
     while index < n {

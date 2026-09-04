@@ -185,7 +185,7 @@ pub fn bare_refusal(name: &str) -> String {
     )
 }
 
-/// Drop `.` components and resolve `..` lexically. No filesystem access.
+/// Drop `.` components and resolve `..` lexically.
 fn normalise(path: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for component in path.components() {

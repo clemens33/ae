@@ -121,10 +121,8 @@ pub fn shown(value: Option<&[u8]>) -> Vec<u8> {
     }
 }
 
-/// One printable line: `tr '\n\t' '  ' | tr -d '[:cntrl:]'` — newline and
-/// tab become spaces first, then every remaining C0 control and DEL is
-/// dropped. The value fans out to meta, the event log, `list` and the
-/// watchdog nudge, none of which may carry a raw control byte.
+/// One printable line: `tr '\n\t' ' ' | tr -d '[:cntrl:]'` — newline and tab
+/// become spaces first, then every remaining C0 control and DEL is dropped.
 #[must_use]
 pub fn printable(text: &str) -> String {
     text.chars()
@@ -133,7 +131,7 @@ pub fn printable(text: &str) -> String {
         .collect()
 }
 
-/// Why the goal was not (fully) recorded, or not read. All are [`EXIT_FAILED`].
+/// Why the goal was not (fully) recorded, or not read.
 #[derive(Debug)]
 pub enum Failure {
     /// `goal` could not read a meta that exists.

@@ -1,6 +1,6 @@
 //! Why a session wants a human, and which reason wins.
 //!
-//! the attention marker is "the single most-actionable reason by
+//! The attention marker is "the single most-actionable reason by
 //! documented severity: dead > stale > waiting-user > blocked > throttled >
 //! unanswered, derived as a rollup across the session's agents". The digest
 //! carries the same fact twice: `attention` (the name) and
@@ -15,7 +15,7 @@ use std::fmt;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Reason {
     /// Rank 1 — an inter-agent `ask`/`review` went unanswered past the
-    /// threshold (`AE_ATTN_REQUEST_SECS`, default 30 min). The lowest severity.
+    /// threshold (`AE_ATTN_REQUEST_SECS`, default 30 min).
     Unanswered,
     /// Rank 2 — an agent is being rate-limited upstream.
     Throttled,
@@ -80,7 +80,7 @@ impl Reason {
         }
     }
 
-    /// The inverse of [`Reason::as_str`]. Unknown text is not a reason.
+    /// The inverse of [`Reason::as_str`].
     #[must_use]
     pub fn from_str_exact(text: &str) -> Option<Self> {
         Self::BY_SEVERITY

@@ -37,12 +37,12 @@ pub const DEFAULT_ACTIVE_WINDOW_SECS: i64 = 300;
 /// Which half of the world a listing covers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Scope {
-    /// running sessions only. The default.
+    /// Running sessions only.
     #[default]
     Running,
-    /// running sessions, then stopped ones.
+    /// Running sessions, then stopped ones.
     All,
-    /// stopped sessions only.
+    /// Stopped sessions only.
     Stopped,
 }
 
@@ -62,10 +62,9 @@ impl Scope {
 pub struct Selection {
     /// Which sessions are in scope at all.
     pub scope: Scope,
-    /// keep only sessions carrying an attention reason.
+    /// Keep only sessions carrying an attention reason.
     pub needs_attention: bool,
-    /// keep only sessions with an ae event within this many seconds.
-    /// `None` does not filter on activity.
+    /// Keep only sessions with an ae event within this many seconds.
     pub active_within_secs: Option<i64>,
 }
 
@@ -101,9 +100,8 @@ impl Selection {
         sessions: &'a [SessionEntry],
         now: Timestamp,
     ) -> Vec<&'a SessionEntry> {
-        // The scope names a composition AND an order, so it carries both
-        // rather than leaving two call sites to agree by
-        // coincidence. See [`Scope::order`].
+        // The scope names a composition AND an order, so it carries both rather
+        // than leaving two call sites to agree by coincidence.
         self.scope
             .order()
             .iter()
@@ -113,9 +111,7 @@ impl Selection {
                     .filter(|session| session.status == *status)
                     .filter(|session| self.keeps(session, now))
                     .collect();
-                // the PRODUCT sorts. Raw byte / `LC_ALL=C` order
-                // by name within the group, so tmux emission order, filesystem
-                // glob order, root traversal, locale collation and creation
+                // The PRODUCT sorts.
                 group.sort_by(|left, right| left.name.as_bytes().cmp(right.name.as_bytes()));
                 group
             })
@@ -158,7 +154,7 @@ fn is_active(session: &SessionEntry, now: Timestamp, window: i64) -> bool {
 pub struct ListArgs {
     /// The filters the flags selected.
     pub selection: Selection,
-    /// whether to render the machine-readable digest.
+    /// Whether to render the machine-readable digest.
     pub json: bool,
 }
 
@@ -194,7 +190,7 @@ impl ListArgs {
         let mut parsed = Self::default();
         for arg in args {
             match arg.as_ref() {
-                // one dimension, so these are
+                // One dimension, so these are
                 // ALTERNATIVES: assignment, not accumulation,
                 // which makes the last distinct selector win and a repeat a
                 "--running" => parsed.selection.scope = Scope::Running,
@@ -204,9 +200,7 @@ impl ListArgs {
                 "--needs-attn" | "--needs-me" | "--needs" | "--attn" => {
                     parsed.selection.needs_attention = true;
                 }
-                // The activity filter, with its `--busy` alias. The window is
-                // "~5 min"; a caller that reads AE_LIST_ACTIVE_SECS overwrites
-                // it, because this function does not read the environment.
+                // The activity filter, with its `--busy` alias.
                 "--active" | "--busy" => {
                     parsed.selection.active_within_secs = Some(DEFAULT_ACTIVE_WINDOW_SECS);
                 }
@@ -283,9 +277,7 @@ mod tests {
 
     #[test]
     fn sc_017m_no_status_falls_out_of_every_scope() {
-        // THE anti-silent-hole mechanism. Rust checks `match` for
-        // exhaustiveness and nothing else, so the arrays in `Scope::order` will
-        // compile forever after a variant is added to `Status` — dropping that
+        // THE anti-silent-hole mechanism.
         for status in Status::ALL {
             assert!(
                 [Scope::Running, Scope::All, Scope::Stopped]
@@ -360,7 +352,7 @@ mod tests {
 
     #[test]
     fn sc_017f_json_is_a_rendering_not_a_filter() {
-        // The row: --json HONOURS the active filters. It must not change them.
+        // The row: --json HONOURS the active filters.
         let with = ListArgs::parse(&["--all", "--json"]).expect("legal");
         let without = ListArgs::parse(&["--all"]).expect("legal");
         assert_eq!(with.selection, without.selection);
@@ -437,9 +429,8 @@ mod tests {
 
     #[test]
     fn sc_017a_amended_the_default_shows_no_stopped_session() {
-        // The default is no longer
-        // "running only" but "not stopped history" — running plus unknown. What
-        // still holds, and what this asserts, is that a stopped session
+        // The default is no longer "running only" but "not stopped history" —
+        // running plus unknown.
         let corpus = corpus();
         let shown = Selection::default().select(&corpus, NOW);
         assert!(
@@ -552,9 +543,7 @@ mod tests {
             ..Selection::default()
         };
         let shown = selection.select(&sessions, NOW);
-        // MEMBERSHIP is what this row is about. The sequence is C-byte
-        // order, which is why it no longer matches the order they were supplied
-        // in — a test that pinned supplied order would now be asserting the very
+        // MEMBERSHIP is what this row is about.
         assert_eq!(names(&shown), ["four-minutes-ago", "just-now"]);
     }
 
@@ -588,7 +577,7 @@ mod tests {
     #[test]
     fn sc_524_a_timestamp_from_the_future_counts_as_active() {
         // Loud-direction doctrine: skew shows a session active rather than
-        // silently hiding a live one. Both a small skew and an absurd one.
+        // silently hiding a live one.
         for skew in [-5, -86_400, -31_536_000] {
             let sessions = vec![active("clock-ahead", Status::Running, skew)];
             let selection = Selection {
@@ -629,8 +618,7 @@ mod tests {
 
     #[test]
     fn sc_017f_the_digest_and_the_table_select_from_one_answer() {
-        // The row: --json honours the active filters. Same Selection, same
-        // sessions, same result — there is no second selection path to diverge.
+        // The row: --json honours the active filters.
         let sessions = corpus();
         let selection = Selection {
             scope: Scope::All,

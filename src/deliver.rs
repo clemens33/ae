@@ -22,7 +22,7 @@ use crate::transport;
 use region::{Occupancy, Tool};
 
 /// How long a send waits for a busy target before abandoning —
-/// `AE_SEND_DEFER_SEC`'s default. A human mid-sentence outlasts two seconds.
+/// `AE_SEND_DEFER_SEC`'s default.
 pub const DEFAULT_DEFER: Duration = Duration::from_secs(30);
 
 /// How often the deferral loop re-reads the target.
@@ -57,19 +57,11 @@ const LOCK_WAIT: Duration = Duration::from_mins(2);
 /// what it does to the pane before pasting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Shape {
-    /// `send`, and the tracked requests behind it. Frames the body in the
-    /// provenance envelope and waits for a clear input box.
+    /// `send`, and the tracked requests behind it.
     Send,
-    /// `interrupt`. Cancels first and pastes into whatever is there — the
-    /// whole point is to reach a target that is mid-generation, so the
-    /// deferral that protects a send would defeat it. Not framed: an
-    /// interrupt is a control action, not transcript chat.
+    /// `interrupt`.
     Interrupt,
-    /// A spawn's BRIEF, pasted into a freshly launched TUI. Not framed — the
-    /// task is the agent's own first instruction, not a message from a peer —
-    /// and not deferred, because the caller has already proven the input box
-    /// idle with [`input_ready`]; a second wait here would only re-ask a
-    /// question that was just answered, on a pane nobody else is writing to.
+    /// A spawn's BRIEF, pasted into a freshly launched TUI.
     Launch,
 }
 
@@ -87,8 +79,7 @@ pub struct Request<'a> {
     /// The target's session — the notice's path grammar, and which session's
     /// meta the dead-pane guard reads.
     pub target_session: &'a str,
-    /// The target pane's `@ae_slot`, or empty. Already read by the resolver,
-    /// so nothing here asks tmux for it a second time.
+    /// The target pane's `@ae_slot`, or empty.
     pub pane_slot: &'a str,
     /// This session's name.
     pub own_session: &'a str,
@@ -96,9 +87,7 @@ pub struct Request<'a> {
     pub action: &'a str,
     /// The request id, or empty.
     pub reference: &'a str,
-    /// The VERIFIED sender for the envelope. Empty is `unverified` — never
-    /// bare, because bare is the human's signature and only direct typing
-    /// earns it.
+    /// The VERIFIED sender for the envelope.
     pub actor: &'a str,
     /// The message as composed, before framing.
     pub body: &'a str,
@@ -118,14 +107,12 @@ pub struct Delivered {
     pub framed: String,
 }
 
-/// Why a delivery did not land. Every arm has already printed its own loud
-/// line; this is what the caller needs to decide the exit code and whether a
-/// `delivery-failed` event is owed.
+/// Why a delivery did not land.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Failure {
-    /// The target pane is a shell, not a running agent. Nothing was stored.
+    /// The target pane is a shell, not a running agent.
     DeadPane,
-    /// The recovery body could not be published. Nothing was pasted.
+    /// The recovery body could not be published.
     Storage,
     /// The per-target lock was not acquired.
     Lock,
@@ -136,12 +123,12 @@ pub enum Failure {
     },
     /// The target stayed busy for the whole deferral.
     Abandoned,
-    /// The paste itself failed. Nothing reached the pane.
+    /// The paste itself failed.
     Paste {
         /// The published recovery body, still readable.
         body_file: String,
     },
-    /// The submit was never confirmed. It may be staged, unsent.
+    /// The submit was never confirmed.
     Unconfirmed {
         /// The published recovery body, still readable.
         body_file: String,
@@ -178,14 +165,13 @@ pub fn deliver(
     let tool = target_tool(request, &probe.command);
     // Interpreted-sink guard: refuse to paste into a pane whose agent has DIED
     // and dropped to a shell — a stray Enter would EXECUTE the message as a
-    // shell command. No retry and no deferral: a dead agent will not recover on
+    // shell command.
     if pane_agent_is_dead(request, &probe) {
         writeln!(err, "{}", dead_pane_line(request))?;
         return Ok(Err(Failure::DeadPane));
     }
     let framed = frame(request);
     // Publish the exact recoverable pane text BEFORE locking or submitting it.
-    // A storage failure is terminal for this delivery.
     let body_file = match store_body(request.dir, request.reference, request.action, &framed) {
         Ok(path) => path.display().to_string(),
         Err(why) => {
@@ -245,8 +231,7 @@ pub fn deliver(
         Ok(()) => Ok(Ok(Delivered { body_file, framed })),
         Err(failure) => {
             // The submit's own line said WHICH step failed; this one names the
-            // delivery and where its body is. The frozen body printed both,
-            // for every arm of the submit — a staged-but-unsent paste and a
+            // delivery and where its body is.
             writeln!(
                 err,
                 "ae: {} to {} UNCONFIRMED — submit not verified; body preserved at {body_file}. Re-send.",
@@ -331,8 +316,7 @@ fn recorded_binary(dir: &Path, slot: &str) -> String {
 }
 
 /// The meta directory the TARGET pane's own session keeps — a sibling of this
-/// one under the same sessions root. This session's own directory when the
-/// target is here, or when its session could not be read.
+/// one under the same sessions root.
 fn target_meta_dir(request: &Request<'_>) -> PathBuf {
     if request.target_session.is_empty() || request.target_session == request.own_session {
         return request.dir.to_path_buf();
@@ -646,9 +630,7 @@ pub fn store_body(
     let stem = if is_name_safe(reference) {
         reference.to_owned()
     } else {
-        // The frozen fallback is a UTC stamp. Rendered from the same clock,
-        // with the separators dropped so the stem stays inside the name
-        // grammar above: `msg-20260903T101500Z`.
+        // The frozen fallback is a UTC stamp.
         let stamp = crate::time::Timestamp::now().to_string();
         format!(
             "msg-{}",
@@ -827,9 +809,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("ae-deliver-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        // An ask and its reply SHARE a request id by design. A ref-named file
-        // meant the reply truncated the ask's body, and the ask event's
-        // pointer then resolved to the reply's text.
+        // An ask and its reply SHARE a request id by design.
         let ask = store_body(&dir, "ae-1", "ask", "the question").unwrap();
         let reply = store_body(&dir, "ae-1", "reply", "the answer").unwrap();
         let second_ask = store_body(&dir, "ae-1", "ask", "again").unwrap();

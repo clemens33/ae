@@ -20,8 +20,7 @@ pub const EXIT_USAGE: u8 = 2;
 /// What frozen prints when no running session needs attention — stderr.
 pub const NOTHING: &str = "ae next: no running session needs attention.";
 
-/// `--help`, verbatim. Frozen wrote it to STDERR and exited 0; both are frozen
-/// behaviour and neither is this module's to improve.
+/// `--help`, verbatim.
 pub const USAGE: &str = "\
 Usage: ae next [--attach]   Name the top running session needing attention.
        ae jump [--attach]   Alias for ae next.
@@ -60,7 +59,7 @@ impl Usage {
         }
     }
 
-    /// The exit it takes. Help is a SUCCESS in frozen bash, not a usage error.
+    /// The exit it takes.
     #[must_use]
     pub const fn code(&self) -> u8 {
         match self {
@@ -172,8 +171,7 @@ fn better(candidate: (Reason, i64, &String), incumbent: (Reason, i64, &String)) 
         > (best_rank.rank(), best_epoch, std::cmp::Reverse(best_name))
 }
 
-/// Frozen's `_session_active_epoch`, as the digest already answers it. An
-/// unknown activity is frozen's `0` — never a reason to skip the session.
+/// Frozen's `_session_active_epoch`, as the digest already answers it.
 fn epoch_of(session: &SessionEntry) -> i64 {
     session.last_active_epoch.unwrap_or(0)
 }
@@ -228,9 +226,8 @@ mod tests {
 
     #[test]
     fn a_stopped_session_is_never_a_candidate_however_loudly_it_asks() {
-        // Frozen iterated `list_ae_sessions`, which asks tmux: a session that is
-        // not running cannot appear there at all. The exclusion is the status,
-        // and it beats the highest rank there is.
+        // Frozen iterated `list_ae_sessions`, which asks tmux: a session that
+        // is not running cannot appear there at all.
         let mut stopped = SessionEntry::new("gone", Status::Stopped);
         stopped.attention = Some(Reason::Dead);
         assert_eq!(choose(&world(vec![stopped])), None);
@@ -274,7 +271,7 @@ mod tests {
         let mut silent = SessionEntry::new("silent", Status::Running);
         silent.attention = Some(Reason::Dead);
         // No last_active_epoch at all — frozen's `printf '0'` when no file has
-        // an mtime. It still wins against nothing.
+        // an mtime.
         assert_eq!(choose(&world(vec![silent.clone()])).unwrap().name, "silent");
         // …and loses the tie-break to a session that HAS activity.
         let timed = needing("timed", Reason::Dead, 1);
@@ -296,9 +293,7 @@ mod tests {
 
     #[test]
     fn a_session_level_reason_no_agent_owns_names_no_agent() {
-        // `unanswered` is the pair fact the core keeps off every agent. The line
-        // still renders — with an empty last field, exactly as frozen's printf
-        // does when the rollup found no contributing agent.
+        // `unanswered` is the pair fact the core keeps off every agent.
         let mut entry = needing("waiting", Reason::Unanswered, 7);
         entry.agents = vec![agent("cl:lead", None)];
         let chosen = choose(&world(vec![entry])).unwrap();
@@ -355,8 +350,7 @@ mod tests {
 
     #[test]
     fn the_first_word_that_answers_decides() {
-        // Frozen's loop returns where it stands. A refused word BEFORE --help is
-        // the refusal; --help before a refused word is the help.
+        // Frozen's loop returns where it stands.
         assert_eq!(
             parse(&["--bogus".to_owned(), "--help".to_owned()]),
             Err(Usage::Unknown("--bogus".to_owned()))

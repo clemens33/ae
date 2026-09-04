@@ -43,7 +43,7 @@ pub const CHAT_SUMMARY_CAP: usize = 3500;
 /// The four states, exactly as the helper spells them.
 pub const VALUES: [&str; 4] = ["working", "waiting-user", "blocked", "done"];
 
-/// The frozen `helper_state_usage` text, byte for byte. Exit 2 goes with it.
+/// The frozen `helper_state_usage` text, byte for byte.
 pub const USAGE: &str = "Usage: state <working|waiting-user|blocked|done> [reason]\n       state                              # print current state\n\n  working       actively making progress\n  waiting-user  needs human input\n  blocked       stuck on external dep — REASON REQUIRED\n  done          complete or paused\n";
 
 /// The refusal when the caller has no pane identity.
@@ -65,7 +65,7 @@ pub struct Declaration {
     pub reason: String,
 }
 
-/// Why argv was refused. Both render to stderr and exit [`EXIT_USAGE`].
+/// Why argv was refused.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Usage {
     /// `blocked` with no reason — the frozen helper's own error line first.
@@ -253,13 +253,7 @@ pub fn summary_of(reason: &str) -> String {
 }
 
 /// The summary as the frozen emitter renders it FOR THIS ACTION — both of
-/// `ae_emit_event`'s arms. `chat` keeps its newlines and tabs and is capped at
-/// [`CHAT_SUMMARY_CAP`] characters (a `say` line is a paragraph, not a label);
-/// every other action is [`summary_of`], flattened and capped at
-/// [`SUMMARY_CAP`]. The action is whatever the caller's `_AE_EVENT_ACTION`
-/// made it, so a `send` run under `_AE_EVENT_ACTION=chat` takes the chat arm
-/// exactly as the bash finisher did. Both cuts land on a character boundary by
-/// construction.
+/// `ae_emit_event`'s arms.
 #[must_use]
 pub fn summary_for(action: &str, text: &str) -> String {
     if action == "chat" {
@@ -307,7 +301,7 @@ pub fn event_body(ts: Timestamp, actor: &str, declaration: &Declaration) -> Stri
     body
 }
 
-/// Why a declaration was not recorded. Every variant is [`EXIT_FAILED`].
+/// Why a declaration was not recorded.
 #[derive(Debug)]
 pub enum Failure {
     /// No pane identity — nothing was opened.
@@ -395,10 +389,9 @@ impl From<Locked> for io::Error {
     }
 }
 
-/// Append `bytes` to `path` under `<path>.lock` — `ae_log_append`, exactly:
-/// the lock is the file's own `.lock` sibling, taken with `flock -w 5`, held
-/// through the append. The append is the [`commit`] transaction. Shared by
-/// the event container and `memo.tsv`, which each keep their own lock.
+/// Append `bytes` to `path` under `<path>.lock` — `ae_log_append`, exactly: the
+/// lock is the file's own `.lock` sibling, taken with `flock -w 5`, held
+/// through the append.
 ///
 /// # Errors
 ///
@@ -449,9 +442,7 @@ fn append(path: &Path, bytes: &[u8]) -> io::Result<()> {
     commit(&mut file, bytes)
 }
 
-/// What a transactional append needs from its container. [`File`] is the
-/// real one; the test double is how the failure arms are driven, because a
-/// real write that fails after a prefix cannot be arranged on demand.
+/// What a transactional append needs from its container.
 trait Sink {
     /// The current length — the point to roll back to.
     fn len(&mut self) -> io::Result<u64>;
@@ -683,7 +674,7 @@ mod tests {
     }
 
     /// A container that fails on demand: after `fail_after` bytes of a put, or
-    /// at sync, or at truncate. Records what was asked of it.
+    /// at sync, or at truncate.
     #[derive(Default)]
     struct Flaky {
         held: Vec<u8>,
@@ -767,8 +758,7 @@ mod tests {
     #[test]
     fn a_rollback_whose_own_sync_fails_is_reported_as_an_unknown_state() {
         // The body reached durable storage, the sync after it failed, the cut
-        // back succeeded in the page cache — and THAT sync failed. Nothing can
-        // now be said about what a crash would leave, so nothing is.
+        // back succeeded in the page cache — and THAT sync failed.
         let mut sink = Flaky {
             fail_syncs: vec![true, true],
             ..Flaky::default()
@@ -871,8 +861,7 @@ mod tests {
     #[test]
     fn a_torn_last_record_is_read_glued_the_way_tac_hands_it_over() {
         // `_ae_tac` does not invent a newline: the unterminated remainder lands
-        // first and runs into the line before it. The bash body then reads the
-        // FIRST `"actor":"` on that glued line — the remainder's — so a torn
+        // first and runs into the line before it.
         let mut body = container(&[
             r#"{"ts":"t1","actor":"cl:lead","action":"state","ref":"working","summary":"whole"}"#,
         ]);

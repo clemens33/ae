@@ -30,10 +30,7 @@ use super::store::{
 use super::{canonical_uuid, meta_get};
 use crate::state::EXIT_FAILED;
 
-/// `_archive-purge` core entry. `0` (and the removed target on `out`) once the
-/// archive is provably gone and durable; `0` with no output when there is nothing
-/// to purge; [`EXIT_FAILED`] with a named refusal or an explicit incomplete state
-/// otherwise. Never deletes a path it cannot prove it owns.
+/// `_archive-purge` core entry.
 pub(crate) fn run(
     dir: &Path,
     aid_arg: &str,
@@ -66,7 +63,7 @@ pub(crate) fn run(
         return Ok(EXIT_FAILED);
     };
     match require_real_root(&root, false) {
-        // A real root: proceed. Absent/non-dir: nothing of ours can be inside it.
+        // A real root: proceed.
         Ok(RootState::Present) => {}
         Ok(RootState::Absent) => return Ok(0),
         // A symlinked root has already been refused, loudly, by the proof itself.
@@ -76,9 +73,8 @@ pub(crate) fn run(
         }
     }
 
-    // Serialize with publication on the primitive it uses: whoever wins the mkdir
-    // owns this id. Losing it means someone is mid-flight; ae never guess-cleans a
-    // claim it did not create.
+    // Serialize with publication on the primitive it uses: whoever wins the
+    // mkdir owns this id.
     let claim = claim_path(&root, &aid);
     if make_claim(&claim).is_err() {
         writeln!(
@@ -105,10 +101,8 @@ pub(crate) fn run(
     purge_owned(&root, &claim, &aid, source_session, out, err)
 }
 
-/// Under our durable claim: prove ownership, then commit the deletion by renaming
-/// the target into the claim and durably removing it. The privacy contract lives
-/// here — no `rc 0` is returned while any archive byte could remain under the
-/// claim.
+/// Under our durable claim: prove ownership, then commit the deletion by
+/// renaming the target into the claim and durably removing it.
 fn purge_owned(
     root: &Path,
     claim: &Path,
@@ -182,7 +176,7 @@ fn purge_owned(
         );
     }
 
-    // COMMIT: the atomic rename. After it the archive is gone from its id path.
+    // COMMIT: the atomic rename.
     let doomed = claim.join("doomed");
     if let Err(why) = fs::rename(&target, &doomed) {
         return precommit_fail(
@@ -195,9 +189,7 @@ fn purge_owned(
             ),
         );
     }
-    // Past the commit: the archive no longer exists at its id path. Any failure
-    // now is rc 1 with NO success stdout and an explicit state — never a
-    // best-effort success.
+    // Past the commit: the archive no longer exists at its id path.
     if let Err(why) = fsync_dir(claim).and_then(|()| fsync_dir(root)) {
         return postcommit_retained(
             err,
@@ -214,9 +206,8 @@ fn purge_owned(
             &format!("the payload could not be removed (remove: {why})"),
         );
     }
-    // The claim AND the bytes under it are now GONE; only the DURABILITY of that
-    // removal is unconfirmed. Reporting "claim RETAINED" here would be false — the
-    // marker no longer exists — so this is a DISTINCT post-removal state.
+    // The claim AND the bytes under it are now GONE; only the DURABILITY of
+    // that removal is unconfirmed.
     if let Err(why) = fsync_dir(root) {
         return postcommit_removed_unsynced(err, &target, &format!("fsync root: {why}"));
     }
@@ -226,8 +217,7 @@ fn purge_owned(
     Ok(0)
 }
 
-/// Remove our own claim and fsync the root. `Ok(())` on a clean, durable removal;
-/// `Err(diag)` naming a cleanup or durability failure.
+/// Remove our own claim and fsync the root.
 fn clear_claim(root: &Path, claim: &Path) -> Result<(), String> {
     fs::remove_dir_all(claim).map_err(|why| {
         format!(
@@ -241,8 +231,7 @@ fn clear_claim(root: &Path, claim: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// A PRE-rename refusal: nothing was deleted. Write `diag`, clear our own claim
-/// durably (naming a cleanup failure), and return [`EXIT_FAILED`].
+/// A PRE-rename refusal: nothing was deleted.
 fn precommit_fail(root: &Path, claim: &Path, err: &mut impl Write, diag: &str) -> io::Result<u8> {
     writeln!(err, "{diag}")?;
     if let Err(cleanup) = clear_claim(root, claim) {
@@ -252,9 +241,7 @@ fn precommit_fail(root: &Path, claim: &Path, err: &mut impl Write, diag: &str) -
 }
 
 /// A POST-rename failure with the doomed archive STILL under our claim: the
-/// canonical id path was removed but the payload is not yet durably gone. NO
-/// success stdout; RETAIN the claim (never guess-clean) as a recovery marker; the
-/// caller (`ae end`) preserves the live session. rc 1.
+/// canonical id path was removed but the payload is not yet durably gone.
 fn postcommit_retained(
     err: &mut impl Write,
     claim: &Path,
@@ -275,10 +262,8 @@ fn postcommit_retained(
 }
 
 /// A POST-removal failure: the archive AND our claim are already GONE, but the
-/// DURABILITY of that final removal is unconfirmed (a crash here could resurrect
-/// the emptied claim directory, never the archive at its id path). Distinct from
-/// [`postcommit_retained`] — there is NO marker left to inspect, so it must not
-/// claim one is retained. rc 1.
+/// DURABILITY of that final removal is unconfirmed (a crash here could
+/// resurrect the emptied claim directory, never the archive at its id path).
 fn postcommit_removed_unsynced(
     err: &mut impl Write,
     target: &Path,
@@ -303,8 +288,7 @@ mod tests {
     use std::path::Path;
 
     // The two post-commit states report DISTINCTLY: one retains a claim to
-    // inspect, the other has already removed it. A fsync failure cannot be
-    // injected through the filesystem, so the discriminating control is a direct
+    // inspect, the other has already removed it.
     #[test]
     fn retained_and_removed_states_are_reported_distinctly() {
         let claim = Path::new("/x/.publishing.abc");

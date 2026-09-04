@@ -74,7 +74,7 @@ pub fn state_root(shape: &Shape) -> Option<PathBuf> {
     ae_home().or_else(|| home().map(|home| home.join(".ae")))
 }
 
-/// `AE_HOME` as declared, empty folded to unset. CHECKOUT's door.
+/// `AE_HOME` as declared, empty folded to unset.
 #[must_use]
 pub fn ae_home() -> Option<PathBuf> {
     #[allow(
@@ -213,7 +213,7 @@ pub fn probe_target(declared: Option<&Declared>) -> Option<ServerId> {
 }
 
 /// Where a launch ACTUALLY lands, as the typed pair `(kind, value)` — frozen's
-/// `resolve_launch_tmux_server`, whole. Both empty means unresolved.
+/// `resolve_launch_tmux_server`, whole.
 #[must_use]
 pub fn resolve_launch_server(declared: Option<&Declared>) -> (String, String) {
     if let Some(server) = probe_target(declared)
@@ -225,8 +225,7 @@ pub fn resolve_launch_server(declared: Option<&Declared>) -> (String, String) {
         return (declared.kind.clone(), declared.value.clone());
     }
     // DELIBERATELY a bare `$TMUX` read, unlike the client-semantics probe: this
-    // is the SOCKET PATH, not our client status. A `$TMUX` inherited by a GUI
-    // terminal still names the very server that spawned it, which is the right
+    // is the SOCKET PATH, not our client status.
     match tmux_env() {
         Some(marker) => (
             "socket".to_owned(),

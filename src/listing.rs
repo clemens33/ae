@@ -61,7 +61,7 @@ pub struct Presentation<'a> {
 }
 
 impl<'a> Presentation<'a> {
-    /// Enter presentation with `snapshot`. Nothing else happens here.
+    /// Enter presentation with `snapshot`.
     #[must_use]
     pub const fn enter(snapshot: &'a Snapshot) -> Self {
         Self { snapshot }
@@ -127,7 +127,7 @@ impl<'a> Presentation<'a> {
         World {
             now,
             sessions,
-            // fact crosses as a COUNT of distinct failed sources,
+            // Fact crosses as a COUNT of distinct failed sources,
             // never as the paths — see [`World::losses`].
             losses: distinct_losses(&self.snapshot.incomplete),
         }
@@ -190,7 +190,7 @@ pub fn diagnostic(world: &World) -> Option<String> {
 /// ```
 #[must_use]
 pub fn render(args: &ListArgs, world: &World) -> String {
-    // ONE selection. Both arms below read this same answer.
+    // ONE selection.
     let selected = args.selection.select(&world.sessions, world.now);
     if args.json {
         let mut out = Digest::new(
@@ -245,8 +245,7 @@ fn push_padded(out: &mut String, value: &str, width: usize) {
 #[must_use]
 pub fn table(sessions: &[&SessionEntry]) -> String {
     // `render` is the product route and supplies its snapshot time to
-    // `table_at`. This compatibility entry point preserves its deterministic
-    // epoch-zero clock: nonzero activity timestamps therefore have frozen's
+    // `table_at`.
     table_at(sessions, Timestamp::from_epoch(0))
 }
 
@@ -255,9 +254,7 @@ pub fn table(sessions: &[&SessionEntry]) -> String {
 pub fn table_at(sessions: &[&SessionEntry], now: Timestamp) -> String {
     let mut out = String::new();
     for session in sessions {
-        // Columns are PADDED, not tab-separated. A tab renders at whatever stop
-        // the terminal happens to have, so a name one character longer shifted
-        // every field after it and nothing lined up down the page. `--json` is
+        // Columns are PADDED, not tab-separated.
         push_padded(&mut out, &session.name, NAME_WIDTH);
         push_padded(&mut out, session.status.as_str(), STATUS_WIDTH);
         // The filter may have selected this row on readable partial evidence, but
@@ -270,9 +267,7 @@ pub fn table_at(sessions: &[&SessionEntry], now: Timestamp) -> String {
             out.push_str(reason.as_str());
             out.push(' ');
         }
-        // ORIGIN — where this session came from. Kept because it is what makes
-        // a session identifiable at a glance when several projects each have
-        // one; the copy MODE is not, and is deliberately not rendered.
+        // ORIGIN — where this session came from.
         match session
             .origin
             .as_deref()
@@ -294,9 +289,7 @@ pub fn table_at(sessions: &[&SessionEntry], now: Timestamp) -> String {
             // (ae@72c7293:4254) and stopped (ae:4299) — and our table omitted it
             // entirely, which run 2 semantic-fails independently of every health
             push_padded(&mut out, agent.display_session_id(), ID_WIDTH);
-            // Per-agent HEALTH is deliberately NOT a column here. Nothing
-            // populates it on the list path — it rendered `unknown` for every
-            // agent of every session — and an always-unknown column is not a
+            // Per-agent HEALTH is deliberately NOT a column here.
             out.push_str(
                 match (session.agent_state_is_exact(), agent.state.as_deref()) {
                     (true, Some(state)) => state,
@@ -304,9 +297,8 @@ pub fn table_at(sessions: &[&SessionEntry], now: Timestamp) -> String {
                     (false, _) => "unknown",
                 },
             );
-            // The frozen `!` marker, restored on the trigger the paragraph above
-            // records: a pane query now fills this. It reads "no agent is in the
-            // foreground of this seat" — a pane that dropped to a bare shell, or
+            // The frozen `!` marker, restored on the trigger the paragraph
+            // above records: a pane query now fills this.
             if session.status == Status::Running && agent.alive == Some(false) {
                 out.push_str(" !");
             }
@@ -340,8 +332,7 @@ fn push_frozen_session_subline(out: &mut String, session: &SessionEntry, now: Ti
         out.push_str(" · ");
     } else if !session.degraded {
         // Branch acquisition HAS landed (see `session::branch_at`), so this arm
-        // no longer stands for "unimplemented". It now means the work tree
-        // answered nothing: not a repository, moved or unreadable, or a `HEAD`
+        // no longer stands for "unimplemented".
         out.push_str("git:? · ");
     }
     out.push_str("ae ");
@@ -499,8 +490,7 @@ mod tests {
 
     #[test]
     fn formatter_goal_branch_version_and_active_match_the_frozen_capture_residual() {
-        // Fixed `World::now` exercises the relative-text FORMATTER only. It is
-        // not a claim that a later replay has the capture's clock.
+        // Fixed `World::now` exercises the relative-text FORMATTER only.
         let mut entry = SessionEntry::new("tg1", Status::Stopped);
         entry.goal = Some("healthy fixture session goal".to_owned());
         entry.goal_set_epoch = Some(NOW.epoch() - 1_440);
@@ -517,8 +507,7 @@ mod tests {
 
     #[test]
     fn formatter_null_goal_uses_the_frozen_no_goal_capture_shape() {
-        // Fixed `World::now` exercises the relative-text FORMATTER only. It is
-        // not a claim that a later replay has the capture's clock.
+        // Fixed `World::now` exercises the relative-text FORMATTER only.
         let mut entry = SessionEntry::new("ta1b", Status::Stopped);
         entry.branch = Some("master".to_owned());
         entry.ae_version = Some("0.2.1".to_owned());
@@ -533,8 +522,7 @@ mod tests {
 
     #[test]
     fn formatter_degraded_meta_uses_the_frozen_placeholder_capture_shape() {
-        // Fixed `World::now` exercises the relative-text FORMATTER only. It is
-        // not a claim that a later replay has the capture's clock.
+        // Fixed `World::now` exercises the relative-text FORMATTER only.
         let mut entry = SessionEntry::degraded("tg1", Status::Stopped);
         entry.last_active_epoch = Some(NOW.epoch() - 1_440);
         let world = World::new(NOW, vec![entry]);
@@ -548,8 +536,7 @@ mod tests {
     #[test]
     fn formatter_goal_truncation_counts_characters_at_the_frozen_boundaries() {
         // A 60-character goal with one two-byte character proves this is a
-        // character limit, not a UTF-8-byte limit. Frozen ae:3272 leaves it
-        // intact; at 61 characters it keeps 59 and appends an ellipsis.
+        // character limit, not a UTF-8-byte limit.
         let exactly_sixty = format!("{}é", "a".repeat(59));
         let sixty_one = format!("{exactly_sixty}z");
         let render_goal = |goal: String| {
@@ -576,8 +563,7 @@ mod tests {
 
     #[test]
     fn formatter_sc_405g_temporary_unobserved_branch_keeps_the_git_atom() {
-        // Branch acquisition has not landed. This temporary placeholder arm
-        // keeps a healthy row's atom present until that source exists.
+        // Branch acquisition has not landed.
         let mut entry = SessionEntry::new("no-branch", Status::Running);
         entry.ae_version = Some("0.2.1".to_owned());
         entry.last_active_epoch = Some(NOW.epoch() - 1_380);
@@ -594,8 +580,7 @@ mod tests {
     #[test]
     fn formatter_sc_405g_degraded_unobserved_branch_omits_the_git_atom() {
         // Meta is readable in both cases, so the retained version remains
-        // visible. Their independent loss facts make the entry degraded and
-        // therefore retain frozen's no-branch placeholder shape.
+        // visible.
         let event_loss_fixture = DigestFixture::new(
             "subline-event-loss",
             Some("mode=local\nae_version=0.2.1\n"),
@@ -675,7 +660,6 @@ mod tests {
     #[test]
     fn source_derived_no_capture_oracle_empty_all_and_stopped_messages_match_frozen() {
         // The phase-4 corpus has no empty `--all` or `--stopped` invocation.
-        // Frozen ae:4316-4321 is therefore the byte authority for both values.
         let empty = World::new(NOW, Vec::new());
         assert_eq!(render(&args(&["--all"]), &empty), "No ae sessions.\n");
         assert_eq!(
@@ -759,8 +743,7 @@ mod tests {
 
     #[test]
     fn sc_017f_json_honours_the_filters_and_never_widens_them() {
-        // The row's actual content: --json is a RENDERING. For every filter, the
-        // two renderings must cover the same sessions.
+        // The row's actual content: --json is a RENDERING.
         let world = world();
         for flags in [
             vec![],
@@ -794,7 +777,7 @@ mod tests {
     #[test]
     fn sc_521a_a_cross_dimension_combination_intersects_rather_than_erroring() {
         // --stopped --needs-attn selects nothing; --all --needs-attn keeps only
-        // the matching RUNNING session. Neither is a usage error.
+        // the matching RUNNING session.
         assert!(names(&json_of(&["--stopped", "--needs-attn", "--json"])).is_empty());
         assert!(names(&json_of(&["--stopped", "--active", "--json"])).is_empty());
         assert_eq!(
@@ -806,7 +789,7 @@ mod tests {
 
     #[test]
     fn sc_521a_an_empty_intersection_is_still_a_complete_document() {
-        // selecting nothing produces a document, not silence.
+        // Selecting nothing produces a document, not silence.
         let value = json_of(&["--stopped", "--needs-attn", "--json"]);
         assert_eq!(
             value.get("schema_version"),
@@ -895,9 +878,7 @@ mod tests {
 
     #[test]
     fn sc_017h_the_roster_lists_every_agent_and_drops_none() {
-        // Membership over the whole document. Whether each agent's OWN nouns
-        // reach it is proven agent-by-agent in
-        // `sc_017h_every_listed_session_brings_its_agents_health_and_declared_state`,
+        // Membership over the whole document.
         let world = world();
         let rendered = table(&world.sessions.iter().collect::<Vec<_>>());
         for listed in world.sessions.iter().flat_map(|session| &session.agents) {
@@ -984,8 +965,7 @@ mod tests {
         );
         assert!(!rendered.contains('\t'), "no tabs remain: {rendered}");
 
-        // NO UNPOPULATED HEALTH CELL. `alive: None` must not surface as a word
-        // in the agent row; the digest carries that fact instead.
+        // NO UNPOPULATED HEALTH CELL.
         let agent = row_fields(&rendered, "cl:lead");
         assert_eq!(
             agent,
@@ -996,8 +976,7 @@ mod tests {
 
     #[test]
     fn sc_017h_an_agent_that_declared_nothing_is_not_rendered_as_blank() {
-        // CONTENT, not form. Contractual: "declared nothing" is a visible
-        // answer, and it is not the same answer as "declared the empty string".
+        // CONTENT, not form.
         let rendered_with = |state: Option<&str>| {
             let mut session = SessionEntry::new("solo-session", Status::Running);
             session.agents = vec![agent("claude:lead", Some(true), state)];
@@ -1055,9 +1034,7 @@ mod tests {
 
     #[test]
     fn a_tabular_listing_that_selected_nothing_carries_no_session() {
-        // The exact empty-state bytes have their capture pin above. This keeps
-        // the selection claim separate: a message must not leak a filtered
-        // session back into the human output.
+        // The exact empty-state bytes have their capture pin above.
         let nothing_selected = render(&args(&["--stopped", "--needs-attn"]), &world());
         for name in ["live", "quiet", "old"] {
             assert!(
@@ -1072,9 +1049,7 @@ mod tests {
 
     #[test]
     fn sc_017h_every_listed_session_brings_its_agents_health_and_declared_state() {
-        // ISOLATED WORLDS, one agent at a time. What is asserted is that the
-        // agent's nouns are THERE — never which line they landed on, what
-        // separates them, or what order the columns come in. Rendering the agent
+        // ISOLATED WORLDS, one agent at a time.
         let world = world();
         for session in &world.sessions {
             for listed in &session.agents {
@@ -1083,8 +1058,7 @@ mod tests {
                 let alone = table(&[&solo]);
 
                 // PER-AGENT HEALTH IS NO LONGER A TABLE CELL — it is a digest
-                // member, gated in `phase3::sc_017r`. Nothing on the list path
-                // populates it, so the column said `unknown` for every agent of
+                // member, gated in `phase3::sc_017r`.
                 assert!(alone.contains(&listed.reference), "{alone}");
                 if let Some(declared) = listed.state.as_deref() {
                     assert!(alone.contains(declared), "{alone}");
@@ -1110,8 +1084,7 @@ mod tests {
     #[test]
     fn sc_509_a_world_with_no_sessions_still_renders_a_complete_document() {
         // Only the ratified half is pinned: the member set of a complete empty
-        // digest. Rendered member order is an open choice. The human's three
-        // established empty states are pinned separately from this document.
+        // digest.
         let empty = World::new(NOW, Vec::new());
         let rendered = render(&args(&["--json"]), &empty);
         let actual = json::parse(rendered.trim_end()).expect("one complete document");
@@ -1215,8 +1188,7 @@ mod tests {
         assert_eq!(entry.get("goal_set_epoch"), None);
         assert_eq!(entry.get("last_active_epoch"), None);
 
-        // No readable contribution currently establishes attention. Under loss,
-        // false is not quiet proof, so there is no null/zero pair.
+        // No readable contribution currently establishes attention.
         assert_eq!(
             entry.get("needs_attention"),
             Some(&json::Value::Bool(false))
@@ -1366,9 +1338,8 @@ mod tests {
             "the status field follows the name"
         );
         assert!(!human.contains("attn:blocked"));
-        // The dash in the id cell is the RULED outcome for an arm that NO standing
-        // authority reaches. PRESENCE is what is governed, and the row disclaims
-        // value authority in its own next sentence — what a member's legitimate
+        // The dash in the id cell is the RULED outcome for an arm that NO
+        // standing authority reaches.
         assert!(
             row_fields(&human, "claude:lead") == ["claude:lead", "-", "unknown"],
             "the malformed event hides stale blocked state behind the human unknown: {human}"
@@ -1389,7 +1360,7 @@ mod tests {
         assert_eq!(agents[0].get("state"), None);
         // THE SAME two-field entry on the machine surface, from the same parsed
         // fixture: the member is PRESENT and is the string dash — never `null`,
-        // never the leaked name. One fixture covering both surfaces is what stops
+        // never the leaked name.
         assert_eq!(
             agents[0].get("session_id"),
             Some(&json::Value::Str("-".to_owned()))
@@ -1399,10 +1370,7 @@ mod tests {
     /// Frozen rendered the short session id on BOTH agent grammars — running at
     /// ae@72c7293:4254 and stopped at ae:4299 — and our table omitted it
     /// entirely, which run 2 semantic-fails independently of every health or
-    /// state question. Its only captured non-dash specimen is on a STOPPED
-    /// session: arms/A1/c05-recover-ref-ro renders `fake:lead` with `11111111`
-    /// under `ta1c`/stopped, and the same case's digest carries those eight
-    /// characters. Dash specimens exist on every status.
+    /// state question.
     #[test]
     fn the_agent_row_carries_frozen_s_short_session_id_on_every_status() {
         for status in [Status::Running, Status::Stopped, Status::Unknown] {
@@ -1414,7 +1382,7 @@ mod tests {
                 session_id: Some("11111111".to_owned()),
                 // Liveness is UNOBSERVED here on purpose: this row's subject is
                 // the id cell, and a `false` would append the `!` marker and
-                // make the assertion below about two things at once. The marker
+                // make the assertion below about two things at once.
                 alive: None,
                 state: Some("working".to_owned()),
                 reason: None,
@@ -1475,11 +1443,7 @@ mod tests {
 
     /// The id sits INSIDE the row rather than beside it, so this asserts that
     /// nothing was displaced: THREE cells in the ruled order — reference first,
-    /// the id next, the declared state last. (It gated four while the row also
-    /// carried a health cell; that cell is now a digest member, and the count
-    /// here follows what the row renders rather than what it once did.) An
-    /// insertion that shifted a cell would still `contains` its way to green
-    /// against a looser assertion, which is why this compares the whole vector.
+    /// the id next, the declared state last.
     #[test]
     fn the_short_session_id_displaces_no_h_r_noun() {
         let mut session = SessionEntry::new("order", Status::Running);
@@ -1528,8 +1492,7 @@ mod tests {
 
         session.agents[0].state = None;
         // TWO dashes, two different facts: the first is an absent session id,
-        // the second is exact no-declaration. They are told apart by
-        // POSITION, exactly as frozen told them apart — its stopped grammar put
+        // the second is exact no-declaration.
         assert_eq!(
             row_fields(&table(&[&session]), "claude:lead"),
             ["claude:lead", "-", "-"],
@@ -1594,8 +1557,7 @@ mod tests {
         );
         let entry = fixture.entry("unrelated-meta-loss");
 
-        // The duplicate makes only `mode` unreadable. The complete roster and
-        // event stream still settle the session maximum exactly.
+        // The duplicate makes only `mode` unreadable.
         assert_eq!(entry.get("degraded"), Some(&json::Value::Bool(true)));
         assert_eq!(entry.get("mode"), None);
         assert_eq!(entry.get_str("origin"), Some("/repo"));
@@ -1736,15 +1698,12 @@ mod tests {
 
     #[test]
     fn sc_522_the_stamp_and_the_attention_it_justifies_cannot_describe_two_moments() {
-        // **THE PRECONDITION, not a convenience.** `unanswered` is RELATIONAL on
-        // the reader's clock — it is true only once the age EXCEEDS the
-        // threshold — while `generated_at` is that same clock printed. Sample
+        // **THE PRECONDITION, not a convenience.**
         let asked_at = Timestamp::from_epoch(1_780_000_000);
         let fixture = Unanswered::new("sc522", asked_at);
         let snapshot = fixture.snapshot();
 
-        // Both arms read the SAME bytes. Only the supplied clock moves, so any
-        // difference in the answer is the clock's doing and nothing else's.
+        // Both arms read the SAME bytes.
         for (label, offset) in [
             ("at the threshold", DEFAULT_UNANSWERED_SECS),
             ("one second past it", DEFAULT_UNANSWERED_SECS + 1),
@@ -1762,9 +1721,7 @@ mod tests {
                 "{label}: the document stamps the supplied now"
             );
 
-            // 2. The relation the document reports is the one ITS OWN stamp
-            //    implies. A second sampling behind the fields would compute from
-            //    a different moment and disagree with the stamp it printed.
+            // 2.
             let implied = asked_at.seconds_until(stamped) > DEFAULT_UNANSWERED_SECS;
             assert_eq!(
                 implied,
@@ -1777,9 +1734,7 @@ mod tests {
                 "{label}: needs_attention follows the stamp"
             );
 
-            // FLIPPED by colead's ruling (2026-08-24). This arm previously
-            // asserted the two optional members were ABSENT below the threshold,
-            // and that enforced the wrong letter: absence is spelling
+            // FLIPPED by colead's ruling (2026-08-24).
             assert_eq!(
                 attention,
                 Some(&if implied {

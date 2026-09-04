@@ -42,28 +42,28 @@ pub struct Event {
     pub ts: Timestamp,
     /// `alias:name` of the emitter, or `watchdog` / `human`.
     pub actor: String,
-    /// the event type.
+    /// The event type.
     pub action: String,
-    /// the recipient, when applicable.
+    /// The recipient, when applicable.
     pub target: Option<String>,
     /// The correlation value, whose meaning the action decides.
     pub reference: Option<String>,
-    /// a truncated preview of the payload.
+    /// A truncated preview of the payload.
     pub summary: Option<String>,
-    /// the sender's slot.
+    /// The sender's slot.
     pub actor_slot: RoutingMember,
-    /// the sender's session.
+    /// The sender's session.
     pub actor_session: RoutingMember,
-    /// the recipient's slot.
+    /// The recipient's slot.
     pub target_slot: RoutingMember,
-    /// the recipient's session.
+    /// The recipient's session.
     pub target_session: RoutingMember,
 }
 
 /// One half of a routing key, exactly as the record carries it.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum RoutingMember {
-    /// The key is not in the record. Every pre-routing-key event looks like this.
+    /// The key is not in the record.
     #[default]
     Absent,
     /// The key is present and empty: the writer meant to route and did not say
@@ -210,7 +210,7 @@ pub enum EventError {
     NotJson(json::ParseError),
     /// The line is JSON, but not an object.
     NotAnObject,
-    /// a required key is missing or empty.
+    /// A required key is missing or empty.
     MissingKey(&'static str),
     /// `ts` is present but not the documented spelling.
     UnreadableTimestamp(String),
@@ -335,13 +335,11 @@ impl Event {
     pub fn alert_meaning(&self) -> AlertMeaning {
         match self.action.as_str() {
             "alert" => AlertMeaning::Raised(alert_class(self.summary.as_deref())),
-            // The watchdog's own retractions. `throttle-cleared` is documented
-            // (events.md:105); `alert-cleared` is not in that table but is
-            // emitted by both reference implementations, so it is READ here
+            // The watchdog's own retractions.
             "alert-cleared" | "throttle-cleared" => AlertMeaning::Cleared,
             // A CARRIER, and the ACTION is the whole discrimination: an owner
-            // plus an active contribution is wanted, `target` names the
-            // owner, and `throttled` names the contribution outright. Reading
+            // plus an active contribution is wanted, `target` names the owner,
+            // and `throttled` names the contribution outright.
             "throttled" => AlertMeaning::Raised(Reason::Throttled),
             _ => AlertMeaning::Undefined,
         }
@@ -386,8 +384,7 @@ fn identity<'a>(
     }
 }
 
-/// Every key this schema defines. Anything else is business, not
-/// this reader's.
+/// Every key this schema defines.
 const KNOWN_KEYS: [&str; 10] = [
     "ts",
     "actor",
@@ -470,22 +467,19 @@ pub struct SkippedLine {
 pub struct Drain {
     /// The events read, in file order.
     pub events: Vec<Event>,
-    /// Where to resume. Never mid-record.
+    /// Where to resume.
     pub cursor: Cursor,
-    /// Lines that were not events. Kept rather than dropped: a reader that
-    /// silently discards malformed input reports a quiet stream and a broken
-    /// one identically.
+    /// Lines that were not events.
     pub skipped: Vec<SkippedLine>,
     /// Whether this generation was read to a stable end — nothing but a
-    /// possible partial record remains. Advancing is permitted only from
-    /// here.
+    /// possible partial record remains.
     pub drained: bool,
 }
 
 /// One generation's backing file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GenerationSource {
-    /// The generation number. Ordering is numeric, not filesystem order.
+    /// The generation number.
     pub generation: u64,
     /// Where its records live.
     pub path: PathBuf,
@@ -543,9 +537,8 @@ impl EventLog {
             ));
         };
 
-        // ONE case is blessed: a fresh session that has not written its
-        // first event. A fresh read is what a default cursor means, so the
-        // tolerance is scoped to it. A cursor that has been somewhere is
+        // ONE case is blessed: a fresh session that has not written its first
+        // event.
         #[allow(
             clippy::disallowed_methods,
             reason = "a door: the event-log read — see clippy.toml"
@@ -585,14 +578,13 @@ impl EventLog {
         let mut consumed: u64 = 0;
         for record in bytes.split_inclusive(|byte| *byte == b'\n') {
             if record.last() != Some(&b'\n') {
-                // A partial trailing record. Not consumed, not reported: the
-                // writer has not finished it yet.
+                // A partial trailing record.
                 break;
             }
             let offset = cursor.offset.saturating_add(consumed);
             consumed = consumed.saturating_add(record.len() as u64);
             let Ok(text) = std::str::from_utf8(record) else {
-                // Not text, so not a JSON object either. Reported, not dropped.
+                // Not text, so not a JSON object either.
                 skipped.push(SkippedLine {
                     generation: cursor.generation,
                     offset,
@@ -665,8 +657,8 @@ impl EventLog {
             skipped.append(&mut drain.skipped);
             last = drain.cursor;
             drained = drain.drained;
-            // The binding condition: never advance past a generation
-            // that is still being written to. The reader comes back to it.
+            // The binding condition: never advance past a generation that is
+            // still being written to.
             if !drained {
                 break;
             }
@@ -728,8 +720,7 @@ mod tests {
 
     const DONE: &str = r#"{"ts":"2026-05-19T07:29:45Z","actor":"claude:lead","action":"done"}"#;
 
-    /// A scratch directory that removes itself. Enough for a read-only test:
-    /// the process id and a counter keep concurrent tests apart.
+    /// A scratch directory that removes itself.
     struct Scratch(PathBuf);
 
     impl Scratch {
@@ -899,7 +890,7 @@ mod tests {
 
     #[test]
     fn sc_405j_an_empty_routing_member_is_present_but_invalid_not_absent() {
-        // The three states, told apart. An empty member is NOT the absent one.
+        // The three states, told apart.
         let event = Event::parse_line(concat!(
             r#"{"ts":"2026-05-19T07:29:45Z","actor":"claude:lead","action":"send","#,
             r#""target":"codex:coworker","actor_slot":"","target_session":"live"}"#
@@ -923,9 +914,7 @@ mod tests {
 
     #[test]
     fn a_routing_member_answers_both_of_its_questions_in_both_directions() {
-        // Each accessor asserted BOTH ways. Checking only the negative
-        // direction leaves `value()` replaceable by None and `is_present()` by
-        // true, and the suite would not notice either.
+        // Each accessor asserted BOTH ways.
         let carried = RoutingMember::Value("worker.0".to_owned());
         assert_eq!(carried.value(), Some("worker.0"));
         assert!(carried.is_present());
@@ -968,9 +957,8 @@ mod tests {
 
     #[test]
     fn sc_405j_the_three_way_presence_discriminator() {
-        // The discriminator the amended row requires, in one place: keys
-        // ABSENT / ONE present-empty member / ALL routing members
-        // present-empty. Only the first falls back to a display name, and the
+        // The discriminator the amended row requires, in one place: keys ABSENT
+        // / ONE present-empty member / ALL routing members present-empty.
         let base = r#""ts":"2026-05-19T07:29:45Z","actor":"claude:lead","action":"send","target":"codex:coworker""#;
 
         // 1. Structurally ABSENT: the legacy fallback pre-routing-key records need.
@@ -982,7 +970,7 @@ mod tests {
             Some(Identity::Display("codex:coworker"))
         );
 
-        // 2. ONE present-empty member, the other structurally absent.
+        // 2.
         let one_empty =
             Event::parse_line(&format!(r#"{{{base},"actor_slot":"","target_slot":""}}"#))
                 .expect("parses");
@@ -991,7 +979,7 @@ mod tests {
         assert_eq!(one_empty.actor_identity(), Identity::Unassociated);
         assert_eq!(one_empty.target_identity(), Some(Identity::Unassociated));
 
-        // 3. ALL routing members present and empty.
+        // 3.
         let all_empty = Event::parse_line(&format!(
             r#"{{{base},"actor_slot":"","actor_session":"","target_slot":"","target_session":""}}"#
         ))
@@ -1016,8 +1004,7 @@ mod tests {
 
     #[test]
     fn sc_405j_an_empty_member_is_not_a_record_error() {
-        // The ruling is explicit: do NOT record-skip. The fact stays countable
-        // and the rest of the event is still true; only the identity is lost.
+        // The ruling is explicit: do NOT record-skip.
         let event = Event::parse_line(concat!(
             r#"{"ts":"2026-05-19T07:29:45Z","actor":"claude:lead","action":"ask","#,
             r#""target":"codex:coworker","ref":"ae-1","actor_slot":"","actor_session":""}"#
@@ -1030,9 +1017,7 @@ mod tests {
 
     #[test]
     fn sc_510b_and_sc_405j_diverge_on_an_empty_value() {
-        // The spillover guard. The three payload keys normalise empty to absent
-        // because its row says those keys never appear empty; the routing keys
-        // deliberately do NOT share that rule. One line, both behaviours, so a
+        // The spillover guard.
         let event = Event::parse_line(concat!(
             r#"{"ts":"2026-05-19T07:29:45Z","actor":"claude:lead","action":"send","#,
             r#""target":"","ref":"","summary":"","actor_slot":"","actor_session":""}"#
@@ -1074,8 +1059,7 @@ mod tests {
 
     #[test]
     fn sc_509b_a_known_key_of_the_wrong_type_is_loss_not_absence() {
-        // `"ref": 7` is a writer saying something the reader cannot take. It is
-        // NOT the same as omitting `ref`, and blanking it would hide the loss.
+        // `"ref": 7` is a writer saying something the reader cannot take.
         for (line, key) in [
             (
                 r#"{"ts":"2026-05-19T07:29:45Z","actor":"a","action":"ask","ref":7}"#,
@@ -1137,8 +1121,7 @@ mod tests {
 
     #[test]
     fn sc_510e_a_duplicated_known_key_makes_the_whole_record_malformed() {
-        // Two actors, and no row says which one the writer meant. Taking either
-        // is fabrication; taking the first makes the answer depend on order.
+        // Two actors, and no row says which one the writer meant.
         let line = concat!(
             r#"{"ts":"2026-05-19T07:29:45Z","actor":"claude:lead","action":"done","#,
             r#""actor":"codex:coworker"}"#
@@ -1151,9 +1134,7 @@ mod tests {
 
     #[test]
     fn a_duplicated_key_is_refused_before_its_type_is_judged() {
-        // A valid actor followed by a wrong-typed one. Reading first-wins would
-        // report a perfectly good event and never see the second; reading
-        // last-wins would report WrongType. Both answers pick a winner, so
+        // A valid actor followed by a wrong-typed one.
         let line = concat!(
             r#"{"ts":"2026-05-19T07:29:45Z","actor":"claude:lead","action":"done","#,
             r#""actor":7}"#
@@ -1222,9 +1203,7 @@ mod tests {
 
     #[test]
     fn sc_510f_a_duplicated_unknown_key_stays_inert() {
-        // The other side of the line. This reader never reads the value, so it
-        // cannot fabricate one — and the rule is to step over what you do not
-        // understand, however many times it appears.
+        // The other side of the line.
         let line = concat!(
             r#"{"ts":"2026-05-19T07:29:45Z","actor":"a","action":"done","#,
             r#""invented":1,"invented":2,"invented":{"deep":true}}"#
@@ -1235,9 +1214,8 @@ mod tests {
 
     #[test]
     fn sc_510f_inertness_survives_the_order_reversal_too() {
-        // Order carries no discriminator: the same duplicate pair with
-        // its members swapped must give the same answer. For an unknown key the
-        // answer is "fine, twice" — and it has to be fine in both directions,
+        // Order carries no discriminator: the same duplicate pair with its
+        // members swapped must give the same answer.
         let forward =
             r#"{"ts":"2026-05-19T07:29:45Z","actor":"a","action":"done","x":1,"x":"two"}"#;
         let reverse =
@@ -1460,8 +1438,7 @@ mod tests {
 
     #[test]
     fn dr_001_the_traversal_plan_never_assumes_consecutive_generation_ids() {
-        // Retention drops the middle of a range, so the set is sparse. A `+1`
-        // walk would step into generations that do not exist.
+        // Retention drops the middle of a range, so the set is sparse.
         let (_scratch, log) = multi_generation("sparse", &[0, 7, 41], None);
         assert_eq!(log.traversal_from(0).expect("plan"), vec![0, 7, 41]);
 
@@ -1539,9 +1516,7 @@ mod tests {
 
     #[test]
     fn dr_001_every_generation_is_visited_at_most_once() {
-        // The bounded-call-count pin. The plan IS the call list — one drain per
-        // entry — so asserting it holds no repeats asserts no source is read
-        // twice.
+        // The bounded-call-count pin.
         let (_scratch, log) = multi_generation("atmostonce", &[0, 7, 41], None);
         let plan = log.traversal_from(0).expect("plan");
         let mut unique = plan.clone();
@@ -1559,7 +1534,7 @@ mod tests {
     fn dr_001_duplicate_generation_ids_collapse_to_one_visit_as_they_always_did() {
         // Guarding the STOP CONDITION on this rewrite: `drain` has always
         // resolved a generation to its FIRST matching source, so a duplicate id
-        // was never read. The traversal preserves that rather than changing it.
+        // was never read.
         let scratch = Scratch::new("dupgen");
         let first = scratch.write("g0-first", &format!("{DONE}\n"));
         let second = scratch.write("g0-second", &format!("{DONE}\n{DONE}\n"));
@@ -1642,9 +1617,7 @@ mod tests {
 
     #[test]
     fn an_empty_container_is_a_quiet_session_not_a_broken_one() {
-        // A session that has been created but has emitted nothing yet. It is
-        // drained (there is nothing left to read), it has no events, and it is
-        // NOT the missing-container case below.
+        // A session that has been created but has emitted nothing yet.
         let scratch = Scratch::new("empty");
         scratch.write("events.jsonl", "");
         let log = EventLog::discover(&scratch.0);
@@ -1659,7 +1632,7 @@ mod tests {
     fn sc_519_a_missing_container_is_the_same_quiet_stream_as_an_empty_one() {
         // The seat ruling that reversed this reader's first answer: a session
         // may have no events file until its first write, so ENOENT is quiet,
-        // not loss. Only an EXISTING file that will not read degrades.
+        // not loss.
         let scratch = Scratch::new("absent");
         let log = EventLog::discover(&scratch.0);
         let drain = log.drain(Cursor::default()).expect("ENOENT is tolerated");
@@ -1675,8 +1648,7 @@ mod tests {
 
     #[test]
     fn dr_001_a_vanished_container_under_a_used_cursor_is_loud_not_quiet() {
-        // tolerance is for a FRESH read. A cursor that has been
-        // somewhere proves the stream existed, so its disappearance is loss.
+        // Tolerance is for a FRESH read.
         let scratch = Scratch::new("vanished");
         let path = scratch.write("events.jsonl", &format!("{DONE}\n"));
         let log = EventLog::discover(&scratch.0);
@@ -1695,8 +1667,7 @@ mod tests {
 
     #[test]
     fn dr_001_an_offset_past_the_end_is_loud_rather_than_serenely_empty() {
-        // Truncated, rotated or replaced under the reader. Seeking past EOF is
-        // legal and reads nothing, so silence here would be permanent.
+        // Truncated, rotated or replaced under the reader.
         let scratch = Scratch::new("truncated");
         let path = scratch.write("events.jsonl", &format!("{DONE}\n{DONE}\n"));
         let log = EventLog::discover(&scratch.0);
@@ -1750,10 +1721,9 @@ mod tests {
         assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
     }
 
-    /// Every alert summary the frozen watchdog can actually emit, taken from the
-    /// `ae_emit_event "alert"` call sites in `ae` @72c7293 and from
-    /// `aewatch`. This is the whole probe population, so the
-    /// cascade is asserted against ALL of it rather than against examples.
+    /// Every alert summary the frozen watchdog can actually emit, taken from
+    /// the `ae_emit_event "alert"` call sites in `ae` @72c7293 and from
+    /// `aewatch`.
     const INCUMBENT_ALERT_SUMMARIES: [(&str, Reason); 7] = [
         ("agent process dead — dropped to shell", Reason::Dead),
         (
@@ -1789,8 +1759,7 @@ mod tests {
     #[test]
     fn sc_980_an_unreadable_alert_is_stale_and_never_silent() {
         // `alert` MEANS attention is required, so a class this cascade cannot
-        // read is an alert of unknown class — not a non-event. Dropping it
-        // would hide the one thing the record exists to report.
+        // read is an alert of unknown class — not a non-event.
         for summary in [
             None,
             Some(""),
@@ -1802,9 +1771,7 @@ mod tests {
 
     #[test]
     fn sc_980_the_wedge_alert_is_stale_even_when_its_text_names_another_class() {
-        // The one place the cascade's ORDER is load-bearing. A wedge summary
-        // that also says "throttled" must not be downgraded by the later arm,
-        // and one that also says "dead" must not be taken by the earlier one.
+        // The one place the cascade's ORDER is load-bearing.
         assert_eq!(
             alert_class(Some("meta-agent not sweeping — throttled upstream")),
             Reason::Stale,
@@ -1818,8 +1785,7 @@ mod tests {
     #[test]
     fn sc_980_the_missing_marker_is_matched_in_both_spellings() {
         // The incumbent lists `missing` AND `MISSING` and its match is
-        // case-sensitive. Keeping only one spelling silently reclassifies a
-        // real pane-missing alert as stale.
+        // case-sensitive.
         assert_eq!(alert_class(Some("pane is MISSING")), Reason::Dead);
         assert_eq!(alert_class(Some("pane is missing")), Reason::Dead);
     }
@@ -1874,8 +1840,7 @@ mod tests {
     #[test]
     fn sc_509c_a_throttled_action_is_a_carrier_on_its_action_alone() {
         // The ruled evidence class: `target` names the owner and the ACTION
-        // names the contribution, so no summary is consulted. Each summary
-        // below would classify DIFFERENTLY if one were — "pausing nudges"
+        // names the contribution, so no summary is consulted.
         for summary in [
             Some("upstream throttling detected — pausing nudges"),
             Some("the process looks dead"),
@@ -1891,8 +1856,8 @@ mod tests {
 
     #[test]
     fn sc_510c_an_alert_ref_is_not_pressed_into_service_as_a_typed_reason() {
-        // typed key is unnamed by any row, so `ref` on an alert stays
-        // Undefined. A reader that took it would be inventing the schema.
+        // Typed key is unnamed by any row, so `ref` on an alert stays
+        // Undefined.
         let line = concat!(
             r#"{"ts":"2026-08-20T15:00:19Z","actor":"_watchdog","action":"alert","#,
             r#""target":"fake:probe","ref":"throttled","summary":"agent process dead"}"#

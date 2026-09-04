@@ -156,7 +156,7 @@ pub enum Status {
     Pending,
     /// Closed by a full-mirror reply.
     Replied,
-    /// Withdrawn by its own sender. Terminal against a later reply.
+    /// Withdrawn by its own sender.
     Cancelled,
 }
 
@@ -262,10 +262,9 @@ pub fn header() -> Vec<u8> {
 /// What the surface writes, and the status it exits with.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Output {
-    /// The table. Empty on a refusal — the frozen helper refuses BEFORE the
-    /// header, so a refused invocation writes nothing to stdout at all.
+    /// The table.
     pub stdout: Vec<u8>,
-    /// The refusal. Empty on success.
+    /// The refusal.
     pub stderr: Vec<u8>,
     /// `0` for a table, [`EXIT_NO_IDENTITY`] for the refusal.
     pub code: u8,
@@ -307,7 +306,7 @@ pub fn states(container: &[u8]) -> Vec<Request> {
     let stream = reversed(container);
     // Every retained record carries its SCAN ORDINAL — its position in the
     // container, i.e. LEDGER ORDER, which is APPEND ORDER and NEVER `ts`
-    // (colead ruling, 2026-08-24). `ts` is read and published as a field and is
+    // (colead ruling, 2026-08-24).
     let mut opened: HashMap<Vec<u8>, (usize, Opening)> = HashMap::new();
     let mut replies: HashMap<Vec<u8>, Vec<(usize, Closing)>> = HashMap::new();
     let mut cancels: HashMap<Vec<u8>, Vec<(usize, Closing)>> = HashMap::new();
@@ -353,9 +352,8 @@ pub fn states(container: &[u8]) -> Vec<Request> {
         .filter_map(|reference| {
             let (opened_at, opening) = opened.remove(&reference)?;
             let no_candidates = Vec::new();
-            // a terminal event terminates only the newest opening
-            // that PRECEDES it. The row shown for a ref is its newest opening,
-            // so a terminal attaches to it exactly when the terminal came
+            // A terminal event terminates only the newest opening that PRECEDES
+            // it.
             let after = |(at, _): &&(usize, Closing)| *at < opened_at;
             let cancelled = cancels.get(&reference).unwrap_or(&no_candidates);
             let answered = replies.get(&reference).unwrap_or(&no_candidates);
@@ -461,9 +459,7 @@ struct Opening {
     summary: Vec<u8>,
 }
 
-/// A candidate `reply` or `cancel`. One shape for both: a cancel simply has no
-/// target side, and reading the fields it does not carry as empty is what the
-/// frozen sensor does too.
+/// A candidate `reply` or `cancel`.
 struct Closing {
     actor: Vec<u8>,
     target: Vec<u8>,
@@ -500,31 +496,15 @@ impl Opening {
         identity_of(&self.to_slot, &self.to_session, &self.to)
     }
 
-    /// **Strict** — the full mirror: the reply's actor is this
-    /// request's TARGET and the reply's target is this request's SENDER, with
-    /// both comparisons made by [`Identity::matches`]. A mixed pair closes
-    /// nothing.
+    /// **Strict** — the full mirror: the reply's actor is this request's TARGET
+    /// and the reply's target is this request's SENDER, with both comparisons
+    /// made by [`Identity::matches`].
     fn answered_by(&self, reply: &Closing) -> bool {
         self.askee().matches(reply.actor_identity())
             && self.asker().matches(reply.target_identity())
     }
 
-    /// **RULED (operational lead, 2026-08-27)** — see the module docs. A cancel
-    /// withdraws this request when its actor identity is this request's SENDER
-    /// by the same strict [`Identity::matches`] the reply mirror uses, or — the
-    /// one arm that rule cannot express — when the cancel is SLOTLESS (no
-    /// routing member at all, hence a display identity), this request's
-    /// opening is ROUTED or is a SLOTLESS-SENDER opening (actor session
-    /// present, actor slot ABSENT — the shape both writers give an ask made
-    /// under `AE_SENDER_OVERRIDE` from a pane), and the cancel's non-empty
-    /// actor bytes equal this request's actor bytes. Nothing looser: a cancel
-    /// carrying slot data, right or wrong, is judged by slot + session alone;
-    /// an empty actor names nobody; an opening whose slot member is PRESENT
-    /// but empty is a writer bug, not that shape, and stays pending. The arm
-    /// is for a request asked from a pane under an explicit override and
-    /// withdrawn from a pane-less command under the same override —
-    /// `ae compact --digest-only` — where the override's bytes are the only
-    /// identity the two events share.
+    /// **RULED (operational lead, 2026-08-27)** — see the module docs.
     fn withdrawn_by(&self, cancel: &Closing) -> bool {
         let asker = self.asker();
         let slotless_sender =
@@ -612,8 +592,7 @@ mod tests {
     /// session, and NO actor slot — "external senders have none".
     const HALFKEY_ASK: &str = r#"{"ts":"t1","actor":"ae:compact:u1","action":"ask","target":"a:lead","ref":"r1","actor_session":"s","target_slot":"main","target_session":"s","summary":"handover"}"#;
     /// Not a shape any writer emits: an EMPTY actor (the emitter falls back to
-    /// `human`). A corrupt row, kept so the arm's non-empty guard is proven
-    /// rather than assumed.
+    /// `human`).
     const EMPTYACTOR_ASK: &str = r#"{"ts":"t1","actor":"","action":"ask","target":"a:lead","ref":"r1","actor_slot":"main","actor_session":"s","target_slot":"main","target_session":"s","summary":"corrupt"}"#;
     /// Not the frozen shape: a PRESENT-but-empty actor slot is a writer bug,
     /// and stays half a key.
@@ -641,7 +620,7 @@ mod tests {
     fn the_header_is_the_frozen_bytes() {
         // Transcribed from the frozen capture
         // arms/A1/c01-healthy-ro/out/requests-all.stdout, whose first line this
-        // is. Spelled out rather than built from the same widths the code uses,
+        // is.
         assert_eq!(
             text(&header()),
             "STATUS   TYPE     ID                           FROM                 TO                   SUMMARY\n"
@@ -701,8 +680,7 @@ mod tests {
 
     #[test]
     fn sc_518_a_reply_addressed_elsewhere_leaves_the_request_pending() {
-        // Both halves of the mirror, one at a time. This is the exact drift the
-        // frozen source records: a sensor that checked only the actor end.
+        // Both halves of the mirror, one at a time.
         let wrong_target = container(&[
             ASK,
             r#"{"ts":"t2","actor":"a:worker","action":"reply","target":"a:third","ref":"r1","summary":"misaddressed"}"#,
@@ -751,7 +729,7 @@ mod tests {
 
         // The control that makes the assertion mean something: the SAME opening
         // closed by a keyless reply, which is Display to Display and DOES
-        // close. Without this arm the test would also pass on an
+        // close.
         let both_keyless = container(&[
             ASK,
             r#"{"ts":"t2","actor":"a:worker","action":"reply","target":"a:lead","ref":"r1","summary":"keyless reply"}"#,
@@ -794,8 +772,7 @@ mod tests {
     #[test]
     fn sc_518_half_a_routing_key_names_nobody_even_beside_a_display_opening() {
         // THE THIRD SHAPE IN THE Unassociated FAMILY, and the corpus cannot see
-        // it either. `Empty` and `Absent` have a sibling: exactly ONE routing
-        // member present. Against a ROUTED opening it fails like everything
+        // it either.
         let half_keyed_reply = r#"{"ts":"t2","actor":"a:worker","action":"reply","target":"a:lead","ref":"r1","actor_slot":"worker.0","target_slot":"main","summary":"half a key"}"#;
         // ASK is keyless, so its participants are Display identities.
         assert_eq!(
@@ -821,9 +798,7 @@ mod tests {
 
     #[test]
     fn an_identity_that_is_not_valid_utf8_names_nobody() {
-        // THE UTF-8 GATE, as a test rather than as a paragraph. `Identity`
-        // compares `&str` and this surface reads arbitrary bytes, so the
-        // conversion needs a decision for the impossible case — and the
+        // THE UTF-8 GATE, as a test rather than as a paragraph.
         let mut ask = Vec::from(
             &br#"{"ts":"t1","actor":"a:lead","action":"ask","target":"a:worker","ref":"r1","actor_slot":"main","actor_session":"s","target_slot":""#[..],
         );
@@ -856,8 +831,7 @@ mod tests {
     #[test]
     fn sc_518a_a_terminal_that_precedes_its_opening_closes_nothing() {
         // The ORDER rule alone, with identity deliberately PERFECT so a failure
-        // can only be about ordering. This is the corpus's one specimen shape
-        // (G5/m2) reduced to its mechanism.
+        // can only be about ordering.
         let reply_first = container(&[
             r#"{"ts":"t1","actor":"a:worker","action":"reply","target":"a:lead","ref":"r1","summary":"answered before it was asked"}"#,
             ASK,
@@ -867,8 +841,7 @@ mod tests {
         assert_eq!(rows[0].summary, b"the question");
 
         // The control, and it is what makes the assertion about ORDER: the same
-        // two records the other way round DO close. Without this arm the test
-        // would pass on an implementation whose identity rule rejected the
+        // two records the other way round DO close.
         let ask_first = container(&[
             ASK,
             r#"{"ts":"t2","actor":"a:worker","action":"reply","target":"a:lead","ref":"r1","summary":"answered after it was asked"}"#,
@@ -878,9 +851,7 @@ mod tests {
 
     #[test]
     fn sc_518a_a_re_ask_opens_a_new_lifecycle_that_the_old_terminal_cannot_close() {
-        // GAP 2. Identity is perfect throughout, so this test can ONLY fail on
-        // the ordering rule — which is the point: a re-ask whose reply is also
-        // identity-invalid would be pending for two reasons and could not tell
+        // GAP 2.
         let body = container(&[
             ASK,
             r#"{"ts":"t2","actor":"a:worker","action":"reply","target":"a:lead","ref":"r1","summary":"the first answer"}"#,
@@ -921,7 +892,7 @@ mod tests {
 
         let without = states(&container(&[ASK]));
         for cancel in [own, stranger, anonymous] {
-            // The cancel precedes the opening. Whoever sent it, it is a no-op.
+            // The cancel precedes the opening.
             let with = states(&container(&[cancel, ASK]));
             assert_eq!(
                 with, without,
@@ -930,8 +901,8 @@ mod tests {
         }
 
         // The same rule from the re-ask side: an earlier lifecycle's cancel
-        // cannot reach forward, so the re-asked row is identical to the row of a
-        // container holding only the re-ask. Also neutral — it says nothing
+        // cannot reach forward, so the re-asked row is identical to the row of
+        // a container holding only the re-ask.
         let only_re_ask = states(&container(&[re_ask]));
         for cancel in [own, stranger, anonymous] {
             let re_asked = states(&container(&[ASK, cancel, re_ask]));
@@ -942,8 +913,8 @@ mod tests {
         }
     }
 
-    /// **NON-GATING DIAGNOSTIC** — a `cancel` AND a `reply` both attached to one
-    /// opening. GAP 4, and the gate now says NOTHING about it.
+    /// **NON-GATING DIAGNOSTIC** — a `cancel` AND a `reply` both attached to
+    /// one opening.
     #[test]
     #[ignore = "records unratified two-terminal precedence behavior; not a gate"]
     fn diagnostic_two_terminals_on_one_opening() {
@@ -965,9 +936,7 @@ mod tests {
     }
 
     /// The ruling's strict half, gated: the request's own sender withdraws it —
-    /// a stranger and an unattributed cancel do not. Formerly the `#[ignore]`d
-    /// diagnostic of the interim policy; the ruling kept that half as it was,
-    /// so the record of what had to change here is: nothing.
+    /// a stranger and an unattributed cancel do not.
     #[test]
     fn the_request_s_own_sender_withdraws_it_and_nobody_else_does() {
         let after = |actor: &str, summary: &str| {
@@ -1019,8 +988,7 @@ mod tests {
 
     /// The ruled arm, gated: a SLOTLESS cancel withdraws a ROUTED or a
     /// SLOTLESS-SENDER request on exact, non-empty actor bytes — `ae compact
-    /// --digest-only`'s shape — and on nothing looser. An opening whose slot
-    /// member is present but empty is neither, and stays pending.
+    /// --digest-only`'s shape — and on nothing looser.
     #[test]
     fn a_slotless_cancel_withdraws_on_exact_actor_bytes_only() {
         let after = |opening: &str, actor_member: &str| {
@@ -1145,7 +1113,7 @@ mod tests {
         }
     }
 
-    /// order rule under the ruled arm, in the positive: it withdraws
+    /// Order rule under the ruled arm, in the positive: it withdraws
     /// only the opening it FOLLOWS, and a re-ask opens a lifecycle an earlier
     /// withdrawal cannot reach.
     #[test]
@@ -1255,9 +1223,7 @@ mod tests {
 
     #[test]
     fn the_filter_uses_the_same_identity_rule_as_closure() {
-        // A CHOICE, not a ruling — see `Request::shown_to`. No corpus row
-        // constrains the filter (all 24 mine/inbox rows are refusals), and this
-        // pins the choice so a seat can overrule it visibly.
+        // A CHOICE, not a ruling — see `Request::shown_to`.
         let keyless = container(&[ASK]);
         // A keyless ROW is a Display identity; a ROUTED viewer is not it, even
         // though the display names agree.
@@ -1410,9 +1376,7 @@ mod tests {
 
     #[test]
     fn the_opening_fields_the_sensor_carries_are_all_read() {
-        // The sensor's row is wider than the table. `ts` and `body_file` are
-        // read by the archive digest from the same rows, so a port that dropped
-        // them would silently narrow a shared sensor.
+        // The sensor's row is wider than the table.
         let body = container(&[
             r#"{"ts":"2026-08-20T16:12:55Z","actor":"a:lead","action":"ask","target":"a:w","ref":"r1","body_file":"/m/r1.ask.txt","actor_slot":"main","target_slot":"worker.0","actor_session":"s","target_session":"s","summary":"q"}"#,
         ]);

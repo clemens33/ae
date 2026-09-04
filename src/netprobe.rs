@@ -140,8 +140,7 @@ mod tests {
     }
 
     /// The CALIBRATION half: a name that must resolve on any machine that can
-    /// run this suite at all. Without it, the `.invalid` test below proves only
-    /// that the probe can say no — which a probe wired to a constant also does.
+    /// run this suite at all.
     #[test]
     fn a_name_every_machine_resolves_answers_ok() {
         let outcome = probe("localhost", DEFAULT_PORT);
@@ -153,9 +152,7 @@ mod tests {
         assert!(outcome.line().starts_with("ok "));
     }
 
-    /// The NEGATIVE half. `.invalid` is reserved by RFC 6761 and guaranteed not
-    /// to resolve, so this is a fact about the probe rather than about whoever
-    /// owns a domain today.
+    /// The NEGATIVE half.
     #[test]
     fn a_reserved_name_that_cannot_exist_is_unresolved() {
         let outcome = probe("ae-net-probe-must-never-resolve.invalid", DEFAULT_PORT);
@@ -165,7 +162,7 @@ mod tests {
 
     /// Documents the instrument's LIMIT, executably: an IP literal answers
     /// without a resolver, so a green probe against one proves nothing about
-    /// DNS or NSS. The CI step names a real host for exactly this reason.
+    /// DNS or NSS.
     #[test]
     fn an_ip_literal_answers_without_asking_a_resolver() {
         assert_eq!(probe("127.0.0.1", DEFAULT_PORT), Outcome::Resolved(1));

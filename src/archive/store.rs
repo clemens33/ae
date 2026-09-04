@@ -17,7 +17,6 @@ use super::meta_get;
 
 /// The archive root for a session directory — `<AE_HOME>/archive`, from the
 /// session path `<AE_HOME>/sessions/<name>` — so no `env::var` door is needed.
-/// `None` only for a path with no grandparent, which a real session never is.
 pub(super) fn archive_root_of(session_dir: &Path) -> Option<PathBuf> {
     session_dir
         .parent()
@@ -25,10 +24,8 @@ pub(super) fn archive_root_of(session_dir: &Path) -> Option<PathBuf> {
         .map(|home| home.join("archive"))
 }
 
-/// Whether the archive root is present as a real directory, or simply not there.
-/// A symlinked root is never either — it is a hard refusal ([`require_real_root`]
-/// returns `Err`), because a link is how a pointer would reach outside the
-/// archive ae owns.
+/// Whether the archive root is present as a real directory, or simply not
+/// there.
 pub(super) enum RootState {
     /// A real directory (created when `create`).
     Present,
@@ -58,9 +55,8 @@ pub(super) fn require_real_root(root: &Path, create: bool) -> Result<RootState, 
             .map_err(|why| format!("archive: could not create '{}': {why}", root.display()))?;
     }
     let _ = fs::set_permissions(root, fs::Permissions::from_mode(0o700));
-    // Persist the archive/ directory's OWN entry in its PARENT — unconditionally,
-    // before any claim. The later root fsync persists entries INSIDE archive/, not
-    // archive/'s own entry, and `ae end` deletes the live session once publication
+    // Persist the archive/ directory's OWN entry in its PARENT —
+    // unconditionally, before any claim.
     if let Some(parent) = root.parent() {
         fsync_dir(parent).map_err(|why| {
             format!(
@@ -78,18 +74,13 @@ pub(super) fn claim_path(root: &Path, aid: &str) -> PathBuf {
     root.join(format!(".publishing.{aid}"))
 }
 
-/// Atomically create the claim directory at exactly `0700`. `Ok(())` means this
-/// process now owns the id; an `AlreadyExists` error means another publisher or
-/// purger holds it (or a crash left it standing) — the caller refuses and NEVER
-/// guess-cleans a claim it did not create.
+/// Atomically create the claim directory at exactly `0700`.
 pub(super) fn make_claim(claim: &Path) -> io::Result<()> {
     fs::DirBuilder::new().mode(0o700).create(claim)
 }
 
 /// A direct, non-dotted child: `cand`'s parent is exactly `root` and its final
-/// component is a real name. Defence in depth — the id is a validated UUID, so
-/// the join is a direct child by construction, but a link or a crafted path never
-/// reaches outside the root ae owns.
+/// component is a real name.
 pub(super) fn is_direct_child(root: &Path, cand: &Path) -> bool {
     cand.parent() == Some(root)
         && cand
@@ -103,14 +94,7 @@ pub(super) fn is_direct_child(root: &Path, cand: &Path) -> bool {
 /// with no executable bit; the required files present; `messages/` a `0700`
 /// directory of `0600` `.txt` files; and meta and digest agreeing on the
 /// archive id, the version, a named source session, and the three counts a
-/// human-edited pair would disagree on. The one gate publish, inherit and purge
-/// all pass before they trust a tree.
-/// Reject any DIRECT child of `path` outside the exact archive set — the
-/// whole-tree rejection the frozen `_ar_validate_tree` made. A destructive
-/// consumer (purge) deletes this tree recursively and `--from` trusts it as
-/// lineage, so an unrecognised top-level file or directory is unvalidated bytes
-/// we must never bless. Enumeration failure REFUSES; it never defaults to an
-/// empty (vacuously-passing) listing.
+/// human-edited pair would disagree on.
 fn reject_unknown_top_level(path: &Path) -> Result<(), String> {
     let allowed = ["meta", "digest.md", "memo.tsv", "events.jsonl", "messages"];
     let top = read_dir(path).map_err(|why| {
@@ -275,11 +259,8 @@ pub(super) fn read_file(path: &Path) -> io::Result<Vec<u8>> {
     bytes
 }
 
-/// The entry paths directly under `dir` (no recursion here; the caller classifies
-/// each). FALLIBLE: `Err` if `dir` cannot be opened, AND if any single directory
-/// entry cannot be read — both propagate rather than yielding a short or empty
-/// list, so a destructive/validation caller refuses an incompletely-read
-/// directory instead of blessing it. Never reintroduce an empty fallback here.
+/// The entry paths directly under `dir` (no recursion here; the caller
+/// classifies each).
 pub(super) fn read_dir(dir: &Path) -> io::Result<Vec<PathBuf>> {
     #[allow(
         clippy::disallowed_methods,
@@ -287,7 +268,7 @@ pub(super) fn read_dir(dir: &Path) -> io::Result<Vec<PathBuf>> {
     )]
     let read = std::fs::read_dir(dir)?;
     // Propagate EVERY DirEntry error — a destructive/validation consumer must
-    // refuse on incomplete enumeration, never silently drop entries. NO `flatten`.
+    // refuse on incomplete enumeration, never silently drop entries.
     read.map(|entry| entry.map(|e| e.path())).collect()
 }
 

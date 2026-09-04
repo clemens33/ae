@@ -244,8 +244,7 @@ impl Preamble {
     }
 
     /// The typed server pair, or nothing when the wrapper resolved neither
-    /// half. Passed VERBATIM — including `ambiguous`, which is a refusal minted
-    /// upstream and must reach the core as one.
+    /// half.
     fn server_argv(&self) -> Vec<String> {
         if self.server_kind.is_empty() && self.server_value.is_empty() {
             return Vec::new();
@@ -463,8 +462,7 @@ mod tests {
     #[test]
     fn an_underscore_word_never_reaches_the_router() {
         // The core's own namespace is dispatched before `route` is called, so
-        // an internal word arriving here would be a caller bug. What this pins
-        // is that the router has no arm claiming one: `_spawn` falls through to
+        // an internal word arriving here would be a caller bug.
         assert_eq!(
             route(&preamble(), &argv(&["_spawn", "/s/x", "helper"]), None),
             Route::Launch(argv(&["_spawn", "/s/x", "helper"]))

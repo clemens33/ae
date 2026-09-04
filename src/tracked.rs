@@ -261,11 +261,7 @@ pub enum ResolveError {
         session: String,
     },
     /// The target session records no usable tmux server (its selector is
-    /// Missing/Ambiguous, or its meta is unreadable). Resolution FAILS CLOSED
-    /// rather than falling back to the ambient server: a pane-less caller's
-    /// ambient is not the recorded server, so a fallback would enumerate the
-    /// wrong server and mis-route silently — the clean cut refuses instead and
-    /// says how to repair it.
+    /// Missing/Ambiguous, or its meta is unreadable).
     UnresolvableServer {
         /// The session whose server pointer could not be trusted.
         session: String,
@@ -308,9 +304,7 @@ pub enum Lookup {
         session: String,
         /// The name to match.
         target: String,
-        /// Whether the session was NAMED (`@session:agent`). The frozen
-        /// resolver runs `has-session` for every `@` form, the caller's own
-        /// session included, and only for those.
+        /// Whether the session was NAMED (`@session:agent`).
         explicit: bool,
     },
 }
@@ -359,7 +353,7 @@ pub fn lookup(target: &str, own_session: &str) -> Result<Lookup, ResolveError> {
 }
 
 /// The pick over a roster: the pane whose `@ae_agent` stamp IS the target,
-/// exactly. Nothing partial.
+/// exactly.
 ///
 /// # Errors
 ///
@@ -459,10 +453,7 @@ pub fn resolve_on(
 }
 
 /// The server for reading a RAW PANE target's stamps: the caller session's
-/// recorded one when it is usable, else the ambient server. Never fails — a pane
-/// id addresses one pane unambiguously, so an unusable server only means its
-/// stamps read empty, never a mis-route (contrast [`named_server`], where a
-/// wrong server enumerates a wrong roster).
+/// recorded one when it is usable, else the ambient server.
 fn pane_server(dir: &Path) -> ServerId {
     // Through `meta.rs`'s inventoried `read_bytes` door (the same one compact
     // reads meta through), not a raw fs call here — a new world-reading site is
@@ -492,8 +483,7 @@ pub(crate) fn named_server(
             None => return Err(ResolveError::SessionNotFound(session.to_owned())),
         }
     };
-    // Through `meta.rs`'s inventoried `read_bytes` door. An unreadable meta
-    // (absent included) is a session ae cannot locate — SessionNotFound.
+    // Through `meta.rs`'s inventoried `read_bytes` door.
     let Ok(bytes) = meta::read_bytes(&meta_dir) else {
         return Err(ResolveError::SessionNotFound(session.to_owned()));
     };
@@ -510,8 +500,6 @@ pub(crate) fn named_server(
 // ---- the event ------------------------------------------------------------
 
 /// Every member `ae_emit_event` writes for a tracked request, in its order.
-/// An empty field is an absent member, as the frozen `[[ -n … ]] &&` guards
-/// make it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EventFields<'a> {
     /// `ts`.
@@ -610,15 +598,7 @@ pub struct Sender {
 /// event.
 const SEND_HELPER: &str = "send";
 
-/// Run a tracked request end to end. `own_session` is the session the helper
-/// serves — the one source for the event's `actor_session`, the resolver's
-/// notion of "here" AND the caller's display ref, so the three can never
-/// disagree. The frozen `_AE_SESSION` is meta's `session=` and nothing else,
-/// and is EMPTY for a meta without that key — a state in which every bash
-/// helper of that session is already half-working (the display ref gains an
-/// `@session:` prefix, `actor_session` vanishes); this crate derives the
-/// session as P2.1b does (meta, else the directory's own name) and does not
-/// copy that state. `entropy` seeds the request id.
+/// Run a tracked request end to end.
 ///
 /// # Errors
 ///
@@ -775,7 +755,7 @@ mod tests {
     }
 
     /// A sessions root under the temp dir with one session subdir per `(name,
-    /// meta)`, each carrying the given meta text. Returns the root.
+    /// meta)`, each carrying the given meta text.
     fn sessions_root(tag: &str, sessions: &[(&str, &str)]) -> std::path::PathBuf {
         let root = std::env::temp_dir()
             .join(format!("aetrsrv.{}.{tag}", std::process::id()))
@@ -802,9 +782,8 @@ mod tests {
             named_server(&a, "a", "a"),
             Ok(ServerId::Selected(Selector::Socket("/srv/a.sock".into()))),
         );
-        // A cross-session target enumerates on the TARGET's server, read from the
-        // TARGET's own meta — the whole point of correction 1. If it read the
-        // caller's meta instead it would answer /srv/a.sock here.
+        // A cross-session target enumerates on the TARGET's server, read from
+        // the TARGET's own meta — the whole point of correction 1.
         assert_eq!(
             named_server(&a, "b", "a"),
             Ok(ServerId::Selected(Selector::Socket("/srv/b.sock".into()))),
@@ -937,8 +916,6 @@ mod tests {
         assert_eq!(lookup("@:w", "s"), Err(ResolveError::CrossSessionEmpty));
         assert_eq!(lookup("@s:", "s"), Err(ResolveError::CrossSessionEmpty));
         // IDENTITY V2: one colon, no `@`, is the same cross-session address.
-        // `lead`, `s:lead` and `@s:lead` all name one pane; `fable5:lead` names
-        // a SESSION called fable5 and no longer stands in for an alias.
         assert_eq!(
             lookup("s:lead", "s"),
             Ok(Lookup::Named {
@@ -987,9 +964,7 @@ mod tests {
 
     #[test]
     fn the_pick_is_exact_and_the_alias_and_bare_name_arms_are_retired() {
-        // A v2 roster: every stamp is the bare NAME. The two legacy `alias:name`
-        // stamps are here because a session written before the cutover still
-        // carries them, and they must keep resolving by their WHOLE stamp.
+        // A v2 roster: every stamp is the bare NAME.
         let rows = roster(&[
             ("%1", "lead"),
             ("%2", "colead"),
@@ -1003,9 +978,7 @@ mod tests {
             Ok(("%3", "cl:legacy".to_owned())),
             "a legacy stamp still resolves by its whole self"
         );
-        // THE RETIREMENT, stated as the failures it causes. Neither half of a
-        // legacy stamp addresses its pane any more, and an alias that once
-        // stood in for a seat now finds nothing at all.
+        // THE RETIREMENT, stated as the failures it causes.
         for partial in ["cl", "legacy", "gx"] {
             assert_eq!(
                 pick(&rows, partial, "s", "s"),
@@ -1033,9 +1006,7 @@ mod tests {
             Ok(("%2", "@other:colead".to_owned())),
             "the display ref is unchanged — accepted input widened, output did not move"
         );
-        // AMBIGUITY IS NOW THE PANE LAYER'S ALONE. A v2 roster cannot produce
-        // it (a name is one seat), so the only way in is two panes stamped
-        // identically — which no ae path creates and a hand-edited `@ae_agent`
+        // AMBIGUITY IS NOW THE PANE LAYER'S ALONE.
         let twins = roster(&[("%1", "lead"), ("%2", "lead")]);
         assert_eq!(
             pick(&twins, "lead", "s", "s"),

@@ -18,9 +18,7 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-/// The `[workspace]` values compact resolves. `main`/`workers` are `None` when the
-/// key never appeared (an empty-but-present value is `Some("")`, which the caller
-/// distinguishes). `purge_agent_history` is the resolved boolean.
+/// The `[workspace]` values compact resolves.
 #[derive(Debug)]
 pub(crate) struct Workspace {
     pub(crate) main: Option<String>,
@@ -29,9 +27,8 @@ pub(crate) struct Workspace {
 }
 
 /// Read `[workspace].{main,workers,purge_agent_history}`, layering `local` over
-/// `global` so the LAST file to set a key wins — matching `get_config`'s "last match
-/// wins, local overrides global". `purge_agent_history` is true iff the resolved value
-/// is one of `true|1|yes|on`, exactly as `_end_effective_purge` decides it.
+/// `global` so the LAST file to set a key wins — matching `get_config`'s "last
+/// match wins, local overrides global".
 pub(crate) fn read_workspace(
     global: Option<&Path>,
     local: Option<&Path>,
@@ -51,10 +48,7 @@ pub(crate) fn read_workspace(
     })
 }
 
-/// Overlay one SELECTED config file's `[workspace]` keys onto the accumulators. Any
-/// key it sets overrides an earlier file's — later files win. `Err(())` when the file
-/// cannot be read or decoded (the caller selected it, so this is a hard failure, not
-/// "contributes nothing").
+/// Overlay one SELECTED config file's `[workspace]` keys onto the accumulators.
 fn apply_file(
     file: &Path,
     main: &mut Option<String>,
@@ -92,8 +86,7 @@ fn apply_file(
     Ok(())
 }
 
-/// A `[section]` header line → the section name. The frozen grammar is
-/// `^\[([a-zA-Z_-]+)\]$`: a non-empty run of ASCII letters, `_`, and `-`.
+/// A `[section]` header line → the section name.
 fn section_header(line: &str) -> Option<String> {
     let inner = line.strip_prefix('[')?.strip_suffix(']')?;
     if !inner.is_empty()
@@ -107,17 +100,14 @@ fn section_header(line: &str) -> Option<String> {
     }
 }
 
-/// A `key = value` line → `(key, value)`. Mirrors the frozen parser: a `key = "..."`
-/// keeps the bytes between the outer quotes verbatim (comments and `#` inside are
-/// kept); an unquoted value strips a trailing `#comment` then trailing whitespace and
-/// must be non-empty. The key grammar is `^[a-zA-Z_][a-zA-Z0-9_-]*`.
+/// A `key = value` line → `(key, value)`.
 fn parse_entry(line: &str) -> Option<(&str, String)> {
     parse_entry_with(line, is_config_key)
 }
 
 /// [`parse_entry`] with the key grammar as a parameter: `[roster]` keys are
 /// agent NAMES (digit-leading allowed), every other section keeps the frozen
-/// config-key grammar. A key the predicate rejects makes the line no entry.
+/// config-key grammar.
 fn parse_entry_with(line: &str, key_ok: fn(&str) -> bool) -> Option<(&str, String)> {
     let eq = line.find('=')?;
     let key = line[..eq].trim_end();
@@ -129,10 +119,7 @@ fn parse_entry_with(line: &str, key_ok: fn(&str) -> bool) -> Option<(&str, Strin
 
 /// The raw KEY a line claims: the text before its first `=`, trimmed — `None`
 /// for a line with no `=` or a `#` comment (a commented-out `# old = x` claims
-/// nothing). The key GRAMMAR is the caller's, per section; this is the claim
-/// itself, recorded for the same-file duplicate gate BEFORE any value parse,
-/// so `lead =` followed by `lead = cc` is a key named twice (colead round-2
-/// IMPORTANT-1).
+/// nothing).
 fn key_claim(line: &str) -> Option<&str> {
     let eq = line.find('=')?;
     let key = line[..eq].trim_end();
@@ -149,9 +136,8 @@ fn key_claim(line: &str) -> Option<&str> {
 fn entry_value(line: &str) -> Option<String> {
     let eq = line.find('=')?;
     let rhs = line[eq + 1..].trim_start();
-    // The line is already whole-line-trimmed, so a fully-quoted value ends at the
-    // final byte. A quote that opens but does not close falls through to the unquoted
-    // branch — exactly as the frozen parser's second regex then matches it.
+    // The line is already whole-line-trimmed, so a fully-quoted value ends at
+    // the final byte.
     if let Some(rest) = rhs.strip_prefix('"')
         && let Some(inner) = rest.strip_suffix('"')
     {
@@ -179,8 +165,7 @@ fn is_config_key(s: &str) -> bool {
 }
 
 /// The agent-name grammar, spelled as the frozen `_validate_agent_name` prints
-/// it. ONE definition: the core validates every identity against this, and the
-/// glue's copy is deleted at the P4 cutover.
+/// it.
 pub const AGENT_NAME_GRAMMAR: &str = "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$";
 
 /// Whether `name` is an agent name: a letter or digit, then up to 63 of
@@ -195,18 +180,17 @@ pub fn is_agent_name(name: &str) -> bool {
     name.len() <= 64 && bytes.all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
-/// The identity v2 config: `[profiles]`, `[roster]`, and the two workspace
-/// seat keys. Order is first appearance across the overlay; a key the local
-/// file repeats keeps its global position with the local value.
+/// The identity v2 config: `[profiles]`, `[roster]`, and the two workspace seat
+/// keys.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct IdentityConfig {
     /// `[profiles] <profile> = <launch command>` — the reusable inventory.
     pub profiles: Vec<(String, String)>,
     /// `[roster] <name> = <profile>` — the agents promised to launch.
     pub roster: Vec<(String, String)>,
-    /// `[workspace] main`, raw. `None` when never set.
+    /// `[workspace] main`, raw.
     pub main: Option<String>,
-    /// `[workspace] workers`, raw (comma-separated). `None` when never set.
+    /// `[workspace] workers`, raw (comma-separated).
     pub workers: Option<String>,
 }
 
@@ -230,15 +214,13 @@ impl IdentityConfig {
     }
 }
 
-/// Why a config could not be READ as identity v2 — each refuses the whole
-/// read before any plan is built. Every message names the file and line.
+/// Why a config could not be READ as identity v2 — each refuses the whole read
+/// before any plan is built.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConfigError {
     /// A SELECTED file that cannot be read or decoded (never treated as empty).
     Unreadable(PathBuf),
-    /// One file names one identity key twice. Precedence inside a file is
-    /// unruled, and the glue's last-wins reading would silently differ from a
-    /// first-wins one — so a v2 file names each key once.
+    /// One file names one identity key twice.
     DuplicateKey {
         /// The file.
         file: PathBuf,
@@ -382,9 +364,7 @@ fn overlay_identity(file: &Path, cfg: &mut IdentityConfig) -> Result<(), ConfigE
             });
         }
         seen.push((section.clone(), key.to_owned()));
-        // Now the VALUE. An empty one (`lead =`, `lead = # note`) binds nothing
-        // — the claim stands for the duplicate gate, the row is skipped, and a
-        // seat naming it later reports NotInRoster, never a bad name.
+        // Now the VALUE.
         let Some(value) = entry_value(trimmed) else {
             continue;
         };
@@ -424,8 +404,7 @@ pub struct Seat {
     /// The profile's launch command, verbatim (operator-authored shell text).
     pub command: String,
     /// The RAW leading-assignment span (`cmd.assign`), byte-exact from the
-    /// command — empty when there are none. The launcher evals
-    /// `<assign_span> exec <argv_span> <context suffix>`.
+    /// command — empty when there are none.
     pub assign_span: String,
     /// The RAW argv span (`cmd.argv`), byte-exact from the command.
     pub argv_span: String,
@@ -443,8 +422,7 @@ pub struct LaunchPlan {
     pub seats: Vec<Seat>,
 }
 
-/// One way the workspace roster is not launchable. ALL of them are collected
-/// before the refusal, so the operator fixes the config once.
+/// One way the workspace roster is not launchable.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Violation {
     /// `[workspace] main` never set (and no override).
@@ -485,7 +463,7 @@ pub enum Violation {
     /// A launch command that is not ONE SIMPLE COMMAND (the command execution
     /// contract): an operator, comment, redirection, substitution or grouping
     /// outside quotes would detach the fixed suffix; a malformed line or one
-    /// with no command word cannot run at all. Never let near a pane.
+    /// with no command word cannot run at all.
     CommandRefused {
         /// The seat name.
         name: String,
@@ -549,9 +527,6 @@ pub fn render_violations(violations: &[Violation]) -> String {
 /// One named seat → its [`Seat`], or `Ok(None)` when the seat's profile is
 /// undefined (its [`Violation::ProfileMissing`] is raised by the independent
 /// roster pass in [`launch_plan`], so this returns no seat and no duplicate).
-/// The binary, tool and raw spans come from ONE validated parse of the command
-/// — never the frozen [`crate::launch_cmd::split_binary`] heuristic, which
-/// would misread a command word that merely contains `=` (colead IMPORTANT-2).
 fn resolve_seat(
     cfg: &IdentityConfig,
     seat: &str,
@@ -592,8 +567,7 @@ fn resolve_seat(
 /// directions: every seat name is in the grammar, bound once in `[roster]`,
 /// bound to a defined and lexable profile, and named for one seat only; and
 /// every `[roster]` row names a defined profile (a row bound to no seat is
-/// legal — it is what `use <name>` selects). `main_override` is the launch
-/// line's `use <name>`, which replaces `[workspace] main` for this launch.
+/// legal — it is what `use <name>` selects).
 ///
 /// # Errors
 ///
@@ -820,9 +794,9 @@ mod tests {
         let w = read_workspace(None, None).expect("no files is empty, not an error");
         assert_eq!(w.main, None);
         assert!(!w.purge_agent_history);
-        // A file the caller SELECTED (Some) that cannot be read fails closed — this is
-        // the purge-bypass guard: a present-but-unreadable config must never read as
-        // empty. `Err` carries the offending path.
+        // A file the caller SELECTED (Some) that cannot be read fails closed —
+        // this is the purge-bypass guard: a present-but-unreadable config must
+        // never read as empty.
         let missing = Path::new("/no/such/config");
         assert_eq!(
             read_workspace(Some(missing), None).unwrap_err(),
@@ -1083,9 +1057,8 @@ mod tests {
 
     #[test]
     fn an_unseated_roster_row_is_legal_but_its_profile_is_still_checked() {
-        // Colead IMPORTANT-4 kept its half: the independent pass reports a missing
-        // profile on a row nobody seats. The row itself is legal — it is what
-        // `use <name>` selects (ruled 2026-09-02).
+        // Colead IMPORTANT-4 kept its half: the independent pass reports a
+        // missing profile on a row nobody seats.
         let (_f, cfg) = v2(
             "[profiles]\ncc = \"claude\"\n[roster]\nlead = cc\nunused = missing\n\
              [workspace]\nmain = lead\n",
@@ -1201,8 +1174,8 @@ mod tests {
 
     #[test]
     fn a_seat_carries_the_byte_exact_launch_spans_from_one_parse() {
-        // Colead IMPORTANT-1: the validated assign/argv spans are transported on
-        // the Seat, not reparsed downstream. Tabs and runs of spaces survive.
+        // Colead IMPORTANT-1: the validated assign/argv spans are transported
+        // on the Seat, not reparsed downstream.
         let (_f, cfg) = v2(
             "[profiles]\nmic = \"A=1  B=2 env -u C claude --model\tfable\"\n\
              [roster]\nlead = mic\n[workspace]\nmain = lead\n",

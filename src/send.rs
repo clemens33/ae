@@ -82,9 +82,6 @@ pub fn parse(tail: &[String]) -> Result<Parsed, Usage> {
 }
 
 /// The frozen event-field contract, as read off the caller's environment.
-/// Every member is what the frozen `${VAR:-}` reads: an unset or EMPTY
-/// variable is `None`/empty. Built by the one door in `lib.rs`; tests build
-/// it directly.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Env {
     /// `AE_SENDER_OVERRIDE`.
@@ -175,11 +172,9 @@ pub fn envelope_sender<'a>(env: &'a Env, display: &'a str) -> &'a str {
     }
 }
 
-/// The event's action, ref and summary, resolved from the environment and
-/// the message the way the frozen body resolves them BEFORE the paste — the
-/// shape a sink records. A pane send re-derives its summary from the delivery
-/// with [`delivered_summary`]. The summary is the raw text: the emitter
-/// renders it for the action.
+/// The event's action, ref and summary, resolved from the environment and the
+/// message the way the frozen body resolves them BEFORE the paste — the shape a
+/// sink records.
 #[must_use]
 pub fn fields(env: &Env, message: &str) -> (String, String, String) {
     let action = env
@@ -203,18 +198,7 @@ pub fn fields(env: &Env, message: &str) -> (String, String, String) {
 
 /// The summary of a delivered pane send, raw: an explicit `_AE_EVENT_SUMMARY`
 /// as given, else the text the entry pasted, for [`crate::tracked::event_line`]
-/// to render for the action. The frozen body summarises `msg` AFTER
-/// reassigning it to the framed text, so the provenance envelope leads the
-/// summary (`⟦ae:msg from …⟧`, a newline, the text) and counts against the
-/// cap; `ask`, `review`, `reply` and `cancel` are exact without this only
-/// because each passes `_AE_EVENT_SUMMARY`. The core does
-/// not re-derive the provenance line — the recovery record the entry just
-/// wrote IS that text byte for byte, and is read back through the one gated
-/// read door, [`crate::event_text::read_container`] (a record is never empty,
-/// so empty means unreadable). Without a readable record (the entry stores
-/// nothing when the messages directory cannot be written), the summary is of
-/// the message as typed and stderr says so: a summary is not worth losing
-/// the record of a delivered message over.
+/// to render for the action.
 fn delivered_summary(env: &Env, framed: &str) -> String {
     match env.summary.as_deref().filter(|value| !value.is_empty()) {
         Some(explicit) => explicit.to_owned(),
@@ -222,11 +206,11 @@ fn delivered_summary(env: &Env, framed: &str) -> String {
     }
 }
 
-/// The environment a delivery that still runs a HELPER is given: the action
-/// and ref the body store names the recovery file after (the ref only when
-/// there is one — an empty variable would read as none anyway), and the
-/// caller's explicit override when it gave one, so the envelope names the same
-/// actor the event does. Nothing else.
+/// The environment a delivery that still runs a HELPER is given: the action and
+/// ref the body store names the recovery file after (the ref only when there is
+/// one — an empty variable would read as none anyway), and the caller's
+/// explicit override when it gave one, so the envelope names the same actor the
+/// event does.
 #[must_use]
 pub fn delivery_env<'a>(
     env: &'a Env,
@@ -247,9 +231,7 @@ pub fn delivery_env<'a>(
     pairs
 }
 
-/// Send end to end. `display` is the calling pane's display ref (empty for
-/// none); `own_session` is this session's name as P2.1b derives it; `defer`
-/// is `AE_SEND_DEFER_SEC`. Nothing is printed on success.
+/// Send end to end.
 ///
 /// # Errors
 ///

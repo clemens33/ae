@@ -61,28 +61,21 @@ use std::time::Duration;
 
 use crate::json::{self, Value};
 
-// The inbound half, in submodules of THIS one rather than beside it. That is a
-// privacy decision, not a filing one: a child module can see its parent's
-// private items, so `open_regular`, `durable_write` and the locked [`Api`]'s
+// The inbound half, in submodules of THIS one rather than beside it.
 pub mod bridge;
 pub mod inbound;
 pub mod routing;
 
 // ─── the network boundary ────────────────────────────────────────────────
 
-/// The production API root. A CONSTANT, and deliberately not a config key: an
-/// operator-settable base URL is an operator-settable place to send the bot
-/// token, and this process reads its config from a file another process wrote.
-/// The tests reach a loopback server through [`Egress::Loopback`], which exists
-/// only under `cfg(test)` and therefore cannot be reached from a release build
-/// at all — not by config, not by argument, not by accident.
+/// The production API root.
 const TELEGRAM_API: &str = "https://api.telegram.org";
 
 /// How long to wait for the TCP+TLS handshake.
 const TIMEOUT_CONNECT: Duration = Duration::from_secs(10);
 /// How long to wait for the response head after the request is sent.
 const TIMEOUT_RECV_RESPONSE: Duration = Duration::from_secs(20);
-/// The whole-call ceiling. Every phase is bounded, and so is their sum.
+/// The whole-call ceiling.
 const TIMEOUT_GLOBAL: Duration = Duration::from_secs(30);
 
 /// The most response body this module will hold in memory, in bytes.
@@ -101,19 +94,15 @@ const _: () = assert!(
 );
 
 /// Telegram's own `text` limit is 4096 UTF-8 characters; a longer message is
-/// rejected with a 400. Truncating below it is our choice, not the API's, and
-/// leaves room for the header line.
+/// rejected with a 400.
 const MAX_TEXT_CHARS: usize = 3900;
 
-/// Where a request can be sent. One production value, one test value that does
-/// not exist outside `cfg(test)`.
+/// Where a request can be sent.
 #[derive(Debug, Clone)]
 enum Egress {
     /// `api.telegram.org` over TLS.
     Production,
     /// TEST ONLY: a plaintext loopback server, e.g. `http://127.0.0.1:53312`.
-    /// Gated on `cfg(test)` so that no release build contains a way to point
-    /// the token anywhere but production.
     #[cfg(test)]
     Loopback(String),
 }
@@ -128,7 +117,7 @@ impl Egress {
         }
     }
 
-    /// Whether the agent refuses plaintext. True for production, always.
+    /// Whether the agent refuses plaintext.
     fn https_only(&self) -> bool {
         match self {
             Self::Production => true,
@@ -143,9 +132,7 @@ impl Egress {
 
 // ─── the secret ──────────────────────────────────────────────────────────
 
-/// A bot token. Constructible from a string and readable exactly once per use
-/// site through [`Token::expose`] — a name that is meant to look wrong in a
-/// diff.
+/// A bot token.
 #[derive(Clone, PartialEq, Eq)]
 pub struct Token(String);
 
@@ -156,7 +143,7 @@ impl Token {
         Self(value.into())
     }
 
-    /// The raw token. Every caller is a place a reviewer should look.
+    /// The raw token.
     fn expose(&self) -> &str {
         &self.0
     }
@@ -200,8 +187,7 @@ impl Credentials {
     }
 }
 
-/// Why credentials could not be loaded. Carries no file CONTENT — only which
-/// step failed and, for a path problem, the path the operator wrote.
+/// Why credentials could not be loaded.
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum CredentialsError {
@@ -216,14 +202,10 @@ pub enum CredentialsError {
     /// The token file was readable but held nothing.
     TokenEmpty,
     /// The config path is not a regular file — a FIFO, a device, a directory.
-    /// Refused BEFORE opening it: `open(2)` on a FIFO blocks until a writer
-    /// appears, and a bridge that hangs in credential loading never starts and
-    /// never says why.
     ConfigNotRegular(PathBuf),
-    /// The token path is not a regular file. Same refusal, same reason.
+    /// The token path is not a regular file.
     TokenNotRegular(PathBuf),
-    /// The token file is readable by group or other. A bot token is a private
-    /// key by any other name, and ssh has refused this for thirty years.
+    /// The token file is readable by group or other.
     TokenInsecurePermissions(PathBuf, u32),
 }
 
@@ -256,8 +238,7 @@ impl fmt::Display for CredentialsError {
     }
 }
 
-/// **THE ONLY `File::open` IN THIS MODULE.** Open a path that must be a REGULAR
-/// FILE, and hand back the descriptor with its `fstat`.
+/// **THE ONLY `File::open` IN THIS MODULE.**
 fn open_regular(path: &Path) -> Result<(fs::File, fs::Metadata), NotRegular> {
     #[allow(
         clippy::disallowed_methods,
@@ -288,7 +269,7 @@ fn open_regular(path: &Path) -> Result<(fs::File, fs::Metadata), NotRegular> {
     Ok((file, metadata))
 }
 
-/// Read a regular file whole. Returns its contents and the opened file's mode.
+/// Read a regular file whole.
 fn read_regular_file(path: &Path) -> Result<(String, u32), NotRegular> {
     let (mut file, metadata) = open_regular(path)?;
     let mut text = String::new();
@@ -297,9 +278,7 @@ fn read_regular_file(path: &Path) -> Result<(String, u32), NotRegular> {
     Ok((text, metadata.mode() & 0o7777))
 }
 
-/// Why [`open_regular`] gave up. Mapped to each caller's own error type, because
-/// what these three states MEAN differs per reader: an absent cursor is a fresh
-/// start, an absent log is a quiet pass, and an absent config is a refusal.
+/// Why [`open_regular`] gave up.
 enum NotRegular {
     /// Nothing at that path.
     Absent,
@@ -330,10 +309,7 @@ pub fn load_credentials(config: &Path, home: &Path) -> Result<Credentials, Crede
 pub struct Settings {
     /// The bot token and the chat the outbound half posts to.
     pub credentials: Credentials,
-    /// **Inbound exists ONLY with a non-empty allow-list.** An empty
-    /// list is not "allow everyone" and not "allow nobody by accident" — it is
-    /// the configured state of an outbound-only bridge, and the inbound loop
-    /// does not run at all in it.
+    /// **Inbound exists ONLY with a non-empty allow-list.**
     pub allowed_user_ids: Vec<String>,
 }
 
@@ -397,9 +373,7 @@ pub fn load_settings(config: &Path, home: &Path) -> Result<Settings, Credentials
             return Err(CredentialsError::TokenUnreadable(token_path.clone()));
         }
     };
-    // CUSTODY, checked on the descriptor that was actually read. Any bit set for
-    // group or other means somebody else can have the token, and a secret with
-    // the wrong permissions is already spent — refusing to start is the only
+    // CUSTODY, checked on the descriptor that was actually read.
     if mode & 0o077 != 0 {
         return Err(CredentialsError::TokenInsecurePermissions(token_path, mode));
     }
@@ -452,8 +426,7 @@ fn setting(line: &str) -> Option<(String, String)> {
     Some((key.to_owned(), value))
 }
 
-/// Expand a leading `~` against the supplied home. Everything else is taken
-/// verbatim.
+/// Expand a leading `~` against the supplied home.
 fn expand_home(value: &str, home: &Path) -> PathBuf {
     if value == "~" {
         return home.to_owned();
@@ -468,7 +441,7 @@ fn expand_home(value: &str, home: &Path) -> PathBuf {
 /// The class of an HTTP status, which is all of it that is ever presented.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StatusClass {
-    /// 3xx. With `max_redirects(0)` this is refused rather than followed.
+    /// 3xx.
     Redirect,
     /// 4xx — Telegram refused the request itself.
     ClientError,
@@ -504,21 +477,18 @@ impl StatusClass {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum SendFailure {
-    /// A non-2xx status. The code is kept — a status code is not a secret, and
-    /// 429 and 500 deserve different sympathy — but nothing else is.
+    /// A non-2xx status.
     Status(StatusClass, u16),
     /// HTTP 2xx, and Telegram still said no: root `ok` was `false`, missing, or
-    /// not a boolean. A REJECTION, not a success — see the module docs.
+    /// not a boolean.
     Rejected,
-    /// The response was not UTF-8, not JSON, or not a JSON object. Includes a
-    /// body nested past [`crate::json`]'s `MAX_DEPTH`.
+    /// The response was not UTF-8, not JSON, or not a JSON object.
     Malformed,
     /// The response body passed [`MAX_RESPONSE_BYTES`] while streaming.
     TooLarge,
     /// A configured timeout fired.
     Timeout,
-    /// A 3xx. `max_redirects(0)` means a redirect is an error, never a second
-    /// request carrying the token to wherever the first host pointed.
+    /// A 3xx.
     Redirected,
     /// Connect, DNS, TLS or socket failure — deliberately one class, because
     /// the distinctions live in strings this type refuses to carry.
@@ -576,9 +546,7 @@ impl ApiFailure {
 
 impl fmt::Display for ApiFailure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Every arm is `{method} {endpoint}: {class}`. No URL, no host, no
-        // response body, no upstream error text. THE ONE PLACE the detail text
-        // is written, so the two endpoints cannot drift into two vocabularies.
+        // Every arm is `{method} {endpoint}: {class}`.
         write!(f, "POST {}: ", self.method.label())?;
         match self.kind {
             SendFailure::Status(class, code) => write!(f, "{} ({code})", class.label()),
@@ -599,8 +567,7 @@ impl std::error::Error for ApiFailure {}
 impl fmt::Display for SendFailure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // A bare `SendFailure` is the OUTBOUND half's, and it renders exactly
-        // as it always has — byte for byte. It renders THROUGH [`ApiFailure`]
-        // so that adding the inbound endpoint did not fork the detail text into
+        // as it always has — byte for byte.
         ApiFailure::at(Method::SendMessage, *self).fmt(f)
     }
 }
@@ -673,8 +640,7 @@ impl Api {
     }
 
     /// The agent's resolved configuration, for the tests that assert the lock
-    /// is actually on. Not a public surface: the settings are an invariant, not
-    /// a thing callers read.
+    /// is actually on.
     #[cfg(test)]
     fn config(&self) -> &ureq::config::Config {
         self.agent.config()
@@ -689,8 +655,7 @@ impl Api {
     /// `{"ok":false}` is [`SendFailure::Rejected`], because Telegram answers
     /// "chat not found" that way and treating it as delivered loses the message.
     pub fn send_message(&self, text: &str) -> Result<(), SendFailure> {
-        // The one place the token becomes part of a string. It is a local, it is
-        // never logged, and it dies at the end of this function.
+        // The one place the token becomes part of a string.
         let url = format!(
             "{}/bot{}/sendMessage",
             self.egress.base(),
@@ -783,8 +748,6 @@ impl Api {
     /// [`Api::get_updates`] before the endpoint is attached to its failure.
     fn updates(&self, offset: i64, limit: u32, wait: Duration) -> Result<Vec<Value>, SendFailure> {
         // The one place the token becomes part of a string, for this endpoint.
-        // A local, never logged, dead at the end of the function — exactly as
-        // in `send_message`.
         let url = format!(
             "{}/bot{}/getUpdates",
             self.egress.base(),
@@ -798,9 +761,7 @@ impl Api {
                 "timeout",
                 Value::Num(i64::try_from(seconds).unwrap_or(i64::MAX)),
             ),
-            // ONLY `message`. Every other update kind — edits, callbacks,
-            // channel posts — is something this bridge has no route for, and
-            // asking for them would mean receiving updates whose only possible
+            // ONLY `message`.
             ("allowed_updates", Value::Arr(vec![Value::str("message")])),
         ])
         .render();
@@ -826,8 +787,7 @@ impl Api {
     }
 }
 
-/// Map a `ureq::Error` to a redacted class. The error is consumed, never
-/// formatted, and nothing derived from it survives this function.
+/// Map a `ureq::Error` to a redacted class.
 #[allow(
     clippy::needless_pass_by_value,
     reason = "BY VALUE ON PURPOSE: this function's contract is that the error dies here. \
@@ -841,7 +801,7 @@ fn classify(error: ureq::Error) -> SendFailure {
         ureq::Error::TooManyRedirects | ureq::Error::RedirectFailed => SendFailure::Redirected,
         // Io, Tls, HostNotFound, ConnectionFailed, Protocol, Http, BadUri,
         // InvalidProxyUrl, BodyExceedsLimit and whatever a `#[non_exhaustive]`
-        // enum adds next. Collapsed on purpose: the differences between them
+        // enum adds next.
         _ => SendFailure::Transport,
     }
 }
@@ -859,7 +819,7 @@ fn read_bounded(reader: impl Read) -> Result<Vec<u8>, SendFailure> {
     Ok(buffer)
 }
 
-/// Did Telegram accept it? Only `{"ok":true, ...}` says yes.
+/// Did Telegram accept it?
 fn accepted(bytes: &[u8]) -> Result<(), SendFailure> {
     envelope(bytes).map(|_| ())
 }
@@ -871,8 +831,7 @@ fn envelope(bytes: &[u8]) -> Result<Value, SendFailure> {
     match value.get("ok") {
         Some(Value::Bool(true)) => Ok(value),
         // `Some(Bool(false))`, `Some(anything else)` and `None` are one answer:
-        // not accepted. Distinguishing them would only invite a caller to treat
-        // one of them as success.
+        // not accepted.
         _ => Err(SendFailure::Rejected),
     }
 }
@@ -897,9 +856,7 @@ pub struct Cursor {
     pub offset: u64,
 }
 
-/// The on-disk form: a version tag and two numbers. Versioned because a cursor
-/// that cannot be recognised must be REFUSED rather than guessed at, and a
-/// future format needs a way to say which one it is.
+/// The on-disk form: a version tag and two numbers.
 const CURSOR_TAG: &str = "ae-telegram-outbound-v1";
 
 impl Cursor {
@@ -909,8 +866,7 @@ impl Cursor {
         format!("{CURSOR_TAG} {} {}\n", self.inode, self.offset)
     }
 
-    /// Parse the one line a cursor is stored as. Strict: an unrecognised line is
-    /// `None`, never a zero cursor.
+    /// Parse the one line a cursor is stored as.
     #[must_use]
     pub fn parse(text: &str) -> Option<Self> {
         let mut fields = text.split_whitespace();
@@ -926,24 +882,17 @@ impl Cursor {
     }
 }
 
-/// Why the cursor could not be read or written. A cursor problem is never
-/// resolved by guessing: guessing low re-sends the whole log, guessing high
-/// loses everything before the guess.
+/// Why the cursor could not be read or written.
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum CursorError {
     /// The file exists but is not a cursor this version understands.
     Unrecognised,
-    /// The cursor path is not a regular file. A special node here is neither
-    /// "absent" (which would restart from zero) nor a valid cursor: it is a
-    /// refusal, and it is made BEFORE the open, because `open(2)` on a FIFO
-    /// waits for a writer and the meta directory is somewhere other processes
-    /// can create names.
+    /// The cursor path is not a regular file.
     NotRegular(PathBuf),
     /// Reading it failed for a reason other than absence.
     Unreadable(io::Error),
-    /// The write did not become durable. The caller must not treat the delivery
-    /// it was checkpointing as checkpointed.
+    /// The write did not become durable.
     NotWritten(io::Error),
 }
 
@@ -971,7 +920,7 @@ impl std::error::Error for CursorError {
     }
 }
 
-/// Read the cursor. `Ok(None)` means there has never been one.
+/// Read the cursor.
 ///
 /// # Errors
 ///
@@ -1025,9 +974,8 @@ pub(crate) fn durable_write(path: &Path, contents: &str) -> io::Result<()> {
         std::process::id()
     ));
     let staged = (|| {
-        // `create_new(true)` is `O_EXCL`, and `O_EXCL` NEVER follows an existing
-        // node. The temp name is predictable (it has to be, to be cleanable), so
-        // without this a planted symlink at that path would be followed and
+        // `create_new(true)` is `O_EXCL`, and `O_EXCL` NEVER follows an
+        // existing node.
         let mut options = fs::OpenOptions::new();
         options.write(true).create_new(true).mode(0o600);
         let mut file = match options.open(&temp) {
@@ -1062,8 +1010,7 @@ pub const CURSOR_FILE: &str = "telegram-outbound.cursor";
 /// The event action `say` emits, and the only one this bridge forwards.
 const CHAT_ACTION: &str = "chat";
 
-/// The most bytes of log one pass will read. A pass is bounded so a backlog
-/// cannot turn one iteration into an unbounded allocation.
+/// The most bytes of log one pass will read.
 const MAX_PASS_BYTES: u64 = 1024 * 1024;
 
 /// Retry schedule after a failed delivery: doubling, and capped.
@@ -1109,12 +1056,9 @@ pub struct Pass {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum PassFailure {
-    /// Telegram did not accept an event. The cursor is unchanged.
+    /// Telegram did not accept an event.
     Send(SendFailure),
     /// The cursor could not be read, or a checkpoint could not be made durable.
-    /// Rendered as a string because a `CursorError` wraps an `io::Error`, which
-    /// is not `Clone` — and this value is compared in tests. It holds ae's own
-    /// message, never a network value.
     Cursor(String),
     /// The log could not be opened or read.
     Log(String),
@@ -1178,9 +1122,7 @@ impl Outbound {
         }
     }
 
-    /// The body of a pass. `Err` is a failure that happened before any event
-    /// was read; a failure DURING the pass is carried in the returned [`Pass`]
-    /// so the deliveries that did land are still reported.
+    /// The body of a pass.
     fn pass(&mut self, api: &Api) -> Result<Pass, PassFailure> {
         // ONE OPEN, and everything about the file comes off THAT descriptor.
         let (mut file, metadata) = match open_regular(&self.log) {
@@ -1188,8 +1130,7 @@ impl Outbound {
             // No log yet is not a failure: a session that has emitted no event
             // has nothing to forward.
             Err(NotRegular::Absent) => return Ok(self.quiet_pass()),
-            // A directory, socket or FIFO wearing the log's name. Fail closed
-            // and say which, rather than blocking in `open(2)` forever.
+            // A directory, socket or FIFO wearing the log's name.
             Err(NotRegular::Node) => {
                 return Err(PassFailure::Log(format!(
                     "telegram: event log {} is not a regular file",
@@ -1240,17 +1181,14 @@ impl Outbound {
                     position.offset += width;
                 }
                 Forwarded::Delivered => {
-                    // THE ADVANCE IS THE CHECKPOINT, and neither happens without
-                    // the other. `position` moves only after `store_cursor`
-                    // returns Ok, so a failed checkpoint leaves the in-memory
+                    // THE ADVANCE IS THE CHECKPOINT, and neither happens
+                    // without the other.
                     let advanced = Cursor {
                         inode: position.inode,
                         offset: position.offset + width,
                     };
                     if let Err(why) = store_cursor(&self.cursor_path, &advanced) {
-                        // The message IS delivered; the checkpoint is not. The
-                        // next pass re-sends exactly this one event — the single
-                        // allowed duplicate — and re-attempts the checkpoint.
+                        // The message IS delivered; the checkpoint is not.
                         pass.delivered += 1;
                         pass.failure = Some(PassFailure::Cursor(why.to_string()));
                         break;
@@ -1331,9 +1269,7 @@ impl Outbound {
 
     /// Forward one raw log line, if it is a chat event.
     fn forward(&self, api: &Api, line: &[u8]) -> Forwarded {
-        // A line that is not UTF-8 is not an event this reader can frame. It is
-        // SKIPPED rather than fatal — one corrupt byte must not stop every later
-        // event forever — and its full byte width is still stepped over, because
+        // A line that is not UTF-8 is not an event this reader can frame.
         let Ok(text) = std::str::from_utf8(line) else {
             return Forwarded::Skipped;
         };
@@ -1419,9 +1355,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
-    /// A token that is obviously fake and obviously searchable. Every
-    /// "the token never appears in X" assertion looks for THIS string, so it
-    /// must not be a substring of anything a test legitimately prints.
+    /// A token that is obviously fake and obviously searchable.
     pub(super) const FAKE_TOKEN: &str = "123456789:AAqRSTUVwxyzTOKENnotarealoneKKKK7";
     pub(super) const CHAT: &str = "-1001234567890";
 
@@ -1435,11 +1369,7 @@ mod tests {
         pub(super) content_type: Option<String>,
         pub(super) body: String,
         /// The durable cursor AT THE MOMENT this request arrived, when the fake
-        /// was told to watch one. This is how a test can see *when* a checkpoint
-        /// is written rather than only where it ends up: the client writes the
-        /// cursor for event N before the request for event N+1 leaves, so the
-        /// value observed here is evidence about ordering, not about the final
-        /// state.
+        /// was told to watch one.
         pub(super) cursor_on_arrival: Option<Cursor>,
     }
 
@@ -1453,20 +1383,15 @@ mod tests {
             /// The framed body.
             body: String,
         },
-        /// A chunked response of `chunks` × `chunk`, with no `Content-Length` at
-        /// all — the shape a cap that trusts a declared length cannot bound.
-        /// `written` counts the chunks that actually got out.
+        /// A chunked response of `chunks` × `chunk`, with no `Content-Length`
+        /// at all — the shape a cap that trusts a declared length cannot bound.
         Chunked {
             chunk: String,
             chunks: usize,
             written: Arc<AtomicUsize>,
         },
         /// A response that DECLARES `declared` bytes and really sends them —
-        /// far past the cap. The cap must hold on what is streamed, not on what
-        /// the header promised. `written` receives however many bytes the server
-        /// actually got out before the client stopped reading, which is the only
-        /// way a test can tell a STREAMING cap from one that buffers the whole
-        /// body and rejects it afterwards.
+        /// far past the cap.
         Oversized {
             declared: usize,
             written: Arc<AtomicUsize>,
@@ -1519,7 +1444,7 @@ mod tests {
                         Ok((stream, _)) => {
                             // BSD/macOS hands back an accepted socket that has
                             // INHERITED the listener's O_NONBLOCK; Linux does
-                            // not. Left set, the first `read_line` returns
+                            // not.
                             stream.set_nonblocking(false).unwrap();
                             stream
                                 .set_read_timeout(Some(Duration::from_secs(10)))
@@ -1811,8 +1736,7 @@ mod tests {
     #[test]
     fn no_failure_this_module_can_produce_carries_the_token() {
         // The URL the request is built on DOES contain the token — that is the
-        // hazard, and this asserts the blast radius of it. Every failure shape,
-        // formatted both ways a caller might format it.
+        // hazard, and this asserts the blast radius of it.
         let failures = [
             SendFailure::Status(StatusClass::ClientError, 401),
             SendFailure::Status(StatusClass::ServerError, 500),
@@ -1902,8 +1826,7 @@ mod tests {
     #[test]
     fn the_production_agent_refuses_a_cleartext_destination() {
         // The lock is not decoration: https_only(true) makes a plaintext URL
-        // fail before a byte of the token leaves the process. (Proved through
-        // the production constructor's own agent, on a loopback URL — nothing
+        // fail before a byte of the token leaves the process.
         let api = Api::production(Credentials::new(Token::new(FAKE_TOKEN), CHAT));
         let failure = api
             .agent
@@ -1999,9 +1922,7 @@ mod tests {
 
     #[test]
     fn a_declared_length_far_past_the_cap_is_capped_while_streaming() {
-        // The declared length is 64 MiB. Two things are asserted, and the second
-        // is the one that matters: the call FAILS, and the server never managed
-        // to hand over anything like 64 MiB — so the cap stopped the read rather
+        // The declared length is 64 MiB.
         let written = Arc::new(AtomicUsize::new(0));
         let declared = MAX_RESPONSE_BYTES * 1024;
         let fake = Fake::one(Reply::Oversized {
@@ -2083,9 +2004,9 @@ mod tests {
 
     #[test]
     fn a_sweep_nudge_is_not_forwarded_by_default() {
-        // The orchestrator's sweep prompt and the stale nudge are both
-        // the `nudge` action (only their summaries differ), and neither is in
-        // the default Telegram include. Here that row holds BY CONSTRUCTION —
+        // The orchestrator's sweep prompt and the stale nudge are both the
+        // `nudge` action (only their summaries differ), and neither is in the
+        // default Telegram include.
         let temp = Temp::new("sweep");
         append(
             temp.path(),
@@ -2134,9 +2055,9 @@ mod tests {
 
     #[test]
     fn a_fault_between_acceptance_and_the_checkpoint_replays_exactly_one_event() {
-        // THE CRASH WINDOW, modelled exactly as the contract states it: Telegram
-        // accepted an event and the process died before that event's checkpoint
-        // reached the disk. On disk that is indistinguishable from "the cursor
+        // THE CRASH WINDOW, modelled exactly as the contract states it:
+        // Telegram accepted an event and the process died before that event's
+        // checkpoint reached the disk.
         let temp = Temp::new("crashwindow");
         append(
             temp.path(),
@@ -2194,9 +2115,7 @@ mod tests {
 
     #[test]
     fn each_accepted_event_is_checkpointed_before_the_next_one_is_sent() {
-        // R1's transaction, observed rather than inferred. Where the cursor ends
-        // up after a pass is the same whether it was written once per event or
-        // once at the end — so a test that only reads the final value cannot
+        // R1's transaction, observed rather than inferred.
         let temp = Temp::new("checkpointorder");
         append(
             temp.path(),
@@ -2235,9 +2154,6 @@ mod tests {
     }
 
     /// Make `dir` unwritable, run `body`, then put it back whatever happens.
-    /// A read-only directory is how a failing checkpoint is arranged without a
-    /// product seam: the log still opens and reads, the cursor still loads, and
-    /// only the temp-file creation inside `store_cursor` is refused.
     pub(super) fn with_unwritable_dir<T>(dir: &Path, body: impl FnOnce() -> T) -> T {
         let original = std::fs::metadata(dir).unwrap().permissions();
         std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o555)).unwrap();
@@ -2251,9 +2167,7 @@ mod tests {
 
     #[test]
     fn a_failed_checkpoint_does_not_let_the_scan_run_past_the_owed_event() {
-        // THE BOUND ON DUPLICATION. When a checkpoint fails, event N is
-        // delivered but not recorded. If the in-memory scan advanced anyway, the
-        // next pass would send N+1 with the durable cursor still before N — and
+        // THE BOUND ON DUPLICATION.
         let temp = Temp::new("checkpointfail");
         append(
             temp.path(),
@@ -2304,7 +2218,7 @@ mod tests {
         );
 
         // Writable again: the owed event lands, is checkpointed, and the rest
-        // follows. Nothing was lost.
+        // follows.
         let recovered = outbound.pump(&fake.api());
         assert_eq!(recovered.delivered, 3);
         assert_eq!(recovered.failure, None);
@@ -2418,8 +2332,7 @@ mod tests {
         let first_inode = outbound.cursor().unwrap().unwrap().inode;
 
         // Rotate: a genuinely different file under the same name — and a LONGER
-        // one than the offset carried over from the old file. That length is the
-        // whole discriminating power of this test: with a shorter new file, a
+        // one than the offset carried over from the old file.
         std::fs::rename(
             temp.path().join("events.jsonl"),
             temp.path().join("events.jsonl.1"),
@@ -2464,8 +2377,7 @@ mod tests {
         let mut outbound = Outbound::new(temp.path(), "s");
         assert_eq!(outbound.pump(&fake.api()).delivered, 2);
 
-        // Same inode, shorter file: the cursor now points past the end. Re-read
-        // (a duplicate) rather than jump to the end (a loss).
+        // Same inode, shorter file: the cursor now points past the end.
         std::fs::write(
             temp.path().join("events.jsonl"),
             chat_event("a", "fresh") + "\n",
@@ -2511,8 +2423,6 @@ mod tests {
     #[test]
     fn a_record_too_long_for_the_pass_window_fails_loudly_instead_of_stalling() {
         // The silent-wedge case: one unterminated record wider than the window.
-        // A pass that just found no complete line would report success and make
-        // no progress, forever, with nothing to see in any status.
         let temp = Temp::new("giant");
         std::fs::write(
             temp.path().join("events.jsonl"),
@@ -2545,7 +2455,7 @@ mod tests {
     #[test]
     fn an_unrecognised_cursor_stops_the_pass_rather_than_guessing() {
         // Guessing low re-sends the whole log; guessing high loses everything
-        // before the guess. Neither is a decision this module gets to make.
+        // before the guess.
         let temp = Temp::new("badcursor");
         append(temp.path(), &[chat_event("a", "one")]);
         std::fs::write(temp.path().join(super::CURSOR_FILE), "garbage\n").unwrap();
@@ -2619,9 +2529,7 @@ mod tests {
 
     // ─── credentials ─────────────────────────────────────────────────────
 
-    /// Write a token file with the custody `load_credentials` demands. Tests
-    /// that want the WRONG custody set it explicitly, so the permission is
-    /// never an accident of the runner's umask in either direction.
+    /// Write a token file with the custody `load_credentials` demands.
     fn write_token(path: &Path, body: &str) {
         std::fs::write(path, body).unwrap();
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
@@ -2655,9 +2563,8 @@ mod tests {
 
     #[test]
     fn the_allow_list_splits_on_every_separator_and_repairs_nothing() {
-        // The allow-list IS the trust predicate's input: every id that
-        // survives this decides who may drive this machine's sessions from a
-        // chat. So the only normalisation here is whitespace — a parser that
+        // The allow-list IS the trust predicate's input: every id that survives
+        // this decides who may drive this machine's sessions from a chat.
         assert_eq!(parse_id_list("42"), vec!["42".to_owned()]);
         assert_eq!(
             parse_id_list(" 42 ,7\t9 "),
@@ -2684,8 +2591,7 @@ mod tests {
     #[test]
     fn the_settings_carry_the_chat_id_and_the_allow_list_the_daemon_admits_on() {
         // The two values the inbound policy is built from, read back through
-        // the accessors the daemon actually calls. Without this the wiring from
-        // config to `Policy` is asserted nowhere: every routing test builds its
+        // the accessors the daemon actually calls.
         let temp = Temp::new("settings");
         write_token(&temp.path().join("tg.token"), FAKE_TOKEN);
         let config = write_config(
@@ -2707,7 +2613,7 @@ mod tests {
     fn a_token_file_is_trimmed_of_every_line_ending_a_text_editor_can_leave() {
         // A token with a stray `\r` or trailing space is a 404 from Telegram
         // and an opaque one: the failure type CANNOT carry the token, so the
-        // operator gets "not found" with nothing to look at. CRLF is the shape
+        // operator gets "not found" with nothing to look at.
         let temp = Temp::new("tokentrim");
         write_token(
             &temp.path().join("tg.token"),
@@ -2725,7 +2631,7 @@ mod tests {
     fn a_commented_out_setting_is_never_honoured() {
         // Comments are skipped BEFORE the key grammar sees them, and the key
         // grammar would refuse them anyway — defence in depth over one
-        // property: a setting an operator commented out must not be live. It is
+        // property: a setting an operator commented out must not be live.
         let temp = Temp::new("commented");
         write_token(&temp.path().join("tg.token"), FAKE_TOKEN);
         let config = write_config(
@@ -2745,9 +2651,7 @@ mod tests {
 
     #[test]
     fn a_chat_id_outside_the_telegram_section_is_not_a_chat_id() {
-        // The `chat_id = 999` above sits under `[workspace]`. If section
-        // tracking were broken, the assertion in that test would still pass by
-        // accident when the key order changed — so state it directly.
+        // The `chat_id = 999` above sits under `[workspace]`.
         let temp = Temp::new("section");
         write_token(&temp.path().join("tg.token"), FAKE_TOKEN);
         let config = write_config(
@@ -2820,9 +2724,7 @@ mod tests {
 
     #[test]
     fn a_credential_path_that_is_not_a_regular_file_is_refused_before_it_is_opened() {
-        // THE HAZARD IS `open(2)` ITSELF. On a FIFO it blocks until a writer
-        // appears — no timeout applies — so the classification has to happen
-        // first, and a bridge that hangs in credential loading never starts and
+        // THE HAZARD IS `open(2)` ITSELF.
         let temp = Temp::new("nodekind");
         write_token(&temp.path().join("tg.token"), FAKE_TOKEN);
 
@@ -2995,7 +2897,7 @@ mod tests {
     fn absence_still_means_absence_at_both_paths() {
         // The refusal above must not have swallowed the two states that are NOT
         // failures: no cursor yet is a fresh start, and no log yet is a quiet
-        // pass. A special node is neither of them.
+        // pass.
         let temp = Temp::new("stillabsent");
         assert_eq!(
             load_cursor(&temp.path().join(super::CURSOR_FILE)).unwrap(),
@@ -3012,8 +2914,7 @@ mod tests {
     #[test]
     fn a_symlink_planted_at_the_temp_path_does_not_get_its_target_truncated() {
         // The temp name is predictable — it has to be, so a leftover can be
-        // cleaned up — which makes it a place to plant a symlink. Without
-        // `O_EXCL` the open follows it and truncates whatever it points at, with
+        // cleaned up — which makes it a place to plant a symlink.
         let temp = Temp::new("symlinktemp");
         let victim = temp.path().join("precious");
         std::fs::write(&victim, "do not lose me").unwrap();

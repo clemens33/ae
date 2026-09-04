@@ -29,9 +29,7 @@ use crate::state::EXIT_FAILED;
 const LOCK_WAIT: Duration = Duration::from_secs(5);
 
 /// The operation facts Bash owns and hands the publisher — everything the core
-/// does NOT derive itself. The commit facts are absent on purpose: the core
-/// derives base/final/range/count from `push_outcome` and `workdir` with P3.2
-/// typed Git, rather than trust a caller to compute them.
+/// does NOT derive itself.
 pub(crate) struct Ops<'a> {
     pub(crate) push_outcome: &'a str,
     pub(crate) push_ref: &'a str,
@@ -42,7 +40,7 @@ pub(crate) struct Ops<'a> {
 
 /// Acquire the three source locks in the one fixed global order and return the
 /// held handles (released on drop) — or a diagnostic naming the lock that could
-/// not be taken. Holding all three through the read is the coherent snapshot.
+/// not be taken.
 fn hold_sources(dir: &Path) -> Result<[fs::File; 3], String> {
     let meta = crate::state::acquire(&dir.join("meta.lock"), LOCK_WAIT)
         .map_err(|why| format!("archive: could not lock meta.lock: {why}"))?;
@@ -53,10 +51,7 @@ fn hold_sources(dir: &Path) -> Result<[fs::File; 3], String> {
     Ok([meta, memo, events])
 }
 
-/// `_archive-publish` core entry. Returns the process exit code: `0` after a
-/// published archive whose `target\tfiles\tbytes` line is on `out`, or
-/// [`EXIT_FAILED`] after a named refusal on `err`. Never touches live source
-/// data — only the archive root and the source `.lock` files.
+/// `_archive-publish` core entry.
 pub(crate) fn run(
     dir: &Path,
     ops: &Ops,
@@ -75,8 +70,8 @@ pub(crate) fn run(
         return Ok(EXIT_FAILED);
     }
 
-    // The coherent snapshot: hold all three source locks, in the one fixed global
-    // order, through every read below. `_held` releases them on drop.
+    // The coherent snapshot: hold all three source locks, in the one fixed
+    // global order, through every read below.
     let _held = match hold_sources(dir) {
         Ok(handles) => handles,
         Err(diag) => {
@@ -86,8 +81,8 @@ pub(crate) fn run(
     };
 
     // Classified-source refusal, under the locks, BEFORE any read: an existing
-    // non-regular core source (symlink, FIFO, directory) fails the whole publish
-    // and is NEVER opened. This runs first precisely so a FIFO cannot block the
+    // non-regular core source (symlink, FIFO, directory) fails the whole
+    // publish and is NEVER opened.
     for file in ["meta", "memo.tsv", "events.jsonl"] {
         if super::nonregular_existing(&dir.join(file)) {
             writeln!(err, "archive: a non-regular {file} cannot be archived.")?;
@@ -95,9 +90,7 @@ pub(crate) fn run(
         }
     }
 
-    // The coherent read, now that every source is a confirmed regular file. An
-    // ABSENT optional memo/events is the defined empty content; an existing-but-
-    // unreadable regular source REFUSES — an immutable ledger must never publish
+    // The coherent read, now that every source is a confirmed regular file.
     let before = fingerprint(dir);
     let (meta_bytes, memo_bytes, event_bytes) = match read_sources(dir) {
         Ok(triple) => triple,
@@ -182,13 +175,7 @@ pub(crate) fn run(
 }
 
 /// Under our atomic claim, stage → validate → durably publish, then report the
-/// `target\tfiles\tbytes` line a bash consumer reads. The claim `mkdir` is the
-/// mutual-exclusion primitive: it fails if another publisher holds the claim or a
-/// crash left it standing, and this NEVER guess-cleans someone else's. The
-/// `rename` onto the target is the COMMIT BOUNDARY: a failure before it removes
-/// our OWN claim and leaves the source untouched; a failure after it — the
-/// archive is already present — never reports success and RETAINS the claim as a
-/// recovery marker, because a retry would otherwise only see an existing target.
+/// `target\tfiles\tbytes` line a bash consumer reads.
 fn publish_under_claim(
     root: &Path,
     target: &Path,
@@ -230,8 +217,7 @@ fn publish_under_claim(
         return Ok(EXIT_FAILED);
     }
 
-    // The commit boundary. The rename itself failing is still pre-rename in
-    // effect (the target was not created): clean our claim and refuse.
+    // The commit boundary.
     let payload = claim.join("payload");
     if let Err(why) = fs::rename(&payload, target) {
         if let Err(e) = fs::remove_dir_all(&claim) {
@@ -249,9 +235,7 @@ fn publish_under_claim(
         return Ok(EXIT_FAILED);
     }
 
-    // Past the point of no return: the archive IS present at `target`. A failure
-    // now is a DURABILITY-confirmation failure, not a publish failure — never
-    // report success, and RETAIN the claim as the recovery marker a retry needs.
+    // Past the point of no return: the archive IS present at `target`.
     if let Err(why) = fsync_dir(root) {
         writeln!(
             err,
@@ -266,8 +250,7 @@ fn publish_under_claim(
         return Ok(EXIT_FAILED);
     }
 
-    // Durable. Persist the claim removal too (fsync the root after it), so a
-    // completed publish does not leave a stale claim behind on a later crash.
+    // Durable.
     if let Err(why) = fs::remove_dir(&claim) {
         writeln!(
             err,
@@ -297,9 +280,7 @@ struct StagedFacts<'a> {
 }
 
 /// Stage the payload under the held claim and validate it — up to but NOT
-/// including the rename (the caller owns the commit boundary). `Ok(())` when the
-/// payload is staged, validated and fsynced, ready to rename; `Err(diag)` on any
-/// PRE-rename failure. The live source is never written.
+/// including the rename (the caller owns the commit boundary).
 fn stage_and_validate(
     claim: &Path,
     target: &Path,
@@ -323,9 +304,7 @@ fn stage_and_validate(
     write_file_0600(&payload.join("events.jsonl"), facts.event_bytes)
         .map_err(|why| format!("archive: could not write events.jsonl: {why}"))?;
 
-    // Messages: NEVER follow a symlinked or non-directory messages/ root. A real
-    // directory is required to enumerate; anything else is skipped loud (the
-    // archive gets an empty messages/, and any referenced body then renders
+    // Messages: NEVER follow a symlinked or non-directory messages/ root.
     let messages_src = dir.join("messages");
     let messages_real = matches!(symlink_meta(&messages_src), Ok(m) if m.is_dir());
     if !messages_real && exists(&messages_src) {
@@ -389,8 +368,6 @@ fn stage_and_validate(
 
 /// Compose the archive `meta` file — the frozen `_ar_build_meta` key order and
 /// values, from the coherent snapshot and the shared, already-validated facts.
-/// Rendered from the SAME helpers the digest uses, so the two agree by
-/// construction and the validator's cross-check cannot fail here.
 fn compose_meta(facts: &StagedFacts) -> String {
     let meta = facts.meta_bytes;
     let g = |key: &str| meta_get(meta, key);
@@ -453,10 +430,8 @@ fn compose_meta(facts: &StagedFacts) -> String {
 }
 
 /// `_ar_git_head`/`_ar_git_range` as `_end_archive_step` drives them for a
-/// PUBLISH: nothing when the run is not git-managed; otherwise the base recorded
-/// at launch and the passed work dir's HEAD and range. Keyed on the push outcome
-/// and the PASSED work dir — not the meta's, and not the mode as a preview keys
-/// it.
+/// PUBLISH: nothing when the run is not git-managed; otherwise the base
+/// recorded at launch and the passed work dir's HEAD and range.
 fn derive_git(meta_bytes: &[u8], push_outcome: &str, workdir: &[u8]) -> GitFacts {
     if push_outcome == "not-managed" {
         return GitFacts {
@@ -480,11 +455,10 @@ fn derive_git(meta_bytes: &[u8], push_outcome: &str, workdir: &[u8]) -> GitFacts
     }
 }
 
-/// Whether `s` is EXACTLY the frozen archive instant `YYYY-MM-DDTHH:MM:SSZ`:
-/// 20 ASCII bytes, digits in the field positions, the fixed separators, and
-/// cheap in-range field values (a control byte, a newline, or a wrong width is
-/// refused). Not a full calendar validity check — leap days pass — but no
-/// interpreted or truncating input reaches an immutable archive's metadata.
+/// Whether `s` is EXACTLY the frozen archive instant `YYYY-MM-DDTHH:MM:SSZ`: 20
+/// ASCII bytes, digits in the field positions, the fixed separators, and cheap
+/// in-range field values (a control byte, a newline, or a wrong width is
+/// refused).
 fn is_archived_at(s: &str) -> bool {
     let b = s.as_bytes();
     if b.len() != 20 {
@@ -514,10 +488,6 @@ fn is_archived_at(s: &str) -> bool {
 
 /// `meta`'s value for `key` read directly from a path (only used before the
 /// coherent snapshot exists, for the session name in a refusal message).
-/// Read a core source from the coherent snapshot. An ABSENT optional file is the
-/// defined empty content (a session that sent no memo, emitted no events); an
-/// existing-but-unreadable regular file REFUSES the whole publish rather than
-/// publish an immutable ledger with its evidence silently dropped to empty.
 fn read_source(path: &Path) -> Result<Vec<u8>, String> {
     match read_file(path) {
         Ok(bytes) => Ok(bytes),
@@ -533,9 +503,7 @@ fn read_source(path: &Path) -> Result<Vec<u8>, String> {
 /// coherent snapshot.
 type CoreBytes = (Vec<u8>, Vec<u8>, Vec<u8>);
 
-/// Read the three core sources from the coherent snapshot. `Ok` with the triple,
-/// or `Err` with every read diagnostic — an existing-but-unreadable regular
-/// source refuses, an absent optional one is empty (see [`read_source`]).
+/// Read the three core sources from the coherent snapshot.
 fn read_sources(dir: &Path) -> Result<CoreBytes, Vec<String>> {
     match (
         read_source(&dir.join("meta")),
@@ -574,10 +542,9 @@ pub(crate) fn live_matches_existing_archive(
     Ok(message_bodies(&dir.join("messages"))? == message_bodies(&archive_path.join("messages"))?)
 }
 
-/// `basename -> bytes` for the DIRECT, regular, non-symlink `*.txt` bodies under `dir` —
-/// exactly the inclusion rule `stage_messages` archives by, so the two sets are comparable.
-/// A `NotFound` directory is the empty map (the empty session); any other enumeration or
-/// read failure REFUSES rather than compare against a set it could not fully read.
+/// `basename -> bytes` for the DIRECT, regular, non-symlink `*.txt` bodies
+/// under `dir` — exactly the inclusion rule `stage_messages` archives by, so
+/// the two sets are comparable.
 fn message_bodies(dir: &Path) -> Result<BTreeMap<String, Vec<u8>>, String> {
     let entries = match read_dir(dir) {
         Ok(paths) => paths,
@@ -612,15 +579,10 @@ fn message_bodies(dir: &Path) -> Result<BTreeMap<String, Vec<u8>>, String> {
 }
 
 /// Copy the DIRECT, regular, non-symlink `messages/*.txt` into `dst` at `0600`.
-/// A symlink or other non-regular entry is skipped with a loud diagnostic and
-/// NEVER followed; an eligible regular file that cannot be read refuses the whole
-/// publish (a digest that names a body must not archive without it).
 fn stage_messages(src: &Path, dst: &Path, err: &mut impl Write) -> Result<(), String> {
     let mut entries: Vec<PathBuf> = match read_dir(src) {
         Ok(paths) => paths,
-        // The caller reaches here only for a REAL directory. A genuinely absent
-        // one (NotFound) is the empty session — a classified absence. Any other
-        // failure to enumerate it (an unreadable dir) is UNKNOWN LOSS: refuse
+        // The caller reaches here only for a REAL directory.
         Err(why) if why.kind() == io::ErrorKind::NotFound => return Ok(()),
         Err(why) => {
             return Err(format!(

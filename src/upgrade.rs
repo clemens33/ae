@@ -14,17 +14,13 @@ pub const USAGE: &str = "Usage: AE_VERSION=<calver> ae upgrade";
 /// The second line of that refusal: the only supported input is the pin.
 pub const USAGE_DETAIL: &str = "ae: upgrade takes no arguments; pin the target with AE_VERSION.";
 
-/// Where release bundles come from. A constant, not a door: an operator-named
-/// repository is a code-execution surface with a friendly name, and ae has
-/// exactly one origin.
+/// Where release bundles come from.
 pub const REPOSITORY: &str = "https://github.com/clemens33/ae";
 
 /// The release manifest naming every tarball of a release.
 pub const MANIFEST: &str = "SHA256SUMS";
 
-/// Caps and timeouts. A repair path may not hang, and it may not read an
-/// unbounded body into memory: a bundle is a couple of megabytes, and the cap is
-/// generous against that rather than against what a hostile server might send.
+/// Caps and timeouts.
 const TIMEOUT_CONNECT: Duration = Duration::from_secs(15);
 const TIMEOUT_RECV_RESPONSE: Duration = Duration::from_mins(1);
 const TIMEOUT_GLOBAL: Duration = Duration::from_mins(5);

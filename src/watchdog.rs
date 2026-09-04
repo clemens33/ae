@@ -20,8 +20,7 @@ use crate::events::Event;
 use crate::procs::Descendancy;
 
 /// The shells the dead-check treats as "no agent in the foreground" — bash's
-/// `command_is_shell` (ae:428). The empty string counts: a pane momentarily
-/// between processes reports no command, and that is not an agent either.
+/// `command_is_shell` (ae:428).
 #[must_use]
 pub fn command_is_shell(cmd: &str) -> bool {
     matches!(cmd, "bash" | "zsh" | "fish" | "sh" | "dash" | "")
@@ -29,11 +28,6 @@ pub fn command_is_shell(cmd: &str) -> bool {
 
 /// Whether a pane's agent has DIED — dropped to a bare shell with no agent
 /// process beneath it.
-///
-/// Both halves are required: a `bash -lc <tool>` wrapper shows a shell in the
-/// foreground while the real agent runs underneath, so the foreground test alone
-/// reads every such live agent as dead.
-/// process beneath it. (The watchdog's branch 1, ae:16503-16521.)
 #[must_use]
 pub fn classify_dead(current_command: &str, descendant: Descendancy) -> bool {
     command_is_shell(current_command) && matches!(descendant, Descendancy::Absent)
@@ -110,8 +104,7 @@ const NUDGE_ENVELOPE: &str = "⟦ae:msg from watchdog⟧";
 const NUDGE_SENTENCE: &str = "Status check: if you have more work, continue. \
      Otherwise declare your state so I stop nudging: ";
 
-/// The invitation the nudge ends with. The meta-dir path in front of it is the
-/// awk's `.*`, so only the tail is fixed text (ae:16893 builds the line).
+/// The invitation the nudge ends with.
 const NUDGE_TAIL: &str = "/state <waiting-user|blocked|done> \"<reason>\"";
 
 /// The optional prefix a nudge carries when the session has a goal (ae:16887).
@@ -122,8 +115,6 @@ const NUDGE_GOAL_PREFIX: &str = "Session goal: ";
 const ECHO_STATES: [&str; 4] = ["working", "waiting-user", "blocked", "done"];
 
 /// POSIX `[[:space:]]` in the C locale — the class the awk is written against.
-/// Deliberately NOT [`char::is_whitespace`], which is Unicode-wide: a
-/// non-breaking space in pane output must not silently count as an indent.
 const fn is_space(c: char) -> bool {
     matches!(c, ' ' | '\t' | '\n' | '\u{b}' | '\u{c}' | '\r')
 }
@@ -137,7 +128,6 @@ fn trim_end_space(line: &str) -> &str {
 }
 
 /// A rendered nudge's HEADER: a submit ornament, then the envelope ALONE.
-/// (awk `submit_hdr`, ae:15706.)
 fn submit_hdr(line: &str) -> bool {
     let body = trim_start_space(trim_end_space(line));
     let mut chars = body.chars();
@@ -150,14 +140,12 @@ fn submit_hdr(line: &str) -> bool {
 }
 
 /// Two leading whitespace characters — the wrapped body of a rendered block.
-/// (awk `indented`, ae:15707.)
 fn indented(line: &str) -> bool {
     let mut chars = line.chars();
     matches!(chars.next(), Some(c) if is_space(c)) && matches!(chars.next(), Some(c) if is_space(c))
 }
 
 /// The nudge as DELIVERED text — an unmodeled pane, or the legacy watchdog.
-/// (awk `raw_nudge`, ae:15708-15710.)
 fn raw_nudge(line: &str) -> bool {
     let Some(body) = trim_end_space(line).strip_suffix(NUDGE_TAIL) else {
         return false;
@@ -166,8 +154,7 @@ fn raw_nudge(line: &str) -> bool {
         return true;
     }
     // `(Session goal: .*\. )?` — any goal text, ending at a `". "` the sentence
-    // then follows. The awk backtracks over every candidate split; so does this,
-    // because a goal may itself contain sentence-ending punctuation.
+    // then follows.
     let Some(goal) = body.strip_prefix(NUDGE_GOAL_PREFIX) else {
         return false;
     };
@@ -179,7 +166,6 @@ fn raw_nudge(line: &str) -> bool {
 
 /// The envelope ALONE on its line — an unmodeled pane's pair form, where the
 /// nudge follows on the next line instead of being wrapped under an ornament.
-/// (awk `raw_env`, ae:15711.)
 fn raw_env(line: &str) -> bool {
     trim_end_space(line) == NUDGE_ENVELOPE
 }
@@ -215,7 +201,6 @@ fn is_hhmm(clock: &str) -> bool {
 }
 
 /// The `state` helper's own echo, in the three CAPTURED renderings.
-/// (awk `is_echo`, ae:15712-15723.)
 fn is_echo(line: &str) -> bool {
     // codex:   `  └ Marked <agent> <state>: …`
     let boxed = trim_start_space(line);
@@ -237,7 +222,7 @@ fn is_echo(line: &str) -> bool {
     {
         return true;
     }
-    // unmodeled pane, no TUI: the bare line.
+    // Unmodeled pane, no TUI: the bare line.
     line.strip_prefix("Marked ").is_some_and(echo_tail)
 }
 
@@ -251,11 +236,6 @@ fn records(buf: &str) -> impl Iterator<Item = &str> {
 }
 
 /// The pane view with the watchdog's own footprints removed.
-///
-/// Its own nudge and the `state` helper's echo have to go, or the watchdog would
-/// keep waking itself up: the baseline is armed with the declaration's echo
-/// already on screen, and must yield only when something else lands.
-/// `_watchdog_quiet_hash` (ae:15726-15738), line for line.
 #[must_use]
 pub fn quiet_filter(buf: &str) -> String {
     let mut out = String::new();
@@ -313,9 +293,7 @@ pub fn quiet_hash(buf: &str) -> u64 {
 }
 
 /// The actor every watchdog-originated event carries, and the action its nudge
-/// carries. Together they are the ONE event shape [`latest_relevant_event`] walks
-/// past: a watchdog `alert` is news and stops the walk, and a peer's event with
-/// action `nudge` is not the watchdog's.
+/// carries.
 const NUDGE_ACTOR: &str = "watchdog";
 const NUDGE_ACTION: &str = "nudge";
 
@@ -402,7 +380,6 @@ pub fn declaration_key(event: &Event) -> String {
 }
 
 /// What a pane's current hash means for a declared quiet state.
-/// (bash `_quiet_pane_decision`, ae:15761-15771.)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QuietPane {
     /// No baseline for THIS declaration yet — take one.
@@ -485,8 +462,7 @@ impl QuietCycle {
         self.spent = 0;
     }
 
-    /// May the pane at `idx` stabilize now? Spending is recorded here, so the
-    /// caller cannot forget to.
+    /// May the pane at `idx` stabilize now?
     pub const fn step(&mut self, idx: usize) -> bool {
         if !quiet_stabilize_allowed(self.spent, self.max, idx, self.cursor) {
             return false;
@@ -514,7 +490,7 @@ impl QuietCycle {
 /// The orchestrator sweep tunables — ae:16435-16448, with the frozen defaults.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SweepKnobs {
-    /// Seconds between sweep prompts. `0` disables the branch.
+    /// Seconds between sweep prompts.
     pub sweep_secs: u64,
     /// How soon an UNDELIVERED prompt is retried instead of burning a whole
     /// cadence window.
@@ -564,7 +540,7 @@ fn distance_secs(now: SystemTime, then: SystemTime) -> u64 {
 /// How far a trusted heartbeat sits from now, and ON WHICH SIDE.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HeartbeatOffset {
-    /// Written this many seconds ago. The ordinary case.
+    /// Written this many seconds ago.
     Behind {
         /// Seconds since the heartbeat was written.
         secs: u64,
@@ -604,7 +580,7 @@ pub enum Heartbeat {
     /// read as liveness.
     Stale,
     /// No trusted mtime at all: missing, a symlink, not a regular file, or a
-    /// reading that could not be taken. NOT evidence of health.
+    /// reading that could not be taken.
     Untrusted,
 }
 
@@ -637,7 +613,7 @@ pub fn heartbeat_offset(mtime: Option<SystemTime>, now: SystemTime) -> Option<He
     })
 }
 
-/// The roster slot the orchestrator cadence belongs to. One spelling, here.
+/// The roster slot the orchestrator cadence belongs to.
 pub const MAIN_SLOT: &str = "main";
 
 /// Whether this pane is the one the sweep cadence applies to — bash's
@@ -697,11 +673,11 @@ pub enum WedgeDetail {
 /// prose.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SweepAlert {
-    /// Live but not sweeping. Raised ONCE per wedge.
+    /// Live but not sweeping.
     RaiseWedge(WedgeDetail),
     /// The heartbeat resumed.
     ClearWedge,
-    /// Sweep prompts stopped landing altogether. Raised ONCE.
+    /// Sweep prompts stopped landing altogether.
     RaiseUnreachable {
         /// Consecutive undelivered prompts at the moment of escalation.
         undelivered: u32,
@@ -749,8 +725,7 @@ impl SweepAlert {
     }
 
     /// The `display-message` line for the human, or `None` when the transition
-    /// is log-only. As with [`crate::watchdog_daemon::Effect::Notify`] this is
-    /// the suffix; the loop prefixes the agent.
+    /// is log-only.
     #[must_use]
     pub const fn notify(self) -> Option<&'static str> {
         match self {
@@ -784,8 +759,7 @@ pub enum SweepEffect {
 /// (ae:16409-16430), gathered into one value.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SweepState {
-    /// When the cadence was last satisfied. `None` is bash's `0` — the first
-    /// cycle is always due.
+    /// When the cadence was last satisfied.
     pub last_sweep: Option<SystemTime>,
     /// When the first prompt LANDED — the startup grace's origin.
     pub first_delivered: Option<SystemTime>,
@@ -807,7 +781,7 @@ pub struct SweepObservation {
     /// The heartbeat's tri-state.
     pub heartbeat: Heartbeat,
     /// Where it sits relative to `now`, `None` when there is no trusted
-    /// reading. Carries the SIDE, because the alert's wording depends on it.
+    /// reading.
     pub heartbeat_offset: Option<HeartbeatOffset>,
 }
 
@@ -859,7 +833,7 @@ pub fn sweep_step(
         _ => SweepVerdict::MetaStarting,
     };
 
-    // 2. The wedge alert, judged off the SAME expression as the verdict.
+    // 2.
     match verdict {
         SweepVerdict::MetaSweeping => {
             if prior.wedge_alerted {
@@ -891,9 +865,7 @@ pub fn sweep_step(
         SweepVerdict::MetaStarting => {}
     }
 
-    // 3. The cadence. An absent `last_sweep` is bash's `0`: the first cycle
-    //    prompts. The boundary is `>=`, so an elapsed exactly equal to the
-    //    cadence is due.
+    // 3.
     let due = prior
         .last_sweep
         .is_none_or(|at| secs_between(seen.now, at) >= knobs.sweep_secs);
@@ -943,8 +915,7 @@ pub fn record_sweep(
         return Vec::new();
     }
 
-    // bounded. A persistently unreachable orchestrator degrades to
-    // the normal cadence and escalates ONCE rather than retry-spamming.
+    // Bounded.
     state.last_sweep = Some(settled_now);
     if state.unreachable_alerted {
         return Vec::new();
@@ -1022,9 +993,9 @@ mod tests {
 
     #[test]
     fn an_unusable_snapshot_never_classifies_an_agent_dead() {
-        // The divergence from bash, and the one that matters: bash cannot tell a
-        // probe that FAILED from one that ran and found nothing, so it alerts a
-        // live agent dead. Unknown is not dead for ANY foreground, shell or not.
+        // The divergence from bash, and the one that matters: bash cannot tell
+        // a probe that FAILED from one that ran and found nothing, so it alerts
+        // a live agent dead.
         for foreground in ["bash", "zsh", "fish", "sh", "dash", "", "claude", "codex"] {
             assert!(
                 !classify_dead(foreground, Descendancy::Unknown),
@@ -1042,7 +1013,7 @@ mod tests {
 
     #[test]
     fn the_stale_boundary_is_bash_strict_less_than() {
-        // bash skips on `age < STALE_SECS`, so equality falls through and IS stale.
+        // Bash skips on `age < STALE_SECS`, so equality falls through and IS stale.
         assert!(
             stale_composite(true, 900, 900, 900, false, false),
             "age == stale_secs is stale"
@@ -1331,9 +1302,9 @@ mod tests {
 
     #[test]
     fn a_declaration_and_the_nudge_answering_it_in_the_same_second_both_survive() {
-        // The bug bash records at ae:15540-15547: second-resolution timestamps make
-        // these two compare EQUAL, so a ts-bounded look-back skipped the
-        // declaration along with the nudge. Append order is the truth.
+        // The bug bash records at ae:15540-15547: second-resolution timestamps
+        // make these two compare EQUAL, so a ts-bounded look-back skipped the
+        // declaration along with the nudge.
         let events = log(&[
             r#"{"ts":"2026-08-29T04:00:00Z","actor":"opus5:builder","action":"state","ref":"waiting-user","summary":"review"}"#,
             r#"{"ts":"2026-08-29T04:00:00Z","actor":"watchdog","action":"nudge","target":"opus5:builder","summary":"idle 15m"}"#,
@@ -1362,7 +1333,7 @@ mod tests {
             .expect("the done is under five nudges");
         assert_eq!(found.action, "done");
         assert!(looked_past);
-        // done is the ONE kind a walked-past nudge clears.
+        // Done is the ONE kind a walked-past nudge clears.
         assert_eq!(quiet_reason(found, "opus5:builder", looked_past), None);
     }
 
@@ -1722,9 +1693,9 @@ tail line
 
     #[test]
     fn the_rotating_budget_reaches_every_pane_within_one_rotation() {
-        // The fairness bug this rotation exists to prevent: with a plain budget,
-        // the first two panes consume both slots EVERY cycle and panes 3+ are
-        // never attempted. Indices are the loop's 1-based traversal position
+        // The fairness bug this rotation exists to prevent: with a plain
+        // budget, the first two panes consume both slots EVERY cycle and panes
+        // 3+ are never attempted.
         let mut cycle = QuietCycle::new(2);
         let mut reached: Vec<usize> = Vec::new();
         for _ in 0..3 {
@@ -1770,8 +1741,7 @@ tail line
 
     // -- the orchestrator sweep cadence --------------------------------------
 
-    /// A fixed clock. Far from the epoch so a back-dated cadence is a real
-    /// instant rather than a saturation artefact.
+    /// A fixed clock.
     const BASE: u64 = 1_700_000_000;
 
     fn at(offset_secs: u64) -> SystemTime {
@@ -1800,8 +1770,7 @@ tail line
     #[test]
     fn an_untrusted_reading_is_never_fresh_however_recent_the_clock_is() {
         // The safety pin, as a pair: the SAME instant classifies Fresh when the
-        // mtime is trusted and Untrusted when it is not. Nothing about the
-        // clock can turn a missing / symlinked / non-regular heartbeat into a
+        // mtime is trusted and Untrusted when it is not.
         assert_eq!(
             classify_heartbeat(None, at(0), 660),
             Heartbeat::Untrusted,
@@ -1842,9 +1811,7 @@ tail line
             Heartbeat::Fresh,
             "exactly at the window, on the future side too"
         );
-        // Beyond it, it stops counting as liveness. THIS IS THE CLOSED HOLE:
-        // bash reads any future stamp Fresh forever (its `now - hb` goes
-        // negative and a negative is below any window), so a timestamp set far
+        // Beyond it, it stops counting as liveness.
         assert_eq!(
             classify_heartbeat(Some(at(961)), at(300), 660),
             Heartbeat::Stale,
@@ -1915,9 +1882,7 @@ tail line
 
     #[test]
     fn the_daemons_own_timestamps_clamp_rather_than_taking_a_distance() {
-        // The SPLIT, pinned. `first_delivered` and `last_sweep` are values THIS
-        // daemon wrote; a future one means our own clock went backwards. Taking
-        // the absolute distance there would compute an enormous elapsed grace
+        // The SPLIT, pinned.
         let k = knobs();
         let jumped = SweepState {
             // Both stamped an hour ahead of the cycle clock.
@@ -1945,9 +1910,8 @@ tail line
 
     #[test]
     fn only_the_orchestrator_main_slot_gets_the_cadence() {
-        // workers and spawned agents in an orchestrator session keep the
-        // normal watchdog. Keyed by SLOT, which cannot alias — `spawn`
-        // uniquifies only the numeric slot, so two registrations can share one
+        // Workers and spawned agents in an orchestrator session keep the normal
+        // watchdog.
         assert!(is_sweep_target(true, "main"));
         for other in [
             "worker.1",
@@ -2148,8 +2112,8 @@ tail line
 
     #[test]
     fn the_unreachable_clear_is_withheld_while_a_wedge_alert_is_still_latched() {
-        // `alert-cleared` is untyped: emitting one here would erase a live
-        // "not sweeping" that could then never re-fire. The latch still drops.
+        // `alert-cleared` is untyped: emitting one here would erase a live "not
+        // sweeping" that could then never re-fire.
         let k = knobs();
         let mut state = SweepState {
             unreachable_alerted: true,
@@ -2367,9 +2331,7 @@ tail line
 
     #[test]
     fn a_stale_or_untrusted_heartbeat_is_never_reported_as_sweeping() {
-        // The tri-state's whole point: only Fresh is a health claim. Inside the
-        // grace the verdict is undecided (MetaStarting), past it wedged —
-        // never sweeping.
+        // The tri-state's whole point: only Fresh is a health claim.
         let k = knobs();
         let prior = SweepState {
             first_delivered: Some(at(0)),

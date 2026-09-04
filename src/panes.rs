@@ -117,8 +117,7 @@ pub fn agents(
     }
 }
 
-/// One session's stamped panes. `label` prints the session column; `None` is
-/// the single-session table, which does not have one.
+/// One session's stamped panes.
 fn rows_for(
     dir: &Path,
     session: &str,
@@ -173,8 +172,7 @@ pub fn focus(
         }
     };
     // The WINDOW first: a worker lives in its own window, and `select-pane`
-    // alone does not change which window is viewed. Tolerated on failure,
-    // exactly as the frozen `2>/dev/null || true`.
+    // alone does not change which window is viewed.
     let _ = transport::run_tmux_op(&argv(
         &server,
         &Op::SelectWindow {

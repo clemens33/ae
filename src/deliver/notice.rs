@@ -24,9 +24,7 @@ use super::region::Tool;
 /// The framed-body size above which a notice replaces the paste.
 pub const LIMIT: u64 = 8192;
 
-/// The largest notice that may be treated as a small pointer. Above it the
-/// compose REFUSES before any paste, and the full body stays recoverable where
-/// the sender wrote it.
+/// The largest notice that may be treated as a small pointer.
 pub const NOTICE_CAP: usize = 300;
 
 /// What the paste will carry.
@@ -145,8 +143,7 @@ pub fn compose(
 pub fn reconstruct(tool: Tool, capture: &str, intended: &str) -> Option<String> {
     let rows: Vec<String> = capture.lines().map(strip_csi).collect();
     // The head includes the request id, which disambiguates a whole-pane
-    // capture carrying several historical notices in its transcript. Message
-    // and spawn heads are deliberately distinct: a spawn is an instruction, not
+    // capture carrying several historical notices in its transcript.
     let head = head_of(intended);
     if head != GENERIC_HEAD && !head_is_wellformed(&head) {
         return None;

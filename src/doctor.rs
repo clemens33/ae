@@ -27,7 +27,7 @@ pub enum Level {
     Ok,
     /// Worth knowing; the exit code is unaffected.
     Warn,
-    /// A broken installation. One of these makes `ae doctor` exit 1.
+    /// A broken installation.
     Fail,
 }
 
@@ -119,8 +119,7 @@ impl Report {
     }
 }
 
-/// One row in the frozen columns. The trailing space of an empty detail is
-/// kept: the frozen `printf` pads the label whatever follows it.
+/// One row in the frozen columns.
 fn render_row(row: &Row) -> String {
     format!(
         "{:<5} {:<14} {}\n",
@@ -171,12 +170,7 @@ pub struct Facts {
     /// The binary answering — `current_exe()`, which since slice Z3 IS the
     /// public `ae`, so this is the resolved core path the operator wants to see.
     pub core: Option<PathBuf>,
-    /// Whether that binary is WRITABLE. The installer publishes it 0555, and
-    /// the reason is a live hazard rather than hygiene: every session helper is
-    /// a symlink to it, and `>`, `chmod` and `sed -i` all FOLLOW a symlink — so
-    /// a writable core is one redirection away from being truncated by
-    /// something that meant to replace a helper. `None` when it could not be
-    /// classified at all.
+    /// Whether that binary is WRITABLE.
     pub core_writable: Option<bool>,
     /// Whether this binary was PUBLISHED by the installer — the shape that
     /// makes a writable core a deviation rather than the normal state.
@@ -298,9 +292,7 @@ fn session_rows(facts: &Facts, out: &mut Report) {
         &facts.worktrees_dir.display().to_string(),
     );
 
-    // Orphans: state on disk with no running session. They accumulate when a
-    // wind-down declares done but never runs `ae end`, and every
-    // running-scoped sensor is structurally blind to them. WARN, not FAIL: a
+    // Orphans: state on disk with no running session.
     let orphans: Vec<&str> = facts
         .sessions
         .iter()
@@ -327,8 +319,7 @@ fn session_rows(facts: &Facts, out: &mut Report) {
     }
 
     // The core is REQUIRED, so a session with no usable pin refuses every
-    // core-owned command — `end` included, which leaves it unendable. WARN
-    // rather than FAIL: `doctor --refresh` repairs it and the rest of the
+    // core-owned command — `end` included, which leaves it unendable.
     let unbound: Vec<&str> = facts
         .sessions
         .iter()
@@ -354,8 +345,7 @@ fn session_rows(facts: &Facts, out: &mut Report) {
     }
 
     // The pin is a PAIR, and a helper that finds a core whose version is not
-    // the pinned one refuses it. A session pinned to a different version than
-    // the binary answering here is therefore reported by name — this is the
+    // the pinned one refuses it.
     let drifted: Vec<String> = facts
         .sessions
         .iter()
@@ -511,8 +501,7 @@ fn session_facts(root: &Path) -> Vec<SessionFacts> {
         .map(|(name, dir)| {
             let bytes = crate::meta::read_bytes(&dir).unwrap_or_default();
             let core_bin = crate::lifecycle::meta_value(&bytes, "ae_core");
-            // Liveness is asked of the session's OWN recorded server. Asking the
-            // ambient one false-orphans every session created on a named server.
+            // Liveness is asked of the session's OWN recorded server.
             let server = match crate::lifecycle::server_of(&bytes) {
                 crate::meta::ServerSelector::Positive(selector) => {
                     crate::inventory::ServerId::Selected(selector)
@@ -554,7 +543,7 @@ struct Args {
     local: Option<PathBuf>,
 }
 
-/// Read `doctor`'s flags. The offending word on refusal.
+/// Read `doctor`'s flags.
 fn parse(tail: &[String]) -> Result<Args, String> {
     let mut args = Args::default();
     let mut rest = tail;
@@ -686,9 +675,7 @@ fn refresh_one(name: &str, dir: &Path, core: &Path, global: Option<&Path>, docum
         }
     };
 
-    // The pin is rebound to the binary DOING the refresh. The frozen
-    // `_ae_core_bind` re-evaluated the operator's input; the core answering here
-    // IS a usable core, which is the only thing the pin has to establish, and
+    // The pin is rebound to the binary DOING the refresh.
     for (key, new) in [
         ("ae_core", core.display().to_string()),
         ("ae_core_version", crate::VERSION.to_owned()),
@@ -1025,8 +1012,7 @@ mod tests {
 
     #[test]
     fn check_deps_takes_no_arguments_at_all() {
-        // `--bash-major` went with `ae-entry`. Nothing supplies it any more, so
-        // a caller that still does is a caller against a version that is gone.
+        // `--bash-major` went with `ae-entry`.
         let mut err = Vec::new();
         let code = check_deps(&["--bash-major".to_owned(), "5".to_owned()], &mut err).unwrap();
         assert_eq!(code, EXIT_USAGE);
@@ -1060,8 +1046,7 @@ mod tests {
             .expect("a core row");
         assert_eq!(row.level, Level::Ok);
 
-        // A checkout build is writable because `cargo build` writes it. There
-        // is no published mode to deviate from, so there is nothing to warn.
+        // A checkout build is writable because `cargo build` writes it.
         let row = report(&checkout)
             .rows
             .into_iter()

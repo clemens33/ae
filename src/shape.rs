@@ -276,8 +276,7 @@ pub fn current() -> &'static Shape {
     static CELL: std::sync::OnceLock<Shape> = std::sync::OnceLock::new();
     CELL.get_or_init(|| {
         // BOTH SIDES CANONICAL, or the comparison is of SPELLINGS and not of
-        // positions. `current_exe()` resolves every link on the way to this
-        // binary; `$HOME` resolves nothing, and one directory reached by two
+        // positions.
         let home = crate::doors::home().map(|home| canonical_home(&home));
         classify(
             resolved_exe().unwrap_or_default().as_path(),
@@ -373,8 +372,7 @@ mod tests {
 
     /// The position is the whole answer: an absent `$HOME` disagrees with
     /// nothing, so a published core is still installed and still answers from
-    /// its own directory. It used to fall to CHECKOUT here, which handed
-    /// `AE_HOME` the state root of an install.
+    /// its own directory.
     #[test]
     fn a_published_core_with_no_home_to_compare_is_still_installed() {
         assert_eq!(
@@ -387,10 +385,7 @@ mod tests {
         );
     }
 
-    /// **B2.** A published core run against a foreign `$HOME` is a REFUSAL, not
-    /// a checkout — the whole point being that a checkout honours `AE_HOME`,
-    /// which is how `HOME=/fake AE_HOME=/foreign <real-install>/ae-core doctor`
-    /// built its sessions under `/foreign`.
+    /// **B2.**
     #[test]
     fn a_published_core_against_a_foreign_home_is_displaced_and_honours_nothing() {
         let shape = classify(
@@ -523,9 +518,7 @@ mod tests {
     }
 
     /// A home reached through a symlink is the SAME home, and an install under
-    /// it is INSTALLED. Without this, `$HOME=/tmp/x` against a `current_exe()`
-    /// of `/private/tmp/x/.ae/versions/V/ae-core` classifies as a checkout, and
-    /// the public boundary quietly starts honouring an inherited `AE_HOME`.
+    /// it is INSTALLED.
     #[test]
     fn a_home_reached_through_a_link_is_still_installed() {
         let root = std::env::temp_dir().join(format!("ae-shape-{}", std::process::id()));

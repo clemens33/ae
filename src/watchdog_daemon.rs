@@ -29,12 +29,10 @@ const ACTOR: &str = "watchdog";
 const NON_AGENT_PANES: [&str; 5] = ["(null)", "_watchdog", "_events", "_shepherd", "_loop"];
 
 /// The bound on consecutive unusable process snapshots before the daemon says
-/// so. Small on purpose: this alert exists to make a watchdog that has quietly
-/// stopped watching VISIBLE, and a bound so high it never fires is the failure
-/// it is meant to prevent.
+/// so.
 const UNKNOWN_ALERT_CYCLES: u32 = 5;
 
-/// The tunables, all of them (ae:16331-16373). Defaults are the frozen ones.
+/// The tunables, all of them (ae:16331-16373).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Knobs {
     /// Seconds slept at the end of every cycle.
@@ -56,7 +54,6 @@ pub struct Knobs {
     /// The orchestrator sweep cadence, retry and bound (ae:16435-16448).
     pub sweep: SweepKnobs,
     /// Seconds between best-effort Telegram bridge revives (ae:14297-14299).
-    /// `0` disables supervision outright.
     pub tg_supervise_secs: u64,
 }
 
@@ -101,8 +98,7 @@ pub struct PaneState {
     /// The armed quiet baseline: the declaration's full-tuple key and the hash
     /// the pane settled on.
     pub quiet_base: Option<(String, u64)>,
-    /// The orchestrator sweep branch's carry. Untouched for every pane that is not
-    /// the orchestrator main.
+    /// The orchestrator sweep branch's carry.
     pub sweep: SweepState,
 }
 
@@ -119,17 +115,14 @@ pub struct Observation {
     /// [`shows_throttle`]'s answer.
     pub is_throttled: bool,
     /// The RESOLVED quiet suppression: `Done` always, `WaitingUser`/`Blocked`
-    /// only while their baseline holds. `None` when the agent is not quiet —
-    /// including a declaration that YIELDED or failed to settle, which bash
-    /// falls through on (ae:16781).
+    /// only while their baseline holds.
     pub quiet: Option<QuietKind>,
     /// Whether a process named the agent binary runs under the pane.
     pub descendancy: Descendancy,
     /// Age of the newest event this agent is the ACTOR of (ae:15520-15537).
     pub last_actor_event_age_secs: u64,
-    /// The orchestrator sweep reading, `Some` ONLY for the orchestrator main agent with
-    /// the cadence enabled. Every other pane carries `None`
-    /// and is judged by the ordinary branches.
+    /// The orchestrator sweep reading, `Some` ONLY for the orchestrator main
+    /// agent with the cadence enabled.
     pub sweep: Option<SweepObservation>,
 }
 
@@ -168,27 +161,22 @@ impl Verdict {
     }
 }
 
-/// Something the loop must DO. The accounting decides these; only the loop
-/// performs them, which is what keeps the branch logic testable.
+/// Something the loop must DO.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Effect {
-    /// Append one event for this agent. `action` is the frozen action name and
-    /// `summary` its frozen text.
+    /// Append one event for this agent.
     Emit {
         /// `alert` / `throttled` / `throttle-cleared`.
         action: &'static str,
         /// The summary, quoted from the frozen loop.
         summary: String,
     },
-    /// Deliver one nudge through the session's own send helper. The helper
-    /// emits the `nudge` event itself, exactly as it does for bash.
+    /// Deliver one nudge through the session's own send helper.
     Nudge,
     /// A line for the human, which bash publishes with `display-message`
     /// (ae:16516 and siblings) — the watchdog interprets, bash shows.
     Notify(String),
-    /// Deliver one SWEEP prompt to the orchestrator (ae:16833-16841). A separate
-    /// effect from [`Effect::Nudge`]: different text, a different frozen event
-    /// summary, and a different post-delivery accounting.
+    /// Deliver one SWEEP prompt to the orchestrator (ae:16833-16841).
     SweepNudge,
     /// Reconcile the durable event log against a wedge alert this daemon does
     /// not remember raising (ae:16768-16774) — the post-restart clear.
@@ -341,7 +329,7 @@ pub fn account(prior: &PaneState, seen: &Observation, knobs: &Knobs) -> Accounti
         };
     }
 
-    // 2. Dead — latched, alerted once, and there is no watchdog-emitted clear.
+    // 2.
     if seen.is_dead {
         next.dead_latched = true;
         effects.push(Effect::Emit {
@@ -358,8 +346,7 @@ pub fn account(prior: &PaneState, seen: &Observation, knobs: &Knobs) -> Accounti
         };
     }
 
-    // 3. The orchestrator main's own cadence, which returns rather than falling
-    //    through — see `book_sweep`.
+    // 3.
     if let Some(verdict) = book_sweep(prior, &mut next, &mut effects, seen, knobs) {
         return Accounting {
             next,
@@ -368,8 +355,7 @@ pub fn account(prior: &PaneState, seen: &Observation, knobs: &Knobs) -> Accounti
         };
     }
 
-    // 4. The throttle streak clears on ANY non-throttled cycle, before the
-    //    branches below can return.
+    // 4.
     if !seen.is_throttled && prior.throttle_streak > 0 {
         effects.push(Effect::Emit {
             action: "throttle-cleared",
@@ -378,8 +364,7 @@ pub fn account(prior: &PaneState, seen: &Observation, knobs: &Knobs) -> Accounti
         next.throttle_streak = 0;
     }
 
-    // 5. A held quiet state is "leave me alone": no nudge, and the delivered
-    //    count resets so a later stale run starts fresh.
+    // 5.
     if let Some(kind) = seen.quiet {
         next.nudge_count = 0;
         return Accounting {
@@ -389,9 +374,7 @@ pub fn account(prior: &PaneState, seen: &Observation, knobs: &Knobs) -> Accounti
         };
     }
 
-    // 6. Throttled: a nudge cannot fix upstream, and the hash bookkeeping is
-    //    updated anyway so a later recovery reads as activity rather than as a
-    //    stale first-time difference.
+    // 6.
     if seen.is_throttled {
         book_throttle(&mut next, &mut effects, seen, knobs);
         return Accounting {
@@ -401,9 +384,7 @@ pub fn account(prior: &PaneState, seen: &Observation, knobs: &Knobs) -> Accounti
         };
     }
 
-    // 7. Active — the pane moved since the last cycle. A moving pane is also
-    //    positive evidence that whatever blocked delivery is gone, so the
-    //    undelivered bound re-arms here rather than only on a delivery.
+    // 7.
     let hash_unchanged = prior.prev_hash == Some(seen.hash);
     if !hash_unchanged {
         next.prev_hash = Some(seen.hash);
@@ -417,8 +398,7 @@ pub fn account(prior: &PaneState, seen: &Observation, knobs: &Knobs) -> Accounti
         };
     }
 
-    // 8. Stale, or one of the two "recent" escapes. One definition of the
-    //    composite, in `watchdog`, driven from here.
+    // 8.
     let hash_change_age = prior
         .last_hash_change
         .map_or(u64::MAX, |at| age_secs(seen.now_epoch, at));
@@ -520,11 +500,9 @@ pub fn last_actor_event_age(events: &[Event], agent: &str, now_epoch: i64) -> u6
 pub const NO_EVENT_AGE: u64 = 999_999;
 
 // ---------------------------------------------------------------------------
-// The loop — observation and effects. Everything above this line is pure.
-// ---------------------------------------------------------------------------
+// The loop — observation and effects.
 
-/// The generated helper a nudge is delivered through. FIXED, and the name is a
-/// literal in this file.
+/// The generated helper a nudge is delivered through.
 const HELPER_NAME: &str = "send";
 
 /// The orchestrator's heartbeat, at the FIXED name `<meta-dir>/meta-agent-state.json`
@@ -561,7 +539,7 @@ impl SendHelper {
         Self(meta_dir.join(HELPER_NAME))
     }
 
-    /// The path to spawn. Reading is harmless; CONSTRUCTION is what is sealed.
+    /// The path to spawn.
     fn path(&self) -> &Path {
         &self.0
     }
@@ -592,8 +570,7 @@ pub fn run(
         return Ok(1);
     };
     let meta = Meta::parse(&String::from_utf8_lossy(&bytes));
-    // The INITIAL resolution, kept as the fast refuse. `rebind` re-asks it
-    // every cycle from that cycle's own meta — see its doc for why.
+    // The INITIAL resolution, kept as the fast refuse.
     let server = match meta.server_selector() {
         ServerSelector::Positive(selector) => crate::inventory::ServerId::Selected(selector),
         ServerSelector::Missing | ServerSelector::Ambiguous => {
@@ -618,9 +595,7 @@ pub fn run(
     let pidfile = match crate::watchdog_glue::PidFile::publish(meta_dir) {
         Ok(published) => Some(published),
         Err(why) => {
-            // Reported, not fatal. A watchdog that refuses to watch a live
-            // session because it could not write its own bookkeeping has turned
-            // a cosmetic failure into an outage; `watchdog status` degrades to
+            // Reported, not fatal.
             writeln!(err, "ae: watchdog: pidfile not published: {why}")?;
             None
         }
@@ -748,7 +723,7 @@ fn watch(
             }
             // `Run` is only returned when the read succeeded, so this `if let`
             // is how that is spelled without an unwrap rather than a branch
-            // anyone expects to take. The parse is the one taken above, not a
+            // anyone expects to take.
             Continuation::Run => {
                 if let (Ok(bytes), Some(meta)) = (&read, &parsed) {
                     let cycle = Cycle {
@@ -800,9 +775,7 @@ fn tick_pane_duties(
         );
     }
     for row in crate::watchdog_glue::recover(meta_dir, meta.roster()) {
-        // The DURABLE record of a post-launch capture. Emitted here rather than
-        // by the recovery itself because that step is silent: the id lands in
-        // meta and nothing else would ever say it had.
+        // The DURABLE record of a post-launch capture.
         journal.record_referring(
             "recover",
             &row.agent,
@@ -819,14 +792,12 @@ fn tick_pane_duties(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Rebind {
     /// The record MOVED: adopt this server, which is never the one already in
-    /// force. Adopting is not a reassignment — see [`adopt_server`] for the
-    /// retraction and the state reset that have to happen with it.
+    /// force.
     Use(crate::inventory::ServerId),
-    /// The record no longer names exactly one server. Stop watching.
+    /// The record no longer names exactly one server.
     Refuse,
-    /// Nothing to do: the record still names the server already in force, or
-    /// it could not be read at all. An unreadable file is not a move, and
-    /// neither is a record that says what it said last cycle.
+    /// Nothing to do: the record still names the server already in force, or it
+    /// could not be read at all.
     Keep,
 }
 
@@ -868,9 +839,7 @@ impl Journal<'_> {
     }
 
     /// Append one watchdog event that names a REFERENCE — the id, request or
-    /// artifact the record is about. Split from [`Journal::record`] rather than
-    /// added to it because every other emission has nothing to refer to, and a
-    /// `""` at each of those call sites is a field nobody reads.
+    /// artifact the record is about.
     fn record_referring(
         &self,
         action: &str,
@@ -947,8 +916,7 @@ fn adopt_server(
              it is leaving — they may persist there; proceeding with the move"
         )?;
         // Durable too: a stderr line in a detached daemon is a line nobody
-        // reads. Targeted at `watchdog` — the subject really is this daemon,
-        // and a bare name can never collide with a roster ref, which is always
+        // reads.
         journal.record(
             "alert",
             ACTOR,
@@ -957,8 +925,7 @@ fn adopt_server(
         )?;
     }
     drop(leaving); // the old server is unaddressable from here on, by construction
-    // 2. UNCONDITIONAL: nothing keyed by a server-local pane id may survive,
-    //    whether or not step 1 succeeded.
+    // 2.
     carry.reset(knobs);
     Ok(joining)
 }
@@ -968,10 +935,9 @@ fn adopt_server(
 pub enum Continuation {
     /// Both readings are good: run the cycle.
     Run,
-    /// A reading FAILED. Nothing is proven, so nothing is decided — sleep and
-    /// ask again, with the bar left exactly as last published.
+    /// A reading FAILED.
     Retry,
-    /// Proven gone. Clear what we published and exit cleanly.
+    /// Proven gone.
     Stop,
 }
 
@@ -993,8 +959,7 @@ pub(crate) fn clear_published(server: &crate::inventory::ServerId, session: &str
         return false;
     };
     // `&=`, NEVER `&&` and never an early return: every option must still be
-    // attempted after one of them fails. Short-circuiting here would leave the
-    // rest of this daemon's bars on a server nothing targets again, which is
+    // attempted after one of them fails.
     let mut ok = true;
     for name in [tmux::WATCHDOG_STATUS_OPTION, tmux::AGENTS_STATUS_OPTION] {
         ok &= transport::clear_option(server, OptionScope::Session, &session_id, name);
@@ -1053,14 +1018,12 @@ struct Cycle<'a> {
     session: &'a str,
     goal: Option<String>,
     roster: Vec<RosterEntry>,
-    /// `meta_agent=true` — this session is the fleet orchestrator. WHICH pane gets
-    /// the cadence is the pane's own `@ae_slot`, not anything from meta.
+    /// `meta_agent=true` — this session is the fleet orchestrator.
     meta_agent: bool,
 }
 
 /// What [`Cycle::apply`] is acting on: one pane, and the cycle-wide readings an
-/// effect may need. A struct rather than five more parameters, because the
-/// nudge arms recurse into `apply` with the same context.
+/// effect may need.
 struct Acting<'a> {
     agent: &'a str,
     /// The pane's `@ae_slot`, for the routed identity an event may carry.
@@ -1108,9 +1071,8 @@ impl Cycle<'_> {
             let slot = pane.slot.clone().unwrap_or_default();
             let agent_bin = self.agent_bin(&slot);
 
-            // The main loop tolerates a failed capture the way bash does (`|| true`
-            // at ae:16702): an unreadable pane hashes as empty here. The
-            // STABILIZER does not — see `settle`.
+            // The main loop tolerates a failed capture the way bash does (`||
+            // true` at ae:16702): an unreadable pane hashes as empty here.
             let capture = transport::capture_pane(self.server, &pane.pane_id).unwrap_or_default();
             let hash = quiet_hash(&capture);
             let carried = entry_mut(&mut carry.panes, &pane.pane_id);
@@ -1135,9 +1097,9 @@ impl Cycle<'_> {
                 ),
                 descendancy: descendancy_of(table.as_deref(), pane.pane_pid, agent_bin.as_deref()),
                 last_actor_event_age_secs: last_actor_event_age(&events, agent, now),
-                // Decided HERE, once, and the type carries the
-                // answer: a pane that is not the orchestrator main gets `None` and
-                // no sweep branch can reach it. The heartbeat is read only for
+                // Decided HERE, once, and the type carries the answer: a pane
+                // that is not the orchestrator main gets `None` and no sweep
+                // branch can reach it.
                 sweep: is_sweep_target(self.meta_agent, &slot).then(|| {
                     SweepObservation::new(
                         SystemTime::now(),
@@ -1316,7 +1278,7 @@ impl Cycle<'_> {
         samples
     }
 
-    /// Perform one effect. The two nudge arms are the security-critical ones.
+    /// Perform one effect.
     fn apply(
         &self,
         effect: &Effect,
@@ -1333,9 +1295,7 @@ impl Cycle<'_> {
             }
             Effect::SweepNudge => self.sweep_nudge(on, state, err),
             Effect::ReconcileWedge => {
-                // The DURABLE half of the wedge clear (ae:16768-16774). A
-                // watchdog restarted after alerting has lost the latch, so the
-                // in-memory fast path cannot fire and the alert would stand
+                // The DURABLE half of the wedge clear (ae:16768-16774).
                 if crate::session::alert_reason_in(on.events, self.session, on.slot, agent)
                     .is_some()
                 {
@@ -1366,8 +1326,7 @@ impl Cycle<'_> {
     ) -> crate::Result<()> {
         let Some(observed) = on.seen.sweep.as_ref() else {
             // Unreachable by construction: only the sweep branch emits this
-            // effect, and it runs only where the observation exists. Reported
-            // rather than assumed away, because a silent no-op here would be a
+            // effect, and it runs only where the observation exists.
             writeln!(
                 err,
                 "ae: watchdog: sweep prompt for {} had no sweep reading — skipped",
@@ -1375,9 +1334,7 @@ impl Cycle<'_> {
             )?;
             return Ok(());
         };
-        // Delivery is CHECKED. The status means "delivered AND
-        // logged", which makes this AT-LEAST-ONCE: an event-write
-        // failure after a successful paste re-prompts an orchestrator that already
+        // Delivery is CHECKED.
         let delivered = self.deliver(on.agent, SWEEP_PROMPT, "sweep cadence");
         let booked = record_sweep(
             &mut state.sweep,
@@ -1672,9 +1629,7 @@ mod tests {
             1,
             "the helper name is a literal in this file, never a read value"
         );
-        // The tmux FORMAT sink: one call, and it is escaped. `display-message`
-        // reads a format and `#(cmd)` in one runs a shell, so an unescaped call
-        // is remote code execution reachable from a peer-chosen agent name.
+        // The tmux FORMAT sink: one call, and it is escaped.
         assert_eq!(
             source
                 .matches(concat!("transport::", "display_message("))
@@ -1711,7 +1666,7 @@ mod tests {
     fn the_cycle_rebinds_its_server_before_it_probes_and_actually_applies_the_answer() {
         // THE WIRING OF THE PER-CYCLE REBIND, which the pure `rebind` table
         // cannot see: a decision nothing consults is a decision that does not
-        // happen. Textual, with the limits every guard in this file has — it
+        // happen.
         let whole = include_str!("watchdog_daemon.rs");
         let source = whole
             .split(concat!("#[cfg(", "test)]"))
@@ -1770,7 +1725,7 @@ mod tests {
     fn the_adopts_reset_is_unconditional_while_its_retraction_is_best_effort() {
         // The failure boundary, held in the SOURCE because the ordering inside
         // `adopt_server` is what the unreachable-old-server test cannot see
-        // from outside. The reset must not sit inside the branch that handles a
+        // from outside.
         let whole = include_str!("watchdog_daemon.rs");
         let source = whole
             .split(concat!("#[cfg(", "test)]"))
@@ -1805,7 +1760,7 @@ mod tests {
             .unwrap_or(whole);
         // The reachability signal itself: `clear_published` reports FALSE from
         // every path that could not address the server, and TRUE only after it
-        // has finished. A version that answered `true` on an unaddressable
+        // has finished.
         let cleared = source
             .split_once("fn clear_published(")
             .map(|(_, body)| body.split_once("\n}\n").map_or(body, |(head, _)| head))
@@ -1816,9 +1771,7 @@ mod tests {
             "both unaddressable exits report failure — a missing session id, and a window \
              enumeration that did not run"
         );
-        // AND the clears themselves are counted. The previous version of this
-        // guard stopped at the two discovery exits and the final literal, and a
-        // guard that asserts "returns true at the end" cannot see that the
+        // AND the clears themselves are counted.
         assert_eq!(
             cleared
                 .matches(concat!("let _ = transport::", "clear_option"))
@@ -1903,8 +1856,7 @@ mod tests {
 
     #[test]
     fn the_defaults_are_the_frozen_ones() {
-        // ae:16331-16373. A bash side that passes no flags must run the cadence
-        // the frozen script ran.
+        // Ae:16331-16373.
         let knobs = Knobs::default();
         assert_eq!(knobs.interval_secs, 60);
         assert_eq!(knobs.stale_secs, 900);
@@ -2270,8 +2222,7 @@ mod tests {
     fn a_slot_with_no_pane_is_neutral_on_its_first_absent_cycle_and_dead_on_its_second() {
         let roster = vec![entry("main", "cl", "lead"), entry("worker.0", "cl", "w")];
         let by_slot = vec![("main".to_owned(), Verdict::Active)];
-        // First absence: the debounce has not recorded it yet. A spawn caught
-        // mid-stamp is not a failure, and ✖ would be a manufactured claim.
+        // First absence: the debounce has not recorded it yet.
         assert_eq!(roster_line(&roster, &by_slot, &[]), "lead● w·");
         // Second: the streak is recorded, and now it is ✖.
         let missing = vec![(
@@ -2303,9 +2254,7 @@ mod tests {
 
     #[test]
     fn a_failed_session_query_does_not_end_the_daemon() {
-        // THE BLOCKER THIS FIXES. A `list-sessions` that could not reach the
-        // server proves nothing, and a daemon that exits on one is a watchdog a
-        // hiccup can switch off for the rest of the session.
+        // THE BLOCKER THIS FIXES.
         assert_eq!(continuation(None, &StopProbe::Unknown), Continuation::Retry);
         // Retry is the only verdict that leaves the publication standing, which
         // is exactly why it must not collapse into Stop.
@@ -2432,9 +2381,7 @@ mod tests {
 
     #[test]
     fn the_orchestrator_main_is_judged_by_its_cadence_and_nothing_below_it() {
-        // The CONTROL is the pair: one Observation, judged twice. With no sweep
-        // reading the ordinary branches call this pane STALE and nudge it; with
-        // one, the cadence decides and every branch below is skipped. That is
+        // The CONTROL is the pair: one Observation, judged twice.
         let knobs = Knobs::default();
         let (prior, ordinary) = stale_pane();
         let plain = account(&prior, &ordinary, &knobs);
@@ -2454,9 +2401,8 @@ mod tests {
 
     #[test]
     fn a_disabled_cadence_returns_the_orchestrator_to_the_ordinary_watchdog() {
-        // From the daemon's side: `sweep_step` answering `None` must
-        // FALL THROUGH, not suppress. An empty accounting here would leave a
-        // orchestrator main watched by nothing at all.
+        // From the daemon's side: `sweep_step` answering `None` must FALL
+        // THROUGH, not suppress.
         let knobs = Knobs {
             sweep: crate::watchdog::SweepKnobs {
                 sweep_secs: 0,
@@ -2530,8 +2476,7 @@ mod tests {
 
     #[test]
     fn the_sweep_prompt_is_the_frozen_sentence() {
-        // The text an orchestrator acts on. Broken across source lines, so assert the
-        // assembled value rather than trusting the continuations.
+        // The text an orchestrator acts on.
         assert_eq!(
             SWEEP_PROMPT,
             "Run your sweep now: ae list --json, diff your state file, and report ONLY \
@@ -2571,7 +2516,7 @@ mod tests {
     fn the_heartbeat_is_lstatted_so_a_symlink_is_never_trusted() {
         // THE SAFETY PIN. bash's `[[ -f ]]` FOLLOWS symlinks, so anything able
         // to write in the session directory could aim the heartbeat at a file
-        // some other process touches often and silence a wedged orchestrator. The
+        // some other process touches often and silence a wedged orchestrator.
         let scratch = Scratch::new("hb");
         let dir = &scratch.0;
         assert_eq!(heartbeat_mtime(dir), None, "absent is untrusted");
@@ -2614,15 +2559,13 @@ mod tests {
     fn the_observation_server_follows_the_record_the_send_helper_reads() {
         // The drift both reviewers named: delivery goes through
         // `<meta-dir>/send`, whose `_lib` re-reads `tmux_server` from the
-        // CURRENT meta on every call. A daemon pinned at startup would observe
+        // CURRENT meta on every call.
         let named =
             |value: &str| Meta::parse(&format!("tmux_server_kind=name\ntmux_server={value}\n"));
         let alpha = ServerId::Selected(Selector::Name("alpha".to_owned()));
         let beta = ServerId::Selected(Selector::Name("beta".to_owned()));
 
-        // `Use` means a REAL MOVE and nothing else. The record still naming the
-        // server in force is not a move, and answering `Use` for it would run
-        // the adopt — retracting our own live bars and throwing away every
+        // `Use` means a REAL MOVE and nothing else.
         assert_eq!(rebind(&alpha, Some(&named("alpha"))), Rebind::Keep);
         assert_eq!(
             rebind(&alpha, Some(&named("beta"))),
@@ -2648,9 +2591,7 @@ mod tests {
             Rebind::Use(ServerId::Selected(Selector::Socket("/tmp/s".into())))
         );
 
-        // Missing or ambiguous: stop, mirroring the startup refusal. The send
-        // helper refuses delivery on an ambiguous record too, so a daemon that
-        // continued would be watching a session nothing can reach.
+        // Missing or ambiguous: stop, mirroring the startup refusal.
         assert_eq!(
             rebind(&alpha, Some(&Meta::parse("session=d\n"))),
             Rebind::Refuse
@@ -2674,9 +2615,7 @@ mod tests {
             "a relative socket path names no server"
         );
 
-        // An unreadable meta says NOTHING about the server. Keeping what is in
-        // force is not the same as refusing: `continuation` already owns what an
-        // unreadable meta means for the daemon's life, and answering it twice,
+        // An unreadable meta says NOTHING about the server.
         assert_eq!(rebind(&alpha, None), Rebind::Keep);
     }
 
@@ -2734,9 +2673,7 @@ mod tests {
 
     #[test]
     fn a_server_move_retracts_the_old_bars_and_carries_no_pane_history() {
-        // THE TWO DEFECTS the re-review found, together. `%0` on alpha and `%0`
-        // on beta are DIFFERENT PANES sharing a name, and every carry is keyed
-        // by that name — so alpha's history would be applied to beta's live
+        // THE TWO DEFECTS the re-review found, together.
         let scratch = Scratch::new("adopt");
         let knobs = Knobs::default();
         let journal = Journal {
@@ -2779,9 +2716,7 @@ mod tests {
 
     #[test]
     fn an_unreachable_old_server_does_not_block_the_move() {
-        // The failure boundary. The server being left may be DEAD — often that
-        // is WHY the selector moved — so a retraction that cannot run must not
-        // gate adoption: refusing would abandon a live session to no watchdog
+        // The failure boundary.
         let scratch = Scratch::new("adopt-dead");
         let knobs = Knobs::default();
         let journal = Journal {

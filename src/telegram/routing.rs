@@ -127,9 +127,7 @@ pub enum Sticky {
         /// The agent reference it names.
         agent: String,
     },
-    /// The file is there and is not a target. Reported rather than ignored:
-    /// silently falling back to the orchestrator would route a message
-    /// somewhere the operator did not choose.
+    /// The file is there and is not a target.
     Corrupt,
 }
 
@@ -174,14 +172,11 @@ pub struct Inbound<'a> {
 /// Which helper a delivery runs — the operator's verb, carried, not collapsed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verb {
-    /// Deliver the message and record a `send`. Every route but an explicit
-    /// `/session <ref> ask …` is this.
+    /// Deliver the message and record a `send`.
     Send,
     /// Open a TRACKED REQUEST: a request id, an `ask` event, and a reply
-    /// command embedded in the message so the agent can answer back through
-    /// the chat. Not a decorated send — a different helper with different
-    /// semantics, which is why the verb has to survive routing rather than be
-    /// validated and discarded.
+    /// command embedded in the message so the agent can answer back through the
+    /// chat.
     Ask,
 }
 
@@ -245,12 +240,10 @@ pub fn decide(
     sticky: &Sticky,
     now: i64,
 ) -> Route {
-    // Trim FIRST, and trim both ends. The slash test below decides whether this
-    // is a command at all, and a message that begins with a newline — which is
-    // what a phone keyboard produces more often than anyone expects — must not
+    // Trim FIRST, and trim both ends.
     let text = message.text.trim();
 
-    // precedence, and the order is the rule: a slash command is a
+    // Precedence, and the order is the rule: a slash command is a
     // command even when it is sent as a reply, so the reply branch is only
     // reachable for text that is not one.
     if !text.starts_with('/')
@@ -323,8 +316,7 @@ fn session_route(args: &str, sessions: &[RunningSession]) -> Route {
     let (verb, rest) = split_word(rest);
     let (agent, message) = split_word(rest);
     // THE MESSAGE IS THE ONLY PART THAT CAN DECIDE, and testing the other three
-    // would be testing nothing. [`split_word`] consumes left to right, so a
-    // part that is missing empties every part AFTER it: a non-empty `message`
+    // would be testing nothing.
     if message.is_empty() {
         return Route::Answer(
             "Usage: /session <name|id-prefix> <send|ask> <agent> <msg>".to_owned(),
@@ -386,9 +378,7 @@ fn describe_sticky(sessions: &[RunningSession], sticky: &Sticky) -> String {
 /// .
 fn sticky_route(text: &str, sessions: &[RunningSession], sticky: &Sticky) -> Route {
     match sticky {
-        // REVALIDATED, every time. An override is a note about the past: the
-        // session it names may have stopped, and its agent may have been
-        // retired, since it was written.
+        // REVALIDATED, every time.
         Sticky::Set { session, agent } => deliver_route(Verb::Send, session, agent, text, sessions),
         Sticky::Corrupt => {
             Route::Answer("Current target is unset/corrupt — /use <session> <agent>".to_owned())
@@ -580,7 +570,7 @@ mod tests {
 
     #[test]
     fn plain_text_with_no_orchestrator_is_start_guidance_rather_than_silence() {
-        // second half: the absence has to SAY something.
+        // Second half: the absence has to SAY something.
         let world = vec![session("work", &["codex:dev"])];
         let Route::Answer(text) = decide(plain("hello"), &world, &Sticky::Unset, NOW) else {
             panic!("a message with nowhere to go must be answered, not delivered");
@@ -637,9 +627,7 @@ mod tests {
 
     #[test]
     fn the_session_command_needs_every_one_of_its_four_parts() {
-        // One missing part at a time. A usage check written with `&&` instead
-        // of `||` would only refuse the command that omits EVERYTHING, and
-        // would deliver an empty message for the rest.
+        // One missing part at a time.
         let world = vec![session("work", &["codex:dev"])];
         for (label, typed) in [
             ("no message", "/session work send dev"),
@@ -771,8 +759,7 @@ mod tests {
 
     #[test]
     fn a_slash_command_stays_a_command_even_as_a_reply() {
-        // precedence. The reply header below is a perfectly good one:
-        // the point is that it is not consulted.
+        // Precedence.
         let world = vec![session("work", &["codex:dev"])];
         let route = decide(
             Inbound {
@@ -982,7 +969,7 @@ mod tests {
 
     #[test]
     fn the_help_text_teaches_orchestrator_and_never_hub() {
-        // the alias is accepted, not taught.
+        // The alias is accepted, not taught.
         let Route::Answer(help) = decide(plain("/help"), &[], &Sticky::Unset, NOW) else {
             panic!("/help answers");
         };

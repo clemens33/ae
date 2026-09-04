@@ -76,7 +76,7 @@ impl Timestamp {
         let days = days_from_civil(year, month, day);
         // The ONE date check, and it is exact: any month or day the calendar
         // does not have — 13, 00, 2026-02-30, 1900-02-29 — normalises to some
-        // other date on the way back, so it fails to round-trip. A range check
+        // other date on the way back, so it fails to round-trip.
         if civil_from_days(days) != (year, month, day) {
             return None;
         }
@@ -118,7 +118,7 @@ impl fmt::Display for Timestamp {
     }
 }
 
-/// Parse a run of ASCII digits. Rejects everything else, including a sign.
+/// Parse a run of ASCII digits.
 fn number(text: &str) -> Option<i64> {
     if text.bytes().all(|b| b.is_ascii_digit()) {
         text.parse().ok()
@@ -214,8 +214,7 @@ mod tests {
 
     #[test]
     fn a_shape_the_contract_does_not_document_is_refused() {
-        // ONE spelling is documented. A reader that also accepts these
-        // would be ratifying formats nothing contains.
+        // ONE spelling is documented.
         for other in [
             "2026-05-19T07:29:45.500Z",
             "2026-05-19T07:29:45+02:00",
@@ -259,8 +258,7 @@ mod tests {
     #[test]
     fn the_civil_arithmetic_holds_on_the_far_side_of_year_zero() {
         // This module's docs claim the whole proleptic Gregorian range, and the
-        // negative-year branches of both functions exist to deliver it. Every
-        // other test here sits after 1900, so cargo-mutants could rewrite those
+        // negative-year branches of both functions exist to deliver it.
         for day in days_from_civil(-5, 1, 1)..days_from_civil(5, 1, 1) {
             let (y, m, d) = civil_from_days(day);
             assert_eq!(days_from_civil(y, m, d), day, "{y}-{m:02}-{d:02}");

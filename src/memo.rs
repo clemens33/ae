@@ -50,8 +50,7 @@ pub enum Command {
 /// A read of the memo file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum View {
-    /// Every record, or only those whose topic is the given one. `--topic ""`
-    /// is every record: the awk filter tests `topic_filter == ""` first.
+    /// Every record, or only those whose topic is the given one.
     All(Option<String>),
     /// The last `n` records, unfiltered.
     Tail(usize),
@@ -142,8 +141,7 @@ pub fn record(ts: Timestamp, author: &str, add: &Add) -> String {
     format!("{ts}\t{author}\t{}\t{}\n", add.topic, add.text)
 }
 
-/// Why the memo was not (fully) recorded, or not read. All are
-/// [`state::EXIT_FAILED`].
+/// Why the memo was not (fully) recorded, or not read.
 #[derive(Debug)]
 pub enum Failure {
     /// `read`/`tail` could not read a memo file that exists.
@@ -417,9 +415,7 @@ short\tline\tonly\n\
         assert_eq!(read(&dir, &View::Tail(1)).unwrap(), b"", "a socket");
         drop(socket);
         std::fs::remove_file(dir.join("memo.tsv")).unwrap();
-        // A REGULAR file that cannot be read is the one reported case. Root
-        // reads anything, so the fault can only be staged for a plain user;
-        // the fixture is checked before the product is.
+        // A REGULAR file that cannot be read is the one reported case.
         std::fs::write(dir.join("memo.tsv"), FIXTURE).unwrap();
         std::fs::set_permissions(dir.join("memo.tsv"), std::fs::Permissions::from_mode(0o000))
             .unwrap();

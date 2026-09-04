@@ -402,7 +402,7 @@ fn scan_word(chars: &[char], start: usize) -> Result<(String, usize), Refusal> {
                     return Err(Refusal::Substitution("$(".to_owned()));
                 } else if ch == '$' && chars.get(i + 1) == Some(&'{') {
                     i = scan_param_expansion(chars, i)?;
-                    // scan lands on the closing `}`; push the whole span raw.
+                    // Scan lands on the closing `}`; push the whole span raw.
                     unquoted.push('$');
                 } else {
                     unquoted.push(ch);

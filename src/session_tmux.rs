@@ -25,8 +25,7 @@ const PANE_ID_FORMAT: &str = "#{pane_id}";
 pub(crate) struct TmuxArgv(Vec<String>);
 
 impl TmuxArgv {
-    /// The argv for the transport door to spawn. Reading is harmless;
-    /// construction is what is sealed.
+    /// The argv for the transport door to spawn.
     pub(crate) fn as_args(&self) -> &[String] {
         &self.0
     }
@@ -39,8 +38,7 @@ pub(crate) enum Split {
     Horizontal,
     /// `-v` — stacked.
     Vertical,
-    /// `-v -b` — stacked, the new pane ABOVE. The watchdog pane's shape, so
-    /// the visual order stays watchdog-on-top / events-below.
+    /// `-v -b` — stacked, the new pane ABOVE.
     VerticalBefore,
 }
 
@@ -50,16 +48,15 @@ pub(crate) enum Op<'a> {
     /// its first pane, in one call, printing the pane id rather than asking for
     /// it afterwards.
     NewSession {
-        /// The session name. Already validated against the session grammar.
+        /// The session name.
         name: &'a str,
         /// The first pane's working directory.
         work_dir: &'a str,
     },
-    /// `new-session -d -s <name> -c <dir> <command…>` — a DAEMON's own
-    /// session, which is not the launch's shape: no `-P -F`, because nothing
-    /// reads a pane id back from it, and a command, because the session exists
-    /// only to hold that process. The Telegram bridge's, and the frozen
-    /// `_telegram_spawn_daemon`'s (ae:7977).
+    /// `new-session -d -s <name> -c <dir> <command…>` — a DAEMON's own session,
+    /// which is not the launch's shape: no `-P -F`, because nothing reads a
+    /// pane id back from it, and a command, because the session exists only to
+    /// hold that process.
     NewDaemonSession {
         /// The session name — a constant here, never operator input.
         name: &'a str,
@@ -106,14 +103,9 @@ pub(crate) enum Op<'a> {
     /// `select-window -t <pane>` — the `focus` helper's window switch, which
     /// `select-pane` alone does not do.
     SelectWindow { pane: &'a str },
-    /// `rename-window -t <target> <name>`. `name` MUST already be
-    /// [`crate::tmux::format_literal`]-escaped: a window name is a FORMAT.
+    /// `rename-window -t <target> <name>`.
     RenameWindow { target: &'a str, name: &'a str },
-    /// `rename-session -t <target> <name>` — `ae rename`'s tmux half. The
-    /// target is the session's exact ID, never its name: `-t proj`
-    /// PREFIX-MATCHES, so a rename addressed by name can move a live
-    /// `project` instead. A session name is not a format, so `name` is passed
-    /// as typed.
+    /// `rename-session -t <target> <name>` — `ae rename`'s tmux half.
     RenameSession { target: &'a str, name: &'a str },
     /// `show-options -gv <name>` — the GLOBAL option value the session-scoped
     /// `status-format[0]` copy is taken from.
@@ -126,8 +118,6 @@ pub(crate) enum Op<'a> {
         value: &'a str,
     },
     /// `capture-pane -p -J -S -<lines> -E - -t <pane>` — the `peek` helper.
-    /// A separate variant from [`crate::tmux::capture_pane_args`], whose window
-    /// is fixed at 40 lines.
     CapturePane { pane: &'a str, lines: u32 },
 }
 
@@ -252,8 +242,7 @@ pub(crate) fn argv(server: &ServerId, op: &Op<'_>) -> TmuxArgv {
 }
 
 /// The `#{pane_id}` a `-P -F` run printed, or `None` when nothing usable came
-/// back. Mirrors [`crate::tmux::interpret_new_window`] — a pane id starts with
-/// `%`, and anything else is a diagnostic that happened to reach stdout.
+/// back.
 pub(crate) fn interpret_pane_id(succeeded: bool, stdout: &str) -> Option<String> {
     if !succeeded {
         return None;

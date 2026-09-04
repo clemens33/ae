@@ -32,11 +32,7 @@ pub struct SeatLines {
     pub harness_session: Option<String>,
 }
 
-/// Render the v2 roster block for `seats`, in the order given. The block opens
-/// with `schema=2` and then, per seat, `seat.`, `profile.`, `agent_bin.` (when
-/// present) and `harness_session.` (when present) — every line `\n`-terminated.
-/// The caller concatenates this after the base facts and hands the whole
-/// document to [`crate::meta::init`].
+/// Render the v2 roster block for `seats`, in the order given.
 #[must_use]
 pub fn render(seats: &[SeatLines]) -> String {
     use std::fmt::Write as _;
@@ -57,8 +53,7 @@ pub fn render(seats: &[SeatLines]) -> String {
 }
 
 /// Why a v1 meta could not be migrated to v2 — collected in full so the
-/// operator fixes the config once. Rendered in the order the v1 roster lists
-/// its slots.
+/// operator fixes the config once.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MigrateRefusal {
     /// The v1 meta itself does not parse into a clean roster (a mixed-schema,
@@ -118,7 +113,6 @@ pub fn render_refusals(refusals: &[MigrateRefusal]) -> String {
 
 /// Migrate the roster of a v1 `meta` into v2 [`SeatLines`], resolving each
 /// legacy alias to a profile of the same name and checking `profile_defined`.
-/// The seats come out in the v1 meta's own roster order.
 ///
 /// # Errors
 ///
@@ -355,9 +349,8 @@ mod tests {
 
     #[test]
     fn migrate_reads_a_real_live_meta_shaped_v1_roster() {
-        // Colead BLOCKER-1: a real v1 meta is FULL of non-roster keys the reader
-        // files as UnknownKey. Those must NOT block migration; only the v1 agent
-        // rows migrate, in order, and every UnknownKey is ignored.
+        // Colead BLOCKER-1: a real v1 meta is FULL of non-roster keys the
+        // reader files as UnknownKey.
         let meta = Meta::parse(
             "session=aedev\nmode=local\nlayout=vertical\n\
              config=/home/x/.ae/config\nae_path=/home/x/bin/ae\n\
@@ -413,13 +406,13 @@ mod tests {
         // Colead round-2 BLOCKER-2: each of these has a VALID v1 row the old
         // predicate would have migrated alone, silently losing the other claim.
         let doubtful = [
-            // a bare agent.<slot> (no `=`) is a raw seat claim filed as MalformedLine
+            // A bare agent.<slot> (no `=`) is a raw seat claim filed as MalformedLine
             "agent.main\nagent.worker.0=cl:colead\n",
-            // a bare seat.<slot> beside a valid v1 row
+            // A bare seat.<slot> beside a valid v1 row
             "seat.main\nagent.worker.0=cl:colead\n",
-            // a v2 schema marker over v1 rows
+            // A v2 schema marker over v1 rows
             "schema=2\nagent.main=cl:lead\n",
-            // a v2 fact attached to a v1 slot
+            // A v2 fact attached to a v1 slot
             "agent.main=cl:lead\nprofile.main=cl\n",
             "agent.main=cl:lead\nharness_session.main=abc\n",
         ];

@@ -20,9 +20,7 @@ fn main() -> ExitCode {
     match ae::run_program(program.as_deref(), &args, &mut out, &mut err) {
         Ok(code) => ExitCode::from(code),
         Err(error) => {
-            // Presentation itself failed. Say so on a fresh stderr handle and
-            // give up quietly if that is gone too — the locked one above may be
-            // the very thing that broke.
+            // Presentation itself failed.
             let _ = writeln!(std::io::stderr(), "ae: {error}");
             ExitCode::FAILURE
         }

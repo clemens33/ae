@@ -27,7 +27,7 @@ use crate::tmux::{self, OptionScope};
 use crate::transport;
 
 /// The DISPLAY branch segment the status bar renders — `' <branch><dirty>'`,
-/// trimmed. Deliberately not the machine value: see [`tmux::BRANCH_OPTION`].
+/// trimmed.
 pub const BRANCH_STATUS_OPTION: &str = "@ae_branch_status";
 
 /// The frozen display trim for a branch name (ae:13868).
@@ -63,7 +63,7 @@ pub struct BranchReading {
     pub full: String,
     /// `' <branch><dirty>'` — the display segment, trimmed to
     /// [`BRANCH_DISPLAY_MAX`] and suffixed `*` when the work tree has tracked
-    /// modifications. Leading space because it sits inside the `[ae …]` bracket.
+    /// modifications.
     pub display: String,
 }
 
@@ -192,12 +192,11 @@ pub fn kill_pane_args(server: &ServerId, pane: &str) -> Vec<String> {
 pub enum KillOutcome {
     /// Nothing to do: an empty pane id.
     Nothing,
-    /// The probe named no owner. Refused, silently — a pane that is not there
-    /// is not a stranger-kill worth a diagnostic.
+    /// The probe named no owner.
     Unreadable,
-    /// The pane belongs to a different session. Refused, loudly.
+    /// The pane belongs to a different session.
     WrongSession(String),
-    /// The pane carries a different `@ae_agent` stamp. Refused, loudly.
+    /// The pane carries a different `@ae_agent` stamp.
     WrongAgent(String),
     /// A positive match on every fact the caller named; `kill-pane` was run.
     Killed,
@@ -417,8 +416,6 @@ pub struct Deferred {
     /// `[[ -x "${AE_PATH_BIN:-}" ]]` guard made it.
     paths: Option<crate::telegram::bridge::Paths>,
     /// This session's own directory — where a refusal's event mirror lands.
-    /// Held rather than rebuilt from the home and the name, so a session whose
-    /// directory and name ever disagree still records against the real one.
     dir: PathBuf,
     /// Seconds between supervise ticks; `0` disables.
     every_secs: u64,
@@ -530,8 +527,7 @@ mod tests {
     #[test]
     fn the_ownership_probe_refuses_every_reading_that_names_no_owner() {
         // Measured 2026-09-03: an unknown pane answers rc 0 with "\t", an
-        // unknown server rc 1. Both must refuse — a kill authorised by silence
-        // is the stranger-kill this guard exists to prevent.
+        // unknown server rc 1.
         assert_eq!(interpret_pane_owner(false, "demo\t_watchdog\n"), None);
         assert_eq!(interpret_pane_owner(true, "\t"), None);
         assert_eq!(interpret_pane_owner(true, ""), None);

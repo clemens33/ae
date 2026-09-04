@@ -23,9 +23,7 @@
 use std::ffi::{OsStr, OsString};
 use std::os::unix::ffi::OsStrExt as _;
 
-/// The four questions the preview asks git, each a fixed argv shape. A typed
-/// query rather than free-form strings so a caller cannot assemble an arbitrary
-/// git command line, and so [`argv`] is the one place the wire form is decided.
+/// The four questions the preview asks git, each a fixed argv shape.
 enum Query<'a> {
     /// `rev-parse --is-inside-work-tree` — the guard, judged by exit status.
     IsWorkTree,
@@ -36,30 +34,21 @@ enum Query<'a> {
     /// `rev-list --count <base>..<tip>` — the range size (printed value).
     CountRange { base: &'a str, tip: &'a str },
     /// `symbolic-ref --quiet --short HEAD` — the branch NAME, judged by its
-    /// printed value. `--quiet` so a detached HEAD is a silent failure rather
-    /// than a diagnostic on stderr the watchdog would have to filter.
+    /// printed value.
     Branch,
     /// `rev-parse --short HEAD` — the detached-HEAD fallback the frozen branch
     /// segment reaches for when `symbolic-ref` names nothing (ae:13866).
     ShortHead,
-    /// `status --porcelain --untracked-files=no` — the dirty marker. Untracked
-    /// files are deliberately EXCLUDED: a build artifact nobody committed is not
-    /// a modified work tree, and the bar would otherwise read `*` forever.
+    /// `status --porcelain --untracked-files=no` — the dirty marker.
     PorcelainStatus,
     /// `worktree remove --force <worktree>` — the git-mode teardown's workdir
-    /// commit, judged by exit status. Run with `-C <origin>`. A successful remove
-    /// deletes that worktree's working directory AND its admin record in origin;
-    /// `prune` is deliberately NOT part of this path (it is global housekeeping
-    /// over unrelated stale entries and must never make a removed workdir look
-    /// retained).
+    /// commit, judged by exit status.
     WorktreeRemove { worktree: &'a OsStr },
     /// `worktree prune` — the frozen end path's housekeeping after a managed
-    /// worktree is removed. Best-effort: its exit status is deliberately ignored.
+    /// worktree is removed.
     WorktreePrune,
     /// `worktree add --detach <worktree> HEAD` — the `--worktree` launch's
-    /// working copy, run with `-C <origin>`. Detached deliberately: ae manages
-    /// no branch at creation, and a named branch would collide the second time
-    /// the same origin launches a session.
+    /// working copy, run with `-C <origin>`.
     WorktreeAdd { worktree: &'a OsStr },
     /// `add -A` — the end path's stage-everything before the session commit.
     AddAll,
@@ -73,8 +62,8 @@ enum Query<'a> {
     LsFilesOthers,
     /// `remote get-url origin` — whether a push target exists at all.
     RemoteGetUrl,
-    /// `fetch origin --quiet` — the frozen silent refresh before the reachability
-    /// test. Best-effort: the frozen path swallows its failure.
+    /// `fetch origin --quiet` — the frozen silent refresh before the
+    /// reachability test.
     FetchOrigin,
     /// `branch -r --contains HEAD` — whether HEAD is already on a remote branch.
     BranchRemoteContains,
@@ -82,23 +71,16 @@ enum Query<'a> {
     MergeBaseOriginHead,
     /// `diff --name-only <base> HEAD` — the files the push carries.
     DiffNameOnly { base: &'a str },
-    /// `push -u origin HEAD:refs/heads/<branch>` — the end path's push, judged by
-    /// exit status. The branch rides as its own argv element.
+    /// `push -u origin HEAD:refs/heads/<branch>` — the end path's push, judged
+    /// by exit status.
     PushHead { branch: &'a str },
 }
 
-/// A git argv minted ONLY by this module's [`argv`] builder. Its inner vector
-/// is private, so no other module can fabricate an arbitrary git command line
-/// and hand it to [`crate::transport::run_git`] — the transport door runs a
-/// `GitArgv`, but only `src/git.rs` can construct one from a typed [`Query`].
-/// This is the boundary a grep guard cannot give: an alias-import of `run_git`
-/// is useless without a `GitArgv`, and a `GitArgv` cannot be built from raw argv
-/// anywhere but here.
+/// A git argv minted ONLY by this module's [`argv`] builder.
 pub(crate) struct GitArgv(Vec<OsString>);
 
 impl GitArgv {
-    /// The OS-native argv for the transport door to spawn. Reading is harmless;
-    /// construction is what is sealed.
+    /// The OS-native argv for the transport door to spawn.
     pub(crate) fn as_os_args(&self) -> &[OsString] {
         &self.0
     }
@@ -278,16 +260,8 @@ pub(crate) fn range(wdir: &[u8], base: &str, tip: &str) -> (String, String) {
     }
 }
 
-/// `git -C <origin> worktree remove --force <worktree>` — remove the exact managed
-/// git worktree of a `mode=git` teardown. Judged by exit status: `true` iff git
-/// exited zero, at which point that worktree's working directory AND its admin
-/// record in `origin` are gone. `origin` and `worktree` ride as RAW bytes → one
-/// `OsStr` argv element each, so a hostile path is data to git, never a command
-/// line, and a non-UTF-8 path survives intact. A git that refuses (a locked or
-/// dirty worktree, a path that is not a registered worktree) returns `false` with
-/// NO `rm -rf` fallback — the caller reclassifies the managed child and retains the
-/// session state. Git mutates only `origin`'s worktree ADMIN metadata; origin's
-/// checked-out content is never touched and origin is never a deletion target.
+/// `git -C <origin> worktree remove --force <worktree>` — remove the exact
+/// managed git worktree of a `mode=git` teardown.
 pub(crate) fn worktree_remove(origin: &[u8], worktree: &[u8]) -> bool {
     let origin = OsStr::from_bytes(origin);
     let worktree = OsStr::from_bytes(worktree);
@@ -355,8 +329,7 @@ pub(crate) fn has_pending_work(wdir: &[u8]) -> bool {
     !listed.trim().is_empty()
 }
 
-/// `git -C <wdir> add -A` then `commit -m <subject> -m <body>`. `true` only if
-/// BOTH exited zero — a failed stage must never look like a successful commit.
+/// `git -C <wdir> add -A` then `commit -m <subject> -m <body>`.
 pub(crate) fn commit_all(wdir: &[u8], subject: &str, body: &str) -> bool {
     let path = OsStr::from_bytes(wdir);
     if !crate::transport::run_git(&argv(path, &Query::AddAll)).0 {
@@ -371,8 +344,7 @@ pub(crate) fn has_origin(wdir: &[u8]) -> bool {
     crate::transport::run_git(&argv(OsStr::from_bytes(wdir), &Query::RemoteGetUrl)).0
 }
 
-/// `git fetch origin --quiet`, best-effort. The frozen path swallows its
-/// failure (`|| true`): an offline end still commits and still archives.
+/// `git fetch origin --quiet`, best-effort.
 pub(crate) fn fetch_origin(wdir: &[u8]) {
     let _ = crate::transport::run_git(&argv(OsStr::from_bytes(wdir), &Query::FetchOrigin));
 }
@@ -408,21 +380,19 @@ pub(crate) fn pushed_file_count(wdir: &[u8]) -> String {
 }
 
 /// `git -C <wdir> push -u origin HEAD:refs/heads/<branch>` — judged by exit
-/// status. `false` is the frozen refusal: the session is STOPPED, the commit is
-/// safe locally, and nothing is deleted.
+/// status.
 pub(crate) fn push_head(wdir: &[u8], branch: &str) -> bool {
     crate::transport::run_git(&argv(OsStr::from_bytes(wdir), &Query::PushHead { branch })).0
 }
 
-/// `git -C <origin> worktree prune`, best-effort — the frozen housekeeping after
-/// a managed worktree goes. Its status is ignored on purpose: pruning unrelated
-/// stale entries must never fail an end whose own removal succeeded.
+/// `git -C <origin> worktree prune`, best-effort — the frozen housekeeping
+/// after a managed worktree goes.
 pub(crate) fn worktree_prune(origin: &[u8]) {
     let _ = crate::transport::run_git(&argv(OsStr::from_bytes(origin), &Query::WorktreePrune));
 }
 
 /// `git -C <origin> worktree add --detach <worktree> HEAD` — the `--worktree`
-/// launch's working copy. Judged by exit status.
+/// launch's working copy.
 pub(crate) fn worktree_add_detached(origin: &[u8], worktree: &[u8]) -> bool {
     let origin = OsStr::from_bytes(origin);
     let worktree = OsStr::from_bytes(worktree);

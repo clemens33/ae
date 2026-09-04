@@ -33,26 +33,22 @@ use std::path::{Path, PathBuf};
 /// The file this module reads, inside a session directory.
 pub const FILE: &str = "meta";
 
-/// The roster key prefixes. The four context keys are
-/// matched literally where they are absorbed, next to their fields.
+/// The roster key prefixes.
 const ROSTER_PREFIX: &str = "agent.";
-/// two selector keys, matched literally where they are absorbed.
+/// Two selector keys, matched literally where they are absorbed.
 const SERVER_KEY: &str = "tmux_server";
 const SERVER_KIND_KEY: &str = "tmux_server_kind";
 const ROSTER_BIN_PREFIX: &str = "agent_bin.";
 /// Identity schema v2 (alias-free): the seat's NAME, its execution PROFILE and
 /// the harness's own conversation id live under three keys instead of one
-/// `alias:name:sid` value. New KEYS, deliberately: a v1 parser meets them as
-/// unknown and answers an EMPTY roster (fail closed), where a `name:sid`
-/// value under the old key would have been misparsed as alias=name, name=sid.
+/// `alias:name:sid` value.
 const SEAT_PREFIX: &str = "seat.";
 const PROFILE_PREFIX: &str = "profile.";
 const HARNESS_SESSION_PREFIX: &str = "harness_session.";
-/// `schema=<n>` — the identity schema the writer used. Absent means v1.
+/// `schema=<n>` — the identity schema the writer used.
 const SCHEMA_KEY: &str = "schema";
 
-/// Which identity schema wrote a roster entry. Kept per entry because the two
-/// spell the DISPLAY ref differently and pre-routing-key ledgers pair on it.
+/// Which identity schema wrote a roster entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RosterSchema {
     /// `agent.<slot>=alias:name[:sid]` — the alias is the identity's first half.
@@ -70,8 +66,6 @@ pub struct RosterEntry {
     /// The agent's NAME — its identity under v2; the display-name half under v1.
     pub name: String,
     /// The execution profile (v2 `profile.<slot>`; the alias half under v1).
-    /// Metadata, never part of the identity. `None` when a v2 seat has no
-    /// profile row.
     pub profile: Option<String>,
     /// The harness's own conversation id (v2 `harness_session.<slot>`; the
     /// `:sid` suffix under v1), where the roster carries one.
@@ -169,7 +163,7 @@ pub enum Anomaly {
         /// 1-based line number of the repeat.
         line: usize,
     },
-    /// a roster value that is not `alias:name[:session-id]`, or an
+    /// A roster value that is not `alias:name[:session-id]`, or an
     /// identity-v2 `seat.<slot>` with an empty name.
     MalformedRosterEntry {
         /// The key as written.
@@ -178,20 +172,13 @@ pub enum Anomaly {
         line: usize,
     },
     /// Identity v2 — one slot named by BOTH `agent.<slot>` and `seat.<slot>`.
-    /// Two schemas claiming one seat is an identity in doubt: the slot
-    /// contributes no agent, and the session degrades with reason. Judged on
-    /// the raw KEYS met (bare, malformed or duplicated ones included), never on
-    /// a surviving entry, so no order of claims can resurrect the slot.
     MixedSchemaSlot {
         /// The slot as written.
         slot: String,
         /// 1-based line number of the claim that made (or found) it mixed.
         line: usize,
     },
-    /// Identity v2 — one NAME carried by more than one seat. Under v2 the name
-    /// IS the identity, so two seats with one name are one identity in doubt:
-    /// every v2 seat carrying it is dropped (a v1 row keeps its `alias:name`
-    /// ref, whose identity is the pair) and the session degrades with reason.
+    /// Identity v2 — one NAME carried by more than one seat.
     DuplicateName {
         /// The name as written.
         name: String,
@@ -238,11 +225,10 @@ pub struct Meta {
     ae_version: Option<String>,
     roster: Vec<RosterEntry>,
     /// `agent_bin.<slot>` values whose `agent.<slot>` / `seat.<slot>` has not
-    /// been read yet. A slot that never gets one simply never becomes an agent.
+    /// been read yet.
     pending_binaries: Vec<(String, String)>,
     /// Identity v2 metadata rows (`profile.<slot>`, `harness_session.<slot>`)
-    /// read before their `seat.<slot>` — same rule as the binaries. They keep
-    /// their key and line because a v1 claim turns them into unknown keys.
+    /// read before their `seat.<slot>` — same rule as the binaries.
     pending_profiles: Vec<PendingRow>,
     pending_harness: Vec<PendingRow>,
     /// Provenance (key + line) of every v2 metadata row that ATTACHED to a V2
@@ -250,10 +236,7 @@ pub struct Meta {
     /// slot later turns out mixed — the same answer the other order gives.
     attached: Vec<PendingRow>,
     /// Every `agent.<slot>` / `seat.<slot>` KEY met so far — `=` or not, valid
-    /// or not, first or repeated. A slot's schema is judged on these raw claims,
-    /// never on a surviving entry: a malformed, bare or duplicated first claim
-    /// leaves no entry, and judging on entries would let the other schema
-    /// resurrect the slot. `archive::roster` judges presence the same way.
+    /// or not, first or repeated.
     claims: Vec<SlotClaim>,
     /// Slots claimed by both schemas: neither claim contributes an agent.
     mixed_slots: Vec<String>,
@@ -261,13 +244,10 @@ pub struct Meta {
     doubtful_names: Vec<String>,
     /// The raw `schema=` value, where the writer recorded one.
     schema: Option<String>,
-    /// two selector keys, kept RAW. `None` is absent; `Some("")` is
-    /// present-and-empty, and the row makes those two different answers.
+    /// Two selector keys, kept RAW.
     server_value: Option<String>,
     server_kind: Option<String>,
-    /// Whether either selector key appeared more than once. A duplicate is
-    /// ambiguous whether or not the repeats agree, so what the second
-    /// one SAID is not kept.
+    /// Whether either selector key appeared more than once.
     server_duplicated: bool,
     anomalies: Vec<Anomaly>,
 }
@@ -310,7 +290,7 @@ impl Meta {
             if raw.is_empty() {
                 continue;
             }
-            // split on the FIRST equals. A value may contain more.
+            // Split on the FIRST equals.
             let Some((key, value)) = raw.split_once('=') else {
                 // A bare `agent.main` / `seat.main` is still a CLAIM on the
                 // slot (the frozen `_ar_roster_slots` names the slot from it),
@@ -324,9 +304,8 @@ impl Meta {
             let already_seen = seen.iter().any(|previous| previous == key);
             meta.note_claim(key, line, already_seen);
             if already_seen {
-                // UNCLASSIFIED: nobody has ruled whether the first
-                // or the last occurrence wins. Publishing either one would be
-                // FABRICATION — the digest would carry a value the contract
+                // UNCLASSIFIED: nobody has ruled whether the first or the last
+                // occurrence wins.
                 meta.anomalies.push(Anomaly::DuplicateKey {
                     key: key.to_owned(),
                     line,
@@ -396,9 +375,8 @@ impl Meta {
             "work_dir" => self.work_dir = Some(value.to_owned()),
             "goal" => self.goal = Some(value.to_owned()),
             "ae_version" => self.ae_version = Some(value.to_owned()),
-            // The selector family is the one exception: these two are
-            // read and normalized rather than tolerated-and-ignored. Every
-            // OTHER unknown key stays uninterpreted below.
+            // The selector family is the one exception: these two are read and
+            // normalized rather than tolerated-and-ignored.
             SERVER_KEY => self.server_value = Some(value.to_owned()),
             SERVER_KIND_KEY => self.server_kind = Some(value.to_owned()),
             SCHEMA_KEY => self.schema = Some(value.to_owned()),
@@ -457,7 +435,7 @@ impl Meta {
         let binary = self.take_pending_binary(slot);
         // v2 metadata on a v1 slot is already uninterpreted by `note_claim`
         // (which fired for this `agent.<slot>` KEY before this absorb, so a
-        // malformed or bare v1 claim reclassifies it too). The alias and sid
+        // malformed or bare v1 claim reclassifies it too).
         if self
             .roster
             .iter()
@@ -475,8 +453,7 @@ impl Meta {
         });
     }
 
-    /// Identity v2: `seat.<slot>=<name>`. The name is the identity; an empty
-    /// one is a malformed entry exactly as an empty v1 name is.
+    /// Identity v2: `seat.<slot>=<name>`.
     fn absorb_seat(&mut self, key: &str, slot: &str, value: &str, line: usize) {
         if value.is_empty() {
             self.anomalies.push(Anomaly::MalformedRosterEntry {
@@ -487,7 +464,7 @@ impl Meta {
         }
         // The name is the identity, so it must be UNIQUE across the roster —
         // against every other seat, v1 rows included (their name half is what a
-        // bare-name address matches). A collision drops every v2 seat carrying
+        // bare-name address matches).
         if self.doubtful_names.iter().any(|n| n == value) {
             self.anomalies.push(Anomaly::DuplicateName {
                 name: value.to_owned(),
@@ -522,15 +499,7 @@ impl Meta {
         });
     }
 
-    /// Record which schema a raw KEY claims for its slot. The moment a slot
-    /// has been claimed by both, it is MIXED: its entry (if any) is dropped, its
-    /// metadata (pending or attached) is uninterpreted, the anomaly is recorded,
-    /// and every later claim of either prefix is refused with its own anomaly.
-    /// A SECOND v2 claim — keyed or bare — is a seat in doubt: the entry is
-    /// dropped and the slot stays absent whichever order the rows came in
-    /// (`already_seen` says the duplicate-key check will record it; a bare
-    /// repeat is recorded here). A v1 bare row keeps its frozen behaviour: a
-    /// malformed line, and the keyed row still names the agent.
+    /// Record which schema a raw KEY claims for its slot.
     fn note_claim(&mut self, key: &str, line: usize, already_seen: bool) {
         let (slot, schema) = if let Some(slot) = key.strip_prefix(ROSTER_PREFIX) {
             (slot, RosterSchema::V1)
@@ -563,7 +532,7 @@ impl Meta {
                 self.claims[at].v1 = true;
                 // A v1 claim — VALID, malformed or bare — makes the slot v1, so
                 // its v2 metadata (pending or attached) is uninterpreted NOW,
-                // at the single point where "a v1 key landed" is known. This is
+                // at the single point where "a v1 key landed" is known.
                 self.uninterpret_pending(slot);
             }
             RosterSchema::V2 => self.claims[at].v2_claims += 1,
@@ -588,8 +557,7 @@ impl Meta {
     }
 
     /// Flag every open metadata row for `key` value-invalidated, keeping its
-    /// provenance. For a v2 metadata key the value is gone, the row is
-    /// not — a later v1/mixed claim still reclassifies it as an unknown key.
+    /// provenance.
     fn mark_metadata_duplicated(&mut self, key: &str) {
         for list in [
             &mut self.pending_profiles,
@@ -684,8 +652,7 @@ impl Meta {
             }
             Some(_) => self.anomalies.push(unknown),
             None => {
-                // No entry yet. A v1 KEY already claimed the slot (its value
-                // was malformed or duplicated) is still a v1 slot.
+                // No entry yet.
                 if self
                     .claims
                     .iter()
@@ -702,9 +669,7 @@ impl Meta {
         }
     }
 
-    /// `agent_bin.<slot>` may appear before or after its `agent.<slot>`. Before,
-    /// it waits; after, it attaches. It never creates an agent by itself: a
-    /// binary is not an identity.
+    /// `agent_bin.<slot>` may appear before or after its `agent.<slot>`.
     fn set_binary(&mut self, slot: &str, value: &str) {
         if value.is_empty() {
             return;
@@ -767,8 +732,7 @@ impl Meta {
             // Absent kind: the legacy one-key form, which named a server.
             None if !value.is_empty() => ServerSelector::Positive(Selector::Name(value.to_owned())),
             None => ServerSelector::Missing,
-            // Present but EMPTY. With no value it is still "no nonempty kind",
-            // which the row calls missing; beside a value it is ambiguous.
+            // Present but EMPTY.
             Some("") if value.is_empty() => ServerSelector::Missing,
             Some("name") if !value.is_empty() => {
                 ServerSelector::Positive(Selector::Name(value.to_owned()))
@@ -782,46 +746,45 @@ impl Meta {
         }
     }
 
-    /// the copy mode the session was started in.
+    /// The copy mode the session was started in.
     #[must_use]
     pub fn mode(&self) -> Option<&str> {
         self.mode.as_deref()
     }
 
-    /// where the session came from.
+    /// Where the session came from.
     #[must_use]
     pub fn origin(&self) -> Option<&str> {
         self.origin.as_deref()
     }
 
-    /// the working directory its agents run in.
+    /// The working directory its agents run in.
     #[must_use]
     pub fn work_dir(&self) -> Option<&str> {
         self.work_dir.as_deref()
     }
 
-    /// the session's one-line objective.
+    /// The session's one-line objective.
     #[must_use]
     pub fn goal(&self) -> Option<&str> {
         self.goal.as_deref()
     }
 
     /// The ae version captured in this session's meta for the human list
-    /// subline. An absent or empty value has frozen's visible `?` fallback.
+    /// subline.
     #[must_use]
     pub fn ae_version(&self) -> Option<&str> {
         self.ae_version.as_deref()
     }
 
-    /// the roster, in the order the meta lists its `agent.<slot>`
+    /// The roster, in the order the meta lists its `agent.<slot>`
     /// keys.
     #[must_use]
     pub fn roster(&self) -> &[RosterEntry] {
         &self.roster
     }
 
-    /// The raw `schema=` value the writer recorded, if any. Absent means the
-    /// meta predates identity v2 (every roster row is `agent.<slot>`).
+    /// The raw `schema=` value the writer recorded, if any.
     #[must_use]
     pub fn schema(&self) -> Option<&str> {
         self.schema.as_deref()
@@ -950,11 +913,10 @@ pub fn rewritten(text: &str, key: &str, value: Option<&str>) -> String {
 #[derive(Debug)]
 pub enum RewriteError {
     /// Nothing visible changed: the lock, the read, the temp write, its sync,
-    /// or the rename failed. The previous meta is still the meta.
+    /// or the rename failed.
     NotWritten(io::Error),
-    /// The rename returned — the new meta IS visible — but the directory
-    /// entry could not be synced, so whether it survives a crash is unknown.
-    /// Reported as exactly that, never as "nothing changed".
+    /// The rename returned — the new meta IS visible — but the directory entry
+    /// could not be synced, so whether it survives a crash is unknown.
     Unknown(io::Error),
 }
 
@@ -1001,15 +963,7 @@ pub fn rewrite(dir: &Path, key: &str, value: Option<&str>) -> Result<(), Rewrite
 }
 
 /// The whole INITIAL meta, published as one document under the meta lock — the
-/// core side of `_meta-init`. A reader sees the OLD meta, no meta, or the
-/// COMPLETE new one: never a half-built roster. `content` is written verbatim
-/// (the caller assembles every `key=value\n` line and the trailing newline),
-/// so per-seat appends — the shape that once left the roster observable
-/// half-built — are impossible by construction. Publishing OVER an existing
-/// meta is refused: initialisation is a create, and clobbering a live session's
-/// meta with a fresh document is never what `_meta-init` means (a rewrite of an
-/// existing session goes through [`rewrite`], key by key, or a future batch
-/// rewrite that takes the current bytes first).
+/// core side of `_meta-init`.
 ///
 /// # Errors
 ///
@@ -1066,8 +1020,7 @@ pub fn lock(dir: &Path) -> io::Result<fs::File> {
 }
 
 /// Publish `content` as the whole meta, for a caller that ALREADY HOLDS
-/// [`lock`]. The publish itself is [`init`]'s and [`replace`]'s: temp, fsync,
-/// rename, directory fsync.
+/// [`lock`].
 ///
 /// # Errors
 ///
@@ -1095,11 +1048,7 @@ pub fn read_base(path: &Path) -> io::Result<String> {
 }
 
 /// Stage `bytes` to a per-process temp beside `path`, fsync it, rename it over
-/// `path`, then fsync the directory so the entry is durable. The rename makes
-/// the first observable version the complete one; the two syncs are why a
-/// meta cannot revert behind an event that announced it. The temp name carries
-/// the pid AND a nonce so two writers under the same lock owner (or a crashed
-/// one's leftover) cannot collide.
+/// `path`, then fsync the directory so the entry is durable.
 fn publish_bytes(dir: &Path, path: &Path, bytes: &[u8]) -> Result<(), RewriteError> {
     static NONCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let temp = dir.join(format!(
@@ -1122,8 +1071,7 @@ fn publish_bytes(dir: &Path, path: &Path, bytes: &[u8]) -> Result<(), RewriteErr
         let _ = fs::remove_file(&temp);
     }
     staged.map_err(RewriteError::NotWritten)?;
-    // Visible now. Publish the directory entry, or say that it is not known
-    // to be published.
+    // Visible now.
     fs::OpenOptions::new()
         .read(true)
         .open(dir)
@@ -1288,9 +1236,7 @@ agent_bin.main=claude
 
     #[test]
     fn sc_405l_all_four_readable_empty_combinations_are_missing() {
-        // kind absent/empty x value absent/empty. `missing` means NO SELECTOR
-        // FACT IS AVAILABLE — not a claim that readable bytes positively omitted
-        // the keys — so all four land in the same place, and none of them is
+        // Kind absent/empty x value absent/empty.
         for (text, why) in [
             ("mode=local\n", "kind absent, value absent"),
             ("tmux_server=\n", "kind absent, value empty"),
@@ -1364,7 +1310,7 @@ agent_bin.main=claude
     #[test]
     fn sc_405l_a_name_payload_and_a_socket_payload_keep_their_types() {
         // Flattening both to a string would let one spelling address the
-        // other's server. `-L /tmp/x` and `-S /tmp/x` are not the same tmux.
+        // other's server.
         let by_name = Meta::parse("tmux_server_kind=name\ntmux_server=/tmp/x\n");
         let by_socket = Meta::parse("tmux_server_kind=socket\ntmux_server=/tmp/x\n");
         assert_eq!(
@@ -1533,11 +1479,7 @@ agent_bin.main=claude
         );
     }
 
-    /// Identity v2 (P1). The tracer that preceded this test pinned the v1
-    /// parser's answer to these keys — unknown, EMPTY roster, i.e. fail
-    /// closed (git history: `identity_v2_keys_are_unknown_to_the_v1_parser_...`).
-    /// The v2 parser reads them as a seat: the NAME is the identity, the profile
-    /// and the harness session are metadata, and the display ref is the bare name.
+    /// Identity v2 (P1).
     #[test]
     fn identity_v2_a_seat_carries_name_profile_and_harness_session() {
         let meta = Meta::parse(concat!(
@@ -1619,9 +1561,8 @@ agent_bin.main=claude
 
     #[test]
     fn identity_v2_a_slot_claimed_by_both_schemas_contributes_no_agent() {
-        // Either order: the second claim drops the slot and pins the anomaly, and
-        // a third claim cannot resurrect it. Membership is roster-
-        // defined, so an identity in doubt is no identity.
+        // Either order: the second claim drops the slot and pins the anomaly,
+        // and a third claim cannot resurrect it.
         for (text, second_line) in [
             ("agent.main=fable5:lead\nseat.main=lead\n", 2),
             ("seat.main=lead\nagent.main=fable5:lead\n", 2),
@@ -1692,8 +1633,7 @@ agent_bin.main=claude
     }
 
     /// Colead P1 gate BLOCKER-1: v2 metadata rows must never rewrite a v1
-    /// identity, in EITHER order. The one rule: on a v1 (or mixed) slot they are
-    /// unknown keys — exactly what a v1 parser would have called them.
+    /// identity, in EITHER order.
     #[test]
     fn identity_v1_ref_and_sid_are_byte_stable_under_v2_metadata_in_both_orders() {
         for text in [
@@ -1749,19 +1689,19 @@ agent_bin.main=claude
     #[test]
     fn identity_v2_a_slot_claimed_by_both_keys_is_dropped_whatever_the_first_claim_was() {
         let cases = [
-            // malformed first
+            // Malformed first
             "agent.main=broken\nseat.main=lead\n",
             "seat.main=\nagent.main=fable5:lead\n",
-            // bare first (no `=`: a MalformedLine, but still a claim)
+            // Bare first (no `=`: a MalformedLine, but still a claim)
             "agent.main\nseat.main=lead\n",
             "seat.main\nagent.main=fable5:lead\n",
-            // duplicate first (the duplicate invalidated the entry)
+            // Duplicate first (the duplicate invalidated the entry)
             "seat.main=lead\nseat.main=other\nagent.main=fable5:lead\n",
             "agent.main=fable5:lead\nagent.main=x:y\nseat.main=lead\n",
-            // valid first
+            // Valid first
             "agent.main=fable5:lead\nseat.main=lead\n",
             "seat.main=lead\nagent.main=fable5:lead\n",
-            // both bare
+            // Both bare
             "agent.main\nseat.main\n",
         ];
         for text in cases {
@@ -1975,13 +1915,13 @@ agent_bin.main=claude
             (unknown, malformed_entry, malformed_line, mixed)
         };
         for field in ["profile", "harness_session"] {
-            // malformed v1 value, both orders → 1 UnknownKey + 1 MalformedRosterEntry.
+            // Malformed v1 value, both orders → 1 UnknownKey + 1 MalformedRosterEntry.
             let a = Meta::parse(&format!("{field}.main=x\nagent.main=broken\n"));
             let b = Meta::parse(&format!("agent.main=broken\n{field}.main=x\n"));
             assert!(a.roster().is_empty() && b.roster().is_empty(), "{field}");
             assert_eq!(kinds(&a), (1, 1, 0, 0), "{field} metadata-first malformed");
             assert_eq!(kinds(&b), (1, 1, 0, 0), "{field} v1-first malformed");
-            // bare v1 line, both orders → 1 UnknownKey + 1 MalformedLine.
+            // Bare v1 line, both orders → 1 UnknownKey + 1 MalformedLine.
             let a = Meta::parse(&format!("{field}.main=x\nagent.main\n"));
             let b = Meta::parse(&format!("agent.main\n{field}.main=x\n"));
             assert_eq!(kinds(&a), (1, 0, 1, 0), "{field} metadata-first bare");
@@ -2022,9 +1962,7 @@ agent_bin.main=claude
 
     /// Colead P1 round-2 IMPORTANT-3: a bare `seat.<slot>` beside a keyed one
     /// is a repeated v2 claim — the slot stays absent in both orders, as the
-    /// archive reader (which counts lines) already refuses it. A v1 bare row
-    /// keeps its frozen behaviour: a malformed line, and the keyed row names
-    /// the agent.
+    /// archive reader (which counts lines) already refuses it.
     #[test]
     fn identity_v2_a_bare_seat_row_beside_a_keyed_one_is_a_repeated_claim() {
         for text in ["seat.main\nseat.main=lead\n", "seat.main=lead\nseat.main\n"] {
@@ -2084,9 +2022,7 @@ agent_bin.main=claude
 
     #[test]
     fn sc_405e_a_duplicate_key_invalidates_the_field_rather_than_picking_one() {
-        // Precedence is UNCLASSIFIED. Publishing "first" would put a value in
-        // the digest that no row says is the value — the reader would be
-        // inventing an answer to a question the seats have not settled.
+        // Precedence is UNCLASSIFIED.
         let meta = Meta::parse("goal=first\ngoal=second\n");
         assert_eq!(meta.goal(), None, "neither occurrence is published");
         assert_eq!(
@@ -2108,8 +2044,7 @@ agent_bin.main=claude
 
     #[test]
     fn sc_405e_every_retained_scalar_key_invalidates_the_same_way() {
-        // One field tested is one field proven. The four context keys and the
-        // frozen human-subline version all go through the same refusal.
+        // One field tested is one field proven.
         type Accessor = fn(&Meta) -> Option<&str>;
         let read: [(&str, Accessor); 5] = [
             ("mode", Meta::mode),
@@ -2137,7 +2072,7 @@ agent_bin.main=claude
 
     #[test]
     fn sc_405e_a_doubly_named_slot_contributes_no_agent() {
-        // membership is roster-defined, so a slot whose identity is in
+        // Membership is roster-defined, so a slot whose identity is in
         // doubt supplies no agent rather than a guessed one.
         let meta = Meta::parse(concat!(
             "agent.main=claude:lead\n",

@@ -1,6 +1,6 @@
 //! Whether a candidate is running — and what ae says when it cannot tell.
 //!
-//! a durable candidate is `running` only when a SUCCESSFUL query of
+//! A durable candidate is `running` only when a SUCCESSFUL query of
 //! its own recorded server returns the EXACT session name with positive
 //! ae-ownership; it is `stopped` only when that same successful query proves the
 //! exact name absent. An unreachable, missing or ambiguous recorded server, a
@@ -34,9 +34,9 @@ pub struct Classified {
 /// A classified snapshot: every phase-1 identity, and what was lost.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Snapshot {
-    /// One entry per phase-1 candidate. Same identities, same count.
+    /// One entry per phase-1 candidate.
     pub sessions: Vec<Classified>,
-    /// loss facts, carried through unchanged.
+    /// Loss facts, carried through unchanged.
     pub incomplete: Vec<FailedSource>,
 }
 
@@ -147,40 +147,34 @@ impl Answers {
 
 /// The status of one candidate, given what its own server said.
 fn decide(candidate: &Candidate, answers: &Answers) -> Status {
-    // snapshot proof, for tmux-only and dual-provenance alike.
+    // Snapshot proof, for tmux-only and dual-provenance alike.
     if already_proven_running(candidate) {
         return Status::Running;
     }
     let Some(record) = &candidate.durable else {
         // Live-only, and the sighting was not positive proof — a marker that is
-        // missing or names another session. There is no recorded server to ask,
-        // so nothing can be established either way: unknown.
+        // missing or names another session.
         return Status::Unknown;
     };
     let selector = match &record.server {
         ServerSelector::Positive(selector) => selector,
-        // The selector is missing or ambiguous. No target is derived from those
-        // an ambiguous pointer is not a pointer, and guessing one would query a
-        // server ae was never entitled to ask.
+        // The selector is missing or ambiguous.
         ServerSelector::Missing | ServerSelector::Ambiguous => return Status::Unknown,
     };
     let server = ServerId::Selected(selector.clone());
     match answers.get(&server) {
-        // The query failed. Inability to verify is not absence.
+        // The query failed.
         Some(Err(QueryFailed)) | None => Status::Unknown,
         Some(Ok(sessions)) => {
-            // EXACT name. A prefix sibling answers for nobody but itself — that
-            // substitution is the tmux-primitive hazard behind #105.
+            // EXACT name.
             match sessions.iter().find(|session| session.name == record.name) {
-                // A successful query that proves the exact name absent. This is
-                // the ONLY route to `stopped`.
+                // A successful query that proves the exact name absent.
                 None => Status::Stopped,
                 Some(session) => {
                     if positively_owned(&record.name, session.marker.as_deref()) {
                         Status::Running
                     } else {
-                        // There, but not provably ae's. Not stopped: it is
-                        // demonstrably present.
+                        // There, but not provably ae's.
                         Status::Unknown
                     }
                 }
@@ -210,9 +204,9 @@ pub fn agent_runtimes(panes: &[ObservedPane], slots: &[String]) -> Vec<AgentRunt
                     None,
                 ),
                 SlotObservation::Absent { unidentified: 0 } => (Some(false), Some(Reason::Dead)),
-                // Two different unprovabilities, one answer: several panes carry
-                // the slot so the association is ambiguous, or an unmarked pane
-                // could be this agent's. Neither may become a verdict.
+                // Two different unprovabilities, one answer: several panes
+                // carry the slot so the association is ambiguous, or an
+                // unmarked pane could be this agent's.
                 SlotObservation::Duplicated { .. } | SlotObservation::Absent { .. } => (None, None),
             };
             AgentRuntime {
@@ -307,9 +301,7 @@ mod tests {
     }
 
     impl Discovery for Backend {
-        /// **HAZARD, and it is deliberate.** An UNREGISTERED server answers
-        /// `Ok(vec![])` — a SUCCESSFUL EMPTY query, which is the proof that a
-        /// name is absent and therefore the route to `stopped`.
+        /// **HAZARD, and it is deliberate.**
         fn enumerate(&self, server: &ServerId) -> Result<Vec<DiscoveredSession>, QueryFailed> {
             self.trace.borrow_mut().push(server.clone());
             self.worlds
@@ -469,8 +461,7 @@ mod tests {
             (None, Status::Unknown, "ownership missing"),
             (
                 // A present-but-empty marker, which is what an unset variable
-                // can render as. A DIFFERENT value is no longer a non-proof:
-                // the tag says "ae's", and identity was settled by the exact
+                // can render as.
                 Some(""),
                 Status::Unknown,
                 "marker present but empty",
@@ -492,9 +483,7 @@ mod tests {
 
     #[test]
     fn the_ownership_predicate_is_the_presence_of_the_marker() {
-        // THE MARKER IS A TAG, NOT A NAME. The real producer writes
-        // `AE_SESSION=1`, so requiring the value to equal the session name made
-        // the predicate unsatisfiable in the field and killed the whole status
+        // THE MARKER IS A TAG, NOT A NAME.
         assert!(positively_owned("mdk", Some("mdk")), "a name is a value");
         assert!(
             positively_owned("mdk", Some("1")),
@@ -547,9 +536,7 @@ mod tests {
                 "{why}, query succeeded"
             );
 
-            // The SAME payload bytes, behind a failed query. A failure carries no
-            // proof in either direction, however complete its partial output
-            // looks.
+            // The SAME payload bytes, behind a failed query.
             let failed = Backend::new().down(named("B"));
             assert_eq!(
                 status_of(
@@ -665,7 +652,7 @@ mod tests {
 
     #[test]
     fn criterion_9_a_tmux_only_candidate_keeps_its_discovery_fact_when_the_server_goes_away() {
-        // Phase 1 saw it alive on A. A is unavailable by the time we classify.
+        // Phase 1 saw it alive on A.
         let candidate = Candidate::tmux_only(sighting(named("A"), "ghost", "ghost"));
         let backend = Backend::new().down(named("A"));
 
@@ -715,8 +702,7 @@ mod tests {
     #[test]
     fn a_redundant_answer_cannot_replace_an_accepted_snapshot_proof() {
         // Monotonicity, stated as a test: the server that proved it alive now
-        // says it is gone. Learning more must not reduce what is known, so the
-        // accepted fact stands and this snapshot is not the place that changes.
+        // says it is gone.
         let mut coalesced = durable("api", positive("B"));
         coalesced.live = Some(sighting(named("B"), "api", "api"));
         let backend = Backend::new().live(named("B"), &[]);
@@ -728,14 +714,12 @@ mod tests {
             Status::Running,
             "the CONTRADICTING answer did not replace the accepted proof"
         );
-        // Deliberately NOT asserted: whether the query happened at all. This
-        // implementation does not make it, but criterion 10 and criterion 21
-        // both leave a redundant query an OPEN CHOICE — it may not CHANGE the
+        // Deliberately NOT asserted: whether the query happened at all.
     }
 
     #[test]
     fn a_dual_candidate_whose_sighting_is_not_positively_owned_follows_the_query_rule() {
-        // exception to the exception: only a POSITIVELY OWNED matched
+        // Exception to the exception: only a POSITIVELY OWNED matched
         // sighting is the snapshot proof.
         let mut unowned = durable("api", positive("B"));
         unowned.live = Some(sighting(named("B"), "api", ""));
@@ -949,7 +933,7 @@ mod tests {
 
     #[test]
     fn an_incomplete_snapshot_never_becomes_a_session_level_condition() {
-        // incompleteness is snapshot state, not a synthetic session and
+        // Incompleteness is snapshot state, not a synthetic session and
         // not a status.
         let snapshot = classify(
             Inventory {
@@ -968,8 +952,7 @@ mod tests {
     #[test]
     fn criterion_22_phase_2_contacts_only_servers_its_input_already_named() {
         // Every server reachable from here comes from a candidate's own typed
-        // selector, so the entitled set is an upper bound by construction. The
-        // planted servers below would answer if asked. They are not asked.
+        // selector, so the entitled set is an upper bound by construction.
         let candidates = vec![
             durable("mine", positive("B")),
             durable("no-selector", ServerSelector::Missing),
@@ -995,8 +978,7 @@ mod tests {
 
     #[test]
     fn a_failed_query_is_unknown_rather_than_stopped() {
-        // The FAILED-query branch. Named for what it reaches: the server was
-        // asked and did not answer.
+        // The FAILED-query branch.
         let snapshot = classify(
             inventory(vec![durable("orphan", positive("down"))]),
             &Backend::new().down(named("down")),
@@ -1074,9 +1056,7 @@ mod tests {
 
     #[test]
     fn a_seat_that_dropped_to_a_shell_is_not_alive_and_still_raises_nothing() {
-        // Frozen's `!`: present, but no agent in the foreground. The DEAD
-        // verdict stays the watchdog's, which also checks for a descendant
-        // agent process — a `bash -lc <tool>` wrapper is a shell with a live
+        // Frozen's `!`: present, but no agent in the foreground.
         let observed = only(&[pane(Some(false), Some("main"), Some("fish"))], "main");
         assert_eq!(observed.alive, Some(false));
         assert_eq!(observed.alert, None, "a shell pane is not a vanished pane");

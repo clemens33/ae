@@ -26,9 +26,7 @@ pub const TMUX_SESSION: &str = "ae-telegram";
 /// The bridge's own state directory under `<ae-home>`.
 const STATE_DIR: &str = "telegram";
 
-/// The config section this lifecycle reads and rewrites. Spelled once: the
-/// state directory happens to share the word, and reading one for the other is
-/// exactly the kind of coincidence a rename would turn into a bug.
+/// The config section this lifecycle reads and rewrites.
 const SECTION: &str = "telegram";
 
 /// The control lock's name inside it.
@@ -178,7 +176,7 @@ fn start(
 ) -> crate::Result<u8> {
     // BEFORE the lock and before the intent flag: a start that cannot possibly
     // work must not leave `enabled = true` behind for a later autostart to act
-    // on. `load_settings` is the daemon's own reader, so what it accepts here is
+    // on.
     if let Err(why) = crate::telegram::load_settings(&paths.config, &paths.home) {
         writeln!(err, "Error: {why}")?;
         return Ok(EXIT_FAILED);
@@ -319,8 +317,7 @@ fn status(paths: &Paths, server: &ServerId, out: &mut impl Write) -> crate::Resu
         )?;
     }
     // An explicit include= that omits `chat` silently drops agents' `say`
-    // replies. The default carries `chat`, so only a PINNED include is warned
-    // about.
+    // replies.
     if let Some(include) = section_value(config.as_deref().unwrap_or_default(), "include")
         && !include.is_empty()
     {
@@ -339,7 +336,7 @@ fn status(paths: &Paths, server: &ServerId, out: &mut impl Write) -> crate::Resu
 }
 
 /// The launch's best-effort revive: start the bridge IF the config asks for one
-/// and none is running. Never fatal, never blocking.
+/// and none is running.
 ///
 /// # Errors
 ///

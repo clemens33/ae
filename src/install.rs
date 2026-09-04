@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 /// The mode both executable members and the version directory are published at.
 pub const MEMBER_MODE: u32 = 0o555;
 
-/// The manifest's mode. Readable, never writable — it describes the members.
+/// The manifest's mode.
 pub const MANIFEST_MODE: u32 = 0o444;
 
 /// The journal's own name, inside the ae home it describes.
@@ -482,9 +482,7 @@ impl Journal {
             "1" => true,
             other => return Err(format!("install journal has an invalid link_had: {other}")),
         };
-        // The emitted set, exactly. A replay removes directories, so a row
-        // naming anything this installer never creates is refused rather than
-        // reversed — that is how `created_dir=<a live session directory>`
+        // The emitted set, exactly.
         let emitted = emitted_dirs(paths);
         for path in &created {
             path_components_ok(path, "install journal directory")?;
@@ -545,7 +543,7 @@ pub fn publish(bundle: &Bundle, paths: &Paths) -> Result<Published, String> {
     validate_bin_destination(&paths.link, &paths.home)?;
     mkdir_all_plain(&paths.home)?;
     // B14: creating the home can make a dangling ancestor of the command path
-    // live. Revalidate before anything is published.
+    // live.
     validate_bin_destination(&paths.link, &paths.home)?;
     recover_existing(paths)?;
 

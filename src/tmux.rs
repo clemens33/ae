@@ -86,8 +86,7 @@ pub enum StopProbe {
     /// proof).
     Absent,
     /// Unproven: the server could not be reached for any OTHER reason (ENOENT,
-    /// permission, refused). Never equated with absence — the same fail-closed
-    /// stance the stop gate takes.
+    /// permission, refused).
     Unknown,
 }
 
@@ -204,9 +203,7 @@ fn read_pane(line: &str) -> ObservedPane {
     }
     let usable = |value: &str| Some(value.to_owned()).filter(|v| !v.is_empty());
     ObservedPane {
-        // `0`/`1` and nothing else. A field that is neither is not a reading
-        // saying "alive" — it is no reading, and no positive proof is built on
-        // one.
+        // `0`/`1` and nothing else.
         dead: match fields[0] {
             "0" => Some(false),
             "1" => Some(true),
@@ -273,7 +270,7 @@ pub fn viewer_args(server: &ServerId, pane: &str) -> Vec<String> {
     args
 }
 
-/// The calling pane's three identity readings. `None` is unset-or-empty.
+/// The calling pane's three identity readings.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ObservedViewer {
     /// `@ae_slot` — the routing key, unvalidated here.
@@ -335,11 +332,10 @@ pub fn agents_args(server: &ServerId, session: &str) -> Vec<String> {
     args
 }
 
-/// The roster the frozen `ae_slot_resolver` reads:
-/// `list-panes -s -t <session> -F '#{pane_id}|#{@ae_slot}|#{@ae_agent}'` —
-/// `|`, not tab, because the middle field is empty on an unstamped pane and
-/// tab is an IFS whitespace character there. The port splits exactly and
-/// keeps the frozen spelling.
+/// The roster the frozen `ae_slot_resolver` reads: `list-panes -s -t <session>
+/// -F '#{pane_id}|#{@ae_slot}|#{@ae_agent}'` — `|`, not tab, because the middle
+/// field is empty on an unstamped pane and tab is an IFS whitespace character
+/// there.
 pub const SLOTS_FORMAT: &str = "#{pane_id}|#{@ae_slot}|#{@ae_agent}";
 
 /// The full argument list for that roster.
@@ -440,11 +436,7 @@ pub fn interpret_agents(succeeded: bool, stdout: &str) -> Option<Vec<ObservedAge
 
 /// The watchdog's per-pane reading — richer than [`PANE_FORMAT`]'s liveness
 /// three, and deliberately its OWN format so widening it never touches the
-/// contract that [`interpret_panes`] answers. Five fields, printable
-/// ` | ` delimited: the first four fields — a `%`-prefixed pane id, an
-/// allowlisted `@ae_slot`/`@ae_agent`, and a numeric pid — cannot contain that
-/// sequence. `pane_current_command` is free text, so it is last and may carry
-/// the separator verbatim.
+/// contract that [`interpret_panes`] answers.
 const WATCH_PANE_SEPARATOR: &str = FIELD_SEPARATOR;
 pub const WATCH_PANE_FORMAT: &str =
     "#{pane_id} | #{@ae_slot} | #{@ae_agent} | #{pane_pid} | #{pane_current_command}";
@@ -582,9 +574,7 @@ pub enum OptionScope {
     Session,
     /// A window option: `set-option -w -t <window-id> …`.
     Window,
-    /// A PANE option: `set-option -p -t <pane-id> …`. The table `@ae_agent`
-    /// and `@ae_slot` live in — a stamp belongs to the pane, not to the window
-    /// that happens to hold it today.
+    /// A PANE option: `set-option -p -t <pane-id> …`.
     Pane,
 }
 
@@ -745,8 +735,7 @@ pub fn pane_ttys_args(server: &ServerId) -> Vec<String> {
     args
 }
 
-/// What a completed pane-tty listing means. A run that did not succeed is
-/// `None` — no answer, which frozen treats as "unanswerable, trust $TMUX".
+/// What a completed pane-tty listing means.
 #[must_use]
 pub fn interpret_pane_ttys(succeeded: bool, stdout: &str) -> Option<Vec<String>> {
     if !succeeded {
@@ -879,8 +868,7 @@ pub fn window_panes_args(server: &ServerId, session: &str) -> Vec<String> {
 }
 
 /// One [`WindowPane`] per line that split into exactly [`WINDOW_PANE_FIELDS`]
-/// fields; `None` on a failed run. A short line is DROPPED rather than guessed,
-/// for the same reason [`interpret_watch_panes`] drops one.
+/// fields; `None` on a failed run.
 #[must_use]
 pub fn interpret_window_panes(succeeded: bool, stdout: &str) -> Option<Vec<WindowPane>> {
     if !succeeded {
@@ -931,8 +919,7 @@ pub fn pane_probe_args(server: &ServerId, pane: &str) -> Vec<String> {
     args
 }
 
-/// What a completed [`pane_probe_args`] run means. A failed run is `None` —
-/// a pane that cannot be read is not a pane running a shell.
+/// What a completed [`pane_probe_args`] run means.
 #[must_use]
 pub fn interpret_pane_probe(succeeded: bool, stdout: &str) -> Option<ObservedPaneProbe> {
     if !succeeded {
@@ -955,8 +942,7 @@ pub enum Styling {
     /// `capture-pane -p` — printable text only.
     Plain,
     /// `capture-pane -e -p -S 0` — SGR preserved, from the top of the visible
-    /// pane. NOT `-J`: joining wrapped rows would erase the two-space
-    /// continuation indent the notice proof reconstructs from.
+    /// pane.
     Escapes,
 }
 
@@ -1013,8 +999,7 @@ pub enum Key {
     Escape,
     /// `C-u` — clear the input line, the notice path's one measurable retry.
     ClearLine,
-    /// `-X cancel` — leave copy mode. A COMMAND, not a key, and it is why
-    /// this is an enum: `send-keys -X` and `send-keys` take different argv.
+    /// `-X cancel` — leave copy mode.
     CancelCopyMode,
 }
 
@@ -1400,10 +1385,7 @@ mod tests {
     /// Every format this module hands tmux is read back by splitting on the
     /// bytes it asked for, and tmux 3.4 does not hand control characters back
     /// unchanged: measured on tmux 3.4 and tmux 3.7b, `\x1f` returns as the
-    /// four literal bytes `\037` and a TAB returns as `_`. A control byte in
-    /// any of these constants is a reader that goes silently blind on Linux
-    /// while macOS stays green, so the SET is pinned printable here rather
-    /// than each parser being trusted to notice for itself.
+    /// four literal bytes `\037` and a TAB returns as `_`.
     #[test]
     fn no_tmux_format_carries_a_control_character() {
         use super::{
@@ -1646,8 +1628,7 @@ mod tests {
 
     #[test]
     fn a_name_and_a_socket_of_the_same_spelling_address_different_servers() {
-        // -L /tmp/x and -S /tmp/x are not the same tmux. The typed halves must
-        // not collapse anywhere on the path from selector to argv.
+        // -L /tmp/x and -S /tmp/x are not the same tmux.
         assert_ne!(
             server_args(&named("/tmp/x")),
             server_args(&socket("/tmp/x"))
@@ -1748,8 +1729,8 @@ mod tests {
 
     #[test]
     fn stop_probe_anchors_clean_dead_at_the_line_start_never_a_substring() {
-        // A server literally NAMED "no server running" once made a permission error
-        // CONTAIN the words (10th-review B2). The magic phrase mid-line is not proof.
+        // A server literally NAMED "no server running" once made a permission
+        // error CONTAIN the words (10th-review B2).
         assert_eq!(
             interpret_stopped(
                 false,
@@ -1850,9 +1831,7 @@ mod tests {
 
     #[test]
     fn the_pane_format_asks_for_identity_and_never_for_the_display_field() {
-        // `@ae_agent` is DISPLAY and the frozen script associated on it
-        // (#106). The two slot fields ARE here now — the ruling that ratified
-        // the predicate is what put them here, and their absence beforehand was
+        // `@ae_agent` is DISPLAY and the frozen script associated on it (#106).
         let args = list_panes_args(&ServerId::Ambient, "s").join(" ");
         assert!(args.contains("#{@ae_slot}"));
         assert!(args.contains("#{pane_dead}"), "{args}");
@@ -1862,8 +1841,7 @@ mod tests {
 
     #[test]
     fn pane_dead_comes_first_so_nothing_upstream_can_shift_it() {
-        // ORDER IS THE SAFETY PROPERTY. `pane_dead` is the conjunct whose loss
-        // fabricates an `alive`; no ae- or system-controlled field precedes it.
+        // ORDER IS THE SAFETY PROPERTY.
         let fields: Vec<&str> = super::PANE_FORMAT.split(super::FIELD_SEPARATOR).collect();
         assert_eq!(fields.len(), super::PANE_FIELDS);
         assert_eq!(fields[0], "#{pane_dead}");
@@ -1883,9 +1861,7 @@ mod tests {
 
     #[test]
     fn an_unmarked_pane_is_a_pane_and_not_a_dropped_line() {
-        // MEASURED against a real server. A three-pane session whose middle pane
-        // carries no marker prints `0 | main | zsh\n0 |  | zsh\n1 |  | true\n`:
-        // the unmarked pane is an EMPTY MIDDLE FIELD, not a missing line.
+        // MEASURED against a real server.
         assert_eq!(
             interpret_panes(true, "0 | main | zsh\n0 |  | zsh\n1 |  | true\n"),
             Ok(vec![
@@ -1923,9 +1899,7 @@ mod tests {
 
     #[test]
     fn a_marker_that_is_empty_or_blank_is_not_a_usable_identity() {
-        // RESTORED BY NAME, and not merely as bookkeeping. This name vanished in
-        // the three-field rewrite; its EMPTY-field half survived inside
-        // `an_unreadable_field_...`, but the WHITESPACE-ONLY field had no
+        // RESTORED BY NAME, and not merely as bookkeeping.
         assert_eq!(
             interpret_panes(true, "0 |  | zsh\n"),
             Ok(vec![pane(Some(false), None, Some("zsh"))]),
@@ -1946,8 +1920,8 @@ mod tests {
 
     #[test]
     fn an_unreadable_field_is_no_reading_rather_than_a_convenient_one() {
-        // an empty or absent reading is NOT alive, because absence of
-        // evidence is not evidence. Each field fails independently.
+        // An empty or absent reading is NOT alive, because absence of evidence
+        // is not evidence.
         assert_eq!(
             interpret_panes(true, "0 | main | \n"),
             Ok(vec![pane(Some(false), Some("main"), None)]),
@@ -1972,9 +1946,7 @@ mod tests {
 
     #[test]
     fn a_line_of_the_wrong_arity_is_a_pane_that_says_nothing() {
-        // A TAB CANNOT BE SMUGGLED THROUGH A FIELD. If a slot carried one, the
-        // line would split into four: the prefix could match a real roster slot
-        // while the remainder was pushed into the command field, forging a
+        // A TAB CANNOT BE SMUGGLED THROUGH A FIELD.
         let forged = interpret_panes(true, "0 | main | evil | zsh\n").expect("success");
         assert_eq!(
             forged,
@@ -1996,7 +1968,7 @@ mod tests {
     #[test]
     fn the_two_interpreters_disagree_about_a_blank_line_on_purpose() {
         // A session called nothing does not exist; a pane that reported nothing
-        // does. A shared filter would be the bug.
+        // does.
         assert_eq!(
             interpret_sessions(true, "a\n\nb\n"),
             Ok(vec!["a".to_owned(), "b".to_owned()])
@@ -2049,9 +2021,7 @@ mod tests {
 
     #[test]
     fn absence_carries_how_many_panes_identified_nothing() {
-        // The COUNT, not a conclusion. Whether zero unidentified panes proves a
-        // roster agent absent is reading and is made where liveness is
-        // decided; this reports what was seen.
+        // The COUNT, not a conclusion.
         assert_eq!(
             slot_observation(&[slotted("other")], "main"),
             SlotObservation::Absent { unidentified: 0 }
@@ -2128,8 +2098,8 @@ mod tests {
     #[test]
     fn the_tty_comparison_strips_dev_from_both_sides_exactly_once() {
         use super::tty_is_a_pane;
-        // procps prints `pts/3` and BSD ps `ttys039`, against tmux's absolute
-        // `/dev/…`. Frozen strips the prefix from both sides for exactly that.
+        // Procps prints `pts/3` and BSD ps `ttys039`, against tmux's absolute
+        // `/dev/…`.
         let panes = vec!["/dev/ttys039".to_owned(), "/dev/pts/3".to_owned()];
         assert!(tty_is_a_pane("ttys039", &panes));
         assert!(tty_is_a_pane("pts/3", &panes));

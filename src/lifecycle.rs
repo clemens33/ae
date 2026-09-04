@@ -72,10 +72,7 @@ pub(crate) fn name_is_valid(name: &str) -> bool {
 }
 
 /// Whether `name` may be used to reach an EXISTING session — the frozen
-/// `_session_name_usable`. The grammar, OR a legacy name that is already a real
-/// direct child of the sessions root, so a pre-grammar session is never made
-/// un-endable. A name carrying a path separator or a `.`/`..` component is
-/// refused whatever the directory holds.
+/// `_session_name_usable`.
 pub(crate) fn name_is_usable(root: &Path, name: &str) -> bool {
     if name_is_valid(name) {
         return true;
@@ -83,8 +80,7 @@ pub(crate) fn name_is_usable(root: &Path, name: &str) -> bool {
     if name.is_empty() || name.contains('/') || name == "." || name == ".." {
         return false;
     }
-    // The legacy arm. `symlink_metadata` classifies the LINK, so a grammar-
-    // invalid symlink pointing outside the root can never qualify.
+    // The legacy arm.
     #[allow(
         clippy::disallowed_methods,
         reason = "a door: the frozen legacy-name arm — an existing direct-child session directory is usable even when its name predates the grammar"
@@ -208,20 +204,16 @@ pub(crate) fn run_stop(
     let mut yes = false;
     let mut is_self = false;
     let mut supervise = false;
-    // `--pane <id>`: the caller's own pane (the shim passes `$TMUX_PANE`, or the
-    // operator's explicit `--pane=<id>` from a run-shell child, where the
-    // inherited $TMUX_PANE names a FOREIGN pane). The core resolves it to a
+    // `--pane <id>`: the caller's own pane (the shim passes `$TMUX_PANE`, or
+    // the operator's explicit `--pane=<id>` from a run-shell child, where the
+    // inherited $TMUX_PANE names a FOREIGN pane).
     let (pane, words) = split_pane_flag(tail);
     for arg in &words {
         match arg.as_str() {
             "-y" | "--yes" => yes = true,
-            // The caller asserts it is running INSIDE the target. Identity is
-            // the shim's to prove (it passes the pane's own `$AE_SESSION`); this
-            // flag is how that proof arrives, and it is why the operation cannot
+            // The caller asserts it is running INSIDE the target.
             "--self" => is_self = true,
-            // The detached worker `--self` starts. Never human-typed, and never
-            // reachable from `--self` itself: this arm runs the locked stop
-            // directly, so no re-detach is possible by shape.
+            // The detached worker `--self` starts.
             "--supervise" => supervise = true,
             flag if flag.starts_with('-') => {
                 writeln!(err, "Error: unknown flag '{flag}'. Use -y/--yes or --self.")?;
@@ -253,8 +245,7 @@ pub(crate) fn run_stop(
         return Ok(EXIT_USAGE);
     }
     // `--self` asserts "the session I am in", so it is a claim about ONE
-    // session. With `all` it is a claim about everyone else, which is how
-    // `ae stop all -y --self` classified every candidate as self, kept the last
+    // session.
     if is_self && target == "all" {
         writeln!(
             err,
@@ -282,9 +273,7 @@ pub(crate) fn run_stop(
             writeln!(out, "No running ae sessions.")?;
             return Ok(0);
         }
-        // THE FLEET FORM CONFIRMS FROM EVERY CALLER. Singular stop destroys
-        // nothing and needs no prompt; `stop all` takes down every session a
-        // typo away, so without -y it asks, and with no terminal it refuses —
+        // THE FLEET FORM CONFIRMS FROM EVERY CALLER.
         if !yes && !confirm_fleet_stop(names.len(), out, err)? {
             return Ok(EXIT_FAILED);
         }
@@ -292,7 +281,7 @@ pub(crate) fn run_stop(
         for name in names {
             // A stopped session in the roster is not a failure of `stop all`:
             // the fleet form's job is that nothing is left running, and one
-            // already down satisfies it. Only a session that could not be
+            // already down satisfies it.
             match stop_recorded(root, &name, out, err)? {
                 StopOutcome::Stopped | StopOutcome::AlreadyStopped => {}
                 StopOutcome::Failed => failures += 1,
@@ -317,8 +306,7 @@ pub(crate) fn run_stop(
     }
 }
 
-/// `stop all` without `-y`: ask on a terminal, refuse without one. `true`
-/// means go ahead.
+/// `stop all` without `-y`: ask on a terminal, refuse without one.
 fn confirm_fleet_stop(
     count: usize,
     out: &mut impl Write,
@@ -347,12 +335,7 @@ fn confirm_fleet_stop(
 }
 
 /// One target's stop, RECORDED in that target's own events log whatever the
-/// caller's streams were: the request before, the outcome after. The log is
-/// the only witness that survives the caller — an agent that stops a session
-/// from a pane about to close, a script whose stdout nobody reads — so every
-/// stop path goes through here, in-process or supervised. The diagnostics are
-/// captured so the failure reason can travel into the record, then replayed
-/// to the caller unchanged.
+/// caller's streams were: the request before, the outcome after.
 fn stop_recorded(
     root: &Path,
     name: &str,
@@ -387,22 +370,15 @@ enum StopOutcome {
 // ---- `--self`: the stop that cannot run in the process asking for it -------
 
 /// The event a self-stop records before it hands over, and the one the
-/// supervisor records when it is done. Both go in the TARGET's own log, because
-/// after a self-stop the pane that asked is gone and this file is the only
-/// account a human has.
+/// supervisor records when it is done.
 const STOP_REQUEST_ACTION: &str = "stop-request";
 const STOP_RESULT_ACTION: &str = "stop-result";
 
-/// A `nohup` argv minted ONLY by [`supervisor_argv`]. Its inner vector is
-/// private, so no other module can fabricate a command line and hand it to
-/// [`crate::transport::run_detached`] — the door runs a `DetachedArgv`, and only
-/// this module can construct one. Same seal, and the same reasoning, as
-/// [`crate::git::GitArgv`].
+/// A `nohup` argv minted ONLY by [`supervisor_argv`].
 pub(crate) struct DetachedArgv(Vec<String>);
 
 impl DetachedArgv {
-    /// The argv for the transport door to spawn. Reading is harmless;
-    /// construction is what is sealed.
+    /// The argv for the transport door to spawn.
     pub(crate) fn as_args(&self) -> &[String] {
         &self.0
     }
@@ -511,8 +487,7 @@ fn self_supervised(
         return Ok(EXIT_FAILED);
     }
     if !yes {
-        // ASK WHETHER WE CAN ASK, BEFORE ASKING. A caller with no terminal gets
-        // one clean error naming the flag, not a prompt it cannot answer.
+        // ASK WHETHER WE CAN ASK, BEFORE ASKING.
         if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
             writeln!(
                 err,
@@ -568,9 +543,7 @@ fn self_supervised(
         "self-stop requested from inside the session",
     );
     if !crate::transport::run_detached(&argv) {
-        // THE REQUEST IS ALREADY IN THE LOG, so the outcome has to be too. A
-        // stop-request with no stop-result is what a stop still in flight looks
-        // like, and this one will never finish — a human reading the log after
+        // THE REQUEST IS ALREADY IN THE LOG, so the outcome has to be too.
         emit_stop_event(
             &dir,
             name,
@@ -605,7 +578,7 @@ fn self_target(caller: Option<&str>, err: &mut impl Write) -> io::Result<Option<
 }
 
 /// Lift `--pane <id>` / `--pane=<id>` out of a stop tail; the rest stays in
-/// order. An empty value is no pane.
+/// order.
 fn split_pane_flag(tail: &[String]) -> (String, Vec<String>) {
     let mut pane: Option<String> = None;
     let mut words: Vec<String> = Vec::with_capacity(tail.len());
@@ -623,7 +596,7 @@ fn split_pane_flag(tail: &[String]) -> (String, Vec<String>) {
 }
 
 /// `_stop --supervise all`: the whole fleet, one session at a time, from a
-/// process no target pane owns. Used when the caller sits inside a target.
+/// process no target pane owns.
 fn run_supervisor(
     root: &Path,
     name: &str,
@@ -653,9 +626,7 @@ fn fleet_supervised(
     err: &mut impl Write,
 ) -> io::Result<u8> {
     if !yes {
-        // THE SUPERVISOR CANNOT PROMPT; THIS PROCESS STILL CAN. It is alive, it
-        // has the caller's terminal, and the fleet form takes down every
-        // session a typo away — so it asks HERE, before detaching, exactly as
+        // THE SUPERVISOR CANNOT PROMPT; THIS PROCESS STILL CAN.
         if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
             writeln!(
                 err,

@@ -69,7 +69,7 @@ pub enum Presence {
     Running(u32),
     /// Verified absent: no pidfile, or one whose daemon is provably gone.
     Stopped,
-    /// The server could not be asked. NOT absence — see the module docs.
+    /// The server could not be asked.
     Unknown,
 }
 
@@ -129,9 +129,7 @@ pub fn run(
         return Ok(EXIT_USAGE);
     };
     if target.is_empty() {
-        // The caller's own pane names its session. A probe that fails leaves the
-        // target empty, which is the same refusal as never having been inside
-        // one — better than guessing at a session to act on.
+        // The caller's own pane names its session.
         if !pane.is_empty()
             && let Some(owner) = transport::observe_pane_owner(&ServerId::Ambient, &pane)
         {
@@ -208,9 +206,7 @@ fn start(
     // rewritten, a running daemon is not restarted), so it is reaped before the
     // check-and-spawn — never two watchdogs side by side.
     watchdog_glue::reap_legacy(server, session, meta_dir, err)?;
-    // SINGLE-STARTER MUTUAL EXCLUSION. The launch's autostart and an explicit
-    // `ae watchdog start` reach here, and without the lock both read "not
-    // running" in the window before either publishes a pidfile and BOTH spawn a
+    // SINGLE-STARTER MUTUAL EXCLUSION.
     let held = crate::state::acquire(&meta_dir.join(START_LOCK), START_LOCK_WAIT);
     let Ok(_held) = held else {
         writeln!(
@@ -275,9 +271,7 @@ fn start(
     );
     let _ = transport::set_pane_title(server, &pane, PANE_TITLE);
     let _ = transport::run_tmux_op(&argv(server, &Op::DisablePane { pane: &pane }));
-    // REGISTRATION, by the same criteria the NEXT starter will apply. The read
-    // is non-destructive — a partial file is never deleted here, because the
-    // daemon that is mid-publish is the one we are waiting for.
+    // REGISTRATION, by the same criteria the NEXT starter will apply.
     let mut registered = false;
     for _ in 0..REGISTER_TRIES {
         if matches!(observe(server, session, meta_dir), Presence::Running(_)) {
@@ -317,8 +311,6 @@ fn stop(
     match presence(server, session, meta_dir) {
         Presence::Running(pid) => {
             // The daemon is the pane's process: killing the pane kills it.
-            // Presence proved the pane was there a moment ago; if it is gone now
-            // the daemon went with it and there is nothing left to kill.
             if let PaneLook::Present(pane) = stamped_pane(server, session, AGENT_STAMP) {
                 watchdog_glue::kill_owned_pane(server, &pane, session, Some(AGENT_STAMP), err)?;
             }
@@ -395,9 +387,7 @@ pub fn observe(server: &ServerId, session: &str, meta_dir: &Path) -> Presence {
         PaneLook::Absent => return Presence::Stopped,
         PaneLook::Unanswered => return Presence::Unknown,
     }
-    // A pid `ps` did not list is gone. A `ps` that did not answer is NOT: the
-    // pane and the pidfile are then the evidence we have, and they both say
-    // running — failure is UNKNOWN, never dead, which is `procs`' own rule.
+    // A pid `ps` did not list is gone.
     if pid_alive(pid) == Some(false) {
         Presence::Stopped
     } else {

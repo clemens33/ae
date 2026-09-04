@@ -45,10 +45,7 @@ use std::path::{Path, PathBuf};
 use crate::meta;
 use crate::state::EXIT_FAILED;
 
-/// `_end-local-teardown` core entry. `0` once the canonical session state is gone
-/// AND the removal is durable; [`EXIT_FAILED`] with a named refusal, or an explicit
-/// recoverable state, otherwise. Never follows a link, never deletes a path it
-/// cannot prove is the configured local session's.
+/// `_end-local-teardown` core entry.
 pub(crate) fn run(dir: &Path, out: &mut impl Write, err: &mut impl Write) -> io::Result<u8> {
     let _ = out; // this teardown speaks only on failure; success is silent (rc 0).
 
@@ -73,11 +70,7 @@ pub(crate) fn run(dir: &Path, out: &mut impl Write, err: &mut impl Write) -> io:
 }
 
 /// `_end-nonlocal-teardown` core entry for `mode=full` (copy) and `mode=git`
-/// (worktree). Removes the managed WORKDIR first (the recovery-anchor canonical
-/// state is removed LAST), so a workdir failure leaves the session retriable and
-/// nothing prints "Ended" falsely. `--preserve` keeps the workdir byte-for-byte and
-/// removes canonical state only. `origin` is read from meta ONLY as the `git -C`
-/// target — never a deletion target, never touched.
+/// (worktree).
 pub(crate) fn run_nonlocal(
     dir: &Path,
     preserve: bool,
@@ -143,8 +136,7 @@ pub(crate) fn run_nonlocal(
         return commit_teardown(dir, &roots.sessions, &name, "session", RECOVER_MANUAL, err);
     }
 
-    // WORKDIR FIRST. A failure here retains BOTH resources (or names the exact
-    // partial state) and never proceeds to canonical removal.
+    // WORKDIR FIRST.
     let removed = if is_git {
         remove_git_worktree(&bytes, &managed, &name, err)?
     } else {
@@ -154,16 +146,13 @@ pub(crate) fn run_nonlocal(
         return Ok(code);
     }
 
-    // The workdir is durably gone. Canonical state LAST. If it now fails, `ae end`
-    // cannot be retried (the workdir is gone, so its repo precondition fails), so the
-    // recovery guidance points at the durable archive and a manual removal.
+    // The workdir is durably gone.
     commit_teardown(dir, &roots.sessions, &name, "session", RECOVER_ARCHIVE, err)
 }
 
-/// Shared front matter for both entries: derive the name, reject a bad grammar or a
-/// `..` traversal, resolve the configured roots from the environment, and prove the
-/// operand is the configured `sessions/<name>` direct child. Returns the validated
-/// name and roots; `Ok(Err(code))` after a named refusal, nothing mutated.
+/// Shared front matter for both entries: derive the name, reject a bad grammar
+/// or a `..` traversal, resolve the configured roots from the environment, and
+/// prove the operand is the configured `sessions/<name>` direct child.
 fn prelude(dir: &Path, err: &mut impl Write) -> io::Result<Result<(String, ConfiguredRoots), u8>> {
     let Some(name) = dir.file_name().and_then(|n| n.to_str()).map(str::to_owned) else {
         writeln!(
@@ -173,9 +162,7 @@ fn prelude(dir: &Path, err: &mut impl Write) -> io::Result<Result<(String, Confi
         )?;
         return Ok(Err(EXIT_FAILED));
     };
-    // Re-validate the fresh session-name grammar. Bash routes only grammar-valid
-    // names here; a legacy name reaching this point is a routing error, refused. The
-    // grammar forbids '/', '.', '..' and a leading dot, so the name is a safe child.
+    // Re-validate the fresh session-name grammar.
     if !is_valid_session_name(&name) {
         writeln!(
             err,
@@ -214,7 +201,7 @@ struct ConfiguredRoots {
 }
 
 /// Resolve the configured roots from `state_root()` (`AE_HOME` nonempty else
-/// `HOME/.ae`). `Ok(Err(code))` after a named refusal when neither is set.
+/// `HOME/.ae`).
 fn configured_roots(err: &mut impl Write) -> io::Result<Result<ConfiguredRoots, u8>> {
     let Some(state_root) = crate::state_root() else {
         writeln!(err, "teardown: {} — refusing.", crate::NO_STATE_ROOT)?;
@@ -228,9 +215,8 @@ fn configured_roots(err: &mut impl Write) -> io::Result<Result<ConfiguredRoots, 
 }
 
 /// Prove the operand is the configured `sessions/<name>` direct child (B1): the
-/// sessions ROOT (from the environment) is a real non-symlink dir, and the operand
-/// is LEXICALLY that root's `<name>` child. Symlinked ANCESTORS above the root stay
-/// supported — only the final root component is classified. `Ok(None)` to proceed.
+/// sessions ROOT (from the environment) is a real non-symlink dir, and the
+/// operand is LEXICALLY that root's `<name>` child.
 fn prove_configured_sessions_child(
     dir: &Path,
     name: &str,
@@ -258,15 +244,14 @@ fn prove_configured_sessions_child(
     Ok(None)
 }
 
-/// Lexical path equality by components — normalises `//`, a trailing `/` and a `.`
-/// component, and never resolves a symlink. (`..` is rejected upstream.)
+/// Lexical path equality by components — normalises `//`, a trailing `/` and a
+/// `.` component, and never resolves a symlink.
 fn same_path_lexically(a: &Path, b: &Path) -> bool {
     a.components().eq(b.components())
 }
 
-/// lstat the session dir as a real non-symlink directory, read its meta as a real
-/// plain file, and prove `meta.session == name` byte-exact. Returns the raw meta
-/// bytes for the caller to read `mode`/`work_dir`; `Ok(Err(code))` after a refusal.
+/// lstat the session dir as a real non-symlink directory, read its meta as a
+/// real plain file, and prove `meta.session == name` byte-exact.
 fn prove_identified_session_dir(
     dir: &Path,
     name: &str,
@@ -303,9 +288,7 @@ fn prove_identified_session_dir(
         Ok(b) => b,
         Err(code) => return Ok(Err(code)),
     };
-    // Identity is proved on the RAW meta bytes, byte-exact. `meta::first_value`
-    // returns the value WITHOUT its line terminator but WITH any trailing spaces,
-    // tabs or CR (the frozen `read_session_meta` preserves them). A destructive op
+    // Identity is proved on the RAW meta bytes, byte-exact.
     if meta::first_value(&bytes, "session") != Some(name.as_bytes()) {
         let shown = meta_value(&bytes, "session");
         writeln!(
@@ -318,15 +301,7 @@ fn prove_identified_session_dir(
     Ok(Ok(bytes))
 }
 
-/// Read `<dir>/meta` ONLY if it is a real plain file. Proving the DIR is real does
-/// not prove `<dir>/meta` is: `meta::read_bytes` is `fs::read`, which FOLLOWS a
-/// symlink and BLOCKS on a FIFO. A symlinked meta pointing at an attacker-controlled
-/// file holding a matching identity would forge the proof from OUTSIDE the session
-/// dir; a FIFO would hang `ae end` under the lifecycle lock. So lstat and require a
-/// plain file, refusing every other existing node. The read that follows is of a
-/// proven regular file — the residual swap-after-lstat is the same-UID race
-/// documented at [`archive::store::make_claim`](crate::archive::store), out of scope.
-/// `Ok(Ok(bytes))` on success; `Ok(Err(code))` after a named refusal.
+/// Read `<dir>/meta` ONLY if it is a real plain file.
 fn read_identity_meta(dir: &Path, err: &mut impl Write) -> io::Result<Result<Vec<u8>, u8>> {
     let meta_path = dir.join("meta");
     match symlink_meta(&meta_path) {
@@ -370,11 +345,8 @@ fn read_identity_meta(dir: &Path, err: &mut impl Write) -> io::Result<Result<Vec
     }
 }
 
-/// The `full` (copy) workdir removal: the P3.5 rename-to-tombstone primitive applied
-/// to the managed copy under the worktrees root. A tombstone clears the copy's name
-/// atomically, so a half-deleted copy cannot be mistaken for a resumable worktree at
-/// launch. `Ok(Ok(()))` only when the copy is DURABLY gone; `Ok(Err(code))` after a
-/// named partial state, canonical state left untouched.
+/// The `full` (copy) workdir removal: the P3.5 rename-to-tombstone primitive
+/// applied to the managed copy under the worktrees root.
 fn remove_copy_workdir(
     managed: &Path,
     worktrees_root: &Path,
@@ -415,11 +387,7 @@ fn remove_copy_workdir(
 }
 
 /// The `git` (worktree) workdir removal: a sealed `git worktree remove --force`
-/// through the one process door (no `prune` — that is global housekeeping). On a git
-/// refusal there is NO `rm -rf` fallback; instead the exact managed child is
-/// reclassified — still a real dir means BOTH resources are cleanly retained
-/// (retriable), anything else is a PARTIAL/UNKNOWN state — and canonical state is
-/// always retained. `Ok(Ok(()))` iff git removed the worktree.
+/// through the one process door (no `prune` — that is global housekeeping).
 fn remove_git_worktree(
     bytes: &[u8],
     managed: &Path,
@@ -433,9 +401,9 @@ fn remove_git_worktree(
         )?;
         return Ok(Err(EXIT_FAILED));
     };
-    // lstat the exact managed child BEFORE handing it to git: `git worktree remove`
-    // resolves a symlink and would delete an EXTERNALLY registered worktree at the
-    // link target. Only a real, non-symlink directory is a legitimate managed
+    // lstat the exact managed child BEFORE handing it to git: `git worktree
+    // remove` resolves a symlink and would delete an EXTERNALLY registered
+    // worktree at the link target.
     match classify_dir(managed) {
         DirKind::RealDir => {}
         DirKind::Absent => {
@@ -458,8 +426,7 @@ fn remove_git_worktree(
     if crate::git::worktree_remove(origin, managed.as_os_str().as_bytes()) {
         return Ok(Ok(()));
     }
-    // git refused. Git mutates only origin's worktree ADMIN metadata; origin's
-    // checked-out content is never touched and origin is never a deletion target.
+    // git refused.
     if matches!(classify_dir(managed), DirKind::RealDir) {
         writeln!(
             err,
@@ -484,18 +451,15 @@ fn remove_git_worktree(
     Ok(Err(EXIT_FAILED))
 }
 
-/// The recovery guidance a canonical-state failure prints, tracking commit state.
-/// `RECOVER_MANUAL`: nothing else was committed away (local, preserve, or the copy
-/// workdir itself), so the human removes the tombstone by hand to recover.
+/// The recovery guidance a canonical-state failure prints, tracking commit
+/// state.
 const RECOVER_MANUAL: &str = "Inspect and remove it by hand to recover; the name is already cleared, so it cannot resurrect.";
 /// `RECOVER_ARCHIVE`: the workdir was already committed away, so `ae end` cannot be
 /// retried — its repo precondition fails with the workdir gone.
 const RECOVER_ARCHIVE: &str = "The workdir is already gone, so ae end cannot be retried; inspect the durable archive, then remove the tombstone by hand.";
 
 /// Rename a resource dir into its sibling tombstone (the commit boundary), then
-/// durably remove it. No `rc 0` while any byte could remain at the canonical name or
-/// under an unconfirmed removal. `resource` labels the diagnostics ("session" /
-/// "working copy"); `recovery` is the guidance a post-rename failure prints.
+/// durably remove it.
 fn commit_teardown(
     dir: &Path,
     root: &Path,
@@ -505,8 +469,8 @@ fn commit_teardown(
     err: &mut impl Write,
 ) -> io::Result<u8> {
     let tombstone = root.join(format!(".ending.{name}"));
-    // A standing tombstone is a previous teardown that did not complete: refuse,
-    // never overwrite it. The human recovers it (there is no end-resume path).
+    // A standing tombstone is a previous teardown that did not complete:
+    // refuse, never overwrite it.
     if symlink_meta(&tombstone).is_ok() {
         writeln!(
             err,
@@ -516,8 +480,7 @@ fn commit_teardown(
         writeln!(err, "  Inspect it, then remove it by hand before retrying.")?;
         return Ok(EXIT_FAILED);
     }
-    // COMMIT: the atomic rename clears the canonical name. Before it, nothing is
-    // deleted; a failure here leaves the resource intact.
+    // COMMIT: the atomic rename clears the canonical name.
     if let Err(why) = fs::rename(dir, &tombstone) {
         writeln!(
             err,
@@ -557,13 +520,12 @@ fn commit_teardown(
             &format!("fsync root: {why}"),
         );
     }
-    // The resource is gone and the removal is durable. Silent success.
+    // The resource is gone and the removal is durable.
     Ok(0)
 }
 
-/// A POST-rename failure with the tombstone STILL present: the resource was removed
-/// from its name but is not yet durably gone. NO success; RETAIN the tombstone as an
-/// inspectable recovery marker and print the commit-state-appropriate `recovery`.
+/// A POST-rename failure with the tombstone STILL present: the resource was
+/// removed from its name but is not yet durably gone.
 fn incomplete_retained(
     err: &mut impl Write,
     tombstone: &Path,
@@ -584,10 +546,8 @@ fn incomplete_retained(
     Ok(EXIT_FAILED)
 }
 
-/// A POST-removal failure: the tombstone is already gone and only the FINAL sync
-/// failed. The resource is DURABLY removed from its name (synced at the rename) and
-/// cannot resurrect; only the tombstone's removal durability is unconfirmed. Distinct
-/// no-retained-marker state. rc 1.
+/// A POST-removal failure: the tombstone is already gone and only the FINAL
+/// sync failed.
 fn removed_unsynced(
     err: &mut impl Write,
     tombstone: &Path,
@@ -627,9 +587,8 @@ fn classify_dir(path: &Path) -> DirKind {
 }
 
 /// The fresh session-name grammar the bash `_validate_session_name` enforces:
-/// `^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$` — a leading alphanumeric, then up to 127 more
-/// of alphanumeric / `_` / `-`. Forbids empty, over-long, a leading `.`, `_` or `-`,
-/// and every traversal or separator byte.
+/// `^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$` — a leading alphanumeric, then up to 127
+/// more of alphanumeric / `_` / `-`.
 fn is_valid_session_name(name: &str) -> bool {
     let bytes = name.as_bytes();
     match bytes.split_first() {

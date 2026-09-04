@@ -23,10 +23,7 @@ use super::store::{
 use super::{canonical_uuid, meta_get};
 use crate::state::EXIT_FAILED;
 
-/// `_archive-from-preflight` core entry. `0` with `aid\thandover\tpending` on
-/// `out` when the archive validates as an inheritable ae archive; [`EXIT_FAILED`]
-/// with a named `Error:` on `err` otherwise. Reads only — never writes, never
-/// follows a link out of the archive root.
+/// `_archive-from-preflight` core entry.
 pub(crate) fn run(
     root: &Path,
     raw_uuid: &str,
@@ -55,7 +52,6 @@ pub(crate) fn run(
 
     let path = root.join(&aid);
     // A live claim means this exact id is being published or purged right now.
-    // Inheriting mid-flight would freeze counts that are about to change or vanish.
     let claim = claim_path(root, &aid);
     if exists(&claim) {
         writeln!(
@@ -113,9 +109,7 @@ pub(crate) fn run(
         return Ok(EXIT_FAILED);
     }
 
-    // ONE observation, frozen. No trailing newline — the bash consumer captures
-    // it with `$(...)`, splits on the tabs, and the frozen body prints it the
-    // same way.
+    // ONE observation, frozen.
     write!(out, "{aid}\t{handover}\t{pending}")?;
     Ok(0)
 }

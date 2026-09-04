@@ -82,7 +82,7 @@ pub struct Parsed {
     pub name: String,
     /// The `[profiles]` recipe to launch it with.
     pub profile: String,
-    /// The task, as typed. Empty when none was given.
+    /// The task, as typed.
     pub prompt: String,
 }
 
@@ -253,9 +253,7 @@ pub fn run_spawn(
             return Ok(EXIT_FAILED);
         }
     };
-    // THE PEER BOUNDARY. A spawn name arrives from another agent, and since #59
-    // it is interpolated into the new agent's own system prompt — so it is
-    // allowlisted HERE, before any effect. The seat write re-checks it.
+    // THE PEER BOUNDARY.
     if !crate::config::is_agent_name(&parsed.name) {
         writeln!(
             err,
@@ -295,9 +293,7 @@ pub fn run_spawn(
         )?;
         return Ok(EXIT_FAILED);
     };
-    // The brief the new agent is handed. A caller we could identify gets a
-    // reply-back instruction; an unidentifiable one does not, because a `send`
-    // to nobody is worse than no instruction at all.
+    // The brief the new agent is handed.
     let brief = if parsed.prompt.is_empty() {
         format!(
             "You were spawned into an ae workspace. Read {}/workspace.md for details.",
@@ -385,7 +381,7 @@ pub fn run_spawn(
 
     // Everything a launch command is made of — the context injection, the
     // session id, the create-vs-resume decision — is composed by `_run` IN the
-    // pane, from this session's own state. What must be true on disk before the
+    // pane, from this session's own state.
     if let Err(why) = crate::run::clear_slot(dir, &slot) {
         rollback(dir, &facts, &slot, &pane, &parsed.name, err)?;
         writeln!(
@@ -397,15 +393,14 @@ pub fn run_spawn(
     }
     // For a tool with no system-prompt channel the context AND the brief travel
     // as the launch command's inline first message, so the brief is RECORDED
-    // for `_run` to compose. Every other tool takes its brief through the
+    // for `_run` to compose.
     let inline = launch::initial_prompt_for(tool);
     let initial = if inline.is_empty() {
         String::new()
     } else {
         format!("{inline} --- {brief}")
     };
-    // Publish the recoverable text BEFORE anything can paste it. A storage
-    // failure is terminal for the spawn.
+    // Publish the recoverable text BEFORE anything can paste it.
     if !initial.is_empty() {
         let stored = deliver::store_body(dir, &format!("spawn-{slot}"), SPAWN_ACTION, &initial)
             .and_then(|_| crate::run::publish_prompt(dir, &slot, &initial));
@@ -419,9 +414,7 @@ pub fn run_spawn(
             return Ok(EXIT_FAILED);
         }
     }
-    // RESOLVED, never raw. This path becomes the pane's own command
-    // (`<core> _run <dir> <slot>`), and macOS answers `current_exe()` with the
-    // path this process was EXEC'D BY — so a spawn typed as `<session>/spawn`
+    // RESOLVED, never raw.
     let Some(core) = crate::shape::resolved_exe() else {
         rollback(dir, &facts, &slot, &pane, &parsed.name, err)?;
         writeln!(
@@ -431,8 +424,7 @@ pub fn run_spawn(
         return Ok(EXIT_FAILED);
     };
     // The pane command is pasted into a SHELL, which is the one delivery in ae
-    // whose reader is meant to be a shell. Fire and forget: an unconfirmed
-    // submit must not abort a spawn that may well have taken.
+    // whose reader is meant to be a shell.
     let _ = deliver::submit_shell_text(
         &facts.server,
         &pane,
@@ -449,8 +441,7 @@ pub fn run_spawn(
             Some(&crate::time::Timestamp::now().epoch().to_string()),
         );
         // The post-launch id capture, detached: it polls and scans for minutes,
-        // so it cannot run inside the process the spawning agent waits on. The
-        // frozen path forked it from bash after the core returned; the core owns
+        // so it cannot run inside the process the spawning agent waits on.
         capture::start(
             dir,
             &[capture::Target {
@@ -461,8 +452,7 @@ pub fn run_spawn(
         );
     }
 
-    // BRIEF-DELIVERED, tracked apart from pane-created. A tool that carried its
-    // brief inline has nothing left to paste, so delivery is settled already.
+    // BRIEF-DELIVERED, tracked apart from pane-created.
     let failure = if initial.is_empty() {
         deliver_brief(
             dir,
@@ -593,9 +583,7 @@ fn deliver_brief(
         ToolKind::Codex => Tool::Codex,
         _ => Tool::Other,
     };
-    // DO NOT paste into a state we could not confirm idle. The old path polled
-    // for any of `❯|bypass permissions|for shortcuts` and pasted on timeout
-    // regardless — so claude's trust dialog read READY and the brief went INTO
+    // DO NOT paste into a state we could not confirm idle.
     if !deliver::wait_input_ready(&facts.server, pane, tool, BRIEF_READY_POLLS) {
         return Ok(Some(
             "input never reached a confirmed-idle state (busy, modal, or unreadable)".to_owned(),
@@ -627,8 +615,7 @@ fn deliver_brief(
         )));
     }
     // A booting TUI can swallow the post-paste Enter, leaving the brief staged
-    // in the input box. Nudge Enter ONCE more if it is still on screen — and
-    // only here, never on a pane we deliberately did not touch.
+    // in the input box.
     std::thread::sleep(LINGER_SETTLE);
     let head: String = brief.chars().take(LINGER_PREFIX).collect();
     if let Some(screen) = transport::capture_pane(&facts.server, pane) {

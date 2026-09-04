@@ -168,15 +168,12 @@ pub fn follow(dir: &Path, out: &mut impl Write) -> io::Result<std::convert::Infa
         match consumed {
             None => {
                 // The first read IS the replay window; everything after it
-                // belongs to the follow. Consuming the whole body here is what
-                // keeps the two from showing one record twice.
+                // belongs to the follow.
                 out.write_all(&replay(&body))?;
                 out.flush()?;
                 consumed = Some(complete_len(&body));
             }
-            // Truncated or replaced beneath us. `tail -f` reports the shrink and
-            // starts over; there is nothing to gain from guessing an offset into
-            // a container that is no longer the one we were reading.
+            // Truncated or replaced beneath us.
             Some(offset) if body.len() < offset => consumed = None,
             Some(offset) => {
                 let fresh = &body[offset..];
@@ -405,8 +402,7 @@ mod tests {
     #[test]
     fn an_absent_or_unreadable_container_replays_nothing() {
         // The frozen reader is `tail … 2>/dev/null`, so there is one answer for
-        // "no container" and "no permission": no lines, no complaint. The
-        // container read is `event_text`'s quiet door; this pins that the
+        // "no container" and "no permission": no lines, no complaint.
         let scratch = Scratch::new("nolog");
         let missing = read_container(&scratch.0.join(CONTAINER));
         assert!(missing.is_empty());

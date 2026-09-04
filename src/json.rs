@@ -68,7 +68,7 @@ impl Value {
         }
     }
 
-    /// Look a field up by key. `None` unless `self` is an object holding it.
+    /// Look a field up by key.
     #[must_use]
     pub fn get(&self, key: &str) -> Option<&Self> {
         match self {
@@ -83,7 +83,7 @@ impl Value {
         self.get(key).and_then(Self::as_str)
     }
 
-    /// Render into `out`. Infallible — see the note on this module.
+    /// Render into `out`.
     pub fn render_into(&self, out: &mut String) {
         match self {
             Self::Str(s) => {
@@ -132,7 +132,7 @@ impl Value {
     }
 
     /// True when both values carry the same members and values, ignoring object
-    /// field order. Arrays remain order-sensitive.
+    /// field order.
     #[cfg(test)]
     #[must_use]
     pub(crate) fn same_members(&self, other: &Self) -> bool {
@@ -349,9 +349,7 @@ impl Parser<'_> {
         if self.pos == digits_from {
             return Err(self.err("a digit"));
         }
-        // RFC 8259: int = "0" / (digit1-9 *DIGIT). A leading zero is not a
-        // stylistic quirk to tolerate — `010` is octal in several languages and
-        // 10 in others, so accepting it means accepting a value whose meaning
+        // RFC 8259: int = "0" / (digit1-9 *DIGIT).
         if self.pos - digits_from > 1 && self.src.get(digits_from) == Some(&b'0') {
             return Err(self.err("no leading zero"));
         }
@@ -380,8 +378,7 @@ impl Parser<'_> {
         }
         let token = self.slice(start, self.pos)?;
         // An integer that fits is a number this crate understands; anything
-        // else is carried verbatim rather than refused. No separate
-        // "is it integral" flag is needed: `i64::from_str` accepts only an
+        // else is carried verbatim rather than refused.
         token
             .parse::<i64>()
             .map_or_else(|_| Ok(Value::Raw(token.to_owned())), |n| Ok(Value::Num(n)))
@@ -429,10 +426,8 @@ impl Parser<'_> {
         Ok(())
     }
 
-    /// The `\uXXXX` form, including the surrogate pair that carries an
-    /// astral character. A lone surrogate is refused rather than replaced:
-    /// it is not a `char`, and silently substituting one would put bytes in
-    /// the model that were never in the file.
+    /// The `\uXXXX` form, including the surrogate pair that carries an astral
+    /// character.
     fn unicode_escape(&mut self) -> Result<char, ParseError> {
         let first = self.hex4()?;
         let code = if (0xD800..=0xDBFF).contains(&first) {
@@ -483,7 +478,7 @@ mod tests {
 
     #[test]
     fn sc_510d_escapes_the_documented_set() {
-        // the escape set is \" \\ \n \t \r.
+        // The escape set is \" \\ \n \t \r.
         let mut out = String::new();
         escape_into("a\"b\\c\nd\te\rf", &mut out);
         assert_eq!(out, r#"a\"b\\c\nd\te\rf"#);
@@ -508,8 +503,7 @@ mod tests {
     #[test]
     fn objects_render_in_field_order() {
         // Determinism of this type: `Value::obj` preserves insertion order
-        // rather than hashing. A HashMap-backed object would make two renders
-        // of the same construction incomparable. List-digest member order is a
+        // rather than hashing.
         let v = Value::obj([
             ("schema_version", Value::Num(1)),
             ("generated_at", Value::str("2026-05-29T14:00:00Z")),
@@ -572,7 +566,7 @@ mod tests {
 
     #[test]
     fn sc_511b_unknown_keys_of_any_type_are_tolerated() {
-        // readers ignore keys they do not understand, and the
+        // Readers ignore keys they do not understand, and the
         // schema grows by ADDING optional keys — one day, keys whose values are
         // not strings.
         let line = r#"{"ts":"t","actor":"a","action":"send","future":{"n":[1,2,null,true]}}"#;
@@ -594,9 +588,7 @@ mod tests {
 
     #[test]
     fn surrogate_pairs_decode_to_one_character() {
-        // The ESCAPED form. An emoji typed literally here would exercise the
-        // utf-8 copy path and never reach the \u decoder at all — which is what
-        // this test did before cargo-mutants walked past the whole branch.
+        // The ESCAPED form.
         let parsed = parse(r#"{"s":"\ud83d\ude00"}"#).expect("a surrogate pair parses");
         assert_eq!(parsed.get_str("s"), Some("😀"));
     }
@@ -623,8 +615,7 @@ mod tests {
 
     #[test]
     fn the_two_escapes_ae_never_writes_are_still_understood() {
-        // What ae WRITES is pinned. A reader that met \b or \f from any
-        // other producer should decode it, not reject the line.
+        // What ae WRITES is pinned.
         let parsed =
             parse(r#"{"s":"a\bb\fc"}"#).expect("the backspace and form-feed escapes parse");
         assert_eq!(parsed.get_str("s"), Some("a\u{8}b\u{c}c"));
@@ -745,8 +736,7 @@ mod tests {
 
     #[test]
     fn a_number_this_crate_does_not_interpret_is_kept_verbatim() {
-        // additive keys are fine — including, one day, a non-integral
-        // one. Refusing the line would break the compatibility the row promises.
+        // Additive keys are fine — including, one day, a non-integral one.
         let parsed = parse(r#"{"a":1.5,"b":2e3,"c":99999999999999999999}"#)
             .expect("a float-valued additive key must not break the reader");
         assert_eq!(parsed.get("a"), Some(&Value::Raw("1.5".to_owned())));

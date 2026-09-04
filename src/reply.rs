@@ -76,10 +76,9 @@ pub fn parse(tail: &[String]) -> Result<Parsed, Usage> {
 }
 
 /// The replying pane, as the frozen helper reads it: `ae_current_agent_ref`
-/// (the stamp, `@<session>:`-prefixed when the pane's tmux session is not
-/// this session's), `ae_current_slot` (the stamp when it is in the slot
-/// grammar, else empty) and the pane's tmux session (`#S`). No pane at all is
-/// three empty strings.
+/// (the stamp, `@<session>:`-prefixed when the pane's tmux session is not this
+/// session's), `ae_current_slot` (the stamp when it is in the slot grammar,
+/// else empty) and the pane's tmux session (`#S`).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Replier {
     /// The display ref, or empty.
@@ -122,7 +121,7 @@ impl Replier {
 
 /// The newest `ask`/`review` carrying `id` in `dir`'s ledger — what
 /// `ae_find_request` returns, read through [`states`] so the row is the one
-/// `requests` shows. `None` for no such request, or no ledger at all.
+/// `requests` shows.
 #[must_use]
 pub fn find(dir: &Path, id: &str) -> Option<Request> {
     let container = read_container(&dir.join(CONTAINER));
@@ -214,8 +213,7 @@ pub fn verify(
 /// The frozen `ae_slot_resolver`: the agent stamped on the pane holding
 /// `want_slot` among `panes` (the roster of `want_session`, or of this session
 /// when that is empty), spelled `@<session>:<agent>` when `want_session` is
-/// another session. `None` when no stamped pane holds the slot — the caller
-/// then keeps the stored name.
+/// another session.
 #[must_use]
 pub fn slot_resolve(
     want_session: &str,
@@ -261,9 +259,7 @@ pub fn route(
 }
 
 /// The frozen order of refusals: usage, the blank body, the unknown id, the
-/// identity check — each loud, each before anything is pasted. `Ok(Err(code))`
-/// is a refusal whose text is already on stderr; `Ok(Ok(..))` is the argv, the
-/// request it names and who the reply is from.
+/// identity check — each loud, each before anything is pasted.
 fn admit(
     dir: &Path,
     tail: &[String],
@@ -337,9 +333,7 @@ pub fn delivery_env<'a>(sender: &'a str, id: &'a str) -> [(&'a str, &'a str); 3]
     ]
 }
 
-/// Reply end to end. `observed` is the replying pane (none for no pane);
-/// `own_session` is this session's name as P2.1b derives it. Nothing is
-/// printed on success — the frozen reply prints nothing.
+/// Reply end to end.
 ///
 /// # Errors
 ///
@@ -375,8 +369,7 @@ pub fn run(
         verified.sender.clone()
     };
     // The asker's panes are enumerated on THAT session's recorded tmux server —
-    // the same door `tracked::resolve` uses — never the ambient one. Under the
-    // ambient server the roster came back empty whenever the session lived on
+    // the same door `tracked::resolve` uses — never the ambient one.
     let reply_target = route(&request, own_session, |search| {
         tracked::named_server(dir, search, own_session)
             .ok()
@@ -428,9 +421,9 @@ pub fn run(
         own_session,
         action: ACTION,
         reference: &parsed.id,
-        // The VERIFIED sender, and never an inherited one: the slot check
-        // above decided who this reply is from, so the envelope takes its
-        // answer rather than the caller's environment. A `--as` reply is
+        // The VERIFIED sender, and never an inherited one: the slot check above
+        // decided who this reply is from, so the envelope takes its answer
+        // rather than the caller's environment.
         actor: &verified.sender,
         body: &message,
         shape: crate::deliver::Shape::Send,

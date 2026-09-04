@@ -27,8 +27,7 @@ pub enum Occupancy {
     Occupied,
     /// A bare ornament, or a dim placeholder suggestion only.
     Idle,
-    /// No live prompt in view, or nothing to read. NOT a reading — see the
-    /// module docs.
+    /// No live prompt in view, or nothing to read.
     Unreadable,
 }
 
@@ -250,8 +249,7 @@ fn is_border(row: &str, max_width: usize) -> bool {
     !row.is_empty() && row.chars().all(|ch| ch == '─') && row.chars().count() == max_width
 }
 
-/// Where the input box ends — `_input_region_content_end`. Rows at or below
-/// the returned line are not input.
+/// Where the input box ends — `_input_region_content_end`.
 fn content_end(segments: &[Segment], prompt_line: usize, stop_at: StopAt) -> usize {
     let Some(last) = segments.last() else {
         return 0;
@@ -290,8 +288,7 @@ fn content_end(segments: &[Segment], prompt_line: usize, stop_at: StopAt) -> usi
     }
     if stop_at == StopAt::Blank {
         // The LAST blank row below the prompt — codex's separator above the
-        // footer. Deliberately not the FIRST: a draft carries its own blank
-        // rows, and stopping at one of those drops the real text below it.
+        // footer.
         for line in ((prompt_line + 1)..end).rev() {
             if !nonblank[line] {
                 end = line;
@@ -318,9 +315,7 @@ pub fn occupancy(region: &str, tool: Tool) -> Occupancy {
                 return Occupancy::Unreadable;
             };
             let end = content_end(&segments, segments[found.index].line, StopAt::Blank);
-            // Content is everything after the ANCHOR ornament only. Removing
-            // every `›` in the region made a user-typed ornament vanish and
-            // read real input as idle.
+            // Content is everything after the ANCHOR ornament only.
             let mut text = after_first(&found.tail, '›');
             for seg in &segments[found.index + 1..] {
                 if seg.line >= end {
@@ -332,8 +327,7 @@ pub fn occupancy(region: &str, tool: Tool) -> Occupancy {
                 text.push_str(&seg.text);
             }
             // ANY unstyled printable remainder is OCCUPIED — including the
-            // unstyled `[Pasted Content N chars]` staging token. The token text
-            // is documentation; the CLASS is the rule.
+            // unstyled `[Pasted Content N chars]` staging token.
             verdict(&text)
         }
         Tool::Claude => {
@@ -725,7 +719,7 @@ mod tests {
             "│ model:       gpt-5.6 xhigh   /model to change │\n",
             Tool::Codex
         ));
-        // And the markers are CODEX's. Nothing is claimed about any other tool.
+        // And the markers are CODEX's.
         assert!(!initializing(progress, Tool::Claude));
         assert!(!initializing(progress, Tool::Other));
         assert!(!initializing("", Tool::Codex));

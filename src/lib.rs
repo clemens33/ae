@@ -145,7 +145,7 @@ pub fn run_program(
         }
         // A helper carries no preamble: the pane execs the link directly, so
         // the translated argv goes straight to the ordinary dispatch — through
-        // the gate, which is the ONE thing a helper still pays. Every helper is
+        // the gate, which is the ONE thing a helper still pays.
         shim::Invocation::Helper { helper, dir } => {
             if let Some(code) = install_gate(err)? {
                 return Ok(code);
@@ -192,15 +192,11 @@ pub fn run(args: &[String], out: &mut impl Write, err: &mut impl Write) -> Resul
         Some("upgrade") => return upgrade::run(&args[1..], out, err),
         _ => {}
     }
-    // THE GATE, above every remaining word. It used to sit BELOW the `_` arm,
-    // which meant the core's own namespace was exempt from the check that says
-    // this binary is the one `install` published: on a planted install whose
+    // THE GATE, above every remaining word.
     if let Some(code) = install_gate(err)? {
         return Ok(code);
     }
-    // The core's OWN namespace. A `_`-prefixed word is an internal entry: it
-    // carries its operands, consumes no ambient fact, and is never a session
-    // name — so it dispatches straight through. An unserved one FAILS CLOSED
+    // The core's OWN namespace.
     if let Some(word) = args.first().map(String::as_str)
         && word.starts_with('_')
     {
@@ -244,9 +240,7 @@ fn install_gate(err: &mut impl Write) -> Result<Option<u8>> {
             err.flush()?;
             return Ok(Some(entry::EXIT_USAGE));
         }
-        // A checkout has no published directory to vouch for. `ae-dev` and the
-        // two bash suites are its only callers, and they build the binary they
-        // run.
+        // A checkout has no published directory to vouch for.
         shape::Shape::Checkout => {}
     }
     Ok(None)
@@ -257,7 +251,7 @@ fn resolve_facts(shape: &shape::Shape, err: &mut impl Write) -> Result<Option<en
     let Some(home) = doors::state_root(shape) else {
         // [`NO_STATE_ROOT`] and its code, VERBATIM: the condition the dispatch
         // already refuses, said one layer earlier because the entry cannot
-        // build a single fact without it. Two spellings of one condition would
+        // build a single fact without it.
         writeln!(err, "ae: {NO_STATE_ROOT}")?;
         return Ok(None);
     };
@@ -396,7 +390,7 @@ fn run_launch(
     }
     // The NAME grammar is the launch's own and answers first, so a traversal
     // name is refused as a name rather than as a path object and the message
-    // says what is actually wrong. Only a name ae would otherwise USE reaches
+    // says what is actually wrong.
     let hint = entry::session_hint(user);
     if !hint.is_empty()
         && session_name_usable(preamble, &hint)
@@ -452,7 +446,7 @@ fn session_path_is_safe(preamble: &entry::Preamble, name: &str) -> bool {
     }
     // ABSENT is safe (nothing to escape through yet); a symlink of ANY kind is
     // not, DANGLING INCLUDED — which is why this is an lstat and not an
-    // existence test. `-e` reads a dangling link as absent and waves it
+    // existence test.
     match lstat_kind(&preamble.sessions().join(name)) {
         None | Some(PathKind::Directory) => true,
         Some(PathKind::Symlink | PathKind::Other) => false,
@@ -462,7 +456,7 @@ fn session_path_is_safe(preamble: &entry::Preamble, name: &str) -> bool {
 /// What an lstat says a path IS — `None` for a path that is not there.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PathKind {
-    /// A symlink, dangling or not. Classified before anything else.
+    /// A symlink, dangling or not.
     Symlink,
     /// A real directory.
     Directory,
@@ -589,10 +583,7 @@ fn run_say(
     Ok(0)
 }
 
-/// The `_state` arm. Nothing after the directory is the READ — the caller's
-/// latest declaration, always 0. A declaration: usage at 2, then the write,
-/// and nothing reaches stdout until the bytes are down; every refusal or
-/// failure is stderr plus a non-zero code.
+/// The `_state` arm.
 fn run_state(
     dir: &std::path::Path,
     tail: &[String],
@@ -655,13 +646,12 @@ fn run_next(
     }
 
     // The ambient server, which is what the frozen `tmux()` shim resolves to
-    // when no `AE_TMUX_SERVER` redirects it. The core has no shim — see
-    // `calling_pane` — so this is a jump to the server the invocation is
+    // when no `AE_TMUX_SERVER` redirects it.
     let server = inventory::ServerId::Ambient;
 
     // Re-validate EXACTLY: the session may have ended between the scan and the
     // jump, and a prefix-matching `has-session -t` would land the focus on a
-    // surviving sibling. A server that did not answer proves nothing is gone,
+    // surviving sibling.
     let still_there =
         transport::session_names(&server).is_some_and(|names| names.contains(&choice.name));
     if !still_there {
@@ -767,7 +757,7 @@ fn run_tracked(
 }
 
 /// `AE_SENDER_OVERRIDE`: how an external actor with no pane (a chat bridge, a
-/// webhook) names itself to the tracked-request helpers. Empty is unset.
+/// webhook) names itself to the tracked-request helpers.
 fn sender_override() -> Option<String> {
     #[allow(
         clippy::disallowed_methods,
@@ -779,9 +769,7 @@ fn sender_override() -> Option<String> {
 }
 
 /// `AE_SEND_DEFER_SEC`: how long a send waits for a busy target before it
-/// abandons. The frozen body's `[[ $x =~ ^[0-9]+$ ]] || x=30` — a value that
-/// is not a plain decimal is the default, not an error, because a typo in an
-/// exported tunable must not stop delivery.
+/// abandons.
 fn send_defer() -> std::time::Duration {
     #[allow(
         clippy::disallowed_methods,
@@ -794,8 +782,8 @@ fn send_defer() -> std::time::Duration {
 
 /// The frozen event-field contract of the send body, read off this process's
 /// environment exactly where `ae_emit_event` and `helper_send_body` read it:
-/// `AE_SENDER_OVERRIDE` and the seven `_AE_EVENT_*` members, an unset or
-/// empty variable being none. One door, one reading.
+/// `AE_SENDER_OVERRIDE` and the seven `_AE_EVENT_*` members, an unset or empty
+/// variable being none.
 fn send_env() -> send::Env {
     #[allow(
         clippy::disallowed_methods,
@@ -943,8 +931,7 @@ pub fn current_world(root: &std::path::Path) -> (liveness::Snapshot, listing::Wo
     let taken = inventory::take(scan, None, &transport::Tmux);
     let snapshot = liveness::classify(taken, &transport::Tmux);
     // Criterion 3 only: the opposed disk must change HERE, on this function's
-    // path, not after it returns. A test that mutates then calls
-    // `Presentation::enter` itself is below the list/ls caller. Compiled out
+    // path, not after it returns.
     #[cfg(debug_assertions)]
     AFTER_CLASSIFY.with(|slot| {
         if let Some(hook) = slot.get() {
@@ -1039,9 +1026,7 @@ pub fn run_with(
 ) -> Result<u8> {
     let request = cli::Request::parse(args);
     let code = match &request {
-        // Asked-for output goes to stdout. A DIAGNOSTIC never does,
-        // because a machine reading `ae list --json` must not have to tell the
-        // document apart from the complaint about the document.
+        // Asked-for output goes to stdout.
         cli::Request::Version => {
             writeln!(out, "{}", version_line())?;
             request.exit_code().unwrap_or(0)
@@ -1056,14 +1041,12 @@ pub fn run_with(
         }
         cli::Request::MissingOperand(command) => {
             // Every internal entry but one is per-SESSION and takes that
-            // session's meta directory. The telegram bridge is machine-global —
-            // one bot, one chat, every session — so it takes AE_HOME, and being
+            // session's meta directory.
             let operand = if *command == cli::TELEGRAM_RUN {
                 "an ae home directory"
             } else if *command == cli::NET_PROBE {
                 // Not a directory at all: the one entry here that takes a name
-                // to resolve. Telling its caller to supply a meta directory
-                // would send them looking for a path with nothing to do with it.
+                // to resolve.
                 "a host to resolve"
             } else {
                 "a session meta directory"
@@ -1129,14 +1112,11 @@ pub fn run_with(
             err.write_all(&rendered.stderr)?;
             rendered.code
         }
-        // NEVER RETURNS. The surface has no completion condition — see
-        // `events_tail::follow` — so the only way out is a signal or a write
-        // failure, and the write failure is the one this arm can report.
+        // NEVER RETURNS.
         cli::Request::EventsTail { dir } => match events_tail::follow(dir, out)? {},
         cli::Request::LaunchPlan { tail } => identity::launch_plan(tail, out, err)?,
         // The only entry whose payload arrives on STDIN: a launch's seat list
-        // is many records, and an argv is not the place for a document. Read to
-        // the end BEFORE anything is published, so a truncated pipe is a
+        // is many records, and an argv is not the place for a document.
         cli::Request::MetaInit { dir, tail } => {
             let mut stdin = String::new();
             std::io::Read::read_to_string(&mut std::io::stdin(), &mut stdin)?;
@@ -1158,9 +1138,7 @@ pub fn run_with(
             out,
             err,
         )?,
-        // The three whole lifecycle operations. They take a session NAME, so
-        // they derive the state root for themselves — the same derivation
-        // `list` uses, and the same refusal when there is none.
+        // The three whole lifecycle operations.
         cli::Request::End { tail } => {
             if let Some(root) = state_root() {
                 lifecycle::end::run(&root, tail, out, err)?
@@ -1287,9 +1265,7 @@ pub fn run_with(
         cli::Request::CompactCancel { dir, reference } => {
             compact::cancel_step(dir, reference, err)?
         }
-        // The two daemons' lifecycle. Like `end`/`stop`/`compact` they take a
-        // NAME (or nothing at all), so they derive the state root the way `list`
-        // does, and refuse the same way when there is none.
+        // The two daemons' lifecycle.
         cli::Request::Watchdog { tail } => {
             if let Some(root) = state_root() {
                 watchdog_lifecycle::run(&root, tail, out, err)?
@@ -1313,9 +1289,7 @@ pub fn run_with(
         cli::Request::CompactFindOutstanding { dir } => compact::find_outstanding_step(dir, out)?,
         cli::Request::List(list_args) => {
             if let Some(world) = world {
-                // the warning goes to STDERR and the table still
-                // prints. A machine reading `--json` must not have to tell the
-                // document apart from the complaint about it, and a human must
+                // The warning goes to STDERR and the table still prints.
                 if !list_args.json
                     && let Some(warning) = listing::diagnostic(world)
                 {
@@ -1421,9 +1395,7 @@ mod tests {
 
     #[test]
     fn the_help_the_binary_prints_is_the_help_text() {
-        // THE DISPATCH, not the human entry. `run` answers what a HUMAN typed
-        // at `ae`, where an empty argv is a launch and every word is resolved
-        // against the real environment; these four rows are about the argv
+        // THE DISPATCH, not the human entry.
         for words in [vec!["--help"], vec!["-h"], vec!["help"], vec![]] {
             let (mut out, mut err) = (Vec::new(), Vec::new());
             let code = run_with(&argv(&words), None, &mut out, &mut err).unwrap();
@@ -1487,9 +1459,7 @@ mod tests {
 
     #[test]
     fn a_served_internal_word_reaches_the_dispatch_without_the_doors() {
-        // `_run` is the command every pane execs. It must not classify the
-        // shape, resolve a tmux server or read a config to find out it was
-        // called with no operands.
+        // `_run` is the command every pane execs.
         let (mut out, mut err) = (Vec::new(), Vec::new());
         let code = run(&[crate::cli::RUN.to_owned()], &mut out, &mut err).unwrap();
         assert_ne!(code, 0);
@@ -1512,9 +1482,7 @@ mod tests {
 
     #[test]
     fn a_list_with_no_state_root_says_so_on_stderr_and_exits_one() {
-        // What is left of the old refusal. It is no longer "no source is wired"
-        // — that was a fact about the BUILD and it is gone — but "this machine
-        // did not tell me where its state lives", which is a fact about the
+        // What is left of the old refusal.
         for words in [vec!["list"], vec!["ls"], vec!["list", "--all", "--json"]] {
             let (mut out, mut err) = (Vec::new(), Vec::new());
             let code = run_with(&argv(&words), None, &mut out, &mut err).unwrap();
@@ -1611,8 +1579,7 @@ mod tests {
 
     #[test]
     fn run_surfaces_a_write_failure_on_the_error_stream_too() {
-        // The unwired report writes to `err`. If that write fails the failure
-        // is surfaced, not swallowed — the same contract stdout already had.
+        // The unwired report writes to `err`.
         let mut sink = Vec::new();
         let failed = run(&["list".to_owned()], &mut sink, &mut ClosedPipe).err();
         assert!(matches!(failed, Some(Error::Io(_))), "expected an io error");

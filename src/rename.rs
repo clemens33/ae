@@ -83,8 +83,7 @@ pub fn run(
         }
     }
 
-    // BOTH lifecycle locks, taken in name-sorted order. Held for the whole
-    // operation: every check below reads state the rename then mutates.
+    // BOTH lifecycle locks, taken in name-sorted order.
     let (first, second) = if old < new {
         (&old, &new)
     } else {
@@ -113,9 +112,7 @@ fn locked(
     let sessions = crate::lifecycle::sessions_dir(root);
     let old_dir = sessions.join(old);
     let new_dir = sessions.join(new);
-    // The server is the OLD session's own recorded one. Asking the ambient
-    // server would report a session on a named server as not running — and, far
-    // worse, an AMBIGUOUS record used to be retagged ambient and renamed
+    // The server is the OLD session's own recorded one.
     let bytes = crate::meta::read_bytes(&old_dir).unwrap_or_default();
     let Some(server) = crate::session_launch::recorded_server_resolved(&old_dir) else {
         writeln!(
@@ -161,9 +158,7 @@ fn locked(
         return Ok(EXIT_FAILED);
     }
 
-    // 2. The main window, which carries the session name — but NOT under
-    // lead-pair, where window 0 carries the ROLE name 'leads' and the session
-    // name lives in status-left. `=<name>:0` is the exact-match target form, so
+    // 2.
     if crate::lifecycle::meta_value(&bytes, "layout") != "lead-pair" {
         let target = format!("={new}:0");
         let _ = transport::run_tmux_op(&argv(
@@ -176,9 +171,7 @@ fn locked(
         ));
     }
 
-    // 3. The state directory. Absent is tolerated, exactly as the frozen
-    // `[[ -d "$old_meta" ]]` guard tolerates it: a live session whose directory
-    // is gone is still worth renaming in tmux.
+    // 3.
     if crate::lifecycle::dir_exists(&old_dir) && std::fs::rename(&old_dir, &new_dir).is_err() {
         writeln!(
             err,
@@ -188,7 +181,7 @@ fn locked(
         return Ok(EXIT_FAILED);
     }
 
-    // 4. The `session=` row, and 5. the two documents that carry the name.
+    // 4.
     if crate::lifecycle::path_exists(&new_dir.join(crate::meta::FILE)) {
         if let Err(why) = crate::meta::rewrite(&new_dir, "session", Some(new)) {
             writeln!(

@@ -31,9 +31,7 @@ use crate::state::EXIT_FAILED;
 use crate::transport;
 use crate::{event_text, meta, requests};
 
-/// `_compact-freeze` core entry. Emits the frozen tuple on `out` and returns `0`, or
-/// writes a clear one-line refusal to `err` and returns [`EXIT_FAILED`]. Never
-/// mutates anything.
+/// `_compact-freeze` core entry.
 #[allow(
     clippy::too_many_lines,
     reason = "a linear resolve-or-refuse sequence; each step's refusal reads best beside the check that raises it"
@@ -58,7 +56,7 @@ pub(crate) fn freeze(
         return Ok(EXIT_FAILED);
     };
 
-    // Mode: local only. A managed or unclassifiable mode is refused, not emulated.
+    // Mode: local only.
     let mode = meta_str(&bytes, "mode").unwrap_or_default();
     match mode.as_str() {
         "local" => {}
@@ -85,9 +83,7 @@ pub(crate) fn freeze(
         }
     }
 
-    // Origin: recorded, and it must resolve to a directory. The RAW path is kept, not
-    // a canonicalized one — the fresh session `cd`s into it and symlinks resolve then;
-    // `metadata` (a tracked capability door) both proves it exists and follows a
+    // Origin: recorded, and it must resolve to a directory.
     let origin = meta_str(&bytes, "origin").unwrap_or_default();
     if origin.is_empty() {
         writeln!(
@@ -104,9 +100,9 @@ pub(crate) fn freeze(
         return Ok(EXIT_FAILED);
     }
 
-    // Config: the recorded config layered UNDER the origin's local `.ae/config`, resolved
-    // once here and again, identically, at each revalidation gate (see `resolve_workspace`).
-    // `config` is emitted RAW in the tuple regardless.
+    // Config: the recorded config layered UNDER the origin's local
+    // `.ae/config`, resolved once here and again, identically, at each
+    // revalidation gate (see `resolve_workspace`).
     let config = meta_str(&bytes, "config").unwrap_or_default();
     let workspace = match resolve_workspace(&name, &config, &origin) {
         Ok(w) => w,
@@ -116,8 +112,7 @@ pub(crate) fn freeze(
         }
     };
 
-    // Session id: a valid recorded UUID. CLEAN CUT — no minting; a session with none
-    // is unsupported old state, refused with a refresh/migrate instruction.
+    // Session id: a valid recorded UUID.
     let raw_uuid = meta_str(&bytes, "session_id").unwrap_or_default();
     let uuid = crate::archive::canonical_uuid(&raw_uuid);
     if uuid.is_empty() {
@@ -140,9 +135,8 @@ pub(crate) fn freeze(
         return Ok(EXIT_FAILED);
     }
 
-    // The main agent to hand over from — its `alias:name` ref, taken from the TYPED
-    // roster grammar, not string-sliced. A malformed `agent.main` (`cl`,
-    // `cl:`, `:main`, empty) never becomes a roster entry, so it is refused HERE rather
+    // The main agent to hand over from — its `alias:name` ref, taken from the
+    // TYPED roster grammar, not string-sliced.
     let meta_text = String::from_utf8_lossy(&bytes);
     let parsed = meta::Meta::parse(&meta_text);
     let Some(main_ref) = parsed
@@ -189,9 +183,7 @@ pub(crate) fn freeze(
         main_ref,
         roster,
     ];
-    // Framing guard: the tuple is ONE `0x1f`-separated line. A field carrying the
-    // separator byte would forge extra fields, and a newline would split the record —
-    // both silently corrupt what the boundary parses back (the TSV-framing hazard, one
+    // Framing guard: the tuple is ONE `0x1f`-separated line.
     if let Some(bad) = fields
         .iter()
         .find(|f| f.contains('\u{1f}') || f.contains('\n'))
@@ -212,8 +204,7 @@ fn meta_str(bytes: &[u8], key: &str) -> Option<String> {
 }
 
 /// Whether `path` resolves (following symlinks) to a directory — the origin's
-/// existence-and-kind gate, and the archive-dir presence check. `metadata` is a tracked
-/// capability door.
+/// existence-and-kind gate, and the archive-dir presence check.
 fn dir_exists(path: &Path) -> bool {
     #[allow(
         clippy::disallowed_methods,
@@ -223,12 +214,8 @@ fn dir_exists(path: &Path) -> bool {
     meta.is_ok_and(|m| m.is_dir())
 }
 
-/// Resolve the `[workspace]` values from the recorded config layered UNDER the origin's
-/// local `.ae/config`. Every SELECTED path is CLASSIFIED (`classify_config_node`: stat +
-/// one lstat, neither opening the node) BEFORE it is read, so a FIFO/device can never
-/// reach `read_to_string` and block; only a confirmed regular file is read, and an
-/// unreadable/non-UTF-8 one still refuses (the purge-bypass guard). Resolved once by
-/// `freeze` and again, identically, by `revalidate`. `Err` is the ready-to-print refusal.
+/// Resolve the `[workspace]` values from the recorded config layered UNDER the
+/// origin's local `.ae/config`.
 fn resolve_workspace(name: &str, config: &str, origin: &str) -> Result<Workspace, String> {
     // Global config, when recorded and not /dev/null, is REQUIRED to be a regular file:
     // absent, a non-regular node, or an unprovable existence all refuse (none are opened).
@@ -244,9 +231,7 @@ fn resolve_workspace(name: &str, config: &str, origin: &str) -> Result<Workspace
             }
         }
     };
-    // The local overlay is OPTIONAL only when truly absent. A present non-regular node, or
-    // an error that cannot prove absence (permission/I/O), refuses — never a silent
-    // fallback to the global as if the local were not there.
+    // The local overlay is OPTIONAL only when truly absent.
     let local_cfg_path = Path::new(origin).join(".ae").join("config");
     let local_cfg = match classify_config_node(&local_cfg_path) {
         ConfigNode::Absent => None,
@@ -267,12 +252,9 @@ fn resolve_workspace(name: &str, config: &str, origin: &str) -> Result<Workspace
     })
 }
 
-/// The fields of the frozen tuple that the RUST destructive gates revalidate against —
-/// identity (`uuid`), stability (`mode`/`origin`/`config`), and the sealed history policy
-/// (`purge`). The other four the freezer emits — `uuid_origin`, `archive_path`, `main_ref`,
-/// `roster` — are read by BASH for the handover ask, the recovery display, and the exec
-/// plan; Rust re-derives the archive path from the state root rather than trusting a passed
-/// one, so it does not keep them.
+/// The fields of the frozen tuple that the RUST destructive gates revalidate
+/// against — identity (`uuid`), stability (`mode`/`origin`/`config`), and the
+/// sealed history policy (`purge`).
 pub(crate) struct FrozenTuple {
     pub(crate) name: String,
     pub(crate) uuid: String,
@@ -280,17 +262,13 @@ pub(crate) struct FrozenTuple {
     pub(crate) origin: String,
     pub(crate) config: String,
     pub(crate) purge: bool,
-    /// The roster the fresh session was PROMISED to start (`main=<alias> workers=<a,b|->`),
-    /// as SHOWN at the prompt. Revalidate compares the config's CURRENT roster against it, so
-    /// a config rewritten under the window that would start different agents is refused.
+    /// The roster the fresh session was PROMISED to start (`main=<alias>
+    /// workers=<a,b|->`), as SHOWN at the prompt.
     pub(crate) roster: String,
 }
 
 impl FrozenTuple {
-    /// Parse the tuple line. `None` unless there are EXACTLY ten fields — `freeze`'s
-    /// framing guard proves no field carries the separator or a newline, so a genuine
-    /// tuple round-trips and a malformed argument is refused, not misread. Only the seven
-    /// fields Rust revalidates against are kept; the field count is still validated in full.
+    /// Parse the tuple line.
     pub(crate) fn parse(line: &str) -> Option<Self> {
         let line = line.strip_suffix('\n').unwrap_or(line);
         let fields: Vec<&str> = line.split('\u{1f}').collect();
@@ -328,17 +306,13 @@ pub(crate) enum StopState {
     Stopped,
     /// The recorded server answered and the session is STILL present.
     Alive,
-    /// The server could not be asked, or the record does not name one server unambiguously
-    /// (a Missing/Ambiguous selector, or an enumeration error). Existence is UNPROVEN —
-    /// and unproven is NEVER equated with stopped.
+    /// The server could not be asked, or the record does not name one server
+    /// unambiguously (a Missing/Ambiguous selector, or an enumeration error).
     Unknown,
 }
 
 /// Ask the session's OWN recorded tmux server (the selector) whether `name` is
-/// still live. Crossing the destructive boundary requires [`StopState::Stopped`] — a
-/// definitive absence FROM A SERVER THAT ANSWERED. `Alive` and `Unknown` both refuse: an
-/// unreachable server, or a Missing/Ambiguous selector, is never read as stopped (the
-/// same fail-closed stance `end` takes).
+/// still live.
 pub(crate) fn verify_stopped(meta_bytes: &[u8], name: &str) -> StopState {
     let selector = meta::Meta::parse(&String::from_utf8_lossy(meta_bytes)).server_selector();
     let meta::ServerSelector::Positive(sel) = selector else {
@@ -356,16 +330,7 @@ pub(crate) fn verify_stopped(meta_bytes: &[u8], name: &str) -> StopState {
     }
 }
 
-/// Compare the LIVE session to the frozen authorization. `Ok(())` if it is still exactly
-/// the session `freeze` authorized; `Err(reason)` (ready to print) if it was replaced or
-/// materially changed since — in which case NOTHING is stopped or archived. `when` names
-/// the gate. Mirrors the frozen `_compact_revalidate` semantics: the id is the replacement
-/// guard, mode/origin/config anchor identity, a purge flip is a different operation, and a
-/// surviving spawned agent blocks a roster compact would otherwise silently drop.
-/// The roster string the fresh session is PROMISED to start — `main=<alias> workers=<a,b|->`.
-/// Derived identically where the prompt SHOWS it (`freeze`) and where a config rewritten
-/// under the confirm window would now RESOLVE it (`revalidate`), so the "what was authorized"
-/// and "what would start now" strings cannot silently diverge in their formatting.
+/// Compare the LIVE session to the frozen authorization.
 fn roster_string(main: &str, workers: Option<&str>) -> String {
     let workers = workers.filter(|w| !w.is_empty()).unwrap_or("-");
     format!("main={main} workers={workers}")
@@ -377,9 +342,7 @@ fn revalidate(
     keep_history: bool,
     when: &str,
 ) -> Result<(), String> {
-    // Bind the authorization's name to the operand itself. `freeze` derived `name` from the
-    // session directory's direct-child basename, and the stop query below (`verify_stopped`)
-    // trusts it to name the LIVE session. A tuple whose name field was altered to some other
+    // Bind the authorization's name to the operand itself.
     let basename = dir.file_name().and_then(|n| n.to_str()).unwrap_or_default();
     if frozen.name != basename {
         return Err(format!(
@@ -465,13 +428,9 @@ fn revalidate(
     Ok(())
 }
 
-/// `_compact-revalidate` core entry — the authorization gate bash crosses at BOTH lifecycle
-/// points: after confirmation (before anything is messaged) and after the handover wait
-/// (before anything is stopped). `when` is the driver's label for which crossing this is, so
-/// a refusal names the gate that caught the drift — the two are not interchangeable, and a
-/// test proves an identity change during the unlocked wait is caught by the SECOND, not the
-/// first. `0` if it is still the authorized session; a named refusal on `err` and
-/// [`EXIT_FAILED`] otherwise. Read-only.
+/// `_compact-revalidate` core entry — the authorization gate bash crosses at
+/// BOTH lifecycle points: after confirmation (before anything is messaged) and
+/// after the handover wait (before anything is stopped).
 pub(crate) fn revalidate_step(
     dir: &Path,
     tuple: &str,
@@ -495,9 +454,9 @@ pub(crate) fn revalidate_step(
     }
 }
 
-/// The two gates every destructive stage crosses: the session is still the one authorized
-/// (`revalidate`), AND it is PROVEN stopped on its recorded server (`verify_stopped`).
-/// `Ok(Ok(()))` proceeds; `Ok(Err(code))` is a refusal already written to `err`.
+/// The two gates every destructive stage crosses: the session is still the one
+/// authorized (`revalidate`), AND it is PROVEN stopped on its recorded server
+/// (`verify_stopped`).
 fn gate_revalidate_and_stopped(
     dir: &Path,
     frozen: &FrozenTuple,
@@ -538,13 +497,8 @@ fn gate_revalidate_and_stopped(
     }
 }
 
-/// `_compact-archive` core entry — the FIRST stage of the two-stage destructive protocol.
-/// Revalidates, PROVES the session stopped, makes the archive durable (publishing when
-/// absent, or REUSING an equivalent existing one — never clobbering, never publishing over
-/// drift), preflights that the recovery command will restore, and PRINTS that recovery
-/// command on `out` before returning. It tears NOTHING down — `teardown_step` does, only
-/// after bash has seen this stage's recovery line (the recovery point is visible before
-/// anything is destroyed).
+/// `_compact-archive` core entry — the FIRST stage of the two-stage destructive
+/// protocol.
 #[allow(
     clippy::too_many_arguments,
     reason = "the archive volatiles bash supplies at the boundary — git push facts, preserved/workdir, and the UTC instant std cannot format — are each a distinct field"
@@ -623,8 +577,7 @@ pub(crate) fn archive_step(
             return Ok(code);
         }
     }
-    // Preflight the recovery command itself: `--from` must accept this archive. Read-only
-    // (proven: from::run only writes to out/err); its stdout is discarded here.
+    // Preflight the recovery command itself: `--from` must accept this archive.
     let mut sink = Vec::new();
     let code = crate::archive::from::run(&archive_root, &frozen.uuid, &mut sink, err)?;
     if code != 0 {
@@ -639,13 +592,8 @@ pub(crate) fn archive_step(
     Ok(0)
 }
 
-/// Re-validate the durable archive as an inheritable recovery point, immediately before
-/// teardown. Runs the SAME read-only preflight the archive step ran ([`from::run`](crate::archive::from::run)),
-/// discarding its stdout; its diagnostics go to `err`. `Ok(true)` only when it accepts the
-/// archive as a real, non-symlink, unclaimed, well-formed tree whose id matches — an empty
-/// directory, a symlink, a claimed/replaced directory, or a vanished archive all yield
-/// `Ok(false)`. `metadata`-level existence is deliberately NOT trusted: teardown is its own
-/// invocation, so it must re-prove the recovery point rather than trust the archive step's.
+/// Re-validate the durable archive as an inheritable recovery point,
+/// immediately before teardown.
 fn archive_recovery_point_valid(
     archive_root: &Path,
     uuid: &str,
@@ -655,9 +603,7 @@ fn archive_recovery_point_valid(
     Ok(crate::archive::from::run(archive_root, uuid, &mut sink, err)? == 0)
 }
 
-/// `_compact-teardown` core entry — the SECOND stage. Re-proves the authorization and the
-/// stop, RE-VALIDATES the durable archive as an inheritable recovery point (teardown without
-/// one is forbidden), removes the live session, and prints the exec plan bash relaunches from.
+/// `_compact-teardown` core entry — the SECOND stage.
 pub(crate) fn teardown_step(
     dir: &Path,
     tuple: &str,
@@ -682,9 +628,9 @@ pub(crate) fn teardown_step(
         return Ok(EXIT_FAILED);
     };
     let archive_root = root.join("archive");
-    // C2's separate-stage boundary: teardown is its OWN invocation, so it must not trust
-    // that the archive the archive step proved is still the same tree now. Re-run the same
-    // read-only preflight immediately before destroying the live session — the live session
+    // C2's separate-stage boundary: teardown is its OWN invocation, so it must
+    // not trust that the archive the archive step proved is still the same tree
+    // now.
     if !archive_recovery_point_valid(&archive_root, &frozen.uuid, err)? {
         writeln!(
             err,
@@ -707,8 +653,7 @@ pub(crate) fn teardown_step(
 //
 // The handover is delivered through the session's own `ask` (bash, pane-side) as a tracked
 
-/// The poll interval between reads while waiting. The frozen `_compact_wait_handover`
-/// polled every two seconds; the bounded deadline is never overshot.
+/// The poll interval between reads while waiting.
 const HANDOVER_POLL: Duration = Duration::from_secs(2);
 
 /// The default handover bound when bash passes no `--timeout` — the frozen
@@ -722,15 +667,13 @@ fn field_eq(line: &[u8], key: &str, want: &[u8]) -> bool {
     event_text::member(line, key).value() == Some(want)
 }
 
-/// The pre-delivery memo boundary the frozen `_compact_request_text` embeds in the request
-/// body (`AE-COMPACT-MEMO-BASELINE=<n>`). A handover is real only if a memo row was
-/// appended AFTER this byte offset, so a memo rewritten wholesale beforehand cannot
-/// masquerade as new content.
+/// The pre-delivery memo boundary the frozen `_compact_request_text` embeds in
+/// the request body (`AE-COMPACT-MEMO-BASELINE=<n>`).
 fn baseline_from_body(body: &[u8]) -> Option<usize> {
     for line in body.split(|&b| b == b'\n') {
         if let Some(rest) = line.strip_prefix(b"AE-COMPACT-MEMO-BASELINE=") {
-            // The marker is authoritative once found: a malformed value is a corrupt
-            // request, NOT a reason to fall back to 0. Return None so the wait fails closed.
+            // The marker is authoritative once found: a malformed value is a
+            // corrupt request, NOT a reason to fall back to 0.
             return std::str::from_utf8(rest)
                 .ok()
                 .and_then(|s| s.trim().parse::<usize>().ok());
@@ -739,12 +682,7 @@ fn baseline_from_body(body: &[u8]) -> Option<usize> {
     None
 }
 
-/// The stored request body IF it is a readable regular file, else `None`. A deleted, FIFO,
-/// directory, or otherwise non-regular `body_file` is UNAVAILABLE EVIDENCE — the wait must
-/// refuse rather than read it as empty (which would yield baseline `0`, the same one-fact
-/// collapse the marker guard closes). Follows symlinks, matching the frozen `[[ -f ]]` gate;
-/// a TOCTOU removal between the check and the read yields empty bytes, hence `None` baseline,
-/// hence the same closed refusal.
+/// The stored request body IF it is a readable regular file, else `None`.
 fn read_body_regular(path_bytes: &[u8]) -> Option<Vec<u8>> {
     let path = Path::new(OsStr::from_bytes(path_bytes));
     if !crate::archive::regular_file(path) {
@@ -753,9 +691,8 @@ fn read_body_regular(path_bytes: &[u8]) -> Option<Vec<u8>> {
     Some(event_text::read_container(path))
 }
 
-/// A `reply` for the EXACT ref, from the `main` slot of the FROZEN session — the frozen
-/// `_compact_reply_seen`. Not the request sensor's "is it closed" row: this answers
-/// "closed by exactly the main agent the handover addressed".
+/// A `reply` for the EXACT ref, from the `main` slot of the FROZEN session —
+/// the frozen `_compact_reply_seen`.
 fn reply_seen(events: &[u8], reference: &str, session: &str) -> bool {
     event_text::read_lines(events).into_iter().any(|line| {
         event_text::event_line(line).is_some_and(|line| {
@@ -768,9 +705,7 @@ fn reply_seen(events: &[u8], reference: &str, session: &str) -> bool {
 }
 
 /// At least one VALID handover row appended after `baseline` — the frozen
-/// `_compact_memo_after`. Rows are read from the byte offset onward, so a wholesale rewrite
-/// cannot masquerade; a row counts only with a non-empty ts and author, the `handover`
-/// topic, and non-empty text.
+/// `_compact_memo_after`.
 fn memo_after(memo: &[u8], baseline: usize) -> bool {
     let tail = memo.get(baseline..).unwrap_or(&[]);
     tail.split(|&b| b == b'\n').any(|row| {
@@ -795,12 +730,8 @@ fn request_by_ref(dir: &Path, reference: &str) -> Option<requests::Request> {
         .find(|r| r.id == reference.as_bytes())
 }
 
-/// `_compact-wait <session-dir> <ref> [--timeout <secs>]` core — the bounded wait for the
-/// TWO handover facts. `0` only when a `reply` (exact ref, main slot, frozen session) AND a
-/// new `handover` memo row (after the request's own baseline) have BOTH arrived. On timeout
-/// it returns [`EXIT_FAILED`] and LEAVES the request as it found it (ruling A, 2026-08-29):
-/// a normal timeout is a resumable pause, and only `--digest-only` withdraws. The guidance
-/// naming WHICH fact arrived is written here — bash branches on the exit code alone.
+/// `_compact-wait <session-dir> <ref> [--timeout <secs>]` core — the bounded
+/// wait for the TWO handover facts.
 pub(crate) fn wait_step(
     dir: &Path,
     reference: &str,
@@ -819,9 +750,8 @@ pub(crate) fn wait_step(
         )?;
         return Ok(EXIT_FAILED);
     };
-    // The memo baseline is REQUIRED evidence: without it the "new handover memo" fact cannot
-    // be told from a memo that predates this request. A missing/non-regular body, or a body
-    // with no valid AE-COMPACT-MEMO-BASELINE marker, fails the wait CLOSED — no stop, no
+    // The memo baseline is REQUIRED evidence: without it the "new handover
+    // memo" fact cannot be told from a memo that predates this request.
     let Some(baseline) = read_body_regular(&req.body_file).and_then(|b| baseline_from_body(&b))
     else {
         writeln!(
@@ -878,13 +808,8 @@ pub(crate) fn wait_step(
     Ok(EXIT_FAILED)
 }
 
-/// `_compact-cancel <session-dir> <ref>` core — withdraw an outstanding compact handover
-/// request, the `--digest-only` degradation. Emits a Rust-owned, COMPLETELY SLOTLESS
-/// `cancel` event whose actor is the request's own opener (`ae:compact:<uuid>`), which is
-/// the exact shape [`requests::states`] reads as a withdrawal (the `withdrawn_by` display
-/// arm: all four routing keys absent, actor bytes equal to the opening actor). Idempotent:
-/// a request already closed is a no-op success. Refuses to withdraw anything not opened by
-/// compact.
+/// `_compact-cancel <session-dir> <ref>` core — withdraw an outstanding compact
+/// handover request, the `--digest-only` degradation.
 pub(crate) fn cancel_step(dir: &Path, reference: &str, err: &mut impl Write) -> io::Result<u8> {
     let Some(req) = request_by_ref(dir, reference) else {
         writeln!(
@@ -916,9 +841,9 @@ pub(crate) fn cancel_step(dir: &Path, reference: &str, err: &mut impl Write) -> 
     Ok(0)
 }
 
-/// The reserved compact actor for the session at `dir` — `ae:compact:<session-uuid>`, the
-/// sender the handover is delivered as and the opener a withdrawal must match. Empty when
-/// meta records no valid session id (then nothing is an outstanding compact request).
+/// The reserved compact actor for the session at `dir` —
+/// `ae:compact:<session-uuid>`, the sender the handover is delivered as and the
+/// opener a withdrawal must match.
 fn compact_actor(dir: &Path) -> String {
     let uuid = meta::read_bytes(dir)
         .ok()
@@ -932,22 +857,18 @@ fn compact_actor(dir: &Path) -> String {
     }
 }
 
-/// `_compact-memo-baseline <dir>` core — print the current `memo.tsv` byte size, the
-/// pre-delivery boundary the bash driver embeds in the handover request body (the frozen
-/// `_compact_memo_offset`). `_compact-wait` counts a handover only for a memo row appended
-/// PAST this offset, which is why it is captured before delivery. No newline — bash
-/// captures it with `$(…)`.
+/// `_compact-memo-baseline <dir>` core — print the current `memo.tsv` byte
+/// size, the pre-delivery boundary the bash driver embeds in the handover
+/// request body (the frozen `_compact_memo_offset`).
 pub(crate) fn memo_baseline_step(dir: &Path, out: &mut impl Write) -> io::Result<u8> {
     let memo = event_text::read_container(&dir.join("memo.tsv"));
     write!(out, "{}", memo.len())?;
     Ok(0)
 }
 
-/// `_compact-find-outstanding <dir>` core — print the ref of the FIRST still-pending
-/// handover request opened by this session's compact actor, or nothing. The frozen
-/// `_compact_find_outstanding`: a retry reuses this ref (and, through its stored body, its
-/// baseline) instead of delivering a duplicate. No newline — bash captures it with `$(…)`
-/// and tests it with `-n`.
+/// `_compact-find-outstanding <dir>` core — print the ref of the FIRST
+/// still-pending handover request opened by this session's compact actor, or
+/// nothing.
 pub(crate) fn find_outstanding_step(dir: &Path, out: &mut impl Write) -> io::Result<u8> {
     let actor = compact_actor(dir);
     if actor.is_empty() {
@@ -985,8 +906,8 @@ mod tests {
 
     const UUID: &str = "11111111-1111-1111-1111-111111111111";
 
-    /// Build a session dir with `meta` lines and a `[workspace]` config, returning the
-    /// session dir. `origin` is the scratch root (a real, canonicalizable dir).
+    /// Build a session dir with `meta` lines and a `[workspace]` config,
+    /// returning the session dir.
     fn session(s: &Scratch, extra_meta: &str, config_body: Option<&str>) -> PathBuf {
         let dir = s.0.join("sess");
         std::fs::create_dir_all(&dir).unwrap();
@@ -1049,12 +970,7 @@ mod tests {
         assert!(err.contains("local-mode only"), "{err}");
     }
 
-    /// Identity v2 (P1, read side). The tracer that preceded this test pinned
-    /// the v1 core's answer to a v2-only meta: no `agent.main`, empty roster,
-    /// "records no valid main agent" — fail closed (git history). With the v2
-    /// read model the seat IS the main agent and the handover ref is its name.
-    /// Nothing writes v2 meta before the P4 cutover, so no live compact changes
-    /// behaviour here; v1 metas keep their `alias:name` ref (`reference()`).
+    /// Identity v2 (P1, read side).
     #[test]
     fn identity_v2_only_meta_hands_over_from_the_named_seat() {
         let s = Scratch::new("v2only");
@@ -1172,9 +1088,9 @@ mod tests {
 
     #[test]
     fn a_present_but_undecodable_config_is_refused() {
-        // The purge-bypass regression: a config that is a REAL regular file (so the old
-        // is_file gate passed) but whose bytes cannot be decoded must refuse — not read
-        // as empty and let a purge=true setting slip through. Non-UTF-8 stands in for
+        // The purge-bypass regression: a config that is a REAL regular file (so
+        // the old is_file gate passed) but whose bytes cannot be decoded must
+        // refuse — not read as empty and let a purge=true setting slip through.
         let s = Scratch::new("badcfg");
         let dir = s.0.join("sess");
         std::fs::create_dir_all(&dir).unwrap();
@@ -1196,9 +1112,9 @@ mod tests {
 
     #[test]
     fn a_field_carrying_the_separator_byte_is_refused() {
-        // A resolved value with a 0x1f would forge extra tuple fields; the framing guard
-        // refuses rather than emit a tuple that does not round-trip. Here the config's
-        // workers value smuggles one in.
+        // A resolved value with a 0x1f would forge extra tuple fields; the
+        // framing guard refuses rather than emit a tuple that does not
+        // round-trip.
         let s = Scratch::new("framing");
         let dir = session(&s, "", Some("[workspace]\nmain = cl\nworkers = a\u{1f}b\n"));
         let (code, out, err) = run(&dir, false);
@@ -1213,8 +1129,8 @@ mod tests {
     #[test]
     fn a_malformed_agent_main_is_refused_not_emitted() {
         // `cl`, `cl:`, `:main` each fail the typed roster grammar and so never
-        // become a `main` entry — freeze refuses rather than emitting a broken handover
-        // ref P3.7b would try to deliver to. Everything else in the session is valid.
+        // become a `main` entry — freeze refuses rather than emitting a broken
+        // handover ref P3.7b would try to deliver to.
         for bad in ["cl", "cl:", ":main"] {
             let s = Scratch::new("malformedmain");
             let dir = s.0.join("sess");
@@ -1243,15 +1159,15 @@ mod tests {
         }
     }
 
-    // The FIFO global regression lives in the black-box `tests/it/compact.rs`: creating
-    // a FIFO needs `mkfifo(1)`, and `std::process::Command` is a crate-wide disallowed
-    // type whose only sanctioned doors are in the it-target (`crate::cli::mkfifo`). A
+    // The FIFO global regression lives in the black-box `tests/it/compact.rs`:
+    // creating a FIFO needs `mkfifo(1)`, and `std::process::Command` is a
+    // crate-wide disallowed type whose only sanctioned doors are in the
+    // it-target (`crate::cli::mkfifo`).
 
     #[test]
     fn a_present_nonregular_local_config_is_refused_not_ignored() {
-        // The origin's local `.ae/config` exists but is a DIRECTORY (a present, non-
-        // regular node). It must refuse — not silently fall back to the valid global as
-        // if the local overlay were absent.
+        // The origin's local `.ae/config` exists but is a DIRECTORY (a present,
+        // non- regular node).
         let s = Scratch::new("nonreglocal");
         std::fs::create_dir_all(s.0.join(".ae").join("config")).unwrap();
         let dir = session(&s, "", Some("[workspace]\nmain = cl\n"));
@@ -1266,9 +1182,8 @@ mod tests {
 
     #[test]
     fn an_untraversable_local_config_is_refused_not_ignored() {
-        // The local override EXISTS but its parent `.ae` is untraversable, so lstat on it
-        // fails with a permission error — NOT NotFound. Existence cannot be proven, so it
-        // must refuse rather than silently use the (valid) global config. Regression for
+        // The local override EXISTS but its parent `.ae` is untraversable, so
+        // lstat on it fails with a permission error — NOT NotFound.
         use std::os::unix::fs::PermissionsExt as _;
         let s = Scratch::new("untraversable");
         let dotae = s.0.join(".ae");
@@ -1393,9 +1308,8 @@ mod tests {
 
     #[test]
     fn revalidate_refuses_an_altered_name_binding_it_to_the_operand() {
-        // The altered-tuple attack: field 1 is rewritten from the real session name to some
-        // other (absent) name. Revalidation must refuse on the name↔operand mismatch BEFORE
-        // any stop query — otherwise the stop check would prove the WRONG (absent) name
+        // The altered-tuple attack: field 1 is rewritten from the real session
+        // name to some other (absent) name.
         let s = Scratch::new("reval-name");
         let dir = session(&s, "", Some("[workspace]\nmain = cl\n"));
         let mut f = frozen(&s.0, &s.0.join("config"));
@@ -1440,7 +1354,7 @@ mod tests {
             Some("[workspace]\nmain = cl\npurge_agent_history = true\n"),
         );
         let f = frozen(&s.0, &s.0.join("config"));
-        // frozen.purge is false, but the live config now purges → refuse.
+        // Frozen.purge is false, but the live config now purges → refuse.
         assert!(
             revalidate(&dir, &f, false, "test")
                 .unwrap_err()
@@ -1457,8 +1371,7 @@ mod tests {
         let f = frozen(&s.0, &s.0.join("config"));
         // Unchanged config → the shown roster still resolves → accepted.
         assert!(revalidate(&dir, &f, false, "test").is_ok());
-        // Rewritten DURING the window to start a different main. The config PATH is unchanged
-        // (that gate passes), but the roster it now resolves to is not the one shown.
+        // Rewritten DURING the window to start a different main.
         std::fs::write(s.0.join("config"), "[workspace]\nmain = other\n").unwrap();
         let err = revalidate(&dir, &f, false, "after confirmation").unwrap_err();
         assert!(
@@ -1496,9 +1409,8 @@ mod tests {
 
     // ---- teardown's archive re-preflight (BLOCKER 2 / C2 separate-stage boundary) ----
 
-    /// Publish a real archive from a session under `<home>/sessions/sess`, returning the
-    /// archive root. Mirrors the archive step's own inputs so the recovery-point preflight
-    /// sees exactly what teardown would.
+    /// Publish a real archive from a session under `<home>/sessions/sess`,
+    /// returning the archive root.
     fn published(s: &Scratch) -> PathBuf {
         let dir = s.0.join("sessions").join("sess");
         std::fs::create_dir_all(dir.join("messages")).unwrap();
@@ -1587,9 +1499,9 @@ mod tests {
         dir
     }
 
-    /// Seed a compact handover ask opening from the reserved compact actor — SLOTLESS
-    /// sender (`actor_session` present, no `actor_slot`), addressed to main, with a stored
-    /// body carrying the memo baseline. The ledger reads it as one Pending request.
+    /// Seed a compact handover ask opening from the reserved compact actor —
+    /// SLOTLESS sender (`actor_session` present, no `actor_slot`), addressed to
+    /// main, with a stored body carrying the memo baseline.
     fn seed_handover(dir: &Path, baseline: usize) {
         let body = dir.join("messages").join("handover.ask.txt");
         std::fs::write(

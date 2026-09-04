@@ -50,8 +50,7 @@ impl PendingRequest {
 /// What one session directory's event stream says.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionRead {
-    /// Every event read, in stream order. Kept so every derived field answers
-    /// from one snapshot of a moving stream.
+    /// Every event read, in stream order.
     pub events: Vec<Event>,
     /// The newest event's timestamp — the activity clock.
     pub last_active: Option<Timestamp>,
@@ -119,8 +118,6 @@ impl SessionRead {
     }
 
     /// The requests that have been waiting longer than `threshold_secs`.
-    ///
-    /// Age must EXCEED the threshold; equality is not past it.
     #[must_use]
     pub fn unanswered(&self, now: Timestamp, threshold_secs: i64) -> Vec<&PendingRequest> {
         self.pending
@@ -140,11 +137,6 @@ impl SessionRead {
     }
 
     /// When the goal was last set.
-    ///
-    /// The `ts` of the LAST APPENDED goal event, not the numerically greatest `ts`:
-    /// a max-timestamp fold would let clock skew reorder committed state. Same
-    /// ordering as [`SessionRead::declared_state_of`] and
-    /// [`SessionRead::alert_reason_of`].
     #[must_use]
     pub fn goal_set_at(&self) -> Option<Timestamp> {
         self.events
@@ -155,13 +147,6 @@ impl SessionRead {
     }
 
     /// The work state this agent last declared.
-    ///
-    /// Identity is the routing key when the event carries one for THIS session, the
-    /// display name otherwise; a renamed session's older events have no key.
-    ///
-    /// The LAST APPENDED declaration wins, whatever `ts` it claims. Ordering by `ts`
-    /// would let a stale-stamped record appended afterwards overwrite the real
-    /// latest one — silently, since both values are legal states.
     #[must_use]
     pub fn declared_state_of(&self, session: &str, slot: &str, reference: &str) -> Option<&str> {
         self.events
@@ -172,28 +157,12 @@ impl SessionRead {
     }
 
     /// The watchdog's standing verdict on this agent, or `None`.
-    ///
-    /// The question is not "is there an alert" but "what is the NEWEST thing the log
-    /// says about this agent". An `alert` raises, a watchdog clear retracts, and any
-    /// other event the agent ITSELF wrote is recovery. Everything else — a `nudge`
-    /// above all, which the watchdog writes and which names the agent as TARGET —
-    /// decides nothing, and the scan looks further back. Treating an inbound event
-    /// as recovery would clear every alert the moment it was raised, since nudges
-    /// are what precede one.
-    ///
-    /// Newest by LEDGER ORDER, not by timestamp, for the same reason as
-    /// [`SessionRead::declared_state_of`]. `last_active` is deliberately NOT one of
-    /// these scans: it takes `max(ts)` because a future-stamped event must count as
-    /// active rather than silently hide a live session.
     #[must_use]
     pub fn alert_reason_of(&self, session: &str, slot: &str, reference: &str) -> Option<Reason> {
         alert_reason_in(&self.events, session, slot, reference)
     }
 
     /// Whether this read lost anything.
-    ///
-    /// A skipped malformed COMPLETE record is loss. A buffered unterminated tail is
-    /// not, and the reader never reports one as skipped.
     #[must_use]
     pub fn lost_records(&self) -> bool {
         !self.skipped.is_empty()
@@ -201,22 +170,13 @@ impl SessionRead {
 }
 
 /// What one agent's RUNTIME says — facts no session directory holds.
-///
-/// `alert` arrives as a decided reason rather than as prose this reader parses:
-/// free text is never a discriminator.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentRuntime {
     /// The slot this describes — `main` / `worker.<n>` / `spawned.<n>`.
     pub slot: String,
     /// Whether the agent's pane is alive, three-valued.
-    ///
-    /// `None` is "not established" — a failed pane query, an ambiguous marker, or a
-    /// session whose own liveness is unknown. It is NOT "dead".
     pub alive: Option<bool>,
     /// The watchdog's typed reason for this agent, if any.
-    ///
-    /// `None` is not an unread source: positive runtime alerts enter only when the
-    /// caller supplies one.
     pub alert: Option<Reason>,
 }
 
@@ -226,7 +186,7 @@ pub struct AgentRuntime {
 pub struct SessionRuntime {
     /// Running or stopped.
     pub status: Status,
-    /// The live git branch. Not a meta key.
+    /// The live git branch.
     pub branch: Option<String>,
     /// One entry per slot the runtime knows about.
     pub agents: Vec<AgentRuntime>,
@@ -249,12 +209,6 @@ impl SessionRuntime {
 }
 
 /// Whether `event`'s actor is the agent at `slot` / `reference` in `session`.
-///
-/// An event that carries a routing key is matched on that key or not at all, so
-/// a stale session after a rename leaves the event UNASSOCIATED rather than
-/// attributed by display name. Display matching survives only for events with NO
-/// routing key at all. A key that is half-given, or given EMPTY, still counts as
-/// given: it identifies nobody.
 fn is_actor(event: &Event, session: &str, slot: &str, reference: &str) -> bool {
     match (&event.actor_slot, &event.actor_session) {
         (RoutingMember::Value(event_slot), RoutingMember::Value(event_session)) => {
@@ -268,14 +222,6 @@ fn is_actor(event: &Event, session: &str, slot: &str, reference: &str) -> bool {
 }
 
 /// The alert the durable log still shows for one agent, or `None`.
-///
-/// A free function over a slice, so the watchdog daemon can ask against the
-/// events it already read this cycle. ONE definition: the method above delegates
-/// here, because two walks of one log with one meaning is how they drift apart.
-///
-/// `events` must arrive in APPEND order, and the LAST decisive record wins.
-/// `next_back` rather than `last`: this walks backward and stops at the first
-/// decisive record instead of reading the whole log to find it.
 #[must_use]
 pub fn alert_reason_in(
     events: &[Event],
@@ -294,10 +240,6 @@ pub fn alert_reason_in(
 }
 
 /// What one record settles for one agent, when it settles anything at all.
-///
-/// Absence of a `Verdict` is the third answer and the load-bearing one:
-/// collapsing it into [`Verdict::Clear`] would let every watchdog nudge cancel
-/// the alert it was sent about.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Verdict {
     /// The watchdog says this agent needs a human, for this reason.
@@ -324,9 +266,6 @@ fn decisive_verdict(event: &Event, session: &str, slot: &str, reference: &str) -
 
 /// Whether `event` is ADDRESSED TO the agent at `slot` / `reference` — the
 /// mirror of [`is_actor`] on the target side.
-///
-/// An agent never writes the record that says it is dead. The watchdog is the
-/// actor of every alert, so consulting only the actor would see none of them.
 fn is_addressed_to(event: &Event, session: &str, slot: &str, reference: &str) -> bool {
     match event.target_identity() {
         Some(Identity::Routed {
@@ -342,9 +281,6 @@ fn is_addressed_to(event: &Event, session: &str, slot: &str, reference: &str) ->
 }
 
 /// Whether `name` is the `@<session>:<agent>` spelling of THIS session's agent.
-///
-/// Matched by stripping rather than by building the string: this runs once per
-/// agent per record.
 fn is_cross_session_form(name: &str, session: &str, reference: &str) -> bool {
     name.strip_prefix('@')
         .and_then(|rest| rest.strip_prefix(session))
@@ -353,15 +289,6 @@ fn is_cross_session_form(name: &str, session: &str, reference: &str) -> bool {
 }
 
 /// The digest entry for the session directory at `dir`.
-///
-/// Cannot fail: one bad session degrades its own entry and the document always
-/// closes. That degradation is VISIBLE — `degraded: true` reaches the JSON
-/// whenever data was actually lost, so damage never renders identically to
-/// legitimate sparsity.
-///
-/// Loss is an unreadable or anomalous `meta`, an event log that EXISTS and would
-/// not read, or a skipped malformed complete record. An absent or zero-byte
-/// event log is a quiet stream, not damage.
 #[must_use]
 pub fn entry_for(
     dir: &Path,
@@ -380,18 +307,11 @@ pub fn entry_for(
 }
 
 /// What happened when phase 1 tried to read a candidate's `meta`.
-///
-/// A tmux-only candidate has no record to lose; a durable candidate whose `meta`
-/// will not read has one and lost its contents. Rendering the two the same way
-/// would report a destroyed record as a session that never had one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum MetaRead {
     /// Read and parsed.
     Parsed,
     /// No `meta` in the state directory.
-    ///
-    /// The DEFAULT, deliberately: a snapshot nobody has read yet has not established
-    /// that anything was lost.
     #[default]
     Absent,
     /// A `meta` that exists and would not read.
@@ -399,22 +319,12 @@ pub enum MetaRead {
 }
 
 /// Everything one session directory said, read ONCE.
-///
-/// A digest built from two observations is a digest whose facts never coexisted:
-/// a `meta` unreadable at discovery could become readable before rendering and
-/// silently repair its own loss fact. Both halves are optional because both
-/// reads fail independently, and the difference matters — an unreadable meta is
-/// damage where an absent event log is not.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct RecordSnapshot {
     /// The parsed `meta`, when it could be read.
     pub meta: Option<Meta>,
     /// WHY there is or is not a `meta` above — the outcome of the very read that
     /// produced it.
-    ///
-    /// `Option<Meta>` cannot tell absent from unreadable. Reconstructing the
-    /// distinction downstream means a SECOND observation wearing a different name,
-    /// and one that answers "absent" for a directory the asker may not traverse.
     pub meta_read: MetaRead,
     /// The event stream, when it could be read.
     pub events: Option<SessionRead>,
@@ -422,9 +332,6 @@ pub struct RecordSnapshot {
 
 impl RecordSnapshot {
     /// Read both halves of the record at `dir`.
-    ///
-    /// The ONLY I/O on this path: everything downstream is a pure function of what
-    /// this captured, including WHY each half is missing.
     #[must_use]
     pub fn read(dir: &Path) -> Self {
         let (meta, meta_read) = match Meta::read(dir) {
@@ -443,13 +350,6 @@ impl RecordSnapshot {
 }
 
 /// The branch checked out in the work tree at `dir`, read from git's own files.
-///
-/// Reading `HEAD` rather than shelling out keeps `list` off a process launch per
-/// session and keeps it working where git is not installed. Every failure is
-/// `None`. Three shapes: `.git` as a DIRECTORY, `.git` as a FILE holding
-/// `gitdir: <path>` (a worktree — ae's own `--worktree` mode creates these, so
-/// this is the common case here), and a detached `HEAD` holding a raw object id,
-/// which renders short.
 #[allow(
     clippy::disallowed_methods,
     reason = "a door: the git branch read — `HEAD` and the worktree `.git` pointer, \
@@ -474,9 +374,9 @@ fn branch_at(dir: &Path) -> Option<String> {
     };
     let raw = fs::read_to_string(git_dir.join("HEAD")).ok()?;
     // Framing is validated on the RAW bytes, before any normalisation: the
-    // previous shape trimmed first and then counted lines, so a leading blank line
-    // and a doubled trailing one both normalised to one line and were ACCEPTED.
-    // Well-formed `HEAD` is one line with an optional single terminal newline.
+    // previous shape trimmed first and then counted lines, so a leading blank
+    // line and a doubled trailing one both normalised to one line and were
+    // ACCEPTED.
     let head = raw.strip_suffix('\n').unwrap_or(&raw);
     if head.chars().any(char::is_control) {
         return None;
@@ -488,7 +388,7 @@ fn branch_at(dir: &Path) -> Option<String> {
         let branch = reference.strip_prefix("refs/heads/").unwrap_or(reference);
         safe_branch(branch).map(ToOwned::to_owned)
     } else if head.len() >= 7 && head.chars().all(|c| c.is_ascii_hexdigit()) {
-        // Detached. Short form, matching how a person refers to a commit.
+        // Detached.
         Some(head.chars().take(7).collect())
     } else {
         None
@@ -496,16 +396,6 @@ fn branch_at(dir: &Path) -> Option<String> {
 }
 
 /// `branch` if it is a safe ref name to render, otherwise `None`.
-///
-/// A RENDERING guard, not a git validator: the bytes come from a file ae did not
-/// create and go straight into a terminal, so the question is whether they can
-/// rewrite the display. An allowlist answers escape, carriage return and newline
-/// at once, where a blocklist answers whichever ones it names.
-///
-/// Permitted: printable ASCII minus git's own forbidden bytes. A tighter set was
-/// tried and rejected refs git accepts. Non-ASCII is refused deliberately — git
-/// permits UTF-8 ref names, but a bidirectional override reorders the rest of
-/// the line.
 fn safe_branch(branch: &str) -> Option<&str> {
     if branch.is_empty() || branch.len() > 255 {
         return None;
@@ -516,14 +406,12 @@ fn safe_branch(branch: &str) -> Option<&str> {
     if !branch.chars().all(permitted) {
         return None;
     }
-    // git's structural rules, plus what matters for a path-shaped value reaching a
-    // terminal: no empty segment, no `..` to climb, no leading `-` to read as a
-    // flag, no `@{` reflog syntax. Bare `@` is accepted — git calls it valid.
+    // git's structural rules, plus what matters for a path-shaped value
+    // reaching a terminal: no empty segment, no `..` to climb, no leading `-`
+    // to read as a flag, no `@{` reflog syntax.
     if branch.contains("@{")
         // git's rule is that a ref may not END in the literal `.lock`,
-        // case-sensitively. Compared as BYTES: a case-insensitive test would refuse
-        // `a.LOCK`, which git accepts, and `Path::extension` reports None for a bare
-        // `.lock`, which git refuses. Both divergences are silent.
+        // case-sensitively.
         || branch.as_bytes().ends_with(b".lock")
         || branch.ends_with('.')
         || branch.starts_with('/')
@@ -538,10 +426,6 @@ fn safe_branch(branch: &str) -> Option<&str> {
 }
 
 /// The digest entry for a record already read.
-///
-/// Pure: same snapshot, same runtime, same answer, whatever the filesystem is
-/// doing by the time this runs. Cannot fail, and reports loss exactly as
-/// [`entry_for`] does.
 #[must_use]
 pub fn entry_from(
     snapshot: &RecordSnapshot,
@@ -579,7 +463,6 @@ pub fn entry_from(
         entry.set_established_runtime_dead_agents(established_runtime_dead_agents(meta, runtime));
     }
     // The MAX across agent reasons PLUS session-level unresolved-request facts.
-    // `unanswered` is a PAIR fact, so it never appears as any agents[].reason.
     entry.attention = Reason::rollup(
         entry
             .agents
@@ -594,9 +477,6 @@ pub fn entry_from(
 }
 
 /// The runtime-origin `Dead` facts this snapshot may retain under ledger loss.
-///
-/// A typed runtime hand-in is independent of the ledger, so a malformed tail
-/// cannot clear it. Only rostered references are retained.
 fn established_runtime_dead_agents(meta: &Meta, runtime: &SessionRuntime) -> Vec<String> {
     meta.roster()
         .iter()
@@ -610,7 +490,7 @@ fn established_runtime_dead_agents(meta: &Meta, runtime: &SessionRuntime) -> Vec
 }
 
 /// Map one raw-record snapshot to the source knowledge each rendered member
-/// needs. Aggregate degradation is deliberately computed separately above.
+/// needs.
 fn render_knowledge(snapshot: &RecordSnapshot) -> RenderKnowledge {
     let meta = snapshot.meta.as_ref();
     RenderKnowledge {
@@ -642,9 +522,6 @@ fn events_complete(snapshot: &RecordSnapshot) -> bool {
 }
 
 /// Whether one optional meta member was settled by the parsed record.
-///
-/// A duplicate of the member's own key makes its value unknowable. With no value
-/// found, an unattributed malformed line makes its absence unknowable too.
 fn meta_member_complete(meta: &Meta, key: &str, value_present: bool) -> bool {
     let duplicate = meta.anomalies().iter().any(|anomaly| {
         matches!(anomaly, Anomaly::DuplicateKey { key: duplicate, .. } if duplicate == key)
@@ -657,9 +534,6 @@ fn meta_member_complete(meta: &Meta, key: &str, value_present: bool) -> bool {
 }
 
 /// Whether meta established the complete agent population.
-///
-/// A readable zero-entry roster is complete. Only missing meta or parse loss
-/// that could name an agent makes the population unenumerable.
 fn roster_complete(meta: &Meta) -> bool {
     !meta.anomalies().iter().any(|anomaly| match anomaly {
         Anomaly::MalformedLine { .. }
@@ -672,13 +546,6 @@ fn roster_complete(meta: &Meta) -> bool {
 }
 
 /// What is known about one roster agent's liveness.
-///
-/// The two grains are related in one direction only: a session proven `stopped`
-/// implies every roster agent dead, an `unknown` session implies unknown agents,
-/// and a `running` session defers to the pane observation. A runtime naming no
-/// member for the slot has made no observation of it, so the answer is unknown
-/// rather than dead — that default is where absence of evidence became evidence
-/// of absence.
 fn agent_liveness(runtime: &SessionRuntime, agent: Option<&AgentRuntime>) -> Option<bool> {
     match runtime.status {
         // Proven absent: every roster agent with it.
@@ -692,9 +559,6 @@ fn agent_liveness(runtime: &SessionRuntime, agent: Option<&AgentRuntime>) -> Opt
 
 /// The `agents[]` array: the meta's roster, answered by the runtime and the
 /// event stream.
-///
-/// Membership is roster-defined. A runtime-only pane never invents an agent, and
-/// an unknown pane never erases an independently established alert.
 fn agent_entries(
     meta: &Meta,
     read: Option<&SessionRead>,
@@ -716,10 +580,9 @@ fn agent_entries(
                 session_id: slot.harness_session.clone(),
                 alive: agent_liveness(runtime, runtime_agent),
                 state: declared.map(ToOwned::to_owned),
-                // This agent's OWN contribution, from the two evidence classes: ALERT-DERIVED
-                // dead/stale/throttled, and SELF-DECLARED waiting-user/blocked. `None` means
-                // no agent-owned contribution exists — a session-level `unanswered` never
-                // reaches this field, because no agent owns a pair fact.
+                // This agent's OWN contribution, from the two evidence classes:
+                // ALERT-DERIVED dead/stale/throttled, and SELF-DECLARED
+                // waiting-user/blocked.
                 reason: Reason::rollup(
                     runtime_agent
                         .and_then(|agent| agent.alert)
@@ -737,11 +600,6 @@ fn agent_entries(
 }
 
 /// Whether a meta's anomalies degrade the session, per anomaly KIND.
-///
-/// Unknown keys are TOLERATED: they are the normal state of a real meta, so
-/// degrading on them would make the flag constant-true. A malformed line, a
-/// duplicate key or a malformed roster value is a value the reader could not
-/// take, and does degrade.
 fn anomalies_degrade(anomalies: &[Anomaly]) -> bool {
     anomalies.iter().any(|anomaly| match anomaly {
         Anomaly::UnknownKey { .. } => false,
@@ -754,9 +612,6 @@ fn anomalies_degrade(anomalies: &[Anomaly]) -> bool {
 }
 
 /// The attention reason a DECLARED work state contributes, if any.
-///
-/// `working` and `done` are states, not reasons: an agent that is working does
-/// not need a human.
 fn declared_reason(state: &str) -> Option<Reason> {
     match state {
         "waiting-user" => Some(Reason::WaitingUser),
@@ -766,15 +621,6 @@ fn declared_reason(state: &str) -> Option<Reason> {
 }
 
 /// The `ask`/`review` events with no qualifying reply, oldest first.
-///
-/// Closure requires the FULL mirror: the same `ref`, the reply's actor is the
-/// request's target, AND the reply's target is the request's actor. A loud
-/// false-pending is safer than a silent false-closure, which loses the question
-/// entirely.
-///
-/// Identity compares routing keys when both sides carry them and display names
-/// when neither does; a MIXED pair matches nothing. Only the newest ask/review
-/// per `ref` counts, so a re-ask restarts the clock.
 fn pending_requests(events: &[Event]) -> Vec<PendingRequest> {
     // One forward pass over an append-only log, so a reply that appears BEFORE its
     // request finds nothing open and closes nothing.
@@ -1143,7 +989,7 @@ mod tests {
 
     #[test]
     fn sc_405j_two_unassociated_sides_do_not_match_each_other() {
-        // Both sides failed to say where they came from. That is not agreement.
+        // Both sides failed to say where they came from.
         let lines = [
             event(
                 &at(3600),
@@ -1226,8 +1072,7 @@ mod tests {
 
     #[test]
     fn sc_511b_pairing_uses_the_routing_key_when_both_sides_carry_one() {
-        // The display name churns; the slot+session key does not. The reply's
-        // actor is spelled differently and must still close the request.
+        // The display name churns; the slot+session key does not.
         let lines = [
             event(
                 &at(3600),
@@ -1718,11 +1563,6 @@ mod tests {
     }
 
     /// The rendering guard agrees with git on every name git has a verdict for.
-    ///
-    /// The verdicts below were MEASURED with `git check-ref-format --branch`, not
-    /// reasoned about: a guard checked only against its author's intuition agrees
-    /// with that intuition by construction. The one deliberate divergence is
-    /// non-ASCII, which is refused.
     #[test]
     fn the_branch_guard_matches_git_s_own_verdicts() {
         // (name, git check-ref-format --branch says valid)
@@ -1775,9 +1615,6 @@ mod tests {
     }
 
     /// A hostile `HEAD` cannot reach the terminal.
-    ///
-    /// Rendering a decorative field is never worth executing attacker-chosen control
-    /// bytes.
     #[test]
     fn a_hostile_head_renders_no_branch_rather_than_its_bytes() {
         let root = std::env::temp_dir().join(format!("ae-head-inject-{}", std::process::id()));
@@ -1856,9 +1693,6 @@ mod tests {
     }
 
     /// The branch read, in all three shapes it meets in the wild.
-    ///
-    /// The worktree shape is not exotic here — ae's own `--worktree` mode creates
-    /// exactly it.
     #[test]
     fn the_branch_is_read_from_an_ordinary_clone_a_worktree_and_a_detached_head() {
         let root = std::env::temp_dir().join(format!("ae-branch-{}", std::process::id()));
@@ -1882,7 +1716,7 @@ mod tests {
             "only the refs/heads/ prefix is stripped"
         );
 
-        // 2. Worktree: `.git` is a FILE pointing at the real git dir.
+        // 2.
         let real = root.join("real-git-dir");
         fs::create_dir_all(&real).expect("the pointed-to dir");
         fs::write(real.join("HEAD"), "ref: refs/heads/worktree-branch\n").expect("HEAD");
@@ -1899,7 +1733,7 @@ mod tests {
             "a worktree follows its gitdir pointer"
         );
 
-        // 3. Detached HEAD: a raw object id renders short, not as a branch.
+        // 3.
         fs::write(
             clone.join(".git/HEAD"),
             "b6a492748114f89533d8b4629fe3c20048879cc0\n",
@@ -1911,8 +1745,7 @@ mod tests {
             "a detached head renders the short object id"
         );
 
-        // 4. Not a repository at all, and a directory that is not there: a
-        //    listing must never fail because a session's tree moved.
+        // 4.
         assert_eq!(super::branch_at(&root).as_deref(), None, "no .git is None");
         assert_eq!(
             super::branch_at(&root.join("absent")).as_deref(),
@@ -2177,9 +2010,8 @@ mod tests {
 
     #[test]
     fn sc_511b_a_state_event_matches_its_agent_by_routing_key_when_it_carries_one() {
-        // FIXTURE ORDER IS THE INSTRUMENT: the events that must NOT match are the
-        // NEWEST, so latest-wins cannot rescue a matcher that accepts them. (It did
-        // exactly that until cargo-mutants rewrote the matcher's `&&` to `||`.)
+        // FIXTURE ORDER IS THE INSTRUMENT: the events that must NOT match are
+        // the NEWEST, so latest-wins cannot rescue a matcher that accepts them.
         let scratch = Scratch::new("routedstate");
         scratch.meta(META);
         scratch.events(&[
@@ -2190,14 +2022,14 @@ mod tests {
                 "state",
                 r#","ref":"waiting-user","actor_slot":"main","actor_session":"live""#,
             ),
-            // Same slot, ANOTHER session. Newer, so a matcher that accepts it decides.
+            // Same slot, ANOTHER session.
             event(
                 &at(600),
                 "claude:lead",
                 "state",
                 r#","ref":"blocked","actor_slot":"main","actor_session":"somewhere-else""#,
             ),
-            // This session, ANOTHER slot. Newer still, for the same reason.
+            // This session, ANOTHER slot.
             event(
                 &at(300),
                 "claude:lead",
@@ -2216,8 +2048,8 @@ mod tests {
 
     #[test]
     fn sc_405j_a_routed_event_with_a_stale_session_stays_unassociated() {
-        // The display name matches the roster exactly; the routing key does not. A
-        // loud false-negative beats a false attribution.
+        // The display name matches the roster exactly; the routing key does
+        // not.
         let scratch = Scratch::new("stalesession");
         scratch.meta(META);
         scratch.events(&[event(
@@ -2263,8 +2095,8 @@ mod tests {
 
     #[test]
     fn sc_980_a_watchdog_alert_arrives_typed_and_outranks_a_self_declaration() {
-        // Alert discrimination is an INPUT at this seam, never free text this reader
-        // parses. An agent can be both blocked and dead; the more actionable wins.
+        // Alert discrimination is an INPUT at this seam, never free text this
+        // reader parses.
         let scratch = Scratch::new("alert");
         scratch.meta(META);
         scratch.events(&[event(
@@ -2300,10 +2132,9 @@ mod tests {
 
     #[test]
     fn sc_017q_an_agent_the_runtime_never_mentions_is_unknown_rather_than_dead() {
-        // THIS TEST PINNED THE DEFECT: it used to assert `alive == false` for an
-        // agent no observation ever mentioned — absence of evidence recorded as
-        // evidence of absence. The session is RUNNING, so the pane observation
-        // decides; there was none, so nothing is decided.
+        // THIS TEST PINNED THE DEFECT: it used to assert `alive == false` for
+        // an agent no observation ever mentioned — absence of evidence recorded
+        // as evidence of absence.
         let scratch = Scratch::new("noruntime");
         scratch.meta(META);
         let entry = entry_for(&scratch.0, "live", &running(), NOW, DEFAULT_UNANSWERED_SECS);
@@ -2543,7 +2374,7 @@ mod tests {
     #[test]
     fn sc_509c_the_agents_own_later_event_supersedes_the_alert() {
         // An alert is a claim about a moment, and the ledger keeps claiming it
-        // forever. The agent's own later event supersedes it.
+        // forever.
         let scratch = Scratch::new("superseded");
         scratch.meta(PAIR_META);
         scratch.events(&[
@@ -2593,8 +2424,7 @@ mod tests {
 
     #[test]
     fn sc_509c_an_inbound_event_after_the_alert_is_not_recovery() {
-        // Only the agent can prove it is back. A nudge is the watchdog asking the
-        // very question the alert answers.
+        // Only the agent can prove it is back.
         for (actor, action) in [("watchdog", "nudge"), ("fake:low", "send")] {
             let scratch = Scratch::new("inbound");
             scratch.meta(PAIR_META);
@@ -2623,8 +2453,8 @@ mod tests {
 
     #[test]
     fn sc_509c_a_watchdog_clear_after_the_alert_retracts_it() {
-        // The watchdog owns its own retractions, so a clear ends the scan without the
-        // agent having to speak. No corpus fixture carries one.
+        // The watchdog owns its own retractions, so a clear ends the scan
+        // without the agent having to speak.
         for clear in ["alert-cleared", "throttle-cleared"] {
             let scratch = Scratch::new("cleared");
             scratch.meta(PAIR_META);
@@ -2650,9 +2480,8 @@ mod tests {
 
     #[test]
     fn sc_509c_an_older_alert_survives_a_newer_one_being_absent() {
-        // An ancient alert under a long quiet log is still the newest thing said
-        // ABOUT the agent. Capping the scan would make deadness expire with nobody
-        // having recovered.
+        // An ancient alert under a long quiet log is still the newest thing
+        // said ABOUT the agent.
         let scratch = Scratch::new("ancient");
         scratch.meta(PAIR_META);
         let mut lines = vec![event(
@@ -2690,7 +2519,7 @@ mod tests {
                     r#","target_slot":"main","target_session":"pair""#,
                 ),
             ),
-            // Same slot, ANOTHER session. Newer.
+            // Same slot, ANOTHER session.
             event(
                 &at(600),
                 "_watchdog",
@@ -2700,7 +2529,7 @@ mod tests {
                     r#","target_slot":"main","target_session":"somewhere-else""#,
                 ),
             ),
-            // This session, ANOTHER slot. Newer still.
+            // This session, ANOTHER slot.
             event(
                 &at(300),
                 "_watchdog",
@@ -2780,13 +2609,11 @@ mod tests {
 
     #[test]
     fn sc_509c_the_ledger_order_decides_when_a_clock_disagrees_with_it() {
-        // BOTH CROSSED DIRECTIONS in one test, so neither can regress alone. Ordering
-        // by `ts` gets exactly one of the two right, and the other one silently wrong.
+        // BOTH CROSSED DIRECTIONS in one test, so neither can regress alone.
         let alert = r#","target":"fake:high","summary":"agent process dead — dropped to shell""#;
         let spoke = r#","ref":"working","summary":"an independently clocked agent""#;
 
-        // Appended LAST, stamped EARLIER: the alert stands. Timestamp order would
-        // drop it and read the agent as recovered — the quiet failure.
+        // Appended LAST, stamped EARLIER: the alert stands.
         let late_alert = Scratch::new("ledgerlatealert");
         late_alert.meta(PAIR_META);
         late_alert.events(&[
@@ -2807,8 +2634,8 @@ mod tests {
              whatever clock stamped it"
         );
 
-        // Mirrored: the agent speaks LAST and is stamped EARLIER, so nothing stands.
-        // Timestamp order would keep the alert — loud, but still wrong.
+        // Mirrored: the agent speaks LAST and is stamped EARLIER, so nothing
+        // stands.
         let late_recovery = Scratch::new("ledgerlaterecovery");
         late_recovery.meta(PAIR_META);
         late_recovery.events(&[
@@ -2855,8 +2682,8 @@ mod tests {
 
     #[test]
     fn sc_509c_an_agent_with_no_carrier_stays_null_beside_a_session_that_needs_a_human() {
-        // One alert, one self-declaration, one aged unanswered ask between two OTHER
-        // agents. Three reasons, two owners — the other two must stay null.
+        // One alert, one self-declaration, one aged unanswered ask between two
+        // OTHER agents.
         const FOUR: &str = concat!(
             "mode=local\nagent.main=fake:high:pending\nagent.worker.0=fake:low:pending\n",
             "agent.worker.1=fake:third:pending\nagent.worker.2=fake:asker:pending\n",
@@ -2901,7 +2728,7 @@ mod tests {
     #[test]
     fn sc_509c_a_handed_in_alert_and_a_ledger_alert_are_one_fact_in_one_rollup() {
         // A handed-in typed reason and the ledger route are not competing, and
-        // neither silences the other. Both enter the same rollup.
+        // neither silences the other.
         let scratch = Scratch::new("bothroutes");
         scratch.meta(PAIR_META);
         scratch.events(&[event(
@@ -3002,9 +2829,8 @@ mod tests {
 
     #[test]
     fn sc_509c_a_throttle_that_escalated_to_an_alert_reads_as_the_alert() {
-        // Both carriers name the same agent and both say throttled, so the ANSWER
-        // cannot discriminate. The assertion that can is that the newer record is
-        // the one consulted.
+        // Both carriers name the same agent and both say throttled, so the
+        // ANSWER cannot discriminate.
         let scratch = Scratch::new("escalated");
         scratch.meta(META);
         scratch.events(&[
@@ -3032,8 +2858,7 @@ mod tests {
     #[test]
     fn sc_510c_the_ledger_order_decides_a_declaration_when_a_clock_disagrees() {
         // THE CROSSED SEED: the LATER-APPENDED declaration carries the EARLIER
-        // timestamp and must win. Under max-by-ts the agent reads `working` while the
-        // ledger's last word is `blocked` — silently, both being legal states.
+        // timestamp and must win.
         let scratch = Scratch::new("statecrossed");
         scratch.meta(META);
         scratch.events(&[
@@ -3067,9 +2892,7 @@ mod tests {
 
     #[test]
     fn sc_510c_the_ordinary_monotonic_case_is_unchanged() {
-        // THE CONTROL: ts and append order agree, as in every corpus fixture. Without
-        // it the crossed test alone could be satisfied by a reader that is backwards
-        // for the wrong reason.
+        // THE CONTROL: ts and append order agree, as in every corpus fixture.
         let scratch = Scratch::new("statemonotonic");
         scratch.meta(META);
         scratch.events(&[
@@ -3157,8 +2980,7 @@ mod tests {
     #[test]
     fn sc_405f_the_goal_epoch_is_the_last_appended_goal_not_the_best_stamped_one() {
         // THE OPPOSED-ORDER FIXTURE: 13:00 appended first, 12:00 second, so a
-        // last-record reader and a max-timestamp reader cannot both be right. The
-        // frozen digest renders the 12:00 one.
+        // last-record reader and a max-timestamp reader cannot both be right.
         let scratch = Scratch::new("goalopposed");
         scratch.meta(META);
         scratch.events(&[

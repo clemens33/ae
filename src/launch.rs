@@ -329,9 +329,9 @@ pub fn inject_ae_context(
                 warning: None,
             }
         }
-        // grok has NO append-style system-prompt flag: `--system-prompt-override`
-        // REPLACES the agent's own prompt, which its tooling depends on. The
-        // context rides in as the POSITIONAL [PROMPT] argument instead.
+        // grok has NO append-style system-prompt flag:
+        // `--system-prompt-override` REPLACES the agent's own prompt, which its
+        // tooling depends on.
         ToolKind::Grok => {
             let full = format!("{ctx}{WAIT_SUFFIX}");
             Injected {
@@ -340,8 +340,7 @@ pub fn inject_ae_context(
             }
         }
         // No wait-suffix here: "this is context only" exists because gemini and
-        // grok receive a USER TURN. This is system-level content and reads
-        // oddly as an instruction to itself.
+        // grok receive a USER TURN.
         ToolKind::OpenCode => match opencode_context_files(meta_dir, slot, ctx) {
             Ok(config) => Injected {
                 cmd: format!(
@@ -705,8 +704,7 @@ mod tests {
     #[test]
     fn a_resume_form_is_wrapped_exactly_as_a_fresh_one_and_never_chained() {
         // The decider is gone: a resume form arrives ALREADY CHOSEN, so the
-        // builder wraps it and stops. Anything else would put a shell operator
-        // in a command line that no shell will ever read.
+        // builder wraps it and stops.
         let built = build_launch_command(
             "claude --resume u3 --append-system-prompt 'ctx mentioning --resume u3'",
             "",

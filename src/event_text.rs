@@ -154,7 +154,7 @@ pub enum Member<'a> {
 }
 
 impl Member<'_> {
-    /// The bytes, or `None` when the key is absent. `Empty` answers `Some(&[])`.
+    /// The bytes, or `None` when the key is absent.
     #[must_use]
     pub fn value(&self) -> Option<&[u8]> {
         match self {
@@ -432,7 +432,7 @@ mod tests {
         let line = br#"{"s":"a\nb\tc\rd\"e\\f\qg"}"#;
         // `\n` and `\t` become ONE space, `\r` is dropped entirely — so `c` and
         // `d` end up adjacent, which the frozen G11 capture shows independently
-        // (`cr class: before\rafter` renders as `cr class: beforeafter`). `\"`
+        // (`cr class: before\rafter` renders as `cr class: beforeafter`).
         assert_eq!(extract(line, "s"), br#"a b cd"e\f\qg"#);
     }
 
@@ -455,7 +455,7 @@ mod tests {
     #[test]
     fn extract_copies_undecodable_bytes_through_verbatim() {
         // A byte walk and a character walk agree here only because the escape
-        // set is ASCII. Decoding first would lose the value entirely.
+        // set is ASCII.
         let mut line = Vec::from(&br#"{"s":"a"#[..]);
         line.extend_from_slice(&[0xFF, 0xFE]);
         line.extend_from_slice(br#"b"}"#);

@@ -33,8 +33,8 @@ pub(crate) fn canonical_uuid(value: &str) -> String {
 }
 
 /// Whether `path` is a regular file — the frozen `[[ -f "$file" ]]` gate,
-/// following symlinks (a symlink to a regular file is `-f`, a symlink to a
-/// FIFO or a directory is not). Never opens the path.
+/// following symlinks (a symlink to a regular file is `-f`, a symlink to a FIFO
+/// or a directory is not).
 #[must_use]
 pub(crate) fn regular_file(path: &Path) -> bool {
     #[allow(
@@ -46,13 +46,7 @@ pub(crate) fn regular_file(path: &Path) -> bool {
 }
 
 /// Whether `path` EXISTS but is not a regular file — a symlink (even to a
-/// regular file), a FIFO, a directory, a socket. `symlink_metadata`, so a
-/// symlink is judged as the link, never followed. An absent path is `false`
-/// (it keeps its defined empty behavior); an unreadable one is `false` too
-/// (nothing to escape into). This is the gate for the P3.1 refusal: a preview
-/// must not leave its session directory to render linked or special-node bytes,
-/// so an existing non-regular `meta`/`memo.tsv`/`events.jsonl` fails the whole
-/// preview rather than being read or silently treated as absent.
+/// regular file), a FIFO, a directory, a socket.
 #[must_use]
 fn nonregular_existing(path: &Path) -> bool {
     #[allow(
@@ -63,30 +57,21 @@ fn nonregular_existing(path: &Path) -> bool {
     meta.is_ok_and(|m| !m.is_file())
 }
 
-/// How a candidate config path classifies, from `stat` + one `lstat`, neither of
-/// which OPENS the node — so a FIFO is classified, never blocked on. The point of
-/// the three-way split is that "does not exist" and "cannot be proven to exist"
-/// are different answers: only the former is a legitimate optional absence.
+/// How a candidate config path classifies, from `stat` + one `lstat`, neither
+/// of which OPENS the node — so a FIFO is classified, never blocked on.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum ConfigNode {
-    /// The node's own name does not exist — `lstat` reports `NotFound`. The ONLY
-    /// state a caller may treat as an optional absence.
+    /// The node's own name does not exist — `lstat` reports `NotFound`.
     Absent,
-    /// A regular file, following a final symlink to one (the frozen `-f`). Safe to
-    /// open and read.
+    /// A regular file, following a final symlink to one (the frozen `-f`).
     Regular,
-    /// Present but not a usable regular file — a directory, FIFO, socket, device, or
-    /// a symlink to one of those or to nothing — OR a permission/I/O error that leaves
-    /// existence UNPROVEN. Never treat as absent: silently skipping here would drop an
-    /// operator's override.
+    /// Present but not a usable regular file — a directory, FIFO, socket,
+    /// device, or a symlink to one of those or to nothing — OR a permission/I/O
+    /// error that leaves existence UNPROVEN.
     Other,
 }
 
-/// Classify `path` as a [`ConfigNode`]. `regular_file` follows symlinks, so a symlink
-/// to a regular file is [`ConfigNode::Regular`]. Otherwise a single `lstat` decides by
-/// its error KIND: only `NotFound` is [`ConfigNode::Absent`]; a present node, or any
-/// other error (permission, I/O — e.g. an untraversable parent directory), is
-/// [`ConfigNode::Other`], which the caller must refuse rather than silently skip.
+/// Classify `path` as a [`ConfigNode`].
 #[must_use]
 pub(crate) fn classify_config_node(path: &Path) -> ConfigNode {
     if regular_file(path) {
@@ -105,8 +90,7 @@ pub(crate) fn classify_config_node(path: &Path) -> ConfigNode {
 
 /// If `file` (a basename under `dir`) EXISTS but is not a regular file, write
 /// the one named P3.1 refusal to `err` and return `true` (the caller stops the
-/// whole preview at `rc=1`). The message lives here, in one place, for meta,
-/// memo.tsv and events.jsonl alike.
+/// whole preview at `rc=1`).
 fn refuse_if_nonregular(
     dir: &Path,
     file: &str,
@@ -124,7 +108,7 @@ fn refuse_if_nonregular(
 }
 
 /// `meta`'s value for `key` — first `key=` record wins, empty when absent or
-/// the meta file is not a regular file. The frozen `_ar_meta_get`.
+/// the meta file is not a regular file.
 #[must_use]
 fn meta_get(meta_bytes: &[u8], key: &str) -> String {
     meta::first_value(meta_bytes, key)
@@ -139,9 +123,8 @@ fn or_dash(value: &str) -> &str {
 }
 
 /// The lines a forward `while IFS= read -r` processes: every `\n`-terminated
-/// line, DROPPING a final unterminated remainder (as `read` returns non-zero
-/// on it and the loop body never runs). `event_text::read_lines` already has
-/// exactly this shape.
+/// line, DROPPING a final unterminated remainder (as `read` returns non-zero on
+/// it and the loop body never runs).
 fn terminated_lines(bytes: &[u8]) -> Vec<&[u8]> {
     event_text::read_lines(bytes)
 }
@@ -156,10 +139,7 @@ fn reversed_lines(bytes: &[u8]) -> Vec<Vec<u8>> {
         .collect()
 }
 
-/// `_ar_event_facts`: count, first ts, last ts, and skipped-line total. A blank line is
-/// ignored; a line that is not `{…}` is SKIPPED and counted; a `{…}` line with
-/// no `ts` is ignored (neither counted nor skipped). Skipped is reported to
-/// stderr by the caller.
+/// `_ar_event_facts`: count, first ts, last ts, and skipped-line total.
 struct EventFacts {
     count: u64,
     first: String,
@@ -171,8 +151,7 @@ struct EventFacts {
 /// the frozen `_ar_preview_once` composes them: `base` is the meta's
 /// `git_base_commit` for EVERY mode (or `-`); `final_commit`, `range` and
 /// `count` come from running git for a non-local session and are `-` for a
-/// local one. The push and preserved-work-dir fields are preview volatility and
-/// are not carried here.
+/// local one.
 pub(crate) struct GitFacts {
     pub(crate) base: String,
     pub(crate) final_commit: String,
@@ -183,7 +162,7 @@ pub(crate) struct GitFacts {
 impl GitFacts {
     /// `_ar_preview_once`: base from meta for any mode; final/range/count only
     /// for a non-local session (`mode != "local"`), where git runs in the raw
-    /// (non-UTF-8-safe) `work_dir`. A local session leaves them `-`.
+    /// (non-UTF-8-safe) `work_dir`.
     fn derive(meta_bytes: &[u8]) -> Self {
         let base = meta_get(meta_bytes, "git_base_commit");
         if meta_get(meta_bytes, "mode") == "local" {
@@ -216,13 +195,7 @@ struct Sources<'a> {
 }
 
 /// The facts that differ between a PREVIEW and an ARCHIVE of the same session
-/// state — everything a preview must name truthfully rather than invent. A
-/// preview passes `snapshot = "preview"`, `archived_at = "pending"`, the
-/// preview git facts, and `preview-not-run`/`-`/`-` for the push and preserved
-/// fields; publication passes `"archived"`, the real timestamp, the operation's
-/// push outcome/ref and preserved work dir. Rendering the digest and composing
-/// the archive meta from the SAME `Volatiles` is what keeps the two consistent —
-/// the frozen validator cross-checks that they agree.
+/// state — everything a preview must name truthfully rather than invent.
 pub(crate) struct Volatiles {
     pub(crate) snapshot: &'static str,
     pub(crate) archived_at: String,
@@ -278,8 +251,7 @@ fn event_facts(bytes: &[u8]) -> EventFacts {
 }
 
 /// A `memo.tsv` row split on TAB: `ts`, `actor`, `topic`, and `text` (the
-/// remainder, TABs preserved — free text is last). Empty when fewer than three
-/// fields or ts/actor/topic empty.
+/// remainder, TABs preserved — free text is last).
 struct MemoRow {
     ts: String,
     actor: String,
@@ -305,12 +277,10 @@ fn memo_rows(bytes: &[u8]) -> Vec<MemoRow> {
     rows
 }
 
-/// `IFS=$'\t' read -r ts actor topic text` — tab is IFS WHITESPACE, so a run
-/// of tabs delimits exactly once and leading/trailing tabs are stripped (the
-/// TSV framing hazard: an "empty" field between two tabs does not exist, it is
-/// swallowed and every later field shifts left). The first three vars take one
-/// field each; the fourth takes the verbatim remainder, its own trailing tabs
-/// already stripped.
+/// `IFS=$'\t' read -r ts actor topic text` — tab is IFS WHITESPACE, so a run of
+/// tabs delimits exactly once and leading/trailing tabs are stripped (the TSV
+/// framing hazard: an "empty" field between two tabs does not exist, it is
+/// swallowed and every later field shifts left).
 fn ifs_tab_read4(line: &str) -> (String, String, String, String) {
     let mut rest = line.trim_matches('\t');
     let mut fields: [&str; 3] = ["", "", ""];
@@ -351,7 +321,7 @@ fn roster_slots(meta_bytes: &[u8]) -> Vec<String> {
         };
         // The frozen `_ar_roster_slots` accepts EVERY `^agent\.` line, `=` or
         // not: `awk -F=` yields the whole line as field 1 when there is no `=`,
-        // so a bare `agent.main` still names the slot `main`. Keep the keyless
+        // so a bare `agent.main` still names the slot `main`.
         let slot = rest.split_once('=').map_or(rest, |(s, _)| s).to_owned();
         let (rank, num) = if slot == "main" {
             (0u8, 0i64)
@@ -369,7 +339,7 @@ fn roster_slots(meta_bytes: &[u8]) -> Vec<String> {
 }
 
 /// Whether the meta carries a line for `key` at all — `key=…` OR a bare `key`
-/// (the `awk -F=` shape `roster_slots` also accepts). Presence, not value.
+/// (the `awk -F=` shape `roster_slots` also accepts).
 fn has_roster_line(meta_bytes: &[u8], key: &str) -> bool {
     count_roster_lines(meta_bytes, key) > 0
 }
@@ -386,8 +356,7 @@ fn count_roster_lines(meta_bytes: &[u8], key: &str) -> usize {
 }
 
 /// `_valid_slot`: the one slot grammar the event path enforces —
-/// `^(main|worker\.[0-9]+|spawned\.[0-9]+)$`. A slot ae would refuse to route a
-/// message to cannot appear in an archive roster either.
+/// `^(main|worker\.[0-9]+|spawned\.[0-9]+)$`.
 fn valid_slot(slot: &str) -> bool {
     slot == "main"
         || slot
@@ -397,9 +366,7 @@ fn valid_slot(slot: &str) -> bool {
 }
 
 /// `_ar_build_meta`'s ref shape check: `^[^:]+:[^:]+(:.*)?$` — a non-empty
-/// alias, a non-empty name, and any optional trailing `:session-id`. The first
-/// two colon-fields must each be non-empty and colon-free (guaranteed by
-/// cutting at the colon); anything after the second colon is unconstrained.
+/// alias, a non-empty name, and any optional trailing `:session-id`.
 fn ref_ok(raw: &str) -> bool {
     let Some((alias, rest)) = raw.split_once(':') else {
         return false;
@@ -408,9 +375,7 @@ fn ref_ok(raw: &str) -> bool {
     !alias.is_empty() && !name.is_empty()
 }
 
-/// `cut -d: -f1-2`: the first two colon-fields, `alias:name`. The provider
-/// session-id (any third+ field) is dropped deliberately — it is the key to
-/// someone's real conversation. `ref_ok` has already guaranteed two fields.
+/// `cut -d: -f1-2`: the first two colon-fields, `alias:name`.
 fn strip_ref(raw: &str) -> String {
     let mut parts = raw.splitn(3, ':');
     let alias = parts.next().unwrap_or("");
@@ -419,11 +384,8 @@ fn strip_ref(raw: &str) -> String {
 }
 
 /// `_ar_build_meta`'s roster pass: each `agent.<slot>` in `_ar_roster_slots`
-/// order, validated (slot grammar, then ref shape) and stripped to
-/// `(slot, alias:name)`. A roster ae cannot parse is a FAILED archive, never a
-/// partial one — so the first offending slot returns the exact stderr line the
-/// frozen reader prints, and the preview refuses. `Ok` carries the ordered,
-/// stripped pairs the digest renders.
+/// order, validated (slot grammar, then ref shape) and stripped to `(slot,
+/// alias:name)`.
 fn roster(meta_bytes: &[u8]) -> Result<Vec<(String, String)>, String> {
     let mut out = Vec::new();
     // Identity v2 seats, checked for NAME uniqueness after the walk: under v2
@@ -449,14 +411,12 @@ fn roster(meta_bytes: &[u8]) -> Result<Vec<(String, String)>, String> {
             ));
         }
         if seat_present {
-            // Identity v2: the seat's NAME is the ref. An empty name is refused
-            // exactly as an empty v1 ref is — a FAILED archive, never a partial one.
+            // Identity v2: the seat's NAME is the ref.
             if seat.is_empty() {
                 return Err(format!("archive: roster entry 'seat.{slot}=' has no name."));
             }
             // A repeated `seat.<slot>` is a seat in doubt (the meta reader
-            // invalidates it; this reader refuses). The frozen v1 duplicate-row
-            // behaviour — the slot emitted once per row — is deliberately kept.
+            // invalidates it; this reader refuses).
             if count_roster_lines(meta_bytes, &seat_key) > 1 {
                 return Err(format!(
                     "archive: roster entry 'seat.{slot}' appears more than once; the roster is in doubt."
@@ -474,8 +434,7 @@ fn roster(meta_bytes: &[u8]) -> Result<Vec<(String, String)>, String> {
         out.push((slot, strip_ref(&raw)));
     }
     // A v2 name must be unique against every OTHER entry — a v2 seat, or the
-    // name half of a v1 `alias:name` (what a bare-name address matches). Two
-    // v1 rows sharing a name are two refs and stay as they were.
+    // name half of a v1 `alias:name` (what a bare-name address matches).
     for name in &seat_names {
         let carriers = out
             .iter()
@@ -496,7 +455,7 @@ fn roster(meta_bytes: &[u8]) -> Result<Vec<(String, String)>, String> {
 }
 
 /// `_ar_latest_state <events> <ref>`: the newest `state` event whose actor is
-/// `ref` → (state, ts, reason). `undeclared/-/-` when none.
+/// `ref` → (state, ts, reason).
 fn latest_state(event_bytes: &[u8], agent_ref: &str) -> (String, String, String) {
     if agent_ref.is_empty() {
         return ("undeclared".into(), "-".into(), "-".into());
@@ -528,10 +487,7 @@ fn latest_state(event_bytes: &[u8], agent_ref: &str) -> (String, String, String)
 }
 
 /// `_ar_text_block`: each line of `text` indented by `pad`, `(none recorded)`
-/// when empty, and a trailing blank line. `text` here is already flattened
-/// (`extract` folds `\n`→space), so it is a single logical line unless the
-/// value itself carried real newlines — which the frozen readers also treat as
-/// separate lines.
+/// when empty, and a trailing blank line.
 fn text_block(out: &mut String, text: &str, pad: &str) {
     if text.is_empty() {
         let _ = writeln!(out, "{pad}(none recorded)");
@@ -565,9 +521,7 @@ fn banner(out: &mut String, aid: &str, name: &str, raw_id: &str, files: u64, byt
 }
 
 /// The three moving files' churn signal: for each of meta, memo.tsv,
-/// events.jsonl, `size:mtime_nanos` (or `-:-` when absent). A `stat`, never an
-/// open — the frozen `_ar_fingerprint` in the shape `std::fs::Metadata`
-/// exposes portably.
+/// events.jsonl, `size:mtime_nanos` (or `-:-` when absent).
 fn fingerprint(dir: &Path) -> String {
     let mut out = String::new();
     for name in ["meta", "memo.tsv", "events.jsonl"] {
@@ -657,9 +611,7 @@ fn file_size(path: &Path) -> u64 {
         clippy::disallowed_methods,
         reason = "a door: the frozen `_ae_stat size` for the banner byte estimate — see clippy.toml"
     )]
-    // `symlink_metadata`, never following. For meta/memo/events a non-regular
-    // node is refused before the banner is ever computed, so this sizes only a
-    // regular file or an absent one; message entries are already filtered to
+    // `symlink_metadata`, never following.
     let meta = std::fs::symlink_metadata(path)
         .ok()
         .filter(std::fs::Metadata::is_file);
@@ -867,7 +819,7 @@ pub fn preview(dir: &Path, out: &mut impl Write, err: &mut impl Write) -> io::Re
 
     // The archive id and the raw session_id are computed ONCE, before the loop,
     // exactly as the frozen `cmd_archive_preview` reads them before its first
-    // fingerprint. Everything else in the digest is re-read per attempt below.
+    // fingerprint.
     let id_meta = read_meta();
     let raw_id = meta_get(&id_meta, "session_id");
     let aid = canonical_uuid(&raw_id);
@@ -882,7 +834,7 @@ pub fn preview(dir: &Path, out: &mut impl Write, err: &mut impl Write) -> io::Re
     let messages = dir.join("messages");
 
     // One clean retry if the three moving files change under us, then refuse —
-    // never a digest stitched from two moments. Static sessions render once.
+    // never a digest stitched from two moments.
     let mut attempts = 0;
     let (digest, facts) = loop {
         let before = fingerprint(dir);

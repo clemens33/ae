@@ -44,17 +44,11 @@ fn record(fields: &[&str]) -> Result<String, String> {
 }
 
 /// The trailer every stdout ends with.
-/// The trailer counts the RECORDS that precede it — never a side effect's size.
-/// A write-only entry (`_meta-init`, `migrate`, `set-harness-session`) therefore
-/// ends with `end<US>0`: the glue's validator compares the count to the body it
-/// received, and a trailer that counted seats consumed made it refuse a correct
-/// publish (found by the first live launch).
 fn trailer(count: usize) -> String {
     format!("end{US}{count}\n")
 }
 
-/// Write a built document to stdout. Callers build the WHOLE document first,
-/// so a refusal never publishes a prefix.
+/// Write a built document to stdout.
 fn emit(body: &str, out: &mut impl Write) -> crate::Result<u8> {
     out.write_all(body.as_bytes())?;
     Ok(0)
@@ -73,9 +67,7 @@ fn usage(entry: &str, word: &str, err: &mut impl Write) -> crate::Result<u8> {
 }
 
 /// Whether a field carries a control byte that a `key=value` record file, or
-/// this framing, cannot round-trip. `\n` and [`US`] are checked by
-/// [`record`]; this is the wider guard for text that is about to become a
-/// META line, where a stray CR would ride into a value invisibly.
+/// this framing, cannot round-trip.
 fn control_free(field: &str) -> bool {
     !field.chars().any(char::is_control)
 }
@@ -124,9 +116,7 @@ struct LaunchFlags {
     /// `[workspace] main` for this launch.
     main: Option<String>,
     /// `--workers <a,b>`: REPLACES `[workspace] workers` for this launch —
-    /// compact's frozen roster passes the names it froze. `-` and the empty
-    /// string both mean NO workers, which is a different thing from the flag
-    /// being absent (that keeps the config's own list).
+    /// compact's frozen roster passes the names it froze.
     workers: Option<String>,
 }
 
@@ -476,13 +466,7 @@ pub fn roster(
 /// Every anomaly that puts the roster's IDENTITY in doubt, rendered — the SAME
 /// provenance grain as migration (`roster::roster_doubting`): a slot claimed by
 /// both schemas, one name on two seats, a malformed roster row or line, and a
-/// duplicate or unreadable key under an identity prefix. An `UnknownKey`
-/// elsewhere is tolerated: a real meta is full of keys this parser does not
-/// interpret (`session`, `layout`, `config`, `launch_id.*`), and refusing on
-/// those would refuse every live session. The identity-prefix duplicate IS a
-/// doubt, though (colead, integrated gate): `Meta::parse` drops the seat that
-/// key belonged to, so a roster read past it is SHORTER than the file — and a
-/// resume that republishes the shorter list deletes the seat for good.
+/// duplicate or unreadable key under an identity prefix.
 fn identity_doubts(current: &Meta) -> Vec<String> {
     let mut doubts: Vec<String> = current
         .anomalies()
@@ -491,8 +475,7 @@ fn identity_doubts(current: &Meta) -> Vec<String> {
         .map(ToString::to_string)
         .collect();
     // A v1 `agent.<slot>` row inside a schema=2 meta is a seat the v2 reader
-    // would silently omit — and a resume would then delete. The core never
-    // writes one after migration, so its presence is a hand edit or a torn
+    // would silently omit — and a resume would then delete.
     if current.schema() == Some("2") {
         doubts.extend(
             current
@@ -552,8 +535,8 @@ fn records(text: &str) -> Vec<&str> {
     rows
 }
 
-/// A record's KEY — everything before its first `=`, a record without one
-/// being its own key. The same reading [`meta::rewritten`]'s awk does.
+/// A record's KEY — everything before its first `=`, a record without one being
+/// its own key.
 fn key_of(record: &str) -> &str {
     record.split_once('=').map_or(record, |(key, _)| key)
 }
@@ -650,9 +633,7 @@ pub fn add_seat_slot(
         binary: Some(binary.to_owned()),
         harness_session: sid.map(ToOwned::to_owned),
     }]);
-    // `render` opens the block it builds with `schema=2`. This document already
-    // declares it — that is what the gate above proved — and a second one would
-    // be a DUPLICATE KEY, which `Meta::parse` invalidates: the meta would stop
+    // `render` opens the block it builds with `schema=2`.
     next.push_str(block.strip_prefix("schema=2\n").unwrap_or(&block));
     publish(dir, &next)?;
     Ok(slot)
@@ -682,9 +663,7 @@ fn add_seat_flags(flags: &[String]) -> Result<AddSeatFlags, String> {
     Ok(parsed)
 }
 
-/// `add-seat`'s flags. The two required ones are `Option` here and checked at
-/// the call site, so "you did not name a profile" is a usage error with its own
-/// message rather than a parse failure naming the wrong word.
+/// `add-seat`'s flags.
 #[derive(Debug, Default)]
 struct AddSeatFlags {
     profile: Option<String>,
@@ -1165,7 +1144,7 @@ mod tests {
         assert_eq!(records[1][1..3], ["worker.0", "lead"]);
         // `-` is no workers: `colead` is then a [roster] row bound to no seat,
         // which is LEGAL (ruled 2026-09-02 — it is what `use <name>` selects),
-        // and the plan is main alone. That the worker row is gone is the
+        // and the plan is main alone.
         let (code, out, err) = plan(&["--global", &path, "--workers", "-"]);
         assert_eq!((code, err.as_str()), (0, ""));
         let records = rows(&out);
@@ -1607,7 +1586,6 @@ mod tests {
         let path = cfg.to_string_lossy().into_owned();
         // schema=2 BESIDE v1 agent rows: `schema()` says 2, so this takes the
         // already-migrated branch and reports success without touching a thing.
-        // The v1 rows are left exactly as found rather than silently dropped.
         let mixed = Scratch::new("migrate-mixed");
         let before = "schema=2\nagent.main=fable5:lead\n";
         mixed.file("meta", before);
@@ -1736,7 +1714,7 @@ mod tests {
     fn list_refuses_a_roster_in_doubt_and_leaves_the_meta_untouched() {
         // Colead, integrated gate: one name on two seats used to list the main
         // seat alone with rc 0 — and the resume consuming that list republished
-        // it, deleting both worker seats for good. The doubt grain is migration's.
+        // it, deleting both worker seats for good.
         let doubtful = [
             (
                 "schema=2\nseat.main=lead\nprofile.main=fable5\nagent_bin.main=claude\n\

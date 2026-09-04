@@ -6,14 +6,12 @@ use std::collections::{HashMap, HashSet};
 
 /// The fixed argv for the process-table snapshot, sealed the way
 /// [`crate::git::GitArgv`] is: the inner vector is private, so no other module
-/// can fabricate a `ps` command line and hand it to [`crate::transport::run_ps`].
-/// Unlike git there is NO caller input at all — the argv is a constant, so this
-/// door has no injection surface to seal beyond the type itself.
+/// can fabricate a `ps` command line and hand it to
+/// [`crate::transport::run_ps`].
 pub struct PsArgv(Vec<String>);
 
 impl PsArgv {
-    /// The snapshot argv. There is exactly one, so this is a constructor with no
-    /// parameters rather than a builder over a query.
+    /// The snapshot argv.
     #[must_use]
     pub fn snapshot() -> Self {
         Self(vec![
@@ -23,10 +21,9 @@ impl PsArgv {
         ])
     }
 
-    /// The argv reading ONE process's controlling tty — frozen's
-    /// `ps -o tty= -p $$`, which `ae next --attach` uses to tell a real pane
-    /// from an inherited `$TMUX`. The only parameter is a pid, so this door has
-    /// no injection surface either: a `u32` cannot be a flag.
+    /// The argv reading ONE process's controlling tty — frozen's `ps -o tty= -p
+    /// $$`, which `ae next --attach` uses to tell a real pane from an inherited
+    /// `$TMUX`.
     #[must_use]
     pub fn tty_of(pid: u32) -> Self {
         Self(vec![
@@ -37,8 +34,7 @@ impl PsArgv {
         ])
     }
 
-    /// The argv for the transport door to spawn. Reading is harmless;
-    /// construction is what is sealed.
+    /// The argv for the transport door to spawn.
     #[must_use]
     pub fn as_args(&self) -> &[String] {
         &self.0
@@ -97,7 +93,7 @@ pub fn parse_table(raw: &str) -> Option<Vec<Proc>> {
 }
 
 /// The first whitespace-delimited token of `s`, and the remainder after the
-/// whitespace run. `None` when `s` holds no token.
+/// whitespace run.
 fn split_first_token(s: &str) -> Option<(&str, &str)> {
     let s = s.trim_start();
     if s.is_empty() {
@@ -139,9 +135,7 @@ pub fn has_descendant_named(procs: &[Proc], pane_pid: u32, agent_bin: &str) -> b
 }
 
 /// Compose a snapshot into a [`Descendancy`]: `None` (no usable snapshot) is
-/// `Unknown`; a good snapshot is `Present`/`Absent` by the descendant walk. This
-/// is the one call the daemon makes per pane, and the only place `Unknown` is
-/// minted.
+/// `Unknown`; a good snapshot is `Present`/`Absent` by the descendant walk.
 #[must_use]
 pub fn descendancy(table: Option<&[Proc]>, pane_pid: u32, agent_bin: &str) -> Descendancy {
     match table {
@@ -168,8 +162,7 @@ fn strip_exe(s: &str) -> &str {
 
 /// The live process table, parsed — `None` when `ps` could not be run or its
 /// output did not parse (both are [`Descendancy::Unknown`] upstream, never a
-/// dead agent). The one impure entry in this module; everything else decides
-/// over the bytes it returns.
+/// dead agent).
 #[must_use]
 pub fn snapshot() -> Option<Vec<Proc>> {
     let (succeeded, stdout) = crate::transport::run_ps(&PsArgv::snapshot());
@@ -253,7 +246,7 @@ mod tests {
 
     #[test]
     fn finds_an_agent_running_two_hops_under_the_pane() {
-        // pane(100) -> bash(200) -> claude(300): the wrapper case the whole
+        // Pane(100) -> bash(200) -> claude(300): the wrapper case the whole
         // descendant probe exists for.
         let procs = vec![
             Proc {
@@ -330,7 +323,7 @@ mod tests {
 
     #[test]
     fn a_ppid_cycle_cannot_loop_the_walk() {
-        // Malformed: 100 and 200 are each other's parent. The walk must end.
+        // Malformed: 100 and 200 are each other's parent.
         let procs = vec![
             Proc {
                 pid: 100,

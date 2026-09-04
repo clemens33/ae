@@ -61,8 +61,7 @@ pub fn parse(tail: &[String]) -> Result<Parsed, Usage> {
     }
 }
 
-/// Interrupt end to end. `actor` is the calling pane's verified display ref
-/// (empty for none); `own_session` is this session's name.
+/// Interrupt end to end.
 ///
 /// # Errors
 ///
@@ -92,9 +91,7 @@ pub fn run(
         resolved.agent.clone()
     };
     if parsed.message.is_empty() {
-        // Cancel keystrokes only. Nothing is pasted, so nothing can be
-        // executed, so there is no dead-pane question to ask and no body to
-        // store. Delivered by hand rather than through the paste path, which
+        // Cancel keystrokes only.
         let _ = transport::send_key(&server, &resolved.pane, crate::tmux::Key::CancelCopyMode);
         let _ = transport::send_key(&server, &resolved.pane, crate::tmux::Key::Escape);
         return record(dir, &target_name, "", now, actor, err);
@@ -118,8 +115,8 @@ pub fn run(
         Ok(delivered) => delivered,
         Err(failure) => {
             // A message interrupt must NOT record success on an unconfirmed
-            // submit: the delivery has already said what happened and where
-            // the body is. One arm is recorded anyway — an oversize NOTICE
+            // submit: the delivery has already said what happened and where the
+            // body is.
             if let deliver::Failure::Unconfirmed {
                 body_file,
                 notice: true,
@@ -182,8 +179,7 @@ fn record(
     record_with_body(dir, target, summary, "", now, actor, err)
 }
 
-/// The `interrupt` event. The summary is the message AS TYPED, which is what
-/// the frozen emitter was handed.
+/// The `interrupt` event.
 fn record_with_body(
     dir: &Path,
     target: &str,

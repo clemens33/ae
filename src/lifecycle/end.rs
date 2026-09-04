@@ -41,10 +41,7 @@ enum Action {
     Unavailable,
 }
 
-/// One target's resolved plan. The FROZEN form of this is what the human is
-/// held to: a plan that changed between the confirmation and the act is an
-/// answer given to a different question, and the end refuses rather than carry
-/// out the other one.
+/// One target's resolved plan.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Plan {
     action: Action,
@@ -112,8 +109,7 @@ pub(crate) fn run(
         return Ok(EXIT_USAGE);
     }
 
-    // RESOLVE BEFORE PROMPTING. A destructive confirm must never fire on an
-    // unresolved target: `ae end <bogus>` must error here, before any prompt.
+    // RESOLVE BEFORE PROMPTING.
     let targets: Vec<String> = if args.target == "all" {
         all_sessions(root)
     } else {
@@ -130,8 +126,7 @@ pub(crate) fn run(
     };
 
     // ONE resolution: the prompt renders from these fields and the frozen
-    // contract is built from the same ones. Resolving a second time to populate
-    // the contract made the human's answer and the end's contract two different
+    // contract is built from the same ones.
     let frozen: Vec<(String, Plan)> = targets
         .iter()
         .map(|name| {
@@ -172,9 +167,7 @@ pub(crate) fn run(
         return Ok(0);
     }
 
-    // EXACTLY the list the human was shown. Re-enumerating here would let a
-    // session that appeared between the prompt and the answer be ended without
-    // ever having been named.
+    // EXACTLY the list the human was shown.
     let mut failures = 0_u32;
     for (name, plan) in &frozen {
         // `-f` freezes nothing, because nothing was promised.
@@ -226,15 +219,12 @@ fn parse(tail: &[String]) -> Result<Args, String> {
     Ok(args)
 }
 
-/// Read the confirmation. A LINE, not a raw single keystroke: the frozen
-/// `read -r -n 1` needs a terminal in raw mode, which this crate cannot enter
-/// (`unsafe_code = "forbid"` closes the termios route). `None` is EOF — a
-/// caller with no stdin, which is never consent.
+/// Read the confirmation.
 fn read_reply() -> Option<String> {
     let mut buffer = String::new();
     // A LINE, not to EOF: a human at a terminal answers and presses Enter, and
     // reading to EOF there would block forever waiting for a ^D they were never
-    // asked for. An empty read and a failed read are the same answer — nobody
+    // asked for.
     match std::io::stdin().read_line(&mut buffer) {
         Ok(read) if read > 0 => Some(buffer.trim_start().to_owned()),
         _ => None,
@@ -277,9 +267,7 @@ fn resolve_plan(root: &Path, name: &str, purge_cli: Option<bool>) -> Plan {
     let archive_root = root.join("archive");
 
     if meta::read_bytes(&dir).is_err() {
-        // A missing meta is not the same as nothing to lose. `Nothing` is
-        // reserved for a target that HAS no session memory. A directory still
-        // carrying memo, events or request payloads but no meta cannot be
+        // A missing meta is not the same as nothing to lose.
         let has_memory = has_nonempty(&dir.join("memo.tsv"))
             || has_nonempty(&dir.join("events.jsonl"))
             || has_message_payload(&dir.join("messages"));
@@ -300,9 +288,7 @@ fn resolve_plan(root: &Path, name: &str, purge_cli: Option<bool>) -> Plan {
 
     let raw = meta_value(&bytes, "session_id");
     let aid = archive::canonical_uuid(&raw);
-    // ABSENT vs CORRUPT, decided BEFORE purge gets a say. A value ae cannot
-    // parse is the only evidence of what went wrong with that session, and it
-    // makes the session unidentifiable — a refusal whichever way the history
+    // ABSENT vs CORRUPT, decided BEFORE purge gets a say.
     if aid.is_empty() && !raw.is_empty() {
         return Plan {
             action: Action::Unavailable,
@@ -384,8 +370,7 @@ fn has_message_payload(dir: &Path) -> bool {
 
 // ---- one session -----------------------------------------------------------
 
-/// End one session, under its lifecycle lock. `false` means the end did NOT
-/// complete — and in every such case the session is still there.
+/// End one session, under its lifecycle lock.
 #[allow(
     clippy::too_many_lines,
     reason = "the frozen order IS the contract; splitting it would put the sequence in two places"
@@ -430,9 +415,7 @@ fn end_one(
             server = Some(id);
         }
         ServerSelector::Missing | ServerSelector::Ambiguous => {
-            // No positive ownership record. The ONLY teardown path is the
-            // explicit per-target acknowledgement — and even that refuses when
-            // the name is live anywhere enumerable, because the assumption
+            // No positive ownership record.
             match sweep(root, name) {
                 Sweep::Found(where_) => {
                     writeln!(
@@ -537,7 +520,7 @@ fn end_one(
         return Ok(true);
     }
 
-    // git/full mode. THE ORDER IS THE FIX: verified stop, THEN snapshot.
+    // git/full mode.
     let wdir_bytes = work_dir.as_os_str().as_encoded_bytes().to_vec();
     if !dir_exists(&work_dir) || !crate::git::is_work_tree(&wdir_bytes) {
         writeln!(
@@ -551,8 +534,7 @@ fn end_one(
         writeln!(err, "  Working directory: {}", work_dir.display())?;
         return Ok(false);
     }
-    // STOP FIRST — and verify it. Everything below this line snapshots a tree
-    // nothing is writing to any more.
+    // STOP FIRST — and verify it.
     if let (Some(server), Some(id)) = (server.as_ref(), session_id.as_ref())
         && !kill_verified(server, name, "end", id, err)?
     {
@@ -629,8 +611,7 @@ fn end_one(
         git.workdir = work_dir.display().to_string();
     } else {
         // B3 durability: a no-remote git target just COMMITTED work that exists
-        // ONLY in this directory. Removing it would silently destroy the work
-        // the prompt promised to keep — preserve the directory, remove only
+        // ONLY in this directory.
         writeln!(out, "No remote 'origin' — skipping push.")?;
         preserve_workdir = true;
         "no-origin".clone_into(&mut git.outcome);
@@ -720,8 +701,7 @@ fn archive_step(
             let code = archive::purge::run(&dir, &aid, name, &parent, &mut captured, err)?;
             if code != 0 {
                 // The purge already emitted the precise state — pre-commit:
-                // nothing deleted; post-commit: PURGE INCOMPLETE. Do NOT
-                // re-assert "nothing was deleted" here: that is false for an
+                // nothing deleted; post-commit: PURGE INCOMPLETE.
                 writeln!(
                     err,
                     "Error: purging the archive for '{name}' failed (see above) — the session is STOPPED."
@@ -811,7 +791,7 @@ fn cleanup(
 
     // The core owns the removal — a rename-to-tombstone commit boundary that
     // clears the canonical name atomically and reports success only after the
-    // removal is durable. A teardown that RAN and FAILED has left the session
+    // removal is durable.
     let valid = super::name_is_valid(name);
     if (mode == "local" || mode.is_empty()) && valid {
         if crate::teardown::run(&dir, out, err)? != 0 {
@@ -856,8 +836,7 @@ fn cleanup(
             return Ok(false);
         }
         // The core already removed the managed workdir together with the
-        // canonical state; it owns BOTH resources. Return BEFORE the legacy
-        // cleanup so those removals can never delete a subtree of a preserved
+        // canonical state; it owns BOTH resources.
         if mode == "git" && !origin.is_empty() {
             crate::git::worktree_prune(origin.as_bytes());
         }

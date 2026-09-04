@@ -15,11 +15,6 @@ use crate::json::Value;
 use crate::time::Timestamp;
 
 /// The `schema_version` every SUCCESSOR digest publishes.
-///
-/// Version 2, because `sessions[].status` gained `unknown`. A new value in an
-/// existing field is a consumer-visible contract change even though the name,
-/// type and position are unchanged: a consumer that gated on the two-value
-/// domain breaks on the third.
 pub const SCHEMA_VERSION: i64 = 2;
 
 /// Whether a session is running, stopped, or not established either way.
@@ -30,19 +25,12 @@ pub enum Status {
     /// The session is stopped history.
     Stopped,
     /// Liveness was NOT ESTABLISHED - the recorded server was unreachable, the
-    /// query failed, or ownership evidence was missing. It is NOT stopped and
-    /// NOT absence.
+    /// query failed, or ownership evidence was missing.
     Unknown,
 }
 
 impl Status {
     /// Every status, in the group order: running, unknown, stopped.
-    ///
-    /// An array literal is NOT exhaustiveness-checked, which is how `filters.rs`
-    /// once enumerated the variants per scope, went on compiling, and silently
-    /// dropped a new state from every listing. The guard is
-    /// `the_status_list_holds_every_variant_exactly_once`, which answers each
-    /// variant through a `match`: a fourth variant fails to BUILD the suite.
     pub const ALL: [Self; 3] = [Self::Running, Self::Unknown, Self::Stopped];
 
     /// The spelling example carries (`"status": "running"`).
@@ -69,11 +57,6 @@ pub struct AgentEntry {
     /// The captured tool session id, where one exists.
     pub session_id: Option<String>,
     /// Whether the agent's pane is alive, three-valued.
-    ///
-    /// `Some` carries a positively established fact — an exact association to a
-    /// live pane, or a proof that this roster agent has none. `None` is
-    /// `unknown`, emitted as JSON `null` rather than omitted, so a consumer
-    /// gating on presence never has to tell absent from unknown.
     pub alive: Option<bool>,
     /// The agent's declared work state.
     pub state: Option<String>,
@@ -140,9 +123,8 @@ impl AgentEntry {
         if events_complete {
             push_str_or_null(&mut fields, "state", self.state.as_deref());
         }
-        // `reason: null` means no contribution exists only when
-        // all inputs that could add or supersede one were read. A roster entry
-        // proves membership, not that completeness. A runtime `dead` is the
+        // `reason: null` means no contribution exists only when all inputs that
+        // could add or supersede one were read.
         if events_complete
             || (runtime_dead_established && self.reason.is_some_and(Reason::is_severity_maximum))
         {
@@ -246,18 +228,16 @@ pub struct SessionEntry {
     pub branch: Option<String>,
     /// When the session last did anything ae could see.
     pub last_active_epoch: Option<i64>,
-    /// The session-level rollup. `None` means nothing needs a human.
+    /// The session-level rollup.
     pub attention: Option<Reason>,
     /// The session's agents.
     pub agents: Vec<AgentEntry>,
     /// Whether this entry suffered ACTUAL read/parse loss.
     pub degraded: bool,
-    /// Per-member source completeness. It stays private so callers cannot make
-    /// an aggregate `degraded` flag masquerade as member provenance.
+    /// Per-member source completeness.
     knowledge: RenderKnowledge,
     /// Roster references whose `Dead` came from a complete, typed runtime
-    /// hand-in. Ledger-derived `Dead` never enters this set: a skipped later
-    /// record may clear or supersede it.
+    /// hand-in.
     established_runtime_dead_agents: Vec<String>,
 }
 
@@ -300,8 +280,7 @@ impl SessionEntry {
     }
 
     /// Bind the independently established runtime maximum facts produced with
-    /// this raw snapshot. Keeping provenance on the entry lets JSON and the
-    /// table agree without treating a partial event record as complete.
+    /// this raw snapshot.
     pub(crate) fn set_established_runtime_dead_agents(&mut self, agents: Vec<String>) {
         self.established_runtime_dead_agents = agents;
     }
@@ -364,9 +343,8 @@ impl SessionEntry {
             self.goal_set_epoch,
             self.knowledge.events.is_complete(),
         );
-        // Legacy shape: the runtime has not yet supplied watchdog/git
-        // branch observation. Preserve the predecessor's two shapes until that
-        // source lands in its own slice: healthy `None` is `null`; degraded
+        // Legacy shape: the runtime has not yet supplied watchdog/git branch
+        // observation.
         if self.degraded {
             if let Some(branch) = self.branch.as_deref() {
                 fields.push(("branch".to_owned(), Value::str(branch)));
@@ -384,9 +362,7 @@ impl SessionEntry {
             "needs_attention".to_owned(),
             Value::Bool(self.needs_attention()),
         ));
-        // `needs_attention` always renders its partial-evidence value. The
-        // other two need the maximum to be exact: every relevant source
-        // completed, or a separately established runtime `dead` remains after
+        // `needs_attention` always renders its partial-evidence value.
         if self.attention_is_exact() {
             fields.push((
                 "attention".to_owned(),
@@ -414,8 +390,7 @@ impl SessionEntry {
                     .collect(),
             ),
         ));
-        // Additive: present only when true. Member order is an open
-        // choice; tests compare the member set, not this key's position.
+        // Additive: present only when true.
         if self.degraded {
             fields.push(("degraded".to_owned(), Value::Bool(true)));
         }
@@ -430,7 +405,7 @@ pub struct Digest {
     pub generated_at: Timestamp,
     /// The sessions the active filters selected.
     pub sessions: Vec<SessionEntry>,
-    /// whether every enumeration completed.
+    /// Whether every enumeration completed.
     pub inventory_complete: bool,
 }
 
@@ -513,7 +488,7 @@ fn push_str_or_null<S: AsRef<str>>(fields: &mut Vec<(String, Value)>, key: &str,
     ));
 }
 
-/// Push a numeric field, or an explicit `null`. See [`push_str_or_null`].
+/// Push a numeric field, or an explicit `null`.
 fn push_num_or_null(fields: &mut Vec<(String, Value)>, key: &str, value: Option<i64>) {
     fields.push((key.to_owned(), value.map_or(Value::Null, Value::Num)));
 }
@@ -523,9 +498,7 @@ mod tests {
     use super::{ABSENT_SESSION_ID, AgentEntry, Digest, SCHEMA_VERSION, SessionEntry, Status};
     /// Frozen normalised the agent session id at PARSE time and both of its
     /// surfaces rendered the normalised value: an eight-character prefix, or a
-    /// dash for absent and `pending`. Never `null`, never the raw id, never the
-    /// literal `pending` — measured over the governed frozen digest population,
-    /// where every agent id is a dash or an eight-character short id.
+    /// dash for absent and `pending`.
     #[test]
     fn sc_509_the_agent_session_id_renders_frozen_s_short_form_never_null_or_raw() {
         let cases = [
@@ -582,10 +555,8 @@ mod tests {
     }
 
     /// Frozen truncated with `${sid:0:8}`, and bash substring expansion counts
-    /// CHARACTERS — its own comment at ae@72c7293:3143 says "8-char short session
-    /// id". A byte slice at index 8 would panic mid-character on a multibyte id,
-    /// and an id recorded by a foreign tool is not a proven-ASCII grammar, so the
-    /// boundary is found rather than assumed.
+    /// CHARACTERS — its own comment at ae@72c7293:3143 says "8-char short
+    /// session id".
     #[test]
     fn the_short_session_id_truncates_on_a_character_boundary() {
         let mut agent = AgentEntry {
@@ -623,8 +594,7 @@ mod tests {
     use std::collections::BTreeSet;
 
     /// The worked example from commands.md's `--json digest` block, rebuilt as
-    /// the model. The expected bytes below are read off that block, not off any
-    /// implementation.
+    /// the model.
     fn documented_example() -> Digest {
         let mut session = SessionEntry::new("my-feature", Status::Running);
         session.mode = Some("local".to_owned());
@@ -653,8 +623,7 @@ mod tests {
 
     #[test]
     fn sc_509_renders_the_documented_example_field_for_field() {
-        // Member set and values, read off commands.md's worked example. The
-        // concat below is that bag of members, not a pin of rendered order.
+        // Member set and values, read off commands.md's worked example.
         let rendered = documented_example().render();
         let expected = concat!(
             r#"{"schema_version":2,"generated_at":"2026-05-29T14:00:00Z","sessions":[{"#,
@@ -678,8 +647,7 @@ mod tests {
     #[test]
     fn the_status_list_holds_every_variant_exactly_once() {
         // The compiler cannot check an array literal for completeness — it can
-        // check a `match`. Each arm answers with the ALL entry for its own
-        // variant, so a fourth variant does not compile until it names a slot,
+        // check a `match`.
         let entry = |status: Status| match status {
             Status::Running => Status::ALL[0],
             Status::Unknown => Status::ALL[1],
@@ -737,9 +705,7 @@ mod tests {
 
     #[test]
     fn sc_017g_a_quiet_read_entry_renders_the_whole_triad() {
-        // CHANGED by the 2026-08-24 precision. This test previously
-        // asserted that `attention` and `attention_rank` were ABSENT on a quiet
-        // entry — "the things that may not exist" — and that was the wrong
+        // CHANGED by the 2026-08-24 precision.
         let value = SessionEntry::new("quiet", Status::Running).to_json();
         assert_eq!(
             value.get("needs_attention"),
@@ -794,8 +760,7 @@ mod tests {
     #[test]
     fn sc_509b_loss_is_visible_and_sparsity_is_not() {
         // The seats' reversal: a machine digest that hides loss lies by
-        // omission. These two entries carry the same FACTS and must not render
-        // identically, because one of them lost data and the other did not.
+        // omission.
         let damaged = SessionEntry::degraded("x", Status::Stopped).to_json();
         let expected = json::Value::obj([
             ("name", json::Value::str("x")),
@@ -829,9 +794,7 @@ mod tests {
         let damaged_keys: BTreeSet<&str> = damaged_fields.iter().map(|(k, _)| k.as_str()).collect();
         let sparse_keys: BTreeSet<&str> = sparse_fields.iter().map(|(k, _)| k.as_str()).collect();
 
-        // aggregate flag has no authority to select another member's
-        // presence. This entry's constructors established every source as
-        // complete; flipping only the aggregate loss flag must retain those
+        // Aggregate flag has no authority to select another member's presence.
         assert!(
             BTreeSet::from(["name", "status"]).is_subset(&damaged_keys),
             "identity always survives: {damaged}"
@@ -848,8 +811,7 @@ mod tests {
 
     #[test]
     fn sc_509b_an_unproven_dead_is_not_exact_under_loss() {
-        // A raw `Dead` has no source provenance here. A lost ledger may contain
-        // a later clear, so its severity alone cannot make it exact.
+        // A raw `Dead` has no source provenance here.
         let mut entry = SessionEntry::degraded("dead", Status::Running);
         entry.attention = Some(Reason::Dead);
         let value = entry.to_json();
@@ -860,7 +822,7 @@ mod tests {
 
     #[test]
     fn sc_510d_text_in_the_digest_is_escaped_not_pasted() {
-        // A goal is free text a human typed. It reaches a JSON emitter.
+        // A goal is free text a human typed.
         let mut session = SessionEntry::new("s", Status::Running);
         session.goal = Some("ship \"it\"\nnow\ttoday\\".to_owned());
         let rendered = Digest::new(Timestamp::from_epoch(0), vec![session], true).render();
@@ -915,9 +877,7 @@ mod tests {
 
     #[test]
     fn sc_509_a_read_entry_renders_every_documented_session_member() {
-        // presence rule as a SET, not member by member. Written this way
-        // because the member-by-member version is what let four of these regress
-        // unnoticed: mutating `goal`, `mode`, `state` or `reason` back to the
+        // Presence rule as a SET, not member by member.
         let value = SessionEntry::new("bare", Status::Running).to_json();
         let json::Value::Obj(fields) = &value else {
             panic!("an object")
@@ -965,9 +925,8 @@ mod tests {
 
     #[test]
     fn sc_509_an_agent_entry_renders_every_documented_member() {
-        // An AgentEntry exists only because the roster was READ, so
-        // there is no unreadable case here and no conditional: all seven members,
-        // always. `reason: null` is own spelling for "no agent-owned
+        // An AgentEntry exists only because the roster was READ, so there is no
+        // unreadable case here and no conditional: all seven members, always.
         let value = AgentEntry {
             reference: "claude:lead".to_owned(),
             alias: "claude".to_owned(),
@@ -995,9 +954,7 @@ mod tests {
             ]),
             "every documented agent member is present: {value}"
         );
-        // `session_id` is the ONE member here that is never null. Frozen
-        // normalised it at parse time and rendered a DASH for an absent or
-        // `pending` id, on both surfaces — the governed frozen population is 842
+        // `session_id` is the ONE member here that is never null.
         assert_eq!(
             value.get("session_id"),
             Some(&json::Value::Str(ABSENT_SESSION_ID.to_owned())),
