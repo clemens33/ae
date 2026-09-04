@@ -64,6 +64,7 @@ watchdog	-	Test 11e: status bar is AE-OWNED — the watchdog never rewrites stat
 watchdog	-	Test 11f: agent roster (@ae_agents_status) with a LIVE watchdog
 helpers	-	goal helper: set → list → survives resume
 list	-	ae list robustness: a per-session helper returning non-zero must NOT abort
+launch	-	orchestrator companion autostart: scaffold → any launch brings it up
 launch	session-shape	lead-default Part 3: layout = lead-solo (real tmux windows)
 launch	session-shape	session-shape: layout = lead-pair (colead seat in window 0, real tmux)
 launch	-	#27: launch.<slot>.sh survives being re-run

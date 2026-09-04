@@ -220,10 +220,6 @@ pub struct Env {
     pub core: Option<PathBuf>,
     /// The version the resolved core reported, when the caller measured it.
     pub core_version: Option<String>,
-    /// The glue's own path, recorded as `ae_path` — the `ae` COMMAND a helper or
-    /// the watchdog re-execs (`ae telegram _supervise`), which under a
-    /// versioned install is a different file from the core.
-    pub glue: Option<PathBuf>,
     /// `--no-autostart`: start NEITHER companion. The frozen
     /// `AE_NO_AUTOSTART=1`, which the core cannot read for itself — the
     /// operator's opt-out crosses as a flag like every other environment fact.
@@ -242,16 +238,15 @@ impl Env {
     }
 
     /// The server every tmux call in this launch addresses.
+    ///
+    /// The mapping is [`ServerId::from_typed_flags`] and nothing else — the
+    /// same rule `read_env` refused on, so the fallback below is unreachable
+    /// for anything that got past the parse. Spelling it twice is how the two
+    /// drift apart, and the drift is what let `--server-kind ambiguous` record
+    /// an unusable pair in meta while building the session somewhere else.
     fn server(&self) -> ServerId {
-        match self.server_kind.as_str() {
-            "socket" if !self.server_value.is_empty() => ServerId::Selected(
-                crate::meta::Selector::Socket(PathBuf::from(&self.server_value)),
-            ),
-            "name" if !self.server_value.is_empty() => {
-                ServerId::Selected(crate::meta::Selector::Name(self.server_value.clone()))
-            }
-            _ => ServerId::Ambient,
-        }
+        ServerId::from_typed_flags(&self.server_kind, &self.server_value)
+            .unwrap_or(ServerId::Ambient)
     }
 
     /// The config files, in overlay order, for the document renders.
@@ -267,12 +262,25 @@ impl Env {
     }
 }
 
+/// Why a preamble could not be read.
+///
+/// Two shapes, because they read differently to an operator: a word ae does not
+/// know is answered with the usage line and the word, while a pair ae knows and
+/// REFUSES is answered with the reason and nothing else — printing "offending
+/// word: Error: …" in front of a full sentence helps nobody.
+enum EnvError {
+    /// A flag ae has no arm for, or one missing its value.
+    OffendingWord(String),
+    /// A well-formed pair ae will not act on, already phrased for the operator.
+    Refused(String),
+}
+
 /// Read the preamble flags, then the user's own argv after `--`.
 ///
 /// # Errors
 ///
-/// The offending word.
-fn read_env(tail: &[String]) -> Result<(Env, Vec<String>), String> {
+/// The offending word, or the refusal.
+fn read_env(tail: &[String]) -> Result<(Env, Vec<String>), EnvError> {
     let mut env = Env {
         home: PathBuf::new(),
         cwd: PathBuf::new(),
@@ -283,7 +291,6 @@ fn read_env(tail: &[String]) -> Result<(Env, Vec<String>), String> {
         inside_tmux: false,
         attach: true,
         no_autostart: false,
-        glue: None,
         core: None,
         core_version: None,
     };
@@ -317,7 +324,7 @@ fn read_env(tail: &[String]) -> Result<(Env, Vec<String>), String> {
             _ => {}
         }
         let Some((value, after)) = after.split_first() else {
-            return Err(flag.clone());
+            return Err(EnvError::OffendingWord(flag.clone()));
         };
         match flag.as_str() {
             "--home" => env.home = value.into(),
@@ -326,15 +333,30 @@ fn read_env(tail: &[String]) -> Result<(Env, Vec<String>), String> {
             "--local-config" => env.local = Some(value.into()),
             "--server-kind" => env.server_kind.clone_from(value),
             "--server" => env.server_value.clone_from(value),
-            "--glue" => env.glue = Some(value.into()),
             "--core" => env.core = Some(value.into()),
             "--core-version" => env.core_version = Some(value.clone()),
-            _ => return Err(flag.clone()),
+            _ => return Err(EnvError::OffendingWord(flag.clone())),
         }
         rest = after;
     }
     if env.home.as_os_str().is_empty() || env.cwd.as_os_str().is_empty() {
-        return Err("--home and --cwd are required".to_owned());
+        return Err(EnvError::OffendingWord(
+            "--home and --cwd are required".to_owned(),
+        ));
+    }
+    // BEFORE ANY EFFECT, and it is the reason this lives in the parse: a kind
+    // ae cannot type used to fall through to the ambient server, so the launch
+    // built the session THERE and recorded the unusable pair in meta. The
+    // result was a session on one server described by a record naming another —
+    // and since every lifecycle operation now refuses that record, nothing
+    // could rename, stop or watch it afterwards.
+    if let Err(why) = ServerId::from_typed_flags(&env.server_kind, &env.server_value) {
+        // The refusal says what could not be used; this line says what to do:
+        // the pair arrives from the glue's AE_TMUX_SERVER* re-export, so the
+        // human fixes it in the environment, not on this command line.
+        return Err(EnvError::Refused(format!(
+            "{why}\n  Set AE_TMUX_SERVER_KIND=name|socket with AE_TMUX_SERVER a server name or an absolute socket path, or launch from outside tmux."
+        )));
     }
     Ok((env, rest.to_vec()))
 }
@@ -351,9 +373,13 @@ fn read_env(tail: &[String]) -> Result<(Env, Vec<String>), String> {
 pub fn run(tail: &[String], out: &mut impl Write, err: &mut impl Write) -> crate::Result<u8> {
     let (env, args) = match read_env(tail) {
         Ok(pair) => pair,
-        Err(word) => {
+        Err(EnvError::OffendingWord(word)) => {
             writeln!(err, "ae: {USAGE}")?;
             writeln!(err, "ae: offending word: {word}")?;
+            return Ok(EXIT_USAGE);
+        }
+        Err(EnvError::Refused(why)) => {
+            writeln!(err, "{why}")?;
             return Ok(EXIT_USAGE);
         }
     };
@@ -423,7 +449,6 @@ pub fn relaunch(
         // A relaunch IS a launch (compact's child), so the companions are
         // decided exactly as they are for one typed by hand.
         no_autostart: false,
-        glue: None,
         core: None,
         core_version: None,
     };
@@ -662,7 +687,8 @@ fn launch(
         if !env.attach {
             writeln!(
                 out,
-                "Session '{session}' is running. Use 'ae orchestrator --attach' to view."
+                "Session '{session}' is running. Attach with: {}",
+                attach_hint(&server, &session)
             )?;
             return Ok(0);
         }
@@ -847,6 +873,38 @@ fn launch(
     }
     if resuming && let Some(saved) = meta_value(&dir, "layout").filter(|v| !v.is_empty()) {
         layout = saved;
+    }
+
+    // ---- restored spawned seats, LEXED before anything is created ----
+    //
+    // A spawned seat records a PROFILE NAME, and the resume looks that name up
+    // in whatever config is current — so the command it resolves to is one no
+    // earlier validation ever saw. `config::launch_plan` lexes the [roster]
+    // seats and `_spawn` lexes the profile it is handed, but this path did
+    // neither: it read `cfg.profile()`, opened a pane, and let the pane shell
+    // run the string. A profile holding `touch m ; tail -f /dev/null` therefore
+    // executed BOTH commands on resume — the same defect the spawn gate closed
+    // (colead gate b5d60fec), reached through the restore instead.
+    //
+    // The refusal is the WHOLE resume, before the first tmux or filesystem
+    // effect, because a session that starts with one seat silently dropped is a
+    // session whose roster no longer matches its meta.
+    if resuming {
+        for entry in spawned_entries(&dir) {
+            // An unconfigured profile is not a refusal: the seat is preserved
+            // verbatim and never launched, which the restore already handles.
+            let Some(command) = cfg.profile(&entry.profile).filter(|c| !c.is_empty()) else {
+                continue;
+            };
+            if let Err(why) = crate::launch_cmd::lex_simple_command(command) {
+                writeln!(
+                    err,
+                    "Error: seat '{}' ({}) — profile '{}' refused — {why}. Nothing was resumed.",
+                    entry.name, entry.slot, entry.profile
+                )?;
+                return Ok(EXIT_FAILED);
+            }
+        }
     }
 
     let mut shape = Session {
@@ -1193,8 +1251,9 @@ fn build(
     if !env.attach {
         writeln!(
             out,
-            "Session '{}' started. Use 'ae orchestrator --attach' to view.",
-            shape.name
+            "Session '{}' started. Attach with: {}",
+            shape.name,
+            attach_hint(&server, &shape.name)
         )?;
         return Ok(0);
     }
@@ -1524,11 +1583,13 @@ fn meta_document(
         // The core binding, pinned per session as a PAIR: a helper that found a
         // binary whose version disagreed with the session's would be running a
         // different contract than the one this session was built against.
-        // ae_path is the recorded `ae` COMMAND, which is the glue when the caller
-        // named it; the core only stands in for a caller that did not.
-        let ae_path = env.glue.as_ref().unwrap_or(&core);
+        //
+        // `ae_path` — the recorded `ae` COMMAND — is NOT written any more. Its
+        // one reader was the watchdog's Telegram revive, which shelled back
+        // into the glue through it; the revive is the core's own call now, so
+        // the row named a binary nobody ran. The flag that fed it (`--glue`)
+        // went with it, and an unknown flag is refused exactly as before.
         let ae_core = env.core.as_ref().unwrap_or(&core);
-        row("ae_path", &ae_path.display().to_string());
         row("ae_core", &ae_core.display().to_string());
         row(
             "ae_core_version",
@@ -1963,7 +2024,7 @@ fn autostart_orchestrator(
         ),
         ("hub", env.home.join("meta-hub/hub.config")),
     ];
-    let Some((session, _)) = scaffolds
+    let Some((session, config)) = scaffolds
         .iter()
         .find(|(_, config)| crate::lifecycle::path_exists(config))
     else {
@@ -1990,17 +2051,28 @@ fn autostart_orchestrator(
         );
         return;
     }
-    // The child is the GLUE (`ae orchestrator` is a bash trampoline that
-    // resolves the scaffold and falls through to a launch), so with no recorded
-    // glue there is nothing to run.
-    let Some(glue) = &env.glue else {
+    // The child is a LAUNCH BY THIS CORE, not a re-entry through the glue: the
+    // glue's `orchestrator` arm was retired and refuses, so the frozen
+    // trampoline's `CONFIG_FILE` + `cd` rewrite has to cross as the flags
+    // `_launch` already reads. The scaffold's own directory is its cwd.
+    let Some(dir) = config.parent() else {
+        return;
+    };
+    let Some(argv) = crate::lifecycle::orchestrator_argv(&crate::lifecycle::Companion {
+        home: &env.home,
+        dir,
+        config,
+        server_kind: &env.server_kind,
+        server_value: &env.server_value,
+        session,
+    }) else {
         return;
     };
     let _ = writeln!(
         out,
         "Starting orchestrator companion session in the background (AE_NO_AUTOSTART=1 skips)."
     );
-    let _ = transport::run_detached(&crate::lifecycle::orchestrator_argv(glue, session));
+    let _ = transport::run_detached(&argv);
 }
 
 /// Create a detached window running `command`, and report its pane id.
@@ -2028,6 +2100,49 @@ fn monitor_pane(server: &ServerId, session: &str, agent: &str) -> Option<String>
         .into_iter()
         .find(|pane| pane.agent == agent)
         .map(|pane| pane.pane)
+}
+
+/// The command that actually attaches to `session` on `server`.
+///
+/// It used to say `ae orchestrator --attach`, which is not a command any more:
+/// the orchestrator trampoline was retired in the glue cut and that word now
+/// REFUSES. It was wrong before that too — it named the companion session
+/// rather than the one just started, so a human who followed it landed
+/// somewhere else or nowhere.
+///
+/// The server is spelled out because a session on a named or socket server is
+/// invisible to a bare `tmux attach`, and this line is meant to be pasted.
+fn attach_hint(server: &ServerId, session: &str) -> String {
+    let session = paste_safe(session);
+    match server {
+        ServerId::Ambient => format!("tmux attach -t {session}"),
+        ServerId::Selected(crate::meta::Selector::Name(name)) => {
+            format!("tmux -L {} attach -t {session}", paste_safe(name))
+        }
+        ServerId::Selected(crate::meta::Selector::Socket(path)) => format!(
+            "tmux -S {} attach -t {session}",
+            paste_safe(&path.display().to_string())
+        ),
+    }
+}
+
+/// `word` as it can be pasted into a shell: bare when nothing in it is
+/// significant there, quoted when anything is.
+///
+/// Unconditional quoting would be just as CORRECT and worse to read — a session
+/// name is allowlisted to `[A-Za-z0-9_-]` and can never need it, so quoting one
+/// only teaches the reader that ae does not know its own grammar. A socket path
+/// is not allowlisted, so it is checked rather than assumed.
+fn paste_safe(word: &str) -> String {
+    let plain = !word.is_empty()
+        && word
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '/' | ':' | '@'));
+    if plain {
+        word.to_owned()
+    } else {
+        crate::launch::shell_quote(word)
+    }
 }
 
 /// Attach or switch the client to `session`, and report the exit code.
@@ -2291,6 +2406,11 @@ fn launching_capture(launching: &[Launching], resuming: bool) -> Vec<capture::Ta
 // ---------------------------------------------------------------------------
 
 /// The tmux server the session at `dir` records, or the ambient one.
+///
+/// TOLERANT, and it must stay that way: its callers are OBSERVERS — the pane
+/// surfaces, the capture child — for which a record that names no server is
+/// answered correctly by the ambient one. A lifecycle operation that ACTS on a
+/// session wants [`recorded_server_resolved`] instead.
 #[must_use]
 pub fn recorded_server(dir: &Path) -> ServerId {
     let Ok(bytes) = meta::read_bytes(dir) else {
@@ -2299,6 +2419,40 @@ pub fn recorded_server(dir: &Path) -> ServerId {
     match Meta::parse(&String::from_utf8_lossy(&bytes)).server_selector() {
         ServerSelector::Positive(selector) => ServerId::Selected(selector),
         ServerSelector::Missing | ServerSelector::Ambiguous => ServerId::Ambient,
+    }
+}
+
+/// The refusal a lifecycle caller prints for a record whose server pointer does
+/// not point — spelled once, because three commands share it and a message that
+/// does not name the ROWS leaves an operator with nothing to fix.
+pub const AMBIGUOUS_SERVER: &str = "records a tmux server ae cannot resolve — its meta rows 'tmux_server_kind' / 'tmux_server' do not name exactly one server";
+
+/// The tmux server the session at `dir` records, REFUSING an ambiguous record.
+///
+/// `None` is the fail-closed answer, and only for [`ServerSelector::Ambiguous`]:
+/// an unknown kind, a typed empty value, a relative socket path, an empty kind
+/// beside a value, or duplicate selector keys. Such a record names a server ae
+/// cannot identify, and falling back to the ambient one is not a smaller
+/// answer — it is a DIFFERENT server, where a same-named session belonging to
+/// somebody else will answer to a rename, a kill or a watchdog.
+///
+/// [`ServerSelector::Missing`] is NOT refused, and that is the whole reason
+/// this is not simply `entitles()`. A launch records the two rows only when the
+/// caller resolved a server (`meta_document`, from `--server-kind`), and the
+/// glue resolves none for a caller that is not inside tmux and sets no
+/// `AE_TMUX_SERVER` — so a session started from a plain terminal legitimately
+/// records nothing, and the ambient server is exactly the one it is on.
+/// Refusing that would make `rename` and the watchdog commands fail for the
+/// most ordinary session there is.
+#[must_use]
+pub fn recorded_server_resolved(dir: &Path) -> Option<ServerId> {
+    let Ok(bytes) = meta::read_bytes(dir) else {
+        return Some(ServerId::Ambient);
+    };
+    match Meta::parse(&String::from_utf8_lossy(&bytes)).server_selector() {
+        ServerSelector::Positive(selector) => Some(ServerId::Selected(selector)),
+        ServerSelector::Missing => Some(ServerId::Ambient),
+        ServerSelector::Ambiguous => None,
     }
 }
 

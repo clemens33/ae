@@ -133,11 +133,17 @@ fn locked(
     let old_dir = sessions.join(old);
     let new_dir = sessions.join(new);
     // The server is the OLD session's own recorded one. Asking the ambient
-    // server would report a session on a named server as not running.
+    // server would report a session on a named server as not running — and, far
+    // worse, an AMBIGUOUS record used to be retagged ambient and renamed
+    // whatever ambient session happened to carry the name.
     let bytes = crate::meta::read_bytes(&old_dir).unwrap_or_default();
-    let server = match crate::lifecycle::server_of(&bytes) {
-        crate::meta::ServerSelector::Positive(selector) => ServerId::Selected(selector),
-        _ => ServerId::Ambient,
+    let Some(server) = crate::session_launch::recorded_server_resolved(&old_dir) else {
+        writeln!(
+            err,
+            "Error: session '{old}' {}. Nothing was renamed.",
+            crate::session_launch::AMBIGUOUS_SERVER
+        )?;
+        return Ok(EXIT_FAILED);
     };
 
     // Addressed by the EXACT id from here on: `-t proj` prefix-matches, so a

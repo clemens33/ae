@@ -197,7 +197,17 @@ pub fn run(
         writeln!(err, "Error: session '{target}' not found")?;
         return Ok(EXIT_FAILED);
     }
-    let server = session_launch::recorded_server(&meta_dir);
+    // FAIL CLOSED on a record that does not name one server: start, stop and
+    // status all address the session BY NAME on this server, and the ambient
+    // fallback would aim every one of them at whatever else answers to it.
+    let Some(server) = session_launch::recorded_server_resolved(&meta_dir) else {
+        writeln!(
+            err,
+            "Error: session '{target}' {}. The watchdog was not touched.",
+            session_launch::AMBIGUOUS_SERVER
+        )?;
+        return Ok(EXIT_FAILED);
+    };
     match action {
         Action::Status => status(&server, &target, &meta_dir, out),
         Action::Start => start(&server, &target, &meta_dir, &knobs, out, err),

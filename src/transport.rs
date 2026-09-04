@@ -443,41 +443,6 @@ pub(crate) fn run_git(argv: &crate::git::GitArgv) -> (bool, String) {
     }
 }
 
-/// The session's own `ae` binary leg of the one process door — the ONLY way
-/// product code runs the recorded wrapper, its PATH chosen by the session record
-/// rather than by a caller. Mirrors [`run_git`] and [`run_ps`]: the argv is a
-/// [`crate::watchdog_glue::AeArgv`] whose inner vector is private to that
-/// module, so only its fixed-shape constructors can mint one and this leg cannot
-/// be alias-imported and handed an arbitrary command line.
-///
-/// It exists because one of the watchdog pane's duties is still a bash
-/// subcommand — `telegram _supervise` — and the frozen wrapper ran exactly this
-/// binary with exactly these arguments. (`_recover-pending` was the other until
-/// the core grew its own recovery; see [`crate::watchdog_glue::recover`].)
-///
-/// Returns whether it exited zero and its stdout decoded lossily; stderr is
-/// captured and dropped, because a supervise that complains must not print into
-/// a read-only watchdog pane.
-pub(crate) fn run_ae(
-    bin: &std::path::Path,
-    argv: &crate::watchdog_glue::AeArgv,
-    envs: &[(&str, &str)],
-) -> (bool, String) {
-    match spawn(
-        &bin.display().to_string(),
-        argv.as_args(),
-        envs,
-        Streams::Captured,
-        None,
-    ) {
-        Some(output) => (
-            output.status.success(),
-            String::from_utf8_lossy(&output.stdout).into_owned(),
-        ),
-        None => (false, String::new()),
-    }
-}
-
 /// The process-table snapshot leg of the one process door — the ONLY way
 /// product code runs `ps`, the program FIXED here. Mirrors [`run_git`]: the argv
 /// is a [`crate::procs::PsArgv`] whose inner vector is private to `src/procs.rs`,

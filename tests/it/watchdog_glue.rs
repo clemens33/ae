@@ -140,8 +140,8 @@ fn quick() -> Knobs {
         stale_secs: 0,
         max_nudges: 2,
         quiet_beat_ms: 10,
-        // A supervise would run the session's recorded `ae`, and this fixture
-        // records none — but zero says so rather than relying on that.
+        // A supervise is a real revive attempt now, so zero keeps every other
+        // arm's fixture out of the Telegram lifecycle entirely.
         tg_supervise_secs: 0,
         ..Knobs::default()
     }
@@ -727,4 +727,127 @@ fn a_pending_codex_seat_is_recovered_by_the_running_watchdog() {
         "the event refers to the captured id:\n{log}"
     );
     let _ = fs::remove_dir_all(&scratch);
+}
+
+/// The Telegram bridge revive, run BY THE DAEMON ITSELF.
+///
+/// The bug this pins: the tick ran `<ae_path> telegram _supervise` through the
+/// recorded glue, and `_supervise` is a word `telegram`'s parser never
+/// accepted — it takes `start|stop|status` and nothing else. So every throttle
+/// window spent a fork on a usage error whose status was discarded, and a
+/// bridge that died between launches was never revived. The revive is the
+/// core's own call now, and `ae_path` has no reader left at all.
+///
+/// OFFLINE BY CONSTRUCTION: the config names a chat but no `allowed_user_ids`,
+/// so the bridge it starts registers no commands and runs no inbound poll, and
+/// with no `chat` event to forward the outbound pump never sends either. What
+/// is proven here is that the tick STARTED it.
+#[test]
+fn a_watchdog_tick_revives_the_telegram_bridge_in_process() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let scratch = scratch("tgrevive");
+    require_tmux(&scratch);
+    let socket = scratch.join("s");
+    let root = scratch.join("home");
+    let work_dir = scratch.join("project");
+    assert!(fs::create_dir_all(&work_dir).is_ok(), "the work dir");
+    let meta_dir = plant(&root, "tgrev", &socket, Some(&work_dir));
+
+    // The intent the revive reads, and the credentials it validates before it
+    // spawns anything. The token's mode is load-bearing: any group or other bit
+    // is refused as spent, which would make this a refusal test by accident.
+    let token = root.join("token");
+    assert!(
+        fs::write(&token, "111:fake-token-never-used\n").is_ok(),
+        "a token"
+    );
+    assert!(
+        fs::set_permissions(&token, fs::Permissions::from_mode(0o600)).is_ok(),
+        "a privately readable token"
+    );
+    let config = root.join("config");
+    assert!(
+        fs::write(
+            &config,
+            format!(
+                "[telegram]\nenabled = true\ntoken_file = {}\nchat_id = 42\n",
+                token.display()
+            ),
+        )
+        .is_ok(),
+        "the intent"
+    );
+    // The tick reads the config meta RECORDS, which is what a launch wrote.
+    let meta = fs::read_to_string(meta_dir.join("meta")).unwrap_or_default();
+    assert!(
+        fs::write(
+            meta_dir.join("meta"),
+            format!("{meta}config={}\n", config.display()),
+        )
+        .is_ok(),
+        "the recorded config"
+    );
+
+    assert!(
+        tmux(
+            &socket,
+            &scratch,
+            &["new-session", "-d", "-s", "tgrev", "cat"]
+        )
+        .0,
+        "the watched session"
+    );
+
+    let daemon_out = scratch.join("daemon-out");
+    let daemon_err = scratch.join("daemon-err");
+    let spawned = super::cli::ae()
+        .arg("_watchdog-run")
+        .arg(&meta_dir)
+        .args(["--interval", "1", "--tg-supervise-secs", "1"])
+        .env("HOME", &scratch)
+        .stdout(fs::File::create(&daemon_out).expect("a stdout sink"))
+        .stderr(fs::File::create(&daemon_err).expect("a stderr sink"))
+        .spawn();
+    let mut child = spawned.expect("the ae binary should spawn");
+
+    let deadline = Instant::now() + BUDGET;
+    let mut revived = false;
+    while Instant::now() < deadline {
+        let (_, listed) = tmux(
+            &socket,
+            &scratch,
+            &["list-sessions", "-F", "#{session_name}"],
+        );
+        if listed.lines().any(|name| name == "ae-telegram") {
+            revived = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    let _ = tmux(&socket, &scratch, &["kill-session", "-t", "tgrev"]);
+    let stop = Instant::now() + BUDGET;
+    while Instant::now() < stop {
+        if matches!(child.try_wait(), Ok(Some(_))) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    let diagnostics = fs::read_to_string(&daemon_err).unwrap_or_default();
+    let refusal =
+        fs::read_to_string(root.join("telegram").join("autostart-refusal")).unwrap_or_default();
+    kill_server(&socket, &scratch);
+
+    assert!(
+        revived,
+        "the tick must start the bridge on the session's own server\n\
+         daemon stderr: {diagnostics}\nrefusal record: {refusal}"
+    );
+    assert!(
+        refusal.is_empty(),
+        "a started bridge records no refusal: {refusal}"
+    );
 }

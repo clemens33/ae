@@ -2855,8 +2855,13 @@ bp_snapshot() { # -> "<name> <mode> <fingerprint>" per helper, sorted by name
     return 0
 }
 bp_before="$(bp_snapshot)"
+# `_register-sid` is in the set and is the one shim no human runs: ae tells codex,
+# in its developer_instructions, to run `<meta>/_register-sid` as its first action,
+# because codex has no launch-time session-id flag. It left the set with the
+# template library and its absence broke that handshake silently — the instruction
+# named a file that was not there.
 assert_eq "shim parity: (setup) the core wrote the full helper set at launch" \
-    "agents ask events-tail focus goal interrupt loop mark-done memo peak peek reply requests retire review say send spawn state watchdog" \
+    "_register-sid agents ask events-tail focus goal interrupt loop mark-done memo peak peek reply requests retire review say send spawn state watchdog" \
     "$(printf '%s\n' "$bp_before" | awk '{print $1}' | paste -sd' ' -)"
 (cd "$REPO_BP" && "$AE" doctor --refresh test-shimparity >/dev/null 2>&1)
 bp_after="$(bp_snapshot)"
@@ -2905,7 +2910,6 @@ printf 'stale manifest\n' > "$HOME/.ae/sessions/test-sync/workspace.md"
 doctor_sync_output="$(cat "$TMPDIR/doctor-sync.out")"
 reply_output="$("$HOME/.ae/sessions/test-sync/reply" 2>&1 || true)"
 workspace_output="$(cat "$HOME/.ae/sessions/test-sync/workspace.md")"
-meta_ae_path="$(grep '^ae_path=' "$HOME/.ae/sessions/test-sync/meta" | cut -d= -f2- || true)"
 
 assert_contains "doctor-refresh: reports refreshed session" "OK    refresh:test-sync" "$doctor_sync_output"
 assert_contains "doctor-refresh: summary still succeeds" "Summary: 0 failure(s)" "$doctor_sync_output"
@@ -2930,12 +2934,15 @@ assert_eq "doctor-refresh: ...and it is the SAME daemon, not a silent replacemen
     "1" "$([[ -n "$wd_pid_before" && "$wd_pid_after" == "$wd_pid_before" ]] && echo 1 || echo 0)"
 assert_contains "doctor-refresh: reply helper regenerated" "Usage: reply [--as <agent>] <request-id> <message>" "$reply_output"
 assert_contains "doctor-refresh: workspace regenerated" "memo add" "$workspace_output"
-# ae_path names the GLUE, not the core. Its remaining consumer is the watchdog's
-# `telegram _supervise` re-exec — `_recover-pending` was the other until the core
-# took the recovery in-process (glue cut, pass 4), and that arm is gone. The row is
-# still refreshed because the surviving re-exec would otherwise point at a stale
-# path after an upgrade.
-assert_eq "doctor-sync: meta ae_path refreshed" "$AE" "$meta_ae_path"
+# "doctor-sync: meta ae_path refreshed" — RETIRED (glue cut, the c3-fix landing).
+# 1 assertion went with its subject. `ae_path` recorded the `ae` COMMAND so a live
+# session's watchdog could re-exec it for the two things the core did not answer,
+# `telegram _supervise` and `_recover-pending`; the refresh rewrote the row so an
+# upgrade could not leave it pointing at a version that was gone. Both are
+# in-process in the daemon now, the glue sends no `--glue`, and the core REFUSES
+# the flag — so there is no row to refresh and no re-exec to keep current. What
+# refresh still has to get right about paths is the CORE binding, which is pinned
+# in the core-binding section, and the shim bytes, pinned just below.
 
 # THE SHIM CANARY (was the declare-f canary, #4B). Since B glue cut 2 the core
 # writes every session helper and bash only reproduces that same shim set on
@@ -3415,8 +3422,73 @@ assert_eq "list (human): exits 0 when a per-session helper returns non-zero" "0"
 "$AE" end -f jsonrobust 2>/dev/null || true
 fi
 
-# ── orchestrator companion autostart: scaffold → any launch brings it up — RETIRED (final glue cut) ───
-# 4 assertion(s) went with their subject: the core starts both companions at launch, AFTER it has created the tmux server — the ordering the bash forked waiter existed to work around, and the race that waiter introduced (a companion revived after a human stopped it) goes with it. AE_NO_AUTOSTART crosses as `_launch --no-autostart`.
+# ── orchestrator companion autostart: scaffold → any launch brings it up ───────
+if _itest_section 'orchestrator companion autostart: scaffold → any launch brings it up'; then
+# BACK, AND THIS IS WHY IT HAD TO COME BACK. The section was retired in final glue
+# cut pass 2 on the reasoning that the core owns the autostart. It did own the
+# DECISION — but it still started the companion by forking the glue's
+# `ae orchestrator` trampoline, and pass 3 turned that word into a refusal. For two
+# passes every launch with a scaffold present printed "Starting orchestrator
+# companion session in the background" and started nothing: run_detached sends the
+# child's output to /dev/null, so the failure was silent. Nothing caught it because
+# this section was gone. The core launches the companion in-process now, and the
+# section is restored to hold that — a retired test is how a silent regression gets
+# two passes to settle in.
+#
+# The scaffold's EXISTENCE is the whole opt-in: no config key, no flag.
+ORC_REPO="$(setup_repo)"
+mkdir -p "$HOME/.ae/orchestrator"
+printf '[profiles]\ndummy = "bash"\n\n[roster]\norchestrator = dummy\n\n[workspace]\nmain = orchestrator\nlayout = vertical\n' \
+    >"$HOME/.ae/orchestrator/orchestrator.config"
+
+# (1) A launch with a scaffold present brings the companion up.
+(cd "$ORC_REPO" && "$AE" --local orctest &) 2>/dev/null
+wait_for_session "orctest"
+orc_up=0
+for _i in $(seq 1 40); do
+    if tmux has-session -t "=orchestrator" 2>/dev/null; then orc_up=1; break; fi
+    sleep 0.5
+done
+assert_eq "orchestrator autostart: a launch with a scaffold present starts the companion" "1" "$orc_up"
+# The tmux session appears BEFORE its meta is written, and the companion is
+# detached, so the roster read below needs the meta specifically — the same wait
+# `wait_for_session` performs for a foreground launch.
+for _i in $(seq 1 40); do
+    [[ -f "$HOME/.ae/sessions/orchestrator/meta" ]] && break
+    sleep 0.5
+done
+# ...as a session of its own, with the SCAFFOLD as its config — the isolation the
+# retired bash trampoline performed by hand. Its single seat is the scaffold's
+# `orchestrator`, never the suite config's `dummy`, which is what a config leak
+# would look like.
+assert_eq "orchestrator autostart: ...with the scaffold's roster, not the caller's config" "orchestrator" \
+    "$(sed -n 's/^seat.main=//p' "$HOME/.ae/sessions/orchestrator/meta" 2>/dev/null || true)"
+"$AE" end -f orctest >/dev/null 2>&1 || true
+"$AE" end -f orchestrator >/dev/null 2>&1 || true
+sleep 0.5
+
+# (2) AE_NO_AUTOSTART=1 suppresses it. Same scaffold, same launch, one fact
+# different — so a pass here cannot be "the scaffold was not found".
+(cd "$ORC_REPO" && AE_NO_AUTOSTART=1 "$AE" --local orcskip &) 2>/dev/null
+wait_for_session "orcskip"
+sleep 3
+assert_eq "orchestrator autostart: AE_NO_AUTOSTART=1 starts no companion" "0" \
+    "$(tmux has-session -t "=orchestrator" 2>/dev/null && echo 1 || echo 0)"
+"$AE" end -f orcskip >/dev/null 2>&1 || true
+sleep 0.5
+
+# (3) THE RECURSION GUARD. The companion IS a launch, and it lands in the same code
+# path that starts one — so a session named for the scaffold must not start itself.
+# Without the guard this is not a duplicate session but an unbounded fork.
+(cd "$ORC_REPO" && "$AE" --local orchestrator &) 2>/dev/null
+wait_for_session "orchestrator"
+sleep 3
+assert_eq "orchestrator autostart: a launch NAMED orchestrator does not start a second one" "1" \
+    "$(tmux list-sessions -F '#{session_name}' 2>/dev/null | command grep -c '^orchestrator$' | tr -d '[:space:]')"
+"$AE" end -f orchestrator >/dev/null 2>&1 || true
+rm -rf "$HOME/.ae/orchestrator"
+unset ORC_REPO orc_up
+fi
 
 
 # ── aewatch retired: the bridge spawn kills a stale sidecar — RETIRED (final glue cut) ─────
@@ -4863,9 +4935,13 @@ assert_eq "archive-preview: and took no publisher claim" "0" \
     "$(find "$HOME/.ae/archive" -maxdepth 1 -name '.publishing.*' 2>/dev/null | grep -c . | tr -d '[:space:]')"
 assert_eq "archive-preview: the session is still running" "0" "$(tmux has-session -t arch-keep 2>/dev/null; echo $?)"
 
-# A FRESH AE_HOME is where the read-only contract is actually testable: ae publishes a
-# default config on a config-less home, and that notice used to land on STDOUT — in front
-# of the digest, for a command whose stdout IS the contract.
+# A FRESH AE_HOME is where the read-only contract is actually testable. ae used to
+# publish a default config on ANY invocation against a config-less home, and that notice
+# landed on STDOUT — in front of the digest, for a command whose stdout IS the contract.
+# It then moved to stderr, and B1 moved the WRITE: the seed is the launch prelude's now,
+# after the core preflight, so a read-only command emits no notice because it creates
+# nothing. Both halves are pinned below — an empty stdout claim is worth little without
+# the fresh home staying empty.
 A48_FRESH="$TMPDIR/a48-freshhome"
 mkdir -p "$A48_FRESH/sessions/pv/messages"
 cat >"$A48_FRESH/sessions/pv/meta" <<EOF
@@ -4890,8 +4966,10 @@ assert_eq "archive-preview: on a config-less home, stdout still starts with the 
     "# ae session archive" "$(printf '%s\n' "$a48_fresh_out" | head -1)"
 assert_eq "archive-preview: and the bootstrap notice is NOT on stdout" "0" \
     "$(printf '%s\n' "$a48_fresh_out" | grep -c 'Created default config' | tr -d '[:space:]')"
-assert_contains "archive-preview: it went to stderr, where diagnostics belong" \
-    "Created default config" "$(cat "$TMPDIR/a48-fresh.err")"
+assert_eq "archive-preview: nor on stderr, because the notice no longer happens" "0" \
+    "$(grep -c 'Created default config' "$TMPDIR/a48-fresh.err" | tr -d '[:space:]')"
+assert_not_exists "archive-preview: and the read-only command seeded no config" \
+    "$A48_FRESH/config"
 # An invalid --from against that same fresh home: no session, no worktree, no tmux.
 a48_fresh_rc=0
 (cd "$A48_REPO" && AE_HOME="$A48_FRESH" _timeout 30 "$AE" --local freshchild --from deadbeef-dead-beef-dead-beefdeadbeef) >/dev/null 2>&1 || a48_fresh_rc=$?
@@ -7396,8 +7474,12 @@ done
 sleep 2
 assert_eq "P5 real: the session state is under the isolated ~/.ae" "1" \
     "$([[ -f "$NXR_META/meta" ]] && echo 1 || echo 0)"
-assert_eq "P5 real: meta pins the versioned glue as ae_path" "1" \
-    "$([[ "$(command grep '^ae_path=' "$NXR_META/meta" 2>/dev/null | cut -d= -f2- || true)" -ef "$NXR_HOME/.ae/versions/$NXR_VERSION/ae-glue" ]] && echo 1 || echo 0)"
+# The glue-path pin here is RETIRED with the `ae_path` row (see the doctor-refresh
+# section). Its replacement is the ABSENCE: a meta that carried a stale path would
+# be worse than one that carries none, and a future reader who re-adds the flag
+# would fail here rather than ship a row nothing reads.
+assert_eq "P5 real: meta records no ae_path — nothing re-execs the glue" "0" \
+    "$(command grep -c '^ae_path=' "$NXR_META/meta" 2>/dev/null || true)"
 assert_eq "P5 real: meta pins the immutable sibling core" "1" \
     "$([[ "$(command grep '^ae_core=' "$NXR_META/meta" 2>/dev/null | cut -d= -f2- || true)" -ef "$NXR_HOME/.ae/versions/$NXR_VERSION/ae-core" ]] && echo 1 || echo 0)"
 assert_eq "P5 real: meta pins the version it reported" "$NXR_VERSION" \
@@ -7547,8 +7629,10 @@ while [[ ! -f "$NXU_META1/meta" ]]; do
     if ((NXU_I >= 40)); then break; fi
 done
 sleep 2
-assert_eq "P5 upgrade: the v1 session pinned v1 glue" "1" \
-    "$([[ "$(command grep '^ae_path=' "$NXU_META1/meta" 2>/dev/null | cut -d= -f2- || true)" -ef "$NXU_HOME/.ae/versions/$NXU_V1/ae-glue" ]] && echo 1 || echo 0)"
+# The v1-glue pin is RETIRED with the `ae_path` row. The version-pinning claim it
+# carried is unchanged and is asserted by the two rows below it — the v1 session
+# pinned the v1 CORE, and recorded the v1 version — which is what an upgrade must
+# not disturb.
 assert_eq "P5 upgrade: the v1 session pinned v1 core" "1" \
     "$([[ "$(command grep '^ae_core=' "$NXU_META1/meta" 2>/dev/null | cut -d= -f2- || true)" -ef "$NXU_HOME/.ae/versions/$NXU_V1/ae-core" ]] && echo 1 || echo 0)"
 assert_eq "P5 upgrade: ...and recorded its version" "$NXU_V1" \

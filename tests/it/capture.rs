@@ -7,11 +7,12 @@
 //! library test would have to mutate the test runner's own environment to fake
 //! either, and both are process-wide.
 //!
-//! Codex's arm is covered by the launch suite
-//! (`session_launch::a_codex_launch_captures_the_session_id_it_registers`),
-//! which drives the `codex.<slot>.sid` handshake through a real launch. The two
-//! tools here have no handshake — ae has to go and look — so they are driven
-//! against a prepared history directory and a prepared `opencode`.
+//! Codex's arm is covered twice. The launch suite
+//! (`session_launch::a_codex_launch_captures_the_session_id_it_registers`)
+//! drives the `codex.<slot>.sid` file through a real launch; the last test here
+//! drives the HANDSHAKE that is supposed to write it, through the real shim.
+//! The two tools above it have no handshake — ae has to go and look — so they
+//! are driven against a prepared history directory and a prepared `opencode`.
 
 #![allow(
     clippy::disallowed_methods,
@@ -191,4 +192,79 @@ fn a_seat_holding_a_tool_that_needs_no_capture_is_left_alone() {
     let (code, stderr) = rig.capture();
     assert_eq!((code, stderr.as_str()), (Some(0), ""));
     assert_eq!(rig.meta(), before, "the meta was rewritten");
+}
+
+/// The `_register-sid` handshake, end to end through the shim it names.
+///
+/// THE LINK THAT WAS DEAD. Codex's `developer_instructions` have always told it
+/// to run `<session-dir>/_register-sid <slot>` as its first action, and the
+/// capture has always polled for `codex.<slot>.sid` — but the shim left the
+/// helper set with the `declare -f` template library and no core entry replaced
+/// it, so the instruction named a file that was not there and every codex seat
+/// fell through to the history scans below it.
+///
+/// Nothing here writes that file but the shim, and codex's history directory is
+/// empty, so the id the capture reports can have come from nowhere else.
+#[test]
+fn the_register_sid_handshake_is_the_id_the_capture_reports() {
+    use super::cli::helper;
+
+    let rig = Rig::new("regsid", "codex", 1);
+    // The shim set as a session gets it — the same writer the launch runs.
+    let rendered = ae()
+        .arg(ae::cli::SHIMS_RENDER)
+        .arg(&rig.session)
+        .output()
+        .unwrap_or_else(|why| panic!("the ae binary should run: {why}"));
+    assert!(
+        rendered.status.success(),
+        "the shims render: {}",
+        String::from_utf8_lossy(&rendered.stderr)
+    );
+    let shim = rig.session.join("_register-sid");
+    assert!(
+        shim.is_file(),
+        "the handshake codex is TOLD to run must be a file in {}",
+        rig.session.display()
+    );
+
+    // A malformed id is refused before anything is written: the value lands in
+    // a file the capture reads back as a session id and writes to the roster,
+    // and a validator that saw only "non-empty" would let it.
+    let refused = helper(&shim)
+        .args(["main", "NOT-A-UUID"])
+        .output()
+        .unwrap_or_else(|why| panic!("the shim should run: {why}"));
+    assert_eq!(
+        refused.status.code(),
+        Some(2),
+        "a malformed id is a refusal"
+    );
+    assert!(
+        !rig.session.join("codex.main.sid").exists(),
+        "a refused id writes nothing"
+    );
+
+    let id = "0199c0de-1234-4890-abcd-ef0123456789";
+    let registered = helper(&shim)
+        .args(["main", id])
+        .output()
+        .unwrap_or_else(|why| panic!("the shim should run: {why}"));
+    assert!(
+        registered.status.success(),
+        "the handshake: {}",
+        String::from_utf8_lossy(&registered.stderr)
+    );
+
+    let (code, stderr) = rig.capture();
+    assert_eq!((code, stderr.as_str()), (Some(0), ""));
+    let meta = rig.meta();
+    assert!(
+        meta.contains(&format!("harness_session.main={id}")),
+        "the capture must report the handshake's id:\n{meta}"
+    );
+    assert!(
+        !rig.session.join("codex.main.sid").exists(),
+        "a consumed handshake file is removed:\n{meta}"
+    );
 }

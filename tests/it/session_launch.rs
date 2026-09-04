@@ -45,6 +45,10 @@ print "  fake-model  ~/x\r\n";
 while (1) { sleep 1; }
 "#;
 
+/// A roster whose agent does nothing but stay in its pane.
+const IDLE_CONFIG: &str = "[profiles]\nidle = \"sleep 600\"\n\n[roster]\nlead = idle\n\n\
+     [workspace]\nmain = lead\nlayout = vertical\nwatchdog = false\n";
+
 /// One isolated ae home, one project directory, one tmux server.
 struct Rig {
     scratch: PathBuf,
@@ -111,6 +115,20 @@ impl Rig {
         }
     }
 
+    /// The same rig with a bare sleeper as its agent.
+    ///
+    /// A perl TUI exists for the input sensor, and a test that never reads a
+    /// pane pays for it in contention with every other launch arm. Two of them
+    /// run here — this session and the companion it starts — so both are cheap.
+    fn idle(tag: &str) -> Self {
+        let rig = Self::new(tag, &[], None);
+        assert!(
+            std::fs::write(&rig.config, IDLE_CONFIG).is_ok(),
+            "an idle config"
+        );
+        rig
+    }
+
     fn tmux(&self, tail: &[&str]) -> (bool, String) {
         let mut args = ae::tmux::server_args(&ae::inventory::ServerId::Selected(
             ae::meta::Selector::Socket(self.sock.clone()),
@@ -121,9 +139,26 @@ impl Rig {
 
     /// Run `_launch` with the preamble this rig implies.
     fn launch(&self, tail: &[&str]) -> (Option<i32>, String, String) {
+        self.launch_with_server("socket", &self.sock.display().to_string(), tail)
+    }
+
+    /// The same launch with an ARBITRARY server pair — what the flag-validation
+    /// arms need.
+    ///
+    /// `TMUX_TMPDIR` points at this rig's scratch so that a launch which falls
+    /// back to the ambient server falls back into the rig rather than onto the
+    /// developer's own tmux. Proving that a bad pair does NOT build a session
+    /// means letting it try.
+    fn launch_with_server(
+        &self,
+        kind: &str,
+        value: &str,
+        tail: &[&str],
+    ) -> (Option<i32>, String, String) {
         let out = ae()
             .env_remove("TMUX")
             .env_remove("TMUX_PANE")
+            .env("TMUX_TMPDIR", &self.scratch)
             .arg(ae::cli::LAUNCH)
             .args([
                 "--home",
@@ -133,9 +168,9 @@ impl Rig {
                 "--global",
                 &self.config.display().to_string(),
                 "--server-kind",
-                "socket",
+                kind,
                 "--server",
-                &self.sock.display().to_string(),
+                value,
                 "--no-attach",
                 "--",
             ])
@@ -149,8 +184,72 @@ impl Rig {
         )
     }
 
+    /// The sessions on a server addressed the way `tmux` itself would be — with
+    /// the operator's environment dropped, so `TMUX_TMPDIR` decides the default
+    /// socket instead of an inherited `TMUX`.
+    fn sessions_on(&self, server_args: &[&str]) -> Vec<String> {
+        let mut invocation = super::parity::Invocation::new("tmux")
+            .env_cleared()
+            .env("PATH", std::env::var("PATH").unwrap_or_default())
+            .env("HOME", &self.scratch)
+            .env("TMUX_TMPDIR", &self.scratch);
+        for arg in server_args {
+            invocation = invocation.arg(arg);
+        }
+        for arg in ["list-sessions", "-F", "#{session_name}"] {
+            invocation = invocation.arg(arg);
+        }
+        let out = self.scratch.join("amb-out");
+        let err = self.scratch.join("amb-err");
+        let _ = super::parity::capture::raw::run(&invocation, &self.scratch, &out, &err);
+        std::fs::read_to_string(&out)
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_owned)
+            .collect()
+    }
+
+    /// Kill a server this rig addressed by `server_args`, so a named one does
+    /// not outlive the test.
+    fn kill_server_at(&self, server_args: &[&str]) {
+        let mut invocation = super::parity::Invocation::new("tmux")
+            .env_cleared()
+            .env("PATH", std::env::var("PATH").unwrap_or_default())
+            .env("HOME", &self.scratch)
+            .env("TMUX_TMPDIR", &self.scratch);
+        for arg in server_args {
+            invocation = invocation.arg(arg);
+        }
+        invocation = invocation.arg("kill-server");
+        let out = self.scratch.join("kill-out");
+        let err = self.scratch.join("kill-err");
+        let _ = super::parity::capture::raw::run(&invocation, &self.scratch, &out, &err);
+    }
+
     fn dir(&self, session: &str) -> PathBuf {
         self.home.join("sessions").join(session)
+    }
+
+    /// Plant the orchestrator scaffold the companion autostart opts in on.
+    ///
+    /// Its agent is a bare sleeper rather than the TUI fake: what this proves is
+    /// that the companion is LAUNCHED, under its own config, and a second perl
+    /// TUI would only add contention to a suite that already runs several.
+    fn scaffold_orchestrator(&self) -> PathBuf {
+        let dir = self.home.join("orchestrator");
+        assert!(std::fs::create_dir_all(&dir).is_ok(), "a scaffold dir");
+        let config = dir.join("orchestrator.config");
+        assert!(
+            std::fs::write(&config, IDLE_CONFIG).is_ok(),
+            "a scaffold config"
+        );
+        config
+    }
+
+    /// The session names the rig's server holds right now.
+    fn sessions(&self) -> Vec<String> {
+        let (_, listed) = self.tmux(&["list-sessions", "-F", "#{session_name}"]);
+        listed.lines().map(str::to_owned).collect()
     }
 
     fn meta(&self, session: &str) -> String {
@@ -181,7 +280,10 @@ impl Rig {
 
     /// Wait briefly for the fake agent to record that it started.
     fn launch_argv(&self) -> String {
-        for _ in 0..200 {
+        // 20s, not 5. The wait is over as soon as the file appears, so a
+        // generous bound costs nothing when the machine is idle — and a bound
+        // that a loaded machine can miss is a flaky test, not a product fact.
+        for _ in 0..800 {
             let seen = std::fs::read_to_string(&self.launched).unwrap_or_default();
             if !seen.is_empty() {
                 return seen;
@@ -193,8 +295,22 @@ impl Rig {
 }
 
 impl Drop for Rig {
+    /// Kill the server, then keep removing the scratch until it STAYS removed.
+    ///
+    /// One removal is not enough: a launch leaves DETACHED children behind it —
+    /// the id capture, and the orchestrator companion, which is a whole second
+    /// launch — and a child still writing recreates the tree a moment after the
+    /// first `remove_dir_all` succeeds. That left a `/tmp/aeln.<pid>.<tag>`
+    /// skeleton behind every run of the companion arm.
     fn drop(&mut self) {
         let _ = self.tmux(&["kill-server"]);
+        for _ in 0..40 {
+            let _ = std::fs::remove_dir_all(&self.scratch);
+            if !self.scratch.exists() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
         let _ = std::fs::remove_dir_all(&self.scratch);
     }
 }
@@ -222,6 +338,17 @@ fn a_local_launch_builds_the_whole_session() {
     let rig = Rig::new("local", &["claude"], None);
     let (code, stdout, stderr) = rig.launch(&["--local", "lnlocal"]);
     assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    // The hint names a command that EXISTS. It used to say `ae orchestrator
+    // --attach`, which is a retired word that now refuses — and which named the
+    // companion rather than the session just started.
+    assert!(
+        stdout.contains(&format!(
+            "Attach with: tmux -S {} attach -t lnlocal",
+            rig.sock.display()
+        )),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("orchestrator --attach"), "{stdout}");
 
     // The SESSION and its stamped pane.
     let panes = rig.panes("lnlocal");
@@ -320,21 +447,28 @@ fn a_helper_shim_execs_the_core() {
         "the core wrote the declaration through the shim"
     );
 
-    let out = helper(&dir.join("peek"))
-        .env("TMUX", format!("{},0,0", rig.sock.display()))
-        .env("TMUX_PANE", &lead)
-        .args(["lead", "20"])
-        .output()
-        .unwrap_or_else(|why| panic!("the peek shim should run: {why}"));
-    assert!(
-        out.status.success(),
-        "peek shim: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    assert!(
-        String::from_utf8_lossy(&out.stdout).contains("fake agent transcript"),
-        "peek read the pane back"
-    );
+    // The agent draws its transcript when its own process gets there, which is
+    // not when the launch returns. Peek until it has, within a bound.
+    let mut seen = String::new();
+    for _ in 0..200 {
+        let out = helper(&dir.join("peek"))
+            .env("TMUX", format!("{},0,0", rig.sock.display()))
+            .env("TMUX_PANE", &lead)
+            .args(["lead", "20"])
+            .output()
+            .unwrap_or_else(|why| panic!("the peek shim should run: {why}"));
+        assert!(
+            out.status.success(),
+            "peek shim: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        seen = String::from_utf8_lossy(&out.stdout).into_owned();
+        if seen.contains("fake agent transcript") {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    panic!("peek never read the pane back: {seen}");
 }
 
 /// A resume re-runs the SAME session with the resume variant, and does not
@@ -450,4 +584,285 @@ fn a_codex_launch_captures_the_session_id_it_registers() {
         std::thread::sleep(Duration::from_millis(250));
     }
     panic!("the capture never registered the id:\n{}", rig.meta("cap"));
+}
+
+/// The orchestrator companion, started BY THE CORE.
+///
+/// The bug this pins: the autostart ran `env AE_NO_AUTOSTART=1 <glue>
+/// orchestrator`, and the glue's `orchestrator` arm is a RETIRED word that
+/// refuses with exit 2 — on a stderr the detached child sends to `/dev/null`.
+/// So the companion had not started since the glue cut, and nothing said so.
+///
+/// The rig passes no glue path at all (the flag is gone), so a companion that
+/// appears here can only have been launched by the core itself.
+#[test]
+fn a_scaffold_starts_the_orchestrator_companion_from_the_core() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("orch");
+    let config = rig.scaffold_orchestrator();
+    let (code, stdout, stderr) = rig.launch(&["--local", "lnorch"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        stdout.contains("Starting orchestrator companion session"),
+        "the launch says it started one: {stdout}"
+    );
+
+    // The child is DETACHED, and its two observable facts do not land together:
+    // tmux lists a session the moment it is created, while the meta is
+    // published further down the launch. Waiting on the RECORD waits for both.
+    let recorded = format!("config={}", config.display());
+    let mut meta = String::new();
+    for _ in 0..160 {
+        meta = rig.meta("orchestrator");
+        if meta.contains(&recorded) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    let seen = rig.sessions();
+    assert!(
+        seen.iter().any(|name| name == "orchestrator"),
+        "the companion must be up on the rig's own server: {seen:?}"
+    );
+
+    // ISOLATION is the whole point of the retired trampoline: the companion
+    // must run under the SCAFFOLD's config and directory, never the caller's.
+    assert!(
+        meta.contains(&recorded),
+        "the companion read the scaffold's config:\n{meta}"
+    );
+    assert!(
+        meta.contains(&format!(
+            "origin={}",
+            rig.home.join("orchestrator").display()
+        )),
+        "the companion ran in the scaffold's directory:\n{meta}"
+    );
+
+    // And it starts NO companion of its own: the structural guard (a session
+    // named for a scaffold) and `--no-autostart` both hold, so there is exactly
+    // one orchestrator however many times the recursion could have gone round.
+    assert_eq!(
+        rig.sessions()
+            .iter()
+            .filter(|name| *name == "orchestrator")
+            .count(),
+        1,
+        "the recursion guard holds"
+    );
+}
+
+/// `--glue` is GONE, and an unknown flag is refused exactly as before.
+///
+/// The flag existed to record `ae_path` in meta — the `ae` COMMAND the watchdog
+/// re-exec'd for its Telegram revive. That revive is in-process now, so the row
+/// had no reader and the flag had no subject. No compat arm: a caller still
+/// passing it is refused before any side effect, which is the whole point of
+/// reading the preamble first.
+#[test]
+fn the_retired_glue_flag_is_refused_before_any_side_effect() {
+    let out = ae()
+        .arg(ae::cli::LAUNCH)
+        .args([
+            "--home",
+            "/nonexistent",
+            "--cwd",
+            "/nonexistent",
+            "--glue",
+            "/bin/ae",
+        ])
+        .output()
+        .unwrap_or_else(|why| panic!("the ae binary should run: {why}"));
+    assert_eq!(out.status.code(), Some(2), "a usage refusal");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("offending word: --glue"),
+        "the refusal names the word: {stderr}"
+    );
+}
+
+/// A resume whose spawned seat names a profile the CURRENT config defines as
+/// two commands.
+///
+/// The bug: the restore read `cfg.profile()` and handed the string to the pane
+/// shell. `config::launch_plan` lexes the `[roster]` seats and `_spawn` lexes
+/// the profile it is given, but nothing lexed THIS one — so a profile holding
+/// `touch m ; tail -f /dev/null` ran both halves on resume, which is the defect
+/// the spawn gate closed, reached through the restore.
+///
+/// `marker` is the proof: it exists only if a second command ran.
+fn resumable_rig(tag: &str, session: &str, profile: &str) -> (Rig, PathBuf) {
+    let rig = Rig::idle(tag);
+    let marker = rig.home.join("MARKER");
+    let mut config = std::fs::read_to_string(&rig.config).unwrap_or_default();
+    // A SECOND `[profiles]` header: the rig's config ends inside `[workspace]`,
+    // and a bare `key = value` appended there is a workspace key, not a profile.
+    config.push_str("\n[profiles]\n");
+    config.push_str(&profile.replace("__MARKER__", &marker.display().to_string()));
+    assert!(std::fs::write(&rig.config, config).is_ok(), "a bad profile");
+    // A STOPPED session: meta on disk, nothing running. That is what a resume
+    // reads its roster out of.
+    let dir = rig.dir(session);
+    assert!(std::fs::create_dir_all(&dir).is_ok(), "a session dir");
+    assert!(
+        std::fs::write(
+            dir.join("meta"),
+            format!(
+                "session={session}\nmode=local\nlayout=vertical\nwork_dir={home}\n\
+                 origin={home}\nschema=2\nseat.main=lead\nprofile.main=idle\n\
+                 agent_bin.main=sleep\nseat.spawned.0=helper\nprofile.spawned.0=bad\n\
+                 agent_bin.spawned.0=sleep\n",
+                home = rig.project.display(),
+            ),
+        )
+        .is_ok(),
+        "a v2 meta with a spawned seat"
+    );
+    (rig, marker)
+}
+
+#[test]
+fn a_restored_spawned_seat_whose_profile_is_two_commands_refuses_the_whole_resume() {
+    if skip() {
+        return;
+    }
+    let (rig, marker) = resumable_rig(
+        "spwbad",
+        "lnspwb",
+        "bad = \"/usr/bin/touch __MARKER__ ; sleep 600\"\n",
+    );
+
+    let (code, stdout, stderr) = rig.launch(&["--local", "lnspwb"]);
+    assert_eq!(code, Some(1), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        stderr.contains("profile 'bad' refused") && stderr.contains("Nothing was resumed"),
+        "the refusal names the profile and the seat: {stderr}"
+    );
+    assert!(stderr.contains("helper"), "and the seat: {stderr}");
+    assert!(
+        !marker.exists(),
+        "the second command must never have run: {}",
+        marker.display()
+    );
+    // BEFORE ANY EFFECT: no session, and no pane for the seat.
+    let live = rig.sessions();
+    assert!(
+        !live.iter().any(|name| name == "lnspwb"),
+        "nothing was started: {live:?}"
+    );
+}
+
+/// The control: a restored seat whose profile is ONE command still resumes, and
+/// still gets its pane.
+#[test]
+fn a_restored_spawned_seat_with_a_valid_profile_still_resumes() {
+    if skip() {
+        return;
+    }
+    let (rig, marker) = resumable_rig("spwok", "lnspwo", "bad = \"sleep 600\"\n");
+
+    let (code, stdout, stderr) = rig.launch(&["--local", "lnspwo"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(!marker.exists(), "nothing ran a second command");
+    let panes = rig.panes("lnspwo");
+    assert!(
+        panes.iter().any(|(_, slot, _)| slot == "spawned.0"),
+        "the restored seat gets its pane back: {panes:?}"
+    );
+}
+
+/// An unusable `--server-kind` is refused before anything is built.
+///
+/// The bug: an unknown kind fell through to the ambient server, so the launch
+/// exited 0 having created the session on the DEFAULT tmux while recording the
+/// unusable pair in meta. Nothing could act on it afterwards — every lifecycle
+/// operation refuses the record it is handed — so the session was a phantom:
+/// running, ae's by its marker, and unmanageable.
+///
+/// `ambiguous` is the case that matters: it is what the glue emits for a socket
+/// path it could not canonicalise, which is a statement that the caller's own
+/// server could not be identified. There is nothing to substitute for it.
+#[test]
+fn an_unusable_server_pair_is_refused_before_the_session_is_built() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("kindbad");
+    for (kind, value, expected) in [
+        ("ambiguous", "work", "'ambiguous' is not a tmux server kind"),
+        ("bogus", "work", "'bogus' is not a tmux server kind"),
+        ("socket", "", "--server-kind socket needs a --server value"),
+        ("name", "", "--server-kind name needs a --server value"),
+        ("", "work", "--server was given without a --server-kind"),
+    ] {
+        let (code, stdout, stderr) = rig.launch_with_server(kind, value, &["--local", "lnkind"]);
+        assert_eq!(
+            code,
+            Some(2),
+            "kind '{kind}' value '{value}': stdout: {stdout}\nstderr: {stderr}"
+        );
+        assert!(
+            stderr.contains(expected) && stderr.contains("ambient"),
+            "kind '{kind}': the refusal names what it could not use and says it did not \
+             fall back: {stderr}"
+        );
+        // BEFORE ANY EFFECT: no state directory, and nothing on the server the
+        // fallback would have used.
+        assert!(
+            !rig.dir("lnkind").exists(),
+            "kind '{kind}': no session state was written"
+        );
+        let ambient = rig.sessions_on(&[]);
+        assert!(
+            !ambient.iter().any(|name| name == "lnkind"),
+            "kind '{kind}': nothing was built on the ambient server: {ambient:?}"
+        );
+    }
+}
+
+/// The control: both typed kinds still reach their own server.
+#[test]
+fn a_typed_server_pair_still_reaches_its_own_server() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("kindok");
+
+    // socket: the rig's own, which every other arm here already depends on.
+    let (code, stdout, stderr) = rig.launch_with_server(
+        "socket",
+        &rig.sock.display().to_string(),
+        &["--local", "lnsock"],
+    );
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        rig.sessions().iter().any(|name| name == "lnsock"),
+        "the socket server holds it"
+    );
+    // And the hint names that server, because a session on one is invisible to
+    // a bare `tmux attach`.
+    assert!(
+        stdout.contains(&format!(
+            "Attach with: tmux -S {} attach -t lnsock",
+            rig.sock.display()
+        )),
+        "{stdout}"
+    );
+
+    // name: a `-L` server, which nothing else here exercises.
+    let named = format!("aeln{}", std::process::id());
+    let (code, stdout, stderr) = rig.launch_with_server("name", &named, &["--local", "lnnamed"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let held = rig.sessions_on(&["-L", &named]);
+    rig.kill_server_at(&["-L", &named]);
+    assert!(
+        held.iter().any(|name| name == "lnnamed"),
+        "the named server holds it: {held:?}"
+    );
+    assert!(
+        stdout.contains(&format!("Attach with: tmux -L {named} attach -t lnnamed")),
+        "{stdout}"
+    );
 }

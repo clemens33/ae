@@ -27,12 +27,15 @@
 //! ([`crate::watchdog::sweep_step`] / [`crate::watchdog::record_sweep`]); this
 //! module reads the heartbeat, delivers the prompt and books what happened.
 //!
-//! # What still crosses to the glue
+//! # Nothing crosses to the glue any more
 //!
-//! Only the Telegram supervise (`ae telegram _supervise`, through the recorded
-//! `ae_path`). The pending tool-session-id recovery is the core's own since
-//! the recovery port: [`crate::watchdog_glue::recover`] runs it in-process on
-//! every tick, from meta, for any seat still without an id.
+//! Both deferred concerns are the core's own. The pending tool-session-id
+//! recovery went first ([`crate::watchdog_glue::recover`], in-process from
+//! meta on every tick), and the Telegram bridge revive followed: it used to
+//! run `<ae_path> telegram _supervise`, a word [`crate::telegram_lifecycle`]
+//! never parsed, so the fork it cost every throttle window bought a discarded
+//! usage error. It is [`crate::telegram_lifecycle::autostart`] now — the same
+//! call a launch makes.
 
 use std::io::{self, Write};
 use std::path::Path;
@@ -812,8 +815,8 @@ pub fn run(
     )?;
     out.flush()?;
     let mut deferred = crate::watchdog_glue::Deferred::new(
-        crate::watchdog_glue::recorded_ae_path(&bytes),
-        recorded_server_value(&meta),
+        meta_dir,
+        Some(crate::lifecycle::meta_value(&bytes, "config").as_str()),
         knobs.tg_supervise_secs,
     );
 
@@ -857,19 +860,6 @@ fn announce_start(server: &crate::inventory::ServerId, session: &str, work_dir: 
         &session_id,
         crate::watchdog_glue::branch_reading(work_dir).as_ref(),
     );
-}
-
-/// The raw `tmux_server` value to export as `AE_TMUX_SERVER` when the deferred
-/// tick runs the recorded `ae` binary, so a supervise reaches the session's own
-/// server rather than an ambient one (ae:14453-14458).
-fn recorded_server_value(meta: &Meta) -> Option<String> {
-    match meta.server_selector() {
-        ServerSelector::Positive(crate::meta::Selector::Name(name)) => Some(name),
-        ServerSelector::Positive(crate::meta::Selector::Socket(path)) => {
-            Some(path.display().to_string())
-        }
-        ServerSelector::Missing | ServerSelector::Ambiguous => None,
-    }
 }
 
 /// The loop itself, split from [`run`] so the pidfile it publishes is released
@@ -1011,7 +1001,7 @@ fn tick_pane_duties(
             err,
         )?;
     }
-    deferred.supervise(session, SystemTime::now());
+    deferred.supervise(server, session, SystemTime::now());
     Ok(())
 }
 

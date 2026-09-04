@@ -516,3 +516,360 @@ fn compact_relaunches_the_child_in_process() {
         "the child starts the FROZEN roster:\n{meta}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// the AMBIENT server, isolated
+// ---------------------------------------------------------------------------
+
+/// A rig whose "ambient" tmux server is nobody else's.
+///
+/// `TMUX_TMPDIR` moves the default socket under this rig's own directory, so a
+/// command that falls back to the ambient server here reaches a server this
+/// test created — which is the only honest way to prove what an ambient
+/// FALLBACK would have done to a stranger's session.
+struct AmbientRig {
+    home: PathBuf,
+}
+
+impl AmbientRig {
+    fn new(tag: &str) -> Self {
+        let home = PathBuf::from(format!("/tmp/aeamb.{}.{tag}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(home.join("sessions")).expect("a scratch AE_HOME");
+        Self { home }
+    }
+
+    /// tmux with the OPERATOR'S ENVIRONMENT DROPPED.
+    ///
+    /// `TMUX_TMPDIR` only decides the default socket when `TMUX` is unset —
+    /// and a suite run from inside a tmux pane inherits `TMUX`, which names the
+    /// developer's own server. Clearing the environment and re-adding the three
+    /// variables tmux actually needs is what makes "ambient" mean this rig.
+    fn tmux(&self, tail: &[&str]) -> (bool, String) {
+        let mut invocation = super::parity::Invocation::new("tmux")
+            .env_cleared()
+            .env("PATH", std::env::var("PATH").unwrap_or_default())
+            .env("HOME", &self.home)
+            .env("TMUX_TMPDIR", &self.home)
+            .arg("-f")
+            .arg("/dev/null");
+        for arg in tail {
+            invocation = invocation.arg(arg);
+        }
+        let out = self.home.join("t-out");
+        let err = self.home.join("t-err");
+        let ran = super::parity::capture::raw::run(&invocation, &self.home, &out, &err);
+        let succeeded = ran.is_ok_and(|status| {
+            matches!(
+                status.outcome(),
+                super::parity::capture::ExitOutcome::Code(0)
+            )
+        });
+        (succeeded, std::fs::read_to_string(&out).unwrap_or_default())
+    }
+
+    /// One core subcommand, with this rig's home AND its ambient server.
+    fn run(&self, args: &[&str]) -> (Option<i32>, String, String) {
+        let mut cmd = ae();
+        cmd.env("AE_HOME", &self.home);
+        cmd.env("TMUX_TMPDIR", &self.home);
+        cmd.env_remove("TMUX");
+        cmd.env_remove("TMUX_PANE");
+        for arg in args {
+            cmd.arg(arg);
+        }
+        let out = bounded(
+            cmd.stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .expect("the ae binary should run"),
+            Duration::from_secs(30),
+        )
+        .expect("the core returned");
+        (
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    }
+
+    /// A live session on the ambient server, plus the state directory that
+    /// makes it one of ae's — with `server_rows` verbatim in its meta.
+    fn plant(&self, name: &str, server_rows: &str) -> PathBuf {
+        assert!(
+            self.tmux(&["new-session", "-d", "-s", name, "sh"]).0,
+            "the ambient session '{name}' starts"
+        );
+        // THE ISOLATION GUARD, checked before anything acts. These tests exist
+        // to watch an ambient fallback take a session that is not its own, and
+        // a leaked `TMUX` would point that fallback at the developer's real
+        // server. A default server holding anything but this rig's session is
+        // not this rig's server, and nothing may proceed against it.
+        let live = self.sessions();
+        assert_eq!(
+            live,
+            vec![name.to_owned()],
+            "the ambient server must be this rig's alone"
+        );
+        let dir = self.home.join("sessions").join(name);
+        std::fs::create_dir_all(&dir).expect("a session dir");
+        std::fs::write(
+            dir.join("meta"),
+            format!(
+                "session={name}\nsession_id={UUID}\nmode=local\nlayout=vertical\n\
+                 work_dir={home}\norigin={home}\nmain_pane=%0\nschema=2\n\
+                 seat.main=lead\nprofile.main=fake\nagent_bin.main=sh\n{server_rows}",
+                home = self.home.display(),
+            ),
+        )
+        .expect("a v2 meta");
+        dir
+    }
+
+    fn sessions(&self) -> Vec<String> {
+        let (_, listed) = self.tmux(&["list-sessions", "-F", "#{session_name}"]);
+        listed.lines().map(str::to_owned).collect()
+    }
+}
+
+impl Drop for AmbientRig {
+    fn drop(&mut self) {
+        let _ = self.tmux(&["kill-server"]);
+        let _ = std::fs::remove_dir_all(&self.home);
+    }
+}
+
+/// B2: an unresolvable server record must not be answered with the ambient one.
+///
+/// The bug, and terra's repro: `tmux_server_kind=ambiguous` normalised to
+/// `ServerSelector::Ambiguous`, the caller retagged that `ServerId::Ambient`,
+/// and the rename then went looking for the name on a server the record never
+/// named. An unrelated session of the same name answers — and gets renamed.
+#[test]
+fn an_ambiguous_server_record_refuses_the_rename_rather_than_taking_an_ambient_session() {
+    let rig = AmbientRig::new("ambrn");
+    let dir = rig.plant("ambold", "tmux_server_kind=ambiguous\ntmux_server=work\n");
+
+    let (code, out, err) = rig.run(&["rename", "ambold", "ambnew"]);
+    assert_eq!(code, Some(1), "stdout: {out}\nstderr: {err}");
+    assert!(
+        err.contains("tmux_server_kind") && err.contains("tmux_server"),
+        "the refusal names the rows an operator has to fix: {err}"
+    );
+    assert!(err.contains("Nothing was renamed"), "{err}");
+
+    // THE POINT. Pre-fix the ambient session was renamed by a record that never
+    // named this server.
+    let live = rig.sessions();
+    assert!(
+        live.iter().any(|name| name == "ambold"),
+        "the ambient session must be untouched: {live:?}"
+    );
+    assert!(
+        !live.iter().any(|name| name == "ambnew"),
+        "nothing was renamed: {live:?}"
+    );
+    assert!(exists(&dir), "the state directory stays put");
+    assert!(!exists(&rig.home.join("sessions").join("ambnew")));
+}
+
+/// The control: a record with NO server rows is not the same defect.
+///
+/// A launch writes the two rows only when its caller resolved a server, and the
+/// glue resolves none from a plain terminal — so a missing selector is the most
+/// ordinary session there is, and the ambient server is exactly the one it runs
+/// on. Refusing it would strand every such session.
+#[test]
+fn a_session_that_records_no_server_still_renames_on_the_ambient_one() {
+    let rig = AmbientRig::new("ambok");
+    rig.plant("ambplain", "");
+
+    let (code, out, err) = rig.run(&["rename", "ambplain", "ambmoved"]);
+    assert_eq!(code, Some(0), "stdout: {out}\nstderr: {err}");
+    assert!(out.contains("Renamed 'ambplain' → 'ambmoved'"), "{out}");
+    let live = rig.sessions();
+    assert!(
+        live.iter().any(|name| name == "ambmoved"),
+        "the ambient session was renamed: {live:?}"
+    );
+    assert!(exists(&rig.home.join("sessions").join("ambmoved")));
+}
+
+/// B2, the watchdog half: start, stop and status all address the session by
+/// name on the server the record names, so an unresolvable record has to stop
+/// them too.
+#[test]
+fn an_ambiguous_server_record_refuses_every_watchdog_command() {
+    let rig = AmbientRig::new("ambwd");
+    rig.plant("ambwd1", "tmux_server_kind=ambiguous\ntmux_server=work\n");
+
+    for verb in ["status", "start", "stop"] {
+        let (code, out, err) = rig.run(&["_watchdog", verb, "ambwd1"]);
+        assert_eq!(code, Some(1), "{verb}: stdout: {out}\nstderr: {err}");
+        assert!(
+            err.contains("tmux_server_kind") && err.contains("The watchdog was not touched"),
+            "{verb}: {err}"
+        );
+    }
+}
+
+/// I1: a handover that never happened is RECORDED as not having happened.
+///
+/// The self-stop writes `stop-request` before it detaches, because a human
+/// whose pane vanished has to be able to tell "ae was asked and something went
+/// wrong" from "ae was never asked". When the detach itself failed, that record
+/// was all there was — and a request with no result is indistinguishable from a
+/// stop still in flight. The caller here has an empty `PATH`, so the `nohup`
+/// the detach runs cannot be found and `run_detached` reports false.
+#[test]
+fn a_supervisor_that_never_started_is_recorded_as_a_failed_stop() {
+    let rig = Rig::new("nosuper");
+    let mut cmd = ae();
+    cmd.env("AE_HOME", &rig.home);
+    cmd.env("PATH", "");
+    cmd.env_remove("TMUX");
+    cmd.env_remove("TMUX_PANE");
+    let out = bounded(
+        cmd.args(["_stop", "--self", &rig.name, "-y"])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("the ae binary should run"),
+        Duration::from_secs(30),
+    )
+    .expect("the core returned");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "{stderr}");
+    assert!(
+        stderr.contains("could not start the supervisor"),
+        "{stderr}"
+    );
+
+    let events = std::fs::read_to_string(rig.dir.join("events.jsonl")).unwrap_or_default();
+    assert!(
+        events.contains("\"action\":\"stop-request\""),
+        "the intent was recorded: {events}"
+    );
+    assert!(
+        events.contains("\"action\":\"stop-result\""),
+        "and so must the outcome be — a request with no result reads as a stop still running: {events}"
+    );
+    assert!(
+        events.contains("FAILED: supervisor did not start"),
+        "the result says what failed: {events}"
+    );
+    assert!(rig.session_is_live(), "nothing was stopped");
+}
+
+/// I2: `stop all` from inside a target ASKS, when there is a terminal to ask on.
+///
+/// The detached supervisor cannot prompt — but the process that hands over to
+/// it is alive, holds the caller's terminal, and is the one taking down every
+/// session a typo away. It used to refuse outright and demand `-y`, which made
+/// the most destructive form of the command the one form that never confirmed.
+///
+/// Driven through a real tmux pane, because a prompt needs a real terminal.
+#[test]
+fn stop_all_from_inside_a_target_prompts_on_a_terminal() {
+    let rig = AmbientRig::new("stpall");
+    rig.plant("stpone", "");
+    let (_, panes) = rig.tmux(&["list-panes", "-t", "stpone", "-F", "#{pane_id}"]);
+    let pane = panes.lines().next().unwrap_or_default().to_owned();
+    assert!(!pane.is_empty(), "the caller's pane: {panes}");
+    assert!(
+        rig.tmux(&["set-option", "-p", "-t", &pane, "@ae_agent", "lead"])
+            .0
+    );
+
+    // The command runs as a PANE's process, so its stdin is a tty. Its own
+    // output goes to files: the prompt has to be read by this test, not by the
+    // terminal emulator.
+    let script = rig.home.join("runner.sh");
+    let log = rig.home.join("stop-out");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nAE_HOME={home} {ae} _stop all --pane {pane} > {log} 2>&1\n\
+             echo \"EXIT:$?\" >> {log}\nsleep 30\n",
+            home = rig.home.display(),
+            ae = env!("CARGO_BIN_EXE_ae"),
+            log = log.display(),
+        ),
+    )
+    .expect("the runner");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
+            .expect("an executable runner");
+    }
+    assert!(
+        rig.tmux(&[
+            "new-session",
+            "-d",
+            "-s",
+            "runner",
+            &script.display().to_string()
+        ])
+        .0,
+        "the runner pane starts"
+    );
+
+    let read = || std::fs::read_to_string(&log).unwrap_or_default();
+    let mut said = String::new();
+    for _ in 0..200 {
+        said = read();
+        if said.contains("Stop all") {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(
+        said.contains("Stop all") && said.contains("[y/N]"),
+        "the fleet stop must ASK before it detaches: {said:?}"
+    );
+
+    // Answering no stops nothing — and proves the process was really waiting on
+    // that terminal rather than having printed and moved on.
+    assert!(rig.tmux(&["send-keys", "-t", "runner", "n", "Enter"]).0);
+    for _ in 0..200 {
+        said = read();
+        if said.contains("EXIT:") {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(said.contains("Nothing was stopped."), "{said:?}");
+    assert!(said.contains("EXIT:1"), "{said:?}");
+    let live = rig.sessions();
+    assert!(
+        live.iter().any(|name| name == "stpone"),
+        "the fleet is untouched: {live:?}"
+    );
+}
+
+/// The other half of I2, unchanged: with no terminal the fleet stop from inside
+/// still refuses and still names the flag.
+#[test]
+fn stop_all_from_inside_a_target_with_no_terminal_still_needs_the_flag() {
+    let rig = AmbientRig::new("stpntty");
+    rig.plant("stptwo", "");
+    let (_, panes) = rig.tmux(&["list-panes", "-t", "stptwo", "-F", "#{pane_id}"]);
+    let pane = panes.lines().next().unwrap_or_default().to_owned();
+    assert!(
+        rig.tmux(&["set-option", "-p", "-t", &pane, "@ae_agent", "lead"])
+            .0
+    );
+
+    let (code, out, err) = rig.run(&["_stop", "all", "--pane", &pane]);
+    assert_eq!(code, Some(1), "stdout: {out}\nstderr: {err}");
+    assert!(err.contains("needs -y"), "{err}");
+    assert!(err.contains("cannot prompt"), "{err}");
+    let live = rig.sessions();
+    assert!(
+        live.iter().any(|name| name == "stptwo"),
+        "nothing was stopped: {live:?}"
+    );
+}

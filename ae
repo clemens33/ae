@@ -287,15 +287,14 @@ watchdog = true
 # .ae/config overrides the global one. Uncomment to add your own house rules:
 # instructions = "Always write tests. Prefer TypeScript."'
 
-# Create default config if missing
-if [[ ! -f "$CONFIG_FILE" ]]; then
-    mkdir -p "$CONFIG_DIR"
-    printf '%s\n' "$DEFAULT_CONFIG" >"$CONFIG_FILE"
-    # STDERR: this runs before the dispatcher, on EVERY invocation, so on a config-less
-    # home it would otherwise prepend a line to the stdout of commands whose stdout is a
-    # contract — `ae archive preview` promises the digest bytes and nothing else.
-    echo "Created default config at $CONFIG_FILE" >&2
-fi
+# THE DEFAULT CONFIG IS NOT WRITTEN HERE. It used to be, on EVERY invocation,
+# before the dispatcher — which meant a broken install left a mark: with no usable
+# core, `ae list` refused with exit 2 and $AE_HOME/config existed anyway. A command
+# that fails closed must not have created state on the way, or a diagnosis starts
+# from a home the failing run invented. The write now happens in the launch
+# prelude, AFTER the core preflight, because a launch is the only thing that needs
+# a config to exist — every other arm either hands the path to the core or does not
+# read one at all.
 
 # ── The core's helper set, rewritten from bash ────────────────────────────
 # The ONE asset `ae doctor --refresh` still needs that the core has no entry for.
@@ -759,10 +758,22 @@ resolve_launch_tmux_server() {
         return 0
     fi
     if [[ -n "${AE_TMUX_SERVER:-}" ]]; then
-        # The re-export path carries the kind SEPARATELY (AE_TMUX_SERVER_KIND) — use it
-        # when present; otherwise type by shape. Never strip prefixes from the value:
-        # a legacy -L server may literally be named "S:evil" (8th review I2).
-        if [[ "${AE_TMUX_SERVER_KIND:-}" == "socket" || "${AE_TMUX_SERVER_KIND:-}" == "name" ]]; then
+        # The re-export path carries the kind SEPARATELY (AE_TMUX_SERVER_KIND).
+        # A kind that IS set is passed through VERBATIM — including `ambiguous`,
+        # and including a word this script has never heard of. Only an UNSET kind
+        # is typed from the value's shape. Never strip prefixes from the value: a
+        # legacy -L server may literally be named "S:evil" (8th review I2).
+        #
+        # WHY VERBATIM. `ambiguous` is a REFUSAL, minted upstream by the one place
+        # that can tell: the socket-path probe above, when a relative path could
+        # not be proven by a pid round-trip. Re-typing it here from the value's
+        # shape turns that refusal into `socket` or `name` — a confident answer
+        # derived from the very string the upstream probe already declined to
+        # trust — and the launch then records a server it cannot verify. The core
+        # reads the kind first and refuses one it cannot type (exit 2), which is
+        # the whole point of carrying the pair: this script's job is to hand over
+        # what it was told, not to improve it.
+        if [[ -n "${AE_TMUX_SERVER_KIND:-}" ]]; then
             _LAUNCH_SRV_KIND="$AE_TMUX_SERVER_KIND"
         elif [[ "$AE_TMUX_SERVER" == /* ]]; then
             _LAUNCH_SRV_KIND="socket"
@@ -894,34 +905,42 @@ _autostart_session_hint() {
 }
 # ── Transfer helpers (cross-machine session sync) ────────────────────
 cmd_help() {
+    # THE COMMAND SET, AND NOTHING ELSE. This text is the only place a human is
+    # told what ae answers to, so a row that outlives its arm is worse than a
+    # missing one: it sends them at a command that now refuses. Check it against
+    # the dispatcher below and against the core's own usage lines when either
+    # moves — passes 3 and 4 left it advertising `ae status` and
+    # `ae orchestrator` after both became refusals, and `ae compact` unlisted
+    # since the day the core grew it.
     echo "ae - agentic engineering: tmux multi-agent workspace"
     echo ""
     echo "Usage:"
     echo "  ae                     Start or reattach default session (local)"
     echo "  ae <name>              Start or reattach a named session"
-    echo "  ae <name> use <alias>  Start session with a specific agent as main"
+    echo "  ae <name> use <name>   Start session with a specific agent as main"
     echo "  ae --local [name]      Start session in current directory (default)"
     echo "  ae --copy [name]       Start session with full copy (includes untracked files)"
     echo "  ae --worktree [name]   Start session with git worktree (tracked files only)"
     echo "  ae <new-name> --from <archive-uuid>"
     echo "                         Start a NEW session that explicitly continues an archived one"
     echo "                         (the main agent is told to read that archive's digest first)"
-    echo "  ae list [--all|--stopped|--needs-attn]"
-    echo "                         List sessions (running by default; --all adds stopped,"
-    echo "                         --needs-attn only those needing attention)"
-    echo "  ae status [name]       Show recent agent output without attaching"
+    echo "  ae list [--running|--all|--stopped|--needs-attn|--active] [--json]"
+    echo "                         List sessions (running by default). 'ae list --help' has the"
+    echo "                         full filter set and what --json carries"
     echo "  ae next [--attach]     Name the top session needing attention (--attach jumps to it)"
     echo "  ae doctor [--refresh [name|all]]"
     echo "                         Check local environment and optionally refresh existing session helpers"
     echo "  ae rename [old] <new>  Rename a running session"
     echo "  ae watchdog <start|stop|status> [name]"
     echo "                         Toggle the stale-agent watchdog for a session"
-    echo "  ae telegram <setup|start|stop|status>"
+    echo "  ae telegram <start|stop|status>"
     echo "                         Machine-global Telegram bridge (forwards events to a chat)"
-    echo "  ae orchestrator [--attach|--init]"
-    echo "                         Ensure the detached fleet orchestrator (meta-agent) is running"
     echo "  ae stop [name]         Pause session, keep ae + agent conversation state for resume"
     echo "                         (or 'ae stop all')"
+    echo "  ae compact [-f] [--keep-history] [--digest-only] [name]"
+    echo "                         Hand this session over to a fresh one: freeze the roster, archive"
+    echo "                         the memory, end it, and relaunch the same agents against that"
+    echo "                         archive. --digest-only writes nothing and prints what it would say"
     echo "  ae archive preview [name]"
     echo "                         Print the digest an end would archive (read-only; writes nothing)"
     echo "  ae end|rm [-f] [--purge-history|--keep-history] [name]"
@@ -937,10 +956,11 @@ cmd_help() {
     echo ""
     echo "Modes: --local (default), --copy (full cp -a), --worktree (git worktree)."
     echo "Sessions persist across reboots. Agents with session support resume conversations; others start fresh."
-    echo "When inside an ae session, stop/end/status work without specifying the name."
+    echo "When inside an ae session, stop/end/compact work without specifying the name."
     echo ""
     echo "Config: ~/.ae/config (per-project override: .ae/config in project dir)"
-    echo "Session helpers: send, ask, review, reply, requests, peek, say, spawn, retire, interrupt"
+    echo "Session helpers, in every session dir: send, ask, review, reply, requests, state,"
+    echo "  mark-done, goal, memo, say, peek (peak), agents, focus, interrupt, spawn, retire."
     echo "Run 'ae doctor' after install or agent CLI upgrades."
     echo "Run 'ae doctor --refresh' after updating ae to regenerate existing session helpers."
 }
@@ -1324,6 +1344,16 @@ esac
 # see: which bash is running this script. Everything else it checks for itself.
 _ae_core_preflight_try _check-deps --bash-major "${BASH_VERSINFO[0]}" || exit 1
 
+# THE FIRST WRITE OF THE RUN, and it is deliberately after the preflight above: a
+# launch cannot proceed without a config, but an install that cannot serve a launch
+# must not leave one behind. Only a launch reaches this line.
+# STDERR, not stdout: the launch's stdout belongs to the core it is about to exec.
+if [[ ! -f "$CONFIG_FILE" ]]; then
+    mkdir -p "$CONFIG_DIR"
+    printf '%s\n' "$DEFAULT_CONFIG" >"$CONFIG_FILE"
+    echo "Created default config at $CONFIG_FILE" >&2
+fi
+
 # The two companions are NOT the core's — a launch that quietly grew them would
 # be three operations in one. They run BEFORE the launch rather than between it
 # and the attach: the core attaches as its own last step, so there is no seam
@@ -1368,16 +1398,16 @@ fi
 if [[ "${AE_NO_AUTOSTART:-}" == "1" ]]; then
     _launch_flags+=(--no-autostart)
 fi
-# THE GLUE'S OWN PATH, recorded as meta's `ae_path`. The core cannot derive it:
-# `current_exe()` names the CORE, and under a versioned install those are two
-# different files (versions/<v>/ae-glue vs versions/<v>/ae-core). `ae_path` is
-# the recorded `ae` COMMAND — the watchdog re-execs it for `telegram _supervise`
-# and `_recover-pending`, which are bash arms the core does not answer — so
-# handing it the core would make a live session's watchdog re-exec unserviceable.
-# Derived exactly as sync_existing_session_assets derives it, and deliberately
-# NOT through `readlink -f`: the versioned path is the one to pin, not whatever
-# ~/.local/bin/ae happens to point at today.
-_launch_flags+=(--glue "$(cd "$(dirname "$0")" && pwd)/$(basename "$0")")
+# NO `--glue`, AND NO `ae_path` IN META. The flag existed for one reason: a live
+# session's watchdog re-exec'd the recorded `ae` COMMAND for the two things the
+# core did not answer, `telegram _supervise` and `_recover-pending`. Both are
+# in-process in the daemon now, so nothing re-execs this script and there is no
+# path to record — the core REFUSES the flag rather than accepting a value it
+# would never read. The reasoning that stood here is worth keeping in one line
+# because it is the trap a future reader would fall back into: `current_exe()`
+# cannot stand in for it, since under a versioned install the glue and the core
+# are two different files (versions/<v>/ae-glue vs versions/<v>/ae-core). The
+# answer today is that nobody needs the question.
 # THE CORE THE GLUE RESOLVED, recorded as meta's `ae_core`. `current_exe()` names
 # the binary that is RUNNING, which is not the same question: `_ae_core_try`
 # re-resolves the pin out of meta on EVERY later call, so what belongs there is

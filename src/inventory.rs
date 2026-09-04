@@ -188,6 +188,49 @@ pub enum ServerId {
     Selected(Selector),
 }
 
+impl ServerId {
+    /// The server a `--server-kind <kind> --server <value>` pair names, or the
+    /// refusal to guess one.
+    ///
+    /// ONE rule, shared by every entry that takes those two flags, because the
+    /// failure it prevents is the same everywhere: a kind ae cannot type used to
+    /// fall through to [`ServerId::Ambient`], so a caller that asked for one
+    /// server silently got another. `_launch` then CREATED the session there
+    /// while recording the unusable pair in meta — a session on a server no
+    /// later lifecycle operation will act on, because those refuse the record
+    /// they are handed. `telegram` had the same hole with a different cost: a
+    /// second bridge beside the one `status` and `stop` look for.
+    ///
+    /// Ambient is the answer for a caller that names NEITHER flag, and only
+    /// that. `ambiguous` — what the glue emits for a socket path it could not
+    /// canonicalise — is refused with every other unknown kind: it is a
+    /// statement that the caller's own server could not be identified, and
+    /// there is nothing to substitute for it.
+    ///
+    /// # Errors
+    ///
+    /// The operator-facing line, naming what it could not use.
+    pub fn from_typed_flags(kind: &str, value: &str) -> Result<Self, String> {
+        match kind {
+            "" if value.is_empty() => Ok(Self::Ambient),
+            "socket" if !value.is_empty() => {
+                Ok(Self::Selected(Selector::Socket(PathBuf::from(value))))
+            }
+            "name" if !value.is_empty() => Ok(Self::Selected(Selector::Name(value.to_owned()))),
+            "" => Err(
+                "Error: --server was given without a --server-kind, so ae cannot tell a socket path from a server name; ae will not fall back to the ambient server."
+                    .to_owned(),
+            ),
+            "socket" | "name" => Err(format!(
+                "Error: --server-kind {kind} needs a --server value; ae will not fall back to the ambient server."
+            )),
+            other => Err(format!(
+                "Error: '{other}' is not a tmux server kind ae can resolve (expected 'socket' or 'name'); ae will not fall back to the ambient server."
+            )),
+        }
+    }
+}
+
 /// One session an entitled server reported, before ae decides whether it is its
 /// own.
 #[derive(Debug, Clone, PartialEq, Eq)]

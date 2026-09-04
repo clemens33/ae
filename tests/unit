@@ -593,6 +593,34 @@ assert_eq "final cut: the retired internal word falls to the fail-closed _* arm"
     "$(printf '%s|%s' \
         "$(grep -c "unknown internal command" <<<"$AE_SOURCE" || true)" \
         "$(grep -c '^    _recover-pending)' <<<"$AE_SOURCE" || true)")"
+# B1: A REFUSED COMMAND CREATES NOTHING. The default config used to be written
+# before the dispatcher, on every invocation, so an install with no usable core
+# refused `ae list` with exit 2 and left $AE_HOME/config behind — a diagnosis then
+# starts from a home the failing run invented. The write is now the launch
+# prelude's, AFTER the core preflight, and it is the only one in the file.
+assert_eq "B1: nothing tests for a missing config BEFORE the core preflight" "0" \
+    "$(awk '/_ae_core_preflight_try _check-deps/{exit} /! -f "\$CONFIG_FILE"/{n++} END{print n+0}' <<<"$AE_SOURCE")"
+assert_eq "B1: ...it is inside the launch prelude, after the _check-deps preflight" "1" \
+    "$(awk '/_ae_core_preflight_try _check-deps/{seen=1} seen && /! -f "\$CONFIG_FILE"/{n++} END{print n+0}' <<<"$AE_SOURCE")"
+assert_eq "B1: ...and there is exactly ONE writer of the default config" "1" \
+    "$(grep -cF '>"$CONFIG_FILE"' <<<"$AE_SOURCE" || true)"
+# B3: THE SERVER KIND CROSSES VERBATIM. `ambiguous` is a REFUSAL minted by the
+# socket-path probe when a relative path could not be proven by a pid round-trip.
+# Re-deriving the kind here from the VALUE's shape turned that refusal into a
+# confident `socket`/`name` — an answer derived from the very string the probe
+# declined to trust. Any kind that is SET is passed through; only an unset one is
+# typed from the shape.
+assert_eq "B3: a set AE_TMUX_SERVER_KIND is passed through, never re-typed" "1" \
+    "$([[ "$AE_SOURCE" == *'if [[ -n "${AE_TMUX_SERVER_KIND:-}" ]]; then'*'_LAUNCH_SRV_KIND="$AE_TMUX_SERVER_KIND"'* ]] && echo 1 || echo 0)"
+# Scoped to the resolver's OWN body: `_ae_install_tmux_shim` legitimately tests
+# the same variable against "socket" — it is choosing a tmux flag from a kind it
+# was handed, not minting one. Non-vacuity first: the extracted body must contain
+# the `ambiguous` mint, or the extraction silently pins an empty string.
+_b3_resolver="$(awk '/^resolve_launch_tmux_server\(\) \{/{s=1} s{print} s && /^\}/{exit}' <<<"$AE_SOURCE")"
+assert_eq "B3: ...the resolver body was actually extracted (non-vacuity)" "1" \
+    "$(grep -c '_LAUNCH_SRV_KIND="ambiguous"' <<<"$_b3_resolver" || true)"
+assert_eq "B3: ...and the socket/name allowlist that dropped 'ambiguous' is gone" "0" \
+    "$(grep -c 'AE_TMUX_SERVER_KIND:-}" == ' <<<"$_b3_resolver" || true)"
 # 2. CORE RESOLUTION FROM CONFIG. Retired because it was the only source needing
 # an INI parser. The behavioural half of this is pinned in the core-input block
 # below; this half is that the call site itself is gone, so the parser cannot be
@@ -1114,12 +1142,22 @@ assert_eq "refresh: the refresh step reported success" "1" \
     "$(grep -q 'refreshed session helpers' "$_gen_root/refresh.log" && echo 1 || echo 0)"
 assert_eq "refresh: rc is recorded (0 or the known liveness-warning 1)" "1" \
     "$([[ "$_refresh_rc" == 0 || "$_refresh_rc" == 1 ]] && echo 1 || echo 0)"
-# EXACT, never ">= N". `_lib` and `_register-sid` left the set with the template
-# library, and exactness is what makes an artifact quietly appearing or vanishing
-# a failure rather than a different number. This list is the core's PASSTHROUGH
-# table plus mark-done, the two monitor processes and the two aliases; the
-# integration suite proves the BYTES match what the core writes at launch.
-_manifest_want="agents ask events-tail focus goal interrupt loop mark-done memo peak peek reply requests retire review say send spawn state watchdog"
+# EXACT, never ">= N": exactness is what makes an artifact quietly appearing or
+# vanishing a failure rather than a different number. This list is the core's
+# PASSTHROUGH table plus mark-done, the two monitor processes and the two
+# aliases; the integration suite proves the BYTES match what the core writes at
+# launch.
+#
+# `_register-sid` IS BACK IN THE SET, and it is the one shim here a human never
+# runs. `_lib` and it left together when the template library went, but the link
+# they were reached through was codex's own handshake: ae tells codex, in its
+# developer_instructions, to run `<meta>/_register-sid` as its first action,
+# because codex has no launch-time session-id flag and that is the only way its
+# UUID reaches meta before a resume needs it. With no shim, that instruction
+# named a file that was not there and the handshake was dead. The entry is
+# `_register-sid <meta-dir> <slot> [<session-id>]` and the shim is the standard
+# passthrough, so it appears here like any other.
+_manifest_want="_register-sid agents ask events-tail focus goal interrupt loop mark-done memo peak peek reply requests retire review say send spawn state watchdog"
 _manifest_got="$(
     cd "$_gen_dir" || exit 0
     for _mf in *; do
@@ -4323,7 +4361,7 @@ _sess="\${1:-sacrificial}"
 _dir="\${AE_HOME:-\$HOME/.ae}/sessions/\$_sess"
 mkdir -p "\$_dir"
 _path="\$(cd "\$(dirname "\$0")" && pwd)/\$(basename "\$0")"
-printf 'ae_path=%s\\n' "\$_path" >"\$_dir/meta"
+printf 'fixture_glue_path=%s\\n' "\$_path" >"\$_dir/meta"
 echo "launched \$_sess"
 EOF
     chmod +x "$dest"
@@ -5240,23 +5278,35 @@ assert_eq "P5 B21 installer left config ABSENT" "1" \
     "$([[ ! -e "$_p5_a8_home/.ae/config" && ! -L "$_p5_a8_home/.ae/config" ]] && echo 1 || echo 0)"
 assert_eq "P5 B21 installer has no config seed constant" "0" \
     "$(grep -cF '_REMOTE_CONFIG_SEED' "$_p5_repo/install" || true)"
-# Installed wrapper's sibling is the stub glue; swap in the real glue so one
+# Installed wrapper's sibling is the stub glue; swap in the real glue so a launch
 # invoke takes the DEFAULT_CONFIG path (config created only when ABSENT).
 chmod -R u+w "$_p5_a8_home/.ae/versions/2026.8.2"
 cp "$AE_BIN" "$_p5_a8_home/.ae/versions/2026.8.2/ae-glue"
 chmod 0555 "$_p5_a8_home/.ae/versions/2026.8.2/ae-glue" \
     "$_p5_a8_home/.ae/versions/2026.8.2"
-_p5_a8_glue_rc=0
+# TWO invokes, because B1 split what used to be one behaviour. `--help` is a
+# NON-LAUNCH and must leave the home exactly as the installer left it; the seed
+# write is the launch prelude's now and sits after the core preflight, so only a
+# launch reaches it. The fixture core answers every subcommand with its version,
+# so `_check-deps` passes and the exec'd `_launch` is a no-op: nothing is
+# started, nothing is attached, and the config is the only thing that appears.
 set +e
 HOME="$_p5_a8_home" "$_p5_a8_home/.local/bin/ae" --help \
+    >"$_p5_a8_home/help.out" 2>"$_p5_a8_home/help.err"
+set -e
+assert_eq "P5 B21 a non-launch invoke creates NO config" "1" \
+    "$([[ ! -e "$_p5_a8_home/.ae/config" ]] && echo 1 || echo 0)"
+_p5_a8_glue_rc=0
+set +e
+HOME="$_p5_a8_home" "$_p5_a8_home/.local/bin/ae" p5b21 \
     >"$_p5_a8_home/glue.out" 2>"$_p5_a8_home/glue.err"
 _p5_a8_glue_rc=$?
 set -e
-assert_eq "P5 B21 first glue invoke creates [profiles]" "1" \
+assert_eq "P5 B21 the launch invoke creates [profiles]" "1" \
     "$(grep -c '^\[profiles\]' "$_p5_a8_home/.ae/config" || true)"
-assert_eq "P5 B21 first glue invoke creates [roster]" "1" \
+assert_eq "P5 B21 the launch invoke creates [roster]" "1" \
     "$(grep -c '^\[roster\]' "$_p5_a8_home/.ae/config" || true)"
-assert_eq "P5 B21 first glue invoke creates [workspace]" "1" \
+assert_eq "P5 B21 the launch invoke creates [workspace]" "1" \
     "$(grep -c '^\[workspace\]' "$_p5_a8_home/.ae/config" || true)"
 assert_eq "P5 B21 default main is present" "1" \
     "$(grep -c '^main =' "$_p5_a8_home/.ae/config" || true)"
@@ -5811,7 +5861,7 @@ assert_eq "P5 installer F8: directory at command destination is refused" "1" "$_
 assert_eq "P5 installer F8: refusal names directory" "1" \
     "$(grep -F -c 'ae command destination is a directory' "$_p5_f8_home/err" || true)"
 
-# ── sacrificial session ae_path + upgrade (isolation preamble verbatim) ─
+# ── sacrificial session: the wrapper reaches the versioned glue, and an upgrade leaves it alone ─
 # Tripwire (2026-07-02 incident: the REAL ~/.ae/config was clobbered with a
 # test fixture during a test window): fingerprint the real user's config
 # BEFORE overriding HOME; cleanup screams and exits non-zero if it changed.
@@ -5859,7 +5909,13 @@ _p5_iso_rc=$?
 set -e
 assert_eq "P5 iso install 2026.8.2 succeeds" "0" "$_p5_iso_rc"
 
-# new-session meta ae_path == versions/<v>/ae-glue (glue records basename of \$0)
+# A REAL SESSION FROM THE INSTALLED BUNDLE. The pin that stood here — meta's
+# `ae_path` equals versions/<v>/ae-glue — is RETIRED: there is no `ae_path` row.
+# It existed because a live session's watchdog re-exec'd the recorded `ae`
+# COMMAND for `telegram _supervise` and `_recover-pending`; both are in-process
+# in the daemon now, the glue no longer sends `--glue`, and the core refuses the
+# flag. What the pin was really guarding is kept below, and widened: that an
+# UPGRADE does not touch a session created by the previous version.
 _p5_launch_rc=0
 set +e
 "$_p5_iso/home/.ae/versions/2026.8.2/ae" sacrificial \
@@ -5867,17 +5923,27 @@ set +e
 _p5_launch_rc=$?
 set -e
 assert_eq "P5 sacrificial launch succeeds" "0" "$_p5_launch_rc"
-_p5_got_path="$(grep -m1 '^ae_path=' "$HOME/.ae/sessions/sacrificial/meta" | cut -d= -f2-)"
-assert_eq "P5 new-session meta ae_path equals versions/v/ae-glue" "1" \
+# THE SUBJECT IS THE WRAPPER, not the glue's meta rows: this stub glue writes one
+# key naming the file that ran, and P5 asks whether the installed `ae` reached the
+# versioned `ae-glue` of the version it published. The key is `fixture_glue_path`
+# and not `ae_path` on purpose — the product row of that name is retired, and a
+# fixture that kept spelling it would read as a claim about ae rather than about
+# this stub.
+_p5_got_path="$(grep -m1 '^fixture_glue_path=' "$HOME/.ae/sessions/sacrificial/meta" | cut -d= -f2-)"
+assert_eq "P5 the installed wrapper reached versions/v/ae-glue" "1" \
     "$([[ -n "$_p5_got_path" && "$_p5_got_path" -ef "$HOME/.ae/versions/2026.8.2/ae-glue" ]] && echo 1 || echo 0)"
+cp "$HOME/.ae/sessions/sacrificial/meta" "$_p5_iso/sacrificial.meta.before"
 
 # stopped + running session dirs for the upgrade report
 mkdir -p "$HOME/.ae/sessions/stoppedone" "$HOME/.ae/sessions/liveone"
-printf 'ae_path=%s\nmarker=stopped\ntmux_server=ae-iso\ntmux_server_kind=name\n' \
-    "$HOME/.ae/versions/2026.8.2/ae-glue" \
+# These two metas are FIXTURES for the upgrade report, which classifies a session
+# dir as stopped or running and must not rewrite either. They used to carry an
+# `ae_path` row; nothing reads one any more (the installer never did), so they
+# carry only what the report keys on plus a marker byte that would reveal a
+# rewrite.
+printf 'marker=stopped\ntmux_server=ae-iso\ntmux_server_kind=name\n' \
     >"$HOME/.ae/sessions/stoppedone/meta"
-printf 'ae_path=%s\nmarker=running\ntmux_server=ae-iso\ntmux_server_kind=name\n' \
-    "$HOME/.ae/versions/2026.8.2/ae-glue" \
+printf 'marker=running\ntmux_server=ae-iso\ntmux_server_kind=name\n' \
     >"$HOME/.ae/sessions/liveone/meta"
 cp -R "$HOME/.ae/sessions/stoppedone" "$_p5_iso/stoppedone.before"
 cp -R "$HOME/.ae/sessions/liveone" "$_p5_iso/liveone.before"
@@ -5945,8 +6011,12 @@ assert_eq "P5 stopped-session dir untouched across upgrade (byte-compare)" "1" \
     "$(diff -rq "$HOME/.ae/sessions/stoppedone" "$_p5_iso/stoppedone.before" >/dev/null && echo 1 || echo 0)"
 assert_eq "P5 running-session meta untouched across upgrade (byte-compare)" "1" \
     "$(cmp -s "$HOME/.ae/sessions/liveone/meta" "$_p5_iso/liveone.before/meta" && echo 1 || echo 0)"
-assert_eq "P5 sacrificial ae_path unchanged across upgrade" "1" \
-    "$([[ -n "$_p5_got_path" && "$_p5_got_path" -ef "$HOME/.ae/versions/2026.8.2/ae-glue" ]] && echo 1 || echo 0)"
+# STRONGER THAN THE ROW IT REPLACES: the whole meta, byte for byte, not one key.
+# A session created by 2026.8.2 keeps pointing at 2026.8.2 after the upgrade —
+# that is the immutable-version-dir contract, and it is what made the retired
+# `ae_path` pin worth having in the first place.
+assert_eq "P5 sacrificial session meta untouched across upgrade (byte-compare)" "1" \
+    "$(cmp -s "$HOME/.ae/sessions/sacrificial/meta" "$_p5_iso/sacrificial.meta.before" && echo 1 || echo 0)"
 assert_eq "P5 B11 iso config telegram remains disabled" "1" \
     "$(grep -F -c 'enabled = false' "$HOME/.ae/config" || true)"
 assert_eq "P5 B11 iso config stub agent remains" "1" \

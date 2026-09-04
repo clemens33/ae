@@ -427,27 +427,6 @@ pub fn banner(session: &str, interval_secs: u64, stale_secs: u64, max_nudges: u3
     )
 }
 
-/// An argv for the recorded `ae` binary, mintable ONLY by this module.
-///
-/// The same seal [`crate::git::GitArgv`] and [`crate::procs::PsArgv`] carry: the
-/// transport leg runs an `AeArgv`, and no other module can build one, so an
-/// alias-import of the runner cannot become a general spawner.
-pub struct AeArgv(Vec<String>);
-
-impl AeArgv {
-    /// The argument list for the transport door to spawn. Reading is harmless;
-    /// CONSTRUCTION is what is sealed.
-    pub(crate) fn as_args(&self) -> &[String] {
-        &self.0
-    }
-}
-
-/// `ae telegram _supervise` — the best-effort bridge revive (ae:14448-14459).
-#[must_use]
-pub fn telegram_supervise_argv() -> AeArgv {
-    AeArgv(vec!["telegram".to_owned(), "_supervise".to_owned()])
-}
-
 /// One recovered tool session id — a seat that was `pending` and is not any
 /// more.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -520,34 +499,58 @@ pub fn supervise_due(every_secs: u64, last: Option<SystemTime>, now: SystemTime)
     now.duration_since(last).unwrap_or(Duration::ZERO).as_secs() >= every_secs
 }
 
-/// The one deferred concern still ticked through the recorded `ae` binary: the
-/// Telegram bridge revive.
+/// The one deferred concern the cycle still owns: the Telegram bridge revive.
 ///
-/// A value rather than three loose locals because the supervise throttle is
-/// state the tick owns, and a caller that forgot to carry it would revive the
-/// bridge on every cycle. Pending-id recovery was the other half until the core
-/// grew its own — see [`recover`], which needs none of this.
+/// A value rather than a loose local because the supervise throttle is state
+/// the tick owns, and a caller that forgot to carry it would revive the bridge
+/// on every cycle. Pending-id recovery was the other half until the core grew
+/// its own — see [`recover`], which needs none of this.
+///
+/// THE REVIVE IS IN-PROCESS. It used to run `<ae_path> telegram _supervise`
+/// through the recorded glue, and that word had no parser on the other side:
+/// [`crate::telegram_lifecycle`] accepts `start|stop|status` and nothing else,
+/// so every throttle window spent a fork on a usage error whose exit status was
+/// discarded. The core calls [`crate::telegram_lifecycle::autostart`] instead —
+/// the same call a launch makes, which respects `[telegram] enabled`, never
+/// writes that flag, takes the control lock non-blocking so a same-second
+/// `stop` wins, and refuses on the tri-state UNKNOWN rather than spawning a
+/// second bridge.
 #[derive(Debug, Clone)]
 pub struct Deferred {
-    /// The recorded `ae` binary (`ae_path` in meta), or `None` when the session
-    /// records none — in which case the tick is a no-op, exactly as the frozen
-    /// `[[ -x "${AE_PATH_BIN:-}" ]]` guard makes it.
-    ae_bin: Option<PathBuf>,
-    /// The raw `tmux_server` value, exported as `AE_TMUX_SERVER` so a supervise
-    /// reaches the session's own server rather than an ambient one.
-    server_value: Option<String>,
+    /// The ae home this session's state lives under, and the config the
+    /// `[telegram]` section is read from — `None` when neither could be
+    /// derived, in which case the tick is a no-op exactly as the frozen
+    /// `[[ -x "${AE_PATH_BIN:-}" ]]` guard made it.
+    paths: Option<crate::telegram::bridge::Paths>,
+    /// This session's own directory — where a refusal's event mirror lands.
+    /// Held rather than rebuilt from the home and the name, so a session whose
+    /// directory and name ever disagree still records against the real one.
+    dir: PathBuf,
     /// Seconds between supervise ticks; `0` disables.
     every_secs: u64,
     last: Option<SystemTime>,
 }
 
 impl Deferred {
-    /// Build the tick from this session's recorded facts.
+    /// Build the tick from this session's own directory and its recorded config.
+    ///
+    /// The ae home is the sessions root's parent — `<ae-home>/sessions/<name>`
+    /// is the one layout the core creates — and the config is meta's `config=`
+    /// row, which is the file the launch resolved. An empty or missing row
+    /// leaves [`Paths::under`]'s `<ae-home>/config` standing, which is what the
+    /// glue's own `--config` default was.
     #[must_use]
-    pub fn new(ae_bin: Option<PathBuf>, server_value: Option<String>, every_secs: u64) -> Self {
+    pub fn new(meta_dir: &Path, recorded_config: Option<&str>, every_secs: u64) -> Self {
+        let paths = meta_dir.parent().and_then(Path::parent).map(|ae_home| {
+            let mut paths = crate::telegram::bridge::Paths::under(ae_home);
+            if let Some(config) = recorded_config.filter(|value| !value.is_empty()) {
+                paths.config = PathBuf::from(config);
+            }
+            paths
+        });
         Self {
-            ae_bin,
-            server_value,
+            paths,
+            dir: meta_dir.to_path_buf(),
             every_secs,
             last: None,
         }
@@ -555,44 +558,42 @@ impl Deferred {
 
     /// Revive the Telegram bridge if the throttle allows it this cycle.
     ///
-    /// Best-effort and idempotent: `telegram _supervise` respects `[telegram]
-    /// enabled` and is a no-op with no network when Telegram is off. Returns
-    /// whether a tick actually ran.
-    pub fn supervise(&mut self, session: &str, now: SystemTime) -> bool {
-        let Some(bin) = self.ae_bin.clone() else {
+    /// Best-effort and idempotent: the autostart is a no-op with no network
+    /// when Telegram is off. Returns whether a tick actually ran.
+    ///
+    /// `server` is the cycle's own — the one a rebind may just have adopted —
+    /// so a revive reaches the session's server rather than an ambient one.
+    /// That is what the `AE_TMUX_SERVER` export used to buy, without an
+    /// environment the core may not set.
+    ///
+    /// THE DIAGNOSTIC IS DISCARDED, and deliberately: this runs in the
+    /// watchdog's read-only pane, where a line printed every throttle window
+    /// would bury the roster the pane exists to show. The frozen leg dropped
+    /// the supervise's stderr for that reason and so does this. Nothing is
+    /// lost — a refusal writes the durable `autostart-refusal` record that
+    /// `telegram status` and `doctor` already display.
+    pub fn supervise(
+        &mut self,
+        server: &crate::inventory::ServerId,
+        session: &str,
+        now: SystemTime,
+    ) -> bool {
+        let Some(paths) = self.paths.as_ref() else {
             return false;
         };
         if !supervise_due(self.every_secs, self.last, now) {
             return false;
         }
         self.last = Some(now);
-        let mut envs: Vec<(&str, &str)> = vec![("AE_TELEGRAM_AUTOSTART_SESSION", session)];
-        if let Some(value) = self.server_value.as_deref().filter(|v| !v.is_empty()) {
-            envs.push(("AE_TMUX_SERVER", value));
-        }
-        let _ = transport::run_ae(&bin, &telegram_supervise_argv(), &envs);
+        let _ = crate::telegram_lifecycle::autostart(
+            paths,
+            server,
+            session,
+            &self.dir,
+            &mut std::io::sink(),
+        );
         true
     }
-}
-
-/// The `ae_path=` value of a session's meta, read from the RAW bytes.
-///
-/// `meta.rs` consumes the keys it models and tolerates the rest, so this one has
-/// no accessor there; the frozen wrapper read it with a `grep` over the same
-/// file (ae:14430). First occurrence wins, as `head -1` does.
-#[must_use]
-pub fn recorded_ae_path(meta_bytes: &[u8]) -> Option<PathBuf> {
-    let text = String::from_utf8_lossy(meta_bytes);
-    for line in text.lines() {
-        if let Some(value) = line.strip_prefix("ae_path=") {
-            let value = value.trim_end_matches('\r');
-            if !value.is_empty() {
-                return Some(PathBuf::from(value));
-            }
-            return None;
-        }
-    }
-    None
 }
 
 /// The daemon's pidfile path under `meta_dir` — `.watchdog.pid`.
@@ -642,7 +643,7 @@ pub fn clear_pid(meta_dir: &Path, pid: u32) -> bool {
 mod tests {
     use super::{
         BRANCH_DISPLAY_MAX, Deferred, PaneOwner, Recovered, interpret_pane_owner, kill_pane_args,
-        pane_owner_args, recorded_ae_path, recovered_summary, supervise_due, trim_display,
+        pane_owner_args, recovered_summary, supervise_due, trim_display,
     };
     use crate::inventory::ServerId;
     use crate::meta::Selector;
@@ -760,27 +761,37 @@ mod tests {
     }
 
     #[test]
-    fn a_session_with_no_recorded_ae_path_supervises_nothing() {
-        // The frozen `[[ -x "${AE_PATH_BIN:-}" ]]` guard: no recorded binary,
-        // no revive — and the throttle must not record a tick that never ran,
-        // or the first real one would be delayed by a no-op.
-        let mut deferred = Deferred::new(None, None, 120);
-        assert!(!deferred.supervise("demo", SystemTime::UNIX_EPOCH));
-        assert!(!deferred.supervise("demo", SystemTime::UNIX_EPOCH));
+    fn a_session_directory_with_no_derivable_home_supervises_nothing() {
+        // The frozen `[[ -x "${AE_PATH_BIN:-}" ]]` guard, in its new subject: a
+        // meta directory with no grandparent names no ae home, so there is no
+        // config to read intent from — and the throttle must not record a tick
+        // that never ran, or the first real one would be delayed by a no-op.
+        let mut deferred = Deferred::new(std::path::Path::new("meta"), None, 120);
+        let server = named("nothing");
+        assert!(!deferred.supervise(&server, "demo", SystemTime::UNIX_EPOCH));
+        assert!(!deferred.supervise(&server, "demo", SystemTime::UNIX_EPOCH));
     }
 
     #[test]
-    fn the_recorded_ae_path_is_the_first_row_and_an_empty_one_is_none() {
+    fn the_recorded_config_row_overrides_the_ae_home_default() {
+        // `<ae-home>/sessions/<name>` is the one layout the core creates, so the
+        // home is two parents up; the config is meta's own row when it has one.
+        let dir = std::path::Path::new("/srv/.ae/sessions/demo");
+        let default = Deferred::new(dir, None, 120);
         assert_eq!(
-            recorded_ae_path(b"mode=local\nae_path=/usr/local/bin/ae\n"),
-            Some("/usr/local/bin/ae".into())
+            default.paths.as_ref().map(|paths| paths.config.clone()),
+            Some("/srv/.ae/config".into())
         );
-        assert_eq!(recorded_ae_path(b"ae_path=\n"), None);
-        assert_eq!(recorded_ae_path(b"mode=local\n"), None);
+        let recorded = Deferred::new(dir, Some("/etc/ae.conf"), 120);
         assert_eq!(
-            recorded_ae_path(b"ae_path=/opt/ae\r\nmode=local\n"),
-            Some("/opt/ae".into()),
-            "a CRLF record does not smuggle the carriage return into the path"
+            recorded.paths.as_ref().map(|paths| paths.config.clone()),
+            Some("/etc/ae.conf".into())
+        );
+        // An EMPTY row is not a config: it leaves the derived default standing.
+        let empty = Deferred::new(dir, Some(""), 120);
+        assert_eq!(
+            empty.paths.as_ref().map(|paths| paths.config.clone()),
+            Some("/srv/.ae/config".into())
         );
     }
 }

@@ -660,3 +660,75 @@ fn a_pane_a_real_server_does_not_list_is_the_only_thing_that_counts_as_hard() {
     );
     let _ = std::fs::remove_dir_all(&scratch);
 }
+
+/// B3: an unusable `--server-kind` is refused, never answered with the ambient
+/// server.
+///
+/// The bridge is ONE per machine, and its identity is the tmux server it runs
+/// on. A caller that asked for a server ae could not resolve used to get the
+/// ambient one silently — so `start` could raise a second bridge beside the one
+/// a later `status` and `stop` would look for. Two long polls on one bot token
+/// is the failure that costs updates: Telegram hands each to whichever asked
+/// first.
+///
+/// `ambiguous` is not a hypothetical spelling: it is what the glue emits for a
+/// socket path it could not canonicalise.
+#[test]
+fn an_unresolvable_server_kind_is_refused_rather_than_answered_with_the_ambient_one() {
+    let home = tg_scratch("serverkind");
+    for (kind, value, expected) in [
+        ("ambiguous", "work", "'ambiguous' is not a tmux server kind"),
+        ("bogus", "work", "'bogus' is not a tmux server kind"),
+        ("socket", "", "--server-kind socket needs a --server value"),
+        ("name", "", "--server-kind name needs a --server value"),
+        ("", "work", "--server was given without a --server-kind"),
+    ] {
+        let out = super::cli::ae()
+            .env("AE_HOME", &home)
+            .args([
+                ae::cli::TELEGRAM,
+                "status",
+                "--server-kind",
+                kind,
+                "--server",
+                value,
+            ])
+            .output()
+            .unwrap_or_else(|why| panic!("the ae binary should run: {why}"));
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "kind '{kind}' value '{value}' must be a usage refusal"
+        );
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains(expected),
+            "kind '{kind}': the refusal must name what it could not use: {stderr}"
+        );
+        assert!(
+            stderr.contains("ambient"),
+            "kind '{kind}': and say it did not fall back: {stderr}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+/// The control: naming NEITHER flag is the normal install, and still ambient.
+#[test]
+fn a_caller_that_names_no_server_still_gets_the_ambient_one() {
+    let home = tg_scratch("noserver");
+    let out = super::cli::ae()
+        .env("AE_HOME", &home)
+        .args([ae::cli::TELEGRAM, "status"])
+        .output()
+        .unwrap_or_else(|why| panic!("the ae binary should run: {why}"));
+    // `status` on a machine with no bridge is a report, not a refusal — what
+    // matters here is that it is not the exit-2 usage error above.
+    assert_ne!(
+        out.status.code(),
+        Some(2),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&home);
+}

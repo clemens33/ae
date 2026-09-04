@@ -192,7 +192,13 @@ pub fn run(
             }
         }
     }
-    let server = server_of(&server_kind, &server_value);
+    let server = match server_of(&server_kind, &server_value) {
+        Ok(server) => server,
+        Err(line) => {
+            writeln!(err, "{line}")?;
+            return Ok(EXIT_USAGE);
+        }
+    };
     // The frozen dispatcher defaulted a bare `ae telegram` to `status`.
     match action.unwrap_or(Action::Status) {
         Action::Status => status(&paths, &server, out),
@@ -201,23 +207,24 @@ pub fn run(
     }
 }
 
-/// The tmux server these commands address.
+/// The tmux server these commands address, or the refusal to guess one.
 ///
-/// The bridge is machine-global, so the AMBIENT server is the default and the
-/// answer under a normal install. The two flags exist for an isolated run
-/// (`ae-dev`, the tests): there the glue's own `tmux` is a named or socket
-/// server, and a bridge started on the ambient one would be invisible to every
-/// later `status` and `stop`.
-fn server_of(kind: &str, value: &str) -> ServerId {
-    match kind {
-        "socket" if !value.is_empty() => ServerId::Selected(crate::meta::Selector::Socket(
-            std::path::PathBuf::from(value),
-        )),
-        "name" if !value.is_empty() => {
-            ServerId::Selected(crate::meta::Selector::Name(value.to_owned()))
-        }
-        _ => ServerId::Ambient,
-    }
+/// The bridge is machine-global, so the AMBIENT server is the answer under a
+/// normal install — a caller that names NEITHER flag gets it, and that is the
+/// whole normal path. The two flags exist for an isolated run (`ae-dev`, the
+/// tests): there the glue's own `tmux` is a named or socket server, and a
+/// bridge started on the ambient one would be invisible to every later
+/// `status` and `stop`.
+///
+/// The rule itself is [`ServerId::from_typed_flags`], shared with `_launch`
+/// because both take the same pair of flags and both used to answer an
+/// unusable kind with the ambient server.
+///
+/// # Errors
+///
+/// The operator-facing line, naming the kind it could not use.
+fn server_of(kind: &str, value: &str) -> Result<ServerId, String> {
+    ServerId::from_typed_flags(kind, value)
 }
 
 /// `telegram start` — validate, enable, spawn, and prove it came up.

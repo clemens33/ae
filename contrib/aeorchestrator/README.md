@@ -1,35 +1,64 @@
 # aeorchestrator — orchestrator (meta-agent) config + charter templates
 
-**Optional. NOT core ae.** These are the templates `ae orchestrator --init` scaffolds
-into `~/.ae/orchestrator/` so `ae orchestrator` can launch the **orchestrator** — your fleet's
-chief of staff: a single ae session that monitors all your other ae sessions, is
-your single point of contact to them (relay + report, via Telegram `say`), and —
-whenever you've told it your objective — helps you hold it (rituals + idea
-parking lot, plus rare, hard-gated proactive nudges when you drift).
+**Optional. NOT core ae.** These are the templates you install into
+`~/.ae/orchestrator/` to get the **orchestrator** — your fleet's chief of staff: a
+single ae session that monitors all your other ae sessions, is your single point of
+contact to them (relay + report, via Telegram `say`), and — whenever you've told it
+your objective — helps you hold it (rituals + idea parking lot, plus rare,
+hard-gated proactive nudges when you drift).
 
-Core ae (`ae list`, `ae <name>`, …) does **not** depend on any of this. You only
-touch it if you run `ae orchestrator`. `ae hub` is the deprecated alias from before
-the rename; an existing `~/.ae/meta-hub/` scaffold keeps working and keeps its
-`hub` session name (migrate with `ae end hub && ae orchestrator --init && ae orchestrator`).
+Core ae (`ae list`, `ae <name>`, …) does **not** depend on any of this, and a machine
+that never installed the scaffold is never touched by it.
 
-## What `ae orchestrator` does
+## Installing it: copy two files, substitute three paths
+
+There is no `ae orchestrator` command any more. The subcommand was a bash trampoline
+that scaffolded these templates and then re-entered the normal launch path; it was cut
+from the glue along with the rest of ae's bash, and `ae orchestrator` now refuses with a
+message rather than doing something surprising. Installing is a copy:
 
 ```bash
-ae orchestrator --init     # scaffold ~/.ae/orchestrator/{orchestrator.config,CHARTER.md} from these templates
-ae orchestrator            # ensure the detached `orchestrator` session is running with that config
-ae orchestrator --attach   # switch/attach to the `orchestrator` session when you want to inspect it
+mkdir -p ~/.ae/orchestrator
+cp contrib/aeorchestrator/orchestrator.config ~/.ae/orchestrator/
+cp contrib/aeorchestrator/CHARTER.md          ~/.ae/orchestrator/
 ```
 
-`ae orchestrator` launches the `orchestrator` session with **full config isolation**: it
-uses `~/.ae/orchestrator/orchestrator.config` as the config and neutralizes any
-project-local `./.ae/config`, so the global config's `workers` never leak into
-the single-agent orchestrator regardless of which directory you run it from. Bare
-`ae orchestrator` does not attach or switch the current tmux client; use `--attach`
-explicitly for that.
+Then replace every `__PLACEHOLDER__` in both files with a real absolute path — nothing
+substitutes them for you, and one left in place lands **verbatim in the agent's system
+prompt**:
 
-Escape hatch: `ae orchestrator` is a reserved subcommand. If you ever need a normal
-session literally named `orchestrator`, `ae --local orchestrator` reaches the generic
-start path (the first arg is no longer `orchestrator`).
+| Placeholder | In | Replace with |
+|---|---|---|
+| `__CHARTER_PATH__` | `orchestrator.config` | `~/.ae/orchestrator/CHARTER.md`, absolute |
+| `__HELPERS_DIR__` | `CHARTER.md` | the orchestrator session's helper dir, `${AE_HOME:-~/.ae}/sessions/orchestrator` |
+| `__AEMONITOR_PATH__` | `CHARTER.md` | wherever you installed [`aemonitor`](../aemonitor/), absolute |
+
+`__HELPERS_DIR__` is a placeholder rather than a hardcoded `~/.ae/...` on purpose: an
+isolated run (tests, e2e) sets its own `AE_HOME`, and a charter that named the live
+`~/.ae` would point that run's orchestrator at your real fleet.
+
+## How it starts: the scaffold's existence is the switch
+
+Once `~/.ae/orchestrator/orchestrator.config` is on disk, **any** `ae <session>` launch
+brings the orchestrator up as a detached **companion** session named `orchestrator`. ae
+starts it itself — it is a launch like any other, with that file as its config and any
+project-local `./.ae/config` neutralized, so your global roster's `workers` never leak
+into the single-agent orchestrator whatever directory you launched from.
+
+- It is **opt-in by that file existing**. No config key, no flag.
+- `AE_NO_AUTOSTART=1 ae <session>` starts neither companion (this one or the watchdog).
+- It never starts a second copy: a launch whose own session is named `orchestrator` (or
+  `hub`) is the companion, and does not recurse.
+- A launch will not start one it cannot rule out — if tmux does not answer, ae says so
+  and skips rather than risking a duplicate.
+
+To look at it, treat it as the ordinary session it is: `ae orchestrator` is not a
+command, but the session is reachable with the session-switching you already use
+(`ae next --attach`, or tmux directly). To stop it for good, remove the scaffold.
+
+`~/.ae/meta-hub/hub.config` is the pre-rename layout. It still works and keeps its `hub`
+session name, so its baked charter paths and resume state stay consistent. To move to the
+canonical one: `ae end hub`, then install as above.
 
 ## The objective is the switch (no modes)
 
@@ -59,30 +88,15 @@ can never set your objective; see the charter's injection boundary).
 | `orchestrator.config` | Standalone single-agent config (`orchestrator = true` marks the meta-agent; the watchdog then runs a sweep cadence instead of the stale-nudge watchdog). |
 | `CHARTER.md` | The orchestrator's operating manual — its three jobs, the `say` channel, the `aemonitor` sweep routine, the ae toolbox, the objective-armed focus aide (state files, operator protocol, the two rituals + §8b gated proactive interrupts), and hard guardrails (injection boundary, never-end-a-session, human-directed relay, suggest-never-dispatch). |
 
-### Placeholders substituted on `--init`
-
-- `__CHARTER_PATH__` (in `orchestrator.config`) → the absolute path of the scaffolded
-  `CHARTER.md`.
-- `__AEMONITOR_PATH__` (in `CHARTER.md`) → the absolute path of the bundled
-  [`aemonitor`](../aemonitor/) sweep helper.
-- `__HELPERS_DIR__` (in `CHARTER.md`) → the orchestrator session's helper directory,
-  `${AE_HOME:-~/.ae}/sessions/orchestrator`. Baked in so the charter's example commands
-  are correct under any `AE_HOME` (default `~/.ae/sessions/orchestrator`; an isolated
-  e2e run gets `$AE_HOME/sessions/orchestrator`) instead of a hardcoded path to the
-  live `~/.ae`.
-
-`--init` **never overwrites** an existing file — it scaffolds only what's missing
-and reports `created` / `skipped (exists)` per file, so it's safe to re-run and
-safe to hand-edit the results afterward.
-
 ## Customizing
 
-After scaffolding, edit `~/.ae/orchestrator/{orchestrator.config,CHARTER.md}` freely —
-they're yours. Common tweaks: the model in `orchestrator.config`, or personalizing the
-charter's "your operator" references to your name and your reporting preferences.
+Edit `~/.ae/orchestrator/{orchestrator.config,CHARTER.md}` freely — they're yours, and ae
+only ever reads them. Common tweaks: the model in `orchestrator.config`, or personalizing
+the charter's "your operator" references to your name and your reporting preferences.
 
 ## Dependencies
 
 The sweep routine uses the optional [`aemonitor`](../aemonitor/) helper (Python 3
-stdlib). The Telegram `say` channel uses the `ae telegram` bridge (`jq` + `curl`).
-Neither is required for core ae; both are required for the orchestrator to be useful.
+stdlib). The Telegram `say` channel uses the `ae telegram` bridge, which is the ae core
+binary and needs no `jq` or `curl`. Neither is required for core ae; both are required
+for the orchestrator to be useful.

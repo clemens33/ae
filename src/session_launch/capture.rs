@@ -319,6 +319,114 @@ fn sid_file(dir: &Path, slot: &str) -> PathBuf {
     dir.join(format!("codex.{slot}.sid"))
 }
 
+/// `_register-sid <meta-dir> <slot> [<session-id>]` — codex's own handshake.
+///
+/// THE LINK THAT WAS DEAD. Codex's `developer_instructions` have always told it
+/// to run `<session-dir>/_register-sid <slot>` as its first action, and
+/// [`capture_codex`] has always polled for what that run writes — but the shim
+/// left the helper set with the `declare -f` template library, and no core
+/// entry replaced it, so the instruction named a file that was not there and
+/// every capture fell through to the scans below it.
+///
+/// Two shapes, because a codex that KNOWS its id and one that does not are
+/// different facts:
+///
+/// * **With an id** the caller is the authority: the id is validated as a
+///   lowercase UUID and written, with no meta read at all. Validation is not
+///   politeness — the value lands in a file the capture reads back as a session
+///   id and writes into the roster, so a malformed one would pin a seat to a
+///   conversation that does not exist.
+/// * **Without one** the core does what the frozen helper did: scans codex's
+///   own history for this seat, floored by `launch_time.<slot>` and filtered by
+///   the launch token, and writes what it finds. That is [`scan_codex`], which
+///   the capture and the watchdog's recovery already share.
+///
+/// The write is temp + rename, so the polling capture never reads a half-written
+/// id.
+///
+/// The INSTRUCTION deliberately names only the seat, never the id: a model
+/// asked for its own session id can produce a well-formed one it invented, and
+/// a validator sees shape, not truth — a hallucinated UUID would pin the seat
+/// to a conversation that does not exist, which is worse than falling through
+/// to the scan. The id argument is for a caller that has one from somewhere
+/// trustworthy.
+///
+/// # Errors
+///
+/// Only a failure to write `out` or `err`. Every refusal is an exit code: `2`
+/// for a usage error or a malformed id, `1` for a scan that matched nothing.
+pub fn register_sid(
+    dir: &Path,
+    slot: &str,
+    id: Option<&str>,
+    out: &mut impl std::io::Write,
+    err: &mut impl std::io::Write,
+) -> crate::Result<u8> {
+    if slot.is_empty() {
+        writeln!(err, "{REGISTER_SID_USAGE}")?;
+        return Ok(crate::state::EXIT_USAGE);
+    }
+    let id = if let Some(given) = id {
+        let given = given.trim();
+        if !is_lowercase_uuid(given) {
+            writeln!(
+                err,
+                "Error: '{given}' is not a lowercase UUID — a session id is 8-4-4-4-12 hex."
+            )?;
+            return Ok(crate::state::EXIT_USAGE);
+        }
+        given.to_owned()
+    } else {
+        let Some(facts) = facts(dir, slot).filter(|facts| facts.tool == ToolKind::Codex) else {
+            writeln!(
+                err,
+                "Error: seat '{slot}' is not a codex seat in {}.",
+                dir.display()
+            )?;
+            return Ok(crate::state::EXIT_USAGE);
+        };
+        let Some(found) = home_dir().and_then(|home| scan_codex(&home, &facts)) else {
+            writeln!(err, "No codex session matched seat '{slot}' yet.")?;
+            return Ok(crate::state::EXIT_FAILED);
+        };
+        found
+    };
+    let file = sid_file(dir, slot);
+    if let Err(why) = super::assets::publish_document(&file, &format!("{id}\n")) {
+        writeln!(err, "Error: could not write {} ({why})", file.display())?;
+        return Ok(crate::state::EXIT_FAILED);
+    }
+    writeln!(out, "Registered session id for '{slot}'.")?;
+    Ok(0)
+}
+
+/// The refusal `_register-sid` prints for a missing seat.
+pub const REGISTER_SID_USAGE: &str = "Usage: _register-sid <meta-dir> <slot> [<session-id>]";
+
+/// Whether `value` is a lowercase 8-4-4-4-12 hex UUID.
+///
+/// Lowercase deliberately: ae's ids and every agent history filename are
+/// lowercase-only, and macOS `uuidgen` is not — so accepting either spelling
+/// would let a value be recorded that no scan can ever match again.
+#[must_use]
+fn is_lowercase_uuid(value: &str) -> bool {
+    let groups = [8, 4, 4, 4, 12];
+    let mut parts = value.split('-');
+    for width in groups {
+        let Some(part) = parts.next() else {
+            return false;
+        };
+        if part.len() != width
+            || !part
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return false;
+        }
+    }
+    parts.next().is_none()
+}
+
 /// Poll for the self-registered id, then the two history scans, then the TUI.
 ///
 /// The order is the frozen chain's: the handshake is what ae ASKED for, the
