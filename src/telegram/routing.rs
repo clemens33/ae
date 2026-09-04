@@ -7,55 +7,21 @@
 //! [`super::bridge`]'s. Splitting it this way is what makes the routing rules —
 //! the part a human argues about — testable without a socket, a tmux server or
 //! a clock.
-//!
-//! # The rules, and where each comes from
-//!
-//! * **A slash command is always a command** (SC-945's precedence), even when
-//!   it arrives as a reply. Leading whitespace is trimmed BEFORE the slash is
-//!   looked for, so a message that begins with a newline is still a command.
-//! * **A plain message that is a reply to a forwarded event goes to that
-//!   event's agent** — the header line the outbound half wrote is the routing
-//!   key, and [`parse_reply_target`] reads it.
-//! * **`/use <session> <agent>` sets a sticky override; `/use clear` restores
-//!   orchestrator routing** (SC-939e).
-//! * **A plain message with no reply and no override goes to the running
-//!   ORCHESTRATOR** (SC-939d); with no orchestrator running it gets start
-//!   guidance rather than silence.
-//! * **`hub` is a deprecated alias and `orchestrator` is canonical**
-//!   (SC-939f): a session named `orchestrator` wins outright, a session named
-//!   `hub` is still accepted, and any other meta-agent session is the last
-//!   resort.
-//! * **Every route is revalidated against the session it names** (SC-946/949):
-//!   a target is only ever a canonical `alias:name` that this run just found in
-//!   THAT session's roster, so `%pane-id`, `@other-session:agent` and
-//!   `telegram:123` cannot match and therefore cannot escape.
-//! * **Only RUNNING sessions are addressable** (SC-947), and a session
-//!   resolves by exact name or by a unique `session_id` prefix (SC-948).
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 /// The file the sticky `/use` target is stored in, inside the machine-global
 /// telegram state directory.
-///
-/// The NAME and the FORMAT are the frozen bash daemon's, deliberately: the
-/// store is machine-global shared state (locks-census-3-aewatch I3), and a Rust
-/// bridge that invented a second name would silently forget an override the
-/// operator set through the bash one.
 pub const TARGET_FILE: &str = "current_target";
 
-/// The canonical orchestrator session name (#52 policy ruling, SC-939f).
+/// The canonical orchestrator session name (#52 policy ruling).
 const ORCHESTRATOR: &str = "orchestrator";
 
-/// The deprecated alias, still accepted (SC-939f).
+/// The deprecated alias, still accepted.
 const HUB: &str = "hub";
 
 /// One RUNNING ae session, as routing sees it.
-///
-/// A snapshot: every field was read at the same moment, and routing never asks
-/// the world a second question part-way through a decision. Its liveness is
-/// part of the snapshot too — a `RunningSession` that exists is one that was
-/// running when the world was sampled (SC-947).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunningSession {
     /// The session name — its directory leaf and its tmux session.
@@ -75,19 +41,12 @@ pub struct RunningSession {
 }
 
 /// The machine's running sessions.
-///
-/// A trait so the routing tests can hand [`decide`] a world they wrote, rather
-/// than a world they had to build out of real directories and a real tmux.
 pub trait World {
     /// Every running session, sampled now.
     fn running(&self) -> Vec<RunningSession>;
 }
 
 /// A lookup that must distinguish "no match" from "more than one".
-///
-/// Two failures, not one, because they deserve different answers: nothing to
-/// address is the operator naming something that is not there, and several
-/// things to address is ae refusing to guess between them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Resolved<T> {
     /// Exactly one.
@@ -99,15 +58,6 @@ pub enum Resolved<T> {
 }
 
 /// Resolve a chat-supplied session reference against the running sessions.
-///
-/// **The reference NEVER becomes a path.** It is matched against names and
-/// session ids that were discovered by enumerating the sessions root, and the
-/// directory that comes back is the one the enumeration found — so `../`,
-/// an absolute path, or any other traversal simply fails to match (SC-946).
-///
-/// Exact name first, then a unique `session_id` prefix (SC-948). An exact name
-/// wins even when some other session's id also starts with it: a name is what
-/// the operator typed, and an id prefix is a convenience.
 #[must_use]
 pub fn resolve_session<'a>(
     sessions: &'a [RunningSession],
@@ -131,16 +81,6 @@ pub fn resolve_session<'a>(
 
 /// Resolve a chat-supplied agent reference INSIDE one session, and canonicalise
 /// it.
-///
-/// **This is the escape gate (SC-949).** The session helpers' own grammar is
-/// broader than this one — it accepts `%pane-id`, `@session:agent` and external
-/// prefixes — so a raw chat value handed to the helper could address a pane in
-/// a session the operator never named. Nothing raw is ever passed on: the value
-/// must match an `alias:name` this session's roster actually holds, and what
-/// gets delivered is the roster's spelling rather than the chat's.
-///
-/// Exact `alias:name`, else a unique bare `name`. Two agents sharing a bare
-/// name is [`Resolved::Ambiguous`] rather than a coin flip.
 #[must_use]
 pub fn resolve_agent(session: &RunningSession, want: &str) -> Resolved<String> {
     if want.is_empty() {
@@ -160,14 +100,7 @@ pub fn resolve_agent(session: &RunningSession, want: &str) -> Resolved<String> {
     }
 }
 
-/// The running orchestrator plain text defaults to (SC-939d), or `None`.
-///
-/// **SC-939f's precedence, and it is a precedence rather than a rename.** A
-/// session actually named `orchestrator` wins outright; a session named `hub`
-/// is the deprecated alias and still works; any other meta-agent session is the
-/// last resort, so a machine whose orchestrator is called something else is not
-/// left unaddressable. A session with no `main` agent is not an orchestrator
-/// anyone can talk to and is skipped.
+/// The running orchestrator plain text defaults to, or `None`.
 #[must_use]
 pub fn find_orchestrator(sessions: &[RunningSession]) -> Option<&RunningSession> {
     let eligible = || {
@@ -201,18 +134,6 @@ pub enum Sticky {
 }
 
 /// Read the sticky target from `path`.
-///
-/// The frozen `<session>\t<agent>` line. A file that is absent is
-/// [`Sticky::Unset`]; a file that is present and not that shape is
-/// [`Sticky::Corrupt`] — and an unreadable one is corrupt too, because "I
-/// cannot tell what the override is" and "there is no override" are different
-/// facts and only one of them permits routing to the orchestrator.
-///
-/// # The empty field that vanishes
-///
-/// Split on the tab EXACTLY ONCE and require both halves non-empty. A
-/// whitespace-run split would turn `"\tagent"` into a single field and read the
-/// agent as the session — the frozen bash TSV framing hazard, one layer up.
 #[must_use]
 pub fn read_sticky(path: &Path) -> Sticky {
     match super::read_regular_file(path) {
@@ -266,11 +187,6 @@ pub enum Verb {
 
 impl Verb {
     /// The helper this verb runs, as a LITERAL.
-    ///
-    /// The two names are the only two values this can ever produce, so a verb
-    /// arriving from a chat message can select between them and can never
-    /// become one: see [`super::bridge::Helper`], where the result is joined
-    /// onto the session directory.
     #[must_use]
     pub const fn helper(self) -> &'static str {
         match self {
@@ -290,10 +206,6 @@ impl Verb {
 }
 
 /// What one authorized message should cause.
-///
-/// A VALUE, not an effect: [`decide`] chooses, and the caller performs. The
-/// separation is what lets every routing rule be tested without delivering
-/// anything anywhere.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Route {
     /// Deliver `text` to `agent` in the session at `dir`, through that
@@ -319,16 +231,13 @@ pub enum Route {
         /// The canonical agent reference.
         agent: String,
     },
-    /// Clear the sticky override (SC-939e's `/use clear`).
+    /// Clear the sticky override (`/use clear`).
     Unuse,
     /// Answer the chat and change nothing else.
     Answer(String),
 }
 
 /// Decide where a message goes.
-///
-/// `now` is passed in rather than read, so `/list`'s ages are a function of the
-/// caller's clock and this stays pure.
 #[must_use]
 pub fn decide(
     message: Inbound<'_>,
@@ -339,10 +248,9 @@ pub fn decide(
     // Trim FIRST, and trim both ends. The slash test below decides whether this
     // is a command at all, and a message that begins with a newline — which is
     // what a phone keyboard produces more often than anyone expects — must not
-    // stop being one.
     let text = message.text.trim();
 
-    // SC-945's precedence, and the order is the rule: a slash command is a
+    // precedence, and the order is the rule: a slash command is a
     // command even when it is sent as a reply, so the reply branch is only
     // reachable for text that is not one.
     if !text.starts_with('/')
@@ -373,9 +281,6 @@ pub fn decide(
 }
 
 /// The `/help` body.
-///
-/// ORCHESTRATOR throughout: `hub` is accepted as an alias but is never taught
-/// (SC-939f). A help text is where a deprecated name gets a second life.
 const HELP: &str = "ae telegram:\n\
      • Plain text → your orchestrator (auto-default; just talk to it).\n\
      • Reply to any forwarded message → answers that agent (no command).\n\
@@ -399,9 +304,6 @@ fn reply_route(quoted: &str, text: &str, sessions: &[RunningSession]) -> Route {
 }
 
 /// `@session:agent <msg>` — the compact prefix.
-///
-/// The session is everything up to the FIRST colon and the agent is all the
-/// rest, so an `alias:name` keeps its own colon.
 fn at_route(rest: &str, sessions: &[RunningSession]) -> Route {
     let (token, message) = split_word(rest);
     let Some((session, agent)) = token.split_once(':') else {
@@ -416,15 +318,6 @@ fn at_route(rest: &str, sessions: &[RunningSession]) -> Route {
 }
 
 /// `/session <ref> <send|ask> <agent> <msg…>`.
-///
-/// THE VERB IS ACTED ON. `send` runs the session's `send` helper; `ask` runs
-/// its `ask` helper, which opens a tracked request — a request id, an `ask`
-/// event, and a reply command embedded in the message, which is the route by
-/// which the agent's answer comes back to the chat. An earlier version accepted
-/// `ask` and ran `send`, so the request the operator asked for was never opened
-/// and the documented reply route could not happen; validating a verb and then
-/// discarding it is worse than rejecting it, because the operator is told it
-/// worked.
 fn session_route(args: &str, sessions: &[RunningSession]) -> Route {
     let (reference, rest) = split_word(args);
     let (verb, rest) = split_word(rest);
@@ -432,12 +325,6 @@ fn session_route(args: &str, sessions: &[RunningSession]) -> Route {
     // THE MESSAGE IS THE ONLY PART THAT CAN DECIDE, and testing the other three
     // would be testing nothing. [`split_word`] consumes left to right, so a
     // part that is missing empties every part AFTER it: a non-empty `message`
-    // is proof that the reference, the verb and the agent were all present.
-    // An earlier version checked all four with `||`, which reads as four
-    // independent conditions; cargo-mutants showed two of those `||`s were
-    // EQUIVALENT MUTANTS — no input reachable through [`decide`] can tell them
-    // apart, because a caller cannot supply an empty reference alongside a
-    // non-empty message. Unreachable logic is worth deleting, not covering.
     if message.is_empty() {
         return Route::Answer(
             "Usage: /session <name|id-prefix> <send|ask> <agent> <msg>".to_owned(),
@@ -451,7 +338,7 @@ fn session_route(args: &str, sessions: &[RunningSession]) -> Route {
     deliver_route(verb, reference, agent, message, sessions)
 }
 
-/// `/use`, `/use clear`, `/use <session> <agent>` (SC-939e).
+/// `/use`, `/use clear`, `/use <session> <agent>`.
 fn use_route(args: &str, sessions: &[RunningSession], sticky: &Sticky) -> Route {
     let (reference, rest) = split_word(args);
     if reference.is_empty() {
@@ -496,7 +383,7 @@ fn describe_sticky(sessions: &[RunningSession], sticky: &Sticky) -> String {
 }
 
 /// Plain text with no reply: the sticky override, else the orchestrator
-/// (SC-939d).
+/// .
 fn sticky_route(text: &str, sessions: &[RunningSession], sticky: &Sticky) -> Route {
     match sticky {
         // REVALIDATED, every time. An override is a note about the past: the
@@ -545,12 +432,7 @@ fn deliver_route(
     }
 }
 
-/// **THE ONE REVALIDATION** every route passes through (SC-946).
-///
-/// Session first, then agent WITHIN that session. One function rather than one
-/// per command, because a route that skipped it would be a route that could
-/// address a pane the operator never named — and the way that happens is a
-/// second copy of this logic that forgot a case.
+/// **THE ONE REVALIDATION** every route passes through.
 fn revalidate<'a>(
     reference: &str,
     agent: &str,
@@ -579,20 +461,6 @@ fn revalidate<'a>(
 
 /// Read the header line of a message THIS bridge forwarded, and recover the
 /// session and agent it came from.
-///
-/// # The grammar is the RENDERER's, not a guess
-///
-/// The Rust outbound half writes `[<session>] <actor>` as line one
-/// (`Outbound::render`), so the actor is the first token after `] `. The frozen
-/// bash bridge wrote `[<session>] <action>  <actor> [→ <target>]` — two spaces
-/// between action and actor — and messages in that shape can still be sitting
-/// in the operator's chat history, replyable, on the day the Rust bridge takes
-/// over. Both are accepted, and the DOUBLE SPACE is what tells them apart: it
-/// is in the frozen format by construction and cannot occur in the Rust one,
-/// whose two fields are separated by exactly one.
-///
-/// A header this cannot read yields `None`, and the caller says so. Guessing
-/// would mean delivering a human's message to an agent picked by accident.
 #[must_use]
 pub fn parse_reply_target(quoted: &str) -> Option<(String, String)> {
     let first = quoted.lines().next()?;
@@ -695,7 +563,7 @@ mod tests {
 
     #[test]
     fn plain_text_with_no_override_goes_to_the_running_orchestrator() {
-        // SC-939d.
+        // Delivery to the orchestrator.
         let world = vec![session("work", &["codex:dev"]), orchestrator(ORCHESTRATOR)];
         let route = decide(plain("status please"), &world, &Sticky::Unset, NOW);
         assert_eq!(
@@ -712,7 +580,7 @@ mod tests {
 
     #[test]
     fn plain_text_with_no_orchestrator_is_start_guidance_rather_than_silence() {
-        // SC-939d's second half: the absence has to SAY something.
+        // second half: the absence has to SAY something.
         let world = vec![session("work", &["codex:dev"])];
         let Route::Answer(text) = decide(plain("hello"), &world, &Sticky::Unset, NOW) else {
             panic!("a message with nowhere to go must be answered, not delivered");
@@ -723,7 +591,7 @@ mod tests {
 
     #[test]
     fn the_canonical_orchestrator_beats_the_deprecated_hub_and_hub_beats_nothing() {
-        // SC-939f: `hub` still WORKS, and `orchestrator` still WINS.
+        // `hub` still WORKS, and `orchestrator` still WINS.
         let both = vec![orchestrator("hub"), orchestrator(ORCHESTRATOR)];
         assert_eq!(
             find_orchestrator(&both).map(|session| session.name.clone()),
@@ -746,10 +614,9 @@ mod tests {
 
     #[test]
     fn the_deprecated_hub_outranks_any_other_meta_agent_session() {
-        // SC-939f's MIDDLE rung, which the last-resort fallback hides: with a
+        // MIDDLE rung, which the last-resort fallback hides: with a
         // `hub` and some other meta-agent session both running, `hub` must win
         // — otherwise "the alias is still accepted" degrades into "whichever
-        // session the scan happened to list first".
         let world = vec![orchestrator("brain"), orchestrator("hub")];
         assert_eq!(
             find_orchestrator(&world).map(|session| session.name.clone()),
@@ -851,7 +718,7 @@ mod tests {
 
     #[test]
     fn use_sets_an_override_and_clear_restores_orchestrator_routing() {
-        // SC-939e, both halves.
+        // Both halves.
         let world = vec![session("work", &["codex:dev"]), orchestrator(ORCHESTRATOR)];
         assert_eq!(
             decide(plain("/use work dev"), &world, &Sticky::Unset, NOW),
@@ -904,7 +771,7 @@ mod tests {
 
     #[test]
     fn a_slash_command_stays_a_command_even_as_a_reply() {
-        // SC-945's precedence. The reply header below is a perfectly good one:
+        // precedence. The reply header below is a perfectly good one:
         // the point is that it is not consulted.
         let world = vec![session("work", &["codex:dev"])];
         let route = decide(
@@ -985,7 +852,7 @@ mod tests {
 
     #[test]
     fn an_agent_reference_can_never_escape_the_session_it_was_resolved_in() {
-        // SC-949. Every one of these is a legal target for the session
+        // Every one of these is a legal target for the session
         // helpers' own grammar, and none of them may resolve here.
         let world = vec![session("work", &["codex:dev"]), session("other", &["cl:x"])];
         for escape in [
@@ -1027,7 +894,7 @@ mod tests {
 
     #[test]
     fn a_session_resolves_by_exact_name_first_and_then_by_unique_id_prefix() {
-        // SC-948, and the precedence within it: an exact NAME is what the
+        // The precedence: an exact NAME is what the
         // operator typed.
         let world = vec![session("work", &["codex:dev"]), session("other", &["cl:x"])];
         assert!(matches!(
@@ -1115,7 +982,7 @@ mod tests {
 
     #[test]
     fn the_help_text_teaches_orchestrator_and_never_hub() {
-        // SC-939f: the alias is accepted, not taught.
+        // the alias is accepted, not taught.
         let Route::Answer(help) = decide(plain("/help"), &[], &Sticky::Unset, NOW) else {
             panic!("/help answers");
         };

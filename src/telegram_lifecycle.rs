@@ -6,39 +6,6 @@
 //! `_telegram_autostart_if_enabled` (ae:8076) owned the intent flag, the
 //! control lock, the tmux session and the autostart. This module is that
 //! management, ported.
-//!
-//! # One daemon per machine, so the control lock is the whole design
-//!
-//! `start`, `stop` and the launch [`autostart`] share
-//! `<ae-home>/telegram/control.lock`, so "is it enabled and running?" and the
-//! spawn or kill that follows are ONE critical section. Without it a launch's
-//! autostart re-spawns the bridge a human has just stopped — the stop-vs-revive
-//! race the frozen glue closed the same way. `start`/`stop` WAIT briefly and
-//! report busy; `autostart` takes it non-blocking and skips its tick, because a
-//! session launch may never be delayed by a bridge.
-//!
-//! # What was dropped on the way, deliberately
-//!
-//! * **`setup`** — an interactive scaffold, not a lifecycle.
-//! * **The pre-P5 coexistence guard** (ae:7798-7925), which existed so a
-//!   named-server `ae-next` could not long-poll the same bot as the installed
-//!   `ae`. There is one ae again, so the second instance it guarded against
-//!   does not exist.
-//! * **The `ae-aewatch` sidecar retirement**, which killed a stale Python
-//!   watchdog that claimed the bridge-owner marker. That sidecar is retired
-//!   (`contrib/aewatch` is archival), and a kill is not a thing to port on
-//!   speculation.
-//! * **The token file's OWNER check.** [`crate::telegram::load_settings`]
-//!   refuses any token readable by group or other, which is the property that
-//!   check was protecting; re-deriving a uid comparison beside it would be a
-//!   second, weaker spelling of one rule.
-//!
-//! # The core is the running binary
-//!
-//! Bash resolved a core three ways (`AE_CORE_BIN`, the versioned
-//! `core/current`, `workspace.core`) and refused when none reported a version.
-//! Here the bridge is started by the process that IS the core, named by
-//! `current_exe` — so there is nothing to resolve and nothing to refuse.
 
 use std::io::{self, Write};
 use std::path::Path;
@@ -98,9 +65,6 @@ impl Action {
 
 /// Why an autostart did not start the bridge — the CLOSED grammar the record
 /// file and `status` share.
-///
-/// A closed set, not a free string: the record is a display sink, and an
-/// arbitrary value in it would be an arbitrary value on the operator's screen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Refusal {
     /// The configured token file could not be validated.
@@ -120,11 +84,6 @@ impl Refusal {
     }
 
     /// The refusal a recorded word names, or `None` for anything else.
-    ///
-    /// The two retired categories are still ACCEPTED for display — a machine
-    /// that ran the frozen glue this morning can hold `aewatch-live`,
-    /// `same-token-live` or `probe-failed` in its record, and a reader that
-    /// refused them would silently stop reporting a refusal that happened.
     #[must_use]
     pub fn parse(word: &str) -> Option<&'static str> {
         match word {
@@ -139,12 +98,6 @@ impl Refusal {
 }
 
 /// `telegram <start|stop|status> [--config <file>] [--home <dir>]`.
-///
-/// The two path flags default to the conventional layout under `<ae-home>`,
-/// exactly as `_telegram-run`'s do: bash passes them when it has them, and the
-/// daemon must read the SAME config this command validated — a `CONFIG_FILE`
-/// override that reached only one of the two would validate one file and start
-/// a daemon reading another.
 ///
 /// # Errors
 ///
@@ -209,17 +162,6 @@ pub fn run(
 
 /// The tmux server these commands address, or the refusal to guess one.
 ///
-/// The bridge is machine-global, so the AMBIENT server is the answer under a
-/// normal install — a caller that names NEITHER flag gets it, and that is the
-/// whole normal path. The two flags exist for an isolated run (`ae-dev`, the
-/// tests): there the glue's own `tmux` is a named or socket server, and a
-/// bridge started on the ambient one would be invisible to every later
-/// `status` and `stop`.
-///
-/// The rule itself is [`ServerId::from_typed_flags`], shared with `_launch`
-/// because both take the same pair of flags and both used to answer an
-/// unusable kind with the ambient server.
-///
 /// # Errors
 ///
 /// The operator-facing line, naming the kind it could not use.
@@ -237,7 +179,6 @@ fn start(
     // BEFORE the lock and before the intent flag: a start that cannot possibly
     // work must not leave `enabled = true` behind for a later autostart to act
     // on. `load_settings` is the daemon's own reader, so what it accepts here is
-    // exactly what the daemon will accept.
     if let Err(why) = crate::telegram::load_settings(&paths.config, &paths.home) {
         writeln!(err, "Error: {why}")?;
         return Ok(EXIT_FAILED);
@@ -282,10 +223,6 @@ fn start(
 }
 
 /// `telegram stop` — disable, then kill, under one lock.
-///
-/// The intent flag is written FIRST and the kill happens under the same lock, so
-/// an autostart tick that is waiting on it re-reads `enabled = false` and does
-/// not undo the stop.
 fn stop(
     paths: &Paths,
     server: &ServerId,
@@ -404,13 +341,6 @@ fn status(paths: &Paths, server: &ServerId, out: &mut impl Write) -> crate::Resu
 /// The launch's best-effort revive: start the bridge IF the config asks for one
 /// and none is running. Never fatal, never blocking.
 ///
-/// `server` is the launch's own tmux server, so an isolated run revives a bridge
-/// on the server it can see rather than on the ambient one.
-///
-/// `session` is the launching session's name, used only for the refusal record's
-/// event mirror. Returns whether a bridge was started, so a caller can say so;
-/// every failure is a one-line warning on `err` and `Ok(false)`.
-///
 /// # Errors
 ///
 /// Only writing the warning to `err`. A launch is never failed by this.
@@ -461,18 +391,6 @@ pub fn autostart(
 }
 
 /// Whether the bridge's tmux session is live — `None` when tmux did not answer.
-///
-/// EXACT name match over `list-sessions`, never `has-session -t`, which
-/// PREFIX-matches: a leftover `ae-telegram-old` would answer for a bridge that
-/// is not there.
-///
-/// The probe is [`transport::verify_session_absent`] rather than a plain
-/// enumeration, because the two failures a bridge lives between are not the
-/// same: a server that has EXITED (its last session gone — killing this very
-/// bridge does that) answers with the stale-socket diagnostic, which PROVES
-/// nothing is running, while an unreachable one proves nothing at all. Reading
-/// the first as "no answer" made `stop` report a failure right after it
-/// succeeded, and would make a cold machine's autostart refuse forever.
 #[must_use]
 pub fn daemon_running(server: &ServerId) -> Option<bool> {
     match transport::verify_session_absent(server, TMUX_SESSION) {
@@ -483,11 +401,6 @@ pub fn daemon_running(server: &ServerId) -> Option<bool> {
 }
 
 /// Start the bridge in its own tmux session, and dress that session.
-///
-/// The command is DIRECT ARGV (see [`Op::NewDaemonSession`]): no shell, so a
-/// core path or config path carrying a space survives byte-for-byte. Secrets
-/// never ride argv — the daemon reads `token_file` / `chat_id` out of the
-/// `--config` file itself.
 fn spawn_daemon(paths: &Paths, server: &ServerId) {
     // RESOLVED, never raw: the daemon's command is direct argv, and an
     // unresolved macOS answer would hand tmux whichever link started it.
@@ -523,9 +436,6 @@ fn spawn_daemon(paths: &Paths, server: &ServerId) {
 }
 
 /// Take the machine-global control lock, waiting at most `wait`.
-///
-/// `Duration::ZERO` is the non-blocking form: one attempt, then give up — which
-/// is what the autostart needs and what `flock -n` gave it.
 fn control_lock(ae_home: &Path, wait: Duration) -> io::Result<std::fs::File> {
     let dir = ae_home.join(STATE_DIR);
     std::fs::create_dir_all(&dir)?;
@@ -534,8 +444,6 @@ fn control_lock(ae_home: &Path, wait: Duration) -> io::Result<std::fs::File> {
 
 /// Persist one refusal category, and mirror it into the launching session's
 /// event ledger when there is a usable one.
-///
-/// Best-effort throughout: a launch is never failed by its own observability.
 fn record_refusal(paths: &Paths, refusal: Refusal, session: &str, session_dir: &Path) {
     let at = crate::time::Timestamp::now().to_string();
     let dir = paths.ae_home.join(STATE_DIR);
@@ -569,9 +477,6 @@ fn record_refusal(paths: &Paths, refusal: Refusal, session: &str, session_dir: &
 
 /// The last recorded refusal, when the file holds ONE row of the closed
 /// grammar.
-///
-/// A malformed, multi-row or hand-edited record is ignored rather than echoed:
-/// this reader must not turn an arbitrary value in a file into a status sink.
 #[must_use]
 pub fn last_refusal(state_dir: &Path) -> Option<(&'static str, String)> {
     let raw = read_file(&state_dir.join(REFUSAL_FILE))?;
@@ -620,10 +525,6 @@ pub fn enabled_in(config: &str) -> bool {
 }
 
 /// One `[telegram]` key's value, last assignment winning.
-///
-/// The frozen value semantics: an optionally quoted value, an unquoted one
-/// truncated at a `#` comment, and only lines INSIDE the section considered —
-/// another section's `enabled =` must never be read as this one's.
 #[must_use]
 pub fn section_value(config: &str, key: &str) -> Option<String> {
     let mut found = None;
@@ -678,10 +579,6 @@ pub fn persist_intent(config: &Path, value: bool) -> io::Result<()> {
 }
 
 /// The config text with `[telegram] enabled` set — the frozen awk pass, ported.
-///
-/// ONE section-scoped walk handles every case, and the replace-vs-insert
-/// decision is never taken from a global search: another section's `enabled =`
-/// would mislead that and leave `[telegram]` untouched.
 #[must_use]
 pub fn rewritten(current: Option<&str>, value: bool) -> String {
     let value = if value { "true" } else { "false" };

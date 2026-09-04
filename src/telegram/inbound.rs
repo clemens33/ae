@@ -1,95 +1,4 @@
 //! The inbound half: one `getUpdates` long poll, routed, then checkpointed.
-//!
-//! # Delivery semantics: at-least-once, with at most one honest duplicate per
-//! # routed-before-offset crash window
-//!
-//! This is the OPPOSITE of what the frozen bash bridge does, and the difference
-//! is deliberate rather than incidental. `poll_updates` persisted the offset
-//! BEFORE dispatching (`ae`'s own comment says "at-most-once"), so a crash in
-//! between LOST the update: the offset had already moved past a message nobody
-//! had acted on, and Telegram would never send it again.
-//!
-//! Here the durable offset advances ONLY after the update has been successfully
-//! AND durably routed. The consequences, stated exactly:
-//!
-//! * A normal cycle re-delivers nothing: each update is checkpointed before the
-//!   next is read.
-//! * A crash in the window between "routed" and "the offset reached the disk"
-//!   re-delivers exactly THAT ONE update on restart — a single honest
-//!   duplicate, bounded to one update, never a loss and never a wholesale
-//!   replay. That window is real and is not closed here: closing it would need
-//!   a two-phase commit with a party that does not offer one.
-//! * The same bound holds under REPEATED checkpoint failure, for the same
-//!   reason it does in the outbound half: nothing in memory advances past the
-//!   durable offset, so a disk that cannot be written degrades to throttled
-//!   re-delivery of that one owed update rather than an unbounded replay.
-//!
-//! # What "successfully routed" means, and what it does not
-//!
-//! * An update the POLICY drops — unauthorized chat, unauthorized sender, a
-//!   non-private chat, an update carrying no message text — is successfully
-//!   handled. Dropping is the correct outcome, nothing is owed to anyone, and
-//!   the offset advances past it. Holding on an unauthorized update would let
-//!   any stranger who can find the bot wedge the bridge forever.
-//! * An authorized update whose ROUTE FAILED — the target session's `send`
-//!   helper refused, or the sticky override could not be written — is NOT
-//!   routed. The offset does not move, the cycle backs off, and the same update
-//!   is retried. See the BOUNDED GIVE-UP below for where that stops.
-//! * The chat ACKNOWLEDGEMENT is best effort and is never part of the
-//!   condition. An ack that fails to send is a message the operator does not
-//!   see; making the offset depend on it would re-deliver commands that had
-//!   already run.
-//!
-//! # The bounded give-up — a SEPARATE policy from the crash window above
-//!
-//! These two are easy to confuse and must not be: the crash window is about a
-//! checkpoint that did not reach the disk, and produces a DUPLICATE. This is
-//! about a target that will not take the message, and produces a message that
-//! is handed BACK.
-//!
-//! Retrying forever is not "never lose", it is a DEADLOCK. A held offset blocks
-//! every later update — including the `/use` that would redirect away from the
-//! very target that is stuck — so a permanently dead pane would wedge the
-//! bridge with no way for the operator to talk it out of the corner.
-//!
-//! So delivery is bounded, mirroring the sweep-delivery contract (SC-936/937/938)
-//! that already governs the watchdog's nudges:
-//!
-//! * **Delivery is CHECKED** (SC-936): the send helper's own status decides, and
-//!   a refusal is never counted as a delivery.
-//! * **A refusal RETRIES on the short cadence** (SC-937): [`backoff_delay`],
-//!   which starts at one second — shorter than the sweep's thirty, because an
-//!   inbound message is someone waiting at a keyboard.
-//! * **After the bound, the offset ADVANCES and ONE notice goes to the chat**
-//!   (SC-938), naming the target that would not take it and QUOTING THE TEXT
-//!   BACK. That is the whole point: the message is never *silently* lost. It is
-//!   handed back to the only party who can do anything with it, and the queue
-//!   goes live again.
-//!
-//! **Two bounds, because two refusals are not the same fact.** A TRANSIENT
-//! refusal (a busy pane, a human mid-keystroke) recovers on its own and earns
-//! the full [`Knobs::retry_max`]. A HARD one — the target's pane is not there
-//! any more — earns [`Knobs::hard_retry_max`], which is small: retrying a pane
-//! that no longer exists only spends the bound slower. Evidence for "hard" is
-//! deliberately narrow, and it inherits `crate::watchdog`'s direction that an
-//! unusable probe is NOT death: only a pane enumeration that SUCCEEDED and did
-//! not list the target counts.
-//!
-//! The notice is sent BEFORE the checkpoint that ends the hold, so it inherits
-//! the crash window above rather than opening one of its own: a crash — or a
-//! checkpoint write that fails — replays the update, and the operator sees the
-//! quoted message a second time. One honest duplicate per routed-before-offset
-//! crash window, the SAME window and not a second policy. A repeatedly
-//! unwritable disk therefore degrades to a quiet retry of that one update
-//! followed by another hand-back, rather than a notice per cycle.
-//!
-//! # No state advancement on a bad response
-//!
-//! A malformed body, a body nested past `crate::json`'s `MAX_DEPTH`, one past
-//! the streaming byte cap, a non-2xx, a 200 carrying `ok:false`, an
-//! `update_id` that is not an integer this machine can hold — every one of them
-//! ends the cycle with the offset EXACTLY where it was. A poisoned response can
-//! cost throughput; it cannot skip an update or lose one.
 
 use std::fmt;
 use std::io;
@@ -101,18 +10,9 @@ use super::{Api, ApiFailure, NotRegular, backoff_delay, durable_write, read_regu
 use crate::json::Value;
 
 /// The machine-global directory the bridge keeps its state in, under `AE_HOME`.
-///
-/// Machine-global rather than per-session, and that is the frozen layout: one
-/// bot polls one chat for the whole machine, so the update offset and the
-/// sticky target belong to the machine and not to whichever session happens to
-/// be running.
 pub const STATE_DIR: &str = "telegram";
 
 /// The file the durable update offset lives in.
-///
-/// The frozen bash daemon's name and its one-decimal-line format, deliberately:
-/// a Rust bridge starting on a machine where the bash one has run must inherit
-/// its position rather than re-deliver everything Telegram still holds.
 pub const OFFSET_FILE: &str = "tg_offset";
 
 /// How many updates one poll may ask for. Bounded so a backlog cannot turn one
@@ -128,17 +28,8 @@ pub struct Knobs {
     /// How long Telegram may hold the connection before answering empty.
     pub long_poll: Duration,
     /// How many times a TRANSIENT refusal is retried before the give-up.
-    ///
-    /// The sweep contract's own bound (SC-937/938, `SweepKnobs::retry_max`),
-    /// reused rather than re-chosen: this is the same question about the same
-    /// send helper, and two different answers to it would be two behaviours an
-    /// operator has to learn.
     pub retry_max: u32,
     /// The bound for a HARD refusal — a target whose pane is provably gone.
-    ///
-    /// Small, and not one: a single enumeration that misses a pane could be a
-    /// pane mid-restart, so the give-up wants one confirmation rather than a
-    /// hair trigger.
     pub hard_retry_max: u32,
 }
 
@@ -160,13 +51,6 @@ impl Default for Knobs {
 #[non_exhaustive]
 pub enum OffsetError {
     /// The file exists and is not an offset.
-    ///
-    /// **REFUSED rather than treated as zero**, which is where this differs
-    /// from the frozen bash (`tg_load_offset` falls back to `0` for anything
-    /// non-numeric). Zero means "send me everything you still hold", so a
-    /// damaged offset file would replay the whole retained backlog — breaking
-    /// the one-duplicate bound this module promises. A refusal costs
-    /// throughput and keeps the promise.
     Unrecognised,
     /// The path is not a regular file. Refused BEFORE the open, because
     /// `open(2)` on a FIFO waits for a writer and this directory is one other
@@ -273,22 +157,6 @@ pub struct Message {
 
 impl Update {
     /// Read one element of `getUpdates`' `result` array.
-    ///
-    /// `None` when there is no usable `update_id`, and NOTHING ELSE makes this
-    /// fail: a message with no text, an update kind this bridge does not route,
-    /// a future field it does not know are all fine, and become an update with
-    /// no routable message.
-    ///
-    /// # The id is the one field that may refuse the whole update
-    ///
-    /// The offset is `update_id + 1`, so an id this machine cannot hold as an
-    /// `i64` is an id it cannot checkpoint. `crate::json` keeps such a literal
-    /// verbatim as [`Value::Raw`] rather than overflowing it, which is what
-    /// makes refusing possible at all — the alternative, a silently wrapped
-    /// number, would checkpoint a position that means nothing. A refusal here
-    /// stops the cycle with the offset unchanged, which is the "no state
-    /// advancement on a bad response" rule: nothing is skipped and nothing is
-    /// lost, and a server that keeps sending one is a server we keep refusing.
     #[must_use]
     pub fn parse(value: &Value) -> Option<Self> {
         let id = match value.get("update_id")? {
@@ -296,12 +164,6 @@ impl Update {
             // EVERYTHING ELSE IS A REFUSAL, including [`Value::Raw`]. That is
             // not a defensive default, it is the exact rule: `crate::json`
             // produces `Raw` precisely when `i64::from_str` FAILS on the
-            // literal (src/json.rs), so a `Raw` id is by construction one this
-            // machine cannot hold — an id past `i64`, a float, an exponent.
-            // An earlier version tried `literal.parse()` here, which could
-            // never succeed and read as though some oversized ids were
-            // accepted; cargo-mutants found it as an unkillable mutant, which
-            // is what dead code looks like from the outside.
             _ => return None,
         };
         Some(Self {
@@ -342,16 +204,6 @@ impl Message {
 }
 
 /// A JSON NUMBER as the text it was written as.
-///
-/// Telegram ids are numbers, and this bridge compares them as strings — which
-/// is what the frozen bash does through `jq -r`, and what the allow-list in the
-/// config is written in. Keeping them textual means an id larger than any
-/// integer type cannot overflow anything on its way to a comparison it was
-/// always going to fail.
-///
-/// **A JSON STRING is not a number and is refused.** Telegram sends ids as
-/// numbers; accepting `"123"` here would let a body that merely LOOKS like an
-/// update satisfy an allow-list written for the real thing.
 fn number_text(value: &Value) -> Option<String> {
     match value {
         Value::Num(id) => Some(id.to_string()),
@@ -379,7 +231,7 @@ impl Policy {
         }
     }
 
-    /// **SC-943: inbound exists ONLY with a non-empty allow-list.** An empty
+    /// **Inbound exists ONLY with a non-empty allow-list.** An empty
     /// one is not a permissive default — it is an outbound-only bridge, and the
     /// inbound loop does not poll at all.
     #[must_use]
@@ -388,20 +240,6 @@ impl Policy {
     }
 
     /// Whether this message may drive ae.
-    ///
-    /// **ALL FOUR must hold**, and they are four rather than one because each
-    /// closes a different door (SC-944a/b/c):
-    ///
-    /// * the sender id is NUMERIC — an allow-list entry can only ever be
-    ///   matched by something shaped like a real id;
-    /// * the sender is on the allow-list;
-    /// * the chat is EXACTLY the configured control chat — so a bot added to
-    ///   some other conversation drives nothing;
-    /// * the chat is PRIVATE — so a group that happens to carry the right id
-    ///   cannot, and an accidental add cannot.
-    ///
-    /// A refusal is SILENT to the sender by design: an unauthorized party
-    /// learns nothing about whether ae is there.
     #[must_use]
     pub fn admits(&self, message: &Message) -> bool {
         !message.from_id.is_empty()
@@ -415,16 +253,8 @@ impl Policy {
 // ─── the effects, behind seams ───────────────────────────────────────────
 
 /// Deliver a message into an agent's pane.
-///
-/// A trait so the routing gate can assert WHERE a message went without a tmux
-/// server. The production implementation is [`super::bridge::Helper`], which
-/// runs the session's own `send` helper and nothing else.
 pub trait Deliver {
     /// Run `dir`'s send helper for `agent`.
-    ///
-    /// [`Delivered::Yes`] means delivered AND logged — the helper's own status,
-    /// never re-read as anything weaker (SC-936). A refusal says which KIND it
-    /// is, because the two earn different retry bounds.
     fn deliver(
         &self,
         verb: Verb,
@@ -453,37 +283,15 @@ pub enum Refusal {
     Transient,
     /// The target cannot take it AT ALL: its pane is gone. Retrying on a
     /// cadence built for a busy pane only spends the bound more slowly.
-    ///
-    /// **Claimed only on positive evidence.** A probe that failed, or a pane
-    /// that is present, is [`Refusal::Transient`] — the same direction
-    /// `crate::watchdog::classify_dead` takes, and for the same reason: a
-    /// missed hard-refusal costs a few extra retries, while a false one throws
-    /// away a message that would have been delivered.
     Hard,
 }
 
 /// Say something back to the operator's chat.
 pub trait Chat {
     /// Queue one message. Best effort by contract: see the module docs.
-    ///
-    /// An acknowledgement that never arrives costs the operator a line they do
-    /// not see, and the update it belongs to has already been routed AND
-    /// checkpointed — so re-running it to deliver an ack would re-run a
-    /// command. That is why this one is allowed to fail quietly.
     fn say(&self, text: &str);
 
     /// Send one message and WAIT for the chat platform to accept it.
-    ///
-    /// **The give-up notice is the one message whose delivery gates state.**
-    /// [`Inbox::poll`] advances the durable offset past an undelivered update
-    /// only after this returns [`Accepted::Yes`], because the notice is the
-    /// entire reason a give-up is a hand-back rather than a silent loss. A
-    /// best-effort notice would make "never silently lose" a phrase: the
-    /// offset would move whether or not anyone was ever told.
-    ///
-    /// Accepting means the platform took it — HTTP 2xx **and** `ok:true`.
-    /// Every other outcome, including no answer at all, is
-    /// [`Accepted::No`]: absence of an acceptance is never read as one.
     fn say_confirmed(&self, text: &str) -> Accepted;
 }
 
@@ -547,12 +355,6 @@ impl fmt::Display for CycleFailure {
 }
 
 /// What one update's handling produced.
-///
-/// [`Handled::Routed`] and [`Handled::Dropped`] both advance the offset and are
-/// still kept apart, because they are what the cycle REPORTS: an operator
-/// reading "routed 12" wants the number of messages that reached an agent or
-/// earned an answer, not that number plus every stranger the policy turned
-/// away.
 enum Handled {
     /// The update produced its effect: delivered, or answered.
     Routed,
@@ -565,11 +367,6 @@ enum Handled {
 }
 
 /// An update that did not land, and everything a give-up notice would need.
-///
-/// The TEXT is CARRIED rather than looked up again: at the bound the message
-/// has to be quoted back to the operator, and re-deriving it from a re-read of
-/// anything is how a notice ends up quoting a different message than the one
-/// that was lost.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Owing {
     /// What would not take it, as the notice names it.
@@ -581,11 +378,6 @@ struct Owing {
 }
 
 /// How many times the CURRENTLY owed update has been attempted.
-///
-/// Keyed by `update_id`, so a different update owing something resets the count
-/// rather than inheriting a stranger's. Held in memory only: a restart forgets
-/// it and the update gets a fresh set of attempts — which can only ever cause
-/// MORE retries, never a skip.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Attempts {
     id: i64,
@@ -594,12 +386,6 @@ struct Attempts {
 
 /// The inbound loop's state: the paths it works between, and its failure
 /// streak.
-///
-/// Holds no position of its own. The durable offset is re-read at the start of
-/// every cycle rather than cached, which is what makes a failed checkpoint
-/// degrade to re-delivering ONE update instead of letting an in-memory position
-/// run ahead of the disk — the exact bug the outbound half documents at its own
-/// checkpoint site.
 #[derive(Debug)]
 pub struct Inbox {
     state: PathBuf,
@@ -633,8 +419,6 @@ impl Inbox {
     }
 
     /// Poll once: fetch, route, checkpoint.
-    ///
-    /// Every early return leaves the durable offset EXACTLY where it was.
     pub fn poll(
         &mut self,
         api: &Api,
@@ -644,7 +428,7 @@ impl Inbox {
         chat: &dyn Chat,
         now: i64,
     ) -> Cycle {
-        // SC-943: with no allow-list there is no authorized sender, so there is
+        // with no allow-list there is no authorized sender, so there is
         // nothing to poll FOR. Not an error, and not a failure streak.
         if !policy.enabled() {
             self.failures = 0;
@@ -679,12 +463,6 @@ impl Inbox {
             // A REPLAYED OR REORDERED ID, which is the one hostile shape that
             // does not look malformed. We asked for everything from `expected`
             // onwards; an id below that is either an update this machine has
-            // already routed or one the server put out of order. Routing it
-            // would deliver a second copy, and checkpointing it would move the
-            // durable offset BACKWARDS — re-delivering every update in between
-            // and turning the one-duplicate bound into an unbounded replay a
-            // remote party controls. Refused with the offset untouched; a gap
-            // (an id higher than expected) is normal and is not refused.
             if update.id < expected {
                 return self.failed_after(cycle, CycleFailure::Malformed);
             }
@@ -698,31 +476,18 @@ impl Inbox {
                 };
                 if attempts < bound {
                     // INSIDE THE BOUND: hold the offset and retry on the short
-                    // cadence. The refusal is REPORTED (SC-936) as the cycle's
+                    // cadence. The refusal is REPORTED as the cycle's
                     // failure, which the daemon logs; the chat hears nothing
-                    // yet, exactly as an undelivered sweep is logged and not
-                    // announced.
                     return self
                         .failed_after(cycle, CycleFailure::Undelivered(owing.target.clone()));
                 }
                 // THE BOUND. Hand the message back and step over it, so the
                 // queue — and with it the `/use` that could redirect away from
                 // this target — is live again. The module's give-up policy has
-                // the reasoning; the checkpoint below is what ends the hold.
-                //
-                // THE HAND-BACK MUST LAND FIRST. Queuing the notice and
-                // advancing anyway would be a silent loss wearing a notice's
-                // clothes: the offset would move past the update whether or not
-                // the operator was ever told, which is the exact failure the
-                // give-up exists to prevent. So the notice is CONFIRMED — the
-                // platform accepted it — before the checkpoint below runs.
                 if chat.say_confirmed(&give_up_notice(owing, attempts)) == Accepted::No {
                     // Nobody was told, so nothing is handed back and the offset
                     // does not move. The update stays owed exactly as it was
                     // inside the bound: the cycle backs off and the give-up is
-                    // re-attempted next cycle. `attempts` is deliberately NOT
-                    // cleared — clearing it would grant a fresh full bound of
-                    // delivery retries every time the notice failed to send.
                     return self
                         .failed_after(cycle, CycleFailure::Undelivered(owing.target.clone()));
                 }
@@ -732,8 +497,6 @@ impl Inbox {
             // THE ADVANCE IS THE CHECKPOINT, and it happens BEFORE the next
             // update is looked at. A failure here means this update was routed
             // and its position was not recorded: the next cycle re-delivers
-            // exactly this one — the single honest duplicate per
-            // routed-before-offset crash window — and re-attempts the write.
             if let Err(why) = store_offset(&self.offset_path(), update.id) {
                 return self.failed_after(cycle, CycleFailure::Offset(why.to_string()));
             }
@@ -766,8 +529,7 @@ impl Inbox {
     ) -> Handled {
         // Everything below is a POLICY DROP: handled, nothing owed, offset
         // advances. An update with no message is one this bridge did not ask
-        // for; an unadmitted one is silently discarded (SC-944a/b/c); an
-        // admitted one with no text carries nothing to route.
+        // for; an unadmitted one is silently discarded; an
         let Some(message) = update.message.as_ref() else {
             return Handled::Dropped;
         };
@@ -841,10 +603,6 @@ impl Inbox {
                         Handled::Routed
                     }
                     // Owed, and retried on the short cadence until the bound.
-                    // The frozen bash reported this and moved on with the offset
-                    // already past the update, which LOSES the message; holding
-                    // it forever deadlocks the queue. The bound is the third
-                    // answer, and it is the caller's to apply.
                     Delivered::No(refusal) => Handled::Owed(Owing {
                         target: format!("{agent} in {session}"),
                         text,
@@ -901,20 +659,6 @@ impl Inbox {
 }
 
 /// The ONE notice a give-up sends.
-///
-/// It names what would not take the message and QUOTES THE MESSAGE BACK.
-/// Quoting is the substance and not a courtesy: without it the operator learns
-/// only that something of theirs vanished, and "never silently lose" would be a
-/// phrase rather than a property. `Api::send_message` caps the length, so an
-/// over-long message is truncated by the sender rather than dropped here.
-///
-/// THIS NOTICE CAN ITSELF ARRIVE TWICE, and its duplicate window is the SAME
-/// one the module documents for a routed message: the notice is sent before the
-/// checkpoint, so a crash — or a checkpoint write that fails — replays the
-/// update, and the retry either delivers it (the operator sees the quote and
-/// then the delivery) or reaches the bound again (the operator sees the quote
-/// twice). One honest duplicate per routed-before-offset crash window, not a
-/// second policy.
 fn give_up_notice(owing: &Owing, attempts: u32) -> String {
     let why = match owing.refusal {
         Refusal::Transient => "it would not accept the message",
@@ -1090,10 +834,6 @@ mod tests {
     // ─── the fake getUpdates server ──────────────────────────────────────
     //
     // THE PRODUCT GATE. Everything above this line tests a decision; what
-    // follows drives the real client against a real socket, because the
-    // properties at stake — that the offset does not move, that a body is
-    // capped while it streams, that a restart re-delivers nothing — are
-    // properties of the whole cycle and cannot be asserted on a pure function.
 
     /// A `getUpdates` envelope carrying these update objects.
     fn result(updates: &[String]) -> String {
@@ -1220,10 +960,6 @@ mod tests {
     }
 
     /// The `offset` each `getUpdates` asked for, in order.
-    ///
-    /// Read off the wire rather than off the client's own state: what this
-    /// bridge REQUESTS is what decides whether Telegram can hand over the
-    /// updates behind a stuck one.
     fn requested_offsets(fake: &Fake) -> Vec<i64> {
         fake.requests()
             .iter()
@@ -1274,7 +1010,6 @@ mod tests {
         // RULING A, end to end. Retrying forever is not "never lose", it is a
         // deadlock: the held offset blocks every later update, INCLUDING the
         // /use that would redirect away from the stuck target. So the bound
-        // ends the hold — by handing the message back, never by dropping it.
         let bound = Knobs::default().retry_max as usize;
         let (dir, recorder, cycles, offset) =
             poll_repeatedly("give-up", Refusal::Transient, "urgent thing", bound);
@@ -1328,14 +1063,6 @@ mod tests {
         // THE HAND-BACK IS THE CHECKPOINT'S PRECONDITION. A give-up steps over
         // an update on the strength of having handed the message back; if the
         // notice was never accepted, nothing was handed back, and advancing
-        // anyway would be a silent loss with a notice-shaped comment next to
-        // it.
-        //
-        // SCOPE: this is the DECISION — what the cycle does when the answer is
-        // `No`, whatever produced it. Which wire shapes produce a `No` is a
-        // question about the client, and it is answered against the real one in
-        // `bridge::tests::the_confirmed_word_accepts_only_what_telegram_actually_took`.
-        // Asserting it here too would be asserting it about a test double.
         let bound = Knobs::default().retry_max as usize;
         {
             let tag = "giveup-refused";
@@ -1427,8 +1154,6 @@ mod tests {
         // The deadlock argument, as a test — and the reason hold-forever was
         // rejected. While the offset is held, EVERY later update is blocked,
         // including the `/use` an operator would send to redirect away from the
-        // target that is stuck. The release is only real if that command is
-        // seen, so this asserts the effect it has and not merely the offset.
         let bound = Knobs::default().retry_max as usize;
         let dir = temp("give-up-frees");
         let held = from(3, "stuck", SENDER);
@@ -1459,11 +1184,6 @@ mod tests {
         // THE RELEASE, at the only place it is really observable: the offset
         // this client now ASKS Telegram for. While the offset is held, every
         // poll re-requests the stuck update and Telegram can never hand over
-        // what is behind it — the deadlock, stated as a wire fact. Asserting it
-        // here rather than only through the scripted reply matters: this fake
-        // answers its script in order, so a scripted `/use` arrives whether or
-        // not the client asked past the update in front of it, and a test that
-        // only read the reply would pass under hold-forever.
         let asked = requested_offsets(&fake);
         assert_eq!(
             asked.first().copied(),
@@ -1658,8 +1378,6 @@ mod tests {
         // THE STEADY STATE, and the one the reversal guard could break without
         // any other test noticing: an id EXACTLY one past the stored offset is
         // what every consecutive Telegram update looks like. A guard written
-        // `<=` instead of `<` would refuse the whole normal path while every
-        // hostile-input test stayed green.
         let dir = temp("steady-state");
         let fake = Fake::one(Reply::json(200, &result(&[from(6, "next", SENDER)])));
         let api = fake.api();
@@ -1684,7 +1402,6 @@ mod tests {
         // The design's requirement, on the fields where `Value::Raw` is
         // REACHABLE: a chat or sender id past `i64` survives as the text it
         // was written as, is compared as text, and simply fails to match. No
-        // wrap, no panic, and no accidental equality with a real id.
         let huge = "99999999999999999999999";
         let update = json::parse(&format!(
             r#"{{"update_id":4,"message":{{"text":"hi","from":{{"id":{huge}}},
@@ -1765,7 +1482,6 @@ mod tests {
         // The mixed case the single-update table cannot show: the first update
         // is genuinely new and IS routed and checkpointed; the second replays an
         // id below it. The offset must hold what it earned and refuse to go
-        // back — a backwards checkpoint would re-deliver everything in between.
         let dir = temp("reversal");
         let fake = Fake::one(Reply::json(
             200,
@@ -1795,7 +1511,6 @@ mod tests {
         // Two shapes, and the difference is the point: one declares nothing and
         // streams forever, the other declares a length far past the cap. A
         // reader that trusted `Content-Length` would fail the first and
-        // allocate the second.
         let endless = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let (cycled, offset) = hostile(
             "oversized-chunked",
@@ -1904,8 +1619,8 @@ mod tests {
 
     #[test]
     fn an_empty_allow_list_never_reaches_the_network_at_all() {
-        // SC-943 as a WIRE fact, not only a predicate: an outbound-only bridge
-        // must not be long-polling.
+        // The allow-list as a WIRE fact, not only a predicate: an outbound-only
+        // bridge must not be long-polling.
         let dir = temp("outbound-only");
         let fake = Fake::one(Reply::json(200, &result(&[from(1, "hi", SENDER)])));
         let api = fake.api();
@@ -1985,7 +1700,7 @@ mod tests {
 
     #[test]
     fn the_trust_predicate_needs_all_four_of_its_conditions() {
-        // SC-944a/b/c: each of these is one door, and each must close alone.
+        // Each of these is one door, and each must close alone.
         let good = message("hello");
         assert!(policy().admits(&good));
         let mut wrong_chat = good.clone();
@@ -2011,7 +1726,7 @@ mod tests {
 
     #[test]
     fn an_empty_allow_list_is_an_outbound_only_bridge_and_not_a_permissive_one() {
-        // SC-943.
+        // The allow-list gate.
         let off = Policy::new(CHAT_ID, Vec::new());
         assert!(!off.enabled());
         assert!(!off.admits(&message("hello")));
@@ -2059,10 +1774,9 @@ mod tests {
 
     #[test]
     fn a_refused_delivery_leaves_the_update_owed_and_the_chat_is_told_nothing_yet() {
-        // Inside the bound a refusal is LOGGED, not announced (SC-936): the
+        // Inside the bound a refusal is LOGGED, not announced: the
         // cycle carries the failure and the chat stays quiet, because a bridge
         // that narrates every retry of a wedged pane is a chat nobody reads.
-        // The one notice comes at the bound, and only there.
         let dir = temp("owed");
         let mut inbox = Inbox::new(&dir, Knobs::default());
         let recorder = Recorder::refusing(Refusal::Transient);
@@ -2083,9 +1797,6 @@ mod tests {
         // `/session <ref> ask <agent> <msg>` promises a TRACKED REQUEST: a
         // request id, an `ask` event, and a reply command embedded in the
         // message — which is the route the agent's answer takes back to the
-        // chat. An earlier version validated the verb and then ran `send`
-        // anyway, so the request was never opened and the documented reply
-        // route could not happen. The operator was told it worked.
         let dir = temp("verb");
         let mut inbox = Inbox::new(&dir, Knobs::default());
         let recorder = Recorder::default();
@@ -2137,7 +1848,7 @@ mod tests {
 
     #[test]
     fn use_writes_the_override_and_clear_removes_it() {
-        // SC-939e, through the real files.
+        // Through the real files.
         let dir = temp("use");
         let mut inbox = Inbox::new(&dir, Knobs::default());
         let recorder = Recorder::default();

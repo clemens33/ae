@@ -64,9 +64,6 @@ use crate::json::{self, Value};
 // The inbound half, in submodules of THIS one rather than beside it. That is a
 // privacy decision, not a filing one: a child module can see its parent's
 // private items, so `open_regular`, `durable_write` and the locked [`Api`]'s
-// test seam are reachable from the inbound code WITHOUT widening any of them to
-// the crate. Everything hardened here stays hardened there, and none of it
-// becomes reachable from a module that has no business with a bot token.
 pub mod bridge;
 pub mod inbound;
 pub mod routing;
@@ -89,18 +86,9 @@ const TIMEOUT_RECV_RESPONSE: Duration = Duration::from_secs(20);
 const TIMEOUT_GLOBAL: Duration = Duration::from_secs(30);
 
 /// The most response body this module will hold in memory, in bytes.
-///
-/// A `sendMessage` reply is a few hundred bytes. The cap is enforced while
-/// STREAMING and ignores `Content-Length` entirely, because a hostile or broken
-/// peer's declared length is a claim about a body it has not sent yet.
 const MAX_RESPONSE_BYTES: usize = 64 * 1024;
 
 /// The most a `getUpdates` long poll may ask Telegram to hold the connection.
-///
-/// STRICTLY BELOW [`TIMEOUT_RECV_RESPONSE`], and that relationship is the point
-/// rather than the number: the agent's ceiling must be able to outlast the wait
-/// we asked for, or every quiet poll ends as our own timeout and the loop backs
-/// off on its most normal outcome.
 const LONG_POLL_MAX: Duration = Duration::from_secs(10);
 
 /// THE COMPILER holds that relationship, not a comment and not a test: raising
@@ -158,11 +146,6 @@ impl Egress {
 /// A bot token. Constructible from a string and readable exactly once per use
 /// site through [`Token::expose`] — a name that is meant to look wrong in a
 /// diff.
-///
-/// No [`fmt::Display`], and a [`fmt::Debug`] that prints nothing: `{token}`
-/// does not compile and `{token:?}` prints a placeholder, so neither the
-/// obvious mistake nor the accidental one (a `#[derive(Debug)]` on a struct
-/// that holds one) can put the secret in a string.
 #[derive(Clone, PartialEq, Eq)]
 pub struct Token(String);
 
@@ -203,12 +186,6 @@ impl Credentials {
     }
 
     /// The configured control chat, verbatim.
-    ///
-    /// Read by the INBOUND half, which admits an update only from exactly this
-    /// chat (SC-944b). Compared as TEXT, like the frozen bash does: a chat id
-    /// is an identifier, and normalising it into a number would make two
-    /// spellings of one config value compare differently from how they were
-    /// written.
     #[must_use]
     pub fn chat_id(&self) -> &str {
         &self.chat_id
@@ -281,27 +258,6 @@ impl fmt::Display for CredentialsError {
 
 /// **THE ONLY `File::open` IN THIS MODULE.** Open a path that must be a REGULAR
 /// FILE, and hand back the descriptor with its `fstat`.
-///
-/// Every file this module reads — the config, the bot token, the durable cursor
-/// and the event log — comes through here, so the hardening below is one
-/// pattern rather than four spellings of it that drift apart.
-///
-/// Two checks, not one, and they are not redundant:
-///
-/// * BEFORE the open, `fs::metadata` (which FOLLOWS symlinks, so a symlink to a
-///   real config keeps working while a symlink to a FIFO does not) rejects
-///   anything that is not a regular file. This one has to come first because the
-///   hazard is `open(2)` ITSELF: on a FIFO it blocks until a writer appears, and
-///   there is no timeout to apply to it. A special node under any of these four
-///   names — `<meta>/telegram-outbound.cursor` and `<meta>/events.jsonl` are
-///   both inside a directory other processes write — would otherwise wedge the
-///   bridge before a single one of its timeouts, caps or retries could run.
-/// * AFTER the open, `File::metadata` — `fstat` on the descriptor — re-checks
-///   the file that was ACTUALLY opened. The path could have been re-pointed
-///   between the two, and this second check is about the bytes we are about to
-///   read rather than about a name. Its result is RETURNED rather than
-///   re-derived by the caller, which is what keeps the one-descriptor property:
-///   nobody downstream needs to stat the path again.
 fn open_regular(path: &Path) -> Result<(fs::File, fs::Metadata), NotRegular> {
     #[allow(
         clippy::disallowed_methods,
@@ -358,15 +314,6 @@ impl std::error::Error for CredentialsError {}
 /// Read `[telegram] token_file` and `[telegram] chat_id` from an ae config, and
 /// the token out of the file the first names.
 ///
-/// `home` is passed in rather than read from the environment: a module that
-/// reads `$HOME` for itself is a module whose behaviour depends on who exported
-/// what, and this one already reads a secret.
-///
-/// Two keys are read and nothing else — deliberately. There is no `base_url`,
-/// `api_root` or `endpoint` key here or anywhere, because the destination of a
-/// request carrying the token is not an operator's decision to make (see
-/// [`TELEGRAM_API`]).
-///
 /// # Errors
 ///
 /// [`CredentialsError`] for a config that cannot be read, either key missing,
@@ -379,16 +326,11 @@ pub fn load_credentials(config: &Path, home: &Path) -> Result<Credentials, Crede
 
 /// Everything the bridge reads out of an ae config: the outbound credentials,
 /// and the inbound allow-list.
-///
-/// One struct and ONE parse. The alternative — a second reader for the inbound
-/// keys — would read the same file at a different moment, and a config edited
-/// between the two would leave the bridge posting to one chat while trusting
-/// the allow-list of another.
 #[derive(Debug, Clone)]
 pub struct Settings {
     /// The bot token and the chat the outbound half posts to.
     pub credentials: Credentials,
-    /// **SC-943: inbound exists ONLY with a non-empty allow-list.** An empty
+    /// **Inbound exists ONLY with a non-empty allow-list.** An empty
     /// list is not "allow everyone" and not "allow nobody by accident" — it is
     /// the configured state of an outbound-only bridge, and the inbound loop
     /// does not run at all in it.
@@ -401,7 +343,7 @@ pub struct Settings {
 ///
 /// [`CredentialsError`], exactly as [`load_credentials`] — the allow-list has
 /// no failure of its own, because ABSENT is a legal, meaningful value for it
-/// (SC-943's outbound-only bridge) rather than a missing requirement.
+/// (outbound-only bridge) rather than a missing requirement.
 pub fn load_settings(config: &Path, home: &Path) -> Result<Settings, CredentialsError> {
     let text = match read_regular_file(config) {
         Ok((text, _)) => text,
@@ -458,7 +400,6 @@ pub fn load_settings(config: &Path, home: &Path) -> Result<Settings, Credentials
     // CUSTODY, checked on the descriptor that was actually read. Any bit set for
     // group or other means somebody else can have the token, and a secret with
     // the wrong permissions is already spent — refusing to start is the only
-    // answer that does not normalise it.
     if mode & 0o077 != 0 {
         return Err(CredentialsError::TokenInsecurePermissions(token_path, mode));
     }
@@ -474,11 +415,6 @@ pub fn load_settings(config: &Path, home: &Path) -> Result<Settings, Credentials
 
 /// Split an `allowed_user_ids` value the way the frozen bash does: on commas
 /// AND spaces, discarding empties.
-///
-/// NON-NUMERIC ENTRIES ARE KEPT AS WRITTEN and simply never match, because
-/// `from.id` is separately required to be numeric before it is compared
-/// (SC-944a). Dropping them here would be a silent repair of a typo the
-/// operator should see fail.
 fn parse_id_list(value: &str) -> Vec<String> {
     value
         .split([',', ' ', '\t'])
@@ -565,13 +501,6 @@ impl StatusClass {
 }
 
 /// Why one `sendMessage` did not land.
-///
-/// **No variant carries a string, a URL or a wrapped foreign error, and that is
-/// the point.** The request URL contains `/bot<TOKEN>/`, and `ureq::Error` has
-/// variants that quote the URI back (`BadUri(String)`); a single `{err}` on one
-/// of those in a log line would publish the bot token. This enum is the
-/// bottleneck every network failure passes through, and it is not capable of
-/// holding one — so the guarantee survives a future caller who logs carelessly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum SendFailure {
@@ -597,14 +526,6 @@ pub enum SendFailure {
 }
 
 /// THE COMPILER, not a convention, is what keeps a token out of [`SendFailure`].
-///
-/// `Copy` is derived above, and a `Copy` type cannot own a `String`, a `PathBuf`
-/// or a boxed error. So the "no variant carries text" property is not a rule a
-/// future edit could quietly break: adding `Detail(String)` does not produce a
-/// leak, it produces a build failure. (Verified as a control: that exact edit
-/// fails to compile.) The source-scan guard in `tests/it/telegram.rs` covers the
-/// remaining shape — a `&'static str` payload, which IS `Copy` — and that is the
-/// only gap it has to cover.
 const _: fn() = || {
     fn holds_no_owned_text<T: Copy>() {}
     holds_no_owned_text::<SendFailure>();
@@ -615,12 +536,6 @@ const _: fn() = || {
 };
 
 /// Which Telegram method a failure came from.
-///
-/// The METHOD NAME is not a secret — the bot token is, and it is in the URL
-/// path, which is why nothing else about the request is ever presented. This
-/// exists so a `getUpdates` failure cannot be rendered as a `sendMessage` one:
-/// a bridge with two endpoints and one failure text is a bridge whose logs
-/// name the wrong half.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Method {
     /// `sendMessage` — the outbound half.
@@ -643,9 +558,6 @@ impl Method {
 }
 
 /// One API call that did not land: which method, and which redacted class.
-///
-/// Both halves are `Copy` and neither can hold text, so this type is subject to
-/// the same compile-time guarantee [`SendFailure`] is — see the `const _` above.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ApiFailure {
     /// The method that failed.
@@ -689,7 +601,6 @@ impl fmt::Display for SendFailure {
         // A bare `SendFailure` is the OUTBOUND half's, and it renders exactly
         // as it always has — byte for byte. It renders THROUGH [`ApiFailure`]
         // so that adding the inbound endpoint did not fork the detail text into
-        // two copies that could disagree.
         ApiFailure::at(Method::SendMessage, *self).fmt(f)
     }
 }
@@ -698,12 +609,6 @@ impl std::error::Error for SendFailure {}
 
 impl SendFailure {
     /// Whether retrying the same event could plausibly succeed.
-    ///
-    /// A 4xx will not: Telegram has judged the request, and re-posting it forever
-    /// is how a bridge wedges. It is still NOT a cursor advance — the event was
-    /// not delivered, and pretending otherwise is the silent loss this module
-    /// exists to avoid. The caller decides what to do with a permanent failure;
-    /// this only says which kind it is.
     #[must_use]
     pub fn is_transient(self) -> bool {
         !matches!(self, Self::Status(StatusClass::ClientError, _))
@@ -713,14 +618,6 @@ impl SendFailure {
 // ─── the locked client ───────────────────────────────────────────────────
 
 /// A Telegram API client bound to one bot token and one chat.
-///
-/// The [`ureq::Agent`] inside is built in ONE place ([`Api::agent`]) and is
-/// locked there: no proxy, HTTPS only, no redirects, finite timeouts, and an
-/// explicitly named crypto provider. Each of those is an override — ureq's
-/// defaults are proxy-from-environment, plaintext allowed, ten redirects — and
-/// each of them is about the same thing: the URL contains the token, so every
-/// mechanism that could send the request somewhere else is a token exfiltration
-/// path with a friendly name.
 pub struct Api {
     agent: ureq::Agent,
     egress: Egress,
@@ -757,27 +654,6 @@ impl Api {
     }
 
     /// **The one and only `ureq::Agent` construction site in this crate.**
-    ///
-    /// Every setting below is an override of a ureq default, and every one of
-    /// them exists because the bot token rides in the request path:
-    ///
-    /// * `proxy(None)` — the default is `Proxy::try_from_env()`. An exported
-    ///   `HTTPS_PROXY` would otherwise route the token through whatever host an
-    ///   environment variable names, and a daemon inherits its environment from
-    ///   whoever started it.
-    /// * `https_only(true)` — the default is `false`. Without it a mistyped
-    ///   `http://` URL sends the token in cleartext instead of failing.
-    /// * `max_redirects(0)` — the default is 10. A 3xx becomes an error rather
-    ///   than a second request carrying the token to the host the first one
-    ///   chose.
-    /// * finite `timeout_*` — ureq's defaults are not finite enough to bound a
-    ///   background loop; a wedged connection would otherwise stall the bridge
-    ///   with no upper bound.
-    /// * an explicit `ring` provider — ureq's own docs reserve the right to
-    ///   change which provider its `rustls` feature selects. For a statically
-    ///   linked musl binary that is not a detail to discover in production, so
-    ///   the provider is named here and the `rustls-no-provider` feature makes
-    ///   naming it mandatory.
     fn agent(egress: &Egress) -> ureq::Agent {
         let crypto = Arc::new(rustls::crypto::ring::default_provider());
         let tls = ureq::tls::TlsConfig::builder()
@@ -848,12 +724,6 @@ impl Api {
     /// Register the slash-command menu, so the chat's `/` list offers ae's
     /// grammar instead of requiring the operator to remember it.
     ///
-    /// **BEST EFFORT BY CONTRACT, and the caller is expected to ignore the
-    /// error** (`docs/reference/telegram.md`): a bridge that refused to start
-    /// because a cosmetic menu did not register would trade the whole feature
-    /// for a nicety. Nothing downstream reads the result — the commands work
-    /// whether or not Telegram ever showed them in a menu.
-    ///
     /// # Errors
     ///
     /// [`SendFailure`], redacted like every other failure here. Same acceptance
@@ -895,23 +765,6 @@ impl Api {
 
     /// Long-poll `getUpdates` for everything from `offset` onwards.
     ///
-    /// Returns the `result` array's elements, untouched — this method owns the
-    /// NETWORK boundary (the locked agent, the byte cap, the `ok == true`
-    /// envelope) and nothing about what an update MEANS, which is
-    /// [`inbound`]'s.
-    ///
-    /// # The long poll is bounded twice, and the two bounds are not the same one
-    ///
-    /// `wait` is Telegram's own parameter: the server holds the connection open
-    /// that long before answering with an empty result. The AGENT's
-    /// `timeout_recv_response` is our ceiling on the same wait, and it is not
-    /// negotiable at run time because the agent is built once, locked, in
-    /// [`Api::agent`]. So `wait` is clamped to [`LONG_POLL_MAX`], which is
-    /// strictly below that ceiling: a normal empty poll must be ANSWERED by
-    /// Telegram rather than aborted by us, because an aborted poll is
-    /// indistinguishable from a broken one and would put the loop into backoff
-    /// on its quietest, most normal path.
-    ///
     /// # Errors
     ///
     /// [`ApiFailure`] — the same redacted classes the outbound half uses, named
@@ -948,7 +801,6 @@ impl Api {
             // ONLY `message`. Every other update kind — edits, callbacks,
             // channel posts — is something this bridge has no route for, and
             // asking for them would mean receiving updates whose only possible
-            // handling is to advance the offset past them.
             ("allowed_updates", Value::Arr(vec![Value::str("message")])),
         ])
         .render();
@@ -969,7 +821,6 @@ impl Api {
             // A 200 with `ok:true` and no array to go with it is not a quiet
             // empty poll — it is a response this reader does not understand,
             // and treating it as "no updates" would advance nothing while
-            // reporting health.
             _ => Err(SendFailure::Malformed),
         }
     }
@@ -991,17 +842,11 @@ fn classify(error: ureq::Error) -> SendFailure {
         // Io, Tls, HostNotFound, ConnectionFailed, Protocol, Http, BadUri,
         // InvalidProxyUrl, BodyExceedsLimit and whatever a `#[non_exhaustive]`
         // enum adds next. Collapsed on purpose: the differences between them
-        // live in strings, and `BadUri` carries the URI — which is the token.
         _ => SendFailure::Transport,
     }
 }
 
 /// Read a response body with a hard ceiling, ignoring `Content-Length`.
-///
-/// `take(cap + 1)` bounds what is allocated to one byte past the cap, so an
-/// endless chunked body is refused rather than buffered: the ceiling holds
-/// whether the peer declared a small length and sent a large body, declared
-/// nothing at all, or lied in the other direction.
 fn read_bounded(reader: impl Read) -> Result<Vec<u8>, SendFailure> {
     let mut buffer = Vec::new();
     let read = reader
@@ -1015,20 +860,11 @@ fn read_bounded(reader: impl Read) -> Result<Vec<u8>, SendFailure> {
 }
 
 /// Did Telegram accept it? Only `{"ok":true, ...}` says yes.
-///
-/// Everything else — `ok:false`, no `ok`, `ok:"true"`, a JSON array, a body
-/// that is not JSON at all, a body nested past `MAX_DEPTH` — is a failure with
-/// the cursor left where it was.
 fn accepted(bytes: &[u8]) -> Result<(), SendFailure> {
     envelope(bytes).map(|_| ())
 }
 
 /// [`accepted`], keeping the parsed body for a caller that needs its `result`.
-///
-/// The acceptance test is the SAME one for both endpoints, and deliberately so:
-/// Telegram signals a refusal with 200 + `ok:false` on `getUpdates` exactly as
-/// it does on `sendMessage`, and an inbound loop that read only the status code
-/// would treat a refusal as an empty poll and keep advancing.
 fn envelope(bytes: &[u8]) -> Result<Value, SendFailure> {
     let text = std::str::from_utf8(bytes).map_err(|_| SendFailure::Malformed)?;
     let value = json::parse(text).map_err(|_| SendFailure::Malformed)?;
@@ -1053,11 +889,6 @@ fn truncate_chars(text: &str, limit: usize) -> String {
 // ─── the durable cursor ──────────────────────────────────────────────────
 
 /// How far into an `events.jsonl` the bridge has been ACCEPTED.
-///
-/// Keyed by inode, not by path. A rotated or replaced log is a different file
-/// that happens to have the same name, and an offset carried across that
-/// boundary would skip the new file's first bytes — or, worse, re-forward the
-/// old file's events after a restore. A different inode means "start at 0".
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Cursor {
     /// The inode of the log this offset belongs to.
@@ -1164,14 +995,6 @@ pub fn load_cursor(path: &Path) -> Result<Option<Cursor>, CursorError> {
 
 /// Write the cursor DURABLY, through the bridge's one durable write.
 ///
-/// The mechanics — `O_EXCL` temp, `fsync` the temp, rename, `fsync` the
-/// directory — and the reason each of them is load-bearing live at
-/// [`durable_write`], which the inbound offset checkpoint shares. What is
-/// specific to the CURSOR is the consequence of getting it wrong: a rollback
-/// here would put the cursor BEHIND deliveries Telegram has already accepted,
-/// and this module's honest one-event crash window would quietly become a
-/// several-event one.
-///
 /// # Errors
 ///
 /// [`CursorError::NotWritten`] for any failure. The caller must treat a failed
@@ -1187,29 +1010,6 @@ const CHECKPOINT_STEM: &str = "ae-telegram-checkpoint";
 
 /// Write `contents` to `path` DURABLY: temp file, `fsync` the temp, rename,
 /// `fsync` the directory.
-///
-/// **THE ONE DURABLE WRITE IN THIS BRIDGE**, shared by the outbound cursor and
-/// the inbound update offset, because those two checkpoints make the same
-/// promise and a second spelling of it is a second thing to get wrong. Both
-/// carry "how far have we definitely got", and both are read back after a crash
-/// by a process whose correctness depends on the answer not having rolled back.
-///
-/// Every property below is load-bearing:
-///
-/// * `create_new(true)` is `O_EXCL`, which NEVER follows an existing node. The
-///   temp name is predictable (it has to be, to be cleanable), so without this
-///   a planted symlink at that path would be followed and whatever it points at
-///   TRUNCATED — by a process with whatever access the bridge has.
-/// * `mode(0o600)` sets the permissions at CREATION rather than after, so the
-///   file is never briefly world-readable, and it is those bits the rename
-///   carries onto the checkpoint.
-/// * `sync_all` on the temp, THEN the rename, THEN `sync_all` on the directory.
-///   The directory sync is the half that is easy to skip and expensive to omit:
-///   a rename is atomic with respect to a reader, which is a different property
-///   from being durable with respect to power loss. The new contents can be on
-///   the platter while the directory entry still points at the old inode, and
-///   that rollback would put a checkpoint BEHIND work already done — turning
-///   this bridge's honest one-item crash window into an unbounded one.
 ///
 /// # Errors
 ///
@@ -1228,19 +1028,12 @@ pub(crate) fn durable_write(path: &Path, contents: &str) -> io::Result<()> {
         // `create_new(true)` is `O_EXCL`, and `O_EXCL` NEVER follows an existing
         // node. The temp name is predictable (it has to be, to be cleanable), so
         // without this a planted symlink at that path would be followed and
-        // whatever it points at TRUNCATED — by a process that has whatever
-        // access the bridge has. `mode(0o600)` sets the permissions at creation
-        // rather than after, so the file is never briefly world-readable, and it
-        // is those bits the rename carries onto the cursor.
         let mut options = fs::OpenOptions::new();
         options.write(true).create_new(true).mode(0o600);
         let mut file = match options.open(&temp) {
             Ok(file) => file,
             Err(why) if why.kind() == io::ErrorKind::AlreadyExists => {
                 // A leftover from a dead process with our pid — or a plant.
-                // `remove_file` unlinks a SYMLINK ITSELF rather than its target,
-                // so this cleans up without ever touching what was pointed at,
-                // and it fails on a directory rather than recursing.
                 fs::remove_file(&temp)?;
                 options.open(&temp)?
             }
@@ -1337,14 +1130,6 @@ impl fmt::Display for PassFailure {
 }
 
 /// The outbound bridge for ONE session's event log.
-///
-/// Holds the two paths it works between and the position it has reached. The
-/// position is two values, not one, and the difference matters: `scanned` is
-/// where reading got to (it moves past events that are not chat events, which
-/// carry no delivery obligation), while the CURSOR ON DISK only ever moves past
-/// an event Telegram accepted. A restart resumes from the durable one, re-reads
-/// the skipped events, and skips them again — which costs a re-read and buys
-/// the rule that nothing but an accepted delivery is ever checkpointed.
 #[derive(Debug)]
 pub struct Outbound {
     log: PathBuf,
@@ -1356,8 +1141,6 @@ pub struct Outbound {
 
 impl Outbound {
     /// Bind a bridge to a session's meta directory.
-    ///
-    /// `label` is what the forwarded message is headed with — the session name.
     #[must_use]
     pub fn new(meta: &Path, label: impl Into<String>) -> Self {
         Self {
@@ -1380,10 +1163,6 @@ impl Outbound {
 
     /// Forward every chat event after the cursor, stopping at the first that is
     /// not accepted.
-    ///
-    /// Each accepted event is checkpointed durably BEFORE the next is read, so
-    /// the cursor never runs ahead of Telegram and never lags it by more than
-    /// the one event in flight.
     pub fn pump(&mut self, api: &Api) -> Pass {
         match self.pass(api) {
             Ok(pass) => pass,
@@ -1404,16 +1183,6 @@ impl Outbound {
     /// so the deliveries that did land are still reported.
     fn pass(&mut self, api: &Api) -> Result<Pass, PassFailure> {
         // ONE OPEN, and everything about the file comes off THAT descriptor.
-        // Sampling the inode and length by PATH and then opening the path again
-        // is a TOCTOU: a rotation between the two binds the new file's BYTES to
-        // the old file's IDENTITY, and the checkpoint that follows is then
-        // written against a file the offset does not describe — which re-sends
-        // on the benign path and, if the inode is reused, can SKIP. There is no
-        // window here because there is no second lookup.
-        // Through [`open_regular`]: classified, then opened once, then `fstat`ed
-        // on THAT descriptor — which is both the FIFO gate and FIX 2's
-        // one-descriptor property, since the metadata comes back from the same
-        // call rather than from a second lookup by name.
         let (mut file, metadata) = match open_regular(&self.log) {
             Ok(opened) => opened,
             // No log yet is not a failure: a session that has emitted no event
@@ -1452,9 +1221,6 @@ impl Outbound {
         // A FULL WINDOW WITH NO COMPLETE LINE IN IT is a record longer than the
         // pass can hold, and it would otherwise wedge the bridge in SILENCE:
         // every later pass reads the same prefix, finds no line, advances
-        // nothing and reports a clean, empty success forever. Say so instead.
-        // The cursor still does not move — the record is owed, not dropped —
-        // but the failure is now something an operator can see.
         if as_bytes_count(window.len()) >= MAX_PASS_BYTES
             && complete_lines(&window).next().is_none()
         {
@@ -1477,14 +1243,6 @@ impl Outbound {
                     // THE ADVANCE IS THE CHECKPOINT, and neither happens without
                     // the other. `position` moves only after `store_cursor`
                     // returns Ok, so a failed checkpoint leaves the in-memory
-                    // scan BEFORE this event too — not just the durable cursor.
-                    //
-                    // Advancing the in-memory scan on a failed checkpoint was
-                    // the bug: the next pass would start past event N with the
-                    // durable cursor still before it, send N+1, and — if that
-                    // checkpoint also failed — leave TWO events owed. Repeated,
-                    // the "one event" crash window becomes "everything since the
-                    // last successful checkpoint", with no bound.
                     let advanced = Cursor {
                         inode: position.inode,
                         offset: position.offset + width,
@@ -1493,16 +1251,6 @@ impl Outbound {
                         // The message IS delivered; the checkpoint is not. The
                         // next pass re-sends exactly this one event — the single
                         // allowed duplicate — and re-attempts the checkpoint.
-                        //
-                        // A checkpoint that keeps failing is a broken disk, and
-                        // what it degrades to is stated rather than pinned: this
-                        // failure feeds the SAME `failures` streak a send failure
-                        // does, so [`backoff_delay`] rate-caps the re-attempts at
-                        // its 60-second ceiling. The behaviour is throttled
-                        // at-least-once re-delivery of that ONE owed event — the
-                        // honest reading of at-least-once when the checkpoint
-                        // cannot be made, not a silent advance and not a
-                        // hard-stop constant nobody agreed to.
                         pass.delivered += 1;
                         pass.failure = Some(PassFailure::Cursor(why.to_string()));
                         break;
@@ -1541,42 +1289,28 @@ impl Outbound {
 
     /// Where this pass starts reading.
     ///
-    /// The in-memory `scanned` position is used only when it belongs to the same
-    /// file AND is at or past the durable cursor; anything else falls back to the
-    /// durable cursor, and a durable cursor for a different inode — or one past
-    /// the end of the file it names — falls back to the start of the file.
-    ///
-    /// An offset past the end means the log was truncated or replaced in place.
-    /// Restarting at 0 re-sends; restarting at the end loses. This re-sends.
-    ///
     /// # THE INVARIANT THIS RESTS ON: `events.jsonl` IS APPEND-ONLY
     ///
     /// A byte offset is only a position in a document that never rewrites its
     /// past. The heuristic above cannot tell a same-inode file whose bytes were
-    /// REPLACED (with a length at or past the offset) from one that merely grew
-    /// — it would resume mid-way through unrelated content. That case is not
-    /// reachable in ae, and the reason is a property of the producer, not of
-    /// this reader:
+    /// REPLACED from one that merely grew. That case is unreachable in ae, and
+    /// the reason is a property of the producer:
     ///
-    /// * The ONLY production writer of the ledger is [`crate::state::emit`] ->
+    /// * the ONLY production writer of the ledger is [`crate::state::emit`] ->
     ///   `append_locked` -> `append`, which opens with `OpenOptions::append(true)`
-    ///   under the container's `flock` (`src/state.rs`). Appending is all it can
-    ///   do.
-    /// * `compact` only READS `events.jsonl` (`event_text::read_container`); it
-    ///   never opens it for writing.
-    /// * Measured across `src/`: there is NO product-side `fs::write`,
-    ///   `truncate(true)`, `remove_file` or `rename` of the ledger. Every such
-    ///   call is inside a `#[cfg(test)]` module building a fixture.
-    /// * Replacement therefore always arrives as a NEW INODE — rotation,
-    ///   `ae transfer`, a restored archive — and that case IS handled, above.
+    ///   under the container's `flock`;
+    /// * `compact` only READS the ledger, never opens it for writing;
+    /// * measured across `src/`, no product-side `fs::write`, `truncate(true)`,
+    ///   `remove_file` or `rename` of the ledger exists;
+    /// * replacement therefore always arrives as a NEW INODE — rotation, a
+    ///   restored archive — and that case IS handled above.
     ///
     /// No fingerprint and no lock are added here on purpose: a guard against an
-    /// unreachable case is speculative machinery, and the proof is cheaper and
-    /// more honest than the code would be.
+    /// unreachable case is speculative machinery.
     ///
     /// **ANY future in-place rewrite of the events ledger — an in-place ledger
     /// compaction is the obvious candidate — INVALIDATES this and must revisit
-    /// the cursor.** That is the trigger; it is written here because this is
+    /// the cursor.** The trigger is written here because this is
     /// where the assumption is spent.
     fn start(&self, durable: Option<Cursor>, inode: u64, length: u64) -> Cursor {
         let base = match durable {
@@ -1600,13 +1334,12 @@ impl Outbound {
         // A line that is not UTF-8 is not an event this reader can frame. It is
         // SKIPPED rather than fatal — one corrupt byte must not stop every later
         // event forever — and its full byte width is still stepped over, because
-        // the cursor counts the file's bytes, not the ones that decoded.
         let Ok(text) = std::str::from_utf8(line) else {
             return Forwarded::Skipped;
         };
         let Ok(event) = crate::events::Event::parse_line(text.trim_end_matches('\n')) else {
             // A line this reader cannot parse is not a chat event it can
-            // forward. SC-511b's tolerance applies to KEYS, not to a line that
+            // forward. tolerance applies to KEYS, not to a line that
             // is not an event at all.
             return Forwarded::Skipped;
         };
@@ -1640,16 +1373,6 @@ enum Forwarded {
 }
 
 /// Read at most [`MAX_PASS_BYTES`] of the log, starting at `from`.
-///
-/// Takes the DESCRIPTOR its caller already opened, never a path: re-opening by
-/// name is the second half of a TOCTOU whose first half is the `fstat` the
-/// caller did (see the note in [`Outbound::pass`]).
-///
-/// BYTES, not a `String`. The cursor is a byte offset into this file, and the
-/// only way to keep it one is to measure the lines in the same units the file
-/// is written in: a lossy UTF-8 decode substitutes a three-byte replacement
-/// character for each bad byte, so a decoded line's length is not the width it
-/// occupied on disk and every later offset would be wrong.
 fn read_window(file: &mut fs::File, from: u64, length: u64) -> io::Result<Vec<u8>> {
     use std::io::{Seek as _, SeekFrom};
     if from >= length {
@@ -1663,10 +1386,6 @@ fn read_window(file: &mut fs::File, from: u64, length: u64) -> io::Result<Vec<u8
 }
 
 /// The COMPLETE lines in `bytes`, each including its trailing `\n`.
-///
-/// A trailing fragment is dropped: an appender that has written half a line is
-/// not a producer of a short event, and consuming the fragment would advance the
-/// cursor past bytes the rest of the record still needs.
 fn complete_lines(bytes: &[u8]) -> impl Iterator<Item = &[u8]> {
     bytes
         .split_inclusive(|byte| *byte == b'\n')
@@ -1801,10 +1520,6 @@ mod tests {
                             // BSD/macOS hands back an accepted socket that has
                             // INHERITED the listener's O_NONBLOCK; Linux does
                             // not. Left set, the first `read_line` returns
-                            // WouldBlock, the connection closes unanswered, and
-                            // the product reports a transport failure — an
-                            // intermittent harness bug wearing the product's
-                            // clothes.
                             stream.set_nonblocking(false).unwrap();
                             stream
                                 .set_read_timeout(Some(Duration::from_secs(10)))
@@ -1988,13 +1703,6 @@ mod tests {
         }
 
         /// A SHORT temp path, for the tests that put a unix socket in it.
-        ///
-        /// `sun_path` is 104 bytes on macOS and 108 on Linux, and macOS's
-        /// `$TMPDIR` (`/var/folders/xy/…/T/`) spends about half of that before
-        /// the test has named anything — so `bind` fails with "path must be
-        /// shorter than `SUN_LEN`" on macOS and passes on Linux, which is the
-        /// worst kind of test. `/tmp` keeps the whole path well inside both
-        /// limits (AGENTS.md records this hazard for exactly this case).
         fn short(tag: &str) -> Self {
             Self::under(Path::new("/tmp"), &format!("ae-tg-{tag}"))
         }
@@ -2196,7 +1904,6 @@ mod tests {
         // The lock is not decoration: https_only(true) makes a plaintext URL
         // fail before a byte of the token leaves the process. (Proved through
         // the production constructor's own agent, on a loopback URL — nothing
-        // is listening, and it must not get as far as finding that out.)
         let api = Api::production(Credentials::new(Token::new(FAKE_TOKEN), CHAT));
         let failure = api
             .agent
@@ -2295,9 +2002,6 @@ mod tests {
         // The declared length is 64 MiB. Two things are asserted, and the second
         // is the one that matters: the call FAILS, and the server never managed
         // to hand over anything like 64 MiB — so the cap stopped the read rather
-        // than buffering the whole body and rejecting it afterwards. A cap that
-        // only rejects after the fact passes the first assertion and fails this
-        // one, and "no OOM" is a claim about the second.
         let written = Arc::new(AtomicUsize::new(0));
         let declared = MAX_RESPONSE_BYTES * 1024;
         let fake = Fake::one(Reply::Oversized {
@@ -2340,12 +2044,6 @@ mod tests {
         // MEASURED, and it is not what the ureq docs' wording suggests:
         // `max_redirects(0)` does not raise `TooManyRedirects` — with no
         // redirect budget the 3xx is simply returned, and `http_status_as_error`
-        // (ureq's default, kept) turns it into `StatusCode(302)`. Either way the
-        // property that matters holds, and it is asserted below rather than
-        // assumed: exactly ONE request left this process, so nothing carrying
-        // the token was re-issued at whatever host a `Location` header named.
-        // `SendFailure::Redirected` stays for the variants ureq does raise
-        // (`TooManyRedirects`, `RedirectFailed`).
         assert_eq!(
             fake.api().send_message("x"),
             Err(SendFailure::Status(StatusClass::Redirect, 302))
@@ -2385,11 +2083,9 @@ mod tests {
 
     #[test]
     fn a_sweep_nudge_is_not_forwarded_by_default() {
-        // SC-939c. The orchestrator's sweep prompt and the stale nudge are both
+        // The orchestrator's sweep prompt and the stale nudge are both
         // the `nudge` action (only their summaries differ), and neither is in
         // the default Telegram include. Here that row holds BY CONSTRUCTION —
-        // this bridge forwards the `chat` action and nothing else — so what
-        // this test pins is that the construction does not quietly widen.
         let temp = Temp::new("sweep");
         append(
             temp.path(),
@@ -2441,14 +2137,6 @@ mod tests {
         // THE CRASH WINDOW, modelled exactly as the contract states it: Telegram
         // accepted an event and the process died before that event's checkpoint
         // reached the disk. On disk that is indistinguishable from "the cursor
-        // stands after the PREVIOUS event", so the fault is injected by putting
-        // it there — no product seam, and nothing the test has to be trusted
-        // about.
-        //
-        // The claim under test is a count, not a direction: exactly ONE event is
-        // duplicated, and none is lost. A rewind of two events would also
-        // "replay without loss" and would still be a contract violation, so the
-        // duplicate count is asserted rather than the absence of loss alone.
         let temp = Temp::new("crashwindow");
         append(
             temp.path(),
@@ -2509,9 +2197,6 @@ mod tests {
         // R1's transaction, observed rather than inferred. Where the cursor ends
         // up after a pass is the same whether it was written once per event or
         // once at the end — so a test that only reads the final value cannot
-        // tell a one-event crash window from a whole-pass one. This reads the
-        // durable cursor AT each request's arrival, which is strictly ordered
-        // after the previous response was processed.
         let temp = Temp::new("checkpointorder");
         append(
             temp.path(),
@@ -2569,9 +2254,6 @@ mod tests {
         // THE BOUND ON DUPLICATION. When a checkpoint fails, event N is
         // delivered but not recorded. If the in-memory scan advanced anyway, the
         // next pass would send N+1 with the durable cursor still before N — and
-        // under repeated failure the "one event" crash window would grow without
-        // limit. So the next pass must re-send N, and nothing else, for as long
-        // as the checkpoint keeps failing.
         let temp = Temp::new("checkpointfail");
         append(
             temp.path(),
@@ -2738,9 +2420,6 @@ mod tests {
         // Rotate: a genuinely different file under the same name — and a LONGER
         // one than the offset carried over from the old file. That length is the
         // whole discriminating power of this test: with a shorter new file, a
-        // cursor that ignored the inode would fall back to zero anyway and pass
-        // by luck. Here a path-keyed cursor would resume at the old offset and
-        // silently skip the new file's first event.
         std::fs::rename(
             temp.path().join("events.jsonl"),
             temp.path().join("events.jsonl.1"),
@@ -2976,11 +2655,9 @@ mod tests {
 
     #[test]
     fn the_allow_list_splits_on_every_separator_and_repairs_nothing() {
-        // The allow-list IS the trust predicate's input (SC-944a): every id that
+        // The allow-list IS the trust predicate's input: every id that
         // survives this decides who may drive this machine's sessions from a
         // chat. So the only normalisation here is whitespace — a parser that
-        // quietly dropped a malformed id would narrow or widen admission in a
-        // way the operator never wrote and cannot see.
         assert_eq!(parse_id_list("42"), vec!["42".to_owned()]);
         assert_eq!(
             parse_id_list(" 42 ,7\t9 "),
@@ -2989,7 +2666,7 @@ mod tests {
         );
         assert!(
             parse_id_list("").is_empty(),
-            "no ids is not one empty id — SC-943 reads an empty list as inbound DISABLED, \
+            "no ids is not one empty id — an empty list means inbound DISABLED, \
              and a phantom entry would switch it on with an allow-list matching nobody"
         );
         assert!(
@@ -3009,7 +2686,6 @@ mod tests {
         // The two values the inbound policy is built from, read back through
         // the accessors the daemon actually calls. Without this the wiring from
         // config to `Policy` is asserted nowhere: every routing test builds its
-        // policy from a literal.
         let temp = Temp::new("settings");
         write_token(&temp.path().join("tg.token"), FAKE_TOKEN);
         let config = write_config(
@@ -3032,8 +2708,6 @@ mod tests {
         // A token with a stray `\r` or trailing space is a 404 from Telegram
         // and an opaque one: the failure type CANNOT carry the token, so the
         // operator gets "not found" with nothing to look at. CRLF is the shape
-        // that actually happens — a token file written on Windows, or pasted
-        // through one.
         let temp = Temp::new("tokentrim");
         write_token(
             &temp.path().join("tg.token"),
@@ -3052,8 +2726,6 @@ mod tests {
         // Comments are skipped BEFORE the key grammar sees them, and the key
         // grammar would refuse them anyway — defence in depth over one
         // property: a setting an operator commented out must not be live. It is
-        // stated here as the property rather than as the mechanism, so either
-        // layer may change without this test having to.
         let temp = Temp::new("commented");
         write_token(&temp.path().join("tg.token"), FAKE_TOKEN);
         let config = write_config(
@@ -3151,16 +2823,6 @@ mod tests {
         // THE HAZARD IS `open(2)` ITSELF. On a FIFO it blocks until a writer
         // appears — no timeout applies — so the classification has to happen
         // first, and a bridge that hangs in credential loading never starts and
-        // never says why.
-        //
-        // THE FIFO IS NOT THE NODE CONSTRUCTED HERE, and that is a deliberate
-        // limit worth stating: `mkfifo` needs libc or a subprocess, this crate
-        // forbids `unsafe` and denies `std::process::Command` outside three
-        // inventoried doors, and adding a fourth door to build a test fixture
-        // would cost more than the fixture is worth. A DIRECTORY and a UNIX
-        // SOCKET take the identical branch — `metadata.is_file()` is false — so
-        // the refusal is exercised; what is untested is only that a FIFO does
-        // not block, which follows from never opening it.
         let temp = Temp::new("nodekind");
         write_token(&temp.path().join("tg.token"), FAKE_TOKEN);
 
@@ -3239,11 +2901,6 @@ mod tests {
     // ─── special nodes at the cursor and the log (FIX 6) ─────────────────
 
     /// Run `body` on a thread and fail if it does not finish in time.
-    ///
-    /// The failure under test IS a hang, so the assertion has to be able to
-    /// observe one. A test that simply called the reader would not fail on the
-    /// bug — it would stop, take the suite's whole timeout with it, and report
-    /// nothing about which path blocked.
     fn within<T: Send + 'static>(label: &str, body: impl FnOnce() -> T + Send + 'static) -> T {
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
@@ -3256,15 +2913,6 @@ mod tests {
     }
 
     /// The two non-regular nodes a test can build without libc or a subprocess.
-    ///
-    /// A FIFO is the node that actually BLOCKS in `open(2)`, and it is not
-    /// constructed here: `mkfifo` needs libc or a fourth `std::process::Command`
-    /// door, and this crate forbids `unsafe` and denies that type outside three
-    /// inventoried doors. A directory and a unix socket take the IDENTICAL
-    /// branch — `metadata.is_file()` is false, so the open never happens — so
-    /// the refusal is exercised. What stays unconstructed is only the claim that
-    /// a FIFO does not block, and that follows from never opening a node the
-    /// classification rejected.
     fn plant_non_regular(path: &Path, kind: &str) -> Option<std::os::unix::net::UnixListener> {
         match kind {
             "directory" => {
@@ -3366,7 +3014,6 @@ mod tests {
         // The temp name is predictable — it has to be, so a leftover can be
         // cleaned up — which makes it a place to plant a symlink. Without
         // `O_EXCL` the open follows it and truncates whatever it points at, with
-        // whatever access the bridge has.
         let temp = Temp::new("symlinktemp");
         let victim = temp.path().join("precious");
         std::fs::write(&victim, "do not lose me").unwrap();

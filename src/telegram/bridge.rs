@@ -1,29 +1,4 @@
 //! The daemon: one thread long-polls Telegram, one pumps `say` outward.
-//!
-//! # Two loops, two threads, one channel — and no async runtime
-//!
-//! The inbound long poll BLOCKS for up to ten seconds at a time. The outbound
-//! pump must not wait behind it, because a `say` emitted during that window
-//! would sit unsent for the length of somebody else's silence. So they are
-//! separate loops, and separate loops here means separate OS threads talking
-//! over a `std::sync::mpsc` channel. Two background loops do not justify an
-//! async runtime, and the crate has none.
-//!
-//! **The OUTBOUND pump is the calling thread**, and the inbound poll is the
-//! spawned one. That is not arbitrary: the caller owns the error stream, and a
-//! diagnostic written from two threads at once is two half-lines. Everything
-//! the inbound thread wants to SAY — a chat reply, a diagnostic — travels the
-//! channel as a [`Word`] and is written or sent by the thread that owns the
-//! means to do it.
-//!
-//! # Restart is the shutdown story
-//!
-//! Both halves checkpoint durably before they consider a piece of work done —
-//! the outbound cursor after Telegram accepts an event, the inbound offset
-//! after an update is routed. So a kill between cycles costs nothing, and a
-//! kill mid-cycle costs at most the single honest duplicate each half
-//! documents. There is no shutdown sequence to get wrong because there is no
-//! state that only exists in memory.
 
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -122,21 +97,12 @@ enum Word {
     /// Send this to the operator's chat, best effort.
     Say(String),
     /// Send this and report back whether the platform ACCEPTED it.
-    ///
-    /// The give-up notice, and nothing else. It carries its own reply channel
-    /// because the inbound thread must not post: the pump is the single sender
-    /// (see [`Outgoing`]), so the only way to learn whether Telegram took the
-    /// message is to ask the thread that is allowed to ask.
     SayAndConfirm(String, Sender<Accepted>),
     /// Write this to the error stream.
     Note(String),
 }
 
 /// The [`Chat`] the inbound loop talks through: a channel, not a socket.
-///
-/// The inbound thread never posts to Telegram itself. It cannot: the outbound
-/// half is a strictly ordered pump over a durable cursor, and a second sender
-/// racing it would interleave with the events it is forwarding.
 struct Outgoing(Sender<Word>);
 
 impl Chat for Outgoing {
@@ -144,7 +110,6 @@ impl Chat for Outgoing {
         // A closed channel means the pump is gone and this process is on its
         // way out. Dropping the word is right: there is nothing left to send it
         // with, and panicking in a worker thread would take the diagnostic with
-        // it.
         let _ = self.0.send(Word::Say(text.to_owned()));
     }
 
@@ -152,29 +117,6 @@ impl Chat for Outgoing {
         // EVERY FAILURE DIRECTION IS `No`, and that is the whole design. The
         // caller advances a durable offset on `Yes`, so anything short of the
         // pump reporting an acceptance — a dead pump, a dropped reply channel —
-        // must read as "not delivered" and leave the update owed. Absence of an
-        // answer is never an answer.
-        //
-        // # The wait is UNBOUNDED, and that is what keeps the notice to one
-        //
-        // A timeout here would not cancel anything: the word stays in the
-        // channel, and the caller — reading the timeout as a rejection — comes
-        // back at the next bound and queues ANOTHER one. A pump busy longer
-        // than the timeout then drains the whole pile and posts every stale
-        // notice, so the operator sees one per retry. Bounding the wait turns
-        // "at most one surfaced notice" into "unboundedly many".
-        //
-        // Blocking instead means this thread cannot reach the next give-up
-        // until the pump has resolved this word, so exactly one is ever in
-        // flight and none is ever abandoned-then-delivered. A slow pump DELAYS
-        // the notice rather than MULTIPLYING it.
-        //
-        // It cannot hang: the pump never waits on this thread — its loop is
-        // drain, forward, `recv_timeout`, every leg bounded by the client's own
-        // timeouts — so there is no cycle to deadlock in. And when the pump is
-        // gone for good, [`run`] drops the word channel BEFORE joining this
-        // thread, which drops the queued word, which drops `answer` and ends
-        // this `recv` with an error.
         let (answer, reply) = std::sync::mpsc::channel();
         if self
             .0
@@ -189,20 +131,6 @@ impl Chat for Outgoing {
 
 /// The [`Deliver`] the inbound loop routes through: the session's OWN `send`
 /// helper, and nothing else.
-///
-/// **THE HELPER PATH IS A LITERAL** — `<session-dir>/send` or `<session-dir>/ask`,
-/// joined here, never a program name read from meta, config, a chat message or
-/// anywhere else a value could be planted. The verb SELECTS between two
-/// compile-time literals ([`Verb::helper`]); it never becomes one, so carrying
-/// the operator's verb through routing widens what may be chosen, not what may
-/// be named. This mirrors the watchdog daemon's sealed
-/// `SendHelper` for the same reason: the one thing a Telegram-driven code path
-/// must never take from its input is the program it executes.
-///
-/// It routes through the helper rather than around it because the helper is
-/// what carries ae's input-busy modelling, staged-paste detection, dead-pane
-/// refusal and per-target locking — and it emits the `send` event itself, so
-/// the event exists exactly when the paste landed.
 #[derive(Debug, Clone, Copy)]
 pub struct Helper;
 
@@ -216,7 +144,7 @@ impl Deliver for Helper {
         text: &str,
         from_id: &str,
     ) -> Delivered {
-        // SC-950: an inbound message acts under the EXTERNAL actor identity, so
+        // an inbound message acts under the EXTERNAL actor identity, so
         // the event ledger records that a chat sent it and not that ae did.
         let sender = format!("telegram:{from_id}");
         let delivery = transport::deliver(
@@ -233,30 +161,6 @@ impl Deliver for Helper {
 }
 
 /// Which give-up bound a refusal earns.
-///
-/// # The helper's status cannot answer this, so a probe does
-///
-/// The frozen `send` helper exits 1 for every refusal it has — a dead pane, a
-/// busy-defer timeout, an unresolvable target — and it writes its reason to
-/// stderr, which [`transport::deliver`] INHERITS rather than captures. So there
-/// is no status to read the difference out of, and parsing an inherited stream
-/// is not on offer. The difference is established the way the watchdog
-/// establishes it: by looking at the panes.
-///
-/// # Only a SUCCEEDED enumeration may say "hard"
-///
-/// Every step that could fail for its own reasons — unreadable meta, a session
-/// whose record does not name exactly one server, a tmux run that did not
-/// answer — yields [`Refusal::Transient`]. This is `crate::watchdog`'s
-/// direction, held to deliberately: an unusable probe is not evidence of death,
-/// and the failure that matters is the one that shortens a bound on a pane that
-/// is actually alive. Only an enumeration that RAN, ANSWERED, and does not list
-/// the target is hard.
-///
-/// An unstamped pane (tmux holds no `@ae_agent` for it) is invisible to this,
-/// so a session full of unstamped panes reads as hard. That costs a shorter
-/// bound and nothing else: the give-up still hands the message back with the
-/// same notice, and the short bound is four attempts rather than none.
 fn classify(session: &str, dir: &Path, agent: &str) -> Refusal {
     let Ok(bytes) = meta::read_bytes(dir) else {
         return Refusal::Transient;
@@ -296,25 +200,7 @@ impl Machine {
 
 impl World for Machine {
     /// Every session that is durably recorded AND still on its recorded server
-    /// (SC-947).
-    ///
-    /// # Why the record's own server, and never an ambient one
-    ///
-    /// This daemon runs outside every session it addresses, so it has no
-    /// ambient tmux server worth the name. A record that does not name exactly
-    /// one server is therefore not addressable — it is skipped rather than
-    /// probed against whatever server this process happens to inherit, which
-    /// would be a liveness answer about a different machine's-worth of state.
-    ///
-    /// # The scan is `ae list`'s
-    ///
-    /// [`inventory::durable_records`] is the crate's one enumerated door onto
-    /// the sessions root, and it reads each record's meta and event log as it
-    /// goes. That is more I/O than a routing lookup strictly needs; it is
-    /// chosen anyway, because the alternative is a second world-reading door in
-    /// a module that handles a bot token, and a door is a bigger thing to
-    /// review than a scan the product already performs on every `ae list`. It
-    /// runs once per inbound MESSAGE, not per poll.
+    /// .
     fn running(&self) -> Vec<RunningSession> {
         let scan = inventory::durable_records(&self.roots);
         scan.records
@@ -344,11 +230,6 @@ impl World for Machine {
 }
 
 /// One running session, assembled from the meta bytes that were just read.
-///
-/// The bytes are re-parsed here rather than borrowing the record's own parsed
-/// `Meta`, and that is on purpose: `session_id` and `meta_agent` are keys
-/// [`Meta`] does not keep, so they have to come off the bytes anyway. One
-/// source for all four facts beats two that could be read a moment apart.
 fn session_facts(name: &str, dir: &Path, bytes: &[u8], last_active: Option<i64>) -> RunningSession {
     let meta = Meta::parse(&String::from_utf8_lossy(bytes));
     RunningSession {
@@ -389,8 +270,6 @@ pub fn run(paths: &Paths, knobs: Knobs, err: &mut impl Write) -> crate::Result<u
             // `CredentialsError` carries paths and reasons, never file CONTENT
             // and never the token — see its declaration. It already names the
             // subsystem ("telegram: …"), so this adds only ae's own prefix; a
-            // second one reads as a stutter and looks like a bug in the very
-            // line an operator is reading to fix their config.
             writeln!(err, "ae: {why}")?;
             return Ok(1);
         }
@@ -417,11 +296,9 @@ pub fn run(paths: &Paths, knobs: Knobs, err: &mut impl Write) -> crate::Result<u
         // The command menu, registered while THIS thread is still the only one
         // that exists. That placement is the single-sender rule, not a
         // convenience: once the pump is running it owns the outbound socket,
-        // and a second poster would interleave with the ordered cursor it is
-        // draining. Before the split there is no one to interleave with.
         register_commands(&api, err)?;
     } else {
-        // SC-943: no allow-list, no inbound. Said once, so an operator who
+        // no allow-list, no inbound. Said once, so an operator who
         // expected two-way traffic learns why they have one.
         writeln!(
             err,
@@ -453,12 +330,6 @@ pub fn run(paths: &Paths, knobs: Knobs, err: &mut impl Write) -> crate::Result<u
     // THE ORDER IS LOAD-BEARING: this drop must happen BEFORE the join, and
     // moving it below — or letting it fall to the end of the scope — hangs the
     // daemon on shutdown. The inbound thread may be blocked awaiting
-    // confirmation of a give-up notice, and its wait ends only when the answer
-    // channel disconnects. That channel's sender lives INSIDE the queued word,
-    // which this receiver owns; while the receiver is alive the word is alive,
-    // so nothing ever wakes the thread and `join` never returns. Dropping here
-    // ends the wait with a REJECTION, which is also the right answer: a bridge
-    // on its way out must not advance the offset past a notice it never sent.
     drop(inbox_words);
     if let Some(poller) = poller {
         // A poller that is mid-long-poll takes up to its timeout to notice the
@@ -503,8 +374,6 @@ fn spawn_inbound(
             // A successful poll needs no pause of its own: the long poll IS the
             // pause, and Telegram holds the connection open when it has
             // nothing. The FLOOR is for the case where it does not — a proxy or
-            // a substitute that ignores the `timeout` parameter and answers
-            // empty immediately would otherwise turn this loop into a spin.
             if cycle.retry_after.is_zero() {
                 if cycle.routed == 0 && cycle.dropped == 0 {
                     sleep_until(&stop, IDLE_FLOOR);
@@ -520,7 +389,7 @@ fn spawn_inbound(
 /// send whatever the inbound thread asked for.
 /// **`words` is an `Option` because "nobody is polling" and "the poller died"
 /// are different facts and must not share a code path.** With an empty
-/// allow-list there is no inbound thread at all (SC-943), so there is no sender
+/// allow-list there is no inbound thread at all, so there is no sender
 /// — and a pump that read that as a disconnected channel would exit
 /// immediately, taking the outbound-only bridge down on the one configuration
 /// that is supposed to be outbound-only.
@@ -571,10 +440,6 @@ fn pump(
 
 /// The slash commands the chat's `/` menu offers, and the whole of what
 /// [`register_commands`] publishes.
-///
-/// Kept beside the grammar they describe: `docs/reference/telegram.md` lists
-/// exactly these four, and a menu that offers a fifth would advertise a command
-/// the router answers with a usage line.
 const MENU: [(&str, &str); 4] = [
     ("list", "Running sessions and their agents"),
     (
@@ -589,13 +454,6 @@ const MENU: [(&str, &str); 4] = [
 ];
 
 /// Publish [`MENU`], and CARRY ON WHATEVER HAPPENS.
-///
-/// Best effort by contract (`docs/reference/telegram.md`): a registration
-/// failure is logged and ignored. It is cosmetic — every command works typed
-/// out whether or not Telegram ever drew the menu — so letting it stop the
-/// daemon would trade a working bridge for a nicety. The only thing this
-/// returns an error for is a failure to WRITE the log line, which is the
-/// caller's stream and not this feature's business.
 fn register_commands(api: &Api, err: &mut impl Write) -> crate::Result<()> {
     if let Err(failure) = api.set_my_commands(&MENU) {
         writeln!(err, "ae: telegram: command menu not registered: {failure}")?;
@@ -623,22 +481,6 @@ fn drain(words: &Receiver<Word>, api: &Api, err: &mut impl Write) -> crate::Resu
 }
 
 /// Act on one word.
-///
-/// # Two contracts, and the difference is the offset
-///
-/// [`Word::Say`] is BEST EFFORT: an acknowledgement that cannot be sent is a
-/// line the operator does not see, and the update it belongs to has already
-/// been routed and checkpointed — re-running it to deliver an ack would re-run
-/// a command.
-///
-/// [`Word::SayAndConfirm`] is NOT. It carries the give-up notice, which is what
-/// makes a give-up a hand-back instead of a silent loss, and the inbound loop
-/// gates its checkpoint on the answer this sends back. An earlier version
-/// treated every outbound word as best effort and advanced the offset anyway;
-/// that made the notice decorative, because the update was stepped over whether
-/// or not it was ever handed back. The acceptance test is
-/// [`Api::send_message`]'s own — HTTP 2xx **and** `ok:true` — not a second
-/// opinion about what counts as delivered.
 fn say(api: &Api, word: Word, err: &mut impl Write) -> crate::Result<()> {
     match word {
         Word::Note(text) => writeln!(err, "{text}")?,
@@ -658,7 +500,6 @@ fn say(api: &Api, word: Word, err: &mut impl Write) -> crate::Result<()> {
             // A dropped receiver means the inbound thread already stopped
             // waiting — it took an answer, or its reply channel disconnected and
             // its own `recv()` returned the fail-safe `No`. Either way this send
-            // has nowhere to go, and dropping it is correct.
             let _ = answer.send(accepted);
         }
     }
@@ -666,15 +507,6 @@ fn say(api: &Api, word: Word, err: &mut impl Write) -> crate::Result<()> {
 }
 
 /// One outbound pass across every session on the machine.
-///
-/// Sessions are discovered afresh each pass — one started a second ago has a
-/// `say` to forward too — and each keeps its own [`Outbound`], so its durable
-/// cursor and scan position persist.
-///
-/// **Not filtered to RUNNING sessions**, deliberately: a session that has just
-/// ended may have emitted a chat event whose delivery has not happened yet, and
-/// dropping it because tmux no longer holds the session would lose the last
-/// thing it said.
 fn forward(
     api: &Api,
     paths: &Paths,
@@ -685,7 +517,6 @@ fn forward(
     // A session that is no longer recorded takes its bridge with it. Without
     // this the map only ever grows, and a long-lived daemon on a machine that
     // churns sessions accumulates one cursor reader per session it has ever
-    // seen.
     bridges.retain(|path, _| scan.records.iter().any(|record| record.path == *path));
     for record in &scan.records {
         let bridge = bridges
@@ -771,10 +602,6 @@ mod tests {
         // THE FAIL-SAFE DIRECTION, and the reason the classifier is written as
         // a chain of `else { Transient }`. `crate::watchdog` already holds the
         // rule that an unusable probe is not evidence of death; here the cost
-        // of getting it wrong is a live pane put on the SHORT bound, so its
-        // message is handed back sooner than it needed to be.
-        //
-        // Every step that can fail on its own account is exercised:
         assert_eq!(
             classify("nowhere", std::path::Path::new("/no/such/session"), "cl:x"),
             Refusal::Transient,
@@ -783,7 +610,7 @@ mod tests {
 
         let dir = std::env::temp_dir().join(format!("ae-tg-classify-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        // A meta that names no server at all: SC-405l Missing, not entitling.
+        // A meta that names no server at all: Missing, not entitling.
         std::fs::write(dir.join("meta"), "mode=local\n").unwrap();
         assert_eq!(
             classify("nowhere", &dir, "cl:x"),
@@ -811,7 +638,6 @@ mod tests {
         // `session_id` and `meta_agent` are not fields of `Meta`, so they are
         // read off the same bytes it was parsed from. Both decide routing:
         // `meta_agent` is what makes a session the orchestrator, and
-        // `session_id` is what a chat can address it by.
         let meta = concat!(
             "session_id=abc123def456\n",
             "meta_agent=true\n",
@@ -884,8 +710,6 @@ mod tests {
         // BEST EFFORT, and "ignored" is the load-bearing half: the menu is
         // cosmetic — every command works typed out — so a daemon that refused
         // to start because Telegram would not take the menu would trade the
-        // whole bridge for a nicety. Both directions are asserted, because
-        // "attempted" and "survivable" are different claims.
         use crate::telegram::tests::{Fake, Reply};
 
         let fake = Fake::one(Reply::json(400, r#"{"ok":false,"description":"nope"}"#));
@@ -925,13 +749,6 @@ mod tests {
     #[test]
     fn the_confirmed_word_accepts_only_what_telegram_actually_took() {
         // THE ACCEPTANCE PREDICATE, on the real client against a real socket.
-        // The inbound loop advances a durable offset on `Accepted::Yes`, so
-        // what counts as `Yes` is the invariant's edge — and the three answers
-        // below are three DIFFERENT paths through the client, which is why a
-        // single rejection case would not cover it: a non-2xx is refused on the
-        // status line and the body is never parsed, while a 200 carrying
-        // `ok:false` is refused only after parsing it. A client that read
-        // either as success would step the bridge over a message nobody got.
         use crate::telegram::tests::{Fake, Reply};
 
         for (label, reply, want) in [
@@ -977,9 +794,6 @@ mod tests {
         // The inbound thread blocks on this answer with NO timeout, so a path
         // that logged the failure and returned without replying would wedge it
         // until shutdown. Every branch of `say` must answer; this is what says
-        // so, and the assertion is simply that an answer exists at all — the
-        // test cannot hang waiting for one, because a missing answer would
-        // disconnect the channel and error instead.
         use crate::telegram::tests::{Fake, Reply};
 
         let fake = Fake::one(Reply::json(503, r#"{"ok":false}"#));
@@ -999,13 +813,6 @@ mod tests {
         // THE BUG THE BOUNDED WAIT HAD, as a test. With `recv_timeout`, a pump
         // busy longer than the bound left the word sitting in the channel: the
         // caller read its timeout as a rejection, came back at the next bound,
-        // queued ANOTHER word, and the pump eventually drained the pile and
-        // posted every stale notice. One give-up, one notice per retry.
-        //
-        // Counted ON THE WIRE — how many `sendMessage` requests the server
-        // actually saw — because what the code queued is exactly the thing that
-        // was wrong. Both checkpoint directions are asserted in the same run,
-        // since "one notice" is only correct if the offset agrees with it.
         use crate::telegram::inbound::Chat as _;
         use crate::telegram::tests::{Fake, Reply};
 
@@ -1067,14 +874,6 @@ mod tests {
         // THE FAIL-SAFE DEFAULT, tested where it actually lives. The inbound
         // loop advances a durable offset on `Yes`, so every way of NOT getting
         // an acceptance has to answer `No` — the dangerous direction is silence
-        // read as consent, and silence is what a dying pump produces.
-        //
-        // Both no-answer shapes are instant: a dropped sender makes the
-        // unbounded `recv()` return `Disconnected` straight away, which the
-        // caller maps to the fail-safe `No`. There is no elapsed-time arm to
-        // exercise — the bounded `recv_timeout`/`CONFIRM_WAIT` design was
-        // removed, so a disconnected reply channel is the only way this
-        // expression yields a rejection.
         use crate::telegram::inbound::Chat as _;
 
         // 1. The pump is already gone: the word cannot even be queued.
@@ -1117,7 +916,6 @@ mod tests {
         // CLEAN SHUTDOWN, end to end: a real thread, a real socket, a real
         // checkpoint. What makes the shutdown clean is not a handshake — there
         // is none — but that the offset on disk is already correct when the
-        // thread returns, so a restart resumes rather than replays.
         use crate::telegram::inbound::load_offset;
         use crate::telegram::tests::{CHAT, Fake, Reply};
         use std::sync::atomic::AtomicBool;
@@ -1167,11 +965,9 @@ mod tests {
 
     #[test]
     fn an_outbound_only_bridge_keeps_pumping_instead_of_exiting_immediately() {
-        // SC-943's configuration is the one where this can go wrong: with no
+        // configuration is the one where this can go wrong: with no
         // allow-list there is no inbound thread, so there is no sender — and a
         // pump that read "no sender" as "the poller died" would exit on its
-        // first iteration and take the outbound-only bridge down. Measured,
-        // because the failure is invisible in every other configuration.
         use crate::telegram::tests::{Fake, Reply};
         use std::sync::atomic::AtomicBool;
 
