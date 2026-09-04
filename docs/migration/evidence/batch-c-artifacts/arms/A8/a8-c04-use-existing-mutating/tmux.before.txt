@@ -1,7 +1,0 @@
-## sessions
-ta8a8c04useexisting|2|0
-## panes
-ta8a8c04useexisting|%0|fake:lead|main|aefake
-ta8a8c04useexisting|%1|fake:worker|worker.0|aefake
-ta8a8c04useexisting|%2|_events||bash
-## clients

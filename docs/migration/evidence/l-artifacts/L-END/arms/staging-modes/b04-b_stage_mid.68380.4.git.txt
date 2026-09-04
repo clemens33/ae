@@ -1,8 +1,0 @@
-## HEAD (no branch)
---- log ---
-e983d2d ae: end session smpl
-f4b70de seed
---- branches -r ---
-  origin/HEAD -> origin/main
-  origin/ae/smpl
-  origin/main

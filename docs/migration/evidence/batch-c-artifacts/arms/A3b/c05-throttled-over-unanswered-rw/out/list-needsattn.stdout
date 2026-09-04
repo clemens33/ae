@@ -1,6 +1,0 @@
-SESSION                   STATUS    MODE        ORIGIN
-tpairthrottledoverunanswered  running   local       /tmp/aecx/tpl/p_pair-throttled-over-unanswered/work
-  git:master · ae 0.2.1 · active 5m ago · attn:throttled
-  fake:high               -         -             
-  fake:low                -         -             
-  fake:asker              -         -             

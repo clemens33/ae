@@ -1,9 +1,0 @@
-## pane set before anything
-%0|fake:lead|aefake
-%1|fake:worker|aefake
-%2|_events|bash
-## all panes on the server
-td04aprebar|%0|fake:lead|aefake
-td04aprebar|%1|fake:worker|aefake
-td04aprebar|%2|_events|bash
-td04aprebarextra|%3||aefake

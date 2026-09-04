@@ -1,6 +1,0 @@
-# lineage fields in the child meta, by exact key
-
-# archive dirs
-3a9baa20-abca-42ff-969f-2f22493af530
-
-# session dirs

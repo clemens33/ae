@@ -1,2 +1,0 @@
-manipulation	the archive ROOT ($AE_HOME/archive) is replaced by a symlink to a directory outside AE_HOME
-link	/tmp/aelx/L-END/hostile-symlinked-archive-root/h/.ae/archive -> /tmp/aelx/L-END/hostile-symlinked-archive-root/elsewhere-archive

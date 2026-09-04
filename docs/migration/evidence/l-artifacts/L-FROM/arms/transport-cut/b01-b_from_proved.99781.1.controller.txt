@@ -1,4 +1,0 @@
-controller.barrier	b_from_proved.99781.1
-controller.action	rm -rf the PARENT archive directory, after the launch has parsed its first parent proof and before it publishes the child meta
-controller.target	/tmp/aelx/L-FROM/transport-cut/h/.ae/archive/22685cdf-baa8-48ae-b493-bbe00cbb7a01
-path.is.plain.launch	this is ae <new> --local <name> --from <uuid>; no compact ran, so no _AE_FROM_EXPECTED is carried in

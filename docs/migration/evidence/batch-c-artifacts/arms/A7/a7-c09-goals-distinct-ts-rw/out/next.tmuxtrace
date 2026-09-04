@@ -1,3 +1,0 @@
-pid=84564	AE_TMUX_SERVER=/tmp/aecx/arms/A7/a7-c09-goals-distinct-ts-rw/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A7/a7-c09-goals-distinct-ts-rw/live.sock list-sessions -F \#\{session_name\} 
-pid=84567	AE_TMUX_SERVER=/tmp/aecx/arms/A7/a7-c09-goals-distinct-ts-rw/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A7/a7-c09-goals-distinct-ts-rw/live.sock show-environment -t tg9 AE_SESSION 
-pid=84574	AE_TMUX_SERVER=/tmp/aecx/arms/A7/a7-c09-goals-distinct-ts-rw/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A7/a7-c09-goals-distinct-ts-rw/live.sock list-panes -s -t tg9 -F $'#{@ae_agent}\t#{pane_current_command}' 

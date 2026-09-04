@@ -1,5 +1,0 @@
-SESSION                   STATUS    MODE        ORIGIN
-tg1                       running   local       /tmp/aecx/tpl/g1/work
-  goal (3h ago): healthy fixture session goal · git:master · ae 0.2.1 · active 3h ago
-  fake:lead               -         working       
-  fake:worker             -         done          

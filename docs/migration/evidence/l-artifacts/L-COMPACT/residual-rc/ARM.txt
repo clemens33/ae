@@ -1,5 +1,0 @@
-arm	residual-rc
-section	L-COMPACT
-roster_ids	SC-508
-construction	no operation of its own: this is the capture-only exit-status table across EVERY arm in the section, assembled from each arm own recorded .rc files and .invocation records
-rows	55

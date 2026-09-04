@@ -1,4 +1,0 @@
-pid=31633	AE_TMUX_SERVER=/tmp/aecx/arms/A1/c05-recover-ref-rw/none.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/a1510c/s.sock display-message -p \#\{pane_id\} 
-pid=31636	AE_TMUX_SERVER=/tmp/aecx/arms/A1/c05-recover-ref-rw/none.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/a1510c/s.sock display-message -p \#\{pane_id\} 
-pid=31639	AE_TMUX_SERVER=/tmp/aecx/arms/A1/c05-recover-ref-rw/none.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/a1510c/s.sock display-message -p \#\{pane_id\} 
-pid=31640	AE_TMUX_SERVER=/tmp/aecx/arms/A1/c05-recover-ref-rw/none.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/a1510c/s.sock display-message -p -t '' \#S 

@@ -1,4 +1,0 @@
-fake:lead	aefake	%0	main
-fake:ghost	zsh	%3	ghost.0
-fake:worker	aefake	%1	worker.0
-_events	bash	%2	

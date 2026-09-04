@@ -1,7 +1,0 @@
-fatal: batch-l delegate-log-fail shim: refusing push
-Error: push failed. The session is STOPPED; nothing was deleted.
-  The commit is safe locally — ae state and the working tree are preserved.
-  Working directory: /tmp/aelx/L-END/transaction-order-b-push-fails/h/.ae/worktrees/txb-push-fails
-  To retry the push: cd /tmp/aelx/L-END/transaction-order-b-push-fails/h/.ae/worktrees/txb-push-fails && git push -u origin HEAD:refs/heads/ae/txb-push-fails
-  Then finish up:    ae end txb-push-fails
-  Or pick the session back up: ae txb-push-fails

@@ -1,3 +1,0 @@
-opencode.53093	pid=53093	tool=opencode	started=2026-08-20T15:36:05Z
-opencode.55956	pid=55956	tool=opencode	started=2026-08-20T15:36:11Z
-opencode.64741	pid=64741	tool=opencode	started=2026-08-20T15:36:35Z

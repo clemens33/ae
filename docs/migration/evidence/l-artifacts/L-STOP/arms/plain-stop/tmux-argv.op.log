@@ -1,4 +1,0 @@
-pid=68986 ppid=68977 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/plain-stop/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
-pid=68997 ppid=68967 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/plain-stop/t/tmux-501/default> <kill-session> <-t> <$0>
-pid=69014 ppid=69012 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/plain-stop/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
-pid=69011 ppid=68999 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/plain-stop/t/tmux-501/default> <list-sessions> <-F> <#{session_name}>

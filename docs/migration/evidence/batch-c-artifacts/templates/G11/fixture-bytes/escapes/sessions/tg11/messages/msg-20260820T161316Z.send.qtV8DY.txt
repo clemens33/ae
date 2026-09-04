@@ -1,2 +1,0 @@
-⟦ae:msg from fake:lead⟧
-quote class: he said "hello" and 'bye'

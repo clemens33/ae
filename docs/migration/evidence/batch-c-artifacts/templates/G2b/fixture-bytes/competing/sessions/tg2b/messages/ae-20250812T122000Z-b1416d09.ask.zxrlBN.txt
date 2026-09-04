@@ -1,6 +1,0 @@
-⟦ae:msg from fake:bravo⟧
-REQUEST ae-20250812T122000Z-b1416d09 from fake:bravo: G2b unanswered question (never replied)
-
-REQUIRED: When you have finished, you MUST run this exact command to reply:
-/tmp/aecx/tpl/g2b/home/.ae/sessions/tg2b/reply --as "fake:charlie" "ae-20250812T122000Z-b1416d09" "<your reply>"
-Do not reply any other way. Do NOT use peek/peak as a reply mechanism.

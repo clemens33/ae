@@ -1,4 +1,0 @@
-pid=75309	AE_TMUX_SERVER=<unset>	AE_TMUX_SERVER_KIND=<unset>	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=display-message -p \#\{pane_id\} 
-pid=75327	AE_TMUX_SERVER=<unset>	AE_TMUX_SERVER_KIND=<unset>	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=display-message -p \#\{pane_id\} 
-pid=75346	AE_TMUX_SERVER=<unset>	AE_TMUX_SERVER_KIND=<unset>	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=display-message -p \#\{pane_id\} 
-pid=75359	AE_TMUX_SERVER=<unset>	AE_TMUX_SERVER_KIND=<unset>	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=display-message -p -t '' \#S 

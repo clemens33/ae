@@ -1,3 +1,0 @@
-forced id -un; echo HOME=$HOME; echo PATH=$PATH; uname -s
-forced true
-forced rsync --server -g -l -o -p -D -r -t -H --dirs . /tmp/aelx/L-RENTRANS/_preflight/rig/remote-home/rsyncdst/

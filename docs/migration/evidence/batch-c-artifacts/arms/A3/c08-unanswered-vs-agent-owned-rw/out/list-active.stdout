@@ -1,6 +1,0 @@
-SESSION                   STATUS    MODE        ORIGIN
-ta3g                      running   local       /tmp/aecx/tpl/a3g/work
-  git:master · ae 0.2.1 · active 2m ago · attn:blocked
-  fake:lead               -         -             
-  fake:bravo              -         blocked       
-  fake:charlie            -         -             

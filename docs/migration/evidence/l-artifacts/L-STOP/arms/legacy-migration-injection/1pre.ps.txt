@@ -1,5 +1,0 @@
-74222     1 ??       /opt/homebrew/bin/tmux new-session -d -s leg -c /private/tmp/aelx/L-STOP/legacy-migration-injection/w
-74733 74222 ttys019  /opt/homebrew/bin/bash /tmp/aelx/L-STOP/legacy-migration-injection/h/.ae/sessions/leg/events-tail
-74784 74222 ttys020  /opt/homebrew/bin/bash /tmp/aelx/L-STOP/legacy-migration-injection/h/.ae/sessions/leg/watchdog _run
-76375 74222 ttys033  /opt/homebrew/bin/bash /tmp/aelx/L-STOP/legacy-migration-injection/h/.ae/sessions/legx/events-tail
-76429 74222 ttys039  /opt/homebrew/bin/bash /tmp/aelx/L-STOP/legacy-migration-injection/h/.ae/sessions/legx/watchdog _run

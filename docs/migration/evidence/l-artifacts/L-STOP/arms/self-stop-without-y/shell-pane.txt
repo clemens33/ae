@@ -1,8 +1,0 @@
-shell_pane	%6
-proj|%0|/dev/ttys007|claude
-proj|%6|/dev/ttys045|bash
-proj|%2|/dev/ttys020|bash
-proj|%1|/dev/ttys019|bash
-projx|%3|/dev/ttys028|claude
-projx|%5|/dev/ttys039|bash
-projx|%4|/dev/ttys033|bash

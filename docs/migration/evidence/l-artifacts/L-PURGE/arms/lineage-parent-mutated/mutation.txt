@@ -1,5 +1,0 @@
-mutation.target	/tmp/aelx/L-PURGE/lineage-parent-mutated/h/.ae/sessions/ch/meta
-mutation.description	the real --from child's meta session_id is set EQUAL to its parent_archive_id, temp + chmod-to-original-mode + rename
-mutation.mode.before	644
-mutation.mode.after	644
-reachability.note	framed as a CODE OBSERVATION for the seats, not a verdict: at 72c7293 _ar_purge_archive:5404-5408 the refusal fires only when the aid being purged equals the session's own parent_archive_id, i.e. when meta session_id == meta parent_archive_id. A real --from child receives a FRESH session_id (launch path), so no sequence of real operations produces that equality. This clone reaches it by the single named mutation above.

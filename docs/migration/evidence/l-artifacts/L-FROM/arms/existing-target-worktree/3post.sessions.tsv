@@ -1,5 +1,0 @@
-# manifest-root	/tmp/aelx/L-FROM/existing-target-worktree/h/.ae/sessions
-#path	type	mode	nlink	size	link	sha256
-.	dir	755	4	128	-	-
-.lifecycle.par.lock	file	644	1	0	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
-.lifecycle.tgt.lock	file	644	1	0	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855

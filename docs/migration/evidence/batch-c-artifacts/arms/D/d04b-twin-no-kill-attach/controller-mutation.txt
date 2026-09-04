@@ -1,7 +1,0 @@
-mutation=NONE — this arm releases the barrier without killing anything
-purpose=the no-kill companion: the same hook, the same caller topology,
-  the same release, with the controller deliberately inert
-utc=2026-08-20T18:04:31Z
-## sessions at release (unchanged by the controller)
-caller|1
-tg2wu|0

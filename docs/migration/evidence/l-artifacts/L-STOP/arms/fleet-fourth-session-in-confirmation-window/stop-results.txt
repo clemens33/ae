@@ -1,7 +1,0 @@
-# stop-result rows, per session
-=== /tmp/aelx/L-STOP/fleet-fourth-session-in-confirmation-window/h/.ae/sessions/other/events.jsonl ===
-{"ts":"2026-08-20T17:41:35Z","actor":"human","action":"stop-result","target":"other","summary":"[op 103decfd-2a62-4f39-9207-8fffeb4e7b41] stopped: verified gone on its recorded server"}
-=== /tmp/aelx/L-STOP/fleet-fourth-session-in-confirmation-window/h/.ae/sessions/proj/events.jsonl ===
-{"ts":"2026-08-20T17:41:35Z","actor":"human","action":"stop-result","target":"proj","summary":"[op 103decfd-2a62-4f39-9207-8fffeb4e7b41] stopped: verified gone on its recorded server"}
-=== /tmp/aelx/L-STOP/fleet-fourth-session-in-confirmation-window/h/.ae/sessions/projx/events.jsonl ===
-{"ts":"2026-08-20T17:41:35Z","actor":"human","action":"stop-result","target":"projx","summary":"[op 103decfd-2a62-4f39-9207-8fffeb4e7b41] stopped: verified gone on its recorded server"}

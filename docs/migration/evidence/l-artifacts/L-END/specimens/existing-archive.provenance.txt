@@ -1,5 +1,0 @@
-specimen	existing-archive
-produced_by	L-END publication-crash-cut-post_rename (product-produced, post-rename / pre-cleanup)
-source_sandbox	/tmp/aelx/L-END/publication-crash-cut-post_rename
-session	pcpos
-session_uuid	5de77cad-d6d1-4088-9845-41211bb90579

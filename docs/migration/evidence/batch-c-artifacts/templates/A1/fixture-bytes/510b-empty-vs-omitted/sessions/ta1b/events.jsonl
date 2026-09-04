@@ -1,8 +1,0 @@
-{"ts":"2026-08-20T16:14:46Z","actor":"fake:lead","action":"send","target":"fake:worker","summary":"⟦ae:msg from fake:lead⟧ b1 body: both overrides absent","body_file":"/tmp/aecx/tpl/a1510b/home/.ae/sessions/ta1b/messages/msg-20260820T161446Z.send.SLISsH.txt"}
-{"ts":"2026-08-20T16:14:47Z","actor":"fake:lead","action":"send","target":"fake:worker","summary":"⟦ae:msg from fake:lead⟧ b2 body: empty summary override","body_file":"/tmp/aecx/tpl/a1510b/home/.ae/sessions/ta1b/messages/msg-20260820T161447Z.send.nNXNO2.txt"}
-{"ts":"2026-08-20T16:14:47Z","actor":"fake:lead","action":"send","target":"fake:worker","summary":"b3 summary present","body_file":"/tmp/aecx/tpl/a1510b/home/.ae/sessions/ta1b/messages/msg-20260820T161447Z.send.1PxNch.txt"}
-{"ts":"2026-08-20T16:14:48Z","actor":"fake:lead","action":"send","target":"fake:worker","ref":"b4-ref-present","summary":"⟦ae:msg from fake:lead⟧ b4 body","body_file":"/tmp/aecx/tpl/a1510b/home/.ae/sessions/ta1b/messages/b4-ref-present.send.HL3vY2.txt"}
-{"ts":"2026-08-20T16:14:48Z","actor":"fake:lead","action":"state","ref":"working"}
-{"ts":"2026-08-20T16:14:48Z","actor":"fake:lead","action":"state","ref":"working"}
-{"ts":"2026-08-20T16:14:49Z","actor":"fake:lead","action":"memo","ref":"general","summary":"b7 memo body"}
-{"ts":"2026-08-20T16:14:49Z","actor":"fake:lead","action":"memo","ref":"general","summary":"b8 memo body"}

@@ -1,3 +1,0 @@
-mutation.label	mutation
-mutation.target	/tmp/aelx/L-PURGE/validator-taxonomy-e3-exec-other-purge/h/.ae/archive/bca85094-7a2e-4c59-bc51-2d3171608d2a/digest.md
-mutation.description	the archive member digest.md gains the OTHER executable bit (0600 -> 0601)

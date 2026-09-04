@@ -1,9 +1,0 @@
-# manifest-root	/tmp/aelx/L-COMPACT/interactive-force/h/.ae/archive
-#path	type	mode	nlink	size	link	sha256
-.	dir	700	3	96	-	-
-8bc901fb-e2db-4179-9342-458ed0d7ec94	dir	700	7	224	-	-
-8bc901fb-e2db-4179-9342-458ed0d7ec94/digest.md	file	600	1	1300	-	90747fdb846a45a50361bc73559d89f839b7cc842b461f63f9127cea2cbbeeb2
-8bc901fb-e2db-4179-9342-458ed0d7ec94/events.jsonl	file	600	1	0	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
-8bc901fb-e2db-4179-9342-458ed0d7ec94/memo.tsv	file	600	1	0	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
-8bc901fb-e2db-4179-9342-458ed0d7ec94/messages	dir	700	2	64	-	-
-8bc901fb-e2db-4179-9342-458ed0d7ec94/meta	file	600	1	653	-	ea8d0b190aea58c6eed80dd90fc52d79124857785052f17dda9e90c220229b13

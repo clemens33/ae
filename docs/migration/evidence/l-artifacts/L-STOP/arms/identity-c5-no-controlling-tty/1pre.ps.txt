@@ -1,5 +1,0 @@
-52638     1 ??       /opt/homebrew/bin/tmux new-session -d -s proj -c /private/tmp/aelx/L-STOP/identity-c5-no-controlling-tty/w
-52931 52638 ttys019  /opt/homebrew/bin/bash /tmp/aelx/L-STOP/identity-c5-no-controlling-tty/h/.ae/sessions/proj/events-tail
-52995 52638 ttys020  /opt/homebrew/bin/bash /tmp/aelx/L-STOP/identity-c5-no-controlling-tty/h/.ae/sessions/proj/watchdog _run
-53996 52638 ttys033  /opt/homebrew/bin/bash /tmp/aelx/L-STOP/identity-c5-no-controlling-tty/h/.ae/sessions/projx/events-tail
-54050 52638 ttys039  /opt/homebrew/bin/bash /tmp/aelx/L-STOP/identity-c5-no-controlling-tty/h/.ae/sessions/projx/watchdog _run

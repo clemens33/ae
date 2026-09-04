@@ -1,7 +1,0 @@
-## sessions
-ta8a8c02resumestopped|2|0
-## panes
-ta8a8c02resumestopped|%0|fake:lead|main|aefake
-ta8a8c02resumestopped|%1|fake:worker|worker.0|aefake
-ta8a8c02resumestopped|%2|_events||fish
-## clients

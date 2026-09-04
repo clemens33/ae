@@ -1,9 +1,0 @@
-# manifest-root	/tmp/aelx/L-FROM/transport-cut/h/.ae/archive
-#path	type	mode	nlink	size	link	sha256
-.	dir	700	3	96	-	-
-22685cdf-baa8-48ae-b493-bbe00cbb7a01	dir	700	7	224	-	-
-22685cdf-baa8-48ae-b493-bbe00cbb7a01/digest.md	file	600	1	1293	-	3bc5ada987485d12892789481be0ca41594a1322ca86b8dfa0d41f15dedd4c69
-22685cdf-baa8-48ae-b493-bbe00cbb7a01/events.jsonl	file	600	1	0	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
-22685cdf-baa8-48ae-b493-bbe00cbb7a01/memo.tsv	file	600	1	0	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
-22685cdf-baa8-48ae-b493-bbe00cbb7a01/messages	dir	700	2	64	-	-
-22685cdf-baa8-48ae-b493-bbe00cbb7a01/meta	file	600	1	646	-	efd48c6bec596846cf867057ce5168ee478d95c61ee6392d152ee1f6755d16f1

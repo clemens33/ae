@@ -1,7 +1,0 @@
-## HEAD (no branch)
-?? wip.txt
---- log ---
-e7356e2 seed
---- branches -r ---
-  origin/HEAD -> origin/main
-  origin/main

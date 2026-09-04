@@ -1,9 +1,0 @@
-# manifest-root	/tmp/aelx/L-FROM/existing-target-stopped/h/.ae/archive
-#path	type	mode	nlink	size	link	sha256
-.	dir	700	3	96	-	-
-2a5164ee-5475-4b9b-abd8-e92be056e17e	dir	700	7	224	-	-
-2a5164ee-5475-4b9b-abd8-e92be056e17e/digest.md	file	600	1	1303	-	98eb35e8f1b2e839fd513e5e7cf1197b00107f74da7fd60e94893a88bf99a44d
-2a5164ee-5475-4b9b-abd8-e92be056e17e/events.jsonl	file	600	1	0	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
-2a5164ee-5475-4b9b-abd8-e92be056e17e/memo.tsv	file	600	1	0	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
-2a5164ee-5475-4b9b-abd8-e92be056e17e/messages	dir	700	2	64	-	-
-2a5164ee-5475-4b9b-abd8-e92be056e17e/meta	file	600	1	656	-	d53a06639902e6dda1237daa50cab1da039763724020b83fd014fa1840464a42

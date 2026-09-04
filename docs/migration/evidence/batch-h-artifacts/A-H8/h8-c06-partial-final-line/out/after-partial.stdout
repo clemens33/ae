@@ -1,5 +1,0 @@
-[1;36m╭─ ae events — session: th8 ───────────────────────────────╮
-│ date+time (UTC)  action   actor                  → target                 summary
-╰──────────────────────────────────────────────────────────────────────────╯
-[0m
-08-21T00:00:01  memo     fake:lead                                       PARTIAL-BASE

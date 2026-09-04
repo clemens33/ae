@@ -1,2 +1,0 @@
-barrier_cmd=list-panes	pid=68041	utc=2026-08-20T17:38:06Z	argv=-S /tmp/aecx/tpl/d04aprefixbarrier/s.sock list-panes -s -t td04aprebar -F $'#{pane_id}\t#{@ae_agent}' 
-released	utc=2026-08-20T17:38:06Z

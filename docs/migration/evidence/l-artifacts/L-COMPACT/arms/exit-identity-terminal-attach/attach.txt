@@ -1,1 +1,0 @@
-attach.observed	the relaunched session rendered inside the driver pane

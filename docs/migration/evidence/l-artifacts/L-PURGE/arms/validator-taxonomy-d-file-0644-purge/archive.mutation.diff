@@ -1,8 +1,0 @@
---- /tmp/aelx/L-PURGE/validator-taxonomy-d-file-0644-purge/cap/archive.pre-mutation.tsv	2026-08-20 19:12:23
-+++ /tmp/aelx/L-PURGE/validator-taxonomy-d-file-0644-purge/cap/archive.post-mutation.tsv	2026-08-20 19:12:23
-@@ -5,4 +5,4 @@
- events.jsonl	file	600	1	0	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
- memo.tsv	file	600	1	0	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
- messages	dir	700	2	64	-	-
--meta	file	600	1	669	-	01e54e9a7b9bd80170d8ce2ef75d97957c37159efacc6f2e584e021d36f5627b
-+meta	file	644	1	669	-	01e54e9a7b9bd80170d8ce2ef75d97957c37159efacc6f2e584e021d36f5627b

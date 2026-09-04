@@ -1,3 +1,0 @@
-opid.from.ps	ead55934-2d9d-43da-bcfe-fdbe46c878bf
-source	the detached supervisor's own argv in the process table — a system observation, not a hook read
-58558 /opt/homebrew/bin/bash /tmp/aelx/L-STOP/exit-folding-planted-failure/b/ae _stop-fleet-supervisor ead55934-2d9d-43da-bcfe-fdbe46c878bf other 5fd71d28-3c02-433e-9218-85d8c41e14fb proj 2a522785-f8a5-4753-978c-b13ecb28035a projx f9d0e68c-4261-4d0b-96c2-6f2a9b3c5b6f

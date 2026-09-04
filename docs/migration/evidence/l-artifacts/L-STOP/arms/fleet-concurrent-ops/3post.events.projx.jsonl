@@ -1,4 +1,0 @@
-{"ts":"2026-08-20T17:42:53Z","actor":"human","action":"stop-request","target":"projx","summary":"[op b277254f-e1d0-41f9-9a10-273c8bd0f1f1] fleet stop requested (ae stop all)"}
-{"ts":"2026-08-20T17:42:53Z","actor":"human","action":"stop-request","target":"projx","summary":"[op 06fff8e3-e20f-4ab2-a74e-c131a18d4030] fleet stop requested (ae stop all)"}
-{"ts":"2026-08-20T17:42:53Z","actor":"human","action":"stop-result","target":"projx","summary":"[op b277254f-e1d0-41f9-9a10-273c8bd0f1f1] stopped: verified gone on its recorded server"}
-{"ts":"2026-08-20T17:42:53Z","actor":"human","action":"stop-result","target":"projx","summary":"[op 06fff8e3-e20f-4ab2-a74e-c131a18d4030] FAILED (rc 1): Session 'projx' is not running."}

@@ -1,5 +1,0 @@
-SESSION                   STATUS    MODE        ORIGIN
-tg2bl                     running   local       /tmp/aecx/tpl/g2bl/work
-  git:master · ae 0.2.1 · active 36m ago · attn:blocked
-  fake:lead               -         working       
-  fake:worker             -         blocked       

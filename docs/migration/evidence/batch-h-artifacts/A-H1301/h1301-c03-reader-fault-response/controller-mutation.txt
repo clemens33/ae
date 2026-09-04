@@ -1,7 +1,0 @@
-## CONTROLLER-CREATED partial line — this is NOT something a writer was observed doing
-writer_shaped_bytes=launch_time.main=17872
-newline_present=no
-intended_complete_row=launch_time.main=<epoch>
-why_this_is_not_a_writer_tear=start_capture_session_id performs ONE append (ae:2073),
-  so there is no window in which the frozen writer can leave a line half-written.
-what_this_probes=how a READER responds to a meta file whose last line lacks a newline

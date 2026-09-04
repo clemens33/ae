@@ -1,5 +1,0 @@
-MacOS-ckriech:w ckriech$ /tmp/aelx/T-100/t100-B-blocked/h/.ae/sessions/t1/launch.main.sh
-fake fake ready
-INSTRUMENT-CONTROL-MARKER-3797
-⟦ae:msg from watchdog⟧
-Status check: if you have more work, continue. Otherwise declare your state so I stop nudging: /tmp/aelx/T-100/t100-B-blocked/h/.ae/sessions/t1/state <waiting-user|blocked|done> "<reason>"

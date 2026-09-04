@@ -1,3 +1,0 @@
-mutation.label	mutation
-mutation.target	/tmp/aelx/L-PURGE/validator-taxonomy-b1-symlink-inside-from/h/.ae/archive/cbdcd50c-db86-4ce8-b27f-d82b8aa6802e/memo.tsv
-mutation.description	the archive member memo.tsv is replaced by a SYMLINK pointing outside the archive (/etc/hosts)

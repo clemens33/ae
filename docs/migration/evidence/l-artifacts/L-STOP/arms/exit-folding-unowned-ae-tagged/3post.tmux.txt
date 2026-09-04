@@ -1,9 +1,0 @@
-## socket	/tmp/aelx/L-STOP/exit-folding-unowned-ae-tagged/t/tmux-501/default
-## socket-exists	yes
-## sessions
-$2|ghost|1|0|1787247877
-## windows
-ghost|@4|0|bash|1
-## panes
-ghost|@4|%6|79792|bash|||0
-## clients

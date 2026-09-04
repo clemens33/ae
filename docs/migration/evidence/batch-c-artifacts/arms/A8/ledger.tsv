@@ -1,5 +1,0 @@
-case	rows	group	member
-a8-c01-fastpath-running	SC-101	live	no-template (live launch)
-a8-c02-resume-stopped	SC-102a	live	no-template (live launch)
-a8-c03-inside-session	SC-102b	live	no-template (live launch)
-a8-c04-use-existing	SC-018b	live	no-template (live launch)

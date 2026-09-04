@@ -1,2 +1,0 @@
-{"ts":"2026-08-20T17:33:15Z","actor":"human","action":"stop-request","target":"proj","summary":"self-stop requested from inside the session"}
-{"ts":"2026-08-20T17:33:15Z","actor":"human","action":"stop-result","target":"proj","summary":"stopped: verified gone on its recorded server"}

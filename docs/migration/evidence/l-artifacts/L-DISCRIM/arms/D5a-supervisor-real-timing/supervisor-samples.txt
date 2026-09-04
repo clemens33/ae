@@ -1,3 +1,0 @@
-hit=1 iter=50 pid=20573 20573     1 /opt/homebrew/bin/bash /tmp/aelx/L-DISCRIM/D5a-supervisor-real-timing/b/ae _stop-supervisor s1
-hit=2 iter=51 pid=20573 20573     1 /opt/homebrew/bin/bash /tmp/aelx/L-DISCRIM/D5a-supervisor-real-timing/b/ae _stop-supervisor s1
-hit=3 iter=52 pid=20573 20573     1 /opt/homebrew/bin/bash /tmp/aelx/L-DISCRIM/D5a-supervisor-real-timing/b/ae _stop-supervisor s1

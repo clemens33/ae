@@ -1,3 +1,0 @@
-note: 3 result(s) still pending after 30s — the stop continues out of process.
-      Read them back with:
-      for f in /tmp/aelx/L-STOP/exit-folding-results-timeout/h/.ae/sessions/*/events.jsonl; do grep '"action":"stop-result"' "$f" | tail -1; done

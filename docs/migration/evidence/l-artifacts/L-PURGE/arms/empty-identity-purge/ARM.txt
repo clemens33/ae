@@ -1,9 +1,0 @@
-arm	empty-identity-purge
-section	L-PURGE
-roster_ids	SC-818d
-fixture	REAL archive produced in THIS sandbox by a real frozen end cut at a barrier; the arm mutation is applied afterwards and diffed
-construction	the archive meta's source_session value is emptied on a fresh clone; this clone drives the purge path only
-template_uuid	2e731eb2-60d6-4dcf-8184-cb4b8ed9076b
-binary	84f68ac8f14bd9686d34a9153eaafbce575e6a4066e0d44c258423c9a9300f18
-side	purge
-op_rc	1

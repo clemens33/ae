@@ -1,9 +1,0 @@
-arm	no-prior-archive
-section	L-PURGE
-roster_ids	SC-810a
-fixture	REAL archive produced in THIS sandbox by a real frozen end cut at a barrier; the arm mutation is applied afterwards and diffed
-construction	a real --local session with a session id and NO archive anywhere is ended with --purge-history; the archive root is captured before and after
-template_uuid	23432a6e-5a6d-41e2-80a7-94a30020de27
-binary	b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd
-op	ae end -f --purge-history np
-op_rc	0

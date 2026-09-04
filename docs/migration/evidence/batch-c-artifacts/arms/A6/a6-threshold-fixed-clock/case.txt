@@ -1,7 +1,0 @@
-arm=A6 case=a6-threshold rows=SC-522,SC-523a,SC-523b template=G2/unanswered clone_mode=rw session=tg2un
-clone_fingerprint=e3b001a06f56b2635329ae424bbd55ce13e796a091ff11df9099ba5be8388981 clone_fingerprint_matches_template=yes
-ask_ts_epoch=1755000000 (2025-08-12T12:00:00Z), never replied
-documented_default_threshold=1800s (AE_ATTN_REQUEST_SECS)
-clock frozen per reading by the PATH-first date shim; every non-now-form still delegates
-utc_start=2026-08-20T19:49:00Z
-manifest_diff_lines=0

@@ -1,5 +1,0 @@
-77577     1 ??       /opt/homebrew/bin/tmux new-session -d -s proj -c /private/tmp/aelx/L-STOP/self-stop-without-y/w
-78476 77577 ttys019  /opt/homebrew/bin/bash /tmp/aelx/L-STOP/self-stop-without-y/h/.ae/sessions/proj/events-tail
-78538 77577 ttys020  /opt/homebrew/bin/bash /tmp/aelx/L-STOP/self-stop-without-y/h/.ae/sessions/proj/watchdog _run
-79235 77577 ttys033  /opt/homebrew/bin/bash /tmp/aelx/L-STOP/self-stop-without-y/h/.ae/sessions/projx/events-tail
-79388 77577 ttys039  /opt/homebrew/bin/bash /tmp/aelx/L-STOP/self-stop-without-y/h/.ae/sessions/projx/watchdog _run

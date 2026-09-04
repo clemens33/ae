@@ -1,4 +1,0 @@
-controller.barrier	b_from_proved.31724.1
-controller.action	the parent archive at id 691a5bb5-e61d-4671-b14e-531076e467fe is REMOVED and a second VALID archive is installed at a DIFFERENT id 435063a9-64fc-41ec-a323-b60ff941dc40 with counts 5/3
-timing	after the launch has parsed its FIRST parent proof and before it publishes the child meta
-note	both archives cannot coexist at one path; the frozen validator requires an archive meta archive_id to equal its directory name, so a different id means a different directory

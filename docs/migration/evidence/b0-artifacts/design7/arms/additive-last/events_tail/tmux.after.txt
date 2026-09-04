@@ -1,9 +1,0 @@
-# tmux snapshot (after) server -L d7af31d23d64
-error connecting to /private/tmp/aeb0/d7/arms/additive-last/events_tail/tmuxtmp/tmux-501/d7af31d23d64 (No such file or directory)
-list-sessions rc=1
-error connecting to /private/tmp/aeb0/d7/arms/additive-last/events_tail/tmuxtmp/tmux-501/d7af31d23d64 (No such file or directory)
-list-windows rc=1
-error connecting to /private/tmp/aeb0/d7/arms/additive-last/events_tail/tmuxtmp/tmux-501/d7af31d23d64 (No such file or directory)
-list-panes rc=1
-error connecting to /private/tmp/aeb0/d7/arms/additive-last/events_tail/tmuxtmp/tmux-501/d7af31d23d64 (No such file or directory)
-list-clients rc=1

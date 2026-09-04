@@ -1,3 +1,0 @@
-./sessions/teq/_lib
-./sessions/teq/meta
-./sessions/teq/workspace.md

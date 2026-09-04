@@ -1,7 +1,0 @@
-# parent archive present after	yes
-# archive dirs after
-c29d85f7-69a5-428b-9812-005e48f951ab
-# session dirs after
-# child meta lineage keys at the time of the op
-4:session_id=121d3453-251d-4391-8168-c6828d434790
-15:parent_archive_id=c29d85f7-69a5-428b-9812-005e48f951ab

@@ -1,3 +1,0 @@
-pid=47283	AE_TMUX_SERVER=/tmp/aecx/tpl/a1405k/s.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=C	LANG=C	argv=-S /tmp/aecx/tpl/a1405k/s.sock list-sessions -F \#\{session_name\} 
-pid=47286	AE_TMUX_SERVER=/tmp/aecx/tpl/a1405k/s.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=C	LANG=C	argv=-S /tmp/aecx/tpl/a1405k/s.sock show-environment -t ta1k AE_SESSION 
-pid=47289	AE_TMUX_SERVER=/tmp/aecx/tpl/a1405k/s.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=C	LANG=C	argv=-S /tmp/aecx/tpl/a1405k/s.sock list-panes -s -t ta1k -F $'#{@ae_agent}\t#{pane_current_command}' 

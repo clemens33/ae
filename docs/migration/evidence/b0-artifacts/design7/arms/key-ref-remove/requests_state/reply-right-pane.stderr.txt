@@ -1,1 +1,0 @@
-Error: request '' is assigned to slot 'main'@'xpartner', current pane is slot 'spawned.0'@'b0d7'

@@ -1,3 +1,0 @@
-pid=57272	AE_TMUX_SERVER=/tmp/aecx/arms/A7/a7-c02-meta-duplicate-key-ro/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A7/a7-c02-meta-duplicate-key-ro/live.sock has-session -t ta7a 
-pid=57273	AE_TMUX_SERVER=/tmp/aecx/arms/A7/a7-c02-meta-duplicate-key-ro/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A7/a7-c02-meta-duplicate-key-ro/live.sock list-panes -s -t ta7a -F $'#{pane_id}\t#{@ae_agent}' 
-pid=57276	AE_TMUX_SERVER=/tmp/aecx/arms/A7/a7-c02-meta-duplicate-key-ro/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A7/a7-c02-meta-duplicate-key-ro/live.sock capture-pane -t %0 -p 

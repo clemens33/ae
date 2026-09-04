@@ -1,4 +1,0 @@
-1c1
-< file	644	e928178e79039e5da73c17a71403695758472ae45898a2e541431a77a75aeb18	-	./.a8-witness-probe-content
----
-> file	644	6eb03447831bd08afede5a8564b7db4978c209fdfb70f3ab9747adf0351b9049	-	./.a8-witness-probe-content

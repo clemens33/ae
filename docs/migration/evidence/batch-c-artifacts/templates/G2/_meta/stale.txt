@@ -1,8 +1,0 @@
-group=G2
-member=stale
-fingerprint_pre_protection=c6085b8190566df8e823fc1189356879e7c183ed925ea5b9329c9a9c33df665a
-source=T-WD producer precursor arm a2 (AE_HOME snapshot), session twda2
-producer=the REAL generated watchdog of that launch
-frozen_sha=72c729343a0117af2968b66e1c43f89ad25fc0b2
-built_utc=2026-08-20T16:13:31Z
-fingerprint_protected=c533c47b12dfb72506a60cf5361b55c0fc0adb1cab8a954fb82ed83f91669eb9

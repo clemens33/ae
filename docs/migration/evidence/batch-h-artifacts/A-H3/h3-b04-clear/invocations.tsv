@@ -1,4 +1,0 @@
-label	rc	stdout_sha256	stdout_bytes	stderr_sha256	stderr_bytes	bound_s	timed_out	argv
-canary-pre-h3-b04-clear	7	2e26ff0336b9e13d8c1a25848a2bfb2d7d3257a773f59d9fc130bb429f409ee4	34	a474cf0138dfd14fc61a9bf1c826640518f01b91e58973c420ed4ccb47e9e646	41	10	no	/opt/homebrew/bin/bash -c printf '%s\n' 'AE-H-CANARY-pre-h3-b04-clear-9f3c'; printf '%s\n' 'AE-H-CANARY-pre-h3-b04-clear-9f3c-stderr' >&2; exit 7
-goal	0	5193631839228490a10aa2f26ba083d15f3d5f5e40ad60d5c1a4824874b3b03f	14	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855	0	25	no	env TMUX=/tmp/aecx/h/h3b/s.sock,62200,0 TMUX_PANE=%0 /tmp/aecx/h/h3b/home/.ae/sessions/th3b/goal --clear
-canary-post-h3-b04-clear	7	fdbadc38c432c975c6f786c1740ff7784d6e3de74fa871d365367a4abdcd6f92	35	9337ca0249955522812c7ee875bf848cbd2a7020e2177b0c8e3d822c57c02efc	42	10	no	/opt/homebrew/bin/bash -c printf '%s\n' 'AE-H-CANARY-post-h3-b04-clear-9f3c'; printf '%s\n' 'AE-H-CANARY-post-h3-b04-clear-9f3c-stderr' >&2; exit 7

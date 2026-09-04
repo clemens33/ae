@@ -1,8 +1,0 @@
-## HEAD (no branch)
---- log ---
-7721f9b ae: end session aw
-2fb1054 seed
---- remote refs ---
-  origin/HEAD -> origin/main
-  origin/ae/aw
-  origin/main

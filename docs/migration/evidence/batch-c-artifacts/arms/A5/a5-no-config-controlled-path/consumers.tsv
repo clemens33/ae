@@ -1,2 +1,0 @@
-consumer	rc	stdout_sha256	stdout_bytes	stderr_sha256	stderr_bytes	tmuxtrace_sha256	tmuxtrace_lines	bounded	argv
-doctor	1	09f229f9672be924aff4ebd9176f95f5e27f0acd2f2448127f0bf6347d7a0d71	1397	93934721c077f17726fa940d7759c025f12285052f2a2f8b82a362ce5fa9cf80	73	-	-	-	ae doctor under PATH=/tmp/aecx/arms/A5/a5-no-config/bin

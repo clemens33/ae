@@ -1,9 +1,0 @@
-arm	claim
-section	L-PURGE
-roster_ids	SC-818b
-fixture	REAL archive produced in THIS sandbox by a real frozen end cut at a barrier; the arm mutation is applied afterwards and diffed
-construction	a claim for the archive's own uuid is planted under the archive root, then end --purge-history runs
-template_uuid	9f281764-2521-4d56-ad15-d80412083095
-binary	84f68ac8f14bd9686d34a9153eaafbce575e6a4066e0d44c258423c9a9300f18
-op	ae end -f --purge-history pg
-op_rc	1

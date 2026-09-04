@@ -1,5 +1,0 @@
-pid=39942	AE_TMUX_SERVER=/tmp/aecx/arms/A6/a6-c01-m1-control-rw/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A6/a6-c01-m1-control-rw/live.sock list-sessions -F \#\{session_name\} 
-pid=39944	AE_TMUX_SERVER=/tmp/aecx/arms/A6/a6-c01-m1-control-rw/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A6/a6-c01-m1-control-rw/live.sock show-environment -t tg5 AE_SESSION 
-pid=39947	AE_TMUX_SERVER=/tmp/aecx/arms/A6/a6-c01-m1-control-rw/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A6/a6-c01-m1-control-rw/live.sock show-environment -t tg5 
-pid=39953	AE_TMUX_SERVER=/tmp/aecx/arms/A6/a6-c01-m1-control-rw/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A6/a6-c01-m1-control-rw/live.sock list-panes -s -t tg5 -F $'#{@ae_agent}\t#{pane_current_command}' 
-pid=39981	AE_TMUX_SERVER=/tmp/aecx/arms/A6/a6-c01-m1-control-rw/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A6/a6-c01-m1-control-rw/live.sock show-options -t tg5 -qv @ae_branch_name 

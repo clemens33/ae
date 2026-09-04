@@ -1,5 +1,0 @@
-pid=81332	AE_TMUX_SERVER=/tmp/aecx/arms/A3/c04-waiting-user-ro/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A3/c04-waiting-user-ro/live.sock list-sessions -F \#\{session_name\} 
-pid=81337	AE_TMUX_SERVER=/tmp/aecx/arms/A3/c04-waiting-user-ro/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A3/c04-waiting-user-ro/live.sock show-environment -t tg2wu AE_SESSION 
-pid=81343	AE_TMUX_SERVER=/tmp/aecx/arms/A3/c04-waiting-user-ro/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A3/c04-waiting-user-ro/live.sock show-environment -t tg2wu 
-pid=81353	AE_TMUX_SERVER=/tmp/aecx/arms/A3/c04-waiting-user-ro/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A3/c04-waiting-user-ro/live.sock list-panes -s -t tg2wu -F $'#{@ae_agent}\t#{pane_current_command}' 
-pid=81381	AE_TMUX_SERVER=/tmp/aecx/arms/A3/c04-waiting-user-ro/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A3/c04-waiting-user-ro/live.sock show-options -t tg2wu -qv @ae_branch_name 

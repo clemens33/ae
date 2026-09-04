@@ -1,3 +1,0 @@
-cut.barrier	b_pre_rename.80137.4
-cut.method	SIGKILL to the whole end process tree
-cut.pids	78566 64865 bash /tmp/aelx/L-END/publication-crash-cut-pre_rename/b/ae end -f pcpre;80137 78566 bash /tmp/aelx/L-END/publication-crash-cut-pre_rename/b/ae end -f pcpre;

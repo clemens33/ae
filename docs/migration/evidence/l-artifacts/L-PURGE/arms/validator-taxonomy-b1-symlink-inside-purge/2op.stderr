@@ -1,3 +1,0 @@
-archive: '/tmp/aelx/L-PURGE/validator-taxonomy-b1-symlink-inside-purge/h/.ae/archive/2a67dabb-e1fe-4b02-a424-2372c47030ce' does not validate as an ae archive — refusing to delete it.
-  Inspect it and remove it by hand if that is what you want.
-Error: purging the archive for 'pg' failed — the session is STOPPED and nothing was deleted.

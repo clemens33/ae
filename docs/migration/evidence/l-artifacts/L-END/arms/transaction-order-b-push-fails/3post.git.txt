@@ -1,7 +1,0 @@
-## HEAD (no branch)
---- log ---
-e2806d8 ae: end session txb-push-fails
-8b59adb seed
---- remote refs ---
-  origin/HEAD -> origin/main
-  origin/main

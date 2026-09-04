@@ -1,9 +1,0 @@
-# verify from: this section directory  (shasum -a 256 -c HARNESS-SHA256SUMS.txt)
-4e04a8c4954ef9d3fa6ce08e02efcea8a87a3fbc7b22f6d9cc0b56d07bc989d2  harness-snapshot/arm.sh
-ec4d15d33d6ae74d339e0ee5c65ee4070850f406d421732ebd83e891205b3e05  harness-snapshot/env-record.txt
-1832edce6ab9a314701f6eb524af700516225fdefe64788530b21e5a9470f82d  harness-snapshot/l_lib.sh
-79b3dac48841140a10397645b4d6e53c765057527658b179107ea03150f6cc6c  harness-snapshot/sandbox.sh
-4473878e99e84d35309497f66daf99523c4009abfdc6864379b0b0f44dbe09bc  harness-snapshot/t100-fake.sh
-639a50e67d09a2db55dc6ea7730d41689a7a0bc9177299719d5d50a1377c2377  harness-snapshot/t100-lib.sh
-2f96286a30e1a404defbc5bdcc68b0aaf9e3a7baf4b0571cc9c901a1289e11a5  harness-snapshot/t100-mktables.sh
-4fa4073b5e4edfbb4c0128ca64193e7081a36a0d1cdf602e30fa1091ed1c3147  harness-snapshot/t100-run.sh

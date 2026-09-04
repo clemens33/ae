@@ -1,3 +1,0 @@
-planted.TMUX	/tmp/aelx/L-STOP/identity-c2-foreign-server/t/tmux-501/default,999999,0
-planted.TMUX_PANE	%0
-note	the socket is real, the server pid in $TMUX is not

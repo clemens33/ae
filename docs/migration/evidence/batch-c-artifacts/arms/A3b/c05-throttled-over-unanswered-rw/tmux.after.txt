@@ -1,6 +1,0 @@
-## panes
-tpairthrottledoverunanswered|%0|fake:high|main|aefake
-tpairthrottledoverunanswered|%2|fake:asker|worker.1|aefake
-tpairthrottledoverunanswered|%1|fake:low|worker.0|aefake
-## sessions
-tpairthrottledoverunanswered|1

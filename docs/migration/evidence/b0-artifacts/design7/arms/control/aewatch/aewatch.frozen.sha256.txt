@@ -1,3 +1,0 @@
-This runner input was byte-identical in every arm that used it.
-Canonical copy: harness/runner-blobs/aewatch.frozen
-sha256=f46f1b8ee4ca57c65a03fbd2173ffca7e9ae430543062a9bb12e046944cc1d79

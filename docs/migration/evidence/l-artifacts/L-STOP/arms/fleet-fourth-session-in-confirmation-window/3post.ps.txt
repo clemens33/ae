@@ -1,3 +1,0 @@
- 6304     1 ??       /opt/homebrew/bin/tmux new-session -d -s proj -c /private/tmp/aelx/L-STOP/fleet-fourth-session-in-confirmation-window/w
-12017  6304 ttys074  /opt/homebrew/bin/bash /tmp/aelx/L-STOP/fleet-fourth-session-in-confirmation-window/h/.ae/sessions/fourth/events-tail
-12122  6304 ttys075  /opt/homebrew/bin/bash /tmp/aelx/L-STOP/fleet-fourth-session-in-confirmation-window/h/.ae/sessions/fourth/watchdog _run

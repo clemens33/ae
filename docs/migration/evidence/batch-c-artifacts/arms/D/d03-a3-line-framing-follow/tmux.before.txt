@@ -1,4 +1,0 @@
-## sessions
-error connecting to /tmp/aecx/arms/D/d03-a3-line-framing/live.sock (No such file or directory)
-## panes
-error connecting to /tmp/aecx/arms/D/d03-a3-line-framing/live.sock (No such file or directory)

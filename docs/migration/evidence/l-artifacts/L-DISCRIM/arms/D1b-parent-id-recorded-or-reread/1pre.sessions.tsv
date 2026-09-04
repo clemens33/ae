@@ -1,6 +1,0 @@
-# manifest-root	/tmp/aelx/L-DISCRIM/D1b-parent-id-recorded-or-reread/h/.ae/sessions
-#path	type	mode	nlink	size	link	sha256
-.	dir	755	4	128	-	-
-.lifecycle.p1.lock	file	644	1	0	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
-.locks	dir	755	3	96	-	-
-.locks/send-lock-_0	file	644	1	0	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855

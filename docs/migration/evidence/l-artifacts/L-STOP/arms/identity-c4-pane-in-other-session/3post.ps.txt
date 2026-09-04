@@ -1,5 +1,0 @@
-22383     1 ??       /opt/homebrew/bin/tmux new-session -d -s proj -c /private/tmp/aelx/L-STOP/identity-c4-pane-in-other-session/w
-23664 22383 ttys019  /opt/homebrew/bin/bash /tmp/aelx/L-STOP/identity-c4-pane-in-other-session/h/.ae/sessions/proj/events-tail
-23770 22383 ttys020  /opt/homebrew/bin/bash /tmp/aelx/L-STOP/identity-c4-pane-in-other-session/h/.ae/sessions/proj/watchdog _run
-25639 22383 ttys039  /opt/homebrew/bin/bash /tmp/aelx/L-STOP/identity-c4-pane-in-other-session/h/.ae/sessions/projx/events-tail
-25693 22383 ttys045  /opt/homebrew/bin/bash /tmp/aelx/L-STOP/identity-c4-pane-in-other-session/h/.ae/sessions/projx/watchdog _run

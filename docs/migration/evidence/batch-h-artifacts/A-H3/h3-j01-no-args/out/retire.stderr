@@ -1,3 +1,0 @@
-Usage: retire <agent-name|pane-id>
-  Examples: retire codex:researcher
-           retire %5

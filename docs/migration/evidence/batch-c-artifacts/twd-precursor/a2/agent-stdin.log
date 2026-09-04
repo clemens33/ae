@@ -1,6 +1,0 @@
---- aefake start pid=70841 ---
-argv[0]=/tmp/aecx/bin/aefake
-⟦ae:msg from watchdog⟧
-Status check: if you have more work, continue. Otherwise declare your state so I stop nudging: /tmp/aecx/twd/a2/home/.ae/sessions/twda2/state <waiting-user|blocked|done> "<reason>"
-⟦ae:msg from watchdog⟧
-Status check: if you have more work, continue. Otherwise declare your state so I stop nudging: /tmp/aecx/twd/a2/home/.ae/sessions/twda2/state <waiting-user|blocked|done> "<reason>"

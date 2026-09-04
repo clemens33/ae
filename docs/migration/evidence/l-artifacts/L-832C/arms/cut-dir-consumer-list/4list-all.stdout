@@ -1,7 +1,0 @@
-SESSION                   STATUS    MODE        ORIGIN
-proj2                     running   local       /private/tmp/aelx/L-832C/cut-dir-consumer-list/w
-  git:main · ae 0.2.1 · active 17s ago
-  grok:grok               a479dc9b  -             
-projx                     running   local       /private/tmp/aelx/L-832C/cut-dir-consumer-list/w
-  git:main · ae 0.2.1 · active 12s ago
-  grok:grok               75b296b0  -             

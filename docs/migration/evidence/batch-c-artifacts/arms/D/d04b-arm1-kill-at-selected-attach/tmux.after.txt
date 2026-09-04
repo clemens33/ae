@@ -1,4 +1,0 @@
-## sessions
-caller|1
-## panes
-caller|%2||zsh

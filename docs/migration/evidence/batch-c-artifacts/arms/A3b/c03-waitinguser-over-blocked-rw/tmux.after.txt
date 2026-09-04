@@ -1,5 +1,0 @@
-## panes
-tpairwaitinguseroverblocked|%0|fake:high|main|aefake
-tpairwaitinguseroverblocked|%1|fake:low|worker.0|aefake
-## sessions
-tpairwaitinguseroverblocked|1

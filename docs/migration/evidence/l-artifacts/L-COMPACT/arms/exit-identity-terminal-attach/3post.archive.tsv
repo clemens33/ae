@@ -1,9 +1,0 @@
-# manifest-root	/tmp/aelx/L-COMPACT/exit-identity-terminal-attach/h/.ae/archive
-#path	type	mode	nlink	size	link	sha256
-.	dir	700	3	96	-	-
-7197bf57-c4d6-4bfe-94d0-23f2ae3280af	dir	700	7	224	-	-
-7197bf57-c4d6-4bfe-94d0-23f2ae3280af/digest.md	file	600	1	1312	-	ee16dac339f6cbd48ff79107db02cf1d53e68ec168090469c0077d95277da872
-7197bf57-c4d6-4bfe-94d0-23f2ae3280af/events.jsonl	file	600	1	0	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
-7197bf57-c4d6-4bfe-94d0-23f2ae3280af/memo.tsv	file	600	1	0	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
-7197bf57-c4d6-4bfe-94d0-23f2ae3280af/messages	dir	700	2	64	-	-
-7197bf57-c4d6-4bfe-94d0-23f2ae3280af/meta	file	600	1	665	-	b5f5cb38830e9c13701860d4323def3b93b86d9f30986e45886f71649e95a8f3

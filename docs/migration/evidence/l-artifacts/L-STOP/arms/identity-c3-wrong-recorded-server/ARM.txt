@@ -1,9 +1,0 @@
-arm	identity-c3-wrong-recorded-server
-section	L-STOP
-roster_ids	SC-839a SC-839b SC-839c SC-839d
-construction	the target session meta's tmux_server is repointed at another socket path (mode preserved), then the implicit no-target stop runs from a genuine shell pane inside that session
-hook_patch_version	none (frozen, unmodified)
-binary.sha256	b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd
-topology	proj + projx (prefix-sibling pair), one recorded server
-cell	c3-wrong-recorded-server
-op_rc	1

@@ -1,6 +1,0 @@
-mutation=kill the EXACT target session (tg2wu) from a SEPARATE controller connection
-kill_when=after-recheck (the reader is blocked at H_NEXT_RECHECKED)
-sibling_present=<none>
-utc=2026-08-20T18:04:11Z
-## sessions immediately after the kill
-caller|1

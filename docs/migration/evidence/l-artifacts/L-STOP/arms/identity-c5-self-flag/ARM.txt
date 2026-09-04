@@ -1,9 +1,0 @@
-arm	identity-c5-self-flag
-section	L-STOP
-roster_ids	SC-839a SC-839b SC-839c SC-839d
-construction	the same run-shell construction as c5, with --self -y added — the flag bypasses exactly one proof mechanism
-hook_patch_version	none (frozen, unmodified)
-binary.sha256	b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd
-topology	proj + projx (prefix-sibling pair), one recorded server
-cell	c5-self-flag
-op_rc	0

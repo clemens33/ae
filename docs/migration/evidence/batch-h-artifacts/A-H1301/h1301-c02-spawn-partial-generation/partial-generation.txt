@@ -1,6 +1,0 @@
-## the agent.* lines present after the kill, which the frozen writer appended
-agent.main=cl:lead:pending
-agent_bin.main=aefake
-agent.spawned.0=cx:probe:pending
-## the keys a COMPLETE spawn generation writes, per ae:11939-11943
-agent.<slot>, agent_bin.<slot>, and launch_id.<slot> for a launch-id tool

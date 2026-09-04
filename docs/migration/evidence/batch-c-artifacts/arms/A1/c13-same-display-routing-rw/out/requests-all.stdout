@@ -1,3 +1,0 @@
-STATUS   TYPE     ID                           FROM                 TO                   SUMMARY
-pending  ask      ae-20260820T161439Z-631e02bb fake:lead            fake:worker          G10 question from the main-slot holder of the display name
-pending  ask      ae-20260820T161440Z-51e9ee43 fake:lead            fake:worker          G10 question from the spawned-slot holder of the same display name

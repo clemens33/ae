@@ -1,4 +1,0 @@
-## sessions
-error connecting to /tmp/aecx/arms/A9/a9-c02-zero-byte-events-ro-noserver/live.sock (No such file or directory)
-## panes
-error connecting to /tmp/aecx/arms/A9/a9-c02-zero-byte-events-ro-noserver/live.sock (No such file or directory)

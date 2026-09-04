@@ -1,9 +1,0 @@
-arm	identity-c1-outside-tmux
-section	L-STOP
-roster_ids	SC-839a SC-839b SC-839c SC-839d
-construction	the implicit no-target stop runs from a plain process with no $TMUX and no $TMUX_PANE
-hook_patch_version	none (frozen, unmodified)
-binary.sha256	b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd
-topology	proj + projx (prefix-sibling pair), one recorded server
-cell	c1-outside-tmux
-op_rc	1

@@ -1,8 +1,0 @@
-# tmux snapshot (after-i1)
-d8: 3 windows (created Thu Aug 20 15:34:43 2026)
-rc=0
-%0 d8 gemini:gemini main gemini /dev/ttys069
-%2 d8 gemini:worker1 spawned.0 gemini /dev/ttys077
-%1 d8 _events  fish /dev/ttys078
-rc=0
-rc=0

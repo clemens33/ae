@@ -1,9 +1,0 @@
-# manifest-root	/tmp/aelx/L-END/identity-uppercase-meta-uuid/h/.ae/archive
-#path	type	mode	nlink	size	link	sha256
-.	dir	700	3	96	-	-
-ae326a1d-4960-4ab0-9efd-9ee401c2cc29	dir	700	7	224	-	-
-ae326a1d-4960-4ab0-9efd-9ee401c2cc29/digest.md	file	600	1	1307	-	e2af5b6dc58e3c56c489e92e2f1d8d766676c2059c010b88644e5e8eb61f22e9
-ae326a1d-4960-4ab0-9efd-9ee401c2cc29/events.jsonl	file	600	1	0	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
-ae326a1d-4960-4ab0-9efd-9ee401c2cc29/memo.tsv	file	600	1	0	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
-ae326a1d-4960-4ab0-9efd-9ee401c2cc29/messages	dir	700	2	64	-	-
-ae326a1d-4960-4ab0-9efd-9ee401c2cc29/meta	file	600	1	660	-	da93dfc2febfc2ef108110aac2d5ab434fd55377e763bf6b4ba67203a296f3d8

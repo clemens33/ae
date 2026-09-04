@@ -1,1 +1,0 @@
-76976     1 ??       /opt/homebrew/bin/tmux new-session -d -s proj -c /private/tmp/aelx/L-STOP/exit-folding-unowned-ae-tagged/w

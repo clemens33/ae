@@ -1,8 +1,0 @@
-mutation=kill ONE listed pane and create ONE new pane, while the reader is blocked
-killed_pane=%0
-created_pane=%3 stamped @ae_agent=fake:added-after-the-cut
-utc=2026-08-20T17:38:02Z
-## pane set immediately after the mutation
-%1|fake:worker|aefake
-%3|fake:added-after-the-cut|aefake
-%2|_events|bash

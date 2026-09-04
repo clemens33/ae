@@ -1,2 +1,0 @@
-note: 'ghost' is an ae-tagged session on the current tmux server that ae's metadata does not own — NOT stopped.
-      Adopt it ('ae doctor --refresh ghost') or stop it explicitly: ae stop ghost

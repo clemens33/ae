@@ -1,7 +1,0 @@
-# manifest-root	/tmp/aelx/L-END/history-policy-c2-none-true/h/.ae
-#path	type	mode	nlink	size	link	sha256
-.	dir	755	4	128	-	-
-config	file	644	1	233	-	a13f4404df8be77ad68bea9159cad03502b97c38a97c43037f6c78192e66207f
-sessions	dir	755	4	128	-	-
-sessions/.lifecycle.hp1.lock	file	644	1	0	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
-sessions/.lifecycle.hp2.lock	file	644	1	0	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855

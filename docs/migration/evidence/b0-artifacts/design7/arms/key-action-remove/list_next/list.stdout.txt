@@ -1,5 +1,0 @@
-SESSION                   STATUS    MODE        ORIGIN
-b0d7                      running   local       /tmp/aeb0/d7/repo
-  goal: fixture goal two · git:master · ae 0.2.1 · active just now
-  dummy:dummy             -         -             !
-  dummy2:helper           -         -             !

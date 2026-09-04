@@ -1,3 +1,0 @@
-archive: /tmp/aelx/L-PURGE/existing-archive-as-produced/h/.ae/archive/.publishing.a353968e-88e1-41a9-ba4e-0420cb9e5558 is standing — another publisher may be mid-publication of a353968e-88e1-41a9-ba4e-0420cb9e5558.
-  Refusing to purge behind it. Inspect that claim, then remove it by hand if it is stale.
-Error: purging the archive for 'pg' failed — the session is STOPPED and nothing was deleted.

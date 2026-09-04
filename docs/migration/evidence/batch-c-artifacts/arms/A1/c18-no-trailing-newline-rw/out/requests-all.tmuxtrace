@@ -1,4 +1,0 @@
-pid=26797	AE_TMUX_SERVER=/tmp/aecx/arms/A1/c18-no-trailing-newline-rw/none.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/g1/s.sock display-message -p \#\{pane_id\} 
-pid=26800	AE_TMUX_SERVER=/tmp/aecx/arms/A1/c18-no-trailing-newline-rw/none.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/g1/s.sock display-message -p \#\{pane_id\} 
-pid=26803	AE_TMUX_SERVER=/tmp/aecx/arms/A1/c18-no-trailing-newline-rw/none.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/g1/s.sock display-message -p \#\{pane_id\} 
-pid=26804	AE_TMUX_SERVER=/tmp/aecx/arms/A1/c18-no-trailing-newline-rw/none.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/g1/s.sock display-message -p -t '' \#S 

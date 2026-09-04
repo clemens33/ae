@@ -1,6 +1,0 @@
-scan.roots	/tmp/aelx/L-STOP/legacy-migration-injection (recursive)
-sentinel.name	SENTINEL_TOUCHED
-sentinel.paths.before
-sentinel.count.before	0
-sentinel.paths.after
-sentinel.count.after	0

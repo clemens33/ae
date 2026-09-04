@@ -1,4 +1,0 @@
-AGENT                     PANE     PROCESS
-cl:lead                   %0       aefake
-cx:worker                 %1       aefake
-_events                   %2       bash

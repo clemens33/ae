@@ -1,4 +1,0 @@
-flock.availability	REMOVED from PATH
-method	/opt/homebrew/bin dropped from PATH entirely; a sandbox bin dir holds symlinks to tmux, git and bash ONLY, so command -v flock fails
-PATH	/tmp/aelx/L-RENTRANS/samename-matrix-stop-first-flock-without/b:/tmp/aelx/L-RENTRANS/samename-matrix-stop-first-flock-without/nb:/usr/bin:/bin:/usr/sbin:/sbin
-command -v flock under that PATH	<not found>

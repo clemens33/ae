@@ -1,3 +1,0 @@
-Usage: focus <agent-name|pane-id|@session:agent>
-  Examples: focus codex:reviewer
-           focus @my-feature:claude:lead

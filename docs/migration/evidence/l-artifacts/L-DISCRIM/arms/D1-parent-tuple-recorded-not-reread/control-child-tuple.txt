@@ -1,4 +1,0 @@
-# the CONTROL child tuple, from a --from against the REPLACEMENT archive
-15:parent_archive_id=59fe7548-e865-4143-b629-870c6ec2ccba
-16:parent_archive_handover_count=5
-17:parent_archive_pending_count=3

@@ -1,3 +1,0 @@
-# stop-result rows
-=== /tmp/aelx/L-DISCRIM/D5a-supervisor-real-timing/h/.ae/sessions/s1/events.jsonl ===
-{"ts":"2026-08-20T19:46:58Z","actor":"human","action":"stop-result","target":"s1","summary":"stopped: verified gone on its recorded server"}

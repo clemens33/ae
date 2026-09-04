@@ -1,7 +1,0 @@
-# manifest-root	/tmp/aelx/L-END/history-policy-c9-keep-false/h/.claude
-#path	type	mode	nlink	size	link	sha256
-.	dir	755	3	96	-	-
-projects	dir	755	3	96	-	-
-projects/-tmp-aelx-w	dir	755	4	128	-	-
-projects/-tmp-aelx-w/2eea7b55-256c-45e3-a961-e452315f95be.jsonl	file	644	1	84	-	f584e793ed6bd2117fd04324c8758e1b8ae61dfc273b4f094af55c202b392253
-projects/-tmp-aelx-w/4980c527-3223-44cb-9d92-90963805b62b.jsonl	file	644	1	84	-	54cd32a0061916e941396f3fbe717d92da477360299c21d2531437ac9e5249bd

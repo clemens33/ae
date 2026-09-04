@@ -1,2 +1,0 @@
-{"ts":"2025-08-12T12:00:00Z","actor":"fake:bravo","action":"state","ref":"blocked","summary":"A3 017g agent-owned reason"}
-{"ts":"2025-08-12T12:10:00Z","actor":"fake:lead","action":"ask","target":"fake:charlie","ref":"ae-20250812T121000Z-4e9757a9","actor_slot":"main","actor_session":"ta3g","target_slot":"worker.1","target_session":"ta3g","summary":"A3 017g unanswered question (never replied)","body_file":"/tmp/aecx/tpl/a3g/home/.ae/sessions/ta3g/messages/ae-20250812T121000Z-4e9757a9.ask.OuJbja.txt"}

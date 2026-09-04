@@ -1,3 +1,0 @@
-pid=64135	AE_TMUX_SERVER=/tmp/aecx/arms/A3/c01-dead-rw/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A3/c01-dead-rw/live.sock has-session -t twda1 
-pid=64140	AE_TMUX_SERVER=/tmp/aecx/arms/A3/c01-dead-rw/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A3/c01-dead-rw/live.sock list-panes -s -t twda1 -F $'#{pane_id}\t#{@ae_agent}' 
-pid=64150	AE_TMUX_SERVER=/tmp/aecx/arms/A3/c01-dead-rw/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A3/c01-dead-rw/live.sock capture-pane -t %0 -p 

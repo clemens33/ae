@@ -1,6 +1,0 @@
-⟦ae:msg from unverified⟧
-REQUEST ae-20260820T001200Z-f2a3cc47 from dummy:dummy: fixture question, closed by a reply
-
-REQUIRED: When you have finished, you MUST run this exact command to reply:
-/tmp/aeb0/d7/build/home/.ae/sessions/b0d7/reply --as "dummy2:helper" "ae-20260820T001200Z-f2a3cc47" "<your reply>"
-Do not reply any other way. Do NOT use peek/peak as a reply mechanism.

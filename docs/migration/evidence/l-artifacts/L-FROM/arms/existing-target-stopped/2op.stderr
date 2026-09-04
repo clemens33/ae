@@ -1,5 +1,0 @@
-Error: --from is only valid for a NEW session, and 'tgt' already exists.
-       Inheriting an archive into a running or resumable session would mean two
-       different things (replace its history? merge it?) with no safe default.
-       Start the continuation under its own name:
-           ae <new-name> --from 2a5164ee-5475-4b9b-abd8-e92be056e17e

@@ -1,5 +1,0 @@
-2026-08-20T19:48:26Z	setup	arm	D5b
-2026-08-20T19:48:34Z	setup	shell.pane	%3
-2026-08-20T19:48:36Z	setup	hook.prefix	AE_L_HOOKS=b_stop_supervisor_singular_entry AE_L_TRACE=/tmp/aelx/L-DISCRIM/D5b-supervisor-held-at-entry/cap/hook-trace.tsv AE_L_BLOCK=/tmp/aelx/L-DISCRIM/D5b-supervisor-held-at-entry/ctl AE_L_BLOCK_MAX=1800
-2026-08-20T19:48:36Z	measure	typed	ae stop -y (implicit self-stop) typed into a shell pane inside the session, under the v5 barrier
-2026-08-20T19:48:37Z	measure	supervisor.pid.at.barrier	48880

@@ -1,2 +1,0 @@
-template.cut.barrier	b_pre_cleanup.38528.2
-template.cut.method	SIGKILL to the whole end process tree

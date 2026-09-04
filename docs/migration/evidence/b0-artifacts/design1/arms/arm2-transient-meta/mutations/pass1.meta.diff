@@ -1,8 +1,0 @@
---- /tmp/aeb0/arms/arm2-transient-meta/mutations/pass1.meta.pre	2026-08-20 16:38:11
-+++ /tmp/aeb0/arms/arm2-transient-meta/mutations/pass1.meta.post	2026-08-20 16:42:34
-@@ -16,3 +16,5 @@
- agent_bin.spawned.0=bash
- watchdog=false
- goal=b0 template baseline goal
-+agent.spawned.1=dummy2:helper2:pending
-+agent_bin.spawned.1=bash

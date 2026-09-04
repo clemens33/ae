@@ -1,7 +1,0 @@
-label=obs-c27
-epoch=1787238198
-utc=2026-08-20T15:03:18Z
-pgrep_aefake=70841 
-events_lines=3
-events_bytes=640
-wd_log_bytes=3348

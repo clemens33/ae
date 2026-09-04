@@ -1,3 +1,0 @@
-FAKE-RECOGNITION PREREQUISITE (i1-worker)
-pane=%2 intended_tool=opencode pane_current_command=opencode
-positively_identifies_as_intended_tool=yes

@@ -1,2 +1,0 @@
-pid=4974	AE_TMUX_SERVER=/tmp/aecx/arms/A1/c02-meta-mode-000-ro/none.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A1/c02-meta-mode-000-ro/none.sock list-sessions -F \#\{session_name\} 
-pid=4977	AE_TMUX_SERVER=/tmp/aecx/arms/A1/c02-meta-mode-000-ro/none.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A1/c02-meta-mode-000-ro/none.sock has-session -t tg1 

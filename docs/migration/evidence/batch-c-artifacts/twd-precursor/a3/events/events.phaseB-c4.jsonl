@@ -1,3 +1,0 @@
-{"ts":"2026-08-20T15:06:56Z","actor":"_watchdog","action":"throttled","target":"fake:probe","summary":"upstream throttling detected — pausing nudges"}
-{"ts":"2026-08-20T15:07:01Z","actor":"_watchdog","action":"alert","target":"fake:probe","summary":"throttled for 10s — may need attention"}
-{"ts":"2026-08-20T15:07:21Z","actor":"_watchdog","action":"throttle-cleared","target":"fake:probe","summary":"throttling cleared after 5 cycles"}

@@ -1,4 +1,0 @@
-# AE_CONTEXT_MATERIAL file hashes (after-i1) 2026-08-20T15:34:59Z
-476a059abc1ac15a542ef4ed82d52ba3045fa1244e37cdc9505c9dfe4306f8a6  launch.main.sh  5981 bytes
-52e0a148a7c2c93cf7002872f20e475c03ff257202a3a1e4edad374a79ccb154  launch.spawned.0.sh  5918 bytes
-a44e006ef02b54078ed033024a4bbfe39113a41d889e1b0ccf2d75a690053e3f  workspace.md  8872 bytes

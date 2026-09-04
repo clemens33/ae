@@ -1,5 +1,0 @@
-Archived 6d1474a3-4aba-45e0-ba45-529a225e9366
-Archive: /tmp/aelx/L-END/compact-relaunch-lock-control/h/.ae/archive/6d1474a3-4aba-45e0-ba45-529a225e9366
-Digest: /tmp/aelx/L-END/compact-relaunch-lock-control/h/.ae/archive/6d1474a3-4aba-45e0-ba45-529a225e9366/digest.md
-Recovery: cd /private/tmp/aelx/L-END/compact-relaunch-lock-control/w && /tmp/aelx/L-END/compact-relaunch-lock-control/b/ae --local cr1 --from 6d1474a3-4aba-45e0-ba45-529a225e9366
-Watchdog started in hidden ae-monitor window. Use 'peek _watchdog' or 'peek _events' to inspect.

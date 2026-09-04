@@ -1,9 +1,0 @@
-# manifest-root	/tmp/aelx/L-DISCRIM/D1b-parent-id-recorded-or-reread/replacement/435063a9-64fc-41ec-a323-b60ff941dc40
-#path	type	mode	nlink	size	link	sha256
-.	dir	700	7	224	-	-
-digest.md	file	600	1	1893	-	2386edd590e2780e3ca75ade28ae4cfaa735551c29612bb9967ac4577cc1dc51
-events.jsonl	file	600	1	658	-	ab2b1a37dcef34ab7866482a427f6850dbe6a0f7d7319155e370505677c55df3
-memo.tsv	file	600	1	158	-	5e86c2c74c1b967f0edb92828d53824ef14f07cfc893ffd6b2b8a6afe31b1021
-messages	dir	700	3	96	-	-
-messages/ae-20260820T204010Z-fd74228a.ask.60cNQe.txt	file	600	1	401	-	63c95828e0a5912db19a2f8f1854d3dd54e5f1588837d93cc82c5a56cd3df6ea
-meta	file	600	1	699	-	60ac767b82b2618bf333fae5bf8a588fab9c362f6675bdb63b566e6ee3d00f8b

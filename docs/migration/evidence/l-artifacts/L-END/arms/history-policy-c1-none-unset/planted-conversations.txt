@@ -1,3 +1,0 @@
-planted conversation files (path-only marker; content never read by the frozen locator)
-  hp1	b871b084-78b1-4349-84a6-508a6220d05d	/tmp/aelx/L-END/history-policy-c1-none-unset/h/.claude/projects/-tmp-aelx-w/b871b084-78b1-4349-84a6-508a6220d05d.jsonl
-  hp2	1eb37c4c-31c4-49c3-8121-6e6812736785	/tmp/aelx/L-END/history-policy-c1-none-unset/h/.claude/projects/-tmp-aelx-w/1eb37c4c-31c4-49c3-8121-6e6812736785.jsonl

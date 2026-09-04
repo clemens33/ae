@@ -1,7 +1,0 @@
-arm=churn
-construction=tmux set-option -p @ae_agent on BOTH panes; @ae_slot and the session untouched
-shape: tests/integration@72c7293:1268-1285
-families=requests_state archive compact
-states=pre,post
-started=2026-08-20T15:42:41Z
-finished=2026-08-20T15:43:34Z

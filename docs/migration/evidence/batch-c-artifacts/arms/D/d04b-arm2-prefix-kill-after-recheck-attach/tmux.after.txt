@@ -1,6 +1,0 @@
-## sessions
-caller|1
-tg2wuextra|1
-## panes
-caller|%3||zsh
-tg2wuextra|%2||aefake

@@ -1,2 +1,0 @@
-archive: '/tmp/aelx/L-PURGE/control-symlinked-archive-root/h/.ae/archive' is a symlink, not ae's archive root — refusing to act through it.
-Error: purging the archive for 'pg' failed — the session is STOPPED and nothing was deleted.

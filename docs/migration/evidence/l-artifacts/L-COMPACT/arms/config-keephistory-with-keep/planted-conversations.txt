@@ -1,2 +1,0 @@
-planted conversation markers (path-only; the frozen locator never reads their content)
-  12c20c8e-9111-4e67-9146-4b6baecfa796	/tmp/aelx/L-COMPACT/config-keephistory-with-keep/h/.claude/projects/-tmp-aelx-w/12c20c8e-9111-4e67-9146-4b6baecfa796.jsonl

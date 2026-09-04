@@ -1,9 +1,0 @@
-# manifest-root	/tmp/aelx/L-COMPACT/recovery-exec-selected/h/.ae/archive
-#path	type	mode	nlink	size	link	sha256
-.	dir	700	3	96	-	-
-ed830d55-354c-4e71-b8c9-949f38af8cad	dir	700	7	224	-	-
-ed830d55-354c-4e71-b8c9-949f38af8cad/digest.md	file	600	1	1305	-	38417c14f4c69aeb1f6a78e8ed761ba740c98b2264c923aaf1c7d0e7d2128322
-ed830d55-354c-4e71-b8c9-949f38af8cad/events.jsonl	file	600	1	0	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
-ed830d55-354c-4e71-b8c9-949f38af8cad/memo.tsv	file	600	1	0	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
-ed830d55-354c-4e71-b8c9-949f38af8cad/messages	dir	700	2	64	-	-
-ed830d55-354c-4e71-b8c9-949f38af8cad/meta	file	600	1	658	-	a210d8edd3c907af391cf927717441258ef6c22128cb9ecbb0bc46678c85aafc

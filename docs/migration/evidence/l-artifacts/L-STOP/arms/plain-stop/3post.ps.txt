@@ -1,5 +1,0 @@
-61602     1 ??       /opt/homebrew/bin/tmux new-session -d -s proj -c /private/tmp/aelx/L-STOP/plain-stop/w
-63084 61602 ttys033  /opt/homebrew/bin/bash /tmp/aelx/L-STOP/plain-stop/h/.ae/sessions/projx/events-tail
-63139 61602 ttys039  /opt/homebrew/bin/bash /tmp/aelx/L-STOP/plain-stop/h/.ae/sessions/projx/watchdog _run
-64824 61602 ttys047  /opt/homebrew/bin/bash /tmp/aelx/L-STOP/plain-stop/h/.ae/sessions/other/events-tail
-64931 61602 ttys063  /opt/homebrew/bin/bash /tmp/aelx/L-STOP/plain-stop/h/.ae/sessions/other/watchdog _run

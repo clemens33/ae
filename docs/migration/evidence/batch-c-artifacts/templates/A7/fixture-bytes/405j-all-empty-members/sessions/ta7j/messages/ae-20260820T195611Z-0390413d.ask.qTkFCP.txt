@@ -1,6 +1,0 @@
-⟦ae:msg from fake:lead⟧
-REQUEST ae-20260820T195611Z-0390413d from fake:lead: A7 405j identity question
-
-REQUIRED: When you have finished, you MUST run this exact command to reply:
-/tmp/aecx/tpl/a7j/home/.ae/sessions/ta7j/reply --as "fake:worker" "ae-20260820T195611Z-0390413d" "<your reply>"
-Do not reply any other way. Do NOT use peek/peak as a reply mechanism.

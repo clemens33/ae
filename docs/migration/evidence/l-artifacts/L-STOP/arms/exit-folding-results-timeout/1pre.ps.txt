@@ -1,7 +1,0 @@
-62500     1 ??       /opt/homebrew/bin/tmux new-session -d -s proj -c /private/tmp/aelx/L-STOP/exit-folding-results-timeout/w
-63359 62500 ttys028  /opt/homebrew/bin/bash /tmp/aelx/L-STOP/exit-folding-results-timeout/h/.ae/sessions/proj/events-tail
-63431 62500 ttys033  /opt/homebrew/bin/bash /tmp/aelx/L-STOP/exit-folding-results-timeout/h/.ae/sessions/proj/watchdog _run
-64384 62500 ttys045  /opt/homebrew/bin/bash /tmp/aelx/L-STOP/exit-folding-results-timeout/h/.ae/sessions/projx/events-tail
-64447 62500 ttys047  /opt/homebrew/bin/bash /tmp/aelx/L-STOP/exit-folding-results-timeout/h/.ae/sessions/projx/watchdog _run
-65401 62500 ttys065  /opt/homebrew/bin/bash /tmp/aelx/L-STOP/exit-folding-results-timeout/h/.ae/sessions/other/events-tail
-65459 62500 ttys069  /opt/homebrew/bin/bash /tmp/aelx/L-STOP/exit-folding-results-timeout/h/.ae/sessions/other/watchdog _run

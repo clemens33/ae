@@ -1,1 +1,0 @@
-manipulation	none: a plain stop then resume cycle

@@ -1,1 +1,0 @@
-pid=96873	AE_TMUX_SERVER=/tmp/aecx/tpl/a4c01-status-live/s.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/a4c01-status-live/s.sock has-session -t no-such-session 

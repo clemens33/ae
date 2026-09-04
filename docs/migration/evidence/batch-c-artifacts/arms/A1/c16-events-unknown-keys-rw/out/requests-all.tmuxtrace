@@ -1,4 +1,0 @@
-pid=10834	AE_TMUX_SERVER=/tmp/aecx/arms/A1/c16-events-unknown-keys-rw/none.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/g1/s.sock display-message -p \#\{pane_id\} 
-pid=10845	AE_TMUX_SERVER=/tmp/aecx/arms/A1/c16-events-unknown-keys-rw/none.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/g1/s.sock display-message -p \#\{pane_id\} 
-pid=10854	AE_TMUX_SERVER=/tmp/aecx/arms/A1/c16-events-unknown-keys-rw/none.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/g1/s.sock display-message -p \#\{pane_id\} 
-pid=10862	AE_TMUX_SERVER=/tmp/aecx/arms/A1/c16-events-unknown-keys-rw/none.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/g1/s.sock display-message -p -t '' \#S 

@@ -1,6 +1,0 @@
-arm	hostile-symlinked-archive-root
-section	L-END
-roster_ids	(none — hostile construction, captures only)
-fixture	--local family
-construction	the archive root is a symlink to a directory outside AE_HOME
-end_rc	1

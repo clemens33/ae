@@ -1,3 +1,0 @@
-mutation.label	mutation
-mutation.target	/tmp/aelx/L-PURGE/empty-identity-purge/h/.ae/archive/2e731eb2-60d6-4dcf-8184-cb4b8ed9076b/meta
-mutation.description	the archive meta's source_session value is emptied (key kept, value removed), temp+rename

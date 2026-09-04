@@ -1,7 +1,0 @@
-label=base-c1
-epoch=1787238406
-utc=2026-08-20T15:06:46Z
-pgrep_aefake=54970 
-events_lines=0
-events_bytes=0
-wd_log_bytes=697

@@ -1,6 +1,0 @@
-To file:///tmp/aelx/L-END/archive-write-inability/o.git
- * [new branch]      HEAD -> ae/aw
-archive: another publisher holds /tmp/aelx/L-END/archive-write-inability/h/.ae/archive/.publishing.01fff80c-96d5-4fa1-b136-37c21ac800a2 (or a previous run crashed holding it).
-  ae will not guess-clean it. Inspect it, then remove it by hand if it is stale.
-Error: archiving session 'aw' failed — the session is STOPPED and NOTHING was deleted.
-  Fix the cause reported above, then re-run: ae end aw

@@ -1,8 +1,0 @@
-## sessions
-td04apretwi|3
-td04apretwiextra|1
-## panes
-td04apretwi|%1|fake:worker|aefake
-td04apretwi|%4|fake:added-after-the-cut|aefake
-td04apretwi|%2|_events|bash
-td04apretwiextra|%3||aefake

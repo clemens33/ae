@@ -1,1 +1,0 @@
-typed	/tmp/aelx/L-STOP/self-stop-with-y/b/ae stop -y

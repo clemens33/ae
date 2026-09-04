@@ -1,6 +1,0 @@
-## sessions
-error connecting to /tmp/aecx/arms/A7/a7-c11-branch-stopped-rw/live.sock (No such file or directory)
-## panes
-error connecting to /tmp/aecx/arms/A7/a7-c11-branch-stopped-rw/live.sock (No such file or directory)
-## @ae_branch_name
-error connecting to /tmp/aecx/arms/A7/a7-c11-branch-stopped-rw/live.sock (No such file or directory)

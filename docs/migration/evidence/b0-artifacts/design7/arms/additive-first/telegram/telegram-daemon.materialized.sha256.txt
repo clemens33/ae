@@ -1,3 +1,0 @@
-This runner input was byte-identical in every arm that used it.
-Canonical copy: harness/runner-blobs/telegram-daemon.materialized
-sha256=671c9b9afb4b2479cda22ee3f57f900162f29f35795e804251f860db8dff99ad

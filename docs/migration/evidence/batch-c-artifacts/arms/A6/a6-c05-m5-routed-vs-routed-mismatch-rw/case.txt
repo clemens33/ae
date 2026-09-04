@@ -1,6 +1,0 @@
-arm=A6 case=a6-c05-m5-routed-vs-routed-mismatch rows=SC-518 template=G5/m5-routed-vs-routed-mismatch clone_mode=rw session=tg5
-clone_fingerprint=99b236f7fa50620ae90d18c88252257a32db3478d74f7567496751f83c5a36af clone_fingerprint_matches_template=yes
-mutation_recorded_at=templates/G5/_meta/m5-routed-vs-routed-mismatch.mutation.txt
-frozen_sha=72c729343a0117af2968b66e1c43f89ad25fc0b2 frozen_ae_sha256=b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd
-utc_start=2026-08-20T19:48:48Z
-manifest_diff_lines=0

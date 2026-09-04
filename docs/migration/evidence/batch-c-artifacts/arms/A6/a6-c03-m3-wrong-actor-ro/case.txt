@@ -1,6 +1,0 @@
-arm=A6 case=a6-c03-m3-wrong-actor rows=SC-518 template=G5/m3-wrong-actor clone_mode=ro session=tg5
-clone_fingerprint=8b6e96f784a004283d32a4dfa03ba9e306af305c0616e333460b461f22e2a8e3 clone_fingerprint_matches_template=yes
-mutation_recorded_at=templates/G5/_meta/m3-wrong-actor.mutation.txt
-frozen_sha=72c729343a0117af2968b66e1c43f89ad25fc0b2 frozen_ae_sha256=b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd
-utc_start=2026-08-20T19:48:27Z
-manifest_diff_lines=0

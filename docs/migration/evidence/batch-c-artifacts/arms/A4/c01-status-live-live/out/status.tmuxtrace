@@ -1,5 +1,0 @@
-pid=96794	AE_TMUX_SERVER=/tmp/aecx/tpl/a4c01-status-live/s.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/a4c01-status-live/s.sock has-session -t ta4c01statuslive 
-pid=96795	AE_TMUX_SERVER=/tmp/aecx/tpl/a4c01-status-live/s.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/a4c01-status-live/s.sock list-panes -s -t ta4c01statuslive -F $'#{pane_id}\t#{@ae_agent}' 
-pid=96798	AE_TMUX_SERVER=/tmp/aecx/tpl/a4c01-status-live/s.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/a4c01-status-live/s.sock capture-pane -t %0 -p 
-pid=96802	AE_TMUX_SERVER=/tmp/aecx/tpl/a4c01-status-live/s.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/a4c01-status-live/s.sock capture-pane -t %1 -p 
-pid=96806	AE_TMUX_SERVER=/tmp/aecx/tpl/a4c01-status-live/s.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/a4c01-status-live/s.sock capture-pane -t %2 -p 

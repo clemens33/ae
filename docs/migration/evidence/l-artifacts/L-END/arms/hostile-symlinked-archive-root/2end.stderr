@@ -1,3 +1,0 @@
-archive: '/tmp/aelx/L-END/hostile-symlinked-archive-root/h/.ae/archive' is a symlink, not ae's archive root — refusing to act through it.
-Error: archiving session 'sy1' failed — the session is STOPPED and NOTHING was deleted.
-  Fix the cause reported above, then re-run: ae end sy1

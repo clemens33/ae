@@ -1,6 +1,0 @@
-controller.barrier	b_cp_after_answer.74808.1
-controller.action	the live session meta session_id is replaced by a fresh uuid (temp + chmod-to-original-mode + rename)
-controller.new_uuid	cc5ad7ad-5b94-4b3f-ac88-df8f7528e588
-mode.before	644
-mode.after	644
-state.changed	sessions/cp1/meta only; tmux, memo, events and messages untouched

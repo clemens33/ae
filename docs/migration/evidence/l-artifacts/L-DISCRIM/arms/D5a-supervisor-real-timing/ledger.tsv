@@ -1,7 +1,0 @@
-2026-08-20T19:46:48Z	setup	arm	D5a
-2026-08-20T19:46:56Z	setup	shell.pane	%3
-2026-08-20T19:46:58Z	measure	typed	ae stop -y (implicit self-stop) typed into a shell pane inside the session
-2026-08-20T19:47:37Z	measure	sampler.rate	iterations=1769 hits=3 window=40s
-2026-08-20T19:47:37Z	measure	supervisor.hits	3
-2026-08-20T19:47:37Z	measure	route.stdout	Stopping 's1' out of pane; this pane will close.
-2026-08-20T19:47:37Z	measure	stop.rc	0

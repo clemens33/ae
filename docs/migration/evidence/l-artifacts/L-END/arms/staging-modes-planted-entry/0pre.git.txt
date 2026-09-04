@@ -1,7 +1,0 @@
-## HEAD (no branch)
-?? wip.txt
---- log ---
-130ea66 seed
---- remote refs ---
-  origin/HEAD -> origin/main
-  origin/main

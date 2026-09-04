@@ -1,6 +1,0 @@
-seq=001	utc=2026-08-20T23:49:34Z	epoch=1787269774	event=case-OPEN	arm=A-H1301	case=h1301-c00-inactive-equivalence	frozen_sha=72c7293	frozen_ae_sha256=b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd
-seq=002	utc=2026-08-20T23:49:34Z	epoch=1787269774	event=rows	rows=SC-1301	phase=admissibility
-seq=003	utc=2026-08-20T23:49:34Z	epoch=1787269774	event=hash-triple	frozen_sha256=b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd	hooked_sha256=dde61d9ba040b8f0fdb0da8f1c1e360b5a890a4f419ac1dc7cdd0dde9014b267	patch_sha256=da1eb14aff2e4299153e2b7b82e724331b48e7693ea0228a630c9257f356246c	lines_added=5	lines_removed=2
-seq=004	utc=2026-08-20T23:49:34Z	epoch=1787269774	event=surface-state-captured	artifact_sha256=aa764c8dfe8f8673389cc9beb64d4fce17325116eed2cb9327d626dbbf90d7f6	paths=/tmp/aecx/h/hook/ae /private/tmp/claude-501/-Users-ckriech-projects-clemens33-ae-rust/347d2089-7268-421d-8188-8924e246bbf0/scratchpad/frozen/ae
-seq=005	utc=2026-08-20T23:49:43Z	epoch=1787269783	event=inactive-equivalence	differing_files=3	files_differing_in_NON_hook_bytes=0	control_vs_known_difference_differs=yes	stdout_identical=yes	note=the hooked copy emits _ae_hook into every generated _lib, so equivalence is the enumerated form; the third column is the comparator's own can-fail control
-seq=006	utc=2026-08-20T23:49:43Z	epoch=1787269783	event=case-CLOSE

@@ -1,6 +1,0 @@
-# manifest-root	/tmp/aelx/L-END/staging-modes/h/.ae/worktrees/smpl
-#path	type	mode	nlink	size	link	sha256
-.	dir	755	5	160	-	-
-.git	file	644	1	68	-	d9c2ee026e8c8ee503521d47bac36b8070fa52f1532e1e875ee6e7a927b722c6
-README.md	file	644	1	5	-	4a6689419b00b11700c9b6246bcfa8936c8f5e1e824db3a7e57030e2d1c1a684
-wip.txt	file	644	1	5	-	4c7a03f2c9a663a0678eef8293f7609a609c92a6b3bccb2e556301f8b290c7f2

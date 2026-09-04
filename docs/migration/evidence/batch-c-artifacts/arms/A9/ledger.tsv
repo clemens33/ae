@@ -1,7 +1,0 @@
-case	rows	group	member
-a9-c01-no-events	SC-519,SC-520	G4	no-events
-a9-c02-zero-byte-events	SC-519,SC-520	G4	zero-byte-events
-a9-c03-meta-mode-000	SC-519,SC-520	G3	meta-mode-000
-a9-c04-malformed-event	SC-519,SC-520	G3	malformed-complete-line
-a9-c05-meta-absent	SC-405i	A9	meta-absent
-a9-c06-healthy-control	control	G1	healthy

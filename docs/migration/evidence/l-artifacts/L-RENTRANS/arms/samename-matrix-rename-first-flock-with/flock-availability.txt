@@ -1,3 +1,0 @@
-flock.availability	PRESENT, through the delegate-and-log spy
-spy	/tmp/aelx/L-RENTRANS/samename-matrix-rename-first-flock-with/b/flock (delegates every invocation to /opt/homebrew/bin/flock, substitutes nothing)
-command -v flock	/tmp/aelx/L-RENTRANS/samename-matrix-rename-first-flock-with/b/flock

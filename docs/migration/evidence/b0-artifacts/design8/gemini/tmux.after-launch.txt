@@ -1,7 +1,0 @@
-# tmux snapshot (after-launch)
-d8: 2 windows (created Thu Aug 20 15:34:43 2026)
-rc=0
-%0 d8 gemini:gemini main gemini /dev/ttys069
-%1 d8 _events  fish /dev/ttys078
-rc=0
-rc=0

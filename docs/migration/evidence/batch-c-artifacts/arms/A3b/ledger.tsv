@@ -1,7 +1,0 @@
-case	rows	group	member
-c01-dead-over-stale	SC-017g	A3b	pair-dead-over-stale
-c02-stale-over-waitinguser	SC-017g	A3b	pair-stale-over-waitinguser
-c03-waitinguser-over-blocked	SC-017g	A3b	pair-waitinguser-over-blocked
-c04-blocked-over-throttled	SC-017g	A3b	pair-blocked-over-throttled
-c05-throttled-over-unanswered	SC-017g	A3b	pair-throttled-over-unanswered
-c06-competing-noclear	SC-017g	A3b	competing-noclear

@@ -1,3 +1,0 @@
-FAKE-RECOGNITION PREREQUISITE (i4-worker)
-pane=%3 intended_tool=gemini pane_current_command=gemini
-positively_identifies_as_intended_tool=yes

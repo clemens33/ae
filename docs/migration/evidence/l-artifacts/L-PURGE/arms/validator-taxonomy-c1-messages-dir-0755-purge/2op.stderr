@@ -1,3 +1,0 @@
-archive: '/tmp/aelx/L-PURGE/validator-taxonomy-c1-messages-dir-0755-purge/h/.ae/archive/8586c11f-3d03-4df0-a8e4-68c196263203' does not validate as an ae archive — refusing to delete it.
-  Inspect it and remove it by hand if that is what you want.
-Error: purging the archive for 'pg' failed — the session is STOPPED and nothing was deleted.

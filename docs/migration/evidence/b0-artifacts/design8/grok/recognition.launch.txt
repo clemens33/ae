@@ -1,3 +1,0 @@
-FAKE-RECOGNITION PREREQUISITE (launch)
-pane=%0 intended_tool=grok pane_current_command=grok
-positively_identifies_as_intended_tool=yes

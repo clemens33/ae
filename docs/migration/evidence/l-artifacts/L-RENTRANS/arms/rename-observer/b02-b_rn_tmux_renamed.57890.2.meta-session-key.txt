@@ -1,4 +1,0 @@
-=== /tmp/aelx/L-RENTRANS/rename-observer/h/.ae/sessions/proj/meta ===
-3:session=proj
-=== /tmp/aelx/L-RENTRANS/rename-observer/h/.ae/sessions/projx/meta ===
-3:session=projx

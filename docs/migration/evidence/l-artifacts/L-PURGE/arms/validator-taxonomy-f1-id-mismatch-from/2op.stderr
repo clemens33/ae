@@ -1,2 +1,0 @@
-archive: meta archive_id '00000000-0000-4000-8000-000000000000' does not match '336eef5b-f5e3-44ad-9f99-4669519fa97a'.
-Error: archive 336eef5b-f5e3-44ad-9f99-4669519fa97a did not validate — refusing to inherit from it.

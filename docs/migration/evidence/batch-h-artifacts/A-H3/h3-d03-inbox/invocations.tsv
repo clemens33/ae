@@ -1,4 +1,0 @@
-label	rc	stdout_sha256	stdout_bytes	stderr_sha256	stderr_bytes	bound_s	timed_out	argv
-canary-pre-h3-d03-inbox	7	9845aedf0b638d61c7f21669cd16a750707f97832030ada86fb1765b184247d7	34	90f262fe71464122b05958653eac94d6fe21755d613306147544639d58e714bf	41	10	no	/opt/homebrew/bin/bash -c printf '%s\n' 'AE-H-CANARY-pre-h3-d03-inbox-9f3c'; printf '%s\n' 'AE-H-CANARY-pre-h3-d03-inbox-9f3c-stderr' >&2; exit 7
-requests	0	c58c370f365bc569778e547d348a9a329ebbcbb30864f53c62409a74ed3cd429	97	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855	0	25	no	env TMUX=/tmp/aecx/h/h3d/s.sock,81198,0 TMUX_PANE=%0 /tmp/aecx/h/h3d/home/.ae/sessions/th3d/requests inbox
-canary-post-h3-d03-inbox	7	cbbace66aade6944ad5ff270d7307d7573c8ffb369314d2980b524c03eb795fb	35	5d67079dd6299e811fee19e4fbf0d4423fc2e82c834b0f26ed039a5d87d78e4d	42	10	no	/opt/homebrew/bin/bash -c printf '%s\n' 'AE-H-CANARY-post-h3-d03-inbox-9f3c'; printf '%s\n' 'AE-H-CANARY-post-h3-d03-inbox-9f3c-stderr' >&2; exit 7

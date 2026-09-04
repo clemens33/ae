@@ -1,3 +1,0 @@
-cut.barrier	b_post_rename.86722.5
-cut.method	SIGKILL to the whole end process tree
-cut.pids	84861 64865 bash /tmp/aelx/L-END/publication-crash-cut-post_rename/b/ae end -f pcpos;86722 84861 bash /tmp/aelx/L-END/publication-crash-cut-post_rename/b/ae end -f pcpos;

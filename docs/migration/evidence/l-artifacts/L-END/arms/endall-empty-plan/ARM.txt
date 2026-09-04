@@ -1,8 +1,0 @@
-arm	endall-empty-plan
-section	L-END
-roster_ids	SC-821a SC-821b
-fixture	an AE_HOME with a config and no sessions at all
-construction	ae end all runs on a real terminal against a state whose target enumeration yields nothing; the prompt transcript, the plan block as rendered, and the outcome record are captured
-end_all_rc	0
-prompt_bound_sec	60
-rc_bound_sec	120

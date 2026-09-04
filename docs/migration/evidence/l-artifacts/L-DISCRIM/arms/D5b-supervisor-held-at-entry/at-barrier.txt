@@ -1,3 +1,0 @@
-barrier	b_stop_supervisor_singular_entry.48880.1
-method	the singular self-stop supervisor is HELD at its own entry, so it is caught alive by construction rather than by racing a sampler
-supervisor.pid	48880

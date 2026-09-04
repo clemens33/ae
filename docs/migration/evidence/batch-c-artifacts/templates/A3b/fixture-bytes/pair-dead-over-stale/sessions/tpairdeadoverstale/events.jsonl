@@ -1,4 +1,0 @@
-{"ts":"2026-08-20T17:13:56Z","actor":"_watchdog","action":"alert","target":"fake:high","summary":"agent process dead — dropped to shell"}
-{"ts":"2026-08-20T17:15:00Z","actor":"watchdog","action":"nudge","target":"fake:low","summary":"no recent events, no recent ae activity","body_file":"/tmp/aecx/tpl/p_pair-dead-over-stale/home/.ae/sessions/tpairdeadoverstale/messages/msg-20260820T171500Z.nudge.KsPMvN.txt"}
-{"ts":"2026-08-20T17:15:06Z","actor":"watchdog","action":"nudge","target":"fake:low","summary":"no recent events, no recent ae activity","body_file":"/tmp/aecx/tpl/p_pair-dead-over-stale/home/.ae/sessions/tpairdeadoverstale/messages/msg-20260820T171506Z.nudge.USwta5.txt"}
-{"ts":"2026-08-20T17:15:11Z","actor":"_watchdog","action":"alert","target":"fake:low","summary":"max nudges reached (no recent events), needs attention"}

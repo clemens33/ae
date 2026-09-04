@@ -1,3 +1,0 @@
-mutation.label	mutation
-mutation.target	/tmp/aelx/L-PURGE/validator-taxonomy-e1-exec-user-purge/h/.ae/archive/5944456d-0251-43f6-b4fc-dfdcd8988bcd/digest.md
-mutation.description	the archive member digest.md gains the USER executable bit (0600 -> 0700)

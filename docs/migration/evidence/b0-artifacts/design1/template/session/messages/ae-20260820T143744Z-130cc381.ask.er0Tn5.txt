@@ -1,6 +1,0 @@
-⟦ae:msg from unverified⟧
-REQUEST ae-20260820T143744Z-130cc381 from dummy:dummy: baseline question two (left open)
-
-REQUIRED: When you have finished, you MUST run this exact command to reply:
-/tmp/aeb0/tmpl/home/.ae/sessions/b0tmpl/reply --as "dummy2:helper" "ae-20260820T143744Z-130cc381" "<your reply>"
-Do not reply any other way. Do NOT use peek/peak as a reply mechanism.

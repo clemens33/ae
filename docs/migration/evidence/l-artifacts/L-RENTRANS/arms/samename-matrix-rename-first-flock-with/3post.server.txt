@@ -1,3 +1,0 @@
-# tmux server liveness
-server.pid	69193
-socket.exists	yes

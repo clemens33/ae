@@ -1,4 +1,0 @@
-AGENT                     PANE     PROCESS
-fake:lead                 %0       aefake
-fake:ghost                %3       zsh
-_events                   %2       bash

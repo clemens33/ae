@@ -1,9 +1,0 @@
-arm=D case=d02-controller-only-twin arm_kind=twin design=b0-design.md Design 3 (D02) rows=D02,SC-1306d
-template=D/d02-pending-with-harvested-reply clone_mode=rw session=td02
-clone_fingerprint=c5a47d626ffaf77aed1dcfd551e1c945a71d612f3ee9ffaa8d16aa40e8192f14 clone_fingerprint_matches_template=yes
-hook=H_REQUEST_SCAN_COMPLETE (after the reversed scan, before row emission)
-unmodified_ae_sha256=b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd hooked_ae_sha256=7d5a9bda713dc28cd01e7d99dd39eb524a9e6994d7bf7714a551648e980c29f0 patch_sha256=a252a7497280da2c1670f7d08b3eaa65d15b5a4c9369f04fa92f0a3d317b43e0
-consumer=the session's OWN generated requests helper (the frozen scan lives there)
-utc_start=2026-08-20T17:27:17Z
-manifest_diff_lines=4
-utc_end=2026-08-20T17:27:18Z

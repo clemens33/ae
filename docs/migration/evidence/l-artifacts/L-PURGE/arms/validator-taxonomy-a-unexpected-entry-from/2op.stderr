@@ -1,2 +1,0 @@
-archive: unexpected entry 'EXTRA.txt' — an archive holds only meta, digest.md, memo.tsv, events.jsonl and messages/*.txt.
-Error: archive 9cfbc2e1-2228-4a62-966f-6ef14cfc4048 did not validate — refusing to inherit from it.

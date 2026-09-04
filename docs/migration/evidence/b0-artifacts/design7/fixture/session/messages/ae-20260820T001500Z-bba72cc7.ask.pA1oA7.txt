@@ -1,6 +1,0 @@
-⟦ae:msg from unverified⟧
-REQUEST ae-20260820T001500Z-bba72cc7 from dummy:dummy: fixture second ask, left open
-
-REQUIRED: When you have finished, you MUST run this exact command to reply:
-/tmp/aeb0/d7/build/home/.ae/sessions/b0d7/reply --as "dummy2:helper" "ae-20260820T001500Z-bba72cc7" "<your reply>"
-Do not reply any other way. Do NOT use peek/peak as a reply mechanism.

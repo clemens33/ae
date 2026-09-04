@@ -1,5 +1,0 @@
-## panes
-tpairdeadoverstale|%0|fake:high|main|aefake
-tpairdeadoverstale|%1|fake:low|worker.0|aefake
-## sessions
-tpairdeadoverstale|1

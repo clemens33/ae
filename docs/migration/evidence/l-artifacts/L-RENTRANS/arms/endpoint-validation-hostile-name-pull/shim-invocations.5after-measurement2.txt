@@ -1,9 +1,0 @@
-label	5after-measurement2
-ssh.log.exists	no
-ssh.log.lines	0
-rsync.log.exists	no
-rsync.log.lines	0
-/tmp/aelx/lib/rentrans-814.sh: line 16: printf: --: invalid option
-printf: usage: printf [-v var] format [arguments]
-/tmp/aelx/lib/rentrans-814.sh: line 17: printf: --: invalid option
-printf: usage: printf [-v var] format [arguments]

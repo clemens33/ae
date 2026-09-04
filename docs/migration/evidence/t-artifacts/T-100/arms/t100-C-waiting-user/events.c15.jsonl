@@ -1,3 +1,0 @@
-{"ts":"2026-08-20T19:05:22Z","actor":"grok:grok","action":"state","ref":"waiting-user","summary":"T-100 arm C"}
-{"ts":"2026-08-20T19:06:35Z","actor":"watchdog","action":"nudge","target":"grok:grok","summary":"idle 1m, no recent ae activity","body_file":"/tmp/aelx/T-100/t100-C-waiting-user/h/.ae/sessions/t1/messages/msg-20260820T190635Z.nudge.uYzWDZ.txt"}
-{"ts":"2026-08-20T19:06:41Z","actor":"watchdog","action":"nudge","target":"grok:grok","summary":"idle 1m, no recent ae activity","body_file":"/tmp/aelx/T-100/t100-C-waiting-user/h/.ae/sessions/t1/messages/msg-20260820T190641Z.nudge.6AaRkg.txt"}

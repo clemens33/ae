@@ -1,4 +1,0 @@
-pid=92656	AE_TMUX_SERVER=<unset>	AE_TMUX_SERVER_KIND=<unset>	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/g1/s.sock display-message -p \#\{pane_id\} 
-pid=92659	AE_TMUX_SERVER=<unset>	AE_TMUX_SERVER_KIND=<unset>	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/g1/s.sock display-message -p \#\{pane_id\} 
-pid=92662	AE_TMUX_SERVER=<unset>	AE_TMUX_SERVER_KIND=<unset>	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/g1/s.sock display-message -p \#\{pane_id\} 
-pid=92663	AE_TMUX_SERVER=<unset>	AE_TMUX_SERVER_KIND=<unset>	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/g1/s.sock display-message -p -t '' \#S 

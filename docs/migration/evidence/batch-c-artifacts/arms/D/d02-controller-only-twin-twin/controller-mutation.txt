@@ -1,9 +1,0 @@
-mutation=append ONE producer-harvested, identity-valid reply event
-payload_file=_d02-controller-payload.reply.jsonl (carried inside the member itself)
-payload_sha256=3514c13a4404cf5413726b8dc3c9a829716ced0cbfe906b8424a27c898c244a1 bytes=367
-payload_line: {"ts":"2026-08-20T17:03:30Z","actor":"fake:worker","action":"reply","target":"fake:lead","ref":"ae-20260820T170328Z-75afd2c3","actor_slot":"worker.0","actor_session":"td02","target_slot":"main","target_session":"td02","summary":"D02 identity-valid answer","body_file":"/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.reply.lM9JHk.txt"}
-utc=2026-08-20T17:27:18Z
-events lines BEFORE: 1
-events sha256 BEFORE: 34e8b7aa7cd8ce1b4381f69300c44e57ec91ee9e205cfb10ee5243f1b6c68492
-events lines AFTER: 2
-events sha256 AFTER: 5bebf683c734303b631bd210a016e95c980d70c106a5082ff733d90502b8bce5

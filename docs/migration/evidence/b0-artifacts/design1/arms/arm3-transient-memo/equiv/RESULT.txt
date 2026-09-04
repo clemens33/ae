@@ -1,9 +1,0 @@
-# per-fixture inactive equivalence (instrumented, AE_H507_DIR unset) vs uninstrumented frozen
-EQUAL stdout.txt
-EQUAL stderr.txt
-EQUAL rc.txt
-EQUAL manifest.after
-EQUAL tmux-probe.txt (harness socket path + server name normalised)
-inactive_rc=0  uninstr_rc=0
-inactive_stdout_sha256=66d22b66b58fe2f0b277d3200213948730b90cbbb4e056a6dff9f33c40714459
-uninstr_stdout_sha256=66d22b66b58fe2f0b277d3200213948730b90cbbb4e056a6dff9f33c40714459

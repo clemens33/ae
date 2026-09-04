@@ -1,5 +1,0 @@
-plant.reason	the frozen reply helper proves the responder from the CURRENT PANE's @ae_slot; a controller process needs a pane the helper accepts
-plant.source_pane	%0 (@ae_agent=claude:claude @ae_slot=main)
-plant.new_pane	%3
-plant.action	split-window in the same window, then set-option -p @ae_agent and @ae_slot to the source pane's values
-plant.not_changed	the agent pane itself, its process, and every file under AE_HOME

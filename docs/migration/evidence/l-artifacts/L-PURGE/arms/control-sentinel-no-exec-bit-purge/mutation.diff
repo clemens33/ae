@@ -1,5 +1,0 @@
---- /tmp/aelx/L-PURGE/control-sentinel-no-exec-bit-purge/cap/member.before.txt	2026-08-20 19:18:06
-+++ /tmp/aelx/L-PURGE/control-sentinel-no-exec-bit-purge/cap/member.after.txt	2026-08-20 19:18:12
-@@ -0,0 +1,2 @@
-+#!/bin/sh
-+printf %s "batch-l sentinel: this archive member was EXECUTED" > /tmp/aelx/L-PURGE/control-sentinel-no-exec-bit-purge/SENTINEL-WAS-EXECUTED

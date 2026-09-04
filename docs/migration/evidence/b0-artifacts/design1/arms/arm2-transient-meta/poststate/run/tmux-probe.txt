@@ -1,7 +1,0 @@
-# tmux probe (TMUX_TMPDIR=/tmp/aeb0/arms/arm2-transient-meta/poststate/run/tmuxtmp, -L aeb0-run)
-error connecting to /private/tmp/aeb0/arms/arm2-transient-meta/poststate/run/tmuxtmp/tmux-501/aeb0-run (No such file or directory)
-list-sessions rc=1
-error connecting to /private/tmp/aeb0/arms/arm2-transient-meta/poststate/run/tmuxtmp/tmux-501/aeb0-run (No such file or directory)
-list-panes rc=1
-error connecting to /private/tmp/aeb0/arms/arm2-transient-meta/poststate/run/tmuxtmp/tmux-501/aeb0-run (No such file or directory)
-list-clients rc=1

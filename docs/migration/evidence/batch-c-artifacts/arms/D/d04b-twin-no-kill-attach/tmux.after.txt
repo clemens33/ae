@@ -1,7 +1,0 @@
-## sessions
-caller|1
-tg2wu|1
-## panes
-caller|%2||zsh
-tg2wu|%0|fake:lead|aefake
-tg2wu|%1|fake:worker|aefake

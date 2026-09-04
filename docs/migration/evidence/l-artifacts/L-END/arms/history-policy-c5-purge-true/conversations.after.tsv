@@ -1,5 +1,0 @@
-# manifest-root	/tmp/aelx/L-END/history-policy-c5-purge-true/h/.claude
-#path	type	mode	nlink	size	link	sha256
-.	dir	755	3	96	-	-
-projects	dir	755	3	96	-	-
-projects/-tmp-aelx-w	dir	755	2	64	-	-

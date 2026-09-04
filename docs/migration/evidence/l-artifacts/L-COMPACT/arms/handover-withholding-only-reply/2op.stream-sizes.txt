@@ -1,4 +1,0 @@
-stdout.bytes	0
-stderr.bytes	945
-stdout.sha256	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
-stderr.sha256	d2dd96589ec2227829af5fc38fcfe5d1bca87efcb64941ba0d2debe1369ce524

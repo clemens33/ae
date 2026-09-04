@@ -1,4 +1,0 @@
-runA.opid	b277254f-e1d0-41f9-9a10-273c8bd0f1f1
-all supervisor argv seen while both runs were in flight
-42101 /opt/homebrew/bin/bash /tmp/aelx/L-STOP/fleet-concurrent-ops/b/ae _stop-fleet-supervisor b277254f-e1d0-41f9-9a10-273c8bd0f1f1 other 8eeb96dd-ed21-4ac7-99bf-402f6e61bb07 proj ec953deb-48bf-4360-9298-476490623c40 projx 1395bb0b-0dac-42f5-8615-e845fe99e62a
-42327 /opt/homebrew/bin/bash /tmp/aelx/L-STOP/fleet-concurrent-ops/b/ae _stop-fleet-supervisor 06fff8e3-e20f-4ab2-a74e-c131a18d4030 other 8eeb96dd-ed21-4ac7-99bf-402f6e61bb07 proj ec953deb-48bf-4360-9298-476490623c40 projx 1395bb0b-0dac-42f5-8615-e845fe99e62a

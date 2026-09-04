@@ -1,5 +1,0 @@
-## panes
-tpairstaleoverwaitinguser|%0|fake:high|main|aefake
-tpairstaleoverwaitinguser|%1|fake:low|worker.0|aefake
-## sessions
-tpairstaleoverwaitinguser|1

@@ -1,8 +1,0 @@
-## HEAD (no branch)
---- log ---
-f1e4a08 ae: end session pcpre
-2201f55 seed
---- branches -r ---
-  origin/HEAD -> origin/main
-  origin/ae/pcpre
-  origin/main

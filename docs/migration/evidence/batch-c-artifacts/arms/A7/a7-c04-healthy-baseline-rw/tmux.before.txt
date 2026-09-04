@@ -1,7 +1,0 @@
-## sessions
-tg1
-## panes
-tg1|%0|fake:lead
-tg1|%1|fake:worker
-## @ae_branch_name
-invalid option: @ae_branch_name

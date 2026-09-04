@@ -1,5 +1,0 @@
-pid=65440	AE_TMUX_SERVER=/tmp/aecx/tpl/d04aexactbarrier/s.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/d04aexactbarrier/s.sock has-session -t td04aexabar 
-pid=65441	AE_TMUX_SERVER=/tmp/aecx/tpl/d04aexactbarrier/s.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/d04aexactbarrier/s.sock list-panes -s -t td04aexabar -F $'#{pane_id}\t#{@ae_agent}' 
-pid=65444	AE_TMUX_SERVER=/tmp/aecx/tpl/d04aexactbarrier/s.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/d04aexactbarrier/s.sock capture-pane -t %1 -p 
-pid=65448	AE_TMUX_SERVER=/tmp/aecx/tpl/d04aexactbarrier/s.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/d04aexactbarrier/s.sock capture-pane -t %3 -p 
-pid=65452	AE_TMUX_SERVER=/tmp/aecx/tpl/d04aexactbarrier/s.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/d04aexactbarrier/s.sock capture-pane -t %2 -p 

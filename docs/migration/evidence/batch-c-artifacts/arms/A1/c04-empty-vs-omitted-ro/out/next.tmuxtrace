@@ -1,1 +1,0 @@
-pid=20816	AE_TMUX_SERVER=/tmp/aecx/arms/A1/c04-empty-vs-omitted-ro/none.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A1/c04-empty-vs-omitted-ro/none.sock list-sessions -F \#\{session_name\} 

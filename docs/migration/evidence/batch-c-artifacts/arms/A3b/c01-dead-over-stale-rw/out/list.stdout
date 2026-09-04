@@ -1,5 +1,0 @@
-SESSION                   STATUS    MODE        ORIGIN
-tpairdeadoverstale        running   local       /tmp/aecx/tpl/p_pair-dead-over-stale/work
-  git:master · ae 0.2.1 · active 6m ago · attn:dead
-  fake:high               -         -             
-  fake:low                -         -             

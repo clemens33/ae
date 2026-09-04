@@ -1,6 +1,0 @@
-⟦ae:msg from fake:asker⟧
-REQUEST ae-20250812T120000Z-13af2e38 from fake:asker: A3b unanswered question (never replied)
-
-REQUIRED: When you have finished, you MUST run this exact command to reply:
-/tmp/aecx/tpl/p_pair-throttled-over-unanswered/home/.ae/sessions/tpairthrottledoverunanswered/reply --as "fake:low" "ae-20250812T120000Z-13af2e38" "<your reply>"
-Do not reply any other way. Do NOT use peek/peak as a reply mechanism.

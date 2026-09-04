@@ -1,3 +1,0 @@
-fake:lead	aefake	%0	main
-fake:worker	aefake	%1	worker.0
-_events	bash	%2	

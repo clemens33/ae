@@ -1,4 +1,0 @@
-46853     1 /opt/homebrew/bin/tmux new-session -d -s cr1 -c /private/tmp/aelx/L-END/compact-relaunch-lock-control/w
-48882 46659 bash /tmp/aelx/L-END/compact-relaunch-lock-control/b/ae compact -f --digest-only cr1
-47434 46853 /opt/homebrew/bin/bash /tmp/aelx/L-END/compact-relaunch-lock-control/h/.ae/sessions/cr1/events-tail
-47502 46853 /opt/homebrew/bin/bash /tmp/aelx/L-END/compact-relaunch-lock-control/h/.ae/sessions/cr1/watchdog _run

@@ -1,9 +1,0 @@
-# manifest-root	/tmp/aelx/L-PURGE/validator-taxonomy-f1-id-mismatch-from/h/.ae/archive
-#path	type	mode	nlink	size	link	sha256
-.	dir	700	3	96	-	-
-336eef5b-f5e3-44ad-9f99-4669519fa97a	dir	700	7	224	-	-
-336eef5b-f5e3-44ad-9f99-4669519fa97a/digest.md	file	600	1	1318	-	1205819a15f4f731db35bc267e5be6e0208c37a5203fbd227b096b3ae639875e
-336eef5b-f5e3-44ad-9f99-4669519fa97a/events.jsonl	file	600	1	0	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
-336eef5b-f5e3-44ad-9f99-4669519fa97a/memo.tsv	file	600	1	0	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
-336eef5b-f5e3-44ad-9f99-4669519fa97a/messages	dir	700	2	64	-	-
-336eef5b-f5e3-44ad-9f99-4669519fa97a/meta	file	600	1	671	-	eead4717f8977afad09b141fca5f8f2030deaf0d403a94f449c31572bef01e0d

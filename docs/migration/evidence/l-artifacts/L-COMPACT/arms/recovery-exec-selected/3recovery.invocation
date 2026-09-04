@@ -1,3 +1,0 @@
-executed	VERBATIM, as one shell command, in the arm environment
-command	cd /private/tmp/aelx/L-COMPACT/recovery-exec-selected/w && /tmp/aelx/L-COMPACT/recovery-exec-selected/b/ae --local cp1 --from ed830d55-354c-4e71-b8c9-949f38af8cad
-against	the PRE-RELAUNCH specimen at its own path (the relaunch was cut before it ran)

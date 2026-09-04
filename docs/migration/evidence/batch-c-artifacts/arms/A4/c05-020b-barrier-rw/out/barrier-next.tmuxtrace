@@ -1,3 +1,0 @@
-pid=47668	AE_TMUX_SERVER=/tmp/aecx/arms/A4/c05-020b-barrier-rw/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A4/c05-020b-barrier-rw/live.sock list-sessions -F \#\{session_name\} 
-pid=47681	AE_TMUX_SERVER=/tmp/aecx/arms/A4/c05-020b-barrier-rw/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A4/c05-020b-barrier-rw/live.sock show-environment -t tg2wu AE_SESSION 
-pid=47704	AE_TMUX_SERVER=/tmp/aecx/arms/A4/c05-020b-barrier-rw/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A4/c05-020b-barrier-rw/live.sock list-panes -s -t tg2wu -F $'#{@ae_agent}\t#{pane_current_command}' 

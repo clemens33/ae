@@ -1,3 +1,0 @@
-Usage: interrupt <agent-name|pane-id|@session:agent> [message]
-  Examples: interrupt codex:reviewer
-           interrupt @my-feature:claude:lead "Stop — try a different approach"

@@ -1,7 +1,0 @@
-# tmux snapshot (after-launch)
-d8: 2 windows (created Thu Aug 20 15:32:41 2026)
-rc=0
-%0 d8 claude:claude main claude /dev/ttys071
-%1 d8 _events  fish /dev/ttys079
-rc=0
-rc=0

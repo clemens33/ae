@@ -1,5 +1,0 @@
-pid=88177	AE_TMUX_SERVER=/tmp/aecx/arms/A3/c05-blocked-rw/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A3/c05-blocked-rw/live.sock list-sessions -F \#\{session_name\} 
-pid=88179	AE_TMUX_SERVER=/tmp/aecx/arms/A3/c05-blocked-rw/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A3/c05-blocked-rw/live.sock show-environment -t tg2bl AE_SESSION 
-pid=88182	AE_TMUX_SERVER=/tmp/aecx/arms/A3/c05-blocked-rw/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A3/c05-blocked-rw/live.sock show-environment -t tg2bl 
-pid=88188	AE_TMUX_SERVER=/tmp/aecx/arms/A3/c05-blocked-rw/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A3/c05-blocked-rw/live.sock list-panes -s -t tg2bl -F $'#{@ae_agent}\t#{pane_current_command}' 
-pid=88209	AE_TMUX_SERVER=/tmp/aecx/arms/A3/c05-blocked-rw/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A3/c05-blocked-rw/live.sock show-options -t tg2bl -qv @ae_branch_name 

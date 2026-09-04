@@ -1,5 +1,0 @@
-[1;36m╭─ ae events — session: ta1c ───────────────────────────────╮
-│ date+time (UTC)  action   actor                  → target                 summary
-╰──────────────────────────────────────────────────────────────────────────╯
-[0m
-08-20T16:17:03  recover  _watchdog              → fake:lead              captured codex session id (11111111)

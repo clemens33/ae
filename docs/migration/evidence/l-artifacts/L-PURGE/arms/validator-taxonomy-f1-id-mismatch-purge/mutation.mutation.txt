@@ -1,3 +1,0 @@
-mutation.label	mutation
-mutation.target	/tmp/aelx/L-PURGE/validator-taxonomy-f1-id-mismatch-purge/h/.ae/archive/711a495d-be9e-4f23-bd59-af1a4fa83357/meta
-mutation.description	the archive meta's archive_id value is replaced by a different well-formed uuid, mode preserved

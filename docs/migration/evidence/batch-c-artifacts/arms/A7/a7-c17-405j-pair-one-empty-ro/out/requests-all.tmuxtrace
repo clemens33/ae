@@ -1,4 +1,0 @@
-pid=62020	AE_TMUX_SERVER=/tmp/aecx/arms/A7/a7-c17-405j-pair-one-empty-ro/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/g5/s.sock display-message -p \#\{pane_id\} 
-pid=62023	AE_TMUX_SERVER=/tmp/aecx/arms/A7/a7-c17-405j-pair-one-empty-ro/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/g5/s.sock display-message -p \#\{pane_id\} 
-pid=62026	AE_TMUX_SERVER=/tmp/aecx/arms/A7/a7-c17-405j-pair-one-empty-ro/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/g5/s.sock display-message -p \#\{pane_id\} 
-pid=62027	AE_TMUX_SERVER=/tmp/aecx/arms/A7/a7-c17-405j-pair-one-empty-ro/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/g5/s.sock display-message -p -t '' \#S 

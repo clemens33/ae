@@ -1,8 +1,0 @@
-## HEAD (no branch)
---- log ---
-8b792e7 ae: end session txa-full-run
-e7356e2 seed
---- branches -r ---
-  origin/HEAD -> origin/main
-  origin/ae/txa-full-run
-  origin/main

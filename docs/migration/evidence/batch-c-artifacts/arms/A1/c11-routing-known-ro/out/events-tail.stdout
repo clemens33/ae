@@ -1,8 +1,0 @@
-[1;36m╭─ ae events — session: tg5 ───────────────────────────────╮
-│ date+time (UTC)  action   actor                  → target                 summary
-╰──────────────────────────────────────────────────────────────────────────╯
-[0m
-08-20T16:13:03  ask      fake:lead              → fake:worker            G5 mirror question
-08-20T16:13:04  reply    fake:worker            → fake:lead              G5 mirror answer
-08-20T16:13:05  ask      fake:third             → fake:lead              G5 third-agent question (routing-key donor)
-08-20T16:13:06  review   fake:lead              → fake:worker            G5 review request (second well-formed ref donor)

@@ -1,3 +1,0 @@
-%0 churned:lead2 main b0d7
-%1 churned:worker2 spawned.0 b0d7
-%2 _events  b0d7

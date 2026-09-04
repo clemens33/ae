@@ -1,8 +1,0 @@
-arm	exit-folding-unowned-ae-tagged
-section	L-STOP
-roster_ids	SC-515c
-construction	a tmux session carrying the ae tag but with no session directory is created directly on the recorded server, then ae stop all -y runs
-hook_patch_version	none (frozen, unmodified)
-binary.sha256	b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd
-topology	proj + projx (prefix-sibling pair) + other, one recorded server
-op_rc	1

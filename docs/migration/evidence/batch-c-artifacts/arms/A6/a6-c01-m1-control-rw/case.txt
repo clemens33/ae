@@ -1,6 +1,0 @@
-arm=A6 case=a6-c01-m1-control rows=SC-518 template=G5/m1-control clone_mode=rw session=tg5
-clone_fingerprint=28dc10300e4bb7b260b1e9273cf6bddf2189910ff4e783f4d8eb346436b4cc04 clone_fingerprint_matches_template=yes
-mutation_recorded_at=templates/G5/_meta/m1-control.mutation.txt
-frozen_sha=72c729343a0117af2968b66e1c43f89ad25fc0b2 frozen_ae_sha256=b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd
-utc_start=2026-08-20T19:48:15Z
-manifest_diff_lines=0

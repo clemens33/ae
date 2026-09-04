@@ -1,1 +1,0 @@
-124 (124 = the bounded window closed the infinite loop, by construction)

@@ -1,9 +1,0 @@
-# manifest-root	/Users/ckriech/projects/clemens33/ae-rust/docs/migration/evidence/l-artifacts/L-END/specimens/clean-archive
-#path	type	mode	nlink	size	link	sha256
-.	dir	700	3	96	-	-
-6f750c87-5a5a-4bac-8ec7-d387596bf49b	dir	700	7	224	-	-
-6f750c87-5a5a-4bac-8ec7-d387596bf49b/digest.md	file	600	1	1489	-	be3ca8f69e7d244ac2d4727ee0dbb944e1c817c5234091a8a0f0e35644415e10
-6f750c87-5a5a-4bac-8ec7-d387596bf49b/events.jsonl	file	600	1	0	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
-6f750c87-5a5a-4bac-8ec7-d387596bf49b/memo.tsv	file	600	1	0	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
-6f750c87-5a5a-4bac-8ec7-d387596bf49b/messages	dir	700	2	64	-	-
-6f750c87-5a5a-4bac-8ec7-d387596bf49b/meta	file	600	1	842	-	c747ea49732795d12f895b29d2f63cfff55a9ccebf1ad15ddcc6c2dc289b089d

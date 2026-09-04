@@ -1,4 +1,0 @@
-pid=11982	AE_TMUX_SERVER=/tmp/aecx/arms/A3/c09-524a-future-ts-ordinary-mtime-rw/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/g1/s.sock display-message -p \#\{pane_id\} 
-pid=11991	AE_TMUX_SERVER=/tmp/aecx/arms/A3/c09-524a-future-ts-ordinary-mtime-rw/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/g1/s.sock display-message -p \#\{pane_id\} 
-pid=11995	AE_TMUX_SERVER=/tmp/aecx/arms/A3/c09-524a-future-ts-ordinary-mtime-rw/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/g1/s.sock display-message -p \#\{pane_id\} 
-pid=11996	AE_TMUX_SERVER=/tmp/aecx/arms/A3/c09-524a-future-ts-ordinary-mtime-rw/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/g1/s.sock display-message -p -t '' \#S 

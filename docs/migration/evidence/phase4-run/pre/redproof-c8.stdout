@@ -1,5 +1,0 @@
-neutral            rc=0  clean  (tracked files untouched throughout)
-OMITTED          delta=1   rc=1 ids=OMITTED                caught  (dropped OC-P3-HUMAN-LAYOUT)
-ORPHAN           delta=1   rc=1 ids=ORPHAN                 caught  (added OC-FAKE-ORPHAN)
-restored           rc=0  clean
-RED-PROOF: BOTH DIRECTIONS PROVEN BY NAMED CHECK

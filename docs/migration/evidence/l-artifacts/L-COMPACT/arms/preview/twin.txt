@@ -1,7 +1,0 @@
-twin.construction	a byte copy (cp -Rp) of the FROZEN (stopped) session directory, with exactly TWO named byte diffs
-twin.diff.1	session=cp1 -> session=twin
-twin.diff.2	session_id -> a fresh uuid (two coexisting sessions cannot share one id)
-twin.uuid	76c19da0-9cad-49f5-844d-aaef79f2b65a
-twin.meta.mode.before	644
-twin.meta.mode.after	644
-twin.memory.identical	memo.tsv, events.jsonl and messages/ are the byte copy; see twin-vs-source.manifest.diff

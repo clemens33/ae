@@ -1,7 +1,0 @@
-canary.class	mkdir under the archive root (the write _ar_publish makes for its claim)
-canary.path	/tmp/aelx/L-END/archive-write-inability/h/.ae/archive/.l-canary.15519
-canary.rc	1
-canary.stderr	mkdir: /tmp/aelx/L-END/archive-write-inability/h/.ae/archive/.l-canary.15519: Permission denied
-canary.euid	501
-canary.dir.mode	500
-canary.result	REFUSED

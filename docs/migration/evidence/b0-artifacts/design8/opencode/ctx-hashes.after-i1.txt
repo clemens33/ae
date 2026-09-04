@@ -1,8 +1,0 @@
-# AE_CONTEXT_MATERIAL file hashes (after-i1) 2026-08-20T15:36:20Z
-f6157241d5f2ef7bd6b919fa9d6484b1e1924912fe2ec286d23855e457e9a187  opencode.main.json  86 bytes
-7532306f81df6683c00f967a82021deb58026b39e69c19fb8779e35cdaa22383  opencode.spawned.0.json  91 bytes
-79c637cddf70e6cef9a6f64cc809f3f2b938d9fce4af352539662e7bddcd1550  opencode.main.md  5547 bytes
-8134e22d2497ed032a941b7556b90a086c950bbfa0bb4fe16a2c9771516c4ec0  opencode.spawned.0.md  5477 bytes
-0c1be9be7f26ff07af4600ababeca74dfc6a3032f3bfd074895865cd2f3e37ab  launch.main.sh  307 bytes
-6a958e3a41b27c8076b3f307a0a99304af2a08e26069fe48f182535902ae6b95  launch.spawned.0.sh  312 bytes
-2b06210acf4c63e198012d7124690a9e7654db0655ac6248bc416a0fda0f743b  workspace.md  8946 bytes

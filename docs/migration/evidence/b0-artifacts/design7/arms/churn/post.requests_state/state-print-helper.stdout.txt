@@ -1,1 +1,0 @@
-churned:lead2 state: (none declared)

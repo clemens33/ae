@@ -1,2 +1,0 @@
-{"ts":"2026-08-20T17:42:16Z","actor":"human","action":"stop-request","target":"projx","summary":"[op 09b4af35-1468-4061-a472-96d3545e4104] fleet stop requested (ae stop all)"}
-{"ts":"2026-08-20T17:42:16Z","actor":"human","action":"stop-result","target":"projx","summary":"[op 09b4af35-1468-4061-a472-96d3545e4104] stopped: verified gone on its recorded server"}

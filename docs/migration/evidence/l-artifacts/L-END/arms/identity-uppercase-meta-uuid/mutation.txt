@@ -1,6 +1,0 @@
-mutation	session_id value case-folded a-f -> A-F
-before	ae326a1d-4960-4ab0-9efd-9ee401c2cc29
-after	AE326A1D-4960-4AB0-9EFD-9EE401C2CC29
-writer_shape	temp file + chmod-to-original-mode + rename — only the NAMED bytes change
-mode.before	644
-mode.after	644

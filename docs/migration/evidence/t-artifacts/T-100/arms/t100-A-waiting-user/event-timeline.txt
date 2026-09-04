@@ -1,2 +1,0 @@
-# every nudge and state event, in order
-{"ts":"2026-08-20T19:08:26Z","actor":"grok:grok","action":"state","ref":"waiting-user","summary":"T-100 arm A"}

@@ -1,2 +1,0 @@
-## tmux at the barrier, before the controller mutation
-tg2wu|1

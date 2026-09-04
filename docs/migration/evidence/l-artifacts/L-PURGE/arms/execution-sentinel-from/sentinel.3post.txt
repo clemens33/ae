@@ -1,3 +1,0 @@
-sentinel.path	/tmp/aelx/L-PURGE/execution-sentinel-from/SENTINEL-WAS-EXECUTED
-sentinel.exists	no
-sentinel.bytes	-

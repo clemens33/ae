@@ -1,5 +1,0 @@
-SESSION                   STATUS    MODE        ORIGIN
-tpairstaleoverwaitinguser  running   local       /tmp/aecx/tpl/p_pair-stale-over-waitinguser/work
-  git:master · ae 0.2.1 · active 2m ago · attn:stale
-  fake:high               -         -             
-  fake:low                -         waiting-user  

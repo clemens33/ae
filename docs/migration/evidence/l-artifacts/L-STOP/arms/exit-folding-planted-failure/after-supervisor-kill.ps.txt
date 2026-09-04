@@ -1,8 +1,0 @@
-51616     1 /opt/homebrew/bin/tmux new-session -d -s proj -c /private/tmp/aelx/L-STOP/exit-folding-planted-failure/w
-58490 51510 bash /tmp/aelx/L-STOP/exit-folding-planted-failure/b/ae stop all -y
-52360 51616 /opt/homebrew/bin/bash /tmp/aelx/L-STOP/exit-folding-planted-failure/h/.ae/sessions/proj/events-tail
-52414 51616 /opt/homebrew/bin/bash /tmp/aelx/L-STOP/exit-folding-planted-failure/h/.ae/sessions/proj/watchdog _run
-53119 51616 /opt/homebrew/bin/bash /tmp/aelx/L-STOP/exit-folding-planted-failure/h/.ae/sessions/projx/events-tail
-53173 51616 /opt/homebrew/bin/bash /tmp/aelx/L-STOP/exit-folding-planted-failure/h/.ae/sessions/projx/watchdog _run
-55182 51616 /opt/homebrew/bin/bash /tmp/aelx/L-STOP/exit-folding-planted-failure/h/.ae/sessions/other/events-tail
-55285 51616 /opt/homebrew/bin/bash /tmp/aelx/L-STOP/exit-folding-planted-failure/h/.ae/sessions/other/watchdog _run

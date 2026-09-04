@@ -1,3 +1,0 @@
-argv: /tmp/aeb0/d8/arms/codex/home/.ae/sessions/d8 spawn codex:worker1 <payload i1>
-note: at 72c7293 a FRESH codex receives this body as a POSITIONAL LAUNCH ARGV value;
-      claude/gemini/grok/opencode receive it POST-LAUNCH by paste.

@@ -1,9 +1,0 @@
-=== proj (failure) ===
-- {"ts":"2026-08-20T17:32:57Z","actor":"human","action":"stop-result","target":"projx","summary":"[op c5e1e118-6af4-4cca-8dc7-0979d277140e] FAILED (rc 1): Error: cannot verify session 'projx' (its recorded tmux server is unreachable) — nothing was stopped, state preserved."}
-+ {"ts":"2026-08-20T17:32:57Z","actor":"human","action":"stop-result","target":"proj","summary":"[op ead55934-2d9d-43da-bcfe-fdbe46c878bf] FAILED (rc 1): Error: cannot verify session 'projx' (its recorded tmux server is unreachable) — nothing was stopped, state preserved."}
-=== projx (success) ===
-- {"ts":"2026-08-20T17:30:01Z","actor":"human","action":"stop-result","target":"st2","summary":"[op 7d056b08-cea9-4b3a-bfac-ec1967174ebc] stopped: verified gone on its recorded server"}
-+ {"ts":"2026-08-20T17:30:01Z","actor":"human","action":"stop-result","target":"projx","summary":"[op ead55934-2d9d-43da-bcfe-fdbe46c878bf] stopped: verified gone on its recorded server"}
-=== other (success) ===
-- {"ts":"2026-08-20T17:30:01Z","actor":"human","action":"stop-result","target":"st2","summary":"[op 7d056b08-cea9-4b3a-bfac-ec1967174ebc] stopped: verified gone on its recorded server"}
-+ {"ts":"2026-08-20T17:30:01Z","actor":"human","action":"stop-result","target":"other","summary":"[op ead55934-2d9d-43da-bcfe-fdbe46c878bf] stopped: verified gone on its recorded server"}

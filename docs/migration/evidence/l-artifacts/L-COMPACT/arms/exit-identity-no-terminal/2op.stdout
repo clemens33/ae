@@ -1,5 +1,0 @@
-Archived bb3e4eaa-eae1-4ed6-b97c-40effb369648
-Archive: /tmp/aelx/L-COMPACT/exit-identity-no-terminal/h/.ae/archive/bb3e4eaa-eae1-4ed6-b97c-40effb369648
-Digest: /tmp/aelx/L-COMPACT/exit-identity-no-terminal/h/.ae/archive/bb3e4eaa-eae1-4ed6-b97c-40effb369648/digest.md
-Recovery: cd /private/tmp/aelx/L-COMPACT/exit-identity-no-terminal/w && /tmp/aelx/L-COMPACT/exit-identity-no-terminal/b/ae --local cp1 --from bb3e4eaa-eae1-4ed6-b97c-40effb369648
-Watchdog started in hidden ae-monitor window. Use 'peek _watchdog' or 'peek _events' to inspect.

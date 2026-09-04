@@ -1,1 +1,0 @@
-Error: --pane expects a tmux pane id like %3 (use --pane=#{pane_id}).

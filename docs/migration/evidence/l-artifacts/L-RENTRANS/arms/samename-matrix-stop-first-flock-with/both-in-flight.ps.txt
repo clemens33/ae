@@ -1,7 +1,0 @@
-91834     1 /opt/homebrew/bin/tmux new-session -d -s proj -c /private/tmp/aelx/L-RENTRANS/samename-matrix-stop-first-flock-with/w
-96369 91670 bash /tmp/aelx/L-RENTRANS/samename-matrix-stop-first-flock-with/b/ae stop -y proj
-96986 91670 bash /tmp/aelx/L-RENTRANS/samename-matrix-stop-first-flock-with/b/ae rename proj proj2
-92374 91834 /opt/homebrew/bin/bash /tmp/aelx/L-RENTRANS/samename-matrix-stop-first-flock-with/h/.ae/sessions/proj/events-tail
-92440 91834 /opt/homebrew/bin/bash /tmp/aelx/L-RENTRANS/samename-matrix-stop-first-flock-with/h/.ae/sessions/proj/watchdog _run
-94128 91834 /opt/homebrew/bin/bash /tmp/aelx/L-RENTRANS/samename-matrix-stop-first-flock-with/h/.ae/sessions/projx/events-tail
-94186 91834 /opt/homebrew/bin/bash /tmp/aelx/L-RENTRANS/samename-matrix-stop-first-flock-with/h/.ae/sessions/projx/watchdog _run

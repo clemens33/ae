@@ -1,2 +1,0 @@
-consumer	rc	stdout_sha256	stdout_bytes	stderr_sha256	stderr_bytes	tmuxtrace_sha256	tmuxtrace_lines	bounded	argv
-clean-rerun-status	0	0cac2176a17d21767e90253f096a402e2c5f150a2331a494f17fd64387569586	705	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855	0	b49ab54611a87487b95f445612b418b51f0b0cd27b9eb7cdcd6cafa511786f19	5	-	/opt/homebrew/bin/bash /private/tmp/claude-501/-Users-ckriech-projects-clemens33-ae-rust/347d2089-7268-421d-8188-8924e246bbf0/scratchpad/frozen/ae status td04apretwi 

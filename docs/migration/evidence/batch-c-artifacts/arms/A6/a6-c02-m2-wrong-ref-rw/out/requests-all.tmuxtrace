@@ -1,4 +1,0 @@
-pid=42915	AE_TMUX_SERVER=/tmp/aecx/arms/A6/a6-c02-m2-wrong-ref-rw/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/g5/s.sock display-message -p \#\{pane_id\} 
-pid=42928	AE_TMUX_SERVER=/tmp/aecx/arms/A6/a6-c02-m2-wrong-ref-rw/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/g5/s.sock display-message -p \#\{pane_id\} 
-pid=42936	AE_TMUX_SERVER=/tmp/aecx/arms/A6/a6-c02-m2-wrong-ref-rw/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/g5/s.sock display-message -p \#\{pane_id\} 
-pid=42940	AE_TMUX_SERVER=/tmp/aecx/arms/A6/a6-c02-m2-wrong-ref-rw/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/g5/s.sock display-message -p -t '' \#S 

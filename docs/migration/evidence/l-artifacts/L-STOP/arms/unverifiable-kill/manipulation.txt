@@ -1,4 +1,0 @@
-manipulation	the directory holding the recorded tmux socket is removed; the server process is left running
-recorded_socket	/private/tmp/aelx/L-STOP/unverifiable-kill/t/tmux-501/default
-server_pid	71738
-server_alive_after	yes

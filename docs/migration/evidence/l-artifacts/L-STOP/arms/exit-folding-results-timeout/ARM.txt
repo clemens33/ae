@@ -1,9 +1,0 @@
-arm	exit-folding-results-timeout
-section	L-STOP
-roster_ids	SC-515b
-construction	ae stop all -y runs over three sessions; the detached supervisor is held at its entry barrier and killed so no per-target record is ever written, and nothing is planted. The caller's bounded wait therefore reaches its bound
-hook_patch_version	L-HOOKS-v2
-binary.sha256	4cc428e955a1e390bdb7afb6f71e4ce86847b4b5cf98e7f8a45599401378f845
-topology	proj + projx (prefix-sibling pair) + other, one recorded server
-op_rc	0
-bound	the frozen bound is the literal 30 passed at 72c7293 ae:6612 (_stop_fleet_await ... 30); there is no environment knob for it, so this arm runs the REAL bound rather than a shortened one — recorded as a deviation from the design's wording, not as a shortened bound

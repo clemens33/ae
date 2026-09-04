@@ -1,9 +1,0 @@
-source.generated_watchdog	/tmp/aelx/T-100/t100-C-blocked/h/.ae/sessions/t1/watchdog
-source.generated_lib	/tmp/aelx/T-100/t100-C-blocked/h/.ae/sessions/t1/_lib
-source.watchdog.sha256	d84a15e45271d9ea64fb4f188c0be59f7be2c898c95e18b4ec3b46e25de06cc1
-source.lib.sha256	91da0d9b5bcd6d3c8abcd5c974fe7be0c63a329ba5971cbbb57b6fd8e71a2d40
-extract.sha256	96315e4eb3ec56fc71b4e04366f7a13b4650f44022b950e0fa021d8b283eb4de
-extract.functions	2
-md5.source	the session own generated _lib is SOURCED (not extracted), exactly as the watchdog prologue sources it, so _ae_md5 is the real one
-note	the scrubber and the capture range are the bytes the RUNNING watchdog uses, extracted from the generated artifact — never a reimplementation
-extraction.locale	LC_ALL=C for the awk extraction only; the arm runtime locale is the pinned UTF-8

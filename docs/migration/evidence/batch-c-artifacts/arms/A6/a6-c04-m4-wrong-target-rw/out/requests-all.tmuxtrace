@@ -1,4 +1,0 @@
-pid=51430	AE_TMUX_SERVER=/tmp/aecx/arms/A6/a6-c04-m4-wrong-target-rw/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/g5/s.sock display-message -p \#\{pane_id\} 
-pid=51451	AE_TMUX_SERVER=/tmp/aecx/arms/A6/a6-c04-m4-wrong-target-rw/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/g5/s.sock display-message -p \#\{pane_id\} 
-pid=51465	AE_TMUX_SERVER=/tmp/aecx/arms/A6/a6-c04-m4-wrong-target-rw/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/g5/s.sock display-message -p \#\{pane_id\} 
-pid=51478	AE_TMUX_SERVER=/tmp/aecx/arms/A6/a6-c04-m4-wrong-target-rw/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/g5/s.sock display-message -p -t '' \#S 

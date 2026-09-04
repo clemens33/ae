@@ -1,6 +1,0 @@
-Archived 7197bf57-c4d6-4bfe-94d0-23f2ae3280af
-Archive: /tmp/aelx/L-COMPACT/exit-identity-terminal-attach/h/.ae/archive/7197bf57-c4d6-4bfe-94d0-23f2ae3280af
-Digest: /tmp/aelx/L-COMPACT/exit-identity-terminal-attach/h/.ae/archive/7197bf57-c4d6-4bfe-94d0-23f2ae3280af/digest.md
-Recovery: cd /private/tmp/aelx/L-COMPACT/exit-identity-terminal-attach/w && /tmp/aelx/L-COMPACT/exit-identity-terminal-attach/b/ae --local cp1 --from 7197bf57-c4d6-4bfe-94d0-23f2ae3280af
-Watchdog started in hidden ae-monitor window. Use 'peek _watchdog' or 'peek _events' to inspect.
-[detached (from session cp1)]

@@ -1,1 +1,0 @@
-target.shape	a STOPPED session: its state directory is on disk, its tmux session is gone

@@ -1,2 +1,0 @@
-{"ts":"2026-08-20T17:38:59Z","actor":"human","action":"stop-request","target":"leg'\"$(touch SENTINEL_TOUCHED)\"'x","summary":"self-stop requested from inside the session"}
-{"ts":"2026-08-20T17:38:59Z","actor":"human","action":"stop-result","target":"leg'\"$(touch SENTINEL_TOUCHED)\"'x","summary":"stopped: verified gone on its recorded server"}

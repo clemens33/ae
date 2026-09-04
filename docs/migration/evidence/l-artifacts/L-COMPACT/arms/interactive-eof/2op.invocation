@@ -1,7 +1,0 @@
-cwd: /tmp/aelx/L-COMPACT/interactive-eof/w
-argv:
-  /tmp/aelx/L-COMPACT/interactive-eof/b/ae
-  compact
-  --digest-only
-  cp1
-stdin: /dev/null (closed by the controller — end of input, no terminal)

@@ -1,4 +1,0 @@
-note: parent archive 22685cdf-baa8-48ae-b493-bbe00cbb7a01 is no longer on this machine — the lineage is recorded, but its digest cannot be read.
-Error: parent archive 22685cdf-baa8-48ae-b493-bbe00cbb7a01 stopped validating while this session was being created.
-ae: launch failed — rolling back 'child'.
-ae: session state removed — this launch created it; nothing left to reattach to.

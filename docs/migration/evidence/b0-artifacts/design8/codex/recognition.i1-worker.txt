@@ -1,3 +1,0 @@
-FAKE-RECOGNITION PREREQUISITE (i1-worker)
-pane=%2 intended_tool=codex pane_current_command=codex
-positively_identifies_as_intended_tool=yes

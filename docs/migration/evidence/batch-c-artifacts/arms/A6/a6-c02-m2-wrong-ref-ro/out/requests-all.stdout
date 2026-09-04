@@ -1,4 +1,0 @@
-STATUS   TYPE     ID                           FROM                 TO                   SUMMARY
-pending  ask      ae-20260820T161302Z-c2c01848 fake:lead            fake:worker          G5 mirror question
-pending  ask      ae-20260820T161304Z-be61f143 fake:third           fake:lead            G5 third-agent question (routing-key donor)
-replied  review   review-20260820T161305Z-dc302d09 fake:lead            fake:worker          G5 mirror answer

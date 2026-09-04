@@ -1,2 +1,0 @@
-pid=29457 ppid=29453 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5pid=29458 ppid=29454 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/identity-c4-pane-in-other-session/t/tmux-501/default> <-S> <list-sessions> </private/tmp/aelx/L-STOP/identity-c4-pane-in-other-session/t/tmux-501/default> <-F> <list-sessions> <#{session_id} #{session_name}> <-F>
- <#{session_id} #{session_name}>

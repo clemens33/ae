@@ -1,1 +1,0 @@
-error connecting to /tmp/aecx/arms/A1/c14-display-only-legacy-ro/none.sock (No such file or directory)

@@ -1,7 +1,0 @@
-[1;36m╭─ ae events — session: tg10 ───────────────────────────────╮
-│ date+time (UTC)  action   actor                  → target                 summary
-╰──────────────────────────────────────────────────────────────────────────╯
-[0m
-08-20T16:14:39  spawn    fake:lead              → fake:lead              second holder of the display name
-08-20T16:14:40  ask      fake:lead              → fake:worker            G10 question from the main-slot holder of the display name
-08-20T16:14:41  ask      fake:lead              → fake:worker            G10 question from the spawned-slot holder of the same dis...

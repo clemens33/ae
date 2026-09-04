@@ -1,3 +1,0 @@
-{"ts":"2026-08-20T19:35:41Z","actor":"grok:grok","action":"memo","ref":"handover","summary":"discriminator fixture handover entry 1"}
-{"ts":"2026-08-20T19:35:42Z","actor":"grok:grok","action":"memo","ref":"handover","summary":"discriminator fixture handover entry 2"}
-{"ts":"2026-08-20T19:35:44Z","actor":"grok:grok","action":"ask","target":"grok:grok","ref":"ae-20260820T193543Z-36e6d03c","actor_slot":"main","actor_session":"p1","target_slot":"main","target_session":"p1","summary":"discriminator fixture question 1","body_file":"/tmp/aelx/L-DISCRIM/D1-parent-tuple-recorded-not-reread/h/.ae/sessions/p1/messages/ae-20260820T193543Z-36e6d03c.ask.1e6t1o.txt"}

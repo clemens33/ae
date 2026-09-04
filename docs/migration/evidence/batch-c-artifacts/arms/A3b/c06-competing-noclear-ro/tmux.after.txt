@@ -1,7 +1,0 @@
-## panes
-tcompetingnoclear|%0|fake:high|main|aefake
-tcompetingnoclear|%3|fake:asker|worker.2|aefake
-tcompetingnoclear|%2|fake:third|worker.1|aefake
-tcompetingnoclear|%1|fake:low|worker.0|aefake
-## sessions
-tcompetingnoclear|1

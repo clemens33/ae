@@ -1,5 +1,0 @@
-Usage: say <text>          # push a free-text line to the Telegram chat
-       echo "text" | say   # multi-line / long replies via stdin
-
-Emits a `chat` event the telegram bridge forwards. Requires the bridge running
-with `chat` in its [telegram] include filter (see `ae telegram status`).

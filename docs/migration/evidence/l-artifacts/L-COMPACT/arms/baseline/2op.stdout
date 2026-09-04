@@ -1,5 +1,0 @@
-Archived bdaead9e-9041-4e87-937f-9b6cac6ace9d
-Archive: /tmp/aelx/L-COMPACT/baseline/h/.ae/archive/bdaead9e-9041-4e87-937f-9b6cac6ace9d
-Digest: /tmp/aelx/L-COMPACT/baseline/h/.ae/archive/bdaead9e-9041-4e87-937f-9b6cac6ace9d/digest.md
-Recovery: cd /private/tmp/aelx/L-COMPACT/baseline/w && /tmp/aelx/L-COMPACT/baseline/b/ae --local cp1 --from bdaead9e-9041-4e87-937f-9b6cac6ace9d
-Watchdog started in hidden ae-monitor window. Use 'peek _watchdog' or 'peek _events' to inspect.

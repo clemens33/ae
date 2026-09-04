@@ -1,3 +1,0 @@
-controller.action	parent archive meta handover_count 0 -> 7 (temp+rename, ORIGINAL MODE PRESERVED — only the named bytes change)
-controller.barrier	b_from_proved.42682.1
-controller.target	/tmp/aelx/L-END/compact-relaunch-lock-parent-mutated/h/.ae/archive/3a9baa20-abca-42ff-969f-2f22493af530/meta

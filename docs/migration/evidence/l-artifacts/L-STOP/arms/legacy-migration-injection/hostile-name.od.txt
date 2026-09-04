@@ -1,5 +1,0 @@
-hostile.name.bytes (od -c)
-0000000    l   e   g   '   "   $   (   t   o   u   c   h       S   E   N
-0000020    T   I   N   E   L   _   T   O   U   C   H   E   D   )   "   '
-0000040    x                                                            
-0000041

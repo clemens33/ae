@@ -1,3 +1,0 @@
-mutation.label	mutation
-mutation.target	/tmp/aelx/L-PURGE/claim/h/.ae/archive/.publishing.9f281764-2521-4d56-ad15-d80412083095
-mutation.description	a .publishing.<uuid> claim directory for this archive's own uuid is created mode 0700 under the archive root

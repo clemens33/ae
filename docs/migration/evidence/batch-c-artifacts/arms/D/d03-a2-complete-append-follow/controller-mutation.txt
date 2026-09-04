@@ -1,4 +1,0 @@
-mutation=append ONE real harvested complete event
-payload=_d03-payloads/append-sentinel.jsonl sha256=5b67427c19842d5e8069766f69d1815aeeb0f88ba7d23591f42f9c7a7936ba92 bytes=110
-events size before=3348
-events size after=3458

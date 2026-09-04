@@ -1,6 +1,0 @@
-mutation step 1=write a PARTIAL producer-derived line with NO terminating newline
-full_line_bytes=109 partial_bytes=84 (the last 25 bytes withheld)
-events size before=3348
-events size after the partial write=3432
-mutation step 2=write the withheld remainder AND the terminating newline
-events size after the terminating write=3458

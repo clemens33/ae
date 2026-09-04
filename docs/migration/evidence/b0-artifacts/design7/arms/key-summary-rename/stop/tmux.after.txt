@@ -1,9 +1,0 @@
-# tmux snapshot (after) server -L d7bebb126873
-no server running on /private/tmp/aeb0/d7/arms/key-summary-rename/stop/tmuxtmp/tmux-501/d7bebb126873
-list-sessions rc=1
-no server running on /private/tmp/aeb0/d7/arms/key-summary-rename/stop/tmuxtmp/tmux-501/d7bebb126873
-list-windows rc=1
-no server running on /private/tmp/aeb0/d7/arms/key-summary-rename/stop/tmuxtmp/tmux-501/d7bebb126873
-list-panes rc=1
-no server running on /private/tmp/aeb0/d7/arms/key-summary-rename/stop/tmuxtmp/tmux-501/d7bebb126873
-list-clients rc=1

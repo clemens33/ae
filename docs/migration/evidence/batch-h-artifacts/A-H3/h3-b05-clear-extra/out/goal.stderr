@@ -1,3 +1,0 @@
-Usage: goal            # show the session goal
-       goal <text>     # set it (one line)
-       goal --clear    # remove it

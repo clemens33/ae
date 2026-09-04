@@ -1,4 +1,0 @@
-pid=82048	AE_TMUX_SERVER=/tmp/aecx/arms/A3/c04-waiting-user-ro/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/g2wu/s.sock display-message -p \#\{pane_id\} 
-pid=82054	AE_TMUX_SERVER=/tmp/aecx/arms/A3/c04-waiting-user-ro/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/g2wu/s.sock display-message -p \#\{pane_id\} 
-pid=82060	AE_TMUX_SERVER=/tmp/aecx/arms/A3/c04-waiting-user-ro/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/g2wu/s.sock display-message -p \#\{pane_id\} 
-pid=82064	AE_TMUX_SERVER=/tmp/aecx/arms/A3/c04-waiting-user-ro/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/g2wu/s.sock display-message -p -t '' \#S 

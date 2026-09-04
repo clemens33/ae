@@ -1,7 +1,0 @@
-label=obs-c1
-epoch=1787238020
-utc=2026-08-20T15:00:20Z
-pgrep_aefake=
-events_lines=1
-events_bytes=141
-wd_log_bytes=824

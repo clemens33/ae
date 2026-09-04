@@ -1,9 +1,0 @@
-# manifest-root	/tmp/aelx/L-PURGE/validator-taxonomy-a-unexpected-entry-from/h/.ae/archive
-#path	type	mode	nlink	size	link	sha256
-.	dir	700	3	96	-	-
-.publishing.9cfbc2e1-2228-4a62-966f-6ef14cfc4048	dir	700	3	96	-	-
-.publishing.9cfbc2e1-2228-4a62-966f-6ef14cfc4048/payload	dir	700	6	192	-	-
-.publishing.9cfbc2e1-2228-4a62-966f-6ef14cfc4048/payload/events.jsonl	file	600	1	0	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
-.publishing.9cfbc2e1-2228-4a62-966f-6ef14cfc4048/payload/memo.tsv	file	600	1	0	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
-.publishing.9cfbc2e1-2228-4a62-966f-6ef14cfc4048/payload/messages	dir	700	2	64	-	-
-.publishing.9cfbc2e1-2228-4a62-966f-6ef14cfc4048/payload/meta	file	600	1	675	-	c82f317d520eea4fb72c0163dd569b385ee471106dbfebc9b1b76e0dbdbcc6d8

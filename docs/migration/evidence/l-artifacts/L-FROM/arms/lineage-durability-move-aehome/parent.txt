@@ -1,2 +1,0 @@
-parent.name	par
-parent.uuid	9a325c6e-8f5c-4cfa-9591-69372cd9cab6

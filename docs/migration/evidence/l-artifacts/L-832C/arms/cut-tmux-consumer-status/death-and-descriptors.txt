@@ -1,8 +1,0 @@
-subject.pid	7801
-subject.alive	no
-any.remaining.sandbox.process
-  (none)
-lock.reacquirable	.lifecycle.proj.lock	YES
-lock.reacquirable	.lifecycle.proj2.lock	YES
-lock.reacquirable	.lifecycle.projx.lock	YES
-precondition.met	YES

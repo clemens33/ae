@@ -1,4 +1,0 @@
-pid=23835	AE_TMUX_SERVER=/tmp/aecx/arms/A1/c04-empty-vs-omitted-rw/none.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/a1510b/s.sock display-message -p \#\{pane_id\} 
-pid=23838	AE_TMUX_SERVER=/tmp/aecx/arms/A1/c04-empty-vs-omitted-rw/none.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/a1510b/s.sock display-message -p \#\{pane_id\} 
-pid=23841	AE_TMUX_SERVER=/tmp/aecx/arms/A1/c04-empty-vs-omitted-rw/none.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/a1510b/s.sock display-message -p \#\{pane_id\} 
-pid=23848	AE_TMUX_SERVER=/tmp/aecx/arms/A1/c04-empty-vs-omitted-rw/none.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/a1510b/s.sock display-message -p -t '' \#S 

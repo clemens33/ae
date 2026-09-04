@@ -1,7 +1,0 @@
-[agents]
-fake = "/tmp/aecx/bin/aefake"
-
-[workspace]
-main = fake:probe
-layout = vertical
-watchdog = true

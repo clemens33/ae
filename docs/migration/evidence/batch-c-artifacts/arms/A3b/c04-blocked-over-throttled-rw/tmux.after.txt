@@ -1,5 +1,0 @@
-## panes
-tpairblockedoverthrottled|%0|fake:high|main|aefake
-tpairblockedoverthrottled|%1|fake:low|worker.0|aefake
-## sessions
-tpairblockedoverthrottled|1

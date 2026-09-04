@@ -1,2 +1,0 @@
-interrupt.method	SIGKILL to the whole compact process tree, AFTER the handover request was published
-interrupt.request_ref	ae-20260820T180219Z-64ea1b5f

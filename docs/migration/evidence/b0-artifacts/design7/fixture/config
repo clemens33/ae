@@ -1,9 +1,0 @@
-[agents]
-dummy = "bash"
-dummy2 = "bash"
-dummy3 = "bash"
-
-[workspace]
-main = dummy
-layout = vertical
-watchdog = false

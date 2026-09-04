@@ -1,3 +1,0 @@
-mutation.label	mutation
-mutation.target	/tmp/aelx/L-PURGE/validator-taxonomy-e2-exec-group-from/h/.ae/archive/4fa37f1c-13ed-4c8d-b161-59123965fc52/digest.md
-mutation.description	the archive member digest.md gains the GROUP executable bit (0600 -> 0610)

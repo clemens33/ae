@@ -1,2 +1,0 @@
-controller killed tmux session ae-telegram (ae telegram stop rc=1)
-controller removed telegram/daemon.lock and control.lock before the bounded cycle

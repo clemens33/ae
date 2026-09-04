@@ -1,4 +1,0 @@
-churn applied BEFORE the consumers ran:
-  tmux set-option -p -t %0 @ae_agent churned:lead2
-  tmux set-option -p -t %1 @ae_agent churned:worker2
-  @ae_slot and the session name are NOT touched

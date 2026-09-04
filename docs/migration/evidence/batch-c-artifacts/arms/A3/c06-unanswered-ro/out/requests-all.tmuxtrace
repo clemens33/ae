@@ -1,4 +1,0 @@
-pid=91114	AE_TMUX_SERVER=/tmp/aecx/arms/A3/c06-unanswered-ro/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/g2un/s.sock display-message -p \#\{pane_id\} 
-pid=91119	AE_TMUX_SERVER=/tmp/aecx/arms/A3/c06-unanswered-ro/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/g2un/s.sock display-message -p \#\{pane_id\} 
-pid=91122	AE_TMUX_SERVER=/tmp/aecx/arms/A3/c06-unanswered-ro/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/g2un/s.sock display-message -p \#\{pane_id\} 
-pid=91123	AE_TMUX_SERVER=/tmp/aecx/arms/A3/c06-unanswered-ro/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/g2un/s.sock display-message -p -t '' \#S 

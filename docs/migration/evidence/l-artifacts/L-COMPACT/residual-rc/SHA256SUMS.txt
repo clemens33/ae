@@ -1,4 +1,0 @@
-# verify from: this directory  (shasum -a 256 -c SHA256SUMS.txt)
-# this listing EXCLUDES itself; a file cannot carry its own hash
-702e47a099b6686546a0c9025e9cd4c6a435fae4152f81954156fff3b2de2ab5  ./ARM.txt
-34c29ca33d0064c062f9ef070bc2f424d8162c4682419c4fd54aa5d36f9b39ca  ./rc-table.tsv

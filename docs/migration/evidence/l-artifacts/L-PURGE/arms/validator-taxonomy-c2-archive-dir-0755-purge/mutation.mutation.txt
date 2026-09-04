@@ -1,3 +1,0 @@
-mutation.label	mutation
-mutation.target	/tmp/aelx/L-PURGE/validator-taxonomy-c2-archive-dir-0755-purge/h/.ae/archive/b0b022c3-e18b-443a-aa1f-10b5c6836cfb/.
-mutation.description	the archive directory's own mode is changed 0700 -> 0755

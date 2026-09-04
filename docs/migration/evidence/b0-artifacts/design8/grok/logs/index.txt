@@ -1,3 +1,0 @@
-grok.35858	pid=35858	tool=grok	started=2026-08-20T15:35:25Z
-grok.38326	pid=38326	tool=grok	started=2026-08-20T15:35:31Z
-grok.47929	pid=47929	tool=grok	started=2026-08-20T15:35:54Z

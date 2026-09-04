@@ -1,3 +1,0 @@
-codex.92792	pid=92792	tool=codex	started=2026-08-20T15:33:40Z
-codex.95566	pid=95566	tool=codex	started=2026-08-20T15:33:46Z
-codex.16003	pid=16003	tool=codex	started=2026-08-20T15:34:36Z

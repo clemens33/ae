@@ -1,3 +1,0 @@
-Error: session 'proj2' has no positive server record — ae cannot tell which tmux server owns it, and will not guess.
-  Resolve: 'ae doctor --refresh proj2', or AE_END_SERVER='<name|/socket/path>' ae stop proj2
-  Nothing was stopped; state preserved.

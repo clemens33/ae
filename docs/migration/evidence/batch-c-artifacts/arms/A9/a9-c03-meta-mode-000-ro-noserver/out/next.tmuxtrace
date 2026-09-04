@@ -1,1 +1,0 @@
-pid=75191	AE_TMUX_SERVER=<unset>	AE_TMUX_SERVER_KIND=<unset>	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=list-sessions -F \#\{session_name\} 

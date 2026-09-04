@@ -1,9 +1,0 @@
-# tmux snapshot (after) server -L d723d8888263
-error connecting to /private/tmp/aeb0/d7/arms/ext-body_file-remove/archive/tmuxtmp/tmux-501/d723d8888263 (No such file or directory)
-list-sessions rc=1
-error connecting to /private/tmp/aeb0/d7/arms/ext-body_file-remove/archive/tmuxtmp/tmux-501/d723d8888263 (No such file or directory)
-list-windows rc=1
-error connecting to /private/tmp/aeb0/d7/arms/ext-body_file-remove/archive/tmuxtmp/tmux-501/d723d8888263 (No such file or directory)
-list-panes rc=1
-error connecting to /private/tmp/aeb0/d7/arms/ext-body_file-remove/archive/tmuxtmp/tmux-501/d723d8888263 (No such file or directory)
-list-clients rc=1

@@ -1,2 +1,0 @@
-## processes under this fixture's AE_HOME at teardown
-(none)

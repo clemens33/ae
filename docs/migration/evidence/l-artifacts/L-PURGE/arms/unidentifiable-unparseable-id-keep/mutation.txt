@@ -1,4 +1,0 @@
-mutation	the session meta session_id value is replaced by an UNPARSEABLE token (not-a-uuid--0000), temp + chmod-to-original-mode + rename
-mutation.mode.before	644
-mutation.mode.after	644
-distinct_from	the legacy MISSING-session_id mint path (SC-826) — the key is PRESENT here, its value is unparseable

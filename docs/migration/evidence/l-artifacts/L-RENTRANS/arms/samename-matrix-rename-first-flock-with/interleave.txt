@@ -1,2 +1,0 @@
-first.barrier	b_rn_locked_entry.74103.1
-second.op	ae stop -y proj (the SAME name, while the rename is held at its barrier)

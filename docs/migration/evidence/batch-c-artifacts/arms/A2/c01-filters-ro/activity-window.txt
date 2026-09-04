@@ -1,5 +1,0 @@
-## activity-window specimens
-tg1_events_mtime_epoch=1787243307 utc=2026-08-20T16:28:27Z
-inside_window_now=1787243367  (mtime + 60s; the documented default window is 300s)
-outside_window_now=1787343307 (mtime + 100000s)
-clock frozen by the PATH-first date shim; every non-now-form still delegates

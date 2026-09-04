@@ -1,2 +1,0 @@
-fake.58533	pid=58533	tool=fake	started=2026-08-20T17:37:37Z
-fake.59425	pid=59425	tool=fake	started=2026-08-20T17:37:41Z

@@ -1,4 +1,0 @@
-preflight.result	BLOCKED
-push.rc	1
-pull.rc	1
-rule	the design makes this preflight BLOCKING: unless BOTH directions complete, no L-RENTRANS arm may run and the section is reported INCONCLUSIVE/BLOCKED. No semantic ssh or rsync fake is substituted, ever.

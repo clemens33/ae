@@ -1,6 +1,0 @@
-## sessions
-ta7g
-## panes
-ta7g|%0|fake:lead
-## @ae_branch_name
-TMUX-OPTION-BRANCH-VALUE

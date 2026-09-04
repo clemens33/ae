@@ -1,5 +1,0 @@
-planted_events=30
-planted_lines=30  # must equal planted_events
-rendered_lines=30
-first_rendered=REPLAY-001-OF-30
-last_rendered=REPLAY-030-OF-30

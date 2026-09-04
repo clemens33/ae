@@ -1,8 +1,0 @@
-arm=control
-op=none
-key=
-extra=
-where=
-families=list_next watchdog requests_state archive events_tail telegram aewatch compact stop
-started=2026-08-20T15:24:38Z
-finished=2026-08-20T15:26:36Z

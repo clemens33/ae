@@ -1,4 +1,0 @@
-pid=87321	AE_TMUX_SERVER=/tmp/aecx/arms/A3/c05-blocked-ro/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A3/c05-blocked-ro/live.sock has-session -t tg2bl 
-pid=87322	AE_TMUX_SERVER=/tmp/aecx/arms/A3/c05-blocked-ro/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A3/c05-blocked-ro/live.sock list-panes -s -t tg2bl -F $'#{pane_id}\t#{@ae_agent}' 
-pid=87325	AE_TMUX_SERVER=/tmp/aecx/arms/A3/c05-blocked-ro/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A3/c05-blocked-ro/live.sock capture-pane -t %0 -p 
-pid=87329	AE_TMUX_SERVER=/tmp/aecx/arms/A3/c05-blocked-ro/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A3/c05-blocked-ro/live.sock capture-pane -t %1 -p 

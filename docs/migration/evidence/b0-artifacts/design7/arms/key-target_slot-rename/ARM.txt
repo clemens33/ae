@@ -1,8 +1,0 @@
-arm=key-target_slot-rename
-op=rename
-key=target_slot
-extra=target_slot_x
-where=
-families=requests_state archive
-started=2026-08-20T15:35:32Z
-finished=2026-08-20T15:35:43Z

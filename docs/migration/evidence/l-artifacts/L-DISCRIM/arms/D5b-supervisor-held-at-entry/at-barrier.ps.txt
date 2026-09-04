@@ -1,4 +1,0 @@
-44014     1 44014 ??       Ss   /opt/homebrew/bin/tmux new-session -d -s s1 -c /private/tmp/aelx/L-DISCRIM/D5b-supervisor-held-at-entry/w
-45547 44014 45547 ttys065  Ss+  /opt/homebrew/bin/bash /tmp/aelx/L-DISCRIM/D5b-supervisor-held-at-entry/h/.ae/sessions/s1/events-tail
-45716 44014 45716 ttys069  Ss+  /opt/homebrew/bin/bash /tmp/aelx/L-DISCRIM/D5b-supervisor-held-at-entry/h/.ae/sessions/s1/watchdog _run
-48880     1 48811 ttys071  S    /opt/homebrew/bin/bash /tmp/aelx/L-DISCRIM/D5b-supervisor-held-at-entry/b/ae _stop-supervisor s1

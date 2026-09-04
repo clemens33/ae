@@ -1,3 +1,0 @@
-consumer	rc	stdout_sha256	stdout_bytes	stderr_sha256	stderr_bytes	tmuxtrace_sha256	tmuxtrace_lines	bounded	argv
-baseline-requests	0	27a1552a6293dbc53142608f31d47758ce38b98f1107611bf2c2218fc6037bc0	199	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855	0	70e333f1aa9d0c7656be7ba8e7dd120eb9e3a66f9d6b0331947bf5a8f57d8e50	4	-	/tmp/aecx/arms/D/d02-controller-only-twin/home/.ae/sessions/td02/requests all 
-clean-rerun-requests	0	f6fb63748a15d7889a030db97bd263d9504b7298c59fb8e9d9c9d21dcba82016	212	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855	0	2401eb42c090753d88011de259a22bf32737c921c243d1d219d97ffeff0fac04	4	-	/tmp/aecx/arms/D/d02-controller-only-twin/home/.ae/sessions/td02/requests all 

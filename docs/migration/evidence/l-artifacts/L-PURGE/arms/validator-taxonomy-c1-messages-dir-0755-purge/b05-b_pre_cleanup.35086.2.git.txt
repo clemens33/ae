@@ -1,6 +1,0 @@
-## main...origin/main
---- log ---
-7b4783b seed
---- branches -r ---
-  origin/HEAD -> origin/main
-  origin/main

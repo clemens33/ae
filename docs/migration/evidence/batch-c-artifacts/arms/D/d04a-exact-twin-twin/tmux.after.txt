@@ -1,6 +1,0 @@
-## sessions
-td04aexatwi|3
-## panes
-td04aexatwi|%1|fake:worker|aefake
-td04aexatwi|%3|fake:added-after-the-cut|aefake
-td04aexatwi|%2|_events|bash

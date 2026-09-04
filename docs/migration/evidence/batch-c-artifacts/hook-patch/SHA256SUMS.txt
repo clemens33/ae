@@ -1,6 +1,0 @@
-# sha256 checksums for the files in THIS directory, paths relative to it.
-# verify with:  cd hook-patch && shasum -a 256 -c SHA256SUMS.txt
-# this file is deliberately NOT listed in itself.
-a252a7497280da2c1670f7d08b3eaa65d15b5a4c9369f04fa92f0a3d317b43e0  ./hook.patch
-2d6a83b0e90d81f7233a83588be328fb585b012e80c0c667dd4af8be7ca04414  ./make-hook-patch.py
-1ad2a006b216ee3e6362125d4d4d192041193e7408741141f7d8f6f5bf4f9f2d  ./README.txt

@@ -1,2 +1,0 @@
-archive: '/tmp/aelx/L-PURGE/validator-taxonomy-c2-archive-dir-0755-from/h/.ae/archive/ff81f990-2750-4f3e-aff5-56cf52961d7b' has mode 755, expected 700.
-Error: archive ff81f990-2750-4f3e-aff5-56cf52961d7b did not validate — refusing to inherit from it.

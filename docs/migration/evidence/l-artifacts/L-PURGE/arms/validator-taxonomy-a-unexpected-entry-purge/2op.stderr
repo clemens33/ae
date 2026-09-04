@@ -1,3 +1,0 @@
-archive: '/tmp/aelx/L-PURGE/validator-taxonomy-a-unexpected-entry-purge/h/.ae/archive/695769c4-3ef4-4085-b6ec-d49057426ebb' does not validate as an ae archive — refusing to delete it.
-  Inspect it and remove it by hand if that is what you want.
-Error: purging the archive for 'pg' failed — the session is STOPPED and nothing was deleted.

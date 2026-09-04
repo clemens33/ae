@@ -1,6 +1,0 @@
-To file:///tmp/aelx/L-END/claim/o.git
- * [new branch]      HEAD -> ae/cl
-archive: another publisher holds /tmp/aelx/L-END/claim/h/.ae/archive/.publishing.8f4a3aae-7318-4063-8b64-407f39a61769 (or a previous run crashed holding it).
-  ae will not guess-clean it. Inspect it, then remove it by hand if it is stale.
-Error: archiving session 'cl' failed — the session is STOPPED and NOTHING was deleted.
-  Fix the cause reported above, then re-run: ae end cl

@@ -1,9 +1,0 @@
-# tmux snapshot (after) server -L d7929748cd79
-no server running on /private/tmp/aeb0/d7/arms/additive-first/stop/tmuxtmp/tmux-501/d7929748cd79
-list-sessions rc=1
-no server running on /private/tmp/aeb0/d7/arms/additive-first/stop/tmuxtmp/tmux-501/d7929748cd79
-list-windows rc=1
-no server running on /private/tmp/aeb0/d7/arms/additive-first/stop/tmuxtmp/tmux-501/d7929748cd79
-list-panes rc=1
-no server running on /private/tmp/aeb0/d7/arms/additive-first/stop/tmuxtmp/tmux-501/d7929748cd79
-list-clients rc=1

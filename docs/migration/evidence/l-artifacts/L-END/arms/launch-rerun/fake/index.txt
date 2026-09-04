@@ -1,4 +1,0 @@
-fake.13698	pid=13698	tool=fake	started=2026-08-20T16:45:50Z
-fake.14070	pid=14070	tool=fake	started=2026-08-20T16:45:53Z
-fake.14472	pid=14472	tool=fake	started=2026-08-20T16:45:55Z
-fake.15471	pid=15471	tool=fake	started=2026-08-20T16:46:00Z

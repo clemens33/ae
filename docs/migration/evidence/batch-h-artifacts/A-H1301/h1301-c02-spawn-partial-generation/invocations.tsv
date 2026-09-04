@@ -1,3 +1,0 @@
-label	rc	stdout_sha256	stdout_bytes	stderr_sha256	stderr_bytes	bound_s	timed_out	argv
-canary-pre-c2	7	655fe48d594d4b4b1cd170c03ebd6c313b58dfa8ef7269aa1af48b1bfcecc0da	24	083de86cac30405eb7b928039d1f8445e6d2695df5221a81ccc18b6b1f0d2555	31	10	no	/opt/homebrew/bin/bash -c printf '%s\n' 'AE-H-CANARY-pre-c2-9f3c'; printf '%s\n' 'AE-H-CANARY-pre-c2-9f3c-stderr' >&2; exit 7
-canary-post-c2	7	5785045a7283270cbabaf863054b2d0e398dea2dd29eabe7adc15bdfbb566fef	25	87acc905c228f66c01a2bae8e8b9c64f935320c4e1b523bb63518ebcbdcf803d	32	10	no	/opt/homebrew/bin/bash -c printf '%s\n' 'AE-H-CANARY-post-c2-9f3c'; printf '%s\n' 'AE-H-CANARY-post-c2-9f3c-stderr' >&2; exit 7

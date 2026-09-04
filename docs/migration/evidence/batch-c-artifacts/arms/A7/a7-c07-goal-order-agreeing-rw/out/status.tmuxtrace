@@ -1,3 +1,0 @@
-pid=78102	AE_TMUX_SERVER=/tmp/aecx/arms/A7/a7-c07-goal-order-agreeing-rw/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A7/a7-c07-goal-order-agreeing-rw/live.sock has-session -t ta7goalorderagreeing 
-pid=78108	AE_TMUX_SERVER=/tmp/aecx/arms/A7/a7-c07-goal-order-agreeing-rw/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A7/a7-c07-goal-order-agreeing-rw/live.sock list-panes -s -t ta7goalorderagreeing -F $'#{pane_id}\t#{@ae_agent}' 
-pid=78116	AE_TMUX_SERVER=/tmp/aecx/arms/A7/a7-c07-goal-order-agreeing-rw/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A7/a7-c07-goal-order-agreeing-rw/live.sock capture-pane -t %0 -p 

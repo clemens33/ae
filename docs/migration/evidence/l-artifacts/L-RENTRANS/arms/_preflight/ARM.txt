@@ -1,8 +1,0 @@
-arm	_preflight
-section	L-RENTRANS
-roster_ids	(none — this is the section BLOCKING gate, not a coverage arm)
-construction	a hermetic loopback rig (sandbox-local sshd on 127.0.0.1, random high port, per-sandbox host and client keypairs, preseeded known_hosts with StrictHostKeyChecking=yes, a ForceCommand wrapper setting a separate remote HOME and PATH) driving FROZEN ae transfer end to end, PUSH then PULL, on a disposable session
-preflight.result	BLOCKED
-push_rc	1
-pull_rc	1
-binary.sha256	b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd

@@ -1,4 +1,0 @@
-SESSION              AGENT                     PANE     PROCESS
-th3f                 cl:lead                   %0       aefake
-th3f                 cx:worker                 %1       aefake
-th3f                 _events                   %2       bash

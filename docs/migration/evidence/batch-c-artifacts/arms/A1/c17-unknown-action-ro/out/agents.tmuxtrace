@@ -1,1 +1,0 @@
-pid=14954	AE_TMUX_SERVER=/tmp/aecx/arms/A1/c17-unknown-action-ro/none.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/g7a/s.sock list-panes -s -t tg7a -F \#\{pane_id\}\|#\{@ae_agent\}\|#\{pane_current_command\} 

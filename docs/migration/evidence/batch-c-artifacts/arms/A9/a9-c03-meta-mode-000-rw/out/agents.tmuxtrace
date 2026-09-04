@@ -1,1 +1,0 @@
-pid=74130	AE_TMUX_SERVER=/tmp/aecx/arms/A9/a9-c03-meta-mode-000-rw/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=list-panes -s -t '' -F \#\{pane_id\}\|#\{@ae_agent\}\|#\{pane_current_command\} 

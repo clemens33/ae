@@ -1,4 +1,0 @@
-pid=82553	AE_TMUX_SERVER=/tmp/aecx/arms/A9/a9-c05-meta-absent-ro/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A9/a9-c05-meta-absent-ro/live.sock has-session -t tg1 
-pid=82554	AE_TMUX_SERVER=/tmp/aecx/arms/A9/a9-c05-meta-absent-ro/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A9/a9-c05-meta-absent-ro/live.sock list-panes -s -t tg1 -F $'#{pane_id}\t#{@ae_agent}' 
-pid=82557	AE_TMUX_SERVER=/tmp/aecx/arms/A9/a9-c05-meta-absent-ro/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A9/a9-c05-meta-absent-ro/live.sock capture-pane -t %0 -p 
-pid=82561	AE_TMUX_SERVER=/tmp/aecx/arms/A9/a9-c05-meta-absent-ro/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A9/a9-c05-meta-absent-ro/live.sock capture-pane -t %1 -p 

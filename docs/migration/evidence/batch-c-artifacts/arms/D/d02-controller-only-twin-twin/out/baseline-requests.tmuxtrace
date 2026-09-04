@@ -1,4 +1,0 @@
-pid=79920	AE_TMUX_SERVER=/tmp/aecx/arms/D/d02-controller-only-twin/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/d02/s.sock display-message -p \#\{pane_id\} 
-pid=79923	AE_TMUX_SERVER=/tmp/aecx/arms/D/d02-controller-only-twin/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/d02/s.sock display-message -p \#\{pane_id\} 
-pid=79926	AE_TMUX_SERVER=/tmp/aecx/arms/D/d02-controller-only-twin/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/d02/s.sock display-message -p \#\{pane_id\} 
-pid=79927	AE_TMUX_SERVER=/tmp/aecx/arms/D/d02-controller-only-twin/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/d02/s.sock display-message -p -t '' \#S 

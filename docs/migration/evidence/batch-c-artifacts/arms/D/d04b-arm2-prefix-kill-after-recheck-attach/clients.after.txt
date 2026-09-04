@@ -1,5 +1,0 @@
-## clients (client -> session mapping)
-/dev/ttys065|/dev/ttys065|tg2wuextra|%2|1787249024
-## sessions
-caller|0
-tg2wuextra|1

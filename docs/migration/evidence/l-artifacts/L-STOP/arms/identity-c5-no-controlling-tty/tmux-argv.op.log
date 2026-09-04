@@ -1,6 +1,0 @@
-pid=55956 ppid=55955 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/identity-c5-no-controlling-tty/t/tmux-501/default> <display-message> <-p> <#{socket_path} #{pid}>
-pid=55958 ppid=55957 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-STOP/identity-c5-no-controlling-tty/t/tmux-501/default> <display-message> <-p> <-t> <%0> <#{session_name}>
-pid=55960 ppid=55959 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/identity-c5-no-controlling-tty/t/tmux-501/default> <display-message> <-p> <#{socket_path} #{pid}>
-pid=55969 ppid=55961 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/identity-c5-no-controlling-tty/t/tmux-501/default> <display-message> <-p> <#{socket_path} #{pid}>
-pid=55971 ppid=55970 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-STOP/identity-c5-no-controlling-tty/t/tmux-501/default> <display-message> <-p> <-t> <%0> <#{session_id} #{session_name}>
-pid=55982 ppid=55973 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/identity-c5-no-controlling-tty/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>

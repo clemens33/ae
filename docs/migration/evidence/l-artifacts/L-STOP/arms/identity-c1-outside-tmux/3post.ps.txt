@@ -1,5 +1,0 @@
- 2351     1 ??       /opt/homebrew/bin/tmux new-session -d -s proj -c /private/tmp/aelx/L-STOP/identity-c1-outside-tmux/w
- 2769  2351 ttys019  /opt/homebrew/bin/bash /tmp/aelx/L-STOP/identity-c1-outside-tmux/h/.ae/sessions/proj/events-tail
- 3020  2351 ttys020  /opt/homebrew/bin/bash /tmp/aelx/L-STOP/identity-c1-outside-tmux/h/.ae/sessions/proj/watchdog _run
- 3930  2351 ttys033  /opt/homebrew/bin/bash /tmp/aelx/L-STOP/identity-c1-outside-tmux/h/.ae/sessions/projx/events-tail
- 3985  2351 ttys039  /opt/homebrew/bin/bash /tmp/aelx/L-STOP/identity-c1-outside-tmux/h/.ae/sessions/projx/watchdog _run
