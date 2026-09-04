@@ -10,8 +10,7 @@
 //! config, or NO VALID SESSION ID — is refused with a clear reason rather than
 //! emulated or migrated on the fly. In particular a session with no parseable
 //! `session_id` is unsupported old state: it is refused with a refresh/migrate
-//! instruction, never minted a new id (the frozen bash minted one; the clean cut does
-//! not).
+//! instruction, never minted a new id.
 //!
 //! The tuple's ten `0x1f`-separated fields, in order: `name`, `uuid`, `uuid_origin`,
 //! `mode`, `origin` (the recorded path, verified to be a directory — not
@@ -252,7 +251,7 @@ fn resolve_workspace(name: &str, config: &str, origin: &str) -> Result<Workspace
     })
 }
 
-/// The fields of the frozen tuple that the RUST destructive gates revalidate
+/// The fields of the frozen tuple the destructive gates revalidate
 /// against — identity (`uuid`), stability (`mode`/`origin`/`config`), and the
 /// sealed history policy (`purge`).
 pub(crate) struct FrozenTuple {
@@ -402,8 +401,8 @@ fn revalidate(
     // prompt as what the child will start, so a config rewritten during the window that now
     // resolves to a DIFFERENT roster must refuse — proving merely that SOME roster resolves
     // would let a child start agents nobody approved. Edits made BEFORE compact are adopted;
-    // only a change DURING the window is caught here. Mirrors the frozen `_compact_revalidate`
-    // roster gate, and reads the current roster from the same config `resolve_workspace` did.
+    // only a change DURING the window is caught here. The current roster is read from the
+    // same config `resolve_workspace` did.
     let now_main = workspace.main.as_deref().unwrap_or_default();
     let now_roster = roster_string(now_main, workspace.workers.as_deref());
     if now_roster != frozen.roster {
@@ -431,8 +430,8 @@ fn revalidate(
     Ok(())
 }
 
-/// `_compact-revalidate` core entry — the authorization gate bash crosses at
-/// BOTH lifecycle points: after confirmation (before anything is messaged) and
+/// `_compact-revalidate` core entry — the authorization gate crossed at BOTH
+/// lifecycle points: after confirmation (before anything is messaged) and
 /// after the handover wait (before anything is stopped).
 pub(crate) fn revalidate_step(
     dir: &Path,
@@ -646,26 +645,25 @@ pub(crate) fn teardown_step(
     if code != 0 {
         return Ok(code);
     }
-    // The exec plan: bash relaunches `ae <name> --from <uuid>` (compact is local-only, so
+    // The exec plan: the driver relaunches `ae <name> --from <uuid>` (compact is local-only, so
     // the fresh session is the default local mode).
     writeln!(out, "{}\u{1f}{}", frozen.name, frozen.uuid)?;
     Ok(0)
 }
 
-// ── The semantic handover: wait for BOTH facts, or withdraw (slice B) ────────────
+// ── The semantic handover: wait for BOTH facts, or withdraw ──────────────────────
 //
-// The handover is delivered through the session's own `ask` (bash, pane-side) as a tracked
-// request from the reserved compact actor `ae:compact:<uuid>`, carrying a memo BASELINE in
-// its body. These two cores own the WAIT and the WITHDRAWAL — the stateful half the clean
-// cut keeps in Rust — and read the ledger and memo the frozen `_compact_wait_handover` /
-// `_compact_cancel_outstanding` read. Bash branches on the exit code alone.
+// The handover is delivered through the session's own `ask` as a tracked request from the
+// reserved compact actor `ae:compact:<uuid>`, carrying a memo BASELINE in its body. These
+// two cores own the WAIT and the WITHDRAWAL, reading the ledger and the memo; the caller
+// branches on the exit code alone.
 
 /// The poll interval between reads while waiting.
 const HANDOVER_POLL: Duration = Duration::from_secs(2);
 
-/// The default handover bound when bash passes no `--timeout` — the frozen
-/// `_compact_handover_secs` fallback (its `AE_COMPACT_HANDOVER_SECS` override lives in the
-/// bash driver, which passes the resolved value through).
+/// The default handover bound when the caller passes no `--timeout`. The
+/// `AE_COMPACT_HANDOVER_SECS` override is resolved by the driver, which passes the value
+/// through.
 pub(crate) const DEFAULT_HANDOVER_SECS: u64 = 300;
 
 /// One flat member of an event line equals `want` — present AND equal, distinguishing an
@@ -674,8 +672,8 @@ fn field_eq(line: &[u8], key: &str, want: &[u8]) -> bool {
     event_text::member(line, key).value() == Some(want)
 }
 
-/// The pre-delivery memo boundary the frozen `_compact_request_text` embeds in
-/// the request body (`AE-COMPACT-MEMO-BASELINE=<n>`).
+/// The pre-delivery memo boundary embedded in the request body
+/// (`AE-COMPACT-MEMO-BASELINE=<n>`).
 fn baseline_from_body(body: &[u8]) -> Option<usize> {
     for line in body.split(|&b| b == b'\n') {
         if let Some(rest) = line.strip_prefix(b"AE-COMPACT-MEMO-BASELINE=") {
@@ -698,8 +696,7 @@ fn read_body_regular(path_bytes: &[u8]) -> Option<Vec<u8>> {
     Some(event_text::read_container(path))
 }
 
-/// A `reply` for the EXACT ref, from the `main` slot of the FROZEN session —
-/// the frozen `_compact_reply_seen`.
+/// A `reply` for the EXACT ref, from the `main` slot of the FROZEN session.
 fn reply_seen(events: &[u8], reference: &str, session: &str) -> bool {
     event_text::read_lines(events).into_iter().any(|line| {
         event_text::event_line(line).is_some_and(|line| {
@@ -711,8 +708,7 @@ fn reply_seen(events: &[u8], reference: &str, session: &str) -> bool {
     })
 }
 
-/// At least one VALID handover row appended after `baseline` — the frozen
-/// `_compact_memo_after`.
+/// At least one VALID handover row appended after `baseline`.
 fn memo_after(memo: &[u8], baseline: usize) -> bool {
     let tail = memo.get(baseline..).unwrap_or(&[]);
     tail.split(|&b| b == b'\n').any(|row| {
@@ -865,8 +861,8 @@ fn compact_actor(dir: &Path) -> String {
 }
 
 /// `_compact-memo-baseline <dir>` core — print the current `memo.tsv` byte
-/// size, the pre-delivery boundary the bash driver embeds in the handover
-/// request body (the frozen `_compact_memo_offset`).
+/// size, the pre-delivery boundary the driver embeds in the handover request
+/// body.
 pub(crate) fn memo_baseline_step(dir: &Path, out: &mut impl Write) -> io::Result<u8> {
     let memo = event_text::read_container(&dir.join("memo.tsv"));
     write!(out, "{}", memo.len())?;
@@ -1135,11 +1131,11 @@ mod tests {
 
     #[test]
     fn a_meta_with_no_main_seat_is_refused_not_emitted() {
-        // An empty `seat.main`, a slot named twice, and the retired v1 row each
-        // leave no `main` entry — freeze refuses rather than emitting a broken
-        // handover ref P3.7b would try to deliver to. The v1 arm is the human's
-        // ruling reaching compact: a legacy session is refused at the same gate
-        // as a doubtful roster, and never mistaken for a session with no agents.
+        // An empty `seat.main`, a slot named twice, and a bare v1 `agent.` row
+        // each leave no `main` entry — freeze refuses rather than emitting a
+        // handover ref with nowhere to deliver. A v1 meta is refused at the same
+        // gate as a doubtful roster, and never mistaken for a session with no
+        // agents.
         for bad in [
             "seat.main=",
             "seat.main=a\nseat.main=b",
@@ -1630,8 +1626,8 @@ mod tests {
         let code = wait_step(&dir, REF, 0, &mut err).unwrap();
         assert_eq!(code, EXIT_FAILED);
         let msg = String::from_utf8_lossy(&err);
-        // The guidance names the session (the frozen contract the integration arms assert),
-        // and points at the two ways forward.
+        // The guidance names the session, as the integration arms assert, and points
+        // at the two ways forward.
         assert!(
             msg.contains("stays open") && msg.contains("ae compact --digest-only sess"),
             "{msg}"
@@ -1778,7 +1774,7 @@ mod tests {
         assert!(String::from_utf8_lossy(&err).contains("no such request"));
     }
 
-    // ---- memo baseline + find-outstanding (the bash-driver state reads) ----
+    // ---- memo baseline + find-outstanding (the driver's state reads) ----
 
     #[test]
     fn memo_baseline_is_the_file_byte_size() {

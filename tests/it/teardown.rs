@@ -108,7 +108,7 @@ fn stderr(out: &std::process::Output) -> String {
     String::from_utf8_lossy(&out.stderr).into_owned()
 }
 
-// ─────────────────────────── local teardown (P3.5, retrofitted) ──────────────
+// ─────────────────────────── local teardown ──────────────────────────────────
 
 #[test]
 fn a_local_session_is_removed_and_no_tombstone_is_left() {
@@ -327,7 +327,7 @@ fn a_fifo_meta_is_refused_and_never_blocks() {
     assert!(dir.exists());
 }
 
-// ─────────────────────────── nonlocal teardown (P3.6) ────────────────────────
+// ─────────────────────────── nonlocal teardown ───────────────────────────────
 
 /// A `full`/`git` session plus its managed workdir under `<AE_HOME>/worktrees`,
 /// with `meta.work_dir` pointing byte-exact at the managed child.

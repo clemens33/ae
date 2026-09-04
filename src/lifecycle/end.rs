@@ -23,12 +23,11 @@ use super::{
     path_exists, server_of, sessions_dir, worktrees_dir,
 };
 
-/// The frozen usage line.
+/// The usage line.
 const USAGE: &str =
     "Usage: _end [-f] [--purge-history|--keep-history] [--assume-stopped] <session-name|all>";
 
-/// What `ae end` will do with a session's memory — the frozen
-/// `_end_archive_plan`'s five answers.
+/// What `ae end` will do with a session's memory, in five answers.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Action {
     /// The archive is published, keyed by the session's recorded id.
@@ -259,7 +258,7 @@ fn confirm_body(
 }
 
 /// What `ae end` will do with this session's memory, resolved BEFORE the prompt
-/// so the confirmation can name the exact path — the frozen `_end_archive_plan`.
+/// so the confirmation can name the exact path.
 fn resolve_plan(root: &Path, name: &str, purge_cli: Option<bool>) -> Plan {
     let dir = sessions_dir(root).join(name);
     let bytes = meta::read_bytes(&dir).unwrap_or_default();
@@ -771,7 +770,7 @@ fn archive_step(
     }
 }
 
-/// Remove the live session — the frozen `cleanup_session`.
+/// Remove the live session.
 fn cleanup(
     root: &Path,
     name: &str,
@@ -813,7 +812,7 @@ fn cleanup(
             }
             return Ok(false);
         }
-        // Legacy cleanup: the old worktree-nested and origin-nested paths.
+        // Older layouts: the worktree-nested and origin-nested paths.
         remove_legacy(root, name, &origin);
         if preserve {
             writeln!(
@@ -851,8 +850,7 @@ fn cleanup(
         }
         return Ok(true);
     }
-    // A grammar-invalid legacy name: removed here rather than by the core, so
-    // it is never made un-endable.
+    // A grammar-invalid name: removed here, so it is never made un-endable.
     let _ = std::fs::remove_dir_all(&dir);
     remove_legacy(root, name, &origin);
     if preserve {
@@ -878,7 +876,7 @@ fn remove_legacy(root: &Path, name: &str, origin: &str) {
 }
 
 /// Delete the agent CLI conversation files this session's captured harness ids
-/// name — the frozen `_cleanup_agent_session_files`.
+/// name.
 fn purge_conversation_files(
     root: &Path,
     bytes: &[u8],

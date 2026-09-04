@@ -1,9 +1,8 @@
-//! `_compact`: the whole compact operation, in the frozen order.
+//! `_compact`: the whole compact operation, in order.
 //!
-//! Ported from `ae`'s `cmd_compact`. Every STEP was already the core's
-//! (`_compact-freeze`, `-revalidate`, `-memo-baseline`, `-find-outstanding`,
-//! `-cancel`, `-wait`, `-archive`, `-teardown`); what bash held was the
-//! sequence and the two lock regions, and that is what moves here:
+//! Each STEP is its own core entry (`_compact-freeze`, `-revalidate`,
+//! `-memo-baseline`, `-find-outstanding`, `-cancel`, `-wait`, `-archive`,
+//! `-teardown`); this module owns the sequence and the two lock regions:
 //!
 //! * **(a) freeze** — one coherent, read-only observation of the source, which
 //!   every later phase is held to. NOT taken under the lifecycle lock;
@@ -34,11 +33,11 @@ use crate::transport;
 
 use super::{kill_verified, live_id, lock, name_is_usable, server_of, sessions_dir};
 
-/// The frozen usage line.
+/// The usage line.
 const USAGE: &str =
     "Usage: _compact [-f] [--keep-history] [--digest-only] <session-name> [--exec-plan <path>]";
 
-/// The frozen default handover budget, in seconds.
+/// The default handover budget, in seconds.
 const DEFAULT_HANDOVER_SECS: u64 = 300;
 
 /// What the argv said.
@@ -550,7 +549,7 @@ impl Frozen {
     }
 }
 
-/// The confirmation body — the frozen `_compact_confirm_body`, on stderr.
+/// The confirmation body, on stderr.
 fn confirm_body(frozen: &Frozen, digest_only: bool, err: &mut impl Write) -> io::Result<()> {
     writeln!(err, "Compact session '{}'?", frozen.name)?;
     writeln!(
@@ -596,9 +595,7 @@ fn confirm_body(frozen: &Frozen, digest_only: bool, err: &mut impl Write) -> io:
     Ok(())
 }
 
-/// The single command a human can paste to redo the relaunch by hand — the
-/// frozen `_compact_recovery_command`, minus the environment prefixes bash
-/// derived from its own `AE_HOME`/`HOME`.
+/// The single command a human can paste to redo the relaunch by hand.
 fn recovery_command(frozen: &Frozen) -> String {
     let mode_flag = match frozen.mode.as_str() {
         "git" => "--worktree",
@@ -613,7 +610,7 @@ fn recovery_command(frozen: &Frozen) -> String {
     )
 }
 
-/// Single-quote a word for a shell, the frozen `shell_quote`.
+/// Single-quote a word for a shell.
 fn shell_quote(word: &str) -> String {
     format!("'{}'", word.replace('\'', "'\\''"))
 }
@@ -627,7 +624,7 @@ fn outstanding(dir: &Path) -> io::Result<String> {
 }
 
 /// The handover budget — `AE_COMPACT_HANDOVER_SECS` when it is a positive
-/// number of seconds, else the frozen 300.
+/// number of seconds, else the default 300.
 fn handover_secs(err: &mut impl Write) -> io::Result<u64> {
     #[allow(
         clippy::disallowed_methods,
@@ -650,7 +647,7 @@ fn handover_secs(err: &mut impl Write) -> io::Result<u64> {
     }
 }
 
-/// The handover request body — the frozen `_compact_request_text`.
+/// The handover request body.
 fn request_text(dir: &Path, baseline: &str) -> String {
     format!(
         "COMPACT HANDOVER — this session is about to be archived and restarted fresh from its\n\

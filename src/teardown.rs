@@ -1,19 +1,18 @@
 //! Session-state teardown on the pinned core.
 //!
 //! Two entries share ONE authority and ONE commit primitive:
-//! * `_end-local-teardown <session-dir>` (P3.5) removes the canonical state of a
+//! * `_end-local-teardown <session-dir>` removes the canonical state of a
 //!   `mode=local` session.
-//! * `_end-nonlocal-teardown <session-dir> [--preserve]` (P3.6) removes the managed
+//! * `_end-nonlocal-teardown <session-dir> [--preserve]` removes the managed
 //!   workdir (a `full` copy, or a `git` worktree) AND then the canonical state of a
 //!   nonlocal session; `--preserve` keeps the workdir byte-for-byte and removes the
 //!   canonical state only.
 //!
-//! Bash still owns confirmation/plan, the lifecycle lock, the verified tmux stop,
+//! The caller owns confirmation/plan, the lifecycle lock, the verified tmux stop,
 //! Git commit/fetch/push, provider-history purge, `kill_heartbeat` and the archive;
-//! the core begins only after a successful archive/purge. `AE_CORE=` and every
-//! legacy/unsupported shape fall back to the frozen bash `rm`/worktree path.
+//! teardown begins only after a successful archive/purge.
 //!
-//! ROOT AUTHORITY (B1). The sessions and worktrees roots are derived from the
+//! ROOT AUTHORITY. The sessions and worktrees roots are derived from the
 //! ENVIRONMENT — `state_root()` (`AE_HOME` nonempty else `HOME/.ae`) → the
 //! `sessions/` and `worktrees/` siblings — NEVER from the operand path. The operand
 //! must be the configured `sessions/<name>` direct child (lexical equality) or the
@@ -171,7 +170,7 @@ fn prelude(dir: &Path, err: &mut impl Write) -> io::Result<Result<(String, Confi
         return Ok(Err(EXIT_FAILED));
     }
     // Reject any `..` traversal component: a `..` could let the basename grammar pass
-    // while the path resolves elsewhere; bash passes no traversal.
+    // while the path resolves elsewhere.
     if dir
         .components()
         .any(|c| matches!(c, std::path::Component::ParentDir))
@@ -345,7 +344,7 @@ fn read_identity_meta(dir: &Path, err: &mut impl Write) -> io::Result<Result<Vec
     }
 }
 
-/// The `full` (copy) workdir removal: the P3.5 rename-to-tombstone primitive
+/// The `full` (copy) workdir removal: the rename-to-tombstone primitive
 /// applied to the managed copy under the worktrees root.
 fn remove_copy_workdir(
     managed: &Path,
@@ -586,8 +585,8 @@ fn classify_dir(path: &Path) -> DirKind {
     }
 }
 
-/// The fresh session-name grammar the bash `_validate_session_name` enforces:
-/// `^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$` — a leading alphanumeric, then up to 127
+/// The fresh session-name grammar `^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$` — a
+/// leading alphanumeric, then up to 127
 /// more of alphanumeric / `_` / `-`.
 fn is_valid_session_name(name: &str) -> bool {
     let bytes = name.as_bytes();
