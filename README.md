@@ -254,7 +254,7 @@ just rust-deny        # supply chain: advisories, licenses, bans, sources
 just rust-mutants     # do the tests discriminate, or do they merely pass?
 ```
 
-Conventions, test layout, and the release pipeline: **[docs/development.md](docs/development.md)**. The Rust toolchain contract — exact pins, lint policy, the no-`unwrap` rule — is in **[AGENTS.md](AGENTS.md#rust-era-main)**.
+Conventions, test layout, and the release pipeline: **[docs/development.md](docs/development.md)**. The Rust toolchain contract — exact pins, lint policy, the no-`unwrap` rule — is in **[AGENTS.md](AGENTS.md#toolchain-pins)**.
 
 ## License
 

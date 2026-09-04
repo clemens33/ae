@@ -6,6 +6,12 @@ repo_name: clemens33/ae
 edit_uri: edit/main/docs/
 copyright: MIT
 
+# history.md is the pre-2026-09-04 AGENTS.md, kept verbatim for agents working in
+# the repo. It is not user documentation, and its inherited links point at repo
+# files the site does not carry — so it stays out of the strict build entirely.
+exclude_docs: |
+  history.md
+
 theme:
   name: material
   palette:

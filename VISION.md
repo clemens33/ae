@@ -55,11 +55,11 @@ convention; and the empty-key / unset-subscript abort class becomes unrepresenta
 gives the same static binary, but with agent authors its simplicity edge evaporates and the
 type system's bug-class elimination wins. Python stays wrong for the core: interpreter boot
 on every helper call, against a hot path where helpers are called constantly. The reasoning
-that decided it is recorded under "Revisit triggers" in AGENTS.md.
+that decided it is recorded under "Revisit triggers" in docs/history.md.
 
 **Daemons are core-owned.** The watchdog and the Telegram bridge run inside the core, and
-their panes run it directly through a link named for the job. Python contrib is reference and incubator only, and
-analytics sidecars stay Python contrib indefinitely.
+their panes run it directly through a link named for the job. There is no Python in the
+product and no sidecar process: `contrib/` holds configuration and charter templates only.
 
 **Install preserves the user-level contract.** After Bash >= 4, tmux, and git are present,
 one command installs a checksum-verified three-member bundle (`ae-core`, `install`,
@@ -73,8 +73,9 @@ current machine.
 ## Where it is going
 
 - **The Bash remainder stays minimal.** It is policy-frozen — no new Bash features — and a
-  pane-side block retires as soon as the core can own it outright. The bash-hazards checklist
-  in AGENTS.md governs what is left.
+  pane-side block retires as soon as the core can own it outright. What still binds the
+  installer and the ad-hoc shell is the GNU/BSD table in AGENTS.md plus the export-expansion
+  rule beside it; the full hazards checklist is docs/history.md §14.
 - **Upgrading carries running sessions across.** `ae upgrade` already installs a release and
   repoints `~/.local/bin/ae` at the new `ae-core`, but a running session is only reported and
   left pinned until someone stops and resumes it by hand. The next step is doing that part
