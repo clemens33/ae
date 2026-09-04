@@ -1,54 +1,8 @@
-//! The `events-tail` read surface — SC-211n, SC-1306e.
+//! The `events-tail` read surface.
 //!
 //! A monitor pane: a cyan banner, then the last thirty records of the session's
 //! event container formatted one line each, then the same formatting applied to
 //! every record appended afterwards. It never finishes on its own.
-//!
-//! # The frozen argv, and the successor spelling
-//!
-//! ```text
-//! <AE_HOME>/sessions/<name>/events-tail  ->  ae _events-tail <AE_HOME>/sessions/<name>
-//! ```
-//!
-//! Same underscore reasoning as [`crate::requests`]: `_validate_session_name`
-//! forbids a leading `_`, so the spelling cannot shadow a session name. The
-//! session label in the banner is the meta directory's own basename
-//! (`${META_DIR##*/}`), so it comes from the path and is never a second
-//! argument.
-//!
-//! # What the 38 corpus rows can and cannot pin
-//!
-//! Every one of them was captured by starting the helper, waiting four seconds
-//! and killing it: `rc=143`, `bounded=4s=yes`. Two consequences, and they point
-//! opposite ways.
-//!
-//! **stdout is fully determined and this module reproduces it.** Nothing
-//! appended during those four seconds, so each capture is exactly
-//! [`banner`] + [`replay`] over the frozen container.
-//!
-//! **stderr is not reproducible by anything that is not GNU bash, and the
-//! corpus demonstrates that against itself.** The captured stderr is bash's own
-//! job-control notification for the pipeline it was killed in — `Terminated: 15`
-//! followed by the SOURCE TEXT of `tail -n 30 -f … | while IFS= read -r line`.
-//! It is not a diagnostic `ae` ever wrote, and it is not stable: 37 of the 38
-//! rows carry one byte string (149 B) while `arms/A1/c09-dupkey-unknown-ro`
-//! carries the same message truncated after its first line (99 B). Byte-parity
-//! with an unstable capture would be a requirement to reproduce a race.
-//!
-//! This surface therefore writes NOTHING to stderr. Not a normalisation and not
-//! a claim of parity: a follow that is killed has nothing to report, and
-//! inventing a farewell diagnostic would put bytes in the successor that no row
-//! asks for. The 38 stderr comparisons are expected to score
-//! FAIL-pending-ruling until the seats rule (lead ruling on F1, 2026-08-24); the
-//! fixed comparison projection has no open-choice row admitting a span in
-//! opaque-surface stderr.
-//!
-//! # SC-1306e
-//!
-//! The replay is a snapshot cut: the container is read once, and records that
-//! arrive after that read are the FOLLOW's business, not the replay's. A record
-//! appended while the replay is being written is therefore shown once, by the
-//! follow, and not twice.
 
 use std::io::{self, Write};
 use std::path::Path;
@@ -161,10 +115,6 @@ pub fn format_event(line: &[u8]) -> Option<Vec<u8>> {
 }
 
 /// `if ((${#summary} > 60)); then summary="${summary:0:57}..."; fi`.
-///
-/// CHARACTERS on both counts, and the frozen `G11/escapes` capture proves it
-/// without reference to any probe: a 62-character, 66-byte summary is cut after
-/// `and ` — the 57th CHARACTER. A byte cut would have landed five bytes earlier.
 fn cut_summary(summary: &[u8]) -> Vec<u8> {
     if char_count(summary) <= SUMMARY_LIMIT {
         return summary.to_vec();
@@ -175,12 +125,6 @@ fn cut_summary(summary: &[u8]) -> Vec<u8> {
 }
 
 /// The replay: the last [`REPLAY_RECORDS`] records of `container`, formatted.
-///
-/// `tail -n 30` counts RECORDS, and an unterminated remainder is one of them
-/// even though the reader never yields it — so a torn container replays
-/// twenty-nine lines, not thirty. Both halves of that are
-/// [`crate::event_text`]'s measured framing, and both G8 captures show the
-/// remainder absent from the output.
 #[must_use]
 pub fn replay(container: &[u8]) -> Vec<u8> {
     let window = last_records(container, REPLAY_RECORDS);
@@ -198,19 +142,6 @@ pub fn replay(container: &[u8]) -> Vec<u8> {
 pub const POLL: Duration = Duration::from_secs(1);
 
 /// Print the opening, then follow the container until the process is signalled.
-///
-/// The frozen helper waits in `while [[ ! -f "$EVENTS_FILE" ]]; do sleep 1; done`
-/// before printing anything but the banner, because a fresh session has no
-/// container until its first event — SC-519's quiet direction, as a wait rather
-/// than as an error. That wait is unbounded there and is unbounded here.
-///
-/// The follow re-reads from the byte offset it stopped at and emits only whole
-/// records, so a record caught mid-write is shown once, whole, on a later poll —
-/// never as two half lines. `tail -f` gets that from `read` blocking on the
-/// delimiter; this gets it from [`crate::event_text::read_lines`].
-///
-/// **This function does not return.** It has no completion condition, exactly as
-/// the surface has none; the caller is a process whose lifetime IS the follow.
 ///
 /// # Errors
 ///
@@ -231,7 +162,6 @@ pub fn follow(dir: &Path, out: &mut impl Write) -> io::Result<std::convert::Infa
     // `None` is "the replay window has not been taken yet", which is NOT the
     // same as offset zero: a container that exists but is still empty has
     // offset zero forever, and conflating the two re-entered the replay branch
-    // on every poll.
     let mut consumed: Option<usize> = None;
     loop {
         let body = read_container(&container);
@@ -477,7 +407,6 @@ mod tests {
         // The frozen reader is `tail … 2>/dev/null`, so there is one answer for
         // "no container" and "no permission": no lines, no complaint. The
         // container read is `event_text`'s quiet door; this pins that the
-        // replay over what it returns is empty rather than an error.
         let scratch = Scratch::new("nolog");
         let missing = read_container(&scratch.0.join(CONTAINER));
         assert!(missing.is_empty());

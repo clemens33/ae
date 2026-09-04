@@ -1,50 +1,28 @@
-//! The event record, and the generation-aware reader DR-001 requires.
+//! The event record, and the generation-aware reader it needs.
 //!
-//! # What the rows say
+//! Every event carries `ts`, `actor` and `action`; a line missing one is not an
+//! event. `target` / `ref` / `summary` never appear empty, and are modelled as
+//! [`Option`] so the empty string is unrepresentable rather than merely
+//! unwritten. `ref` is polysemous and the action decides its meaning, which is
+//! [`RefMeaning`] here so a caller cannot read a memo topic as a request id.
 //!
-//! * **SC-510a** — every event carries `ts` (ISO 8601 UTC, second precision),
-//!   `actor` and `action`. A line missing one is not an event.
-//! * **SC-510b** — `target` / `ref` / `summary` never appear as empty strings.
-//!   Modelled as [`Option`]: absent and empty are the same absence, and the type
-//!   makes the empty string unrepresentable rather than merely unwritten.
-//! * **SC-510c** — `ref` is polysemous and the action decides its meaning. That
-//!   is a table in prose and a [`RefMeaning`] here, so a caller cannot read a
-//!   memo topic as a request id.
-//! * **SC-510d** — string values are JSON-escaped (see [`crate::json`]).
-//! * **SC-511a** — messaging events also carry `actor_slot` / `actor_session` /
-//!   `target_slot` / `target_session` when known, omitted when empty.
-//! * **SC-511b** — readers prefer slot+session over display name, and ignore
-//!   keys they do not understand. [`Identity`] is that preference, resolved
-//!   once, at the boundary.
-//! * **SC-511c** — evolution is additive-only, so an unknown key is data this
-//!   reader steps over, never an error.
-//! * **SC-510e** — a KNOWN key appearing twice makes the whole record
-//!   malformed: no row defines precedence, so choosing a winner would be
-//!   fabrication. Skipped and counted, degrading through SC-520.
-//! * **SC-510f** — a duplicated UNKNOWN key stays inert. A reader cannot
-//!   fabricate a value it never took.
-//! * **SC-405j** — PRESENCE of a routing member is decided BEFORE any
-//!   empty-string normalization. Structurally absent members permit the legacy
-//!   display fallback; any present member that does not fully and freshly match
-//!   — stale, partial, or empty — makes the identity [`Identity::Unassociated`],
-//!   which matches nothing.
+//! A KNOWN key appearing twice makes the whole record malformed: nothing defines
+//! precedence, so choosing a winner would be fabrication. A duplicated UNKNOWN
+//! key stays inert, and an unknown key is data this reader steps over.
 //!
-//! # DR-001
+//! PRESENCE of a routing member is decided BEFORE any empty-string
+//! normalization. Structurally absent members permit the legacy display
+//! fallback; any present member that does not fully and freshly match — stale,
+//! partial, or empty — is [`Identity::Unassociated`], which matches nothing.
 //!
-//! The reader is generation-aware from the first line of Rust, while exactly one
-//! container exists. The DR's binding conditions shape the API directly:
-//! append-only WITHIN a generation, a reader **drains a stable opened generation
-//! before advancing**, and the cursor persists **generation + offset**. So
-//! [`Cursor`] is a pair, [`Drain`] reports whether the generation it read is
-//! finished, and advancing is a separate, explicit step that only a drained
-//! generation permits.
-//!
-//! What is deliberately NOT here: any *naming convention* for generation files.
-//! DR-001 states that the written layout and its legacy-read/migration/write
-//! ownership land "at the flip commit", which has not happened. So
-//! [`EventLog::discover`] maps today's single container to generation 0 and
-//! nothing else, and multi-generation behavior is exercised through
-//! [`EventLog::from_sources`], which takes the paths it is given.
+//! The reader is generation-aware: append-only WITHIN a generation, a reader
+//! drains a stable opened generation before advancing, and the cursor persists
+//! generation + offset. So [`Cursor`] is a pair, [`Drain`] reports whether the
+//! generation it read is finished, and advancing is a separate explicit step
+//! that only a drained generation permits. There is deliberately no naming
+//! convention for generation files here: [`EventLog::discover`] maps today's
+//! single container to generation 0, and multi-generation behaviour is
+//! exercised through [`EventLog::from_sources`].
 
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
@@ -54,54 +32,38 @@ use crate::attention::Reason;
 use crate::json::{self, Value};
 use crate::time::Timestamp;
 
-/// The bash-era event container. SC-400a keeps it readable across every flip.
+/// The bash-era event container, kept readable across every flip.
 pub const LEGACY_CONTAINER: &str = "events.jsonl";
 
 /// One record from the event log.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Event {
-    /// SC-510a: ISO 8601 UTC, second precision.
+    /// ISO 8601 UTC, second precision.
     pub ts: Timestamp,
-    /// SC-510a: `alias:name` of the emitter, or `watchdog` / `human`.
+    /// `alias:name` of the emitter, or `watchdog` / `human`.
     pub actor: String,
-    /// SC-510a: the event type.
+    /// the event type.
     pub action: String,
-    /// SC-510b: the recipient, when applicable.
+    /// the recipient, when applicable.
     pub target: Option<String>,
-    /// SC-510b/c: the correlation value, whose meaning the action decides.
+    /// The correlation value, whose meaning the action decides.
     pub reference: Option<String>,
-    /// SC-510b: a truncated preview of the payload.
+    /// a truncated preview of the payload.
     pub summary: Option<String>,
-    /// SC-511a: the sender's slot.
+    /// the sender's slot.
     pub actor_slot: RoutingMember,
-    /// SC-511a: the sender's session.
+    /// the sender's session.
     pub actor_session: RoutingMember,
-    /// SC-511a: the recipient's slot.
+    /// the recipient's slot.
     pub target_slot: RoutingMember,
-    /// SC-511a: the recipient's session.
+    /// the recipient's session.
     pub target_session: RoutingMember,
 }
 
 /// One half of a routing key, exactly as the record carries it.
-///
-/// **SC-405j, as amended: PRESENCE is decided BEFORE any empty-string
-/// normalization.** A member that appears in the record's JSON is PRESENT even
-/// when its value is `""`, so the three states here are the three the contract
-/// distinguishes — and collapsing the middle one into [`Self::Absent`] is
-/// exactly what let a malformed keyed record fall back to its display name and
-/// close a request it never answered.
-///
-/// The row is explicit that a reader may not lean on SC-510b or SC-511a to do
-/// that collapsing: those are PRODUCER rules — what ae writes — and say nothing
-/// about what a reader may erase.
-///
-/// An empty member therefore makes its identity [`Identity::Unassociated`],
-/// the same as a partial or stale key. The record is NOT skipped: the fact
-/// stays countable and the rest of the event is still true. It identifies
-/// nobody, which is a different thing from being unreadable.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum RoutingMember {
-    /// The key is not in the record. Every pre-SC-511a event looks like this.
+    /// The key is not in the record. Every pre-routing-key event looks like this.
     #[default]
     Absent,
     /// The key is present and empty: the writer meant to route and did not say
@@ -137,22 +99,13 @@ impl RoutingMember {
     }
 
     /// Whether the record carries this key at all, in any state.
-    ///
-    /// A record with NO routing keys present is the only one that falls back to
-    /// its display name (SC-405j).
     #[must_use]
     pub const fn is_present(&self) -> bool {
         !matches!(self, Self::Absent)
     }
 }
 
-/// What a `ref` means, per the COMPLETE SC-510c action table.
-///
-/// The row was amended after this reader was first written: the original
-/// dropped the authority's own hedge ("usually absent") and its `state` entry,
-/// which made the self-declared attention reasons underivable. The amendment
-/// cost exactly one variant and one match arm, because the polysemy is a type
-/// here rather than a string comparison at each call site.
+/// What a `ref` means, per the COMPLETE action table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RefMeaning<'a> {
     /// `ask` / `review` / `reply` — the request id pairing the three.
@@ -164,19 +117,13 @@ pub enum RefMeaning<'a> {
     /// `state` — the declared work state (`working` / `waiting-user` /
     /// `blocked` / `done`).
     DeclaredState(&'a str),
-    /// Any other action. SC-510c says `ref` is *usually* absent there — never
-    /// categorically absent — so a value that turns up carries no meaning the
+    /// Any other action, where `ref` is *usually* absent — never categorically
+    /// absent — so a value that turns up carries no meaning the
     /// table defines, which is not the same as carrying none at all.
     Undefined,
 }
 
 /// What one event says about the watchdog's standing verdict on an agent.
-///
-/// Three answers rather than two, because a CLEAR is not the absence of an
-/// alert — it is the watchdog retracting one — while an event that is neither
-/// must leave a backward scan looking further rather than answering it. Collapse
-/// the third into the second and every nudge in the log silently cancels the
-/// alert it was sent about.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AlertMeaning {
     /// The watchdog says this agent needs a human, for this reason.
@@ -188,16 +135,6 @@ pub enum AlertMeaning {
 }
 
 /// How a reader names a participant.
-///
-/// SC-511b: pairing and delivery use the churn-proof routing key **where
-/// present**, and fall back to the display name where there is none at all.
-///
-/// SC-405j makes a PARTIAL key negative rather than absent, and the distinction
-/// is the whole point of the third variant: an event carrying `actor_slot` with
-/// no `actor_session` has told us it is routed and then failed to say where, so
-/// reading it as a display name would let it match a display-only counterpart
-/// that names a different agent. [`Identity::Unassociated`] matches nothing —
-/// including another `Unassociated` — so the failure is a loud non-match.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Identity<'a> {
     /// The routing key: slot + session, which survives a display-name change.
@@ -207,14 +144,14 @@ pub enum Identity<'a> {
         /// The session the slot belongs to.
         session: &'a str,
     },
-    /// The display name — all a pre-SC-511a event carries.
+    /// The display name — all a pre-routing-key event carries.
     Display(&'a str),
     /// Half a routing key: routed, but to nowhere nameable.
     Unassociated,
 }
 
 impl Identity<'_> {
-    /// Whether two identities name the same participant (SC-511b, SC-405j).
+    /// Whether two identities name the same participant.
     ///
     /// **This lives on the type because the type's own doc already asserts the
     /// rule** — "`Unassociated` matches nothing, including another
@@ -226,13 +163,13 @@ impl Identity<'_> {
     ///
     /// Routing keys compare to routing keys — that is the whole point of a
     /// churn-proof key. When NEITHER side carries one, the display name is all
-    /// there is, and SC-511b's own fallback applies.
+    /// there is, and own fallback applies.
     ///
     /// Everything else is false, and the two ways that happens are worth naming
     /// separately because both are loud-direction rulings:
     ///
     /// * a MIXED pair — one side routed, the other display-only — has nothing in
-    ///   common to compare (SC-518);
+    ///   common to compare;
     /// * an [`Identity::Unassociated`] side is half a routing key, and matches
     ///   nothing INCLUDING another `Unassociated`. Two events that each failed to
     ///   say where they came from have not thereby said the same thing.
@@ -273,32 +210,14 @@ pub enum EventError {
     NotJson(json::ParseError),
     /// The line is JSON, but not an object.
     NotAnObject,
-    /// SC-510a: a required key is missing or empty.
+    /// a required key is missing or empty.
     MissingKey(&'static str),
-    /// SC-510a: `ts` is present but not the documented spelling.
+    /// `ts` is present but not the documented spelling.
     UnreadableTimestamp(String),
     /// A key the schema DOES define, appearing more than once in one record.
-    ///
-    /// **SC-510e** — no row defines duplicate-member precedence, RFC 8259 makes
-    /// duplicate-name resolution non-interoperable, and picking a first or last
-    /// winner among KNOWN keys is forbidden fabrication. The whole record is
-    /// skipped and counted, degrading the session through SC-520's path.
-    ///
-    /// **SC-510f** — duplicate UNKNOWN keys stay inert: additive-schema
-    /// semantics ignore a member this reader never reads, however many times it
-    /// appears, and it cannot fabricate a value it never took.
-    ///
-    /// (Not SC-405e: that is meta grammar, still UNCLASSIFIED, and not
-    /// authority here.)
     DuplicateKey(&'static str),
     /// A key the schema DOES define, carrying a value of the wrong JSON type —
     /// `"ref": 7`, a numeric `target`, an object `summary`.
-    ///
-    /// Not the same as absent, and SC-509b/SC-520 forbid rendering it as such:
-    /// the writer meant to say something and the reader could not take it, so
-    /// the record is skipped and counted rather than silently emptied. Unknown
-    /// keys of any type stay ignored — SC-511b says a reader steps over what it
-    /// does not understand, and that is exactly what it does NOT understand.
     WrongType(&'static str),
 }
 
@@ -323,7 +242,7 @@ impl Event {
     /// # Errors
     ///
     /// Returns [`EventError`] when the line is not JSON, is not an object, or
-    /// is missing one of SC-510a's three required keys.
+    /// is missing one of three required keys.
     ///
     /// ```
     /// let e = ae::events::Event::parse_line(
@@ -365,7 +284,7 @@ impl Event {
         })
     }
 
-    /// What this event's `ref` means, per SC-510c.
+    /// What this event's `ref` means.
     ///
     /// ```
     /// let memo = ae::events::Event::parse_line(
@@ -388,22 +307,7 @@ impl Event {
         }
     }
 
-    /// The work state this record DECLARES, if any — SC-510c as amended.
-    ///
-    /// Two shapes, because the ledger has always held two. A `state` event
-    /// carries the value in `ref` ([`RefMeaning::DeclaredState`]). A bare `done`
-    /// event declares `done` outright: events.md's action table says
-    /// "`mark-done` is a shim over `state done`; both are read as `done`", and a
-    /// session that predates the `state` helper has only the second shape.
-    ///
-    /// The frozen readers are split on this and the split is why it is written
-    /// down here rather than inferred: `_session_states` (ae:3369 — the reader
-    /// the LIST path actually uses) and `ae_latest_state_for` (ae:13263) both
-    /// accept `done`, while `_ar_latest_state` (ae:4637) requires `state`.
-    /// Ruled 2026-08-24 in favour of retaining the legacy record, which is what
-    /// the list path did all along.
-    ///
-    /// A `state` event with no `ref` declares nothing — it has not said what.
+    /// The work state this record DECLARES, if any.
     #[must_use]
     pub fn declared_state(&self) -> Option<&str> {
         match self.ref_meaning() {
@@ -413,7 +317,7 @@ impl Event {
         }
     }
 
-    /// How to name this event's actor, preferring the routing key (SC-511b).
+    /// How to name this event's actor, preferring the routing key.
     #[must_use]
     pub fn actor_identity(&self) -> Identity<'_> {
         identity(&self.actor_slot, &self.actor_session, &self.actor)
@@ -426,21 +330,7 @@ impl Event {
         Some(identity(&self.target_slot, &self.target_session, display))
     }
 
-    /// The watchdog verdict this event carries — SC-509c's alert-derived half.
-    ///
-    /// **SC-980 rules that an alert carries a TYPED reason key and that
-    /// free-text `summary` is never a discriminator — and no row names that
-    /// key.** There is therefore nothing here to read it from, and picking a
-    /// spelling would be fabrication. The row's own escape clause is taken
-    /// instead: the incumbent action/summary byte shapes are "T-WD probe
-    /// material for the LEGACY ADAPTER", empirical and never SHOULD. This is
-    /// that adapter. When SC-980's key is named it is read FIRST and this
-    /// cascade becomes the fallback for records written before it existed.
-    ///
-    /// `ref` is deliberately not pressed into service as that key. SC-510c
-    /// makes `ref`'s meaning the ACTION's to decide, and no row decides it for
-    /// `alert` — so [`RefMeaning::Undefined`] is the honest answer and reading a
-    /// reason out of it would invent the very schema this doc refuses to invent.
+    /// The watchdog verdict this event carries — alert-derived half.
     #[must_use]
     pub fn alert_meaning(&self) -> AlertMeaning {
         match self.action.as_str() {
@@ -448,16 +338,10 @@ impl Event {
             // The watchdog's own retractions. `throttle-cleared` is documented
             // (events.md:105); `alert-cleared` is not in that table but is
             // emitted by both reference implementations, so it is READ here
-            // without being published as a row this crate invented.
             "alert-cleared" | "throttle-cleared" => AlertMeaning::Cleared,
-            // A CARRIER, and the ACTION is the whole discrimination: SC-509c
-            // wants an owner plus an active contribution, `target` names the
+            // A CARRIER, and the ACTION is the whole discrimination: an owner
+            // plus an active contribution is wanted, `target` names the
             // owner, and `throttled` names the contribution outright. Reading
-            // the summary here would NARROW a decision the action has already
-            // made — neither needed nor permitted. Ruled 2026-08-24, after both
-            // reference implementations were found to define the carrier class
-            // this way; events.md:106's "first cycle of a streak" says WHEN the
-            // watchdog emits it, not whether the agent owns it.
             "throttled" => AlertMeaning::Raised(Reason::Throttled),
             _ => AlertMeaning::Undefined,
         }
@@ -465,21 +349,6 @@ impl Event {
 }
 
 /// The reason an incumbent alert `summary` names.
-///
-/// Pinned by two INDEPENDENT implementations of one algorithm that agree on
-/// every arm: `_agents_alert_reasons` in `ae` @72c7293 and
-/// `_agent_alert_reason` in `contrib/aewatch/aewatch`. Both are empirical
-/// probe material under SC-980, never authority — which is exactly why they are
-/// reproduced rather than improved on.
-///
-/// **The ORDER is load-bearing, in one place only.** The meta-agent wedge alert
-/// says "not sweeping" and must reach [`Reason::Stale`] before any later arm can
-/// claim its text; the incumbent carries that same warning at the same line.
-///
-/// An unrecognised summary is `Stale`, never [`AlertMeaning::Undefined`]:
-/// `alert` MEANS attention is required, so an alert whose class this cascade
-/// cannot read is an alert of unknown class — dropping it would hide the one
-/// thing it exists to report.
 fn alert_class(summary: Option<&str>) -> Reason {
     let summary = summary.unwrap_or_default();
     if summary.contains("not sweeping") {
@@ -500,15 +369,9 @@ fn alert_class(summary: Option<&str>) -> Reason {
     Reason::Stale
 }
 
-/// SC-511b + SC-405j, in one sentence: BOTH halves present and valid route,
+/// The identity rule in one sentence: BOTH halves present and valid route,
 /// NEITHER half present falls back to the display name, and everything between
 /// those two identifies nobody.
-///
-/// "Everything between" is the point. A slot without its session cannot be told
-/// apart from the same slot in another session; a slot that is present and
-/// EMPTY has said even less while still declaring itself routed. Both are the
-/// same species under SC-405j, so both answer [`Identity::Unassociated`] —
-/// which matches nothing, including another `Unassociated`.
 fn identity<'a>(
     slot: &'a RoutingMember,
     session: &'a RoutingMember,
@@ -523,12 +386,8 @@ fn identity<'a>(
     }
 }
 
-/// Every key this schema defines. Anything else is SC-511b's business, not
+/// Every key this schema defines. Anything else is business, not
 /// this reader's.
-///
-/// One list, used to police duplicates. It is deliberately the WHOLE documented
-/// surface rather than "the keys we happen to read", because a key the schema
-/// defines is a key a writer may repeat.
 const KNOWN_KEYS: [&str; 10] = [
     "ts",
     "actor",
@@ -542,13 +401,7 @@ const KNOWN_KEYS: [&str; 10] = [
     "target_session",
 ];
 
-/// Refuse a record that names any KNOWN key twice (SC-510e).
-///
-/// Detection lives here, at the event-consumption layer, and not in
-/// [`crate::json`]: the parser's first-wins lookup is fine for a generic JSON
-/// object, and SC-510f keeps a repeated UNKNOWN key inert. It is only for the
-/// keys the schema DEFINES that "which one did the writer mean" becomes a
-/// question nobody has answered.
+/// Refuse a record that names any KNOWN key twice.
 fn reject_duplicate_known_keys(fields: &[(String, Value)]) -> Result<(), EventError> {
     for known in KNOWN_KEYS {
         if fields.iter().filter(|(key, _)| key == known).count() > 1 {
@@ -558,10 +411,7 @@ fn reject_duplicate_known_keys(fields: &[(String, Value)]) -> Result<(), EventEr
     Ok(())
 }
 
-/// A required string key (SC-510a).
-///
-/// An empty value is a missing value; a value of the wrong type is neither —
-/// see [`EventError::WrongType`].
+/// A required string key.
 fn required<'a>(value: &'a Value, key: &'static str) -> Result<&'a str, EventError> {
     match value.get(key) {
         Some(Value::Str(text)) if !text.is_empty() => Ok(text),
@@ -570,24 +420,7 @@ fn required<'a>(value: &'a Value, key: &'static str) -> Result<&'a str, EventErr
     }
 }
 
-/// An optional string key of the SC-510b trio — `target`, `ref`, `summary`.
-///
-/// Empty-as-absent belongs to these three and stops here. SC-405j's
-/// reader-erasure prohibition is scoped, in the row's own words, to the four
-/// ROUTING keys: "the SC-510b trio's reader-side empty-as-omission stands
-/// unchanged". So this normalisation is the contract, not an exception to it.
-///
-/// The routing keys deliberately do NOT share it (see [`RoutingMember`]),
-/// because for them an empty value is a claim to be routed with the destination
-/// missing — a fact worth keeping rather than erasing.
-///
-/// The row says such a key never appears empty. A reader that met one anyway
-/// would have to decide what an empty target means; treating it as the absence
-/// the row describes is the only reading that does not invent a third state.
-///
-/// A value of the WRONG TYPE is a different fact and gets a different answer:
-/// `Err` rather than `Ok(None)`, so the record is skipped and counted instead of
-/// being emitted with a field silently blanked (SC-509b, SC-520).
+/// An optional string key of the trio — `target`, `ref`, `summary`.
 ///
 /// # Errors
 ///
@@ -602,10 +435,6 @@ fn optional(value: &Value, key: &'static str) -> Result<Option<String>, EventErr
 }
 
 /// A position in the event stream: which generation, and how far into it.
-///
-/// DR-001, binding condition: "the cursor persists generation + offset". The
-/// pair is the whole point — an offset alone is meaningless once the container
-/// it counted into is no longer the current one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Cursor {
     /// Which generation this offset counts into.
@@ -648,7 +477,7 @@ pub struct Drain {
     /// one identically.
     pub skipped: Vec<SkippedLine>,
     /// Whether this generation was read to a stable end — nothing but a
-    /// possible partial record remains. DR-001 permits advancing only from
+    /// possible partial record remains. Advancing is permitted only from
     /// here.
     pub drained: bool,
 }
@@ -670,12 +499,6 @@ pub struct EventLog {
 
 impl EventLog {
     /// The generations of the session directory at `dir`.
-    ///
-    /// Today that is exactly one: the bash-era `events.jsonl`, read as
-    /// generation 0. DR-001 defers the written multi-generation layout — and
-    /// its legacy-read and migration ownership — to the flip commit, so
-    /// inventing a filename pattern here would be inventing the half of the DR
-    /// that is deliberately unwritten.
     #[must_use]
     pub fn discover(dir: &Path) -> Self {
         Self {
@@ -702,25 +525,12 @@ impl EventLog {
 
     /// Read one generation from `cursor`, consuming only complete records.
     ///
-    /// This is the "drain a stable opened generation" half of DR-001: the file
-    /// is opened once and read to the end it had at that moment. A trailing
-    /// record without its newline is left unconsumed — the cursor would
-    /// otherwise land mid-record, and a mid-record offset is exactly the state
-    /// the generation+offset cursor exists to make impossible.
-    ///
     /// # Errors
     ///
     /// Returns the underlying [`io::Error`] when the generation's file exists
     /// and cannot be opened or read, and [`io::ErrorKind::InvalidData`] when
     /// `cursor.offset` is past the file's end — a container truncated, rotated
     /// or replaced beneath the reader.
-    ///
-    /// ONE absence is not an error: a missing file under a FRESH cursor
-    /// (`Cursor::default`), which SC-519 rules a quiet empty stream because a
-    /// session may not have written its first event yet. A missing file under a
-    /// cursor that has been somewhere IS an error — the cursor is evidence the
-    /// stream existed, so its disappearance is loss and SC-509b says loss must
-    /// be visible.
     pub fn drain(&self, cursor: Cursor) -> io::Result<Drain> {
         let Some(source) = self
             .sources
@@ -733,12 +543,9 @@ impl EventLog {
             ));
         };
 
-        // SC-519 blesses ONE case: a fresh session that has not written its
+        // ONE case is blessed: a fresh session that has not written its
         // first event. A fresh read is what a default cursor means, so the
         // tolerance is scoped to it. A cursor that has been somewhere is
-        // EVIDENCE the stream existed — if the file is gone now, history was
-        // lost, and answering "quiet" would render that loss identically to a
-        // session that never spoke (SC-509b's exact prohibition).
         #[allow(
             clippy::disallowed_methods,
             reason = "a door: the event-log read — see clippy.toml"
@@ -758,8 +565,6 @@ impl EventLog {
 
         // The same evidence, the other way round: an offset past the end means
         // the container was truncated, rotated or replaced under the reader.
-        // Seeking past EOF is legal and reads zero bytes, so without this the
-        // answer would be a serene "nothing new" forever.
         let length = file.metadata()?.len();
         if cursor.offset > length {
             return Err(io::Error::new(
@@ -823,10 +628,6 @@ impl EventLog {
 
     /// The cursor that follows `drain`'s, advancing a generation when — and
     /// only when — the current one is finished and a later one exists.
-    ///
-    /// DR-001, binding condition: "a reader drains a stable opened generation
-    /// before advancing". Returning the same cursor is the correct answer for a
-    /// generation that is still being written to; the reader comes back to it.
     #[must_use]
     pub fn next_cursor(&self, drain: &Drain) -> Cursor {
         if !drain.drained {
@@ -839,10 +640,6 @@ impl EventLog {
     }
 
     /// Read every generation from `cursor` to the end of the stream.
-    ///
-    /// The whole-history read `list --json` needs: it starts at a cursor,
-    /// drains each generation in turn, and stops at the first one that is not
-    /// finished — never skipping ahead of a generation still being written.
     ///
     /// # Errors
     ///
@@ -868,7 +665,7 @@ impl EventLog {
             skipped.append(&mut drain.skipped);
             last = drain.cursor;
             drained = drain.drained;
-            // DR-001, the binding condition: never advance past a generation
+            // The binding condition: never advance past a generation
             // that is still being written to. The reader comes back to it.
             if !drained {
                 break;
@@ -885,25 +682,6 @@ impl EventLog {
 
     /// The generations [`EventLog::drain_all`] will visit, in order, starting at
     /// `generation`.
-    ///
-    /// **This is the bound.** DR-001's condition is that a reader drains a
-    /// stable generation BEFORE advancing, so an advance loop that fails to
-    /// converge violates the row rather than merely hanging — and a loop that
-    /// terminates only when cursor arithmetic stops changing can fail to
-    /// converge. Traversal is therefore planned from the DISCOVERED, SORTED
-    /// generation set, never computed: the plan is finite because the set is,
-    /// whatever the arithmetic says.
-    ///
-    /// Two properties the plan carries, both asserted in tests rather than
-    /// assumed:
-    ///
-    /// * generation ids are NOT assumed consecutive — a retention policy that
-    ///   drops the middle of a range leaves gaps, and `+1` would walk off into
-    ///   generations that do not exist;
-    /// * each generation appears AT MOST ONCE, so no source can be read twice.
-    ///   Duplicate ids in the source list collapse to one visit, which is what
-    ///   [`EventLog::drain`] already did by resolving a generation to its first
-    ///   matching source — the traversal preserves that rather than changing it.
     ///
     /// # Errors
     ///
@@ -1035,7 +813,7 @@ mod tests {
             ("reply", RefMeaning::RequestId("r-1")),
             ("memo", RefMeaning::MemoTopic("r-1")),
             ("recover", RefMeaning::CapturedSessionId("r-1")),
-            // SC-510c as AMENDED: `state` carries the declared work state.
+            // `state` carries the declared work state.
             ("state", RefMeaning::DeclaredState("r-1")),
             // "Other actions — USUALLY absent"; a value that turns up anyway
             // has no meaning the table defines, so neither do we.
@@ -1084,7 +862,7 @@ mod tests {
     #[test]
     fn sc_511b_falls_back_to_the_display_name_when_the_key_is_absent() {
         // "An event without those fields ... pairing falls back to the display
-        // name" — every pre-SC-511a event in an existing log looks like this.
+        // name" — every pre-routing-key event in an existing log looks like this.
         let event = Event::parse_line(DONE).expect("parses");
         assert_eq!(event.actor_identity(), Identity::Display("claude:lead"));
         assert_eq!(event.target_identity(), None);
@@ -1095,7 +873,6 @@ mod tests {
         // This test previously asserted Display, which is the bug it was named
         // for: an event that says "I am routed" and then fails to say where
         // must not be answerable by a name a display-only counterpart also
-        // carries. Either half alone, on either side.
         for keys in [r#""actor_slot":"main""#, r#""actor_session":"my-feature""#] {
             let line = format!(
                 r#"{{"ts":"2026-05-19T07:29:45Z","actor":"claude:lead","action":"send","target":"codex:coworker",{keys}}}"#
@@ -1194,10 +971,9 @@ mod tests {
         // The discriminator the amended row requires, in one place: keys
         // ABSENT / ONE present-empty member / ALL routing members
         // present-empty. Only the first falls back to a display name, and the
-        // two empty shapes must not be answerable by collapsing them into it.
         let base = r#""ts":"2026-05-19T07:29:45Z","actor":"claude:lead","action":"send","target":"codex:coworker""#;
 
-        // 1. Structurally ABSENT: the legacy fallback pre-SC-511a records need.
+        // 1. Structurally ABSENT: the legacy fallback pre-routing-key records need.
         let absent = Event::parse_line(&format!("{{{base}}}")).expect("parses");
         assert_eq!(absent.actor_slot, RoutingMember::Absent);
         assert_eq!(absent.actor_identity(), Identity::Display("claude:lead"));
@@ -1254,10 +1030,9 @@ mod tests {
 
     #[test]
     fn sc_510b_and_sc_405j_diverge_on_an_empty_value() {
-        // The spillover guard. The SC-510b trio normalises empty to absent
+        // The spillover guard. The three payload keys normalise empty to absent
         // because its row says those keys never appear empty; the routing keys
         // deliberately do NOT share that rule. One line, both behaviours, so a
-        // future edit cannot quietly re-unify them.
         let event = Event::parse_line(concat!(
             r#"{"ts":"2026-05-19T07:29:45Z","actor":"claude:lead","action":"send","#,
             r#""target":"","ref":"","summary":"","actor_slot":"","actor_session":""}"#
@@ -1379,7 +1154,6 @@ mod tests {
         // A valid actor followed by a wrong-typed one. Reading first-wins would
         // report a perfectly good event and never see the second; reading
         // last-wins would report WrongType. Both answers pick a winner, so
-        // neither is available — the duplicate itself is the finding.
         let line = concat!(
             r#"{"ts":"2026-05-19T07:29:45Z","actor":"claude:lead","action":"done","#,
             r#""actor":7}"#
@@ -1402,35 +1176,8 @@ mod tests {
         );
     }
 
-    /// The ten key names SC-510a/b/c and SC-511a document, written out here
+    /// The ten documented key names, written out here
     /// INDEPENDENTLY of the production list.
-    ///
-    /// The point is the independence. A test that iterates `KNOWN_KEYS` and
-    /// checks a rejection which itself consults `KNOWN_KEYS` proves only that
-    /// the constant equals itself: drop a documented key from production and
-    /// nothing is generated for it; rename one to a bogus name of any length
-    /// and both sides move together. Const membership has no mutant either, so
-    /// the mutation lane cannot see the gap. This literal is the second opinion
-    /// that makes the pin mean something — the same lesson as counting fixtures
-    /// instead of naming them.
-    ///
-    /// **The class, for whoever adds the eleventh key.** This suite shipped
-    /// three tests that looked like constraints and were not: one asserted the
-    /// fixture COUNT where it meant the fixture NAMES, so deleting one fixture
-    /// and adding another passed; one asserted an accessor only in the
-    /// direction where it returns nothing, so replacing its body with that
-    /// nothing passed; and this one iterated the production key list to check a
-    /// rejection that consulted the production key list, so a bogus name
-    /// substituted on both sides passed. One signature underneath all three:
-    /// **the expected value and the actual value came from the same place.** A
-    /// test shaped that way cannot fail, and it is worse than no test, because
-    /// it reports coverage of the thing it does not check. Mutation testing
-    /// caught the first two and structurally CANNOT catch this one — const
-    /// membership has no mutant to generate — so the only defence here is a
-    /// second, independent statement of the expectation, which is what the list
-    /// below is. So: adding a key means adding it in BOTH places, and if that
-    /// ever feels like pointless duplication, that feeling is the bug. The
-    /// duplication is the test.
     const DOCUMENTED_EVENT_KEYS: [&str; 10] = [
         "ts",
         "actor",
@@ -1452,7 +1199,7 @@ mod tests {
         documented.sort_unstable();
         assert_eq!(
             production, documented,
-            "KNOWN_KEYS has drifted from the keys SC-510/SC-511 document"
+            "KNOWN_KEYS has drifted from the documented key set"
         );
     }
 
@@ -1476,7 +1223,7 @@ mod tests {
     #[test]
     fn sc_510f_a_duplicated_unknown_key_stays_inert() {
         // The other side of the line. This reader never reads the value, so it
-        // cannot fabricate one — and SC-511b says step over what you do not
+        // cannot fabricate one — and the rule is to step over what you do not
         // understand, however many times it appears.
         let line = concat!(
             r#"{"ts":"2026-05-19T07:29:45Z","actor":"a","action":"done","#,
@@ -1488,10 +1235,9 @@ mod tests {
 
     #[test]
     fn sc_510f_inertness_survives_the_order_reversal_too() {
-        // SC-510f carries SC-510e's discriminator: the same duplicate pair with
+        // Order carries no discriminator: the same duplicate pair with
         // its members swapped must give the same answer. For an unknown key the
         // answer is "fine, twice" — and it has to be fine in both directions,
-        // or the reader is reading a value it claims to ignore.
         let forward =
             r#"{"ts":"2026-05-19T07:29:45Z","actor":"a","action":"done","x":1,"x":"two"}"#;
         let reverse =
@@ -1752,7 +1498,6 @@ mod tests {
         // The binding condition, at the hardest point: the generation still
         // being written is in the MIDDLE, so a reader that advanced past it
         // would look correct on the totals while silently reordering history.
-        // It must stop, and never visit what comes after.
         let (_scratch, log) = multi_generation("middlepartial", &[0, 7, 41], Some(7));
         assert_eq!(
             log.traversal_from(0).expect("plan"),
@@ -1930,7 +1675,7 @@ mod tests {
 
     #[test]
     fn dr_001_a_vanished_container_under_a_used_cursor_is_loud_not_quiet() {
-        // SC-519's tolerance is for a FRESH read. A cursor that has been
+        // tolerance is for a FRESH read. A cursor that has been
         // somewhere proves the stream existed, so its disappearance is loss.
         let scratch = Scratch::new("vanished");
         let path = scratch.write("events.jsonl", &format!("{DONE}\n"));
@@ -1985,7 +1730,7 @@ mod tests {
     #[test]
     fn sc_519_a_container_that_exists_but_will_not_open_is_still_an_error() {
         // A directory where the container should be: the open fails with
-        // something other than NotFound, which SC-509b says must reach the
+        // something other than NotFound, which must reach the
         // digest as loss.
         let scratch = Scratch::new("unreadable");
         fs::create_dir_all(scratch.0.join("events.jsonl")).expect("a directory in its place");
@@ -2007,7 +1752,7 @@ mod tests {
 
     /// Every alert summary the frozen watchdog can actually emit, taken from the
     /// `ae_emit_event "alert"` call sites in `ae` @72c7293 and from
-    /// `aewatch`. This is the whole probe population SC-980 names, so the
+    /// `aewatch`. This is the whole probe population, so the
     /// cascade is asserted against ALL of it rather than against examples.
     const INCUMBENT_ALERT_SUMMARIES: [(&str, Reason); 7] = [
         ("agent process dead — dropped to shell", Reason::Dead),
@@ -2117,7 +1862,6 @@ mod tests {
         // `nudge` is the load-bearing entry: the watchdog writes it, it names
         // the agent as TARGET, and it is what PRECEDES an alert — so a reader
         // that let it carry a verdict would answer from the question instead of
-        // from the answer.
         for action in ["state", "send", "nudge", "ask", "reply", "memo", "recover"] {
             assert_eq!(
                 event(action, Some("agent process dead — dropped to shell")).alert_meaning(),
@@ -2132,8 +1876,6 @@ mod tests {
         // The ruled evidence class: `target` names the owner and the ACTION
         // names the contribution, so no summary is consulted. Each summary
         // below would classify DIFFERENTLY if one were — "pausing nudges"
-        // carries no marker and would fall to Stale, and the second says
-        // "dead". The action deciding alone is the property, not a shortcut.
         for summary in [
             Some("upstream throttling detected — pausing nudges"),
             Some("the process looks dead"),
@@ -2149,7 +1891,7 @@ mod tests {
 
     #[test]
     fn sc_510c_an_alert_ref_is_not_pressed_into_service_as_a_typed_reason() {
-        // SC-980's typed key is unnamed by any row, so `ref` on an alert stays
+        // typed key is unnamed by any row, so `ref` on an alert stays
         // Undefined. A reader that took it would be inventing the schema.
         let line = concat!(
             r#"{"ts":"2026-08-20T15:00:19Z","actor":"_watchdog","action":"alert","#,
@@ -2165,9 +1907,6 @@ mod tests {
         // Added after moving this comparison onto the type: mutating the routed
         // arm to compare the SLOT ONLY survived the nextest lane, because the
         // only assertion covering it was the doctest — and nextest does not run
-        // doctests. `just rust-check` caught it, the fast lane did not. Same
-        // slot in another session is another agent, and that is the whole point
-        // of a churn-proof key.
         let here = Identity::Routed {
             slot: "main",
             session: "s",

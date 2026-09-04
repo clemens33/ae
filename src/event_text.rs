@@ -1,78 +1,12 @@
 //! The opaque event-text layer the generated `requests` and `events-tail`
-//! helpers read their bytes through — SC-211d, SC-211n, SC-1306d, SC-1306e.
-//!
-//! # Why this is not [`crate::events`]
-//!
-//! [`crate::events`] is the TYPED reader. It parses a record, enforces
-//! SC-510a–f, and under SC-520 skips a malformed complete line and marks the
-//! session degraded. The two helper read surfaces do none of that. They take a
-//! line, search it for `"key":"`, and keep whatever follows up to the first
-//! unescaped quote — so a line that is not JSON at all still yields fields, and
-//! a duplicate key silently resolves to its first occurrence. The 206 opaque P1
-//! rows compare those bytes, so the extraction they were captured through is
-//! its own module rather than a mode of the typed one.
-//!
-//! # Bytes, not `String`
-//!
-//! Every function here works on `[u8]`. The helpers are shell pipelines: `read`
-//! frames on `\n` and nothing else, and a value that is not valid UTF-8 is
-//! copied through verbatim. Decoding first would make an undecodable event log
-//! render differently from the frozen capture — and the escape set the walker
-//! recognises (`\`, `n`, `t`, `r`, `"`) is ASCII, which cannot occur as a UTF-8
-//! continuation byte, so a byte walk and a character walk agree on every
-//! sequence that decodes at all.
-//!
-//! # Framing is per surface, and the two surfaces do not agree
-//!
-//! MEASURED (bash 5.3.15, BSD userland, 2026-08-24), not derived:
-//!
-//! - `requests` reads through `_ae_tac`, i.e. `tac` or BSD `tail -r`. Neither
-//!   adds a newline, so a container whose last record is unterminated emits that
-//!   remainder FIRST, immediately followed by the previous line — the reader
-//!   sees the two GLUED into one line. Probe: `a\nb\n{partial` through
-//!   `tail -r` into `while IFS= read -r` yields `{partialb` then `a`.
-//! - `events-tail` reads through `tail -n 30 -f`, forward, where the same
-//!   unterminated remainder is simply not yet a line and `read` never yields it.
-//!
-//! [`reversed`] and [`last_records`] produce those two byte streams; both are
-//! then framed by the one [`read_lines`], because in the pipeline both are the
-//! same `while IFS= read -r line` loop.
+//! helpers read their bytes through.
 
 use std::borrow::Cow;
 
 /// The event container's filename under a session meta directory.
-///
-/// One spelling for both surfaces. DR-001 defers the written multi-generation
-/// layout, and these two surfaces are the bash-era readers: the frozen helpers
-/// both name `${META_DIR}/events.jsonl` literally, so inventing a pattern here
-/// would invent the half of the DR that is deliberately unwritten.
 pub const CONTAINER: &str = "events.jsonl";
 
 /// The container's bytes, or none at all.
-///
-/// **A DOOR** in the sense `clippy.toml` means, and the only one either helper
-/// surface needs: both of them read the same `events.jsonl` the same quiet way,
-/// so the read lives with the framing rather than once per surface.
-///
-/// Quiet on every failure, which is the frozen behavior and not a tolerance
-/// choice. The request sensor guards with `[[ -f "$file" ]] || return 0` and
-/// then reads through `_ae_tac "$file" 2>/dev/null || true`; `events-tail` reads
-/// through `tail … 2>/dev/null`; the state read guards the same way. An absent
-/// container, an unreadable one and anything that is not a regular file in
-/// its place are therefore indistinguishable at these surfaces: no diagnostic,
-/// no rows, `rc=0`.
-///
-/// **The `-f` gate is applied HERE, before anything is opened**, and it is not
-/// decoration: a FIFO in the container's place blocks whoever opens it for a
-/// reader that never comes, and an unconditional read left the core hanging
-/// with no stdout, no stderr and no exit where the frozen bodies answered
-/// empty at 0 (found in review, reproduced). The gate follows symlinks, as
-/// `-f` does.
-///
-/// That is SC-519's quiet-empty direction and deliberately NOT SC-509b's
-/// degraded direction, which belongs to [`crate::events`]: a degradation has to
-/// be publishable somewhere, and neither of these surfaces has a field to
-/// publish it in.
 #[must_use]
 pub fn read_container(path: &std::path::Path) -> Vec<u8> {
     if !container_exists(path) {
@@ -90,7 +24,7 @@ pub fn read_container(path: &std::path::Path) -> Vec<u8> {
 
 /// Whether the container exists yet — the frozen `[[ ! -f "$EVENTS_FILE" ]]`
 /// wait in `events-tail`, which exists because a fresh session has no container
-/// until its first event (SC-519).
+/// until its first event.
 #[must_use]
 pub fn container_exists(path: &std::path::Path) -> bool {
     #[allow(
@@ -104,10 +38,6 @@ pub fn container_exists(path: &std::path::Path) -> bool {
 
 /// The records `tac` and `tail` count: every byte up to and including a `\n`,
 /// plus a final unterminated remainder when the container does not end in one.
-///
-/// A record is NOT a line. `tail -n 30` over 31 terminated lines followed by an
-/// unterminated remainder emits from line 3 onward — 29 terminated records plus
-/// the remainder — because the remainder is one of the thirty (measured).
 fn records(bytes: &[u8]) -> Vec<&[u8]> {
     let mut out = Vec::new();
     let mut start = 0;
@@ -167,10 +97,6 @@ pub fn last_records(bytes: &[u8], count: usize) -> Vec<u8> {
 }
 
 /// The lines a `while IFS= read -r line` loop yields: complete lines only.
-///
-/// `read` returns non-zero at end-of-input without a delimiter, so the loop
-/// body never runs for a trailing remainder. Dropping it here is that fact, not
-/// a tolerance choice.
 #[must_use]
 pub fn read_lines(bytes: &[u8]) -> Vec<&[u8]> {
     let mut out = Vec::new();
@@ -185,9 +111,6 @@ pub fn read_lines(bytes: &[u8]) -> Vec<&[u8]> {
 }
 
 /// A line both helpers accept as an event: nonempty and `{`-prefixed.
-///
-/// `[[ "$line" == \{* ]] || continue` in both. Nothing here validates JSON —
-/// that is exactly the difference from [`crate::events`].
 #[must_use]
 pub fn event_line(line: &[u8]) -> Option<&[u8]> {
     line.first().filter(|byte| **byte == b'{').map(|_| line)
@@ -219,16 +142,7 @@ pub fn extract(line: &[u8], key: &str) -> Vec<u8> {
     member(line, key).value().unwrap_or_default().to_vec()
 }
 
-/// A flat string member's three states — SC-511b's, read off opaque text.
-///
-/// [`extract`] answers with bytes and so cannot tell an ABSENT key from one
-/// that is present and EMPTY. The frozen `requests` matcher never needed to:
-/// it tested `-n` and both look the same to that. **The RULED matcher does**,
-/// because SC-511b/SC-405j make those two different identities — both members
-/// absent falls back to the display name, while a member present and empty is
-/// a writer that meant to route and did not say where, which identifies
-/// nobody. Collapsing them would silently make an `Unassociated` side compare
-/// as a `Display` side.
+/// A flat string member's three states, read off opaque text.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Member<'a> {
     /// The key is not in the record.
@@ -236,10 +150,6 @@ pub enum Member<'a> {
     /// The key is present and its value is empty.
     Empty,
     /// The key carries a nonempty value.
-    ///
-    /// Borrowed on the fast path and owned only when the value carried an
-    /// escape, so the common case costs no copy while an unescaped value still
-    /// has somewhere to live.
     Value(Cow<'a, [u8]>),
 }
 
@@ -323,7 +233,6 @@ fn unescape(rest: &[u8]) -> Vec<u8> {
                 // `\\` unescapes to one backslash, and so does a TRAILING lone
                 // backslash — bash reads `${rest:$((i+1)):1}` past the end as
                 // the empty string, whose `case` falls to `*)` and appends `$c`
-                // followed by nothing. Two different reasons, one byte.
                 Some(b'\\') | None => out.push(b'\\'),
                 Some(other) => {
                     out.push(b'\\');
@@ -352,18 +261,6 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 
 /// `${#value}` — bash's parameter length, which is CHARACTERS under a UTF-8
 /// locale and not bytes.
-///
-/// MEASURED both ways, and the two disagree, so neither may be assumed: this
-/// counts characters (`${#s}` of `⟦abc⟧` is 5), while
-/// [`pad_left_aligned`] pads to BYTES. The frozen `events-tail` capture for
-/// `G11/escapes` decides it independently of any probe — a 62-character,
-/// 66-byte summary truncates after `and `, which only a character count and a
-/// character slice produce.
-///
-/// A byte that cannot start a UTF-8 sequence counts as one character and
-/// advances one byte, so the count is total. No fixture in the corpus carries
-/// undecodable event text, so that extension is the honest generalisation of
-/// the measured behavior and not itself measured.
 #[must_use]
 pub fn char_count(bytes: &[u8]) -> usize {
     char_starts(bytes).count()
@@ -400,11 +297,6 @@ pub fn char_slice(bytes: &[u8], start: usize, len: usize) -> &[u8] {
 }
 
 /// The byte offset at which each character starts.
-///
-/// `nth(n)` is therefore both "where character `n` begins" and "where the first
-/// `n` characters end", which is what makes one iterator serve the count and
-/// both slices. `None` from `nth(n)` means there are at most `n` characters —
-/// the whole value — and that is exactly bash's short-slice behavior.
 fn char_starts(bytes: &[u8]) -> impl Iterator<Item = usize> + '_ {
     let mut index = 0;
     std::iter::from_fn(move || {
@@ -433,12 +325,6 @@ fn utf8_width(lead: u8) -> usize {
 }
 
 /// `printf '%-<width>s'` — left-aligned, padded to `width` BYTES.
-///
-/// MEASURED (bash 5.3.15, `LC_ALL=en_US.UTF-8`): `printf '%-8s'` of `αβ` — two
-/// characters, four bytes — emits eight BYTES, four of them padding. Rust's own
-/// `{:<8}` counts characters and would emit ten. An over-long field is never
-/// truncated: the frozen `A6` capture carries a 31-character request id in a
-/// `%-28s` column with exactly one space after it.
 pub fn pad_left_aligned(out: &mut Vec<u8>, field: &[u8], width: usize) {
     out.extend_from_slice(field);
     for _ in field.len()..width {
@@ -547,7 +433,6 @@ mod tests {
         // `\n` and `\t` become ONE space, `\r` is dropped entirely — so `c` and
         // `d` end up adjacent, which the frozen G11 capture shows independently
         // (`cr class: before\rafter` renders as `cr class: beforeafter`). `\"`
-        // and `\\` unescape to themselves; `\q` is kept as both characters.
         assert_eq!(extract(line, "s"), br#"a b cd"e\f\qg"#);
     }
 
