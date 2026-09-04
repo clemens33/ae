@@ -1,10 +1,10 @@
 # seconds<TAB>section — measured by tests/itest-par, used to order units
 # longest-first. Regenerate with: tests/itest-par --timings
-2	Test 1: Lifecycle — create, list, end
+3	Test 1: Lifecycle — create, list, end
 5	core binding: requests shims to a pinned Rust core, or falls back visibly
 5	Test 2: Resume detection
 6	identity v2: resuming a v1 meta migrates the roster in place
-4	Test 2b: Rename moves session, window, and meta
+3	Test 2b: Rename moves session, window, and meta
 3	Test 3: Health check in list
 3	Test 3a: --active (recently-active filter)
 1	Test 3b: state column + session attn marker in list
@@ -14,14 +14,14 @@
 1	P1: truthful prompt + stopped-dir end-by-name regression
 2	P1 review B1: end a session on a DIFFERENT tmux server (named-server)
 2	2nd-delta B1 MIRROR: DEFAULT-server target, ended from a NAMED-ambient shell
-3	4th review B1: launch INSIDE a foreign tmux pane records the REAL server
+2	4th review B1: launch INSIDE a foreign tmux pane records the REAL server
 2	5th review B1: -S socket vs same-basename -L server collision round-trip
 6	issue #4: `ae end` racing a launch must not leave a recreated session
 1	7th review B3: zero-hit stays empty; --assume-stopped is the explicit teardown
 1	10th review B1 behavioral: an unverifiable enumerable socket BLOCKS the ack
 2	11th review B1: unlinked-but-LIVE server must be CANNOT-VERIFY, never clean-dead
 17	11th review B2: the lifecycle lock excludes end vs start/resume
-2	4th review B2: unreachable server → CANNOT VERIFY → state preserved, rc!=0
+1	4th review B2: unreachable server → CANNOT VERIFY → state preserved, rc!=0
 2	4th review B3-probe: no-remote worktree end preserves dir + commit reachable
 3	P1 review B2: cleanup must not read a prefix-neighbor's mode after the kill
 4	Test 3c: derived rollup surfaces a watchdog alert (slice 2)
@@ -33,7 +33,7 @@
 3	Test 8: ae <name> use <name> override
 5	Test 9: Resume from different CWD (local mode)
 1	Test 10: ae doctor
-2	Test 10b: ae doctor orphan check (P2a — lifecycle blindness)
+3	Test 10b: ae doctor orphan check (P2a — lifecycle blindness)
 3	refresh reproduces the CORE's helper set, link for link
 3	Test 11: ae doctor --refresh
 3	Test 11b: refresh must NOT stop a STOPPED session's stale-pid watchdog
@@ -47,10 +47,10 @@
 9	lead-default Part 3: layout = lead-solo (real tmux windows)
 9	session-shape: layout = lead-pair (colead seat in window 0, real tmux)
 4	#27: a pane command survives being re-run
-37	ROLLBACK: a failed launch must not leave debris behind
-90	#33: stop targets the RECORDED server by EXACT id, and verifies
+36	ROLLBACK: a failed launch must not leave debris behind
+89	#33: stop targets the RECORDED server by EXACT id, and verifies
 3	#34: end STOPS before it SNAPSHOTS
-4	#34: a failed push leaves everything, and SAYS the session is stopped
+3	#34: a failed push leaves everything, and SAYS the session is stopped
 17	#30: a resumed pane reports the TOOL, not bash
 10	#48: session archives, end to end
 10	purge: no archive written, and an existing one removed
