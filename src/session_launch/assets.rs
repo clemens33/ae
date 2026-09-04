@@ -22,7 +22,13 @@ use std::path::{Path, PathBuf};
 ///
 /// `peak` is absent: it is an alias for `peek`, and an alias that re-derived
 /// its own directory would be a second place the derivation could drift.
-pub(crate) const PASSTHROUGH: [(&str, &str); 15] = [
+///
+/// `_register-sid` is here although no human types it: codex's own
+/// `developer_instructions` name it by path as that agent's first action, so it
+/// must be a FILE in the session directory like every other helper. It left the
+/// set with the `declare -f` template library and nothing replaced it, which is
+/// how the handshake came to name a script that was not there.
+pub(crate) const PASSTHROUGH: [(&str, &str); 16] = [
     ("send", crate::cli::SEND),
     ("ask", crate::cli::ASK),
     ("review", crate::cli::REVIEW),
@@ -38,6 +44,7 @@ pub(crate) const PASSTHROUGH: [(&str, &str); 15] = [
     ("interrupt", crate::cli::INTERRUPT),
     ("spawn", crate::cli::SPAWN),
     ("retire", crate::cli::RETIRE),
+    ("_register-sid", crate::cli::REGISTER_SID),
 ];
 
 /// The prologue every generated shim shares.
@@ -252,6 +259,7 @@ mod tests {
             "interrupt",
             "spawn",
             "retire",
+            "_register-sid",
             "loop",
             "watchdog",
             "events-tail",

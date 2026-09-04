@@ -220,10 +220,6 @@ pub struct Env {
     pub core: Option<PathBuf>,
     /// The version the resolved core reported, when the caller measured it.
     pub core_version: Option<String>,
-    /// The glue's own path, recorded as `ae_path` — the `ae` COMMAND a helper or
-    /// the watchdog re-execs (`ae telegram _supervise`), which under a
-    /// versioned install is a different file from the core.
-    pub glue: Option<PathBuf>,
     /// `--no-autostart`: start NEITHER companion. The frozen
     /// `AE_NO_AUTOSTART=1`, which the core cannot read for itself — the
     /// operator's opt-out crosses as a flag like every other environment fact.
@@ -283,7 +279,6 @@ fn read_env(tail: &[String]) -> Result<(Env, Vec<String>), String> {
         inside_tmux: false,
         attach: true,
         no_autostart: false,
-        glue: None,
         core: None,
         core_version: None,
     };
@@ -326,7 +321,6 @@ fn read_env(tail: &[String]) -> Result<(Env, Vec<String>), String> {
             "--local-config" => env.local = Some(value.into()),
             "--server-kind" => env.server_kind.clone_from(value),
             "--server" => env.server_value.clone_from(value),
-            "--glue" => env.glue = Some(value.into()),
             "--core" => env.core = Some(value.into()),
             "--core-version" => env.core_version = Some(value.clone()),
             _ => return Err(flag.clone()),
@@ -423,7 +417,6 @@ pub fn relaunch(
         // A relaunch IS a launch (compact's child), so the companions are
         // decided exactly as they are for one typed by hand.
         no_autostart: false,
-        glue: None,
         core: None,
         core_version: None,
     };
@@ -1524,11 +1517,13 @@ fn meta_document(
         // The core binding, pinned per session as a PAIR: a helper that found a
         // binary whose version disagreed with the session's would be running a
         // different contract than the one this session was built against.
-        // ae_path is the recorded `ae` COMMAND, which is the glue when the caller
-        // named it; the core only stands in for a caller that did not.
-        let ae_path = env.glue.as_ref().unwrap_or(&core);
+        //
+        // `ae_path` — the recorded `ae` COMMAND — is NOT written any more. Its
+        // one reader was the watchdog's Telegram revive, which shelled back
+        // into the glue through it; the revive is the core's own call now, so
+        // the row named a binary nobody ran. The flag that fed it (`--glue`)
+        // went with it, and an unknown flag is refused exactly as before.
         let ae_core = env.core.as_ref().unwrap_or(&core);
-        row("ae_path", &ae_path.display().to_string());
         row("ae_core", &ae_core.display().to_string());
         row(
             "ae_core_version",
@@ -1963,7 +1958,7 @@ fn autostart_orchestrator(
         ),
         ("hub", env.home.join("meta-hub/hub.config")),
     ];
-    let Some((session, _)) = scaffolds
+    let Some((session, config)) = scaffolds
         .iter()
         .find(|(_, config)| crate::lifecycle::path_exists(config))
     else {
@@ -1990,17 +1985,28 @@ fn autostart_orchestrator(
         );
         return;
     }
-    // The child is the GLUE (`ae orchestrator` is a bash trampoline that
-    // resolves the scaffold and falls through to a launch), so with no recorded
-    // glue there is nothing to run.
-    let Some(glue) = &env.glue else {
+    // The child is a LAUNCH BY THIS CORE, not a re-entry through the glue: the
+    // glue's `orchestrator` arm was retired and refuses, so the frozen
+    // trampoline's `CONFIG_FILE` + `cd` rewrite has to cross as the flags
+    // `_launch` already reads. The scaffold's own directory is its cwd.
+    let Some(dir) = config.parent() else {
+        return;
+    };
+    let Some(argv) = crate::lifecycle::orchestrator_argv(&crate::lifecycle::Companion {
+        home: &env.home,
+        dir,
+        config,
+        server_kind: &env.server_kind,
+        server_value: &env.server_value,
+        session,
+    }) else {
         return;
     };
     let _ = writeln!(
         out,
         "Starting orchestrator companion session in the background (AE_NO_AUTOSTART=1 skips)."
     );
-    let _ = transport::run_detached(&crate::lifecycle::orchestrator_argv(glue, session));
+    let _ = transport::run_detached(&argv);
 }
 
 /// Create a detached window running `command`, and report its pane id.

@@ -45,6 +45,10 @@ print "  fake-model  ~/x\r\n";
 while (1) { sleep 1; }
 "#;
 
+/// A roster whose agent does nothing but stay in its pane.
+const IDLE_CONFIG: &str = "[profiles]\nidle = \"sleep 600\"\n\n[roster]\nlead = idle\n\n\
+     [workspace]\nmain = lead\nlayout = vertical\nwatchdog = false\n";
+
 /// One isolated ae home, one project directory, one tmux server.
 struct Rig {
     scratch: PathBuf,
@@ -111,6 +115,20 @@ impl Rig {
         }
     }
 
+    /// The same rig with a bare sleeper as its agent.
+    ///
+    /// A perl TUI exists for the input sensor, and a test that never reads a
+    /// pane pays for it in contention with every other launch arm. Two of them
+    /// run here — this session and the companion it starts — so both are cheap.
+    fn idle(tag: &str) -> Self {
+        let rig = Self::new(tag, &[], None);
+        assert!(
+            std::fs::write(&rig.config, IDLE_CONFIG).is_ok(),
+            "an idle config"
+        );
+        rig
+    }
+
     fn tmux(&self, tail: &[&str]) -> (bool, String) {
         let mut args = ae::tmux::server_args(&ae::inventory::ServerId::Selected(
             ae::meta::Selector::Socket(self.sock.clone()),
@@ -151,6 +169,28 @@ impl Rig {
 
     fn dir(&self, session: &str) -> PathBuf {
         self.home.join("sessions").join(session)
+    }
+
+    /// Plant the orchestrator scaffold the companion autostart opts in on.
+    ///
+    /// Its agent is a bare sleeper rather than the TUI fake: what this proves is
+    /// that the companion is LAUNCHED, under its own config, and a second perl
+    /// TUI would only add contention to a suite that already runs several.
+    fn scaffold_orchestrator(&self) -> PathBuf {
+        let dir = self.home.join("orchestrator");
+        assert!(std::fs::create_dir_all(&dir).is_ok(), "a scaffold dir");
+        let config = dir.join("orchestrator.config");
+        assert!(
+            std::fs::write(&config, IDLE_CONFIG).is_ok(),
+            "a scaffold config"
+        );
+        config
+    }
+
+    /// The session names the rig's server holds right now.
+    fn sessions(&self) -> Vec<String> {
+        let (_, listed) = self.tmux(&["list-sessions", "-F", "#{session_name}"]);
+        listed.lines().map(str::to_owned).collect()
     }
 
     fn meta(&self, session: &str) -> String {
@@ -450,4 +490,101 @@ fn a_codex_launch_captures_the_session_id_it_registers() {
         std::thread::sleep(Duration::from_millis(250));
     }
     panic!("the capture never registered the id:\n{}", rig.meta("cap"));
+}
+
+/// The orchestrator companion, started BY THE CORE.
+///
+/// The bug this pins: the autostart ran `env AE_NO_AUTOSTART=1 <glue>
+/// orchestrator`, and the glue's `orchestrator` arm is a RETIRED word that
+/// refuses with exit 2 — on a stderr the detached child sends to `/dev/null`.
+/// So the companion had not started since the glue cut, and nothing said so.
+///
+/// The rig passes no glue path at all (the flag is gone), so a companion that
+/// appears here can only have been launched by the core itself.
+#[test]
+fn a_scaffold_starts_the_orchestrator_companion_from_the_core() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("orch");
+    let config = rig.scaffold_orchestrator();
+    let (code, stdout, stderr) = rig.launch(&["--local", "lnorch"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        stdout.contains("Starting orchestrator companion session"),
+        "the launch says it started one: {stdout}"
+    );
+
+    // The child is DETACHED, and its two observable facts do not land together:
+    // tmux lists a session the moment it is created, while the meta is
+    // published further down the launch. Waiting on the RECORD waits for both.
+    let recorded = format!("config={}", config.display());
+    let mut meta = String::new();
+    for _ in 0..160 {
+        meta = rig.meta("orchestrator");
+        if meta.contains(&recorded) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    let seen = rig.sessions();
+    assert!(
+        seen.iter().any(|name| name == "orchestrator"),
+        "the companion must be up on the rig's own server: {seen:?}"
+    );
+
+    // ISOLATION is the whole point of the retired trampoline: the companion
+    // must run under the SCAFFOLD's config and directory, never the caller's.
+    assert!(
+        meta.contains(&recorded),
+        "the companion read the scaffold's config:\n{meta}"
+    );
+    assert!(
+        meta.contains(&format!(
+            "origin={}",
+            rig.home.join("orchestrator").display()
+        )),
+        "the companion ran in the scaffold's directory:\n{meta}"
+    );
+
+    // And it starts NO companion of its own: the structural guard (a session
+    // named for a scaffold) and `--no-autostart` both hold, so there is exactly
+    // one orchestrator however many times the recursion could have gone round.
+    assert_eq!(
+        rig.sessions()
+            .iter()
+            .filter(|name| *name == "orchestrator")
+            .count(),
+        1,
+        "the recursion guard holds"
+    );
+}
+
+/// `--glue` is GONE, and an unknown flag is refused exactly as before.
+///
+/// The flag existed to record `ae_path` in meta — the `ae` COMMAND the watchdog
+/// re-exec'd for its Telegram revive. That revive is in-process now, so the row
+/// had no reader and the flag had no subject. No compat arm: a caller still
+/// passing it is refused before any side effect, which is the whole point of
+/// reading the preamble first.
+#[test]
+fn the_retired_glue_flag_is_refused_before_any_side_effect() {
+    let out = ae()
+        .arg(ae::cli::LAUNCH)
+        .args([
+            "--home",
+            "/nonexistent",
+            "--cwd",
+            "/nonexistent",
+            "--glue",
+            "/bin/ae",
+        ])
+        .output()
+        .unwrap_or_else(|why| panic!("the ae binary should run: {why}"));
+    assert_eq!(out.status.code(), Some(2), "a usage refusal");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("offending word: --glue"),
+        "the refusal names the word: {stderr}"
+    );
 }

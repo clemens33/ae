@@ -271,6 +271,12 @@ pub const LAUNCH: &str = "_launch";
 /// entry, never human-typed.
 pub const CAPTURE_SID: &str = "_capture-sid";
 
+/// Codex's own session-id handshake: `_register-sid <meta-dir> <slot>
+/// [<session-id>]`. Underscored — the CODEX AGENT runs it through its session
+/// shim, never a human. The behavior is
+/// [`crate::session_launch::capture::register_sid`].
+pub const REGISTER_SID: &str = "_register-sid";
+
 /// The environment report: `doctor [--refresh [all|<session>]]`. A TOP-LEVEL
 /// command, not underscored — a human types it after an install or an agent-CLI
 /// upgrade, which is the whole reason it exists. The behavior is
@@ -341,6 +347,15 @@ pub enum Request {
         slot: String,
         /// Its pane, for the TUI fallback.
         pane: String,
+    },
+    /// `_register-sid <dir> <slot> [<id>]` — codex's self-registration.
+    RegisterSid {
+        /// The session meta directory the shim derives from `$0`.
+        dir: PathBuf,
+        /// The seat registering an id.
+        slot: String,
+        /// The id the agent named, or `None` to let the core scan for it.
+        id: Option<String>,
     },
     /// `_launch …` — a whole session, created or resumed.
     Launch {
@@ -838,6 +853,20 @@ impl Request {
                 [_, _, _, extra, ..] => Self::UsageError(extra.clone()),
                 _ => Self::MissingOperand(CAPTURE_SID),
             },
+            Some(REGISTER_SID) => match &args[1..] {
+                [dir, slot] => Self::RegisterSid {
+                    dir: dir.into(),
+                    slot: slot.clone(),
+                    id: None,
+                },
+                [dir, slot, id] => Self::RegisterSid {
+                    dir: dir.into(),
+                    slot: slot.clone(),
+                    id: Some(id.clone()),
+                },
+                [_, _, _, extra, ..] => Self::UsageError(extra.clone()),
+                _ => Self::MissingOperand(REGISTER_SID),
+            },
             Some(LAUNCH) => Self::Launch {
                 tail: args[1..].to_vec(),
             },
@@ -1291,6 +1320,7 @@ impl Request {
             | Self::Focus { .. }
             | Self::Launch { .. }
             | Self::CaptureSid { .. }
+            | Self::RegisterSid { .. }
             | Self::Doctor { .. }
             | Self::Rename { .. }
             | Self::CheckDeps { .. }

@@ -465,21 +465,68 @@ fn supervisor_argv(name: &str) -> Option<DetachedArgv> {
     ]))
 }
 
-/// `nohup env AE_NO_AUTOSTART=1 <glue> <session>` — the launch's orchestrator
-/// companion (the frozen ae:8055), and the second shape this module can mint.
+/// The facts a companion launch carries — everything `_launch` would otherwise
+/// have to read out of an environment the core may not touch.
+pub(crate) struct Companion<'a> {
+    /// The ae home the companion's state lives under — the launching session's.
+    pub home: &'a Path,
+    /// The directory the companion runs in: its own scaffold's.
+    pub dir: &'a Path,
+    /// The scaffold's config, which is the whole point of the isolation — the
+    /// companion must never resolve the CALLER's roster.
+    pub config: &'a Path,
+    /// The recorded server's kind, so the companion lands where the fleet is.
+    pub server_kind: &'a str,
+    /// That server's value.
+    pub server_value: &'a str,
+    /// The session name the scaffold decides.
+    pub session: &'a str,
+}
+
+/// `nohup <this binary> _launch … -- --local <session>` — the launch's
+/// orchestrator companion, and the second shape this module can mint.
 ///
-/// `env` carries the recursion guard the core cannot set for itself: the child
-/// is the GLUE, which reads `AE_NO_AUTOSTART` to decide whether to start
-/// companions of its own. Every word is fixed but the glue's path and the
-/// scaffold's session name, and there is no shell, so a path with a space stays
-/// one argument.
-pub(crate) fn orchestrator_argv(glue: &Path, session: &str) -> DetachedArgv {
-    DetachedArgv(vec![
-        "env".to_owned(),
-        "AE_NO_AUTOSTART=1".to_owned(),
-        glue.display().to_string(),
-        session.to_owned(),
-    ])
+/// THE CHILD IS THE CORE, not the glue. `ae orchestrator` was a bash
+/// trampoline that rewrote the config and fell through to a launch; the glue
+/// cut retired it, and its arm now REFUSES — so a companion started through
+/// the glue died with exit 2 on a discarded stderr. The core starts its own
+/// launch instead, with the scaffold's config and directory as flags, which is
+/// what the trampoline's `CONFIG_FILE` + `cd` rewrite meant.
+///
+/// `--no-autostart` is the recursion guard the child cannot infer, kept beside
+/// the structural one (a session already named for a scaffold starts nothing).
+/// `--no-attach` because nothing is watching: the child's output is
+/// `/dev/null`.
+///
+/// `None` when this process cannot name its own executable — without that the
+/// companion could only be started through a `PATH` lookup, which may resolve
+/// to a different `ae` than the one holding the contract.
+pub(crate) fn orchestrator_argv(plan: &Companion<'_>) -> Option<DetachedArgv> {
+    let own = std::env::current_exe().ok()?;
+    let mut argv = vec![
+        own.to_string_lossy().into_owned(),
+        crate::cli::LAUNCH.to_owned(),
+        "--home".to_owned(),
+        plan.home.display().to_string(),
+        "--cwd".to_owned(),
+        plan.dir.display().to_string(),
+        "--global".to_owned(),
+        plan.config.display().to_string(),
+    ];
+    if !plan.server_kind.is_empty() {
+        argv.push("--server-kind".to_owned());
+        argv.push(plan.server_kind.to_owned());
+        argv.push("--server".to_owned());
+        argv.push(plan.server_value.to_owned());
+    }
+    argv.extend([
+        "--no-attach".to_owned(),
+        "--no-autostart".to_owned(),
+        "--".to_owned(),
+        "--local".to_owned(),
+        plan.session.to_owned(),
+    ]);
+    Some(DetachedArgv(argv))
 }
 
 /// Append one line to the target's event log, best-effort.
