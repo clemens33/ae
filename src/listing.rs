@@ -303,8 +303,7 @@ pub fn table_at(sessions: &[&SessionEntry], now: Timestamp) -> String {
                     (false, _) => "unknown",
                 },
             );
-            // The frozen `!` marker, restored on the trigger the paragraph
-            // above records: a pane query now fills this.
+            // The `!` marker: a pane query fills this.
             if session.status == Status::Running && agent.alive == Some(false) {
                 out.push_str(" !");
             }
@@ -314,7 +313,7 @@ pub fn table_at(sessions: &[&SessionEntry], now: Timestamp) -> String {
     out
 }
 
-/// Append the retained, frozen-bash session summary.
+/// Append the session summary line.
 fn push_frozen_session_subline(out: &mut String, session: &SessionEntry, now: Timestamp) {
     out.push_str("  ");
     if let Some(goal) = session.goal.as_deref().filter(|goal| !goal.is_empty()) {
@@ -337,8 +336,8 @@ fn push_frozen_session_subline(out: &mut String, session: &SessionEntry, now: Ti
         out.push_str(branch);
         out.push_str(" · ");
     } else if !session.degraded {
-        // Branch acquisition HAS landed (see `session::branch_at`), so this arm
-        // no longer stands for "unimplemented".
+        // This arm means the branch is UNKNOWN, not unimplemented — branch
+        // acquisition is `session::branch_at`.
         out.push_str("git:? · ");
     }
     out.push_str("ae ");
@@ -359,8 +358,8 @@ fn push_frozen_session_subline(out: &mut String, session: &SessionEntry, now: Ti
     out.push('\n');
 }
 
-/// Frozen bash keeps at most 60 characters of a goal, reserving its final
-/// character for an ellipsis when truncation happens.
+/// At most 60 characters of a goal, the final character reserved for an
+/// ellipsis when truncation happens.
 fn push_frozen_goal(out: &mut String, goal: &str) {
     if goal.chars().count() > 60 {
         out.extend(goal.chars().take(59));
@@ -1120,7 +1119,7 @@ mod tests {
                 solo.agents = vec![listed.clone()];
                 let alone = table(&[&solo]);
 
-                // PER-AGENT HEALTH IS NO LONGER A TABLE CELL — it is a digest
+                // PER-AGENT HEALTH IS NOT A TABLE CELL — it is a digest
                 // member, gated in `phase3::sc_017r`.
                 assert!(alone.contains(&listed.reference), "{alone}");
                 if let Some(declared) = listed.state.as_deref() {
@@ -1464,7 +1463,7 @@ mod tests {
         }
     }
 
-    /// The frozen `!` marker: a RUNNING seat whose pane holds no agent.
+    /// The `!` marker: a RUNNING seat whose pane holds no agent.
     #[test]
     fn a_running_seat_with_no_agent_in_its_pane_carries_frozen_s_marker() {
         let seat = |status, alive| {

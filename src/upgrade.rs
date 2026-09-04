@@ -279,7 +279,7 @@ pub fn run(
         return Ok(crate::entry::EXIT_USAGE);
     };
     // BEFORE THE DOWNLOAD AND BEFORE ANY MUTATION. A publish is `$HOME`-pinned
-    // end to end, and it is no longer only a file copy: it migrates, repoints
+    // end to end, and it is not only a file copy: it migrates, repoints
     // and relinks every session under `$HOME/.ae` and then deletes version
     // directories there. A checkout run whose state root is somewhere else —
     // `ae-dev` is the whole point of that door — would therefore reach straight
@@ -387,8 +387,8 @@ fn upgrade(
 
 /// Hand the extracted bundle to ITS OWN core, exactly as the bootstrap does.
 ///
-/// THE PUBLISH BELONGS TO THE NEW CORE, not to this one. A publish is no longer
-/// a file copy: it steps every session's meta through the migration chain. The
+/// THE PUBLISH BELONGS TO THE NEW CORE, not to this one. A publish is not a
+/// file copy: it steps every session's meta through the migration chain. The
 /// steps for versions N..M live in the core being INSTALLED — this process only
 /// knows the chain as of its own release, so an in-process `install_from` would
 /// migrate tomorrow's sessions with yesterday's rules, and on the first real

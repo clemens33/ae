@@ -1,7 +1,6 @@
 //! `_launch`: a whole session, created or resumed, as ONE core operation.
 //!
-//! Ported from the frozen script's launch path, the dispatcher's
-//! fall-through: `_launch_parse_flags`, the name derivation and its
+//! The whole launch path: the flag parse, the name derivation and its
 //! ownership guard, the teardown tombstones, the `--from` preflight, the
 //! working-directory modes, the tmux session and its layout, the meta publish,
 //! the session assets, the pane commands and their readiness-gated paste, the
@@ -25,32 +24,30 @@ pub(crate) mod assets;
 pub(crate) mod capture;
 pub(crate) mod name;
 
-/// The frozen usage line for the core entry.
+/// The usage line for the core entry.
 pub const USAGE: &str = "Usage: _launch --home <ae-home> --cwd <dir> [--global <cfg>] [--local <cfg>] [--server-kind <kind>] [--server <value>] [--attach|--no-attach] [--no-autostart] [--] [--worktree|--copy|--local] [--from <uuid>] [use <name>] [<session-name>]";
 
 /// How long a freshly created pane's shell is given to draw its prompt before
-/// anything is pasted — the frozen `sleep 0.3`.
+/// anything is pasted.
 const SHELL_SETTLE: Duration = Duration::from_millis(300);
 
 /// How many polls the launch prompt's readiness wait takes.
 const LAUNCH_READY_POLLS: u32 = 90;
 
-/// How many polls the tool-process wait takes — the frozen `10`.
+/// How many polls the tool-process wait takes.
 const START_POLLS: u32 = 10;
 
-/// The pause between those polls — the frozen `sleep 0.1`.
+/// The pause between those polls.
 const START_POLL: Duration = Duration::from_millis(100);
 
-/// How long to hold the lifecycle lock for before giving up — the frozen
-/// `flock -w 15`.
+/// How long to hold the lifecycle lock for before giving up.
 const LIFECYCLE_WAIT: Duration = Duration::from_secs(15);
 
-/// The event log's resume-time retention, in lines — the frozen
-/// `AE_EVENTS_KEEP` default.
+/// The event log's resume-time retention, in lines.
 const EVENTS_KEEP: usize = 1000;
 
-/// The `launch-delivery-failed` action, kept byte-identical to the frozen one:
-/// the watchdog and the digest both key on it.
+/// The `launch-delivery-failed` action: the watchdog and the digest both key
+/// on it.
 const LAUNCH_FAILED_ACTION: &str = "launch-delivery-failed";
 
 // ---------------------------------------------------------------------------
@@ -69,7 +66,7 @@ pub enum Mode {
 }
 
 impl Mode {
-    /// The spelling the meta records — the frozen `mode=` values.
+    /// The spelling the meta records — the `mode=` values.
     const fn as_str(self) -> &'static str {
         match self {
             Self::Local => "local",
@@ -89,7 +86,7 @@ impl Mode {
     }
 }
 
-/// What the user's own argv said — the frozen `_launch_parse_flags`.
+/// What the user's own argv said.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Plan {
     /// The mode flag, when one was given.
@@ -108,7 +105,7 @@ pub struct Plan {
 ///
 /// # Errors
 ///
-/// The refusal line, ready for stderr. Every one is the frozen text.
+/// The refusal line, ready for stderr.
 pub fn parse_plan(args: &[String]) -> Result<Plan, String> {
     let mut plan = Plan::default();
     let mut rest = args;
@@ -153,7 +150,7 @@ pub fn parse_plan(args: &[String]) -> Result<Plan, String> {
                     "Error: unknown flag '{word}'. Use --worktree, --copy, --local, or --from <archive-uuid>."
                 ));
             }
-            // Last positional wins, exactly as the frozen loop's `*)` arm does.
+            // Last positional wins.
             _ => plan.name = Some(word.clone()),
         }
     }
@@ -297,8 +294,8 @@ fn read_env(tail: &[String]) -> Result<(Env, Vec<String>), EnvError> {
         ));
     }
     // BEFORE ANY EFFECT, and it is the reason this lives in the parse: a kind
-    // ae cannot type used to fall through to the ambient server, so the launch
-    // built the session THERE and recorded the unusable pair in meta.
+    // ae cannot type must NOT fall through to the ambient server: the launch
+    // would build the session THERE and record the unusable pair in meta.
     if let Err(why) = ServerId::from_typed_flags(&env.server_kind, &env.server_value) {
         // The refusal says what could not be used; this line says what to do:
         // the pair arrives from the glue's AE_TMUX_SERVER* re-export, so the
@@ -338,10 +335,9 @@ pub fn run(tail: &[String], out: &mut impl Write, err: &mut impl Write) -> crate
         // caller who asked wrong — an unknown flag, `use` with no agent name, a
         // second `--from` — and the crate's exit contract keeps 2 ("you asked
         // wrong") distinct from 1 ("it went wrong") precisely so a script can
-        // tell them apart. SC-022 rules the same for an unknown top-level
-        // option, and since slice Z3 this is where one lands: the wrapper is
-        // gone, so `ae --frobnicate` reaches the launch grammar as the first
-        // parser that defines a flag set, and answering 1 there made the row
+        // tell them apart. The same holds for an unknown top-level option:
+        // `ae --frobnicate` reaches the launch grammar as the first parser
+        // that defines a flag set, so answering 1 there would make the rule
         // unsatisfiable through the public binary.
         Err(line) => {
             writeln!(err, "{line}")?;
@@ -1169,9 +1165,8 @@ fn build(
     // TRI-STATE, and a tmux probe taken before any server is running answers
     // UNKNOWN — which refuses every time and would silently disable both
     // companions on a cold machine. The session created above is what makes the
-    // server answerable. Both are best-effort and strictly non-fatal (the frozen
-    // path ran each behind `2>/dev/null || true`): a session that is up is never
-    // failed by a bridge that is not.
+    // server answerable. Both are best-effort and strictly non-fatal: a session
+    // that is up is never failed by a bridge that is not.
     if !env.no_autostart {
         autostart_telegram(env, shape, &dir, &server, err);
         autostart_orchestrator(env, shape, &server, out, err);
@@ -1349,12 +1344,11 @@ pub(crate) fn apply_status_bar(server: &ServerId, name: &str, paths: &str) {
     );
 }
 
-/// The location segment of the status bar — the frozen
-/// `_ae_status_left_paths`, whose shape is mode-aware.
+/// The location segment of the status bar, whose shape is mode-aware.
 pub(crate) fn status_paths(mode: &str, origin: &str, work_dir: &str) -> String {
     match Mode::parse(mode) {
-        // An unrecorded or unknown mode reads as local: the frozen `case`'s
-        // default arm shows the work dir alone rather than an arrow to nothing.
+        // An unrecorded or unknown mode reads as local: the work dir alone
+        // rather than an arrow to nothing.
         Some(Mode::Local) | None => work_dir.to_owned(),
         Some(Mode::Git | Mode::Full) => format!("{origin} → {work_dir}"),
     }
@@ -1615,10 +1609,9 @@ fn start_agent(
 /// fresh one, and none at all for a tool with no post-launch capture.
 ///
 /// The token is what tells two seats apart INSIDE the tool's own store, so it
-/// has to outlive a resume the way `harness_session` does. It used to be minted
-/// on a fresh launch alone and dropped everywhere else, which left every resumed
-/// seat with an empty token, no `AE_..._LAUNCH_ID` in its instructions, and a
-/// capture reduced to matching the newest log in the working directory.
+/// has to outlive a resume the way `harness_session` does. A resumed seat with
+/// an empty token carries no `AE_..._LAUNCH_ID` in its instructions, and its
+/// capture is reduced to matching the newest log in the working directory.
 /// Measured 2026-09-04: two codex seats resumed while both were still `pending`
 /// then raced onto ONE rollout and recorded the SAME id twice.
 fn launch_token(tool: ToolKind, stored: Option<String>) -> String {
@@ -1634,7 +1627,7 @@ fn launch_token(tool: ToolKind, stored: Option<String>) -> String {
 ///
 /// `_run` appends the inline first message on the CREATE path alone; EVERY
 /// resume composes with an empty prompt — the exact one, and equally the fresh
-/// fallback a seat whose recorded id no longer probes has to take. So the start
+/// fallback a seat whose recorded id fails its store probe has to take. So the start
 /// marker decides this, and the id must not: a codex seat resumed while its
 /// `harness_session` is still `pending` takes that fallback, and gating on a
 /// probeable id would leave it with NO user turn at all. It would then write no
@@ -1851,7 +1844,7 @@ fn autostart_orchestrator(
     if matches!(shape.name.as_str(), "orchestrator" | "hub") {
         return;
     }
-    // The SCAFFOLD decides the session name: a legacy `hub.config` keeps
+    // The SCAFFOLD decides the session name: a `hub.config` keeps
     // running as `hub`, because its baked charter paths and its resume state
     // are that name's.
     let scaffolds = [
@@ -1867,7 +1860,7 @@ fn autostart_orchestrator(
     else {
         return;
     };
-    // TRI-STATE (#28): only a VERIFIED absence may start a companion.
+    // TRI-STATE: only a VERIFIED absence may start a companion.
     let mut unknown = false;
     for (name, _) in &scaffolds {
         match transport::verify_session_absent(server, name) {
@@ -1883,10 +1876,9 @@ fn autostart_orchestrator(
         );
         return;
     }
-    // The child is a LAUNCH BY THIS CORE, not a re-entry through the glue: the
-    // glue's `orchestrator` arm was retired and refuses, so the frozen
-    // trampoline's `CONFIG_FILE` + `cd` rewrite has to cross as the flags
-    // `_launch` already reads. The scaffold's own directory is its cwd.
+    // The child is a LAUNCH BY THIS CORE: the `CONFIG_FILE` + `cd` rewrite
+    // crosses as the flags `_launch` already reads, and the scaffold's own
+    // directory is its cwd.
     let Some(dir) = config.parent() else {
         return;
     };
@@ -2019,7 +2011,7 @@ fn meta_value(dir: &Path, key: &str) -> Option<String> {
     meta::first_value(&bytes, key).map(|value| String::from_utf8_lossy(value).into_owned())
 }
 
-/// The session directory at 0700 — the frozen `mkdir -p && chmod 0700`.
+/// The session directory at 0700.
 fn create_private_dir(dir: &Path) -> io::Result<()> {
     use std::os::unix::fs::PermissionsExt as _;
     std::fs::create_dir_all(dir)?;
@@ -2077,7 +2069,7 @@ fn rollback_dir(shape: &Session, dir: &Path, err: &mut impl Write) -> io::Result
     )
 }
 
-/// A recursive copy of `from` into `to` — the frozen `cp -a`, minus one thing.
+/// A recursive copy of `from` into `to`, minus one thing.
 ///
 /// # Errors
 ///

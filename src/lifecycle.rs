@@ -1,12 +1,9 @@
 //! `_end`, `_stop` and `_compact`: the three destructive lifecycle operations,
 //! whole, in the core.
 //!
-//! Ported from `ae`'s `cmd_end`/`end_session`/`_end_session_locked`/
-//! `cleanup_session`/`_end_archive_step`, `cmd_stop`/`_stop_dispatch`/
-//! `_stop_one_session`/`_stop_session_locked`, and `cmd_compact`. The core
-//! already owned every STEP (`_end-local-teardown`, `_archive-publish`,
-//! `_compact-freeze` and the rest); what lived in bash was the ORDER, and the
-//! order is the whole contract:
+//! Each STEP is its own core entry (`_end-local-teardown`, `_archive-publish`,
+//! `_compact-freeze` and the rest); this module owns the ORDER, and the order
+//! is the whole contract:
 //!
 //! 1. the per-session **lifecycle lock** is taken before the target is
 //!    classified and held through the last removal, so a start or resume can
@@ -35,8 +32,7 @@ use crate::state::{EXIT_FAILED, EXIT_USAGE};
 use crate::tmux::StopProbe;
 use crate::transport;
 
-/// How long a lifecycle operation waits for the per-session lock — the frozen
-/// `flock -w 15`.
+/// How long a lifecycle operation waits for the per-session lock.
 const LIFECYCLE_WAIT: Duration = Duration::from_secs(15);
 
 /// `<AE_HOME>/sessions`.
@@ -59,7 +55,7 @@ pub(crate) fn lock(root: &Path, name: &str) -> io::Result<fs::File> {
     )
 }
 
-/// The frozen session-name grammar — `^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$`.
+/// The session-name grammar — `^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$`.
 pub(crate) fn name_is_valid(name: &str) -> bool {
     let mut bytes = name.bytes();
     let Some(first) = bytes.next() else {
@@ -71,8 +67,7 @@ pub(crate) fn name_is_valid(name: &str) -> bool {
     name.len() <= 128 && bytes.all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
-/// Whether `name` may be used to reach an EXISTING session — the frozen
-/// `_session_name_usable`.
+/// Whether `name` may be used to reach an EXISTING session.
 pub(crate) fn name_is_usable(root: &Path, name: &str) -> bool {
     if name_is_valid(name) {
         return true;
@@ -80,7 +75,7 @@ pub(crate) fn name_is_usable(root: &Path, name: &str) -> bool {
     if name.is_empty() || name.contains('/') || name == "." || name == ".." {
         return false;
     }
-    // The legacy arm.
+    // The pre-grammar arm.
     #[allow(
         clippy::disallowed_methods,
         reason = "a door: the frozen legacy-name arm — an existing direct-child session directory is usable even when its name predates the grammar"
@@ -102,14 +97,14 @@ pub(crate) fn meta_value(bytes: &[u8], key: &str) -> String {
 }
 
 /// The EXACT live session id for `name` on `server`, or `None` when it is not
-/// live there — the frozen `_end_live_id`.
+/// live there.
 pub(crate) fn live_id(server: &ServerId, name: &str) -> Option<String> {
     transport::observe_session_id(server, name)
 }
 
 /// Kill an exactly-identified session on its recorded server and VERIFY it
-/// died — the frozen `_lifecycle_kill_verified`, and the ONE answer to "is it
-/// gone" that `stop`, `end` and `compact` share so the three cannot drift into
+/// died — the ONE answer to "is it gone" that `stop`, `end` and `compact`
+/// share so the three cannot drift into
 /// disagreeing.
 pub(crate) fn kill_verified(
     server: &ServerId,
@@ -138,9 +133,9 @@ pub(crate) fn kill_verified(
     }
 }
 
-/// Every ae session the state root knows about, live or stopped — the frozen
-/// `list_ae_sessions` + `iter_stopped_sessions` union that `end all` and
-/// `stop all` enumerate, in directory order made deterministic by a sort.
+/// Every ae session the state root knows about, live or stopped — the union
+/// `end all` and `stop all` enumerate, in directory order made deterministic by
+/// a sort.
 pub(crate) fn all_sessions(root: &Path) -> Vec<String> {
     census(root).ok().flatten().unwrap_or_default()
 }
@@ -216,7 +211,7 @@ pub(crate) fn path_exists(path: &Path) -> bool {
 
 // ---- `_stop` ---------------------------------------------------------------
 
-/// The frozen `ae stop` usage.
+/// The `ae stop` usage.
 const STOP_USAGE: &str = "Usage: _stop <session-name|all> [-y] [--self]";
 
 /// `_stop <name|all> [-y]` — the whole stop operation.
@@ -386,7 +381,7 @@ fn stop_recorded(
 
 /// What one target's stop did — kept distinct so the fleet form can treat an
 /// already-stopped session as satisfied while the singular form still reports
-/// it as the frozen `Session 'x' is not running.` failure.
+/// it as the `Session 'x' is not running.` failure.
 enum StopOutcome {
     Stopped,
     AlreadyStopped,

@@ -378,7 +378,7 @@ fn a_hostile_journal_is_refused_and_preserved_for_diagnosis() {
     // against a fact this installer already knows.
     let ae_home = |rig: &Rig| rig.home.join(".ae");
     for (tag, body) in [
-        // A journal from another installer: the retired bash field set.
+        // A journal from another installer: a foreign field set.
         (
             "retired-field",
             "format=2\nversion=2026.8.1\nhome=$HOME/.ae\nlink=$HOME/.local/bin/ae\n\
@@ -461,8 +461,8 @@ fn an_interrupted_install_is_reversed_by_the_next_run_which_then_completes() {
 
 #[test]
 fn a_second_install_repoints_the_link_and_sweeps_the_version_nothing_records() {
-    // A21, as amended by the migration ruling: a publish repoints every session
-    // onto the new core BEFORE it repoints the link, so by the time the sweep
+    // A publish repoints every session onto the new core BEFORE it repoints
+    // the link, so by the time the sweep
     // runs, nothing records the superseded version and it goes. One installed
     // version, one pointer, no accumulation — and no relink-to-yesterday
     // rollback, which is the cost this buys the guarantee with.

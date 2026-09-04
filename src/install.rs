@@ -1,8 +1,8 @@
 //! `_install --from <dir>` — publish a verified bundle as the current `ae`.
 //!
-//! Slice Z4 moves the installer's LOGIC here. What is left in bash is a
-//! bootstrap that downloads a bundle, checks it against the release manifest,
-//! extracts it, and runs the core it just unpacked. Everything after that — the
+//! The `install` bootstrap downloads a bundle, checks it against the release
+//! manifest, extracts it, and runs the core it just unpacked. Everything after
+//! that — the
 //! member proof, the version directory, its modes, the command link and the
 //! journal that makes a half-done publish reversible — is this module, and
 //! [`crate::upgrade`] reaches the same [`publish`] without a second spelling.
@@ -395,9 +395,9 @@ fn core_version(core: &Path) -> Result<String, String> {
 /// A PRODUCT CROSSING of `clippy.toml`'s `Command` deny — the only one that is
 /// neither tmux nor an `exec`.
 ///
-/// Named, not numbered. The ordinals these comments used to carry drifted the
-/// moment a door was added: `tests/it/doors.rs` is the count of record, and it
-/// asks the compiler rather than reading prose.
+/// Named, not numbered: an ordinal drifts the moment a door is added.
+/// `tests/it/doors.rs` is the count of record, and it asks the compiler rather
+/// than reading prose.
 fn run_core(core: &Path) -> std::io::Result<std::process::Output> {
     #[allow(
         clippy::disallowed_types,
@@ -1199,7 +1199,7 @@ mod tests {
             created: Vec::new(),
         }
         .render();
-        // The bash journal's retired fields, a foreign home, a foreign command
+        // A foreign field set, a foreign home, a foreign command
         // path, a bad version, a bad flag, and a directory row naming live
         // state — every one a refusal, none a partial replay.
         for hostile in [

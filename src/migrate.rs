@@ -137,8 +137,8 @@ pub enum Refusal {
 impl Refusal {
     /// The operator-facing line, naming the session it is about.
     ///
-    /// [`Refusal::Absent`] carries the fresh-start wording the retired v1
-    /// roster already uses: there is one way forward from a meta ae cannot
+    /// [`Refusal::Absent`] carries the same fresh-start wording a v1 roster
+    /// earns: there is one way forward from a meta ae cannot
     /// place, and it is a new session.
     #[must_use]
     pub fn line(&self, session: &str) -> String {
@@ -361,10 +361,10 @@ pub fn session_noted(dir: &Path, name: &str) -> Option<String> {
 /// The three rows a session records about the core it was built against.
 const CORE_ROWS: [&str; 2] = ["ae_core", "ae_core_version"];
 
-/// The retired glue's own path row. REWRITTEN where a session still carries
-/// one and never introduced: a pre-Z3 meta names the deleted wrapper, and an
-/// upgrade that left that pointing into a version directory it is about to
-/// delete would leave a session naming a binary that is gone.
+/// The `ae_path` row some metas still carry. REWRITTEN where a session already
+/// has one and never introduced: an upgrade that left it pointing into a
+/// version directory it is about to delete would leave a session naming a
+/// binary that is gone.
 const LEGACY_PATH_ROW: &str = "ae_path";
 
 /// [`crate::lifecycle::census`] with its one absent case read as empty: a state
@@ -389,7 +389,7 @@ fn taken(root: &Path) -> std::io::Result<Vec<String>> {
 ///
 /// Per session, under the same per-session lifecycle lock a start or an end
 /// takes: the chain, then `ae_core` / `ae_core_version` / `ae_version` (and a
-/// legacy `ae_path`) rewritten to the new core, then the helper links
+/// an `ae_path` where a session has one) rewritten to the new core, then the helper links
 /// re-rendered. A RUNNING session then has its watchdog restarted, and the
 /// Telegram bridge on its tmux server restarted once per server. Agent panes
 /// are never touched.
@@ -529,9 +529,8 @@ fn repoint(dir: &Path, core: &Path, version: &str) -> Result<(), String> {
         (CORE_ROWS[1], version),
         ("ae_version", version),
     ];
-    // The legacy row is rewritten where one is already there and never
-    // introduced, so a meta that never named the deleted wrapper does not
-    // start naming a replacement for it.
+    // The `ae_path` row is rewritten where one is already there and never
+    // introduced, so a meta that never carried it does not start carrying one.
     if text
         .lines()
         .any(|line| line.starts_with(&format!("{LEGACY_PATH_ROW}=")))
