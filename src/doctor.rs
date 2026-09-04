@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use crate::state::{EXIT_FAILED, EXIT_USAGE};
 
-/// The frozen usage line, quoted verbatim by every refusal that raises it.
+/// The usage line, quoted verbatim by every refusal that raises it.
 pub const USAGE: &str = "Usage: ae doctor [--refresh [all|<session>]]";
 
 /// The `_shims-render` usage line.
@@ -16,7 +16,7 @@ pub const SHIMS_USAGE: &str = "Usage: _shims-render <session-dir>";
 /// The `_check-deps` usage line.
 pub const CHECK_DEPS_USAGE: &str = "Usage: _check-deps";
 
-/// The frozen `check_deps` refusal for a missing tmux.
+/// The `_check-deps` refusal for a missing tmux.
 pub const NO_TMUX: &str =
     "Error: tmux not found in PATH. Install tmux or run 'ae doctor' for details.";
 
@@ -48,9 +48,9 @@ impl Level {
 pub struct Row {
     /// How it reads.
     pub level: Level,
-    /// The subject — the frozen second column.
+    /// The subject — the second column.
     pub label: String,
-    /// The detail — the frozen free-text remainder, always last.
+    /// The detail — the free-text remainder, always last.
     pub detail: String,
 }
 
@@ -92,7 +92,7 @@ impl Report {
         self.rows.iter().filter(|row| row.level == level).count()
     }
 
-    /// The document — the frozen `ae doctor` header, the rows in the frozen
+    /// The document — the `ae doctor` header, the rows in their
     /// `%-5s %-14s %s` columns, and the summary line.
     #[must_use]
     pub fn render(&self) -> String {
@@ -111,15 +111,14 @@ impl Report {
         text
     }
 
-    /// `0` with no failure, `1` with any — the frozen
-    /// `((DOCTOR_FAILURES == 0))`.
+    /// `0` with no failure, `1` with any.
     #[must_use]
     pub fn exit_code(&self) -> u8 {
         if self.failures() == 0 { 0 } else { EXIT_FAILED }
     }
 }
 
-/// One row in the frozen columns.
+/// One row in those columns.
 fn render_row(row: &Row) -> String {
     format!(
         "{:<5} {:<14} {}\n",
@@ -167,8 +166,8 @@ pub struct ProfileFacts {
 pub struct Facts {
     /// The version of the binary answering.
     pub version: String,
-    /// The binary answering — `current_exe()`, which since slice Z3 IS the
-    /// public `ae`, so this is the resolved core path the operator wants to see.
+    /// The binary answering — `current_exe()`, which IS the public `ae`, so this
+    /// is the resolved core path the operator wants to see.
     pub core: Option<PathBuf>,
     /// Whether that binary is WRITABLE.
     pub core_writable: Option<bool>,
@@ -386,8 +385,8 @@ fn blank(value: &str) -> &str {
     if value.is_empty() { "-" } else { value }
 }
 
-/// The executable word of a launch command — the frozen `doctor_extract_exec`,
-/// which skips a leading `env` and any `VAR=val` prefix.
+/// The executable word of a launch command, skipping a leading `env` and any
+/// `VAR=val` prefix.
 #[must_use]
 pub fn executable_of(command: &str) -> Option<String> {
     crate::launch_cmd::split_binary(command).map(|split| split.binary)
@@ -596,8 +595,8 @@ pub fn run(
         writeln!(err, "{USAGE}")?;
         return Ok(EXIT_USAGE);
     };
-    // The two roots are CREATED, exactly as the frozen `mkdir -p` did: doctor
-    // is where a fresh install acquires them.
+    // The two roots are CREATED here: doctor is where a fresh install acquires
+    // them.
     let roots = crate::inventory::Roots::under(root);
     let _ = std::fs::create_dir_all(roots.sessions());
     let _ = std::fs::create_dir_all(roots.worktrees());
@@ -697,8 +696,8 @@ fn refresh_one(name: &str, dir: &Path, core: &Path, global: Option<&Path>, docum
     }
 
     // The manifest reads the session's OWN recorded config, layered under the
-    // origin's project override — the frozen `sync_existing_session_assets`
-    // hydration, which is why a refresh renders the same document a launch did.
+    // origin's project override, which is why a refresh renders the same
+    // document a launch does.
     let origin = or_dot(value("origin"));
     let work_dir = or_dot(value("work_dir"));
     let mut config_files: Vec<PathBuf> = Vec::new();
@@ -743,7 +742,7 @@ fn refresh_one(name: &str, dir: &Path, core: &Path, global: Option<&Path>, docum
     document.push(Level::Ok, &label, "refreshed session helpers and workspace");
 }
 
-/// A missing path fact renders as `.`, the frozen default.
+/// A missing path fact renders as `.`.
 fn or_dot(value: String) -> String {
     if value.is_empty() {
         ".".to_owned()
@@ -1012,7 +1011,7 @@ mod tests {
 
     #[test]
     fn check_deps_takes_no_arguments_at_all() {
-        // `--bash-major` went with `ae-entry`.
+        // `_check-deps` takes no flags at all.
         let mut err = Vec::new();
         let code = check_deps(&["--bash-major".to_owned(), "5".to_owned()], &mut err).unwrap();
         assert_eq!(code, EXIT_USAGE);

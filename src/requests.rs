@@ -1,12 +1,9 @@
 //! The `requests` read surface.
 //!
-//! Two things, kept apart the way the frozen implementation keeps them apart:
-//! the request SENSOR ([`states`]) and the TABLE the helper prints
-//! ([`render`]). The frozen `requests` helper carries `_ar_request_states`
-//! beside it by `declare -f` rather than owning a second copy, and the frozen
-//! source says why — the two copies had already drifted once, one checking both
-//! ends of a reply and the other only the actor end. So the sensor is a public
-//! function here, not a private detail of the table.
+//! Two things, kept apart: the request SENSOR ([`states`]) and the TABLE the
+//! helper prints ([`render`]). ONE sensor, because two copies of this logic
+//! drift — one checking both ends of a reply, the other only the actor end — so
+//! the sensor is a public function here, not a private detail of the table.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -33,7 +30,7 @@ pub enum Mode {
 impl Mode {
     /// The mode a token selects, or `None` for a token that is not one.
     ///
-    /// `None` for the argument is `mine`: the frozen helper's `${1:-mine}`.
+    /// `None` for the argument is `mine`.
     /// A token that is not one of the three is a USAGE ERROR and is not this
     /// type's to describe — see [`crate::cli::Request`], which carries it to the
     /// crate's one usage exit code.
@@ -62,14 +59,14 @@ impl Mode {
     }
 }
 
-/// Who is asking — the pane identity the frozen helper reads from tmux.
+/// Who is asking — the pane identity read from tmux.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Viewer {
-    /// `ae_current_slot` — the routing key.
+    /// The routing key.
     pub slot: String,
     /// The tmux session (`#S`) the calling pane belongs to.
     pub session: String,
-    /// `ae_current_agent_ref` — the display `alias:name`.
+    /// The display `alias:name`.
     pub display: String,
 }
 
@@ -80,7 +77,7 @@ impl Viewer {
         !self.display.is_empty()
     }
 
-    /// The viewer a pane's readings make, by the frozen helper's rules.
+    /// The viewer a pane's readings make.
     #[must_use]
     pub fn from_pane(observed: &ObservedViewer, own_session: &str) -> Self {
         let (Some(agent), Some(session)) = (observed.agent.as_deref(), observed.session.as_deref())
@@ -229,7 +226,7 @@ fn write_row(
 }
 
 /// Whether `text` is a routing slot: exactly `main`, `worker.<digits>` or
-/// `spawned.<digits>` — the frozen `_valid_slot`, anchored, so a tampered
+/// `spawned.<digits>` — anchored, so a tampered
 /// `@ae_slot` such as `worker.0x` cannot route.
 #[must_use]
 pub fn is_slot(text: &str) -> bool {
@@ -318,8 +315,7 @@ pub fn states(container: &[u8]) -> Vec<Request> {
         let Some(line) = event_line(line) else {
             continue;
         };
-        // Counted for every brace-prefixed line, before the `ref` test, exactly
-        // where the frozen sensor counts it.
+        // Counted for every brace-prefixed line, before the `ref` test.
         scan += 1;
         let reference = extract(line, "ref");
         if reference.is_empty() {
@@ -551,7 +547,7 @@ impl Closing {
     }
 }
 
-/// The frozen sensor's `${_EV//$'\n'/ }` on every summary it stores.
+/// Newlines folded to spaces on every summary the sensor stores.
 fn fold_newlines(mut value: Vec<u8>) -> Vec<u8> {
     for byte in &mut value {
         if *byte == b'\n' {
@@ -595,8 +591,7 @@ mod tests {
     /// Not a shape any writer emits: an EMPTY actor (the emitter falls back to
     /// `human`).
     const EMPTYACTOR_ASK: &str = r#"{"ts":"t1","actor":"","action":"ask","target":"a:lead","ref":"r1","actor_slot":"main","actor_session":"s","target_slot":"main","target_session":"s","summary":"corrupt"}"#;
-    /// Not the frozen shape: a PRESENT-but-empty actor slot is a writer bug,
-    /// and stays half a key.
+    /// A PRESENT-but-empty actor slot is a writer bug, and stays half a key.
     const EMPTYSLOT_ASK: &str = r#"{"ts":"t1","actor":"ae:compact:u1","action":"ask","target":"a:lead","ref":"r1","actor_slot":"","actor_session":"s","target_slot":"main","target_session":"s","summary":"handover"}"#;
 
     struct Scratch(PathBuf);
@@ -619,9 +614,6 @@ mod tests {
 
     #[test]
     fn the_header_is_the_frozen_bytes() {
-        // Transcribed from the frozen capture
-        // arms/A1/c01-healthy-ro/out/requests-all.stdout, whose first line this
-        // is.
         assert_eq!(
             text(&header()),
             "STATUS   TYPE     ID                           FROM                 TO                   SUMMARY\n"
@@ -960,9 +952,9 @@ mod tests {
 
     #[test]
     fn an_invalid_newer_reply_cannot_bury_a_valid_older_one() {
-        // The measured regression the frozen sensor's retain-then-validate shape
-        // exists to prevent: keeping only the newest RAW candidate and
-        // validating it afterwards rendered this `pending`.
+        // The retain-then-validate shape exists to prevent this: keeping only
+        // the newest RAW candidate and validating it afterwards renders this
+        // `pending`.
         let replies = container(&[
             ASK,
             r#"{"ts":"t2","actor":"a:worker","action":"reply","target":"a:lead","ref":"r1","summary":"valid answer"}"#,

@@ -1,12 +1,11 @@
-//! `ae archive preview` — the read-only tracer, black-box (P3.1).
+//! `ae archive preview` — the read-only tracer, black-box.
 //!
-//! Byte-parity against the frozen bash on ordinary, empty and
-//! malformed-but-readable sessions, plus the two guarantees a read tracer must
-//! keep: it writes NOTHING, and it never blocks or follows a non-regular file
-//! in place of a source. The expected outputs under
-//! `tests/fixtures/archive-preview/<case>/` were captured from the frozen
-//! `ae archive preview`; `<DIR>` in the expected stderr stands for the session
-//! directory this run built.
+//! Byte-exact expected output on ordinary, empty and malformed-but-readable
+//! sessions, plus the two guarantees a read tracer must keep: it writes
+//! NOTHING, and it never blocks or follows a non-regular file in place of a
+//! source. The expectations live under `tests/fixtures/archive-preview/<case>/`;
+//! `<DIR>` in the expected stderr stands for the session directory this run
+//! built.
 
 #![allow(
     clippy::disallowed_methods,
@@ -59,7 +58,7 @@ fn copy_tree(src: &Path, dest: &Path) {
 
 /// The session NAME the banner reports is the session directory's basename, so
 /// each case is installed into a dir named after its own `meta`'s `session=` —
-/// the name the frozen capture ran under (demo / fresh / odd).
+/// the name the fixture was recorded under (demo / fresh / odd).
 fn session_name(case: &str) -> String {
     let meta = std::fs::read_to_string(cases_root().join(case).join("session/meta"))
         .expect("fixture meta");
@@ -156,13 +155,14 @@ fn the_preview_writes_nothing() {
 #[test]
 fn a_non_regular_event_container_is_a_named_refusal_and_never_blocks() {
     // A preview must not leave its session directory to render linked or
-    // special-node bytes (colead ruling, P3.1). events.jsonl replaced by, in
+    // special-node bytes. events.jsonl replaced by, in
     // turn: a FIFO (an ungated open would block on it forever), a directory, a
     // symlink to a REGULAR file (the escape the follow variants would render), a
     // symlink to a directory, and a symlink to a FIFO. Each must return promptly
     // (never block), refuse by name at rc=1 with NO digest on stdout, and write
-    // nothing. This is the intentional divergence from the frozen `[[ -f ]]`,
-    // which follows the symlink-to-regular and treats the FIFO/dir as absent.
+    // nothing. The classification is deliberate: a symlink to a regular file is
+    // refused rather than followed, and a FIFO or directory is a refusal rather
+    // than an absence.
     let scratch = Scratch::new("hostile");
     for kind in [
         "fifo",
@@ -238,9 +238,9 @@ fn a_non_regular_meta_is_a_named_refusal_without_blocking() {
 
 #[test]
 fn a_roster_ae_cannot_parse_refuses_the_whole_preview() {
-    // `_ar_build_meta` REFUSES a roster it cannot parse — a bad slot or a ref
+    // The meta builder REFUSES a roster it cannot parse — a bad slot or a ref
     // that is not `alias:name[:session-id]` fails the whole preview (rc=1) with
-    // the frozen line, then the composer's own refusal, and writes nothing.
+    // a named refusal, then the composer's own, and writes nothing.
     let scratch = Scratch::new("refuse");
     let cases = [
         (
@@ -255,9 +255,9 @@ fn a_roster_ae_cannot_parse_refuses_the_whole_preview() {
             "agent_bin.spawned.0=grok\nagent.bogus=x:y",
             "archive: meta carries an unrecognised roster slot 'agent.bogus'.",
         ),
-        // A BARE `agent.main` record (no `=`) is not dropped: the frozen
-        // `_ar_roster_slots` names the slot `main`, its ref reads empty, and
-        // `_ar_build_meta` refuses it as `agent.main=`.
+        // A BARE `agent.main` record (no `=`) is not dropped: the slot reader
+        // names the slot `main`, its ref reads empty, and the meta builder
+        // refuses it as `agent.main=`.
         (
             "bare-recognised-slot",
             "agent.main=cl:lead:AE3AA692-E177-4798-9BA0-D14E0D084061",
@@ -301,8 +301,8 @@ fn a_roster_ae_cannot_parse_refuses_the_whole_preview() {
 
 #[test]
 fn a_symlinked_regular_source_is_refused_not_followed() {
-    // The safety core of the P3.1 ruling: a symlink to a REGULAR file — the one
-    // shape the frozen `[[ -f ]]` would follow and render — is refused for meta
+    // The safety core: a symlink to a REGULAR file — the one shape a follow-test
+    // would render — is refused for meta
     // and for memo.tsv (events is covered by the hostile-container test).
     let scratch = Scratch::new("symlink-refuse");
     for (file, needle) in [
@@ -341,8 +341,7 @@ fn minimal_session(scratch: &Scratch, tag: &str, meta: &str) -> PathBuf {
 
 #[test]
 fn a_roster_record_on_the_final_unterminated_line_is_not_dropped() {
-    // The frozen `_ar_roster_slots` is awk: it processes a final record with no
-    // trailing newline.
+    // The slot reader processes a final record with no trailing newline.
     const HEAD: &str = "session=nolf\nsession_id=e795c9e9-1111-2222-3333-444455556666\n\
                         session_id_origin=session\nmode=local\n";
     let scratch = Scratch::new("nolf");

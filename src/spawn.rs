@@ -37,31 +37,29 @@ use crate::tracked::{self, EventFields};
 use crate::transport;
 use crate::watchdog_glue;
 
-/// The frozen usage line.
+/// The usage line.
 pub const SPAWN_USAGE: &str = "Usage: spawn <name> --using <profile> [--] [prompt]";
 
-/// The frozen `retire` usage.
+/// The `retire` usage.
 pub const RETIRE_USAGE: &str = "Usage: retire <agent-name|pane-id>";
 
-/// How long the frozen path waits for a new pane's shell before pasting.
+/// How long to wait for a new pane's shell before pasting.
 const SHELL_SETTLE: Duration = Duration::from_millis(300);
 
-/// How many polls the brief's readiness wait takes — the frozen `30`, at half
-/// a second each.
+/// How many polls the brief's readiness wait takes, at half a second each.
 const BRIEF_READY_POLLS: u32 = 30;
 
-/// How many polls the launch's process wait takes — the frozen `10`.
+/// How many polls the launch's process wait takes.
 const START_POLLS: u32 = 10;
 
-/// The pause between those polls — the frozen `sleep 0.1`.
+/// The pause between those polls.
 const START_POLL: Duration = Duration::from_millis(100);
 
 /// How long to let a booting TUI swallow the Enter before looking for staged
-/// text — the frozen `sleep 1.5`.
+/// text.
 const LINGER_SETTLE: Duration = Duration::from_millis(1500);
 
-/// How much of the brief the lingering check looks for on screen — the frozen
-/// `${prompt:0:40}`.
+/// How much of the brief the lingering check looks for on screen.
 const LINGER_PREFIX: usize = 40;
 
 /// The event action a completed spawn records.
@@ -310,11 +308,10 @@ pub fn run_spawn(
     };
 
     // THE SAME GRAMMAR AS A LAUNCH SEAT, before any effect. config.rs enforces the
-    // one-simple-command lexer for the initial roster only; a profile selected at
-    // spawn used to reach `bash -lc` unvalidated, so `bad = "touch m; tail -f
-    // /dev/null"` executed the semicolon command and then reported the spawn
-    // incomplete with the seat left in meta (colead gate b5d60fec, repro). Tool
-    // and binary now come from the one validated parse.
+    // one-simple-command lexer for the initial roster, and a profile selected at
+    // spawn is held to the same one: a value like `bad = "touch m; tail -f
+    // /dev/null"` is REFUSED rather than run. Tool and binary come from the one
+    // validated parse.
     let lexed = match crate::launch_cmd::lex_simple_command(&command) {
         Ok(lexed) => lexed,
         Err(why) => {
@@ -575,9 +572,7 @@ fn deliver_brief(
     kind: ToolKind,
     err: &mut impl Write,
 ) -> io::Result<Option<String>> {
-    // The tool is the CONFIGURED one, not the pane's live command: that is the
-    // fact the frozen `_wait_input_ready` is handed, and it is right for the
-    // same reason `ae_target_tool` prefers `agent_bin.<slot>` — a wrapper, an
+    // The tool is the CONFIGURED one, not the pane's live command: a wrapper, an
     // interpreter or a `.exe` launcher makes the live command say something
     // else while the box on screen is still the tool's.
     let tool = match kind {

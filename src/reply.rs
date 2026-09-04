@@ -1,8 +1,7 @@
-//! The `reply` helper (P2.5b): a tracked request's answer, created and
-//! delivered by the core, consuming what either the core (P2.5a) or the frozen
-//! `ae_tracked_send` recorded.
+//! The `reply` helper: a tracked request's answer, created and delivered by the
+//! core.
 //!
-//! What the frozen `helper_reply_main` does, kept exactly. The argv is
+//! The argv is
 //! `[--as <agent>] <request-id> <message>`. A blank message is refused ON THE
 //! MESSAGE — the delivered text `[<id>] <message>` is never blank, so the send
 //! body's own guard cannot see this case, the case that once lost a whole
@@ -11,7 +10,7 @@
 //! verified by SLOT AND SESSION against the replying pane — `--as` cannot
 //! bypass that; it is display only, and merely warned about when it disagrees
 //! with the stored name. A request without one (a pre-migration row, or a
-//! slotless target) name-matches as before, with the frozen errors. The reply
+//! slotless target) name-matches instead, with its own errors. The reply
 //! goes to the asker's CURRENT pane — the stored `actor_slot` resolved in the
 //! stored `actor_session` — and falls back to the stored display name only
 //! when no stamped pane holds that slot. Then `[<id>] <message>` is pasted
@@ -29,7 +28,7 @@ use crate::tmux::{ObservedSlot, ObservedViewer};
 use crate::tracked::{self, EventFields};
 use crate::transport;
 
-/// The frozen usage text.
+/// The usage text.
 pub const USAGE: &str = "Usage: reply [--as <agent>] <request-id> <message>\n  Reply to a logged ask/review request using its request id.\n";
 
 /// The event's `action`.
@@ -75,10 +74,9 @@ pub fn parse(tail: &[String]) -> Result<Parsed, Usage> {
     }
 }
 
-/// The replying pane, as the frozen helper reads it: `ae_current_agent_ref`
-/// (the stamp, `@<session>:`-prefixed when the pane's tmux session is not this
-/// session's), `ae_current_slot` (the stamp when it is in the slot grammar,
-/// else empty) and the pane's tmux session (`#S`).
+/// The replying pane: its display ref (the stamp, `@<session>:`-prefixed when
+/// the pane's tmux session is not this session's), its routing slot (the stamp
+/// when it is in the slot grammar, else empty) and the pane's tmux session.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Replier {
     /// The display ref, or empty.
@@ -130,22 +128,22 @@ pub fn find(dir: &Path, id: &str) -> Option<Request> {
         .find(|request| request.id == id.as_bytes())
 }
 
-/// The frozen identity check's answer: who the reply is from, and the
+/// The identity check's answer: who the reply is from, and the
 /// advisory `--as` warning when that name disagrees with the stored target.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Verified {
-    /// The `AE_SENDER_OVERRIDE` the frozen helper hands to `send`: `--as`,
+    /// The `AE_SENDER_OVERRIDE` handed to `send`: `--as`,
     /// else the pane's display ref — possibly empty.
     pub sender: String,
     /// The warning line, newline included.
     pub warning: Option<String>,
 }
 
-/// The frozen check, in its two branches.
+/// The check, in its two branches.
 ///
 /// # Errors
 ///
-/// The frozen error line, without its newline.
+/// The error line, without its newline.
 pub fn verify(
     request: &Request,
     id: &str,
@@ -210,7 +208,7 @@ pub fn verify(
     })
 }
 
-/// The frozen `ae_slot_resolver`: the agent stamped on the pane holding
+/// The slot resolver: the agent stamped on the pane holding
 /// `want_slot` among `panes` (the roster of `want_session`, or of this session
 /// when that is empty), spelled `@<session>:<agent>` when `want_session` is
 /// another session.
@@ -258,7 +256,7 @@ pub fn route(
     slot_resolve(&want_session, &want_slot, own_session, &panes).unwrap_or(stored)
 }
 
-/// The frozen order of refusals: usage, the blank body, the unknown id, the
+/// The order of refusals: usage, the blank body, the unknown id, the
 /// identity check — each loud, each before anything is pasted.
 fn admit(
     dir: &Path,
@@ -302,9 +300,8 @@ fn admit(
 /// The environment a reply that still runs a HELPER would hand it: the
 /// VERIFIED sender as `AE_SENDER_OVERRIDE` — always set, so an override
 /// inherited from the caller's environment is overwritten, empty included.
-/// The frozen helper `exec env AE_SENDER_OVERRIDE="$reply_sender"` after the
-/// slot check, and the send body's provenance envelope took that variable
-/// verbatim when it was non-empty.
+/// It is set after the slot check, and the send body's provenance envelope
+/// takes it verbatim when it is non-empty.
 ///
 /// Since B move 1 the reply pastes for itself and hands the envelope the
 /// verified sender directly, so nothing reads this on the reply path. It
@@ -391,7 +388,7 @@ pub fn run(
         body_file: "",
     };
     if tracked::is_external(&reply_target) {
-        // An event-only sink: the frozen send records and pastes nothing.
+        // An event-only sink: record, paste nothing.
         if let Err(why) = state::emit(dir, &tracked::event_line(&fields)) {
             writeln!(err, "ae: reply {} not recorded: {why}", parsed.id)?;
             return Ok(EXIT_FAILED);
@@ -447,8 +444,8 @@ pub fn run(
     Ok(0)
 }
 
-/// Bytes as text, the way the frozen helper compares them: it never sees an
-/// invalid byte from its own writers.
+/// Bytes as text: the comparison never sees an invalid byte from ae's own
+/// writers.
 fn lossy(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
 }

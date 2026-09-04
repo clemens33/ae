@@ -1,9 +1,7 @@
 //! Post-launch session-id capture for the tools with no launch-time id flag.
 //!
-//! Ported from `ae`'s `start_capture_session_id` / `capture_session_id` and the
-//! three `capture_*_session_id` chains under them. Codex, opencode, gemini and
-//! agy all learn their conversation id only after they start, so ae asks each
-//! of them a different way:
+//! Codex, opencode, gemini and agy all learn their conversation id only after
+//! they start, so ae asks each of them a different way:
 //!
 //! | Tool | How the id is found |
 //! |---|---|
@@ -15,9 +13,8 @@
 //! Every scan is filtered by the seat's `launch_time.<slot>`, so a stale
 //! conversation in the same directory cannot be captured as this one.
 //!
-//! Runs in ITS OWN DETACHED PROCESS, never on the launch's thread: the frozen
-//! path backgrounded it with `&` for the same reason, so a tool that takes half
-//! a minute to print its id does not delay the attach.
+//! Runs in ITS OWN DETACHED PROCESS, never on the launch's thread, so a tool
+//! that takes half a minute to print its id does not delay the attach.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -26,13 +23,13 @@ use crate::inventory::ServerId;
 use crate::launch_cmd::ToolKind;
 use crate::time::Timestamp;
 
-/// How many times a capture looks — the frozen `for _attempt in 1..6`.
+/// How many times a capture looks.
 const POLLS: u32 = 6;
 
-/// The pause between looks — the frozen `sleep 5`.
+/// The pause between looks.
 const POLL: Duration = Duration::from_secs(5);
 
-/// How many sessions `opencode session list` is asked for — the frozen `-n 20`.
+/// How many sessions `opencode session list` is asked for.
 const OPENCODE_LIST_LIMIT: &str = "20";
 
 /// One agent whose id must be captured after it starts.
@@ -209,9 +206,8 @@ fn facts(dir: &Path, slot: &str) -> Option<Facts> {
     Some(Facts {
         tool: ToolKind::from_binary_name(&value(&format!("agent_bin.{slot}"))),
         work_dir: value("work_dir"),
-        // A non-numeric value is 0, never a refusal: the frozen reader made the
-        // same choice, and a scan with no lower bound still cannot pick a
-        // session in another directory.
+        // A non-numeric value is 0, never a refusal: a scan with no lower bound
+        // still cannot pick a session in another directory.
         launch_time: if launch_time.bytes().all(|byte| byte.is_ascii_digit()) {
             launch_time.parse().unwrap_or(0)
         } else {
@@ -515,9 +511,9 @@ fn gemini_chats(home: &Path, work_dir: &str) -> Vec<PathBuf> {
         if canonical(root.trim_end_matches('\n')) != target {
             continue;
         }
-        // The frozen glob is `session-*.json`, and both halves are
-        // case-sensitive: the extension is compared as a path component rather
-        // than as a string suffix so it stays exactly that.
+        // The glob is `session-*.json` and both halves are case-sensitive: the
+        // extension is compared as a path component rather than as a string
+        // suffix, so it stays exactly that.
         found.extend(entries(&project.join("chats")).into_iter().filter(|path| {
             path.extension().is_some_and(|ext| ext == "json")
                 && path
@@ -833,7 +829,7 @@ fn scan_opencode(facts: &Facts) -> Option<String> {
     // opencode timestamps are MILLISECONDS.
     let since = facts.launch_time.saturating_mul(1000);
     // A failed run is "no answer", never an empty one: opencode may not be
-    // installed at all, which the frozen path checked with `command -v`.
+    // installed at all.
     let (ran, listed) = crate::transport::run_opencode(&opencode_list_argv());
     if !ran {
         return None;
@@ -917,7 +913,7 @@ fn json_records(listed: &str) -> Vec<&str> {
 // ---------------------------------------------------------------------------
 
 /// Today and yesterday as `YYYY/MM/DD` in UTC — the day-partitioned layout
-/// codex uses, and the frozen `_ae_yesterday` chokepoint's whole job.
+/// codex uses.
 fn day_dirs(now: Timestamp) -> Vec<String> {
     [
         now,
@@ -1011,14 +1007,14 @@ fn canonical(path: &str) -> String {
 }
 
 /// The first `"key": "<value>"` in `text`, the value being any run of
-/// non-quote bytes — the frozen `_ae_json_first`.
+/// non-quote bytes.
 #[must_use]
 pub(crate) fn first_string_field(text: &str, key: &str) -> Option<String> {
     first_field(text, key, |_| true)
 }
 
 /// The first `"key": "<value>"` in `text` whose value is only hex digits and
-/// dashes — the frozen `_ae_json_first <key> '[0-9a-f-]'`.
+/// dashes.
 #[must_use]
 pub(crate) fn first_hex_field(text: &str, key: &str) -> Option<String> {
     first_field(text, key, |ch| {
@@ -1026,7 +1022,7 @@ pub(crate) fn first_hex_field(text: &str, key: &str) -> Option<String> {
     })
 }
 
-/// The first `"key": <digits>` in `text` — the frozen `_ae_json_first_num`.
+/// The first `"key": <digits>` in `text`.
 #[must_use]
 pub(crate) fn first_num_field(text: &str, key: &str) -> Option<i64> {
     let quoted = format!("\"{key}\"");
@@ -1127,8 +1123,8 @@ mod tests {
     #[test]
     fn a_recovery_takes_the_pending_seats_whose_tool_has_no_launch_time_id() {
         let roster = [
-            // Pending, both spellings: the frozen literal and the empty row a
-            // v2 meta reads as absent metadata.
+            // Pending, both spellings: the literal, and the empty row a meta
+            // reads as absent metadata.
             seat("worker.1", "w1", "codex", Some(crate::launch::PENDING)),
             seat("worker.2", "w2", "gemini", None),
             seat("worker.3", "w3", "opencode", Some("")),
