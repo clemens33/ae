@@ -3,7 +3,7 @@
 ## Topology
 
 `~/.local/bin/ae` is a plain symlink into one immutable `~/.ae/versions/<V>/` set: `ae-core`
-(Rust lifecycle/state core), `install` (the immutable sibling used by `ae upgrade`), and
+(Rust lifecycle/state core), `install` (the bootstrap a fresh machine runs), and
 `SHA256SUMS` (the manifest covering the other two, by bare basename, `ae-core` first). The
 version directory and its executable members are published 0555, the manifest 0444, so the
 installed core cannot be written through any path that reaches it. The symlink points
@@ -73,10 +73,10 @@ The regenerate step runs on a new launch or resume, never against an already-run
 
 There is no wrapper. `~/.local/bin/ae` is a symlink straight to `~/.ae/versions/<V>/ae-core`,
 and running `ae` runs that binary directly — no re-exec, no pair to validate, no preamble
-handed across a process boundary. `version` prints the crate version; `upgrade` execs the
-immutable sibling `install` published beside it in the same version directory, which
-publishes the new version and atomically repoints `~/.local/bin/ae` at it. The one bash file
-left in the product is `install` itself — everything else the old `ae-entry` wrapper did
+handed across a process boundary. `version` prints the crate version; `upgrade` downloads
+the platform bundle, proves it by SHA-256 and publishes it through the same code the
+bootstrap reaches, atomically repointing `~/.local/bin/ae` at the new version. The one bash
+file left in the product is `install` itself — 79 lines of it since slice Z4 — everything else the old `ae-entry` wrapper did
 (dispatcher, help text, name grammar, config writer, the facts it used to hand the core
 across the exec) is gone with it, not replaced.
 

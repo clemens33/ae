@@ -85,10 +85,18 @@ fn the_locked_agent_has_exactly_one_construction_site() {
         .filter(|(_, text)| text.contains("Agent::new_with_config"))
         .map(|(path, _)| path.rsplit('/').next().unwrap_or(path).to_owned())
         .collect();
+    // TWO SITES SINCE SLICE Z4, and the second is deliberate rather than a
+    // second set of defaults: `src/upgrade.rs` builds an agent with the same
+    // lock except for `max_redirects`, because a GitHub release download
+    // answers with a 302 to its object store and there is no token in that URL
+    // to leak to it. What keeps the difference honest is the SHA-256 proof of
+    // the downloaded bundle — a redirect that lands somewhere unexpected is a
+    // checksum refusal, not an install. Both are listed rather than one
+    // exempted: a third agent is a line in a review, not a diff nobody read.
     assert_eq!(
         sites,
-        vec!["telegram.rs"],
-        "the locked ureq Agent is built somewhere other than src/telegram.rs"
+        vec!["upgrade.rs", "telegram.rs"],
+        "the locked ureq Agent is built somewhere this test does not name"
     );
 
     let telegram = product("telegram.rs");

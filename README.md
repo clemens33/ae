@@ -211,10 +211,11 @@ itself, so there is nothing separate to bind. See **[VISION.md](VISION.md)**.
 ae upgrade
 ```
 
-`ae upgrade` execs its immutable sibling `install`, which downloads the latest release
-(or an `AE_VERSION` pin), verifies the checksum before extraction, publishes the new
-version read-only under `~/.ae/versions/<V>/`, and atomically repoints `~/.local/bin/ae`
-directly at its `ae-core`. A stopped session consumes the current version on its next
+`ae upgrade` downloads the latest release (or an `AE_VERSION` pin), verifies the checksum
+before extraction, publishes the new version read-only under `~/.ae/versions/<V>/`, and
+atomically repoints `~/.local/bin/ae` directly at its `ae-core`. It does all of that
+itself: the publication is the core's own code, not a sibling script it hands the
+terminal to. A stopped session consumes the current version on its next
 resume. A running session is reported by name and stays pinned until it is stopped and
 resumed; upgrades never hot-rewrite running sessions.
 

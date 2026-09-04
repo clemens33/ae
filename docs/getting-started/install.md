@@ -54,7 +54,7 @@ Walks a fixed checklist: tmux/git on `PATH`, config file, registered agent execu
 ae upgrade
 ```
 
-`ae upgrade` execs its immutable sibling `install`. It downloads the latest release (or an `AE_VERSION` pin), verifies checksums before extraction, publishes a new immutable version read-only under `~/.ae/versions/<V>/`, then atomically repoints `~/.local/bin/ae` directly at that version's `ae-core`.
+`ae upgrade` downloads the latest release (or an `AE_VERSION` pin), verifies checksums before extraction, publishes a new immutable version read-only under `~/.ae/versions/<V>/`, then atomically repoints `~/.local/bin/ae` directly at that version's `ae-core`. The whole of that is the core's own code — it needs nothing on the machine but `tar`, and works on an installed generation that is otherwise too broken to run.
 
 Stopped sessions consume the current version only on their next resume. Running sessions are reported by name and deferred until stop and resume; an upgrade never hot-rewrites their loaded helpers or daemon bodies.
 

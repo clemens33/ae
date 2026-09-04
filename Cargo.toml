@@ -93,6 +93,21 @@ rustls = { version = "=0.23.35", default-features = false, features = [
   "std",
 ] }
 
+# THE ONE SHA-256 PRIMITIVE, and it arrived with the feature that needs it
+# (slice Z4: the installer's logic moved into the core, and an installer that
+# does not verify what it publishes is not an installer). ring was ALREADY in
+# the locked graph as rustls' crypto provider — this row makes ae's own use of
+# it direct and reviewable rather than reaching through a re-export, and adds
+# nothing to the dependency tree or to cargo-vet's exemption set.
+#
+# `default-features = false` drops `dev_urandom_fallback`: ae hashes bytes it
+# already holds and asks ring for no randomness at all.
+#
+# Note what this does NOT change: `src/shape.rs` still does no hashing on any
+# invocation. Content integrity is proven ONCE, here, by the install — a 2.4 MB
+# digest on every helper call is a cost the product will not pay.
+ring = { version = "=0.17.14", default-features = false }
+
 # The fake Telegram server the outbound gate runs against is a `std::net`
 # TcpListener in the test module itself: a test double that needed a dependency
 # would be a second network stack to trust.
