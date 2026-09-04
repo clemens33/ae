@@ -3823,6 +3823,15 @@ case "$mode" in
             exit 1
         fi
         : >"$state/$id"
+        # Real claude writes a transcript when the conversation starts, and that
+        # file IS what the core's resume probe reads. A stub that skipped it made
+        # every re-run take the no-transcript fallback, so the section tested the
+        # branch it is not about. PHYSICAL cwd: the core asks getcwd(2), bash's
+        # $PWD is logical, and on macOS /tmp is a symlink to /private/tmp — the
+        # two disagree and the probe then misses.
+        proj="$HOME/.claude/projects/$(pwd -P | tr / -)"
+        mkdir -p "$proj"
+        : >"$proj/$id.jsonl"
         printf 'CREATE %s\n' "$id" >>"$log"
         ;;
     resume) printf 'RESUME %s\n' "$id" >>"$log" ;;
@@ -3869,9 +3878,25 @@ assert_eq "#27: ...and a second re-run still resumes it" "RESUME $RR_UUID" \
        tail -1 "$TMPDIR/rr.log" 2>/dev/null || true)"
 assert_eq "#27: the collision was never hit" "0" \
     "$(command grep -c '^COLLIDE ' "$TMPDIR/rr.log" 2>/dev/null || true)"
-assert_contains "#27: the fallback announces itself" "re-run" "$RR_ERR"
+assert_contains "#27: the re-run announces itself" "re-run" "$RR_ERR"
+# THE OTHER ARM OF THE PROBE. The marker decides create-vs-resume; the TRANSCRIPT
+# decides which resume form. Take the transcript away and the same re-run must
+# fall back to the tool's own `--continue` rather than dying on a `--resume` for a
+# conversation that is not there. Without this arm the probe has only ever been
+# seen say yes, and a probe that cannot say no is not a probe.
+RR_PROJ="$HOME/.claude/projects/$( (cd "$RR_REPO" && pwd -P) | tr / -)"
+assert_eq "#27: (setup) the stub really wrote the transcript the probe reads" "1" \
+    "$([[ -f "$RR_PROJ/$RR_UUID.jsonl" ]] && echo 1 || echo 0)"
+rm -f "$RR_PROJ/$RR_UUID.jsonl"
+RR_FB_RC=0
+PATH="$RR_BIN:$PATH" "$RR_CORE" _run "$RR_DIR" main >/dev/null 2>&1 || RR_FB_RC=$?
+assert_eq "#27: with the transcript gone the re-run falls back instead of resuming" "NOID" \
+    "$(tail -1 "$TMPDIR/rr.log" 2>/dev/null || true)"
+assert_eq "#27: ...and the fallback still starts the tool rather than failing" "0" "$RR_FB_RC"
+assert_eq "#27: ...and it never went back to creating" "0" \
+    "$(command grep -c '^COLLIDE ' "$TMPDIR/rr.log" 2>/dev/null || true)"
 "$AE" end -f rerun27 >/dev/null 2>&1 || true
-unset RR_BIN RR_REPO RR_DIR RR_UUID RR_CORE RR_ERR
+unset RR_BIN RR_REPO RR_DIR RR_UUID RR_CORE RR_ERR RR_PROJ RR_FB_RC
 fi
 
 # ── #28 boundary: ONE definition, in the runtime that calls it — RETIRED (final glue cut) ───
