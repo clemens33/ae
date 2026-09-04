@@ -151,7 +151,7 @@ Usage:
                          End session: commit, push to ae/<name>, ARCHIVE its memory to
                          ~/.ae/archive/<session-uuid>/, then remove ae state. The archive
                          is mandatory: if it cannot be written, the end fails and nothing
-                         is deleted. KEEPS the claude/codex conversation files by default
+                         is deleted. KEEPS the claude/codex/agy conversation files by default
                          (token history); --purge-history deletes them AND writes no
                          archive (removing any existing one) ([workspace]
                          purge_agent_history sets the default). (or 'ae end all')

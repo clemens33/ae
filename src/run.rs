@@ -948,6 +948,26 @@ mod tests {
     }
 
     #[test]
+    fn agy_resumes_by_conversation_and_falls_back_to_continue() {
+        // The pair, read directly rather than through a launch: agy has no
+        // `--resume` at all, and its operator-facing session flags are stripped
+        // off BOTH forms so nothing an operator pinned can stack with, or be
+        // read instead of, the id ae is putting on.
+        let (exact, fallback) = resume_forms(
+            "agy --conversation OLD -c --dangerously-skip-permissions",
+            ToolKind::Agy,
+            "u-9",
+        );
+        assert_eq!(
+            exact,
+            "agy --dangerously-skip-permissions --conversation u-9"
+        );
+        assert_eq!(fallback, "agy --dangerously-skip-permissions --continue");
+        assert!(!exact.contains("OLD") && !fallback.contains("OLD"));
+        assert!(!exact.contains("--resume"), "agy has no --resume: {exact}");
+    }
+
+    #[test]
     fn a_missing_id_is_the_only_thing_that_makes_a_seat_unresumable_without_a_probe() {
         // No probe exists for these three, and that is not evidence of
         // absence: the recorded id is still this seat's own conversation.

@@ -403,7 +403,7 @@ pub(crate) fn run(
     epipe_ok(writeln!(err, "Recovery: {recovery}"))?;
     writeln!(
         err,
-        "kept agent conversation files (claude/codex token history; purge: ae end --purge-history)"
+        "kept agent conversation files (claude/codex/agy token history; purge: ae end --purge-history)"
     )?;
     writeln!(
         err,
@@ -615,7 +615,7 @@ fn confirm_body(frozen: &Frozen, digest_only: bool, err: &mut impl Write) -> io:
     )?;
     writeln!(
         err,
-        "  - KEPT: the archive, and the claude/codex conversation files on disk."
+        "  - KEPT: the archive, and the claude/codex/agy conversation files on disk."
     )?;
     if digest_only {
         writeln!(

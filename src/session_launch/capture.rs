@@ -10,7 +10,7 @@
 //! | codex | the `codex.<slot>.sid` file its own `developer_instructions` write, then a launch-token scan of `~/.codex/sessions/<day>/*.jsonl`, then a cwd scan of the same files, then its TUI header |
 //! | opencode | `opencode session list --format json`, matched on the session's `directory` |
 //! | gemini | `~/.gemini/tmp/<project>/chats/session-*.json`, matched on the launch token, then on the project root alone |
-//! | agy | `~/.gemini/antigravity-cli/conversations/<id>.db`, matched on the launch token in the file's BYTES, then on the CLI log that names both the workspace and the conversation it created |
+//! | agy | the launch token, searched in the BYTES of `~/.gemini/antigravity-cli/conversations/<id>.db` — OR, for a seat that has no token at all, the CLI log that names both the workspace and the conversation it created. Alternatives, not a chain: a token miss stays pending, because falling through cross-wires two seats sharing one directory |
 //!
 //! Every scan is filtered by the seat's `launch_time.<slot>`, so a stale
 //! conversation in the same directory cannot be captured as this one.
@@ -691,23 +691,36 @@ fn capture_agy(home: &Path, facts: &Facts) -> Option<String> {
     None
 }
 
-/// One look for this seat's agy conversation: the launch token first, the CLI
-/// log's workspace second.
+/// One look for this seat's agy conversation. The two halves are ALTERNATIVES,
+/// chosen by whether the seat has a launch token — never a chain.
 ///
-/// The two halves read DIFFERENT FILES because agy splits the two facts across
-/// them (measured 2026-09-04, 1.1.25): the conversation database carries the
-/// injected context — and so the launch token — but never the working
-/// directory, while the CLI log carries `workspaceDirs=[…]` and the id of the
-/// conversation that run created, but never the token. Token first, because it
-/// is the only half that separates two agy seats sharing one working directory.
+/// They read DIFFERENT FILES because agy splits the two facts across them
+/// (measured 2026-09-04, 1.1.25): the conversation database carries the injected
+/// context — and so the launch token — but never the working directory, while
+/// the CLI log carries `workspaceDirs=[…]` and the id of the conversation that
+/// run created, but never the token.
+///
+/// # A token miss is PENDING, never a fallback
+///
+/// This was a shipped defect, and the shape of it is worth keeping: the token
+/// search used to fall THROUGH to the workspace search on a miss. Two agy seats
+/// in one working directory, started in the same second, then had one positive
+/// answer between them — the workspace — and the seat that had not yet written
+/// its token registered its SIBLING's conversation. From there the roster is
+/// cross-wired and the resume puts two agents into one transcript.
+///
+/// So: a seat that HAS a token is answered by the token and by nothing else.
+/// A miss costs a cycle, not a conversation — the token lands in the database as
+/// soon as the first turn persists, and the watchdog looks again every tick.
+/// The workspace search is for a seat with NO token at all (a legacy meta, a
+/// seat whose launch predates the marker), where it is the only question that
+/// can be asked, and even there it refuses to guess between two candidates.
 fn scan_agy(home: &Path, facts: &Facts) -> Option<String> {
+    if !facts.launch_id.is_empty() {
+        return find_agy_by_launch_id(home, &facts.launch_id, facts.launch_time);
+    }
     if facts.work_dir.is_empty() {
         return None;
-    }
-    if !facts.launch_id.is_empty()
-        && let Some(id) = find_agy_by_launch_id(home, &facts.launch_id, facts.launch_time)
-    {
-        return Some(id);
     }
     find_agy_by_cwd(home, &facts.work_dir, facts.launch_time)
 }
@@ -742,34 +755,63 @@ pub(crate) fn find_agy_by_launch_id(
         let Some(id) = agy_conversation_id(&path) else {
             continue;
         };
-        let Some(bytes) = read_bytes(&path) else {
-            continue;
-        };
-        if contains_bytes(&bytes, &marker) {
+        if file_contains(&path, &marker) {
             best = Some((at, id));
         }
     }
     best.map(|(_, found)| found)
 }
 
-/// The newest conversation an agy run in THIS working directory created,
-/// read out of agy's own CLI log.
+/// The ONE conversation an agy run in this working directory created, read out
+/// of agy's own CLI log — or nothing, when there is more than one.
 ///
 /// The log is the only place agy records which directory a conversation belongs
-/// to. One log per CLI process, plain UTF-8, carrying
-/// `workspaceDirs=[<dir>]` once at start-up and `Created conversation <id>`
-/// for each conversation that run began. The FIRST created id is taken, because
-/// a launch's own conversation is the first one its process creates; a later
-/// one is a conversation the human started by hand in the same pane.
+/// to. One log per CLI process, plain UTF-8, carrying `workspaceDirs=[<dir>]`
+/// once at start-up and `Created conversation <id>` for each conversation that
+/// run began. The FIRST created id of a run is this launch's, because a launch's
+/// own conversation is the first one its process creates; a later one is a
+/// conversation somebody started by hand in the same pane.
+///
+/// # Exactly one, or none
+///
+/// A workspace does not identify a SEAT — two agy agents in one ae session share
+/// a working directory — so where two runs match, this cannot say which is the
+/// caller's and does not try. It is not "the newest wins": between two seats
+/// started in the same second, newest is a coin toss whose losing side
+/// cross-wires the roster. Candidates are counted by conversation id (two logs
+/// naming the same conversation are one candidate, which is what a re-read of
+/// the same run looks like), and two distinct ids answer `None`. Pending is
+/// recoverable; a wrong id is not.
 #[must_use]
 pub(crate) fn find_agy_by_cwd(home: &Path, work_dir: &str, launch_time: i64) -> Option<String> {
     let target = canonical(work_dir);
-    newest(agy_logs(home), launch_time, |text| {
-        if !agy_log_workspace_matches(text, &target) {
+    let mut candidates: Vec<String> = Vec::new();
+    for path in agy_logs(home) {
+        let Some(at) = mtime(&path) else {
+            continue;
+        };
+        if at < launch_time {
+            continue;
+        }
+        let Some(text) = read_text(&path) else {
+            continue;
+        };
+        if !agy_log_workspace_matches(&text, &target) {
+            continue;
+        }
+        let Some(id) = agy_log_created_conversation(&text) else {
+            continue;
+        };
+        if !candidates.contains(&id) {
+            candidates.push(id);
+        }
+        // Two is already the answer, and reading further logs cannot make it
+        // fewer.
+        if candidates.len() > 1 {
             return None;
         }
-        agy_log_created_conversation(text)
-    })
+    }
+    candidates.pop()
 }
 
 /// Does this log's `workspaceDirs=[…]` name `target`?
@@ -849,27 +891,98 @@ fn agy_logs(home: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
-/// One file's bytes, or nothing when it cannot be read.
+/// The most a single conversation database is worth scanning for a token.
+///
+/// A conversation grows without bound — the operator's own store held one at
+/// 6.7 MB after a day's work — and this search runs SIX TIMES per launch and
+/// again on every watchdog tick. Slurping the file was the first shape and it is
+/// the wrong one twice over: it holds the whole database in memory at once, and
+/// it pays for the whole file when the marker is in the first kilobyte.
+///
+/// So the scan streams, stops at the first match, and refuses a file larger than
+/// this outright rather than reading it in full. 16 MiB is well above the
+/// largest conversation measured (6.7 MB, 2026-09-04) and far below a size worth
+/// walking repeatedly; a database past it is a conversation ae will not identify
+/// by token, which costs a `pending` seat and never a wrong one.
+const AGY_SCAN_CAP: u64 = 16 * 1024 * 1024;
+
+/// How much of a conversation database is held at once while scanning it.
+const AGY_SCAN_CHUNK: usize = 64 * 1024;
+
+/// Does `path` contain `needle`, reading at most [`AGY_SCAN_CAP`] bytes?
 ///
 /// The text reader cannot serve here: a conversation database is `SQLite` and is
 /// not valid UTF-8, so `read_to_string` answers `None` for every one of them.
-fn read_bytes(path: &Path) -> Option<Vec<u8>> {
-    #[allow(
-        clippy::disallowed_methods,
-        reason = "a door: a capture reads the tool's own conversation store, which is binary — see clippy.toml"
-    )]
-    let read = std::fs::read(path);
-    read.ok()
-}
+///
+/// Read in chunks, keeping `needle.len() - 1` bytes of the previous chunk in
+/// front of each new one, so a marker LYING ACROSS A CHUNK BOUNDARY is still
+/// found — the defect a naive chunked search ships with, and the reason the
+/// overlap is derived from the needle rather than fixed.
+fn file_contains(path: &Path, needle: &[u8]) -> bool {
+    use std::io::Read as _;
 
-/// Is `needle` a subsequence of `haystack`?
-fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
-    if needle.is_empty() || needle.len() > haystack.len() {
+    let Some(overlap) = needle.len().checked_sub(1) else {
+        return false;
+    };
+    let Some(size) = file_size(path) else {
+        return false;
+    };
+    if size > AGY_SCAN_CAP {
+        // Visible where a look can still be retried: the watchdog's recovery
+        // runs in the daemon, whose stderr reaches its pane. The launch's own
+        // capture is detached with its streams dropped, so there it is silent —
+        // said plainly rather than pretended otherwise.
+        eprintln!(
+            "ae: agy capture skipped {} ({size} bytes over the {AGY_SCAN_CAP}-byte scan cap)",
+            path.display()
+        );
         return false;
     }
-    haystack
-        .windows(needle.len())
-        .any(|window| window == needle)
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: a capture reads the tool's own conversation store, which is binary and unbounded — see clippy.toml"
+    )]
+    let opened = std::fs::File::open(path);
+    let Ok(mut file) = opened else {
+        return false;
+    };
+    let mut buffer = vec![0_u8; overlap + AGY_SCAN_CHUNK];
+    // Starts EMPTY, not at `overlap`: seeding the carry with the buffer's own
+    // zero fill would put bytes the file does not contain in front of its first
+    // chunk, and a needle is matched against file bytes or nothing.
+    let mut filled = 0_usize;
+    loop {
+        let Ok(read) = file.read(&mut buffer[filled..]) else {
+            return false;
+        };
+        if read == 0 {
+            return false;
+        }
+        filled += read;
+        if buffer[..filled]
+            .windows(needle.len())
+            .any(|window| window == needle)
+        {
+            return true;
+        }
+        // Carry the tail forward: the next chunk is read BEHIND it, so a needle
+        // straddling the seam sits contiguously in the next pass. A read too
+        // short to fill even the carry is left to accumulate instead.
+        if filled > overlap {
+            buffer.copy_within(filled - overlap..filled, 0);
+            filled = overlap;
+        }
+    }
+}
+
+/// One file's length in bytes, or nothing when it has none.
+fn file_size(path: &Path) -> Option<u64> {
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: the scan cap that keeps an unbounded conversation store off the watchdog's cycle — see clippy.toml"
+    )]
+    let read = std::fs::metadata(path);
+    Some(read.ok()?.len())
 }
 
 // ---------------------------------------------------------------------------
@@ -1403,6 +1516,108 @@ mod tests {
         // A home with no agy state at all is quiet.
         assert_eq!(find_agy_by_cwd(&root.join("empty"), &work, 0), None);
         assert_eq!(find_agy_by_launch_id(&root.join("empty"), "tok-1", 0), None);
+    }
+
+    #[test]
+    fn two_agy_seats_in_one_directory_stay_pending_rather_than_take_each_other_s() {
+        // THE CROSS-WIRING DEFECT, pinned. Two agy seats in one ae session share
+        // a working directory. The sibling has already written its conversation
+        // and its log; THIS seat has a token and nothing on disk yet. A chain
+        // that fell through from the token miss to the workspace search answered
+        // with the sibling's id, and the roster then pointed two agents at one
+        // transcript — which a resume makes permanent.
+        let root = scratch("agy-siblings");
+        let home = root.join("home");
+        let work = root.join("project");
+        std::fs::create_dir_all(&work).expect("a project dir");
+        let logs = home.join(AGY_LOGS);
+        let sibling = "aaaaaaaa-1111-4111-8111-111111111111";
+        let mine = "bbbbbbbb-2222-4222-8222-222222222222";
+        for (name, id) in [("cli-000-sibling.log", sibling), ("cli-999-own.log", mine)] {
+            write(
+                &logs.join(name),
+                &format!(
+                    "workspaceDirs=[{work}]\nCreated conversation {id}\n",
+                    work = work.display()
+                ),
+            );
+        }
+        let work = work.display().to_string();
+
+        // The seat HAS a token, and no database carries it yet.
+        let facts = Facts {
+            tool: ToolKind::Agy,
+            work_dir: work.clone(),
+            launch_time: 0,
+            launch_id: "own-token".to_owned(),
+        };
+        assert_eq!(
+            scan_agy(&home, &facts),
+            None,
+            "a token miss must stay pending, never fall through to the workspace"
+        );
+
+        // And the workspace search on its own refuses to pick between the two,
+        // which is what protects the no-token seat the fallback is FOR.
+        assert_eq!(
+            find_agy_by_cwd(&home, &work, 0),
+            None,
+            "two candidate conversations in one directory is not an answer"
+        );
+
+        // Once the token IS on disk, the same seat resolves — and to ITS OWN
+        // conversation, not the newer sibling log's.
+        write_bytes(
+            &home.join(AGY_CONVERSATIONS).join(format!("{mine}.db")),
+            b"\x00\xffAE_AGY_LAUNCH_ID=own-token\x00",
+        );
+        assert_eq!(scan_agy(&home, &facts).as_deref(), Some(mine));
+    }
+
+    #[test]
+    fn a_marker_lying_across_a_chunk_boundary_is_still_found_and_a_huge_file_is_skipped() {
+        // The chunked scan's OWN defect class: a needle split by the seam
+        // between two reads. One offset does not prove it — a marker that lands
+        // just inside the first buffer is found by a scan with no carry at all —
+        // so the marker is walked across EVERY position that crosses the seam,
+        // and a scan that drops its overlap misses at least one of them.
+        // Verified against a deliberately broken carry before this was trusted.
+        let root = scratch("agy-chunks");
+        let marker = b"AE_AGY_LAUNCH_ID=tok-1";
+        let seam = marker.len() - 1 + AGY_SCAN_CHUNK;
+        for shift in 1..marker.len() {
+            let at = seam - marker.len() + shift;
+            let path = root.join(format!("straddle-{shift}.db"));
+            let mut body = vec![0_u8; at];
+            body.extend_from_slice(marker);
+            body.extend_from_slice(&[0xff_u8; 4096]);
+            write_bytes(&path, &body);
+            assert!(
+                file_contains(&path, marker),
+                "a marker at byte {at}, {shift} bytes across the seam, must still be found"
+            );
+            assert!(
+                !file_contains(&path, b"AE_AGY_LAUNCH_ID=tok-9"),
+                "and a different token must not match at {at}"
+            );
+        }
+
+        // A file past the cap is SKIPPED, not read: the marker is there and the
+        // answer is still no, which is the trade the constant records.
+        let cap = usize::try_from(AGY_SCAN_CAP).unwrap_or(usize::MAX);
+        let big = root.join("huge.db");
+        let mut body = marker.to_vec();
+        body.resize(cap + 1, 0);
+        write_bytes(&big, &body);
+        assert!(
+            !file_contains(&big, marker),
+            "a database past the scan cap is skipped rather than walked"
+        );
+        // A file exactly AT the cap is still scanned — the boundary is `>`.
+        let edge = root.join("edge.db");
+        body.truncate(cap);
+        write_bytes(&edge, &body);
+        assert!(file_contains(&edge, marker));
     }
 
     #[test]

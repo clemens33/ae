@@ -856,7 +856,7 @@ fn cleanup(
     } else {
         writeln!(
             out,
-            "  kept agent conversation files (claude/codex token history; purge: ae end --purge-history)"
+            "  kept agent conversation files (claude/codex/agy token history; purge: ae end --purge-history)"
         )?;
     }
 
@@ -982,6 +982,18 @@ fn purge_conversation_files(
                     writeln!(out, "  removed codex rollout: {}", file.display())?;
                 }
             }
+            // agy names its conversation EXACTLY: one file per id, in one flat
+            // directory, so there is no lookup to implement and no ambiguity to
+            // refuse. The `-wal`/`-shm` siblings go with it — left behind they
+            // are an orphaned write-ahead log for a database that no longer
+            // exists, which is the same retention leak as the database itself.
+            "agy" => {
+                for file in agy_conversation_files(home, uuid) {
+                    if std::fs::remove_file(&file).is_ok() {
+                        writeln!(out, "  removed agy conversation: {}", file.display())?;
+                    }
+                }
+            }
             "gemini" | "opencode" => {
                 writeln!(
                     err,
@@ -993,6 +1005,27 @@ fn purge_conversation_files(
         }
     }
     Ok(())
+}
+
+/// agy's conversation database for `uuid`, and the `SQLite` sidecars beside it.
+///
+/// No search and no ambiguity check, unlike the claude and codex finders: agy
+/// keeps one file per conversation NAMED for the id in one flat directory, so
+/// the path is computed rather than looked for, and only paths that exist are
+/// returned. `-wal` and `-shm` are appended to the FULL file name (`<id>.db-wal`
+/// is what `SQLite` writes), which is why they are built from the database's own
+/// name rather than from a second extension.
+fn agy_conversation_files(home: &Path, uuid: &str) -> Vec<PathBuf> {
+    let store = home.join(crate::session_launch::capture::AGY_CONVERSATIONS);
+    [
+        format!("{uuid}.db"),
+        format!("{uuid}.db-wal"),
+        format!("{uuid}.db-shm"),
+    ]
+    .into_iter()
+    .map(|name| store.join(name))
+    .filter(|path| path_exists(path))
+    .collect()
 }
 
 /// `~/.claude/projects/*/<uuid>.jsonl`, and only when exactly one matches.
@@ -1147,7 +1180,88 @@ fn socket_dir(root: &Path) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Action, Plan, sanitize_branch_name};
+    use super::{Action, Plan, path_exists, purge_conversation_files, sanitize_branch_name};
+    use std::path::{Path, PathBuf};
+
+    /// `--purge-history` deletes the conversations ae can name by EXACT id, and
+    /// nothing else. agy can be named exactly — one file per id — so it belongs
+    /// in that set; it was silently skipped, which is a retention leak rather
+    /// than a conservative default, because the operator asked for a purge.
+    #[test]
+    fn a_purge_removes_the_agy_conversation_and_its_sidecars_and_no_one_else_s() {
+        let scratch = std::env::temp_dir().join(format!("ae-purge-agy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&scratch);
+        let home = scratch.join("home");
+        // `purge_conversation_files` derives the tool homes from the state
+        // root's PARENT, which is what makes a fake home possible at all.
+        let root = home.join(".ae");
+        let store = home.join(".gemini/antigravity-cli/conversations");
+        std::fs::create_dir_all(&store).expect("a conversation store");
+        std::fs::create_dir_all(&root).expect("a state root");
+
+        let mine = "643393ad-eb92-4b9e-ab7a-0fe7b1221fa1";
+        let sibling = "aaaaaaaa-1111-4111-8111-111111111111";
+        let write = |path: &Path| std::fs::write(path, "x").expect("a fixture conversation");
+        for suffix in ["db", "db-wal", "db-shm"] {
+            write(&store.join(format!("{mine}.{suffix}")));
+            write(&store.join(format!("{sibling}.{suffix}")));
+        }
+        // A seat whose id was never captured names nothing, so it must delete
+        // nothing — the guard that stops a pending seat purging a stranger.
+        let meta = format!(
+            "session=x\nschema=2\nseat.main=lead\nagent_bin.main=agy\n\
+             harness_session.main={mine}\nseat.worker.1=hand\nagent_bin.worker.1=agy\n\
+             harness_session.worker.1=pending\n"
+        );
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        purge_conversation_files(&root, meta.as_bytes(), &mut out, &mut err)
+            .expect("the purge writes its report");
+        let said = String::from_utf8_lossy(&out).into_owned();
+
+        for suffix in ["db", "db-wal", "db-shm"] {
+            let gone = store.join(format!("{mine}.{suffix}"));
+            assert!(
+                !path_exists(&gone),
+                "the seat's own {suffix} must be removed: {said}"
+            );
+            assert!(
+                said.contains(&format!("removed agy conversation: {}", gone.display())),
+                "and the removal must be reported: {said}"
+            );
+            assert!(
+                path_exists(&store.join(format!("{sibling}.{suffix}"))),
+                "another conversation's {suffix} must be untouched"
+            );
+        }
+        assert!(
+            !said.contains("pending"),
+            "a seat with no captured id names nothing: {said}"
+        );
+        let _ = std::fs::remove_dir_all(&scratch);
+    }
+
+    /// The paths are computed, never searched, and only existing ones are named.
+    #[test]
+    fn the_agy_purge_names_only_files_that_are_there() {
+        let scratch = std::env::temp_dir().join(format!("ae-purge-agy2-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&scratch);
+        let store = scratch.join(".gemini/antigravity-cli/conversations");
+        std::fs::create_dir_all(&store).expect("a conversation store");
+        let id = "643393ad-eb92-4b9e-ab7a-0fe7b1221fa1";
+        assert_eq!(
+            super::agy_conversation_files(&scratch, id),
+            Vec::<PathBuf>::new(),
+            "an id with nothing on disk names nothing"
+        );
+        std::fs::write(store.join(format!("{id}.db")), "x").expect("a conversation");
+        assert_eq!(
+            super::agy_conversation_files(&scratch, id),
+            vec![store.join(format!("{id}.db"))],
+            "a database with no sidecars is one file, not three"
+        );
+        let _ = std::fs::remove_dir_all(&scratch);
+    }
 
     #[test]
     fn the_branch_name_is_the_frozen_sanitisation() {
