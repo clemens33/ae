@@ -391,9 +391,9 @@ pub fn resume_forms(cmd: &str, tool: ToolKind, session_id: &str) -> (String, Str
                 format!("{clean} {fallback}"),
             )
         }
-        ResumeForm::Subcommand(exact) => {
-            let clean = launch::strip_session_flags(cmd);
-            (format!("{clean} {exact} {session_id}"), clean)
+        ResumeForm::Subcommand { grammar, command } => {
+            let clean = launch::strip_session_grammar(cmd, grammar);
+            (format!("{clean} {command} {session_id}"), clean)
         }
         ResumeForm::None => (cmd.to_owned(), cmd.to_owned()),
     }

@@ -22,6 +22,7 @@ use std::time::Duration;
 use crate::inventory::ServerId;
 use crate::launch_cmd::ToolKind;
 use crate::time::Timestamp;
+use crate::tool::{CaptureSpec, InitialTurn};
 
 /// How many times a capture looks.
 const POLLS: u32 = 6;
@@ -110,14 +111,18 @@ pub fn run(dir: &Path, slot: &str, pane: &str, server: &ServerId) -> u8 {
         return 0;
     };
     let home = home_dir();
-    let captured = match facts.tool {
-        ToolKind::Codex => capture_codex(dir, slot, pane, server, home.as_deref(), &facts),
-        ToolKind::OpenCode => capture_opencode(&facts),
-        ToolKind::Gemini => home
+    let captured = match facts.tool.adapter().capture {
+        CaptureSpec::HandshakeRolloutOrTui => {
+            capture_codex(dir, slot, pane, server, home.as_deref(), &facts)
+        }
+        CaptureSpec::SessionList => capture_opencode(&facts),
+        CaptureSpec::ChatHistory => home
             .as_deref()
             .and_then(|home| capture_gemini(home, &facts)),
-        ToolKind::Agy => home.as_deref().and_then(|home| capture_agy(home, &facts)),
-        _ => None,
+        CaptureSpec::ConversationDatabaseOrLog => {
+            home.as_deref().and_then(|home| capture_agy(home, &facts))
+        }
+        CaptureSpec::None => None,
     };
     if let Some(id) = captured {
         register(dir, slot, &id);
@@ -168,12 +173,16 @@ fn is_pending(id: Option<&str>) -> bool {
 pub fn attempt(dir: &Path, slot: &str) -> Option<String> {
     let facts = facts(dir, slot)?;
     let home = home_dir();
-    match facts.tool {
-        ToolKind::Codex => home.as_deref().and_then(|home| scan_codex(home, &facts)),
-        ToolKind::Gemini => home.as_deref().and_then(|home| scan_gemini(home, &facts)),
-        ToolKind::Agy => home.as_deref().and_then(|home| scan_agy(home, &facts)),
-        ToolKind::OpenCode => scan_opencode(&facts),
-        _ => None,
+    match facts.tool.adapter().capture {
+        CaptureSpec::HandshakeRolloutOrTui => {
+            home.as_deref().and_then(|home| scan_codex(home, &facts))
+        }
+        CaptureSpec::ChatHistory => home.as_deref().and_then(|home| scan_gemini(home, &facts)),
+        CaptureSpec::ConversationDatabaseOrLog => {
+            home.as_deref().and_then(|home| scan_agy(home, &facts))
+        }
+        CaptureSpec::SessionList => scan_opencode(&facts),
+        CaptureSpec::None => None,
     }
 }
 
@@ -192,6 +201,8 @@ struct Facts {
     launch_time: i64,
     /// The launch token, empty when none was minted.
     launch_id: String,
+    /// The adapter-owned marker prefix written into the tool store.
+    launch_marker: Option<&'static str>,
 }
 
 /// Read one seat's capture facts, or nothing when the meta cannot be read.
@@ -203,8 +214,9 @@ fn facts(dir: &Path, slot: &str) -> Option<Facts> {
             .unwrap_or_default()
     };
     let launch_time = value(&format!("launch_time.{slot}"));
+    let tool = ToolKind::from_binary_name(&value(&format!("agent_bin.{slot}")));
     Some(Facts {
-        tool: ToolKind::from_binary_name(&value(&format!("agent_bin.{slot}"))),
+        tool,
         work_dir: value("work_dir"),
         // A non-numeric value is 0, never a refusal: a scan with no lower bound
         // still cannot pick a session in another directory.
@@ -214,6 +226,7 @@ fn facts(dir: &Path, slot: &str) -> Option<Facts> {
             0
         },
         launch_id: value(&format!("launch_id.{slot}")),
+        launch_marker: tool.adapter().launch_marker,
     })
 }
 
@@ -276,7 +289,9 @@ pub fn register_sid(
         }
         given.to_owned()
     } else {
-        let Some(facts) = facts(dir, slot).filter(|facts| facts.tool == ToolKind::Codex) else {
+        let Some(facts) = facts(dir, slot).filter(|facts| {
+            facts.tool.adapter().launch.initial_turn == InitialTurn::RegisterSessionId
+        }) else {
             writeln!(
                 err,
                 "Error: seat '{slot}' is not a codex seat in {}.",
@@ -361,7 +376,9 @@ fn capture_codex(
 fn scan_codex(home: &Path, facts: &Facts) -> Option<String> {
     let days = day_dirs(Timestamp::now());
     if !facts.launch_id.is_empty()
-        && let Some(id) = find_codex_by_launch_id(home, &facts.launch_id, facts.launch_time, &days)
+        && let Some(marker) = facts.launch_marker
+        && let Some(id) =
+            find_codex_by_launch_id(home, marker, &facts.launch_id, facts.launch_time, &days)
     {
         return Some(id);
     }
@@ -392,11 +409,12 @@ pub(crate) fn scrape_session_id(screen: &str) -> Option<String> {
 #[must_use]
 pub(crate) fn find_codex_by_launch_id(
     home: &Path,
+    marker_prefix: &str,
     launch_id: &str,
     launch_time: i64,
     days: &[String],
 ) -> Option<String> {
-    let marker = format!("AE_CODEX_LAUNCH_ID={launch_id}");
+    let marker = format!("AE_{marker_prefix}_LAUNCH_ID={launch_id}");
     newest(codex_logs(home, days), launch_time, |text| {
         if !text.contains(&marker) {
             return None;
@@ -466,8 +484,14 @@ fn scan_gemini(home: &Path, facts: &Facts) -> Option<String> {
         return None;
     }
     if !facts.launch_id.is_empty()
-        && let Some(id) =
-            find_gemini_by_launch_id(home, &facts.work_dir, &facts.launch_id, facts.launch_time)
+        && let Some(marker) = facts.launch_marker
+        && let Some(id) = find_gemini_by_launch_id(
+            home,
+            &facts.work_dir,
+            marker,
+            &facts.launch_id,
+            facts.launch_time,
+        )
     {
         return Some(id);
     }
@@ -479,10 +503,11 @@ fn scan_gemini(home: &Path, facts: &Facts) -> Option<String> {
 pub(crate) fn find_gemini_by_launch_id(
     home: &Path,
     work_dir: &str,
+    marker_prefix: &str,
     launch_id: &str,
     launch_time: i64,
 ) -> Option<String> {
-    let marker = format!("AE_GEMINI_LAUNCH_ID={launch_id}");
+    let marker = format!("AE_{marker_prefix}_LAUNCH_ID={launch_id}");
     newest(gemini_chats(home, work_dir), launch_time, |text| {
         if !text.contains(&marker) {
             return None;
@@ -557,7 +582,9 @@ fn capture_agy(home: &Path, facts: &Facts) -> Option<String> {
 /// token registered its sibling's conversation.
 fn scan_agy(home: &Path, facts: &Facts) -> Option<String> {
     if !facts.launch_id.is_empty() {
-        return find_agy_by_launch_id(home, &facts.launch_id, facts.launch_time);
+        return facts.launch_marker.and_then(|marker| {
+            find_agy_by_launch_id(home, marker, &facts.launch_id, facts.launch_time)
+        });
     }
     if facts.work_dir.is_empty() {
         return None;
@@ -569,10 +596,11 @@ fn scan_agy(home: &Path, facts: &Facts) -> Option<String> {
 #[must_use]
 pub(crate) fn find_agy_by_launch_id(
     home: &Path,
+    marker_prefix: &str,
     launch_id: &str,
     launch_time: i64,
 ) -> Option<String> {
-    let marker = format!("AE_AGY_LAUNCH_ID={launch_id}").into_bytes();
+    let marker = format!("AE_{marker_prefix}_LAUNCH_ID={launch_id}").into_bytes();
     let mut best: Option<(i64, String)> = None;
     let mut candidates = agy_conversations(home);
     candidates.sort();
@@ -1280,21 +1308,24 @@ mod tests {
 
         let work = work.display().to_string();
         assert_eq!(
-            find_agy_by_launch_id(&home, "tok-1", 0).as_deref(),
+            find_agy_by_launch_id(&home, "AGY", "tok-1", 0).as_deref(),
             Some(id)
         );
-        assert_eq!(find_agy_by_launch_id(&home, "tok-2", 0), None);
+        assert_eq!(find_agy_by_launch_id(&home, "AGY", "tok-2", 0), None);
         // The log fallback takes the FIRST conversation the matching run
         // created, never a later hand-started one and never another workspace's.
         assert_eq!(find_agy_by_cwd(&home, &work, 0).as_deref(), Some(id));
         // The launch-time floor keeps a conversation that predates this launch
         // out of BOTH halves.
         let future = i64::MAX / 2;
-        assert_eq!(find_agy_by_launch_id(&home, "tok-1", future), None);
+        assert_eq!(find_agy_by_launch_id(&home, "AGY", "tok-1", future), None);
         assert_eq!(find_agy_by_cwd(&home, &work, future), None);
         // A home with no agy state at all is quiet.
         assert_eq!(find_agy_by_cwd(&root.join("empty"), &work, 0), None);
-        assert_eq!(find_agy_by_launch_id(&root.join("empty"), "tok-1", 0), None);
+        assert_eq!(
+            find_agy_by_launch_id(&root.join("empty"), "AGY", "tok-1", 0),
+            None
+        );
     }
 
     #[test]
@@ -1327,6 +1358,7 @@ mod tests {
             work_dir: work.clone(),
             launch_time: 0,
             launch_id: "own-token".to_owned(),
+            launch_marker: Some("AGY"),
         };
         assert_eq!(
             scan_agy(&home, &facts),
@@ -1460,10 +1492,13 @@ mod tests {
         );
         let work = work.display().to_string();
         assert_eq!(
-            find_gemini_by_launch_id(&home, &work, "tok-1", 0).as_deref(),
+            find_gemini_by_launch_id(&home, &work, "GEMINI", "tok-1", 0).as_deref(),
             Some("gem-a")
         );
-        assert_eq!(find_gemini_by_launch_id(&home, &work, "tok-2", 0), None);
+        assert_eq!(
+            find_gemini_by_launch_id(&home, &work, "GEMINI", "tok-2", 0),
+            None
+        );
         assert_eq!(
             find_gemini_by_cwd(&home, &work, 0).as_deref(),
             Some("gem-a")
@@ -1500,10 +1535,13 @@ mod tests {
         write(&day.join("notes.txt"), "AE_CODEX_LAUNCH_ID=tok-1\n");
         let work = work.display().to_string();
         assert_eq!(
-            find_codex_by_launch_id(&home, "tok-1", 0, &days).as_deref(),
+            find_codex_by_launch_id(&home, "CODEX", "tok-1", 0, &days).as_deref(),
             Some("c0de-01")
         );
-        assert_eq!(find_codex_by_launch_id(&home, "tok-2", 0, &days), None);
+        assert_eq!(
+            find_codex_by_launch_id(&home, "CODEX", "tok-2", 0, &days),
+            None
+        );
         assert_eq!(
             find_codex_by_cwd(&home, &work, 0, &days).as_deref(),
             Some("c0de-01")
@@ -1514,7 +1552,7 @@ mod tests {
         );
         // A day that was never written is not an error.
         assert_eq!(
-            find_codex_by_launch_id(&home, "tok-1", 0, &["2020/01/01".to_owned()]),
+            find_codex_by_launch_id(&home, "CODEX", "tok-1", 0, &["2020/01/01".to_owned()],),
             None
         );
     }

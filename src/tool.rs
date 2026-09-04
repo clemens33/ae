@@ -53,12 +53,8 @@ pub(crate) enum ContextChannel {
     SystemPromptFlag(&'static str),
     /// Set Codex-compatible developer instructions and the registration task.
     DeveloperInstructions,
-    /// Send context as a user turn, optionally through a flag and with a
-    /// tool-store launch marker prefix.
-    UserTurn {
-        flag: Option<&'static str>,
-        marker: Option<&'static str>,
-    },
+    /// Send context as a user turn, optionally through a flag.
+    UserTurn { flag: Option<&'static str> },
     /// Point the harness at generated instruction/config files.
     ConfigFile,
     /// No context channel is known.
@@ -125,7 +121,10 @@ pub(crate) enum ResumeForm {
     },
     /// Strip common flags, append an exact subcommand/id pair, and use the
     /// stripped command itself as fallback.
-    Subcommand(&'static str),
+    Subcommand {
+        grammar: SessionFlags,
+        command: &'static str,
+    },
     /// Preserve the command for both forms.
     None,
 }
@@ -152,6 +151,28 @@ pub(crate) struct ResumeSpec {
     pub(crate) probe: StoreProbe,
 }
 
+/// How a harness-created conversation id is found after launch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CaptureSpec {
+    /// Read the handshake file, scan rollouts by token or cwd, or read the TUI header.
+    HandshakeRolloutOrTui,
+    /// Scan project chat history.
+    ChatHistory,
+    /// Scan conversation databases or the CLI log.
+    ConversationDatabaseOrLog,
+    /// Ask the harness for its session list.
+    SessionList,
+    /// No post-launch capture is needed.
+    None,
+}
+
+impl CaptureSpec {
+    /// Whether the launch needs capture metadata and a detached capture.
+    pub(crate) const fn is_needed(self) -> bool {
+        !matches!(self, Self::None)
+    }
+}
+
 /// Everything ae needs to know about one agent harness.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ToolAdapter {
@@ -161,16 +182,21 @@ pub(crate) struct ToolAdapter {
     pub(crate) name: &'static str,
     /// Human-facing name, or the full profile command for an unknown tool.
     pub(crate) label: Option<&'static str>,
+    /// Prefix shared by launch-marker writers and tool-store readers.
+    pub(crate) launch_marker: Option<&'static str>,
     /// Fresh-launch and initial-turn behaviour.
     pub(crate) launch: LaunchSpec,
     /// Exact/fallback resume behaviour and its store evidence.
     pub(crate) resume: ResumeSpec,
+    /// Post-launch conversation-id capture behaviour.
+    pub(crate) capture: CaptureSpec,
 }
 
 const CLAUDE: ToolAdapter = ToolAdapter {
     kind: ToolKind::Claude,
     name: "claude",
     label: Some("claude code"),
+    launch_marker: None,
     launch: LaunchSpec {
         session_flags: SessionFlags::Common,
         id: IdStyle::Flag {
@@ -188,12 +214,14 @@ const CLAUDE: ToolAdapter = ToolAdapter {
         },
         probe: StoreProbe::ProjectTranscript,
     },
+    capture: CaptureSpec::None,
 };
 
 const CODEX: ToolAdapter = ToolAdapter {
     kind: ToolKind::Codex,
     name: "codex",
     label: Some("codex"),
+    launch_marker: Some("CODEX"),
     launch: LaunchSpec {
         session_flags: SessionFlags::Common,
         id: IdStyle::None,
@@ -202,22 +230,24 @@ const CODEX: ToolAdapter = ToolAdapter {
         initial_turn: InitialTurn::RegisterSessionId,
     },
     resume: ResumeSpec {
-        form: ResumeForm::Subcommand("resume"),
+        form: ResumeForm::Subcommand {
+            grammar: SessionFlags::Common,
+            command: "resume",
+        },
         probe: StoreProbe::DatedRollouts,
     },
+    capture: CaptureSpec::HandshakeRolloutOrTui,
 };
 
 const GEMINI: ToolAdapter = ToolAdapter {
     kind: ToolKind::Gemini,
     name: "gemini",
     label: Some("gemini cli"),
+    launch_marker: Some("GEMINI"),
     launch: LaunchSpec {
         session_flags: SessionFlags::Common,
         id: IdStyle::None,
-        context: ContextChannel::UserTurn {
-            flag: Some("-i"),
-            marker: Some("GEMINI"),
-        },
+        context: ContextChannel::UserTurn { flag: Some("-i") },
         command: CommandForm::InlinePrompt,
         initial_turn: InitialTurn::None,
     },
@@ -228,19 +258,18 @@ const GEMINI: ToolAdapter = ToolAdapter {
         },
         probe: StoreProbe::RecordedId,
     },
+    capture: CaptureSpec::ChatHistory,
 };
 
 const AGY: ToolAdapter = ToolAdapter {
     kind: ToolKind::Agy,
     name: "agy",
     label: Some("antigravity cli"),
+    launch_marker: Some("AGY"),
     launch: LaunchSpec {
         session_flags: SessionFlags::Conversation,
         id: IdStyle::None,
-        context: ContextChannel::UserTurn {
-            flag: Some("-i"),
-            marker: Some("AGY"),
-        },
+        context: ContextChannel::UserTurn { flag: Some("-i") },
         command: CommandForm::InlinePrompt,
         initial_turn: InitialTurn::None,
     },
@@ -252,22 +281,22 @@ const AGY: ToolAdapter = ToolAdapter {
         },
         probe: StoreProbe::ConversationDatabase,
     },
+    capture: CaptureSpec::ConversationDatabaseOrLog,
 };
 
 const GROK: ToolAdapter = ToolAdapter {
     kind: ToolKind::Grok,
     name: "grok",
     label: Some("grok build"),
+    launch_marker: None,
     launch: LaunchSpec {
         session_flags: SessionFlags::Common,
         id: IdStyle::Flag {
             flag: "--session-id",
             grammar: SessionFlags::ShortAliases,
         },
-        context: ContextChannel::UserTurn {
-            flag: None,
-            marker: None,
-        },
+        // A positional turn preserves the harness's own system prompt.
+        context: ContextChannel::UserTurn { flag: None },
         command: CommandForm::InlinePrompt,
         initial_turn: InitialTurn::None,
     },
@@ -279,12 +308,14 @@ const GROK: ToolAdapter = ToolAdapter {
         },
         probe: StoreProbe::RecordedId,
     },
+    capture: CaptureSpec::None,
 };
 
 const OPENCODE: ToolAdapter = ToolAdapter {
     kind: ToolKind::OpenCode,
     name: "opencode",
     label: Some("opencode"),
+    launch_marker: None,
     launch: LaunchSpec {
         session_flags: SessionFlags::Common,
         id: IdStyle::None,
@@ -299,12 +330,14 @@ const OPENCODE: ToolAdapter = ToolAdapter {
         },
         probe: StoreProbe::RecordedId,
     },
+    capture: CaptureSpec::SessionList,
 };
 
 const UNKNOWN: ToolAdapter = ToolAdapter {
     kind: ToolKind::Unknown,
     name: "unknown",
     label: None,
+    launch_marker: None,
     launch: LaunchSpec {
         session_flags: SessionFlags::Common,
         id: IdStyle::None,
@@ -316,6 +349,7 @@ const UNKNOWN: ToolAdapter = ToolAdapter {
         form: ResumeForm::None,
         probe: StoreProbe::RecordedId,
     },
+    capture: CaptureSpec::None,
 };
 
 const KNOWN: [&ToolAdapter; 6] = [&CLAUDE, &CODEX, &GEMINI, &AGY, &GROK, &OPENCODE];
@@ -384,128 +418,169 @@ mod tests {
         reason = "six complete adapter rows are one readable contract matrix"
     )]
     fn capability_rows_pin_the_public_tool_contract() {
-        let rows = KNOWN.map(|adapter| {
-            (
-                adapter.kind,
-                adapter.name,
-                adapter.label,
-                adapter.launch.session_flags,
-                adapter.launch.id,
-                adapter.launch.context,
-                adapter.launch.command,
-                adapter.launch.initial_turn,
-                adapter.resume.form,
-                adapter.resume.probe,
-            )
-        });
         assert_eq!(
-            rows,
+            KNOWN.map(|adapter| *adapter),
             [
-                (
-                    ToolKind::Claude,
-                    "claude",
-                    Some("claude code"),
-                    SessionFlags::Common,
-                    IdStyle::Flag {
-                        flag: "--session-id",
-                        grammar: SessionFlags::Common,
+                ToolAdapter {
+                    kind: ToolKind::Claude,
+                    name: "claude",
+                    label: Some("claude code"),
+                    launch_marker: None,
+                    launch: LaunchSpec {
+                        session_flags: SessionFlags::Common,
+                        id: IdStyle::Flag {
+                            flag: "--session-id",
+                            grammar: SessionFlags::Common,
+                        },
+                        context: ContextChannel::SystemPromptFlag("--append-system-prompt"),
+                        command: CommandForm::SanitizedEnvironment,
+                        initial_turn: InitialTurn::None,
                     },
-                    ContextChannel::SystemPromptFlag("--append-system-prompt"),
-                    CommandForm::SanitizedEnvironment,
-                    InitialTurn::None,
-                    ResumeForm::Flags {
-                        exact: "--resume",
-                        fallback: "--continue",
+                    resume: ResumeSpec {
+                        form: ResumeForm::Flags {
+                            exact: "--resume",
+                            fallback: "--continue",
+                        },
+                        probe: StoreProbe::ProjectTranscript,
                     },
-                    StoreProbe::ProjectTranscript,
-                ),
-                (
-                    ToolKind::Codex,
-                    "codex",
-                    Some("codex"),
-                    SessionFlags::Common,
-                    IdStyle::None,
-                    ContextChannel::DeveloperInstructions,
-                    CommandForm::InlinePrompt,
-                    InitialTurn::RegisterSessionId,
-                    ResumeForm::Subcommand("resume"),
-                    StoreProbe::DatedRollouts,
-                ),
-                (
-                    ToolKind::Gemini,
-                    "gemini",
-                    Some("gemini cli"),
-                    SessionFlags::Common,
-                    IdStyle::None,
-                    ContextChannel::UserTurn {
-                        flag: Some("-i"),
-                        marker: Some("GEMINI"),
+                    capture: CaptureSpec::None,
+                },
+                ToolAdapter {
+                    kind: ToolKind::Codex,
+                    name: "codex",
+                    label: Some("codex"),
+                    launch_marker: Some("CODEX"),
+                    launch: LaunchSpec {
+                        session_flags: SessionFlags::Common,
+                        id: IdStyle::None,
+                        context: ContextChannel::DeveloperInstructions,
+                        command: CommandForm::InlinePrompt,
+                        initial_turn: InitialTurn::RegisterSessionId,
                     },
-                    CommandForm::InlinePrompt,
-                    InitialTurn::None,
-                    ResumeForm::Flags {
-                        exact: "--resume",
-                        fallback: "--resume latest",
+                    resume: ResumeSpec {
+                        form: ResumeForm::Subcommand {
+                            grammar: SessionFlags::Common,
+                            command: "resume",
+                        },
+                        probe: StoreProbe::DatedRollouts,
                     },
-                    StoreProbe::RecordedId,
-                ),
-                (
-                    ToolKind::Agy,
-                    "agy",
-                    Some("antigravity cli"),
-                    SessionFlags::Conversation,
-                    IdStyle::None,
-                    ContextChannel::UserTurn {
-                        flag: Some("-i"),
-                        marker: Some("AGY"),
+                    capture: CaptureSpec::HandshakeRolloutOrTui,
+                },
+                ToolAdapter {
+                    kind: ToolKind::Gemini,
+                    name: "gemini",
+                    label: Some("gemini cli"),
+                    launch_marker: Some("GEMINI"),
+                    launch: LaunchSpec {
+                        session_flags: SessionFlags::Common,
+                        id: IdStyle::None,
+                        context: ContextChannel::UserTurn { flag: Some("-i") },
+                        command: CommandForm::InlinePrompt,
+                        initial_turn: InitialTurn::None,
                     },
-                    CommandForm::InlinePrompt,
-                    InitialTurn::None,
-                    ResumeForm::StrippedFlags {
-                        grammar: SessionFlags::Conversation,
-                        exact: "--conversation",
-                        fallback: "--continue",
+                    resume: ResumeSpec {
+                        form: ResumeForm::Flags {
+                            exact: "--resume",
+                            fallback: "--resume latest",
+                        },
+                        probe: StoreProbe::RecordedId,
                     },
-                    StoreProbe::ConversationDatabase,
-                ),
-                (
-                    ToolKind::Grok,
-                    "grok",
-                    Some("grok build"),
-                    SessionFlags::Common,
-                    IdStyle::Flag {
-                        flag: "--session-id",
-                        grammar: SessionFlags::ShortAliases,
+                    capture: CaptureSpec::ChatHistory,
+                },
+                ToolAdapter {
+                    kind: ToolKind::Agy,
+                    name: "agy",
+                    label: Some("antigravity cli"),
+                    launch_marker: Some("AGY"),
+                    launch: LaunchSpec {
+                        session_flags: SessionFlags::Conversation,
+                        id: IdStyle::None,
+                        context: ContextChannel::UserTurn { flag: Some("-i") },
+                        command: CommandForm::InlinePrompt,
+                        initial_turn: InitialTurn::None,
                     },
-                    ContextChannel::UserTurn {
-                        flag: None,
-                        marker: None,
+                    resume: ResumeSpec {
+                        form: ResumeForm::StrippedFlags {
+                            grammar: SessionFlags::Conversation,
+                            exact: "--conversation",
+                            fallback: "--continue",
+                        },
+                        probe: StoreProbe::ConversationDatabase,
                     },
-                    CommandForm::InlinePrompt,
-                    InitialTurn::None,
-                    ResumeForm::StrippedFlags {
-                        grammar: SessionFlags::ShortAliases,
-                        exact: "--resume",
-                        fallback: "--continue",
+                    capture: CaptureSpec::ConversationDatabaseOrLog,
+                },
+                ToolAdapter {
+                    kind: ToolKind::Grok,
+                    name: "grok",
+                    label: Some("grok build"),
+                    launch_marker: None,
+                    launch: LaunchSpec {
+                        session_flags: SessionFlags::Common,
+                        id: IdStyle::Flag {
+                            flag: "--session-id",
+                            grammar: SessionFlags::ShortAliases,
+                        },
+                        context: ContextChannel::UserTurn { flag: None },
+                        command: CommandForm::InlinePrompt,
+                        initial_turn: InitialTurn::None,
                     },
-                    StoreProbe::RecordedId,
-                ),
-                (
-                    ToolKind::OpenCode,
-                    "opencode",
-                    Some("opencode"),
-                    SessionFlags::Common,
-                    IdStyle::None,
-                    ContextChannel::ConfigFile,
-                    CommandForm::NoInlinePrompt,
-                    InitialTurn::None,
-                    ResumeForm::Flags {
-                        exact: "--session",
-                        fallback: "--continue",
+                    resume: ResumeSpec {
+                        form: ResumeForm::StrippedFlags {
+                            grammar: SessionFlags::ShortAliases,
+                            exact: "--resume",
+                            fallback: "--continue",
+                        },
+                        probe: StoreProbe::RecordedId,
                     },
-                    StoreProbe::RecordedId,
-                ),
+                    capture: CaptureSpec::None,
+                },
+                ToolAdapter {
+                    kind: ToolKind::OpenCode,
+                    name: "opencode",
+                    label: Some("opencode"),
+                    launch_marker: None,
+                    launch: LaunchSpec {
+                        session_flags: SessionFlags::Common,
+                        id: IdStyle::None,
+                        context: ContextChannel::ConfigFile,
+                        command: CommandForm::NoInlinePrompt,
+                        initial_turn: InitialTurn::None,
+                    },
+                    resume: ResumeSpec {
+                        form: ResumeForm::Flags {
+                            exact: "--session",
+                            fallback: "--continue",
+                        },
+                        probe: StoreProbe::RecordedId,
+                    },
+                    capture: CaptureSpec::SessionList,
+                },
             ]
+        );
+    }
+
+    #[test]
+    fn unknown_adapter_is_inert() {
+        assert_eq!(
+            ToolKind::Unknown.adapter(),
+            &ToolAdapter {
+                kind: ToolKind::Unknown,
+                name: "unknown",
+                label: None,
+                launch_marker: None,
+                launch: LaunchSpec {
+                    session_flags: SessionFlags::Common,
+                    id: IdStyle::None,
+                    context: ContextChannel::None,
+                    command: CommandForm::InlinePrompt,
+                    initial_turn: InitialTurn::None,
+                },
+                resume: ResumeSpec {
+                    form: ResumeForm::None,
+                    probe: StoreProbe::RecordedId,
+                },
+                capture: CaptureSpec::None,
+            }
         );
     }
 }

@@ -32,13 +32,21 @@ fn single_quote_escape(text: &str) -> String {
     text.replace('\'', "'\\''")
 }
 
+/// The launch marker shared with capture readers, or no marker when either
+/// component is absent.
+fn launch_marker_text(prefix: Option<&str>, launch_id: &str, slot: &str) -> String {
+    if launch_id.is_empty() {
+        return String::new();
+    }
+    prefix.map_or_else(String::new, |prefix| {
+        format!("\nAE_{prefix}_LAUNCH_ID={launch_id}\nAE_{prefix}_SLOT={slot}")
+    })
+}
+
 /// Does this tool need a post-launch capture handshake?
 #[must_use]
 pub const fn supports_launch_id(tool: ToolKind) -> bool {
-    matches!(
-        tool,
-        ToolKind::Codex | ToolKind::OpenCode | ToolKind::Gemini | ToolKind::Agy
-    )
+    tool.adapter().capture.is_needed()
 }
 
 /// Does this tool take an ae-generated session id at LAUNCH?
@@ -260,7 +268,8 @@ pub fn inject_ae_context(
     launch_id: &str,
 ) -> Injected {
     let dir = meta_dir.display();
-    match ToolKind::from_cmd(cmd).adapter().launch.context {
+    let adapter = ToolKind::from_cmd(cmd).adapter();
+    match adapter.launch.context {
         ContextChannel::SystemPromptFlag(flag) => Injected {
             cmd: format!("{cmd} {flag} '{}'", single_quote_escape(ctx)),
             warning: None,
@@ -274,11 +283,7 @@ pub fn inject_ae_context(
             // Meta keys are generic (`launch_id.<slot>`); the persisted marker
             // stays tool-specific, because each capture searches a different
             // external store.
-            let marker = if launch_id.is_empty() {
-                String::new()
-            } else {
-                format!("\nAE_CODEX_LAUNCH_ID={launch_id}\nAE_CODEX_SLOT={slot}")
-            };
+            let marker = launch_marker_text(adapter.launch_marker, launch_id, slot);
             let full = format!(
                 "{ctx} --- CRITICAL FIRST TASK: Enable session resume by running: {dir}/_register-sid{slot_arg} — do this NOW before anything else.{marker}"
             );
@@ -290,14 +295,8 @@ pub fn inject_ae_context(
                 warning: None,
             }
         }
-        ContextChannel::UserTurn { flag, marker } => {
-            let marker = if launch_id.is_empty() {
-                String::new()
-            } else {
-                marker.map_or_else(String::new, |marker| {
-                    format!("\nAE_{marker}_LAUNCH_ID={launch_id}\nAE_{marker}_SLOT={slot}")
-                })
-            };
+        ContextChannel::UserTurn { flag } => {
+            let marker = launch_marker_text(adapter.launch_marker, launch_id, slot);
             let full = format!("{ctx}{marker}{WAIT_SUFFIX}");
             let turn = single_quote_escape(&full);
             Injected {
