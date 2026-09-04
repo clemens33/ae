@@ -63,6 +63,7 @@ pub mod telegram;
 pub mod telegram_lifecycle;
 pub mod time;
 pub mod tmux;
+pub mod tool;
 pub mod tracked;
 pub mod transport;
 pub mod upgrade;
