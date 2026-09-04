@@ -29,11 +29,14 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 #[cfg(unix)]
-use std::os::unix::fs::MetadataExt;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
 use super::cli::ae;
 use super::parity::{Invocation, capture::raw};
 use super::phase2::{run_tmux, tmux_present};
+
+const IDLE_CONFIG: &str = "[profiles]\nidle = \"sleep 600\"\n\n[roster]\nlead = idle\n\n\
+     [workspace]\nmain = lead\nlayout = vertical\nwatchdog = false\n";
 
 /// An isolated ae home and a project directory.
 struct Rig {
@@ -69,6 +72,41 @@ impl Rig {
         self.home.join("config")
     }
 
+    /// The same rig with the harmless idle profile used by routing tests.
+    fn idle(tag: &str) -> Self {
+        let rig = Self::new(tag);
+        assert!(std::fs::create_dir_all(&rig.home).is_ok(), "an ae home");
+        assert!(
+            std::fs::write(rig.config(), IDLE_CONFIG).is_ok(),
+            "an idle config"
+        );
+        rig
+    }
+
+    /// Install command-name fakes for the seeded config's real profile rows.
+    /// They record which profile reached the pane, then stay alive until the
+    /// rig's server cleanup kills them.
+    #[cfg(unix)]
+    fn fake_profiles(&self) -> (PathBuf, PathBuf) {
+        let bin = self.scratch.join("fake-bin");
+        let marker = self.scratch.join("fake-agent-launched");
+        assert!(std::fs::create_dir_all(&bin).is_ok(), "a fake bin dir");
+        for tool in ["claude", "codex"] {
+            let body = format!(
+                "#!/usr/bin/perl\nuse strict;\nuse warnings;\nopen(my $marker, '>>', '{}') or die; print $marker '{}\\n'; close($marker); sleep 600;\n",
+                marker.display(),
+                tool,
+            );
+            let path = bin.join(tool);
+            assert!(std::fs::write(&path, body).is_ok(), "the fake {tool}");
+            assert!(
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).is_ok(),
+                "an executable fake {tool}"
+            );
+        }
+        (bin, marker)
+    }
+
     fn sessions(&self) -> PathBuf {
         self.home.join("sessions")
     }
@@ -77,6 +115,48 @@ impl Rig {
     /// its project as the working directory, and `argv` verbatim.
     fn run(&self, argv: &[&str]) -> (Option<i32>, String, String) {
         self.run_on(None, argv)
+    }
+
+    #[cfg(unix)]
+    fn run_on_with_path(
+        &self,
+        server: Option<&Path>,
+        path: &Path,
+        argv: &[&str],
+    ) -> (Option<i32>, String, String) {
+        let mut command = ae();
+        let path = format!(
+            "{}:{}",
+            path.display(),
+            std::env::var("PATH").unwrap_or_default()
+        );
+        command
+            .env_remove("TMUX")
+            .env_remove("TMUX_PANE")
+            .env("AE_HOME", &self.home)
+            .env("CONFIG_FILE", self.config())
+            .env("AE_NO_AUTOSTART", "1")
+            .env("TMUX_TMPDIR", &self.scratch)
+            .env("PATH", path)
+            .current_dir(&self.project);
+        if let Some(socket) = server {
+            command
+                .env("AE_TMUX_SERVER_KIND", "socket")
+                .env("AE_TMUX_SERVER", socket);
+        } else {
+            command
+                .env_remove("AE_TMUX_SERVER_KIND")
+                .env_remove("AE_TMUX_SERVER");
+        }
+        let out = command
+            .args(argv)
+            .output()
+            .unwrap_or_else(|why| panic!("the ae binary should run: {why}"));
+        (
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
     }
 
     /// The same, with the tmux server pair declared — the door the launch needs
@@ -416,7 +496,7 @@ fn no_argv_at_all_launches_rather_than_printing_help() {
     if skip() {
         return;
     }
-    let rig = Rig::new("bare");
+    let rig = Rig::idle("bare");
     let sock = rig.sock.clone();
     let (code, stdout, stderr) = rig.run_on(Some(&sock), &[]);
     assert_ne!(code, Some(2), "not a usage error: {stdout}\n{stderr}");
@@ -569,7 +649,12 @@ fn the_first_run_seeds_the_config_only_after_the_dependency_check() {
 
         // The same launch with a PATH the gate accepts writes it, and says so on
         // STDERR — the launch's stdout belongs to the session it is about to become.
-        let (_, stdout, stderr) = rig.run(&["seedme"]);
+        // Fake command names keep this assertion hermetic: no installed coding
+        // agent can be reached while the public template is seeded byte-for-byte.
+        #[cfg(unix)]
+        let (fake_bin, marker) = rig.fake_profiles();
+        #[cfg(unix)]
+        let (_, stdout, stderr) = rig.run_on_with_path(Some(&rig.sock), &fake_bin, &["seedme"]);
         assert!(rig.config().exists(), "{stderr}");
         assert!(
             stderr.contains(&format!(
@@ -579,6 +664,20 @@ fn the_first_run_seeds_the_config_only_after_the_dependency_check() {
             "{stderr}"
         );
         assert!(!stdout.contains("Created default config"), "{stdout}");
+
+        #[cfg(unix)]
+        {
+            for _ in 0..200 {
+                if marker.exists() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            assert!(
+                marker.exists(),
+                "the seeded profile reached a fake executable"
+            );
+        }
 
         let written = std::fs::read_to_string(rig.config()).unwrap_or_default();
         assert_eq!(written, ae::entry::DEFAULT_CONFIG);
