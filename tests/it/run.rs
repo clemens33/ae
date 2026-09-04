@@ -250,6 +250,51 @@ impl Rig {
     fn tool(&self, name: &str) -> String {
         self.bin.join(name).display().to_string()
     }
+
+    /// Replace the config so the seat's `custom` profile runs `cmd` verbatim.
+    ///
+    /// The profile is what `_run` reads FRESH on every run, so this is also how
+    /// a test changes one after its session has started.
+    fn only_profile(&self, cmd: &str) {
+        assert!(
+            std::fs::write(
+                &self.config,
+                format!(
+                    "[profiles]\ncustom = \"{cmd}\"\n\n[roster]\nlead = custom\n\n[workspace]\nmain = lead\n"
+                ),
+            )
+            .is_ok(),
+            "a fixture config"
+        );
+    }
+
+    /// `_run` for the `main` seat with `extra` in its environment, returning
+    /// the raw result — a test about a REFUSAL cannot use a runner that
+    /// asserts success.
+    fn run_raw(&self, extra: &[(&str, &str)]) -> std::process::Output {
+        let mut cmd = ae();
+        cmd.env_remove("TMUX")
+            .env_remove("TMUX_PANE")
+            .env("HOME", &self.home)
+            .current_dir(&self.project)
+            .arg(ae::cli::RUN)
+            .arg(&self.dir)
+            .arg("main");
+        for (name, value) in extra {
+            cmd.env(name, value);
+        }
+        cmd.output()
+            .unwrap_or_else(|why| panic!("the ae binary should run: {why}"))
+    }
+
+    /// Set the session directory's mode, so a test can make publishing fail.
+    fn chmod(&self, mode: u32) {
+        use std::os::unix::fs::PermissionsExt as _;
+        assert!(
+            std::fs::set_permissions(&self.dir, std::fs::Permissions::from_mode(mode)).is_ok(),
+            "a fixture chmod"
+        );
+    }
 }
 
 impl Drop for Rig {
@@ -659,4 +704,183 @@ fn the_pane_command_is_the_core_this_entry_and_the_two_operands() {
         "spawned.0",
     );
     assert_eq!(line, "'/opt/ae 1/ae-core' _run '/s/tg1' 'spawned.0'");
+}
+
+// ---- the environment prefix (colead Z2 BLOCKER-1) --------------------------
+
+#[test]
+fn a_bare_leading_assignment_is_an_environment_delta_and_never_the_binary() {
+    // `A=1 codex --yolo` CLASSIFIES as codex — `split_binary` has always
+    // skipped an assignment word — but `_run` peeled assignments only after a
+    // literal `env`, so the exec ran a binary named `A=1`.
+    // CODEX deliberately: ae prepends its own `env` prefix to a claude command,
+    // and that prefix hid the defect — the assignment was peeled as one of
+    // `env`'s own operands. Codex gets no prefix, so the profile's assignment
+    // is the FIRST word of the composed line, which is where the peel failed.
+    let rig = Rig::new("assign");
+    rig.only_profile(&format!("AE_Z2_MARK=set {} --flag", rig.tool("codex")));
+    rig.seat("custom", "");
+    let plan = rig.plan();
+    assert!(plan.contains(r#""env_set":{"AE_Z2_MARK":"set"}"#), "{plan}");
+    assert_eq!(
+        rig.planned_argv()[0],
+        rig.tool("codex"),
+        "the assignment is not the binary"
+    );
+    // And it really execs: pre-fix this was ENOENT on a file named `AE_Z2_MARK=set`.
+    let (argv, _) = rig.exec();
+    assert_eq!(argv[0], "--flag", "the tool ran and reported its own argv");
+}
+
+#[test]
+fn a_quoted_leading_assignment_is_the_binary_on_both_sides() {
+    // The off-diagonal the peel itself could create: `words` decodes `'A=1'` to
+    // `A=1`, so a peel that re-derives assignment-shape from the VALUE assigns
+    // where `lex_simple_command` — and bash — run a binary of that name. Both
+    // halves are pinned here, on one rig, so the difference is the quoting and
+    // nothing else.
+    let rig = Rig::new("quoted");
+    rig.seat("custom", "");
+
+    rig.only_profile(&format!("'AE_Z2_MARK=set' {} --flag", rig.tool("codex")));
+    let plan = rig.plan();
+    assert!(
+        plan.contains(r#""env_set":{}"#),
+        "a quoted word assigns nothing: {plan}"
+    );
+    assert_eq!(
+        rig.planned_argv()[0],
+        "AE_Z2_MARK=set",
+        "the quoted word IS the binary"
+    );
+    assert_eq!(
+        ae::launch_cmd::lex_simple_command(&format!(
+            "'AE_Z2_MARK=set' {} --flag",
+            rig.tool("codex")
+        ))
+        .map(|parsed| parsed.binary),
+        Ok("AE_Z2_MARK=set".to_owned()),
+        "…which is what the validator says too"
+    );
+    // So the run refuses the way an exec of a missing binary refuses, rather
+    // than silently launching codex with an environment the operator did not
+    // ask for.
+    let out = rig.run_raw(&[]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "{stderr}");
+    assert!(
+        stderr.contains("could not start AE_Z2_MARK=set"),
+        "{stderr}"
+    );
+
+    // The same line WITHOUT the quotes is an ordinary assignment.
+    rig.only_profile(&format!("AE_Z2_MARK=set {} --flag", rig.tool("codex")));
+    let plan = rig.plan();
+    assert!(plan.contains(r#""env_set":{"AE_Z2_MARK":"set"}"#), "{plan}");
+    assert_eq!(rig.planned_argv()[0], rig.tool("codex"), "{plan}");
+}
+
+#[test]
+fn an_env_dash_i_starts_the_tool_from_an_empty_environment() {
+    // `-i` was peeled and then dropped, so a profile that asked for a clean
+    // environment inherited the pane's whole one.
+    let rig = Rig::new("envi");
+    rig.only_profile("env -i /usr/bin/env");
+    rig.seat("custom", "");
+    assert!(rig.plan().contains(r#""env_clear":true"#), "{}", rig.plan());
+    let out = rig.run_raw(&[("FOO_AE_Z2_LEAK", "present")]);
+    assert!(
+        out.status.success(),
+        "_run: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let printed = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !printed.contains("FOO_AE_Z2_LEAK"),
+        "the pane's environment must not survive `env -i`: {printed}"
+    );
+    assert!(
+        printed.trim().is_empty(),
+        "and nothing else survives it either: {printed}"
+    );
+}
+
+// ---- the create-once marker (colead Z2 BLOCKER-2) --------------------------
+
+#[test]
+fn a_start_marker_that_cannot_be_published_refuses_before_the_exec() {
+    // The marker is the whole create-vs-resume discriminator. Writing it best
+    // effort meant a transient failure produced TWO runs that both took the
+    // create branch — and for claude and grok the second one collides on a
+    // create-once `--session-id`.
+    let rig = Rig::new("marker");
+    rig.seat("claude", "u-1");
+    rig.chmod(0o555);
+    for run in 1..=2 {
+        let out = rig.run_raw(&[]);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(1), "run {run}: {stderr}");
+        assert!(
+            stderr.contains("launch.main.started") && stderr.contains("refusing to launch"),
+            "run {run} names the marker and the reason: {stderr}"
+        );
+        assert!(
+            !rig.out.exists(),
+            "run {run}: the tool must not have been exec'ed"
+        );
+    }
+    rig.chmod(0o755);
+    // With the directory writable again the same seat launches, once.
+    let (argv, _) = rig.exec();
+    assert!(argv.contains(&"u-1".to_owned()), "{argv:?}");
+    assert!(
+        rig.dir.join("launch.main.started").exists(),
+        "and the marker is there afterwards"
+    );
+}
+
+// ---- one grammar for both lexers (colead Z2 BLOCKER-3) ---------------------
+
+#[test]
+fn the_profile_read_at_run_time_is_validated_by_the_plan_time_validator() {
+    // A profile edited after its session started reached the exec unvalidated.
+    // `lex_simple_command` refuses brace expansion and a word-initial comment;
+    // `_run` used to hand both to the tool as literal bytes.
+    let rig = Rig::new("offdiag1");
+    rig.seat("custom", "");
+    for (profile, named) in [
+        (format!("{} {{a,b}}", rig.tool("claude")), "brace expansion"),
+        (format!("{} # note", rig.tool("claude")), "comment"),
+    ] {
+        rig.only_profile(&profile);
+        let out = rig.run_raw(&[]);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(1), "{profile}: {stderr}");
+        assert!(
+            stderr.contains("is not one simple command") && stderr.contains(named),
+            "{profile}: {stderr}"
+        );
+        assert!(!rig.out.exists(), "{profile}: nothing was exec'ed");
+    }
+}
+
+#[test]
+fn a_parameter_form_the_validator_accepts_is_one_the_run_can_expand() {
+    // The off-diagonal pointed the other way: `lex_simple_command` accepted
+    // `${X:-default}` and the runner refused it, so a seat planned green and
+    // then exited 1 in its own pane.
+    let rig = Rig::new("offdiag2");
+    rig.only_profile("/bin/echo ${AE_Z2_UNSET:-fallback} ${AE_Z2_SET:-fallback}");
+    rig.seat("custom", "");
+    assert!(ae::launch_cmd::lex_simple_command("/bin/echo ${AE_Z2_UNSET:-fallback}").is_ok());
+    let out = rig.run_raw(&[("AE_Z2_SET", "chosen")]);
+    assert!(
+        out.status.success(),
+        "_run: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim(),
+        "fallback chosen"
+    );
 }

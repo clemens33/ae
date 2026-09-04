@@ -64,6 +64,12 @@ pub struct Plan {
     pub mode: Mode,
     /// The tool the seat launches.
     pub tool: ToolKind,
+    /// Does the prefix start from an EMPTY environment (`env -i`)?
+    ///
+    /// Peeling `-i` without honouring it was a silent inheritance: the pane's
+    /// whole environment reached a tool the operator had asked to start clean
+    /// (colead Z2 BLOCKER-1).
+    pub clear: bool,
     /// Names the `env -u` prefix removes.
     pub unset: Vec<String>,
     /// Assignments the `env` prefix makes, in order.
@@ -80,6 +86,7 @@ impl Plan {
         Value::Obj(vec![
             ("mode".to_owned(), Value::Str(self.mode.as_str().to_owned())),
             ("tool".to_owned(), Value::Str(self.tool.as_str().to_owned())),
+            ("env_clear".to_owned(), Value::Bool(self.clear)),
             (
                 "env_unset".to_owned(),
                 Value::Arr(self.unset.iter().cloned().map(Value::Str).collect()),
@@ -203,13 +210,24 @@ pub fn run(
         out.flush()?;
         return Ok(0);
     }
-    // BEFORE the exec, because after it there is no "after". Best effort, as
-    // the frozen script's `: > marker 2>/dev/null || true` was: a marker that
-    // cannot be written costs a second run that creates instead of resuming,
-    // and refusing to start the agent at all costs more.
+    // BEFORE the exec, because after it there is no "after" — and REFUSING when
+    // it cannot be written, which the frozen script's
+    // `: > marker 2>/dev/null || true` did not. The marker is the whole
+    // create-once discriminator: a run that starts the agent without it leaves
+    // a seat that a re-run creates a SECOND time, and for the upfront-UUID
+    // tools that second create collides on `--session-id` and the pane dies.
+    // Costing one launch is the cheap half of that trade (colead Z2 BLOCKER-2).
     let marker = started_marker(dir, slot);
     if plan.mode == Mode::Create {
-        let _ = std::fs::File::create(&marker);
+        if let Err(why) = publish_marker(&marker) {
+            writeln!(
+                err,
+                "ae: could not record the start marker {} ({why}) — refusing to launch, because a re-run of this pane would create a second conversation",
+                marker.display()
+            )?;
+            err.flush()?;
+            return Ok(EXIT_FAILED);
+        }
     } else {
         // The frozen script said this on its re-run branch, and it is worth
         // saying on every resume: a human who arrow-upped the pane's command
@@ -231,6 +249,36 @@ pub fn run(
     Ok(EXIT_FAILED)
 }
 
+/// Create the start marker DURABLY, or say why it could not be.
+///
+/// Write, `fsync`, rename — the shape `launch::publish` froze, plus the file
+/// sync generated data does not need and this artifact does: the marker's whole
+/// content is its EXISTENCE, so bytes still in the page cache are a seat that
+/// re-creates instead of resuming. The failure this guard exists for is the
+/// ordinary one — an unwritable session directory, a read-only or full
+/// filesystem — and every step above reports it by name.
+///
+/// What it does NOT claim: the rename's own directory entry is not synced, so
+/// this is durability against a failed write, not against a power cut between
+/// the rename and the `exec`.
+///
+/// # Errors
+///
+/// The path that could not be written and the reason, ready to print.
+fn publish_marker(marker: &Path) -> Result<(), String> {
+    let temp = PathBuf::from(format!("{}.tmp.{}", marker.display(), std::process::id()));
+    let write = std::fs::File::create(&temp).and_then(|file| file.sync_all());
+    if let Err(why) = write {
+        let _ = std::fs::remove_file(&temp);
+        return Err(format!("{} — {why}", temp.display()));
+    }
+    if let Err(why) = std::fs::rename(&temp, marker) {
+        let _ = std::fs::remove_file(&temp);
+        return Err(why.to_string());
+    }
+    Ok(())
+}
+
 /// Replace this process with the planned command. Returns only on failure.
 fn exec(plan: &Plan) -> std::io::Error {
     use std::os::unix::process::CommandExt as _;
@@ -241,6 +289,11 @@ fn exec(plan: &Plan) -> std::io::Error {
     )]
     let mut command = std::process::Command::new(&plan.argv[0]);
     command.args(&plan.argv[1..]);
+    // `env -i` FIRST, so the ordered unsets and sets that follow it are applied
+    // to the empty environment the operator asked for rather than to the pane's.
+    if plan.clear {
+        command.env_clear();
+    }
     for name in &plan.unset {
         command.env_remove(name);
     }
@@ -272,11 +325,12 @@ pub fn build(dir: &Path, slot: &str) -> Result<Plan, String> {
         &seat.config_files,
     );
     let composed = compose(dir, slot, &seat, &ctx, mode);
-    let words = crate::words::split(&composed, &env_lookup)?;
+    let words = crate::words::split_words(&composed, &env_lookup)?;
     let (prefix, argv) = peel_env(words)?;
     Ok(Plan {
         mode,
         tool: seat.tool,
+        clear: prefix.clear,
         unset: prefix.unset,
         set: prefix.assign,
         argv,
@@ -440,55 +494,97 @@ pub fn resume_forms(cmd: &str, tool: ToolKind, session_id: &str) -> (String, Str
     }
 }
 
-/// An `env` prefix, split into what it removes and what it assigns.
+/// An `env` prefix, split into what it clears, removes and assigns.
 #[derive(Debug, Default, PartialEq, Eq)]
 struct EnvPrefix {
+    /// `env -i`: start from an empty environment.
+    clear: bool,
     /// Names `env -u` removes.
     unset: Vec<String>,
     /// `NAME=value` assignments, in order.
     assign: Vec<(String, String)>,
 }
 
-/// Peel the `env` prefix off a split command line.
+/// Peel the environment prefix off a split command line.
 ///
-/// `env -u NAME`, `-i` and `NAME=value` are the three forms ae itself composes
-/// (claude's nesting guard, opencode's config pointer) and the three
-/// [`crate::launch_cmd`] already skips when it classifies a command, so the two
-/// modules agree about where the binary word starts.
+/// TWO forms, and the shell applies them in this order: the bare leading
+/// `NAME=value` assignments a shell reads before the command word, and then the
+/// `env` command with its `-i`, `-u NAME` and `NAME=value` operands. Both are
+/// what ae itself composes (claude's nesting guard, opencode's config pointer),
+/// and the vocabulary is EXACTLY [`crate::launch_cmd`]'s `launch_binary` —
+/// deliberately, down to the spellings it does not know. `env --` and
+/// `env --ignore-environment` are not peeled here BECAUSE they are not peeled
+/// there: a word one module treats as an operand and the other as the binary is
+/// a command classified as one tool and `exec`ed as another. Widen both or
+/// neither.
+///
+/// The two forms ask about assignment-shape on DIFFERENT TEXT, and that is not
+/// an inconsistency but the reason the two modules agree. The shell's own
+/// prefix is decided before quote removal, so it reads [`crate::words::Word`]'s
+/// `assignment` flag and a quoted `'A=1'` is the command word. `env`'s operands
+/// are parsed by `env` itself, out of an argv the shell has already unquoted,
+/// so they are decided on the VALUE and `env 'A=1' claude` does assign. Both
+/// answers are `launch_binary`'s, word for word.
+///
+/// The bare form was missing, and its absence was not a degraded launch but a
+/// wrong one: `A=1 codex --yolo` classified as codex, planned as codex, and
+/// then `exec`ed a binary literally named `A=1` (colead Z2 BLOCKER-1). `-i` was
+/// consumed and dropped on the floor, which is the same defect pointed the
+/// other way — the environment the operator asked to clear was inherited whole.
 ///
 /// # Errors
 ///
-/// A command line that is nothing but an env prefix — there is no binary to
-/// exec, and guessing one is how a mis-shaped command reaches a live pane.
-fn peel_env(words: Vec<String>) -> Result<(EnvPrefix, Vec<String>), String> {
+/// A command line that is nothing but an environment prefix — there is no
+/// binary to exec, and guessing one is how a mis-shaped command reaches a live
+/// pane.
+fn peel_env(words: Vec<crate::words::Word>) -> Result<(EnvPrefix, Vec<String>), String> {
     let mut prefix = EnvPrefix::default();
     let mut rest = words.into_iter().peekable();
-    while rest.peek().is_some_and(|word| word == "env") {
+    loop {
+        // A shell's own prefix: assignments up to the command word, decided AS
+        // WRITTEN. A quoted `'A=1'` is not one of them — it is the binary.
+        while rest.peek().is_some_and(|word| word.assignment) {
+            let Some(word) = rest.next() else { break };
+            let Some((name, value)) = word.value.split_once('=') else {
+                break;
+            };
+            prefix.assign.push((name.to_owned(), value.to_owned()));
+        }
+        if rest.peek().is_none_or(|word| word.value != "env") {
+            break;
+        }
         rest.next();
+        // `env`'s own operands. An unrecognised one ENDS the peel: it is the
+        // command word, and a prefix that guessed at it would exec something
+        // the operator did not write.
         while let Some(word) = rest.peek() {
-            if word == "-i" {
-                rest.next();
-            } else if word == "-u" {
-                rest.next();
-                match rest.next() {
-                    Some(name) => prefix.unset.push(name),
-                    None => return Err("an `env -u` with no name in a launch command".to_owned()),
+            match word.value.as_str() {
+                "-i" => {
+                    prefix.clear = true;
+                    rest.next();
                 }
-            } else if word == "--" {
-                rest.next();
-                break;
-            } else if let Some((name, value)) = word.split_once('=')
-                && !name.is_empty()
-            {
-                let pair = (name.to_owned(), value.to_owned());
-                rest.next();
-                prefix.assign.push(pair);
-            } else {
-                break;
+                "-u" => {
+                    rest.next();
+                    match rest.next() {
+                        Some(name) => prefix.unset.push(name.value),
+                        None => {
+                            return Err("an `env -u` with no name in a launch command".to_owned());
+                        }
+                    }
+                }
+                // On the VALUE, because `env` reads its own argv after the
+                // shell has unquoted it — and because `launch_binary` does.
+                value if crate::launch_cmd::is_assignment(value) => {
+                    let Some(word) = rest.next() else { break };
+                    if let Some((name, value)) = word.value.split_once('=') {
+                        prefix.assign.push((name.to_owned(), value.to_owned()));
+                    }
+                }
+                _ => break,
             }
         }
     }
-    let argv: Vec<String> = rest.collect();
+    let argv: Vec<String> = rest.map(|word| word.value).collect();
     if argv.is_empty() {
         return Err("a launch command with no binary to run".to_owned());
     }
@@ -542,6 +638,18 @@ fn read_seat(dir: &Path, slot: &str) -> Result<Seat, String> {
             "profile '{profile}' is not configured on this machine — '{name}' cannot be launched"
         ));
     };
+    // The profile is read FRESH here, so the launch-time validation of it is a
+    // fact about a file that may since have changed. Re-ask the SAME validator
+    // rather than trust the older answer: without this a profile edited after
+    // its session started reached the `exec` unvalidated, and a construct the
+    // validator refuses — brace expansion, a word-initial comment — ran with
+    // whatever literal meaning this lexer happened to give it (colead Z2
+    // BLOCKER-3).
+    if let Err(why) = crate::launch_cmd::lex_simple_command(command) {
+        return Err(format!(
+            "profile '{profile}' is not one simple command — {why} — '{name}' cannot be launched"
+        ));
+    }
     Ok(Seat {
         session: value("session"),
         work_dir: value("work_dir"),
@@ -589,7 +697,7 @@ mod tests {
 
     #[test]
     fn the_env_prefix_becomes_environment_deltas_and_the_tool_becomes_argv() {
-        let words = crate::words::split(
+        let words = crate::words::split_words(
             "env -u CLAUDECODE -u CLAUDE_CODE_SESSION CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=0 claude --session-id x",
             &|_| None,
         )
@@ -608,13 +716,13 @@ mod tests {
 
     #[test]
     fn a_command_line_that_is_only_a_prefix_has_no_binary_to_exec() {
-        let words = crate::words::split("env -u A", &|_| None).expect("splits");
+        let words = crate::words::split_words("env -u A", &|_| None).expect("splits");
         assert!(peel_env(words).is_err());
     }
 
     #[test]
     fn a_plain_command_keeps_its_whole_argv_and_touches_no_environment() {
-        let words = crate::words::split("codex --yolo", &|_| None).expect("splits");
+        let words = crate::words::split_words("codex --yolo", &|_| None).expect("splits");
         let (prefix, argv) = peel_env(words).expect("peels");
         assert_eq!(prefix, EnvPrefix::default());
         assert_eq!(argv, ["codex", "--yolo"]);
@@ -625,6 +733,7 @@ mod tests {
         let plan = Plan {
             mode: Mode::Resume,
             tool: ToolKind::Claude,
+            clear: false,
             unset: vec!["CLAUDECODE".to_owned()],
             set: vec![("K".to_owned(), "0".to_owned())],
             argv: vec!["claude".to_owned(), "a\nb".to_owned()],
@@ -634,6 +743,169 @@ mod tests {
         assert!(line.contains(r#""mode":"resume""#), "{line}");
         assert!(line.contains(r#""tool":"claude""#), "{line}");
         assert!(line.contains(r#""argv":["claude","a\nb"]"#), "{line}");
+    }
+
+    #[test]
+    fn a_bare_leading_assignment_is_an_environment_delta_not_the_binary() {
+        // Colead Z2 BLOCKER-1: `A=1 codex --yolo` classified as codex and then
+        // `exec`ed a binary literally named `A=1`.
+        let words = crate::words::split_words("A=1 B=2 codex --yolo", &|_| None).expect("splits");
+        let (prefix, argv) = peel_env(words).expect("peels");
+        assert!(!prefix.clear);
+        assert_eq!(
+            prefix.assign,
+            [
+                ("A".to_owned(), "1".to_owned()),
+                ("B".to_owned(), "2".to_owned())
+            ]
+        );
+        assert_eq!(argv, ["codex", "--yolo"]);
+        // …and the two forms compose, in the order a shell applies them.
+        let words =
+            crate::words::split_words("A=1 env -u KEEPOUT B=2 claude", &|_| None).expect("splits");
+        let (prefix, argv) = peel_env(words).expect("peels");
+        assert_eq!(prefix.unset, ["KEEPOUT"]);
+        assert_eq!(
+            prefix.assign,
+            [
+                ("A".to_owned(), "1".to_owned()),
+                ("B".to_owned(), "2".to_owned())
+            ]
+        );
+        assert_eq!(argv, ["claude"]);
+        // The env vocabulary is the CLASSIFIER's, down to what it does not
+        // know: `--` is a command word to `launch_binary`, so it is one here.
+        let words = crate::words::split_words("env -- claude", &|_| None).expect("splits");
+        let (prefix, argv) = peel_env(words).expect("peels");
+        assert_eq!(prefix.assign, []);
+        assert_eq!(argv, ["--", "claude"]);
+    }
+
+    #[test]
+    fn a_quoted_leading_assignment_is_the_command_word_not_an_assignment() {
+        // The B3 defect pointed at B1: `words::split` erased quoting, so
+        // peel_env re-derived assignment-shape from the DECODED value and
+        // called `'A=1'` an assignment where the validator calls it the binary.
+        // The two off-diagonals, pinned side by side.
+        let words = crate::words::split_words("'A=1' codex --yolo", &|_| None).expect("splits");
+        let (prefix, argv) = peel_env(words).expect("peels");
+        assert_eq!(prefix.assign, [], "a quoted word assigns nothing");
+        assert_eq!(argv, ["A=1", "codex", "--yolo"]);
+
+        let words = crate::words::split_words("A=1 codex --yolo", &|_| None).expect("splits");
+        let (prefix, argv) = peel_env(words).expect("peels");
+        assert_eq!(prefix.assign, [("A".to_owned(), "1".to_owned())]);
+        assert_eq!(argv, ["codex", "--yolo"]);
+
+        // Every spelling that quotes the `=` itself is the command word too…
+        for cmd in [r"A\=1 codex", "A'='1 codex", "\"A=1\" codex"] {
+            let words = crate::words::split_words(cmd, &|_| None).expect("splits");
+            let (prefix, argv) = peel_env(words).expect("peels");
+            assert_eq!(prefix.assign, [], "{cmd:?}");
+            assert_eq!(argv[0], "A=1", "{cmd:?}");
+        }
+        // …while quoting only the VALUE leaves an ordinary assignment.
+        let words = crate::words::split_words("A=\"1 2\" codex", &|_| None).expect("splits");
+        let (prefix, argv) = peel_env(words).expect("peels");
+        assert_eq!(prefix.assign, [("A".to_owned(), "1 2".to_owned())]);
+        assert_eq!(argv, ["codex"]);
+
+        // `env`'s OWN operands are the other rule: env parses an argv the shell
+        // has already unquoted, so a quoted one does assign — and that is what
+        // `launch_binary` says too.
+        let words = crate::words::split_words("env 'A=1' codex", &|_| None).expect("splits");
+        let (prefix, argv) = peel_env(words).expect("peels");
+        assert_eq!(prefix.assign, [("A".to_owned(), "1".to_owned())]);
+        assert_eq!(argv, ["codex"]);
+    }
+
+    #[test]
+    fn an_env_dash_i_clears_the_environment_instead_of_being_consumed() {
+        // Colead Z2 BLOCKER-1, the other half: `-i` was peeled and dropped, so
+        // the pane's whole environment reached a tool asked to start clean.
+        let words = crate::words::split_words("env -i claude", &|_| None).expect("splits");
+        let (prefix, argv) = peel_env(words).expect("peels");
+        assert!(prefix.clear);
+        assert_eq!(argv, ["claude"]);
+        let words = crate::words::split_words("claude", &|_| None).expect("splits");
+        let (prefix, _) = peel_env(words).expect("peels");
+        assert!(!prefix.clear, "a plain command clears nothing");
+    }
+
+    #[test]
+    fn the_binary_this_peel_leaves_is_the_one_the_classifier_named() {
+        // The classifier decides `agent_bin` and the tool kind; this peel
+        // decides what is `exec`ed. A command classified as one binary and run
+        // as another is the B1 defect in its general form, so the invariant is
+        // pinned over every prefix shape rather than over the one that shipped.
+        for cmd in [
+            "claude",
+            "/usr/bin/claude --flag",
+            "A=1 codex --yolo",
+            "A=1 B=2 codex",
+            "env -u CLAUDECODE claude",
+            "env -i claude",
+            "env -i -u A B=2 claude",
+            "A=1 env -u B C=3 claude",
+            "env -- claude",
+            "env --ignore-environment claude",
+            "--flag=x claude",
+            // Quoting decides assignment-shape, and both modules read it off
+            // the word AS WRITTEN.
+            "'A=1' codex --yolo",
+            r"A\=1 codex",
+            "A'='1 codex",
+            "\"A=1\" codex",
+            "A=\"1 2\" codex",
+            "env 'A=1' codex",
+        ] {
+            let named = crate::launch_cmd::lex_simple_command(cmd)
+                .map(|parsed| parsed.binary)
+                .unwrap_or_default();
+            let words = crate::words::split_words(cmd, &|_| None).expect("splits");
+            let (_, argv) = peel_env(words).expect("peels");
+            let run = argv[0].rsplit('/').next().unwrap_or(&argv[0]).to_owned();
+            assert_eq!(named, run, "{cmd:?}: classified one way, exec'ed another");
+        }
+    }
+
+    #[test]
+    fn the_printed_plan_reports_whether_the_environment_is_cleared() {
+        let plan = Plan {
+            mode: Mode::Create,
+            tool: ToolKind::Unknown,
+            clear: true,
+            unset: Vec::new(),
+            set: Vec::new(),
+            argv: vec!["/usr/bin/env".to_owned()],
+        };
+        assert!(
+            plan.render().contains(r#""env_clear":true"#),
+            "{}",
+            plan.render()
+        );
+    }
+
+    #[test]
+    fn a_start_marker_that_cannot_be_published_is_an_error_not_a_shrug() {
+        // Colead Z2 BLOCKER-2: the marker is the create-once discriminator, so
+        // a failure to write it has to reach the caller rather than be shrugged
+        // off into a seat that re-creates on its next run.
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = PathBuf::from(format!("/tmp/aemarker.{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a fixture dir");
+        assert!(publish_marker(&started_marker(&dir, "main")).is_ok());
+        std::fs::remove_file(started_marker(&dir, "main")).expect("the marker is there");
+
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555))
+            .expect("a read-only fixture dir");
+        let refused = publish_marker(&started_marker(&dir, "main"));
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755))
+            .expect("restored so the fixture can be removed");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(refused.is_err(), "an unwritable session directory refuses");
     }
 
     #[test]
