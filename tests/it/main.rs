@@ -17,7 +17,6 @@ mod doctor;
 mod entry;
 mod fixtures;
 mod git;
-mod helper_corpus;
 mod install;
 mod lifecycle;
 mod parity;

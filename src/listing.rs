@@ -625,23 +625,21 @@ mod tests {
     use crate::time::Timestamp;
 
     const NOW: Timestamp = Timestamp::from_epoch(1_780_000_000);
-    const GOAL_BRANCH_ACTIVE_CAPTURE: &str = include_str!(
-        "../docs/migration/evidence/batch-c-artifacts/arms/A1/c01-healthy-ro/out/list-all.stdout"
-    );
+    const GOAL_BRANCH_ACTIVE_CAPTURE: &str =
+        include_str!("../tests/fixtures/list-goldens/arms/A1/c01-healthy-ro/out/list-all.stdout");
     const NO_GOAL_CAPTURE: &str = include_str!(
-        "../docs/migration/evidence/batch-c-artifacts/arms/A1/c04-empty-vs-omitted-ro/out/list-all.stdout"
+        "../tests/fixtures/list-goldens/arms/A1/c04-empty-vs-omitted-ro/out/list-all.stdout"
     );
     const DEGRADED_META_CAPTURE: &str = include_str!(
-        "../docs/migration/evidence/batch-c-artifacts/arms/A1/c02-meta-mode-000-ro/out/list-all.stdout"
+        "../tests/fixtures/list-goldens/arms/A1/c02-meta-mode-000-ro/out/list-all.stdout"
     );
-    const NO_RUNNING_CAPTURE: &str = include_str!(
-        "../docs/migration/evidence/batch-c-artifacts/arms/A1/c01-healthy-ro/out/list.stdout"
-    );
+    const NO_RUNNING_CAPTURE: &str =
+        include_str!("../tests/fixtures/list-goldens/arms/A1/c01-healthy-ro/out/list.stdout");
     const NO_ACTIVE_CAPTURE: &str = include_str!(
-        "../docs/migration/evidence/batch-c-artifacts/arms/A2/c01-filters-ro/out/list_active.stdout"
+        "../tests/fixtures/list-goldens/arms/A2/c01-filters-ro/out/list_active.stdout"
     );
     const NO_NEEDS_ATTENTION_CAPTURE: &str = include_str!(
-        "../docs/migration/evidence/batch-c-artifacts/arms/A2/c01-filters-ro/out/win_inside_active_needsattn.stdout"
+        "../tests/fixtures/list-goldens/arms/A2/c01-filters-ro/out/win_inside_active_needsattn.stdout"
     );
 
     fn args(flags: &[&str]) -> ListArgs {
