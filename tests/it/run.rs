@@ -41,6 +41,10 @@ struct Rig {
     config: PathBuf,
     out: PathBuf,
     bin: PathBuf,
+    /// The rig's own `HOME`. The resume PROBE reads a tool's session store
+    /// under it, so a test that plants one — or deliberately does not — has to
+    /// own the directory it is planted in.
+    home: PathBuf,
 }
 
 impl Rig {
@@ -51,7 +55,8 @@ impl Rig {
         let dir = scratch.join("sessions").join(tag);
         let project = scratch.join("project");
         let bin = scratch.join("bin");
-        for path in [&dir, &project, &bin] {
+        let home = scratch.join("home");
+        for path in [&dir, &project, &bin, &home] {
             assert!(std::fs::create_dir_all(path).is_ok(), "a fixture dir");
         }
         let out = scratch.join("argv");
@@ -82,6 +87,7 @@ impl Rig {
             config,
             out,
             bin,
+            home,
         }
     }
 
@@ -122,11 +128,58 @@ impl Rig {
         path
     }
 
+    /// Mark the seat as having run once, which is what makes the next `_run` a
+    /// RESUME. `_run` writes this itself; a test that wants only the resume
+    /// half writes it directly rather than launching a tool to get it.
+    fn started(&self) {
+        assert!(
+            std::fs::write(self.dir.join("launch.main.started"), "").is_ok(),
+            "a start marker"
+        );
+    }
+
+    /// Plant the evidence a tool's own resume probe looks for.
+    ///
+    /// Only claude and codex leave any, and where a tool leaves none there is
+    /// nothing to plant — the recorded id is the whole answer.
+    fn transcript(&self, tool: &str, id: &str) {
+        match tool {
+            "claude" => {
+                // The PHYSICAL working directory, because the probe asks
+                // `getcwd(2)` — which is what claude's own `process.cwd()`
+                // asks, and on macOS `/tmp` is a symlink.
+                let key: String = std::fs::canonicalize(&self.project)
+                    .unwrap_or_else(|_| self.project.clone())
+                    .display()
+                    .to_string()
+                    .chars()
+                    .map(|ch| if ch == '/' { '-' } else { ch })
+                    .collect();
+                let dir = self.home.join(".claude/projects").join(key);
+                assert!(std::fs::create_dir_all(&dir).is_ok(), "a transcript dir");
+                assert!(
+                    std::fs::write(dir.join(format!("{id}.jsonl")), "{}\n").is_ok(),
+                    "a transcript"
+                );
+            }
+            "codex" => {
+                let dir = self.home.join(".codex/sessions/2026/09/04");
+                assert!(std::fs::create_dir_all(&dir).is_ok(), "a session-log dir");
+                assert!(
+                    std::fs::write(dir.join(format!("rollout-{id}.jsonl")), "{}\n").is_ok(),
+                    "a session log"
+                );
+            }
+            _ => {}
+        }
+    }
+
     /// `_run --print` for the `main` seat.
     fn plan(&self) -> String {
         let out = ae()
             .env_remove("TMUX")
             .env_remove("TMUX_PANE")
+            .env("HOME", &self.home)
             .current_dir(&self.project)
             .args([ae::cli::RUN, "--print"])
             .arg(&self.dir)
@@ -171,6 +224,7 @@ impl Rig {
             .env_remove("TMUX_PANE")
             // Set so the claude nesting guard has something to REMOVE.
             .env("CLAUDECODE", "1")
+            .env("HOME", &self.home)
             .current_dir(&self.project)
             .arg(ae::cli::RUN)
             .arg(&self.dir)
@@ -434,6 +488,95 @@ fn each_tool_gets_the_argv_its_capability_row_promises() {
             .contains("You are agent lead"),
         "the instructions file the config points at is published"
     );
+}
+
+/// Does `argv` carry `wanted` as a contiguous run of words?
+fn carries(argv: &[String], wanted: &[&str]) -> bool {
+    wanted.is_empty() || argv.windows(wanted.len()).any(|run| run == wanted)
+}
+
+#[test]
+fn a_recorded_id_is_the_resume_target_for_every_tool() {
+    // The resume form each tool's capability row promises, and the fallback it
+    // offers when there is no id to resume BY. codex's fallback is its plain
+    // command — there is no word to look for, so its absence is the assertion.
+    for (tool, exact, fallback) in [
+        ("claude", &["--resume", "u-9"][..], &["--continue"][..]),
+        ("codex", &["resume", "u-9"][..], &[][..]),
+        (
+            "gemini",
+            &["--resume", "u-9"][..],
+            &["--resume", "latest"][..],
+        ),
+        ("grok", &["--resume", "u-9"][..], &["--continue"][..]),
+        ("opencode", &["--session", "u-9"][..], &["--continue"][..]),
+    ] {
+        // WITH an id: the exact form, for every tool. grok, gemini and opencode
+        // have no probe to pass, and that is not a reason to refuse their own
+        // recorded conversation.
+        let rig = Rig::new(&format!("res-{tool}"));
+        rig.seat(tool, "u-9");
+        rig.started();
+        rig.transcript(tool, "u-9");
+        let argv = rig.planned_argv();
+        assert!(
+            carries(&argv, exact),
+            "{tool} resumes the id its meta records: {argv:?}"
+        );
+        assert!(
+            !carries(&argv, fallback) || fallback.is_empty(),
+            "{tool} does not also carry its fallback: {argv:?}"
+        );
+
+        // WITHOUT one: the tool's own fallback, and no half-written flag that
+        // would have taken the next word as its value.
+        let rig = Rig::new(&format!("nores-{tool}"));
+        rig.seat(tool, "");
+        rig.started();
+        let argv = rig.planned_argv();
+        assert!(
+            carries(&argv, fallback),
+            "{tool} falls back when there is no id: {argv:?}"
+        );
+        assert!(
+            !argv.iter().any(|word| word == "u-9" || word.is_empty()),
+            "{tool} never names an id it does not have: {argv:?}"
+        );
+        if tool == "codex" {
+            assert!(
+                !argv.iter().any(|word| word == "resume"),
+                "codex with no id starts fresh: {argv:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_probe_that_can_run_and_fails_still_falls_back() {
+    // The other half of the rule: where a tool DOES leave evidence, a recorded
+    // id whose conversation is gone is not a resume target either.
+    for (tool, gone) in [("claude", "--continue"), ("codex", "resume")] {
+        let rig = Rig::new(&format!("gone-{tool}"));
+        rig.seat(tool, "u-9");
+        rig.started();
+        // No transcript planted: the id names a conversation that is not there.
+        let argv = rig.planned_argv();
+        if tool == "codex" {
+            assert!(
+                !argv.iter().any(|word| word == gone),
+                "codex starts fresh rather than resuming a missing log: {argv:?}"
+            );
+        } else {
+            assert!(
+                argv.iter().any(|word| word == gone),
+                "claude takes its cwd heuristic rather than a missing transcript: {argv:?}"
+            );
+        }
+        assert!(
+            !carries(&argv, &["--resume", "u-9"]),
+            "{tool} does not ask for what is not there: {argv:?}"
+        );
+    }
 }
 
 #[test]
