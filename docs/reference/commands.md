@@ -267,7 +267,9 @@ stall, upstream throttle, wedge) — the orchestrator's sweep helper rewrites
 stops advancing past ~`2×AE_WATCHDOG_SWEEP_SEC` the watchdog raises one alert (cleared on
 recovery). That sweep helper is the core entry `ae _monitor sweep <session-dir>`, and the
 file name is one constant shared by the writer and the watchdog that stats it, so the two
-cannot drift apart. The sweep nudges use `action=nudge`,
+cannot drift apart. The directory must be the caller's OWN session — the sweep is refused
+unless `$TMUX_PANE` names a pane of it on the tmux server that session records — because a
+sweep locks, writes and runs `say` inside whatever directory it is handed. The sweep nudges use `action=nudge`,
 which is **not in the default telegram include set**, so routine sweeps don't
 reach your phone (a custom `include` containing `nudge` would forward them).
 

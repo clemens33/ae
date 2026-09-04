@@ -27,8 +27,10 @@
 //!   fixed name [`SAY_HELPER`] joined onto the session directory — the
 //!   [`crate::watchdog_daemon`]'s rule for the same hazard, and the reason
 //!   [`Notice`] has one constructor. That constructor seals the PROGRAM
-//!   relative to the directory; [`is_session_dir`] seals the DIRECTORY, so the
-//!   two together are what closes the hazard rather than either alone.
+//!   relative to the directory; [`is_session_dir`] seals the DIRECTORY to a
+//!   session ae owns; and [`is_own_session`] seals it to the CALLER'S, because
+//!   every session on the machine passes the second one. The three together
+//!   close the hazard — no two of them do.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
@@ -66,6 +68,10 @@ pub const USAGE: &str = "Usage: _monitor sweep <session-dir> [--now EPOCH] [--qu
 /// that raises it.
 pub const TARGET_RULE: &str =
     "a sweep target must be a direct child of <AE_HOME>/sessions holding a meta file";
+
+/// The rule a sweep's CALLER must satisfy, quoted verbatim by every refusal
+/// that raises it.
+pub const OWN_RULE: &str = "a sweep runs from inside the session it monitors";
 
 /// The subcommand — the only one, and named so the argv stays open.
 pub const SWEEP: &str = "sweep";
@@ -693,6 +699,58 @@ fn is_session_dir(root: &Path, dir: &Path) -> bool {
     probe.is_ok_and(|found| found.is_file())
 }
 
+/// Whether the caller is inside the session at `dir` — the OTHER half of the
+/// target seal, and the half [`is_session_dir`] cannot supply.
+///
+/// [`is_session_dir`] proves the directory is a session THIS INSTALL owns. It
+/// does not prove it is the CALLER'S, and every session on the machine passes
+/// it: `_monitor sweep <AE_HOME>/sessions/<anyone>` wrote its state into a
+/// sibling and ran the `say` it found there — the `--notify-cmd` hazard again,
+/// reached this time through a path ae DOES own rather than one it does not.
+/// The sweep is the orchestrator's own loop over its own session directory
+/// (the charter's one command is `ae _monitor sweep <its own helpers dir>`), so
+/// "my own session" is the whole permitted set.
+///
+/// The caller's identity is `$TMUX_PANE` — the door `stop` and `watchdog`
+/// already answer "is the target the session I am running in" with — resolved
+/// on the server the TARGET RECORDS. That server is what makes the pane id
+/// meaningful: pane ids are small per-server integers, so `%3` exists on every
+/// running server, and asking the ambient one would compare a pane on the
+/// caller's server against a directory belonging to another's. A pane the
+/// recorded server does not answer for is not a pane of this session; a pane
+/// whose `#{session_name}` is not the directory's own name is somebody else's.
+///
+/// `Err` carries the detail alone; the caller prints it after [`OWN_RULE`], so
+/// the rule is stated once and the refusal is one line.
+fn is_own_session(dir: &Path) -> Result<(), String> {
+    let Some(pane) = crate::doors::calling_pane_id() else {
+        return Err("no $TMUX_PANE, so there is no caller to identify".to_owned());
+    };
+    // The CANONICAL basename: `is_session_dir` proved the canonical path is a
+    // direct child of the sessions root, so its last component is the session's
+    // name — where the argv spelling could be `.`, a trailing slash or a link.
+    let Some(own) = std::fs::canonicalize(dir).ok().and_then(|target| {
+        target
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+    }) else {
+        return Err(format!("cannot name the session at {}", dir.display()));
+    };
+    let Some(server) = crate::session_launch::recorded_server_resolved(dir) else {
+        return Err(format!("{own} {}", crate::session_launch::AMBIGUOUS_SERVER));
+    };
+    let Some(viewer) = crate::transport::observe_viewer(&server, &pane) else {
+        return Err(format!(
+            "$TMUX_PANE {pane} is not a pane of the tmux server {own} records"
+        ));
+    };
+    match viewer.session.as_deref() {
+        Some(name) if name == own => Ok(()),
+        Some(name) => Err(format!("$TMUX_PANE {pane} is in session {name}, not {own}")),
+        None => Err(format!("$TMUX_PANE {pane} is in no session")),
+    }
+}
+
 /// Run one sweep for the session at `dir` and report what it found.
 ///
 /// # Errors
@@ -709,6 +767,14 @@ pub fn run(
     // `dir`, so the target is proven before the first one of them.
     if !crate::state_root().is_some_and(|root| is_session_dir(&root, dir)) {
         writeln!(err, "ae: monitor: {TARGET_RULE}: {}", dir.display())?;
+        return Ok(crate::state::EXIT_USAGE);
+    }
+    // AND IT MUST BE THE CALLER'S OWN. The guard above narrows the target to a
+    // session ae owns; this narrows it to the one sweeping. Same exit code:
+    // sweeping somebody else's session is asking wrong, not a sweep that went
+    // wrong.
+    if let Err(why) = is_own_session(dir) {
+        writeln!(err, "ae: monitor: {OWN_RULE}: {why}")?;
         return Ok(crate::state::EXIT_USAGE);
     }
 

@@ -152,7 +152,9 @@ pub const MANIFEST_RENDER: &str = "_manifest-render";
 /// <slot> [--global <f>] [--local <f>]`.
 pub const CONTEXT: &str = "_context";
 
-/// The orchestrator's sweep: `_monitor sweep <session-dir> [flags]`.
+/// The orchestrator's sweep: `_monitor sweep <session-dir> [flags]`. The
+/// directory must be the CALLER'S OWN session — refused unless `$TMUX_PANE`
+/// names a pane of it.
 pub const MONITOR: &str = "_monitor";
 
 /// The musl DNS/NSS instrument — `_net-probe <host> [--port <n>]`.

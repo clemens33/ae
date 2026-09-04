@@ -123,8 +123,10 @@ fn plant_session(root: &Path, name: &str, socket: &Path, events: &[&str]) -> Pat
     dir
 }
 
-/// Bring `name` up on `socket` as a session ae will own.
-fn start_session(socket: &Path, scratch: &Path, name: &str) {
+/// Bring `name` up on `socket` as a session ae will own, and answer with the id
+/// of its one pane — a sweep is refused unless `$TMUX_PANE` names a pane of the
+/// session it is handed, so every arm that expects one to RUN needs one.
+fn start_session(socket: &Path, scratch: &Path, name: &str) -> String {
     assert!(
         tmux(
             socket,
@@ -143,6 +145,14 @@ fn start_session(socket: &Path, scratch: &Path, name: &str) {
         .0,
         "the ownership marker, without which the session reads as unknown"
     );
+    let (found, stdout) = tmux(
+        socket,
+        scratch,
+        &["list-panes", "-t", name, "-F", "#{pane_id}"],
+    );
+    let pane = stdout.lines().next().unwrap_or_default().trim().to_owned();
+    assert!(found && !pane.is_empty(), "the pane a sweep is run from");
+    pane
 }
 
 /// One agent declaring a work state, at a fixed stamp.
@@ -153,9 +163,29 @@ fn declared(agent: &str, state: &str) -> String {
 /// The moment every arm sweeps as of — fixed, so nothing here is a race.
 const NOW: &str = "1788000000";
 
-/// Run one sweep and return `(code, stdout, stderr)`.
-fn sweep(root: &Path, dir: &Path, flags: &[&str]) -> (Option<i32>, String, String) {
-    let out = ae()
+/// Run one sweep FROM `pane` and return `(code, stdout, stderr)`.
+fn sweep(root: &Path, dir: &Path, pane: &str, flags: &[&str]) -> (Option<i32>, String, String) {
+    sweep_from(root, dir, Some(pane), flags)
+}
+
+/// The same, with the caller's pane as the variable — `None` is a sweep run
+/// from no pane at all.
+///
+/// `TMUX_PANE` is SET OR REMOVED here, never inherited: this suite may itself
+/// be run from inside tmux, and a pane leaking in from the developer's terminal
+/// would be what decides the own-session guard instead of the fixture.
+fn sweep_from(
+    root: &Path,
+    dir: &Path,
+    pane: Option<&str>,
+    flags: &[&str],
+) -> (Option<i32>, String, String) {
+    let mut command = ae();
+    match pane {
+        Some(pane) => command.env("TMUX_PANE", pane),
+        None => command.env_remove("TMUX_PANE"),
+    };
+    let out = command
         .env("AE_HOME", root)
         .arg(ae::cli::MONITOR)
         .arg(ae::monitor::SWEEP)
@@ -214,11 +244,11 @@ fn a_repeated_attention_state_is_reported_once_and_its_change_is_reported_again(
     let log = scratch.join("said");
     let dir = plant_session(&root, "mondd", &socket, &[&declared("lead", "blocked")]);
     plant_say(&dir, &log, 0);
-    start_session(&socket, &scratch, "mondd");
+    let pane = start_session(&socket, &scratch, "mondd");
 
     // A first run reports the attention it finds — that half is NOT suppressed,
     // only the fleet inventory is.
-    let (code, out, err) = sweep(&root, &dir, &["--format", "json"]);
+    let (code, out, err) = sweep(&root, &dir, &pane, &["--format", "json"]);
     assert_eq!(code, Some(0), "{err}");
     assert_eq!(
         report(&out),
@@ -229,7 +259,7 @@ fn a_repeated_attention_state_is_reported_once_and_its_change_is_reported_again(
     assert_eq!(said(&log), "⚠ mondd · lead needs you: blocked\n--\n");
 
     // Nothing changed.
-    let (code, out, err) = sweep(&root, &dir, &["--format", "json"]);
+    let (code, out, err) = sweep(&root, &dir, &pane, &["--format", "json"]);
     assert_eq!(code, Some(0), "{err}");
     assert!(
         report(&out).is_empty(),
@@ -251,7 +281,7 @@ fn a_repeated_attention_state_is_reported_once_and_its_change_is_reported_again(
         .is_ok(),
         "the changed declaration"
     );
-    let (code, out, err) = sweep(&root, &dir, &["--format", "json"]);
+    let (code, out, err) = sweep(&root, &dir, &pane, &["--format", "json"]);
     assert_eq!(code, Some(0), "{err}");
     assert_eq!(
         report(&out),
@@ -269,13 +299,13 @@ fn a_repeated_attention_state_is_reported_once_and_its_change_is_reported_again(
         .is_ok(),
         "the cleared declaration"
     );
-    let (_, out, err) = sweep(&root, &dir, &["--format", "json"]);
+    let (_, out, err) = sweep(&root, &dir, &pane, &["--format", "json"]);
     assert_eq!(
         report(&out),
         vec!["✓ mondd · lead cleared".to_owned()],
         "{err}"
     );
-    let (_, out, _) = sweep(&root, &dir, &["--format", "json"]);
+    let (_, out, _) = sweep(&root, &dir, &pane, &["--format", "json"]);
     assert!(
         report(&out).is_empty(),
         "a delivered all-clear is said once: {out}"
@@ -296,11 +326,11 @@ fn a_report_that_was_not_delivered_is_reported_again_until_it_lands() {
     let log = scratch.join("said");
     let dir = plant_session(&root, "monrt", &socket, &[&declared("lead", "blocked")]);
     plant_say(&dir, &log, 1);
-    start_session(&socket, &scratch, "monrt");
+    let pane = start_session(&socket, &scratch, "monrt");
 
     let expected = vec!["⚠ monrt · lead needs you: blocked".to_owned()];
     for attempt in 1..=2 {
-        let (code, out, err) = sweep(&root, &dir, &["--format", "json"]);
+        let (code, out, err) = sweep(&root, &dir, &pane, &["--format", "json"]);
         assert_eq!(code, Some(0), "attempt {attempt}: {err}");
         assert_eq!(report(&out), expected, "attempt {attempt}: {out}");
         assert!(!delivered(&out), "attempt {attempt}: say exited non-zero");
@@ -312,10 +342,10 @@ fn a_report_that_was_not_delivered_is_reported_again_until_it_lands() {
 
     // The channel comes back.
     plant_say(&dir, &log, 0);
-    let (_, out, err) = sweep(&root, &dir, &["--format", "json"]);
+    let (_, out, err) = sweep(&root, &dir, &pane, &["--format", "json"]);
     assert_eq!(report(&out), expected, "{err}");
     assert!(delivered(&out), "{err}");
-    let (_, out, _) = sweep(&root, &dir, &["--format", "json"]);
+    let (_, out, _) = sweep(&root, &dir, &pane, &["--format", "json"]);
     assert!(
         report(&out).is_empty(),
         "once delivered, the same attention is silent: {out}"
@@ -337,14 +367,14 @@ fn the_state_round_trips_through_the_file_the_watchdog_reads_as_a_heartbeat() {
     let log = scratch.join("said");
     let dir = plant_session(&root, "monst", &socket, &[&declared("lead", "blocked")]);
     plant_say(&dir, &log, 0);
-    start_session(&socket, &scratch, "monst");
+    let pane = start_session(&socket, &scratch, "monst");
 
     let state = dir.join("meta-agent-state.json");
     assert!(
         !state.exists(),
         "the fixture must start without one, or the first run is not one"
     );
-    let (code, _, err) = sweep(&root, &dir, &["--format", "json"]);
+    let (code, _, err) = sweep(&root, &dir, &pane, &["--format", "json"]);
     assert_eq!(code, Some(0), "{err}");
 
     let text = fs::read_to_string(&state).expect("the sweep wrote its state");
@@ -390,7 +420,7 @@ fn the_state_round_trips_through_the_file_the_watchdog_reads_as_a_heartbeat() {
         fs::write(&state, "{not json at all").is_ok(),
         "the corruption"
     );
-    let (code, out, err) = sweep(&root, &dir, &["--format", "json"]);
+    let (code, out, err) = sweep(&root, &dir, &pane, &["--format", "json"]);
     assert_eq!(
         code,
         Some(0),
@@ -416,10 +446,10 @@ fn a_dry_run_previews_the_report_and_changes_nothing() {
     let log = scratch.join("said");
     let dir = plant_session(&root, "mondr", &socket, &[&declared("lead", "blocked")]);
     plant_say(&dir, &log, 0);
-    start_session(&socket, &scratch, "mondr");
+    let pane = start_session(&socket, &scratch, "mondr");
 
     // Text format, because that is what a human previewing runs.
-    let (code, out, err) = sweep(&root, &dir, &["--dry-run"]);
+    let (code, out, err) = sweep(&root, &dir, &pane, &["--dry-run"]);
     assert_eq!(code, Some(0), "{err}");
     assert_eq!(out, "⚠ mondr · lead needs you: blocked\n");
     assert!(
@@ -430,10 +460,10 @@ fn a_dry_run_previews_the_report_and_changes_nothing() {
 
     // `--init` seeds the same snapshot SILENTLY — the first-install path, so a
     // fresh orchestrator does not announce a fleet already running.
-    let (code, out, err) = sweep(&root, &dir, &["--init"]);
+    let (code, out, err) = sweep(&root, &dir, &pane, &["--init"]);
     assert_eq!((code, out.as_str()), (Some(0), ""), "{err}");
     assert_eq!(said(&log), "", "--init says nothing");
-    let (_, out, _) = sweep(&root, &dir, &["--format", "json"]);
+    let (_, out, _) = sweep(&root, &dir, &pane, &["--format", "json"]);
     assert!(
         report(&out).is_empty(),
         "a seeded attention is already known: {out}"
@@ -453,16 +483,16 @@ fn no_notify_prints_without_delivering_and_without_marking_anything_notified() {
     let log = scratch.join("said");
     let dir = plant_session(&root, "monnn", &socket, &[&declared("lead", "blocked")]);
     plant_say(&dir, &log, 0);
-    start_session(&socket, &scratch, "monnn");
+    let pane = start_session(&socket, &scratch, "monnn");
 
-    let (code, out, err) = sweep(&root, &dir, &["--no-notify"]);
+    let (code, out, err) = sweep(&root, &dir, &pane, &["--no-notify"]);
     assert_eq!(code, Some(0), "{err}");
     assert_eq!(out, "⚠ monnn · lead needs you: blocked\n");
     assert_eq!(said(&log), "", "--no-notify runs no helper at all");
 
     // An UNCONFIRMED report is not a delivered one: the next sweep says it
     // again.
-    let (_, out, _) = sweep(&root, &dir, &["--no-notify"]);
+    let (_, out, _) = sweep(&root, &dir, &pane, &["--no-notify"]);
     assert_eq!(out, "⚠ monnn · lead needs you: blocked\n");
 }
 
@@ -499,11 +529,14 @@ fn the_sweep_command_the_charter_prints_is_the_one_the_binary_accepts() {
     let log = scratch.join("said");
     let dir = plant_session(&root, "moncc", &socket, &[&declared("lead", "blocked")]);
     plant_say(&dir, &log, 0);
-    start_session(&socket, &scratch, "moncc");
+    let pane = start_session(&socket, &scratch, "moncc");
 
     let words: Vec<&str> = quoted.split_whitespace().skip(1).collect();
     let out = ae()
         .env("AE_HOME", &root)
+        // From the orchestrator's own pane, which is where the charter's
+        // instruction is carried out.
+        .env("TMUX_PANE", &pane)
         .args(&words[..words.len() - 1])
         .arg(&dir)
         .output()
@@ -550,6 +583,7 @@ fn a_subcommand_or_flag_the_sweep_does_not_know_is_a_usage_error() {
 fn a_sweep_target_outside_the_sessions_root_is_refused_before_anything_is_written() {
     // THE TARGET GUARD.
     let scratch = scratch("foreign");
+    require_tmux(&scratch);
     let socket = scratch.join("s");
     let _cleanup = Cleanup {
         socket: socket.clone(),
@@ -559,6 +593,11 @@ fn a_sweep_target_outside_the_sessions_root_is_refused_before_anything_is_writte
     let log = scratch.join("said");
     let real = plant_session(&root, "monfg", &socket, &[]);
     let sessions = root.join("sessions");
+    // From a REAL pane of a real session: the caller is beyond reproach here,
+    // so what refuses each shape below is the target guard and nothing else —
+    // which also pins the ORDER, since a caller check that ran first would
+    // refuse these with the wrong rule.
+    let pane = start_session(&socket, &scratch, "monfg");
 
     // Three shapes that are not a session directory, and none of them is
     // refused for want of a `meta`: a directory ae does not own at all, the
@@ -584,7 +623,12 @@ fn a_sweep_target_outside_the_sessions_root_is_refused_before_anything_is_writte
 
     for dir in [&foreign, &sessions, &nested] {
         let named = dir.display().to_string();
-        let (code, out, err) = sweep(&root, dir, &["--liveness-sweeps", "1", "--format", "json"]);
+        let (code, out, err) = sweep(
+            &root,
+            dir,
+            &pane,
+            &["--liveness-sweeps", "1", "--format", "json"],
+        );
         // `2` and not `1`: naming a directory ae does not own is asking wrong,
         // not a sweep that went wrong.
         assert_eq!(code, Some(2), "{named}: {err}");
@@ -612,6 +656,7 @@ fn a_real_session_directory_still_sweeps_under_the_target_guard() {
     // root and holds a meta, so it sweeps, delivers and leaves the heartbeat
     // the watchdog reads.
     let scratch = scratch("target-ok");
+    require_tmux(&scratch);
     let socket = scratch.join("s");
     let _cleanup = Cleanup {
         socket: socket.clone(),
@@ -621,15 +666,160 @@ fn a_real_session_directory_still_sweeps_under_the_target_guard() {
     let log = scratch.join("said");
     let dir = plant_session(&root, "monok", &socket, &[]);
     plant_say(&dir, &log, 0);
+    let pane = start_session(&socket, &scratch, "monok");
 
-    let (code, out, err) = sweep(&root, &dir, &["--liveness-sweeps", "1", "--format", "json"]);
+    let (code, out, err) = sweep(
+        &root,
+        &dir,
+        &pane,
+        &["--liveness-sweeps", "1", "--format", "json"],
+    );
     assert_eq!(code, Some(0), "{err}");
-    let ping = "🛰️ still watching 0 sessions · all healthy";
+    let ping = "🛰️ still watching 1 sessions · all healthy";
     assert_eq!(report(&out), vec![ping.to_owned()]);
     assert!(delivered(&out), "and it believes the ping landed: {out}");
     assert_eq!(said(&log), format!("{ping}\n--\n"), "as it did");
     assert!(
         dir.join(ae::monitor::STATE_NAME).exists(),
         "the heartbeat the watchdog reads is there"
+    );
+}
+
+#[test]
+fn a_sweep_of_a_sibling_session_is_refused_before_anything_is_written() {
+    // THE CALLER GUARD, and the repro that raised it. Every session on the
+    // machine is a direct child of the sessions root holding a meta, so the
+    // target guard admits ALL of them: an orchestrator handed
+    // `<AE_HOME>/sessions/<anybody>` wrote its state file into that directory
+    // and executed the `say` it found there — the `--notify-cmd` hazard again,
+    // reached through a path ae does own instead of one it does not.
+    //
+    // Both sessions are real and both are running, so nothing here is refused
+    // for being absent: the only difference between the two sweeps below is
+    // which session the CALLER's pane is in.
+    let scratch = scratch("sibling");
+    require_tmux(&scratch);
+    let socket = scratch.join("s");
+    let _cleanup = Cleanup {
+        socket: socket.clone(),
+        scratch: scratch.clone(),
+    };
+    let root = scratch.join("home");
+    let mine = plant_session(&root, "monorch", &socket, &[]);
+    let theirs = plant_session(&root, "monvic", &socket, &[]);
+    let my_log = scratch.join("said-mine");
+    let their_log = scratch.join("said-theirs");
+    plant_say(&mine, &my_log, 0);
+    plant_say(&theirs, &their_log, 0);
+    let pane = start_session(&socket, &scratch, "monorch");
+    start_session(&socket, &scratch, "monvic");
+
+    let (code, out, err) = sweep(
+        &root,
+        &theirs,
+        &pane,
+        &["--liveness-sweeps", "1", "--format", "json"],
+    );
+    assert_eq!(code, Some(2), "asking for someone else's session: {err}");
+    assert!(out.is_empty(), "stdout must stay empty: {out}");
+    assert!(
+        err.contains(ae::monitor::OWN_RULE),
+        "the refusal must quote the rule: {err}"
+    );
+    assert!(
+        err.contains("monvic") && err.contains("monorch"),
+        "and name both sessions, or an operator cannot tell what it refused: {err}"
+    );
+    assert!(
+        !theirs.join(ae::monitor::STATE_NAME).exists(),
+        "a refused sweep writes the sibling nothing at all"
+    );
+    assert_eq!(said(&their_log), "", "and runs the sibling's `say` never");
+
+    // THE OTHER HALF, in the same fixture and from the same pane: its own
+    // session still sweeps. A guard that refused this would take the
+    // orchestrator's whole loop with it.
+    let (code, out, err) = sweep(
+        &root,
+        &mine,
+        &pane,
+        &["--liveness-sweeps", "1", "--format", "json"],
+    );
+    assert_eq!(code, Some(0), "{err}");
+    let ping = "🛰️ still watching 2 sessions · all healthy";
+    assert_eq!(report(&out), vec![ping.to_owned()], "{err}");
+    assert!(delivered(&out), "and it believes the ping landed: {out}");
+    assert_eq!(said(&my_log), format!("{ping}\n--\n"), "as it did");
+    assert!(
+        mine.join(ae::monitor::STATE_NAME).exists(),
+        "the heartbeat the watchdog reads is there"
+    );
+    assert_eq!(
+        said(&their_log),
+        "",
+        "and the sibling's helper was never the one that ran"
+    );
+}
+
+#[test]
+fn a_sweep_run_from_no_pane_at_all_is_refused() {
+    // `$TMUX_PANE` is the whole of the caller's identity, so its ABSENCE has to
+    // be a refusal rather than a skipped check — a sweep detached from tmux
+    // (cron, a stray shell, a script) would otherwise walk straight past the
+    // guard into any session directory it was handed, which is the repro
+    // above with the check removed.
+    let scratch = scratch("nopane");
+    require_tmux(&scratch);
+    let socket = scratch.join("s");
+    let _cleanup = Cleanup {
+        socket: socket.clone(),
+        scratch: scratch.clone(),
+    };
+    let root = scratch.join("home");
+    let log = scratch.join("said");
+    let dir = plant_session(&root, "monnp", &socket, &[]);
+    plant_say(&dir, &log, 0);
+    start_session(&socket, &scratch, "monnp");
+
+    // Its OWN session — the one directory it would be entitled to sweep from
+    // inside it. Not even that passes without a pane.
+    let (code, out, err) = sweep_from(
+        &root,
+        &dir,
+        None,
+        &["--liveness-sweeps", "1", "--format", "json"],
+    );
+    assert_eq!(code, Some(2), "{err}");
+    assert!(out.is_empty(), "stdout must stay empty: {out}");
+    assert!(
+        err.contains(ae::monitor::OWN_RULE),
+        "the refusal must quote the rule: {err}"
+    );
+    assert!(
+        err.contains("TMUX_PANE"),
+        "and name the door it read: {err}"
+    );
+    assert!(
+        !dir.join(ae::monitor::STATE_NAME).exists(),
+        "nothing written"
+    );
+    assert_eq!(said(&log), "", "and no `say` run");
+
+    // A pane the recorded server does not answer for is the same answer: an
+    // id from somewhere else is not evidence of being here.
+    let (code, _, err) = sweep_from(
+        &root,
+        &dir,
+        Some("%4242"),
+        &["--liveness-sweeps", "1", "--format", "json"],
+    );
+    assert_eq!(code, Some(2), "{err}");
+    assert!(
+        err.contains(ae::monitor::OWN_RULE),
+        "the refusal must quote the rule: {err}"
+    );
+    assert!(
+        !dir.join(ae::monitor::STATE_NAME).exists(),
+        "still nothing written"
     );
 }

@@ -87,6 +87,11 @@ one command**:
 ae _monitor sweep __HELPERS_DIR__
 ```
 
+The directory is **yours** — the placeholder is your own helpers dir, and the sweep
+refuses any other session's (it writes state and runs `say` in the directory it is
+handed, so it only ever acts on the session it is running inside). You watch the
+fleet by reading it, never by sweeping someone else's directory.
+
 That's the whole sweep. `ae _monitor`:
 - reads the same running-session snapshot `ae list --json` renders,
 - diffs it against its own locked state file (it OWNS the dedup — you don't touch
