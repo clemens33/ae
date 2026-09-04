@@ -99,7 +99,8 @@ falls back to a fresh conversation.
 
 ## Using fish or zsh
 
-Fine. ae runs under bash; your interactive shell does not need to be bash as long as ae is launched correctly (and `~/.local/bin` is on `PATH`).
+Fine. `ae` is a native Rust binary; your interactive shell does not need to be bash as
+long as `ae` is launched correctly (and `~/.local/bin` is on `PATH`).
 
 ## On WSL2
 
@@ -113,10 +114,10 @@ that used to reach for them is Rust. `flock` and `timeout` are likewise no longe
 dependencies — the core locks with its own `flock(2)` and times out in its own code — so
 `ae doctor` no longer reports rows for them.
 
-One macOS requirement stands: `ae` itself needs **bash >= 4.0**, because macOS ships 3.2.
-`brew install bash` and put brew's bin directory ahead of `/bin` on `PATH`. The session
-helpers do not care — each is a one-line `exec` that runs fine under 3.2 — but the glue does,
-and it re-execs itself to get there.
+One macOS requirement stands for installation: the `install` bootstrap needs a modern Bash,
+because macOS ships 3.2. Install one with Homebrew and put brew's bin directory ahead of
+`/bin` on `PATH`. `ae` itself is the Rust core and needs only tmux and git; session helpers
+are symlinks to that same binary and do not invoke Bash.
 
 Resume / session-id capture for external CLIs still depends on each tool's local
 storage format, which differs across platforms.
