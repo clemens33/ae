@@ -1,9 +1,16 @@
-# Rust lanes only.
+# THE GATE, run natively on both platforms ae ships for.
 #
-# The bash-era lanes (`just check`, `just test`) are deliberately NOT wired here:
-# they are blocked on the gate-integrity enablers (#58/#67) and get their own
-# workflow later. Adding them now would publish a red badge for a known,
-# separately-tracked gap.
+# Two lanes, and together they are ae's whole automated gate: `just rust-check`
+# (which `just test` now IS) and `just check`, the bash lane over `install`.
+#
+# THE BASH LANE USED TO BE DELIBERATELY ABSENT, held out by the gate-integrity
+# issues #58/#67 — a red badge for a known, separately-tracked gap was judged
+# worse than no badge at all. The trade has flipped. What the lane guards is now
+# ONE file, `install`: 79 lines, the only bash ae ships, and a member of every
+# release bundle. #67's fix is in the recipe it runs — the `< /dev/null` on
+# shellcheck's invocation, pinned structurally by tests/it/gate.rs — the lane
+# costs seconds, and until this landed `install` was the one product file no
+# automated gate read at all.
 #
 # This workflow is also the TARGET-NATIVE PROOF the #80 acceptance asks for:
 # `ae --version` is executed on real x86_64 Linux and real arm64 macOS, not
@@ -11,9 +18,13 @@
 
 name: rust
 
-# PATHS FILTER: only Rust-affecting changes start these lanes. Measured cause —
-# a docs slice pushing to this branch every 2-6 minutes started a rust run each
-# time, and none of those pushes touched a Rust file.
+# PATHS FILTER: only changes these lanes can say something about start them.
+# Measured cause — a docs slice pushing to this branch every 2-6 minutes started
+# a rust run each time, and none of those pushes touched a file below.
+#
+# `install` is in the list because the bash lane reads it. A filter that starts
+# the job for a Rust change but not for the file the job's own lint gates is a
+# gate that any `install`-only commit walks straight past.
 #
 # TRAP, recorded where the decision lives: if `rust` ever becomes a REQUIRED
 # status check, a run skipped by this filter reports "skipped", not "success",
@@ -41,6 +52,7 @@ on:
       - src/**
       - tests/it/**
       - justfile
+      - install
       - .github/workflows/rust.yml
   pull_request:
     branches: [main]
@@ -56,6 +68,7 @@ on:
       - src/**
       - tests/it/**
       - justfile
+      - install
       - .github/workflows/rust.yml
   # The manual escape hatch: run the lanes against any ref regardless of paths.
   workflow_dispatch:
@@ -83,6 +96,14 @@ env:
   CARGO_TERM_COLOR: always
   # A CI failure must be readable without a local repro.
   RUST_BACKTRACE: 1
+  # THE ONE PIN SITE FOR shfmt, and it is here because there is no other: the
+  # justfile pins shellcheck (`_shellcheck-pin`, read below rather than
+  # restated) and deliberately does not pin shfmt, whose `< /dev/null` it calls
+  # insurance rather than contract. CI cannot be that relaxed — shfmt's printer
+  # changes between minors (3.14.0 respaced nested parens and `!` in
+  # arithmetic), so an unpinned formatter is a gate that goes red on a release
+  # nobody here made. Pinned to the version `install` is formatted with.
+  SHFMT_VERSION: "3.13.1"
 
 jobs:
   rust:
@@ -159,11 +180,21 @@ jobs:
       # Cache key derives from the PINS THEMSELVES, not from the whole justfile:
       # editing a recipe comment must not evict a slow tool build. Read with grep
       # so no tool is needed before the cache that holds the tools.
+      #
+      # The bash lane's two tools live in the same cached root, so their pins are
+      # in the key as well — the shellcheck one read out of `_shellcheck-pin`,
+      # shfmt's from this workflow's env. Without them a bump would be served a
+      # stale binary out of a cache whose key never moved. The install step below
+      # version-checks what it finds anyway, so this is what keeps a bump CHEAP
+      # rather than what keeps it correct.
       - name: Compute pin hash
         id: pins
         run: |
           set -euo pipefail
-          hash="$( { grep -E '^[A-Z_]+_VERSION := ' justfile; cat rust-toolchain.toml; } \
+          hash="$( { grep -E '^[A-Z_]+_VERSION := ' justfile
+                     grep -E '^[[:space:]]+want="[0-9]+\.[0-9]+\.[0-9]+"$' justfile
+                     printf 'shfmt %s\n' "$SHFMT_VERSION"
+                     cat rust-toolchain.toml; } \
                    | shasum -a 256 | cut -d' ' -f1 )"
           echo "hash=$hash" >> "$GITHUB_OUTPUT"
 
@@ -206,6 +237,98 @@ jobs:
           else
             cargo install --locked --version "$want" just
           fi
+
+      # THE BASH LANE'S TOOLS, pinned and PROVEN BY DIGEST before they run.
+      #
+      # `just check` is worth exactly as much as the two binaries it calls.
+      # shellcheck's finding set moves between releases — the reason the justfile
+      # pins it at all — and shfmt's printer moves too, so both come from their
+      # upstream release assets rather than from apt or brew, neither of which
+      # can be asked for a version. They install into the same cached root the
+      # cargo tools use, so a warm cache makes this step a no-op.
+      #
+      # THE VERSION IS READ; THE DIGEST IS TABLED. The shellcheck pin has one
+      # home, `_shellcheck-pin` in the justfile, so it is grepped rather than
+      # restated here — the same rule the `just` step above follows. A digest can
+      # be read from nowhere, so it sits in a table keyed by that version, and a
+      # bump to a version with no row FAILS this step saying so. That is the
+      # intended cost of a bump: an unverified download is the one outcome a
+      # pinned lane must not have.
+      - name: Install shellcheck and shfmt (pinned, digest-verified)
+        run: |
+          set -euo pipefail
+          want_sc="$(grep -m1 -E '^[[:space:]]+want="[0-9]+\.[0-9]+\.[0-9]+"$' justfile | cut -d'"' -f2)"
+          [ -n "$want_sc" ] || { echo "::error::no shellcheck pin found in the justfile's _shellcheck-pin recipe"; exit 1; }
+
+          case "$want_sc:$RUNNER_OS" in
+            0.11.0:Linux)
+              sc_asset="shellcheck-v0.11.0.linux.x86_64.tar.xz"
+              sc_sha="8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198" ;;
+            0.11.0:macOS)
+              sc_asset="shellcheck-v0.11.0.darwin.aarch64.tar.xz"
+              sc_sha="56affdd8de5527894dca6dc3d7e0a99a873b0f004d7aabc30ae407d3f48b0a79" ;;
+            *)
+              echo "::error::no pinned digest recorded for shellcheck $want_sc on $RUNNER_OS — add its asset name and sha256 beside the others in this step"
+              exit 1 ;;
+          esac
+          case "$SHFMT_VERSION:$RUNNER_OS" in
+            3.13.1:Linux)
+              sh_asset="shfmt_v3.13.1_linux_amd64"
+              sh_sha="fb096c5d1ac6beabbdbaa2874d025badb03ee07929f0c9ff67563ce8c75398b1" ;;
+            3.13.1:macOS)
+              sh_asset="shfmt_v3.13.1_darwin_arm64"
+              sh_sha="9680526be4a66ea1ffe988ed08af58e1400fe1e4f4aef5bd88b20bb9b3da33f8" ;;
+            *)
+              echo "::error::no pinned digest recorded for shfmt $SHFMT_VERSION on $RUNNER_OS — add its asset name and sha256 beside the others in this step"
+              exit 1 ;;
+          esac
+
+          bin="$CARGO_INSTALL_ROOT/bin"
+          tmp="$RUNNER_TEMP/bash-tools"
+          mkdir -p "$bin" "$tmp"
+
+          # ASK EACH TOOL WHAT IT IS. A cache restored from before a bump still
+          # holds the old binary — the key moves with the pin, but only for the
+          # run after the bump — so presence is not the question, version is.
+          sc_have="$(shellcheck --version 2>/dev/null | awk '/^version:/ {print $2}' || true)"
+          if [ "$sc_have" = "$want_sc" ]; then
+            echo "shellcheck $want_sc already present"
+          else
+            curl -fsSL --retry 3 --output "$tmp/$sc_asset" \
+              "https://github.com/koalaman/shellcheck/releases/download/v$want_sc/$sc_asset"
+            echo "$sc_sha  $tmp/$sc_asset" | shasum -a 256 -c -
+            tar -xJf "$tmp/$sc_asset" -C "$tmp"
+            cp "$tmp/shellcheck-v$want_sc/shellcheck" "$bin/shellcheck"
+            chmod 0755 "$bin/shellcheck"
+          fi
+
+          # The release binary answers `v3.13.1`; a source build answers
+          # `3.13.1`. Compare on the number so either satisfies the pin.
+          sh_have="$(shfmt --version 2>/dev/null | sed 's/^v//' || true)"
+          if [ "$sh_have" = "$SHFMT_VERSION" ]; then
+            echo "shfmt $SHFMT_VERSION already present"
+          else
+            curl -fsSL --retry 3 --output "$tmp/$sh_asset" \
+              "https://github.com/mvdan/sh/releases/download/v$SHFMT_VERSION/$sh_asset"
+            echo "$sh_sha  $tmp/$sh_asset" | shasum -a 256 -c -
+            cp "$tmp/$sh_asset" "$bin/shfmt"
+            chmod 0755 "$bin/shfmt"
+          fi
+
+          # A digest proves BYTES, not that the bytes are the tool this lane
+          # wants. Ask both again, now that PATH decides which one answers.
+          sc_now="$(shellcheck --version 2>/dev/null | awk '/^version:/ {print $2}' || true)"
+          [ "$sc_now" = "$want_sc" ] || { echo "::error::shellcheck on PATH is ${sc_now:-absent}, want $want_sc"; exit 1; }
+          sh_now="$(shfmt --version 2>/dev/null | sed 's/^v//' || true)"
+          [ "$sh_now" = "$SHFMT_VERSION" ] || { echo "::error::shfmt on PATH is ${sh_now:-absent}, want $SHFMT_VERSION"; exit 1; }
+          echo "bash lane ready: shellcheck $sc_now, shfmt $sh_now"
+
+      # THE BASH LANE ITSELF, and `install` is the whole of its subject: 79 lines
+      # that have to run before there is a core to run, published as a member of
+      # every release bundle. It runs here, ahead of the Rust lanes, because it
+      # costs seconds and needs nothing they build.
+      - name: just check (shellcheck + shfmt over install)
+        run: just check
 
       # The bootstrap contract, exercised for real: rustup + just -> rust-setup.
       - name: just rust-setup
@@ -440,7 +563,8 @@ jobs:
           # (dispatch and schedule fire from the default branch, where this file does not
           # exist). Until that stub lands there, this step SAYS so, in an annotation and in
           # the job summary; it does not pretend to be a gate. The inventory mirrors the
-          # workflow's own trigger paths minus src/.
+          # workflow's own trigger paths minus src/ — and minus `install`, which is
+          # bash, carries no mutant to select, and is gated by `just check` above.
           infra='tests Cargo.toml Cargo.lock rust-toolchain.toml deny.toml clippy.toml taplo.toml supply-chain .cargo justfile .github/workflows/rust.yml'
           # shellcheck disable=SC2086  # the inventory is a deliberate word list
           if ! git diff --quiet "$base" "${{ github.sha }}" -- $infra; then

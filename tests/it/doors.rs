@@ -463,6 +463,13 @@ fn the_lint_relaxations_this_counter_can_see_are_the_expected_ones() {
     // `tests/it/install.rs` is the black-box door for both: an install is what
     // a real process does to a real `$HOME`.
     //
+    // A THIRD SITE IN THAT FILE is the bash bootstrap's: `install.rs`'s
+    // `command()` runs `bash` over the repository's own `install`, and `tar` to
+    // pack the fixture bundle its shimmed `curl` serves. Everything the
+    // bootstrap owns happens BEFORE there is a core — resolve the platform,
+    // prove the archive against the release manifest, extract, exec — so there
+    // is no library call that could stand in for the process.
+    //
     // A further entry is red. A relaxation this counter CANNOT see is not —
     // that is what the semantic guard above is for.
     assert_eq!(
@@ -474,7 +481,7 @@ fn the_lint_relaxations_this_counter_can_see_are_the_expected_ones() {
             ("src/upgrade.rs".to_owned(), 1),
             ("tests/it/cli.rs".to_owned(), 5),
             ("tests/it/doors.rs".to_owned(), 1),
-            ("tests/it/install.rs".to_owned(), 2),
+            ("tests/it/install.rs".to_owned(), 3),
             ("tests/it/parity.rs".to_owned(), 1),
             ("tests/it/shape.rs".to_owned(), 2),
         ],
