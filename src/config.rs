@@ -32,13 +32,6 @@ pub(crate) struct Workspace {
 /// `global` so the LAST file to set a key wins — matching `get_config`'s "last match
 /// wins, local overrides global". `purge_agent_history` is true iff the resolved value
 /// is one of `true|1|yes|on`, exactly as `_end_effective_purge` decides it.
-///
-/// ABSENCE VS UNREADABLE. Absence is expressed by passing `None`; a `Some(path)` is a
-/// SELECTED file the caller has decided to read, so if it cannot be read or decoded
-/// (permission, non-UTF-8, a directory, or gone) the read FAILS closed — `Err(path)` —
-/// rather than being silently treated as empty. Reading a `purge_agent_history = true`
-/// config as empty was the purge-bypass hazard; the caller turns this `Err` into a
-/// refusal.
 pub(crate) fn read_workspace(
     global: Option<&Path>,
     local: Option<&Path>,
@@ -692,8 +685,6 @@ pub fn launch_plan(
     // A roster row bound to no seat is NOT a violation (ruled 2026-09-02, reversing
     // the v5 "dormant refuses" ruling): `[roster]` is the set of named agents this
     // workspace MAY launch, main/workers pick the defaults, and `use <name>` picks
-    // another — which is only possible if an unseated row is legal. Its profile is
-    // still validated above, so a typo in the binding is still caught.
     if violations.is_empty() {
         Ok(LaunchPlan { seats })
     } else {
@@ -704,16 +695,6 @@ pub fn launch_plan(
 /// Read arbitrary `[workspace]` keys, layering `local` over `global` — the
 /// launch operation's own `get_config workspace.<key>` reads (`layout`, `copy`,
 /// `watchdog`/`loop`, `orchestrator`/`hub`/`meta`).
-///
-/// A separate entry from [`read_workspace`] because that one is compact's,
-/// with its own fail-closed contract on a selected-but-unreadable file. This is
-/// the LAUNCH read: a config file that cannot be read contributes nothing,
-/// exactly as the frozen `get_config` behaves, because the launch has already
-/// refused a missing config through [`read_identity`] and a second, differently
-/// shaped refusal here would be a second place the rule lives.
-///
-/// Returns the resolved value of each requested key, or `None` where no file
-/// set it. Last file to set a key wins.
 #[must_use]
 pub fn read_workspace_keys(
     global: Option<&Path>,

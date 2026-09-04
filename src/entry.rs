@@ -1,52 +1,10 @@
 //! The product's ENTRY: the ambient facts an invocation carries, and the
 //! dispatch that used to be `ae-glue`'s `case` statement.
-//!
-//! # There is no preamble any more
-//!
-//! Slice Z1 deleted the bash dispatcher and froze a PREAMBLE — a flag line the
-//! wrapper spoke so the core could learn what only bash could see. Slice Z3
-//! deletes the wrapper itself: the public `ae` IS this binary, so there is
-//! nothing in front of it and nothing to relay. Every flag of that line is now
-//! an environment DOOR read at its own documented site ([`crate::doors`]), and
-//! [`Preamble`] is what those doors resolved to — a value, not a parse.
-//!
-//! `--bash-major` went with the interpreter: ae ships no bash, so there is no
-//! version of it to report and no re-exec ladder to report it from.
-//!
-//! # Why the routing lives here and not in [`crate::cli`]
-//!
-//! [`crate::cli::Request::parse`] answers "which core entry is this argv", and
-//! it must keep answering that for the session helpers, which reach the core
-//! through a link and skip this module entirely. This module answers a
-//! different question — "what did a HUMAN type at `ae`" — and the two differ in
-//! three places that matter:
-//!
-//! * an EMPTY argv is a LAUNCH here and [`crate::cli::Request::Help`] there,
-//!   because `ae` with no words starts the default session and always has;
-//! * the human-facing words (`stop`, `end`, `watchdog`, …) are not the core's
-//!   entry spellings (`_stop`, `_end`, `_watchdog`), and the translation is
-//!   where the environmental facts are appended;
-//! * four words are REFUSALS rather than commands, and one of them (`status`)
-//!   would otherwise be a perfectly legal session name.
-//!
-//! That last point is the whole reason the retired words keep an arm at all:
-//! everything this router does not recognise falls through to a LAUNCH, and a
-//! launch takes the last positional as a session name. A deleted `status` arm
-//! does not error — it quietly creates a session called `status`.
-//!
-//! The core's OWN namespace never reaches here. A first word starting with `_`
-//! is an internal entry, carries its own operands, and consumes no ambient
-//! fact, so [`crate::run`] dispatches it directly — which is also what keeps
-//! `_run`, the command every pane execs, from paying for the tmux probes.
 
 use std::path::PathBuf;
 
 /// The config `ae` writes on a first run, verbatim from the glue's
 /// `DEFAULT_CONFIG` heredoc.
-///
-/// A TEMPLATE, never a read: the core parses the config it is handed
-/// ([`crate::config`]), and this is only what a machine with none starts from.
-/// The trailing newline is added at the write, the way `printf '%s\n'` did.
 pub const DEFAULT_CONFIG: &str = r##"# ae config — auto-created on first run, yours to edit. Also mirrored in the repo as
 # config.sample. INI-style: [section] headers, key = value, "#" starts a comment.
 # New sessions read this whole file. Stopping + resuming an existing session (ae stop <name>;
@@ -112,10 +70,6 @@ watchdog = true
 "##;
 
 /// The text `ae help` prints — the glue's `cmd_help`, verbatim.
-///
-/// THE COMMAND SET, AND NOTHING ELSE. A row that outlives its arm is worse than
-/// a missing one: it sends a human at a command that now refuses. Check it
-/// against [`route`] below whenever either moves.
 pub const HELP: &str = r"ae - agentic engineering: tmux multi-agent workspace
 
 Usage:
@@ -170,10 +124,6 @@ Run 'ae doctor --refresh' after updating ae to regenerate existing session helpe
 ";
 
 /// The text `ae list --help` prints — the glue's `LISTHELP` heredoc, verbatim.
-///
-/// STDERR and exit 0, as the glue had it. The core parses `--help` only at top
-/// level and answers a `list` tail with a usage error, so this text is the
-/// answer until the core grows a ratified list-help of its own.
 pub const LIST_HELP: &str = r"Usage: ae list [--running | --all | --stopped | --needs-attn | --active] [--json]
   (default)    running sessions only
   --running    running sessions only (explicit)
@@ -192,28 +142,13 @@ pub const LIST_HELP: &str = r"Usage: ae list [--running | --all | --stopped | --
 ";
 
 /// `ae status` — CUT, and the arm is the refusal.
-///
-/// It was the last command with a full bash body reading session state
-/// directly: a second reader of meta, tmux and the event log beside the core's
-/// own. `ae list` answers the same question from one implementation.
 pub const RETIRED_STATUS: &str =
     "Error: 'ae status' was retired. Use 'ae list' (add --json for the full record).\n";
 
 /// `ae orchestrator` / `ae hub` — CUT, and the arm is the refusal.
-///
-/// It was a TRAMPOLINE, not a command: it scaffolded a config, rewrote the
-/// config pair and the working directory, and fell through to the generic
-/// launch. The core reads the config pair it is handed and starts the
-/// companions itself, so what is left is the recipe for running it as an
-/// ordinary session against its own config.
 pub const RETIRED_ORCHESTRATOR: &str = "Error: 'ae orchestrator' was retired.\nRun it as an ordinary session against its own config:\n  cd ~/.ae/orchestrator && CONFIG_FILE=$PWD/orchestrator.config ae --local orchestrator\n";
 
 /// `ae transfer` — CUT rather than ported, and the arm is the refusal.
-///
-/// Cross-machine session sync is gone (docs/reference/commands.md records it as
-/// "gone, no arm"). The nearest thing ae still does is what `end` already does:
-/// it pushes the work to `ae/<name>` before it removes anything, so the branch
-/// is how the work reaches another machine.
 pub const RETIRED_TRANSFER: &str = "Error: 'ae transfer' was cut, not ported — ae does no cross-machine session sync.\nMove the WORK instead: 'ae end <name>' commits and pushes it to the 'ae/<name>' branch,\nthen start a session from that branch on the other machine.\n";
 
 /// `ae archive`'s usage, for a second word that is not `preview`.
@@ -273,10 +208,6 @@ impl Default for Preamble {
 
 impl Preamble {
     /// The launch's own preamble, rebuilt as `_launch`'s flags.
-    ///
-    /// Deliberately NOT `--core`: the launch re-enters this very process, so
-    /// `current_exe()` already names the binary, and a flag would only be a
-    /// second, staler answer.
     #[must_use]
     pub fn launch_argv(&self, user: &[String]) -> Vec<String> {
         let mut argv = vec![crate::cli::LAUNCH.to_owned()];
@@ -425,13 +356,6 @@ fn with_head(head: &str, tail: &[String]) -> Vec<String> {
 }
 
 /// Append `--pane <id>` unless the caller named one itself.
-///
-/// BOTH spellings count as named. `_stop` lifts `--pane <id>` and `--pane=<id>`
-/// alike ([`crate::lifecycle`]), so re-normalising one into the other here
-/// would only be a second place for the two to disagree; `_watchdog` takes the
-/// space form only, and a caller who writes the other gets its usage error
-/// either way — which is what the glue did too, having appended a second flag
-/// beside a token that entry never accepted.
 fn with_pane(tail: &[String], pane: Option<&str>) -> Vec<String> {
     let named = tail
         .iter()
@@ -497,9 +421,6 @@ pub fn session_hint(argv: &[String]) -> String {
 
 /// Whether `name` could be a DIRECT CHILD of the sessions root, by pure string
 /// structure — the belt to the grammar, before anything on disk is touched.
-///
-/// String-structural rather than resolved on purpose: it rejects `a/b` as well
-/// as `../victim`, which a resolved-path prefix check would happily accept.
 #[must_use]
 pub fn is_direct_child_name(name: &str) -> bool {
     !name.is_empty() && !name.contains('/') && name != "." && name != ".."
@@ -544,8 +465,6 @@ mod tests {
         // The core's own namespace is dispatched before `route` is called, so
         // an internal word arriving here would be a caller bug. What this pins
         // is that the router has no arm claiming one: `_spawn` falls through to
-        // the launch arm exactly like any other unrecognised word, and it is
-        // `run` that keeps it from ever getting here.
         assert_eq!(
             route(&preamble(), &argv(&["_spawn", "/s/x", "helper"]), None),
             Route::Launch(argv(&["_spawn", "/s/x", "helper"]))

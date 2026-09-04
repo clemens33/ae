@@ -59,10 +59,6 @@ fn split_dest(dest: &Path) -> io::Result<(&Path, &str)> {
 
 /// Publish one helper link: symlink a temp beside the destination, then rename
 /// it over.
-///
-/// A symlink has no mode of its own, so the publish is one step shorter than
-/// the executable it replaced — and the guarantee is the same one: the
-/// destination is never a partially made artifact.
 fn link(dest: &Path, core: &Path) -> io::Result<()> {
     let (dir, name) = split_dest(dest)?;
     let temp = dir.join(format!(".{name}.tmp.{}", std::process::id()));

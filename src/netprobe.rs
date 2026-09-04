@@ -1,47 +1,4 @@
 //! `_net-probe <host> [--port <n>]` — can THIS binary's resolver answer?
-//!
-//! # Why a core subcommand exists for one `getaddrinfo`
-//!
-//! The Linux artifact is a **static musl** binary, and musl has no NSS: it does
-//! not consult `/etc/nsswitch.conf`, so host lookups behave differently than
-//! under glibc (AGENTS.md, "The linux target is musl"). That caveat was flagged
-//! at P4 and went LIVE with the Telegram bridge, which resolves
-//! `api.telegram.org` — and the check it owes could not run on the laptop,
-//! because there is no musl toolchain there. This is the instrument that pays
-//! it: the CI Linux leg runs the musl binary it just proved static against a
-//! real name, and requires an answer.
-//!
-//! Its authority is the pre-P5 coexistence design
-//! (a coexistence rule of the Rust rewrite, since retired with its notes), not a semantic-contract row: there
-//! is no row because there is no bash predecessor — nothing in the frozen script
-//! ever resolved a hostname. The output shape is quoted from that item verbatim:
-//! *"resolves `host:port` with `std::net::ToSocketAddrs`; prints `ok <n>` or
-//! `error: <class>`; exit 0/1; no TLS, no token."*
-//!
-//! # What it proves, and what it does not
-//!
-//! `ToSocketAddrs` for `(&str, u16)` parses the host as an IP LITERAL first and
-//! returns that address without ever consulting a resolver. So `_net-probe
-//! 127.0.0.1` answers `ok 1` on a machine with no DNS at all — it is not a
-//! lookup and must never be cited as one. Only a NAME exercises the path this
-//! instrument exists to measure, which is why the CI step names a real host.
-//!
-//! A green probe says the resolver answered with at least one address. It says
-//! nothing about reachability, TLS or the Telegram API: no connection is opened
-//! and no token is read. That is deliberate — an instrument that needed a
-//! credential could not run on a fork's CI, and one that dialled the host would
-//! confuse "cannot resolve" with "cannot connect", which are different bugs with
-//! different fixes.
-//!
-//! # Streams
-//!
-//! `ok <n>` is the asked-for answer and goes to stdout; `error: <class>` is a
-//! diagnostic and goes to stderr, under SC-022's rule that a machine reading the
-//! answer must never have to tell it apart from the complaint about it. The
-//! `error:` spelling is the design's, kept verbatim rather than reshaped into
-//! this crate's usual `ae: ` prefix: it is an instrument's output CLASS, which a
-//! CI step and a `doctor` check read, and paraphrasing a spec's token is a
-//! decision nobody asked for.
 
 use std::io::Write;
 use std::net::ToSocketAddrs as _;
@@ -49,24 +6,12 @@ use std::net::ToSocketAddrs as _;
 use crate::Result;
 
 /// The port a probe resolves for when none is given.
-///
-/// 443, because the question this instrument was built to answer is whether a
-/// static musl `ae` can resolve `api.telegram.org` before its bridge tries to
-/// talk HTTPS to it. The port takes no part in the lookup of a name — it is
-/// carried through so the printed authority is the one the caller meant.
 pub const DEFAULT_PORT: u16 = 443;
 
 /// What a probe that could not resolve exits with.
-///
-/// `1`, not `2`: the argv was fine, the world did not answer. SC-022 keeps the
-/// two apart so a caller can tell "you asked wrong" from "it went wrong".
 pub const EXIT_UNRESOLVED: u8 = 1;
 
 /// The result of one lookup, as a class rather than a message.
-///
-/// A CLASS, because the message a resolver produces for a failure is not
-/// portable: glibc, musl and macOS word the same failure differently, and a CI
-/// step that greps their prose is a step that breaks on a libc upgrade.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
     /// The resolver answered with this many addresses (never zero).
@@ -74,11 +19,6 @@ pub enum Outcome {
     /// The resolver returned an error.
     Unresolved,
     /// The resolver returned success and no addresses at all.
-    ///
-    /// Rare, and deliberately NOT folded into [`Outcome::Unresolved`]: an empty
-    /// success is a different fact about the machine than a refusal, and a
-    /// probe whose whole job is to report what the resolver did may not average
-    /// two answers into one.
     NoAddresses,
 }
 
@@ -148,11 +88,6 @@ pub fn classify(resolved: &std::io::Result<usize>) -> Outcome {
 }
 
 /// Resolve `host:port` and classify the answer.
-///
-/// The tuple form is used rather than a formatted `"host:port"` string on
-/// purpose: a host carrying a colon (an IPv6 literal typed without brackets, or
-/// a paste of `host:443`) would otherwise build an authority nobody meant, and
-/// the failure would be reported as the machine's rather than the caller's.
 #[must_use]
 pub fn probe(host: &str, port: u16) -> Outcome {
     classify(&(host, port).to_socket_addrs().map(Iterator::count))

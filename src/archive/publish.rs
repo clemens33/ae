@@ -5,46 +5,6 @@
 //! `_ar_publish`, then reads back the one line this prints — `target\tfiles\tbytes`
 //! — and reports "Archived …". `AE_CORE=` falls back to the frozen body. Plan,
 //! mint, purge and teardown stay in bash; this core only PUBLISHES.
-//!
-//! # What is reference and what is Rust-native
-//!
-//! The frozen `_ar_publish`/`_ar_stage_payload`/`_ar_validate_tree` are REFERENCE
-//! EVIDENCE for the externally meaningful surface — the payload file set, the
-//! `key=value` archive meta, the digest bytes, the `0700`/`0600` modes, and the
-//! `target\tfiles\tbytes` diagnostic a bash consumer reads. This module preserves
-//! those. It does NOT reproduce the frozen weaknesses; the P3.3 assignment is
-//! authoritative on the safety properties, and where they conflict with bash the
-//! safer Rust behaviour wins and the divergence is stated:
-//!
-//! * **Coherent locked snapshot.** meta, memo.tsv and events.jsonl are read
-//!   while holding their own `.lock` siblings — `state::acquire`, `flock(2)`, the
-//!   Bash-compatible lock the writers take — acquired in the FIXED order
-//!   `meta.lock -> memo.tsv.lock -> events.jsonl.lock` and held through the copy.
-//!   Current writers hold one at a time, so this adds no inversion. The caller's
-//!   lifecycle lock and a before/after fingerprint are defence in depth. Taking a
-//!   lock may CREATE its `.lock` file — that is lock infrastructure, not source
-//!   data; the live meta/memo/events/messages bytes are never written.
-//! * **Durable publication.** Every staged file is `fsync`ed, then the messages
-//!   and payload directories, then the payload is `rename`d onto the target, then
-//!   the archive root is `fsync`ed — so a crash after the rename cannot lose the
-//!   archive. The frozen writer syncs nothing.
-//! * **Classified-source refusal.** An existing non-regular meta/memo.tsv/
-//!   events.jsonl (symlink, FIFO, directory) is a NAMED `rc=1` refusal, never
-//!   followed — the P3.1/P3.2 preview rule. An absent optional memo/events is the
-//!   defined empty file. A DIRECT `messages/*.txt` that is a symlink or other
-//!   non-regular node is SKIPPED with a loud diagnostic (never followed, never
-//!   recursed); an eligible regular one that cannot be read REFUSES the whole
-//!   publish rather than archive a digest that references a body that is not
-//!   there.
-//! * **Atomic claim, standing on crash.** `mkdir` of `.publishing.<uuid>` is the
-//!   atomic primitive: it fails if another publisher holds it OR a previous run
-//!   crashed holding it, and this module NEVER guess-cleans someone else's claim —
-//!   a crash leaves it standing and loud. A failure THIS invocation handles
-//!   removes its OWN claim and leaves the source untouched.
-//!
-//! Nothing here deletes or mutates the live session: every write lands under the
-//! archive root, and the only session-directory writes are the `.lock` files the
-//! locks stand on.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -128,8 +88,6 @@ pub(crate) fn run(
     // Classified-source refusal, under the locks, BEFORE any read: an existing
     // non-regular core source (symlink, FIFO, directory) fails the whole publish
     // and is NEVER opened. This runs first precisely so a FIFO cannot block the
-    // read while three locks are held, and a symlinked source is never followed —
-    // the diagnostic name is read only after meta is a confirmed regular file.
     for file in ["meta", "memo.tsv", "events.jsonl"] {
         if super::nonregular_existing(&dir.join(file)) {
             writeln!(err, "archive: a non-regular {file} cannot be archived.")?;
@@ -140,8 +98,6 @@ pub(crate) fn run(
     // The coherent read, now that every source is a confirmed regular file. An
     // ABSENT optional memo/events is the defined empty content; an existing-but-
     // unreadable regular source REFUSES — an immutable ledger must never publish
-    // with its evidence silently dropped. Fingerprint before/after as defence in
-    // depth against a writer that somehow bypassed the locks (it cannot, held).
     let before = fingerprint(dir);
     let (meta_bytes, memo_bytes, event_bytes) = match read_sources(dir) {
         Ok(triple) => triple,
@@ -370,9 +326,6 @@ fn stage_and_validate(
     // Messages: NEVER follow a symlinked or non-directory messages/ root. A real
     // directory is required to enumerate; anything else is skipped loud (the
     // archive gets an empty messages/, and any referenced body then renders
-    // 'Payload: unavailable' from the staged set). Within a real directory the
-    // per-entry skip/refuse rules apply, and the directory is fingerprinted
-    // around the copy so a mid-publish change refuses rather than mix generations.
     let messages_src = dir.join("messages");
     let messages_real = matches!(symlink_meta(&messages_src), Ok(m) if m.is_dir());
     if !messages_real && exists(&messages_src) {
@@ -598,18 +551,6 @@ fn read_sources(dir: &Path) -> Result<CoreBytes, Vec<String>> {
 /// of the CURRENT live session at `dir` — the gate compact's retry crosses before reusing
 /// an existing archive as its recovery point instead of publishing (publish REFUSES over
 /// an existing archive; it is immutable).
-///
-/// It holds the SAME source locks [`run`] holds, so the live read is coherent, and compares
-/// the conversation LEDGERS that accumulate — `memo.tsv` and `events.jsonl` byte-for-byte
-/// (both archived verbatim), and the `messages/` bodies by CONTENT (a fingerprint uses
-/// mtime, which a copy changes, so it cannot compare across locations). meta identity is
-/// proven separately, by compact's `revalidate`. The reason the comparison matters: a
-/// session that ran on after a failed teardown would have GROWN these ledgers, and tearing
-/// it down against the stale archive would lose that growth.
-///
-/// `Ok(true)` equivalent — safe to reuse the archive and tear the live session down;
-/// `Ok(false)` DRIFT — refuse teardown and retain both; `Err` the existing tree is not a
-/// valid archive for `aid`, or the coherent live read failed.
 pub(crate) fn live_matches_existing_archive(
     dir: &Path,
     archive_path: &Path,
@@ -680,7 +621,6 @@ fn stage_messages(src: &Path, dst: &Path, err: &mut impl Write) -> Result<(), St
         // The caller reaches here only for a REAL directory. A genuinely absent
         // one (NotFound) is the empty session — a classified absence. Any other
         // failure to enumerate it (an unreadable dir) is UNKNOWN LOSS: refuse
-        // rather than publish an archive that may be missing message bodies.
         Err(why) if why.kind() == io::ErrorKind::NotFound => return Ok(()),
         Err(why) => {
             return Err(format!(

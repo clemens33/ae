@@ -1,35 +1,6 @@
 //! `ae doctor` — the environment report, plus the two internal entries beside
 //! it: `_check-deps` (the launch prelude's hard-dependency gate) and
 //! `_shims-render` (the session helper set, republished).
-//!
-//! # What was ported, and what was dropped
-//!
-//! The frozen `cmd_doctor` reported on the BASH runtime as much as on ae: a
-//! `bash >= 4.0` row for the `declare -f` helper bodies, `flock`/`timeout` rows
-//! for the optional coreutils the glue degraded without, and a `userland` row
-//! naming which portability shim was active. Under the B move none of those are
-//! ae's dependencies any more — a session helper is a one-line `exec` that runs
-//! under bash 3.2, locking is the core's own `flock(2)`, and there is no shim
-//! layer to name. They are dropped rather than reported as permanently OK.
-//!
-//! Slice Z3 took the last one: `ae-entry` is deleted, so there is no
-//! interpreter in the product at all and nothing left to report a version of.
-//! What arrived in its place is the row that matters now — whether the
-//! published core is still READ-ONLY, because every session helper is a symlink
-//! to it and a writable target is one redirection away from being truncated.
-//!
-//! What is kept is what the report is FOR: the two hard dependencies (`tmux`,
-//! `git`), whether the config parses and names a startup roster whose profiles
-//! resolve to real executables, whether the state root's sessions are coherent,
-//! and whether each session's recorded core and glue agree with the binary
-//! answering right now. The pending-session-id recovery the frozen refresh ran
-//! is dropped outright: the launch captures ids itself.
-//!
-//! # The rows are facts first, text second
-//!
-//! [`gather`] performs every read and answers with [`Facts`]; [`report`] is a
-//! pure function of that value. A row that would need a second look at the
-//! world to render is a row that can disagree with the one above it.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -209,11 +180,6 @@ pub struct Facts {
     pub core_writable: Option<bool>,
     /// Whether this binary was PUBLISHED by the installer — the shape that
     /// makes a writable core a deviation rather than the normal state.
-    ///
-    /// A checkout build is writable by construction: `cargo build` rewrites it.
-    /// Warning about that on every run would train an operator to skip the row
-    /// that matters, so the deviation is only claimed where there is a
-    /// published mode to deviate FROM.
     pub core_published: bool,
     /// `tmux`, resolved on `PATH`.
     pub tmux: Option<PathBuf>,
@@ -335,8 +301,6 @@ fn session_rows(facts: &Facts, out: &mut Report) {
     // Orphans: state on disk with no running session. They accumulate when a
     // wind-down declares done but never runs `ae end`, and every
     // running-scoped sensor is structurally blind to them. WARN, not FAIL: a
-    // deliberately stopped session is legitimately here too, and doctor cannot
-    // read intent.
     let orphans: Vec<&str> = facts
         .sessions
         .iter()
@@ -365,7 +329,6 @@ fn session_rows(facts: &Facts, out: &mut Report) {
     // The core is REQUIRED, so a session with no usable pin refuses every
     // core-owned command — `end` included, which leaves it unendable. WARN
     // rather than FAIL: `doctor --refresh` repairs it and the rest of the
-    // install is fine.
     let unbound: Vec<&str> = facts
         .sessions
         .iter()
@@ -393,8 +356,6 @@ fn session_rows(facts: &Facts, out: &mut Report) {
     // The pin is a PAIR, and a helper that finds a core whose version is not
     // the pinned one refuses it. A session pinned to a different version than
     // the binary answering here is therefore reported by name — this is the
-    // "core and glue agree" check, read off the only place either version is
-    // recorded.
     let drifted: Vec<String> = facts
         .sessions
         .iter()
@@ -437,9 +398,6 @@ fn blank(value: &str) -> &str {
 
 /// The executable word of a launch command — the frozen `doctor_extract_exec`,
 /// which skips a leading `env` and any `VAR=val` prefix.
-///
-/// Delegates to [`crate::launch_cmd::split_binary`] so the report and the
-/// launch cannot disagree about which word is the binary.
 #[must_use]
 pub fn executable_of(command: &str) -> Option<String> {
     crate::launch_cmd::split_binary(command).map(|split| split.binary)
@@ -447,12 +405,6 @@ pub fn executable_of(command: &str) -> Option<String> {
 
 /// Resolve `program` the way `command -v` does: an absolute or relative name
 /// with a `/` is taken as given, anything else is looked up along `PATH`.
-///
-/// # The door
-///
-/// This is the one place this module reads the world outside ae's own state,
-/// and it reads exactly two things: the `PATH` variable, and whether each
-/// candidate is an executable file. Registered in the phase-3 door inventory.
 #[must_use]
 pub fn resolve_on_path(program: &str) -> Option<PathBuf> {
     if program.is_empty() {
@@ -475,9 +427,6 @@ pub fn resolve_on_path(program: &str) -> Option<PathBuf> {
 }
 
 /// Whether anyone may WRITE `path` — `None` when it cannot be classified.
-///
-/// Any write bit, not the caller's: the published mode is 0555, so a set bit is
-/// a deviation from what `install` wrote whoever it belongs to.
 fn is_writable(path: &Path) -> Option<bool> {
     use std::os::unix::fs::PermissionsExt as _;
     #[allow(
@@ -502,10 +451,6 @@ fn is_executable_file(path: &Path) -> bool {
 }
 
 /// Read every fact the report needs.
-///
-/// `global` and `local` are the config files the CALLER selected — the glue
-/// hands them in exactly as it does for a launch, because the core does not
-/// read the environment to find them.
 #[must_use]
 pub fn gather(root: &Path, global: Option<&Path>, local: Option<&Path>) -> Facts {
     let roots = crate::inventory::Roots::under(root);
@@ -588,7 +533,7 @@ fn session_facts(root: &Path) -> Vec<SessionFacts> {
     out
 }
 
-/// Every durable session directory the state root holds, both SC-400d layouts,
+/// Every durable session directory the state root holds, both layouts,
 /// first record per name.
 fn discovered(root: &Path) -> Vec<(String, PathBuf)> {
     let scan = crate::inventory::durable_records(&crate::inventory::Roots::under(root));
@@ -744,7 +689,6 @@ fn refresh_one(name: &str, dir: &Path, core: &Path, global: Option<&Path>, docum
     // The pin is rebound to the binary DOING the refresh. The frozen
     // `_ae_core_bind` re-evaluated the operator's input; the core answering here
     // IS a usable core, which is the only thing the pin has to establish, and
-    // pinning what actually ran cannot pin something unusable.
     for (key, new) in [
         ("ae_core", core.display().to_string()),
         ("ae_core_version", crate::VERSION.to_owned()),
@@ -823,10 +767,6 @@ fn or_dot(value: String) -> String {
 
 /// `_check-deps` — the launch prelude's gate.
 ///
-/// tmux is ae's one PATH dependency at launch, and its absence is fatal before
-/// any side effect. `--bash-major` went with `ae-entry`: ae ships no bash, so
-/// there is no interpreter version to refuse on and the flag has no supplier.
-///
 /// # Errors
 ///
 /// Propagates a write failure on the caller's streams.
@@ -844,10 +784,6 @@ pub fn check_deps(tail: &[String], err: &mut impl Write) -> crate::Result<u8> {
 
 /// `_shims-render <session-dir>` — republish one session's helper set, bound to
 /// the binary answering.
-///
-/// The whole helper set, not a diff: a shim is a one-line `exec`, so rewriting
-/// all of them costs nothing and a partial set is a session with a helper
-/// missing.
 ///
 /// # Errors
 ///

@@ -17,21 +17,6 @@
 //! | `AE_NO_AUTOSTART` | start neither companion | both |
 //! | `TMUX` | is this shell in a pane, and which server | both |
 //! | `TMUX_PANE` | which pane, for `stop` and `watchdog` | both (at its own site) |
-//!
-//! # The INSTALLED shape closes four of them
-//!
-//! An installed `ae` keeps its state in `$HOME/.ae` and nothing an inherited
-//! variable says can move it. The wrapper enforced that by UNSETTING the four;
-//! the core cannot — `std::env::remove_var` is `unsafe` under edition 2024 and
-//! `unsafe_code = "forbid"` closes that route — so it enforces it by NOT
-//! READING them, which is the same contract with a smaller blast radius: a
-//! child process inherits whatever it inherited, and every `ae` in the tree
-//! ignores the four for the same reason.
-//!
-//! One aggregated notice names whichever of them was set and would have changed
-//! behaviour ([`ignored`]). It is the ENTRY's, printed once for what a human
-//! typed at `ae` — never on the helper path, where an agent's `send` would turn
-//! one stale export into a line of noise in every pane.
 
 use std::path::{Path, PathBuf};
 
@@ -39,9 +24,6 @@ use crate::inventory::ServerId;
 use crate::shape::Shape;
 
 /// `$HOME`, or `None` when it is unset or empty.
-///
-/// The one variable neither shape can do without: the INSTALLED shape derives
-/// its whole state root from it, and the CHECKOUT shape falls back to it.
 #[must_use]
 pub fn home() -> Option<PathBuf> {
     #[allow(
@@ -53,13 +35,6 @@ pub fn home() -> Option<PathBuf> {
 }
 
 /// The caller's working directory, as the caller spells it.
-///
-/// `$PWD` is the LOGICAL path — the one that keeps a symlinked directory
-/// spelled the way the human typed it, which matters on macOS where `/tmp` is
-/// `/private/tmp` — and it is what the wrapper passed as `--cwd`. It is also an
-/// ordinary variable that a program which `chdir`s without updating it will
-/// leave stale, so it is honoured only when it is absolute AND resolves to the
-/// directory this process is actually in. Otherwise the physical path answers.
 #[must_use]
 pub fn cwd() -> PathBuf {
     #[allow(
@@ -90,19 +65,7 @@ fn same_directory(left: &Path, right: &Path) -> bool {
     }
 }
 
-/// Where this invocation's state lives — **SC-404**'s derivation, shape-aware.
-///
-/// PUBLISHED: `<root>/.ae`, taken from the binary's own location, so an install
-/// is self-locating and an inherited `AE_HOME` is not consulted at all. That
-/// covers the DISPLACED shape too: it is refused at the gate before it reaches
-/// here, and a path that somehow did must still use the position rather than
-/// the `$HOME` the refusal is about. CHECKOUT: `AE_HOME` if it names something,
-/// else `<HOME>/.ae`.
-///
-/// An empty `AE_HOME` is treated as unset rather than as the filesystem root:
-/// deriving `/sessions` from a variable someone exported blank is a worse
-/// answer than saying the root cannot be derived. A relative one is used as
-/// given — normalising a path the operator supplied is a decision no row makes.
+/// Where this invocation's state lives — derived, shape-aware.
 #[must_use]
 pub fn state_root(shape: &Shape) -> Option<PathBuf> {
     if let Some(home) = shape.published_home() {
@@ -123,9 +86,6 @@ pub fn ae_home() -> Option<PathBuf> {
 }
 
 /// The global config this invocation reads.
-///
-/// INSTALLED: `<home>/config`, full stop. CHECKOUT: `CONFIG_FILE` if it names
-/// something, else `<home>/config`.
 #[must_use]
 pub fn config_file(shape: &Shape, root: &Path) -> PathBuf {
     if shape.honours_environment() {
@@ -142,10 +102,6 @@ pub fn config_file(shape: &Shape, root: &Path) -> PathBuf {
 }
 
 /// The project-local config override at `<cwd>/.ae/config`, when there is one.
-///
-/// Resolved against the CALLER's directory and handed on absolute: the launch
-/// may run from somewhere else entirely, so a relative override would name a
-/// different file by the time it is read.
 #[must_use]
 pub fn local_config(cwd: &Path) -> Option<PathBuf> {
     let path = cwd.join(".ae").join("config");
@@ -158,9 +114,6 @@ pub fn local_config(cwd: &Path) -> Option<PathBuf> {
 }
 
 /// `AE_NO_AUTOSTART=1`: start NEITHER companion.
-///
-/// Exactly `1`, as the wrapper tested it — a knob that fired on any nonempty
-/// value would make `AE_NO_AUTOSTART=0` mean its opposite.
 #[must_use]
 pub fn no_autostart() -> bool {
     #[allow(
@@ -173,12 +126,6 @@ pub fn no_autostart() -> bool {
 
 /// `AE_VERSION` — the target pin, and the ONE word that reads it is
 /// [`crate::upgrade`].
-///
-/// Scoped deliberately. [`crate::transport`]'s spawn door removes it from every
-/// child, so an operator pin cannot freeze into the tmux server a launch creates
-/// and silently pin an upgrade months later. It is a door rather than a
-/// `std::env::var` at the use site so the whole environment surface stays
-/// enumerable in one file.
 #[must_use]
 pub fn target_version() -> Option<String> {
     #[allow(
@@ -191,11 +138,6 @@ pub fn target_version() -> Option<String> {
 }
 
 /// `$TMUX`, or `None` when unset or empty.
-///
-/// Two different questions read it and they are not the same question: whether
-/// this shell is a CLIENT of a pane ([`inside_tmux`], which needs proof), and
-/// which SERVER spawned it ([`resolve_launch_server`]'s last resort, where an
-/// inherited value still names the right server).
 #[must_use]
 pub fn tmux_env() -> Option<String> {
     #[allow(
@@ -208,9 +150,6 @@ pub fn tmux_env() -> Option<String> {
 }
 
 /// `$TMUX_PANE` — the pane THIS process sits in, or `None`.
-///
-/// tmux sets it in every pane's environment. Two words consume it (`stop` and
-/// `watchdog`), both to answer "is the target the session I am running in".
 #[must_use]
 pub fn calling_pane_id() -> Option<String> {
     #[allow(
@@ -233,20 +172,6 @@ pub struct Declared {
 }
 
 /// The declared server pair, or `None` when NEITHER variable is set.
-///
-/// **SET IS THE TEST, NOT NONEMPTY.** `AE_TMUX_SERVER_KIND=ambiguous
-/// AE_TMUX_SERVER=` is the shape the socket probe mints for a relative path it
-/// could not prove, and a nonempty test read that set-empty half as an absent
-/// one: the pair was dropped and the launch proceeded on the AMBIENT server —
-/// the exact outcome `ambiguous` exists to prevent. EITHER variable being set
-/// resolves the pair.
-///
-/// A kind that IS set crosses verbatim; only an UNSET kind is typed from the
-/// value's shape. Re-typing an `ambiguous` from the value would turn a REFUSAL
-/// minted by the one probe that could tell into a confident answer derived from
-/// the very string that probe declined to trust.
-///
-/// The INSTALLED shape does not read the pair at all.
 #[must_use]
 pub fn declared_server(shape: &Shape) -> Option<Declared> {
     if !shape.honours_environment() {
@@ -276,13 +201,6 @@ pub fn declared_server(shape: &Shape) -> Option<Declared> {
 }
 
 /// Which server the two PROBES may ask — the wrapper's `tmux` shim, as a value.
-///
-/// `None` is the refusing shim: a declared pair that is `ambiguous` or that
-/// cannot be routed must NOT leave the ambient server in place. That was a
-/// shipped bug — no shim was installed, the socket probe asked the AMBIENT
-/// server and got a confident answer, and a broken re-export landed a session
-/// on a server nobody asked for. The pair still crosses to the launch verbatim,
-/// where the core says exactly what is wrong with it.
 #[must_use]
 pub fn probe_target(declared: Option<&Declared>) -> Option<ServerId> {
     let Some(declared) = declared else {
@@ -296,16 +214,6 @@ pub fn probe_target(declared: Option<&Declared>) -> Option<ServerId> {
 
 /// Where a launch ACTUALLY lands, as the typed pair `(kind, value)` — frozen's
 /// `resolve_launch_tmux_server`, whole. Both empty means unresolved.
-///
-/// The core RECORDS the pair it is handed rather than asking tmux which server
-/// it is on later, so an unresolved value would land in meta verbatim and every
-/// exact-server consumer would read it as "the default server" while the
-/// session lived somewhere else.
-///
-/// Ask tmux ITSELF for `#{socket_path}`; a RELATIVE answer is proven by a pid
-/// round trip (a `readlink` in the caller's cwd once found a same-named decoy)
-/// and is `ambiguous` when it cannot be proven, so the core fails closed rather
-/// than guessing.
 #[must_use]
 pub fn resolve_launch_server(declared: Option<&Declared>) -> (String, String) {
     if let Some(server) = probe_target(declared)
@@ -319,8 +227,6 @@ pub fn resolve_launch_server(declared: Option<&Declared>) -> (String, String) {
     // DELIBERATELY a bare `$TMUX` read, unlike the client-semantics probe: this
     // is the SOCKET PATH, not our client status. A `$TMUX` inherited by a GUI
     // terminal still names the very server that spawned it, which is the right
-    // server to talk to; the stale-client test would discard a correct answer
-    // for being second-hand.
     match tmux_env() {
         Some(marker) => (
             "socket".to_owned(),
@@ -331,11 +237,6 @@ pub fn resolve_launch_server(declared: Option<&Declared>) -> (String, String) {
 }
 
 /// Turn a server's own `#{socket_path}` answer into the recorded pair.
-///
-/// An absolute path is the answer. A RELATIVE one is only trustworthy if the
-/// path resolved from this process's working directory reaches the SAME server,
-/// which identical pids prove; anything else is `ambiguous`, carrying the
-/// unproven text so the refusal can name it.
 fn prove_socket(server: &ServerId, socket: String) -> (String, String) {
     if Path::new(&socket).is_absolute() {
         return ("socket".to_owned(), socket);
@@ -355,17 +256,6 @@ fn prove_socket(server: &ServerId, socket: String) -> (String, String) {
 
 /// Whether this invocation is really inside a tmux pane — frozen's
 /// `_ae_inside_tmux`, and NOT a bare `$TMUX` test.
-///
-/// `$TMUX` is inherited, so a shell that is not a pane can carry one; a GUI
-/// terminal launched from inside a pane hands it to every tab it opens
-/// (observed live). ae then takes the inside-tmux branch, and `ae <name>` runs
-/// `switch-client` — which moves the ORIGINAL pane's view somewhere else and
-/// never attaches the terminal the human is looking at.
-///
-/// POSITIVE EVIDENCE ONLY. When the question is unanswerable — no controlling
-/// tty, tmux unreachable, an empty pane list, or a `server` the probes may not
-/// ask — the answer is TRUE and the historical behaviour stands. This guard
-/// catches a PROVEN mismatch; it does not re-litigate every ambiguous case.
 ///
 /// # Errors
 ///
@@ -398,14 +288,6 @@ pub fn inside_tmux(
 
 /// The inherited variables an INSTALLED ae ignores, `NAME=value` each, in a
 /// fixed order — the wrapper's one aggregated notice, ported.
-///
-/// A variable is named only when it was SET **and** would have changed
-/// behaviour: `AE_HOME` and `CONFIG_FILE` have defaults an installed run agrees
-/// with, so a value equal to the default is not worth a line. The server pair
-/// has no default, so SET is the whole test — the same rule
-/// [`declared_server`] applies to the same two variables.
-///
-/// Empty for a CHECKOUT, which honours all four.
 #[must_use]
 pub fn ignored(shape: &Shape) -> Vec<String> {
     let Some(home) = shape.published_home() else {
@@ -437,26 +319,11 @@ pub fn ignored(shape: &Shape) -> Vec<String> {
 }
 
 /// Whether two paths name the same PLACE, not merely the same text.
-///
-/// The shape is positional and so is this test. `<home>` is derived from a
-/// resolved `current_exe()`, while an inherited `AE_HOME` is whatever the
-/// caller typed — and one directory reached by two names is ordinary, since
-/// `/tmp` and `/var` are `/private/...` on macOS. Comparing the spellings
-/// would report a value as IGNORED while it named the very directory in use,
-/// which is the one thing this notice must never say. A path that will not
-/// resolve falls back to its own text: somewhere that does not exist is not
-/// the state root.
 fn same_place(left: &Path, right: &Path) -> bool {
     left == right || resolved_place(left) == resolved_place(right)
 }
 
 /// `path` with every link on the way to it resolved.
-///
-/// The path itself NEED NOT EXIST: `CONFIG_FILE` names a file an install
-/// writes on demand, so resolving only whole paths would make a missing config
-/// compare by spelling and put a spurious line in the notice. The deepest
-/// thing that does exist is the directory holding it, so that is what is
-/// resolved and the name is kept as written.
 fn resolved_place(path: &Path) -> PathBuf {
     #[allow(
         clippy::disallowed_methods,

@@ -5,28 +5,11 @@
 //! through a symlink named `send`, `ask`, `watchdog` and so on. The dispatch
 //! that used to be the shim's `exec` line is this module: the core reads the
 //! BASENAME of `argv[0]`, and derives the session directory from its dirname.
-//!
-//! # Why `argv[0]` and not `current_exe()`
-//!
-//! `current_exe()` resolves the link and answers `.../ae-core` for every
-//! helper — the one fact this dispatch must not lose. `std::env::args().next()`
-//! is the path the caller actually invoked, which is what carries both the
-//! helper's identity and its session.
-//!
-//! # Why a bare name is refused
-//!
-//! A helper with no directory in `argv[0]` — reached because someone put a
-//! session directory on `PATH` — has no session to derive. The frozen shim
-//! derived it from `$0` too and would have failed the same way; refusing with
-//! the rule is the difference between a diagnosis and a puzzle.
 
 use std::path::{Component, Path, PathBuf};
 
 /// One session helper: the file name, the core entry it runs, and the words it
 /// prepends to the caller's argv.
-///
-/// `prefix` is what the frozen `mark-done` shim spelled as a literal word
-/// between the entry and `"$@"`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Helper {
     /// The file name in the session directory.
@@ -39,12 +22,6 @@ pub struct Helper {
 
 /// THE helper set — the names a session directory holds, and the only names
 /// this dispatch answers to.
-///
-/// The aliases are links like every other name: `mark-done` is `state done`,
-/// `peak` is the common typo for `peek`, and `loop` is the deprecated spelling
-/// of `watchdog`. The bash era gave each alias an `exec` to its sibling so the
-/// directory derivation had one home; a link has no derivation of its own to
-/// duplicate, so each alias simply names its entry.
 pub const HELPERS: [Helper; 21] = [
     Helper {
         name: "send",
@@ -177,10 +154,6 @@ pub enum Invocation {
 
 /// Classify `program` (`argv[0]`) against the helper set, resolving a relative
 /// directory against `cwd`.
-///
-/// The directory is normalised LEXICALLY, never canonicalised: a session
-/// directory that is a symlink is refused elsewhere, and resolving links here
-/// would answer about the target rather than about the path the caller used.
 #[must_use]
 pub fn classify(program: &str, cwd: &Path) -> Invocation {
     let Some(base) = Path::new(program).file_name().and_then(|n| n.to_str()) else {

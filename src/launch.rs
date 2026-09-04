@@ -6,27 +6,6 @@
 //! `_emit_launch_script` and `write_launch_script` — the composition half of a
 //! spawn (and, when the launch move lands, of a launch). Every decision below
 //! is the frozen one; the reasoning is kept at the site that needs it.
-//!
-//! # Two facts are TRANSPORTED, never re-parsed
-//!
-//! By the time a command reaches [`build_launch_command`] it carries kilobytes
-//! of injected agent-facing prose — which contains the words `resume`,
-//! `--session-id` and every flag name the docs mention. So:
-//!
-//! * the resume id is passed in, never searched for. The frozen bug: ae's own
-//!   codex context says "Enable session resume by running:", and a
-//!   `codex*resume*` glob matched every FRESH command.
-//! * the injection boundary is passed in as the PRE-INJECTION command, which is
-//!   a literal prefix of the built one. String surgery may only ever touch that
-//!   head; the tail is copied, never edited.
-//!
-//! # Shell quoting
-//!
-//! The frozen builder quotes with bash's `printf %q`. This one emits the POSIX
-//! single-quoted form instead — same guarantee (every byte literal to the
-//! shell that runs it), different bytes for inputs `%q` would leave bare. The
-//! consumers are `bash -lc <cmd>` and `[ -e <path> ]` inside a generated
-//! script, both of which read a single-quoted word identically.
 
 use std::path::{Path, PathBuf};
 
@@ -65,10 +44,6 @@ pub const fn supports_launch_id(tool: ToolKind) -> bool {
 }
 
 /// Does this tool take an ae-generated session id at LAUNCH?
-///
-/// Claude and grok do, so their conversation id is known upfront and resume is
-/// exact from the first cycle. Everything else is `pending` until a capture
-/// answers — the frozen `resolve_agent_session_id`.
 #[must_use]
 pub const fn takes_launch_session_id(tool: ToolKind) -> bool {
     matches!(tool, ToolKind::Claude | ToolKind::Grok)
@@ -79,14 +54,6 @@ pub const PENDING: &str = "pending";
 
 /// A fresh RFC 4122 version-4 UUID, lowercase and hyphenated — the frozen
 /// `gen_uuid`.
-///
-/// The frozen helper shells out to `uuidgen` (normalising macOS's uppercase)
-/// or reads `/proc/sys/kernel/random/uuid`; neither is available to a core that
-/// must run identically on both platforms without a subprocess. The bits come
-/// from the same source the request-id suffix uses — `RandomState`, seeded per
-/// process by the OS — mixed with the clock, which is the quality this id
-/// needs: it NAMES a conversation, and a collision costs a resumed transcript,
-/// not a security property.
 #[must_use]
 pub fn generate_uuid() -> String {
     use std::hash::{BuildHasher, RandomState};
@@ -120,10 +87,6 @@ fn words(cmd: &str) -> Vec<&str> {
 
 /// Strip `--session-id`, `--resume` and `--continue` — the frozen
 /// `strip_session_flags`, whole-token so `--continue-on-error` survives.
-///
-/// A value-taking flag consumes the next word only when there IS one: the
-/// frozen `[= ][^ ]*` needs the `=` or the space to be there at all, so a
-/// trailing `--resume` with nothing after it is left alone.
 #[must_use]
 pub fn strip_session_flags(cmd: &str) -> String {
     let words = words(cmd);
@@ -148,10 +111,6 @@ pub fn strip_session_flags(cmd: &str) -> String {
 }
 
 /// Strip grok's session surface — the frozen `strip_grok_session_flags`.
-///
-/// Grok's `-r/--resume` takes an OPTIONAL value, which is the trap the generic
-/// stripper cannot handle: eat the next token only when it is not itself a
-/// flag, so `--resume --effort high` keeps `--effort`.
 #[must_use]
 pub fn strip_grok_session_flags(cmd: &str) -> String {
     let words = words(cmd);
@@ -252,10 +211,6 @@ pub fn strip_agy_session_flags(cmd: &str) -> String {
 
 /// Put ae's generated session id on the command — the frozen
 /// `inject_session_id`.
-///
-/// `pending` is no id at all: the flags are stripped and nothing is added, so
-/// a capture-tool launch is clean. The tool is read with THE classifier, so an
-/// env-prefixed binary or an absolute path is still seen.
 #[must_use]
 pub fn inject_session_id(cmd: &str, session_id: &str) -> String {
     let session_id = if session_id == PENDING {
@@ -301,10 +256,6 @@ pub struct Injected {
 
 /// Inject the rendered context on the channel this tool actually has — the
 /// frozen `inject_ae_context`.
-///
-/// `launch_id` is the capture token already recorded for the slot (empty when
-/// the tool needs none); `meta_dir` and `slot` are what codex's `_register-sid`
-/// instruction names and where opencode's config files land.
 #[must_use]
 pub fn inject_ae_context(
     cmd: &str,
@@ -423,10 +374,6 @@ const WAIT_SUFFIX: &str =
 /// Publish opencode's context pair and return the config path — the frozen
 /// `_opencode_context_files`.
 ///
-/// Both files are published temp + mode + rename at 0600, for the reason the
-/// data chokepoint exists: a writer that dies mid-write must leave the previous
-/// artifact whole rather than a truncated one in place.
-///
 /// # Errors
 ///
 /// The file that could not be published, named.
@@ -488,11 +435,6 @@ fn publish(dest: &Path, bytes: &[u8], mode: u32) -> Result<(), String> {
 
 /// The first USER message a tool needs, for tools whose context does not ride
 /// a system-prompt channel — the frozen `initial_prompt_for_cmd`.
-///
-/// Only codex has one: it needs a user turn to act on `developer_instructions`.
-/// claude, gemini and grok take their context by flag or argv; opencode's
-/// arrives as system-level `instructions`, so there is nothing to paste and
-/// nothing to wait for.
 #[must_use]
 pub const fn initial_prompt_for(tool: ToolKind) -> &'static str {
     match tool {
@@ -504,10 +446,6 @@ pub const fn initial_prompt_for(tool: ToolKind) -> &'static str {
 // ---- the resume predicate -------------------------------------------------
 
 /// Is `id` usable in a command the PANE will run?
-///
-/// Conservative on purpose: the value is interpolated into a shell command, so
-/// anything outside the charset is treated as "no id" — which costs a
-/// conversation, never a pane.
 #[must_use]
 pub fn id_probeable(id: &str) -> bool {
     !id.is_empty()
@@ -521,13 +459,6 @@ pub fn id_probeable(id: &str) -> bool {
 
 /// The command a pane runs to start its agent — the frozen
 /// `build_launch_command`, minus the shell it no longer has.
-///
-/// The frozen builder could return a shell `if … then exec … else exec … fi`:
-/// the resume PROBE was a shell test, so the choice between a resume form and
-/// its fallback had to be made in the pane. Slice Z2 moved that decision into
-/// [`crate::run`], where it is two filesystem questions, so this builder now
-/// returns ONE command in every case — and both callers hand it a form that has
-/// already been chosen.
 #[must_use]
 pub fn build_launch_command(cmd: &str, prompt: &str) -> String {
     // opencode's resume rides its own flag surface and it has no inline first

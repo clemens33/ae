@@ -20,14 +20,6 @@
 //!   source.
 //! * **(e) the boundary** — the four stdout lines, then the exec plan for the
 //!   relaunch.
-//!
-//! # The roster is FROZEN, and the relaunch must use the frozen one
-//!
-//! The child is launched from the roster the freeze resolved and the human was
-//! SHOWN, never from a config re-read after the boundary: a config rewritten
-//! under the window would start different agents than the ones authorised.
-//! [`ExecPlan`] is how that frozen answer travels to the relaunch, alongside
-//! the `--from` proof the child re-proves before publishing its own meta.
 
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -113,8 +105,6 @@ pub(crate) fn run(
     // The server the SOURCE ran on, read HERE — while its meta is still on
     // disk. The teardown removes the session directory before the boundary, so
     // a read after it finds nothing and the child would land on the caller's
-    // ambient server, which is a different server whenever the fleet runs on a
-    // named socket.
     let (child_server_kind, child_server_value) = recorded_server(&dir);
 
     // STDERR: compact's STDOUT is a contract — the four boundary lines, in
@@ -342,7 +332,6 @@ pub(crate) fn run(
     // ── phase (e): the boundary ─────────────────────────────────────────────
     // THE ARCHIVE IS PUBLISHED AND THE SOURCE IS GONE. Everything from here is
     // unrecoverable-by-rollback, so the recovery line is emitted BEFORE the
-    // relaunch is handed off.
     let (plan_name, plan_uuid) = plan_line
         .split_once('\u{1f}')
         .unwrap_or((frozen.name.as_str(), frozen.uuid.as_str()));
@@ -392,8 +381,6 @@ pub(crate) fn run(
     // The four stdout contract lines, in order, and nothing else. A CLOSED
     // stdout (`ae compact ... | true`) must not abort here: the archive is
     // published and the source is gone, so the relaunch below and the stderr
-    // route back are all that is left — the bash trapped SIGPIPE for exactly
-    // this (glue cut 2 finding).
     epipe_ok(writeln!(out, "Archived {}", frozen.uuid))?;
     epipe_ok(writeln!(out, "Archive: {}", frozen.archive))?;
     epipe_ok(writeln!(out, "Digest: {}/digest.md", frozen.archive))?;
@@ -412,8 +399,6 @@ pub(crate) fn run(
     // THE RELAUNCH, in this process. `--exec-plan` is the one shape that does
     // NOT relaunch: a caller that asked for the plan file has said it will
     // drive the child itself, and starting one here as well would give it two.
-    // Everything the child needs travels as the plan — the frozen roster
-    // included — so there is no config re-read and no exec through the glue.
     if args.exec_plan.is_some() {
         return Ok(0);
     }
@@ -729,7 +714,6 @@ fn read_reply() -> Option<String> {
     // A LINE, not to EOF: a human at a terminal answers and presses Enter, and
     // reading to EOF there would block forever waiting for a ^D they were never
     // asked for. An empty read and a failed read are the same answer — nobody
-    // replied.
     match std::io::stdin().read_line(&mut buffer) {
         Ok(read) if read > 0 => Some(buffer.trim_start().to_owned()),
         _ => None,

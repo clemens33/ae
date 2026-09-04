@@ -5,21 +5,6 @@
 //! `.lifecycle.<name>.lock` filename, and the text in the status bar. The
 //! rename moves all five or none, which is why every check that reads state it
 //! then mutates happens INSIDE the lock rather than in front of it.
-//!
-//! # Ported, with the frozen reasoning
-//!
-//! * **The TARGET takes the grammar, the SOURCE does not.** Renaming is the
-//!   migration path out of a pre-grammar name, so refusing the old name would
-//!   strand exactly the session that needs this command.
-//! * **Two locks, in name-sorted order** — the standard deadlock avoidance, so
-//!   two concurrent renames over the same pair acquire them in the same
-//!   sequence and one waits instead of both holding half.
-//! * **The window is renamed unless the layout is `lead-pair`**, decided by the
-//!   layout FACT in meta and never by comparing the window name to the session
-//!   name: a session literally called `lead` would fool a name check.
-//! * **Both names are path-checked**, independently of the grammar: a
-//!   grammar-valid symlink satisfies every name rule, and a move THROUGH one
-//!   relocates whatever it points at.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -38,10 +23,6 @@ pub const USAGE_INSIDE: &str =
     "(Run inside an ae tmux session to rename it without specifying the old name.)";
 
 /// `rename [old] <new>` — the whole operation.
-///
-/// With one operand the old name is the session the caller is sitting in, read
-/// from the ambient tmux server and required to be a real session directory —
-/// the frozen `detect_current_session`.
 ///
 /// # Errors
 ///
@@ -135,7 +116,6 @@ fn locked(
     // The server is the OLD session's own recorded one. Asking the ambient
     // server would report a session on a named server as not running — and, far
     // worse, an AMBIGUOUS record used to be retagged ambient and renamed
-    // whatever ambient session happened to carry the name.
     let bytes = crate::meta::read_bytes(&old_dir).unwrap_or_default();
     let Some(server) = crate::session_launch::recorded_server_resolved(&old_dir) else {
         writeln!(
@@ -184,7 +164,6 @@ fn locked(
     // 2. The main window, which carries the session name — but NOT under
     // lead-pair, where window 0 carries the ROLE name 'leads' and the session
     // name lives in status-left. `=<name>:0` is the exact-match target form, so
-    // the window belongs to the session just renamed and to no prefix of it.
     if crate::lifecycle::meta_value(&bytes, "layout") != "lead-pair" {
         let target = format!("={new}:0");
         let _ = transport::run_tmux_op(&argv(
@@ -227,10 +206,6 @@ fn locked(
 }
 
 /// The manifest and the status bar, both of which name the session.
-///
-/// Best-effort by design: the rename itself has already happened, and failing
-/// the command over a document that `ae doctor --refresh` republishes would
-/// report a rename that did occur as one that did not.
 fn republish(dir: &Path, name: &str, server: &ServerId) {
     let bytes = crate::meta::read_bytes(dir).unwrap_or_default();
     let value = |key: &str| crate::lifecycle::meta_value(&bytes, key);
@@ -289,13 +264,6 @@ fn current_session(root: &Path) -> Option<String> {
 }
 
 /// Whether `path` is a symlink — the frozen `_require_session_path_safe`.
-///
-/// # The door
-///
-/// `symlink_metadata` classifies the LINK rather than following it, which is
-/// the whole point: a move through a symlink relocates its target, and a
-/// dangling link at the destination is invisible to an existence check that
-/// follows.
 fn is_symlink(path: &Path) -> bool {
     #[allow(
         clippy::disallowed_methods,

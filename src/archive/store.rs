@@ -38,11 +38,6 @@ pub(super) enum RootState {
 }
 
 /// Classify — and, with `create`, materialise — the archive root at `root`.
-///
-/// A symlinked root is always a hard refusal. With `create` (publish): make it
-/// `0700` and prove its own directory entry durable by an unconditional parent
-/// fsync, then `Present`. Without `create` (inherit/purge): `Present` only for an
-/// existing real directory, else `Absent` — never created, never fsynced.
 pub(super) fn require_real_root(root: &Path, create: bool) -> Result<RootState, String> {
     if let Ok(meta) = symlink_meta(root)
         && meta.file_type().is_symlink()
@@ -66,8 +61,6 @@ pub(super) fn require_real_root(root: &Path, create: bool) -> Result<RootState, 
     // Persist the archive/ directory's OWN entry in its PARENT — unconditionally,
     // before any claim. The later root fsync persists entries INSIDE archive/, not
     // archive/'s own entry, and `ae end` deletes the live session once publication
-    // reports success; so an unconfirmed root must fail the publish here rather
-    // than after the source is gone.
     if let Some(parent) = root.parent() {
         fsync_dir(parent).map_err(|why| {
             format!(
@@ -89,18 +82,6 @@ pub(super) fn claim_path(root: &Path, aid: &str) -> PathBuf {
 /// process now owns the id; an `AlreadyExists` error means another publisher or
 /// purger holds it (or a crash left it standing) — the caller refuses and NEVER
 /// guess-cleans a claim it did not create.
-///
-/// RESIDUAL (documented, ruled out of this delivery): the claim is a mutual-
-/// exclusion token by PATHNAME. ae's threat model is cooperating/confused
-/// same-UID agents, all of which respect this mkdir claim. A DELIBERATELY hostile
-/// same-UID process could, after we win the mkdir, unlink our claim directory and
-/// substitute a symlink at `.publishing.<aid>`, so that a later `fs::rename` or
-/// removal keyed on that path resolves the middle component through the link and
-/// acts outside the archive root. Closing that honestly needs descriptor-relative
-/// `renameat`/`unlinkat`/`openat` machinery absent from std (or a `rustix`
-/// dependency); a pathname re-check would only move the same race, not close it,
-/// so ae adds neither now. REVISIT this and the purge/publish rename boundaries if
-/// ae ever treats peer processes as hostile, or adopts rustix/openat capabilities.
 pub(super) fn make_claim(claim: &Path) -> io::Result<()> {
     fs::DirBuilder::new().mode(0o700).create(claim)
 }

@@ -6,55 +6,10 @@
 //! member proof, the version directory, its modes, the command link and the
 //! journal that makes a half-done publish reversible — is this module, and
 //! [`crate::upgrade`] reaches the same [`publish`] without a second spelling.
-//!
-//! # The published shape is the contract
-//!
-//! ```text
-//! ~/.ae/versions/<V>/ae-core      0555
-//! ~/.ae/versions/<V>/install      0555
-//! ~/.ae/versions/<V>/SHA256SUMS   0444
-//! ~/.ae/versions/<V>/             0555
-//! ~/.local/bin/ae -> ~/.ae/versions/<V>/ae-core
-//! ```
-//!
-//! Three consequences, each of them a decision rather than a detail:
-//!
-//! * **The command link IS the current pointer.** Switching versions is one
-//!   atomic rename of it. `~/.ae/core/current` and `~/.ae/current` are retired,
-//!   and a second pointer at a single target is a second answer waiting to
-//!   disagree.
-//! * **A 0555 directory refuses entry create and unlink**, so a stray
-//!   `> $SESSION/send` through a helper symlink gets `EACCES` instead of
-//!   truncating the binary every session on the machine is bound to.
-//! * **The manifest's exact bytes are a two-party contract.** This module
-//!   writes nothing into it — it COPIES the bundle's own — and
-//!   [`crate::shape::parse_manifest`] reads it back on every invocation.
-//!
-//! # Fixed paths, derived from `$HOME` and nothing else
-//!
-//! There are no path overrides. `AE_HOME` moves ae's STATE for a checkout build;
-//! it has never moved an INSTALL, and accepting one here would let a publish
-//! land somewhere the shape classifier ([`crate::shape`]) will never look.
-//!
-//! # Verification is the whole gate, and it runs before any write
-//!
-//! [`verify`] proves the three members, parses the manifest, and re-digests both
-//! executable members with SHA-256 before a byte is published. Only then is the
-//! bundle's own core executed to ask its version — so nothing unverified runs on
-//! this path, and the version directory's NAME is the version the core will
-//! report when [`crate::lib`]'s install gate asks it again at run time.
-//!
-//! This is the ONE place in ae that hashes anything. The core deliberately does
-//! not: a 2.4 MB digest on every helper call is a cost the product will not pay,
-//! and structural validation plus this one-time proof is what the immutable
-//! directory rests on.
 
 use std::path::{Path, PathBuf};
 
 /// The mode both executable members and the version directory are published at.
-///
-/// The directory carries the member mode too: 0555 on a directory is what makes
-/// an entry create or unlink inside it fail with `EACCES`.
 pub const MEMBER_MODE: u32 = 0o555;
 
 /// The manifest's mode. Readable, never writable — it describes the members.
@@ -64,14 +19,6 @@ pub const MANIFEST_MODE: u32 = 0o444;
 pub const JOURNAL: &str = ".ae-install.journal";
 
 /// The journal's format word.
-///
-/// **3, not 2.** The bash journal carried `config`/`config_had` rows, a
-/// leftover from an installer that once seeded `~/.ae/config` and had to be
-/// able to put it back. It has not written a config since slice Z3, so those
-/// two fields recorded a fact nothing consumed. They are gone, and a journal
-/// naming them is refused by the unknown-field arm rather than half-replayed —
-/// which is exactly the treatment any journal this parser does not know should
-/// get.
 pub const JOURNAL_FORMAT: &str = "3";
 
 /// The usage line `_install` prints when its argv is not `--from <dir>`.
@@ -80,9 +27,6 @@ pub const USAGE: &str = "Usage: ae _install --from <extracted-bundle-dir>";
 // ─── the doors ───────────────────────────────────────────────────────────
 
 /// The filesystem reads this module makes, each named once.
-///
-/// Registered in `tests/it/phase3.rs`'s inventory: a module that reaches the
-/// world is a line in a review, not a diff nobody read.
 mod door {
     use std::path::Path;
 
@@ -176,11 +120,6 @@ fn trim_trailing_slash(home: &Path) -> PathBuf {
 }
 
 /// The path grammar every publication destination is held to.
-///
-/// A path that reaches the journal is replayed by a LATER process, so its
-/// spelling is not cosmetic: `..` re-aims a reversal, `//` and a trailing `/`
-/// make two spellings of one path compare unequal, and a newline ends the
-/// record and turns its remainder into a phantom row.
 fn path_components_ok(path: &Path, label: &str) -> Result<(), String> {
     let text = path.to_string_lossy();
     if text.contains('\n') || text.contains('\r') {
@@ -223,12 +162,6 @@ fn validate_home(home: &Path) -> Result<(), String> {
 /// The command destination: outside the home, reached through no symlinked
 /// ancestor, and not a directory.
 ///
-/// **Parent versus leaf, and the difference is the attack.** A dangling
-/// `~/.local -> ~/.ae` makes `~/.local/bin` land physically INSIDE the home the
-/// moment the home is created, so the ANCESTOR is what has to be resolved. The
-/// LEAF being a symlink into the home is the canonical published state — it is
-/// replaced atomically and never followed — so it is `lstat`ed and not resolved.
-///
 /// # Errors
 ///
 /// A relative path, a bad spelling, a destination lexically or physically inside
@@ -270,18 +203,10 @@ pub fn validate_bin_destination(link: &Path, home: &Path) -> Result<(), String> 
 }
 
 /// How many dangling symlinks [`resolve_nearest`] will follow before it stops.
-///
-/// A dangling link may point at another dangling link, and two of them may
-/// point at each other. The budget bounds the walk without needing to track the
-/// links already seen.
 const RESOLVE_LINK_BUDGET: u8 = 8;
 
 /// `path` with its nearest EXISTING ancestor resolved and the missing tail
 /// re-appended.
-///
-/// `canonicalize` alone cannot answer for a path that does not exist yet, and a
-/// DANGLING symlink ancestor is exactly the case that matters: it names a
-/// destination that is not there today and will be tomorrow.
 fn resolve_nearest(path: &Path) -> PathBuf {
     resolve_nearest_within(path, RESOLVE_LINK_BUDGET)
 }
@@ -308,18 +233,6 @@ fn resolve_nearest_within(path: &Path, budget: u8) -> PathBuf {
 }
 
 /// One existing (or dangling-symlink) path, resolved as far as it can be.
-///
-/// **A dangling target is resolved through its own nearest existing ancestor,
-/// not returned raw.** `canonicalize` fails on a path that is not there yet, and
-/// returning the link's target verbatim made the two sides of the
-/// [`validate_bin_destination`] comparison disagree about spelling whenever the
-/// home sat under a symlinked ancestor: on macOS a fixture home in `/tmp`
-/// resolved to `/private/tmp/…/.ae` while the dangling `~/.local -> ~/.ae/bin`
-/// stayed `/tmp/…/.ae/bin`, so the prefix test could never match and the guard
-/// did not fire. Measured: with the home under `/private/tmp` the same install
-/// refused correctly, and under `/tmp` it published a version directory first
-/// and was only caught later, incidentally, by the symlinked-ancestor check in
-/// [`missing_chain`].
 fn resolve_existing(path: &Path, budget: u8) -> PathBuf {
     let is_link = door::lstat(path).is_ok_and(|meta| meta.file_type().is_symlink());
     if is_link {
@@ -379,11 +292,6 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
 }
 
 /// Prove `dir` is a bundle, and answer with the version it carries.
-///
-/// The order is the security property. Members are classified WITHOUT following
-/// a link, the manifest is parsed and checked to cover exactly the two
-/// executable members, both members are re-digested — and only then is the
-/// bundle's own core executed to ask its version. Nothing unverified runs.
 ///
 /// # Errors
 ///
@@ -450,11 +358,6 @@ pub fn verify(dir: &Path) -> Result<Bundle, String> {
 }
 
 /// Ask a VERIFIED core which version it is.
-///
-/// The version directory is named for this answer, and
-/// [`crate::shape::validate`] compares the two again on every later invocation
-/// — so a publish under the wrong name would brick the install at its first
-/// run. Asking here turns that into an install-time refusal.
 fn core_version(core: &Path) -> Result<String, String> {
     let out = run_core(core).map_err(|why| format!("the bundle core did not run: {why}"))?;
     if !out.status.success() {
@@ -471,11 +374,6 @@ fn core_version(core: &Path) -> Result<String, String> {
 
 /// THE FOURTH PRODUCT CROSSING of `clippy.toml`'s `Command` deny, and the only
 /// one that is neither tmux nor an `exec`.
-///
-/// It runs ONE program — the bundle member this module has just proven by
-/// digest — with ONE fixed argument, and reads its first line. There is no
-/// caller input in the argv at all. The alternative was to trust the archive's
-/// directory name for the version the whole install gate is keyed on.
 fn run_core(core: &Path) -> std::io::Result<std::process::Output> {
     #[allow(
         clippy::disallowed_types,
@@ -488,12 +386,6 @@ fn run_core(core: &Path) -> std::io::Result<std::process::Output> {
 // ─── the journal ─────────────────────────────────────────────────────────
 
 /// The record a half-done publish is reversed from.
-///
-/// It is BOTH the record and the lock. The bash installer kept a separate
-/// `mkdir` lock beside it, which meant two objects, two acquire paths and a
-/// stale-takeover dance between them. One object with a PID in it answers both
-/// questions: a live PID means another install is running, a dead one means an
-/// interrupted install to replay before this one starts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Journal {
     /// The process that owns this install.
@@ -532,12 +424,6 @@ impl Journal {
     }
 
     /// Parse a journal, holding it to the record THIS installer emits.
-    ///
-    /// Hostile by assumption: the file is hand-editable, it survives a crash,
-    /// and replaying it removes directories and rewrites the command link. Every
-    /// field is checked against a fact the caller already knows, and an unknown
-    /// field is a refusal rather than a row this parser skips — a journal from
-    /// another installer names things this one would half-replay.
     ///
     /// # Errors
     ///
@@ -599,7 +485,6 @@ impl Journal {
         // The emitted set, exactly. A replay removes directories, so a row
         // naming anything this installer never creates is refused rather than
         // reversed — that is how `created_dir=<a live session directory>`
-        // becomes a refusal instead of an `rmdir`.
         let emitted = emitted_dirs(paths);
         for path in &created {
             path_components_ok(path, "install journal directory")?;
@@ -649,24 +534,6 @@ pub struct Published {
 }
 
 /// Publish `bundle` under `paths`, atomically, and repoint the command link.
-///
-/// The steps, in the order that makes each one reversible:
-///
-/// 1. the home is created (untracked — an empty `~/.ae` is not a failure), then
-///    the command destination is REVALIDATED, because creating the home can
-///    make a dangling ancestor of that destination live;
-/// 2. an existing journal is replayed and removed, or refused;
-/// 3. this install's journal is created with `O_EXCL` — the create IS the lock;
-/// 4. `versions/` is created and recorded;
-/// 5. the version directory is staged beside itself, moded, and RENAMED into
-///    place, so it is never visible at a writable mode;
-/// 6. the command link's parent is created and recorded, and the link is
-///    replaced by a rename of a temp symlink beside it;
-/// 7. the journal is removed.
-///
-/// A failure anywhere after step 3 replays the journal and removes it. A SIGNAL
-/// leaves the journal on disk, which is the same outcome by a different route:
-/// the next run finds a dead PID and replays it before starting.
 ///
 /// # Errors
 ///
@@ -743,11 +610,6 @@ fn publish_steps(
 }
 
 /// Stage the three members, mode them, and rename the whole directory in.
-///
-/// A version already on disk is not republished: its members must be regular
-/// files with the SAME bytes, and then the published modes are re-asserted. A
-/// version directory holding different bytes under the same name is refused —
-/// the name is a promise about the content.
 fn publish_version_dir(bundle: &Bundle, version_dir: &Path) -> Result<(), String> {
     if door::lstat(version_dir).is_ok_and(|meta| meta.file_type().is_symlink()) {
         return Err(format!(
@@ -823,9 +685,6 @@ fn stage_members(bundle: &Bundle, stage: &Path) -> Result<(), String> {
 }
 
 /// The published modes, on a stage or on an already-installed directory.
-///
-/// The DIRECTORY is moded last: 0555 refuses an entry create, so moding it
-/// first would make the member `chmod`s fail on a fresh publish.
 fn apply_modes(dir: &Path) -> Result<(), String> {
     apply_member_modes(dir)?;
     seal_dir(dir)
@@ -860,10 +719,6 @@ fn seal_dir(dir: &Path) -> Result<(), String> {
 }
 
 /// Replace the command link atomically.
-///
-/// A symlink at a temp name beside the destination, then a rename over it. The
-/// rename is the switch: there is no window in which the command is absent, and
-/// no `rm` that could leave one.
 fn relink(link: &Path, target: &Path) -> Result<(), String> {
     let parent = link
         .parent()
@@ -885,10 +740,6 @@ fn relink(link: &Path, target: &Path) -> Result<(), String> {
 
 /// Create `path` and every missing ancestor, refusing to create THROUGH a
 /// symlink.
-///
-/// Used for the home alone, which is created before there is a journal to record
-/// it in. An empty `~/.ae` left behind by a failure is not a defect worth a
-/// reversal.
 fn mkdir_all_plain(path: &Path) -> Result<(), String> {
     for missing in missing_chain(path)?.iter().rev() {
         std::fs::create_dir(missing)
@@ -898,12 +749,6 @@ fn mkdir_all_plain(path: &Path) -> Result<(), String> {
 }
 
 /// The same, recording each directory this process actually created.
-///
-/// **Recorded AFTER the syscall succeeded**, which is the whole ownership rule:
-/// a row written first would claim a directory an operator created in the gap,
-/// and a replay that removes one it does not own is the irreversible mistake.
-/// The gap in this direction leaves an empty directory unrecorded, which is the
-/// safe half of the trade.
 fn mkdir_recorded(path: &Path, journal: &mut Journal, paths: &Paths) -> Result<(), String> {
     for missing in missing_chain(path)?.iter().rev() {
         std::fs::create_dir(missing)
@@ -920,10 +765,6 @@ fn mkdir_recorded(path: &Path, journal: &mut Journal, paths: &Paths) -> Result<(
 
 /// The missing directories between `path` and its nearest existing ancestor,
 /// deepest first.
-///
-/// A symlink or a non-directory anywhere on the way is a refusal, not something
-/// to create through: a dangling `~/.local -> ~/.ae` would otherwise be followed
-/// into the ae home.
 fn missing_chain(path: &Path) -> Result<Vec<PathBuf>, String> {
     let mut missing = Vec::new();
     let mut cursor = path.to_path_buf();
@@ -964,11 +805,6 @@ fn missing_chain(path: &Path) -> Result<Vec<PathBuf>, String> {
 // ─── recovery ────────────────────────────────────────────────────────────
 
 /// Replay a journal left behind by an earlier install, or refuse.
-///
-/// A LIVE pid means another install owns this home: refuse without touching
-/// anything. A dead one means an interrupted install: replay it and remove it,
-/// then carry on. A journal this parser will not accept is preserved for
-/// diagnosis and refuses the run — nothing is half-replayed.
 fn recover_existing(paths: &Paths) -> Result<(), String> {
     let path = paths.journal();
     let Ok(meta) = door::lstat(&path) else {
@@ -1004,22 +840,11 @@ fn recover_existing(paths: &Paths) -> Result<(), String> {
 }
 
 /// Whether the process that wrote a journal is still there.
-///
-/// **A snapshot that cannot be taken answers YES**, and the direction is the
-/// decision: `crate::procs` documents failure as UNKNOWN and never as dead, and
-/// replaying a LIVE install's journal would restore its old command link while
-/// it publishes. A wedge costs one documented `rm`; the other direction costs
-/// an install nobody can name.
 fn owner_alive(pid: u32) -> bool {
     crate::procs::snapshot().is_none_or(|table| table.iter().any(|proc| proc.pid == pid))
 }
 
 /// Undo what `journal` records, then remove it.
-///
-/// The command link is restored first because it is the only object a caller can
-/// already be using; the created directories follow, deepest last recorded and
-/// therefore removed first. `remove_dir` never removes content, so a directory
-/// that has since gained an entry is left as it stands.
 fn replay(journal: &Journal, path: &Path) -> Result<(), String> {
     if journal.link_had {
         relink(&journal.link, Path::new(&journal.link_old))?;
@@ -1037,8 +862,6 @@ fn replay(journal: &Journal, path: &Path) -> Result<(), String> {
         // `remove_dir` never removes content, so its failure is not a failed
         // reversal: an absent directory is already undone, and a NON-EMPTY one
         // holds something this install did not put there — a retained version
-        // directory, or an operator's own file. Both are the designed final
-        // state.
         let _ = std::fs::remove_dir(created);
     }
     std::fs::remove_file(path).map_err(|why| format!("could not remove the journal: {why}"))
@@ -1056,10 +879,6 @@ fn current_link(link: &Path) -> (bool, String) {
 }
 
 /// Create a file that must not already exist, at 0600.
-///
-/// `create_new` is the `O_EXCL` create, and it is what makes the journal the lock:
-/// exactly one of two racing installs wins it, and the loser sees the winner's
-/// live PID.
 fn write_new(path: &Path, text: &str) -> std::io::Result<()> {
     use std::io::Write as _;
     use std::os::unix::fs::OpenOptionsExt as _;
@@ -1081,11 +900,6 @@ fn append_line(path: &Path, line: &str) -> std::io::Result<()> {
 }
 
 /// Remove one of OUR OWN private trees, whose members may be 0555.
-///
-/// A 0555 directory refuses the unlink of its own entries, so a plain
-/// `remove_dir_all` on a staged (or extracted) bundle fails with `EACCES`. The
-/// only arguments are this process's own temp namespaces, never a canonical
-/// path.
 ///
 /// # Errors
 ///
@@ -1114,10 +928,6 @@ pub fn remove_private_tree(path: &Path) -> std::io::Result<()> {
 // ─── the command ─────────────────────────────────────────────────────────
 
 /// `ae _install --from <dir>` — verify a bundle and publish it.
-///
-/// The bootstrap `install` script's whole second half: it downloads, checks the
-/// archive against the release manifest, extracts, and runs the core it just
-/// unpacked with this word.
 ///
 /// # Errors
 ///

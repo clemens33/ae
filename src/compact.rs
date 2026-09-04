@@ -88,8 +88,6 @@ pub(crate) fn freeze(
     // Origin: recorded, and it must resolve to a directory. The RAW path is kept, not
     // a canonicalized one — the fresh session `cd`s into it and symlinks resolve then;
     // `metadata` (a tracked capability door) both proves it exists and follows a
-    // symlink to its target the way the launch will. A harmless divergence from the
-    // frozen bash, which normalized the path via `_canonical_dir`.
     let origin = meta_str(&bytes, "origin").unwrap_or_default();
     if origin.is_empty() {
         writeln!(
@@ -143,9 +141,8 @@ pub(crate) fn freeze(
     }
 
     // The main agent to hand over from — its `alias:name` ref, taken from the TYPED
-    // roster grammar (SC-405c), not string-sliced. A malformed `agent.main` (`cl`,
+    // roster grammar, not string-sliced. A malformed `agent.main` (`cl`,
     // `cl:`, `:main`, empty) never becomes a roster entry, so it is refused HERE rather
-    // than emitted as a broken handover ref that P3.7b would then try to deliver to.
     let meta_text = String::from_utf8_lossy(&bytes);
     let parsed = meta::Meta::parse(&meta_text);
     let Some(main_ref) = parsed
@@ -195,7 +192,6 @@ pub(crate) fn freeze(
     // Framing guard: the tuple is ONE `0x1f`-separated line. A field carrying the
     // separator byte would forge extra fields, and a newline would split the record —
     // both silently corrupt what the boundary parses back (the TSV-framing hazard, one
-    // separator up). Refuse rather than emit a tuple that does not round-trip.
     if let Some(bad) = fields
         .iter()
         .find(|f| f.contains('\u{1f}') || f.contains('\n'))
@@ -338,7 +334,7 @@ pub(crate) enum StopState {
     Unknown,
 }
 
-/// Ask the session's OWN recorded tmux server (the SC-405l selector) whether `name` is
+/// Ask the session's OWN recorded tmux server (the selector) whether `name` is
 /// still live. Crossing the destructive boundary requires [`StopState::Stopped`] — a
 /// definitive absence FROM A SERVER THAT ANSWERED. `Alive` and `Unknown` both refuse: an
 /// unreachable server, or a Missing/Ambiguous selector, is never read as stopped (the
@@ -384,9 +380,6 @@ fn revalidate(
     // Bind the authorization's name to the operand itself. `freeze` derived `name` from the
     // session directory's direct-child basename, and the stop query below (`verify_stopped`)
     // trusts it to name the LIVE session. A tuple whose name field was altered to some other
-    // (absent) session would otherwise prove THAT name stopped while the live session runs
-    // on — and teardown would then delete the live session. The basename is authoritative:
-    // meta records only session_id, which the UUID guard already binds.
     let basename = dir.file_name().and_then(|n| n.to_str()).unwrap_or_default();
     if frozen.name != basename {
         return Err(format!(
@@ -445,9 +438,6 @@ fn revalidate(
     // The roster is an AUTHORIZED FACT, not merely a resolvable one: it was PRINTED at the
     // prompt as what the child will start, so a config rewritten during the window that now
     // resolves to a DIFFERENT roster must refuse — proving merely that SOME roster resolves
-    // would let a child start agents nobody approved. Edits made BEFORE compact are adopted;
-    // only a change DURING the window is caught here. Mirrors the frozen `_compact_revalidate`
-    // roster gate, and reads the current roster from the same config `resolve_workspace` did.
     let now_main = workspace.main.as_deref().unwrap_or_default();
     let now_roster = roster_string(now_main, workspace.workers.as_deref());
     if now_roster != frozen.roster {
@@ -695,8 +685,6 @@ pub(crate) fn teardown_step(
     // C2's separate-stage boundary: teardown is its OWN invocation, so it must not trust
     // that the archive the archive step proved is still the same tree now. Re-run the same
     // read-only preflight immediately before destroying the live session — the live session
-    // is its ONLY recovery source, and a symlinked, emptied, claimed, or vanished archive
-    // must retain it, never delete it against a recovery point that would not restore.
     if !archive_recovery_point_valid(&archive_root, &frozen.uuid, err)? {
         writeln!(
             err,
@@ -718,10 +706,6 @@ pub(crate) fn teardown_step(
 // ── The semantic handover: wait for BOTH facts, or withdraw (slice B) ────────────
 //
 // The handover is delivered through the session's own `ask` (bash, pane-side) as a tracked
-// request from the reserved compact actor `ae:compact:<uuid>`, carrying a memo BASELINE in
-// its body. These two cores own the WAIT and the WITHDRAWAL — the stateful half the clean
-// cut keeps in Rust — and read the ledger and memo the frozen `_compact_wait_handover` /
-// `_compact_cancel_outstanding` read. Bash branches on the exit code alone.
 
 /// The poll interval between reads while waiting. The frozen `_compact_wait_handover`
 /// polled every two seconds; the bounded deadline is never overshot.
@@ -742,13 +726,6 @@ fn field_eq(line: &[u8], key: &str, want: &[u8]) -> bool {
 /// body (`AE-COMPACT-MEMO-BASELINE=<n>`). A handover is real only if a memo row was
 /// appended AFTER this byte offset, so a memo rewritten wholesale beforehand cannot
 /// masquerade as new content.
-///
-/// `Some(n)` ONLY when the marker is present AND its value parses — `Some(0)` is legitimate
-/// (an empty memo at request time, so any row is new). A marker that is ABSENT or MALFORMED
-/// returns `None`: UNAVAILABLE EVIDENCE, which the wait refuses. It must never fall back to
-/// `0`, because a `0` baseline lets a memo written BEFORE this request satisfy the "new
-/// handover memo" fact, collapsing the two-fact safety gate to one (p4runner BLOCKER,
-/// review dc59b178).
 fn baseline_from_body(body: &[u8]) -> Option<usize> {
     for line in body.split(|&b| b == b'\n') {
         if let Some(rest) = line.strip_prefix(b"AE-COMPACT-MEMO-BASELINE=") {
@@ -845,7 +822,6 @@ pub(crate) fn wait_step(
     // The memo baseline is REQUIRED evidence: without it the "new handover memo" fact cannot
     // be told from a memo that predates this request. A missing/non-regular body, or a body
     // with no valid AE-COMPACT-MEMO-BASELINE marker, fails the wait CLOSED — no stop, no
-    // archive, no teardown (p4runner BLOCKER, review dc59b178).
     let Some(baseline) = read_body_regular(&req.body_file).and_then(|b| baseline_from_body(&b))
     else {
         writeln!(
@@ -1199,7 +1175,6 @@ mod tests {
         // The purge-bypass regression: a config that is a REAL regular file (so the old
         // is_file gate passed) but whose bytes cannot be decoded must refuse — not read
         // as empty and let a purge=true setting slip through. Non-UTF-8 stands in for
-        // "present but unreadable".
         let s = Scratch::new("badcfg");
         let dir = s.0.join("sess");
         std::fs::create_dir_all(&dir).unwrap();
@@ -1237,7 +1212,7 @@ mod tests {
 
     #[test]
     fn a_malformed_agent_main_is_refused_not_emitted() {
-        // `cl`, `cl:`, `:main` each fail the typed roster grammar (SC-405c) and so never
+        // `cl`, `cl:`, `:main` each fail the typed roster grammar and so never
         // become a `main` entry — freeze refuses rather than emitting a broken handover
         // ref P3.7b would try to deliver to. Everything else in the session is valid.
         for bad in ["cl", "cl:", ":main"] {
@@ -1271,8 +1246,6 @@ mod tests {
     // The FIFO global regression lives in the black-box `tests/it/compact.rs`: creating
     // a FIFO needs `mkfifo(1)`, and `std::process::Command` is a crate-wide disallowed
     // type whose only sanctioned doors are in the it-target (`crate::cli::mkfifo`). A
-    // unit test here would open a new Command door in `src/` and fail the capability
-    // self-test. The DIRECTORY-as-local case below needs no such fixture.
 
     #[test]
     fn a_present_nonregular_local_config_is_refused_not_ignored() {
@@ -1296,7 +1269,6 @@ mod tests {
         // The local override EXISTS but its parent `.ae` is untraversable, so lstat on it
         // fails with a permission error — NOT NotFound. Existence cannot be proven, so it
         // must refuse rather than silently use the (valid) global config. Regression for
-        // the absent-vs-can't-prove-absence conflation.
         use std::os::unix::fs::PermissionsExt as _;
         let s = Scratch::new("untraversable");
         let dotae = s.0.join(".ae");
@@ -1384,10 +1356,6 @@ mod tests {
     // ---- verify_stopped selector guard (C1) ----
     //
     // The recorded-server QUERY tri-state (present → Alive, answered-absent and
-    // clean-dead → Stopped, any other failure → Unknown) is the pure
-    // `crate::tmux::interpret_stopped`, unit-tested at its own site. Here we cover
-    // only what `verify_stopped` itself decides BEFORE any query: a non-positive
-    // selector fails closed without asking a server at all.
 
     #[test]
     fn stop_missing_or_ambiguous_selector_is_unknown() {
@@ -1428,7 +1396,6 @@ mod tests {
         // The altered-tuple attack: field 1 is rewritten from the real session name to some
         // other (absent) name. Revalidation must refuse on the name↔operand mismatch BEFORE
         // any stop query — otherwise the stop check would prove the WRONG (absent) name
-        // stopped while the live session runs on, and teardown would delete the live session.
         let s = Scratch::new("reval-name");
         let dir = session(&s, "", Some("[workspace]\nmain = cl\n"));
         let mut f = frozen(&s.0, &s.0.join("config"));
@@ -1783,9 +1750,6 @@ mod tests {
     fn wait_fails_closed_when_the_baseline_evidence_is_unavailable() {
         // The BLOCKER (p4runner review dc59b178): a memo written BEFORE the request PLUS a
         // reply must NOT satisfy the two-fact gate when the baseline cannot be established.
-        // A missing/non-regular body or a body with no valid marker would default to
-        // baseline 0, and `memo_after(old_memo, 0)` would then pass the pre-existing memo as
-        // "new". This row is a VALID handover row that baseline 0 would have accepted.
         let old_memo = "2026-08-29T00:00:00Z\tcl:main\thandover\twritten BEFORE the request\n";
         let body = |dir: &Path| dir.join("messages").join("handover.ask.txt");
 

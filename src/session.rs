@@ -1390,7 +1390,7 @@ mod tests {
             DEFAULT_UNANSWERED_SECS,
         );
         assert!(entry.degraded);
-        assert_eq!(entry.name, "no-meta-here", "identity survives (SC-509b)");
+        assert_eq!(entry.name, "no-meta-here", "identity survives");
         assert_eq!(entry.status, Status::Running);
         assert_eq!(entry.mode, None, "never fabricated");
         assert!(entry.agents.is_empty());
@@ -1494,7 +1494,7 @@ mod tests {
         assert_eq!(
             healthy.to_json().get("branch"),
             Some(&crate::json::Value::Null),
-            "healthy legacy bytes survive until the SC-405g source slice"
+            "healthy legacy bytes survive until the branch source slice"
         );
         assert!(
             !healthy.degraded,
@@ -1713,7 +1713,7 @@ mod tests {
         );
         assert!(
             crate::listing::table(&[&entry]).contains("unknown"),
-            "event loss keeps the SC-017h declared-state cell unknown"
+            "event loss keeps the declared-state cell unknown"
         );
     }
 
@@ -2294,7 +2294,7 @@ mod tests {
         assert_eq!(
             entry.branch.as_deref(),
             Some("feature/login"),
-            "SC-405g input"
+            "branch input"
         );
     }
 

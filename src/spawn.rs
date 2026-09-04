@@ -19,15 +19,6 @@
 //! without rolling back would leave a phantom — a roster entry with an empty
 //! pane, visible to `ae list`, addressable by every helper, retirable only by
 //! hand.
-//!
-//! # Pane-created and brief-delivered are different truths
-//!
-//! Only the second means the worker was assigned its task. Conflating them is
-//! how a delivery failure became a success at the caller: the failure printed
-//! to stderr and control ran on to a task-bearing `spawn` event and rc=0, so
-//! supervision saw an assigned worker whose brief was absent. stderr is for
-//! humans; the exit code and the event log are the machine-visible contract,
-//! and they must agree with reality.
 
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -96,10 +87,6 @@ pub struct Parsed {
 }
 
 /// Parse `<name> --using <profile> [--] [prompt…]`.
-///
-/// `--` ends the options so a prompt may start with a dash; anything else that
-/// is not a recognised option ends them too, which is what lets an unquoted
-/// prompt follow the profile.
 ///
 /// # Errors
 ///
@@ -171,10 +158,6 @@ fn row(bytes: &[u8], key: &str) -> String {
 }
 
 /// Read the six session facts, the target server and the config layering.
-///
-/// The config files are derived the way the frozen helper wires them: the
-/// session's own `config=` row, plus the origin's `.ae/config` when that file
-/// exists. The core does not read the environment, so this is the only source.
 fn facts(dir: &Path) -> Result<Facts, String> {
     let bytes = meta::read_bytes(dir).map_err(|why| format!("cannot read the meta: {why}"))?;
     let session = row(&bytes, "session");
@@ -203,10 +186,6 @@ fn facts(dir: &Path) -> Result<Facts, String> {
 
 impl Facts {
     /// The config files the renders read, in layering order.
-    ///
-    /// Both are named unconditionally: the render's own reader SKIPS a file it
-    /// cannot open, which is the frozen `[[ -f … ]]` gate's effect without a
-    /// second existence probe of the world.
     fn config_files(&self) -> Vec<PathBuf> {
         self.global
             .iter()
@@ -216,11 +195,6 @@ impl Facts {
     }
 
     /// The layered `[profiles]`, with an ABSENT file read as absent.
-    ///
-    /// The frozen helper gates each file on `-f` before naming it; this reads
-    /// it and drops the one that could not be opened, which reaches the same
-    /// answer without a second door onto the filesystem. A file that exists but
-    /// is malformed still refuses — that is a config error, not an absence.
     fn identity(&self) -> Result<crate::config::IdentityConfig, crate::config::ConfigError> {
         let mut global = self.global.as_deref();
         let mut local = self.local.as_deref();
@@ -342,9 +316,6 @@ pub fn run_spawn(
     // THE SAME GRAMMAR AS A LAUNCH SEAT, before any effect. config.rs enforces the
     // one-simple-command lexer for the initial roster only; a profile selected at
     // spawn used to reach `bash -lc` unvalidated, so `bad = "touch m; tail -f
-    // /dev/null"` executed the semicolon command and then reported the spawn
-    // incomplete with the seat left in meta (colead gate b5d60fec, repro). Tool
-    // and binary now come from the one validated parse.
     let lexed = match crate::launch_cmd::lex_simple_command(&command) {
         Ok(lexed) => lexed,
         Err(why) => {
@@ -415,9 +386,6 @@ pub fn run_spawn(
     // Everything a launch command is made of — the context injection, the
     // session id, the create-vs-resume decision — is composed by `_run` IN the
     // pane, from this session's own state. What must be true on disk before the
-    // paste is this process's to establish, and both halves refuse rather than
-    // proceed: a spawned slot NUMBER is reused after a retire, so an inherited
-    // marker or first message belongs to the agent this seat replaces.
     if let Err(why) = crate::run::clear_slot(dir, &slot) {
         rollback(dir, &facts, &slot, &pane, &parsed.name, err)?;
         writeln!(
@@ -430,7 +398,6 @@ pub fn run_spawn(
     // For a tool with no system-prompt channel the context AND the brief travel
     // as the launch command's inline first message, so the brief is RECORDED
     // for `_run` to compose. Every other tool takes its brief through the
-    // readiness-gated paste below, and records nothing.
     let inline = launch::initial_prompt_for(tool);
     let initial = if inline.is_empty() {
         String::new()
@@ -455,8 +422,6 @@ pub fn run_spawn(
     // RESOLVED, never raw. This path becomes the pane's own command
     // (`<core> _run <dir> <slot>`), and macOS answers `current_exe()` with the
     // path this process was EXEC'D BY — so a spawn typed as `<session>/spawn`
-    // built a pane command whose `argv[0]` basename was `spawn`, which the
-    // helper dispatch reads back as `_spawn` and the seat never launches.
     let Some(core) = crate::shape::resolved_exe() else {
         rollback(dir, &facts, &slot, &pane, &parsed.name, err)?;
         writeln!(
@@ -477,7 +442,6 @@ pub fn run_spawn(
     // The capture tools need the launch instant to filter stale sessions, so it
     // is recorded BEFORE the capture child is started — the child reads it back
     // out of meta, and a capture with no floor would accept a conversation this
-    // spawn did not create.
     if launch::supports_launch_id(tool) {
         let _ = meta::rewrite(
             dir,
@@ -487,18 +451,6 @@ pub fn run_spawn(
         // The post-launch id capture, detached: it polls and scans for minutes,
         // so it cannot run inside the process the spawning agent waits on. The
         // frozen path forked it from bash after the core returned; the core owns
-        // it now, which is also what makes it start from the facts it has just
-        // written rather than from a second reader's guess at the slot.
-        //
-        // HERE, not after the brief. Two reasons, and both are deliberate
-        // departures from the frozen "only on rc==0": the capture window is
-        // finite (the tool writes its session record within seconds of
-        // starting, and the poll gives up), so time spent waiting for a
-        // readiness-gated paste is time taken off it; and a brief that fails to
-        // deliver does NOT roll the seat back — the agent is alive and its id is
-        // still worth having. A capture that outlives a seat which later goes
-        // away is harmless: `set-harness-session` refuses a slot that is not in
-        // the roster.
         capture::start(
             dir,
             &[capture::Target {
@@ -572,12 +524,6 @@ fn actor_of(caller: &str) -> &str {
 }
 
 /// Label the pane and name the worker's window.
-///
-/// `@ae_agent` IS the bare name under identity v2. The explicit
-/// `rename-window` also disables tmux's automatic-rename, so the window keeps
-/// the role name instead of following the foreground process — and the name is
-/// format-escaped, because a window name is a tmux FORMAT and `#(cmd)` in one
-/// runs a shell.
 fn stamp_pane(server: &ServerId, pane: &str, name: &str, slot: &str) {
     let _ = transport::set_pane_title(server, pane, &format!("ae:{name}"));
     let _ = transport::publish_option(
@@ -599,10 +545,6 @@ fn stamp_pane(server: &ServerId, pane: &str, name: &str, slot: &str) {
 
 /// Wait, briefly, for the tool's process to replace the pane's shell — the
 /// frozen `wait_for_agent_start`.
-///
-/// Best effort: it proves the process is RUNNING, never that it will accept
-/// input, which is why the brief has its own readiness gate. Unmodelled tools
-/// are not waited for at all, exactly as the frozen `case` skips them.
 fn wait_for_agent_start(server: &ServerId, pane: &str, tool: ToolKind) {
     if !matches!(
         tool,
@@ -628,9 +570,6 @@ fn wait_for_agent_start(server: &ServerId, pane: &str, tool: ToolKind) {
 }
 
 /// Deliver the brief to a tool whose context rode a system-prompt channel.
-///
-/// `None` is delivered; `Some(reason)` is not, and the caller must then report
-/// it rather than claim the task was assigned.
 #[allow(
     clippy::too_many_arguments,
     reason = "one call site, all six are facts"
@@ -649,8 +588,6 @@ fn deliver_brief(
     // The tool is the CONFIGURED one, not the pane's live command: that is the
     // fact the frozen `_wait_input_ready` is handed, and it is right for the
     // same reason `ae_target_tool` prefers `agent_bin.<slot>` — a wrapper, an
-    // interpreter or a `.exe` launcher makes the live command say something
-    // else while the box on screen is still the tool's.
     let tool = match kind {
         ToolKind::Claude => Tool::Claude,
         ToolKind::Codex => Tool::Codex,
@@ -659,8 +596,6 @@ fn deliver_brief(
     // DO NOT paste into a state we could not confirm idle. The old path polled
     // for any of `❯|bypass permissions|for shortcuts` and pasted on timeout
     // regardless — so claude's trust dialog read READY and the brief went INTO
-    // THE MODAL, where Enter answers the dialog instead. A brief is re-sendable;
-    // a clobbered modal is not.
     if !deliver::wait_input_ready(&facts.server, pane, tool, BRIEF_READY_POLLS) {
         return Ok(Some(
             "input never reached a confirmed-idle state (busy, modal, or unreadable)".to_owned(),
@@ -706,11 +641,6 @@ fn deliver_brief(
 }
 
 /// Say what happened, where the brief is, and how to hand it over by hand.
-///
-/// The pane EXISTS and is in meta — say so, so nobody respawns a duplicate —
-/// but never claim the task was assigned. The brief is preserved on disk rather
-/// than quoted into the message: it is arbitrary multi-line text, and a
-/// `<the brief>` placeholder is not a resend path anyone can run.
 fn report_undelivered(
     dir: &Path,
     name: &str,
@@ -755,11 +685,6 @@ fn write_private(path: &Path, text: &str) -> io::Result<()> {
 }
 
 /// Undo a spawn whose agent never launched.
-///
-/// The same teardown `_retire` performs, run on the failure path. Every step is
-/// tolerated — the caller's non-zero status is what matters — but the seat's
-/// removal is REPORTED when it fails, because a seat nobody removed is a
-/// phantom the operator has to clear with `retire`.
 fn rollback(
     dir: &Path,
     facts: &Facts,
@@ -782,10 +707,6 @@ fn rollback(
 
 /// The slot's start marker and recorded first message — dead weight once the
 /// pane is gone, and a hazard once the slot number is handed to someone else.
-///
-/// Best effort HERE, unlike the claim a spawn makes on the same two files: a
-/// retire that leaves them behind loses nothing, because the next occupant
-/// refuses rather than inherits.
 fn drop_launch_artifacts(dir: &Path, slot: &str) {
     let _ = crate::run::clear_slot(dir, slot);
 }
@@ -793,15 +714,6 @@ fn drop_launch_artifacts(dir: &Path, slot: &str) {
 // ---- retire ---------------------------------------------------------------
 
 /// `_retire <meta-dir> <name|%pane>`.
-///
-/// Resolution is EXACT: `@ae_agent` is the bare name under identity v2, and a
-/// `%pane` target must be a pane of THIS session. A seat whose pane is already
-/// gone still resolves by name at the seat removal below, so a spawn that died
-/// between its seat and its pane can still be cleaned up.
-///
-/// CORE FIRST: the seat removal — which refuses a `main` or `worker.*` launch
-/// seat and an unknown name — runs before anything is killed, so a refused
-/// retire kills nothing.
 ///
 /// # Errors
 ///

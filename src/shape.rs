@@ -13,44 +13,6 @@
 //! * **CHECKOUT** — anywhere else. `AE_HOME`, `CONFIG_FILE` and the
 //!   `AE_TMUX_SERVER` pair are HONOURED. That is the `ae-dev` namespace and the
 //!   two bash suites, which are its only callers.
-//!
-//! # `$HOME` is compared, never trusted to derive
-//!
-//! The installed root used to be `<$HOME>/.ae` and the position was tested
-//! against it, so an inherited `HOME` decided which SHAPE a published core was:
-//! `HOME=/tmp/fake AE_HOME=/tmp/foreign <real>/.ae/versions/<V>/ae-core doctor`
-//! classified CHECKOUT and built its sessions under `/tmp/foreign` (measured).
-//! That is C51's degradation reached through a variable instead of a missing
-//! sibling. The root is now derived from the canonical executable path alone —
-//! `.../.ae/versions/<V>/ae-core` names its own `.ae` — and `$HOME` is only ever
-//! compared against it.
-//!
-//! # Why the position and not the health
-//!
-//! C51's lesson, ported: the wrapper once keyed "am I a bundle" off whether its
-//! sibling core looked usable, so a bundle whose core was missing silently
-//! degraded into checkout semantics *at the public boundary*. Shape is decided
-//! by WHERE this binary sits and nothing else. A binary sitting in a version
-//! directory that does not validate is a BROKEN INSTALL — a refusal — never a
-//! checkout.
-//!
-//! # What is validated, and what is not
-//!
-//! The installer publishes exactly three members and one manifest naming two of
-//! them ([`MANIFEST`]). This module proves the STRUCTURE on every invocation:
-//! the members are regular non-symlink files, the manifest parses, and it names
-//! exactly the two members it is supposed to. It does NOT re-hash them, and the
-//! omission is deliberate on two counts: the core has no SHA-256 primitive and
-//! adding a dependency for one is a supply-chain decision nobody made, and
-//! hashing a ~2.4 MB binary on every invocation would be paid by every helper
-//! call in every live session. Content integrity is proven ONCE, by `install`,
-//! which verifies the published checksums before it extracts anything.
-//!
-//! MODE IS NOT VALIDATED HERE, and that is a ruling rather than an oversight:
-//! the version directory and its members are published read-only (0555/0444),
-//! but a WRITABLE core is a `doctor` WARN (slice Z3 contract (e)). A refusal on
-//! mode would make that warning unreachable — `doctor` could never run to print
-//! it — and would brick every helper in a live session over a stray `chmod`.
 
 use std::path::{Path, PathBuf};
 
@@ -80,12 +42,6 @@ pub enum Shape {
     },
     /// Published by the installer, but run against a `$HOME` that names a
     /// different root.
-    ///
-    /// Neither a working install nor a checkout: a REFUSAL, carried as a shape
-    /// so the gate can state both roots ([`displaced_refusal`]). It is a shape
-    /// rather than an error return because the classification is what knows
-    /// both halves, and a caller that forgot to ask would otherwise get the
-    /// permissive answer.
     Displaced {
         /// `<root>/.ae`, derived from where this binary SITS.
         home: PathBuf,
@@ -98,21 +54,12 @@ pub enum Shape {
 
 impl Shape {
     /// Whether inherited `AE_HOME` / `CONFIG_FILE` / `AE_TMUX_SERVER*` are read.
-    ///
-    /// A DISPLACED shape says no, like an installed one: the disagreement is
-    /// refused, and a refusal that first adopted the variable it is refusing
-    /// over would be no refusal at all.
     #[must_use]
     pub fn honours_environment(&self) -> bool {
         matches!(self, Self::Checkout)
     }
 
     /// The state root this binary's own POSITION derives, if it has one.
-    ///
-    /// Both published shapes answer, and they answer the same way — the
-    /// displaced one is refused at the gate, and any path that ever reached
-    /// past it must still use the position rather than the `$HOME` it
-    /// disagreed with.
     #[must_use]
     pub fn published_home(&self) -> Option<&Path> {
         match self {
@@ -124,17 +71,6 @@ impl Shape {
 
 /// Classify `exe` — an already-resolved `current_exe()` — against `home`, the
 /// value of `$HOME`.
-///
-/// POSITIONAL AND TOTAL, and the position is the EXECUTABLE'S ALONE:
-/// `<root>/.ae/versions/<anything>/ae-core` is an install whose state root is
-/// `<root>/.ae`, and everything else is a checkout. The directory's NAME is not
-/// checked here — a wrong name is a broken install that must refuse, and
-/// refusing is [`validate`]'s job, not classification's.
-///
-/// `home` is COMPARED and never derived from: an install run against a
-/// different `$HOME` is [`Shape::Displaced`], a refusal. An ABSENT `$HOME`
-/// disagrees with nothing, so a published core still classifies installed and
-/// answers from its own position — which is the safe root, not a borrowed one.
 #[must_use]
 pub fn classify(exe: &Path, home: Option<&Path>) -> Shape {
     let Some((ae_home, version_dir, version)) = published_position(exe) else {
@@ -157,10 +93,6 @@ pub fn classify(exe: &Path, home: Option<&Path>) -> Shape {
 
 /// The `<root>/.ae`, the version directory and its name, as `exe`'s own path
 /// spells them — or `None` when this binary is not sitting in one.
-///
-/// Every component is named: the member is `ae-core`, its grandparent
-/// directory is `versions`, and that one's parent is `.ae`. A path that merely
-/// ends in the right two words (`/opt/versions/9/ae-core`) is not an install.
 fn published_position(exe: &Path) -> Option<(PathBuf, PathBuf, String)> {
     if exe.file_name()? != CORE {
         return None;
@@ -183,11 +115,6 @@ fn published_position(exe: &Path) -> Option<(PathBuf, PathBuf, String)> {
 }
 
 /// The refusal a [`Shape::Displaced`] carries: two lines naming BOTH roots.
-///
-/// Not a [`Broken`], because `ae upgrade` is not the repair. Nothing is wrong
-/// with the install; it is being pointed at somebody else's state, and the fix
-/// is to correct the caller — which of the two roots is the mistake is the
-/// caller's to know, so both are printed.
 #[must_use]
 pub fn displaced_refusal(home: &Path, declared: &Path) -> String {
     format!(
@@ -199,9 +126,6 @@ pub fn displaced_refusal(home: &Path, declared: &Path) -> String {
 }
 
 /// Why an installed version directory was refused.
-///
-/// One line each, and each names the repair. `ae upgrade` runs ahead of this
-/// gate precisely so a refusal here still has a way out.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Broken(pub String);
 
@@ -213,8 +137,6 @@ impl std::fmt::Display for Broken {
 
 /// The manifest as the installer writes it: `<64 hex><SP><SP><name>` lines,
 /// one per covered member, LF-terminated, bare basenames, no other content.
-///
-/// Returns the names in file order, or the offending line.
 ///
 /// # Errors
 ///
@@ -245,8 +167,6 @@ pub fn parse_manifest(text: &str) -> Result<Vec<String>, String> {
 }
 
 /// Whether `names` is exactly the covered set, in any order.
-///
-/// The manifest does not cover itself, so two members and no more.
 #[must_use]
 pub fn manifest_covers_members(names: &[String]) -> bool {
     let mut sorted: Vec<&str> = names.iter().map(String::as_str).collect();
@@ -276,11 +196,6 @@ pub trait VersionDir {
 
 /// Prove the version directory is the one `install` published, or say what is
 /// wrong with it.
-///
-/// Runs BEFORE any effect and refuses the whole invocation — the same place
-/// the wrapper's pair gate stood, and for the same reason: a core nobody can
-/// vouch for must not create a session, deliver a message, or write a byte of
-/// state.
 ///
 /// # Errors
 ///
@@ -317,11 +232,6 @@ pub fn validate(dir: &impl VersionDir, version: &str, reports: &str) -> Result<(
 }
 
 /// The real version directory: the three doors this module opens on disk.
-///
-/// `symlink_metadata`, never `metadata` — a member that is a symlink to a
-/// mutable file outside the immutable directory passes every follow-test and is
-/// then executed as if it were ours. That is C51/C67 restated, and it is why
-/// the classification lstats first.
 pub struct OnDisk<'a>(pub &'a Path);
 
 impl VersionDir for OnDisk<'_> {
@@ -349,21 +259,6 @@ impl VersionDir for OnDisk<'_> {
 }
 
 /// This process's resolved executable, or `None` when the OS will not say.
-///
-/// `current_exe`, deliberately, and NOT `argv[0]`: the two answer different
-/// questions and slice Z2 pinned the difference. `argv[0]` says which SESSION
-/// HELPER this is ([`crate::shim`]); `current_exe` says which BINARY is
-/// running, which is the only thing that can decide the shape.
-///
-/// RESOLVED HERE, not by the OS. `current_exe` is only as resolved as the
-/// platform makes it: Linux answers from `/proc/self/exe`, which is the real
-/// file, while macOS answers the path this process was EXEC'D BY — the symlink,
-/// not its target. Slice Z3 makes that difference decide the product: `ae` is
-/// `~/.local/bin/ae`, a link, and every session helper is another link, so on
-/// macOS an unresolved answer names a file called `ae` or `send` and the
-/// positional test below sees a CHECKOUT for every installed invocation on the
-/// machine. Canonicalising here is what makes the two platforms answer the same
-/// question.
 #[must_use]
 pub fn resolved_exe() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
@@ -376,10 +271,6 @@ pub fn resolved_exe() -> Option<PathBuf> {
 }
 
 /// This process's shape, resolved once.
-///
-/// Cached because it cannot change mid-run and because every reader of ae's
-/// state root asks for it — a second classification would be a second answer to
-/// "whose environment does this binary trust".
 #[must_use]
 pub fn current() -> &'static Shape {
     static CELL: std::sync::OnceLock<Shape> = std::sync::OnceLock::new();
@@ -387,12 +278,6 @@ pub fn current() -> &'static Shape {
         // BOTH SIDES CANONICAL, or the comparison is of SPELLINGS and not of
         // positions. `current_exe()` resolves every link on the way to this
         // binary; `$HOME` resolves nothing, and one directory reached by two
-        // names is ordinary — `/tmp` and `/var` are `/private/...` on macOS,
-        // and a `/home` mounted through a link is the same shape on Linux.
-        // A home spelled the other way classifies a PUBLISHED core as a
-        // checkout, which hands an inherited `AE_HOME` the state root the
-        // install owns: exactly the C51 degradation at the public boundary
-        // that this module's positional rule exists to refuse.
         let home = crate::doors::home().map(|home| canonical_home(&home));
         classify(
             resolved_exe().unwrap_or_default().as_path(),

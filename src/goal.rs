@@ -171,10 +171,6 @@ impl Failure {
 /// Apply `write` to the session at `dir` for `viewer`, and return the
 /// success line for stdout — only once both writes are down.
 ///
-/// The event's actor is the pane's display ref, or `human` when the caller has
-/// none: the frozen emitter's own fallback, minus its habit of naming whatever
-/// pane the server last touched.
-///
 /// # Errors
 ///
 /// [`Failure`] — see its variants.

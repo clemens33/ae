@@ -20,13 +20,6 @@
 //!    stop and after git, and BEFORE any live state is removed, so a failed
 //!    archive fails the end with the whole session still on disk;
 //! 5. only then is the live state removed.
-//!
-//! # What this module may NOT do
-//!
-//! Guess a server. Every refusal here is fail-closed: a session with no
-//! positive server record is refused rather than swept for, an unreachable
-//! server is never read as "stopped", and `--assume-stopped` is the only
-//! acknowledgement that crosses that line — per target, never for `all`.
 
 pub(crate) mod compaction;
 pub(crate) mod end;
@@ -57,11 +50,6 @@ pub(crate) fn worktrees_dir(root: &Path) -> PathBuf {
 }
 
 /// Take the per-session lifecycle lock — `<sessions>/.lifecycle.<name>.lock`.
-///
-/// The returned handle IS the lock: dropping it releases, so every caller binds
-/// it for exactly the region the frozen `{ … } 9>"$lock"` block covered. The
-/// frozen path degraded loudly when `flock` was absent; the core has the
-/// capability unconditionally, so there is no degraded mode to announce.
 pub(crate) fn lock(root: &Path, name: &str) -> io::Result<fs::File> {
     let sessions = sessions_dir(root);
     fs::create_dir_all(&sessions)?;
@@ -72,11 +60,6 @@ pub(crate) fn lock(root: &Path, name: &str) -> io::Result<fs::File> {
 }
 
 /// The frozen session-name grammar — `^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$`.
-///
-/// One definition, quoted verbatim in every refusal that raises it. A name is
-/// simultaneously a tmux session, a directory under `<AE_HOME>/sessions`, part
-/// of a lock filename and the target of a removal, which is why it is
-/// allowlisted rather than merely screened.
 pub(crate) fn name_is_valid(name: &str) -> bool {
     let mut bytes = name.bytes();
     let Some(first) = bytes.next() else {
@@ -124,10 +107,6 @@ pub(crate) fn meta_value(bytes: &[u8], key: &str) -> String {
 
 /// The EXACT live session id for `name` on `server`, or `None` when it is not
 /// live there — the frozen `_end_live_id`.
-///
-/// An id, never a name: `kill-session -t proj` PREFIX-MATCHES and kills a live
-/// `project` while reporting success. Every kill in this module is addressed by
-/// what this returns.
 pub(crate) fn live_id(server: &ServerId, name: &str) -> Option<String> {
     transport::observe_session_id(server, name)
 }
@@ -136,10 +115,6 @@ pub(crate) fn live_id(server: &ServerId, name: &str) -> Option<String> {
 /// died — the frozen `_lifecycle_kill_verified`, and the ONE answer to "is it
 /// gone" that `stop`, `end` and `compact` share so the three cannot drift into
 /// disagreeing.
-///
-/// `verb` is the caller's own word, so the retry line names the command the
-/// human actually ran. The kill's own exit status is deliberately ignored: the
-/// proof is the verification that follows it.
 pub(crate) fn kill_verified(
     server: &ServerId,
     name: &str,
@@ -170,10 +145,6 @@ pub(crate) fn kill_verified(
 /// Every ae session the state root knows about, live or stopped — the frozen
 /// `list_ae_sessions` + `iter_stopped_sessions` union that `end all` and
 /// `stop all` enumerate, in directory order made deterministic by a sort.
-///
-/// Read from DURABLE state only. A tmux-only session (a name ae has no record
-/// of) is deliberately not a target: `end` would have nothing to archive and
-/// `stop` would be killing something it cannot prove is its own.
 pub(crate) fn all_sessions(root: &Path) -> Vec<String> {
     #[allow(
         clippy::disallowed_methods,
@@ -227,10 +198,6 @@ pub(crate) fn path_exists(path: &Path) -> bool {
 const STOP_USAGE: &str = "Usage: _stop <session-name|all> [-y] [--self]";
 
 /// `_stop <name|all> [-y]` — the whole stop operation.
-///
-/// Stop DESTROYS NOTHING, so it carries none of `end`'s `--assume-stopped`
-/// machinery: with no positive ownership record there is nothing to
-/// acknowledge, only a guess to refuse.
 pub(crate) fn run_stop(
     root: &Path,
     tail: &[String],
@@ -244,9 +211,6 @@ pub(crate) fn run_stop(
     // `--pane <id>`: the caller's own pane (the shim passes `$TMUX_PANE`, or the
     // operator's explicit `--pane=<id>` from a run-shell child, where the
     // inherited $TMUX_PANE names a FOREIGN pane). The core resolves it to a
-    // session itself: a target equal to it is a self-stop, and `all` with the
-    // caller inside any target is handed to the detached supervisor whole, so
-    // nothing is abandoned when the caller's pane dies mid-fleet.
     let (pane, words) = split_pane_flag(tail);
     for arg in &words {
         match arg.as_str() {
@@ -254,7 +218,6 @@ pub(crate) fn run_stop(
             // The caller asserts it is running INSIDE the target. Identity is
             // the shim's to prove (it passes the pane's own `$AE_SESSION`); this
             // flag is how that proof arrives, and it is why the operation cannot
-            // run in this process.
             "--self" => is_self = true,
             // The detached worker `--self` starts. Never human-typed, and never
             // reachable from `--self` itself: this arm runs the locked stop
@@ -292,7 +255,6 @@ pub(crate) fn run_stop(
     // `--self` asserts "the session I am in", so it is a claim about ONE
     // session. With `all` it is a claim about everyone else, which is how
     // `ae stop all -y --self` classified every candidate as self, kept the last
-    // and left the rest live with rc 0.
     if is_self && target == "all" {
         writeln!(
             err,
@@ -323,7 +285,6 @@ pub(crate) fn run_stop(
         // THE FLEET FORM CONFIRMS FROM EVERY CALLER. Singular stop destroys
         // nothing and needs no prompt; `stop all` takes down every session a
         // typo away, so without -y it asks, and with no terminal it refuses —
-        // the bash contract from the first day (glue cut 2 finding).
         if !yes && !confirm_fleet_stop(names.len(), out, err)? {
             return Ok(EXIT_FAILED);
         }
@@ -332,7 +293,6 @@ pub(crate) fn run_stop(
             // A stopped session in the roster is not a failure of `stop all`:
             // the fleet form's job is that nothing is left running, and one
             // already down satisfies it. Only a session that could not be
-            // stopped counts.
             match stop_recorded(root, &name, out, err)? {
                 StopOutcome::Stopped | StopOutcome::AlreadyStopped => {}
                 StopOutcome::Failed => failures += 1,
@@ -451,10 +411,6 @@ impl DetachedArgv {
 /// `nohup <this binary> _stop --supervise <name>` — the ONE shape this module
 /// can mint, with the session name as its own argv element (no shell, so
 /// nothing to inject) and nothing else settable by a caller.
-///
-/// `None` when this process cannot name its own executable: without that the
-/// supervisor could only be started through a `PATH` lookup, which may resolve
-/// to a different `ae` than the one holding the contract.
 fn supervisor_argv(name: &str) -> Option<DetachedArgv> {
     let own = crate::shape::resolved_exe()?;
     Some(DetachedArgv(vec![
@@ -485,22 +441,6 @@ pub(crate) struct Companion<'a> {
 
 /// `nohup <this binary> _launch … -- --local <session>` — the launch's
 /// orchestrator companion, and the second shape this module can mint.
-///
-/// THE CHILD IS THE CORE, not the glue. `ae orchestrator` was a bash
-/// trampoline that rewrote the config and fell through to a launch; the glue
-/// cut retired it, and its arm now REFUSES — so a companion started through
-/// the glue died with exit 2 on a discarded stderr. The core starts its own
-/// launch instead, with the scaffold's config and directory as flags, which is
-/// what the trampoline's `CONFIG_FILE` + `cd` rewrite meant.
-///
-/// `--no-autostart` is the recursion guard the child cannot infer, kept beside
-/// the structural one (a session already named for a scaffold starts nothing).
-/// `--no-attach` because nothing is watching: the child's output is
-/// `/dev/null`.
-///
-/// `None` when this process cannot name its own executable — without that the
-/// companion could only be started through a `PATH` lookup, which may resolve
-/// to a different `ae` than the one holding the contract.
 pub(crate) fn orchestrator_argv(plan: &Companion<'_>) -> Option<DetachedArgv> {
     let own = crate::shape::resolved_exe()?;
     let mut argv = vec![
@@ -530,9 +470,6 @@ pub(crate) fn orchestrator_argv(plan: &Companion<'_>) -> Option<DetachedArgv> {
 }
 
 /// Append one line to the target's event log, best-effort.
-///
-/// Best-effort deliberately: a self-stop whose audit line could not be written
-/// must still stop the session. The line is the account, not the operation.
 fn emit_stop_event(dir: &Path, name: &str, action: &str, summary: &str) {
     let _ = crate::state::emit(
         dir,
@@ -554,18 +491,6 @@ fn emit_stop_event(dir: &Path, name: &str, action: &str, summary: &str) {
 
 /// `_stop --self <name>`: hand the whole stop to a detached supervisor and
 /// return.
-///
-/// THE CALLER IS INSIDE THE TARGET. Nothing running in that pane can own this
-/// operation, because the kill destroys the pane mid-loop — the lock would be
-/// released by a dead process, the verification would never run, and the result
-/// would never be recorded. Earlier attempts to identify the caller among the
-/// targets and stop it last cannot work in general, so nothing here iterates:
-/// a detached child owns the lock, the identity lookup, the kill and the
-/// verification, and no session it kills is running it.
-///
-/// This function takes NO lock. It must not: the child needs the same
-/// per-session lock, and a lock held by a process about to be killed is the
-/// exact hazard being avoided.
 fn self_supervised(
     root: &Path,
     name: &str,
@@ -646,7 +571,6 @@ fn self_supervised(
         // THE REQUEST IS ALREADY IN THE LOG, so the outcome has to be too. A
         // stop-request with no stop-result is what a stop still in flight looks
         // like, and this one will never finish — a human reading the log after
-        // their pane closed would wait for a supervisor that was never born.
         emit_stop_event(
             &dir,
             name,
@@ -669,17 +593,6 @@ fn self_supervised(
 }
 
 /// `_stop --supervise <name>`: the detached worker.
-///
-/// It — not the dying caller — owns the lock, the identity lookup, the kill and
-/// the verification, and it records the OUTCOME so a human whose pane vanished
-/// can still find out what happened. Its streams are `/dev/null`, so the event
-/// log is the only report it can make; that is why the failure arm records the
-/// diagnostic rather than merely returning a code.
-///
-/// Calls [`stop_one`] directly, never `run_stop`: this process inherits `TMUX`
-/// from the pane that spawned it, so routing through the self path again would
-/// recurse. Calling the locked path directly makes that impossible by shape.
-/// `--self` with no name IS a name: the session the caller's pane resolves to.
 fn self_target(caller: Option<&str>, err: &mut impl Write) -> io::Result<Option<String>> {
     if let Some(own) = caller {
         return Ok(Some(own.to_owned()));
@@ -743,8 +656,6 @@ fn fleet_supervised(
         // THE SUPERVISOR CANNOT PROMPT; THIS PROCESS STILL CAN. It is alive, it
         // has the caller's terminal, and the fleet form takes down every
         // session a typo away — so it asks HERE, before detaching, exactly as
-        // every other `stop all` caller does. Only a caller with no terminal is
-        // refused, and refused the same way: name the flag, stop nothing.
         if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
             writeln!(
                 err,

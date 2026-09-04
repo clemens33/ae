@@ -4,32 +4,6 @@
 //! that repairs one. It runs AHEAD of the version-directory gate
 //! ([`crate::shape::validate`]) and reads none of ae's state: everything it
 //! needs is its platform, one environment variable, and the network.
-//!
-//! # Slice Z4 removed the handover
-//!
-//! It used to `exec` the immutable sibling `install`, because the installer's
-//! logic lived in bash and a core could not publish itself. That logic is
-//! [`crate::install`] now, so this module downloads, verifies and calls
-//! [`crate::install::publish`] IN PROCESS. The sibling `install` is still a
-//! bundle member and still published — it is what a human runs to bootstrap a
-//! machine — but `ae upgrade` no longer needs it to exist to work.
-//!
-//! # `AE_VERSION` is the pin, and it is scoped to this word
-//!
-//! Nothing else in ae reads it, and [`crate::transport`]'s spawn door removes it
-//! from every child, so an operator pin cannot freeze into the tmux server a
-//! launch creates and silently pin an upgrade months later.
-//!
-//! # Egress
-//!
-//! The same posture as [`crate::telegram`], with ONE deliberate difference.
-//! There is no secret in these URLs — a release asset is public — and GitHub
-//! answers a release download with a 302 to its object store, so a finite
-//! redirect budget is correct here where `max_redirects(0)` is correct there.
-//! `https_only(true)` still means a redirect cannot downgrade to cleartext, and
-//! the payload is proven by SHA-256 against a manifest fetched over the same
-//! locked agent, so a redirect that lands somewhere unexpected produces a
-//! checksum refusal rather than an install.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -58,10 +32,6 @@ const MAX_MANIFEST_BYTES: u64 = 1 << 20;
 const MAX_ARCHIVE_BYTES: u64 = 64 << 20;
 
 /// The two platforms ae publishes for.
-///
-/// Named rather than derived from `uname` strings: the bundle name is built
-/// from this word, so a platform ae does not publish must refuse here rather
-/// than 404 later.
 ///
 /// # Errors
 ///
@@ -136,10 +106,6 @@ pub fn archive_name(version: &str, platform: &str) -> String {
 /// The version the newest release publishes for `platform`, read out of the
 /// release manifest.
 ///
-/// The manifest names tarballs, one line per asset. The first line whose name is
-/// this platform's bundle answers; a release with no bundle for this platform is
-/// a refusal rather than a 404 on a guessed name.
-///
 /// # Errors
 ///
 /// No line names a bundle for `platform`.
@@ -189,10 +155,6 @@ pub fn expected_digest(manifest: &str, asset: &str) -> Result<String, String> {
 
 /// The entries a bundle tarball may carry, and nothing else.
 ///
-/// Checked BEFORE extraction, against `tar -tzf`: an archive that names a path
-/// outside its own root — `../`, an absolute path, a fourth member — is refused
-/// rather than unpacked and then inspected.
-///
 /// # Errors
 ///
 /// The first entry that is not one of the four.
@@ -216,21 +178,6 @@ pub fn entries_ok(listing: &str, root: &str) -> Result<(), String> {
 
 /// The SECOND `ureq::Agent` construction site in this crate, and the difference
 /// from [`crate::telegram`]'s is one setting.
-///
-/// * `proxy(None)` — the default is `Proxy::try_from_env()`. An upgrade is the
-///   highest-authority path ae has; an exported `HTTPS_PROXY` must not choose
-///   which bytes it publishes.
-/// * `https_only(true)` — the default is `false`. A redirect must not be able to
-///   downgrade the transfer to cleartext.
-/// * `max_redirects(3)` — telegram uses 0 because its URL carries the bot token.
-///   Here there is no secret to leak and GitHub answers a release download with
-///   a 302 to its object store, so a finite budget is what makes the feature
-///   work at all. What keeps it honest is the digest: a redirect that lands
-///   somewhere unexpected produces a checksum refusal, not an install.
-/// * finite `timeout_*` — a repair path may not hang.
-/// * an explicit `ring` provider — ureq's docs reserve the right to change which
-///   provider its rustls feature selects, and a static musl binary's provider is
-///   not a detail to discover in production.
 fn agent() -> ureq::Agent {
     let crypto = std::sync::Arc::new(rustls::crypto::ring::default_provider());
     let tls = ureq::tls::TlsConfig::builder()
@@ -250,10 +197,6 @@ fn agent() -> ureq::Agent {
 }
 
 /// GET `url`, refusing a body larger than `cap`.
-///
-/// The error is the URL and a CLASS, never `ureq::Error`'s own text: it can
-/// quote a URI, and while these carry no secret, one redacted vocabulary across
-/// the crate is worth more than one exception.
 fn fetch(agent: &ureq::Agent, url: &str, cap: u64) -> Result<Vec<u8>, String> {
     use std::io::Read as _;
     let mut response = agent
@@ -276,13 +219,6 @@ fn fetch(agent: &ureq::Agent, url: &str, cap: u64) -> Result<Vec<u8>, String> {
 // ─── extraction ──────────────────────────────────────────────────────────
 
 /// THE FIFTH PRODUCT CROSSING of `clippy.toml`'s `Command` deny.
-///
-/// `tar`, twice: once to LIST an archive and once to extract it. It is a
-/// deliberate non-dependency — the alternative is a tar-and-gzip crate pair in a
-/// binary whose whole dependency posture is "std owns every byte we write", for
-/// one call on one command. `tar` is on every machine ae runs on, and the
-/// listing pass ([`entries_ok`]) is what makes running it safe: nothing is
-/// unpacked until every entry has been proven to sit under the expected root.
 fn tar(args: &[&str]) -> std::io::Result<std::process::Output> {
     #[allow(
         clippy::disallowed_types,

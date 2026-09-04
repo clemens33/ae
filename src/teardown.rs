@@ -306,8 +306,6 @@ fn prove_identified_session_dir(
     // Identity is proved on the RAW meta bytes, byte-exact. `meta::first_value`
     // returns the value WITHOUT its line terminator but WITH any trailing spaces,
     // tabs or CR (the frozen `read_session_meta` preserves them). A destructive op
-    // must never normalize an unproven directory into a match: `session=demo ` is NOT
-    // `demo`. `meta_value` is used only to DISPLAY what was recorded, never to decide.
     if meta::first_value(&bytes, "session") != Some(name.as_bytes()) {
         let shown = meta_value(&bytes, "session");
         writeln!(
@@ -438,7 +436,6 @@ fn remove_git_worktree(
     // lstat the exact managed child BEFORE handing it to git: `git worktree remove`
     // resolves a symlink and would delete an EXTERNALLY registered worktree at the
     // link target. Only a real, non-symlink directory is a legitimate managed
-    // worktree; anything else is refused and BOTH resources stay RETAINED.
     match classify_dir(managed) {
         DirKind::RealDir => {}
         DirKind::Absent => {
@@ -463,8 +460,6 @@ fn remove_git_worktree(
     }
     // git refused. Git mutates only origin's worktree ADMIN metadata; origin's
     // checked-out content is never touched and origin is never a deletion target.
-    // Reclassify the exact managed child: still a real dir means BOTH resources are
-    // cleanly retained (retriable); anything else is PARTIAL/UNKNOWN.
     if matches!(classify_dir(managed), DirKind::RealDir) {
         writeln!(
             err,

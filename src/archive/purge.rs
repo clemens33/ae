@@ -198,10 +198,6 @@ fn purge_owned(
     // Past the commit: the archive no longer exists at its id path. Any failure
     // now is rc 1 with NO success stdout and an explicit state — never a
     // best-effort success.
-    //
-    // WHILE the doomed archive is still under our claim — the rename's fsync, or
-    // the recursive removal, failing — the claim is RETAINED as a recovery marker
-    // and may still hold payload bytes.
     if let Err(why) = fsync_dir(claim).and_then(|()| fsync_dir(root)) {
         return postcommit_retained(
             err,
@@ -309,7 +305,6 @@ mod tests {
     // The two post-commit states report DISTINCTLY: one retains a claim to
     // inspect, the other has already removed it. A fsync failure cannot be
     // injected through the filesystem, so the discriminating control is a direct
-    // unit test of the two diagnostics.
     #[test]
     fn retained_and_removed_states_are_reported_distinctly() {
         let claim = Path::new("/x/.publishing.abc");

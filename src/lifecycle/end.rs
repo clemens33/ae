@@ -132,7 +132,6 @@ pub(crate) fn run(
     // ONE resolution: the prompt renders from these fields and the frozen
     // contract is built from the same ones. Resolving a second time to populate
     // the contract made the human's answer and the end's contract two different
-    // observations, and every later gate then compared against the wrong one.
     let frozen: Vec<(String, Plan)> = targets
         .iter()
         .map(|name| {
@@ -236,7 +235,6 @@ fn read_reply() -> Option<String> {
     // A LINE, not to EOF: a human at a terminal answers and presses Enter, and
     // reading to EOF there would block forever waiting for a ^D they were never
     // asked for. An empty read and a failed read are the same answer — nobody
-    // replied.
     match std::io::stdin().read_line(&mut buffer) {
         Ok(read) if read > 0 => Some(buffer.trim_start().to_owned()),
         _ => None,
@@ -272,8 +270,6 @@ fn confirm_body(
 
 /// What `ae end` will do with this session's memory, resolved BEFORE the prompt
 /// so the confirmation can name the exact path — the frozen `_end_archive_plan`.
-///
-/// A QUERY: it never writes.
 fn resolve_plan(root: &Path, name: &str, purge_cli: Option<bool>) -> Plan {
     let dir = sessions_dir(root).join(name);
     let bytes = meta::read_bytes(&dir).unwrap_or_default();
@@ -284,9 +280,6 @@ fn resolve_plan(root: &Path, name: &str, purge_cli: Option<bool>) -> Plan {
         // A missing meta is not the same as nothing to lose. `Nothing` is
         // reserved for a target that HAS no session memory. A directory still
         // carrying memo, events or request payloads but no meta cannot be
-        // identified, so it is UNAVAILABLE and the end refuses: otherwise the
-        // cleanup deletes that memory unread, which is the one outcome this
-        // whole path exists to prevent.
         let has_memory = has_nonempty(&dir.join("memo.tsv"))
             || has_nonempty(&dir.join("events.jsonl"))
             || has_message_payload(&dir.join("messages"));
@@ -310,7 +303,6 @@ fn resolve_plan(root: &Path, name: &str, purge_cli: Option<bool>) -> Plan {
     // ABSENT vs CORRUPT, decided BEFORE purge gets a say. A value ae cannot
     // parse is the only evidence of what went wrong with that session, and it
     // makes the session unidentifiable — a refusal whichever way the history
-    // flag points.
     if aid.is_empty() && !raw.is_empty() {
         return Plan {
             action: Action::Unavailable,
@@ -324,7 +316,6 @@ fn resolve_plan(root: &Path, name: &str, purge_cli: Option<bool>) -> Plan {
         // CLEAN CUT, as `_compact-freeze` already rules for the same state: a
         // session with no valid id is unsupported old state, refused with a
         // refresh/migrate instruction rather than minted an id on the way to
-        // an immutable archive.
         return Plan {
             action: Action::Unavailable,
             detail: "it records no valid session id — refresh or migrate the session, then retry"
@@ -348,12 +339,6 @@ fn resolve_plan(root: &Path, name: &str, purge_cli: Option<bool>) -> Plan {
 
 /// THE purge sensor — one definition, consulted by the confirmation prompt
 /// (before the human answers) and by the cleanup (when it acts).
-///
-/// A CLI flag overrides globally; otherwise the answer comes from THIS
-/// session's OWN config, hydrated from its meta `config` plus its origin's
-/// local config, so a cross-repo end or `ae end all` honors each session's
-/// policy rather than the caller's cwd. An unreadable config is `false`: the
-/// frozen sensor's `get_config` miss is a keep, and a keep is the safe answer.
 fn effective_purge(bytes: &[u8], purge_cli: Option<bool>) -> bool {
     if let Some(explicit) = purge_cli {
         return explicit;
@@ -363,10 +348,6 @@ fn effective_purge(bytes: &[u8], purge_cli: Option<bool>) -> bool {
 
 /// The `[workspace]` block a session's own config resolves to — its recorded
 /// global config layered under its origin's local `.ae/config`.
-///
-/// No usable stored config is NOT a fall back to the caller's cwd or global
-/// (that would let an unrelated `purge = true` bleed in): only the session's
-/// OWN origin overlay can opt into anything.
 fn workspace_of(bytes: &[u8]) -> Option<Workspace> {
     let config = meta_value(bytes, "config");
     let origin = meta_value(bytes, "origin");
@@ -405,12 +386,6 @@ fn has_message_payload(dir: &Path) -> bool {
 
 /// End one session, under its lifecycle lock. `false` means the end did NOT
 /// complete — and in every such case the session is still there.
-///
-/// THE LIFECYCLE LOCK is taken here, before the target is classified, and held
-/// through the last removal: the classification decays otherwise, because the
-/// window between the proof and the cleanup spans commit/fetch/push, and a
-/// start or resume in that window made cleanup delete state under a freshly
-/// LIVE session. A final recheck alone would still race.
 #[allow(
     clippy::too_many_lines,
     reason = "the frozen order IS the contract; splitting it would put the sequence in two places"
@@ -436,14 +411,6 @@ fn end_one(
     // ══ THE INVARIANT: ae NEVER deletes session state unless
     //    (a) the target was positively identified on ITS OWN recorded server
     //        and its kill was verified, or
-    //    (b) the human passed --assume-stopped for THIS single target, and the
-    //        full enumerable sweep found nothing AND left no unverifiable
-    //        socket standing, or
-    //    (c) the target's POSITIVE record names a server that verifiably lacks
-    //        the session.
-    // Classification comes FIRST — before ANY server query — so a blank or
-    // ambiguous record can never aim a lookup (or a kill) at a server it does
-    // not own.
     let selector = server_of(&bytes);
     let mut session_id: Option<String> = None;
     let mut server = None;
@@ -466,7 +433,6 @@ fn end_one(
             // No positive ownership record. The ONLY teardown path is the
             // explicit per-target acknowledgement — and even that refuses when
             // the name is live anywhere enumerable, because the assumption
-            // would be provably false.
             match sweep(root, name) {
                 Sweep::Found(where_) => {
                     writeln!(
@@ -572,15 +538,6 @@ fn end_one(
     }
 
     // git/full mode. THE ORDER IS THE FIX: verified stop, THEN snapshot.
-    //
-    // end used to add/commit/fetch/push while the agents were STILL LIVE and
-    // only then kill. A write landing after the snapshot and before the kill
-    // was neither committed nor left on disk — cleanup deleted the directory it
-    // lived in.
-    //
-    // The repo precondition is checked BEFORE the stop, deliberately: refusing
-    // here leaves the session running, and there is no reason to stop a session
-    // for a failure we can see coming.
     let wdir_bytes = work_dir.as_os_str().as_encoded_bytes().to_vec();
     if !dir_exists(&work_dir) || !crate::git::is_work_tree(&wdir_bytes) {
         writeln!(
@@ -674,7 +631,6 @@ fn end_one(
         // B3 durability: a no-remote git target just COMMITTED work that exists
         // ONLY in this directory. Removing it would silently destroy the work
         // the prompt promised to keep — preserve the directory, remove only
-        // ae's session state.
         writeln!(out, "No remote 'origin' — skipping push.")?;
         preserve_workdir = true;
         "no-origin".clone_into(&mut git.outcome);
@@ -726,8 +682,6 @@ impl Git {
 
 /// Publish the archive (or perform the purge) for a session that is verifiably
 /// stopped, BEFORE any live state is removed.
-///
-/// `false` means the end must stop with everything still on disk.
 fn archive_step(
     root: &Path,
     name: &str,
@@ -768,7 +722,6 @@ fn archive_step(
                 // The purge already emitted the precise state — pre-commit:
                 // nothing deleted; post-commit: PURGE INCOMPLETE. Do NOT
                 // re-assert "nothing was deleted" here: that is false for an
-                // incomplete purge.
                 writeln!(
                     err,
                     "Error: purging the archive for '{name}' failed (see above) — the session is STOPPED."
@@ -833,10 +786,6 @@ fn archive_step(
 }
 
 /// Remove the live session — the frozen `cleanup_session`.
-///
-/// The FROZEN answer wins when a human confirmed one: re-resolving the purge
-/// policy here would let a config edit made during the prompt delete
-/// conversation files the human was told would be kept.
 fn cleanup(
     root: &Path,
     name: &str,
@@ -863,8 +812,6 @@ fn cleanup(
     // The core owns the removal — a rename-to-tombstone commit boundary that
     // clears the canonical name atomically and reports success only after the
     // removal is durable. A teardown that RAN and FAILED has left the session
-    // recoverable under its tombstone and printed the state: fail loudly, do
-    // NOT delete more and do NOT print an end line.
     let valid = super::name_is_valid(name);
     if (mode == "local" || mode.is_empty()) && valid {
         if crate::teardown::run(&dir, out, err)? != 0 {
@@ -911,7 +858,6 @@ fn cleanup(
         // The core already removed the managed workdir together with the
         // canonical state; it owns BOTH resources. Return BEFORE the legacy
         // cleanup so those removals can never delete a subtree of a preserved
-        // workdir or touch `origin/.ae/<name>`.
         if mode == "git" && !origin.is_empty() {
             crate::git::worktree_prune(origin.as_bytes());
         }
@@ -948,9 +894,6 @@ fn remove_legacy(root: &Path, name: &str, origin: &str) {
 
 /// Delete the agent CLI conversation files this session's captured harness ids
 /// name — the frozen `_cleanup_agent_session_files`.
-///
-/// Opt-in by construction: these are the only local per-session record of token
-/// usage, so they are KEPT unless the resolved policy says otherwise.
 fn purge_conversation_files(
     root: &Path,
     bytes: &[u8],
@@ -1142,10 +1085,6 @@ enum Sweep {
 }
 
 /// Ask every enumerable tmux socket whether `name` is live there.
-///
-/// Only `--assume-stopped` consults this, and it is the reason that
-/// acknowledgement is safe to honour: an assumption that is provably false is
-/// refused rather than trusted.
 fn sweep(root: &Path, name: &str) -> Sweep {
     let Some(dir) = socket_dir(root) else {
         // Nowhere to enumerate is not proof of absence, but it is also not a
@@ -1183,10 +1122,6 @@ fn sweep(root: &Path, name: &str) -> Sweep {
 }
 
 /// `${TMUX_TMPDIR:-/tmp}/tmux-<uid>` — where tmux keeps its default sockets.
-///
-/// The uid comes from the state root's own owner rather than a syscall:
-/// `unsafe_code = "forbid"` closes the libc route, and the directory ae keeps
-/// its state in is owned by the user whose tmux sockets are being enumerated.
 fn socket_dir(root: &Path) -> Option<PathBuf> {
     use std::os::unix::fs::MetadataExt as _;
     #[allow(

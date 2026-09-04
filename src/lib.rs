@@ -1,61 +1,5 @@
 //! `ae` — agent environment: a tmux-backed multi-agent session multiplexer.
 //!
-//! Every quality lane — fmt, clippy, nextest, doctests, coverage, mutants —
-//! runs against real code.
-//!
-//! # Where the behavior comes from
-//!
-//! Every module here was built from RATIFIED rows of the rewrite's semantic
-//! contract, and each still names its rows in its own module docs. That
-//! document and the bash it described are both retired; the row identifiers
-//! stay because they are what a module's own docs say it implements, and git
-//! keeps the text. While it was live the rule was: the bash implementation is
-//! **not** an oracle — it may be read to understand a mechanism, but it never
-//! defines an expected output, and a behavior with no row stops the work and
-//! goes to the seats — which is why several
-//! fields of the `list --json` digest are *inputs* to [`session::entry_for`]
-//! rather than things it reads. See that module's docs for the list.
-//!
-//! # The first read-side slice (P1: `list --json`)
-//!
-//! | Module | Rows |
-//! |---|---|
-//! | [`json`] | SC-510d — the escape set, both directions |
-//! | [`meta`] | SC-405a–e — the session meta keys, and only those |
-//! | [`time`] | SC-510a, SC-509 — the one timestamp spelling |
-//! | [`events`] | SC-510a–f, SC-511a–c, SC-405j, SC-519, SC-520, DR-001 — the record and the generation-aware reader |
-//! | [`attention`] | SC-017g, SC-509 — severity and the rollup |
-//! | [`digest`] | SC-509, SC-509b, SC-506 — the versioned document that always closes, and says when it lost something |
-//! | [`filters`] | SC-017a–f, SC-017i, SC-521, SC-523, SC-524 — which sessions a listing shows |
-//! | [`inventory`] | SC-017j, SC-404 — which sessions EXIST, before anything asks whether they run |
-//! | [`liveness`] | SC-017k, SC-017l — what ae knows about running, and what it says when it cannot tell |
-//! | [`tmux`] | SC-017k — which server an argument list addresses, and what a completed run means |
-//! | [`transport`] | SC-017k, SC-017l — the exec, and why a run that did not answer is never absence |
-//! | [`session`] | SC-017e, SC-017g, SC-405d/f/g/i/j/k, SC-518, SC-520, SC-980 — what a session directory establishes, and what it must be told |
-//! | [`listing`] | SC-017f, SC-017h, SC-509, SC-506 — the two renderings of one selection, and the injected world they read |
-//! | [`cli`] | SC-021, SC-022, and the argv half of SC-017a–i / SC-521a/b — which word is `list`, and which parser owns its flags |
-//!
-//! # The read side, slice 2: the two helper query surfaces
-//!
-//! | Module | Rows |
-//! |---|---|
-//! | [`event_text`] | SC-211d, SC-211n — the OPAQUE extraction and framing the generated helpers read through, which is not [`events`]'s typed reader |
-//! | [`requests`] | SC-212c, SC-518, SC-1306d — pending, replied, cancelled, and the table that shows them |
-//! | [`events_tail`] | SC-211n, SC-1306e — the monitor pane's banner, replay and follow |
-//!
-//! These two are GENERATED SESSION HELPERS in the frozen tree, invoked as
-//! `<AE_HOME>/sessions/<name>/requests` and `…/events-tail`. Their successor
-//! spelling is [`cli::REQUESTS`] and [`cli::EVENTS_TAIL`], and the argv mapping a
-//! parity run must declare for them is recorded in each module's docs.
-//!
-//! Most of those rows exist BECAUSE this code was written. Two slices stopped on
-//! eleven questions rather than inferring answers, and the seats ratified the
-//! results: eighteen rows from the first batch, five more and an amendment to
-//! SC-017g from the second, plus an amendment to SC-510c whose original text had
-//! dropped its own authority's hedge. Three of those rulings REVERSED what this
-//! crate first did, and one rejected a row this crate's own evidence might have
-//! justified — a live census is evidence, never contract.
-//!
 //! Module layout is 2018-edition style: `cli.rs` beside a future `cli/`, never
 //! a `mod.rs`.
 //!
@@ -146,15 +90,6 @@ pub fn version_line() -> String {
 }
 
 /// The text `ae --help` prints.
-///
-/// Every command this binary actually carries has to appear here. Help that
-/// omits a shipped surface is a wrong answer wearing the shape of a right one —
-/// the same failure `ae list` refuses to commit when it has no source to read.
-///
-/// **The help LAYOUT is not ratified.** SC-012 owns this surface ("prints the
-/// command surface") and is not a row this slice was built from, so what is
-/// maintained here is the CONTENT — the commands that exist — and no test
-/// asserts its exact bytes. Its acceptance rides SC-012's own seat mark.
 #[must_use]
 pub fn help_text() -> String {
     format!(
@@ -178,48 +113,16 @@ pub fn help_text() -> String {
 }
 
 /// What the binary says when it cannot derive its own state root.
-///
-/// **The unwired-source refusal is GONE.** `ae list` answers now: SC-017j
-/// enumerates, SC-017k/l classify, SC-017m/n render. What remains is the one
-/// case where there is nothing to enumerate FROM — no `AE_HOME` and no `HOME` —
-/// which is not a missing feature but a machine that cannot say where its own
-/// state lives. Reporting that is not the same as reporting "no source is
-/// wired": one is a fact about this invocation, the other was a fact about the
-/// build.
 pub const NO_STATE_ROOT: &str = "cannot derive the state root: neither AE_HOME nor HOME is set";
 
 /// What the binary says for a top-level session name.
-///
-/// **SC-022** rules that such a token is a launch candidate and never an
-/// unknown-subcommand error. Launching is not this slice's work, so the binary
-/// says exactly that — SCAFFOLD, and no part of any
-/// acceptance claim.
 pub const NO_LAUNCHER: &str = "start is not implemented in this build";
 
 /// The exit code for a request the binary understood but could not carry out.
-///
-/// Distinct from `0` and from SC-022's usage-error `2`: "you asked wrong" and
-/// "it went wrong" stay tellable apart, which is the whole reason `2` exists.
-///
-/// **SCAFFOLD.** No row rules this code for either of the two requests that
-/// currently end in it. It is the least-wrong placeholder while their real
-/// surfaces are unratified, and it is deliberately not returned by
-/// [`cli::Request::exit_code`], where it could be mistaken for contract.
 pub const EXIT_UNAVAILABLE: u8 = 1;
 
 /// Run the CLI against a whole argv, `argv[0]` included — the binary's real
 /// entry.
-///
-/// THE BASENAME OF `argv[0]` IS READ FIRST, because it can change what this
-/// process IS. Every session helper is a symlink to this binary, so a pane that
-/// runs `<session-dir>/send` reaches exactly this function with `program` set
-/// to that path; the helper's entry and its session directory both come out of
-/// it. `program` is [`std::env::args`]'s first word, never
-/// [`std::env::current_exe`], which resolves the link and would answer
-/// `ae-core` for every helper.
-///
-/// A `program` of `None` — the shape [`run`] keeps for tests and doctests — is
-/// simply "not a helper".
 ///
 /// # Errors
 ///
@@ -243,8 +146,6 @@ pub fn run_program(
         // A helper carries no preamble: the pane execs the link directly, so
         // the translated argv goes straight to the ordinary dispatch — through
         // the gate, which is the ONE thing a helper still pays. Every helper is
-        // a link to this binary, so a helper that skipped it was a route around
-        // the install check for 21 names per session.
         shim::Invocation::Helper { helper, dir } => {
             if let Some(code) = install_gate(err)? {
                 return Ok(code);
@@ -266,12 +167,6 @@ fn invocation_dir() -> std::path::PathBuf {
 
 /// Run the CLI against `args` (argv WITHOUT the program name).
 ///
-/// The argv dispatch, once [`run_program`] has established that this process is
-/// not a session helper. `list` reads the real state root, enumerates,
-/// classifies and renders; see [`run_with`] for the injected-source path the
-/// suite drives, and [`listing::World`] for why the source is a parameter at
-/// all.
-///
 /// # Errors
 ///
 /// Returns [`Error::Io`] if `out` or `err` cannot be written or flushed.
@@ -288,8 +183,6 @@ pub fn run(args: &[String], out: &mut impl Write, err: &mut impl Write) -> Resul
     // TWO WORDS ARE OWED AN ANSWER ON A BROKEN INSTALL, and they are the ONLY
     // two, which is why they sit ahead of the gate: `version` is how a mismatch
     // is diagnosed, so it may not depend on the thing it diagnoses, and
-    // `upgrade` is how one is repaired. This is the wrapper's own ordering,
-    // kept.
     match args.first().map(String::as_str) {
         Some("version" | "--version" | "-V") => {
             writeln!(out, "{}", version_line())?;
@@ -302,18 +195,12 @@ pub fn run(args: &[String], out: &mut impl Write, err: &mut impl Write) -> Resul
     // THE GATE, above every remaining word. It used to sit BELOW the `_` arm,
     // which meant the core's own namespace was exempt from the check that says
     // this binary is the one `install` published: on a planted install whose
-    // manifest had been replaced with nonsense, `_shims-render <dir>` answered
-    // 0 and published 21 helper links (measured, pre-fix). What the `_` arm
-    // still skips is the TMUX PROBES below, which is what keeps `_run` — the
-    // command every pane execs — cheap. The gate is not a probe: three lstats
-    // and one small read, no tmux and no state.
     if let Some(code) = install_gate(err)? {
         return Ok(code);
     }
     // The core's OWN namespace. A `_`-prefixed word is an internal entry: it
     // carries its operands, consumes no ambient fact, and is never a session
     // name — so it dispatches straight through. An unserved one FAILS CLOSED
-    // rather than becoming a launch.
     if let Some(word) = args.first().map(String::as_str)
         && word.starts_with('_')
     {
@@ -339,18 +226,6 @@ pub fn run(args: &[String], out: &mut impl Write, err: &mut impl Write) -> Resul
 
 /// The structural install gate — the ONE place every effectful invocation
 /// proves this binary is the one `install` published.
-///
-/// `Some(code)` is a refusal already written to `err`; `None` means carry on.
-///
-/// EVERY EFFECTFUL PATH PASSES IT: the public commands, the core's own `_`
-/// namespace, and the 21 session-helper links, which are all links to this same
-/// binary and reach it through [`run_program`]. Only `version` and `upgrade`
-/// stand ahead of it, because one diagnoses a broken install and the other
-/// repairs it.
-///
-/// VALIDATION ONLY, deliberately. No tmux, no state read, no probe: this runs
-/// on `_run`, which every pane execs, and on every `send` an agent types, so it
-/// costs what [`shape::validate`] costs and nothing more.
 fn install_gate(err: &mut impl Write) -> Result<Option<u8>> {
     match shape::current() {
         shape::Shape::Installed {
@@ -378,22 +253,11 @@ fn install_gate(err: &mut impl Write) -> Result<Option<u8>> {
 }
 
 /// Every ambient fact this invocation carries, read from the doors.
-///
-/// `None` is the one thing that cannot be recovered from: no state root, which
-/// means neither `AE_HOME` nor `HOME` said where ae lives. The wrapper caught
-/// the same case as an empty `--home` and refused for the same reason — a home
-/// nobody named would silently mean the filesystem root.
-///
-/// THE TMUX PROBES RUN HERE, eagerly, exactly as the wrapper ran them for every
-/// invocation: one `display-message` outside a pane, three inside it. Making
-/// them lazy would need a second table of which words consume a server, and a
-/// table that drifts from [`entry::route`] is worse than a subprocess.
 fn resolve_facts(shape: &shape::Shape, err: &mut impl Write) -> Result<Option<entry::Preamble>> {
     let Some(home) = doors::state_root(shape) else {
         // [`NO_STATE_ROOT`] and its code, VERBATIM: the condition the dispatch
         // already refuses, said one layer earlier because the entry cannot
         // build a single fact without it. Two spellings of one condition would
-        // make the answer depend on which path reached it first.
         writeln!(err, "ae: {NO_STATE_ROOT}")?;
         return Ok(None);
     };
@@ -415,14 +279,10 @@ fn resolve_facts(shape: &shape::Shape, err: &mut impl Write) -> Result<Option<en
 }
 
 /// The ordinary argv dispatch: [`cli::Request::parse`] and the world it needs.
-///
-/// Split out of [`run`] so the entry router can reach it for a translated argv
-/// without re-entering the preamble detection it has already answered.
 fn run_dispatch(args: &[String], out: &mut impl Write, err: &mut impl Write) -> Result<u8> {
     // Only a listing needs a source, and `next` only needs one once its argv has
     // been accepted: a refused word must not pay for a tmux scan of every
     // session before it can say so, which is what frozen's parse-then-scan order
-    // already guaranteed.
     let wants_world = match cli::Request::parse(args) {
         // The sweep reads the same world `list` renders — that IS its input.
         cli::Request::List(_) | cli::Request::Monitor { .. } => true,
@@ -480,11 +340,6 @@ fn run_entry(
 
 /// `ae archive preview [name]` — resolve the target, path-check it, then hand
 /// the resolved directory to the read-only tracer.
-///
-/// The NAME half is answered here because the tracer takes a directory: the
-/// grammar, the migration arm for a legacy name, the existence of the state,
-/// and the path object are four different refusals, and the tracer sees none of
-/// them.
 fn run_archive_preview(
     preamble: &entry::Preamble,
     name: Option<&str>,
@@ -522,19 +377,6 @@ fn run_archive_preview(
 }
 
 /// The launch fall-through: the prelude the glue ran, then `_launch`.
-///
-/// THE ORDER IS THE CONTRACT, and each step is where it is for a reason:
-///
-/// 1. the dependency gate, which refuses a machine with no tmux before
-///    anything is written;
-/// 2. the default config, the FIRST WRITE of the run and deliberately after
-///    the gate: a launch cannot proceed without a config, but an install that
-///    cannot serve a launch must not leave one behind;
-/// 3. the PATH OBJECT at the named session, ahead of every side effect — the
-///    grammar says nothing about what is on disk, and a symlink named
-///    `valid-name` satisfies every naming rule while the reuse paths and the
-///    rollback's own removal run straight through it;
-/// 4. the launch itself, the user's argv handed over verbatim.
 fn run_launch(
     preamble: &entry::Preamble,
     user: &[String],
@@ -555,7 +397,6 @@ fn run_launch(
     // The NAME grammar is the launch's own and answers first, so a traversal
     // name is refused as a name rather than as a path object and the message
     // says what is actually wrong. Only a name ae would otherwise USE reaches
-    // the path question.
     let hint = entry::session_hint(user);
     if !hint.is_empty()
         && session_name_usable(preamble, &hint)
@@ -583,12 +424,6 @@ fn write_unsafe_path(path: &std::path::Path, err: &mut impl Write) -> Result<()>
 }
 
 /// The session the CALLER is sitting in, or `None`.
-///
-/// Only asked when the wrapper proved we are genuinely inside a pane: `$TMUX`
-/// is an ordinary variable a GUI terminal inherits, and answering for the
-/// ORIGINAL pane is how a nameless command used to target someone else's
-/// session. The answer must also name real ae state — a plain tmux session that
-/// ae never created is not one of ours.
 fn current_session_name(preamble: &entry::Preamble) -> Option<String> {
     if !preamble.inside_tmux {
         return None;
@@ -601,12 +436,6 @@ fn current_session_name(preamble: &entry::Preamble) -> Option<String> {
 }
 
 /// Whether `name` may be used for an EXISTING session — the migration shape.
-///
-/// Anything the grammar accepts, or a legacy name that IS ALREADY a real
-/// physical direct-child directory. Sessions created before the grammar existed
-/// stay usable; traversal is accepted by neither arm, because the second
-/// requires a direct child that is a directory in its own right rather than a
-/// symlink pointing anywhere.
 fn session_name_usable(preamble: &entry::Preamble, name: &str) -> bool {
     if session_launch::name::is_session_name(name) {
         return true;
@@ -617,10 +446,6 @@ fn session_name_usable(preamble: &entry::Preamble, name: &str) -> bool {
 
 /// Whether the on-disk object at `<sessions>/<name>` is safe to treat as that
 /// session's directory — a PATH question, answered INDEPENDENTLY of the name.
-///
-/// That independence is the point: folding it into the name check did not work,
-/// because the name check RETURNS on a grammar accept, so every grammar-valid
-/// symlink skipped it completely.
 fn session_path_is_safe(preamble: &entry::Preamble, name: &str) -> bool {
     if !entry::is_direct_child_name(name) {
         return false;
@@ -628,7 +453,6 @@ fn session_path_is_safe(preamble: &entry::Preamble, name: &str) -> bool {
     // ABSENT is safe (nothing to escape through yet); a symlink of ANY kind is
     // not, DANGLING INCLUDED — which is why this is an lstat and not an
     // existence test. `-e` reads a dangling link as absent and waves it
-    // through.
     match lstat_kind(&preamble.sessions().join(name)) {
         None | Some(PathKind::Directory) => true,
         Some(PathKind::Symlink | PathKind::Other) => false,
@@ -665,11 +489,6 @@ fn lstat_kind(path: &std::path::Path) -> Option<PathKind> {
 }
 
 /// Write the default config, once, if there is none.
-///
-/// `Ok(None)` is "nothing to do, or done"; `Ok(Some(code))` is a refusal the
-/// caller returns. Published temp-then-rename in the destination's own
-/// directory, so a writer that dies mid-write leaves no half-written config for
-/// the very next step to parse.
 fn seed_default_config(path: &std::path::Path, err: &mut impl Write) -> Result<Option<u8>> {
     if regular_file(path) {
         return Ok(None);
@@ -724,12 +543,6 @@ fn regular_file(path: &std::path::Path) -> bool {
 }
 
 /// The `_say` arm: the frozen `helper_say_main`.
-///
-/// It emits a `chat` event and says so — the bridge is what forwards it, and a
-/// `say` with no bridge running is deliberately still a recorded line rather
-/// than a refusal, because the event log is where the text belongs either way.
-/// stdin is read when no text was given, which is how a multi-line reply
-/// travels; a whitespace-only payload is the usage refusal, not an empty event.
 fn run_say(
     dir: &std::path::Path,
     tail: &[String],
@@ -815,15 +628,6 @@ fn run_state(
 }
 
 /// The `next`/`jump` arm — frozen `cmd_next`, over the world `list` renders.
-///
-/// The argv is answered BEFORE the world is consulted, exactly as frozen's loop
-/// ran before its scan: `ae next --bogus` is a refusal whether or not any
-/// session needs a human, and `--help` never depends on tmux being reachable.
-///
-/// Everything after the selection is the jump, and it is here rather than in
-/// [`next`] because it runs tmux — the module stays pure so the ordering rules
-/// can be tested without a server, which is the same split [`tmux`] and
-/// [`transport`] already keep.
 fn run_next(
     tail: &[String],
     world: Option<&listing::World>,
@@ -853,13 +657,11 @@ fn run_next(
     // The ambient server, which is what the frozen `tmux()` shim resolves to
     // when no `AE_TMUX_SERVER` redirects it. The core has no shim — see
     // `calling_pane` — so this is a jump to the server the invocation is
-    // already talking to, and never to one a session record names.
     let server = inventory::ServerId::Ambient;
 
     // Re-validate EXACTLY: the session may have ended between the scan and the
     // jump, and a prefix-matching `has-session -t` would land the focus on a
     // surviving sibling. A server that did not answer proves nothing is gone,
-    // but it also cannot be jumped to, so it takes the same refusal.
     let still_there =
         transport::session_names(&server).is_some_and(|names| names.contains(&choice.name));
     if !still_there {
@@ -1063,11 +865,6 @@ fn run_memo(
 
 /// Who is invoking a helper: the pane `TMUX_PANE` names, read from the ambient
 /// server and classified by [`requests::Viewer::from_pane`].
-///
-/// No `TMUX_PANE`, an empty one, or a pane the server does not answer for is
-/// [`requests::Viewer::default`] — no identity — and the requests surface then
-/// refuses `mine`/`inbox`. See the `requests` module docs for why this does not
-/// copy the frozen helper's fallback to the server's current pane.
 fn calling_viewer(dir: &std::path::Path) -> requests::Viewer {
     calling_pane(dir)
         .map(|observed| requests::Viewer::from_pane(&observed, &own_session(dir)))
@@ -1076,14 +873,6 @@ fn calling_viewer(dir: &std::path::Path) -> requests::Viewer {
 
 /// The tmux server a helper reads its OWN pane on: the session's recorded
 /// selector when usable, else the ambient server.
-///
-/// The bash helpers read `TMUX_PANE` off `$AE_TMUX_SERVER` (the shim ae exports
-/// into every session's environment); the core does not read that env, so it
-/// reads the same server from the session's recorded selector instead — they
-/// name the same server, since the launch pins one from the other. An unusable
-/// selector degrades to the ambient server (who-am-I then simply finds no
-/// identity, exactly as an unstamped pane does) rather than refusing: this is a
-/// read of the caller's own identity, not a destructive routing decision.
 fn viewer_server(dir: &std::path::Path) -> crate::inventory::ServerId {
     match crate::meta::read_bytes(dir)
         .map(|bytes| crate::meta::Meta::parse(&String::from_utf8_lossy(&bytes)).server_selector())
@@ -1146,39 +935,16 @@ pub(crate) fn state_root() -> Option<std::path::PathBuf> {
 
 /// The classified snapshot AND the world `ae list` shows right now — the real
 /// route, returned in both halves so it can be observed from outside.
-///
-/// **Both halves, deliberately.** The phase-3 gate's criterion 2 requires the
-/// presentation input to equal the completed classified set, and a test that
-/// entered presentation itself was observing a boundary IT chose rather than the
-/// one the CLI crosses: anything this function did between classification and
-/// entry was invisible to it. Returning the snapshot beside the world makes both
-/// sides comparable on the route the product actually takes.
-///
-/// Phase 1 discovers, phase 2 classifies, phase 3 renders — and the transport is
-/// [`transport::Tmux`], which runs the real thing. A candidate whose recorded
-/// server answers is `running` or `stopped` on that answer; a candidate whose
-/// server does not answer is still `unknown`, because SC-017l is about what was
-/// established and not about which build is running.
 #[must_use]
 pub fn current_world(root: &std::path::Path) -> (liveness::Snapshot, listing::World) {
     let scan = inventory::durable_records(&inventory::Roots::under(root));
-    // No ambient server: selecting one is SC-1410c's unratified question, and
-    // entitlement without a pointer is exactly what SC-017j forbids.
+    // No ambient server: selecting one is unratified question, and
+    // entitlement without a pointer is exactly what is forbidden.
     let taken = inventory::take(scan, None, &transport::Tmux);
     let snapshot = liveness::classify(taken, &transport::Tmux);
     // Criterion 3 only: the opposed disk must change HERE, on this function's
     // path, not after it returns. A test that mutates then calls
     // `Presentation::enter` itself is below the list/ls caller. Compiled out
-    // when `debug_assertions` is off.
-    //
-    // Not precedent for the rejected transport seam. The rejected route-(c)
-    // seam would have created a presentation-only product route supplying a
-    // product fact. This callback schedules a product-valid external change
-    // inside the existing route and can inject nothing — not a snapshot, a
-    // World, a Discovery, or a tmux substitute. It serves a ratified
-    // criterion's mandated arm (C3) and is compiled out when
-    // `debug_assertions` is off. Single-purpose: a new consumer needs a new
-    // ruling.
     #[cfg(debug_assertions)]
     AFTER_CLASSIFY.with(|slot| {
         if let Some(hook) = slot.get() {
@@ -1195,21 +961,6 @@ pub fn current_world(root: &std::path::Path) -> (liveness::Snapshot, listing::Wo
 }
 
 /// What tmux says RIGHT NOW about every classified candidate, in snapshot order.
-///
-/// The facts no session directory holds, and the ones the frozen `cmd_list`
-/// read straight from tmux: each running session's pane enumeration (SC-017p/q's
-/// per-agent liveness, and the vanished-pane `dead` the attention rollup raises)
-/// and the branch its watchdog publishes (SC-405g's live half).
-///
-/// **Only a RUNNING session is asked.** A `stopped` classification already
-/// proves every pane of it gone, and an `unknown` one establishes nothing that a
-/// pane query could repair — so both would spend a round-trip to learn what the
-/// status already said.
-///
-/// Every read is allowed to fail into "nothing observed": a session with no
-/// entitled server, a pane query that did not come back, an absent branch
-/// option. None of those may become a verdict, because a failed question is the
-/// one thing SC-017q says must never look like an answer.
 fn observed_runtimes(snapshot: &liveness::Snapshot) -> Vec<session::SessionRuntime> {
     snapshot
         .sessions
@@ -1250,24 +1001,12 @@ thread_local! {
 }
 
 /// Arm a callback between classification and [`listing::Presentation::enter`].
-///
-/// **Single-purpose.** Criterion 3's opposed-disk plant, and nothing else. A
-/// new consumer requires a new ruling. Not the rejected transport seam: that
-/// route-(c) hook would have created a presentation-only product route
-/// supplying a product fact. This callback schedules a product-valid external
-/// change inside the existing route and can inject nothing. Compiled out when
-/// `debug_assertions` is off. Integration tests cannot see `cfg(test)` on this
-/// crate, which is why the hook is not `cfg(test)`.
 #[cfg(debug_assertions)]
 pub fn set_after_classify_hook(hook: Option<fn(&std::path::Path)>) {
     AFTER_CLASSIFY.with(|slot| slot.set(hook));
 }
 
 /// Run the CLI against `args` over `world` — the injected session source.
-///
-/// `None` means the caller could not supply one, which after three phases is no
-/// longer "nothing is wired" but "this invocation has no state root". [`run`]
-/// supplies a real world; the suite supplies fixtures.
 ///
 /// # Errors
 ///
@@ -1300,7 +1039,7 @@ pub fn run_with(
 ) -> Result<u8> {
     let request = cli::Request::parse(args);
     let code = match &request {
-        // Asked-for output goes to stdout. A DIAGNOSTIC never does — SC-022 —
+        // Asked-for output goes to stdout. A DIAGNOSTIC never does,
         // because a machine reading `ae list --json` must not have to tell the
         // document apart from the complaint about the document.
         cli::Request::Version => {
@@ -1319,8 +1058,6 @@ pub fn run_with(
             // Every internal entry but one is per-SESSION and takes that
             // session's meta directory. The telegram bridge is machine-global —
             // one bot, one chat, every session — so it takes AE_HOME, and being
-            // told to supply a meta directory would send an operator looking
-            // for a path that has nothing to do with it.
             let operand = if *command == cli::TELEGRAM_RUN {
                 "an ae home directory"
             } else if *command == cli::NET_PROBE {
@@ -1337,7 +1074,6 @@ pub fn run_with(
         // The frozen helper writes its table and its refusal to the streams a
         // pane reads, and so does this: the refusal is a DIAGNOSTIC and never
         // reaches stdout, which is why a refused invocation's stdout is empty
-        // rather than a bare header.
         cli::Request::State { dir, tail } => run_state(dir, tail, out, err)?,
         cli::Request::Goal { dir, tail } => run_goal(dir, tail, out, err)?,
         cli::Request::Memo { dir, tail } => run_memo(dir, tail, out, err)?,
@@ -1401,7 +1137,6 @@ pub fn run_with(
         // The only entry whose payload arrives on STDIN: a launch's seat list
         // is many records, and an argv is not the place for a document. Read to
         // the end BEFORE anything is published, so a truncated pipe is a
-        // refusal the trailer catches rather than a half-built roster.
         cli::Request::MetaInit { dir, tail } => {
             let mut stdin = String::new();
             std::io::Read::read_to_string(&mut std::io::stdin(), &mut stdin)?;
@@ -1578,10 +1313,9 @@ pub fn run_with(
         cli::Request::CompactFindOutstanding { dir } => compact::find_outstanding_step(dir, out)?,
         cli::Request::List(list_args) => {
             if let Some(world) = world {
-                // SC-017o: the warning goes to STDERR and the table still
+                // the warning goes to STDERR and the table still
                 // prints. A machine reading `--json` must not have to tell the
                 // document apart from the complaint about it, and a human must
-                // not have to notice a missing row to learn ae could not look.
                 if !list_args.json
                     && let Some(warning) = listing::diagnostic(world)
                 {
@@ -1676,7 +1410,7 @@ mod tests {
 
     #[test]
     fn help_names_every_command_the_binary_actually_carries() {
-        // CONTENT, not layout (SC-012 owns the surface and is not this slice's
+        // CONTENT, not layout (the surface itself is owned elsewhere):
         // row): each shipped spelling has to be findable in the help text, so a
         // command can never ship without appearing here.
         let text = help_text();
@@ -1690,7 +1424,6 @@ mod tests {
         // THE DISPATCH, not the human entry. `run` answers what a HUMAN typed
         // at `ae`, where an empty argv is a launch and every word is resolved
         // against the real environment; these four rows are about the argv
-        // table underneath it, which `run_with` is the seam for.
         for words in [vec!["--help"], vec!["-h"], vec!["help"], vec![]] {
             let (mut out, mut err) = (Vec::new(), Vec::new());
             let code = run_with(&argv(&words), None, &mut out, &mut err).unwrap();
@@ -1782,8 +1515,6 @@ mod tests {
         // What is left of the old refusal. It is no longer "no source is wired"
         // — that was a fact about the BUILD and it is gone — but "this machine
         // did not tell me where its state lives", which is a fact about the
-        // invocation. Not 0, not the usage 2, nothing on stdout that could be
-        // mistaken for an empty listing.
         for words in [vec!["list"], vec!["ls"], vec!["list", "--all", "--json"]] {
             let (mut out, mut err) = (Vec::new(), Vec::new());
             let code = run_with(&argv(&words), None, &mut out, &mut err).unwrap();
@@ -1804,7 +1535,7 @@ mod tests {
         assert!(err.is_empty(), "nothing is wrong, so nothing is reported");
         let listing = String::from_utf8(out).unwrap();
         assert!(listing.contains("live"), "{listing}");
-        assert!(!listing.contains("old"), "SC-017a: running only");
+        assert!(!listing.contains("old"), "running only");
     }
 
     #[test]
@@ -1823,12 +1554,12 @@ mod tests {
         assert_eq!(
             value.get("schema_version"),
             Some(&crate::json::Value::Num(crate::digest::SCHEMA_VERSION)),
-            "SC-509d: every successor digest is version 2"
+            "every successor digest is version 2"
         );
         assert_eq!(
             value.get("inventory_complete"),
             Some(&crate::json::Value::Bool(true)),
-            "SC-017o: and every successor digest carries the completeness fact"
+            "and every successor digest carries the completeness fact"
         );
     }
 

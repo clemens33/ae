@@ -6,75 +6,6 @@
 //! would archive — the "preview" snapshot — to stdout, with the command's
 //! banner and any degradation notices to stderr. Archive publication and the
 //! publisher claim live elsewhere; this module is preview only.
-//!
-//! # The frozen surface, and the successor spelling
-//!
-//! ```text
-//! ae archive preview [name]  ->  ae _archive-preview <AE_HOME>/sessions/<name>
-//! ```
-//!
-//! `ae` (the bash glue) resolves the session name, validates it, checks the
-//! directory exists, and runs `_require_session_path_safe` BEFORE it shims —
-//! name resolution and traversal safety are about the sessions root and stay
-//! in the glue. The core is handed a concrete, existing session directory and
-//! renders from it. `_validate_session_name` forbids a leading `_`, so the
-//! `_archive-preview` spelling can never shadow a session name.
-//!
-//! # Byte-for-byte with the frozen `cmd_archive_preview`
-//!
-//! The bash command (`ae`: `cmd_archive_preview` / `_ar_preview_once` /
-//! `_ar_render_digest` and the `_ar_*` readers) is the reference. This module
-//! reproduces it for ordinary, empty and malformed-but-readable sessions; the
-//! parity fixtures and their captured stdout/stderr are the test. The
-//! volatility fields a PREVIEW names truthfully, exactly as `_ar_preview_once`
-//! does: `archived_at` = `pending`, `git_push_outcome` = `preview-not-run`,
-//! `git_push_ref` = `-`.
-//!
-//! # Git facts, derived by running git (P3.2)
-//!
-//! For a non-local (`worktree`/`copy`) session the frozen `_ar_git_head` and
-//! `_ar_git_range` run `git` in the work dir; [`crate::git`] ports them exactly,
-//! reached through [`crate::transport::run_git`] — the fixed-program git leg of
-//! the one process door, widened deliberately (not a second door). [`GitFacts`]
-//! composes them as `_ar_preview_once` does: `base` is the meta's
-//! `git_base_commit` for every mode, and `final`/`range`/`count` are `-` for a
-//! LOCAL session and computed from git for a non-local one. The strict
-//! interpreters (40-hex HEAD, all-digit count) mean an unusable, non-repository
-//! or rewritten-base work dir falls to `-`, matching the frozen readers. The
-//! P3.1 parity fixtures are all local or have a non-existent work dir, so they
-//! still render `-`; the real-repo shapes are covered by `tests/it/git.rs`.
-//!
-//! # Non-regular sources are REFUSED (a Rust-native divergence)
-//!
-//! A preview must not leave its session directory to render linked or
-//! special-node bytes. So for `meta`, `memo.tsv` and `events.jsonl`, an EXISTING
-//! non-regular node — a symlink (even to a regular file), a FIFO, a directory, a
-//! socket — is a NAMED `rc=1` refusal: no digest on stdout, nothing written,
-//! and, because the classification is an `lstat` ([`nonregular_existing`]) and
-//! never an open, no block on a FIFO waiting for a writer that never comes. An
-//! ABSENT optional file keeps its defined empty behavior.
-//!
-//! This is a deliberate, platform-deterministic divergence from the frozen
-//! `[[ -f ]]`, ruled at P3.1 (colead) and documented here. The frozen gate
-//! FOLLOWS a symlink to a regular file (and would render its target), and treats
-//! a FIFO or directory as absent; worse, its byte estimate then diverges by
-//! platform (GNU `stat` follows to the target size, BSD `stat -f` lstat-sizes
-//! the link). The core refuses instead of choosing between those, which is safer
-//! than both and identical on every platform. The bash shim's own `grep` of
-//! `meta` to resolve the pinned core is a pre-existing binding read; it does not
-//! authorize the preview to follow and publish a symlink target. Nothing here
-//! opens a path for writing.
-//!
-//! # Live sessions move while read
-//!
-//! A live session writes its own `meta`/`memo.tsv`/`events.jsonl` while the
-//! preview reads them. The frozen command fingerprints the three moving files
-//! (inode + size) before and after the render; if they differ it retries once,
-//! and if they are still moving it refuses with `changed while previewing;
-//! retry` rather than hand back a digest stitched from two moments. This module
-//! does the same, using `size + mtime-nanos` (a `stat`, never an open) as the
-//! churn signal — inode is not exposed by `std::fs::Metadata` portably, and any
-//! in-place rewrite changes size or mtime.
 
 use std::fmt::Write as _;
 use std::io::{self, Write};
@@ -407,11 +338,6 @@ fn roster_slots(meta_bytes: &[u8]) -> Vec<String> {
     // Split like `awk`, NOT like `while read`: the frozen `_ar_roster_slots` is
     // awk, which processes a final record with no trailing newline, so a meta
     // whose last line is `agent.main=…` (or a bare `agent.main`) still names a
-    // slot. `terminated_lines`/`read_lines` model `while read` and drop that
-    // record — right for the event and memo readers, wrong here. A trailing
-    // newline yields a final empty chunk, which carries no `agent.` prefix and is
-    // skipped, so this matches awk on both shapes. `meta_get` already keeps the
-    // remainder (SC parity), so the ref lookup agrees with the slot list.
     for (index, line) in meta_bytes.split(|&byte| byte == b'\n').enumerate() {
         let text = String::from_utf8_lossy(line);
         // Identity v2 (P1, read side): a `seat.<slot>` row names a slot exactly as
@@ -426,9 +352,6 @@ fn roster_slots(meta_bytes: &[u8]) -> Vec<String> {
         // The frozen `_ar_roster_slots` accepts EVERY `^agent\.` line, `=` or
         // not: `awk -F=` yields the whole line as field 1 when there is no `=`,
         // so a bare `agent.main` still names the slot `main`. Keep the keyless
-        // record — `roster()` then reads its (empty) ref via `meta_get` and
-        // `_ar_build_meta` refuses it as `agent.main=`, rather than the core
-        // silently dropping the slot and emitting a plausible partial digest.
         let slot = rest.split_once('=').map_or(rest, |(s, _)| s).to_owned();
         let (rank, num) = if slot == "main" {
             (0u8, 0i64)
@@ -656,7 +579,6 @@ fn fingerprint(dir: &Path) -> String {
         // `symlink_metadata`, never following: a non-regular meta/memo/events is
         // already refused before the render loop (see `preview`), so this only
         // ever fingerprints a regular file or an absent one, and the read, size
-        // and fingerprint decisions all stay on the same lstat classification.
         let meta = std::fs::symlink_metadata(&path)
             .ok()
             .filter(std::fs::Metadata::is_file);
@@ -738,7 +660,6 @@ fn file_size(path: &Path) -> u64 {
     // `symlink_metadata`, never following. For meta/memo/events a non-regular
     // node is refused before the banner is ever computed, so this sizes only a
     // regular file or an absent one; message entries are already filtered to
-    // non-symlink regular files by `read_message_entries` (the frozen `! -L`).
     let meta = std::fs::symlink_metadata(path)
         .ok()
         .filter(std::fs::Metadata::is_file);
@@ -940,11 +861,6 @@ pub fn preview(dir: &Path, out: &mut impl Write, err: &mut impl Write) -> io::Re
     // A preview must not leave its session directory to render linked or
     // special-node bytes (colead ruling, P3.1): an EXISTING non-regular
     // `meta`/`memo.tsv`/`events.jsonl` is a named rc=1 refusal — no digest, no
-    // writes — while an ABSENT optional file keeps its empty behavior. Meta is
-    // guarded first, before the id read that would otherwise follow it. This is
-    // an intentional, platform-deterministic divergence from the frozen `[[ -f ]]`
-    // (which follows a symlink to a regular file, and treats a FIFO/dir as
-    // absent); see the module docs.
     if refuse_if_nonregular(dir, meta::FILE, &name, err)? {
         return Ok(EXIT_FAILED);
     }
@@ -981,10 +897,6 @@ pub fn preview(dir: &Path, out: &mut impl Write, err: &mut impl Write) -> io::Re
         // Meta is re-read INSIDE the attempt, as `_ar_preview_once` re-reads it:
         // the roster, goal and mode the digest renders come from the meta of THIS
         // attempt, and the roster is validated and stripped here (a roster ae
-        // cannot parse fails the whole preview with the frozen line, never a
-        // partial digest). Reading it once before the loop would render stale
-        // roster/goal alongside fresh memo/events while both fingerprints saw only
-        // the new meta and declared success.
         let meta_bytes = read_meta();
         let roster = match roster(&meta_bytes) {
             Ok(pairs) => pairs,
