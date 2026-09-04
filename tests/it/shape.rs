@@ -76,14 +76,41 @@ impl Install {
         );
     }
 
+    /// A directory that stands in for a session, with one helper LINK in it.
+    ///
+    /// A helper is a symlink to the core and its `argv[0]` dirname IS the
+    /// session — which is the whole reason a helper must pay the install gate:
+    /// it is another way to reach this same binary.
+    fn helper(&self, name: &str) -> PathBuf {
+        let dir = self.scratch.join("sess");
+        let _ = std::fs::create_dir_all(&dir);
+        let link = dir.join(name);
+        let _ = std::fs::remove_file(&link);
+        assert!(
+            std::os::unix::fs::symlink(self.core(), &link).is_ok(),
+            "a helper link"
+        );
+        link
+    }
+
     /// Run the planted core AS the installed `ae`, with `HOME` pointing at the
     /// fixture and `extra` on top.
     fn run(&self, extra: &[(&str, &str)], argv: &[&str]) -> (Option<i32>, String, String) {
+        self.run_as(&self.core(), extra, argv)
+    }
+
+    /// The same, invoked through `program` — a helper link, or the core itself.
+    fn run_as(
+        &self,
+        program: &Path,
+        extra: &[(&str, &str)],
+        argv: &[&str],
+    ) -> (Option<i32>, String, String) {
         #[allow(
             clippy::disallowed_types,
             reason = "the black-box door: an INSTALLED shape is a process whose current_exe() sits in a version directory, which only running that file produces"
         )]
-        let mut command = std::process::Command::new(self.core());
+        let mut command = std::process::Command::new(program);
         command
             .env_remove("TMUX")
             .env_remove("TMUX_PANE")
@@ -364,5 +391,78 @@ fn doctor_warns_when_the_published_core_is_writable_and_not_when_it_is_not() {
     assert!(
         report.contains("WARN"),
         "a warning, never a refusal — doctor has to RUN to say it: {report}"
+    );
+}
+
+/// **B1.** The gate is not a property of the PUBLIC words — it is a property of
+/// the invocation, and the core's own `_` namespace is the most effectful part
+/// of it. `_shims-render` on a core nobody can vouch for published 21 helper
+/// links and answered 0.
+#[test]
+fn an_internal_entry_pays_the_install_gate_and_publishes_nothing() {
+    let rig = Install::plant("internal");
+    rig.write_manifest("nonsense\n");
+    let session = rig.scratch.join("render");
+    assert!(std::fs::create_dir_all(&session).is_ok(), "a session dir");
+
+    let (code, stdout, stderr) = rig.run(&[], &["_shims-render", &session.display().to_string()]);
+    assert_eq!(code, Some(2), "{stdout}{stderr}");
+    assert!(stderr.contains("SHA256SUMS"), "{stderr}");
+    assert!(stderr.contains("ae upgrade"), "{stderr}");
+    let published = std::fs::read_dir(&session)
+        .map(std::iter::Iterator::count)
+        .unwrap_or_default();
+    assert_eq!(published, 0, "a refused render published {published} links");
+}
+
+/// **B1, the other half.** Every session helper is a link to this binary, so a
+/// helper that skipped the gate was 21 routes around it per session.
+#[test]
+fn a_session_helper_pays_the_install_gate_too() {
+    let rig = Install::plant("helpergate");
+    rig.write_manifest("nonsense\n");
+    let send = rig.helper("send");
+
+    let (code, stdout, stderr) = rig.run_as(&send, &[], &["someone", "hello"]);
+    assert_eq!(code, Some(2), "{stdout}{stderr}");
+    assert!(
+        stderr.contains("SHA256SUMS"),
+        "a helper must refuse for the SAME reason the public word does: {stderr}"
+    );
+}
+
+/// **B2.** A published core run against a foreign `$HOME` used to classify as a
+/// CHECKOUT, which honours `AE_HOME` — so an install could be pointed at
+/// somebody else's state root and would build sessions there.
+#[test]
+fn a_published_core_refuses_a_foreign_home_instead_of_adopting_it() {
+    let rig = Install::plant("foreignhome");
+    let fake = rig.scratch.join("fakehome");
+    let foreign = rig.scratch.join("foreign-ae");
+    assert!(std::fs::create_dir_all(&fake).is_ok(), "a second home");
+
+    let (code, stdout, stderr) = rig.run(
+        &[
+            ("HOME", &fake.display().to_string()),
+            ("AE_HOME", &foreign.display().to_string()),
+        ],
+        &["doctor"],
+    );
+    assert_eq!(code, Some(2), "{stdout}{stderr}");
+    assert!(
+        !foreign.join("sessions").exists(),
+        "a refused invocation built state under the foreign root"
+    );
+    // BOTH roots are named: which of the two is the mistake is the caller's to
+    // know, and the published one is the resolved spelling this core answers
+    // `current_exe()` with.
+    let published = std::fs::canonicalize(&rig.home).unwrap_or_else(|_| rig.home.clone());
+    assert!(
+        stderr.contains(&published.join(".ae").display().to_string()),
+        "the published root is unnamed: {stderr}"
+    );
+    assert!(
+        stderr.contains(&fake.display().to_string()),
+        "the inherited HOME is unnamed: {stderr}"
     );
 }
