@@ -207,24 +207,22 @@ fn doctor_refresh_republishes_the_shims_the_manifest_and_the_core_pin() {
         "{stdout}"
     );
 
-    // The whole helper set, executable, and each one a shim that execs the core.
-    for name in [
-        "send",
-        "ask",
-        "state",
-        "peek",
-        "watchdog",
-        "mark-done",
-        "peak",
-    ] {
-        let path = dir.join(name);
-        assert!(path.is_file(), "{name} was published");
+    // The WHOLE helper set, and every one of them a link to the core doing the
+    // refresh — including the one that was a stale regular file.
+    let refresher = std::fs::canonicalize(env!("CARGO_BIN_EXE_ae")).unwrap_or_default();
+    for helper in ae::shim::HELPERS {
+        let path = dir.join(helper.name);
+        let kind = std::fs::symlink_metadata(&path)
+            .unwrap_or_else(|why| panic!("{} was not published ({why})", helper.name));
+        assert!(kind.file_type().is_symlink(), "{} is a link", helper.name);
+        let target = std::fs::read_link(&path).unwrap_or_default();
+        assert_eq!(
+            std::fs::canonicalize(&target).unwrap_or_default(),
+            refresher,
+            "{} points at the refreshing core",
+            helper.name
+        );
     }
-    let shim = std::fs::read_to_string(dir.join("send")).unwrap_or_default();
-    assert!(
-        shim.contains(ae::cli::SEND),
-        "the stale shim was replaced: {shim}"
-    );
 
     // The pin now names the binary that did the refresh, at its version.
     let meta = std::fs::read_to_string(dir.join("meta")).unwrap_or_default();

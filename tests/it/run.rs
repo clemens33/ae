@@ -1,0 +1,519 @@
+//! Slice Z2's two deletions, proven black-box: the helper LINKS and the pane's
+//! own `_run`.
+//!
+//! Both subjects only exist as processes. A helper is a symlink whose identity
+//! is `argv[0]`, so proving it means EXECUTING the link rather than calling the
+//! function behind it; and a launch command now exists nowhere but in the
+//! `execve` the pane makes, so proving it means either running a tool that
+//! reports its own argv, or asking `_run --print` for the plan it would exec.
+//! No tmux is needed for either — which is the point: the bash that used to
+//! hold both of these is gone, and what replaced it is testable without a pane.
+
+#![allow(
+    clippy::disallowed_methods,
+    reason = "fixtures build and inspect real directories; the boundary is about what \
+              PRODUCT code may reach"
+)]
+
+use std::fmt::Write as _;
+use std::path::{Path, PathBuf};
+
+use super::cli::{ae, helper, helper_by_name};
+
+/// The record separator the fixture tool frames its argv with: the context is
+/// kilobytes of prose containing every other candidate, newlines included.
+const RS: char = '\u{1e}';
+
+/// A tool that reports exactly what it was `exec`ed with, and what two
+/// environment variables looked like when it got there.
+const REPORTING_TOOL: &str = "#!/bin/sh\n\
+     : > \"__OUT__\"\n\
+     for a in \"$@\"; do printf '%s\\036' \"$a\" >> \"__OUT__\"; done\n\
+     printf 'ENV\\036%s\\036%s\\036' \"${CLAUDECODE-<unset>}\" \
+     \"${CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION-<unset>}\" >> \"__OUT__\"\n";
+
+/// One hand-built session: a config with one profile per tool, and a meta whose
+/// seat names one of them.
+struct Rig {
+    scratch: PathBuf,
+    dir: PathBuf,
+    project: PathBuf,
+    config: PathBuf,
+    out: PathBuf,
+    bin: PathBuf,
+}
+
+impl Rig {
+    fn new(tag: &str) -> Self {
+        use std::os::unix::fs::PermissionsExt as _;
+        let scratch = PathBuf::from(format!("/tmp/aerun.{}.{tag}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&scratch);
+        let dir = scratch.join("sessions").join(tag);
+        let project = scratch.join("project");
+        let bin = scratch.join("bin");
+        for path in [&dir, &project, &bin] {
+            assert!(std::fs::create_dir_all(path).is_ok(), "a fixture dir");
+        }
+        let out = scratch.join("argv");
+        let mut profiles = String::from("[profiles]\n");
+        for tool in ["claude", "codex", "gemini", "grok", "opencode"] {
+            let path = bin.join(tool);
+            let body = REPORTING_TOOL.replace("__OUT__", &out.display().to_string());
+            assert!(std::fs::write(&path, body).is_ok(), "the fixture {tool}");
+            assert!(
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).is_ok(),
+                "an executable fixture {tool}"
+            );
+            let _ = writeln!(profiles, "{tool} = \"{} --flag\"", path.display());
+        }
+        let config = scratch.join("config");
+        assert!(
+            std::fs::write(
+                &config,
+                format!("{profiles}\n[roster]\nlead = claude\n\n[workspace]\nmain = lead\n"),
+            )
+            .is_ok(),
+            "a fixture config"
+        );
+        Self {
+            scratch,
+            dir,
+            project,
+            config,
+            out,
+            bin,
+        }
+    }
+
+    /// Publish a meta whose `main` seat runs `profile`, with `id` recorded as
+    /// its harness session (empty for the capture tools, which have none yet).
+    fn seat(&self, profile: &str, id: &str) {
+        let mut body = String::new();
+        for (key, value) in [
+            ("mode", "local"),
+            ("schema", "2"),
+            ("session", "fixture"),
+            ("origin", &self.project.display().to_string()),
+            ("work_dir", &self.project.display().to_string()),
+            ("layout", "vertical"),
+            ("config", &self.config.display().to_string()),
+            ("seat.main", "lead"),
+            ("profile.main", profile),
+            ("launch_id.main", "tok-1"),
+        ] {
+            let _ = writeln!(body, "{key}={value}");
+        }
+        if !id.is_empty() {
+            let _ = writeln!(body, "harness_session.main={id}");
+        }
+        assert!(
+            std::fs::write(self.dir.join("meta"), body).is_ok(),
+            "a fixture meta"
+        );
+    }
+
+    /// Link one helper name into the session directory.
+    fn link(&self, name: &str) -> PathBuf {
+        let path = self.dir.join(name);
+        assert!(
+            std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_ae"), &path).is_ok(),
+            "a {name} link"
+        );
+        path
+    }
+
+    /// `_run --print` for the `main` seat.
+    fn plan(&self) -> String {
+        let out = ae()
+            .env_remove("TMUX")
+            .env_remove("TMUX_PANE")
+            .current_dir(&self.project)
+            .args([ae::cli::RUN, "--print"])
+            .arg(&self.dir)
+            .arg("main")
+            .output()
+            .unwrap_or_else(|why| panic!("the ae binary should run: {why}"));
+        assert!(
+            out.status.success(),
+            "_run --print: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    }
+
+    /// The argv `--print` reports, decoded out of its JSON.
+    fn planned_argv(&self) -> Vec<String> {
+        let line = self.plan();
+        let value =
+            ae::json::parse(line.trim()).unwrap_or_else(|_| panic!("one JSON line: {line}"));
+        let ae::json::Value::Obj(fields) = value else {
+            panic!("an object: {line}")
+        };
+        let Some((_, ae::json::Value::Arr(argv))) =
+            fields.into_iter().find(|(key, _)| key == "argv")
+        else {
+            panic!("an argv array: {line}")
+        };
+        argv.into_iter()
+            .map(|word| match word {
+                ae::json::Value::Str(text) => text,
+                other => panic!("an argv word is a string, not {other:?}"),
+            })
+            .collect()
+    }
+
+    /// `_run` for real: it `exec`s the fixture tool, which reports its argv.
+    /// Returns that argv and whatever `_run` said before it became the tool.
+    fn exec(&self) -> (Vec<String>, String) {
+        let _ = std::fs::remove_file(&self.out);
+        let out = ae()
+            .env_remove("TMUX")
+            .env_remove("TMUX_PANE")
+            // Set so the claude nesting guard has something to REMOVE.
+            .env("CLAUDECODE", "1")
+            .current_dir(&self.project)
+            .arg(ae::cli::RUN)
+            .arg(&self.dir)
+            .arg("main")
+            .output()
+            .unwrap_or_else(|why| panic!("the ae binary should run: {why}"));
+        assert!(
+            out.status.success(),
+            "_run: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let said = String::from_utf8_lossy(&out.stderr).into_owned();
+        let dumped = std::fs::read_to_string(&self.out)
+            .unwrap_or_else(|why| panic!("the tool should have reported its argv: {why}"));
+        let argv = dumped
+            .split(RS)
+            .filter(|word| !word.is_empty())
+            .map(ToOwned::to_owned)
+            .collect();
+        (argv, said)
+    }
+
+    fn tool(&self, name: &str) -> String {
+        self.bin.join(name).display().to_string()
+    }
+}
+
+impl Drop for Rig {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.scratch);
+    }
+}
+
+// ---- the helper links -----------------------------------------------------
+
+#[test]
+fn a_link_invoked_by_path_reaches_the_core_with_its_own_session() {
+    let rig = Rig::new("link");
+    rig.seat("claude", "u-1");
+    let memo = rig.link("memo");
+
+    let added = helper(&memo)
+        .env_remove("TMUX_PANE")
+        .args(["add", "a durable finding"])
+        .output()
+        .unwrap_or_else(|why| panic!("the memo link should run: {why}"));
+    assert!(
+        added.status.success(),
+        "memo add: {}",
+        String::from_utf8_lossy(&added.stderr)
+    );
+    // THE SESSION CAME OUT OF argv[0]: nothing else on that command line names
+    // a directory, and the memo landed in the one the link lives in.
+    assert!(
+        std::fs::read_to_string(rig.dir.join("memo.tsv"))
+            .unwrap_or_default()
+            .contains("a durable finding"),
+        "the memo was written beside the link"
+    );
+    let read = helper(&memo)
+        .env_remove("TMUX_PANE")
+        .arg("read")
+        .output()
+        .unwrap_or_else(|why| panic!("the memo link should run: {why}"));
+    assert!(
+        String::from_utf8_lossy(&read.stdout).contains("a durable finding"),
+        "and reads back through the same link"
+    );
+}
+
+#[test]
+fn an_alias_link_prepends_its_own_fixed_word() {
+    let rig = Rig::new("alias");
+    rig.seat("claude", "u-1");
+    let done = rig.link("mark-done");
+    let state = rig.link("state");
+    let reason = "the slice landed";
+
+    // The SAME words through both links, and they part company on the word
+    // `mark-done` inserts. Through `state` the reason is read as the state
+    // VALUE and refused as a usage error; through `mark-done` the value is
+    // already `done`, the reason is a reason, and the only thing left to refuse
+    // is the identity a test process outside a pane does not have.
+    let via_state = helper(&state)
+        .env_remove("TMUX_PANE")
+        .arg(reason)
+        .output()
+        .unwrap_or_else(|why| panic!("the state link should run: {why}"));
+    assert_eq!(via_state.status.code(), Some(2), "an unknown state value");
+    assert!(
+        String::from_utf8_lossy(&via_state.stderr).contains("Usage: state"),
+        "{}",
+        String::from_utf8_lossy(&via_state.stderr)
+    );
+
+    let via_alias = helper(&done)
+        .env_remove("TMUX_PANE")
+        .arg(reason)
+        .output()
+        .unwrap_or_else(|why| panic!("the mark-done link should run: {why}"));
+    assert_eq!(
+        via_alias.status.code(),
+        Some(1),
+        "the value parsed; the pane did not"
+    );
+    assert!(
+        String::from_utf8_lossy(&via_alias.stderr).contains("current agent identity"),
+        "{}",
+        String::from_utf8_lossy(&via_alias.stderr)
+    );
+}
+
+#[test]
+fn a_typo_alias_and_a_deprecated_one_reach_the_entries_they_alias() {
+    let rig = Rig::new("aliases");
+    rig.seat("claude", "u-1");
+    let answer = |name: &str| {
+        let out = helper(&rig.link(name))
+            .env_remove("TMUX_PANE")
+            .output()
+            .unwrap_or_else(|why| panic!("the {name} link should run: {why}"));
+        (
+            out.status.code(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    };
+    assert_eq!(answer("peak"), answer("peek"), "peak IS peek");
+    assert_eq!(
+        answer("loop"),
+        answer("watchdog"),
+        "loop is the deprecated spelling of watchdog"
+    );
+}
+
+#[test]
+fn a_helper_reached_by_name_refuses_and_names_the_full_path_rule() {
+    let rig = Rig::new("bare");
+    rig.seat("claude", "u-1");
+    rig.link("send");
+    let path = format!(
+        "{}:{}",
+        rig.dir.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let out = helper_by_name("send")
+        .env("PATH", path)
+        .args(["lead", "hello"])
+        .output()
+        .unwrap_or_else(|why| panic!("the send link should be on PATH: {why}"));
+    assert_eq!(out.status.code(), Some(2), "a usage error, not a failure");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("<session-dir>/send") && stderr.contains("session helper"),
+        "the refusal states the rule: {stderr}"
+    );
+}
+
+// ---- the pane's own command ------------------------------------------------
+
+#[test]
+fn each_tool_gets_the_argv_its_capability_row_promises() {
+    // claude: an ae-generated id at launch, and the context on its own
+    // append-style flag. The nesting guard is an ENVIRONMENT delta, not an
+    // `env` word: there is no shell left to read one.
+    let rig = Rig::new("claude");
+    rig.seat("claude", "u-1");
+    let argv = rig.planned_argv();
+    assert_eq!(
+        argv[..4],
+        [
+            rig.tool("claude"),
+            "--flag".to_owned(),
+            "--session-id".to_owned(),
+            "u-1".to_owned()
+        ]
+    );
+    assert_eq!(argv[4], "--append-system-prompt");
+    assert!(
+        argv[5].contains("You are agent lead (slot main)"),
+        "{}",
+        argv[5]
+    );
+    assert_eq!(argv.len(), 6, "{argv:?}");
+    let plan = rig.plan();
+    assert!(
+        plan.contains(r#""env_unset":["CLAUDECODE","CLAUDE_CODE_SESSION"]"#),
+        "{plan}"
+    );
+    assert!(
+        plan.contains(r#""env_set":{"CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION":"0"}"#),
+        "{plan}"
+    );
+
+    // codex: no launch-time id flag exists, so nothing is baked; the context
+    // rides `developer_instructions` and the inline first user turn is `Go`.
+    let rig = Rig::new("codex");
+    rig.seat("codex", "");
+    let argv = rig.planned_argv();
+    assert_eq!(
+        argv[..3],
+        [rig.tool("codex"), "--flag".to_owned(), "-c".to_owned()]
+    );
+    assert!(
+        argv[3].starts_with("developer_instructions=")
+            && argv[3].contains("_register-sid main")
+            && argv[3].contains("AE_CODEX_LAUNCH_ID=tok-1"),
+        "{}",
+        argv[3]
+    );
+    assert_eq!(
+        argv[4], "Go",
+        "codex needs a user turn to act on its instructions"
+    );
+    assert_eq!(argv.len(), 5, "{argv:?}");
+
+    // gemini: `-i`, with the wait suffix that keeps a USER TURN from being
+    // acted on.
+    let rig = Rig::new("gemini");
+    rig.seat("gemini", "");
+    let argv = rig.planned_argv();
+    assert_eq!(
+        argv[..3],
+        [rig.tool("gemini"), "--flag".to_owned(), "-i".to_owned()]
+    );
+    assert!(argv[3].contains("This is context only"), "{}", argv[3]);
+    assert_eq!(argv.len(), 4, "{argv:?}");
+
+    // grok: an ae-generated id, and the context as the POSITIONAL prompt —
+    // never `--system-prompt-override`, which would replace grok's own.
+    let rig = Rig::new("grok");
+    rig.seat("grok", "u-2");
+    let argv = rig.planned_argv();
+    assert_eq!(
+        argv[..4],
+        [
+            rig.tool("grok"),
+            "--flag".to_owned(),
+            "--session-id".to_owned(),
+            "u-2".to_owned()
+        ]
+    );
+    assert!(argv[4].contains("This is context only"), "{}", argv[4]);
+    assert!(
+        !argv.iter().any(|word| word.starts_with("--system-prompt")),
+        "{argv:?}"
+    );
+    assert_eq!(argv.len(), 5, "{argv:?}");
+
+    // opencode: the context is a FILE named by an environment variable, so the
+    // `env` prefix ae composed becomes a real environment delta and the argv
+    // holds nothing but the tool.
+    let rig = Rig::new("opencode");
+    rig.seat("opencode", "");
+    let argv = rig.planned_argv();
+    assert_eq!(argv, [rig.tool("opencode"), "--flag".to_owned()]);
+    let plan = rig.plan();
+    assert!(plan.contains("OPENCODE_CONFIG"), "{plan}");
+    assert!(
+        std::fs::read_to_string(rig.dir.join("opencode.main.md"))
+            .unwrap_or_default()
+            .contains("You are agent lead"),
+        "the instructions file the config points at is published"
+    );
+}
+
+#[test]
+fn a_first_run_creates_a_second_resumes_and_the_marker_is_the_difference() {
+    let rig = Rig::new("twice");
+    rig.seat("claude", "u-3");
+    let marker = rig.dir.join("launch.main.started");
+    assert!(!marker.exists(), "a fresh seat has never run");
+
+    // FIRST RUN: the create form, and the environment deltas really applied —
+    // `CLAUDECODE` was set for the ae process and is gone from the tool's.
+    let (argv, said) = rig.exec();
+    assert!(
+        !said.contains("re-run"),
+        "a first run announces no resume: {said}"
+    );
+    assert!(
+        argv.contains(&"--session-id".to_owned()) && argv.contains(&"u-3".to_owned()),
+        "{argv:?}"
+    );
+    let env = argv
+        .iter()
+        .position(|word| word == "ENV")
+        .unwrap_or_else(|| panic!("the tool reports its environment: {argv:?}"));
+    assert_eq!(
+        argv[env + 1],
+        "<unset>",
+        "the nesting guard removed CLAUDECODE"
+    );
+    assert_eq!(argv[env + 2], "0", "and set the suggestion knob");
+    assert!(
+        marker.is_file(),
+        "the run marked the seat before becoming the tool"
+    );
+
+    // SECOND RUN: the SAME line, and it resumes rather than creating a second
+    // conversation — which is the whole reason the marker exists. It says so
+    // on the way, because a human who arrow-upped the pane's command is owed an
+    // answer to "did that start a second conversation?".
+    let (argv, said) = rig.exec();
+    assert!(said.contains(ae::run::RESUMING), "{said}");
+    assert!(
+        !argv.contains(&"--session-id".to_owned()),
+        "a re-run must not collide on a create-once id: {argv:?}"
+    );
+    assert!(argv.contains(&"--continue".to_owned()), "{argv:?}");
+    assert!(rig.plan().contains(r#""mode":"resume""#));
+}
+
+#[test]
+fn a_seat_that_cannot_be_launched_refuses_instead_of_execing() {
+    let rig = Rig::new("refuse");
+    rig.seat("claude", "u-1");
+    for (slot, expected) in [
+        ("worker.0", "no seat 'worker.0'"),
+        ("main", "not configured on this machine"),
+    ] {
+        if slot == "main" {
+            // The seat names a profile the config no longer defines.
+            assert!(std::fs::write(&rig.config, "[profiles]\nother = \"x\"\n").is_ok());
+        }
+        let out = ae()
+            .env_remove("TMUX_PANE")
+            .arg(ae::cli::RUN)
+            .arg(&rig.dir)
+            .arg(slot)
+            .output()
+            .unwrap_or_else(|why| panic!("the ae binary should run: {why}"));
+        assert_eq!(out.status.code(), Some(1), "a refusal, not a usage error");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(stderr.contains(expected), "{stderr}");
+    }
+}
+
+#[test]
+fn the_pane_command_is_the_core_this_entry_and_the_two_operands() {
+    let line = ae::run::pane_command(
+        Path::new("/opt/ae 1/ae-core"),
+        Path::new("/s/tg1"),
+        "spawned.0",
+    );
+    assert_eq!(line, "'/opt/ae 1/ae-core' _run '/s/tg1' 'spawned.0'");
+}

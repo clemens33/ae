@@ -23,6 +23,7 @@ mod parity;
 mod parity_self_test;
 mod phase2;
 mod phase3;
+mod run;
 mod session_launch;
 mod spawn;
 mod teardown;

@@ -46,6 +46,20 @@ pub(crate) fn helper(path: &std::path::Path) -> std::process::Command {
     std::process::Command::new(path)
 }
 
+/// Run a session helper reached BY NAME, through `PATH`.
+///
+/// The other black-box door for the same subject, and the only spelling that
+/// produces it: a helper's identity is `argv[0]`, so "invoked by name" is a
+/// process whose `argv[0]` is the bare name — which `Command::new(<path>)`
+/// cannot make. It exists to prove the refusal, not to run a helper.
+#[allow(
+    clippy::disallowed_types,
+    reason = "the black-box tests' second door: a helper reached by name is a process started AS that name; see clippy.toml"
+)]
+pub(crate) fn helper_by_name(name: &str) -> std::process::Command {
+    std::process::Command::new(name)
+}
+
 // The FIFO fixture. Safe std can bind a socket and make a directory, but the
 // one special file that BLOCKS an ungated open — the case a `-f` gate exists
 // for — needs mkfifo(2), and the only route to it without libc is mkfifo(1).

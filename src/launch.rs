@@ -28,7 +28,6 @@
 //! consumers are `bash -lc <cmd>` and `[ -e <path> ]` inside a generated
 //! script, both of which read a single-quoted word identically.
 
-use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use crate::launch_cmd::ToolKind;
@@ -372,7 +371,7 @@ pub fn safe_slot(slot: &str) -> String {
 }
 
 /// Publish one non-executable generated artifact atomically at 0600.
-fn publish_data(dest: &Path, bytes: &[u8]) -> Result<(), String> {
+pub(crate) fn publish_data(dest: &Path, bytes: &[u8]) -> Result<(), String> {
     publish(dest, bytes, 0o600)
 }
 
@@ -431,101 +430,23 @@ pub fn id_probeable(id: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
 }
 
-/// The part of `cmd` ae composed itself — the frozen `_launch_injected_head`.
-///
-/// `None` means "cannot classify", and the caller then changes nothing at all.
-#[must_use]
-pub fn injected_head<'a>(cmd: &'a str, pre: &str) -> Option<&'a str> {
-    (!pre.is_empty() && cmd.starts_with(pre)).then(|| &cmd[..pre.len()])
-}
-
-/// THE resume predicate — the frozen `_launch_is_resume`.
-///
-/// One question, one answer, from transported facts only. Two classifiers
-/// answering it from different evidence is what shipped: a fresh codex got its
-/// prompt inline AND deferred, and acted on the same instruction twice.
-#[must_use]
-pub fn is_resume(cmd: &str, id: &str, pre: &str) -> bool {
-    if !id_probeable(id) {
-        return false;
-    }
-    let Some(head) = injected_head(cmd, pre) else {
-        return false;
-    };
-    // The tool is read off the HEAD, which is ae's own composition — never off
-    // the tail, which is prose.
-    let token = match ToolKind::from_cmd(head) {
-        ToolKind::Codex => format!(" resume {id}"),
-        ToolKind::Claude => format!(" --resume {id}"),
-        _ => return false,
-    };
-    head.contains(&token)
-}
-
-/// A shell TEST, evaluated in the pane at launch, that answers "is this
-/// conversation actually resumable" — or `None` for "no probe".
-#[must_use]
-pub fn resume_probe(tool: ToolKind, uuid: &str) -> Option<String> {
-    if !id_probeable(uuid) {
-        return None;
-    }
-    match tool {
-        // Claude keeps transcripts at
-        // ~/.claude/projects/<cwd with / turned into ->/<uuid>.jsonl, so the
-        // file's existence IS the answer. $PWD is read at run time rather than
-        // baked: a stale baked path would choose the fallback forever.
-        ToolKind::Claude => Some(format!(
-            r#"test -f "$HOME/.claude/projects/$(printf %s "$PWD" | tr / -)/{uuid}.jsonl""#
-        )),
-        // Codex records under dated directories, so the id is searched for.
-        // The pattern is QUOTED in the emitted command: unquoted, the pane's
-        // shell globs it against the work dir before find sees it.
-        ToolKind::Codex => Some(format!(
-            r#"test -n "$(find "$HOME/.codex/sessions" -maxdepth 4 -name "*{uuid}*.jsonl" -print -quit 2>/dev/null)""#
-        )),
-        _ => None,
-    }
-}
-
-/// Choose between the resume command and the fallback IN THE PANE — the frozen
-/// `_launch_resume_decider`.
-///
-/// Both branches `exec` a SINGLE command, so whichever runs replaces the shell
-/// and `pane_current_command` reports the TOOL. A `A || B` chain keeps bash as
-/// the pane process to evaluate the `||`, which silently disables the send
-/// path's whole TUI model on every resumed agent (measured).
-#[must_use]
-pub fn resume_decider(probe: Option<&str>, resume: &str, fallback: &str) -> String {
-    match probe {
-        None => format!("exec {fallback}"),
-        Some(probe) => format!("if {probe}; then exec {resume}; else exec {fallback}; fi"),
-    }
-}
-
 // ---- the launch command ---------------------------------------------------
 
 /// The command a pane runs to start its agent — the frozen
-/// `build_launch_command`.
+/// `build_launch_command`, minus the shell it no longer has.
+///
+/// The frozen builder could return a shell `if … then exec … else exec … fi`:
+/// the resume PROBE was a shell test, so the choice between a resume form and
+/// its fallback had to be made in the pane. Slice Z2 moved that decision into
+/// [`crate::run`], where it is two filesystem questions, so this builder now
+/// returns ONE command in every case — and both callers hand it a form that has
+/// already been chosen.
 #[must_use]
-pub fn build_launch_command(cmd: &str, prompt: &str, resume_id: &str, pre: &str) -> String {
-    match ToolKind::from_cmd(cmd) {
-        ToolKind::Codex if is_resume(cmd, resume_id, pre) => {
-            // Head only, EXACT token — the injected tail is appended untouched.
-            let head = injected_head(cmd, pre).unwrap_or_default();
-            let fallback = format!(
-                "{}{}",
-                head.replacen(&format!(" resume {resume_id}"), "", 1),
-                &cmd[head.len()..]
-            );
-            return resume_decider(
-                resume_probe(ToolKind::Codex, resume_id).as_deref(),
-                cmd,
-                &fallback,
-            );
-        }
-        // opencode's resume rides its own flag surface; nothing is appended.
-        ToolKind::OpenCode => return cmd.to_owned(),
-        _ => {}
+pub fn build_launch_command(cmd: &str, prompt: &str) -> String {
+    // opencode's resume rides its own flag surface and it has no inline first
+    // message; nothing is appended to it, ever.
+    if ToolKind::from_cmd(cmd) == ToolKind::OpenCode {
+        return cmd.to_owned();
     }
     // Keep Claude Code from detecting nesting when ae runs from inside a claude
     // session, and disable the input-box ghost SUGGESTION: the input-region
@@ -537,112 +458,11 @@ pub fn build_launch_command(cmd: &str, prompt: &str, resume_id: &str, pre: &str)
     } else {
         cmd.to_owned()
     };
-    let suffix = if prompt.is_empty() {
-        String::new()
-    } else {
-        format!(" {}", shell_quote(prompt))
-    };
-    if is_resume(cmd, resume_id, pre) {
-        let fallback = launch_cmd.replacen(&format!(" --resume {resume_id}"), " --continue", 1);
-        return resume_decider(
-            resume_probe(ToolKind::Claude, resume_id).as_deref(),
-            &format!("{launch_cmd}{suffix}"),
-            &format!("{fallback}{suffix}"),
-        );
+    if !prompt.is_empty() {
+        launch_cmd.push(' ');
+        launch_cmd.push_str(&shell_quote(prompt));
     }
-    launch_cmd.push_str(&suffix);
     launch_cmd
-}
-
-/// The `--resume` form of a launch command, for the script's SECOND run — the
-/// frozen `launch_rerun_command`.
-///
-/// `None` is "no re-run form", which is a refusal rather than a guess: the id
-/// may be `pending`, the tool may not take one, or the head may not sit in the
-/// built command exactly once. The cost of refusing is a second run colliding
-/// loudly on "Session ID already in use", never a wrong conversation.
-#[must_use]
-pub fn rerun_command(launch_cmd: &str, id: &str, pre: &str) -> Option<String> {
-    if !id_probeable(id) || pre.is_empty() {
-        return None;
-    }
-    // The tool is read off ae's OWN composition, which has no prose in it.
-    if !matches!(ToolKind::from_cmd(pre), ToolKind::Claude | ToolKind::Grok) {
-        return None;
-    }
-    let token = format!(" --session-id {id}");
-    if !pre.contains(&token) {
-        return None;
-    }
-    // THE EDIT HAPPENS INSIDE THE HEAD, then the head is spliced back over its
-    // own span — so the flag's position in the built command is never guessed
-    // and the injected tail cannot be touched even when it names the same flag.
-    let rerun_pre = pre.replacen(&token, &format!(" --resume {id}"), 1);
-    // Containment AND uniqueness: a head appearing twice has no unambiguous
-    // span to splice.
-    let (before, after) = launch_cmd.split_once(pre)?;
-    if after.contains(pre) {
-        return None;
-    }
-    Some(format!("{before}{rerun_pre}{after}"))
-}
-
-// ---- the launch script ----------------------------------------------------
-
-/// The interpreter a generated launch script names.
-///
-/// Named explicitly for the reason the helper shebangs are: `#!/usr/bin/env
-/// bash` resolves via PATH, and under a macOS login shell that is bash 3.2.
-pub const SHELL: &str = "/bin/bash";
-
-/// The body of `launch.<slot>.sh` — the frozen `_emit_launch_script`.
-///
-/// With a re-run form the script answers "has THIS script already launched its
-/// agent?" with a file test, not by parsing an error. Both branches still
-/// `exec` a SINGLE command, which is what keeps `pane_current_command`
-/// reporting the tool instead of bash.
-#[must_use]
-pub fn script_body(shell: &str, started: &Path, rerun: Option<&str>, launch_cmd: &str) -> String {
-    let started = shell_quote(&started.display().to_string());
-    let mut body = format!("#!{shell}\n");
-    if let Some(rerun) = rerun {
-        let _ = write!(
-            body,
-            "if [ -e {started} ]; then\n    printf '%s\\n' 'ae: re-run — resuming this agent, not creating a second session.' >&2\n    exec {shell} -lc {}\nfi\n: > {started} 2>/dev/null || true\n",
-            shell_quote(rerun)
-        );
-    }
-    let _ = writeln!(body, "exec {shell} -lc {}", shell_quote(launch_cmd));
-    body
-}
-
-/// Publish `launch.<slot>.sh` and return its path — the frozen
-/// `write_launch_script`.
-///
-/// The marker is cleared AFTER the publish succeeds, and only then: a failed
-/// publish leaves the PREVIOUS script in place, and clearing the marker anyway
-/// would reclassify that survivor as never-run, so its next run would go back
-/// to creating and collide.
-///
-/// # Errors
-///
-/// The publication failure, named. Nothing is reported on success but the path.
-pub fn write_launch_script(
-    meta_dir: &Path,
-    slot: &str,
-    launch_cmd: &str,
-    session_id: &str,
-    pre: &str,
-) -> Result<PathBuf, String> {
-    let safe = safe_slot(slot);
-    let script = meta_dir.join(format!("launch.{safe}.sh"));
-    let started = meta_dir.join(format!("launch.{safe}.started"));
-    let rerun = rerun_command(launch_cmd, session_id, pre);
-    let body = script_body(SHELL, &started, rerun.as_deref(), launch_cmd);
-    publish(&script, body.as_bytes(), 0o700)?;
-    // A rewritten script has never run.
-    let _ = std::fs::remove_file(&started);
-    Ok(script)
 }
 
 #[cfg(test)]
@@ -653,11 +473,11 @@ pub fn write_launch_script(
 mod tests {
     use super::{
         build_launch_command, generate_uuid, id_probeable, initial_prompt_for, inject_ae_context,
-        inject_session_id, is_resume, opencode_context_files, rerun_command, script_body,
-        shell_quote, strip_grok_session_flags, strip_session_flags, write_launch_script,
+        inject_session_id, opencode_context_files, shell_quote, strip_grok_session_flags,
+        strip_session_flags,
     };
     use crate::launch_cmd::ToolKind;
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
 
     fn scratch(tag: &str) -> PathBuf {
         let dir = PathBuf::from(format!("/tmp/ae-launch-{}-{tag}", std::process::id()));
@@ -799,138 +619,48 @@ mod tests {
     }
 
     #[test]
-    fn a_fresh_launch_command_is_the_generic_tail_per_tool() {
+    fn a_launch_command_is_the_generic_tail_per_tool() {
         // claude: the nesting/ghost env wrapper, and no inline prompt.
-        let claude =
-            build_launch_command("claude --session-id u1", "", "u1", "claude --session-id u1");
         assert_eq!(
-            claude,
+            build_launch_command("claude --session-id u1", ""),
             "env -u CLAUDECODE -u CLAUDE_CODE_SESSION CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=0 claude --session-id u1"
         );
-        // codex: no resume token in the head, so the generic tail with the
-        // inline first message quoted onto it.
-        let codex = build_launch_command(
-            "codex -c developer_instructions='x'",
-            "Go --- task",
-            "pending",
-            "codex",
+        // codex: the generic tail with the inline first message quoted onto it.
+        assert_eq!(
+            build_launch_command("codex -c developer_instructions='x'", "Go --- task"),
+            "codex -c developer_instructions='x' 'Go --- task'"
         );
-        assert_eq!(codex, "codex -c developer_instructions='x' 'Go --- task'");
         // opencode: returned untouched — its context rides OPENCODE_CONFIG and
         // there is nothing to paste.
         assert_eq!(
-            build_launch_command(
-                "env OPENCODE_CONFIG='/x' opencode",
-                "ignored",
-                "pending",
-                "opencode"
-            ),
+            build_launch_command("env OPENCODE_CONFIG='/x' opencode", "ignored"),
             "env OPENCODE_CONFIG='/x' opencode"
         );
         // grok: the positional context is already on the command; nothing else.
         assert_eq!(
-            build_launch_command(
-                "grok --session-id u2 'ctx'",
-                "",
-                "u2",
-                "grok --session-id u2"
-            ),
+            build_launch_command("grok --session-id u2 'ctx'", ""),
             "grok --session-id u2 'ctx'"
         );
     }
 
     #[test]
-    fn a_resume_is_decided_in_the_pane_and_never_by_a_fallback_chain() {
-        let pre = "claude --resume u3";
-        let cmd = "claude --resume u3 --append-system-prompt 'ctx mentioning --resume u3'";
-        assert!(is_resume(cmd, "u3", pre));
-        let built = build_launch_command(cmd, "", "u3", pre);
-        assert!(
-            built.starts_with("if test -f \"$HOME/.claude/projects/"),
-            "{built}"
+    fn a_resume_form_is_wrapped_exactly_as_a_fresh_one_and_never_chained() {
+        // The decider is gone: a resume form arrives ALREADY CHOSEN, so the
+        // builder wraps it and stops. Anything else would put a shell operator
+        // in a command line that no shell will ever read.
+        let built = build_launch_command(
+            "claude --resume u3 --append-system-prompt 'ctx mentioning --resume u3'",
+            "",
         );
-        assert!(built.contains("; then exec env -u CLAUDECODE"), "{built}");
-        assert!(built.contains("; else exec env -u CLAUDECODE"), "{built}");
-        assert!(
-            built.matches(" --continue").count() == 1,
-            "the fallback arm swaps --resume for --continue exactly once: {built}"
-        );
-        assert!(
-            !built.contains("||"),
-            "never a chain: bash would stay the pane process"
-        );
-        // The TAIL's mention of the id is untouched — only the head is edited.
-        assert!(
-            built.contains("ctx mentioning --resume u3"),
-            "the injected prose is copied, never edited: {built}"
-        );
-        // A pending id is not a resume, whatever the prose says.
-        assert!(!is_resume(cmd, "pending", pre));
-        assert!(!id_probeable("has space"));
-    }
-
-    #[test]
-    fn the_rerun_form_exists_only_where_a_launch_time_id_was_transported() {
-        let pre = "claude --session-id u4";
-        let built = format!("env -u CLAUDECODE {pre} --append-system-prompt 'ctx'");
-        let rerun = rerun_command(&built, "u4", pre).expect("a claude re-run form");
         assert_eq!(
-            rerun,
-            "env -u CLAUDECODE claude --resume u4 --append-system-prompt 'ctx'"
+            built,
+            "env -u CLAUDECODE -u CLAUDE_CODE_SESSION CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=0 claude --resume u3 --append-system-prompt 'ctx mentioning --resume u3'"
         );
-        // codex never gets one: no launch-time id flag exists.
-        assert_eq!(
-            rerun_command("codex resume u4", "u4", "codex resume u4"),
-            None
-        );
-        // Nor does a pending id, nor a head that is not in the built command.
-        assert_eq!(rerun_command(&built, "pending", pre), None);
-        assert_eq!(rerun_command(&built, "u4", "grok --session-id u4"), None);
-    }
-
-    #[test]
-    fn the_launch_script_is_rerunnable_only_when_a_rerun_form_exists() {
-        let dir = scratch("script");
-        let pre = "claude --session-id u5";
-        let built = format!("env -u CLAUDECODE {pre}");
-        let script = write_launch_script(&dir, "spawned.0", &built, "u5", pre).unwrap();
-        let body = std::fs::read_to_string(&script).unwrap();
-        assert!(body.starts_with("#!/bin/bash\n"), "{body}");
-        assert!(body.contains("if [ -e '"), "{body}");
-        assert!(body.contains("launch.spawned.0.started'"), "{body}");
-        assert!(
-            body.matches("exec /bin/bash -lc ").count() == 2,
-            "both branches exec a SINGLE command: {body}"
-        );
-        assert!(body.contains("--resume u5"), "{body}");
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            let mode = std::fs::metadata(&script).unwrap().permissions().mode();
-            assert_eq!(mode & 0o777, 0o700, "the script is private and executable");
+        for shell_word in ["if ", "; then", "; else", "||", "&&"] {
+            assert!(!built.contains(shell_word), "{shell_word} in {built}");
         }
-        // A capture tool has no re-run form, so the script is the one-liner.
-        let plain =
-            write_launch_script(&dir, "spawned.1", "codex -c x='y'", "pending", "codex").unwrap();
-        let plain_body = std::fs::read_to_string(&plain).unwrap();
-        assert_eq!(
-            plain_body,
-            "#!/bin/bash\nexec /bin/bash -lc 'codex -c x='\\''y'\\'''\n"
-        );
-        // A rewrite clears the marker: a fresh launch must CREATE, not resume.
-        let marker = dir.join("launch.spawned.0.started");
-        std::fs::write(&marker, "").unwrap();
-        write_launch_script(&dir, "spawned.0", &built, "u5", pre).unwrap();
-        assert!(
-            std::fs::read_to_string(&marker).is_err(),
-            "the marker is cleared by a rewrite"
-        );
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn the_script_body_names_its_interpreter_and_quotes_every_interpolation() {
-        let body = script_body("/bin/bash", Path::new("/s/m.started"), None, "tool 'x'");
-        assert_eq!(body, "#!/bin/bash\nexec /bin/bash -lc 'tool '\\''x'\\'''\n");
+        assert!(!id_probeable("has space"));
+        assert!(!id_probeable("pending"));
     }
 
     #[test]

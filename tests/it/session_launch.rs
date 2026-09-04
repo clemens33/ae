@@ -1,9 +1,10 @@
 //! `_launch` against a REAL tmux server: the whole session, built or resumed.
 //!
 //! The operation runs end to end — the working copy, the tmux session, its
-//! panes and their stamps, the meta, the helper shims, the launch scripts and
-//! the paste that starts each agent. The agents are the same perl fake the
-//! spawn suite uses, named for the tool whose classification the test needs.
+//! panes and their stamps, the meta, the helper links, and the paste that hands
+//! each pane the core command which becomes its agent. The agents are the same
+//! perl fake the spawn suite uses, named for the tool whose classification the
+//! test needs.
 
 #![allow(
     clippy::disallowed_methods,
@@ -230,6 +231,30 @@ impl Rig {
         self.home.join("sessions").join(session)
     }
 
+    /// `_run --print` for one seat: the JSON plan the pane's own command would
+    /// exec, without execing it.
+    ///
+    /// The only way to read a pane's argv without a pane, now that the argv
+    /// exists nowhere but in the `execve` itself.
+    fn plan(&self, session: &str, slot: &str) -> String {
+        let out = ae()
+            .env_remove("TMUX")
+            .env_remove("TMUX_PANE")
+            .current_dir(&self.project)
+            .arg(ae::cli::RUN)
+            .arg("--print")
+            .arg(self.dir(session))
+            .arg(slot)
+            .output()
+            .unwrap_or_else(|why| panic!("the ae binary should run: {why}"));
+        assert!(
+            out.status.success(),
+            "_run --print {slot}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    }
+
     /// Plant the orchestrator scaffold the companion autostart opts in on.
     ///
     /// Its agent is a bare sleeper rather than the TUI fake: what this proves is
@@ -379,16 +404,23 @@ fn a_local_launch_builds_the_whole_session() {
         "the core is pinned per session:\n{meta}"
     );
 
-    // The HELPERS, every one a shim that execs the core.
+    // The HELPERS, every one a LINK to the core this session is pinned to.
     let dir = rig.dir("lnlocal");
-    for helper in [
-        "send", "state", "peek", "agents", "focus", "spawn", "watchdog",
-    ] {
-        let body = std::fs::read_to_string(dir.join(helper))
-            .unwrap_or_else(|why| panic!("the {helper} helper should exist: {why}"));
-        assert!(
-            body.contains("exec ") && body.contains("\"$@\""),
-            "{helper} is not a shim:\n{body}"
+    let pinned = meta
+        .lines()
+        .find_map(|line| line.strip_prefix("ae_core="))
+        .unwrap_or_default();
+    assert!(!pinned.is_empty(), "the core pin is written:\n{meta}");
+    for helper in ae::shim::HELPERS {
+        let path = dir.join(helper.name);
+        let kind = std::fs::symlink_metadata(&path)
+            .unwrap_or_else(|why| panic!("the {} helper should exist: {why}", helper.name));
+        assert!(kind.file_type().is_symlink(), "{} is a link", helper.name);
+        assert_eq!(
+            std::fs::read_link(&path).unwrap_or_default(),
+            Path::new(pinned),
+            "{} points at the pinned core",
+            helper.name
         );
     }
     assert!(
@@ -398,32 +430,59 @@ fn a_local_launch_builds_the_whole_session() {
         "the manifest names the roster"
     );
 
-    // The LAUNCH SCRIPT, and the agent it started.
-    let script = std::fs::read_to_string(dir.join("launch.main.sh"))
-        .unwrap_or_else(|why| panic!("a launch script: {why}"));
+    // NO LAUNCH SCRIPT: the pane's command is the core, and there is no bash
+    // left anywhere in the session directory.
     assert!(
-        script.contains("--session-id"),
-        "a fresh claude bakes its id:\n{script}"
+        !dir.join("launch.main.sh").exists(),
+        "slice Z2 writes no bash into a session directory"
+    );
+    // The ARGV the agent actually got, and the same argv reported without a
+    // pane. A fresh claude bakes its own id. The wait is the argv's: the tool
+    // reports itself only after `_run` has become it, so a recorded argv is
+    // proof the marker below was already written.
+    let argv = rig.launch_argv();
+    assert!(
+        dir.join("launch.main.started").is_file(),
+        "`_run` marked the seat launched before becoming the tool"
     );
     assert!(
-        !rig.launch_argv().is_empty(),
-        "the pasted script started the agent"
+        argv.contains("--session-id"),
+        "a fresh claude bakes its id: {argv}"
+    );
+    assert!(
+        argv.contains("--append-system-prompt"),
+        "the context rides claude's own channel: {argv}"
+    );
+    let plan = rig.plan("lnlocal", "main");
+    assert!(
+        plan.contains(r#""mode":"resume""#),
+        "the seat has run once: {plan}"
+    );
+    assert!(plan.contains(r#""tool":"claude""#), "{plan}");
+    assert!(
+        plan.contains(r#""env_unset":["CLAUDECODE","CLAUDE_CODE_SESSION"]"#),
+        "the nesting guard is an ENV delta now, not an `env` word in a shell string: {plan}"
+    );
+    assert!(
+        plan.contains(r#""CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION":"0""#),
+        "{plan}"
     );
 }
 
-/// A helper shim really does exec the core: `state` writes the caller's
-/// declaration, and `peek` reads a pane back.
+/// A helper LINK really is the core: `state` writes the caller's declaration,
+/// and `peek` reads a pane back — both through a file that is nothing but a
+/// symlink to the binary answering.
 #[test]
-fn a_helper_shim_execs_the_core() {
+fn a_helper_link_is_the_core_with_its_own_session() {
     if skip() {
         return;
     }
-    let rig = Rig::new("shim", &["claude"], None);
-    let (code, stdout, stderr) = rig.launch(&["--local", "lnshim"]);
+    let rig = Rig::new("link", &["claude"], None);
+    let (code, stdout, stderr) = rig.launch(&["--local", "lnlink"]);
     assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
-    let dir = rig.dir("lnshim");
+    let dir = rig.dir("lnlink");
     let lead = rig
-        .panes("lnshim")
+        .panes("lnlink")
         .into_iter()
         .find(|(_, slot, _)| slot == "main")
         .map(|(pane, _, _)| pane)
@@ -432,19 +491,19 @@ fn a_helper_shim_execs_the_core() {
     let out = helper(&dir.join("state"))
         .env("TMUX", format!("{},0,0", rig.sock.display()))
         .env("TMUX_PANE", &lead)
-        .args(["working", "proving the shim"])
+        .args(["working", "proving the link"])
         .output()
-        .unwrap_or_else(|why| panic!("the state shim should run: {why}"));
+        .unwrap_or_else(|why| panic!("the state link should run: {why}"));
     assert!(
         out.status.success(),
-        "state shim: {}",
+        "state link: {}",
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(
         std::fs::read_to_string(dir.join("events.jsonl"))
             .unwrap_or_default()
-            .contains("proving the shim"),
-        "the core wrote the declaration through the shim"
+            .contains("proving the link"),
+        "the core wrote the declaration through the link"
     );
 
     // The agent draws its transcript when its own process gets there, which is
@@ -456,10 +515,10 @@ fn a_helper_shim_execs_the_core() {
             .env("TMUX_PANE", &lead)
             .args(["lead", "20"])
             .output()
-            .unwrap_or_else(|why| panic!("the peek shim should run: {why}"));
+            .unwrap_or_else(|why| panic!("the peek link should run: {why}"));
         assert!(
             out.status.success(),
-            "peek shim: {}",
+            "peek link: {}",
             String::from_utf8_lossy(&out.stderr)
         );
         seen = String::from_utf8_lossy(&out.stdout).into_owned();
@@ -481,6 +540,16 @@ fn a_resume_reruns_with_the_resume_variant() {
     let rig = Rig::new("resume", &["claude"], None);
     let (code, stdout, stderr) = rig.launch(&["--local", "lnres"]);
     assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    // Wait for the agent to actually be running before killing its session:
+    // the seat is only "launched once" after `_run` has become the tool.
+    assert!(
+        !rig.launch_argv().is_empty(),
+        "the pasted command started the agent"
+    );
+    assert!(
+        rig.dir("lnres").join("launch.main.started").is_file(),
+        "the first run marked the seat"
+    );
     let fresh = rig.meta("lnres");
     let sid = fresh
         .lines()
@@ -501,20 +570,51 @@ fn a_resume_reruns_with_the_resume_variant() {
         stdout.contains("Resuming session lnres"),
         "the resume announces itself: {stdout}"
     );
-    let script = std::fs::read_to_string(rig.dir("lnres").join("launch.main.sh"))
-        .unwrap_or_else(|why| panic!("a launch script: {why}"));
+    // THE RESUME DECISION IS THE CORE'S NOW, and it is the start marker plus a
+    // probe rather than a shell `if` in a generated script. With no transcript
+    // on disk for this id, the probe says no and the pane runs the CWD-heuristic
+    // fallback — which is exactly what the script's `else` branch did.
+    let plan = rig.plan("lnres", "main");
+    assert!(plan.contains(r#""mode":"resume""#), "{plan}");
     assert!(
-        script.contains(&format!("--resume {sid}")),
-        "the resume asks for the SAME conversation:\n{script}"
+        plan.contains(r#""--continue""#) && !plan.contains(&format!(r#""--resume","{sid}""#)),
+        "no transcript for this id, so the fallback: {plan}"
     );
+
+    // Plant the transcript claude would have written, and the same seat resumes
+    // the SAME conversation. The probe is a file test; this is the file.
+    let home = std::env::var("HOME").unwrap_or_default();
+    // The PHYSICAL path, because the probe asks `getcwd(2)` — which is what
+    // claude's own `process.cwd()` asks, and on macOS `/tmp` is a symlink.
+    let key: String = std::fs::canonicalize(&rig.project)
+        .unwrap_or_else(|_| rig.project.clone())
+        .display()
+        .to_string()
+        .chars()
+        .map(|ch| if ch == '/' { '-' } else { ch })
+        .collect();
+    let transcripts = Path::new(&home).join(".claude/projects").join(key);
     assert!(
-        script.contains("--continue"),
-        "and keeps the CWD-heuristic fallback:\n{script}"
+        std::fs::create_dir_all(&transcripts).is_ok(),
+        "a transcript dir"
     );
+    let transcript = transcripts.join(format!("{sid}.jsonl"));
+    assert!(std::fs::write(&transcript, "{}\n").is_ok(), "a transcript");
+    let plan = rig.plan("lnres", "main");
+    let _ = std::fs::remove_file(&transcript);
+    assert!(
+        plan.contains(&format!(r#""--resume","{sid}""#)),
+        "the resume asks for the SAME conversation: {plan}"
+    );
+
     assert!(
         rig.meta("lnres")
             .contains(&format!("harness_session.main={sid}")),
-        "the id survives the rewrite"
+        "the id survives the resume"
+    );
+    assert!(
+        !rig.dir("lnres").join("launch.main.sh").exists(),
+        "and no bash was written to decide any of it"
     );
 }
 

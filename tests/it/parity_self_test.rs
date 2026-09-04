@@ -898,14 +898,19 @@ fn the_capability_boundary_holds_against_any_lint_relaxation() {
     // Asked of the compiler, so no `allow` of any shape can hide a site from it:
     // these ARE the places this crate can start a child process.
     //
-    // `src/transport.rs` is the PRODUCT's, and the only entry outside the test
-    // target: ae cannot answer SC-017k/SC-017l without running tmux, and before
-    // it existed every session ae listed read `unknown` by construction. It is
-    // listed here rather than exempted because the value of this guard is that
-    // adding a door is a line in a review, not a diff nobody read.
+    // Two product entries, and both are stated where they are used.
+    // `src/transport.rs` runs tmux: ae cannot answer SC-017k/SC-017l without
+    // it, and before it existed every session ae listed read `unknown` by
+    // construction. `src/run.rs` is the pane's own `exec` — it BECOMES the
+    // tool rather than starting a child, which is the fact
+    // `pane_current_command` rests on, and it arrived with slice Z2 when the
+    // generated `launch.<slot>.sh` that used to hold that `exec` was deleted.
+    // Both are listed rather than exempted because the value of this guard is
+    // that adding a door is a line in a review, not a diff nobody read.
     assert_eq!(
         sites,
         vec![
+            "src/run.rs".to_owned(),
             "src/transport.rs".to_owned(),
             "tests/it/cli.rs".to_owned(),
             "tests/it/parity.rs".to_owned(),
@@ -1118,15 +1123,19 @@ fn the_lint_relaxations_this_counter_can_see_are_the_expected_ones() {
         }
     }
 
-    // Seven relaxations this counter can see, each for a different job: the
-    // PRODUCT's, in `src/transport.rs`, because a tmux multiplexer that cannot
-    // run tmux answers `unknown` about everything; the parity harness's door,
+    // Eight relaxations this counter can see, each for a different job: the
+    // PRODUCT's two — `src/transport.rs`, because a tmux multiplexer that
+    // cannot run tmux answers `unknown` about everything, and `src/run.rs`,
+    // the pane's own `exec` of its tool; the parity harness's door,
     // which must never judge a lane; the black-box door, which drives the
     // PRODUCT binary and where asserting on what it printed is the whole point
     // (`cli::ae` is private to its module, so the harness cannot reach a child
     // through it); the black-box FIFO fixture beside it (`cli::mkfifo` — safe
     // std cannot make the one special file that blocks an ungated open, and
-    // the tests that prove the `-f` gates need exactly that file); the git
+    // the tests that prove the `-f` gates need exactly that file); the
+    // by-name door beside it (`cli::helper_by_name` — a helper's identity IS
+    // `argv[0]`, so proving the bare-name refusal needs a process started AS
+    // the name, which no path spelling produces); the git
     // fixture builder beside those (`cli::git_in` — the preview's git-facts
     // tests need REAL repos, and only `git` builds a real repo); the generated
     // session-helper runner beside those too (`cli::helper` — a launch writes
@@ -1134,13 +1143,14 @@ fn the_lint_relaxations_this_counter_can_see_are_the_expected_ones() {
     // rather than the function behind it); and this file's own, which has to
     // run clippy in order to ask clippy anything.
     //
-    // An eighth entry is red. A relaxation this counter CANNOT see is not — that
+    // A ninth entry is red. A relaxation this counter CANNOT see is not — that
     // is what the semantic guard above is for.
     assert_eq!(
         inventory,
         vec![
+            ("src/run.rs".to_owned(), 1),
             ("src/transport.rs".to_owned(), 1),
-            ("tests/it/cli.rs".to_owned(), 4),
+            ("tests/it/cli.rs".to_owned(), 5),
             ("tests/it/parity.rs".to_owned(), 1),
             ("tests/it/parity_self_test.rs".to_owned(), 1),
         ],

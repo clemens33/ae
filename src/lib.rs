@@ -99,10 +99,12 @@ pub mod render;
 pub mod reply;
 pub mod requests;
 pub mod roster;
+pub mod run;
 pub mod send;
 pub mod session;
 pub mod session_launch;
 mod session_tmux;
+pub mod shim;
 pub mod spawn;
 pub mod state;
 pub mod teardown;
@@ -116,6 +118,7 @@ pub mod watchdog;
 pub mod watchdog_daemon;
 pub mod watchdog_glue;
 pub mod watchdog_lifecycle;
+pub mod words;
 
 use std::io::Write;
 
@@ -196,9 +199,61 @@ pub const NO_LAUNCHER: &str = "start is not implemented in this build";
 /// [`cli::Request::exit_code`], where it could be mistaken for contract.
 pub const EXIT_UNAVAILABLE: u8 = 1;
 
+/// Run the CLI against a whole argv, `argv[0]` included — the binary's real
+/// entry.
+///
+/// THE BASENAME OF `argv[0]` IS READ FIRST, because it can change what this
+/// process IS. Every session helper is a symlink to this binary, so a pane that
+/// runs `<session-dir>/send` reaches exactly this function with `program` set
+/// to that path; the helper's entry and its session directory both come out of
+/// it. `program` is [`std::env::args`]'s first word, never
+/// [`std::env::current_exe`], which resolves the link and would answer
+/// `ae-core` for every helper.
+///
+/// A `program` of `None` — the shape [`run`] keeps for tests and doctests — is
+/// simply "not a helper".
+///
+/// # Errors
+///
+/// Returns [`Error::Io`] if `out` or `err` cannot be written or flushed.
+pub fn run_program(
+    program: Option<&str>,
+    args: &[String],
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> Result<u8> {
+    let Some(program) = program else {
+        return run(args, out, err);
+    };
+    match shim::classify(program, &invocation_dir()) {
+        shim::Invocation::Core => run(args, out, err),
+        shim::Invocation::Bare(name) => {
+            writeln!(err, "{}", shim::bare_refusal(name))?;
+            err.flush()?;
+            Ok(entry::EXIT_USAGE)
+        }
+        // A helper carries no preamble: the pane execs the link directly, so
+        // the translated argv goes straight to the ordinary dispatch.
+        shim::Invocation::Helper { helper, dir } => {
+            run_dispatch(&shim::translate(helper, &dir, args), out, err)
+        }
+    }
+}
+
+/// The directory a relative `argv[0]` is resolved against.
+fn invocation_dir() -> std::path::PathBuf {
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: a relative argv[0] means nothing without the working directory it was typed in"
+    )]
+    let cwd = std::env::current_dir();
+    cwd.unwrap_or_else(|_| std::path::PathBuf::from("."))
+}
+
 /// Run the CLI against `args` (argv WITHOUT the program name).
 ///
-/// The binary's entry point. `list` reads the real state root, enumerates,
+/// The argv dispatch, once [`run_program`] has established that this process is
+/// not a session helper. `list` reads the real state root, enumerates,
 /// classifies and renders; see [`run_with`] for the injected-source path the
 /// suite drives, and [`listing::World`] for why the source is a parameter at
 /// all.
@@ -1359,6 +1414,7 @@ pub fn run_with(
         }
         cli::Request::CheckDeps { tail } => doctor::check_deps(tail, err)?,
         cli::Request::ShimsRender { dir, tail } => doctor::shims_render(dir, tail, err)?,
+        cli::Request::Run { dir, slot, print } => run::run(dir, slot, *print, out, err)?,
         cli::Request::Roster { dir, tail } => identity::roster(dir, tail, out, err)?,
         cli::Request::ManifestRender { dir, tail } => render::run_manifest(dir, tail, out, err)?,
         cli::Request::Context { dir, tail } => render::run_context(dir, tail, out, err)?,
