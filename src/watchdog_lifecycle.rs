@@ -6,42 +6,6 @@
 //! helper, whose `_watchdog_start` / `_watchdog_stop` / `_watchdog_status`
 //! (ae:11464-11588) owned the pane, the pidfile, the start lock and the meta
 //! flag. This module is that management, ported.
-//!
-//! # What the pane runs, and where the knobs are
-//!
-//! `start` splits a pane running `<meta>/watchdog _run`, exactly as bash did —
-//! and the helper is not a fallback: it is where the `AE_WATCHDOG_*` / legacy
-//! `AE_LOOP_*` knob NAMES are spelled. The core may not read the environment,
-//! so every tunable has to cross as a flag, and the process that can see an
-//! operator's exports is the one tmux starts in the pane. Pointing that pane
-//! straight at `ae-core _watchdog-run` would silently run a cadence nobody
-//! chose.
-//!
-//! When a session has NO `watchdog` helper the pane runs the core directly, and
-//! the words after `--` are appended to its argv: that is the channel a caller
-//! who knows the knobs (the glue, which can read the environment) uses to carry
-//! them through. No `--` tail means the daemon's own defaults, which is the
-//! honest answer when nobody said otherwise.
-//!
-//! # Three states, not two
-//!
-//! Bash asked `kill -0` and `_monitor_find_pane`, and a tmux probe that FAILED
-//! was indistinguishable from a pane that was absent — so an unanswerable
-//! server read as "not running", which on `start` means spawning a second
-//! daemon beside a live one. [`Presence`] keeps that third answer, and both
-//! edges refuse to act on it (#28: only a VERIFIED absence may start a
-//! companion, and only a verified presence may be killed).
-//!
-//! # The pane is the kill
-//!
-//! `stop` does not signal the recorded pid. Since A.3 the daemon IS the pane's
-//! process, so the ownership-checked `kill-pane`
-//! ([`watchdog_glue::kill_owned_pane`]) takes it with the pane — and a bare kill
-//! of a recorded pid is the stranger-kill that guard exists to refuse. The
-//! pidfile is then retracted only while it still names the pid we observed, and
-//! the bar options are cleared through the daemon's own
-//! [`watchdog_daemon::clear_published`], because a pane killed by SIGHUP does
-//! not get to run its own cleanup.
 
 use std::io::Write;
 use std::path::Path;
@@ -110,10 +74,6 @@ pub enum Presence {
 }
 
 /// `watchdog <start|stop|status> [session] [--pane <id>]`.
-///
-/// `--pane` is how "inside an ae session" arrives: the caller's own pane id,
-/// which the core resolves to a session itself rather than trusting a name it
-/// was told. Without it, and without a name, there is nothing to act on.
 ///
 /// # Errors
 ///
@@ -251,11 +211,6 @@ fn start(
     // SINGLE-STARTER MUTUAL EXCLUSION. The launch's autostart and an explicit
     // `ae watchdog start` reach here, and without the lock both read "not
     // running" in the window before either publishes a pidfile and BOTH spawn a
-    // daemon. Failing to take it is not licence to proceed: the holder is
-    // establishing the one daemon, so we DEFER. The handle is held for the rest
-    // of the function — the spawn and the registration wait included — because
-    // the pidfile appears asynchronously and releasing at pane-creation would
-    // hand the next starter the same empty window.
     let held = crate::state::acquire(&meta_dir.join(START_LOCK), START_LOCK_WAIT);
     let Ok(_held) = held else {
         writeln!(
@@ -393,20 +348,12 @@ fn stop(
 }
 
 /// The argv the watchdog pane runs.
-///
-/// The session's own `watchdog` helper when it has one — the frozen shape, and
-/// the only process in this path that can read an operator's `AE_WATCHDOG_*`
-/// exports. Otherwise the core directly, with whatever knob flags the caller
-/// passed after `--`. `None` when there is no helper AND this process cannot
-/// name its own executable: there is then nothing to start, and a `PATH` lookup
-/// could resolve to a different core than the one holding the contract.
 fn daemon_command(meta_dir: &Path, knobs: &[String]) -> Option<Vec<String>> {
     let helper = meta_dir.join(HELPER);
     if lifecycle::path_exists(&helper) {
         // The core-written shim is `exec <core> _watchdog-run <meta> "$@"`: the
         // entry and the meta dir are already inside it, so ONLY the knobs
         // follow — an extra word arrives as an unknown argument and the daemon
-        // dies before it publishes a pidfile (measured, glue cut 3).
         let mut command = vec![helper.display().to_string()];
         command.extend(knobs.iter().cloned());
         return Some(command);
@@ -424,12 +371,6 @@ fn daemon_command(meta_dir: &Path, knobs: &[String]) -> Option<Vec<String>> {
 }
 
 /// [`observe`], plus the frozen stale-pidfile cleanup.
-///
-/// A pidfile naming a dead process, or one whose pane is verifiably gone, is an
-/// artifact rather than a registration: it is removed so `status` cannot lie,
-/// `start` does not wrongly defer, and `stop` does not report a daemon that is
-/// not there. Removal is ownership-checked, so a replacement that has already
-/// published its own pid is never touched.
 #[must_use]
 pub fn presence(server: &ServerId, session: &str, meta_dir: &Path) -> Presence {
     let seen = observe(server, session, meta_dir);
@@ -442,11 +383,6 @@ pub fn presence(server: &ServerId, session: &str, meta_dir: &Path) -> Presence {
 }
 
 /// Read the three facts a registration rests on, and change NOTHING.
-///
-/// The registration wait uses this rather than [`presence`]: the daemon it is
-/// waiting for may be mid-publish, and a reader that deletes what it finds
-/// half-written is the duplicate-spawn hazard the atomic publish exists to
-/// close.
 #[must_use]
 pub fn observe(server: &ServerId, session: &str, meta_dir: &Path) -> Presence {
     let Some(pid) = watchdog_glue::read_pid(meta_dir) else {
@@ -470,11 +406,6 @@ pub fn observe(server: &ServerId, session: &str, meta_dir: &Path) -> Presence {
 }
 
 /// Whether `pid` is in the process table — `None` when there is no table.
-///
-/// The `kill -0` of the frozen predicate, without a signal: this crate forbids
-/// `unsafe`, so liveness is read from the snapshot [`crate::procs`] already
-/// takes for the watchdog's own dead-checks. Failure is UNKNOWN, never dead —
-/// the same direction that module documents.
 fn pid_alive(pid: u32) -> Option<bool> {
     let table = crate::procs::snapshot()?;
     Some(table.iter().any(|proc| proc.pid == pid))

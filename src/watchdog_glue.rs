@@ -17,27 +17,6 @@
 //!   binary;
 //! * on the lifecycle edges, reaped a pre-rename (`_shepherd` / `_loop`)
 //!   watchdog through an OWNERSHIP-CHECKED kill (ae:13219-13245).
-//!
-//! # Why the ownership check is the load-bearing part
-//!
-//! A tmux pane id is server-local and REUSED after a server restart on the same
-//! socket. A process holding a stale id would kill a stranger — measured in the
-//! integration suite, where a leftover ae process took a later section's freshly
-//! spawned pane three seconds after it was created. So the facts are read from
-//! the PANE ITSELF at the moment of the kill and the kill is authorised by a
-//! POSITIVE match, never by the absence of a contradiction: a probe that fails
-//! (server gone, tmux unavailable) and a probe that answers with an empty
-//! session (tmux renders an empty format for an unknown target rather than
-//! failing) BOTH refuse. A pane that is not there is nothing to kill, and an
-//! unreadable pane is exactly the one this guard may not take on faith.
-//!
-//! # Where the argv lives
-//!
-//! The two tmux shapes this module needs — the pane-ownership probe and
-//! `kill-pane` — are built HERE rather than in [`crate::tmux`], and
-//! [`crate::transport`] holds only the two thin runners. That is a concession to
-//! a concurrent-edit rule, not a design claim: they belong beside their
-//! siblings in `tmux.rs` and should move there when that file is quiet.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -55,9 +34,6 @@ pub const BRANCH_STATUS_OPTION: &str = "@ae_branch_status";
 pub const BRANCH_DISPLAY_MAX: usize = 24;
 
 /// The pre-rename watchdog names a session can still carry, newest first.
-///
-/// A `doctor --refresh` rewrites helpers but does NOT restart a running
-/// watchdog, so a legacy process can outlive the rename (ae:13279-13300).
 pub const LEGACY_WATCHDOG_NAMES: [&str; 2] = ["shepherd", "loop"];
 
 /// The daemon's pidfile, relative to the session's meta dir.
@@ -65,11 +41,6 @@ const PIDFILE_NAME: &str = ".watchdog.pid";
 
 /// Flatten and trim `text` to `max` display characters, the frozen
 /// `_watchdog_trim` (ae:13830-13839).
-///
-/// Newlines and carriage returns become spaces FIRST — a status bar renders one
-/// line, and a value carrying a newline would break the option, not wrap it.
-/// Over the cap the value keeps `max - 1` characters and gains a `~`, so the
-/// result is never longer than `max`.
 #[must_use]
 pub fn trim_display(text: &str, max: usize) -> String {
     let flat: String = text
@@ -97,11 +68,6 @@ pub struct BranchReading {
 }
 
 /// Read the work tree's branch, or `None` when there is nothing to publish.
-///
-/// `None` for every frozen no-branch case (ae:13857-13875): no `work_dir`, a
-/// path that is not inside a work tree, and a HEAD that names nothing. The
-/// caller must then UNSET `@ae_branch_name` rather than publish an empty one —
-/// see [`publish_branch`].
 #[must_use]
 pub fn branch_reading(work_dir: Option<&str>) -> Option<BranchReading> {
     let work_dir = work_dir.filter(|dir| !dir.is_empty())?;
@@ -122,10 +88,6 @@ pub fn branch_reading(work_dir: Option<&str>) -> Option<BranchReading> {
 }
 
 /// Publish (or retract) the two branch options on `session_id`.
-///
-/// `None` publishes the display option as EMPTY and UNSETS the machine one,
-/// exactly as the frozen segment does: the bar must collapse to just the path,
-/// and a machine consumer must read "no branch", never a stale one.
 pub fn publish_branch(server: &ServerId, session_id: &str, reading: Option<&BranchReading>) {
     let Some(reading) = reading else {
         let _ = transport::clear_option(
@@ -198,11 +160,6 @@ pub fn pane_owner_args(server: &ServerId, pane: &str) -> Vec<String> {
 }
 
 /// What a completed ownership probe means.
-///
-/// `None` — the refusal — for a FAILED run and for a successful run whose
-/// session field is empty. Measured 2026-09-03: an unknown pane answers rc 0
-/// with `"\t"`, and an unknown server answers rc 1. Both are "no owner named",
-/// and a kill may not be authorised by either.
 #[must_use]
 pub fn interpret_pane_owner(succeeded: bool, stdout: &str) -> Option<PaneOwner> {
     if !succeeded {
@@ -247,9 +204,6 @@ pub enum KillOutcome {
 }
 
 /// Kill `pane` ONLY if it is still the pane the caller means.
-///
-/// A refusal is LOUD but non-fatal: the caller's own status stands, which is why
-/// nothing here is an error. See the module docs for why the check is positive.
 ///
 /// # Errors
 ///
@@ -302,12 +256,6 @@ pub fn kill_owned_pane(
 
 /// Reap any pre-rename watchdog still running under legacy artifacts.
 ///
-/// Idempotent and quiet. For each legacy name: if its `_<name>` pane is live in
-/// this session, kill it through [`kill_owned_pane`]; either way remove the
-/// `.<name>.pid` / `.<name>.status` artifacts. Returns the names whose pane was
-/// present, so a caller can report "stopped" for a session that ran only a
-/// legacy watchdog (ae:13304-13316).
-///
 /// # Errors
 ///
 /// Only writing a refusal diagnostic to `err`.
@@ -332,7 +280,6 @@ pub fn reap_legacy(
             // The recorded pid is deliberately NOT signalled here: the legacy
             // daemon IS the process in that pane, so the ownership-checked
             // `kill-pane` takes it with the pane, and a bare kill of a recorded
-            // pid is the stranger-kill this module exists to refuse.
             kill_owned_pane(server, &pane, session, Some(&stamp), err)?;
         }
         let _ = std::fs::remove_file(meta_dir.join(format!(".{name}.pid")));
@@ -350,12 +297,6 @@ pub struct PidFile {
 
 impl PidFile {
     /// Publish this process's pid ATOMICALLY (temp + rename).
-    ///
-    /// `echo >file` creates the file empty and only THEN writes, so a reader can
-    /// observe a zero-byte pidfile mid-write; a serialized starter that saw it
-    /// would read no pid, delete the file and spawn a duplicate. `rename(2)`
-    /// makes the pidfile appear only fully written, which is what the start
-    /// path's registration wait depends on (ae:14346-14356).
     ///
     /// # Errors
     ///
@@ -378,12 +319,6 @@ impl PidFile {
     }
 
     /// Remove the pidfile, but ONLY while it still names this process.
-    ///
-    /// A stop/start in quick succession can leave the old daemon's cleanup
-    /// running after the new one is already publishing; unconditional removal
-    /// would then delete the REPLACEMENT's registration — the dying process
-    /// vandalising its successor (ae:13996-14000). Returns whether it was ours
-    /// to remove.
     #[must_use]
     #[allow(
         clippy::disallowed_methods,
@@ -400,13 +335,6 @@ impl PidFile {
 }
 
 /// RAII: the registration dies with the value that published it.
-///
-/// `run` used to release only after the loop returned, so any `?` between
-/// publish and watch — the banner write hitting a closed pipe, a reap diagnostic
-/// failing — left `.watchdog.pid` naming an exited process (colead gate
-/// 135cf36a, deterministic repro). The release stays ownership-checked, so a
-/// successor that already re-published is never touched, and a second release
-/// is a no-op.
 impl Drop for PidFile {
     fn drop(&mut self) {
         let _ = self.release();
@@ -441,18 +369,6 @@ pub struct Recovered {
 
 /// One recovery pass over a session's roster: a single look at every seat whose
 /// id is still pending, and the rows worth an event.
-///
-/// This is what `ae _recover-pending <session>` used to be. The frozen arm ran
-/// the whole selection and every capture chain in bash and reported them as TSV
-/// for this module to read back; the core owns both halves now, so the walk is
-/// a call and the "row" is a value rather than a line that has to survive a
-/// pipe. Only a seat that ACTUALLY landed an id is returned — the frozen
-/// wrapper likewise acted on `ok` rows alone and left `already` / `miss` /
-/// `skip` to doctor.
-///
-/// A look that finds nothing is not a failure: the seat stays pending and the
-/// next cycle looks again, which is what made the frozen arm's
-/// `2>/dev/null || true` the right reading of a failed run.
 #[must_use]
 pub fn recover(dir: &Path, roster: &[crate::meta::RosterEntry]) -> Vec<Recovered> {
     let mut rows = Vec::new();
@@ -474,9 +390,6 @@ pub fn recover(dir: &Path, roster: &[crate::meta::RosterEntry]) -> Vec<Recovered
 }
 
 /// The event summary a recovery is recorded with (ae:14440).
-///
-/// The reference is the full id; the summary quotes its first eight characters,
-/// which is the form every other ae surface abbreviates an id with.
 #[must_use]
 pub fn recovered_summary(row: &Recovered) -> String {
     let short: String = row.captured.chars().take(8).collect();
@@ -484,10 +397,6 @@ pub fn recovered_summary(row: &Recovered) -> String {
 }
 
 /// Whether a supervise tick is due.
-///
-/// `0` disables it outright, and a daemon that has never ticked is due
-/// immediately — the frozen `last_tg_supervise=0` makes the first cycle's
-/// `now - 0 >= TG_SUPERVISE_SECS` true (ae:14446-14451).
 #[must_use]
 pub fn supervise_due(every_secs: u64, last: Option<SystemTime>, now: SystemTime) -> bool {
     if every_secs == 0 {
@@ -500,21 +409,6 @@ pub fn supervise_due(every_secs: u64, last: Option<SystemTime>, now: SystemTime)
 }
 
 /// The one deferred concern the cycle still owns: the Telegram bridge revive.
-///
-/// A value rather than a loose local because the supervise throttle is state
-/// the tick owns, and a caller that forgot to carry it would revive the bridge
-/// on every cycle. Pending-id recovery was the other half until the core grew
-/// its own — see [`recover`], which needs none of this.
-///
-/// THE REVIVE IS IN-PROCESS. It used to run `<ae_path> telegram _supervise`
-/// through the recorded glue, and that word had no parser on the other side:
-/// [`crate::telegram_lifecycle`] accepts `start|stop|status` and nothing else,
-/// so every throttle window spent a fork on a usage error whose exit status was
-/// discarded. The core calls [`crate::telegram_lifecycle::autostart`] instead —
-/// the same call a launch makes, which respects `[telegram] enabled`, never
-/// writes that flag, takes the control lock non-blocking so a same-second
-/// `stop` wins, and refuses on the tri-state UNKNOWN rather than spawning a
-/// second bridge.
 #[derive(Debug, Clone)]
 pub struct Deferred {
     /// The ae home this session's state lives under, and the config the
@@ -533,12 +427,6 @@ pub struct Deferred {
 
 impl Deferred {
     /// Build the tick from this session's own directory and its recorded config.
-    ///
-    /// The ae home is the sessions root's parent — `<ae-home>/sessions/<name>`
-    /// is the one layout the core creates — and the config is meta's `config=`
-    /// row, which is the file the launch resolved. An empty or missing row
-    /// leaves [`Paths::under`]'s `<ae-home>/config` standing, which is what the
-    /// glue's own `--config` default was.
     #[must_use]
     pub fn new(meta_dir: &Path, recorded_config: Option<&str>, every_secs: u64) -> Self {
         let paths = meta_dir.parent().and_then(Path::parent).map(|ae_home| {
@@ -557,21 +445,6 @@ impl Deferred {
     }
 
     /// Revive the Telegram bridge if the throttle allows it this cycle.
-    ///
-    /// Best-effort and idempotent: the autostart is a no-op with no network
-    /// when Telegram is off. Returns whether a tick actually ran.
-    ///
-    /// `server` is the cycle's own — the one a rebind may just have adopted —
-    /// so a revive reaches the session's server rather than an ambient one.
-    /// That is what the `AE_TMUX_SERVER` export used to buy, without an
-    /// environment the core may not set.
-    ///
-    /// THE DIAGNOSTIC IS DISCARDED, and deliberately: this runs in the
-    /// watchdog's read-only pane, where a line printed every throttle window
-    /// would bury the roster the pane exists to show. The frozen leg dropped
-    /// the supervise's stderr for that reason and so does this. Nothing is
-    /// lost — a refusal writes the durable `autostart-refusal` record that
-    /// `telegram status` and `doctor` already display.
     pub fn supervise(
         &mut self,
         server: &crate::inventory::ServerId,
@@ -597,22 +470,12 @@ impl Deferred {
 }
 
 /// The daemon's pidfile path under `meta_dir` — `.watchdog.pid`.
-///
-/// Published here rather than spelled again at the lifecycle's call sites: the
-/// name is one fact, and a start that polled a different filename from the one
-/// the daemon publishes would wait out its bound every time.
 #[must_use]
 pub fn pidfile(meta_dir: &Path) -> PathBuf {
     meta_dir.join(PIDFILE_NAME)
 }
 
 /// The pid a session's pidfile names, or `None` when it names nothing usable.
-///
-/// The read the LIFECYCLE needs, beside [`PidFile`]'s ownership-checked release:
-/// `status` reports the pid, `start` refuses to duplicate a daemon that already
-/// published one, and `stop` removes only the registration it observed. A
-/// zero-byte or non-numeric file is `None` — the publish is atomic, so a partial
-/// read means the file is not a pidfile.
 #[must_use]
 #[allow(
     clippy::disallowed_methods,
@@ -624,13 +487,6 @@ pub fn read_pid(meta_dir: &Path) -> Option<u32> {
 }
 
 /// Remove the pidfile, but ONLY while it still names `pid`.
-///
-/// [`PidFile::release`]'s rule from the OTHER side: the stopper reads a pid,
-/// kills the pane it belongs to and then retracts the registration — and
-/// between those steps a replacement may already have published its own. The
-/// ownership check is what keeps a stop from vandalising the next daemon's
-/// pidfile, exactly as it keeps a dying daemon from vandalising its successor's.
-/// Returns whether the file was removed.
 #[must_use]
 pub fn clear_pid(meta_dir: &Path, pid: u32) -> bool {
     if read_pid(meta_dir) != Some(pid) {
@@ -765,7 +621,6 @@ mod tests {
         // The frozen `[[ -x "${AE_PATH_BIN:-}" ]]` guard, in its new subject: a
         // meta directory with no grandparent names no ae home, so there is no
         // config to read intent from — and the throttle must not record a tick
-        // that never ran, or the first real one would be delayed by a no-op.
         let mut deferred = Deferred::new(std::path::Path::new("meta"), None, 120);
         let server = named("nothing");
         assert!(!deferred.supervise(&server, "demo", SystemTime::UNIX_EPOCH));

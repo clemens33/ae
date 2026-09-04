@@ -1,41 +1,5 @@
 //! The watchdog daemon — the loop that observes a session's panes each cycle,
 //! asks [`crate::watchdog`] what it is looking at, and applies the answers.
-//!
-//! # The clean cut
-//!
-//! [`crate::watchdog`] DECIDES and holds no state; this module OBSERVES,
-//! ACCOUNTS and delivers. Bash keeps what it is best at: starting and stopping
-//! this process, and publishing the tmux options from the status lines printed
-//! here. Rust interprets, bash publishes.
-//!
-//! # Two halves, and the seam is deliberate
-//!
-//! [`account`] is PURE — prior pane state plus this cycle's observation in,
-//! next state plus a list of [`Effect`]s out. Every branch of the frozen loop
-//! (ae:16490-16947) is therefore unit-testable without a tmux server, a
-//! process table or a clock. The loop's own job is reduced to gathering the
-//! observation and applying the effects, which is the part a test cannot reach
-//! anyway.
-//!
-//! # The meta-agent sweep
-//!
-//! The frozen watchdog's orchestrator branch (ae:16738-16897) IS ported: sweep
-//! cadence, heartbeat wedge detection and its own two alerts. It applies to the
-//! orchestrator MAIN agent alone (SC-935) and it replaces every ordinary branch for
-//! that pane — an orchestrator idling between sweeps is a service at rest, not a
-//! stale agent. The decisions are [`crate::watchdog`]'s
-//! ([`crate::watchdog::sweep_step`] / [`crate::watchdog::record_sweep`]); this
-//! module reads the heartbeat, delivers the prompt and books what happened.
-//!
-//! # Nothing crosses to the glue any more
-//!
-//! Both deferred concerns are the core's own. The pending tool-session-id
-//! recovery went first ([`crate::watchdog_glue::recover`], in-process from
-//! meta on every tick), and the Telegram bridge revive followed: it used to
-//! run `<ae_path> telegram _supervise`, a word [`crate::telegram_lifecycle`]
-//! never parsed, so the fork it cost every throttle window bought a discarded
-//! usage error. It is [`crate::telegram_lifecycle::autostart`] now — the same
-//! call a launch makes.
 
 use std::io::{self, Write};
 use std::path::Path;
@@ -71,11 +35,6 @@ const NON_AGENT_PANES: [&str; 5] = ["(null)", "_watchdog", "_events", "_shepherd
 const UNKNOWN_ALERT_CYCLES: u32 = 5;
 
 /// The tunables, all of them (ae:16331-16373). Defaults are the frozen ones.
-///
-/// They arrive as CLI ARGUMENTS rather than environment: this crate's clippy
-/// policy disallows `std::env::var` outright, so bash reads `AE_WATCHDOG_*`
-/// (with its `AE_LOOP_*` fallback) and passes what it read. The defaults live
-/// here so a bash side that passes nothing still runs the frozen cadence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Knobs {
     /// Seconds slept at the end of every cycle.
@@ -143,7 +102,7 @@ pub struct PaneState {
     /// the pane settled on.
     pub quiet_base: Option<(String, u64)>,
     /// The orchestrator sweep branch's carry. Untouched for every pane that is not
-    /// the orchestrator main (SC-935).
+    /// the orchestrator main.
     pub sweep: SweepState,
 }
 
@@ -169,7 +128,7 @@ pub struct Observation {
     /// Age of the newest event this agent is the ACTOR of (ae:15520-15537).
     pub last_actor_event_age_secs: u64,
     /// The orchestrator sweep reading, `Some` ONLY for the orchestrator main agent with
-    /// the cadence enabled (SC-935 + SC-1405b). Every other pane carries `None`
+    /// the cadence enabled. Every other pane carries `None`
     /// and is judged by the ordinary branches.
     pub sweep: Option<SweepObservation>,
 }
@@ -248,9 +207,6 @@ pub struct Accounting {
 }
 
 /// `idle <n>m`, or `no recent events` when the age is absurd (ae:16862-16867).
-///
-/// The absurd case is the sentinel: an agent with no event at all reports
-/// 999999 seconds, and "idle 16666m" is a worse thing to publish than the truth.
 #[must_use]
 pub fn stale_display(event_age_secs: u64) -> String {
     let minutes = event_age_secs / 60;
@@ -275,11 +231,6 @@ pub fn nudge_text(goal: Option<&str>, meta_dir: &Path) -> String {
 }
 
 /// Count consecutive unusable process snapshots, and say so once.
-///
-/// This runs on EVERY observed cycle, including the ones [`account`] returns
-/// early from: the point is to notice a probe that never works, and the dead
-/// branch — where an unusable probe now means "not dead" — is exactly where it
-/// would otherwise stay hidden.
 fn book_unknown(next: &mut PaneState, effects: &mut Vec<Effect>, descendancy: Descendancy) {
     if !matches!(descendancy, Descendancy::Unknown) {
         next.unknown_streak = 0;
@@ -300,12 +251,6 @@ fn book_unknown(next: &mut PaneState, effects: &mut Vec<Effect>, descendancy: De
 }
 
 /// The throttled branch (ae:16787-16818).
-///
-/// The streak's FIRST cycle says so once, and the cycle that reaches the alert
-/// bound says so once more; the hash bookkeeping is updated even though no
-/// nudge follows, so that a later recovery reads as activity rather than as a
-/// stale first-time difference. The delivered count resets: a throttled agent
-/// has not ignored anything.
 fn book_throttle(
     next: &mut PaneState,
     effects: &mut Vec<Effect>,
@@ -335,12 +280,6 @@ fn book_throttle(
 
 /// What a stale pane earns: a nudge, the one max-nudges alert, or nothing
 /// (ae:16858-16922).
-///
-/// Three states, not two. Past the undelivered bound the pane earns NOTHING:
-/// an unreachable pane must stop costing cycles, and each send can hold the
-/// loop for its whole defer window. The alert fires on the cycle the delivered
-/// count EQUALS the bound and the count then advances past it, so it is raised
-/// exactly once however long the pane stays stale.
 fn book_stale(
     prior: &PaneState,
     next: &mut PaneState,
@@ -369,19 +308,6 @@ fn book_stale(
 
 /// The orchestrator main's sweep branch (ae:16738-16897), or `None` when this pane
 /// is not it.
-///
-/// A `Some` verdict means the cadence DECIDED this pane and every branch after
-/// it is skipped: no quiet suppression, no throttle streak, no stale nudge.
-/// "Idle between sweeps" is what a monitor at rest looks like, and nudging it
-/// to declare a state would be nudging the thing that watches the nudging. The
-/// dead check runs BEFORE this and the missing-pane sweep runs after the loop,
-/// so a crashed or vanished orchestrator is still caught.
-///
-/// Two separate `None`s, and they mean the same thing to the caller — run the
-/// ordinary branches — for different reasons. `seen.sweep` is `None` for every
-/// pane that is not the orchestrator main (SC-935, decided at the observation).
-/// [`sweep_step`] returns `None` for SC-1405b's disabled cadence. Neither is an
-/// empty accounting, which would suppress the stale watchdog as well.
 fn book_sweep(
     prior: &PaneState,
     next: &mut PaneState,
@@ -400,26 +326,6 @@ fn book_sweep(
 
 /// Account for one pane in one cycle — the frozen loop's branch order, and the
 /// only place any of it is decided.
-///
-/// The order is bash's, and it is load-bearing rather than incidental:
-///
-/// 1. a LATCHED dead pane is skipped entirely (ae:16490-16495);
-/// 2. the dead check, which latches and alerts once (ae:16503-16519);
-/// 3. the orchestrator main's sweep cadence, which REPLACES every branch below it
-///    for that one pane (ae:16738-16897);
-/// 4. the throttle streak CLEAR, which runs before every later branch so a
-///    quiet agent's throttle still clears (ae:16713-16723);
-/// 5. quiet suppression, which resets the delivered count and counts active
-///    (ae:16739-16790);
-/// 6. throttle, reacted to BEFORE active/recent so the alert cadence starts
-///    immediately rather than after the whole stale window (ae:16787-16818);
-/// 7. active / recently visible / recently alive (ae:16821-16856);
-/// 8. stale: nudge, or the one max-nudges alert (ae:16858-16922).
-///
-/// The persistent-Unknown accounting has no bash counterpart — it is the
-/// visibility this port's [`Descendancy::Unknown`] ruling requires, since an
-/// unusable snapshot now means "not dead" and a permanently failing probe would
-/// otherwise be a watchdog that had silently stopped watching.
 #[must_use]
 pub fn account(prior: &PaneState, seen: &Observation, knobs: &Knobs) -> Accounting {
     let mut next = prior.clone();
@@ -541,12 +447,6 @@ pub fn account(prior: &PaneState, seen: &Observation, knobs: &Knobs) -> Accounti
 }
 
 /// Render the sweep layer's decisions as this loop's effects.
-///
-/// The alert TRANSITION carries its own frozen action, summary and
-/// display-message text ([`crate::watchdog::SweepAlert`]), so this is a
-/// rendering step and never a policy one — there is nothing here to disagree
-/// with the decision about. Both producers of sweep effects go through it, so
-/// the two cannot drift.
 fn sweep_effects(booked: Vec<SweepEffect>) -> Vec<Effect> {
     let mut out = Vec::new();
     for effect in booked {
@@ -568,14 +468,6 @@ fn sweep_effects(booked: Vec<SweepEffect>) -> Vec<Effect> {
 }
 
 /// Book a nudge attempt's outcome (ae:16894-16913).
-///
-/// The counter counts DELIVERIES: a nudge the send helper refused (a dead
-/// shell) or abandoned (a busy target, or the human mid-type) is an attempt,
-/// not a nudge, and bumping the delivered count on one made the watchdog report
-/// asks that never landed. The undelivered streak is separate for the same
-/// reason, and the attempt that REACHES the bound raises its own distinct alert
-/// — "delivered and ignored" and "could not be delivered" are different
-/// problems with different fixes.
 #[must_use]
 pub fn record_nudge(
     state: &mut PaneState,
@@ -608,10 +500,6 @@ pub fn record_nudge(
 }
 
 /// Seconds between `at` and `now`, clamped at zero.
-///
-/// A timestamp in the FUTURE — clock skew, a container written by another host
-/// — must not underflow into an age of billions of seconds, which would read as
-/// "nothing has happened in this agent's whole history" and nudge a busy agent.
 #[must_use]
 pub fn age_secs(now_epoch: i64, at_epoch: i64) -> u64 {
     u64::try_from(now_epoch.saturating_sub(at_epoch)).unwrap_or(0)
@@ -619,11 +507,6 @@ pub fn age_secs(now_epoch: i64, at_epoch: i64) -> u64 {
 
 /// The age of the newest event this agent is the ACTOR of — bash's
 /// `_last_event_age` (ae:15520-15537).
-///
-/// Actor only, never target, and by APPEND POSITION (bash takes `tail -1` of
-/// the matching lines, not the maximum timestamp). `NO_EVENT_AGE` when the
-/// agent has no event at all, which is the sentinel the stale display turns
-/// into "no recent events" rather than an absurd minute count.
 #[must_use]
 pub fn last_actor_event_age(events: &[Event], agent: &str, now_epoch: i64) -> u64 {
     events
@@ -646,40 +529,15 @@ const HELPER_NAME: &str = "send";
 
 /// The orchestrator's heartbeat, at the FIXED name `<meta-dir>/meta-agent-state.json`
 /// (ae:16747).
-///
-/// This is the file [`crate::monitor`] rewrites atomically on each real sweep,
-/// and it reads the name FROM HERE. The two MUST agree — a monitor writing
-/// somewhere else would leave this check watching a file nobody writes, which
-/// false-alarms forever — so the agreement is one constant rather than two
-/// literals and a warning. That warning is what this comment used to be: the
-/// sweep was `contrib/aemonitor`, a Python sidecar taking the path as
-/// `--state`, where nothing but prose could keep the two in step.
 pub(crate) const HEARTBEAT_NAME: &str = "meta-agent-state.json";
 
 /// The sweep prompt, exactly as ae:16836-16840 composes it.
-///
-/// A fixed string with nothing interpolated: unlike the stale nudge it carries
-/// no goal and no path, so there is no value in it that could come from meta,
-/// config or a pane.
 const SWEEP_PROMPT: &str = "Run your sweep now: ae list --json, diff your state file, and report \
                             ONLY new/changed attention to Clemens via say (stay silent if nothing \
                             changed). Stay in 'working'.";
 
 /// The heartbeat's modification time, or `None` when there is nothing this
 /// watchdog is willing to trust.
-///
-/// # `lstat`, never `stat` — the safety pin
-///
-/// `symlink_metadata` does NOT follow symlinks, and a symlink's own metadata
-/// reports `is_file() == false`, so a link is refused here whatever it points
-/// at. The frozen bash uses `[[ -f ]]`, which DOES follow: anything able to
-/// write in the session directory could aim the heartbeat at a file some other
-/// process touches often, and a wedged orchestrator would be silenced by a link.
-/// This port refuses that, and the refusal is the reason the reading is a
-/// tri-state rather than a number — see [`crate::watchdog::Heartbeat`].
-///
-/// Every other failure — absent, a directory, a fifo, an unreadable parent, a
-/// filesystem with no mtime — is the same `None`, and `None` is never health.
 fn heartbeat_mtime(meta_dir: &Path) -> Option<SystemTime> {
     #[allow(
         clippy::disallowed_methods,
@@ -695,17 +553,6 @@ fn heartbeat_mtime(meta_dir: &Path) -> Option<SystemTime> {
 }
 
 /// The session's own send helper, at the FIXED path `<meta-dir>/send`.
-///
-/// A newtype with ONE constructor, because this is the security boundary the
-/// slice was cut around: the daemon must never take the program it EXECUTES
-/// from meta, config, `/tmp`, or pane content, where an attacker-chosen value
-/// could be planted. Making the path unforgeable by construction turns "every
-/// reviewer must check every call site" into "there is one constructor, and it
-/// joins a literal onto the session directory the core was handed".
-///
-/// The helper is also what carries ae's input-busy modelling, staged-paste
-/// detection and defer behaviour, and it emits the `nudge` event itself — so
-/// routing around it would lose the protections AND the honest event.
 struct SendHelper(std::path::PathBuf);
 
 impl SendHelper {
@@ -722,27 +569,9 @@ impl SendHelper {
 
 /// The glyph for a verdict nobody reached — an unstamped slot, or a roster entry
 /// whose pane this cycle never judged.
-///
-/// Neutral on purpose (ae:16210-16212): borrowing `●` for "we did not decide"
-/// would manufacture a liveness claim out of a gap in our own logic.
 const NEUTRAL_GLYPH: &str = "·";
 
 /// Run the watchdog for one session until its session or its state goes away.
-///
-/// # Fail closed on the server
-///
-/// The RECORDED selector is resolved ONCE, at startup, and a record that does
-/// not name exactly one server is fatal. There is no ambient fallback: an
-/// ambient server is a different server, and this daemon sends keys into panes.
-/// The frozen bash never had to make this choice because it ran inside the
-/// session it watched; a core entry does.
-///
-/// # Self-termination
-///
-/// Each cycle re-reads the session's `meta` and asks the recorded server whether
-/// the session is still there. Either being gone ends the daemon cleanly
-/// (ae:16433-16441) — a watchdog for a session that no longer exists is a
-/// process nobody will ever stop.
 ///
 /// # Errors
 ///
@@ -786,25 +615,17 @@ pub fn run(
     // ── The pane's own duties, which were the bash wrapper's until slice A.3 ──
     // Order is the frozen one (ae:14346-14372): the pidfile FIRST, because the
     // start path's registration wait is what releases the start lock; then the
-    // bars, so a pane that is up says so before its first cycle; then the banner.
     let pidfile = match crate::watchdog_glue::PidFile::publish(meta_dir) {
         Ok(published) => Some(published),
         Err(why) => {
             // Reported, not fatal. A watchdog that refuses to watch a live
             // session because it could not write its own bookkeeping has turned
             // a cosmetic failure into an outage; `watchdog status` degrades to
-            // "not running" instead, which is exactly what a missing pidfile has
-            // always meant.
             writeln!(err, "ae: watchdog: pidfile not published: {why}")?;
             None
         }
     };
     // The pre-rename reap, which was `_watchdog_start`'s first act (ae:13302-13306).
-    // It happens HERE now, because the pane IS the daemon: a `doctor --refresh`
-    // rewrites helpers but does not restart a running watchdog, so a legacy
-    // `_shepherd` / `_loop` process can outlive the rename and we must never run
-    // two watchdogs over one session — nor leave a stray legacy pane this loop
-    // would then mis-classify as an agent.
     crate::watchdog_glue::reap_legacy(&server, &session, meta_dir, err)?;
     announce_start(&server, &session, meta.work_dir());
     write!(
@@ -837,17 +658,12 @@ pub fn run(
     // The pidfile is released by `PidFile`'s Drop — ownership-checked, so a
     // stop/start in quick succession never lets the dying process vandalise its
     // successor's registration (ae:13996-14000) — and Drop, not an explicit call,
-    // so EVERY return after publish releases it, the `?` exits above included.
     drop(pidfile);
     code
 }
 
 /// Publish the two things a pane that is UP says before its first cycle: the
 /// starting health segment and the branch pair (ae:14361-14362).
-///
-/// Separate from the loop's own publication because it must land BEFORE the
-/// first observation: a watchdog that publishes nothing until its first cycle
-/// completes leaves the bar reading whatever the last one left there.
 fn announce_start(server: &crate::inventory::ServerId, session: &str, work_dir: Option<&str>) {
     let Some(session_id) = transport::observe_session_id(server, session) else {
         return;
@@ -933,8 +749,6 @@ fn watch(
             // `Run` is only returned when the read succeeded, so this `if let`
             // is how that is spelled without an unwrap rather than a branch
             // anyone expects to take. The parse is the one taken above, not a
-            // second one: two parses of one file could disagree about which
-            // server this cycle is on.
             Continuation::Run => {
                 if let (Ok(bytes), Some(meta)) = (&read, &parsed) {
                     let cycle = Cycle {
@@ -954,9 +768,6 @@ fn watch(
                     // The pane's own per-cycle duties, in the frozen wrapper's
                     // order (ae:14431-14459): the branch pair, which is a git
                     // read no cycle owns, then the recovery and the revive.
-                    // AFTER the cycle deliberately — a nudge is what this
-                    // process is for, and a git read, a history scan or a
-                    // supervise that is slow must not delay one.
                     tick_pane_duties(&server, meta_dir, session, meta, deferred, journal, err)?;
                 }
             }
@@ -967,11 +778,6 @@ fn watch(
 
 /// The branch publication, the pending-id recovery and the Telegram revive,
 /// once per cycle.
-///
-/// Every one degrades in place: a failed git read publishes "no branch", a look
-/// that finds no session id leaves the seat pending for the next cycle, and a
-/// supervise is best-effort by construction. None of them is a reason to stop
-/// watching.
 #[allow(
     clippy::too_many_arguments,
     reason = "the cycle's context, passed rather than gathered: each is a fact the loop \
@@ -1025,37 +831,6 @@ pub enum Rebind {
 }
 
 /// Which server this cycle addresses, from the meta this cycle read.
-///
-/// # Why this is re-asked EVERY cycle, and not pinned at startup
-///
-/// Raised by both reviewers of the P4.2 slice. The daemon's own reads
-/// (`list-panes`, `capture-pane`) and its status writes go to a server it
-/// resolved ONCE; but delivery does not go through this daemon at all — it goes
-/// through the fixed `<meta-dir>/send` helper, whose `_lib` re-reads
-/// `tmux_server` from the CURRENT meta on every call (ae:18349). The two
-/// therefore drift the moment the record changes: the daemon would observe and
-/// publish on the OLD server while its nudges landed on the NEW one, and it
-/// would judge panes that no longer exist against a session it can no longer
-/// see. Re-resolving here makes the daemon's own server EQUAL the one delivery
-/// already uses, from the same file, on the same cycle.
-///
-/// It is also why the resolution runs BEFORE this cycle's liveness probe: a
-/// probe aimed at the abandoned server reports the session absent, and absence
-/// is the one reading that ends the daemon and clears the bar. Pinning would
-/// turn a selector edit into a self-terminating watchdog.
-///
-/// # HARD CONSTRAINT, stated where someone would be tempted
-///
-/// This decides THIS DAEMON'S observation target and nothing else. The send
-/// helper is never handed a server: it stays the fixed, audited, no-ambient
-/// path that reads current meta for itself. Passing one would replace an
-/// audited resolution with this daemon's guess at it.
-///
-/// [`Rebind::Refuse`] mirrors the startup refusal rather than degrading: an
-/// ambiguous record is also one the send helper refuses to deliver against
-/// (ae:18350), so a daemon that continued would be watching a session nothing
-/// can reach. Stopping is recoverable — bash's start machinery relaunches, and
-/// startup re-refuses until the record is repaired.
 #[must_use]
 pub fn rebind(current: &crate::inventory::ServerId, meta: Option<&Meta>) -> Rebind {
     let Some(meta) = meta else {
@@ -1075,11 +850,6 @@ pub fn rebind(current: &crate::inventory::ServerId, meta: Option<&Meta>) -> Rebi
 }
 
 /// Where this daemon records what it did — the session's own event log.
-///
-/// A value rather than two loose arguments because both the cycle and the
-/// server handover append through it, and ONE definition of the event's shape
-/// is what keeps a handover diagnostic looking like every other watchdog
-/// record.
 struct Journal<'a> {
     meta_dir: &'a Path,
     session: &'a str,
@@ -1087,10 +857,6 @@ struct Journal<'a> {
 
 impl Journal<'_> {
     /// Append one watchdog event.
-    ///
-    /// A failure to record is reported and the caller continues: a watchdog
-    /// that exits because one append failed stops watching a live session over
-    /// a full disk.
     fn record(
         &self,
         action: &str,
@@ -1137,9 +903,6 @@ impl Journal<'_> {
 }
 
 /// Everything this daemon carries between cycles that is scoped to ONE SERVER.
-///
-/// Gathered into a value so the move can drop it in a single call that cannot
-/// forget a member — three loose locals were three chances to reset two.
 struct Carry {
     /// Per-pane history, keyed by `pane_id`.
     panes: Vec<(String, PaneState)>,
@@ -1160,68 +923,12 @@ impl Carry {
     }
 
     /// Drop every carry, because the server they are scoped to is being left.
-    ///
-    /// PANE IDS ARE SERVER-LOCAL AND REUSABLE. `%0` on server A and `%0` on
-    /// server B are different panes that happen to share a name, and every one
-    /// of these collections is keyed by that name: [`PaneState`] (dead latch,
-    /// delivered nudge count, undelivered streak, throttle streak, quiet
-    /// baseline, the whole sweep cadence), the missing-pane debounce, and the
-    /// stabilization cursor. Carrying them across a move applies the OLD
-    /// server's history to whatever the new one calls `%0` — latching a live
-    /// pane dead, suppressing a nudge that is due, or resuming a sweep cadence
-    /// for a pane that is not the orchestrator.
-    ///
-    /// Nothing is salvageable by matching on something else, either: the
-    /// display ref is not unique (`spawn` uniquifies only the numeric slot), so
-    /// no key survives the move. The only correct carry is none.
-    ///
-    /// Whole-value reassignment rather than field-by-field clearing, so a field
-    /// ADDED to this struct is reset by construction instead of by remembering.
     fn reset(&mut self, knobs: &Knobs) {
         *self = Self::new(knobs);
     }
 }
 
 /// Move this daemon from one server to another, in the ONE order that is safe.
-///
-/// Adopting a moved selector is three steps, and a caller that performs two of
-/// them leaves a defect no output shows: the abandoned server keeps this
-/// daemon's `@ae_*` options FOREVER (nothing ever targets it again), and the
-/// new server's panes inherit the old server's per-pane history. Both were
-/// found in review of the first version of this fix, which assigned the server
-/// and did neither.
-///
-/// `leaving` is taken BY VALUE and the new server is RETURNED, so a caller
-/// cannot keep addressing the old one: the borrow checker enforces the handover
-/// that a `&mut` assignment left optional.
-///
-/// # The two halves fail differently, and that is the whole design
-///
-/// **Retraction is BEST-EFFORT presentation.** The server being left may be
-/// DEAD — often it is the very reason the selector moved — so `retract` is
-/// attempted, and a failure is reported LOUDLY (a stderr line and a durable
-/// event) and then passed over. It must never gate the move: refusing to adopt
-/// because we could not tidy a server that is gone would abandon a live session
-/// to no watchdog at all, over a cosmetic leftover on a server nobody is
-/// looking at.
-///
-/// **The reset is CORRECTNESS-CRITICAL and UNCONDITIONAL.** It runs whether or
-/// not the retraction worked, always before anything observes the new server,
-/// because the alternative is judging B's panes with A's history. There is no
-/// failure mode in which carrying that state is the better answer.
-///
-/// # Why adopt at all, rather than refusing a move
-///
-/// bash's tick loop does NOT restart this daemon after it exits (ae:16627 reaps
-/// orphans, then `exit 0`), so stopping on a VALID selector move would lose the
-/// watchdog permanently. [`Rebind::Refuse`] stays right for Missing/Ambiguous —
-/// that record is broken, the send helper refuses delivery against it too, and
-/// stopping until it is repaired is the honest answer — but a well-formed move
-/// is a session that is still there and still wants watching.
-///
-/// `retract` is a parameter rather than a direct call so the whole handover is
-/// exercisable without a tmux server, including the case that matters most: the
-/// old server unreachable.
 fn adopt_server(
     leaving: crate::inventory::ServerId,
     joining: crate::inventory::ServerId,
@@ -1242,7 +949,6 @@ fn adopt_server(
         // Durable too: a stderr line in a detached daemon is a line nobody
         // reads. Targeted at `watchdog` — the subject really is this daemon,
         // and a bare name can never collide with a roster ref, which is always
-        // `alias:name`, so this cannot hijack an agent's attention marker.
         journal.record(
             "alert",
             ACTOR,
@@ -1271,30 +977,6 @@ pub enum Continuation {
 
 /// Whether the daemon keeps running, retries, or exits — the tri-state the rest
 /// of this port already uses, applied to the daemon's OWN liveness.
-///
-/// # Unproven absence is not death
-///
-/// A long-lived daemon must survive a failed query. A `list-sessions` that could
-/// not reach the server, or a `meta` read that failed for any reason other than
-/// the file being gone, proves NOTHING — and a daemon that exits on one is a
-/// watchdog a network hiccup can switch off, silently, for the rest of the
-/// session. Same discipline as [`crate::procs::Descendancy::Unknown`] (an
-/// unusable snapshot never classifies an agent dead) and the compact gate's
-/// [`StopProbe`] (an unreachable server is never read as a stopped session).
-///
-/// # What IS proof
-///
-/// * [`StopProbe::Absent`] — the server answered without the name, or reported
-///   the stale-socket diagnostic that only a clean server exit produces. This
-///   wins over any meta reading, because the session itself is gone.
-/// * [`io::ErrorKind::NotFound`] on the meta read. [`crate::meta::rewrite`]
-///   publishes through a temp file and `rename`, so `meta` is never MOMENTARILY
-///   absent during a write — a `NotFound` means teardown removed it, which is the
-///   frozen loop's other self-termination condition (ae:16433-16441).
-///
-/// Everything else is [`Continuation::Retry`]: permission, a busy filesystem, an
-/// unreachable server. The bar keeps its last publication, because a stale bar
-/// is not a reason to stop watching.
 #[must_use]
 pub fn continuation(meta_error: Option<io::ErrorKind>, session: &StopProbe) -> Continuation {
     match (meta_error, session) {
@@ -1306,41 +988,6 @@ pub fn continuation(meta_error: Option<io::ErrorKind>, session: &StopProbe) -> C
 }
 
 /// Remove everything this daemon published, and report whether it all came off.
-///
-/// # The return value is about the CLEARS, not only about reaching the server
-///
-/// `false` from either DISCOVERY call means the server could not be addressed
-/// at all. `false` from a clear means it was addressable and the unset FAILED.
-/// An earlier version discarded every clear result and answered a literal
-/// `true` whenever both discoveries succeeded — so an addressable server that
-/// failed to drop a bar reported success, [`adopt_server`] emitted neither its
-/// stderr line nor its durable alert, and the leak was SILENT. That is the
-/// exact failure the best-effort refinement exists to make visible, so the
-/// accumulator is the contract and a literal `true` here is a defect.
-///
-/// # Why an already-clear bar does not false-positive — MEASURED, not assumed
-///
-/// The aggregation would be useless if unsetting an option that is already
-/// unset counted as a failure: every move would emit a spurious diagnostic and
-/// the signal would be noise. Probed on a throwaway socket, tmux 3.7b:
-/// `set-option -u` of a NEVER-SET `@ae_*` exits 0 (session scope and window
-/// scope alike), unsetting an already-cleared one exits 0 again, and only a
-/// genuinely bad target (`no such session`) exits 1. So a `false` from
-/// [`transport::clear_option`] on an addressable server is a REAL failure worth
-/// the diagnostic. In practice this daemon republishes its bars every cycle, so
-/// on a move the old server's options are set and the unset has real work to do.
-///
-/// # No ownership check — a known gap, named rather than hidden
-///
-/// The frozen exit path checks the pidfile before cleaning up (ae:15340-15352),
-/// because a stop/start in quick succession can leave the OLD watchdog's trap
-/// running while the NEW one is already publishing — unconditional cleanup then
-/// has the dying process wipe its replacement's bar. This daemon does not own
-/// that pidfile (bash does), so P4.1 clears unconditionally and the race is the
-/// bash glue's to close by not starting a replacement until this one is gone.
-///
-/// When the SESSION is what went away there is nothing to clear — its options
-/// died with it — and the id resolution simply finds nothing.
 pub(crate) fn clear_published(server: &crate::inventory::ServerId, session: &str) -> bool {
     let Some(session_id) = transport::observe_session_id(server, session) else {
         return false;
@@ -1348,7 +995,6 @@ pub(crate) fn clear_published(server: &crate::inventory::ServerId, session: &str
     // `&=`, NEVER `&&` and never an early return: every option must still be
     // attempted after one of them fails. Short-circuiting here would leave the
     // rest of this daemon's bars on a server nothing targets again, which is
-    // the leak the aggregation exists to report.
     let mut ok = true;
     for name in [tmux::WATCHDOG_STATUS_OPTION, tmux::AGENTS_STATUS_OPTION] {
         ok &= transport::clear_option(server, OptionScope::Session, &session_id, name);
@@ -1377,11 +1023,6 @@ pub(crate) fn clear_published(server: &crate::inventory::ServerId, session: &str
 }
 
 /// The debounce for a roster agent whose pane is not in the session.
-///
-/// The EVENT fires on the first absent snapshot and the latch is for the
-/// daemon's lifetime (there is no missing-cleared event); the GLYPH waits for a
-/// second consecutive absence, so one unlucky enumeration does not paint a live
-/// agent as gone (ae:16929-16939, ae:16991-17022).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct MissingState {
     streak: u32,
@@ -1433,10 +1074,6 @@ impl Cycle<'_> {
     /// One pass over the session's panes.
     fn run(&self, carry: &mut Carry, err: &mut impl Write) -> crate::Result<()> {
         // An enumeration that FAILED is not evidence that anything is gone.
-        // bash reads nothing from a `2>/dev/null` failure and then walks the
-        // roster looking for panes it never saw — which alerts every agent in
-        // the session as missing. Same ruling as `Descendancy::Unknown`: an
-        // unusable observation decides nothing.
         let Some(observed) = transport::observe_watch_panes(self.server, self.session) else {
             writeln!(
                 err,
@@ -1498,11 +1135,9 @@ impl Cycle<'_> {
                 ),
                 descendancy: descendancy_of(table.as_deref(), pane.pane_pid, agent_bin.as_deref()),
                 last_actor_event_age_secs: last_actor_event_age(&events, agent, now),
-                // SC-935 is decided HERE, once, and the type carries the
+                // Decided HERE, once, and the type carries the
                 // answer: a pane that is not the orchestrator main gets `None` and
                 // no sweep branch can reach it. The heartbeat is read only for
-                // the pane that is, so an ordinary session never stats a file
-                // it has no use for.
                 sweep: is_sweep_target(self.meta_agent, &slot).then(|| {
                     SweepObservation::new(
                         SystemTime::now(),
@@ -1550,16 +1185,6 @@ impl Cycle<'_> {
     }
 
     /// Publish this cycle's verdicts as tmux user options.
-    ///
-    /// Every write targets an EXACT id. The session id is re-resolved each cycle
-    /// rather than cached: it costs one `list-sessions`, it is what the frozen
-    /// does on every publish, and a stale cached id is a write aimed at whatever
-    /// tmux now calls that number. No id means the session is gone — write
-    /// NOTHING, because an empty `-t` lands on tmux's CURRENT session, which is
-    /// somebody else's bar.
-    ///
-    /// A failed publication is a stale bar, never a reason to stop watching, so
-    /// nothing here is fallible to the caller.
     fn publish(
         &self,
         roster: &str,
@@ -1600,17 +1225,6 @@ impl Cycle<'_> {
     }
 
     /// Per-window glyphs, grouped from the SAME per-pane verdicts in pane order.
-    ///
-    /// Targeted by WINDOW ID (`@N`), never by index: closing a window renumbers
-    /// the ones after it, so glyphs published against an index land on the wrong
-    /// window — and cleanup then misses one and leaves exactly the frozen glyphs
-    /// cleanup exists to prevent (ae:17038-17045). `@N` also carries no session
-    /// name, so the prefix-match hazard cannot reach it at all.
-    ///
-    /// A non-agent pane REGISTERS its window and contributes no glyph, so a
-    /// window that no longer holds agents is published EMPTY rather than keeping
-    /// last cycle's glyphs — and the monitor window reads `99:ae-monitor`, not
-    /// `99:ae-monitor··`.
     fn publish_windows(&self, by_pane: &[(String, Verdict)]) {
         let Some(panes) = transport::observe_window_panes(self.server, self.session) else {
             return;
@@ -1652,13 +1266,6 @@ impl Cycle<'_> {
     }
 
     /// The RESOLVED quiet suppression for one pane.
-    ///
-    /// `Done` is event-only. `WaitingUser`/`Blocked` are pane holds: the
-    /// baseline arms once (settled WITHIN this cycle, and only if the rotating
-    /// budget allows this pane a turn), holds while the filtered hash matches,
-    /// and yields the moment anything else lands. A yield or a failed
-    /// stabilization is NOT quiet — bash falls through to the normal branches
-    /// (ae:16781) and so does this.
     fn resolve_quiet(
         &self,
         query: &QuietQuery<'_>,
@@ -1693,11 +1300,6 @@ impl Cycle<'_> {
 
     /// The samples a baseline must settle across: one capture, then a beat and
     /// another, up to `quiet_tries` times.
-    ///
-    /// A capture that FAILS truncates the run rather than contributing an empty
-    /// sample. Two empty captures hash EQUAL, so an unreadable or dying pane
-    /// would otherwise settle instantly and be classified quiet — the bug bash
-    /// records above `_watchdog_capture_pane`.
     fn settle(&self, pane_id: &str) -> Vec<String> {
         let mut samples = Vec::new();
         let Some(first) = transport::capture_pane(self.server, pane_id) else {
@@ -1734,8 +1336,6 @@ impl Cycle<'_> {
                 // The DURABLE half of the wedge clear (ae:16768-16774). A
                 // watchdog restarted after alerting has lost the latch, so the
                 // in-memory fast path cannot fire and the alert would stand
-                // forever. Read once, and only when the log still shows one:
-                // an unconditional clear would retract an alert nobody raised.
                 if crate::session::alert_reason_in(on.events, self.session, on.slot, agent)
                     .is_some()
                 {
@@ -1758,15 +1358,6 @@ impl Cycle<'_> {
     }
 
     /// Deliver one sweep prompt and book what happened (ae:16833-16895).
-    ///
-    /// # The clock is re-read AFTER the delivery
-    ///
-    /// `deliver` BLOCKS while the send helper defers a busy target (up to
-    /// `AE_SEND_DEFER_SEC`), so the cycle's clock is stale by exactly the
-    /// interval a retry is scheduled against — off it, the retry would be due
-    /// the moment `deliver` returned. bash re-reads for the same reason
-    /// (ae:16866-16869), and [`record_sweep`] takes both clocks so neither
-    /// caller can conflate them.
     fn sweep_nudge(
         &self,
         on: &Acting<'_>,
@@ -1777,7 +1368,6 @@ impl Cycle<'_> {
             // Unreachable by construction: only the sweep branch emits this
             // effect, and it runs only where the observation exists. Reported
             // rather than assumed away, because a silent no-op here would be a
-            // orchestrator that is never prompted again.
             writeln!(
                 err,
                 "ae: watchdog: sweep prompt for {} had no sweep reading — skipped",
@@ -1785,10 +1375,9 @@ impl Cycle<'_> {
             )?;
             return Ok(());
         };
-        // Delivery is CHECKED (SC-936). The status means "delivered AND
-        // logged", which makes this AT-LEAST-ONCE (SC-939a): an event-write
+        // Delivery is CHECKED. The status means "delivered AND
+        // logged", which makes this AT-LEAST-ONCE: an event-write
         // failure after a successful paste re-prompts an orchestrator that already
-        // swept. A duplicate sweep is cheap; a dropped one is a blind spot.
         let delivered = self.deliver(on.agent, SWEEP_PROMPT, "sweep cadence");
         let booked = record_sweep(
             &mut state.sweep,
@@ -1807,20 +1396,6 @@ impl Cycle<'_> {
     /// route through it rather than each spawning for itself: a second delivery
     /// site is a second thing to audit, and a unit guard in this file holds the
     /// count at one.
-    ///
-    /// THE HELPER PATH IS A LITERAL. It is `<meta-dir>/send` and nothing else:
-    /// never a program name read from meta, config, a pane, or anywhere else a
-    /// value can be planted. The helper is what carries ae's input-busy,
-    /// staged-detection and defer modelling, and it emits the `nudge` event
-    /// itself — so the event exists only when the paste actually landed,
-    /// exactly as it does for bash.
-    ///
-    /// The frozen action is `nudge` for BOTH the stale nudge (ae:16884-16897)
-    /// and the orchestrator's sweep prompt (ae:16833-16841); only the summary
-    /// distinguishes them, which is why `summary` is the one thing that varies.
-    ///
-    /// `true` means delivered. It is the helper's own status, which means
-    /// "delivered AND logged" — never re-read as anything weaker.
     fn deliver(&self, agent: &str, text: &str, summary: &str) -> bool {
         transport::deliver(
             self.helper.path(),
@@ -1837,10 +1412,6 @@ impl Cycle<'_> {
     }
 
     /// Append one watchdog event for `agent`.
-    ///
-    /// A failure to record is reported and the cycle continues: a watchdog that
-    /// exits because one append failed stops watching a live session over a
-    /// full disk.
     fn emit(
         &self,
         action: &str,
@@ -1891,15 +1462,6 @@ impl Cycle<'_> {
 
     /// The transient alert the frozen shows beside every watchdog event
     /// (`display-message -d 10000`, ae:16516 and siblings).
-    ///
-    /// THE ESCAPE IS HERE, AT THE SINK, and it is the reason this is a function
-    /// rather than an inline call: `display-message` reads its argument as a
-    /// FORMAT, `#(cmd)` in a format RUNS A SHELL, and the text interpolates an
-    /// `alias:name` — a value that reaches ae from `spawn`, i.e. from a peer.
-    /// [`tmux::format_literal`] doubles `#` and `%` exactly as the frozen
-    /// `_ae_tmux_format_literal` does.
-    ///
-    /// A failed display is a message nobody saw, never a reason to stop watching.
     fn notify(&self, agent: &str, text: &str) {
         let Some(session_id) = transport::observe_session_id(self.server, self.session) else {
             return;
@@ -1911,15 +1473,6 @@ impl Cycle<'_> {
 
 /// The roster line for `@ae_agents_status`: `<label><glyph>`, space-joined, in
 /// META ORDER (ae:16986-17024).
-///
-/// Keyed by SLOT, never by the display ref: `spawn` uniquifies only the numeric
-/// slot, so two registrations CAN share one `alias:name`. Keying on the ref
-/// would let one pane's verdict stand for both, and killing one pane would then
-/// not render its slot ✖ — which is the whole point of the roster.
-///
-/// A slot with no live pane renders from the PRIOR debounce: neutral on its
-/// first absent cycle (a spawn caught mid-stamp is not a failure, and saying so
-/// would be the manufactured claim the roster exists to avoid), ✖ on the second.
 fn roster_line(
     roster: &[RosterEntry],
     by_slot: &[(String, Verdict)],
@@ -1951,12 +1504,6 @@ fn roster_line(
 }
 
 /// `opus5:builder` -> `builder`, with control bytes stripped (ae:16205-16218).
-///
-/// The roster is about WHO, not which model backs them — the alias is already
-/// on the pane border. An agent name cannot contain `:`, so the suffix strip is
-/// unambiguous. The value lands in a tmux USER option, which interpolates
-/// LITERALLY, so `#` and `%` need no escaping here; control bytes are stripped
-/// anyway, because they corrupt the bar's rendering rather than merely its text.
 fn roster_label(reference: &str) -> String {
     reference
         .rsplit(':')
@@ -1968,10 +1515,6 @@ fn roster_label(reference: &str) -> String {
 }
 
 /// The carried state for `key`, created on first sight.
-///
-/// An association LIST rather than a map: a session has a handful of panes, the
-/// traversal order is the one thing the rotating quiet budget depends on, and a
-/// `HashMap` would buy nothing here but an iteration order nobody chose.
 fn entry_mut<'a, V: Default>(list: &'a mut Vec<(String, V)>, key: &str) -> &'a mut V {
     let index = list
         .iter()
@@ -1987,11 +1530,6 @@ fn entry_mut<'a, V: Default>(list: &'a mut Vec<(String, V)>, key: &str) -> &'a m
 }
 
 /// The descendancy for a pane, with BOTH unusable inputs mapped to `Unknown`.
-///
-/// A slot with no recorded `agent_bin`, and a pane tmux gave no parseable pid
-/// for, are both probes that cannot RUN. Reading either as `Absent` is how a
-/// live agent gets alerted dead — and it is where the frozen send path's
-/// `command_is_shell(agent_bin)` guard belongs in this design (lead's ruling).
 fn descendancy_of(
     table: Option<&[procs::Proc]>,
     pane_pid: Option<u32>,
@@ -2004,12 +1542,6 @@ fn descendancy_of(
 }
 
 /// The session's events in APPEND ORDER, oldest first.
-///
-/// No `reversed()`, no sort: [`latest_relevant_event`] reverses internally and
-/// its whole contract is that position, not timestamp, is the truth. A line
-/// that is not a readable event is dropped — bash's `grep` would still have
-/// seen it, which matters only for `_last_event_age` and only for a line no
-/// emitter writes.
 fn read_events(meta_dir: &Path) -> Vec<Event> {
     let bytes = crate::event_text::read_container(&meta_dir.join(crate::event_text::CONTAINER));
     crate::event_text::read_lines(&bytes)
@@ -2020,24 +1552,6 @@ fn read_events(meta_dir: &Path) -> Vec<Event> {
 
 /// Whether the meta declares this session the fleet orchestrator — bash's
 /// `META_AGENT` (ae:16458, compared at ae:16739).
-///
-/// EXACTLY ONE `meta_agent` record, whose value is EXACTLY `true`. Anything
-/// else — absent, `1`, `yes`, `True`, or the key named TWICE — is not the
-/// orchestrator.
-///
-/// # Why a duplicate must fail, and why that is the SAFE direction
-///
-/// bash captures `grep '^meta_agent=' meta | cut -d= -f2-` into a scalar, so
-/// `meta_agent=true` twice, or `true` beside `false`, makes a value with a
-/// NEWLINE in it — which equals neither, so `== "true"` is false and the pane
-/// keeps the NORMAL watchdog. Reading only the FIRST record made
-/// `true\nfalse` and `true\ntrue` both say orchestrator, which is a divergence in
-/// the dangerous direction: the sweep branch REPLACES stale escalation, so a
-/// misread flag turns off the watchdog for an ordinary agent on the strength
-/// of a record whose meaning is in doubt. Failing closed keeps the escalation.
-///
-/// [`crate::meta::sole_value`] is where that rule lives, so it is the same
-/// answer `Meta::parse` gives the keys it absorbs (SC-405e).
 fn is_meta_agent(meta_bytes: &[u8]) -> bool {
     crate::meta::sole_value(meta_bytes, "meta_agent") == Some(b"true".as_slice())
 }
@@ -2061,11 +1575,6 @@ fn session_name(meta_bytes: &[u8], meta_dir: &Path) -> String {
 }
 
 /// The watchdog bar's glyph, from the cycle's COUNTS (ae:16974-16984).
-///
-/// Dead beats stale beats active, and the bar has only those three faces: a
-/// throttled or quiet agent is counted ACTIVE here, so `[watch ⚡ …]` is not a
-/// thing the frozen bar can say and is not a thing this one says either. The
-/// per-agent glyph is where those verdicts show.
 fn bar_glyph(dead: usize, stale: usize) -> &'static str {
     if dead > 0 {
         Verdict::Dead.glyph()
@@ -2134,9 +1643,6 @@ mod tests {
     }
 
     /// The security invariant, checked STRUCTURALLY rather than by review.
-    ///
-    /// The needles are split with `concat!` so this test's own source does not
-    /// match them — a guard that counts itself always passes.
     #[test]
     fn there_is_one_delivery_site_and_it_cannot_name_another_program_or_server() {
         let whole = include_str!("watchdog_daemon.rs");
@@ -2206,7 +1712,6 @@ mod tests {
         // THE WIRING OF THE PER-CYCLE REBIND, which the pure `rebind` table
         // cannot see: a decision nothing consults is a decision that does not
         // happen. Textual, with the limits every guard in this file has — it
-        // holds the shape, not the semantics.
         let whole = include_str!("watchdog_daemon.rs");
         let source = whole
             .split(concat!("#[cfg(", "test)]"))
@@ -2231,8 +1736,6 @@ mod tests {
         // The answer is APPLIED, and applied THROUGH the adopt — a decision
         // nothing assigns is a decision that did not happen, and a move that
         // assigns without retracting and resetting is the pair of defects the
-        // re-review found. `adopt_server` takes the old server BY VALUE, so the
-        // compiler already forbids keeping it; these hold the rest.
         assert_eq!(
             source
                 .matches(concat!("server = ", "adopt_server("))
@@ -2268,8 +1771,6 @@ mod tests {
         // The failure boundary, held in the SOURCE because the ordering inside
         // `adopt_server` is what the unreachable-old-server test cannot see
         // from outside. The reset must not sit inside the branch that handles a
-        // retraction failure, or a DEAD old server would leave the new one
-        // judging panes with the old one's history.
         let whole = include_str!("watchdog_daemon.rs");
         let source = whole
             .split(concat!("#[cfg(", "test)]"))
@@ -2305,8 +1806,6 @@ mod tests {
         // The reachability signal itself: `clear_published` reports FALSE from
         // every path that could not address the server, and TRUE only after it
         // has finished. A version that answered `true` on an unaddressable
-        // server would silence the diagnostic the refinement exists to emit,
-        // and no unit test can see that — the answer is the transport's.
         let cleared = source
             .split_once("fn clear_published(")
             .map(|(_, body)| body.split_once("\n}\n").map_or(body, |(head, _)| head))
@@ -2320,9 +1819,6 @@ mod tests {
         // AND the clears themselves are counted. The previous version of this
         // guard stopped at the two discovery exits and the final literal, and a
         // guard that asserts "returns true at the end" cannot see that the
-        // `true` is a LIE about work it never checked: every `clear_option`
-        // result was discarded, so an addressable server that FAILED to drop a
-        // bar reported success and the leak was silent.
         assert_eq!(
             cleared
                 .matches(concat!("let _ = transport::", "clear_option"))
@@ -2939,8 +2435,6 @@ mod tests {
         // The CONTROL is the pair: one Observation, judged twice. With no sweep
         // reading the ordinary branches call this pane STALE and nudge it; with
         // one, the cadence decides and every branch below is skipped. That is
-        // the whole point of SC-935 — a monitor idling between sweeps is a
-        // service at rest, not an agent that stopped working.
         let knobs = Knobs::default();
         let (prior, ordinary) = stale_pane();
         let plain = account(&prior, &ordinary, &knobs);
@@ -2960,7 +2454,7 @@ mod tests {
 
     #[test]
     fn a_disabled_cadence_returns_the_orchestrator_to_the_ordinary_watchdog() {
-        // SC-1405b, from the daemon's side: `sweep_step` answering `None` must
+        // From the daemon's side: `sweep_step` answering `None` must
         // FALL THROUGH, not suppress. An empty accounting here would leave a
         // orchestrator main watched by nothing at all.
         let knobs = Knobs {
@@ -3050,11 +2544,6 @@ mod tests {
     fn the_orchestrator_flag_is_read_strictly_and_fails_closed_on_a_doubled_record() {
         // A session that gets the sweep branch stops being escalated for
         // silence, so the flag is EXACTLY ONE record saying EXACTLY `true`.
-        //
-        // BASH PARITY, and it is the whole point of the duplicate rows: bash
-        // captures `grep '^meta_agent=' | cut -d= -f2-` into a scalar, so two
-        // records make a value with a newline in it that equals neither — every
-        // `== "true"` fails and the pane keeps the normal watchdog.
         let cases: [(&str, bool); 9] = [
             ("session=x\nmeta_agent=true\n", true),
             // The two that a first-value read got WRONG, in the dangerous
@@ -3083,8 +2572,6 @@ mod tests {
         // THE SAFETY PIN. bash's `[[ -f ]]` FOLLOWS symlinks, so anything able
         // to write in the session directory could aim the heartbeat at a file
         // some other process touches often and silence a wedged orchestrator. The
-        // control is the pair: the same target file, reached directly, IS
-        // trusted; reached through a link, it is not.
         let scratch = Scratch::new("hb");
         let dir = &scratch.0;
         assert_eq!(heartbeat_mtime(dir), None, "absent is untrusted");
@@ -3128,7 +2615,6 @@ mod tests {
         // The drift both reviewers named: delivery goes through
         // `<meta-dir>/send`, whose `_lib` re-reads `tmux_server` from the
         // CURRENT meta on every call. A daemon pinned at startup would observe
-        // and publish on the OLD server while its nudges landed on the NEW one.
         let named =
             |value: &str| Meta::parse(&format!("tmux_server_kind=name\ntmux_server={value}\n"));
         let alpha = ServerId::Selected(Selector::Name("alpha".to_owned()));
@@ -3137,7 +2623,6 @@ mod tests {
         // `Use` means a REAL MOVE and nothing else. The record still naming the
         // server in force is not a move, and answering `Use` for it would run
         // the adopt — retracting our own live bars and throwing away every
-        // pane's history — on every cycle of a session that never moved.
         assert_eq!(rebind(&alpha, Some(&named("alpha"))), Rebind::Keep);
         assert_eq!(
             rebind(&alpha, Some(&named("beta"))),
@@ -3178,7 +2663,7 @@ mod tests {
                 ))
             ),
             Rebind::Refuse,
-            "a duplicated selector is ambiguous by SC-405l"
+            "a duplicated selector is ambiguous"
         );
         assert_eq!(
             rebind(
@@ -3192,7 +2677,6 @@ mod tests {
         // An unreadable meta says NOTHING about the server. Keeping what is in
         // force is not the same as refusing: `continuation` already owns what an
         // unreadable meta means for the daemon's life, and answering it twice,
-        // differently, is how a transient read error becomes a dead watchdog.
         assert_eq!(rebind(&alpha, None), Rebind::Keep);
     }
 
@@ -3225,9 +2709,6 @@ mod tests {
     }
 
     /// Every assertion that `%0` on the NEW server starts from nothing.
-    ///
-    /// Field by field, because "the vector is empty" and "the next lookup is
-    /// clean" are two different claims and the loop depends on the second.
     fn assert_neutral(carry: &mut Carry) {
         assert!(carry.panes.is_empty(), "no pane history survives the move");
         assert!(
@@ -3256,7 +2737,6 @@ mod tests {
         // THE TWO DEFECTS the re-review found, together. `%0` on alpha and `%0`
         // on beta are DIFFERENT PANES sharing a name, and every carry is keyed
         // by that name — so alpha's history would be applied to beta's live
-        // pane. And alpha, never targeted again, would keep our bars forever.
         let scratch = Scratch::new("adopt");
         let knobs = Knobs::default();
         let journal = Journal {
@@ -3302,8 +2782,6 @@ mod tests {
         // The failure boundary. The server being left may be DEAD — often that
         // is WHY the selector moved — so a retraction that cannot run must not
         // gate adoption: refusing would abandon a live session to no watchdog
-        // at all, over a cosmetic leftover on a server nobody is looking at.
-        // The reset is the opposite: correctness-critical and unconditional.
         let scratch = Scratch::new("adopt-dead");
         let knobs = Knobs::default();
         let journal = Journal {

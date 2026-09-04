@@ -28,27 +28,12 @@ pub fn command_is_shell(cmd: &str) -> bool {
 }
 
 /// Whether a pane's agent has DIED — dropped to a bare shell with no agent
+/// process beneath it.
+///
+/// Both halves are required: a `bash -lc <tool>` wrapper shows a shell in the
+/// foreground while the real agent runs underneath, so the foreground test alone
+/// reads every such live agent as dead.
 /// process beneath it. (The watchdog's branch 1, ae:16503-16521.)
-///
-/// The two-part guard is bash's: the foreground must be a known shell
-/// ([`command_is_shell`]) AND no process named by the slot's `agent_bin` may run
-/// as a descendant of the pane's pid. Both halves are required because a
-/// `bash -lc <tool>` wrapper shows a shell in the foreground while the real agent
-/// runs underneath — dropping the descendant half read every such live agent as
-/// dead (the measured macOS regression the bash comment records).
-///
-/// # The third state is a DIVERGENCE from bash, not a port of it
-///
-/// bash has no `Unknown`. `_pane_has_descendant_named` (ae:16228-16247) answers
-/// "no descendant" for an empty pane pid, an empty agent binary, a failed
-/// `pgrep` and a failed `ps` alike — so a probe that could not RUN is
-/// indistinguishable from one that ran and found nothing, and the agent is
-/// alerted DEAD either way.
-///
-/// The colead's binding for this port makes an unusable snapshot
-/// [`Descendancy::Unknown`], and Unknown is NOT dead. The direction is the whole
-/// point: a missed dead is silent and self-heals on the next cycle, while a
-/// FALSE dead raises a process-died alert against a live agent and latches it.
 #[must_use]
 pub fn classify_dead(current_command: &str, descendant: Descendancy) -> bool {
     command_is_shell(current_command) && matches!(descendant, Descendancy::Absent)
@@ -75,12 +60,6 @@ const GENERIC: &[&str] = &["429 Too Many Requests", "503 Service Unavailable"];
 
 /// Whether the captured pane buffer shows upstream throttling for the agent whose
 /// binary is `agent_bin` — bash's `_buf_shows_throttle` (ae:16256-16301).
-///
-/// The catalogs are deliberately narrow phrases, keyed by the agent BINARY name
-/// (never the user-chosen alias). `opencode` is the full union because it is a TUI
-/// over configurable providers; the generic `429`/`503` pair applies to every
-/// tool, and an unknown binary matches only those generics. An empty buffer is
-/// never throttled.
 #[must_use]
 pub fn shows_throttle(buf: &str, agent_bin: &str) -> bool {
     if buf.is_empty() {
@@ -103,32 +82,6 @@ pub fn shows_throttle(buf: &str, agent_bin: &str) -> bool {
 
 /// Whether an agent is STALE — the composite the watchdog's branches 4, 5 and 6
 /// have to ALL decline before branch 7 fires (ae:16821-16867).
-///
-/// Read the bash as a sieve: each earlier branch `continue`s, so "stale" is what
-/// is left when every escape has been refused.
-///
-/// * `is_quiet` — branch 2 already skipped a held quiet state (ae:16739). The
-///   caller passes the RESOLVED answer: `done` is event-only quiet, while
-///   `waiting-user`/`blocked` are quiet only while their pane-hash baseline
-///   holds, so a yielded declaration arrives here as `false`.
-/// * `is_throttled` — branch 3 (ae:16787). Throttling is upstream's fault and a
-///   nudge cannot fix it.
-/// * `hash_unchanged` — branch 4 (ae:16821). A changed pane is activity.
-/// * `hash_change_age_secs` — branch 5 (ae:16840): a pane that changed inside the
-///   window is "recently visible", which covers a human reading a static answer.
-/// * `last_actor_event_age_secs` — branch 6 (ae:16850): recent ae activity.
-///
-/// # The boundary is bash's, exactly
-///
-/// Both age branches skip on `age < stale_secs`, so `age == stale_secs` falls
-/// THROUGH and is stale. Equality is stale; one second under is not.
-///
-/// # `last_change == 0`
-///
-/// Branch 5 guards on `last_change > 0` before comparing, for a pane whose hash
-/// has never been recorded. That guard changes no verdict — `now - 0` is an epoch
-/// count, which is never below any real stale window — so a caller with no
-/// recorded change passes the age it computes and gets the same answer bash gives.
 #[must_use]
 pub fn stale_composite(
     hash_unchanged: bool,
@@ -147,25 +100,6 @@ pub fn stale_composite(
 
 // ---------------------------------------------------------------------------
 // Quiet detection — what a quiet state's pane baseline is hashed FROM.
-// ---------------------------------------------------------------------------
-//
-// The escape hatch for `waiting-user`/`blocked` is a per-pane baseline hash: the
-// declaration's own echo is already on screen when the baseline is armed, so the
-// hash HOLDS while the pane still shows only that, and YIELDS the moment anything
-// else lands (a human's reply, the agent resuming). For that to work the view
-// must have the watchdog's OWN footprints removed — its nudge and the `state`
-// helper's echo — or the watchdog would keep waking itself up.
-//
-// The port is byte-faithful to the awk in bash's `_watchdog_quiet_hash`
-// (ae:15675-15740) because a filter bug is not a cosmetic defect: dropping too
-// much makes the watchdog deaf to a human reply, dropping too little makes it
-// spam a quiet agent. Hand-rolled, no regex crate — zero-dep doctrine, and the
-// five predicates are small enough to read against the awk line by line.
-//
-// THE SPECIMENS ARE CAPTURED RENDERINGS, not delivered bytes: this hashes what
-// the TUI drew (`capture-pane -p -J`), and an earlier bash version that matched
-// the bytes ae *sends* filtered nothing at all. The bash comment above the awk
-// holds the captures; the tests below replay them.
 
 /// The origin envelope the send helper stamps on a watchdog-delivered message
 /// (#39) — the discriminator that separates a real nudge from an agent QUOTING
@@ -204,10 +138,6 @@ fn trim_end_space(line: &str) -> &str {
 
 /// A rendered nudge's HEADER: a submit ornament, then the envelope ALONE.
 /// (awk `submit_hdr`, ae:15706.)
-///
-/// The header is the discriminator rather than the body because the body wraps
-/// at whatever width the pane had, and the wrap point is not stable. `›` is
-/// codex's ornament, `❯` claude's; both were captured 2026-08-15.
 fn submit_hdr(line: &str) -> bool {
     let body = trim_start_space(trim_end_space(line));
     let mut chars = body.chars();
@@ -221,9 +151,6 @@ fn submit_hdr(line: &str) -> bool {
 
 /// Two leading whitespace characters — the wrapped body of a rendered block.
 /// (awk `indented`, ae:15707.)
-///
-/// A BLANK line is not indented, so it ends the block: the swallow is bounded by
-/// the render, not by a line budget.
 fn indented(line: &str) -> bool {
     let mut chars = line.chars();
     matches!(chars.next(), Some(c) if is_space(c)) && matches!(chars.next(), Some(c) if is_space(c))
@@ -259,10 +186,6 @@ fn raw_env(line: &str) -> bool {
 
 /// `Marked <agent> <state>` and its optional `:`/`.` remainder — the tail every
 /// echo form ends with.
-///
-/// The awk's `[^ ]+` cannot cross a space, so the agent field is EXACTLY the
-/// first space-delimited token: `Marked two words done` is not an echo, and must
-/// survive into the hash.
 fn echo_tail(rest: &str) -> bool {
     let Some(sep) = rest.find(' ') else {
         return false;
@@ -293,11 +216,6 @@ fn is_hhmm(clock: &str) -> bool {
 
 /// The `state` helper's own echo, in the three CAPTURED renderings.
 /// (awk `is_echo`, ae:15712-15723.)
-///
-/// The claude form is the captured status grammar, not "anything mentioning
-/// `output:`" — the loose version swallowed ordinary assistant prose, which is
-/// deafness in the YIELD direction and the one failure this filter must never
-/// introduce.
 fn is_echo(line: &str) -> bool {
     // codex:   `  └ Marked <agent> <state>: …`
     let boxed = trim_start_space(line);
@@ -332,19 +250,12 @@ fn records(buf: &str) -> impl Iterator<Item = &str> {
     records.into_iter().flat_map(|b| b.split('\n'))
 }
 
-/// The pane view with the watchdog's own footprints removed — the awk of bash's
+/// The pane view with the watchdog's own footprints removed.
+///
+/// Its own nudge and the `state` helper's echo have to go, or the watchdog would
+/// keep waking itself up: the baseline is armed with the declaration's echo
+/// already on screen, and must yield only when something else lands.
 /// `_watchdog_quiet_hash` (ae:15726-15738), line for line.
-///
-/// Everything else — the human's reply, the agent's real output — stays, and the
-/// output is newline-TERMINATED exactly as awk's `print` leaves it.
-///
-/// The state machine is the part that must not drift:
-/// * a rendered nudge's ornamented header opens a BLOCK whose indented body is
-///   swallowed until the first unindented (or blank) line;
-/// * a bare envelope is HELD, and dropped only if the raw nudge follows it —
-///   otherwise it is a real message from the watchdog and gets printed;
-/// * a QUOTED nudge, having neither ornament nor envelope, SURVIVES and still
-///   wakes the watchdog.
 #[must_use]
 pub fn quiet_filter(buf: &str) -> String {
     let mut out = String::new();
@@ -389,15 +300,6 @@ pub fn quiet_filter(buf: &str) -> String {
 }
 
 /// The baseline hash of a pane, over [`quiet_filter`]'s output.
-///
-/// FNV-1a/64 rather than bash's `md5`, and rather than [`std::hash`]'s default
-/// hasher, which is RANDOMLY SEEDED per process: a baseline armed in one cycle is
-/// compared to a hash taken in a later one, so the function must be stable for
-/// the life of the daemon and identical across restarts.
-///
-/// Only EQUALITY is ever asked of it. It is deliberately not the bash digest —
-/// nothing compares a Rust hash to a bash one across the clean cut, and a
-/// baseline never leaves the daemon's own memory.
 #[must_use]
 pub fn quiet_hash(buf: &str) -> u64 {
     const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
@@ -418,10 +320,6 @@ const NUDGE_ACTOR: &str = "watchdog";
 const NUDGE_ACTION: &str = "nudge";
 
 /// Whether an event is RELEVANT to `agent` — bash's match at ae:15570-15572.
-///
-/// Three forms, because a target is written in three ways: the agent's own
-/// events (actor), events aimed at it in this session (target), and events aimed
-/// at it by the cross-session `@session:agent` spelling.
 fn mentions(event: &Event, agent: &str, cross_session: &str) -> bool {
     if event.actor == agent {
         return true;
@@ -436,44 +334,6 @@ fn mentions(event: &Event, agent: &str, cross_session: &str) -> bool {
 /// of the watchdog's own nudges to reach it — bash's `_latest_relevant_event`
 /// (ae:15549-15590), which is the SELECTION half of the quiet decision that
 /// [`quiet_reason`] then classifies.
-///
-/// # `events` must be in APPEND ORDER, and that is the whole contract
-///
-/// Oldest first, exactly as the container was written; the walk is this slice
-/// reversed. Ordering by TIMESTAMP is not the same thing and is the bug bash
-/// records at ae:15540-15547: `events.jsonl` timestamps are second-resolution, so
-/// a declaration and the nudge that answered it in the same second compare EQUAL,
-/// and a ts-bounded look-back skipped the declaration along with the nudge.
-/// Append order is the truth here; the timestamp is its lossy rendering, and
-/// reasoning about order from a display form is the same family of mistake as
-/// reading state out of rendered text.
-///
-/// So the caller reads with a reader that PRESERVES that order —
-/// [`crate::event_text::reversed`] and the events-tail path do; anything that
-/// sorts does not — and this function never looks at [`Event::ts`] at all.
-///
-/// # The look-back is unbounded, by design
-///
-/// A quiet state stays valid until a NEWER event for this agent invalidates it,
-/// however many unrelated events follow it (bash says so at ae:15556-15558).
-/// Unrelated events are stepped over, never a stop.
-///
-/// # Walking past the watchdog's own nudges
-///
-/// One reverse pass consumes the consecutive run of watchdog nudges at the top
-/// and returns the relevant event underneath, reporting that it did. A nudge is
-/// an inbound event, so without this the watchdog invalidated the very state it
-/// was asking about: one nudge and the agent stopped being quiet no matter what
-/// the pane said, so it nudged again, and again (measured 2026-08-02). The flag
-/// is what [`quiet_reason`] needs for its one exception — `done` IS cleared by a
-/// nudge, because its contract is "honoured until a newer message arrives".
-///
-/// Only the watchdog's OWN nudges are skipped: an `alert` from the watchdog, or a
-/// `nudge` from anyone else, is news like any other event.
-///
-/// bash takes the skip as an optional flag with a non-skipping arm; that arm has
-/// no caller (`_agent_quiet_reason` at ae:15606 is the only one, and it passes
-/// `skip`), so the ported shape is the one in use rather than the one written.
 #[must_use]
 pub fn latest_relevant_event<'a>(
     events: &'a [Event],
@@ -497,12 +357,6 @@ pub fn latest_relevant_event<'a>(
 
 /// A self-declared state that tells the watchdog to stop nudging — bash's
 /// `_agent_quiet_reason` (ae:15592-15657) reduced to its three answers.
-///
-/// The KIND is all this module decides. How each one is honoured is the daemon's:
-/// `Done` is EVENT-ONLY quiet (pane churn — scrollback, resize, redraws — never
-/// invalidates it), while `WaitingUser` and `Blocked` are honoured only while
-/// their pane-hash baseline holds, because the human usually replies in the pane
-/// and that reply exists nowhere else (ae:16724-16739).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QuietKind {
     /// `done` — complete or paused.
@@ -514,38 +368,6 @@ pub enum QuietKind {
 }
 
 /// The quiet state an agent's LATEST RELEVANT event declares, or `None`.
-///
-/// `latest` is the newest event whose actor or target is this agent, with the
-/// watchdog's own nudges walked past; `looked_past_nudge` is whether any were.
-/// Selecting it is the caller's job (bash splits it the same way, between
-/// `_latest_relevant_event` at ae:15549 and the classification here).
-///
-/// The three rules, all bash's:
-///
-/// 1. **Only the agent's OWN declaration is quiet.** If the newest relevant event
-///    is INBOUND — a peer or a human writing to the agent — the prior quiet state
-///    is invalidated, because a quiet state must be broken by NEWS.
-/// 2. **The watchdog asking is not news.** Its nudge is an inbound event, so it
-///    invalidated the very state it was asking about; one nudge and the agent
-///    stopped being quiet no matter what the pane said, so the watchdog nudged
-///    again, and again (measured 2026-08-02). Hence the caller's skip.
-/// 3. **`done` is the ONE exception to rule 2.** Its documented contract is
-///    "honoured until a newer MESSAGE arrives", and a nudge is a message, so
-///    clearing `done` on one is pinned behaviour rather than an oversight — which
-///    is why `looked_past_nudge` un-quiets `Done` and nothing else.
-///
-/// `working` is a declaration but not a quiet one, and a `state` event with no
-/// `ref` has declared nothing.
-///
-/// # Two typed readers deliberately NOT used here
-///
-/// * [`crate::state::latest`] answers a different question: it scans for an
-///   actor's own `state`/`done` events and SKIPS everything else, so an inbound
-///   message could never invalidate — rule 1 would be unreachable.
-/// * [`Event::actor_identity`] prefers the churn-proof routing key, but the bash
-///   decision compares the DISPLAY name it read off the pane's `@ae_agent`, and
-///   a routed compare needs the agent's slot and session — inputs this decision
-///   never had. Kept as bash has it; widening it is a decision, not a detail.
 #[must_use]
 pub fn quiet_reason(latest: &Event, agent: &str, looked_past_nudge: bool) -> Option<QuietKind> {
     if latest.actor != agent {
@@ -567,15 +389,6 @@ pub fn quiet_reason(latest: &Event, agent: &str, looked_past_nudge: bool) -> Opt
 
 /// The declaration's identity, as [`quiet_pane_decision`] compares it —
 /// `action|ts|ref|actor|summary`, bash's key at ae:15656.
-///
-/// The FULL tuple rather than the timestamp: two declarations can land in the
-/// same second (ts is second-resolution), and any differing field — usually the
-/// summary — still re-arms the baseline. Byte-identical same-second re-declares
-/// remain indistinguishable, which bash accepts and so does this.
-///
-/// An absent `ref` or `summary` renders as empty, exactly as the bash key does.
-/// The timestamp round-trips: [`crate::time::Timestamp`] parses only the one
-/// documented spelling and renders it back, so the key holds the event's own ts.
 #[must_use]
 pub fn declaration_key(event: &Event) -> String {
     format!(
@@ -601,15 +414,6 @@ pub enum QuietPane {
 }
 
 /// The escape hatch's verdict for one pane.
-///
-/// `armed` is the baseline in force, as `(declaration key, hash)`; `None` is an
-/// unarmed pane, which bash spells as an empty `armed_key` that can never equal
-/// a real declaration.
-///
-/// The declaration is identified by its FULL tuple key (action|ts|ref|actor|
-/// summary, built by `_agent_quiet_reason` at ae:15656) rather than by its
-/// timestamp, so a genuinely new declaration re-arms even inside the same
-/// second.
 #[must_use]
 pub fn quiet_pane_decision(cur_hash: u64, armed: Option<(&str, u64)>, decl_key: &str) -> QuietPane {
     match armed {
@@ -626,27 +430,6 @@ pub fn quiet_pane_decision(cur_hash: u64, armed: Option<(&str, u64)>, decl_key: 
 
 /// The settled baseline for a pane, or `None` if it never held still — bash's
 /// `_quiet_stabilize` (ae:15862-15884), with the captures hoisted out.
-///
-/// # Why settle at all
-///
-/// An agent declares its state with a TOOL CALL and emits its final message
-/// AFTER — every harness works that way. So the pane is guaranteed to change
-/// once more right after the declaration, and baselining the first observed pane
-/// meant the agent broke its own hold (measured live: a `waiting-user`
-/// declaration at 09:05:55Z nudged at 10:36:43Z through a branch reachable only
-/// after the quiet branch had yielded). Settling happens WITHIN the arming cycle,
-/// so a change in any LATER cycle is unambiguously not the declaration's own echo
-/// and the verdict stays the crisp three.
-///
-/// # Purity
-///
-/// The daemon supplies the SAMPLES — bash sleeps a beat between captures, and
-/// that beat is the loop's business, not this decision's. `samples` is the
-/// arming capture followed by up to `tries` re-captures.
-///
-/// `None` covers both bash exits: the pane never settled, and a capture that
-/// FAILED (an unreadable or dying pane, which the caller must not hand on as a
-/// sample — two empty captures hash equal and would settle instantly).
 #[must_use]
 pub fn quiet_stabilize(samples: &[&str], tries: usize) -> Option<u64> {
     let mut captures = samples.iter();
@@ -663,23 +446,12 @@ pub fn quiet_stabilize(samples: &[&str], tries: usize) -> Option<u64> {
 
 /// Whether a pane may pay the stabilization beat this cycle — bash's
 /// `_quiet_stabilize_allowed` (ae:15846-15851).
-///
-/// Budget AND position. The budget alone is bounded but not FAIR: `list-panes` is
-/// traversed in the same order every cycle and an unsettled attempt stores no
-/// baseline, so the first two permanently unsettled panes consumed both slots
-/// forever and panes 3+ were never attempted — they aged out and got nudged while
-/// holding a perfectly good declaration, which is this slice's bug displaced onto
-/// later panes.
 #[must_use]
 pub const fn quiet_stabilize_allowed(spent: usize, max: usize, idx: usize, cursor: usize) -> bool {
     spent < max && idx >= cursor
 }
 
 /// Where the next cycle starts — bash's `_quiet_cursor_advance` (ae:15855-15863).
-///
-/// Wrap when this cycle did not spend its budget (everyone reachable was offered
-/// a turn) or when the cursor has run past the last pane, so the rotation cannot
-/// itself starve: every pane is reached within one full rotation.
 #[must_use]
 pub const fn quiet_cursor_advance(cursor: usize, spent: usize, max: usize, seen: usize) -> usize {
     if spent < max || cursor > seen {
@@ -690,13 +462,6 @@ pub const fn quiet_cursor_advance(cursor: usize, spent: usize, max: usize, seen:
 }
 
 /// The rotating stabilization budget, as ONE machine.
-///
-/// Bash owns the same wiring in `_quiet_cycle_begin`/`_quiet_cycle_step`/
-/// `_quiet_cycle_end` (ae:15866-15884) and says why: driving the predicate and
-/// the wrap rule separately is not the same as driving the machine — a test that
-/// advances its own cursor and calls the wrap itself passes even when the product
-/// does neither, which is how the fairness fix ended up with no regression
-/// protection at all. One definition, both callers.
 #[derive(Debug, Clone, Copy)]
 pub struct QuietCycle {
     max: usize,
@@ -745,34 +510,17 @@ impl QuietCycle {
 
 // ---------------------------------------------------------------------------
 // The orchestrator (meta-agent) sweep cadence — ae:16727-16899.
-//
-// An orchestrator session is a long-running SERVICE, so "idle between sweeps" is
-// NORMAL rather than stale: its main agent leaves the stale-nudge watchdog
-// entirely (SC-935) for an explicit cadence — prompt a sweep every
-// `sweep_secs`, and guard liveness with the orchestrator's OWN heartbeat file
-// instead of with pane silence.
-//
-// Everything below is the DECISION half. No clock, no filesystem, no send: the
-// daemon reads the heartbeat's mtime, performs the delivery, and reports back
-// what happened, exactly as it already does for the stale-nudge branch
-// (`watchdog_daemon::account` / `record_nudge`).
-// ---------------------------------------------------------------------------
 
 /// The orchestrator sweep tunables — ae:16435-16448, with the frozen defaults.
-///
-/// bash validates these out of `AE_WATCHDOG_SWEEP_*` (with the `AE_LOOP_*`
-/// legacy fallback, SC-1408a) before any arithmetic, and passes what it read;
-/// the defaults live here so a caller that passes nothing runs the frozen
-/// cadence (SC-1405a, SC-1406a, SC-1407a).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SweepKnobs {
-    /// Seconds between sweep prompts. `0` disables the branch (SC-1405b).
+    /// Seconds between sweep prompts. `0` disables the branch.
     pub sweep_secs: u64,
     /// How soon an UNDELIVERED prompt is retried instead of burning a whole
-    /// cadence window (SC-937).
+    /// cadence window.
     pub retry_secs: u64,
     /// How many FAST retries are allowed before the branch falls back to the
-    /// normal cadence and escalates once (SC-1407b).
+    /// normal cadence and escalates once.
     pub retry_max: u32,
 }
 
@@ -788,23 +536,12 @@ impl Default for SweepKnobs {
 
 impl SweepKnobs {
     /// Whether the sweep branch runs at all.
-    ///
-    /// SC-1405b: `0` is not "sweep immediately", it is "there is no sweep
-    /// branch" — the orchestrator main falls back to the normal watchdog. bash
-    /// spells it as the `((SWEEP_SECS > 0))` conjunct on the branch guard
-    /// (ae:16738), so a zero never reaches any of the arithmetic below.
     #[must_use]
     pub const fn enabled(&self) -> bool {
         self.sweep_secs > 0
     }
 
     /// The heartbeat window: `SWEEP_SECS * 2 + 60` (ae:16750).
-    ///
-    /// Two cadences plus a minute — one missed sweep is not a wedge, and the
-    /// minute absorbs the poll interval that the second one is judged across.
-    /// Saturating because the knob is caller-supplied: an absurd cadence must
-    /// widen the window, never wrap it into a narrow one that alerts on
-    /// everything.
     #[must_use]
     pub const fn wedge_secs(&self) -> u64 {
         self.sweep_secs.saturating_mul(2).saturating_add(60)
@@ -812,32 +549,11 @@ impl SweepKnobs {
 }
 
 /// Seconds ELAPSED from `then` to `now`, clamped at zero.
-///
-/// For the instants this daemon WROTE ITSELF — the cadence mark and the grace
-/// origin. A future value there means our own clock went backwards between two
-/// cycles, and the clamp is what bash does with it: `now - last_sweep` goes
-/// negative, a negative is below any window, so the cadence is simply not due
-/// yet and the grace has simply not elapsed. Both answers are the quiet ones.
-///
-/// # Why this is NOT the heartbeat's function — read before merging them
-///
-/// The heartbeat uses [`distance_secs`] instead, and the split is the point.
-/// Applying the ABSOLUTE difference here would make a backwards clock jump
-/// compute an enormous elapsed grace and raise a wedge alert against an orchestrator
-/// that is sweeping perfectly well — a NEW false-wedge path, which is the exact
-/// failure the heartbeat's symmetry was chosen to avoid. Applying the CLAMP to
-/// the heartbeat would restore the indefinite-masking hole. Neither is a
-/// generalisation of the other: one measures a value we wrote, the other a
-/// value another process — possibly on another host — wrote.
 fn secs_between(now: SystemTime, then: SystemTime) -> u64 {
     now.duration_since(then).map_or(0, |d| d.as_secs())
 }
 
 /// The ABSOLUTE distance between two instants, in seconds — direction dropped.
-///
-/// For the heartbeat alone, and only because a heartbeat is written by a
-/// DIFFERENT process, possibly on a different host with a different clock. See
-/// [`secs_between`] for why the two are not merged.
 fn distance_secs(now: SystemTime, then: SystemTime) -> u64 {
     match now.duration_since(then) {
         Ok(elapsed) => elapsed.as_secs(),
@@ -846,12 +562,6 @@ fn distance_secs(now: SystemTime, then: SystemTime) -> u64 {
 }
 
 /// How far a trusted heartbeat sits from now, and ON WHICH SIDE.
-///
-/// The side is kept because the WORDING depends on it, and a wrong word here is
-/// a lie to a human debugging an outage: a timestamp in the FUTURE was not
-/// "written N minutes ago", and saying so sends someone looking for a stall
-/// that never happened. [`classify_heartbeat`] does not care about the side —
-/// it judges the distance — so the two facts are separate on purpose.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HeartbeatOffset {
     /// Written this many seconds ago. The ordinary case.
@@ -878,11 +588,6 @@ impl HeartbeatOffset {
 }
 
 /// `now` moved `secs` into the past.
-///
-/// The fallback direction is deliberate: an instant that cannot be represented
-/// makes the next prompt due IMMEDIATELY rather than a full cadence away. A
-/// duplicate sweep prompt costs one redundant sweep; a dropped one costs a
-/// blind spot (SC-939a's at-least-once trade, applied to the arithmetic).
 fn back_date(now: SystemTime, secs: u64) -> SystemTime {
     now.checked_sub(Duration::from_secs(secs))
         .unwrap_or(UNIX_EPOCH)
@@ -890,32 +595,6 @@ fn back_date(now: SystemTime, secs: u64) -> SystemTime {
 
 /// What the orchestrator's heartbeat file says about it — the third state is the
 /// point.
-///
-/// The orchestrator rewrites `<session>/meta-agent-state.json` on every real sweep
-/// (the core entry `_monitor sweep` — see [`crate::monitor`]), so a heartbeat that stops
-/// advancing while the watchdog keeps prompting is an orchestrator that is LIVE but
-/// NOT SWEEPING: a model stall, an upstream throttle, a wedge (SC-939b). The
-/// dead-pane and missing-pane checks cannot see that — the process is fine.
-///
-/// # Why three states and not two
-///
-/// bash reads the heartbeat as ONE number: `hb=0` unless `[[ -f ]]`, then
-/// `_ae_stat mtime` (whose own failure also lands as `0`). So "no file",
-/// "not a regular file", "a stat that could not run" and "a genuinely ancient
-/// heartbeat" are all `hb=0`, distinguished only in the alert's wording.
-///
-/// This port keeps them apart because the SAFETY PIN needs them apart. The
-/// mtime that reaches [`classify_heartbeat`] is trusted only when it came from
-/// an `lstat` of a NON-SYMLINK REGULAR file: `[[ -f ]]` FOLLOWS symlinks, so
-/// bash accepts a heartbeat that points anywhere, and anything writable in the
-/// session directory could then be aimed at a file that some other process
-/// touches often — a wedged orchestrator silenced by a link. `None` is every
-/// untrusted reading, and `None` is [`Heartbeat::Untrusted`], never
-/// [`Heartbeat::Fresh`].
-///
-/// Neither [`Heartbeat::Stale`] nor [`Heartbeat::Untrusted`] is a health claim:
-/// both mean "not sweeping" and only the startup grace decides whether that is
-/// worth an alert yet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Heartbeat {
     /// A trusted mtime inside the window — the orchestrator is sweeping.
@@ -930,32 +609,6 @@ pub enum Heartbeat {
 }
 
 /// Classify an ALREADY-VALIDATED heartbeat mtime — ae:16748-16758.
-///
-/// `mtime` is `Some` only for a non-symlink regular file's modification time
-/// (the caller's `lstat`, per the safety pin on [`Heartbeat`]); every other
-/// reading — missing, symlink, directory, fifo, unreadable — arrives as `None`
-/// and classifies [`Heartbeat::Untrusted`].
-///
-/// # The window is SYMMETRIC, and that is a deliberate divergence from bash
-///
-/// The boundary is bash's on the past side — `now - hb <= wedge_secs`, so an
-/// age EQUAL to the window is still fresh and one second past it is not — but
-/// this judges the DISTANCE, so it applies on the future side too:
-///
-/// * a NEAR-future mtime, inside the window, is **Fresh**. Deliberate skew
-///   tolerance: a heartbeat can land on an NFS mount or a second host whose
-///   clock leads ours by seconds, so every fresh write looks slightly future.
-///   Refusing those would false-wedge a perfectly healthy orchestrator on every
-///   sweep — worse than the hole it closes.
-/// * a FAR-future mtime, beyond the window, is **Stale**. bash reads it Fresh
-///   forever, because its `now - hb` goes negative and a negative is below any
-///   window — so a timestamp set far ahead masks a wedged orchestrator
-///   INDEFINITELY. Symmetry closes that: the further out the stamp, the sooner
-///   it stops counting as liveness.
-///
-/// [`Heartbeat::Untrusted`] stays exactly what the READ LAYER could not vouch
-/// for. A clock is not a trust question, and conflating the two is what makes
-/// skew look like an attack.
 #[must_use]
 pub fn classify_heartbeat(
     mtime: Option<SystemTime>,
@@ -971,12 +624,6 @@ pub fn classify_heartbeat(
 
 /// Where a trusted heartbeat sits relative to `now`, or `None` when there is no
 /// trusted reading.
-///
-/// Separate from [`classify_heartbeat`] because an offset is not a
-/// classification: this carries no policy and no window. The wedge alert's
-/// wording needs the distance AND the side (ae:16780-16784), and
-/// [`SweepObservation::new`] derives this and the classification from the SAME
-/// reading so the two can never describe different files.
 #[must_use]
 pub fn heartbeat_offset(mtime: Option<SystemTime>, now: SystemTime) -> Option<HeartbeatOffset> {
     let at = mtime?;
@@ -996,38 +643,12 @@ pub const MAIN_SLOT: &str = "main";
 /// Whether this pane is the one the sweep cadence applies to — bash's
 /// `[[ "$META_AGENT" == "true" && "$agent" == "$META_MAIN_AGENT" ]]`
 /// (ae:16738), keyed by SLOT rather than by display name.
-///
-/// SC-935: the cadence is the orchestrator MAIN agent's alone. Workers and spawned
-/// agents in an orchestrator session keep the normal watchdog — they are ordinary
-/// agents that happen to share a session with a monitor.
-///
-/// # Why the SLOT, and not the `alias:name` bash compares
-///
-/// Same reason the roster line is keyed by slot (ae:16986-17024): `spawn`
-/// uniquifies only the NUMERIC slot, so two registrations CAN share one
-/// `alias:name`. A reference-keyed gate would hand the sweep cadence to BOTH
-/// panes — and the cadence REPLACES stale escalation, so the second pane would
-/// silently stop being watched. The slot cannot alias, and it is the key every
-/// other per-pane decision in this daemon already uses.
-///
-/// It also removes a whole class of question rather than answering it. Keying
-/// on the reference meant deriving it from `agent.main` in meta, which made the
-/// gate depend on that record being unambiguous — one more thing to read, to
-/// fail closed on, and to keep in step with bash's own multiline-scalar
-/// behaviour. The pane's own `@ae_slot` is the fact, and ae stamped it.
-///
-/// An UNSTAMPED pane has no slot and is therefore never the target, which is
-/// the fail-closed direction: an unstamped pane keeps the ordinary watchdog.
 #[must_use]
 pub fn is_sweep_target(meta_agent: bool, slot: &str) -> bool {
     meta_agent && slot == MAIN_SLOT
 }
 
 /// What the orchestrator's row shows this cycle — ae:16755-16765.
-///
-/// bash derives the glyph from the SAME two conditions the alert branch judges,
-/// deliberately: the expressions are identical so the glyph can never disagree
-/// with the alert. Here they are one expression, computed once.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SweepVerdict {
     /// A fresh heartbeat — the orchestrator is sweeping.
@@ -1052,10 +673,6 @@ impl SweepVerdict {
 }
 
 /// Which "not sweeping" the wedge alert is reporting — ae:16780-16784.
-///
-/// The two readings need different words because they send a human to different
-/// places: a heartbeat that STOPPED points at the orchestrator's own loop, while one
-/// that never existed points at the state file's path or its writer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WedgeDetail {
     /// A trusted heartbeat exists but stopped advancing this long ago.
@@ -1065,22 +682,11 @@ pub enum WedgeDetail {
     },
     /// A trusted heartbeat stamped this far AHEAD of this clock — far enough
     /// that it is outside the freshness window and cannot be read as liveness.
-    ///
-    /// Its own variant rather than a signed `Stalled`, because the WORDING is
-    /// the whole reason the side is carried: a future timestamp was not written
-    /// "N minutes ago", and telling a human it was sends them hunting a stall
-    /// that never happened. The past wording is bash's, frozen, and untouched.
     Ahead {
         /// Seconds by which the heartbeat leads this clock.
         ahead_secs: u64,
     },
     /// No trusted heartbeat has ever been read, across this much prompting.
-    ///
-    /// bash reaches this wording for a missing file. This port also reaches it
-    /// for a heartbeat REFUSED by the safety pin (a symlink, a non-regular
-    /// file) — where "never wrote a heartbeat" is the alert's honest reading of
-    /// what the watchdog is willing to trust, not a claim about the file's
-    /// contents.
     Never {
         /// Seconds of delivered sweep prompts with nothing to show for them.
         prompting_secs: u64,
@@ -1089,19 +695,13 @@ pub enum WedgeDetail {
 
 /// An alert the sweep branch raises or clears, as a TRANSITION rather than as
 /// prose.
-///
-/// The two alerts are separate on purpose and bash says why (ae:16843-16856):
-/// `alert-cleared` is UNTYPED — anything that clears clears THE alert — so a
-/// clear emitted while the other alert is still latched would erase a live
-/// warning that could then never re-fire. Keeping the transitions typed here is
-/// what lets the accounting refuse that combination in one readable place.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SweepAlert {
-    /// Live but not sweeping (SC-939b). Raised ONCE per wedge.
+    /// Live but not sweeping. Raised ONCE per wedge.
     RaiseWedge(WedgeDetail),
     /// The heartbeat resumed.
     ClearWedge,
-    /// Sweep prompts stopped landing altogether (SC-938/SC-1407b). Raised ONCE.
+    /// Sweep prompts stopped landing altogether. Raised ONCE.
     RaiseUnreachable {
         /// Consecutive undelivered prompts at the moment of escalation.
         undelivered: u32,
@@ -1121,11 +721,6 @@ impl SweepAlert {
     }
 
     /// The frozen summary text, quoted from the branch that emits it.
-    ///
-    /// The wedge summary deliberately avoids the `throttl`/`dead`/`missing`
-    /// substrings so `_agent_alert_reason` ranks it by its own "not sweeping"
-    /// case (ae:16775-16777); the unreachable one carries "not sweeping" for
-    /// the same reason. Do not reword either without checking that ranking.
     #[must_use]
     pub fn summary(self) -> String {
         match self {
@@ -1173,11 +768,6 @@ impl SweepAlert {
 pub enum SweepEffect {
     /// Deliver one sweep prompt through the session's own `send` helper, then
     /// report the outcome to [`record_sweep`].
-    ///
-    /// Delivery is CHECKED, never fire-and-forget (SC-936): `send` exits
-    /// non-zero when it REFUSES a dead shell or ABANDONS a busy target, and a
-    /// swallowed failure advanced the cadence while the orchestrator was never
-    /// prompted (the measured 94-minute blind spot at ae:16812-16818).
     FireSweepNudge,
     /// Raise or clear one alert.
     Alert(SweepAlert),
@@ -1185,13 +775,6 @@ pub enum SweepEffect {
     /// latched wedge: read the DURABLE event log and, if it still shows an
     /// active alert for this agent, emit [`SweepAlert::ClearWedge`]'s event
     /// (ae:16768-16774).
-    ///
-    /// The in-memory latch is lost across a watchdog restart, so a watchdog
-    /// that alerted before the restart would otherwise never clear. Kept as an
-    /// effect rather than as a `has_active_alert` input because bash reads that
-    /// log LAZILY — once, and only on the cycle that can act on it.
-    /// Idempotent: once cleared, the clear is the newest event and a re-scan
-    /// finds nothing active.
     ReconcileWedge,
 }
 
@@ -1199,23 +782,12 @@ pub enum SweepEffect {
 /// `last_sweep_nudge` / `first_sweep_nudge` / `sweep_nudge_fails` /
 /// `meta_wedge_alerted` / `sweep_unreachable_alerted` / `meta_reconciled`
 /// (ae:16409-16430), gathered into one value.
-///
-/// Default is the fresh pane bash starts with: every array unset, which its
-/// `${...:-0}` reads as zero.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SweepState {
     /// When the cadence was last satisfied. `None` is bash's `0` — the first
     /// cycle is always due.
-    ///
-    /// A FAST RETRY back-dates this rather than storing a due time, exactly as
-    /// bash does (`sweep_now - SWEEP_SECS + sweep_retry`), so one comparison
-    /// serves both schedules.
     pub last_sweep: Option<SystemTime>,
     /// When the first prompt LANDED — the startup grace's origin.
-    ///
-    /// The wedge window ticks from a DELIVERED prompt, never from an attempt:
-    /// starting it on an undelivered one would alert "not sweeping" against a
-    /// orchestrator that was never actually reached.
     pub first_delivered: Option<SystemTime>,
     /// Consecutive undelivered prompts.
     pub fails: u32,
@@ -1228,10 +800,6 @@ pub struct SweepState {
 }
 
 /// What the cycle observed about the orchestrator, after the heartbeat was read.
-///
-/// Build it with [`SweepObservation::new`]: the state and the age must come
-/// from ONE reading, and a constructor is the only way to make describing two
-/// different files impossible.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SweepObservation {
     /// Wall clock for this cycle (bash's `now_epoch`).
@@ -1245,9 +813,6 @@ pub struct SweepObservation {
 
 impl SweepObservation {
     /// Derive the observation from one validated heartbeat reading.
-    ///
-    /// `heartbeat_mtime` is `Some` only for a non-symlink regular file — see
-    /// the safety pin on [`Heartbeat`].
     #[must_use]
     pub fn new(now: SystemTime, heartbeat_mtime: Option<SystemTime>, knobs: &SweepKnobs) -> Self {
         Self {
@@ -1272,26 +837,6 @@ pub struct SweepAccounting {
 
 /// Account for the orchestrator main in one cycle — ae:16738-16897, and the only
 /// place any of it is decided.
-///
-/// `None` is SC-1405b: with `sweep_secs == 0` there is NO sweep branch, and the
-/// caller must fall through to the normal watchdog for this pane. Returning an
-/// `Option` rather than an empty accounting is the point — an empty accounting
-/// would suppress the stale watchdog too, which is the opposite of the row.
-///
-/// The caller gates on [`is_sweep_target`] first (SC-935); this function
-/// assumes the pane is the orchestrator main.
-///
-/// The order is bash's:
-///
-/// 1. the verdict, from the heartbeat and the startup grace;
-/// 2. the wedge alert's raise / clear / post-restart reconcile;
-/// 3. the cadence, which only ever DECIDES to prompt.
-///
-/// Step 3 never books its own outcome: the delivery happens in the loop and its
-/// result comes back through [`record_sweep`]. That is the same split
-/// [`crate::watchdog_daemon::account`] and
-/// [`crate::watchdog_daemon::record_nudge`] already use, and it is what keeps
-/// "a prompt was attempted" from being recorded as "a prompt landed" (SC-936).
 #[must_use]
 pub fn sweep_step(
     prior: &SweepState,
@@ -1299,7 +844,7 @@ pub fn sweep_step(
     knobs: &SweepKnobs,
 ) -> Option<SweepAccounting> {
     if !knobs.enabled() {
-        return None; // SC-1405b — not this branch at all.
+        return None; // Not this branch at all.
     }
     let mut next = *prior;
     let mut effects = Vec::new();
@@ -1307,8 +852,6 @@ pub fn sweep_step(
     // 1. The verdict. A FRESH heartbeat is the only healthy reading; Stale and
     //    Untrusted both mean "not sweeping", and the startup grace is what
     //    decides whether that is worth an alert yet. The grace runs from the
-    //    first DELIVERED prompt and the comparison is bash's strict `>`, so an
-    //    age exactly equal to the window is still starting up.
     let grace_secs = prior.first_delivered.map(|at| secs_between(seen.now, at));
     let verdict = match (seen.heartbeat, grace_secs) {
         (Heartbeat::Fresh, _) => SweepVerdict::MetaSweeping,
@@ -1366,29 +909,6 @@ pub fn sweep_step(
 }
 
 /// Book a sweep prompt's outcome — ae:16833-16895.
-///
-/// Call this with the state [`sweep_step`] returned, only when its effects
-/// contained [`SweepEffect::FireSweepNudge`], and only after the delivery
-/// actually returned.
-///
-/// # The two clocks are not interchangeable
-///
-/// `cycle_now` is the clock the cycle opened with (bash's `now_epoch`);
-/// `settled_now` is re-read AFTER the send returned (bash's `sweep_now`). The
-/// send BLOCKS while it defers a busy target — up to `AE_SEND_DEFER_SEC` — so
-/// scheduling a retry off `cycle_now` would make it due the moment `send`
-/// returned, which is not a retry interval at all. A landed prompt keeps
-/// `cycle_now`, because its schedule is the cadence and the cadence is the
-/// cycle's.
-///
-/// # Delivery is at-least-once (SC-939a)
-///
-/// `send`'s status means "delivered AND logged" — its last command is the event
-/// append — so an event-write failure after a successful paste reports failure
-/// and this books a retry for a prompt the orchestrator already got. That is the
-/// chosen trade: a duplicate sweep costs one redundant sweep, a dropped one
-/// costs a blind spot. Do not "fix" it by reading a non-zero status as
-/// delivered.
 pub fn record_sweep(
     state: &mut SweepState,
     delivered: bool,
@@ -1407,10 +927,6 @@ pub fn record_sweep(
         }
         state.unreachable_alerted = false;
         // The latch drops either way; only the EVENT is conditional.
-        // `alert-cleared` is untyped, so emitting one while the wedge alert is
-        // still latched would erase a live "not sweeping" from `ae list` while
-        // `wedge_alerted` stayed set — it could then never re-fire, and a
-        // wedged orchestrator would go invisible. The wedge owns its own clear.
         if state.wedge_alerted {
             return Vec::new();
         }
@@ -1422,24 +938,12 @@ pub fn record_sweep(
         // Don't consume the cadence slot — make the retry due `retry` seconds
         // after THIS failure, by back-dating the cadence rather than by
         // carrying a second schedule.
-        //
-        // SC-1406b: CLAMPED to the cadence, in ONE expression. A retry longer
-        // than `sweep_secs` would push `last_sweep` into the FUTURE and DELAY
-        // the next prompt instead of hastening it, so the amount the cadence is
-        // hastened by SATURATES at zero: a retry at or past the cadence simply
-        // does not hasten it. bash clamps `sweep_retry` and then subtracts;
-        // that is the same arithmetic, but writing BOTH here left the clamp
-        // undecidable — no input could tell the `min` from the saturation, so
-        // no test could hold it (a mutation of the `min` alone stayed green).
-        // It is a FLOOR, not a deadline: the watchdog polls on its own
-        // interval, so the retry lands on the first poll at or after that
-        // point, never sooner.
         let hastened_by = knobs.sweep_secs.saturating_sub(knobs.retry_secs);
         state.last_sweep = Some(back_date(settled_now, hastened_by));
         return Vec::new();
     }
 
-    // SC-938/SC-1407b: bounded. A persistently unreachable orchestrator degrades to
+    // bounded. A persistently unreachable orchestrator degrades to
     // the normal cadence and escalates ONCE rather than retry-spamming.
     state.last_sweep = Some(settled_now);
     if state.unreachable_alerted {
@@ -1903,7 +1407,6 @@ mod tests {
         // The ONE property that a ts-ordered implementation would get wrong while
         // every other test still passed: the newest APPENDED event carries an
         // OLDER timestamp than the one before it (clock skew, or a container
-        // stitched from two generations).
         let events = log(&[
             r#"{"ts":"2026-08-29T04:09:00Z","actor":"opus5:builder","action":"state","ref":"waiting-user"}"#,
             r#"{"ts":"2026-08-29T04:00:00Z","actor":"fable5:lead","action":"send","target":"opus5:builder","summary":"answered"}"#,
@@ -1919,15 +1422,6 @@ mod tests {
     // ---- Quiet detection --------------------------------------------------
     //
     // PANE_SPECIMEN is written from the renderings CAPTURED in the bash comment
-    // above `_watchdog_quiet_hash` (ae:15680-15700), plus the near-misses that
-    // must survive. AWK_ORACLE is not what this port is expected to produce —
-    // it is what the FROZEN BASH AWK actually produced when run over that
-    // specimen (2026-08-29, `awk -f <the awk, extracted verbatim from ae>`), so
-    // the expectation comes from the behavior authority and not from a second
-    // reading of it by the same author.
-    //
-    // Both are column-0 raw strings: leading whitespace is semantic here (it is
-    // what `indented` tests), so they must not be re-indented to match the block.
 
     const PANE_SPECIMEN: &str = r#"some ordinary prose from the agent
 
@@ -2231,7 +1725,6 @@ tail line
         // The fairness bug this rotation exists to prevent: with a plain budget,
         // the first two panes consume both slots EVERY cycle and panes 3+ are
         // never attempted. Indices are the loop's 1-based traversal position
-        // (ae:16484 increments before the step).
         let mut cycle = QuietCycle::new(2);
         let mut reached: Vec<usize> = Vec::new();
         for _ in 0..3 {
@@ -2275,7 +1768,7 @@ tail line
         );
     }
 
-    // -- the orchestrator sweep cadence (SC-935..SC-939b, SC-1405b, SC-1406b) ------
+    // -- the orchestrator sweep cadence --------------------------------------
 
     /// A fixed clock. Far from the epoch so a back-dated cadence is a real
     /// instant rather than a saturation artefact.
@@ -2297,9 +1790,9 @@ tail line
     #[test]
     fn the_frozen_sweep_defaults_are_the_bash_ones() {
         let k = knobs();
-        assert_eq!(k.sweep_secs, 300, "SC-1405a");
-        assert_eq!(k.retry_secs, 30, "SC-1406a");
-        assert_eq!(k.retry_max, 6, "SC-1407a");
+        assert_eq!(k.sweep_secs, 300, "sweep cadence");
+        assert_eq!(k.retry_secs, 30, "retry floor");
+        assert_eq!(k.retry_max, 6, "retry ceiling");
         assert_eq!(k.wedge_secs(), 660, "SWEEP_SECS * 2 + 60");
         assert!(k.enabled());
     }
@@ -2309,7 +1802,6 @@ tail line
         // The safety pin, as a pair: the SAME instant classifies Fresh when the
         // mtime is trusted and Untrusted when it is not. Nothing about the
         // clock can turn a missing / symlinked / non-regular heartbeat into a
-        // health claim.
         assert_eq!(
             classify_heartbeat(None, at(0), 660),
             Heartbeat::Untrusted,
@@ -2340,9 +1832,6 @@ tail line
         );
 
         // FUTURE SIDE — the divergence, and it flips at the SAME boundary.
-        // Inside the window a leading clock is tolerated, because an NFS mount
-        // or a second host makes every fresh write look slightly future and
-        // refusing those would false-wedge a healthy orchestrator on every sweep.
         assert_eq!(
             classify_heartbeat(Some(at(900)), at(300), 660),
             Heartbeat::Fresh,
@@ -2356,7 +1845,6 @@ tail line
         // Beyond it, it stops counting as liveness. THIS IS THE CLOSED HOLE:
         // bash reads any future stamp Fresh forever (its `now - hb` goes
         // negative and a negative is below any window), so a timestamp set far
-        // ahead masks a wedged orchestrator INDEFINITELY.
         assert_eq!(
             classify_heartbeat(Some(at(961)), at(300), 660),
             Heartbeat::Stale,
@@ -2430,9 +1918,6 @@ tail line
         // The SPLIT, pinned. `first_delivered` and `last_sweep` are values THIS
         // daemon wrote; a future one means our own clock went backwards. Taking
         // the absolute distance there would compute an enormous elapsed grace
-        // and raise a wedge against an orchestrator that is sweeping perfectly well —
-        // a NEW false-wedge path, which is the failure the heartbeat symmetry
-        // exists to avoid. bash clamps both, and so does this.
         let k = knobs();
         let jumped = SweepState {
             // Both stamped an hour ahead of the cycle clock.
@@ -2460,12 +1945,9 @@ tail line
 
     #[test]
     fn only_the_orchestrator_main_slot_gets_the_cadence() {
-        // SC-935: workers and spawned agents in an orchestrator session keep the
+        // workers and spawned agents in an orchestrator session keep the
         // normal watchdog. Keyed by SLOT, which cannot alias — `spawn`
         // uniquifies only the numeric slot, so two registrations can share one
-        // `alias:name`, and a reference-keyed gate would hand the cadence to
-        // BOTH (silently un-watching the second, since the cadence replaces
-        // stale escalation).
         assert!(is_sweep_target(true, "main"));
         for other in [
             "worker.1",
@@ -2492,9 +1974,9 @@ tail line
 
     #[test]
     fn a_zero_cadence_removes_the_branch_rather_than_emptying_it() {
-        // SC-1405b, with its own control: the SAME inputs that produce a wedge
-        // alert on the frozen cadence produce NO BRANCH at all on `0` — the
-        // caller falls through to the normal watchdog.
+        // The disabled cadence, with its own control: the SAME inputs that
+        // produce a wedge alert on the frozen cadence produce NO BRANCH at all
+        // on `0` — the
         let prior = SweepState {
             first_delivered: Some(at(0)),
             ..SweepState::default()
@@ -2547,7 +2029,7 @@ tail line
 
     #[test]
     fn an_undelivered_prompt_retries_fast_without_consuming_the_cadence_slot() {
-        // SC-937. The retry is a FLOOR: due 30s after the failure, on the first
+        // The retry is a FLOOR: due 30s after the failure, on the first
         // poll at or after that point.
         let k = knobs();
         let mut state = SweepState {
@@ -2577,7 +2059,7 @@ tail line
 
     #[test]
     fn the_retry_interval_is_clamped_to_the_cadence() {
-        // SC-1406b. An unclamped 600s retry against a 300s cadence would push
+        // An unclamped 600s retry against a 300s cadence would push
         // last_sweep into the FUTURE and DELAY the next prompt to +600.
         let k = SweepKnobs {
             retry_secs: 600,
@@ -2602,7 +2084,7 @@ tail line
 
     #[test]
     fn past_the_retry_maximum_the_branch_alerts_once_and_returns_to_the_cadence() {
-        // SC-938 / SC-1407b.
+        // The retry ceiling.
         let k = knobs();
         let mut state = SweepState::default();
         for attempt in 1..=k.retry_max {
@@ -2698,7 +2180,7 @@ tail line
 
     #[test]
     fn the_wedge_raises_once_past_the_grace_and_the_boundary_is_strict() {
-        // SC-939b. The grace runs from the first DELIVERED prompt; bash's
+        // The grace runs from the first DELIVERED prompt; bash's
         // comparison is `>`, so an elapsed exactly at the window is still
         // starting up.
         let k = knobs();
