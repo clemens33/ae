@@ -177,9 +177,8 @@ impl Drop for Scratch {
                 &out,
                 &err,
             );
-            let alive = status
-                .map(|status| !matches!(status.outcome(), ExitOutcome::Code(1)))
-                .unwrap_or(false);
+            let alive =
+                status.is_ok_and(|status| !matches!(status.outcome(), ExitOutcome::Code(1)));
             if !alive {
                 break;
             }
@@ -234,7 +233,12 @@ fn dead_socket(dir: &std::path::Path) -> std::path::PathBuf {
 }
 
 fn ae_in(dir: &std::path::Path) -> Runner {
-    let mut command = binary();
+    isolated(binary(), dir)
+}
+
+/// Apply the suite's baseline environment to any child process. Individual
+/// fixtures may then override only the pane/server facts they are testing.
+fn isolated(mut command: Runner, dir: &std::path::Path) -> Runner {
     for name in AMBIENT {
         command.env_remove(name);
     }
@@ -243,7 +247,8 @@ fn ae_in(dir: &std::path::Path) -> Runner {
         .env("AE_HOME", dir.join(".ae"))
         .env("TMUX_TMPDIR", dir)
         .env("AE_TMUX_SERVER_KIND", "socket")
-        .env("AE_TMUX_SERVER", dead_socket(dir));
+        .env("AE_TMUX_SERVER", dead_socket(dir))
+        .env("SHELL", "/bin/sh");
     command
 }
 
@@ -317,7 +322,7 @@ fn the_black_box_runner_cannot_see_the_developers_own_home_or_tmux() {
     reason = "the black-box tests' door: a session helper must be RUN to be proven; see clippy.toml"
 )]
 pub(crate) fn helper(path: &std::path::Path) -> std::process::Command {
-    std::process::Command::new(path)
+    isolated(std::process::Command::new(path), &run_scratch())
 }
 
 /// Run a session helper reached BY NAME, through `PATH`.
@@ -326,7 +331,7 @@ pub(crate) fn helper(path: &std::path::Path) -> std::process::Command {
     reason = "the black-box tests' second door: a helper reached by name is a process started AS that name; see clippy.toml"
 )]
 pub(crate) fn helper_by_name(name: &str) -> std::process::Command {
-    std::process::Command::new(name)
+    isolated(std::process::Command::new(name), &run_scratch())
 }
 
 // The FIFO fixture.

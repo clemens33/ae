@@ -108,8 +108,8 @@ impl Rig {
         let sock = scratch.join("sock");
         scratch.add_tmux_server(sock.clone());
         Self {
-            sock,
             scratch,
+            sock,
             home,
             project,
             config,

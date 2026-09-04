@@ -64,10 +64,10 @@ impl Rig {
         scratch.add_tmux_server(sock.clone());
         scratch.add_tmux_server(scratch.join(format!("tmux-{uid}")).join("default"));
         Self {
-            sock,
             scratch,
             home,
             project,
+            sock,
         }
     }
 
