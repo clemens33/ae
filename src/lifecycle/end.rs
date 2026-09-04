@@ -961,10 +961,31 @@ fn purge_conversation_files(
     let parsed = meta::Meta::parse(&text);
     let home = root.parent().map(Path::to_path_buf);
     for entry in parsed.roster() {
-        let uuid = entry.harness_session.as_deref().unwrap_or_default();
-        if uuid.is_empty() || uuid == "pending" {
+        let recorded = entry.harness_session.as_deref().unwrap_or_default();
+        if recorded.is_empty() || recorded == "pending" {
             continue;
         }
+        // A NAME, NEVER A PATH. `harness_session.<slot>` is metadata — a
+        // hand-editable file, and `set-harness-session` screens only for control
+        // bytes — and every arm below interpolates it into a filename that is
+        // then joined onto a tool's store and REMOVED. `Path::join` with an
+        // absolute operand DISCARDS the store entirely, so a row reading
+        // `/etc/passwd` is not a conversation id, it is a deletion target; and
+        // `../../x` walks out of the store just as well. So the value is proven
+        // to be a UUID first, with the grammar the archive already uses, and an
+        // id that is not one names NOTHING — reported as a loss, because a
+        // conversation ae cannot safely name is a conversation the purge did not
+        // remove, and the operator asked for it to be gone.
+        let uuid = crate::archive::canonical_uuid(recorded);
+        if uuid.is_empty() {
+            writeln!(
+                err,
+                "  note: conversation file for slot {} left in place (recorded id is not a UUID)",
+                entry.slot
+            )?;
+            continue;
+        }
+        let uuid = uuid.as_str();
         let tool = entry.binary.as_deref().unwrap_or_default();
         let Some(home) = home.as_ref() else { continue };
         match tool {
@@ -1015,6 +1036,11 @@ fn purge_conversation_files(
 /// returned. `-wal` and `-shm` are appended to the FULL file name (`<id>.db-wal`
 /// is what `SQLite` writes), which is why they are built from the database's own
 /// name rather than from a second extension.
+///
+/// `uuid` is the caller's proven one. Computing a path from an unvalidated id is
+/// how a metadata row becomes a deletion target, so the check lives at the
+/// boundary where the row is READ rather than here — one guard covering every
+/// arm, instead of one per tool that a fourth tool would be added without.
 fn agy_conversation_files(home: &Path, uuid: &str) -> Vec<PathBuf> {
     let store = home.join(crate::session_launch::capture::AGY_CONVERSATIONS);
     [
@@ -1238,6 +1264,69 @@ mod tests {
             !said.contains("pending"),
             "a seat with no captured id names nothing: {said}"
         );
+        let _ = std::fs::remove_dir_all(&scratch);
+    }
+
+    /// A recorded id is a NAME, not a path — and the purge is `remove_file`.
+    ///
+    /// `harness_session.<slot>` is hand-editable metadata that only ever gets
+    /// screened for control bytes, so an absolute value makes `Path::join`
+    /// discard the store and a dot-dot value walks out of it. Either one turns a
+    /// roster row into a deletion target anywhere the user can write. The guard
+    /// is at the row, so this covers claude and codex too.
+    #[test]
+    fn a_recorded_id_that_is_not_a_uuid_names_nothing_and_deletes_nothing() {
+        let scratch = std::env::temp_dir().join(format!("ae-purge-esc-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&scratch);
+        let home = scratch.join("home");
+        let root = home.join(".ae");
+        let store = home.join(".gemini/antigravity-cli/conversations");
+        std::fs::create_dir_all(&store).expect("a conversation store");
+        std::fs::create_dir_all(&root).expect("a state root");
+
+        // Two bystanders OUTSIDE the store, each named by one of the escapes.
+        let outside = scratch.join("outside");
+        std::fs::create_dir_all(&outside).expect("a bystander dir");
+        let absolute = outside.join("absolute");
+        let dotdot = home.join(".gemini/antigravity-cli/escaped.db");
+        std::fs::write(&absolute, "keep me").expect("a bystander");
+        std::fs::write(&dotdot, "keep me").expect("a bystander");
+
+        for (tool, id) in [
+            ("agy", absolute.display().to_string()),
+            ("agy", "../escaped".to_owned()),
+            ("claude", absolute.display().to_string()),
+            ("codex", "../escaped".to_owned()),
+            // Shapes that are close to a UUID but are not one.
+            ("agy", "643393ad-eb92-4b9e-ab7a".to_owned()),
+            (
+                "agy",
+                "643393ad-eb92-4b9e-ab7a-0fe7b1221fa1/../../x".to_owned(),
+            ),
+        ] {
+            let meta = format!(
+                "session=x\nschema=2\nseat.main=lead\nagent_bin.main={tool}\n\
+                 harness_session.main={id}\n"
+            );
+            let mut out = Vec::new();
+            let mut err = Vec::new();
+            purge_conversation_files(&root, meta.as_bytes(), &mut out, &mut err)
+                .expect("the purge reports rather than fails");
+            let said = String::from_utf8_lossy(&out).into_owned();
+            let noted = String::from_utf8_lossy(&err).into_owned();
+            assert!(
+                said.is_empty(),
+                "nothing may be reported removed for {tool} id {id}: {said}"
+            );
+            assert!(
+                noted.contains("is not a UUID"),
+                "and the loss must be reported for {tool} id {id}: {noted}"
+            );
+            assert!(
+                path_exists(&absolute) && path_exists(&dotdot),
+                "a file outside the store was removed via {tool} id {id}"
+            );
+        }
         let _ = std::fs::remove_dir_all(&scratch);
     }
 

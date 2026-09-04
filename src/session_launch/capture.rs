@@ -921,21 +921,29 @@ const AGY_SCAN_CHUNK: usize = 64 * 1024;
 fn file_contains(path: &Path, needle: &[u8]) -> bool {
     use std::io::Read as _;
 
-    let Some(overlap) = needle.len().checked_sub(1) else {
+    // ONE stat, TWO facts, and both are decided BEFORE the open.
+    //
+    // `is_file` is not a tidiness check: `open(2)` on a FIFO BLOCKS until a
+    // writer appears, and this runs inside the watchdog's cycle. A named pipe
+    // called `<uuid>.db` in the store reports a length of 0, would sail through
+    // a size-only gate, and hang the daemon on the open — so the node is
+    // classified first and anything that is not a regular file is not opened at
+    // all. Symlinks are FOLLOWED here deliberately (`metadata`, not
+    // `symlink_metadata`): what must not block is the open, and the open
+    // reaches the target, so the target is what has to be regular.
+    //
+    // What a pre-check cannot close is the race — the node could be replaced
+    // between the stat and the open — and there is no non-blocking open in std
+    // to close it with. Named rather than papered over: the store is the
+    // caller's own home, so the exposure is a machine already writing there.
+    let Some((regular, size)) = file_facts(path) else {
         return false;
     };
-    let Some(size) = file_size(path) else {
+    if !regular {
         return false;
-    };
+    }
     if size > AGY_SCAN_CAP {
-        // Visible where a look can still be retried: the watchdog's recovery
-        // runs in the daemon, whose stderr reaches its pane. The launch's own
-        // capture is detached with its streams dropped, so there it is silent —
-        // said plainly rather than pretended otherwise.
-        eprintln!(
-            "ae: agy capture skipped {} ({size} bytes over the {AGY_SCAN_CAP}-byte scan cap)",
-            path.display()
-        );
+        skipped(path, size);
         return false;
     }
     #[allow(
@@ -943,27 +951,70 @@ fn file_contains(path: &Path, needle: &[u8]) -> bool {
         reason = "a door: a capture reads the tool's own conversation store, which is binary and unbounded — see clippy.toml"
     )]
     let opened = std::fs::File::open(path);
-    let Ok(mut file) = opened else {
+    let Ok(file) = opened else {
         return false;
+    };
+    // THE STAT IS NOT THE BOUND. A conversation is a LIVE database: it can grow
+    // between the stat above and the last read below, and a file that measured
+    // 1 KB can feed this loop for as long as agy keeps writing. `take` is the
+    // bound that holds whatever the file does — one byte past the cap, so
+    // exceeding it is observable rather than indistinguishable from a file that
+    // ends exactly there.
+    match scan_stream(file.take(AGY_SCAN_CAP.saturating_add(1)), needle) {
+        Scan::Found => true,
+        Scan::Absent => false,
+        Scan::OverCap => {
+            skipped(path, AGY_SCAN_CAP.saturating_add(1));
+            false
+        }
+    }
+}
+
+/// What a bounded search of one stream found.
+#[derive(Debug, PartialEq, Eq)]
+enum Scan {
+    /// The needle is in the bytes read.
+    Found,
+    /// The stream ended without it.
+    Absent,
+    /// The budget ran out first, so the answer is unknown and not "no".
+    OverCap,
+}
+
+/// Search `reader` for `needle` in chunks, spending at most [`AGY_SCAN_CAP`]
+/// bytes.
+///
+/// Takes a READER rather than a path so the budget is provable without a file
+/// that lies about its length: an endless stream is the shape a growing
+/// database presents, and the only honest way to show the loop ends is to run
+/// it against one.
+fn scan_stream<R: std::io::Read>(mut reader: R, needle: &[u8]) -> Scan {
+    let Some(overlap) = needle.len().checked_sub(1) else {
+        return Scan::Absent;
     };
     let mut buffer = vec![0_u8; overlap + AGY_SCAN_CHUNK];
     // Starts EMPTY, not at `overlap`: seeding the carry with the buffer's own
-    // zero fill would put bytes the file does not contain in front of its first
-    // chunk, and a needle is matched against file bytes or nothing.
+    // zero fill would put bytes the stream does not contain in front of its
+    // first chunk, and a needle is matched against real bytes or nothing.
     let mut filled = 0_usize;
+    let mut consumed = 0_u64;
     loop {
-        let Ok(read) = file.read(&mut buffer[filled..]) else {
-            return false;
+        let Ok(read) = reader.read(&mut buffer[filled..]) else {
+            return Scan::Absent;
         };
         if read == 0 {
-            return false;
+            return Scan::Absent;
+        }
+        consumed = consumed.saturating_add(read as u64);
+        if consumed > AGY_SCAN_CAP {
+            return Scan::OverCap;
         }
         filled += read;
         if buffer[..filled]
             .windows(needle.len())
             .any(|window| window == needle)
         {
-            return true;
+            return Scan::Found;
         }
         // Carry the tail forward: the next chunk is read BEHIND it, so a needle
         // straddling the seam sits contiguously in the next pass. A read too
@@ -975,14 +1026,32 @@ fn file_contains(path: &Path, needle: &[u8]) -> bool {
     }
 }
 
-/// One file's length in bytes, or nothing when it has none.
-fn file_size(path: &Path) -> Option<u64> {
+/// Say that a conversation was too big to search, and where.
+///
+/// Visible where a look can still be retried: the watchdog's recovery runs in
+/// the daemon, whose stderr reaches its pane. The launch's own capture is
+/// detached with its streams dropped, so there it is silent — said plainly
+/// rather than pretended otherwise.
+fn skipped(path: &Path, size: u64) {
+    eprintln!(
+        "ae: agy capture skipped {} ({size} bytes over the {AGY_SCAN_CAP}-byte scan cap)",
+        path.display()
+    );
+}
+
+/// Whether `path` is a regular file, and how long it is — from ONE stat, and
+/// without opening the node.
+///
+/// The two facts travel together because both gate the same open and a second
+/// stat would be a second answer to race against.
+fn file_facts(path: &Path) -> Option<(bool, u64)> {
     #[allow(
         clippy::disallowed_methods,
-        reason = "a door: the scan cap that keeps an unbounded conversation store off the watchdog's cycle — see clippy.toml"
+        reason = "a door: the node classification and scan cap that keep a FIFO and an unbounded conversation store off the watchdog's cycle — see clippy.toml"
     )]
     let read = std::fs::metadata(path);
-    Some(read.ok()?.len())
+    let meta = read.ok()?;
+    Some((meta.is_file(), meta.len()))
 }
 
 // ---------------------------------------------------------------------------
@@ -1572,6 +1641,60 @@ mod tests {
             b"\x00\xffAE_AGY_LAUNCH_ID=own-token\x00",
         );
         assert_eq!(scan_agy(&home, &facts).as_deref(), Some(mine));
+    }
+
+    #[test]
+    fn a_stream_that_never_ends_is_bounded_rather_than_followed() {
+        // A conversation database is LIVE, so its length at stat time is not a
+        // bound on what a read loop will be handed. The endless stream is that
+        // hazard in its purest form: without the budget this call does not
+        // return, so the test passing at all IS the assertion.
+        let marker = b"AE_AGY_LAUNCH_ID=tok-1";
+        assert_eq!(
+            scan_stream(std::io::repeat(0x00), marker),
+            Scan::OverCap,
+            "an endless stream must exhaust the budget, not the machine"
+        );
+        // OverCap is not Absent: the answer is UNKNOWN, and a caller that
+        // conflated them would report "no such conversation" for a database it
+        // simply stopped reading.
+        assert_ne!(scan_stream(std::io::repeat(0x00), marker), Scan::Absent);
+        // The ordinary answers still work through the same path.
+        let mut body = vec![0_u8; 4096];
+        body.extend_from_slice(marker);
+        assert_eq!(scan_stream(body.as_slice(), marker), Scan::Found);
+        assert_eq!(scan_stream(&b"nothing here"[..], marker), Scan::Absent);
+    }
+
+    #[test]
+    fn a_node_that_is_not_a_regular_file_is_never_opened() {
+        // `open(2)` on a FIFO BLOCKS until a writer appears, and this runs in
+        // the watchdog's cycle — so a named pipe called `<uuid>.db` would hang
+        // the daemon. A FIFO cannot be made here (`mkfifo(1)` needs a child
+        // process, and `std::process::Command` is a crate-wide disallowed type
+        // whose only doors are in the it-target), so the FIFO itself is pinned
+        // by `capture::an_agy_fifo_in_the_store_is_skipped_and_does_not_block`
+        // over there. What is constructible here is the rest of the class, and
+        // the guard does not distinguish between them: it opens a regular file
+        // and nothing else.
+        let root = scratch("agy-nodes");
+        let marker = b"AE_AGY_LAUNCH_ID=tok-1";
+
+        let directory = root.join("a-directory.db");
+        std::fs::create_dir_all(&directory).expect("a directory node");
+        assert!(!file_contains(&directory, marker));
+
+        let socket = root.join("a-socket.db");
+        let listener = std::os::unix::net::UnixListener::bind(&socket).expect("a socket node");
+        assert!(!file_contains(&socket, marker));
+        drop(listener);
+
+        // The control: the same call on a REGULAR file with the same content
+        // still answers yes, so the guard is refusing the node and not the
+        // needle.
+        let regular = root.join("a-regular.db");
+        write_bytes(&regular, marker);
+        assert!(file_contains(&regular, marker));
     }
 
     #[test]

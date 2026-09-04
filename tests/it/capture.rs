@@ -202,6 +202,43 @@ fn an_agy_seat_captures_the_conversation_whose_database_carries_its_launch_token
     );
 }
 
+/// A FIFO in the conversation store is SKIPPED, and the capture still answers.
+///
+/// `open(2)` on a named pipe blocks until a writer appears. A pipe called
+/// `<uuid>.db` reports a length of 0, so a size-only gate waves it through and
+/// the open hangs — in the launch's detached child, and worse, in the
+/// watchdog's own cycle, where one bad node stops every nudge on the machine.
+///
+/// The pipe is named to sort FIRST, so it is visited before the real
+/// conversation: if the guard were missing, this test would never reach the
+/// assertion, and its timeout would be the failure. The real conversation is
+/// there so a PASS means "skipped the pipe and carried on" rather than the
+/// weaker "found nothing", which a blocked open could also look like.
+#[test]
+fn an_agy_fifo_in_the_store_is_skipped_and_does_not_block() {
+    let rig = Rig::new("agyfifo", "agy", 1);
+    let store = rig
+        .home
+        .join(".gemini")
+        .join("antigravity-cli")
+        .join("conversations");
+    assert!(std::fs::create_dir_all(&store).is_ok(), "a fixture store");
+    super::cli::mkfifo(&store.join("00000000-0000-4000-8000-000000000000.db"));
+    let real = "643393ad-eb92-4b9e-ab7a-0fe7b1221fa1";
+    rig.write_bytes(
+        &store.join(format!("{real}.db")),
+        b"\x00\xffAE_AGY_LAUNCH_ID=tok-1\x00",
+    );
+
+    let (code, stderr) = rig.capture();
+    assert_eq!((code, stderr.as_str()), (Some(0), ""));
+    let meta = rig.meta();
+    assert!(
+        meta.contains(&format!("harness_session.main={real}")),
+        "the capture must step over the pipe and find the real conversation:\n{meta}"
+    );
+}
+
 #[test]
 fn an_agy_seat_with_no_token_falls_back_to_the_cli_log_for_its_own_workspace() {
     let rig = Rig::new("agylog", "agy", 1);
