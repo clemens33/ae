@@ -10,7 +10,7 @@ hard-gated proactive nudges when you drift).
 Core ae (`ae list`, `ae <name>`, …) does **not** depend on any of this, and a machine
 that never installed the scaffold is never touched by it.
 
-## Installing it: copy two files, substitute three paths
+## Installing it: copy two files, substitute two paths
 
 There is no `ae orchestrator` command any more. The subcommand was a bash trampoline
 that scaffolded these templates and then re-entered the normal launch path; it was cut
@@ -31,7 +31,6 @@ prompt**:
 |---|---|---|
 | `__CHARTER_PATH__` | `orchestrator.config` | `~/.ae/orchestrator/CHARTER.md`, absolute |
 | `__HELPERS_DIR__` | `CHARTER.md` | the orchestrator session's helper dir, `${AE_HOME:-~/.ae}/sessions/orchestrator` |
-| `__AEMONITOR_PATH__` | `CHARTER.md` | wherever you installed [`aemonitor`](../aemonitor/), absolute |
 
 `__HELPERS_DIR__` is a placeholder rather than a hardcoded `~/.ae/...` on purpose: an
 isolated run (tests, e2e) sets its own `AE_HOME`, and a charter that named the live
@@ -86,7 +85,7 @@ can never set your objective; see the charter's injection boundary).
 | File | Role |
 |---|---|
 | `orchestrator.config` | Standalone single-agent config (`orchestrator = true` marks the meta-agent; the watchdog then runs a sweep cadence instead of the stale-nudge watchdog). |
-| `CHARTER.md` | The orchestrator's operating manual — its three jobs, the `say` channel, the `aemonitor` sweep routine, the ae toolbox, the objective-armed focus aide (state files, operator protocol, the two rituals + §8b gated proactive interrupts), and hard guardrails (injection boundary, never-end-a-session, human-directed relay, suggest-never-dispatch). |
+| `CHARTER.md` | The orchestrator's operating manual — its three jobs, the `say` channel, the `ae _monitor` sweep routine, the ae toolbox, the objective-armed focus aide (state files, operator protocol, the two rituals + §8b gated proactive interrupts), and hard guardrails (injection boundary, never-end-a-session, human-directed relay, suggest-never-dispatch). |
 
 ## Customizing
 
@@ -96,7 +95,8 @@ the charter's "your operator" references to your name and your reporting prefere
 
 ## Dependencies
 
-The sweep routine uses the optional [`aemonitor`](../aemonitor/) helper (Python 3
-stdlib). The Telegram `say` channel uses the `ae telegram` bridge, which is the ae core
-binary and needs no `jq` or `curl`. Neither is required for core ae; both are required
-for the orchestrator to be useful.
+None beyond ae itself. The sweep routine is the core entry `ae _monitor sweep`, and the
+Telegram `say` channel is the `ae telegram` bridge — both are the ae binary, so there is
+no Python, `jq` or `curl` to install. (`contrib/aemonitor`, the Python sidecar the sweep
+used to be, was deleted when the core took the job.) Neither is required for core ae;
+both are required for the orchestrator to be useful.

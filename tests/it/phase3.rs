@@ -1886,6 +1886,12 @@ fn criterion_3_the_places_this_crate_can_read_the_world_are_the_inventoried_ones
             // new door all the same.
             "src/memo.rs".to_owned(),
             "src/meta.rs".to_owned(),
+            // The orchestrator sweep's ONE own door: its state file, which is
+            // also the watchdog's heartbeat. It reads nothing else — the fleet
+            // it diffs arrives as the `World` `list` renders, injected by the
+            // caller, so the sweep re-derives no session fact of its own.
+            // Registered deliberately.
+            "src/monitor.rs".to_owned(),
             // The two document renders' own reads (A.2c): the INI config behind
             // the profile inventory and `prompt.instructions`, and the `[[ -f ]]`
             // that decides whether a parent archive's digest is still on this

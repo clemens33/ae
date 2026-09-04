@@ -647,10 +647,14 @@ const HELPER_NAME: &str = "send";
 /// The orchestrator's heartbeat, at the FIXED name `<meta-dir>/meta-agent-state.json`
 /// (ae:16747).
 ///
-/// This is the file `contrib/aemonitor` rewrites atomically on each real sweep.
-/// The two MUST agree: point the monitor's `--state` somewhere else and the
-/// wedge check watches a file nobody writes, which false-alarms forever.
-const HEARTBEAT_NAME: &str = "meta-agent-state.json";
+/// This is the file [`crate::monitor`] rewrites atomically on each real sweep,
+/// and it reads the name FROM HERE. The two MUST agree — a monitor writing
+/// somewhere else would leave this check watching a file nobody writes, which
+/// false-alarms forever — so the agreement is one constant rather than two
+/// literals and a warning. That warning is what this comment used to be: the
+/// sweep was `contrib/aemonitor`, a Python sidecar taking the path as
+/// `--state`, where nothing but prose could keep the two in step.
+pub(crate) const HEARTBEAT_NAME: &str = "meta-agent-state.json";
 
 /// The sweep prompt, exactly as ae:16836-16840 composes it.
 ///

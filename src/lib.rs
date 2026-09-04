@@ -92,6 +92,7 @@ pub mod listing;
 pub mod liveness;
 pub mod memo;
 pub mod meta;
+pub mod monitor;
 pub mod netprobe;
 pub mod next;
 pub mod panes;
@@ -420,7 +421,8 @@ fn run_dispatch(args: &[String], out: &mut impl Write, err: &mut impl Write) -> 
     // session before it can say so, which is what frozen's parse-then-scan order
     // already guaranteed.
     let wants_world = match cli::Request::parse(args) {
-        cli::Request::List(_) => true,
+        // The sweep reads the same world `list` renders — that IS its input.
+        cli::Request::List(_) | cli::Request::Monitor { .. } => true,
         cli::Request::Next { tail } => next::parse(&tail).is_ok(),
         _ => false,
     };
@@ -1584,6 +1586,14 @@ pub fn run_with(
                 }
                 write!(out, "{}", listing::render(list_args, world))?;
                 0
+            } else {
+                writeln!(err, "ae: {NO_STATE_ROOT}")?;
+                EXIT_UNAVAILABLE
+            }
+        }
+        cli::Request::Monitor { dir, args } => {
+            if let Some(world) = world {
+                monitor::run(dir, world, args, out, err)?
             } else {
                 writeln!(err, "ae: {NO_STATE_ROOT}")?;
                 EXIT_UNAVAILABLE

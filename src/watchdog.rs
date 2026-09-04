@@ -892,7 +892,7 @@ fn back_date(now: SystemTime, secs: u64) -> SystemTime {
 /// point.
 ///
 /// The orchestrator rewrites `<session>/meta-agent-state.json` on every real sweep
-/// (`contrib/aemonitor`'s default `--state` path), so a heartbeat that stops
+/// (the core entry `_monitor sweep` — see [`crate::monitor`]), so a heartbeat that stops
 /// advancing while the watchdog keeps prompting is an orchestrator that is LIVE but
 /// NOT SWEEPING: a model stall, an upstream throttle, a wedge (SC-939b). The
 /// dead-pane and missing-pane checks cannot see that — the process is fine.
