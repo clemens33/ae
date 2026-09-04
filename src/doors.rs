@@ -1,10 +1,7 @@
-//! The ENTRY's environment doors — every ambient fact the deleted wrapper used
-//! to hand over as a preamble flag.
+//! The ENTRY's environment doors — every ambient fact an invocation carries.
 //!
-//! Slice Z1 froze a preamble because bash was in front of the core and knew
-//! things the core could not see. Slice Z3 deletes the bash, so there is
-//! nothing in front any more and every one of those facts is read HERE, at a
-//! named door, with the reason at the site — which is also what
+//! Nothing stands in front of the core, so every one of these facts is read
+//! HERE, at a named door, with the reason at the site — which is what
 //! `clippy.toml`'s `disallowed-methods` deny requires of any world read.
 //!
 //! | Door | What it decides | Read in |
@@ -200,7 +197,7 @@ pub fn declared_server(shape: &Shape) -> Option<Declared> {
     })
 }
 
-/// Which server the two PROBES may ask — the wrapper's `tmux` shim, as a value.
+/// Which server the two PROBES may ask, as a value.
 #[must_use]
 pub fn probe_target(declared: Option<&Declared>) -> Option<ServerId> {
     let Some(declared) = declared else {
@@ -286,7 +283,7 @@ pub fn inside_tmux(
 }
 
 /// The inherited variables an INSTALLED ae ignores, `NAME=value` each, in a
-/// fixed order — the wrapper's one aggregated notice, ported.
+/// fixed order — one aggregated notice.
 #[must_use]
 pub fn ignored(shape: &Shape) -> Vec<String> {
     let Some(home) = shape.published_home() else {

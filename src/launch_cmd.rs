@@ -5,9 +5,7 @@
 //! executes it outside a pane's own shell — see the identity plan's command
 //! execution contract — but it must CLASSIFY it: the binary name becomes
 //! `agent_bin.<slot>`, and the tool kind selects the harness channel the
-//! rendered context rides on. This is the port of the frozen `_cmd_split_binary`
-//! (bash `ae`), kept byte-for-byte in its decisions so the glue that still
-//! classifies for the send path and the core agree on every command:
+//! rendered context rides on. The rules:
 //!
 //! - words are split on spaces and tabs, honouring single quotes (everything
 //!   literal), double quotes (`\` escapes only `"`, `\`, `$`, `` ` `` and a
@@ -64,7 +62,7 @@ pub enum ToolKind {
 }
 
 impl ToolKind {
-    /// The frozen `tool_kind_from_cmd` mapping over a bare binary name.
+    /// The tool kind for a bare binary name.
     #[must_use]
     pub fn from_binary_name(name: &str) -> Self {
         match name {
@@ -86,7 +84,7 @@ impl ToolKind {
         })
     }
 
-    /// The frozen `tool_kind_from_cmd` spelling.
+    /// The kind's spelling.
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
@@ -849,7 +847,7 @@ mod tests {
         for (cmd, want) in cases {
             assert_eq!(lex_simple_command(cmd), Err(want), "{cmd:?}");
         }
-        // Colead P2 BLOCKER-2: an active substitution nested in ${…} is refused
+        // An active substitution nested in ${…} is refused
         // (bash runs it — measured X=HIT reaches env), quoted or not.
         assert_eq!(
             lex_simple_command("X=${X:-$(printf HIT)} claude"),

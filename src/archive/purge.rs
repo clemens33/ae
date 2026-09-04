@@ -1,11 +1,11 @@
 //! `_archive-purge <session-dir> <aid> <source-session> <parent-id>` — the
-//! `--purge-history` archive deletion (P3.4).
+//! `--purge-history` archive deletion.
 //!
-//! Bash routes the frozen `_ar_purge_archive` here; it keeps stop/git, live-state
-//! cleanup and compact. The core proves the archive is provably THIS session's,
+//! The caller keeps stop/git, live-state cleanup and compact. The core proves
+//! the archive is provably THIS session's,
 //! deletes it under the shared `.publishing.<aid>` claim, and — because purge is a
 //! PRIVACY promise — reports success ONLY after the bytes are gone AND the removal
-//! is durable. `AE_CORE=` falls back to the frozen body.
+//! is durable.
 //!
 //! Deletion is not an in-place `rm -rf`. The commit boundary is an atomic RENAME
 //! of the target into the claim (`claim/doomed`), symmetric with publication's
@@ -88,7 +88,7 @@ pub(crate) fn run(
         )?;
         return Ok(EXIT_FAILED);
     }
-    // Make the claim entry durable (P3.3's root fsync) before anything destructive.
+    // Make the claim entry durable with a root fsync before anything destructive.
     if let Err(why) = fsync_dir(&root) {
         return precommit_fail(
             &root,

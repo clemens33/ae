@@ -38,16 +38,15 @@ impl Discovery for Tmux {
     }
 }
 
-/// Whether `server` has a session `name` — the frozen resolver's `tmux
-/// has-session -t` before a cross-session lookup (prefix-matched, as tmux
-/// does).
+/// Whether `server` has a session `name` — `tmux has-session -t` before a
+/// cross-session lookup (prefix-matched, as tmux does).
 #[must_use]
 pub fn session_exists(server: &ServerId, name: &str) -> bool {
     addressable(server) && run(PROGRAM, &tmux::has_session_args(server, name)).0
 }
 
-/// Whether `name` is verifiably STOPPED on its recorded `server` — the frozen
-/// `_end_verify_gone` tri-state the destructive compact gate crosses.
+/// Whether `name` is verifiably STOPPED on its recorded `server` — the
+/// tri-state the destructive compact gate crosses.
 #[must_use]
 pub fn verify_session_absent(server: &ServerId, name: &str) -> tmux::StopProbe {
     if !addressable(server) {
@@ -68,8 +67,8 @@ pub fn observe_agents(server: &ServerId, session: &str) -> Option<Vec<tmux::Obse
     tmux::interpret_agents(succeeded, &stdout)
 }
 
-/// The slot roster of `session` on the AMBIENT server — the frozen
-/// `ae_slot_resolver`'s query — or `None` when the enumeration failed.
+/// The slot roster of `session` on the AMBIENT server, or `None` when the
+/// enumeration failed.
 #[must_use]
 pub fn observe_slots(server: &ServerId, session: &str) -> Option<Vec<tmux::ObservedSlot>> {
     let (succeeded, stdout) = run(PROGRAM, &tmux::slots_args(server, session));
@@ -97,7 +96,7 @@ pub fn observe_branch(server: &ServerId, session: &str) -> Option<String> {
     tmux::interpret_session_option(succeeded, &stdout)
 }
 
-/// What running the frozen `send` helper produced.
+/// What running the `send` helper produced.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Delivery {
     /// The helper's exit code; `None` when it could not be spawned at all, or
@@ -108,8 +107,8 @@ pub struct Delivery {
 }
 
 /// Run the session's send helper at `helper` with `target` and `message`,
-/// plus `envs` (the event fields the frozen body store names the recovery
-/// file after). stderr is INHERITED — the helper's refusals and
+/// plus `envs` (the event fields the body store names the recovery file
+/// after). stderr is INHERITED — the helper's refusals and
 /// unconfirmed-submit lines are the caller's diagnostics, verbatim; stdin is
 /// null.
 #[must_use]
@@ -171,8 +170,7 @@ fn spawn<A: AsRef<std::ffi::OsStr>>(
     let mut command = std::process::Command::new(program);
     command.args(args);
     command.envs(envs.iter().copied());
-    // B42, ported from the wrapper's pre-exec `unset`: `AE_VERSION` is the
-    // TARGET PIN of `ae upgrade` and nothing else's input.
+    // `AE_VERSION` is the TARGET PIN of `ae upgrade` and nothing else's input.
     command.env_remove("AE_VERSION");
     if streams == Streams::InheritStderr {
         command.stderr(std::process::Stdio::inherit());

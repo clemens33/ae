@@ -53,8 +53,8 @@ impl Tool {
         }
     }
 
-    /// The name the frozen `ae_target_tool` printed, which is what every
-    /// diagnostic line in this path interpolates.
+    /// The tool's name, which is what every diagnostic line in this path
+    /// interpolates.
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
@@ -96,8 +96,8 @@ pub fn parse(region: &str) -> Vec<Segment> {
         if let Some(body) = rest.strip_prefix("\u{1b}[") {
             let split = body.char_indices().find(|(_, ch)| ch.is_ascii_alphabetic());
             let Some((at, final_byte)) = split else {
-                // No final byte at all: the frozen parser consumes the whole
-                // remainder rather than spinning on it.
+                // No final byte at all: consume the whole remainder rather
+                // than spinning on it.
                 break;
             };
             let params = &body[..at];
@@ -358,7 +358,7 @@ pub fn occupancy(region: &str, tool: Tool) -> Occupancy {
 }
 
 /// Everything after the first `needle` in `text`, or all of it when there is
-/// none — the frozen `${tail#*›}`.
+/// none.
 fn after_first(text: &str, needle: char) -> String {
     match text.find(needle) {
         Some(at) => text[at + needle.len_utf8()..].to_owned(),
@@ -440,8 +440,8 @@ fn model_loading(line: &str) -> bool {
     rest.starts_with(is_space) && rest.contains(AFFORDANCE)
 }
 
-/// Does this capture show a composed TUI — the frozen spawn readiness grep
-/// for a tool ae does not model, `'❯|bypass permissions|for shortcuts'`.
+/// Does this capture show a composed TUI — the spawn readiness check for a tool
+/// ae does not model: `❯`, `bypass permissions` or `for shortcuts`.
 #[must_use]
 pub fn composed_ui(capture: &str) -> bool {
     capture.contains('❯')
@@ -454,8 +454,7 @@ fn is_space(ch: char) -> bool {
     matches!(ch, ' ' | '\t' | '\n' | '\u{b}' | '\u{c}' | '\r')
 }
 
-/// Whether every character is a POSIX space — the frozen
-/// `[[ -z "${text//[[:space:]]/}" ]]`.
+/// Whether every character is a POSIX space.
 pub(super) fn is_blank(text: &str) -> bool {
     text.chars().all(is_space)
 }

@@ -13,7 +13,7 @@ use crate::event_text::{
     last_records, pad_left_aligned, read_container, read_lines,
 };
 
-/// How many records the replay shows — the frozen `tail -n 30`.
+/// How many records the replay shows.
 pub const REPLAY_RECORDS: usize = 30;
 
 /// How long a summary may be before it is cut, in CHARACTERS.
@@ -26,8 +26,7 @@ const SUMMARY_KEPT: usize = 57;
 ///
 /// The three box lines have FIXED rule widths — the label is interpolated into
 /// the top line without re-padding it — so a longer session name makes a longer
-/// first line rather than a re-drawn box. That is the frozen behavior, and the
-/// `tg11` capture (a four-character label) shows it directly.
+/// first line rather than a re-drawn box.
 ///
 /// The surrounding SGR pair is part of the banner: `ESC[1;36m` opens before the
 /// box and `ESC[0m` plus a newline closes after it.
@@ -68,8 +67,8 @@ pub fn banner(label: &[u8]) -> Vec<u8> {
 /// `'%s  %-8s %-22s   %-22s %s\n'` when it does not — note that the arrow's
 /// three-byte glyph is replaced by ONE space, so the no-target line is two bytes
 /// narrower before its summary and the columns do not actually line up. That
-/// asymmetry is in the frozen format strings and in every capture; it is
-/// reproduced, not corrected.
+/// asymmetry is in the format strings themselves; it is deliberate, not
+/// corrected.
 ///
 /// The timestamp is cut to `MM-DDTHH:MM:SS` — fourteen CHARACTERS from character
 /// offset five — so a day rollover stays visible in a monitor pane while the
@@ -137,8 +136,8 @@ pub fn replay(container: &[u8]) -> Vec<u8> {
     out
 }
 
-/// How long the frozen helper sleeps between checks for a container that does
-/// not exist yet, and how long this one waits between reads once it does.
+/// How long to sleep between checks for a container that does not exist yet,
+/// and how long to wait between reads once it does.
 pub const POLL: Duration = Duration::from_secs(1);
 
 /// Print the opening, then follow the container until the process is signalled.
@@ -245,9 +244,7 @@ mod tests {
 
     #[test]
     fn the_banner_is_the_frozen_bytes() {
-        // Transcribed from the frozen capture
-        // arms/A1/c01-healthy-ro/out/events-tail.stdout, not rebuilt from the
-        // same loops the code uses.
+        // Written out here, not rebuilt from the same loops the code uses.
         let expected = concat!(
             "\u{1b}[1;36m",
             "╭─ ae events — session: tg1 ───────────────────────────────╮\n",
@@ -287,7 +284,7 @@ mod tests {
             br#"{"ts":"2026-08-20T16:12:52Z","actor":"fake:lead","action":"state","summary":"building the healthy fixture"}"#,
         )
         .expect("an event");
-        // Byte offsets measured on the frozen c01 capture: the summary starts at
+        // Measured byte offsets: the summary starts at
         // 75 with a target and at 73 without one, because the arrow's glyph is
         // three bytes and its replacement is one space.
         assert_eq!(
@@ -402,8 +399,8 @@ mod tests {
 
     #[test]
     fn an_absent_or_unreadable_container_replays_nothing() {
-        // The frozen reader is `tail … 2>/dev/null`, so there is one answer for
-        // "no container" and "no permission": no lines, no complaint.
+        // One answer for "no container" and for "no permission": no lines, no
+        // complaint.
         let scratch = Scratch::new("nolog");
         let missing = read_container(&scratch.0.join(CONTAINER));
         assert!(missing.is_empty());

@@ -926,9 +926,9 @@ mod tests {
     /// A pair associates on two whole routing keys or on two display names, and
     /// on nothing in between.
     ///
-    /// Every negative row is kept because it once closed a request it should
-    /// not have: half a routing key used to read as its display name, and an
-    /// empty member used to read as an absent one.
+    /// Every negative row guards a way a request could be closed by something
+    /// that is not its answer: half a routing key read as its display name, or
+    /// an empty member read as an absent one.
     #[test]
     fn only_the_targets_own_reply_on_the_same_request_closes_it() {
         assert!(closes(ASK, "coworker", REPLY), "the target's own reply");
@@ -1257,9 +1257,9 @@ mod tests {
 
     #[test]
     fn a_meta_that_carries_only_a_v1_roster_lists_with_no_agents_and_says_why() {
-        // The human ruling, at the LISTING grain: a legacy session is still
-        // listed — it keeps its name, status, mode and goal — but it has no
-        // agents this ae will serve, and the loss is VISIBLE. A silent empty
+        // At the LISTING grain: a v1 session is still listed — it keeps its
+        // name, status, mode and goal — but it has no agents this ae will
+        // serve, and the loss is VISIBLE. A silent empty
         // roster would read exactly like a healthy session that has none.
         let scratch = Scratch::new("legacyroster");
         scratch.meta(concat!(
@@ -1280,7 +1280,7 @@ mod tests {
         assert_eq!(entry.mode.as_deref(), Some("local"), "the rest still reads");
         assert_eq!(entry.goal.as_deref(), Some("finish the thing"));
         // The CONTROL that makes the assertion mean something: a healthy
-        // session whose roster is genuinely empty is NOT degraded, so a legacy
+        // session whose roster is genuinely empty is NOT degraded, so a v1
         // session and an agentless one cannot be confused.
         let empty = Scratch::new("emptyroster");
         empty.meta("mode=local\norigin=/src\ngoal=finish the thing\n");
@@ -1913,9 +1913,8 @@ mod tests {
 
     #[test]
     fn sc_017q_an_agent_the_runtime_never_mentions_is_unknown_rather_than_dead() {
-        // THIS TEST PINNED THE DEFECT: it used to assert `alive == false` for
-        // an agent no observation ever mentioned — absence of evidence recorded
-        // as evidence of absence.
+        // An agent no observation ever mentions is UNKNOWN, never dead: absence
+        // of evidence is not evidence of absence.
         let scratch = Scratch::new("noruntime");
         scratch.meta(META);
         let entry = entry_for(&scratch.0, "live", &running(), NOW, DEFAULT_UNANSWERED_SECS);
@@ -2697,8 +2696,8 @@ mod tests {
 
     #[test]
     fn sc_510c_a_legacy_done_event_is_still_a_declaration() {
-        // The frozen readers were split on a bare `done`, and the one corpus fixture
-        // emitting both agrees by accident — which is why this needs a test.
+        // A bare `done` event is a declaration wherever it is read, and every
+        // reader has to agree on that.
         let scratch = Scratch::new("legacydone");
         scratch.meta(META);
         scratch.events(&[

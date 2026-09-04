@@ -1,23 +1,20 @@
 //! The `memo` helper: `add`, `read` and `tail`.
 //!
-//! What the frozen `helper_memo_main add` does, kept exactly: one TSV record
+//! `add` writes one TSV record
 //! `<ts>\t<author>\t<topic>\t<text>` appended to `memo.tsv` under
 //! `memo.tsv.lock` — carriage returns dropped, tabs and newlines to spaces in
 //! both topic and text, an empty topic is `general` — then a `memo` event
 //! (`ref` = topic, `summary` = text) on the container. Nothing on stdout.
 //!
-//! Two files, two locks, two transactions — as in bash. A failure between them
+//! Two files, two locks, two transactions. A failure between them
 //! is reported as exactly that: recorded in `memo.tsv`, event not emitted.
 //!
-//! `read [--topic <topic>]` and `tail [n]` (P2.4) are `helper_memo_render`'s
-//! awk program, byte for byte ([`render`]), over the whole file or its last
-//! `n` records ([`crate::event_text::last_records`] — what `tail -n` counts).
-//! `[[ -f "$MEMO_FILE" ]] || exit 0` is applied as written: no `memo.tsv`, or
-//! anything but a regular file in its place — a directory, a FIFO — is empty
-//! output at 0. The gate comes BEFORE the open, because a FIFO opened without
-//! it blocks the reader for good (found in review). A regular file that then
-//! cannot be read is reported at 1, where the frozen body printed awk's
-//! complaint.
+//! `read [--topic <topic>]` and `tail [n]` render ([`render`]) the whole file or
+//! its last `n` records ([`crate::event_text::last_records`] — what `tail -n`
+//! counts). A regular-file gate decides first: no `memo.tsv`, or anything but a
+//! regular file in its place — a directory, a FIFO — is empty output at 0. The
+//! gate comes BEFORE the open, because a FIFO opened without it blocks the
+//! reader for good. A regular file that then cannot be read is reported at 1.
 use std::io;
 use std::path::Path;
 
@@ -25,7 +22,7 @@ use crate::requests::Viewer;
 use crate::state;
 use crate::time::Timestamp;
 
-/// The frozen `helper_memo_usage` text.
+/// The usage text.
 pub const USAGE: &str =
     "Usage: memo add [--topic <topic>] <text> | memo read [--topic <topic>] | memo tail [n]\n";
 
@@ -72,9 +69,8 @@ pub struct Usage;
 /// Parse the argv after the meta directory, the way `helper_memo_main` does:
 /// no word is `read`; `read` takes nothing or exactly `--topic <topic>`;
 /// `tail` takes nothing or one all-digit count (an empty word is the default,
-/// as `${1:-10}` reads it; a count too large for `usize` is every record,
-/// which is what GNU `tail` gives — BSD `tail` refuses it, so the frozen body
-/// already answered that one two ways).
+/// a count too large for `usize` is every record, which is what GNU `tail`
+/// gives).
 ///
 /// # Errors
 ///
@@ -340,8 +336,7 @@ mod tests {
         assert_eq!(parse(&words(&["show"])), Err(Usage));
     }
 
-    // The fixture and both renderings were MEASURED on the frozen awk program
-    // (`helper_memo_render`, macOS awk, 2026-08-27), record by record: a
+    // The fixture and both renderings, record by record: a
     // three-field line is skipped, a five-field line renders its fourth field
     // only, an empty line is skipped, an empty text renders as an empty line,
     // a carriage return stays inside the text, and an unterminated last record
@@ -407,7 +402,8 @@ short\tline\tonly\n\
             read(&dir, &View::Tail(usize::MAX)).unwrap(),
             RENDERED_ALL.as_bytes()
         );
-        // Anything `-f` rejects is the frozen empty answer, never opened: a
+        // Anything that is not a regular file is the empty answer, never
+        // opened: a
         // directory, a socket (bound here from safe std — the FIFO that would
         // BLOCK an ungated open needs mkfifo and is covered black-box).
         std::fs::remove_file(dir.join("memo.tsv")).unwrap();

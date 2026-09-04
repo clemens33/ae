@@ -22,8 +22,8 @@ pub fn read_container(path: &std::path::Path) -> Vec<u8> {
     body.unwrap_or_default()
 }
 
-/// Whether the container exists yet — the frozen `[[ ! -f "$EVENTS_FILE" ]]`
-/// wait in `events-tail`, which exists because a fresh session has no container
+/// Whether the container exists yet — the wait in `events-tail`, which exists
+/// because a fresh session has no container
 /// until its first event.
 #[must_use]
 pub fn container_exists(path: &std::path::Path) -> bool {
@@ -118,13 +118,10 @@ pub fn event_line(line: &[u8]) -> Option<&[u8]> {
 
 /// The value of the FIRST flat `"key":"…"` member, or empty when absent.
 ///
-/// One function for two frozen bodies. `_event_json_str` (used by `requests`
-/// through `_lib`) and `helper_events_tail_extract_json_str` are a hand-copy
-/// pair — the frozen source says so at the definition site — and they agree
-/// down to the fast path, so a second Rust extractor would be the drift the
-/// frozen comment is complaining about.
+/// ONE extractor, shared by every reader of the container: a second copy would
+/// drift, and the fast path and the unescaping have to agree everywhere.
 ///
-/// The unescape set is `ae_emit_event`'s and only that: `\n` and `\t` become one
+/// The unescape set is the emitter's and only that: `\n` and `\t` become one
 /// SPACE, `\r` is dropped entirely, `\"` and `\\` unescape, and any other
 /// escape is kept as BOTH its characters. There is no `\uXXXX` handling, because
 /// the emitter never writes one.
@@ -198,7 +195,7 @@ pub fn member<'a>(line: &'a [u8], key: &str) -> Member<'a> {
         return Member::Absent;
     };
     let rest = &line[offset + needle.len()..];
-    // The frozen fast path: when nothing before the first quote is a backslash,
+    // The fast path: when nothing before the first quote is a backslash,
     // that quote is the real terminator and there is nothing to unescape.
     let head = match find(rest, b"\"") {
         Some(end) => &rest[..end],
@@ -231,8 +228,8 @@ fn unescape(rest: &[u8]) -> Vec<u8> {
                 Some(b'r') => {}
                 Some(b'"') => out.push(b'"'),
                 // `\\` unescapes to one backslash, and so does a TRAILING lone
-                // backslash — bash reads `${rest:$((i+1)):1}` past the end as
-                // the empty string, whose `case` falls to `*)` and appends `$c`
+                // backslash — there is nothing after it to escape, so the byte
+                // stands for itself
                 Some(b'\\') | None => out.push(b'\\'),
                 Some(other) => {
                     out.push(b'\\');
@@ -259,8 +256,7 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
         .position(|window| window == needle)
 }
 
-/// `${#value}` — bash's parameter length, which is CHARACTERS under a UTF-8
-/// locale and not bytes.
+/// The value's length in CHARACTERS under a UTF-8 locale, not bytes.
 #[must_use]
 pub fn char_count(bytes: &[u8]) -> usize {
     char_starts(bytes).count()
@@ -277,13 +273,14 @@ pub fn char_prefix(bytes: &[u8], len: usize) -> &[u8] {
 
 /// `${value:start:len}` — `len` CHARACTERS from character offset `start`.
 ///
-/// Bash yields the empty string when `start` is past the end and a short slice
-/// when fewer than `len` characters remain; both fall out of the clamping here.
+/// A `start` past the end yields the empty string, and fewer than `len`
+/// characters remaining yields a short slice; both fall out of the clamping
+/// here.
 ///
 /// ```
 /// use ae::event_text::char_slice;
 ///
-/// // The frozen `short_ts` cut: 14 characters from offset 5.
+/// // The short-timestamp cut: 14 characters from offset 5.
 /// assert_eq!(char_slice(b"2026-08-20T16:12:52Z", 5, 14), b"08-20T16:12:52");
 /// assert_eq!(char_slice(b"short", 9, 14), b"");
 /// ```
@@ -311,15 +308,15 @@ fn char_starts(bytes: &[u8]) -> impl Iterator<Item = usize> + '_ {
 }
 
 /// The length of the UTF-8 sequence a lead byte opens; `1` for any byte that
-/// opens none, which is how bash's own indexing advances over invalid input.
+/// opens none, which is how the indexing advances over invalid input.
 fn utf8_width(lead: u8) -> usize {
     match lead {
         0xC2..=0xDF => 2,
         0xE0..=0xEF => 3,
         0xF0..=0xF4 => 4,
         // ASCII and every byte that opens no sequence at all, together: one
-        // byte is one step, which is how bash's own indexing walks past invalid
-        // input rather than stalling on it.
+        // byte is one step, so the walk passes invalid input rather than
+        // stalling on it.
         _ => 1,
     }
 }
@@ -431,8 +428,8 @@ mod tests {
     fn extract_unescapes_exactly_the_emitter_set() {
         let line = br#"{"s":"a\nb\tc\rd\"e\\f\qg"}"#;
         // `\n` and `\t` become ONE space, `\r` is dropped entirely — so `c` and
-        // `d` end up adjacent, which the frozen G11 capture shows independently
-        // (`cr class: before\rafter` renders as `cr class: beforeafter`).
+        // `d` end up adjacent (`cr class: before\rafter` renders as
+        // `cr class: beforeafter`).
         assert_eq!(extract(line, "s"), br#"a b cd"e\f\qg"#);
     }
 

@@ -1,11 +1,7 @@
 //! `_run <session-dir> <slot>` — what a pane runs, and the whole of it.
 //!
-//! Until slice Z2 a pane ran `launch.<slot>.sh`, a generated bash file that
-//! baked one composed command line, tested a marker file to choose between a
-//! create form and a re-run form, and handed the winner to `bash -lc`. The
-//! script is gone. The pane's command is `<core> _run <session-dir> <slot>`,
-//! and the core does in Rust what the script did in bash: read the seat, build
-//! the tool command with the SAME builders the launch always used, decide
+//! The pane's command is `<core> _run <session-dir> <slot>`: read the seat,
+//! build the tool command with the SAME builders the launch uses, decide
 //! create-vs-resume, then `exec` the tool.
 
 use std::io::Write;
@@ -164,8 +160,7 @@ pub fn run(
         return Ok(0);
     }
     // BEFORE the exec, because after it there is no "after" — and REFUSING when
-    // it cannot be written, which the frozen script's `: > marker 2>/dev/null
-    // || true` did not.
+    // it cannot be written.
     let marker = started_marker(dir, slot);
     if plan.mode == Mode::Create {
         if let Err(why) = publish_marker(&marker) {
@@ -178,8 +173,7 @@ pub fn run(
             return Ok(EXIT_FAILED);
         }
     } else {
-        // The frozen script said this on its re-run branch, and it is worth
-        // saying on every resume: a human who arrow-upped the pane's command
+        // Said on every resume: a human who arrow-upped the pane's command
         // gets an answer to "did that just start a second conversation?", and a
         // resumed pane says why it is not empty. It survives on screen only
         // until the tool draws over it.
@@ -275,13 +269,12 @@ pub fn build(dir: &Path, slot: &str) -> Result<Plan, String> {
     })
 }
 
-/// The composed shell command line — the frozen builders, in the frozen order.
+/// The composed shell command line, in builder order.
 fn compose(dir: &Path, slot: &str, seat: &Seat, ctx: &str, mode: Mode) -> String {
     if mode == Mode::Resume {
         let (resume_form, fallback_form) =
             resume_forms(&seat.command, seat.tool, &seat.harness_session);
-        // DECIDE, THEN INJECT — which is the frozen order read forward, not a
-        // departure from it.
+        // DECIDE, THEN INJECT.
         let form = if resumable(seat.tool, &seat.harness_session) {
             resume_form
         } else {
@@ -378,7 +371,7 @@ fn contains_id(root: &Path, id: &str, depth: usize) -> bool {
 }
 
 /// The resume form of a profile's command, and the form to use when the
-/// conversation cannot be found — the frozen `resume_cmd_from_cmd`.
+/// conversation cannot be found.
 #[must_use]
 pub fn resume_forms(cmd: &str, tool: ToolKind, session_id: &str) -> (String, String) {
     match tool {
