@@ -63,6 +63,7 @@ pub(crate) mod capture {
         //! The one place a child process is run — and the only thing this
         //! harness ever holds of what one produced.
 
+        use std::ffi::OsStr;
         use std::fs::File;
         use std::io;
         use std::path::Path;
@@ -115,6 +116,9 @@ pub(crate) mod capture {
             }
             for (key, value) in &invocation.env {
                 command.env(key, value);
+            }
+            if invocation.program == "tmux" && !invocation.env.contains_key(OsStr::new("SHELL")) {
+                command.env("SHELL", "/bin/sh");
             }
             command
                 .stdin(Stdio::null())
