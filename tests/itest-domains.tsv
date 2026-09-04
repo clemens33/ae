@@ -22,6 +22,7 @@
 # chain contiguous. Add a section here in the same commit that adds it to the suite.
 launch	-	Test 1: Lifecycle — create, list, end
 core-routing	-	core binding: requests shims to a pinned Rust core, or falls back visibly
+core-routing	-	server pair: a SET-EMPTY half is a DECLARED server, not an absent one
 core-routing	-	hostile PATH: ae must survive its own re-exec marker
 resume	-	Test 2: Resume detection
 resume	-	identity v2: resuming a v1 meta migrates the roster in place

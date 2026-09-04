@@ -564,7 +564,11 @@ assert_eq "Z1: exactly one exec of the bound core" "1" \
 # declined to trust. Any kind that is SET is passed through; only an unset one is
 # typed from the shape.
 assert_eq "B3: a set AE_TMUX_SERVER_KIND is passed through, never re-typed" "1" \
-    "$([[ "$AE_SOURCE" == *'if [[ -n "${AE_TMUX_SERVER_KIND:-}" ]]; then'*'_LAUNCH_SRV_KIND="$AE_TMUX_SERVER_KIND"'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'if [[ -n "${AE_TMUX_SERVER_KIND+x}" ]]; then'*'_LAUNCH_SRV_KIND="$AE_TMUX_SERVER_KIND"'* ]] && echo 1 || echo 0)"
+# SET, NOT NONEMPTY, in both places that read the pair. `${VAR:-}` treats a
+# set-empty half as absent, and that is how the whole pair got dropped.
+assert_eq "B3: neither reader tests the pair for emptiness" "0" \
+    "$(grep -c -e 'AE_TMUX_SERVER:-}" \]\]' -e 'AE_TMUX_SERVER_KIND:-}" \]\]' <<<"$AE_SOURCE" || true)"
 # Scoped to the resolver's OWN body: `_ae_install_tmux_shim` legitimately tests
 # the same variable against "socket" — it is choosing a tmux flag from a kind it
 # was handed, not minting one. Non-vacuity first: the extracted body must contain
@@ -574,6 +578,96 @@ assert_eq "B3: ...the resolver body was actually extracted (non-vacuity)" "1" \
     "$(grep -c '_LAUNCH_SRV_KIND="ambiguous"' <<<"$_b3_resolver" || true)"
 assert_eq "B3: ...and the socket/name allowlist that dropped 'ambiguous' is gone" "0" \
     "$(grep -c 'AE_TMUX_SERVER_KIND:-}" == ' <<<"$_b3_resolver" || true)"
+
+# ── B3 BEHAVIOURALLY: a set-empty half is still a DECLARED server ───────────
+# The pins above read the source; they cannot see the gate that decides whether
+# the pair crosses AT ALL. That gate tested the two strings for emptiness, so
+# `AE_TMUX_SERVER_KIND=ambiguous AE_TMUX_SERVER=` — the exact shape the socket
+# probe mints when it cannot prove a relative path — was dropped whole, the
+# preamble carried no server, and the launch proceeded on the AMBIENT server:
+# the one outcome `ambiguous` exists to prevent. Measured, not grepped: run the
+# wrapper against a core that prints the argv it was handed.
+_b3d="$(mktemp -d "${TMPDIR:-/tmp}/ae-b3.XXXXXX")"
+mkdir -p "$_b3d/home/.ae" "$_b3d/bin"
+cp "$AE_BIN" "$_b3d/ae-entry"
+chmod +x "$_b3d/ae-entry"
+printf '%s\n' '#!/usr/bin/env bash' 'exit 1' >"$_b3d/bin/tmux"
+chmod +x "$_b3d/bin/tmux"
+cat >"$_b3d/core" <<EOF
+#!/usr/bin/env bash
+if [ "\${1:-}" = "--version" ]; then
+    echo "ae $(grep -m1 '^_AE_ENTRY_VERSION=' "$AE_BIN" | cut -d'"' -f2)"
+    exit 0
+fi
+printf '[%s]' "\$@"
+echo
+EOF
+chmod +x "$_b3d/core"
+# A tmux that always fails makes the socket probe deterministic, so what is left
+# is exactly the branch under test. Every variable the case does not name is
+# UNSET, because "set-empty" is only a distinct state against a real unset.
+_b3_pair() {
+    env -u TMUX -u TMUX_PANE -u CONFIG_FILE -u AE_TMUX_SERVER -u AE_TMUX_SERVER_KIND \
+        PATH="$_b3d/bin:$PATH" HOME="$_b3d/home" AE_HOME="$_b3d/home/.ae" \
+        AE_CORE_BIN="$_b3d/core" "$@" "$_b3d/ae-entry" _probe 2>/dev/null |
+        sed -n 's/.*\[--server-kind\]\[\([^]]*\)\]\[--server\]\[\([^]]*\)\].*/\1|\2/p'
+}
+# Non-vacuity: the fixture core is reached and its argv is readable at all.
+assert_eq "B3 behavioural: the fixture core is reached (non-vacuity)" "1" \
+    "$(env -u TMUX -u TMUX_PANE -u CONFIG_FILE PATH="$_b3d/bin:$PATH" \
+        HOME="$_b3d/home" AE_HOME="$_b3d/home/.ae" AE_CORE_BIN="$_b3d/core" \
+        "$_b3d/ae-entry" _probe 2>/dev/null | grep -c -- '\[--home\]' || true)"
+assert_eq "B3 behavioural: ambiguous with a SET-EMPTY value still crosses" "ambiguous|" \
+    "$(_b3_pair AE_TMUX_SERVER_KIND=ambiguous AE_TMUX_SERVER='')"
+assert_eq "B3 behavioural: a SET-EMPTY kind crosses too, never re-typed to 'name'" "|work" \
+    "$(_b3_pair AE_TMUX_SERVER_KIND='' AE_TMUX_SERVER=work)"
+assert_eq "B3 behavioural: a kind with a SET-EMPTY value crosses" "name|" \
+    "$(_b3_pair AE_TMUX_SERVER_KIND=name AE_TMUX_SERVER='')"
+assert_eq "B3 behavioural: a SET-EMPTY value alone is typed from its shape and crosses" "name|" \
+    "$(_b3_pair AE_TMUX_SERVER='')"
+# The opposed control: an UNSET pair must NOT mint one, or the assertions above
+# would pass for a wrapper that emits a server unconditionally.
+assert_eq "B3 behavioural: neither variable set emits no server at all" "" \
+    "$(_b3_pair)"
+assert_eq "B3 behavioural: ...and a usable pair is unchanged" "name|work" \
+    "$(_b3_pair AE_TMUX_SERVER_KIND=name AE_TMUX_SERVER=work)"
+# THE SHIM READS THE SAME PAIR and had the same defect: `-n "$AE_TMUX_SERVER"`
+# installed no shim for a declared-but-empty server, so the wrapper's own tmux
+# calls went to the AMBIENT server — which is how the socket probe then answered
+# confidently about a server nobody asked for. A declared pair it cannot route
+# is refused, not substituted. Subshell: the function it defines is named `tmux`.
+# Each probe is its own subshell: the thing the shim installs is a function
+# named `tmux`, and the rest of this suite calls the real one.
+# The routing probe never CALLS tmux — a real `command tmux -L work …` would
+# start a server on this machine. It reads the function the shim installed.
+_b3_shim_route() {
+    (
+        export AE_TMUX_SERVER_KIND="$1" AE_TMUX_SERVER="$2"
+        _ae_install_tmux_shim
+        declare -f tmux | grep -oE '\-[LS] "\$AE_TMUX_SERVER"' | head -1
+    )
+}
+# The refusal probe DOES call it, because refusing is the whole behaviour.
+_b3_shim_refuses() {
+    (
+        set +e
+        export AE_TMUX_SERVER_KIND="$1" AE_TMUX_SERVER="$2"
+        _ae_install_tmux_shim
+        out="$(tmux ls 2>&1 >/dev/null)"
+        rc=$?
+        printf '%s|%s' "$rc" "$([[ "$out" == *"do not name a usable server"* ]] && echo said || echo silent)"
+    )
+}
+assert_eq "B3 shim: a declared but unroutable pair refuses instead of falling back" "1|said" \
+    "$(_b3_shim_refuses name '')"
+assert_eq "B3 shim: ...so does a set-empty kind with a value" "1|said" \
+    "$(_b3_shim_refuses '' work)"
+# Opposed controls: a usable pair still routes, and each kind keeps its flag.
+assert_eq "B3 shim: ...and a usable name pair still routes with -L" '-L "$AE_TMUX_SERVER"' \
+    "$(_b3_shim_route name work)"
+assert_eq "B3 shim: ...and a usable socket pair still routes with -S" '-S "$AE_TMUX_SERVER"' \
+    "$(_b3_shim_route socket /tmp/s)"
+rm -rf "$_b3d"
 # CORE RESOLUTION FROM CONFIG. Retired because it was the only source needing an
 # INI parser. The behavioural half is pinned in the core-input block below; this
 # half is that the call site itself is gone.

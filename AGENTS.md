@@ -400,6 +400,16 @@ Not passed, each absence a decision: `--pane` (the core reads `TMUX_PANE` itself
 it IS the entry process), `--core` and `--core-version` (the core is `current_exe()`,
 which under both shapes is exactly the binary the wrapper resolved and exec'd).
 
+**The server pair is read by SET, not by nonempty**, in both places that read it —
+`resolve_launch_tmux_server` and the tmux shim. `AE_TMUX_SERVER_KIND=ambiguous
+AE_TMUX_SERVER=` is the shape the socket probe mints for a relative socket path it could
+not prove, and a `${VAR:-}` test read that set-empty half as an absent one: the pair was
+dropped, no `--server-kind` reached the preamble, and the core resolved the AMBIENT server
+— the one outcome `ambiguous` exists to prevent. EITHER variable being set now resolves
+the pair, BOTH halves cross verbatim, and the core issues the refusal. A pair that cannot
+be routed makes the shim refuse every tmux call rather than fall back, so bash never asks
+a server the caller did not name.
+
 **Core binding.** An INSTALLED bundle binds its own immutable sibling `ae-core` — proven
 a regular, non-symlink, executable member, proven `-ef` the published `core/current`
 pointer, and proven to report the wrapper's own version — so no operator variable can
