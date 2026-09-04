@@ -1,8 +1,19 @@
 # Session helpers
 
-Every ae session has a directory at `~/.ae/sessions/<name>/` filled with generated helper scripts. Agents call them by absolute path (they're deliberately not on `PATH`); humans can too. All helpers regenerate from the running ae binary on every start, resume, and `ae doctor --refresh`.
+Every ae session has a directory at `~/.ae/sessions/<name>/` filled with helpers. Agents call them by absolute path; humans can too. All of them are re-linked from the running ae binary on every start, resume, and `ae doctor --refresh`.
 
-Each one is a **thin shim**: four lines of bash that name their own session directory and hand the whole argv to the ae core. The names and the argv are the contract — every agent in a live workspace calls them by name — and everything behind them is Rust.
+Each one is a **symlink to the ae core binary**. There is no script and no wrapper in front of it: the core reads the name it was invoked under to pick the entry, and the directory it was invoked from to find the session. The names and the argv are the contract — every agent in a live workspace calls them by name — and everything behind them is Rust.
+
+**Call them by full path.** The session directory is the dirname of the path you invoked, so a helper reached by bare name — put on `PATH`, or copied elsewhere — has no session to act on and says so:
+
+```
+$ send lead "hi"
+ae: 'send' is a session helper — run it by its full path (<session-dir>/send); invoked by name it has no session directory to derive.
+$ echo $?
+2
+```
+
+It refuses rather than guessing. A helper that picked a session for you would eventually deliver one workspace's message into another.
 
 ## Communication
 
@@ -92,15 +103,26 @@ Every agent pane carries a stable **slot** — `main`, `worker.<n>`, or `spawned
 
 ## Not agent-facing
 
-Two more shims share the directory. They are the whole command of the two panes inside the
-`ae-monitor` window, so each has to be an executable file tmux can run rather than a shell
+Two more links share the directory. They are the whole command of the two panes inside the
+`ae-monitor` window, so each has to be a filesystem entry tmux can run rather than a shell
 line quoting a core path:
 
 - `watchdog` — the stale-agent watchdog daemon (`loop` is its deprecated alias).
 - `events-tail` — the live event-log view.
 
-`ae doctor --refresh` republishes all of them. It replaces on-disk scripts only: a running
+One more is never typed by a human: `_register-sid`, which codex is told to run as its
+first action because it has no launch-time session-id flag.
+
+`ae doctor --refresh` re-links all of them. It replaces on-disk links only: a running
 watchdog keeps the process it already is until it is stopped and started.
+
+## What else is in the directory
+
+Everything beside the links is data, not code — `meta`, `events.jsonl`, `workspace.md`,
+`messages/`, and the per-slot launch bookkeeping: `launch.<slot>.started`, the marker that
+tells the core's `_run` entry whether this seat already has a conversation to resume, and
+(for a spawned codex seat) `launch.<slot>.prompt`, its first message. A pane's command is
+`<core> _run <session-dir> <slot>`; there is no launch script to read or re-run by hand.
 
 ## Name resolution
 

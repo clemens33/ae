@@ -121,7 +121,7 @@ Full command reference: **[docs/reference/commands.md](docs/reference/commands.m
 
 ## Session helpers
 
-Inside a session, agents and humans share generated helper scripts in `~/.ae/sessions/<name>/` -- the wiring agents use to collaborate:
+Inside a session, agents and humans share a set of helpers in `~/.ae/sessions/<name>/` -- the wiring agents use to collaborate. Each is a symlink to the ae core binary, so call them by full path (they are deliberately not on `PATH`, and invoked by bare name they refuse):
 
 ```bash
 send <agent> <message>         # message another agent

@@ -11,7 +11,7 @@ Bash is process start/stop/tick glue only: it starts and stops the core child, r
 - **Persists across resume.** The state is recorded in session meta.
 - **Self-terminates** if the tmux session or `meta` file disappears.
 
-The `_watchdog` pane hosts the Rust core process through the generated helper. The Bash wrapper around it owns lifecycle and glue duties only; `_watchdog-run` owns the live cycle and its decisions.
+The `_watchdog` pane runs the core directly: its command is the session's `watchdog` link, which is the core binary under another name, dispatching to `_watchdog-run`. There is no wrapper around it any more.
 
 ## Implementations: Rust core (live), Bash glue, and archived alternatives
 
@@ -129,7 +129,7 @@ Concretely:
 
 ### `done` dual-emit
 
-`state done` (and the `mark-done` shim) emit both a `state ref=done` event and an `action=done` event; the watchdog reads either, so a watchdog process started before the `state` helper still recognizes completions.
+`state done` (and its `mark-done` alias) emit both a `state ref=done` event and an `action=done` event; the watchdog reads either, so a watchdog process started before the `state` helper still recognizes completions.
 
 ## Throttle detection
 

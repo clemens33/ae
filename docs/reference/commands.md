@@ -548,9 +548,11 @@ Four properties are worth knowing, because they are what the archive *is*:
   staged tree against an exact path whitelist: every entry is a regular file or the one
   expected directory, nothing is a symlink or a special file, no file carries an
   executable bit for *anyone*, and the meta and digest agree about what they describe.
-  Helpers, `launch.*.sh`, provider session-id scratch files, locks and the generated
-  `workspace.md` are all left behind — an archive is data, and it must not be possible to
-  run one.
+  Helpers, the `launch.*` per-slot bookkeeping, provider session-id scratch files, locks
+  and the generated `workspace.md` are all left behind — an archive is data, and it must
+  not be possible to run one. The no-symlink rule earns its keep here: since slice Z2 a
+  helper *is* a symlink to the ae core, so a copied one would put the binary itself one
+  hop from an archive.
 - **The meta is generated, never copied.** Live meta carries runtime coordinates that are
   meaningless or harmful in a snapshot — panes, sockets, watchdog state, launch ids — and
   in `harness_session.<slot>` it carries the *provider conversation UUID*, the one field

@@ -4,7 +4,7 @@
 
 ## Producers and consumers
 
-Single writer, single file, multiple readers. The writer is the ae core, reached through whichever helper shim the agent called. The append-only structure plus lock-serialized writes mean readers can scan safely without coordination.
+Single writer, single file, multiple readers. The writer is the ae core, reached through whichever helper link the agent called. The append-only structure plus lock-serialized writes mean readers can scan safely without coordination.
 
 ```mermaid
 flowchart LR
@@ -92,7 +92,7 @@ Each is optional and omitted when empty. Readers that don't understand them igno
 | `review` | `review` helper | Like `ask`, with the critical-review prompt template. Carries `ref`. |
 | `reply` | `reply` helper | Reply to an `ask` / `review`. Same `ref`. |
 | `state` | `state` helper | Agent declares its work state — `working` / `waiting-user` / `blocked` / `done` (in `ref`). The watchdog honors quiet states. |
-| `done` | `mark-done` helper | Completion / pause signal. `mark-done` is a shim over `state done`; both are read as `done`. |
+| `done` | `mark-done` helper | Completion / pause signal. `mark-done` is an alias for `state done`; both are read as `done`. |
 | `chat` | `say` helper | Agent's free-text line to the human, forwarded by the Telegram bridge. Text in `summary`. |
 | `memo` | `memo add` helper | Append to shared session memory. |
 | `spawn` | ae internal | A new agent joined the workspace. |

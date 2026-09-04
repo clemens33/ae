@@ -713,8 +713,8 @@ assert_eq "render: the fixture documents are non-empty (the prose pins are not v
 # ── refresh ordering: stamp @ae_slot BEFORE the manifest is regenerated — RETIRED (B glue cut 2) ────
 # 1 assertion(s) went with their subject: the core writes every session helper itself (src/session_launch/assets.rs),
 # so the `declare -f` template library and its generator are gone. What bash
-# still writes is the refresh-only shim set, pinned byte-for-byte against the
-# core's in tests/integration.
+# still writes is the refresh-only helper set, pinned by LINK TARGET against the
+# core's in tests/integration (slice Z2: a helper is a symlink, not a script).
 
 # ── #59 identity: an agent is TOLD its own name, never left to infer it ──────────
 # A spawned agent asked who it was answered "I am fable5:lead" — it read its model
@@ -966,8 +966,8 @@ unset _c32_ctx
 # ── helper generation guards — RETIRED (B glue cut 2) ──────────────────────────────────────────────
 # 6 assertion(s) went with their subject: the core writes every session helper itself (src/session_launch/assets.rs),
 # so the `declare -f` template library and its generator are gone. What bash
-# still writes is the refresh-only shim set, pinned byte-for-byte against the
-# core's in tests/integration.
+# still writes is the refresh-only helper set, pinned by LINK TARGET against the
+# core's in tests/integration (slice Z2: a helper is a symlink, not a script).
 
 # ── events.jsonl infrastructure — RETIRED (final glue cut) ─────────────────────────────────────────
 # 10 assertion(s) went with their subject: the event log is written by the core under its own locked transaction. `ae_emit_event` and `ae_json_escape` were the glue's writer and its escaper; both are gone, and the JSON sink's escape set is pinned in src/json.rs where the renderer lives.
@@ -975,8 +975,8 @@ unset _c32_ctx
 # ── state helper (phase 1) — RETIRED (B glue cut 2) ────────────────────────────────────────────────
 # 7 assertion(s) went with their subject: the core writes every session helper itself (src/session_launch/assets.rs),
 # so the `declare -f` template library and its generator are gone. What bash
-# still writes is the refresh-only shim set, pinned byte-for-byte against the
-# core's in tests/integration.
+# still writes is the refresh-only helper set, pinned by LINK TARGET against the
+# core's in tests/integration (slice Z2: a helper is a symlink, not a script).
 
 # ── delegation protocol (tiers + spawned workers) — RETIRED (final glue cut) ───────────────────────
 # 7 assertion(s) went with their subject: the delegation prose is part of the rendered context document, which the core writes; the assertions that grepped it out of the glue's own escaper are covered by the prose pins on the REAL render above.
@@ -1098,8 +1098,8 @@ assert_eq "perf: no echo|sed meta field reads remain" "0" \
 # ── watchdog (watchdog) — RETIRED (B glue cut 2) ───────────────────────────────────────────────────
 # 5 assertion(s) went with their subject: the core writes every session helper itself (src/session_launch/assets.rs),
 # so the `declare -f` template library and its generator are gone. What bash
-# still writes is the refresh-only shim set, pinned byte-for-byte against the
-# core's in tests/integration.
+# still writes is the refresh-only helper set, pinned by LINK TARGET against the
+# core's in tests/integration (slice Z2: a helper is a symlink, not a script).
 
 # ── orchestrator companion autostart — RETIRED (final glue cut) ────────────────────────────────────
 # 1 assertion(s) went with their subject: the core starts both companions at launch, after it has created the tmux server — the ordering the bash waiter existed to work around. `_orchestrator_autostart_if_scaffolded` and its forked waiter are gone; `AE_NO_AUTOSTART` now crosses as `_launch --no-autostart`.
@@ -1111,13 +1111,13 @@ assert_eq "perf: no echo|sed meta field reads remain" "0" \
 # The EMISSION CLOSURE guard stood here: 375 lines that re-lexed generated
 # `declare -f` bodies and walked each artifact's call graph to a fixpoint,
 # because a generated helper carried LOGIC and one name dropped from an emission
-# list broke it SILENTLY at runtime. B glue cut 2 removed that subject — every
-# helper is now `exec <core> <entry> "$META_DIR" "$@"`, so there is no call graph
-# inside an artifact left to close, and no `_lib` to grant anything.
+# list broke it SILENTLY at runtime. B glue cut 2 removed that subject, and
+# slice Z2 removed the artifact: a helper is a SYMLINK to the core binary, so
+# there is no body to close over and no bash in a session directory at all.
 #
-# What survives is the one asset job the core has no entry for and bash therefore
-# kept: `doctor --refresh` rewriting that shim set. It is checked END TO END,
-# through the shipped `ae`, on the bytes that actually land in a session dir.
+# What survives is the one asset job worth pinning here: `doctor --refresh`
+# re-linking the set. It is checked END TO END, through the shipped `ae`, on
+# what actually lands in a session dir.
 _gen_root="$(mktemp -d /tmp/aeclosure.XXXXXX)"
 # Isolation: HOME and AE_HOME are assigned in SEPARATE statements from the
 # literal temp path. `export HOME=x AE_HOME="$HOME/.ae"` expands $HOME BEFORE
@@ -1153,18 +1153,16 @@ assert_eq "refresh: rc is recorded (0 or the known liveness-warning 1)" "1" \
 # EXACT, never ">= N": exactness is what makes an artifact quietly appearing or
 # vanishing a failure rather than a different number. This list is the core's
 # PASSTHROUGH table plus mark-done, the two monitor processes and the two
-# aliases; the integration suite proves the BYTES match what the core writes at
-# launch.
+# aliases; the integration suite proves the LINK TARGETS match what the core
+# links at launch.
 #
-# `_register-sid` IS BACK IN THE SET, and it is the one shim here a human never
-# runs. `_lib` and it left together when the template library went, but the link
-# they were reached through was codex's own handshake: ae tells codex, in its
+# `_register-sid` IS IN THE SET, and it is the one name here a human never runs.
+# It and `_lib` left together when the template library went, but the link it
+# was reached through was codex's own handshake: ae tells codex, in its
 # developer_instructions, to run `<meta>/_register-sid` as its first action,
 # because codex has no launch-time session-id flag and that is the only way its
-# UUID reaches meta before a resume needs it. With no shim, that instruction
-# named a file that was not there and the handshake was dead. The entry is
-# `_register-sid <meta-dir> <slot> [<session-id>]` and the shim is the standard
-# passthrough, so it appears here like any other.
+# UUID reaches meta before a resume needs it. With no entry, that instruction
+# named a file that was not there and the handshake was dead.
 _manifest_want="_register-sid agents ask events-tail focus goal interrupt loop mark-done memo peak peek reply requests retire review say send spawn state watchdog"
 _manifest_got="$(
     cd "$_gen_dir" || exit 0
@@ -1173,32 +1171,59 @@ _manifest_got="$(
         printf '%s\n' "$_mf"
     done | LC_ALL=C sort | tr '\n' ' ' | sed 's/ $//'
 )"
-assert_eq "refresh: the shim set is exactly the core's" \
+assert_eq "refresh: the helper set is exactly the core's" \
     "$_manifest_want" "$_manifest_got"
-# On the bytes that run, not on the generator: every artifact parses, is
-# executable, and its last line hands the WHOLE argv on.
+# THE LINK, on what landed: every name is a symlink (never a regular file, which
+# is what a returning generator would leave), its target is the ABSOLUTE path of
+# the core that refreshed it, and that target is executable. `readlink` without
+# -f deliberately: the pin is the recorded target, not what it resolves through.
 _gen_bad=""
 for _ga in $_manifest_want; do
-    [[ -x "$_gen_dir/$_ga" ]] || _gen_bad+="${_ga}:not-executable "
-    "${BASH:-bash}" -n "$_gen_dir/$_ga" 2>/dev/null || _gen_bad+="${_ga}:parse "
-    [[ "$(tail -1 "$_gen_dir/$_ga")" == *'"$@"' ]] || _gen_bad+="${_ga}:argv "
+    [[ -L "$_gen_dir/$_ga" ]] || { _gen_bad+="${_ga}:not-a-symlink "; continue; }
+    [[ "$(readlink "$_gen_dir/$_ga")" == "$AE_CORE_BIN" ]] || _gen_bad+="${_ga}:target "
+    [[ -x "$_gen_dir/$_ga" ]] || _gen_bad+="${_ga}:target-not-executable "
 done
-assert_eq "refresh: every shim parses, is executable, and passes its whole argv" \
+assert_eq "refresh: every helper is a symlink to the core that refreshed it" \
     "" "$_gen_bad"
-# The passthrough shape itself: the session directory is derived by the shim and
-# handed to the core as the entry's FIRST argument. A shim that derived it wrong
-# would address another session's meta.
-_gen_want_send="exec '${AE_CORE_BIN}' _send \"\$META_DIR\" \"\$@\""
-_gen_want_md="exec '${AE_CORE_BIN}' _state \"\$META_DIR\" 'done' \"\$@\""
-assert_eq "refresh: a passthrough shim execs the pinned core with the dir first" \
-    "$_gen_want_send" "$(tail -1 "$_gen_dir/send")"
-assert_eq "refresh: mark-done is state done with the message as the reason" \
-    "$_gen_want_md" "$(tail -1 "$_gen_dir/mark-done")"
-unset _gen_want_send _gen_want_md
-# An alias execs its SIBLING, so the directory is derived exactly once.
-assert_eq "refresh: peak is an alias onto peek, and loop onto watchdog" "1" \
-    "$([[ "$(tail -1 "$_gen_dir/peak")" == 'exec "$(cd "$(dirname "$0")" && pwd)/peek" "$@"' \
-       && "$(tail -1 "$_gen_dir/loop")" == 'exec "$(cd "$(dirname "$0")" && pwd)/watchdog" "$@"' ]] && echo 1 || echo 0)"
+# ...and ONE target for all of them. mark-done, peak and loop used to be bodies
+# of their own (a prepended word, a sibling exec); since Z2 the aliasing lives in
+# the core's argv[0] dispatch, so a second target here means an alias grew a
+# body again.
+# `grep -c` exits 1 on a zero count, and under `pipefail` that would abort the
+# whole suite mid-run rather than fail this one assertion — the long-emitter
+# footgun in AGENTS.md. The pipeline owns its own `|| true` for that reason.
+_gen_targets="$(
+    for _ga in $_manifest_want; do readlink "$_gen_dir/$_ga" || true; done |
+        LC_ALL=C sort -u | command grep -c . | tr -d '[:space:]' || true
+)"
+assert_eq "refresh: all 21 names point at ONE target, aliases included" "1" "$_gen_targets"
+# NOTHING IN A SESSION DIRECTORY IS A SCRIPT. The old set was checked for a
+# parsable shebang under the oldest bash on the machine; the invariant that
+# replaced it is stronger and simpler — no regular executable file at all.
+_gen_execfiles=""
+for _mf in "$_gen_dir"/*; do
+    if [[ ! -L "$_mf" && -f "$_mf" && -x "$_mf" ]]; then
+        _gen_execfiles+="${_mf##*/} "
+    fi
+done
+assert_eq "refresh: no generated artifact is an executable file any more" "" "$_gen_execfiles"
+unset _gen_targets _gen_execfiles
+# THE FULL-PATH RULE. argv[0] carries both facts the core needs — the entry
+# (basename) and the session (dirname) — so a helper reached by BARE NAME has no
+# session to act on. It refuses rather than guessing at one; a helper that
+# guessed would deliver one workspace's message into another. Driven the way it
+# actually happens: the session directory on PATH.
+_gen_bare_rc=0
+_gen_bare_err="$(cd "$_gen_root" && PATH="$_gen_dir:$PATH" send lead hi 2>&1 >/dev/null)" || _gen_bare_rc=$?
+assert_eq "refresh: a helper invoked by BARE NAME refuses with exit 2" "2" "$_gen_bare_rc"
+assert_eq "refresh: ...and the refusal names the full-path rule" "1" \
+    "$([[ "$_gen_bare_err" == *"is a session helper"* && "$_gen_bare_err" == *"full path"* ]] && echo 1 || echo 0)"
+# THE CONTROL for that pair: the SAME link, the SAME argv, reached by full path,
+# must get past the refusal. Without it "exit 2" could be any failure at all.
+_gen_full_err="$("$_gen_dir/send" lead hi 2>&1 >/dev/null || true)"
+assert_eq "refresh CONTROL: the same call by full path is not the bare-name refusal" "0" \
+    "$([[ "$_gen_full_err" == *"is a session helper"* ]] && echo 1 || echo 0)"
+unset _gen_bare_rc _gen_bare_err _gen_full_err
 # The manifest is a core render, and refresh must have produced one.
 assert_eq "refresh: workspace.md was re-rendered" "1" \
     "$([[ -s "$_gen_dir/workspace.md" ]] && echo 1 || echo 0)"
@@ -1447,7 +1472,7 @@ assert_eq "portability guard fires: /usr/bin/stat -c (path-qualified)" "stat-c" 
 # 20 assertion(s) went with their subject: the launch records its own server and the core verifies its own kills; `_end_tmux`, the target-kind/target-server readers and the tri-state tmux error classifier went with end and stop.
 
 # ── CHOKEPOINT: one door for publishing executable artifacts — RETIRED (final glue cut) ────────────
-# 4 assertion(s) went with their subject: the glue publishes no executable artifact any more. The core writes every session helper and every launch script through its own temp+chmod+rename publisher (src/session_launch/assets.rs).
+# 4 assertion(s) went with their subject: the glue publishes no executable artifact any more, and since slice Z2 neither does the core: a session helper is a SYMLINK to the core binary, published temp+rename with no mode of its own, and there is no launch script left to publish (src/session_launch/assets.rs).
 
 # ── CALLER LEVEL: the primitive refusing is not the same as the caller
 # ── honouring the refusal (completion-without-delivery) — RETIRED (B glue cut 2) ───────────────────
@@ -1656,20 +1681,20 @@ unset _cc_dir _cc_bad
 # ── sync_session_assets: orphan cleanup — RETIRED (B glue cut 2) ───────────────────────────────────
 # 11 assertion(s) went with their subject: the core writes every session helper itself (src/session_launch/assets.rs),
 # so the `declare -f` template library and its generator are gone. What bash
-# still writes is the refresh-only shim set, pinned byte-for-byte against the
-# core's in tests/integration.
+# still writes is the refresh-only helper set, pinned by LINK TARGET against the
+# core's in tests/integration (slice Z2: a helper is a symlink, not a script).
 
 # ── requests helper: pending/replied logic from events.jsonl — RETIRED (B glue cut 2) ──────────────
 # 2 assertion(s) went with their subject: the core writes every session helper itself (src/session_launch/assets.rs),
 # so the `declare -f` template library and its generator are gone. What bash
-# still writes is the refresh-only shim set, pinned byte-for-byte against the
-# core's in tests/integration.
+# still writes is the refresh-only helper set, pinned by LINK TARGET against the
+# core's in tests/integration (slice Z2: a helper is a symlink, not a script).
 
 # ── _register-sid: referenced-implies-available, enforced by EXECUTION — RETIRED (B glue cut 2) ────
 # 7 assertion(s) went with their subject: the core writes every session helper itself (src/session_launch/assets.rs),
 # so the `declare -f` template library and its generator are gone. What bash
-# still writes is the refresh-only shim set, pinned byte-for-byte against the
-# core's in tests/integration.
+# still writes is the refresh-only helper set, pinned by LINK TARGET against the
+# core's in tests/integration (slice Z2: a helper is a symlink, not a script).
 
 # ── ae transfer — phase 1 (walking skeleton) — RETIRED (B glue cut 2) ──────────────────────────────
 # 33 assertion(s) went with their subject: `ae transfer` was ruled CUT rather than ported. There is no subject left.
@@ -2189,8 +2214,9 @@ assert_eq "from-prompt: the digest path follows AE_HOME (derived, not stored)" "
 # The emission-list guards that stood here had a subject: a generated helper
 # carried only the functions its `declare -f` list named, and a dropped name broke
 # it AT RUNTIME while this suite stayed green. B glue cut 2 removed the mechanism
-# entirely — the core writes every helper, each one a five-line shim — so what is
-# left to assert is the end state: no send body, no delivery entry, no emission.
+# entirely, and slice Z2 removed the last body — a helper is a symlink to the core
+# — so what is left to assert is the end state: no send body, no delivery entry,
+# no emission.
 assert_eq "helpers: the internal delivery entry is not generated at all" "0" \
     "$(grep -c 'helper_send_deliver' <<<"$AE_SOURCE" || true)"
 assert_eq "helpers: no helper is emitted with the retired send body" "0" \

@@ -39,12 +39,13 @@ listed in AGENTS.md and has not changed.
 
 ## The shape today
 
-**One typed core, a thin Bash remainder.** The public `ae` command is a small wrapper that
+**One typed core, one Bash file.** The public `ae` command is a small wrapper that
 validates a matched, immutable pair — wrapper and Rust core — out of one versioned
 directory, then execs the core once with the facts it cannot see for itself. The core owns
-state, lifecycle, the daemons and every command. Bash keeps only what it is best at: that
-wrapper and the pane-side artifacts the core writes (`launch.<slot>.sh`, interactive shims).
-Rust calls the `tmux` CLI directly — bash was always the glue, never the API.
+state, lifecycle, the daemons and every command. That wrapper is now the whole of ae's
+Bash: a session's helpers are symlinks to the core and a pane's command is a core entry, so
+nothing generated is a script any more. Rust calls the `tmux` CLI directly — bash was
+always the glue, never the API.
 
 **Why the core is Rust.** Agents author most of this code, and a restrictive compiler is a
 free review lane that never gets tired: a `Result` must be consumed, so the silent-abort
@@ -56,7 +57,7 @@ on every helper call, against a hot path where helpers are called constantly. Th
 that decided it is recorded under "Revisit triggers" in AGENTS.md.
 
 **Daemons are core-owned.** The watchdog and the Telegram bridge run inside the core, and
-their panes are four-line shims that exec it. Python contrib is reference and incubator only, and
+their panes run it directly through a link named for the job. Python contrib is reference and incubator only, and
 analytics sidecars stay Python contrib indefinitely.
 
 **Install preserves the user-level contract.** After Bash >= 4, tmux, and git are present,

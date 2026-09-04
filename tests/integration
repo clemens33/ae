@@ -794,36 +794,33 @@ assert_contains "lifecycle: list shows running status" "running" "$list_output"
 # Meta should exist
 assert_eq "lifecycle: meta exists" "1" "$([[ -f "$HOME/.ae/sessions/test-life/meta" ]] && echo 1 || echo 0)"
 
-# Every generated artifact must be RUNNABLE by its own shebang. The old rule was
-# "a bash >= 4", because the `declare -f` bodies a helper carried could not be
-# PARSED by the 3.2 a macOS login shell hands `env`. Since B glue cut 2 nothing
-# generated carries a bash-4 body: a helper is a five-line shim and a launch
-# script is two `exec`s, and both name an interpreter deliberately —
-# `#!/usr/bin/env bash` for the shims, `#!/bin/bash` for the launch scripts. So
-# the invariant is now the one that still bites: the interpreter must exist, and
-# the artifact must parse under it AND under the oldest bash on this machine,
-# which is exactly what `env` resolves to under a login shell.
+# Every generated artifact used to have to be RUNNABLE by its own shebang. The
+# rule before that was "a bash >= 4", because the `declare -f` bodies a helper
+# carried could not be PARSED by the 3.2 a macOS login shell hands `env`; B glue
+# cut 2 reduced them to a four-line shim, and slice Z2 removed the body
+# altogether. What lands in a session directory now is SYMLINKS to the core, so
+# the invariant that replaced the shebang rule is stronger and needs no
+# interpreter at all: nothing here is a script.
 _sb_bad=""
 for _sb in "$HOME/.ae/sessions/test-life"/*; do
-    [[ -f "$_sb" && -x "$_sb" ]] || continue
-    IFS= read -r _sb_line <"$_sb" || continue
-    [[ "$_sb_line" == '#!'* ]] || continue
-    _sb_interp="${_sb_line#\#!}"
-    if [[ "$_sb_interp" == */env\ * ]]; then
-        # `#!/usr/bin/env bash` names env; the INTERPRETER is what env resolves.
-        _sb_interp="$(command -v "${_sb_interp##* }" 2>/dev/null || true)"
-    else
-        _sb_interp="${_sb_interp%% *}"
+    _sb_n="${_sb##*/}"
+    if [[ -L "$_sb" ]]; then
+        # A link is only a helper if it resolves to something runnable.
+        [[ -x "$_sb" ]] || _sb_bad+="${_sb_n}:link-target-not-executable "
+        continue
     fi
-    [[ -n "$_sb_interp" && -x "$_sb_interp" ]] || { _sb_bad+="$(basename "$_sb"):no-interp "; continue; }
-    "$_sb_interp" -n "$_sb" 2>/dev/null || { _sb_bad+="$(basename "$_sb"):parse "; continue; }
-    # The 3.2 case, explicitly: it is the interpreter a macOS login shell
-    # actually supplies, and the whole reason the old rule existed.
-    if [[ -x /bin/bash ]]; then
-        /bin/bash -n "$_sb" 2>/dev/null || _sb_bad+="$(basename "$_sb"):parse-oldbash "
+    # Anything else in the directory must be DATA. An executable regular file is
+    # a generator that came back, and a shebang is one that came back quietly.
+    if [[ -f "$_sb" && -x "$_sb" ]]; then
+        _sb_bad+="${_sb_n}:executable-file "
+    fi
+    IFS= read -r _sb_line <"$_sb" 2>/dev/null || continue
+    if [[ "$_sb_line" == '#!'* ]]; then
+        _sb_bad+="${_sb_n}:shebang "
     fi
 done
-assert_eq "helpers: every shebang resolves, and the artifact parses under it and under /bin/bash" "" "$_sb_bad"
+assert_eq "helpers: every helper is a runnable link, and nothing else is a script" "" "$_sb_bad"
+unset _sb _sb_n _sb_line _sb_bad
 fi
 
 # ── P2.1: the Rust core binding for generated helpers ────────────────────────
@@ -841,37 +838,46 @@ _cb_core="$_cb_root/ae-core"
 _cb_write_core() {
     cat >"$_cb_core" <<EOF
 #!/bin/sh
-case "\$1" in
-    --version) echo "ae $1" ;;
-    _requests)
-        # The shim always passes _requests as the subcommand, so the stub's
-        # own unknown-subcommand arm is unreachable THROUGH the shim, and
-        # only mode all is routed at all. The fact that discriminates the
-        # exit-status probe must therefore ride on an argument the CALLER
-        # controls PAST the mode: the sentinel word anywhere in argv is a
-        # refusal.
+# THE STUB DISPATCHES ON ITS OWN NAME, because since slice Z2 that is how the real
+# core is reached: a helper is a SYMLINK to the binary, and the entry comes from
+# the basename of \$0 while the session directory comes from its dirname. A stub
+# that still read a subcommand out of \$1 would be testing a calling convention
+# the product no longer has.
+_cb_name=\$(basename "\$0")
+_cb_dir=\$(dirname "\$0")
+case "\$_cb_name" in
+    requests)
+        # Every mode is routed, so the fact that discriminates the exit-status
+        # probe must ride on an argument the CALLER controls: the sentinel word
+        # anywhere in argv is a refusal.
         case "\$*" in *nonsense*) exit 64 ;; esac
-        echo "CORE_TOKEN_9f3a mode=\${3:-none}"
+        echo "CORE_TOKEN_9f3a mode=\${1:-none}"
         ;;
-    _state) echo "CORE_TOKEN_9f3a state=\${3:-read}" ;;
-    _goal) echo "CORE_TOKEN_9f3a goal=\${3:-read}" ;;
-    _memo) echo "CORE_TOKEN_9f3a memo=\${3:-read}" ;;
-    _ask) echo "CORE_TOKEN_9f3a ask=\${3:-none} body=\${4:-none}" ;;
-    _review) echo "CORE_TOKEN_9f3a review=\${3:-none} body=\${4:-none}" ;;
-    _reply) echo "CORE_TOKEN_9f3a reply=\${3:-none} body=\${4:-none}" ;;
-    _send) echo "CORE_TOKEN_9f3a send=\${3:-none} body=\${4:-none}" ;;
-    _events-tail) echo "CORE_TOKEN_9f3a events-tail dir=\${2:-none}" ;;
-    _archive-preview) echo "CORE_TOKEN_9f3a archive-preview dir=\${2:-none}" ;;
-    # IDENTITY IS NOT WHAT THIS SECTION DISCRIMINATES. Since P34 a launch cannot
-    # happen without a core that answers the roster entries, so a stub that
-    # refused them would only prove that this fixture cannot start a session.
-    # Delegate exactly those to the real core and keep the token arms — the
-    # opposed control above is untouched, and '*) exit 64' still catches every
-    # subcommand the shim is actually being tested on. Kept as a safety net now
-    # that the binding is repointed by substitution and no launch runs through
-    # the stub: an arm that reaches them is a fixture mistake, not a refusal.
-    _launch-plan|_meta-init|_roster|_manifest-render) exec "$_ITEST_CORE_BIN" "\$@" ;;
-    *) exit 64 ;;
+    state) echo "CORE_TOKEN_9f3a state=\${1:-read}" ;;
+    # The alias is the core's now, not a generated body: mark-done IS state done.
+    mark-done) echo "CORE_TOKEN_9f3a state=done" ;;
+    goal) echo "CORE_TOKEN_9f3a goal=\${1:-read}" ;;
+    memo) echo "CORE_TOKEN_9f3a memo=\${1:-read}" ;;
+    ask) echo "CORE_TOKEN_9f3a ask=\${1:-none} body=\${2:-none}" ;;
+    review) echo "CORE_TOKEN_9f3a review=\${1:-none} body=\${2:-none}" ;;
+    reply) echo "CORE_TOKEN_9f3a reply=\${1:-none} body=\${2:-none}" ;;
+    send) echo "CORE_TOKEN_9f3a send=\${1:-none} body=\${2:-none}" ;;
+    events-tail) echo "CORE_TOKEN_9f3a events-tail dir=\${_cb_dir:-none}" ;;
+    *)
+        # Reached under the binary's OWN name — the wrapper's version probe, and
+        # the safety net below it.
+        case "\$1" in
+            --version) echo "ae $1" ;;
+            # IDENTITY IS NOT WHAT THIS SECTION DISCRIMINATES. Since P34 a launch
+            # cannot happen without a core that answers the roster entries, so a
+            # stub that refused them would only prove that this fixture cannot
+            # start a session. Kept as a safety net now that the binding is
+            # repointed by re-linking and no launch runs through the stub: an arm
+            # that reaches them is a fixture mistake, not a refusal.
+            _launch-plan | _meta-init | _roster | _manifest-render) exec "$_ITEST_CORE_BIN" "\$@" ;;
+            *) exit 64 ;;
+        esac
+        ;;
 esac
 EOF
     chmod 0755 "$_cb_core"
@@ -879,34 +885,30 @@ EOF
 _cb_write_core "9.9.9"
 
 # THE LAUNCH IS THE REAL CORE'S, and it has to be. Since B glue cut 2 the whole
-# launch is one core call, and the core writes its OWN path (current_exe) into
-# every helper shim — so a stub that cannot start a session cannot be the thing
-# that launches one, and a stub that delegated the launch would hand the session
-# the REAL core's path and make every token assertion below vacuous.
+# launch is one core call, and the core links every helper at its OWN path
+# (current_exe) — so a stub that cannot start a session cannot be the thing that
+# launches one, and a stub that delegated the launch would hand the session the
+# REAL core's path and make every token assertion below vacuous.
 #
-# THE BINDING IS THEN REPOINTED BY SUBSTITUTION, not by a refresh. It used to be
+# THE BINDING IS THEN REPOINTED BY RE-LINKING, not by a refresh. It used to be
 # established the operator's way — `AE_CORE_BIN=<stub> ae doctor --refresh` —
 # because the refresh was bash and re-evaluated that input. Since final cut pass 2
-# `doctor` is the core's own entry: the glue's preflight EXECs whatever
-# AE_CORE_BIN names, so that command now asks the STUB to serve `doctor`, and a
-# stub able to serve `doctor --refresh` would have to be a second implementation
-# of the refresh — the one thing this suite exists to prevent. So the two facts a
-# session's binding actually consists of are edited directly: the meta PAIR that
-# `_ae_core_try` re-reads on every call, and the absolute path the core baked into
-# each generated shim. Nothing else about the session changes, and every assertion
+# `doctor` is the core's own entry: the wrapper EXECs whatever AE_CORE_BIN names,
+# so that command now asks the STUB to serve `doctor`, and a stub able to serve
+# `doctor --refresh` would have to be a second implementation of the refresh — the
+# one thing this suite exists to prevent. So the two facts a session's binding
+# actually consists of are edited directly: the meta PAIR, and the link every
+# helper name IS. Nothing else about the session changes, and every assertion
 # below discriminates exactly as it did.
-_cb_pin_stub() { # <session-dir> — repoint meta + every generated shim at the stub
+_cb_pin_stub() { # <session-dir> — repoint meta + every helper link at the stub
     local dir="$1" f
     sed -e "s|^ae_core=.*|ae_core=$_cb_core|" -e "s|^ae_core_version=.*|ae_core_version=9.9.9|" \
         "$dir/meta" >"$dir/meta.tmp" && mv "$dir/meta.tmp" "$dir/meta"
-    # Only the `exec <core> _<entry> "$META_DIR"` shims. An ALIAS helper (peak) execs
-    # its sibling by a derived path, and its second word is not an entry name — the
-    # `_[a-z-]+` guard is what keeps the substitution off it.
+    # Every link, with no exception for the aliases: peak and loop are links to
+    # the same binary since slice Z2, not sibling execs of a generated script.
     for f in "$dir"/*; do
-        [[ -f "$f" && -x "$f" ]] || continue
-        case "${f##*/}" in launch.*) continue ;; esac
-        sed -E "s|^exec [^ ]+ (_[a-z-]+) |exec '$_cb_core' \1 |" "$f" >"$f.shim.tmp" &&
-            mv "$f.shim.tmp" "$f" && chmod 0755 "$f"
+        [[ -L "$f" ]] || continue
+        ln -sfn "$_cb_core" "$f"
     done
     return 0
 }
@@ -917,31 +919,30 @@ sleep 1
 _cb_meta="$HOME/.ae/sessions/test-core"
 _cb_pin_stub "$_cb_meta"
 
-# The binding is PINNED AS A PAIR — `_ae_core_try` compares both on every call, so
-# a session pinned to a path is not pinned until the version agrees with it.
+# The binding is PINNED AS A PAIR — the pair is what `doctor` reports on and what a
+# refresh rewrites, so a session pinned to a path is not pinned until the version
+# agrees with it.
 assert_eq "core binding: meta pins the absolute core path" "$_cb_core" \
     "$(grep '^ae_core=' "$_cb_meta/meta" | cut -d= -f2- || true)"
 assert_eq "core binding: meta pins the version the binary reported" "9.9.9" \
     "$(grep '^ae_core_version=' "$_cb_meta/meta" | cut -d= -f2- || true)"
-# ...and the SHIMS moved with it. Asserted separately from the token arms below
-# because a substitution that silently matched nothing would leave every helper on
-# the real core, and "no token" would then read as a broken shim rather than a
-# broken fixture.
-_cb_foreign_shims() { # -> count of shim exec lines naming an absolute path that is NOT the stub
+# ...and the LINKS moved with it. Asserted separately from the token arms below
+# because a re-link that silently matched nothing would leave every helper on the
+# real core, and "no token" would then read as a broken helper rather than a broken
+# fixture.
+_cb_foreign_links() { # -> count of helper links whose target is NOT the stub
     local dir="$1" f n=0
     for f in "$dir"/*; do
-        [[ -f "$f" && -x "$f" ]] || continue
-        case "${f##*/}" in launch.*) continue ;; esac
-        command grep -qE "^exec /|^exec '/" "$f" || continue
-        command grep -q "^exec '$_cb_core' " "$f" || n=$((n + 1))
+        [[ -L "$f" ]] || continue
+        [[ "$(readlink "$f" || true)" == "$_cb_core" ]] || n=$((n + 1))
     done
     printf '%s' "$n"
     return 0
 }
-assert_eq "core binding: (fixture) no generated shim still names another core" "0" \
-    "$(_cb_foreign_shims "$_cb_meta")"
-assert_eq "core binding: (fixture) ...and the substitution was not a no-op" "1" \
-    "$([[ "$(command grep -lF "exec '$_cb_core' " "$_cb_meta"/* 2>/dev/null | command grep -c . || true)" -gt 0 ]] && echo 1 || echo 0)"
+assert_eq "core binding: (fixture) no helper link still names another core" "0" \
+    "$(_cb_foreign_links "$_cb_meta")"
+assert_eq "core binding: (fixture) ...and the re-link was not a no-op" "1" \
+    "$([[ "$(readlink "$_cb_meta/requests" || true)" == "$_cb_core" ]] && echo 1 || echo 0)"
 
 # POSITIVE: the core actually executes. This is the assertion every other one
 # in this block depends on being able to fail.
@@ -1013,7 +1014,7 @@ assert_contains "core binding: send reaches the core with target and body" "CORE
 _cb_out="$(AE_CORE="" "$_cb_meta/send" dummy "the message" 2>/dev/null || true)"
 assert_contains "core binding: AE_CORE= is not an escape — send still reaches the core" "CORE_TOKEN_9f3a send=dummy" "$_cb_out"
 # EVENTS-TAIL (P2.7, closes P2): the monitor pane's helper takes no argument —
-# the core is handed the meta dir the shim always passes. It never returns on its
+# the core reads the meta dir out of the path it was invoked by. It never returns on its
 # own (it follows the container), so each run happens in the background, is read
 # for its first line, and is killed. Neither run may be captured with $( ): a
 # following helper never returns, and that would hang the suite instead of failing.
@@ -1086,11 +1087,11 @@ unset _cb_rc
 # AE_CORE_BIN is the input. (The BUNDLE arm's stricter pair check, where the sibling
 # outranks every variable, is the P5 sections' subject.)
 #
-# The generated helper shims deliberately carry no gate at all: the core writes them
-# itself (src/session_launch/assets.rs) and their whole body is
-# `exec '<absolute core path>' <entry> "$META_DIR" "$@"` — the binding is BAKED, not
-# re-resolved. That is sound where it lands, because a published version directory is
-# immutable, so the baked path cannot become a different binary under a live session.
+# The helpers deliberately carry no gate at all: since slice Z2 each one IS the
+# core, reached through a symlink the core published at its own absolute path
+# (src/session_launch/assets.rs). The binding is the LINK — baked, not re-resolved.
+# That is sound where it lands, because a published version directory is immutable,
+# so the linked path cannot become a different binary under a live session.
 _cb_refuse() { # <expected-reason-fragment> <core-path>
     local frag="$1" core="$2" rc=0
     env AE_CORE_BIN="$core" "$AE" ls >"$_cb_root/out" 2>"$_cb_root/err" || rc=$?
@@ -1143,9 +1144,9 @@ unset _cb_doc
 
 # REFRESH REBINDS TO THE BINARY THAT RAN IT, which is what repairs the blank pin
 # left just above. The frozen bash refresh re-evaluated the operator's input; the
-# core answering here IS that input — the glue's preflight resolved AE_CORE_BIN and
-# exec'd it — so it pins itself, path and version together, and rewrites every shim
-# to match. That is one rule where there were two, and it is the reason a stub can
+# core answering here IS that input — the wrapper resolved AE_CORE_BIN and exec'd
+# it — so it pins itself, path and version together, and re-links every helper to
+# match. That is one rule where there were two, and it is the reason a stub can
 # no longer establish a binding through this door: only a real core can pin itself.
 (cd "$REPO" && AE_CORE_BIN="$_ITEST_CORE_BIN" "$AE" doctor --refresh test-core >/dev/null 2>&1 || true)
 assert_eq "core binding: refresh rebinds the pin to the core that ran it" "$_ITEST_CORE_BIN" \
@@ -1153,10 +1154,10 @@ assert_eq "core binding: refresh rebinds the pin to the core that ran it" "$_ITE
 assert_eq "core binding: ...and the version with it, as a pair" \
     "$("$_ITEST_CORE_BIN" --version 2>/dev/null | awk '{print $NF}')" \
     "$(grep '^ae_core_version=' "$_cb_meta/meta" | cut -d= -f2- || true)"
-# ...and the SHIMS were rewritten with it, so the stub is out of the session
+# ...and the LINKS were repointed with it, so the stub is out of the session
 # entirely. This is the assertion that makes the repair real rather than cosmetic:
-# a refresh that moved only the meta pair would leave every helper still exec'ing
-# whatever it was baked with.
+# a refresh that moved only the meta pair would leave every helper still linked to
+# whatever it was published with.
 assert_eq "core binding: ...and every helper follows the new pin, not the old one" "0" \
     "$(printf '%s' "$("$_cb_meta/requests" all 2>/dev/null || true)" | command grep -c 'CORE_TOKEN_9f3a' | tr -d '[:space:]')"
 
@@ -1922,8 +1923,8 @@ fi
 # a substitution: single quotes are the fix here, not the finding (see _itest_names).
 if _itest_section 'issue #4: `ae end` racing a launch must not leave a recreated session'; then
 # The lifecycle lock used to be released immediately after the meta mv, while
-# ~20 helpers, the loop shim, workspace.md and launch.<slot>.sh were still being
-# written. A concurrent `ae end` rm -rf'd the directory mid-generation and the
+# ~20 helpers, the loop alias, workspace.md and the per-slot launch bookkeeping
+# were still being written. A concurrent `ae end` rm -rf'd the directory mid-generation and the
 # next atomic temp+mv RECREATED it, so end returned 0 having left a partial
 # session on disk. Proven by timestamp ordering before the fix: end-rm-begin
 # landed 1.7s before the last asset write, and the directory came back carrying
@@ -2850,54 +2851,70 @@ fi
 # ── refresh reproduces the CORE's helper set, byte for byte ──────────
 # shellcheck disable=SC1003 # the backslash escapes the apostrophe INSIDE the
 # single-quoted name; _itest_names unescapes it the same way.
-if _itest_section 'refresh reproduces the CORE'\''s helper set, byte for byte'; then
-# Since B glue cut 2 a session's helper shims have TWO writers: the core at
-# launch (src/session_launch/assets.rs) and `ae doctor --refresh`, which is the
-# one artifact bash still emits. Two writers of one file is a divergence waiting
-# to happen, and the unit suite can only hold the bash side against a string it
-# also owns. This holds the two against EACH OTHER: launch with the core, take
-# the set + its bytes + its modes, refresh, take them again.
+if _itest_section 'refresh reproduces the CORE'\''s helper set, link for link'; then
+# A session's helper set has TWO writers: the core at launch
+# (src/session_launch/assets.rs) and `ae doctor --refresh`, which reaches the same
+# writer through `_shims-render`. Two writers of one artifact is a divergence
+# waiting to happen, and the unit suite can only hold one side against a string it
+# also owns. This holds the two against EACH OTHER: launch with the core, take the
+# set and each entry's LINK TARGET, refresh, take them again.
+#
+# The comparison is the target, not the bytes, since slice Z2: a helper is a
+# symlink to the core binary, so hashing it would hash the same 20MB core 21 times
+# and prove only that the core did not change under us. The link is the artifact.
 REPO_BP="$(setup_repo)"
 (cd "$REPO_BP" && "$AE" --local test-shimparity &) 2>/dev/null
 wait_for_session "test-shimparity"
 sleep 1
 BP_DIR="$HOME/.ae/sessions/test-shimparity"
-# The HELPER set: every executable regular file the session owns except the
-# per-slot launch scripts, which are the core's alone and are not refreshed.
-bp_snapshot() { # -> "<name> <mode> <fingerprint>" per helper, sorted by name
+# The HELPER set: every symlink the session owns. Nothing else in the directory is
+# executable any more — the per-slot launch scripts went with slice Z2, and what is
+# left beside the links is data.
+bp_snapshot() { # -> "<name> <link target>" per helper, sorted by name
     local f n
     for f in "$BP_DIR"/*; do
         n="${f##*/}"
-        case "$n" in launch.*) continue ;; esac
-        if [[ -f "$f" && -x "$f" ]]; then
-            printf '%s %s %s\n' "$n" \
-                "$(stat -f '%Lp' "$f" 2>/dev/null || stat -c '%a' "$f" 2>/dev/null || echo '?')" \
-                "$(_fpr <"$f")"
+        if [[ -L "$f" ]]; then
+            printf '%s %s\n' "$n" "$(readlink "$f" || echo '?')"
         fi
     done | sort
     return 0
 }
 bp_before="$(bp_snapshot)"
-# `_register-sid` is in the set and is the one shim no human runs: ae tells codex,
+# `_register-sid` is in the set and is the one name no human runs: ae tells codex,
 # in its developer_instructions, to run `<meta>/_register-sid` as its first action,
 # because codex has no launch-time session-id flag. It left the set with the
 # template library and its absence broke that handshake silently — the instruction
 # named a file that was not there.
-assert_eq "shim parity: (setup) the core wrote the full helper set at launch" \
+assert_eq "shim parity: (setup) the core linked the full helper set at launch" \
     "_register-sid agents ask events-tail focus goal interrupt loop mark-done memo peak peek reply requests retire review say send spawn state watchdog" \
     "$(printf '%s\n' "$bp_before" | awk '{print $1}' | paste -sd' ' -)"
+# ...and every one of them points at ONE target, the absolute core path the session
+# is pinned to in meta. A helper naming a different binary than the session's own
+# core is the divergence this whole section exists to catch.
+assert_eq "shim parity: (setup) every link names the core meta pins, and only that" "1" \
+    "$(bp_meta_core="$(grep '^ae_core=' "$BP_DIR/meta" | cut -d= -f2- || true)"
+       bp_targets="$(printf '%s\n' "$bp_before" | awk '{print $2}' | LC_ALL=C sort -u)"
+       [[ -n "$bp_meta_core" && "$bp_targets" == "$bp_meta_core" ]] && echo 1 || echo 0)"
 (cd "$REPO_BP" && "$AE" doctor --refresh test-shimparity >/dev/null 2>&1)
 bp_after="$(bp_snapshot)"
-assert_eq "shim parity: refresh reproduced every helper byte for byte, mode included" \
+assert_eq "shim parity: refresh reproduced every helper, link target included" \
     "$bp_before" "$bp_after"
 # THE CONTROL. A pin that compares two snapshots passes trivially if refresh
 # writes nothing at all, so make one helper WRONG and prove refresh restores it.
-printf '#!/usr/bin/env bash\necho stale\n' >"$BP_DIR/send"
-chmod 0700 "$BP_DIR/send"
+# Wrong the way it can actually go wrong now: a link pointing somewhere else.
+ln -sfn /bin/echo "$BP_DIR/send"
 assert_eq "shim parity CONTROL: the tampered helper really differs first" "1" \
     "$([[ "$(bp_snapshot)" != "$bp_before" ]] && echo 1 || echo 0)"
 (cd "$REPO_BP" && "$AE" doctor --refresh test-shimparity >/dev/null 2>&1)
-assert_eq "shim parity CONTROL: ...and refresh puts the core's bytes back" \
+assert_eq "shim parity CONTROL: ...and refresh puts the core's link back" \
+    "$bp_before" "$(bp_snapshot)"
+# SECOND CONTROL, for the other way a link dies: replaced by a regular file. The
+# refresh must publish OVER it rather than leaving a script in a session directory.
+printf '#!/usr/bin/env bash\necho stale\n' >"$BP_DIR/peek"
+chmod 0700 "$BP_DIR/peek"
+(cd "$REPO_BP" && "$AE" doctor --refresh test-shimparity >/dev/null 2>&1)
+assert_eq "shim parity CONTROL: a helper replaced by a SCRIPT is re-linked" \
     "$bp_before" "$(bp_snapshot)"
 "$AE" end -f test-shimparity >/dev/null 2>&1 || true
 unset REPO_BP BP_DIR bp_before bp_after
@@ -3754,15 +3771,20 @@ assert_eq "lead-pair rename: status-left refreshed to the new session name" "[ae
 mv "$HOME/.ae/config.ls-bak" "$HOME/.ae/config"
 fi
 
-# ── #27: launch.<slot>.sh survives being re-run ──────────────────────
-if _itest_section '#27: launch.<slot>.sh survives being re-run'; then
+# ── #27: a pane command survives being re-run ────────────────────────
+if _itest_section '#27: a pane command survives being re-run'; then
 # The human /exits the TUI (to pick up a globally-updated MCP config, say) and
-# arrow-ups the launch script. It bakes `--session-id UUID` — creation semantics
+# arrow-ups the pane's command. It bakes `--session-id UUID` — creation semantics
 # — so before the fix every re-run died with "Session ID <uuid> is already in
 # use" and the conversation was unreachable. Stand-in for claude: --session-id
 # is create-once and COLLIDES on a second create, --resume replays. The command
 # must literally begin with "claude" — that prefix is what makes ae inject an
 # upfront UUID at all — so it goes on PATH rather than being named absolutely.
+#
+# Since slice Z2 the pane command is not a script but the core entry
+# `<core> _run <session-dir> <slot>`, and the re-run decision is the core's own:
+# it reads the `launch.<slot>.started` marker it wrote before its first exec. So
+# this drives exactly what the human's arrow-up would.
 RR_BIN="$TMPDIR/bin27"
 mkdir -p "$RR_BIN" "$TMPDIR/rr-state"
 : >"$TMPDIR/rr.log"
@@ -3811,24 +3833,31 @@ EOF
 (cd "$RR_REPO" && PATH="$RR_BIN:$PATH" "$AE" --local rerun27 >/dev/null 2>&1 || true)
 wait_for_session "rerun27"
 sleep 2
-RR_UUID="$(sed -n 's/^harness_session.main=//p' "$HOME/.ae/sessions/rerun27/meta" 2>/dev/null | head -1 || true)"
-RR_SCRIPT="$HOME/.ae/sessions/rerun27/launch.main.sh"
+RR_DIR="$HOME/.ae/sessions/rerun27"
+RR_UUID="$(sed -n 's/^harness_session.main=//p' "$RR_DIR/meta" 2>/dev/null | head -1 || true)"
+# The command the human would arrow up, composed the way the pane's is: the core
+# meta pins, then `_run`, then this session and this slot.
+RR_CORE="$(grep '^ae_core=' "$RR_DIR/meta" | cut -d= -f2- || true)"
 assert_eq "#27: launch baked an upfront session id into meta" "1" \
     "$([[ "$RR_UUID" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] && echo 1 || echo 0)"
 assert_eq "#27: the pane's own first launch CREATED that session" "CREATE $RR_UUID" \
     "$(head -1 "$TMPDIR/rr.log" 2>/dev/null || true)"
+# The marker is the discriminator, and it is `_run`'s own file — written before
+# the exec of the first run, which is why the second run can see it.
+assert_eq "#27: the first run left the started marker behind" "1" \
+    "$([[ -e "$RR_DIR/launch.main.started" ]] && echo 1 || echo 0)"
 # Re-run it exactly as the human would.
-RR_ERR="$(PATH="$RR_BIN:$PATH" "$RR_SCRIPT" 2>&1 >/dev/null || true)"
-assert_eq "#27: re-running the script RESUMES the ORIGINAL id" "RESUME $RR_UUID" \
+RR_ERR="$(PATH="$RR_BIN:$PATH" "$RR_CORE" _run "$RR_DIR" main 2>&1 >/dev/null || true)"
+assert_eq "#27: re-running the pane command RESUMES the ORIGINAL id" "RESUME $RR_UUID" \
     "$(tail -1 "$TMPDIR/rr.log" 2>/dev/null || true)"
 assert_eq "#27: ...and a second re-run still resumes it" "RESUME $RR_UUID" \
-    "$(PATH="$RR_BIN:$PATH" "$RR_SCRIPT" >/dev/null 2>&1 || true
+    "$(PATH="$RR_BIN:$PATH" "$RR_CORE" _run "$RR_DIR" main >/dev/null 2>&1 || true
        tail -1 "$TMPDIR/rr.log" 2>/dev/null || true)"
 assert_eq "#27: the collision was never hit" "0" \
     "$(command grep -c '^COLLIDE ' "$TMPDIR/rr.log" 2>/dev/null || true)"
 assert_contains "#27: the fallback announces itself" "re-run" "$RR_ERR"
 "$AE" end -f rerun27 >/dev/null 2>&1 || true
-unset RR_BIN RR_REPO RR_UUID RR_SCRIPT RR_ERR
+unset RR_BIN RR_REPO RR_DIR RR_UUID RR_CORE RR_ERR
 fi
 
 # ── #28 boundary: ONE definition, in the runtime that calls it — RETIRED (final glue cut) ───
@@ -3884,19 +3913,22 @@ assert_eq "rollback (fresh): the lifecycle lock is free afterwards" "0" \
 # conversation history belongs to the user, and the next attempt must resume it
 # rather than silently start a fresh one.
 #
-# THE FAULT is the spawn arm's, for the same reason it works there: the core
-# renames a temp over <meta>/launch.<slot>.sh, and a rename onto a non-empty
-# DIRECTORY fails. Here the session directory predates the attempt, so the
-# rollback must KEEP it.
+# THE FAULT is a HELPER the core cannot publish. `write_helpers` symlinks each
+# name to a temp beside it and renames over the destination, and a rename onto a
+# non-empty DIRECTORY fails — it runs after the meta is published and after the
+# session and its panes exist, which is exactly the state the rollback has to
+# undo. (Before slice Z2 this arm planted <meta>/launch.<slot>.sh, published at
+# the same point; that artifact is gone and the helper publish replaced it.)
+# Here the session directory predates the attempt, so the rollback must KEEP it.
 RB_REPO2="$(setup_repo)"
 (cd "$RB_REPO2" && "$AE" --local rbresume &) 2>/dev/null
 wait_for_session "rbresume"
 sleep 1
 "$AE" stop rbresume >/dev/null 2>&1 || true
 sleep 0.5
-rm -f "$HOME/.ae/sessions/rbresume/launch.main.sh"
-mkdir -p "$HOME/.ae/sessions/rbresume/launch.main.sh"
-: >"$HOME/.ae/sessions/rbresume/launch.main.sh/decoy"
+rm -f "$HOME/.ae/sessions/rbresume/peek"
+mkdir -p "$HOME/.ae/sessions/rbresume/peek"
+: >"$HOME/.ae/sessions/rbresume/peek/decoy"
 rb2_rc=0
 rb2_out="$( (cd "$RB_REPO2" && _timeout 90 "$AE" rbresume) 2>&1 )" || rb2_rc=$?
 assert_eq "rollback (resume): ae exits non-zero" "1" "$([[ $rb2_rc -ne 0 ]] && echo 1 || echo 0)"
@@ -3911,7 +3943,7 @@ assert_eq "rollback (resume): the lifecycle lock is free afterwards" "0" \
            (flock -n 7 || exit 1) 7>"$HOME/.ae/sessions/.lifecycle.rbresume.lock"
            echo $?
        else echo 0; fi)"
-rm -rf "$HOME/.ae/sessions/rbresume/launch.main.sh"
+rm -rf "$HOME/.ae/sessions/rbresume/peek"
 "$AE" end -f rbresume >/dev/null 2>&1 || true
 
 # (c) SPAWN: the window/pane and the meta registration both precede the launch,
@@ -3921,15 +3953,17 @@ RB_REPO3="$(setup_repo)"
 (cd "$RB_REPO3" && "$AE" --local rbspawn &) 2>/dev/null
 wait_for_session "rbspawn"
 sleep 1
-# THE FAULT, injected where the core's spawn can still roll back: a launch script
-# it cannot publish. `write_launch_script` renames a temp over
-# <meta>/launch.<slot>.sh, and a rename onto a non-empty DIRECTORY fails — so this
-# decoy makes the publish fail AFTER the seat is reserved and the pane exists,
-# which is exactly the state the rollback has to undo. A brief that fails to
-# deliver would NOT do: the core treats pane-created and brief-delivered as
+# THE FAULT, injected where the core's spawn can still roll back: the re-run
+# marker for the slot it is creating. Since slice Z2 that marker is the
+# create-vs-resume discriminator, so spawn CLEARS it as a hard error rather than
+# best-effort — a slot whose stale marker survived would be RESUMED into a
+# conversation that does not exist. `remove_file` cannot take a non-empty
+# DIRECTORY, so this decoy fails the clear AFTER the seat is reserved and the pane
+# exists, which is exactly the state the rollback has to undo. A brief that fails
+# to deliver would NOT do: the core treats pane-created and brief-delivered as
 # different truths and records spawn-failed rather than rolling back, by design.
-mkdir -p "$HOME/.ae/sessions/rbspawn/launch.spawned.0.sh"
-: >"$HOME/.ae/sessions/rbspawn/launch.spawned.0.sh/decoy"
+mkdir -p "$HOME/.ae/sessions/rbspawn/launch.spawned.0.started"
+: >"$HOME/.ae/sessions/rbspawn/launch.spawned.0.started/decoy"
 rb3_rc=0
 rb3_out="$(_timeout 90 "$HOME/.ae/sessions/rbspawn/spawn" rbworker --using dummy2 "brief" 2>&1)" || rb3_rc=$?
 assert_eq "rollback (spawn): the spawn reports failure" "1" "$([[ $rb3_rc -ne 0 ]] && echo 1 || echo 0)"
@@ -3941,12 +3975,13 @@ assert_eq "rollback (spawn): no phantom agent registered in meta" "0" \
 # panes carry one as well, so the seat count reads @ae_slot — see the note in Test 4.
 assert_eq "rollback (spawn): no orphan agent pane left in the session" "1" \
     "$(tmux list-panes -s -t rbspawn -F '#{@ae_slot}' 2>/dev/null | command grep -c . || true)"
-# The decoy directory is the TEST's, and `remove_file` cannot take it; what the
-# rollback owns is the re-run marker and any temp its publisher left mid-write.
-assert_eq "rollback (spawn): no launch marker and no publish temp left behind" "0" \
-    "$(command ls "$HOME/.ae/sessions/rbspawn" 2>/dev/null |
-        command grep -c '^launch\.spawned\.0\.\(started\|tmp\.\)' || true)"
-rm -rf "$HOME/.ae/sessions/rbspawn/launch.spawned.0.sh"
+# The decoy directory is the TEST's and stays; what the rollback owns is every
+# other artifact of the slot it was creating — the codex first-message file and
+# any temp a publisher left mid-write.
+assert_eq "rollback (spawn): no slot artifact and no publish temp left behind" "0" \
+    "$(command ls -a "$HOME/.ae/sessions/rbspawn" 2>/dev/null |
+        command grep -c -e '^launch\.spawned\.0\.prompt$' -e '\.tmp\.' || true)"
+rm -rf "$HOME/.ae/sessions/rbspawn/launch.spawned.0.started"
 "$AE" end -f rbspawn >/dev/null 2>&1 || true
 
 # (d) THE DELETION BOUNDARY. $SESSION becomes a directory name, and since the
@@ -4246,8 +4281,8 @@ unset RN_REPO rn_rc rn_out
 # deleted a directory this attempt never created.
 # The fault is the resume arm's decoy, for the same reason: the launch must FAIL
 # with the directory already there, or there is no rollback to classify.
-mkdir -p "$HOME/.ae/sessions/rbpre/launch.main.sh"
-: >"$HOME/.ae/sessions/rbpre/launch.main.sh/decoy"
+mkdir -p "$HOME/.ae/sessions/rbpre/peek"
+: >"$HOME/.ae/sessions/rbpre/peek/decoy"
 : >"$HOME/.ae/sessions/rbpre/PREEXISTING"
 RB_REPO5="$(setup_repo)"
 rb5_rc=0
@@ -4825,9 +4860,12 @@ if _itest_section '#30: a resumed pane reports the TOOL, not bash'; then
 # The acceptance measurement from the issue, run against a REAL resumed session
 # with a stub "tool" so no agent is involved — the question is process shape, not
 # behaviour. Since B glue cut 2 the decider is built inside the core
-# (`resume_decider`, src/launch.rs) and reaches the pane only through the
-# generated launch.<slot>.sh, so the probe is the product end to end: launch,
-# stop, resume, then read what the pane's process actually is.
+# (`resume_decider`, src/launch.rs), and since slice Z2 the core is also what the
+# pane RUNS — `_run` decides and then `exec`s the tool itself — so the probe is the
+# product end to end: launch, stop, resume, then read what the pane's process
+# actually is. Nothing stands between the decision and the process any more, which
+# is what makes a pane reporting `bash` here a real regression rather than an
+# artefact of a wrapper script.
 #
 # The stub is named `claude` because that prefix is what makes ae bake an upfront
 # UUID and therefore compose a RESUME command at all. It execs `sleep`, so a pane
@@ -6569,20 +6607,20 @@ ID59_META="$HOME/.ae/sessions/ident59"
 PATH="$ID59_BIN:$PATH" "$ID59_META/spawn" helper --using cl "hello" >/dev/null 2>&1 || true
 sleep 2
 
-# DECODE ONCE, THEN ENUMERATE. launch.<slot>.sh ends `exec <sh> -lc <shell-quoted
-# command>`, so on disk every space and paren of the context is BACKSLASH-ESCAPED: a raw
-# grep for "You are agent" in that file is ALWAYS zero, which made the first round's
-# absence pins pass without testing anything. Decode the way the shell will (`set --`
-# parses, it does not run), then count — and `head -1` is deliberately NOT used, because
+# ASK THE CORE WHAT THE PANE GETS, THEN ENUMERATE. There is no launch script to read
+# since slice Z2: a pane runs `<core> _run <dir> <slot>` and the tool's argv is composed
+# in process. `_run --print` reports exactly that vector as one JSON line and does NOT
+# write the started marker or exec anything, so it is the artifact this section is about.
+# The pins below grep that line RAW, which is safe because everything they look for —
+# the identity sentence, "REQUIRED RULES" — is plain ASCII that JSON does not escape;
+# only newlines elsewhere in the context are. `head -1` is deliberately NOT used, because
 # the failure worth catching is an artifact carrying its own identity FIRST and a second,
 # wrong one after it.
-_id59_decode() { # <launch script> -> the command string the pane will receive
-    local q
-    q="$(tail -1 "$1" 2>/dev/null || true)"
-    q="${q#exec }"
-    [[ -n "$q" ]] || return 0
-    eval "set -- ${q}"
-    printf '%s' "${3:-}"
+_id59_print() { # <session-dir> <slot> -> the argv line _run --print emits
+    local core
+    core="$(command grep '^ae_core=' "$1/meta" 2>/dev/null | cut -d= -f2- || true)"
+    [[ -n "$core" && -x "$core" ]] || return 0
+    "$core" _run --print "$1" "$2" 2>/dev/null || true
     return 0
 }
 _id59_ids() { # <text> -> every identity sentence in it, one per line
@@ -6612,18 +6650,19 @@ assert_eq "#59: the rig really has three distinct agents in meta" "1" \
     "$(command grep -qxF 'seat.main=boss' "$ID59_META/meta" &&
        command grep -qxF 'seat.worker.0=sidekick' "$ID59_META/meta" &&
        command grep -qxF 'seat.spawned.0=helper' "$ID59_META/meta" && echo 1 || echo 0)"
-ID59_DEC_MAIN="$(_id59_decode "$ID59_META/launch.main.sh")"
-ID59_DEC_SP0="$(_id59_decode "$ID59_META/launch.spawned.0.sh")"
+ID59_DEC_MAIN="$(_id59_print "$ID59_META" main)"
+ID59_DEC_SP0="$(_id59_print "$ID59_META" spawned.0)"
 ID59_OC_W0="$(cat "$ID59_META/opencode.worker.0.md" 2>/dev/null || true)"
-# The decode instrument must have decoded SOMETHING, or every count below reads 0 and the
+# The instrument must have reported SOMETHING, or every count below reads 0 and the
 # singleton pins fail loudly instead of passing vacuously — but say it out loud anyway.
-assert_eq "#59: the launch artifacts really decoded to a command (instrument works)" "1" \
-    "$([[ "$ID59_DEC_MAIN" == *'--append-system-prompt'* && "$ID59_DEC_SP0" == *'--append-system-prompt'* ]] && echo 1 || echo 0)"
+assert_eq "#59: _run --print really reported an argv for both slots (instrument works)" "1" \
+    "$([[ "$ID59_DEC_MAIN" == *'"argv":'* && "$ID59_DEC_MAIN" == *'--append-system-prompt'* &&
+          "$ID59_DEC_SP0" == *'"argv":'* && "$ID59_DEC_SP0" == *'--append-system-prompt'* ]] && echo 1 || echo 0)"
 # EXACT SINGLETON per slot: count is one, and that one is this slot's own agent. A
 # contaminated artifact (own identity, then a wrong one) fails on the count.
-assert_eq "#59: launch.main.sh carries EXACTLY ONE identity, and it is MAIN's" "1" \
+assert_eq "#59: main's argv carries EXACTLY ONE identity, and it is MAIN's" "1" \
     "$(_id59_singleton "$ID59_DEC_MAIN" "You are agent boss (slot main).")"
-assert_eq "#59: launch.spawned.0.sh carries EXACTLY ONE identity, and it is the SPAWNED agent's" "1" \
+assert_eq "#59: the spawned slot's argv carries EXACTLY ONE identity, and it is that agent's" "1" \
     "$(_id59_singleton "$ID59_DEC_SP0" "You are agent helper (slot spawned.0).")"
 assert_eq "#59: opencode.worker.0.md carries EXACTLY ONE identity, and it is the WORKER's" "1" \
     "$(_id59_singleton "$ID59_OC_W0" "You are agent sidekick (slot worker.0).")"
@@ -6700,7 +6739,7 @@ assert_eq "#59 C3-2: a legacy non-conforming seat.main still RESUMES (no fatal)"
 assert_eq "#59 C3-2: ...and its pane is really labelled with that legacy name" "1" \
     "$(tmux list-panes -s -t c32sess -F '#{@ae_agent}' 2>/dev/null | command grep -qxF "${C32_LEGACY}" && echo 1 || echo 0)"
 # ...and the only thing it loses is the identity line — decoded, not raw-grepped.
-C32_DEC="$(_id59_decode "$C32_META/launch.main.sh")"
+C32_DEC="$(_id59_print "$C32_META" main)"
 assert_eq "#59 C3-2: ...it carries NO identity line (quiet suppression at the sink)" "0" \
     "$(_id59_n "$C32_DEC")"
 assert_eq "#59 C3-2: ...but DOES carry the rest of the ae context (quiet, not shut)" "1" \

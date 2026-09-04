@@ -56,7 +56,7 @@ config	-	Test 8: ae <name> use <name> override
 resume	-	Test 9: Resume from different CWD (local mode)
 doctor	-	Test 10: ae doctor
 doctor	-	Test 10b: ae doctor orphan check (P2a — lifecycle blindness)
-doctor	-	refresh reproduces the CORE's helper set, byte for byte
+doctor	-	refresh reproduces the CORE's helper set, link for link
 doctor	watchdog-rig	Test 11: ae doctor --refresh
 watchdog	watchdog-rig	Test 11b: refresh must NOT stop a STOPPED session's stale-pid watchdog
 resume	watchdog-rig	Test 11c: resume trims events.jsonl to the newest AE_EVENTS_KEEP lines
@@ -68,7 +68,7 @@ list	-	ae list robustness: a per-session helper returning non-zero must NOT abor
 launch	-	orchestrator companion autostart: scaffold → any launch brings it up
 launch	session-shape	lead-default Part 3: layout = lead-solo (real tmux windows)
 launch	session-shape	session-shape: layout = lead-pair (colead seat in window 0, real tmux)
-launch	-	#27: launch.<slot>.sh survives being re-run
+launch	-	#27: a pane command survives being re-run
 launch	-	ROLLBACK: a failed launch must not leave debris behind
 stop	-	#33: stop targets the RECORDED server by EXACT id, and verifies
 end	-	#34: end STOPS before it SNAPSHOTS
