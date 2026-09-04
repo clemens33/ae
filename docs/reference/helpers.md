@@ -15,6 +15,8 @@ $ echo $?
 
 It refuses rather than guessing. A helper that picked a session for you would eventually deliver one workspace's message into another.
 
+**Never write through a helper path.** `>`, `>>`, `chmod`, `cp` and `sed -i` follow a symlink, so `> ~/.ae/sessions/<name>/send` truncates the ae core binary rather than replacing a helper — and every session on the machine is bound to it. Reading through one is fine. If you need to replace a helper, delete it first, or just run `ae doctor --refresh <name>` and let ae re-link the set.
+
 ## Communication
 
 | Helper | Purpose |

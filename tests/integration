@@ -2911,6 +2911,10 @@ assert_eq "shim parity CONTROL: ...and refresh puts the core's link back" \
     "$bp_before" "$(bp_snapshot)"
 # SECOND CONTROL, for the other way a link dies: replaced by a regular file. The
 # refresh must publish OVER it rather than leaving a script in a session directory.
+# `rm -f` FIRST — `>` and `chmod` both follow a symlink, so without the unlink this
+# control would truncate and chmod the ae core binary itself rather than plant a
+# stale helper.
+rm -f "$BP_DIR/peek"
 printf '#!/usr/bin/env bash\necho stale\n' >"$BP_DIR/peek"
 chmod 0700 "$BP_DIR/peek"
 (cd "$REPO_BP" && "$AE" doctor --refresh test-shimparity >/dev/null 2>&1)
@@ -2940,6 +2944,14 @@ sleep 1
 wd_poll test-sync "is running" 20 || true
 wd_pid_before="$(wd_pid test-sync)"
 
+# UNLINK BEFORE WRITING, and this is not tidiness. Since slice Z2 a helper is a
+# SYMLINK to the ae core binary, and both `>` and `chmod` FOLLOW a symlink — so
+# `> <dir>/reply` does not plant a stale helper, it TRUNCATES the core every
+# session on this machine is bound to, and chmods it. Measured: the whole install
+# domain then fails with phantom errors about a core that reports 'stale-helper'.
+# `rm -f` first makes the redirection create a regular file, which is exactly the
+# stale artifact this section wants refresh to replace.
+rm -f "$HOME/.ae/sessions/test-sync/reply" "$HOME/.ae/sessions/test-sync/state"
 printf '#!/usr/bin/env bash\necho stale-helper\n' > "$HOME/.ae/sessions/test-sync/reply"
 chmod 0700 "$HOME/.ae/sessions/test-sync/reply"
 printf '#!/usr/bin/env bash\necho stale-helper\n' > "$HOME/.ae/sessions/test-sync/state"
@@ -2984,15 +2996,17 @@ assert_contains "doctor-refresh: workspace regenerated" "memo add" "$workspace_o
 # refresh still has to get right about paths is the CORE binding, which is pinned
 # in the core-binding section, and the shim bytes, pinned just below.
 
-# THE SHIM CANARY (was the declare-f canary, #4B). Since B glue cut 2 the core
-# writes every session helper and bash only reproduces that same shim set on
-# refresh, so what the regenerated artifact must carry is the core call — the
-# byte-for-byte parity between the two writers is pinned in its own section
-# below. This one asserts the artifact then RUNS, end to end, against a real
-# _lib-free session, real panes and a real events.jsonl.
+# THE HELPER CANARY (was the declare-f canary, #4B). Since slice Z2 a helper has
+# no body to inspect: it IS the core, reached through a symlink, and the entry it
+# serves comes from the name it was invoked under. So the artifact pin is the LINK
+# (the parity between the two writers is pinned in its own section below) and
+# everything after it RUNS the thing, end to end, against a real session, real
+# panes and a real events.jsonl — which is the only place the dispatch can be
+# proven anyway.
 STATE_HELPER="$HOME/.ae/sessions/test-sync/state"
-assert_contains "doctor-refresh: state helper carries the core shim" \
-    '_state "$META_DIR" "$@"' "$(cat "$STATE_HELPER")"
+assert_eq "doctor-refresh: the stale state helper was replaced by a link to the core" "1" \
+    "$([[ -L "$STATE_HELPER" && "$(readlink "$STATE_HELPER" || true)" == \
+         "$(command grep '^ae_core=' "$HOME/.ae/sessions/test-sync/meta" | cut -d= -f2- || true)" ]] && echo 1 || echo 0)"
 assert_contains "doctor-refresh: regenerated state runs standalone (no args)" \
     "state:" "$("$STATE_HELPER" 2>&1 || true)"
 # RUN IT FROM THE PANE IT IS FOR. The canary is "does the regenerated artifact work end
@@ -3024,8 +3038,8 @@ unset state_events_before state_nopane_rc state_nopane_out
 # still carry is the shim, and a missing name there is invisible to the unit suite,
 # so run the regenerated artifact against real events.
 REQ_HELPER="$HOME/.ae/sessions/test-sync/requests"
-assert_contains "doctor-refresh: requests helper carries the core shim" \
-    '_requests "$META_DIR" "$@"' "$(cat "$REQ_HELPER")"
+assert_eq "doctor-refresh: requests is a link to the core, not a body of its own" "1" \
+    "$([[ -L "$REQ_HELPER" ]] && echo 1 || echo 0)"
 cat >>"$HOME/.ae/sessions/test-sync/events.jsonl" <<'REQEV'
 {"ts":"2026-08-01T00:00:00Z","actor":"a:one","action":"ask","ref":"canary-open","target":"b:two","summary":"still open"}
 {"ts":"2026-08-01T00:01:00Z","actor":"a:one","action":"ask","ref":"canary-done","target":"b:two","summary":"answered"}
@@ -3055,8 +3069,8 @@ unset REQ_HELPER req_canary req_canary2
 # management verbs never reach it — `ae watchdog` owns those — so the cycle is
 # smoked where it actually lives: stop → status → start → status, real panes.
 WD_HELPER="$HOME/.ae/sessions/test-sync/watchdog"
-assert_contains "doctor-refresh: watchdog helper carries the core daemon shim" \
-    '_watchdog-run "$META_DIR" "$@"' "$(cat "$WD_HELPER")"
+assert_eq "doctor-refresh: watchdog is a link to the core, dispatching on its own name" "1" \
+    "$([[ -L "$WD_HELPER" ]] && echo 1 || echo 0)"
 wd_poll test-sync "is running" 20 || true # settle the refresh restart
 "$AE" watchdog stop test-sync >/dev/null 2>&1 || true
 wd_poll test-sync "not running" 20 || true

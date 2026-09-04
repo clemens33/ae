@@ -147,6 +147,19 @@ Every helper is core-owned end to end — name resolution, tmux server support, 
 
 **Call a helper by its full path.** The session directory is `argv[0]`'s dirname, so a helper reached by bare name — through `PATH`, or copied somewhere convenient — has no session to act on and refuses with exit 2 rather than guessing at one. The helpers are deliberately not on `PATH` for that reason.
 
+**Never write through a helper path.** A helper is a link to the ae core binary, and
+`>`, `>>`, `chmod`, `cp` and `sed -i` all FOLLOW a symlink — so `> <session-dir>/send`
+does not replace a helper, it truncates the core binary that every session on the machine
+is bound to, and `chmod` on one re-modes that binary. It fails far from the write: the
+next `ae` command reports a core that is empty or that prints whatever you wrote. Reading
+through a link is fine; only writers bite. To replace a helper, `rm -f` it first and then
+create the new file, which is what `write_helpers` does for its own publish (symlink to a
+temp beside the destination, then rename). This is a live hazard for test fixtures above
+all — a fixture that plants a "stale helper" is exactly the shape that corrupts the core —
+and it shipped once, as 19 phantom failures in an unrelated domain. Z3 will make the
+published core read-only and have `ae doctor` warn when the resolved core is writable;
+until then the rule is the only guard.
+
 Two more links sit in the same directory and are not agent-facing: `watchdog` and `events-tail` are the whole command of the two monitor panes, so each must be a filesystem entry tmux can run rather than a shell line that would have to quote a core path. `loop` is the deprecated spelling of `watchdog`, kept as an alias for sessions created before the rename.
 
 ### How helpers are generated (links, not scripts)
