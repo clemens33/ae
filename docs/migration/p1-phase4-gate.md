@@ -17,8 +17,10 @@ score.
 
 ## Status
 
-**NOT RUN — phase 4 does not exist.** The fixed gate is the implementation's acceptance
-standard, not a description of whatever is later built.
+**NOT RUN — Phase-4 Run 2 has not executed.** Phase-4 machinery now exists; what has not
+happened is the run. The fixed gate remains the implementation's acceptance standard, not
+a description of whatever is later built — the criteria were authored before that
+machinery existed and are not amended by it.
 
 ## Fixed inputs and vocabulary
 
@@ -29,15 +31,15 @@ The corpus is the named, hash-pinned view recorded in
 `helper:requests`, and 38 `helper:events-tail` rows. P1-adjacent and P2 rows remain
 frozen but do not enter this gate.
 
-The obligation table's current committed projection contains 1,843 obligations over
-581 carrying invocation rows: 1,082 `OBSERVED` and 761 `UNSCORABLE`. These numbers are a
+The obligation table's current committed projection contains 6,730 obligations over
+865 carrying invocation rows: 1,863 `OBSERVED` and 4,867 `UNSCORABLE`. These numbers are a
 reconciliation control for the current contract, not hand-maintained authority. The
 table's contract-blob freshness relation is authoritative: if the contract moves, phase
 4 stops for re-derivation even when the old counts still happen to agree.
 
 The only product-output exclusions are the CLOSED register
 `p1-phase4-open-choices.tsv`, blob
-`2da4fb86933a6b8edee15fd61596d6f53fa6c550`. Every entry names its authority,
+`931773e99e30bea49d0303550cd08d68122a5054`. Every entry names its authority,
 surface, scope, exact excluded comparison locus, and the facts that remain required.
 An implementation or runner cannot declare another open choice. Changing the register
 changes a fixed input and requires a new gate identity and review.
@@ -138,8 +140,8 @@ Terms:
 4. **[PAIR/CONTROL] THE OBLIGATION TABLE PROVES ITS OWN FRAMING.** For every obligation,
    re-read `from` from the captured stream, validate the closed stream/predicate/support
    domains, and verify its `(case, consumer)` is a P1 row. Derive the P1 universe by exact
-   phase equality and prove its 1,065 keys are distinct. Derive the 581 distinct carrying
-   keys from obligations, prove they are a subset of that universe, and derive the 484
+   phase equality and prove its 1,065 keys are distinct. Derive the 865 distinct carrying
+   keys from obligations, prove they are a subset of that universe, and derive the 200
    match-only keys as the complement. `INVOCATIONS.tsv` names a consumer file while the
    obligation table names its case directory, so the join uses the consumer path's
    dirname rather than comparing the two spellings directly. No stored verdict column is
@@ -167,7 +169,7 @@ Terms:
    SC-017l, widened into a prediction of the whole row set, or omitted. A live sighting
    may add a running candidate; it cannot remove the durable selector-missing unknown
    candidate. Current reconciliation control: SC-017m `OBSERVED` is 30 and SC-017l
-   `OBSERVED` remains 14. These figures are controls for the contract blob pinned by
+   `OBSERVED` is 44. These figures are controls for the contract blob pinned by
    criterion 1, not authority: a fresh contract-driven re-derivation changes them rather
    than failing merely because old prose still names the prior counts.
 
@@ -323,8 +325,26 @@ Terms:
     header-only views with no semantic rows: 302 have semantic rows; 86 are the single residual line
     `No running ae sessions. (try: ae list --all)`; 52 are `No recently active sessions.`;
     14 are `No running sessions need your attention.`; and four have empty stdout.
-    Separately, 294 of the 458 human rows carry 1,104 agent rows, while all 78 SC-017r
-    obligation loci are `UNSCORABLE`. Agent-row presence is not agent-health coverage.
+    Separately, the fixed-source audit reports the human agent-row population against a
+    stated denominator, because the three counts differ and only one of them is the base a
+    coverage claim may divide by: the UNIVERSE is 458 non-`--json` `ae list`/`ae ls`
+    invocations; two are EXCLUDED as `rc=1` bad-flag cases (`ae list --no-such-flag`, both
+    `list_badflag`), which produce a usage error rather than a listing and so can carry no
+    agent row; the DENOMINATOR is therefore the 456 `rc=0` invocations, of which 286 carry
+    at least one agent row, for 816 agent rows total (578 under running sessions, 238 under
+    stopped). The superseded 294/1,104 claim conflated 294 git-bearing outputs and 288
+    git/active metadata sublines with agent rows — a subline whose first token satisfies the
+    agent-ref grammar is still a subline, and classifying by grammar rather than by an
+    aggregate count is what separates the two populations.
+    SC-017r's obligation loci are NOT uniformly unscorable, and the earlier
+    "all 78 are `UNSCORABLE`" claim is retired on both counts: the accepted table carries
+    812 SC-017r loci (808 singular plus four `(class)` loci for the four rendered identities
+    that repeat), of which 796 are `UNSCORABLE` and 16 are `OBSERVED` — 10 `blank` to
+    `alive`, two `blank` to `dead`, and four `blank` to `unambiguous unknown`. The 812
+    addresses against 816 occurrences is the same four-way repetition, not a loss.
+    Agent-row presence is still not agent-health coverage: 796 of 812 loci remain unscorable,
+    and the 16 observed rows are presentation divergences at identities whose panes were
+    actually reached.
     The projection's zero-row header
     calibration therefore has no corpus specimen and must not be reported as exercised.
     Each gap points to its only evidence: a pinned successor test, a controlled phase-4

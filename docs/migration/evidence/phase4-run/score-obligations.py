@@ -8,11 +8,16 @@ from __future__ import annotations
 
 import json
 import re
+import sys
+import tempfile
+from contextlib import redirect_stderr, redirect_stdout
+from io import StringIO
 from pathlib import Path
+
+from artifact_tuple import ArtifactTuple, ArtifactTupleError, parse_tsv_bytes, read_generated_tuple
 
 REPO = Path(__file__).resolve().parents[4]
 INV = REPO / "docs/migration/evidence/corpus/INVOCATIONS.tsv"
-OBL = REPO / "docs/migration/evidence/corpus/OBLIGATIONS.tsv"
 RUN = Path(__file__).resolve().parent
 CAPS = RUN / "captures"
 
@@ -164,6 +169,16 @@ def score_one(obl: dict, cap: Path) -> tuple[str, str]:
 
 
 def main() -> int:
+    # This is intentionally before opening output: an incoherent generated tuple
+    # has no scorer result.  `snapshot.obligations` is the one read whose hash the
+    # FRESHNESS file bound; do not turn this into a verifier subprocess plus a
+    # second OBLIGATIONS open.
+    try:
+        snapshot = read_generated_tuple(REPO)
+        _, obls = parse_tsv_bytes(snapshot.obligations, "saved OBLIGATIONS snapshot")
+    except ArtifactTupleError as error:
+        print(error, file=sys.stderr)
+        return 2
     _, inv = load_tsv(INV)
     p1 = [r for r in inv if r["phase"] == "P1"]
     index = {}
@@ -171,11 +186,11 @@ def main() -> int:
         case_dir = str(Path(r["case"]).parent)
         index[(case_dir, r["consumer"])] = i
 
-    _, obls = load_tsv(OBL)
     out_path = RUN / "obligation-scores.tsv"
     n_obs = n_uns = n_pass = n_fail = n_abort = 0
     by_id = {}
     with out_path.open("w", encoding="utf-8") as fh:
+        fh.write(f"# generated_tuple\t{snapshot.identity}\n")
         fh.write("case\tconsumer\tobligation_id\tlocus\tsupport\tverdict\tdetail\n")
         for obl in obls:
             key = (obl["case"], obl["consumer"])
@@ -226,5 +241,62 @@ def main() -> int:
     return 0
 
 
+def redproof() -> None:
+    """Exercise main's actual no-output refusal and its saved-tuple attribution."""
+    global INV, RUN, read_generated_tuple
+    original_inv, original_run, original_reader = INV, RUN, read_generated_tuple
+    try:
+        with tempfile.TemporaryDirectory(prefix="ae-score-tuple-") as temp:
+            root = Path(temp)
+            INV = root / "INVOCATIONS.tsv"
+            INV.write_text("phase\tcase\tconsumer\nP1\tarms/X/case.tsv\tview\n", encoding="utf-8")
+            RUN = root / "out"
+            RUN.mkdir()
+            out_path = RUN / "obligation-scores.tsv"
+
+            def refuse(_repo: Path) -> ArtifactTuple:
+                raise ArtifactTupleError("ARTIFACT-TUPLE RED fixture")
+
+            read_generated_tuple = refuse
+            refused_stdout, refused_stderr = StringIO(), StringIO()
+            with redirect_stdout(refused_stdout), redirect_stderr(refused_stderr):
+                refusal_rc = main()
+            if (
+                refusal_rc != 2
+                or out_path.exists()
+                or refused_stdout.getvalue()
+                or "ARTIFACT-TUPLE RED fixture" not in refused_stderr.getvalue()
+            ):
+                raise RuntimeError("REDPROOF tuple refusal wrote a scorer output")
+            print("RED scorer tuple refusal: named stderr, no output")
+
+            fields = {
+                "contract_blob": "a" * 40,
+                "obligations_sha256": "b" * 64,
+                "added_roster_gap_sha256": "c" * 64,
+                "sc509c_unproved_sha256": "d" * 64,
+            }
+            snapshot = ArtifactTuple(
+                obligations=b"case\tconsumer\n",
+                added_roster_gap=b"",
+                sc509c_unproved=b"",
+                freshness=b"",
+                fields=fields,
+            )
+            read_generated_tuple = lambda _repo: snapshot
+            if main() != 0:
+                raise RuntimeError("REDPROOF valid saved tuple did not score")
+            first = out_path.read_text(encoding="utf-8").splitlines()[0]
+            if first != f"# generated_tuple\t{snapshot.identity}":
+                raise RuntimeError(f"REDPROOF scorer lost tuple identity: {first!r}")
+            print("GREEN scorer saved tuple parsed and attributed")
+    finally:
+        INV, RUN, read_generated_tuple = original_inv, original_run, original_reader
+    print("SCORE-OBLIGATIONS-TUPLE-REDPROOF PASS")
+
+
 if __name__ == "__main__":
-    raise SystemExit(main())
+    if sys.argv[1:] == ["redproof"]:
+        redproof()
+    else:
+        raise SystemExit(main())
