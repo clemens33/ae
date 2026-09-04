@@ -8,3 +8,7 @@ __pycache__/
 # Rust build artifacts (Cargo.lock is COMMITTED — see rust-toolchain.toml/#80)
 /target/
 /mutants.out*/
+
+# Local release bundles: `just bundles` builds both platform halves and the
+# release SHA256SUMS here. Assets, not sources.
+/dist/

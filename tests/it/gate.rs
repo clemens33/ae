@@ -570,6 +570,181 @@ fn the_bundle_recipe_is_the_one_definition_of_a_bundle_and_both_release_legs_cal
     }
 }
 
+/// The musl compiler/linker name the justfile pins, from `RUST_MUSL_CC := "…"`.
+fn justfile_musl_cc(justfile: &str) -> String {
+    justfile
+        .lines()
+        .find_map(|line| line.trim_end().strip_prefix("RUST_MUSL_CC := "))
+        .map(|value| value.trim().trim_matches('"').to_owned())
+        .unwrap_or_default()
+}
+
+/// The linker `.cargo/config.toml` pins for the musl target: the first
+/// `linker = "…"` under `[target.x86_64-unknown-linux-musl]` and no other.
+fn cargo_musl_linker(config: &str) -> String {
+    let mut inside = false;
+    for line in config.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            inside = line == "[target.x86_64-unknown-linux-musl]";
+            continue;
+        }
+        if inside && let Some(value) = line.strip_prefix("linker = ") {
+            return value.trim().trim_matches('"').to_owned();
+        }
+    }
+    String::new()
+}
+
+/// ONE NAME FOR THE CROSS COMPILER, in the two files that have to agree.
+///
+/// `.cargo/config.toml` pins the linker rustc invokes for the musl target and
+/// the justfile pins `CC_x86_64_unknown_linux_musl` for the C ring compiles.
+/// They are the same program, and a laptop that links the Linux half with one
+/// while compiling C with another produces an artifact nobody chose.
+#[test]
+fn the_musl_cross_compiler_has_one_spelling_in_the_justfile_and_the_cargo_config() {
+    let justfile = read(&root().join("justfile"));
+    let config = read(&root().join(".cargo/config.toml"));
+
+    let pinned = justfile_musl_cc(&justfile);
+    assert!(
+        !pinned.is_empty(),
+        "the justfile must pin RUST_MUSL_CC — it is the one name three readers share"
+    );
+    assert_eq!(
+        cargo_musl_linker(&config),
+        pinned,
+        "`.cargo/config.toml`'s musl linker and the justfile's RUST_MUSL_CC must name one compiler"
+    );
+
+    // RED — each parser must read its OWN section, not any line that looks
+    // like one. A rule that matches anything cannot notice drift.
+    assert_eq!(
+        cargo_musl_linker("[target.aarch64-apple-darwin]\nlinker = \"wrong\"\n"),
+        "",
+        "a linker pinned for another target is not the musl one"
+    );
+    assert_eq!(
+        cargo_musl_linker("[target.x86_64-unknown-linux-musl]\nlinker = \"cc\"\n"),
+        "cc"
+    );
+    assert_eq!(
+        justfile_musl_cc("RUST_CROSS_TARGET := \"x86_64-unknown-linux-musl\"\n"),
+        "",
+        "the target triple is not the compiler name"
+    );
+    assert_eq!(
+        justfile_musl_cc("RUST_MUSL_CC := \"probe-gcc\"\n"),
+        "probe-gcc"
+    );
+}
+
+/// A RELEASE IS BUILT AND PUBLISHED HERE, and it refuses before it can half
+/// finish (human ruling, 2026-09-04: agents release locally, Actions optional).
+///
+/// The ordering is the safety property. Push rights are proved before the bump
+/// writes a version file; the bundles are built and proven before a tag exists;
+/// only then is anything pushed or attached. A release that dies after
+/// `git push --tags` has published a version with no assets behind it, and
+/// every assertion here is one step of the order that prevents it.
+#[test]
+fn a_release_builds_both_bundles_locally_and_proves_its_rights_before_the_bump() {
+    let justfile = read(&root().join("justfile"));
+
+    // `just bundle` stays the ONE definition of a bundle: `bundles` calls it
+    // once per platform, exactly as the two workflow legs do.
+    let bundles = recipe_text(&justfile, "bundles:").join("\n");
+    assert!(
+        !bundles.is_empty(),
+        "the justfile must carry a `bundles` recipe"
+    );
+    for pin in [
+        r#"just bundle "$version" darwin-arm64"#,
+        r#"just bundle "$version" linux-x86_64-musl"#,
+        "sums -- ae-*.tar.gz > SHA256SUMS",
+    ] {
+        assert_eq!(
+            bundles.matches(pin).count(),
+            1,
+            "the bundles recipe must carry exactly one `{pin}`"
+        );
+    }
+    // The static proof is LOCAL and it is the pinned toolchain's, not the
+    // machine's: macOS ships no readelf, and llvm-readobj arrives with the
+    // llvm-tools component rust-toolchain.toml already pins.
+    for pin in [
+        "rustc --print sysroot",
+        "llvm-readobj",
+        "--program-headers",
+        "PT_INTERP",
+    ] {
+        assert!(
+            bundles.contains(pin),
+            "the bundles recipe must prove the musl half static via `{pin}`"
+        );
+    }
+
+    // THE ORDER OF THE RELEASE, read off the recipe itself.
+    let release = recipe_text(&justfile, "release:");
+    let step = |needle: &str| {
+        release
+            .iter()
+            .position(|line| line.contains(needle))
+            .unwrap_or_else(|| panic!("the release recipe must run `{needle}`"))
+    };
+    let rights = step(".permissions.push");
+    let bump = step("just bump");
+    let build = step("just bundles");
+    let tag = step("git tag");
+    let publish = step("gh release create");
+    assert!(
+        rights < bump,
+        "push rights are proved before the bump writes a version file"
+    );
+    assert!(
+        bump < build && build < tag,
+        "both bundles are built and proven after the bump and before the tag"
+    );
+    assert!(
+        tag < publish,
+        "the release object is created only once the tag exists"
+    );
+    assert!(
+        release.iter().any(|line| line.contains("--notes-file")),
+        "the release body reaches gh as a file, not as an argv-sized string"
+    );
+
+    // The tag-triggered workflow is retained as a MANUAL Linux run-proof lane.
+    // Re-arming its push trigger would put Actions back on the critical path,
+    // which is the thing the ruling removed.
+    let workflow = read(&root().join(".github/workflows/release.yml"));
+    assert!(
+        workflow.contains("on:\n  workflow_dispatch:"),
+        "the release workflow is dispatch-only"
+    );
+    assert!(
+        !workflow.contains("  push:\n    tags:"),
+        "the release workflow must not be tag-triggered — `just release` publishes"
+    );
+
+    // Both workflow legs that LINK musl name their own linker, because the
+    // pin in `.cargo/config.toml` is the macOS cross toolchain's name and
+    // Ubuntu's musl-tools ships no triple-prefixed alias.
+    for file in [
+        ".github/workflows/release.yml",
+        ".github/workflows/rust.yml",
+    ] {
+        assert_eq!(
+            read(&root().join(file))
+                .matches("CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc")
+                .count(),
+            1,
+            "{file} must name the musl linker its runner actually has"
+        );
+    }
+}
+
 /// One command in `dir`, with `PATH` led by that fixture's own `bin`.
 fn in_fixture(dir: &Path, program: &str, args: &[&str], env: &[(&str, &str)]) -> (i32, String) {
     let mut invocation = super::parity::Invocation::new(program)

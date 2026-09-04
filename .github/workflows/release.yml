@@ -1,9 +1,17 @@
 name: release
 
+# OPTIONAL, AND OFF THE CRITICAL PATH (ruled 2026-09-04). `just release` builds,
+# proves and publishes both platform bundles from a laptop, so a release no
+# longer waits on a runner and a red or queued Actions run cannot hold one up.
+#
+# The job is kept INTACT because it is still the only place a musl binary can
+# actually RUN: it executes the cross-built core, checks its version, proves it
+# static, and runs both `_net-probe` controls against musl's NSS-less resolver.
+# Dispatch it AT A TAG — `gh workflow run release.yml --ref v2026.9.2` — because
+# every step derives the version from GITHUB_REF_NAME. Dispatched on a branch it
+# refuses at the first `--version` assertion, before any release object exists.
 on:
-  push:
-    tags:
-      - 'v[0-9]*.[0-9]*.[0-9]*'
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -41,7 +49,13 @@ jobs:
             cargo install --locked --version "$want" just
           fi
 
+      # `.cargo/config.toml` pins the musl linker to the macOS cross toolchain's
+      # name, because that is where `just bundles` links this target. Ubuntu's
+      # `musl-tools` ships `musl-gcc` and no triple-prefixed alias, so this leg
+      # names its own. A config value an env var overrides is still the pin.
       - name: Build release binary
+        env:
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
         run: cargo build --release --locked --target x86_64-unknown-linux-musl
 
       - name: Verify and bundle Linux artifact

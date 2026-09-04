@@ -33,7 +33,8 @@ mkdocs.yml          — docs site config
 | [shellcheck](https://github.com/koalaman/shellcheck) | bash linter, pinned to **0.11.0** and enforced by `just lint` |
 | [shfmt](https://github.com/mvdan/sh) | bash formatter (indent=4, case-indent) |
 | [git-cliff](https://github.com/orhun/git-cliff) | changelog from conventional commits |
-| [gh](https://cli.github.com/) | GitHub CLI for releases |
+| [gh](https://cli.github.com/) | GitHub CLI — a hard prerequisite of `just release`, which attaches the assets itself |
+| [x86_64-unknown-linux-musl-gcc](https://github.com/messense/macos-cross-toolchains) | musl cross toolchain — needed by `just bundles` only. `brew install messense/macos-cross-toolchains/x86_64-unknown-linux-musl` |
 | [mkdocs-material](https://squidfunk.github.io/mkdocs-material/) | docs site (optional, only for `just docs`) |
 
 ## Common commands
@@ -58,7 +59,8 @@ just install          # checkout-mode immutable versioned install
 just rust-setup       # install pinned Rust toolchain and dev tools
 just rust-check       # Rust fmt, clippy, nextest, and doctests
 just version          # current AE_VERSION
-just release          # full release pipeline (CalVer → tag → gh release)
+just bundles          # both platform bundles + release SHA256SUMS into ./dist
+just release          # full release pipeline (CalVer → bundles → tag → gh release)
 just docs             # serve the docs site locally on http://localhost:8000
 just docs-build       # build the static site into ./site
 ```
@@ -95,8 +97,10 @@ Three modules are about the REPOSITORY rather than the product:
 * `tests/it/gate.rs` — the two build files ae owns. It proves the `lint` recipe redirects
   shellcheck's stdin (issue #67: the linter reads fd 0, an agent harness hands it a socket,
   and the process then blocks forever), that `install` carries no GNU-only coreutils, that
-  the `bundle` recipe is the one definition of a bundle, and that `just bump` derives its
-  sequence from the tags.
+  the `bundle` recipe is the one definition of a bundle, that `just bump` derives its
+  sequence from the tags, that the musl cross compiler has one spelling across the justfile
+  and `.cargo/config.toml`, and that `just release` proves its push rights before the bump
+  and builds both bundles before the tag.
 * `tests/it/parity.rs` — the suite's ONE child-process door. It was the plumbing of a
   bash-versus-core parity harness; the harness went with the bash it compared against, and
   the door stayed because every real-server test runs through it.
@@ -108,18 +112,45 @@ cases are the half that makes a green run mean something.
 ## Releases
 
 SemVer-compatible CalVer in `YYYY.M.N` format, with the sequence derived from matching Git
-tags and reset each month. `just release` is the full pipeline:
+tags and reset each month.
+
+**The whole release happens on one machine (ruled 2026-09-04).** `just release` builds both
+platform bundles locally and attaches them itself, so GitHub Actions is not on the critical
+path and a queued or red run cannot hold a release up. Prerequisites are `gh` logged in as
+an account with push rights and the musl cross toolchain; both are checked in the pre-flight.
 
 The bump is recover-or-refuse: durable backups restore version files on a handled failure;
 an untrappable interruption leaves `.ae-bump-recovery`, and the next bump stops until it is
 recovered with `just bump-recover`.
 
-1. Pre-flight: clean working tree, fetch tags, pull rebase.
+1. Pre-flight: clean working tree; `gh` authenticated **and** `repos/<owner>/<repo>` reporting `permissions.push=true`; the musl cross compiler present; fetch tags, pull rebase.
 2. `just check` (shellcheck + shfmt).
 3. `just test` (the Rust suite; minutes).
 4. `just bump` updates the version — `Cargo.toml` and `Cargo.lock`, which since slice Z3 are the only files that hold one — and rewrites the README and docs/index release badges. It refuses to proceed if the pre-release badge or the obsolete checkout-install prose is still standing in either file; a real build-from-source section is not what it is looking for.
-5. `git-cliff` → `CHANGELOG.md` + release-body.
-6. Commit, tag, push, `gh release`.
+5. `just bundles` builds both halves into `dist/` and proves them.
+6. `git-cliff` → `CHANGELOG.md` + release-body.
+7. Commit, tag, push, then `gh release create` with the three assets and the changelog section as `--notes-file`.
+
+**Why the order is what it is.** Everything that can refuse refuses in step 1, before a
+version file is written and long before a tag exists — an authenticated `gh` account is not
+the same thing as one that can push here, which is why the API is asked rather than the
+login trusted. The bundles are built in step 5, still before the tag, so a failed cross
+build costs a `git checkout` of two version files rather than an orphan tag with no assets
+behind it. `tests/it/gate.rs` pins that order.
+
+**What `just bundles` proves, and what it does not.** It builds `darwin-arm64` natively and
+`linux-x86_64-musl` against the Homebrew cross toolchain, both `--locked`; runs `--version`
+on the native half; and proves the musl half static with `llvm-readobj --program-headers`
+from the pinned `llvm-tools` component (no `PT_INTERP`) plus `file`. It cannot RUN the musl
+binary — a macOS kernel will not exec an ELF — so **the musl run proof stays on the Linux CI
+leg** (`.github/workflows/rust.yml`), which executes the core, checks its exit codes, and
+resolves a real name through musl's NSS-less `getaddrinfo`. `just bundle` is honest about
+the same gap: it asks a native member for its `--version` and says so out loud when it
+degrades to a byte search for a foreign one.
+
+`.github/workflows/release.yml` is kept as a **dispatch-only** lane for that Linux run
+proof. Dispatch it at a tag — `gh workflow run release.yml --ref v<version>` — because every
+step derives the version from `GITHUB_REF_NAME`.
 
 ## Cross-model code review
 

@@ -372,7 +372,20 @@ changelog:
 
 # ── Release ──────────────────────────────────────────────────────────
 
-# Full release pipeline: check → test → bump → changelog → tag → gh release
+# THE WHOLE RELEASE HAPPENS HERE, on this machine. GitHub Actions is no longer
+# on the critical path: `just bundles` builds and proves both platform halves
+# locally, and `gh release create` attaches them. The tag-triggered workflow is
+# retained as a manually dispatched Linux run-proof lane, not as the publisher.
+#
+# THE ORDER IS THE SAFETY PROPERTY. Everything that can refuse — a dirty tree,
+# a gh account without push rights, a missing cross toolchain — refuses in the
+# pre-flight, before the bump writes a version file and long before a tag
+# exists. Everything that can fail expensively — the gates, the bundles —
+# happens before the tag too. A release that dies after `git push --tags` has
+# published a version with no assets behind it, which is the half-done state
+# this ordering exists to prevent.
+
+# Full release pipeline: check → test → bump → bundles → changelog → tag → gh release
 # Usage: just release
 release:
     #!/usr/bin/env bash
@@ -382,6 +395,36 @@ release:
     if ! git diff --quiet HEAD || [ -n "$(git ls-files --others --exclude-standard)" ]; then
         echo "Error: uncommitted or untracked changes" >&2; exit 1
     fi
+
+    # PUBLICATION RIGHTS, PROVED BEFORE ANYTHING IS IRREVERSIBLE. Now that the
+    # release is built and attached from here, `gh` is a hard prerequisite
+    # rather than the best-effort afterthought it was when a runner published.
+    #
+    # `.permissions.push` is ASKED OF THE API, never inferred from a successful
+    # login: an account can be authenticated, hold the `repo` scope, and still
+    # have pull-only rights on this repository — which is the exact state this
+    # laptop is in when the wrong one of two logged-in accounts is active.
+    command -v gh >/dev/null 2>&1 || { echo "Error: gh is required to publish a release" >&2; exit 1; }
+    gh auth status >/dev/null 2>&1 || { echo "Error: gh is not authenticated — gh auth login" >&2; exit 1; }
+    REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner)
+    [ -n "$REPO" ] || { echo "Error: gh cannot resolve this repository" >&2; exit 1; }
+    PUSH=$(gh api "repos/$REPO" --jq .permissions.push)
+    if [ "$PUSH" != "true" ]; then
+        echo "Error: the active gh account cannot push to $REPO (permissions.push=$PUSH)" >&2
+        echo "       gh auth status            # which account is active" >&2
+        echo "       gh auth switch --hostname github.com --user <account>" >&2
+        exit 1
+    fi
+
+    # The cross toolchain `just bundles` links the Linux half with, checked in
+    # the same breath and for the same reason: it is present or it is not, and
+    # discovering that after the tag is pushed helps nobody.
+    command -v {{ RUST_MUSL_CC }} >/dev/null 2>&1 || {
+        echo "Error: {{ RUST_MUSL_CC }} not found — the linux-x86_64-musl bundle cannot be linked." >&2
+        echo "       brew install messense/macos-cross-toolchains/x86_64-unknown-linux-musl" >&2
+        exit 1
+    }
+
     git fetch {{GIT_REMOTE}} --tags
     git pull {{GIT_REMOTE}} {{default_branch}} --rebase
 
@@ -396,6 +439,13 @@ release:
     echo "Releasing v$VERSION"
     # Re-parse and compile after bump before any changelog or tag publication.
     cargo check --locked
+
+    # Gate 3: the artifacts themselves. Both platform halves and the
+    # release-level SHA256SUMS, built and proven HERE — this is what replaced
+    # the tag-triggered workflow. It runs BEFORE the tag deliberately: a failed
+    # cross build or a musl binary that is not static costs a `git checkout` of
+    # two version files, not an orphan tag with nothing behind it.
+    just bundles
 
     # Update the release badges.
     sed_i() {
@@ -456,16 +506,32 @@ release:
     git push {{GIT_REMOTE}} "$TAG"
     git push {{GIT_REMOTE}} {{default_branch}}
 
-    # GitHub release (best-effort, requires gh CLI with repo access)
-    if command -v gh &>/dev/null; then
-        REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || true)
-        if [[ -n "$REPO" ]]; then
-            gh api "repos/$REPO/releases" \
-                -f tag_name="$TAG" -f target_commitish={{default_branch}} -f name="$TAG" \
-                -f body="$RELEASE_BODY" -f make_latest=true > /dev/null 2>&1 \
-                && echo "GitHub release created" \
-                || echo "Warning: GitHub release failed (tag pushed, create release manually)" >&2
-        fi
+    # GitHub release. NOT best-effort any more: the tag is pushed, so the assets
+    # have to land, and push rights were proved in the pre-flight — a failure
+    # here is a real failure and is reported as one rather than as a warning
+    # nobody reads. The three assets are the ones `install` fetches, so a
+    # release object without them is a broken install command.
+    NOTES_FILE="$(mktemp "${TMPDIR:-/tmp}/ae-release-notes.XXXXXX")"
+    trap 'rm -f "$NOTES_FILE"' EXIT
+    printf '%s\n' "$RELEASE_BODY" > "$NOTES_FILE"
+    ASSETS=(
+        "dist/ae-$VERSION-darwin-arm64.tar.gz"
+        "dist/ae-$VERSION-linux-x86_64-musl.tar.gz"
+        dist/SHA256SUMS
+    )
+    for asset in "${ASSETS[@]}"; do
+        [ -f "$asset" ] || { echo "Error: $asset is missing — just bundles did not produce it" >&2; exit 1; }
+    done
+    # A re-run after a partial failure meets an existing release object. Upload
+    # into it rather than refusing — the shape the publish job used, for the
+    # same reason.
+    if gh release view "$TAG" -R "$REPO" >/dev/null 2>&1; then
+        gh release upload "$TAG" "${ASSETS[@]}" --clobber -R "$REPO"
+    else
+        gh release create "$TAG" "${ASSETS[@]}" \
+            -R "$REPO" \
+            --title "ae $VERSION" \
+            --notes-file "$NOTES_FILE"
     fi
 
     echo "Released $TAG"
@@ -491,9 +557,29 @@ bundle version platform binary:
     platform="{{ platform }}"
     binary="{{ binary }}"
     [ -x "$binary" ] || { echo "Error: $binary is not an executable core" >&2; exit 1; }
+    # THE MEMBER MUST BE THE VERSION THE BUNDLE CLAIMS, and the strong proof is
+    # to ask it. That only works when this kernel can exec it: `just bundles`
+    # cross-builds the Linux half on an Apple Silicon laptop, where the musl ELF
+    # will not run. So the proof is asked of a NATIVE member, and degraded — out
+    # loud, never silently — to a byte search for the version string in a
+    # foreign one. Running the cross-built core is the Linux CI lane's job
+    # (.github/workflows/rust.yml runs it, version-checks it, proves it static,
+    # and resolves a real name through it); this recipe never pretends to have
+    # done that here.
+    case "$(uname -s):$(uname -m)" in
+        Darwin:arm64) host_platform=darwin-arm64 ;;
+        Linux:x86_64) host_platform=linux-x86_64-musl ;;
+        *) host_platform= ;;
+    esac
     want="ae $version"
-    got="$("$binary" --version)"
-    [ "$got" = "$want" ] || { echo "Error: --version printed '$got', want '$want'" >&2; exit 1; }
+    if [ "$platform" = "$host_platform" ]; then
+        got="$("$binary" --version)"
+        [ "$got" = "$want" ] || { echo "Error: --version printed '$got', want '$want'" >&2; exit 1; }
+    else
+        LC_ALL=C grep -qa -- "$version" "$binary" ||
+            { echo "Error: $binary carries no '$version' string — it is not a $version core" >&2; exit 1; }
+        echo "==> $platform is foreign to this host: version proven by byte search, not by running it"
+    fi
     root="ae-$version-$platform"
     # C83: a bundle root is published 0555, so `rm -rf` on a previous run's
     # directory fails "Permission denied" — a 0555 directory refuses the unlink
@@ -517,6 +603,125 @@ bundle version platform binary:
     chmod 0555 "$root"
     tar -czf "$root.tar.gz" "$root"
     echo "==> $root.tar.gz"
+
+# Both release halves, and the release-level SHA256SUMS over them, built HERE.
+#
+# THIS IS THE RECIPE THAT TAKES GITHUB ACTIONS OFF THE CRITICAL PATH. It emits
+# exactly the three files .github/workflows/release.yml used to publish, so a
+# release no longer waits on a runner and `install` verifies the same bytes it
+# always did.
+#
+# It does NOT restate what a bundle is. `just bundle` remains the one
+# definition, called once per platform — the same two calls the two workflow
+# legs make — so a change to a bundle's shape still cannot land on one platform
+# and miss the other.
+#
+# Apple Silicon only, and refused elsewhere rather than half-served: the
+# darwin-arm64 half is the native build and the linux-x86_64-musl half is
+# cross-linked against the Homebrew musl toolchain, and a Linux host has no way
+# to produce the macOS half at all.
+#
+# Output lands in `dist/` (gitignored), wiped first — a stale tarball from a
+# previous version must never reach a release.
+
+# Build both platform bundles + the release SHA256SUMS into ./dist
+bundles:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    case "$(uname -s):$(uname -m)" in
+        Darwin:arm64) : ;;
+        *)
+            echo "Error: just bundles needs an Apple Silicon host — it builds darwin-arm64 natively and cross-links linux-x86_64-musl" >&2
+            exit 1
+            ;;
+    esac
+
+    command -v {{ RUST_MUSL_CC }} >/dev/null 2>&1 || {
+        echo "Error: {{ RUST_MUSL_CC }} not found — the linux-x86_64-musl half cannot be linked." >&2
+        echo "       brew install messense/macos-cross-toolchains/x86_64-unknown-linux-musl" >&2
+        exit 1
+    }
+
+    # llvm-readobj comes from the PINNED toolchain's llvm-tools component
+    # (rust-toolchain.toml), never from whatever binutils a laptop happens to
+    # carry: macOS ships no readelf, and a static proof that depends on the
+    # machine is a proof that silently stops running.
+    readobj="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin/llvm-readobj"
+    [ -x "$readobj" ] || { echo "Error: $readobj is missing — rustup component add llvm-tools" >&2; exit 1; }
+
+    version="$(just version)"
+    out="dist"
+    native_bin="target/release/ae"
+    musl_bin="target/{{ RUST_CROSS_TARGET }}/release/ae"
+
+    cargo build --release --locked
+    # ring's build script compiles C for the target, so the cross build needs a
+    # musl C COMPILER as well as a musl linker. The linker is pinned in
+    # .cargo/config.toml; CC_<target> is what the `cc` crate reads, and it is
+    # set HERE rather than there because that name does not exist on the Linux
+    # CI leg, which builds this same target against musl-tools.
+    CC_x86_64_unknown_linux_musl={{ RUST_MUSL_CC }} \
+        cargo build --release --locked --target {{ RUST_CROSS_TARGET }}
+
+    # The native half is RUN, which is the whole reason it is the native half.
+    echo "==> native: $("$native_bin" --version)"
+
+    # The musl half is proven STATIC. It cannot be run here — that proof, and
+    # the musl DNS/NSS proof beside it, stay on the Linux CI leg. What a laptop
+    # can prove is the link, and the authoritative signal is the absence of a
+    # PT_INTERP segment: no program interpreter means no dynamic loader.
+    #
+    # Capture FIRST. Piping llvm-readobj straight into grep would turn a broken
+    # readobj into "no PT_INTERP found", which is to say into a pass.
+    headers="$("$readobj" --program-headers "$musl_bin")"
+    if printf '%s\n' "$headers" | grep -q 'PT_INTERP'; then
+        echo "Error: the musl binary has a PT_INTERP segment — it is dynamically linked" >&2
+        printf '%s\n' "$headers" >&2
+        exit 1
+    fi
+    # Second, independent signal. Rust musl builds are static-pie, which `file`
+    # spells "static-pie linked" or "statically linked" depending on version —
+    # both contain "static"; a dynamic build says "dynamically".
+    described="$(file -b "$musl_bin")"
+    case "$described" in
+        *dynamically*) echo "Error: file reports a dynamic binary: $described" >&2; exit 1 ;;
+        *static*) : ;;
+        *) echo "Error: file does not report a static binary: $described" >&2; exit 1 ;;
+    esac
+    echo "==> musl: static proof ok — $described"
+
+    # C83 again: a bundle root is published 0555, and a 0555 directory refuses
+    # the unlink of its own entries, so a previous run's tree is made writable
+    # before it is removed.
+    [ ! -e "$out" ] || chmod -R u+w "$out" 2>/dev/null || true
+    rm -rf "$out"
+    mkdir "$out"
+
+    just bundle "$version" darwin-arm64 "$native_bin"
+    just bundle "$version" linux-x86_64-musl "$musl_bin"
+    for platform in darwin-arm64 linux-x86_64-musl; do
+        root="ae-$version-$platform"
+        mv "$root.tar.gz" "$out/"
+        chmod -R u+w "$root" 2>/dev/null || true
+        rm -rf "$root"
+    done
+
+    # THE RELEASE-LEVEL MANIFEST, and a different file from the SHA256SUMS
+    # inside each bundle: this one covers the two TARBALLS. `install` reads it
+    # to discover the latest version and to verify an archive before extracting
+    # it, so its bytes are a contract — `<sha256><SP><SP><basename>`, bare
+    # basenames, glob order — byte-identical to the `sha256sum -- ae-*.tar.gz`
+    # the publish job ran.
+    if command -v sha256sum >/dev/null 2>&1; then
+        sums() { sha256sum "$@"; }
+    else
+        sums() { shasum -a 256 "$@"; }
+    fi
+    ( cd "$out" && sums -- ae-*.tar.gz > SHA256SUMS )
+
+    echo "==> $out/"
+    ls -l "$out"
 
 # ── Install ──────────────────────────────────────────────────────────
 
@@ -591,11 +796,25 @@ LLVM_COV_VERSION := "0.9.0"
 VET_VERSION := "0.10.2"
 
 # The foreign target. musl, not gnu — ae ships a STATIC binary with no host
-# runtime dependency, and gnu is not that (see rust-toolchain.toml for the NSS caveat). Compile-smoke
-# only: `cargo check` never links, so nothing produced here can be mistaken for a
-# runnable artifact.
+# runtime dependency, and gnu is not that (see rust-toolchain.toml for the NSS caveat).
+# It is LINKED here now, by `just bundles`, which builds the Linux release half
+# on this laptop; it is RUN only on the Linux CI leg, which stays the proof of
+# record for a musl binary that executes and resolves a real name.
 
 RUST_CROSS_TARGET := "x86_64-unknown-linux-musl"
+
+# The musl C compiler and linker driver, in the spelling the prebuilt Homebrew
+# tap publishes (messense/macos-cross-toolchains). ONE name, three readers: the
+# linker pin in `.cargo/config.toml`, the `CC_x86_64_unknown_linux_musl` the
+# `cc` crate reads when ring compiles C for the target, and the advisory in
+# `rust-setup`. `tests/it/gate.rs` refuses drift between this and the config.
+#
+# It is deliberately NOT installed by `rust-setup`: a cross toolchain is a
+# machine dependency of RELEASING, and the bootstrap contract (rustup + just,
+# nothing else) covers developing. Ubuntu names the same tool `musl-gcc`, which
+# is why the workflow legs override the linker rather than sharing this pin.
+
+RUST_MUSL_CC := "x86_64-unknown-linux-musl-gcc"
 
 # Bootstrap: rustup toolchain + the pinned dev tools. Idempotent — every tool is
 # version-checked first, so a second run installs nothing. Honest prerequisites:
@@ -636,6 +855,20 @@ rust-setup:
     ensure cargo-mutants  "{{ MUTANTS_VERSION }}"  'cargo mutants --version'
     ensure cargo-llvm-cov "{{ LLVM_COV_VERSION }}" 'cargo llvm-cov --version'
     ensure cargo-vet      "{{ VET_VERSION }}"      'cargo vet --version'
+
+    # REPORTED, NOT PROVISIONED, and never fatal. The musl cross toolchain is
+    # needed by `just bundles` (and so by `just release`) and by nothing else:
+    # `just rust-check` and `just rust-build-release` are native lanes. A clone
+    # that only develops is complete without it, so this prints the one line
+    # that fixes it and moves on. Both spellings are accepted because the tap
+    # publishes the triple-prefixed name and the keg carries the short one.
+    echo "==> musl cross toolchain (optional — only 'just bundles' links it)"
+    if command -v {{ RUST_MUSL_CC }} >/dev/null 2>&1 || command -v x86_64-linux-musl-gcc >/dev/null 2>&1; then
+        printf '    ok   %-16s %s\n' "musl cc" "{{ RUST_MUSL_CC }}"
+    else
+        printf '    --   %-16s absent; just bundles cannot link the Linux half\n' "musl cc"
+        printf '         brew install messense/macos-cross-toolchains/x86_64-unknown-linux-musl\n'
+    fi
 
     echo "==> ready — run: just rust-check"
 
@@ -713,17 +946,19 @@ rust-vet:
 # THE MUSL COMPILE-SMOKE WAS REMOVED at the first dependency (2026-08-29, P4.3
 # tracer A). It used to be a free `cargo check --target {{ RUST_CROSS_TARGET }}`
 # that never linked. `ring` ended that: its build script compiles C for the
-# target, so a musl `cargo check` now needs a musl C toolchain
-# (`x86_64-linux-musl-gcc`) — trivial to add on the Linux CI leg (`musl-tools`),
-# a heavy from-source cross-toolchain on a macOS laptop. Forcing every clone to
-# install one to run `rust-build-release` is the wrong trade: the musl artifact
-# is BUILT, LINKED, RUN and proven static on the Linux CI leg
-# (.github/workflows/rust.yml), which is the only place it can link anyway. This
-# recipe stays native-only so a bare clone builds without a cross toolchain.
-# {{ RUST_CROSS_TARGET }} is still the pinned musl triple, used by that CI leg
-# and deny.toml's graph.
+# target, so a musl `cargo check` needs a musl C toolchain. This recipe stays
+# NATIVE-ONLY regardless: a bare clone must build with rustup and just and
+# nothing else, and requiring a cross toolchain of every clone to run a release
+# smoke is the wrong trade.
+#
+# Where the musl target IS linked is `just bundles`, which needs the prebuilt
+# Homebrew toolchain ({{ RUST_MUSL_CC }}) and says so when it is missing. Where
+# it is RUN stays the Linux CI leg (.github/workflows/rust.yml): a macOS kernel
+# cannot exec an ELF binary, so "it links and carries no PT_INTERP" is the whole
+# of what a laptop can prove, and the run plus the musl DNS/NSS proof remain
+# CI's. {{ RUST_CROSS_TARGET }} is also deny.toml's second graph.
 
-# Release build: native binary (musl artifact is a Linux-CI-only proof — see above)
+# Release build: native binary (the musl half is `just bundles`; its RUN proof is Linux CI)
 rust-build-release:
     cargo build --release --locked
     @echo "==> native binary: target/release/ae"

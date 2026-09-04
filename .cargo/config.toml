@@ -28,3 +28,28 @@ xcheck = "check --locked --target x86_64-unknown-linux-musl"
 
 [future-incompat-report]
 frequency = "always"
+
+# THE CROSS TOOLCHAIN, AND IT IS TARGET-SCOPED ON PURPOSE. This section is read
+# only when something asks for x86_64-unknown-linux-musl. A bare clone that
+# builds native — `just rust-check`, `just rust-build-release`, `cargo test` —
+# never resolves it and never needs the compiler it names, so the fresh-clone
+# contract (rustup + just, nothing else) is unchanged.
+#
+# It exists because `just bundles` builds BOTH release halves on an Apple
+# Silicon laptop. rustc's default linker for a musl target is `cc`, which on
+# macOS is Apple clang: it cannot link ELF. The name below is the one the
+# prebuilt Homebrew tap publishes
+# (`brew install messense/macos-cross-toolchains/x86_64-unknown-linux-musl`),
+# and `just rust-setup` prints that line when the compiler is missing rather
+# than installing it — a cross toolchain is a machine dependency, not part of
+# the bootstrap contract.
+#
+# LINUX SPELLS IT DIFFERENTLY, and that is why this is a pin rather than a
+# requirement. Ubuntu's `musl-tools` ships `musl-gcc` with no triple-prefixed
+# alias, so the two workflow legs that link musl on Linux name their own with
+# CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc. A config value an
+# environment variable overrides is still the pin: it is what holds when nobody
+# says otherwise. Keep this name and `RUST_MUSL_CC` in the justfile identical —
+# `tests/it/gate.rs` refuses the drift.
+[target.x86_64-unknown-linux-musl]
+linker = "x86_64-unknown-linux-musl-gcc"

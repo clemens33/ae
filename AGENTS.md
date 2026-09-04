@@ -408,17 +408,41 @@ number that blocks a merge is a number nobody agreed to.
 
 ### Prebuilt ae distribution
 
-Release tags matching `v[0-9]*.[0-9]*.[0-9]*` build their own release binaries with
-`--locked` on pinned `ubuntu-24.04` and `macos-15` runners. The Linux artifact is
-proven static (`PT_INTERP` absent and `file` reports static) and runs both `_net-probe`
-controls against the shipped binary: the reserved `.invalid` name must refuse and
-`api.telegram.org` must resolve. Each bundle holds three members — `ae-core`, the canonical
-`install`, and a `SHA256SUMS` naming exactly those two; the final job emits one `SHA256SUMS`
-over both tarballs. There is ONE spelling of that payload, the justfile's `bundle` recipe,
-and both release legs call it rather than restating a `cp`/`chmod`/`tar` sequence of their
-own. The installer downloads files, verifies the checksum before extraction, and atomically
-publishes the complete matched set under one immutable version directory. Local unit tests
-use fixture bundles and never access the network.
+**A release is produced and published from one machine (ruled 2026-09-04): agents can
+release locally, and GitHub Actions is optional.** `just release` runs its gates, bumps the
+CalVer version, calls `just bundles`, tags, pushes, and attaches the assets with
+`gh release create`. Nothing on that path waits on a runner, so a queued or red Actions run
+cannot hold a release up.
+
+`just bundles` is the artifact half: the native `darwin-arm64` build, the cross-linked
+`linux-x86_64-musl` build (both `--locked`), a local static proof of the musl half, a run of
+`--version` on the native one, then `just bundle` once per platform and one `SHA256SUMS`
+over both tarballs into `dist/`. Each bundle holds three members — `ae-core`, the canonical
+`install`, and a `SHA256SUMS` naming exactly those two. There is still ONE spelling of that
+payload, the justfile's `bundle` recipe, and `bundles` and both workflow legs call it rather
+than restating a `cp`/`chmod`/`tar` sequence of their own. The installer downloads files,
+verifies the checksum before extraction, and atomically publishes the complete matched set
+under one immutable version directory. Local unit tests use fixture bundles and never access
+the network.
+
+**The order of `just release` is the safety property, and it is pinned by
+`tests/it/gate.rs`.** Everything that can refuse does so in the pre-flight, before a version
+file is written and long before a tag exists: a dirty tree, a `gh` account whose
+`repos/<owner>/<repo>` reports `permissions.push=false` (an account can be authenticated,
+hold the `repo` scope, and still be read-only on this repository), and a missing musl cross
+toolchain. The bundles are then built and proven BEFORE the tag, so a failed cross build
+costs a `git checkout` of two version files rather than an orphan tag with no assets behind
+it. Once the tag is pushed, `gh release create` is no longer best-effort — a failure there
+is reported as a failure, and a re-run uploads into the existing release object instead of
+refusing.
+
+**`.github/workflows/release.yml` is retained but dispatch-only** (`workflow_dispatch`, no
+tag trigger). It is no longer the publisher; it is the lane where a musl binary can actually
+RUN — it executes the cross-built core, checks its version, proves it static, and runs both
+`_net-probe` controls against the shipped binary, the reserved `.invalid` name refusing and
+`api.telegram.org` resolving. Dispatch it AT A TAG (`gh workflow run release.yml --ref
+v<version>`); every step derives the version from `GITHUB_REF_NAME`, so a branch dispatch
+refuses at the first `--version` assertion before any release object exists.
 
 **The canonical installer takes no path overrides.** It installs to `~/.ae/versions` and
 `~/.local/bin/ae`, derived from `HOME` and nothing else. Fixed publication paths avoid
@@ -697,17 +721,39 @@ The bootstrap contract, in full — nothing else is assumed to exist:
   describes.
 - **The musl build needs a C toolchain as of the first dependency (2026-08-29, P4.3).**
   `ring`'s build script compiles C for the target, so a musl `cargo check`/`build` is no
-  longer link-free — it needs `x86_64-linux-musl-gcc`. Consequences, recorded so they are not
+  longer link-free — it needs a musl C compiler. Consequences, recorded so they are not
   rediscovered: (1) the musl compile-smoke was **removed** from `just rust-build-release`,
-  which is now native-only — forcing every clone to install a from-source macOS cross
-  toolchain to run one recipe is the wrong trade; (2) the musl artifact is BUILT, LINKED, RUN
-  and proven static on the **Linux CI leg only** (`.github/workflows/rust.yml`), which
-  installs `musl-tools` for exactly this reason and is the only place musl can link anyway;
-  (3) macOS no longer touches the target at all. The static proof itself is unchanged — no
-  `PT_INTERP` in `readelf -l` (authoritative), `file` must say static and never "dynamically",
-  `ldd` informational — and it was re-proven under the `musl-tools` step by run
-  33323387544 (2026-08-30). Local musl checking now costs a cross toolchain; the Linux CI
-  leg is the proof of record.
+  which is native-only and stays that way — a bare clone must build with rustup and just and
+  nothing else; (2) macOS now DOES link the target, in `just bundles` and nowhere else; (3)
+  the static proof is unchanged wherever it runs — no `PT_INTERP` (authoritative), `file`
+  must say static and never "dynamically" — and it was re-proven under the `musl-tools` step
+  by run 33323387544 (2026-08-30).
+- **macOS links the musl target since 2026-09-04, and still cannot run it.** The local
+  release lane needs the Linux half, so `just bundles` cross-builds it against the prebuilt
+  Homebrew tap
+  (`brew install messense/macos-cross-toolchains/x86_64-unknown-linux-musl`; the
+  filosottile `musl-cross` formula is a source build and was rejected on time alone). Three
+  files carry it and they must agree: `.cargo/config.toml` pins the linker under
+  `[target.x86_64-unknown-linux-musl]` (target-scoped, so a bare clone that only builds
+  native never resolves it), the justfile's `RUST_MUSL_CC` is the same name and is what
+  `CC_x86_64_unknown_linux_musl` gets set to for ring, and `just rust-setup` prints the brew
+  line when the compiler is absent rather than installing it — a cross toolchain is a
+  machine dependency of RELEASING, not part of the bootstrap contract. `tests/it/gate.rs`
+  refuses drift between the first two. **Ubuntu spells the same tool `musl-gcc`** and ships
+  no triple-prefixed alias, so both workflow legs that link musl override the pin with
+  `CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc`; a config value an environment
+  variable overrides is still the pin, because it is what holds when nobody says otherwise.
+- **What a laptop can prove about the musl half is the LINK, not the run.** `just bundles`
+  asserts no `PT_INTERP` segment with `llvm-readobj --program-headers` — from the pinned
+  `llvm-tools` component, never the machine's binutils, because macOS ships no `readelf` and
+  a proof that depends on the machine is a proof that silently stops running — and that
+  `file` reports static. **The RUN proof stays on the Linux CI leg**
+  (`.github/workflows/rust.yml`): a macOS kernel cannot exec an ELF binary, so executing the
+  core, checking its exit codes and resolving a real name through musl's NSS-less
+  `getaddrinfo` are all CI's, and the tag-triggered release lane is kept — dispatch-only —
+  for the same reason. `just bundle` follows the same honesty rule: it asks a NATIVE member
+  for its `--version` and degrades OUT LOUD to a byte search for the version string in a
+  foreign one, rather than pretending it ran something it cannot.
 - **NSS caveat — flagged for P4 (daemons), and now LIVE: the Telegram bridge resolves
   `api.telegram.org`.** musl has no NSS: user, group and host lookups do not consult
   `/etc/nsswitch.conf`, so `getpwuid`/`getaddrinfo` behave differently than under glibc —

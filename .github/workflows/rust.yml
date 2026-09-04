@@ -300,8 +300,17 @@ jobs:
       #
       # A musl-static binary runs fine on a glibc host, so it is EXECUTED here,
       # not just built.
+      #
+      # `.cargo/config.toml` pins the musl linker to the macOS cross
+      # toolchain's name (`x86_64-unknown-linux-musl-gcc`), because that is
+      # where `just bundles` links this target on a laptop. `musl-tools` ships
+      # `musl-gcc` and no triple-prefixed alias, so this leg names its own. A
+      # config value an env var overrides is still the pin: it is what holds
+      # when nobody says otherwise.
       - name: Build, run and prove the static musl binary
         if: matrix.name == 'linux-x86_64'
+        env:
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
         run: |
           set -euo pipefail
           cargo build --release --locked --target x86_64-unknown-linux-musl
