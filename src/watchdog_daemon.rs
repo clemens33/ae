@@ -2182,7 +2182,6 @@ mod tests {
             profile: Some(alias.to_owned()),
             harness_session: None,
             binary: None,
-            schema: crate::meta::RosterSchema::V1,
         }
     }
 

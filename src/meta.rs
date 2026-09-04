@@ -48,42 +48,27 @@ const HARNESS_SESSION_PREFIX: &str = "harness_session.";
 /// `schema=<n>` — the identity schema the writer used.
 const SCHEMA_KEY: &str = "schema";
 
-/// Which identity schema wrote a roster entry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RosterSchema {
-    /// `agent.<slot>=alias:name[:sid]` — the alias is the identity's first half.
-    V1,
-    /// `seat.<slot>=name` + `profile.<slot>` + `harness_session.<slot>` — the
-    /// name IS the identity; the profile is metadata.
-    V2,
-}
-
-/// One agent, as the roster records it, in either identity schema.
+/// One agent, as the roster records it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RosterEntry {
     /// `main` / `worker.<n>` / `spawned.<n>` — the key's suffix.
     pub slot: String,
-    /// The agent's NAME — its identity under v2; the display-name half under v1.
+    /// The agent's NAME — its identity.
     pub name: String,
-    /// The execution profile (v2 `profile.<slot>`; the alias half under v1).
+    /// The execution profile (`profile.<slot>`).
     pub profile: Option<String>,
-    /// The harness's own conversation id (v2 `harness_session.<slot>`; the
-    /// `:sid` suffix under v1), where the roster carries one.
+    /// The harness's own conversation id (`harness_session.<slot>`), where the
+    /// roster carries one.
     pub harness_session: Option<String>,
     /// `agent_bin.<slot>` — the recorded binary, where the meta carries one.
     pub binary: Option<String>,
-    /// Which schema wrote this entry.
-    pub schema: RosterSchema,
 }
 
 impl RosterEntry {
     /// The DISPLAY ref this agent is known by in the ledger and on panes.
     #[must_use]
     pub fn reference(&self) -> String {
-        match (self.schema, self.profile.as_deref()) {
-            (RosterSchema::V1, Some(alias)) => format!("{alias}:{}", self.name),
-            _ => self.name.clone(),
-        }
+        self.name.clone()
     }
 }
 
@@ -126,20 +111,17 @@ struct PendingRow {
     value: String,
     key: String,
     line: usize,
-    /// A later duplicate of this metadata key was met: its VALUE is invalidated
-    /// , but the provenance survives so a still-later v1/mixed claim
-    /// can reclassify the row as an unknown key — the same answer the v1-first
-    /// order gives.
+    /// A later duplicate of this metadata key was met, so its VALUE is
+    /// invalidated.
     duplicated: bool,
 }
 
-/// Which schemas have claimed a slot by KEY so far, and how often v2 did:
-/// a second `seat.<slot>` claim — keyed or bare — is a seat in doubt.
+/// How often a slot has been claimed by a `seat.<slot>` KEY: a second claim —
+/// keyed or bare — is a seat in doubt.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SlotClaim {
     slot: String,
-    v1: bool,
-    v2_claims: usize,
+    claims: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -171,11 +153,12 @@ pub enum Anomaly {
         /// 1-based line number.
         line: usize,
     },
-    /// Identity v2 — one slot named by BOTH `agent.<slot>` and `seat.<slot>`.
-    MixedSchemaSlot {
+    /// The retired v1 roster row `agent.<slot>`, which this ae does not read
+    /// into a seat.
+    LegacyRoster {
         /// The slot as written.
         slot: String,
-        /// 1-based line number of the claim that made (or found) it mixed.
+        /// 1-based line number.
         line: usize,
     },
     /// Identity v2 — one NAME carried by more than one seat.
@@ -198,10 +181,11 @@ impl fmt::Display for Anomaly {
             Self::MalformedRosterEntry { key, line } => {
                 write!(f, "malformed roster entry {key} at line {line}")
             }
-            Self::MixedSchemaSlot { slot, line } => {
+            Self::LegacyRoster { slot, line } => {
                 write!(
                     f,
-                    "slot {slot} is named by both agent.* and seat.* (line {line})"
+                    "slot {slot} carries the retired v1 roster agent.{slot} (line {line}): \
+                     this session is not served by this ae"
                 )
             }
             Self::DuplicateName { name, line } => {
@@ -231,15 +215,9 @@ pub struct Meta {
     /// read before their `seat.<slot>` — same rule as the binaries.
     pending_profiles: Vec<PendingRow>,
     pending_harness: Vec<PendingRow>,
-    /// Provenance (key + line) of every v2 metadata row that ATTACHED to a V2
-    /// seat, kept so the row can be reclassified as an unknown key if its
-    /// slot later turns out mixed — the same answer the other order gives.
-    attached: Vec<PendingRow>,
-    /// Every `agent.<slot>` / `seat.<slot>` KEY met so far — `=` or not, valid
-    /// or not, first or repeated.
+    /// Every `seat.<slot>` KEY met so far — `=` or not, valid or not, first or
+    /// repeated.
     claims: Vec<SlotClaim>,
-    /// Slots claimed by both schemas: neither claim contributes an agent.
-    mixed_slots: Vec<String>,
     /// v2 names already found on more than one seat: no later seat may take them.
     doubtful_names: Vec<String>,
     /// The raw `schema=` value, where the writer recorded one.
@@ -340,25 +318,16 @@ impl Meta {
                     }
                     self.pending_binaries.retain(|(pending, _)| pending != slot);
                 } else if let Some(slot) = key.strip_prefix(PROFILE_PREFIX) {
-                    // Only a V2 entry ever took the row; a V1 entry's profile
-                    // is the alias from `agent.<slot>` and stays byte-stable.
-                    if let Some(entry) = self.roster.iter_mut().find(|e| e.slot == slot)
-                        && entry.schema == RosterSchema::V2
-                    {
+                    if let Some(entry) = self.roster.iter_mut().find(|e| e.slot == slot) {
                         entry.profile = None;
                     }
                     self.mark_metadata_duplicated(key);
                 } else if let Some(slot) = key.strip_prefix(HARNESS_SESSION_PREFIX) {
-                    if let Some(entry) = self.roster.iter_mut().find(|e| e.slot == slot)
-                        && entry.schema == RosterSchema::V2
-                    {
+                    if let Some(entry) = self.roster.iter_mut().find(|e| e.slot == slot) {
                         entry.harness_session = None;
                     }
                     self.mark_metadata_duplicated(key);
-                } else if let Some(slot) = key
-                    .strip_prefix(ROSTER_PREFIX)
-                    .or_else(|| key.strip_prefix(SEAT_PREFIX))
-                {
+                } else if let Some(slot) = key.strip_prefix(SEAT_PREFIX) {
                     // A doubly-named slot is a slot whose identity is in doubt,
                     // and agents[] membership is roster-defined —
                     // so it contributes no agent rather than a guessed one.
@@ -388,14 +357,10 @@ impl Meta {
                 } else if let Some(slot) = key.strip_prefix(HARNESS_SESSION_PREFIX) {
                     self.set_metadata(Metadata::HarnessSession, slot, key, value, line);
                 } else if let Some(slot) = key.strip_prefix(ROSTER_PREFIX) {
-                    // `note_claim` already refused a mixed slot with its anomaly.
-                    if !self.is_mixed(slot) {
-                        self.absorb_roster(key, slot, value, line);
-                    }
+                    self.note_legacy(slot, line);
                 } else if let Some(slot) = key.strip_prefix(SEAT_PREFIX) {
-                    // A mixed slot and a repeated v2 claim were both refused
-                    // by `note_claim` with their anomalies.
-                    if !self.is_mixed(slot) && !self.is_v2_repeated(slot) {
+                    // A repeated claim was already refused by `note_claim`.
+                    if !self.is_repeated(slot) {
                         self.absorb_seat(key, slot, value, line);
                     }
                 } else {
@@ -409,47 +374,15 @@ impl Meta {
         }
     }
 
-    /// `alias:name` with an optional provider session id.
-    fn absorb_roster(&mut self, key: &str, slot: &str, value: &str, line: usize) {
-        let parts: Vec<&str> = value.split(':').collect();
-        let (alias, name, session_id) = match parts.as_slice() {
-            [alias, name] => (*alias, *name, None),
-            [alias, name, session_id] => (*alias, *name, Some((*session_id).to_owned())),
-            _ => {
-                self.anomalies.push(Anomaly::MalformedRosterEntry {
-                    key: key.to_owned(),
-                    line,
-                });
-                return;
-            }
-        };
-        if alias.is_empty() || name.is_empty() {
-            self.anomalies.push(Anomaly::MalformedRosterEntry {
-                key: key.to_owned(),
-                line,
-            });
-            return;
-        }
-        // A duplicate `agent.<slot>` is caught upstream by the duplicate-key
-        // check, so this slot cannot already be in the roster.
-        let binary = self.take_pending_binary(slot);
-        // v2 metadata on a v1 slot is already uninterpreted by `note_claim`
-        // (which fired for this `agent.<slot>` KEY before this absorb, so a
-        // malformed or bare v1 claim reclassifies it too).
-        if self
-            .roster
-            .iter()
-            .any(|entry| entry.name == name && entry.schema == RosterSchema::V2)
-        {
-            self.mark_name_doubtful(name, line);
-        }
-        self.roster.push(RosterEntry {
+    /// Record a retired v1 roster row: it names no seat this ae will serve.
+    ///
+    /// The row is REPORTED rather than dropped. A silent drop would render a
+    /// legacy session identically to a healthy one whose roster is empty, and
+    /// those are the two facts a reader most needs told apart.
+    fn note_legacy(&mut self, slot: &str, line: usize) {
+        self.anomalies.push(Anomaly::LegacyRoster {
             slot: slot.to_owned(),
-            name: name.to_owned(),
-            profile: Some(alias.to_owned()),
-            harness_session: session_id.filter(|id| !id.is_empty()),
-            binary,
-            schema: RosterSchema::V1,
+            line,
         });
     }
 
@@ -462,9 +395,7 @@ impl Meta {
             });
             return;
         }
-        // The name is the identity, so it must be UNIQUE across the roster —
-        // against every other seat, v1 rows included (their name half is what a
-        // bare-name address matches).
+        // The name is the identity, so it must be UNIQUE across the roster.
         if self.doubtful_names.iter().any(|n| n == value) {
             self.anomalies.push(Anomaly::DuplicateName {
                 name: value.to_owned(),
@@ -477,44 +408,25 @@ impl Meta {
             return;
         }
         let binary = self.take_pending_binary(slot);
-        // Empty v2 metadata is ABSENT metadata (the seat is still an agent);
-        // its provenance is kept so a later mixed claim can reclassify it.
-        let profile = take_pending(&mut self.pending_profiles, slot).and_then(|row| {
-            let usable = (!row.value.is_empty() && !row.duplicated).then(|| row.value.clone());
-            self.attached.push(row);
-            usable
-        });
-        let harness_session = take_pending(&mut self.pending_harness, slot).and_then(|row| {
-            let usable = (!row.value.is_empty() && !row.duplicated).then(|| row.value.clone());
-            self.attached.push(row);
-            usable
-        });
+        // Empty metadata is ABSENT metadata: the seat is still an agent.
+        let profile = take_pending(&mut self.pending_profiles, slot)
+            .and_then(|row| (!row.value.is_empty() && !row.duplicated).then_some(row.value));
+        let harness_session = take_pending(&mut self.pending_harness, slot)
+            .and_then(|row| (!row.value.is_empty() && !row.duplicated).then_some(row.value));
         self.roster.push(RosterEntry {
             slot: slot.to_owned(),
             name: value.to_owned(),
             profile,
             harness_session,
             binary,
-            schema: RosterSchema::V2,
         });
     }
 
-    /// Record which schema a raw KEY claims for its slot.
+    /// Record a `seat.<slot>` KEY claim, and refuse a repeated one.
     fn note_claim(&mut self, key: &str, line: usize, already_seen: bool) {
-        let (slot, schema) = if let Some(slot) = key.strip_prefix(ROSTER_PREFIX) {
-            (slot, RosterSchema::V1)
-        } else if let Some(slot) = key.strip_prefix(SEAT_PREFIX) {
-            (slot, RosterSchema::V2)
-        } else {
+        let Some(slot) = key.strip_prefix(SEAT_PREFIX) else {
             return;
         };
-        if self.is_mixed(slot) {
-            self.anomalies.push(Anomaly::MixedSchemaSlot {
-                slot: slot.to_owned(),
-                line,
-            });
-            return;
-        }
         let at = self
             .claims
             .iter()
@@ -522,30 +434,12 @@ impl Meta {
             .unwrap_or_else(|| {
                 self.claims.push(SlotClaim {
                     slot: slot.to_owned(),
-                    v1: false,
-                    v2_claims: 0,
+                    claims: 0,
                 });
                 self.claims.len() - 1
             });
-        match schema {
-            RosterSchema::V1 => {
-                self.claims[at].v1 = true;
-                // A v1 claim — VALID, malformed or bare — makes the slot v1, so
-                // its v2 metadata (pending or attached) is uninterpreted NOW,
-                // at the single point where "a v1 key landed" is known.
-                self.uninterpret_pending(slot);
-            }
-            RosterSchema::V2 => self.claims[at].v2_claims += 1,
-        }
-        if self.claims[at].v1 && self.claims[at].v2_claims > 0 {
-            self.mixed_slots.push(slot.to_owned());
-            self.roster.retain(|entry| entry.slot != slot);
-            self.uninterpret_pending(slot);
-            self.anomalies.push(Anomaly::MixedSchemaSlot {
-                slot: slot.to_owned(),
-                line,
-            });
-        } else if schema == RosterSchema::V2 && self.claims[at].v2_claims > 1 {
+        self.claims[at].claims += 1;
+        if self.claims[at].claims > 1 {
             self.roster.retain(|entry| entry.slot != slot);
             if !already_seen {
                 self.anomalies.push(Anomaly::DuplicateKey {
@@ -559,11 +453,7 @@ impl Meta {
     /// Flag every open metadata row for `key` value-invalidated, keeping its
     /// provenance.
     fn mark_metadata_duplicated(&mut self, key: &str) {
-        for list in [
-            &mut self.pending_profiles,
-            &mut self.pending_harness,
-            &mut self.attached,
-        ] {
+        for list in [&mut self.pending_profiles, &mut self.pending_harness] {
             for row in list.iter_mut() {
                 if row.key == key {
                     row.duplicated = true;
@@ -572,21 +462,16 @@ impl Meta {
         }
     }
 
-    fn is_v2_repeated(&self, slot: &str) -> bool {
+    fn is_repeated(&self, slot: &str) -> bool {
         self.claims
             .iter()
-            .any(|claim| claim.slot == slot && claim.v2_claims > 1)
+            .any(|claim| claim.slot == slot && claim.claims > 1)
     }
 
-    fn is_mixed(&self, slot: &str) -> bool {
-        self.mixed_slots.iter().any(|mixed| mixed == slot)
-    }
-
-    /// Drop every v2 seat named `name` (a v1 row never is), record the
-    /// collision at `line`, and remember the name so no later seat takes it.
+    /// Drop every seat named `name`, record the collision at `line`, and
+    /// remember the name so no later seat takes it.
     fn mark_name_doubtful(&mut self, name: &str, line: usize) {
-        self.roster
-            .retain(|entry| !(entry.name == name && entry.schema == RosterSchema::V2));
+        self.roster.retain(|entry| entry.name != name);
         if !self.doubtful_names.iter().any(|n| n == name) {
             self.doubtful_names.push(name.to_owned());
         }
@@ -596,40 +481,17 @@ impl Meta {
         });
     }
 
-    /// Pending AND attached v2 metadata for `slot` becomes unknown
-    /// keys: the slot turned out not to be a v2 seat (a v1 claim, or a mixed
-    /// one) — the same answer whichever order the rows came in.
-    fn uninterpret_pending(&mut self, slot: &str) {
-        for pending in [
-            &mut self.pending_profiles,
-            &mut self.pending_harness,
-            &mut self.attached,
-        ] {
-            let mut kept = Vec::with_capacity(pending.len());
-            for row in pending.drain(..) {
-                if row.slot == slot {
-                    self.anomalies.push(Anomaly::UnknownKey {
-                        key: row.key,
-                        line: row.line,
-                    });
-                } else {
-                    kept.push(row);
-                }
-            }
-            *pending = kept;
-        }
-    }
-
-    /// `profile.<slot>` / `harness_session.<slot>`: attaches to a V2 seat,
-    /// waits for one not read yet, and is an UNKNOWN KEY on a slot that is v1
-    /// or mixed — the one explicit rule, order-independent.
+    /// `profile.<slot>` / `harness_session.<slot>`: attaches to its seat, or
+    /// waits for one that has not been read yet.
     fn set_metadata(&mut self, which: Metadata, slot: &str, key: &str, value: &str, line: usize) {
-        let unknown = Anomaly::UnknownKey {
-            key: key.to_owned(),
-            line,
-        };
-        if self.is_mixed(slot) {
-            self.anomalies.push(unknown);
+        // Ownership FIRST, value second: an empty row on a seat is absent
+        // metadata, not a missing seat.
+        if let Some(existing) = self.roster.iter_mut().find(|entry| entry.slot == slot) {
+            let value = (!value.is_empty()).then(|| value.to_owned());
+            match which {
+                Metadata::Profile => existing.profile = value,
+                Metadata::HarnessSession => existing.harness_session = value,
+            }
             return;
         }
         let row = PendingRow {
@@ -639,37 +501,12 @@ impl Meta {
             line,
             duplicated: false,
         };
-        // Ownership FIRST, value second: an empty row on a v1 slot is still an
-        // unknown key; an empty row on a v2 seat is absent metadata.
-        match self.roster.iter_mut().find(|entry| entry.slot == slot) {
-            Some(existing) if existing.schema == RosterSchema::V2 => {
-                let value = (!value.is_empty()).then(|| value.to_owned());
-                match which {
-                    Metadata::Profile => existing.profile = value,
-                    Metadata::HarnessSession => existing.harness_session = value,
-                }
-                self.attached.push(row);
-            }
-            Some(_) => self.anomalies.push(unknown),
-            None => {
-                // No entry yet.
-                if self
-                    .claims
-                    .iter()
-                    .any(|claim| claim.slot == slot && claim.v1)
-                {
-                    self.anomalies.push(unknown);
-                    return;
-                }
-                match which {
-                    Metadata::Profile => self.pending_profiles.push(row),
-                    Metadata::HarnessSession => self.pending_harness.push(row),
-                }
-            }
+        match which {
+            Metadata::Profile => self.pending_profiles.push(row),
+            Metadata::HarnessSession => self.pending_harness.push(row),
         }
     }
 
-    /// `agent_bin.<slot>` may appear before or after its `agent.<slot>`.
     fn set_binary(&mut self, slot: &str, value: &str) {
         if value.is_empty() {
             return;
@@ -1196,7 +1033,7 @@ agent_bin.main=claude
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    use super::{Anomaly, Meta, RosterSchema, Selector, ServerSelector};
+    use super::{Anomaly, Meta, Selector, ServerSelector};
     use std::path::PathBuf;
 
     #[test]
@@ -1389,30 +1226,8 @@ agent_bin.main=claude
     }
 
     #[test]
-    fn sc_405c_a_roster_entry_carries_alias_name_and_an_optional_session_id() {
-        let meta = Meta::parse(concat!(
-            "agent.main=claude:lead:e795c9e9\n",
-            "agent_bin.main=claude\n",
-            "agent.worker.0=codex:coworker\n",
-        ));
-        let roster = meta.roster();
-        assert_eq!(roster.len(), 2);
-        assert_eq!(roster[0].slot, "main");
-        assert_eq!(roster[0].profile.as_deref(), Some("claude"));
-        assert_eq!(roster[0].name, "lead");
-        assert_eq!(roster[0].harness_session.as_deref(), Some("e795c9e9"));
-        assert_eq!(roster[0].binary.as_deref(), Some("claude"));
-        assert_eq!(roster[0].reference(), "claude:lead");
-        // The slot name itself contains a dot; only the PREFIX is stripped.
-        assert_eq!(roster[1].slot, "worker.0");
-        assert_eq!(roster[1].harness_session, None);
-        assert_eq!(roster[1].binary, None);
-        assert!(meta.anomalies().is_empty());
-    }
-
-    #[test]
     fn sc_405c_the_binary_may_be_recorded_before_the_identity() {
-        let meta = Meta::parse("agent_bin.main=claude\nagent.main=claude:lead\n");
+        let meta = Meta::parse("agent_bin.main=claude\nseat.main=lead\n");
         let roster = meta.roster();
         assert_eq!(roster.len(), 1);
         assert_eq!(roster[0].binary.as_deref(), Some("claude"));
@@ -1427,36 +1242,6 @@ agent_bin.main=claude
             meta.anomalies().is_empty(),
             "not an anomaly, just not an agent"
         );
-    }
-
-    #[test]
-    fn a_roster_value_the_reader_rejects_leaves_no_half_built_entry_behind() {
-        // The state that made a "does this entry have a name" filter necessary
-        // is the state this parser no longer produces.
-        let meta = Meta::parse("agent_bin.main=claude\nagent.main=broken\n");
-        assert!(meta.roster().is_empty());
-        assert_eq!(meta.anomalies().len(), 1);
-    }
-
-    #[test]
-    fn sc_405c_a_roster_value_that_is_not_alias_name_is_an_anomaly() {
-        for (value, why) in [
-            ("justanalias", "no name half"),
-            ("a:b:c:d", "too many parts"),
-            (":name", "empty alias"),
-            ("alias:", "empty name"),
-        ] {
-            let meta = Meta::parse(&format!("agent.main={value}\n"));
-            assert!(meta.roster().is_empty(), "{why}");
-            assert_eq!(
-                meta.anomalies(),
-                [Anomaly::MalformedRosterEntry {
-                    key: "agent.main".to_owned(),
-                    line: 1
-                }],
-                "{why}"
-            );
-        }
     }
 
     #[test]
@@ -1497,12 +1282,7 @@ agent_bin.main=claude
         assert_eq!(roster[0].profile.as_deref(), Some("fable5"));
         assert_eq!(roster[0].harness_session.as_deref(), Some("e795c9e9"));
         assert_eq!(roster[0].binary.as_deref(), Some("claude"));
-        assert_eq!(roster[0].schema, RosterSchema::V2);
-        assert_eq!(
-            roster[0].reference(),
-            "lead",
-            "v2 display ref is the name alone"
-        );
+        assert_eq!(roster[0].reference(), "lead", "the display ref is the name");
         assert!(
             meta.anomalies().is_empty(),
             "every v2 key is read, none is unknown"
@@ -1512,7 +1292,8 @@ agent_bin.main=claude
     #[test]
     fn identity_v2_metadata_rows_may_precede_their_seat() {
         // Same rule as `agent_bin`: profile/harness wait for the seat, never
-        // create a half-built entry, and a slot that never gets a seat is not an agent.
+        // create a half-built entry, and a slot that never gets one is not an
+        // agent.
         let meta = Meta::parse(concat!(
             "profile.worker.0=gpt56sol\n",
             "harness_session.worker.0=abc\n",
@@ -1560,48 +1341,6 @@ agent_bin.main=claude
     }
 
     #[test]
-    fn identity_v2_a_slot_claimed_by_both_schemas_contributes_no_agent() {
-        // Either order: the second claim drops the slot and pins the anomaly,
-        // and a third claim cannot resurrect it.
-        for (text, second_line) in [
-            ("agent.main=fable5:lead\nseat.main=lead\n", 2),
-            ("seat.main=lead\nagent.main=fable5:lead\n", 2),
-        ] {
-            let meta = Meta::parse(text);
-            assert!(meta.roster().is_empty(), "{text:?}");
-            assert_eq!(
-                meta.anomalies(),
-                [Anomaly::MixedSchemaSlot {
-                    slot: "main".to_owned(),
-                    line: second_line
-                }],
-                "{text:?}"
-            );
-        }
-        let meta = Meta::parse("agent.main=fable5:lead\nseat.main=lead\nseat.main=lead2\n");
-        assert!(
-            meta.roster().is_empty(),
-            "no resurrection after a mixed claim"
-        );
-        // The third line is BOTH a duplicate key and a mixed claim; the
-        // duplicate check runs first and refuses to absorb it at all.
-        assert!(
-            meta.anomalies()
-                .iter()
-                .any(|a| matches!(a, Anomaly::MixedSchemaSlot { .. }))
-        );
-        assert!(
-            meta.anomalies()
-                .iter()
-                .any(|a| matches!(a, Anomaly::DuplicateKey { .. }))
-        );
-        // Other slots are untouched by one slot's doubt.
-        let meta = Meta::parse("agent.main=fable5:lead\nseat.main=lead\nseat.worker.0=colead\n");
-        assert_eq!(meta.roster().len(), 1);
-        assert_eq!(meta.roster()[0].name, "colead");
-    }
-
-    #[test]
     fn identity_v2_duplicate_metadata_keys_invalidate_only_that_field() {
         let meta = Meta::parse(concat!(
             "seat.main=lead\n",
@@ -1621,125 +1360,11 @@ agent_bin.main=claude
         assert!(meta.roster().is_empty());
     }
 
-    #[test]
-    fn identity_v1_rows_keep_their_alias_name_display_ref() {
-        // Pre-routing-key ledgers pair on the display string; a reader that
-        // it would unpair every legacy state event. v1 stays v1 on the read side.
-        let meta = Meta::parse("agent.main=fable5:lead:sid\n");
-        assert_eq!(meta.roster()[0].schema, RosterSchema::V1);
-        assert_eq!(meta.roster()[0].profile.as_deref(), Some("fable5"));
-        assert_eq!(meta.roster()[0].reference(), "fable5:lead");
-        assert_eq!(meta.schema(), None, "no schema row means v1");
-    }
-
     /// Colead P1 gate BLOCKER-1: v2 metadata rows must never rewrite a v1
     /// identity, in EITHER order.
-    #[test]
-    fn identity_v1_ref_and_sid_are_byte_stable_under_v2_metadata_in_both_orders() {
-        for text in [
-            "agent.main=fable5:lead:sid\nprofile.main=opus5\nharness_session.main=other\n",
-            "profile.main=opus5\nharness_session.main=other\nagent.main=fable5:lead:sid\n",
-            "profile.main=opus5\nagent.main=fable5:lead:sid\nharness_session.main=other\n",
-        ] {
-            let meta = Meta::parse(text);
-            let roster = meta.roster();
-            assert_eq!(roster.len(), 1, "{text:?}");
-            assert_eq!(roster[0].schema, RosterSchema::V1, "{text:?}");
-            assert_eq!(roster[0].reference(), "fable5:lead", "{text:?}");
-            assert_eq!(roster[0].profile.as_deref(), Some("fable5"), "{text:?}");
-            assert_eq!(
-                roster[0].harness_session.as_deref(),
-                Some("sid"),
-                "{text:?}"
-            );
-            let unknown: Vec<&str> = meta
-                .anomalies()
-                .iter()
-                .filter_map(|a| match a {
-                    Anomaly::UnknownKey { key, .. } => Some(key.as_str()),
-                    _ => None,
-                })
-                .collect();
-            assert_eq!(
-                unknown,
-                ["profile.main", "harness_session.main"],
-                "the rows are recorded, never interpreted: {text:?}"
-            );
-            assert_eq!(meta.anomalies().len(), 2, "{text:?}");
-        }
-        // A DUPLICATE profile row on a v1 slot invalidates nothing of the v1
-        // identity: its alias is not a profile row's to take away.
-        let meta = Meta::parse("agent.main=fable5:lead:sid\nprofile.main=x\nprofile.main=y\n");
-        assert_eq!(meta.roster()[0].profile.as_deref(), Some("fable5"));
-        assert_eq!(meta.roster()[0].harness_session.as_deref(), Some("sid"));
-        // A v1 KEY whose value was malformed still claims the slot for v1: a
-        // later profile row is unknown, not pending-for-a-seat-that-never-comes.
-        let meta = Meta::parse("agent.main=broken\nprofile.main=x\n");
-        assert!(meta.roster().is_empty());
-        assert!(
-            meta.anomalies()
-                .iter()
-                .any(|a| matches!(a, Anomaly::UnknownKey { key, .. } if key == "profile.main"))
-        );
-    }
-
     /// Colead P1 gate BLOCKER-2: mixed-schema detection is by raw KEY claim,
     /// so a malformed, bare or duplicated FIRST claim (which leaves no entry)
     /// cannot let the other schema resurrect the slot — in both orders.
-    #[test]
-    fn identity_v2_a_slot_claimed_by_both_keys_is_dropped_whatever_the_first_claim_was() {
-        let cases = [
-            // Malformed first
-            "agent.main=broken\nseat.main=lead\n",
-            "seat.main=\nagent.main=fable5:lead\n",
-            // Bare first (no `=`: a MalformedLine, but still a claim)
-            "agent.main\nseat.main=lead\n",
-            "seat.main\nagent.main=fable5:lead\n",
-            // Duplicate first (the duplicate invalidated the entry)
-            "seat.main=lead\nseat.main=other\nagent.main=fable5:lead\n",
-            "agent.main=fable5:lead\nagent.main=x:y\nseat.main=lead\n",
-            // Valid first
-            "agent.main=fable5:lead\nseat.main=lead\n",
-            "seat.main=lead\nagent.main=fable5:lead\n",
-            // Both bare
-            "agent.main\nseat.main\n",
-        ];
-        for text in cases {
-            let meta = Meta::parse(text);
-            assert!(meta.roster().is_empty(), "resurrected: {text:?}");
-            assert!(
-                meta.anomalies()
-                    .iter()
-                    .any(|a| matches!(a, Anomaly::MixedSchemaSlot { slot, .. } if slot == "main")),
-                "no mixed anomaly: {text:?} → {:?}",
-                meta.anomalies()
-            );
-        }
-        // Once mixed, a further claim of either prefix is refused with its own
-        // anomaly and never recreates the slot.
-        let meta = Meta::parse(
-            "agent.main=fable5:lead\nseat.main=lead\nseat.spawned.1=b\nagent.main=z:q\n",
-        );
-        assert_eq!(meta.roster().len(), 1);
-        assert_eq!(meta.roster()[0].name, "b", "other slots are untouched");
-        assert_eq!(
-            meta.anomalies()
-                .iter()
-                .filter(|a| matches!(a, Anomaly::MixedSchemaSlot { .. }))
-                .count(),
-            2,
-            "the line that made it mixed and the later refused claim"
-        );
-        // Pending metadata for a slot that turns out mixed is uninterpreted.
-        let meta = Meta::parse("profile.main=x\nagent.main=fable5:lead\nseat.main=lead\n");
-        assert!(meta.roster().is_empty());
-        assert!(
-            meta.anomalies()
-                .iter()
-                .any(|a| matches!(a, Anomaly::UnknownKey { key, .. } if key == "profile.main"))
-        );
-    }
-
     /// Colead P1 gate IMPORTANT-1: under v2 the NAME is the identity, so one
     /// name on two seats is one identity in doubt — every v2 seat carrying it
     /// is dropped, in both orders; a v1 row keeps its `alias:name` ref.
@@ -1774,104 +1399,23 @@ agent_bin.main=claude
                 .count(),
             2
         );
-        // v1 beside v2 with one name: the v1 row stays (its identity is the
-        // pair `cl:lead`), the v2 seat is dropped — both orders.
-        for text in [
-            "agent.main=cl:lead:sid\nseat.worker.0=lead\n",
-            "seat.worker.0=lead\nagent.main=cl:lead:sid\n",
-        ] {
-            let meta = Meta::parse(text);
-            assert_eq!(meta.roster().len(), 1, "{text:?}");
-            assert_eq!(meta.roster()[0].reference(), "cl:lead", "{text:?}");
-            assert_eq!(meta.roster()[0].schema, RosterSchema::V1, "{text:?}");
-            assert!(
-                meta.anomalies()
-                    .iter()
-                    .any(|a| matches!(a, Anomaly::DuplicateName { name, .. } if name == "lead")),
-                "{text:?}"
-            );
-        }
-        // CONTROLS — the check is not over-strong: distinct names, a single
-        // seat, and two v1 rows sharing a name (two refs, frozen behaviour).
+        // CONTROLS — the check is not over-strong: distinct names and a
+        // single seat.
         let meta = Meta::parse("seat.main=lead\nseat.worker.0=colead\n");
         assert_eq!(meta.roster().len(), 2);
         assert!(meta.anomalies().is_empty());
         let meta = Meta::parse("seat.main=lead\n");
         assert_eq!(meta.roster().len(), 1);
         assert!(meta.anomalies().is_empty());
-        let meta = Meta::parse("agent.main=a:lead\nagent.worker.0=b:lead\n");
-        assert_eq!(meta.roster().len(), 2);
-        assert!(
-            meta.anomalies().is_empty(),
-            "v1 duplicate names are two refs"
-        );
     }
 
     /// Colead P1 round-2 IMPORTANT-1: metadata that ATTACHED to a v2 seat is
     /// reclassified as unknown when the slot turns out mixed — the answer the
     /// other order already gave.
-    #[test]
-    fn identity_v2_attached_metadata_is_uninterpreted_when_the_slot_turns_mixed() {
-        for text in [
-            "seat.main=lead\nprofile.main=x\nagent.main=a:lead\n",
-            "seat.main=lead\nharness_session.main=sid\nagent.main=a:lead\n",
-            "agent.main=a:lead\nprofile.main=x\nseat.main=lead\n",
-            "agent.main=a:lead\nharness_session.main=sid\nseat.main=lead\n",
-            "profile.main=x\nseat.main=lead\nagent.main=a:lead\n",
-        ] {
-            let meta = Meta::parse(text);
-            assert!(meta.roster().is_empty(), "{text:?}");
-            let unknown = meta
-                .anomalies()
-                .iter()
-                .filter(|a| {
-                    matches!(a, Anomaly::UnknownKey { key, .. }
-                        if key == "profile.main" || key == "harness_session.main")
-                })
-                .count();
-            assert_eq!(
-                unknown,
-                1,
-                "the metadata row is unknown whichever order: {text:?} → {:?}",
-                meta.anomalies()
-            );
-            assert!(
-                meta.anomalies()
-                    .iter()
-                    .any(|a| matches!(a, Anomaly::MixedSchemaSlot { .. })),
-                "{text:?}"
-            );
-        }
-    }
-
     /// Colead P1 round-2 IMPORTANT-2: an EMPTY metadata row is judged by the
     /// slot's schema first — unknown on v1 (both orders), absent metadata on v2.
     #[test]
-    fn identity_v2_empty_metadata_rows_are_judged_by_schema_first() {
-        for text in [
-            "agent.main=a:lead:sid\nprofile.main=\n",
-            "profile.main=\nagent.main=a:lead:sid\n",
-            "agent.main=a:lead:sid\nharness_session.main=\n",
-            "harness_session.main=\nagent.main=a:lead:sid\n",
-        ] {
-            let meta = Meta::parse(text);
-            assert_eq!(meta.roster().len(), 1, "{text:?}");
-            assert_eq!(meta.roster()[0].reference(), "a:lead", "{text:?}");
-            assert_eq!(
-                meta.roster()[0].harness_session.as_deref(),
-                Some("sid"),
-                "{text:?}"
-            );
-            assert_eq!(
-                meta.anomalies()
-                    .iter()
-                    .filter(|a| matches!(a, Anomaly::UnknownKey { .. }))
-                    .count(),
-                1,
-                "{text:?} → {:?}",
-                meta.anomalies()
-            );
-        }
+    fn identity_v2_an_empty_metadata_row_is_absent_metadata_in_both_orders() {
         for text in [
             "seat.main=lead\nprofile.main=\n",
             "profile.main=\nseat.main=lead\n",
@@ -1894,72 +1438,6 @@ agent_bin.main=claude
     /// from RAW v1 claims, so a metadata row's anomaly KIND is the same in both
     /// orders — even when the v1 claim is MALFORMED or BARE, and even across a
     /// duplicate-metadata-then-mixed sequence.
-    #[test]
-    fn identity_v2_metadata_is_order_independent_across_malformed_bare_and_duplicate_v1_claims() {
-        // A malformed or bare v1 claim reclassifies pending metadata the same
-        // as a valid one — both orders yield {UnknownKey, <the v1 refusal>}.
-        let kinds = |meta: &Meta| -> (usize, usize, usize, usize) {
-            let mut unknown = 0;
-            let mut malformed_entry = 0;
-            let mut malformed_line = 0;
-            let mut mixed = 0;
-            for a in meta.anomalies() {
-                match a {
-                    Anomaly::UnknownKey { .. } => unknown += 1,
-                    Anomaly::MalformedRosterEntry { .. } => malformed_entry += 1,
-                    Anomaly::MalformedLine { .. } => malformed_line += 1,
-                    Anomaly::MixedSchemaSlot { .. } => mixed += 1,
-                    _ => {}
-                }
-            }
-            (unknown, malformed_entry, malformed_line, mixed)
-        };
-        for field in ["profile", "harness_session"] {
-            // Malformed v1 value, both orders → 1 UnknownKey + 1 MalformedRosterEntry.
-            let a = Meta::parse(&format!("{field}.main=x\nagent.main=broken\n"));
-            let b = Meta::parse(&format!("agent.main=broken\n{field}.main=x\n"));
-            assert!(a.roster().is_empty() && b.roster().is_empty(), "{field}");
-            assert_eq!(kinds(&a), (1, 1, 0, 0), "{field} metadata-first malformed");
-            assert_eq!(kinds(&b), (1, 1, 0, 0), "{field} v1-first malformed");
-            // Bare v1 line, both orders → 1 UnknownKey + 1 MalformedLine.
-            let a = Meta::parse(&format!("{field}.main=x\nagent.main\n"));
-            let b = Meta::parse(&format!("agent.main\n{field}.main=x\n"));
-            assert_eq!(kinds(&a), (1, 0, 1, 0), "{field} metadata-first bare");
-            assert_eq!(kinds(&b), (1, 0, 1, 0), "{field} v1-first bare");
-        }
-        // Duplicate metadata, THEN the slot goes mixed: both orders carry an
-        // UnknownKey (the first metadata row) as well as the DuplicateKey and
-        // the MixedSchemaSlot — the duplicate no longer erases the provenance.
-        let has = |meta: &Meta, f: &dyn Fn(&Anomaly) -> bool| meta.anomalies().iter().any(f);
-        for text in [
-            "profile.main=x\nprofile.main=y\nagent.main=a:lead\nseat.main=lead\n",
-            "agent.main=a:lead\nprofile.main=x\nprofile.main=y\nseat.main=lead\n",
-            "harness_session.main=x\nharness_session.main=y\nagent.main=a:lead\nseat.main=lead\n",
-        ] {
-            let meta = Meta::parse(text);
-            assert!(meta.roster().is_empty(), "{text:?}");
-            assert!(
-                has(&meta, &|a| matches!(a, Anomaly::UnknownKey { .. })),
-                "no UnknownKey: {text:?} → {:?}",
-                meta.anomalies()
-            );
-            assert!(
-                has(&meta, &|a| matches!(a, Anomaly::DuplicateKey { .. })),
-                "no DuplicateKey: {text:?}"
-            );
-            assert!(
-                has(&meta, &|a| matches!(a, Anomaly::MixedSchemaSlot { .. })),
-                "no Mixed: {text:?}"
-            );
-        }
-        // CONTROL — a duplicate metadata key on a genuine v2 seat invalidates
-        // only the value; no UnknownKey, the seat survives.
-        let meta = Meta::parse("seat.main=lead\nprofile.main=x\nprofile.main=y\n");
-        assert_eq!(meta.roster().len(), 1);
-        assert_eq!(meta.roster()[0].profile, None);
-        assert!(!has(&meta, &|a| matches!(a, Anomaly::UnknownKey { .. })));
-    }
-
     /// Colead P1 round-2 IMPORTANT-3: a bare `seat.<slot>` beside a keyed one
     /// is a repeated v2 claim — the slot stays absent in both orders, as the
     /// archive reader (which counts lines) already refuses it.
@@ -2002,22 +1480,6 @@ agent_bin.main=claude
                 line: 2
             }]
         );
-        // v1 control — frozen.
-        for text in [
-            "agent.main\nagent.main=a:lead\n",
-            "agent.main=a:lead\nagent.main\n",
-        ] {
-            let meta = Meta::parse(text);
-            assert_eq!(meta.roster().len(), 1, "{text:?}");
-            assert_eq!(meta.roster()[0].reference(), "a:lead", "{text:?}");
-            assert!(
-                meta.anomalies()
-                    .iter()
-                    .all(|a| matches!(a, Anomaly::MalformedLine { .. })),
-                "{text:?} → {:?}",
-                meta.anomalies()
-            );
-        }
     }
 
     #[test]
@@ -2075,9 +1537,9 @@ agent_bin.main=claude
         // Membership is roster-defined, so a slot whose identity is in
         // doubt supplies no agent rather than a guessed one.
         let meta = Meta::parse(concat!(
-            "agent.main=claude:lead\n",
-            "agent.main=codex:someone-else\n",
-            "agent.worker.0=codex:coworker\n",
+            "seat.main=lead\n",
+            "seat.main=someone-else\n",
+            "seat.worker.0=coworker\n",
         ));
         assert_eq!(
             meta.roster()
@@ -2093,7 +1555,7 @@ agent_bin.main=claude
     #[test]
     fn sc_405e_a_doubled_binary_leaves_the_agent_without_one() {
         let meta = Meta::parse(concat!(
-            "agent.main=claude:lead\n",
+            "seat.main=lead\n",
             "agent_bin.main=claude\n",
             "agent_bin.main=codex\n",
         ));
@@ -2107,7 +1569,7 @@ agent_bin.main=claude
         let meta = Meta::parse(concat!(
             "agent_bin.main=claude\n",
             "agent_bin.main=codex\n",
-            "agent.main=claude:lead\n",
+            "seat.main=lead\n",
         ));
         let roster = meta.roster();
         assert_eq!(roster.len(), 1);
@@ -2164,11 +1626,52 @@ agent_bin.main=claude
         );
         assert_eq!(
             Anomaly::MalformedRosterEntry {
-                key: "agent.main".to_owned(),
+                key: "seat.main".to_owned(),
                 line: 2
             }
             .to_string(),
-            "malformed roster entry agent.main at line 2"
+            "malformed roster entry seat.main at line 2"
+        );
+        assert_eq!(
+            Anomaly::LegacyRoster {
+                slot: "main".to_owned(),
+                line: 4
+            }
+            .to_string(),
+            "slot main carries the retired v1 roster agent.main (line 4): \
+             this session is not served by this ae"
+        );
+    }
+
+    #[test]
+    fn a_retired_v1_roster_row_names_no_seat_and_says_so_out_loud() {
+        // The human ruling: this ae does not read `agent.<slot>` into a seat,
+        // and a legacy session is one to start over from. The row is REPORTED
+        // rather than dropped — a silent drop would render a legacy session
+        // identically to a healthy one whose roster is simply empty.
+        let meta = Meta::parse(concat!(
+            "mode=local\n",
+            "agent.main=claude:lead:e795c9e9\n",
+            "agent_bin.main=claude\n",
+            "agent.worker.0=codex:coworker\n",
+        ));
+        assert!(meta.roster().is_empty(), "no seat comes from a v1 row");
+        assert_eq!(meta.mode(), Some("local"), "the rest still reads");
+        let legacy: Vec<&str> = meta
+            .anomalies()
+            .iter()
+            .filter_map(|anomaly| match anomaly {
+                Anomaly::LegacyRoster { slot, .. } => Some(slot.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(legacy, ["main", "worker.0"], "every row is named");
+        assert!(
+            meta.anomalies()[0]
+                .to_string()
+                .contains("not served by this ae"),
+            "the anomaly says why: {:?}",
+            meta.anomalies()[0]
         );
     }
 

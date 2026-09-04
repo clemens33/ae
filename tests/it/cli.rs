@@ -365,7 +365,7 @@ fn plant_session(root: &std::path::Path, name: &str) {
         std::fs::write(
             dir.join("meta"),
             format!(
-                "mode=local\nagent.main=cl:lead\ntmux_server_kind=socket\ntmux_server={}\n",
+                "mode=local\nseat.main=lead\nprofile.main=cl\ntmux_server_kind=socket\ntmux_server={}\n",
                 server.display()
             ),
         )
@@ -405,7 +405,7 @@ fn plant_events(root: &std::path::Path, session: &str, lines: &[&str]) -> std::p
     dir
 }
 
-const PLANTED_ASK: &str = r#"{"ts":"2026-08-20T16:12:55Z","actor":"cl:lead","action":"ask","target":"cl:worker","ref":"ae-1","actor_slot":"main","actor_session":"s","target_slot":"worker.0","target_session":"s","summary":"the planted question"}"#;
+const PLANTED_ASK: &str = r#"{"ts":"2026-08-20T16:12:55Z","actor":"lead","action":"ask","target":"worker","ref":"ae-1","actor_slot":"main","actor_session":"s","target_slot":"worker.0","target_session":"s","summary":"the planted question"}"#;
 
 #[test]
 fn requests_all_prints_the_table_on_stdout_and_says_nothing_else() {
@@ -424,7 +424,7 @@ fn requests_all_prints_the_table_on_stdout_and_says_nothing_else() {
     // The bytes, not a substring: this surface's whole contract is its bytes.
     let mut expected = ae::requests::header();
     expected.extend_from_slice(
-        b"pending  ask      ae-1                         cl:lead              cl:worker            the planted question\n",
+        b"pending  ask      ae-1                         lead                 worker               the planted question\n",
     );
     assert_eq!(
         String::from_utf8_lossy(&out.stdout),
@@ -452,7 +452,7 @@ fn requests_mine_and_inbox_answer_for_the_pane_tmux_pane_names() {
     let pane = pane.trim().to_owned();
     assert!(pane.starts_with('%'), "a pane id, got {pane:?}");
     assert!(tmux(&["set-option", "-p", "-t", &pane, "@ae_slot", "worker.0"]).0);
-    assert!(tmux(&["set-option", "-p", "-t", &pane, "@ae_agent", "cl:worker"]).0);
+    assert!(tmux(&["set-option", "-p", "-t", &pane, "@ae_agent", "worker"]).0);
 
     // The planted row is routed main -> worker.0 in session `idsess`, so the
     // stamped pane is its addressee and not its asker.
@@ -786,11 +786,11 @@ fn memo_read_and_tail_render_the_frozen_shape_and_report_an_unreadable_file() {
     let ts = tsv.split('\t').next().unwrap().to_owned();
     std::fs::write(
         dir.join("memo.tsv"),
-        format!("{tsv}2026-01-01T00:00:00Z\tcl:lead\tgeneral\tbash writer\n"),
+        format!("{tsv}2026-01-01T00:00:00Z\tlead\tgeneral\tbash writer\n"),
     )
     .expect("a second record");
     let first = format!("{ts} — human [p2]\none line\n\n");
-    let second = "2026-01-01T00:00:00Z — cl:lead\nbash writer\n\n";
+    let second = "2026-01-01T00:00:00Z — lead\nbash writer\n\n";
     let both = format!("{first}{second}");
     for (tail, expected) in [
         (vec![], both.as_str()),
@@ -933,7 +933,7 @@ fn state_refuses_without_a_pane_identity_and_writes_nothing() {
         "s2",
         &[
             r#"{"ts":"2026-08-27T08:00:00Z","actor":"human","action":"state","ref":"working"}"#,
-            r#"{"ts":"2026-08-27T08:00:01Z","actor":"cl:lead","action":"state","ref":"done","summary":"not the human's"}"#,
+            r#"{"ts":"2026-08-27T08:00:01Z","actor":"lead","action":"state","ref":"done","summary":"not the human's"}"#,
         ],
     );
     assert_eq!(
@@ -963,7 +963,7 @@ fn state_declares_for_the_pane_and_a_held_lock_fails_it_at_the_bound() {
     let (_, pane) = tmux(&["display-message", "-p", "-t", "stsess", "#{pane_id}"]);
     let pane = pane.trim().to_owned();
     assert!(tmux(&["set-option", "-p", "-t", &pane, "@ae_slot", "main"]).0);
-    assert!(tmux(&["set-option", "-p", "-t", &pane, "@ae_agent", "cl:lead"]).0);
+    assert!(tmux(&["set-option", "-p", "-t", &pane, "@ae_agent", "lead"]).0);
 
     let root = scratch("state-pane");
     let dir = root.join("sessions").join("stsess");
@@ -1005,7 +1005,7 @@ fn state_declares_for_the_pane_and_a_held_lock_fails_it_at_the_bound() {
     let _ = std::fs::remove_dir_all(&scratch_dir);
 
     assert_eq!(done.0, Some(0), "{done:?}");
-    assert_eq!(done.1, "Marked cl:lead done: all green\n");
+    assert_eq!(done.1, "Marked lead done: all green\n");
     assert!(done.2.is_empty(), "{done:?}");
     let lines: Vec<&str> = container.lines().collect();
     assert_eq!(
@@ -1015,12 +1015,12 @@ fn state_declares_for_the_pane_and_a_held_lock_fails_it_at_the_bound() {
     );
     assert!(
         lines[0].contains(
-            "\"actor\":\"cl:lead\",\"action\":\"state\",\"ref\":\"done\",\"summary\":\"all green\"}"
+            "\"actor\":\"lead\",\"action\":\"state\",\"ref\":\"done\",\"summary\":\"all green\"}"
         ),
         "{container}"
     );
     assert!(
-        lines[1].contains("\"actor\":\"cl:lead\",\"action\":\"done\",\"summary\":\"all green\"}"),
+        lines[1].contains("\"actor\":\"lead\",\"action\":\"done\",\"summary\":\"all green\"}"),
         "{container}"
     );
 
@@ -1051,7 +1051,7 @@ fn state_declares_for_the_pane_and_a_held_lock_fails_it_at_the_bound() {
     // frozen printf, with the timestamp the write recorded (`{"ts":"` is the
     // emitter's first member, so the stamp is bytes 7..27 of the last line).
     let ts = &final_lines.lines().last().expect("a last line")[7..27];
-    let line = format!("cl:lead state: working — lands now  (since {ts})\n");
+    let line = format!("lead state: working — lands now  (since {ts})\n");
     assert_eq!(shown, (Some(0), line, String::new()));
 }
 
@@ -1160,7 +1160,7 @@ fn events_tail_prints_its_opening_then_follows_what_is_appended() {
         format!("{PLANTED_ASK}\n").as_bytes(),
     ));
 
-    let appended = r#"{"ts":"2026-08-20T16:13:01Z","actor":"cl:worker","action":"reply","target":"cl:lead","ref":"ae-1","summary":"the appended answer"}"#;
+    let appended = r#"{"ts":"2026-08-20T16:13:01Z","actor":"worker","action":"reply","target":"lead","ref":"ae-1","summary":"the appended answer"}"#;
     let followed = ae::events_tail::format_event(appended.as_bytes()).expect("an event line");
 
     let mut child = ae()

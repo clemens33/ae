@@ -135,8 +135,8 @@ pub(crate) fn freeze(
         return Ok(EXIT_FAILED);
     }
 
-    // The main agent to hand over from — its `alias:name` ref, taken from the
-    // TYPED roster grammar, not string-sliced.
+    // The main agent to hand over from, taken from the TYPED roster grammar
+    // rather than string-sliced.
     let meta_text = String::from_utf8_lossy(&bytes);
     let parsed = meta::Meta::parse(&meta_text);
     let Some(main_ref) = parsed
@@ -147,7 +147,7 @@ pub(crate) fn freeze(
     else {
         writeln!(
             err,
-            "compact: session '{name}' records no valid main agent (alias:name) to hand over from."
+            "compact: session '{name}' records no main agent to hand over from."
         )?;
         return Ok(EXIT_FAILED);
     };
@@ -919,7 +919,7 @@ mod tests {
             String::new()
         };
         let meta = format!(
-            "session_id={UUID}\nmode=local\norigin={}\nagent.main=cl:main:{UUID}\n{config_line}{extra_meta}",
+            "session_id={UUID}\nmode=local\norigin={}\nseat.main=main\nprofile.main=cl\nharness_session.main={UUID}\n{config_line}{extra_meta}",
             s.0.display()
         );
         std::fs::write(dir.join("meta"), meta).unwrap();
@@ -949,7 +949,7 @@ mod tests {
         assert_eq!(fields[1], UUID);
         assert_eq!(fields[3], "local");
         assert_eq!(fields[6], "false", "purge false without a purge config");
-        assert_eq!(fields[8], "cl:main");
+        assert_eq!(fields[8], "main", "the seat name is the handover ref");
         assert_eq!(fields[9], "main=cl workers=a, b");
     }
 
@@ -960,7 +960,7 @@ mod tests {
         std::fs::write(
             dir.join("meta"),
             format!(
-                "session_id={UUID}\nmode=git\norigin={}\nagent.main=cl:main\n",
+                "session_id={UUID}\nmode=git\norigin={}\nseat.main=main\nprofile.main=cl\n",
                 s.0.display()
             ),
         )
@@ -997,7 +997,7 @@ mod tests {
         std::fs::write(
             dir.join("meta"),
             format!(
-                "session_id=not-a-uuid\nmode=local\norigin={}\nagent.main=cl:main\n",
+                "session_id=not-a-uuid\nmode=local\norigin={}\nseat.main=main\nprofile.main=cl\n",
                 s.0.display()
             ),
         )
@@ -1017,7 +1017,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
             dir.join("meta"),
-            format!("session_id={UUID}\nmode=local\nagent.main=cl:main\n"),
+            format!("session_id={UUID}\nmode=local\nseat.main=main\nprofile.main=cl\n"),
         )
         .unwrap();
         let (code, _out, err) = run(&dir, false);
@@ -1033,7 +1033,7 @@ mod tests {
         std::fs::write(
             dir.join("meta"),
             format!(
-                "session_id={UUID}\nmode=local\norigin=/no/such/place/xyz\nagent.main=cl:main\n"
+                "session_id={UUID}\nmode=local\norigin=/no/such/place/xyz\nseat.main=main\nprofile.main=cl\n"
             ),
         )
         .unwrap();
@@ -1054,7 +1054,7 @@ mod tests {
         .unwrap();
         let (code, _out, err) = run(&dir, false);
         assert_eq!(code, 1);
-        assert!(err.contains("no valid main agent"), "{err}");
+        assert!(err.contains("no main agent"), "{err}");
     }
 
     #[test]
@@ -1099,7 +1099,7 @@ mod tests {
         std::fs::write(
             dir.join("meta"),
             format!(
-                "session_id={UUID}\nmode=local\norigin={}\nagent.main=cl:main\nconfig={}\n",
+                "session_id={UUID}\nmode=local\norigin={}\nseat.main=main\nprofile.main=cl\nconfig={}\n",
                 s.0.display(),
                 cfg.display()
             ),
@@ -1127,11 +1127,17 @@ mod tests {
     }
 
     #[test]
-    fn a_malformed_agent_main_is_refused_not_emitted() {
-        // `cl`, `cl:`, `:main` each fail the typed roster grammar and so never
-        // become a `main` entry — freeze refuses rather than emitting a broken
-        // handover ref P3.7b would try to deliver to.
-        for bad in ["cl", "cl:", ":main"] {
+    fn a_meta_with_no_main_seat_is_refused_not_emitted() {
+        // An empty `seat.main`, a slot named twice, and the retired v1 row each
+        // leave no `main` entry — freeze refuses rather than emitting a broken
+        // handover ref P3.7b would try to deliver to. The v1 arm is the human's
+        // ruling reaching compact: a legacy session is refused at the same gate
+        // as a doubtful roster, and never mistaken for a session with no agents.
+        for bad in [
+            "seat.main=",
+            "seat.main=a\nseat.main=b",
+            "agent.main=cl:main",
+        ] {
             let s = Scratch::new("malformedmain");
             let dir = s.0.join("sess");
             std::fs::create_dir_all(&dir).unwrap();
@@ -1140,22 +1146,16 @@ mod tests {
             std::fs::write(
                 dir.join("meta"),
                 format!(
-                    "session_id={UUID}\nmode=local\norigin={}\nagent.main={bad}\nconfig={}\n",
+                    "session_id={UUID}\nmode=local\norigin={}\n{bad}\nconfig={}\n",
                     s.0.display(),
                     cfg.display()
                 ),
             )
             .unwrap();
             let (code, out, err) = run(&dir, false);
-            assert_eq!(code, 1, "agent.main={bad:?}: {err}");
-            assert!(
-                err.contains("no valid main agent"),
-                "agent.main={bad:?}: {err}"
-            );
-            assert!(
-                out.is_empty(),
-                "agent.main={bad:?} emitted a tuple: {out:?}"
-            );
+            assert_eq!(code, 1, "{bad:?}: {err}");
+            assert!(err.contains("no main agent"), "{bad:?}: {err}");
+            assert!(out.is_empty(), "{bad:?} emitted a tuple: {out:?}");
         }
     }
 
@@ -1393,7 +1393,7 @@ mod tests {
         std::fs::write(
             dir.join("meta"),
             format!(
-                "session_id={UUID}\nmode=local\norigin={}\nagent.main=cl:main:{UUID}\nagent.spawned.0=gpt:helper:{UUID}\nconfig={}\n",
+                "session_id={UUID}\nmode=local\norigin={}\nseat.main=main\nprofile.main=cl\nharness_session.main={UUID}\nseat.spawned.0=helper\nprofile.spawned.0=gpt\nconfig={}\n",
                 s.0.display(),
                 cfg.display()
             ),
@@ -1402,7 +1402,7 @@ mod tests {
         let f = frozen(&s.0, &cfg);
         let e = revalidate(&dir, &f, false, "test").unwrap_err();
         assert!(
-            e.contains("still has spawned agents") && e.contains("gpt:helper"),
+            e.contains("still has spawned agents") && e.contains("helper"),
             "{e}"
         );
     }

@@ -206,7 +206,7 @@ fn entry_of(row: &Planted) -> SessionEntry {
         entry.last_active_epoch = Some(NOW.epoch() - 10);
     }
     entry.agents = vec![AgentEntry {
-        reference: "cl:lead".to_owned(),
+        reference: "lead".to_owned(),
         alias: "cl".to_owned(),
         name: "lead".to_owned(),
         ..AgentEntry::default()
@@ -922,7 +922,7 @@ fn criterion_2_presentation_starts_from_one_completed_classified_snapshot() {
             std::fs::write(
                 dir.join("meta"),
                 // NO SERVER SELECTOR, deliberately.
-                "mode=local\nagent.main=cl:lead\n",
+                "mode=local\nseat.main=lead\nprofile.main=cl\n",
             )
         });
         assert!(written.is_ok(), "a planted session");
@@ -1087,7 +1087,7 @@ fn c3_root(tag: &str) -> PathBuf {
 
 fn event_line(offset: i64, action: &str, extra: &str) -> String {
     format!(
-        r#"{{"ts":"{}","actor":"cl:lead","action":"{action}"{extra}}}"#,
+        r#"{{"ts":"{}","actor":"lead","action":"{action}"{extra}}}"#,
         Timestamp::from_epoch(NOW.epoch() + offset)
     )
 }
@@ -1099,7 +1099,7 @@ fn write_session(dir: &Path, facts: ExternalFacts) {
         facts.name
     );
     let meta = format!(
-        "mode={}\nagent.main=cl:lead\ngoal={}\n",
+        "mode={}\nseat.main=lead\nprofile.main=cl\ngoal={}\n",
         facts.mode, facts.goal
     );
     assert!(
@@ -1838,7 +1838,7 @@ fn sc_509e_the_agent_liveness_field_is_present_even_when_null() {
     ] {
         let mut entry = SessionEntry::new("s", Status::Running);
         entry.agents = vec![AgentEntry {
-            reference: "cl:lead".to_owned(),
+            reference: "lead".to_owned(),
             alias: "cl".to_owned(),
             name: "lead".to_owned(),
             alive,
@@ -1872,7 +1872,7 @@ fn sc_509e_the_agent_liveness_field_is_present_even_when_null() {
 fn health_cell(alive: Option<bool>) -> String {
     let mut entry = SessionEntry::new("s", Status::Running);
     entry.agents = vec![AgentEntry {
-        reference: "cl:lead".to_owned(),
+        reference: "lead".to_owned(),
         alias: "cl".to_owned(),
         name: "lead".to_owned(),
         alive,
@@ -1915,7 +1915,7 @@ fn sc_017q_an_unknown_agent_keeps_its_declared_state_and_reason() {
     // Liveness null never nulls or relabels an independently known fact.
     let mut entry = SessionEntry::new("s", Status::Running);
     entry.agents = vec![AgentEntry {
-        reference: "cl:lead".to_owned(),
+        reference: "lead".to_owned(),
         alias: "cl".to_owned(),
         name: "lead".to_owned(),
         alive: None,
@@ -1952,7 +1952,7 @@ fn sc_017q_the_entry_point_reports_unknown_agents_rather_than_dead_ones() {
     let written = std::fs::create_dir_all(&dir).and_then(|()| {
         std::fs::write(
             dir.join("meta"),
-            "mode=local\nagent.main=cl:lead\ntmux_server_kind=name\ntmux_server=B\n",
+            "mode=local\nseat.main=lead\nprofile.main=cl\ntmux_server_kind=name\ntmux_server=B\n",
         )
     });
     assert!(written.is_ok(), "a planted session");
@@ -1971,7 +1971,7 @@ fn sc_017q_the_entry_point_reports_unknown_agents_rather_than_dead_ones() {
     assert_ne!(null_cell, dead_cell, "unknown is not dead in the digest");
     let agent_row = human
         .lines()
-        .find(|line| line.starts_with(char::is_whitespace) && line.contains("cl:lead"))
+        .find(|line| line.starts_with(char::is_whitespace) && line.contains("lead"))
         .unwrap_or_else(|| panic!("the agent row must be rendered: {human}"));
     // The TABLE's third field is the declared state.
     assert_eq!(

@@ -54,7 +54,7 @@ pub(crate) fn roster_doubting(a: &Anomaly) -> bool {
         "harness_session.",
     ];
     match a {
-        Anomaly::MixedSchemaSlot { .. }
+        Anomaly::LegacyRoster { .. }
         | Anomaly::DuplicateName { .. }
         | Anomaly::MalformedRosterEntry { .. }
         | Anomaly::MalformedLine { .. } => true,

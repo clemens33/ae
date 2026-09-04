@@ -12,10 +12,10 @@ from the SHOULD text of the row named in the directory name — the anti-oracle 
 to fixtures: a measured value cannot define an expected value. If a bash capture later
 disagrees with one of these files, that is a finding for the seats, not a fixture to fix.
 
-Each directory holds a `meta` (SC-405a–c) and, unless the fixture is about its absence, an
-`events.jsonl`. Most `meta` files carry only the keys SC-405b and SC-405c name, which keeps
-each fixture about one row. A real bash-era meta holds many more keys; SC-405d ratified
-that those are tolerated silently and never degrade, and SC-405h was REJECTED so no row
+Each directory holds a `meta` and, unless the fixture is about its absence, an
+`events.jsonl`. Most `meta` files carry only the context keys and the roster, which keeps
+each fixture about one rule. A real meta holds many more keys; unknown keys are
+tolerated silently and never degrade, and no rule
 enumerates them — `sc-405d-unknown-key/` pins the tolerance, and no fixture here tries to
 mirror the live key population, because a census is evidence and never contract.
 

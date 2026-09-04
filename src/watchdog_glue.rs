@@ -496,7 +496,7 @@ pub fn clear_pid(meta_dir: &Path, pid: u32) -> bool {
 mod tests {
     use super::{
         BRANCH_DISPLAY_MAX, Deferred, PaneOwner, Recovered, interpret_pane_owner, kill_pane_args,
-        pane_owner_args, recovered_summary, supervise_due, trim_display,
+        pane_owner_args, recover, recovered_summary, supervise_due, trim_display,
     };
     use crate::inventory::ServerId;
     use crate::meta::Selector;
@@ -644,5 +644,26 @@ mod tests {
             empty.paths.as_ref().map(|paths| paths.config.clone()),
             Some("/srv/.ae/config".into())
         );
+    }
+
+    #[test]
+    fn a_legacy_v1_meta_gives_the_watchdog_no_seats_to_recover() {
+        // The daemon hands `recover` the roster it read this cycle. A meta this
+        // ae no longer serves parses to an EMPTY roster, so the cycle finds no
+        // pending seat, does no work, and does not panic — the same answer as a
+        // session with no roster at all, which is what the digest's `degraded`
+        // flag exists to tell apart.
+        let dir = std::env::temp_dir().join(format!("ae-wdglue-legacy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let legacy = crate::meta::Meta::parse("mode=local\nagent.main=claude:lead:pending\n");
+        assert!(legacy.roster().is_empty(), "no seat comes from a v1 row");
+        assert!(
+            recover(&dir, legacy.roster()).is_empty(),
+            "and so there is nothing to recover"
+        );
+        let none = crate::meta::Meta::parse("mode=local\n");
+        assert!(recover(&dir, none.roster()).is_empty(), "the control");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

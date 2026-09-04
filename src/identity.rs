@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use crate::config::{self, IdentityConfig};
 use crate::launch_cmd;
-use crate::meta::{self, Meta, RosterSchema};
+use crate::meta::{self, Meta};
 use crate::roster::{self, SeatLines};
 
 /// The unit separator that frames every record these entries print.
@@ -462,29 +462,16 @@ pub fn roster(
     }
 }
 
-/// Every anomaly that puts the roster's IDENTITY in doubt, rendered — the SAME
-/// provenance grain as migration (`roster::roster_doubting`): a slot claimed by
-/// both schemas, one name on two seats, a malformed roster row or line, and a
+/// Every anomaly that puts the roster's IDENTITY in doubt, rendered: a retired
+/// v1 row, one name on two seats, a malformed roster row or line, and a
 /// duplicate or unreadable key under an identity prefix.
 fn identity_doubts(current: &Meta) -> Vec<String> {
-    let mut doubts: Vec<String> = current
+    current
         .anomalies()
         .iter()
         .filter(|anomaly| roster::roster_doubting(anomaly))
         .map(ToString::to_string)
-        .collect();
-    // A v1 `agent.<slot>` row inside a schema=2 meta is a seat the v2 reader
-    // would silently omit — and a resume would then delete.
-    if current.schema() == Some("2") {
-        doubts.extend(
-            current
-                .roster()
-                .iter()
-                .filter(|entry| entry.schema == RosterSchema::V1)
-                .map(|entry| format!("v1 row agent.{} inside a schema=2 meta", entry.slot)),
-        );
-    }
-    doubts
+        .collect()
 }
 
 /// The meta's text.

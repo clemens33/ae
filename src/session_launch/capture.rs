@@ -1404,7 +1404,6 @@ mod tests {
             profile: Some("p".to_owned()),
             harness_session: id.map(ToOwned::to_owned),
             binary: Some(binary.to_owned()),
-            schema: crate::meta::RosterSchema::V2,
         }
     }
 

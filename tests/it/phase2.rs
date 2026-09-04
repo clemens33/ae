@@ -163,7 +163,7 @@ impl Scratch {
         self.write(
             name,
             &format!(
-                "mode=local\ntmux_server_kind=name\ntmux_server=B\nagent.main=cl:lead\n{extra}"
+                "mode=local\ntmux_server_kind=name\ntmux_server=B\nseat.main=lead\nprofile.main=cl\n{extra}"
             ),
         )
     }
@@ -173,7 +173,7 @@ impl Scratch {
     fn degraded_but_addressable(&self, name: &str) -> PathBuf {
         let dir = self.write(
             name,
-            "mode=local\ntmux_server_kind=name\ntmux_server=B\nagent.main=cl:lead\n",
+            "mode=local\ntmux_server_kind=name\ntmux_server=B\nseat.main=lead\nprofile.main=cl\n",
         );
         self.events(
             name,
@@ -195,7 +195,7 @@ impl Scratch {
 
     /// A session whose meta is readable and carries a roster but NO selector.
     fn no_selector(&self, name: &str) -> PathBuf {
-        self.write(name, "mode=local\nagent.main=cl:lead\n")
+        self.write(name, "mode=local\nseat.main=lead\nprofile.main=cl\n")
     }
 
     /// Write an event log beside a session's meta.
@@ -1244,10 +1244,10 @@ fn plant_both_record_sources(scratch: &Scratch) -> PathBuf {
     scratch.events(
         "alpha",
         &[
-            event("2026-05-29T09:00:00Z", "cl:lead", "goal", ""),
+            event("2026-05-29T09:00:00Z", "lead", "goal", ""),
             event(
                 "2026-05-29T10:00:00Z",
-                "cl:lead",
+                "lead",
                 "state",
                 r#","ref":"working""#,
             ),
@@ -1264,7 +1264,7 @@ fn oppose_both_record_sources(scratch: &Scratch, repaired: &Path) {
     assert!(
         fs::write(
             repaired.join("meta"),
-            "mode=local\nagent.main=cl:lead\ngoal=a goal that appeared later\n",
+            "mode=local\nseat.main=lead\nprofile.main=cl\ngoal=a goal that appeared later\n",
         )
         .is_ok(),
         "the absent record becomes readable"
@@ -1272,7 +1272,7 @@ fn oppose_both_record_sources(scratch: &Scratch, repaired: &Path) {
     assert!(
         fs::write(
             scratch.0.join("sessions").join("alpha").join("meta"),
-            "mode=copy\nagent.main=cl:other\ngoal=a different goal\n",
+            "mode=copy\nseat.main=other\nprofile.main=cl\ngoal=a different goal\n",
         )
         .is_ok(),
         "and an existing record changes"
@@ -1280,18 +1280,18 @@ fn oppose_both_record_sources(scratch: &Scratch, repaired: &Path) {
     scratch.events(
         "alpha",
         &[
-            event("2026-05-29T09:00:00Z", "cl:lead", "goal", ""),
+            event("2026-05-29T09:00:00Z", "lead", "goal", ""),
             event(
                 "2026-05-29T10:00:00Z",
-                "cl:lead",
+                "lead",
                 "state",
                 r#","ref":"working""#,
             ),
             // Strictly LATER, and opposed on every event-derived field.
-            event("2026-05-29T11:00:00Z", "cl:lead", "goal", ""),
+            event("2026-05-29T11:00:00Z", "lead", "goal", ""),
             event(
                 "2026-05-29T12:00:00Z",
-                "cl:lead",
+                "lead",
                 "state",
                 r#","ref":"blocked""#,
             ),
@@ -1389,7 +1389,11 @@ fn criterion_14_a_record_that_changes_after_discovery_cannot_change_the_digest()
 
     // The world changes between the two boundaries.
     assert!(
-        fs::write(damaged.join("meta"), "mode=local\nagent.main=cl:lead\n").is_ok(),
+        fs::write(
+            damaged.join("meta"),
+            "mode=local\nseat.main=lead\nprofile.main=cl\n"
+        )
+        .is_ok(),
         "the record becomes readable after discovery"
     );
 

@@ -83,7 +83,7 @@ fn sc_510b_an_absent_optional_key_reads_as_absent() {
     assert_eq!(done.summary, None);
 
     let nudge = &drain.events[1];
-    assert_eq!(nudge.target.as_deref(), Some("claude:lead"));
+    assert_eq!(nudge.target.as_deref(), Some("lead"));
     assert_eq!(
         nudge.summary.as_deref(),
         Some("idle 90m, no recent ae activity")
@@ -159,7 +159,7 @@ fn sc_511a_and_b_routing_keys_are_read_and_preferred_where_present() {
     );
     assert_eq!(
         drain.events[1].actor_identity(),
-        Identity::Display("claude:lead"),
+        Identity::Display("lead"),
         "a record without the keys falls back to the display name"
     );
 }
@@ -240,7 +240,7 @@ fn sc_519_a_session_with_no_event_log_is_quiet_not_degraded() {
     assert_eq!(built.last_active_epoch, None);
     assert_eq!(built.mode.as_deref(), Some("local"));
     assert_eq!(built.agents.len(), 1, "the roster still names its agents");
-    assert_eq!(built.agents[0].reference, "claude:lead");
+    assert_eq!(built.agents[0].reference, "lead");
 }
 
 #[test]
@@ -298,11 +298,11 @@ fn sc_405b_and_c_the_meta_supplies_the_context_fields_and_the_roster() {
     assert_eq!(built.work_dir.as_deref(), Some("/home/c/projects/ae"));
 
     assert_eq!(built.agents.len(), 2);
-    assert_eq!(built.agents[0].reference, "claude:lead");
+    assert_eq!(built.agents[0].reference, "lead");
     assert_eq!(built.agents[0].alias, "claude");
     assert_eq!(built.agents[0].name, "lead");
     assert_eq!(built.agents[0].session_id.as_deref(), Some("e795c9e9"));
-    assert_eq!(built.agents[1].reference, "codex:coworker");
+    assert_eq!(built.agents[1].reference, "coworker");
     assert_eq!(
         built.agents[1].session_id, None,
         "the roster's session id is optional"
@@ -336,7 +336,7 @@ fn sc_405d_an_unknown_meta_key_is_tolerated_and_never_degrades() {
         meta.anomalies(),
         [Anomaly::UnknownKey {
             key: "ae_path".to_owned(),
-            line: 6
+            line: 8
         }],
         "the reader still SEES it"
     );

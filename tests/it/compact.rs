@@ -56,7 +56,7 @@ fn local_session(s: &Scratch, name: &str, mode: &str, config_body: &str) -> Path
     let config = s.0.join("config");
     std::fs::write(&config, config_body).unwrap();
     let meta = format!(
-        "session_id={UUID}\nmode={mode}\norigin={}\nagent.main=cl:main:{UUID}\nconfig={}\n",
+        "session_id={UUID}\nmode={mode}\norigin={}\nseat.main=main\nprofile.main=cl\nharness_session.main={UUID}\nconfig={}\n",
         s.0.display(),
         config.display()
     );
@@ -123,7 +123,7 @@ fn archive_step_refuses_a_replacement_session() {
     let tuple = tuple_of(s.0.as_path(), &dir);
     // The session is replaced under the same name: a fresh session_id.
     let meta = format!(
-        "session_id=99999999-9999-9999-9999-999999999999\nmode=local\norigin={}\nagent.main=cl:main:99999999-9999-9999-9999-999999999999\nconfig={}\n",
+        "session_id=99999999-9999-9999-9999-999999999999\nmode=local\norigin={}\nseat.main=main\nprofile.main=cl\nharness_session.main=99999999-9999-9999-9999-999999999999\nconfig={}\n",
         s.0.display(),
         s.0.join("config").display()
     );
@@ -258,7 +258,7 @@ fn a_local_session_emits_the_frozen_tuple() {
     assert_eq!(fields[1], UUID, "uuid");
     assert_eq!(fields[3], "local", "mode");
     assert_eq!(fields[6], "false", "purge");
-    assert_eq!(fields[8], "cl:main", "main_ref");
+    assert_eq!(fields[8], "main", "main_ref");
     assert_eq!(fields[9], "main=cl workers=a, b", "roster");
     // Read-only: the session dir and its meta are untouched.
     assert!(dir.join("meta").exists());
@@ -275,7 +275,7 @@ fn a_fifo_global_config_is_refused_without_hanging() {
     let cfg = s.0.join("fifo-config");
     crate::cli::mkfifo(&cfg);
     let meta = format!(
-        "session_id={UUID}\nmode=local\norigin={}\nagent.main=cl:main:{UUID}\nconfig={}\n",
+        "session_id={UUID}\nmode=local\norigin={}\nseat.main=main\nprofile.main=cl\nharness_session.main={UUID}\nconfig={}\n",
         s.0.display(),
         cfg.display()
     );

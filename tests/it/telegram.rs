@@ -508,7 +508,7 @@ fn plant_session(root: &std::path::Path, socket: &std::path::Path) -> std::path:
         std::fs::write(
             dir.join("meta"),
             format!(
-                "mode=local\nagent.main=cl:lead\ntmux_server_kind=socket\ntmux_server={}\n",
+                "mode=local\nseat.main=lead\nprofile.main=cl\ntmux_server_kind=socket\ntmux_server={}\n",
                 socket.display()
             ),
         )
@@ -534,7 +534,7 @@ fn a_pane_a_real_server_does_not_list_is_the_only_thing_that_counts_as_hard() {
     let dir = plant_session(&scratch, &socket);
 
     // ARM 1 — no server at all.
-    let refusal = Helper.deliver(Verb::Send, "work", &dir, "cl:lead", "hello", "42");
+    let refusal = Helper.deliver(Verb::Send, "work", &dir, "lead", "hello", "42");
     assert!(
         matches!(refusal, Delivered::No(Refusal::Transient)),
         "an unreachable server must not shorten the bound: {refusal:?}"
@@ -548,7 +548,7 @@ fn a_pane_a_real_server_does_not_list_is_the_only_thing_that_counts_as_hard() {
     let (created, _) = super::phase2::run_tmux(&create, &scratch);
     assert!(created, "the fixture server must start");
 
-    let refusal = Helper.deliver(Verb::Send, "work", &dir, "cl:lead", "hello", "42");
+    let refusal = Helper.deliver(Verb::Send, "work", &dir, "lead", "hello", "42");
     assert!(
         matches!(refusal, Delivered::No(Refusal::Hard)),
         "a server that answered and does not hold the target is the hard case: {refusal:?}"
@@ -556,11 +556,11 @@ fn a_pane_a_real_server_does_not_list_is_the_only_thing_that_counts_as_hard() {
 
     // ARM 3 — the same server, now holding a pane stamped as the target.
     let mut stamp = ae::tmux::server_args(&server);
-    stamp.extend(["set-option", "-p", "-t", "work", "@ae_agent", "cl:lead"].map(ToOwned::to_owned));
+    stamp.extend(["set-option", "-p", "-t", "work", "@ae_agent", "lead"].map(ToOwned::to_owned));
     let (stamped, _) = super::phase2::run_tmux(&stamp, &scratch);
     assert!(stamped, "stamping the pane must succeed");
 
-    let refusal = Helper.deliver(Verb::Send, "work", &dir, "cl:lead", "hello", "42");
+    let refusal = Helper.deliver(Verb::Send, "work", &dir, "lead", "hello", "42");
     assert!(
         matches!(refusal, Delivered::No(Refusal::Transient)),
         "a pane that is present cannot be dead, whatever the send helper did: {refusal:?}"
@@ -579,7 +579,7 @@ fn a_pane_a_real_server_does_not_list_is_the_only_thing_that_counts_as_hard() {
         "the planted session is live on its own server and must be routable"
     );
     assert_eq!(running[0].dir, dir);
-    assert_eq!(running[0].main.as_deref(), Some("cl:lead"));
+    assert_eq!(running[0].main.as_deref(), Some("lead"));
 
     let mut kill = ae::tmux::server_args(&server);
     kill.push("kill-server".to_owned());

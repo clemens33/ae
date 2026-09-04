@@ -472,8 +472,8 @@ mod tests {
         live.attention = Some(Reason::Blocked);
         live.last_active_epoch = Some(NOW.epoch() - 10);
         live.agents = vec![
-            agent("claude:lead", Some(true), Some("blocked")),
-            agent("codex:coworker", Some(false), None),
+            agent("lead", Some(true), Some("blocked")),
+            agent("coworker", Some(false), None),
         ];
 
         let mut quiet = SessionEntry::new("quiet", Status::Running);
@@ -979,7 +979,7 @@ mod tests {
         // CONTENT, not form.
         let rendered_with = |state: Option<&str>| {
             let mut session = SessionEntry::new("solo-session", Status::Running);
-            session.agents = vec![agent("claude:lead", Some(true), state)];
+            session.agents = vec![agent("lead", Some(true), state)];
             table(&[&session])
         };
 
@@ -989,7 +989,7 @@ mod tests {
         let residue = undeclared
             .replacen("solo-session", "", 1)
             .replacen(Status::Running.as_str(), "", 1)
-            .replacen("claude:lead", "", 1)
+            .replacen("lead", "", 1)
             .replacen("alive", "", 1);
         assert!(
             residue.chars().any(|glyph| !glyph.is_whitespace()),
@@ -1013,7 +1013,7 @@ mod tests {
         // agent's OWN reason is not rendered at all.
         let mut session = SessionEntry::new("s", Status::Running);
         session.attention = Some(Reason::Dead);
-        session.agents = vec![agent("claude:lead", Some(false), Some("working"))];
+        session.agents = vec![agent("lead", Some(false), Some("working"))];
 
         let unflagged = table(&[&session]);
         for reason in Reason::BY_SEVERITY {
@@ -1176,7 +1176,7 @@ mod tests {
     fn sc_509b_event_loss_keeps_false_as_partial_evidence_and_omits_only_event_facts() {
         let fixture = DigestFixture::new(
             "event-loss",
-            Some("mode=local\norigin=/repo\nagent.main=claude:lead\n"),
+            Some("mode=local\norigin=/repo\nseat.main=lead\nprofile.main=claude\n"),
             Some("not json\n"),
         );
         let entry = fixture.entry("event-loss");
@@ -1208,9 +1208,9 @@ mod tests {
     fn sc_509b_a_listed_agent_needs_complete_reason_inputs() {
         let fixture = DigestFixture::new(
             "reason-loss",
-            Some("mode=local\nagent.main=claude:lead\n"),
+            Some("mode=local\nseat.main=lead\nprofile.main=claude\n"),
             Some(concat!(
-                r#"{"ts":"2026-05-29T14:00:00Z","actor":"claude:lead","action":"state","ref":"blocked"}"#,
+                r#"{"ts":"2026-05-29T14:00:00Z","actor":"lead","action":"state","ref":"blocked"}"#,
                 "\nnot json\n",
             )),
         );
@@ -1224,7 +1224,7 @@ mod tests {
         let Some(json::Value::Arr(agents)) = entry.get("agents") else {
             panic!("the readable agent remains visible");
         };
-        assert_eq!(agents[0].get_str("ref"), Some("claude:lead"));
+        assert_eq!(agents[0].get_str("ref"), Some("lead"));
         assert_eq!(agents[0].get("state"), None);
         assert_eq!(agents[0].get("reason"), None);
     }
@@ -1233,9 +1233,9 @@ mod tests {
     fn sc_509b_entry_for_and_presentation_render_one_snapshot_identically() {
         let fixture = DigestFixture::new(
             "one-producer",
-            Some("mode=local\nagent.main=claude:lead\n"),
+            Some("mode=local\nseat.main=lead\nprofile.main=claude\n"),
             Some(concat!(
-                r#"{"ts":"2026-05-29T14:00:00Z","actor":"claude:lead","action":"state","ref":"blocked"}"#,
+                r#"{"ts":"2026-05-29T14:00:00Z","actor":"lead","action":"state","ref":"blocked"}"#,
                 "\nnot json\n",
             )),
         );
@@ -1315,9 +1315,9 @@ mod tests {
     fn sc_509b_needs_attention_selects_partial_evidence_without_printing_an_inexact_class() {
         let fixture = DigestFixture::new(
             "partial-evidence-table",
-            Some("mode=local\nagent.main=claude:lead\n"),
+            Some("mode=local\nseat.main=lead\nprofile.main=claude\n"),
             Some(concat!(
-                r#"{"ts":"2026-05-29T14:00:00Z","actor":"claude:lead","action":"state","ref":"blocked"}"#,
+                r#"{"ts":"2026-05-29T14:00:00Z","actor":"lead","action":"state","ref":"blocked"}"#,
                 "\nnot json\n",
             )),
         );
@@ -1341,7 +1341,7 @@ mod tests {
         // The dash in the id cell is the RULED outcome for an arm that NO
         // standing authority reaches.
         assert!(
-            row_fields(&human, "claude:lead") == ["claude:lead", "-", "unknown"],
+            row_fields(&human, "lead") == ["lead", "-", "unknown"],
             "the malformed event hides stale blocked state behind the human unknown: {human}"
         );
         assert!(
@@ -1473,7 +1473,7 @@ mod tests {
     fn sc_017h_declared_state_cell_distinguishes_exact_value_and_no_declaration() {
         let mut session = SessionEntry::new("state-cell", Status::Running);
         session.agents = vec![AgentEntry {
-            reference: "claude:lead".to_owned(),
+            reference: "lead".to_owned(),
             alias: "claude".to_owned(),
             name: "lead".to_owned(),
             session_id: None,
@@ -1485,8 +1485,8 @@ mod tests {
         // fields, on every status, because frozen rendered it on both grammars
         // (ae@72c7293:4254 running, ae:4299 stopped) and our table omitted it.
         assert_eq!(
-            row_fields(&table(&[&session]), "claude:lead"),
-            ["claude:lead", "-", "blocked"],
+            row_fields(&table(&[&session]), "lead"),
+            ["lead", "-", "blocked"],
             "reference, short id, declared state"
         );
 
@@ -1494,8 +1494,8 @@ mod tests {
         // TWO dashes, two different facts: the first is an absent session id,
         // the second is exact no-declaration.
         assert_eq!(
-            row_fields(&table(&[&session]), "claude:lead"),
-            ["claude:lead", "-", "-"],
+            row_fields(&table(&[&session]), "lead"),
+            ["lead", "-", "-"],
             "no declaration renders the dash cell"
         );
     }
@@ -1504,9 +1504,9 @@ mod tests {
     fn sc_509b_ledger_dead_with_event_loss_is_partial_for_session_and_agent() {
         let fixture = DigestFixture::new(
             "dead-dominates",
-            Some("mode=local\nagent.main=claude:lead\n"),
+            Some("mode=local\nseat.main=lead\nprofile.main=claude\n"),
             Some(concat!(
-                r#"{"ts":"2026-05-29T14:00:00Z","actor":"_watchdog","action":"alert","target":"claude:lead","summary":"agent process dead — dropped to shell"}"#,
+                r#"{"ts":"2026-05-29T14:00:00Z","actor":"_watchdog","action":"alert","target":"lead","summary":"agent process dead — dropped to shell"}"#,
                 "\nnot json\n",
             )),
         );
@@ -1548,10 +1548,10 @@ mod tests {
         let fixture = DigestFixture::new(
             "unrelated-meta-loss",
             Some(
-                "mode=local\nmode=duplicate\norigin=/repo\nwork_dir=/work\nagent.main=claude:lead\n",
+                "mode=local\nmode=duplicate\norigin=/repo\nwork_dir=/work\nseat.main=lead\nprofile.main=claude\n",
             ),
             Some(concat!(
-                r#"{"ts":"2026-05-29T14:00:00Z","actor":"claude:lead","action":"state","ref":"blocked"}"#,
+                r#"{"ts":"2026-05-29T14:00:00Z","actor":"lead","action":"state","ref":"blocked"}"#,
                 "\n",
             )),
         );
@@ -1579,15 +1579,15 @@ mod tests {
     fn sc_509b_lost_roster_and_lost_events_omit_different_members() {
         let events_lost = DigestFixture::new(
             "events-separated",
-            Some("mode=local\nagent.main=claude:lead\n"),
+            Some("mode=local\nseat.main=lead\nprofile.main=claude\n"),
             Some("not json\n"),
         )
         .entry("events-separated");
         let roster_lost = DigestFixture::new(
             "roster-separated",
-            Some("mode=local\nagent.main=claude:lead\nagent.worker.0=broken\n"),
+            Some("mode=local\nseat.main=lead\nprofile.main=claude\nagent.worker.0=broken\n"),
             Some(concat!(
-                r#"{"ts":"2026-05-29T14:00:00Z","actor":"claude:lead","action":"state","ref":"blocked"}"#,
+                r#"{"ts":"2026-05-29T14:00:00Z","actor":"lead","action":"state","ref":"blocked"}"#,
                 "\n",
             )),
         )
@@ -1622,15 +1622,15 @@ mod tests {
             std::fs::create_dir_all(&dir).expect("a scratch dir");
             std::fs::write(
                 dir.join("meta"),
-                "mode=local\nagent.main=claude:lead:e795c9e9\nagent.worker.0=codex:hand:pending\n",
+                "mode=local\nseat.main=lead\nprofile.main=claude\nharness_session.main=e795c9e9\nseat.worker.0=hand\nprofile.worker.0=codex\nharness_session.worker.0=pending\n",
             )
             .expect("writing a fixture");
             std::fs::write(
                 dir.join("events.jsonl"),
                 format!(
                     concat!(
-                        r#"{{"ts":"{}","actor":"claude:lead","action":"ask","#,
-                        r#""target":"codex:hand","ref":"ae-1","summary":"nobody answered"}}"#,
+                        r#"{{"ts":"{}","actor":"lead","action":"ask","#,
+                        r#""target":"hand","ref":"ae-1","summary":"nobody answered"}}"#,
                         "\n",
                     ),
                     asked_at,

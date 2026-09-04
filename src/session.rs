@@ -88,8 +88,8 @@ impl SessionRead {
     ///
     /// // An ask at 09:00 that nobody answered, read at 14:00.
     /// let ask = Event::parse_line(concat!(
-    ///     r#"{"ts":"2026-05-29T09:00:00Z","actor":"claude:lead","action":"ask","#,
-    ///     r#""target":"codex:coworker","ref":"ae-1"}"#,
+    ///     r#"{"ts":"2026-05-29T09:00:00Z","actor":"lead","action":"ask","#,
+    ///     r#""target":"coworker","ref":"ae-1"}"#,
     /// ))?;
     /// let read = SessionRead::from_drain(&Drain {
     ///     events: vec![ask],
@@ -538,7 +538,7 @@ fn roster_complete(meta: &Meta) -> bool {
     !meta.anomalies().iter().any(|anomaly| match anomaly {
         Anomaly::MalformedLine { .. }
         | Anomaly::MalformedRosterEntry { .. }
-        | Anomaly::MixedSchemaSlot { .. }
+        | Anomaly::LegacyRoster { .. }
         | Anomaly::DuplicateName { .. } => true,
         Anomaly::DuplicateKey { key, .. } => key.starts_with("agent.") || key.starts_with("seat."),
         Anomaly::UnknownKey { .. } => false,
@@ -606,7 +606,7 @@ fn anomalies_degrade(anomalies: &[Anomaly]) -> bool {
         Anomaly::MalformedLine { .. }
         | Anomaly::DuplicateKey { .. }
         | Anomaly::MalformedRosterEntry { .. }
-        | Anomaly::MixedSchemaSlot { .. }
+        | Anomaly::LegacyRoster { .. }
         | Anomaly::DuplicateName { .. } => true,
     })
 }
@@ -737,8 +737,8 @@ mod tests {
     #[test]
     fn sc_017e_the_activity_clock_is_the_newest_event() {
         let lines = [
-            event(&at(900), "claude:lead", "done", ""),
-            event(&at(30), "claude:lead", "memo", r#","ref":"design""#),
+            event(&at(900), "lead", "done", ""),
+            event(&at(30), "lead", "memo", r#","ref":"design""#),
             event(&at(600), "watchdog", "nudge", ""),
         ];
         let read = read(&lines);
@@ -758,9 +758,9 @@ mod tests {
     fn sc_017g_an_ask_whose_target_never_replied_is_unanswered_past_the_threshold() {
         let lines = [event(
             &at(DEFAULT_UNANSWERED_SECS + 60),
-            "claude:lead",
+            "lead",
             "ask",
-            r#","target":"codex:coworker","ref":"ae-1""#,
+            r#","target":"coworker","ref":"ae-1""#,
         )];
         let read = read(&lines);
         assert_eq!(read.pending.len(), 1);
@@ -775,9 +775,9 @@ mod tests {
     fn sc_017g_a_request_still_inside_the_threshold_is_not_an_attention_reason() {
         let lines = [event(
             &at(60),
-            "claude:lead",
+            "lead",
             "ask",
-            r#","target":"codex:coworker","ref":"ae-1""#,
+            r#","target":"coworker","ref":"ae-1""#,
         )];
         let read = read(&lines);
         assert_eq!(read.pending.len(), 1, "it is pending");
@@ -801,9 +801,9 @@ mod tests {
         ] {
             let lines = [event(
                 &at(age),
-                "claude:lead",
+                "lead",
                 "ask",
-                r#","target":"codex:coworker","ref":"ae-1""#,
+                r#","target":"coworker","ref":"ae-1""#,
             )];
             assert_eq!(
                 read(&lines).unanswered(NOW, DEFAULT_UNANSWERED_SECS).len(),
@@ -818,15 +818,15 @@ mod tests {
         let lines = [
             event(
                 &at(3600),
-                "claude:lead",
+                "lead",
                 "ask",
-                r#","target":"codex:coworker","ref":"ae-1""#,
+                r#","target":"coworker","ref":"ae-1""#,
             ),
             event(
                 &at(3000),
-                "codex:coworker",
+                "coworker",
                 "reply",
-                r#","target":"claude:lead","ref":"ae-1""#,
+                r#","target":"lead","ref":"ae-1""#,
             ),
         ];
         assert!(read(&lines).pending.is_empty());
@@ -838,13 +838,13 @@ mod tests {
         let lines = [
             event(
                 &at(3600),
-                "claude:lead",
+                "lead",
                 "ask",
-                r#","target":"codex:coworker","ref":"ae-1""#,
+                r#","target":"coworker","ref":"ae-1""#,
             ),
             event(
                 &at(3000),
-                "codex:coworker",
+                "coworker",
                 "reply",
                 r#","target":"gemini:someone-else","ref":"ae-1""#,
             ),
@@ -857,11 +857,11 @@ mod tests {
         let lines = [
             event(
                 &at(3600),
-                "claude:lead",
+                "lead",
                 "ask",
-                r#","target":"codex:coworker","ref":"ae-1""#,
+                r#","target":"coworker","ref":"ae-1""#,
             ),
-            event(&at(3000), "codex:coworker", "reply", r#","ref":"ae-1""#),
+            event(&at(3000), "coworker", "reply", r#","ref":"ae-1""#),
         ];
         assert_eq!(read(&lines).pending.len(), 1);
     }
@@ -874,15 +874,15 @@ mod tests {
             let lines = [
                 event(
                     &at(3600),
-                    "claude:lead",
+                    "lead",
                     "ask",
-                    r#","target":"codex:coworker","ref":"ae-1""#,
+                    r#","target":"coworker","ref":"ae-1""#,
                 ),
                 event(
                     &at(3000),
-                    "codex:coworker",
+                    "coworker",
                     "reply",
-                    &format!(r#","target":"claude:lead","ref":"ae-1"{reply_keys}"#),
+                    &format!(r#","target":"lead","ref":"ae-1"{reply_keys}"#),
                 ),
             ];
             assert_eq!(read(&lines).pending.len(), 1, "{reply_keys}");
@@ -899,15 +899,15 @@ mod tests {
             let lines = [
                 event(
                     &at(3600),
-                    "claude:lead",
+                    "lead",
                     "ask",
-                    &format!(r#","target":"codex:coworker","ref":"ae-1"{ask_keys}"#),
+                    &format!(r#","target":"coworker","ref":"ae-1"{ask_keys}"#),
                 ),
                 event(
                     &at(3000),
-                    "codex:coworker",
+                    "coworker",
                     "reply",
-                    r#","target":"claude:lead","ref":"ae-1""#,
+                    r#","target":"lead","ref":"ae-1""#,
                 ),
             ];
             assert_eq!(read(&lines).pending.len(), 1, "{ask_keys}");
@@ -926,15 +926,15 @@ mod tests {
             let lines = [
                 event(
                     &at(3600),
-                    "claude:lead",
+                    "lead",
                     "ask",
-                    r#","target":"codex:coworker","ref":"ae-1""#,
+                    r#","target":"coworker","ref":"ae-1""#,
                 ),
                 event(
                     &at(3000),
-                    "codex:coworker",
+                    "coworker",
                     "reply",
-                    &format!(r#","target":"claude:lead","ref":"ae-1"{reply_keys}"#),
+                    &format!(r#","target":"lead","ref":"ae-1"{reply_keys}"#),
                 ),
             ];
             assert_eq!(read(&lines).pending.len(), 1, "{reply_keys}");
@@ -951,15 +951,15 @@ mod tests {
             let lines = [
                 event(
                     &at(3600),
-                    "claude:lead",
+                    "lead",
                     "ask",
-                    &format!(r#","target":"codex:coworker","ref":"ae-1"{ask_keys}"#),
+                    &format!(r#","target":"coworker","ref":"ae-1"{ask_keys}"#),
                 ),
                 event(
                     &at(3000),
-                    "codex:coworker",
+                    "coworker",
                     "reply",
-                    r#","target":"claude:lead","ref":"ae-1""#,
+                    r#","target":"lead","ref":"ae-1""#,
                 ),
             ];
             assert_eq!(read(&lines).pending.len(), 1, "{ask_keys}");
@@ -974,7 +974,7 @@ mod tests {
         scratch.meta(META);
         scratch.events(&[event(
             &at(600),
-            "claude:lead",
+            "lead",
             "state",
             r#","ref":"blocked","actor_slot":"","actor_session":"live""#,
         )]);
@@ -993,15 +993,15 @@ mod tests {
         let lines = [
             event(
                 &at(3600),
-                "claude:lead",
+                "lead",
                 "ask",
-                r#","target":"codex:coworker","ref":"ae-1","target_slot":"worker.0""#,
+                r#","target":"coworker","ref":"ae-1","target_slot":"worker.0""#,
             ),
             event(
                 &at(3000),
-                "codex:coworker",
+                "coworker",
                 "reply",
-                r#","target":"claude:lead","ref":"ae-1","actor_slot":"worker.0""#,
+                r#","target":"lead","ref":"ae-1","actor_slot":"worker.0""#,
             ),
         ];
         assert_eq!(read(&lines).pending.len(), 1);
@@ -1013,19 +1013,19 @@ mod tests {
         let lines = [
             event(
                 &at(3600),
-                "claude:lead",
+                "lead",
                 "ask",
                 concat!(
-                    r#","target":"codex:coworker","ref":"ae-1""#,
+                    r#","target":"coworker","ref":"ae-1""#,
                     r#","actor_slot":"main","actor_session":"s""#,
                     r#","target_slot":"worker.0","target_session":"s""#
                 ),
             ),
             event(
                 &at(3000),
-                "codex:coworker",
+                "coworker",
                 "reply",
-                r#","target":"claude:lead","ref":"ae-1""#,
+                r#","target":"lead","ref":"ae-1""#,
             ),
         ];
         assert_eq!(read(&lines).pending.len(), 1);
@@ -1037,15 +1037,15 @@ mod tests {
         let lines = [
             event(
                 &at(3600),
-                "claude:lead",
+                "lead",
                 "ask",
-                r#","target":"codex:coworker","ref":"ae-1""#,
+                r#","target":"coworker","ref":"ae-1""#,
             ),
             event(
                 &at(3000),
                 "gemini:bystander",
                 "reply",
-                r#","target":"claude:lead","ref":"ae-1""#,
+                r#","target":"lead","ref":"ae-1""#,
             ),
         ];
         assert_eq!(read(&lines).pending.len(), 1);
@@ -1056,15 +1056,15 @@ mod tests {
         let lines = [
             event(
                 &at(3600),
-                "claude:lead",
+                "lead",
                 "ask",
-                r#","target":"codex:coworker","ref":"ae-1""#,
+                r#","target":"coworker","ref":"ae-1""#,
             ),
             event(
                 &at(3000),
-                "codex:coworker",
+                "coworker",
                 "reply",
-                r#","target":"claude:lead","ref":"ae-2""#,
+                r#","target":"lead","ref":"ae-2""#,
             ),
         ];
         assert_eq!(read(&lines).pending.len(), 1);
@@ -1076,10 +1076,10 @@ mod tests {
         let lines = [
             event(
                 &at(3600),
-                "claude:lead",
+                "lead",
                 "ask",
                 concat!(
-                    r#","target":"codex:coworker","ref":"ae-1""#,
+                    r#","target":"coworker","ref":"ae-1""#,
                     r#","actor_slot":"main","actor_session":"s""#,
                     r#","target_slot":"worker.0","target_session":"s""#
                 ),
@@ -1089,7 +1089,7 @@ mod tests {
                 "codex:renamed-since",
                 "reply",
                 concat!(
-                    r#","target":"claude:lead","ref":"ae-1""#,
+                    r#","target":"lead","ref":"ae-1""#,
                     r#","actor_slot":"worker.0","actor_session":"s""#,
                     r#","target_slot":"main","target_session":"s""#
                 ),
@@ -1106,20 +1106,20 @@ mod tests {
         let lines = [
             event(
                 &at(3600),
-                "claude:lead",
+                "lead",
                 "ask",
                 concat!(
-                    r#","target":"codex:coworker","ref":"ae-1""#,
+                    r#","target":"coworker","ref":"ae-1""#,
                     r#","actor_slot":"main","actor_session":"s""#,
                     r#","target_slot":"worker.0","target_session":"s""#
                 ),
             ),
             event(
                 &at(3000),
-                "codex:coworker",
+                "coworker",
                 "reply",
                 concat!(
-                    r#","target":"claude:lead","ref":"ae-1""#,
+                    r#","target":"lead","ref":"ae-1""#,
                     r#","actor_slot":"worker.0","actor_session":"another-session""#
                 ),
             ),
@@ -1135,9 +1135,9 @@ mod tests {
     fn a_review_is_a_request_too() {
         let lines = [event(
             &at(3600),
-            "claude:lead",
+            "lead",
             "review",
-            r#","target":"codex:coworker","ref":"ae-1""#,
+            r#","target":"coworker","ref":"ae-1""#,
         )];
         assert_eq!(read(&lines).pending.len(), 1);
     }
@@ -1147,15 +1147,15 @@ mod tests {
         let lines = [
             event(
                 &at(7200),
-                "claude:lead",
+                "lead",
                 "ask",
-                r#","target":"codex:coworker","ref":"ae-1""#,
+                r#","target":"coworker","ref":"ae-1""#,
             ),
             event(
                 &at(60),
-                "claude:lead",
+                "lead",
                 "ask",
-                r#","target":"codex:coworker","ref":"ae-1""#,
+                r#","target":"coworker","ref":"ae-1""#,
             ),
         ];
         let read = read(&lines);
@@ -1171,15 +1171,15 @@ mod tests {
         let lines = [
             event(
                 &at(3000),
-                "codex:coworker",
+                "coworker",
                 "reply",
-                r#","target":"claude:lead","ref":"ae-1""#,
+                r#","target":"lead","ref":"ae-1""#,
             ),
             event(
                 &at(2400),
-                "claude:lead",
+                "lead",
                 "ask",
-                r#","target":"codex:coworker","ref":"ae-1""#,
+                r#","target":"coworker","ref":"ae-1""#,
             ),
         ];
         assert_eq!(read(&lines).pending.len(), 1);
@@ -1189,12 +1189,12 @@ mod tests {
     fn an_ask_without_a_target_is_pending_and_nothing_can_close_it() {
         // No target means no "the target replied" to test against.
         let lines = [
-            event(&at(3600), "claude:lead", "ask", r#","ref":"ae-1""#),
+            event(&at(3600), "lead", "ask", r#","ref":"ae-1""#),
             event(
                 &at(3000),
-                "codex:coworker",
+                "coworker",
                 "reply",
-                r#","target":"claude:lead","ref":"ae-1""#,
+                r#","target":"lead","ref":"ae-1""#,
             ),
         ];
         assert_eq!(read(&lines).pending.len(), 1);
@@ -1217,7 +1217,7 @@ mod tests {
     }
 
     /// The roster every scratch session uses unless it needs another.
-    const META: &str = "mode=local\norigin=/src\nwork_dir=/src\nagent.main=claude:lead:e795c9e9\n";
+    const META: &str = "mode=local\norigin=/src\nwork_dir=/src\nseat.main=lead\nprofile.main=claude\nharness_session.main=e795c9e9\n";
 
     fn running() -> SessionRuntime {
         SessionRuntime::new(Status::Running)
@@ -1284,7 +1284,9 @@ mod tests {
     #[test]
     fn sc_509b_a_malformed_line_makes_absent_meta_members_unreadable() {
         let scratch = Scratch::new("unattributed-meta-loss");
-        scratch.meta("mode=local\nthis line has no equals sign\nagent.main=claude:lead\n");
+        scratch.meta(
+            "mode=local\nthis line has no equals sign\nseat.main=lead\nprofile.main=claude\n",
+        );
         let entry = entry_for(
             &scratch.0,
             "damaged",
@@ -1319,7 +1321,9 @@ mod tests {
         let empty_roster = Scratch::new("branch-observation-empty-roster");
         empty_roster.meta("mode=local\n");
         let degraded = Scratch::new("branch-observation-degraded");
-        degraded.meta("mode=local\nthis line has no equals sign\nagent.main=claude:lead\n");
+        degraded.meta(
+            "mode=local\nthis line has no equals sign\nseat.main=lead\nprofile.main=claude\n",
+        );
         // Unimplemented observation is not a new degradation fact.
         let healthy = entry_for(&healthy.0, "live", &running(), NOW, DEFAULT_UNANSWERED_SECS);
         let empty_roster = entry_for(
@@ -1363,7 +1367,7 @@ mod tests {
     #[test]
     fn sc_509b_a_malformed_line_keeps_the_roster_unenumerable() {
         let scratch = Scratch::new("malformed-roster-completeness");
-        scratch.meta("agent.main=claude:lead\nthis line has no equals sign\n");
+        scratch.meta("seat.main=lead\nprofile.main=claude\nthis line has no equals sign\n");
         let entry = entry_for(
             &scratch.0,
             "damaged",
@@ -1389,7 +1393,7 @@ mod tests {
     #[test]
     fn sc_509b_an_unknown_meta_key_does_not_make_the_roster_incomplete() {
         let scratch = Scratch::new("unknown-meta-key-roster");
-        scratch.meta("agent.main=claude:lead\nfuture_meta_key=permitted\n");
+        scratch.meta("seat.main=lead\nprofile.main=claude\nfuture_meta_key=permitted\n");
         let entry = entry_for(
             &scratch.0,
             "tolerated",
@@ -1410,7 +1414,9 @@ mod tests {
     #[test]
     fn sc_509b_a_duplicate_agent_key_makes_quiet_attention_inexact() {
         let scratch = Scratch::new("duplicate-agent-roster");
-        scratch.meta("agent.main=claude:lead\nagent.main=claude:replacement\n");
+        scratch.meta(
+            "seat.main=lead\nprofile.main=claude\nseat.main=replacement\nprofile.main=claude\n",
+        );
         let entry = entry_for(
             &scratch.0,
             "damaged",
@@ -1430,10 +1436,44 @@ mod tests {
     }
 
     #[test]
+    fn a_meta_that_carries_only_a_v1_roster_lists_with_no_agents_and_says_why() {
+        // The human ruling, at the LISTING grain: a legacy session is still
+        // listed — it keeps its name, status, mode and goal — but it has no
+        // agents this ae will serve, and the loss is VISIBLE. A silent empty
+        // roster would read exactly like a healthy session that has none.
+        let scratch = Scratch::new("legacyroster");
+        scratch.meta(concat!(
+            "mode=local\n",
+            "origin=/src\n",
+            "goal=finish the thing\n",
+            "agent.main=claude:lead:e795c9e9\n",
+        ));
+        let entry = entry_for(
+            &scratch.0,
+            "legacy",
+            &running(),
+            NOW,
+            DEFAULT_UNANSWERED_SECS,
+        );
+        assert!(entry.agents.is_empty(), "no seat comes from a v1 row");
+        assert!(entry.degraded, "and the loss reaches the JSON");
+        assert_eq!(entry.mode.as_deref(), Some("local"), "the rest still reads");
+        assert_eq!(entry.goal.as_deref(), Some("finish the thing"));
+        // The CONTROL that makes the assertion mean something: a healthy
+        // session whose roster is genuinely empty is NOT degraded, so a legacy
+        // session and an agentless one cannot be confused.
+        let empty = Scratch::new("emptyroster");
+        empty.meta("mode=local\norigin=/src\ngoal=finish the thing\n");
+        let entry = entry_for(&empty.0, "empty", &running(), NOW, DEFAULT_UNANSWERED_SECS);
+        assert!(entry.agents.is_empty());
+        assert!(!entry.degraded, "an empty roster is not damage");
+    }
+
+    #[test]
     fn sc_405k_a_meta_that_names_one_agent_is_not_rosterless() {
         // The neighbour of the case above: one agent is a roster.
         let scratch = Scratch::new("oneagent");
-        scratch.meta("agent.main=claude:lead\n");
+        scratch.meta("seat.main=lead\nprofile.main=claude\n");
         let entry = entry_for(
             &scratch.0,
             "small",
@@ -1468,10 +1508,7 @@ mod tests {
         scratch.meta(META);
         fs::write(
             scratch.0.join("events.jsonl"),
-            format!(
-                "{}\nnot an event\n",
-                event(&at(10), "claude:lead", "done", "")
-            ),
+            format!("{}\nnot an event\n", event(&at(10), "lead", "done", "")),
         )
         .expect("writing a fixture");
         let entry = entry_for(
@@ -1499,8 +1536,8 @@ mod tests {
         let scratch = Scratch::new("partial-events");
         scratch.meta(META);
         scratch.events(&[
-            event(&at(600), "claude:lead", "goal", ""),
-            event(&at(300), "claude:lead", "state", r#","ref":"blocked""#),
+            event(&at(600), "lead", "goal", ""),
+            event(&at(300), "lead", "state", r#","ref":"blocked""#),
             "not an event".to_owned(),
         ]);
         let entry = entry_for(&scratch.0, "live", &running(), NOW, DEFAULT_UNANSWERED_SECS);
@@ -1816,7 +1853,7 @@ mod tests {
         );
         assert!(entry.degraded, "an existing log that will not read is loss");
         assert_eq!(entry.agents.len(), 1, "the roster survives");
-        assert_eq!(entry.agents[0].reference, "claude:lead");
+        assert_eq!(entry.agents[0].reference, "lead");
         assert_eq!(
             entry.agents[0].state, None,
             "but its declared state is gone"
@@ -1879,9 +1916,9 @@ mod tests {
         scratch.meta(META);
         scratch.events(&[event(
             &at(7200),
-            "claude:lead",
+            "lead",
             "ask",
-            r#","target":"codex:coworker","ref":"ae-1""#,
+            r#","target":"coworker","ref":"ae-1""#,
         )]);
         let entry = entry_for(&scratch.0, "live", &running(), NOW, DEFAULT_UNANSWERED_SECS);
         assert_eq!(
@@ -1904,11 +1941,11 @@ mod tests {
             "origin=/home/c/projects/ae\n",
             "work_dir=/home/c/.ae/worktrees/x\n",
             "goal=ship the login flow\n",
-            "agent.main=claude:lead:e795c9e9\n",
+            "seat.main=lead\nprofile.main=claude\nharness_session.main=e795c9e9\n",
             "agent_bin.main=claude\n",
-            "agent.worker.0=codex:coworker\n",
+            "seat.worker.0=coworker\nprofile.worker.0=codex\n",
         ));
-        scratch.events(&[event(&at(900), "claude:lead", "done", "")]);
+        scratch.events(&[event(&at(900), "lead", "done", "")]);
         let entry = entry_for(&scratch.0, "live", &running(), NOW, DEFAULT_UNANSWERED_SECS);
 
         assert!(!entry.degraded);
@@ -1919,11 +1956,11 @@ mod tests {
         assert_eq!(entry.last_active_epoch, Some(NOW.epoch() - 900));
 
         assert_eq!(entry.agents.len(), 2);
-        assert_eq!(entry.agents[0].reference, "claude:lead");
+        assert_eq!(entry.agents[0].reference, "lead");
         assert_eq!(entry.agents[0].alias, "claude");
         assert_eq!(entry.agents[0].name, "lead");
         assert_eq!(entry.agents[0].session_id.as_deref(), Some("e795c9e9"));
-        assert_eq!(entry.agents[1].reference, "codex:coworker");
+        assert_eq!(entry.agents[1].reference, "coworker");
         assert_eq!(entry.agents[1].session_id, None);
     }
 
@@ -1946,9 +1983,9 @@ mod tests {
         let scratch = Scratch::new("goalevent");
         scratch.meta(&format!("{META}goal=ship the login flow\n"));
         scratch.events(&[
-            event(&at(7200), "claude:lead", "goal", ""),
-            event(&at(600), "claude:lead", "goal", ""),
-            event(&at(60), "claude:lead", "done", ""),
+            event(&at(7200), "lead", "goal", ""),
+            event(&at(600), "lead", "goal", ""),
+            event(&at(60), "lead", "done", ""),
         ]);
         let entry = entry_for(&scratch.0, "live", &running(), NOW, DEFAULT_UNANSWERED_SECS);
         assert_eq!(entry.goal.as_deref(), Some("ship the login flow"));
@@ -1963,7 +2000,7 @@ mod tests {
     fn a_session_that_never_set_a_goal_has_no_goal_epoch() {
         let scratch = Scratch::new("nogoal");
         scratch.meta(META);
-        scratch.events(&[event(&at(60), "claude:lead", "done", "")]);
+        scratch.events(&[event(&at(60), "lead", "done", "")]);
         let entry = entry_for(&scratch.0, "live", &running(), NOW, DEFAULT_UNANSWERED_SECS);
         assert_eq!(entry.goal_set_epoch, None);
     }
@@ -1973,8 +2010,8 @@ mod tests {
         let scratch = Scratch::new("declared");
         scratch.meta(META);
         scratch.events(&[
-            event(&at(3600), "claude:lead", "state", r#","ref":"working""#),
-            event(&at(600), "claude:lead", "state", r#","ref":"blocked""#),
+            event(&at(3600), "lead", "state", r#","ref":"working""#),
+            event(&at(600), "lead", "state", r#","ref":"blocked""#),
         ]);
         let entry = entry_for(&scratch.0, "live", &running(), NOW, DEFAULT_UNANSWERED_SECS);
         assert_eq!(
@@ -1997,7 +2034,7 @@ mod tests {
             scratch.meta(META);
             scratch.events(&[event(
                 &at(600),
-                "claude:lead",
+                "lead",
                 "state",
                 &format!(r#","ref":"{declared}""#),
             )]);
@@ -2025,14 +2062,14 @@ mod tests {
             // Same slot, ANOTHER session.
             event(
                 &at(600),
-                "claude:lead",
+                "lead",
                 "state",
                 r#","ref":"blocked","actor_slot":"main","actor_session":"somewhere-else""#,
             ),
             // This session, ANOTHER slot.
             event(
                 &at(300),
-                "claude:lead",
+                "lead",
                 "state",
                 r#","ref":"done","actor_slot":"worker.0","actor_session":"live""#,
             ),
@@ -2054,7 +2091,7 @@ mod tests {
         scratch.meta(META);
         scratch.events(&[event(
             &at(600),
-            "claude:lead",
+            "lead",
             "state",
             r#","ref":"blocked","actor_slot":"main","actor_session":"the-old-name""#,
         )]);
@@ -2072,7 +2109,7 @@ mod tests {
         ] {
             let scratch = Scratch::new("partialkey");
             scratch.meta(META);
-            scratch.events(&[event(&at(600), "claude:lead", "state", partial)]);
+            scratch.events(&[event(&at(600), "lead", "state", partial)]);
             let entry = entry_for(&scratch.0, "live", &running(), NOW, DEFAULT_UNANSWERED_SECS);
             assert_eq!(entry.agents[0].state, None, "{partial}");
         }
@@ -2083,12 +2120,7 @@ mod tests {
         // Every pre-routing-key event in an existing log looks like this.
         let scratch = Scratch::new("displayonly");
         scratch.meta(META);
-        scratch.events(&[event(
-            &at(600),
-            "claude:lead",
-            "state",
-            r#","ref":"blocked""#,
-        )]);
+        scratch.events(&[event(&at(600), "lead", "state", r#","ref":"blocked""#)]);
         let entry = entry_for(&scratch.0, "live", &running(), NOW, DEFAULT_UNANSWERED_SECS);
         assert_eq!(entry.agents[0].state.as_deref(), Some("blocked"));
     }
@@ -2099,12 +2131,7 @@ mod tests {
         // reader parses.
         let scratch = Scratch::new("alert");
         scratch.meta(META);
-        scratch.events(&[event(
-            &at(600),
-            "claude:lead",
-            "state",
-            r#","ref":"blocked""#,
-        )]);
+        scratch.events(&[event(&at(600), "lead", "state", r#","ref":"blocked""#)]);
         let runtime = SessionRuntime {
             status: Status::Running,
             branch: Some("feature/login".to_owned()),
@@ -2205,17 +2232,12 @@ mod tests {
         let scratch = Scratch::new("rollup");
         scratch.meta(concat!(
             "mode=local\norigin=/src\nwork_dir=/src\n",
-            "agent.main=claude:lead\n",
-            "agent.worker.0=codex:coworker\n",
+            "seat.main=lead\nprofile.main=claude\n",
+            "seat.worker.0=coworker\nprofile.worker.0=codex\n",
         ));
         scratch.events(&[
-            event(&at(600), "claude:lead", "state", r#","ref":"blocked""#),
-            event(
-                &at(600),
-                "codex:coworker",
-                "state",
-                r#","ref":"waiting-user""#,
-            ),
+            event(&at(600), "lead", "state", r#","ref":"blocked""#),
+            event(&at(600), "coworker", "state", r#","ref":"waiting-user""#),
         ]);
         let entry = entry_for(&scratch.0, "live", &running(), NOW, DEFAULT_UNANSWERED_SECS);
         assert_eq!(entry.agents[0].reason, Some(Reason::Blocked));
@@ -2233,9 +2255,9 @@ mod tests {
         scratch.meta(META);
         scratch.events(&[event(
             &at(7200),
-            "claude:lead",
+            "lead",
             "ask",
-            r#","target":"codex:coworker","ref":"ae-1""#,
+            r#","target":"coworker","ref":"ae-1""#,
         )]);
         let runtime = SessionRuntime {
             status: Status::Running,
@@ -2270,8 +2292,7 @@ mod tests {
 
     /// Two agents, so a test can prove an alert reaches the one it names and
     /// only that one.
-    const PAIR_META: &str =
-        "mode=local\nagent.main=fake:high:pending\nagent.worker.0=fake:low:pending\n";
+    const PAIR_META: &str = "mode=local\nseat.main=high\nprofile.main=fake\nharness_session.main=pending\nseat.worker.0=low\nprofile.worker.0=fake\nharness_session.worker.0=pending\n";
 
     /// The corpus's own alert bytes at the ruled grain: the summary a real watchdog
     /// wrote, and the class the targeted agent owns.
@@ -2296,7 +2317,7 @@ mod tests {
                 &at(600),
                 "_watchdog",
                 "alert",
-                &format!(r#","target":"claude:lead","summary":"{summary}""#),
+                &format!(r#","target":"lead","summary":"{summary}""#),
             )]);
             let entry = entry_for(&scratch.0, "live", &running(), NOW, DEFAULT_UNANSWERED_SECS);
             assert_eq!(entry.agents[0].reason, Some(want), "{summary:?}");
@@ -2318,13 +2339,13 @@ mod tests {
             &at(600),
             "_watchdog",
             "alert",
-            r#","target":"fake:high","summary":"agent process dead — dropped to shell""#,
+            r#","target":"high","summary":"agent process dead — dropped to shell""#,
         )]);
         let entry = entry_for(&scratch.0, "pair", &running(), NOW, DEFAULT_UNANSWERED_SECS);
-        assert_eq!(entry.agents[0].reference, "fake:high");
+        assert_eq!(entry.agents[0].reference, "high");
         assert_eq!(entry.agents[0].reason, Some(Reason::Dead));
-        assert_eq!(entry.agents[1].reference, "fake:low");
-        assert_eq!(entry.agents[1].reason, None, "no carrier names fake:low");
+        assert_eq!(entry.agents[1].reference, "low");
+        assert_eq!(entry.agents[1].reason, None, "no carrier names low");
         assert_eq!(entry.attention, Some(Reason::Dead));
     }
 
@@ -2340,25 +2361,25 @@ mod tests {
                 &at(900),
                 "_watchdog",
                 "alert",
-                r#","target":"fake:high","summary":"agent process dead — dropped to shell""#,
+                r#","target":"high","summary":"agent process dead — dropped to shell""#,
             ),
             event(
                 &at(600),
                 "watchdog",
                 "nudge",
-                r#","target":"fake:low","summary":"no recent events, no recent ae activity""#,
+                r#","target":"low","summary":"no recent events, no recent ae activity""#,
             ),
             event(
                 &at(300),
                 "watchdog",
                 "nudge",
-                r#","target":"fake:low","summary":"no recent events, no recent ae activity""#,
+                r#","target":"low","summary":"no recent events, no recent ae activity""#,
             ),
             event(
                 &at(60),
                 "_watchdog",
                 "alert",
-                r#","target":"fake:low","summary":"max nudges reached (no recent events), needs attention""#,
+                r#","target":"low","summary":"max nudges reached (no recent events), needs attention""#,
             ),
         ]);
         let entry = entry_for(&scratch.0, "pair", &running(), NOW, DEFAULT_UNANSWERED_SECS);
@@ -2382,13 +2403,13 @@ mod tests {
                 &at(900),
                 "_watchdog",
                 "alert",
-                r#","target":"fake:high","summary":"agent process dead — dropped to shell""#,
+                r#","target":"high","summary":"agent process dead — dropped to shell""#,
             ),
             event(
                 &at(300),
-                "fake:high",
+                "high",
                 "ask",
-                r#","target":"fake:low","ref":"ae-1","summary":"still here""#,
+                r#","target":"low","ref":"ae-1","summary":"still here""#,
             ),
         ]);
         let entry = entry_for(&scratch.0, "pair", &running(), NOW, DEFAULT_UNANSWERED_SECS);
@@ -2407,15 +2428,15 @@ mod tests {
         scratch.events(&[
             event(
                 &at(900),
-                "fake:high",
+                "high",
                 "ask",
-                r#","target":"fake:low","ref":"ae-1","summary":"working""#,
+                r#","target":"low","ref":"ae-1","summary":"working""#,
             ),
             event(
                 &at(300),
                 "_watchdog",
                 "alert",
-                r#","target":"fake:high","summary":"agent process dead — dropped to shell""#,
+                r#","target":"high","summary":"agent process dead — dropped to shell""#,
             ),
         ]);
         let entry = entry_for(&scratch.0, "pair", &running(), NOW, DEFAULT_UNANSWERED_SECS);
@@ -2425,7 +2446,7 @@ mod tests {
     #[test]
     fn sc_509c_an_inbound_event_after_the_alert_is_not_recovery() {
         // Only the agent can prove it is back.
-        for (actor, action) in [("watchdog", "nudge"), ("fake:low", "send")] {
+        for (actor, action) in [("watchdog", "nudge"), ("low", "send")] {
             let scratch = Scratch::new("inbound");
             scratch.meta(PAIR_META);
             scratch.events(&[
@@ -2433,13 +2454,13 @@ mod tests {
                     &at(900),
                     "_watchdog",
                     "alert",
-                    r#","target":"fake:high","summary":"agent process dead — dropped to shell""#,
+                    r#","target":"high","summary":"agent process dead — dropped to shell""#,
                 ),
                 event(
                     &at(300),
                     actor,
                     action,
-                    r#","target":"fake:high","summary":"anyone there?""#,
+                    r#","target":"high","summary":"anyone there?""#,
                 ),
             ]);
             let entry = entry_for(&scratch.0, "pair", &running(), NOW, DEFAULT_UNANSWERED_SECS);
@@ -2463,13 +2484,13 @@ mod tests {
                     &at(900),
                     "_watchdog",
                     "alert",
-                    r#","target":"fake:high","summary":"throttled for 10s — may need attention""#,
+                    r#","target":"high","summary":"throttled for 10s — may need attention""#,
                 ),
                 event(
                     &at(300),
                     "_watchdog",
                     clear,
-                    r#","target":"fake:high","summary":"throttling cleared after 3 cycles""#,
+                    r#","target":"high","summary":"throttling cleared after 3 cycles""#,
                 ),
             ]);
             let entry = entry_for(&scratch.0, "pair", &running(), NOW, DEFAULT_UNANSWERED_SECS);
@@ -2488,12 +2509,12 @@ mod tests {
             &at(100_000),
             "_watchdog",
             "alert",
-            r#","target":"fake:high","summary":"agent process dead — dropped to shell""#,
+            r#","target":"high","summary":"agent process dead — dropped to shell""#,
         )];
         for age in (100..900).step_by(100) {
             lines.push(event(
                 &at(age),
-                "fake:low",
+                "low",
                 "memo",
                 r#","ref":"design","summary":"somebody else's traffic""#,
             ));
@@ -2525,7 +2546,7 @@ mod tests {
                 "_watchdog",
                 "alert",
                 concat!(
-                    r#","target":"fake:high","summary":"throttled for 10s — may need attention""#,
+                    r#","target":"high","summary":"throttled for 10s — may need attention""#,
                     r#","target_slot":"main","target_session":"somewhere-else""#,
                 ),
             ),
@@ -2535,7 +2556,7 @@ mod tests {
                 "_watchdog",
                 "alert",
                 concat!(
-                    r#","target":"fake:high","summary":"max nudges reached, needs attention""#,
+                    r#","target":"high","summary":"max nudges reached, needs attention""#,
                     r#","target_slot":"worker.0","target_session":"pair""#,
                 ),
             ),
@@ -2569,7 +2590,7 @@ mod tests {
                 "_watchdog",
                 "alert",
                 &format!(
-                    r#","target":"fake:high","summary":"agent process dead — dropped to shell"{partial}"#
+                    r#","target":"high","summary":"agent process dead — dropped to shell"{partial}"#
                 ),
             )]);
             let entry = entry_for(&scratch.0, "pair", &running(), NOW, DEFAULT_UNANSWERED_SECS);
@@ -2587,7 +2608,7 @@ mod tests {
             &at(600),
             "_watchdog",
             "alert",
-            r#","target":"@pair:fake:high","summary":"agent process dead — dropped to shell""#,
+            r#","target":"@pair:high","summary":"agent process dead — dropped to shell""#,
         )]);
         let entry = entry_for(&scratch.0, "pair", &running(), NOW, DEFAULT_UNANSWERED_SECS);
         assert_eq!(entry.agents[0].reason, Some(Reason::Dead));
@@ -2598,7 +2619,7 @@ mod tests {
             &at(600),
             "_watchdog",
             "alert",
-            r#","target":"@elsewhere:fake:high","summary":"agent process dead — dropped to shell""#,
+            r#","target":"@elsewhere:high","summary":"agent process dead — dropped to shell""#,
         )]);
         let entry = entry_for(&other.0, "pair", &running(), NOW, DEFAULT_UNANSWERED_SECS);
         assert_eq!(
@@ -2610,14 +2631,14 @@ mod tests {
     #[test]
     fn sc_509c_the_ledger_order_decides_when_a_clock_disagrees_with_it() {
         // BOTH CROSSED DIRECTIONS in one test, so neither can regress alone.
-        let alert = r#","target":"fake:high","summary":"agent process dead — dropped to shell""#;
+        let alert = r#","target":"high","summary":"agent process dead — dropped to shell""#;
         let spoke = r#","ref":"working","summary":"an independently clocked agent""#;
 
         // Appended LAST, stamped EARLIER: the alert stands.
         let late_alert = Scratch::new("ledgerlatealert");
         late_alert.meta(PAIR_META);
         late_alert.events(&[
-            event(&at(300), "fake:high", "state", spoke),
+            event(&at(300), "high", "state", spoke),
             event(&at(900), "_watchdog", "alert", alert),
         ]);
         let entry = entry_for(
@@ -2640,7 +2661,7 @@ mod tests {
         late_recovery.meta(PAIR_META);
         late_recovery.events(&[
             event(&at(300), "_watchdog", "alert", alert),
-            event(&at(900), "fake:high", "state", spoke),
+            event(&at(900), "high", "state", spoke),
         ]);
         let entry = entry_for(
             &late_recovery.0,
@@ -2667,13 +2688,13 @@ mod tests {
                 &same,
                 "_watchdog",
                 "alert",
-                r#","target":"fake:high","summary":"agent process dead — dropped to shell""#,
+                r#","target":"high","summary":"agent process dead — dropped to shell""#,
             ),
             event(
                 &same,
                 "_watchdog",
                 "alert-cleared",
-                r#","target":"fake:high","summary":"back""#,
+                r#","target":"high","summary":"back""#,
             ),
         ]);
         let entry = entry_for(&scratch.0, "pair", &running(), NOW, DEFAULT_UNANSWERED_SECS);
@@ -2685,8 +2706,8 @@ mod tests {
         // One alert, one self-declaration, one aged unanswered ask between two
         // OTHER agents.
         const FOUR: &str = concat!(
-            "mode=local\nagent.main=fake:high:pending\nagent.worker.0=fake:low:pending\n",
-            "agent.worker.1=fake:third:pending\nagent.worker.2=fake:asker:pending\n",
+            "mode=local\nseat.main=high\nprofile.main=fake\nharness_session.main=pending\nseat.worker.0=low\nprofile.worker.0=fake\nharness_session.worker.0=pending\n",
+            "seat.worker.1=third\nprofile.worker.1=fake\nharness_session.worker.1=pending\nseat.worker.2=asker\nprofile.worker.2=fake\nharness_session.worker.2=pending\n",
         );
         let scratch = Scratch::new("competing");
         scratch.meta(FOUR);
@@ -2695,19 +2716,19 @@ mod tests {
                 &at(900),
                 "_watchdog",
                 "alert",
-                r#","target":"fake:high","summary":"agent process dead — dropped to shell""#,
+                r#","target":"high","summary":"agent process dead — dropped to shell""#,
             ),
             event(
                 &at(600),
-                "fake:low",
+                "low",
                 "state",
                 r#","ref":"waiting-user","summary":"asked the human""#,
             ),
             event(
                 &at(100_000),
-                "fake:asker",
+                "asker",
                 "ask",
-                r#","target":"fake:third","ref":"ae-never-answered","summary":"a question""#,
+                r#","target":"third","ref":"ae-never-answered","summary":"a question""#,
             ),
         ]);
         let entry = entry_for(&scratch.0, "four", &running(), NOW, DEFAULT_UNANSWERED_SECS);
@@ -2735,7 +2756,7 @@ mod tests {
             &at(600),
             "_watchdog",
             "alert",
-            r#","target":"fake:low","summary":"throttled for 10s — may need attention""#,
+            r#","target":"low","summary":"throttled for 10s — may need attention""#,
         )]);
         let runtime = SessionRuntime {
             status: Status::Running,
@@ -2769,7 +2790,7 @@ mod tests {
         scratch.events(&[
             event(
                 &at(900),
-                "fake:high",
+                "high",
                 "state",
                 r#","ref":"blocked","summary":"the higher-rank declaration""#,
             ),
@@ -2777,7 +2798,7 @@ mod tests {
                 &at(600),
                 "_watchdog",
                 "throttled",
-                r#","target":"fake:low","summary":"upstream throttling detected — pausing nudges""#,
+                r#","target":"low","summary":"upstream throttling detected — pausing nudges""#,
             ),
         ]);
         let entry = entry_for(&scratch.0, "pair", &running(), NOW, DEFAULT_UNANSWERED_SECS);
@@ -2800,12 +2821,12 @@ mod tests {
                 &at(300),
                 "_watchdog",
                 "throttle-cleared",
-                r#","target":"fake:low","summary":"throttling cleared after 3 cycles""#,
+                r#","target":"low","summary":"throttling cleared after 3 cycles""#,
             ),
             // The agent itself speaks: recovery.
             event(
                 &at(300),
-                "fake:low",
+                "low",
                 "memo",
                 r#","ref":"notes","summary":"back""#,
             ),
@@ -2817,7 +2838,7 @@ mod tests {
                     &at(900),
                     "_watchdog",
                     "throttled",
-                    r#","target":"fake:low","summary":"upstream throttling detected""#,
+                    r#","target":"low","summary":"upstream throttling detected""#,
                 ),
                 ending.clone(),
             ]);
@@ -2838,13 +2859,13 @@ mod tests {
                 &at(900),
                 "_watchdog",
                 "throttled",
-                r#","target":"claude:lead","summary":"upstream throttling detected — pausing nudges""#,
+                r#","target":"lead","summary":"upstream throttling detected — pausing nudges""#,
             ),
             event(
                 &at(600),
                 "_watchdog",
                 "alert",
-                r#","target":"claude:lead","summary":"pane missing — agent no longer visible in session""#,
+                r#","target":"lead","summary":"pane missing — agent no longer visible in session""#,
             ),
         ]);
         let entry = entry_for(&scratch.0, "live", &running(), NOW, DEFAULT_UNANSWERED_SECS);
@@ -2864,13 +2885,13 @@ mod tests {
         scratch.events(&[
             event(
                 &at(300),
-                "claude:lead",
+                "lead",
                 "state",
                 r#","ref":"working","summary":"earlier append, later clock""#,
             ),
             event(
                 &at(900),
-                "claude:lead",
+                "lead",
                 "state",
                 r#","ref":"blocked","summary":"later append, earlier clock""#,
             ),
@@ -2898,19 +2919,19 @@ mod tests {
         scratch.events(&[
             event(
                 &at(900),
-                "claude:lead",
+                "lead",
                 "state",
                 r#","ref":"working","summary":"first""#,
             ),
             event(
                 &at(600),
-                "claude:lead",
+                "lead",
                 "state",
                 r#","ref":"blocked","summary":"second""#,
             ),
             event(
                 &at(300),
-                "claude:lead",
+                "lead",
                 "state",
                 r#","ref":"waiting-user","summary":"third""#,
             ),
@@ -2929,13 +2950,13 @@ mod tests {
         scratch.events(&[
             event(
                 &at(600),
-                "claude:lead",
+                "lead",
                 "state",
                 r#","ref":"working","summary":"still going""#,
             ),
             event(
                 &at(300),
-                "claude:lead",
+                "lead",
                 "done",
                 r#","summary":"finished, pre-state-helper shape""#,
             ),
@@ -2961,16 +2982,11 @@ mod tests {
         scratch.events(&[
             event(
                 &at(600),
-                "claude:lead",
+                "lead",
                 "state",
                 r#","ref":"blocked","summary":"a real declaration""#,
             ),
-            event(
-                &at(300),
-                "claude:lead",
-                "state",
-                r#","summary":"no ref at all""#,
-            ),
+            event(&at(300), "lead", "state", r#","summary":"no ref at all""#),
         ]);
         let entry = entry_for(&scratch.0, "live", &running(), NOW, DEFAULT_UNANSWERED_SECS);
         assert_eq!(entry.agents[0].state.as_deref(), Some("blocked"));
@@ -2984,8 +3000,8 @@ mod tests {
         let scratch = Scratch::new("goalopposed");
         scratch.meta(META);
         scratch.events(&[
-            r#"{"ts":"2025-08-12T13:00:00Z","actor":"claude:lead","action":"goal","summary":"GOAL-TEXT-WITH-NEWER-TS"}"#.to_owned(),
-            r#"{"ts":"2025-08-12T12:00:00Z","actor":"claude:lead","action":"goal","summary":"GOAL-TEXT-WITH-OLDER-TS"}"#.to_owned(),
+            r#"{"ts":"2025-08-12T13:00:00Z","actor":"lead","action":"goal","summary":"GOAL-TEXT-WITH-NEWER-TS"}"#.to_owned(),
+            r#"{"ts":"2025-08-12T12:00:00Z","actor":"lead","action":"goal","summary":"GOAL-TEXT-WITH-OLDER-TS"}"#.to_owned(),
         ]);
         let entry = entry_for(&scratch.0, "live", &running(), NOW, DEFAULT_UNANSWERED_SECS);
         assert_eq!(
@@ -3003,8 +3019,10 @@ mod tests {
         let scratch = Scratch::new("goalagreeing");
         scratch.meta(META);
         scratch.events(&[
-            r#"{"ts":"2025-08-12T12:00:00Z","actor":"claude:lead","action":"goal","summary":"first"}"#.to_owned(),
-            r#"{"ts":"2025-08-12T13:00:00Z","actor":"claude:lead","action":"goal","summary":"second"}"#.to_owned(),
+            r#"{"ts":"2025-08-12T12:00:00Z","actor":"lead","action":"goal","summary":"first"}"#
+                .to_owned(),
+            r#"{"ts":"2025-08-12T13:00:00Z","actor":"lead","action":"goal","summary":"second"}"#
+                .to_owned(),
         ]);
         let entry = entry_for(&scratch.0, "live", &running(), NOW, DEFAULT_UNANSWERED_SECS);
         assert_eq!(entry.goal_set_epoch, Some(1_755_003_600));

@@ -803,6 +803,43 @@ mod tests {
         clippy::disallowed_methods,
         reason = "a TEST reading back what the store wrote — the deny enumerates the PRODUCT's read doors"
     )]
+    fn a_legacy_v1_meta_supplies_no_recorded_binary_and_is_not_an_empty_v2_session() {
+        // The delivery path reads `agent_bin.<slot>` THROUGH the roster, so a
+        // meta this ae no longer serves must answer nothing rather than panic
+        // or invent a tool. The three arms are the ones that can be confused.
+        let dir = std::env::temp_dir().join(format!("ae-deliver-legacy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("meta"),
+            "mode=local\nagent.main=claude:lead\nagent_bin.main=claude\n",
+        )
+        .unwrap();
+        assert_eq!(
+            super::recorded_binary(&dir, "main"),
+            "",
+            "a v1 row names no seat, so its agent_bin belongs to nobody"
+        );
+        std::fs::write(
+            dir.join("meta"),
+            "mode=local\nseat.main=lead\nagent_bin.main=claude\n",
+        )
+        .unwrap();
+        assert_eq!(
+            super::recorded_binary(&dir, "main"),
+            "claude",
+            "the CONTROL: a v2 seat still answers"
+        );
+        std::fs::write(dir.join("meta"), "mode=local\n").unwrap();
+        assert_eq!(super::recorded_binary(&dir, "main"), "", "and so does none");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a TEST reading back what the store wrote — the deny enumerates the PRODUCT's read doors"
+    )]
     fn the_record_is_one_artifact_per_delivery_and_never_clobbers_an_earlier_one() {
         use std::os::unix::fs::PermissionsExt;
 

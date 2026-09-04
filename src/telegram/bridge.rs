@@ -614,8 +614,8 @@ mod tests {
         let meta = concat!(
             "session_id=abc123def456\n",
             "meta_agent=true\n",
-            "agent.main=claude:lead:e795c9e9\n",
-            "agent.worker.0=codex:coworker\n",
+            "seat.main=lead\nprofile.main=claude\nharness_session.main=e795c9e9\n",
+            "seat.worker.0=coworker\nprofile.worker.0=codex\n",
         );
         let facts = super::session_facts(
             "orchestrator",
@@ -625,8 +625,8 @@ mod tests {
         );
         assert_eq!(facts.session_id, "abc123def456");
         assert!(facts.meta_agent);
-        assert_eq!(facts.main.as_deref(), Some("claude:lead"));
-        assert_eq!(facts.agents, vec!["claude:lead", "codex:coworker"]);
+        assert_eq!(facts.main.as_deref(), Some("lead"));
+        assert_eq!(facts.agents, vec!["lead", "coworker"]);
         assert_eq!(facts.last_active, Some(1_800_000_000));
 
         // A session that is NOT a meta-agent, and one whose flag is any other
