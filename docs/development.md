@@ -12,8 +12,8 @@ cliff.toml          — git-cliff config (CalVer-compatible changelog)
 tests/unit          — pure-function unit tests (bash, no deps)
 tests/integration   — integration tests (requires tmux, git)
 tests/it/           — Rust integration target
-install             — canonical checksum-verifying versioned installer; the product's
-                      only bash file
+install             — the bootstrap (download, verify, extract, `ae-core _install`); the
+                      product's only bash file, 79 lines
 Cargo.toml          — Rust package (bin + lib, both `ae`)
 src/                — Rust core sources
 README.md           — short user-facing intro

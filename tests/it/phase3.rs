@@ -1848,6 +1848,15 @@ fn criterion_3_the_places_this_crate_can_read_the_world_are_the_inventoried_ones
             "src/doors.rs".to_owned(),
             "src/event_text.rs".to_owned(),
             "src/events.rs".to_owned(),
+            // THE INSTALLER'S OWN DOORS (slice Z4): the bundle members read to
+            // be hashed, the `lstat` that classifies every member and every
+            // publication destination WITHOUT following a link, the journal
+            // read that a rollback replays, and the enumeration of a
+            // transaction-private tree whose 0555 members have to be re-moded
+            // before they can be removed. Registered deliberately: this is the
+            // only module that writes into `~/.ae/versions`, and the only one
+            // that hashes anything at all.
+            "src/install.rs".to_owned(),
             "src/inventory.rs".to_owned(),
             "src/lib.rs".to_owned(),
             // The three whole lifecycle operations (B move 4) and their own
@@ -1964,12 +1973,11 @@ fn criterion_3_the_places_this_crate_can_read_the_world_are_the_inventoried_ones
             // custody rules. Registered deliberately: a command that can start a
             // daemon holding a secret is not one to gain a quiet new read.
             "src/telegram_lifecycle.rs".to_owned(),
-            // `ae upgrade`'s ONE own door: the `lstat` plus mode test that
-            // proves the sibling installer is a regular, non-symlink,
-            // executable member BEFORE ae becomes it. Registered deliberately —
-            // it is the highest-authority path in the product, and a member
-            // that is a symlink to a mutable file passes every follow-test.
-            "src/upgrade.rs".to_owned(),
+            // `ae upgrade` READS NOTHING since slice Z4, and its absence from
+            // this list is the change. It used to `lstat` the sibling installer
+            // before becoming it; there is no handover any more — it downloads,
+            // verifies and calls `install::publish` in process, so every read on
+            // that path is `src/install.rs`'s and is registered there.
             // The orchestrator heartbeat's `lstat` (P4.2): the one read the watchdog
             // daemon takes for itself, proving `meta-agent-state.json` is a
             // non-symlink regular file before its mtime is trusted as liveness.

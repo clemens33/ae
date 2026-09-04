@@ -24,7 +24,9 @@ stay readable.
 
 ## Rules
 
-- `ae` must remain a single bash script. No compiled languages, no runtimes. *(Historical: this once governed all of `ae`; triggers 1–3 fired on 2026-08-20 and the Rust core is the ratified successor, not a violation of the durable product doctrine.)* What survives is ONE bash file and it is not `ae` at all — it is `install`, the thing that has to run before there is a core to run. **`ae-glue` was deleted whole in slice Z1**, its residue folded into the wrapper `ae-entry`, and **`ae-entry` itself was deleted in slice Z3**: the published `ae` is a symlink straight at the versioned core. `install` is policy-frozen — no new Bash features.
+- `ae` must remain a single bash script. No compiled languages, no runtimes. *(Historical: this once governed all of `ae`; triggers 1–3 fired on 2026-08-20 and the Rust core is the ratified successor, not a violation of the durable product doctrine.)* What survives is ONE bash file and it is not `ae` at all — it is `install`, the thing that has to run before there is a core to run. **`ae-glue` was deleted whole in slice Z1**, its residue folded into the wrapper `ae-entry`, and **`ae-entry` itself was deleted in slice Z3**: the published `ae` is a symlink straight at the versioned core. `install` is policy-frozen — no new Bash features — and slice Z4 took its LOGIC too:
+  what publishes a version directory is `src/install.rs`, and the script is a 79-line
+  bootstrap that exists because a machine with no ae has no core to run.
 - Config is INI-style with a simple regex parser, and it is the core's (`src/config.rs`) — no bash reads a key of it, and `install` writes only a default config where none exists. Don't add TOML/YAML/JSON parsing.
 - Core ae requires only `tmux` and `git` — the core is a static binary and needs no shell at all; `bash` is a prerequisite of `install`, not of `ae`. Optional features may declare their own hard dependencies (e.g. the orchestrator companion session needs an agent CLI; `contrib/aemonitor` needs Python 3), but those deps must never be required for the rest of ae to work — `ae list`, `ae <name>`, etc. continue to function on a machine without them. (`ae telegram` used to need `jq` + `curl`; the Rust-core bridge needs neither — it is the ae core binary.)
 - Session state lives in `~/.ae/sessions/`; archived session memory lives in
@@ -69,8 +71,10 @@ cliff.toml          — git-cliff changelog config (CalVer-compatible)
 tests/unit          — pure-function unit tests (bash, no deps)
 tests/integration   — integration tests (requires tmux, git)
 tests/itest-par     — parallel sharded runner for tests/integration (`just itest-all`, `just itest <domain>`); tests/itest-domains.tsv tags every section with a domain and records order-dependent chains, tests/itest-timings.tsv holds measured seconds per section
-install             — canonical checksum-verifying versioned installer (checkout or release
-                      entry), and since slice Z3 the product's ONLY bash file
+install             — the bootstrap: download a release bundle, prove it against the release
+                      manifest, extract, and run `ae-core _install --from <tmp>`. 79 lines
+                      (51 of code) since slice Z4 moved the publication into the core, and
+                      still the product's ONLY bash file
 docs/               — user + internals documentation (getting-started, reference, internals)
 contrib/            — optional sidecars: aewatch (retired Python watchdog+bridge; archival), aeorchestrator, aemonitor
 Cargo.toml          — Rust package: one crate, bin + lib, both named `ae` (no workspace)
@@ -314,9 +318,10 @@ run after the commit on the integrated diff (nothing is pushed); fixes roll forw
 DELETED, every line of bash a session used to carry is DELETED, and so is the public
 wrapper: **there is no bash in the PRODUCT at all.** `ae-entry` was 737 lines when slice
 Z2 ended, down from the 18,673 the epic closed on; slice Z3 took it to zero with
-`git rm ae-entry`. What is left of ae's Bash is `install` — 1,366 lines, 1,139 of them
-code — which is not `ae` and never runs during one: it is the thing that has to work
-before a core exists to run.
+`git rm ae-entry`. What is left of ae's Bash is `install` — **79 lines, 51 of them code**
+after slice Z4 (it was 1,366) — which is not `ae` and never runs during one: it is the
+thing that has to work before a core exists to run. Everything a publication IS moved to
+`src/install.rs`, and `ae upgrade` reaches it in process rather than exec'ing a sibling.
 
 Slice Z2 took the last two session artefacts: the helpers are symlinks to the core
 (`argv[0]` dispatch, full-path rule) and `launch.<slot>.sh` is replaced by the core entry
@@ -424,14 +429,24 @@ RETIRED, their absence asserted rather than assumed. **A 0555 directory refuses 
 and unlink**, so a stray `> $SESSION/send` through a helper link fails with `EACCES` and the
 core stays byte-identical — the hazard the session-helper rule could only warn about is now
 enforced by the filesystem. **The manifest's exact bytes are a two-party contract**: the
-installer writes them and the core parses them, so `remote_manifest_write` and the `bundle`
-recipe must emit the same file.
+`bundle` recipe writes them, `src/install.rs` verifies them, and `src/shape.rs` parses them
+on every invocation — three readers of one file, so the recipe and the two modules must
+agree byte for byte.
 
-**Validation is STRUCTURAL, and the core does no hashing — ever.** It proves three regular
-non-symlink members, a manifest that parses and names exactly `ae-core` and `install`, and a
-directory whose basename equals its own crate version. No SHA-256 primitive, no dependency,
-no shelling out: a 2.4 MB digest on every helper call is a cost the product will not pay,
-and the installer already verified the bytes at publication under an immutable directory.
+**Validation at the GATE is STRUCTURAL, and hashes nothing.** `src/shape.rs` proves three
+regular non-symlink members, a manifest that parses and names exactly `ae-core` and
+`install`, and a directory whose basename equals its own crate version — no digest, because
+a 2.4 MB hash on every helper call is a cost the product will not pay, and the bytes were
+proven once at publication under an immutable directory.
+
+**That one proof is `src/install.rs`'s, and since slice Z4 it is the core's too.** It
+re-digests both executable members against the bundle's own `SHA256SUMS` with
+`ring::digest::SHA256` BEFORE a byte is published, and only then runs the verified core to
+ask its version — so nothing unverified runs and the directory's name is the version the
+gate will demand at every later invocation. `ring` is a direct dependency for exactly this
+(it was already in the locked graph as rustls' provider, so the tree and the cargo-vet
+exemption set are unchanged). There is ONE hashing site in the crate and it is not on any
+hot path.
 Modes are NOT a refusal — `ae doctor` WARNs when a PUBLISHED core is writable, because a
 mode is a repairable fact about an install, not a reason to refuse to run.
 
@@ -475,7 +490,7 @@ words are still worth naming, because each reaches something outside the running
 
 | Invocation | What it reaches |
 |---|---|
-| `upgrade` | the immutable sibling `<H>/versions/<V>/install`, exec'd with `argv[0]` = `install` and NO arguments; the caller's `AE_VERSION` crosses as the target pin. Repair therefore survives a broken install, because the installer is a member of it |
+| `upgrade` | the network. Since slice Z4 there is no handover: it downloads the platform bundle and the release `SHA256SUMS` over the locked ureq agent, proves the archive by digest, extracts it with `tar`, and publishes through the same `install::publish` the bootstrap reaches. `AE_VERSION` is its target pin and nothing else's input. Repair still survives a broken install, because the word runs ahead of the version-directory gate |
 | `version`, `--version`, or `-V` | the crate version, which since slice Z3 is the ONLY version word in the product (`_AE_ENTRY_VERSION` went with `ae-entry`) |
 
 The frozen preamble is GONE — `--home`, `--cwd`, `--global`, `--local-config`, `--server-kind`,

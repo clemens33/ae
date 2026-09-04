@@ -905,19 +905,26 @@ fn the_capability_boundary_holds_against_any_lint_relaxation() {
     // tool rather than starting a child, which is the fact
     // `pane_current_command` rests on, and it arrived with slice Z2 when the
     // generated `launch.<slot>.sh` that used to hold that `exec` was deleted.
-    // `src/upgrade.rs` is the second `exec` and arrived with slice Z3, when
-    // `ae-entry` — which used to run the installer — was deleted: `ae upgrade`
-    // BECOMES the immutable sibling installer, so the installer's exit status
-    // is ae's and no surviving parent can misreport a repair.
-    // All three are listed rather than exempted because the value of this guard
+    // `src/install.rs` and `src/upgrade.rs` are slice Z4's, when the
+    // installer's logic moved out of bash. `install.rs` runs the
+    // DIGEST-VERIFIED bundle core ONCE, with one fixed argument, to ask which
+    // version it is — the version directory is named for that answer, and the
+    // install gate compares the two on every later invocation, so asking here
+    // turns a mis-named publish into an install-time refusal instead of a
+    // bricked install. `upgrade.rs` no longer `exec`s the sibling installer at
+    // all; its door is `tar`, listing and then unpacking the bundle it
+    // downloaded, and the listing pass is what makes running it safe.
+    // All four are listed rather than exempted because the value of this guard
     // is that adding a door is a line in a review, not a diff nobody read.
     assert_eq!(
         sites,
         vec![
+            "src/install.rs".to_owned(),
             "src/run.rs".to_owned(),
             "src/transport.rs".to_owned(),
             "src/upgrade.rs".to_owned(),
             "tests/it/cli.rs".to_owned(),
+            "tests/it/install.rs".to_owned(),
             "tests/it/parity.rs".to_owned(),
             "tests/it/parity_self_test.rs".to_owned(),
             "tests/it/shape.rs".to_owned(),
@@ -1158,15 +1165,28 @@ fn the_lint_relaxations_this_counter_can_see_are_the_expected_ones() {
     // it. `cli::ae()` cannot be used: it names the built binary under `target/`,
     // which is a CHECKOUT by construction and so the wrong arm entirely.
     //
-    // An eleventh entry is red. A relaxation this counter CANNOT see is not —
+    // TWO MORE ARRIVED WITH SLICE Z4, when the installer's logic moved out of
+    // bash. `src/install.rs` runs the DIGEST-VERIFIED bundle core once to ask
+    // which version it is, because the version directory is named for that
+    // answer and the install gate compares the two on every later invocation.
+    // `src/upgrade.rs`'s door changed job rather than arriving: it used to
+    // `exec` the sibling installer, and now runs `tar` to list and unpack the
+    // bundle it downloaded — a deliberate non-dependency, gated by the listing
+    // pass that proves every entry before anything is extracted.
+    // `tests/it/install.rs` is the black-box door for both: an install is what
+    // a real process does to a real `$HOME`.
+    //
+    // A further entry is red. A relaxation this counter CANNOT see is not —
     // that is what the semantic guard above is for.
     assert_eq!(
         inventory,
         vec![
+            ("src/install.rs".to_owned(), 1),
             ("src/run.rs".to_owned(), 1),
             ("src/transport.rs".to_owned(), 1),
             ("src/upgrade.rs".to_owned(), 1),
             ("tests/it/cli.rs".to_owned(), 5),
+            ("tests/it/install.rs".to_owned(), 2),
             ("tests/it/parity.rs".to_owned(), 1),
             ("tests/it/parity_self_test.rs".to_owned(), 1),
             ("tests/it/shape.rs".to_owned(), 2),

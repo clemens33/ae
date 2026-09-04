@@ -324,15 +324,20 @@ fn version_and_upgrade_answer_on_a_broken_install() {
     assert_eq!(code, Some(0), "version answers anyway");
     assert_eq!(stdout, format!("{}\n", ae::version_line()));
 
-    let (code, stdout, stderr) = rig.run(&[("AE_VERSION", "2026.9.9")], &["upgrade"]);
-    assert_eq!(code, Some(0), "the installer ran: {stdout}{stderr}");
+    // `upgrade` reaches its OWN vocabulary rather than the gate's. Slice Z4
+    // ended the handover — there is no sibling installer to exec, the download
+    // is `upgrade`'s own — so what proves it ran past the gate is that a bad
+    // pin is refused in the pin's words. Kept offline deliberately: a test that
+    // reached github would be a test that fails on a train.
+    let (code, stdout, stderr) = rig.run(&[("AE_VERSION", "not-a-version")], &["upgrade"]);
+    assert_eq!(code, Some(1), "{stdout}{stderr}");
     assert!(
-        stdout.contains("ae upgrade: running"),
-        "it names what it becomes: {stdout}"
+        stderr.contains("AE_VERSION must be a CalVer tag"),
+        "upgrade did not get past the broken-install gate: {stderr}"
     );
     assert!(
-        stdout.contains("installer ran: 2026.9.9"),
-        "AE_VERSION crossed the exec as the pin: {stdout}"
+        !stderr.contains("run 'ae upgrade' to reinstall"),
+        "the gate refused the one word that repairs it: {stderr}"
     );
 }
 
@@ -346,22 +351,13 @@ fn upgrade_takes_no_argument_and_refuses_before_it_runs_anything() {
     assert!(!stderr.contains("installer ran"), "{stderr}");
 }
 
-#[test]
-fn upgrade_refuses_an_installer_that_is_not_an_immutable_member() {
-    let rig = Install::plant("upgradelink");
-    let installer = rig.version_dir.join("install");
-    assert!(
-        std::fs::remove_file(&installer).is_ok(),
-        "remove the member"
-    );
-    assert!(
-        std::os::unix::fs::symlink("/bin/echo", &installer).is_ok(),
-        "a link to something mutable and external"
-    );
-    let (code, stdout, stderr) = rig.run(&[], &["upgrade"]);
-    assert_eq!(code, Some(2), "{stdout}{stderr}");
-    assert!(stderr.contains("no installer beside"), "{stderr}");
-}
+// RETIRED (slice Z4): `upgrade` no longer becomes the sibling installer, so
+// there is no member to prove before executing it. `ae upgrade` downloads its
+// own bundle and publishes it through `install::publish`, and what protects
+// that path is the SHA-256 proof of what was downloaded — pinned in
+// `tests/it/install.rs`, which is where the publication now lives. The sibling
+// `install` is still a bundle member and still published; nothing executes it
+// on ae's behalf.
 
 #[test]
 fn doctor_warns_when_the_published_core_is_writable_and_not_when_it_is_not() {

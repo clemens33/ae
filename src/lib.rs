@@ -80,6 +80,7 @@ pub mod filters;
 pub mod git;
 pub mod goal;
 pub mod identity;
+pub mod install;
 pub mod interrupt;
 pub mod inventory;
 pub mod json;
@@ -1465,6 +1466,7 @@ pub fn run_with(
         }
         cli::Request::CheckDeps { tail } => doctor::check_deps(tail, err)?,
         cli::Request::ShimsRender { dir, tail } => doctor::shims_render(dir, tail, err)?,
+        cli::Request::Install { tail } => install::run(tail, out, err)?,
         cli::Request::Run { dir, slot, print } => run::run(dir, slot, *print, out, err)?,
         cli::Request::Roster { dir, tail } => identity::roster(dir, tail, out, err)?,
         cli::Request::ManifestRender { dir, tail } => render::run_manifest(dir, tail, out, err)?,

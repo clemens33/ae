@@ -156,11 +156,12 @@ To request a specific release, set a CalVer pin in the environment:
 AE_VERSION=2026.8.2 ae upgrade
 ```
 
-`ae upgrade` execs its immutable sibling `install`, published beside `ae-core` in the same
-version directory, so a broken installed generation can still repair itself. `install`
-downloads the selected release, verifies its checksum before extraction, publishes the new
-immutable version read-only under `~/.ae/versions/<V>/`, and atomically repoints
-`~/.local/bin/ae` directly at that version's `ae-core`.
+`ae upgrade` runs ahead of the version-directory gate, so a broken installed generation can
+still repair itself. It downloads the selected release, verifies its checksum before
+extraction, publishes the new immutable version read-only under `~/.ae/versions/<V>/`, and
+atomically repoints `~/.local/bin/ae` directly at that version's `ae-core` — all of it the
+core's own code. The `install` script published beside `ae-core` is the BOOTSTRAP, for a
+machine that has no ae yet; nothing executes it on ae's behalf.
 
 Stopped session directories are untouched and consume the current version on
 their next resume. Running sessions are reported by name as deferred until

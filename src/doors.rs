@@ -171,6 +171,25 @@ pub fn no_autostart() -> bool {
     raw.is_some_and(|value| value == "1")
 }
 
+/// `AE_VERSION` — the target pin, and the ONE word that reads it is
+/// [`crate::upgrade`].
+///
+/// Scoped deliberately. [`crate::transport`]'s spawn door removes it from every
+/// child, so an operator pin cannot freeze into the tmux server a launch creates
+/// and silently pin an upgrade months later. It is a door rather than a
+/// `std::env::var` at the use site so the whole environment surface stays
+/// enumerable in one file.
+#[must_use]
+pub fn target_version() -> Option<String> {
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: AE_VERSION is `ae upgrade`'s target pin and nothing else's input"
+    )]
+    let raw = std::env::var_os("AE_VERSION");
+    raw.filter(|value| !value.is_empty())
+        .map(|value| value.to_string_lossy().into_owned())
+}
+
 /// `$TMUX`, or `None` when unset or empty.
 ///
 /// Two different questions read it and they are not the same question: whether

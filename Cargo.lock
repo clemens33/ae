@@ -6,6 +6,7 @@ version = 4
 name = "ae"
 version = "2026.9.1"
 dependencies = [
+ "ring",
  "rustls",
  "ureq",
 ]

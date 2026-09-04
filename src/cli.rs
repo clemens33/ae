@@ -300,6 +300,13 @@ pub const RUN: &str = "_run";
 /// Underscored — a core entry, never human-typed.
 pub const SHIMS_RENDER: &str = "_shims-render";
 
+/// The publication half of the installer: `_install --from <bundle-dir>`.
+///
+/// Underscored — the bootstrap `install` script runs it on the core it has just
+/// extracted, and `ae upgrade` reaches the same code in process. A human types
+/// `install` or `ae upgrade`, never this. The behavior is [`crate::install`].
+pub const INSTALL: &str = "_install";
+
 /// What an argv asks the binary to do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Request {
@@ -724,6 +731,12 @@ pub enum Request {
         /// Report the composed plan instead of running it.
         print: bool,
     },
+    /// `_install --from <bundle-dir>` — publish a verified bundle.
+    Install {
+        /// The whole tail, validated by [`crate::install::run`] so the refusal
+        /// text is the installer's own.
+        tail: Vec<String>,
+    },
     /// `_shims-render <session-dir>` — republish one session's helper shims.
     ShimsRender {
         /// The session directory.
@@ -908,6 +921,9 @@ impl Request {
                 tail: args[1..].to_vec(),
             },
             Some(RUN) => Self::parse_run(&args[1..]),
+            Some(INSTALL) => Self::Install {
+                tail: args[1..].to_vec(),
+            },
             Some(SHIMS_RENDER) => match &args[1..] {
                 [] => Self::MissingOperand(SHIMS_RENDER),
                 [dir, tail @ ..] => Self::ShimsRender {
@@ -1380,6 +1396,7 @@ impl Request {
             | Self::Doctor { .. }
             | Self::Rename { .. }
             | Self::CheckDeps { .. }
+            | Self::Install { .. }
             | Self::ShimsRender { .. }
             | Self::Run { .. }
             | Self::State { .. }
