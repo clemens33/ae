@@ -584,6 +584,35 @@ pub fn event_line(fields: &EventFields<'_>) -> String {
     line
 }
 
+/// Render the summary of a delivery whose submit was not confirmed.
+///
+/// The body file remains the recovery source, while the event makes the
+/// uncertainty visible to `requests` and `events-tail` without changing the
+/// frozen event shape.
+#[must_use]
+pub(crate) fn unconfirmed_summary(summary: &str) -> String {
+    format!("[unconfirmed] {summary}")
+}
+
+/// Render an event for a delivery whose submit was not confirmed.
+#[must_use]
+pub(crate) fn unconfirmed_event_line(fields: &EventFields<'_>) -> String {
+    let summary = unconfirmed_summary(fields.summary);
+    event_line(&EventFields {
+        ts: fields.ts,
+        actor: fields.actor,
+        action: fields.action,
+        target: fields.target,
+        reference: fields.reference,
+        actor_slot: fields.actor_slot,
+        actor_session: fields.actor_session,
+        target_slot: fields.target_slot,
+        target_session: fields.target_session,
+        summary: &summary,
+        body_file: fields.body_file,
+    })
+}
+
 // ---- the run --------------------------------------------------------------
 
 /// Who is asking: the display ref and the routing slot (empty for an
@@ -693,13 +722,7 @@ pub fn run(
         shape: crate::deliver::Shape::Send,
         defer,
     };
-    let Ok(delivered) = crate::deliver::deliver(&request, err)? else {
-        // Every arm of a refused delivery has already said what happened and
-        // where the body is; nothing is recorded for one.
-        return Ok(EXIT_FAILED);
-    };
-    let body_file = delivered.body_file.as_str();
-    let line = event_line(&EventFields {
+    let fields = EventFields {
         ts: now,
         actor: &sender.display,
         action,
@@ -710,14 +733,75 @@ pub fn run(
         target_slot: &resolved.slot,
         target_session: &resolved.session,
         summary: &parsed.body,
-        body_file,
-    });
+        body_file: "",
+    };
+    let delivery = crate::deliver::deliver(&request, err)?;
+    record_tracked_delivery(dir, &fields, delivery, err)
+}
+
+/// Record the event for a tracked delivery, including a delivery whose submit
+/// was not confirmed after its body was pasted. For replies, this intentionally
+/// closes the request on an unconfirmed paste because leaving it pending invites
+/// a duplicate literal retry; the marker and notice preserve the uncertainty.
+pub(crate) fn record_tracked_delivery(
+    dir: &Path,
+    fields: &EventFields<'_>,
+    delivery: Result<crate::deliver::Delivered, crate::deliver::Failure>,
+    err: &mut impl Write,
+) -> io::Result<u8> {
+    let action = fields.action;
+    let req_id = fields.reference;
+    let target_name = fields.target;
+    let (body_file, unconfirmed) = match delivery {
+        Ok(delivered) => (delivered.body_file, false),
+        Err(crate::deliver::Failure::Unconfirmed {
+            body_file,
+            notice: false,
+            ..
+        }) => (body_file, true),
+        Err(_) => {
+            // Every other refused delivery has already said what happened and
+            // where the body is; nothing is recorded for one.
+            return Ok(EXIT_FAILED);
+        }
+    };
+    let fields = EventFields {
+        ts: fields.ts,
+        actor: fields.actor,
+        action: fields.action,
+        target: fields.target,
+        reference: fields.reference,
+        actor_slot: fields.actor_slot,
+        actor_session: fields.actor_session,
+        target_slot: fields.target_slot,
+        target_session: fields.target_session,
+        summary: fields.summary,
+        body_file: &body_file,
+    };
+    let line = if unconfirmed {
+        unconfirmed_event_line(&fields)
+    } else {
+        event_line(&fields)
+    };
     if let Err(why) = store::open(dir).append_event(&line) {
+        if unconfirmed {
+            writeln!(
+                err,
+                "ae: {action} {req_id} was pasted to {target_name} but its event was not emitted: {why}"
+            )?;
+        } else {
+            writeln!(
+                err,
+                "ae: {action} {req_id} was delivered to {target_name} but its event was not emitted: {why}"
+            )?;
+        }
+        return Ok(EXIT_FAILED);
+    }
+    if unconfirmed {
         writeln!(
             err,
-            "ae: {action} {req_id} was delivered to {target_name} but its event was not emitted: {why}"
+            "ae: {action} {req_id} recorded as pending; re-send only if peek shows the body still in the input box."
         )?;
-        return Ok(EXIT_FAILED);
     }
     Ok(0)
 }
@@ -744,8 +828,9 @@ pub(crate) fn delivery_code(
 #[cfg(test)]
 mod tests {
     use super::{
-        Kind, Lookup, Parsed, ResolveError, Usage, compose, is_blank, is_external, lookup,
-        named_server, pane_server, parse, pick, refusal, reply_command, request_id,
+        EventFields, Kind, Lookup, Parsed, ResolveError, Usage, compose, is_blank, is_external,
+        lookup, named_server, pane_server, parse, pick, record_tracked_delivery, refusal,
+        reply_command, request_id,
     };
     use crate::inventory::ServerId;
     use crate::meta::Selector;
@@ -881,6 +966,144 @@ mod tests {
                 super::REVIEW_INSTRUCTIONS
             )
         );
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the test writes and reads its isolated event ledger"
+    )]
+    fn an_unconfirmed_request_event_remains_replyable() {
+        let dir =
+            std::env::temp_dir().join(format!("ae-tracked-unconfirmed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("the isolated state directory");
+        let body_file = dir.join("messages/ae-20260827T071112Z-00000001.ask.body.txt");
+        let id = "ae-20260827T071112Z-00000001";
+        let fields = EventFields {
+            ts: Timestamp::parse("2026-08-27T07:11:12Z").expect("the timestamp parses"),
+            actor: "lead",
+            action: "ask",
+            target: "worker",
+            reference: id,
+            actor_slot: "main",
+            actor_session: "session",
+            target_slot: "worker.0",
+            target_session: "session",
+            summary: "the question",
+            body_file: "",
+        };
+        let mut err = Vec::new();
+        let code = record_tracked_delivery(
+            &dir,
+            &fields,
+            Err(crate::deliver::Failure::Unconfirmed {
+                body_file: body_file.display().to_string(),
+                framed: "framed".to_owned(),
+                notice: false,
+            }),
+            &mut err,
+        )
+        .expect("the pending request event is recorded");
+        assert_eq!(code, 0);
+        assert_eq!(
+            String::from_utf8(err).expect("the pending notice is utf-8"),
+            "ae: ask ae-20260827T071112Z-00000001 recorded as pending; re-send only if peek shows the body still in the input box.\n"
+        );
+
+        let event = std::fs::read_to_string(dir.join("events.jsonl")).expect("the event ledger");
+        assert!(event.contains("\"summary\":\"[unconfirmed] the question\""));
+        assert!(event.contains(&format!("\"body_file\":\"{}\"", body_file.display())));
+        let found = crate::reply::find(&dir, id).expect("reply resolves an unconfirmed request id");
+        assert_eq!(found.id, id.as_bytes());
+        assert_eq!(found.status, crate::requests::Status::Pending);
+        assert_eq!(found.summary, b"[unconfirmed] the question");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the test writes and reads its isolated event ledger"
+    )]
+    fn a_notice_unconfirmed_delivery_remains_unrecorded() {
+        let dir = std::env::temp_dir().join(format!(
+            "ae-tracked-notice-unconfirmed-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("the isolated state directory");
+        let fields = EventFields {
+            ts: Timestamp::parse("2026-08-27T07:11:12Z").expect("the timestamp parses"),
+            actor: "lead",
+            action: "ask",
+            target: "worker",
+            reference: "ae-20260827T071112Z-00000002",
+            actor_slot: "main",
+            actor_session: "session",
+            target_slot: "worker.0",
+            target_session: "session",
+            summary: "the question",
+            body_file: "",
+        };
+        let mut err = Vec::new();
+        let code = record_tracked_delivery(
+            &dir,
+            &fields,
+            Err(crate::deliver::Failure::Unconfirmed {
+                body_file: dir
+                    .join("messages/ae-20260827T071112Z-00000002.ask.body.txt")
+                    .display()
+                    .to_string(),
+                framed: "framed".to_owned(),
+                notice: true,
+            }),
+            &mut err,
+        )
+        .expect("the notice failure is handled");
+        assert_eq!(code, crate::state::EXIT_FAILED);
+        assert!(!dir.join("events.jsonl").exists());
+        assert!(err.is_empty());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the test writes and reads its isolated event ledger"
+    )]
+    fn a_non_unconfirmed_delivery_remains_unrecorded() {
+        let dir = std::env::temp_dir().join(format!("ae-tracked-refused-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("the isolated state directory");
+        let fields = EventFields {
+            ts: Timestamp::parse("2026-08-27T07:11:12Z").expect("the timestamp parses"),
+            actor: "lead",
+            action: "ask",
+            target: "worker",
+            reference: "ae-20260827T071112Z-00000003",
+            actor_slot: "main",
+            actor_session: "session",
+            target_slot: "worker.0",
+            target_session: "session",
+            summary: "the question",
+            body_file: "",
+        };
+        let mut err = Vec::new();
+        let code = record_tracked_delivery(
+            &dir,
+            &fields,
+            Err(crate::deliver::Failure::Abandoned),
+            &mut err,
+        )
+        .expect("the refused delivery is handled");
+        assert_eq!(code, crate::state::EXIT_FAILED);
+        assert!(!dir.join("events.jsonl").exists());
+        assert!(err.is_empty());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

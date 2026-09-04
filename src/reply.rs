@@ -427,22 +427,9 @@ pub fn run(
         shape: crate::deliver::Shape::Send,
         defer,
     };
-    let Ok(delivered) = crate::deliver::deliver(&request, err)? else {
-        // Every arm of a refused delivery has already said what happened and
-        // where the body is; nothing is recorded for one.
-        return Ok(EXIT_FAILED);
-    };
     fields.target = &target_name;
-    fields.body_file = &delivered.body_file;
-    if let Err(why) = store::open(dir).append_event(&tracked::event_line(&fields)) {
-        writeln!(
-            err,
-            "ae: reply {} was delivered to {target_name} but its event was not emitted: {why}",
-            parsed.id
-        )?;
-        return Ok(EXIT_FAILED);
-    }
-    Ok(0)
+    let delivery = crate::deliver::deliver(&request, err)?;
+    tracked::record_tracked_delivery(dir, &fields, delivery, err)
 }
 
 /// Bytes as text: the comparison never sees an invalid byte from ae's own
@@ -461,7 +448,9 @@ fn key_text(key: &Key) -> String {
 mod tests {
     use super::{Parsed, Replier, Usage, parse, route, slot_resolve, verify};
     use crate::requests::{Key, Request, Status};
+    use crate::time::Timestamp;
     use crate::tmux::{ObservedSlot, ObservedViewer};
+    use crate::tracked::{EventFields, record_tracked_delivery};
 
     fn words(items: &[&str]) -> Vec<String> {
         items.iter().map(|item| (*item).to_owned()).collect()
@@ -551,6 +540,56 @@ mod tests {
             "a slot outside the grammar is no slot (_valid_slot)"
         );
         assert_eq!(Replier::from_observed(None, "s"), Replier::default());
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the test writes and reads its isolated event ledger"
+    )]
+    fn an_unconfirmed_reply_event_is_recorded_by_the_reply_path() {
+        let dir = std::env::temp_dir().join(format!("ae-reply-unconfirmed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("the isolated state directory");
+        let id = "ae-20260827T071112Z-00000004";
+        let body_file = dir.join("messages/reply.body.txt").display().to_string();
+        let mut err = Vec::new();
+        let fields = EventFields {
+            ts: Timestamp::parse("2026-08-27T07:11:12Z").expect("the timestamp parses"),
+            actor: "worker",
+            action: "reply",
+            target: "lead",
+            reference: id,
+            actor_slot: "worker.0",
+            actor_session: "session",
+            target_slot: "main",
+            target_session: "session",
+            summary: "the answer",
+            body_file: "",
+        };
+        let code = record_tracked_delivery(
+            &dir,
+            &fields,
+            Err(crate::deliver::Failure::Unconfirmed {
+                body_file: body_file.clone(),
+                framed: "⟦ae:msg from worker⟧\n[ae-1] the answer".to_owned(),
+                notice: false,
+            }),
+            &mut err,
+        )
+        .expect("the unconfirmed reply event is recorded");
+        assert_eq!(code, 0);
+        assert!(
+            String::from_utf8(err)
+                .expect("the pending notice is utf-8")
+                .contains("reply ae-20260827T071112Z-00000004 recorded as pending")
+        );
+        let event = std::fs::read_to_string(dir.join("events.jsonl")).expect("the event ledger");
+        assert!(event.contains("\"action\":\"reply\""));
+        assert!(event.contains("\"summary\":\"[unconfirmed] the answer\""));
+        assert!(event.contains(&format!("\"body_file\":\"{body_file}\"")));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

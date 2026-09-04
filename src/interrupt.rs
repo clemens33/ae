@@ -121,6 +121,7 @@ pub fn run(
             if let deliver::Failure::Unconfirmed {
                 body_file,
                 notice: true,
+                ..
             } = &failure
             {
                 let _ = record_delivery_failure(dir, &target_name, body_file, now, actor);

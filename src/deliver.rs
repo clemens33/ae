@@ -7,6 +7,7 @@
 pub mod notice;
 pub mod region;
 
+use std::fmt;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
@@ -104,7 +105,7 @@ pub struct Delivered {
 }
 
 /// Why a delivery did not land.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum Failure {
     /// The target pane is a shell, not a running agent.
     DeadPane,
@@ -128,10 +129,40 @@ pub enum Failure {
     Unconfirmed {
         /// The published recovery body, still readable.
         body_file: String,
+        /// Exactly what was framed before submit verification failed. For a
+        /// notice arm, the pointer is the payload pasted on screen; this is
+        /// the original framed body preserved by the recovery record.
+        framed: String,
         /// Whether the failure was the notice's on-screen proof — the arm that
         /// records a `delivery-failed` event.
         notice: bool,
     },
+}
+
+impl fmt::Debug for Failure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::DeadPane => formatter.write_str("DeadPane"),
+            Self::Storage => formatter.write_str("Storage"),
+            Self::Lock => formatter.write_str("Lock"),
+            Self::NoticeRefused { body_file } => formatter
+                .debug_struct("NoticeRefused")
+                .field("body_file", body_file)
+                .finish(),
+            Self::Abandoned => formatter.write_str("Abandoned"),
+            Self::Paste { body_file } => formatter
+                .debug_struct("Paste")
+                .field("body_file", body_file)
+                .finish(),
+            Self::Unconfirmed {
+                body_file, notice, ..
+            } => formatter
+                .debug_struct("Unconfirmed")
+                .field("body_file", body_file)
+                .field("notice", notice)
+                .finish(),
+        }
+    }
 }
 
 impl Failure {
@@ -223,21 +254,28 @@ pub fn deliver(
         notice::Mode::Direct => framed.as_str(),
         notice::Mode::Notice(pointer) => pointer.as_str(),
     };
-    match submit(request, tool, payload, &mode, &body_file, err)? {
+    match submit(request, tool, payload, &mode, &body_file, &framed, err)? {
         Ok(()) => Ok(Ok(Delivered { body_file, framed })),
         Err(failure) => {
             // The submit's own line said WHICH step failed; this one names the
             // delivery and where its body is.
-            writeln!(
-                err,
-                "ae: {} to {} UNCONFIRMED — submit not verified; body preserved at {body_file}. Re-send.",
-                match request.shape {
-                    Shape::Send => "send",
-                    Shape::Interrupt => "interrupt message",
-                    Shape::Launch => "spawn brief",
-                },
-                request.logged_target
-            )?;
+            match request.shape {
+                Shape::Send => writeln!(
+                    err,
+                    "ae: send to {} UNCONFIRMED — submit not verified; body preserved at {body_file}.",
+                    request.logged_target
+                )?,
+                Shape::Interrupt => writeln!(
+                    err,
+                    "ae: interrupt message to {} UNCONFIRMED — submit not verified; body preserved at {body_file}. Re-send.",
+                    request.logged_target
+                )?,
+                Shape::Launch => writeln!(
+                    err,
+                    "ae: spawn brief to {} UNCONFIRMED — submit not verified; body preserved at {body_file}. Re-send.",
+                    request.logged_target
+                )?,
+            }
             Ok(Err(failure))
         }
     }
@@ -490,6 +528,7 @@ fn submit(
     payload: &str,
     mode: &notice::Mode,
     body_file: &str,
+    framed: &str,
     err: &mut impl Write,
 ) -> io::Result<Result<(), Failure>> {
     let buffer = buffer_name(request.pane);
@@ -529,19 +568,29 @@ fn submit(
         )?;
         return Ok(Err(Failure::Unconfirmed {
             body_file: body_file.to_owned(),
+            framed: framed.to_owned(),
             notice: true,
         }));
     }
     if submit_staged(server, pane, tool) {
         return Ok(Ok(()));
     }
-    writeln!(
-        err,
-        "ae: submit UNCONFIRMED to pane {pane} ({}) — message may not have sent. Re-send.",
-        tool.as_str()
-    )?;
+    if request.shape == Shape::Send {
+        writeln!(
+            err,
+            "ae: submit UNCONFIRMED to pane {pane} ({}) — message may not have sent.",
+            tool.as_str()
+        )?;
+    } else {
+        writeln!(
+            err,
+            "ae: submit UNCONFIRMED to pane {pane} ({}) — message may not have sent. Re-send.",
+            tool.as_str()
+        )?;
+    }
     Ok(Err(Failure::Unconfirmed {
         body_file: body_file.to_owned(),
+        framed: framed.to_owned(),
         notice: false,
     }))
 }
@@ -785,10 +834,23 @@ mod tests {
         assert_eq!(
             Failure::Unconfirmed {
                 body_file: "/m/x.txt".into(),
+                framed: "framed".into(),
                 notice: true
             }
             .body_file(),
             "/m/x.txt"
+        );
+        assert_eq!(
+            format!(
+                "{:?}",
+                Failure::Unconfirmed {
+                    body_file: "/m/x.txt".into(),
+                    framed: "framed body".into(),
+                    notice: false
+                }
+            ),
+            "Unconfirmed { body_file: \"/m/x.txt\", notice: false }",
+            "the recovery body is not leaked into diagnostics"
         );
         assert_eq!(
             Failure::Paste {
