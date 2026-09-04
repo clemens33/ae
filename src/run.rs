@@ -320,33 +320,35 @@ fn compose(dir: &Path, slot: &str, seat: &Seat, ctx: &str, mode: Mode) -> String
     launch::build_launch_command(&injected.cmd, &prompt)
 }
 
-/// Is the recorded conversation actually there to resume?
+/// Should this seat be resumed with the id its meta records?
 ///
-/// The frozen `resume_probe` wrote this as a shell test the pane evaluated;
-/// with no pane shell left it is the same question asked directly.
+/// TWO QUESTIONS, and only one of them is a probe. The first is whether there
+/// is an id at all: a seat with none — a capture tool whose id never arrived,
+/// or a `pending` placeholder — has nothing to resume BY, and the fallback form
+/// is what a tool offers for exactly that (`--continue`, `--resume latest`).
+/// The second is whether the recorded conversation still exists, and it can
+/// only be asked where the tool leaves evidence on disk: claude writes a
+/// transcript per conversation, codex writes a dated session log. Where that
+/// evidence exists, a missing file means the id names a conversation that is
+/// gone and the fallback is the right form.
 ///
-/// **Only claude and codex have a probe, so only they can answer YES.** grok,
-/// gemini and opencode take the fallback form on every resume — `--continue`,
-/// `--resume latest`, `--continue` — however good the recorded id is. That is
-/// the frozen decider's behaviour carried over unchanged (its `None` arm
-/// emitted the FALLBACK), and it is carried over deliberately rather than
-/// improved here, because this slice ports the decision and does not re-rule
-/// it. It DISAGREES with the capability table in AGENTS.md, which says grok's
-/// resume is UUID-scoped from the first cycle and gemini uses exact resume once
-/// captured; the disagreement predates slice Z2 and belongs to whoever rules on
-/// it. Flagged here so the next reader sees the conflict rather than the code.
+/// **A tool with NO probe answers YES.** The absence of a probe is not evidence
+/// of absence — it is ae having no way to look — and the recorded id is still
+/// this seat's own conversation. grok, gemini and opencode therefore resume
+/// with `--resume <id>`, `--resume <id>` and `--session <id>` whenever meta
+/// holds one, which is what their rows in AGENTS.md's capability table have
+/// always said. The frozen decider read the other way (its `None` arm emitted
+/// the FALLBACK), so those three never resumed by id however good the id was;
+/// that was a defect, ruled and fixed here rather than ported.
 fn resumable(tool: ToolKind, id: &str) -> bool {
     if !launch::id_probeable(id) {
         return false;
     }
-    let Some(home) = env_lookup("HOME") else {
-        return false;
-    };
     match tool {
         // Claude keeps a transcript per conversation at a path derived from the
         // working directory, so the file's existence IS the answer.
         ToolKind::Claude => {
-            let Some(cwd) = working_dir() else {
+            let (Some(home), Some(cwd)) = (env_lookup("HOME"), working_dir()) else {
                 return false;
             };
             let key: String = cwd
@@ -363,8 +365,13 @@ fn resumable(tool: ToolKind, id: &str) -> bool {
             )
         }
         // Codex records under dated directories, so the id is searched for.
-        ToolKind::Codex => contains_id(&Path::new(&home).join(".codex/sessions"), id, 4),
-        _ => false,
+        ToolKind::Codex => {
+            let Some(home) = env_lookup("HOME") else {
+                return false;
+            };
+            contains_id(&Path::new(&home).join(".codex/sessions"), id, 4)
+        }
+        _ => true,
     }
 }
 
@@ -630,9 +637,17 @@ mod tests {
     }
 
     #[test]
-    fn a_tool_ae_cannot_probe_is_not_resumable_evidence() {
-        assert!(!resumable(ToolKind::Gemini, "3f2a-1"));
+    fn a_missing_id_is_the_only_thing_that_makes_a_seat_unresumable_without_a_probe() {
+        // No probe exists for these three, and that is not evidence of
+        // absence: the recorded id is still this seat's own conversation.
+        for tool in [ToolKind::Gemini, ToolKind::Grok, ToolKind::OpenCode] {
+            assert!(resumable(tool, "3f2a-1"), "{}", tool.as_str());
+            assert!(!resumable(tool, "pending"), "{}", tool.as_str());
+            assert!(!resumable(tool, ""), "{}", tool.as_str());
+        }
+        // A tool ae CAN probe still has to pass it, and a `pending` id never
+        // reaches the probe at all.
         assert!(!resumable(ToolKind::Claude, "pending"));
-        assert!(!resumable(ToolKind::Claude, ""));
+        assert!(!resumable(ToolKind::Codex, ""));
     }
 }
