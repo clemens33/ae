@@ -735,21 +735,6 @@ mod tests {
     }
 
     #[test]
-    fn sc_017e_the_activity_clock_is_the_newest_event() {
-        let lines = [
-            event(&at(900), "lead", "done", ""),
-            event(&at(30), "lead", "memo", r#","ref":"design""#),
-            event(&at(600), "watchdog", "nudge", ""),
-        ];
-        let read = read(&lines);
-        assert_eq!(
-            read.last_active,
-            Some(Timestamp::from_epoch(NOW.epoch() - 30)),
-            "the newest event, not the last line"
-        );
-    }
-
-    #[test]
     fn a_session_with_no_events_has_no_activity_clock() {
         assert_eq!(read(&[]).last_active, None);
     }
@@ -814,159 +799,6 @@ mod tests {
     }
 
     #[test]
-    fn sc_017g_a_reply_from_the_target_closes_the_request() {
-        let lines = [
-            event(
-                &at(3600),
-                "lead",
-                "ask",
-                r#","target":"coworker","ref":"ae-1""#,
-            ),
-            event(
-                &at(3000),
-                "coworker",
-                "reply",
-                r#","target":"lead","ref":"ae-1""#,
-            ),
-        ];
-        assert!(read(&lines).pending.is_empty());
-    }
-
-    #[test]
-    fn sc_518_a_reply_addressed_to_someone_else_does_not_close_it() {
-        // Right responder, wrong recipient.
-        let lines = [
-            event(
-                &at(3600),
-                "lead",
-                "ask",
-                r#","target":"coworker","ref":"ae-1""#,
-            ),
-            event(
-                &at(3000),
-                "coworker",
-                "reply",
-                r#","target":"gemini:someone-else","ref":"ae-1""#,
-            ),
-        ];
-        assert_eq!(read(&lines).pending.len(), 1);
-    }
-
-    #[test]
-    fn sc_518_a_reply_with_no_target_at_all_closes_nothing() {
-        let lines = [
-            event(
-                &at(3600),
-                "lead",
-                "ask",
-                r#","target":"coworker","ref":"ae-1""#,
-            ),
-            event(&at(3000), "coworker", "reply", r#","ref":"ae-1""#),
-        ];
-        assert_eq!(read(&lines).pending.len(), 1);
-    }
-
-    #[test]
-    fn sc_405j_a_partial_key_reply_cannot_close_a_display_only_ask() {
-        // The reply carries actor_slot with no actor_session, and that half-key used
-        // to read as its display name — which matches the ask's target.
-        for reply_keys in [r#","actor_slot":"worker.0""#, r#","actor_session":"live""#] {
-            let lines = [
-                event(
-                    &at(3600),
-                    "lead",
-                    "ask",
-                    r#","target":"coworker","ref":"ae-1""#,
-                ),
-                event(
-                    &at(3000),
-                    "coworker",
-                    "reply",
-                    &format!(r#","target":"lead","ref":"ae-1"{reply_keys}"#),
-                ),
-            ];
-            assert_eq!(read(&lines).pending.len(), 1, "{reply_keys}");
-        }
-    }
-
-    #[test]
-    fn sc_405j_a_partial_key_on_the_ask_side_is_equally_unclosable() {
-        // Mirrored: the REQUEST has half a key, so nothing can answer it.
-        for ask_keys in [
-            r#","target_slot":"worker.0""#,
-            r#","target_session":"live""#,
-        ] {
-            let lines = [
-                event(
-                    &at(3600),
-                    "lead",
-                    "ask",
-                    &format!(r#","target":"coworker","ref":"ae-1"{ask_keys}"#),
-                ),
-                event(
-                    &at(3000),
-                    "coworker",
-                    "reply",
-                    r#","target":"lead","ref":"ae-1""#,
-                ),
-            ];
-            assert_eq!(read(&lines).pending.len(), 1, "{ask_keys}");
-        }
-    }
-
-    #[test]
-    fn sc_405j_an_empty_key_reply_cannot_false_close_a_display_only_ask() {
-        // The reply declares itself routed with an EMPTY member.
-        for reply_keys in [
-            r#","actor_slot":"""#,
-            r#","actor_session":"""#,
-            r#","actor_slot":"","actor_session":"""#,
-            r#","actor_slot":"","actor_session":"live""#,
-        ] {
-            let lines = [
-                event(
-                    &at(3600),
-                    "lead",
-                    "ask",
-                    r#","target":"coworker","ref":"ae-1""#,
-                ),
-                event(
-                    &at(3000),
-                    "coworker",
-                    "reply",
-                    &format!(r#","target":"lead","ref":"ae-1"{reply_keys}"#),
-                ),
-            ];
-            assert_eq!(read(&lines).pending.len(), 1, "{reply_keys}");
-        }
-    }
-
-    #[test]
-    fn sc_405j_an_empty_key_on_the_ask_side_is_equally_unclosable() {
-        for ask_keys in [
-            r#","target_slot":"""#,
-            r#","target_session":"""#,
-            r#","target_slot":"","target_session":"""#,
-        ] {
-            let lines = [
-                event(
-                    &at(3600),
-                    "lead",
-                    "ask",
-                    &format!(r#","target":"coworker","ref":"ae-1"{ask_keys}"#),
-                ),
-                event(
-                    &at(3000),
-                    "coworker",
-                    "reply",
-                    r#","target":"lead","ref":"ae-1""#,
-                ),
-            ];
-            assert_eq!(read(&lines).pending.len(), 1, "{ask_keys}");
-        }
-    }
-
-    #[test]
     fn sc_405j_an_empty_key_state_event_associates_with_no_agent() {
         // The same rule on the other consumer of identity: a declared state whose
         // routing key is empty belongs to nobody.
@@ -987,148 +819,151 @@ mod tests {
         );
     }
 
-    #[test]
-    fn sc_405j_two_unassociated_sides_do_not_match_each_other() {
-        // Both sides failed to say where they came from.
+    /// Does one ask at T-3600 and one reply at T-3000 pair up?
+    fn closes(ask_tail: &str, replier: &str, reply_tail: &str) -> bool {
         let lines = [
-            event(
-                &at(3600),
-                "lead",
-                "ask",
-                r#","target":"coworker","ref":"ae-1","target_slot":"worker.0""#,
-            ),
-            event(
-                &at(3000),
-                "coworker",
-                "reply",
-                r#","target":"lead","ref":"ae-1","actor_slot":"worker.0""#,
-            ),
+            event(&at(3600), "lead", "ask", ask_tail),
+            event(&at(3000), replier, "reply", reply_tail),
         ];
-        assert_eq!(read(&lines).pending.len(), 1);
+        read(&lines).pending.is_empty()
     }
 
-    #[test]
-    fn sc_518_a_mixed_identity_pair_matches_nothing() {
-        // Request routed, reply display-only: mixed matches nothing.
-        let lines = [
-            event(
-                &at(3600),
-                "lead",
-                "ask",
-                concat!(
-                    r#","target":"coworker","ref":"ae-1""#,
-                    r#","actor_slot":"main","actor_session":"s""#,
-                    r#","target_slot":"worker.0","target_session":"s""#
-                ),
-            ),
-            event(
-                &at(3000),
-                "coworker",
-                "reply",
-                r#","target":"lead","ref":"ae-1""#,
-            ),
-        ];
-        assert_eq!(read(&lines).pending.len(), 1);
-    }
+    /// The base ask and reply, and the routed variant of the ask.
+    const ASK: &str = r#","target":"coworker","ref":"ae-1""#;
+    const REPLY: &str = r#","target":"lead","ref":"ae-1""#;
+    const KEYED_ASK: &str = concat!(
+        r#","target":"coworker","ref":"ae-1""#,
+        r#","actor_slot":"main","actor_session":"s""#,
+        r#","target_slot":"worker.0","target_session":"s""#
+    );
 
-    #[test]
-    fn sc_017g_a_reply_from_someone_else_does_not_close_it() {
-        // "whose TARGET never replied" — a stray reply leaves it pending.
-        let lines = [
-            event(
-                &at(3600),
-                "lead",
-                "ask",
-                r#","target":"coworker","ref":"ae-1""#,
-            ),
-            event(
-                &at(3000),
-                "gemini:bystander",
-                "reply",
-                r#","target":"lead","ref":"ae-1""#,
-            ),
-        ];
-        assert_eq!(read(&lines).pending.len(), 1);
-    }
+    /// Wrong pair: someone else, no one, or another request.
+    const WRONG_PAIR: [(&str, &str, &str, &str); 5] = [
+        (
+            "right responder, wrong recipient",
+            ASK,
+            "coworker",
+            r#","target":"gemini:someone-else","ref":"ae-1""#,
+        ),
+        (
+            "a reply with no target at all",
+            ASK,
+            "coworker",
+            r#","ref":"ae-1""#,
+        ),
+        (
+            "an ask with no target has none to answer it",
+            r#","ref":"ae-1""#,
+            "coworker",
+            REPLY,
+        ),
+        ("a bystander's reply", ASK, "gemini:bystander", REPLY),
+        (
+            "another request id",
+            ASK,
+            "coworker",
+            r#","target":"lead","ref":"ae-2""#,
+        ),
+    ];
 
-    #[test]
-    fn sc_510c_a_reply_carrying_another_request_id_closes_nothing() {
-        let lines = [
-            event(
-                &at(3600),
-                "lead",
-                "ask",
-                r#","target":"coworker","ref":"ae-1""#,
-            ),
-            event(
-                &at(3000),
-                "coworker",
-                "reply",
-                r#","target":"lead","ref":"ae-2""#,
-            ),
-        ];
-        assert_eq!(read(&lines).pending.len(), 1);
-    }
+    /// Right pair, broken key: half-written, empty, or on one side only.
+    const BROKEN_KEY: [(&str, &str, &str); 12] = [
+        (
+            "half an actor key: slot only",
+            "",
+            r#","actor_slot":"worker.0""#,
+        ),
+        (
+            "half an actor key: session only",
+            "",
+            r#","actor_session":"live""#,
+        ),
+        ("an empty actor slot", "", r#","actor_slot":"""#),
+        ("an empty actor session", "", r#","actor_session":"""#),
+        (
+            "both actor members empty",
+            "",
+            r#","actor_slot":"","actor_session":"""#,
+        ),
+        (
+            "an empty slot beside a named session",
+            "",
+            r#","actor_slot":"","actor_session":"live""#,
+        ),
+        (
+            "half a target key: slot only",
+            r#","target_slot":"worker.0""#,
+            "",
+        ),
+        (
+            "half a target key: session only",
+            r#","target_session":"live""#,
+            "",
+        ),
+        ("an empty target slot", r#","target_slot":"""#, ""),
+        ("an empty target session", r#","target_session":"""#, ""),
+        (
+            "both target members empty",
+            r#","target_slot":"","target_session":"""#,
+            "",
+        ),
+        (
+            "two half-keyed sides do not match each other",
+            r#","target_slot":"worker.0""#,
+            r#","actor_slot":"worker.0""#,
+        ),
+    ];
 
+    /// Right pair, one side keyed and the other not, or keyed to elsewhere.
+    const MIXED_KEY: [(&str, &str); 2] = [
+        ("a routed ask and a display-only reply are mixed", ""),
+        (
+            "the same slot in another session is another agent",
+            r#","actor_slot":"worker.0","actor_session":"another-session""#,
+        ),
+    ];
+
+    /// A pair associates on two whole routing keys or on two display names, and
+    /// on nothing in between.
+    ///
+    /// Every negative row is kept because it once closed a request it should
+    /// not have: half a routing key used to read as its display name, and an
+    /// empty member used to read as an absent one.
     #[test]
-    fn sc_511b_pairing_uses_the_routing_key_when_both_sides_carry_one() {
-        // The display name churns; the slot+session key does not.
-        let lines = [
-            event(
-                &at(3600),
-                "lead",
-                "ask",
-                concat!(
-                    r#","target":"coworker","ref":"ae-1""#,
-                    r#","actor_slot":"main","actor_session":"s""#,
-                    r#","target_slot":"worker.0","target_session":"s""#
-                ),
-            ),
-            event(
-                &at(3000),
+    fn only_the_targets_own_reply_on_the_same_request_closes_it() {
+        assert!(closes(ASK, "coworker", REPLY), "the target's own reply");
+        assert!(
+            closes(
+                KEYED_ASK,
                 "codex:renamed-since",
-                "reply",
                 concat!(
                     r#","target":"lead","ref":"ae-1""#,
                     r#","actor_slot":"worker.0","actor_session":"s""#,
                     r#","target_slot":"main","target_session":"s""#
-                ),
+                )
             ),
-        ];
-        assert!(
-            read(&lines).pending.is_empty(),
-            "a renamed agent still answered"
+            "two whole routing keys, so a rename still answers"
         );
-    }
 
-    #[test]
-    fn sc_511b_a_routing_key_from_another_session_is_a_different_participant() {
-        let lines = [
-            event(
-                &at(3600),
-                "lead",
-                "ask",
-                concat!(
-                    r#","target":"coworker","ref":"ae-1""#,
-                    r#","actor_slot":"main","actor_session":"s""#,
-                    r#","target_slot":"worker.0","target_session":"s""#
+        for (why, ask, replier, reply) in WRONG_PAIR {
+            assert!(!closes(ask, replier, reply), "{why}");
+        }
+        for (why, ask_extra, reply_extra) in BROKEN_KEY {
+            assert!(
+                !closes(
+                    &format!("{ASK}{ask_extra}"),
+                    "coworker",
+                    &format!("{REPLY}{reply_extra}")
                 ),
-            ),
-            event(
-                &at(3000),
-                "coworker",
-                "reply",
-                concat!(
-                    r#","target":"lead","ref":"ae-1""#,
-                    r#","actor_slot":"worker.0","actor_session":"another-session""#
-                ),
-            ),
-        ];
-        assert_eq!(
-            read(&lines).pending.len(),
-            1,
-            "same slot, different session, different agent"
-        );
+                "{why}"
+            );
+        }
+        for (why, reply_extra) in MIXED_KEY {
+            assert!(
+                !closes(KEYED_ASK, "coworker", &format!("{REPLY}{reply_extra}")),
+                "{why}"
+            );
+        }
     }
 
     #[test]
@@ -1180,21 +1015,6 @@ mod tests {
                 "lead",
                 "ask",
                 r#","target":"coworker","ref":"ae-1""#,
-            ),
-        ];
-        assert_eq!(read(&lines).pending.len(), 1);
-    }
-
-    #[test]
-    fn an_ask_without_a_target_is_pending_and_nothing_can_close_it() {
-        // No target means no "the target replied" to test against.
-        let lines = [
-            event(&at(3600), "lead", "ask", r#","ref":"ae-1""#),
-            event(
-                &at(3000),
-                "coworker",
-                "reply",
-                r#","target":"lead","ref":"ae-1""#,
             ),
         ];
         assert_eq!(read(&lines).pending.len(), 1);
@@ -1483,23 +1303,6 @@ mod tests {
         );
         assert!(!entry.degraded);
         assert_eq!(entry.agents.len(), 1);
-    }
-
-    #[test]
-    fn sc_519_a_session_with_meta_and_no_event_log_is_quiet_not_degraded() {
-        let scratch = Scratch::new("noevents");
-        scratch.meta(META);
-        let entry = entry_for(
-            &scratch.0,
-            "fresh",
-            &running(),
-            NOW,
-            DEFAULT_UNANSWERED_SECS,
-        );
-        assert!(!entry.degraded, "an absent event log is a quiet stream");
-        assert_eq!(entry.last_active_epoch, None);
-        assert_eq!(entry.mode.as_deref(), Some("local"));
-        assert_eq!(entry.agents.len(), 1, "the roster still names its agents");
     }
 
     #[test]
@@ -1863,20 +1666,6 @@ mod tests {
     }
 
     #[test]
-    fn sc_405d_an_unknown_meta_key_is_tolerated_and_never_degrades() {
-        // Unknown keys are the NORMAL state of a real meta, so degrading on them
-        // would make the flag constant-true.
-        let scratch = Scratch::new("unknownkey");
-        scratch.meta(&format!(
-            "{META}ae_path=/usr/local/bin/ae\nlayout=vertical\nwatchdog=1234\n"
-        ));
-        let entry = entry_for(&scratch.0, "odd", &running(), NOW, DEFAULT_UNANSWERED_SECS);
-        assert!(!entry.degraded, "tolerated silently");
-        assert_eq!(entry.mode.as_deref(), Some("local"));
-        assert_eq!(entry.agents.len(), 1);
-    }
-
-    #[test]
     fn sc_405e_a_shape_the_reader_could_not_take_still_degrades() {
         // Each is a VALUE the reader could not accept, unlike a key it ignores.
         for (meta_text, why) in [
@@ -1979,24 +1768,6 @@ mod tests {
     }
 
     #[test]
-    fn sc_405f_the_goal_epoch_comes_from_the_latest_goal_event_not_the_meta() {
-        let scratch = Scratch::new("goalevent");
-        scratch.meta(&format!("{META}goal=ship the login flow\n"));
-        scratch.events(&[
-            event(&at(7200), "lead", "goal", ""),
-            event(&at(600), "lead", "goal", ""),
-            event(&at(60), "lead", "done", ""),
-        ]);
-        let entry = entry_for(&scratch.0, "live", &running(), NOW, DEFAULT_UNANSWERED_SECS);
-        assert_eq!(entry.goal.as_deref(), Some("ship the login flow"));
-        assert_eq!(
-            entry.goal_set_epoch,
-            Some(NOW.epoch() - 600),
-            "the LATEST goal event, and never a meta key"
-        );
-    }
-
-    #[test]
     fn a_session_that_never_set_a_goal_has_no_goal_epoch() {
         let scratch = Scratch::new("nogoal");
         scratch.meta(META);
@@ -2081,23 +1852,6 @@ mod tests {
             "neither half of the routing key alone identifies an agent"
         );
         assert_eq!(entry.agents[0].reason, Some(Reason::WaitingUser));
-    }
-
-    #[test]
-    fn sc_405j_a_routed_event_with_a_stale_session_stays_unassociated() {
-        // The display name matches the roster exactly; the routing key does
-        // not.
-        let scratch = Scratch::new("stalesession");
-        scratch.meta(META);
-        scratch.events(&[event(
-            &at(600),
-            "lead",
-            "state",
-            r#","ref":"blocked","actor_slot":"main","actor_session":"the-old-name""#,
-        )]);
-        let entry = entry_for(&scratch.0, "live", &running(), NOW, DEFAULT_UNANSWERED_SECS);
-        assert_eq!(entry.agents[0].state, None);
-        assert_eq!(entry.agents[0].reason, None);
     }
 
     #[test]

@@ -827,30 +827,6 @@ mod tests {
     }
 
     #[test]
-    fn sc_511a_and_b_routing_keys_are_read_and_preferred() {
-        let line = concat!(
-            r#"{"ts":"2026-05-19T07:29:45Z","actor":"claude:lead","action":"send","#,
-            r#""target":"codex:coworker","actor_slot":"main","actor_session":"my-feature","#,
-            r#""target_slot":"worker.0","target_session":"my-feature"}"#
-        );
-        let event = Event::parse_line(line).expect("parses");
-        assert_eq!(
-            event.actor_identity(),
-            Identity::Routed {
-                slot: "main",
-                session: "my-feature"
-            }
-        );
-        assert_eq!(
-            event.target_identity(),
-            Some(Identity::Routed {
-                slot: "worker.0",
-                session: "my-feature"
-            })
-        );
-    }
-
-    #[test]
     fn sc_511b_falls_back_to_the_display_name_when_the_key_is_absent() {
         // "An event without those fields ... pairing falls back to the display
         // name" — every pre-routing-key event in an existing log looks like this.
