@@ -508,8 +508,8 @@ struct EnvPrefix {
 /// Peel the environment prefix off a split command line.
 ///
 /// TWO forms, and the shell applies them in this order: the bare leading
-/// `NAME=value` assignments a shell reads before the command word, and then the
-/// `env` command with its `-i`, `-u NAME` and `NAME=value` operands. Both are
+/// `NAME=value` assignments a shell reads before the command word, and then
+/// ONE `env` command with its `-i`, `-u NAME` and `NAME=value` operands. Both are
 /// what ae itself composes (claude's nesting guard, opencode's config pointer),
 /// and the vocabulary is EXACTLY [`crate::launch_cmd`]'s `launch_binary` —
 /// deliberately, down to the spellings it does not know. `env --` and
@@ -540,19 +540,23 @@ struct EnvPrefix {
 fn peel_env(words: Vec<crate::words::Word>) -> Result<(EnvPrefix, Vec<String>), String> {
     let mut prefix = EnvPrefix::default();
     let mut rest = words.into_iter().peekable();
-    loop {
-        // A shell's own prefix: assignments up to the command word, decided AS
-        // WRITTEN. A quoted `'A=1'` is not one of them — it is the binary.
-        while rest.peek().is_some_and(|word| word.assignment) {
-            let Some(word) = rest.next() else { break };
-            let Some((name, value)) = word.value.split_once('=') else {
-                break;
-            };
-            prefix.assign.push((name.to_owned(), value.to_owned()));
-        }
-        if rest.peek().is_none_or(|word| word.value != "env") {
+    // A shell's own prefix: assignments up to the command word, decided AS
+    // WRITTEN. A quoted `'A=1'` is not one of them — it is the binary.
+    while rest.peek().is_some_and(|word| word.assignment) {
+        let Some(word) = rest.next() else { break };
+        let Some((name, value)) = word.value.split_once('=') else {
             break;
-        }
+        };
+        prefix.assign.push((name.to_owned(), value.to_owned()));
+    }
+    // EXACTLY ONE `env`, because `launch_binary` peels exactly one. A second is
+    // a COMMAND WORD to the classifier, so `env env claude` is a profile whose
+    // binary is `env` and whose tool kind is therefore unknown. A loop here
+    // consumed both words and `exec`ed claude — classified as one thing and run
+    // as another, which is the B1 defect in its general form: the seat got none
+    // of claude's context or TUI handling while a claude sat in its pane.
+    // Widen both or neither.
+    if rest.peek().is_some_and(|word| word.value == "env") {
         rest.next();
         // `env`'s own operands. An unrecognised one ENDS the peel: it is the
         // command word, and a prefix that guessed at it would exec something
@@ -858,6 +862,14 @@ mod tests {
             "\"A=1\" codex",
             "A=\"1 2\" codex",
             "env 'A=1' codex",
+            // A SECOND `env` is a command word, not a second prefix. Both
+            // modules stop at it, so the seat is classified as `env` (tool kind
+            // unknown) and `env claude` is what runs — consistent, which is the
+            // whole invariant. Peeling both here classified the seat as `env`
+            // and exec'ed `claude`.
+            "env env claude",
+            "A=1 env env claude",
+            "env -i env -u B claude",
         ] {
             let named = crate::launch_cmd::lex_simple_command(cmd)
                 .map(|parsed| parsed.binary)
