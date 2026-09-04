@@ -18,6 +18,7 @@ use crate::json::Value;
 use crate::meta;
 use crate::requests::is_slot;
 use crate::state::{self, EXIT_FAILED, EXIT_USAGE};
+use crate::store;
 use crate::time::Timestamp;
 use crate::tmux::ObservedAgent;
 use crate::transport;
@@ -654,7 +655,7 @@ pub fn run(
             summary: &parsed.body,
             body_file: "",
         });
-        if let Err(why) = state::emit(dir, &line) {
+        if let Err(why) = store::open(dir).append_event(&line) {
             writeln!(err, "ae: {action} {req_id} not recorded: {why}")?;
             return Ok(EXIT_FAILED);
         }
@@ -711,7 +712,7 @@ pub fn run(
         summary: &parsed.body,
         body_file,
     });
-    if let Err(why) = state::emit(dir, &line) {
+    if let Err(why) = store::open(dir).append_event(&line) {
         writeln!(
             err,
             "ae: {action} {req_id} was delivered to {target_name} but its event was not emitted: {why}"

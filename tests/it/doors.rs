@@ -547,3 +547,91 @@ fn literal_end(src: &[char], index: usize) -> usize {
     }
     src.len()
 }
+
+/// Every `src/**.rs` production half: comment lines dropped and everything from
+/// the first `#[cfg(test)]` cut off, so a fixture is never mistaken for a
+/// product line.
+fn product_halves() -> Vec<(String, String)> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut halves = Vec::new();
+    for path in rust_sources() {
+        let Ok(relative) = path.strip_prefix(root) else {
+            continue;
+        };
+        let name = relative.to_string_lossy().replace('\\', "/");
+        if !name.starts_with("src/") {
+            continue;
+        }
+        let text = fs::read_to_string(&path)
+            .unwrap_or_else(|err| panic!("{name} must be readable: {err}"));
+        let code = text
+            .split_once("\n#[cfg(test)]\n")
+            .map_or(text.clone(), |(product, _)| product.to_owned());
+        halves.push((
+            name,
+            code.lines()
+                .filter(|line| !line.trim_start().starts_with("//"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ));
+    }
+    assert!(
+        halves.len() > 5,
+        "the source walk found {} product halves; a guard that scans nothing passes forever",
+        halves.len()
+    );
+    halves
+}
+
+#[test]
+fn a_live_session_file_is_named_in_exactly_one_place() {
+    // A second spelling of `events.jsonl` or `memo.tsv` is how a reader and a
+    // writer end up on two different files, and a hand-appended `.lock` is how
+    // one mutual exclusion becomes two. `src/store.rs` owns both names and
+    // derives every lock from them, so a production line anywhere else that
+    // writes one out is the drift this guard exists to catch. The literals are
+    // unterminated on purpose: `"events.jsonl.lock"` is caught by the same
+    // check as `"events.jsonl"`. Fixtures are not production — the scan cuts
+    // each file at its first `#[cfg(test)]`.
+    for (name, code) in product_halves() {
+        // `src/archive/store.rs` names an ARCHIVE's members. They coincide with
+        // the live names today and are deliberately independent: an archive is
+        // immutable, so renaming a live file must not rename what is published.
+        if name == "src/store.rs" || name == "src/archive/store.rs" {
+            continue;
+        }
+        // The file and its lock, exactly. A DERIVED sibling built from the
+        // name (`session_launch`'s `events.jsonl.trim.<pid>` staging file) is
+        // not a second spelling of either, and is not what drifts.
+        for literal in [
+            "\"events.jsonl\"",
+            "\"events.jsonl.lock\"",
+            "\"memo.tsv\"",
+            "\"memo.tsv.lock\"",
+        ] {
+            assert!(
+                !code.contains(literal),
+                "{name} spells {literal} itself; a live session file is named in src/store.rs"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_only_writer_of_a_session_file_is_the_store() {
+    // What `src/telegram.rs`'s append-only proof rests on, checked rather than
+    // asserted in prose: the locked-append primitive is private to the store,
+    // so `append_event` and `append_memo` are the only ways in. If this goes
+    // red, that proof — and the byte-offset cursor built on it — is no longer
+    // sound.
+    for (name, code) in product_halves() {
+        if name == "src/store.rs" {
+            continue;
+        }
+        assert!(
+            !code.contains("append_locked"),
+            "{name} reaches the locked-append primitive directly; \
+             every session-file write goes through SessionStore"
+        );
+    }
+}

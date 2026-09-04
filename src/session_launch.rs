@@ -2111,8 +2111,8 @@ fn copy_tree(from: &Path, to: &Path) -> io::Result<()> {
 
 /// Cap `events.jsonl` to its newest lines on resume.
 fn trim_events(dir: &Path) {
-    let path = dir.join("events.jsonl");
-    let Ok(_guard) = crate::state::acquire(&dir.join("events.jsonl.lock"), Duration::from_secs(5))
+    let path = crate::store::open(dir).events_path();
+    let Ok(_guard) = crate::store::lock(&crate::store::lock_path(&path), Duration::from_secs(5))
     else {
         return;
     };

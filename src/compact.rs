@@ -27,6 +27,7 @@ use crate::archive::{ConfigNode, classify_config_node};
 use crate::config::{Workspace, read_workspace};
 use crate::inventory::ServerId;
 use crate::state::EXIT_FAILED;
+use crate::store;
 use crate::transport;
 use crate::{event_text, meta, requests};
 
@@ -727,7 +728,7 @@ fn memo_after(memo: &[u8], baseline: usize) -> bool {
 /// The request `reference` names, from the live ledger, or `None` if the ledger has no such
 /// request.
 fn request_by_ref(dir: &Path, reference: &str) -> Option<requests::Request> {
-    let container = event_text::read_container(&dir.join("events.jsonl"));
+    let container = event_text::read_container(&store::open(dir).events_path());
     requests::states(&container)
         .into_iter()
         .find(|r| r.id == reference.as_bytes())
@@ -763,8 +764,9 @@ pub(crate) fn wait_step(
         )?;
         return Ok(EXIT_FAILED);
     };
-    let events_path = dir.join("events.jsonl");
-    let memo_path = dir.join("memo.tsv");
+    let store = store::open(dir);
+    let events_path = store.events_path();
+    let memo_path = store.memo_path();
 
     let deadline = Instant::now() + Duration::from_secs(timeout_secs);
     let mut saw_reply;
@@ -840,7 +842,7 @@ pub(crate) fn cancel_step(dir: &Path, reference: &str, err: &mut impl Write) -> 
         reference,
         "withdrawn: --digest-only, semantic handover skipped",
     );
-    crate::state::emit(dir, &line)?;
+    crate::store::open(dir).append_event(&line)?;
     Ok(0)
 }
 
@@ -864,7 +866,7 @@ fn compact_actor(dir: &Path) -> String {
 /// size, the pre-delivery boundary the driver embeds in the handover request
 /// body.
 pub(crate) fn memo_baseline_step(dir: &Path, out: &mut impl Write) -> io::Result<u8> {
-    let memo = event_text::read_container(&dir.join("memo.tsv"));
+    let memo = event_text::read_container(&store::open(dir).memo_path());
     write!(out, "{}", memo.len())?;
     Ok(0)
 }
@@ -877,7 +879,7 @@ pub(crate) fn find_outstanding_step(dir: &Path, out: &mut impl Write) -> io::Res
     if actor.is_empty() {
         return Ok(0);
     }
-    let container = event_text::read_container(&dir.join("events.jsonl"));
+    let container = event_text::read_container(&store::open(dir).events_path());
     if let Some(req) = requests::states(&container)
         .into_iter()
         .find(|r| r.status == requests::Status::Pending && r.from == actor.as_bytes())
@@ -1536,7 +1538,7 @@ mod tests {
     }
 
     fn status_of(dir: &Path) -> requests::Status {
-        let container = event_text::read_container(&dir.join("events.jsonl"));
+        let container = event_text::read_container(&store::open(dir).events_path());
         requests::states(&container)
             .into_iter()
             .find(|r| r.id == REF.as_bytes())

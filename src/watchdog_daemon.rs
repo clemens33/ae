@@ -8,7 +8,7 @@ use std::time::{Duration, SystemTime};
 use crate::events::Event;
 use crate::meta::{Meta, RosterEntry, ServerSelector};
 use crate::procs::{self, Descendancy};
-use crate::state;
+use crate::store;
 use crate::time::Timestamp;
 use crate::tmux::{self, OptionScope, StopProbe};
 use crate::tracked::{self, EventFields};
@@ -856,7 +856,7 @@ impl Journal<'_> {
             summary,
             body_file: "",
         });
-        if let Err(why) = state::emit(self.meta_dir, &line) {
+        if let Err(why) = store::open(self.meta_dir).append_event(&line) {
             writeln!(
                 err,
                 "ae: watchdog: {action} for {target} not recorded: {why}"
@@ -1495,7 +1495,7 @@ fn descendancy_of(
 
 /// The session's events in APPEND ORDER, oldest first.
 fn read_events(meta_dir: &Path) -> Vec<Event> {
-    let bytes = crate::event_text::read_container(&meta_dir.join(crate::event_text::CONTAINER));
+    let bytes = crate::event_text::read_container(&store::open(meta_dir).events_path());
     crate::event_text::read_lines(&bytes)
         .into_iter()
         .filter_map(|line| Event::parse_line(&String::from_utf8_lossy(line)).ok())

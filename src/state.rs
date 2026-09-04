@@ -13,21 +13,19 @@
 //! <ts>)`, or `(none declared)`. Read through [`crate::event_text`], so the
 //! reversal, the line filter and the member extraction are the ones `requests`
 //! shares.
-use std::fs::{File, OpenOptions, TryLockError};
-use std::io::{self, Write};
+use std::io;
 use std::path::Path;
-use std::time::{Duration, Instant};
 
-use crate::event_text::{self, CONTAINER};
+use crate::event_text;
 use crate::json::Value;
 use crate::requests::Viewer;
+use crate::store;
 use crate::time::Timestamp;
 
-/// How long a declaration waits for the container lock — `flock -w 5`.
-pub const LOCK_WAIT: Duration = Duration::from_secs(5);
-
-/// How often the lock is retried while waiting.
-const LOCK_POLL: Duration = Duration::from_millis(20);
+/// The lock bound and the lock primitive are [`crate::store`]'s; other modules
+/// still reach them through this one.
+pub use crate::store::LOCK_WAIT;
+pub(crate) use crate::store::lock as acquire;
 
 /// The reason cap, in CHARACTERS — `ae_cap_summary … 200` counts characters
 /// under a UTF-8 locale, and so does this.
@@ -229,7 +227,7 @@ pub fn read(dir: &Path, viewer: &Viewer) -> Vec<u8> {
     } else {
         "human"
     };
-    let container = event_text::read_container(&dir.join(CONTAINER));
+    let container = event_text::read_container(&store::open(dir).events_path());
     read_line(actor, latest(&container, actor).as_ref())
 }
 
@@ -336,11 +334,10 @@ pub fn declare(
         return Err(Failure::NoIdentity);
     }
     let body = event_body(now, &viewer.display, declaration);
-    let container = dir.join(CONTAINER);
-    match append_locked(&container, body.as_bytes()) {
+    match store::open(dir).append_event(&body) {
         Ok(()) => {}
-        Err(Locked::Lock(path, why)) => return Err(Failure::Lock(path, why)),
-        Err(Locked::Append(path, why)) => return Err(Failure::Append(path, why)),
+        Err(store::Error::Lock(path, why)) => return Err(Failure::Lock(path, why)),
+        Err(store::Error::Append(path, why)) => return Err(Failure::Append(path, why)),
     }
     let reason = if declaration.reason.is_empty() {
         String::new()
@@ -353,130 +350,14 @@ pub fn declare(
     ))
 }
 
-/// Why a locked append did not happen: which step, on which path.
-#[derive(Debug)]
-pub enum Locked {
-    /// The lock file could not be opened or the lock was not acquired within
-    /// [`LOCK_WAIT`].
-    Lock(String, io::Error),
-    /// The append itself failed (and was rolled back where it could be).
-    Append(String, io::Error),
-}
-
-impl From<Locked> for io::Error {
-    fn from(why: Locked) -> Self {
-        match why {
-            Locked::Lock(path, cause) => Self::new(
-                cause.kind(),
-                format!(
-                    "could not lock {path} within {}s: {cause}",
-                    LOCK_WAIT.as_secs()
-                ),
-            ),
-            Locked::Append(path, cause) => {
-                Self::new(cause.kind(), format!("could not append to {path}: {cause}"))
-            }
-        }
-    }
-}
-
-/// Append `bytes` to `path` under `<path>.lock` — `ae_log_append`, exactly: the
-/// lock is the file's own `.lock` sibling, taken with `flock -w 5`, held
-/// through the append.
+/// Append one event line to `dir`'s container, reporting the store's failure as
+/// one [`io::Error`] naming the step.
 ///
 /// # Errors
 ///
-/// [`Locked`] — which step failed, on which path.
-pub fn append_locked(path: &Path, bytes: &[u8]) -> Result<(), Locked> {
-    let mut lock_path = path.as_os_str().to_owned();
-    lock_path.push(".lock");
-    let lock_path = Path::new(&lock_path);
-    let _held = acquire(lock_path, LOCK_WAIT)
-        .map_err(|why| Locked::Lock(lock_path.display().to_string(), why))?;
-    append(path, bytes).map_err(|why| Locked::Append(path.display().to_string(), why))
-}
-
-/// Append one event line to `dir`'s container under its lock.
-///
-/// # Errors
-///
-/// The [`Locked`] failure, flattened to one [`io::Error`] naming the step.
+/// The lock was not taken, or the append did not complete.
 pub fn emit(dir: &Path, line: &str) -> io::Result<()> {
-    append_locked(&dir.join(CONTAINER), line.as_bytes()).map_err(io::Error::from)
-}
-
-/// Take the exclusive advisory lock on `path`, retrying for up to `wait`.
-pub(crate) fn acquire(path: &Path, wait: Duration) -> io::Result<File> {
-    let file = OpenOptions::new().append(true).create(true).open(path)?;
-    let started = Instant::now();
-    loop {
-        match file.try_lock() {
-            Ok(()) => return Ok(file),
-            Err(TryLockError::WouldBlock) => {
-                if started.elapsed() >= wait {
-                    return Err(io::Error::new(
-                        io::ErrorKind::WouldBlock,
-                        "another writer holds the lock",
-                    ));
-                }
-                std::thread::sleep(LOCK_POLL);
-            }
-            Err(TryLockError::Error(why)) => return Err(why),
-        }
-    }
-}
-
-/// Append `bytes` to `path`, creating it, as one transaction under the lock
-/// the caller holds.
-fn append(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    let mut file = OpenOptions::new().append(true).create(true).open(path)?;
-    commit(&mut file, bytes)
-}
-
-/// What a transactional append needs from its container.
-trait Sink {
-    /// The current length — the point to roll back to.
-    fn len(&mut self) -> io::Result<u64>;
-    /// Write all of `bytes`, possibly failing after a prefix.
-    fn put(&mut self, bytes: &[u8]) -> io::Result<()>;
-    /// Make what was written durable — `fdatasync`.
-    fn sync(&mut self) -> io::Result<()>;
-    /// Cut the container back to `len`.
-    fn truncate(&mut self, len: u64) -> io::Result<()>;
-}
-
-impl Sink for File {
-    fn len(&mut self) -> io::Result<u64> {
-        self.metadata().map(|meta| meta.len())
-    }
-    fn put(&mut self, bytes: &[u8]) -> io::Result<()> {
-        self.write_all(bytes)
-    }
-    fn sync(&mut self) -> io::Result<()> {
-        self.sync_data()
-    }
-    fn truncate(&mut self, len: u64) -> io::Result<()> {
-        self.set_len(len)
-    }
-}
-
-/// Write `bytes` so that afterwards the container holds either all of them,
-/// durably, or none of them.
-fn commit(sink: &mut impl Sink, bytes: &[u8]) -> io::Result<()> {
-    let before = sink.len()?;
-    match sink.put(bytes).and_then(|()| sink.sync()) {
-        Ok(()) => Ok(()),
-        Err(failed) => match sink.truncate(before).and_then(|()| sink.sync()) {
-            Ok(()) => Err(failed),
-            Err(rollback) => Err(io::Error::new(
-                rollback.kind(),
-                format!(
-                    "{failed}; and rolling the container back to {before} bytes failed: {rollback} \
-                     — the container's state is UNKNOWN"
-                ),
-            )),
-        },
-    }
+    store::open(dir).append_event(line).map_err(io::Error::from)
 }
 
 #[cfg(test)]
@@ -486,14 +367,12 @@ fn commit(sink: &mut impl Sink, bytes: &[u8]) -> io::Result<()> {
 )]
 mod tests {
     use super::{
-        CHAT_SUMMARY_CAP, Command, Declaration, Failure, LOCK_WAIT, Latest, SUMMARY_CAP, Sink,
-        USAGE, Usage, acquire, commit, declare, event_body, event_line, latest, parse, read,
-        read_line, summary_for, summary_of,
+        CHAT_SUMMARY_CAP, Command, Declaration, Failure, Latest, SUMMARY_CAP, USAGE, Usage,
+        declare, event_body, event_line, latest, parse, read, read_line, summary_for, summary_of,
     };
     use crate::requests::Viewer;
     use crate::time::Timestamp;
     use std::path::PathBuf;
-    use std::time::Duration;
 
     fn words(items: &[&str]) -> Vec<String> {
         items.iter().map(|item| (*item).to_owned()).collect()
@@ -664,155 +543,6 @@ mod tests {
         );
     }
 
-    /// A container that fails on demand: after `fail_after` bytes of a put, or
-    /// at sync, or at truncate.
-    #[derive(Default)]
-    struct Flaky {
-        held: Vec<u8>,
-        fail_put_after: Option<usize>,
-        /// Per sync call, in order: `true` fails that call.
-        fail_syncs: Vec<bool>,
-        /// How many syncs were asked for.
-        syncs: usize,
-        fail_truncate: bool,
-        truncated_to: Vec<u64>,
-    }
-
-    impl Sink for Flaky {
-        fn len(&mut self) -> std::io::Result<u64> {
-            Ok(self.held.len() as u64)
-        }
-        fn put(&mut self, bytes: &[u8]) -> std::io::Result<()> {
-            if let Some(prefix) = self.fail_put_after {
-                self.held
-                    .extend_from_slice(&bytes[..prefix.min(bytes.len())]);
-                return Err(std::io::Error::other("disk full after a prefix"));
-            }
-            self.held.extend_from_slice(bytes);
-            Ok(())
-        }
-        fn sync(&mut self) -> std::io::Result<()> {
-            let call = self.syncs;
-            self.syncs += 1;
-            if self.fail_syncs.get(call).copied().unwrap_or(false) {
-                return Err(std::io::Error::other(format!("sync {} failed", call + 1)));
-            }
-            Ok(())
-        }
-        fn truncate(&mut self, len: u64) -> std::io::Result<()> {
-            self.truncated_to.push(len);
-            if self.fail_truncate {
-                return Err(std::io::Error::other("truncate failed"));
-            }
-            self.held.truncate(usize::try_from(len).unwrap());
-            Ok(())
-        }
-    }
-
-    #[test]
-    fn a_write_that_fails_after_a_prefix_rolls_the_container_back() {
-        let mut sink = Flaky {
-            held: b"{\"ts\":\"earlier\"}\n".to_vec(),
-            fail_put_after: Some(7),
-            ..Flaky::default()
-        };
-        let before = sink.held.clone();
-        let result = commit(&mut sink, b"{\"ts\":\"now\",\"action\":\"state\"}\n");
-        assert!(result.is_err());
-        assert_eq!(
-            sink.held, before,
-            "not one byte of the failed record survives"
-        );
-        assert_eq!(sink.truncated_to, vec![before.len() as u64]);
-    }
-
-    #[test]
-    fn a_sync_that_fails_after_a_complete_write_rolls_the_container_back_too() {
-        // The subtler arm: the bytes are all there, the caller is told "not
-        // recorded", and without the rollback the next reader would find a
-        // state nobody acknowledged.
-        let mut sink = Flaky {
-            fail_syncs: vec![true],
-            ..Flaky::default()
-        };
-        let result = commit(&mut sink, b"{\"action\":\"state\"}\n");
-        assert_eq!(
-            result.unwrap_err().to_string(),
-            "sync 1 failed",
-            "the write's error"
-        );
-        assert!(sink.held.is_empty());
-        assert_eq!(sink.truncated_to, vec![0]);
-        assert_eq!(sink.syncs, 2, "the rollback was synced too");
-    }
-
-    #[test]
-    fn a_rollback_whose_own_sync_fails_is_reported_as_an_unknown_state() {
-        // The body reached durable storage, the sync after it failed, the cut
-        // back succeeded in the page cache — and THAT sync failed.
-        let mut sink = Flaky {
-            fail_syncs: vec![true, true],
-            ..Flaky::default()
-        };
-        let why = commit(&mut sink, b"{\"action\":\"state\"}\n")
-            .unwrap_err()
-            .to_string();
-        assert!(why.contains("sync 1 failed"), "{why}");
-        assert!(
-            why.contains("rolling the container back to 0 bytes failed: sync 2 failed"),
-            "{why}"
-        );
-        assert!(why.contains("UNKNOWN"), "{why}");
-        assert_eq!(sink.syncs, 2);
-    }
-
-    #[test]
-    fn a_rollback_that_fails_is_what_gets_reported() {
-        let mut sink = Flaky {
-            fail_put_after: Some(2),
-            fail_truncate: true,
-            ..Flaky::default()
-        };
-        let why = commit(&mut sink, b"abcdef").unwrap_err().to_string();
-        assert!(why.contains("disk full after a prefix"), "{why}");
-        assert!(
-            why.contains("rolling the container back to 0 bytes failed"),
-            "{why}"
-        );
-        assert!(why.contains("UNKNOWN"), "{why}");
-        assert_eq!(sink.syncs, 0, "a failed truncate is not followed by a sync");
-    }
-
-    #[test]
-    fn a_successful_commit_never_truncates() {
-        let mut sink = Flaky::default();
-        commit(&mut sink, b"line\n").unwrap();
-        assert_eq!(sink.held, b"line\n");
-        assert!(sink.truncated_to.is_empty());
-        assert_eq!(sink.syncs, 1, "one sync, for the write");
-    }
-
-    #[test]
-    fn a_held_lock_fails_the_declaration_at_the_bound_with_no_bytes_written() {
-        let dir = scratch("held");
-        let lock_path = dir.join("events.jsonl.lock");
-        // Another open file description holding the same flock.
-        let holder = acquire(&lock_path, Duration::from_millis(10)).unwrap();
-        let started = std::time::Instant::now();
-        let waited = acquire(&lock_path, Duration::from_millis(150));
-        assert!(waited.is_err(), "the lock is held");
-        assert!(
-            started.elapsed() >= Duration::from_millis(150),
-            "the bound was honoured"
-        );
-        drop(holder);
-        assert!(
-            acquire(&lock_path, Duration::from_millis(10)).is_ok(),
-            "released"
-        );
-        // The real path uses the real bound: 5s, per flock -w 5.
-        assert_eq!(LOCK_WAIT, Duration::from_secs(5));
-    }
     fn container(lines: &[&str]) -> Vec<u8> {
         let mut out = Vec::new();
         for line in lines {

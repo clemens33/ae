@@ -31,7 +31,8 @@ use crate::launch;
 use crate::launch_cmd::ToolKind;
 use crate::meta::{self, Meta, ServerSelector};
 use crate::session_launch::capture;
-use crate::state::{self, EXIT_FAILED, EXIT_USAGE};
+use crate::state::{EXIT_FAILED, EXIT_USAGE};
+use crate::store;
 use crate::time::Timestamp;
 use crate::tracked::{self, EventFields};
 use crate::transport;
@@ -467,41 +468,35 @@ pub fn run_spawn(
     };
     if let Some(reason) = failure {
         report_undelivered(dir, &parsed.name, &pane, &brief, &reason, err)?;
-        let _ = state::emit(
-            dir,
-            &tracked::event_line(&EventFields {
-                ts: now,
-                actor: actor_of(caller),
-                action: SPAWN_FAILED_ACTION,
-                target: &parsed.name,
-                reference: "",
-                actor_slot: "",
-                actor_session: "",
-                target_slot: "",
-                target_session: "",
-                summary: &format!("brief not delivered: {reason}"),
-                body_file: "",
-            }),
-        );
-        return Ok(EXIT_FAILED);
-    }
-    writeln!(out, "Spawned {} in pane {pane}", parsed.name)?;
-    let _ = state::emit(
-        dir,
-        &tracked::event_line(&EventFields {
+        let _ = store::open(dir).append_event(&tracked::event_line(&EventFields {
             ts: now,
             actor: actor_of(caller),
-            action: SPAWN_ACTION,
+            action: SPAWN_FAILED_ACTION,
             target: &parsed.name,
             reference: "",
             actor_slot: "",
             actor_session: "",
             target_slot: "",
             target_session: "",
-            summary: &parsed.prompt,
+            summary: &format!("brief not delivered: {reason}"),
             body_file: "",
-        }),
-    );
+        }));
+        return Ok(EXIT_FAILED);
+    }
+    writeln!(out, "Spawned {} in pane {pane}", parsed.name)?;
+    let _ = store::open(dir).append_event(&tracked::event_line(&EventFields {
+        ts: now,
+        actor: actor_of(caller),
+        action: SPAWN_ACTION,
+        target: &parsed.name,
+        reference: "",
+        actor_slot: "",
+        actor_session: "",
+        target_slot: "",
+        target_session: "",
+        summary: &parsed.prompt,
+        body_file: "",
+    }));
     Ok(0)
 }
 
@@ -770,21 +765,18 @@ pub fn run_retire(
     // pane closed that window and the main window's layout was never touched.
     facts.regenerate_manifest(dir);
     writeln!(out, "Retired {agent} (pane {resolved})")?;
-    let _ = state::emit(
-        dir,
-        &tracked::event_line(&EventFields {
-            ts: now,
-            actor: actor_of(caller),
-            action: RETIRE_ACTION,
-            target: &agent,
-            reference: "",
-            actor_slot: "",
-            actor_session: "",
-            target_slot: "",
-            target_session: "",
-            summary: "",
-            body_file: "",
-        }),
-    );
+    let _ = store::open(dir).append_event(&tracked::event_line(&EventFields {
+        ts: now,
+        actor: actor_of(caller),
+        action: RETIRE_ACTION,
+        target: &agent,
+        reference: "",
+        actor_slot: "",
+        actor_session: "",
+        target_slot: "",
+        target_session: "",
+        summary: "",
+        body_file: "",
+    }));
     Ok(0)
 }

@@ -58,6 +58,7 @@ pub mod shape;
 pub mod shim;
 pub mod spawn;
 pub mod state;
+pub mod store;
 pub mod teardown;
 pub mod telegram;
 pub mod telegram_lifecycle;
@@ -564,22 +565,19 @@ fn run_say(
         return Ok(state::EXIT_USAGE);
     }
     let viewer = calling_viewer(dir);
-    let _ = state::emit(
-        dir,
-        &tracked::event_line(&tracked::EventFields {
-            ts: time::Timestamp::now(),
-            actor: &viewer.display,
-            action: "chat",
-            target: "",
-            reference: "",
-            actor_slot: &viewer.slot,
-            actor_session: "",
-            target_slot: "",
-            target_session: "",
-            summary: &text,
-            body_file: "",
-        }),
-    );
+    let _ = store::open(dir).append_event(&tracked::event_line(&tracked::EventFields {
+        ts: time::Timestamp::now(),
+        actor: &viewer.display,
+        action: "chat",
+        target: "",
+        reference: "",
+        actor_slot: &viewer.slot,
+        actor_session: "",
+        target_slot: "",
+        target_session: "",
+        summary: &text,
+        body_file: "",
+    }));
     let head: String = text.chars().take(60).collect();
     let ellipsis = if text.chars().count() > 60 { "…" } else { "" };
     writeln!(out, "Sent to Telegram bridge (chat): {head}{ellipsis}")?;

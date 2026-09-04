@@ -12,7 +12,6 @@ use std::fmt::Write as _;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use super::request_states::request_states;
 use super::store::{
@@ -26,10 +25,7 @@ use super::{
 };
 use crate::state::EXIT_FAILED;
 
-/// The five-second lock wait the writers use.
-const LOCK_WAIT: Duration = Duration::from_secs(5);
-
-/// The operation facts the caller hands the publisher — everything the core
+/// The operation facts Bash owns and hands the publisher — everything the core
 /// does NOT derive itself.
 pub(crate) struct Ops<'a> {
     pub(crate) push_outcome: &'a str,
@@ -43,13 +39,26 @@ pub(crate) struct Ops<'a> {
 /// held handles (released on drop) — or a diagnostic naming the lock that could
 /// not be taken.
 fn hold_sources(dir: &Path) -> Result<[fs::File; 3], String> {
-    let meta = crate::state::acquire(&dir.join("meta.lock"), LOCK_WAIT)
-        .map_err(|why| format!("archive: could not lock meta.lock: {why}"))?;
-    let memo = crate::state::acquire(&dir.join("memo.tsv.lock"), LOCK_WAIT)
-        .map_err(|why| format!("archive: could not lock memo.tsv.lock: {why}"))?;
-    let events = crate::state::acquire(&dir.join("events.jsonl.lock"), LOCK_WAIT)
-        .map_err(|why| format!("archive: could not lock events.jsonl.lock: {why}"))?;
+    // Each lock is its file's own name plus `.lock`, spelled by the store, so
+    // this cannot drift from the lock the writer takes.
+    let store = crate::store::open(dir);
+    let meta = hold(&dir.join(crate::meta::FILE))?;
+    let memo = hold(&store.memo_path())?;
+    let events = hold(&store.events_path())?;
     Ok([meta, memo, events])
+}
+
+/// Hold `path`'s lock, or say which lock could not be taken.
+fn hold(path: &Path) -> Result<fs::File, String> {
+    let lock = crate::store::lock_path(path);
+    crate::store::lock(&lock, crate::store::LOCK_WAIT).map_err(|why| {
+        format!(
+            "archive: could not lock {}: {why}",
+            lock.file_name()
+                .unwrap_or(lock.as_os_str())
+                .to_string_lossy()
+        )
+    })
 }
 
 /// `_archive-publish` core entry.
@@ -84,7 +93,7 @@ pub(crate) fn run(
     // Classified-source refusal, under the locks, BEFORE any read: an existing
     // non-regular core source (symlink, FIFO, directory) fails the whole
     // publish and is NEVER opened.
-    for file in ["meta", "memo.tsv", "events.jsonl"] {
+    for file in [crate::meta::FILE, crate::store::MEMO, crate::store::EVENTS] {
         if super::nonregular_existing(&dir.join(file)) {
             writeln!(err, "archive: a non-regular {file} cannot be archived.")?;
             return Ok(EXIT_FAILED);
@@ -300,9 +309,9 @@ fn stage_and_validate(
     let meta_out = compose_meta(facts);
     write_file_0600(&payload.join("meta"), meta_out.as_bytes())
         .map_err(|why| format!("archive: could not write meta: {why}"))?;
-    write_file_0600(&payload.join("memo.tsv"), facts.memo_bytes)
+    write_file_0600(&payload.join(super::store::MEMO), facts.memo_bytes)
         .map_err(|why| format!("archive: could not write memo.tsv: {why}"))?;
-    write_file_0600(&payload.join("events.jsonl"), facts.event_bytes)
+    write_file_0600(&payload.join(super::store::EVENTS), facts.event_bytes)
         .map_err(|why| format!("archive: could not write events.jsonl: {why}"))?;
 
     // Messages: NEVER follow a symlinked or non-directory messages/ root.
@@ -506,10 +515,11 @@ type CoreBytes = (Vec<u8>, Vec<u8>, Vec<u8>);
 
 /// Read the three core sources from the coherent snapshot.
 fn read_sources(dir: &Path) -> Result<CoreBytes, Vec<String>> {
+    let store = crate::store::open(dir);
     match (
-        read_source(&dir.join("meta")),
-        read_source(&dir.join("memo.tsv")),
-        read_source(&dir.join("events.jsonl")),
+        read_source(&dir.join(crate::meta::FILE)),
+        read_source(&store.memo_path()),
+        read_source(&store.events_path()),
     ) {
         (Ok(m), Ok(mo), Ok(e)) => Ok((m, mo, e)),
         (m, mo, e) => Err([m, mo, e].into_iter().filter_map(Result::err).collect()),
@@ -532,9 +542,9 @@ pub(crate) fn live_matches_existing_archive(
     let _held = hold_sources(dir)?;
     let (_live_meta, live_memo, live_events) =
         read_sources(dir).map_err(|diags| diags.join("; "))?;
-    let arch_memo = read_file(&archive_path.join("memo.tsv"))
+    let arch_memo = read_file(&archive_path.join(super::store::MEMO))
         .map_err(|why| format!("archive: cannot read archived memo.tsv: {why}"))?;
-    let arch_events = read_file(&archive_path.join("events.jsonl"))
+    let arch_events = read_file(&archive_path.join(super::store::EVENTS))
         .map_err(|why| format!("archive: cannot read archived events.jsonl: {why}"))?;
     if live_memo != arch_memo || live_events != arch_events {
         return Ok(false);

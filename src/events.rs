@@ -32,9 +32,6 @@ use crate::attention::Reason;
 use crate::json::{self, Value};
 use crate::time::Timestamp;
 
-/// The event container's file name, kept readable across every flip.
-pub const LEGACY_CONTAINER: &str = "events.jsonl";
-
 /// One record from the event log.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Event {
@@ -497,7 +494,7 @@ impl EventLog {
         Self {
             sources: vec![GenerationSource {
                 generation: 0,
-                path: dir.join(LEGACY_CONTAINER),
+                path: dir.join(crate::store::EVENTS),
             }],
         }
     }

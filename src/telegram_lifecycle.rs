@@ -451,9 +451,8 @@ fn record_refusal(paths: &Paths, refusal: Refusal, session: &str, session_dir: &
     if !lifecycle::name_is_valid(session) {
         return;
     }
-    let _ = crate::state::emit(
-        session_dir,
-        &crate::tracked::event_line(&crate::tracked::EventFields {
+    let _ = crate::store::open(session_dir).append_event(&crate::tracked::event_line(
+        &crate::tracked::EventFields {
             ts: crate::time::Timestamp::now(),
             actor: "ae",
             action: "telegram_autostart_refused",
@@ -465,8 +464,8 @@ fn record_refusal(paths: &Paths, refusal: Refusal, session: &str, session_dir: &
             target_session: "",
             summary: &format!("category={}", refusal.as_str()),
             body_file: "",
-        }),
-    );
+        },
+    ));
 }
 
 /// The last recorded refusal, when the file holds ONE row of the closed

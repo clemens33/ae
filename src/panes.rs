@@ -190,9 +190,8 @@ pub fn focus(
     } else {
         resolved.agent.as_str()
     };
-    let _ = crate::state::emit(
-        dir,
-        &crate::tracked::event_line(&crate::tracked::EventFields {
+    let _ = crate::store::open(dir).append_event(&crate::tracked::event_line(
+        &crate::tracked::EventFields {
             ts: now,
             actor: "human",
             action: "focus",
@@ -204,8 +203,8 @@ pub fn focus(
             target_session: &resolved.session,
             summary: "",
             body_file: "",
-        }),
-    );
+        },
+    ));
     Ok(0)
 }
 

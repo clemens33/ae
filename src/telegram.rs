@@ -1079,7 +1079,7 @@ impl Outbound {
     #[must_use]
     pub fn new(meta: &Path, label: impl Into<String>) -> Self {
         Self {
-            log: meta.join(crate::events::LEGACY_CONTAINER),
+            log: meta.join(crate::store::EVENTS),
             cursor_path: meta.join(CURSOR_FILE),
             label: label.into(),
             scanned: None,
@@ -1226,7 +1226,7 @@ impl Outbound {
     /// REPLACED from one that merely grew. That case is unreachable in ae, and
     /// the reason is a property of the producer:
     ///
-    /// * the ONLY production writer of the ledger is [`crate::state::emit`] ->
+    /// * the ONLY production writer of the ledger is [`crate::store::SessionStore::append_event`] ->
     ///   `append_locked` -> `append`, which opens with `OpenOptions::append(true)`
     ///   under the container's `flock`;
     /// * `compact` only READS the ledger, never opens it for writing;

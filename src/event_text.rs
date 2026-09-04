@@ -3,9 +3,6 @@
 
 use std::borrow::Cow;
 
-/// The event container's filename under a session meta directory.
-pub const CONTAINER: &str = "events.jsonl";
-
 /// The container's bytes, or none at all.
 #[must_use]
 pub fn read_container(path: &std::path::Path) -> Vec<u8> {

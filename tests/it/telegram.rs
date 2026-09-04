@@ -379,7 +379,7 @@ fn the_append_only_invariant_is_recorded_where_it_is_spent() {
         .map(|(_, rest)| rest.to_owned())
         .expect("the append-only invariant must be documented at start()");
     for citation in [
-        "crate::state::emit",
+        "crate::store::SessionStore::append_event",
         "append_locked",
         "OpenOptions::append(true)",
         "compact",

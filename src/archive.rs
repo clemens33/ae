@@ -526,7 +526,7 @@ fn banner(out: &mut String, aid: &str, name: &str, raw_id: &str, files: u64, byt
 /// events.jsonl, `size:mtime_nanos` (or `-:-` when absent).
 fn fingerprint(dir: &Path) -> String {
     let mut out = String::new();
-    for name in ["meta", "memo.tsv", "events.jsonl"] {
+    for name in [meta::FILE, crate::store::MEMO, crate::store::EVENTS] {
         let path = dir.join(name);
         #[allow(
             clippy::disallowed_methods,
@@ -567,8 +567,8 @@ fn selection(dir: &Path, digest_chars: u64) -> (u64, u64) {
     let mut files = 2u64;
     let mut bytes = digest_chars;
     // meta is always present in an archive and counted.
-    bytes += file_size(&dir.join("meta"));
-    for name in ["memo.tsv", "events.jsonl"] {
+    bytes += file_size(&dir.join(meta::FILE));
+    for name in [crate::store::MEMO, crate::store::EVENTS] {
         files += 1;
         bytes += file_size(&dir.join(name));
     }
@@ -795,7 +795,7 @@ pub fn preview(dir: &Path, out: &mut impl Write, err: &mut impl Write) -> io::Re
         }
     };
     let read_memo = || -> Vec<u8> {
-        let path = dir.join("memo.tsv");
+        let path = crate::store::open(dir).memo_path();
         if regular_file(&path) {
             #[allow(
                 clippy::disallowed_methods,
@@ -807,7 +807,7 @@ pub fn preview(dir: &Path, out: &mut impl Write, err: &mut impl Write) -> io::Re
             Vec::new()
         }
     };
-    let read_events = || event_text::read_container(&dir.join(event_text::CONTAINER));
+    let read_events = || event_text::read_container(&crate::store::open(dir).events_path());
 
     let name = dir
         .file_name()
@@ -848,7 +848,7 @@ pub fn preview(dir: &Path, out: &mut impl Write, err: &mut impl Write) -> io::Re
         // An existing non-regular meta/memo/events fails the whole preview, before
         // any read — checked per attempt (a source could turn into a link between
         // attempts) in a fixed order, so the refusal is deterministic.
-        for file in [meta::FILE, "memo.tsv", event_text::CONTAINER] {
+        for file in [meta::FILE, crate::store::MEMO, crate::store::EVENTS] {
             if refuse_if_nonregular(dir, file, &name, err)? {
                 return Ok(EXIT_FAILED);
             }
@@ -905,7 +905,7 @@ pub fn preview(dir: &Path, out: &mut impl Write, err: &mut impl Write) -> io::Re
             err,
             "archive: skipped {} malformed line(s) in {}",
             facts.skipped,
-            dir.join(event_text::CONTAINER).display()
+            crate::store::open(dir).events_path().display()
         )?;
     }
 

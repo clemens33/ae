@@ -22,6 +22,7 @@ use std::path::Path;
 use crate::meta;
 use crate::requests::Viewer;
 use crate::state::{self, EXIT_FAILED, EXIT_USAGE};
+use crate::store;
 use crate::time::Timestamp;
 
 /// The usage text.
@@ -190,7 +191,9 @@ pub fn run(dir: &Path, viewer: &Viewer, write: &Write, now: Timestamp) -> Result
         meta::RewriteError::Unknown(cause) => Failure::MetaUnknown(cause),
     })?;
     let event = state::event_line(now, actor, "goal", "", &state::summary_of(summary));
-    state::emit(dir, &event).map_err(Failure::Event)?;
+    store::open(dir)
+        .append_event(&event)
+        .map_err(|why| Failure::Event(why.into()))?;
     Ok(line)
 }
 

@@ -20,9 +20,10 @@
 use std::io::{self, Write};
 use std::path::Path;
 
-use crate::event_text::{CONTAINER, read_container};
+use crate::event_text::read_container;
 use crate::requests::{Key, Request, Status, is_slot, states};
-use crate::state::{self, EXIT_FAILED, EXIT_USAGE};
+use crate::state::{EXIT_FAILED, EXIT_USAGE};
+use crate::store;
 use crate::time::Timestamp;
 use crate::tmux::{ObservedSlot, ObservedViewer};
 use crate::tracked::{self, EventFields};
@@ -122,7 +123,7 @@ impl Replier {
 /// `requests` shows.
 #[must_use]
 pub fn find(dir: &Path, id: &str) -> Option<Request> {
-    let container = read_container(&dir.join(CONTAINER));
+    let container = read_container(&store::open(dir).events_path());
     states(&container)
         .into_iter()
         .find(|request| request.id == id.as_bytes())
@@ -278,7 +279,7 @@ fn admit(
             err,
             "Error: request id '{}' not found in {}",
             parsed.id,
-            dir.join(CONTAINER).display()
+            store::open(dir).events_path().display()
         )?;
         return Ok(Err(EXIT_FAILED));
     };
@@ -389,7 +390,7 @@ pub fn run(
     };
     if tracked::is_external(&reply_target) {
         // An event-only sink: record, paste nothing.
-        if let Err(why) = state::emit(dir, &tracked::event_line(&fields)) {
+        if let Err(why) = store::open(dir).append_event(&tracked::event_line(&fields)) {
             writeln!(err, "ae: reply {} not recorded: {why}", parsed.id)?;
             return Ok(EXIT_FAILED);
         }
@@ -433,7 +434,7 @@ pub fn run(
     };
     fields.target = &target_name;
     fields.body_file = &delivered.body_file;
-    if let Err(why) = state::emit(dir, &tracked::event_line(&fields)) {
+    if let Err(why) = store::open(dir).append_event(&tracked::event_line(&fields)) {
         writeln!(
             err,
             "ae: reply {} was delivered to {target_name} but its event was not emitted: {why}",

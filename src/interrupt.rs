@@ -22,7 +22,8 @@ use std::io::{self, Write};
 use std::path::Path;
 
 use crate::deliver::{self, Shape};
-use crate::state::{self, EXIT_FAILED, EXIT_USAGE};
+use crate::state::{EXIT_FAILED, EXIT_USAGE};
+use crate::store;
 use crate::time::Timestamp;
 use crate::tracked::{self, EventFields};
 use crate::transport;
@@ -163,7 +164,9 @@ fn record_delivery_failure(
         ),
         body_file: "",
     });
-    state::emit(dir, &line)
+    store::open(dir)
+        .append_event(&line)
+        .map_err(io::Error::from)
 }
 
 /// The `interrupt` event, with no recovery record — a bare cancel stores
@@ -203,7 +206,7 @@ fn record_with_body(
         summary,
         body_file,
     });
-    if let Err(why) = state::emit(dir, &line) {
+    if let Err(why) = store::open(dir).append_event(&line) {
         writeln!(err, "ae: interrupt of {target} not recorded: {why}")?;
         return Ok(EXIT_FAILED);
     }

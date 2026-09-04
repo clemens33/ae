@@ -267,8 +267,9 @@ fn resolve_plan(root: &Path, name: &str, purge_cli: Option<bool>) -> Plan {
 
     if meta::read_bytes(&dir).is_err() {
         // A missing meta is not the same as nothing to lose.
-        let has_memory = has_nonempty(&dir.join("memo.tsv"))
-            || has_nonempty(&dir.join("events.jsonl"))
+        let store = crate::store::open(&dir);
+        let has_memory = has_nonempty(&store.memo_path())
+            || has_nonempty(&store.events_path())
             || has_message_payload(&dir.join("messages"));
         return if has_memory {
             Plan {

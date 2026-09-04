@@ -20,14 +20,12 @@ use std::path::Path;
 
 use crate::requests::Viewer;
 use crate::state;
+use crate::store;
 use crate::time::Timestamp;
 
 /// The usage text.
 pub const USAGE: &str =
     "Usage: memo add [--topic <topic>] <text> | memo read [--topic <topic>] | memo tail [n]\n";
-
-/// The memo file, inside the session directory.
-pub const FILE: &str = "memo.tsv";
 
 /// The topic when none is given or the given one is empty.
 pub const DEFAULT_TOPIC: &str = "general";
@@ -152,11 +150,12 @@ impl Failure {
     /// The stderr line.
     #[must_use]
     pub fn message(&self) -> String {
+        let file = store::MEMO;
         match self {
-            Self::Read(why) => format!("ae: memo not read: could not read {FILE}: {why}"),
-            Self::Tsv(why) => format!("ae: memo not recorded: could not append to {FILE}: {why}"),
+            Self::Read(why) => format!("ae: memo not read: could not read {file}: {why}"),
+            Self::Tsv(why) => format!("ae: memo not recorded: could not append to {file}: {why}"),
             Self::Event(why) => {
-                format!("ae: memo recorded in {FILE} but its event was not emitted: {why}")
+                format!("ae: memo recorded in {file} but its event was not emitted: {why}")
             }
         }
     }
@@ -173,7 +172,9 @@ pub fn run(dir: &Path, viewer: &Viewer, add: &Add, now: Timestamp) -> Result<(),
     } else {
         "human"
     };
-    state::append_locked(&dir.join(FILE), record(now, author, add).as_bytes())
+    let store = store::open(dir);
+    store
+        .append_memo(record(now, author, add).as_bytes())
         .map_err(|why| Failure::Tsv(why.into()))?;
     let event = state::event_line(
         now,
@@ -182,7 +183,9 @@ pub fn run(dir: &Path, viewer: &Viewer, add: &Add, now: Timestamp) -> Result<(),
         &add.topic,
         &state::summary_of(&add.text),
     );
-    state::emit(dir, &event).map_err(Failure::Event)
+    store
+        .append_event(&event)
+        .map_err(|why| Failure::Event(why.into()))
 }
 
 /// `helper_memo_render`, byte for byte: for every `\n`-separated record with
@@ -237,7 +240,7 @@ pub fn render(container: &[u8], topic: Option<&str>) -> Vec<u8> {
 /// absent, a directory, a FIFO, a socket — is empty output, not an error, and
 /// is never opened.
 pub fn read(dir: &Path, view: &View) -> io::Result<Vec<u8>> {
-    let path = dir.join(FILE);
+    let path = store::open(dir).memo_path();
     #[allow(
         clippy::disallowed_methods,
         reason = "a door: the frozen `[[ -f \"$MEMO_FILE\" ]]` gate, before the memo file is opened — see clippy.toml"

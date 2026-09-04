@@ -32,14 +32,15 @@
 //! `AE_SENDER_OVERRIDE` when it is set), body store, per-target lock, busy
 //! deferral, submit verification — which prints every loud line itself and
 //! records NOTHING. Only a confirmed delivery is followed by the ONE event,
-//! under [`crate::state::emit`]'s locked, synced transaction; an event that
+//! under [`crate::store::SessionStore::append_event`]'s locked, synced transaction; an event that
 //! could not be written after a confirmed delivery is reported as exactly that
 //! gap and exits non-zero.
 use std::io::{self, Write};
 use std::path::Path;
 
 use crate::deliver;
-use crate::state::{self, EXIT_FAILED, EXIT_USAGE};
+use crate::state::{EXIT_FAILED, EXIT_USAGE};
+use crate::store;
 use crate::time::Timestamp;
 use crate::tracked::{self, EventFields};
 
@@ -271,7 +272,7 @@ pub fn run(
     if tracked::is_external(&parsed.target) {
         // An event-only sink: record and exit, pasting nothing and storing
         // nothing.
-        if let Err(why) = state::emit(dir, &tracked::event_line(&event)) {
+        if let Err(why) = store::open(dir).append_event(&tracked::event_line(&event)) {
             writeln!(err, "ae: {action} to {} not recorded: {why}", parsed.target)?;
             return Ok(EXIT_FAILED);
         }
@@ -313,7 +314,7 @@ pub fn run(
     event.target = &target_name;
     event.body_file = &delivered.body_file;
     event.summary = &recorded;
-    if let Err(why) = state::emit(dir, &tracked::event_line(&event)) {
+    if let Err(why) = store::open(dir).append_event(&tracked::event_line(&event)) {
         writeln!(
             err,
             "ae: {action} to {target_name} was delivered but its event was not emitted: {why}"
