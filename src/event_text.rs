@@ -229,7 +229,7 @@ fn unescape(rest: &[u8]) -> Vec<u8> {
                 Some(b'"') => out.push(b'"'),
                 // `\\` unescapes to one backslash, and so does a TRAILING lone
                 // backslash — there is nothing after it to escape, so the byte
-                // stands for itself
+                // stands for itself.
                 Some(b'\\') | None => out.push(b'\\'),
                 Some(other) => {
                     out.push(b'\\');
