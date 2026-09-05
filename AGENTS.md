@@ -27,7 +27,8 @@ reasoning, the retired rules and every measurement narrative are in
 
 ```
 src/                — Rust sources. main.rs thin (argv in, exit code out); lib.rs and one
-                      module per domain hold everything testable
+                      module per domain hold everything testable. theme.rs is PURE: the
+                      palettes, the six marks and every tmux format ae draws a session with
 tests/it/           — the one integration-test target. The behaviours of the retired bash
                       suites are pinned here as Rust tests.
                       doors.rs = capability boundary; gate.rs = justfile/install guards;
@@ -72,6 +73,15 @@ Other rules of the loop:
 
 - **Live probes go in the `ae-dev` namespace** — `~/.local/bin/ae-dev`: own `~/.ae-dev` home
   and config, own tmux server (`-L ae-dev`), checkout binary. NEVER the default server or `~/.ae`.
+- **A session's LOOK is session-scoped, and it has three writers with one job each.**
+  `src/theme.rs` owns the palettes, the six marks and every format. A LAUNCH writes the
+  layout, the look facts and the attention SEED, and stamps each WINDOW (tmux keeps pane
+  borders, window entries and menu styles in the window table, where `set -t <session>`
+  reaches only the current one). A RENAME rewrites the layout and the facts and leaves
+  every verdict alone. The WATCHDOG owns the verdicts, refreshing them every cycle, and
+  rewrites or UNSETS the layout only when `@ae_look_stamp` says the look has changed under
+  it. Never write a global (`-g`) option, never `#()` in a format, and prove a look change
+  by rendering it in `ae-dev` before it touches a live session.
 - **Workers get their own git worktree.** `git worktree add <path> -b <branch> main`.
 - **One writer per file.** Other agents edit this tree concurrently; coordinate before
   reverting or overwriting anything you did not change.
@@ -124,6 +134,7 @@ Pins, not channels. CI, laptop and agent sandbox must resolve to the same compil
 | Targets | `aarch64-apple-darwin`, `x86_64-unknown-linux-musl` | `rust-toolchain.toml`, justfile, `deny.toml` |
 | Dev tools | nextest `0.9.143`, taplo `0.10.0`, deny `0.20.2`, mutants `27.1.0`, llvm-cov `0.9.0`, vet `0.10.2` | justfile `*_VERSION` — the single source |
 | `just` | `1.57.0` | justfile `JUST_VERSION`; CI reads the pin from there |
+| tmux floor | `3.4` — a launch and the picker REFUSE below it; `list`/`version`/`doctor`/`upgrade` do not. Ubuntu 24.04 and Homebrew both package a tmux that clears it, so CI installs the package | `src/tmux_floor.rs`; CI step in `.github/workflows/rust.yml` |
 
 `--locked` on every graph-consuming lane. Spellings differ: `cargo deny --locked check`
 (global option), `cargo mutants --cargo-arg=--locked` (no native flag), `cargo fmt` exempt.
@@ -258,6 +269,8 @@ Each is one rule with one owner. Change the owner, not a copy.
 | A harness session id is a NAME: the purge proves it against the archive UUID grammar before it builds a path | `src/lifecycle/end.rs::purge_conversation_files`; grammar in `src/archive.rs::canonical_uuid` |
 | A monitor sweep may act only on the CALLER'S own session (`$TMUX_PANE`) | `src/monitor.rs` |
 | Every tmux format uses a printable pipe separator, never a control byte — tmux 3.4 octal-escapes those. Each format literal is written out; `SLOTS_FORMAT` deliberately uses an unspaced pipe | `src/tmux.rs` (`FIELD_SEPARATOR` is the parser delimiter) + the control-char-free test over every format constant |
+| The tmux floor is REFUSED at exactly two places — a launch (before its first write) and the picker — and REPORTED at three: `ae version`, `ae doctor`, a publish. The parse and the verdict have one owner | `src/tmux_floor.rs`; the sites are pinned by `tests/it/floor.rs` |
+| A session's look is SESSION- and WINDOW-scoped, never global. Three writers, one job each: a launch writes the layout, the facts and the attention SEED; a rename rewrites the layout and the facts only; the watchdog owns the verdicts every cycle and rewrites the layout ONLY on a look-stamp change | `src/theme.rs` splits the sets (`layout_options` / `fact_options` / `seed_options`); `src/session_launch.rs::apply_status_bar` / `redress_status_bar` / `stamp_window` write them; `src/watchdog_daemon.rs::reconcile_look` is the only one that rewrites them, and `::publish` the only writer of the values |
 | The server pair is read by SET, not by nonempty; an untypeable pair is refused | `src/doors.rs` |
 | Control bytes never reach JSON raw: they are written as JSON escapes | `src/json.rs` |
 | Exit codes: `0` success, `2` usage error, `1` everything else | `src/cli.rs` + `src/lib.rs::run`; `src/main.rs` only maps the byte |
@@ -282,6 +295,10 @@ name = profile
 main = name
 workers = name, name2      # optional, omit for single-agent start
 layout = vertical
+palette = darcula          # darcula (default), a = neutral dark, b = warmer
+icons = on                 # off swaps the glyph set for its ASCII fallback
+theme = on                 # off keeps YOUR status line; ae still fills @ae_*
+motion = on                # off freezes the spinner
 
 [prompt]
 instructions = "Custom instructions injected into agent system prompts"

@@ -17,7 +17,7 @@ Works with any CLI-based agentic harness.
 - **Everything survives reboots** -- sessions, spawned agents, conversation history. Pick up exactly where you left off.
 - **Nothing touches your repo** -- session state lives in `~/.ae/sessions/`. Your working directory stays clean.
 - **Tiered delegation** -- leads run the strongest model; bounded chores go to cheap spawned workers in their own tmux windows, reviewed and retired. Convention, not machinery ([docs](docs/reference/delegation.md)).
-- **A status bar that answers "who needs me"** -- inside its sessions ae owns the tmux footer: session, git branch, and watchdog health on line one; the focused agent plus a whole-org roster showing the watchdog's verdict per agent (`lead● colead✔ builder◌ grok⚡`) on line two. Verdicts, never claims.
+- **A status bar that answers "who needs me"** -- inside its sessions ae draws the tmux footer: this session, its windows, its branch and goal on line one; every ae session on the server, most actionable first and each one clickable, plus this session's agents (`lead● colead✓ builder◌ grok⚠`) on line two. Verdicts, never claims, and `[workspace] theme = off` gives your own status line back.
 - **A chief of staff on your phone** -- the optional orchestrator session watches your whole fleet and reports over Telegram; tell it your objective and it helps you hold it.
 - **Small public surface** -- one command, and optional companions in `contrib/` that are never required.
 
@@ -89,7 +89,8 @@ ae orchestrator --popup        # pick a session, then an agent, in a tmux menu; 
 watch -n 10 'ae list'          # live dashboard
 ```
 
-Bind the picker to a key (tmux 3.4+); `switch-client -l` (prefix + `L`) is the way back:
+Bind the picker to a key (ae needs tmux 3.4+); `switch-client -l` (prefix + `L`) is the
+way back:
 
 ```tmux
 bind o run-shell "ae orchestrator --popup"

@@ -262,20 +262,35 @@ plain form above is the working one.
 
 ### The tmux floor
 
-The picker needs **tmux 3.4 or newer**, and asks the SERVER (`display-message -p
-'#{version}'`) rather than the `tmux` binary on `PATH`: a long-lived server keeps running
-the binary that started it, and the two disagree exactly when an upgrade has happened.
-Below the floor it refuses at exit 1, naming what it found, what it needs and which server
-it asked. It never starts or restarts a server for you.
+ae needs **tmux 3.4 or newer**, fleet-wide. A LAUNCH is gated before it writes anything —
+it asks the running server (`display-message -p '#{version}'`) when one answers, and the
+`tmux` binary on `PATH` (`tmux -V`) when none does, because that is the binary the launch
+would start a server with. A long-lived server keeps running the binary that started it,
+and the two disagree exactly when an upgrade has happened. The picker asks the server
+alone: a menu needs a client.
+
+Below the floor both refuse at exit 1, naming what was found, what is required, which
+server was asked and how to get it. Neither ever starts or restarts a server for you.
+
+`ae list`, `ae version`, `ae doctor` and `ae upgrade` keep working below the floor —
+`version` prints the reading on its second line, `doctor` carries it as a `tmux-floor`
+row, and a publish warns without refusing. That is how a machine below the floor sees the
+problem and leaves it behind.
+
+Ubuntu 24.04 ships tmux 3.4, which clears the floor exactly, so `apt install tmux` is
+enough there; Homebrew carries current. An older distro needs its backport or a build.
 
 ```text
 $ ae orchestrator --popup
-ae orchestrator: this tmux is too old to draw the menu.
+ae orchestrator: the tmux server it would use is older than ae runs on.
   found:    3.3a
   required: 3.4 or newer
   server:   the current server ($TMUX)
-Upgrade tmux (macOS: brew upgrade tmux; Debian/Ubuntu: apt install tmux), then start a
-NEW server with the upgraded binary — ae never restarts a running server for you.
+Install a newer tmux, then start a NEW server with it — ae never restarts a
+running server for you.
+  macOS:  brew install tmux
+  Linux:  apt install tmux   (Ubuntu 24.04 ships 3.4, which clears the floor;
+          an older distro needs its backport, a newer package, or a source build).
 ```
 
 Bare `ae orchestrator` prints the usage at exit 2: the word is reserved for the hub session

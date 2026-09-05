@@ -82,31 +82,48 @@ on demand with `spawn <name> --using <profile>`.
 | `layout`  | `lead-pair` (lead + colead share window 0, other workers in window 1), `lead-solo` (lead alone in window 0, workers in window 1), `vertical` (side-by-side splits), `horizontal` (stacked splits) | `lead-pair`   |
 | `copy`    | Working directory mode (see below)                   | `local`       |
 | `watchdog`    | Auto-start the watchdog (`true` / `false`)            | `true`        |
+| `palette` | `darcula` (the JetBrains dark), `a` (neutral dark), `b` (warmer neutrals) | `darcula` |
+| `icons`   | `off` draws the ASCII fallback instead of the glyph set | `on`          |
+| `theme`   | `off` leaves your own status line, pane borders and menu styles alone | `on`  |
+| `motion`  | `off` freezes the spinner on its mark                 | `on`          |
 
 Names show in pane borders and are how agents address each other. Under `lead-pair`
 the windows carry role names (`0:leads`, `1:workers`); under `lead-solo` window 0 keeps
 the session name and only window 1 is role-named (`workers`).
 
-The status bar reads `[ae <session>]  0:leads●● 1:workers◌ 99:ae-monitor  [<path> <git>] [watch …]`
-— session name left, the window list in the middle, path + git branch + watchdog health
-right. A second status line shows the focused pane's agent identity (pane borders only
-render in windows with two or more panes, so a lone agent would otherwise have no
-visible name), and on its right a roster of every registered agent:
-`lead● colead✔ builder◌ grok⚡`.
+The status bar has two lines. The first is this session: its attention mark and name,
+then the windows, then the branch, the goal, the shortened path and the watch segment.
+The second is the **fleet strip** — every ae session on this tmux server, most actionable
+first, each one clickable to switch to it — and on its right the agents of this session.
+Every pane also carries a border title: `<name> · <profile> · <mark> <reason>`.
 
-The glyphs are the **watchdog's verdict** for each agent — never a claim about what an
-agent is "doing" (it cannot see that): `●` it saw the pane advance, `✔` declared done,
-`⏳` waiting on you, `⛔` blocked, `◌` stale/nudged, `⚡` throttled, `✖` dead or its pane
-is gone, `👁` the orchestrator swept recently, `·` no verdict this cycle. The roster is keyed
-by the agents in session meta, so an agent whose pane vanished still holds its slot as
-`✖` rather than quietly disappearing from the line. The same glyphs appear per window in
-the window list, so attention maps onto the windows you already scan. Everything is
+The marks are the **watchdog's verdict**, never a claim about what an agent is "doing"
+(it cannot see that):
+
+| Mark | ASCII | Means |
+|---|---|---|
+| `✖` | `x` | the process behind the pane is gone |
+| `⚠` | `!` | waiting on you, blocked, throttled, or an unanswered request |
+| `●` | `*` | it saw the pane advance |
+| `✓` | `+` | declared done or paused |
+| `◌` | `?` | stale, or a fact ae could not establish |
+| `·` | `-` | no agent, or no verdict yet |
+
+A pane that printed since the last cycle shows a spinner frame in place of `●`. The
+frame advances once per watchdog cycle, so it means "this moved since I last looked"
+rather than "this is moving now".
+
+The roster is keyed by the agents in session meta, so an agent whose pane vanished still
+holds its slot as `⚠` rather than quietly disappearing. The same marks appear per window
+in the window list, so attention maps onto the windows you already scan. Everything is
 watchdog-published and disappears when the watchdog is stopped.
 
-> **ae owns `window-status-format` inside its own sessions** (and `status-format[0]`/`[1]`,
-> `status-left`, `status-right`). If you theme tmux, note that ae overrides these at
-> **session scope** for the sessions it creates — your global config is untouched, and
-> tmux's own window flags (`#F`) are preserved. Nothing outside an ae session changes.
+> **ae draws its own sessions, at session and window scope.** It sets `status-format[0]`
+> and `[1]` on its sessions, and the pane-border and menu styles on their windows. Your
+> global tmux config is untouched, and nothing outside an ae session changes. tmux's `Z`
+> zoom flag is kept in the window list; the `*` and `-` flags are replaced by the mark.
+> `theme = off` turns all of that off and still publishes every `@ae_*` value, so your own
+> `status-right` can read ae's facts in your own layout.
 
 ## Copy modes
 
