@@ -3,7 +3,7 @@
 //!
 //! The tmux calls the launch path makes: `new-session`, `set-environment`,
 //! `split-window`, `new-window`,
-//! `select-layout`, `select-pane`, `select-window`, `show-options -g`.
+//! `select-layout`, `select-pane`, `select-window`, `set-window-option`.
 //!
 //! Same shape as [`crate::git`] and for the same reason: the inner vector of
 //! [`TmuxArgv`] is private to this module, so no other module can hand the
@@ -106,9 +106,6 @@ pub(crate) enum Op<'a> {
     RenameWindow { target: &'a str, name: &'a str },
     /// `rename-session -t <target> <name>` — `ae rename`'s tmux half.
     RenameSession { target: &'a str, name: &'a str },
-    /// `show-options -gv <name>` — the GLOBAL option value the session-scoped
-    /// `status-format[0]` copy is taken from.
-    ShowGlobalOption { name: &'a str },
     /// `set-window-option -t <target> <name> <value>` — the monitor window's
     /// `pane-border-status`.
     SetWindowOption {
@@ -220,9 +217,6 @@ pub(crate) fn argv(server: &ServerId, op: &Op<'_>) -> TmuxArgv {
         }
         Op::RenameWindow { target, name } => {
             args.extend(["rename-window", "-t", target, name].map(ToOwned::to_owned));
-        }
-        Op::ShowGlobalOption { name } => {
-            args.extend(["show-options", "-gqv", name].map(ToOwned::to_owned));
         }
         Op::SetWindowOption {
             target,

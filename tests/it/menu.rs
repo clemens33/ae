@@ -193,7 +193,13 @@ fn picker_argv(socket: &Path, ids: &[String]) -> Vec<String> {
             placement: Placement::Elsewhere("tmux -L elsewhere attach -t far".to_owned()),
         },
     ];
-    let menu = ae::orchestrator::menu(&world, &located, world.now);
+    let menu = ae::orchestrator::menu(
+        &world,
+        &located,
+        world.now,
+        true,
+        &ae::theme::Palette::DARCULA,
+    );
     display_menu_args(
         &ServerId::Selected(Selector::Socket(socket.to_path_buf())),
         &menu,

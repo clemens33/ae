@@ -14,6 +14,7 @@
 use crate::attention::Reason;
 use crate::digest::{SessionEntry, Status};
 use crate::listing::World;
+use crate::theme::{Mark, Palette};
 use crate::time::Timestamp;
 use crate::tmux::{Menu, MenuAction, MenuItem, jump_command, switch_command};
 
@@ -163,12 +164,25 @@ const ABSENT: &str = "-";
 /// never the spelling of a fact that holds.
 const UNKNOWN: &str = "?";
 
+/// The ATTENTION column's spelling of the same thing.
+///
+/// A word, not the `?`: a session ae could not read is a different situation
+/// from one that went quiet, and the two share a glyph, so the reason beside it
+/// is what has to tell them apart.
+const UNKNOWN_ATTENTION: &str = "unknown";
+
 /// The picker, as a menu model — the whole pure step.
 ///
 /// `located` describes the sessions of `world` by name; a session with no
 /// entry there is treated as absent from this server.
 #[must_use]
-pub fn menu(world: &World, located: &[Located], now: Timestamp) -> Menu {
+pub fn menu(
+    world: &World,
+    located: &[Located],
+    now: Timestamp,
+    icons: bool,
+    palette: &Palette,
+) -> Menu {
     let ranked = ranked_sessions(world);
     let shown = ranked.len().min(ROW_CAP);
     let mut items: Vec<MenuItem> = Vec::with_capacity(shown + 1);
@@ -177,7 +191,7 @@ pub fn menu(world: &World, located: &[Located], now: Timestamp) -> Menu {
             .iter()
             .find(|entry| entry.session == session.name)
             .map(|entry| &entry.placement);
-        items.push(session_item(session, placement, now));
+        items.push(session_item(session, placement, now, icons, palette));
     }
     if ranked.len() > shown {
         items.push(disabled(format!(
@@ -191,6 +205,7 @@ pub fn menu(world: &World, located: &[Located], now: Timestamp) -> Menu {
     assign_keys(&mut items);
     Menu {
         title: format!(" ae fleet — {} running ", ranked.len()),
+        title_style: crate::theme::menu_title_style(palette),
         items,
     }
 }
@@ -223,14 +238,21 @@ fn rank_of(session: &SessionEntry) -> i64 {
 }
 
 /// One session's row, and the second menu behind it.
-fn session_item(session: &SessionEntry, placement: Option<&Placement>, now: Timestamp) -> MenuItem {
+fn session_item(
+    session: &SessionEntry,
+    placement: Option<&Placement>,
+    now: Timestamp,
+    icons: bool,
+    palette: &Palette,
+) -> MenuItem {
     let agents: Vec<&AgentPane> = match placement {
         Some(Placement::Here(panes)) => panes.iter().filter(|pane| is_agent(pane)).collect(),
         _ => Vec::new(),
     };
     let label = format!(
-        "{} {} {:>2}ag {}",
+        "{} {} {} {:>2}ag {}",
         pad(&clean(&session.name), NAME_WIDTH),
+        attention_mark(session).glyph(icons),
         pad(attention_word(session), ATTENTION_WIDTH),
         agents.len(),
         goal_of(session),
@@ -240,22 +262,24 @@ fn session_item(session: &SessionEntry, placement: Option<&Placement>, now: Time
         // whether or not this client can reach it.
         Some(Placement::Elsewhere(attach)) => {
             return disabled(format!(
-                "{} {} {}",
+                "{} {} {} {}",
                 pad(&clean(&session.name), NAME_WIDTH),
+                attention_mark(session).glyph(icons),
                 pad(attention_word(session), ATTENTION_WIDTH),
                 clean(attach)
             ));
         }
         _ if !name_is_targetable(&session.name) => {
             return disabled(format!(
-                "{} {} not a name ae will target",
+                "{} {} {} not a name ae will target",
                 pad(&clean(&session.name), NAME_WIDTH),
+                attention_mark(session).glyph(icons),
                 pad(attention_word(session), ATTENTION_WIDTH)
             ));
         }
         // Nothing to pick between, so the row does the only useful thing.
         _ if agents.is_empty() => MenuAction::Run(switch_command(&session.name)),
-        _ => MenuAction::Open(agent_menu(session, &agents, now)),
+        _ => MenuAction::Open(agent_menu(session, &agents, now, icons, palette)),
     };
     MenuItem {
         label,
@@ -265,11 +289,17 @@ fn session_item(session: &SessionEntry, placement: Option<&Placement>, now: Time
 }
 
 /// The second menu: one row per stamped agent pane of `session`.
-fn agent_menu(session: &SessionEntry, agents: &[&AgentPane], now: Timestamp) -> Menu {
+fn agent_menu(
+    session: &SessionEntry,
+    agents: &[&AgentPane],
+    now: Timestamp,
+    icons: bool,
+    palette: &Palette,
+) -> Menu {
     let shown = agents.len().min(ROW_CAP);
     let mut items: Vec<MenuItem> = Vec::with_capacity(shown + 1);
     for pane in agents.iter().take(shown) {
-        items.push(agent_item(session, pane));
+        items.push(agent_item(session, pane, icons));
     }
     if agents.len() > shown {
         items.push(disabled(format!("… {} more", agents.len() - shown)));
@@ -282,12 +312,13 @@ fn agent_menu(session: &SessionEntry, agents: &[&AgentPane], now: Timestamp) -> 
             attention_word(session),
             age(now, session.last_active_epoch)
         ),
+        title_style: crate::theme::menu_title_style(palette),
         items,
     }
 }
 
 /// One agent's row: what it declared, what it is asking for, and its pane.
-fn agent_item(session: &SessionEntry, pane: &AgentPane) -> MenuItem {
+fn agent_item(session: &SessionEntry, pane: &AgentPane, icons: bool) -> MenuItem {
     let entry = session
         .agents
         .iter()
@@ -310,8 +341,12 @@ fn agent_item(session: &SessionEntry, pane: &AgentPane) -> MenuItem {
         (true, Some(reason)) => reason.as_str().to_owned(),
     };
     let label = format!(
-        "{} {} {} {}",
+        "{} {} {} {} {}",
         pad(&clean(&pane.agent), AGENT_WIDTH),
+        entry
+            .and_then(|entry| entry.reason)
+            .map_or(Mark::Idle, Mark::for_reason)
+            .glyph(icons),
         pad(&state, STATE_WIDTH),
         pad(&reason, ATTENTION_WIDTH),
         clean(&pane.pane),
@@ -383,11 +418,21 @@ fn pane_is_targetable(pane: &str) -> bool {
     }
 }
 
+/// The mark a row draws: the rollup's own, and [`Mark::Stale`] when ae could
+/// not establish one — never a quiet or working glyph, which would claim a
+/// verdict ae does not have.
+fn attention_mark(session: &SessionEntry) -> Mark {
+    if !session.attention_is_exact() {
+        return Mark::Stale;
+    }
+    session.attention.map_or(Mark::Idle, Mark::for_reason)
+}
+
 /// The attention word a row shows: the rollup, `-` for a quiet session, and
-/// `?` when the evidence behind the marker was incomplete.
+/// `unknown` when the evidence behind the marker was incomplete.
 fn attention_word(session: &SessionEntry) -> &str {
     if !session.attention_is_exact() {
-        return UNKNOWN;
+        return UNKNOWN_ATTENTION;
     }
     session.attention.map_or(ABSENT, Reason::as_str)
 }
@@ -492,6 +537,7 @@ mod tests {
     use crate::inventory::ServerId;
     use crate::listing::World;
     use crate::meta::Selector;
+    use crate::theme::{Mark, Palette};
     use crate::time::Timestamp;
     use crate::tmux::{Menu, MenuAction, display_menu_args};
 
@@ -602,7 +648,7 @@ mod tests {
         let quiet = running("aab");
 
         let world = world(vec![quiet, blocked, stale_b, dead, stale_a]);
-        let drawn = menu(&world, &[], NOW);
+        let drawn = menu(&world, &[], NOW, true, &Palette::DARCULA);
         assert_eq!(names(&drawn), ["zzz", "abb", "bbb", "aaa", "aab"]);
     }
 
@@ -612,9 +658,19 @@ mod tests {
         degraded.attention = Some(Reason::Dead);
         let mut calm = running("aaa");
         calm.attention = Some(Reason::Blocked);
-        let drawn = menu(&world(vec![calm, degraded]), &[], NOW);
+        let drawn = menu(
+            &world(vec![calm, degraded]),
+            &[],
+            NOW,
+            true,
+            &Palette::DARCULA,
+        );
         assert_eq!(names(&drawn), ["murky", "aaa"], "unproven is not quiet");
-        assert!(labels(&drawn)[0].contains('?'), "{:?}", labels(&drawn));
+        assert!(
+            labels(&drawn)[0].contains("unknown"),
+            "{:?}",
+            labels(&drawn)
+        );
         assert!(
             !labels(&drawn)[0].contains("dead"),
             "the row must not claim a reason the evidence did not establish"
@@ -627,14 +683,20 @@ mod tests {
         stopped.attention = Some(Reason::Dead);
         let mut unknown = SessionEntry::new("unsure", Status::Unknown);
         unknown.attention = Some(Reason::Dead);
-        let drawn = menu(&world(vec![stopped, unknown, running("live")]), &[], NOW);
+        let drawn = menu(
+            &world(vec![stopped, unknown, running("live")]),
+            &[],
+            NOW,
+            true,
+            &Palette::DARCULA,
+        );
         assert_eq!(names(&drawn), ["live"]);
         assert!(drawn.title.contains("1 running"));
     }
 
     #[test]
     fn an_empty_fleet_says_so_in_a_row_that_cannot_be_chosen() {
-        let drawn = menu(&world(Vec::new()), &[], NOW);
+        let drawn = menu(&world(Vec::new()), &[], NOW, true, &Palette::DARCULA);
         assert_eq!(labels(&drawn), ["no running ae sessions"]);
         assert!(matches!(drawn.items[0].action, MenuAction::Disabled));
     }
@@ -644,7 +706,7 @@ mod tests {
         let sessions: Vec<SessionEntry> = (0..ROW_CAP + 7)
             .map(|index| running(&format!("s{index:03}")))
             .collect();
-        let drawn = menu(&world(sessions), &[], NOW);
+        let drawn = menu(&world(sessions), &[], NOW, true, &Palette::DARCULA);
         assert_eq!(drawn.items.len(), ROW_CAP + 1, "the cap, plus its own note");
         let last = drawn.items.last().expect("a note");
         assert_eq!(last.label, "… 7 more — see ae list");
@@ -654,7 +716,10 @@ mod tests {
             .rev()
             .map(|index| running(&format!("s{index:03}")))
             .collect();
-        assert_eq!(names(&menu(&world(reversed), &[], NOW)), names(&drawn));
+        assert_eq!(
+            names(&menu(&world(reversed), &[], NOW, true, &Palette::DARCULA)),
+            names(&drawn)
+        );
     }
 
     #[test]
@@ -668,7 +733,7 @@ mod tests {
 
         let sessions: Vec<SessionEntry> =
             (0..3).map(|index| running(&format!("s{index}"))).collect();
-        let drawn = menu(&world(sessions), &[], NOW);
+        let drawn = menu(&world(sessions), &[], NOW, true, &Palette::DARCULA);
         let keys: Vec<String> = drawn.items.iter().map(|item| item.key.clone()).collect();
         assert_eq!(keys, ["1", "2", "3"]);
     }
@@ -677,12 +742,12 @@ mod tests {
     fn a_long_name_and_a_long_goal_are_cut_with_an_ellipsis_and_never_wrap() {
         let mut session = running("a-session-name-far-longer-than-its-column");
         session.goal = Some("x".repeat(200));
-        let drawn = menu(&world(vec![session]), &[], NOW);
+        let drawn = menu(&world(vec![session]), &[], NOW, true, &Palette::DARCULA);
         let label = &labels(&drawn)[0];
         assert!(label.contains("a-session-name-fa…"), "{label}");
         assert!(label.ends_with('…'), "{label}");
         assert!(
-            label.chars().count() <= 18 + 1 + 12 + 1 + 4 + 1 + 30,
+            label.chars().count() <= 18 + 1 + 1 + 1 + 12 + 1 + 4 + 1 + 30,
             "the row is bounded: {}",
             label.chars().count()
         );
@@ -693,10 +758,57 @@ mod tests {
         let quiet = running("calm");
         let mut degraded = SessionEntry::degraded("murky", Status::Running);
         degraded.attention = Some(Reason::Dead);
-        let drawn = menu(&world(vec![quiet, degraded]), &[], NOW);
+        let drawn = menu(
+            &world(vec![quiet, degraded]),
+            &[],
+            NOW,
+            true,
+            &Palette::DARCULA,
+        );
         let rendered = labels(&drawn).join("\n");
-        assert!(rendered.contains("calm               -"), "{rendered}");
-        assert!(rendered.contains("murky              ?"), "{rendered}");
+        // The glyph sits between the name and the word, and shares its
+        // vocabulary with the status bar: nothing for a quiet session, the
+        // stale mark for one whose evidence was incomplete — never a green one.
+        // The WORD behind that mark says which of the two it was.
+        assert!(
+            rendered.contains(&format!("calm               {} -", Mark::Idle.glyph(true))),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains(&format!(
+                "murky              {} unknown",
+                Mark::Stale.glyph(true)
+            )),
+            "{rendered}"
+        );
+    }
+
+    /// The picker draws the SAME marks the status bar does, in whichever
+    /// vocabulary the calling session asked for.
+    #[test]
+    fn the_picker_draws_the_shared_marks_and_falls_back_to_ascii() {
+        let mut waiting = running("waits");
+        waiting.attention = Some(Reason::WaitingUser);
+        let rendered = |icons| {
+            labels(&menu(
+                &world(vec![waiting.clone()]),
+                &[],
+                NOW,
+                icons,
+                &Palette::DARCULA,
+            ))
+            .join("\n")
+        };
+        assert!(
+            rendered(true).contains("⚠ waiting-user"),
+            "{}",
+            rendered(true)
+        );
+        assert!(
+            rendered(false).contains("! waiting-user"),
+            "{}",
+            rendered(false)
+        );
     }
 
     #[test]
@@ -705,7 +817,7 @@ mod tests {
         session.agents = vec![agent("lead", Some("working"), None)];
         let world = world(vec![session]);
         let located = [here("hub", &[("lead", "%12")])];
-        let drawn = menu(&world, &located, NOW);
+        let drawn = menu(&world, &located, NOW, true, &Palette::DARCULA);
         let agents = submenu(&drawn, "hub");
         let MenuAction::Run(command) = &agents.items[0].action else {
             panic!("the agent row runs a command");
@@ -730,7 +842,7 @@ mod tests {
         ];
         let world = world(vec![session]);
         let located = [here("hub", &[("lead", "%1"), ("quiet", "%2")])];
-        let drawn = menu(&world, &located, NOW);
+        let drawn = menu(&world, &located, NOW, true, &Palette::DARCULA);
         let agents = submenu(&drawn, "hub");
         let rendered = labels(agents);
         assert!(rendered[0].starts_with("lead"), "{rendered:?}");
@@ -750,7 +862,13 @@ mod tests {
             "hub",
             &[("lead", "%1"), ("_watchdog", "%2"), ("_events", "%3")],
         )];
-        let drawn = menu(&world(vec![session]), &located, NOW);
+        let drawn = menu(
+            &world(vec![session]),
+            &located,
+            NOW,
+            true,
+            &Palette::DARCULA,
+        );
         assert!(labels(&drawn)[0].contains(" 1ag "), "{:?}", labels(&drawn));
         let agents = submenu(&drawn, "hub");
         assert_eq!(names(agents), ["lead"]);
@@ -763,7 +881,7 @@ mod tests {
         let session = running("hub");
         let world = world(vec![session]);
         let located = [here("hub", &[("ghost", "%9")])];
-        let drawn = menu(&world, &located, NOW);
+        let drawn = menu(&world, &located, NOW, true, &Palette::DARCULA);
         let agents = submenu(&drawn, "hub");
         assert!(labels(agents)[0].starts_with("ghost"));
         assert!(matches!(agents.items[0].action, MenuAction::Run(_)));
@@ -776,7 +894,13 @@ mod tests {
         session.last_active_epoch = Some(NOW.epoch() - 5_400);
         session.agents = vec![agent("lead", Some("working"), None)];
         let located = [here("hub", &[("lead", "%1")])];
-        let drawn = menu(&world(vec![session]), &located, NOW);
+        let drawn = menu(
+            &world(vec![session]),
+            &located,
+            NOW,
+            true,
+            &Palette::DARCULA,
+        );
         let agents = submenu(&drawn, "hub");
         assert_eq!(agents.title, " hub — attn:stale — active 1h ");
     }
@@ -785,7 +909,7 @@ mod tests {
     fn a_session_with_no_stamped_pane_still_switches_to_the_session() {
         let world = world(vec![running("bare")]);
         let located = [here("bare", &[])];
-        let drawn = menu(&world, &located, NOW);
+        let drawn = menu(&world, &located, NOW, true, &Palette::DARCULA);
         let MenuAction::Run(command) = &drawn.items[0].action else {
             panic!("a session with nothing to pick between still jumps");
         };
@@ -802,7 +926,7 @@ mod tests {
                 "far",
             )),
         }];
-        let drawn = menu(&quiet, &located, NOW);
+        let drawn = menu(&quiet, &located, NOW, true, &Palette::DARCULA);
         assert!(matches!(drawn.items[0].action, MenuAction::Disabled));
         assert!(
             labels(&drawn)[0].contains("tmux -L ae-dev attach -t far"),
@@ -818,7 +942,7 @@ mod tests {
             session: "far".to_owned(),
             placement: Placement::Elsewhere("tmux -L ae-dev attach -t far".to_owned()),
         }];
-        let drawn = menu(&world(vec![hot]), &located, NOW);
+        let drawn = menu(&world(vec![hot]), &located, NOW, true, &Palette::DARCULA);
         assert!(labels(&drawn)[0].contains("dead"), "{:?}", labels(&drawn));
     }
 
@@ -836,7 +960,7 @@ mod tests {
         let world = world(vec![running("hub")]);
         for hostile in ["", "12", "%", "%1;kill-server", "%1 x"] {
             let located = [here("hub", &[("lead", hostile)])];
-            let drawn = menu(&world, &located, NOW);
+            let drawn = menu(&world, &located, NOW, true, &Palette::DARCULA);
             let agents = submenu(&drawn, "hub");
             assert!(
                 matches!(agents.items[0].action, MenuAction::Disabled),
@@ -855,7 +979,13 @@ mod tests {
             None,
         )];
         let located = [here("hub", &[("lead", "%1")])];
-        let drawn = menu(&world(vec![session]), &located, NOW);
+        let drawn = menu(
+            &world(vec![session]),
+            &located,
+            NOW,
+            true,
+            &Palette::DARCULA,
+        );
         let agents = submenu(&drawn, "hub");
         let label = &labels(agents)[0];
         assert!(!label.contains('\''), "{label:?}");
@@ -872,7 +1002,13 @@ mod tests {
         session.goal = Some("ship 'it' now\u{7}\nand more".to_owned());
         session.agents = vec![agent("lead", Some("working"), None)];
         let located = [here("hub", &[("lead", "%1")])];
-        let drawn = menu(&world(vec![session]), &located, NOW);
+        let drawn = menu(
+            &world(vec![session]),
+            &located,
+            NOW,
+            true,
+            &Palette::DARCULA,
+        );
         let label = &labels(&drawn)[0];
         assert!(!label.contains('\''), "{label:?}");
         assert!(!label.chars().any(char::is_control), "{label:?}");
@@ -891,7 +1027,7 @@ mod tests {
         // expander, so `##` collapses to `#` and `%%` stays two characters.
         let mut session = running("hub");
         session.goal = Some("100% of #{everything}".to_owned());
-        let drawn = menu(&world(vec![session]), &[], NOW);
+        let drawn = menu(&world(vec![session]), &[], NOW, true, &Palette::DARCULA);
         let words = display_menu_args(&ServerId::Ambient, &drawn);
         let label = words
             .iter()
@@ -909,7 +1045,10 @@ mod tests {
             session: "far".to_owned(),
             placement: Placement::Elsewhere("tmux -L other attach -t far".to_owned()),
         }];
-        let words = display_menu_args(&ServerId::Ambient, &menu(&world, &located, NOW));
+        let words = display_menu_args(
+            &ServerId::Ambient,
+            &menu(&world, &located, NOW, true, &Palette::DARCULA),
+        );
         let first_item = words
             .iter()
             .position(|word| word.starts_with('-') && word.contains("far"))
@@ -923,7 +1062,13 @@ mod tests {
         let mut session = running("hub");
         session.agents = vec![agent("lead", Some("working"), None)];
         let located = [here("hub", &[("lead", "%1")])];
-        let drawn = menu(&world(vec![session]), &located, NOW);
+        let drawn = menu(
+            &world(vec![session]),
+            &located,
+            NOW,
+            true,
+            &Palette::DARCULA,
+        );
         let words = display_menu_args(&ServerId::Ambient, &drawn);
         assert_eq!(&words[..5], ["display-menu", "-x", "C", "-y", "C"]);
         assert_eq!(words[5], "-T");

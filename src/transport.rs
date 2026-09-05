@@ -96,6 +96,17 @@ pub fn observe_branch(server: &ServerId, session: &str) -> Option<String> {
     tmux::interpret_session_option(succeeded, &stdout)
 }
 
+/// One session option's value on `server`, or `None` when it is unset or the
+/// server did not answer.
+#[must_use]
+pub fn observe_session_option(server: &ServerId, session: &str, name: &str) -> Option<String> {
+    if !addressable(server) {
+        return None;
+    }
+    let (succeeded, stdout) = run(PROGRAM, &tmux::session_option_args(server, session, name));
+    tmux::interpret_session_option(succeeded, &stdout)
+}
+
 /// What running the `send` helper produced.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Delivery {
@@ -572,6 +583,37 @@ pub fn observe_tmux_floor(server: &ServerId) -> crate::tmux_floor::Probe {
             None => crate::tmux_floor::Probe::Silent,
         },
     }
+}
+
+/// Every session on `server` with the attention its own watchdog published, or
+/// `None` when the server did not answer.
+#[must_use]
+pub fn observe_fleet_sessions(server: &ServerId) -> Option<Vec<tmux::FleetSession>> {
+    if !addressable(server) {
+        return None;
+    }
+    let (succeeded, stdout) = run(PROGRAM, &tmux::fleet_sessions_args(server));
+    tmux::interpret_fleet_sessions(succeeded, &stdout)
+}
+
+/// The `(icons, palette)` pair `session` is drawn with, each empty when unset.
+#[must_use]
+pub fn observe_look(server: &ServerId, session: &str) -> Option<tmux::LookOptions> {
+    if !addressable(server) {
+        return None;
+    }
+    let (succeeded, stdout) = run(PROGRAM, &tmux::look_args(server, session));
+    tmux::interpret_look(succeeded, &stdout)
+}
+
+/// The `(icons, palette)` pair of the session the CALLING client is in.
+#[must_use]
+pub fn observe_look_here(server: &ServerId) -> Option<tmux::LookOptions> {
+    if !addressable(server) {
+        return None;
+    }
+    let (succeeded, stdout) = run(PROGRAM, &tmux::look_here_args(server));
+    tmux::interpret_look(succeeded, &stdout)
 }
 
 /// The ttys of every pane on `server`, or `None` when it did not answer.

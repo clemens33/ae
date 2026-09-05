@@ -256,13 +256,15 @@ fn start(
     // The stamp goes on BEFORE the daemon publishes its pidfile, so whenever a
     // pidfile exists its pane is already findable — which is what makes
     // [`Presence`]'s pane requirement safe against a starting watchdog.
-    let _ = transport::publish_option(
-        server,
-        tmux::OptionScope::Pane,
-        &pane,
-        "@ae_agent",
-        AGENT_STAMP,
-    );
+    for (option, value) in [
+        ("@ae_agent", AGENT_STAMP.to_owned()),
+        (
+            crate::theme::AGENT_LABEL_OPTION,
+            crate::theme::agent_label(AGENT_STAMP),
+        ),
+    ] {
+        let _ = transport::publish_option(server, tmux::OptionScope::Pane, &pane, option, &value);
+    }
     let _ = transport::set_pane_title(server, &pane, PANE_TITLE);
     let _ = transport::run_tmux_op(&argv(server, &Op::DisablePane { pane: &pane }));
     // REGISTRATION, by the same criteria the NEXT starter will apply.

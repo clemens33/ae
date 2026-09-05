@@ -232,10 +232,28 @@ fn republish(dir: &Path, name: &str, server: &ServerId) {
         &config_files,
     );
     let _ = crate::session_launch::assets::publish_document(&dir.join("workspace.md"), &manifest);
-    crate::session_launch::apply_status_bar(
+    // The look is the SESSION's, so a rename re-reads it from the session
+    // rather than re-deriving it from a config the session may not have been
+    // launched with.
+    // A session whose look could not be read is one this rename leaves alone:
+    // the name it draws is wrong for a moment, and that is better than
+    // redressing it in a look it never had.
+    let Some(look) = crate::session_launch::look_of(server, name) else {
+        return;
+    };
+    crate::session_launch::redress_status_bar(
         server,
         name,
-        &crate::session_launch::status_paths(&mode, &origin, &work_dir),
+        &crate::session_launch::status_paths(
+            &mode,
+            &origin,
+            &work_dir,
+            &crate::doors::home()
+                .unwrap_or_default()
+                .display()
+                .to_string(),
+        ),
+        &look,
     );
 }
 
@@ -354,14 +372,20 @@ mod tests {
     }
 
     #[test]
-    fn the_status_paths_shape_is_mode_aware() {
+    fn the_status_paths_shape_is_mode_aware_and_shortened_against_home() {
         assert_eq!(
-            crate::session_launch::status_paths("local", "/o", "/w"),
+            crate::session_launch::status_paths("local", "/o", "/w", "/h"),
             "/w"
         );
         assert_eq!(
-            crate::session_launch::status_paths("git", "/o", "/w"),
+            crate::session_launch::status_paths("git", "/o", "/w", "/h"),
             "/o → /w"
+        );
+        // The shortening is what keeps the branch and the watch count on the
+        // bar beside a worktree path spelled in full.
+        assert_eq!(
+            crate::session_launch::status_paths("git", "/h/p/ae", "/h/.ae/worktrees/feat", "/h"),
+            "~/p/ae → ~/…/worktrees/feat"
         );
     }
 }

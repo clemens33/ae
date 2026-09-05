@@ -64,6 +64,7 @@ pub mod store;
 pub mod teardown;
 pub mod telegram;
 pub mod telegram_lifecycle;
+pub mod theme;
 pub mod time;
 pub mod tmux;
 pub mod tmux_floor;
@@ -386,7 +387,15 @@ fn run_orchestrator(
     let recorded = recorded_servers(snapshot);
     let mut sockets = SocketPaths::asking(transport::observe_socket_path);
     let located = placements(&recorded, &server, world, &panes, &mut sockets);
-    let menu = orchestrator::menu(world, &located, world.now);
+    // The picker draws in the calling session's own look, so a session running
+    // the ASCII fallback gets an ASCII menu and a themed one gets its palette.
+    // A look ae could not read draws the picker in the default one: a menu is
+    // a transient surface that writes nothing, so a wrong palette on it costs
+    // one keystroke rather than a session's appearance.
+    let look = transport::observe_look_here(&server).map_or(theme::Look::DEFAULT, |read| {
+        theme::Look::read(&read.icons, &read.palette, &read.drawn, &read.motion)
+    });
+    let menu = orchestrator::menu(world, &located, world.now, look.icons, &look.palette);
     if !transport::display_menu(&server, &menu) {
         writeln!(
             err,

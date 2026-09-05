@@ -853,6 +853,74 @@ fn a_restored_spawned_seat_with_a_valid_profile_still_resumes() {
     );
 }
 
+/// A seat name a human typed into the meta reaches a pane border, and the
+/// border reads an option VALUE, which tmux takes styles out of.
+///
+/// The RESUME is where this bites: a name in the config passed
+/// `config::is_agent_name` on the way in, and a name read back off the meta
+/// never did. So the identity and the drawn name are two options, and only the
+/// second is rewritten.
+#[test]
+fn a_hostile_seat_name_in_a_resumed_meta_cannot_style_a_pane_border() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("hostile");
+    let session = "lnhost";
+    let dir = rig.dir(session);
+    assert!(std::fs::create_dir_all(&dir).is_ok(), "a session dir");
+    let hostile = "evil#[bg=red]";
+    assert!(
+        std::fs::write(
+            dir.join("meta"),
+            format!(
+                "meta_version={version}\nsession={session}\nmode=local\nlayout=vertical\n\
+                 work_dir={home}\norigin={home}\nschema=2\nseat.main={hostile}\n\
+                 profile.main=idle\nagent_bin.main=sleep\n",
+                version = ae::migrate::CURRENT,
+                home = rig.project.display(),
+            ),
+        )
+        .is_ok(),
+        "a meta somebody edited by hand"
+    );
+
+    let (code, stdout, stderr) = rig.launch(&["--local", session]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+
+    let pane = |name: &str| {
+        rig.tmux(&[
+            "display-message",
+            "-p",
+            "-t",
+            &format!("{session}:0.0"),
+            &format!("#{{{name}}}"),
+        ])
+        .1
+        .trim_end_matches('\n')
+        .to_owned()
+    };
+    // The IDENTITY is verbatim — the roster, the monitor and every lookup match
+    // on it, and rewriting it would break the session rather than protect it.
+    assert_eq!(pane("@ae_agent"), hostile);
+    // The DRAWN name cannot carry a directive.
+    let label = pane(ae::theme::AGENT_LABEL_OPTION);
+    assert!(!label.contains('#'), "the label is inert: {label}");
+    assert!(label.contains("evil"), "and still names the seat: {label}");
+    // And the border reads the label, not the identity.
+    let format = rig
+        .tmux(&["show-options", "-wv", "-t", session, "pane-border-format"])
+        .1;
+    assert!(
+        format.contains(ae::theme::AGENT_LABEL_OPTION),
+        "the border draws the label: {format}"
+    );
+    assert!(
+        !format.contains("#{@ae_agent}"),
+        "and never the raw identity: {format}"
+    );
+}
+
 /// An unusable `--server-kind` is refused before anything is built.
 #[test]
 fn an_unusable_server_pair_is_refused_before_the_session_is_built() {
@@ -1022,7 +1090,66 @@ fn the_lead_layouts_seat_each_agent_in_the_window_their_layout_names() {
     );
 }
 
-/// The status bar is AE-OWNED, and its first line still RENDERS.
+/// `[workspace] theme = off` writes the FACTS and NONE of the layout.
+///
+/// The opt-out is only worth having if it is total: a session that still gets
+/// `pane-border-status` or a `status-format` has taken the user's own look away
+/// while claiming not to. Every option ae would have written is asserted absent
+/// at the scope ae would have written it.
+#[test]
+fn a_session_with_the_theme_off_keeps_the_users_own_look() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("themeoff");
+    assert!(
+        std::fs::write(&rig.config, format!("{IDLE_CONFIG}theme = off\n")).is_ok(),
+        "a config with the look turned off"
+    );
+    let (code, stdout, stderr) = rig.launch(&["--local", "lnoff"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+
+    // `show-options -v` with no session-scoped value prints nothing at all.
+    let session = |name: &str| {
+        rig.tmux(&["show-options", "-v", "-t", "lnoff", name])
+            .1
+            .trim_end_matches('\n')
+            .to_owned()
+    };
+    for name in ae::theme::LAYOUT_OPTIONS {
+        assert!(
+            session(name).is_empty(),
+            "{name} was written on a session whose look is off"
+        );
+    }
+    // Every window, the monitor window included — that one was dressed by hand
+    // before the look existed, and it is the regression this test names. The
+    // window LIST is asserted first: a target that does not exist answers every
+    // question with a blank, which is what a vacuous version of this test would
+    // read as a pass.
+    let (_, windows) = rig.tmux(&["list-windows", "-t", "lnoff", "-F", "#{window_name}"]);
+    assert!(
+        windows.lines().any(|name| name == "ae-monitor"),
+        "the monitor window is part of the scene: {windows}"
+    );
+    for window in ["lnoff:0", "lnoff:ae-monitor"] {
+        for name in ae::theme::window_option_names() {
+            let (_, value) = rig.tmux(&["show-options", "-wv", "-t", window, name.as_str()]);
+            assert!(
+                value.trim().is_empty(),
+                "{name} was written on {window} with the look off: {value}"
+            );
+        }
+    }
+    // And the FACTS are all there, so a hand-written status line can read them.
+    assert_eq!(session(ae::theme::LOOK_OPTION), "off");
+    assert_eq!(session(ae::theme::PALETTE_OPTION), "darcula");
+    assert!(!session(ae::theme::ATTENTION_GLYPH_OPTION).is_empty());
+    assert!(!session(ae::theme::PATHS_OPTION).is_empty());
+}
+
+/// The status bar is AE-OWNED, SESSION-SCOPED, and its first line still
+/// RENDERS.
 #[test]
 fn the_status_bar_is_ae_owned_and_its_first_line_still_renders() {
     if skip() {
@@ -1038,48 +1165,162 @@ fn the_status_bar_is_ae_owned_and_its_first_line_still_renders() {
             .trim_end_matches('\n')
             .to_owned()
     };
-    assert_eq!(option("status-left"), "[ae lnbar] ");
-    // The watch segment is a user option at the END, referenced exactly once,
-    // so a watchdog restart cannot double it.
-    let right = option("status-right");
-    assert!(
-        right.starts_with('[') && right.ends_with("] #{@ae_watchdog_status}"),
-        "the ae-baked shape: {right}"
-    );
+    // Line 0 is ae's own: the session segment in its attention accent, the
+    // windows, and the right-hand facts. The watch segment is a user option at
+    // the END, referenced exactly once, so a watchdog restart cannot double it.
+    let zero = option("status-format[0]");
+    assert!(zero.contains("#{@ae_attn_style}"), "{zero}");
+    assert!(zero.contains("#{@ae_attn_glyph}"), "{zero}");
+    assert!(zero.contains("lnbar"), "{zero}");
+    assert!(zero.contains("#{@ae_branch_status}"), "{zero}");
     assert_eq!(
-        right.matches("#{@ae_watchdog_status}").count(),
+        zero.matches("#{@ae_watchdog_status}").count(),
         1,
-        "exactly one watch reference: {right}"
+        "exactly one watch reference: {zero}"
     );
+    assert!(!zero.contains("#("), "no format ever shells out: {zero}");
+    // Line 1 is the fleet strip and this session's agents.
+    let one = option("status-format[1]");
+    assert!(one.contains("#{@ae_fleet_strip}"), "{one}");
+    assert!(one.contains("#{@ae_agents_status}"), "{one}");
+    // PRESENT is not RENDERED. Both lines are drawn and read back, because a
+    // format that tmux cannot expand does not fail — it prints the source text,
+    // and a bar with `#{` still in it is a broken bar that a "contains the
+    // session name" assertion would happily pass.
+    let render = |index: u8| {
+        rig.tmux(&[
+            "display-message",
+            "-p",
+            "-t",
+            "lnbar:0",
+            &format!("#{{T:status-format[{index}]}}"),
+        ])
+        .1
+    };
+    let drawn = render(0);
     assert!(
-        option("status-format[1]").contains("#{@ae_agent}"),
-        "the second line is the focused agent's identity"
+        !drawn.contains("#{"),
+        "line 0 left a format unexpanded: {drawn:?}"
     );
-    assert!(
-        !option("status-format[0]").is_empty(),
-        "the standard bar is present at session scope"
-    );
-    // PRESENT is not RENDERED.
-    let (_, drawn) = rig.tmux(&[
-        "display-message",
-        "-p",
-        "-t",
-        "lnbar:0",
-        "#{T:status-format[0]}",
-    ]);
     assert!(
         drawn.contains("lnbar"),
         "line 0 draws the session rather than a blank line: {drawn:?}"
     );
-    // The per-window glyph renders only through these, at SESSION scope — and
-    // the GLOBAL table stays the operator's.
     assert!(
-        option("window-status-format").contains("#{@ae_window_status}"),
-        "the window glyph has somewhere to render"
+        drawn.contains("0:lnbar"),
+        "the window segment is drawn, not just the session name: {drawn:?}"
     );
-    let (_, global) = rig.tmux(&["show-options", "-gv", "window-status-format"]);
     assert!(
-        !global.contains("@ae_window_status"),
-        "ae does not theme the global window table: {global}"
+        drawn.contains("range=window|0"),
+        "the window entry is a click target: {drawn:?}"
     );
+    // The attention SEED, drawn: the stale mark, in the palette's stale accent
+    // and never a verdict the watchdog has not reached yet.
+    let stale = ae::theme::Mark::Stale;
+    assert!(
+        drawn.contains(stale.glyph(true)),
+        "line 0 draws the seeded attention glyph: {drawn:?}"
+    );
+    assert!(
+        drawn.contains(ae::theme::Palette::DARCULA.accent(stale)),
+        "and in its accent: {drawn:?}"
+    );
+    // Line 1 carries what the WATCHDOG publishes, and this rig runs none — so
+    // the two options are seeded here and the line is read back. An assertion
+    // that only proved the line expanded would pass on two empty halves, which
+    // is exactly the broken bar it is meant to catch.
+    for (name, value) in [
+        (ae::theme::FLEET_STRIP_OPTION, "FLEETMARK lnbar"),
+        (ae::tmux::AGENTS_STATUS_OPTION, "AGENTMARK lead"),
+    ] {
+        let (set, why) = rig.tmux(&["set-option", "-t", "lnbar", name, value]);
+        assert!(set, "seeding {name}: {why}");
+    }
+    let strip = render(1);
+    assert!(
+        !strip.contains("#{"),
+        "line 1 left a format unexpanded: {strip:?}"
+    );
+    assert!(
+        strip.contains("FLEETMARK lnbar"),
+        "line 1 draws the fleet strip: {strip:?}"
+    );
+    assert!(
+        strip.contains("AGENTMARK lead"),
+        "line 1 draws this session's agents: {strip:?}"
+    );
+    assert!(
+        strip.find("FLEETMARK") < strip.find("AGENTMARK"),
+        "the fleet is the left half and the agents the right: {strip:?}"
+    );
+}
+
+/// The per-window half of the look, and the tables ae must never write.
+#[test]
+fn the_window_half_of_the_look_is_stamped_per_window_and_never_globally() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("winlook");
+    let (code, stdout, stderr) = rig.launch(&["--local", "lnwin"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+
+    let option = |name: &str| {
+        rig.tmux(&["show-options", "-v", "-t", "lnwin", name])
+            .1
+            .trim_end_matches('\n')
+            .to_owned()
+    };
+    // Stamped on the WINDOW, because tmux keeps pane-border and menu styles
+    // there — and a `set -t <session>` would reach only the current window.
+    let window = |name: &str| {
+        rig.tmux(&["show-options", "-wv", "-t", "lnwin:0", name])
+            .1
+            .trim_end_matches('\n')
+            .to_owned()
+    };
+    assert_eq!(window("pane-border-status"), "top");
+    assert_eq!(window("pane-border-lines"), "heavy");
+    assert!(
+        window("pane-border-format").contains("#{@ae_profile}"),
+        "the border names the profile: {}",
+        window("pane-border-format")
+    );
+    assert_eq!(
+        window("@ae_theme"),
+        ae::theme::window_stamp(&ae::theme::Look::DEFAULT),
+        "the stamp names the LOOK the window was dressed in, not just that it was"
+    );
+    assert!(!window("menu-style").is_empty(), "the picker is themed too");
+    // The MONITOR window is stamped like every other one — it is the window a
+    // caller once dressed by hand, and the look owns those options now.
+    let monitor = rig
+        .tmux(&["show-options", "-wv", "-t", "lnwin:ae-monitor", "@ae_theme"])
+        .1
+        .trim_end_matches('\n')
+        .to_owned();
+    assert_eq!(
+        monitor,
+        ae::theme::window_stamp(&ae::theme::Look::DEFAULT),
+        "the monitor window too"
+    );
+    // The LOOK STAMP says what the layout was written for, which is what the
+    // watchdog compares against to notice a knob turned on a live session.
+    assert_eq!(
+        option(ae::theme::LOOK_STAMP_OPTION),
+        ae::theme::Look::DEFAULT.stamp()
+    );
+    // The GLOBAL tables stay the operator's — every ae option is written at
+    // session or window scope, never at `-g`.
+    for (flags, name) in [
+        (["show-options", "-gv"], "status-format[0]"),
+        (["show-options", "-gwv"], "pane-border-format"),
+        (["show-options", "-gwv"], "menu-style"),
+    ] {
+        let (_, global) = rig.tmux(&[flags[0], flags[1], name]);
+        assert!(
+            !global.contains("@ae_"),
+            "ae does not theme the global table: {name} = {global}"
+        );
+    }
 }

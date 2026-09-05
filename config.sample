@@ -53,6 +53,17 @@ main = lead
 workers = colead
 layout = lead-pair
 watchdog = true
+# The session's LOOK, applied at launch and refreshed by the watchdog. Both are
+# session-scoped: a non-ae session on the same tmux server keeps your own theme.
+# palette = darcula (the default) | a (neutral dark) | b (warmer neutrals).
+# icons = off draws the ASCII fallback (x ! * + ? -) rather than ✖ ⚠ ● ✓ ◌ ·.
+# theme = off leaves your own status line, pane borders and menu styles alone;
+#         ae still publishes every @ae_* value, so your format can read them.
+# motion = off freezes the spinner on its mark.
+# palette = darcula
+# icons = on
+# theme = on
+# motion = on
 
 [prompt]
 # ae already injects the full workspace protocol into every agent — the roster, the helper

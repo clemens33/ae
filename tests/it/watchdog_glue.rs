@@ -930,3 +930,157 @@ fn the_agent_roster_and_the_window_glyph_are_published_by_a_running_daemon() {
         "the window carries a glyph, not a roster: {window:?}"
     );
 }
+
+/// The session an OLDER CORE left behind: identities on its panes, and the
+/// drawn-name option nowhere.
+fn plant_unlabelled(
+    root: &Path,
+    session: &str,
+    socket: &Path,
+    work_dir: &Path,
+    scratch: &Path,
+) -> PathBuf {
+    let meta_dir = root.join("sessions").join(session);
+    assert!(fs::create_dir_all(&meta_dir).is_ok(), "a session meta dir");
+    assert!(
+        fs::write(
+            meta_dir.join("meta"),
+            format!(
+                "mode=local\nsession={session}\ntmux_server_kind=socket\ntmux_server={socket}\n\
+                 work_dir={work_dir}\nschema=2\nseat.main=lead\nprofile.main=sh\n\
+                 agent_bin.main=cat\n",
+                socket = socket.display(),
+                work_dir = work_dir.display(),
+            ),
+        )
+        .is_ok(),
+        "the record"
+    );
+    assert!(
+        tmux(
+            socket,
+            scratch,
+            &["new-session", "-d", "-s", session, "cat"]
+        )
+        .0,
+        "the watched session"
+    );
+    assert!(
+        tmux(
+            socket,
+            scratch,
+            &[
+                "new-window",
+                "-d",
+                "-t",
+                &format!("{session}:99"),
+                "-n",
+                "ae-monitor",
+                "cat"
+            ]
+        )
+        .0,
+        "its monitor window"
+    );
+    for (target, agent) in [
+        (format!("{session}:0.0"), "lead"),
+        (format!("{session}:99.0"), "_events"),
+    ] {
+        assert!(
+            tmux(
+                socket,
+                scratch,
+                &["set-option", "-p", "-t", &target, "@ae_agent", agent]
+            )
+            .0,
+            "an identity on {target}"
+        );
+    }
+    meta_dir
+}
+
+/// A session UPGRADED IN PLACE gets its drawn agent names back.
+///
+/// The pane border reads `@ae_agent_label`, which a session launched by an
+/// older core does not have — only the identity beside it. So the running
+/// daemon backfills the label every cycle, for the monitor's own panes as well
+/// as for the agents, and this drives a real one to prove it.
+#[test]
+fn the_running_watchdog_backfills_the_drawn_agent_names() {
+    let scratch = scratch("label");
+    require_tmux(&scratch);
+    let socket = scratch.join("s");
+    let _cleanup = Cleanup::new(&socket, &scratch);
+    let root = scratch.join("home");
+    let project = scratch.join("project");
+    assert!(fs::create_dir_all(&project).is_ok(), "the work dir");
+    let session = "relabel";
+    let meta_dir = plant_unlabelled(&root, session, &socket, &project, &scratch);
+
+    let daemon_out = scratch.join("daemon-out");
+    let daemon_err = scratch.join("daemon-err");
+    let mut child = super::cli::ae()
+        .arg("_watchdog-run")
+        .arg(&meta_dir)
+        .args(["--interval", "1", "--tg-supervise-secs", "0"])
+        .env("HOME", &root)
+        .stdout(fs::File::create(&daemon_out).expect("a stdout sink"))
+        .stderr(fs::File::create(&daemon_err).expect("a stderr sink"))
+        .spawn()
+        .expect("the ae binary should spawn");
+
+    let label = |target: &str| {
+        tmux(
+            &socket,
+            &scratch,
+            &[
+                "show-options",
+                "-pv",
+                "-t",
+                target,
+                ae::theme::AGENT_LABEL_OPTION,
+            ],
+        )
+        .1
+        .trim()
+        .to_owned()
+    };
+    let agent_pane = format!("{session}:0.0");
+    let monitor_pane = format!("{session}:99.0");
+    let deadline = Instant::now() + BUDGET;
+    let mut landed = (String::new(), String::new());
+    while Instant::now() < deadline {
+        landed = (label(&agent_pane), label(&monitor_pane));
+        if !landed.0.is_empty() && !landed.1.is_empty() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    let _ = tmux(&socket, &scratch, &["kill-session", "-t", session]);
+    let stop = Instant::now() + BUDGET;
+    while Instant::now() < stop {
+        if matches!(child.try_wait(), Ok(Some(_))) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    let diagnostics = fs::read_to_string(&daemon_err).unwrap_or_default();
+    kill_server(&socket, &scratch);
+
+    let (agent, monitor) = landed;
+    assert_eq!(
+        agent, "lead",
+        "the agent pane's drawn name is backfilled: {diagnostics}"
+    );
+    // BEFORE the filter that drops the monitor's panes from the marks: they are
+    // filtered out of the rollup and still draw a border title. And the leading
+    // underscore is the lookup's marker, not part of the name.
+    assert_eq!(
+        monitor, "events",
+        "the monitor pane too, without its marker: {diagnostics}"
+    );
+    let _ = fs::remove_dir_all(&scratch);
+}

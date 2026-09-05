@@ -373,7 +373,13 @@ pub fn run_spawn(
         )?;
         return Ok(EXIT_FAILED);
     };
-    stamp_pane(&facts.server, &pane, &parsed.name, &slot);
+    stamp_pane(&facts.server, &pane, &parsed.name, &slot, &parsed.profile);
+    // A spawn makes a NEW window, and the pane border, menu and popup styles
+    // live in the window table — so the window is stamped here rather than
+    // waiting a watchdog cycle to be dressed.
+    if let Some(look) = crate::session_launch::look_of(&facts.server, &facts.session) {
+        crate::session_launch::stamp_window(&facts.server, &pane, &look);
+    }
     facts.regenerate_manifest(dir);
     // Let the new pane's shell finish drawing its prompt before anything is
     // pasted into it.
@@ -505,8 +511,10 @@ fn actor_of(caller: &str) -> &str {
 }
 
 /// Label the pane and name the worker's window.
-fn stamp_pane(server: &ServerId, pane: &str, name: &str, slot: &str) {
+fn stamp_pane(server: &ServerId, pane: &str, name: &str, slot: &str, profile: &str) {
     let _ = transport::set_pane_title(server, pane, &format!("ae:{name}"));
+    // The IDENTITY, verbatim; the label beside it is the same name as DRAWN,
+    // with everything a drawer would read as a style taken out.
     let _ = transport::publish_option(
         server,
         crate::tmux::OptionScope::Pane,
@@ -518,8 +526,25 @@ fn stamp_pane(server: &ServerId, pane: &str, name: &str, slot: &str) {
         server,
         crate::tmux::OptionScope::Pane,
         pane,
+        crate::theme::AGENT_LABEL_OPTION,
+        &crate::theme::agent_label(name),
+    );
+    let _ = transport::publish_option(
+        server,
+        crate::tmux::OptionScope::Pane,
+        pane,
         "@ae_slot",
         slot,
+    );
+    let _ = transport::publish_option(
+        server,
+        crate::tmux::OptionScope::Pane,
+        pane,
+        crate::theme::PROFILE_OPTION,
+        // SANITISED at the sink: a profile name comes back off a hand-editable
+        // meta, and the drawer reads `#[…]` out of an option value, so a
+        // profile carrying one would restyle the pane border it names.
+        &crate::theme::bar_text(profile, crate::theme::PROFILE_WIDTH),
     );
     let _ = transport::rename_window(server, pane, &crate::tmux::format_literal(name));
 }

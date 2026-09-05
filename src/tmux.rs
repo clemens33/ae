@@ -820,6 +820,11 @@ pub struct MenuItem {
 pub struct Menu {
     /// The bordered title, unescaped.
     pub title: String,
+    /// The `#[…]` the title is drawn in — ae's own text, so it is emitted
+    /// BEFORE the escape rather than through it. tmux has no menu-title style
+    /// option, and the title is format-expanded, so this is where a colour for
+    /// it can go at all.
+    pub title_style: String,
     /// The rows, in the order they are drawn.
     pub items: Vec<MenuItem>,
 }
@@ -849,7 +854,7 @@ pub fn display_menu_args(server: &ServerId, menu: &Menu) -> Vec<String> {
     args.push("display-menu".to_owned());
     args.extend(MENU_POSITION.map(ToOwned::to_owned));
     args.push("-T".to_owned());
-    args.push(menu_literal(&menu.title));
+    args.push(titled(menu));
     args.push(END_OF_FLAGS.to_owned());
     for item in &menu.items {
         args.extend(item_words(item));
@@ -873,13 +878,18 @@ fn item_words(item: &MenuItem) -> Vec<String> {
     }
 }
 
+/// The `-T` argument: the style ae chose, then the title it was given.
+fn titled(menu: &Menu) -> String {
+    format!("{}{}", menu.title_style, menu_literal(&menu.title))
+}
+
 /// `menu` as ONE tmux command word — what a row that opens a second menu runs.
 #[must_use]
 pub fn menu_command(menu: &Menu) -> String {
     let mut words = vec!["display-menu".to_owned()];
     words.extend(MENU_POSITION.map(ToOwned::to_owned));
     words.push("-T".to_owned());
-    words.push(menu_literal(&menu.title));
+    words.push(titled(menu));
     words.push(END_OF_FLAGS.to_owned());
     for item in &menu.items {
         words.extend(item_words(item));
@@ -1074,11 +1084,13 @@ pub fn interpret_program_version(succeeded: bool, stdout: &str) -> Option<String
 ///
 /// The rank is what makes this an ae listing: a session with none is not one ae
 /// watches, so the strip skips it rather than drawing a stranger.
-pub const FLEET_SESSION_FORMAT: &str =
-    "#{session_name} | #{session_id} | #{@ae_attn_rank} | #{@ae_attn_glyph}";
+pub const FLEET_SESSION_FORMAT: &str = "#{session_name} | #{session_id} | #{@ae_attn_rank}";
 
 /// How many fields [`FLEET_SESSION_FORMAT`] yields.
-const FLEET_SESSION_FIELDS: usize = 4;
+const FLEET_SESSION_FIELDS: usize = 3;
+
+/// The highest rank a session may publish — [`crate::theme::Mark`]'s own count.
+const HIGHEST_RANK: u8 = 5;
 
 /// One ae session as the fleet strip reads it off the server.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1087,10 +1099,8 @@ pub struct FleetSession {
     pub name: String,
     /// Its `$<n>` id.
     pub id: String,
-    /// The published attention rank, verbatim.
+    /// The published attention rank, proven to be one.
     pub rank: String,
-    /// The published attention glyph, verbatim — empty when unset.
-    pub glyph: String,
 }
 
 /// The arguments listing every session on `server` with its published
@@ -1120,15 +1130,24 @@ pub fn interpret_fleet_sessions(succeeded: bool, stdout: &str) -> Option<Vec<Fle
             .filter_map(|line| {
                 let fields: Vec<&str> =
                     line.splitn(FLEET_SESSION_FIELDS, FIELD_SEPARATOR).collect();
-                let [name, id, rank, glyph] = fields.as_slice() else {
+                let [name, id, rank] = fields.as_slice() else {
                     return None;
                 };
-                let rank = rank.trim();
-                (!rank.is_empty()).then(|| FleetSession {
-                    name: (*name).to_owned(),
-                    id: (*id).to_owned(),
+                // PROVEN, not trusted. Every field of this row is rendered into
+                // an option value the drawer reads `#[…]` out of, and the row
+                // comes from a session ae did not necessarily create: a name
+                // with a style directive in it would restyle the strip and tear
+                // its click ranges. A session ae launched always passes.
+                let (name, id, rank) = (name.trim(), id.trim(), rank.trim());
+                let named = crate::session_launch::name::is_session_name(name);
+                let identified = id.strip_prefix('$').is_some_and(|digits| {
+                    !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit())
+                });
+                let ranked = rank.parse::<u8>().is_ok_and(|rank| rank <= HIGHEST_RANK);
+                (named && identified && ranked).then(|| FleetSession {
+                    name: name.to_owned(),
+                    id: id.to_owned(),
                     rank: rank.to_owned(),
-                    glyph: glyph.trim().to_owned(),
                 })
             })
             .collect(),
@@ -1173,31 +1192,32 @@ pub fn look_here_args(server: &ServerId) -> Vec<String> {
 ///
 /// A short answer leaves the missing fields EMPTY rather than failing: an older
 /// core's session carries only the first two, and empty is the default in every
-/// position.
+/// position. A read that did not RUN is `None`, which is a different fact
+/// entirely — the caller must not stand a default look in for it.
 ///
 /// ```
 /// use ae::tmux::interpret_look;
-/// let read = interpret_look(true, "off | b | on | off\n");
+/// let read = interpret_look(true, "off | b | on | off\n").unwrap_or_default();
 /// assert_eq!(read.icons, "off");
 /// assert_eq!(read.palette, "b");
 /// assert_eq!(read.motion, "off");
-/// assert_eq!(interpret_look(true, "on | a").drawn, "");
-/// assert_eq!(interpret_look(false, "on | a | on | on").icons, "");
+/// assert_eq!(interpret_look(true, "on | a").unwrap_or_default().drawn, "");
+/// assert_eq!(interpret_look(false, "on | a | on | on"), None);
 /// ```
 #[must_use]
-pub fn interpret_look(succeeded: bool, stdout: &str) -> LookOptions {
+pub fn interpret_look(succeeded: bool, stdout: &str) -> Option<LookOptions> {
     if !succeeded {
-        return LookOptions::default();
+        return None;
     }
     let line = stdout.lines().next().unwrap_or_default().trim_end();
     let mut fields = line.split(FIELD_SEPARATOR).map(str::trim);
     let mut next = || fields.next().unwrap_or_default().to_owned();
-    LookOptions {
+    Some(LookOptions {
         icons: next(),
         palette: next(),
         drawn: next(),
         motion: next(),
-    }
+    })
 }
 
 /// `#{pane_tty}` — the tty of every pane on the server, one per line.
@@ -1318,11 +1338,16 @@ pub fn interpret_session_id(succeeded: bool, stdout: &str, name: &str) -> Option
     })
 }
 
-/// `#{pane_id} | #{window_id} | #{@ae_agent}` — the window-grouping read.
-pub const WINDOW_PANE_FORMAT: &str = "#{pane_id} | #{window_id} | #{@ae_agent}";
+/// `#{pane_id} | #{window_id} | #{@ae_theme} | #{@ae_agent}` — the
+/// window-grouping read.
+///
+/// The theme stamp rides along because the alternative is a second listing:
+/// the watchdog has to know which windows are already dressed, and a user
+/// option set on the WINDOW resolves in a pane's format context.
+pub const WINDOW_PANE_FORMAT: &str = "#{pane_id} | #{window_id} | #{@ae_theme} | #{@ae_agent}";
 
 /// The number of fields [`WINDOW_PANE_FORMAT`] yields.
-const WINDOW_PANE_FIELDS: usize = 3;
+const WINDOW_PANE_FIELDS: usize = 4;
 
 /// One pane as the window grouping reads it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1331,6 +1356,8 @@ pub struct WindowPane {
     pub pane_id: String,
     /// `#{window_id}` — `@N`, server-global and stable for the window's life.
     pub window_id: String,
+    /// `@ae_theme` — the window's look stamp, empty when it carries none.
+    pub theme: String,
     /// `@ae_agent`, or `None` when unstamped.
     pub agent: Option<String>,
 }
@@ -1356,14 +1383,19 @@ pub fn interpret_window_panes(succeeded: bool, stdout: &str) -> Option<Vec<Windo
         stdout
             .lines()
             .filter_map(|line| {
-                let fields: Vec<&str> = line.split(FIELD_SEPARATOR).collect();
-                if fields.len() != WINDOW_PANE_FIELDS {
+                // BOUNDED: the agent stamp is last and is the one field that
+                // could carry the separator, so a longer line is that name and
+                // not a corrupt row.
+                let fields: Vec<&str> = line.splitn(WINDOW_PANE_FIELDS, FIELD_SEPARATOR).collect();
+                let [pane_id, window_id, theme, agent] = fields.as_slice() else {
                     return None;
-                }
+                };
+                let agent = agent.trim_end();
                 Some(WindowPane {
-                    pane_id: fields[0].to_owned(),
-                    window_id: fields[1].to_owned(),
-                    agent: (!fields[2].is_empty()).then(|| fields[2].to_owned()),
+                    pane_id: (*pane_id).to_owned(),
+                    window_id: (*window_id).to_owned(),
+                    theme: (*theme).to_owned(),
+                    agent: (!agent.is_empty()).then(|| agent.to_owned()),
                 })
             })
             .collect(),
@@ -1839,7 +1871,7 @@ mod tests {
                 super::WINDOW_PANE_FORMAT
             ]
         );
-        let listing = "%1 | @0 | cl:lead\n%2 | @0 | \n%3 @1 cl:x\n";
+        let listing = "%1 | @0 | 1 | cl:lead\n%2 | @0 | 1 | \n%4 | @2 |  | cl:y\n%3 @1 cl:x\n";
         let panes = interpret_window_panes(true, listing).expect("a successful run");
         assert_eq!(
             panes,
@@ -1847,12 +1879,22 @@ mod tests {
                 WindowPane {
                     pane_id: "%1".to_owned(),
                     window_id: "@0".to_owned(),
+                    theme: "1".to_owned(),
                     agent: Some("cl:lead".to_owned()),
                 },
                 WindowPane {
                     pane_id: "%2".to_owned(),
                     window_id: "@0".to_owned(),
+                    theme: "1".to_owned(),
                     agent: None,
+                },
+                // An UNDRESSED window: the stamp is empty, which is the fact
+                // the watchdog restamps on.
+                WindowPane {
+                    pane_id: "%4".to_owned(),
+                    window_id: "@2".to_owned(),
+                    theme: String::new(),
+                    agent: Some("cl:y".to_owned()),
                 },
             ],
             "the space-delimited line is corruption, not a pane"
@@ -1887,12 +1929,52 @@ mod tests {
             VIEWER_FORMAT,
             WATCH_PANE_FORMAT,
             WINDOW_PANE_FORMAT,
+            super::FLEET_SESSION_FORMAT,
+            super::LOOK_FORMAT,
         ] {
             assert!(
                 !format.chars().any(char::is_control),
                 "{format:?} carries a control character, which tmux 3.4 escapes"
             );
         }
+    }
+
+    /// The fleet strip is rendered from rows this reader hands it, straight
+    /// into an option value the drawer reads styles out of — so a row that is
+    /// not provably an ae session must never leave this function.
+    #[test]
+    fn a_fleet_row_is_proven_before_it_is_admitted() {
+        use super::{FleetSession, interpret_fleet_sessions};
+
+        let listing = "\
+            good | $1 | 4\n\
+            evil#[bg=red] | $2 | 4\n\
+            spaced name | $3 | 4\n\
+            badid | @4 | 4\n\
+            badid2 | $ | 4\n\
+            unranked | $5 | \n\
+            overranked | $6 | 99\n\
+            wordrank | $7 | four\n\
+            -leading | $8 | 0\n\
+            also-good | $9 | 0\n";
+        let read = interpret_fleet_sessions(true, listing).unwrap_or_default();
+        assert_eq!(
+            read,
+            vec![
+                FleetSession {
+                    name: "good".to_owned(),
+                    id: "$1".to_owned(),
+                    rank: "4".to_owned(),
+                },
+                FleetSession {
+                    name: "also-good".to_owned(),
+                    id: "$9".to_owned(),
+                    rank: "0".to_owned(),
+                },
+            ],
+            "only rows whose name, id and rank all check out"
+        );
+        assert!(interpret_fleet_sessions(false, listing).is_none());
     }
 
     #[test]

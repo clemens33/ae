@@ -451,6 +451,9 @@ struct Session {
     work_dir: PathBuf,
     origin: PathBuf,
     layout: String,
+    /// What this session is drawn in, and whether it is drawn at all —
+    /// `[workspace]`'s `palette`, `icons`, `theme` and `motion`.
+    look: crate::theme::Look,
     resuming: bool,
     /// Whether THIS attempt created the session directory — the ownership fact
     /// the rollback keys on, recorded at the `mkdir` and never derived from
@@ -713,10 +716,20 @@ fn launch(
             "orchestrator",
             "hub",
             "meta",
+            "palette",
+            "icons",
+            "theme",
+            "motion",
         ],
     );
     let config_layout = extras[0].clone().unwrap_or_default();
     let config_copy = extras[1].clone().unwrap_or_default();
+    let look = crate::theme::Look::read(
+        &extras[8].clone().unwrap_or_default(),
+        &extras[7].clone().unwrap_or_default(),
+        &extras[9].clone().unwrap_or_default(),
+        &extras[10].clone().unwrap_or_default(),
+    );
     let meta_agent = ["true", "1", "yes", "on"].contains(
         &extras[4]
             .clone()
@@ -889,6 +902,7 @@ fn launch(
         work_dir,
         origin,
         layout,
+        look,
         resuming,
         dir_created: false,
     };
@@ -1009,7 +1023,13 @@ fn build(
 
     // Pane stamps.
     for (index, seat) in seats.iter().enumerate() {
-        stamp_pane(&server, &panes[index], &seat.name, &seat.slot);
+        stamp_pane(
+            &server,
+            &panes[index],
+            &seat.name,
+            &seat.slot,
+            &seat.profile,
+        );
     }
 
     // ---- the roster, and the ids each seat launches with ----
@@ -1064,7 +1084,7 @@ fn build(
                             &pane,
                             &tmux::format_literal(&entry.name),
                         );
-                        stamp_pane(&server, &pane, &entry.name, &entry.slot);
+                        stamp_pane(&server, &pane, &entry.name, &entry.slot, &entry.profile);
                         panes.push(pane.clone());
                         pane
                     }
@@ -1195,6 +1215,11 @@ fn build(
         start_watchdog_pane(env, shape, &dir, &server, anchor);
     }
 
+    // ---- the per-window half of the look ----
+    // LAST, so every window a layout, a seat or a monitor created is stamped.
+    // The watchdog restamps whatever appears after this.
+    stamp_windows(&server, &shape.name, &shape.look);
+
     // ---- the companions ----
     //
     // LAST, and after the session exists, deliberately: both guards are
@@ -1298,8 +1323,6 @@ fn stamp_session(server: &ServerId, env: &Env, shape: &Session, main_pane: &str)
         ("mouse", "on"),
         ("focus-events", "on"),
         ("history-limit", "50000"),
-        ("pane-border-status", "top"),
-        ("pane-border-format", " #{@ae_agent} "),
         ("automatic-rename", "off"),
     ] {
         let _ = transport::publish_option(server, tmux::OptionScope::Session, name, option, value);
@@ -1311,7 +1334,9 @@ fn stamp_session(server: &ServerId, env: &Env, shape: &Session, main_pane: &str)
             shape.mode.as_str(),
             &shape.origin.display().to_string(),
             &shape.work_dir.display().to_string(),
+            &home,
         ),
+        &shape.look,
     );
     // The window carries the SESSION name; agent identity lives on `@ae_agent`.
     let _ = transport::run_tmux_op(&argv(
@@ -1324,69 +1349,111 @@ fn stamp_session(server: &ServerId, env: &Env, shape: &Session, main_pane: &str)
     let _ = transport::run_tmux_op(&argv(server, &Op::SelectPane { pane: main_pane }));
 }
 
-/// The two status lines ae owns.
-pub(crate) fn apply_status_bar(server: &ServerId, name: &str, paths: &str) {
-    let paths = tmux::format_literal(paths);
-    let session = tmux::format_literal(name);
-    for (option, value) in [
-        ("status-left", format!("[ae {session}] ")),
-        ("status-left-length", "40".to_owned()),
-        (
-            "status-right",
-            format!("[{paths}#{{@ae_branch_status}}] #{{@ae_watchdog_status}}"),
-        ),
-        ("status-right-length", "100".to_owned()),
-        ("status-interval", "5".to_owned()),
-        ("status", "2".to_owned()),
-        // The per-window glyph the watchdog publishes into @ae_window_status
-        // renders only through these two; without them it is published and
-        // never shown.
-        (
-            "window-status-format",
-            "#I:#W#{@ae_window_status}#F".to_owned(),
-        ),
-        (
-            "window-status-current-format",
-            "#I:#W#{@ae_window_status}#F".to_owned(),
-        ),
-    ] {
-        let _ = transport::publish_option(server, tmux::OptionScope::Session, name, option, &value);
-    }
-    // tmux ARRAY options do not inherit per index: setting `status-format[1]`
-    // alone shadows the WHOLE global array and leaves index 0 — the standard
-    // bar — empty at session scope.
-    let (found, global) = transport::run_tmux_op(&argv(
+/// The SESSION-scoped look: the two status lines ae owns, and the `@ae_*`
+/// values that fill them before the watchdog's first cycle.
+///
+/// Session scope throughout, so a non-ae session on the same server keeps the
+/// user's own theme. The per-window half — pane borders, menu and popup styles
+/// — is [`stamp_window`]'s, because tmux keeps those in the WINDOW table.
+pub(crate) fn apply_status_bar(
+    server: &ServerId,
+    name: &str,
+    paths: &str,
+    look: &crate::theme::Look,
+) {
+    write_options(
         server,
-        &Op::ShowGlobalOption {
-            name: "status-format[0]",
-        },
-    ));
-    let global = global.trim_end_matches('\n');
-    if found && !global.is_empty() {
-        let _ = transport::publish_option(
-            server,
-            tmux::OptionScope::Session,
-            name,
-            "status-format[0]",
-            global,
-        );
-    }
-    let _ = transport::publish_option(
-        server,
-        tmux::OptionScope::Session,
         name,
-        "status-format[1]",
-        "#[align=left] #{@ae_agent}#[align=right]#{@ae_agents_status} ",
+        crate::theme::session_options(look, name, paths),
     );
 }
 
+/// The same look, WITHOUT the attention seed — for a session that is already
+/// running and already has a verdict the watchdog published.
+pub(crate) fn redress_status_bar(
+    server: &ServerId,
+    name: &str,
+    paths: &str,
+    look: &crate::theme::Look,
+) {
+    write_options(
+        server,
+        name,
+        crate::theme::redress_options(look, name, paths),
+    );
+}
+
+/// Write one option set at SESSION scope.
+fn write_options(server: &ServerId, name: &str, options: Vec<(String, String)>) {
+    for (option, value) in options {
+        let _ =
+            transport::publish_option(server, tmux::OptionScope::Session, name, &option, &value);
+    }
+}
+
+/// The WINDOW-scoped look, stamped on one window.
+pub(crate) fn stamp_window(server: &ServerId, target: &str, look: &crate::theme::Look) -> bool {
+    if !look.drawn {
+        // `[workspace] theme = off`: the window keeps whatever the user's own
+        // tmux configuration gave it, stamp included, so nothing here is ever
+        // written and the watchdog finds nothing to restamp.
+        return true;
+    }
+    // `&=`, never `&&`: one refused option must not skip the rest of the set.
+    let mut ok = true;
+    let set = |name: &str, value: &str| {
+        let (succeeded, _) = transport::run_tmux_op(&argv(
+            server,
+            &Op::SetWindowOption {
+                target,
+                name,
+                value,
+            },
+        ));
+        succeeded
+    };
+    for (option, value) in crate::theme::window_options(look) {
+        ok &= set(&option, &value);
+    }
+    // The STAMP is the claim that all of the above happened, so it is written
+    // LAST and only when they did. A stamp over a half-dressed window would
+    // tell every later cycle there was nothing left to do.
+    if !ok {
+        return false;
+    }
+    set(
+        crate::theme::WINDOW_STAMP_OPTION,
+        &crate::theme::window_stamp(look),
+    )
+}
+
+/// Stamp every window this session has — called once the layout, the seats and
+/// the monitor panes have all created theirs.
+pub(crate) fn stamp_windows(server: &ServerId, session: &str, look: &crate::theme::Look) {
+    let Some(panes) = transport::observe_window_panes(server, session) else {
+        return;
+    };
+    let mut done: Vec<String> = Vec::new();
+    for pane in panes {
+        if done.contains(&pane.window_id) {
+            continue;
+        }
+        done.push(pane.window_id.clone());
+        stamp_window(server, &pane.window_id, look);
+    }
+}
+
 /// The location segment of the status bar, whose shape is mode-aware.
-pub(crate) fn status_paths(mode: &str, origin: &str, work_dir: &str) -> String {
+///
+/// SHORTENED against `home`: the bar shares one line with the branch and the
+/// watch count, and a worktree path spelled in full pushes both off the end.
+pub(crate) fn status_paths(mode: &str, origin: &str, work_dir: &str, home: &str) -> String {
+    let short = |path: &str| crate::theme::short_path(home, path);
     match Mode::parse(mode) {
         // An unrecorded or unknown mode reads as local: the work dir alone
         // rather than an arrow to nothing.
-        Some(Mode::Local) | None => work_dir.to_owned(),
-        Some(Mode::Git | Mode::Full) => format!("{origin} → {work_dir}"),
+        Some(Mode::Local) | None => short(work_dir),
+        Some(Mode::Git | Mode::Full) => format!("{} → {}", short(origin), short(work_dir)),
     }
 }
 
@@ -1445,10 +1512,36 @@ fn apply_layout(server: &ServerId, shape: &Session, panes: &[String], workers: u
 }
 
 /// Label one pane with the identity it holds.
-fn stamp_pane(server: &ServerId, pane: &str, name: &str, slot: &str) {
+///
+/// The PROFILE goes on the pane too: the border title names what an agent is
+/// as well as who, and the roster it would otherwise be read from is in the
+/// meta, not in tmux.
+fn stamp_pane(server: &ServerId, pane: &str, name: &str, slot: &str, profile: &str) {
     let _ = transport::set_pane_title(server, pane, &format!("ae:{name}"));
+    // The IDENTITY, verbatim: this is what the roster, the monitor's own names
+    // and every pane lookup match against, so it is never rewritten.
     let _ = transport::publish_option(server, tmux::OptionScope::Pane, pane, "@ae_agent", name);
+    // The same name as DRAWN. A seat name comes back off a hand-editable meta,
+    // and the border format reads this one, so what a drawer would take for a
+    // style is dropped here rather than in the identity.
+    let _ = transport::publish_option(
+        server,
+        tmux::OptionScope::Pane,
+        pane,
+        crate::theme::AGENT_LABEL_OPTION,
+        &crate::theme::agent_label(name),
+    );
     let _ = transport::publish_option(server, tmux::OptionScope::Pane, pane, "@ae_slot", slot);
+    let _ = transport::publish_option(
+        server,
+        tmux::OptionScope::Pane,
+        pane,
+        crate::theme::PROFILE_OPTION,
+        // SANITISED at the sink: a profile name comes back off a hand-editable
+        // meta, and the drawer reads `#[…]` out of an option value, so a
+        // profile carrying one would restyle the pane border it names.
+        &crate::theme::bar_text(profile, crate::theme::PROFILE_WIDTH),
+    );
 }
 
 /// Build the WHOLE initial meta — base facts, then the v2 roster block.
@@ -1768,6 +1861,23 @@ fn wait_for_agent_start(server: &ServerId, pane: &str, tool: ToolKind) {
     }
 }
 
+/// The look `session` declares, or `None` when the server did not answer.
+///
+/// Read from the session rather than from the config: the look is the
+/// SESSION's, and a helper that ran with a different config must not redress it.
+/// A failed READ is not a default look either — standing one in would stamp a
+/// window of a theme-off session in ae's colours, and the stamp would then hide
+/// the mismatch from every later cycle.
+pub(crate) fn look_of(server: &ServerId, session: &str) -> Option<crate::theme::Look> {
+    let read = transport::observe_look(server, session)?;
+    Some(crate::theme::Look::read(
+        &read.icons,
+        &read.palette,
+        &read.drawn,
+        &read.motion,
+    ))
+}
+
 /// The monitor window's events pane, created if it is not already there.
 pub(crate) fn ensure_events_pane(server: &ServerId, session: &str, dir: &Path) -> Option<String> {
     if let Some(existing) = monitor_pane(server, session, "_events") {
@@ -1776,22 +1886,23 @@ pub(crate) fn ensure_events_pane(server: &ServerId, session: &str, dir: &Path) -
     let command = vec![dir.join("events-tail").display().to_string()];
     let pane = new_window_running(server, &format!("{session}:99"), "ae-monitor", &command)
         .or_else(|| new_window_running(server, session, "ae-monitor", &command))?;
-    let _ = transport::publish_option(
-        server,
-        tmux::OptionScope::Pane,
-        &pane,
-        "@ae_agent",
-        "_events",
-    );
+    for (option, value) in [
+        ("@ae_agent", "_events".to_owned()),
+        (
+            crate::theme::AGENT_LABEL_OPTION,
+            crate::theme::agent_label("_events"),
+        ),
+    ] {
+        let _ = transport::publish_option(server, tmux::OptionScope::Pane, &pane, option, &value);
+    }
     let _ = transport::set_pane_title(server, &pane, "ae events");
-    let _ = transport::run_tmux_op(&argv(
-        server,
-        &Op::SetWindowOption {
-            target: &format!("{session}:ae-monitor"),
-            name: "pane-border-status",
-            value: "top",
-        },
-    ));
+    // The monitor window's borders are the LOOK's, so they are written by the
+    // look and by nothing else: with `[workspace] theme = off` this window is
+    // left exactly as the user's own tmux configuration draws it, like every
+    // other window of the session.
+    if let Some(look) = look_of(server, session) {
+        stamp_window(server, &format!("{session}:ae-monitor"), &look);
+    }
     let _ = transport::run_tmux_op(&argv(server, &Op::DisablePane { pane: &pane }));
     Some(pane)
 }
@@ -1831,13 +1942,15 @@ fn start_watchdog_pane(env: &Env, shape: &Session, dir: &Path, server: &ServerId
     let Some(pane) = interpret_pane_id(succeeded, &stdout) else {
         return;
     };
-    let _ = transport::publish_option(
-        server,
-        tmux::OptionScope::Pane,
-        &pane,
-        "@ae_agent",
-        "_watchdog",
-    );
+    for (option, value) in [
+        ("@ae_agent", "_watchdog".to_owned()),
+        (
+            crate::theme::AGENT_LABEL_OPTION,
+            crate::theme::agent_label("_watchdog"),
+        ),
+    ] {
+        let _ = transport::publish_option(server, tmux::OptionScope::Pane, &pane, option, &value);
+    }
     let _ = transport::set_pane_title(server, &pane, "ae watchdog");
     let _ = transport::run_tmux_op(&argv(server, &Op::DisablePane { pane: &pane }));
     let _ = meta::rewrite(dir, "watchdog", Some("true"));

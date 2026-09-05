@@ -9,6 +9,7 @@ use crate::events::Event;
 use crate::meta::{Meta, RosterEntry, ServerSelector};
 use crate::procs::{self, Descendancy};
 use crate::store;
+use crate::theme::{self, Look, Mark};
 use crate::time::Timestamp;
 use crate::tmux::{self, OptionScope, StopProbe};
 use crate::tracked::{self, EventFields};
@@ -143,19 +144,47 @@ pub enum Verdict {
 }
 
 impl Verdict {
+    /// The theme mark this verdict is drawn as.
+    ///
+    /// SIX marks for ten verdicts: the accent and the reason word beside it
+    /// carry the difference, and a status bar that spent a distinct glyph on
+    /// each verdict asked its reader to learn a private alphabet. A gone
+    /// process keeps its own mark, because "this will never move again" is not
+    /// the same news as "this is waiting for you".
+    #[must_use]
+    pub const fn mark(self) -> Mark {
+        match self {
+            Self::Dead => Mark::Dead,
+            Self::Quiet(QuietKind::WaitingUser | QuietKind::Blocked)
+            | Self::Throttled
+            | Self::Meta(SweepVerdict::MetaWedged) => Mark::NeedsYou,
+            Self::Quiet(QuietKind::Done) => Mark::Done,
+            Self::Stale | Self::Meta(SweepVerdict::MetaStarting) => Mark::Stale,
+            Self::Active | Self::Meta(SweepVerdict::MetaSweeping) => Mark::Working,
+        }
+    }
+
+    /// The word the pane border prints after the glyph.
+    #[must_use]
+    pub const fn reason(self) -> &'static str {
+        match self {
+            Self::Dead => "dead",
+            Self::Quiet(QuietKind::Done) => "done",
+            Self::Quiet(QuietKind::WaitingUser) => "waiting-user",
+            Self::Quiet(QuietKind::Blocked) => "blocked",
+            Self::Throttled => "throttled",
+            Self::Stale => "stale",
+            Self::Active => "working",
+            Self::Meta(SweepVerdict::MetaSweeping) => "sweeping",
+            Self::Meta(SweepVerdict::MetaWedged) => "wedged",
+            Self::Meta(SweepVerdict::MetaStarting) => "starting",
+        }
+    }
+
     /// The glyph the roster bar publishes for this verdict.
     #[must_use]
-    pub const fn glyph(self) -> &'static str {
-        match self {
-            Self::Dead => "✖",
-            Self::Quiet(QuietKind::Done) => "✔",
-            Self::Quiet(QuietKind::WaitingUser) => "⏳",
-            Self::Quiet(QuietKind::Blocked) => "⛔",
-            Self::Throttled => "⚡",
-            Self::Stale => "◌",
-            Self::Active => "●",
-            Self::Meta(verdict) => verdict.glyph(),
-        }
+    pub const fn glyph(self, icons: bool) -> &'static str {
+        self.mark().glyph(icons)
     }
 }
 
@@ -189,6 +218,10 @@ pub struct Accounting {
     pub effects: Vec<Effect>,
     /// The glyph verdict for the status line.
     pub verdict: Verdict,
+    /// Whether the pane produced output since the LAST capture — the spinner's
+    /// whole input. `Active` covers "moved recently" as well, so a verdict
+    /// alone cannot say whether anything is happening right now.
+    pub moved: bool,
 }
 
 /// `idle <n>m`, or `no recent events` when the age is absurd.
@@ -320,6 +353,7 @@ pub fn account(prior: &PaneState, seen: &Observation, knobs: &Knobs) -> Accounti
             next,
             effects,
             verdict: Verdict::Dead,
+            moved: false,
         };
     }
 
@@ -337,6 +371,7 @@ pub fn account(prior: &PaneState, seen: &Observation, knobs: &Knobs) -> Accounti
             next,
             effects,
             verdict: Verdict::Dead,
+            moved: false,
         };
     }
 
@@ -346,6 +381,7 @@ pub fn account(prior: &PaneState, seen: &Observation, knobs: &Knobs) -> Accounti
             next,
             effects,
             verdict,
+            moved: false,
         };
     }
 
@@ -365,6 +401,7 @@ pub fn account(prior: &PaneState, seen: &Observation, knobs: &Knobs) -> Accounti
             next,
             effects,
             verdict: Verdict::Quiet(kind),
+            moved: false,
         };
     }
 
@@ -375,6 +412,7 @@ pub fn account(prior: &PaneState, seen: &Observation, knobs: &Knobs) -> Accounti
             next,
             effects,
             verdict: Verdict::Throttled,
+            moved: false,
         };
     }
 
@@ -389,6 +427,8 @@ pub fn account(prior: &PaneState, seen: &Observation, knobs: &Knobs) -> Accounti
             next,
             effects,
             verdict: Verdict::Active,
+            // THE spinner's signal: this cycle's capture differs from the last.
+            moved: true,
         };
     }
 
@@ -409,6 +449,7 @@ pub fn account(prior: &PaneState, seen: &Observation, knobs: &Knobs) -> Accounti
             next,
             effects,
             verdict: Verdict::Active,
+            moved: false,
         };
     }
 
@@ -417,6 +458,7 @@ pub fn account(prior: &PaneState, seen: &Observation, knobs: &Knobs) -> Accounti
         next,
         effects,
         verdict: Verdict::Stale,
+        moved: false,
     }
 }
 
@@ -538,9 +580,70 @@ impl SendHelper {
     }
 }
 
-/// The glyph for a verdict nobody reached — an unstamped slot, or a roster entry
-/// whose pane this cycle never judged.
-const NEUTRAL_GLYPH: &str = "·";
+/// What one pass counted, gathered so the publish call stays one statement.
+struct Counts {
+    /// Panes that were neither dead nor stale.
+    active: usize,
+    /// Panes judged at all.
+    total: usize,
+    /// Panes whose process is gone.
+    dead: usize,
+    /// Panes silent past the window.
+    stale: usize,
+}
+
+/// One pane's verdict this cycle, and whether it moved during it.
+struct PaneMark {
+    /// The `%<n>` pane id.
+    pane: String,
+    /// What the accounting made of it.
+    verdict: Verdict,
+    /// Whether its capture differs from the previous cycle's.
+    moved: bool,
+}
+
+/// Everything one cycle publishes, gathered so the call reads as one statement.
+struct Published<'a> {
+    /// The agent strip.
+    roster: &'a str,
+    /// The watch bar's own glyph.
+    bar: &'a str,
+    /// How many panes were neither dead nor stale.
+    active: usize,
+    /// How many panes were judged at all.
+    total: usize,
+    /// Per-pane verdicts, in pane order.
+    by_pane: &'a [PaneMark],
+    /// The session's rolled-up mark.
+    attention: Mark,
+    /// The look to draw all of it in.
+    look: &'a Look,
+    /// The cycle counter the spinner advances on.
+    spin: u64,
+}
+
+/// The session's own mark: the most actionable thing any of its surfaces is
+/// saying, and [`Mark::Idle`] when none of them says anything.
+///
+/// BOTH inputs, because they do not cover the same ground: `by_pane` is what
+/// the panes that are there are doing, and `roster` carries the slots whose
+/// pane is NOT there — which the agent strip already draws as needs-you. A
+/// rollup that read only the first would leave the fleet strip calling a
+/// session idle while its own bar showed an agent missing.
+fn session_mark(by_pane: &[PaneMark], roster: &[Mark]) -> Mark {
+    by_pane
+        .iter()
+        .map(|entry| entry.verdict.mark())
+        .chain(roster.iter().copied())
+        .max_by_key(|mark| mark.rank())
+        .unwrap_or(Mark::Idle)
+}
+
+/// The glyph one pane contributes: the spinner while it is moving, its mark
+/// otherwise.
+fn pane_glyph(mark: Mark, moving: bool, look: &Look, spin: u64) -> String {
+    look.glyph(mark, moving, spin).to_owned()
+}
 
 /// Run the watchdog for one session until its session or its state goes away.
 ///
@@ -638,13 +741,24 @@ fn announce_start(server: &crate::inventory::ServerId, session: &str, work_dir: 
     let Some(session_id) = transport::observe_session_id(server, session) else {
         return;
     };
-    let _ = transport::publish_option(
-        server,
-        OptionScope::Session,
-        &session_id,
-        tmux::WATCHDOG_STATUS_OPTION,
-        "[watch ◌ starting]",
-    );
+    // The session's OWN look, not a frozen glyph: a session running the ASCII
+    // fallback would otherwise show one braille character until the first
+    // cycle replaced it. A look that did NOT answer publishes nothing here: the
+    // first cycle says it instead, in a look it actually read.
+    if let Some(read) = transport::observe_look(server, session) {
+        let look = Look::read(&read.icons, &read.palette, &read.drawn, &read.motion);
+        let _ = transport::publish_option(
+            server,
+            OptionScope::Session,
+            &session_id,
+            tmux::WATCHDOG_STATUS_OPTION,
+            &format!(
+                "#[fg={}]{} starting",
+                look.palette.dim,
+                Mark::Stale.glyph(look.icons)
+            ),
+        );
+    }
     crate::watchdog_glue::publish_branch(
         server,
         &session_id,
@@ -875,6 +989,18 @@ struct Carry {
     /// The rotating stabilization budget, whose cursor indexes THIS server's
     /// pane enumeration.
     quiet: QuietCycle,
+    /// The cycle counter the spinner advances on — one frame per cycle, which
+    /// is what "moving" means at this cadence.
+    spin: u64,
+    /// The last look this daemon actually READ, and `None` until one answers.
+    ///
+    /// Carried so that a cycle whose read failed draws in the look it saw last
+    /// rather than in a guess: the alternative is a session with the theme off,
+    /// or in another palette, being repainted in ae's default because one tmux
+    /// call did not answer. Before the FIRST successful read there is no last
+    /// look either, and a default would be that same guess — so nothing which
+    /// depends on the look is published at all until one arrives.
+    look: Option<Look>,
 }
 
 impl Carry {
@@ -883,6 +1009,8 @@ impl Carry {
             panes: Vec::new(),
             missing: Vec::new(),
             quiet: QuietCycle::new(knobs.quiet_panes_per_cycle),
+            spin: 0,
+            look: None,
         }
     }
 
@@ -956,7 +1084,18 @@ pub(crate) fn clear_published(server: &crate::inventory::ServerId, session: &str
     // `&=`, NEVER `&&` and never an early return: every option must still be
     // attempted after one of them fails.
     let mut ok = true;
-    for name in [tmux::WATCHDOG_STATUS_OPTION, tmux::AGENTS_STATUS_OPTION] {
+    // EVERY session-scoped value this daemon publishes. A fleet strip or an
+    // attention rank left behind would keep asserting a session nobody is
+    // watching — and every OTHER session on the server reads those two.
+    for name in [
+        tmux::WATCHDOG_STATUS_OPTION,
+        tmux::AGENTS_STATUS_OPTION,
+        theme::ATTENTION_GLYPH_OPTION,
+        theme::ATTENTION_RANK_OPTION,
+        theme::ATTENTION_STYLE_OPTION,
+        theme::FLEET_STRIP_OPTION,
+        theme::GOAL_OPTION,
+    ] {
         ok &= transport::clear_option(server, OptionScope::Session, &session_id, name);
     }
     // The branch pair is published by THIS daemon too, so it is retracted with
@@ -967,7 +1106,7 @@ pub(crate) fn clear_published(server: &crate::inventory::ServerId, session: &str
         return false;
     };
     let mut cleared: Vec<String> = Vec::new();
-    for pane in panes {
+    for pane in &panes {
         if cleared.contains(&pane.window_id) {
             continue;
         }
@@ -978,6 +1117,13 @@ pub(crate) fn clear_published(server: &crate::inventory::ServerId, session: &str
             &pane.window_id,
             tmux::WINDOW_STATUS_OPTION,
         );
+    }
+    // The per-pane half: a border title that outlived its watchdog would keep
+    // naming a state nothing is judging any more.
+    for pane in &panes {
+        for name in [theme::PANE_STATE_OPTION, theme::PANE_ACCENT_OPTION] {
+            ok &= transport::clear_option(server, OptionScope::Pane, &pane.pane_id, name);
+        }
     }
     ok
 }
@@ -1050,8 +1196,8 @@ impl Cycle<'_> {
         let mut total = 0_usize;
         let mut dead = 0_usize;
         let mut stale = 0_usize;
-        let mut by_slot: Vec<(String, Verdict)> = Vec::new();
-        let mut by_pane: Vec<(String, Verdict)> = Vec::new();
+        let mut by_slot: Vec<(String, Verdict, bool)> = Vec::new();
+        let mut by_pane: Vec<PaneMark> = Vec::new();
 
         for pane in &observed {
             let Some(agent) = pane.agent.as_deref().filter(|name| !name.is_empty()) else {
@@ -1119,50 +1265,225 @@ impl Cycle<'_> {
                 Verdict::Stale => stale += 1,
                 _ => active += 1,
             }
-            by_slot.push((slot, booked.verdict));
-            by_pane.push((pane.pane_id.clone(), booked.verdict));
+            by_slot.push((slot, booked.verdict, booked.moved));
+            by_pane.push(PaneMark {
+                pane: pane.pane_id.clone(),
+                verdict: booked.verdict,
+                moved: booked.moved,
+            });
         }
         carry.quiet.end(index);
+        self.close(
+            carry,
+            &Counts {
+                active,
+                total,
+                dead,
+                stale,
+            },
+            &by_slot,
+            &by_pane,
+            &live,
+            err,
+        )
+    }
+
+    /// The cycle's last step: compose the strips in this session's look, then
+    /// publish everything one pass produced.
+    fn close(
+        &self,
+        carry: &mut Carry,
+        counts: &Counts,
+        by_slot: &[(String, Verdict, bool)],
+        by_pane: &[PaneMark],
+        live: &[String],
+        err: &mut impl Write,
+    ) -> crate::Result<()> {
+        // The LOOK is re-read every cycle, so flipping `@ae_icons` on a live
+        // session takes effect on the next one rather than at the next launch.
+        // A read that did not answer keeps the last one and RECONCILES NOTHING:
+        // rewriting a layout from a look ae did not actually read is how a
+        // theme-off session gets repainted by the daemon that is meant to
+        // respect it.
+        let read = self.look();
+        let Some(look) = read.or(carry.look) else {
+            // No look has EVER answered on this session. Publishing now would
+            // mean choosing colours ae was never told to use, and restamping
+            // every window in them; the next cycle asks again.
+            return Ok(());
+        };
+        carry.look = Some(look);
+        carry.spin = carry.spin.wrapping_add(1);
+        if read.is_some() {
+            self.reconcile_look(&look);
+        }
         // The roster is composed from the PRIOR debounce state, then the state
-        // is advanced, so a slot's first absent cycle
-        // renders neutral and only the second renders ✖.
-        let roster = self.roster_line(&by_slot, &carry.missing);
-        self.sweep_missing(&live, &mut carry.missing, err)?;
-        self.publish(&roster, bar_glyph(dead, stale), active, total, &by_pane);
+        // is advanced, so a slot's first absent cycle renders neutral and only
+        // the second renders the needs-you mark.
+        let roster = self.roster_line(by_slot, &carry.missing, &look, carry.spin);
+        // The SAME judgement the roster line just drew, rolled up: one snapshot
+        // behind every surface, so the strip and the bar cannot disagree.
+        let slots: Vec<Mark> = self
+            .roster
+            .iter()
+            .map(|entry| slot_mark(entry, by_slot, &carry.missing).0)
+            .collect();
+        self.sweep_missing(live, &mut carry.missing, err)?;
+        self.publish(&Published {
+            roster: &roster,
+            bar: bar_glyph(counts.dead, counts.stale, look.icons),
+            active: counts.active,
+            total: counts.total,
+            by_pane,
+            attention: session_mark(by_pane, &slots),
+            look: &look,
+            spin: carry.spin,
+        });
         Ok(())
+    }
+
+    /// Rewrite the LAYOUT when the look has moved under it.
+    ///
+    /// The values this daemon publishes follow the look every cycle, but the
+    /// two status lines and the per-window styles are written once, at launch.
+    /// So a `@ae_palette` or `@ae_look` changed on a live session would leave
+    /// the bar half in the old look for as long as the session ran. The stamp
+    /// is what the layout was written FOR; when it and the live look disagree,
+    /// the layout is written again — or taken off, which unsets the session
+    /// options and hands the user's own global status line back.
+    fn reconcile_look(&self, look: &Look) {
+        let Some(session_id) = transport::observe_session_id(self.server, self.session) else {
+            return;
+        };
+        let stamped =
+            transport::observe_session_option(self.server, self.session, theme::LOOK_STAMP_OPTION)
+                .unwrap_or_default();
+        if stamped == look.stamp() {
+            return;
+        }
+        // `&=`, never `&&`: every option is attempted even after one fails, and
+        // the STAMP is only advanced when all of them landed. A stamp written
+        // over a partial repaint would tell every later cycle the work was
+        // done — which is how a session keeps ae's borders after `theme = off`.
+        let mut ok = true;
+        if look.drawn {
+            for (option, value) in theme::layout_options(look, self.session) {
+                ok &= transport::publish_option(
+                    self.server,
+                    OptionScope::Session,
+                    &session_id,
+                    &option,
+                    &value,
+                );
+            }
+        } else {
+            for option in theme::LAYOUT_OPTIONS {
+                ok &=
+                    transport::clear_option(self.server, OptionScope::Session, &session_id, option);
+            }
+        }
+        ok &= self.reconcile_windows(look);
+        if !ok {
+            return;
+        }
+        let _ = transport::publish_option(
+            self.server,
+            OptionScope::Session,
+            &session_id,
+            theme::LOOK_STAMP_OPTION,
+            &look.stamp(),
+        );
+    }
+
+    /// The window half of [`Cycle::reconcile_look`]: restamp every window in
+    /// the new look, or unset the options the old one wrote.
+    fn reconcile_windows(&self, look: &Look) -> bool {
+        // An enumeration that did not RUN is not an empty session: reporting
+        // success here would advance the stamp over windows nobody looked at.
+        let Some(panes) = transport::observe_window_panes(self.server, self.session) else {
+            return false;
+        };
+        let mut ok = true;
+        let mut done: Vec<&str> = Vec::new();
+        for pane in &panes {
+            if done.contains(&pane.window_id.as_str()) {
+                continue;
+            }
+            done.push(&pane.window_id);
+            if look.drawn {
+                ok &= crate::session_launch::stamp_window(self.server, &pane.window_id, look);
+            } else {
+                for option in theme::window_option_names() {
+                    ok &= transport::clear_option(
+                        self.server,
+                        OptionScope::Window,
+                        &pane.window_id,
+                        &option,
+                    );
+                }
+            }
+        }
+        ok
+    }
+
+    /// The look this session is drawn in, as its own options declare it.
+    fn look(&self) -> Option<Look> {
+        let read = transport::observe_look(self.server, self.session)?;
+        Some(Look::read(
+            &read.icons,
+            &read.palette,
+            &read.drawn,
+            &read.motion,
+        ))
     }
 
     /// This cycle's roster line, from the daemon's own roster.
     fn roster_line(
         &self,
-        by_slot: &[(String, Verdict)],
+        by_slot: &[(String, Verdict, bool)],
         missing: &[(String, MissingState)],
+        look: &Look,
+        spin: u64,
     ) -> String {
-        roster_line(&self.roster, by_slot, missing)
+        roster_line(&self.roster, by_slot, missing, look, spin)
     }
 
     /// Publish this cycle's verdicts as tmux user options.
-    fn publish(
-        &self,
-        roster: &str,
-        glyph: &str,
-        active: usize,
-        total: usize,
-        by_pane: &[(String, Verdict)],
-    ) {
+    fn publish(&self, published: &Published<'_>) {
         let Some(session_id) = transport::observe_session_id(self.server, self.session) else {
             return;
         };
-        let _ = transport::publish_option(
-            self.server,
-            OptionScope::Session,
-            &session_id,
-            tmux::WATCHDOG_STATUS_OPTION,
-            &format!("[watch {glyph} {active}/{total}]"),
+        let look = published.look;
+        let set = |name: &str, value: &str| {
+            let _ = transport::publish_option(
+                self.server,
+                OptionScope::Session,
+                &session_id,
+                name,
+                value,
+            );
+        };
+        set(tmux::WATCHDOG_STATUS_OPTION, &watch_segment(published));
+        // THE SESSION'S OWN ATTENTION, published as three facts: the glyph it
+        // draws with, the rank another session's strip sorts on, and the style
+        // its name segment is drawn in. Any session on this server can read
+        // them, which is what makes the strip one tmux call rather than a walk
+        // of every session's state.
+        set(
+            theme::ATTENTION_GLYPH_OPTION,
+            published.attention.glyph(look.icons),
+        );
+        set(
+            theme::ATTENTION_RANK_OPTION,
+            &published.attention.rank().to_string(),
+        );
+        set(
+            theme::ATTENTION_STYLE_OPTION,
+            &theme::attention_style(&look.palette, published.attention),
         );
         // An EMPTY roster is UNSET, never published as "": a roster outliving
         // its agents would keep asserting a fleet that no longer exists.
-        let _ = if roster.is_empty() {
+        let _ = if published.roster.is_empty() {
             transport::clear_option(
                 self.server,
                 OptionScope::Session,
@@ -1175,31 +1496,96 @@ impl Cycle<'_> {
                 OptionScope::Session,
                 &session_id,
                 tmux::AGENTS_STATUS_OPTION,
-                roster,
+                published.roster,
             )
         };
-        self.publish_windows(by_pane);
+        // The GOAL, ahead of the path on the right: what this session is for
+        // outranks where its files are, and the path is the fact the reader's
+        // own shell prompt already carries.
+        match self
+            .goal
+            .as_deref()
+            .map(str::trim)
+            .filter(|g| !g.is_empty())
+        {
+            Some(goal) => set(
+                theme::GOAL_OPTION,
+                &format!(" {}", theme::bar_text(goal, theme::GOAL_WIDTH)),
+            ),
+            None => {
+                let _ = transport::clear_option(
+                    self.server,
+                    OptionScope::Session,
+                    &session_id,
+                    theme::GOAL_OPTION,
+                );
+            }
+        }
+        self.publish_fleet(&session_id, look);
+        self.publish_windows(published);
     }
 
-    /// Per-window glyphs, grouped from the SAME per-pane verdicts in pane order.
-    fn publish_windows(&self, by_pane: &[(String, Verdict)]) {
+    /// The fleet strip: every ae session on THIS server, as each one's own
+    /// watchdog described itself.
+    fn publish_fleet(&self, session_id: &str, look: &Look) {
+        let Some(sessions) = transport::observe_fleet_sessions(self.server) else {
+            return;
+        };
+        let rows: Vec<theme::FleetRow> = sessions
+            .iter()
+            .map(|entry| theme::FleetRow {
+                name: entry.name.clone(),
+                id: entry.id.clone(),
+                mark: Mark::from_rank(&entry.rank),
+                current: entry.name == self.session,
+            })
+            .collect();
+        let _ = transport::publish_option(
+            self.server,
+            OptionScope::Session,
+            session_id,
+            theme::FLEET_STRIP_OPTION,
+            &theme::fleet_strip(look, &rows),
+        );
+    }
+
+    /// Per-window marks and per-pane state, grouped from the SAME per-pane
+    /// verdicts in pane order — and the theme, restamped on any window that
+    /// appeared since the launch dressed the session.
+    fn publish_windows(&self, published: &Published<'_>) {
         let Some(panes) = transport::observe_window_panes(self.server, self.session) else {
             return;
         };
+        let look = published.look;
         let mut windows: Vec<(String, String)> = Vec::new();
         for pane in &panes {
             let glyphs = entry_mut(&mut windows, &pane.window_id);
             let Some(agent) = pane.agent.as_deref().filter(|name| !name.is_empty()) else {
                 continue;
             };
+            // The DRAWN name, BEFORE the agent filter and every cycle: a
+            // session upgraded in place carries an identity and no label, and
+            // the border format reads the label — so an unbackfilled pane, the
+            // monitor's own included, would draw a blank title from the moment
+            // the look reached it.
+            let _ = transport::publish_option(
+                self.server,
+                OptionScope::Pane,
+                &pane.pane_id,
+                theme::AGENT_LABEL_OPTION,
+                &theme::agent_label(agent),
+            );
             if NON_AGENT_PANES.contains(&agent) {
                 continue;
             }
-            let glyph = by_pane
+            let found = published
+                .by_pane
                 .iter()
-                .find(|(pane_id, _)| *pane_id == pane.pane_id)
-                .map_or(NEUTRAL_GLYPH, |(_, verdict)| verdict.glyph());
-            glyphs.push_str(glyph);
+                .find(|entry| entry.pane == pane.pane_id);
+            let mark = found.map_or(Mark::Idle, |entry| entry.verdict.mark());
+            let moving = found.is_some_and(|entry| entry.moved);
+            glyphs.push_str(&pane_glyph(mark, moving, look, published.spin));
+            self.publish_pane_state(&pane.pane_id, found, look, published.spin);
         }
         for (window_id, glyphs) in &windows {
             let _ = transport::publish_option(
@@ -1210,6 +1596,44 @@ impl Cycle<'_> {
                 glyphs,
             );
         }
+        // A window created after the launch — by a spawn on an older core, or
+        // by the human — carries no stamp, so it is dressed here rather than
+        // left on the user's global window table.
+        let mut dressed: Vec<&str> = Vec::new();
+        for pane in &panes {
+            if pane.theme == theme::window_stamp(look) || dressed.contains(&pane.window_id.as_str())
+            {
+                continue;
+            }
+            dressed.push(&pane.window_id);
+            crate::session_launch::stamp_window(self.server, &pane.window_id, look);
+        }
+    }
+
+    /// One pane's border state: its mark, and the word behind it.
+    fn publish_pane_state(&self, pane: &str, found: Option<&PaneMark>, look: &Look, spin: u64) {
+        let Some(entry) = found else {
+            return;
+        };
+        let mark = entry.verdict.mark();
+        let glyph = pane_glyph(mark, entry.moved, look, spin);
+        let _ = transport::publish_option(
+            self.server,
+            OptionScope::Pane,
+            pane,
+            theme::PANE_STATE_OPTION,
+            &theme::pane_state(&look.palette, mark, &glyph, entry.verdict.reason()),
+        );
+        // The ACCENT alone, for the active border: a style option is
+        // format-expanded, so the border colour follows the pane it belongs to
+        // without a style written per pane.
+        let _ = transport::publish_option(
+            self.server,
+            OptionScope::Pane,
+            pane,
+            theme::PANE_ACCENT_OPTION,
+            look.palette.accent(mark),
+        );
     }
 
     /// The recorded binary for a slot, or `None` when the roster has none —
@@ -1423,47 +1847,70 @@ impl Cycle<'_> {
     }
 }
 
-/// The roster line for `@ae_agents_status`: `<label><glyph>`, space-joined, in
-/// META ORDER.
+/// The roster line for `@ae_agents_status`: `<label><mark>`, space-joined, in
+/// META ORDER, each mark in its own accent.
+///
+/// The style directives are ae's own and the LABEL is not escaped: measured on
+/// tmux 3.7b, a user option's value interpolates LITERALLY — `##` renders as
+/// two characters and `#{…}` is not re-expanded — so doubling would show. What
+/// the drawer does still read out of a value is `#[…]`, which is why the label
+/// goes through [`theme::bar_text`] first: the name comes off a hand-editable
+/// meta, and `config::is_agent_name` guarded it when it was WRITTEN, not when
+/// it was read back.
 fn roster_line(
     roster: &[RosterEntry],
-    by_slot: &[(String, Verdict)],
+    by_slot: &[(String, Verdict, bool)],
     missing: &[(String, MissingState)],
+    look: &Look,
+    spin: u64,
 ) -> String {
     roster
         .iter()
         .map(|entry| {
-            let glyph = by_slot
-                .iter()
-                .find(|(slot, _)| *slot == entry.slot)
-                .map_or_else(
-                    || {
-                        let seen_absent = missing
-                            .iter()
-                            .any(|(slot, state)| *slot == entry.slot && state.streak > 0);
-                        if seen_absent {
-                            Verdict::Dead.glyph()
-                        } else {
-                            NEUTRAL_GLYPH
-                        }
-                    },
-                    |(_, verdict)| verdict.glyph(),
-                );
-            format!("{}{glyph}", roster_label(&entry.reference()))
+            let (mark, moving) = slot_mark(entry, by_slot, missing);
+            format!(
+                "{}{}{}#[default]",
+                roster_label(&entry.reference()),
+                theme::mark_style(&look.palette, mark),
+                pane_glyph(mark, moving, look, spin),
+            )
         })
         .collect::<Vec<_>>()
         .join(" ")
 }
 
-/// `opus5:builder` -> `builder`, with control bytes stripped.
+/// What ONE roster entry is saying, and whether its pane moved this cycle.
+///
+/// The single owner of that judgement: the roster line, the session's rolled-up
+/// attention and therefore every other session's fleet strip all read it here,
+/// so a slot whose pane has gone missing cannot say "needs you" on one surface
+/// and "idle" on another.
+fn slot_mark(
+    entry: &RosterEntry,
+    by_slot: &[(String, Verdict, bool)],
+    missing: &[(String, MissingState)],
+) -> (Mark, bool) {
+    let found = by_slot.iter().find(|(slot, _, _)| *slot == entry.slot);
+    let mark = found.map_or_else(
+        || {
+            let seen_absent = missing
+                .iter()
+                .any(|(slot, state)| *slot == entry.slot && state.streak > 0);
+            if seen_absent {
+                Mark::NeedsYou
+            } else {
+                Mark::Idle
+            }
+        },
+        |(_, verdict, _)| verdict.mark(),
+    );
+    (mark, found.is_some_and(|(_, _, moved)| *moved))
+}
+
+/// `opus5:builder` -> `builder`, as an option VALUE can carry it.
 fn roster_label(reference: &str) -> String {
-    reference
-        .rsplit(':')
-        .next()
-        .unwrap_or(reference)
-        .chars()
-        .filter(|c| !c.is_control())
-        .collect()
+    let bare = reference.rsplit(':').next().unwrap_or(reference);
+    theme::bar_text(bare, theme::LABEL_WIDTH)
 }
 
 /// The carried state for `key`, created on first sight.
@@ -1526,13 +1973,34 @@ fn session_name(meta_bytes: &[u8], meta_dir: &Path) -> String {
 }
 
 /// The watchdog bar's glyph, from the cycle's COUNTS.
-fn bar_glyph(dead: usize, stale: usize) -> &'static str {
+/// The watch segment of the bar.
+///
+/// A HEALTHY watch says only that it is watching: the counts are a monitoring
+/// fact, and the bar is a hierarchy where the session, its windows and its
+/// agents come first. The moment a pane is dead or stale the counts come back,
+/// in the mark's own accent, because then they are the news.
+fn watch_segment(published: &Published<'_>) -> String {
+    let look = published.look;
+    let healthy = published.active == published.total;
+    if healthy {
+        return format!("#[fg={}]{}", look.palette.dim, published.bar);
+    }
+    format!(
+        "#[fg={}]{} {}/{}#[default]",
+        look.palette.accent(published.attention),
+        published.bar,
+        published.active,
+        published.total,
+    )
+}
+
+fn bar_glyph(dead: usize, stale: usize, icons: bool) -> &'static str {
     if dead > 0 {
-        Verdict::Dead.glyph()
+        Verdict::Dead.glyph(icons)
     } else if stale > 0 {
-        Verdict::Stale.glyph()
+        Verdict::Stale.glyph(icons)
     } else {
-        Verdict::Active.glyph()
+        Verdict::Active.glyph(icons)
     }
 }
 
@@ -1545,6 +2013,7 @@ mod tests {
         last_actor_event_age, nudge_text, read_events, rebind, record_nudge, roster_label,
         roster_line, session_name, stale_display, sweep_effects,
     };
+    use super::{Look, Mark, PaneMark, session_mark};
     use crate::events::Event;
     use crate::inventory::ServerId;
     use crate::meta::{Meta, RosterEntry, Selector};
@@ -1780,8 +2249,9 @@ mod tests {
             cleared
                 .matches(concat!("ok &= transport::", "clear_option"))
                 .count(),
-            2,
-            "every clear folds into the accumulator, at BOTH scopes (session and window)"
+            3,
+            "every clear folds into the accumulator, at ALL THREE scopes (session, window \
+             and pane)"
         );
         assert_eq!(
             cleared
@@ -2143,31 +2613,75 @@ mod tests {
 
     #[test]
     fn the_bar_has_only_three_faces_and_ranks_dead_over_stale() {
-        assert_eq!(bar_glyph(0, 0), Verdict::Active.glyph());
-        assert_eq!(bar_glyph(0, 3), Verdict::Stale.glyph());
-        assert_eq!(bar_glyph(1, 3), Verdict::Dead.glyph());
-        assert_eq!(bar_glyph(1, 0), Verdict::Dead.glyph());
-        // A throttled or quiet agent is counted ACTIVE for the bar, so no other
-        // glyph can reach it — `[watch ⚡ …]` is not a thing the bar says.
-        for glyph in [
-            Verdict::Throttled.glyph(),
-            Verdict::Quiet(QuietKind::Done).glyph(),
+        for icons in [true, false] {
+            assert_eq!(bar_glyph(0, 0, icons), Verdict::Active.glyph(icons));
+            assert_eq!(bar_glyph(0, 3, icons), Verdict::Stale.glyph(icons));
+            assert_eq!(bar_glyph(1, 3, icons), Verdict::Dead.glyph(icons));
+            assert_eq!(bar_glyph(1, 0, icons), Verdict::Dead.glyph(icons));
+        }
+        // A dead pane keeps its own mark, and it outranks everything: a bar
+        // showing a finish while a process is gone would be a lie.
+        assert_eq!(bar_glyph(1, 3, true), Mark::Dead.glyph(true));
+        assert_ne!(bar_glyph(1, 0, true), bar_glyph(0, 3, true));
+    }
+
+    /// Ten verdicts, six marks: the mapping is the whole vocabulary the status
+    /// bar, the pane borders and the picker share.
+    #[test]
+    fn every_verdict_maps_onto_one_of_the_marks() {
+        for (verdict, mark, reason) in [
+            (Verdict::Dead, Mark::Dead, "dead"),
+            (
+                Verdict::Quiet(QuietKind::WaitingUser),
+                Mark::NeedsYou,
+                "waiting-user",
+            ),
+            (
+                Verdict::Quiet(QuietKind::Blocked),
+                Mark::NeedsYou,
+                "blocked",
+            ),
+            (Verdict::Throttled, Mark::NeedsYou, "throttled"),
+            (Verdict::Quiet(QuietKind::Done), Mark::Done, "done"),
+            (Verdict::Stale, Mark::Stale, "stale"),
+            (Verdict::Active, Mark::Working, "working"),
+            (
+                Verdict::Meta(SweepVerdict::MetaSweeping),
+                Mark::Working,
+                "sweeping",
+            ),
+            (
+                Verdict::Meta(SweepVerdict::MetaWedged),
+                Mark::NeedsYou,
+                "wedged",
+            ),
+            (
+                Verdict::Meta(SweepVerdict::MetaStarting),
+                Mark::Stale,
+                "starting",
+            ),
         ] {
-            assert_ne!(bar_glyph(0, 0), glyph);
-            assert_ne!(bar_glyph(0, 1), glyph);
-            assert_ne!(bar_glyph(1, 1), glyph);
+            assert_eq!(verdict.mark(), mark, "{verdict:?}");
+            assert_eq!(verdict.reason(), reason, "{verdict:?}");
+            assert_eq!(verdict.glyph(true), mark.glyph(true), "{verdict:?}");
+            assert_eq!(verdict.glyph(false), mark.glyph(false), "{verdict:?}");
         }
     }
 
     #[test]
-    fn every_verdict_publishes_the_frozen_glyph() {
-        assert_eq!(Verdict::Dead.glyph(), "✖");
-        assert_eq!(Verdict::Quiet(QuietKind::Done).glyph(), "✔");
-        assert_eq!(Verdict::Quiet(QuietKind::WaitingUser).glyph(), "⏳");
-        assert_eq!(Verdict::Quiet(QuietKind::Blocked).glyph(), "⛔");
-        assert_eq!(Verdict::Throttled.glyph(), "⚡");
-        assert_eq!(Verdict::Stale.glyph(), "◌");
-        assert_eq!(Verdict::Active.glyph(), "●");
+    fn every_mark_publishes_the_frozen_glyph_and_its_ascii_fallback() {
+        assert_eq!(Mark::Dead.glyph(true), "✖");
+        assert_eq!(Mark::Dead.glyph(false), "x");
+        assert_eq!(Mark::NeedsYou.glyph(true), "⚠");
+        assert_eq!(Mark::Working.glyph(true), "●");
+        assert_eq!(Mark::Done.glyph(true), "✓");
+        assert_eq!(Mark::Stale.glyph(true), "◌");
+        assert_eq!(Mark::Idle.glyph(true), "·");
+        assert_eq!(Mark::NeedsYou.glyph(false), "!");
+        assert_eq!(Mark::Working.glyph(false), "*");
+        assert_eq!(Mark::Done.glyph(false), "+");
+        assert_eq!(Mark::Stale.glyph(false), "?");
+        assert_eq!(Mark::Idle.glyph(false), "-");
     }
 
     /// A roster entry as `meta` records one.
@@ -2182,14 +2696,126 @@ mod tests {
     }
 
     #[test]
-    fn the_roster_label_is_the_name_half_with_control_bytes_stripped() {
+    fn the_roster_label_is_the_name_half_and_can_carry_no_style() {
         assert_eq!(roster_label("opus5:builder"), "builder");
         assert_eq!(roster_label("lead"), "lead");
         // Control bytes corrupt the bar's RENDERING, not merely its text.
-        assert_eq!(roster_label("cl:bui\u{7}lder\u{1b}"), "builder");
-        // `#` and `%` are NOT escaped here: a user option's value interpolates
-        // literally, so doubling them would render doubled.
-        assert_eq!(roster_label("cl:a#b%c"), "a#b%c");
+        assert_eq!(roster_label("cl:bui\u{7}lder\u{1b}"), "bui lder");
+        // `%` is NOT escaped: a user option's value interpolates literally, so
+        // doubling it would render doubled. `#` IS dropped, because the drawer
+        // still reads `#[…]` out of a value and this name came back off a
+        // hand-editable meta rather than through `config::is_agent_name`.
+        assert_eq!(roster_label("cl:a%c"), "a%c");
+        assert_eq!(roster_label("cl:evil#[bg=red]"), "evil[bg=red]");
+        assert!(!roster_label("#[bg=red]lead").contains('#'));
+    }
+
+    /// A seat name a human typed into the meta reaches the agent strip, and the
+    /// strip is an option value the drawer reads styles out of.
+    #[test]
+    fn a_hostile_seat_name_cannot_style_the_agent_strip() {
+        let roster = vec![RosterEntry {
+            slot: "main".to_owned(),
+            name: "evil#[bg=red,fg=black]".to_owned(),
+            profile: None,
+            binary: None,
+            harness_session: None,
+        }];
+        let by_slot = vec![("main".to_owned(), Verdict::Active, false)];
+        let drawn = roster_line(&roster, &by_slot, &[], &look(), 0);
+        // A style directive needs its `#[`. Without one the text is just text,
+        // which is why the name is allowed to keep its brackets.
+        assert!(
+            !drawn.contains("#[bg="),
+            "a seat name must not reach the drawer as a style: {drawn}"
+        );
+        assert_eq!(
+            drawn.matches("#[").count(),
+            2,
+            "the only directives are ae's own — the mark's accent and its reset: {drawn}"
+        );
+        assert!(drawn.contains("evil"), "the name itself survives: {drawn}");
+    }
+
+    /// A daemon that has never READ a look publishes nothing that depends on
+    /// one — no verdicts, no fleet strip, and above all no restamped windows.
+    ///
+    /// The carry's start is asserted directly; the ORDER is read off the source,
+    /// because reaching `close` needs a live server and the property is about
+    /// which statement comes first.
+    #[test]
+    fn a_daemon_that_has_never_read_a_look_publishes_nothing() {
+        let knobs = Knobs::default();
+        assert_eq!(
+            Carry::new(&knobs).look,
+            None,
+            "a default look would be the same guess the fallback exists to avoid"
+        );
+        let source = include_str!("watchdog_daemon.rs");
+        let close = source
+            .split_once("fn close(")
+            .map(|(_, body)| body.split_once("\n    }\n").map_or(body, |(head, _)| head))
+            .expect("close is defined in this file");
+        let bail = close
+            .find("return Ok(());")
+            .expect("close gives up when no look has ever answered");
+        let publish = close
+            .find(concat!("self.", "publish(&Published"))
+            .expect("close publishes the cycle");
+        assert!(
+            bail < publish,
+            "the give-up must come BEFORE anything look-dependent is published"
+        );
+        assert!(
+            close.contains("carry.look = Some(look);"),
+            "and a successful read is remembered for the next failed one"
+        );
+    }
+
+    /// The drawn name is backfilled for EVERY pane, monitor panes included,
+    /// before the filter that drops them from the mark rollup.
+    #[test]
+    fn the_drawn_name_is_backfilled_ahead_of_the_agent_filter() {
+        let source = include_str!("watchdog_daemon.rs");
+        let windows = source
+            .split_once("fn publish_windows(")
+            .map(|(_, body)| body.split_once("\n    }\n").map_or(body, |(head, _)| head))
+            .expect("publish_windows is defined in this file");
+        let label = windows
+            .find("AGENT_LABEL_OPTION")
+            .expect("the cycle backfills the drawn name");
+        let filter = windows
+            .find("NON_AGENT_PANES.contains")
+            .expect("the cycle drops the monitor's own panes from the rollup");
+        assert!(
+            label < filter,
+            "a monitor pane is filtered out of the MARKS and still draws a border title, \
+             so its label must be written before the filter"
+        );
+    }
+
+    /// The look every roster assertion below is written against.
+    fn look() -> Look {
+        Look {
+            palette: crate::theme::Palette::NEUTRAL,
+            ..Look::DEFAULT
+        }
+    }
+
+    /// The roster line with its `#[…]` style directives removed, so an
+    /// assertion is about the VOCABULARY rather than about the palette.
+    fn plain(line: &str) -> String {
+        let mut out = String::new();
+        let mut rest = line;
+        while let Some(open) = rest.find("#[") {
+            out.push_str(&rest[..open]);
+            match rest[open..].find(']') {
+                Some(close) => rest = &rest[open + close + 1..],
+                None => return out,
+            }
+        }
+        out.push_str(rest);
+        out
     }
 
     #[test]
@@ -2202,24 +2828,64 @@ mod tests {
         // Two registrations SHARE a display ref and differ only by slot — the
         // case that makes ref-keying wrong.
         let by_slot = vec![
-            ("main".to_owned(), Verdict::Active),
-            ("worker.0".to_owned(), Verdict::Stale),
-            ("spawned.0".to_owned(), Verdict::Quiet(QuietKind::Done)),
+            ("main".to_owned(), Verdict::Active, false),
+            ("worker.0".to_owned(), Verdict::Stale, false),
+            (
+                "spawned.0".to_owned(),
+                Verdict::Quiet(QuietKind::Done),
+                false,
+            ),
         ];
         assert_eq!(
-            roster_line(&roster, &by_slot, &[]),
-            "lead● twin◌ twin✔",
+            plain(&roster_line(&roster, &by_slot, &[], &look(), 0)),
+            "lead● twin◌ twin✓",
             "each slot renders its OWN verdict"
+        );
+        // The ASCII fallback is the same line in the other vocabulary.
+        let ascii = Look {
+            icons: false,
+            ..look()
+        };
+        assert_eq!(
+            plain(&roster_line(&roster, &by_slot, &[], &ascii, 0)),
+            "lead* twin? twin+"
+        );
+    }
+
+    /// A pane that produced output since the last capture spins; one that only
+    /// moved recently does not.
+    #[test]
+    fn a_moving_pane_spins_where_a_merely_active_one_shows_its_mark() {
+        let roster = vec![entry("main", "cl", "lead")];
+        let moving = vec![("main".to_owned(), Verdict::Active, true)];
+        let settled = vec![("main".to_owned(), Verdict::Active, false)];
+        assert_eq!(
+            plain(&roster_line(&roster, &moving, &[], &look(), 3)),
+            format!("lead{}", crate::theme::spinner(3, true))
+        );
+        assert_eq!(
+            plain(&roster_line(&roster, &settled, &[], &look(), 3)),
+            "lead●"
+        );
+        // Only WORKING spins: a stale pane that somehow reported movement is
+        // still stale, and a spinner there would claim otherwise.
+        let stale = vec![("main".to_owned(), Verdict::Stale, true)];
+        assert_eq!(
+            plain(&roster_line(&roster, &stale, &[], &look(), 3)),
+            "lead◌"
         );
     }
 
     #[test]
     fn a_slot_with_no_pane_is_neutral_on_its_first_absent_cycle_and_dead_on_its_second() {
         let roster = vec![entry("main", "cl", "lead"), entry("worker.0", "cl", "w")];
-        let by_slot = vec![("main".to_owned(), Verdict::Active)];
+        let by_slot = vec![("main".to_owned(), Verdict::Active, false)];
         // First absence: the debounce has not recorded it yet.
-        assert_eq!(roster_line(&roster, &by_slot, &[]), "lead● w·");
-        // Second: the streak is recorded, and now it is ✖.
+        assert_eq!(
+            plain(&roster_line(&roster, &by_slot, &[], &look(), 0)),
+            "lead● w·"
+        );
+        // Second: the streak is recorded, and now it wants a human.
         let missing = vec![(
             "worker.0".to_owned(),
             MissingState {
@@ -2227,9 +2893,12 @@ mod tests {
                 alerted: true,
             },
         )];
-        assert_eq!(roster_line(&roster, &by_slot, &missing), "lead● w✖");
+        assert_eq!(
+            plain(&roster_line(&roster, &by_slot, &missing, &look(), 0)),
+            "lead● w⚠"
+        );
         // The debounce is keyed by SLOT: a streak against some other slot must
-        // not make this one ✖.
+        // not make this one say so.
         let elsewhere = vec![(
             "spawned.9".to_owned(),
             MissingState {
@@ -2237,14 +2906,72 @@ mod tests {
                 alerted: true,
             },
         )];
-        assert_eq!(roster_line(&roster, &by_slot, &elsewhere), "lead● w·");
+        assert_eq!(
+            plain(&roster_line(&roster, &by_slot, &elsewhere, &look(), 0)),
+            "lead● w·"
+        );
+    }
+
+    /// The session's own mark is the most actionable of its panes'.
+    #[test]
+    fn the_session_mark_is_the_rollup_of_its_panes() {
+        let pane = |pane: &str, verdict| PaneMark {
+            pane: pane.to_owned(),
+            verdict,
+            moved: false,
+        };
+        assert_eq!(session_mark(&[], &[]), Mark::Idle);
+        assert_eq!(
+            session_mark(
+                &[
+                    pane("%1", Verdict::Quiet(QuietKind::Done)),
+                    pane("%2", Verdict::Active),
+                ],
+                &[]
+            ),
+            Mark::Working
+        );
+        assert_eq!(
+            session_mark(
+                &[
+                    pane("%1", Verdict::Active),
+                    pane("%2", Verdict::Quiet(QuietKind::WaitingUser)),
+                ],
+                &[]
+            ),
+            Mark::NeedsYou,
+            "one agent waiting on the human makes the whole session say so"
+        );
+        assert_eq!(
+            session_mark(
+                &[pane("%1", Verdict::Stale), pane("%2", Verdict::Active)],
+                &[]
+            ),
+            Mark::Stale
+        );
+        // A slot whose PANE is gone says needs-you on the agent strip, so the
+        // session it belongs to has to say it too — the surfaces are one
+        // snapshot or they are a bug.
+        assert_eq!(
+            session_mark(
+                &[pane("%1", Verdict::Active)],
+                &[Mark::Idle, Mark::NeedsYou]
+            ),
+            Mark::NeedsYou,
+            "a missing agent must not leave the fleet strip calling the session calm"
+        );
+        assert_eq!(
+            session_mark(&[], &[Mark::Idle]),
+            Mark::Idle,
+            "a roster that is merely quiet says nothing"
+        );
     }
 
     #[test]
     fn an_empty_roster_composes_to_nothing_so_the_caller_can_unset_it() {
         // The caller UNSETS on empty rather than publishing "" — a roster
         // outliving its agents would keep asserting a fleet that is gone.
-        assert!(roster_line(&[], &[], &[]).is_empty());
+        assert!(roster_line(&[], &[], &[], &look(), 0).is_empty());
     }
 
     #[test]
@@ -2427,11 +3154,23 @@ mod tests {
         assert!(booked.next.dead_latched);
     }
 
+    /// The sweep verdicts fold into the shared marks like every other verdict:
+    /// the orchestrator's own eye glyph is gone, because a status bar with a
+    /// private symbol for one session's one seat is a bar nobody can read.
     #[test]
-    fn the_sweep_verdicts_render_the_frozen_roster_glyphs() {
-        assert_eq!(Verdict::Meta(SweepVerdict::MetaSweeping).glyph(), "👁");
-        assert_eq!(Verdict::Meta(SweepVerdict::MetaWedged).glyph(), "◌");
-        assert_eq!(Verdict::Meta(SweepVerdict::MetaStarting).glyph(), "·");
+    fn the_sweep_verdicts_render_the_shared_marks() {
+        assert_eq!(
+            Verdict::Meta(SweepVerdict::MetaSweeping).glyph(true),
+            Mark::Working.glyph(true)
+        );
+        assert_eq!(
+            Verdict::Meta(SweepVerdict::MetaWedged).glyph(true),
+            Mark::NeedsYou.glyph(true)
+        );
+        assert_eq!(
+            Verdict::Meta(SweepVerdict::MetaStarting).glyph(true),
+            Mark::Stale.glyph(true)
+        );
     }
 
     #[test]

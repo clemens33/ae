@@ -317,6 +317,16 @@ fn rename_moves_the_tmux_session_the_directory_and_the_meta_together() {
         rig.tmux(&["new-session", "-d", "-s", "before"]).0,
         "a live session to rename"
     );
+    // A verdict already on the session, as a watchdog would have published it.
+    for (name, value) in [
+        (ae::theme::ATTENTION_RANK_OPTION, "9"),
+        (ae::theme::ATTENTION_GLYPH_OPTION, "LIVE"),
+    ] {
+        assert!(
+            rig.tmux(&["set-option", "-t", "before", name, value]).0,
+            "seeding {name}"
+        );
+    }
 
     let (code, stdout, stderr) = rig.run(&[ae::cli::RENAME, "before", "after"]);
     assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
@@ -334,9 +344,23 @@ fn rename_moves_the_tmux_session_the_directory_and_the_meta_together() {
     // The manifest carries the name, so it is re-rendered under it.
     let manifest = std::fs::read_to_string(moved.join("workspace.md")).unwrap_or_default();
     assert!(manifest.contains("Session: after"), "{manifest}");
-    // The status bar carries it too.
-    let (_, left) = rig.tmux(&["show-options", "-v", "-t", "after", "status-left"]);
-    assert!(left.contains("[ae after]"), "{left}");
+    // The status bar carries it too — the session segment of line 0, which is
+    // where ae now draws the name.
+    let (_, line) = rig.tmux(&["show-options", "-v", "-t", "after", "status-format[0]"]);
+    assert!(line.contains("bold]after#["), "{line}");
+    assert!(!line.contains("before"), "{line}");
+    // The rename re-renders the LAYOUT and leaves the verdicts alone: those are
+    // the watchdog's, and every other session on this server sorts its fleet
+    // strip on them. A rename that re-seeded them would make this session claim
+    // to be stale, on its own bar and on everyone else's.
+    let published = |name: &str| {
+        rig.tmux(&["show-options", "-v", "-t", "after", name])
+            .1
+            .trim_end_matches('\n')
+            .to_owned()
+    };
+    assert_eq!(published(ae::theme::ATTENTION_RANK_OPTION), "9");
+    assert_eq!(published(ae::theme::ATTENTION_GLYPH_OPTION), "LIVE");
 }
 
 #[test]
