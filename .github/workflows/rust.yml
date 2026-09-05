@@ -381,7 +381,7 @@ jobs:
         run: |
           set -euo pipefail
           want="ae $(grep -m1 -E '^version = ' Cargo.toml | cut -d'"' -f2)"
-          got="$(./target/release/ae --version)"
+          got="$(./target/release/ae --version | head -n1)"
           [ "$got" = "$want" ] || { echo "::error::--version printed '$got', want '$want'"; exit 1; }
 
           # Exit codes are part of the contract. Capture the status explicitly:
@@ -451,7 +451,7 @@ jobs:
           # Same proof shape as the native lane: it prints what it should, and
           # its exit codes are the contract.
           want="ae $(grep -m1 -E '^version = ' Cargo.toml | cut -d'"' -f2)"
-          got="$("$bin" --version)"
+          got="$("$bin" --version | head -n1)"
           [ "$got" = "$want" ] || { echo "::error::musl --version printed '$got', want '$want'"; exit 1; }
 
           set +e

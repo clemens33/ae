@@ -600,7 +600,9 @@ bundle version platform binary:
     esac
     want="ae $version"
     if [ "$platform" = "$host_platform" ]; then
-        got="$("$binary" --version)"
+        # The FIRST line only: `--version` answers in two, the second naming the
+        # tmux this machine has, which is not part of the version claim.
+        got="$("$binary" --version | head -n1)"
         [ "$got" = "$want" ] || { echo "Error: --version printed '$got', want '$want'" >&2; exit 1; }
     else
         # -F IS LOAD-BEARING. Without it the dots in a CalVer version are BRE

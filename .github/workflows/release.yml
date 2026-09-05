@@ -70,7 +70,7 @@ jobs:
           version="${GITHUB_REF_NAME#v}"
           bin="target/x86_64-unknown-linux-musl/release/ae"
           want="ae $version"
-          got="$($bin --version)"
+          got="$($bin --version | head -n1)"
           [ "$got" = "$want" ] || { echo "::error::--version printed '$got', want '$want'"; exit 1; }
 
           command -v readelf >/dev/null || { echo "::error::readelf is required"; exit 1; }
@@ -135,7 +135,7 @@ jobs:
           version="${GITHUB_REF_NAME#v}"
           bin="target/release/ae"
           want="ae $version"
-          got="$($bin --version)"
+          got="$($bin --version | head -n1)"
           [ "$got" = "$want" ] || { echo "::error::--version printed '$got', want '$want'"; exit 1; }
           "$bin" _net-probe localhost >/dev/null
 
