@@ -1,6 +1,21 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [v2026.9.4] - 2026-09-05
+
+### Bug Fixes
+
+- **release**: The version proofs read the first --version line
+- **release**: Cut the version line in the shell, not through head
+
+### Documentation
+
+- The tmux floor, the session look, and a CI tmux that clears it
+
+### Features
+
+- **tmux**: Refuse to launch below the tmux floor, and report it everywhere
+- **theme**: Draw ae sessions in a session-scoped look
 ## [v2026.9.3] - 2026-09-05
 
 ### Bug Fixes
