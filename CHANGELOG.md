@@ -1,6 +1,75 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [v2026.9.3] - 2026-09-05
+
+### Bug Fixes
+
+- **migrate**: A meta with schema=2 and no version row IS version 2, and is stamped rather than refused
+- **upgrade**: A census that failed is not an empty one, and the publisher holds its lock through the version sweep
+- **upgrade**: The absent sessions root is typed, the sweep never deletes what the command link names
+- **session**: A withdrawn request is not one anybody is waiting on
+- **archive**: A terminal event ends only an opening it follows
+
+### Documentation
+
+- AGENTS.md is the current contract, not the record
+- Correct three owners and the process-door count
+- **clippy**: The door inventory names what the boundary test enforces
+- **contract**: Six owner and wording corrections from the colead round
+- **contract**: The re-run row follows the store probe, and the separator rule names every format
+- **watchdog**: Comments state current behaviour, not what they replaced
+- **cli**: Argv comments describe the grammar, not the port that produced it
+- **compact,teardown**: The lifecycle comments describe the steps, not the port
+- **render,state,archive,tmux**: The readers describe what they read
+- **launch,tracked,phase3**: The builders and the door inventory say what they do
+- **capture,git,doctor,requests,reply,spawn**: Every doc names the rule it holds
+- **lib,entry,send,deliver,identity,telegram**: The entry and the chokepoints
+- **lexer,readers,doors**: Shell semantics stay, port narration goes
+- **config,events,shim,shape,roster,rename**: The module docs open on the rule
+- **tail**: The last of the port narration across src and the suite
+- **event_text**: The unescape note ends its sentence
+- **contract**: The helper section names the message-style rule and its scope
+- **migrate,meta,lifecycle,session_launch,install**: The previously fenced files
+
+### Features
+
+- **upgrade**: Every session carries a meta_version, and a publish migrates every one of them before it moves the ae command
+
+### Other
+
+- **codex**: The first turn stays, measured, and is passive
+- Add ae message style rule
+- Centralize tool launch and resume capabilities
+- Tool adapters phase 1 — one immutable adapter row per tool, behaviour-shaped strategy variants
+- Centralize tool session capture capabilities
+- Record unconfirmed deliveries
+- Upgrade migration chain — every session carries meta_version, a publish migrates all of them before it moves the command link
+- Merge branch 'comment-sweep'
+- **floor**: The SERVER's own version decides, and a refusal never restarts one
+- The fleet picker is a tmux menu, built from the list digest
+- Ae orchestrator --popup — the fleet picker is a tmux menu built from the list digest, behind a server-version floor
+- The black-box suite owns its scratch and never launches an installed agent — fake tools, owned scratch guards, SHELL pinned at both tmux doors
+- Centralize tool input observation capabilities
+
+### Refactoring
+
+- **store**: A live session's files are named once and written one way
+- **store**: The memo file is read where its name is spelled
+- **store**: One quiet container read, and the three request readers pinned
+- **store**: Every session file is named, locked and written in one place
+- **store**: Resume retention is a store transaction, and the guard sees direct writes
+
+### Testing
+
+- **deliver**: The draft sensor is proven by the polled reading, not a second read
+- **cli**: The black-box runner is hermetic, so no fixture can launch into the developer's ae
+- **entry**: Route seeded profiles through fakes
+- **it**: Own scratch cleanup
+- **cli**: Isolate helper environments
+- **parity**: Pin tmux fixture shell
+- **cli**: Own runner scratch
+- **cli**: Harden scratch ownership
 ## [v2026.9.2] - 2026-09-04
 
 ### Bug Fixes
