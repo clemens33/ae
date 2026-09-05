@@ -176,6 +176,9 @@ pub struct Facts {
     pub core_published: bool,
     /// `tmux`, resolved on `PATH`.
     pub tmux: Option<PathBuf>,
+    /// WHICH tmux would run ae's surfaces, and what it answered — the floor
+    /// row's whole input.
+    pub tmux_floor: crate::tmux_floor::Probe,
     /// `git`, resolved on `PATH`.
     pub git: Option<PathBuf>,
     /// The global config file this invocation reads.
@@ -229,6 +232,19 @@ fn install_rows(facts: &Facts, out: &mut Report) {
             None => out.push(Level::Fail, label, &format!("{label} not found in PATH")),
         }
     }
+
+    // WARN, never FAIL: an ae below the floor still lists, reports and upgrades
+    // itself, and a FAIL here would make `ae doctor` exit non-zero on a machine
+    // whose install is perfectly sound.
+    let floor = &facts.tmux_floor;
+    out.push(
+        match floor.verdict() {
+            crate::tmux_floor::Verdict::Ok => Level::Ok,
+            _ => Level::Warn,
+        },
+        "tmux-floor",
+        &crate::tmux_floor::row_detail(floor),
+    );
 
     if let Some(why) = &facts.config_error {
         out.push(Level::Fail, "config", why);
@@ -480,6 +496,17 @@ pub fn gather(root: &Path, global: Option<&Path>, local: Option<&Path>) -> Facts
         ),
         core,
         tmux: resolve_on_path("tmux"),
+        // The DECLARED server, not the ambient one: a checkout honours the
+        // `AE_TMUX_SERVER` pair, so that is the server a launch from here would
+        // land on and the only one whose version answers the operator's
+        // question. An ambiguous pair leaves the ambient server, which is what
+        // every other command falls back to.
+        tmux_floor: crate::transport::observe_tmux_floor(
+            &crate::doors::probe_target(
+                crate::doors::declared_server(crate::shape::current()).as_ref(),
+            )
+            .unwrap_or(crate::inventory::ServerId::Ambient),
+        ),
         git: resolve_on_path("git"),
         config,
         config_error,
@@ -815,6 +842,7 @@ mod tests {
             core_writable: Some(false),
             core_published: true,
             tmux: Some(PathBuf::from("/usr/bin/tmux")),
+            tmux_floor: crate::tmux_floor::Probe::Executable("3.7b".to_owned()),
             git: Some(PathBuf::from("/usr/bin/git")),
             config: PathBuf::from("/home/me/.ae/config"),
             config_error: None,
@@ -857,6 +885,54 @@ mod tests {
         assert!(
             text.ends_with("Summary: 0 failure(s), 1 warning(s)\n"),
             "{text}"
+        );
+    }
+
+    /// The floor row REPORTS, it never fails the report: an ae below the floor
+    /// still lists, still says its version and still upgrades itself, and a
+    /// FAIL here would make `ae doctor` exit non-zero on a sound install.
+    #[test]
+    fn the_tmux_floor_row_warns_below_the_floor_and_never_fails_the_report() {
+        use crate::tmux_floor::Probe;
+
+        let row_named = |input: &Facts| {
+            report(input)
+                .rows()
+                .iter()
+                .find(|row| row.label == "tmux-floor")
+                .cloned()
+                .unwrap_or_else(|| panic!("the report carries a tmux-floor row"))
+        };
+
+        let clean = row_named(&facts());
+        assert_eq!(clean.level, Level::Ok);
+        assert!(clean.detail.contains("3.7b"), "{}", clean.detail);
+        assert!(clean.detail.contains("clears"), "{}", clean.detail);
+
+        let mut old = facts();
+        old.tmux_floor = Probe::Server("3.3a".to_owned());
+        let below = row_named(&old);
+        assert_eq!(below.level, Level::Warn);
+        assert!(below.detail.contains("BELOW"), "{}", below.detail);
+        assert!(
+            below.detail.contains("brew install tmux"),
+            "the row carries the fix: {}",
+            below.detail
+        );
+        assert_eq!(
+            report(&old).exit_code(),
+            0,
+            "a machine below the floor has a sound install"
+        );
+
+        let mut none = facts();
+        none.tmux_floor = Probe::Silent;
+        let missing = row_named(&none);
+        assert_eq!(missing.level, Level::Warn);
+        assert!(
+            missing.detail.starts_with("tmux not found"),
+            "{}",
+            missing.detail
         );
     }
 

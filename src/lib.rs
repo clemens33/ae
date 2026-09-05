@@ -180,7 +180,10 @@ fn invocation_dir() -> std::path::PathBuf {
 /// let (mut out, mut err) = (Vec::new(), Vec::new());
 /// let code = ae::run(&["--version".to_owned()], &mut out, &mut err)?;
 /// assert_eq!(code, 0);
-/// assert_eq!(String::from_utf8(out).unwrap(), ae::version_line() + "\n");
+/// // Two lines: the core version, then this machine's tmux against the floor.
+/// let text = String::from_utf8(out).unwrap();
+/// assert!(text.starts_with(&(ae::version_line() + "\n")));
+/// assert!(text.lines().nth(1).unwrap_or_default().starts_with("tmux "));
 /// assert!(err.is_empty());
 /// # Ok::<(), ae::Error>(())
 /// ```
@@ -192,6 +195,27 @@ pub fn run(args: &[String], out: &mut impl Write, err: &mut impl Write) -> Resul
     match args.first().map(String::as_str) {
         Some("version" | "--version" | "-V") => {
             writeln!(out, "{}", version_line())?;
+            // The SECOND line, on a broken install too: which tmux this machine
+            // HAS, and whether the floor admits it.
+            //
+            // The SAME tmux a launch would use, asked the same way: the running
+            // server on the declared socket first, and the `PATH` binary only
+            // when nothing answers there. Reading the pair is two env reads
+            // through their own door, which needs no install — and a line that
+            // reported `PATH` alone would say `ok` on a machine whose declared
+            // server is old and whose launches therefore refuse, which is the
+            // one case this line exists for. An UNTYPABLE pair names no server
+            // to ask, so the binary is all there is to report.
+            let probe = match crate::doors::probe_target(
+                crate::doors::declared_server(crate::shape::current()).as_ref(),
+            ) {
+                Some(server) => transport::observe_tmux_floor(&server),
+                None => match transport::observe_tmux_program_version() {
+                    Some(found) => tmux_floor::Probe::Executable(found),
+                    None => tmux_floor::Probe::Silent,
+                },
+            };
+            writeln!(out, "{}", tmux_floor::summary(&probe))?;
             out.flush()?;
             return Ok(0);
         }
@@ -329,12 +353,19 @@ fn run_orchestrator(
         err.flush()?;
         return Ok(EXIT_UNAVAILABLE);
     };
-    let found = transport::observe_tmux_version(&server).unwrap_or_default();
-    if !tmux_floor::clears(&found) {
+    // Only the SERVER is asked here: a menu needs a client to be drawn on, so a
+    // `PATH` binary that would clear the floor answers a question the picker
+    // never asks.
+    let probe = match transport::probe_tmux_version(&server) {
+        tmux::VersionProbe::Answered(found) => tmux_floor::Probe::Server(found),
+        tmux::VersionProbe::NoServer => tmux_floor::Probe::Silent,
+        tmux::VersionProbe::Unreachable => tmux_floor::Probe::Unreachable,
+    };
+    if !probe.clears_floor() {
         write!(
             err,
             "{}",
-            tmux_floor::refusal("orchestrator", &found, &server)
+            tmux_floor::refusal("orchestrator", &probe, &server)
         )?;
         err.flush()?;
         return Ok(tmux_floor::EXIT_REFUSED);
@@ -570,12 +601,10 @@ fn run_launch(
         err.flush()?;
         return Ok(deps);
     }
-    if let Some(global) = preamble.global.as_ref()
-        && let Some(code) = seed_default_config(global, err)?
-    {
-        err.flush()?;
-        return Ok(code);
-    }
+    // The first-run config SEEDING is not here: it is a write, and every write
+    // a launch makes belongs below the tmux floor gate. `session_launch::launch`
+    // does both, in that order, so there is exactly ONE floor decision per
+    // launch and nothing can happen between the two.
     // The NAME grammar is the launch's own and answers first, so a traversal
     // name is refused as a name rather than as a path object and the message
     // says what is actually wrong.
@@ -672,7 +701,14 @@ fn lstat_kind(path: &std::path::Path) -> Option<PathKind> {
 }
 
 /// Write the default config, once, if there is none.
-fn seed_default_config(path: &std::path::Path, err: &mut impl Write) -> Result<Option<u8>> {
+///
+/// Called from `session_launch::launch`, BELOW its floor gate: this is the
+/// first thing a launch writes, and a machine ae will not run on has to be told
+/// so before ae leaves anything behind.
+pub(crate) fn seed_default_config(
+    path: &std::path::Path,
+    err: &mut impl Write,
+) -> Result<Option<u8>> {
     if regular_file(path) {
         return Ok(None);
     }
@@ -1681,10 +1717,21 @@ mod tests {
         // The expectation is spelled out rather than reusing `version_line()`:
         // comparing the output against the same function that produced it is a
         // test that passes no matter what that function returns.
+        let text = String::from_utf8(out).unwrap();
+        let mut lines = text.lines();
         assert_eq!(
-            String::from_utf8(out).unwrap(),
-            format!("ae {}\n", env!("CARGO_PKG_VERSION"))
+            lines.next(),
+            Some(format!("ae {}", env!("CARGO_PKG_VERSION")).as_str())
         );
+        // The floor line is SECOND, and it names a tmux either way: this
+        // machine's, or the fact that it has none.
+        let floor = lines.next().unwrap_or_default();
+        assert!(floor.starts_with("tmux "), "{text}");
+        assert!(
+            floor.contains(&crate::tmux_floor::REQUIRED.to_string()),
+            "{text}"
+        );
+        assert_eq!(lines.next(), None, "{text}");
     }
 
     #[test]
@@ -1746,7 +1793,8 @@ mod tests {
             let (mut out, mut err) = (Vec::new(), Vec::new());
             let code = run(&[word.to_owned()], &mut out, &mut err).unwrap();
             assert_eq!(code, 0, "{word}");
-            assert_eq!(String::from_utf8(out).unwrap(), version_line() + "\n");
+            let text = String::from_utf8(out).unwrap();
+            assert!(text.starts_with(&(version_line() + "\n")), "{word}: {text}");
             assert!(err.is_empty(), "{word}");
         }
     }

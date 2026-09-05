@@ -425,6 +425,25 @@ fn split_frozen_roster(roster: &str) -> (Option<String>, Option<String>) {
     (Some(main.to_owned()), Some(workers.to_owned()))
 }
 
+/// The floor refusal a launch of `session` on `server` must print, or `None`
+/// when the launch may proceed.
+///
+/// THE ONE GATE, so the public path (which seeds a first-run config) and the
+/// `_launch` entry (which migrates a resumable session's meta) refuse in the
+/// same place with the same words, each BEFORE its own first write.
+///
+/// A session that is already RUNNING is exempt: it was created by a tmux that
+/// cleared whatever floor stood then, reattaching to it writes nothing, and
+/// refusing would strand the agents inside it with no way to reach them.
+#[must_use]
+pub(crate) fn floor_refusal(server: &ServerId, session: &str) -> Option<String> {
+    if !session.is_empty() && transport::session_exists(server, session) {
+        return None;
+    }
+    let probe = transport::observe_tmux_floor(server);
+    (!probe.clears_floor()).then(|| crate::tmux_floor::refusal("launch", &probe, server))
+}
+
 /// A session's resolved shape, once every refusal has passed.
 struct Session {
     name: String,
@@ -491,6 +510,25 @@ fn launch(
             writeln!(err, "           rm -rf {}", tombstone.display())?;
             return Ok(EXIT_FAILED);
         }
+    }
+
+    // ---- THE tmux FLOOR, before the first thing this launch would write ----
+    // AHEAD of the migration chain and of every guard that touches state: a
+    // meta this core steps and re-stamps is a write, and a session ae could
+    // neither theme nor draw a menu for is one it must not touch.
+    let server = env.server();
+    if let Some(refusal) = floor_refusal(&server, &session) {
+        write!(err, "{refusal}")?;
+        return Ok(crate::tmux_floor::EXIT_REFUSED);
+    }
+
+    // The FIRST write a launch makes, and it happens here rather than on the
+    // public path so that nothing at all can land between the floor decision
+    // and it. One gate, one decision, and every write below it.
+    if let Some(global) = env.global.as_ref()
+        && let Some(code) = crate::seed_default_config(global, err)?
+    {
+        return Ok(code);
     }
 
     let meta_present = node_exists(&dir.join(crate::store::META));
@@ -567,7 +605,6 @@ fn launch(
         }
     }
 
-    let server = env.server();
     // ---- explicit lineage, proved before anything is created ----
     let mut parent: Option<FromProof> = None;
     if let Some(uuid) = &plan.from {

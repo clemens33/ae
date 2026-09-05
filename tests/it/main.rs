@@ -17,6 +17,7 @@ mod doctor;
 mod doors;
 mod entry;
 mod fixtures;
+mod floor;
 mod gate;
 mod git;
 mod install;

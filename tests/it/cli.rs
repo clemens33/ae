@@ -637,8 +637,10 @@ pub(crate) fn bounded(
     None
 }
 
+/// `ae --version` answers in TWO lines: which ae, then which tmux it would run
+/// its surfaces with and whether the floor admits that tmux.
 #[test]
-fn version_prints_the_version_line_and_exits_zero() {
+fn version_prints_the_version_line_and_the_tmux_floor_and_exits_zero() {
     let out = ae()
         .arg("--version")
         .output()
@@ -646,7 +648,19 @@ fn version_prints_the_version_line_and_exits_zero() {
 
     assert!(out.status.success(), "exit status: {:?}", out.status);
     let stdout = String::from_utf8(out.stdout).expect("stdout should be utf-8");
-    assert_eq!(stdout, format!("ae {}\n", env!("CARGO_PKG_VERSION")));
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(
+        lines.first().copied(),
+        Some(format!("ae {}", env!("CARGO_PKG_VERSION")).as_str()),
+        "{stdout}"
+    );
+    let floor = lines.get(1).copied().unwrap_or_default();
+    assert!(floor.starts_with("tmux "), "{stdout}");
+    assert!(
+        floor.contains(&ae::tmux_floor::REQUIRED.to_string()),
+        "the line names the floor it is measured against: {stdout}"
+    );
+    assert_eq!(lines.len(), 2, "{stdout}");
 }
 
 #[test]

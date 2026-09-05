@@ -101,15 +101,60 @@ pub fn interpret_stopped(succeeded: bool, stdout: &str, stderr: &str, name: &str
             StopProbe::Absent
         };
     }
+    // STRICTLY the clean-exit diagnostic, and NOT the connect error the version
+    // probe also reads as absence: a live server whose socket was unlinked
+    // answers ENOENT while it keeps running, so ENOENT proves a session gone
+    // only if you are willing to be wrong about it. The two probes ask
+    // different questions — see [`says_no_server`].
     let clean_dead = stderr
         .lines()
         .next()
-        .is_some_and(|line| line.starts_with("no server running on "));
+        .is_some_and(|line| line.starts_with(NO_SERVER_DIAGNOSTIC));
     if clean_dead {
         StopProbe::Absent
     } else {
         StopProbe::Unknown
     }
+}
+
+/// tmux's diagnostic after a server exited cleanly and left its socket behind.
+const NO_SERVER_DIAGNOSTIC: &str = "no server running on ";
+
+/// tmux's diagnostic when the socket is not there at all — measured on 3.7b for
+/// both selectors: `-L nosuch` and `-S /nosuch/sock` each answer
+/// `error connecting to <path> (No such file or directory)`.
+const CONNECT_PREFIX: &str = "error connecting to ";
+
+/// The errno tail that makes a connect failure an ABSENCE rather than an
+/// unknown. Permission denied and connection refused are neither, and each
+/// leaves the server's version unproven.
+const CONNECT_ABSENT_SUFFIX: &str = "(No such file or directory)";
+
+/// Whether `stderr`'s first line says, in either of tmux's two spellings, that
+/// there is NO server on that socket.
+///
+/// Read by the VERSION probe alone, whose question is "which tmux binary will
+/// this launch actually run". A socket that cannot be connected to cannot be
+/// launched into either, so the launch will start a fresh server with the
+/// `PATH` binary — which is the version to compare. The STOP probe asks a
+/// different question ("is that session gone") and deliberately reads the same
+/// ENOENT as UNKNOWN, because a live server whose socket was unlinked answers
+/// it while still running.
+///
+/// ```
+/// use ae::tmux::says_no_server;
+/// assert!(says_no_server("no server running on /tmp/s\n"));
+/// assert!(says_no_server("error connecting to /tmp/s (No such file or directory)\n"));
+/// assert!(!says_no_server("error connecting to /tmp/s (Permission denied)\n"));
+/// assert!(!says_no_server("some other failure\n"));
+/// ```
+#[must_use]
+pub fn says_no_server(stderr: &str) -> bool {
+    let Some(line) = stderr.lines().next().map(str::trim_end) else {
+        return false;
+    };
+    line.starts_with(NO_SERVER_DIAGNOSTIC)
+        || (line.starts_with(CONNECT_PREFIX) && line.ends_with(CONNECT_ABSENT_SUFFIX))
 }
 
 /// The ownership marker a completed `show-environment` run reported.
@@ -940,6 +985,219 @@ pub fn version_args(server: &ServerId) -> Vec<String> {
     let mut args = server_args(server);
     args.extend(["display-message", "-p", VERSION_FORMAT].map(ToOwned::to_owned));
     args
+}
+
+/// What asking a server for its `#{version}` PROVED.
+///
+/// Three answers, because two of the failures are different facts: a server
+/// that is not there can be replaced by one this launch starts, while a server
+/// that could not be reached might be any version at all — and a floor that
+/// treated the second as the first would clear a 3.4 server on the strength of
+/// a 3.7 binary that will never run it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VersionProbe {
+    /// The server answered with this text.
+    Answered(String),
+    /// tmux said there is no server on that socket.
+    NoServer,
+    /// Anything else: a permission error, a refused connection, a run that
+    /// never happened, or an answer with nothing in it.
+    Unreachable,
+}
+
+/// What a completed `display-message -p '#{version}'` run proved.
+///
+/// ```
+/// use ae::tmux::{VersionProbe, interpret_version};
+/// assert_eq!(interpret_version(true, "3.7b\n", ""), VersionProbe::Answered("3.7b".to_owned()));
+/// assert_eq!(
+///     interpret_version(false, "", "no server running on /tmp/s\n"),
+///     VersionProbe::NoServer
+/// );
+/// assert_eq!(
+///     interpret_version(false, "", "error connecting to /tmp/s (No such file or directory)\n"),
+///     VersionProbe::NoServer
+/// );
+/// assert_eq!(
+///     interpret_version(false, "", "error connecting to /tmp/s (Permission denied)\n"),
+///     VersionProbe::Unreachable
+/// );
+/// assert_eq!(interpret_version(true, "\n", ""), VersionProbe::Unreachable);
+/// ```
+#[must_use]
+pub fn interpret_version(succeeded: bool, stdout: &str, stderr: &str) -> VersionProbe {
+    match interpret_display_value(succeeded, stdout) {
+        Some(found) => VersionProbe::Answered(found),
+        // A run that SUCCEEDED and printed nothing is not a server that is
+        // absent; it is one whose answer ae could not read.
+        None if succeeded => VersionProbe::Unreachable,
+        None if says_no_server(stderr) => VersionProbe::NoServer,
+        None => VersionProbe::Unreachable,
+    }
+}
+
+/// The arguments asking the tmux BINARY on `PATH` which version it is — `tmux
+/// -V`, with no server selector, because no server is involved.
+///
+/// The executable is asked only when no server answered: it is the binary that
+/// a `new-session` would start, so it is the version the launch would get.
+#[must_use]
+pub fn program_version_args() -> Vec<String> {
+    vec!["-V".to_owned()]
+}
+
+/// The version a completed `tmux -V` run reported, or `None`.
+///
+/// `tmux -V` prints `tmux <version>`; the program name is dropped so the answer
+/// is spelled exactly as `#{version}` spells it.
+///
+/// ```
+/// use ae::tmux::interpret_program_version;
+/// assert_eq!(interpret_program_version(true, "tmux 3.7b\n").as_deref(), Some("3.7b"));
+/// assert_eq!(interpret_program_version(true, "3.7b\n").as_deref(), Some("3.7b"));
+/// assert_eq!(interpret_program_version(false, "tmux 3.7b\n"), None);
+/// ```
+#[must_use]
+pub fn interpret_program_version(succeeded: bool, stdout: &str) -> Option<String> {
+    let line = interpret_display_value(succeeded, stdout)?;
+    let value = line.strip_prefix("tmux ").unwrap_or(&line).trim();
+    (!value.is_empty()).then(|| value.to_owned())
+}
+
+// ---------------------------------------------------------------------------
+// The fleet strip's two reads.
+// ---------------------------------------------------------------------------
+
+/// The format the fleet strip asks `list-sessions` for: a session's name, the
+/// `$<n>` id a click resolves through, and the attention rank its OWN watchdog
+/// published.
+///
+/// The rank is what makes this an ae listing: a session with none is not one ae
+/// watches, so the strip skips it rather than drawing a stranger.
+pub const FLEET_SESSION_FORMAT: &str =
+    "#{session_name} | #{session_id} | #{@ae_attn_rank} | #{@ae_attn_glyph}";
+
+/// How many fields [`FLEET_SESSION_FORMAT`] yields.
+const FLEET_SESSION_FIELDS: usize = 4;
+
+/// One ae session as the fleet strip reads it off the server.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FleetSession {
+    /// The session name.
+    pub name: String,
+    /// Its `$<n>` id.
+    pub id: String,
+    /// The published attention rank, verbatim.
+    pub rank: String,
+    /// The published attention glyph, verbatim — empty when unset.
+    pub glyph: String,
+}
+
+/// The arguments listing every session on `server` with its published
+/// attention.
+#[must_use]
+pub fn fleet_sessions_args(server: &ServerId) -> Vec<String> {
+    let mut args = server_args(server);
+    args.extend(["list-sessions", "-F", FLEET_SESSION_FORMAT].map(ToOwned::to_owned));
+    args
+}
+
+/// What a completed fleet-session listing means.
+///
+/// A session with no rank is dropped: it is not an ae session, or its watchdog
+/// has not run a cycle yet, and a strip that drew it would claim to know
+/// something about it.
+#[must_use]
+pub fn interpret_fleet_sessions(succeeded: bool, stdout: &str) -> Option<Vec<FleetSession>> {
+    if !succeeded {
+        return None;
+    }
+    Some(
+        stdout
+            .lines()
+            .map(|line| line.trim_end_matches(['\r', '\n']))
+            .filter(|line| !line.is_empty())
+            .filter_map(|line| {
+                let fields: Vec<&str> =
+                    line.splitn(FLEET_SESSION_FIELDS, FIELD_SEPARATOR).collect();
+                let [name, id, rank, glyph] = fields.as_slice() else {
+                    return None;
+                };
+                let rank = rank.trim();
+                (!rank.is_empty()).then(|| FleetSession {
+                    name: (*name).to_owned(),
+                    id: (*id).to_owned(),
+                    rank: rank.to_owned(),
+                    glyph: glyph.trim().to_owned(),
+                })
+            })
+            .collect(),
+    )
+}
+
+/// The two look knobs the watchdog re-reads every cycle, in ONE query — so a
+/// human who flips `@ae_icons` on a live session sees the next cycle in ASCII.
+pub const LOOK_FORMAT: &str = "#{@ae_icons} | #{@ae_palette} | #{@ae_look} | #{@ae_motion}";
+
+/// The four look values a session carries, each empty when unset.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LookOptions {
+    /// `@ae_icons`.
+    pub icons: String,
+    /// `@ae_palette`.
+    pub palette: String,
+    /// `@ae_look`.
+    pub drawn: String,
+    /// `@ae_motion`.
+    pub motion: String,
+}
+
+/// The arguments asking `session` which look it is drawn in.
+#[must_use]
+pub fn look_args(server: &ServerId, session: &str) -> Vec<String> {
+    let mut args = server_args(server);
+    args.extend(["display-message", "-p", "-t", session, LOOK_FORMAT].map(ToOwned::to_owned));
+    args
+}
+
+/// The same question with NO target, so tmux answers for the session the
+/// CALLING client is in — which is the one a picker is being drawn on.
+#[must_use]
+pub fn look_here_args(server: &ServerId) -> Vec<String> {
+    let mut args = server_args(server);
+    args.extend(["display-message", "-p", LOOK_FORMAT].map(ToOwned::to_owned));
+    args
+}
+
+/// The look values a completed [`look_args`] run reported.
+///
+/// A short answer leaves the missing fields EMPTY rather than failing: an older
+/// core's session carries only the first two, and empty is the default in every
+/// position.
+///
+/// ```
+/// use ae::tmux::interpret_look;
+/// let read = interpret_look(true, "off | b | on | off\n");
+/// assert_eq!(read.icons, "off");
+/// assert_eq!(read.palette, "b");
+/// assert_eq!(read.motion, "off");
+/// assert_eq!(interpret_look(true, "on | a").drawn, "");
+/// assert_eq!(interpret_look(false, "on | a | on | on").icons, "");
+/// ```
+#[must_use]
+pub fn interpret_look(succeeded: bool, stdout: &str) -> LookOptions {
+    if !succeeded {
+        return LookOptions::default();
+    }
+    let line = stdout.lines().next().unwrap_or_default().trim_end();
+    let mut fields = line.split(FIELD_SEPARATOR).map(str::trim);
+    let mut next = || fields.next().unwrap_or_default().to_owned();
+    LookOptions {
+        icons: next(),
+        palette: next(),
+        drawn: next(),
+        motion: next(),
+    }
 }
 
 /// `#{pane_tty}` — the tty of every pane on the server, one per line.

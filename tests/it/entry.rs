@@ -255,7 +255,11 @@ fn the_doors_carry_the_facts_and_the_argv_is_the_users_alone() {
     let rig = Rig::new("carry");
     let (code, stdout, stderr) = rig.run(&["version"]);
     assert_eq!(code, Some(0), "stderr: {stderr}");
-    assert_eq!(stdout, format!("{}\n", ae::version_line()));
+    // Two lines: the core's version, then the tmux floor reading.
+    assert!(
+        stdout.starts_with(&format!("{}\n", ae::version_line())),
+        "{stdout}"
+    );
     // The doors alone write NOTHING: only a launch seeds a config.
     assert!(!rig.config().exists(), "a version query created state");
 }
@@ -270,10 +274,20 @@ fn version_answers_with_no_environment_at_all() {
             .output()
             .unwrap_or_else(|why| panic!("the ae binary should run: {why}"));
         assert_eq!(out.status.code(), Some(0), "{word}");
-        assert_eq!(
-            String::from_utf8_lossy(&out.stdout),
-            format!("{}\n", ae::version_line()),
-            "{word}"
+        let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+        assert!(
+            stdout.starts_with(&format!("{}\n", ae::version_line())),
+            "{word}: {stdout}"
+        );
+        // No PATH at all, so no tmux can be run: the floor line reports that
+        // rather than failing the word that has to answer everywhere.
+        assert!(
+            stdout
+                .lines()
+                .nth(1)
+                .unwrap_or_default()
+                .starts_with("tmux not found"),
+            "{word}: {stdout}"
         );
         assert!(out.stderr.is_empty(), "{word}");
     }

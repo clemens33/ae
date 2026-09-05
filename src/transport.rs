@@ -527,6 +527,53 @@ pub fn observe_tmux_version(server: &ServerId) -> Option<String> {
     tmux::interpret_display_value(succeeded, &stdout)
 }
 
+/// The version of the tmux BINARY on `PATH`, or `None` when it did not run.
+#[must_use]
+pub fn observe_tmux_program_version() -> Option<String> {
+    let (succeeded, stdout) = run(PROGRAM, &tmux::program_version_args());
+    tmux::interpret_program_version(succeeded, &stdout)
+}
+
+/// What `server` answered when asked its own version, told apart from the two
+/// ways the asking can fail.
+#[must_use]
+pub fn probe_tmux_version(server: &ServerId) -> tmux::VersionProbe {
+    // A socket path ae cannot address is a socket with no server behind it,
+    // which is the same fact tmux states as "no server running on …".
+    if !addressable(server) {
+        return tmux::VersionProbe::NoServer;
+    }
+    let (succeeded, stdout, stderr) = run_captured(PROGRAM, &tmux::version_args(server));
+    tmux::interpret_version(succeeded, &stdout, &stderr)
+}
+
+/// WHICH tmux would actually run, for the floor gate and the surfaces that
+/// report it.
+///
+/// The live server first, because a running one keeps executing the binary that
+/// started it whatever `PATH` now holds. The `PATH` binary is consulted ONLY
+/// when tmux positively said there is no server: a server that merely could not
+/// be reached might be any version, and answering for it with the version of a
+/// binary that will never run it is how an old server clears the floor.
+#[must_use]
+pub fn observe_tmux_floor(server: &ServerId) -> crate::tmux_floor::Probe {
+    match probe_tmux_version(server) {
+        tmux::VersionProbe::Answered(found) => crate::tmux_floor::Probe::Server(found),
+        tmux::VersionProbe::NoServer => match observe_tmux_program_version() {
+            Some(found) => crate::tmux_floor::Probe::Executable(found),
+            None => crate::tmux_floor::Probe::Silent,
+        },
+        // A server that could not be reached is a REFUSAL — except when there
+        // is no runnable tmux at all, which is a machine without tmux and not a
+        // server with a problem. The `PATH` binary is asked only to tell those
+        // two apart; its version is never stood in for the server's.
+        tmux::VersionProbe::Unreachable => match observe_tmux_program_version() {
+            Some(_) => crate::tmux_floor::Probe::Unreachable,
+            None => crate::tmux_floor::Probe::Silent,
+        },
+    }
+}
+
 /// The ttys of every pane on `server`, or `None` when it did not answer.
 #[must_use]
 pub fn observe_pane_ttys(server: &ServerId) -> Option<Vec<String>> {

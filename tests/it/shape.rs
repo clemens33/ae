@@ -318,7 +318,20 @@ fn version_and_upgrade_answer_on_a_broken_install() {
 
     let (code, stdout, _) = rig.run(&[], &["version"]);
     assert_eq!(code, Some(0), "version answers anyway");
-    assert_eq!(stdout, format!("{}\n", ae::version_line()));
+    // Both lines answer on a broken install: the core version, and the tmux
+    // floor reading that says whether this machine can run ae at all.
+    assert!(
+        stdout.starts_with(&format!("{}\n", ae::version_line())),
+        "{stdout}"
+    );
+    assert!(
+        stdout
+            .lines()
+            .nth(1)
+            .unwrap_or_default()
+            .starts_with("tmux "),
+        "{stdout}"
+    );
 
     // `upgrade` reaches its OWN vocabulary rather than the gate's.
     let (code, stdout, stderr) = rig.run(&[("AE_VERSION", "not-a-version")], &["upgrade"]);

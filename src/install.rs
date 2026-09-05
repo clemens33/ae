@@ -1050,6 +1050,18 @@ pub fn run(
                 published.version,
                 published.version_dir.display()
             )?;
+            // A WARNING, never a refusal: the install has to land on a machine
+            // below the floor, because `ae version` is how the operator sees
+            // the problem and `ae upgrade` is how they leave it behind. On
+            // stdout with the `ae: ` prefix so `upgrade` — which reads this
+            // child's notes off stdout — relays it too.
+            if let Some(advisory) = crate::tmux_floor::advisory(
+                &crate::transport::observe_tmux_floor(&crate::inventory::ServerId::Ambient),
+            ) {
+                for line in advisory.lines() {
+                    writeln!(out, "ae: {line}")?;
+                }
+            }
             out.flush()?;
             Ok(0)
         }
