@@ -601,8 +601,11 @@ bundle version platform binary:
     want="ae $version"
     if [ "$platform" = "$host_platform" ]; then
         # The FIRST line only: `--version` answers in two, the second naming the
-        # tmux this machine has, which is not part of the version claim.
-        got="$("$binary" --version | head -n1)"
+        # tmux this machine has, which is not part of the version claim. Cut in
+        # the shell, not through `head`: under `pipefail` a reader that stops
+        # after one line hands the core a broken pipe on the second.
+        got="$("$binary" --version)"
+        got="${got%%$'\n'*}"
         [ "$got" = "$want" ] || { echo "Error: --version printed '$got', want '$want'" >&2; exit 1; }
     else
         # -F IS LOAD-BEARING. Without it the dots in a CalVer version are BRE

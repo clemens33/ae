@@ -475,9 +475,7 @@ fn the_bundle_recipe_is_the_one_definition_of_a_bundle_and_both_release_legs_cal
         "both release legs bundle through the one recipe"
     );
     assert_eq!(
-        release
-            .matches(r#"got="$($bin --version | head -n1)""#)
-            .count(),
+        release.matches(r#"got="$($bin --version)""#).count(),
         2,
         "both legs check ae-core's version against the tag"
     );
