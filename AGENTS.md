@@ -169,7 +169,7 @@ dirname. Names and argv are the compatibility contract.
 | `requests [mine\|inbox\|all]` | Inspect pending and replied requests without peeking panes |
 | `state <working\|waiting-user\|blocked\|done> [reason]` | Declare work state; shows in `ae list`. Only `done`, `waiting-user` and `blocked` quiet the watchdog — `working` does not. `mark-done [msg]` = `state done` plus the legacy `done` event |
 | `say <text>` | Push a line to the human's Telegram chat. Pane output is NOT forwarded |
-| `memo add [--topic t] <text>` / `memo read` / `memo tail [n]` | Durable shared session memory |
+| `memo add [--topic t] <text>` / `memo read` / `memo tail [n]` | Durable shared session memory. Topics are STABLE and reused (`goal`, `decision`, `parking`, `<feature>`) and each record is a CHECKPOINT that supersedes the last one on its topic — `ae brief` shows only the latest per topic |
 | `goal [text\|--clear]` | The session's one-line objective. Survives resume; shown in `ae list` |
 | `peek <agent> [lines]` / `peak` | Capture recent pane output. Inspection only, never a reply channel |
 | `agents [--all]` | List agents with pane IDs and processes. `focus <agent>` switches tmux focus |

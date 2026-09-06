@@ -85,6 +85,8 @@ ae list --needs-attn           # only sessions needing attention (alias: --attn)
 ae list --all                  # include stopped sessions
 ae list --json                 # machine-readable digest (for scripts/agents)
 ae next                        # name the top session needing attention (--attach jumps to it)
+ae brief [name] [--all]        # why a session needs you: goal, latest note per memo topic,
+                               # each agent's declared state, and every unanswered ask
 ae orchestrator                # start or reattach the local orchestrator seat
 ae orchestrator --popup        # pick a session, then an agent, in a tmux menu; Enter lands in its pane
 watch -n 10 'ae list'          # live dashboard

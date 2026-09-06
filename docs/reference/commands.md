@@ -9,6 +9,9 @@ ae list [--all|--stopped|--needs-attn]
 ae upgrade             Install the latest tagged immutable release; no extra arguments
 ae next [--attach]     Name the top running session needing attention (read-only;
                        alias: ae jump). --attach jumps to it. Non-zero when none.
+ae brief [name] [--all] [--since <dur>]
+                       Card a session: goal, the latest note per memo topic, each agent's
+                       declared state, and who is waiting on you. Read-only
 ae orchestrator --popup
                        Pick a session, then one of its agents, in a tmux menu; the
                        chosen agent's pane gets the client. Needs tmux >= 3.4
@@ -149,6 +152,70 @@ fallback) — together with `name`, `origin` and `mode` they give a consumer
 `schema_version` lets consumers gate on shape. `attention_rank` is the numeric
 severity (`dead` 6 → `unanswered` 1); richer per-agent timing fields are a
 planned addition.
+
+## `ae brief`
+
+The reading half of the session's own memory. `ae list` names sessions and marks the ones
+needing attention; a brief says **why**, without opening a single pane.
+
+```bash
+ae brief              # the session this pane is in, else the whole fleet
+ae brief aedev        # one session by name, running or not
+ae brief --all        # every running session, most actionable first
+ae brief --all --since 4h    # ... dropping topic records older than four hours
+```
+
+One card per session, plain text, no colour:
+
+```text
+aedev · running · attn:waiting-user · ae 2026.9.5 · s1-brief* · ~/projects/clemens33/ae
+  goal: ship S1 of #113
+  topics:
+    decision    12m   lead          gate once per merge, release after both land
+    parking     2h    brief         resume here: the renderer is half written
+  agents:
+    lead          working       3m    "wiring the dispatch"
+    brief         waiting-user  12m   "which layout do you want"
+  needs you:
+    brief         waiting-user  12m   which layout do you want
+    ask           lead → colead 41m   does the strip pin orchestrator first?
+```
+
+| Section | What it holds |
+|---|---|
+| header | name, liveness, the `attn:` rollup [`ae list`](#ae-list) shows, the session's ae version, its branch (`*` when the work tree has tracked changes) and its work dir |
+| `goal:` | the session's [`goal`](helpers.md), in full, or `none` |
+| `topics:` | the **latest** record per `memo` topic, newest topic first — see the topic convention below |
+| `agents:` | one line per roster agent: its declared state, how long ago it declared, and the reason it gave |
+| `needs you:` | the only two EXPLICIT claims on your attention — an agent that declared `waiting-user`/`blocked`, and an `ask`/`review` nobody has answered. Nothing here is inferred, so an empty section reads `none recorded` |
+
+### The topic convention
+
+A brief shows one line per topic, so topics are **stable and reused**, never invented per
+message. The four that pay for themselves:
+
+| Topic | What goes in it |
+|---|---|
+| `goal` | what this session is for, when it is longer than the one-line `goal` helper holds |
+| `decision` | a ruling and the reason behind it |
+| `parking` | where to resume — the record starts `resume here:` and names the next concrete action |
+| `<feature>` | one topic per feature or slice an agent owns |
+
+Write **checkpoints, not turns**: each record supersedes the last one on that topic, because
+that is the only one a brief will show. The same convention is injected into every agent's
+system prompt as rule 6.
+
+### Flags and exit codes
+
+`--since <dur>` takes `90` (seconds), `45s`, `30m`, `2h`, `3d` or `1w`, and drops topic
+records older than that; a record whose timestamp does not parse is kept rather than
+silently dropped. `--all` and a session name are mutually exclusive.
+
+Exit **2** for a usage error, **1** for a name no session carries. An empty fleet is a fact
+rather than a failure: `ae brief --all` says so on stderr and exits **0**.
+
+`ae brief` writes nothing — no tmux option, no event, no meta — so it is safe to run against
+a session you do not own.
 
 ## `ae upgrade`
 
