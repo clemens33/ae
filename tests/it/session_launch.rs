@@ -1165,13 +1165,16 @@ fn the_status_bar_is_ae_owned_and_its_first_line_still_renders() {
             .trim_end_matches('\n')
             .to_owned()
     };
-    // Line 0 is ae's own: the session segment in its attention accent, the
-    // windows, and the right-hand facts. The watch segment is a user option at
-    // the END, referenced exactly once, so a watchdog restart cannot double it.
+    // Line 0 is ae's own: the attention mark, the windows, and the right-hand
+    // facts. The session NAME is not on it — the fleet strip on line 1 names
+    // every session and raises this one — so the format depends on the look
+    // alone. The watch segment is a user option at the END, referenced exactly
+    // once, so a watchdog restart cannot double it.
     let zero = option("status-format[0]");
     assert!(zero.contains("#{@ae_attn_style}"), "{zero}");
     assert!(zero.contains("#{@ae_attn_glyph}"), "{zero}");
-    assert!(zero.contains("lnbar"), "{zero}");
+    assert!(!zero.contains("lnbar"), "{zero}");
+    assert!(zero.contains("#{window_name}"), "{zero}");
     assert!(zero.contains("#{@ae_branch_status}"), "{zero}");
     assert_eq!(
         zero.matches("#{@ae_watchdog_status}").count(),

@@ -344,10 +344,15 @@ fn rename_moves_the_tmux_session_the_directory_and_the_meta_together() {
     // The manifest carries the name, so it is re-rendered under it.
     let manifest = std::fs::read_to_string(moved.join("workspace.md")).unwrap_or_default();
     assert!(manifest.contains("Session: after"), "{manifest}");
-    // The status bar carries it too — the session segment of line 0, which is
-    // where ae now draws the name.
+    // The status bar carries it too. Line 0 draws no session name of its own
+    // — the window entries do, through `#{window_name}`, and the session's
+    // window is named for the session — so the rename must move the window
+    // name, and the re-rendered layout must carry no trace of the old one.
+    let (_, windows) = rig.tmux(&["list-windows", "-t", "after", "-F", "#{window_name}"]);
+    assert!(windows.lines().any(|name| name == "after"), "{windows}");
+    assert!(!windows.lines().any(|name| name == "before"), "{windows}");
     let (_, line) = rig.tmux(&["show-options", "-v", "-t", "after", "status-format[0]"]);
-    assert!(line.contains("bold]after#["), "{line}");
+    assert!(line.contains(ae::theme::ATTENTION_GLYPH_OPTION), "{line}");
     assert!(!line.contains("before"), "{line}");
     // The rename re-renders the LAYOUT and leaves the verdicts alone: those are
     // the watchdog's, and every other session on this server sorts its fleet
