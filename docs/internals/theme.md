@@ -64,19 +64,25 @@ that "this is waiting for you" is, and a gone process must never be drawn like a
 session that finished. Stale and unknown share a glyph and never a WORD: the
 reason beside the mark says which of the two it was.
 
-A pane that produced output since the watchdog's last capture shows a braille
-spinner frame in place of the working glyph. It is not an animation: the frame
-advances once per watchdog cycle, and the cycle is 60 seconds by default. So the
-spinner reads as "this moved since I last looked", and a bar that is spinning
-one frame per minute is telling you about the last minute rather than about now.
-Live motion belongs to a surface that redraws for itself, not to a status line
-one daemon repaints.
+A motion ticker runs between the watchdog's 60-second verdict cycles. Each tick
+reads every pane's history size and cursor position in one `list-panes` call. A
+history-size change is moving immediately; cursor-only motion is damped until
+two of the last three readings changed, so an idle TUI's occasional cursor
+redraw does not animate it. One batched tmux invocation then advances the pane
+border frame and window glyph. The next unchanged reading restores the cycle's
+verdict once. Dead and needs-you verdicts remain authoritative even when their
+panes print. Attached sessions tick every 250 ms; detached sessions every 2
+seconds because nobody can see them. Tmux redraws changed user options for
+every attached client without waiting for `status-interval`, so no format polls
+and no status-interval setting participates in animation.
+A pane spawned after the last verdict cycle has no cached verdict yet, so it
+starts animating from the next cycle.
 
 The spinner is subordinate to the state: it stands in for the working glyph and
 nothing else, so a pane that needs a human keeps saying so while it prints.
-`[workspace] icons = off` selects the ASCII column, and `motion = off` freezes
-the frame on its mark. The watchdog re-reads the look every cycle, so flipping
-either knob on a live session takes effect on the next one.
+`[workspace] icons = off` selects the ASCII column. `motion = off` or
+`theme = off` disables the ticker. The watchdog re-reads the look every cycle, so
+flipping either knob on a live session takes effect on the next one.
 
 ## What goes when the bar runs out of room
 

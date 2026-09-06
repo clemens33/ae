@@ -204,6 +204,55 @@ fn watch_until(
     satisfied
 }
 
+fn spawn_watchdog(
+    meta_dir: &Path,
+    home: &Path,
+    stdout: &Path,
+    stderr: &Path,
+    interval: &str,
+) -> Option<super::cli::OwnedChild> {
+    let stdout = fs::File::create(stdout).ok()?;
+    let stderr = fs::File::create(stderr).ok()?;
+    super::cli::ae()
+        .arg("_watchdog-run")
+        .arg(meta_dir)
+        .args([
+            "--interval",
+            interval,
+            "--quiet-beat-ms",
+            "10",
+            "--tg-supervise-secs",
+            "0",
+        ])
+        .env("HOME", home)
+        .stdout(stdout)
+        .stderr(stderr)
+        .spawn()
+        .ok()
+}
+
+fn stop_watchdog(child: &mut super::cli::OwnedChild, socket: &Path, scratch: &Path, session: &str) {
+    let _ = tmux(socket, scratch, &["kill-session", "-t", session]);
+    // This arm exercises the ticker, not the daemon's once-per-minute
+    // self-termination. Stop its dedicated child directly so teardown does not
+    // inherit the deliberately long verdict interval.
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+fn stamp_agent(socket: &Path, scratch: &Path, session: &str) {
+    for (option, value) in [("@ae_agent", "lead"), ("@ae_slot", "main")] {
+        assert!(
+            tmux(
+                socket,
+                scratch,
+                &["set-option", "-p", "-t", session, option, value]
+            )
+            .0
+        );
+    }
+}
+
 fn events(meta_dir: &Path) -> String {
     fs::read_to_string(meta_dir.join("events.jsonl")).unwrap_or_default()
 }
@@ -928,6 +977,108 @@ fn the_agent_roster_and_the_window_glyph_are_published_by_a_running_daemon() {
     assert!(
         !window.is_empty() && !window.contains("lead"),
         "the window carries a glyph, not a roster: {window:?}"
+    );
+}
+
+/// Motion has its own cadence: a normal 60-second verdict interval must not
+/// freeze a pane that is producing output while somebody is watching it.
+#[test]
+fn a_moving_panes_spinner_advances_between_watchdog_cycles() {
+    let scratch = scratch("spinner");
+    require_tmux(&scratch);
+    let socket = scratch.join("s");
+    let _cleanup = Cleanup::new(&socket, &scratch);
+    let root = scratch.join("home");
+    let meta_dir = plant(&root, "spinning", &socket, None);
+    let meta = fs::read_to_string(meta_dir.join("meta")).expect("the planted record");
+    assert!(
+        fs::write(
+            meta_dir.join("meta"),
+            meta.replace("agent_bin.main=claude", "agent_bin.main=yes")
+        )
+        .is_ok(),
+        "the chatty pane's binary"
+    );
+
+    assert!(
+        tmux(
+            &socket,
+            &scratch,
+            &["new-session", "-d", "-s", "spinning", "yes moving"]
+        )
+        .0,
+        "the chatty watched session"
+    );
+    stamp_agent(&socket, &scratch, "spinning");
+    let attach = format!(
+        "env -u TMUX tmux -S {} attach-session -t spinning",
+        socket.display()
+    );
+    assert!(
+        tmux(
+            &socket,
+            &scratch,
+            &["new-session", "-d", "-s", "viewer", &attach]
+        )
+        .0,
+        "a real client watches the target session"
+    );
+    let deadline = Instant::now() + BUDGET;
+    while Instant::now() < deadline
+        && tmux(
+            &socket,
+            &scratch,
+            &[
+                "display-message",
+                "-p",
+                "-t",
+                "spinning",
+                "#{session_attached}",
+            ],
+        )
+        .1
+        .trim()
+            == "0"
+    {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    let read = || {
+        tmux(
+            &socket,
+            &scratch,
+            &["show-options", "-pv", "-t", "spinning", "@ae_pane_state"],
+        )
+        .1
+        .trim()
+        .to_owned()
+    };
+    let daemon_out = scratch.join("daemon-out");
+    let daemon_err = scratch.join("daemon-err");
+    let mut child = spawn_watchdog(&meta_dir, &root, &daemon_out, &daemon_err, "60")
+        .expect("the watchdog binary should spawn");
+
+    let deadline = Instant::now() + BUDGET;
+    let first = loop {
+        let state = read();
+        if state.ends_with(" working") {
+            break Some(state);
+        }
+        if Instant::now() >= deadline {
+            break None;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    std::thread::sleep(Duration::from_secs(1));
+    let second = read();
+    let advanced = first.as_ref().is_some_and(|first| first != &second);
+
+    stop_watchdog(&mut child, &socket, &scratch, "spinning");
+    let diagnostics = fs::read_to_string(&daemon_err).unwrap_or_default();
+    assert!(
+        advanced,
+        "spinner stayed frozen across the 60-second verdict interval: {first:?} -> {second:?}\n\
+         daemon stderr: {diagnostics}"
     );
 }
 

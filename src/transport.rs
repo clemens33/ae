@@ -334,6 +334,19 @@ pub fn observe_watch_panes(server: &ServerId, session: &str) -> Option<Vec<tmux:
     tmux::interpret_watch_panes(succeeded, &stdout)
 }
 
+/// The motion ticker's single pane observation for `session` on `server`.
+#[must_use]
+pub(crate) fn observe_motion_panes(
+    server: &ServerId,
+    session: &str,
+) -> Option<Vec<tmux::MotionPane>> {
+    if !addressable(server) {
+        return None;
+    }
+    let (succeeded, stdout) = run(PROGRAM, &tmux::motion_panes_args(server, session));
+    tmux::interpret_motion_panes(succeeded, &stdout)
+}
+
 /// Who a pane says it belongs to — `#{session_name}` and `@ae_agent`, read from
 /// the PANE ITSELF at the moment a kill is being authorised.
 #[must_use]
@@ -446,6 +459,15 @@ pub fn publish_option(
         &tmux::set_option_args(server, scope, target, name, value),
     );
     succeeded
+}
+
+/// Publish several option values in one tmux process.
+#[must_use]
+pub(crate) fn publish_options(server: &ServerId, writes: &[tmux::OptionWrite]) -> bool {
+    if !addressable(server) || writes.is_empty() {
+        return false;
+    }
+    run(PROGRAM, &tmux::set_options_args(server, writes)).0
 }
 
 /// Remove one user option from `target`.

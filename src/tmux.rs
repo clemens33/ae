@@ -568,6 +568,77 @@ pub fn interpret_watch_panes(succeeded: bool, stdout: &str) -> Option<Vec<WatchP
     Some(panes)
 }
 
+/// The ticker's one observation: identity, visible-output coordinates, and
+/// whether anybody is attached to the session.
+pub(crate) const MOTION_PANE_FORMAT: &str =
+    "#{pane_id} | #{@ae_agent} | #{history_size} | #{cursor_x} | #{cursor_y} | #{session_attached}";
+
+/// The number of fields [`MOTION_PANE_FORMAT`] yields.
+const MOTION_PANE_FIELDS: usize = 6;
+
+/// One pane as the motion ticker reads it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MotionPane {
+    /// `#{pane_id}`, e.g. `%3`.
+    pub pane_id: String,
+    /// `@ae_agent`, or `None` when unstamped.
+    pub agent: Option<String>,
+    /// Lines in tmux's history buffer.
+    pub history_size: u64,
+    /// Cursor column.
+    pub cursor_x: u32,
+    /// Cursor row.
+    pub cursor_y: u32,
+    /// Clients attached to this session.
+    pub session_attached: u32,
+}
+
+/// The ticker's `list-panes -s -t <session> -F <MOTION_PANE_FORMAT>` argv.
+#[must_use]
+pub(crate) fn motion_panes_args(server: &ServerId, session: &str) -> Vec<String> {
+    let mut args = server_args(server);
+    args.extend(
+        ["list-panes", "-s", "-t", session, "-F", MOTION_PANE_FORMAT].map(ToOwned::to_owned),
+    );
+    args
+}
+
+/// Interpret one complete motion observation. Any malformed row refuses the
+/// whole snapshot: dropping it could fabricate a stopped pane.
+#[must_use]
+pub(crate) fn interpret_motion_panes(succeeded: bool, stdout: &str) -> Option<Vec<MotionPane>> {
+    if !succeeded {
+        return None;
+    }
+    let mut panes = Vec::new();
+    for line in stdout.lines() {
+        let fields: Vec<&str> = line.trim_end_matches('\r').split(FIELD_SEPARATOR).collect();
+        if fields.len() != MOTION_PANE_FIELDS {
+            return None;
+        }
+        let [
+            pane_id,
+            agent,
+            history_size,
+            cursor_x,
+            cursor_y,
+            session_attached,
+        ] = fields.as_slice()
+        else {
+            return None;
+        };
+        panes.push(MotionPane {
+            pane_id: (*pane_id).to_owned(),
+            agent: (!agent.is_empty()).then(|| (*agent).to_owned()),
+            history_size: history_size.parse().ok()?,
+            cursor_x: cursor_x.parse().ok()?,
+            cursor_y: cursor_y.parse().ok()?,
+            session_attached: session_attached.parse().ok()?,
+        });
+    }
+    Some(panes)
+}
+
 /// The arguments capturing `pane`'s recent output for the watchdog's hash and
 /// throttle scan — `capture-pane -p -J -S -40 -E - -t <pane>`: print to stdout,
 /// join wrapped lines, start 40 lines back, end at the last line.
@@ -652,6 +723,50 @@ pub fn set_option_args(
         args.push(flag.to_owned());
     }
     args.extend(["-t", target, name, value].map(ToOwned::to_owned));
+    args
+}
+
+/// One `set-option` in a batched tmux command.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct OptionWrite {
+    scope: OptionScope,
+    target: String,
+    name: String,
+    value: String,
+}
+
+impl OptionWrite {
+    /// A write to one exact option table and target.
+    pub(crate) fn new(scope: OptionScope, target: &str, name: &str, value: &str) -> Self {
+        Self {
+            scope,
+            target: target.to_owned(),
+            name: name.to_owned(),
+            value: value.to_owned(),
+        }
+    }
+}
+
+/// Batch several option writes into one tmux invocation. `;` is the argv form
+/// of the shell spelling `\;`; no shell sits between this vector and tmux.
+#[must_use]
+pub(crate) fn set_options_args(server: &ServerId, writes: &[OptionWrite]) -> Vec<String> {
+    let mut args = server_args(server);
+    for (index, write) in writes.iter().enumerate() {
+        if index > 0 {
+            args.push(";".to_owned());
+        }
+        args.push("set-option".to_owned());
+        if let Some(flag) = write.scope.flag() {
+            args.push(flag.to_owned());
+        }
+        args.extend([
+            "-t".to_owned(),
+            write.target.clone(),
+            write.name.clone(),
+            write.value.clone(),
+        ]);
+    }
     args
 }
 
@@ -1840,6 +1955,43 @@ mod tests {
     }
 
     #[test]
+    fn option_writes_are_one_tmux_command_with_literal_argv_separators() {
+        use super::{OptionScope, OptionWrite, set_options_args};
+        use crate::inventory::ServerId;
+        use crate::meta::Selector;
+        let server = ServerId::Selected(Selector::Name("ae".to_owned()));
+        let writes = [
+            OptionWrite::new(
+                OptionScope::Pane,
+                "%1",
+                "@ae_pane_state",
+                "#[fg=#6897BB]⠋#[default] working",
+            ),
+            OptionWrite::new(OptionScope::Window, "@7", super::WINDOW_STATUS_OPTION, "⠋◌"),
+        ];
+        assert_eq!(
+            set_options_args(&server, &writes),
+            [
+                "-L",
+                "ae",
+                "set-option",
+                "-p",
+                "-t",
+                "%1",
+                "@ae_pane_state",
+                "#[fg=#6897BB]⠋#[default] working",
+                ";",
+                "set-option",
+                "-w",
+                "-t",
+                "@7",
+                "@ae_window_status",
+                "⠋◌",
+            ]
+        );
+    }
+
+    #[test]
     fn the_transient_alert_carries_the_frozen_duration() {
         use super::display_message_args;
         use crate::inventory::ServerId;
@@ -1909,15 +2061,17 @@ mod tests {
     #[test]
     fn no_tmux_format_carries_a_control_character() {
         use super::{
-            AGENTS_FORMAT, CLIENT_FORMAT, FLEET_PANE_FORMAT, PANE_FORMAT, PANE_ID_FORMAT,
-            PANE_PROBE_FORMAT, PANE_TTY_FORMAT, SESSION_ID_FORMAT, SESSION_NAME_FORMAT,
-            SLOTS_FORMAT, VERSION_FORMAT, VIEWER_FORMAT, WATCH_PANE_FORMAT, WINDOW_PANE_FORMAT,
+            AGENTS_FORMAT, CLIENT_FORMAT, FLEET_PANE_FORMAT, MOTION_PANE_FORMAT, PANE_FORMAT,
+            PANE_ID_FORMAT, PANE_PROBE_FORMAT, PANE_TTY_FORMAT, SESSION_ID_FORMAT,
+            SESSION_NAME_FORMAT, SLOTS_FORMAT, VERSION_FORMAT, VIEWER_FORMAT, WATCH_PANE_FORMAT,
+            WINDOW_PANE_FORMAT,
         };
 
         for format in [
             AGENTS_FORMAT,
             CLIENT_FORMAT,
             FLEET_PANE_FORMAT,
+            MOTION_PANE_FORMAT,
             PANE_FORMAT,
             PANE_ID_FORMAT,
             PANE_PROBE_FORMAT,
@@ -2056,6 +2210,48 @@ mod tests {
             interpret_watch_panes(true, "\n").is_none(),
             "non-empty output with no parseable lines is untrusted"
         );
+    }
+
+    #[test]
+    fn the_motion_reading_is_one_strict_printable_snapshot() {
+        use super::{MotionPane, interpret_motion_panes, motion_panes_args};
+        use crate::inventory::ServerId;
+        assert_eq!(
+            motion_panes_args(&ServerId::Ambient, "s"),
+            [
+                "list-panes",
+                "-s",
+                "-t",
+                "s",
+                "-F",
+                super::MOTION_PANE_FORMAT,
+            ]
+        );
+        let listing = "%1 | lead | 42 | 7 | 9 | 1\n%2 |  | 0 | 0 | 0 | 1\n";
+        assert_eq!(
+            interpret_motion_panes(true, listing),
+            Some(vec![
+                MotionPane {
+                    pane_id: "%1".to_owned(),
+                    agent: Some("lead".to_owned()),
+                    history_size: 42,
+                    cursor_x: 7,
+                    cursor_y: 9,
+                    session_attached: 1,
+                },
+                MotionPane {
+                    pane_id: "%2".to_owned(),
+                    agent: None,
+                    history_size: 0,
+                    cursor_x: 0,
+                    cursor_y: 0,
+                    session_attached: 1,
+                },
+            ])
+        );
+        assert!(interpret_motion_panes(false, listing).is_none());
+        assert!(interpret_motion_panes(true, "%1 | lead | bad | 7 | 9 | 1\n").is_none());
+        assert!(interpret_motion_panes(true, "%1 | lead | 42 | 7 | 9\n").is_none());
     }
 
     #[test]
