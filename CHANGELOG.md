@@ -1,6 +1,25 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [v2026.9.6] - 2026-09-06
+
+### Documentation
+
+- Document the orchestrator seat and role contract
+- **brief**: The topic-capture convention, and ae brief as its reader
+- **commands**: The bare orchestrator word in the command list
+
+### Features
+
+- **theme**: Titles, pinned orchestrator row, and bare word API
+- **entry**: The bare orchestrator word launches the seat
+- **brief**: Ae brief cards a session's goal, topics, states and open asks
+- **watchdog**: The working spinner animates between verdict cycles
+
+### Refactoring
+
+- **launch**: Drop the orchestrator companion autostart
+- **memo**: One record parser, shared by render and brief
 ## [v2026.9.5] - 2026-09-06
 
 ### Features
