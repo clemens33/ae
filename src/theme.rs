@@ -517,11 +517,11 @@ pub const PANE_ACCENT_OPTION: &str = "@ae_pane_accent";
 pub const WINDOW_STAMP_OPTION: &str = "@ae_theme";
 
 /// The version of every FORMAT this module draws — the session lines, the
-/// window entries, the pane borders, the menu styles. Bump it when any of them
+/// window entries, the pane borders, the menu styles and terminal titles. Bump it when any of them
 /// changes shape: the version leads both stamps, so a session or window carrying
 /// an older one is rewritten by the next watchdog cycle rather than left on the
 /// layout an older core wrote.
-pub const FORMAT_VERSION: &str = "2";
+pub const FORMAT_VERSION: &str = "3";
 
 /// What [`WINDOW_STAMP_OPTION`] is set to: the LOOK the window was dressed in,
 /// formats version first.
@@ -675,6 +675,13 @@ pub struct FleetRow {
     pub current: bool,
 }
 
+impl FleetRow {
+    /// Whether this row is the fleet's fixed orchestrator anchor.
+    fn pinned(&self) -> bool {
+        self.name == crate::orchestrator::ORCHESTRATOR_SESSION
+    }
+}
+
 /// The fleet strip: `<glyph> <name>` per session, most actionable first, each
 /// one a click that switches this client to it.
 ///
@@ -689,10 +696,13 @@ pub fn fleet_strip(look: &Look, rows: &[FleetRow]) -> String {
     let icons = look.icons;
     let mut ordered: Vec<&FleetRow> = rows.iter().collect();
     ordered.sort_by(|left, right| {
-        right
-            .mark
-            .rank()
-            .cmp(&left.mark.rank())
+        // The orchestrator is the fleet's fixed point of reference: keep it
+        // first regardless of attention, and never let overflow shed it.
+        let left_pinned = left.pinned();
+        let right_pinned = right.pinned();
+        right_pinned
+            .cmp(&left_pinned)
+            .then_with(|| right.mark.rank().cmp(&left.mark.rank()))
             .then_with(|| left.name.cmp(&right.name))
     });
     // OVERFLOW: the strip sheds its calmest rows first, because a session that
@@ -723,13 +733,20 @@ pub fn fleet_strip(look: &Look, rows: &[FleetRow]) -> String {
             (palette.base, format!("fg={} nobold", palette.dim))
         };
         let lead = if row.current { " " } else { "" };
+        let pinned = row.pinned() && row.mark != Mark::Dead;
+        let glyph = if pinned {
+            if icons { "◆" } else { "o" }
+        } else {
+            row.mark.glyph(icons)
+        };
+        let accent = if pinned { palette.dim } else { palette.accent(row.mark) };
         let _ = write!(
             out,
             "#[range=session|{id} fg={accent} bg={ground}]{lead}{glyph}#[{text} bg={ground}] {name}{lead}\
              #[norange nobold fg={dim} bg={base}] ",
             id = row.id,
-            accent = palette.accent(row.mark),
-            glyph = row.mark.glyph(icons),
+            accent = accent,
+            glyph = glyph,
             base = palette.base,
             dim = palette.dim,
         );
@@ -925,7 +942,7 @@ pub fn redress_options(look: &Look, paths: &str) -> Vec<(String, String)> {
 /// The LAYOUT half: the two status lines and their ground.
 ///
 /// Empty when the look is undrawn. `[workspace] theme = off` leaves `status`,
-/// `status-style` and both `status-format` indices exactly as the user's own
+/// `status-style`, titles and both `status-format` indices exactly as the user's own
 /// tmux configuration left them, and ae fills the `@ae_*` facts anyway — so a
 /// hand-written `status-right` can carry them in the user's own layout.
 #[must_use]
@@ -941,6 +958,11 @@ pub fn layout_options(look: &Look) -> Vec<(String, String)> {
             "status-style".to_owned(),
             format!("bg={},fg={}", palette.base, palette.text),
         ),
+        ("set-titles".to_owned(), "on".to_owned()),
+        (
+            "set-titles-string".to_owned(),
+            "#{?#{@ae_attn_glyph},#{@ae_attn_glyph} ,}#{session_name}".to_owned(),
+        ),
         ("status-format[0]".to_owned(), status_line_zero(palette)),
         ("status-format[1]".to_owned(), status_line_one(palette)),
     ]
@@ -952,10 +974,12 @@ pub fn layout_options(look: &Look) -> Vec<(String, String)> {
 /// UNSET, not written empty: a session option that is not set falls back to the
 /// global one, which is the user's own — so this is how ae actually gives the
 /// status line back rather than replacing it with a blank.
-pub const LAYOUT_OPTIONS: [&str; 5] = [
+pub const LAYOUT_OPTIONS: [&str; 7] = [
     "status",
     "status-interval",
     "status-style",
+    "set-titles",
+    "set-titles-string",
     "status-format[0]",
     "status-format[1]",
 ];
@@ -1318,6 +1342,102 @@ mod tests {
             strip.matches("norange").count(),
             1,
             "an unclosed range bleeds into the next row: {strip}"
+        );
+    }
+
+    #[test]
+    fn the_orchestrator_is_a_pinned_dim_fleet_anchor() {
+        let row = |name: &str, mark| FleetRow {
+            name: name.to_owned(),
+            id: format!("${}", name.len()),
+            mark,
+            current: false,
+        };
+        let strip = fleet_strip(
+            &Look::DEFAULT,
+            &[
+                row("zeta", Mark::Done),
+                row("orchestrator", Mark::Working),
+                row("alpha", Mark::NeedsYou),
+            ],
+        );
+        assert!(
+            strip.find("orchestrator").unwrap_or(usize::MAX)
+                < strip.find("alpha").unwrap_or(usize::MAX),
+            "the anchor stays first: {strip}"
+        );
+        assert_eq!(strip.matches("◆").count(), 1, "{strip}");
+        assert!(strip.contains("fg=#808080"), "the pin is dim: {strip}");
+
+        let ascii = fleet_strip(
+            &Look {
+                icons: false,
+                ..Look::DEFAULT
+            },
+            &[row("orchestrator", Mark::Working)],
+        );
+        assert!(ascii.contains("]o#["), "ASCII pin: {ascii}");
+        assert!(
+            !ascii.contains("x#["),
+            "the softer attention glyph is hidden: {ascii}"
+        );
+
+        let dead = fleet_strip(
+            &Look {
+                icons: false,
+                ..Look::DEFAULT
+            },
+            &[row("orchestrator", Mark::Dead)],
+        );
+        assert!(dead.contains("]x#["), "dead keeps its alarm glyph: {dead}");
+        assert!(
+            dead.contains("fg=#FF6B68"),
+            "dead keeps its alarm accent: {dead}"
+        );
+    }
+
+    #[test]
+    fn the_pinned_orchestrator_survives_strip_overflow() {
+        let rows: Vec<FleetRow> = (0..super::STRIP_ROWS + 3)
+            .map(|index| FleetRow {
+                name: if index == super::STRIP_ROWS + 2 {
+                    "orchestrator".to_owned()
+                } else {
+                    format!("session-{index}")
+                },
+                id: format!("${index}"),
+                mark: Mark::Idle,
+                current: false,
+            })
+            .collect();
+        let strip = fleet_strip(&Look::DEFAULT, &rows);
+        assert!(
+            strip.contains("orchestrator"),
+            "pinned row was shed: {strip}"
+        );
+        assert!(
+            strip.contains("+3"),
+            "overflow count remains exact: {strip}"
+        );
+    }
+
+    #[test]
+    fn terminal_titles_are_part_of_the_drawn_layout() {
+        let options = super::layout_options(&Look::DEFAULT);
+        assert_eq!(super::FORMAT_VERSION, "3");
+        assert_eq!(
+            options
+                .iter()
+                .find(|(name, _)| name == "set-titles")
+                .map(|(_, value)| value.as_str()),
+            Some("on")
+        );
+        assert_eq!(
+            options
+                .iter()
+                .find(|(name, _)| name == "set-titles-string")
+                .map(|(_, value)| value.as_str()),
+            Some("#{?#{@ae_attn_glyph},#{@ae_attn_glyph} ,}#{session_name}")
         );
     }
 

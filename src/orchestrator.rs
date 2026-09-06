@@ -20,7 +20,10 @@ use crate::tmux::{Menu, MenuAction, MenuItem, jump_command, switch_command};
 
 /// `--help`, verbatim.
 pub const USAGE: &str = "\
-Usage: ae orchestrator --popup   Pick a session, then an agent, in a tmux menu.
+Usage: ae orchestrator [--popup]
+
+Bare `ae orchestrator` starts or reattaches the orchestrator seat. With
+`--popup`, pick a session, then an agent, in a tmux menu.
 
 The menu lists every running ae session in attention order — dead, stale,
 waiting-user, blocked, throttled, unanswered, then the quiet ones by name —
@@ -35,10 +38,12 @@ Bind it:  bind o run-shell \"ae orchestrator --popup\"
 A session on another tmux server cannot be switched to from here, so its row is
 disabled and shows the attach command instead.
 
-Bare 'ae orchestrator' is reserved for the hub session and does nothing yet.
 ";
 
-/// The code a bare `ae orchestrator` takes — it named no surface that exists.
+/// The canonical orchestrator session name.
+pub const ORCHESTRATOR_SESSION: &str = "orchestrator";
+
+/// The code a refused orchestrator invocation takes.
 pub const EXIT_USAGE: u8 = 2;
 
 /// What the argv asked for.
@@ -53,8 +58,6 @@ pub struct Args {
 pub enum Usage {
     /// `-h` / `--help` — the text, at exit 0.
     Help,
-    /// No word at all: the bare form, which S0 does not implement.
-    Bare,
     /// A word this command does not accept, carried for its message.
     Unknown(String),
 }
@@ -64,7 +67,7 @@ impl Usage {
     #[must_use]
     pub fn render(&self) -> String {
         match self {
-            Self::Help | Self::Bare => USAGE.to_owned(),
+            Self::Help => USAGE.to_owned(),
             Self::Unknown(token) => format!(
                 "ae orchestrator: unknown argument '{token}' (see: ae orchestrator --help)\n"
             ),
@@ -76,7 +79,7 @@ impl Usage {
     pub const fn code(&self) -> u8 {
         match self {
             Self::Help => 0,
-            Self::Bare | Self::Unknown(_) => EXIT_USAGE,
+            Self::Unknown(_) => EXIT_USAGE,
         }
     }
 }
@@ -85,13 +88,12 @@ impl Usage {
 ///
 /// # Errors
 ///
-/// [`Usage::Bare`] for the reserved bare form, [`Usage::Help`] for the help
-/// spellings, [`Usage::Unknown`] for anything else.
+/// [`Usage::Help`] for the help spellings, [`Usage::Unknown`] for anything else.
 ///
 /// ```
 /// use ae::orchestrator::{parse, Args, Usage};
 /// assert_eq!(parse(&["--popup".to_owned()]), Ok(Args { popup: true }));
-/// assert_eq!(parse(&[]), Err(Usage::Bare));
+/// assert_eq!(parse(&[]), Ok(Args { popup: false }));
 /// ```
 pub fn parse(tail: &[String]) -> Result<Args, Usage> {
     let mut args = Args { popup: false };
@@ -102,11 +104,13 @@ pub fn parse(tail: &[String]) -> Result<Args, Usage> {
             other => return Err(Usage::Unknown(other.to_owned())),
         }
     }
-    if args.popup {
-        Ok(args)
-    } else {
-        Err(Usage::Bare)
-    }
+    Ok(args)
+}
+
+/// The user-facing launch tail for the canonical orchestrator seat.
+#[must_use]
+pub fn seat_launch_args() -> Vec<String> {
+    vec![ORCHESTRATOR_SESSION.to_owned(), "--local".to_owned()]
 }
 
 /// Where one session's panes are, as the caller's own tmux server sees them.
@@ -531,7 +535,9 @@ pub fn attach_command(server: &crate::inventory::ServerId, session: &str) -> Str
 
 #[cfg(test)]
 mod tests {
-    use super::{AgentPane, KEYS, Located, Placement, ROW_CAP, Usage, attach_command, menu, parse};
+    use super::{
+        AgentPane, Args, KEYS, Located, Placement, ROW_CAP, Usage, attach_command, menu, parse,
+    };
     use crate::attention::Reason;
     use crate::digest::{AgentEntry, SessionEntry, Status};
     use crate::inventory::ServerId;
@@ -607,10 +613,7 @@ mod tests {
     #[test]
     fn the_flags_the_picker_accepts_and_the_ones_it_refuses() {
         assert!(parse(&["--popup".to_owned()]).unwrap().popup);
-        // Bare is RESERVED, not accepted: it prints the usage at 2.
-        assert_eq!(parse(&[]), Err(Usage::Bare));
-        assert_eq!(Usage::Bare.code(), 2);
-        assert!(Usage::Bare.render().contains("--popup"));
+        assert_eq!(parse(&[]), Ok(Args { popup: false }));
         for spelling in ["-h", "--help"] {
             assert_eq!(
                 parse(&[spelling.to_owned()]),
@@ -624,6 +627,15 @@ mod tests {
             Err(Usage::Unknown("--nope".to_owned()))
         );
         assert_eq!(Usage::Unknown("--nope".to_owned()).code(), 2);
+    }
+
+    #[test]
+    fn the_bare_word_routes_to_the_canonical_local_seat() {
+        assert_eq!(
+            super::seat_launch_args(),
+            vec!["orchestrator".to_owned(), "--local".to_owned()]
+        );
+        assert_eq!(super::ORCHESTRATOR_SESSION, "orchestrator");
     }
 
     #[test]
