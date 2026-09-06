@@ -181,7 +181,7 @@ pub struct Env {
     pub core: Option<PathBuf>,
     /// The version the resolved core reported, when the caller measured it.
     pub core_version: Option<String>,
-    /// `--no-autostart`: start NEITHER companion.
+    /// `--no-autostart`: suppress the Telegram bridge.
     pub no_autostart: bool,
 }
 
@@ -392,8 +392,8 @@ pub fn relaunch(
         server_value: plan.server_value.to_owned(),
         inside_tmux: false,
         attach: false,
-        // A relaunch IS a launch (compact's child), so the companions are
-        // decided exactly as they are for one typed by hand.
+        // A relaunch IS a launch (compact's child), so Telegram autostart is
+        // decided exactly as it is for one typed by hand.
         no_autostart: false,
         core: None,
         core_version: None,
@@ -1220,17 +1220,13 @@ fn build(
     // The watchdog restamps whatever appears after this.
     stamp_windows(&server, &shape.name, &shape.look);
 
-    // ---- the companions ----
+    // ---- the Telegram bridge ----
     //
-    // LAST, and after the session exists, deliberately: both guards are
-    // TRI-STATE, and a tmux probe taken before any server is running answers
-    // UNKNOWN — which refuses every time and would silently disable both
-    // companions on a cold machine. The session created above is what makes the
-    // server answerable. Both are best-effort and strictly non-fatal: a session
-    // that is up is never failed by a bridge that is not.
+    // LAST, and after the session exists, deliberately: the bridge is
+    // best-effort and strictly non-fatal. A session that is up is never failed
+    // by a bridge that is not.
     if !env.no_autostart {
         autostart_telegram(env, shape, &dir, &server, err);
-        autostart_orchestrator(env, shape, &server, out, err);
     }
 
     let _ = transport::run_tmux_op(&argv(&server, &Op::SelectPane { pane: &main_pane }));
@@ -1961,75 +1957,6 @@ fn autostart_telegram(
         paths.config.clone_from(global);
     }
     let _ = crate::telegram_lifecycle::autostart(&paths, server, &shape.name, dir, err);
-}
-
-/// The orchestrator companion, started in the background when a scaffold exists.
-fn autostart_orchestrator(
-    env: &Env,
-    shape: &Session,
-    server: &ServerId,
-    out: &mut impl Write,
-    err: &mut impl Write,
-) {
-    // The recursion guard, and it is structural rather than an environment
-    // variable: the companion IS an `ae orchestrator` launch, which lands right
-    // here, and a session already named for the scaffold does not start itself.
-    if matches!(shape.name.as_str(), "orchestrator" | "hub") {
-        return;
-    }
-    // The SCAFFOLD decides the session name: a `hub.config` keeps
-    // running as `hub`, because its baked charter paths and its resume state
-    // are that name's.
-    let scaffolds = [
-        (
-            "orchestrator",
-            env.home.join("orchestrator/orchestrator.config"),
-        ),
-        ("hub", env.home.join("meta-hub/hub.config")),
-    ];
-    let Some((session, config)) = scaffolds
-        .iter()
-        .find(|(_, config)| crate::lifecycle::path_exists(config))
-    else {
-        return;
-    };
-    // TRI-STATE: only a VERIFIED absence may start a companion.
-    let mut unknown = false;
-    for (name, _) in &scaffolds {
-        match transport::verify_session_absent(server, name) {
-            tmux::StopProbe::Present => return,
-            tmux::StopProbe::Unknown => unknown = true,
-            tmux::StopProbe::Absent => {}
-        }
-    }
-    if unknown {
-        let _ = writeln!(
-            err,
-            "Orchestrator autostart skipped — tmux did not answer, so a running orchestrator cannot be ruled out."
-        );
-        return;
-    }
-    // The child is a LAUNCH BY THIS CORE: the `CONFIG_FILE` + `cd` rewrite
-    // crosses as the flags `_launch` already reads, and the scaffold's own
-    // directory is its cwd.
-    let Some(dir) = config.parent() else {
-        return;
-    };
-    let Some(argv) = crate::lifecycle::orchestrator_argv(&crate::lifecycle::Companion {
-        home: &env.home,
-        dir,
-        config,
-        server_kind: &env.server_kind,
-        server_value: &env.server_value,
-        session,
-    }) else {
-        return;
-    };
-    let _ = writeln!(
-        out,
-        "Starting orchestrator companion session in the background (AE_NO_AUTOSTART=1 skips)."
-    );
-    let _ = transport::run_detached(&argv);
 }
 
 /// Create a detached window running `command`, and report its pane id.

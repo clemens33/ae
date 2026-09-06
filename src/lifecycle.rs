@@ -418,54 +418,6 @@ fn supervisor_argv(name: &str) -> Option<DetachedArgv> {
     ]))
 }
 
-/// The facts a companion launch carries — everything `_launch` would otherwise
-/// have to read out of an environment the core may not touch.
-pub(crate) struct Companion<'a> {
-    /// The ae home the companion's state lives under — the launching session's.
-    pub home: &'a Path,
-    /// The directory the companion runs in: its own scaffold's.
-    pub dir: &'a Path,
-    /// The scaffold's config, which is the whole point of the isolation — the
-    /// companion must never resolve the CALLER's roster.
-    pub config: &'a Path,
-    /// The recorded server's kind, so the companion lands where the fleet is.
-    pub server_kind: &'a str,
-    /// That server's value.
-    pub server_value: &'a str,
-    /// The session name the scaffold decides.
-    pub session: &'a str,
-}
-
-/// `nohup <this binary> _launch … -- --local <session>` — the launch's
-/// orchestrator companion, and the second shape this module can mint.
-pub(crate) fn orchestrator_argv(plan: &Companion<'_>) -> Option<DetachedArgv> {
-    let own = crate::shape::resolved_exe()?;
-    let mut argv = vec![
-        own.to_string_lossy().into_owned(),
-        crate::cli::LAUNCH.to_owned(),
-        "--home".to_owned(),
-        plan.home.display().to_string(),
-        "--cwd".to_owned(),
-        plan.dir.display().to_string(),
-        "--global".to_owned(),
-        plan.config.display().to_string(),
-    ];
-    if !plan.server_kind.is_empty() {
-        argv.push("--server-kind".to_owned());
-        argv.push(plan.server_kind.to_owned());
-        argv.push("--server".to_owned());
-        argv.push(plan.server_value.to_owned());
-    }
-    argv.extend([
-        "--no-attach".to_owned(),
-        "--no-autostart".to_owned(),
-        "--".to_owned(),
-        "--local".to_owned(),
-        plan.session.to_owned(),
-    ]);
-    Some(DetachedArgv(argv))
-}
-
 /// Append one line to the target's event log, best-effort.
 fn emit_stop_event(dir: &Path, name: &str, action: &str, summary: &str) {
     let _ = crate::store::open(dir).append_event(&crate::tracked::event_line(

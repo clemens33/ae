@@ -249,18 +249,6 @@ impl Rig {
         String::from_utf8_lossy(&out.stdout).into_owned()
     }
 
-    /// Plant the orchestrator scaffold the companion autostart opts in on.
-    fn scaffold_orchestrator(&self) -> PathBuf {
-        let dir = self.home.join("orchestrator");
-        assert!(std::fs::create_dir_all(&dir).is_ok(), "a scaffold dir");
-        let config = dir.join("orchestrator.config");
-        assert!(
-            std::fs::write(&config, IDLE_CONFIG).is_ok(),
-            "a scaffold config"
-        );
-        config
-    }
-
     /// The session names the rig's server holds right now.
     fn sessions(&self) -> Vec<String> {
         let (_, listed) = self.tmux(&["list-sessions", "-F", "#{session_name}"]);
@@ -686,66 +674,6 @@ fn a_codex_launch_captures_the_session_id_it_registers() {
         std::thread::sleep(Duration::from_millis(250));
     }
     panic!("the capture never registered the id:\n{}", rig.meta("cap"));
-}
-
-/// The orchestrator companion, started BY THE CORE.
-#[test]
-fn a_scaffold_starts_the_orchestrator_companion_from_the_core() {
-    if skip() {
-        return;
-    }
-    let rig = Rig::idle("orch");
-    let config = rig.scaffold_orchestrator();
-    let (code, stdout, stderr) = rig.launch(&["--local", "lnorch"]);
-    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
-    assert!(
-        stdout.contains("Starting orchestrator companion session"),
-        "the launch says it started one: {stdout}"
-    );
-
-    // The child is DETACHED, and its two observable facts do not land together:
-    // tmux lists a session the moment it is created, while the meta is
-    // published further down the launch.
-    let recorded = format!("config={}", config.display());
-    let mut meta = String::new();
-    for _ in 0..160 {
-        meta = rig.meta("orchestrator");
-        if meta.contains(&recorded) {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(250));
-    }
-    let seen = rig.sessions();
-    assert!(
-        seen.iter().any(|name| name == "orchestrator"),
-        "the companion must be up on the rig's own server: {seen:?}"
-    );
-
-    // ISOLATION: the companion must run under the SCAFFOLD's config and
-    // directory, never the caller's.
-    assert!(
-        meta.contains(&recorded),
-        "the companion read the scaffold's config:\n{meta}"
-    );
-    assert!(
-        meta.contains(&format!(
-            "origin={}",
-            rig.home.join("orchestrator").display()
-        )),
-        "the companion ran in the scaffold's directory:\n{meta}"
-    );
-
-    // And it starts NO companion of its own: the structural guard (a session
-    // named for a scaffold) and `--no-autostart` both hold, so there is exactly
-    // one orchestrator however many times the recursion could have gone round.
-    assert_eq!(
-        rig.sessions()
-            .iter()
-            .filter(|name| *name == "orchestrator")
-            .count(),
-        1,
-        "the recursion guard holds"
-    );
 }
 
 /// `--glue` is GONE, and an unknown flag is refused exactly as before.
