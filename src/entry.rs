@@ -85,6 +85,9 @@ Usage:
                          List sessions (running by default). 'ae list --help' has the
                          full filter set and what --json carries
   ae next [--attach]     Name the top session needing attention (--attach jumps to it)
+  ae brief [name] [--all] [--since <dur>]
+                         Card one session or the fleet: goal, the latest note per memo
+                         topic, each agent's declared state, and who is waiting on you
   ae orchestrator        Start or reattach the orchestrator seat (a session named
                          orchestrator in this directory; see contrib/aeorchestrator)
   ae orchestrator --popup
@@ -323,6 +326,7 @@ pub fn route(preamble: &Preamble, argv: &[String], pane: Option<&str>) -> Route 
             }
         }
         Some("next" | "jump") => Route::Core(with_head("next", &tail())),
+        Some("brief") => Route::Core(with_head("brief", &tail())),
         Some("compact") => Route::Core(with_head(crate::cli::COMPACT, &tail())),
         Some("archive") => match argv.get(1).map(String::as_str) {
             Some("preview") => Route::ArchivePreview(argv.get(2).cloned()),
@@ -500,6 +504,7 @@ mod tests {
             (argv(&["rename", "a", "b"]), argv(&["rename", "a", "b"])),
             (argv(&["ls", "--all"]), argv(&["list", "--all"])),
             (argv(&["jump", "--attach"]), argv(&["next", "--attach"])),
+            (argv(&["brief", "--all"]), argv(&["brief", "--all"])),
         ];
         for (typed, effective) in table {
             assert_eq!(route(&preamble(), &typed, None), Route::Core(effective));

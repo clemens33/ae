@@ -8,6 +8,7 @@ mod archive;
 mod archive_from;
 mod archive_publish;
 mod archive_purge;
+mod brief;
 mod capture;
 mod cli;
 mod compact;

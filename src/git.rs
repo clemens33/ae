@@ -1,6 +1,12 @@
-//! The archive preview's git facts, derived by running `git` — the ONLY product
-//! caller of [`crate::transport::run_git`], the fixed-program git leg of the one
-//! process door.
+//! ae's git facts, derived by running `git` — the ONLY product caller of
+//! [`crate::transport::run_git`], the fixed-program git leg of the one process
+//! door.
+//!
+//! Four consumers, one door: the archive preview's range and HEAD facts, the
+//! `ae end` path's commit and push, the watchdog's branch-and-dirty segment, and
+//! `ae brief`'s dirty marker — which is the watchdog's [`work_tree_dirty`], read
+//! a second time rather than spelled a second way, so the `*` on a card and the
+//! `*` on a status line can never disagree.
 //!
 //! A non-local (`worktree`/`copy`) preview runs these in the session's work dir.
 //! Two properties are structural, not incidental:
@@ -22,7 +28,7 @@
 use std::ffi::{OsStr, OsString};
 use std::os::unix::ffi::OsStrExt as _;
 
-/// The four questions the preview asks git, each a fixed argv shape.
+/// Every question ae asks git, each a fixed argv shape.
 enum Query<'a> {
     /// `rev-parse --is-inside-work-tree` — the guard, judged by exit status.
     IsWorkTree,

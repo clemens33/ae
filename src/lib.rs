@@ -11,6 +11,7 @@
 
 pub mod archive;
 pub mod attention;
+pub mod brief;
 pub mod cli;
 mod compact;
 pub mod config;
@@ -316,6 +317,9 @@ fn run_dispatch(args: &[String], out: &mut impl Write, err: &mut impl Write) -> 
         cli::Request::Orchestrator { tail } => {
             orchestrator::parse(&tail).is_ok_and(|args| args.popup)
         }
+        // A brief is a reading of the same world, so a refused argv must not pay
+        // for the scan either.
+        cli::Request::Brief { tail } => brief::parse(&tail).is_ok(),
         _ => false,
     };
     if wants_world && let Some(root) = state_root() {
@@ -862,6 +866,103 @@ fn run_state(
 }
 
 /// The `next`/`jump` arm — frozen `cmd_next`, over the world `list` renders.
+/// `ae brief [session] [--all] [--since <dur>]` — the cards, most actionable
+/// first.
+///
+/// The impure half of the command, and deliberately thin: it resolves WHICH
+/// sessions the argv names and hands each one to [`brief::card_for`], which owns
+/// every read of a session directory. The one thing asked of the outside world
+/// beyond that is git's opinion of each live work tree, through the same
+/// [`git::work_tree_dirty`] the watchdog's branch marker uses — so a dirty card
+/// and a dirty status line can never disagree.
+fn run_brief(
+    tail: &[String],
+    world: Option<&listing::World>,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> Result<u8> {
+    let args = match brief::parse(tail) {
+        Ok(args) => args,
+        Err(usage) => {
+            write!(err, "{}", usage.render())?;
+            return Ok(entry::EXIT_USAGE);
+        }
+    };
+    let (Some(world), Some(root)) = (world, state_root()) else {
+        writeln!(err, "ae: {NO_STATE_ROOT}")?;
+        return Ok(EXIT_UNAVAILABLE);
+    };
+    // Before ANY absence claim: an enumeration that lost a source cannot prove a
+    // session is not there, and both refusals below are absence claims. The
+    // warning is `ae list`'s own, so the two surfaces say the same thing.
+    if let Some(warning) = listing::diagnostic(world) {
+        writeln!(err, "{warning}")?;
+    }
+    let named = match &args.target {
+        brief::Target::All => None,
+        brief::Target::Named(name) => Some(name.clone()),
+        // No name given: the session this pane is in. A caller outside one, or
+        // in a session ae cannot see, gets the whole fleet rather than nothing.
+        brief::Target::Caller => calling_session_name()
+            .filter(|name| world.sessions.iter().any(|entry| &entry.name == name)),
+    };
+    let selected: Vec<&digest::SessionEntry> = if let Some(name) = &named {
+        let Some(entry) = world.sessions.iter().find(|entry| &entry.name == name) else {
+            // A COMPLETE enumeration proves absence; an incomplete one only
+            // proves this reader did not see it.
+            if world.inventory_complete() {
+                writeln!(err, "ae brief: no session named {name}")?;
+            } else {
+                writeln!(
+                    err,
+                    "ae brief: {name} is in no session source ae could read, so ae will not \
+                     say it is gone."
+                )?;
+            }
+            return Ok(EXIT_UNAVAILABLE);
+        };
+        vec![entry]
+    } else {
+        filters::Selection::running().select(&world.sessions, world.now)
+    };
+    if selected.is_empty() {
+        write!(err, "{}", brief::NOTHING)?;
+        return Ok(0);
+    }
+    let sessions = inventory::Roots::under(&root);
+    let home = doors::home();
+    let cards = brief::ordered(
+        selected
+            .iter()
+            .map(|entry| {
+                let dirty = brief::wants_git(entry)
+                    && entry
+                        .work_dir
+                        .as_deref()
+                        .is_some_and(|dir| git::work_tree_dirty(dir.as_bytes()));
+                brief::card_for(
+                    entry,
+                    &sessions.sessions().join(&entry.name),
+                    home.as_deref(),
+                    dirty,
+                    world.now,
+                    args.since_secs,
+                )
+            })
+            .collect(),
+    );
+    write!(out, "{}", brief::render(&cards))?;
+    Ok(0)
+}
+
+/// The session the calling pane sits in, on the server this invocation would
+/// ask — `None` outside tmux, or when that server does not answer for the pane.
+fn calling_session_name() -> Option<String> {
+    let pane = doors::calling_pane_id()?;
+    let server = doors::probe_target(doors::declared_server(shape::current()).as_ref())?;
+    transport::observe_viewer(&server, &pane)?.session
+}
+
 fn run_next(
     tail: &[String],
     world: Option<&listing::World>,
@@ -1552,6 +1653,7 @@ pub fn run_with(
             }
         }
         cli::Request::Next { tail } => run_next(tail, world, out, err)?,
+        cli::Request::Brief { tail } => run_brief(tail, world, out, err)?,
         // A parsed `--popup` is answered in `run_dispatch`, which has the
         // snapshot this arm does not: reaching here with one means there was no
         // state root to read a world from at all.

@@ -604,6 +604,12 @@ pub enum Request {
         /// Everything after the subcommand, as typed.
         tail: Vec<String>,
     },
+    /// `brief [session] [--all] [--since <dur>]` — validated by
+    /// [`crate::brief::parse`], which owns the flag grammar and its usage text.
+    Brief {
+        /// Everything after the subcommand, as typed.
+        tail: Vec<String>,
+    },
     /// `rename [old] <new>` — validated by [`crate::rename`].
     Rename {
         /// Everything after the subcommand, as typed.
@@ -721,6 +727,9 @@ impl Request {
                 tail: args[1..].to_vec(),
             },
             Some("orchestrator") => Self::Orchestrator {
+                tail: args[1..].to_vec(),
+            },
+            Some("brief") => Self::Brief {
                 tail: args[1..].to_vec(),
             },
             Some(SAY) => match &args[1..] {
@@ -1236,6 +1245,7 @@ impl Request {
             Self::List(_)
             | Self::Next { .. }
             | Self::Orchestrator { .. }
+            | Self::Brief { .. }
             | Self::LaunchCandidate(_)
             | Self::Requests { .. }
             | Self::Say { .. }

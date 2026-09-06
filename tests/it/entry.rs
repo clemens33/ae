@@ -621,6 +621,7 @@ fn help_is_the_command_set_and_names_no_retired_word() {
     for row in [
         "  ae list [",
         "  ae next [",
+        "  ae brief [",
         "  ae orchestrator --popup",
         "  ae doctor [",
         "  ae rename ",
