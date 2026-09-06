@@ -1,7 +1,7 @@
 # The session look
 
-ae draws its own sessions: two status lines, a glyph on every window, a title on
-every pane border, and a style for the menu the picker opens. All of it is
+ae draws its own sessions: two status lines, a terminal title, a glyph on every
+window, a title on every pane border, and a style for the menu the picker opens. All of it is
 **session-scoped**. A tmux server can hold ae sessions and your own side by
 side, and yours keeps your theme.
 
@@ -16,9 +16,9 @@ them. ae still publishes every `@ae_*` value, so a hand-written `status-right`
 can carry ae's facts in your own layout. `motion = off` freezes the spinner on
 its mark. Both knobs are session-scoped like everything else here.
 
-**Session-scoped, never global.** `status`, `status-style` and the two
-`status-format` indices are session options, so ae writes them on its own
-sessions. The pane borders, the window entries and the menu and popup styles are
+**Session-scoped, never global.** `status`, `status-style`, `set-titles`,
+`set-titles-string` and the two `status-format` indices are session options, so
+ae writes them on its own sessions. The pane borders, the window entries and the menu and popup styles are
 **window** options — measured on tmux 3.7b, `set-option -t <session>` on one of
 those lands on that session's *current* window and silently leaves the others on
 the global table — so ae stamps each window individually and never touches `-g`.
@@ -99,14 +99,17 @@ paired with a glyph, and each glyph with a reason word on the pane border.
 
 ## The two status lines
 
-`status-format[0]` — the session's attention glyph in its accent and its name as
-plain text, then the windows (a mark instead of tmux's `*` and `-` flags, with
-`Z` kept because a zoomed pane hides the rest of the window), then on the right
-the branch, the goal, the shortened path and the watch segment.
+`status-format[0]` — the session's attention glyph in its accent, then the
+windows (a mark instead of tmux's `*` and `-` flags, with `Z` kept because a
+zoomed pane hides the rest of the window), then on the right the branch, the
+goal, the shortened path and the watch segment. The session name is shown once
+in the fleet strip below.
 
-`status-format[1]` — the **fleet strip**: every ae session on this server, most
-actionable first, then this session's own agents with their live marks. Each
-strip entry is a tmux `range=session` region, so tmux's own default
+`status-format[1]` — the **fleet strip**: the `orchestrator` session pinned
+first with a dim `◆` (ASCII `o` when icons are off), then every other ae session
+most actionable first, then this session's own agents with their live marks.
+The orchestrator pin is never shed on overflow and never displays its attention
+glyph. Each strip entry is a tmux `range=session` region, so tmux's own default
 `MouseDown1Status` binding (`switch-client -t =`) makes it clickable: ae adds no
 key binding, which would be a server-global write on your key table.
 
@@ -119,6 +122,15 @@ One snapshot feeds every surface. The marks the agent strip draws, the mark the
 session publishes for other sessions to sort on, and the words on the pane
 borders all come from the same cycle's judgement, including the slots whose pane
 has gone missing.
+
+### Terminal titles
+
+When the look is on, ae enables tmux terminal titles and sets
+`set-titles-string` to `#{@ae_attn_glyph} #{session_name}`. Ghostty and other
+terminals that expose tmux's title therefore show the session's current
+attention glyph and name. Titles are session-scoped and follow the same
+look-stamp repaint as the status lines; `[workspace] theme = off` leaves the
+user's title settings untouched.
 
 ## The `@ae_*` interface
 
@@ -159,7 +171,7 @@ A tmux option **value** interpolates literally: `##` renders as two characters
 and `#{…}` is not re-expanded. What the drawer *does* read out of a value is
 `#[…]`, which is how the watchdog publishes colour. So values carry styles and
 are never format-escaped, while text baked into a FORMAT — the session name in
-`status-format[0]` — is escaped through `tmux::format_literal`.
+the fleet strip — is escaped through `tmux::format_literal`.
 
 That leaves free text nowhere to hide, so it is dropped rather than escaped:
 the goal, an agent's name on the strip, a pane's profile and the shortened path

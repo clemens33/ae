@@ -19,7 +19,7 @@ Works with any CLI-based agentic harness.
 - **Tiered delegation** -- leads run the strongest model; bounded chores go to cheap spawned workers in their own tmux windows, reviewed and retired. Convention, not machinery ([docs](docs/reference/delegation.md)).
 - **A status bar that answers "who needs me"** -- inside its sessions ae draws the tmux footer: this session, its windows, its branch and goal on line one; every ae session on the server, most actionable first and each one clickable, plus this session's agents (`lead● colead✓ builder◌ grok⚠`) on line two. Verdicts, never claims, and `[workspace] theme = off` gives your own status line back.
 - **A chief of staff on your phone** -- the optional orchestrator session watches your whole fleet and reports over Telegram; tell it your objective and it helps you hold it.
-- **Small public surface** -- one command, and optional companions in `contrib/` that are never required.
+- **Small public surface** -- one command, and an optional orchestrator seat in `contrib/` that is never required.
 
 ## Install
 
@@ -85,9 +85,15 @@ ae list --needs-attn           # only sessions needing attention (alias: --attn)
 ae list --all                  # include stopped sessions
 ae list --json                 # machine-readable digest (for scripts/agents)
 ae next                        # name the top session needing attention (--attach jumps to it)
+ae orchestrator                # start or reattach the local orchestrator seat
 ae orchestrator --popup        # pick a session, then an agent, in a tmux menu; Enter lands in its pane
 watch -n 10 'ae list'          # live dashboard
 ```
+
+The bare `ae orchestrator` command uses the current directory and session-local
+config. If you need the role contract, copy
+`contrib/aeorchestrator/orchestrator.config` to `.ae/config` first; ae prints
+that hint when the file is missing.
 
 Bind the picker to a key (ae needs tmux 3.4+); `switch-client -l` (prefix + `L`) is the
 way back:
@@ -205,9 +211,9 @@ Everything else is **optional**, never required for core commands:
 | Feature | What | Needs |
 |---|---|---|
 | `ae telegram` | machine-global bridge: fleet events to your Telegram chat, replies route back | a configured ae core (no extra CLI deps) |
-| the orchestrator companion ([contrib/aeorchestrator](contrib/aeorchestrator)) | the fleet's chief of staff: monitors every session, relays and reports, guards an objective once you set one. An ordinary ae session against its own config, started for you alongside the first launch | an agent CLI |
+| the orchestrator seat ([contrib/aeorchestrator](contrib/aeorchestrator)) | an ordinary local ae session named `orchestrator`: reads `ae brief --all` / `ae list`, reports fleet health, and relays only explicit human instructions | an agent CLI + copied `.ae/config` |
 
-Both daemons are Rust, start to finish: the watchdog pane runs core `_watchdog-run`, the bridge runs core `_telegram-run`, and `ae watchdog`/`ae telegram` are core operations. Neither needs `jq` or `curl`. The orchestrator's deterministic sweep is the core entry `ae _monitor sweep` — it was a Python sidecar (`contrib/aemonitor`) until the core took the job, and that was the product's last Python. Autostart controls are per component: set `watchdog = false` in workspace config to disable the workspace watchdog; set `enabled = false` in Telegram config to disable Telegram; set `AE_NO_AUTOSTART=1` to start neither companion with a launch.
+Both daemons are Rust, start to finish: the watchdog pane runs core `_watchdog-run`, the bridge runs core `_telegram-run`, and `ae watchdog`/`ae telegram` are core operations. Neither needs `jq` or `curl`. The orchestrator's deterministic sweep is the core entry `ae _monitor sweep` — it was a Python sidecar (`contrib/aemonitor`) until the core took the job, and that was the product's last Python. Autostart controls are per component: set `watchdog = false` in workspace config to disable the workspace watchdog; set `enabled = false` in Telegram config to disable Telegram; set `AE_NO_AUTOSTART=1` to suppress the Telegram bridge on launch.
 
 There is no coreless mode to fall back to: the public `ae` command is the core binary
 itself, so there is nothing separate to bind. See **[VISION.md](VISION.md)**.

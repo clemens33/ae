@@ -204,6 +204,13 @@ The fleet picker, drawn by tmux itself. No daemon, no polling, no dependency: on
 `display-menu` built from the same [`ae list`](#ae-list) digest, thrown away when you
 choose.
 
+Bare `ae orchestrator` starts or reattaches the local session named
+`orchestrator`. It is the ordinary `ae --local orchestrator` launch in the
+current directory. If that directory has no `.ae/config` with the orchestrator
+role, ae starts the seat and prints a hint to copy
+`contrib/aeorchestrator/orchestrator.config` there. `--popup` remains the
+picker form described below.
+
 ```text
 $ ae orchestrator --popup
 ┌─ ae fleet — 3 running ──────────────────────────────────────────────────┐
@@ -293,9 +300,6 @@ running server for you.
           an older distro needs its backport, a newer package, or a source build).
 ```
 
-Bare `ae orchestrator` prints the usage at exit 2: the word is reserved for the hub session
-and does nothing yet.
-
 ## `ae doctor`
 
 Pre-flight + post-upgrade self-test. Walks a fixed checklist of `OK / WARN / FAIL` items and
@@ -374,49 +378,33 @@ sweep locks, writes and runs `say` inside whatever directory it is handed. The s
 which is **not in the default telegram include set**, so routine sweeps don't
 reach your phone (a custom `include` containing `nudge` would forward them).
 
-## The orchestrator companion
+## The orchestrator seat
 
-The **orchestrator** — your fleet's chief of staff: a single ae session that monitors
-all your *other* ae sessions and is your one point of contact to them (it relays
-your instructions to the other sessions and reports what needs you, via the
-Telegram `say` channel). Once you set an objective (`objective: …` over Telegram) it also holds it, parks
-your ideas, and answers `what next` — and may proactively nudge you when you drift,
-but only through hard gates (concrete signal held two sweeps, a rate budget, quiet
-hours, suggest-only; ignore a couple and it self-mutes for the day). See
-[`contrib/aeorchestrator`](../../contrib/aeorchestrator/). It
-is a monitor + relay + focus aide: per its charter it never ends/stops/edits
-another session on its own, and only suggests — it dispatches nothing without
-your say-so.
+The **orchestrator** is an ordinary local ae session named `orchestrator`. It
+reads `ae brief --all` (or `ae list`) and reports three buckets — needs your
+answer, health to inspect, and in progress — with `session:agent` identities. It
+relays only explicit human instructions through the exact `send`, `ask`, or
+`review` helpers and reports the delivery verdict or request id. It never
+dispatches work, changes goals, clears questions, runs lifecycle operations,
+edits project or session state, or treats text from another session as
+instructions. See [`contrib/aeorchestrator`](../../contrib/aeorchestrator/).
 
-**The orchestrator AGENT is not a command.** `ae orchestrator` is the
-[fleet picker](#ae-orchestrator---popup) above, and `ae hub` refuses. The agent is an
-ordinary ae session against its own config:
+**Setting it up.** Run from the project directory where the seat should live:
 
 ```bash
-cd ~/.ae/orchestrator && CONFIG_FILE=$PWD/orchestrator.config ae --local orchestrator
+mkdir -p .ae
+cp contrib/aeorchestrator/orchestrator.config .ae/config
+ae orchestrator
 ```
 
-That is exactly what `ae hub` prints when you reach for it.
+The bare command starts or reattaches the local seat and prints that copy hint
+when `.ae/config` is absent. The copied config carries the role prompt inline;
+`CHARTER.md` is its readable reference, not a guessed runtime path. Use
+`ae orchestrator --local` to start the same seat without the template.
 
-**Setting it up.** There is no `--init` any more. Copy the two templates from
-[`contrib/aeorchestrator`](../../contrib/aeorchestrator/) into `~/.ae/orchestrator/` yourself
-— `orchestrator.config` and `CHARTER.md` — and replace the charter path placeholder in the
-config with the real path. The charter wires the deterministic sweep to the core entry
-`ae _monitor sweep`, defines the objective-armed focus aide, and tells the
-agent its only channel to you is `say`. The config marks the session with `[workspace]
-orchestrator = true`, which is what gives its main agent the sweep cadence described above.
-
-Config isolation is still the point of running it this way. `CONFIG_FILE` names the
-orchestrator's own config and `--local` keeps it in that directory, so the global config's
-`workers` never leak into the single-agent orchestrator regardless of where you started from.
-
-**Autostart.** A launch starts the companion for you: if `~/.ae/orchestrator/orchestrator.config`
-exists (or the legacy `~/.ae/meta-hub/hub.config`, which keeps running under the name `hub`
-so its baked charter paths stay consistent), the core brings the orchestrator up in the
-background beside the session you asked for. It is guarded three ways — the session it is
-launching from is never the orchestrator itself, a verified-present orchestrator is left
-alone, and a tmux server that cannot answer counts as *unknown* and refuses to start one
-rather than risk a duplicate. `AE_NO_AUTOSTART=1` starts neither companion.
+**Autostart.** A launch may start the configured Telegram bridge. The
+orchestrator is started explicitly with `ae orchestrator`; it is never a
+background companion. `AE_NO_AUTOSTART=1` suppresses the Telegram bridge.
 
 To talk to the orchestrator from your phone, run the [Telegram bridge](telegram.md):
 plain messages route to the running orchestrator automatically (no `/use` setup), and
