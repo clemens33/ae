@@ -17,6 +17,15 @@ Name every item with its `session:agent` identity. Keep reports short and send
 them to the operator through the session's `say` helper; pane text is not a
 delivery channel.
 
+For "what changed since my last report", deduped by the core, run the sweep from
+inside this seat, verbatim — it delivers through this session's own `say`, and
+empty output means nothing needed reporting:
+
+    ae _monitor sweep __HELPERS_DIR__
+
+`__HELPERS_DIR__` is this session's helper directory, `~/.ae/sessions/orchestrator`
+(under `AE_HOME` when one is set).
+
 ## Relay
 
 Relay only an explicit human instruction. Use the exact target identity and the

@@ -313,7 +313,9 @@ fn run_dispatch(args: &[String], out: &mut impl Write, err: &mut impl Write) -> 
         // The sweep reads the same world `list` renders — that IS its input.
         cli::Request::List(_) | cli::Request::Monitor { .. } => true,
         cli::Request::Next { tail } => next::parse(&tail).is_ok(),
-        cli::Request::Orchestrator { tail } => orchestrator::parse(&tail).is_ok(),
+        cli::Request::Orchestrator { tail } => {
+            orchestrator::parse(&tail).is_ok_and(|args| args.popup)
+        }
         _ => false,
     };
     if wants_world && let Some(root) = state_root() {
@@ -553,7 +555,17 @@ fn run_entry(
             return run_archive_preview(preamble, name.as_deref(), out, err);
         }
         entry::Route::Core(effective) => return run_dispatch(&effective, out, err),
-        entry::Route::Launch(user) => return run_launch(preamble, &user, out, err),
+        entry::Route::Launch(user) => {
+            if user == orchestrator::seat_launch_args() && preamble.local.is_none() {
+                writeln!(
+                    err,
+                    "ae orchestrator: no .ae/config under {} — the seat runs on your global roster. \
+                     For the role contract: mkdir -p .ae && cp <ae repo>/contrib/aeorchestrator/orchestrator.config .ae/config",
+                    preamble.cwd.display()
+                )?;
+            }
+            return run_launch(preamble, &user, out, err);
+        }
     };
     out.flush()?;
     err.flush()?;
@@ -1547,6 +1559,14 @@ pub fn run_with(
             if let Err(usage) = orchestrator::parse(tail) {
                 write!(err, "{}", usage.render())?;
                 usage.code()
+            } else if !orchestrator::parse(tail).is_ok_and(|args| args.popup) {
+                // The bare word reaches the core only WITHOUT a preamble: the
+                // seat is a launch, and a launch needs the ae command.
+                writeln!(
+                    err,
+                    "ae orchestrator: the seat launches through the ae command"
+                )?;
+                entry::EXIT_USAGE
             } else {
                 writeln!(err, "ae: {NO_STATE_ROOT}")?;
                 EXIT_UNAVAILABLE

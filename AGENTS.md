@@ -226,7 +226,7 @@ inventoried by the clippy `disallowed-methods` boundary. Never read the world ad
 | `AE_HOME` | relocates ALL ae state | CHECKOUT only |
 | `CONFIG_FILE` | which global config is read | CHECKOUT only |
 | `AE_TMUX_SERVER` + `AE_TMUX_SERVER_KIND` | which tmux server a launch lands on | CHECKOUT only |
-| `AE_NO_AUTOSTART` | start neither companion | both |
+| `AE_NO_AUTOSTART` | start no companion: neither the watchdog nor the Telegram bridge | both |
 | `TMUX` / `TMUX_PANE` | which pane this shell is, for `stop` and `watchdog` | both |
 
 In the core `AE_VERSION` is scoped to `upgrade` alone; `install` reads it too, as the CalVer

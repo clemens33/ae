@@ -98,7 +98,7 @@ Three ways to reach an agent, easiest first:
 
 ## Orchestrator-centric routing: talk to the meta-agent, not ten sessions
 
-The [orchestrator companion](commands.md#the-orchestrator-companion) meta-agent turns the bridge from a
+The [orchestrator seat](commands.md#ae-orchestrator) (`ae orchestrator`) turns the bridge from a
 *broadcast* (every session shouting events at you) into a *conversation* (you talk
 to one agent that watches the rest and relays for you). This is **not a new
 mechanism** — it's a setup on top of the routing above:

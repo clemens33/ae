@@ -526,7 +526,7 @@ fn a_cut_word_refuses_and_creates_no_session() {
     let rig = Rig::new("cut");
     for (word, expected) in [
         ("status", "Use 'ae list'"),
-        ("hub", "An orchestrator AGENT is an ordinary session"),
+        ("hub", "The orchestrator seat is 'ae orchestrator'"),
         ("transfer", "no cross-machine session sync"),
     ] {
         let (code, stdout, stderr) = rig.run(&[word]);
@@ -543,23 +543,49 @@ fn a_cut_word_refuses_and_creates_no_session() {
     }
 }
 
-/// `ae orchestrator` came BACK as the fleet picker, so the bare word prints its
-/// usage rather than a refusal — and, like a refusal, it makes no session.
+/// The bare `ae orchestrator` is a LAUNCH of the orchestrator seat: an ordinary
+/// local session named `orchestrator`, built through the same preamble as any
+/// launch. With no `.ae/config` beside it, the seat still starts, on the global
+/// roster, and says where the role contract comes from.
 #[test]
-fn the_bare_orchestrator_prints_its_usage_and_creates_no_session() {
+fn the_bare_orchestrator_launches_the_seat_and_names_the_missing_local_config() {
+    if skip() {
+        return;
+    }
     let rig = Rig::new("orch");
-    let (code, stdout, stderr) = rig.run(&["orchestrator"]);
-    assert_eq!(code, Some(2), "{stdout}{stderr}");
+    assert!(std::fs::create_dir_all(&rig.home).is_ok(), "an ae home");
     assert!(
-        stderr.starts_with("Usage: ae orchestrator --popup"),
-        "{stderr}"
+        std::fs::write(
+            rig.config(),
+            "[profiles]\nidle = \"sleep 600\"\n\n[roster]\nlead = idle\n\n\
+             [workspace]\nmain = lead\nlayout = vertical\nwatchdog = false\n",
+        )
+        .is_ok(),
+        "a global config"
     );
-    assert!(stdout.is_empty(), "printed to stdout: {stdout}");
+    let sock = rig.sock.clone();
+    let (code, stdout, stderr) = rig.run_on(Some(&sock), &["orchestrator"]);
+    // The rig has no terminal, so the attach at the end of a launch fails; the
+    // build before it is what this test is about.
     assert!(
-        !rig.sessions().join("orchestrator").exists(),
-        "the bare word created a session directory"
+        code == Some(0) || stderr.contains("open terminal failed"),
+        "{stdout}{stderr}"
     );
-    assert!(!rig.config().exists(), "the bare word seeded a config");
+    assert!(
+        rig.sessions().join("orchestrator").join("meta").exists(),
+        "the bare word built the seat: {stdout}{stderr}"
+    );
+    assert!(
+        stderr.contains("ae orchestrator: no .ae/config under"),
+        "the missing local config is named: {stderr}"
+    );
+    assert!(
+        stderr.contains("contrib/aeorchestrator/orchestrator.config"),
+        "the hint names the template: {stderr}"
+    );
+    let (ok, names) = rig.tmux(&["list-sessions", "-F", "#{session_name}"]);
+    assert!(ok, "{names}");
+    assert!(names.lines().any(|line| line == "orchestrator"), "{names}");
 }
 
 /// An underscore word nobody serves fails CLOSED for the same reason.
@@ -941,8 +967,8 @@ fn the_cwd_door_prefers_the_logical_pwd_only_when_it_agrees() {
     );
 }
 
-/// The `AE_NO_AUTOSTART` door: `=1` starts NEITHER companion, however the config
-/// asks.
+/// The `AE_NO_AUTOSTART` door: `=1` starts no companion — the watchdog here,
+/// and the Telegram bridge alike — however the config asks.
 #[test]
 fn the_no_autostart_door_starts_neither_companion() {
     if skip() {

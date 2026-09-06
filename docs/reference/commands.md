@@ -51,7 +51,7 @@ otherwise create a session called `status`.
 | Word | What now |
 |---|---|
 | `ae status [name]` | Refuses (exit 2). `ae list` answers the same question from one implementation, and its per-session sub-line already carries the state, goal and attention rollup `status` printed. Inside a session, the `peek` helper shows one agent's recent output |
-| `ae hub` | Refuses (exit 2). The fleet picker is [`ae orchestrator --popup`](#ae-orchestrator---popup); an orchestrator AGENT is an ordinary ae session against its own config — see [the orchestrator](#the-orchestrator-companion) |
+| `ae hub` | Refuses (exit 2). The orchestrator seat is [`ae orchestrator`](#ae-orchestrator); the fleet picker is [`ae orchestrator --popup`](#ae-orchestrator---popup) |
 | `ae transfer <name> <ssh-target>` | Gone, no arm. Cross-machine session sync was ruled cut rather than ported |
 
 Any other `_`-prefixed word nobody serves also fails closed with exit 2, for the same
@@ -198,18 +198,21 @@ $ ae next --attach
 # → switches your tmux client to my-feature (the blocked session)
 ```
 
+## `ae orchestrator`
+
+Bare `ae orchestrator` starts or reattaches the local session named
+`orchestrator`: the orchestrator seat. It is the ordinary `ae --local orchestrator`
+launch in the current directory. If that directory has no `.ae/config` with the
+orchestrator role, ae starts the seat on your global roster and prints a hint to
+copy `contrib/aeorchestrator/orchestrator.config` there. The seat is pinned first
+in the status bar's fleet strip, marked `◆`. The `--popup` form is the picker,
+next.
+
 ## `ae orchestrator --popup`
 
 The fleet picker, drawn by tmux itself. No daemon, no polling, no dependency: one
 `display-menu` built from the same [`ae list`](#ae-list) digest, thrown away when you
 choose.
-
-Bare `ae orchestrator` starts or reattaches the local session named
-`orchestrator`. It is the ordinary `ae --local orchestrator` launch in the
-current directory. If that directory has no `.ae/config` with the orchestrator
-role, ae starts the seat and prints a hint to copy
-`contrib/aeorchestrator/orchestrator.config` there. `--popup` remains the
-picker form described below.
 
 ```text
 $ ae orchestrator --popup

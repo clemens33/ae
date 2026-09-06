@@ -85,6 +85,8 @@ Usage:
                          List sessions (running by default). 'ae list --help' has the
                          full filter set and what --json carries
   ae next [--attach]     Name the top session needing attention (--attach jumps to it)
+  ae orchestrator        Start or reattach the orchestrator seat (a session named
+                         orchestrator in this directory; see contrib/aeorchestrator)
   ae orchestrator --popup
                          Pick a session, then one of its agents, in a tmux menu and
                          hand this client to that agent's pane (needs tmux 3.4+)
@@ -148,7 +150,7 @@ pub const RETIRED_STATUS: &str =
     "Error: 'ae status' was retired. Use 'ae list' (add --json for the full record).\n";
 
 /// `ae hub` — not a command, and the arm is the refusal that says so.
-pub const RETIRED_ORCHESTRATOR: &str = "Error: 'ae hub' was retired.\nThe fleet picker is 'ae orchestrator --popup'.\nAn orchestrator AGENT is an ordinary session against its own config:\n  cd ~/.ae/orchestrator && CONFIG_FILE=$PWD/orchestrator.config ae --local orchestrator\n";
+pub const RETIRED_ORCHESTRATOR: &str = "Error: 'ae hub' was retired.\nThe orchestrator seat is 'ae orchestrator'; the fleet picker is 'ae orchestrator --popup'.\n";
 
 /// `ae transfer` — CUT rather than ported, and the arm is the refusal.
 pub const RETIRED_TRANSFER: &str = "Error: 'ae transfer' was cut, not ported — ae does no cross-machine session sync.\nMove the WORK instead: 'ae end <name>' commits and pushes it to the 'ae/<name>' branch,\nthen start a session from that branch on the other machine.\n";
@@ -185,7 +187,8 @@ pub struct Preamble {
     pub inside_tmux: bool,
     /// Whether to attach once the session is up.
     pub attach: bool,
-    /// The operator's `AE_NO_AUTOSTART=1`: start NEITHER companion.
+    /// The operator's `AE_NO_AUTOSTART=1`: start no companion — neither the
+    /// watchdog nor the Telegram bridge.
     pub no_autostart: bool,
 }
 
@@ -339,6 +342,11 @@ pub fn route(preamble: &Preamble, argv: &[String], pane: Option<&str>) -> Route 
         )),
         Some("end" | "rm") => Route::Core(with_head(crate::cli::END, &tail())),
         Some("status") => Route::Retired(RETIRED_STATUS),
+        // The BARE word is a launch of the orchestrator seat, which needs the
+        // preamble like any launch; with a tail (`--popup`) it is the core's picker.
+        Some("orchestrator") if tail().is_empty() => {
+            Route::Launch(crate::orchestrator::seat_launch_args())
+        }
         Some("orchestrator") => Route::Core(with_head("orchestrator", &tail())),
         Some("hub") => Route::Retired(RETIRED_ORCHESTRATOR),
         Some("transfer") => Route::Retired(RETIRED_TRANSFER),
@@ -469,7 +477,7 @@ mod tests {
         );
         assert_eq!(
             route(&preamble(), &argv(&["orchestrator"]), None),
-            Route::Core(argv(&["orchestrator"]))
+            Route::Launch(argv(&["orchestrator", "--local"]))
         );
     }
 
