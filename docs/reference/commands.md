@@ -12,6 +12,8 @@ ae next [--attach]     Name the top running session needing attention (read-only
 ae brief [name] [--all] [--since <dur>]
                        Card a session: goal, the latest note per memo topic, each agent's
                        declared state, and who is waiting on you. Read-only
+ae orchestrator        Start or reattach the orchestrator seat: a local session named
+                       orchestrator, pinned first in the fleet strip
 ae orchestrator --popup
                        Pick a session, then one of its agents, in a tmux menu; the
                        chosen agent's pane gets the client. Needs tmux >= 3.4
