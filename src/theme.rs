@@ -392,11 +392,14 @@ impl Look {
     ///
     /// What the layout depends on and nothing else: two looks with the same
     /// stamp draw the same bar, so a watchdog that finds a different stamp on a
-    /// session knows the layout has to be rewritten.
+    /// session knows the layout has to be rewritten. The FORMATS are part of
+    /// that: [`FORMAT_VERSION`] leads the stamp, so a core whose formats
+    /// changed repaints every session it inherits instead of leaving them on
+    /// the layout an older core wrote.
     ///
     /// ```
-    /// use ae::theme::Look;
-    /// assert_eq!(Look::DEFAULT.stamp(), "darcula:on:on");
+    /// use ae::theme::{FORMAT_VERSION, Look};
+    /// assert_eq!(Look::DEFAULT.stamp(), format!("{FORMAT_VERSION}:darcula:on:on"));
     /// assert_ne!(Look::read("off", "", "", "").stamp(), Look::DEFAULT.stamp());
     /// // Motion moves no pixel of the layout, so it is not in the stamp.
     /// assert_eq!(Look::read("", "", "", "off").stamp(), Look::DEFAULT.stamp());
@@ -404,7 +407,7 @@ impl Look {
     #[must_use]
     pub fn stamp(&self) -> String {
         format!(
-            "{}:{}:{}",
+            "{FORMAT_VERSION}:{}:{}:{}",
             self.palette.name,
             switch(self.icons),
             switch(self.drawn)
@@ -458,6 +461,13 @@ pub const GOAL_OPTION: &str = "@ae_goal_status";
 /// SESSION — the shortened work paths, as the bar shows them.
 pub const PATHS_OPTION: &str = "@ae_paths";
 
+/// SESSION — the ae core this session's watchdog runs on, as `ae <version>`.
+///
+/// Published by the WATCHDOG rather than the launch: an upgrade restarts the
+/// watchdog on the new core, so the bar answers "did the upgrade reach this
+/// session" without a relaunch.
+pub const VERSION_OPTION: &str = "@ae_version";
+
 /// SESSION — the look the LAYOUT was written for.
 ///
 /// The watchdog compares it with the look the session's own options now
@@ -506,12 +516,15 @@ pub const PANE_ACCENT_OPTION: &str = "@ae_pane_accent";
 /// WINDOW — the stamp saying this window already carries the theme.
 pub const WINDOW_STAMP_OPTION: &str = "@ae_theme";
 
-/// The window option SET's own version, bumped when its shape changes so an
-/// existing window is restamped rather than left on the old set.
-pub const WINDOW_STAMP_VERSION: &str = "1";
+/// The version of every FORMAT this module draws — the session lines, the
+/// window entries, the pane borders, the menu styles. Bump it when any of them
+/// changes shape: the version leads both stamps, so a session or window carrying
+/// an older one is rewritten by the next watchdog cycle rather than left on the
+/// layout an older core wrote.
+pub const FORMAT_VERSION: &str = "2";
 
-/// What [`WINDOW_STAMP_OPTION`] is set to: the option set's version and the
-/// LOOK the window was dressed in.
+/// What [`WINDOW_STAMP_OPTION`] is set to: the LOOK the window was dressed in,
+/// formats version first.
 ///
 /// The look is part of the stamp because the stamp is what tells a later cycle
 /// whether the window still matches. A constant would say "dressed" about a
@@ -519,12 +532,12 @@ pub const WINDOW_STAMP_VERSION: &str = "1";
 /// had failed, and hide the mismatch forever.
 ///
 /// ```
-/// use ae::theme::{Look, window_stamp};
-/// assert_eq!(window_stamp(&Look::DEFAULT), "1:darcula:on:on");
+/// use ae::theme::{FORMAT_VERSION, Look, window_stamp};
+/// assert_eq!(window_stamp(&Look::DEFAULT), format!("{FORMAT_VERSION}:darcula:on:on"));
 /// ```
 #[must_use]
 pub fn window_stamp(look: &Look) -> String {
-    format!("{WINDOW_STAMP_VERSION}:{}", look.stamp())
+    look.stamp()
 }
 
 // ---------------------------------------------------------------------------
@@ -600,34 +613,32 @@ fn window_entry(palette: &Palette, current: bool) -> String {
 /// their own shell prompt already carries.
 const NARROW: u16 = 100;
 
-/// `status-format[0]`: the session segment, the windows, and the right-hand
-/// facts.
+/// `status-format[0]`: this session's attention mark, its windows, and the
+/// right-hand facts.
 ///
-/// `session` arrives already escaped for a format context — it is the caller's
-/// text, and this builds a format. The PATH is not baked in: it rides
-/// [`PATHS_OPTION`] like every other fact, so this format depends on the look
-/// alone and the watchdog can rewrite it without knowing where the session
-/// lives.
+/// The session's NAME is not here: the fleet strip on the line below names
+/// every session and raises this one, and a word the reader has just seen one
+/// row down is a word this row can spend on the windows. The PATH is not baked
+/// in either: it rides [`PATHS_OPTION`] like every other fact, so this format
+/// depends on the look alone and the watchdog can rewrite it without knowing
+/// where the session lives.
 #[must_use]
-pub fn status_line_zero(palette: &Palette, session: &str) -> String {
+pub fn status_line_zero(palette: &Palette) -> String {
     let windows = format!(
         "#{{W:{},{}}}",
         window_entry(palette, false),
         window_entry(palette, true)
     );
     format!(
-        // The session: its attention glyph in the accent, then its NAME as
-        // ordinary text on the bar's own ground. The accent is a badge and the
-        // name is a word, and a word has to be readable rather than bright.
+        // The session's attention glyph in the accent, as the badge that opens
+        // the line, then straight into the windows.
         "#[align=left]#{{{ATTENTION_STYLE_OPTION}}} #{{{ATTENTION_GLYPH_OPTION}}} \
-         #[fg={text} bg={base} bold]{session}\
-         #[nobold fg={dim} bg={base}] \
+         #[nobold fg={dim} bg={base}]\
          {windows}\
          #[align=right nobold fg={dim} bg={base}] \
          #{{@ae_branch_status}}#{{{GOAL_OPTION}}}\
          #{{?#{{e|>=:#{{client_width}},{NARROW}}}, #{{{PATHS_OPTION}}},}} \
          #{{@ae_watchdog_status}} ",
-        text = palette.text,
         dim = palette.dim,
         base = palette.base,
     )
@@ -638,12 +649,14 @@ pub fn status_line_zero(palette: &Palette, session: &str) -> String {
 // ---------------------------------------------------------------------------
 
 /// `status-format[1]`: every ae session on this server, then this session's
-/// own agents.
+/// own agents, then the core they run on — dim, at the far right, where a
+/// reader looks once after an upgrade and never otherwise.
 #[must_use]
 pub fn status_line_one(palette: &Palette) -> String {
     format!(
         "#[align=left fg={dim} bg={base}] #{{{FLEET_STRIP_OPTION}}}\
-         #[align=right fg={dim} bg={base}]#{{@ae_agents_status}} ",
+         #[align=right fg={dim} bg={base}]#{{@ae_agents_status}}  \
+         #{{{VERSION_OPTION}}} ",
         dim = palette.dim,
         base = palette.base,
     )
@@ -700,17 +713,22 @@ pub fn fleet_strip(look: &Look, rows: &[FleetRow]) -> String {
         // interpolates literally, and a session name is an allowlist that
         // admits no `#`.
         let name = &row.name;
-        let text = if row.current {
-            format!("fg={} bold", palette.text)
+        // The CURRENT session is the raised tab: the panel ground the current
+        // window entry stands on, bright bold text, and a space of ground on
+        // either side so the segment reads as a shape. It is the only place the
+        // bar names the session you are in, so it has to be found at a glance.
+        let (ground, text) = if row.current {
+            (palette.panel, format!("fg={} bold", palette.text))
         } else {
-            format!("fg={} nobold", palette.dim)
+            (palette.base, format!("fg={} nobold", palette.dim))
         };
+        let lead = if row.current { " " } else { "" };
         let _ = write!(
             out,
-            "#[range=session|{id} {mark}]{glyph}#[{text} bg={base}] {name}\
+            "#[range=session|{id} fg={accent} bg={ground}]{lead}{glyph}#[{text} bg={ground}] {name}{lead}\
              #[norange nobold fg={dim} bg={base}] ",
             id = row.id,
-            mark = accent_only(palette, row.mark),
+            accent = palette.accent(row.mark),
             glyph = row.mark.glyph(icons),
             base = palette.base,
             dim = palette.dim,
@@ -730,12 +748,6 @@ pub fn fleet_strip(look: &Look, rows: &[FleetRow]) -> String {
 
 /// How many sessions the fleet strip draws before it starts counting instead.
 const STRIP_ROWS: usize = 8;
-
-/// The accent attributes alone, for a `#[range=… <style>]` where the range and
-/// the style share one bracket.
-fn accent_only(palette: &Palette, mark: Mark) -> String {
-    format!("fg={} bg={}", palette.accent(mark), palette.base)
-}
 
 // ---------------------------------------------------------------------------
 // the pane border
@@ -895,8 +907,8 @@ pub const PALETTE_OPTION: &str = "@ae_palette";
 /// right in the seconds before the watchdog's first cycle, and so it says what
 /// it actually knows then: nothing.
 #[must_use]
-pub fn session_options(look: &Look, session: &str, paths: &str) -> Vec<(String, String)> {
-    let mut options = redress_options(look, session, paths);
+pub fn session_options(look: &Look, paths: &str) -> Vec<(String, String)> {
+    let mut options = redress_options(look, paths);
     options.extend(seed_options(look));
     options
 }
@@ -904,8 +916,8 @@ pub fn session_options(look: &Look, session: &str, paths: &str) -> Vec<(String, 
 /// Everything a session that is ALREADY RUNNING may have rewritten: the layout
 /// and the facts, and none of the verdicts.
 #[must_use]
-pub fn redress_options(look: &Look, session: &str, paths: &str) -> Vec<(String, String)> {
-    let mut options = layout_options(look, session);
+pub fn redress_options(look: &Look, paths: &str) -> Vec<(String, String)> {
+    let mut options = layout_options(look);
     options.extend(fact_options(look, paths));
     options
 }
@@ -917,12 +929,11 @@ pub fn redress_options(look: &Look, session: &str, paths: &str) -> Vec<(String, 
 /// tmux configuration left them, and ae fills the `@ae_*` facts anyway — so a
 /// hand-written `status-right` can carry them in the user's own layout.
 #[must_use]
-pub fn layout_options(look: &Look, session: &str) -> Vec<(String, String)> {
+pub fn layout_options(look: &Look) -> Vec<(String, String)> {
     if !look.drawn {
         return Vec::new();
     }
     let palette = &look.palette;
-    let escaped_session = crate::tmux::format_literal(session);
     vec![
         ("status".to_owned(), "2".to_owned()),
         ("status-interval".to_owned(), "5".to_owned()),
@@ -930,10 +941,7 @@ pub fn layout_options(look: &Look, session: &str) -> Vec<(String, String)> {
             "status-style".to_owned(),
             format!("bg={},fg={}", palette.base, palette.text),
         ),
-        (
-            "status-format[0]".to_owned(),
-            status_line_zero(palette, &escaped_session),
-        ),
+        ("status-format[0]".to_owned(), status_line_zero(palette)),
         ("status-format[1]".to_owned(), status_line_one(palette)),
     ]
 }
@@ -1078,10 +1086,21 @@ mod tests {
     /// Every palette a session can be drawn in.
     const PALETTES: [Palette; 3] = [Palette::DARCULA, Palette::NEUTRAL, Palette::WARM];
 
+    /// Line two ends in the core version, so a reader can tell whether an
+    /// upgrade reached this session without leaving the bar.
+    #[test]
+    fn line_one_carries_the_core_version_at_its_right_end() {
+        for palette in PALETTES {
+            let line = status_line_one(&palette);
+            let reference = format!("#{{{}}}", super::VERSION_OPTION);
+            assert!(line.ends_with(&format!("{reference} ")), "{line}");
+        }
+    }
+
     /// Every format literal this module hands tmux, for the guards below.
     fn every_format() -> Vec<String> {
         let mut out = vec![
-            status_line_zero(&Palette::NEUTRAL, "demo"),
+            status_line_zero(&Palette::NEUTRAL),
             status_line_one(&Palette::NEUTRAL),
             pane_border_format(),
             super::pane_active_border_style(&Palette::NEUTRAL),
@@ -1097,7 +1116,7 @@ mod tests {
             pane_state(&Palette::NEUTRAL, Mark::Stale, "◌", "stale"),
         ];
         out.extend(
-            session_options(&Look::DEFAULT, "demo", "~/p/ae")
+            session_options(&Look::DEFAULT, "~/p/ae")
                 .into_iter()
                 .map(|(_, value)| value),
         );
@@ -1204,7 +1223,7 @@ mod tests {
         for drawn in [
             attention_style(&darcula, Mark::NeedsYou),
             mark_style(&darcula, Mark::NeedsYou),
-            super::status_line_zero(&darcula, "s"),
+            super::status_line_zero(&darcula),
             super::status_line_one(&darcula),
         ] {
             assert!(!drawn.contains(darcula.title), "{drawn}");
@@ -1307,7 +1326,7 @@ mod tests {
     /// window table, where a `set -t <session>` reaches only the current one.
     #[test]
     fn the_two_option_sets_do_not_overlap() {
-        let session: Vec<String> = session_options(&Look::DEFAULT, "demo", "/w")
+        let session: Vec<String> = session_options(&Look::DEFAULT, "/w")
             .into_iter()
             .map(|(name, _)| name)
             .collect();
@@ -1339,7 +1358,7 @@ mod tests {
     /// cycle its attention seed is the stale mark, never a working or done one.
     #[test]
     fn the_unpublished_attention_seed_is_stale_and_never_a_verdict() {
-        let seeded = session_options(&Look::DEFAULT, "demo", "/w");
+        let seeded = session_options(&Look::DEFAULT, "/w");
         let value = |name: &str| {
             seeded
                 .iter()
@@ -1366,7 +1385,6 @@ mod tests {
                 icons: false,
                 ..Look::DEFAULT
             },
-            "demo",
             "/w",
         );
         assert!(
@@ -1385,7 +1403,7 @@ mod tests {
             drawn: false,
             ..Look::DEFAULT
         };
-        let session = session_options(&off, "demo", "/w");
+        let session = session_options(&off, "/w");
         let names: Vec<&str> = session.iter().map(|(name, _)| name.as_str()).collect();
         for layout in [
             "status",
@@ -1515,10 +1533,10 @@ mod tests {
             ..Look::DEFAULT
         };
         assert_ne!(stamped(&warm), stamped(&Look::DEFAULT));
-        // The option set has its own version beside the look, so a change to
-        // the SET restamps every window even when the look has not moved.
+        // The formats have their own version ahead of the look, so a change to
+        // the FORMATS restamps every window even when the look has not moved.
         assert!(
-            stamped(&Look::DEFAULT).starts_with(super::WINDOW_STAMP_VERSION),
+            stamped(&Look::DEFAULT).starts_with(super::FORMAT_VERSION),
             "{}",
             stamped(&Look::DEFAULT)
         );

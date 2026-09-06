@@ -129,6 +129,7 @@ has gone missing.
 | `@ae_attn_glyph`, `@ae_attn_rank`, `@ae_attn_style` | session | launch seeds them once, watchdog owns them after |
 | `@ae_fleet_strip`, `@ae_agents_status`, `@ae_watchdog_status` | session | watchdog |
 | `@ae_goal_status` | session | watchdog |
+| `@ae_version` | session | watchdog (the core it runs on, `ae <version>`) |
 | `@ae_branch_status`, `@ae_branch_name` | session | watchdog |
 | `@ae_window_status` | window | watchdog |
 | `@ae_theme` | window | launch, spawn, watchdog |

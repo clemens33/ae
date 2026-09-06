@@ -1361,11 +1361,7 @@ pub(crate) fn apply_status_bar(
     paths: &str,
     look: &crate::theme::Look,
 ) {
-    write_options(
-        server,
-        name,
-        crate::theme::session_options(look, name, paths),
-    );
+    write_options(server, name, crate::theme::session_options(look, paths));
 }
 
 /// The same look, WITHOUT the attention seed — for a session that is already
@@ -1376,11 +1372,7 @@ pub(crate) fn redress_status_bar(
     paths: &str,
     look: &crate::theme::Look,
 ) {
-    write_options(
-        server,
-        name,
-        crate::theme::redress_options(look, name, paths),
-    );
+    write_options(server, name, crate::theme::redress_options(look, paths));
 }
 
 /// Write one option set at SESSION scope.

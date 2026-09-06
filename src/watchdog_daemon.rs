@@ -1095,6 +1095,7 @@ pub(crate) fn clear_published(server: &crate::inventory::ServerId, session: &str
         theme::ATTENTION_STYLE_OPTION,
         theme::FLEET_STRIP_OPTION,
         theme::GOAL_OPTION,
+        theme::VERSION_OPTION,
     ] {
         ok &= transport::clear_option(server, OptionScope::Session, &session_id, name);
     }
@@ -1367,7 +1368,7 @@ impl Cycle<'_> {
         // done — which is how a session keeps ae's borders after `theme = off`.
         let mut ok = true;
         if look.drawn {
-            for (option, value) in theme::layout_options(look, self.session) {
+            for (option, value) in theme::layout_options(look) {
                 ok &= transport::publish_option(
                     self.server,
                     OptionScope::Session,
@@ -1521,6 +1522,9 @@ impl Cycle<'_> {
                 );
             }
         }
+        // The core THIS daemon runs on. An upgrade restarts the daemon on the
+        // new core, so the value moves with the install and never with a launch.
+        set(theme::VERSION_OPTION, &crate::version_line());
         self.publish_fleet(&session_id, look);
         self.publish_windows(published);
     }
