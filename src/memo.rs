@@ -188,6 +188,84 @@ pub fn run(dir: &Path, viewer: &Viewer, add: &Add, now: Timestamp) -> Result<(),
         .map_err(|why| Failure::Event(why.into()))
 }
 
+/// One `memo.tsv` record: the four fields, BORROWED from the container.
+///
+/// # This is the file's one grammar, and `memo.tsv` is hand-editable
+///
+/// A memo file is persisted state a human can open in an editor, so it is
+/// hostile input and every reader of it has to be total. Keeping ONE parser is
+/// what makes that a property of the file rather than a property each caller
+/// re-argues: [`render`] and [`crate::brief::topic_lines`] both come through
+/// here, so neither can drift into a second dialect and only this function has
+/// to be proven.
+///
+/// Total by construction: [`slice::split`] over a single byte, four `next()`
+/// calls that return `None` rather than index, and no arithmetic. No byte
+/// sequence reaches a panic — `no_byte_sequence_makes_the_record_parser_panic`
+/// exercises it directly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Record<'a> {
+    /// The first field: when the record was written.
+    pub ts: &'a [u8],
+    /// The second: who wrote it.
+    pub author: &'a [u8],
+    /// The third: the topic it was filed under.
+    pub topic: &'a [u8],
+    /// The fourth: the text. A record with MORE fields keeps only this one.
+    pub text: &'a [u8],
+}
+
+impl<'a> Record<'a> {
+    /// Read one `\t`-separated record, or `None` when it carries fewer than
+    /// four fields.
+    ///
+    /// awk `-F '\t'` with `NF >= 4`, which is what the helper this replaced
+    /// ran: a record with MORE fields keeps its fourth and drops the rest, and a
+    /// record whose fourth is EMPTY is still a record.
+    ///
+    /// ```
+    /// use ae::memo::Record;
+    ///
+    /// let full = Record::parse(b"t1\tcl:lead\tgeneral\tplain").unwrap();
+    /// assert_eq!(full.topic, b"general");
+    /// assert_eq!(full.text, b"plain");
+    /// // A fifth field is dropped, an empty fourth is kept, three is not a record.
+    /// assert_eq!(Record::parse(b"a\tb\tc\td\te").unwrap().text, b"d");
+    /// assert_eq!(Record::parse(b"a\tb\tc\t").unwrap().text, b"");
+    /// assert_eq!(Record::parse(b"a\tb\tc"), None);
+    /// assert_eq!(Record::parse(b""), None);
+    /// ```
+    #[must_use]
+    pub fn parse(record: &'a [u8]) -> Option<Self> {
+        let mut fields = record.split(|byte| *byte == b'\t');
+        Some(Self {
+            ts: fields.next()?,
+            author: fields.next()?,
+            topic: fields.next()?,
+            text: fields.next()?,
+        })
+    }
+}
+
+/// Every record in a `memo.tsv` container, in file order.
+///
+/// `\n`-separated, and a line that is not a record is SKIPPED rather than
+/// repaired — a half-written append at the end of the file costs its own line
+/// and nothing before it.
+///
+/// ```
+/// use ae::memo::records;
+///
+/// let file = b"t1\tcl:lead\tgeneral\tplain\nnot-a-record\nt2\tcl:lead\tp2\ttopical\n";
+/// let topics: Vec<&[u8]> = records(file).map(|record| record.topic).collect();
+/// assert_eq!(topics, [b"general".as_slice(), b"p2".as_slice()]);
+/// ```
+pub fn records(container: &[u8]) -> impl Iterator<Item = Record<'_>> {
+    container
+        .split(|byte| *byte == b'\n')
+        .filter_map(Record::parse)
+}
+
 /// `helper_memo_render`, byte for byte: for every `\n`-separated record with
 /// at least four tab-separated fields — awk `-F '\t'` and `NF >= 4`, so a
 /// record with MORE fields renders only its fourth, and a record whose fourth
@@ -209,24 +287,20 @@ pub fn run(dir: &Path, viewer: &Viewer, add: &Add, now: Timestamp) -> Result<(),
 #[must_use]
 pub fn render(container: &[u8], topic: Option<&str>) -> Vec<u8> {
     let mut out = Vec::new();
-    for record in container.split(|byte| *byte == b'\n') {
-        let fields: Vec<&[u8]> = record.split(|byte| *byte == b'\t').collect();
-        let [ts, author, record_topic, text, ..] = fields.as_slice() else {
-            continue;
-        };
-        if topic.is_some_and(|wanted| *record_topic != wanted.as_bytes()) {
+    for record in records(container) {
+        if topic.is_some_and(|wanted| record.topic != wanted.as_bytes()) {
             continue;
         }
-        out.extend_from_slice(ts);
+        out.extend_from_slice(record.ts);
         out.extend_from_slice(" — ".as_bytes());
-        out.extend_from_slice(author);
-        if *record_topic != DEFAULT_TOPIC.as_bytes() {
+        out.extend_from_slice(record.author);
+        if record.topic != DEFAULT_TOPIC.as_bytes() {
             out.extend_from_slice(b" [");
-            out.extend_from_slice(record_topic);
+            out.extend_from_slice(record.topic);
             out.push(b']');
         }
         out.push(b'\n');
-        out.extend_from_slice(text);
+        out.extend_from_slice(record.text);
         out.extend_from_slice(b"\n\n");
     }
     out
@@ -251,7 +325,10 @@ pub fn view(container: &[u8], view: &View) -> Vec<u8> {
     reason = "tests read back what the door wrote and check their own fixtures; the boundary is on product code — see clippy.toml"
 )]
 mod tests {
-    use super::{Add, Command, DEFAULT_TAIL, Usage, View, one_line, parse, record, render, view};
+    use super::{
+        Add, Command, DEFAULT_TAIL, Record, Usage, View, one_line, parse, record, records, render,
+        view,
+    };
     use crate::time::Timestamp;
 
     fn words(items: &[&str]) -> Vec<String> {
@@ -263,6 +340,84 @@ mod tests {
             topic: topic.to_owned(),
             text: text.to_owned(),
         })
+    }
+
+    /// THE PARSER'S ONE CONTRACT, and the reason it is the only one.
+    ///
+    /// `memo.tsv` is persisted state a human can open in an editor, so every
+    /// byte sequence has to yield a list of records rather than a panic. Both
+    /// readers come through here, so proving it once proves it for `memo read`
+    /// and for `ae brief` alike.
+    #[test]
+    fn no_byte_sequence_makes_the_record_parser_panic() {
+        let mut adversarial: Vec<Vec<u8>> = vec![
+            Vec::new(),
+            b"\n".to_vec(),
+            b"\t\t\t".to_vec(),
+            b"\t\t\t\n\t\t\t".to_vec(),
+            b"a\tb\tc".to_vec(),
+            b"a\tb\tc\td\te\tf".to_vec(),
+            b"\xff\xfe\tauthor\ttopic\ttext".to_vec(),
+            "\u{feff}\thuman\t\u{202e}\t\u{0}text"
+                .to_string()
+                .into_bytes(),
+            b"9223372036854775807\thuman\tt\tx".to_vec(),
+            b"-9223372036854775808\thuman\tt\tx".to_vec(),
+            format!(
+                "{}\t{}\t{}\t{}",
+                "9".repeat(400),
+                "a".repeat(400),
+                "t".repeat(400),
+                "x".repeat(400)
+            )
+            .into_bytes(),
+            b"1970-01-01T00:00:00Z\thuman\tt\tx".to_vec(),
+        ];
+        // A reproducible byte soup: every value 0..=255 in shifting positions,
+        // so tabs, newlines, control bytes and broken UTF-8 land everywhere.
+        let mut seed = 0x2026_0906_u64;
+        for _ in 0..512 {
+            let mut record = Vec::new();
+            for _ in 0..64 {
+                seed = seed
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1_442_695_040_888_963_407);
+                #[allow(clippy::cast_possible_truncation, reason = "a byte is what this wants")]
+                record.push((seed >> 33) as u8);
+            }
+            adversarial.push(record);
+        }
+        for container in adversarial {
+            for record in records(&container) {
+                // The INVARIANT beyond "did not panic": four fields, every one
+                // of them a slice OF THE INPUT rather than something invented.
+                let within = |field: &[u8]| {
+                    field.is_empty() || container.windows(field.len()).any(|window| window == field)
+                };
+                assert!(within(record.ts), "ts is not from the container");
+                assert!(within(record.author), "author is not from the container");
+                assert!(within(record.topic), "topic is not from the container");
+                assert!(within(record.text), "text is not from the container");
+            }
+            // And the renderer over the same bytes, since it is the other
+            // consumer and shares the parser's totality by construction.
+            let _ = render(&container, None);
+            let _ = render(&container, Some("general"));
+        }
+    }
+
+    #[test]
+    fn a_record_needs_four_fields_and_keeps_only_the_fourth() {
+        assert_eq!(Record::parse(b"a\tb\tc"), None, "three is not a record");
+        let five = Record::parse(b"a\tb\tc\td\te").expect("five is");
+        assert_eq!(five.text, b"d", "the fifth field is dropped, not appended");
+        let empty_text = Record::parse(b"a\tb\tc\t").expect("an empty fourth is a record");
+        assert_eq!(empty_text.text, b"");
+        assert_eq!(
+            records(b"a\tb\tc\td\nbad\ne\tf\tg\th").count(),
+            2,
+            "a line that is not a record costs its own line and nothing else"
+        );
     }
 
     #[test]

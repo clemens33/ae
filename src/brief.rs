@@ -532,20 +532,14 @@ fn short_path(path: &str, home: Option<&Path>) -> String {
 
 /// The latest record per topic in a `memo.tsv`, newest first.
 ///
-/// The container is [`crate::memo::render`]'s own input shape: `\n`-separated
-/// records of at least four tab-separated fields, `ts \t author \t topic \t
-/// text`. A record with fewer is skipped, as the reader skips it.
+/// The file is read by [`crate::memo::records`] — the ONE parser of this
+/// hand-editable container, shared with [`crate::memo::render`], so a brief and
+/// a `memo read` can never disagree about what a record is. Totality over
+/// hostile bytes is that parser's property and is proven there.
 ///
-/// # `memo.tsv` is hand-editable, so this is TOTAL over bytes
-///
-/// Every step is: `split` on a byte, a slice pattern that FALLS THROUGH when it
-/// does not match, [`String::from_utf8_lossy`], a [`Timestamp::parse`] that
-/// returns `None`, and a saturating subtraction. There is no index, no slice
-/// range, no `unwrap` and no arithmetic that can overflow, so no byte sequence
-/// reaches a panic — which
-/// `no_byte_sequence_makes_the_memo_reader_panic` exercises directly.
-/// The shape is `memo::render`'s and not a second grammar; a divergence between
-/// the two would be a defect in this function, not a new dialect.
+/// What is added here is total too: [`String::from_utf8_lossy`], a
+/// [`Timestamp::parse`] that returns `None`, and a saturating subtraction — no
+/// index, no slice range, no `unwrap`.
 ///
 /// ```
 /// use ae::brief::topic_lines;
@@ -569,17 +563,13 @@ fn short_path(path: &str, home: Option<&Path>) -> String {
 #[must_use]
 pub fn topic_lines(container: &[u8], now: Timestamp, since_secs: Option<i64>) -> Vec<TopicLine> {
     let mut latest: Vec<TopicLine> = Vec::new();
-    for record in container.split(|byte| *byte == b'\n') {
-        let fields: Vec<&[u8]> = record.split(|byte| *byte == b'\t').collect();
-        let [ts, author, topic, text, ..] = fields.as_slice() else {
-            continue;
-        };
-        let stamp = Timestamp::parse(&String::from_utf8_lossy(ts));
+    for record in crate::memo::records(container) {
+        let stamp = Timestamp::parse(&String::from_utf8_lossy(record.ts));
         let line = TopicLine {
-            topic: String::from_utf8_lossy(topic).into_owned(),
+            topic: String::from_utf8_lossy(record.topic).into_owned(),
             age_secs: stamp.map(|stamp| stamp.seconds_until(now)),
-            author: String::from_utf8_lossy(author).into_owned(),
-            text: String::from_utf8_lossy(text).into_owned(),
+            author: String::from_utf8_lossy(record.author).into_owned(),
+            text: String::from_utf8_lossy(record.text).into_owned(),
         };
         // Append-only, so a later record for a topic REPLACES the one held.
         match latest.iter().position(|held| held.topic == line.topic) {
@@ -955,54 +945,32 @@ mod tests {
     }
 
     #[test]
-    fn no_byte_sequence_makes_the_memo_reader_panic() {
-        // `memo.tsv` is hand-editable persisted state, so the reader's contract
-        // is TOTALITY: every input is a (possibly empty) list of lines, never a
-        // panic. A cheap deterministic generator, plus the shapes a hand-edit
-        // actually produces.
+    fn hostile_bytes_still_leave_one_line_per_topic() {
+        // The PARSER's totality is proven at its home
+        // (`memo::no_byte_sequence_makes_the_record_parser_panic`). What is
+        // proven here is what this consumer adds on top of it: a timestamp that
+        // does not parse, a topic that repeats, and a `--since` window must
+        // still leave exactly one line per topic.
         let now = Timestamp::parse("2026-09-06T12:00:00Z").expect("a timestamp");
-        let mut adversarial: Vec<Vec<u8>> = vec![
-            Vec::new(),
-            b"\n".to_vec(),
-            b"\t\t\t".to_vec(),
-            b"\t\t\t\n\t\t\t".to_vec(),
-            b"a\tb\tc".to_vec(),
-            b"a\tb\tc\td\te\tf".to_vec(),
-            b"\xff\xfe\tauthor\ttopic\ttext".to_vec(),
-            "\u{feff}\thuman\t\u{202e}\t\u{0}text"
-                .to_string()
-                .into_bytes(),
-            b"9223372036854775807\thuman\tt\tx".to_vec(),
-            b"-9223372036854775808\thuman\tt\tx".to_vec(),
-            format!(
-                "{}\t{}\t{}\t{}",
-                "9".repeat(400),
-                "a".repeat(400),
-                "t".repeat(400),
-                "x".repeat(400)
-            )
-            .into_bytes(),
-            b"1970-01-01T00:00:00Z\thuman\tt\tx".to_vec(),
-        ];
-        // A reproducible byte soup: every value 0..=255 in shifting positions,
-        // so tabs, newlines, control bytes and broken UTF-8 land everywhere.
         let mut seed = 0x2026_0906_u64;
+        let mut soup = Vec::new();
         for _ in 0..512 {
-            let mut record = Vec::new();
-            for _ in 0..64 {
-                seed = seed
-                    .wrapping_mul(6_364_136_223_846_793_005)
-                    .wrapping_add(1_442_695_040_888_963_407);
-                #[allow(clippy::cast_possible_truncation, reason = "a byte is what this wants")]
-                record.push((seed >> 33) as u8);
-            }
-            adversarial.push(record);
+            seed = seed
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            #[allow(clippy::cast_possible_truncation, reason = "a byte is what this wants")]
+            soup.push((seed >> 33) as u8);
         }
-        for container in adversarial {
+        let containers: [&[u8]; 5] = [
+            b"",
+            b"\t\t\t\n\t\t\t",
+            b"not-a-time\thuman\tt\tx\nnot-a-time\thuman\tt\ty",
+            b"9223372036854775807\thuman\tt\tx\n-9223372036854775808\thuman\tt\ty",
+            &soup,
+        ];
+        for container in containers {
             for window in [None, Some(0), Some(3_600), Some(i64::MAX)] {
-                let lines = topic_lines(&container, now, window);
-                // The one INVARIANT worth asserting beyond "did not panic":
-                // one line per topic, never two.
+                let lines = topic_lines(container, now, window);
                 let mut topics: Vec<&str> = lines.iter().map(|line| line.topic.as_str()).collect();
                 let before = topics.len();
                 topics.sort_unstable();
