@@ -1,6 +1,15 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [v2026.9.5] - 2026-09-06
+
+### Features
+
+- **theme**: The bar names the session once, raises it in the strip, and shows the core
+
+### Testing
+
+- Line zero names no session; a rename proves the window name instead
 ## [v2026.9.4] - 2026-09-05
 
 ### Bug Fixes

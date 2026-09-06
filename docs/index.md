@@ -4,7 +4,7 @@
 
 `ae` is a symlink to an immutable versioned Rust core. It turns tmux into a multi-agent workspace: pair Claude Code with Codex for cross-model review, spin up a reviewer on demand, and wake to a complete event log after a long task.
 
-[![Release: 2026.9.4](https://img.shields.io/badge/release-2026.9.4-blue.svg)](https://github.com/clemens33/ae/releases)
+[![Release: 2026.9.5](https://img.shields.io/badge/release-2026.9.5-blue.svg)](https://github.com/clemens33/ae/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/clemens33/ae/blob/main/LICENSE)
 [![Bash](https://img.shields.io/badge/bash-%3E%3D4.0-green.svg)](https://www.gnu.org/software/bash/)
 
