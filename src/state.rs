@@ -36,6 +36,8 @@ pub const VALUES: [&str; 4] = ["working", "waiting-user", "blocked", "done"];
 /// The usage text.
 pub const USAGE: &str = "Usage: state <working|waiting-user|blocked|done> [reason]\n       state                              # print current state\n\n  working       actively making progress\n  waiting-user  needs human input\n  blocked       stuck on external dep — REASON REQUIRED\n  done          complete or paused\n";
 
+const REASON_SHAPE: &str = "Reason required: waiting-user asks '<what you need decided>: <option A> | <option B> (recommend A because …)'; blocked names blocker and unblock owner";
+
 /// The refusal when the caller has no pane identity.
 pub const NO_IDENTITY: &str =
     "Error: could not detect current agent identity; declare state from an ae pane";
@@ -60,6 +62,8 @@ pub struct Declaration {
 pub enum Usage {
     /// `blocked` with no reason.
     BlockedNeedsReason,
+    /// `waiting-user` with no reason.
+    WaitingUserNeedsReason,
     /// Not one of [`VALUES`].
     UnknownValue(String),
 }
@@ -70,7 +74,12 @@ impl Usage {
     #[must_use]
     pub fn render(&self) -> String {
         match self {
-            Self::BlockedNeedsReason => format!("Error: 'blocked' requires a reason\n{USAGE}"),
+            Self::BlockedNeedsReason => {
+                format!("Error: 'blocked' requires a reason\n{REASON_SHAPE}\n{USAGE}")
+            }
+            Self::WaitingUserNeedsReason => {
+                format!("Error: 'waiting-user' requires a reason\n{REASON_SHAPE}\n{USAGE}")
+            }
             Self::UnknownValue(_) => USAGE.to_owned(),
         }
     }
@@ -91,7 +100,7 @@ pub enum Command {
 ///
 /// # Errors
 ///
-/// [`Usage`] for a value outside [`VALUES`] or a `blocked` with no reason.
+/// [`Usage`] for a value outside [`VALUES`] or a quiet state with no reason.
 pub fn parse(tail: &[String]) -> Result<Command, Usage> {
     let Some((value, rest)) = tail.split_first() else {
         return Ok(Command::Read);
@@ -100,8 +109,17 @@ pub fn parse(tail: &[String]) -> Result<Command, Usage> {
         return Err(Usage::UnknownValue(value.clone()));
     }
     let reason = rest.join(" ");
-    if value == "blocked" && reason.is_empty() {
-        return Err(Usage::BlockedNeedsReason);
+    if reason.is_empty() {
+        return Err(if value == "blocked" {
+            Usage::BlockedNeedsReason
+        } else if value == "waiting-user" {
+            Usage::WaitingUserNeedsReason
+        } else {
+            return Ok(Command::Declare(Declaration {
+                value: value.clone(),
+                reason,
+            }));
+        });
     }
     Ok(Command::Declare(Declaration {
         value: value.clone(),
@@ -398,6 +416,10 @@ mod tests {
             }))
         );
         assert_eq!(parse(&words(&["blocked"])), Err(Usage::BlockedNeedsReason));
+        assert_eq!(
+            parse(&words(&["waiting-user"])),
+            Err(Usage::WaitingUserNeedsReason)
+        );
         assert!(parse(&words(&["blocked", "on x"])).is_ok());
         assert_eq!(
             parse(&words(&["Working"])),
@@ -413,6 +435,11 @@ mod tests {
             Usage::BlockedNeedsReason
                 .render()
                 .starts_with("Error: 'blocked' requires a reason\n")
+        );
+        assert!(
+            Usage::WaitingUserNeedsReason
+                .render()
+                .contains("<what you need decided>")
         );
         assert!(Usage::BlockedNeedsReason.render().ends_with(USAGE));
         assert_eq!(Usage::UnknownValue("x".to_owned()).render(), USAGE);

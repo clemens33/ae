@@ -13,7 +13,9 @@ pub const TRAILER: &str = "— overview; declare done.";
 /// The maximum width of every rendered agent or collapsed-session line.
 pub const WIDTH: usize = 100;
 
-/// The maximum free-text detail shown on one line.
+/// Indentation under the detail column in a NEEDS YOU row.
+const DETAIL_INDENT: usize = 38;
+const MAX_NEED_LINES: usize = 3;
 const DETAIL_WIDTH: usize = 60;
 
 #[derive(Debug, Clone)]
@@ -293,11 +295,11 @@ fn need_parts(need: &Need) -> (&str, &str, String, Option<i64>, i64) {
             from,
             to,
             age_secs,
-            ..
+            question,
         } => (
             to,
             "unanswered",
-            format!("{kind} {reference} from {from}"),
+            format!("{kind} {reference} from {from}: {}", clipped(question, 120)),
             Some(*age_secs),
             need_rank(need),
         ),
@@ -320,15 +322,57 @@ fn working_detail(card: &Card) -> &str {
 fn needs_line(identity: &str, state: &str, detail: &str, age_secs: Option<i64>) -> String {
     let identity = clipped(identity, 28);
     let state = clipped(state, 14);
-    let suffix = format!(" ({})", brief::age(age_secs));
+    let (detail, suffix) = if state == "unanswered" {
+        detail.split_once(": ").map_or_else(
+            || (detail.to_owned(), format!(" ({})", brief::age(age_secs))),
+            |(head, body)| {
+                (
+                    format!("{head} ({}): {body}", brief::age(age_secs)),
+                    String::new(),
+                )
+            },
+        )
+    } else {
+        (detail.to_owned(), format!(" ({})", brief::age(age_secs)))
+    };
     let mut prefix = String::from("  ");
     push_field(&mut prefix, &identity, 18);
     push_field(&mut prefix, &state, 14);
     let remaining = WIDTH
         .saturating_sub(prefix.chars().count())
         .saturating_sub(suffix.chars().count());
-    let detail = clipped(detail, DETAIL_WIDTH.min(remaining));
-    format!("{prefix}{detail}{suffix}")
+    let mut lines = wrap_detail(&detail, remaining);
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    let first = lines.remove(0);
+    let mut out = format!("{prefix}{first}{suffix}");
+    let indent = " ".repeat(DETAIL_INDENT);
+    for line in lines {
+        out.push('\n');
+        out.push_str(&indent);
+        out.push_str(&line);
+    }
+    out
+}
+
+fn wrap_detail(detail: &str, first_width: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut rest = detail;
+    let mut width = first_width;
+    while !rest.is_empty() && lines.len() < MAX_NEED_LINES {
+        let take = rest.chars().count().min(width);
+        let mut line: String = rest.chars().take(take).collect();
+        rest = &rest[line.len()..];
+        if !rest.is_empty() && lines.len() + 1 == MAX_NEED_LINES {
+            line = clipped(&line, width.saturating_sub(1));
+            line.push('…');
+            rest = "";
+        }
+        lines.push(line);
+        width = WIDTH.saturating_sub(DETAIL_INDENT);
+    }
+    lines
 }
 
 fn working_line(session: &str, agent: &str, detail: &str) -> String {
@@ -489,6 +533,37 @@ mod tests {
         assert!(
             text.contains("ask ae-20260907T000000Z-9d07aac0 from reviewer (1d)"),
             "{text}"
+        );
+    }
+
+    #[test]
+    fn needs_detail_wraps_to_three_lines_and_keeps_request_body_excerpt() {
+        let mut pending = card("alpha", vec![agent("lead", "waiting-user", 0, None)]);
+        pending.agents[0].reason = "decide ".to_owned() + &"x".repeat(260);
+        pending.needs.push(Need::Declared {
+            owner: "lead".to_owned(),
+            state: "waiting-user".to_owned(),
+            age_secs: Some(0),
+            reason: pending.agents[0].reason.clone(),
+        });
+        let mut request = card("beta", vec![agent("lead", "working", 0, None)]);
+        request.needs.push(Need::Unanswered {
+            kind: "ask".to_owned(),
+            reference: "ae-request".to_owned(),
+            from: "reviewer".to_owned(),
+            to: "lead".to_owned(),
+            age_secs: 0,
+            question: "body-".to_owned() + &"q".repeat(200),
+        });
+        let text = render(&[pending, request], "orchestrator");
+        let lines: Vec<&str> = text.lines().collect();
+        assert!(lines.len() <= 7, "{text}");
+        assert!(text.contains("body-"), "{text}");
+        assert!(
+            lines
+                .iter()
+                .skip(1)
+                .all(|line| line.chars().count() <= WIDTH)
         );
     }
 

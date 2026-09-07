@@ -51,7 +51,8 @@ that session fact outranks `AE_WATCHDOG_SWEEP_SEC`, which outranks 120.
 
 For an orchestrator main, each verdict cycle calls `current_world` once and
 builds the same detail cards as `ae brief --all`. The pure overview renderer
-omits the orchestrator's own session, bounds agent lines to 100 characters, and
+omits the orchestrator's own session, bounds agent lines to 100 characters (NEEDS YOU
+reasons wrap to three lines), and
 groups the facts under `NEEDS YOU`, `WORKING`, and `QUIET`. The watchdog hashes
 the semantic facts behind that text and pastes it only when the last delivered
 hash differs and the minimum spacing has elapsed. Elapsed age labels still

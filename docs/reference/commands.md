@@ -147,7 +147,9 @@ session's agents, by severity:
 | `attn:unanswered` | an inter-agent `ask`/`review` went unanswered past the fixed 1800-second (30-minute) threshold |
 
 (`dead`/`stale`/`throttled` reuse the watchdog's own alert events;
-`waiting-user`/`blocked` are self-declared; `unanswered` flags an `ask`/`review`
+`waiting-user`/`blocked` are self-declared and require a reason. Use a one-line decision
+question for `waiting-user` (`<what>: <A> | <B> (recommend A because …)`); `blocked`
+names blocker and unblock owner. `unanswered` flags an `ask`/`review`
 whose target never replied within 1800 seconds (30 minutes) — the lowest-severity reason.)
 
 By default it shows **running sessions only** — stopped sessions are usually the
@@ -244,7 +246,7 @@ aedev · running · attn:waiting-user · ae 2026.9.5 · s1-brief* · ~/projects/
 | `goal:` | the session's [`goal`](helpers.md), in full, or `none` |
 | `topics:` | the **latest** record per `memo` topic, newest topic first — see the topic convention below |
 | `agents:` | one line per roster agent: its declared state, how long ago it declared, and the reason it gave |
-| `needs you:` | the only two EXPLICIT claims on your attention — an agent that declared `waiting-user`/`blocked`, and an `ask`/`review` nobody has answered. Nothing here is inferred, so an empty section reads `none recorded` |
+| `needs you:` | the only two EXPLICIT claims on your attention — an agent that declared `waiting-user`/`blocked`, and an `ask`/`review` nobody has answered. Reasons wrap to three lines; unanswered rows include request id, sender and body excerpt. Nothing here is inferred, so an empty section reads `none recorded` |
 
 ### The topic convention
 
