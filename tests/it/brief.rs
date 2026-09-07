@@ -136,13 +136,19 @@ fn the_card_carries_the_goal_the_latest_record_per_topic_and_who_is_waiting() {
         "gate once per merge, release after both land",
     );
 
-    declare(&dir, "lead", "working", "wiring the dispatch", 180);
+    declare(
+        &dir,
+        "lead",
+        "waiting-user",
+        "which layout do you want",
+        720,
+    );
     declare(
         &dir,
         "scribe",
         "waiting-user",
-        "which layout do you want",
-        720,
+        "worker-only layout request",
+        600,
     );
 
     let (code, stdout, stderr) = run(&root, &["brief", "brf1"]);
@@ -176,10 +182,10 @@ fn the_card_carries_the_goal_the_latest_record_per_topic_and_who_is_waiting() {
          \x20   decision    {}    human         gate once per merge, release after both land\n\
          \x20   parking     {}    human         resume here: the renderer is half written\n\
          \x20 agents:\n\
-         \x20   lead          working       3m    \"wiring the dispatch\"\n\
-         \x20   scribe        waiting-user  12m   \"which layout do you want\"\n\
+         \x20   lead          waiting-user  12m   \"which layout do you want\"\n\
+         \x20   scribe        waiting-user  10m   \"worker-only layout request\"\n\
          \x20 needs you:\n\
-         \x20   scribe        waiting-user  12m   which layout do you want\n",
+         \x20   lead          waiting-user  12m   which layout do you want\n",
         ages[0], ages[1],
     );
     assert_eq!(stdout, expected, "stderr: {stderr}");
@@ -303,12 +309,12 @@ fn event(dir: &Path, line: &str) {
 }
 
 #[test]
-fn an_open_ask_reaches_needs_you_and_leaves_it_when_it_is_answered() {
-    // END TO END over the request sensor, not the renderer: the section has to
-    // fill from a real ledger and EMPTY again when the ledger closes the row.
-    // Asserting only the rendered `Need` would pass with the sensor unwired.
+fn an_open_ask_stays_out_of_needs_you_and_counts_on_the_working_row() {
+    // END TO END over the request sensor, not just a planted `Need`: the open
+    // request becomes overview metadata while staying out of the human queue.
     let root = scratch("asks");
     let dir = plant(&root, "brf5", &root.join("work"));
+    declare(&dir, "lead", "working", "review the strip", 180);
     event(
         &dir,
         &format!(
@@ -320,15 +326,25 @@ fn an_open_ask_reaches_needs_you_and_leaves_it_when_it_is_answered() {
 
     let (code, open, stderr) = run(&root, &["brief", "brf5"]);
     assert_eq!(code, Some(0), "stderr: {stderr}");
-    assert!(
-        open.contains(
-            "    ask           lead → colead 41m   does the strip pin orchestrator first?\n"
-        ),
-        "{open}"
-    );
+    assert!(open.contains("  needs you: none recorded\n"), "{open}");
+    assert!(!open.contains("orchestrator first"), "{open}");
 
-    // THE OPPOSED HALF: a reply closes the row, and the section goes back to
-    // claiming nothing rather than keeping a stale question on screen.
+    let (_, world) = ae::current_world(&root);
+    let entry = world
+        .sessions
+        .iter()
+        .find(|entry| entry.name == "brf5")
+        .expect("the planted session is discovered");
+    let mut card = ae::brief::card_for(entry, &dir, Some(&root), false, world.now, None);
+    card.status = "running";
+    let overview = ae::overview::render(&[card], "orchestrator");
+    assert!(
+        overview.contains("brf5          lead          ship S1 of #113 (1 open ask)"),
+        "{overview}"
+    );
+    assert!(!overview.contains("orchestrator first"), "{overview}");
+
+    // THE OPPOSED HALF: a reply closes the count, and no stale body appears.
     event(
         &dir,
         &format!(
@@ -342,6 +358,17 @@ fn an_open_ask_reaches_needs_you_and_leaves_it_when_it_is_answered() {
     assert!(!closed.contains("ae-7"), "{closed}");
     assert!(!closed.contains("orchestrator first"), "{closed}");
     assert!(closed.contains("  needs you: none recorded\n"), "{closed}");
+
+    let (_, world) = ae::current_world(&root);
+    let entry = world
+        .sessions
+        .iter()
+        .find(|entry| entry.name == "brf5")
+        .expect("the planted session is discovered");
+    let mut card = ae::brief::card_for(entry, &dir, Some(&root), false, world.now, None);
+    card.status = "running";
+    let overview = ae::overview::render(&[card], "orchestrator");
+    assert!(!overview.contains("open ask"), "{overview}");
 }
 
 #[test]

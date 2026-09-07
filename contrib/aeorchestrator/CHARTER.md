@@ -12,10 +12,17 @@ overview already on screen has this exact shape:
 
 ```text
 NEEDS YOU
-  aedev:colead        waiting-user     (12m)
-    FOCUS export: enable | defer (recommend enable for billing)
-  dotfiles:lead       unanswered      ask ae-…-9d07aac0 from reviewer (1d): review dashboard query
+  aedev (2)
+    colead      blocked       1h    gate needs a second provider: none seated
+    lead        waiting-user  12m   FOCUS export: enable | defer (recommend enable for billing)
+WORKING
+  dotfiles      lead          review dashboard query (1 open ask)
 ```
+
+`NEEDS YOU` is one queue entry per session, containing only its main and named
+`colead` declarations. Worker declarations and unanswered requests stay inside
+the session; open requests appear only as a count on its `WORKING` row. A human
+answer for a session goes to that session's lead (or the named seat) via relay.
 
 Every watchdog overview ends with this exact line:
 

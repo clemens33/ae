@@ -243,11 +243,12 @@ aedev · running · attn:waiting-user · ae 2026.9.5 · s1-brief* · ~/projects/
     decision    12m   lead          gate once per merge, release after both land
     parking     2h    brief         resume here: the renderer is half written
   agents:
-    lead          working       3m    "wiring the dispatch"
-    brief         waiting-user  12m   "which layout do you want"
+    lead          waiting-user  12m   "which layout do you want"
+    brief         blocked       8m    "awaiting lead direction"
+    colead        blocked       4m    "gate needs a second provider"
   needs you:
-    brief         waiting-user  12m   which layout do you want
-    ask           lead → colead 41m   does the strip pin orchestrator first?
+    lead          waiting-user  12m   which layout do you want
+    colead        blocked       4m    gate needs a second provider
 ```
 
 | Section | What it holds |
@@ -256,7 +257,7 @@ aedev · running · attn:waiting-user · ae 2026.9.5 · s1-brief* · ~/projects/
 | `goal:` | the session's [`goal`](helpers.md), in full, or `none` |
 | `topics:` | the **latest** record per `memo` topic, newest topic first — see the topic convention below |
 | `agents:` | one line per roster agent: its declared state, how long ago it declared, and the reason it gave |
-| `needs you:` | the only two EXPLICIT claims on your attention — an agent that declared `waiting-user`/`blocked`, and an `ask`/`review` nobody has answered. Nothing here is inferred, so an empty section reads `none recorded` |
+| `needs you:` | explicit `waiting-user`/`blocked` declarations from the session's main agent or named `colead`. Worker declarations and unanswered asks/reviews are intra-session traffic and stay out. Nothing here is inferred, so an empty section reads `none recorded` |
 
 ### The topic convention
 
@@ -556,8 +557,9 @@ when it is at or after the latest successful delivery. When none qualifies by
 raises one `meta-agent not acknowledging overviews` alert, cleared by the next
 qualifying `done`. The state-file mtime is the watchdog's own render heartbeat
 and is never treated as seat liveness. The same file carries
-the last semantic overview hash: elapsed age labels do not change it, but a
-state, reason, request, goal, topic, or attention change does. A restart neither
+the last semantic overview hash: elapsed age labels and request bodies do not
+change it, but a state, reason, per-session open-request count, goal, topic, or
+attention change does. A restart neither
 resends unchanged text nor forgets minimum spacing or the outstanding deadline.
 The overview is built from the same `current_world` plus brief-card facts as
 `ae brief --all`; the seat does not run that command on a timer. Sweep nudges
@@ -569,7 +571,10 @@ phone (a custom `include` containing `nudge` would forward them).
 
 The **orchestrator** is an ordinary local ae session named `orchestrator`. It
 receives a watchdog-rendered `NEEDS YOU` / `WORKING` / `QUIET` overview only
-when that text changes. Its entire overview turn is `state done`: it prints
+when that text changes. `NEEDS YOU` is grouped by session and contains only the
+main/`colead` decisions that need the human; open asks are counts on `WORKING`
+rows. A human answer for a session is relayed to that session's lead, or to the
+named seat when the human selects one. Its entire overview turn is `state done`: it prints
 nothing and stays done until another change. Each delivered change therefore
 costs one minimal seat turn; a timer-only cycle costs none. For a human fleet
 question it may run `ae brief --all` once. It relays only explicit human

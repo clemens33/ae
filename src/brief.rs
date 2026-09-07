@@ -4,16 +4,17 @@
 //! The card answers the question `ae list` cannot: a listing names sessions and
 //! their attention markers, and leaves the human to open each one to learn WHY.
 //! A brief carries the reasons across — the goal, the latest checkpoint per memo
-//! topic, each agent's declared state, and the two explicit sources of "somebody
-//! is waiting on you": a `waiting-user`/`blocked` declaration, and an `ask` or
-//! `review` nobody has answered.
+//! topic, each agent's declared state, and the leadership declarations that
+//! explicitly ask the human to decide or unblock something.
 //!
 //! Two properties are deliberate:
 //!
-//! * **Explicit sources only.** Nothing here infers that a human is needed. A
-//!   `needs you:` line exists because an agent DECLARED it or because a tracked
-//!   request is still open. There is no pane capture and no heuristic, so the
-//!   section is either evidence or the words `none recorded`.
+//! * **Explicit leadership sources only.** Nothing here infers that a human is
+//!   needed. A `needs you:` line exists only when the session's main agent or
+//!   its named `colead` DECLARED `waiting-user`/`blocked`. Open requests and
+//!   worker declarations are intra-session traffic. There is no pane capture
+//!   and no heuristic, so the section is either evidence or the words
+//!   `none recorded`.
 //! * **It writes nothing.** No tmux option, no event, no meta. The card is a
 //!   read of the session store plus the world `ae list` already builds, which is
 //!   why it is safe to run against somebody else's session.
@@ -29,9 +30,9 @@
 //!   prints. Only the age and the reason come from the second read, and only
 //!   when the declaration found there still names that state. A newer
 //!   declaration is DROPPED, not shown against the old cell.
-//! * `attn:` is the world's rollup and `needs you:` is this read's detail, so
-//!   the two can differ only in the safe direction: this read sees every open
-//!   request, where the rollup counts one only past its staleness threshold.
+//! * `attn:` is the world's operational rollup and `needs you:` is the human's
+//!   leadership queue. They intentionally differ: worker trouble and open
+//!   requests stay with the session's leaders.
 //! * A session whose record could not be fully read is marked `degraded`, and
 //!   its empty sections say `unknown` rather than claiming nothing was recorded.
 //!
@@ -196,7 +197,7 @@ pub struct AgentLine {
     pub attention: Option<Reason>,
 }
 
-/// One entry of `needs you:` — an EXPLICIT claim on the human's attention.
+/// One declared state or open-request fact used by brief and overview.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Need {
     /// An agent declared `waiting-user` or `blocked`.
@@ -227,6 +228,22 @@ pub enum Need {
     },
 }
 
+impl Need {
+    /// Whether this fact is a direct claim on the human's attention.
+    ///
+    /// Roster order owns main-seat identity: [`Card::human_needs`] supplies the
+    /// first agent's name. `colead` is the one name-based leadership convention.
+    #[must_use]
+    pub fn claims_human(&self, main_agent: Option<&str>) -> bool {
+        matches!(
+            self,
+            Self::Declared { owner, state, .. }
+                if matches!(state.as_str(), "waiting-user" | "blocked")
+                    && (main_agent == Some(owner.as_str()) || owner == "colead")
+        )
+    }
+}
+
 /// One session's whole card, as data — every formatting decision lives in
 /// [`render`], so a test can assert the facts without asserting the layout.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -251,7 +268,8 @@ pub struct Card {
     pub topics: Vec<TopicLine>,
     /// One line per roster agent.
     pub agents: Vec<AgentLine>,
-    /// Every explicit claim on the human's attention.
+    /// Declared-state and open-request facts; [`Card::human_needs`] owns which
+    /// ones are direct human claims.
     pub needs: Vec<Need>,
     /// Whether the session's own record could not be fully read — the world's
     /// `degraded`. An empty section on a degraded card is `unknown`, never a
@@ -282,6 +300,23 @@ impl Card {
     #[must_use]
     pub fn urgency(&self) -> i64 {
         self.attention.map_or(0, Reason::rank)
+    }
+
+    /// Direct human claims, using the roster's first entry as the main seat.
+    pub fn human_needs(&self) -> impl Iterator<Item = &Need> {
+        let main_agent = self.agents.first().map(|agent| agent.name.as_str());
+        self.needs
+            .iter()
+            .filter(move |need| need.claims_human(main_agent))
+    }
+
+    /// Pending intra-session asks and reviews, counted without exposing bodies.
+    #[must_use]
+    pub fn open_ask_count(&self) -> usize {
+        self.needs
+            .iter()
+            .filter(|need| matches!(need, Need::Unanswered { .. }))
+            .count()
     }
 }
 
@@ -351,11 +386,11 @@ fn push_card(out: &mut String, card: &Card) {
     }
 
     out.push_str("  needs you:");
-    if card.needs.is_empty() {
+    if card.human_needs().next().is_none() {
         out.push_str(card.empty_section());
     }
     out.push('\n');
-    for need in &card.needs {
+    for need in card.human_needs() {
         out.push_str("    ");
         push_need(out, need);
         out.push('\n');
@@ -627,8 +662,9 @@ fn agent_lines(entry: &SessionEntry, container: &[u8], now: Timestamp) -> Vec<Ag
         .collect()
 }
 
-/// The two explicit sources of a claim on the human's attention: a declaration
-/// of `waiting-user`/`blocked`, and a tracked request nobody has closed.
+/// Collect declarations and open requests once. Presentation decides that only
+/// main/`colead` declarations claim the human; requests remain available as a
+/// count for the overview's working line.
 fn needs(agents: &[AgentLine], container: &[u8], now: Timestamp) -> Vec<Need> {
     let mut needs: Vec<Need> = agents
         .iter()
@@ -783,14 +819,49 @@ mod tests {
     }
 
     #[test]
-    fn needs_you_carries_both_explicit_sources_and_nothing_else() {
+    fn needs_you_contains_only_main_and_colead_declarations() {
         let mut entry = card("alpha");
+        entry.agents = vec![
+            AgentLine {
+                name: "lead".to_owned(),
+                state: "waiting-user".to_owned(),
+                age_secs: Some(720),
+                reason: String::new(),
+                attention: None,
+            },
+            AgentLine {
+                name: "worker".to_owned(),
+                state: "blocked".to_owned(),
+                age_secs: Some(600),
+                reason: String::new(),
+                attention: None,
+            },
+            AgentLine {
+                name: "colead".to_owned(),
+                state: "blocked".to_owned(),
+                age_secs: Some(300),
+                reason: String::new(),
+                attention: None,
+            },
+        ];
         entry.needs = vec![
             Need::Declared {
-                owner: "brief".to_owned(),
-                state: "blocked".to_owned(),
+                owner: "lead".to_owned(),
+                state: "waiting-user".to_owned(),
                 age_secs: Some(720),
-                reason: "waiting on the codex read".to_owned(),
+                reason: "main decision".to_owned(),
+            },
+            Need::Declared {
+                owner: "worker".to_owned(),
+                state: "blocked".to_owned(),
+                age_secs: Some(600),
+                reason: "worker blocker".to_owned(),
+            },
+            Need::Declared {
+                owner: "colead".to_owned(),
+                state: "blocked".to_owned(),
+                age_secs: Some(300),
+                reason: "co-lead gate".to_owned(),
             },
             Need::Unanswered {
                 kind: "ask".to_owned(),
@@ -801,15 +872,19 @@ mod tests {
                 question: "does the strip pin orchestrator first?".to_owned(),
             },
         ];
+        assert_eq!(entry.open_ask_count(), 1);
         let rendered = render(&[entry]);
-        assert!(rendered.contains("brief"), "{rendered}");
-        assert!(rendered.contains("blocked"), "{rendered}");
-        assert!(rendered.contains("12m"), "{rendered}");
-        assert!(rendered.contains("waiting on the codex read"), "{rendered}");
-        assert!(rendered.contains("lead → colead"), "{rendered}");
-        assert!(rendered.contains("41m"), "{rendered}");
+        let needs = rendered
+            .split_once("  needs you:\n")
+            .map_or("", |(_, needs)| needs);
+        assert!(needs.contains("lead"), "{rendered}");
+        assert!(needs.contains("main decision"), "{rendered}");
+        assert!(needs.contains("colead"), "{rendered}");
+        assert!(needs.contains("co-lead gate"), "{rendered}");
+        assert!(!needs.contains("worker blocker"), "{rendered}");
+        assert!(!needs.contains("lead → colead"), "{rendered}");
         assert!(
-            rendered.contains("does the strip pin orchestrator first?"),
+            !needs.contains("does the strip pin orchestrator first?"),
             "{rendered}"
         );
     }

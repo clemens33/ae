@@ -5,7 +5,7 @@
 //! bounded presentation. No clock and no filesystem read enters this module.
 
 use crate::attention::Reason;
-use crate::brief::{self, AgentLine, Card, Need};
+use crate::brief::{self, Card, Need};
 
 /// The final line of every overview turn.
 pub const TRAILER: &str = "— overview; declare done.";
@@ -13,23 +13,37 @@ pub const TRAILER: &str = "— overview; declare done.";
 /// The maximum width of every rendered agent or collapsed-session line.
 pub const WIDTH: usize = 100;
 
-/// Indentation under the detail column in a NEEDS YOU row.
+/// Indentation of every need below its session heading.
 const DETAIL_INDENT: usize = 4;
 const MAX_NEED_LINES: usize = 3;
 const DETAIL_WIDTH: usize = 60;
 
 #[derive(Debug, Clone)]
 struct Row {
-    rank: i64,
     order: usize,
     text: String,
 }
 
+#[derive(Debug, Clone)]
+struct NeedRow {
+    age_secs: Option<i64>,
+    order: usize,
+    text: String,
+}
+
+#[derive(Debug, Clone)]
+struct NeedSession {
+    oldest_age_secs: Option<i64>,
+    order: usize,
+    name: String,
+    needs: Vec<NeedRow>,
+}
+
 /// Render `cards` as `NEEDS YOU`, `WORKING`, and `QUIET` sections.
 ///
-/// `own_session` is omitted before any row is classified. Rows are sorted by
-/// attention severity; Rust's stable sort preserves the fleet and roster
-/// creation order among ties.
+/// `own_session` is omitted before any row is classified. Human needs are
+/// grouped per session, oldest session first, then oldest need first. Rust's
+/// stable sort preserves fleet and roster creation order among ties.
 #[must_use]
 pub fn render(cards: &[Card], own_session: &str) -> String {
     let mut needs = Vec::new();
@@ -42,36 +56,50 @@ pub fn render(cards: &[Card], own_session: &str) -> String {
         .filter(|card| card.name != own_session && card.status == "running")
     {
         let mut session_has_news = false;
-        for agent in &card.agents {
-            if let Some((rank, state, detail, age)) = need_for(card, agent) {
-                needs.push(Row {
-                    rank,
+        let mut session_needs = card
+            .human_needs()
+            .filter_map(|need| {
+                let (owner, state, detail, age_secs) = human_need_parts(need)?;
+                let row = NeedRow {
+                    age_secs,
                     order,
-                    text: needs_line(&identity(&card.name, &agent.name), &state, &detail, age),
-                });
-                session_has_news = true;
-            } else if agent.state == "working" {
-                working.push(Row {
-                    rank: 0,
-                    order,
-                    text: working_line(&card.name, &agent.name, working_detail(card)),
-                });
-                session_has_news = true;
-            }
+                    text: needs_line(owner, state, &detail, age_secs),
+                };
+                order = order.saturating_add(1);
+                Some(row)
+            })
+            .collect::<Vec<_>>();
+        session_needs.sort_by(|left, right| {
+            age_order(right.age_secs)
+                .cmp(&age_order(left.age_secs))
+                .then_with(|| left.order.cmp(&right.order))
+        });
+        if !session_needs.is_empty() {
+            needs.push(NeedSession {
+                oldest_age_secs: session_needs.first().and_then(|need| need.age_secs),
+                order,
+                name: card.name.clone(),
+                needs: session_needs,
+            });
+            session_has_news = true;
             order = order.saturating_add(1);
         }
 
-        // Hostile or mid-write state can leave a need whose owner is absent
-        // from the roster. Keep the claim visible, still one line per named
-        // owner, instead of collapsing the session as quiet.
-        for need in card.needs.iter().filter(|need| !need_has_agent(need, card)) {
-            let (owner, state, detail, age, rank) = need_parts(need);
-            needs.push(Row {
-                rank,
-                order,
-                text: needs_line(&identity(&card.name, owner), state, &detail, age),
-            });
-            session_has_news = true;
+        let mut ask_count_shown = false;
+        for agent in &card.agents {
+            if agent.state == "working" {
+                let open_asks = if ask_count_shown {
+                    0
+                } else {
+                    card.open_ask_count()
+                };
+                working.push(Row {
+                    order,
+                    text: working_line(&card.name, &agent.name, working_detail(card), open_asks),
+                });
+                ask_count_shown = true;
+                session_has_news = true;
+            }
             order = order.saturating_add(1);
         }
 
@@ -81,15 +109,14 @@ pub fn render(cards: &[Card], own_session: &str) -> String {
     }
 
     needs.sort_by(|left, right| {
-        right
-            .rank
-            .cmp(&left.rank)
+        age_order(right.oldest_age_secs)
+            .cmp(&age_order(left.oldest_age_secs))
             .then_with(|| left.order.cmp(&right.order))
     });
     working.sort_by_key(|row| row.order);
 
     let mut sections = Vec::new();
-    push_rows(&mut sections, "NEEDS YOU", &needs);
+    push_need_sessions(&mut sections, &needs);
     push_rows(&mut sections, "WORKING", &working);
     if !quiet.is_empty() {
         let mut section = String::from("QUIET");
@@ -115,7 +142,7 @@ pub fn nudge_body(rendered: &str) -> String {
 /// Return a stable dependency-free FNV-1a 64 digest of the semantic fleet
 /// facts that decide an overview, never their elapsed ages. The display can
 /// advance from `20m` to `22m` without spending a seat turn; a state, reason,
-/// request, goal, topic, or attention change cannot.
+/// open-request count, goal, topic, or attention change cannot.
 #[must_use]
 pub fn semantic_hash(cards: &[Card], own_session: &str) -> String {
     let mut value = 0xcbf2_9ce4_8422_2325_u64;
@@ -140,36 +167,22 @@ pub fn semantic_hash(cards: &[Card], own_session: &str) -> String {
             hash_field(&mut value, &agent.reason);
             hash_attention(&mut value, agent.attention);
         }
-        for need in &card.needs {
-            match need {
-                Need::Declared {
-                    owner,
-                    state,
-                    reason,
-                    ..
-                } => {
-                    hash_field(&mut value, "declared");
-                    hash_field(&mut value, owner);
-                    hash_field(&mut value, state);
-                    hash_field(&mut value, reason);
-                }
-                Need::Unanswered {
-                    kind,
-                    reference,
-                    from,
-                    to,
-                    question,
-                    ..
-                } => {
-                    hash_field(&mut value, "unanswered");
-                    hash_field(&mut value, kind);
-                    hash_field(&mut value, reference);
-                    hash_field(&mut value, from);
-                    hash_field(&mut value, to);
-                    hash_field(&mut value, question);
-                }
+        for need in card.human_needs() {
+            if let Need::Declared {
+                owner,
+                state,
+                reason,
+                ..
+            } = need
+            {
+                hash_field(&mut value, "declared");
+                hash_field(&mut value, owner);
+                hash_field(&mut value, state);
+                hash_field(&mut value, reason);
             }
         }
+        hash_field(&mut value, "open-asks");
+        hash_field(&mut value, &card.open_ask_count().to_string());
         hash_field(&mut value, "end-session");
     }
     format!("{value:016x}")
@@ -214,71 +227,30 @@ fn push_rows(sections: &mut Vec<String>, header: &str, rows: &[Row]) {
     sections.push(section);
 }
 
-fn need_for(card: &Card, agent: &AgentLine) -> Option<(i64, String, String, Option<i64>)> {
-    let explicit = card
-        .needs
-        .iter()
-        .filter(|need| need_owner(need) == agent.name)
-        .max_by_key(|need| need_rank(need));
-    let watchdog = agent.attention.map(|reason| {
-        (
-            reason.rank(),
-            reason.as_str().to_owned(),
-            watchdog_detail(reason, agent),
-            agent.age_secs,
-        )
-    });
-    let explicit = explicit.map(|need| {
-        let (_, state, detail, age, rank) = need_parts(need);
-        (rank, state.to_owned(), detail, age)
-    });
-    match (watchdog, explicit) {
-        // On an equal class the explicit row carries the useful request id or
-        // declaration reason, while the rollup can only repeat the class.
-        (Some(left), Some(right)) if right.0 >= left.0 => Some(right),
-        (Some(left), _) => Some(left),
-        (None, right) => right,
+fn push_need_sessions(sections: &mut Vec<String>, sessions: &[NeedSession]) {
+    if sessions.is_empty() {
+        return;
     }
-}
-
-fn watchdog_detail(reason: Reason, agent: &AgentLine) -> String {
-    if matches!(reason, Reason::WaitingUser | Reason::Blocked) && !agent.reason.is_empty() {
-        clean_text(&agent.reason)
-    } else {
-        reason.as_str().to_owned()
+    let mut section = String::from("NEEDS YOU");
+    for session in sessions {
+        section.push('\n');
+        section.push_str(&need_session_line(&session.name, session.needs.len()));
+        for need in &session.needs {
+            section.push('\n');
+            section.push_str(&need.text);
+        }
     }
+    sections.push(section);
 }
 
-fn need_has_agent(need: &Need, card: &Card) -> bool {
-    card.agents
-        .iter()
-        .any(|agent| agent.name == need_owner(need))
-}
-
-fn need_owner(need: &Need) -> &str {
-    match need {
-        Need::Declared { owner, .. } => owner,
-        Need::Unanswered { to, .. } => to,
-    }
-}
-
-fn need_rank(need: &Need) -> i64 {
-    match need {
-        Need::Declared { state, .. } if state == "waiting-user" => Reason::WaitingUser.rank(),
-        Need::Declared { state, .. } if state == "blocked" => Reason::Blocked.rank(),
-        Need::Declared { .. } => 0,
-        Need::Unanswered { .. } => Reason::Unanswered.rank(),
-    }
-}
-
-fn need_parts(need: &Need) -> (&str, &str, String, Option<i64>, i64) {
+fn human_need_parts(need: &Need) -> Option<(&str, &str, String, Option<i64>)> {
     match need {
         Need::Declared {
             owner,
             state,
             age_secs,
             reason,
-        } => (
+        } => Some((
             owner,
             state,
             if reason.is_empty() {
@@ -287,26 +259,13 @@ fn need_parts(need: &Need) -> (&str, &str, String, Option<i64>, i64) {
                 clean_text(reason)
             },
             *age_secs,
-            need_rank(need),
-        ),
-        Need::Unanswered {
-            kind,
-            reference,
-            from,
-            to,
-            age_secs,
-            question,
-        } => (
-            to,
-            "unanswered",
-            format!(
-                "{kind} {reference} from {from}: {}",
-                clipped(&clean_text(question), 120)
-            ),
-            Some(*age_secs),
-            need_rank(need),
-        ),
+        )),
+        Need::Unanswered { .. } => None,
     }
+}
+
+fn age_order(age_secs: Option<i64>) -> i64 {
+    age_secs.unwrap_or(i64::MIN)
 }
 
 fn working_detail(card: &Card) -> &str {
@@ -322,50 +281,24 @@ fn working_detail(card: &Card) -> &str {
         .unwrap_or("-")
 }
 
-fn needs_line(identity: &str, state: &str, detail: &str, age_secs: Option<i64>) -> String {
-    let identity = clipped(identity, 28);
-    let state = clipped(state, 14);
-    let (detail, suffix) = if state == "unanswered" {
-        detail.split_once(": ").map_or_else(
-            || (detail.to_owned(), format!(" ({})", brief::age(age_secs))),
-            |(head, body)| {
-                let age_width = brief::age(age_secs).chars().count() + 4;
-                if detail.chars().count()
-                    <= WIDTH.saturating_sub(prefix_width(&identity, &state) + age_width)
-                {
-                    (
-                        format!("{head} ({}): {body}", brief::age(age_secs)),
-                        String::new(),
-                    )
-                } else {
-                    (detail.to_owned(), format!(" ({})", brief::age(age_secs)))
-                }
-            },
-        )
-    } else {
-        (detail.to_owned(), format!(" ({})", brief::age(age_secs)))
-    };
-    let mut prefix = String::from("  ");
-    push_field(&mut prefix, &identity, 18);
-    push_field(&mut prefix, &state, 14);
-    let remaining = WIDTH
-        .saturating_sub(prefix.chars().count())
-        .saturating_sub(suffix.chars().count());
-    if detail.chars().count() > remaining {
-        let mut out = format!("{prefix}{suffix}");
-        for line in wrap_detail(&detail, WIDTH - DETAIL_INDENT, MAX_NEED_LINES) {
-            out.push('\n');
-            out.push_str(&" ".repeat(DETAIL_INDENT));
-            out.push_str(&line);
-        }
-        return out;
-    }
-    let mut lines = wrap_detail(&detail, remaining, 1);
+fn need_session_line(session: &str, count: usize) -> String {
+    let suffix = format!(" ({count})");
+    let room = WIDTH.saturating_sub(2 + suffix.chars().count());
+    format!("  {}{suffix}", clipped(session, room))
+}
+
+fn needs_line(owner: &str, state: &str, detail: &str, age_secs: Option<i64>) -> String {
+    let mut prefix = " ".repeat(DETAIL_INDENT);
+    push_field(&mut prefix, &clipped(owner, 18), 10);
+    push_field(&mut prefix, &clipped(state, 14), 12);
+    push_field(&mut prefix, &brief::age(age_secs), 4);
+    let first_width = WIDTH.saturating_sub(prefix.chars().count());
+    let mut lines = wrap_detail(detail, first_width, WIDTH - DETAIL_INDENT, MAX_NEED_LINES);
     if lines.is_empty() {
         lines.push(String::new());
     }
     let first = lines.remove(0);
-    let mut out = format!("{prefix}{first}{suffix}");
+    let mut out = format!("{prefix}{first}");
     let indent = " ".repeat(DETAIL_INDENT);
     for line in lines {
         out.push('\n');
@@ -375,7 +308,12 @@ fn needs_line(identity: &str, state: &str, detail: &str, age_secs: Option<i64>) 
     out
 }
 
-fn wrap_detail(detail: &str, first_width: usize, max_lines: usize) -> Vec<String> {
+fn wrap_detail(
+    detail: &str,
+    first_width: usize,
+    continuation_width: usize,
+    max_lines: usize,
+) -> Vec<String> {
     let mut lines = Vec::new();
     let mut rest = detail;
     let mut width = first_width;
@@ -400,18 +338,14 @@ fn wrap_detail(detail: &str, first_width: usize, max_lines: usize) -> Vec<String
         let mut line = rest[..end].trim_end().to_owned();
         rest = rest[end..].trim_start();
         if !rest.is_empty() && lines.len() + 1 == max_lines {
-            line = clipped(&line, width.saturating_sub(1));
+            line = line.chars().take(width.saturating_sub(1)).collect();
             line.push('…');
             rest = "";
         }
         lines.push(line);
-        width = first_width;
+        width = continuation_width;
     }
     lines
-}
-
-fn prefix_width(identity: &str, state: &str) -> usize {
-    2 + identity.chars().count().max(18) + 2 + state.chars().count().max(14) + 2
 }
 
 fn clean_text(text: &str) -> String {
@@ -431,12 +365,19 @@ fn clean_text(text: &str) -> String {
     clean.trim().to_owned()
 }
 
-fn working_line(session: &str, agent: &str, detail: &str) -> String {
+fn working_line(session: &str, agent: &str, detail: &str, open_asks: usize) -> String {
     let mut prefix = String::from("  ");
     push_field(&mut prefix, &clipped(session, 28), 12);
     push_field(&mut prefix, &clipped(agent, 20), 12);
     let remaining = WIDTH.saturating_sub(prefix.chars().count());
-    prefix.push_str(&clipped(detail, DETAIL_WIDTH.min(remaining)));
+    let suffix = match open_asks {
+        0 => String::new(),
+        1 => " (1 open ask)".to_owned(),
+        count => format!(" ({count} open asks)"),
+    };
+    let detail_width = DETAIL_WIDTH.min(remaining.saturating_sub(suffix.chars().count()));
+    prefix.push_str(&clipped(detail, detail_width));
+    prefix.push_str(&suffix);
     prefix
 }
 
@@ -475,10 +416,6 @@ fn packed_quiet(chunks: &[String]) -> Vec<String> {
         lines.push(line);
     }
     lines
-}
-
-fn identity(session: &str, agent: &str) -> String {
-    format!("{session}:{agent}")
 }
 
 fn push_field(out: &mut String, field: &str, width: usize) {
@@ -559,8 +496,11 @@ mod tests {
 
         let text = render(&[blocked, working, quiet], "orchestrator");
         assert!(text.contains("NEEDS YOU\n"), "{text}");
-        assert!(text.contains("alpha:lead"), "{text}");
-        assert!(text.contains("choose blue or green (12m)"), "{text}");
+        assert!(text.contains("  alpha (1)"), "{text}");
+        assert!(
+            text.contains("lead        waiting-user  12m   choose blue or green"),
+            "{text}"
+        );
         assert!(text.contains("WORKING\n"), "{text}");
         assert!(text.contains("beta"), "{text}");
         assert!(text.contains("ship the parser"), "{text}");
@@ -575,7 +515,7 @@ mod tests {
     }
 
     #[test]
-    fn unanswered_rows_name_the_request_and_sender() {
+    fn unanswered_requests_are_only_a_count_on_the_working_session() {
         let mut pending = card("dotfiles", vec![agent("lead", "working", 0, None)]);
         pending.needs.push(Need::Unanswered {
             kind: "ask".to_owned(),
@@ -585,56 +525,74 @@ mod tests {
             age_secs: 86_400,
             question: "ignored\r\nin\u{1b}[31m the compact overview".to_owned(),
         });
+        pending.needs.push(Need::Unanswered {
+            kind: "review".to_owned(),
+            reference: "ae-second".to_owned(),
+            from: "lead".to_owned(),
+            to: "reviewer".to_owned(),
+            age_secs: 60,
+            question: "also hidden".to_owned(),
+        });
         let text = render(&[pending], "orchestrator");
         assert!(
-            text.contains("ask ae-20260907T000000Z-9d07aac0 from reviewer"),
+            text.contains("dotfiles      lead          - (2 open asks)"),
             "{text}"
         );
-        assert!(
-            text.lines().all(|line| !line.chars().any(char::is_control)),
-            "{text}"
+        assert!(!text.contains("NEEDS YOU"), "{text}");
+        assert!(!text.contains("9d07aac0"), "{text}");
+        assert!(!text.contains("compact overview"), "{text}");
+
+        let without = render(
+            &[card("dotfiles", vec![agent("lead", "working", 0, None)])],
+            "orchestrator",
         );
+        assert!(!without.contains("open ask"), "{without}");
     }
 
     #[test]
-    fn needs_detail_wraps_to_three_lines_and_keeps_request_body_excerpt() {
-        let mut pending = card("alpha", vec![agent("lead", "waiting-user", 0, None)]);
-        pending.agents[0].reason = "decide ".to_owned() + &"x".repeat(260);
+    fn worker_needs_are_hidden_while_main_and_colead_share_one_session_heading() {
+        let mut pending = card("alpha", vec![agent("captain", "waiting-user", 0, None)]);
+        pending
+            .agents
+            .push(agent("worker", "waiting-user", 3_600, None));
+        pending.agents.push(agent("colead", "blocked", 1_800, None));
         pending.needs.push(Need::Declared {
-            owner: "lead".to_owned(),
+            owner: "captain".to_owned(),
             state: "waiting-user".to_owned(),
             age_secs: Some(0),
-            reason: pending.agents[0].reason.clone(),
+            reason: "main decision".to_owned(),
         });
-        let mut request = card("beta", vec![agent("lead", "working", 0, None)]);
-        request.needs.push(Need::Unanswered {
-            kind: "ask".to_owned(),
-            reference: "ae-request".to_owned(),
-            from: "reviewer".to_owned(),
-            to: "lead".to_owned(),
-            age_secs: 0,
-            question: "body-".to_owned() + &"q".repeat(200),
+        pending.needs.push(Need::Declared {
+            owner: "worker".to_owned(),
+            state: "waiting-user".to_owned(),
+            age_secs: Some(3_600),
+            reason: "internal worker blocker".to_owned(),
         });
-        let text = render(&[pending, request], "orchestrator");
-        let lines: Vec<&str> = text.lines().collect();
-        assert!(lines.len() <= 8, "{text}");
-        assert!(text.contains("body-"), "{text}");
+        pending.needs.push(Need::Declared {
+            owner: "colead".to_owned(),
+            state: "blocked".to_owned(),
+            age_secs: Some(1_800),
+            reason: "co-lead gate".to_owned(),
+        });
+
+        let text = render(&[pending], "orchestrator");
+        assert!(text.contains("  alpha (2)"), "{text}");
         assert!(
-            lines
-                .iter()
-                .skip(1)
-                .all(|line| line.chars().count() <= WIDTH)
+            text.contains("colead      blocked       30m   co-lead gate"),
+            "{text}"
         );
+        assert!(
+            text.contains("captain     waiting-user  0s    main decision"),
+            "{text}"
+        );
+        assert!(!text.contains("worker"), "{text}");
+        assert!(!text.contains("internal worker blocker"), "{text}");
     }
 
     #[test]
-    fn max_reason_with_whitespace_tokens_fits_three_continuations() {
-        let reason = format!(
-            "{} {} {}",
-            "a".repeat(50),
-            "b".repeat(80),
-            "decision".to_owned() + &"c".repeat(40)
-        );
+    fn a_180_character_reason_keeps_its_last_decision_token_within_three_lines() {
+        let reason = format!("{} decision", "x".repeat(171));
+        assert_eq!(reason.chars().count(), 180);
         let mut entry = card(
             "a".repeat(28).as_str(),
             vec![agent("lead", "waiting-user", 99_999, None)],
@@ -647,13 +605,31 @@ mod tests {
         });
         let text = render(&[entry], "orchestrator");
         assert!(text.contains("decision"), "{text}");
-        assert!(
-            text.lines().skip(2).all(|line| !line.contains('…')),
-            "{text}"
-        );
+        assert!(!text.contains('…'), "{text}");
+        let need_lines = text.lines().skip(2).count();
+        assert!(need_lines <= 3, "{need_lines} need lines:\n{text}");
         assert!(
             text.lines().all(|line| line.chars().count() <= WIDTH),
             "{text}"
+        );
+    }
+
+    #[test]
+    fn hostile_controls_in_a_reason_are_flattened() {
+        let mut entry = card("alpha", vec![agent("lead", "blocked", 60, None)]);
+        entry.needs.push(Need::Declared {
+            owner: "lead".to_owned(),
+            state: "blocked".to_owned(),
+            age_secs: Some(60),
+            reason: "choose\r\nblue \u{1b}[31mdecision".to_owned(),
+        });
+        let text = render(&[entry], "orchestrator");
+        assert!(text.contains("choose blue [31mdecision"), "{text}");
+        assert!(
+            text.chars()
+                .filter(|ch| *ch != '\n')
+                .all(|ch| !ch.is_control()),
+            "{text:?}"
         );
     }
 
@@ -679,23 +655,42 @@ mod tests {
     }
 
     #[test]
-    fn needs_sort_by_rank_then_keep_input_and_roster_order() {
-        let stale = card(
-            "first",
+    fn sessions_and_their_needs_sort_oldest_first() {
+        let mut recent = card(
+            "recent",
             vec![
-                agent("one", "working", 60, Some(Reason::Stale)),
-                agent("two", "working", 120, Some(Reason::Stale)),
+                agent("lead", "waiting-user", 60, None),
+                agent("colead", "blocked", 1_200, None),
             ],
         );
-        let dead = card(
-            "second",
-            vec![agent("lead", "working", 10, Some(Reason::Dead))],
-        );
-        let text = render(&[stale, dead], "orchestrator");
-        let rows: Vec<&str> = text.lines().skip(1).collect();
-        assert!(rows[0].contains("second:lead"), "{text}");
-        assert!(rows[1].contains("first:one"), "{text}");
-        assert!(rows[2].contains("first:two"), "{text}");
+        recent.needs = vec![
+            Need::Declared {
+                owner: "lead".to_owned(),
+                state: "waiting-user".to_owned(),
+                age_secs: Some(60),
+                reason: "newer".to_owned(),
+            },
+            Need::Declared {
+                owner: "colead".to_owned(),
+                state: "blocked".to_owned(),
+                age_secs: Some(1_200),
+                reason: "older".to_owned(),
+            },
+        ];
+        let mut oldest = card("oldest", vec![agent("lead", "blocked", 7_200, None)]);
+        oldest.needs.push(Need::Declared {
+            owner: "lead".to_owned(),
+            state: "blocked".to_owned(),
+            age_secs: Some(7_200),
+            reason: "oldest need".to_owned(),
+        });
+        let text = render(&[recent, oldest], "orchestrator");
+        let oldest_session = text.find("  oldest (1)").unwrap_or(usize::MAX);
+        let recent_session = text.find("  recent (2)").unwrap_or(usize::MAX);
+        let older_need = text.find("older").unwrap_or(usize::MAX);
+        let newer_need = text.find("newer").unwrap_or(usize::MAX);
+        assert!(oldest_session < recent_session, "{text}");
+        assert!(older_need < newer_need, "{text}");
     }
 
     #[test]
@@ -723,13 +718,20 @@ mod tests {
     }
 
     #[test]
-    fn semantic_hash_ignores_clock_only_changes_but_tracks_state_and_requests() {
-        let mut pending = card("alpha", vec![agent("lead", "done", 1_200, None)]);
+    fn semantic_hash_tracks_human_facts_and_open_ask_count_but_not_ages_or_bodies() {
+        let mut pending = card("alpha", vec![agent("lead", "waiting-user", 1_200, None)]);
+        pending.agents[0].reason = "choose blue".to_owned();
         pending.topics.push(TopicLine {
             topic: "goal".to_owned(),
             age_secs: Some(60),
             author: "lead".to_owned(),
             text: "ship overview".to_owned(),
+        });
+        pending.needs.push(Need::Declared {
+            owner: "lead".to_owned(),
+            state: "waiting-user".to_owned(),
+            age_secs: Some(1_200),
+            reason: "choose blue".to_owned(),
         });
         pending.needs.push(Need::Unanswered {
             kind: "review".to_owned(),
@@ -743,7 +745,10 @@ mod tests {
         let mut later = original.clone();
         later[0].agents[0].age_secs = Some(1_320);
         later[0].topics[0].age_secs = Some(180);
-        if let Need::Unanswered { age_secs, .. } = &mut later[0].needs[0] {
+        if let Need::Declared { age_secs, .. } = &mut later[0].needs[0] {
+            *age_secs = Some(1_320);
+        }
+        if let Need::Unanswered { age_secs, .. } = &mut later[0].needs[1] {
             *age_secs = 180;
         }
 
@@ -758,20 +763,40 @@ mod tests {
             "elapsed time alone never spends a seat turn"
         );
 
-        later[0].agents[0].state = "working".to_owned();
-        assert_ne!(
-            semantic_hash(&original, "orchestrator"),
-            semantic_hash(&later, "orchestrator"),
-            "a real state change wakes the seat"
-        );
-        later[0].agents[0].state = "done".to_owned();
-        if let Need::Unanswered { reference, .. } = &mut later[0].needs[0] {
-            *reference = "ae-20260907T000000Z-second".to_owned();
+        let mut changed_reason = original.clone();
+        changed_reason[0].agents[0].reason = "choose green".to_owned();
+        if let Need::Declared { reason, .. } = &mut changed_reason[0].needs[0] {
+            *reason = "choose green".to_owned();
         }
         assert_ne!(
             semantic_hash(&original, "orchestrator"),
-            semantic_hash(&later, "orchestrator"),
-            "a different open request wakes the seat"
+            semantic_hash(&changed_reason, "orchestrator"),
+            "a reason change wakes the seat"
+        );
+
+        let mut changed_body = original.clone();
+        if let Need::Unanswered { question, .. } = &mut changed_body[0].needs[1] {
+            *question = "different body".to_owned();
+        }
+        assert_eq!(
+            semantic_hash(&original, "orchestrator"),
+            semantic_hash(&changed_body, "orchestrator"),
+            "request bodies never spend a seat turn"
+        );
+
+        let mut changed_count = original.clone();
+        changed_count[0].needs.push(Need::Unanswered {
+            kind: "ask".to_owned(),
+            reference: "ae-second".to_owned(),
+            from: "worker".to_owned(),
+            to: "lead".to_owned(),
+            age_secs: 0,
+            question: "another body".to_owned(),
+        });
+        assert_ne!(
+            semantic_hash(&original, "orchestrator"),
+            semantic_hash(&changed_count, "orchestrator"),
+            "a changed open-ask count wakes the seat"
         );
     }
 

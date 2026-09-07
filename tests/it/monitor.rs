@@ -524,19 +524,38 @@ fn the_charter_pins_the_watchdog_overview_turn_and_retires_the_model_sweep() {
             work_dir: None,
             goal: None,
             topics: Vec::new(),
-            agents: vec![AgentLine {
-                name: "colead".to_owned(),
-                state: "waiting-user".to_owned(),
-                age_secs: Some(720),
-                reason: "FOCUS export: enable | defer (recommend enable for billing)".to_owned(),
-                attention: None,
-            }],
-            needs: vec![Need::Declared {
-                owner: "colead".to_owned(),
-                state: "waiting-user".to_owned(),
-                age_secs: Some(720),
-                reason: "FOCUS export: enable | defer (recommend enable for billing)".to_owned(),
-            }],
+            agents: vec![
+                AgentLine {
+                    name: "lead".to_owned(),
+                    state: "waiting-user".to_owned(),
+                    age_secs: Some(720),
+                    reason: "FOCUS export: enable | defer (recommend enable for billing)"
+                        .to_owned(),
+                    attention: None,
+                },
+                AgentLine {
+                    name: "colead".to_owned(),
+                    state: "blocked".to_owned(),
+                    age_secs: Some(3_600),
+                    reason: "gate needs a second provider: none seated".to_owned(),
+                    attention: None,
+                },
+            ],
+            needs: vec![
+                Need::Declared {
+                    owner: "lead".to_owned(),
+                    state: "waiting-user".to_owned(),
+                    age_secs: Some(720),
+                    reason: "FOCUS export: enable | defer (recommend enable for billing)"
+                        .to_owned(),
+                },
+                Need::Declared {
+                    owner: "colead".to_owned(),
+                    state: "blocked".to_owned(),
+                    age_secs: Some(3_600),
+                    reason: "gate needs a second provider: none seated".to_owned(),
+                },
+            ],
             degraded: false,
             memo_unreadable: false,
         },
@@ -548,7 +567,7 @@ fn the_charter_pins_the_watchdog_overview_turn_and_retires_the_model_sweep() {
             branch: None,
             dirty: false,
             work_dir: None,
-            goal: None,
+            goal: Some("review dashboard query".to_owned()),
             topics: Vec::new(),
             agents: vec![AgentLine {
                 name: "lead".to_owned(),

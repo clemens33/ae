@@ -51,14 +51,19 @@ that session fact outranks `AE_WATCHDOG_SWEEP_SEC`, which outranks 120.
 
 For an orchestrator main, each verdict cycle calls `current_world` once and
 builds the same detail cards as `ae brief --all`. The pure overview renderer
-omits the orchestrator's own session, bounds agent lines to 100 characters. NEEDS YOU
-rows carry identity/state/age on the head line; long reasons and unanswered request
-bodies follow on indented lines, at most three, with request id, sender and body excerpt.
-groups the facts under `NEEDS YOU`, `WORKING`, and `QUIET`. The watchdog hashes
-the semantic facts behind that text and pastes it only when the last delivered
-hash differs and the minimum spacing has elapsed. Elapsed age labels still
-advance on screen, but never change the hash by themselves; unchanged cycles
-never wake the model.
+omits the orchestrator's own session and bounds data lines to 100 characters.
+`NEEDS YOU` has one heading per session and includes only explicit
+`waiting-user`/`blocked` declarations from that session's main or named
+`colead`; worker declarations stay with their session leadership. Sessions and
+their needs sort oldest first. Each need occupies at most three lines: a
+four-space-indented 96-character body, word-wrapped and ellipsized when needed.
+Unanswered asks/reviews never enter `NEEDS YOU`; their count is appended once to
+the session's first `WORKING` row when nonzero. The renderer groups the remaining
+facts under `WORKING` and `QUIET`. The watchdog hashes the semantic facts behind
+that text and pastes it only when the last delivered hash differs and the minimum
+spacing has elapsed. Elapsed age labels and request bodies never change the hash;
+leadership state/reason or the per-session open-request count does. Unchanged
+cycles never wake the model.
 
 `meta-agent-state.json` carries the watchdog heartbeat, semantic hash, the
 oldest delivery awaiting acknowledgement, and the latest successful delivery
