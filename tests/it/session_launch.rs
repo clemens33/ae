@@ -1432,6 +1432,80 @@ fn a_config_swap_while_resume_waits_cannot_change_the_preflighted_command() {
     );
 }
 
+#[test]
+fn a_spawned_seat_launches_its_preflighted_command_after_a_config_swap() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::new("spawned-config-swap", &["claude"], None);
+    let claude = rig.scratch.join("bin/claude");
+    let repair_command = format!("{} --model repaired", claude.display());
+    let old_command = format!("{} --model spawned-old", claude.display());
+    let swapped_command = format!("{} --model spawned-swapped", claude.display());
+    add_profile(&rig, "repair", &repair_command);
+    add_profile(&rig, "spawned", &old_command);
+
+    let session = "lnspawnedcfgswap";
+    let _keep = bare_session(&rig, &rig.sock, &format!("keep-{session}"));
+    let dir = rig.dir(session);
+    assert!(std::fs::create_dir_all(&dir).is_ok(), "a session dir");
+    assert!(
+        std::fs::write(
+            dir.join("meta"),
+            format!(
+                "meta_version={version}\nsession={session}\ntmux_server_kind=socket\n\
+                 tmux_server={server}\nmode=local\nlayout=vertical\n\
+                 work_dir={project}\norigin={project}\nschema=2\nseat.main=lead\n\
+                 profile.main=claude\nagent_bin.main=claude\nseat.spawned.0=helper\n\
+                 profile.spawned.0=spawned\nagent_bin.spawned.0=claude\n",
+                version = ae::migrate::CURRENT,
+                server = rig.sock.display(),
+                project = rig.project.display(),
+            ),
+        )
+        .is_ok(),
+        "a stopped session with a spawned seat"
+    );
+
+    let lock_path = rig
+        .home
+        .join("sessions")
+        .join(format!(".lifecycle.{session}.lock"));
+    let held = std::fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(&lock_path)
+        .expect("the lifecycle lock opens");
+    held.try_lock()
+        .expect("the fixture holds the lifecycle lock");
+    let mut child = rig.launch_child(&["--local", session, "--lead", "repair"]);
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(
+        matches!(child.try_wait(), Ok(None)),
+        "the resume waits after preflight"
+    );
+    let config = std::fs::read_to_string(&rig.config).unwrap_or_default();
+    assert!(
+        std::fs::write(&rig.config, config.replace(&old_command, &swapped_command)).is_ok(),
+        "the spawned profile swaps while the launch waits"
+    );
+    drop(held);
+
+    let output = child
+        .wait_with_output()
+        .unwrap_or_else(|why| panic!("the resume should finish: {why}"));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stdout: {stdout}\nstderr: {stderr}"
+    );
+    let launched = rig.launch_argv();
+    assert!(launched.contains("--model spawned-old"), "{launched}");
+    assert!(!launched.contains("spawned-swapped"), "{launched}");
+}
+
 /// Every entry into a session returns the client to its lead pane. The hook is
 /// session-scoped through the lead pane id, so a resume installs the new id and
 /// a rename keeps the old one.

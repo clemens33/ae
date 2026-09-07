@@ -1714,7 +1714,8 @@ fn build(
                 session_id: entry.harness_session,
                 launch_id,
                 pane,
-                command_snapshot: None,
+                command_snapshot: seat_overrides
+                    .and_then(|_| (!command.is_empty()).then(|| command.clone())),
             });
         }
         // Rebalance only the SPLIT layouts: a spawned agent gets its own window,
