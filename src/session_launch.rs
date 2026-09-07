@@ -1008,15 +1008,35 @@ fn build(
         let created = match shape.layout.as_str() {
             "lead-pair" => match index {
                 0 => split(&server, &panes[0], &work_dir, Split::Horizontal),
-                1 => new_window(&server, &format!("{}:", shape.name), "", &work_dir),
+                1 => new_window(
+                    &server,
+                    &format!("{}:", tmux::session_target(&shape.name)),
+                    "",
+                    &work_dir,
+                ),
                 _ => split(&server, &panes[panes.len() - 1], &work_dir, Split::Vertical),
             },
             "lead-solo" => match index {
-                0 => new_window(&server, &format!("{}:", shape.name), "", &work_dir),
+                0 => new_window(
+                    &server,
+                    &format!("{}:", tmux::session_target(&shape.name)),
+                    "",
+                    &work_dir,
+                ),
                 _ => split(&server, &panes[panes.len() - 1], &work_dir, Split::Vertical),
             },
-            "vertical" => split(&server, &shape.name, &work_dir, Split::Horizontal),
-            _ => split(&server, &shape.name, &work_dir, Split::Vertical),
+            "vertical" => split(
+                &server,
+                &format!("{}:", tmux::session_target(&shape.name)),
+                &work_dir,
+                Split::Horizontal,
+            ),
+            _ => split(
+                &server,
+                &format!("{}:", tmux::session_target(&shape.name)),
+                &work_dir,
+                Split::Vertical,
+            ),
         };
         let Some(pane) = created else {
             return rollback_launch(
@@ -1087,7 +1107,12 @@ fn build(
             let pane = if command.is_empty() {
                 String::new()
             } else {
-                match new_window(&server, &format!("{}:", shape.name), "", &work_dir) {
+                match new_window(
+                    &server,
+                    &format!("{}:", tmux::session_target(&shape.name)),
+                    "",
+                    &work_dir,
+                ) {
                     Some(pane) => {
                         let _ = transport::rename_window(
                             &server,
@@ -1119,7 +1144,7 @@ fn build(
         // so window 0 gains no panes, and even-vertical would stack lead-pair's
         // side-by-side leads.
         if shape.layout != "lead-solo" && shape.layout != "lead-pair" {
-            let target = shape.name.clone();
+            let target = format!("{}:", tmux::session_target(&shape.name));
             let layout = if shape.layout == "vertical" {
                 "even-horizontal"
             } else {
@@ -1345,10 +1370,11 @@ fn stamp_session(server: &ServerId, env: &Env, shape: &Session, main_pane: &str)
         &shape.look,
     );
     // The window carries the SESSION name; agent identity lives on `@ae_agent`.
+    let target = format!("{}:", tmux::session_target(name));
     let _ = transport::run_tmux_op(&argv(
         server,
         &Op::RenameWindow {
-            target: name,
+            target: &target,
             name: &tmux::format_literal(name),
         },
     ));
@@ -1475,8 +1501,14 @@ fn apply_layout(server: &ServerId, shape: &Session, panes: &[String], workers: u
                 select(&panes[1], "even-vertical");
             }
         }
-        "vertical" => select(&shape.name, "even-horizontal"),
-        _ => select(&shape.name, "even-vertical"),
+        "vertical" => select(
+            &format!("{}:", tmux::session_target(&shape.name)),
+            "even-horizontal",
+        ),
+        _ => select(
+            &format!("{}:", tmux::session_target(&shape.name)),
+            "even-vertical",
+        ),
     }
     // Role-based window names use FIXED literals — never an agent name, which
     // would feed the rename-window format sink.
@@ -1891,11 +1923,18 @@ pub(crate) fn ensure_events_pane(server: &ServerId, session: &str, dir: &Path) -
     let command = vec![dir.join("events-tail").display().to_string()];
     let pane = new_window_running(
         server,
-        &format!("{session}:99"),
+        &format!("{}:99", tmux::session_target(session)),
         crate::theme::MONITOR_WINDOW,
         &command,
     )
-    .or_else(|| new_window_running(server, session, crate::theme::MONITOR_WINDOW, &command))?;
+    .or_else(|| {
+        new_window_running(
+            server,
+            &tmux::session_target(session),
+            crate::theme::MONITOR_WINDOW,
+            &command,
+        )
+    })?;
     for (option, value) in [
         ("@ae_agent", "_events".to_owned()),
         (
@@ -1911,7 +1950,11 @@ pub(crate) fn ensure_events_pane(server: &ServerId, session: &str, dir: &Path) -
     // left exactly as the user's own tmux configuration draws it, like every
     // other window of the session.
     if let Some(look) = look_of(server, session) {
-        stamp_window(server, &format!("{session}:ae-monitor"), &look);
+        stamp_window(
+            server,
+            &format!("{}:ae-monitor", tmux::session_target(session)),
+            &look,
+        );
     }
     let _ = transport::run_tmux_op(&argv(server, &Op::DisablePane { pane: &pane }));
     Some(pane)
@@ -2010,7 +2053,7 @@ fn monitor_pane(server: &ServerId, session: &str, agent: &str) -> Option<String>
 
 /// The command that actually attaches to `session` on `server`.
 fn attach_hint(server: &ServerId, session: &str) -> String {
-    let session = paste_safe(session);
+    let session = format!("\"{}\"", tmux::session_target(session));
     match server {
         ServerId::Ambient => format!("tmux attach -t {session}"),
         ServerId::Selected(crate::meta::Selector::Name(name)) => {

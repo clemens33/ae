@@ -349,7 +349,7 @@ fn a_local_launch_builds_the_whole_session() {
     // The hint names a command that EXISTS.
     assert!(
         stdout.contains(&format!(
-            "Attach with: tmux -S {} attach -t lnlocal",
+            "Attach with: tmux -S {} attach -t \"=lnlocal\"",
             rig.sock.display()
         )),
         "{stdout}"
@@ -911,7 +911,7 @@ fn a_typed_server_pair_still_reaches_its_own_server() {
     // a bare `tmux attach`.
     assert!(
         stdout.contains(&format!(
-            "Attach with: tmux -S {} attach -t lnsock",
+            "Attach with: tmux -S {} attach -t \"=lnsock\"",
             rig.sock.display()
         )),
         "{stdout}"
@@ -928,7 +928,9 @@ fn a_typed_server_pair_still_reaches_its_own_server() {
         "the named server holds it: {held:?}"
     );
     assert!(
-        stdout.contains(&format!("Attach with: tmux -L {named} attach -t lnnamed")),
+        stdout.contains(&format!(
+            "Attach with: tmux -L {named} attach -t \"=lnnamed\""
+        )),
         "{stdout}"
     );
 }

@@ -160,7 +160,7 @@ fn locked(
 
     // 2.
     if crate::lifecycle::meta_value(&bytes, "layout") != "lead-pair" {
-        let target = format!("={new}:0");
+        let target = format!("{}:0", crate::tmux::session_target(new));
         let _ = transport::run_tmux_op(&argv(
             &server,
             &Op::RenameWindow {

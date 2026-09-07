@@ -15,7 +15,7 @@
 //! [`crate::transport::publish_option`], which is the existing door.
 
 use crate::inventory::ServerId;
-use crate::tmux::server_args;
+use crate::tmux::{server_args, session_target};
 
 /// The `-P -F` format every pane-creating call here prints.
 const PANE_ID_FORMAT: &str = "#{pane_id}";
@@ -157,10 +157,14 @@ pub(crate) fn argv(server: &ServerId, op: &Op<'_>) -> TmuxArgv {
             key,
             value,
         } => {
-            args.extend(["set-environment", "-t", session, key, value].map(ToOwned::to_owned));
+            args.extend(["set-environment", "-t"].map(ToOwned::to_owned));
+            args.push(session_target(session));
+            args.extend([key, value].map(ToOwned::to_owned));
         }
         Op::UnsetEnv { session, key } => {
-            args.extend(["set-environment", "-t", session, "-u", key].map(ToOwned::to_owned));
+            args.extend(["set-environment", "-t"].map(ToOwned::to_owned));
+            args.push(session_target(session));
+            args.extend(["-u", key].map(ToOwned::to_owned));
         }
         Op::SplitWindow {
             target,
@@ -213,7 +217,9 @@ pub(crate) fn argv(server: &ServerId, op: &Op<'_>) -> TmuxArgv {
             args.extend(["select-window", "-t", pane].map(ToOwned::to_owned));
         }
         Op::RenameSession { target, name } => {
-            args.extend(["rename-session", "-t", target, name].map(ToOwned::to_owned));
+            args.extend(["rename-session", "-t"].map(ToOwned::to_owned));
+            args.push(session_target(target));
+            args.push(name.to_owned());
         }
         Op::RenameWindow { target, name } => {
             args.extend(["rename-window", "-t", target, name].map(ToOwned::to_owned));

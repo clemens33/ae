@@ -526,17 +526,18 @@ fn age(now: Timestamp, epoch: Option<i64>) -> String {
 /// use ae::inventory::ServerId;
 /// use ae::meta::Selector;
 /// let server = ServerId::Selected(Selector::Name("ae-dev".to_owned()));
-/// assert_eq!(ae::orchestrator::attach_command(&server, "hub"), "tmux -L ae-dev attach -t hub");
+/// assert_eq!(ae::orchestrator::attach_command(&server, "hub"), "tmux -L ae-dev attach -t \"=hub\"");
 /// ```
 #[must_use]
 pub fn attach_command(server: &crate::inventory::ServerId, session: &str) -> String {
     use crate::inventory::ServerId;
     use crate::meta::Selector;
+    let target = format!("\"{}\"", crate::tmux::session_target(session));
     match server {
-        ServerId::Ambient => format!("tmux attach -t {session}"),
-        ServerId::Selected(Selector::Name(name)) => format!("tmux -L {name} attach -t {session}"),
+        ServerId::Ambient => format!("tmux attach -t {target}"),
+        ServerId::Selected(Selector::Name(name)) => format!("tmux -L {name} attach -t {target}"),
         ServerId::Selected(Selector::Socket(path)) => {
-            format!("tmux -S {} attach -t {session}", path.display())
+            format!("tmux -S {} attach -t {target}", path.display())
         }
     }
 }
@@ -841,7 +842,7 @@ mod tests {
         };
         assert_eq!(
             command,
-            "switch-client -t hub ; select-window -t %12 ; select-pane -t %12"
+            "switch-client -t =hub ; select-window -t %12 ; select-pane -t %12"
         );
         // The window BEFORE the pane: a worker lives in its own window and
         // select-pane alone does not change which window is viewed.
@@ -930,7 +931,7 @@ mod tests {
         let MenuAction::Run(command) = &drawn.items[0].action else {
             panic!("a session with nothing to pick between still jumps");
         };
-        assert_eq!(command, "switch-client -t bare");
+        assert_eq!(command, "switch-client -t =bare");
     }
 
     #[test]
@@ -946,7 +947,7 @@ mod tests {
         let drawn = menu(&quiet, &located, NOW, true, &Palette::DARCULA);
         assert!(matches!(drawn.items[0].action, MenuAction::Disabled));
         assert!(
-            labels(&drawn)[0].contains("tmux -L ae-dev attach -t far"),
+            labels(&drawn)[0].contains("tmux -L ae-dev attach -t \"=far\""),
             "{:?}",
             labels(&drawn)
         );
@@ -965,10 +966,13 @@ mod tests {
 
     #[test]
     fn every_way_of_naming_a_server_names_the_command_that_reaches_it() {
-        assert_eq!(attach_command(&ServerId::Ambient, "s"), "tmux attach -t s");
+        assert_eq!(
+            attach_command(&ServerId::Ambient, "s"),
+            "tmux attach -t \"=s\""
+        );
         assert_eq!(
             attach_command(&ServerId::Selected(Selector::Socket("/tmp/x".into())), "s"),
-            "tmux -S /tmp/x attach -t s"
+            "tmux -S /tmp/x attach -t \"=s\""
         );
     }
 
@@ -1098,7 +1102,8 @@ mod tests {
         assert!(words[10].starts_with("'display-menu'"), "{}", words[10]);
         assert!(words[10].contains("'--'"), "{}", words[10]);
         assert!(
-            words[10].ends_with("'switch-client -t hub ; select-window -t %1 ; select-pane -t %1'"),
+            words[10]
+                .ends_with("'switch-client -t =hub ; select-window -t %1 ; select-pane -t %1'"),
             "the jump travels intact through the nesting: {}",
             words[10]
         );

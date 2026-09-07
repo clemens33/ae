@@ -69,6 +69,8 @@ flowchart TB
 
 The regenerate step runs on a new launch or resume, never against an already-running session. After an installed upgrade, stopped sessions bind the new generation on resume while running sessions stay pinned; no migration ceremony is needed.
 
+Whenever ae passes a session name as a tmux target, it spells it `=name`; without the leading `=`, tmux falls through from exact matching to prefix and fnmatch matching.
+
 ## The public command
 
 There is no wrapper. `~/.local/bin/ae` is a symlink straight to `~/.ae/versions/<V>/ae-core`,

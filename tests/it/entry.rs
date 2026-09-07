@@ -497,6 +497,43 @@ fn a_launch_candidate_becomes_a_session_from_the_preamble_facts() {
     );
 }
 
+/// A tmux target without `=` first matches exactly, then by prefix. A longer
+/// sibling must therefore never make a missing session look live.
+#[test]
+fn a_launch_target_is_an_exact_session_name_not_a_prefix() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("exact-session-target");
+    assert!(
+        rig.tmux(&["-f", "/dev/null", "new-session", "-d", "-s", "dotfiles2"])
+            .0,
+        "the longer sibling is live"
+    );
+    let sock = rig.sock.clone();
+
+    // The control: the full sibling name still reaches the already-live
+    // session rather than creating state for another one.
+    let (code, stdout, stderr) = rig.run_on(Some(&sock), &["--local", "dotfiles2"]);
+    assert_ne!(code, Some(2), "not a usage error: {stdout}\n{stderr}");
+    assert!(
+        !rig.sessions().join("dotfiles2").exists(),
+        "an exact live session was rebuilt"
+    );
+
+    let (code, stdout, stderr) = rig.run_on(Some(&sock), &["--local", "dotfiles"]);
+    assert_ne!(code, Some(2), "not a usage error: {stdout}\n{stderr}");
+    assert!(
+        rig.sessions().join("dotfiles").join("meta").exists(),
+        "the shorter session was not built: {stdout}\n{stderr}"
+    );
+    let (ok, listed) = rig.tmux(&["list-sessions", "-F", "#{session_name}"]);
+    assert!(ok, "the tmux server answers: {listed}");
+    let mut names = listed.lines().collect::<Vec<_>>();
+    names.sort_unstable();
+    assert_eq!(names, ["dotfiles", "dotfiles2"], "{listed}");
+}
+
 /// An EMPTY argv after the preamble is a LAUNCH, not the help an empty argv
 /// gets everywhere else — `ae` with no words starts the default session and
 /// always has.

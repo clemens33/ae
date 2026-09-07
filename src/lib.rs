@@ -993,8 +993,8 @@ fn run_next(
     let server = inventory::ServerId::Ambient;
 
     // Re-validate EXACTLY: the session may have ended between the scan and the
-    // jump, and a prefix-matching `has-session -t` would land the focus on a
-    // surviving sibling.
+    // jump. The target below is exact too; this remains the race guard between
+    // choosing the session and asking tmux to focus it.
     let still_there =
         transport::session_names(&server).is_some_and(|names| names.contains(&choice.name));
     if !still_there {
@@ -1769,7 +1769,7 @@ mod tests {
         let Placement::Elsewhere(attach) = &only.placement else {
             panic!("a session recorded on another server is not reachable from here");
         };
-        assert_eq!(attach, "tmux -L B attach -t foo");
+        assert_eq!(attach, "tmux -L B attach -t \"=foo\"");
 
         // …and the same session, recorded on the server that IS this one, is.
         let mut sockets = super::SocketPaths::asking(socket_of);

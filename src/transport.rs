@@ -38,8 +38,8 @@ impl Discovery for Tmux {
     }
 }
 
-/// Whether `server` has a session `name` — `tmux has-session -t` before a
-/// cross-session lookup (prefix-matched, as tmux does).
+/// Whether `server` has the exact session `name` — `tmux has-session -t =name`
+/// before a cross-session lookup.
 #[must_use]
 pub fn session_exists(server: &ServerId, name: &str) -> bool {
     addressable(server) && run(PROGRAM, &tmux::has_session_args(server, name)).0

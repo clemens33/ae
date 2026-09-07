@@ -15,6 +15,15 @@ use crate::meta::Selector;
 /// The format `list-sessions` is asked for: one exact session name per line.
 pub const SESSION_NAME_FORMAT: &str = "#{session_name}";
 
+/// Pin `name` to tmux's exact session-name rule.
+///
+/// A tmux target session resolves by exact match, then prefix, then fnmatch;
+/// the leading `=` disables the latter two steps.
+#[must_use]
+pub(crate) fn session_target(name: &str) -> String {
+    format!("={name}")
+}
+
 /// The separator every multi-field format in this module renders between its
 /// fields.
 const FIELD_SEPARATOR: &str = " | ";
@@ -50,7 +59,7 @@ pub fn marker_args(server: &ServerId, session: &str) -> Vec<String> {
     let mut args = server_args(server);
     args.push("show-environment".to_owned());
     args.push("-t".to_owned());
-    args.push(session.to_owned());
+    args.push(session_target(session));
     args.push(OWNERSHIP_VARIABLE.to_owned());
     args
 }
@@ -185,7 +194,7 @@ pub fn list_panes_args(server: &ServerId, session: &str) -> Vec<String> {
     args.push("list-panes".to_owned());
     args.push("-s".to_owned());
     args.push("-t".to_owned());
-    args.push(session.to_owned());
+    args.push(session_target(session));
     args.push("-F".to_owned());
     args.push(PANE_FORMAT.to_owned());
     args
@@ -345,12 +354,13 @@ pub fn interpret_viewer(succeeded: bool, stdout: &str) -> Option<ObservedViewer>
     })
 }
 
-/// The arguments for the resolver's session check — `tmux has-session -t
-/// <session>` before a cross-session lookup.
+/// The arguments for the resolver's exact session check — `tmux has-session
+/// -t =<session>` before a cross-session lookup.
 #[must_use]
 pub fn has_session_args(server: &ServerId, session: &str) -> Vec<String> {
     let mut args = server_args(server);
-    args.extend(["has-session", "-t", session].map(ToOwned::to_owned));
+    args.extend(["has-session", "-t"].map(ToOwned::to_owned));
+    args.push(session_target(session));
     args
 }
 
@@ -358,7 +368,8 @@ pub fn has_session_args(server: &ServerId, session: &str) -> Vec<String> {
 #[must_use]
 pub fn kill_session_args(server: &ServerId, session_id: &str) -> Vec<String> {
     let mut args = server_args(server);
-    args.extend(["kill-session", "-t", session_id].map(ToOwned::to_owned));
+    args.extend(["kill-session", "-t"].map(ToOwned::to_owned));
+    args.push(session_target(session_id));
     args
 }
 
@@ -370,7 +381,9 @@ pub const AGENTS_FORMAT: &str = "#{pane_id} | #{@ae_agent}";
 #[must_use]
 pub fn agents_args(server: &ServerId, session: &str) -> Vec<String> {
     let mut args = server_args(server);
-    args.extend(["list-panes", "-s", "-t", session, "-F", AGENTS_FORMAT].map(ToOwned::to_owned));
+    args.extend(["list-panes", "-s", "-t"].map(ToOwned::to_owned));
+    args.push(session_target(session));
+    args.extend(["-F", AGENTS_FORMAT].map(ToOwned::to_owned));
     args
 }
 
@@ -384,7 +397,9 @@ pub const SLOTS_FORMAT: &str = "#{pane_id}|#{@ae_slot}|#{@ae_agent}";
 #[must_use]
 pub fn slots_args(server: &ServerId, session: &str) -> Vec<String> {
     let mut args = server_args(server);
-    args.extend(["list-panes", "-s", "-t", session, "-F", SLOTS_FORMAT].map(ToOwned::to_owned));
+    args.extend(["list-panes", "-s", "-t"].map(ToOwned::to_owned));
+    args.push(session_target(session));
+    args.extend(["-F", SLOTS_FORMAT].map(ToOwned::to_owned));
     args
 }
 
@@ -493,9 +508,9 @@ const WATCH_PANE_FIELDS: usize = 5;
 #[must_use]
 pub fn watch_panes_args(server: &ServerId, session: &str) -> Vec<String> {
     let mut args = server_args(server);
-    args.extend(
-        ["list-panes", "-s", "-t", session, "-F", WATCH_PANE_FORMAT].map(ToOwned::to_owned),
-    );
+    args.extend(["list-panes", "-s", "-t"].map(ToOwned::to_owned));
+    args.push(session_target(session));
+    args.extend(["-F", WATCH_PANE_FORMAT].map(ToOwned::to_owned));
     args
 }
 
@@ -590,9 +605,9 @@ pub(crate) struct MotionPane {
 #[must_use]
 pub(crate) fn motion_panes_args(server: &ServerId, session: &str) -> Vec<String> {
     let mut args = server_args(server);
-    args.extend(
-        ["list-panes", "-s", "-t", session, "-F", MOTION_PANE_FORMAT].map(ToOwned::to_owned),
-    );
+    args.extend(["list-panes", "-s", "-t"].map(ToOwned::to_owned));
+    args.push(session_target(session));
+    args.extend(["-F", MOTION_PANE_FORMAT].map(ToOwned::to_owned));
     args
 }
 
@@ -690,7 +705,7 @@ pub fn format_literal(text: &str) -> String {
     text.replace('#', "##").replace('%', "%%")
 }
 
-/// Set one user option on `target`, which MUST be an exact id.
+/// Set one user option on `target`, which must name the selected table.
 #[must_use]
 pub fn set_option_args(
     server: &ServerId,
@@ -704,7 +719,12 @@ pub fn set_option_args(
     if let Some(flag) = scope.flag() {
         args.push(flag.to_owned());
     }
-    args.extend(["-t", target, name, value].map(ToOwned::to_owned));
+    args.push("-t".to_owned());
+    args.push(match scope {
+        OptionScope::Session => format!("{}:", session_target(target)),
+        OptionScope::Window | OptionScope::Pane => target.to_owned(),
+    });
+    args.extend([name, value].map(ToOwned::to_owned));
     args
 }
 
@@ -742,12 +762,12 @@ pub(crate) fn set_options_args(server: &ServerId, writes: &[OptionWrite]) -> Vec
         if let Some(flag) = write.scope.flag() {
             args.push(flag.to_owned());
         }
-        args.extend([
-            "-t".to_owned(),
-            write.target.clone(),
-            write.name.clone(),
-            write.value.clone(),
-        ]);
+        args.push("-t".to_owned());
+        args.push(match write.scope {
+            OptionScope::Session => format!("{}:", session_target(&write.target)),
+            OptionScope::Window | OptionScope::Pane => write.target.clone(),
+        });
+        args.extend([write.name.clone(), write.value.clone()]);
     }
     args
 }
@@ -765,7 +785,12 @@ pub fn unset_option_args(
     if let Some(flag) = scope.flag() {
         args.push(flag.to_owned());
     }
-    args.extend(["-u", "-t", target, name].map(ToOwned::to_owned));
+    args.extend(["-u", "-t"].map(ToOwned::to_owned));
+    args.push(match scope {
+        OptionScope::Session => format!("{}:", session_target(target)),
+        OptionScope::Window | OptionScope::Pane => target.to_owned(),
+    });
+    args.push(name.to_owned());
     args
 }
 
@@ -776,7 +801,9 @@ pub const BRANCH_OPTION: &str = "@ae_branch_name";
 #[must_use]
 pub fn session_option_args(server: &ServerId, session: &str, name: &str) -> Vec<String> {
     let mut args = server_args(server);
-    args.extend(["show-options", "-t", session, "-qv", name].map(ToOwned::to_owned));
+    args.extend(["show-options", "-t"].map(ToOwned::to_owned));
+    args.push(format!("{}:", session_target(session)));
+    args.extend(["-qv", name].map(ToOwned::to_owned));
     args
 }
 
@@ -1050,7 +1077,11 @@ impl FocusVerb {
 /// since tmux's single quotes admit no escape inside them.
 #[must_use]
 pub fn switch_command(session: &str) -> String {
-    format!("{} -t {session}", FocusVerb::SwitchClient.as_str())
+    format!(
+        "{} -t {}",
+        FocusVerb::SwitchClient.as_str(),
+        session_target(session)
+    )
 }
 
 /// The command that hands the calling client to `pane` of `session`.
@@ -1073,7 +1104,7 @@ pub fn focus_args(server: &ServerId, verb: FocusVerb, session: &str) -> Vec<Stri
     let mut args = server_args(server);
     args.push(verb.as_str().to_owned());
     args.push("-t".to_owned());
-    args.push(session.to_owned());
+    args.push(session_target(session));
     args
 }
 
@@ -1272,7 +1303,9 @@ pub struct LookOptions {
 #[must_use]
 pub fn look_args(server: &ServerId, session: &str) -> Vec<String> {
     let mut args = server_args(server);
-    args.extend(["display-message", "-p", "-t", session, LOOK_FORMAT].map(ToOwned::to_owned));
+    args.extend(["display-message", "-p", "-t"].map(ToOwned::to_owned));
+    args.push(format!("{}:", session_target(session)));
+    args.push(LOOK_FORMAT.to_owned());
     args
 }
 
@@ -1463,9 +1496,9 @@ pub struct WindowPane {
 #[must_use]
 pub fn window_panes_args(server: &ServerId, session: &str) -> Vec<String> {
     let mut args = server_args(server);
-    args.extend(
-        ["list-panes", "-s", "-t", session, "-F", WINDOW_PANE_FORMAT].map(ToOwned::to_owned),
-    );
+    args.extend(["list-panes", "-s", "-t"].map(ToOwned::to_owned));
+    args.push(session_target(session));
+    args.extend(["-F", WINDOW_PANE_FORMAT].map(ToOwned::to_owned));
     args
 }
 
@@ -1678,12 +1711,13 @@ pub fn interpret_clients(succeeded: bool, stdout: &str) -> Option<Vec<ObservedCl
 #[must_use]
 pub fn new_window_args(server: &ServerId, session: &str, work_dir: &str) -> Vec<String> {
     let mut args = server_args(server);
+    let target = format!("{}:", session_target(session));
     args.extend(
         [
             "new-window",
             "-d",
             "-t",
-            &format!("{session}:"),
+            &target,
             "-c",
             work_dir,
             "-P",
@@ -1883,7 +1917,7 @@ mod tests {
                 "ae",
                 "set-option",
                 "-t",
-                "$3",
+                "=$3:",
                 "@ae_agents_status",
                 "lead● builder◌"
             ]
@@ -1917,7 +1951,7 @@ mod tests {
                 "set-option",
                 "-u",
                 "-t",
-                "$3",
+                "=$3:",
                 "@ae_agents_status"
             ]
         );
@@ -2000,7 +2034,7 @@ mod tests {
                 "list-panes",
                 "-s",
                 "-t",
-                "demo",
+                "=demo",
                 "-F",
                 super::WINDOW_PANE_FORMAT
             ]
@@ -2147,7 +2181,7 @@ mod tests {
         use crate::inventory::ServerId;
         assert_eq!(
             watch_panes_args(&ServerId::Ambient, "s"),
-            ["list-panes", "-s", "-t", "s", "-F", WATCH_PANE_FORMAT]
+            ["list-panes", "-s", "-t", "=s", "-F", WATCH_PANE_FORMAT]
         );
         assert_eq!(
             capture_pane_args(&ServerId::Ambient, "%3"),
@@ -2204,7 +2238,7 @@ mod tests {
                 "list-panes",
                 "-s",
                 "-t",
-                "s",
+                "=s",
                 "-F",
                 super::MOTION_PANE_FORMAT,
             ]
@@ -2272,19 +2306,38 @@ mod tests {
 
     #[test]
     fn the_resolver_queries_are_the_frozen_ones() {
-        use super::{AGENTS_FORMAT, SLOTS_FORMAT, agents_args, has_session_args, slots_args};
+        use super::{
+            AGENTS_FORMAT, SLOTS_FORMAT, agents_args, has_session_args, kill_session_args,
+            list_panes_args, session_target, slots_args,
+        };
         use crate::inventory::ServerId;
+        assert_eq!(session_target("dotfiles"), "=dotfiles");
         assert_eq!(
-            has_session_args(&ServerId::Ambient, "other"),
-            ["has-session", "-t", "other"]
+            has_session_args(&ServerId::Ambient, "dotfiles"),
+            ["has-session", "-t", "=dotfiles"]
+        );
+        assert_eq!(
+            kill_session_args(&ServerId::Ambient, "dotfiles"),
+            ["kill-session", "-t", "=dotfiles"]
+        );
+        assert_eq!(
+            list_panes_args(&ServerId::Ambient, "dotfiles"),
+            [
+                "list-panes",
+                "-s",
+                "-t",
+                "=dotfiles",
+                "-F",
+                super::PANE_FORMAT
+            ]
         );
         assert_eq!(
             agents_args(&ServerId::Ambient, "s"),
-            ["list-panes", "-s", "-t", "s", "-F", AGENTS_FORMAT]
+            ["list-panes", "-s", "-t", "=s", "-F", AGENTS_FORMAT]
         );
         assert_eq!(
             slots_args(&ServerId::Ambient, "s"),
-            ["list-panes", "-s", "-t", "s", "-F", SLOTS_FORMAT]
+            ["list-panes", "-s", "-t", "=s", "-F", SLOTS_FORMAT]
         );
         assert_eq!(SLOTS_FORMAT, "#{pane_id}|#{@ae_slot}|#{@ae_agent}");
     }
@@ -2390,7 +2443,7 @@ mod tests {
                 "/tmp/ae.sock",
                 "show-environment",
                 "-t",
-                "my-feature",
+                "=my-feature",
                 "AE_SESSION"
             ]
         );
@@ -2556,7 +2609,7 @@ mod tests {
                 "list-panes",
                 "-s",
                 "-t",
-                "my-feature",
+                "=my-feature",
                 "-F",
                 "#{pane_dead} | #{@ae_slot} | #{pane_current_command}"
             ]
@@ -2828,11 +2881,11 @@ mod tests {
 
         // The verb has ONE owner; a second spelling here could drift from it.
         assert!(switch_command("hub").starts_with(FocusVerb::SwitchClient.as_str()));
-        assert_eq!(switch_command("hub"), "switch-client -t hub");
+        assert_eq!(switch_command("hub"), "switch-client -t =hub");
         let jump = jump_command("hub", "%12");
         assert_eq!(
             jump,
-            "switch-client -t hub ; select-window -t %12 ; select-pane -t %12"
+            "switch-client -t =hub ; select-window -t %12 ; select-pane -t %12"
         );
         assert!(jump.starts_with(&switch_command("hub")));
         let window = jump.find("select-window").expect("a window step");
@@ -2880,11 +2933,11 @@ mod tests {
         // word-split", and an argument vector is where that stays true.
         assert_eq!(
             focus_args(&ServerId::Ambient, FocusVerb::SwitchClient, "a b"),
-            vec!["switch-client", "-t", "a b"]
+            vec!["switch-client", "-t", "=a b"]
         );
         assert_eq!(
             focus_args(&ServerId::Ambient, FocusVerb::AttachSession, "s"),
-            vec!["attach-session", "-t", "s"]
+            vec!["attach-session", "-t", "=s"]
         );
     }
 
