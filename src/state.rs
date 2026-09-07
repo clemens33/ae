@@ -26,7 +26,7 @@ use crate::time::Timestamp;
 pub const REASON_MAX: usize = 180;
 
 /// `ae_emit_event`'s chat arm: a `chat` event's summary keeps its newlines and
-/// tabs and is capped at this many characters, not [`SUMMARY_CAP`].
+/// tabs and is capped at this many characters, not [`REASON_MAX`].
 pub const CHAT_SUMMARY_CAP: usize = 3500;
 
 /// The four states, exactly as the helper spells them.

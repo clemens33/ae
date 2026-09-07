@@ -329,7 +329,10 @@ fn needs_line(identity: &str, state: &str, detail: &str, age_secs: Option<i64>) 
         detail.split_once(": ").map_or_else(
             || (detail.to_owned(), format!(" ({})", brief::age(age_secs))),
             |(head, body)| {
-                if detail.chars().count() <= WIDTH.saturating_sub(prefix_width(&identity, &state)) {
+                let age_width = brief::age(age_secs).chars().count() + 4;
+                if detail.chars().count()
+                    <= WIDTH.saturating_sub(prefix_width(&identity, &state) + age_width)
+                {
                     (
                         format!("{head} ({}): {body}", brief::age(age_secs)),
                         String::new(),

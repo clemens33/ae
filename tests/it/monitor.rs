@@ -24,6 +24,8 @@ use super::cli::ae;
 use super::parity::Invocation;
 use super::parity::capture::raw;
 use super::phase2::{run_tmux, tmux_present};
+use ae::brief::{AgentLine, Card, Need};
+use ae::overview;
 
 /// A scratch dir short enough to hold a socket path — `sun_path` is 104 bytes
 /// on macOS and the usual temp dir eats most of it.
@@ -506,14 +508,71 @@ fn no_notify_prints_without_delivering_and_without_marking_anything_notified() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn the_charter_pins_the_watchdog_overview_turn_and_retires_the_model_sweep() {
     let charter = Path::new(env!("CARGO_MANIFEST_DIR")).join("contrib/aeorchestrator/CHARTER.md");
     let text = fs::read_to_string(&charter).expect("the charter ships with the repo");
     let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    let overview = "NEEDS YOU\n  aedev:colead   waiting-user  FOCUS export: enabled | disabled (recommend enabled because billing needs it) (12m)\n  dotfiles:lead  unanswered    ask ae-…-9d07aac0 from reviewer: review dashboard query (1d)\nWORKING\n  aedev     lead    landing names; inside; server1 (goal: #113 orchestrator…)\n  wikiskill lead    …\nQUIET\n  dotfiles2 (done 20m)   400 (done 2h)";
+    let cards = vec![
+        Card {
+            name: "aedev".to_owned(),
+            status: "running",
+            attention: None,
+            ae_version: None,
+            branch: None,
+            dirty: false,
+            work_dir: None,
+            goal: None,
+            topics: Vec::new(),
+            agents: vec![AgentLine {
+                name: "colead".to_owned(),
+                state: "waiting-user".to_owned(),
+                age_secs: Some(720),
+                reason: "FOCUS export: enable | defer (recommend enable for billing)".to_owned(),
+                attention: None,
+            }],
+            needs: vec![Need::Declared {
+                owner: "colead".to_owned(),
+                state: "waiting-user".to_owned(),
+                age_secs: Some(720),
+                reason: "FOCUS export: enable | defer (recommend enable for billing)".to_owned(),
+            }],
+            degraded: false,
+            memo_unreadable: false,
+        },
+        Card {
+            name: "dotfiles".to_owned(),
+            status: "running",
+            attention: None,
+            ae_version: None,
+            branch: None,
+            dirty: false,
+            work_dir: None,
+            goal: None,
+            topics: Vec::new(),
+            agents: vec![AgentLine {
+                name: "lead".to_owned(),
+                state: "working".to_owned(),
+                age_secs: Some(0),
+                reason: String::new(),
+                attention: None,
+            }],
+            needs: vec![Need::Unanswered {
+                kind: "ask".to_owned(),
+                reference: "ae-…-9d07aac0".to_owned(),
+                from: "reviewer".to_owned(),
+                to: "lead".to_owned(),
+                age_secs: 86_400,
+                question: "review dashboard query".to_owned(),
+            }],
+            degraded: false,
+            memo_unreadable: false,
+        },
+    ];
+    let overview = overview::render(&cards, "orchestrator");
     assert!(
-        text.contains(overview),
-        "the overview shape is the role's exact output contract"
+        text.contains(&overview),
+        "the overview shape is the role's exact output contract:\n{overview}"
     );
     assert!(
         text.contains("Do not send routine overviews through `say`"),

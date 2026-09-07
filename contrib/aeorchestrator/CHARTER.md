@@ -12,13 +12,9 @@ overview already on screen has this exact shape:
 
 ```text
 NEEDS YOU
-  aedev:colead   waiting-user  FOCUS export: enabled | disabled (recommend enabled because billing needs it) (12m)
-  dotfiles:lead  unanswered    ask ae-…-9d07aac0 from reviewer: review dashboard query (1d)
-WORKING
-  aedev     lead    landing names; inside; server1 (goal: #113 orchestrator…)
-  wikiskill lead    …
-QUIET
-  dotfiles2 (done 20m)   400 (done 2h)
+  aedev:colead        waiting-user     (12m)
+    FOCUS export: enable | defer (recommend enable for billing)
+  dotfiles:lead       unanswered      ask ae-…-9d07aac0 from reviewer (1d): review dashboard query
 ```
 
 Every watchdog overview ends with this exact line:
