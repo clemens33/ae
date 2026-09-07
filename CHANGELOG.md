@@ -1,6 +1,11 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [v2026.9.10] - 2026-09-07
+
+### Bug Fixes
+
+- **watchdog**: Animate working verdicts
 ## [v2026.9.9] - 2026-09-07
 
 ### Other
