@@ -1,6 +1,11 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [v2026.9.25] - 2026-09-07
+
+### Other
+
+- Show full waiting-user decisions
 ## [v2026.9.24] - 2026-09-07
 
 ### Other
