@@ -521,7 +521,7 @@ pub const WINDOW_STAMP_OPTION: &str = "@ae_theme";
 /// changes shape: the version leads both stamps, so a session or window carrying
 /// an older one is rewritten by the next watchdog cycle rather than left on the
 /// layout an older core wrote.
-pub const FORMAT_VERSION: &str = "3";
+pub const FORMAT_VERSION: &str = "4";
 
 /// What [`WINDOW_STAMP_OPTION`] is set to: the LOOK the window was dressed in,
 /// formats version first.
@@ -595,16 +595,27 @@ pub fn menu_title_style(palette: &Palette) -> String {
 fn window_entry(palette: &Palette, current: bool) -> String {
     let text = if current { palette.text } else { palette.dim };
     let weight = if current { "bold" } else { "nobold" };
+    // The monitor window is ae's own plumbing: its two panes are the watchdog
+    // and the event tail, read through `peek`, never watched. It stays a
+    // window — prefix 9 still reaches it — and leaves the bar.
     format!(
-        "#[range=window|#{{window_index}} fg={text} bg={panel} {weight}] \
+        "#{{?#{{==:#{{window_name}},{monitor}}},,\
+         #[range=window|#{{window_index}} fg={text} bg={panel} {weight}] \
          #{{window_index}}:#{{window_name}}#{{?window_zoomed_flag,Z,}}\
          #{{?#{{@ae_window_status}}, #{{@ae_window_status}},}} \
-         #[norange nobold fg={dim} bg={base}]",
+         #[norange nobold fg={dim} bg={base}]}}",
+        monitor = MONITOR_WINDOW,
         panel = palette.panel,
         dim = palette.dim,
         base = palette.base,
     )
 }
+
+/// The name of the monitor window a launch adds to every session.
+///
+/// One owner: `session_launch` creates the window by this name and the bar
+/// hides it by this name.
+pub const MONITOR_WINDOW: &str = "ae-monitor";
 
 /// The client width below which the status bar drops its path segment.
 ///
@@ -1121,6 +1132,17 @@ mod tests {
         }
     }
 
+    /// The monitor window is ae's plumbing and leaves the bar: every window
+    /// entry is guarded by its name, in every palette.
+    #[test]
+    fn the_monitor_window_is_not_drawn_on_line_zero() {
+        for palette in PALETTES {
+            let line = status_line_zero(&palette);
+            let guard = format!("#{{?#{{==:#{{window_name}},{}}},,", super::MONITOR_WINDOW);
+            assert_eq!(line.matches(guard.as_str()).count(), 2, "{line}");
+        }
+    }
+
     /// Every format literal this module hands tmux, for the guards below.
     fn every_format() -> Vec<String> {
         let mut out = vec![
@@ -1424,7 +1446,7 @@ mod tests {
     #[test]
     fn terminal_titles_are_part_of_the_drawn_layout() {
         let options = super::layout_options(&Look::DEFAULT);
-        assert_eq!(super::FORMAT_VERSION, "3");
+        assert_eq!(super::FORMAT_VERSION, "4");
         assert_eq!(
             options
                 .iter()

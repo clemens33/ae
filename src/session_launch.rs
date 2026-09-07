@@ -1872,8 +1872,13 @@ pub(crate) fn ensure_events_pane(server: &ServerId, session: &str, dir: &Path) -
         return Some(existing);
     }
     let command = vec![dir.join("events-tail").display().to_string()];
-    let pane = new_window_running(server, &format!("{session}:99"), "ae-monitor", &command)
-        .or_else(|| new_window_running(server, session, "ae-monitor", &command))?;
+    let pane = new_window_running(
+        server,
+        &format!("{session}:99"),
+        crate::theme::MONITOR_WINDOW,
+        &command,
+    )
+    .or_else(|| new_window_running(server, session, crate::theme::MONITOR_WINDOW, &command))?;
     for (option, value) in [
         ("@ae_agent", "_events".to_owned()),
         (
