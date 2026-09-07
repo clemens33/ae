@@ -946,6 +946,7 @@ fn launch(
         // Attaching may block for the client's whole lifetime; holding the
         // guard across it would make stop/end refuse while the user is there.
         drop(lifecycle.take());
+        crate::autoupgrade::schedule();
         if !env.attach {
             writeln!(
                 out,
@@ -1578,6 +1579,7 @@ fn build(
     }
 
     let _ = transport::run_tmux_op(&argv(&server, &Op::SelectPane { pane: &main_pane }));
+    crate::autoupgrade::schedule();
     if !env.attach {
         writeln!(
             out,
@@ -2847,6 +2849,43 @@ mod tests {
     use std::fmt::Write as _;
     use std::path::PathBuf;
 
+    #[test]
+    fn automatic_upgrade_hooks_follow_reattach_validation_and_fresh_launch_completion() {
+        let source = include_str!("session_launch.rs");
+        let reattach = source
+            .split_once("// ---- a session that is already running is reattached")
+            .and_then(|(_, tail)| tail.split_once("if seeds_orchestrator_config"))
+            .map(|(body, _)| body)
+            .expect("running-session branch");
+        let validated = reattach
+            .find("observe_agents")
+            .expect("ae-session validation");
+        let released = reattach
+            .find("drop(lifecycle.take())")
+            .expect("lifecycle guard release");
+        let scheduled = reattach
+            .find("autoupgrade::schedule")
+            .expect("reattach scheduling edge");
+        let attach = reattach.find("if !env.attach").expect("attach decision");
+        assert!(
+            validated < released && released < scheduled && scheduled < attach,
+            "{reattach}"
+        );
+
+        let completed = source
+            .split_once("// ---- the Telegram bridge ----")
+            .and_then(|(_, tail)| tail.split_once("// ---------------------------------------------------------------------------"))
+            .map(|(body, _)| body)
+            .expect("completed launch tail");
+        let selected = completed
+            .find("Op::SelectPane")
+            .expect("final pane selection");
+        let scheduled = completed
+            .find("autoupgrade::schedule")
+            .expect("fresh-launch scheduling edge");
+        let attach = completed.find("if !env.attach").expect("attach decision");
+        assert!(selected < scheduled && scheduled < attach, "{completed}");
+    }
     fn scratch(tag: &str) -> PathBuf {
         let dir = PathBuf::from(format!("/tmp/ae-launch-{}-{tag}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);

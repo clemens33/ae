@@ -630,11 +630,26 @@ pub fn run(
 
     let facts = gather(root, args.global.as_deref(), args.local.as_deref());
     let mut document = report(&facts);
+    append_autoupgrade_status(crate::shape::current(), &mut document);
     if let Some(target) = &args.refresh {
         refresh(root, target, args.global.as_deref(), &mut document);
     }
     write!(out, "{}", document.render())?;
     Ok(document.exit_code())
+}
+
+fn append_autoupgrade_status(shape: &crate::shape::Shape, document: &mut Report) {
+    let status = crate::autoupgrade::status(shape);
+    for (label, row) in [
+        ("auto-upgrade", status.policy),
+        ("upgrade-check", status.check),
+    ] {
+        document.push(
+            if row.warning { Level::Warn } else { Level::Ok },
+            label,
+            &row.detail,
+        );
+    }
 }
 
 /// Republish one session's assets, or every session's.

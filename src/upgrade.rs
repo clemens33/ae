@@ -24,6 +24,9 @@ pub const MANIFEST: &str = "SHA256SUMS";
 const TIMEOUT_CONNECT: Duration = Duration::from_secs(15);
 const TIMEOUT_RECV_RESPONSE: Duration = Duration::from_mins(1);
 const TIMEOUT_GLOBAL: Duration = Duration::from_mins(5);
+/// A frequent background check must never inherit the archive download's
+/// five-minute budget merely to discover that nothing changed.
+pub const TIMEOUT_LATEST_MANIFEST: Duration = Duration::from_secs(2);
 const MAX_MANIFEST_BYTES: u64 = 1 << 20;
 const MAX_ARCHIVE_BYTES: u64 = 64 << 20;
 
@@ -87,10 +90,14 @@ impl Pin {
     }
 }
 
-/// `<repository>/releases/<ref>/download/<asset>`.
+/// GitHub's moving latest route or immutable tagged release route.
 #[must_use]
 pub fn asset_url(release_ref: &str, asset: &str) -> String {
-    format!("{REPOSITORY}/releases/{release_ref}/download/{asset}")
+    if release_ref == "latest" {
+        format!("{REPOSITORY}/releases/latest/download/{asset}")
+    } else {
+        format!("{REPOSITORY}/releases/download/{release_ref}/{asset}")
+    }
 }
 
 /// The bundle name for one version and platform.
@@ -170,11 +177,52 @@ pub fn entries_ok(listing: &str, root: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// A release identified by one verified manifest entry, before its archive is
+/// downloaded. The archive route is immutable even when discovery used the
+/// moving `latest` route.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Candidate {
+    version: String,
+    platform: String,
+    archive: String,
+    expected_digest: String,
+    archive_url: String,
+}
+
+impl Candidate {
+    #[must_use]
+    pub(crate) fn version(&self) -> &str {
+        &self.version
+    }
+}
+
+/// A digest-verified and extracted release kept alive by its private scratch
+/// directory until the downloaded core finishes publication.
+pub(crate) struct PreparedRelease {
+    candidate: Candidate,
+    root: PathBuf,
+    _scratch: Scratch,
+}
+
+impl PreparedRelease {
+    #[must_use]
+    pub(crate) fn version(&self) -> &str {
+        self.candidate.version()
+    }
+}
+
+/// What the downloaded core answered in automatic mode.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum AutomaticInstall {
+    Published(crate::install::Published),
+    Superseded { candidate: String, current: String },
+}
+
 // ─── the locked client ───────────────────────────────────────────────────
 
 /// The SECOND `ureq::Agent` construction site in this crate, and the difference
 /// from [`crate::telegram`]'s is one setting.
-fn agent() -> ureq::Agent {
+fn agent(global: Duration) -> ureq::Agent {
     let crypto = std::sync::Arc::new(rustls::crypto::ring::default_provider());
     let tls = ureq::tls::TlsConfig::builder()
         .provider(ureq::tls::TlsProvider::Rustls)
@@ -186,10 +234,14 @@ fn agent() -> ureq::Agent {
         .max_redirects(3)
         .timeout_connect(Some(TIMEOUT_CONNECT))
         .timeout_recv_response(Some(TIMEOUT_RECV_RESPONSE))
-        .timeout_global(Some(TIMEOUT_GLOBAL))
+        .timeout_global(Some(global))
         .tls_config(tls)
         .build();
     ureq::Agent::new_with_config(config)
+}
+
+fn fetch_network(url: &str, cap: u64, timeout: Duration) -> Result<Vec<u8>, String> {
+    fetch(&agent(timeout), url, cap)
 }
 
 /// GET `url`, refusing a body larger than `cap`.
@@ -291,7 +343,15 @@ pub fn run(
         err.flush()?;
         return Ok(crate::entry::EXIT_USAGE);
     }
-    match upgrade(&home, out) {
+    let pin = match Pin::parse(crate::doors::target_version().as_deref()) {
+        Ok(pin) => pin,
+        Err(why) => {
+            writeln!(err, "ae: {why}")?;
+            err.flush()?;
+            return Ok(crate::entry::EXIT_FAILED);
+        }
+    };
+    match upgrade(&home, &pin, out) {
         Ok(published) => {
             for note in &published.notes {
                 writeln!(out, "ae: {note}")?;
@@ -345,44 +405,111 @@ fn namespace_escape(home: &Path) -> Option<String> {
 /// Download, verify, extract, publish.
 fn upgrade(
     home: &Path,
+    pin: &Pin,
     out: &mut impl std::io::Write,
 ) -> Result<crate::install::Published, String> {
-    let platform = current_platform()?;
-    let pin = Pin::parse(crate::doors::target_version().as_deref())?;
-    let release_ref = pin.release_ref();
-    let agent = agent();
+    let paths = crate::install::fixed_paths(home)?;
+    crate::install::prepare_home(&paths)?;
+    let _held = crate::autoupgrade::lock(&paths.home, crate::autoupgrade::MANUAL_LOCK_WAIT)
+        .map_err(|why| {
+            format!(
+                "another ae upgrade or automatic check is in progress: {why}; retry in a few minutes"
+            )
+        })?;
+    let candidate = discover(pin)?;
+    let _ = writeln!(out, "ae upgrade: fetching {}", candidate.archive);
+    let _ = out.flush();
+    let prepared = prepare(candidate)?;
+    delegate(&prepared.root, home, prepared.version(), false).and_then(|answer| match answer {
+        AutomaticInstall::Published(published) => Ok(published),
+        AutomaticInstall::Superseded { .. } => {
+            Err("manual upgrade unexpectedly used the automatic version guard".to_owned())
+        }
+    })
+}
 
+/// Discover a manually requested release from one manifest GET. Both latest
+/// discovery and an exact operator pin retain the ordinary transfer budget.
+pub(crate) fn discover(pin: &Pin) -> Result<Candidate, String> {
+    discover_manual_with(pin, current_platform()?, &mut fetch_network)
+}
+
+/// Automatic discovery is always latest and has a foreground-safe deadline.
+pub(crate) fn discover_automatic() -> Result<Candidate, String> {
+    discover_automatic_with(current_platform()?, &mut fetch_network)
+}
+
+fn discover_manual_with(
+    pin: &Pin,
+    platform: &str,
+    fetcher: &mut impl FnMut(&str, u64, Duration) -> Result<Vec<u8>, String>,
+) -> Result<Candidate, String> {
+    discover_with(pin, platform, TIMEOUT_GLOBAL, fetcher)
+}
+
+fn discover_automatic_with(
+    platform: &str,
+    fetcher: &mut impl FnMut(&str, u64, Duration) -> Result<Vec<u8>, String>,
+) -> Result<Candidate, String> {
+    discover_with(&Pin::Latest, platform, TIMEOUT_LATEST_MANIFEST, fetcher)
+}
+
+fn discover_with(
+    pin: &Pin,
+    platform: &str,
+    manifest_timeout: Duration,
+    fetcher: &mut impl FnMut(&str, u64, Duration) -> Result<Vec<u8>, String>,
+) -> Result<Candidate, String> {
+    let release_ref = pin.release_ref();
     let manifest_url = asset_url(&release_ref, MANIFEST);
-    let manifest_bytes = fetch(&agent, &manifest_url, MAX_MANIFEST_BYTES)?;
+    let manifest_bytes = fetcher(&manifest_url, MAX_MANIFEST_BYTES, manifest_timeout)?;
     let manifest = String::from_utf8(manifest_bytes)
         .map_err(|_| format!("{manifest_url} is not a text manifest"))?;
-    let version = match &pin {
+    let version = match pin {
         Pin::Latest => latest_version(&manifest, platform)?,
         Pin::Exact(version) => version.clone(),
     };
     let archive = archive_name(&version, platform);
-    let expected = expected_digest(&manifest, &archive)?;
+    let expected_digest = expected_digest(&manifest, &archive)?;
+    // The manifest may move; the candidate it named may not.
+    let archive_url = asset_url(&format!("v{version}"), &archive);
+    Ok(Candidate {
+        version,
+        platform: platform.to_owned(),
+        archive,
+        expected_digest,
+        archive_url,
+    })
+}
 
-    let _ = writeln!(out, "ae upgrade: fetching {archive}");
-    let _ = out.flush();
-    let archive_bytes = fetch(
-        &agent,
-        &asset_url(&release_ref, &archive),
-        MAX_ARCHIVE_BYTES,
-    )?;
-    if crate::install::sha256_hex(&archive_bytes) != expected {
+/// Download, digest-check and extract one already-discovered candidate.
+pub(crate) fn prepare(candidate: Candidate) -> Result<PreparedRelease, String> {
+    prepare_with(candidate, &mut fetch_network)
+}
+
+fn prepare_with(
+    candidate: Candidate,
+    fetcher: &mut impl FnMut(&str, u64, Duration) -> Result<Vec<u8>, String>,
+) -> Result<PreparedRelease, String> {
+    let archive_bytes = fetcher(&candidate.archive_url, MAX_ARCHIVE_BYTES, TIMEOUT_GLOBAL)?;
+    if crate::install::sha256_hex(&archive_bytes) != candidate.expected_digest {
         return Err(format!(
-            "checksum mismatch for {archive}; nothing was installed"
+            "checksum mismatch for {}; nothing was installed",
+            candidate.archive
         ));
     }
-
     let scratch = Scratch::new()?;
-    let archive_path = scratch.path().join(&archive);
+    let archive_path = scratch.path().join(&candidate.archive);
     std::fs::write(&archive_path, &archive_bytes)
-        .map_err(|why| format!("could not stage {archive}: {why}"))?;
-    let root = format!("ae-{version}-{platform}");
-    extract(&archive_path, scratch.path(), &root)?;
-    delegate(&scratch.path().join(&root), home, &version)
+        .map_err(|why| format!("could not stage {}: {why}", candidate.archive))?;
+    let root_name = format!("ae-{}-{}", candidate.version, candidate.platform);
+    extract(&archive_path, scratch.path(), &root_name)?;
+    let root = scratch.path().join(root_name);
+    Ok(PreparedRelease {
+        candidate,
+        root,
+        _scratch: scratch,
+    })
 }
 
 /// Hand the extracted bundle to ITS OWN core, exactly as the bootstrap does.
@@ -403,10 +530,15 @@ fn upgrade(
 ///
 /// A core too old to know `_install` would fail here; none ever was, because
 /// `_install` predates `upgrade`.
-fn delegate(root: &Path, home: &Path, version: &str) -> Result<crate::install::Published, String> {
+fn delegate(
+    root: &Path,
+    home: &Path,
+    version: &str,
+    newer_only: bool,
+) -> Result<AutomaticInstall, String> {
     let core = root.join(crate::shape::CORE);
-    let out =
-        run_core(&core, root, home).map_err(|why| format!("could not run the new core: {why}"))?;
+    let out = run_core(&core, root, home, newer_only)
+        .map_err(|why| format!("could not run the new core: {why}"))?;
     let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
     if !out.status.success() {
@@ -422,21 +554,45 @@ fn delegate(root: &Path, home: &Path, version: &str) -> Result<crate::install::P
     }
     // Its notes are the operator's, and the caller prints them. The `ae: `
     // prefix is this process's own convention, added when they are printed.
+    if newer_only
+        && let Some(line) = stdout
+            .lines()
+            .find_map(|line| line.strip_prefix("ae: automatic candidate "))
+        && let Some((candidate, current)) = line.split_once(" skipped; current ae is ")
+    {
+        return Ok(AutomaticInstall::Superseded {
+            candidate: candidate.to_owned(),
+            current: current.to_owned(),
+        });
+    }
     let notes = stdout
         .lines()
         .filter_map(|line| line.strip_prefix("ae: "))
         .filter(|line| !line.starts_with("installed "))
         .map(ToOwned::to_owned)
         .collect();
-    Ok(crate::install::Published {
+    Ok(AutomaticInstall::Published(crate::install::Published {
         version_dir: home.join(".ae").join(crate::shape::VERSIONS).join(version),
         version: version.to_owned(),
         notes,
-    })
+    }))
+}
+
+/// Hand an automatic candidate to its own core with the late newer-only flag.
+pub(crate) fn delegate_automatic(
+    prepared: &PreparedRelease,
+    home: &Path,
+) -> Result<AutomaticInstall, String> {
+    delegate(&prepared.root, home, prepared.version(), true)
 }
 
 /// A PRODUCT CROSSING of `clippy.toml`'s `Command` deny — the handover door.
-fn run_core(core: &Path, root: &Path, home: &Path) -> std::io::Result<std::process::Output> {
+fn run_core(
+    core: &Path,
+    root: &Path,
+    home: &Path,
+    newer_only: bool,
+) -> std::io::Result<std::process::Output> {
     #[allow(
         clippy::disallowed_types,
         reason = "upgrade's handover door: the digest-verified new core performs its own publish, because the migration chain that publish runs belongs to the version being installed"
@@ -446,8 +602,11 @@ fn run_core(core: &Path, root: &Path, home: &Path) -> std::io::Result<std::proce
         .arg(crate::cli::INSTALL)
         .arg("--from")
         .arg(root)
-        .env("HOME", home)
-        .output()
+        .env("HOME", home);
+    if newer_only {
+        command.arg(crate::install::NEWER_ONLY);
+    }
+    command.output()
 }
 
 /// List, prove, then unpack.
@@ -562,5 +721,90 @@ mod tests {
                 "accepted a hostile listing: {hostile}"
             );
         }
+    }
+
+    #[test]
+    fn latest_discovery_is_bounded_and_pins_the_archive_to_its_tag() {
+        let digest = "a".repeat(64);
+        let manifest = format!("{digest}  ae-2026.10.2-darwin-arm64.tar.gz\n");
+        let mut calls = Vec::new();
+        let candidate = discover_automatic_with("darwin-arm64", &mut |url, cap, timeout| {
+            calls.push((url.to_owned(), cap, timeout));
+            Ok(manifest.as_bytes().to_vec())
+        })
+        .expect("candidate");
+        assert_eq!(candidate.version(), "2026.10.2");
+        assert_eq!(
+            candidate.archive_url,
+            "https://github.com/clemens33/ae/releases/download/v2026.10.2/ae-2026.10.2-darwin-arm64.tar.gz",
+            "latest is only discovery; archive is immutable"
+        );
+        assert_eq!(
+            calls,
+            vec![(
+                "https://github.com/clemens33/ae/releases/latest/download/SHA256SUMS".to_owned(),
+                MAX_MANIFEST_BYTES,
+                TIMEOUT_LATEST_MANIFEST
+            )]
+        );
+    }
+
+    #[test]
+    fn manual_latest_discovery_keeps_the_full_transfer_budget() {
+        let digest = "a".repeat(64);
+        let manifest = format!("{digest}  ae-2026.10.2-darwin-arm64.tar.gz\n");
+        let candidate = discover_manual_with(&Pin::Latest, "darwin-arm64", &mut |_, _, timeout| {
+            assert_eq!(timeout, TIMEOUT_GLOBAL);
+            Ok(manifest.as_bytes().to_vec())
+        })
+        .expect("candidate");
+        assert_eq!(candidate.version(), "2026.10.2");
+    }
+
+    #[test]
+    fn exact_discovery_uses_the_tag_for_manifest_and_archive() {
+        let digest = "b".repeat(64);
+        let manifest = format!("{digest}  ae-2026.9.7-linux-x86_64-musl.tar.gz\n");
+        let mut called = String::new();
+        let candidate = discover_manual_with(
+            &Pin::Exact("2026.9.7".to_owned()),
+            "linux-x86_64-musl",
+            &mut |url, _, timeout| {
+                called = url.to_owned();
+                assert_eq!(timeout, TIMEOUT_GLOBAL);
+                Ok(manifest.as_bytes().to_vec())
+            },
+        )
+        .expect("candidate");
+        assert_eq!(
+            called,
+            "https://github.com/clemens33/ae/releases/download/v2026.9.7/SHA256SUMS"
+        );
+        assert_eq!(
+            candidate.archive_url,
+            "https://github.com/clemens33/ae/releases/download/v2026.9.7/ae-2026.9.7-linux-x86_64-musl.tar.gz"
+        );
+    }
+
+    #[test]
+    fn a_bad_archive_digest_refuses_before_scratch_or_extraction() {
+        let candidate = Candidate {
+            version: "2026.10.2".to_owned(),
+            platform: "darwin-arm64".to_owned(),
+            archive: "ae-2026.10.2-darwin-arm64.tar.gz".to_owned(),
+            expected_digest: "0".repeat(64),
+            archive_url: "https://example.invalid/archive".to_owned(),
+        };
+        let mut calls = 0;
+        let failed = prepare_with(candidate, &mut |_, cap, timeout| {
+            calls += 1;
+            assert_eq!(cap, MAX_ARCHIVE_BYTES);
+            assert_eq!(timeout, TIMEOUT_GLOBAL);
+            Ok(b"not the recorded archive".to_vec())
+        })
+        .err()
+        .unwrap_or_default();
+        assert_eq!(calls, 1);
+        assert!(failed.contains("checksum mismatch"), "{failed}");
     }
 }

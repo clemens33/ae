@@ -48,6 +48,17 @@ impl Install {
         );
         rig.write_installer("#!/bin/sh\necho \"installer ran: $AE_VERSION\"\n");
         rig.write_manifest(&format!("{0}  ae-core\n{0}  install\n", "0".repeat(64)));
+        let command = rig.public_command();
+        assert!(
+            command
+                .parent()
+                .is_some_and(|parent| std::fs::create_dir_all(parent).is_ok()),
+            "the public command directory"
+        );
+        assert!(
+            std::os::unix::fs::symlink(rig.core(), command).is_ok(),
+            "the public command pointer"
+        );
         rig
     }
 
@@ -57,6 +68,34 @@ impl Install {
 
     fn manifest(&self) -> PathBuf {
         self.version_dir.join("SHA256SUMS")
+    }
+
+    fn public_command(&self) -> PathBuf {
+        self.home.join(".local").join("bin").join("ae")
+    }
+
+    /// Replace the public pointer with a private executable that records the
+    /// detached argv and whether the scheduler leaked its caller's pin.
+    fn replace_public_pointer_with_marker(&self, record: &Path, done: &Path) {
+        use std::os::unix::fs::PermissionsExt as _;
+        let command = self.public_command();
+        // Never write through the helper link: remove it before writing the
+        // marker in its place, exactly as every fixture replacement must.
+        let _ = std::fs::remove_file(&command);
+        let script = format!(
+            "#!/bin/sh\n\
+             version=absent\n\
+             if [ \"${{AE_VERSION+x}}\" = x ]; then version=present; fi\n\
+             printf '%s\\t%s\\n' \"$1\" \"$version\" >> \"{}\"\n\
+             : > \"{}\"\n",
+            record.display(),
+            done.display()
+        );
+        assert!(std::fs::write(&command, script).is_ok(), "the marker");
+        assert!(
+            std::fs::set_permissions(&command, std::fs::Permissions::from_mode(0o755)).is_ok(),
+            "the executable marker"
+        );
     }
 
     fn write_manifest(&self, text: &str) {
@@ -114,6 +153,7 @@ impl Install {
             .env_remove("CONFIG_FILE")
             .env_remove("AE_TMUX_SERVER")
             .env_remove("AE_TMUX_SERVER_KIND")
+            .env("AE_NO_AUTOSTART", "1")
             .env("HOME", &self.home)
             .env("TMUX_TMPDIR", &self.scratch)
             .current_dir(&self.scratch);
@@ -300,6 +340,7 @@ fn a_version_directory_named_for_another_version_refuses() {
     let out = std::process::Command::new(wrong.join("ae-core"))
         .env("HOME", &rig.home)
         .env_remove("AE_HOME")
+        .env("AE_NO_AUTOSTART", "1")
         .arg("list")
         .output()
         .unwrap_or_else(|why| panic!("the planted core should run: {why}"));
@@ -403,6 +444,14 @@ fn an_internal_entry_pays_the_install_gate_and_publishes_nothing() {
         .map(std::iter::Iterator::count)
         .unwrap_or_default();
     assert_eq!(published, 0, "a refused render published {published} links");
+
+    let (code, stdout, stderr) = rig.run(&[], &["_autoupgrade"]);
+    assert_eq!(code, Some(2), "{stdout}{stderr}");
+    assert!(stderr.contains("SHA256SUMS"), "{stderr}");
+    assert!(
+        !rig.home.join(".ae").join("upgrade.check").exists(),
+        "a refused automatic check published state"
+    );
 }
 
 /// **B1, the other half.**
@@ -418,6 +467,82 @@ fn a_session_helper_pays_the_install_gate_too() {
         stderr.contains("SHA256SUMS"),
         "a helper must refuse for the SAME reason the public word does: {stderr}"
     );
+}
+
+#[test]
+fn a_suppressed_installed_list_has_zero_automatic_upgrade_effects() {
+    let rig = Install::plant("autoupgrade-suppressed");
+    let record = rig.scratch.join("autoupgrade.argv");
+    let done = rig.scratch.join("autoupgrade.done");
+    rig.replace_public_pointer_with_marker(&record, &done);
+
+    let (code, stdout, stderr) = rig.run(&[], &["list"]);
+    assert_eq!(code, Some(0), "list failed: {stdout}{stderr}");
+    assert!(!record.exists(), "the suppressed hook ran the marker");
+    assert!(!done.exists(), "the suppressed child completed");
+    for name in [
+        ae::autoupgrade::LOCK_FILE,
+        ae::autoupgrade::CHECK_FILE,
+        ae::autoupgrade::LOG_FILE,
+    ] {
+        assert!(
+            !rig.home.join(".ae").join(name).exists(),
+            "the suppressed hook created {name}"
+        );
+    }
+}
+
+#[test]
+fn an_enabled_installed_list_starts_one_pinless_bounded_child() {
+    let rig = Install::plant("autoupgrade-enabled");
+    let record = rig.scratch.join("autoupgrade.argv");
+    let done = rig.scratch.join("autoupgrade.done");
+    rig.replace_public_pointer_with_marker(&record, &done);
+    // macOS serializes first execution of freshly written scripts under
+    // parallel load. Prime that test-only platform check before timing the
+    // detached path; a real public pointer is an already-published native core.
+    let (direct_code, direct_out, direct_err) = rig.run_as(&rig.public_command(), &[], &["probe"]);
+    assert_eq!(
+        direct_code,
+        Some(0),
+        "direct marker failed: {direct_out}{direct_err}"
+    );
+    assert!(std::fs::remove_file(&record).is_ok(), "clear direct record");
+    assert!(std::fs::remove_file(&done).is_ok(), "clear direct done");
+    assert!(
+        std::fs::write(
+            rig.home.join(".ae").join("config"),
+            "[workspace]\nauto_upgrade = on\n",
+        )
+        .is_ok(),
+        "the global policy"
+    );
+
+    let (code, stdout, stderr) = rig.run(
+        &[("AE_NO_AUTOSTART", "0"), ("AE_VERSION", "9999.1.1")],
+        &["list"],
+    );
+    assert_eq!(code, Some(0), "list failed: {stdout}{stderr}");
+    let limit = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while !done.exists() && std::time::Instant::now() < limit {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(done.exists(), "the detached marker did not finish in 2s");
+    assert_eq!(
+        std::fs::read_to_string(&record).unwrap_or_default(),
+        "_autoupgrade\tabsent\n",
+        "one fixed child argv; scheduled children inherit no AE_VERSION"
+    );
+    for name in [
+        ae::autoupgrade::LOCK_FILE,
+        ae::autoupgrade::CHECK_FILE,
+        ae::autoupgrade::LOG_FILE,
+    ] {
+        assert!(
+            !rig.home.join(".ae").join(name).exists(),
+            "the marker-only child unexpectedly created {name}"
+        );
+    }
 }
 
 /// **B2.**

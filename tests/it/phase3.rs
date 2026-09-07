@@ -1729,6 +1729,9 @@ fn criterion_3_the_places_this_crate_can_read_the_world_are_the_inventoried_ones
             // all read the world through — so this single file, not three, is
             // the inventoried reader for all of them.
             "src/archive/store.rs".to_owned(),
+            // The bounded, non-following reads of hostile `upgrade.check` and
+            // `upgrade.log` state. Policy itself stays behind config.rs's door.
+            "src/autoupgrade.rs".to_owned(),
             // Compact's own door: the stored request body a handover reply
             // names, read after its regular-file gate. An arbitrary path, not a
             // session file, which is why it is compact's and not the store's.

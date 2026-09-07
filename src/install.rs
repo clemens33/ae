@@ -38,6 +38,11 @@ pub const JOURNAL_FORMAT: &str = "3";
 /// The usage line `_install` prints when its argv is not `--from <dir>`.
 pub const USAGE: &str = "Usage: ae _install --from <extracted-bundle-dir>";
 
+/// The automatic handover's extra flag. Manual installs deliberately never
+/// pass it: an operator may reinstall or downgrade, while a stale background
+/// candidate may do neither.
+pub const NEWER_ONLY: &str = "--newer-only";
+
 // ─── the doors ───────────────────────────────────────────────────────────
 
 /// The filesystem reads this module makes, each named once.
@@ -127,6 +132,20 @@ pub fn fixed_paths(home_var: &Path) -> Result<Paths, String> {
     validate_home(&home)?;
     path_components_ok(&link, "ae command path")?;
     Ok(Paths { home, link })
+}
+
+/// Prepare the fixed ae home so a caller can place a lock inside it, using the
+/// same symlink-resistant path checks publication itself relies on.
+///
+/// # Errors
+///
+/// The home or command destination is unsafe, or the home cannot be created.
+pub(crate) fn prepare_home(paths: &Paths) -> Result<(), String> {
+    validate_home(&paths.home)?;
+    validate_bin_destination(&paths.link, &paths.home)?;
+    mkdir_all_plain(&paths.home)?;
+    // Creating the home can make a dangling ancestor of the command path live.
+    validate_bin_destination(&paths.link, &paths.home)
 }
 
 /// `$HOME` with one trailing slash removed — `/` itself is left alone.
@@ -294,6 +313,28 @@ pub fn is_version(version: &str) -> bool {
         && parts
             .iter()
             .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
+}
+
+/// Compare two `CalVer` words component by component without parsing them into
+/// fixed-width integers. Release sequence numbers are untrusted manifest text;
+/// lexical length comparison after trimming leading zeroes stays defined even
+/// when a component is wider than `u128`.
+#[must_use]
+pub fn compare_versions(left: &str, right: &str) -> Option<std::cmp::Ordering> {
+    if !is_version(left) || !is_version(right) {
+        return None;
+    }
+    for (left, right) in left.split('.').zip(right.split('.')) {
+        let left = left.trim_start_matches('0');
+        let right = right.trim_start_matches('0');
+        let left = if left.is_empty() { "0" } else { left };
+        let right = if right.is_empty() { "0" } else { right };
+        match left.len().cmp(&right.len()).then_with(|| left.cmp(right)) {
+            std::cmp::Ordering::Equal => {}
+            other => return Some(other),
+        }
+    }
+    Some(std::cmp::Ordering::Equal)
 }
 
 /// SHA-256 of `bytes`, lowercase hex — the spelling both `sha256sum` and
@@ -559,6 +600,27 @@ pub struct Published {
     pub notes: Vec<String>,
 }
 
+/// The automatic publisher either committed the candidate or found that the
+/// public pointer had caught up while the candidate was being prepared.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AutomaticPublish {
+    /// The candidate committed normally.
+    Published(Published),
+    /// The current public pointer was equal or newer under the install lock.
+    Superseded {
+        /// The candidate that was refused.
+        candidate: String,
+        /// The current public version that won the race.
+        current: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PublishMode {
+    Manual,
+    NewerOnly,
+}
+
 /// Publish `bundle` under `paths`, atomically, and repoint the command link.
 ///
 /// # Errors
@@ -567,12 +629,31 @@ pub struct Published {
 /// journal is PRESERVED and the message says so — the journal is the
 /// retryability, so removing it is the irreversible step.
 pub fn publish(bundle: &Bundle, paths: &Paths) -> Result<Published, String> {
-    validate_home(&paths.home)?;
-    validate_bin_destination(&paths.link, &paths.home)?;
-    mkdir_all_plain(&paths.home)?;
-    // B14: creating the home can make a dangling ancestor of the command path
-    // live.
-    validate_bin_destination(&paths.link, &paths.home)?;
+    match publish_with_mode(bundle, paths, PublishMode::Manual)? {
+        AutomaticPublish::Published(published) => Ok(published),
+        AutomaticPublish::Superseded { .. } => {
+            Err("manual publication unexpectedly used the automatic version guard".to_owned())
+        }
+    }
+}
+
+/// Publish an automatic candidate only when it is still strictly newer than
+/// the public pointer at the final serialized decision point.
+///
+/// # Errors
+///
+/// The same publication failures as [`publish`], plus a malformed public
+/// pointer that cannot safely be compared.
+pub fn publish_newer(bundle: &Bundle, paths: &Paths) -> Result<AutomaticPublish, String> {
+    publish_with_mode(bundle, paths, PublishMode::NewerOnly)
+}
+
+fn publish_with_mode(
+    bundle: &Bundle,
+    paths: &Paths,
+    mode: PublishMode,
+) -> Result<AutomaticPublish, String> {
+    prepare_home(paths)?;
     // ONE PUBLISHER AT A TIME, from here until after the version sweep. Held
     // across the commit, not released by it — see [`LOCK`].
     let _held = crate::store::lock(&paths.lock(), LOCK_WAIT).map_err(|why| {
@@ -582,6 +663,21 @@ pub fn publish(bundle: &Bundle, paths: &Paths) -> Result<Published, String> {
         )
     })?;
     recover_existing(paths)?;
+
+    // THE LATE AUTOMATIC GUARD. Discovery and archive verification happen
+    // outside this lock. A manual publisher can therefore move the public
+    // pointer while an automatic candidate downloads. Re-read it here, under
+    // the install lock and before this attempt creates its journal or changes
+    // a version/session/link, so the stale candidate becomes a clean no-op.
+    if mode == PublishMode::NewerOnly {
+        let current = current_public_version(paths)?;
+        if compare_versions(&bundle.version, &current) != Some(std::cmp::Ordering::Greater) {
+            return Ok(AutomaticPublish::Superseded {
+                candidate: bundle.version.clone(),
+                current,
+            });
+        }
+    }
 
     let (link_had, link_old) = current_link(&paths.link);
     let mut journal = Journal {
@@ -620,7 +716,7 @@ pub fn publish(bundle: &Bundle, paths: &Paths) -> Result<Published, String> {
                 &paths.link,
                 &bundle.version,
             ));
-            Ok(published)
+            Ok(AutomaticPublish::Published(published))
         }
         Err(why) => {
             if let Err(unwound) = replay(&journal, &path) {
@@ -632,6 +728,39 @@ pub fn publish(bundle: &Bundle, paths: &Paths) -> Result<Published, String> {
             Err(why)
         }
     }
+}
+
+/// The version named by the public command pointer.
+pub(crate) fn current_public_version(paths: &Paths) -> Result<String, String> {
+    let target = std::fs::read_link(&paths.link).map_err(|why| {
+        format!(
+            "cannot read the current ae command pointer {}: {why}",
+            paths.link.display()
+        )
+    })?;
+    let expected = paths.versions();
+    let Some(version_dir) = target.parent() else {
+        return Err(format!(
+            "the current ae command pointer has no version directory: {}",
+            target.display()
+        ));
+    };
+    let Some(version) = version_dir.file_name().and_then(std::ffi::OsStr::to_str) else {
+        return Err(format!(
+            "the current ae command pointer has no readable version: {}",
+            target.display()
+        ));
+    };
+    if target.file_name() != Some(std::ffi::OsStr::new(crate::shape::CORE))
+        || version_dir.parent() != Some(expected.as_path())
+        || !is_version(version)
+    {
+        return Err(format!(
+            "the current ae command pointer is not a published version: {}",
+            target.display()
+        ));
+    }
+    Ok(version.to_owned())
 }
 
 /// Everything between the journal's creation and its removal.
@@ -1024,23 +1153,27 @@ pub fn run(
     out: &mut impl std::io::Write,
     err: &mut impl std::io::Write,
 ) -> crate::Result<u8> {
-    let [flag, dir] = tail else {
-        writeln!(err, "{USAGE}")?;
-        err.flush()?;
-        return Ok(crate::entry::EXIT_USAGE);
+    let (dir, newer_only) = match tail {
+        [flag, dir] if flag == "--from" => (dir, false),
+        [flag, dir, mode] if flag == "--from" && mode == NEWER_ONLY => (dir, true),
+        _ => {
+            writeln!(err, "{USAGE}")?;
+            err.flush()?;
+            return Ok(crate::entry::EXIT_USAGE);
+        }
     };
-    if flag != "--from" {
-        writeln!(err, "{USAGE}")?;
-        err.flush()?;
-        return Ok(crate::entry::EXIT_USAGE);
-    }
     let Some(home) = crate::doors::home() else {
         writeln!(err, "ae: HOME is not set, so there is nowhere to install.")?;
         err.flush()?;
         return Ok(crate::entry::EXIT_USAGE);
     };
-    match install_from(Path::new(dir), &home) {
-        Ok(published) => {
+    let result = if newer_only {
+        install_from_newer(Path::new(dir), &home)
+    } else {
+        install_from(Path::new(dir), &home).map(AutomaticPublish::Published)
+    };
+    match result {
+        Ok(AutomaticPublish::Published(published)) => {
             for note in &published.notes {
                 writeln!(out, "ae: {note}")?;
             }
@@ -1065,6 +1198,14 @@ pub fn run(
             out.flush()?;
             Ok(0)
         }
+        Ok(AutomaticPublish::Superseded { candidate, current }) => {
+            writeln!(
+                out,
+                "ae: automatic candidate {candidate} skipped; current ae is {current}"
+            )?;
+            out.flush()?;
+            Ok(0)
+        }
         Err(why) => {
             writeln!(err, "ae: {why}")?;
             err.flush()?;
@@ -1082,6 +1223,17 @@ pub fn install_from(dir: &Path, home: &Path) -> Result<Published, String> {
     let paths = fixed_paths(home)?;
     let bundle = verify(dir)?;
     publish(&bundle, &paths)
+}
+
+/// Verify an automatic bundle, then apply the late strictly-newer guard.
+///
+/// # Errors
+///
+/// Whatever [`verify`] or [`publish_newer`] refused, verbatim.
+pub fn install_from_newer(dir: &Path, home: &Path) -> Result<AutomaticPublish, String> {
+    let paths = fixed_paths(home)?;
+    let bundle = verify(dir)?;
+    publish_newer(&bundle, &paths)
 }
 
 #[cfg(test)]
@@ -1168,6 +1320,30 @@ mod tests {
         ] {
             assert!(!is_version(bad), "accepted {bad}");
         }
+    }
+
+    #[test]
+    fn calver_order_is_numeric_and_cannot_overflow() {
+        use std::cmp::Ordering;
+
+        assert_eq!(
+            compare_versions("2026.10.1", "2026.9.99"),
+            Some(Ordering::Greater)
+        );
+        assert_eq!(
+            compare_versions("2026.09.001", "2026.9.1"),
+            Some(Ordering::Equal)
+        );
+        assert_eq!(
+            compare_versions("2026.9.1", "2027.1.1"),
+            Some(Ordering::Less)
+        );
+        let huge = format!("2026.9.{}", "9".repeat(256));
+        assert_eq!(
+            compare_versions(&huge, "2026.9.999"),
+            Some(Ordering::Greater)
+        );
+        assert_eq!(compare_versions("bad", "2026.9.1"), None);
     }
 
     #[test]

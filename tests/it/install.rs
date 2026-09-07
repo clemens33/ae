@@ -56,6 +56,20 @@ impl Rig {
         dir
     }
 
+    /// A candidate bundle whose core is this build, so invoking it proves the
+    /// automatic-only install contract belongs to the downloaded core.
+    fn product_bundle(&self) -> PathBuf {
+        let dir = self.scratch.join(format!("ae-{}-fixture", ae::VERSION));
+        assert!(std::fs::create_dir_all(&dir).is_ok(), "a bundle root");
+        assert!(
+            std::fs::copy(env!("CARGO_BIN_EXE_ae"), dir.join("ae-core")).is_ok(),
+            "the candidate core"
+        );
+        write_exec(&dir.join("install"), "#!/bin/sh\necho bootstrap\n");
+        rewrite_manifest(&dir);
+        dir
+    }
+
     fn versions(&self) -> PathBuf {
         self.home.join(".ae").join("versions")
     }
@@ -90,6 +104,7 @@ impl Rig {
             .env_remove("CONFIG_FILE")
             .env_remove("AE_VERSION")
             .env_remove("TMUX")
+            .env("AE_NO_AUTOSTART", "1")
             .env("HOME", &self.home)
             .args(["_install", "--from", &from.to_string_lossy()])
             .stdout(std::process::Stdio::null())
@@ -103,16 +118,21 @@ impl Rig {
     }
 
     fn run(&self, argv: &[&str]) -> (Option<i32>, String, String) {
+        self.run_as(Path::new(env!("CARGO_BIN_EXE_ae")), argv)
+    }
+
+    fn run_as(&self, program: &Path, argv: &[&str]) -> (Option<i32>, String, String) {
         #[allow(
             clippy::disallowed_types,
             reason = "the black-box door: an install is what a real process does to a real HOME"
         )]
-        let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_ae"));
+        let mut command = std::process::Command::new(program);
         let out = command
             .env_remove("AE_HOME")
             .env_remove("CONFIG_FILE")
             .env_remove("AE_VERSION")
             .env_remove("TMUX")
+            .env("AE_NO_AUTOSTART", "1")
             .env("HOME", &self.home)
             .args(argv)
             .output()
@@ -613,6 +633,7 @@ fn upgrade_refuses_a_bad_pin_before_it_reaches_the_network() {
         .env_remove("AE_HOME")
         .env_remove("CONFIG_FILE")
         .env("HOME", &rig.home)
+        .env("AE_NO_AUTOSTART", "1")
         .env("AE_VERSION", "not-a-version")
         .arg("upgrade")
         .output()
@@ -627,6 +648,170 @@ fn upgrade_refuses_a_bad_pin_before_it_reaches_the_network() {
         !present(&rig.versions()),
         "a refused pin published something"
     );
+}
+
+#[test]
+fn automatic_publication_refuses_a_candidate_superseded_before_the_install_lock() {
+    let rig = Rig::new("automatic-superseded");
+    let current = rig.bundle("2026.10.2");
+    let older = rig.bundle("2026.10.1");
+    let (code, _, stderr) = rig.install(&current);
+    assert_eq!(code, Some(0), "base install failed: {stderr}");
+
+    let (code, stdout, stderr) = rig.run(&[
+        "_install",
+        "--from",
+        &older.to_string_lossy(),
+        ae::install::NEWER_ONLY,
+    ]);
+    assert_eq!(code, Some(0), "guard failed noisily: {stderr}");
+    assert!(stdout.contains("candidate 2026.10.1 skipped"), "{stdout}");
+    assert_eq!(
+        read_link(&rig.link()),
+        rig.version_dir("2026.10.2").join("ae-core")
+    );
+    assert!(
+        !present(&rig.version_dir("2026.10.1")),
+        "the stale attempt mutated the version fleet"
+    );
+    assert!(!present(&rig.journal()), "the stale attempt journalled");
+
+    // The same older candidate remains legal when the operator explicitly
+    // installs it: manual downgrade/reinstall semantics do not inherit the
+    // automatic guard.
+    let (code, _, stderr) = rig.install(&older);
+    assert_eq!(code, Some(0), "manual downgrade failed: {stderr}");
+    assert_eq!(
+        read_link(&rig.link()),
+        rig.version_dir("2026.10.1").join("ae-core")
+    );
+}
+
+#[test]
+fn automatic_publication_accepts_a_strictly_newer_candidate() {
+    let rig = Rig::new("automatic-newer");
+    let old = rig.bundle("2026.9.99");
+    let newer = rig.bundle("2026.10.1");
+    assert_eq!(rig.install(&old).0, Some(0));
+    let (code, stdout, stderr) = rig.run(&[
+        "_install",
+        "--from",
+        &newer.to_string_lossy(),
+        ae::install::NEWER_ONLY,
+    ]);
+    assert_eq!(code, Some(0), "automatic install failed: {stdout}{stderr}");
+    assert_eq!(
+        read_link(&rig.link()),
+        rig.version_dir("2026.10.1").join("ae-core")
+    );
+}
+
+#[test]
+fn downloaded_candidate_core_enforces_both_sides_of_the_newer_only_guard() {
+    let newer = Rig::new("downloaded-newer");
+    let old = newer.bundle("2026.1.1");
+    let candidate = newer.product_bundle();
+    assert_eq!(newer.install(&old).0, Some(0));
+    let (code, stdout, stderr) = newer.run_as(
+        &candidate.join("ae-core"),
+        &[
+            "_install",
+            "--from",
+            &candidate.to_string_lossy(),
+            ae::install::NEWER_ONLY,
+        ],
+    );
+    assert_eq!(code, Some(0), "candidate failed: {stdout}{stderr}");
+    assert_eq!(
+        read_link(&newer.link()),
+        newer.version_dir(ae::VERSION).join("ae-core"),
+        "the downloaded candidate published itself"
+    );
+
+    let stale = Rig::new("downloaded-stale");
+    let future = stale.bundle("9999.1.1");
+    let candidate = stale.product_bundle();
+    assert_eq!(stale.install(&future).0, Some(0));
+    let (code, stdout, stderr) = stale.run_as(
+        &candidate.join("ae-core"),
+        &[
+            "_install",
+            "--from",
+            &candidate.to_string_lossy(),
+            ae::install::NEWER_ONLY,
+        ],
+    );
+    assert_eq!(code, Some(0), "guard failed: {stdout}{stderr}");
+    assert!(stdout.contains("skipped"), "{stdout}");
+    assert_eq!(
+        read_link(&stale.link()),
+        stale.version_dir("9999.1.1").join("ae-core"),
+        "the stale downloaded core must not move the public pointer"
+    );
+    assert!(
+        !present(&stale.version_dir(ae::VERSION)),
+        "the stale downloaded core mutated the version fleet"
+    );
+    assert!(!present(&stale.journal()), "the stale core journalled");
+}
+
+#[test]
+fn installed_doctor_warns_when_the_last_successful_check_is_stale() {
+    let rig = Rig::new("doctor-stale-check");
+    let candidate = rig.product_bundle();
+    let (code, _, stderr) = rig.install(&candidate);
+    assert_eq!(code, Some(0), "product install failed: {stderr}");
+    assert!(
+        std::fs::write(
+            rig.home.join(".ae").join("config"),
+            "[workspace]\nauto_upgrade = on\n",
+        )
+        .is_ok(),
+        "global config"
+    );
+    assert!(
+        std::fs::write(
+            rig.home.join(".ae").join(ae::autoupgrade::CHECK_FILE),
+            "format=1\nattempted_at=1\nseen=2026.1.1\nresult=current\n",
+        )
+        .is_ok(),
+        "stale check"
+    );
+
+    let before = std::fs::read_to_string(rig.home.join(".ae").join(ae::autoupgrade::CHECK_FILE))
+        .unwrap_or_default();
+    let (code, stdout, stderr) = rig.run_as(&rig.link(), &["version"]);
+    assert_eq!(code, Some(0), "version failed: {stderr}");
+    assert!(
+        stdout.contains("auto-upgrade: on (global policy"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("upgrade-check:") && stdout.contains("; stale"),
+        "{stdout}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(rig.home.join(".ae").join(ae::autoupgrade::CHECK_FILE))
+            .unwrap_or_default(),
+        before,
+        "version must not update check state"
+    );
+    assert!(
+        !rig.home
+            .join(".ae")
+            .join(ae::autoupgrade::LOCK_FILE)
+            .exists(),
+        "version must not schedule a checker"
+    );
+
+    let (code, stdout, stderr) = rig.run_as(&rig.link(), &[ae::cli::DOCTOR]);
+    assert!(matches!(code, Some(0 | 1)), "doctor crashed: {stderr}");
+    let row = stdout
+        .lines()
+        .find(|line| line.contains("upgrade-check"))
+        .unwrap_or_default();
+    assert!(row.starts_with("WARN"), "{stdout}");
+    assert!(row.ends_with("; stale"), "{stdout}");
 }
 
 // ─── the bash bootstrap ──────────────────────────────────────────────────
@@ -797,7 +982,8 @@ cat "$AE_FIXTURE_RELEASE/$name" > "$out"
             .env("TMPDIR", self.scratch.join("tmp"))
             .env("AE_FIXTURE_RELEASE", self.scratch.join("release"))
             .env("AE_FIXTURE_LOG", self.log())
-            .env("AE_FIXTURE_REACHED", self.reached());
+            .env("AE_FIXTURE_REACHED", self.reached())
+            .env("AE_NO_AUTOSTART", "1");
         match pin {
             Some(version) => command.env("AE_VERSION", version),
             None => command.env_remove("AE_VERSION"),

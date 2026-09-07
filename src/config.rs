@@ -700,6 +700,60 @@ pub fn read_workspace_keys(
     read_workspace_keys_with_identity_sections(global, local, keys).0
 }
 
+/// Read one global `[workspace]` key while preserving an explicit malformed
+/// value. Generic config overlays intentionally skip malformed entries; a
+/// default-on safety policy must distinguish those entries from absence.
+///
+/// # Errors
+///
+/// The selected file could not be read, or an explicit occurrence of `key`
+/// does not use the shared config entry grammar.
+pub fn read_global_workspace_key(file: &Path, key: &str) -> Result<Option<String>, String> {
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: reads the same selected global INI config as the frozen config parser — see clippy.toml"
+    )]
+    let text = match std::fs::read_to_string(file) {
+        Ok(text) => text,
+        Err(why) if why.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(why) => return Err(format!("could not read global config: {why}")),
+    };
+    let mut section = String::new();
+    let mut found = None;
+    for raw in text.lines() {
+        let line = raw.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Some(name) = section_header(line) {
+            section = name;
+            continue;
+        }
+        if section != "workspace" || line.starts_with('#') {
+            continue;
+        }
+        if key_claim(line) == Some(key) {
+            found = Some(
+                parse_entry(line)
+                    .filter(|(parsed, _)| *parsed == key)
+                    .map(|(_, value)| value)
+                    .ok_or_else(|| format!("{key} has an invalid value")),
+            );
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix(key)
+            && (rest.is_empty()
+                || rest
+                    .bytes()
+                    .next()
+                    .is_some_and(|byte| byte.is_ascii_whitespace()))
+        {
+            found = Some(Err(format!("{key} is malformed")));
+        }
+    }
+    found.transpose()
+}
+
 /// Read `[workspace]` keys and report whether the local file carries legacy
 /// identity sections. The latter are metadata for compatibility notices only:
 /// callers that own identity globally must not parse or overlay those rows.

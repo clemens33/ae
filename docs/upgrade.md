@@ -75,3 +75,35 @@ migrated, repointed and pruned the real fleet.
 A live upgrade probe therefore runs against a sandboxed `$HOME` — its own `HOME`, its own
 `AE_HOME` pointing at that home's `.ae`, and its own tmux socket. That is the same isolation
 `ae-dev` gives for everything else, arranged so the one door `ae-dev` cannot close stays shut.
+
+## Automatic checks
+
+The release that introduces this updater must be installed manually once; every later
+auto-capable release can hand its own publication to the next downloaded core.
+
+An installed core schedules quiet automatic checks during validated use and after a
+watchdog verdict cycle. Checkout and displaced cores never do. The machine-wide policy is
+global `[workspace] auto_upgrade = on|off`; absence means `on`, project-local config gets no
+vote, and an invalid explicit value disables scheduling and is reported by `ae version` and
+`ae doctor`. `AE_NO_AUTOSTART=1` suppresses scheduling. Status reads never trigger a check.
+
+Scheduling only starts a fixed detached `_autoupgrade` argv through the existing process
+door. It has null standard streams, clears inherited `AE_VERSION`, and is reaped by a small
+wait thread; a direct `_autoupgrade` ignores any pin because only manual `ae upgrade` reads
+one. The child takes `.ae-upgrade.lock` without waiting, rechecks policy and cadence under
+that lock, and stamps `upgrade.check` before its one manifest request. Successful/current
+checks wait 900 seconds; failed or interrupted attempts back off 3600 seconds. Bounded
+`upgrade.check` and `upgrade.log` are the diagnostic surface.
+
+Manual `ae upgrade` shares the outer lock for its whole operation and waits for it. The
+automatic latest manifest request has a two-second global deadline; manual latest and exact
+pins retain the normal transfer budget. Latest is only discovery: archives are fetched from
+their immutable `releases/download/v<V>/...` route and verified before delegation.
+
+Only automatic publication carries the internal newer-only flag. The downloaded core takes
+the existing install lock, recovers an interrupted publish, then repeats the numeric
+strictly-newer comparison before it creates a journal or mutates anything. A manual upgrade
+still permits an explicit reinstall or downgrade. The publisher then migrates and relinks
+every session before moving the public command pointer, and prunes only afterward. Running
+agent harnesses stay alive; helpers and companion daemons move to the new core, subject to
+the same partial-failure diagnostics as a manual publish.

@@ -41,7 +41,7 @@ ae end|rm [-f] [--purge-history|--keep-history] [name]
                        to ~/.ae/archive/<session-uuid>/, then remove ae state. KEEPS the
                        per-session claude/codex conversation files by default (token history);
                        --purge-history deletes them AND writes no archive.
-ae version             Show version
+ae version             Show version, tmux floor, auto-upgrade policy, and last check
 ae help                Show short help
 ```
 
@@ -285,14 +285,19 @@ AE_VERSION=2026.8.2 ae upgrade
 
 `ae upgrade` runs ahead of the version-directory gate, so a broken installed generation can
 still repair itself. It downloads the selected release, verifies its checksum before
-extraction, publishes the new immutable version read-only under `~/.ae/versions/<V>/`, and
-atomically repoints `~/.local/bin/ae` directly at that version's `ae-core` — all of it the
-core's own code. The `install` script published beside `ae-core` is the BOOTSTRAP, for a
-machine that has no ae yet; nothing executes it on ae's behalf.
+extraction, and hands publication to that release's own core. Publication creates the
+immutable `~/.ae/versions/<V>/`, migrates every session, repoints its recorded core and helper
+links, restarts companion daemons, then atomically moves `~/.local/bin/ae` to the new core.
+Existing agent harnesses stay running. The `install` script beside `ae-core` is only the
+bootstrap for a machine with no ae yet.
 
-Stopped session directories are untouched and consume the current version on
-their next resume. Running sessions are reported by name as deferred until
-stop and resume; upgrade never hot-rewrites loaded helpers or daemon bodies.
+Installed ae also checks quietly during validated launch/reattach, list, brief and
+orchestrator use, and after watchdog verdict cycles. `[workspace] auto_upgrade = off` in the
+global config disables this machine-wide; absence means `on`, project-local config cannot
+override it, and `AE_NO_AUTOSTART=1` suppresses scheduling. Automatic publication accepts only
+a strictly newer candidate. It uses the same verified download, downloaded-core publication,
+migration and recovery path as manual upgrade. `ae version` and `ae doctor` inspect policy and
+the bounded last-check record without triggering a check.
 
 ## `ae next` (alias `ae jump`)
 
@@ -415,8 +420,9 @@ Below the floor both refuse at exit 1, naming what was found, what is required, 
 server was asked and how to get it. Neither ever starts or restarts a server for you.
 
 `ae list`, `ae version`, `ae doctor` and `ae upgrade` keep working below the floor —
-`version` prints the reading on its second line, `doctor` carries it as a `tmux-floor`
-row, and a publish warns without refusing. That is how a machine below the floor sees the
+`version` prints the tmux reading on its second line and automatic-upgrade status on its third
+and fourth, `doctor` carries the corresponding `tmux-floor`, `auto-upgrade` and `upgrade-check`
+rows, and a publish warns without refusing. That is how a machine below the floor sees the
 problem and leaves it behind.
 
 Ubuntu 24.04 ships tmux 3.4, which clears the floor exactly, so `apt install tmux` is
@@ -441,7 +447,8 @@ Pre-flight + post-upgrade self-test. Walks a fixed checklist of `OK / WARN / FAI
 returns non-zero if anything failed: the two hard dependencies (`tmux`, `git`), whether the
 config parses and names a startup roster whose profiles resolve to real executables, whether
 the state root's sessions are coherent, and whether each session's recorded core agrees with
-the binary answering right now.
+the binary answering right now. Its read-only `auto-upgrade` and `upgrade-check` rows report
+global policy plus missing, stale, failed or malformed check state; they never schedule work.
 
 The report is the core's. Its bash-version row is fed through a `--bash-major` flag rather
 than the core probing `bash --version` itself, which would report whatever is first on
@@ -454,11 +461,11 @@ permanently OK**: `flock` and `timeout` are no longer ae's dependencies (the cor
 its own `flock(2)` and times out in its own code), and there is no portability-shim layer
 left to name in a `userland` row.
 
-An upgrade needs no helper refresh: stop/resume is the generation-migration
-boundary, while running watchdogs retain their loaded body until stopped and
-restarted. `doctor --refresh` is an explicit repair/development mutation; do
-not run it unscoped while sessions are running. After `git pull`, run `just
-install` (checkout mode), or use tagged `ae upgrade`:
+An upgrade needs no helper refresh: publication migrates and relinks every session and restarts
+its companion daemons before moving the public command pointer. Existing agent harnesses retain
+their loaded process. `doctor --refresh` is an explicit repair/development mutation; do not run
+it unscoped while sessions are running. After `git pull`, run `just install` (checkout mode), or
+use tagged `ae upgrade`:
 
 ```bash
 ae doctor --refresh         # all sessions

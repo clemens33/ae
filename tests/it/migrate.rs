@@ -131,6 +131,7 @@ impl Rig {
             .env_remove("CONFIG_FILE")
             .env_remove("AE_VERSION")
             .env_remove("TMUX")
+            .env("AE_NO_AUTOSTART", "1")
             .env("HOME", &self.home)
             .args(["_install", "--from", &from.to_string_lossy()])
             .output()

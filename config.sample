@@ -57,6 +57,9 @@ main = lead
 workers = colead
 layout = lead-pair
 watchdog = true
+# Installed ae checks for a newer release during normal use. This policy is
+# global-only: a project's .ae/config cannot enable or disable software updates.
+# auto_upgrade = on
 # The session's LOOK, applied at launch and refreshed by the watchdog. Both are
 # session-scoped: a non-ae session on the same tmux server keeps your own theme.
 # palette = darcula (the default) | a (neutral dark) | b (warmer neutrals).

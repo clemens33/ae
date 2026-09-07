@@ -34,6 +34,12 @@ one symlink, no separate wrapper or pointer file to keep in sync. Switching vers
 is one atomic rename of that symlink. Make sure `~/.local/bin` is on your `PATH`, then run
 `ae doctor`. Set `AE_VERSION=2026.8.2` to pin a release.
 
+Installed ae checks for strictly newer releases during ordinary use and applies
+them quietly in a detached process. Set global `[workspace] auto_upgrade = off`
+to disable this machine-wide; absence means `on`. Project-local config cannot
+override software-update policy. `ae version` and `ae doctor` show the policy
+and last result without starting a check.
+
 | Platform | Bundle | Status |
 |---|---|---|
 | macOS Apple Silicon | `darwin-arm64` | supported |
@@ -224,7 +230,7 @@ Everything else is **optional**, never required for core commands:
 | `ae telegram` | machine-global bridge: fleet events to your Telegram chat, replies route back | a configured ae core (no extra CLI deps) |
 | the orchestrator seat ([contrib/aeorchestrator](contrib/aeorchestrator)) | a dedicated single-seat local session named `orchestrator`: prints a periodic fleet overview and relays only explicit human instructions through an audited bare-text helper | an agent CLI; ae seeds its config |
 
-Both daemons are Rust, start to finish: the watchdog pane runs core `_watchdog-run`, the bridge runs core `_telegram-run`, and `ae watchdog`/`ae telegram` are core operations. Neither needs `jq` or `curl`. The orchestrator's deterministic sweep is the core entry `ae _monitor sweep`; the seat invokes it with `--no-notify` so its heartbeat advances without sending changes through `say`. It was a Python sidecar (`contrib/aemonitor`) until the core took the job, and that was the product's last Python. Autostart controls are per component: set `watchdog = false` in workspace config to disable the workspace watchdog; set `enabled = false` in Telegram config to disable Telegram; set `AE_NO_AUTOSTART=1` to suppress the Telegram bridge on launch.
+Both daemons are Rust, start to finish: the watchdog pane runs core `_watchdog-run`, the bridge runs core `_telegram-run`, and `ae watchdog`/`ae telegram` are core operations. Neither needs `jq` or `curl`. The orchestrator's deterministic sweep is the core entry `ae _monitor sweep`; the seat invokes it with `--no-notify` so its heartbeat advances without sending changes through `say`. It was a Python sidecar (`contrib/aemonitor`) until the core took the job, and that was the product's last Python. Autostart controls are per component: set `watchdog = false` in workspace config to disable the workspace watchdog; set `enabled = false` in Telegram config to disable Telegram; set global `auto_upgrade = off` to disable automatic releases; set `AE_NO_AUTOSTART=1` to suppress all three.
 
 There is no coreless mode to fall back to: the public `ae` command is the core binary
 itself, so there is nothing separate to bind. See **[VISION.md](VISION.md)**.
@@ -236,12 +242,12 @@ ae upgrade
 ```
 
 `ae upgrade` downloads the latest release (or an `AE_VERSION` pin), verifies the checksum
-before extraction, publishes the new version read-only under `~/.ae/versions/<V>/`, and
-atomically repoints `~/.local/bin/ae` directly at its `ae-core`. It does all of that
-itself: the publication is the core's own code, not a sibling script it hands the
-terminal to. A stopped session consumes the current version on its next
-resume. A running session is reported by name and stays pinned until it is stopped and
-resumed; upgrades never hot-rewrite running sessions.
+before extraction, then hands publication to the downloaded core. It publishes the new
+version read-only under `~/.ae/versions/<V>/`; migrates every session; repoints every
+session's core record, helpers, watchdog and Telegram bridge; and only then atomically
+moves `~/.local/bin/ae` to the new core. Existing agent harnesses are never restarted.
+Partial migration/relink failures are diagnosed with the same journal and recovery path
+for manual and automatic upgrades. See [docs/upgrade.md](docs/upgrade.md).
 
 ## Requirements
 

@@ -11,6 +11,7 @@
 
 pub mod archive;
 pub mod attention;
+pub mod autoupgrade;
 pub mod brief;
 pub mod cli;
 mod compact;
@@ -97,6 +98,14 @@ pub fn version_line() -> String {
     format!("ae {VERSION}")
 }
 
+/// The read-only automatic-upgrade rows shared by every version entry.
+fn write_autoupgrade_status(out: &mut impl Write) -> Result<()> {
+    let status = autoupgrade::status(shape::current());
+    writeln!(out, "auto-upgrade: {}", status.policy.detail)?;
+    writeln!(out, "upgrade-check: {}", status.check.detail)?;
+    Ok(())
+}
+
 /// The text `ae --help` prints.
 #[must_use]
 pub fn help_text() -> String {
@@ -113,7 +122,7 @@ pub fn help_text() -> String {
          Follow a session's event log\n\n\
          Options:\n  \
          -h, --help     Print help\n  \
-         -V, --version  Print version\n",
+         -V, --version  Print version and local status\n",
         version_line(),
         cli::REQUESTS,
         cli::EVENTS_TAIL
@@ -183,10 +192,12 @@ fn invocation_dir() -> std::path::PathBuf {
 /// let (mut out, mut err) = (Vec::new(), Vec::new());
 /// let code = ae::run(&["--version".to_owned()], &mut out, &mut err)?;
 /// assert_eq!(code, 0);
-/// // Two lines: the core version, then this machine's tmux against the floor.
+/// // Four lines: core version, tmux floor, auto-upgrade policy, last check.
 /// let text = String::from_utf8(out).unwrap();
 /// assert!(text.starts_with(&(ae::version_line() + "\n")));
 /// assert!(text.lines().nth(1).unwrap_or_default().starts_with("tmux "));
+/// assert!(text.lines().nth(2).unwrap_or_default().starts_with("auto-upgrade: "));
+/// assert!(text.lines().nth(3).unwrap_or_default().starts_with("upgrade-check: "));
 /// assert!(err.is_empty());
 /// # Ok::<(), ae::Error>(())
 /// ```
@@ -219,6 +230,7 @@ pub fn run(args: &[String], out: &mut impl Write, err: &mut impl Write) -> Resul
                 },
             };
             writeln!(out, "{}", tmux_floor::summary(&probe))?;
+            write_autoupgrade_status(out)?;
             out.flush()?;
             return Ok(0);
         }
@@ -309,33 +321,50 @@ fn resolve_facts(shape: &shape::Shape, err: &mut impl Write) -> Result<Option<en
 
 /// The ordinary argv dispatch: [`cli::Request::parse`] and the world it needs.
 fn run_dispatch(args: &[String], out: &mut impl Write, err: &mut impl Write) -> Result<u8> {
+    let request = cli::Request::parse(args);
     // Only a listing needs a source, and `next` only needs one once its argv has
     // been accepted: a refused word must not pay for a tmux scan of every
     // session before it can say so, which is what frozen's parse-then-scan order
     // already guaranteed.
-    let wants_world = match cli::Request::parse(args) {
+    let wants_world = match &request {
         // The sweep reads the same world `list` renders — that IS its input.
         cli::Request::List(_) | cli::Request::Monitor { .. } => true,
-        cli::Request::Next { tail } => next::parse(&tail).is_ok(),
+        cli::Request::Next { tail } => next::parse(tail).is_ok(),
         cli::Request::Orchestrator { tail } => {
-            orchestrator::parse(&tail).is_ok_and(|args| args.popup)
+            orchestrator::parse(tail).is_ok_and(|args| args.popup)
         }
         // A brief is a reading of the same world, so a refused argv must not pay
         // for the scan either.
-        cli::Request::Brief { tail } => brief::parse(&tail).is_ok(),
+        cli::Request::Brief { tail } => brief::parse(tail).is_ok(),
         _ => false,
     };
+    if schedules_automatic_upgrade(&request) {
+        autoupgrade::schedule();
+    }
     if wants_world && let Some(root) = state_root() {
         let (snapshot, world) = current_world(&root);
         // The picker is the one caller that needs BOTH halves: the world for
         // the rows, and the snapshot for the server a session off this one was
         // recorded on.
-        if let cli::Request::Orchestrator { tail } = cli::Request::parse(args) {
-            return run_orchestrator(&tail, &snapshot, &world, err);
+        if let cli::Request::Orchestrator { tail } = &request {
+            return run_orchestrator(tail, &snapshot, &world, err);
         }
         return run_with(args, Some(&world), out, err);
     }
     run_with(args, None, out, err)
+}
+
+/// Commands whose fully accepted grammar proves ordinary interactive use.
+/// Launch/reattach has its own edge after its deeper name/config validation.
+fn schedules_automatic_upgrade(request: &cli::Request) -> bool {
+    match request {
+        cli::Request::List(_) => true,
+        cli::Request::Brief { tail } => brief::parse(tail).is_ok(),
+        cli::Request::Orchestrator { tail } => {
+            orchestrator::parse(tail).is_ok_and(|args| args.popup)
+        }
+        _ => false,
+    }
 }
 
 /// `ae orchestrator --popup` — gate the tmux version, then hand tmux the menu.
@@ -613,6 +642,7 @@ fn run_entry(
         }
         entry::Route::Version => {
             writeln!(out, "{}", version_line())?;
+            write_autoupgrade_status(out)?;
             0
         }
         // STDERR and 0, as the glue had it: the text is a diagnostic, and a
@@ -1493,6 +1523,7 @@ pub fn run_with(
         // Asked-for output goes to stdout.
         cli::Request::Version => {
             writeln!(out, "{}", version_line())?;
+            write_autoupgrade_status(out)?;
             request.exit_code().unwrap_or(0)
         }
         cli::Request::Help => {
@@ -1676,6 +1707,7 @@ pub fn run_with(
         cli::Request::CheckDeps { tail } => doctor::check_deps(tail, err)?,
         cli::Request::ShimsRender { dir, tail } => doctor::shims_render(dir, tail, err)?,
         cli::Request::Install { tail } => install::run(tail, out, err)?,
+        cli::Request::Autoupgrade { tail } => autoupgrade::run(tail),
         cli::Request::Run { dir, slot, print } => run::run(dir, slot, *print, out, err)?,
         cli::Request::Roster { dir, tail } => identity::roster(dir, tail, out, err)?,
         cli::Request::ManifestRender { dir, tail } => render::run_manifest(dir, tail, out, err)?,
@@ -2042,7 +2074,44 @@ mod tests {
             floor.contains(&crate::tmux_floor::REQUIRED.to_string()),
             "{text}"
         );
+        assert_eq!(
+            lines.next(),
+            Some("auto-upgrade: unavailable (checkout builds never auto-upgrade)"),
+            "{text}"
+        );
+        assert_eq!(
+            lines.next(),
+            Some("upgrade-check: not read for this binary shape"),
+            "{text}"
+        );
         assert_eq!(lines.next(), None, "{text}");
+    }
+
+    #[test]
+    fn only_valid_list_brief_and_picker_requests_schedule_automatic_upgrade() {
+        let accepted = [
+            argv(&["list"]),
+            argv(&["list", "--all"]),
+            argv(&["brief"]),
+            argv(&["brief", "--all", "--since", "4h"]),
+            argv(&["orchestrator", "--popup"]),
+        ];
+        for args in accepted {
+            let request = crate::cli::Request::parse(&args);
+            assert!(super::schedules_automatic_upgrade(&request), "{args:?}");
+        }
+
+        let refused_or_unrelated = [
+            argv(&["list", "unexpected"]),
+            argv(&["brief", "--since", "bad"]),
+            argv(&["orchestrator", "--unknown"]),
+            argv(&["next"]),
+            argv(&[crate::cli::MONITOR, "sweep"]),
+        ];
+        for args in refused_or_unrelated {
+            let request = crate::cli::Request::parse(&args);
+            assert!(!super::schedules_automatic_upgrade(&request), "{args:?}");
+        }
     }
 
     #[test]

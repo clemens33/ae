@@ -208,6 +208,9 @@ pub const SHIMS_RENDER: &str = "_shims-render";
 /// The publication half of the installer: `_install --from <bundle-dir>`.
 pub const INSTALL: &str = "_install";
 
+/// The detached installed-only automatic release check.
+pub const AUTOUPGRADE: &str = "_autoupgrade";
+
 /// What an argv asks the binary to do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Request {
@@ -652,6 +655,11 @@ pub enum Request {
         /// text is the installer's own.
         tail: Vec<String>,
     },
+    /// `_autoupgrade` — the silent detached release checker.
+    Autoupgrade {
+        /// Must be empty; the checker accepts no caller-controlled input.
+        tail: Vec<String>,
+    },
     /// `_shims-render <session-dir>` — republish one session's helper shims.
     ShimsRender {
         /// The session directory.
@@ -813,6 +821,9 @@ impl Request {
             },
             Some(RUN) => Self::parse_run(&args[1..]),
             Some(INSTALL) => Self::Install {
+                tail: args[1..].to_vec(),
+            },
+            Some(AUTOUPGRADE) => Self::Autoupgrade {
                 tail: args[1..].to_vec(),
             },
             Some(SHIMS_RENDER) => match &args[1..] {
@@ -1282,6 +1293,7 @@ impl Request {
             | Self::Rename { .. }
             | Self::CheckDeps { .. }
             | Self::Install { .. }
+            | Self::Autoupgrade { .. }
             | Self::ShimsRender { .. }
             | Self::Run { .. }
             | Self::State { .. }

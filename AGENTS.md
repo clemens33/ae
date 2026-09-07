@@ -314,6 +314,7 @@ orchestrator = profile  # the seat ae orchestrator runs
 main = name
 workers = name, name2      # optional, omit for single-agent start
 layout = vertical
+auto_upgrade = on        # installed ae checks quietly; global config only
 palette = darcula          # darcula (default), a = neutral dark, b = warmer
 icons = on                 # off swaps the glyph set for its ASCII fallback
 theme = on                 # off keeps YOUR status line; ae still fills @ae_*

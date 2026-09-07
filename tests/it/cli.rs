@@ -680,8 +680,8 @@ pub(crate) fn bounded(
     None
 }
 
-/// `ae --version` answers in TWO lines: which ae, then which tmux it would run
-/// its surfaces with and whether the floor admits that tmux.
+/// `ae --version` answers in four lines: ae, tmux floor, automatic-upgrade
+/// policy, and last-check state. All four are read-only diagnostics.
 #[test]
 fn version_prints_the_version_line_and_the_tmux_floor_and_exits_zero() {
     let out = ae()
@@ -703,7 +703,17 @@ fn version_prints_the_version_line_and_the_tmux_floor_and_exits_zero() {
         floor.contains(&ae::tmux_floor::REQUIRED.to_string()),
         "the line names the floor it is measured against: {stdout}"
     );
-    assert_eq!(lines.len(), 2, "{stdout}");
+    assert_eq!(
+        lines.get(2).copied(),
+        Some("auto-upgrade: unavailable (checkout builds never auto-upgrade)"),
+        "{stdout}"
+    );
+    assert_eq!(
+        lines.get(3).copied(),
+        Some("upgrade-check: not read for this binary shape"),
+        "{stdout}"
+    );
+    assert_eq!(lines.len(), 4, "{stdout}");
 }
 
 #[test]

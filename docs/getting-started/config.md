@@ -23,6 +23,7 @@ main = lead
 workers = colead
 layout = lead-pair
 watchdog = true
+# auto_upgrade = on
 
 [prompt]
 instructions = "Always write tests. Prefer TypeScript."
@@ -90,6 +91,7 @@ Old seat files that still carry `[profiles]`/`[roster]` are ignored for identity
 | `watchdog`    | Auto-start the watchdog (`true` / `false`)            | `true`        |
 | `orchestrator` | Mark this session as the fleet overview seat (`true`); grants its panes the bare human-authority `relay` helper | `false`       |
 | `sweep` | Persist this orchestrator's sweep cadence in seconds (`0` disables; positive values below `60` become `60`) | `AE_WATCHDOG_SWEEP_SEC`, then `300` |
+| `auto_upgrade` | Let an installed ae quietly check for and apply strictly newer releases (`on` / `off`); global config only | `on` |
 | `palette` | `darcula` (the JetBrains dark), `a` (neutral dark), `b` (warmer neutrals) | `darcula` |
 | `icons`   | `off` draws the ASCII fallback instead of the glyph set | `on`          |
 | `theme`   | `off` leaves your own status line, pane borders and menu styles alone | `on`  |
@@ -97,6 +99,14 @@ Old seat files that still carry `[profiles]`/`[roster]` are ignored for identity
 
 Set `orchestrator = true` only in the dedicated overview seat. It authorizes
 unenveloped `relay` delivery, whose target treats the text as human input.
+
+`auto_upgrade` is machine policy, so ae reads it only from `~/.ae/config`;
+a project's `.ae/config` cannot override it. Absence means `on`. Any explicit
+value other than `on` or `off`, including an empty value, is invalid and leaves
+automatic upgrades disabled until corrected. Checkout builds never
+auto-upgrade, and `AE_NO_AUTOSTART=1` suppresses scheduling along with the other
+companions. `ae version` and `ae doctor` report policy plus last check/result;
+they never trigger a check.
 
 Names show in pane borders and are how agents address each other. Each window
 keeps its first agent's name as its stable tmux routing name; later splits do

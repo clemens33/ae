@@ -1627,6 +1627,7 @@ impl Cycle<'_> {
             &live,
             err,
         )
+        .inspect(|()| schedule_automatic_upgrade())
     }
 
     /// The cycle's last step: compose the strips in this session's look, then
@@ -2206,6 +2207,12 @@ impl Cycle<'_> {
         let message = tmux::format_literal(&format!("[ae watchdog] {agent} {text}"));
         let _ = transport::display_message(self.server, &session_id, &message);
     }
+}
+
+/// A completed verdict cycle is a foreground-safe scheduling edge. The 100 ms
+/// motion ticker never calls this; cadence prevents redundant later children.
+fn schedule_automatic_upgrade() {
+    crate::autoupgrade::schedule();
 }
 
 /// The agents one window entry draws, in pane order.
@@ -3434,6 +3441,30 @@ mod tests {
         assert!(
             close.contains("carry.look = Some(look);"),
             "and a successful read is remembered for the next failed one"
+        );
+    }
+
+    #[test]
+    fn automatic_upgrade_scheduling_is_on_a_verdict_cycle_never_the_motion_ticker() {
+        let source = include_str!("watchdog_daemon.rs");
+        let cycle = source
+            .split_once("fn run(&self, carry:")
+            .and_then(|(_, tail)| tail.split_once("/// The cycle's last step"))
+            .map(|(body, _)| body)
+            .expect("Cycle::run is bounded by its close documentation");
+        assert_eq!(
+            cycle.matches("schedule_automatic_upgrade()").count(),
+            1,
+            "one scheduling edge follows each completed verdict cycle"
+        );
+        let ticker = source
+            .split_once("fn wait_between_cycles(")
+            .and_then(|(_, tail)| tail.split_once("/// The branch publication"))
+            .map(|(body, _)| body)
+            .expect("the motion ticker is bounded by tick_pane_duties");
+        assert!(
+            !ticker.contains("autoupgrade"),
+            "the 100 ms motion ticker must never schedule a child"
         );
     }
 

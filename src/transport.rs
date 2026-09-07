@@ -226,9 +226,15 @@ fn spawn<A: AsRef<std::ffi::OsStr>>(
         command.stdin(std::process::Stdio::null());
         command.stdout(std::process::Stdio::null());
         command.stderr(std::process::Stdio::null());
-        // The child is deliberately not waited for, so it is reaped by init
-        // when it finishes.
-        return command.spawn().ok().map(|_child| std::process::Output {
+        let mut child = command.spawn().ok()?;
+        // A long-lived watchdog schedules many short children, and lifecycle
+        // callers share this detached leg for their supervisors. Dropping the
+        // handles leaves zombies while their parent lives, so one tiny waiter
+        // owns each handle while the detached child still outlives its caller.
+        std::thread::spawn(move || {
+            let _ = child.wait();
+        });
+        return Some(std::process::Output {
             status: std::process::ExitStatus::default(),
             stdout: Vec::new(),
             stderr: Vec::new(),
@@ -355,6 +361,12 @@ pub(crate) fn run_say(notice: &crate::monitor::Notice) -> bool {
 /// code starts a process that must OUTLIVE it, and the program is FIXED here to
 /// `nohup`.
 pub(crate) fn run_detached(argv: &crate::lifecycle::DetachedArgv) -> bool {
+    spawn("nohup", argv.as_args(), &[], Streams::Detached, None).is_some()
+}
+
+/// The automatic-upgrade leg of the existing detached process door. The argv
+/// is sealed by `autoupgrade`; this layer only adds fixed `nohup` and streams.
+pub(crate) fn run_autoupgrade_detached(argv: &crate::autoupgrade::DetachedArgv) -> bool {
     spawn("nohup", argv.as_args(), &[], Streams::Detached, None).is_some()
 }
 

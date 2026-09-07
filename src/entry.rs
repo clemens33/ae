@@ -66,6 +66,9 @@ main = lead
 workers = colead
 layout = lead-pair
 watchdog = true
+# Installed ae checks for newer releases during validated ordinary use. This
+# machine policy is global-only; a project's .ae/config cannot override it.
+# auto_upgrade = on
 
 [prompt]
 # ae already injects the full workspace protocol into every agent — the roster, the helper
@@ -125,7 +128,7 @@ Usage:
                          (token history); --purge-history deletes them AND writes no
                          archive (removing any existing one) ([workspace]
                          purge_agent_history sets the default). (or 'ae end all')
-  ae version             Show version
+  ae version             Show version, tmux floor, auto-upgrade policy and last check
   ae help                Show this help
 
 Modes: --local (default), --copy (full cp -a), --worktree (git worktree).
