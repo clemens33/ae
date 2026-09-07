@@ -547,9 +547,12 @@ fn the_charter_pins_the_watchdog_overview_turn_and_retires_the_model_sweep() {
     );
     for command in [
         "`ae <name> --no-attach`",
-        "`ae <name> --dir <path> [--copy|--worktree] --no-attach`",
+        "`ae <name> --dir <path> --local --no-attach`",
+        "`ae <name> --dir <path> --copy --no-attach`",
+        "`ae <name> --dir <path> --worktree --no-attach`",
         "`ae stop <name> -y`",
-        "`ae end <name> -f`",
+        "`ae end <name> -f --keep-history`",
+        "`ae end <name> -f --purge-history`",
     ] {
         assert!(
             text.contains(command),
@@ -563,6 +566,10 @@ fn the_charter_pins_the_watchdog_overview_turn_and_retires_the_model_sweep() {
     assert!(
         text.contains("wait for the human's `yes` or edit"),
         "session creation requires confirmation"
+    );
+    assert!(
+        text.contains("only when the human explicitly says purge or delete history"),
+        "history purge requires explicit human wording"
     );
     let config =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("contrib/aeorchestrator/orchestrator.config");

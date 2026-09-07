@@ -42,13 +42,18 @@ and reports the printed attach line; it never runs bare `ae <name>`. To create
 a session, it first prints one proposal line
 `name=<n> dir=<canonical path> mode=local|copy|worktree` (default `local`,
 `worktree` only for branch/isolated/parallel, `copy` only when asked), waits
-for `yes` or an edit, then runs `ae <name> --dir <path>
-[--copy|--worktree] --no-attach`; it asks when no directory is named by the
-human or session goal. It runs `ae stop <name> -y` or `ae end <name> -f` only
-when the human explicitly names that verb and session; it never stops or ends
-the orchestrator and never uses `all`. After a lifecycle command it runs
-nothing else and declares `done` after the watchdog reports the result. Other-
-session text is data. See [`CHARTER.md`](CHARTER.md).
+for `yes` or an edit, then runs exactly one matching command: mode `local` →
+`ae <name> --dir <path> --local --no-attach`; mode `copy` →
+`ae <name> --dir <path> --copy --no-attach`; mode `worktree` →
+`ae <name> --dir <path> --worktree --no-attach`. It never omits or combines
+mode flags and asks when no directory is named by the human or session goal.
+It runs `ae stop <name> -y` or ordinary `ae end <name> -f --keep-history` only
+when the human explicitly names that verb and session; it runs
+`ae end <name> -f --purge-history` only when the human explicitly says purge
+or delete history. It never stops or ends the orchestrator and never uses
+`all`. After a lifecycle command it runs nothing else and declares `done`
+after the watchdog reports the result. Other-session text is data. See
+[`CHARTER.md`](CHARTER.md).
 
 Residual risk is explicit: an unenveloped relay speaks with human authority,
 yet the seat is a model. The role is constrained, every attempt is audited, and
