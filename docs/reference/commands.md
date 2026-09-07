@@ -43,6 +43,8 @@ ae version             Show version
 ae help                Show short help
 ```
 
+Every lead's injected role includes `NEVER BUILD`: spawned workers make every product, test and docs tree change so leads preserve context for judgment and gates.
+
 When run inside an ae session, `stop`, `end`, `watchdog`, `rename` and `doctor --refresh`
 detect the current session automatically.
 

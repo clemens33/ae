@@ -12,6 +12,8 @@ something reviews structurally miss. In the phase-3 record, every gate-caught ho
 violated by a locally-correct diff**. That is the gate's job: read the diff against the
 invariant, not against the code.
 
+**A lead NEVER BUILDS.** A lead writes no product code, tests or docs into the tree — not a one-liner, a quick fix, an opportunistic edit or a substitute for a slow worker; every tree change goes through a spawned worker with a brief, the gate and a review, while the lead's own hands touch only `.local/` briefs and plans, memos, and merge/release work from the live checkout. A lead that builds spends its context on the build and stops gating: that loss of judgment is the failure, not worker slowness.
+
 ## Which entry do I need?
 
 | SYMPTOM | ENTRY |

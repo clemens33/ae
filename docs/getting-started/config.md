@@ -6,16 +6,16 @@
 
 ```toml
 [profiles]
-claude = "claude --permission-mode bypassPermissions --model claude-opus-4-8"
-codex = "codex --yolo -m gpt-5.5 -c model_reasoning_effort=high"
+opus5 = "claude --permission-mode bypassPermissions --model claude-opus-5 --effort xhigh"
+gpt56sol = "codex --yolo -m gpt-5.6-sol -c model_reasoning_effort=xhigh"
+fable5 = "claude --permission-mode bypassPermissions --model fable --effort xhigh"
+gpt6astra = "codex --yolo -m gpt-6-astra -c model_reasoning_effort=xhigh"
 gpt56luna = "codex -m gpt-5.6-luna -c model_reasoning_effort=xhigh -a never"
-gemini = "gemini --yolo -m gemini-2.5-pro"
-grokbuild = "grok --always-approve -m grok-4.6 --effort high"
-opencode = "opencode -m google/gemini-3-pro-preview"
+grok46 = "grok --always-approve -m grok-4.6 --effort high"
 
 [roster]
-lead = claude
-colead = codex
+lead = fable5
+colead = gpt6astra
 orchestrator = gpt56luna
 
 [workspace]
@@ -174,44 +174,10 @@ The legacy `AE_LOOP_*` names are still honoured as fallbacks for each tunable. T
 
 ## Model tiers (recommended profiles)
 
-Profiles are arbitrary shell commands, so capability tiers are just config.
-Name profiles by intent, not by vendor model — the config survives model
-generations:
-
-```toml
-[profiles]
-# tiers (Claude Code) — workers MUST be non-interactive: an approval prompt
-# stalls an unattended pane forever. bypassPermissions is the trusting default
-# (matches ae's own examples); acceptEdits is the cautious alternative.
-# chores at FULL effort on a cheap model — cheap comes from the model, not from
-# thinking less: tests, CI runs, caller/usage scans, log triage, scouts
-chore  = "codex -m gpt-5.6-luna -c model_reasoning_effort=xhigh -a never"
-# dev work: implementation slices, doc syncs — builder-grade. Two peers, pick per
-# slice or alternate for cross-vendor diversity on builder seats:
-dev    = "claude --permission-mode bypassPermissions --model claude-opus-5 --effort xhigh"
-devx   = "grok --always-approve -m grok-4.6 --effort high"
-# cross-model review seat (spawned per slice, retired after)
-review = "codex --yolo -m gpt-5.6-sol -c model_reasoning_effort=xhigh"
-# leads / orchestrator / hardest work
-best   = "claude --permission-mode bypassPermissions --model fable --effort xhigh"
-
-[roster]
-lead = best
-coworker = codex
-
-[workspace]
-main = lead
-workers = coworker
-```
-
-Role guidance: leads and the orchestrator run `optimal`/`best`; cross-model
-reviews run `codex` (a different model family sees different bugs);
-chores/tests/CI run `fast`; scoped implementation runs `standard`.
-Spawned workers must never wait on approval prompts (they stall unattended
-panes): Claude tiers carry `--permission-mode bypassPermissions` (or
-`acceptEdits`), codex workers carry `-a never` — and read-only scouts add
-`--sandbox read-only` on codex.
-See [Delegation](../reference/delegation.md) for when to spawn what.
+- **STRONG DEV (build slices):** use `gpt56sol` xhigh or `opus5` xhigh.
+- **BRAINPOWER (lead/colead seats, plans, rulings, hard debugging):** use `fable5` xhigh or `gpt6astra` xhigh.
+- **CHORES/tests/simple slices:** use `gpt56luna` xhigh; it also runs the orchestrator seat.
+- **REVIEWER:** use `grok46` when usage allows.
 
 ## Where state lives
 
