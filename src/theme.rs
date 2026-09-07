@@ -280,11 +280,10 @@ impl Mark {
     }
 }
 
-/// The spinner frames, shown in place of the working glyph while a pane
-/// produced output since the watchdog's last capture.
+/// The spinner frames shown in place of an attached pane's working glyph.
 const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
-/// The ASCII spinner, for the same movement without the braille block.
+/// The ASCII spinner for the same animation without the braille block.
 const ASCII_SPINNER: [&str; 4] = ["|", "/", "-", "\\"];
 
 /// The spinner frame at `tick`, in the vocabulary `icons` selects.
@@ -412,21 +411,6 @@ impl Look {
             switch(self.icons),
             switch(self.drawn)
         )
-    }
-
-    /// The glyph for `mark`, or a spinner frame when `moving` and this look
-    /// animates.
-    ///
-    /// The spinner is SUBORDINATE to the state: it stands in for the working
-    /// glyph and for nothing else, so a pane that needs a human keeps saying so
-    /// while it prints.
-    #[must_use]
-    pub fn glyph(&self, mark: Mark, moving: bool, tick: u64) -> &'static str {
-        if moving && self.motion && mark == Mark::Working {
-            spinner(tick, self.icons)
-        } else {
-            mark.glyph(self.icons)
-        }
     }
 }
 
@@ -840,8 +824,8 @@ pub fn pane_active_border_style(palette: &Palette) -> String {
 /// What the watchdog publishes into [`PANE_STATE_OPTION`]: `glyph` in the
 /// mark's accent, then the reason word.
 ///
-/// The GLYPH is passed rather than derived: a moving pane shows a spinner frame
-/// where its mark would be, and only the caller counting cycles knows which.
+/// The GLYPH is passed rather than derived: the verdict cycle publishes a
+/// static mark and the attached ticker publishes a spinner frame.
 ///
 /// Nothing here is escaped, and nothing may need to be: this is an option
 /// VALUE, which tmux interpolates literally, and `reason` is one of a closed
@@ -1650,40 +1634,6 @@ mod tests {
                 .iter()
                 .any(|(name, value)| name == super::LOOK_OPTION && value == "off"),
             "the session must say that it is undrawn, so the watchdog agrees"
-        );
-    }
-
-    /// Motion is a knob, and it moves NOTHING but the working glyph.
-    #[test]
-    fn the_spinner_is_subordinate_to_the_state_and_to_the_motion_knob() {
-        let still = Look {
-            motion: false,
-            ..Look::DEFAULT
-        };
-        assert_eq!(
-            still.glyph(Mark::Working, true, 3),
-            Mark::Working.glyph(true),
-            "motion off freezes the working glyph on its mark"
-        );
-        assert_eq!(
-            Look::DEFAULT.glyph(Mark::Working, true, 3),
-            spinner(3, true),
-            "motion on spins a working pane"
-        );
-        for mark in Mark::BY_URGENCY {
-            if mark == Mark::Working {
-                continue;
-            }
-            assert_eq!(
-                Look::DEFAULT.glyph(mark, true, 3),
-                mark.glyph(true),
-                "{mark:?} keeps saying what it is while it prints"
-            );
-        }
-        assert_eq!(
-            Look::DEFAULT.glyph(Mark::Working, false, 3),
-            Mark::Working.glyph(true),
-            "a pane that did not move does not spin"
         );
     }
 

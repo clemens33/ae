@@ -104,14 +104,14 @@ The marks are the **watchdog's verdict**, never a claim about what an agent is "
 |---|---|---|
 | `✖` | `x` | the process behind the pane is gone |
 | `⚠` | `!` | waiting on you, blocked, throttled, or an unanswered request |
-| `●` | `*` | it saw the pane advance |
+| `●` | `*` | working according to the latest liveness verdict |
 | `✓` | `+` | declared done or paused |
 | `◌` | `?` | stale, or a fact ae could not establish |
 | `·` | `-` | no agent, or no verdict yet |
 
-A pane that printed since the last cycle shows a spinner frame in place of `●`. The
-frame advances once per watchdog cycle, so it means "this moved since I last looked"
-rather than "this is moving now".
+While somebody is attached, a Working verdict shows a spinner in place of `●`.
+The spinner is the cached verdict, not terminal motion; silence past the liveness
+window changes the next watchdog verdict to stale.
 
 The roster is keyed by the agents in session meta, so an agent whose pane vanished still
 holds its slot as `⚠` rather than quietly disappearing. The same marks appear per window

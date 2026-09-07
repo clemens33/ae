@@ -980,10 +980,10 @@ fn the_agent_roster_and_the_window_glyph_are_published_by_a_running_daemon() {
     );
 }
 
-/// Motion has its own cadence: a normal 60-second verdict interval must not
-/// freeze a pane that is producing output while somebody is watching it.
+/// A cached Working verdict animates at ticker cadence even while its pane is
+/// producing no terminal output.
 #[test]
-fn a_moving_panes_spinner_advances_between_watchdog_cycles() {
+fn a_working_verdict_spinner_advances_between_watchdog_cycles() {
     let scratch = scratch("spinner");
     require_tmux(&scratch);
     let socket = scratch.join("s");
@@ -994,20 +994,20 @@ fn a_moving_panes_spinner_advances_between_watchdog_cycles() {
     assert!(
         fs::write(
             meta_dir.join("meta"),
-            meta.replace("agent_bin.main=claude", "agent_bin.main=yes")
+            meta.replace("agent_bin.main=claude", "agent_bin.main=sleep")
         )
         .is_ok(),
-        "the chatty pane's binary"
+        "the quiet pane's binary"
     );
 
     assert!(
         tmux(
             &socket,
             &scratch,
-            &["new-session", "-d", "-s", "spinning", "yes moving"]
+            &["new-session", "-d", "-s", "spinning", "sleep 120"]
         )
         .0,
-        "the chatty watched session"
+        "the quiet watched session"
     );
     stamp_agent(&socket, &scratch, "spinning");
     let attach = format!(

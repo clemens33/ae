@@ -228,9 +228,7 @@ pub struct Accounting {
     pub effects: Vec<Effect>,
     /// The glyph verdict for the status line.
     pub verdict: Verdict,
-    /// Whether the pane produced output since the LAST capture — the spinner's
-    /// whole input. `Active` covers "moved recently" as well, so a verdict
-    /// alone cannot say whether anything is happening right now.
+    /// Whether the pane changed since the last liveness capture.
     pub moved: bool,
 }
 
@@ -602,14 +600,12 @@ struct Counts {
     stale: usize,
 }
 
-/// One pane's verdict this cycle, and whether it moved during it.
+/// One pane's verdict this cycle.
 struct PaneMark {
     /// The `%<n>` pane id.
     pane: String,
     /// What the accounting made of it.
     verdict: Verdict,
-    /// Whether its capture differs from the previous cycle's.
-    moved: bool,
 }
 
 /// One cycle verdict in the window layout the ticker animates between cycles.
@@ -618,90 +614,53 @@ struct MotionVerdict {
     pane: String,
     window: String,
     verdict: Verdict,
-    /// The cycle itself observed output; ticker must restore this frame if its
-    /// first coordinate diff is still.
-    moved: bool,
 }
 
-/// The ticker's carry: last coordinates, currently moving panes, and the most
-/// recent cycle verdicts it must restore when movement stops.
+/// The ticker's carry: the most recent cycle verdicts and spinner frame.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct MotionState {
-    previous: Vec<tmux::MotionPane>,
-    cursor_changes: Vec<(String, u8)>,
-    moving: Vec<String>,
     verdicts: Vec<MotionVerdict>,
     spin: u64,
 }
 
 impl MotionState {
-    /// Replace only the cycle-owned verdicts. A verdict that became
-    /// dead/needs-you stops being ticker-eligible immediately; the cycle has
-    /// already published its authoritative glyph.
+    /// Replace only the cycle-owned verdicts. The cycle already published the
+    /// corresponding static glyphs.
     fn replace_verdicts(&mut self, verdicts: Vec<MotionVerdict>) {
         self.verdicts = verdicts;
-        self.moving.retain(|pane| {
-            self.verdicts
-                .iter()
-                .find(|entry| entry.pane == *pane)
-                .is_some_and(|entry| motion_allowed(entry.verdict))
-        });
-        for entry in &self.verdicts {
-            if entry.moved && motion_allowed(entry.verdict) && !self.moving.contains(&entry.pane) {
-                self.moving.push(entry.pane.clone());
-            }
-        }
     }
 
-    /// Advance one pure ticker step and return every option write it earned.
+    /// Advance every attached pane whose last cycle verdict is Working.
     fn step(&mut self, current: &[tmux::MotionPane], look: &Look) -> Vec<tmux::OptionWrite> {
-        let (raw_moving, cursor_changes) =
-            damped_moving_panes(&self.previous, current, &self.cursor_changes);
-        let moving: Vec<String> = raw_moving
-            .into_iter()
-            .filter(|pane| {
-                self.verdicts
-                    .iter()
-                    .find(|entry| entry.pane == *pane)
-                    .is_some_and(|entry| motion_allowed(entry.verdict))
+        if !current.iter().any(|pane| pane.session_attached > 0) {
+            return Vec::new();
+        }
+        let working: Vec<&MotionVerdict> = self
+            .verdicts
+            .iter()
+            .filter(|entry| entry.verdict.mark() == Mark::Working)
+            .filter(|entry| {
+                current.iter().any(|pane| {
+                    pane.pane_id == entry.pane
+                        && pane.agent.as_deref().is_some_and(|agent| {
+                            !agent.is_empty() && !NON_AGENT_PANES.contains(&agent)
+                        })
+                })
             })
             .collect();
-        let mut changed = moving.clone();
-        for pane in &self.moving {
-            if !moving.contains(pane)
-                && current.iter().any(|reading| reading.pane_id == *pane)
-                && !changed.contains(pane)
-            {
-                changed.push(pane.clone());
-            }
+        if working.is_empty() {
+            return Vec::new();
         }
-
         self.spin = self.spin.wrapping_add(1);
+        let spinner = theme::spinner(self.spin, look.icons);
         let mut writes = Vec::new();
         let mut windows = Vec::new();
-        for pane in &changed {
-            let Some(entry) = self.verdicts.iter().find(|entry| entry.pane == *pane) else {
-                continue;
-            };
-            let is_moving = moving.contains(pane);
-            let (mark, glyph, reason) = if is_moving {
-                (
-                    Mark::Working,
-                    theme::spinner(self.spin, look.icons),
-                    "working",
-                )
-            } else {
-                (
-                    entry.verdict.mark(),
-                    entry.verdict.glyph(look.icons),
-                    entry.verdict.reason(),
-                )
-            };
+        for entry in &working {
             writes.push(tmux::OptionWrite::new(
                 OptionScope::Pane,
-                pane,
+                &entry.pane,
                 theme::PANE_STATE_OPTION,
-                &theme::pane_state(&look.palette, mark, glyph, reason),
+                &theme::pane_state(&look.palette, Mark::Working, spinner, "working"),
             ));
             if !windows.contains(&entry.window) {
                 windows.push(entry.window.clone());
@@ -713,8 +672,8 @@ impl MotionState {
                 .iter()
                 .filter(|entry| entry.window == *window)
                 .map(|entry| {
-                    if moving.contains(&entry.pane) {
-                        theme::spinner(self.spin, look.icons)
+                    if entry.verdict.mark() == Mark::Working {
+                        spinner
                     } else {
                         entry.verdict.glyph(look.icons)
                     }
@@ -727,80 +686,8 @@ impl MotionState {
                 &glyphs,
             ));
         }
-        self.previous = current.to_vec();
-        self.cursor_changes = cursor_changes;
-        self.moving = moving;
         writes
     }
-}
-
-/// Panes whose output coordinates changed between two complete observations.
-fn moving_panes(previous: &[tmux::MotionPane], current: &[tmux::MotionPane]) -> Vec<String> {
-    current
-        .iter()
-        .filter(|pane| {
-            let Some(agent) = pane.agent.as_deref().filter(|agent| !agent.is_empty()) else {
-                return false;
-            };
-            if NON_AGENT_PANES.contains(&agent) {
-                return false;
-            }
-            previous
-                .iter()
-                .find(|prior| prior.pane_id == pane.pane_id)
-                .is_some_and(|prior| {
-                    // The COLUMN is not motion: typing into an input box moves
-                    // it on every keystroke, and a human typing is not an agent
-                    // working. Output scrolls the history or moves the ROW.
-                    prior.history_size != pane.history_size || prior.cursor_y != pane.cursor_y
-                })
-        })
-        .map(|pane| pane.pane_id.clone())
-        .collect()
-}
-
-/// Apply a three-tick damper to cursor-only movement. Real output grows the
-/// history immediately; terminal UI cursor jitter must occur twice within
-/// three readings before it animates.
-fn damped_moving_panes(
-    previous: &[tmux::MotionPane],
-    current: &[tmux::MotionPane],
-    cursor_history: &[(String, u8)],
-) -> (Vec<String>, Vec<(String, u8)>) {
-    let raw_moving = moving_panes(previous, current);
-    let mut moving = Vec::new();
-    let mut next_changes = Vec::new();
-    for pane in current {
-        let Some(agent) = pane.agent.as_deref().filter(|agent| !agent.is_empty()) else {
-            continue;
-        };
-        if NON_AGENT_PANES.contains(&agent) {
-            continue;
-        }
-        let Some(prior) = previous.iter().find(|prior| prior.pane_id == pane.pane_id) else {
-            next_changes.push((pane.pane_id.clone(), 0));
-            continue;
-        };
-        let cursor_moved = prior.cursor_y != pane.cursor_y;
-        let prior_changes = cursor_history
-            .iter()
-            .find(|(pane_id, _)| pane_id == &pane.pane_id)
-            .map_or(0, |(_, changes)| *changes);
-        let changes = ((prior_changes << 1) | u8::from(cursor_moved)) & 0b111;
-        if raw_moving.contains(&pane.pane_id)
-            && (prior.history_size != pane.history_size
-                || (cursor_moved && changes.count_ones() >= 2))
-        {
-            moving.push(pane.pane_id.clone());
-        }
-        next_changes.push((pane.pane_id.clone(), changes));
-    }
-    (moving, next_changes)
-}
-
-/// Dead and needs-you are authoritative even while their pane prints.
-const fn motion_allowed(verdict: Verdict) -> bool {
-    !matches!(verdict.mark(), Mark::Dead | Mark::NeedsYou)
 }
 
 /// Whether this look permits periodic redraws at all.
@@ -840,8 +727,6 @@ struct Published<'a> {
     attention: Mark,
     /// The look to draw all of it in.
     look: &'a Look,
-    /// The cycle counter the spinner advances on.
-    spin: u64,
 }
 
 /// The session's own mark: the most actionable thing any of its surfaces is
@@ -859,12 +744,6 @@ fn session_mark(by_pane: &[PaneMark], roster: &[Mark]) -> Mark {
         .chain(roster.iter().copied())
         .max_by_key(|mark| mark.rank())
         .unwrap_or(Mark::Idle)
-}
-
-/// The glyph one pane contributes: the spinner while it is moving, its mark
-/// otherwise.
-fn pane_glyph(mark: Mark, moving: bool, look: &Look, spin: u64) -> String {
-    look.glyph(mark, moving, spin).to_owned()
 }
 
 /// Run the watchdog for one session until its session or its state goes away.
@@ -1104,7 +983,7 @@ fn wait_between_cycles(
         return;
     };
     let started = Instant::now();
-    let mut cadence = motion_cadence(&carry.motion.previous);
+    let mut cadence = ATTACHED_MOTION_TICK;
     let mut failures = 0_u8;
     loop {
         let remaining = interval.saturating_sub(started.elapsed());
@@ -1274,9 +1153,6 @@ struct Carry {
     quiet: QuietCycle,
     /// The faster publisher that runs between verdict cycles.
     motion: MotionState,
-    /// The cycle counter the spinner advances on — one frame per cycle, which
-    /// is what "moving" means at this cadence.
-    spin: u64,
     /// The last look this daemon actually READ, and `None` until one answers.
     ///
     /// Carried so that a cycle whose read failed draws in the look it saw last
@@ -1295,7 +1171,6 @@ impl Carry {
             missing: Vec::new(),
             quiet: QuietCycle::new(knobs.quiet_panes_per_cycle),
             motion: MotionState::default(),
-            spin: 0,
             look: None,
         }
     }
@@ -1483,7 +1358,7 @@ impl Cycle<'_> {
         let mut total = 0_usize;
         let mut dead = 0_usize;
         let mut stale = 0_usize;
-        let mut by_slot: Vec<(String, Verdict, bool)> = Vec::new();
+        let mut by_slot: Vec<(String, Verdict)> = Vec::new();
         let mut by_pane: Vec<PaneMark> = Vec::new();
 
         for pane in &observed {
@@ -1552,11 +1427,10 @@ impl Cycle<'_> {
                 Verdict::Stale => stale += 1,
                 _ => active += 1,
             }
-            by_slot.push((slot, booked.verdict, booked.moved));
+            by_slot.push((slot, booked.verdict));
             by_pane.push(PaneMark {
                 pane: pane.pane_id.clone(),
                 verdict: booked.verdict,
-                moved: booked.moved,
             });
         }
         carry.quiet.end(index);
@@ -1581,7 +1455,7 @@ impl Cycle<'_> {
         &self,
         carry: &mut Carry,
         counts: &Counts,
-        by_slot: &[(String, Verdict, bool)],
+        by_slot: &[(String, Verdict)],
         by_pane: &[PaneMark],
         live: &[String],
         err: &mut impl Write,
@@ -1600,20 +1474,19 @@ impl Cycle<'_> {
             return Ok(());
         };
         carry.look = Some(look);
-        carry.spin = carry.spin.wrapping_add(1);
         if read.is_some() {
             self.reconcile_look(&look);
         }
         // The roster is composed from the PRIOR debounce state, then the state
         // is advanced, so a slot's first absent cycle renders neutral and only
         // the second renders the needs-you mark.
-        let roster = self.roster_line(by_slot, &carry.missing, &look, carry.spin);
+        let roster = self.roster_line(by_slot, &carry.missing, &look);
         // The SAME judgement the roster line just drew, rolled up: one snapshot
         // behind every surface, so the strip and the bar cannot disagree.
         let slots: Vec<Mark> = self
             .roster
             .iter()
-            .map(|entry| slot_mark(entry, by_slot, &carry.missing).0)
+            .map(|entry| slot_mark(entry, by_slot, &carry.missing))
             .collect();
         self.sweep_missing(live, &mut carry.missing, err)?;
         self.publish(
@@ -1625,7 +1498,6 @@ impl Cycle<'_> {
                 by_pane,
                 attention: session_mark(by_pane, &slots),
                 look: &look,
-                spin: carry.spin,
             },
             &mut carry.motion,
         );
@@ -1730,12 +1602,11 @@ impl Cycle<'_> {
     /// This cycle's roster line, from the daemon's own roster.
     fn roster_line(
         &self,
-        by_slot: &[(String, Verdict, bool)],
+        by_slot: &[(String, Verdict)],
         missing: &[(String, MissingState)],
         look: &Look,
-        spin: u64,
     ) -> String {
-        roster_line(&self.roster, by_slot, missing, look, spin)
+        roster_line(&self.roster, by_slot, missing, look)
     }
 
     /// Publish this cycle's verdicts as tmux user options.
@@ -1877,15 +1748,13 @@ impl Cycle<'_> {
                 .iter()
                 .find(|entry| entry.pane == pane.pane_id);
             let mark = found.map_or(Mark::Idle, |entry| entry.verdict.mark());
-            let moving = found.is_some_and(|entry| entry.moved);
-            glyphs.push_str(&pane_glyph(mark, moving, look, published.spin));
-            self.publish_pane_state(&pane.pane_id, found, look, published.spin);
+            glyphs.push_str(mark.glyph(look.icons));
+            self.publish_pane_state(&pane.pane_id, found, look);
             if let Some(entry) = found {
                 verdicts.push(MotionVerdict {
                     pane: pane.pane_id.clone(),
                     window: pane.window_id.clone(),
                     verdict: entry.verdict,
-                    moved: entry.moved,
                 });
             }
         }
@@ -1914,18 +1783,22 @@ impl Cycle<'_> {
     }
 
     /// One pane's border state: its mark, and the word behind it.
-    fn publish_pane_state(&self, pane: &str, found: Option<&PaneMark>, look: &Look, spin: u64) {
+    fn publish_pane_state(&self, pane: &str, found: Option<&PaneMark>, look: &Look) {
         let Some(entry) = found else {
             return;
         };
         let mark = entry.verdict.mark();
-        let glyph = pane_glyph(mark, entry.moved, look, spin);
         let _ = transport::publish_option(
             self.server,
             OptionScope::Pane,
             pane,
             theme::PANE_STATE_OPTION,
-            &theme::pane_state(&look.palette, mark, &glyph, entry.verdict.reason()),
+            &theme::pane_state(
+                &look.palette,
+                mark,
+                mark.glyph(look.icons),
+                entry.verdict.reason(),
+            ),
         );
         // The ACCENT alone, for the active border: a style option is
         // format-expanded, so the border colour follows the pane it belongs to
@@ -2162,27 +2035,26 @@ impl Cycle<'_> {
 /// it was read back.
 fn roster_line(
     roster: &[RosterEntry],
-    by_slot: &[(String, Verdict, bool)],
+    by_slot: &[(String, Verdict)],
     missing: &[(String, MissingState)],
     look: &Look,
-    spin: u64,
 ) -> String {
     roster
         .iter()
         .map(|entry| {
-            let (mark, moving) = slot_mark(entry, by_slot, missing);
+            let mark = slot_mark(entry, by_slot, missing);
             format!(
                 "{}{}{}#[default]",
                 roster_label(&entry.reference()),
                 theme::mark_style(&look.palette, mark),
-                pane_glyph(mark, moving, look, spin),
+                mark.glyph(look.icons),
             )
         })
         .collect::<Vec<_>>()
         .join(" ")
 }
 
-/// What ONE roster entry is saying, and whether its pane moved this cycle.
+/// What ONE roster entry is saying.
 ///
 /// The single owner of that judgement: the roster line, the session's rolled-up
 /// attention and therefore every other session's fleet strip all read it here,
@@ -2190,11 +2062,11 @@ fn roster_line(
 /// and "idle" on another.
 fn slot_mark(
     entry: &RosterEntry,
-    by_slot: &[(String, Verdict, bool)],
+    by_slot: &[(String, Verdict)],
     missing: &[(String, MissingState)],
-) -> (Mark, bool) {
-    let found = by_slot.iter().find(|(slot, _, _)| *slot == entry.slot);
-    let mark = found.map_or_else(
+) -> Mark {
+    let found = by_slot.iter().find(|(slot, _)| *slot == entry.slot);
+    found.map_or_else(
         || {
             let seen_absent = missing
                 .iter()
@@ -2205,9 +2077,8 @@ fn slot_mark(
                 Mark::Idle
             }
         },
-        |(_, verdict, _)| verdict.mark(),
-    );
-    (mark, found.is_some_and(|(_, _, moved)| *moved))
+        |(_, verdict)| verdict.mark(),
+    )
 }
 
 /// `opus5:builder` -> `builder`, as an option VALUE can carry it.
@@ -2313,10 +2184,9 @@ mod tests {
         ACTOR, Carry, Continuation, Effect, HEARTBEAT_NAME, Journal, Knobs, MissingState,
         MotionState, MotionVerdict, Observation, PaneState, Rebind, SWEEP_PROMPT,
         UNKNOWN_ALERT_CYCLES, Verdict, account, adopt_server, age_secs, bar_glyph, continuation,
-        damped_moving_panes, entry_mut, heartbeat_mtime, is_meta_agent, last_actor_event_age,
-        motion_cadence, motion_failure, motion_ticker_enabled, moving_panes, nudge_text,
-        read_events, rebind, record_nudge, roster_label, roster_line, session_name, stale_display,
-        sweep_effects,
+        entry_mut, heartbeat_mtime, is_meta_agent, last_actor_event_age, motion_cadence,
+        motion_failure, motion_ticker_enabled, nudge_text, read_events, rebind, record_nudge,
+        roster_label, roster_line, session_name, stale_display, sweep_effects,
     };
     use super::{Look, Mark, PaneMark, session_mark};
     use crate::events::Event;
@@ -2345,48 +2215,115 @@ mod tests {
         }
     }
 
-    fn motion(
-        pane_id: &str,
-        agent: &str,
-        history_size: u64,
-        cursor_x: u32,
-        cursor_y: u32,
-    ) -> crate::tmux::MotionPane {
+    fn motion(pane_id: &str, agent: &str) -> crate::tmux::MotionPane {
         crate::tmux::MotionPane {
             pane_id: pane_id.to_owned(),
             agent: Some(agent.to_owned()),
-            history_size,
-            cursor_x,
-            cursor_y,
             session_attached: 1,
         }
     }
 
     #[test]
-    fn motion_is_the_pure_diff_of_history_or_cursor_for_agent_panes() {
-        let previous = [
-            motion("%1", "lead", 10, 2, 3),
-            motion("%2", "worker", 20, 4, 5),
-            motion("%3", "still", 30, 6, 7),
-            motion("%5", "_watchdog", 40, 8, 9),
-        ];
+    fn every_working_agent_spins_each_tick_and_other_marks_never_do() {
         let current = [
-            motion("%1", "lead", 11, 2, 3),
-            motion("%2", "worker", 20, 4, 6),
-            motion("%3", "still", 30, 6, 7),
-            motion("%4", "new", 1, 1, 1),
-            motion("%5", "_watchdog", 41, 8, 9),
+            motion("%1", "active"),
+            motion("%2", "done"),
+            motion("%3", "blocked"),
+            motion("%4", "dead"),
+            motion("%5", "idle"),
+            motion("%6", "sweeping"),
+            motion("%7", "_watchdog"),
         ];
-        assert_eq!(moving_panes(&previous, &current), ["%1", "%2"]);
+        let mut state = MotionState {
+            verdicts: vec![
+                MotionVerdict {
+                    pane: "%1".to_owned(),
+                    window: "@7".to_owned(),
+                    verdict: Verdict::Active,
+                },
+                MotionVerdict {
+                    pane: "%2".to_owned(),
+                    window: "@7".to_owned(),
+                    verdict: Verdict::Quiet(QuietKind::Done),
+                },
+                MotionVerdict {
+                    pane: "%3".to_owned(),
+                    window: "@7".to_owned(),
+                    verdict: Verdict::Quiet(QuietKind::Blocked),
+                },
+                MotionVerdict {
+                    pane: "%4".to_owned(),
+                    window: "@7".to_owned(),
+                    verdict: Verdict::Dead,
+                },
+                MotionVerdict {
+                    pane: "%6".to_owned(),
+                    window: "@7".to_owned(),
+                    verdict: Verdict::Meta(SweepVerdict::MetaSweeping),
+                },
+            ],
+            ..MotionState::default()
+        };
+        let first = crate::tmux::set_options_args(
+            &ServerId::Ambient,
+            &state.step(&current, &Look::DEFAULT),
+        );
+        assert_eq!(
+            first,
+            [
+                "set-option",
+                "-p",
+                "-t",
+                "%1",
+                "@ae_pane_state",
+                "#[fg=#6897BB]⠙#[default] working",
+                ";",
+                "set-option",
+                "-p",
+                "-t",
+                "%6",
+                "@ae_pane_state",
+                "#[fg=#6897BB]⠙#[default] working",
+                ";",
+                "set-option",
+                "-w",
+                "-t",
+                "@7",
+                "@ae_window_status",
+                "⠙✓⚠✖⠙",
+            ]
+        );
+        let second = crate::tmux::set_options_args(
+            &ServerId::Ambient,
+            &state.step(&current, &Look::DEFAULT),
+        );
+        assert!(second.iter().any(|word| word.contains('⠹')));
         assert!(
-            moving_panes(&[], &current).is_empty(),
-            "the first observation is a baseline, not fabricated movement"
+            second
+                .iter()
+                .all(|word| !matches!(word.as_str(), "%2" | "%3" | "%4" | "%5" | "%7"))
         );
     }
 
     #[test]
+    fn detached_sessions_never_write_spinner_frames() {
+        let mut pane = motion("%1", "lead");
+        pane.session_attached = 0;
+        let mut state = MotionState {
+            verdicts: vec![MotionVerdict {
+                pane: "%1".to_owned(),
+                window: "@7".to_owned(),
+                verdict: Verdict::Active,
+            }],
+            ..MotionState::default()
+        };
+        assert!(state.step(&[pane], &Look::DEFAULT).is_empty());
+        assert_eq!(state.spin, 0, "an invisible ticker does not advance");
+    }
+
+    #[test]
     fn ticker_cadence_follows_visibility_and_both_opt_outs_disable_it() {
-        let attached = motion("%1", "lead", 10, 2, 3);
+        let attached = motion("%1", "lead");
         let mut detached = attached.clone();
         detached.session_attached = 0;
         assert_eq!(motion_cadence(&[attached]), Duration::from_millis(250));
@@ -2410,153 +2347,6 @@ mod tests {
         assert_eq!((second, stop), (2, false));
         let (third, stop) = motion_failure(second);
         assert_eq!((third, stop), (3, true));
-    }
-
-    /// Typing moves the cursor COLUMN on every keystroke and nothing else; it
-    /// is a human at the keyboard, not an agent at work, so it never spins.
-    #[test]
-    fn typing_moves_only_the_column_and_is_never_motion() {
-        let mut previous = vec![motion("%1", "lead", 10, 2, 3)];
-        let mut history: Vec<(String, u8)> = Vec::new();
-        for column in 3..12 {
-            let current = [motion("%1", "lead", 10, column, 3)];
-            let (moving, next) = super::damped_moving_panes(&previous, &current, &history);
-            assert!(moving.is_empty(), "column {column} read as motion");
-            history = next;
-            previous = current.to_vec();
-        }
-    }
-
-    #[test]
-    fn cursor_only_motion_requires_two_changes_within_three_ticks() {
-        let previous = [motion("%1", "lead", 10, 2, 3)];
-        let first = [motion("%1", "lead", 10, 2, 4)];
-        let (moving, changes) = damped_moving_panes(&previous, &first, &[]);
-        assert!(moving.is_empty());
-
-        let second = [motion("%1", "lead", 10, 2, 5)];
-        let (moving, changes) = damped_moving_panes(&first, &second, &changes);
-        assert_eq!(moving, ["%1"]);
-
-        let still = [motion("%1", "lead", 10, 2, 5)];
-        let (moving, _) = damped_moving_panes(&second, &still, &changes);
-        assert!(moving.is_empty(), "stopped cursor motion restores at once");
-    }
-
-    #[test]
-    fn the_motion_step_animates_then_restores_the_cycle_verdict_once() {
-        let mut state = MotionState {
-            previous: vec![motion("%1", "lead", 10, 2, 3)],
-            verdicts: vec![MotionVerdict {
-                pane: "%1".to_owned(),
-                window: "@7".to_owned(),
-                verdict: Verdict::Active,
-                moved: false,
-            }],
-            ..MotionState::default()
-        };
-        let current = [motion("%1", "lead", 11, 2, 3)];
-        let animated = crate::tmux::set_options_args(
-            &ServerId::Ambient,
-            &state.step(&current, &Look::DEFAULT),
-        );
-        assert_eq!(
-            animated,
-            [
-                "set-option",
-                "-p",
-                "-t",
-                "%1",
-                "@ae_pane_state",
-                "#[fg=#6897BB]⠙#[default] working",
-                ";",
-                "set-option",
-                "-w",
-                "-t",
-                "@7",
-                "@ae_window_status",
-                "⠙",
-            ]
-        );
-
-        let restored = crate::tmux::set_options_args(
-            &ServerId::Ambient,
-            &state.step(&current, &Look::DEFAULT),
-        );
-        assert_eq!(
-            restored,
-            [
-                "set-option",
-                "-p",
-                "-t",
-                "%1",
-                "@ae_pane_state",
-                "#[fg=#6897BB]●#[default] working",
-                ";",
-                "set-option",
-                "-w",
-                "-t",
-                "@7",
-                "@ae_window_status",
-                "●",
-            ]
-        );
-        assert!(
-            state.step(&current, &Look::DEFAULT).is_empty(),
-            "a stopped pane's cycle verdict is restored once"
-        );
-    }
-
-    #[test]
-    fn motion_never_overwrites_dead_or_needs_you_verdicts() {
-        let mut state = MotionState {
-            previous: vec![
-                motion("%1", "dead", 10, 2, 3),
-                motion("%2", "blocked", 10, 2, 3),
-            ],
-            verdicts: vec![
-                MotionVerdict {
-                    pane: "%1".to_owned(),
-                    window: "@7".to_owned(),
-                    verdict: Verdict::Dead,
-                    moved: true,
-                },
-                MotionVerdict {
-                    pane: "%2".to_owned(),
-                    window: "@7".to_owned(),
-                    verdict: Verdict::Quiet(QuietKind::Blocked),
-                    moved: true,
-                },
-            ],
-            ..MotionState::default()
-        };
-        let current = [
-            motion("%1", "dead", 11, 2, 3),
-            motion("%2", "blocked", 11, 2, 3),
-        ];
-        assert!(
-            state.step(&current, &Look::DEFAULT).is_empty(),
-            "pane output cannot hide either authoritative verdict"
-        );
-    }
-
-    #[test]
-    fn the_first_tick_restores_a_cycle_spinner_that_already_stopped() {
-        let mut state = MotionState::default();
-        state.replace_verdicts(vec![MotionVerdict {
-            pane: "%1".to_owned(),
-            window: "@7".to_owned(),
-            verdict: Verdict::Active,
-            moved: true,
-        }]);
-        let writes = crate::tmux::set_options_args(
-            &ServerId::Ambient,
-            &state.step(&[motion("%1", "lead", 10, 2, 3)], &Look::DEFAULT),
-        );
-        assert!(
-            writes.iter().any(|argument| argument == "●"),
-            "the cycle's one-frame spinner is restored from its seeded moving state: {writes:?}"
-        );
     }
 
     /// A pane that has been still and silent for longer than the window.
@@ -3240,8 +3030,8 @@ mod tests {
             binary: None,
             harness_session: None,
         }];
-        let by_slot = vec![("main".to_owned(), Verdict::Active, false)];
-        let drawn = roster_line(&roster, &by_slot, &[], &look(), 0);
+        let by_slot = vec![("main".to_owned(), Verdict::Active)];
+        let drawn = roster_line(&roster, &by_slot, &[], &look());
         // A style directive needs its `#[`. Without one the text is just text,
         // which is why the name is allowed to keep its brackets.
         assert!(
@@ -3347,16 +3137,12 @@ mod tests {
         // Two registrations SHARE a display ref and differ only by slot — the
         // case that makes ref-keying wrong.
         let by_slot = vec![
-            ("main".to_owned(), Verdict::Active, false),
-            ("worker.0".to_owned(), Verdict::Stale, false),
-            (
-                "spawned.0".to_owned(),
-                Verdict::Quiet(QuietKind::Done),
-                false,
-            ),
+            ("main".to_owned(), Verdict::Active),
+            ("worker.0".to_owned(), Verdict::Stale),
+            ("spawned.0".to_owned(), Verdict::Quiet(QuietKind::Done)),
         ];
         assert_eq!(
-            plain(&roster_line(&roster, &by_slot, &[], &look(), 0)),
+            plain(&roster_line(&roster, &by_slot, &[], &look())),
             "lead● twin◌ twin✓",
             "each slot renders its OWN verdict"
         );
@@ -3366,42 +3152,18 @@ mod tests {
             ..look()
         };
         assert_eq!(
-            plain(&roster_line(&roster, &by_slot, &[], &ascii, 0)),
+            plain(&roster_line(&roster, &by_slot, &[], &ascii)),
             "lead* twin? twin+"
-        );
-    }
-
-    /// A pane that produced output since the last capture spins; one that only
-    /// moved recently does not.
-    #[test]
-    fn a_moving_pane_spins_where_a_merely_active_one_shows_its_mark() {
-        let roster = vec![entry("main", "cl", "lead")];
-        let moving = vec![("main".to_owned(), Verdict::Active, true)];
-        let settled = vec![("main".to_owned(), Verdict::Active, false)];
-        assert_eq!(
-            plain(&roster_line(&roster, &moving, &[], &look(), 3)),
-            format!("lead{}", crate::theme::spinner(3, true))
-        );
-        assert_eq!(
-            plain(&roster_line(&roster, &settled, &[], &look(), 3)),
-            "lead●"
-        );
-        // Only WORKING spins: a stale pane that somehow reported movement is
-        // still stale, and a spinner there would claim otherwise.
-        let stale = vec![("main".to_owned(), Verdict::Stale, true)];
-        assert_eq!(
-            plain(&roster_line(&roster, &stale, &[], &look(), 3)),
-            "lead◌"
         );
     }
 
     #[test]
     fn a_slot_with_no_pane_is_neutral_on_its_first_absent_cycle_and_dead_on_its_second() {
         let roster = vec![entry("main", "cl", "lead"), entry("worker.0", "cl", "w")];
-        let by_slot = vec![("main".to_owned(), Verdict::Active, false)];
+        let by_slot = vec![("main".to_owned(), Verdict::Active)];
         // First absence: the debounce has not recorded it yet.
         assert_eq!(
-            plain(&roster_line(&roster, &by_slot, &[], &look(), 0)),
+            plain(&roster_line(&roster, &by_slot, &[], &look())),
             "lead● w·"
         );
         // Second: the streak is recorded, and now it wants a human.
@@ -3413,7 +3175,7 @@ mod tests {
             },
         )];
         assert_eq!(
-            plain(&roster_line(&roster, &by_slot, &missing, &look(), 0)),
+            plain(&roster_line(&roster, &by_slot, &missing, &look())),
             "lead● w⚠"
         );
         // The debounce is keyed by SLOT: a streak against some other slot must
@@ -3426,7 +3188,7 @@ mod tests {
             },
         )];
         assert_eq!(
-            plain(&roster_line(&roster, &by_slot, &elsewhere, &look(), 0)),
+            plain(&roster_line(&roster, &by_slot, &elsewhere, &look())),
             "lead● w·"
         );
     }
@@ -3437,7 +3199,6 @@ mod tests {
         let pane = |pane: &str, verdict| PaneMark {
             pane: pane.to_owned(),
             verdict,
-            moved: false,
         };
         assert_eq!(session_mark(&[], &[]), Mark::Idle);
         assert_eq!(
@@ -3490,7 +3251,7 @@ mod tests {
     fn an_empty_roster_composes_to_nothing_so_the_caller_can_unset_it() {
         // The caller UNSETS on empty rather than publishing "" — a roster
         // outliving its agents would keep asserting a fleet that is gone.
-        assert!(roster_line(&[], &[], &[], &look(), 0).is_empty());
+        assert!(roster_line(&[], &[], &[], &look()).is_empty());
     }
 
     #[test]

@@ -568,13 +568,12 @@ pub fn interpret_watch_panes(succeeded: bool, stdout: &str) -> Option<Vec<WatchP
     Some(panes)
 }
 
-/// The ticker's one observation: identity, visible-output coordinates, and
-/// whether anybody is attached to the session.
-pub(crate) const MOTION_PANE_FORMAT: &str =
-    "#{pane_id} | #{@ae_agent} | #{history_size} | #{cursor_x} | #{cursor_y} | #{session_attached}";
+/// The ticker's one observation: identity and whether anybody is attached to
+/// the session.
+pub(crate) const MOTION_PANE_FORMAT: &str = "#{pane_id} | #{@ae_agent} | #{session_attached}";
 
 /// The number of fields [`MOTION_PANE_FORMAT`] yields.
-const MOTION_PANE_FIELDS: usize = 6;
+const MOTION_PANE_FIELDS: usize = 3;
 
 /// One pane as the motion ticker reads it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -583,12 +582,6 @@ pub(crate) struct MotionPane {
     pub pane_id: String,
     /// `@ae_agent`, or `None` when unstamped.
     pub agent: Option<String>,
-    /// Lines in tmux's history buffer.
-    pub history_size: u64,
-    /// Cursor column.
-    pub cursor_x: u32,
-    /// Cursor row.
-    pub cursor_y: u32,
     /// Clients attached to this session.
     pub session_attached: u32,
 }
@@ -616,23 +609,12 @@ pub(crate) fn interpret_motion_panes(succeeded: bool, stdout: &str) -> Option<Ve
         if fields.len() != MOTION_PANE_FIELDS {
             return None;
         }
-        let [
-            pane_id,
-            agent,
-            history_size,
-            cursor_x,
-            cursor_y,
-            session_attached,
-        ] = fields.as_slice()
-        else {
+        let [pane_id, agent, session_attached] = fields.as_slice() else {
             return None;
         };
         panes.push(MotionPane {
             pane_id: (*pane_id).to_owned(),
             agent: (!agent.is_empty()).then(|| (*agent).to_owned()),
-            history_size: history_size.parse().ok()?,
-            cursor_x: cursor_x.parse().ok()?,
-            cursor_y: cursor_y.parse().ok()?,
             session_attached: session_attached.parse().ok()?,
         });
     }
@@ -2227,31 +2209,25 @@ mod tests {
                 super::MOTION_PANE_FORMAT,
             ]
         );
-        let listing = "%1 | lead | 42 | 7 | 9 | 1\n%2 |  | 0 | 0 | 0 | 1\n";
+        let listing = "%1 | lead | 1\n%2 |  | 1\n";
         assert_eq!(
             interpret_motion_panes(true, listing),
             Some(vec![
                 MotionPane {
                     pane_id: "%1".to_owned(),
                     agent: Some("lead".to_owned()),
-                    history_size: 42,
-                    cursor_x: 7,
-                    cursor_y: 9,
                     session_attached: 1,
                 },
                 MotionPane {
                     pane_id: "%2".to_owned(),
                     agent: None,
-                    history_size: 0,
-                    cursor_x: 0,
-                    cursor_y: 0,
                     session_attached: 1,
                 },
             ])
         );
         assert!(interpret_motion_panes(false, listing).is_none());
-        assert!(interpret_motion_panes(true, "%1 | lead | bad | 7 | 9 | 1\n").is_none());
-        assert!(interpret_motion_panes(true, "%1 | lead | 42 | 7 | 9\n").is_none());
+        assert!(interpret_motion_panes(true, "%1 | lead | bad\n").is_none());
+        assert!(interpret_motion_panes(true, "%1 | lead\n").is_none());
     }
 
     #[test]
