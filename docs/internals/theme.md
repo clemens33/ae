@@ -22,6 +22,9 @@ ae writes them on its own sessions. The pane borders, the window entries and the
 **window** options — measured on tmux 3.7b, `set-option -t <session>` on one of
 those lands on that session's *current* window and silently leaves the others on
 the global table — so ae stamps each window individually and never touches `-g`.
+The launch also stamps a session-scoped `client-session-changed` hook that
+selects the lead window and pane by pane id; it is a focus rule, not a look
+option, and is present when `theme = off` too.
 
 **Three writers, one job each.** A launch writes the layout, the look facts and
 the attention seed. A rename rewrites the layout and the facts, and leaves every

@@ -1607,6 +1607,7 @@ fn stamp_session(server: &ServerId, env: &Env, shape: &Session, main_pane: &str)
         ),
         &shape.look,
     );
+    let _ = transport::run_tmux_op(&argv(server, &Op::SetClientSessionHook { pane: main_pane }));
     let _ = transport::run_tmux_op(&argv(server, &Op::SelectPane { pane: main_pane }));
 }
 

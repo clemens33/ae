@@ -1046,6 +1046,71 @@ fn a_resume_reruns_with_the_resume_variant() {
     );
 }
 
+/// Every entry into a session returns the client to its lead pane. The hook is
+/// session-scoped through the lead pane id, so a resume installs the new id and
+/// a rename keeps the old one.
+#[test]
+fn the_session_focus_hook_follows_the_lead_through_resume_and_rename() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("focus");
+    let (code, stdout, stderr) = rig.launch(&["--local", "lnfocus"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+
+    let main_pane = || {
+        rig.panes("lnfocus")
+            .into_iter()
+            .find(|(_, slot, _)| slot == "main")
+            .map_or_else(|| panic!("a stamped main pane"), |(pane, _, _)| pane)
+    };
+    let assert_hook = |name: &str, pane: &str| {
+        let target = format!("={name}:");
+        let (_, hooks) = rig.tmux(&["show-hooks", "-t", &target]);
+        // `show-hooks` prints tmux's quoted target form; quotes are not in our argv.
+        let command = format!("select-window -t \"{pane}\" ; select-pane -t \"{pane}\"");
+        assert_eq!(
+            hooks
+                .lines()
+                .filter(|line| {
+                    line.starts_with("client-session-changed[0] ") && line.contains(&command)
+                })
+                .count(),
+            1,
+            "one lead focus hook on {name}: {hooks}"
+        );
+        let (_, global) = rig.tmux(&["show-hooks", "-g"]);
+        assert!(
+            !global.lines().any(|line| line.contains(&command)),
+            "the lead focus hook is not global: {global}"
+        );
+    };
+
+    let first_pane = main_pane();
+    assert_hook("lnfocus", &first_pane);
+
+    assert!(
+        rig.tmux(&["kill-session", "-t", "=lnfocus"]).0,
+        "stop the session before resume"
+    );
+    let (code, stdout, stderr) = rig.launch(&["--local", "lnfocus"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let resumed_pane = main_pane();
+    assert_hook("lnfocus", &resumed_pane);
+
+    let renamed = ae()
+        .env("HOME", &rig.scratch)
+        .env("AE_HOME", &rig.home)
+        .env("TMUX_TMPDIR", &rig.scratch)
+        .env_remove("TMUX")
+        .env_remove("TMUX_PANE")
+        .args([ae::cli::RENAME, "lnfocus", "lnrenamed"])
+        .output()
+        .unwrap_or_else(|why| panic!("the rename should run: {why}"));
+    assert_eq!(renamed.status.code(), Some(0), "rename failed: {renamed:?}");
+    assert_hook("lnrenamed", &resumed_pane);
+}
+
 /// `--worktree` creates a real git worktree; a launch that cannot build its
 /// session directory tears the tmux session down again.
 #[test]

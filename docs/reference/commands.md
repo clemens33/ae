@@ -52,6 +52,9 @@ When a launch name resolves to the session the caller's pane already belongs to,
 prints `you are in '<name>'` and exits 0. Naming another running session still switches
 the current tmux client to it.
 
+Entering a session by any path — fleet-strip click, prefix-s, `ae next`, the orchestrator
+picker, or plain `tmux switch-client`/`attach` — lands on that session's lead pane.
+
 ### Retired words
 
 Three commands were cut rather than ported to the Rust core. Two keep a **refusing arm** in

@@ -3,7 +3,8 @@
 //!
 //! The tmux calls the launch path makes: `new-session`, `set-environment`,
 //! `split-window`, `new-window`,
-//! `select-layout`, `select-pane`, `select-window`, `set-window-option`.
+//! `select-layout`, `select-pane`, `select-window`, `set-hook`,
+//! `set-window-option`.
 //!
 //! Same shape as [`crate::git`] and for the same reason: the inner vector of
 //! [`TmuxArgv`] is private to this module, so no other module can hand the
@@ -102,6 +103,11 @@ pub(crate) enum Op<'a> {
     /// `select-window -t <pane>` — the `focus` helper's window switch, which
     /// `select-pane` alone does not do.
     SelectWindow { pane: &'a str },
+    /// `set-hook -t <pane> client-session-changed <focus command>` — keep a
+    /// client's view on the lead pane whenever it enters this pane's session.
+    /// `set-hook` takes a target-PANE, so the pane id makes this session-scoped
+    /// without a name target (and without prefix matching).
+    SetClientSessionHook { pane: &'a str },
     /// `rename-session -t <target> <name>` — `ae rename`'s tmux half.
     RenameSession { target: &'a str, name: &'a str },
     /// `set-window-option -t <target> <name> <value>` — the monitor window's
@@ -214,6 +220,18 @@ pub(crate) fn argv(server: &ServerId, op: &Op<'_>) -> TmuxArgv {
         Op::SelectWindow { pane } => {
             args.extend(["select-window", "-t", pane].map(ToOwned::to_owned));
         }
+        Op::SetClientSessionHook { pane } => {
+            args.extend(
+                [
+                    "set-hook",
+                    "-t",
+                    pane,
+                    "client-session-changed",
+                    &format!("select-window -t {pane} ; select-pane -t {pane}"),
+                ]
+                .map(ToOwned::to_owned),
+            );
+        }
         Op::RenameSession { target, name } => {
             args.extend(["rename-session", "-t"].map(ToOwned::to_owned));
             args.push(session_target(target));
@@ -315,6 +333,20 @@ mod tests {
                 "-",
                 "-t",
                 "%1"
+            ]
+        );
+    }
+
+    #[test]
+    fn the_session_focus_hook_targets_the_lead_pane_and_keeps_its_command_one_argv_element() {
+        assert_eq!(
+            words(&Op::SetClientSessionHook { pane: "%9" }),
+            vec![
+                "set-hook",
+                "-t",
+                "%9",
+                "client-session-changed",
+                "select-window -t %9 ; select-pane -t %9"
             ]
         );
     }

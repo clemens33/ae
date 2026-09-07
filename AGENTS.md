@@ -86,7 +86,9 @@ Other rules of the loop:
   every verdict alone. The WATCHDOG owns the verdicts, refreshing them every cycle, and
   rewrites or UNSETS the layout only when `@ae_look_stamp` says the look has changed under
   it. Never write a global (`-g`) option, never `#()` in a format, and prove a look change
-  by rendering it in `ae-dev` before it touches a live session.
+  by rendering it in `ae-dev` before it touches a live session. The launch also stamps a
+  session-scoped focus hook by main-pane ID, never by name or globally; it applies with
+  `theme = off` and is not part of the look.
 - **Workers get their own git worktree.** `git worktree add <path> -b <branch> main`.
 - **One writer per file.** Other agents edit this tree concurrently; coordinate before
   reverting or overwriting anything you did not change.
