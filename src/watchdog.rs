@@ -374,17 +374,25 @@ pub enum QuietPane {
     Arm,
     /// The pane still shows only what it showed when the baseline was armed.
     Hold,
+    /// The pane changed once: move the baseline and keep honoring quiet state.
+    Rearm(u64),
     /// Something new landed: a human's reply, or the agent resuming.
     Yield,
 }
 
 /// The escape hatch's verdict for one pane.
 #[must_use]
-pub fn quiet_pane_decision(cur_hash: u64, armed: Option<(&str, u64)>, decl_key: &str) -> QuietPane {
+pub fn quiet_pane_decision(
+    cur_hash: u64,
+    armed: Option<(&str, u64, u8)>,
+    decl_key: &str,
+) -> QuietPane {
     match armed {
-        Some((armed_key, armed_hash)) if armed_key == decl_key => {
+        Some((armed_key, armed_hash, changed_streak)) if armed_key == decl_key => {
             if cur_hash == armed_hash {
                 QuietPane::Hold
+            } else if changed_streak == 0 {
+                QuietPane::Rearm(cur_hash)
             } else {
                 QuietPane::Yield
             }
@@ -1135,7 +1143,7 @@ mod tests {
         assert_eq!(
             quiet_pane_decision(
                 7,
-                Some((&declaration_key(&first), 7)),
+                Some((&declaration_key(&first), 7, 0)),
                 &declaration_key(&second)
             ),
             QuietPane::Arm,
@@ -1624,7 +1632,7 @@ tail line
     }
 
     #[test]
-    fn an_unarmed_pane_arms_then_holds_until_the_pane_changes() {
+    fn an_unarmed_pane_arms_then_holds_until_the_pane_keeps_changing() {
         let decl = "state|2026-08-29T04:00:00Z|waiting-user|opus5:builder|review";
         assert_eq!(
             quiet_pane_decision(7, None, decl),
@@ -1632,18 +1640,28 @@ tail line
             "no baseline yet"
         );
         assert_eq!(
-            quiet_pane_decision(7, Some((decl, 7)), decl),
+            quiet_pane_decision(7, Some((decl, 7, 0)), decl),
             QuietPane::Hold
         );
         assert_eq!(
-            quiet_pane_decision(9, Some((decl, 7)), decl),
-            QuietPane::Yield
+            quiet_pane_decision(9, Some((decl, 7, 0)), decl),
+            QuietPane::Rearm(9)
+        );
+        assert_eq!(
+            quiet_pane_decision(11, Some((decl, 9, 1)), decl),
+            QuietPane::Yield,
+            "two consecutive changes yield"
+        );
+        assert_eq!(
+            quiet_pane_decision(9, Some((decl, 9, 1)), decl),
+            QuietPane::Hold,
+            "change then same holds and lets the daemon reset streak"
         );
         // A NEW declaration re-arms even against a baseline that is still held —
         // the key is the full tuple, so two same-second declarations differ.
         let redeclared = "state|2026-08-29T04:00:00Z|waiting-user|opus5:builder|now blocked";
         assert_eq!(
-            quiet_pane_decision(7, Some((decl, 7)), redeclared),
+            quiet_pane_decision(7, Some((decl, 7, 0)), redeclared),
             QuietPane::Arm
         );
     }

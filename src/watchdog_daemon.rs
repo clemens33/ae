@@ -104,9 +104,9 @@ pub struct PaneState {
     pub unknown_streak: u32,
     /// The persistent-unknown alert is raised once per streak, not per cycle.
     pub unknown_alerted: bool,
-    /// The armed quiet baseline: the declaration's full-tuple key and the hash
-    /// the pane settled on.
-    pub quiet_base: Option<(String, u64)>,
+    /// The armed quiet baseline: declaration key, settled hash, and the number
+    /// of consecutive cycles whose hash differed from the prior baseline.
+    pub quiet_base: Option<(String, u64, u8)>,
     /// The orchestrator sweep branch's carry.
     pub sweep: SweepState,
 }
@@ -1838,10 +1838,23 @@ impl Cycle<'_> {
         let armed = state
             .quiet_base
             .as_ref()
-            .map(|(armed_key, armed_hash)| (armed_key.as_str(), *armed_hash));
+            .map(|(armed_key, armed_hash, changed_streak)| {
+                (armed_key.as_str(), *armed_hash, *changed_streak)
+            });
         match quiet_pane_decision(query.hash, armed, &key) {
-            QuietPane::Hold => Some(kind),
+            QuietPane::Hold => {
+                state.quiet_base = Some((key, query.hash, 0));
+                Some(kind)
+            }
             QuietPane::Yield => None,
+            QuietPane::Rearm(hash) => {
+                let changed_streak = state
+                    .quiet_base
+                    .as_ref()
+                    .map_or(1, |(_, _, streak)| streak.saturating_add(1));
+                state.quiet_base = Some((key, hash, changed_streak));
+                Some(kind)
+            }
             QuietPane::Arm => {
                 if !quiet_cycle.step(query.index) {
                     return None; // budget spent this cycle; try again next one
@@ -1849,7 +1862,7 @@ impl Cycle<'_> {
                 let samples = self.settle(query.pane_id);
                 let borrowed: Vec<&str> = samples.iter().map(String::as_str).collect();
                 let settled = quiet_stabilize(&borrowed, self.knobs.quiet_tries)?;
-                state.quiet_base = Some((key, settled));
+                state.quiet_base = Some((key, settled, 0));
                 Some(kind)
             }
         }
@@ -2181,12 +2194,12 @@ fn bar_glyph(dead: usize, stale: usize, icons: bool) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{
-        ACTOR, Carry, Continuation, Effect, HEARTBEAT_NAME, Journal, Knobs, MissingState,
-        MotionState, MotionVerdict, Observation, PaneState, Rebind, SWEEP_PROMPT,
-        UNKNOWN_ALERT_CYCLES, Verdict, account, adopt_server, age_secs, bar_glyph, continuation,
-        entry_mut, heartbeat_mtime, is_meta_agent, last_actor_event_age, motion_cadence,
-        motion_failure, motion_ticker_enabled, nudge_text, read_events, rebind, record_nudge,
-        roster_label, roster_line, session_name, stale_display, sweep_effects,
+        ACTOR, Carry, Continuation, Cycle, Effect, HEARTBEAT_NAME, Journal, Knobs, MissingState,
+        MotionState, MotionVerdict, Observation, PaneState, QuietCycle, QuietQuery, Rebind,
+        SWEEP_PROMPT, SendHelper, UNKNOWN_ALERT_CYCLES, Verdict, account, adopt_server, age_secs,
+        bar_glyph, continuation, entry_mut, heartbeat_mtime, is_meta_agent, last_actor_event_age,
+        motion_cadence, motion_failure, motion_ticker_enabled, nudge_text, read_events, rebind,
+        record_nudge, roster_label, roster_line, session_name, stale_display, sweep_effects,
     };
     use super::{Look, Mark, PaneMark, session_mark};
     use crate::events::Event;
@@ -2196,6 +2209,7 @@ mod tests {
     use crate::tmux::StopProbe;
     use crate::watchdog::{
         Heartbeat, QuietKind, SweepAlert, SweepEffect, SweepObservation, SweepVerdict, WedgeDetail,
+        declaration_key,
     };
     use std::io::ErrorKind;
     use std::path::{Path, PathBuf};
@@ -2762,6 +2776,67 @@ mod tests {
             !booked.effects.contains(&Effect::Nudge),
             "a quiet agent is not nudged"
         );
+    }
+
+    #[test]
+    fn quiet_repaint_rearms_once_then_two_changes_activate() {
+        let scratch = Scratch::new("quiet-streak");
+        let helper = SendHelper::for_session(&scratch.0);
+        let server = ServerId::Ambient;
+        let cycle = Cycle {
+            knobs: Knobs::default(),
+            meta_dir: &scratch.0,
+            helper: &helper,
+            server: &server,
+            session: "demo",
+            goal: None,
+            roster: Vec::new(),
+            meta_agent: false,
+        };
+        let event = Event::parse_line(
+            r#"{"ts":"2026-08-29T04:00:00Z","actor":"opus5:builder","action":"state","ref":"waiting-user","summary":"review"}"#,
+        )
+        .expect("well-formed state event");
+        let key = declaration_key(&event);
+        let events = vec![event];
+        let mut state = PaneState {
+            quiet_base: Some((key.clone(), 7, 0)),
+            ..PaneState::default()
+        };
+        let mut quiet_cycle = QuietCycle::new(4);
+        let mut query = QuietQuery {
+            events: &events,
+            agent: "opus5:builder",
+            hash: 9,
+            index: 1,
+            pane_id: "%1",
+        };
+
+        let first = cycle.resolve_quiet(&query, &mut state, &mut quiet_cycle);
+        assert_eq!(first, Some(QuietKind::WaitingUser));
+        assert_eq!(state.quiet_base, Some((key.clone(), 9, 1)));
+        let mut observed = seen();
+        observed.hash = 9;
+        observed.quiet = first;
+        assert_eq!(
+            account(&PaneState::default(), &observed, &Knobs::default()).verdict,
+            Verdict::Quiet(QuietKind::WaitingUser)
+        );
+
+        query.hash = 11;
+        let second = cycle.resolve_quiet(&query, &mut state, &mut quiet_cycle);
+        assert_eq!(second, None);
+        observed.hash = 11;
+        observed.quiet = second;
+        assert_eq!(
+            account(&state, &observed, &Knobs::default()).verdict,
+            Verdict::Active
+        );
+
+        query.hash = 9;
+        let settled = cycle.resolve_quiet(&query, &mut state, &mut quiet_cycle);
+        assert_eq!(settled, Some(QuietKind::WaitingUser));
+        assert_eq!(state.quiet_base, Some((key, 9, 0)));
     }
 
     #[test]
@@ -3646,7 +3721,7 @@ mod tests {
             state.throttle_streak = 4;
             state.prev_hash = Some(99);
             state.last_hash_change = Some(1_000);
-            state.quiet_base = Some(("alpha-declaration".to_owned(), 99));
+            state.quiet_base = Some(("alpha-declaration".to_owned(), 99, 0));
             state.sweep.wedge_alerted = true;
             state.sweep.unreachable_alerted = true;
             state.sweep.fails = 5;
