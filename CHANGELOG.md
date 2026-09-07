@@ -1,6 +1,31 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [v2026.9.11] - 2026-09-07
+
+### Bug Fixes
+
+- Fix watchdog quiet pane repaint handling
+
+### Other
+
+- Make tmux session targets exact
+
+Target class | Sites | Treatment
+session names | marker, has/kill, pane enumeration, focus, environment, rename | =name via session_target
+session compounds | session options, look, split/new-window/layout, window rename, monitor | =name:... via session_target
+session IDs | kill-session | =ID via session_target
+human attach hints | launch and picker | shell-safe "=name"
+pane/window IDs | capture, send, select, option writes | unchanged
+creation names | new-session -s | unchanged
+- Animate the fleet strip with working sessions
+
+Cache pane and fleet observations for five 100 ms frames, while writing only changed static strips and shared Working frames.
+
+ae-dev measurement, 60.048 s, attached, 2 local Working panes plus 1 Working session:
+cadence | watchdog CPU avg/max | tmux CPU avg/max | pane fps | fleet fps
+250 ms baseline | 0.9% / 2.0% | not recorded | nominal 4 | static
+100 ms | 1.047% / 3.300% | 0.830% / 2.700% | 9.059 | 9.059
 ## [v2026.9.10] - 2026-09-07
 
 ### Bug Fixes
