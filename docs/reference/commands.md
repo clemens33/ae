@@ -272,10 +272,13 @@ $ ae next --attach
 Bare `ae orchestrator` starts or reattaches the local session named
 `orchestrator`: the orchestrator seat. Its local overlay is always
 `~/.ae/orchestrator.config`, independent of the current directory's
-`.ae/config`. Ae seeds that file from the embedded template on first run; edit
-it to choose the harness profile or customize the role. The seat is pinned
-first in the status bar's fleet strip, marked `◆`. The `--popup` form is the
-picker, next.
+`.ae/config`. Set its profile globally with `[roster] orchestrator = <profile>`;
+ae refuses before writing the seat when that row is missing. Ae seeds the seat
+file from the embedded template on first run; the template carries only
+workspace and prompt settings. Existing seat files that still carry
+`[profiles]`/`[roster]` keep working, with local values winning. Add
+`--no-attach` to build without attaching. The seat is pinned first in the status
+bar's fleet strip, marked `◆`. The `--popup` form is the picker, next.
 
 ## `ae orchestrator --popup`
 
@@ -469,9 +472,12 @@ ae orchestrator
 
 The bare command seeds `~/.ae/orchestrator.config` on first run, then starts or
 reattaches the local seat with that file as its overlay. Project-local
-`.ae/config` files never affect the seat. The generated config carries the role
-prompt inline; `CHARTER.md` is its readable reference, not a guessed runtime
-path.
+`.ae/config` files never affect the seat. Bind the profile globally with
+`[roster] orchestrator = <profile>`; a missing row refuses before the seat file
+is written. Use `--no-attach` to build without attaching. The generated config
+carries workspace and role prompt only; old generated configs with
+`[profiles]`/`[roster]` remain valid. `CHARTER.md` is its readable reference,
+not a guessed runtime path.
 
 **Autostart.** A launch may start the configured Telegram bridge. The
 orchestrator is started explicitly with `ae orchestrator`; it is never a

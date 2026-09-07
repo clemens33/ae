@@ -22,7 +22,7 @@ fable5 = "claude --permission-mode bypassPermissions --model fable --effort xhig
 sonnet5 = "claude --permission-mode bypassPermissions --model sonnet --effort low"
 gpt56sol = "codex --yolo -m gpt-5.6-sol -c model_reasoning_effort=xhigh"
 gpt56terra = "codex --yolo -m gpt-5.6-terra -c model_reasoning_effort=xhigh"
-gpt56luna = "codex -m gpt-5.6-luna -c model_reasoning_effort=low -a never"
+gpt56luna = "codex -m gpt-5.6-luna -c model_reasoning_effort=xhigh -a never"
 opencode = "opencode"
 
 [roster]
@@ -34,6 +34,7 @@ opencode = "opencode"
 # spawn <name> --using <profile> [prompt].
 lead = fable5
 colead = gpt56sol
+orchestrator = gpt56luna
 
 [workspace]
 # main = the standing main seat (a [roster] NAME) — under lead-pair a technical lifecycle

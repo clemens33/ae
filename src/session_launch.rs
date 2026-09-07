@@ -538,6 +538,30 @@ fn launch(
     {
         return Ok(code);
     }
+    if seeds_orchestrator_config && let Some(global) = env.global.as_deref() {
+        // The global roster chooses the seat's profile. Check it after the
+        // global first-run seed (whose template carries the default row), but
+        // before the dedicated seat file or any session state is written.
+        let local = env.local.as_deref().filter(|path| node_exists(path));
+        let cfg = match config::read_identity(Some(global), local) {
+            Ok(cfg) => cfg,
+            Err(why) => {
+                writeln!(err, "{why}")?;
+                return Ok(EXIT_FAILED);
+            }
+        };
+        if cfg
+            .roster_profile(crate::orchestrator::ORCHESTRATOR_SESSION)
+            .is_none()
+        {
+            writeln!(
+                err,
+                "ae orchestrator: no profile for the seat — add \"orchestrator = <profile>\" under [roster] in {}",
+                global.display()
+            )?;
+            return Ok(EXIT_FAILED);
+        }
+    }
     if seeds_orchestrator_config
         && let Some(code) = crate::seed_default_config(
             &orchestrator_config,

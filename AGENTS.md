@@ -291,6 +291,7 @@ profile = "shell command"
 
 [roster]
 name = profile
+orchestrator = profile  # the seat ae orchestrator runs
 
 [workspace]
 main = name

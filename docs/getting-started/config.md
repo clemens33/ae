@@ -8,6 +8,7 @@
 [profiles]
 claude = "claude --permission-mode bypassPermissions --model claude-opus-4-8"
 codex = "codex --yolo -m gpt-5.5 -c model_reasoning_effort=high"
+gpt56luna = "codex -m gpt-5.6-luna -c model_reasoning_effort=xhigh -a never"
 gemini = "gemini --yolo -m gemini-2.5-pro"
 grokbuild = "grok --always-approve -m grok-4.6 --effort high"
 opencode = "opencode -m google/gemini-3-pro-preview"
@@ -15,6 +16,7 @@ opencode = "opencode -m google/gemini-3-pro-preview"
 [roster]
 lead = claude
 colead = codex
+orchestrator = gpt56luna
 
 [workspace]
 main = lead
@@ -71,7 +73,11 @@ and the same profile can back more than one name. Every seat in
 `[workspace] main`/`workers` must be bound here — ae refuses the launch
 otherwise and lists every violation. A name bound here but not seated is legal:
 `ae <session> use <name>` starts it as main instead of the configured one. Spawn
-on demand with `spawn <name> --using <profile>`.
+on demand with `spawn <name> --using <profile>`. The optional orchestrator seat
+also uses this global roster: add `orchestrator = <profile>` before running
+`ae orchestrator`; its dedicated local overlay no longer chooses the profile.
+Old seat files that still carry `[profiles]`/`[roster]` remain valid, with local
+values winning.
 
 ## `[workspace]`
 

@@ -28,7 +28,7 @@ fable5 = "claude --permission-mode bypassPermissions --model fable --effort xhig
 sonnet5 = "claude --permission-mode bypassPermissions --model sonnet --effort low"
 gpt56sol = "codex --yolo -m gpt-5.6-sol -c model_reasoning_effort=xhigh"
 gpt56terra = "codex --yolo -m gpt-5.6-terra -c model_reasoning_effort=xhigh"
-gpt56luna = "codex -m gpt-5.6-luna -c model_reasoning_effort=low -a never"
+gpt56luna = "codex -m gpt-5.6-luna -c model_reasoning_effort=xhigh -a never"
 opencode = "opencode"
 
 [roster]
@@ -40,6 +40,7 @@ opencode = "opencode"
 # spawn <name> --using <profile> [prompt].
 lead = fable5
 colead = gpt56sol
+orchestrator = gpt56luna
 
 [workspace]
 # main = the standing main seat (a [roster] NAME) — under lead-pair a technical lifecycle
@@ -348,10 +349,16 @@ pub fn route(preamble: &Preamble, argv: &[String], pane: Option<&str>) -> Route 
         Some("status") => Route::Retired(RETIRED_STATUS),
         // The BARE word is a launch of the orchestrator seat, which needs the
         // preamble like any launch; with a tail (`--popup`) it is the core's picker.
-        Some("orchestrator") if tail().is_empty() => {
-            Route::Launch(crate::orchestrator::seat_launch_args())
+        Some("orchestrator") => {
+            let tail = tail();
+            if crate::orchestrator::launch_tail_is_valid(&tail) {
+                let mut launch = crate::orchestrator::seat_launch_args();
+                launch.extend(tail);
+                Route::Launch(launch)
+            } else {
+                Route::Core(with_head("orchestrator", &tail))
+            }
         }
-        Some("orchestrator") => Route::Core(with_head("orchestrator", &tail())),
         Some("hub") => Route::Retired(RETIRED_ORCHESTRATOR),
         Some("transfer") => Route::Retired(RETIRED_TRANSFER),
         Some("help" | "-h" | "--help") => Route::Help,
@@ -483,6 +490,21 @@ mod tests {
             route(&preamble(), &argv(&["orchestrator"]), None),
             Route::Launch(argv(&["orchestrator"]))
         );
+        for flag in ["--attach", "--no-attach", "--inside-tmux", "--no-autostart"] {
+            assert_eq!(
+                route(&preamble(), &argv(&["orchestrator", flag]), None),
+                Route::Launch(argv(&["orchestrator", flag]))
+            );
+        }
+        for flag in ["--popup", "--copy", "--worktree", "--from", "use", "--nope"] {
+            assert!(
+                matches!(
+                    route(&preamble(), &argv(&["orchestrator", flag]), None),
+                    Route::Core(_)
+                ),
+                "{flag} must remain a core usage error"
+            );
+        }
     }
 
     #[test]
@@ -676,6 +698,8 @@ mod tests {
         assert!(DEFAULT_CONFIG.contains("\n[roster]\n"));
         assert!(DEFAULT_CONFIG.contains("\n[workspace]\n"));
         assert!(DEFAULT_CONFIG.contains("\n[prompt]\n"));
+        assert!(DEFAULT_CONFIG.contains("orchestrator = gpt56luna\n"));
+        assert!(DEFAULT_CONFIG.contains("model_reasoning_effort=xhigh"));
         assert!(DEFAULT_CONFIG.ends_with("Prefer TypeScript.\"\n"));
     }
 }

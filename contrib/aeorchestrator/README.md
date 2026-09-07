@@ -13,10 +13,12 @@ ae orchestrator
 ```
 
 On first run, ae seeds `~/.ae/orchestrator.config` from `orchestrator.config`
-and reads it as the seat's local overlay. It never reads the current project's
-`.ae/config` for this launch. Edit the seeded file to change the profile or
-local preferences. `CHARTER.md` is the readable copy of the role contract; it
-is not loaded from a guessed path.
+and reads it as the seat's local overlay. The profile comes from the global
+`[roster] orchestrator = <profile>` row; it never reads the current project's
+`.ae/config` for this launch. Existing seat files that still carry `[profiles]`
+or `[roster]` keep working, with local values winning. Edit the seeded file to
+change local preferences. `CHARTER.md` is the readable copy of the role
+contract; it is not loaded from a guessed path.
 
 ## Role
 
@@ -41,8 +43,9 @@ its sweep. The seat is started explicitly; it is never an autostart companion.
 | `orchestrator.config` | Embedded first-run config with the role prompt inline. |
 | `CHARTER.md` | Short human-readable role contract. |
 
-Edit `~/.ae/orchestrator.config` to choose another profile or add local
-preferences. Keep the role boundaries intact.
+Edit `~/.ae/config` to choose another profile, or edit
+`~/.ae/orchestrator.config` for local preferences. Keep the role boundaries
+intact.
 
 ## Dependencies
 

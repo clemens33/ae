@@ -596,7 +596,7 @@ fn write_competing_orchestrator_configs(rig: &Rig) {
     assert!(
         std::fs::write(
             rig.config(),
-            "[profiles]\nother = \"claude\"\n\n[roster]\nlead = other\nworker = other\n\n\
+            "[profiles]\nother = \"claude\"\n\n[roster]\nlead = other\nworker = other\norchestrator = other\n\n\
              [workspace]\nmain = lead\nworkers = worker\nlayout = lead-pair\nwatchdog = false\n",
         )
         .is_ok(),
@@ -649,6 +649,8 @@ fn the_bare_orchestrator_seeds_its_own_config_and_seats_exactly_one_agent() {
         .unwrap_or_else(|why| panic!("{}: {why}", config.display()));
     assert!(seeded.contains("main = orchestrator"), "{seeded}");
     assert!(seeded.contains("workers = \"\""), "{seeded}");
+    assert!(!seeded.contains("\n[profiles]\n"), "{seeded}");
+    assert!(!seeded.contains("\n[roster]\n"), "{seeded}");
     let meta_path = rig.sessions().join("orchestrator").join("meta");
     let meta = std::fs::read_to_string(&meta_path)
         .unwrap_or_else(|why| panic!("{}: {why}", meta_path.display()));
@@ -710,6 +712,77 @@ fn the_bare_orchestrator_seeds_its_own_config_and_seats_exactly_one_agent() {
         customized,
         "a resume preserves the human's config"
     );
+}
+
+/// A fresh home seeds the global roster first, then the seat overlay, before
+/// building the one named orchestrator seat.
+#[test]
+fn a_fresh_orchestrator_seeds_global_then_seat_and_builds_without_attach() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::new("orch-fresh");
+    let (bin, marker) = rig.fake_profiles();
+    let (code, stdout, stderr) =
+        rig.run_on_with_path(Some(&rig.sock), &bin, &["orchestrator", "--no-attach"]);
+    assert_eq!(code, Some(0), "{stdout}{stderr}");
+    let global_at = stderr
+        .find("Created default config at")
+        .unwrap_or_else(|| panic!("global seed missing: {stderr}"));
+    let seat_at = stderr
+        .find("Created orchestrator config at")
+        .unwrap_or_else(|| panic!("seat seed missing: {stderr}"));
+    assert!(
+        global_at < seat_at,
+        "global seed must precede seat seed: {stderr}"
+    );
+    assert!(rig.config().exists(), "global config missing");
+    let seat = rig.home.join("orchestrator.config");
+    let seeded = std::fs::read_to_string(&seat).unwrap_or_default();
+    assert!(!seeded.contains("\n[profiles]\n"), "{seeded}");
+    assert!(!seeded.contains("\n[roster]\n"), "{seeded}");
+    let meta = rig.sessions().join("orchestrator").join("meta");
+    let text = std::fs::read_to_string(&meta).unwrap_or_default();
+    assert!(
+        text.lines().any(|line| line == "seat.main=orchestrator"),
+        "{text}"
+    );
+    assert_agent_launched(
+        &marker,
+        "the globally bound default profile reached the seat",
+    );
+}
+
+/// A custom global config must bind the dedicated seat before ae writes its
+/// local overlay or session state.
+#[test]
+fn the_bare_orchestrator_refuses_without_a_global_profile_row() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::new("orch-missing");
+    assert!(std::fs::create_dir_all(&rig.home).is_ok(), "an ae home");
+    let global = "[profiles]\nidle = \"sleep 600\"\n\n[roster]\nlead = idle\n\n[workspace]\nmain = lead\nwatchdog = false\n";
+    assert!(
+        std::fs::write(rig.config(), global).is_ok(),
+        "a global config"
+    );
+    let (code, stdout, stderr) = rig.run_on(Some(&rig.sock), &["orchestrator"]);
+    assert_eq!(code, Some(1), "{stdout}{stderr}");
+    assert_eq!(
+        stderr,
+        format!(
+            "ae orchestrator: no profile for the seat — add \"orchestrator = <profile>\" under [roster] in {}\n",
+            rig.config().display()
+        )
+    );
+    assert!(stdout.is_empty(), "{stdout}");
+    assert_eq!(
+        std::fs::read_to_string(rig.config()).unwrap_or_default(),
+        global
+    );
+    assert!(!rig.home.join("orchestrator.config").exists());
+    assert!(!rig.sessions().join("orchestrator").exists());
 }
 
 /// An underscore word nobody serves fails CLOSED for the same reason.

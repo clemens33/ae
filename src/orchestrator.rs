@@ -20,11 +20,15 @@ use crate::tmux::{Menu, MenuAction, MenuItem, jump_command, switch_command};
 
 /// `--help`, verbatim.
 pub const USAGE: &str = "\
-Usage: ae orchestrator [--popup]
+Usage: ae orchestrator [--popup | --attach | --no-attach | --inside-tmux | --no-autostart]
 
 Bare `ae orchestrator` starts or reattaches the orchestrator seat from its
 dedicated config under ae's state home. With `--popup`, pick a session, then
 an agent, in a tmux menu.
+
+The bare seat also accepts `_launch`'s `--attach`, `--no-attach`,
+`--inside-tmux` and `--no-autostart` flags. Working-directory and archive flags
+are picker usage errors.
 
 The menu lists every running ae session in attention order — dead, stale,
 waiting-user, blocked, throttled, unanswered, then the quiet ones by name —
@@ -113,6 +117,19 @@ pub fn parse(tail: &[String]) -> Result<Args, Usage> {
         }
     }
     Ok(args)
+}
+
+/// Whether a bare seat launch tail consists only of `_launch` preamble flags.
+/// Shape and lineage flags are not accepted because the seat has one fixed
+/// local session and working directory mode.
+#[must_use]
+pub fn launch_tail_is_valid(tail: &[String]) -> bool {
+    tail.iter().all(|word| {
+        matches!(
+            word.as_str(),
+            "--attach" | "--no-attach" | "--inside-tmux" | "--no-autostart"
+        )
+    })
 }
 
 /// The user-facing launch tail for the canonical orchestrator seat.
@@ -545,7 +562,8 @@ pub fn attach_command(server: &crate::inventory::ServerId, session: &str) -> Str
 #[cfg(test)]
 mod tests {
     use super::{
-        AgentPane, Args, KEYS, Located, Placement, ROW_CAP, Usage, attach_command, menu, parse,
+        AgentPane, Args, KEYS, Located, Placement, ROW_CAP, Usage, attach_command,
+        launch_tail_is_valid, menu, parse,
     };
     use crate::attention::Reason;
     use crate::digest::{AgentEntry, SessionEntry, Status};
@@ -636,6 +654,17 @@ mod tests {
             Err(Usage::Unknown("--nope".to_owned()))
         );
         assert_eq!(Usage::Unknown("--nope".to_owned()).code(), 2);
+    }
+
+    #[test]
+    fn the_bare_seat_accepts_only_launch_preamble_flags() {
+        assert!(launch_tail_is_valid(&[]));
+        for flag in ["--attach", "--no-attach", "--inside-tmux", "--no-autostart"] {
+            assert!(launch_tail_is_valid(&[flag.to_owned()]), "{flag}");
+        }
+        for flag in ["--popup", "--copy", "--worktree", "--from", "use", "--nope"] {
+            assert!(!launch_tail_is_valid(&[flag.to_owned()]), "{flag}");
+        }
     }
 
     #[test]

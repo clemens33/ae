@@ -94,8 +94,11 @@ watch -n 10 'ae list'          # live dashboard
 
 The bare `ae orchestrator` command starts one seat using
 `~/.ae/orchestrator.config`, independent of the current directory's
-`.ae/config`. Ae seeds that dedicated config on first run; edit it to choose the
-harness profile or customize the role.
+`.ae/config`. Bind its profile globally with `orchestrator = <profile>` under
+`[roster]`; ae seeds the dedicated config on first run and refuses before
+writing when the row is missing. Use `--no-attach` to build the seat without
+attaching. Existing dedicated configs that still carry `[profiles]`/`[roster]`
+remain compatible, with local values winning.
 
 Bind the picker to a key (ae needs tmux 3.4+); `switch-client -l` (prefix + `L`) is the
 way back:
@@ -168,12 +171,14 @@ Agents call these automatically when you ask them to collaborate. Full helper ca
 [profiles]
 claude = "claude --permission-mode bypassPermissions --model opus"
 codex = "codex --yolo -m gpt-5.6-sol -c model_reasoning_effort=high"
+gpt56luna = "codex -m gpt-5.6-luna -c model_reasoning_effort=xhigh -a never"
 grok = "grok --always-approve -m grok-4.6 --effort high"
 agy = "agy --dangerously-skip-permissions"   # any CLI works — agy has no special ae integration
 
 [roster]
 lead = claude
 reviewer = codex
+orchestrator = gpt56luna
 
 [workspace]
 main = lead
