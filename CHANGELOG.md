@@ -1,6 +1,12 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [v2026.9.12] - 2026-09-07
+
+### Other
+
+- Configure orchestrator profile globally
+- Scope orchestrator identity to its seat overlay
 ## [v2026.9.11] - 2026-09-07
 
 ### Bug Fixes
