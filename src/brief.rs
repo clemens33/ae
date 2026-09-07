@@ -192,6 +192,8 @@ pub struct AgentLine {
     pub age_secs: Option<i64>,
     /// The reason it declared with the state, empty when it gave none.
     pub reason: String,
+    /// The watchdog-derived attention class for this agent, when exact.
+    pub attention: Option<Reason>,
 }
 
 /// One entry of `needs you:` — an EXPLICIT claim on the human's attention.
@@ -212,6 +214,8 @@ pub enum Need {
     Unanswered {
         /// `ask` or `review`.
         kind: String,
+        /// The request id (`ae-...`).
+        reference: String,
         /// Who asked.
         from: String,
         /// Who was asked.
@@ -398,6 +402,7 @@ fn push_need(out: &mut String, need: &Need) {
         }
         Need::Unanswered {
             kind,
+            reference: _,
             from,
             to,
             age_secs,
@@ -616,6 +621,7 @@ fn agent_lines(entry: &SessionEntry, container: &[u8], now: Timestamp) -> Vec<Ag
                 reason: declared
                     .map(|latest| String::from_utf8_lossy(&latest.reason).into_owned())
                     .unwrap_or_default(),
+                attention: entry.attention_is_exact().then_some(agent.reason).flatten(),
             }
         })
         .collect()
@@ -641,6 +647,7 @@ fn needs(agents: &[AgentLine], container: &[u8], now: Timestamp) -> Vec<Need> {
         let text = |field: &[u8]| String::from_utf8_lossy(field).into_owned();
         needs.push(Need::Unanswered {
             kind: text(&request.kind),
+            reference: text(&request.id),
             from: text(&request.from),
             to: text(&request.to),
             age_secs: Timestamp::parse(&text(&request.at))
@@ -787,6 +794,7 @@ mod tests {
             },
             Need::Unanswered {
                 kind: "ask".to_owned(),
+                reference: "ae-20260907T000000Z-example".to_owned(),
                 from: "lead".to_owned(),
                 to: "colead".to_owned(),
                 age_secs: 2_460,
@@ -815,12 +823,14 @@ mod tests {
                 state: "working".to_owned(),
                 age_secs: Some(180),
                 reason: String::new(),
+                attention: None,
             },
             AgentLine {
                 name: "brief".to_owned(),
                 state: "blocked".to_owned(),
                 age_secs: Some(720),
                 reason: "codex read".to_owned(),
+                attention: Some(Reason::Blocked),
             },
         ];
         let rendered = render(&[entry]);

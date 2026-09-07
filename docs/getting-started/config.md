@@ -90,7 +90,7 @@ Old seat files that still carry `[profiles]`/`[roster]` are ignored for identity
 | `copy`    | Working directory mode (see below)                   | `local`       |
 | `watchdog`    | Auto-start the watchdog (`true` / `false`)            | `true`        |
 | `orchestrator` | Mark this session as the fleet overview seat (`true`); grants its panes the bare human-authority `relay` helper | `false`       |
-| `sweep` | Persist this orchestrator's sweep cadence in seconds (`0` disables; positive values below `60` become `60`) | `AE_WATCHDOG_SWEEP_SEC`, then `300` |
+| `sweep` | Persist this orchestrator's changed-overview minimum spacing in seconds (`0` disables; positive values below `60` become `60`) | `AE_WATCHDOG_SWEEP_SEC`, then `120` |
 | `auto_upgrade` | Let an installed ae quietly check for and apply strictly newer releases (`on` / `off`); global config only | `on` |
 | `palette` | `darcula` (the JetBrains dark), `a` (neutral dark), `b` (warmer neutrals) | `darcula` |
 | `icons`   | `off` draws the ASCII fallback instead of the glyph set | `on`          |
@@ -181,7 +181,7 @@ The watchdog reads its tunables from environment variables (set them in the sess
 | `AE_WATCHDOG_MAX_NUDGES` | 2 | Nudges before escalating to alert |
 | `AE_WATCHDOG_THROTTLE_ALERT_CYCLES` | 5 | Cycles of continuous upstream throttle before alert |
 | `AE_WATCHDOG_TG_SUPERVISE_SEC` | 120 | Telegram-bridge revive cadence in seconds (`0` disables) |
-| `AE_WATCHDOG_SWEEP_SEC` | 300 | Orchestrator sweep fallback when `[workspace] sweep` is absent or invalid (`0` falls back to the normal watchdog; positive values below `60` become `60`) |
+| `AE_WATCHDOG_SWEEP_SEC` | 120 | Orchestrator changed-overview minimum-spacing fallback when `[workspace] sweep` is absent or invalid (`0` falls back to the normal watchdog; positive values below `60` become `60`) |
 | `AE_WATCHDOG_SWEEP_RETRY_SEC` | 30 | After an UNDELIVERED sweep nudge, retry this soon instead of waiting a full `AE_WATCHDOG_SWEEP_SEC` (clamped to it; floor — lands on the next poll) |
 | `AE_WATCHDOG_SWEEP_RETRY_MAX` | 6 | Fast retries allowed before falling back to normal cadence and raising one `meta-agent unreachable` alert |
 

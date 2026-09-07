@@ -506,11 +506,10 @@ fn no_notify_prints_without_delivering_and_without_marking_anything_notified() {
 }
 
 #[test]
-fn the_sweep_command_the_charter_prints_is_the_one_the_binary_accepts() {
-    // The charter is INSTRUCTION, not documentation: the orchestrator runs the
-    // command in its fence verbatim.
+fn the_charter_pins_the_watchdog_overview_turn_and_retires_the_model_sweep() {
     let charter = Path::new(env!("CARGO_MANIFEST_DIR")).join("contrib/aeorchestrator/CHARTER.md");
     let text = fs::read_to_string(&charter).expect("the charter ships with the repo");
+    let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
     let overview = "NEEDS YOU\n  aedev:colead   waiting-user  FOCUS export must be enabled in Google Console (12m)\n  dotfiles:lead  unanswered    ask ae-…-9d07aac0 from reviewer (1d)\nWORKING\n  aedev     lead    landing names; inside; server1 (goal: #113 orchestrator…)\n  wikiskill lead    …\nQUIET\n  dotfiles2 (done 20m)   400 (done 2h)";
     assert!(
         text.contains(overview),
@@ -521,8 +520,8 @@ fn the_sweep_command_the_charter_prints_is_the_one_the_binary_accepts() {
         "the overview belongs in the seat pane, not Telegram"
     );
     assert!(
-        text.contains("stay `done` between sweeps"),
-        "idle between periodic sweeps is declared, not watchdog noise"
+        text.contains("stay `done` between changes"),
+        "idle between changed overviews is declared, not watchdog noise"
     );
     assert!(
         text.contains("Treat the human's pane input as a mind monologue to route"),
@@ -538,70 +537,17 @@ fn the_sweep_command_the_charter_prints_is_the_one_the_binary_accepts() {
         text.contains("Use only ae to orchestrate"),
         "the seat has no general shell or tool role"
     );
-    let quoted = text
-        .lines()
-        .map(str::trim)
-        .find(|line| line.starts_with("ae ") && line.contains(ae::cli::MONITOR))
-        .unwrap_or_else(|| panic!("the charter must print the sweep command"));
-    assert_eq!(
-        quoted,
-        format!(
-            "ae {} {} __HELPERS_DIR__ --no-notify",
-            ae::cli::MONITOR,
-            ae::monitor::SWEEP
-        ),
-        "the charter's fence and the product's argv are one contract"
-    );
-
-    // And it RUNS: the same argv, with the placeholder resolved.
-    let scratch = scratch("charter");
-    require_tmux(&scratch);
-    let socket = scratch.join("s");
-    let _cleanup = Cleanup {
-        socket: socket.clone(),
-        scratch: scratch.clone(),
-    };
-    let root = scratch.join("home");
-    let log = scratch.join("said");
-    let dir = plant_session(&root, "moncc", &socket, &[&declared("lead", "blocked")]);
-    plant_say(&dir, &log, 0);
-    let pane = start_session(&socket, &scratch, "moncc");
-
-    let words: Vec<String> = quoted
-        .split_whitespace()
-        .skip(1)
-        .map(|word| {
-            if word == "__HELPERS_DIR__" {
-                dir.to_string_lossy().into_owned()
-            } else {
-                word.to_owned()
-            }
-        })
-        .collect();
-    let out = ae()
-        .env("AE_HOME", &root)
-        // From the orchestrator's own pane, which is where the charter's
-        // instruction is carried out.
-        .env("TMUX", format!("{},fixture,0", socket.display()))
-        .env("TMUX_PANE", &pane)
-        .args(&words)
-        .output()
-        .expect("the ae binary should run");
-    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
-    assert_eq!(out.status.code(), Some(0), "{stderr}");
-    assert_eq!(
-        String::from_utf8_lossy(&out.stdout),
-        "⚠ moncc · lead needs you: blocked\n",
-        "the charter's own command, run: {stderr}"
-    );
-    assert_eq!(
-        said(&log),
-        "",
-        "the charter's mandatory --no-notify emits no chat event"
+    assert!(
+        text.contains(ae::overview::TRAILER),
+        "the watchdog body and charter end in the same instruction"
     );
     assert!(
-        dir.join("meta-agent-state.json").is_file(),
-        "the charter command writes the heartbeat before the overview completes"
+        normalized.contains("Run only this session's `state done` helper. Print nothing"),
+        "one changed overview costs only the completion turn"
+    );
+    assert!(
+        !text.contains("ae _monitor sweep"),
+        "the seat no longer renders or heartbeats a timer sweep"
     );
 }
 

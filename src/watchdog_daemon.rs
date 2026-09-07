@@ -3,8 +3,9 @@
 
 use std::io::{self, Write};
 use std::path::Path;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use crate::digest::Status;
 use crate::events::Event;
 use crate::meta::{Meta, RosterEntry, ServerSelector};
 use crate::procs::{self, Descendancy};
@@ -64,7 +65,7 @@ pub struct Knobs {
     pub quiet_tries: usize,
     /// How many panes may pay that beat in one cycle.
     pub quiet_panes_per_cycle: usize,
-    /// The orchestrator sweep cadence, retry and bound.
+    /// The orchestrator changed-overview spacing, retry and bound.
     pub sweep: SweepKnobs,
     /// Seconds between best-effort Telegram bridge revives.
     pub tg_supervise_secs: u64,
@@ -542,6 +543,28 @@ pub fn last_actor_event_age(events: &[Event], agent: &str, now_epoch: i64) -> u6
         .map_or(NO_EVENT_AGE, |event| age_secs(now_epoch, event.ts.epoch()))
 }
 
+/// The newest `state done` acknowledgement by `agent`, as a wall-clock value
+/// the pure sweep accounting can compare with the delivered overview time.
+fn last_done_event_at(events: &[Event], session: &str, agent: &str) -> Option<SystemTime> {
+    let epoch = events
+        .iter()
+        .rev()
+        .find(|event| {
+            let from_main = match event.actor_identity() {
+                crate::events::Identity::Routed {
+                    slot,
+                    session: owner,
+                } => slot == crate::watchdog::MAIN_SLOT && owner == session,
+                crate::events::Identity::Display(display) => display == agent,
+                crate::events::Identity::Unassociated => false,
+            };
+            from_main && event.declared_state() == Some("done")
+        })?
+        .ts
+        .epoch();
+    UNIX_EPOCH.checked_add(Duration::from_secs(u64::try_from(epoch).ok()?))
+}
+
 /// The age reported for an agent with no event at all.
 pub const NO_EVENT_AGE: u64 = 999_999;
 
@@ -551,15 +574,11 @@ pub const NO_EVENT_AGE: u64 = 999_999;
 /// The generated helper a nudge is delivered through.
 const HELPER_NAME: &str = "send";
 
-/// The orchestrator's heartbeat, at the FIXED name
+/// The orchestrator watchdog's checkpoint and heartbeat, at the FIXED name
 /// `<meta-dir>/meta-agent-state.json`.
 pub(crate) const HEARTBEAT_NAME: &str = "meta-agent-state.json";
 
-/// The sweep prompt the orchestrator is nudged with.
-const SWEEP_PROMPT: &str = "Sweep now: refresh the heartbeat with `ae _monitor sweep` for this \
-session and `--no-notify`; then `ae brief --all`; print the overview in this pane; declare done.";
-
-/// The normal verdict interval and smallest useful positive sweep cadence.
+/// The normal verdict interval and smallest useful positive overview spacing.
 /// Zero remains the explicit off switch.
 const MIN_SWEEP_SECS: u64 = 60;
 
@@ -575,9 +594,9 @@ fn sweep_env() -> Option<String> {
     raw.and_then(|value| value.into_string().ok())
 }
 
-/// Resolve sweep cadence in authority order: the session's persisted launch
+/// Resolve overview spacing in authority order: the session's persisted launch
 /// fact, the watchdog-wide environment fallback, then the supplied internal
-/// knob (300 in production defaults; CLI flags may override it in tests).
+/// knob (120 in production defaults; CLI flags may override it in tests).
 fn sweep_seconds(meta_bytes: &[u8], env: Option<&str>, fallback: u64) -> u64 {
     let resolved = crate::meta::sole_value(meta_bytes, "sweep_sec")
         .and_then(|value| std::str::from_utf8(value).ok())
@@ -589,22 +608,6 @@ fn sweep_seconds(meta_bytes: &[u8], env: Option<&str>, fallback: u64) -> u64 {
     } else {
         resolved.max(MIN_SWEEP_SECS)
     }
-}
-
-/// The heartbeat's modification time, or `None` when there is nothing this
-/// watchdog is willing to trust.
-fn heartbeat_mtime(meta_dir: &Path) -> Option<SystemTime> {
-    #[allow(
-        clippy::disallowed_methods,
-        reason = "a door: lstat of the orchestrator's heartbeat, so a symlinked state file is \
-                  refused rather than trusted — see clippy.toml"
-    )]
-    let lstat = std::fs::symlink_metadata(meta_dir.join(HEARTBEAT_NAME));
-    let at = lstat.ok()?;
-    if !at.is_file() {
-        return None;
-    }
-    at.modified().ok()
 }
 
 /// The session's own send helper, at the FIXED path `<meta-dir>/send`.
@@ -1505,6 +1508,29 @@ struct Cycle<'a> {
     meta_agent: bool,
 }
 
+/// The fleet text and durable gate observed once for the orchestrator cycle.
+#[derive(Debug, Clone)]
+struct OverviewReading {
+    rendered: String,
+    hash: String,
+    checkpoint: crate::monitor::OverviewCheckpoint,
+}
+
+impl OverviewReading {
+    fn changed(&self) -> bool {
+        self.checkpoint.hash.as_deref() != Some(self.hash.as_str())
+    }
+
+    fn persisted_last_delivery(&self) -> Option<SystemTime> {
+        let epoch = u64::try_from(self.checkpoint.delivered_at?).ok()?;
+        UNIX_EPOCH.checked_add(Duration::from_secs(epoch))
+    }
+
+    fn body(&self) -> String {
+        crate::overview::nudge_body(&self.rendered)
+    }
+}
+
 /// What [`Cycle::apply`] is acting on: one pane, and the cycle-wide readings an
 /// effect may need.
 struct Acting<'a> {
@@ -1514,9 +1540,79 @@ struct Acting<'a> {
     seen: &'a Observation,
     /// This cycle's events, in APPEND order — what the durable reconcile reads.
     events: &'a [Event],
+    /// The cycle-wide fleet overview, present only for the orchestrator main.
+    overview: Option<&'a OverviewReading>,
 }
 
 impl Cycle<'_> {
+    /// Read the fleet through [`crate::current_world`], enrich it through the
+    /// same card collector as `ae brief --all`, then touch the watchdog-owned
+    /// checkpoint without advancing the last-delivered hash.
+    fn overview(&self, now: i64, err: &mut impl Write) -> Option<OverviewReading> {
+        let Some(root) = crate::state_root() else {
+            let _ = writeln!(
+                err,
+                "ae: watchdog: no state root for fleet overview — skipped"
+            );
+            return None;
+        };
+        let (_, world) = crate::current_world(&root);
+        let sessions = crate::inventory::Roots::under(&root);
+        let cards: Vec<crate::brief::Card> = world
+            .sessions
+            .iter()
+            .filter(|entry| entry.status == Status::Running && entry.name != self.session)
+            .map(|entry| {
+                crate::brief::card_for(
+                    entry,
+                    &sessions.sessions().join(&entry.name),
+                    None,
+                    false,
+                    world.now,
+                    None,
+                )
+            })
+            .collect();
+        let rendered = crate::overview::render(&cards, self.session);
+        let hash = crate::overview::hash(&rendered);
+        let checkpoint = match crate::monitor::overview_heartbeat(self.meta_dir, now) {
+            Ok(checkpoint) => checkpoint,
+            Err(why) => {
+                let _ = writeln!(
+                    err,
+                    "ae: watchdog: fleet overview checkpoint failed — skipped: {why}"
+                );
+                return None;
+            }
+        };
+        Some(OverviewReading {
+            rendered,
+            hash,
+            checkpoint,
+        })
+    }
+
+    /// The orchestrator-main-only observation, including the durable hash and
+    /// spacing gate recovered with this cycle's overview.
+    fn sweep_observation(
+        &self,
+        slot: &str,
+        agent: &str,
+        events: &[Event],
+        overview: Option<&OverviewReading>,
+    ) -> Option<SweepObservation> {
+        is_sweep_target(self.meta_agent, slot).then(|| {
+            SweepObservation::new(
+                SystemTime::now(),
+                last_done_event_at(events, self.session, agent),
+            )
+            .with_overview(
+                overview.is_some_and(OverviewReading::changed),
+                overview.and_then(OverviewReading::persisted_last_delivery),
+            )
+        })
+    }
+
     /// One pass over the session's panes.
     fn run(&self, carry: &mut Carry, err: &mut impl Write) -> crate::Result<()> {
         // An enumeration that FAILED is not evidence that anything is gone.
@@ -1530,6 +1626,11 @@ impl Cycle<'_> {
         let table = procs::snapshot();
         let events = read_events(self.meta_dir);
         let now = Timestamp::now().epoch();
+        let overview = if self.meta_agent && self.knobs.sweep.enabled() {
+            self.overview(now, err)
+        } else {
+            None
+        };
 
         carry.quiet.begin();
         let mut index = 0_usize;
@@ -1583,19 +1684,14 @@ impl Cycle<'_> {
                 // Decided HERE, once, and the type carries the answer: a pane
                 // that is not the orchestrator main gets `None` and no sweep
                 // branch can reach it.
-                sweep: is_sweep_target(self.meta_agent, &slot).then(|| {
-                    SweepObservation::new(
-                        SystemTime::now(),
-                        heartbeat_mtime(self.meta_dir),
-                        &self.knobs.sweep,
-                    )
-                }),
+                sweep: self.sweep_observation(&slot, agent, &events, overview.as_ref()),
             };
             let acting = Acting {
                 agent,
                 slot: &slot,
                 seen: &seen,
                 events: &events,
+                overview: seen.sweep.as_ref().and(overview.as_ref()),
             };
             let booked = account(carried, &seen, &self.knobs);
             *carried = booked.next;
@@ -2114,8 +2210,32 @@ impl Cycle<'_> {
             )?;
             return Ok(());
         };
+        let Some(overview) = on.overview else {
+            // A failed fleet read suppresses the change gate, so this is also
+            // unreachable by construction. Keep the refusal loud if those two
+            // paths ever drift.
+            writeln!(
+                err,
+                "ae: watchdog: sweep nudge for {} had no fleet overview — skipped",
+                on.agent
+            )?;
+            return Ok(());
+        };
         // Delivery is CHECKED.
-        let delivered = self.deliver(on.agent, SWEEP_PROMPT, "sweep cadence");
+        let body = overview.body();
+        let delivered = self.deliver(on.agent, &body, "fleet overview changed");
+        if delivered
+            && let Err(why) = crate::monitor::record_overview_delivery(
+                self.meta_dir,
+                &overview.hash,
+                on.seen.now_epoch,
+            )
+        {
+            writeln!(
+                err,
+                "ae: watchdog: delivered fleet overview but could not persist its hash: {why}"
+            )?;
+        }
         let booked = record_sweep(
             &mut state.sweep,
             delivered,
@@ -2370,10 +2490,10 @@ fn bar_glyph(dead: usize, stale: usize, icons: bool) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{
-        ACTOR, Carry, Continuation, Cycle, Effect, HEARTBEAT_NAME, Journal, Knobs, MissingState,
-        MotionState, MotionVerdict, Observation, PaneState, QuietCycle, QuietQuery, Rebind,
-        SWEEP_PROMPT, SendHelper, UNKNOWN_ALERT_CYCLES, Verdict, account, adopt_server, age_secs,
-        bar_glyph, continuation, entry_mut, heartbeat_mtime, is_meta_agent, last_actor_event_age,
+        ACTOR, Carry, Continuation, Cycle, Effect, Journal, Knobs, MissingState, MotionState,
+        MotionVerdict, Observation, OverviewReading, PaneState, QuietCycle, QuietQuery, Rebind,
+        SendHelper, UNKNOWN_ALERT_CYCLES, Verdict, account, adopt_server, age_secs, bar_glyph,
+        continuation, entry_mut, is_meta_agent, last_actor_event_age, last_done_event_at,
         motion_cadence, motion_failure, motion_observation_due, motion_publish_failure,
         motion_ticker_enabled, nudge_text, read_events, rebind, record_nudge, session_name,
         slot_mark, stale_display, sweep_effects, sweep_seconds, window_agents_line,
@@ -2385,7 +2505,7 @@ mod tests {
     use crate::procs::Descendancy;
     use crate::tmux::StopProbe;
     use crate::watchdog::{
-        Heartbeat, QuietKind, SweepAlert, SweepEffect, SweepObservation, SweepVerdict, WedgeDetail,
+        QuietKind, SweepAlert, SweepEffect, SweepObservation, SweepVerdict, WedgeDetail,
         declaration_key,
     };
     use std::io::ErrorKind;
@@ -3743,7 +3863,7 @@ mod tests {
         assert_eq!(plain.effects, vec![Effect::Nudge]);
 
         let mut orchestrator = ordinary.clone();
-        orchestrator.sweep = Some(SweepObservation::new(at(0), None, &knobs.sweep));
+        orchestrator.sweep = Some(SweepObservation::new(at(0), None));
         let booked = account(&prior, &orchestrator, &knobs);
         assert_eq!(booked.verdict, Verdict::Meta(SweepVerdict::MetaStarting));
         assert_eq!(
@@ -3765,7 +3885,7 @@ mod tests {
             ..Knobs::default()
         };
         let (prior, mut observed) = stale_pane();
-        observed.sweep = Some(SweepObservation::new(at(0), None, &knobs.sweep));
+        observed.sweep = Some(SweepObservation::new(at(0), None));
         let booked = account(&prior, &observed, &knobs);
         assert_eq!(booked.verdict, Verdict::Stale);
         assert_eq!(booked.effects, vec![Effect::Nudge]);
@@ -3780,7 +3900,7 @@ mod tests {
         let mut observed = seen();
         observed.is_dead = true;
         observed.descendancy = Descendancy::Absent;
-        observed.sweep = Some(SweepObservation::new(at(0), None, &knobs.sweep));
+        observed.sweep = Some(SweepObservation::new(at(0), None));
         let booked = account(&PaneState::default(), &observed, &knobs);
         assert_eq!(booked.verdict, Verdict::Dead);
         assert!(booked.next.dead_latched);
@@ -3824,10 +3944,13 @@ mod tests {
             vec![
                 Effect::Emit {
                     action: "alert",
-                    summary: "meta-agent not sweeping — no heartbeat for 11m (may be stuck)"
+                    summary: "meta-agent not acknowledging overviews — latest delivery \
+                              unacknowledged for 11m (may be stuck)"
                         .to_owned(),
                 },
-                Effect::Notify("(meta-agent) not sweeping — may be stuck".to_owned()),
+                Effect::Notify(
+                    "(meta-agent) not acknowledging overviews — may be stuck".to_owned()
+                ),
             ]
         );
         assert_eq!(
@@ -3841,17 +3964,28 @@ mod tests {
     }
 
     #[test]
-    fn the_sweep_prompt_is_the_frozen_sentence() {
-        // The text an orchestrator acts on.
+    fn a_changed_overview_carries_the_rendered_text_as_the_nudge_body() {
+        let reading = OverviewReading {
+            rendered: "WORKING\n  alpha lead ship".to_owned(),
+            hash: "0123456789abcdef".to_owned(),
+            checkpoint: crate::monitor::OverviewCheckpoint {
+                hash: Some("fedcba9876543210".to_owned()),
+                delivered_at: Some(300),
+            },
+        };
+        assert!(reading.changed());
         assert_eq!(
-            SWEEP_PROMPT,
-            "Sweep now: refresh the heartbeat with `ae _monitor sweep` for this session and \
-             `--no-notify`; then `ae brief --all`; print the overview in this pane; declare done."
+            reading.body(),
+            "WORKING\n  alpha lead ship\n— overview; declare done."
+        );
+        assert_eq!(
+            reading.persisted_last_delivery(),
+            Some(UNIX_EPOCH + Duration::from_mins(5))
         );
     }
 
     #[test]
-    fn a_completed_sweep_stays_healthy_beyond_startup_grace() {
+    fn a_done_after_delivery_stays_healthy_beyond_startup_grace() {
         let knobs = Knobs {
             sweep: crate::watchdog::SweepKnobs {
                 sweep_secs: 120,
@@ -3860,10 +3994,11 @@ mod tests {
             ..Knobs::default()
         };
         let mut prior = PaneState::default();
-        prior.sweep.first_delivered = Some(at(0));
+        prior.sweep.last_delivered = Some(at(0));
+        prior.sweep.unacknowledged_deliveries = 1;
         prior.sweep.last_sweep = Some(at(240));
         let mut observed = seen();
-        observed.sweep = Some(SweepObservation::new(at(301), Some(at(300)), &knobs.sweep));
+        observed.sweep = Some(SweepObservation::new(at(301), Some(at(300))));
 
         let booked = account(&prior, &observed, &knobs);
 
@@ -3876,7 +4011,7 @@ mod tests {
                     ..
                 }
             )),
-            "the completion heartbeat prevents a wedge after the 300s grace: {:?}",
+            "the done acknowledgement prevents a wedge after the 300s grace: {:?}",
             booked.effects
         );
     }
@@ -3938,47 +4073,28 @@ mod tests {
     }
 
     #[test]
-    fn the_heartbeat_is_lstatted_so_a_symlink_is_never_trusted() {
-        // THE SAFETY PIN. A plain existence check FOLLOWS symlinks, so anything
-        // able to write in the session directory could aim the heartbeat at a
-        // file some other process touches often and silence a wedged
-        // orchestrator.
-        let scratch = Scratch::new("hb");
-        let dir = &scratch.0;
-        assert_eq!(heartbeat_mtime(dir), None, "absent is untrusted");
+    fn the_overview_acknowledgement_is_the_main_agents_newest_done_event() {
+        let events: Vec<Event> = [
+            r#"{"ts":"2026-09-07T09:00:00Z","actor":"seat:main","action":"state","ref":"done"}"#,
+            r#"{"ts":"2026-09-07T09:01:00Z","actor":"seat:worker","action":"state","ref":"done"}"#,
+            r#"{"ts":"2026-09-07T09:02:00Z","actor":"seat:main","action":"memo","ref":"x"}"#,
+            r#"{"ts":"2026-09-07T09:04:00Z","actor":"seat:main","action":"done","actor_slot":"worker.0","actor_session":"orchestrator"}"#,
+            r#"{"ts":"2026-09-07T09:03:00Z","actor":"seat:main","action":"done"}"#,
+        ]
+        .iter()
+        .map(|line| Event::parse_line(line).expect("specimen"))
+        .collect();
+        let epoch = crate::time::Timestamp::parse("2026-09-07T09:03:00Z")
+            .expect("specimen")
+            .epoch();
+        let expected = UNIX_EPOCH + Duration::from_secs(u64::try_from(epoch).expect("positive"));
 
-        let real = dir.join(HEARTBEAT_NAME);
-        std::fs::write(&real, b"{}").expect("write the heartbeat");
-        assert!(
-            heartbeat_mtime(dir).is_some(),
-            "a plain regular file is the trusted case"
-        );
-
-        let elsewhere = dir.join("decoy.json");
-        std::fs::write(&elsewhere, b"{}").expect("write the decoy");
-        std::fs::remove_file(&real).expect("clear the way for the link");
-        std::os::unix::fs::symlink(&elsewhere, &real).expect("link");
         assert_eq!(
-            heartbeat_mtime(dir),
-            None,
-            "a symlink is refused however good its target"
+            last_done_event_at(&events, "orchestrator", "seat:main"),
+            Some(expected),
+            "a routed worker with the same display name is not the main slot"
         );
-
-        std::fs::remove_file(&real).expect("clear the link");
-        std::fs::create_dir(&real).expect("a directory in its place");
-        assert_eq!(heartbeat_mtime(dir), None, "a directory is not a heartbeat");
-    }
-
-    #[test]
-    fn an_untrusted_heartbeat_reaches_the_branch_as_untrusted() {
-        // The end-to-end of the pin: the reading the loop takes is the reading
-        // the decision layer classifies, and a refused file is never Fresh.
-        let scratch = Scratch::new("hbclass");
-        let knobs = Knobs::default();
-        let observed =
-            SweepObservation::new(SystemTime::now(), heartbeat_mtime(&scratch.0), &knobs.sweep);
-        assert_eq!(observed.heartbeat, Heartbeat::Untrusted);
-        assert_eq!(observed.heartbeat_offset, None);
+        assert_eq!(last_done_event_at(&events, "orchestrator", "nobody"), None);
     }
 
     #[test]

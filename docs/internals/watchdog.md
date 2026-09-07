@@ -41,19 +41,30 @@ The sections below describe the Rust core's per-cycle state machine and effects.
 | `AE_WATCHDOG_MAX_NUDGES` | 2 | Nudges before escalating to alert |
 | `AE_WATCHDOG_THROTTLE_ALERT_CYCLES` | 5 | Continuous throttle cycles before throttle-alert |
 | `AE_WATCHDOG_TG_SUPERVISE_SEC` | 120 | Telegram-bridge revive cadence in seconds (`0` disables) |
-| `AE_WATCHDOG_SWEEP_SEC` | 300 | Orchestrator sweep fallback when persisted `sweep_sec` is absent or invalid (`0` falls back to the normal watchdog; positive values below `60` become `60`) |
+| `AE_WATCHDOG_SWEEP_SEC` | 120 | Orchestrator changed-overview minimum-spacing fallback when persisted `sweep_sec` is absent or invalid (`0` falls back to the normal watchdog; positive values below `60` become `60`) |
 | `AE_WATCHDOG_SWEEP_RETRY_SEC` | 30 | After an UNDELIVERED sweep nudge, retry this soon instead of waiting a full `AE_WATCHDOG_SWEEP_SEC` (clamped to it; floor — lands on the next poll) |
 | `AE_WATCHDOG_SWEEP_RETRY_MAX` | 6 | Fast retries allowed before falling back to normal cadence and raising one `meta-agent unreachable` alert |
 
 Set them in the shell before `ae <name>`, or via your shell rc.
 For the orchestrator only, launch persists `[workspace] sweep` as `sweep_sec`;
-that session fact outranks `AE_WATCHDOG_SWEEP_SEC`, which outranks 300.
+that session fact outranks `AE_WATCHDOG_SWEEP_SEC`, which outranks 120.
 
-The orchestrator completes each prompted sweep by running
-`ae _monitor sweep <its-session-dir> --no-notify` before `ae brief --all`.
-The monitor command is the only writer of `meta-agent-state.json`; its mtime is
-the watchdog's completion heartbeat. The command can execute `say` by default,
-so the seat's `--no-notify` is mandatory and keeps routine overviews in its pane.
+For an orchestrator main, each verdict cycle calls `current_world` once and
+builds the same detail cards as `ae brief --all`. The pure overview renderer
+omits the orchestrator's own session, bounds agent lines to 100 characters, and
+groups the facts under `NEEDS YOU`, `WORKING`, and `QUIET`. The watchdog hashes
+that text and pastes it only when the last delivered hash differs and the
+minimum spacing has elapsed. Unchanged cycles never wake the model.
+
+`meta-agent-state.json` carries the watchdog heartbeat plus the last delivered
+overview hash and time. The watchdog refreshes that checkpoint after each
+successful render and advances the hash/time only after delivery succeeds, so
+a restart neither resends unchanged text nor forgets the spacing. Its mtime is
+not seat liveness: the watchdog compares the delivered time with the main
+seat's newest `state done` event in `events.jsonl`. A delivery with no later
+`done` becomes `wedged` after `sweep * 2 + 60` seconds and clears on the next
+`done`. The seat's only action on the pasted turn is that acknowledgement; it
+never runs `ae brief --all` on a timer.
 
 ## Per-cycle state machine
 

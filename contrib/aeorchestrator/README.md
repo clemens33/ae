@@ -22,10 +22,13 @@ contract; it is not loaded from a guessed path.
 
 ## Role
 
-The orchestrator reads fleet state with `ae brief --all` and prints a compact
-`NEEDS YOU` / `WORKING` / `QUIET` overview in its own pane. Empty sections are
-omitted and quiet sessions collapse to one line. Routine sweeps do not use
-Telegram. It stays `done` between sweeps.
+The watchdog reads fleet state through ae, renders a compact `NEEDS YOU` /
+`WORKING` / `QUIET` overview, and pastes it into the orchestrator pane only
+when the rendered content changed. Empty sections are omitted and quiet
+sessions collapse to one line. The seat only declares `done` on that turn, so
+the watchdog can tell the delivery was acknowledged. Each delivered change
+costs one minimal model turn; a timer alone costs none.
+Routine overviews do not use Telegram. It stays `done` between changes.
 
 It relays only explicit human instructions through its full-path `relay`
 helper. The target is a session or exact `session:agent`; the text arrives bare
@@ -40,11 +43,13 @@ Residual risk is explicit: an unenveloped relay speaks with human authority,
 yet the seat is a model. The role is constrained, every attempt is audited, and
 the seat deliberately runs a cheap model; never give it judgment tasks.
 
-The standard workspace watchdog nudges the template's orchestrator every 120
-seconds. Each overview first runs `ae _monitor sweep` for its own session with
-`--no-notify`, refreshing the completion heartbeat without sending changed
-lines through `say`. The persisted `[workspace] sweep` setting outranks the
-process-wide fallback and default. The seat is started explicitly; it is never an autostart companion.
+The standard workspace watchdog checks the template's orchestrator each cycle.
+The persisted `[workspace] sweep` setting is the minimum spacing between
+changed overviews and outranks the process-wide fallback and default. A zero
+disables overview delivery. The watchdog persists the last delivered hash and
+its own heartbeat, so restarts do not resend unchanged text. The seat never
+runs `ae brief --all` on a timer; it may read it once for a human fleet question
+or routing decision. The seat is started explicitly; it is never an autostart companion.
 `AE_NO_AUTOSTART=1` suppresses the Telegram bridge when launching another session.
 
 ## Files
@@ -60,5 +65,5 @@ intact.
 
 ## Dependencies
 
-None beyond ae and one configured agent CLI. Fleet overview, sweep cadence, and
+None beyond ae and one configured agent CLI. Fleet overview, minimum spacing, and
 bare relay are core ae operations; no Python, `jq`, or `curl` sidecar is needed.

@@ -509,16 +509,17 @@ whole command of the monitor pane. `ae loop` is the deprecated spelling, kept as
 
 The [watchdog](../internals/watchdog.md) is on by default — only an explicit `false` / `no` / `off` / `0` in config or session meta keeps it off. `watchdog start` is idempotent; running it again just confirms the meta flag.
 
-### Meta-agent (orchestrator) sweep cadence
+### Meta-agent (orchestrator) overview spacing
 
 A session marked as the fleet orchestrator with `[workspace] orchestrator = true` (or its
 legacy aliases `hub = true` / `meta = true`; persisted to
 its meta as `meta_agent=true`) gets a different watchdog behaviour for its **main
-agent**: instead of the stale-nudge watchdog, the watchdog sends a *"run your sweep
-now"* nudge on the cadence persisted from `[workspace] sweep`; then
-`AE_WATCHDOG_SWEEP_SEC`; then 300 seconds. A zero disables the sweep branch;
+agent**: instead of the stale-nudge watchdog, each cycle renders the fleet
+overview and sends it only when the text changed and the minimum spacing
+elapsed. The spacing comes from persisted `[workspace] sweep`, then
+`AE_WATCHDOG_SWEEP_SEC`, then 120 seconds. A zero disables the sweep branch;
 positive values below 60 seconds are clamped to 60, one normal watchdog cycle.
-It never escalates the orchestrator to a stale `attn:` alert (idle between sweeps is normal for a monitor).
+It never escalates the orchestrator to a stale `attn:` alert (idle between changes is normal for a monitor).
 Workers/spawned agents in the same session keep the normal watchdog.
 
 Sweep nudges are **delivery-checked**. A nudge can fail to land — the target's shell
@@ -526,33 +527,35 @@ is dead (refused), or it stayed busy / a human was typing in it (abandoned after
 `AE_SEND_DEFER_SEC`). A failed nudge is logged as `sweep nudge FAILED` with the
 reason, and is retried after `AE_WATCHDOG_SWEEP_RETRY_SEC` (default 30) rather than
 waiting a full sweep window. After `AE_WATCHDOG_SWEEP_RETRY_MAX` (default 6) fast
-retries the watchdog falls back to the normal cadence and raises one
+retries the watchdog falls back to the normal spacing and raises one
 `meta-agent unreachable` alert, cleared when a nudge next lands. Delivery is
-**at-least-once**: a nudge that lands but fails to write its event is retried, so the
-orchestrator may occasionally sweep twice — a redundant sweep is cheap, a silently dropped
-one is not.
+**at-least-once**: a nudge that lands but fails to write its event or overview
+checkpoint is retried after the spacing, so the orchestrator may occasionally
+receive the same overview twice rather than silently lose it.
 
 Liveness is still guarded two ways: the dead/missing-pane checks catch a crashed
-orchestrator, and a **heartbeat** check catches a *live-but-not-sweeping* orchestrator (model
-stall, upstream throttle, wedge). Before each overview, the seat runs
-`ae _monitor sweep <session-dir> --no-notify`; that helper rewrites
-`~/.ae/sessions/<orchestrator>/meta-agent-state.json` on each real sweep, and if that mtime
-stops advancing past roughly twice the resolved sweep cadence the watchdog raises one alert (cleared on
-recovery). The monitor command defaults to notifications and may execute the session's `say`
-helper when it has changes; the seat's mandatory `--no-notify` prevents that. The
-file name is one constant shared by the writer and the watchdog that stats it, so the two
-cannot drift apart. The directory must be the caller's OWN session — the sweep is refused
-unless `$TMUX_PANE` names a pane of it on the tmux server that session records — because a
-sweep locks, writes and may run `say` inside whatever directory it is handed. The sweep nudges use `action=nudge`,
-which is **not in the default telegram include set**, so routine sweeps don't
-reach your phone (a custom `include` containing `nudge` would forward them).
+orchestrator, while a live seat acknowledges each delivered overview with
+`state done`. The watchdog records delivery time in `meta-agent-state.json` and
+compares it with the main seat's newest `done` event in `events.jsonl`; no later
+acknowledgement past `sweep * 2 + 60` seconds raises one `meta-agent not
+acknowledging overviews` alert, cleared by the next `done`. The state-file mtime
+is the watchdog's own render heartbeat and is never treated as seat liveness.
+That file also carries the last delivered overview hash, so a restart does not
+resend unchanged text or forget the minimum spacing. The overview is built from
+the same `current_world` plus brief-card facts as `ae brief --all`; the seat does
+not run that command on a timer. Sweep nudges use `action=nudge`, which is **not
+in the default telegram include set**, so routine overviews do not reach your
+phone (a custom `include` containing `nudge` would forward them).
 
 ## The orchestrator seat
 
 The **orchestrator** is an ordinary local ae session named `orchestrator`. It
-reads `ae brief --all` and prints a compact `NEEDS YOU` / `WORKING` / `QUIET`
-overview in its pane, then declares `done` until the next sweep. It relays only
-explicit human instructions through its `relay <session[:agent]> <text…>` helper.
+receives a watchdog-rendered `NEEDS YOU` / `WORKING` / `QUIET` overview only
+when that text changes. Its entire overview turn is `state done`: it prints
+nothing and stays done until another change. Each delivered change therefore
+costs one minimal seat turn; a timer-only cycle costs none. For a human fleet
+question it may run `ae brief --all` once. It relays only explicit human
+instructions through its `relay <session[:agent]> <text…>` helper.
 One quoted text argument works; otherwise remaining argv are joined with single
 spaces. The delivery is bare human-authority text, audited with target and full
 text only in the orchestrator session. Free text without a leading target is

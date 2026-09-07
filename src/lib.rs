@@ -46,6 +46,7 @@ pub mod monitor;
 pub mod netprobe;
 pub mod next;
 pub mod orchestrator;
+pub mod overview;
 pub mod panes;
 pub mod procs;
 pub mod relay;

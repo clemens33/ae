@@ -479,12 +479,12 @@ impl QuietCycle {
 }
 
 // ---------------------------------------------------------------------------
-// The orchestrator (meta-agent) sweep cadence.
+// The orchestrator (meta-agent) changed-overview cadence.
 
 /// The orchestrator sweep tunables, with their defaults.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SweepKnobs {
-    /// Seconds between sweep prompts.
+    /// Minimum seconds between changed-overview prompts.
     pub sweep_secs: u64,
     /// How soon an UNDELIVERED prompt is retried instead of burning a whole
     /// cadence window.
@@ -497,7 +497,7 @@ pub struct SweepKnobs {
 impl Default for SweepKnobs {
     fn default() -> Self {
         Self {
-            sweep_secs: 300,
+            sweep_secs: 120,
             retry_secs: 30,
             retry_max: 6,
         }
@@ -511,7 +511,7 @@ impl SweepKnobs {
         self.sweep_secs > 0
     }
 
-    /// The heartbeat window: `SWEEP_SECS * 2 + 60`.
+    /// The overview acknowledgement window: `SWEEP_SECS * 2 + 60`.
     #[must_use]
     pub const fn wedge_secs(&self) -> u64 {
         self.sweep_secs.saturating_mul(2).saturating_add(60)
@@ -523,94 +523,16 @@ fn secs_between(now: SystemTime, then: SystemTime) -> u64 {
     now.duration_since(then).map_or(0, |d| d.as_secs())
 }
 
-/// The ABSOLUTE distance between two instants, in seconds — direction dropped.
-fn distance_secs(now: SystemTime, then: SystemTime) -> u64 {
-    match now.duration_since(then) {
-        Ok(elapsed) => elapsed.as_secs(),
-        Err(ahead) => ahead.duration().as_secs(),
-    }
-}
-
-/// How far a trusted heartbeat sits from now, and ON WHICH SIDE.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HeartbeatOffset {
-    /// Written this many seconds ago.
-    Behind {
-        /// Seconds since the heartbeat was written.
-        secs: u64,
-    },
-    /// Stamped this many seconds in the FUTURE — clock skew between this host
-    /// and whatever wrote the file, or a clock that was set forward.
-    Ahead {
-        /// Seconds by which the heartbeat leads this clock.
-        secs: u64,
-    },
-}
-
-impl HeartbeatOffset {
-    /// The distance, with the side dropped — what the freshness window judges.
-    #[must_use]
-    pub const fn distance_secs(self) -> u64 {
-        match self {
-            Self::Behind { secs } | Self::Ahead { secs } => secs,
-        }
-    }
-}
-
 /// `now` moved `secs` into the past.
 fn back_date(now: SystemTime, secs: u64) -> SystemTime {
     now.checked_sub(Duration::from_secs(secs))
         .unwrap_or(UNIX_EPOCH)
 }
 
-/// What the orchestrator's heartbeat file says about it — the third state is the
-/// point.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Heartbeat {
-    /// A trusted mtime inside the window — the orchestrator is sweeping.
-    Fresh,
-    /// A trusted mtime OUTSIDE the window, on either side: one that stopped
-    /// advancing, or one stamped so far ahead of this clock that it cannot be
-    /// read as liveness.
-    Stale,
-    /// No trusted mtime at all: missing, a symlink, not a regular file, or a
-    /// reading that could not be taken.
-    Untrusted,
-}
-
-/// Classify an ALREADY-VALIDATED heartbeat mtime.
-#[must_use]
-pub fn classify_heartbeat(
-    mtime: Option<SystemTime>,
-    now: SystemTime,
-    wedge_secs: u64,
-) -> Heartbeat {
-    match mtime {
-        None => Heartbeat::Untrusted,
-        Some(at) if distance_secs(now, at) <= wedge_secs => Heartbeat::Fresh,
-        Some(_) => Heartbeat::Stale,
-    }
-}
-
-/// Where a trusted heartbeat sits relative to `now`, or `None` when there is no
-/// trusted reading.
-#[must_use]
-pub fn heartbeat_offset(mtime: Option<SystemTime>, now: SystemTime) -> Option<HeartbeatOffset> {
-    let at = mtime?;
-    Some(match now.duration_since(at) {
-        Ok(elapsed) => HeartbeatOffset::Behind {
-            secs: elapsed.as_secs(),
-        },
-        Err(ahead) => HeartbeatOffset::Ahead {
-            secs: ahead.duration().as_secs(),
-        },
-    })
-}
-
 /// The roster slot the orchestrator cadence belongs to.
 pub const MAIN_SLOT: &str = "main";
 
-/// Whether this pane is the one the sweep cadence applies to, keyed by SLOT
+/// Whether this pane is the one the overview cadence applies to, keyed by SLOT
 /// rather than by display name.
 #[must_use]
 pub fn is_sweep_target(meta_agent: bool, slot: &str) -> bool {
@@ -620,12 +542,11 @@ pub fn is_sweep_target(meta_agent: bool, slot: &str) -> bool {
 /// What the orchestrator's row shows this cycle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SweepVerdict {
-    /// A fresh heartbeat — the orchestrator is sweeping.
+    /// The latest delivered overview has a later `state done` acknowledgement.
     MetaSweeping,
-    /// Prompted past the window with no fresh heartbeat — live but not sweeping.
+    /// A delivered overview passed the grace window without `state done`.
     MetaWedged,
-    /// Inside the startup grace with no heartbeat yet: genuinely undecided, and
-    /// the glyph says exactly that rather than inventing a liveness claim.
+    /// No overview yet, or its acknowledgement is still inside the grace.
     MetaStarting,
 }
 
@@ -641,24 +562,18 @@ impl SweepVerdict {
     }
 }
 
-/// Which "not sweeping" the wedge alert is reporting.
+/// Which missing overview acknowledgement the wedge alert is reporting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WedgeDetail {
-    /// A trusted heartbeat exists but stopped advancing this long ago.
+    /// The seat has acknowledged before, but not since the latest delivery.
     Stalled {
-        /// Seconds since the heartbeat last moved.
+        /// Seconds since the latest overview landed.
         age_secs: u64,
     },
-    /// A trusted heartbeat stamped this far AHEAD of this clock — far enough
-    /// that it is outside the freshness window and cannot be read as liveness.
-    Ahead {
-        /// Seconds by which the heartbeat leads this clock.
-        ahead_secs: u64,
-    },
-    /// No trusted heartbeat has ever been read, across this much prompting.
+    /// No `done` event exists despite one or more delivered overviews.
     Never {
-        /// Seconds of delivered sweep prompts with nothing to show for them.
-        prompting_secs: u64,
+        /// Delivered overviews since this daemon started, at least one.
+        deliveries: u32,
     },
 }
 
@@ -666,9 +581,9 @@ pub enum WedgeDetail {
 /// prose.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SweepAlert {
-    /// Live but not sweeping.
+    /// Live but not acknowledging delivered overviews.
     RaiseWedge(WedgeDetail),
-    /// The heartbeat resumed.
+    /// A `state done` acknowledgement landed.
     ClearWedge,
     /// Sweep prompts stopped landing altogether.
     RaiseUnreachable {
@@ -694,20 +609,17 @@ impl SweepAlert {
     pub fn summary(self) -> String {
         match self {
             Self::RaiseWedge(WedgeDetail::Stalled { age_secs }) => format!(
-                "meta-agent not sweeping — no heartbeat for {}m (may be stuck)",
+                "meta-agent not acknowledging overviews — latest delivery unacknowledged for {}m \
+                 (may be stuck)",
                 age_secs / 60
             ),
-            Self::RaiseWedge(WedgeDetail::Ahead { ahead_secs }) => format!(
-                "meta-agent not sweeping — heartbeat timestamp is {}m ahead of this clock (may \
-                 be stuck)",
-                ahead_secs / 60
+            Self::RaiseWedge(WedgeDetail::Never { deliveries }) => format!(
+                "meta-agent not acknowledging overviews — {deliveries} delivered, zero done \
+                 events (may be stuck)"
             ),
-            Self::RaiseWedge(WedgeDetail::Never { prompting_secs }) => format!(
-                "meta-agent not sweeping — never wrote a heartbeat in {}m of sweep prompts (may \
-                 be stuck)",
-                prompting_secs / 60
-            ),
-            Self::ClearWedge => "meta-agent sweeping again (heartbeat resumed)".to_owned(),
+            Self::ClearWedge => {
+                "meta-agent acknowledging overviews again (done received)".to_owned()
+            }
             Self::RaiseUnreachable { undelivered } => format!(
                 "meta-agent unreachable — {undelivered} sweep nudges undelivered (not sweeping)"
             ),
@@ -722,7 +634,7 @@ impl SweepAlert {
     #[must_use]
     pub const fn notify(self) -> Option<&'static str> {
         match self {
-            Self::RaiseWedge(_) => Some("(meta-agent) not sweeping — may be stuck"),
+            Self::RaiseWedge(_) => Some("(meta-agent) not acknowledging overviews — may be stuck"),
             Self::RaiseUnreachable { .. } => {
                 Some("(meta-agent) unreachable — sweep nudges undelivered")
             }
@@ -739,7 +651,7 @@ pub enum SweepEffect {
     FireSweepNudge,
     /// Raise or clear one alert.
     Alert(SweepAlert),
-    /// ONCE per daemon lifetime, on the first fresh heartbeat seen with no
+    /// ONCE per daemon lifetime, on the first acknowledged overview with no
     /// latched wedge: read the DURABLE event log and, if it still shows an
     /// active alert for this agent, emit [`SweepAlert::ClearWedge`]'s event.
     ReconcileWedge,
@@ -751,8 +663,10 @@ pub enum SweepEffect {
 pub struct SweepState {
     /// When the cadence was last satisfied.
     pub last_sweep: Option<SystemTime>,
-    /// When the first prompt LANDED — the startup grace's origin.
-    pub first_delivered: Option<SystemTime>,
+    /// When the latest overview LANDED — the acknowledgement grace's origin.
+    pub last_delivered: Option<SystemTime>,
+    /// Successful overview deliveries not yet followed by `state done`.
+    pub unacknowledged_deliveries: u32,
     /// Consecutive undelivered prompts.
     pub fails: u32,
     /// The wedge alert is raised once per wedge, not once per cycle.
@@ -763,27 +677,44 @@ pub struct SweepState {
     pub reconciled: bool,
 }
 
-/// What the cycle observed about the orchestrator, after the heartbeat was read.
+/// What the cycle observed about the orchestrator and its durable checkpoint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SweepObservation {
     /// Wall clock for this cycle.
     pub now: SystemTime,
-    /// The heartbeat's tri-state.
-    pub heartbeat: Heartbeat,
-    /// Where it sits relative to `now`, `None` when there is no trusted
-    /// reading.
-    pub heartbeat_offset: Option<HeartbeatOffset>,
+    /// Newest `state done` event by the orchestrator main, if one exists.
+    pub last_done: Option<SystemTime>,
+    /// Whether the newly rendered overview differs from the last one that
+    /// landed in the orchestrator pane.
+    pub overview_changed: bool,
+    /// Last delivered overview recovered from the durable checkpoint state.
+    pub persisted_last_delivery: Option<SystemTime>,
 }
 
 impl SweepObservation {
-    /// Derive the observation from one validated heartbeat reading.
+    /// Start an observation from the seat's newest `state done` event.
     #[must_use]
-    pub fn new(now: SystemTime, heartbeat_mtime: Option<SystemTime>, knobs: &SweepKnobs) -> Self {
+    pub const fn new(now: SystemTime, last_done: Option<SystemTime>) -> Self {
         Self {
             now,
-            heartbeat: classify_heartbeat(heartbeat_mtime, now, knobs.wedge_secs()),
-            heartbeat_offset: heartbeat_offset(heartbeat_mtime, now),
+            last_done,
+            overview_changed: true,
+            persisted_last_delivery: None,
         }
+    }
+
+    /// Add the change gate and durable cadence checkpoint used by the fleet
+    /// overview. The plain constructor keeps the original always-changed
+    /// behaviour for callers that do not render one.
+    #[must_use]
+    pub const fn with_overview(
+        mut self,
+        changed: bool,
+        persisted_last_delivery: Option<SystemTime>,
+    ) -> Self {
+        self.overview_changed = changed;
+        self.persisted_last_delivery = persisted_last_delivery;
+        self
     }
 }
 
@@ -813,17 +744,32 @@ pub fn sweep_step(
     let mut next = *prior;
     let mut effects = Vec::new();
 
-    // 1. The verdict. A FRESH heartbeat is the only healthy reading; Stale and
-    //    Untrusted both mean "not sweeping", and the startup grace is what
-    //    decides whether that is worth an alert yet. The grace runs from the
-    //    first DELIVERED prompt and the comparison is a strict `>`, so an
-    //    age exactly equal to the window is still starting up.
-    let grace_secs = prior.first_delivered.map(|at| secs_between(seen.now, at));
-    let verdict = match (seen.heartbeat, grace_secs) {
-        (Heartbeat::Fresh, _) => SweepVerdict::MetaSweeping,
-        (_, Some(elapsed)) if elapsed > knobs.wedge_secs() => SweepVerdict::MetaWedged,
+    // 1. The verdict. The watchdog's own checkpoint proves only that THIS loop
+    //    ran. Seat liveness comes from the `state done` event the charter
+    //    requires after every delivered overview. The grace comparison is
+    //    strict `>`, so an age exactly equal to the window is still starting.
+    let delivered_at = match (prior.last_delivered, seen.persisted_last_delivery) {
+        (Some(memory), Some(persisted)) => Some(memory.max(persisted)),
+        (memory, persisted) => memory.or(persisted),
+    };
+    next.last_delivered = delivered_at;
+    let acknowledged = delivered_at.is_some_and(|delivery| {
+        seen.last_done
+            .is_some_and(|done| done.duration_since(delivery).is_ok())
+    });
+    let grace_secs = delivered_at.map(|at| secs_between(seen.now, at));
+    let verdict = match (delivered_at, acknowledged, grace_secs) {
+        (Some(_), true, _) => SweepVerdict::MetaSweeping,
+        (Some(_), false, Some(elapsed)) if elapsed > knobs.wedge_secs() => SweepVerdict::MetaWedged,
         _ => SweepVerdict::MetaStarting,
     };
+    if acknowledged {
+        next.unacknowledged_deliveries = 0;
+    } else if delivered_at.is_some() && next.unacknowledged_deliveries == 0 {
+        // A persisted delivery survived a daemon restart; its in-memory count
+        // did not, but the durable timestamp proves there was at least one.
+        next.unacknowledged_deliveries = 1;
+    }
 
     // 2.
     match verdict {
@@ -840,15 +786,12 @@ pub fn sweep_step(
         SweepVerdict::MetaWedged => {
             if !prior.wedge_alerted {
                 next.wedge_alerted = true;
-                let detail = match seen.heartbeat_offset {
-                    Some(HeartbeatOffset::Behind { secs }) => {
-                        WedgeDetail::Stalled { age_secs: secs }
-                    }
-                    Some(HeartbeatOffset::Ahead { secs }) => {
-                        WedgeDetail::Ahead { ahead_secs: secs }
-                    }
+                let detail = match seen.last_done {
+                    Some(_) => WedgeDetail::Stalled {
+                        age_secs: grace_secs.unwrap_or(0),
+                    },
                     None => WedgeDetail::Never {
-                        prompting_secs: grace_secs.unwrap_or(0),
+                        deliveries: next.unacknowledged_deliveries,
                     },
                 };
                 effects.push(SweepEffect::Alert(SweepAlert::RaiseWedge(detail)));
@@ -858,10 +801,12 @@ pub fn sweep_step(
     }
 
     // 3.
-    let due = prior
-        .last_sweep
-        .is_none_or(|at| secs_between(seen.now, at) >= knobs.sweep_secs);
-    if due {
+    let last_sweep = match (prior.last_sweep, seen.persisted_last_delivery) {
+        (Some(memory), Some(persisted)) => Some(memory.max(persisted)),
+        (memory, persisted) => memory.or(persisted),
+    };
+    let due = last_sweep.is_none_or(|at| secs_between(seen.now, at) >= knobs.sweep_secs);
+    if due && seen.overview_changed {
         effects.push(SweepEffect::FireSweepNudge);
     }
 
@@ -881,11 +826,10 @@ pub fn record_sweep(
     knobs: &SweepKnobs,
 ) -> Vec<SweepEffect> {
     if delivered {
-        if state.first_delivered.is_none() {
-            state.first_delivered = Some(cycle_now);
-        }
         state.fails = 0;
         state.last_sweep = Some(cycle_now);
+        state.last_delivered = Some(cycle_now);
+        state.unacknowledged_deliveries = state.unacknowledged_deliveries.saturating_add(1);
         if !state.unreachable_alerted {
             return Vec::new();
         }
@@ -923,12 +867,12 @@ mod tests {
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     use super::{
-        Heartbeat, HeartbeatOffset, QuietCycle, QuietKind, QuietPane, SweepAlert, SweepEffect,
-        SweepKnobs, SweepObservation, SweepState, SweepVerdict, WedgeDetail, classify_dead,
-        classify_heartbeat, command_is_shell, declaration_key, heartbeat_offset, indented, is_echo,
-        is_sweep_target, latest_relevant_event, quiet_cursor_advance, quiet_filter, quiet_hash,
-        quiet_pane_decision, quiet_reason, quiet_stabilize, quiet_stabilize_allowed, raw_nudge,
-        record_sweep, shows_throttle, stale_composite, submit_hdr, sweep_step,
+        QuietCycle, QuietKind, QuietPane, SweepAlert, SweepEffect, SweepKnobs, SweepObservation,
+        SweepState, SweepVerdict, WedgeDetail, classify_dead, command_is_shell, declaration_key,
+        indented, is_echo, is_sweep_target, latest_relevant_event, quiet_cursor_advance,
+        quiet_filter, quiet_hash, quiet_pane_decision, quiet_reason, quiet_stabilize,
+        quiet_stabilize_allowed, raw_nudge, record_sweep, shows_throttle, stale_composite,
+        submit_hdr, sweep_step,
     };
     use crate::events::Event;
     use crate::procs::Descendancy;
@@ -1743,7 +1687,7 @@ tail line
         );
     }
 
-    // -- the orchestrator sweep cadence --------------------------------------
+    // -- the orchestrator overview cadence -----------------------------------
 
     /// A fixed clock.
     const BASE: u64 = 1_700_000_000;
@@ -1752,136 +1696,59 @@ tail line
         UNIX_EPOCH + Duration::from_secs(BASE + offset_secs)
     }
 
-    /// The default knobs: 300s cadence, 30s retry, 6 fast retries.
+    /// Stable 300s specimens for the cadence and wedge boundary tests.
     fn knobs() -> SweepKnobs {
-        SweepKnobs::default()
+        SweepKnobs {
+            sweep_secs: 300,
+            ..SweepKnobs::default()
+        }
     }
 
-    fn seen(now_offset: u64, heartbeat: Option<u64>, k: &SweepKnobs) -> SweepObservation {
-        SweepObservation::new(at(now_offset), heartbeat.map(at), k)
+    fn seen(now_offset: u64, last_done: Option<u64>, _k: &SweepKnobs) -> SweepObservation {
+        SweepObservation::new(at(now_offset), last_done.map(at))
     }
 
     #[test]
-    fn the_frozen_sweep_defaults_are_the_bash_ones() {
-        let k = knobs();
-        assert_eq!(k.sweep_secs, 300, "sweep cadence");
+    fn the_overview_defaults_to_a_two_minute_minimum_spacing() {
+        let k = SweepKnobs::default();
+        assert_eq!(k.sweep_secs, 120, "minimum spacing");
         assert_eq!(k.retry_secs, 30, "retry floor");
         assert_eq!(k.retry_max, 6, "retry ceiling");
-        assert_eq!(k.wedge_secs(), 660, "SWEEP_SECS * 2 + 60");
+        assert_eq!(k.wedge_secs(), 300, "SWEEP_SECS * 2 + 60");
         assert!(k.enabled());
     }
 
     #[test]
-    fn an_untrusted_reading_is_never_fresh_however_recent_the_clock_is() {
-        // The safety pin, as a pair: the SAME instant classifies Fresh when the
-        // mtime is trusted and Untrusted when it is not.
-        assert_eq!(
-            classify_heartbeat(None, at(0), 660),
-            Heartbeat::Untrusted,
-            "no trusted mtime is never Fresh"
-        );
-        assert_eq!(
-            classify_heartbeat(Some(at(0)), at(0), 660),
-            Heartbeat::Fresh,
-            "the control: a trusted mtime at the same instant IS fresh"
-        );
-        // Even a zero-width window cannot make the absent reading fresh.
-        assert_eq!(classify_heartbeat(None, at(0), 0), Heartbeat::Untrusted);
-        assert_eq!(heartbeat_offset(None, at(0)), None);
-    }
+    fn a_delivered_overview_without_a_done_event_eventually_wedges() {
+        let k = knobs();
+        let prior = SweepState::default();
+        let observed = seen(661, None, &k).with_overview(false, Some(at(0)));
 
-    #[test]
-    fn the_heartbeat_window_is_symmetric_so_skew_is_tolerated_but_never_forever() {
-        // PAST SIDE — `now - hb <= wedge_secs`.
-        assert_eq!(
-            classify_heartbeat(Some(at(0)), at(660), 660),
-            Heartbeat::Fresh,
-            "an age exactly at the window is fresh"
-        );
-        assert_eq!(
-            classify_heartbeat(Some(at(0)), at(661), 660),
-            Heartbeat::Stale,
-            "one second past it is not"
-        );
+        let booked = sweep_step(&prior, &observed, &k).expect("enabled");
 
-        // FUTURE SIDE — the divergence, and it flips at the SAME boundary.
-        assert_eq!(
-            classify_heartbeat(Some(at(900)), at(300), 660),
-            Heartbeat::Fresh,
-            "600s ahead is inside the window — deliberate skew tolerance"
-        );
-        assert_eq!(
-            classify_heartbeat(Some(at(960)), at(300), 660),
-            Heartbeat::Fresh,
-            "exactly at the window, on the future side too"
-        );
-        // Beyond it, it stops counting as liveness.
-        assert_eq!(
-            classify_heartbeat(Some(at(961)), at(300), 660),
-            Heartbeat::Stale,
-            "one second beyond the window on the future side is not liveness"
-        );
-        assert_eq!(
-            classify_heartbeat(Some(at(9_000_000)), at(300), 660),
-            Heartbeat::Stale,
-            "a far-future stamp can no longer mask a wedge"
-        );
-
-        // The OFFSET reports the real distance and the real side — never 0,
-        // and never "behind" for a timestamp that is ahead.
-        assert_eq!(
-            heartbeat_offset(Some(at(900)), at(300)),
-            Some(HeartbeatOffset::Ahead { secs: 600 }),
-            "a future mtime reports its true distance, not zero"
-        );
-        assert_eq!(
-            heartbeat_offset(Some(at(0)), at(700)),
-            Some(HeartbeatOffset::Behind { secs: 700 })
-        );
-        assert_eq!(
-            HeartbeatOffset::Ahead { secs: 600 }.distance_secs(),
-            HeartbeatOffset::Behind { secs: 600 }.distance_secs(),
-            "the window judges the distance; only the wording judges the side"
+        assert_eq!(booked.verdict, SweepVerdict::MetaWedged);
+        assert!(
+            booked
+                .effects
+                .contains(&SweepEffect::Alert(SweepAlert::RaiseWedge(
+                    WedgeDetail::Never { deliveries: 1 }
+                )))
         );
     }
 
     #[test]
-    fn a_far_future_heartbeat_is_never_described_as_having_been_written_ago() {
-        // A timestamp in the FUTURE was not written N minutes ago, and telling
-        // a human it was sends them hunting a stall that never happened.
+    fn a_done_event_after_delivery_is_fresh_even_long_after_the_grace() {
         let k = knobs();
         let prior = SweepState {
-            first_delivered: Some(at(0)),
+            last_delivered: Some(at(0)),
+            unacknowledged_deliveries: 1,
             ..SweepState::default()
         };
-        // Past the grace, with a heartbeat stamped 2000s AHEAD of now.
-        let acc = sweep_step(&prior, &seen(700, Some(2700), &k), &k).expect("enabled");
-        assert_eq!(acc.verdict, SweepVerdict::MetaWedged);
-        assert!(
-            acc.effects
-                .contains(&SweepEffect::Alert(SweepAlert::RaiseWedge(
-                    WedgeDetail::Ahead { ahead_secs: 2000 }
-                ))),
-            "the future side gets its own detail, not a signed Stalled"
-        );
-        let text = SweepAlert::RaiseWedge(WedgeDetail::Ahead { ahead_secs: 2000 }).summary();
-        assert_eq!(
-            text,
-            "meta-agent not sweeping — heartbeat timestamp is 33m ahead of this clock (may be \
-             stuck)"
-        );
-        for banned in ["ago", "no heartbeat for", "never wrote"] {
-            assert!(
-                !text.contains(banned),
-                "{text:?} must not carry {banned:?} — the timestamp is AHEAD, not old"
-            );
-        }
-        // Still an alert of the right CLASS: `_agent_alert_reason` ranks on
-        // "not sweeping", and none of the higher-ranking substrings may appear.
-        assert!(text.contains("not sweeping"));
-        for banned in ["throttl", "dead", "missing"] {
-            assert!(!text.contains(banned), "{text:?} must not carry {banned:?}");
-        }
+
+        let booked = sweep_step(&prior, &seen(5_000, Some(1), &k), &k).expect("enabled");
+
+        assert_eq!(booked.verdict, SweepVerdict::MetaSweeping);
+        assert_eq!(booked.next.unacknowledged_deliveries, 0);
     }
 
     #[test]
@@ -1890,7 +1757,7 @@ tail line
         let k = knobs();
         let jumped = SweepState {
             // Both stamped an hour ahead of the cycle clock.
-            first_delivered: Some(at(3600)),
+            last_delivered: Some(at(3600)),
             last_sweep: Some(at(3600)),
             ..SweepState::default()
         };
@@ -1946,7 +1813,8 @@ tail line
         // produce a wedge alert on a live cadence produce NO BRANCH at all
         // on `0` — the caller falls through to the normal watchdog.
         let prior = SweepState {
-            first_delivered: Some(at(0)),
+            last_delivered: Some(at(0)),
+            unacknowledged_deliveries: 1,
             ..SweepState::default()
         };
         let off = SweepKnobs {
@@ -1966,9 +1834,7 @@ tail line
         assert!(
             acc.effects
                 .contains(&SweepEffect::Alert(SweepAlert::RaiseWedge(
-                    WedgeDetail::Never {
-                        prompting_secs: 5000
-                    }
+                    WedgeDetail::Never { deliveries: 1 }
                 ))),
             "the control proves the disabled case was disabled, not merely quiet"
         );
@@ -1996,6 +1862,38 @@ tail line
     }
 
     #[test]
+    fn an_unchanged_overview_never_spends_a_seat_turn() {
+        let k = knobs();
+        let seen = seen(900, Some(900), &k).with_overview(false, Some(at(0)));
+        let booked = sweep_step(&SweepState::default(), &seen, &k).expect("enabled");
+        assert!(
+            !booked.effects.contains(&SweepEffect::FireSweepNudge),
+            "elapsed cadence alone is not a reason to wake the seat"
+        );
+    }
+
+    #[test]
+    fn a_changed_overview_waits_for_the_persisted_minimum_spacing() {
+        let k = knobs();
+        let too_soon = seen(299, Some(299), &k).with_overview(true, Some(at(0)));
+        assert!(
+            !sweep_step(&SweepState::default(), &too_soon, &k)
+                .expect("enabled")
+                .effects
+                .contains(&SweepEffect::FireSweepNudge)
+        );
+
+        let due = seen(300, Some(300), &k).with_overview(true, Some(at(0)));
+        assert!(
+            sweep_step(&SweepState::default(), &due, &k)
+                .expect("enabled")
+                .effects
+                .contains(&SweepEffect::FireSweepNudge),
+            "a changed overview fires exactly at the durable boundary"
+        );
+    }
+
+    #[test]
     fn an_undelivered_prompt_retries_fast_without_consuming_the_cadence_slot() {
         // The retry is a FLOOR: due 30s after the failure, on the first
         // poll at or after that point.
@@ -2008,8 +1906,8 @@ tail line
         assert!(effects.is_empty(), "a fast retry escalates nothing");
         assert_eq!(state.fails, 1);
         assert_eq!(
-            state.first_delivered, None,
-            "the wedge grace never starts on an attempt"
+            state.last_delivered, None,
+            "the acknowledgement grace never starts on an attempt"
         );
 
         // Scheduled off the SETTLED clock (302), not the cycle clock (300).
@@ -2093,7 +1991,8 @@ tail line
             Some(at(900)),
             "a landed prompt schedules off the CYCLE clock"
         );
-        assert_eq!(state.first_delivered, Some(at(900)));
+        assert_eq!(state.last_delivered, Some(at(900)));
+        assert_eq!(state.unacknowledged_deliveries, 1);
     }
 
     #[test]
@@ -2133,26 +2032,25 @@ tail line
     }
 
     #[test]
-    fn the_first_delivered_prompt_is_the_only_one_that_starts_the_grace() {
+    fn each_delivered_overview_restarts_the_acknowledgement_grace() {
         let k = knobs();
         let mut state = SweepState::default();
         assert!(record_sweep(&mut state, true, at(10), at(11), &k).is_empty());
-        assert_eq!(state.first_delivered, Some(at(10)));
+        assert_eq!(state.last_delivered, Some(at(10)));
+        assert_eq!(state.unacknowledged_deliveries, 1);
         assert!(record_sweep(&mut state, true, at(310), at(311), &k).is_empty());
-        assert_eq!(
-            state.first_delivered,
-            Some(at(10)),
-            "the grace origin never moves"
-        );
+        assert_eq!(state.last_delivered, Some(at(310)));
+        assert_eq!(state.unacknowledged_deliveries, 2);
     }
 
     #[test]
     fn the_wedge_raises_once_past_the_grace_and_the_boundary_is_strict() {
-        // The grace runs from the first DELIVERED prompt; the comparison is
+        // The grace runs from the latest DELIVERED overview; the comparison is
         // `>`, so an elapsed exactly at the window is still starting up.
         let k = knobs();
         let prior = SweepState {
-            first_delivered: Some(at(0)),
+            last_delivered: Some(at(0)),
+            unacknowledged_deliveries: 1,
             ..SweepState::default()
         };
         let edge = sweep_step(&prior, &seen(660, None, &k), &k).expect("enabled");
@@ -2170,9 +2068,7 @@ tail line
         assert!(
             over.effects
                 .contains(&SweepEffect::Alert(SweepAlert::RaiseWedge(
-                    WedgeDetail::Never {
-                        prompting_secs: 661
-                    }
+                    WedgeDetail::Never { deliveries: 1 }
                 ))),
             "one second past the window flips the decision"
         );
@@ -2191,14 +2087,14 @@ tail line
     }
 
     #[test]
-    fn a_stalled_heartbeat_and_an_untrusted_one_wedge_with_different_words() {
+    fn an_old_done_and_no_done_wedge_with_different_details() {
         let k = knobs();
         let prior = SweepState {
-            first_delivered: Some(at(0)),
+            last_delivered: Some(at(100)),
+            unacknowledged_deliveries: 2,
             ..SweepState::default()
         };
-        // A trusted heartbeat that stopped advancing.
-        let stalled = sweep_step(&prior, &seen(700, Some(0), &k), &k).expect("enabled");
+        let stalled = sweep_step(&prior, &seen(800, Some(50), &k), &k).expect("enabled");
         assert_eq!(stalled.verdict, SweepVerdict::MetaWedged);
         assert!(
             stalled
@@ -2207,24 +2103,22 @@ tail line
                     WedgeDetail::Stalled { age_secs: 700 }
                 )))
         );
-        // No trusted heartbeat at all.
-        let never = sweep_step(&prior, &seen(700, None, &k), &k).expect("enabled");
+        let never = sweep_step(&prior, &seen(800, None, &k), &k).expect("enabled");
         assert!(
             never
                 .effects
                 .contains(&SweepEffect::Alert(SweepAlert::RaiseWedge(
-                    WedgeDetail::Never {
-                        prompting_secs: 700
-                    }
+                    WedgeDetail::Never { deliveries: 2 }
                 )))
         );
     }
 
     #[test]
-    fn a_fresh_heartbeat_clears_a_latched_wedge_and_reports_sweeping() {
+    fn a_done_after_delivery_clears_a_latched_wedge_and_reports_sweeping() {
         let k = knobs();
         let wedged = SweepState {
-            first_delivered: Some(at(0)),
+            last_delivered: Some(at(700)),
+            unacknowledged_deliveries: 1,
             last_sweep: Some(at(700)),
             wedge_alerted: true,
             ..SweepState::default()
@@ -2243,7 +2137,7 @@ tail line
         );
 
         // Idempotent: no second clear.
-        let steady = sweep_step(&recovered.next, &seen(900, Some(890), &k), &k).expect("enabled");
+        let steady = sweep_step(&recovered.next, &seen(900, Some(790), &k), &k).expect("enabled");
         assert!(
             !steady
                 .effects
@@ -2255,15 +2149,17 @@ tail line
     #[test]
     fn the_durable_reconcile_is_offered_once_per_daemon_lifetime() {
         // A watchdog restarted after alerting has lost the latch, so the first
-        // fresh heartbeat has to reach for the event log — once.
+        // acknowledged overview has to reach for the event log — once.
         let k = knobs();
         let restarted = SweepState::default();
-        let first = sweep_step(&restarted, &seen(0, Some(0), &k), &k).expect("enabled");
+        let first_seen = seen(1, Some(1), &k).with_overview(true, Some(at(0)));
+        let first = sweep_step(&restarted, &first_seen, &k).expect("enabled");
         assert_eq!(first.verdict, SweepVerdict::MetaSweeping);
         assert!(first.effects.contains(&SweepEffect::ReconcileWedge));
         assert!(first.next.reconciled);
 
-        let second = sweep_step(&first.next, &seen(400, Some(390), &k), &k).expect("enabled");
+        let second_seen = seen(400, Some(1), &k).with_overview(true, Some(at(0)));
+        let second = sweep_step(&first.next, &second_seen, &k).expect("enabled");
         assert!(
             !second.effects.contains(&SweepEffect::ReconcileWedge),
             "the log is read lazily, once"
@@ -2280,11 +2176,12 @@ tail line
         assert_eq!(wedge.action(), "alert");
         assert_eq!(
             wedge.summary(),
-            "meta-agent not sweeping — no heartbeat for 11m (may be stuck)"
+            "meta-agent not acknowledging overviews — latest delivery unacknowledged for 11m \
+             (may be stuck)"
         );
         assert_eq!(
             wedge.notify(),
-            Some("(meta-agent) not sweeping — may be stuck")
+            Some("(meta-agent) not acknowledging overviews — may be stuck")
         );
         for text in [
             wedge.summary(),
@@ -2293,24 +2190,20 @@ tail line
             for banned in ["throttl", "dead", "missing"] {
                 assert!(
                     !text.contains(banned),
-                    "{text:?} must not carry {banned:?} — it would outrank its own \
-                     'not sweeping' case in _agent_alert_reason"
+                    "{text:?} must not carry {banned:?} — it would outrank the stale alert class"
                 );
             }
         }
         assert_eq!(
-            SweepAlert::RaiseWedge(WedgeDetail::Never {
-                prompting_secs: 661
-            })
-            .summary(),
-            "meta-agent not sweeping — never wrote a heartbeat in 11m of sweep prompts (may be \
+            SweepAlert::RaiseWedge(WedgeDetail::Never { deliveries: 3 }).summary(),
+            "meta-agent not acknowledging overviews — 3 delivered, zero done events (may be \
              stuck)"
         );
         let clear = SweepAlert::ClearWedge;
         assert_eq!(clear.action(), "alert-cleared");
         assert_eq!(
             clear.summary(),
-            "meta-agent sweeping again (heartbeat resumed)"
+            "meta-agent acknowledging overviews again (done received)"
         );
         assert_eq!(clear.notify(), None);
         let unreachable = SweepAlert::RaiseUnreachable { undelivered: 7 };
@@ -2333,29 +2226,23 @@ tail line
     }
 
     #[test]
-    fn a_stale_or_untrusted_heartbeat_is_never_reported_as_sweeping() {
-        // The tri-state's whole point: only Fresh is a health claim.
+    fn only_a_done_at_or_after_delivery_is_reported_as_sweeping() {
         let k = knobs();
         let prior = SweepState {
-            first_delivered: Some(at(0)),
+            last_delivered: Some(at(1000)),
+            unacknowledged_deliveries: 1,
             ..SweepState::default()
         };
-        let cases: [(Option<u64>, u64, SweepVerdict); 6] = [
-            (None, 100, SweepVerdict::MetaStarting),
-            (None, 660, SweepVerdict::MetaStarting),
-            (None, 661, SweepVerdict::MetaWedged),
-            (None, 5000, SweepVerdict::MetaWedged),
-            (Some(0), 700, SweepVerdict::MetaWedged),
-            (Some(1000), 2000, SweepVerdict::MetaWedged),
+        let cases: [(Option<u64>, u64, SweepVerdict); 5] = [
+            (None, 1100, SweepVerdict::MetaStarting),
+            (None, 1660, SweepVerdict::MetaStarting),
+            (None, 1661, SweepVerdict::MetaWedged),
+            (Some(999), 2000, SweepVerdict::MetaWedged),
+            (Some(1000), 5000, SweepVerdict::MetaSweeping),
         ];
-        for (hb, now, want) in cases {
-            let acc = sweep_step(&prior, &seen(now, hb, &k), &k).expect("enabled");
-            assert_eq!(acc.verdict, want, "hb={hb:?} now={now}");
-            assert_ne!(
-                acc.verdict,
-                SweepVerdict::MetaSweeping,
-                "a non-fresh heartbeat is never health"
-            );
+        for (done, now, want) in cases {
+            let acc = sweep_step(&prior, &seen(now, done, &k), &k).expect("enabled");
+            assert_eq!(acc.verdict, want, "done={done:?} now={now}");
         }
     }
 }

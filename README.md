@@ -18,7 +18,7 @@ Works with any CLI-based agentic harness.
 - **Nothing touches your repo** -- session state lives in `~/.ae/sessions/`. Your working directory stays clean.
 - **Tiered delegation** -- leads run the strongest model; bounded chores go to cheap spawned workers in their own tmux windows, reviewed and retired. Convention, not machinery ([docs](docs/reference/delegation.md)).
 - **A status bar that answers "who needs me"** -- inside its sessions ae draws the tmux footer: this session, its windows and mark-first agents (`●lead ✓colead ◌builder ⚠grok`), its branch and goal on line one; every ae session on the server, most actionable first and each one clickable, on line two. Verdicts, never claims, and `[workspace] theme = off` gives your own status line back.
-- **A fleet overview in one pane** -- the optional orchestrator session periodically shows what needs you, what is working, and what is quiet; explicit instructions relay as if you typed them in the target pane.
+- **A fleet overview in one pane** -- the watchdog pastes a changed `NEEDS YOU` / `WORKING` / `QUIET` overview into the optional orchestrator seat; explicit instructions relay as if you typed them in the target pane.
 - **Small public surface** -- one command, and an optional orchestrator seat in `contrib/` that is never required.
 
 ## Install
@@ -105,8 +105,9 @@ The bare `ae orchestrator` command starts one overview seat using
 writing when the row is missing. Use `--no-attach` to build the seat without
 attaching. Existing dedicated configs that still carry `[profiles]`/`[roster]`
 remain compatible, with `[profiles]`/`[roster]` ignored for identity;
-`[workspace]`/`[prompt]` still overlay. The seeded 120-second sweep prints
-`NEEDS YOU` / `WORKING` / `QUIET` in that pane and stays `done` between sweeps.
+`[workspace]`/`[prompt]` still overlay. The seeded 120-second minimum spacing
+delivers a changed `NEEDS YOU` / `WORKING` / `QUIET` view to that pane; the seat
+only declares `done` and stays done between changes.
 Its privileged `relay <session[:agent]> <text…>` helper delivers only explicit
 human instructions as bare text and audits them in the orchestrator session.
 
@@ -228,9 +229,9 @@ Everything else is **optional**, never required for core commands:
 | Feature | What | Needs |
 |---|---|---|
 | `ae telegram` | machine-global bridge: fleet events to your Telegram chat, replies route back | a configured ae core (no extra CLI deps) |
-| the orchestrator seat ([contrib/aeorchestrator](contrib/aeorchestrator)) | a dedicated single-seat local session named `orchestrator`: prints a periodic fleet overview and relays only explicit human instructions through an audited bare-text helper | an agent CLI; ae seeds its config |
+| the orchestrator seat ([contrib/aeorchestrator](contrib/aeorchestrator)) | a dedicated single-seat local session named `orchestrator`: receives watchdog-rendered changed fleet overviews and relays only explicit human instructions through an audited bare-text helper | an agent CLI; ae seeds its config |
 
-Both daemons are Rust, start to finish: the watchdog pane runs core `_watchdog-run`, the bridge runs core `_telegram-run`, and `ae watchdog`/`ae telegram` are core operations. Neither needs `jq` or `curl`. The orchestrator's deterministic sweep is the core entry `ae _monitor sweep`; the seat invokes it with `--no-notify` so its heartbeat advances without sending changes through `say`. It was a Python sidecar (`contrib/aemonitor`) until the core took the job, and that was the product's last Python. Autostart controls are per component: set `watchdog = false` in workspace config to disable the workspace watchdog; set `enabled = false` in Telegram config to disable Telegram; set global `auto_upgrade = off` to disable automatic releases; set `AE_NO_AUTOSTART=1` to suppress all three.
+Both daemons are Rust, start to finish: the watchdog pane runs core `_watchdog-run`, the bridge runs core `_telegram-run`, and `ae watchdog`/`ae telegram` are core operations. Neither needs `jq` or `curl`. The watchdog renders the orchestrator's overview from core fleet facts, persists its last delivered hash, and wakes the seat only for changed text; the seat never scans the fleet on a timer. It was a Python sidecar (`contrib/aemonitor`) until the core took the job, and that was the product's last Python. Autostart controls are per component: set `watchdog = false` in workspace config to disable the workspace watchdog; set `enabled = false` in Telegram config to disable Telegram; set global `auto_upgrade = off` to disable automatic releases; set `AE_NO_AUTOSTART=1` to suppress all three.
 
 There is no coreless mode to fall back to: the public `ae` command is the core binary
 itself, so there is nothing separate to bind. See **[VISION.md](VISION.md)**.

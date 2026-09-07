@@ -206,12 +206,19 @@ pub struct State {
     pub last_sweep_at: i64,
     /// Consecutive sweeps that reported nothing, reset by the liveness ping.
     pub quiet_sweeps: u64,
+    /// Whether the manual `_monitor sweep` baseline has been seeded. A
+    /// watchdog-only heartbeat leaves this false.
+    pub monitor_initialized: bool,
     /// Per-agent attention, keyed `<session>\x1f<ref>`.
     pub attention: BTreeMap<String, Attn>,
     /// Per-session quiet, keyed by session name.
     pub quiet: BTreeMap<String, Quiet>,
     /// The fleet baseline: session name to agent count.
     pub sessions: BTreeMap<String, usize>,
+    /// Digest of the last fleet overview the watchdog delivered to the seat.
+    pub overview_hash: Option<String>,
+    /// Epoch second of that delivery; the cadence survives watchdog restarts.
+    pub overview_delivered_at: Option<i64>,
 }
 
 impl State {
@@ -247,18 +254,27 @@ impl State {
                 Value::obj([("agents", Value::Num(i64::try_from(*agents).unwrap_or(0)))]),
             )
         });
-        let mut text = Value::obj([
+        let mut fields = vec![
             ("attention", Value::obj(attention)),
             ("last_sweep_at", Value::Num(self.last_sweep_at)),
+            ("monitor_initialized", Value::Bool(self.monitor_initialized)),
             ("quiet", Value::obj(quiet)),
             (
                 "quiet_sweeps",
                 Value::Num(i64::try_from(self.quiet_sweeps).unwrap_or(0)),
             ),
+        ];
+        if let Some(at) = self.overview_delivered_at {
+            fields.push(("overview_delivered_at", Value::Num(at)));
+        }
+        if let Some(hash) = &self.overview_hash {
+            fields.push(("overview_hash", Value::str(hash)));
+        }
+        fields.extend([
             ("schema_version", Value::Num(SCHEMA)),
             ("sessions", Value::obj(sessions)),
-        ])
-        .render();
+        ]);
+        let mut text = Value::obj(fields).render();
         text.push('\n');
         text
     }
@@ -275,6 +291,13 @@ impl State {
         let mut state = Self {
             last_sweep_at: num(&doc, "last_sweep_at").unwrap_or(0),
             quiet_sweeps: u64::try_from(num(&doc, "quiet_sweeps").unwrap_or(0)).unwrap_or(0),
+            // A schema-1 document written before overview heartbeats existed
+            // came from `_monitor sweep`, so absence means initialized.
+            monitor_initialized: doc
+                .get("monitor_initialized")
+                .is_none_or(|value| matches!(value, Value::Bool(true))),
+            overview_hash: doc.get_str("overview_hash").map(ToOwned::to_owned),
+            overview_delivered_at: num(&doc, "overview_delivered_at"),
             ..Self::default()
         };
         if let Some(Value::Obj(fields)) = doc.get("attention") {
@@ -584,6 +607,9 @@ pub fn sweep(prior: Option<&State>, cur: &[Observed], args: &Args) -> Outcome {
         lines: Vec::new(),
         next: State {
             last_sweep_at: now,
+            monitor_initialized: true,
+            overview_hash: prior.overview_hash.clone(),
+            overview_delivered_at: prior.overview_delivered_at,
             ..State::default()
         },
         reported_attn: BTreeSet::new(),
@@ -641,6 +667,19 @@ pub fn sweep(prior: Option<&State>, cur: &[Observed], args: &Args) -> Outcome {
         prior_sessions: prior.sessions.clone(),
         first_run,
     }
+}
+
+/// Run the manual monitor diff from the shared heartbeat document. A state
+/// created only by the watchdog is not a monitor baseline, but its overview
+/// checkpoint must still survive the monitor's first write.
+fn sweep_from_state(prior: Option<&State>, cur: &[Observed], args: &Args) -> Outcome {
+    let monitor_prior = prior.filter(|state| state.monitor_initialized);
+    let mut outcome = sweep(monitor_prior, cur, args);
+    if let Some(state) = prior {
+        outcome.next.overview_hash.clone_from(&state.overview_hash);
+        outcome.next.overview_delivered_at = state.overview_delivered_at;
+    }
+    outcome
 }
 
 /// The one program a sweep may run: `<session-dir>/say`, and one argument.
@@ -701,9 +740,9 @@ fn is_session_dir(root: &Path, dir: &Path) -> bool {
 /// it: `_monitor sweep <AE_HOME>/sessions/<anyone>` wrote its state into a
 /// sibling and ran the `say` it found there — the `--notify-cmd` hazard again,
 /// reached this time through a path ae DOES own rather than one it does not.
-/// The sweep is the orchestrator's own loop over its own session directory
-/// (the charter's one command is `ae _monitor sweep <its own helpers dir>`), so
-/// "my own session" is the whole permitted set.
+/// The manual sweep is scoped to the caller's own session directory, so "my
+/// own session" is the whole permitted set. The watchdog's overview path uses
+/// the private state helpers directly and never enters this command boundary.
 ///
 /// The caller's identity is `$TMUX_PANE` on the socket `$TMUX` names. Pane ids
 /// are small per-server integers, so `%3` exists on every running server and
@@ -801,7 +840,7 @@ pub fn run(
     };
 
     let prior = read_state(&state_path);
-    let mut outcome = sweep(prior.as_ref(), &cur, args);
+    let mut outcome = sweep_from_state(prior.as_ref(), &cur, args);
     let text = outcome.text();
 
     let delivery = if text.is_empty() || !args.notify || args.dry_run {
@@ -849,6 +888,53 @@ fn read_state(path: &Path) -> Option<State> {
     State::parse(&text.ok()?)
 }
 
+/// The persisted half of the watchdog's change gate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct OverviewCheckpoint {
+    /// Digest of the last overview that landed in the seat.
+    pub hash: Option<String>,
+    /// Epoch second of that delivery.
+    pub delivered_at: Option<i64>,
+}
+
+/// Mark one successful watchdog render as a heartbeat and return the last
+/// delivered overview checkpoint. No overview hash advances here: observing a
+/// changed fleet is not evidence that its nudge landed.
+pub(crate) fn overview_heartbeat(dir: &Path, now: i64) -> std::io::Result<OverviewCheckpoint> {
+    update_overview_state(dir, now, None)
+}
+
+/// Persist the overview whose nudge just landed.
+pub(crate) fn record_overview_delivery(dir: &Path, hash: &str, now: i64) -> std::io::Result<()> {
+    update_overview_state(dir, now, Some(hash)).map(|_| ())
+}
+
+/// One locked read-decide-write over the heartbeat document. This keeps the
+/// watchdog and `_monitor` from losing each other's optional fields.
+fn update_overview_state(
+    dir: &Path,
+    now: i64,
+    delivered_hash: Option<&str>,
+) -> std::io::Result<OverviewCheckpoint> {
+    let state_path = dir.join(STATE_NAME);
+    let _lock = crate::store::lock(
+        &dir.join(format!("{STATE_NAME}.lock")),
+        crate::store::LOCK_WAIT,
+    )?;
+    let mut state = read_state(&state_path).unwrap_or_default();
+    let checkpoint = OverviewCheckpoint {
+        hash: state.overview_hash.clone(),
+        delivered_at: state.overview_delivered_at,
+    };
+    state.last_sweep_at = now;
+    if let Some(hash) = delivered_hash {
+        state.overview_hash = Some(hash.to_owned());
+        state.overview_delivered_at = Some(now);
+    }
+    publish(&state_path, &state.render())?;
+    Ok(checkpoint)
+}
+
 /// Publish `content` at `path`: a temp beside it, then a rename, then a
 /// directory sync — so the first observable version is a complete one and a
 /// crashed sweep cannot leave a half-written state file behind.
@@ -883,7 +969,9 @@ fn publish(path: &Path, content: &str) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Args, Attn, Delivery, Format, Observed, Quiet, SEP, State, observe, sanitize, sweep,
+        Args, Attn, Delivery, Format, Observed, Quiet, SEP, STATE_NAME, State, observe,
+        overview_heartbeat, read_state, record_overview_delivery, sanitize, sweep,
+        sweep_from_state,
     };
     use crate::attention::Reason;
     use crate::digest::{AgentEntry, SessionEntry, Status};
@@ -1248,6 +1336,7 @@ mod tests {
         let state = State {
             last_sweep_at: NOW,
             quiet_sweeps: 4,
+            monitor_initialized: true,
             attention: [(
                 format!("alpha{SEP}lead"),
                 Attn {
@@ -1272,6 +1361,8 @@ mod tests {
             .into_iter()
             .collect(),
             sessions: [("alpha".to_owned(), 2)].into_iter().collect(),
+            overview_hash: Some("0123456789abcdef".to_owned()),
+            overview_delivered_at: Some(NOW - 30),
         };
         let text = state.render();
         assert_eq!(State::parse(&text), Some(state), "parse(render(x)) == x");
@@ -1290,6 +1381,58 @@ mod tests {
         ] {
             assert_eq!(State::parse(hostile), None, "{hostile:?}");
         }
+    }
+
+    #[test]
+    fn the_heartbeat_persists_the_last_delivered_overview_hash() {
+        let dir =
+            std::env::temp_dir().join(format!("ae-monitor-overview-{}-{NOW}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch directory");
+
+        let empty = overview_heartbeat(&dir, NOW).expect("first heartbeat");
+        assert_eq!(empty.hash, None);
+        assert_eq!(empty.delivered_at, None);
+
+        record_overview_delivery(&dir, "0123456789abcdef", NOW + 5).expect("persist delivery");
+        let resumed = overview_heartbeat(&dir, NOW + 60).expect("restart heartbeat");
+        assert_eq!(resumed.hash.as_deref(), Some("0123456789abcdef"));
+        assert_eq!(resumed.delivered_at, Some(NOW + 5));
+        let state = read_state(&dir.join(STATE_NAME)).expect("published heartbeat state");
+        assert_eq!(state.last_sweep_at, NOW + 60);
+        assert_eq!(state.overview_hash, resumed.hash);
+        assert!(
+            !state.monitor_initialized,
+            "a watchdog heartbeat must not seed the manual monitor baseline"
+        );
+
+        std::fs::remove_dir_all(&dir).expect("remove scratch directory");
+    }
+
+    #[test]
+    fn the_first_manual_sweep_preserves_a_watchdog_only_overview_checkpoint() {
+        let prior = State {
+            last_sweep_at: NOW - 60,
+            overview_hash: Some("0123456789abcdef".to_owned()),
+            overview_delivered_at: Some(NOW - 120),
+            ..State::default()
+        };
+        let seen = observe(
+            &world(vec![session("alpha", 0, vec![agent("lead", None, None)])]),
+            NOW,
+            1200,
+        );
+
+        let outcome = sweep_from_state(Some(&prior), &seen, &args());
+
+        assert!(outcome.report.is_empty(), "first baseline stays silent");
+        assert!(outcome.next.monitor_initialized);
+        assert_eq!(outcome.next.overview_hash, prior.overview_hash);
+        assert_eq!(
+            outcome.next.overview_delivered_at,
+            prior.overview_delivered_at
+        );
+        assert_eq!(outcome.next.sessions.get("alpha"), Some(&1));
     }
 
     #[test]

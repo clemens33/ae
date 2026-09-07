@@ -2332,7 +2332,7 @@ mod tests {
     #[test]
     fn a_configured_zero_sweep_reaches_the_daemon_as_a_zero() {
         // A `0` is a VALUE, not an omission: it means "no sweep branch", and
-        // defaulting it to 300 would start prompting a session whose operator
+        // defaulting it to 120 would start prompting a session whose operator
         // turned the cadence off.
         let Request::WatchdogRun { knobs, .. } =
             Request::parse(&argv(&[WATCHDOG_RUN, "/s/demo", "--sweep-secs", "0"]))
@@ -2345,7 +2345,7 @@ mod tests {
         else {
             panic!("the flagless call did not parse");
         };
-        assert_eq!(knobs.sweep.sweep_secs, 300);
+        assert_eq!(knobs.sweep.sweep_secs, 120);
         assert!(knobs.sweep.enabled());
     }
 
