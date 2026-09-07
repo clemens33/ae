@@ -632,7 +632,7 @@ struct MotionState {
 
 impl MotionState {
     /// Replace only the cycle-owned verdicts. The cycle already published the
-    /// corresponding static glyphs.
+    /// corresponding static window labels.
     fn replace_verdicts(&mut self, verdicts: Vec<MotionVerdict>) {
         self.verdicts = verdicts;
     }
@@ -729,23 +729,26 @@ impl MotionState {
             }
         }
         for window in &windows {
-            let glyphs: String = self
+            let agents: Vec<(String, Mark)> = self
                 .verdicts
                 .iter()
                 .filter(|entry| entry.window == *window)
-                .map(|entry| {
-                    if entry.verdict.mark() == Mark::Working {
-                        spinner
-                    } else {
-                        entry.verdict.glyph(look.icons)
-                    }
+                .filter_map(|entry| {
+                    let agent = self
+                        .panes
+                        .iter()
+                        .find(|pane| pane.pane_id == entry.pane)?
+                        .agent
+                        .as_deref()
+                        .filter(|agent| !agent.is_empty() && !NON_AGENT_PANES.contains(agent))?;
+                    Some((theme::agent_label(agent), entry.verdict.mark()))
                 })
                 .collect();
             writes.push(tmux::OptionWrite::new(
                 OptionScope::Window,
                 window,
-                tmux::WINDOW_STATUS_OPTION,
-                &glyphs,
+                theme::WINDOW_AGENTS_OPTION,
+                &window_agents_line(&agents, look, Some(spinner)),
             ));
         }
         self.push_fleet_write(&mut writes, look, fleet_working.then_some(spinner));
@@ -792,8 +795,6 @@ const fn motion_publish_failure(prior: u8, observed: bool) -> (u8, bool) {
 
 /// Everything one cycle publishes, gathered so the call reads as one statement.
 struct Published<'a> {
-    /// The agent strip.
-    roster: &'a str,
     /// The watch bar's own glyph.
     bar: &'a str,
     /// How many panes were neither dead nor stale.
@@ -813,9 +814,8 @@ struct Published<'a> {
 ///
 /// BOTH inputs, because they do not cover the same ground: `by_pane` is what
 /// the panes that are there are doing, and `roster` carries the slots whose
-/// pane is NOT there — which the agent strip already draws as needs-you. A
-/// rollup that read only the first would leave the fleet strip calling a
-/// session idle while its own bar showed an agent missing.
+/// pane is NOT there. A rollup that read only the first would leave the fleet
+/// strip calling a session idle while its roster says an agent is missing.
 fn session_mark(by_pane: &[PaneMark], roster: &[Mark]) -> Mark {
     by_pane
         .iter()
@@ -1344,7 +1344,6 @@ pub(crate) fn clear_published(server: &crate::inventory::ServerId, session: &str
     // watching — and every OTHER session on the server reads those two.
     for name in [
         tmux::WATCHDOG_STATUS_OPTION,
-        tmux::AGENTS_STATUS_OPTION,
         theme::ATTENTION_GLYPH_OPTION,
         theme::ATTENTION_RANK_OPTION,
         theme::ATTENTION_STYLE_OPTION,
@@ -1371,7 +1370,7 @@ pub(crate) fn clear_published(server: &crate::inventory::ServerId, session: &str
             server,
             OptionScope::Window,
             &pane.window_id,
-            tmux::WINDOW_STATUS_OPTION,
+            theme::WINDOW_AGENTS_OPTION,
         );
     }
     // The per-pane half: a border title that outlived its watchdog would keep
@@ -1571,12 +1570,9 @@ impl Cycle<'_> {
         if read.is_some() {
             self.reconcile_look(&look, &mut carry.motion);
         }
-        // The roster is composed from the PRIOR debounce state, then the state
-        // is advanced, so a slot's first absent cycle renders neutral and only
-        // the second renders the needs-you mark.
-        let roster = self.roster_line(by_slot, &carry.missing, &look);
-        // The SAME judgement the roster line just drew, rolled up: one snapshot
-        // behind every surface, so the strip and the bar cannot disagree.
+        // The roster still contributes slots whose panes are missing to the
+        // session rollup. It is no longer drawn as a separate session strip:
+        // live panes are named in their own window entries instead.
         let slots: Vec<Mark> = self
             .roster
             .iter()
@@ -1585,7 +1581,6 @@ impl Cycle<'_> {
         self.sweep_missing(live, &mut carry.missing, err)?;
         self.publish(
             &Published {
-                roster: &roster,
                 bar: bar_glyph(counts.dead, counts.stale, look.icons),
                 active: counts.active,
                 total: counts.total,
@@ -1697,16 +1692,6 @@ impl Cycle<'_> {
         ))
     }
 
-    /// This cycle's roster line, from the daemon's own roster.
-    fn roster_line(
-        &self,
-        by_slot: &[(String, Verdict)],
-        missing: &[(String, MissingState)],
-        look: &Look,
-    ) -> String {
-        roster_line(&self.roster, by_slot, missing, look)
-    }
-
     /// Publish this cycle's verdicts as tmux user options.
     fn publish(&self, published: &Published<'_>, motion: &mut MotionState) {
         let Some(session_id) = transport::observe_session_id(self.server, self.session) else {
@@ -1740,24 +1725,6 @@ impl Cycle<'_> {
             theme::ATTENTION_STYLE_OPTION,
             &theme::attention_style(&look.palette, published.attention),
         );
-        // An EMPTY roster is UNSET, never published as "": a roster outliving
-        // its agents would keep asserting a fleet that no longer exists.
-        let _ = if published.roster.is_empty() {
-            transport::clear_option(
-                self.server,
-                OptionScope::Session,
-                &session_id,
-                tmux::AGENTS_STATUS_OPTION,
-            )
-        } else {
-            transport::publish_option(
-                self.server,
-                OptionScope::Session,
-                &session_id,
-                tmux::AGENTS_STATUS_OPTION,
-                published.roster,
-            )
-        };
         // The GOAL, ahead of the path on the right: what this session is for
         // outranks where its files are, and the path is the fact the reader's
         // own shell prompt already carries.
@@ -1810,10 +1777,10 @@ impl Cycle<'_> {
             return;
         };
         let look = published.look;
-        let mut windows: Vec<(String, String)> = Vec::new();
+        let mut windows: Vec<(String, Vec<(String, Mark)>)> = Vec::new();
         let mut verdicts = Vec::new();
         for pane in &panes {
-            let glyphs = entry_mut(&mut windows, &pane.window_id);
+            let agents = entry_mut(&mut windows, &pane.window_id);
             let Some(agent) = pane.agent.as_deref().filter(|name| !name.is_empty()) else {
                 continue;
             };
@@ -1837,7 +1804,7 @@ impl Cycle<'_> {
                 .iter()
                 .find(|entry| entry.pane == pane.pane_id);
             let mark = found.map_or(Mark::Idle, |entry| entry.verdict.mark());
-            glyphs.push_str(mark.glyph(look.icons));
+            agents.push((theme::agent_label(agent), mark));
             self.publish_pane_state(&pane.pane_id, found, look);
             if let Some(entry) = found {
                 verdicts.push(MotionVerdict {
@@ -1847,14 +1814,24 @@ impl Cycle<'_> {
                 });
             }
         }
-        for (window_id, glyphs) in &windows {
-            let _ = transport::publish_option(
-                self.server,
-                OptionScope::Window,
-                window_id,
-                tmux::WINDOW_STATUS_OPTION,
-                glyphs,
-            );
+        for (window_id, agents) in &windows {
+            let line = window_agents_line(agents, look, None);
+            let _ = if line.is_empty() {
+                transport::clear_option(
+                    self.server,
+                    OptionScope::Window,
+                    window_id,
+                    theme::WINDOW_AGENTS_OPTION,
+                )
+            } else {
+                transport::publish_option(
+                    self.server,
+                    OptionScope::Window,
+                    window_id,
+                    theme::WINDOW_AGENTS_OPTION,
+                    &line,
+                )
+            };
         }
         // A window created after the launch — by a spawn on an older core, or
         // by the human — carries no stamp, so it is dressed here rather than
@@ -2125,43 +2102,46 @@ impl Cycle<'_> {
     }
 }
 
-/// The roster line for `@ae_agents_status`: `<label><mark>`, space-joined, in
-/// META ORDER, each mark in its own accent.
+/// The agents one window entry draws, in pane order.
 ///
-/// The style directives are ae's own and the LABEL is not escaped: measured on
-/// tmux 3.7b, a user option's value interpolates LITERALLY — `##` renders as
-/// two characters and `#{…}` is not re-expanded — so doubling would show. What
-/// the drawer does still read out of a value is `#[…]`, which is why the label
-/// goes through [`theme::bar_text`] first: the name comes off a hand-editable
-/// meta, and `config::is_agent_name` guarded it when it was WRITTEN, not when
-/// it was read back.
-fn roster_line(
-    roster: &[RosterEntry],
-    by_slot: &[(String, Verdict)],
-    missing: &[(String, MissingState)],
+/// Labels have already passed through [`theme::agent_label`]. A window with
+/// one agent needs no punctuation; two or more are bracketed so their boundary
+/// is visible beside the window index. `working_frame` replaces only working
+/// marks, allowing the ticker to animate the whole label without re-reading a
+/// verdict.
+fn window_agents_line(
+    agents: &[(String, Mark)],
     look: &Look,
+    working_frame: Option<&str>,
 ) -> String {
-    roster
+    let line = agents
         .iter()
-        .map(|entry| {
-            let mark = slot_mark(entry, by_slot, missing);
+        .map(|(agent, mark)| {
+            let glyph = if *mark == Mark::Working {
+                working_frame.unwrap_or_else(|| mark.glyph(look.icons))
+            } else {
+                mark.glyph(look.icons)
+            };
             format!(
-                "{}{}{}#[default]",
-                roster_label(&entry.reference()),
-                theme::mark_style(&look.palette, mark),
-                mark.glyph(look.icons),
+                "{agent}#[fg={}]{}#[default]",
+                look.palette.accent(*mark),
+                glyph
             )
         })
         .collect::<Vec<_>>()
-        .join(" ")
+        .join(" ");
+    if agents.len() > 1 {
+        format!("[{line}]")
+    } else {
+        line
+    }
 }
 
 /// What ONE roster entry is saying.
 ///
-/// The single owner of that judgement: the roster line, the session's rolled-up
-/// attention and therefore every other session's fleet strip all read it here,
-/// so a slot whose pane has gone missing cannot say "needs you" on one surface
-/// and "idle" on another.
+/// The single owner of that judgement: the session's rolled-up attention and
+/// therefore every other session's fleet strip read it here, so a slot whose
+/// pane has gone missing cannot disappear from session attention.
 fn slot_mark(
     entry: &RosterEntry,
     by_slot: &[(String, Verdict)],
@@ -2181,12 +2161,6 @@ fn slot_mark(
         },
         |(_, verdict)| verdict.mark(),
     )
-}
-
-/// `opus5:builder` -> `builder`, as an option VALUE can carry it.
-fn roster_label(reference: &str) -> String {
-    let bare = reference.rsplit(':').next().unwrap_or(reference);
-    theme::bar_text(bare, theme::LABEL_WIDTH)
 }
 
 /// The carried state for `key`, created on first sight.
@@ -2288,8 +2262,8 @@ mod tests {
         SWEEP_PROMPT, SendHelper, UNKNOWN_ALERT_CYCLES, Verdict, account, adopt_server, age_secs,
         bar_glyph, continuation, entry_mut, heartbeat_mtime, is_meta_agent, last_actor_event_age,
         motion_cadence, motion_failure, motion_observation_due, motion_publish_failure,
-        motion_ticker_enabled, nudge_text, read_events, rebind, record_nudge, roster_label,
-        roster_line, session_name, stale_display, sweep_effects,
+        motion_ticker_enabled, nudge_text, read_events, rebind, record_nudge, session_name,
+        slot_mark, stale_display, sweep_effects, window_agents_line,
     };
     use super::{Look, Mark, PaneMark, session_mark};
     use crate::events::Event;
@@ -2391,8 +2365,8 @@ mod tests {
                 "-w",
                 "-t",
                 "@7",
-                "@ae_window_status",
-                "⠙✓⚠✖⠙",
+                "@ae_window_agents",
+                "[active#[fg=#6897BB]⠙#[default] done#[fg=#6A8759]✓#[default] blocked#[fg=#CC7832]⚠#[default] dead#[fg=#FF6B68]✖#[default] sweeping#[fg=#6897BB]⠙#[default]]",
             ]
         );
         let second = crate::tmux::set_options_args(&ServerId::Ambient, &state.step(&Look::DEFAULT));
@@ -3228,45 +3202,50 @@ mod tests {
     }
 
     #[test]
-    fn the_roster_label_is_the_name_half_and_can_carry_no_style() {
-        assert_eq!(roster_label("opus5:builder"), "builder");
-        assert_eq!(roster_label("lead"), "lead");
-        // Control bytes corrupt the bar's RENDERING, not merely its text.
-        assert_eq!(roster_label("cl:bui\u{7}lder\u{1b}"), "bui lder");
-        // `%` is NOT escaped: a user option's value interpolates literally, so
-        // doubling it would render doubled. `#` IS dropped, because the drawer
-        // still reads `#[…]` out of a value and this name came back off a
-        // hand-editable meta rather than through `config::is_agent_name`.
-        assert_eq!(roster_label("cl:a%c"), "a%c");
-        assert_eq!(roster_label("cl:evil#[bg=red]"), "evil[bg=red]");
-        assert!(!roster_label("#[bg=red]lead").contains('#'));
-    }
+    fn window_agents_name_one_or_many_and_follow_the_look() {
+        let one = vec![("act".to_owned(), Mark::Done)];
+        assert_eq!(
+            window_agents_line(&one, &look(), None),
+            "act#[fg=#7fbf6a]✓#[default]"
+        );
 
-    /// A seat name a human typed into the meta reaches the agent strip, and the
-    /// strip is an option value the drawer reads styles out of.
-    #[test]
-    fn a_hostile_seat_name_cannot_style_the_agent_strip() {
-        let roster = vec![RosterEntry {
-            slot: "main".to_owned(),
-            name: "evil#[bg=red,fg=black]".to_owned(),
-            profile: None,
-            binary: None,
-            harness_session: None,
-        }];
-        let by_slot = vec![("main".to_owned(), Verdict::Active)];
-        let drawn = roster_line(&roster, &by_slot, &[], &look());
-        // A style directive needs its `#[`. Without one the text is just text,
-        // which is why the name is allowed to keep its brackets.
-        assert!(
-            !drawn.contains("#[bg="),
-            "a seat name must not reach the drawer as a style: {drawn}"
+        let many = vec![
+            ("lead".to_owned(), Mark::Done),
+            ("colead".to_owned(), Mark::Working),
+        ];
+        assert_eq!(
+            window_agents_line(&many, &look(), None),
+            "[lead#[fg=#7fbf6a]✓#[default] colead#[fg=#57b6c2]●#[default]]"
         );
         assert_eq!(
-            drawn.matches("#[").count(),
-            2,
-            "the only directives are ae's own — the mark's accent and its reset: {drawn}"
+            window_agents_line(&many, &look(), Some("⠙")),
+            "[lead#[fg=#7fbf6a]✓#[default] colead#[fg=#57b6c2]⠙#[default]]"
         );
-        assert!(drawn.contains("evil"), "the name itself survives: {drawn}");
+        let ascii = Look {
+            icons: false,
+            ..look()
+        };
+        assert_eq!(
+            window_agents_line(&many, &ascii, Some("/")),
+            "[lead#[fg=#7fbf6a]+#[default] colead#[fg=#57b6c2]/#[default]]"
+        );
+
+        let needs_you = vec![("lead".to_owned(), Mark::NeedsYou)];
+        assert!(
+            window_agents_line(&needs_you, &Look::DEFAULT, None)
+                .contains("#[fg=#CC7832]⚠#[default]")
+        );
+    }
+
+    #[test]
+    fn a_hostile_seat_name_cannot_style_the_window_entry() {
+        let agents = vec![(
+            crate::theme::agent_label("evil#[bg=red,fg=black]"),
+            Mark::Working,
+        )];
+        let drawn = window_agents_line(&agents, &look(), None);
+        assert!(!drawn.contains("#[bg=red"), "{drawn}");
+        assert!(drawn.contains("evil"), "{drawn}");
     }
 
     /// A daemon that has never READ a look publishes nothing that depends on
@@ -3326,7 +3305,7 @@ mod tests {
         );
     }
 
-    /// The look every roster assertion below is written against.
+    /// The look every window-agent assertion below is written against.
     fn look() -> Look {
         Look {
             palette: crate::theme::Palette::NEUTRAL,
@@ -3334,25 +3313,9 @@ mod tests {
         }
     }
 
-    /// The roster line with its `#[…]` style directives removed, so an
-    /// assertion is about the VOCABULARY rather than about the palette.
-    fn plain(line: &str) -> String {
-        let mut out = String::new();
-        let mut rest = line;
-        while let Some(open) = rest.find("#[") {
-            out.push_str(&rest[..open]);
-            match rest[open..].find(']') {
-                Some(close) => rest = &rest[open + close + 1..],
-                None => return out,
-            }
-        }
-        out.push_str(rest);
-        out
-    }
-
     #[test]
-    fn the_roster_is_meta_order_keyed_by_slot_not_by_the_display_ref() {
-        let roster = vec![
+    fn the_session_rollup_is_keyed_by_slot_not_by_the_display_ref() {
+        let roster = [
             entry("main", "cl", "lead"),
             entry("worker.0", "cl", "twin"),
             entry("spawned.0", "cl", "twin"),
@@ -3364,31 +3327,19 @@ mod tests {
             ("worker.0".to_owned(), Verdict::Stale),
             ("spawned.0".to_owned(), Verdict::Quiet(QuietKind::Done)),
         ];
-        assert_eq!(
-            plain(&roster_line(&roster, &by_slot, &[], &look())),
-            "lead● twin◌ twin✓",
-            "each slot renders its OWN verdict"
-        );
-        // The ASCII fallback is the same line in the other vocabulary.
-        let ascii = Look {
-            icons: false,
-            ..look()
-        };
-        assert_eq!(
-            plain(&roster_line(&roster, &by_slot, &[], &ascii)),
-            "lead* twin? twin+"
-        );
+        let marks: Vec<Mark> = roster
+            .iter()
+            .map(|entry| slot_mark(entry, &by_slot, &[]))
+            .collect();
+        assert_eq!(marks, [Mark::Working, Mark::Stale, Mark::Done]);
     }
 
     #[test]
     fn a_slot_with_no_pane_is_neutral_on_its_first_absent_cycle_and_dead_on_its_second() {
-        let roster = vec![entry("main", "cl", "lead"), entry("worker.0", "cl", "w")];
+        let roster = [entry("main", "cl", "lead"), entry("worker.0", "cl", "w")];
         let by_slot = vec![("main".to_owned(), Verdict::Active)];
         // First absence: the debounce has not recorded it yet.
-        assert_eq!(
-            plain(&roster_line(&roster, &by_slot, &[], &look())),
-            "lead● w·"
-        );
+        assert_eq!(slot_mark(&roster[1], &by_slot, &[]), Mark::Idle);
         // Second: the streak is recorded, and now it wants a human.
         let missing = vec![(
             "worker.0".to_owned(),
@@ -3397,10 +3348,7 @@ mod tests {
                 alerted: true,
             },
         )];
-        assert_eq!(
-            plain(&roster_line(&roster, &by_slot, &missing, &look())),
-            "lead● w⚠"
-        );
+        assert_eq!(slot_mark(&roster[1], &by_slot, &missing), Mark::NeedsYou);
         // The debounce is keyed by SLOT: a streak against some other slot must
         // not make this one say so.
         let elsewhere = vec![(
@@ -3410,10 +3358,7 @@ mod tests {
                 alerted: true,
             },
         )];
-        assert_eq!(
-            plain(&roster_line(&roster, &by_slot, &elsewhere, &look())),
-            "lead● w·"
-        );
+        assert_eq!(slot_mark(&roster[1], &by_slot, &elsewhere), Mark::Idle);
     }
 
     /// The session's own mark is the most actionable of its panes'.
@@ -3452,9 +3397,8 @@ mod tests {
             ),
             Mark::Stale
         );
-        // A slot whose PANE is gone says needs-you on the agent strip, so the
-        // session it belongs to has to say it too — the surfaces are one
-        // snapshot or they are a bug.
+        // A slot whose PANE is gone still says needs-you in the session
+        // rollup; a missing pane must not make the fleet strip look calm.
         assert_eq!(
             session_mark(
                 &[pane("%1", Verdict::Active)],
@@ -3471,10 +3415,10 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_roster_composes_to_nothing_so_the_caller_can_unset_it() {
-        // The caller UNSETS on empty rather than publishing "" — a roster
-        // outliving its agents would keep asserting a fleet that is gone.
-        assert!(roster_line(&[], &[], &[], &look()).is_empty());
+    fn an_empty_window_agent_list_composes_to_nothing() {
+        // The publisher clears an empty option so an ordinary tmux window
+        // falls back to its own name.
+        assert!(window_agents_line(&[], &look(), None).is_empty());
     }
 
     #[test]

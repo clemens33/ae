@@ -1,7 +1,7 @@
 # The session look
 
-ae draws its own sessions: two status lines, a terminal title, a glyph on every
-window, a title on every pane border, and a style for the menu the picker opens. All of it is
+ae draws its own sessions: two status lines, a terminal title, named agents in
+every window entry, a title on every pane border, and a style for the menu the picker opens. All of it is
 **session-scoped**. A tmux server can hold ae sessions and your own side by
 side, and yours keeps your theme.
 
@@ -66,7 +66,7 @@ reason beside the mark says which of the two it was.
 
 A ticker runs between the watchdog's 60-second verdict cycles. Every attached
 pane whose latest verdict mark is working gets the next spinner frame every
-100 ms, and one batched tmux invocation advances its pane border, window glyph
+100 ms, and one batched tmux invocation advances its pane border, window entry
 and fleet strip together. Every fifth frame refreshes the pane and fleet
 observations; the four frames between reuse that snapshot, keeping tmux reads
 at 500 ms while animation runs at 10 fps. Detached sessions receive no
@@ -109,17 +109,19 @@ paired with a glyph, and each glyph with a reason word on the pane border.
 ## The two status lines
 
 `status-format[0]` — the session's attention glyph in its accent, then the
-windows (a mark instead of tmux's `*` and `-` flags, with `Z` kept because a
-zoomed pane hides the rest of the window), then on the right the branch, the
-goal, the shortened path and the watch segment. The session name is shown once
-in the fleet strip below.
+windows. Each window names its agent and live mark (`0:lead✓`) or brackets
+multiple agents (`0:[lead✓ colead⠙]`); a window with no agent panes falls back
+to its tmux name. `Z` stays because a zoomed pane hides the rest of the window.
+The selected window uses the palette's selection ground and ink. The right
+side carries the branch, goal, shortened path and watch segment. The session
+name is shown once in the fleet strip below.
 
 `status-format[1]` — the **fleet strip**: the `orchestrator` session pinned
 first, then every other ae session
-in the order it was created, each with its live glyph, then this session's own
-agents with their marks. A session keeps its place while its attention changes,
-so a click never moves the thing that was clicked; the current session is drawn
-raised, not moved.
+in the order it was created, each with its live glyph. A session keeps its
+place while its attention changes, so a click never moves the thing that was
+clicked; the current session uses the palette's selection ground and ink, not
+a new position.
 The orchestrator pin is never shed on overflow. While calm it carries a dim `◆`
 (ASCII `o`); working replaces that pin with the shared spinner frame, and dead,
 needs-you or stale replaces it with the more urgent mark. Each strip entry is a
@@ -138,7 +140,9 @@ agent in the session rollup, so attention always stops that session's spinner.
 One snapshot feeds every surface. The marks the agent strip draws, the mark the
 session publishes for other sessions to sort on, and the words on the pane
 borders all come from the same cycle's judgement, including the slots whose pane
-has gone missing.
+has gone missing. A missing agent has no window entry to name it: it remains
+visible only through the session mark (the fleet-strip glyph and terminal title)
+and through `ae list` or the session brief.
 
 ### Terminal titles
 
@@ -156,11 +160,12 @@ lines; `[workspace] theme = off` leaves the user's title settings untouched.
 | `@ae_palette`, `@ae_icons`, `@ae_look`, `@ae_motion` | session | launch, rename |
 | `@ae_look_stamp`, `@ae_paths` | session | launch, rename, watchdog |
 | `@ae_attn_glyph`, `@ae_attn_rank`, `@ae_attn_style` | session | launch seeds them once, watchdog owns them after |
-| `@ae_fleet_strip`, `@ae_agents_status`, `@ae_watchdog_status` | session | watchdog |
+| `@ae_fleet_strip`, `@ae_watchdog_status` | session | watchdog |
 | `@ae_goal_status` | session | watchdog |
 | `@ae_version` | session | watchdog (the core it runs on, `ae <version>`) |
 | `@ae_branch_status`, `@ae_branch_name` | session | watchdog |
-| `@ae_window_status` | window | watchdog |
+| `@ae_window_agents` | window | watchdog |
+| `@ae_window_plumbing` | monitor window | launch, watchdog lifecycle |
 | `@ae_theme` | window | launch, spawn, watchdog |
 | `@ae_agent`, `@ae_slot`, `@ae_profile` | pane | launch, spawn |
 | `@ae_agent_label` | pane | launch, spawn, watchdog |

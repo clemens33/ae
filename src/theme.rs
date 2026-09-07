@@ -468,6 +468,18 @@ pub const LOOK_STAMP_OPTION: &str = "@ae_look_stamp";
 /// a style taken out of it.
 pub const AGENT_LABEL_OPTION: &str = "@ae_agent_label";
 
+/// WINDOW — the agents in this window, each followed by its live mark.
+///
+/// Published by the watchdog from the pane identities and verdicts. A single
+/// agent is bare (`lead✓`); two or more are bracketed (`[lead✓ colead●]`).
+pub const WINDOW_AGENTS_OPTION: &str = "@ae_window_agents";
+
+/// WINDOW — marks the one window owned by ae's monitor plumbing.
+///
+/// Agent names share the public name grammar and may validly be `ae-monitor`,
+/// so the status line hides this proven ownership marker, never a name.
+pub const WINDOW_PLUMBING_OPTION: &str = "@ae_window_plumbing";
+
 /// The name a pane's border DRAWS for `agent`.
 ///
 /// One owner, because two would disagree: the launch writes it when the pane is
@@ -505,7 +517,7 @@ pub const WINDOW_STAMP_OPTION: &str = "@ae_theme";
 /// changes shape: the version leads both stamps, so a session or window carrying
 /// an older one is rewritten by the next watchdog cycle rather than left on the
 /// layout an older core wrote.
-pub const FORMAT_VERSION: &str = "5";
+pub const FORMAT_VERSION: &str = "6";
 
 /// What [`WINDOW_STAMP_OPTION`] is set to: the LOOK the window was dressed in,
 /// formats version first.
@@ -574,22 +586,32 @@ pub fn menu_title_style(palette: &Palette) -> String {
 
 /// The window entry inside `#{W:…}`, drawn in `body`'s style.
 ///
-/// `#F` is gone on purpose: the `*` / `-` / `Z` flag block is replaced by the
-/// window's own `@ae_window_status`, which is the marks of the agents in it.
+/// `#F` is gone on purpose: the `*` / `-` flag block is replaced by the
+/// window's own named agents. `Z` stays because it says the rest of the panes
+/// are hidden. A window with no agent panes falls back to its tmux name.
 fn window_entry(palette: &Palette, current: bool) -> String {
-    let text = if current { palette.text } else { palette.dim };
+    let text = if current {
+        palette.selected_ink
+    } else {
+        palette.dim
+    };
+    let panel = if current {
+        palette.selected
+    } else {
+        palette.base
+    };
     let weight = if current { "bold" } else { "nobold" };
-    // The monitor window is ae's own plumbing: its two panes are the watchdog
-    // and the event tail, read through `peek`, never watched. It stays a
-    // window — prefix 9 still reaches it — and leaves the bar.
+    // The marked monitor window is ae's own plumbing: its two panes are the
+    // watchdog and event tail, read through `peek`, never watched. It stays a
+    // window — prefix 9 still reaches it — and leaves the bar. Its NAME cannot
+    // be the discriminator because `ae-monitor` is a valid agent name.
     format!(
-        "#{{?#{{==:#{{window_name}},{monitor}}},,\
-         #[range=window|#{{window_index}} fg={text} bg={panel} {weight}] \
-         #{{window_index}}:#{{window_name}}#{{?window_zoomed_flag,Z,}}\
-         #{{?#{{@ae_window_status}}, #{{@ae_window_status}},}} \
-         #[norange nobold fg={dim} bg={base}]}}",
-        monitor = MONITOR_WINDOW,
-        panel = palette.panel,
+        "#{{?#{{{WINDOW_PLUMBING_OPTION}}},,\
+         #[range=window|#{{window_index}} fg={text} bg={panel} {weight}]#[push-default] \
+         #{{window_index}}:#{{?#{{{WINDOW_AGENTS_OPTION}}},#{{{WINDOW_AGENTS_OPTION}}},#{{window_name}}}}\
+         #{{?window_zoomed_flag,Z,}} \
+         #[pop-default]#[norange nobold fg={dim} bg={base}]}}",
+        panel = panel,
         dim = palette.dim,
         base = palette.base,
     )
@@ -643,15 +665,14 @@ pub fn status_line_zero(palette: &Palette) -> String {
 // status-format[1] — the fleet strip
 // ---------------------------------------------------------------------------
 
-/// `status-format[1]`: every ae session on this server, then this session's
-/// own agents, then the core they run on — dim, at the far right, where a
-/// reader looks once after an upgrade and never otherwise.
+/// `status-format[1]`: every ae session on this server, then the core they run
+/// on — dim, at the far right, where a reader looks once after an upgrade and
+/// never otherwise.
 #[must_use]
 pub fn status_line_one(palette: &Palette) -> String {
     format!(
         "#[align=left fg={dim} bg={base}] #{{{FLEET_STRIP_OPTION}}}\
-         #[align=right fg={dim} bg={base}]#{{@ae_agents_status}}  \
-         #{{{VERSION_OPTION}}} ",
+         #[align=right fg={dim} bg={base}] #{{{VERSION_OPTION}}} ",
         dim = palette.dim,
         base = palette.base,
     )
@@ -747,12 +768,15 @@ pub fn fleet_strip(look: &Look, rows: &[FleetRow], working_frame: Option<&str>) 
         // interpolates literally, and a session name is an allowlist that
         // admits no `#`.
         let name = &row.name;
-        // The CURRENT session is the raised tab: the panel ground the current
-        // window entry stands on, bright bold text, and a space of ground on
+        // The CURRENT session is the selected tab: the palette's selection
+        // ground and ink, bold, with a space of ground on
         // either side so the segment reads as a shape. It is the only place the
         // bar names the session you are in, so it has to be found at a glance.
         let (ground, text) = if row.current {
-            (palette.panel, format!("fg={} bold", palette.text))
+            (
+                palette.selected,
+                format!("fg={} bold", palette.selected_ink),
+            )
         } else {
             (palette.base, format!("fg={} nobold", palette.dim))
         };
@@ -1149,14 +1173,32 @@ mod tests {
     }
 
     /// The monitor window is ae's plumbing and leaves the bar: every window
-    /// entry is guarded by its name, in every palette.
+    /// entry is guarded by proven ownership, never by its user-valid name.
     #[test]
     fn the_monitor_window_is_not_drawn_on_line_zero() {
         for palette in PALETTES {
             let line = status_line_zero(&palette);
-            let guard = format!("#{{?#{{==:#{{window_name}},{}}},,", super::MONITOR_WINDOW);
+            let guard = format!("#{{?#{{{}}},,", super::WINDOW_PLUMBING_OPTION);
             assert_eq!(line.matches(guard.as_str()).count(), 2, "{line}");
+            assert!(!line.contains("#{==:#{window_name},ae-monitor}"), "{line}");
         }
+    }
+
+    #[test]
+    fn window_entries_prefer_named_agents_keep_fallback_and_zoom() {
+        let current = super::window_entry(&Palette::DARCULA, true);
+        assert!(
+            current.contains("#{?#{@ae_window_agents},#{@ae_window_agents},#{window_name}}"),
+            "{current}"
+        );
+        assert!(current.contains("#{?window_zoomed_flag,Z,}"), "{current}");
+        assert!(current.contains("fg=#A9B7C6 bg=#214283 bold"), "{current}");
+        assert!(current.contains("#[push-default]"), "{current}");
+        assert!(current.contains("#[pop-default]"), "{current}");
+
+        let other = super::window_entry(&Palette::DARCULA, false);
+        assert!(other.contains("fg=#808080 bg=#313335 nobold"), "{other}");
+        assert!(!other.contains("bg=#214283"), "{other}");
     }
 
     /// Every format literal this module hands tmux, for the guards below.
@@ -1400,6 +1442,27 @@ mod tests {
         assert!(!strip.contains(Mark::Working.glyph(true)), "{strip}");
     }
 
+    #[test]
+    fn only_the_current_fleet_row_uses_selection_colours() {
+        let row = |current| FleetRow {
+            name: "demo".to_owned(),
+            id: "$7".to_owned(),
+            mark: Mark::Done,
+            current,
+        };
+        let current = fleet_strip(&Look::DEFAULT, &[row(true)], None);
+        assert!(current.contains("bg=#214283"), "{current}");
+        assert!(current.contains("fg=#A9B7C6 bold"), "{current}");
+        assert!(
+            current.contains("fg=#6A8759 bg=#214283"),
+            "mark keeps its accent: {current}"
+        );
+
+        let other = fleet_strip(&Look::DEFAULT, &[row(false)], None);
+        assert!(!other.contains("bg=#214283"), "{other}");
+        assert!(other.contains("bg=#313335"), "{other}");
+    }
+
     /// Overflow sheds the CALMEST rows and keeps the order of the rest; the
     /// current session survives wherever it was created.
     #[test]
@@ -1541,7 +1604,7 @@ mod tests {
     #[test]
     fn terminal_titles_are_part_of_the_drawn_layout() {
         let options = super::layout_options(&Look::DEFAULT);
-        assert_eq!(super::FORMAT_VERSION, "5");
+        assert_eq!(super::FORMAT_VERSION, "6");
         assert_eq!(
             options
                 .iter()

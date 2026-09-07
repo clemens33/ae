@@ -93,15 +93,18 @@ Old seat files that still carry `[profiles]`/`[roster]` are ignored for identity
 | `theme`   | `off` leaves your own status line, pane borders and menu styles alone | `on`  |
 | `motion`  | `off` freezes the spinner on its mark                 | `on`          |
 
-Names show in pane borders and are how agents address each other. Under `lead-pair`
-the windows carry role names (`0:leads`, `1:workers`); under `lead-solo` window 0 keeps
-the session name and only window 1 is role-named (`workers`).
+Names show in pane borders and are how agents address each other. Each window
+keeps its first agent's name as its stable tmux routing name; later splits do
+not rename it.
 
-The status bar has two lines. The first is this session: its attention mark and name,
-then the windows, then the branch, the goal, the shortened path and the watch segment.
+The status bar has two lines. The first is this session: its attention mark,
+then windows named with their agents and live marks, then the branch, goal,
+shortened path and watch segment. One agent is `0:lead✓`; multiple agents are
+`0:[lead✓ colead⠙]`. The selected window and current fleet row use the
+palette's selection colours.
 The second is the **fleet strip** — every ae session on this tmux server in the order it
-was created, each with its live mark and clickable to switch to it — and on its right the
-agents of this session. Every pane also carries a border title: `<name> · <mark> <reason>`.
+was created, each with its live mark and clickable to switch to it. Every pane
+also carries a border title: `<name> · <mark> <reason>`.
 
 The marks are the **watchdog's verdict**, never a claim about what an agent is "doing"
 (it cannot see that):
@@ -119,15 +122,17 @@ While somebody is attached, a Working verdict shows a spinner in place of `●`.
 The spinner is the cached verdict, not terminal motion; silence past the liveness
 window changes the next watchdog verdict to stale.
 
-The roster is keyed by the agents in session meta, so an agent whose pane vanished still
-holds its slot as `⚠` rather than quietly disappearing. The same marks appear per window
-in the window list, so attention maps onto the windows you already scan. Everything is
-watchdog-published and disappears when the watchdog is stopped.
+Session attention is keyed by the agents in session meta, so an agent whose
+pane vanished still holds its slot as `⚠` rather than quietly disappearing.
+Live agents and their marks appear in the window list, so attention maps onto
+the windows you already scan. Everything is watchdog-published and disappears
+when the watchdog is stopped.
 
 > **ae draws its own sessions, at session and window scope.** It sets `status-format[0]`
 > and `[1]` on its sessions, and the pane-border and menu styles on their windows. Your
 > global tmux config is untouched, and nothing outside an ae session changes. tmux's `Z`
-> zoom flag is kept in the window list; the `*` and `-` flags are replaced by the mark.
+> zoom flag is kept in the window list; the `*` and `-` flags are replaced by
+> named agents and marks.
 > `theme = off` turns all of that off and still publishes every `@ae_*` value, so your own
 > `status-right` can read ae's facts in your own layout.
 

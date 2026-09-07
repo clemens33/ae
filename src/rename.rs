@@ -113,7 +113,6 @@ fn locked(
     let old_dir = sessions.join(old);
     let new_dir = sessions.join(new);
     // The server is the OLD session's own recorded one.
-    let bytes = crate::meta::read_bytes(&old_dir).unwrap_or_default();
     let Some(server) = crate::session_launch::recorded_server_resolved(&old_dir) else {
         writeln!(
             err,
@@ -159,19 +158,6 @@ fn locked(
     }
 
     // 2.
-    if crate::lifecycle::meta_value(&bytes, "layout") != "lead-pair" {
-        let target = format!("{}:0", crate::tmux::session_target(new));
-        let _ = transport::run_tmux_op(&argv(
-            &server,
-            &Op::RenameWindow {
-                target: &target,
-                // A window name is a tmux FORMAT: `#(cmd)` runs a shell.
-                name: &crate::tmux::format_literal(new),
-            },
-        ));
-    }
-
-    // 3.
     if crate::lifecycle::dir_exists(&old_dir) && std::fs::rename(&old_dir, &new_dir).is_err() {
         writeln!(
             err,
@@ -181,7 +167,7 @@ fn locked(
         return Ok(EXIT_FAILED);
     }
 
-    // 4.
+    // 3.
     if crate::lifecycle::path_exists(&new_dir.join(crate::meta::FILE)) {
         if let Err(why) = crate::meta::rewrite(&new_dir, "session", Some(new)) {
             writeln!(

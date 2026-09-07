@@ -950,7 +950,8 @@ fn lead_config(layout: &str, workers: &[&str]) -> String {
     cfg
 }
 
-/// The two LEAD layouts seat each agent in the window their layout names.
+/// The two LEAD layouts seat each agent together and keep each window's first
+/// agent as its stable routing name.
 #[test]
 fn the_lead_layouts_seat_each_agent_in_the_window_their_layout_names() {
     if skip() {
@@ -968,11 +969,19 @@ fn the_lead_layouts_seat_each_agent_in_the_window_their_layout_names() {
     assert_eq!(
         solo.windows("lsolo"),
         vec![
-            ("0".to_owned(), "lsolo".to_owned(), 1),
-            ("1".to_owned(), "workers".to_owned(), 2),
+            ("0".to_owned(), "lead".to_owned(), 1),
+            ("1".to_owned(), "w1".to_owned(), 2),
         ],
-        "the lead is alone, and the workers share the role-named second window"
+        "each window keeps the name of the first agent placed in it"
     );
+    let (_, automatic) = solo.tmux(&[
+        "show-window-options",
+        "-v",
+        "-t",
+        "lsolo:0",
+        "automatic-rename",
+    ]);
+    assert_eq!(automatic.trim(), "off", "the singleton name stays stable");
     assert!(
         solo.meta("lsolo").contains("layout=lead-solo"),
         "the layout is pinned, so a resume keeps this shape:\n{}",
@@ -994,10 +1003,10 @@ fn the_lead_layouts_seat_each_agent_in_the_window_their_layout_names() {
     assert_eq!(
         pair.windows("lpair"),
         vec![
-            ("0".to_owned(), "leads".to_owned(), 2),
-            ("1".to_owned(), "workers".to_owned(), 2),
+            ("0".to_owned(), "lead".to_owned(), 2),
+            ("1".to_owned(), "builder".to_owned(), 2),
         ],
-        "both leadership seats are in window 0, and both windows carry a ROLE name"
+        "a later split does not rename either window"
     );
     // The colead really is the FIRST worker slot, and it really is in the
     // lead's window — a shape assertion alone would pass if the panes were
@@ -1054,9 +1063,8 @@ fn a_session_with_the_theme_off_keeps_the_users_own_look() {
     }
     // Every window, the monitor window included — that one was dressed by hand
     // before the look existed, and it is the regression this test names. The
-    // window LIST is asserted first: a target that does not exist answers every
-    // question with a blank, which is what a vacuous version of this test would
-    // read as a pass.
+    // plumbing identity is not a look option and remains present so a custom
+    // status line can distinguish that window without relying on its name.
     let (_, windows) = rig.tmux(&["list-windows", "-t", "lnoff", "-F", "#{window_name}"]);
     assert!(
         windows.lines().any(|name| name == "ae-monitor"),
@@ -1071,11 +1079,72 @@ fn a_session_with_the_theme_off_keeps_the_users_own_look() {
             );
         }
     }
+    let (_, plumbing) = rig.tmux(&[
+        "show-options",
+        "-wv",
+        "-t",
+        "lnoff:ae-monitor",
+        ae::theme::WINDOW_PLUMBING_OPTION,
+    ]);
+    assert_eq!(plumbing.trim(), "1");
     // And the FACTS are all there, so a hand-written status line can read them.
     assert_eq!(session(ae::theme::LOOK_OPTION), "off");
     assert_eq!(session(ae::theme::PALETTE_OPTION), "darcula");
     assert!(!session(ae::theme::ATTENTION_GLYPH_OPTION).is_empty());
     assert!(!session(ae::theme::PATHS_OPTION).is_empty());
+}
+
+#[test]
+fn an_agent_named_ae_monitor_keeps_its_window_while_the_plumbing_window_stays_hidden() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("monitor-name");
+    let config = "[profiles]\nidle = \"sleep 600\"\n\n[roster]\nae-monitor = idle\n\n\
+                  [workspace]\nmain = ae-monitor\nlayout = vertical\nwatchdog = false\n";
+    assert!(
+        std::fs::write(&rig.config, config).is_ok(),
+        "a valid agent name that matches the plumbing window"
+    );
+    let (code, stdout, stderr) = rig.launch(&["--local", "monitor-name"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+
+    let (_, windows) = rig.tmux(&[
+        "list-windows",
+        "-t",
+        "monitor-name",
+        "-F",
+        "#{window_index}|#{window_name}|#{@ae_window_plumbing}",
+    ]);
+    assert!(
+        windows.lines().any(|line| line == "0|ae-monitor|"),
+        "{windows}"
+    );
+    assert!(
+        windows.lines().any(|line| line == "99|ae-monitor|1"),
+        "{windows}"
+    );
+
+    let (_, format) = rig.tmux(&[
+        "show-options",
+        "-v",
+        "-t",
+        "monitor-name",
+        "status-format[0]",
+    ]);
+    let (_, drawn) = rig.tmux(&[
+        "display-message",
+        "-p",
+        "-t",
+        "monitor-name:0",
+        "-F",
+        format.trim_end(),
+    ]);
+    assert!(
+        drawn.contains("0:ae-monitor"),
+        "agent window missing: {drawn}"
+    );
+    assert!(!drawn.contains("99:ae-monitor"), "plumbing leaked: {drawn}");
 }
 
 /// The status bar is AE-OWNED, SESSION-SCOPED, and its first line still
@@ -1105,6 +1174,7 @@ fn the_status_bar_is_ae_owned_and_its_first_line_still_renders() {
     assert!(zero.contains("#{@ae_attn_glyph}"), "{zero}");
     assert!(!zero.contains("lnbar"), "{zero}");
     assert!(zero.contains("#{window_name}"), "{zero}");
+    assert!(zero.contains("#{@ae_window_agents}"), "{zero}");
     assert!(zero.contains("#{@ae_branch_status}"), "{zero}");
     assert_eq!(
         zero.matches("#{@ae_watchdog_status}").count(),
@@ -1112,10 +1182,11 @@ fn the_status_bar_is_ae_owned_and_its_first_line_still_renders() {
         "exactly one watch reference: {zero}"
     );
     assert!(!zero.contains("#("), "no format ever shells out: {zero}");
-    // Line 1 is the fleet strip and this session's agents.
+    // Line 1 is the fleet strip and the core version. Agents live in their
+    // window entries on line 0.
     let one = option("status-format[1]");
     assert!(one.contains("#{@ae_fleet_strip}"), "{one}");
-    assert!(one.contains("#{@ae_agents_status}"), "{one}");
+    assert!(!one.contains(concat!("@ae_agents_", "status")), "{one}");
     // PRESENT is not RENDERED. Both lines are drawn and read back, because a
     // format that tmux cannot expand does not fail — it prints the source text,
     // and a bar with `#{` still in it is a broken bar that a "contains the
@@ -1136,12 +1207,12 @@ fn the_status_bar_is_ae_owned_and_its_first_line_still_renders() {
         "line 0 left a format unexpanded: {drawn:?}"
     );
     assert!(
-        drawn.contains("lnbar"),
-        "line 0 draws the session rather than a blank line: {drawn:?}"
+        drawn.contains("lead"),
+        "line 0 draws the window's agent rather than a blank line: {drawn:?}"
     );
     assert!(
-        drawn.contains("0:lnbar"),
-        "the window segment is drawn, not just the session name: {drawn:?}"
+        drawn.contains("0:lead"),
+        "the fallback window name is its single agent: {drawn:?}"
     );
     assert!(
         drawn.contains("range=window|0"),
@@ -1158,17 +1229,27 @@ fn the_status_bar_is_ae_owned_and_its_first_line_still_renders() {
         drawn.contains(ae::theme::Palette::DARCULA.accent(stale)),
         "and in its accent: {drawn:?}"
     );
-    // Line 1 carries what the WATCHDOG publishes, and this rig runs none — so
-    // the two options are seeded here and the line is read back. An assertion
-    // that only proved the line expanded would pass on two empty halves, which
-    // is exactly the broken bar it is meant to catch.
-    for (name, value) in [
-        (ae::theme::FLEET_STRIP_OPTION, "FLEETMARK lnbar"),
-        (ae::tmux::AGENTS_STATUS_OPTION, "AGENTMARK lead"),
-    ] {
-        let (set, why) = rig.tmux(&["set-option", "-t", "lnbar", name, value]);
-        assert!(set, "seeding {name}: {why}");
-    }
+    // Both watchdog-owned surfaces render their option values. The rig runs no
+    // watchdog, so seed them directly.
+    let (set, why) = rig.tmux(&[
+        "set-option",
+        "-t",
+        "lnbar",
+        ae::theme::FLEET_STRIP_OPTION,
+        "FLEETMARK lnbar",
+    ]);
+    assert!(set, "seeding fleet strip: {why}");
+    let (set, why) = rig.tmux(&[
+        "set-option",
+        "-w",
+        "-t",
+        "lnbar:0",
+        ae::theme::WINDOW_AGENTS_OPTION,
+        "AGENTMARK lead",
+    ]);
+    assert!(set, "seeding window agents: {why}");
+    let agents = render(0);
+    assert!(agents.contains("0:AGENTMARK lead"), "{agents:?}");
     let strip = render(1);
     assert!(
         !strip.contains("#{"),
@@ -1177,14 +1258,6 @@ fn the_status_bar_is_ae_owned_and_its_first_line_still_renders() {
     assert!(
         strip.contains("FLEETMARK lnbar"),
         "line 1 draws the fleet strip: {strip:?}"
-    );
-    assert!(
-        strip.contains("AGENTMARK lead"),
-        "line 1 draws this session's agents: {strip:?}"
-    );
-    assert!(
-        strip.find("FLEETMARK") < strip.find("AGENTMARK"),
-        "the fleet is the left half and the agents the right: {strip:?}"
     );
 }
 

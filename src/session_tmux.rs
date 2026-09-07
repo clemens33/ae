@@ -102,8 +102,6 @@ pub(crate) enum Op<'a> {
     /// `select-window -t <pane>` — the `focus` helper's window switch, which
     /// `select-pane` alone does not do.
     SelectWindow { pane: &'a str },
-    /// `rename-window -t <target> <name>`.
-    RenameWindow { target: &'a str, name: &'a str },
     /// `rename-session -t <target> <name>` — `ae rename`'s tmux half.
     RenameSession { target: &'a str, name: &'a str },
     /// `set-window-option -t <target> <name> <value>` — the monitor window's
@@ -220,9 +218,6 @@ pub(crate) fn argv(server: &ServerId, op: &Op<'_>) -> TmuxArgv {
             args.extend(["rename-session", "-t"].map(ToOwned::to_owned));
             args.push(session_target(target));
             args.push(name.to_owned());
-        }
-        Op::RenameWindow { target, name } => {
-            args.extend(["rename-window", "-t", target, name].map(ToOwned::to_owned));
         }
         Op::SetWindowOption {
             target,

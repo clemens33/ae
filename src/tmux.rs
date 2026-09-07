@@ -667,12 +667,6 @@ pub fn capture_pane_args(server: &ServerId, pane: &str) -> Vec<String> {
 /// <active>/<total>]`.
 pub const WATCHDOG_STATUS_OPTION: &str = "@ae_watchdog_status";
 
-/// The session-scoped user option carrying the roster line.
-pub const AGENTS_STATUS_OPTION: &str = "@ae_agents_status";
-
-/// The WINDOW-scoped user option carrying that window's glyphs.
-pub const WINDOW_STATUS_OPTION: &str = "@ae_window_status";
-
 /// How long a transient watchdog alert stays on screen, in milliseconds — the
 /// frozen `display-message -d 10000`.
 const DISPLAY_MESSAGE_MS: &str = "10000";
@@ -1897,39 +1891,18 @@ mod tests {
 
     #[test]
     fn a_user_option_write_targets_an_exact_id_in_the_right_table() {
-        use super::{
-            AGENTS_STATUS_OPTION, OptionScope, WINDOW_STATUS_OPTION, set_option_args,
-            unset_option_args,
-        };
+        use super::{OptionScope, set_option_args, unset_option_args};
         use crate::inventory::ServerId;
         use crate::meta::Selector;
         let server = ServerId::Selected(Selector::Name("ae".to_owned()));
-        assert_eq!(
-            set_option_args(
-                &server,
-                OptionScope::Session,
-                "$3",
-                AGENTS_STATUS_OPTION,
-                "lead● builder◌"
-            ),
-            [
-                "-L",
-                "ae",
-                "set-option",
-                "-t",
-                "=$3:",
-                "@ae_agents_status",
-                "lead● builder◌"
-            ]
-        );
         // The window table needs -w, and the target is a window id.
         assert_eq!(
             set_option_args(
                 &server,
                 OptionScope::Window,
                 "@7",
-                WINDOW_STATUS_OPTION,
-                "●◌"
+                crate::theme::WINDOW_AGENTS_OPTION,
+                "[lead● builder◌]"
             ),
             [
                 "-L",
@@ -1938,25 +1911,17 @@ mod tests {
                 "-w",
                 "-t",
                 "@7",
-                "@ae_window_status",
-                "●◌"
-            ]
-        );
-        // UNSET, not set-to-empty.
-        assert_eq!(
-            unset_option_args(&server, OptionScope::Session, "$3", AGENTS_STATUS_OPTION),
-            [
-                "-L",
-                "ae",
-                "set-option",
-                "-u",
-                "-t",
-                "=$3:",
-                "@ae_agents_status"
+                "@ae_window_agents",
+                "[lead● builder◌]"
             ]
         );
         assert_eq!(
-            unset_option_args(&server, OptionScope::Window, "@7", WINDOW_STATUS_OPTION),
+            unset_option_args(
+                &server,
+                OptionScope::Window,
+                "@7",
+                crate::theme::WINDOW_AGENTS_OPTION,
+            ),
             [
                 "-L",
                 "ae",
@@ -1965,7 +1930,7 @@ mod tests {
                 "-u",
                 "-t",
                 "@7",
-                "@ae_window_status"
+                "@ae_window_agents"
             ]
         );
     }
@@ -1983,7 +1948,12 @@ mod tests {
                 "@ae_pane_state",
                 "#[fg=#6897BB]⠋#[default] working",
             ),
-            OptionWrite::new(OptionScope::Window, "@7", super::WINDOW_STATUS_OPTION, "⠋◌"),
+            OptionWrite::new(
+                OptionScope::Window,
+                "@7",
+                crate::theme::WINDOW_AGENTS_OPTION,
+                "[lead⠋ builder◌]",
+            ),
         ];
         assert_eq!(
             set_options_args(&server, &writes),
@@ -2001,8 +1971,8 @@ mod tests {
                 "-w",
                 "-t",
                 "@7",
-                "@ae_window_status",
-                "⠋◌",
+                "@ae_window_agents",
+                "[lead⠋ builder◌]",
             ]
         );
     }

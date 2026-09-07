@@ -899,10 +899,10 @@ fn a_watchdog_tick_revives_the_telegram_bridge_in_process() {
     );
 }
 
-/// The daemon publishes the agent ROSTER on the session and a GLYPH on every
-/// window that holds an agent.
+/// The daemon publishes each window's named agents and retires the old
+/// session-wide roster.
 #[test]
-fn the_agent_roster_and_the_window_glyph_are_published_by_a_running_daemon() {
+fn the_window_agents_are_published_by_a_running_daemon() {
     let scratch = scratch("roster");
     require_tmux(&scratch);
     let socket = scratch.join("s");
@@ -939,44 +939,47 @@ fn the_agent_roster_and_the_window_glyph_are_published_by_a_running_daemon() {
                 "-t",
                 "rostered",
                 "window-status-format",
-                "#I:#W#{@ae_window_status}#F",
+                "#I:#{?#{@ae_window_agents},#{@ae_window_agents},#W}#F",
             ],
         )
         .0
     );
 
     let read = |args: &[&str]| tmux(&socket, &scratch, args).1.trim().to_owned();
-    let seen = std::cell::RefCell::new((String::new(), String::new()));
+    let seen = std::cell::RefCell::new(String::new());
     let reached = watch_until(&meta_dir, &socket, &scratch, "rostered", || {
-        let agents = read(&["show-options", "-v", "-t", "rostered", "@ae_agents_status"]);
         let window = read(&[
             "show-options",
             "-wv",
             "-t",
             "rostered:0",
-            "@ae_window_status",
+            "@ae_window_agents",
         ]);
-        if agents.is_empty() || window.is_empty() {
+        if window.is_empty() {
             return false;
         }
-        *seen.borrow_mut() = (agents, window);
+        *seen.borrow_mut() = window;
         true
     });
-    let (agents, window) = seen.into_inner();
-    assert!(reached, "the daemon published both bars within the budget");
+    let window = seen.into_inner();
+    assert!(
+        reached,
+        "the daemon published window agents within the budget"
+    );
 
     // `<name><glyph>`: the bare name, then one status mark, and no alias.
     assert!(
-        agents.starts_with("lead") && agents.chars().count() > "lead".chars().count(),
-        "the roster entry is the bare name plus a glyph: {agents:?}"
+        window.starts_with("lead") && window.chars().count() > "lead".chars().count(),
+        "the window entry is the bare name plus a glyph: {window:?}"
     );
     assert!(
-        !agents.contains(':'),
-        "no alias prefix leaks in: {agents:?}"
+        !window.contains(':'),
+        "no alias prefix leaks in: {window:?}"
     );
+    let retired = concat!("@ae_agents_", "status");
     assert!(
-        !window.is_empty() && !window.contains("lead"),
-        "the window carries a glyph, not a roster: {window:?}"
+        read(&["show-options", "-v", "-t", "rostered", retired]).is_empty(),
+        "the retired session roster stays unset"
     );
 }
 

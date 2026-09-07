@@ -374,6 +374,7 @@ pub fn run_spawn(
         return Ok(EXIT_FAILED);
     };
     stamp_pane(&facts.server, &pane, &parsed.name, &slot, &parsed.profile);
+    crate::session_launch::name_agent_window(&facts.server, &pane, &parsed.name);
     // A spawn makes a NEW window, and the pane border, menu and popup styles
     // live in the window table — so the window is stamped here rather than
     // waiting a watchdog cycle to be dressed.
@@ -510,7 +511,8 @@ fn actor_of(caller: &str) -> &str {
     if caller.is_empty() { "human" } else { caller }
 }
 
-/// Label the pane and name the worker's window.
+/// Label the pane. Its new window is named separately, so this function stays
+/// correct if pane stamping is ever reused for a split.
 fn stamp_pane(server: &ServerId, pane: &str, name: &str, slot: &str, profile: &str) {
     let _ = transport::set_pane_title(server, pane, &format!("ae:{name}"));
     // The IDENTITY, verbatim; the label beside it is the same name as DRAWN,
@@ -546,7 +548,6 @@ fn stamp_pane(server: &ServerId, pane: &str, name: &str, slot: &str, profile: &s
         // profile carrying one would restyle the pane border it names.
         &crate::theme::bar_text(profile, crate::theme::PROFILE_WIDTH),
     );
-    let _ = transport::rename_window(server, pane, &crate::tmux::format_literal(name));
 }
 
 /// Wait, briefly, for the tool's process to replace the pane's shell — the

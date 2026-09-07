@@ -1056,18 +1056,21 @@ fn build(
     }
 
     stamp_session(&server, env, shape, &main_pane);
+    if let Some(main) = seats.first() {
+        name_agent_window(&server, &main_pane, &main.name);
+    }
 
     // ---- worker panes, by layout ----
     let mut panes = vec![main_pane.clone()];
     let workers = seats.len().saturating_sub(1);
-    for index in 0..workers {
+    for (index, seat) in seats.iter().skip(1).enumerate() {
         let created = match shape.layout.as_str() {
             "lead-pair" => match index {
                 0 => split(&server, &panes[0], &work_dir, Split::Horizontal),
                 1 => new_window(
                     &server,
                     &format!("{}:", tmux::session_target(&shape.name)),
-                    "",
+                    &seat.name,
                     &work_dir,
                 ),
                 _ => split(&server, &panes[panes.len() - 1], &work_dir, Split::Vertical),
@@ -1076,7 +1079,7 @@ fn build(
                 0 => new_window(
                     &server,
                     &format!("{}:", tmux::session_target(&shape.name)),
-                    "",
+                    &seat.name,
                     &work_dir,
                 ),
                 _ => split(&server, &panes[panes.len() - 1], &work_dir, Split::Vertical),
@@ -1166,15 +1169,10 @@ fn build(
                 match new_window(
                     &server,
                     &format!("{}:", tmux::session_target(&shape.name)),
-                    "",
+                    &entry.name,
                     &work_dir,
                 ) {
                     Some(pane) => {
-                        let _ = transport::rename_window(
-                            &server,
-                            &pane,
-                            &tmux::format_literal(&entry.name),
-                        );
                         stamp_pane(&server, &pane, &entry.name, &entry.slot, &entry.profile);
                         panes.push(pane.clone());
                         pane
@@ -1364,12 +1362,14 @@ fn new_window(server: &ServerId, target: &str, name: &str, work_dir: &str) -> Op
         server,
         &Op::NewWindow {
             target,
-            name,
+            name: "",
             work_dir,
             command: &[],
         },
     ));
-    interpret_pane_id(succeeded, &stdout)
+    let pane = interpret_pane_id(succeeded, &stdout)?;
+    name_agent_window(server, &pane, name);
+    Some(pane)
 }
 
 /// Kill the session this launch created — the rollback's first step.
@@ -1425,15 +1425,6 @@ fn stamp_session(server: &ServerId, env: &Env, shape: &Session, main_pane: &str)
         ),
         &shape.look,
     );
-    // The window carries the SESSION name; agent identity lives on `@ae_agent`.
-    let target = format!("{}:", tmux::session_target(name));
-    let _ = transport::run_tmux_op(&argv(
-        server,
-        &Op::RenameWindow {
-            target: &target,
-            name: &tmux::format_literal(name),
-        },
-    ));
     let _ = transport::run_tmux_op(&argv(server, &Op::SelectPane { pane: main_pane }));
 }
 
@@ -1566,35 +1557,22 @@ fn apply_layout(server: &ServerId, shape: &Session, panes: &[String], workers: u
             "even-vertical",
         ),
     }
-    // Role-based window names use FIXED literals — never an agent name, which
-    // would feed the rename-window format sink.
-    if shape.layout == "lead-solo" && workers > 0 {
-        let _ = transport::run_tmux_op(&argv(
-            server,
-            &Op::RenameWindow {
-                target: &panes[1],
-                name: "workers",
-            },
-        ));
-    }
-    if shape.layout == "lead-pair" {
-        let _ = transport::run_tmux_op(&argv(
-            server,
-            &Op::RenameWindow {
-                target: &panes[0],
-                name: "leads",
-            },
-        ));
-        if workers > 1 {
-            let _ = transport::run_tmux_op(&argv(
-                server,
-                &Op::RenameWindow {
-                    target: &panes[2],
-                    name: "workers",
-                },
-            ));
-        }
-    }
+}
+
+/// Name a window for the first agent placed in it and freeze that name.
+///
+/// Later splits do not call this: once a second agent joins, the watchdog's
+/// `@ae_window_agents` value carries both identities while the routing name
+/// stays stable.
+pub(crate) fn name_agent_window(server: &ServerId, pane: &str, name: &str) {
+    let _ = transport::publish_option(
+        server,
+        tmux::OptionScope::Window,
+        pane,
+        "automatic-rename",
+        "off",
+    );
+    let _ = transport::rename_window(server, pane, &tmux::format_literal(name));
 }
 
 /// Label one pane with the identity it holds.
@@ -1974,6 +1952,7 @@ pub(crate) fn look_of(server: &ServerId, session: &str) -> Option<crate::theme::
 /// The monitor window's events pane, created if it is not already there.
 pub(crate) fn ensure_events_pane(server: &ServerId, session: &str, dir: &Path) -> Option<String> {
     if let Some(existing) = monitor_pane(server, session, "_events") {
+        mark_plumbing_window(server, &existing);
         return Some(existing);
     }
     let command = vec![dir.join("events-tail").display().to_string()];
@@ -1991,6 +1970,7 @@ pub(crate) fn ensure_events_pane(server: &ServerId, session: &str, dir: &Path) -
             &command,
         )
     })?;
+    mark_plumbing_window(server, &pane);
     for (option, value) in [
         ("@ae_agent", "_events".to_owned()),
         (
@@ -2014,6 +1994,17 @@ pub(crate) fn ensure_events_pane(server: &ServerId, session: &str, dir: &Path) -
     }
     let _ = transport::run_tmux_op(&argv(server, &Op::DisablePane { pane: &pane }));
     Some(pane)
+}
+
+/// Mark the monitor pane's window as ae-owned plumbing for status rendering.
+fn mark_plumbing_window(server: &ServerId, pane: &str) {
+    let _ = transport::publish_option(
+        server,
+        tmux::OptionScope::Window,
+        pane,
+        crate::theme::WINDOW_PLUMBING_OPTION,
+        "1",
+    );
 }
 
 /// The watchdog pane, split ABOVE the events pane so the visual order stays
