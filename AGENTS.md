@@ -78,6 +78,7 @@ Other rules of the loop:
   `TMUX` / `TMUX_PANE`, and uses scratch state; never let checkout `-L ae` reach the real socket:
   `probe=$(mktemp -d)` then
   `TMUX_TMPDIR="$probe" AE_HOME="$probe/state" CONFIG_FILE="$probe/config" env -u TMUX -u TMUX_PANE target/debug/ae …`.
+  `TMUX_TMPDIR` must EXIST — tmux silently falls back to the real socket dir otherwise (3.7b).
 - **A session's LOOK is session-scoped, and it has three writers with one job each.**
   `src/theme.rs` owns the palettes, the six marks and every format. A LAUNCH writes the
   layout, the look facts and the attention SEED, and stamps each WINDOW (tmux keeps pane

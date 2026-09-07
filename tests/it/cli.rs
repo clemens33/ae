@@ -48,6 +48,25 @@ fn run_scratch() -> std::path::PathBuf {
     std::path::PathBuf::from(format!("/tmp/ae-hermetic-{}-{nth}", std::process::id()))
 }
 
+/// Existing, process-private directory for the runner's bare `tmux -L name`
+/// lookups. An absent `TMUX_TMPDIR` makes tmux silently fall back to its real
+/// socket directory, so this must be created before any child runs.
+fn isolated_tmux_tmpdir() -> &'static std::path::Path {
+    static DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| {
+        let parent = std::env::var_os("TMUX_TMPDIR")
+            .filter(|path| !path.is_empty())
+            .map_or_else(std::env::temp_dir, std::path::PathBuf::from);
+        let dir = parent.join(format!("ae-it-tmux-{}", std::process::id()));
+        assert!(
+            std::fs::create_dir_all(&dir).is_ok(),
+            "the runner's tmux directory"
+        );
+        dir
+    })
+    .as_path()
+}
+
 /// Remove every hermetic scratch older than [`STALE_AFTER`].
 fn sweep_stale_scratches() {
     let Ok(entries) = std::fs::read_dir("/tmp") else {
@@ -387,12 +406,11 @@ fn binary(scratch: Option<OwnedScratch>) -> Runner {
 
 /// The black-box runner, HERMETIC BY DEFAULT.
 ///
-/// `$HOME` and `$AE_HOME` name a scratch path that does not exist, and the
-/// server pair is SET — not dropped — at a socket under a directory that does
-/// not exist either. Both halves are necessary and the difference is the whole
-/// lesson: an UNSET pair does not mean "no tmux", it means the AMBIENT server,
-/// which is the developer's own. (`TMUX_TMPDIR` is set too, and is not the
-/// mechanism: measured 2026-09-04, tmux still answered on the default socket.)
+/// `$HOME` and `$AE_HOME` name a scratch path that does not exist. The runner's
+/// `TMUX_TMPDIR` is an existing process-private directory, while the server
+/// pair is SET — not dropped — at a socket under a directory that does not
+/// exist. Both halves are necessary: an UNSET pair does not mean "no tmux", it
+/// means the AMBIENT server, which is the developer's own.
 ///
 /// So a fixture whose argv reaches the LAUNCH grammar cannot build anything:
 /// every tmux operation is aimed at a socket that cannot be created, and there
@@ -460,7 +478,7 @@ fn isolated(mut command: Runner, dir: &std::path::Path) -> Runner {
     command
         .env("HOME", dir)
         .env("AE_HOME", dir.join(".ae"))
-        .env("TMUX_TMPDIR", dir)
+        .env("TMUX_TMPDIR", isolated_tmux_tmpdir())
         .env("AE_TMUX_SERVER_KIND", "socket")
         .env("AE_TMUX_SERVER", dead_socket(dir))
         .env("SHELL", "/bin/sh");
@@ -494,7 +512,7 @@ fn the_black_box_runner_cannot_see_the_developers_own_home_or_tmux() {
     for (key, expected) in [
         ("HOME", dir.path().to_owned()),
         ("AE_HOME", dir.join(".ae")),
-        ("TMUX_TMPDIR", dir.path().to_owned()),
+        ("TMUX_TMPDIR", isolated_tmux_tmpdir().to_owned()),
         ("AE_TMUX_SERVER", dead_socket(&dir)),
     ] {
         assert_eq!(
@@ -503,6 +521,20 @@ fn the_black_box_runner_cannot_see_the_developers_own_home_or_tmux() {
             "{key} does not name the run's own scratch"
         );
     }
+    assert!(
+        isolated_tmux_tmpdir().is_dir(),
+        "the runner's TMUX_TMPDIR does not exist"
+    );
+    let probe_args = ["-L", "ae", "ls"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let (probe_success, probe_stdout) = run_tmux(&probe_args, isolated_tmux_tmpdir());
+    assert!(!probe_success, "runner tmux listed a server");
+    assert!(
+        probe_stdout.is_empty(),
+        "runner tmux produced a session listing: {probe_stdout}"
+    );
     // The point, stated as the comparison it is.
     let mine = std::env::var("HOME").unwrap_or_default();
     assert_ne!(
