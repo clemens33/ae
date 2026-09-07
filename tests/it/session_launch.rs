@@ -1213,8 +1213,9 @@ fn the_window_half_of_the_look_is_stamped_per_window_and_never_globally() {
     assert_eq!(window("pane-border-status"), "top");
     assert_eq!(window("pane-border-lines"), "heavy");
     assert!(
-        window("pane-border-format").contains("#{@ae_profile}"),
-        "the border names the profile: {}",
+        window("pane-border-format").contains("#{@ae_agent_label}")
+            && !window("pane-border-format").contains("#{@ae_profile}"),
+        "the border names the agent and its state, never the profile: {}",
         window("pane-border-format")
     );
     assert_eq!(

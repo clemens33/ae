@@ -93,9 +93,9 @@ the session name and only window 1 is role-named (`workers`).
 
 The status bar has two lines. The first is this session: its attention mark and name,
 then the windows, then the branch, the goal, the shortened path and the watch segment.
-The second is the **fleet strip** — every ae session on this tmux server, most actionable
-first, each one clickable to switch to it — and on its right the agents of this session.
-Every pane also carries a border title: `<name> · <profile> · <mark> <reason>`.
+The second is the **fleet strip** — every ae session on this tmux server in the order it
+was created, each with its live mark and clickable to switch to it — and on its right the
+agents of this session. Every pane also carries a border title: `<name> · <mark> <reason>`.
 
 The marks are the **watchdog's verdict**, never a claim about what an agent is "doing"
 (it cannot see that):

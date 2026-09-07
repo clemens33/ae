@@ -88,9 +88,10 @@ flipping either knob on a live session takes effect on the next one.
 ## What goes when the bar runs out of room
 
 One order, everywhere. The path first, because it is the one fact the reader's
-own shell prompt already carries. Then the profile in a pane border title, which
-the roster also holds. Then the calmest fleet entries, never the ones asking for
-something, and the strip says `+N` for what it dropped.
+own shell prompt already carries. Then the calmest fleet entries, never the ones
+asking for something, and the strip says `+N` for what it dropped. A pane border
+title is only ever the agent's name and its state; the profile behind the seat is
+a pane fact (`@ae_profile`) for a reader that asks, never a drawn word.
 
 The bar is a hierarchy: the session, its windows and its agents come first, and
 the watch counters step out of it while everything is healthy. The moment a pane
@@ -114,7 +115,10 @@ in the fleet strip below.
 
 `status-format[1]` — the **fleet strip**: the `orchestrator` session pinned
 first with a dim `◆` (ASCII `o` when icons are off), then every other ae session
-most actionable first, then this session's own agents with their live marks.
+in the order it was created, each with its live glyph, then this session's own
+agents with their marks. A session keeps its place while its attention changes,
+so a click never moves the thing that was clicked; the current session is drawn
+raised, not moved.
 The orchestrator pin is never shed on overflow and never displays its attention
 glyph. Each strip entry is a tmux `range=session` region, so tmux's own default
 `MouseDown1Status` binding (`switch-client -t =`) makes it clickable: ae adds no
@@ -133,11 +137,11 @@ has gone missing.
 ### Terminal titles
 
 When the look is on, ae enables tmux terminal titles and sets
-`set-titles-string` to `#{@ae_attn_glyph} #{session_name}`. Ghostty and other
-terminals that expose tmux's title therefore show the session's current
-attention glyph and name. Titles are session-scoped and follow the same
-look-stamp repaint as the status lines; `[workspace] theme = off` leaves the
-user's title settings untouched.
+`set-titles-string` to `#{@ae_attn_glyph} ae`. A terminal that exposes tmux's title
+therefore shows the session's current attention glyph and the word `ae`, nothing
+more: the fleet strip names the current session, and the tab is not asked to.
+Titles are session-scoped and follow the same look-stamp repaint as the status
+lines; `[workspace] theme = off` leaves the user's title settings untouched.
 
 ## The `@ae_*` interface
 
@@ -167,7 +171,8 @@ The attention trio is the one place where "launch writes it" and "the watchdog
 owns it" meet. A launch SEEDS it, so a session says something true in the
 seconds before the first cycle, and nothing writes it again — a rename
 re-renders the layout and the facts and leaves the verdicts alone, because every
-other session on the server sorts its fleet strip on them.
+other session on the server draws its fleet-strip glyphs from them and sheds on
+them when the strip overflows.
 
 `@ae_theme` carries the option set's version and the look the window was dressed
 in, so a window dressed in another palette does not read as dressed. Nothing

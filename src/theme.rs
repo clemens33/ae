@@ -504,7 +504,7 @@ pub fn agent_label(agent: &str) -> String {
     bar_text(agent.strip_prefix('_').unwrap_or(agent), LABEL_WIDTH)
 }
 
-/// PANE — the seat's profile, for the border title.
+/// PANE — the seat's profile. A fact, published for a reader; never drawn.
 pub const PROFILE_OPTION: &str = "@ae_profile";
 
 /// PANE — `<styled glyph> <reason>`, for the border title.
@@ -521,7 +521,7 @@ pub const WINDOW_STAMP_OPTION: &str = "@ae_theme";
 /// changes shape: the version leads both stamps, so a session or window carrying
 /// an older one is rewritten by the next watchdog cycle rather than left on the
 /// layout an older core wrote.
-pub const FORMAT_VERSION: &str = "4";
+pub const FORMAT_VERSION: &str = "5";
 
 /// What [`WINDOW_STAMP_OPTION`] is set to: the LOOK the window was dressed in,
 /// formats version first.
@@ -687,14 +687,30 @@ pub struct FleetRow {
 }
 
 impl FleetRow {
+    /// The session's place in creation order: the number in its `$<n>` id.
+    /// An id that is not one sorts last, after every real session.
+    #[must_use]
+    pub fn created(&self) -> u64 {
+        self.id
+            .strip_prefix('$')
+            .and_then(|digits| digits.parse().ok())
+            .unwrap_or(u64::MAX)
+    }
+
     /// Whether this row is the fleet's fixed orchestrator anchor.
     fn pinned(&self) -> bool {
         self.name == crate::orchestrator::ORCHESTRATOR_SESSION
     }
 }
 
-/// The fleet strip: `<glyph> <name>` per session, most actionable first, each
-/// one a click that switches this client to it.
+/// The fleet strip: `<glyph> <name>` per session, in the order the sessions
+/// were CREATED, each one a click that switches this client to it.
+///
+/// Creation order, never attention order: a row's place is where the reader
+/// learned to find it, like a tab, and a click that moved the thing clicked is
+/// a bar that cannot be learned. Attention is carried by the glyph and its
+/// accent, which change in place. The tmux `$<n>` id is the creation order,
+/// assigned once per server and never reused while it runs.
 ///
 /// The range is tmux's OWN `session` range, so the default root binding
 /// (`MouseDown1Status` → `switch-client -t =`) already does the jump: ae adds no
@@ -713,21 +729,33 @@ pub fn fleet_strip(look: &Look, rows: &[FleetRow]) -> String {
         let right_pinned = right.pinned();
         right_pinned
             .cmp(&left_pinned)
-            .then_with(|| right.mark.rank().cmp(&left.mark.rank()))
+            .then_with(|| left.created().cmp(&right.created()))
             .then_with(|| left.name.cmp(&right.name))
     });
     // OVERFLOW: the strip sheds its calmest rows first, because a session that
-    // wants nothing is the one the reader loses least by not seeing. The
-    // current session is never shed — a strip that cannot show you where you
-    // are is not a map.
+    // wants nothing is the one the reader loses least by not seeing, and the
+    // rows that remain keep their order. The current session and the pinned
+    // anchor are never shed — a strip that cannot show you where you are is
+    // not a map.
     let hidden = ordered.len().saturating_sub(STRIP_ROWS);
     if hidden > 0 {
-        if let Some(here) = ordered.iter().position(|row| row.current)
-            && here >= STRIP_ROWS
-        {
-            ordered.swap(STRIP_ROWS - 1, here);
-        }
-        ordered.truncate(STRIP_ROWS);
+        let mut shed: Vec<usize> = (0..ordered.len())
+            .filter(|&index| !ordered[index].current && !ordered[index].pinned())
+            .collect();
+        shed.sort_by(|&left, &right| {
+            ordered[left]
+                .mark
+                .rank()
+                .cmp(&ordered[right].mark.rank())
+                .then_with(|| right.cmp(&left))
+        });
+        shed.truncate(hidden);
+        let mut index = 0;
+        ordered.retain(|_| {
+            let keep = !shed.contains(&index);
+            index += 1;
+            keep
+        });
     }
     let mut strip = ordered.iter().fold(String::new(), |mut out, row| {
         // NOT escaped: the strip is published as an option VALUE, which tmux
@@ -781,23 +809,19 @@ const STRIP_ROWS: usize = 8;
 // the pane border
 // ---------------------------------------------------------------------------
 
-/// `pane-border-format`: `<name> · <profile> · <glyph> <reason>`, each part
-/// dropped when the option behind it is unset rather than drawn as a gap.
+/// `pane-border-format`: `<name> · <glyph> <reason>`, the state dropped when
+/// the option behind it is unset rather than drawn as a gap.
+///
+/// The profile is NOT drawn. It is a fact the pane carries in
+/// [`PROFILE_OPTION`] for a reader that asks, and a profile name is how the
+/// roster spells a tool, not what the human watching the pane needs to know.
 #[must_use]
 pub fn pane_border_format() -> String {
     format!(
         " #{{{AGENT_LABEL_OPTION}}}\
-         #{{?#{{e|>=:#{{pane_width}},{NARROW_PANE}}},\
-         #{{?#{{{PROFILE_OPTION}}}, · #{{{PROFILE_OPTION}}},}},}}\
          #{{?#{{{PANE_STATE_OPTION}}}, · #{{{PANE_STATE_OPTION}}},}} "
     )
 }
-
-/// The pane width below which the border title drops the profile.
-///
-/// Second in the same order the bar sheds things: the name and the state are
-/// what the title is FOR, and the profile is a fact the roster also carries.
-const NARROW_PANE: u16 = 60;
 
 /// `pane-active-border-style`: the ACTIVE pane's own accent when the watchdog
 /// has published one, and the working accent before it has.
@@ -862,7 +886,7 @@ pub fn bar_text(raw: &str, width: usize) -> String {
 /// How much of the session goal the bar carries.
 pub const GOAL_WIDTH: usize = 40;
 
-/// How much of a profile name a pane border title carries.
+/// How much of a profile name the pane fact carries.
 pub const PROFILE_WIDTH: usize = 24;
 
 /// How much of an agent name the agent strip carries.
@@ -972,7 +996,7 @@ pub fn layout_options(look: &Look) -> Vec<(String, String)> {
         ("set-titles".to_owned(), "on".to_owned()),
         (
             "set-titles-string".to_owned(),
-            "#{?#{@ae_attn_glyph},#{@ae_attn_glyph} ,}#{session_name}".to_owned(),
+            "#{?#{@ae_attn_glyph},#{@ae_attn_glyph} ,}ae".to_owned(),
         ),
         ("status-format[0]".to_owned(), status_line_zero(palette)),
         ("status-format[1]".to_owned(), status_line_one(palette)),
@@ -1314,10 +1338,11 @@ mod tests {
         assert_ne!(Mark::Dead.glyph(false), Mark::Done.glyph(false));
     }
 
-    /// The strip is ATTENTION-SORTED, then by name — the same order on every
-    /// session's copy of it, whatever order tmux listed the sessions in.
+    /// The strip is in CREATION order — the `$<n>` id — whatever the marks say
+    /// and whatever order tmux listed the sessions in: a row keeps its place
+    /// while its attention changes, so a click never moves what was clicked.
     #[test]
-    fn the_fleet_strip_is_attention_sorted_then_alphabetical() {
+    fn the_fleet_strip_is_in_creation_order_whatever_the_attention() {
         let row = |name: &str, id: &str, mark| FleetRow {
             name: name.to_owned(),
             id: id.to_owned(),
@@ -1333,15 +1358,70 @@ mod tests {
                 row("gamma", "$4", Mark::Working),
             ],
         );
-        let order: Vec<&str> = ["beta", "alpha", "gamma", "zeta"]
-            .into_iter()
+        let at = |name: &str| strip.find(name).unwrap_or(usize::MAX);
+        assert!(at("alpha") < at("beta"), "$1 before $2: {strip}");
+        assert!(at("beta") < at("zeta"), "$2 before $3: {strip}");
+        assert!(
+            at("zeta") < at("gamma"),
+            "$3 before $4, done or not: {strip}"
+        );
+        // The same rows in another listing order draw the same strip.
+        let again = fleet_strip(
+            &Look::DEFAULT,
+            &[
+                row("gamma", "$4", Mark::Working),
+                row("beta", "$2", Mark::NeedsYou),
+                row("alpha", "$1", Mark::Working),
+                row("zeta", "$3", Mark::Done),
+            ],
+        );
+        assert_eq!(strip, again);
+    }
+
+    /// Overflow sheds the CALMEST rows and keeps the order of the rest; the
+    /// current session survives wherever it was created.
+    #[test]
+    fn overflow_sheds_the_calmest_rows_and_keeps_the_order_of_the_rest() {
+        let rows: Vec<FleetRow> = (0..super::STRIP_ROWS + 2)
+            .map(|index| FleetRow {
+                name: format!("s{index:02}"),
+                id: format!("${index}"),
+                mark: if index == 1 || index == 4 {
+                    Mark::NeedsYou
+                } else {
+                    Mark::Idle
+                },
+                current: index == super::STRIP_ROWS + 1,
+            })
+            .collect();
+        let strip = fleet_strip(&Look::DEFAULT, &rows);
+        let drawn: Vec<&str> = rows
+            .iter()
+            .map(|row| row.name.as_str())
             .filter(|name| strip.contains(name))
             .collect();
-        assert_eq!(order.len(), 4, "{strip}");
-        let at = |name: &str| strip.find(name).unwrap_or(usize::MAX);
-        assert!(at("beta") < at("alpha"), "needs-you first: {strip}");
-        assert!(at("alpha") < at("gamma"), "then by name: {strip}");
-        assert!(at("gamma") < at("zeta"), "working before done: {strip}");
+        assert_eq!(drawn.len(), super::STRIP_ROWS, "{strip}");
+        assert!(
+            drawn.contains(&"s01") && drawn.contains(&"s04"),
+            "needs-you kept: {strip}"
+        );
+        assert!(
+            drawn.contains(&"s09"),
+            "the current session is never shed: {strip}"
+        );
+        assert!(
+            !drawn.contains(&"s08") && !drawn.contains(&"s07"),
+            "the newest calm rows went: {strip}"
+        );
+        let positions: Vec<usize> = drawn
+            .iter()
+            .map(|name| strip.find(name).unwrap_or(0))
+            .collect();
+        assert!(
+            positions.windows(2).all(|pair| pair[0] < pair[1]),
+            "order kept: {strip}"
+        );
+        assert!(strip.contains("+2"), "{strip}");
     }
 
     /// Each row is a tmux SESSION range, which is what makes it clickable with
@@ -1446,7 +1526,7 @@ mod tests {
     #[test]
     fn terminal_titles_are_part_of_the_drawn_layout() {
         let options = super::layout_options(&Look::DEFAULT);
-        assert_eq!(super::FORMAT_VERSION, "4");
+        assert_eq!(super::FORMAT_VERSION, "5");
         assert_eq!(
             options
                 .iter()
@@ -1459,7 +1539,7 @@ mod tests {
                 .iter()
                 .find(|(name, _)| name == "set-titles-string")
                 .map(|(_, value)| value.as_str()),
-            Some("#{?#{@ae_attn_glyph},#{@ae_attn_glyph} ,}#{session_name}")
+            Some("#{?#{@ae_attn_glyph},#{@ae_attn_glyph} ,}ae")
         );
     }
 
@@ -1642,10 +1722,13 @@ mod tests {
         let hostile = super::agent_label("evil#[bg=red]");
         assert!(!hostile.contains('#'), "{hostile}");
         assert!(hostile.contains("evil"), "{hostile}");
-        // The border reads the LABEL and never the identity.
+        // The border reads the LABEL and never the identity, and never the
+        // profile: the name and the state are what the title is for.
         let format = super::pane_border_format();
         assert!(format.contains(super::AGENT_LABEL_OPTION), "{format}");
+        assert!(format.contains(super::PANE_STATE_OPTION), "{format}");
         assert!(!format.contains("#{@ae_agent}"), "{format}");
+        assert!(!format.contains(super::PROFILE_OPTION), "{format}");
     }
 
     /// A rank published by one session's watchdog is read back as the same mark
