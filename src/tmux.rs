@@ -840,6 +840,77 @@ pub fn display_message_args(server: &ServerId, target: &str, text: &str) -> Vec<
     args
 }
 
+/// Show a transient message on one attached client, without needing a pane
+/// that may have disappeared with the session which produced the message.
+#[must_use]
+pub fn display_client_message_args(server: &ServerId, client: &str, text: &str) -> Vec<String> {
+    let mut args = server_args(server);
+    args.extend(
+        [
+            "display-message",
+            "-d",
+            DISPLAY_MESSAGE_MS,
+            "-c",
+            client,
+            text,
+        ]
+        .map(ToOwned::to_owned),
+    );
+    args
+}
+
+/// Ask one attached client to authorize `continuation`.
+#[must_use]
+pub fn confirm_before_args(
+    server: &ServerId,
+    client: &str,
+    prompt: &str,
+    continuation: &str,
+) -> Vec<String> {
+    let mut args = server_args(server);
+    args.extend(
+        ["confirm-before", "-p", prompt, "-t", client, continuation].map(ToOwned::to_owned),
+    );
+    args
+}
+
+/// A `run-shell -b` tmux command which re-execs `argv` without allowing any
+/// argv element to become shell syntax.
+///
+/// There are two parsers. [`crate::launch::shell_quote`] protects each word
+/// from the shell which `run-shell` starts; [`tmux_double_quote`] then carries
+/// that shell command through tmux's deferred command parser. Tmux removes a
+/// backslash before any character inside double quotes, so the second layer
+/// must double the backslashes the first layer minted for a literal quote.
+#[must_use]
+pub fn run_shell_background_command(argv: &[String]) -> String {
+    let shell = argv
+        .iter()
+        .map(|word| crate::launch::shell_quote(word))
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!("run-shell -b {}", tmux_double_quote(&shell))
+}
+
+/// One argument in tmux's deferred command language.
+fn tmux_double_quote(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 2);
+    out.push('"');
+    for ch in text.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '$' => out.push_str("\\$"),
+            // `run-shell` format-expands its shell command. `##` is one
+            // literal hash at that second boundary.
+            '#' => out.push_str("##"),
+            _ => out.push(ch),
+        }
+    }
+    out.push('"');
+    out
+}
+
 /// The format the fleet picker asks for: which session a pane belongs to, its
 /// id, and the agent stamped on it.
 pub const FLEET_PANE_FORMAT: &str = "#{session_name} | #{pane_id} | #{@ae_agent}";
@@ -1654,15 +1725,20 @@ pub fn send_keys_args(server: &ServerId, pane: &str, key: Key) -> Vec<String> {
     args
 }
 
-/// Each attached client's own active pane and the epoch of its last input.
-pub const CLIENT_FORMAT: &str = "#{pane_id} | #{client_activity}";
+/// Each attached client's address, session, active pane and last-input epoch.
+pub const CLIENT_FORMAT: &str =
+    "#{client_name} | #{session_name} | #{pane_id} | #{client_activity}";
 
 /// The number of fields [`CLIENT_FORMAT`] renders.
-const CLIENT_FIELDS: usize = 2;
+const CLIENT_FIELDS: usize = 4;
 
 /// One attached client's [`CLIENT_FORMAT`] readings.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ObservedClient {
+    /// The target-client name, normally its tty path.
+    pub name: String,
+    /// The session this client is currently viewing.
+    pub session: String,
     /// The pane this client is viewing.
     pub pane: String,
     /// The epoch of its last input, or `None` when it was not a number.
@@ -1693,8 +1769,10 @@ pub fn interpret_clients(succeeded: bool, stdout: &str) -> Option<Vec<ObservedCl
                     return None;
                 }
                 Some(ObservedClient {
-                    pane: fields[0].to_owned(),
-                    activity: fields[1].parse().ok(),
+                    name: fields[0].to_owned(),
+                    session: fields[1].to_owned(),
+                    pane: fields[2].to_owned(),
+                    activity: fields[3].parse().ok(),
                 })
             })
             .collect(),
@@ -1756,8 +1834,9 @@ pub fn rename_window_args(server: &ServerId, pane: &str, name: &str) -> Vec<Stri
 mod tests {
     use super::{
         CLIENT_FORMAT, Key, ObservedClient, ObservedPaneProbe, PANE_PROBE_FORMAT, Styling,
-        capture_screen_args, interpret_clients, interpret_pane_probe, list_clients_args,
-        load_buffer_args, pane_probe_args, paste_buffer_args, send_keys_args,
+        capture_screen_args, confirm_before_args, display_client_message_args, interpret_clients,
+        interpret_pane_probe, list_clients_args, load_buffer_args, pane_probe_args,
+        paste_buffer_args, run_shell_background_command, send_keys_args,
     };
 
     #[test]
@@ -1848,15 +1927,22 @@ mod tests {
 
     #[test]
     fn clients_report_the_pane_each_is_viewing_and_when_it_last_typed() {
-        assert_eq!(interpret_clients(false, "%1 | 100\n"), None);
+        assert_eq!(interpret_clients(false, "/dev/tty1 | s | %1 | 100\n"), None);
         assert_eq!(
-            interpret_clients(true, "%1 | 100\n%2 | nope\n\n"),
+            interpret_clients(
+                true,
+                "/dev/tty1 | s | %1 | 100\n/dev/tty2 | other | %2 | nope\n\n"
+            ),
             Some(vec![
                 ObservedClient {
+                    name: "/dev/tty1".into(),
+                    session: "s".into(),
                     pane: "%1".into(),
                     activity: Some(100)
                 },
                 ObservedClient {
+                    name: "/dev/tty2".into(),
+                    session: "other".into(),
                     pane: "%2".into(),
                     activity: None
                 }
@@ -1866,6 +1952,54 @@ mod tests {
             interpret_clients(true, ""),
             Some(Vec::new()),
             "no clients attached is an ANSWER; a failed run is not"
+        );
+    }
+
+    #[test]
+    fn confirmation_targets_one_client_and_runs_the_supervisor_in_background() {
+        let argv = vec![
+            "/opt/ae core/ae's".to_owned(),
+            "_end".to_owned(),
+            "--handoff".to_owned(),
+            "inside".to_owned(),
+        ];
+        let continuation = run_shell_background_command(&argv);
+        assert_eq!(
+            continuation,
+            r#"run-shell -b "'/opt/ae core/ae'\\''s' '_end' '--handoff' 'inside'""#
+        );
+        assert_eq!(
+            run_shell_background_command(&["/opt/$ae#core".to_owned()]),
+            r#"run-shell -b "'/opt/\$ae##core'""#
+        );
+        assert_eq!(
+            confirm_before_args(
+                &ServerId::Selected(Selector::Name("ae-dev".to_owned())),
+                "/dev/ttys004",
+                "End 'inside'? Archives, then deletes its state. (y/n)",
+                &continuation,
+            ),
+            vec![
+                "-L",
+                "ae-dev",
+                "confirm-before",
+                "-p",
+                "End 'inside'? Archives, then deletes its state. (y/n)",
+                "-t",
+                "/dev/ttys004",
+                continuation.as_str(),
+            ]
+        );
+        assert_eq!(
+            display_client_message_args(&ServerId::Ambient, "/dev/ttys004", "Stopped inside",),
+            vec![
+                "display-message",
+                "-d",
+                "10000",
+                "-c",
+                "/dev/ttys004",
+                "Stopped inside",
+            ]
         );
     }
 

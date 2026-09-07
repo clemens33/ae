@@ -90,7 +90,9 @@ Other rules of the loop:
 - **One writer per file.** Other agents edit this tree concurrently; coordinate before
   reverting or overwriting anything you did not change.
 - **No lifecycle commands against a live session you do not own** — no `ae end`, `ae stop`,
-  `ae rm`, no `retire` of someone else's agent.
+  `ae rm`, no `retire` of someone else's agent. An unforced `ae stop` or `ae end` from
+  inside a session delegates confirmation to the attached human's tmux client; agents must
+  not answer that prompt or pass `-y` / `-f` unless the human explicitly authorized it.
 - **Never `export HOME=… AE_HOME="$HOME/.ae"` in ONE statement.** The shell expands every
   word before any assignment, so `AE_HOME` binds to the REAL home. This clobbered `~/.ae`
   twice. Separate the statements, or assign both from the literal temp path.

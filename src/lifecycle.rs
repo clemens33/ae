@@ -214,7 +214,12 @@ pub(crate) fn path_exists(path: &Path) -> bool {
 /// The `ae stop` usage.
 const STOP_USAGE: &str = "Usage: _stop <session-name|all> [-y] [--self]";
 
-/// `_stop <name|all> [-y]` — the whole stop operation.
+/// `_stop <name|all> [-y] [--self|--handoff|--supervise]` — the whole stop
+/// operation.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the public, handoff and supervisor modes share one ordered parse and target resolution"
+)]
 pub(crate) fn run_stop(
     root: &Path,
     tail: &[String],
@@ -225,6 +230,7 @@ pub(crate) fn run_stop(
     let mut yes = false;
     let mut is_self = false;
     let mut supervise = false;
+    let mut handoff = false;
     // `--pane <id>`: the caller's own pane (the shim passes `$TMUX_PANE`, or
     // the operator's explicit `--pane=<id>` from a run-shell child, where the
     // inherited $TMUX_PANE names a FOREIGN pane).
@@ -236,6 +242,9 @@ pub(crate) fn run_stop(
             "--self" => is_self = true,
             // The detached worker `--self` starts.
             "--supervise" => supervise = true,
+            // A tmux `run-shell` job starts this, then exits before the
+            // detached supervisor kills the job's target session.
+            "--handoff" => handoff = true,
             flag if flag.starts_with('-') => {
                 writeln!(err, "Error: unknown flag '{flag}'. Use -y/--yes or --self.")?;
                 return Ok(EXIT_USAGE);
@@ -255,11 +264,16 @@ pub(crate) fn run_stop(
     } else {
         crate::transport::observe_pane_owner(&ServerId::Ambient, &pane).map(|owner| owner.session)
     };
-    if target.is_empty() && is_self {
-        let Some(own) = self_target(caller_session.as_deref(), err)? else {
-            return Ok(EXIT_FAILED);
-        };
-        target = own;
+    if target.is_empty() {
+        if let Some(own) = &caller_session {
+            target.clone_from(own);
+            is_self = true;
+        } else if is_self {
+            let Some(own) = self_target(caller_session.as_deref(), err)? else {
+                return Ok(EXIT_FAILED);
+            };
+            target = own;
+        }
     }
     if target.is_empty() {
         writeln!(err, "{STOP_USAGE}")?;
@@ -276,6 +290,9 @@ pub(crate) fn run_stop(
     }
     if supervise {
         return run_supervisor(root, &target, out, err);
+    }
+    if handoff {
+        return start_stop_supervisor(root, &target, out, err);
     }
     if let Some(own) = &caller_session {
         if target == "all" && all_sessions(root).contains(own) {
@@ -405,6 +422,71 @@ impl DetachedArgv {
     }
 }
 
+/// What asking an attached tmux client did.
+pub(super) enum ClientPrompt {
+    /// Tmux displayed the question and retained the continuation.
+    Shown,
+    /// No client is attached to the caller's session.
+    Nobody,
+    /// A client existed, but tmux refused the prompt.
+    Failed,
+}
+
+/// Ask the most recently active client viewing `session`.
+///
+/// One prompt has one continuation. Prompting every attached client would let
+/// two `y` answers start the destructive operation twice, so the active client
+/// is the deterministic owner of this confirmation.
+pub(super) fn confirm_on_client(
+    server: &ServerId,
+    session: &str,
+    prompt: &str,
+    argv: &DetachedArgv,
+) -> ClientPrompt {
+    let Some(clients) = transport::observe_clients(server) else {
+        return ClientPrompt::Nobody;
+    };
+    let Some(client) = clients
+        .iter()
+        .filter(|client| client.session == session && !client.name.is_empty())
+        .max_by(|one, other| {
+            one.activity
+                .unwrap_or_default()
+                .cmp(&other.activity.unwrap_or_default())
+                .then_with(|| one.name.cmp(&other.name))
+        })
+    else {
+        return ClientPrompt::Nobody;
+    };
+    let continuation = crate::tmux::run_shell_background_command(argv.as_args());
+    if transport::confirm_before(server, &client.name, prompt, &continuation) {
+        ClientPrompt::Shown
+    } else {
+        ClientPrompt::Failed
+    }
+}
+
+/// Display one outcome on every client still attached to `server`.
+pub(super) fn announce_to_clients(server: &ServerId, text: &str) {
+    let Some(clients) = transport::observe_clients(server) else {
+        return;
+    };
+    for client in clients {
+        if !client.name.is_empty() {
+            let _ = transport::display_client_message(server, &client.name, text);
+        }
+    }
+}
+
+/// The positive server record of one session.
+pub(super) fn recorded_server(root: &Path, name: &str) -> Option<ServerId> {
+    let bytes = meta::read_bytes(&sessions_dir(root).join(name)).ok()?;
+    match server_of(&bytes) {
+        ServerSelector::Positive(selector) => Some(ServerId::Selected(selector)),
+        ServerSelector::Missing | ServerSelector::Ambiguous => None,
+    }
+}
+
 /// `nohup <this binary> _stop --supervise <name>` — the ONE shape this module
 /// can mint, with the session name as its own argv element (no shell, so
 /// nothing to inject) and nothing else settable by a caller.
@@ -418,8 +500,20 @@ fn supervisor_argv(name: &str) -> Option<DetachedArgv> {
     ]))
 }
 
+/// `<core> _stop --handoff <name>` — the short-lived tmux job which starts
+/// [`supervisor_argv`] and exits before the target session is killed.
+fn handoff_argv(name: &str) -> Option<DetachedArgv> {
+    let own = crate::shape::resolved_exe()?;
+    Some(DetachedArgv(vec![
+        own.to_string_lossy().into_owned(),
+        crate::cli::STOP.to_owned(),
+        "--handoff".to_owned(),
+        name.to_owned(),
+    ]))
+}
+
 /// Append one line to the target's event log, best-effort.
-fn emit_stop_event(dir: &Path, name: &str, action: &str, summary: &str) {
+pub(super) fn emit_lifecycle_event(dir: &Path, name: &str, action: &str, summary: &str) {
     let _ = crate::store::open(dir).append_event(&crate::tracked::event_line(
         &crate::tracked::EventFields {
             ts: crate::time::Timestamp::now(),
@@ -435,6 +529,15 @@ fn emit_stop_event(dir: &Path, name: &str, action: &str, summary: &str) {
             body_file: "",
         },
     ));
+}
+
+/// Append one stop event to the target's log, best-effort.
+fn emit_stop_event(dir: &Path, name: &str, action: &str, summary: &str) {
+    emit_lifecycle_event(dir, name, action, summary);
+}
+
+fn stop_prompt(name: &str) -> String {
+    format!("Stop '{name}'? Kills the session you are in. (y/n)")
 }
 
 /// `_stop --self <name>`: hand the whole stop to a detached supervisor and
@@ -461,15 +564,24 @@ fn self_supervised(
     if !yes {
         // ASK WHETHER WE CAN ASK, BEFORE ASKING.
         if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
-            writeln!(
-                err,
-                "Error: '{name}' is the session you are in, and there is no terminal to confirm on."
-            )?;
-            writeln!(
-                err,
-                "  Re-run with -y to stop it non-interactively: ae stop {name} -y"
-            )?;
-            return Ok(EXIT_FAILED);
+            let Some(argv) = handoff_argv(name) else {
+                writeln!(
+                    err,
+                    "Error: ae cannot name its own executable, so it cannot hand '{name}' to a supervisor — nothing was stopped."
+                )?;
+                return Ok(EXIT_FAILED);
+            };
+            return match confirm_on_client(&ServerId::Ambient, name, &stop_prompt(name), &argv) {
+                ClientPrompt::Shown => Ok(0),
+                ClientPrompt::Nobody => {
+                    writeln!(err, "Error: nobody attached to confirm; pass -y.")?;
+                    Ok(EXIT_FAILED)
+                }
+                ClientPrompt::Failed => {
+                    writeln!(err, "Error: tmux refused the confirmation prompt; pass -y.")?;
+                    Ok(EXIT_FAILED)
+                }
+            };
         }
         writeln!(
             out,
@@ -587,6 +699,39 @@ fn run_supervisor(
     Ok(u8::from(failures != 0))
 }
 
+/// `_stop --handoff`: detach the real supervisor, then let the tmux
+/// `run-shell` job end while the target still exists.
+fn start_stop_supervisor(
+    root: &Path,
+    name: &str,
+    _out: &mut impl Write,
+    err: &mut impl Write,
+) -> io::Result<u8> {
+    let Some(argv) = supervisor_argv(name) else {
+        writeln!(
+            err,
+            "Error: ae cannot name its own executable, so it cannot hand '{name}' to a supervisor — nothing was stopped."
+        )?;
+        return Ok(EXIT_FAILED);
+    };
+    if !transport::run_detached(&argv) {
+        let dir = sessions_dir(root).join(name);
+        emit_stop_event(&dir, name, STOP_REQUEST_ACTION, "stop requested from tmux");
+        emit_stop_event(
+            &dir,
+            name,
+            STOP_RESULT_ACTION,
+            "FAILED: supervisor did not start",
+        );
+        writeln!(
+            err,
+            "Error: could not start the supervisor for '{name}' — nothing was stopped."
+        )?;
+        return Ok(EXIT_FAILED);
+    }
+    Ok(0)
+}
+
 /// Hand `stop all` to the detached supervisor because the caller is inside
 /// `own`, one of the targets; print the same two lines the single self-stop
 /// prints and return.
@@ -600,11 +745,26 @@ fn fleet_supervised(
     if !yes {
         // THE SUPERVISOR CANNOT PROMPT; THIS PROCESS STILL CAN.
         if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
-            writeln!(
-                err,
-                "Error: 'stop all' from inside session '{own}' needs -y: the stop is handed to a detached supervisor and cannot prompt."
-            )?;
-            return Ok(EXIT_FAILED);
+            let Some(argv) = handoff_argv("all") else {
+                writeln!(
+                    err,
+                    "Error: could not locate this binary to detach the fleet stop."
+                )?;
+                return Ok(EXIT_FAILED);
+            };
+            let prompt =
+                format!("Stop all ae sessions? Kills '{own}', the session you are in. (y/n)");
+            return match confirm_on_client(&ServerId::Ambient, own, &prompt, &argv) {
+                ClientPrompt::Shown => Ok(0),
+                ClientPrompt::Nobody => {
+                    writeln!(err, "Error: nobody attached to confirm; pass -y.")?;
+                    Ok(EXIT_FAILED)
+                }
+                ClientPrompt::Failed => {
+                    writeln!(err, "Error: tmux refused the confirmation prompt; pass -y.")?;
+                    Ok(EXIT_FAILED)
+                }
+            };
         }
         if !confirm_fleet_stop(all_sessions(root).len(), out, err)? {
             return Ok(EXIT_FAILED);
@@ -659,10 +819,18 @@ fn supervise_one(
     if !dir_exists(&sessions_dir(root).join(name)) {
         return Ok(EXIT_FAILED);
     }
+    let server = recorded_server(root, name);
     // This process has no streams a human can read; the record written by
-    // `stop_recorded` is the only place the outcome survives.
+    // `stop_recorded` is the durable outcome. Any surviving client also gets
+    // the one-line result.
     match stop_recorded(root, name, out, err)? {
-        StopOutcome::Stopped => Ok(0),
+        StopOutcome::Stopped => {
+            let line = format!("Stopped {name}");
+            if let Some(server) = &server {
+                announce_to_clients(server, &line);
+            }
+            Ok(0)
+        }
         StopOutcome::AlreadyStopped | StopOutcome::Failed => Ok(EXIT_FAILED),
     }
 }
@@ -724,7 +892,7 @@ fn stop_one(
 
 #[cfg(test)]
 mod tests {
-    use super::{name_is_valid, sessions_dir, worktrees_dir};
+    use super::{name_is_valid, sessions_dir, stop_prompt, worktrees_dir};
     use std::path::Path;
 
     #[test]
@@ -740,6 +908,14 @@ mod tests {
         assert!(!name_is_valid("has space"));
         assert!(name_is_valid(&format!("a{}", "b".repeat(127))));
         assert!(!name_is_valid(&format!("a{}", "b".repeat(128))));
+    }
+
+    #[test]
+    fn the_in_pane_stop_prompt_names_the_session_and_the_consequence() {
+        assert_eq!(
+            stop_prompt("inside"),
+            "Stop 'inside'? Kills the session you are in. (y/n)"
+        );
     }
 
     #[test]

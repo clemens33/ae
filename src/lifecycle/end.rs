@@ -19,13 +19,17 @@ use crate::tmux::StopProbe;
 use crate::transport;
 
 use super::{
-    all_sessions, dir_exists, kill_verified, live_id, lock, meta_value, name_is_usable,
-    path_exists, server_of, sessions_dir, worktrees_dir,
+    ClientPrompt, DetachedArgv, all_sessions, announce_to_clients, confirm_on_client, dir_exists,
+    emit_lifecycle_event, kill_verified, live_id, lock, meta_value, name_is_usable, path_exists,
+    recorded_server, server_of, sessions_dir, worktrees_dir,
 };
 
 /// The usage line.
 const USAGE: &str =
     "Usage: _end [-f] [--purge-history|--keep-history] [--assume-stopped] <session-name|all>";
+
+const END_REQUEST_ACTION: &str = "end-request";
+const END_RESULT_ACTION: &str = "end-result";
 
 /// What `ae end` will do with a session's memory, in five answers.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -74,30 +78,62 @@ impl Plan {
 }
 
 /// What the argv said.
+#[derive(Clone)]
 struct Args {
     target: String,
     force: bool,
     assume_stopped: bool,
+    mode: RunMode,
+    pane: Option<String>,
     /// `Some(true)` for `--purge-history`, `Some(false)` for `--keep-history`,
     /// `None` when the caller passed neither and each session's OWN config
     /// decides.
     purge_cli: Option<bool>,
 }
 
+/// Which process owns the destructive sequence.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RunMode {
+    Direct,
+    Handoff,
+    Supervise,
+}
+
 /// `_end [-f] [--purge-history|--keep-history] [--assume-stopped] <name|all>`.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the confirmation, handoff and direct paths share one ordered preflight"
+)]
 pub(crate) fn run(
     root: &Path,
     tail: &[String],
+    ambient_pane: Option<&str>,
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> io::Result<u8> {
-    let args = match parse(tail) {
+    let mut args = match parse(tail) {
         Ok(args) => args,
         Err(message) => {
             writeln!(err, "{message}")?;
             return Ok(EXIT_USAGE);
         }
     };
+    if args.pane.is_none() {
+        args.pane = ambient_pane.map(ToOwned::to_owned);
+    }
+    let caller_session = args.pane.as_deref().and_then(|pane| {
+        transport::observe_pane_owner(&ServerId::Ambient, pane).map(|owner| owner.session)
+    });
+    if args.target.is_empty() {
+        let Some(own) = &caller_session else {
+            writeln!(err, "{USAGE}")?;
+            return Ok(EXIT_USAGE);
+        };
+        args.target.clone_from(own);
+    }
+    if args.mode == RunMode::Supervise {
+        return run_supervised(root, &args, out, err);
+    }
     // The stopped acknowledgement is PER-TARGET destructive intent — never
     // valid for 'all'.
     if args.target == "all" && args.assume_stopped {
@@ -134,6 +170,52 @@ pub(crate) fn run(
         })
         .collect();
 
+    if args.mode == RunMode::Handoff {
+        if frozen.is_empty() {
+            writeln!(out, "No ae sessions.")?;
+            return Ok(0);
+        }
+        return handoff(
+            root,
+            &args,
+            &targets,
+            caller_session.as_deref(),
+            false,
+            out,
+            err,
+        );
+    }
+
+    if !args.force
+        && !std::io::IsTerminal::is_terminal(&std::io::stdin())
+        && let Some(caller) = &caller_session
+    {
+        let Some(continuation) = handoff_argv(&args) else {
+            writeln!(
+                err,
+                "Error: ae cannot name its own executable, so it cannot hand '{}' to a supervisor — nothing was ended.",
+                args.target
+            )?;
+            return Ok(EXIT_FAILED);
+        };
+        return match confirm_on_client(
+            &ServerId::Ambient,
+            caller,
+            &end_prompt(&args.target),
+            &continuation,
+        ) {
+            ClientPrompt::Shown => Ok(0),
+            ClientPrompt::Nobody => {
+                writeln!(err, "Error: nobody attached to confirm; pass -f.")?;
+                Ok(EXIT_FAILED)
+            }
+            ClientPrompt::Failed => {
+                writeln!(err, "Error: tmux refused the confirmation prompt; pass -f.")?;
+                Ok(EXIT_FAILED)
+            }
+        };
+    }
+
     if !args.force {
         // Set REGARDLESS of how many targets there were: the human was asked,
         // and what they were asked about is now the whole of what may be ended.
@@ -166,6 +248,21 @@ pub(crate) fn run(
         return Ok(0);
     }
 
+    if caller_session
+        .as_ref()
+        .is_some_and(|caller| targets.iter().any(|target| target == caller))
+    {
+        return handoff(
+            root,
+            &args,
+            &targets,
+            caller_session.as_deref(),
+            true,
+            out,
+            err,
+        );
+    }
+
     // EXACTLY the list the human was shown.
     let mut failures = 0_u32;
     for (name, plan) in &frozen {
@@ -190,14 +287,24 @@ fn parse(tail: &[String]) -> Result<Args, String> {
         target: String::new(),
         force: false,
         assume_stopped: false,
+        mode: RunMode::Direct,
+        pane: None,
         purge_cli: None,
     };
     for arg in tail {
         match arg.as_str() {
             "-f" | "--force" => args.force = true,
+            "--supervise" => args.mode = RunMode::Supervise,
+            "--handoff" => args.mode = RunMode::Handoff,
             "--assume-stopped" => args.assume_stopped = true,
             "--purge-history" => args.purge_cli = Some(true),
             "--keep-history" => args.purge_cli = Some(false),
+            "--pane" => {
+                return Err("Error: --pane needs a pane id as its next argument.".to_owned());
+            }
+            flag if flag.starts_with("--pane=") => {
+                args.pane = flag.strip_prefix("--pane=").map(ToOwned::to_owned);
+            }
             flag if flag.starts_with('-') => {
                 return Err(format!(
                     "Error: unknown flag '{flag}'. Use -f, --purge-history, --keep-history, --assume-stopped."
@@ -212,10 +319,253 @@ fn parse(tail: &[String]) -> Result<Args, String> {
             }
         }
     }
-    if args.target.is_empty() {
-        return Err(USAGE.to_owned());
-    }
     Ok(args)
+}
+
+fn end_prompt(name: &str) -> String {
+    format!("End '{name}'? Archives, then deletes its state. (y/n)")
+}
+
+/// The detached worker's exact argv.
+fn supervisor_argv(args: &Args) -> Option<DetachedArgv> {
+    let own = crate::shape::resolved_exe()?;
+    let mut command = vec![
+        own.to_string_lossy().into_owned(),
+        crate::cli::END.to_owned(),
+        "--supervise".to_owned(),
+        args.target.clone(),
+    ];
+    if let Some(purge) = args.purge_cli {
+        command.push(
+            if purge {
+                "--purge-history"
+            } else {
+                "--keep-history"
+            }
+            .to_owned(),
+        );
+    }
+    if args.assume_stopped {
+        command.push("--assume-stopped".to_owned());
+    }
+    if let Some(pane) = args.pane.as_deref().filter(|pane| !pane.is_empty()) {
+        command.push(format!("--pane={pane}"));
+    }
+    Some(DetachedArgv(command))
+}
+
+/// The short-lived tmux job's exact argv. It records intent, starts the
+/// detached worker and exits before the target session is killed.
+fn handoff_argv(args: &Args) -> Option<DetachedArgv> {
+    let own = crate::shape::resolved_exe()?;
+    let mut command = vec![
+        own.to_string_lossy().into_owned(),
+        crate::cli::END.to_owned(),
+        "--handoff".to_owned(),
+        args.target.clone(),
+    ];
+    if let Some(purge) = args.purge_cli {
+        command.push(
+            if purge {
+                "--purge-history"
+            } else {
+                "--keep-history"
+            }
+            .to_owned(),
+        );
+    }
+    if args.assume_stopped {
+        command.push("--assume-stopped".to_owned());
+    }
+    if let Some(pane) = args.pane.as_deref().filter(|pane| !pane.is_empty()) {
+        command.push(format!("--pane={pane}"));
+    }
+    Some(DetachedArgv(command))
+}
+
+/// Facts which survive the successful removal of a session's live state.
+struct Notice {
+    name: String,
+    dir: PathBuf,
+    server: Option<ServerId>,
+    archive_id: String,
+    purge: bool,
+}
+
+fn notices(root: &Path, args: &Args) -> Vec<Notice> {
+    let names = if args.target == "all" {
+        all_sessions(root)
+    } else {
+        vec![args.target.clone()]
+    };
+    names
+        .into_iter()
+        .map(|name| {
+            let dir = sessions_dir(root).join(&name);
+            let bytes = meta::read_bytes(&dir).unwrap_or_default();
+            Notice {
+                server: recorded_server(root, &name),
+                archive_id: archive::canonical_uuid(&meta_value(&bytes, "session_id")),
+                purge: effective_purge(&bytes, args.purge_cli),
+                name,
+                dir,
+            }
+        })
+        .collect()
+}
+
+fn request_summary(pane: Option<&str>) -> String {
+    let Some(pane) = pane.filter(|pane| !pane.is_empty()) else {
+        return "end requested by supervisor".to_owned();
+    };
+    let agent = transport::observe_viewer(&ServerId::Ambient, pane)
+        .and_then(|viewer| viewer.agent)
+        .unwrap_or_else(|| "unknown".to_owned());
+    format!("end requested from inside by {agent}/{pane}")
+}
+
+/// `_end --supervise`: run the whole end where killing a target pane cannot
+/// kill this process. The handoff's request is captured by the archive; only
+/// failures get a result event because only failures retain a live directory.
+fn run_supervised(
+    root: &Path,
+    args: &Args,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> io::Result<u8> {
+    let notices = notices(root, args);
+    let mut tail = vec!["-f".to_owned()];
+    if args.assume_stopped {
+        tail.push("--assume-stopped".to_owned());
+    }
+    if let Some(purge) = args.purge_cli {
+        tail.push(
+            if purge {
+                "--purge-history"
+            } else {
+                "--keep-history"
+            }
+            .to_owned(),
+        );
+    }
+    tail.push(args.target.clone());
+    let mut captured_out = Vec::new();
+    let mut captured_err = Vec::new();
+    let code = match run(root, &tail, None, &mut captured_out, &mut captured_err) {
+        Ok(code) => code,
+        Err(why) => {
+            let summary = format!("FAILED: end supervisor I/O: {why}");
+            for notice in &notices {
+                if dir_exists(&notice.dir) {
+                    emit_lifecycle_event(&notice.dir, &notice.name, END_RESULT_ACTION, &summary);
+                }
+            }
+            writeln!(err, "Error: end supervisor I/O failed: {why}")?;
+            return Ok(EXIT_FAILED);
+        }
+    };
+
+    if code == 0 {
+        for notice in &notices {
+            let line = if !notice.purge && !notice.archive_id.is_empty() {
+                format!("Ended {} — archived {}", notice.name, notice.archive_id)
+            } else {
+                format!("Ended {}", notice.name)
+            };
+            if let Some(server) = &notice.server {
+                announce_to_clients(server, &line);
+            }
+        }
+    } else {
+        let reason = String::from_utf8_lossy(&captured_err);
+        let reason = reason
+            .lines()
+            .find(|line| line.starts_with("Error:"))
+            .or_else(|| reason.lines().find(|line| !line.is_empty()))
+            .unwrap_or("end failed");
+        let summary = format!("FAILED: {reason}");
+        for notice in &notices {
+            if dir_exists(&notice.dir) {
+                emit_lifecycle_event(&notice.dir, &notice.name, END_RESULT_ACTION, &summary);
+            }
+        }
+    }
+    out.write_all(&captured_out)?;
+    err.write_all(&captured_err)?;
+    Ok(code)
+}
+
+/// Hand an already-authorized end to a detached process.
+fn handoff(
+    root: &Path,
+    args: &Args,
+    targets: &[String],
+    caller_session: Option<&str>,
+    report_start: bool,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> io::Result<u8> {
+    let mut ordered: Vec<&String> = targets.iter().collect();
+    ordered.sort_by_key(|name| u8::from(caller_session == Some(name.as_str())));
+    let Some(supervisors) = ordered
+        .iter()
+        .map(|name| {
+            let mut worker = args.clone();
+            worker.target.clone_from(name);
+            supervisor_argv(&worker).map(|argv| (*name, argv))
+        })
+        .collect::<Option<Vec<_>>>()
+    else {
+        writeln!(
+            err,
+            "Error: ae cannot name its own executable, so it cannot hand '{}' to a supervisor — nothing was ended.",
+            args.target
+        )?;
+        return Ok(EXIT_FAILED);
+    };
+    let requested = request_summary(args.pane.as_deref());
+    for name in targets {
+        emit_lifecycle_event(
+            &sessions_dir(root).join(name),
+            name,
+            END_REQUEST_ACTION,
+            &requested,
+        );
+    }
+    let mut failures = 0_u32;
+    for (name, argv) in supervisors {
+        if !transport::run_detached(&argv) {
+            failures += 1;
+            let dir = sessions_dir(root).join(name);
+            emit_lifecycle_event(
+                &dir,
+                name,
+                END_RESULT_ACTION,
+                "FAILED: supervisor did not start",
+            );
+        }
+    }
+    if failures > 0 {
+        writeln!(
+            err,
+            "Error: could not start {failures} end supervisor(s) for '{}' — affected state was preserved.",
+            args.target,
+        )?;
+        return Ok(EXIT_FAILED);
+    }
+    if !report_start {
+        return Ok(0);
+    }
+    if args.target == "all" {
+        writeln!(out, "Ending all ae sessions out of pane.")?;
+    } else {
+        writeln!(
+            out,
+            "Ending '{}' out of pane; this pane will close.",
+            args.target
+        )?;
+    }
+    Ok(0)
 }
 
 /// Read the confirmation.
@@ -1131,8 +1481,18 @@ fn socket_dir(root: &Path) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Action, Plan, path_exists, purge_conversation_files, sanitize_branch_name};
+    use super::{
+        Action, Plan, end_prompt, path_exists, purge_conversation_files, sanitize_branch_name,
+    };
     use std::path::{Path, PathBuf};
+
+    #[test]
+    fn the_in_pane_end_prompt_names_the_session_and_the_consequence() {
+        assert_eq!(
+            end_prompt("inside"),
+            "End 'inside'? Archives, then deletes its state. (y/n)"
+        );
+    }
 
     /// `--purge-history` deletes the conversations ae can name by EXACT id, and
     /// nothing else. agy can be named exactly — one file per id — so it belongs

@@ -1573,7 +1573,7 @@ pub fn run_with(
         // The three whole lifecycle operations.
         cli::Request::End { tail } => {
             if let Some(root) = state_root() {
-                lifecycle::end::run(&root, tail, out, err)?
+                lifecycle::end::run(&root, tail, doors::calling_pane_id().as_deref(), out, err)?
             } else {
                 writeln!(err, "ae: {NO_STATE_ROOT}")?;
                 EXIT_UNAVAILABLE

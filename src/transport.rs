@@ -493,6 +493,32 @@ pub fn display_message(server: &ServerId, target: &str, text: &str) -> bool {
     succeeded
 }
 
+/// Show a transient message on one attached client.
+#[must_use]
+pub fn display_client_message(server: &ServerId, client: &str, text: &str) -> bool {
+    if !addressable(server) {
+        return false;
+    }
+    let (succeeded, _) = run(
+        PROGRAM,
+        &tmux::display_client_message_args(server, client, text),
+    );
+    succeeded
+}
+
+/// Ask one attached client to authorize a deferred tmux command.
+#[must_use]
+pub fn confirm_before(server: &ServerId, client: &str, prompt: &str, continuation: &str) -> bool {
+    if !addressable(server) {
+        return false;
+    }
+    let (succeeded, _) = run(
+        PROGRAM,
+        &tmux::confirm_before_args(server, client, prompt, continuation),
+    );
+    succeeded
+}
+
 /// Every session name `server` reports, or `None` when it did not answer.
 #[must_use]
 pub fn session_names(server: &ServerId) -> Option<Vec<String>> {

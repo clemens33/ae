@@ -710,7 +710,7 @@ fn launch(
             )?;
             return Ok(0);
         }
-        return Ok(attach(&server, &env, &session));
+        return Ok(attach(&server, &env, &session, out)?);
     }
 
     if seeds_orchestrator_config && let Some(global) = env.global.as_deref() {
@@ -1328,7 +1328,7 @@ fn build(
         )?;
         return Ok(0);
     }
-    Ok(attach(&server, env, &shape.name))
+    Ok(attach(&server, env, &shape.name, out)?)
 }
 
 // ---------------------------------------------------------------------------
@@ -2125,13 +2125,38 @@ fn paste_safe(word: &str) -> String {
     }
 }
 
-/// Attach or switch the client to `session`, and report the exit code.
-fn attach(server: &ServerId, env: &Env, session: &str) -> u8 {
-    transport::focus(
-        server,
-        tmux::FocusVerb::for_inside(env.inside_tmux),
-        session,
-    )
+/// Whether an attach is already at its destination or needs a tmux focus
+/// operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AttachAction {
+    /// The caller's pane is already in the target session.
+    InPlace,
+    /// Tmux must attach or switch the caller's client.
+    Focus(tmux::FocusVerb),
+}
+
+/// Decide the attach action from already-observed facts.
+fn attach_action(inside: bool, caller_session: Option<&str>, target: &str) -> AttachAction {
+    if inside && caller_session == Some(target) {
+        AttachAction::InPlace
+    } else {
+        AttachAction::Focus(tmux::FocusVerb::for_inside(inside))
+    }
+}
+
+/// Attach or switch the client to `session`, unless the caller is already in
+/// it, and report the exit code.
+fn attach(server: &ServerId, env: &Env, session: &str, out: &mut impl Write) -> io::Result<u8> {
+    let caller_session = crate::doors::calling_pane_id().and_then(|pane| {
+        transport::observe_viewer(&ServerId::Ambient, &pane).and_then(|viewer| viewer.session)
+    });
+    match attach_action(env.inside_tmux, caller_session.as_deref(), session) {
+        AttachAction::InPlace => {
+            writeln!(out, "you are in '{session}'")?;
+            Ok(0)
+        }
+        AttachAction::Focus(verb) => Ok(transport::focus(server, verb, session)),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2446,7 +2471,10 @@ fn from_preflight(root: &Path, raw_uuid: &str) -> Result<FromProof, String> {
               about what PRODUCT code may reach"
 )]
 mod tests {
-    use super::{EVENTS_KEEP, ToolKind, launch_token, launch_turn_is_pasted, trim_events};
+    use super::{
+        AttachAction, EVENTS_KEEP, ToolKind, attach_action, launch_token, launch_turn_is_pasted,
+        trim_events,
+    };
     use std::fmt::Write as _;
     use std::path::PathBuf;
 
@@ -2455,6 +2483,22 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn switching_to_the_session_already_owning_the_caller_is_in_place() {
+        assert_eq!(
+            attach_action(true, Some("inside"), "inside"),
+            AttachAction::InPlace
+        );
+        assert_eq!(
+            attach_action(true, Some("inside"), "other"),
+            AttachAction::Focus(crate::tmux::FocusVerb::SwitchClient)
+        );
+        assert_eq!(
+            attach_action(false, Some("inside"), "inside"),
+            AttachAction::Focus(crate::tmux::FocusVerb::AttachSession)
+        );
     }
 
     /// EVERY codex resume needs the turn pasted, including the one whose id is

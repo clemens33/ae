@@ -48,6 +48,10 @@ Every lead's injected role includes `NEVER BUILD`: spawned workers make every pr
 When run inside an ae session, `stop`, `end`, `watchdog`, `rename` and `doctor --refresh`
 detect the current session automatically.
 
+When a launch name resolves to the session the caller's pane already belongs to, `ae`
+prints `you are in '<name>'` and exits 0. Naming another running session still switches
+the current tmux client to it.
+
 ### Retired words
 
 Three commands were cut rather than ported to the Rust core. Two keep a **refusing arm** in
@@ -575,14 +579,24 @@ Stopping 'myproject' out of pane; this pane will close.
 ```
 
 Your pane disappears with the session, so the outcome is written to the session's event
-log rather than to a terminal you can no longer see. After reattaching elsewhere:
+log. Ae also displays `Stopped <name>` on every client still attached to that tmux server.
+After reattaching elsewhere:
 
 ```bash
 grep '"action":"stop-result"' ~/.ae/sessions/myproject/events.jsonl | tail -1
 ```
 
-Add `-y` to skip the confirmation (required when there is no terminal to ask on, e.g.
-from a script running inside the session).
+An agentic CLI shell escape has no terminal on stdin. In that case ae asks the human on
+the most recently active tmux client attached to the caller's session:
+
+```text
+Stop 'myproject'? Kills the session you are in. (y/n)
+```
+
+`y` starts a short-lived server job, which detaches the real supervisor and returns before
+the session is killed. `n` or Escape changes nothing. With no attached client, ae refuses
+with `nobody attached to confirm; pass -y`. Add `-y` only when the caller has already been
+authorized to skip human confirmation.
 
 ### Stopping every session (`ae stop all`)
 
@@ -685,8 +699,29 @@ session's recorded server (C3), your pane is in that session (C4), and your cont
 terminal is that pane's (C5, the one `--self` waives). The named fact tells you which
 one to fix.
 
+## `ae end` / `ae rm`
+
 End a session for good. Removes ae's own state; **keeps the agent conversation
 history by default**. If you want to resume later, use `ae stop` instead.
+
+Inside a session, bare `ae end` and `ae end <current-name>` target the caller's session.
+When stdin has no terminal, ae asks the attached human's tmux client:
+
+```text
+End 'myproject'? Archives, then deletes its state. (y/n)
+```
+
+`y` hands the entire kill/archive/cleanup sequence to a detached supervisor, so destroying
+the caller's pane cannot interrupt the archive. `n` or Escape changes nothing. With no
+attached client, ae refuses with `nobody attached to confirm; pass -f`. `-f` remains the
+explicit non-interactive authorization.
+
+Before the handoff, ae records `end-request`; that event is therefore captured by a
+successful archive. A failed end leaves live state and records `end-result` with the failed
+step. Success writes no result into the immutable published archive: its UUID is the result.
+Ae displays `Ended <name> — archived <uuid>` on every client still attached to the server.
+It emits no end `chat` event: the live event source disappears during the end, so that
+delivery could not be promised.
 
 Wraps up:
 

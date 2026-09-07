@@ -35,6 +35,7 @@ struct Rig {
     sock: PathBuf,
     name: String,
     dir: PathBuf,
+    pane: String,
 }
 
 impl Rig {
@@ -49,14 +50,15 @@ impl Rig {
         let config = home.join("config");
         std::fs::write(
             &config,
-            "[profiles]\nfake = \"sh\"\n\n[workspace]\nmain = fake\nlayout = vertical\n",
+            "[profiles]\nfake = \"sh\"\n\n[roster]\nfake = fake\n\n[workspace]\nmain = fake\nlayout = vertical\n",
         )
         .expect("a config");
-        let rig = Self {
+        let mut rig = Self {
             home: home.clone(),
             sock: home.join("s"),
             name: name.clone(),
             dir: dir.clone(),
+            pane: String::new(),
         };
         assert!(
             rig.tmux(&["-f", "/dev/null", "new-session", "-d", "-s", &name, "sh"])
@@ -69,6 +71,16 @@ impl Rig {
         assert!(
             rig.tmux(&["set-option", "-p", "-t", &main_pane, "@ae_agent", "lead"])
                 .0
+        );
+        assert!(
+            rig.tmux(&[
+                "set-environment",
+                "-g",
+                "AE_HOME",
+                &home.display().to_string(),
+            ])
+            .0,
+            "the server-owned continuation inherits the isolated state root"
         );
         std::fs::write(
             dir.join("meta"),
@@ -84,6 +96,7 @@ impl Rig {
             ),
         )
         .expect("a v2 meta");
+        rig.pane = main_pane;
         rig
     }
 
@@ -97,10 +110,27 @@ impl Rig {
 
     /// Run one core subcommand under this rig's `AE_HOME`, bounded.
     fn run(&self, args: &[&str]) -> (Option<i32>, String, String) {
+        self.run_as(args, false)
+    }
+
+    /// Run the human-facing binary as if it were invoked in this rig's pane.
+    fn run_inside(&self, args: &[&str]) -> (Option<i32>, String, String) {
+        self.run_as(args, true)
+    }
+
+    fn run_as(&self, args: &[&str], inside: bool) -> (Option<i32>, String, String) {
         let mut cmd = ae();
         cmd.env("AE_HOME", &self.home);
-        cmd.env_remove("TMUX");
-        cmd.env_remove("TMUX_PANE");
+        if inside {
+            let (_, pid) = self.tmux(&["display-message", "-p", "#{pid}"]);
+            cmd.env("TMUX", format!("{},{},0", self.sock.display(), pid.trim()));
+            cmd.env("TMUX_PANE", &self.pane);
+            cmd.env("AE_TMUX_SERVER_KIND", "socket");
+            cmd.env("AE_TMUX_SERVER", &self.sock);
+        } else {
+            cmd.env_remove("TMUX");
+            cmd.env_remove("TMUX_PANE");
+        }
         for arg in args {
             cmd.arg(arg);
         }
@@ -118,6 +148,53 @@ impl Rig {
             String::from_utf8_lossy(&out.stdout).into_owned(),
             String::from_utf8_lossy(&out.stderr).into_owned(),
         )
+    }
+
+    /// Keep one real client attached to the target, hosted in another detached
+    /// pane on the same isolated server. Keys sent to that host pane are raw
+    /// client input, including the single-key confirmation answer.
+    fn attach_client(&self) -> (String, String) {
+        let controller = format!("ctl{}", self.name);
+        assert!(
+            self.tmux(&["set-option", "-t", &self.name, "detach-on-destroy", "off",])
+                .0,
+            "the client remains attached after the target is destroyed"
+        );
+        let command = format!(
+            "env TMUX= tmux -S {} attach -t ={}",
+            self.sock.display(),
+            self.name
+        );
+        assert!(
+            self.tmux(&["new-session", "-d", "-s", &controller, &command])
+                .0,
+            "the controller pane starts"
+        );
+        let (_, panes) = self.tmux(&[
+            "list-panes",
+            "-t",
+            &format!("={controller}"),
+            "-F",
+            "#{pane_id}",
+        ]);
+        let controller_pane = panes.lines().next().unwrap_or_default().to_owned();
+        assert!(!controller_pane.is_empty(), "the controller pane has an id");
+        let mut client = String::new();
+        for _ in 0..100 {
+            let (_, clients) =
+                self.tmux(&["list-clients", "-F", "#{client_name} | #{session_name}"]);
+            if let Some(name) = clients.lines().find_map(|line| {
+                line.split_once(" | ")
+                    .filter(|(_, session)| *session == self.name)
+                    .map(|(name, _)| name.to_owned())
+            }) {
+                client = name;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        assert!(!client.is_empty(), "a client attaches to {}", self.name);
+        (controller_pane, client)
     }
 
     fn session_is_live(&self) -> bool {
@@ -284,18 +361,235 @@ fn a_self_stop_returns_from_the_pane_it_kills() {
 }
 
 #[test]
-fn a_self_stop_with_no_terminal_names_the_flag_instead_of_asking() {
-    // A non-interactive caller inside the session has no one to ask, and
-    // silently killing the session would be worse than refusing.
+fn a_self_stop_with_no_terminal_and_no_client_refuses_in_one_line() {
+    // A non-interactive caller inside a detached session has nobody who can
+    // answer a tmux confirmation prompt.
     let rig = Rig::new("selfnotty");
     let (code, out, err) = rig.run(&["_stop", "--self", &rig.name]);
     assert_eq!(code, Some(1), "stdout: {out}\nstderr: {err}");
-    assert!(err.contains("no terminal to confirm on"), "{err}");
-    assert!(
-        err.contains(&format!("ae stop {} -y", rig.name)),
-        "it names the flag: {err}"
-    );
+    assert_eq!(err, "Error: nobody attached to confirm; pass -y.\n");
     assert!(rig.session_is_live(), "nothing was stopped");
+}
+
+#[test]
+fn an_end_with_no_terminal_and_no_client_refuses_in_one_line() {
+    let rig = Rig::new("endnotty");
+    let (code, out, err) = rig.run_inside(&["end"]);
+    assert_eq!(code, Some(1), "stdout: {out}\nstderr: {err}");
+    assert_eq!(err, "Error: nobody attached to confirm; pass -f.\n");
+    assert!(rig.session_is_live(), "nothing was ended");
+    assert!(exists(&rig.dir), "state stays intact");
+}
+
+#[test]
+fn a_no_tty_stop_inside_prompts_the_attached_client_then_runs_the_continuation() {
+    let rig = Rig::new("clientstop");
+    let (controller_pane, _client) = rig.attach_client();
+
+    let (code, out, err) = std::thread::scope(|scope| {
+        let waiting = scope.spawn(|| rig.run_inside(&["stop"]));
+        let mut prompt = String::new();
+        for _ in 0..200 {
+            let (_, screen) = rig.tmux(&["capture-pane", "-p", "-t", &controller_pane]);
+            if screen.contains("Kills the session you are in. (y/n)") {
+                prompt = screen;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        assert!(!prompt.is_empty(), "the client displays the prompt");
+        assert!(rig.session_is_live(), "nothing happens before confirmation");
+        assert!(
+            rig.tmux(&["send-keys", "-t", &controller_pane, "y"]).0,
+            "the attached client answers yes"
+        );
+        waiting.join().expect("the invoking thread")
+    });
+    assert_eq!(code, Some(0), "stdout: {out}\nstderr: {err}");
+    assert!(out.is_empty(), "the prompt is on the tmux client: {out}");
+    assert!(err.is_empty(), "{err}");
+    let mut events = String::new();
+    let mut screen = String::new();
+    for _ in 0..200 {
+        events = std::fs::read_to_string(rig.dir.join("events.jsonl")).unwrap_or_default();
+        let (_, current) = rig.tmux(&["capture-pane", "-p", "-t", &controller_pane]);
+        screen = current;
+        if events.contains("\"action\":\"stop-result\"")
+            && !rig.session_is_live()
+            && screen.contains(&format!("Stopped {}", rig.name))
+        {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    assert!(
+        !rig.session_is_live(),
+        "the confirmed continuation stopped it; screen: {screen:?}; events: {events}"
+    );
+    assert!(events.contains("\"action\":\"stop-request\""), "{events}");
+    assert!(events.contains("\"action\":\"stop-result\""), "{events}");
+    assert!(!events.contains("\"action\":\"chat\""), "{events}");
+    assert!(
+        screen.contains(&format!("Stopped {}", rig.name)),
+        "{screen}"
+    );
+}
+
+#[test]
+fn naming_the_session_already_owning_the_caller_is_a_noop() {
+    let rig = Rig::new("own");
+    let (code, out, err) = rig.run_inside(&[&rig.name]);
+    assert_eq!(code, Some(0), "stdout: {out}\nstderr: {err}");
+    assert_eq!(out, format!("you are in '{}'\n", rig.name));
+    assert!(err.is_empty(), "{err}");
+    assert!(rig.session_is_live(), "the session remains live");
+}
+
+#[test]
+fn an_end_handoff_returns_then_its_supervisor_archives_and_removes() {
+    let rig = Rig::new("selfend");
+    let (code, out, err) = rig.run(&["_end", "--handoff", &rig.name]);
+    assert_eq!(code, Some(0), "stdout: {out}\nstderr: {err}");
+    assert!(out.is_empty(), "the handoff is silent: {out}");
+    assert!(err.is_empty(), "{err}");
+    for _ in 0..200 {
+        if exists(&rig.archive()) && !exists(&rig.dir) && !rig.session_is_live() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    assert!(exists(&rig.archive()), "the archive is published");
+    assert!(!exists(&rig.dir), "the live state is gone");
+    assert!(!rig.session_is_live(), "the tmux session is gone");
+    let events = std::fs::read_to_string(rig.archive().join("events.jsonl"))
+        .expect("the archived request event");
+    assert!(events.contains("\"action\":\"end-request\""), "{events}");
+    assert!(
+        !events.contains("\"action\":\"end-result\""),
+        "a successful archive is the durable result: {events}"
+    );
+}
+
+#[test]
+fn a_stop_handoff_is_silent_then_its_supervisor_records_the_result() {
+    let rig = Rig::new("stophand");
+    let (code, out, err) = rig.run(&["_stop", "--handoff", &rig.name]);
+    assert_eq!(code, Some(0), "stdout: {out}\nstderr: {err}");
+    assert!(out.is_empty(), "the hidden handoff is silent: {out}");
+    assert!(err.is_empty(), "{err}");
+
+    let mut events = String::new();
+    for _ in 0..200 {
+        events = std::fs::read_to_string(rig.dir.join("events.jsonl")).unwrap_or_default();
+        if events.contains("\"action\":\"stop-result\"") && !rig.session_is_live() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    assert!(!rig.session_is_live(), "the tmux session is gone");
+    assert!(events.contains("\"action\":\"stop-request\""), "{events}");
+    assert!(events.contains("\"action\":\"stop-result\""), "{events}");
+}
+
+#[test]
+fn a_bare_forced_end_inside_targets_the_caller_and_finishes_out_of_pane() {
+    let rig = Rig::new("bareend");
+    let (code, out, err) = rig.run_inside(&["end", "-f"]);
+    assert_eq!(code, Some(0), "stdout: {out}\nstderr: {err}");
+    assert!(out.contains("out of pane"), "{out}");
+
+    for _ in 0..200 {
+        if exists(&rig.archive()) && !exists(&rig.dir) && !rig.session_is_live() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    assert!(exists(&rig.archive()), "the archive is published");
+    assert!(!exists(&rig.dir), "the live state is gone");
+    assert!(!rig.session_is_live(), "the tmux session is gone");
+    let events = std::fs::read_to_string(rig.archive().join("events.jsonl"))
+        .expect("the archived request event");
+    assert!(events.contains("\"action\":\"end-request\""), "{events}");
+}
+
+#[test]
+fn a_failed_end_supervisor_records_its_result_in_the_preserved_session() {
+    let rig = Rig::new("selfendfail");
+    std::fs::create_dir_all(rig.home.join("archive")).expect("an archive root");
+    std::fs::write(rig.archive(), b"not a directory\n").expect("the obstruction");
+
+    let (code, out, err) = rig.run(&["_end", "--handoff", &rig.name]);
+    assert_eq!(code, Some(0), "stdout: {out}\nstderr: {err}");
+    let mut events = String::new();
+    for _ in 0..200 {
+        events = std::fs::read_to_string(rig.dir.join("events.jsonl")).unwrap_or_default();
+        if events.contains("\"action\":\"end-result\"") {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    assert!(exists(&rig.dir), "failed end preserves live state");
+    assert!(events.contains("\"action\":\"end-request\""), "{events}");
+    assert!(events.contains("\"action\":\"end-result\""), "{events}");
+    assert!(events.contains("FAILED:"), "{events}");
+}
+
+#[test]
+fn a_no_tty_end_inside_prompts_the_attached_client_then_archives() {
+    let rig = Rig::new("clientend");
+    let (controller_pane, _client) = rig.attach_client();
+
+    let (code, out, err) = std::thread::scope(|scope| {
+        let waiting = scope.spawn(|| rig.run_inside(&["end"]));
+        let mut prompt = String::new();
+        for _ in 0..200 {
+            let (_, screen) = rig.tmux(&["capture-pane", "-p", "-t", &controller_pane]);
+            if screen.contains("Archives, then deletes its state. (y/n)") {
+                prompt = screen;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        assert!(!prompt.is_empty(), "the client displays the prompt");
+        assert!(rig.session_is_live(), "nothing happens before confirmation");
+        assert!(
+            rig.tmux(&["send-keys", "-t", &controller_pane, "y"]).0,
+            "the attached client answers yes"
+        );
+        waiting.join().expect("the invoking thread")
+    });
+    assert_eq!(code, Some(0), "stdout: {out}\nstderr: {err}");
+    assert!(out.is_empty(), "the prompt is on the tmux client: {out}");
+    assert!(err.is_empty(), "{err}");
+
+    let mut screen = String::new();
+    for _ in 0..200 {
+        let (_, current) = rig.tmux(&["capture-pane", "-p", "-t", &controller_pane]);
+        screen = current;
+        if exists(&rig.archive())
+            && !exists(&rig.dir)
+            && !rig.session_is_live()
+            && screen.contains(&format!("Ended {} — archived {UUID}", rig.name))
+        {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    assert!(exists(&rig.archive()), "the archive is published");
+    assert!(!exists(&rig.dir), "the live state is gone");
+    assert!(!rig.session_is_live(), "the tmux session is gone");
+    let events = std::fs::read_to_string(rig.archive().join("events.jsonl"))
+        .expect("the archived request event");
+    assert!(events.contains("\"action\":\"end-request\""), "{events}");
+    assert!(
+        events.contains(&format!("end requested from inside by lead/{}", rig.pane)),
+        "{events}"
+    );
+    assert!(!events.contains("\"action\":\"end-result\""), "{events}");
+    assert!(
+        screen.contains(&format!("Ended {} — archived {UUID}", rig.name)),
+        "{screen}"
+    );
 }
 
 #[test]
@@ -563,6 +857,37 @@ impl AmbientRig {
         )
     }
 
+    /// One public command as if a shell inside `pane` invoked it.
+    fn run_inside(&self, pane: &str, args: &[&str]) -> (Option<i32>, String, String) {
+        let (_, identity) = self.tmux(&["display-message", "-p", "#{socket_path} | #{pid}"]);
+        let (socket, pid) = identity
+            .trim()
+            .split_once(" | ")
+            .expect("the isolated server identity");
+        let mut cmd = ae();
+        cmd.env("AE_HOME", &self.home);
+        cmd.env("TMUX_TMPDIR", &self.home);
+        cmd.env("TMUX", format!("{socket},{pid},0"));
+        cmd.env("TMUX_PANE", pane);
+        for arg in args {
+            cmd.arg(arg);
+        }
+        let out = bounded(
+            cmd.stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .expect("the ae binary should run"),
+            Duration::from_secs(30),
+        )
+        .expect("the core returned");
+        (
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    }
+
     /// A live session on the ambient server, plus the state directory that
     /// makes it one of ae's — with `server_rows` verbatim in its meta.
     fn plant(&self, name: &str, server_rows: &str) -> PathBuf {
@@ -603,6 +928,27 @@ impl Drop for AmbientRig {
         let _ = self.tmux(&["kill-server"]);
         let _ = std::fs::remove_dir_all(&self.home);
     }
+}
+
+#[test]
+fn a_bare_stop_from_a_non_ae_tmux_pane_refuses_without_touching_it() {
+    let rig = AmbientRig::new("foreignstop");
+    assert!(
+        rig.tmux(&["new-session", "-d", "-s", "foreign", "sh"]).0,
+        "the non-ae session starts"
+    );
+    let (_, panes) = rig.tmux(&["list-panes", "-t", "=foreign", "-F", "#{pane_id}"]);
+    let pane = panes.lines().next().unwrap_or_default();
+    assert!(!pane.is_empty(), "the non-ae pane: {panes}");
+
+    let (code, out, err) = rig.run_inside(pane, &["stop"]);
+
+    assert_eq!(code, Some(1), "stdout: {out}\nstderr: {err}");
+    assert_eq!(
+        err,
+        "Error: no session state for 'foreign' — refusing to self-stop something ae does not own.\n"
+    );
+    assert_eq!(rig.sessions(), vec!["foreign"], "nothing was killed");
 }
 
 /// B2: an unresolvable server record must not be answered with the ambient one.
@@ -788,8 +1134,8 @@ fn stop_all_from_inside_a_target_prompts_on_a_terminal() {
     );
 }
 
-/// The other half of I2, unchanged: with no terminal the fleet stop from inside
-/// still refuses and still names the flag.
+/// With no terminal and no attached client, the fleet stop refuses and names
+/// the non-interactive authorization flag.
 #[test]
 fn stop_all_from_inside_a_target_with_no_terminal_still_needs_the_flag() {
     let rig = AmbientRig::new("stpntty");
@@ -803,8 +1149,7 @@ fn stop_all_from_inside_a_target_with_no_terminal_still_needs_the_flag() {
 
     let (code, out, err) = rig.run(&["_stop", "all", "--pane", &pane]);
     assert_eq!(code, Some(1), "stdout: {out}\nstderr: {err}");
-    assert!(err.contains("needs -y"), "{err}");
-    assert!(err.contains("cannot prompt"), "{err}");
+    assert_eq!(err, "Error: nobody attached to confirm; pass -y.\n");
     let live = rig.sessions();
     assert!(
         live.iter().any(|name| name == "stptwo"),
