@@ -95,6 +95,18 @@ same server, and `ae list` de-duplicates them only after proving that equality f
 own socket answers. The server reads your normal `~/.tmux.conf`; ae supplies no private `-f`
 configuration.
 
+A resume first checks the recorded server. A running session stays there and keeps its pair.
+A session proved absent there is rebuilt on the current launch destination, and the new pair is
+published only after the replacement panes exist; a failed build leaves the old pair intact.
+Metadata from before server pairs existed is checked on tmux's historical `default` server and
+backfilled only when the session's ownership marker, state root, and recorded main pane all prove
+it is this ae session. An unreachable server or an unowned namesake is refused rather than guessed.
+
+Attaching follows the servers, not just the session name. Outside tmux, ae attaches on the recorded
+destination. From a client on that same proven server it switches clients. From another tmux server
+it prints the exact `tmux … attach -t "=name"` command and exits successfully without nesting or
+trying a cross-server `switch-client`.
+
 Checkout runs may override the destination with the typed `AE_TMUX_SERVER_KIND` /
 `AE_TMUX_SERVER` pair used by `ae-dev` and the test rigs. Installed ae ignores that override.
 
@@ -280,11 +292,12 @@ message when nothing needs attention, so it composes in scripts and is a clean
 primitive for a future monitoring agent. Tie-break across equally-severe
 sessions: most-recent activity, then session name ascending (deterministic).
 
-With **`--attach`** (alias `--switch`) it jumps straight to that session —
-`tmux switch-client` when you're already inside tmux, `tmux attach-session`
-otherwise. It re-checks the session still exists first, and no-ops with a
-message if you're already in it. `-h`/`--help` prints usage; an unknown argument
-exits non-zero.
+With **`--attach`** (alias `--switch`) it jumps straight to that session on the server recorded in
+the chosen session's metadata. It uses the same attach rule as `ae <name>`: attach from outside
+tmux, switch a client proved to be on that server, or print the exact attach command from a foreign
+server. It re-checks the session still exists first, and no-ops with a message if you're already in
+it. A legacy pre-pair session is refused here until its first ordinary resume verifies ownership
+and backfills the pair. `-h`/`--help` prints usage; an unknown argument exits non-zero.
 
 ```text
 $ ae next --attach
@@ -556,7 +569,7 @@ grammar, and the error echoes it verbatim when it does not.
 
 ## `ae stop`
 
-Pause a session for later resume. Detaches all agents and kills the tmux session, but leaves everything on disk: ae state at `~/.ae/sessions/<name>/` plus the per-agent conversation files at `~/.claude/projects/.../<uuid>.jsonl` and `~/.codex/sessions/.../<uuid>.jsonl`. The next `ae <name>` resumes with the full conversation history.
+Pause a session for later resume. Detaches all agents and kills the tmux session, but leaves everything on disk: ae state at `~/.ae/sessions/<name>/` plus the per-agent conversation files at `~/.claude/projects/.../<uuid>.jsonl` and `~/.codex/sessions/.../<uuid>.jsonl`. The next `ae <name>` resumes with the full conversation history. When the recorded server proves the session absent, that build may move it to the current launch destination; the server pair changes only with the successful build publication.
 
 Use this when you're done for the day or switching contexts.
 

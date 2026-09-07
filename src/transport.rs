@@ -107,6 +107,35 @@ pub fn observe_session_option(server: &ServerId, session: &str, name: &str) -> O
     tmux::interpret_session_option(succeeded, &stdout)
 }
 
+/// The two exact tmux-environment values that prove an old session belongs to
+/// one ae state root. Either failed or malformed read makes the proof absent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionOwnership {
+    /// The nonempty `AE_SESSION` ownership marker. Its value is deliberately
+    /// opaque: ae has always stamped `1`, and the exact tmux target owns the
+    /// session name independently.
+    pub marker: String,
+    /// `AE_HOME`, expected to name the caller's state root.
+    pub home: String,
+}
+
+/// Read the ownership pair from `session` on `server`.
+#[must_use]
+pub fn observe_session_ownership(server: &ServerId, session: &str) -> Option<SessionOwnership> {
+    if !addressable(server) {
+        return None;
+    }
+    let (marker_ok, marker_output) = run(PROGRAM, &tmux::marker_args(server, session));
+    let marker =
+        tmux::interpret_marker(marker_ok, &marker_output).filter(|value| !value.is_empty())?;
+    let (homed, home) = run(
+        PROGRAM,
+        &tmux::environment_value_args(server, session, tmux::HOME_VARIABLE),
+    );
+    let home = tmux::interpret_environment_value(homed, &home, tmux::HOME_VARIABLE)?;
+    Some(SessionOwnership { marker, home })
+}
+
 /// What running the `send` helper produced.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Delivery {

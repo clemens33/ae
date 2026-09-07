@@ -23,6 +23,9 @@ use crate::shape::Shape;
 /// The isolated tmux server a launch uses when no checkout override was declared.
 pub const DEFAULT_SERVER_NAME: &str = "ae";
 
+/// The server ae launches used before ae gained its own named server.
+pub const HISTORICAL_SERVER_NAME: &str = "default";
+
 /// `$HOME`, or `None` when it is unset or empty.
 #[must_use]
 pub fn home() -> Option<PathBuf> {
@@ -147,6 +150,33 @@ pub fn tmux_env() -> Option<String> {
     let raw = std::env::var_os("TMUX");
     raw.filter(|value| !value.is_empty())
         .map(|value| value.to_string_lossy().into_owned())
+}
+
+/// The server whose client invoked ae, resolved only from tmux's own marker.
+///
+/// A checkout's `AE_TMUX_SERVER*` pair redirects launches; it says nothing
+/// about where `$TMUX_PANE` lives. A malformed or relative marker names no
+/// caller server rather than falling through to an ambient guess.
+#[must_use]
+pub fn caller_server() -> Option<ServerId> {
+    caller_server_from_marker(tmux_env().as_deref())
+}
+
+fn caller_server_from_marker(marker: Option<&str>) -> Option<ServerId> {
+    let socket = marker?.split(',').next()?;
+    let path = Path::new(socket);
+    path.is_absolute()
+        .then(|| ServerId::Selected(crate::meta::Selector::Socket(path.to_owned())))
+}
+
+/// The explicit server on which launches predating the isolated `ae` server
+/// were created. `-L default` honours tmux's ordinary `$TMUX_TMPDIR` lookup
+/// without ever consulting the caller's `$TMUX` marker.
+#[must_use]
+pub fn historical_server() -> ServerId {
+    ServerId::Selected(crate::meta::Selector::Name(
+        HISTORICAL_SERVER_NAME.to_owned(),
+    ))
 }
 
 /// `$TMUX_PANE` — the pane THIS process sits in, or `None`.
@@ -437,6 +467,28 @@ mod tests {
             )))
         );
         assert_ne!(launch_target(None), Some(ServerId::Ambient));
+    }
+
+    #[test]
+    fn the_caller_server_comes_only_from_tmuxs_absolute_socket_field() {
+        assert_eq!(caller_server_from_marker(None), None);
+        assert_eq!(caller_server_from_marker(Some("relative,123,4")), None);
+        assert_eq!(caller_server_from_marker(Some(",123,4")), None);
+        assert_eq!(
+            caller_server_from_marker(Some("/tmp/tmux-501/default,123,4")),
+            Some(ServerId::Selected(Selector::Socket(PathBuf::from(
+                "/tmp/tmux-501/default"
+            ))))
+        );
+    }
+
+    #[test]
+    fn the_historical_server_is_explicitly_named_and_never_ambient() {
+        assert_eq!(
+            historical_server(),
+            ServerId::Selected(Selector::Name(HISTORICAL_SERVER_NAME.to_owned()))
+        );
+        assert_ne!(historical_server(), ServerId::Ambient);
     }
 
     #[test]

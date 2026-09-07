@@ -31,6 +31,9 @@ const FIELD_SEPARATOR: &str = " | ";
 /// The ae-ownership marker, read from a session's own tmux environment.
 pub const OWNERSHIP_VARIABLE: &str = "AE_SESSION";
 
+/// The state-root marker stamped into a session's own tmux environment.
+pub const HOME_VARIABLE: &str = "AE_HOME";
+
 /// The arguments that address `server`, before any subcommand.
 #[must_use]
 pub fn server_args(server: &ServerId) -> Vec<String> {
@@ -56,11 +59,17 @@ pub fn list_sessions_args(server: &ServerId) -> Vec<String> {
 /// The full argument list for reading one session's ownership marker.
 #[must_use]
 pub fn marker_args(server: &ServerId, session: &str) -> Vec<String> {
+    environment_value_args(server, session, OWNERSHIP_VARIABLE)
+}
+
+/// The full argument list for reading one exact session environment value.
+#[must_use]
+pub fn environment_value_args(server: &ServerId, session: &str, variable: &str) -> Vec<String> {
     let mut args = server_args(server);
     args.push("show-environment".to_owned());
     args.push("-t".to_owned());
     args.push(session_target(session));
-    args.push(OWNERSHIP_VARIABLE.to_owned());
+    args.push(variable.to_owned());
     args
 }
 
@@ -178,6 +187,29 @@ pub fn interpret_marker(succeeded: bool, stdout: &str) -> Option<String> {
             line.trim_end()
                 .strip_prefix(&format!("{OWNERSHIP_VARIABLE}="))
         })
+        .map(ToOwned::to_owned)
+}
+
+/// One exact value from a successful single-variable `show-environment`.
+///
+/// More than one output record is refused. In particular, a newline inside a
+/// hostile value cannot turn its first line into proof while hiding trailing
+/// material on another line.
+#[must_use]
+pub fn interpret_environment_value(
+    succeeded: bool,
+    stdout: &str,
+    variable: &str,
+) -> Option<String> {
+    if !succeeded {
+        return None;
+    }
+    let line = stdout.strip_suffix('\n').unwrap_or(stdout);
+    if line.contains('\n') {
+        return None;
+    }
+    line.strip_prefix(&format!("{variable}="))
+        .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
 }
 
@@ -2494,9 +2526,10 @@ mod tests {
     }
 
     use super::{
-        ObservedPane, SlotObservation, StopProbe, interpret_marker, interpret_panes,
-        interpret_sessions, interpret_stopped, is_addressable_socket, list_panes_args,
-        list_sessions_args, marker_args, server_args, slot_observation,
+        ObservedPane, SlotObservation, StopProbe, environment_value_args,
+        interpret_environment_value, interpret_marker, interpret_panes, interpret_sessions,
+        interpret_stopped, is_addressable_socket, list_panes_args, list_sessions_args, marker_args,
+        server_args, slot_observation,
     };
     use crate::inventory::{QueryFailed, ServerId};
     use crate::meta::Selector;
@@ -2550,6 +2583,35 @@ mod tests {
                 "=my-feature",
                 "AE_SESSION"
             ]
+        );
+    }
+
+    #[test]
+    fn an_ownership_value_is_one_exact_nonempty_environment_record() {
+        assert_eq!(
+            environment_value_args(&named("default"), "old", "AE_HOME"),
+            ["-L", "default", "show-environment", "-t", "=old", "AE_HOME"]
+        );
+        assert_eq!(
+            interpret_environment_value(true, "AE_HOME=/tmp/state\n", "AE_HOME"),
+            Some("/tmp/state".to_owned())
+        );
+        for output in [
+            "",
+            "-AE_HOME\n",
+            "AE_HOME=\n",
+            "OTHER=/tmp/state\n",
+            "AE_HOME=/tmp/state\ntrailing\n",
+        ] {
+            assert_eq!(
+                interpret_environment_value(true, output, "AE_HOME"),
+                None,
+                "{output:?}"
+            );
+        }
+        assert_eq!(
+            interpret_environment_value(false, "AE_HOME=/tmp/state\n", "AE_HOME"),
+            None
         );
     }
 

@@ -705,14 +705,11 @@ fn is_session_dir(root: &Path, dir: &Path) -> bool {
 /// (the charter's one command is `ae _monitor sweep <its own helpers dir>`), so
 /// "my own session" is the whole permitted set.
 ///
-/// The caller's identity is `$TMUX_PANE` — the door `stop` and `watchdog`
-/// already answer "is the target the session I am running in" with — resolved
-/// on the server the TARGET RECORDS. That server is what makes the pane id
-/// meaningful: pane ids are small per-server integers, so `%3` exists on every
-/// running server, and asking the ambient one would compare a pane on the
-/// caller's server against a directory belonging to another's. A pane the
-/// recorded server does not answer for is not a pane of this session; a pane
-/// whose `#{session_name}` is not the directory's own name is somebody else's.
+/// The caller's identity is `$TMUX_PANE` on the socket `$TMUX` names. Pane ids
+/// are small per-server integers, so `%3` exists on every running server and
+/// resolving it on the target's recorded server could identify somebody else.
+/// The caller and recorded sockets are proved equal independently; then the
+/// caller server answers which session owns the pane.
 ///
 /// `Err` carries the detail alone; the caller prints it after [`OWN_RULE`], so
 /// the rule is stated once and the refusal is one line.
@@ -733,9 +730,18 @@ fn is_own_session(dir: &Path) -> Result<(), String> {
     let Some(server) = crate::session_launch::recorded_server_resolved(dir) else {
         return Err(format!("{own} {}", crate::session_launch::AMBIGUOUS_SERVER));
     };
-    let Some(viewer) = crate::transport::observe_viewer(&server, &pane) else {
+    let Some(caller_server) = crate::doors::caller_server() else {
+        return Err("no calling tmux server, so $TMUX_PANE has no server identity".to_owned());
+    };
+    let mut sockets = crate::SocketPaths::asking(crate::transport::observe_socket_path);
+    if !sockets.proven_same(&caller_server, &server) {
         return Err(format!(
-            "$TMUX_PANE {pane} is not a pane of the tmux server {own} records"
+            "the calling tmux server is not the server {own} records"
+        ));
+    }
+    let Some(viewer) = crate::transport::observe_viewer(&caller_server, &pane) else {
+        return Err(format!(
+            "$TMUX_PANE {pane} is not a pane of the calling tmux server"
         ));
     };
     match viewer.session.as_deref() {

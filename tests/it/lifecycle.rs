@@ -365,7 +365,7 @@ fn a_self_stop_with_no_terminal_and_no_client_refuses_in_one_line() {
     // A non-interactive caller inside a detached session has nobody who can
     // answer a tmux confirmation prompt.
     let rig = Rig::new("selfnotty");
-    let (code, out, err) = rig.run(&["_stop", "--self", &rig.name]);
+    let (code, out, err) = rig.run_inside(&["_stop", "--self", &rig.name]);
     assert_eq!(code, Some(1), "stdout: {out}\nstderr: {err}");
     assert_eq!(err, "Error: nobody attached to confirm; pass -y.\n");
     assert!(rig.session_is_live(), "nothing was stopped");
@@ -1195,7 +1195,7 @@ fn stop_all_from_inside_a_target_with_no_terminal_still_needs_the_flag() {
             .0
     );
 
-    let (code, out, err) = rig.run(&["_stop", "all", "--pane", &pane]);
+    let (code, out, err) = rig.run_inside(&pane, &["_stop", "all", "--pane", &pane]);
     assert_eq!(code, Some(1), "stdout: {out}\nstderr: {err}");
     assert_eq!(err, "Error: nobody attached to confirm; pass -y.\n");
     let live = rig.sessions();

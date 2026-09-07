@@ -825,6 +825,49 @@ pub fn rewrite(dir: &Path, key: &str, value: Option<&str>) -> Result<(), Rewrite
     publish_bytes(dir, &path, next.as_bytes())
 }
 
+/// Backfill the proven socket spelling for a legacy meta that predates the
+/// typed server pair, publishing both rows in one atomic replacement.
+///
+/// This is deliberately narrower than a general selector writer: the only
+/// permitted caller has already asked the historical server for its own
+/// absolute socket path. A malformed path is rejected before the meta lock is
+/// taken, and no intermediate one-row document is ever visible.
+///
+/// # Errors
+///
+/// [`RewriteError::NotWritten`] when `socket` is not an absolute, single-line
+/// path, when the lock or meta read fails, or when publication does not become
+/// visible. [`RewriteError::Unknown`] when the replacement became visible but
+/// the directory sync failed.
+pub fn backfill_server_socket(dir: &Path, socket: &str) -> Result<(), RewriteError> {
+    if !Path::new(socket).is_absolute() || socket.contains(['\n', '\r']) {
+        return Err(RewriteError::NotWritten(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "the proven tmux socket path must be absolute and single-line",
+        )));
+    }
+    let path = crate::store::open(dir).meta_path();
+    let _held = crate::store::lock(
+        &crate::store::open(dir).meta_lock(),
+        crate::store::LOCK_WAIT,
+    )
+    .map_err(RewriteError::NotWritten)?;
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: the legacy meta read, for its locked atomic server-pair backfill — see clippy.toml"
+    )]
+    let current = fs::read_to_string(&path).map_err(RewriteError::NotWritten)?;
+    if Meta::parse(&current).server_selector() != ServerSelector::Missing {
+        return Err(RewriteError::NotWritten(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "legacy tmux server backfill requires metadata with no server pair",
+        )));
+    }
+    let with_kind = rewritten(&current, SERVER_KIND_KEY, Some("socket"));
+    let next = rewritten(&with_kind, SERVER_KEY, Some(socket));
+    publish_bytes(dir, &path, next.as_bytes())
+}
+
 /// The whole INITIAL meta, published as one document under the meta lock — the
 /// core side of `_meta-init`.
 ///
@@ -1022,6 +1065,55 @@ mod tests {
         // hide the degradation the reader reports.
         assert_eq!(rewritten("k=1\nk=2\n", "k", Some("3")), "k=3\nk=3\n");
         assert_eq!(rewritten("k=1\nk=2\n", "k", None), "");
+    }
+
+    #[test]
+    fn the_legacy_server_backfill_publishes_one_typed_socket_pair() {
+        let dir =
+            std::env::temp_dir().join(format!("ae-meta-server-backfill-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch");
+        std::fs::write(dir.join("meta"), "session=old\nmain_pane=%0\n").expect("legacy meta");
+
+        super::backfill_server_socket(&dir, "/tmp/private/default").expect("backfill");
+
+        assert_eq!(
+            std::fs::read_to_string(dir.join("meta")).unwrap(),
+            "session=old\nmain_pane=%0\ntmux_server_kind=socket\ntmux_server=/tmp/private/default\n"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_legacy_server_backfill_refuses_an_unusable_path_without_touching_meta() {
+        let dir = std::env::temp_dir().join(format!(
+            "ae-meta-server-backfill-invalid-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch");
+        let original = "session=old\nmain_pane=%0\n";
+        std::fs::write(dir.join("meta"), original).expect("legacy meta");
+
+        assert!(super::backfill_server_socket(&dir, "relative/default").is_err());
+        assert_eq!(std::fs::read_to_string(dir.join("meta")).unwrap(), original);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_legacy_server_backfill_never_replaces_a_pair_that_appeared_before_its_lock() {
+        let dir = std::env::temp_dir().join(format!(
+            "ae-meta-server-backfill-race-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch");
+        let original = "session=old\ntmux_server_kind=name\ntmux_server=already-there\n";
+        std::fs::write(dir.join("meta"), original).expect("paired meta");
+
+        assert!(super::backfill_server_socket(&dir, "/tmp/private/default").is_err());
+        assert_eq!(std::fs::read_to_string(dir.join("meta")).unwrap(), original);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

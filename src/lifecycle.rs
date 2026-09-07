@@ -259,10 +259,13 @@ pub(crate) fn run_stop(
             }
         }
     }
+    let caller_server = crate::doors::caller_server();
     let caller_session = if pane.is_empty() {
         None
     } else {
-        crate::transport::observe_pane_owner(&ServerId::Ambient, &pane).map(|owner| owner.session)
+        caller_server.as_ref().and_then(|server| {
+            crate::transport::observe_pane_owner(server, &pane).map(|owner| owner.session)
+        })
     };
     if target.is_empty() {
         if let Some(own) = &caller_session {
@@ -571,7 +574,11 @@ fn self_supervised(
                 )?;
                 return Ok(EXIT_FAILED);
             };
-            return match confirm_on_client(&ServerId::Ambient, name, &stop_prompt(name), &argv) {
+            let Some(caller_server) = crate::doors::caller_server() else {
+                writeln!(err, "Error: the calling tmux server is unknown; pass -y.")?;
+                return Ok(EXIT_FAILED);
+            };
+            return match confirm_on_client(&caller_server, name, &stop_prompt(name), &argv) {
                 ClientPrompt::Shown => Ok(0),
                 ClientPrompt::Nobody => {
                     writeln!(err, "Error: nobody attached to confirm; pass -y.")?;
@@ -754,7 +761,11 @@ fn fleet_supervised(
             };
             let prompt =
                 format!("Stop all ae sessions? Kills '{own}', the session you are in. (y/n)");
-            return match confirm_on_client(&ServerId::Ambient, own, &prompt, &argv) {
+            let Some(caller_server) = crate::doors::caller_server() else {
+                writeln!(err, "Error: the calling tmux server is unknown; pass -y.")?;
+                return Ok(EXIT_FAILED);
+            };
+            return match confirm_on_client(&caller_server, own, &prompt, &argv) {
                 ClientPrompt::Shown => Ok(0),
                 ClientPrompt::Nobody => {
                     writeln!(err, "Error: nobody attached to confirm; pass -y.")?;

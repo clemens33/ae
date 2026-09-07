@@ -48,6 +48,21 @@ running server is recorded by the absolute socket path it reports. Fleet discove
 `-L ae` and collapses name/socket spellings only after tmux proves they report the same socket.
 The server still reads the user's ordinary `~/.tmux.conf`; ae does not supply a private `-f` config.
 
+Resume separates a recorded destination from today's launch destination. A live session stays on
+its recorded server without rewriting the pair. Only a verified absence permits a rebuild on the
+current destination, whose existing whole-meta publication writes the new pair after the owned
+panes exist. Failure leaves the old pair byte-identical. Legacy metadata with no pair is probed on
+tmux's historical `default` server, never the caller's server; ae backfills that server's proven
+socket in one publication only when the exact session has a nonempty `AE_SESSION` marker, its
+`AE_HOME` resolves to this state root, and the recorded main pane belongs to it. Unknown liveness or
+failed ownership proof refuses without changing metadata.
+
+Caller identity is independent again: `$TMUX` identifies the server that owns `$TMUX_PANE`.
+Attaching from outside tmux uses `attach-session`; a caller on the same proven socket uses
+`switch-client`; a caller on another server gets the exact attach command without nesting or a
+cross-server switch attempt. The same rule drives `ae next --attach` on its chosen session's
+recorded server.
+
 ```mermaid
 flowchart TB
     Cmd([ae &lt;name&gt;]) --> Check{Session dir<br/>on disk?}
@@ -63,8 +78,8 @@ flowchart TB
 
     subgraph Resume ["Resume"]
         direction TB
-        R1[Read meta<br/>recover ae_core, slots]
-        R2[Reattach tmux session<br/>+ relaunch agents w/ --resume]
+        R1[Read meta + probe<br/>recorded server]
+        R2[Reattach where running<br/>or rebuild on launch target]
         R1 --> R2
     end
 

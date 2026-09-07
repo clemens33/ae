@@ -291,7 +291,8 @@ fn resolve_facts(shape: &shape::Shape, err: &mut impl Write) -> Result<Option<en
     let cwd = doors::cwd();
     let declared = doors::declared_server(shape);
     let (server_kind, server_value) = doors::resolve_launch_server(declared.as_ref());
-    let inside_tmux = doors::inside_tmux(doors::probe_target(declared.as_ref()).as_ref(), err)?;
+    let caller_server = doors::caller_server();
+    let inside_tmux = doors::inside_tmux(caller_server.as_ref(), err)?;
     Ok(Some(entry::Preamble {
         global: Some(doors::config_file(shape, &home)),
         local: doors::local_config(&cwd),
@@ -299,6 +300,7 @@ fn resolve_facts(shape: &shape::Shape, err: &mut impl Write) -> Result<Option<en
         cwd,
         server_kind,
         server_value,
+        caller_server,
         inside_tmux,
         attach: true,
         no_autostart: doors::no_autostart(),
@@ -348,15 +350,12 @@ fn run_orchestrator(
         err.flush()?;
         return Ok(usage.code());
     }
-    // The server this invocation may ASK — the declared pair when one redirects
-    // ae (the ae-dev namespace), the ambient one otherwise. The menu is drawn
-    // for that server's client, and `switch-client` reaches nothing outside it.
-    // Which is why a session elsewhere becomes a disabled row.
-    let Some(server) = doors::probe_target(doors::declared_server(shape::current()).as_ref())
-    else {
+    // The server whose client invoked ae. A launch override names a
+    // destination, never the `%pane` on which this menu must be drawn.
+    let Some(server) = doors::caller_server() else {
         writeln!(
             err,
-            "ae orchestrator: the declared tmux server is ambiguous, so ae will not guess one."
+            "ae orchestrator: no calling tmux server, so ae cannot draw a client menu."
         )?;
         err.flush()?;
         return Ok(EXIT_UNAVAILABLE);
@@ -747,10 +746,8 @@ fn current_session_name(preamble: &entry::Preamble) -> Option<String> {
     if !preamble.inside_tmux {
         return None;
     }
-    let server =
-        inventory::ServerId::from_typed_flags(&preamble.server_kind, &preamble.server_value)
-            .ok()?;
-    let name = transport::observe_current_session(&server)?;
+    let server = preamble.caller_server.as_ref()?;
+    let name = transport::observe_current_session(server)?;
     lifecycle::dir_exists(&preamble.sessions().join(&name)).then_some(name)
 }
 
@@ -1044,7 +1041,7 @@ fn run_brief(
 /// ask — `None` outside tmux, or when that server does not answer for the pane.
 fn calling_session_name() -> Option<String> {
     let pane = doors::calling_pane_id()?;
-    let server = doors::probe_target(doors::declared_server(shape::current()).as_ref())?;
+    let server = doors::caller_server()?;
     transport::observe_viewer(&server, &pane)?.session
 }
 
@@ -1074,9 +1071,24 @@ fn run_next(
         return Ok(0);
     }
 
-    // The ambient server: where a call lands when no `AE_TMUX_SERVER` redirects
-    // it.
-    let server = inventory::ServerId::Ambient;
+    let Some(root) = state_root() else {
+        writeln!(err, "ae: {NO_STATE_ROOT}")?;
+        return Ok(EXIT_UNAVAILABLE);
+    };
+    let dir = inventory::Roots::under(&root).sessions().join(&choice.name);
+    let server = match meta::read_bytes(&dir)
+        .map(|bytes| meta::Meta::parse(&String::from_utf8_lossy(&bytes)).server_selector())
+    {
+        Ok(meta::ServerSelector::Positive(selector)) => inventory::ServerId::Selected(selector),
+        Ok(meta::ServerSelector::Missing | meta::ServerSelector::Ambiguous) | Err(_) => {
+            writeln!(
+                err,
+                "ae next: '{}' has no usable recorded tmux server.",
+                choice.name
+            )?;
+            return Ok(next::EXIT_NONE);
+        }
+    };
 
     // Re-validate EXACTLY: the session may have ended between the scan and the
     // jump. The target below is exact too; this remains the race guard between
@@ -1088,8 +1100,20 @@ fn run_next(
         return Ok(next::EXIT_NONE);
     }
 
-    let inside = doors::inside_tmux(Some(&server), err)?;
-    if inside && transport::observe_current_session(&server).as_deref() == Some(&*choice.name) {
+    let caller_server = doors::caller_server();
+    let inside = doors::inside_tmux(caller_server.as_ref(), err)?;
+    let same_server = caller_server.as_ref().is_some_and(|caller| {
+        let mut sockets = SocketPaths::asking(transport::observe_socket_path);
+        sockets.proven_same(caller, &server)
+    });
+    if inside
+        && same_server
+        && caller_server
+            .as_ref()
+            .and_then(transport::observe_current_session)
+            .as_deref()
+            == Some(&*choice.name)
+    {
         writeln!(
             out,
             "ae next: already in '{}' (attn:{}).",
@@ -1101,11 +1125,13 @@ fn run_next(
     // Nothing may still be buffered when tmux takes the terminal.
     out.flush()?;
     err.flush()?;
-    Ok(transport::focus(
+    Ok(session_launch::attach_on(
         &server,
-        tmux::FocusVerb::for_inside(inside),
+        caller_server.as_ref(),
+        inside,
         &choice.name,
-    ))
+        out,
+    )?)
 }
 
 /// The `_goal` arm: `--help` and a refused argv are usage at 2; the READ is
@@ -1279,41 +1305,19 @@ fn run_memo(
     }
 }
 
-/// Who is invoking a helper: the pane `TMUX_PANE` names, read from the ambient
-/// server and classified by [`requests::Viewer::from_pane`].
+/// Who is invoking a helper: the pane `TMUX_PANE` names on the caller's server,
+/// classified by [`requests::Viewer::from_pane`].
 fn calling_viewer(dir: &std::path::Path) -> requests::Viewer {
-    calling_pane(dir)
+    calling_pane()
         .map(|observed| requests::Viewer::from_pane(&observed, &own_session(dir)))
         .unwrap_or_default()
 }
 
-/// The tmux server a helper reads its OWN pane on: the session's recorded
-/// selector when usable, else the ambient server.
-fn viewer_server(dir: &std::path::Path) -> crate::inventory::ServerId {
-    match crate::meta::read_bytes(dir)
-        .map(|bytes| crate::meta::Meta::parse(&String::from_utf8_lossy(&bytes)).server_selector())
-    {
-        Ok(crate::meta::ServerSelector::Positive(selector)) => {
-            crate::inventory::ServerId::Selected(selector)
-        }
-        _ => crate::inventory::ServerId::Ambient,
-    }
-}
-
-/// The pane a helper was invoked from, observed on the session's recorded
-/// server — `None` for no `TMUX_PANE`, an empty one, or one the server does not
-/// answer for.
-fn calling_pane(dir: &std::path::Path) -> Option<tmux::ObservedViewer> {
-    #[allow(
-        clippy::disallowed_methods,
-        reason = "a door: the pane a helper was invoked from is TMUX_PANE, which tmux sets in every pane's environment — see clippy.toml"
-    )]
-    let pane = std::env::var_os("TMUX_PANE");
-    let pane = pane.filter(|value| !value.is_empty())?;
-    // Who-am-I reads the caller's pane on the session's OWN recorded server —
-    // the core has no $AE_TMUX_SERVER shim, so a session on a non-ambient server
-    // (or a caller with no $TMUX) would otherwise read no identity.
-    transport::observe_viewer(&viewer_server(dir), pane.to_str()?)
+/// The pane a helper was invoked from, observed only on the server named by
+/// the caller's `$TMUX` marker. Pane ids repeat across servers, so the target
+/// session's recorded server cannot identify the caller.
+fn calling_pane() -> Option<tmux::ObservedViewer> {
+    actual_calling_pane().map(|(viewer, _)| viewer)
 }
 
 /// The caller pane observed on the server this PROCESS is actually inside.
@@ -1321,17 +1325,11 @@ fn calling_pane(dir: &std::path::Path) -> Option<tmux::ObservedViewer> {
 /// Relay is an authority boundary, so its caller server cannot be inferred
 /// from the helper path: a pane may invoke another session's universally
 /// linked helper, and pane ids repeat across servers. `$TMUX` names the actual
-/// socket inherited by the invoking pane; an absent or untypeable marker fails
-/// closed.
+/// socket inherited by the invoking pane. [`doors::caller_server`] is the one
+/// parser for that marker; an absent or untypeable marker fails closed.
 fn actual_calling_pane() -> Option<(tmux::ObservedViewer, inventory::ServerId)> {
     let pane = doors::calling_pane_id()?;
-    let marker = doors::tmux_env()?;
-    let socket = marker.split(',').next()?;
-    let path = std::path::PathBuf::from(socket);
-    if !path.is_absolute() {
-        return None;
-    }
-    let server = inventory::ServerId::Selected(meta::Selector::Socket(path));
+    let server = doors::caller_server()?;
     transport::observe_viewer(&server, &pane).map(|viewer| (viewer, server))
 }
 
@@ -1555,7 +1553,7 @@ pub fn run_with(
         cli::Request::Reply { dir, tail } => reply::run(
             dir,
             tail,
-            calling_pane(dir).as_ref(),
+            calling_pane().as_ref(),
             &own_session(dir),
             time::Timestamp::now(),
             send_defer(),

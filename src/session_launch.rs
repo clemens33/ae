@@ -24,7 +24,7 @@ pub(crate) mod capture;
 pub(crate) mod name;
 
 /// The usage line for the core entry.
-pub const USAGE: &str = "Usage: _launch --home <ae-home> --cwd <dir> [--global <cfg>] [--local <cfg>] [--server-kind <kind>] [--server <value>] [--attach|--no-attach] [--no-autostart] [--] [--worktree|--copy|--local] [--from <uuid>] [use <name>] [<session-name>]";
+pub const USAGE: &str = "Usage: _launch --home <ae-home> --cwd <dir> [--global <cfg>] [--local <cfg>] [--server-kind <kind>] [--server <value>] [--caller-socket <path>] [--attach|--no-attach] [--no-autostart] [--] [--worktree|--copy|--local] [--from <uuid>] [use <name>] [<session-name>]";
 
 /// How long a freshly created pane's shell is given to draw its prompt before
 /// anything is pasted.
@@ -172,6 +172,8 @@ pub struct Env {
     pub server_kind: String,
     /// The recorded server's value.
     pub server_value: String,
+    /// The server whose tmux client invoked ae, when the caller is in tmux.
+    pub caller_server: Option<ServerId>,
     /// Whether the caller is inside tmux, which decides attach vs switch.
     pub inside_tmux: bool,
     /// Whether to attach when the session is up.
@@ -236,6 +238,7 @@ fn read_env(tail: &[String]) -> Result<(Env, Vec<String>), EnvError> {
         local: None,
         server_kind: String::new(),
         server_value: String::new(),
+        caller_server: None,
         inside_tmux: false,
         attach: true,
         no_autostart: false,
@@ -281,6 +284,10 @@ fn read_env(tail: &[String]) -> Result<(Env, Vec<String>), EnvError> {
             "--local-config" => env.local = Some(value.into()),
             "--server-kind" => env.server_kind.clone_from(value),
             "--server" => env.server_value.clone_from(value),
+            "--caller-socket" => {
+                env.caller_server =
+                    Some(ServerId::from_typed_flags("socket", value).map_err(EnvError::Refused)?);
+            }
             "--core" => env.core = Some(value.into()),
             "--core-version" => env.core_version = Some(value.clone()),
             _ => return Err(EnvError::OffendingWord(flag.clone())),
@@ -390,6 +397,7 @@ pub fn relaunch(
         },
         server_kind: plan.server_kind.to_owned(),
         server_value: plan.server_value.to_owned(),
+        caller_server: None,
         inside_tmux: false,
         attach: false,
         // A relaunch IS a launch (compact's child), so Telegram autostart is
@@ -515,14 +523,171 @@ fn launch(
         }
     }
 
+    let proposed_server = env.server();
+    let meta_present = node_exists(&dir.join(crate::store::META));
+
     // ---- THE tmux FLOOR, before the first thing this launch would write ----
-    // AHEAD of the migration chain and of every guard that touches state: a
-    // meta this core steps and re-stamps is a write, and a session ae could
-    // neither theme nor draw a menu for is one it must not touch.
-    let server = env.server();
-    if let Some(refusal) = floor_refusal(&server, &session) {
+    // AHEAD of the lifecycle lock, migration chain and config seed. A resume
+    // first takes a read-only look at its recorded server so the floor is asked
+    // of the server this attempt will actually use; the decision is repeated
+    // under the lifecycle lock below before anything acts on it.
+    let floor_server = if meta_present {
+        let Ok(bytes) = meta::read_bytes(&dir) else {
+            writeln!(err, "Error: could not read metadata for '{session}'.")?;
+            return Ok(EXIT_FAILED);
+        };
+        match Meta::parse(&String::from_utf8_lossy(&bytes)).server_selector() {
+            ServerSelector::Positive(selector) => {
+                let recorded = ServerId::Selected(selector);
+                match transport::verify_session_absent(&recorded, &session) {
+                    tmux::StopProbe::Absent => proposed_server.clone(),
+                    tmux::StopProbe::Present => recorded,
+                    tmux::StopProbe::Unknown => {
+                        writeln!(
+                            err,
+                            "Error: cannot verify whether tmux session '{session}' is absent on its recorded server. Metadata was not changed."
+                        )?;
+                        return Ok(EXIT_FAILED);
+                    }
+                }
+            }
+            ServerSelector::Missing => {
+                let historical = crate::doors::historical_server();
+                match transport::verify_session_absent(&historical, &session) {
+                    tmux::StopProbe::Absent => proposed_server.clone(),
+                    tmux::StopProbe::Present => historical,
+                    tmux::StopProbe::Unknown => {
+                        writeln!(
+                            err,
+                            "Error: cannot verify whether legacy tmux session '{session}' is absent on the historical default server. Metadata was not changed."
+                        )?;
+                        return Ok(EXIT_FAILED);
+                    }
+                }
+            }
+            ServerSelector::Ambiguous => {
+                writeln!(err, "Error: '{session}' {AMBIGUOUS_SERVER}.")?;
+                return Ok(EXIT_FAILED);
+            }
+        }
+    } else {
+        proposed_server.clone()
+    };
+    if let Some(refusal) = floor_refusal(&floor_server, &session) {
         write!(err, "{refusal}")?;
         return Ok(crate::tmux_floor::EXIT_REFUSED);
+    }
+
+    // A resume's liveness decision and any legacy backfill share the lock
+    // stop/end use. The preflight above exists only to place the floor before
+    // this lock-file write; every fact is re-read while the lock is held.
+    let mut lifecycle = if meta_present {
+        if let Ok(held) = crate::store::lock(
+            &sessions.join(format!(".lifecycle.{session}.lock")),
+            LIFECYCLE_WAIT,
+        ) {
+            Some(held)
+        } else {
+            writeln!(
+                err,
+                "Error: another lifecycle operation (end) is in progress for '{session}' — retry shortly."
+            )?;
+            return Ok(EXIT_FAILED);
+        }
+    } else {
+        None
+    };
+
+    let mut env = env.clone();
+    let mut running_server = None;
+    if meta_present {
+        let Ok(bytes) = meta::read_bytes(&dir) else {
+            writeln!(err, "Error: could not read metadata for '{session}'.")?;
+            return Ok(EXIT_FAILED);
+        };
+        match Meta::parse(&String::from_utf8_lossy(&bytes)).server_selector() {
+            ServerSelector::Positive(selector) => {
+                let recorded = ServerId::Selected(selector);
+                match transport::verify_session_absent(&recorded, &session) {
+                    tmux::StopProbe::Present => {
+                        set_env_server(&mut env, &recorded);
+                        running_server = Some(recorded);
+                    }
+                    tmux::StopProbe::Absent => {
+                        if !destination_is_absent(&proposed_server, &session, err)? {
+                            return Ok(EXIT_FAILED);
+                        }
+                    }
+                    tmux::StopProbe::Unknown => {
+                        writeln!(
+                            err,
+                            "Error: cannot verify whether tmux session '{session}' is absent on its recorded server. Metadata was not changed."
+                        )?;
+                        return Ok(EXIT_FAILED);
+                    }
+                }
+            }
+            ServerSelector::Missing => {
+                let historical = crate::doors::historical_server();
+                match transport::verify_session_absent(&historical, &session) {
+                    tmux::StopProbe::Present => {
+                        let ownership = transport::observe_session_ownership(&historical, &session);
+                        let main_pane = meta_value(&dir, "main_pane").unwrap_or_default();
+                        let pane_belongs = !main_pane.is_empty()
+                            && transport::observe_agents(&historical, &session).is_some_and(
+                                |panes| panes.into_iter().any(|pane| pane.pane == main_pane),
+                            );
+                        let owned = ownership.is_some_and(|ownership| {
+                            !ownership.marker.is_empty()
+                                && existing_directories_match(Path::new(&ownership.home), &env.home)
+                        }) && pane_belongs;
+                        let socket = owned
+                            .then(|| transport::observe_socket_path(&historical))
+                            .flatten();
+                        let Some(socket) = socket else {
+                            writeln!(
+                                err,
+                                "Error: tmux session '{session}' exists on the historical default server, but ae could not prove it belongs to this state root. Metadata was not changed."
+                            )?;
+                            return Ok(EXIT_FAILED);
+                        };
+                        if let Err(why) = meta::backfill_server_socket(&dir, &socket) {
+                            writeln!(
+                                err,
+                                "Error: could not backfill the tmux server for '{session}' ({}).",
+                                why.cause()
+                            )?;
+                            return Ok(EXIT_FAILED);
+                        }
+                        let recorded = ServerId::Selected(meta::Selector::Socket(socket.into()));
+                        set_env_server(&mut env, &recorded);
+                        running_server = Some(recorded);
+                    }
+                    tmux::StopProbe::Absent => {
+                        if !destination_is_absent(&proposed_server, &session, err)? {
+                            return Ok(EXIT_FAILED);
+                        }
+                    }
+                    tmux::StopProbe::Unknown => {
+                        writeln!(
+                            err,
+                            "Error: cannot verify whether legacy tmux session '{session}' is absent on the historical default server. Metadata was not changed."
+                        )?;
+                        return Ok(EXIT_FAILED);
+                    }
+                }
+            }
+            ServerSelector::Ambiguous => {
+                writeln!(err, "Error: '{session}' {AMBIGUOUS_SERVER}.")?;
+                return Ok(EXIT_FAILED);
+            }
+        }
+    } else if transport::session_exists(&proposed_server, &session) {
+        writeln!(
+            err,
+            "Error: tmux session '{session}' exists but is not an ae session."
+        )?;
+        return Ok(EXIT_FAILED);
     }
 
     let orchestrator_config = env.home.join(crate::orchestrator::CONFIG_FILE);
@@ -538,7 +703,6 @@ fn launch(
     {
         return Ok(code);
     }
-    let meta_present = node_exists(&dir.join(crate::store::META));
     // THE CHAIN, before anything reads a field of this meta: a resume or a
     // reattach is ae touching a session, and a shape it cannot place is one it
     // must not act on.
@@ -548,7 +712,6 @@ fn launch(
     }
     // On resume the RECORDED config wins: an agent's aliases must resolve from
     // the file the session was created with, not from wherever the caller is.
-    let mut env = env.clone();
     if meta_present {
         if let Some(stored) = meta_value(&dir, "config").filter(|v| !v.is_empty()) {
             env.global = Some(PathBuf::from(stored));
@@ -646,7 +809,7 @@ fn launch(
         let root = env.home.join("archive");
         match from_preflight(&root, uuid) {
             Ok(proof) => {
-                if transport::session_exists(&server, &session)
+                if transport::session_exists(&proposed_server, &session)
                     || dir_exists(&dir)
                     || dir_exists(&work_root)
                 {
@@ -694,7 +857,7 @@ fn launch(
     }
 
     // ---- a session that is already running is reattached, never rebuilt ----
-    if transport::session_exists(&server, &session) {
+    if let Some(server) = running_server {
         if transport::observe_agents(&server, &session).is_none() {
             writeln!(
                 err,
@@ -702,6 +865,10 @@ fn launch(
             )?;
             return Ok(EXIT_FAILED);
         }
+        // The guard protects only the resume decision and its verification.
+        // Attaching may block for the client's whole lifetime; holding the
+        // guard across it would make stop/end refuse while the user is there.
+        drop(lifecycle.take());
         if !env.attach {
             writeln!(
                 out,
@@ -986,6 +1153,7 @@ fn launch(
         meta_agent,
         sweep_sec.as_deref(),
         parent.as_ref(),
+        lifecycle.take(),
         out,
         err,
     )
@@ -1020,6 +1188,7 @@ fn build(
     meta_agent: bool,
     sweep_sec: Option<&str>,
     parent: Option<&FromProof>,
+    lifecycle: Option<std::fs::File>,
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> crate::Result<u8> {
@@ -1036,17 +1205,23 @@ fn build(
         )?;
         return Ok(EXIT_FAILED);
     }
-    // The LIFECYCLE LOCK: mutual exclusion with `ae end`.
-    let Ok(lifecycle) = crate::store::lock(
-        &sessions.join(format!(".lifecycle.{}.lock", shape.name)),
-        LIFECYCLE_WAIT,
-    ) else {
-        writeln!(
-            err,
-            "Error: another lifecycle operation (end) is in progress for '{}' — retry shortly.",
-            shape.name
-        )?;
-        return Ok(EXIT_FAILED);
+    // The LIFECYCLE LOCK: a resume carries the one under which it chose this
+    // destination; a new session takes it here before its first tmux write.
+    let lifecycle = if let Some(held) = lifecycle {
+        held
+    } else {
+        let Ok(held) = crate::store::lock(
+            &sessions.join(format!(".lifecycle.{}.lock", shape.name)),
+            LIFECYCLE_WAIT,
+        ) else {
+            writeln!(
+                err,
+                "Error: another lifecycle operation (end) is in progress for '{}' — retry shortly.",
+                shape.name
+            )?;
+            return Ok(EXIT_FAILED);
+        };
+        held
     };
 
     // ---- the session and its first pane ----
@@ -2144,35 +2319,135 @@ enum AttachAction {
     InPlace,
     /// Tmux must attach or switch the caller's client.
     Focus(tmux::FocusVerb),
+    /// The caller is inside another tmux server and must attach explicitly.
+    Hint,
 }
 
 /// Decide the attach action from already-observed facts.
-fn attach_action(inside: bool, caller_session: Option<&str>, target: &str) -> AttachAction {
-    if inside && caller_session == Some(target) {
+fn attach_action(
+    inside: bool,
+    same_server: bool,
+    caller_session: Option<&str>,
+    target: &str,
+) -> AttachAction {
+    if !inside {
+        AttachAction::Focus(tmux::FocusVerb::AttachSession)
+    } else if !same_server {
+        AttachAction::Hint
+    } else if caller_session == Some(target) {
         AttachAction::InPlace
     } else {
-        AttachAction::Focus(tmux::FocusVerb::for_inside(inside))
+        AttachAction::Focus(tmux::FocusVerb::SwitchClient)
     }
 }
 
 /// Attach or switch the client to `session`, unless the caller is already in
 /// it, and report the exit code.
 fn attach(server: &ServerId, env: &Env, session: &str, out: &mut impl Write) -> io::Result<u8> {
-    let caller_session = crate::doors::calling_pane_id().and_then(|pane| {
-        transport::observe_viewer(&ServerId::Ambient, &pane).and_then(|viewer| viewer.session)
+    attach_on(
+        server,
+        env.caller_server.as_ref(),
+        env.inside_tmux,
+        session,
+        out,
+    )
+}
+
+/// Focus `session` only when the caller can reach its recorded server; a
+/// foreign-server caller gets an explicit attach command instead.
+pub(crate) fn attach_on(
+    server: &ServerId,
+    caller_server: Option<&ServerId>,
+    inside: bool,
+    session: &str,
+    out: &mut impl Write,
+) -> io::Result<u8> {
+    let caller_session = if inside {
+        caller_server.and_then(|caller| {
+            crate::doors::calling_pane_id().and_then(|pane| {
+                transport::observe_viewer(caller, &pane).and_then(|viewer| viewer.session)
+            })
+        })
+    } else {
+        None
+    };
+    let same_server = caller_server.is_some_and(|caller| {
+        let mut sockets = crate::SocketPaths::asking(transport::observe_socket_path);
+        sockets.proven_same(caller, server)
     });
-    match attach_action(env.inside_tmux, caller_session.as_deref(), session) {
+    match attach_action(inside, same_server, caller_session.as_deref(), session) {
         AttachAction::InPlace => {
             writeln!(out, "you are in '{session}'")?;
             Ok(0)
         }
         AttachAction::Focus(verb) => Ok(transport::focus(server, verb, session)),
+        AttachAction::Hint => {
+            writeln!(
+                out,
+                "Session '{session}' is on another tmux server. Attach with: {}",
+                attach_hint(server, session)
+            )?;
+            Ok(0)
+        }
     }
 }
 
 // ---------------------------------------------------------------------------
 // filesystem and meta reads
 // ---------------------------------------------------------------------------
+
+/// Carry `server` as the pair the existing whole-meta build publication will
+/// write. This changes only the attempt's in-memory destination.
+fn set_env_server(env: &mut Env, server: &ServerId) {
+    match server {
+        ServerId::Ambient => {
+            env.server_kind.clear();
+            env.server_value.clear();
+        }
+        ServerId::Selected(meta::Selector::Name(name)) => {
+            "name".clone_into(&mut env.server_kind);
+            env.server_value.clone_from(name);
+        }
+        ServerId::Selected(meta::Selector::Socket(path)) => {
+            "socket".clone_into(&mut env.server_kind);
+            env.server_value = path.display().to_string();
+        }
+    }
+}
+
+/// Prove the destination does not already hold this exact name before a
+/// stopped session can be rebuilt there.
+fn destination_is_absent(
+    server: &ServerId,
+    session: &str,
+    err: &mut impl Write,
+) -> io::Result<bool> {
+    if transport::session_exists(server, session) {
+        writeln!(
+            err,
+            "Error: tmux session '{session}' exists but is not an ae session."
+        )?;
+        Ok(false)
+    } else {
+        // A cold destination is expected: unlike the recorded-server probe,
+        // this is only a collision guard. `new-session` creates a named or
+        // socket-selected server and remains the final atomic race check.
+        Ok(true)
+    }
+}
+
+/// Whether two existing directories canonicalise to the same path. A failed
+/// canonicalisation proves nothing and therefore never establishes ownership.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "a door: legacy ownership proof canonicalises both the stamped AE_HOME and this state root — see clippy.toml"
+)]
+fn existing_directories_match(one: &Path, other: &Path) -> bool {
+    match (std::fs::canonicalize(one), std::fs::canonicalize(other)) {
+        (Ok(one), Ok(other)) => one == other,
+        _ => false,
+    }
+}
 
 /// Whether `path` is any node at all, LINK INCLUDED.
 fn node_exists(path: &Path) -> bool {
@@ -2499,16 +2774,20 @@ mod tests {
     #[test]
     fn switching_to_the_session_already_owning_the_caller_is_in_place() {
         assert_eq!(
-            attach_action(true, Some("inside"), "inside"),
+            attach_action(true, true, Some("inside"), "inside"),
             AttachAction::InPlace
         );
         assert_eq!(
-            attach_action(true, Some("inside"), "other"),
+            attach_action(true, true, Some("inside"), "other"),
             AttachAction::Focus(crate::tmux::FocusVerb::SwitchClient)
         );
         assert_eq!(
-            attach_action(false, Some("inside"), "inside"),
+            attach_action(false, false, Some("inside"), "inside"),
             AttachAction::Focus(crate::tmux::FocusVerb::AttachSession)
+        );
+        assert_eq!(
+            attach_action(true, false, Some("inside"), "inside"),
+            AttachAction::Hint
         );
     }
 

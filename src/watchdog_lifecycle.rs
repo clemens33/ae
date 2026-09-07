@@ -125,7 +125,8 @@ pub fn run(
     if target.is_empty() {
         // The caller's own pane names its session.
         if !pane.is_empty()
-            && let Some(owner) = transport::observe_pane_owner(&ServerId::Ambient, &pane)
+            && let Some(server) = crate::doors::caller_server()
+            && let Some(owner) = transport::observe_pane_owner(&server, &pane)
         {
             target = owner.session;
         }

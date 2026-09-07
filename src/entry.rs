@@ -3,6 +3,9 @@
 
 use std::path::PathBuf;
 
+use crate::inventory::ServerId;
+use crate::meta::Selector;
+
 /// The config `ae` writes on a first run.
 pub const DEFAULT_CONFIG: &str = r##"# ae config — auto-created on first run, yours to edit. Also mirrored in the repo as
 # config.sample. INI-style: [section] headers, key = value, "#" starts a comment.
@@ -190,6 +193,8 @@ pub struct Preamble {
     pub server_kind: String,
     /// The resolved server's value.
     pub server_value: String,
+    /// The tmux server whose client invoked ae, resolved from `$TMUX` alone.
+    pub caller_server: Option<ServerId>,
     /// Whether the caller is genuinely inside a tmux pane (attach vs switch).
     pub inside_tmux: bool,
     /// Whether to attach once the session is up.
@@ -211,6 +216,7 @@ impl Default for Preamble {
             local: None,
             server_kind: String::new(),
             server_value: String::new(),
+            caller_server: None,
             inside_tmux: false,
             attach: true,
             no_autostart: false,
@@ -239,6 +245,10 @@ impl Preamble {
             argv.push("--no-autostart".to_owned());
         }
         argv.extend(self.server_argv());
+        if let Some(ServerId::Selected(Selector::Socket(socket))) = &self.caller_server {
+            argv.push("--caller-socket".to_owned());
+            argv.push(socket.to_string_lossy().into_owned());
+        }
         argv.push(
             if self.attach {
                 "--attach"
@@ -636,6 +646,9 @@ mod tests {
         pre.local = Some("/c/.ae/config".into());
         pre.server_kind = "socket".to_owned();
         pre.server_value = "/tmp/s".to_owned();
+        pre.caller_server = Some(crate::inventory::ServerId::Selected(
+            crate::meta::Selector::Socket("/tmp/caller".into()),
+        ));
         pre.inside_tmux = true;
         pre.no_autostart = true;
         assert_eq!(
@@ -655,6 +668,8 @@ mod tests {
                 "socket",
                 "--server",
                 "/tmp/s",
+                "--caller-socket",
+                "/tmp/caller",
                 "--attach",
                 "--inside-tmux",
                 "--",

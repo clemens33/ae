@@ -305,6 +305,43 @@ fn the_transport_reports_the_names_and_markers_the_server_holds() {
     );
 }
 
+#[test]
+fn the_transport_reads_the_exact_session_and_home_ownership_pair() {
+    let scratch = scratch("ownership-pair");
+    require_tmux(&scratch);
+    let socket = scratch.join("t.sock");
+    let _cleanup = Cleanup::new(&socket, &scratch);
+    start_server(&socket, &scratch, &[("old", Some("1"))]);
+    let server = ServerId::Selected(Selector::Socket(socket.clone()));
+    let mut set_home = ae::tmux::server_args(&server);
+    set_home.extend(
+        [
+            "set-environment",
+            "-t",
+            "=old",
+            ae::tmux::HOME_VARIABLE,
+            "/tmp/owned-state",
+        ]
+        .map(ToOwned::to_owned),
+    );
+    assert!(run_tmux(&set_home, &scratch).0, "setting AE_HOME");
+
+    let owned = ae::transport::observe_session_ownership(&server, "old");
+    let missing = ae::transport::observe_session_ownership(&server, "missing");
+
+    kill_server(&socket, &scratch);
+    let _ = fs::remove_dir_all(&scratch);
+
+    assert_eq!(
+        owned,
+        Some(ae::transport::SessionOwnership {
+            marker: "1".to_owned(),
+            home: "/tmp/owned-state".to_owned(),
+        })
+    );
+    assert_eq!(missing, None, "a failed query is never ownership proof");
+}
+
 // ---- the PURE pane half, against a real server ---------------------------
 //
 // THIS IS NOT THE TRANSPORT'S TEST, and the distinction is deliberate. The

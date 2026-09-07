@@ -13,6 +13,7 @@
 )]
 
 use std::fmt::Write as _;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -62,7 +63,6 @@ impl Rig {
     /// `tools` names each fake agent to install, and whether it writes a
     /// `codex.<slot>.sid` handshake file into the session directory.
     fn new(tag: &str, tools: &[&str], sid_for: Option<&str>) -> Self {
-        use std::os::unix::fs::PermissionsExt;
         let mut scratch = OwnedScratch::existing(PathBuf::from(format!(
             "/tmp/aeln.{}.{tag}",
             std::process::id()
@@ -128,8 +128,20 @@ impl Rig {
     }
 
     fn tmux(&self, tail: &[&str]) -> (bool, String) {
+        self.tmux_on(&self.sock, tail)
+    }
+
+    fn tmux_on(&self, socket: &Path, tail: &[&str]) -> (bool, String) {
         let mut args = ae::tmux::server_args(&ae::inventory::ServerId::Selected(
-            ae::meta::Selector::Socket(self.sock.clone()),
+            ae::meta::Selector::Socket(socket.to_path_buf()),
+        ));
+        args.extend(tail.iter().map(|arg| (*arg).to_owned()));
+        run_tmux(&args, &self.scratch)
+    }
+
+    fn tmux_named(&self, name: &str, tail: &[&str]) -> (bool, String) {
+        let mut args = ae::tmux::server_args(&ae::inventory::ServerId::Selected(
+            ae::meta::Selector::Name(name.to_owned()),
         ));
         args.extend(tail.iter().map(|arg| (*arg).to_owned()));
         run_tmux(&args, &self.scratch)
@@ -171,6 +183,52 @@ impl Rig {
                 "--no-attach",
                 "--",
             ])
+            .args(tail)
+            .output()
+            .unwrap_or_else(|why| panic!("the ae binary should run: {why}"));
+        (
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    }
+
+    /// Launch with attach enabled and an optional real caller pane/socket.
+    fn launch_attaching(
+        &self,
+        destination: &Path,
+        caller: Option<(&Path, &str)>,
+        tail: &[&str],
+    ) -> (Option<i32>, String, String) {
+        let mut command = ae();
+        command
+            .env_remove("TMUX")
+            .env_remove("TMUX_PANE")
+            .env("HOME", &self.scratch)
+            .env("TMUX_TMPDIR", &self.scratch)
+            .arg(ae::cli::LAUNCH)
+            .args([
+                "--home",
+                &self.home.display().to_string(),
+                "--cwd",
+                &self.project.display().to_string(),
+                "--global",
+                &self.config.display().to_string(),
+                "--server-kind",
+                "socket",
+                "--server",
+                &destination.display().to_string(),
+            ]);
+        if let Some((socket, pane)) = caller {
+            command
+                .arg("--caller-socket")
+                .arg(socket)
+                .arg("--inside-tmux")
+                .env("TMUX", format!("{},1,0", socket.display()))
+                .env("TMUX_PANE", pane);
+        }
+        let out = command
+            .args(["--attach", "--"])
             .args(tail)
             .output()
             .unwrap_or_else(|why| panic!("the ae binary should run: {why}"));
@@ -334,6 +392,386 @@ fn skip() -> bool {
     let present = tmux_present(&probe);
     let _ = std::fs::remove_dir_all(&probe);
     !present
+}
+
+fn bare_session(rig: &Rig, socket: &Path, name: &str) -> String {
+    let (created, pane) = rig.tmux_on(
+        socket,
+        &[
+            "-f",
+            "/dev/null",
+            "new-session",
+            "-d",
+            "-P",
+            "-F",
+            "#{pane_id}",
+            "-s",
+            name,
+        ],
+    );
+    assert!(created, "a bare session named {name}");
+    pane.trim().to_owned()
+}
+
+fn bare_named_session(rig: &Rig, server: &str, name: &str) -> String {
+    let (created, pane) = rig.tmux_named(
+        server,
+        &[
+            "-f",
+            "/dev/null",
+            "new-session",
+            "-d",
+            "-P",
+            "-F",
+            "#{pane_id}",
+            "-s",
+            name,
+        ],
+    );
+    assert!(created, "a bare session named {name}");
+    pane.trim().to_owned()
+}
+
+fn set_named_session_env(rig: &Rig, server: &str, session: &str, key: &str, value: &str) {
+    assert!(
+        rig.tmux_named(
+            server,
+            &["set-environment", "-t", &format!("={session}"), key, value]
+        )
+        .0,
+        "set {key} on {session}"
+    );
+}
+
+#[test]
+fn a_verified_stopped_session_repairs_to_the_proposed_server_only_after_build() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("repair-stopped");
+    let first = rig.launch(&["--local", "repair-stopped"]);
+    assert_eq!(first.0, Some(0), "{first:?}");
+    let _keep = bare_session(&rig, &rig.sock, "keep-old-server");
+    assert!(
+        rig.tmux(&["kill-session", "-t", "=repair-stopped"]).0,
+        "stop the recorded session while its server remains queryable"
+    );
+    let old_meta = rig.meta("repair-stopped");
+    let destination = rig.scratch.join("repair-destination.sock");
+
+    let resumed = rig.launch_with_server(
+        "socket",
+        &destination.display().to_string(),
+        &["--local", "repair-stopped"],
+    );
+    let new_meta = rig.meta("repair-stopped");
+
+    assert_eq!(resumed.0, Some(0), "{resumed:?}");
+    assert!(!rig.sessions().contains(&"repair-stopped".to_owned()));
+    assert!(
+        rig.sessions_on(&["-S", &destination.display().to_string()])
+            .contains(&"repair-stopped".to_owned())
+    );
+    assert_ne!(
+        new_meta, old_meta,
+        "the successful build publishes the move"
+    );
+    assert!(
+        new_meta.contains(&format!("tmux_server={}\n", destination.display())),
+        "{new_meta}"
+    );
+    rig.kill_server_at(&["-S", &destination.display().to_string()]);
+}
+
+#[test]
+fn a_failed_creation_keeps_the_old_pair_and_the_next_resume_can_repair_it() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("repair-retry");
+    let first = rig.launch(&["--local", "repair-retry"]);
+    assert_eq!(first.0, Some(0), "{first:?}");
+    let _keep = bare_session(&rig, &rig.sock, "keep-retry-source");
+    assert!(
+        rig.tmux(&["kill-session", "-t", "=repair-retry"]).0,
+        "stop the recorded session while its server remains queryable"
+    );
+    let before = rig.meta("repair-retry");
+    let parent = rig.scratch.join("late-socket-dir");
+    let destination = parent.join("sock");
+
+    let failed = rig.launch_with_server(
+        "socket",
+        &destination.display().to_string(),
+        &["--local", "repair-retry"],
+    );
+    assert_eq!(failed.0, Some(1), "{failed:?}");
+    assert_eq!(rig.meta("repair-retry"), before);
+
+    assert!(std::fs::create_dir_all(&parent).is_ok(), "socket parent");
+    let retried = rig.launch_with_server(
+        "socket",
+        &destination.display().to_string(),
+        &["--local", "repair-retry"],
+    );
+    assert_eq!(retried.0, Some(0), "{retried:?}");
+    assert!(
+        rig.meta("repair-retry")
+            .contains(&format!("tmux_server={}\n", destination.display()))
+    );
+    rig.kill_server_at(&["-S", &destination.display().to_string()]);
+}
+
+#[test]
+fn a_running_session_keeps_its_recorded_server_and_pair() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("repair-running");
+    let first = rig.launch(&["--local", "repair-running"]);
+    assert_eq!(first.0, Some(0), "{first:?}");
+    let before = rig.meta("repair-running");
+    let other = rig.scratch.join("unused-destination.sock");
+
+    let resumed = rig.launch_with_server(
+        "socket",
+        &other.display().to_string(),
+        &["--local", "repair-running"],
+    );
+
+    assert_eq!(resumed.0, Some(0), "{resumed:?}");
+    assert!(rig.sessions().contains(&"repair-running".to_owned()));
+    assert!(
+        rig.sessions_on(&["-S", &other.display().to_string()])
+            .is_empty(),
+        "the proposed server stays cold"
+    );
+    assert_eq!(rig.meta("repair-running"), before);
+}
+
+#[test]
+fn an_unknown_recorded_server_refuses_without_changing_meta() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("repair-unknown");
+    let first = rig.launch(&["--local", "repair-unknown"]);
+    assert_eq!(first.0, Some(0), "{first:?}");
+    let before = rig.meta("repair-unknown");
+    let other = rig.scratch.join("unknown-destination.sock");
+
+    assert!(
+        std::fs::set_permissions(&rig.sock, std::fs::Permissions::from_mode(0o000)).is_ok(),
+        "make the recorded server unreachable, not absent"
+    );
+
+    let refused = rig.launch_with_server(
+        "socket",
+        &other.display().to_string(),
+        &["--local", "repair-unknown"],
+    );
+    assert!(
+        std::fs::set_permissions(&rig.sock, std::fs::Permissions::from_mode(0o600)).is_ok(),
+        "restore the socket for rig cleanup"
+    );
+
+    assert_eq!(refused.0, Some(1), "{refused:?}");
+    assert!(refused.2.contains("cannot verify"), "{refused:?}");
+    assert_eq!(rig.meta("repair-unknown"), before);
+}
+
+#[test]
+fn a_destination_namesake_refuses_before_the_old_pair_changes() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("repair-namesake");
+    let first = rig.launch(&["--local", "repair-namesake"]);
+    assert_eq!(first.0, Some(0), "{first:?}");
+    let _keep = bare_session(&rig, &rig.sock, "keep-namesake-source");
+    assert!(
+        rig.tmux(&["kill-session", "-t", "=repair-namesake"]).0,
+        "stop the recorded session"
+    );
+    let before = rig.meta("repair-namesake");
+    let destination = rig.scratch.join("namesake-destination.sock");
+    let _foreign = bare_session(&rig, &destination, "repair-namesake");
+
+    let refused = rig.launch_with_server(
+        "socket",
+        &destination.display().to_string(),
+        &["--local", "repair-namesake"],
+    );
+
+    assert_eq!(refused.0, Some(1), "{refused:?}");
+    assert!(refused.2.contains("exists but is not an ae session"));
+    assert_eq!(rig.meta("repair-namesake"), before);
+    rig.kill_server_at(&["-S", &destination.display().to_string()]);
+}
+
+#[test]
+fn an_owned_pre_pair_session_is_backfilled_on_historical_default() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("legacy-owned");
+    let pane = bare_named_session(&rig, "default", "legacy-owned");
+    let historical_socket = rig
+        .tmux_named("default", &["display-message", "-p", "#{socket_path}"])
+        .1
+        .trim()
+        .to_owned();
+    set_named_session_env(&rig, "default", "legacy-owned", "AE_SESSION", "1");
+    set_named_session_env(
+        &rig,
+        "default",
+        "legacy-owned",
+        "AE_HOME",
+        &rig.home.display().to_string(),
+    );
+    let dir = rig.dir("legacy-owned");
+    std::fs::create_dir_all(&dir).expect("legacy session dir");
+    std::fs::write(
+        dir.join("meta"),
+        format!("schema=2\nsession=legacy-owned\nmain_pane={pane}\nmode=local\n"),
+    )
+    .expect("legacy meta");
+    let proposed = rig.scratch.join("legacy-unused.sock");
+
+    let resumed = rig.launch_with_server(
+        "socket",
+        &proposed.display().to_string(),
+        &["--local", "legacy-owned"],
+    );
+    let meta = rig.meta("legacy-owned");
+
+    assert_eq!(resumed.0, Some(0), "{resumed:?}");
+    assert!(meta.contains("tmux_server_kind=socket\n"), "{meta}");
+    assert!(
+        meta.contains(&format!("tmux_server={historical_socket}\n")),
+        "the backfill records the historical server's proven socket: {meta}"
+    );
+    assert!(
+        rig.sessions_on(&["-S", &proposed.display().to_string()])
+            .is_empty(),
+        "the caller/proposed server gets no duplicate"
+    );
+    rig.kill_server_at(&["-L", "default"]);
+}
+
+#[test]
+fn a_pre_pair_lookalike_from_another_home_is_refused_byte_for_byte() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("legacy-foreign");
+    let pane = bare_named_session(&rig, "default", "legacy-foreign");
+    let other_home = rig.scratch.join("other-home");
+    std::fs::create_dir_all(&other_home).expect("foreign home");
+    set_named_session_env(&rig, "default", "legacy-foreign", "AE_SESSION", "1");
+    set_named_session_env(
+        &rig,
+        "default",
+        "legacy-foreign",
+        "AE_HOME",
+        &other_home.display().to_string(),
+    );
+    let dir = rig.dir("legacy-foreign");
+    std::fs::create_dir_all(&dir).expect("legacy session dir");
+    let before = format!("schema=2\nsession=legacy-foreign\nmain_pane={pane}\nmode=local\n");
+    std::fs::write(dir.join("meta"), &before).expect("legacy meta");
+
+    let refused = rig.launch_with_server(
+        "socket",
+        &rig.scratch.join("unused.sock").display().to_string(),
+        &["--local", "legacy-foreign"],
+    );
+
+    assert_eq!(refused.0, Some(1), "{refused:?}");
+    assert!(refused.2.contains("could not prove"), "{refused:?}");
+    assert_eq!(rig.meta("legacy-foreign"), before);
+    rig.kill_server_at(&["-L", "default"]);
+}
+
+#[test]
+fn attach_outside_tmux_uses_the_destination_server() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("attach-outside");
+    let first = rig.launch(&["--local", "attach-outside"]);
+    assert_eq!(first.0, Some(0), "{first:?}");
+
+    let attached = rig.launch_attaching(&rig.sock, None, &["--local", "attach-outside"]);
+
+    assert_ne!(
+        attached.0,
+        Some(0),
+        "a non-terminal cannot attach: {attached:?}"
+    );
+    assert!(
+        attached.1.is_empty(),
+        "no foreign-server hint: {attached:?}"
+    );
+    assert!(
+        !attached.2.contains("no sessions") && !attached.2.contains("can't find session"),
+        "the attach reached the recorded destination: {attached:?}"
+    );
+}
+
+#[test]
+fn attach_inside_the_same_server_uses_switch_client() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("attach-same");
+    let first = rig.launch(&["--local", "attach-same"]);
+    assert_eq!(first.0, Some(0), "{first:?}");
+    let caller = bare_session(&rig, &rig.sock, "same-server-caller");
+
+    let switched = rig.launch_attaching(
+        &rig.sock,
+        Some((&rig.sock, &caller)),
+        &["--local", "attach-same"],
+    );
+
+    assert!(
+        switched.1.is_empty(),
+        "no foreign-server hint: {switched:?}"
+    );
+    assert!(
+        !switched.2.contains("can't find session") && !switched.2.contains("no sessions"),
+        "switch-client reached the recorded destination: {switched:?}"
+    );
+}
+
+#[test]
+fn attach_inside_a_foreign_server_prints_the_destination_command() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("attach-foreign");
+    let first = rig.launch(&["--local", "attach-foreign"]);
+    assert_eq!(first.0, Some(0), "{first:?}");
+    let foreign = rig.scratch.join("foreign.sock");
+    let caller = bare_session(&rig, &foreign, "foreign-caller");
+
+    let hinted = rig.launch_attaching(
+        &rig.sock,
+        Some((&foreign, &caller)),
+        &["--local", "attach-foreign"],
+    );
+
+    assert_eq!(hinted.0, Some(0), "{hinted:?}");
+    assert_eq!(
+        hinted.1,
+        format!(
+            "Session 'attach-foreign' is on another tmux server. Attach with: tmux -S {} attach -t \"=attach-foreign\"\n",
+            rig.sock.display()
+        )
+    );
+    assert!(hinted.2.is_empty(), "{hinted:?}");
+    rig.kill_server_at(&["-S", &foreign.display().to_string()]);
 }
 
 /// The whole local launch: session, pane, stamps, meta, helpers, launch script,
@@ -703,6 +1141,7 @@ fn the_retired_glue_flag_is_refused_before_any_side_effect() {
 /// two commands.
 fn resumable_rig(tag: &str, session: &str, profile: &str) -> (Rig, PathBuf) {
     let rig = Rig::idle(tag);
+    let _keep = bare_session(&rig, &rig.sock, &format!("keep-{session}"));
     let marker = rig.home.join("MARKER");
     let mut config = std::fs::read_to_string(&rig.config).unwrap_or_default();
     // A SECOND `[profiles]` header: the rig's config ends inside `[workspace]`,
@@ -717,11 +1156,13 @@ fn resumable_rig(tag: &str, session: &str, profile: &str) -> (Rig, PathBuf) {
         std::fs::write(
             dir.join("meta"),
             format!(
-                "meta_version={version}\nsession={session}\nmode=local\nlayout=vertical\n\
+                "meta_version={version}\nsession={session}\ntmux_server_kind=socket\n\
+                 tmux_server={server}\nmode=local\nlayout=vertical\n\
                  work_dir={home}\norigin={home}\nschema=2\nseat.main=lead\n\
                  profile.main=idle\nagent_bin.main=sleep\nseat.spawned.0=helper\n\
                  profile.spawned.0=bad\nagent_bin.spawned.0=sleep\n",
                 version = ae::migrate::CURRENT,
+                server = rig.sock.display(),
                 home = rig.project.display(),
             ),
         )
@@ -795,6 +1236,7 @@ fn a_hostile_seat_name_in_a_resumed_meta_cannot_style_a_pane_border() {
     }
     let rig = Rig::idle("hostile");
     let session = "lnhost";
+    let _keep = bare_session(&rig, &rig.sock, "keep-ln-host");
     let dir = rig.dir(session);
     assert!(std::fs::create_dir_all(&dir).is_ok(), "a session dir");
     let hostile = "evil#[bg=red]";
@@ -802,10 +1244,12 @@ fn a_hostile_seat_name_in_a_resumed_meta_cannot_style_a_pane_border() {
         std::fs::write(
             dir.join("meta"),
             format!(
-                "meta_version={version}\nsession={session}\nmode=local\nlayout=vertical\n\
+                "meta_version={version}\nsession={session}\ntmux_server_kind=socket\n\
+                 tmux_server={server}\nmode=local\nlayout=vertical\n\
                  work_dir={home}\norigin={home}\nschema=2\nseat.main={hostile}\n\
                  profile.main=idle\nagent_bin.main=sleep\n",
                 version = ae::migrate::CURRENT,
+                server = rig.sock.display(),
                 home = rig.project.display(),
             ),
         )

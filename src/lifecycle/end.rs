@@ -162,8 +162,11 @@ pub(crate) fn run(
     if args.pane.is_none() {
         args.pane = ambient_pane.map(ToOwned::to_owned);
     }
+    let caller_server = crate::doors::caller_server();
     let caller_session = args.pane.as_deref().and_then(|pane| {
-        transport::observe_pane_owner(&ServerId::Ambient, pane).map(|owner| owner.session)
+        caller_server.as_ref().and_then(|server| {
+            transport::observe_pane_owner(server, pane).map(|owner| owner.session)
+        })
     });
     if args.target.is_empty() {
         let Some(own) = &caller_session else {
@@ -263,8 +266,12 @@ pub(crate) fn run(
             )?;
             return Ok(EXIT_FAILED);
         };
+        let Some(caller_server) = caller_server.as_ref() else {
+            writeln!(err, "Error: the calling tmux server is unknown; pass -f.")?;
+            return Ok(EXIT_FAILED);
+        };
         return match confirm_on_client(
-            &ServerId::Ambient,
+            caller_server,
             caller,
             &end_prompt(&args.target, &frozen),
             &continuation,
@@ -602,7 +609,9 @@ fn request_summary(pane: Option<&str>) -> String {
     let Some(pane) = pane.filter(|pane| !pane.is_empty()) else {
         return "end requested by supervisor".to_owned();
     };
-    let agent = transport::observe_viewer(&ServerId::Ambient, pane)
+    let agent = crate::doors::caller_server()
+        .as_ref()
+        .and_then(|server| transport::observe_viewer(server, pane))
         .and_then(|viewer| viewer.agent)
         .unwrap_or_else(|| "unknown".to_owned());
     format!("end requested from inside by {agent}/{pane}")

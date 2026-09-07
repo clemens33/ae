@@ -1984,9 +1984,22 @@ exit 0
         tail: &[&str],
         envs: &[(&str, &str)],
     ) -> (Option<i32>, String, String) {
+        self.run_from(&self.sock, sub, pane, tail, envs)
+    }
+
+    /// Run a helper from a pane on `caller_socket`, while its target remains
+    /// this fixture's recorded server.
+    fn run_from(
+        &self,
+        caller_socket: &std::path::Path,
+        sub: &str,
+        pane: Option<&str>,
+        tail: &[&str],
+        envs: &[(&str, &str)],
+    ) -> (Option<i32>, String, String) {
         let mut command = ae();
         command
-            .env("TMUX", format!("{},0,0", self.sock.display()))
+            .env("TMUX", format!("{},0,0", caller_socket.display()))
             .env_remove("AE_SENDER_OVERRIDE")
             .env_remove("STUB_SEND_RC")
             .env_remove("STUB_RECORD")
@@ -2899,6 +2912,63 @@ fn send_pastes_through_the_entry_and_records_the_one_frozen_event() {
 }
 
 #[test]
+fn send_resolves_a_repeated_pane_id_only_on_the_callers_server() {
+    let fx = Tracked::new("two-server-sender");
+    let caller_socket = fx.scratch_dir.join("caller.sock");
+    let caller_server =
+        ae::inventory::ServerId::Selected(ae::meta::Selector::Socket(caller_socket.clone()));
+    let mut create = ae::tmux::server_args(&caller_server);
+    create.extend(
+        [
+            "-f",
+            "/dev/null",
+            "new-session",
+            "-d",
+            "-P",
+            "-F",
+            "#{pane_id}",
+            "-s",
+            "caller-a",
+        ]
+        .map(ToOwned::to_owned),
+    );
+    let (created, caller_pane) = run_tmux(&create, &fx.scratch_dir);
+    assert!(created, "the caller server must come up");
+    let caller_pane = caller_pane.trim().to_owned();
+    assert_eq!(
+        caller_pane, fx.main,
+        "the regression requires the same pane id on both servers"
+    );
+    for (option, value) in [("@ae_slot", "main"), ("@ae_agent", "caller-a")] {
+        let mut mark = ae::tmux::server_args(&caller_server);
+        mark.extend(["set-option", "-p", "-t", &caller_pane, option, value].map(ToOwned::to_owned));
+        assert!(run_tmux(&mark, &fx.scratch_dir).0, "stamp caller pane");
+    }
+
+    let sent = fx.run_from(
+        &caller_socket,
+        ae::cli::SEND,
+        Some(&caller_pane),
+        &["worker", "from", "server", "a"],
+        &[],
+    );
+
+    let mut kill = ae::tmux::server_args(&caller_server);
+    kill.push("kill-server".to_owned());
+    let _ = run_tmux(&kill, &fx.scratch_dir);
+    assert_eq!(sent, (Some(0), String::new(), String::new()));
+    assert_eq!(
+        pasted(&fx, "worker"),
+        "⟦ae:msg from @caller-a:caller-a⟧\nfrom server a"
+    );
+    let last = fx.events().pop().unwrap_or_default();
+    assert!(
+        last.contains("\"actor\":\"@caller-a:caller-a\"") && !last.contains("\"actor\":\"lead\""),
+        "caller identity came from its own server: {last}"
+    );
+}
+
+#[test]
 fn send_carries_the_frozen_event_fields_from_the_environment_and_the_override_to_the_envelope() {
     let fx = Tracked::new("ss");
     // The shape `ae cancel` execs the helper under.
@@ -3341,8 +3411,8 @@ fn the_next_argv_is_answered_before_any_session_is_looked_at() {
         "",
         "Read-only by default: prints \"<session>  attn:<reason>  rank:<n>  <agent>\" and",
         "exits 0, or a message on stderr and non-zero when nothing needs attention.",
-        "--attach (alias --switch) jumps to that session: switch-client inside tmux,",
-        "attach-session outside.",
+        "--attach (alias --switch) uses its recorded server: switch-client on that server,",
+        "attach-session outside tmux, or an attach command from another tmux server.",
         "",
     ]
     .join("\n");
@@ -3363,9 +3433,10 @@ fn the_next_argv_is_answered_before_any_session_is_looked_at() {
 }
 
 #[test]
-fn attach_refuses_a_session_the_server_it_would_jump_on_does_not_have() {
-    // The re-validation between the scan and the jump, and the reason it is an
-    // EXACT list-sessions match rather than a prefix-matching `has-session`.
+fn attach_from_a_foreign_server_prints_the_recorded_destination_command() {
+    // Pane ids and session names may repeat across servers. The chosen
+    // session is revalidated on its recorded server, while the caller's socket
+    // decides that a switch-client would cross servers and must become a hint.
     let fixture = NextFixture::plant("elsewhere");
     let elsewhere = fixture.scratch.join("e");
     let other = ae::inventory::ServerId::Selected(ae::meta::Selector::Socket(elsewhere.clone()));
@@ -3377,21 +3448,28 @@ fn attach_refuses_a_session_the_server_it_would_jump_on_does_not_have() {
         "the second server must come up"
     );
 
-    let refused = fixture.run(
+    let hinted = fixture.run(
         &["next", "--attach"],
-        &[("TMUX", &format!("{},1,0", elsewhere.display()))],
+        &[
+            ("TMUX", &format!("{},1,0", elsewhere.display())),
+            ("TMUX_PANE", "%0"),
+        ],
     );
     let mut kill = ae::tmux::server_args(&other);
     kill.push("kill-server".to_owned());
     let _ = run_tmux(&kill, &fixture.scratch);
     fixture.tear_down();
 
-    assert_eq!(refused.0, Some(1), "{refused:?}");
-    assert!(refused.1.is_empty(), "{refused:?}");
+    assert_eq!(hinted.0, Some(0), "{hinted:?}");
     assert_eq!(
-        refused.2, "ae next: 'nx-hot' disappeared before attach.\n",
-        "a prefix sibling on the server is not the session: {refused:?}"
+        hinted.1,
+        format!(
+            "Session 'nx-hot' is on another tmux server. Attach with: tmux -S {} attach -t \"=nx-hot\"\n",
+            fixture.socket.display()
+        ),
+        "the target's recorded server, not the caller's prefix sibling: {hinted:?}"
     );
+    assert!(hinted.2.is_empty(), "{hinted:?}");
 }
 
 #[test]

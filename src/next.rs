@@ -27,8 +27,8 @@ Usage: ae next [--attach]   Name the top running session needing attention.
 
 Read-only by default: prints \"<session>  attn:<reason>  rank:<n>  <agent>\" and
 exits 0, or a message on stderr and non-zero when nothing needs attention.
---attach (alias --switch) jumps to that session: switch-client inside tmux,
-attach-session outside.
+--attach (alias --switch) uses its recorded server: switch-client on that server,
+attach-session outside tmux, or an attach command from another tmux server.
 ";
 
 /// What the argv asked for.

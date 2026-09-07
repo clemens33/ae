@@ -164,27 +164,36 @@ fn declared(agent: &str, state: &str) -> String {
 const NOW: &str = "1788000000";
 
 /// Run one sweep FROM `pane` and return `(code, stdout, stderr)`.
-fn sweep(root: &Path, dir: &Path, pane: &str, flags: &[&str]) -> (Option<i32>, String, String) {
-    sweep_from(root, dir, Some(pane), flags)
+fn sweep(
+    root: &Path,
+    dir: &Path,
+    socket: &Path,
+    pane: &str,
+    flags: &[&str],
+) -> (Option<i32>, String, String) {
+    sweep_from(root, dir, Some((socket, pane)), flags)
 }
 
-/// The same, with the caller's pane as the variable — `None` is a sweep run
-/// from no pane at all.
+/// The same, with the caller's server and pane as the variable — `None` is a
+/// sweep run from no pane at all.
 ///
-/// `TMUX_PANE` is SET OR REMOVED here, never inherited: this suite may itself
-/// be run from inside tmux, and a pane leaking in from the developer's terminal
-/// would be what decides the own-session guard instead of the fixture.
+/// `TMUX` and `TMUX_PANE` are SET OR REMOVED here, never inherited: this suite
+/// may itself be run from inside tmux, and a caller identity leaking in from
+/// the developer's terminal would decide the guard instead of the fixture.
 fn sweep_from(
     root: &Path,
     dir: &Path,
-    pane: Option<&str>,
+    caller: Option<(&Path, &str)>,
     flags: &[&str],
 ) -> (Option<i32>, String, String) {
     let mut command = ae();
-    match pane {
-        Some(pane) => command.env("TMUX_PANE", pane),
-        None => command.env_remove("TMUX_PANE"),
-    };
+    if let Some((socket, pane)) = caller {
+        command.env("TMUX", format!("{},fixture,0", socket.display()));
+        command.env("TMUX_PANE", pane);
+    } else {
+        command.env_remove("TMUX");
+        command.env_remove("TMUX_PANE");
+    }
     let out = command
         .env("AE_HOME", root)
         .arg(ae::cli::MONITOR)
@@ -248,7 +257,7 @@ fn a_repeated_attention_state_is_reported_once_and_its_change_is_reported_again(
 
     // A first run reports the attention it finds — that half is NOT suppressed,
     // only the fleet inventory is.
-    let (code, out, err) = sweep(&root, &dir, &pane, &["--format", "json"]);
+    let (code, out, err) = sweep(&root, &dir, &socket, &pane, &["--format", "json"]);
     assert_eq!(code, Some(0), "{err}");
     assert_eq!(
         report(&out),
@@ -259,7 +268,7 @@ fn a_repeated_attention_state_is_reported_once_and_its_change_is_reported_again(
     assert_eq!(said(&log), "⚠ mondd · lead needs you: blocked\n--\n");
 
     // Nothing changed.
-    let (code, out, err) = sweep(&root, &dir, &pane, &["--format", "json"]);
+    let (code, out, err) = sweep(&root, &dir, &socket, &pane, &["--format", "json"]);
     assert_eq!(code, Some(0), "{err}");
     assert!(
         report(&out).is_empty(),
@@ -281,7 +290,7 @@ fn a_repeated_attention_state_is_reported_once_and_its_change_is_reported_again(
         .is_ok(),
         "the changed declaration"
     );
-    let (code, out, err) = sweep(&root, &dir, &pane, &["--format", "json"]);
+    let (code, out, err) = sweep(&root, &dir, &socket, &pane, &["--format", "json"]);
     assert_eq!(code, Some(0), "{err}");
     assert_eq!(
         report(&out),
@@ -299,13 +308,13 @@ fn a_repeated_attention_state_is_reported_once_and_its_change_is_reported_again(
         .is_ok(),
         "the cleared declaration"
     );
-    let (_, out, err) = sweep(&root, &dir, &pane, &["--format", "json"]);
+    let (_, out, err) = sweep(&root, &dir, &socket, &pane, &["--format", "json"]);
     assert_eq!(
         report(&out),
         vec!["✓ mondd · lead cleared".to_owned()],
         "{err}"
     );
-    let (_, out, _) = sweep(&root, &dir, &pane, &["--format", "json"]);
+    let (_, out, _) = sweep(&root, &dir, &socket, &pane, &["--format", "json"]);
     assert!(
         report(&out).is_empty(),
         "a delivered all-clear is said once: {out}"
@@ -330,7 +339,7 @@ fn a_report_that_was_not_delivered_is_reported_again_until_it_lands() {
 
     let expected = vec!["⚠ monrt · lead needs you: blocked".to_owned()];
     for attempt in 1..=2 {
-        let (code, out, err) = sweep(&root, &dir, &pane, &["--format", "json"]);
+        let (code, out, err) = sweep(&root, &dir, &socket, &pane, &["--format", "json"]);
         assert_eq!(code, Some(0), "attempt {attempt}: {err}");
         assert_eq!(report(&out), expected, "attempt {attempt}: {out}");
         assert!(!delivered(&out), "attempt {attempt}: say exited non-zero");
@@ -342,10 +351,10 @@ fn a_report_that_was_not_delivered_is_reported_again_until_it_lands() {
 
     // The channel comes back.
     plant_say(&dir, &log, 0);
-    let (_, out, err) = sweep(&root, &dir, &pane, &["--format", "json"]);
+    let (_, out, err) = sweep(&root, &dir, &socket, &pane, &["--format", "json"]);
     assert_eq!(report(&out), expected, "{err}");
     assert!(delivered(&out), "{err}");
-    let (_, out, _) = sweep(&root, &dir, &pane, &["--format", "json"]);
+    let (_, out, _) = sweep(&root, &dir, &socket, &pane, &["--format", "json"]);
     assert!(
         report(&out).is_empty(),
         "once delivered, the same attention is silent: {out}"
@@ -374,7 +383,7 @@ fn the_state_round_trips_through_the_file_the_watchdog_reads_as_a_heartbeat() {
         !state.exists(),
         "the fixture must start without one, or the first run is not one"
     );
-    let (code, _, err) = sweep(&root, &dir, &pane, &["--format", "json"]);
+    let (code, _, err) = sweep(&root, &dir, &socket, &pane, &["--format", "json"]);
     assert_eq!(code, Some(0), "{err}");
 
     let text = fs::read_to_string(&state).expect("the sweep wrote its state");
@@ -420,7 +429,7 @@ fn the_state_round_trips_through_the_file_the_watchdog_reads_as_a_heartbeat() {
         fs::write(&state, "{not json at all").is_ok(),
         "the corruption"
     );
-    let (code, out, err) = sweep(&root, &dir, &pane, &["--format", "json"]);
+    let (code, out, err) = sweep(&root, &dir, &socket, &pane, &["--format", "json"]);
     assert_eq!(
         code,
         Some(0),
@@ -449,7 +458,7 @@ fn a_dry_run_previews_the_report_and_changes_nothing() {
     let pane = start_session(&socket, &scratch, "mondr");
 
     // Text format, because that is what a human previewing runs.
-    let (code, out, err) = sweep(&root, &dir, &pane, &["--dry-run"]);
+    let (code, out, err) = sweep(&root, &dir, &socket, &pane, &["--dry-run"]);
     assert_eq!(code, Some(0), "{err}");
     assert_eq!(out, "⚠ mondr · lead needs you: blocked\n");
     assert!(
@@ -460,10 +469,10 @@ fn a_dry_run_previews_the_report_and_changes_nothing() {
 
     // `--init` seeds the same snapshot SILENTLY — the first-install path, so a
     // fresh orchestrator does not announce a fleet already running.
-    let (code, out, err) = sweep(&root, &dir, &pane, &["--init"]);
+    let (code, out, err) = sweep(&root, &dir, &socket, &pane, &["--init"]);
     assert_eq!((code, out.as_str()), (Some(0), ""), "{err}");
     assert_eq!(said(&log), "", "--init says nothing");
-    let (_, out, _) = sweep(&root, &dir, &pane, &["--format", "json"]);
+    let (_, out, _) = sweep(&root, &dir, &socket, &pane, &["--format", "json"]);
     assert!(
         report(&out).is_empty(),
         "a seeded attention is already known: {out}"
@@ -485,14 +494,14 @@ fn no_notify_prints_without_delivering_and_without_marking_anything_notified() {
     plant_say(&dir, &log, 0);
     let pane = start_session(&socket, &scratch, "monnn");
 
-    let (code, out, err) = sweep(&root, &dir, &pane, &["--no-notify"]);
+    let (code, out, err) = sweep(&root, &dir, &socket, &pane, &["--no-notify"]);
     assert_eq!(code, Some(0), "{err}");
     assert_eq!(out, "⚠ monnn · lead needs you: blocked\n");
     assert_eq!(said(&log), "", "--no-notify runs no helper at all");
 
     // An UNCONFIRMED report is not a delivered one: the next sweep says it
     // again.
-    let (_, out, _) = sweep(&root, &dir, &pane, &["--no-notify"]);
+    let (_, out, _) = sweep(&root, &dir, &socket, &pane, &["--no-notify"]);
     assert_eq!(out, "⚠ monnn · lead needs you: blocked\n");
 }
 
@@ -573,6 +582,7 @@ fn the_sweep_command_the_charter_prints_is_the_one_the_binary_accepts() {
         .env("AE_HOME", &root)
         // From the orchestrator's own pane, which is where the charter's
         // instruction is carried out.
+        .env("TMUX", format!("{},fixture,0", socket.display()))
         .env("TMUX_PANE", &pane)
         .args(&words)
         .output()
@@ -670,6 +680,7 @@ fn a_sweep_target_outside_the_sessions_root_is_refused_before_anything_is_writte
         let (code, out, err) = sweep(
             &root,
             dir,
+            &socket,
             &pane,
             &["--liveness-sweeps", "1", "--format", "json"],
         );
@@ -715,6 +726,7 @@ fn a_real_session_directory_still_sweeps_under_the_target_guard() {
     let (code, out, err) = sweep(
         &root,
         &dir,
+        &socket,
         &pane,
         &["--liveness-sweeps", "1", "--format", "json"],
     );
@@ -761,6 +773,7 @@ fn a_sweep_of_a_sibling_session_is_refused_before_anything_is_written() {
     let (code, out, err) = sweep(
         &root,
         &theirs,
+        &socket,
         &pane,
         &["--liveness-sweeps", "1", "--format", "json"],
     );
@@ -786,6 +799,7 @@ fn a_sweep_of_a_sibling_session_is_refused_before_anything_is_written() {
     let (code, out, err) = sweep(
         &root,
         &mine,
+        &socket,
         &pane,
         &["--liveness-sweeps", "1", "--format", "json"],
     );
@@ -854,7 +868,7 @@ fn a_sweep_run_from_no_pane_at_all_is_refused() {
     let (code, _, err) = sweep_from(
         &root,
         &dir,
-        Some("%4242"),
+        Some((&socket, "%4242")),
         &["--liveness-sweeps", "1", "--format", "json"],
     );
     assert_eq!(code, Some(2), "{err}");
