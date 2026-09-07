@@ -231,6 +231,7 @@ const fn frozen_empty_listing(args: &ListArgs) -> &'static str {
 const NAME_WIDTH: usize = 26;
 const STATUS_WIDTH: usize = 10;
 const AGENT_WIDTH: usize = 24;
+const PROFILE_WIDTH: usize = 14;
 const ID_WIDTH: usize = 10;
 
 /// Append `value`, padded to at least `width` with a single trailing space.
@@ -240,6 +241,20 @@ fn push_padded(out: &mut String, value: &str, width: usize) {
         out.push(' ');
     }
     out.push(' ');
+}
+
+/// Append `value` clipped to `width`, then pad it as one fixed-width column.
+fn push_clipped_padded(out: &mut String, value: &str, width: usize) {
+    if value.chars().count() <= width {
+        push_padded(out, value, width);
+        return;
+    }
+    let mut clipped = value
+        .chars()
+        .take(width.saturating_sub(1))
+        .collect::<String>();
+    clipped.push('…');
+    push_padded(out, &clipped, width);
 }
 
 /// The tabular view with no snapshot time of its own, so every relative age
@@ -287,12 +302,13 @@ pub fn table_at(sessions: &[&SessionEntry], now: Timestamp) -> String {
         push_frozen_session_subline(&mut out, session, now);
         for agent in &session.agents {
             out.push_str("  ");
-            let label = if agent.reference == agent.name && !agent.alias.is_empty() {
-                format!("{} {}", agent.name, agent.alias)
+            push_padded(&mut out, &agent.reference, AGENT_WIDTH);
+            let profile = if agent.reference == agent.name {
+                agent.alias.as_str()
             } else {
-                agent.reference.clone()
+                ""
             };
-            push_padded(&mut out, &label, AGENT_WIDTH);
+            push_clipped_padded(&mut out, profile, PROFILE_WIDTH);
             // Frozen rendered the short session id on BOTH grammars — running
             // and stopped — and our table omitted it entirely, which run 2
             // semantic-fails independently of every health or state question.
@@ -1563,6 +1579,49 @@ mod tests {
             row_fields(&table(&[&session]), "lead"),
             ["lead", "claude", "-", "-"],
             "no declaration renders the dash cell"
+        );
+    }
+
+    #[test]
+    fn a_profile_has_its_own_clipped_column() {
+        let mut session = SessionEntry::new("profile-column", Status::Running);
+        session.agents = vec![
+            AgentEntry {
+                reference: "lead".to_owned(),
+                alias: "fable5".to_owned(),
+                name: "lead".to_owned(),
+                session_id: Some("11111111".to_owned()),
+                alive: Some(true),
+                state: Some("working".to_owned()),
+                reason: None,
+            },
+            AgentEntry {
+                reference: "colead".to_owned(),
+                alias: "gpt6astra-review".to_owned(),
+                name: "colead".to_owned(),
+                session_id: Some("22222222".to_owned()),
+                alive: Some(true),
+                state: Some("working".to_owned()),
+                reason: None,
+            },
+        ];
+
+        let rendered = table(&[&session]);
+        assert_eq!(
+            row_fields(&rendered, "22222222"),
+            ["colead", "gpt6astra-rev…", "22222222", "working"],
+            "the profile is a clipped field between name and id: {rendered}"
+        );
+        let id_offset = |id: &str| {
+            rendered
+                .lines()
+                .find(|line| line.contains(id))
+                .and_then(|line| line.find(id).map(|offset| line[..offset].chars().count()))
+        };
+        assert_eq!(
+            id_offset("11111111"),
+            id_offset("22222222"),
+            "a long profile must not shift the id column: {rendered}"
         );
     }
 
