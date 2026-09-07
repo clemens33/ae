@@ -1,6 +1,13 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [v2026.9.17] - 2026-09-07
+
+### Other
+
+- Add directory-explicit detached launch
+- Guard explicit launch origins before mutation
+- Add automatic upgrade checks
 ## [v2026.9.16] - 2026-09-07
 
 ### Other
