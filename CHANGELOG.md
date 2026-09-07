@@ -1,6 +1,11 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [v2026.9.13] - 2026-09-07
+
+### Other
+
+- Name agents in window entries
 ## [v2026.9.12] - 2026-09-07
 
 ### Other
