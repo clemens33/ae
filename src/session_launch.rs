@@ -598,6 +598,20 @@ enum SeatOverrideRefusal {
     Failed(String),
 }
 
+/// One override resolved through the exact config snapshot preflight read.
+struct ResolvedSeatOverride {
+    agent: String,
+    profile: String,
+    command: String,
+    parsed: crate::launch_cmd::SimpleCommand,
+}
+
+/// Identity plus parsed override commands carried unchanged through the lock.
+struct SeatOverrideSnapshot {
+    cfg: IdentityConfig,
+    overrides: Vec<ResolvedSeatOverride>,
+}
+
 /// The launch-agent names an override may target, in seat order.
 fn override_agents(cfg: &IdentityConfig, plan: &Plan, dir: &Path, resuming: bool) -> Vec<String> {
     if resuming {
@@ -647,8 +661,20 @@ fn override_identity(
         let origin = meta_value(dir, "origin").unwrap_or_default();
         local = config::local_overlay(dir, &origin);
     }
-    config::read_identity(global.as_deref(), local.as_deref())
-        .map_err(|why| SeatOverrideRefusal::Failed(why.to_string()))
+    let read = if resuming {
+        config::read_identity(global.as_deref(), local.as_deref())
+    } else {
+        config::read_identity_with_global_default(
+            global.as_deref(),
+            local.as_deref(),
+            crate::entry::DEFAULT_CONFIG,
+        )
+    };
+    read.map_err(|why| SeatOverrideRefusal::Failed(why.to_string()))
+}
+
+fn running_override_refusal(session: &str) -> String {
+    format!("Error: session '{session}' is running; stop it before changing a seat profile.")
 }
 
 /// Validate every explicit seat profile before the launch's first write.
@@ -658,18 +684,18 @@ fn validate_seat_overrides(
     dir: &Path,
     resuming: bool,
     running: bool,
-) -> Result<(), SeatOverrideRefusal> {
+) -> Result<Option<SeatOverrideSnapshot>, SeatOverrideRefusal> {
     if plan.seat_profiles.is_empty() {
-        return Ok(());
+        return Ok(None);
     }
     if running {
         let session = plan.name.as_deref().unwrap_or_default();
-        return Err(SeatOverrideRefusal::Usage(format!(
-            "Error: session '{session}' is running; stop it before changing a seat profile."
+        return Err(SeatOverrideRefusal::Usage(running_override_refusal(
+            session,
         )));
     }
 
-    let cfg = override_identity(env, dir, resuming)?;
+    let mut cfg = override_identity(env, dir, resuming)?;
     let agents = override_agents(&cfg, plan, dir, resuming);
     let known_agents = if agents.is_empty() {
         "<none>".to_owned()
@@ -693,18 +719,19 @@ fn validate_seat_overrides(
         None
     };
 
+    let mut overrides = Vec::with_capacity(plan.seat_profiles.len());
     for (agent, profile) in &plan.seat_profiles {
         if !agents.iter().any(|known| known == agent) {
             return Err(SeatOverrideRefusal::Usage(format!(
                 "Error: unknown launch agent '{agent}' in --seat. Known agents: {known_agents}."
             )));
         }
-        let Some(command) = cfg.profile(profile) else {
+        let Some(command) = cfg.profile(profile).map(str::to_owned) else {
             return Err(SeatOverrideRefusal::Usage(format!(
                 "Error: unknown profile '{profile}' in --seat. Known profiles: {known_profiles}."
             )));
         };
-        let parsed = crate::launch_cmd::lex_simple_command(command).map_err(|why| {
+        let parsed = crate::launch_cmd::lex_simple_command(&command).map_err(|why| {
             SeatOverrideRefusal::Failed(format!(
                 "Error: [profiles] {profile} (seat '{agent}'): the launch command must be one simple command — it has {why}."
             ))
@@ -725,46 +752,45 @@ fn validate_seat_overrides(
                 )));
             }
         }
+        overrides.push(ResolvedSeatOverride {
+            agent: agent.clone(),
+            profile: profile.clone(),
+            command,
+            parsed,
+        });
     }
-    Ok(())
+    for replacement in &overrides {
+        if let Some((_, bound)) = cfg
+            .roster
+            .iter_mut()
+            .find(|(name, _)| name == &replacement.agent)
+        {
+            bound.clone_from(&replacement.profile);
+        }
+    }
+    Ok(Some(SeatOverrideSnapshot { cfg, overrides }))
 }
 
 /// Replace one resolved seat's profile and every command-derived field.
-fn reprofile_seat(seat: &mut Seat, profile: &str, command: &str) -> Result<(), String> {
-    let parsed = crate::launch_cmd::lex_simple_command(command).map_err(|why| {
-        format!(
-            "Error: [profiles] {profile} (seat '{}'): the launch command must be one simple command — it has {why}.",
-            seat.name
-        )
-    })?;
-    let tool = parsed.tool();
-    profile.clone_into(&mut seat.profile);
-    command.clone_into(&mut seat.command);
-    seat.assign_span = parsed.assign_span;
-    seat.argv_span = parsed.argv_span;
-    seat.binary = parsed.binary;
-    seat.tool = tool;
-    Ok(())
+fn reprofile_seat(seat: &mut Seat, replacement: &ResolvedSeatOverride) {
+    replacement.profile.clone_into(&mut seat.profile);
+    replacement.command.clone_into(&mut seat.command);
+    seat.assign_span.clone_from(&replacement.parsed.assign_span);
+    seat.argv_span.clone_from(&replacement.parsed.argv_span);
+    seat.binary.clone_from(&replacement.parsed.binary);
+    seat.tool = replacement.parsed.tool();
 }
 
 /// Apply already-preflighted overrides to final, possibly restored seats.
-fn apply_seat_overrides(
-    cfg: &IdentityConfig,
-    plan: &Plan,
-    seats: &mut [Seat],
-) -> Result<(), String> {
-    for (agent, profile) in &plan.seat_profiles {
-        let Some(seat) = seats.iter_mut().find(|seat| seat.name == *agent) else {
+fn apply_seat_overrides(snapshot: &SeatOverrideSnapshot, seats: &mut [Seat]) -> Result<(), String> {
+    for replacement in &snapshot.overrides {
+        let Some(seat) = seats.iter_mut().find(|seat| seat.name == replacement.agent) else {
             return Err(format!(
-                "Error: launch agent '{agent}' disappeared after preflight."
+                "Error: launch agent '{}' disappeared after preflight.",
+                replacement.agent
             ));
         };
-        let Some(command) = cfg.profile(profile) else {
-            return Err(format!(
-                "Error: profile '{profile}' disappeared after preflight."
-            ));
-        };
-        reprofile_seat(seat, profile, command)?;
+        reprofile_seat(seat, replacement);
     }
     Ok(())
 }
@@ -894,19 +920,18 @@ fn launch(
         write!(err, "{refusal}")?;
         return Ok(crate::tmux_floor::EXIT_REFUSED);
     }
-    if let Err(refusal) = validate_seat_overrides(env, plan, &dir, meta_present, running_preflight)
-    {
-        match refusal {
-            SeatOverrideRefusal::Usage(line) => {
+    let seat_overrides =
+        match validate_seat_overrides(env, plan, &dir, meta_present, running_preflight) {
+            Ok(snapshot) => snapshot,
+            Err(SeatOverrideRefusal::Usage(line)) => {
                 writeln!(err, "{line}")?;
                 return Ok(EXIT_USAGE);
             }
-            SeatOverrideRefusal::Failed(line) => {
+            Err(SeatOverrideRefusal::Failed(line)) => {
                 writeln!(err, "{line}")?;
                 return Ok(EXIT_FAILED);
             }
-        }
-    }
+        };
 
     // A resume's liveness decision and any legacy backfill share the lock
     // stop/end use. The preflight above exists only to place the floor before
@@ -965,6 +990,10 @@ fn launch(
                 let recorded = ServerId::Selected(selector);
                 match transport::verify_session_absent(&recorded, &session) {
                     tmux::StopProbe::Present => {
+                        if !plan.seat_profiles.is_empty() {
+                            writeln!(err, "{}", running_override_refusal(&session))?;
+                            return Ok(EXIT_USAGE);
+                        }
                         set_env_server(&mut env, &recorded);
                         running_server = Some(recorded);
                     }
@@ -1006,6 +1035,10 @@ fn launch(
                             )?;
                             return Ok(EXIT_FAILED);
                         };
+                        if !plan.seat_profiles.is_empty() {
+                            writeln!(err, "{}", running_override_refusal(&session))?;
+                            return Ok(EXIT_USAGE);
+                        }
                         if let Err(why) = meta::backfill_server_socket(&dir, &socket) {
                             writeln!(
                                 err,
@@ -1078,7 +1111,7 @@ fn launch(
         .local
         .as_deref()
         .is_some_and(|local| crate::orchestrator::is_seat_overlay(local, &env.home));
-    if orchestrator_seat {
+    if orchestrator_seat && seat_overrides.is_none() {
         let (_, has_profiles, has_roster) =
             config::read_workspace_keys_with_identity_sections(None, env.local.as_deref(), &[]);
         if (has_profiles || has_roster)
@@ -1208,18 +1241,22 @@ fn launch(
     }
 
     // ---- config, roster, workspace values ----
-    let mut cfg: IdentityConfig = match if orchestrator_seat {
-        config::read_identity(env.global.as_deref(), None)
+    let mut cfg: IdentityConfig = if let Some(snapshot) = seat_overrides.as_ref() {
+        snapshot.cfg.clone()
     } else {
-        config::read_identity(env.global.as_deref(), env.local.as_deref())
-    } {
-        Ok(cfg) => cfg,
-        Err(why) => {
-            writeln!(err, "{why}")?;
-            return Ok(EXIT_FAILED);
+        match if orchestrator_seat {
+            config::read_identity(env.global.as_deref(), None)
+        } else {
+            config::read_identity(env.global.as_deref(), env.local.as_deref())
+        } {
+            Ok(cfg) => cfg,
+            Err(why) => {
+                writeln!(err, "{why}")?;
+                return Ok(EXIT_FAILED);
+            }
         }
     };
-    if orchestrator_seat {
+    if orchestrator_seat && seat_overrides.is_none() {
         // Identity is global-only, while the dedicated seat still overlays its
         // workspace choices. Read those two keys without parsing legacy local
         // profiles or roster rows.
@@ -1273,14 +1310,6 @@ fn launch(
 
     if let Some(workers) = &plan.workers {
         cfg.workers = Some(workers.clone());
-    }
-    // A command-line choice replaces this launch's roster binding only. The
-    // config file remains untouched, while `launch_plan` still owns command
-    // validation and all ordinary roster invariants.
-    for (agent, profile) in &plan.seat_profiles {
-        if let Some((_, bound)) = cfg.roster.iter_mut().find(|(name, _)| name == agent) {
-            bound.clone_from(profile);
-        }
     }
     let mut seats = match config::launch_plan(&cfg, plan.main.as_deref()) {
         Ok(resolved) => resolved.seats,
@@ -1403,7 +1432,9 @@ fn launch(
             }
         }
     }
-    if let Err(line) = apply_seat_overrides(&cfg, plan, &mut seats) {
+    if let Some(snapshot) = seat_overrides.as_ref()
+        && let Err(line) = apply_seat_overrides(snapshot, &mut seats)
+    {
         writeln!(err, "{line}")?;
         return Ok(EXIT_FAILED);
     }
@@ -1455,6 +1486,7 @@ fn launch(
         &mut shape,
         &seats,
         &cfg,
+        seat_overrides.as_ref(),
         meta_agent,
         sweep_sec.as_deref(),
         parent.as_ref(),
@@ -1478,6 +1510,7 @@ struct Launching {
     session_id: String,
     launch_id: String,
     pane: String,
+    command_snapshot: Option<String>,
 }
 
 #[allow(
@@ -1490,6 +1523,7 @@ fn build(
     shape: &mut Session,
     seats: &[Seat],
     cfg: &IdentityConfig,
+    seat_overrides: Option<&SeatOverrideSnapshot>,
     meta_agent: bool,
     sweep_sec: Option<&str>,
     parent: Option<&FromProof>,
@@ -1639,6 +1673,7 @@ fn build(
             session_id,
             launch_id,
             pane: panes[index].clone(),
+            command_snapshot: seat_overrides.map(|_| seat.command.clone()),
         });
     }
 
@@ -1679,6 +1714,7 @@ fn build(
                 session_id: entry.harness_session,
                 launch_id,
                 pane,
+                command_snapshot: None,
             });
         }
         // Rebalance only the SPLIT layouts: a spawned agent gets its own window,
@@ -2279,11 +2315,11 @@ fn start_agent(
         crate::lifecycle::path_exists(&crate::run::started_marker(dir, &agent.slot));
     // Fire and forget: the reader here IS a shell, and an unconfirmed submit
     // must not abort a launch that may well have taken.
-    let _ = deliver::submit_shell_text(
-        server,
-        &agent.pane,
-        &crate::run::pane_command(core, dir, &agent.slot),
+    let command = agent.command_snapshot.as_deref().map_or_else(
+        || crate::run::pane_command(core, dir, &agent.slot),
+        |snapshot| crate::run::pane_command_with_snapshot(core, dir, &agent.slot, snapshot),
     );
+    let _ = deliver::submit_shell_text(server, &agent.pane, &command);
     wait_for_agent_start(server, &agent.pane, agent.tool);
     if agent.tool.adapter().capture.is_needed() {
         let _ = meta::rewrite(

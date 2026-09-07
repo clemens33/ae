@@ -763,13 +763,23 @@ fn a_seat_that_cannot_be_launched_refuses_instead_of_execing() {
 }
 
 #[test]
-fn the_pane_command_is_the_core_this_entry_and_the_two_operands() {
+fn pane_commands_quote_their_operands_and_an_optional_snapshot() {
     let line = ae::run::pane_command(
         Path::new("/opt/ae 1/ae-core"),
         Path::new("/s/tg1"),
         "spawned.0",
     );
     assert_eq!(line, "'/opt/ae 1/ae-core' _run '/s/tg1' 'spawned.0'");
+    let snapshot = ae::run::pane_command_with_snapshot(
+        Path::new("/opt/ae 1/ae-core"),
+        Path::new("/s/tg1"),
+        "spawned.0",
+        "claude --model 'fable 5'",
+    );
+    assert_eq!(
+        snapshot,
+        "'/opt/ae 1/ae-core' _run --command-snapshot 'claude --model '\\''fable 5'\\''' '/s/tg1' 'spawned.0'"
+    );
 }
 
 // ---- the environment prefix (colead Z2 BLOCKER-1) --------------------------

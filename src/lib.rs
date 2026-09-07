@@ -1771,7 +1771,12 @@ pub fn run_with(
         cli::Request::ShimsRender { dir, tail } => doctor::shims_render(dir, tail, err)?,
         cli::Request::Install { tail } => install::run(tail, out, err)?,
         cli::Request::Autoupgrade { tail } => autoupgrade::run(tail),
-        cli::Request::Run { dir, slot, print } => run::run(dir, slot, *print, out, err)?,
+        cli::Request::Run {
+            dir,
+            slot,
+            print,
+            command_snapshot,
+        } => run::run(dir, slot, *print, command_snapshot.as_deref(), out, err)?,
         cli::Request::Roster { dir, tail } => identity::roster(dir, tail, out, err)?,
         cli::Request::ManifestRender { dir, tail } => render::run_manifest(dir, tail, out, err)?,
         cli::Request::Context { dir, tail } => render::run_context(dir, tail, out, err)?,

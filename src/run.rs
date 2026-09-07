@@ -116,6 +116,19 @@ pub fn pane_command(core: &Path, dir: &Path, slot: &str) -> String {
     )
 }
 
+/// The line a re-paired pane runs, carrying the command preflight validated.
+#[must_use]
+pub fn pane_command_with_snapshot(core: &Path, dir: &Path, slot: &str, command: &str) -> String {
+    format!(
+        "{} {} --command-snapshot {} {} {}",
+        launch::shell_quote(&core.display().to_string()),
+        crate::cli::RUN,
+        launch::shell_quote(command),
+        launch::shell_quote(&dir.display().to_string()),
+        launch::shell_quote(slot)
+    )
+}
+
 /// The exit code for a `_run` that could not build or start its agent.
 const EXIT_FAILED: u8 = 1;
 
@@ -143,10 +156,11 @@ pub fn run(
     dir: &Path,
     slot: &str,
     print: bool,
+    command_snapshot: Option<&str>,
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> crate::Result<u8> {
-    let plan = match build(dir, slot) {
+    let plan = match build_with_snapshot(dir, slot, command_snapshot) {
         Ok(plan) => plan,
         Err(why) => {
             writeln!(err, "ae: {why}")?;
@@ -243,7 +257,15 @@ fn exec(plan: &Plan) -> std::io::Error {
 /// seat, a profile this machine does not configure, or a command line the
 /// direct exec cannot run.
 pub fn build(dir: &Path, slot: &str) -> Result<Plan, String> {
-    let seat = read_seat(dir, slot)?;
+    build_with_snapshot(dir, slot, None)
+}
+
+fn build_with_snapshot(
+    dir: &Path,
+    slot: &str,
+    command_snapshot: Option<&str>,
+) -> Result<Plan, String> {
+    let seat = read_seat(dir, slot, command_snapshot)?;
     let mode = if crate::lifecycle::path_exists(&started_marker(dir, slot)) {
         Mode::Resume
     } else {
@@ -480,7 +502,7 @@ struct Seat {
 }
 
 /// Read the seat `slot` names, refusing anything that is not launchable.
-fn read_seat(dir: &Path, slot: &str) -> Result<Seat, String> {
+fn read_seat(dir: &Path, slot: &str, command_snapshot: Option<&str>) -> Result<Seat, String> {
     if !crate::lifecycle::dir_exists(dir) {
         return Err(format!("no session state at {}", dir.display()));
     }
@@ -510,30 +532,47 @@ fn read_seat(dir: &Path, slot: &str) -> Result<Seat, String> {
             .and_then(Path::parent)
             .is_some_and(|home| crate::orchestrator::is_seat_overlay(path, home))
     });
-    let cfg = crate::config::read_identity(
-        (!global.is_empty()).then(|| Path::new(&global)),
-        (!orchestrator_seat).then_some(local.as_deref()).flatten(),
-    )
-    .map_err(|why| why.to_string())?;
-    let Some(command) = cfg.profile(&profile).filter(|cmd| !cmd.trim().is_empty()) else {
-        return Err(format!(
-            "profile '{profile}' is not configured on this machine — '{name}' cannot be launched"
-        ));
+    let configured;
+    let command = if let Some(command) = command_snapshot {
+        command
+    } else {
+        let cfg = crate::config::read_identity(
+            (!global.is_empty()).then(|| Path::new(&global)),
+            (!orchestrator_seat).then_some(local.as_deref()).flatten(),
+        )
+        .map_err(|why| why.to_string())?;
+        let Some(command) = cfg.profile(&profile).filter(|cmd| !cmd.trim().is_empty()) else {
+            return Err(format!(
+                "profile '{profile}' is not configured on this machine — '{name}' cannot be launched"
+            ));
+        };
+        configured = command.to_owned();
+        &configured
     };
-    // The profile is read FRESH here, so the launch-time validation of it is a
-    // fact about a file that may since have changed. Re-ask the SAME validator:
-    // a profile edited after its session started otherwise reaches the `exec`
-    // unvalidated.
-    if let Err(why) = crate::launch_cmd::lex_simple_command(command) {
-        return Err(format!(
+    // An ordinary/manual `_run` reads the profile fresh, so it re-asks the same
+    // validator. A launch-provided snapshot already passed that validator, but
+    // validating the transported bytes again keeps this entry safe on its own.
+    let parsed = crate::launch_cmd::lex_simple_command(command).map_err(|why| {
+        format!(
             "profile '{profile}' is not one simple command — {why} — '{name}' cannot be launched"
-        ));
+        )
+    })?;
+    let tool = parsed.tool();
+    if command_snapshot.is_some() {
+        let recorded = ToolKind::from_binary_name(&value(&format!("agent_bin.{slot}")));
+        if tool != recorded {
+            return Err(format!(
+                "profile '{profile}' command snapshot changed tool kind from {} to {} — '{name}' cannot be launched",
+                recorded.as_str(),
+                tool.as_str()
+            ));
+        }
     }
     Ok(Seat {
         session: value("session"),
         work_dir: value("work_dir"),
         config_files,
-        tool: ToolKind::from_cmd(command),
+        tool,
         command: command.to_owned(),
         harness_session: value(&format!("harness_session.{slot}")),
         launch_id: value(&format!("launch_id.{slot}")),

@@ -323,6 +323,39 @@ pub fn read_identity(
     Ok(cfg)
 }
 
+/// Read identity like [`read_identity`], but parse `global_default` when the
+/// selected global file does not exist yet. A first launch uses this to
+/// validate against the exact config text it will seed after preflight.
+///
+/// # Errors
+///
+/// The same errors as [`read_identity`]. An existing but unreadable global
+/// file is still refused; only `NotFound` selects the in-memory default.
+pub fn read_identity_with_global_default(
+    global: Option<&Path>,
+    local: Option<&Path>,
+    global_default: &str,
+) -> Result<IdentityConfig, ConfigError> {
+    let mut cfg = IdentityConfig::default();
+    if let Some(file) = global {
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "a door: reads the selected INI config or uses the exact first-run snapshot — see clippy.toml"
+        )]
+        match std::fs::read_to_string(file) {
+            Ok(text) => overlay_identity_text(file, &text, &mut cfg)?,
+            Err(why) if why.kind() == std::io::ErrorKind::NotFound => {
+                overlay_identity_text(file, global_default, &mut cfg)?;
+            }
+            Err(_) => return Err(ConfigError::Unreadable(file.to_owned())),
+        }
+    }
+    if let Some(file) = local {
+        overlay_identity(file, &mut cfg)?;
+    }
+    Ok(cfg)
+}
+
 /// The three identity sections.
 const IDENTITY_SECTIONS: [&str; 3] = ["profiles", "roster", "workspace"];
 
@@ -333,6 +366,14 @@ fn overlay_identity(file: &Path, cfg: &mut IdentityConfig) -> Result<(), ConfigE
     )]
     let read = std::fs::read_to_string(file);
     let text = read.map_err(|_| ConfigError::Unreadable(file.to_owned()))?;
+    overlay_identity_text(file, &text, cfg)
+}
+
+fn overlay_identity_text(
+    file: &Path,
+    text: &str,
+    cfg: &mut IdentityConfig,
+) -> Result<(), ConfigError> {
     let mut section = String::new();
     let mut seen: Vec<(String, String)> = Vec::new();
     for (index, raw) in text.lines().enumerate() {
@@ -1073,6 +1114,29 @@ mod tests {
         assert_eq!(plan.seats[1].name, "colead");
         assert_eq!(plan.seats[1].tool, crate::tool::ToolKind::Codex);
         assert!(plan.seats[1].command.starts_with("codex --yolo"));
+    }
+
+    #[test]
+    fn an_absent_global_can_be_parsed_from_a_default_without_writing_it() {
+        let root = NamedDir::new("identity-default");
+        let missing = root.path().join("config");
+        let cfg = read_identity_with_global_default(
+            Some(&missing),
+            None,
+            "[profiles]\nfable = \"claude\"\n[roster]\nlead = fable\n[workspace]\nmain = lead\n",
+        )
+        .expect("the embedded default parses");
+        assert_eq!(cfg.roster_profile("lead"), Some("fable"));
+        assert_eq!(cfg.profile("fable"), Some("claude"));
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "the unit fixture proves its absent input stayed absent"
+        )]
+        let missing_stayed_absent = !missing.exists();
+        assert!(
+            missing_stayed_absent,
+            "parsing the fallback has zero effects"
+        );
     }
 
     #[test]

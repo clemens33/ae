@@ -199,7 +199,7 @@ pub const RENAME: &str = "rename";
 /// The launch prelude's hard-dependency gate: `_check-deps [--bash-major <n>]`.
 pub const CHECK_DEPS: &str = "_check-deps";
 
-/// The pane's own command: `_run [--print] <session-dir> <slot>`.
+/// The pane's own command: `_run [--print] [--command-snapshot <cmd>] <session-dir> <slot>`.
 pub const RUN: &str = "_run";
 
 /// The session helper set, republished: `_shims-render <session-dir>`.
@@ -639,8 +639,8 @@ pub enum Request {
         /// Everything after the subcommand, as typed.
         tail: Vec<String>,
     },
-    /// `_run [--print] <session-dir> <slot>` — compose one seat's tool command
-    /// and become it.
+    /// `_run [--print] [--command-snapshot <cmd>] <session-dir> <slot>` —
+    /// compose one seat's tool command and become it.
     Run {
         /// The session directory.
         dir: PathBuf,
@@ -648,6 +648,8 @@ pub enum Request {
         slot: String,
         /// Report the composed plan instead of running it.
         print: bool,
+        /// A launch-preflighted command that must not be re-read from config.
+        command_snapshot: Option<String>,
     },
     /// `_install --from <bundle-dir>` — publish a verified bundle.
     Install {
@@ -1248,15 +1250,23 @@ impl Request {
         }
     }
 
-    /// `_run [--print] <session-dir> <slot>`.
+    /// `_run [--print] [--command-snapshot <cmd>] <session-dir> <slot>`.
     fn parse_run(tail: &[String]) -> Self {
         let mut print = false;
+        let mut command_snapshot = None;
         let mut operands: Vec<&String> = Vec::new();
-        for word in tail {
-            if word == "--print" {
-                print = true;
-            } else {
-                operands.push(word);
+        let mut words = tail.iter();
+        while let Some(word) = words.next() {
+            match word.as_str() {
+                "--print" => print = true,
+                "--command-snapshot" if command_snapshot.is_none() => {
+                    let Some(command) = words.next() else {
+                        return Self::MissingOperand(RUN);
+                    };
+                    command_snapshot = Some(command.clone());
+                }
+                "--command-snapshot" => return Self::UsageError(word.clone()),
+                _ => operands.push(word),
             }
         }
         match operands.as_slice() {
@@ -1264,6 +1274,7 @@ impl Request {
                 dir: PathBuf::from(*dir),
                 slot: (*slot).clone(),
                 print,
+                command_snapshot,
             },
             [_, _, extra, ..] => Self::UsageError((*extra).clone()),
             _ => Self::MissingOperand(RUN),
@@ -1481,7 +1492,7 @@ mod tests {
         ARCHIVE_PREVIEW, ASK, COMPACT_ARCHIVE, COMPACT_CANCEL, COMPACT_FIND_OUTSTANDING,
         COMPACT_FREEZE, COMPACT_MEMO_BASELINE, COMPACT_REVALIDATE, COMPACT_TEARDOWN, COMPACT_WAIT,
         DEFAULT_REVALIDATE_WHEN, END_NONLOCAL_TEARDOWN, EVENTS_TAIL, GOAL, INTERRUPT, MEMO,
-        NET_PROBE, RELAY, REPLY, REQUESTS, REVIEW, Request, SEND, STATE, TELEGRAM_RUN,
+        NET_PROBE, RELAY, REPLY, REQUESTS, REVIEW, RUN, Request, SEND, STATE, TELEGRAM_RUN,
         WATCHDOG_RUN,
     };
     use crate::filters::{ListArgs, Scope};
@@ -1504,6 +1515,42 @@ mod tests {
 
     fn argv(words: &[&str]) -> Vec<String> {
         words.iter().map(|word| (*word).to_owned()).collect()
+    }
+
+    #[test]
+    fn run_carries_one_command_snapshot_without_losing_its_operands() {
+        let Request::Run {
+            dir,
+            slot,
+            print,
+            command_snapshot,
+        } = Request::parse(&argv(&[
+            RUN,
+            "--print",
+            "--command-snapshot",
+            "claude --model fable",
+            "/sessions/demo",
+            "main",
+        ]))
+        else {
+            panic!("the snapshot run parses");
+        };
+        assert_eq!(dir, std::path::Path::new("/sessions/demo"));
+        assert_eq!(slot, "main");
+        assert!(print);
+        assert_eq!(command_snapshot.as_deref(), Some("claude --model fable"));
+        assert_eq!(
+            Request::parse(&argv(&[
+                RUN,
+                "--command-snapshot",
+                "one",
+                "--command-snapshot",
+                "two",
+                "/sessions/demo",
+                "main",
+            ])),
+            Request::UsageError("--command-snapshot".to_owned())
+        );
     }
 
     #[test]

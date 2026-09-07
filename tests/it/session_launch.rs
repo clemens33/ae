@@ -15,9 +15,10 @@
 use std::fmt::Write as _;
 use std::os::unix::fs::{MetadataExt as _, PermissionsExt};
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use std::time::Duration;
 
-use super::cli::{OwnedScratch, ae, git_in, helper};
+use super::cli::{OwnedChild, OwnedScratch, Runner, ae, git_in, helper};
 use super::phase2::run_tmux;
 
 /// A TUI-shaped fake agent: it records its argv, then sits there drawing the
@@ -56,6 +57,7 @@ struct Rig {
     home: PathBuf,
     project: PathBuf,
     config: PathBuf,
+    bin: PathBuf,
     launched: PathBuf,
 }
 
@@ -115,6 +117,7 @@ impl Rig {
             home,
             project,
             config,
+            bin: bin_dir,
             launched,
         }
     }
@@ -162,7 +165,20 @@ impl Rig {
         value: &str,
         tail: &[&str],
     ) -> (Option<i32>, String, String) {
-        let out = ae()
+        let out = self
+            .launch_command_with_server(kind, value, tail)
+            .output()
+            .unwrap_or_else(|why| panic!("the ae binary should run: {why}"));
+        (
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    }
+
+    fn launch_command_with_server(&self, kind: &str, value: &str, tail: &[&str]) -> Runner {
+        let mut command = ae();
+        command
             .env_remove("TMUX")
             .env_remove("TMUX_PANE")
             // THE RIG'S OWN HOME, not the runner's per-call one: `launch` and
@@ -185,14 +201,19 @@ impl Rig {
                 "--no-attach",
                 "--",
             ])
-            .args(tail)
-            .output()
-            .unwrap_or_else(|why| panic!("the ae binary should run: {why}"));
-        (
-            out.status.code(),
-            String::from_utf8_lossy(&out.stdout).into_owned(),
-            String::from_utf8_lossy(&out.stderr).into_owned(),
-        )
+            .args(tail);
+        command
+    }
+
+    fn launch_child(&self, tail: &[&str]) -> OwnedChild {
+        let mut command =
+            self.launch_command_with_server("socket", &self.sock.display().to_string(), tail);
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap_or_else(|why| panic!("the ae binary should start: {why}"))
     }
 
     /// Launch with attach enabled and an optional real caller pane/socket.
@@ -1089,6 +1110,62 @@ fn seat_profile_flags_refuse_unknown_words_before_session_state_is_written() {
 }
 
 #[test]
+fn a_fresh_home_validates_seat_profiles_against_the_default_before_seeding_it() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::new("seat-fresh-default", &["claude", "codex"], None);
+    assert!(
+        std::fs::remove_file(&rig.config).is_ok(),
+        "config starts absent"
+    );
+
+    let (code, stdout, stderr) = rig.launch(&["--local", "lnfreshbad", "--lead", "missing"]);
+    assert_eq!(code, Some(2), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        stderr.contains("unknown profile 'missing'")
+            && stderr.contains("Known profiles:")
+            && stderr.contains("fable5"),
+        "the embedded defaults decide the refusal: {stderr}"
+    );
+    assert!(!rig.home.exists(), "an invalid override writes no state");
+    assert!(!rig.config.exists(), "an invalid override seeds no config");
+
+    let mut command = rig.launch_command_with_server(
+        "socket",
+        &rig.sock.display().to_string(),
+        &["--local", "lnfreshgood", "--lead", "fable5"],
+    );
+    command.env(
+        "PATH",
+        format!(
+            "{}:{}",
+            rig.bin.display(),
+            std::env::var("PATH").unwrap_or_default()
+        ),
+    );
+    let output = command
+        .output()
+        .unwrap_or_else(|why| panic!("the fresh launch should run: {why}"));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stdout: {stdout}\nstderr: {stderr}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&rig.config).unwrap_or_default(),
+        ae::entry::DEFAULT_CONFIG,
+        "validation and seeding use the same snapshot"
+    );
+    assert!(
+        rig.meta("lnfreshgood").contains("profile.main=fable5\n"),
+        "the validated default override reaches meta"
+    );
+}
+
+#[test]
 fn a_seat_profile_override_is_persisted_and_restored() {
     if skip() {
         return;
@@ -1224,6 +1301,134 @@ fn a_running_session_refuses_seat_profile_flags_and_tells_the_user_to_stop() {
     assert!(
         rig.sessions().contains(&"lnseatrunning".to_owned()),
         "the running session remains"
+    );
+}
+
+#[test]
+fn concurrent_resume_loser_refuses_instead_of_dropping_its_override() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::new("seat-concurrent", &["claude"], None);
+    let binary = rig.scratch.join("bin/claude");
+    add_profile(
+        &rig,
+        "otherclaude",
+        &format!("{} --model other", binary.display()),
+    );
+    let (code, stdout, stderr) = rig.launch(&["--local", "lnseatconcurrent"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(!rig.launch_argv().is_empty(), "the first agent started");
+    assert!(
+        rig.tmux(&["kill-session", "-t", "=lnseatconcurrent"]).0,
+        "the session stops"
+    );
+
+    let lock_path = rig
+        .home
+        .join("sessions")
+        .join(".lifecycle.lnseatconcurrent.lock");
+    let held = std::fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(&lock_path)
+        .expect("the lifecycle lock opens");
+    held.try_lock()
+        .expect("the fixture holds the lifecycle lock");
+    let mut first = rig.launch_child(&["--local", "lnseatconcurrent", "--lead", "otherclaude"]);
+    let mut second = rig.launch_child(&["--local", "lnseatconcurrent", "--lead", "otherclaude"]);
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(
+        matches!(first.try_wait(), Ok(None)) && matches!(second.try_wait(), Ok(None)),
+        "both resumes wait behind the fixture lock"
+    );
+    drop(held);
+
+    let outputs = [first, second].map(|child| {
+        child
+            .wait_with_output()
+            .unwrap_or_else(|why| panic!("the resume should finish: {why}"))
+    });
+    let mut codes = outputs
+        .iter()
+        .map(|output| output.status.code())
+        .collect::<Vec<_>>();
+    codes.sort_unstable();
+    assert_eq!(codes, [Some(0), Some(2)], "one resume wins: {codes:?}");
+    let loser = outputs
+        .iter()
+        .find(|output| output.status.code() == Some(2))
+        .expect("one loser");
+    let stderr = String::from_utf8_lossy(&loser.stderr);
+    assert!(
+        stderr.contains(
+            "session 'lnseatconcurrent' is running; stop it before changing a seat profile"
+        ),
+        "the loser refuses the override explicitly: {stderr}"
+    );
+}
+
+#[test]
+fn a_config_swap_while_resume_waits_cannot_change_the_preflighted_command() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::new("seat-config-swap", &["claude", "codex"], None);
+    let claude = rig.scratch.join("bin/claude");
+    let codex = rig.scratch.join("bin/codex");
+    let old_command = format!("{} --model old", claude.display());
+    let swapped_command = format!("{} --model swapped", codex.display());
+    add_profile(&rig, "repair", &old_command);
+    let (code, stdout, stderr) = rig.launch(&["--local", "lnseatcfgswap"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(!rig.launch_argv().is_empty(), "the first agent started");
+    assert!(
+        rig.tmux(&["kill-session", "-t", "=lnseatcfgswap"]).0,
+        "the session stops"
+    );
+    let _ = std::fs::remove_file(&rig.launched);
+
+    let lock_path = rig
+        .home
+        .join("sessions")
+        .join(".lifecycle.lnseatcfgswap.lock");
+    let held = std::fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(&lock_path)
+        .expect("the lifecycle lock opens");
+    held.try_lock()
+        .expect("the fixture holds the lifecycle lock");
+    let mut child = rig.launch_child(&["--local", "lnseatcfgswap", "--lead", "repair"]);
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(
+        matches!(child.try_wait(), Ok(None)),
+        "the resume waits after preflight"
+    );
+    let config = std::fs::read_to_string(&rig.config).unwrap_or_default();
+    assert!(
+        std::fs::write(&rig.config, config.replace(&old_command, &swapped_command)).is_ok(),
+        "the config swaps while the launch waits"
+    );
+    drop(held);
+
+    let output = child
+        .wait_with_output()
+        .unwrap_or_else(|why| panic!("the resume should finish: {why}"));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stdout: {stdout}\nstderr: {stderr}"
+    );
+    let launched = rig.launch_argv();
+    assert!(launched.contains("--model old"), "{launched}");
+    assert!(!launched.contains("swapped"), "{launched}");
+    assert!(
+        rig.meta("lnseatcfgswap")
+            .contains("agent_bin.main=claude\n"),
+        "the validated tool kind reaches meta"
     );
 }
 
