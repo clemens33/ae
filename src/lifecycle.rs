@@ -260,13 +260,7 @@ pub(crate) fn run_stop(
         }
     }
     let caller_server = crate::doors::caller_server();
-    let caller_session = if pane.is_empty() {
-        None
-    } else {
-        caller_server.as_ref().and_then(|server| {
-            crate::transport::observe_pane_owner(server, &pane).map(|owner| owner.session)
-        })
-    };
+    let caller_session = recorded_caller_session(root, caller_server.as_ref(), &pane);
     if target.is_empty() {
         if let Some(own) = &caller_session {
             target.clone_from(own);
@@ -488,6 +482,32 @@ pub(super) fn recorded_server(root: &Path, name: &str) -> Option<ServerId> {
         ServerSelector::Positive(selector) => Some(ServerId::Selected(selector)),
         ServerSelector::Missing | ServerSelector::Ambiguous => None,
     }
+}
+
+/// The caller's session only when its recorded server is the actual caller.
+///
+/// Pane ids and session names repeat across tmux servers. Observing a pane on
+/// the server `$TMUX` names establishes its name, but that name becomes an ae
+/// self-target only after the session's durable selector answers with the same
+/// socket identity.
+pub(super) fn recorded_caller_session(
+    root: &Path,
+    caller_server: Option<&ServerId>,
+    pane: &str,
+) -> Option<String> {
+    let caller_server = caller_server?;
+    if pane.is_empty() {
+        return None;
+    }
+    let owner = transport::observe_pane_owner(caller_server, pane)?;
+    if !name_is_usable(root, &owner.session) {
+        return None;
+    }
+    let recorded = recorded_server(root, &owner.session)?;
+    let mut sockets = crate::SocketPaths::asking(transport::observe_socket_path);
+    sockets
+        .proven_same(caller_server, &recorded)
+        .then_some(owner.session)
 }
 
 /// `nohup <this binary> _stop --supervise <name>` — the ONE shape this module

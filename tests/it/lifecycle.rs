@@ -101,8 +101,12 @@ impl Rig {
     }
 
     fn tmux(&self, tail: &[&str]) -> (bool, String) {
+        self.tmux_at(&self.sock, tail)
+    }
+
+    fn tmux_at(&self, socket: &Path, tail: &[&str]) -> (bool, String) {
         let mut args = ae::tmux::server_args(&ae::inventory::ServerId::Selected(
-            ae::meta::Selector::Socket(self.sock.clone()),
+            ae::meta::Selector::Socket(socket.to_path_buf()),
         ));
         args.extend(tail.iter().map(|arg| (*arg).to_owned()));
         run_tmux(&args, &self.home)
@@ -110,21 +114,25 @@ impl Rig {
 
     /// Run one core subcommand under this rig's `AE_HOME`, bounded.
     fn run(&self, args: &[&str]) -> (Option<i32>, String, String) {
-        self.run_as(args, false)
+        self.run_from(args, None)
     }
 
     /// Run the human-facing binary as if it were invoked in this rig's pane.
     fn run_inside(&self, args: &[&str]) -> (Option<i32>, String, String) {
-        self.run_as(args, true)
+        self.run_from(args, Some((&self.sock, &self.pane)))
     }
 
-    fn run_as(&self, args: &[&str], inside: bool) -> (Option<i32>, String, String) {
+    /// Run as a caller pane on an explicitly chosen server.
+    fn run_from(
+        &self,
+        args: &[&str],
+        caller: Option<(&Path, &str)>,
+    ) -> (Option<i32>, String, String) {
         let mut cmd = ae();
         cmd.env("AE_HOME", &self.home);
-        if inside {
-            let (_, pid) = self.tmux(&["display-message", "-p", "#{pid}"]);
-            cmd.env("TMUX", format!("{},{},0", self.sock.display(), pid.trim()));
-            cmd.env("TMUX_PANE", &self.pane);
+        if let Some((socket, pane)) = caller {
+            cmd.env("TMUX", format!("{},fixture,0", socket.display()));
+            cmd.env("TMUX_PANE", pane);
             cmd.env("AE_TMUX_SERVER_KIND", "socket");
             cmd.env("AE_TMUX_SERVER", &self.sock);
         } else {
@@ -200,6 +208,31 @@ impl Rig {
     fn session_is_live(&self) -> bool {
         let (_, listed) = self.tmux(&["list-sessions", "-F", "#{session_name}"]);
         listed.lines().any(|line| line == self.name)
+    }
+
+    /// A non-ae session with the same name on another isolated server.
+    fn foreign_namesake(&self, tag: &str) -> (PathBuf, String) {
+        let socket = self.home.join(format!("foreign-{tag}.sock"));
+        let (created, panes) = self.tmux_at(
+            &socket,
+            &[
+                "-f",
+                "/dev/null",
+                "new-session",
+                "-d",
+                "-P",
+                "-F",
+                "#{pane_id}",
+                "-s",
+                &self.name,
+                "sleep",
+                "60",
+            ],
+        );
+        assert!(created, "the foreign namesake starts: {panes}");
+        let pane = panes.lines().next().unwrap_or_default().to_owned();
+        assert!(!pane.is_empty(), "the foreign namesake has a pane: {panes}");
+        (socket, pane)
     }
 
     fn archive(&self) -> PathBuf {
@@ -291,6 +324,54 @@ fn stop_destroys_nothing() {
     let (code, _, err) = rig.run(&["_stop", &rig.name]);
     assert_eq!(code, Some(1));
     assert!(err.contains("is not running"), "{err}");
+}
+
+#[test]
+fn a_bare_stop_from_a_foreign_namesake_never_targets_the_recorded_session() {
+    let rig = Rig::new("foreignbarestop");
+    let (foreign, pane) = rig.foreign_namesake("stop");
+
+    let (code, out, err) = rig.run_from(&["stop", "-y"], Some((&foreign, &pane)));
+    let _ = rig.tmux_at(&foreign, &["kill-server"]);
+
+    assert_eq!(code, Some(2), "stdout: {out}\nstderr: {err}");
+    assert_eq!(err, "Usage: _stop <session-name|all> [-y] [--self]\n");
+    assert!(rig.session_is_live(), "the recorded session stays live");
+    assert!(exists(&rig.dir), "the recorded state stays intact");
+}
+
+#[test]
+fn self_stop_from_a_foreign_namesake_refuses_instead_of_supervising_it() {
+    let rig = Rig::new("foreignselfstop");
+    let (foreign, pane) = rig.foreign_namesake("self-stop");
+
+    let (code, out, err) = rig.run_from(&["stop", "--self", "-y"], Some((&foreign, &pane)));
+    let _ = rig.tmux_at(&foreign, &["kill-server"]);
+
+    assert_eq!(code, Some(1), "stdout: {out}\nstderr: {err}");
+    assert_eq!(
+        err,
+        "Error: --self with no session name needs a pane ae can resolve (--pane <id>); this one is not an ae agent pane.\n"
+    );
+    assert!(rig.session_is_live(), "the recorded session stays live");
+    assert!(exists(&rig.dir), "the recorded state stays intact");
+}
+
+#[test]
+fn a_bare_end_from_a_foreign_namesake_never_targets_the_recorded_session() {
+    let rig = Rig::new("foreignbareend");
+    let (foreign, pane) = rig.foreign_namesake("end");
+
+    let (code, out, err) = rig.run_from(&["end", "-f"], Some((&foreign, &pane)));
+    let _ = rig.tmux_at(&foreign, &["kill-server"]);
+
+    assert_eq!(code, Some(2), "stdout: {out}\nstderr: {err}");
+    assert_eq!(
+        err,
+        "Usage: _end [-f] [--purge-history|--keep-history] [--assume-stopped] <session-name|all>\n"
+    );
+    assert!(rig.session_is_live(), "the recorded session stays live");
+    assert!(exists(&rig.dir), "the recorded state stays intact");
 }
 
 #[test]
@@ -979,7 +1060,7 @@ impl Drop for AmbientRig {
 }
 
 #[test]
-fn a_bare_stop_from_a_non_ae_tmux_pane_refuses_without_touching_it() {
+fn a_bare_stop_from_a_non_ae_tmux_pane_has_no_inferred_target() {
     let rig = AmbientRig::new("foreignstop");
     assert!(
         rig.tmux(&["new-session", "-d", "-s", "foreign", "sh"]).0,
@@ -991,11 +1072,8 @@ fn a_bare_stop_from_a_non_ae_tmux_pane_refuses_without_touching_it() {
 
     let (code, out, err) = rig.run_inside(pane, &["stop"]);
 
-    assert_eq!(code, Some(1), "stdout: {out}\nstderr: {err}");
-    assert_eq!(
-        err,
-        "Error: no session state for 'foreign' — refusing to self-stop something ae does not own.\n"
-    );
+    assert_eq!(code, Some(2), "stdout: {out}\nstderr: {err}");
+    assert_eq!(err, "Usage: _stop <session-name|all> [-y] [--self]\n");
     assert_eq!(rig.sessions(), vec!["foreign"], "nothing was killed");
 }
 
@@ -1182,8 +1260,8 @@ fn stop_all_from_inside_a_target_prompts_on_a_terminal() {
     );
 }
 
-/// With no terminal and no attached client, the fleet stop refuses and names
-/// the non-interactive authorization flag.
+/// An unpaired target cannot prove that it owns the caller. With no terminal,
+/// the ordinary fleet confirmation refuses and names its authorization flag.
 #[test]
 fn stop_all_from_inside_a_target_with_no_terminal_still_needs_the_flag() {
     let rig = AmbientRig::new("stpntty");
@@ -1197,7 +1275,10 @@ fn stop_all_from_inside_a_target_with_no_terminal_still_needs_the_flag() {
 
     let (code, out, err) = rig.run_inside(&pane, &["_stop", "all", "--pane", &pane]);
     assert_eq!(code, Some(1), "stdout: {out}\nstderr: {err}");
-    assert_eq!(err, "Error: nobody attached to confirm; pass -y.\n");
+    assert_eq!(
+        err,
+        "Error: 'stop all' stops every running ae session (1), and there is no terminal to confirm on.\n  Re-run with -y: ae stop all -y\n  Nothing was stopped.\n"
+    );
     let live = rig.sessions();
     assert!(
         live.iter().any(|name| name == "stptwo"),

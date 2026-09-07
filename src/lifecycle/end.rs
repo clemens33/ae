@@ -163,11 +163,10 @@ pub(crate) fn run(
         args.pane = ambient_pane.map(ToOwned::to_owned);
     }
     let caller_server = crate::doors::caller_server();
-    let caller_session = args.pane.as_deref().and_then(|pane| {
-        caller_server.as_ref().and_then(|server| {
-            transport::observe_pane_owner(server, pane).map(|owner| owner.session)
-        })
-    });
+    let caller_session = args
+        .pane
+        .as_deref()
+        .and_then(|pane| super::recorded_caller_session(root, caller_server.as_ref(), pane));
     if args.target.is_empty() {
         let Some(own) = &caller_session else {
             writeln!(err, "{USAGE}")?;
