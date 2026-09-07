@@ -1,6 +1,20 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [v2026.9.18] - 2026-09-07
+
+### Other
+
+- Deliver changed fleet overviews from the watchdog
+- Anchor overview liveness to settled deliveries
+- Require acknowledgements after latest overview
+- Authorize orchestrator lifecycle operations
+- Require safe orchestrator lifecycle flags
+- Move orchestrator beside version in status strip
+- Make attention reasons actionable in overview
+- Sanitize overview attention text
+- Tighten overview reason layout
+- Align overview charter with renderer
 ## [v2026.9.17] - 2026-09-07
 
 ### Other
