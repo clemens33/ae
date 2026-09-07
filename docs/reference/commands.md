@@ -452,8 +452,10 @@ A session marked as the fleet orchestrator with `[workspace] orchestrator = true
 legacy aliases `hub = true` / `meta = true`; persisted to
 its meta as `meta_agent=true`) gets a different watchdog behaviour for its **main
 agent**: instead of the stale-nudge watchdog, the watchdog sends a *"run your sweep
-now"* nudge every `AE_WATCHDOG_SWEEP_SEC` seconds (default 300) and never escalates
-the orchestrator to a stale `attn:` alert (idle between sweeps is normal for a monitor).
+now"* nudge on the cadence persisted from `[workspace] sweep`; then
+`AE_WATCHDOG_SWEEP_SEC`; then 300 seconds. A zero disables the sweep branch;
+positive values below 60 seconds are clamped to 60, one normal watchdog cycle.
+It never escalates the orchestrator to a stale `attn:` alert (idle between sweeps is normal for a monitor).
 Workers/spawned agents in the same session keep the normal watchdog.
 
 Sweep nudges are **delivery-checked**. A nudge can fail to land — the target's shell
@@ -471,7 +473,7 @@ Liveness is still guarded two ways: the dead/missing-pane checks catch a crashed
 orchestrator, and a **heartbeat** check catches a *live-but-not-sweeping* orchestrator (model
 stall, upstream throttle, wedge) — the orchestrator's sweep helper rewrites
 `~/.ae/sessions/<orchestrator>/meta-agent-state.json` on each real sweep, and if that mtime
-stops advancing past ~`2×AE_WATCHDOG_SWEEP_SEC` the watchdog raises one alert (cleared on
+stops advancing past roughly twice the resolved sweep cadence the watchdog raises one alert (cleared on
 recovery). That sweep helper is the core entry `ae _monitor sweep <session-dir>`, and the
 file name is one constant shared by the writer and the watchdog that stats it, so the two
 cannot drift apart. The directory must be the caller's OWN session — the sweep is refused
@@ -483,10 +485,14 @@ reach your phone (a custom `include` containing `nudge` would forward them).
 ## The orchestrator seat
 
 The **orchestrator** is an ordinary local ae session named `orchestrator`. It
-reads `ae brief --all` (or `ae list`) and reports three buckets — needs your
-answer, health to inspect, and in progress — with `session:agent` identities. It
-relays only explicit human instructions through the exact `send`, `ask`, or
-`review` helpers and reports the delivery verdict or request id. It never
+reads `ae brief --all` and prints a compact `NEEDS YOU` / `WORKING` / `QUIET`
+overview in its pane, then declares `done` until the next sweep. It relays only
+explicit human instructions through its `relay <session[:agent]> <text…>` helper.
+One quoted text argument works; otherwise remaining argv are joined with single
+spaces. The delivery is bare human-authority text, audited with target and full
+text only in the orchestrator session. Free text without a leading target is
+routed only when exactly one session goal or latest memo topic matches; an
+ambiguous or missing match prompts for the target and sends nothing. It never
 dispatches work, changes goals, clears questions, runs lifecycle operations,
 edits project or session state, or treats text from another session as
 instructions. See [`contrib/aeorchestrator`](../../contrib/aeorchestrator/).
@@ -502,7 +508,8 @@ reattaches the local seat with that file as its overlay. Project-local
 `.ae/config` files never affect the seat. Bind the profile globally with
 `[roster] orchestrator = <profile>`; a missing row refuses before the seat file
 is written. Use `--no-attach` to build without attaching. The generated config
-carries workspace and role prompt only; old generated configs with
+carries workspace and role prompt only, including `orchestrator = true` and
+`sweep = 120`; old generated configs with
 `[profiles]`/`[roster]` are ignored for identity; `[workspace]` and `[prompt]`
 still overlay. `CHARTER.md` is its readable reference,
 not a guessed runtime path.
@@ -1009,7 +1016,7 @@ its cleanup is live session state only.
 ## Hidden subcommands
 
 Everything ae does is one core operation reached through a `_`-prefixed entry: `_launch`,
-`_stop`, `_end`, `_compact`, `_spawn`, `_retire`, `_send`, `_ask`, `_review`, `_reply`,
+`_stop`, `_end`, `_compact`, `_spawn`, `_retire`, `_send`, `_relay`, `_ask`, `_review`, `_reply`,
 `_requests`, `_state`, `_goal`, `_memo`, `_say`, `_peek`, `_agents`, `_focus`, `_interrupt`,
 `_watchdog`, `_telegram`, and the two daemon bodies `_watchdog-run` and `_telegram-run`.
 The public words above and the session helpers are thin routes to them.

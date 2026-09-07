@@ -787,6 +787,7 @@ fn launch(
             "icons",
             "theme",
             "motion",
+            "sweep",
         ],
     );
     let config_layout = extras[0].clone().unwrap_or_default();
@@ -805,6 +806,10 @@ fn launch(
             .unwrap_or_default()
             .as_str(),
     );
+    let sweep_sec = extras[11]
+        .as_deref()
+        .and_then(|value| value.parse::<u64>().ok())
+        .map(|value| value.to_string());
 
     if let Some(workers) = &plan.workers {
         cfg.workers = Some(workers.clone());
@@ -979,6 +984,7 @@ fn launch(
         &seats,
         &cfg,
         meta_agent,
+        sweep_sec.as_deref(),
         parent.as_ref(),
         out,
         err,
@@ -1012,6 +1018,7 @@ fn build(
     seats: &[Seat],
     cfg: &IdentityConfig,
     meta_agent: bool,
+    sweep_sec: Option<&str>,
     parent: Option<&FromProof>,
     out: &mut impl Write,
     err: &mut impl Write,
@@ -1215,7 +1222,7 @@ fn build(
     }
 
     // ---- the meta, published as ONE document ----
-    let document = match meta_document(env, shape, &launching, meta_agent, parent) {
+    let document = match meta_document(env, shape, &launching, meta_agent, sweep_sec, parent) {
         Ok(document) => document,
         Err(why) => return rollback_launch(shape, &dir, &server, &format!("Error: {why}"), err),
     };
@@ -1623,6 +1630,7 @@ fn meta_document(
     shape: &Session,
     launching: &[Launching],
     meta_agent: bool,
+    sweep_sec: Option<&str>,
     parent: Option<&FromProof>,
 ) -> Result<String, String> {
     let dir = env.sessions().join(&shape.name);
@@ -1722,6 +1730,9 @@ fn meta_document(
     }
     if meta_agent {
         row("meta_agent", "true");
+        if let Some(seconds) = sweep_sec {
+            row("sweep_sec", seconds);
+        }
     }
     for agent in launching {
         if !agent.launch_id.is_empty() {

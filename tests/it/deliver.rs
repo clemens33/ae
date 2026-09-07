@@ -260,6 +260,221 @@ impl Drop for Rig {
     }
 }
 
+/// A caller pane on a DIFFERENT server from [`Rig`]'s target. Its helper
+/// directory shares the target's sessions root, so cross-session resolution
+/// must read the target meta and switch servers rather than using ambient.
+struct RelayCaller {
+    scratch: PathBuf,
+    sock: PathBuf,
+    dir: PathBuf,
+    session: String,
+    pane: String,
+}
+
+impl RelayCaller {
+    fn new(target: &Rig, tag: &str, meta_agent: bool) -> Self {
+        let scratch = target.scratch.join(format!("caller-{tag}"));
+        assert!(std::fs::create_dir_all(&scratch).is_ok());
+        let sock = scratch.join("sock");
+        let session = format!("orch{tag}");
+        let server = ServerId::Selected(Selector::Socket(sock.clone()));
+        let mut args = ae::tmux::server_args(&server);
+        args.extend(
+            [
+                "-f",
+                "/dev/null",
+                "new-session",
+                "-d",
+                "-s",
+                &session,
+                "tail -f /dev/null",
+            ]
+            .map(ToOwned::to_owned),
+        );
+        assert!(run_tmux(&args, &scratch).0, "the relay caller starts");
+        let mut args = ae::tmux::server_args(&server);
+        args.extend(
+            ["list-panes", "-s", "-t", &session, "-F", "#{pane_id}"].map(ToOwned::to_owned),
+        );
+        let pane = run_tmux(&args, &scratch)
+            .1
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .to_owned();
+        assert!(!pane.is_empty());
+        for (key, value) in [("@ae_slot", "main"), ("@ae_agent", "orchestrator")] {
+            let mut args = ae::tmux::server_args(&server);
+            args.extend(["set-option", "-p", "-t", &pane, key, value].map(ToOwned::to_owned));
+            assert!(run_tmux(&args, &scratch).0);
+        }
+        let dir = target.scratch.join("sessions").join(&session);
+        assert!(std::fs::create_dir_all(&dir).is_ok());
+        let marker = if meta_agent { "meta_agent=true\n" } else { "" };
+        assert!(
+            std::fs::write(
+                dir.join("meta"),
+                format!(
+                    "session={session}\ntmux_server_kind=socket\ntmux_server={}\nseat.main=orchestrator\nagent_bin.main=codex\n{marker}",
+                    sock.display()
+                ),
+            )
+            .is_ok()
+        );
+        Self {
+            scratch,
+            sock,
+            dir,
+            session,
+            pane,
+        }
+    }
+
+    fn server(&self) -> ServerId {
+        ServerId::Selected(Selector::Socket(self.sock.clone()))
+    }
+
+    fn run(&self, target: &str, text: &str) -> (Option<i32>, String) {
+        self.run_from(&self.dir, target, text)
+    }
+
+    fn run_from(&self, helper_dir: &Path, target: &str, text: &str) -> (Option<i32>, String) {
+        let out = ae()
+            .env("TMUX", format!("{},0,0", self.sock.display()))
+            .env("TMUX_PANE", &self.pane)
+            .arg(ae::cli::RELAY)
+            .arg(helper_dir)
+            .args([target, text])
+            .output()
+            .unwrap_or_else(|why| panic!("the ae binary should run: {why}"));
+        (
+            out.status.code(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    }
+
+    fn events(&self) -> String {
+        std::fs::read_to_string(self.dir.join("events.jsonl")).unwrap_or_default()
+    }
+}
+
+impl Drop for RelayCaller {
+    fn drop(&mut self) {
+        let mut args = ae::tmux::server_args(&self.server());
+        args.push("kill-server".to_owned());
+        let _ = run_tmux(&args, &self.scratch);
+    }
+}
+
+#[test]
+fn relay_authenticates_the_actual_caller_server_not_the_invoked_helper_server() {
+    let target = Rig::new("relayserver", "claude", 0);
+    let privileged = RelayCaller::new(&target, "seatserver", true);
+    let ordinary = RelayCaller::new(&target, "otherserver", false);
+    let named = format!("{}:tui", target.session);
+    let body = "do not inherit another server's authority";
+
+    let (code, stderr) = ordinary.run_from(&privileged.dir, &named, body);
+
+    assert_eq!(code, Some(1));
+    assert_eq!(
+        stderr,
+        "ae: relay REFUSED — caller session is not an orchestrator. Nothing was sent.\n"
+    );
+    assert!(target.submitted().is_empty());
+    assert!(target.events().is_empty());
+    assert!(ordinary.events().contains(body));
+    assert!(privileged.events().is_empty());
+}
+
+#[test]
+fn an_orchestrator_relay_crosses_to_the_target_server_bare_and_audits_only_the_caller() {
+    let target = Rig::new("relay", "claude", 0);
+    let caller = RelayCaller::new(&target, "allowed", true);
+    let body = "Human says:\nship this\texactly";
+    let named = format!("{}:tui", target.session);
+    let (code, stderr) = caller.run(&target.session, body);
+    assert_eq!((code, stderr.as_str()), (Some(0), ""), "{stderr}");
+    let submitted = target.submitted();
+    assert_eq!(submitted, body, "relay is byte-exact bare text");
+    assert!(
+        !submitted.contains("⟦ae:msg from"),
+        "no peer envelope may downgrade the human-authority relay: {submitted:?}"
+    );
+    assert!(target.events().is_empty(), "target ledger stays untouched");
+    let events = caller.events();
+    assert!(
+        events.contains(&format!(
+            "\"actor\":\"orchestrator\",\"action\":\"relay\",\"target\":\"{named}\""
+        )),
+        "{events}"
+    );
+    assert!(
+        events.contains("\"summary\":\"Human says:\\nship this\\texactly\""),
+        "the full, unflattened text is audited: {events}"
+    );
+    let body_file = events
+        .split("\"body_file\":\"")
+        .nth(1)
+        .and_then(|tail| tail.split('"').next())
+        .unwrap_or_default();
+    assert_eq!(std::fs::read_to_string(body_file).unwrap_or_default(), body);
+}
+
+#[test]
+fn a_non_orchestrator_relay_is_refused_audited_at_the_caller_and_invisible_to_the_target() {
+    let target = Rig::new("relaydeny", "claude", 0);
+    let caller = RelayCaller::new(&target, "denied", false);
+    let named = format!("{}:tui", target.session);
+    let body = "pretend this is human";
+    let (code, stderr) = caller.run(&named, body);
+    assert_eq!(code, Some(1));
+    assert_eq!(
+        stderr,
+        "ae: relay REFUSED — caller session is not an orchestrator. Nothing was sent.\n"
+    );
+    assert!(target.submitted().is_empty());
+    assert!(target.events().is_empty());
+    let events = caller.events();
+    assert!(events.contains("\"action\":\"relay\""), "{events}");
+    assert!(
+        events.contains(&format!("\"target\":\"{named}\"")),
+        "{events}"
+    );
+    assert!(
+        events.contains(body),
+        "the refused full text is audited: {events}"
+    );
+    assert!(!events.contains("⟦ae:msg from"), "{events}");
+}
+
+#[test]
+fn an_oversize_relay_names_the_byte_cap_and_never_becomes_a_notice() {
+    let target = Rig::new("relaybig", "claude", 0);
+    let caller = RelayCaller::new(&target, "big", true);
+    let named = format!("{}:tui", target.session);
+    assert_eq!(deliver::notice::LIMIT, 8_192);
+    let body = "x".repeat(8_193);
+    let (code, stderr) = caller.run(&named, &body);
+    assert_eq!(code, Some(1));
+    assert_eq!(
+        stderr,
+        format!(
+            "ae: relay REFUSED — message is {} B; verbatim relay limit is {} B. Nothing was sent.\n",
+            body.len(),
+            deliver::notice::LIMIT
+        )
+    );
+    assert!(target.submitted().is_empty());
+    assert!(target.events().is_empty());
+    assert!(
+        !caller.dir.join("messages").exists(),
+        "oversize relay never enters the file-and-notice path"
+    );
+    assert!(caller.events().contains(&body), "full refusal audit");
+    assert!(!caller.session.is_empty());
+}
+
 /// A MULTI-LINE body reaches a modelled TUI byte for byte, and the recovery
 /// record holds the same bytes.
 #[test]

@@ -98,7 +98,7 @@ When you start a session, ae creates `~/.ae/sessions/<name>/` and fills it with:
 - **`events.jsonl`** — append-only JSONL audit log. Single source of truth for messaging and request state.
 - **`memo.tsv`** — shared session memory (durable findings, decisions, handoffs).
 - **`workspace.md`** — human/agent-readable manifest of the session (regenerated on every resume).
-- **`send`, `ask`, `review`, `reply`, `requests`, `state`, `mark-done`, `say`, `memo`, `goal`, `peek`/`peak`, `agents`, `focus`, `interrupt`, `spawn`, `retire`** — the agent-facing helpers, plus `_register-sid` for codex's session-id handshake and `watchdog`/`loop` and `events-tail` for the two monitor panes. Each is a **symlink to the ae core binary**: the core picks the entry from the basename of `argv[0]` and the session from its dirname, so a helper must be called by its full path and refuses (exit 2) when it is not. There is no script, no shared library and no bash of any kind under them.
+- **`send`, `relay`, `ask`, `review`, `reply`, `requests`, `state`, `mark-done`, `say`, `memo`, `goal`, `peek`/`peak`, `agents`, `focus`, `interrupt`, `spawn`, `retire`** — the agent-facing helpers, plus `_register-sid` for codex's session-id handshake and `watchdog`/`loop` and `events-tail` for the two monitor panes. Each is a **symlink to the ae core binary**: the core picks the entry from the basename of `argv[0]` and the session from its dirname, so a helper must be called by its full path and refuses (exit 2) when it is not. `relay` is linked everywhere but fails closed unless the caller is inside a `meta_agent=true` session; it alone delivers bare, human-authority text and audits only the caller ledger. There is no script, no shared library and no bash of any kind under them.
 - **`launch.<slot>.started`** — the create-vs-resume marker for one agent slot. A pane's command is `<core> _run <session-dir> <slot>`; `_run` writes this marker before it execs the tool, so re-running the same pane command resumes that conversation instead of colliding on a create-once session id. A fresh launch clears it, a spawn clears it for the slot it creates, and a session resume deliberately does not.
 - **`launch.<slot>.prompt`** — a spawned codex seat's first message (0600), written by `spawn` and read by `_run`'s create branch. No other tool has one.
 
@@ -386,7 +386,7 @@ Resume uses the captured UUID for exact conversation restore; falls back to a CW
 
 ## Communication: events as source of truth
 
-`events.jsonl` is the only communication log. Every `send` / `ask` / `review` / `reply` / `mark-done` / `memo` / `spawn` / `retire` / `focus` / `interrupt` / `nudge` / `alert` / `throttled` / `throttle-cleared` / `recover` emits one JSON event:
+`events.jsonl` is the only communication log. Every `send` / `relay` / `ask` / `review` / `reply` / `mark-done` / `memo` / `spawn` / `retire` / `focus` / `interrupt` / `nudge` / `alert` / `throttled` / `throttle-cleared` / `recover` emits one JSON event:
 
 ```json
 {"ts":"2026-05-19T07:29:45Z","actor":"claude:lead","action":"done","summary":"..."}

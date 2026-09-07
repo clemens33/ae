@@ -128,7 +128,7 @@ Sessions persist across reboots. Agents with session support resume conversation
 When inside an ae session, stop/end/compact work without specifying the name.
 
 Config: ~/.ae/config (per-project override: .ae/config in project dir)
-Session helpers, in every session dir: send, ask, review, reply, requests, state,
+Session helpers, in every session dir: send, relay, ask, review, reply, requests, state,
   mark-done, goal, memo, say, peek (peak), agents, focus, interrupt, spawn, retire.
 Run 'ae doctor' after install or agent CLI upgrades.
 Run 'ae doctor --refresh' after updating ae to regenerate existing session helpers.

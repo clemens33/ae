@@ -93,6 +93,10 @@ pub const REPLY: &str = "_reply";
 /// The `send` helper's surface — `_send <meta-dir> <target> <message…>`.
 pub const SEND: &str = "_send";
 
+/// The orchestrator's privileged bare-text surface —
+/// `_relay <meta-dir> <session[:agent]> <text…>`.
+pub const RELAY: &str = "_relay";
+
 /// The `interrupt` helper's surface —
 /// `_interrupt <meta-dir> <target> [message…]`.
 pub const INTERRUPT: &str = "_interrupt";
@@ -341,6 +345,15 @@ pub enum Request {
     /// [`crate::send::parse`].
     Send {
         /// The session meta directory.
+        dir: std::path::PathBuf,
+        /// Everything after it, as typed.
+        tail: Vec<String>,
+    },
+    /// `_relay <meta-dir> <session[:agent]> <text…>` — validated by
+    /// [`crate::relay::parse`], then authorised against the caller pane.
+    Relay {
+        /// The helper directory; the caller's observed session selects the
+        /// actual audit directory.
         dir: std::path::PathBuf,
         /// Everything after it, as typed.
         tail: Vec<String>,
@@ -849,6 +862,13 @@ impl Request {
                     tail: rest.to_vec(),
                 },
             },
+            Some(RELAY) => match &args[1..] {
+                [] => Self::MissingOperand(RELAY),
+                [dir, rest @ ..] => Self::Relay {
+                    dir: PathBuf::from(dir),
+                    tail: rest.to_vec(),
+                },
+            },
             Some(INTERRUPT) => match &args[1..] {
                 [] => Self::MissingOperand(INTERRUPT),
                 [dir, rest @ ..] => Self::Interrupt {
@@ -1268,6 +1288,7 @@ impl Request {
             | Self::Review { .. }
             | Self::Reply { .. }
             | Self::Send { .. }
+            | Self::Relay { .. }
             | Self::Interrupt { .. }
             | Self::EventsTail { .. }
             | Self::ArchivePreview { .. }
@@ -1445,7 +1466,8 @@ mod tests {
         ARCHIVE_PREVIEW, ASK, COMPACT_ARCHIVE, COMPACT_CANCEL, COMPACT_FIND_OUTSTANDING,
         COMPACT_FREEZE, COMPACT_MEMO_BASELINE, COMPACT_REVALIDATE, COMPACT_TEARDOWN, COMPACT_WAIT,
         DEFAULT_REVALIDATE_WHEN, END_NONLOCAL_TEARDOWN, EVENTS_TAIL, GOAL, INTERRUPT, MEMO,
-        NET_PROBE, REPLY, REQUESTS, REVIEW, Request, SEND, STATE, TELEGRAM_RUN, WATCHDOG_RUN,
+        NET_PROBE, RELAY, REPLY, REQUESTS, REVIEW, Request, SEND, STATE, TELEGRAM_RUN,
+        WATCHDOG_RUN,
     };
     use crate::filters::{ListArgs, Scope};
     use crate::requests::Mode;
@@ -1637,6 +1659,7 @@ mod tests {
             REVIEW,
             REPLY,
             SEND,
+            RELAY,
             INTERRUPT,
         ] {
             assert!(spelling.starts_with('_'), "{spelling}");
@@ -1684,6 +1707,23 @@ mod tests {
     }
 
     #[test]
+    fn relay_keeps_its_directory_target_and_text_for_the_privilege_gate() {
+        assert_eq!(
+            Request::parse(&argv(&[
+                RELAY,
+                "/s/orchestrator",
+                "work:lead",
+                "ship",
+                "it",
+            ])),
+            Request::Relay {
+                dir: "/s/orchestrator".into(),
+                tail: argv(&["work:lead", "ship", "it"]),
+            }
+        );
+    }
+
+    #[test]
     fn archive_preview_takes_a_directory_and_nothing_else() {
         assert_eq!(
             Request::parse(&argv(&[ARCHIVE_PREVIEW, "/s/tg1"])),
@@ -1710,6 +1750,7 @@ mod tests {
             REVIEW,
             REPLY,
             SEND,
+            RELAY,
             INTERRUPT,
         ] {
             let request = Request::parse(&argv(&[spelling]));

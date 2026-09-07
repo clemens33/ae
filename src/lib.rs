@@ -47,6 +47,7 @@ pub mod next;
 pub mod orchestrator;
 pub mod panes;
 pub mod procs;
+pub mod relay;
 pub mod rename;
 pub mod render;
 pub mod reply;
@@ -1305,6 +1306,25 @@ fn calling_pane(dir: &std::path::Path) -> Option<tmux::ObservedViewer> {
     transport::observe_viewer(&viewer_server(dir), pane.to_str()?)
 }
 
+/// The caller pane observed on the server this PROCESS is actually inside.
+///
+/// Relay is an authority boundary, so its caller server cannot be inferred
+/// from the helper path: a pane may invoke another session's universally
+/// linked helper, and pane ids repeat across servers. `$TMUX` names the actual
+/// socket inherited by the invoking pane; an absent or untypeable marker fails
+/// closed.
+fn actual_calling_pane() -> Option<tmux::ObservedViewer> {
+    let pane = doors::calling_pane_id()?;
+    let marker = doors::tmux_env()?;
+    let socket = marker.split(',').next()?;
+    let path = std::path::PathBuf::from(socket);
+    if !path.is_absolute() {
+        return None;
+    }
+    let server = inventory::ServerId::Selected(meta::Selector::Socket(path));
+    transport::observe_viewer(&server, &pane)
+}
+
 /// `session=` in `<dir>/meta`, empty-or-missing folded to `None`.
 fn session_key(dir: &std::path::Path) -> Option<String> {
     #[allow(
@@ -1507,6 +1527,14 @@ pub fn run_with(
             &send_env(),
             &calling_viewer(dir).display,
             &own_session(dir),
+            time::Timestamp::now(),
+            send_defer(),
+            err,
+        )?,
+        cli::Request::Relay { dir, tail } => relay::run(
+            dir,
+            tail,
+            actual_calling_pane().as_ref(),
             time::Timestamp::now(),
             send_defer(),
             err,

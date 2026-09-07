@@ -533,8 +533,8 @@ pub struct EventFields<'a> {
 ///
 /// The summary is rendered HERE, for the event's action, by
 /// [`crate::state::summary_for`] — flattened and capped at 200 characters for
-/// every action but `chat`, which keeps its lines and tabs under the 3500 cap —
-/// as `ae_emit_event`'s two arms render it. Callers hand the text raw; a
+/// ordinary actions, keeps `chat` lines and tabs under the 3500 cap, and keeps
+/// a `relay` caller audit exact — as the emitter's arms render them. Callers hand the text raw; a
 /// summary rendered twice would flatten a chat that the first pass had kept.
 ///
 /// ```

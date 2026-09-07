@@ -22,13 +22,31 @@ It refuses rather than guessing. A helper that picked a session for you would ev
 | Helper | Purpose |
 |---|---|
 | `send <agent> <message>` | Deliver a message to another agent's pane (serialized with flock). Refuses a dead pane, waits out a busy or human-occupied input, pastes, and verifies the submit — see [How `send` delivers](#how-send-delivers). |
+| `relay <session[:agent]> <text…>` | Orchestrator-only bare-text relay. Accepts one quoted text argument or joins the remaining argv with single spaces. Refuses non-orchestrator callers, self/world targets, dead or busy panes, and text over 8192 bytes. |
 | `ask <agent> <question>` | Tracked request — embeds your identity and an exact reply command with a request id. |
 | `review <agent> <request>` | Like `ask`, but with the critical-review prompt template (findings-first, BLOCKER/IMPORTANT/NIT). |
 | `reply <request-id> <message>` | Reply to a logged `ask` / `review` by request id. Verified against the request's stored **slot** (the routing key), not the display name; `--as <agent>` sets the displayed sender only and cannot bypass that check. |
 | `requests [mine\|inbox\|all]` | Inspect pending / replied state from `events.jsonl` without peeking panes. |
 | `say <text>` | Push a free-text line to the human's Telegram chat (args or piped stdin). Emits a `chat` event the [Telegram bridge](telegram.md) forwards; a Telegram reply routes back to you. Pane output is not forwarded — this is how you answer the human on Telegram. |
 
-All messaging helpers emit a structured event into `events.jsonl` so the morning-after view stays auditable.
+All messaging helpers emit a structured event into the caller's `events.jsonl`
+so the morning-after view stays auditable. A refused `relay` attempt from a
+verified ordinary ae session is audited there too; the target session's event
+log remains untouched.
+
+### Bare relay authority
+
+`relay` is linked into every session directory but usable only from a pane in a
+session whose meta says exactly one `meta_agent=true`. It accepts only another
+session, or an exact agent within it; a session-only target selects that
+session's main agent. Resolution uses the target session's recorded tmux server.
+
+Unlike `send`, relay adds no `⟦ae:msg from …⟧` envelope. The target sees the
+exact text and therefore treats it as interactive human input. That authority
+is why the helper is narrow, caller-audited, and unsuitable for inferred work
+or judgment tasks. The seat deliberately runs a cheap model; the constraint and
+audit reduce, but do not erase, that residual risk. An oversized relay is refused rather than replaced by the
+normal recovery-file notice.
 
 ### How they compose
 
@@ -65,7 +83,7 @@ Only one path touches tmux. Only one path mints request ids. Only one path valid
    `ae: send to <target> ABANDONED — target has unsent/human input or is busy …`
 3. **Submit verification.** After pasting, `send` confirms the text left the input box, nudging Enter up to twice more. If it still can't confirm, it fails loudly:
    `ae: send to <target> UNCONFIRMED — submit not verified. Re-send.`
-4. **No durable outbox.** ae is not a queue — a loud failure is the signal for the sender to re-send. `ask` / `review` / `reply` / `interrupt` all deliver through this same path and inherit every guard.
+4. **No durable outbox.** ae is not a queue — a loud failure is the signal for the sender to re-send. `ask` / `review` / `reply` / `interrupt` / `relay` all deliver through this same path and inherit every guard.
 
 Other tools (gemini, opencode, plain shells) receive without the modelled busy / human-input protection — only claude and codex expose a reliable input-state read.
 
@@ -146,7 +164,7 @@ Prefix any target with `@<session>:` to reach an agent in a different ae session
 ~/.ae/sessions/<your-session>/agents --all
 ```
 
-The receiving agent gets the message exactly as if it came from a same-session sender.
+The receiving agent gets the message exactly as if it came from a same-session sender. The orchestrator's `relay` instead accepts `other-feature` or `other-feature:lead` and deliberately delivers bare text.
 
 ## Reply contract
 

@@ -22,18 +22,27 @@ contract; it is not loaded from a guessed path.
 
 ## Role
 
-The orchestrator reads fleet state with `ae brief --all` (or `ae list`) and
-reports three buckets: needs your answer, health to inspect, and in progress.
-Reports use `session:agent` identities and go through `say`. It relays only
-explicit human instructions, using exact `send`, `ask`, or `review` helpers and
-showing each delivery verdict or request id.
+The orchestrator reads fleet state with `ae brief --all` and prints a compact
+`NEEDS YOU` / `WORKING` / `QUIET` overview in its own pane. Empty sections are
+omitted and quiet sessions collapse to one line. Routine sweeps do not use
+Telegram. It stays `done` between sweeps.
+
+It relays only explicit human instructions through its full-path `relay`
+helper. The target is a session or exact `session:agent`; the text arrives bare
+and therefore speaks with human authority. The caller session alone audits the
+target and full text. This is intentionally not a general dispatch mechanism.
 
 It never dispatches work, changes goals, clears questions, runs lifecycle
 operations, edits project/session state, or treats text from another session as
 instructions. Other-session text is data. See [`CHARTER.md`](CHARTER.md).
 
-The standard workspace watchdog can nudge a configured orchestrator seat to run
-its sweep. The seat is started explicitly; it is never an autostart companion.
+Residual risk is explicit: an unenveloped relay speaks with human authority,
+yet the seat is a model. The role is constrained, every attempt is audited, and
+the seat deliberately runs a cheap model; never give it judgment tasks.
+
+The standard workspace watchdog nudges the template's orchestrator every 120
+seconds. The persisted `[workspace] sweep` setting outranks the process-wide
+fallback and default. The seat is started explicitly; it is never an autostart companion.
 `AE_NO_AUTOSTART=1` suppresses the Telegram bridge when launching another session.
 
 ## Files
@@ -49,5 +58,5 @@ intact.
 
 ## Dependencies
 
-None beyond ae and one configured agent CLI. Fleet sweep and Telegram `say` are
-core ae operations; no Python, `jq`, or `curl` sidecar is needed.
+None beyond ae and one configured agent CLI. Fleet overview, sweep cadence, and
+bare relay are core ae operations; no Python, `jq`, or `curl` sidecar is needed.

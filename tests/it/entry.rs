@@ -706,6 +706,13 @@ fn the_bare_orchestrator_seeds_its_own_config_and_seats_exactly_one_agent() {
         .unwrap_or_else(|why| panic!("{}: {why}", config.display()));
     assert!(seeded.contains("main = orchestrator"), "{seeded}");
     assert!(seeded.contains("workers = \"\""), "{seeded}");
+    assert!(seeded.contains("orchestrator = true"), "{seeded}");
+    assert!(seeded.contains("sweep = 120"), "{seeded}");
+    assert!(seeded.contains("Use only ae commands"), "{seeded}");
+    assert!(
+        seeded.contains("Two plausible matches: ask one line naming both, no relay"),
+        "{seeded}"
+    );
     assert!(!seeded.contains("\n[profiles]\n"), "{seeded}");
     assert!(!seeded.contains("\n[roster]\n"), "{seeded}");
     let meta_path = rig.sessions().join("orchestrator").join("meta");
@@ -716,6 +723,8 @@ fn the_bare_orchestrator_seeds_its_own_config_and_seats_exactly_one_agent() {
         .filter(|line| line.starts_with("seat."))
         .collect::<Vec<_>>();
     assert_eq!(seats, ["seat.main=orchestrator"], "{meta}");
+    assert!(meta.lines().any(|line| line == "meta_agent=true"), "{meta}");
+    assert!(meta.lines().any(|line| line == "sweep_sec=120"), "{meta}");
     assert!(
         meta.contains(&format!("local_config={}", config.display())),
         "the nonstandard overlay is a session fact: {meta}"

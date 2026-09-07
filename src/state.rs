@@ -240,10 +240,13 @@ pub fn summary_of(reason: &str) -> String {
 /// The summary as it is rendered FOR THIS ACTION.
 #[must_use]
 pub fn summary_for(action: &str, text: &str) -> String {
-    if action == "chat" {
-        text.chars().take(CHAT_SUMMARY_CAP).collect()
-    } else {
-        summary_of(text)
+    match action {
+        "chat" => text.chars().take(CHAT_SUMMARY_CAP).collect(),
+        // Relay is deliberately exceptional: its caller-only audit is the
+        // durable record of the exact bare text sent with human authority.
+        // Delivery caps that text by bytes before this renderer sees it.
+        "relay" => text.to_owned(),
+        _ => summary_of(text),
     }
 }
 
@@ -431,6 +434,11 @@ mod tests {
             summary_for("send", "a\nb\tc"),
             "a b c",
             "every other action is the flattened arm"
+        );
+        assert_eq!(
+            summary_for("relay", "a\nb\tc"),
+            "a\nb\tc",
+            "the privileged caller audit keeps the full exact relay text"
         );
         assert_eq!(
             summary_for("say", &"x".repeat(250)).len(),

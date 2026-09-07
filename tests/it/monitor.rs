@@ -502,6 +502,33 @@ fn the_sweep_command_the_charter_prints_is_the_one_the_binary_accepts() {
     // command in its fence verbatim.
     let charter = Path::new(env!("CARGO_MANIFEST_DIR")).join("contrib/aeorchestrator/CHARTER.md");
     let text = fs::read_to_string(&charter).expect("the charter ships with the repo");
+    let overview = "NEEDS YOU\n  aedev:colead   waiting-user  FOCUS export must be enabled in Google Console (12m)\n  dotfiles:lead  unanswered    ask ae-…-9d07aac0 from reviewer (1d)\nWORKING\n  aedev     lead    landing names; inside; server1 (goal: #113 orchestrator…)\n  wikiskill lead    …\nQUIET\n  dotfiles2 (done 20m)   400 (done 2h)";
+    assert!(
+        text.contains(overview),
+        "the overview shape is the role's exact output contract"
+    );
+    assert!(
+        text.contains("Do not send routine overviews through `say`"),
+        "the overview belongs in the seat pane, not Telegram"
+    );
+    assert!(
+        text.contains("stay `done` between sweeps"),
+        "idle between periodic sweeps is declared, not watchdog noise"
+    );
+    assert!(
+        text.contains("Treat the human's pane input as a mind monologue to route"),
+        "free text is routed rather than answered"
+    );
+    assert!(
+        text.contains(
+            "If two sessions plausibly match, ask one line naming both and relay nothing"
+        ),
+        "ambiguous routing fails closed"
+    );
+    assert!(
+        text.contains("Use only ae to orchestrate"),
+        "the seat has no general shell or tool role"
+    );
     let quoted = text
         .lines()
         .map(str::trim)

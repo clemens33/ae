@@ -163,13 +163,14 @@ Pins, not channels. CI, laptop and agent sandbox must resolve to the same compil
 
 ## Session helpers
 
-The core LINKS 21 names into `~/.ae/sessions/<name>/`. Every one is a **symlink to the core
+The core LINKS 22 names into `~/.ae/sessions/<name>/`. Every one is a **symlink to the core
 binary**; the core dispatches on `argv[0]`'s basename and derives the session from its
 dirname. Names and argv are the compatibility contract.
 
 | Helper | Purpose |
 |---|---|
 | `send <agent> <msg>` | Deliver a message to another agent's pane. Refuses a dead pane, defers on busy/human input, verifies the submit |
+| `relay <session[:agent]> <text…>` | Orchestrator-only, audited bare-text delivery with human authority; linked everywhere, refused unless the caller session records `meta_agent=true` |
 | `ask <agent> <question>` | Tracked request with a request ID and an exact reply command |
 | `review <agent> <request>` | Ask for a critical review, findings first |
 | `reply <request-id> <msg>` | Reply to a logged ask/review. Verified against the request's stored slot |
@@ -191,6 +192,11 @@ through `send`/`ask`/`review`/`reply`/`memo`, a spawn brief or an `interrupt` is
 agent and costs its context, so drop filler and keep file:line, commands, errors, ids and
 verdict words exact. Nothing else is covered: replies to the human, `say`, commits, code and
 docs follow whatever your own instructions define.
+
+`relay` is the ONE unenveloped sender: its bare text has human authority. The link is published
+in every session but works only when the caller pane belongs to the orchestrator seat
+(`meta_agent=true`), and every attempt is audited in that caller session. It is for verbatim,
+explicit human instructions only, never inferred or judgment work.
 
 **Call a helper by its FULL PATH.** No `/` in `argv[0]` means no session to derive, and the
 core exits 2 rather than guessing. That is why they are not on `PATH`.

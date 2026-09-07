@@ -20,10 +20,15 @@ pub struct Helper {
 
 /// THE helper set — the names a session directory holds, and the only names
 /// this dispatch answers to.
-pub const HELPERS: [Helper; 21] = [
+pub const HELPERS: [Helper; 22] = [
     Helper {
         name: "send",
         entry: crate::cli::SEND,
+        prefix: &[],
+    },
+    Helper {
+        name: "relay",
+        entry: crate::cli::RELAY,
         prefix: &[],
     },
     Helper {
@@ -259,6 +264,17 @@ mod tests {
         let helper = lookup("mark-done").expect("mark-done is a helper");
         let argv = translate(helper, Path::new("/s/tg1"), &["shipped".to_owned()]);
         assert_eq!(argv, ["_state", "/s/tg1", "done", "shipped"]);
+    }
+
+    #[test]
+    fn relay_is_a_universal_link_to_its_privileged_core_entry() {
+        let helper = lookup("relay").expect("relay is a helper");
+        let argv = translate(
+            helper,
+            Path::new("/s/orchestrator"),
+            &["work:lead".to_owned(), "ship it".to_owned()],
+        );
+        assert_eq!(argv, ["_relay", "/s/orchestrator", "work:lead", "ship it"]);
     }
 
     #[test]

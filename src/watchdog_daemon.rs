@@ -556,9 +556,40 @@ const HELPER_NAME: &str = "send";
 pub(crate) const HEARTBEAT_NAME: &str = "meta-agent-state.json";
 
 /// The sweep prompt the orchestrator is nudged with.
-const SWEEP_PROMPT: &str = "Run your sweep now: ae list --json, diff your state file, and report \
-                            ONLY new/changed attention to Clemens via say (stay silent if nothing \
-                            changed). Stay in 'working'.";
+const SWEEP_PROMPT: &str =
+    "Sweep now: `ae brief --all`; print the overview in this pane; declare done.";
+
+/// The normal verdict interval and smallest useful positive sweep cadence.
+/// Zero remains the explicit off switch.
+const MIN_SWEEP_SECS: u64 = 60;
+
+/// The process-wide fallback for an orchestrator session with no persisted
+/// `sweep_sec`. Kept as a door at its only use site: launch-time config is the
+/// durable owner, while this remains useful for development and recovery.
+fn sweep_env() -> Option<String> {
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: AE_WATCHDOG_SWEEP_SEC is the documented watchdog-wide sweep fallback"
+    )]
+    let raw = std::env::var_os("AE_WATCHDOG_SWEEP_SEC");
+    raw.and_then(|value| value.into_string().ok())
+}
+
+/// Resolve sweep cadence in authority order: the session's persisted launch
+/// fact, the watchdog-wide environment fallback, then the supplied internal
+/// knob (300 in production defaults; CLI flags may override it in tests).
+fn sweep_seconds(meta_bytes: &[u8], env: Option<&str>, fallback: u64) -> u64 {
+    let resolved = crate::meta::sole_value(meta_bytes, "sweep_sec")
+        .and_then(|value| std::str::from_utf8(value).ok())
+        .and_then(|value| value.parse::<u64>().ok())
+        .or_else(|| env.and_then(|value| value.parse::<u64>().ok()))
+        .unwrap_or(fallback);
+    if resolved == 0 {
+        0
+    } else {
+        resolved.max(MIN_SWEEP_SECS)
+    }
+}
 
 /// The heartbeat's modification time, or `None` when there is nothing this
 /// watchdog is willing to trust.
@@ -887,7 +918,7 @@ fn session_mark(by_pane: &[PaneMark], roster: &[Mark]) -> Mark {
 /// the cycle instead.
 pub fn run(
     meta_dir: &Path,
-    knobs: Knobs,
+    mut knobs: Knobs,
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> crate::Result<u8> {
@@ -899,6 +930,7 @@ pub fn run(
         )?;
         return Ok(1);
     };
+    knobs.sweep.sweep_secs = sweep_seconds(&bytes, sweep_env().as_deref(), knobs.sweep.sweep_secs);
     let meta = Meta::parse(&String::from_utf8_lossy(&bytes));
     // The INITIAL resolution, kept as the fast refuse.
     let server = match meta.server_selector() {
@@ -2336,7 +2368,7 @@ mod tests {
         bar_glyph, continuation, entry_mut, heartbeat_mtime, is_meta_agent, last_actor_event_age,
         motion_cadence, motion_failure, motion_observation_due, motion_publish_failure,
         motion_ticker_enabled, nudge_text, read_events, rebind, record_nudge, session_name,
-        slot_mark, stale_display, sweep_effects, window_agents_line,
+        slot_mark, stale_display, sweep_effects, sweep_seconds, window_agents_line,
     };
     use super::{Look, Mark, PaneMark, session_mark};
     use crate::events::Event;
@@ -3781,10 +3813,37 @@ mod tests {
         // The text an orchestrator acts on.
         assert_eq!(
             SWEEP_PROMPT,
-            "Run your sweep now: ae list --json, diff your state file, and report ONLY \
-             new/changed attention to Clemens via say (stay silent if nothing changed). Stay in \
-             'working'."
+            "Sweep now: `ae brief --all`; print the overview in this pane; declare done."
         );
+    }
+
+    #[test]
+    fn persisted_sweep_cadence_outranks_env_then_the_internal_default() {
+        assert_eq!(sweep_seconds(b"sweep_sec=120\n", Some("240"), 300), 120);
+        assert_eq!(sweep_seconds(b"session=x\n", Some("240"), 300), 240);
+        assert_eq!(sweep_seconds(b"session=x\n", None, 300), 300);
+        assert_eq!(
+            sweep_seconds(b"sweep_sec=nope\n", Some("240"), 300),
+            240,
+            "an invalid persisted value does not shadow a valid fallback"
+        );
+        assert_eq!(
+            sweep_seconds(b"sweep_sec=120\nsweep_sec=60\n", Some("240"), 300),
+            240,
+            "a duplicate persisted fact is not authoritative"
+        );
+        assert_eq!(
+            sweep_seconds(b"session=x\n", Some("nope"), 300),
+            300,
+            "an invalid environment fallback does not replace the default"
+        );
+        assert_eq!(sweep_seconds(b"sweep_sec=0\n", Some("240"), 300), 0);
+        assert_eq!(
+            sweep_seconds(b"sweep_sec=1\n", Some("240"), 300),
+            60,
+            "a positive cadence cannot nudge more than once per normal verdict cycle"
+        );
+        assert_eq!(sweep_seconds(b"session=x\n", Some("59"), 300), 60);
     }
 
     #[test]

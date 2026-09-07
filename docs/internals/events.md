@@ -11,6 +11,7 @@ flowchart LR
     subgraph Writers
         direction TB
         SH[send]
+        RLH[relay]
         AKH[ask / review]
         RPH[reply]
         MDH[mark-done]
@@ -29,6 +30,7 @@ flowchart LR
     end
 
     SH --> EE
+    RLH --> EE
     AKH --> EE
     RPH --> EE
     MDH --> EE
@@ -55,7 +57,7 @@ Every event has these keys; `target`, `ref`, and `summary` are optional and omit
   "action":  "done",                        // event type — see below
   "target":  "coworker",                    // bare name of the recipient when applicable
   "ref":     "ae-20260519T072100Z-abc123",  // polysemous — see action table
-  "summary": "first 200 chars of payload"   // optional preview, truncated
+  "summary": "action-specific payload view" // optional; usually flattened and truncated
 }
 ```
 
@@ -70,7 +72,7 @@ String values are JSON-escaped: `\"` `\\` `\n` `\t` `\r`, and control bytes are 
 
 ### Routing-key fields
 
-Messaging events (`send` / `ask` / `review` / `reply`) also carry the sender's and recipient's **slot** and **session** when known — the churn-proof routing key that survives a display-name change (see [slot identity](../reference/helpers.md#slot-identity)):
+Messaging events (`send` / `relay` / `ask` / `review` / `reply`) also carry the sender's and recipient's **slot** and **session** when known — the churn-proof routing key that survives a display-name change (see [slot identity](../reference/helpers.md#slot-identity)). `relay` is exceptional: its caller-only audit keeps the full exact text, while the target session gains no event:
 
 ```json
 {
@@ -88,6 +90,7 @@ Each is optional and omitted when empty. Readers that don't understand them igno
 | Action | Emitted by | Meaning |
 |---|---|---|
 | `send` | `send` helper | One-way message between agents (or from human / watchdog). |
+| `relay` | `relay` helper | Orchestrator-only bare human-authority text. Caller ledger carries target + full text; refused attempts are audited too. |
 | `ask` | `ask` helper | Tracked request expecting a reply. Carries `ref`. |
 | `review` | `review` helper | Like `ask`, with the critical-review prompt template. Carries `ref`. |
 | `reply` | `reply` helper | Reply to an `ask` / `review`. Same `ref`. |

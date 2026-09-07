@@ -56,6 +56,8 @@ const LOCK_WAIT: Duration = Duration::from_mins(2);
 pub enum Shape {
     /// `send`, and the tracked requests behind it.
     Send,
+    /// The orchestrator seat's privileged, unenveloped human-authority relay.
+    Relay,
     /// `interrupt`.
     Interrupt,
     /// A spawn's BRIEF, pasted into a freshly launched TUI.
@@ -198,6 +200,11 @@ pub fn deliver(
         return Ok(Err(Failure::DeadPane));
     }
     let framed = frame(request);
+    if relay_oversize_refused(request, &framed, err)? {
+        return Ok(Err(Failure::NoticeRefused {
+            body_file: String::new(),
+        }));
+    }
     // Publish the exact recoverable pane text BEFORE locking or submitting it.
     let body_file = match store_body(request.dir, request.reference, request.action, &framed) {
         Ok(path) => path.display().to_string(),
@@ -235,10 +242,12 @@ pub fn deliver(
         )?;
         return Ok(Err(Failure::NoticeRefused { body_file }));
     };
-    if request.shape == Shape::Send && !wait_for_quiet(request, input.model) {
+    if matches!(request.shape, Shape::Send | Shape::Relay) && !wait_for_quiet(request, input.model)
+    {
         writeln!(
             err,
-            "ae: send to {} ABANDONED — target stayed busy / human input or attention (not clear within {}s; AE_SEND_DEFER_SEC overrides). Re-send.",
+            "ae: {} to {} ABANDONED — target stayed busy / human input or attention (not clear within {}s; AE_SEND_DEFER_SEC overrides). Re-send.",
+            request.action,
             request.logged_target,
             request.defer.as_secs()
         )?;
@@ -265,6 +274,11 @@ pub fn deliver(
                     "ae: send to {} UNCONFIRMED — submit not verified; body preserved at {body_file}.",
                     request.logged_target
                 )?,
+                Shape::Relay => writeln!(
+                    err,
+                    "ae: relay to {} UNCONFIRMED — submit not verified; body preserved at {body_file}.",
+                    request.logged_target
+                )?,
                 Shape::Interrupt => writeln!(
                     err,
                     "ae: interrupt message to {} UNCONFIRMED — submit not verified; body preserved at {body_file}. Re-send.",
@@ -281,12 +295,36 @@ pub fn deliver(
     }
 }
 
+/// Refuse an oversize relay before its body reaches the recovery-notice path.
+fn relay_oversize_refused(
+    request: &Request<'_>,
+    framed: &str,
+    err: &mut impl Write,
+) -> io::Result<bool> {
+    // A relay promises exact bare text. A pointer would change the text and
+    // expose the orchestrator to the target.
+    if request.shape != Shape::Relay || framed.len() as u64 <= notice::LIMIT {
+        return Ok(false);
+    }
+    writeln!(
+        err,
+        "ae: relay to {} REFUSED — message is {} B; verbatim relay limit is {} B. Nothing was sent.",
+        request.logged_target,
+        framed.len(),
+        notice::LIMIT
+    )?;
+    Ok(true)
+}
+
 /// What an unbindable caller's envelope says.
 pub const UNVERIFIED: &str = "unverified";
 
 /// The message as it reaches the pane.
 fn frame(request: &Request<'_>) -> String {
-    if matches!(request.shape, Shape::Interrupt | Shape::Launch) {
+    if matches!(
+        request.shape,
+        Shape::Relay | Shape::Interrupt | Shape::Launch
+    ) {
         return request.body.to_owned();
     }
     format!(
@@ -313,6 +351,10 @@ fn dead_pane_line(request: &Request<'_>) -> String {
             "ae: send to {} REFUSED — target pane is a shell, not a running agent (the agent process is gone). Nothing pasted; a stray Enter would EXECUTE the message as a shell command. Re-launch the agent, then re-send.",
             request.logged_target
         ),
+        Shape::Relay => format!(
+            "ae: relay to {} REFUSED — target pane is a shell, not a running agent. Nothing was sent.",
+            request.logged_target
+        ),
         Shape::Interrupt => format!(
             "ae: interrupt of {} REFUSED — target pane is a shell, not a running agent; a stray Enter would EXECUTE the message as a shell command. Re-launch the agent, then re-send.",
             request.logged_target
@@ -332,7 +374,7 @@ struct TargetInput {
 
 /// The input-box grammar this pane draws — `ae_target_tool`.
 fn target_input(request: &Request<'_>, command: &str) -> TargetInput {
-    let recorded = recorded_binary(request.dir, request.pane_slot);
+    let recorded = recorded_binary(&target_meta_dir(request), request.pane_slot);
     choose_input(&recorded, command)
 }
 
@@ -594,7 +636,7 @@ fn submit(
     if submit_staged(server, pane, model) {
         return Ok(Ok(()));
     }
-    if request.shape == Shape::Send {
+    if matches!(request.shape, Shape::Send | Shape::Relay) {
         writeln!(
             err,
             "ae: submit UNCONFIRMED to pane {pane} ({diagnostic}) — message may not have sent."
@@ -872,6 +914,11 @@ mod tests {
             frame(&request("cl:lead", "stop", Shape::Interrupt)),
             "stop",
             "an interrupt is a control action, not transcript chat"
+        );
+        assert_eq!(
+            frame(&request("orchestrator", "human words", Shape::Relay)),
+            "human words",
+            "relay is the one privileged unenveloped sender"
         );
     }
 
