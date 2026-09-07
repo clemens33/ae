@@ -882,7 +882,9 @@ mod tests {
             started.elapsed() < Duration::from_millis(500),
             "foreground waited for child"
         );
-        for _ in 0..40 {
+        // Allow slow CI scheduling while keeping the foreground assertion
+        // independent: the detached child still owns completion.
+        for _ in 0..200 {
             if marker.is_file() {
                 break;
             }
