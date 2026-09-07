@@ -1,6 +1,12 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [v2026.9.8] - 2026-09-07
+
+### Features
+
+- **theme**: The monitor window leaves the bar
+- **theme**: The strip keeps creation order, the tab says ae, the border drops the profile
 ## [v2026.9.7] - 2026-09-07
 
 ### Bug Fixes
