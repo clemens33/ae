@@ -1,6 +1,13 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [v2026.9.22] - 2026-09-07
+
+### Other
+
+- Clarify explicit session creation flow
+- Fix window tab clicks with focus hook
+- Reassert status click binding on live sessions
 ## [v2026.9.21] - 2026-09-07
 
 ### Other
