@@ -243,7 +243,7 @@ fn need_for(card: &Card, agent: &AgentLine) -> Option<(i64, String, String, Opti
 
 fn watchdog_detail(reason: Reason, agent: &AgentLine) -> String {
     if matches!(reason, Reason::WaitingUser | Reason::Blocked) && !agent.reason.is_empty() {
-        agent.reason.clone()
+        clean_text(&agent.reason)
     } else {
         reason.as_str().to_owned()
     }
@@ -284,7 +284,7 @@ fn need_parts(need: &Need) -> (&str, &str, String, Option<i64>, i64) {
             if reason.is_empty() {
                 "no reason given".to_owned()
             } else {
-                reason.clone()
+                clean_text(reason)
             },
             *age_secs,
             need_rank(need),
@@ -299,7 +299,10 @@ fn need_parts(need: &Need) -> (&str, &str, String, Option<i64>, i64) {
         } => (
             to,
             "unanswered",
-            format!("{kind} {reference} from {from}: {}", clipped(question, 120)),
+            format!(
+                "{kind} {reference} from {from}: {}",
+                clipped(&clean_text(question), 120)
+            ),
             Some(*age_secs),
             need_rank(need),
         ),
@@ -362,8 +365,21 @@ fn wrap_detail(detail: &str, first_width: usize) -> Vec<String> {
     let mut width = first_width;
     while !rest.is_empty() && lines.len() < MAX_NEED_LINES {
         let take = rest.chars().count().min(width);
-        let mut line: String = rest.chars().take(take).collect();
-        rest = &rest[line.len()..];
+        let boundary = rest
+            .char_indices()
+            .take(take + 1)
+            .filter(|(_, ch)| ch.is_whitespace())
+            .map(|(index, _)| index)
+            .filter(|index| rest[..*index].chars().count() <= width)
+            .filter(|index| rest[..*index].chars().count() >= width / 2)
+            .fold(None, |_, index| Some(index));
+        let end = boundary.unwrap_or_else(|| {
+            rest.char_indices()
+                .nth(take)
+                .map_or(rest.len(), |(index, _)| index)
+        });
+        let mut line = rest[..end].trim_end().to_owned();
+        rest = rest[end..].trim_start();
         if !rest.is_empty() && lines.len() + 1 == MAX_NEED_LINES {
             line = clipped(&line, width.saturating_sub(1));
             line.push('…');
@@ -373,6 +389,23 @@ fn wrap_detail(detail: &str, first_width: usize) -> Vec<String> {
         width = WIDTH.saturating_sub(DETAIL_INDENT);
     }
     lines
+}
+
+fn clean_text(text: &str) -> String {
+    let mut clean = String::with_capacity(text.len());
+    let mut in_run = false;
+    for ch in text.chars() {
+        if ch.is_control() || ch.is_whitespace() {
+            if !in_run {
+                clean.push(' ');
+                in_run = true;
+            }
+        } else {
+            clean.push(ch);
+            in_run = false;
+        }
+    }
+    clean.trim().to_owned()
 }
 
 fn working_line(session: &str, agent: &str, detail: &str) -> String {
@@ -527,11 +560,15 @@ mod tests {
             from: "reviewer".to_owned(),
             to: "lead".to_owned(),
             age_secs: 86_400,
-            question: "ignored in the compact overview".to_owned(),
+            question: "ignored\r\nin\u{1b}[31m the compact overview".to_owned(),
         });
         let text = render(&[pending], "orchestrator");
         assert!(
             text.contains("ask ae-20260907T000000Z-9d07aac0 from reviewer (1d)"),
+            "{text}"
+        );
+        assert!(
+            text.lines().all(|line| !line.chars().any(char::is_control)),
             "{text}"
         );
     }
