@@ -402,6 +402,7 @@ pub fn run(
             return Ok(EXIT_FAILED);
         }
     };
+    let cross_session = !me.session.is_empty() && resolved.session != me.session;
     let target_name = if resolved.agent.is_empty() {
         reply_target.clone()
     } else {
@@ -428,7 +429,11 @@ pub fn run(
     };
     fields.target = &target_name;
     let delivery = crate::deliver::deliver(&request, err)?;
-    tracked::record_tracked_delivery(dir, &fields, delivery, err)
+    let cross_session = cross_session.then_some(tracked::CrossSession {
+        caller: &me.session,
+        target: &resolved.session,
+    });
+    tracked::record_tracked_delivery(dir, &fields, delivery, cross_session, err)
 }
 
 /// Bytes as text: the comparison never sees an invalid byte from ae's own
@@ -574,6 +579,7 @@ mod tests {
                 framed: "⟦ae:msg from worker⟧\n[ae-1] the answer".to_owned(),
                 notice: false,
             }),
+            None,
             &mut err,
         )
         .expect("the unconfirmed reply event is recorded");

@@ -172,10 +172,10 @@ dirname. Names and argv are the compatibility contract.
 
 | Helper | Purpose |
 |---|---|
-| `send <agent> <msg>` | Deliver a message to another agent's pane. Refuses a dead pane, defers on busy/human input, verifies the submit |
+| `send [--cross-session] <agent> <msg>` | Deliver to the same session; another session needs `--cross-session`. Refuses a dead pane, defers on busy/human input, verifies the submit |
 | `relay <session[:agent]> <text…>` | Orchestrator-only, audited bare-text delivery with human authority; linked everywhere, refused unless the caller session records `meta_agent=true` |
-| `ask <agent> <question>` | Tracked request with a request ID and an exact reply command |
-| `review <agent> <request>` | Ask for a critical review, findings first |
+| `ask [--cross-session] <agent> <question>` | Tracked request in the same session; another session needs `--cross-session` |
+| `review [--cross-session] <agent> <request>` | Critical review request in the same session; another session needs `--cross-session` |
 | `reply <request-id> <msg>` | Reply to a logged ask/review. Verified against the request's stored slot |
 | `requests [mine\|inbox\|all]` | Inspect pending and replied requests without peeking panes |
 | `state <working\|waiting-user\|blocked\|done> [reason]` | Declare work state; shows in `ae list`. Only `done`, `waiting-user` and `blocked` quiet the watchdog — `working` does not. `mark-done [msg]` = `state done` plus the legacy `done` event |
@@ -184,7 +184,7 @@ dirname. Names and argv are the compatibility contract.
 | `goal [text\|--clear]` | The session's one-line objective. Survives resume; shown in `ae list` |
 | `peek <agent> [lines]` / `peak` | Capture recent pane output. Inspection only, never a reply channel |
 | `agents [--all]` | List agents with pane IDs and processes. `focus <agent>` switches tmux focus |
-| `interrupt <agent> [msg]` | Cancel current generation, optionally send new instructions |
+| `interrupt [--cross-session] <agent> [msg]` | Cancel in the same session; another session needs `--cross-session` |
 | `spawn <name> --using <profile> [prompt]` | Add an agent to the workspace |
 | `retire <name>` \| `retire %pane` | Remove a spawned agent. Exact name only; `main`/`worker` refuse |
 | `_register-sid` | codex's own session-id handshake. The one helper no human types |

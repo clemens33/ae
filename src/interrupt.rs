@@ -29,7 +29,7 @@ use crate::tracked::{self, EventFields};
 use crate::transport;
 
 /// The frozen usage text.
-pub const USAGE: &str = "Usage: interrupt <agent-name|pane-id|@session:agent> [message]\n  Examples: interrupt codex:reviewer\n           interrupt @my-feature:claude:lead \"Stop — try a different approach\"\n";
+pub const USAGE: &str = "Usage: interrupt [--cross-session] <agent-name|pane-id|@session:agent> [message]\n  Examples: interrupt codex:reviewer\n           interrupt --cross-session @my-feature:claude:lead \"Stop — try a different approach\"\n";
 
 /// The event action.
 pub const ACTION: &str = "interrupt";
@@ -37,6 +37,9 @@ pub const ACTION: &str = "interrupt";
 /// What the argv said.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Parsed {
+    /// Whether the caller states that the human explicitly authorized a
+    /// cross-session delivery.
+    pub cross_session: bool,
     /// The target as typed.
     pub target: String,
     /// The message: the remaining words joined by one space, or empty.
@@ -53,8 +56,10 @@ pub struct Usage;
 ///
 /// [`Usage`] for no target at all.
 pub fn parse(tail: &[String]) -> Result<Parsed, Usage> {
+    let (cross_session, tail) = tracked::split_cross_session_flag(tail);
     match tail {
         [target, message @ ..] => Ok(Parsed {
+            cross_session,
             target: target.clone(),
             message: message.join(" "),
         }),
@@ -71,6 +76,7 @@ pub fn run(
     dir: &Path,
     tail: &[String],
     actor: &str,
+    caller_session: &str,
     own_session: &str,
     now: Timestamp,
     err: &mut impl Write,
@@ -79,6 +85,11 @@ pub fn run(
         write!(err, "{USAGE}")?;
         return Ok(EXIT_USAGE);
     };
+    let caller_session = if caller_session.is_empty() {
+        own_session
+    } else {
+        caller_session
+    };
     let (resolved, server) = match tracked::resolve_on(&parsed.target, own_session, dir) {
         Ok(resolved) => resolved,
         Err(why) => {
@@ -86,6 +97,25 @@ pub fn run(
             return Ok(EXIT_FAILED);
         }
     };
+    if tracked::refuse_cross_session(
+        dir,
+        ACTION,
+        parsed.cross_session,
+        &parsed.target,
+        &resolved,
+        actor,
+        "",
+        caller_session,
+        now,
+        err,
+    )? {
+        return Ok(EXIT_FAILED);
+    }
+    let cross = (resolved.session != caller_session).then_some(CrossDelivery {
+        caller_session,
+        target_slot: &resolved.slot,
+        target_session: &resolved.session,
+    });
     let target_name = if resolved.agent.is_empty() {
         parsed.target.clone()
     } else {
@@ -95,7 +125,7 @@ pub fn run(
         // Cancel keystrokes only.
         let _ = transport::send_key(&server, &resolved.pane, crate::tmux::Key::CancelCopyMode);
         let _ = transport::send_key(&server, &resolved.pane, crate::tmux::Key::Escape);
-        return record(dir, &target_name, "", now, actor, err);
+        return record(dir, &target_name, "", now, actor, cross, err);
     }
     let request = deliver::Request {
         dir,
@@ -136,8 +166,17 @@ pub fn run(
         &delivered.body_file,
         now,
         actor,
+        cross,
         err,
     )
+}
+
+/// Routing facts needed only when an interrupt crosses a session boundary.
+#[derive(Debug, Clone, Copy)]
+struct CrossDelivery<'a> {
+    caller_session: &'a str,
+    target_slot: &'a str,
+    target_session: &'a str,
 }
 
 /// The frozen `_notice_emit_failure`: a `delivery-failed` line naming the
@@ -178,12 +217,17 @@ fn record(
     summary: &str,
     now: Timestamp,
     actor: &str,
+    cross: Option<CrossDelivery<'_>>,
     err: &mut impl Write,
 ) -> io::Result<u8> {
-    record_with_body(dir, target, summary, "", now, actor, err)
+    record_with_body(dir, target, summary, "", now, actor, cross, err)
 }
 
 /// The `interrupt` event.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the interrupt event and optional cross-session route are explicit inputs"
+)]
 fn record_with_body(
     dir: &Path,
     target: &str,
@@ -191,23 +235,40 @@ fn record_with_body(
     body_file: &str,
     now: Timestamp,
     actor: &str,
+    cross: Option<CrossDelivery<'_>>,
     err: &mut impl Write,
 ) -> io::Result<u8> {
     let actor = if actor.is_empty() { "human" } else { actor };
-    let line = tracked::event_line(&EventFields {
+    let (actor_session, target_slot, target_session) = cross.map_or(("", "", ""), |route| {
+        (
+            route.caller_session,
+            route.target_slot,
+            route.target_session,
+        )
+    });
+    let fields = EventFields {
         ts: now,
         actor,
         action: ACTION,
         target,
         reference: "",
         actor_slot: "",
-        actor_session: "",
-        target_slot: "",
-        target_session: "",
+        actor_session,
+        target_slot,
+        target_session,
         summary,
         body_file,
+    };
+    let line = if cross.is_some() {
+        tracked::cross_session_event_line(&fields)
+    } else {
+        tracked::event_line(&fields)
+    };
+    let cross_session = cross.map(|route| tracked::CrossSession {
+        caller: route.caller_session,
+        target: route.target_session,
     });
-    if let Err(why) = store::open(dir).append_event(&line) {
+    if let Err(why) = tracked::append_delivery_event(dir, &line, cross_session) {
         writeln!(err, "ae: interrupt of {target} not recorded: {why}")?;
         return Ok(EXIT_FAILED);
     }
@@ -228,6 +289,7 @@ mod tests {
         assert_eq!(
             parse(&words(&["reviewer"])),
             Ok(Parsed {
+                cross_session: false,
                 target: "reviewer".into(),
                 message: String::new()
             }),
@@ -236,8 +298,17 @@ mod tests {
         assert_eq!(
             parse(&words(&["reviewer", "try", "another", "approach"])),
             Ok(Parsed {
+                cross_session: false,
                 target: "reviewer".into(),
                 message: "try another approach".into()
+            })
+        );
+        assert_eq!(
+            parse(&words(&["--cross-session", "@other:reviewer"])),
+            Ok(Parsed {
+                cross_session: true,
+                target: "@other:reviewer".into(),
+                message: String::new(),
             })
         );
     }

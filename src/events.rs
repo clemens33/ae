@@ -55,6 +55,8 @@ pub struct Event {
     pub target_slot: RoutingMember,
     /// The recipient's session.
     pub target_session: RoutingMember,
+    /// Whether this event was mirrored across two ae sessions.
+    pub cross_session: bool,
 }
 
 /// One half of a routing key, exactly as the record carries it.
@@ -328,6 +330,7 @@ impl Event {
             actor_session: RoutingMember::read(value, "actor_session")?,
             target_slot: RoutingMember::read(value, "target_slot")?,
             target_session: RoutingMember::read(value, "target_session")?,
+            cross_session: optional_bool(value, "cross_session")?,
         })
     }
 
@@ -432,7 +435,7 @@ fn identity<'a>(
 }
 
 /// Every key this schema defines.
-const KNOWN_KEYS: [&str; 10] = [
+const KNOWN_KEYS: [&str; 11] = [
     "ts",
     "actor",
     "action",
@@ -443,6 +446,7 @@ const KNOWN_KEYS: [&str; 10] = [
     "actor_session",
     "target_slot",
     "target_session",
+    "cross_session",
 ];
 
 /// Refuse a record that names any KNOWN key twice.
@@ -474,6 +478,15 @@ fn optional(value: &Value, key: &'static str) -> Result<Option<String>, EventErr
         None => Ok(None),
         Some(Value::Str(text)) if text.is_empty() => Ok(None),
         Some(Value::Str(text)) => Ok(Some(text.clone())),
+        Some(_) => Err(EventError::WrongType(key)),
+    }
+}
+
+/// An optional boolean key, absent meaning false.
+fn optional_bool(value: &Value, key: &'static str) -> Result<bool, EventError> {
+    match value.get(key) {
+        None => Ok(false),
+        Some(Value::Bool(value)) => Ok(*value),
         Some(_) => Err(EventError::WrongType(key)),
     }
 }
@@ -884,6 +897,21 @@ mod tests {
     }
 
     #[test]
+    fn cross_session_is_false_when_absent_and_preserves_a_boolean_value() {
+        let absent = Event::parse_line(DONE).expect("parses");
+        assert!(!absent.cross_session);
+        for (value, expected) in [("true", true), ("false", false)] {
+            let line = format!(
+                r#"{{"ts":"2026-05-19T07:29:45Z","actor":"a","action":"send","cross_session":{value}}}"#
+            );
+            assert_eq!(
+                Event::parse_line(&line).expect("parses").cross_session,
+                expected
+            );
+        }
+    }
+
+    #[test]
     fn sc_405j_half_a_routing_key_is_unassociated_not_a_display_name() {
         // This test previously asserted Display, which is the bug it was named
         // for: an event that says "I am routed" and then fails to say where
@@ -1115,6 +1143,10 @@ mod tests {
                 r#"{"ts":"2026-05-19T07:29:45Z","actor":"a","action":"send","target_session":null}"#,
                 "target_session",
             ),
+            (
+                r#"{"ts":"2026-05-19T07:29:45Z","actor":"a","action":"send","cross_session":"true"}"#,
+                "cross_session",
+            ),
         ] {
             assert_eq!(
                 Event::parse_line(line),
@@ -1183,9 +1215,9 @@ mod tests {
         );
     }
 
-    /// The ten documented key names, written out here
+    /// The eleven documented key names, written out here
     /// INDEPENDENTLY of the production list.
-    const DOCUMENTED_EVENT_KEYS: [&str; 10] = [
+    const DOCUMENTED_EVENT_KEYS: [&str; 11] = [
         "ts",
         "actor",
         "action",
@@ -1196,6 +1228,7 @@ mod tests {
         "actor_session",
         "target_slot",
         "target_session",
+        "cross_session",
     ];
 
     #[test]

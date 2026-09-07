@@ -81,16 +81,19 @@ pub const GOAL: &str = "_goal";
 /// `_memo <meta-dir> [add [--topic <t>] <text…>|read [--topic <t>]|tail [n]]`.
 pub const MEMO: &str = "_memo";
 
-/// The `ask` helper's surface — `_ask <meta-dir> <target> <question…>`.
+/// The `ask` helper's surface — `_ask <meta-dir> [--cross-session] <target>
+/// <question…>`.
 pub const ASK: &str = "_ask";
 
-/// The `review` helper's surface — `_review <meta-dir> <target> <request…>`.
+/// The `review` helper's surface — `_review <meta-dir> [--cross-session]
+/// <target> <request…>`.
 pub const REVIEW: &str = "_review";
 
 /// The `reply` helper's surface — `_reply <meta-dir> [--as <agent>] <request-id> <message…>`.
 pub const REPLY: &str = "_reply";
 
-/// The `send` helper's surface — `_send <meta-dir> <target> <message…>`.
+/// The `send` helper's surface — `_send <meta-dir> [--cross-session] <target>
+/// <message…>`.
 pub const SEND: &str = "_send";
 
 /// The orchestrator's privileged bare-text surface —
@@ -98,7 +101,7 @@ pub const SEND: &str = "_send";
 pub const RELAY: &str = "_relay";
 
 /// The `interrupt` helper's surface —
-/// `_interrupt <meta-dir> <target> [message…]`.
+/// `_interrupt <meta-dir> [--cross-session] <target> [message…]`.
 pub const INTERRUPT: &str = "_interrupt";
 
 /// The watchdog daemon's surface — `_watchdog-run <meta-dir> [knob flags]`.

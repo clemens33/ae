@@ -146,9 +146,10 @@ pub struct Delivery {
     pub stdout: String,
 }
 
-/// Run the session's send helper at `helper` with `target` and `message`,
-/// plus `envs` (the event fields the body store names the recovery file
-/// after). stderr is INHERITED — the helper's refusals and
+/// Run the session's send helper at `helper` with an optional leading
+/// cross-session capability, then `target` and `message`, plus `envs` (the
+/// event fields the body store names the recovery file after). stderr is
+/// INHERITED — the helper's refusals and
 /// unconfirmed-submit lines are the caller's diagnostics, verbatim; stdin is
 /// null.
 #[must_use]
@@ -156,9 +157,15 @@ pub fn deliver(
     helper: &std::path::Path,
     target: &str,
     message: &str,
+    cross_session: bool,
     envs: &[(&str, &str)],
 ) -> Delivery {
-    let args = [target.to_owned(), message.to_owned()];
+    let mut args = Vec::with_capacity(if cross_session { 3 } else { 2 });
+    if cross_session {
+        args.push(crate::tracked::CROSS_SESSION_FLAG.to_owned());
+    }
+    args.push(target.to_owned());
+    args.push(message.to_owned());
     match spawn(
         &helper.display().to_string(),
         &args,

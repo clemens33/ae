@@ -201,6 +201,7 @@ pub(crate) fn run(
             let sender = tracked::Sender {
                 display: format!("ae:compact:{}", frozen.uuid),
                 slot: String::new(),
+                session: String::new(),
             };
             let mut delivered = Vec::new();
             let code = tracked::run(

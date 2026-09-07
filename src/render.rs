@@ -71,17 +71,17 @@ ${agent_rows}
 
 Send a message to another agent by name:
 ```bash
-${sessions_dir}/send "<agent_name>" "your message"
+${sessions_dir}/send [--cross-session] "<agent_name>" "your message"
 ```
 
 Ask another agent a question and require a reply:
 ```bash
-${sessions_dir}/ask <agent_name> "your question"
+${sessions_dir}/ask [--cross-session] <agent_name> "your question"
 ```
 
 Request a critical review:
 ```bash
-${sessions_dir}/review <agent_name> "review request"
+${sessions_dir}/review [--cross-session] <agent_name> "review request"
 ```
 
 Reply to a logged request by request id:
@@ -173,7 +173,7 @@ ${sessions_dir}/focus <agent_name>
 
 Stop an agent's current generation and optionally redirect:
 ```bash
-${sessions_dir}/interrupt <agent_name> [message]
+${sessions_dir}/interrupt [--cross-session] <agent_name> [message]
 ```
 
 Without a message, just cancels current work. With a message, cancels then sends new instructions.
@@ -247,10 +247,13 @@ Kills the pane, removes meta entry, and updates the manifest. Only works on spaw
 
 ## Cross-session
 
-All helpers support targeting agents in other ae sessions using `@session:agent` syntax:
+Inspection helpers may target another ae session directly. Delivery helpers
+`send`, `ask`, `review`, and `interrupt` require `--cross-session`, which means
+the human explicitly instructed the delivery. A `reply` to a cross-session
+request needs no flag because the request id proves the conversation is open:
 ```bash
 ${sessions_dir}/peek @other-session:claude:lead 20
-${sessions_dir}/send @other-session:codex:reviewer "check the API"
+${sessions_dir}/send --cross-session @other-session:codex:reviewer "check the API"
 ```
 
 List all agents across all running sessions:

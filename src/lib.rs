@@ -1187,13 +1187,19 @@ fn run_tracked(
         Some(tracked::Sender {
             display,
             slot: String::new(),
+            session: String::new(),
         })
     } else {
-        let viewer = calling_viewer(dir);
+        let own_session = own_session(dir);
+        let viewer = actual_calling_pane()
+            .as_ref()
+            .map(|(pane, _)| requests::Viewer::from_pane(pane, &own_session))
+            .unwrap_or_default();
         let known = viewer.is_known();
         known.then_some(tracked::Sender {
             display: viewer.display,
             slot: viewer.slot,
+            session: viewer.session,
         })
     };
     let code = tracked::run(
@@ -1327,7 +1333,7 @@ fn calling_pane() -> Option<tmux::ObservedViewer> {
 /// linked helper, and pane ids repeat across servers. `$TMUX` names the actual
 /// socket inherited by the invoking pane. [`doors::caller_server`] is the one
 /// parser for that marker; an absent or untypeable marker fails closed.
-fn actual_calling_pane() -> Option<(tmux::ObservedViewer, inventory::ServerId)> {
+pub(crate) fn actual_calling_pane() -> Option<(tmux::ObservedViewer, inventory::ServerId)> {
     let pane = doors::calling_pane_id()?;
     let server = doors::caller_server()?;
     transport::observe_viewer(&server, &pane).map(|viewer| (viewer, server))
@@ -1521,24 +1527,40 @@ pub fn run_with(
         cli::Request::Goal { dir, tail } => run_goal(dir, tail, out, err)?,
         cli::Request::Memo { dir, tail } => run_memo(dir, tail, out, err)?,
         cli::Request::Ask { dir, tail } => run_tracked(tracked::Kind::Ask, dir, tail, out, err)?,
-        cli::Request::Interrupt { dir, tail } => interrupt::run(
-            dir,
-            tail,
-            &calling_viewer(dir).display,
-            &own_session(dir),
-            time::Timestamp::now(),
-            err,
-        )?,
-        cli::Request::Send { dir, tail } => send::run(
-            dir,
-            tail,
-            &send_env(),
-            &calling_viewer(dir).display,
-            &own_session(dir),
-            time::Timestamp::now(),
-            send_defer(),
-            err,
-        )?,
+        cli::Request::Interrupt { dir, tail } => {
+            let own_session = own_session(dir);
+            let viewer = actual_calling_pane()
+                .as_ref()
+                .map(|(pane, _)| requests::Viewer::from_pane(pane, &own_session))
+                .unwrap_or_default();
+            interrupt::run(
+                dir,
+                tail,
+                &viewer.display,
+                &viewer.session,
+                &own_session,
+                time::Timestamp::now(),
+                err,
+            )?
+        }
+        cli::Request::Send { dir, tail } => {
+            let own_session = own_session(dir);
+            let viewer = actual_calling_pane()
+                .as_ref()
+                .map(|(pane, _)| requests::Viewer::from_pane(pane, &own_session))
+                .unwrap_or_default();
+            send::run(
+                dir,
+                tail,
+                &send_env(),
+                &viewer.display,
+                &viewer.session,
+                &own_session,
+                time::Timestamp::now(),
+                send_defer(),
+                err,
+            )?
+        }
         cli::Request::Relay { dir, tail } => {
             let actual = actual_calling_pane();
             relay::run(

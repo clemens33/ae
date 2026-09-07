@@ -142,6 +142,7 @@ impl Deliver for Helper {
             &dir.join(verb.helper()),
             agent,
             text,
+            false,
             &[("AE_SENDER_OVERRIDE", sender.as_str())],
         );
         if delivery.code == Some(0) {

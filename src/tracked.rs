@@ -4,8 +4,8 @@
 //! `AE_SENDER_OVERRIDE` or the pane's own stamp (no identity at all falls back
 //! to a plain `send`, with a warning); an external sink (`telegram:*`,
 //! `discord:*`, `ae:compact:*`) is event-only; any other target is resolved —
-//! `%pane` passthrough, `@session:agent` across
-//! sessions, exact `alias:name`, else a unique alias, else a unique bare name;
+//! `%pane` passthrough, `@session:agent` across sessions when explicitly
+//! authorized, exact `alias:name`, else a unique alias, else a unique bare name;
 //! a request id is minted (`<prefix>-<YYYYMMDDTHHMMSSZ>-<8 hex>`); the message
 //! is composed with the header, the optional review instructions and the
 //! REQUIRED reply footer whose command names the resolved target, the id and
@@ -33,10 +33,13 @@ pub enum Kind {
 }
 
 /// The `ask` usage text.
-pub const ASK_USAGE: &str = "Usage: ask <agent-name|pane-id|@session:agent> <question>\n  Like send, but embeds your identity and reply command in the message.\n";
+pub const ASK_USAGE: &str = "Usage: ask [--cross-session] <agent-name|pane-id|@session:agent> <question>\n  Like send, but embeds your identity and reply command in the message.\n";
 
 /// The `review` usage text.
-pub const REVIEW_USAGE: &str = "Usage: review <agent-name|pane-id|@session:agent> <request>\n  Ask another agent for a critical review and require a reply via send.\n";
+pub const REVIEW_USAGE: &str = "Usage: review [--cross-session] <agent-name|pane-id|@session:agent> <request>\n  Ask another agent for a critical review and require a reply via send.\n";
+
+/// The explicit capability flag for a delivery outside the helper's session.
+pub const CROSS_SESSION_FLAG: &str = "--cross-session";
 
 /// The review instructions — its continuation lines carry four spaces of
 /// indentation.
@@ -101,6 +104,9 @@ impl Kind {
 /// A parsed argv: the target as typed, the body as `"$*"` joins it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Parsed {
+    /// Whether the caller states that the human explicitly authorized a
+    /// cross-session delivery.
+    pub cross_session: bool,
     /// The target name, pane id or `@session:agent`.
     pub target: String,
     /// The remaining words joined by one space.
@@ -118,12 +124,23 @@ pub struct Usage;
 ///
 /// [`Usage`] for fewer than two words.
 pub fn parse(tail: &[String]) -> Result<Parsed, Usage> {
+    let (cross_session, tail) = split_cross_session_flag(tail);
     match tail {
         [target, words @ ..] if !words.is_empty() => Ok(Parsed {
+            cross_session,
             target: target.clone(),
             body: words.join(" "),
         }),
         _ => Err(Usage),
+    }
+}
+
+/// Remove the one supported leading delivery capability flag.
+#[must_use]
+pub fn split_cross_session_flag(tail: &[String]) -> (bool, &[String]) {
+    match tail.split_first() {
+        Some((flag, rest)) if flag == CROSS_SESSION_FLAG => (true, rest),
+        _ => (false, tail),
     }
 }
 
@@ -554,10 +571,21 @@ pub struct EventFields<'a> {
 /// ```
 #[must_use]
 pub fn event_line(fields: &EventFields<'_>) -> String {
+    render_event_line(fields, false)
+}
+
+/// One cross-session event line, with the capability fact present.
+#[must_use]
+pub(crate) fn cross_session_event_line(fields: &EventFields<'_>) -> String {
+    render_event_line(fields, true)
+}
+
+/// Render the common event shape, optionally carrying the cross-session fact.
+fn render_event_line(fields: &EventFields<'_>, cross_session: bool) -> String {
     let mut members = vec![
-        ("ts", fields.ts.to_string()),
-        ("actor", fields.actor.to_owned()),
-        ("action", fields.action.to_owned()),
+        ("ts", Value::Str(fields.ts.to_string())),
+        ("actor", Value::Str(fields.actor.to_owned())),
+        ("action", Value::Str(fields.action.to_owned())),
     ];
     let summary = state::summary_for(fields.action, fields.summary);
     for (key, value) in [
@@ -571,15 +599,13 @@ pub fn event_line(fields: &EventFields<'_>) -> String {
         ("body_file", fields.body_file),
     ] {
         if !value.is_empty() {
-            members.push((key, value.to_owned()));
+            members.push((key, Value::Str(value.to_owned())));
         }
     }
-    let mut line = Value::obj(
-        members
-            .into_iter()
-            .map(|(key, value)| (key, Value::Str(value))),
-    )
-    .render();
+    if cross_session {
+        members.push(("cross_session", Value::Bool(true)));
+    }
+    let mut line = Value::obj(members).render();
     line.push('\n');
     line
 }
@@ -597,8 +623,18 @@ pub(crate) fn unconfirmed_summary(summary: &str) -> String {
 /// Render an event for a delivery whose submit was not confirmed.
 #[must_use]
 pub(crate) fn unconfirmed_event_line(fields: &EventFields<'_>) -> String {
+    render_unconfirmed_event_line(fields, false)
+}
+
+/// Render an unconfirmed cross-session event.
+#[must_use]
+pub(crate) fn cross_session_unconfirmed_event_line(fields: &EventFields<'_>) -> String {
+    render_unconfirmed_event_line(fields, true)
+}
+
+fn render_unconfirmed_event_line(fields: &EventFields<'_>, cross_session: bool) -> String {
     let summary = unconfirmed_summary(fields.summary);
-    event_line(&EventFields {
+    let fields = EventFields {
         ts: fields.ts,
         actor: fields.actor,
         action: fields.action,
@@ -610,7 +646,122 @@ pub(crate) fn unconfirmed_event_line(fields: &EventFields<'_>) -> String {
         target_session: fields.target_session,
         summary: &summary,
         body_file: fields.body_file,
-    })
+    };
+    render_event_line(&fields, cross_session)
+}
+
+/// Refuse a resolved target outside `caller_session` unless the caller supplied
+/// [`CROSS_SESSION_FLAG`]. Resolution deliberately precedes this check, so an
+/// unknown target keeps its existing resolution error.
+///
+/// # Errors
+///
+/// Only a failure to write the refusal to `err`.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the boundary audit needs the resolved route and caller identity spelled out"
+)]
+pub fn refuse_cross_session(
+    dir: &Path,
+    helper: &str,
+    allowed: bool,
+    typed_target: &str,
+    resolved: &Resolved,
+    actor: &str,
+    actor_slot: &str,
+    caller_session: &str,
+    now: Timestamp,
+    err: &mut impl Write,
+) -> io::Result<bool> {
+    if allowed || resolved.session.is_empty() || resolved.session == caller_session {
+        return Ok(false);
+    }
+    let canonical = resolved.agent.strip_prefix('@').map_or_else(
+        || {
+            let agent = if resolved.agent.is_empty() {
+                resolved.pane.as_str()
+            } else {
+                resolved.agent.as_str()
+            };
+            format!("{}:{agent}", resolved.session)
+        },
+        ToOwned::to_owned,
+    );
+    let refusal = format!(
+        "ae: {helper} to {canonical} (typed {typed_target}) REFUSED — another ae session; pass --cross-session only when the human explicitly instructed it"
+    );
+    let line = event_line(&EventFields {
+        ts: now,
+        actor,
+        action: "refused",
+        target: &canonical,
+        reference: "",
+        actor_slot,
+        actor_session: caller_session,
+        target_slot: &resolved.slot,
+        target_session: &resolved.session,
+        summary: &refusal,
+        body_file: "",
+    });
+    // The refusal itself remains the one promised diagnostic even if its
+    // audit append cannot be made; no delivery is attempted either way.
+    let _ = participant_dir(dir, caller_session).and_then(|caller_dir| {
+        store::open(&caller_dir)
+            .append_event(&line)
+            .map_err(io::Error::from)
+    });
+    writeln!(err, "{refusal}")?;
+    Ok(true)
+}
+
+/// The two participants in one authorized cross-session delivery.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct CrossSession<'a> {
+    /// The physical caller's session, or the helper session for a pane-less
+    /// caller.
+    pub caller: &'a str,
+    /// The resolved target pane's session.
+    pub target: &'a str,
+}
+
+/// Append one ordinary event to the helper ledger, or one cross-session event
+/// to both participant ledgers.
+pub(crate) fn append_delivery_event(
+    dir: &Path,
+    line: &str,
+    cross_session: Option<CrossSession<'_>>,
+) -> io::Result<()> {
+    let Some(cross_session) = cross_session else {
+        return store::open(dir).append_event(line).map_err(io::Error::from);
+    };
+    let caller_dir = participant_dir(dir, cross_session.caller)?;
+    let target_dir = participant_dir(dir, cross_session.target)?;
+    store::open(&caller_dir)
+        .append_event(line)
+        .map_err(io::Error::from)?;
+    if target_dir == caller_dir {
+        return Ok(());
+    }
+    store::open(&target_dir)
+        .append_event(line)
+        .map_err(io::Error::from)
+}
+
+/// One participant's directory under the helper's sessions root.
+fn participant_dir(dir: &Path, session: &str) -> io::Result<std::path::PathBuf> {
+    if !crate::session_launch::name::is_session_name(session) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("invalid participant session '{session}'"),
+        ));
+    }
+    let Some(sessions) = dir.parent() else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "session directory has no parent",
+        ));
+    };
+    Ok(sessions.join(session))
 }
 
 // ---- the run --------------------------------------------------------------
@@ -623,11 +774,58 @@ pub struct Sender {
     pub display: String,
     /// The event's `actor_slot`, or empty.
     pub slot: String,
+    /// The physical caller's tmux session, or empty for a pane-less actor.
+    pub session: String,
 }
 
 /// The public `send` helper: the no-identity fallback, which records its own
 /// event.
 const SEND_HELPER: &str = "send";
+
+/// The physical caller's session, or the helper session for a pane-less actor.
+fn sender_session<'a>(sender: &'a Sender, own_session: &'a str) -> &'a str {
+    if sender.session.is_empty() {
+        own_session
+    } else {
+        &sender.session
+    }
+}
+
+/// Resolve and admit one tracked pane route before any delivery is attempted.
+fn admitted_route(
+    kind: Kind,
+    dir: &Path,
+    parsed: &Parsed,
+    sender: &Sender,
+    own_session: &str,
+    now: Timestamp,
+    err: &mut impl Write,
+) -> io::Result<Result<(Resolved, ServerId, bool), u8>> {
+    let (resolved, server) = match resolve_on(&parsed.target, own_session, dir) {
+        Ok(resolved) => resolved,
+        Err(why) => {
+            writeln!(err, "{}", why.message())?;
+            return Ok(Err(EXIT_FAILED));
+        }
+    };
+    let caller_session = sender_session(sender, own_session);
+    if refuse_cross_session(
+        dir,
+        kind.action(),
+        parsed.cross_session,
+        &parsed.target,
+        &resolved,
+        &sender.display,
+        &sender.slot,
+        caller_session,
+        now,
+        err,
+    )? {
+        return Ok(Err(EXIT_FAILED));
+    }
+    let cross_session = resolved.session != caller_session;
+    Ok(Ok((resolved, server, cross_session)))
+}
 
 /// Run a tracked request end to end.
 ///
@@ -663,10 +861,17 @@ pub fn run(
         // The fallback: a plain send, which writes its own event.
         let helper = dir.join(SEND_HELPER);
         write!(err, "{NO_IDENTITY_WARNING}")?;
-        let delivery = transport::deliver(&helper, &parsed.target, &parsed.body, &[]);
+        let delivery = transport::deliver(
+            &helper,
+            &parsed.target,
+            &parsed.body,
+            parsed.cross_session,
+            &[],
+        );
         out.write_all(delivery.stdout.as_bytes())?;
         return delivery_code(&delivery, &helper, action, err);
     };
+    let caller_session = sender_session(sender, own_session);
     let req_id = request_id(kind.id_prefix(), now, entropy);
     if is_external(&parsed.target) {
         // An event-only sink: emit and exit, pasting nothing and storing
@@ -678,7 +883,7 @@ pub fn run(
             target: &parsed.target,
             reference: &req_id,
             actor_slot: &sender.slot,
-            actor_session: own_session,
+            actor_session: caller_session,
             target_slot: "",
             target_session: "",
             summary: &parsed.body,
@@ -690,13 +895,11 @@ pub fn run(
         }
         return Ok(0);
     }
-    let (resolved, server) = match resolve_on(&parsed.target, own_session, dir) {
-        Ok(resolved) => resolved,
-        Err(why) => {
-            writeln!(err, "{}", why.message())?;
-            return Ok(EXIT_FAILED);
-        }
-    };
+    let (resolved, server, cross_session) =
+        match admitted_route(kind, dir, &parsed, sender, own_session, now, err)? {
+            Ok(route) => route,
+            Err(code) => return Ok(code),
+        };
     let target_name = if resolved.agent.is_empty() {
         parsed.target.clone()
     } else {
@@ -729,14 +932,18 @@ pub fn run(
         target: &target_name,
         reference: &req_id,
         actor_slot: &sender.slot,
-        actor_session: own_session,
+        actor_session: caller_session,
         target_slot: &resolved.slot,
         target_session: &resolved.session,
         summary: &parsed.body,
         body_file: "",
     };
     let delivery = crate::deliver::deliver(&request, err)?;
-    record_tracked_delivery(dir, &fields, delivery, err)
+    let cross = cross_session.then_some(CrossSession {
+        caller: caller_session,
+        target: &resolved.session,
+    });
+    record_tracked_delivery(dir, &fields, delivery, cross, err)
 }
 
 /// Record the event for a tracked delivery, including a delivery whose submit
@@ -747,6 +954,7 @@ pub(crate) fn record_tracked_delivery(
     dir: &Path,
     fields: &EventFields<'_>,
     delivery: Result<crate::deliver::Delivered, crate::deliver::Failure>,
+    cross_session: Option<CrossSession<'_>>,
     err: &mut impl Write,
 ) -> io::Result<u8> {
     let action = fields.action;
@@ -778,12 +986,16 @@ pub(crate) fn record_tracked_delivery(
         summary: fields.summary,
         body_file: &body_file,
     };
-    let line = if unconfirmed {
+    let line = if unconfirmed && cross_session.is_some() {
+        cross_session_unconfirmed_event_line(&fields)
+    } else if unconfirmed {
         unconfirmed_event_line(&fields)
+    } else if cross_session.is_some() {
+        cross_session_event_line(&fields)
     } else {
         event_line(&fields)
     };
-    if let Err(why) = store::open(dir).append_event(&line) {
+    if let Err(why) = append_delivery_event(dir, &line, cross_session) {
         if unconfirmed {
             writeln!(
                 err,
@@ -828,9 +1040,9 @@ pub(crate) fn delivery_code(
 #[cfg(test)]
 mod tests {
     use super::{
-        EventFields, Kind, Lookup, Parsed, ResolveError, Usage, compose, is_blank, is_external,
-        lookup, named_server, pane_server, parse, pick, record_tracked_delivery, refusal,
-        reply_command, request_id,
+        CrossSession, EventFields, Kind, Lookup, Parsed, ResolveError, Usage, compose, is_blank,
+        is_external, lookup, named_server, pane_server, parse, pick, record_tracked_delivery,
+        refusal, reply_command, request_id,
     };
     use crate::inventory::ServerId;
     use crate::meta::Selector;
@@ -927,12 +1139,22 @@ mod tests {
         assert_eq!(
             parse(&words(&["cl:w", "two", "words"])),
             Ok(Parsed {
+                cross_session: false,
                 target: "cl:w".to_owned(),
                 body: "two words".to_owned()
             })
         );
         assert_eq!(parse(&words(&["cl:w"])), Err(Usage));
         assert_eq!(parse(&[]), Err(Usage));
+        assert_eq!(
+            parse(&words(&["--cross-session", "@other:cl:w", "question"])),
+            Ok(Parsed {
+                cross_session: true,
+                target: "@other:cl:w".to_owned(),
+                body: "question".to_owned(),
+            })
+        );
+        assert_eq!(parse(&words(&["--cross-session", "cl:w"])), Err(Usage));
         assert!(is_blank(" \t\n\u{b}\u{c}\r"));
         assert!(is_blank(""));
         assert!(!is_blank(" x "));
@@ -1002,6 +1224,7 @@ mod tests {
                 framed: "framed".to_owned(),
                 notice: false,
             }),
+            None,
             &mut err,
         )
         .expect("the pending request event is recorded");
@@ -1020,6 +1243,65 @@ mod tests {
         assert_eq!(found.summary, b"[unconfirmed] the question");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the test forces a target-ledger write failure in isolated state"
+    )]
+    fn a_failed_target_mirror_is_loud_and_keeps_the_caller_event() {
+        let root = std::env::temp_dir().join(format!(
+            "ae-tracked-cross-audit-failure-{}",
+            std::process::id()
+        ));
+        let caller = root.join("caller");
+        let target = root.join("target");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&caller).expect("caller session directory");
+        std::fs::create_dir_all(target.join("events.jsonl"))
+            .expect("a directory blocks the target event file");
+        let fields = EventFields {
+            ts: Timestamp::parse("2026-08-27T07:11:12Z").expect("the timestamp parses"),
+            actor: "lead",
+            action: "ask",
+            target: "@target:worker",
+            reference: "ae-1",
+            actor_slot: "main",
+            actor_session: "caller",
+            target_slot: "worker.0",
+            target_session: "target",
+            summary: "question",
+            body_file: "",
+        };
+        let mut err = Vec::new();
+        let code = record_tracked_delivery(
+            &caller,
+            &fields,
+            Ok(crate::deliver::Delivered {
+                body_file: "/messages/ae-1.ask.body.txt".to_owned(),
+                framed: "framed".to_owned(),
+            }),
+            Some(CrossSession {
+                caller: "caller",
+                target: "target",
+            }),
+            &mut err,
+        )
+        .expect("the diagnostic is writable");
+        assert_eq!(code, crate::state::EXIT_FAILED);
+        let caller_event =
+            std::fs::read_to_string(caller.join("events.jsonl")).expect("the caller audit remains");
+        assert!(caller_event.contains("\"cross_session\":true"));
+        let diagnostic = String::from_utf8(err).expect("the diagnostic is utf-8");
+        assert_eq!(diagnostic.lines().count(), 1, "{diagnostic}");
+        assert!(
+            diagnostic.starts_with(
+                "ae: ask ae-1 was delivered to @target:worker but its event was not emitted:"
+            ),
+            "{diagnostic}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -1059,6 +1341,7 @@ mod tests {
                 framed: "framed".to_owned(),
                 notice: true,
             }),
+            None,
             &mut err,
         )
         .expect("the notice failure is handled");
@@ -1096,6 +1379,7 @@ mod tests {
             &dir,
             &fields,
             Err(crate::deliver::Failure::Abandoned),
+            None,
             &mut err,
         )
         .expect("the refused delivery is handled");

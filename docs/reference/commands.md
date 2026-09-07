@@ -448,6 +448,29 @@ ae doctor --refresh         # all sessions
 ae doctor --refresh my-fix  # one session
 ```
 
+## Session helpers
+
+Session delivery helpers stay inside their own ae session by default:
+
+```text
+send [--cross-session] <agent> <message>
+ask [--cross-session] <agent> <question>
+review [--cross-session] <agent> <request>
+interrupt [--cross-session] <agent> [message]
+```
+
+A target that resolves to another ae session is refused unless the leading
+`--cross-session` flag is present. Passing the flag states that the human
+explicitly instructed that delivery. Resolution happens first, so an unknown
+target keeps its normal resolution error. Successful cross-session deliveries
+write the same event to both session ledgers with `cross_session: true`.
+Outside tmux, the helper's own session is treated as the caller.
+
+`reply <request-id> <message>` needs no flag when answering a cross-session
+`ask` or `review`: the stored request id proves that conversation was opened
+explicitly. Inspection and navigation (`peek`, `focus`, `agents --all`) do not
+deliver messages and need no flag.
+
 ## `ae watchdog`
 
 ```bash

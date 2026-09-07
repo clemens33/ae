@@ -2143,6 +2143,51 @@ exit 0
         dir
     }
 
+    /// A second live ae session on this fixture's server, with one stamped
+    /// pane recording everything it receives.
+    fn live_session(&self, session: &str, agent: &str) -> (std::path::PathBuf, String) {
+        let received = format!("received.{session}");
+        let recorder = format!("exec cat >> {}", self.scratch_dir.join(&received).display());
+        assert!(
+            self.tmux(&[
+                "new-session",
+                "-d",
+                "-x",
+                "400",
+                "-y",
+                "40",
+                "-s",
+                session,
+                &recorder
+            ])
+            .0
+        );
+        let (_, panes) = self.tmux(&["list-panes", "-s", "-t", session, "-F", "#{pane_id}"]);
+        let pane = panes.lines().next().unwrap_or_default().to_owned();
+        assert!(
+            self.tmux(&["set-option", "-p", "-t", &pane, "@ae_slot", "main"])
+                .0
+        );
+        assert!(
+            self.tmux(&["set-option", "-p", "-t", &pane, "@ae_agent", agent])
+                .0
+        );
+        let dir = self.scratch_dir.join("sessions").join(session);
+        assert!(std::fs::create_dir_all(&dir).is_ok(), "a session dir");
+        assert!(
+            std::fs::write(
+                dir.join("meta"),
+                format!(
+                    "session={session}\ntmux_server_kind=socket\ntmux_server={}\n",
+                    self.sock.display()
+                ),
+            )
+            .is_ok(),
+            "a meta file"
+        );
+        (dir, pane)
+    }
+
     fn forget(&self) {
         for name in ["send.target", "send.message", "send.env"] {
             let _ = std::fs::remove_file(self.dir.join(name));
@@ -2179,6 +2224,23 @@ fn event_ref(fx: &Tracked) -> String {
         .and_then(|tail| tail.split('"').next())
         .unwrap_or_else(|| panic!("the event carries a ref: {last:?}"))
         .to_owned()
+}
+
+/// One local and one remote live ae session for boundary integration tests.
+fn boundary_fixture(
+    tag: &str,
+) -> (
+    Tracked,
+    String,
+    std::path::PathBuf,
+    String,
+    std::path::PathBuf,
+) {
+    let fx = Tracked::new(tag);
+    let remote_session = format!("tr{tag}_remote");
+    let (remote_dir, remote_pane) = fx.live_session(&remote_session, "outside");
+    let remote_received = fx.scratch_dir.join(format!("received.{remote_session}"));
+    (fx, remote_session, remote_dir, remote_pane, remote_received)
 }
 
 /// The framed text a pane received, with the trailing newline the Enter added
@@ -2399,7 +2461,7 @@ fn a_request_that_does_not_resolve_or_is_refused_leaves_no_event_and_no_paste() 
         .env("TMUX_PANE", &fx.main)
         .arg(ae::cli::ASK)
         .arg(&dead)
-        .args(["ghost", "q"])
+        .args(["--cross-session", "ghost", "q"])
         .output()
         .expect("the ae binary should run");
     assert_eq!(out.status.code(), Some(1), "{out:?}");
@@ -2976,12 +3038,28 @@ fn send_resolves_a_repeated_pane_id_only_on_the_callers_server() {
         mark.extend(["set-option", "-p", "-t", &caller_pane, option, value].map(ToOwned::to_owned));
         assert!(run_tmux(&mark, &fx.scratch_dir).0, "stamp caller pane");
     }
+    let caller_dir = fx.scratch_dir.join("sessions").join("caller-a");
+    assert!(
+        std::fs::create_dir_all(&caller_dir).is_ok(),
+        "the caller session dir"
+    );
+    assert!(
+        std::fs::write(
+            caller_dir.join("meta"),
+            format!(
+                "session=caller-a\ntmux_server_kind=socket\ntmux_server={}\n",
+                caller_socket.display()
+            ),
+        )
+        .is_ok(),
+        "the caller session meta"
+    );
 
     let sent = fx.run_from(
         &caller_socket,
         ae::cli::SEND,
         Some(&caller_pane),
-        &["worker", "from", "server", "a"],
+        &["--cross-session", "worker", "from", "server", "a"],
         &[],
     );
 
@@ -2997,6 +3075,257 @@ fn send_resolves_a_repeated_pane_id_only_on_the_callers_server() {
     assert!(
         last.contains("\"actor\":\"@caller-a:caller-a\"") && !last.contains("\"actor\":\"lead\""),
         "caller identity came from its own server: {last}"
+    );
+}
+
+#[test]
+fn cross_session_helpers_refuse_without_authority() {
+    let (fx, remote_session, remote_dir, remote_pane, remote_received) =
+        boundary_fixture("boundary_refusal");
+    let target = format!("@{remote_session}:outside");
+    let canonical = format!("{remote_session}:outside");
+    let pane_target = remote_pane.clone();
+
+    for (helper, typed, body) in [
+        (ae::cli::SEND, target.as_str(), "send refused"),
+        (ae::cli::ASK, canonical.as_str(), "ask refused"),
+        (ae::cli::REVIEW, pane_target.as_str(), "review refused"),
+        (ae::cli::INTERRUPT, target.as_str(), "interrupt refused"),
+    ] {
+        let before = fx.events().len();
+        let refused = fx.run(helper, Some(&fx.main), &[typed, body], &[]);
+        assert_eq!(refused.0, Some(1), "{helper}: {refused:?}");
+        assert_eq!(
+            refused.2,
+            format!(
+                "ae: {} to {canonical} (typed {typed}) REFUSED — another ae session; pass --cross-session only when the human explicitly instructed it\n",
+                helper.trim_start_matches('_')
+            )
+        );
+        let events = fx.events();
+        assert_eq!(events.len(), before + 1, "{helper}: {events:?}");
+        assert!(
+            events.last().is_some_and(|event| {
+                event.contains("\"action\":\"refused\"")
+                    && event.contains(&format!("\"target\":\"{canonical}\""))
+                    && !event.contains("\"cross_session\"")
+            }),
+            "{helper}: {events:?}"
+        );
+        assert!(
+            std::fs::read_to_string(&remote_received)
+                .unwrap_or_default()
+                .is_empty(),
+            "{helper}: a refused body reached the target"
+        );
+        assert!(
+            !remote_dir.join("events.jsonl").exists(),
+            "{helper}: a refusal reached the target ledger"
+        );
+    }
+
+    let before = fx.events().len();
+    let missing = fx.run(
+        ae::cli::SEND,
+        Some(&fx.main),
+        &[&format!("@{remote_session}:nobody"), "x"],
+        &[],
+    );
+    assert_eq!(
+        missing,
+        (
+            Some(1),
+            String::new(),
+            format!("Error: agent 'nobody' not found in session '{remote_session}'\n")
+        )
+    );
+    assert_eq!(fx.events().len(), before, "resolution precedes refusal");
+}
+
+#[test]
+fn authorized_cross_session_deliveries_are_mirrored_to_both_ledgers() {
+    let (fx, remote_session, remote_dir, _remote_pane, remote_received) =
+        boundary_fixture("boundary_allowed");
+    let target = format!("@{remote_session}:outside");
+    let sent = fx.run(
+        ae::cli::SEND,
+        Some(&fx.main),
+        &["--cross-session", &target, "authorized send"],
+        &[],
+    );
+    assert_eq!(sent, (Some(0), String::new(), String::new()));
+    assert_eq!(
+        std::fs::read_to_string(&remote_received).unwrap_or_default(),
+        "⟦ae:msg from lead⟧\nauthorized send\n"
+    );
+    let caller_send = fx.events().last().cloned().unwrap_or_default();
+    let remote_send = std::fs::read_to_string(remote_dir.join("events.jsonl"))
+        .unwrap_or_default()
+        .lines()
+        .last()
+        .unwrap_or_default()
+        .to_owned();
+    assert_eq!(caller_send, remote_send, "the event is mirrored verbatim");
+    assert!(
+        caller_send.contains("\"cross_session\":true"),
+        "{caller_send}"
+    );
+
+    assert!(std::fs::write(&remote_received, "").is_ok());
+    let reviewed = fx.run(
+        ae::cli::REVIEW,
+        Some(&fx.main),
+        &["--cross-session", &target, "review this"],
+        &[],
+    );
+    assert_eq!(reviewed.0, Some(0), "{reviewed:?}");
+    let caller_review = fx.events().last().cloned().unwrap_or_default();
+    let remote_review = std::fs::read_to_string(remote_dir.join("events.jsonl"))
+        .unwrap_or_default()
+        .lines()
+        .last()
+        .unwrap_or_default()
+        .to_owned();
+    assert!(
+        caller_review.contains("\"action\":\"review\"")
+            && caller_review.contains("\"cross_session\":true"),
+        "{caller_review}"
+    );
+    assert_eq!(caller_review, remote_review);
+
+    assert!(std::fs::write(&remote_received, "").is_ok());
+    let interrupted = fx.run(
+        ae::cli::INTERRUPT,
+        Some(&fx.main),
+        &["--cross-session", &target, "change direction"],
+        &[],
+    );
+    assert_eq!(interrupted, (Some(0), String::new(), String::new()));
+    let interrupted_body = std::fs::read_to_string(&remote_received).unwrap_or_default();
+    assert!(
+        interrupted_body.ends_with("change direction\n") && !interrupted_body.contains("⟦ae:msg"),
+        "interrupt remains unframed: {interrupted_body:?}"
+    );
+    let caller_interrupt = fx.events().last().cloned().unwrap_or_default();
+    let remote_interrupt = std::fs::read_to_string(remote_dir.join("events.jsonl"))
+        .unwrap_or_default()
+        .lines()
+        .last()
+        .unwrap_or_default()
+        .to_owned();
+    assert!(
+        caller_interrupt.contains("\"action\":\"interrupt\"")
+            && caller_interrupt.contains("\"cross_session\":true"),
+        "{caller_interrupt}"
+    );
+    assert_eq!(caller_interrupt, remote_interrupt);
+}
+
+#[test]
+fn same_session_send_is_unchanged() {
+    let fx = Tracked::new("boundary_same");
+    let same = fx.run(
+        ae::cli::SEND,
+        Some(&fx.main),
+        &["worker", "still local"],
+        &[],
+    );
+    assert_eq!(same, (Some(0), String::new(), String::new()));
+    assert_eq!(pasted(&fx, "worker"), "⟦ae:msg from lead⟧\nstill local");
+    assert!(
+        !fx.events()
+            .last()
+            .unwrap_or(&String::new())
+            .contains("\"cross_session\""),
+        "same-session send changed shape"
+    );
+}
+
+#[test]
+fn cross_session_request_can_be_replied_to_without_a_flag() {
+    let (fx, remote_session, remote_dir, remote_pane, _remote_received) =
+        boundary_fixture("boundary_reply");
+    let target = format!("@{remote_session}:outside");
+    let asked = fx.run(
+        ae::cli::ASK,
+        Some(&fx.main),
+        &["--cross-session", &target, "answer me"],
+        &[],
+    );
+    assert_eq!(asked.0, Some(0), "{asked:?}");
+    let id = event_ref(&fx);
+    let opening = fx.events().last().cloned().unwrap_or_default();
+    assert!(opening.contains("\"cross_session\":true"), "{opening}");
+    assert!(
+        std::fs::read_to_string(remote_dir.join("events.jsonl"))
+            .unwrap_or_default()
+            .contains(&format!("\"ref\":\"{id}\"")),
+        "the target ledger lacks the opening request"
+    );
+
+    fx.forget();
+    let replied = fx.run(
+        ae::cli::REPLY,
+        Some(&remote_pane),
+        &[&id, "cross-session answer"],
+        &[],
+    );
+    assert_eq!(replied, (Some(0), String::new(), String::new()));
+    assert_eq!(
+        pasted(&fx, "main"),
+        format!("⟦ae:msg from @{remote_session}:outside⟧\n[{id}] cross-session answer")
+    );
+    let reply = fx.events().last().cloned().unwrap_or_default();
+    let remote_events =
+        std::fs::read_to_string(remote_dir.join("events.jsonl")).unwrap_or_default();
+    assert!(reply.contains("\"action\":\"reply\"") && reply.contains("\"cross_session\":true"));
+    assert_eq!(
+        remote_events.lines().last().unwrap_or_default(),
+        reply,
+        "reply needs no flag and is mirrored"
+    );
+}
+
+#[test]
+fn boundary_follows_the_actual_caller_not_the_helper_path() {
+    let (fx, _remote_session, remote_dir, remote_pane, _remote_received) =
+        boundary_fixture("boundary_caller");
+    let canonical = "trboundary_caller:worker";
+    let remote_events =
+        std::fs::read_to_string(remote_dir.join("events.jsonl")).unwrap_or_default();
+    // The caller boundary follows the pane on the actual `$TMUX` socket, not
+    // the helper path. A remote pane invoking this session's helper cannot
+    // turn its target into a same-session delivery by choosing that path.
+    fx.forget();
+    let caller_before = remote_events.lines().count();
+    let target_before = fx.events().len();
+    let refused = fx.run(
+        ae::cli::SEND,
+        Some(&remote_pane),
+        &["worker", "helper path bypass"],
+        &[],
+    );
+    assert_eq!(refused.0, Some(1), "{refused:?}");
+    assert_eq!(
+        refused.2,
+        format!(
+            "ae: send to {canonical} (typed worker) REFUSED — another ae session; pass --cross-session only when the human explicitly instructed it\n"
+        )
+    );
+    assert_eq!(fx.events().len(), target_before, "target ledger changed");
+    assert!(
+        fx.received_now("worker").is_empty(),
+        "helper-path bypass reached target"
+    );
+    let remote_events =
+        std::fs::read_to_string(remote_dir.join("events.jsonl")).unwrap_or_default();
+    assert_eq!(remote_events.lines().count(), caller_before + 1);
+    assert!(
+        remote_events.lines().last().is_some_and(|event| {
+            event.contains("\"action\":\"refused\"")
+                && event.contains(&format!("\"target\":\"{canonical}\""))
+        }),
+        "{remote_events}"
     );
 }
 
@@ -3112,7 +3441,7 @@ fn send_refuses_exactly_records_nothing_on_a_failed_delivery_and_names_the_gap_a
         .env("TMUX_PANE", &fx.main)
         .arg(ae::cli::SEND)
         .arg(&dead)
-        .args(["ghost", "late"])
+        .args(["--cross-session", "ghost", "late"])
         .output()
         .expect("the ae binary should run");
     assert_eq!(out.status.code(), Some(1), "{out:?}");

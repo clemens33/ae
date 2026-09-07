@@ -2,9 +2,10 @@
 //! `ae`-internal paths exec into, composed, DELIVERED and recorded by the core
 //! — the paste included ([`crate::deliver`]).
 //!
-//! `send <target> <message…>`: fewer than two words is usage; a blank message
-//! is refused. The EVENT's fields come from the caller's environment and
-//! nowhere else — this is the contract the `ask`/`review`/`reply` fallback
+//! `send [--cross-session] <target> <message…>`: fewer than two operand words
+//! is usage; a blank message is refused. The EVENT's fields come from the
+//! caller's environment and nowhere else — this is the contract the
+//! `ask`/`review`/`reply` fallback
 //! bodies, `ae cancel`, the watchdog's `nudge` and the telegram bridge all exec
 //! `send` under: `AE_SENDER_OVERRIDE` names the actor (the explicit, never
 //! ambient, door for callers with no pane); `_AE_EVENT_ACTION` (else `send`),
@@ -47,7 +48,7 @@ use crate::time::Timestamp;
 use crate::tracked::{self, EventFields};
 
 /// The usage text.
-pub const USAGE: &str = "Usage: send <agent-name|pane-id|@session:agent> <message>\n  Examples: send claude:lead \"hello\"\n           send @my-feature:claude:lead \"hello\"\n";
+pub const USAGE: &str = "Usage: send [--cross-session] <agent-name|pane-id|@session:agent> <message>\n  Examples: send claude:lead \"hello\"\n           send --cross-session @my-feature:claude:lead \"hello\"\n";
 
 /// The default action.
 pub const ACTION: &str = "send";
@@ -55,6 +56,9 @@ pub const ACTION: &str = "send";
 /// What the argv said.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Parsed {
+    /// Whether the caller states that the human explicitly authorized a
+    /// cross-session delivery.
+    pub cross_session: bool,
     /// The target as typed.
     pub target: String,
     /// The message: the remaining words joined by one space (`"$*"`).
@@ -71,8 +75,10 @@ pub struct Usage;
 ///
 /// [`Usage`].
 pub fn parse(tail: &[String]) -> Result<Parsed, Usage> {
+    let (cross_session, tail) = tracked::split_cross_session_flag(tail);
     match tail {
         [target, message @ ..] if !message.is_empty() => Ok(Parsed {
+            cross_session,
             target: target.clone(),
             message: message.join(" "),
         }),
@@ -243,6 +249,7 @@ pub fn run(
     tail: &[String],
     env: &Env,
     display: &str,
+    caller_session: &str,
     own_session: &str,
     now: Timestamp,
     defer: std::time::Duration,
@@ -258,6 +265,11 @@ pub fn run(
     }
     let (action, reference, summary) = fields(env, &parsed.message);
     let actor = actor(env, display);
+    let caller_session = if caller_session.is_empty() {
+        own_session
+    } else {
+        caller_session
+    };
     let mut event = EventFields {
         ts: now,
         actor: &actor,
@@ -287,6 +299,21 @@ pub fn run(
             return Ok(EXIT_FAILED);
         }
     };
+    if tracked::refuse_cross_session(
+        dir,
+        ACTION,
+        parsed.cross_session,
+        &parsed.target,
+        &resolved,
+        &actor,
+        &env.actor_slot,
+        caller_session,
+        now,
+        err,
+    )? {
+        return Ok(EXIT_FAILED);
+    }
+    let cross_session = resolved.session != caller_session;
     let target_name = if resolved.agent.is_empty() {
         parsed.target.clone()
     } else {
@@ -308,8 +335,17 @@ pub fn run(
         defer,
     };
     event.target = &target_name;
+    if cross_session {
+        event.actor_session = caller_session;
+        event.target_slot = &resolved.slot;
+        event.target_session = &resolved.session;
+    }
     let delivery = deliver::deliver(&request, err)?;
-    record_send_delivery(dir, &event, delivery, env, err)
+    let cross = cross_session.then_some(tracked::CrossSession {
+        caller: caller_session,
+        target: &resolved.session,
+    });
+    record_send_delivery(dir, &event, delivery, env, cross, err)
 }
 
 /// Record a send after its body was delivered or its submit was left
@@ -320,6 +356,7 @@ fn record_send_delivery(
     event: &EventFields<'_>,
     delivery: Result<deliver::Delivered, deliver::Failure>,
     env: &Env,
+    cross_session: Option<tracked::CrossSession<'_>>,
     err: &mut impl Write,
 ) -> io::Result<u8> {
     let action = event.action;
@@ -354,12 +391,16 @@ fn record_send_delivery(
         summary: &recorded,
         body_file: &body_file,
     };
-    let line = if unconfirmed {
+    let line = if unconfirmed && cross_session.is_some() {
+        tracked::cross_session_unconfirmed_event_line(&fields)
+    } else if unconfirmed {
         tracked::unconfirmed_event_line(&fields)
+    } else if cross_session.is_some() {
+        tracked::cross_session_event_line(&fields)
     } else {
         tracked::event_line(&fields)
     };
-    if let Err(why) = store::open(dir).append_event(&line) {
+    if let Err(why) = tracked::append_delivery_event(dir, &line, cross_session) {
         if unconfirmed {
             writeln!(
                 err,
@@ -401,8 +442,17 @@ mod tests {
         assert_eq!(
             parse(&words(&["cl:lead", "hello", "there"])),
             Ok(Parsed {
+                cross_session: false,
                 target: "cl:lead".into(),
                 message: "hello there".into()
+            })
+        );
+        assert_eq!(
+            parse(&words(&["--cross-session", "@other:lead", "hello"])),
+            Ok(Parsed {
+                cross_session: true,
+                target: "@other:lead".into(),
+                message: "hello".into(),
             })
         );
     }
@@ -576,6 +626,7 @@ mod tests {
                 notice: false,
             }),
             &Env::default(),
+            None,
             &mut err,
         )
         .expect("the pending send event is recorded");
@@ -625,8 +676,9 @@ mod tests {
                 body_file: "",
             };
             let mut err = Vec::new();
-            let code = record_send_delivery(&dir, &event, Err(failure), &Env::default(), &mut err)
-                .expect("the refusal is handled");
+            let code =
+                record_send_delivery(&dir, &event, Err(failure), &Env::default(), None, &mut err)
+                    .expect("the refusal is handled");
             assert_eq!(code, crate::state::EXIT_FAILED);
             assert!(!dir.join("events.jsonl").exists());
             assert!(err.is_empty());
