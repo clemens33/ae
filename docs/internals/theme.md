@@ -65,7 +65,8 @@ session that finished. Stale and unknown share a glyph and never a WORD: the
 reason beside the mark says which of the two it was.
 
 A motion ticker runs between the watchdog's 60-second verdict cycles. Each tick
-reads every pane's history size and cursor position in one `list-panes` call. A
+reads every pane's history size and cursor ROW in one `list-panes` call, never the column,
+which is what typing moves. A
 history-size change is moving immediately; cursor-only motion is damped until
 two of the last three readings changed, so an idle TUI's occasional cursor
 redraw does not animate it. One batched tmux invocation then advances the pane

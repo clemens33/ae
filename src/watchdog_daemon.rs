@@ -749,9 +749,10 @@ fn moving_panes(previous: &[tmux::MotionPane], current: &[tmux::MotionPane]) -> 
                 .iter()
                 .find(|prior| prior.pane_id == pane.pane_id)
                 .is_some_and(|prior| {
-                    prior.history_size != pane.history_size
-                        || prior.cursor_x != pane.cursor_x
-                        || prior.cursor_y != pane.cursor_y
+                    // The COLUMN is not motion: typing into an input box moves
+                    // it on every keystroke, and a human typing is not an agent
+                    // working. Output scrolls the history or moves the ROW.
+                    prior.history_size != pane.history_size || prior.cursor_y != pane.cursor_y
                 })
         })
         .map(|pane| pane.pane_id.clone())
@@ -780,7 +781,7 @@ fn damped_moving_panes(
             next_changes.push((pane.pane_id.clone(), 0));
             continue;
         };
-        let cursor_moved = prior.cursor_x != pane.cursor_x || prior.cursor_y != pane.cursor_y;
+        let cursor_moved = prior.cursor_y != pane.cursor_y;
         let prior_changes = cursor_history
             .iter()
             .find(|(pane_id, _)| pane_id == &pane.pane_id)
@@ -2371,7 +2372,7 @@ mod tests {
         ];
         let current = [
             motion("%1", "lead", 11, 2, 3),
-            motion("%2", "worker", 20, 5, 5),
+            motion("%2", "worker", 20, 4, 6),
             motion("%3", "still", 30, 6, 7),
             motion("%4", "new", 1, 1, 1),
             motion("%5", "_watchdog", 41, 8, 9),
@@ -2411,18 +2412,33 @@ mod tests {
         assert_eq!((third, stop), (3, true));
     }
 
+    /// Typing moves the cursor COLUMN on every keystroke and nothing else; it
+    /// is a human at the keyboard, not an agent at work, so it never spins.
+    #[test]
+    fn typing_moves_only_the_column_and_is_never_motion() {
+        let mut previous = vec![motion("%1", "lead", 10, 2, 3)];
+        let mut history: Vec<(String, u8)> = Vec::new();
+        for column in 3..12 {
+            let current = [motion("%1", "lead", 10, column, 3)];
+            let (moving, next) = super::damped_moving_panes(&previous, &current, &history);
+            assert!(moving.is_empty(), "column {column} read as motion");
+            history = next;
+            previous = current.to_vec();
+        }
+    }
+
     #[test]
     fn cursor_only_motion_requires_two_changes_within_three_ticks() {
         let previous = [motion("%1", "lead", 10, 2, 3)];
-        let first = [motion("%1", "lead", 10, 3, 3)];
+        let first = [motion("%1", "lead", 10, 2, 4)];
         let (moving, changes) = damped_moving_panes(&previous, &first, &[]);
         assert!(moving.is_empty());
 
-        let second = [motion("%1", "lead", 10, 4, 3)];
+        let second = [motion("%1", "lead", 10, 2, 5)];
         let (moving, changes) = damped_moving_panes(&first, &second, &changes);
         assert_eq!(moving, ["%1"]);
 
-        let still = [motion("%1", "lead", 10, 4, 3)];
+        let still = [motion("%1", "lead", 10, 2, 5)];
         let (moving, _) = damped_moving_panes(&second, &still, &changes);
         assert!(moving.is_empty(), "stopped cursor motion restores at once");
     }
