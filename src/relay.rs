@@ -13,6 +13,7 @@ use std::time::Duration;
 
 use crate::config;
 use crate::deliver;
+use crate::inventory::ServerId;
 use crate::meta;
 use crate::requests::is_slot;
 use crate::session_launch::name::is_session_name;
@@ -73,8 +74,8 @@ struct Target {
 
 /// Run one relay end to end.
 ///
-/// `dir` is the helper directory used to enter the core; `viewer` is the
-/// caller identity read from tmux on that helper directory's recorded server.
+/// `dir` is the helper directory used to enter the core; `actual` is the
+/// caller identity and server read from the actual `$TMUX` socket.
 ///
 /// # Errors
 ///
@@ -86,7 +87,7 @@ struct Target {
 pub fn run(
     dir: &Path,
     tail: &[String],
-    viewer: Option<&ObservedViewer>,
+    actual: Option<(&ObservedViewer, &ServerId)>,
     now: Timestamp,
     defer: Duration,
     err: &mut impl Write,
@@ -95,7 +96,7 @@ pub fn run(
         write!(err, "{USAGE}")?;
         return Ok(EXIT_USAGE);
     };
-    let (caller, caller_meta) = match caller(dir, viewer) {
+    let (caller, caller_meta) = match caller(dir, actual) {
         Ok(caller) => caller,
         Err(reason) => {
             // With no proven caller there is no trustworthy session ledger to
@@ -178,8 +179,11 @@ pub fn run(
     }
 }
 
-fn caller(dir: &Path, viewer: Option<&ObservedViewer>) -> Result<(Caller, Vec<u8>), &'static str> {
-    let Some(viewer) = viewer else {
+fn caller(
+    dir: &Path,
+    actual: Option<(&ObservedViewer, &ServerId)>,
+) -> Result<(Caller, Vec<u8>), &'static str> {
+    let Some((viewer, actual_server)) = actual else {
         return Err("caller pane could not be verified");
     };
     let (Some(session), Some(actor)) = (viewer.session.as_deref(), viewer.agent.as_deref()) else {
@@ -197,6 +201,15 @@ fn caller(dir: &Path, viewer: Option<&ObservedViewer>) -> Result<(Caller, Vec<u8
     };
     if meta::sole_value(&bytes, "session") != Some(session.as_bytes()) {
         return Err("caller session meta does not match its pane");
+    }
+    let parsed = meta::Meta::parse(&String::from_utf8_lossy(&bytes));
+    let meta::ServerSelector::Positive(selector) = parsed.server_selector() else {
+        return Err("caller session is not the recorded one");
+    };
+    let recorded_server = ServerId::Selected(selector);
+    let mut sockets = crate::SocketPaths::asking(crate::transport::observe_socket_path);
+    if !sockets.proven_same(actual_server, &recorded_server) {
+        return Err("caller session is not the recorded one");
     }
     Ok((
         Caller {

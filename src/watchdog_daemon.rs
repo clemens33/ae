@@ -556,8 +556,8 @@ const HELPER_NAME: &str = "send";
 pub(crate) const HEARTBEAT_NAME: &str = "meta-agent-state.json";
 
 /// The sweep prompt the orchestrator is nudged with.
-const SWEEP_PROMPT: &str =
-    "Sweep now: `ae brief --all`; print the overview in this pane; declare done.";
+const SWEEP_PROMPT: &str = "Sweep now: refresh the heartbeat with `ae _monitor sweep` for this \
+session and `--no-notify`; then `ae brief --all`; print the overview in this pane; declare done.";
 
 /// The normal verdict interval and smallest useful positive sweep cadence.
 /// Zero remains the explicit off switch.
@@ -3813,7 +3813,39 @@ mod tests {
         // The text an orchestrator acts on.
         assert_eq!(
             SWEEP_PROMPT,
-            "Sweep now: `ae brief --all`; print the overview in this pane; declare done."
+            "Sweep now: refresh the heartbeat with `ae _monitor sweep` for this session and \
+             `--no-notify`; then `ae brief --all`; print the overview in this pane; declare done."
+        );
+    }
+
+    #[test]
+    fn a_completed_sweep_stays_healthy_beyond_startup_grace() {
+        let knobs = Knobs {
+            sweep: crate::watchdog::SweepKnobs {
+                sweep_secs: 120,
+                ..crate::watchdog::SweepKnobs::default()
+            },
+            ..Knobs::default()
+        };
+        let mut prior = PaneState::default();
+        prior.sweep.first_delivered = Some(at(0));
+        prior.sweep.last_sweep = Some(at(240));
+        let mut observed = seen();
+        observed.sweep = Some(SweepObservation::new(at(301), Some(at(300)), &knobs.sweep));
+
+        let booked = account(&prior, &observed, &knobs);
+
+        assert_eq!(booked.verdict, Verdict::Meta(SweepVerdict::MetaSweeping));
+        assert!(
+            !booked.effects.iter().any(|effect| matches!(
+                effect,
+                Effect::Emit {
+                    action: "alert",
+                    ..
+                }
+            )),
+            "the completion heartbeat prevents a wedge after the 300s grace: {:?}",
+            booked.effects
         );
     }
 

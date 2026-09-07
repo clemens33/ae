@@ -471,14 +471,16 @@ one is not.
 
 Liveness is still guarded two ways: the dead/missing-pane checks catch a crashed
 orchestrator, and a **heartbeat** check catches a *live-but-not-sweeping* orchestrator (model
-stall, upstream throttle, wedge) — the orchestrator's sweep helper rewrites
+stall, upstream throttle, wedge). Before each overview, the seat runs
+`ae _monitor sweep <session-dir> --no-notify`; that helper rewrites
 `~/.ae/sessions/<orchestrator>/meta-agent-state.json` on each real sweep, and if that mtime
 stops advancing past roughly twice the resolved sweep cadence the watchdog raises one alert (cleared on
-recovery). That sweep helper is the core entry `ae _monitor sweep <session-dir>`, and the
+recovery). The monitor command defaults to notifications and may execute the session's `say`
+helper when it has changes; the seat's mandatory `--no-notify` prevents that. The
 file name is one constant shared by the writer and the watchdog that stats it, so the two
 cannot drift apart. The directory must be the caller's OWN session — the sweep is refused
 unless `$TMUX_PANE` names a pane of it on the tmux server that session records — because a
-sweep locks, writes and runs `say` inside whatever directory it is handed. The sweep nudges use `action=nudge`,
+sweep locks, writes and may run `say` inside whatever directory it is handed. The sweep nudges use `action=nudge`,
 which is **not in the default telegram include set**, so routine sweeps don't
 reach your phone (a custom `include` containing `nudge` would forward them).
 

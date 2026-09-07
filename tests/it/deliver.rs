@@ -353,6 +353,17 @@ impl RelayCaller {
         )
     }
 
+    fn rename_session(&self, name: &str) {
+        let mut args = ae::tmux::server_args(&self.server());
+        args.extend(["rename-session", "-t"].map(ToOwned::to_owned));
+        args.push(format!("={}", self.session));
+        args.push(name.to_owned());
+        assert!(
+            run_tmux(&args, &self.scratch).0,
+            "the caller session renames"
+        );
+    }
+
     fn events(&self) -> String {
         std::fs::read_to_string(self.dir.join("events.jsonl")).unwrap_or_default()
     }
@@ -384,6 +395,28 @@ fn relay_authenticates_the_actual_caller_server_not_the_invoked_helper_server() 
     assert!(target.submitted().is_empty());
     assert!(target.events().is_empty());
     assert!(ordinary.events().contains(body));
+    assert!(privileged.events().is_empty());
+}
+
+#[test]
+fn relay_refuses_a_foreign_caller_that_renamed_into_the_privileged_session_name() {
+    let target = Rig::new("relaynamesake", "claude", 0);
+    let privileged = RelayCaller::new(&target, "namesake-a", true);
+    let ordinary = RelayCaller::new(&target, "namesake-b", false);
+    ordinary.rename_session(&privileged.session);
+    let named = format!("{}:tui", target.session);
+    let body = "foreign caller must not inherit namesake authority";
+
+    let (code, stderr) = ordinary.run_from(&privileged.dir, &named, body);
+
+    assert_eq!(code, Some(1), "a namesake caller must be refused: {stderr}");
+    assert_eq!(
+        stderr,
+        "ae: relay REFUSED — caller session is not the recorded one. Nothing was sent.\n"
+    );
+    assert!(target.submitted().is_empty());
+    assert!(target.events().is_empty());
+    assert!(ordinary.events().is_empty());
     assert!(privileged.events().is_empty());
 }
 

@@ -49,6 +49,12 @@ Set them in the shell before `ae <name>`, or via your shell rc.
 For the orchestrator only, launch persists `[workspace] sweep` as `sweep_sec`;
 that session fact outranks `AE_WATCHDOG_SWEEP_SEC`, which outranks 300.
 
+The orchestrator completes each prompted sweep by running
+`ae _monitor sweep <its-session-dir> --no-notify` before `ae brief --all`.
+The monitor command is the only writer of `meta-agent-state.json`; its mtime is
+the watchdog's completion heartbeat. The command can execute `say` by default,
+so the seat's `--no-notify` is mandatory and keeps routine overviews in its pane.
+
 ## Per-cycle state machine
 
 For each agent pane, the watchdog walks a fixed branch order. First match wins; later branches don't fire.

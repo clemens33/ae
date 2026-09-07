@@ -41,8 +41,10 @@ yet the seat is a model. The role is constrained, every attempt is audited, and
 the seat deliberately runs a cheap model; never give it judgment tasks.
 
 The standard workspace watchdog nudges the template's orchestrator every 120
-seconds. The persisted `[workspace] sweep` setting outranks the process-wide
-fallback and default. The seat is started explicitly; it is never an autostart companion.
+seconds. Each overview first runs `ae _monitor sweep` for its own session with
+`--no-notify`, refreshing the completion heartbeat without sending changed
+lines through `say`. The persisted `[workspace] sweep` setting outranks the
+process-wide fallback and default. The seat is started explicitly; it is never an autostart companion.
 `AE_NO_AUTOSTART=1` suppresses the Telegram bridge when launching another session.
 
 ## Files

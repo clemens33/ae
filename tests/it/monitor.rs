@@ -537,7 +537,7 @@ fn the_sweep_command_the_charter_prints_is_the_one_the_binary_accepts() {
     assert_eq!(
         quoted,
         format!(
-            "ae {} {} __HELPERS_DIR__",
+            "ae {} {} __HELPERS_DIR__ --no-notify",
             ae::cli::MONITOR,
             ae::monitor::SWEEP
         ),
@@ -558,14 +558,23 @@ fn the_sweep_command_the_charter_prints_is_the_one_the_binary_accepts() {
     plant_say(&dir, &log, 0);
     let pane = start_session(&socket, &scratch, "moncc");
 
-    let words: Vec<&str> = quoted.split_whitespace().skip(1).collect();
+    let words: Vec<String> = quoted
+        .split_whitespace()
+        .skip(1)
+        .map(|word| {
+            if word == "__HELPERS_DIR__" {
+                dir.to_string_lossy().into_owned()
+            } else {
+                word.to_owned()
+            }
+        })
+        .collect();
     let out = ae()
         .env("AE_HOME", &root)
         // From the orchestrator's own pane, which is where the charter's
         // instruction is carried out.
         .env("TMUX_PANE", &pane)
-        .args(&words[..words.len() - 1])
-        .arg(&dir)
+        .args(&words)
         .output()
         .expect("the ae binary should run");
     let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
@@ -575,7 +584,15 @@ fn the_sweep_command_the_charter_prints_is_the_one_the_binary_accepts() {
         "⚠ moncc · lead needs you: blocked\n",
         "the charter's own command, run: {stderr}"
     );
-    assert_eq!(said(&log), "⚠ moncc · lead needs you: blocked\n--\n");
+    assert_eq!(
+        said(&log),
+        "",
+        "the charter's mandatory --no-notify emits no chat event"
+    );
+    assert!(
+        dir.join("meta-agent-state.json").is_file(),
+        "the charter command writes the heartbeat before the overview completes"
+    );
 }
 
 #[test]

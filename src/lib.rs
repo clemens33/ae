@@ -430,13 +430,12 @@ fn placements(
     panes: &[tmux::FleetPane],
     sockets: &mut SocketPaths,
 ) -> Vec<orchestrator::Located> {
-    let here = sockets.of(caller);
     world
         .sessions
         .iter()
         .map(|session| {
             let recorded = recorded_server(recorded, &session.name);
-            let same_server = here.is_some() && sockets.of(&recorded) == here;
+            let same_server = sockets.proven_same(caller, &recorded);
             let mine: Vec<&tmux::FleetPane> = panes
                 .iter()
                 .filter(|pane| pane.session == session.name)
@@ -469,7 +468,7 @@ fn placements(
 ///
 /// One read per DISTINCT server, however many sessions name it: a fleet on one
 /// server is one question, not one per row.
-struct SocketPaths {
+pub(crate) struct SocketPaths {
     /// Who is asked. A parameter so the collision the cache exists to catch can
     /// be proven without two real servers.
     resolve: fn(&inventory::ServerId) -> Option<String>,
@@ -478,7 +477,7 @@ struct SocketPaths {
 
 impl SocketPaths {
     /// A cache that asks `resolve`.
-    const fn asking(resolve: fn(&inventory::ServerId) -> Option<String>) -> Self {
+    pub(crate) const fn asking(resolve: fn(&inventory::ServerId) -> Option<String>) -> Self {
         Self {
             resolve,
             seen: Vec::new(),
@@ -493,6 +492,17 @@ impl SocketPaths {
         let path = (self.resolve)(server);
         self.seen.push((server.clone(), path.clone()));
         path
+    }
+
+    /// Whether both server spellings answered with the same socket path.
+    /// Unknown is never equal, even when the spellings themselves match.
+    pub(crate) fn proven_same(
+        &mut self,
+        left: &inventory::ServerId,
+        right: &inventory::ServerId,
+    ) -> bool {
+        let left = self.of(left);
+        left.is_some() && self.of(right) == left
     }
 
     /// Keep the first spelling of each server whose socket identity tmux can
@@ -1313,7 +1323,7 @@ fn calling_pane(dir: &std::path::Path) -> Option<tmux::ObservedViewer> {
 /// linked helper, and pane ids repeat across servers. `$TMUX` names the actual
 /// socket inherited by the invoking pane; an absent or untypeable marker fails
 /// closed.
-fn actual_calling_pane() -> Option<tmux::ObservedViewer> {
+fn actual_calling_pane() -> Option<(tmux::ObservedViewer, inventory::ServerId)> {
     let pane = doors::calling_pane_id()?;
     let marker = doors::tmux_env()?;
     let socket = marker.split(',').next()?;
@@ -1322,7 +1332,7 @@ fn actual_calling_pane() -> Option<tmux::ObservedViewer> {
         return None;
     }
     let server = inventory::ServerId::Selected(meta::Selector::Socket(path));
-    transport::observe_viewer(&server, &pane)
+    transport::observe_viewer(&server, &pane).map(|viewer| (viewer, server))
 }
 
 /// `session=` in `<dir>/meta`, empty-or-missing folded to `None`.
@@ -1531,14 +1541,17 @@ pub fn run_with(
             send_defer(),
             err,
         )?,
-        cli::Request::Relay { dir, tail } => relay::run(
-            dir,
-            tail,
-            actual_calling_pane().as_ref(),
-            time::Timestamp::now(),
-            send_defer(),
-            err,
-        )?,
+        cli::Request::Relay { dir, tail } => {
+            let actual = actual_calling_pane();
+            relay::run(
+                dir,
+                tail,
+                actual.as_ref().map(|(viewer, server)| (viewer, server)),
+                time::Timestamp::now(),
+                send_defer(),
+                err,
+            )?
+        }
         cli::Request::Reply { dir, tail } => reply::run(
             dir,
             tail,
