@@ -986,7 +986,7 @@ fn the_window_agents_are_published_by_a_running_daemon() {
 /// A cached Working verdict animates at ticker cadence even while its pane is
 /// producing no terminal output.
 #[test]
-fn a_working_verdict_spinner_advances_between_watchdog_cycles() {
+fn a_working_verdict_pulse_changes_between_ticks() {
     let scratch = scratch("spinner");
     require_tmux(&scratch);
     let socket = scratch.join("s");
@@ -1072,15 +1072,22 @@ fn a_working_verdict_spinner_advances_between_watchdog_cycles() {
         }
         std::thread::sleep(Duration::from_millis(50));
     };
-    std::thread::sleep(Duration::from_secs(1));
-    let second = read();
-    let advanced = first.as_ref().is_some_and(|first| first != &second);
+    let mut states = first.into_iter().collect::<Vec<_>>();
+    for _ in 0..5 {
+        std::thread::sleep(Duration::from_millis(200));
+        states.push(read());
+    }
+    let advanced = states
+        .iter()
+        .collect::<std::collections::HashSet<_>>()
+        .len()
+        >= 2;
 
     stop_watchdog(&mut child, &socket, &scratch, "spinning");
     let diagnostics = fs::read_to_string(&daemon_err).unwrap_or_default();
     assert!(
         advanced,
-        "spinner stayed frozen across the 60-second verdict interval: {first:?} -> {second:?}\n\
+        "pulse stayed frozen across watchdog ticks: {states:?}\n\
          daemon stderr: {diagnostics}"
     );
 }
