@@ -655,6 +655,31 @@ fn launch(
             writeln!(err, "Error: could not read metadata for '{session}'.")?;
             return Ok(EXIT_FAILED);
         };
+        // An explicit origin is a claim about this exact session, including a
+        // live one. It must agree with the recorded owner before reattach can
+        // migrate, seed, or backfill anything below.
+        if plan.dir.is_some() {
+            let recorded = meta::first_value(&bytes, "origin")
+                .map(|value| String::from_utf8_lossy(value).into_owned())
+                .unwrap_or_default();
+            if recorded.is_empty() || !same_directory(&recorded, &cwd) {
+                writeln!(
+                    err,
+                    "Error: session '{session}' exists with a different origin."
+                )?;
+                writeln!(
+                    err,
+                    "       recorded: {}",
+                    if recorded.is_empty() {
+                        "<none>"
+                    } else {
+                        &recorded
+                    }
+                )?;
+                writeln!(err, "       requested: {cwd}")?;
+                return Ok(EXIT_FAILED);
+            }
+        }
         match Meta::parse(&String::from_utf8_lossy(&bytes)).server_selector() {
             ServerSelector::Positive(selector) => {
                 let recorded = ServerId::Selected(selector);
@@ -759,29 +784,6 @@ fn launch(
     if meta_present && let Err(refusal) = crate::migrate::session(&dir) {
         writeln!(err, "Error: {}", refusal.line(&session))?;
         return Ok(EXIT_FAILED);
-    }
-    // An explicit origin is a claim about this exact session, including a
-    // live one. It must agree with the recorded owner before reattach can
-    // bypass the rest of the build.
-    if plan.dir.is_some() && meta_present {
-        let recorded = meta_value(&dir, "origin").unwrap_or_default();
-        if recorded.is_empty() || !same_directory(&recorded, &cwd) {
-            writeln!(
-                err,
-                "Error: session '{session}' exists with a different origin."
-            )?;
-            writeln!(
-                err,
-                "       recorded: {}",
-                if recorded.is_empty() {
-                    "<none>"
-                } else {
-                    &recorded
-                }
-            )?;
-            writeln!(err, "       requested: {cwd}")?;
-            return Ok(EXIT_FAILED);
-        }
     }
     // On resume the RECORDED config wins: an agent's aliases must resolve from
     // the file the session was created with, not from wherever the caller is.

@@ -221,6 +221,14 @@ impl Rig {
         args.extend(tail.iter().map(|arg| (*arg).to_owned()));
         run_tmux(&args, &self.scratch)
     }
+
+    fn historical_tmux(&self, tail: &[&str]) -> (bool, String) {
+        let mut args = ae::tmux::server_args(&ae::inventory::ServerId::Selected(
+            ae::meta::Selector::Name(ae::doors::HISTORICAL_SERVER_NAME.to_owned()),
+        ));
+        args.extend(tail.iter().map(|arg| (*arg).to_owned()));
+        run_tmux(&args, &self.scratch)
+    }
 }
 
 /// Confirm that a rig's detached tmux command is gone after its Drop guard.
@@ -680,6 +688,71 @@ fn a_directory_explicit_reattach_refuses_a_different_or_missing_origin() {
     let (code, stdout, stderr) = rig.run_on(Some(&sock), &["unknown", "--nope"]);
     assert_eq!(code, Some(2), "{stdout}{stderr}");
     assert!(stderr.contains("unknown flag '--nope'"), "{stderr}");
+}
+
+#[test]
+fn a_directory_refusal_preserves_pre_chain_meta_and_skips_config_seed() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::new("explicit-dir-pre-chain");
+    let first = rig.scratch.join("first");
+    let other = rig.scratch.join("other");
+    assert!(std::fs::create_dir_all(&first).is_ok());
+    assert!(std::fs::create_dir_all(&other).is_ok());
+    let first = std::fs::canonicalize(&first).expect("first origin");
+    let other = std::fs::canonicalize(&other).expect("other origin");
+    let dir = rig.sessions().join("owned");
+    assert!(std::fs::create_dir_all(&dir).is_ok(), "session dir");
+    assert!(
+        rig.historical_tmux(&["new-session", "-d", "-s", "owned"]).0,
+        "historical session starts"
+    );
+    assert!(
+        rig.historical_tmux(&["set-environment", "-t", "=owned", "AE_SESSION", "1"])
+            .0,
+        "historical ownership marker"
+    );
+    assert!(
+        rig.historical_tmux(&[
+            "set-environment",
+            "-t",
+            "=owned",
+            "AE_HOME",
+            &rig.home.to_string_lossy(),
+        ])
+        .0,
+        "historical ownership root"
+    );
+    let (ok, pane) = rig.historical_tmux(&["list-panes", "-t", "=owned", "-F", "#{pane_id}"]);
+    assert!(ok, "historical pane");
+    let (ok, sessions) = rig.historical_tmux(&["list-sessions", "-F", "#{session_name}"]);
+    assert!(
+        ok && sessions.lines().any(|line| line == "owned"),
+        "{sessions}"
+    );
+    let before = format!(
+        "session=owned\norigin={}\nwork_dir={}\nmode=local\nmain_pane={}\nschema=2\n",
+        first.display(),
+        first.display(),
+        pane.trim()
+    );
+    assert!(std::fs::write(dir.join("meta"), &before).is_ok(), "meta");
+
+    let (code, stdout, stderr) = rig.run_on(
+        Some(&rig.sock),
+        &["owned", "--dir", &other.to_string_lossy(), "--no-attach"],
+    );
+    assert_eq!(code, Some(1), "{stdout}{stderr}");
+    assert!(
+        stderr.contains("exists with a different origin"),
+        "{stderr}"
+    );
+    assert_eq!(
+        std::fs::read(dir.join("meta")).unwrap_or_default(),
+        before.as_bytes()
+    );
+    assert!(!rig.config().exists(), "a refused launch seeded config");
 }
 
 #[test]
