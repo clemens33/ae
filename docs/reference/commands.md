@@ -167,9 +167,11 @@ session's agents, by severity:
 | `attn:unanswered` | an inter-agent `ask`/`review` went unanswered past the fixed 1800-second (30-minute) threshold |
 
 (`dead`/`stale`/`throttled` reuse the watchdog's own alert events;
-`waiting-user`/`blocked` are self-declared and require a reason. Use a one-line decision
-question for `waiting-user` (`<what>: <A> | <B> (recommend A because …)`); `blocked`
-names blocker and unblock owner. `unanswered` flags an `ask`/`review`
+`waiting-user`/`blocked` are self-declared and require a reason. A `waiting-user`
+reason is a self-contained decision of at most 600 characters: each option gets one
+clause, the recommendation gives its reason, and the text points to any long form in
+`.local/<file>` or a memo topic. Never use pointers such as “see pane” or “as discussed.”
+`blocked` names blocker and unblock owner. `unanswered` flags an `ask`/`review`
 whose target never replied within 1800 seconds (30 minutes) — the lowest-severity reason.)
 
 By default it shows **running sessions only** — stopped sessions are usually the
@@ -267,7 +269,7 @@ aedev · running · attn:waiting-user · ae 2026.9.5 · s1-brief* · ~/projects/
 | `goal:` | the session's [`goal`](helpers.md), in full, or `none` |
 | `topics:` | the **latest** record per `memo` topic, newest topic first — see the topic convention below |
 | `agents:` | one line per roster agent: its declared state, how long ago it declared, and the reason it gave |
-| `needs you:` | explicit `waiting-user`/`blocked` declarations from the session's main agent or named `colead`. Worker declarations and unanswered asks/reviews are intra-session traffic and stay out. Nothing here is inferred, so an empty section reads `none recorded` |
+| `needs you:` | explicit `waiting-user`/`blocked` declarations from the session's main agent or named `colead`, with each full reason wrapped across as many bounded lines as needed. Worker declarations and unanswered asks/reviews are intra-session traffic and stay out. Nothing here is inferred, so an empty section reads `none recorded` |
 
 ### The topic convention
 
@@ -589,6 +591,9 @@ nothing and stays done until another change. Each delivered change therefore
 costs one minimal seat turn; a timer-only cycle costs none. For a human fleet
 question it may run `ae brief --all` once. It relays only explicit human
 instructions through its `relay <session[:agent]> <text…>` helper.
+When the human asks about one session, it runs `ae brief <session>` and presents
+the card verbatim — including the full `needs you:` reasons — then relays the
+human's answer to that session's lead.
 One quoted text argument works; otherwise remaining argv are joined with single
 spaces. The delivery is bare human-authority text, audited with target and full
 text only in the orchestrator session. Free text without a leading target is

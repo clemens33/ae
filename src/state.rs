@@ -23,7 +23,7 @@ use crate::store;
 use crate::time::Timestamp;
 
 /// Maximum persisted decision/blocker reason length in characters.
-pub const REASON_MAX: usize = 180;
+pub const REASON_MAX: usize = 600;
 
 /// `ae_emit_event`'s chat arm: a `chat` event's summary keeps its newlines and
 /// tabs and is capped at this many characters, not [`REASON_MAX`].
@@ -35,7 +35,7 @@ pub const VALUES: [&str; 4] = ["working", "waiting-user", "blocked", "done"];
 /// The usage text.
 pub const USAGE: &str = "Usage: state <working|waiting-user|blocked|done> [reason]\n       state                              # print current state\n\n  working       actively making progress\n  waiting-user  needs human input\n  blocked       stuck on external dep — REASON REQUIRED\n  done          complete or paused\n";
 
-const REASON_SHAPE: &str = "Reason required: waiting-user asks '<what you need decided>: <option A> | <option B> (recommend A because …)'; blocked names blocker and unblock owner";
+const REASON_SHAPE: &str = "Reason required: waiting-user gives a self-contained decision in 600 characters or fewer: '<what you need decided>: <option A and impact> | <option B and impact> (recommend A because <reason>; details: .local/<file> or memo <topic>)'; blocked names blocker and unblock owner";
 
 /// The refusal when the caller has no pane identity.
 pub const NO_IDENTITY: &str =
@@ -455,10 +455,15 @@ mod tests {
     #[test]
     fn the_summary_is_flattened_then_capped_in_characters() {
         assert_eq!(summary_of("a\nb\tc"), "a b c");
-        let long: String = "é".repeat(REASON_MAX + 5);
+        let long: String = "é".repeat(REASON_MAX + 1);
         let capped = summary_of(&long);
         assert_eq!(capped.chars().count(), REASON_MAX);
         assert_eq!(capped.len(), REASON_MAX * 2, "cut on a character boundary");
+        assert_eq!(
+            capped,
+            "é".repeat(600),
+            "the 601st character is clipped before persistence"
+        );
     }
 
     #[test]
@@ -475,7 +480,7 @@ mod tests {
             "the privileged caller audit keeps the full exact relay text"
         );
         assert_eq!(
-            summary_for("say", &"x".repeat(250)).len(),
+            summary_for("say", &"x".repeat(REASON_MAX + 1)).len(),
             REASON_MAX,
             "the literal action chat, nothing that resembles it"
         );

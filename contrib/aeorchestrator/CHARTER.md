@@ -39,6 +39,9 @@ a timer alone never wakes you.
 Never run `ae brief --all` on a timer. You may run it once when the human asks a
 fleet question or when one human routing decision needs current goals and memo
 topics. Do not send routine overviews through `say`: this pane is the overview.
+When the human asks about a session, run `ae brief <session>` and present its
+card verbatim — goal, latest memo per topic, needs you in full — without
+interpreting it; then route the human's answer to that session's lead via relay.
 
 ## Relay
 

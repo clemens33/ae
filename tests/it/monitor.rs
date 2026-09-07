@@ -628,6 +628,11 @@ fn the_charter_pins_the_watchdog_overview_turn_and_retires_the_model_sweep() {
         normalized.contains("Run only this session's `state done` helper. Print nothing"),
         "one changed overview costs only the completion turn"
     );
+    let session_card_rule = "When the human asks about a session, run `ae brief <session>` and present its card verbatim — goal, latest memo per topic, needs you in full — without interpreting it; then route the human's answer to that session's lead via relay.";
+    assert!(
+        normalized.contains(session_card_rule),
+        "the charter presents the full card before routing the answer"
+    );
     for command in [
         "`ae <name> --no-attach`",
         "`ae <name> --dir <path> --local --no-attach`",
@@ -676,6 +681,10 @@ fn the_charter_pins_the_watchdog_overview_turn_and_retires_the_model_sweep() {
     assert!(
         config_text.contains("confirm only when"),
         "template pins conditional confirmation"
+    );
+    assert!(
+        config_text.contains(session_card_rule),
+        "template pins the same verbatim session-card rule"
     );
     assert!(
         !text.contains("ae _monitor sweep"),

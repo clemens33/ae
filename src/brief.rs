@@ -58,10 +58,19 @@ pub const USAGE: &str = "Usage: ae brief [session] [--all] [--since <duration>]\
 /// The width a card is written to fit — a terminal half, not a full one, so two
 /// cards sit side by side in a split.
 ///
-/// It bounds the FREE TEXT: a goal, a memo record, a reason and a question are
-/// clipped to it. An identity is not — a name, a branch or a path is what the
-/// reader has to type back, and a truncated one is worse than a long line.
+/// It bounds each FREE-TEXT line: goals, memo records and agent summaries are
+/// clipped; human needs wrap. An identity is not — a name, a branch or a path
+/// is what the reader has to type back, and a truncated one is worse than a
+/// long line.
 pub const WIDTH: usize = 100;
+
+/// Continuation lines for a human need align with the card's section body.
+const NEED_INDENT: usize = 4;
+
+/// A valid 64-character owner leaves 11 characters on the first line. The
+/// wrapper consumes at least half of each non-final line, so 13 lines carry at
+/// least `5 + 11 * 48 + 96 = 629` characters: every persisted reason fits.
+const MAX_NEED_LINES: usize = 13;
 
 /// Which sessions a brief covers.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -394,7 +403,6 @@ fn push_card(out: &mut String, card: &Card) {
     }
     out.push('\n');
     for need in card.human_needs() {
-        out.push_str("    ");
         push_need(out, need);
         out.push('\n');
     }
@@ -426,17 +434,18 @@ fn push_header(out: &mut String, card: &Card) {
 
 /// One `needs you:` entry.
 fn push_need(out: &mut String, need: &Need) {
-    match need {
+    let mut prefix = " ".repeat(NEED_INDENT);
+    let (detail, fallback) = match need {
         Need::Declared {
             owner,
             state,
             age_secs,
             reason,
         } => {
-            push_padded(out, owner, 14);
-            push_padded(out, state, 14);
-            push_padded(out, &age(*age_secs), 6);
-            out.push_str(&clip(Some(reason), "no reason given", WIDTH - 40));
+            push_padded(&mut prefix, owner, 14);
+            push_padded(&mut prefix, state, 14);
+            push_padded(&mut prefix, &age(*age_secs), 6);
+            (reason.as_str(), "no reason given")
         }
         Need::Unanswered {
             kind,
@@ -448,12 +457,88 @@ fn push_need(out: &mut String, need: &Need) {
         } => {
             // The SAME three columns a declared need uses, so the section reads
             // as one grid rather than as two tables that happen to be adjacent.
-            push_padded(out, kind, 14);
-            push_padded(out, &format!("{from} → {to}"), 14);
-            push_padded(out, &age(Some(*age_secs)), 6);
-            out.push_str(&clip(Some(question), "no text recorded", WIDTH - 40));
+            push_padded(&mut prefix, kind, 14);
+            push_padded(&mut prefix, &format!("{from} → {to}"), 14);
+            push_padded(&mut prefix, &age(Some(*age_secs)), 6);
+            (question.as_str(), "no text recorded")
+        }
+    };
+    let detail = if detail.is_empty() { fallback } else { detail };
+    let first_width = WIDTH.saturating_sub(prefix.chars().count()).max(1);
+    let mut lines = wrap_text(detail, first_width, WIDTH - NEED_INDENT, MAX_NEED_LINES);
+    if lines.is_empty() {
+        lines.push(fallback.to_owned());
+    }
+    let first = lines.remove(0);
+    out.push_str(&prefix);
+    out.push_str(&first);
+    let indent = " ".repeat(NEED_INDENT);
+    for line in lines {
+        out.push('\n');
+        out.push_str(&indent);
+        out.push_str(&line);
+    }
+}
+
+/// Clean and word-wrap free text. A non-final line consumes at least half its
+/// width; when no such whitespace boundary exists it consumes the whole width.
+/// Only text beyond `max_lines` is replaced by an ellipsis.
+pub(crate) fn wrap_text(
+    text: &str,
+    first_width: usize,
+    continuation_width: usize,
+    max_lines: usize,
+) -> Vec<String> {
+    let clean = clean_text(text);
+    let mut lines = Vec::new();
+    let mut rest = clean.as_str();
+    let mut width = first_width.max(1);
+    while !rest.is_empty() && lines.len() < max_lines {
+        let take = rest.chars().count().min(width);
+        let boundary = (rest.chars().count() > width)
+            .then(|| {
+                rest.char_indices()
+                    .take(take + 1)
+                    .filter(|(_, ch)| ch.is_whitespace())
+                    .map(|(index, _)| index)
+                    .filter(|index| rest[..*index].chars().count() <= width)
+                    .filter(|index| rest[..*index].chars().count() >= width / 2)
+                    .fold(None, |_, index| Some(index))
+            })
+            .flatten();
+        let end = boundary.unwrap_or_else(|| {
+            rest.char_indices()
+                .nth(take)
+                .map_or(rest.len(), |(index, _)| index)
+        });
+        let mut line = rest[..end].trim_end().to_owned();
+        rest = rest[end..].trim_start();
+        if !rest.is_empty() && lines.len() + 1 == max_lines {
+            line = line.chars().take(width.saturating_sub(1)).collect();
+            line.push('…');
+            rest = "";
+        }
+        lines.push(line);
+        width = continuation_width.max(1);
+    }
+    lines
+}
+
+fn clean_text(text: &str) -> String {
+    let mut clean = String::with_capacity(text.len());
+    let mut in_run = false;
+    for ch in text.chars() {
+        if ch.is_control() || ch.is_whitespace() {
+            if !in_run {
+                clean.push(' ');
+                in_run = true;
+            }
+        } else {
+            clean.push(ch);
+            in_run = false;
         }
     }
+    clean.trim().to_owned()
 }
 
 /// `field` then spaces to `width`, and at least one space when it overruns.
@@ -1016,6 +1101,58 @@ mod tests {
             );
         }
         assert!(rendered.contains('…'), "{rendered}");
+    }
+
+    #[test]
+    fn a_600_character_reason_fits_thirteen_lines_because_5_plus_eleven_times_48_plus_96_is_629() {
+        let mut parts = vec!["x".repeat(5)];
+        parts.extend((0..11).map(|_| "x".repeat(48)));
+        parts.push(format!("{}decision", "x".repeat(47)));
+        let reason = parts.join(" ");
+        assert_eq!(reason.chars().count(), 600);
+
+        let owner = "o".repeat(64);
+        let mut entry = card("alpha");
+        entry.main = Some(owner.clone());
+        entry.needs.push(Need::Declared {
+            owner,
+            state: "waiting-user".to_owned(),
+            age_secs: Some(99_999),
+            reason,
+        });
+        let rendered = render(&[entry]);
+        let needs = rendered
+            .split_once("  needs you:\n")
+            .map_or("", |(_, needs)| needs);
+        assert!(needs.contains("decision"), "{rendered}");
+        assert!(!needs.contains('…'), "{rendered}");
+        assert_eq!(needs.lines().count(), 13, "{rendered}");
+        assert!(
+            rendered
+                .lines()
+                .all(|line| line.chars().count() <= super::WIDTH),
+            "{rendered}"
+        );
+    }
+
+    #[test]
+    fn hostile_controls_in_a_need_are_cleaned_before_wrapping() {
+        let mut entry = card("alpha");
+        entry.needs.push(Need::Declared {
+            owner: "lead".to_owned(),
+            state: "blocked".to_owned(),
+            age_secs: Some(60),
+            reason: "choose\r\nblue \u{1b}[31mdecision".to_owned(),
+        });
+        let rendered = render(&[entry]);
+        assert!(rendered.contains("choose blue [31mdecision"), "{rendered}");
+        assert!(
+            rendered
+                .chars()
+                .filter(|ch| *ch != '\n')
+                .all(|ch| !ch.is_control()),
+            "{rendered:?}"
+        );
     }
 
     #[test]

@@ -14,7 +14,10 @@ pub const WIDTH: usize = 100;
 
 /// Indentation of every need below its session heading.
 const DETAIL_INDENT: usize = 4;
-const MAX_NEED_LINES: usize = 3;
+// A maximally wide rendered owner leaves 56 characters on the first line. The
+// shared wrapper consumes at least half of every non-final line, so 12 lines
+// carry at least `28 + 10 * 48 + 96 = 604` characters.
+const MAX_NEED_LINES: usize = 12;
 const DETAIL_WIDTH: usize = 60;
 
 #[derive(Debug, Clone)]
@@ -255,7 +258,7 @@ fn human_need_parts(need: &Need) -> Option<(&str, &str, String, Option<i64>)> {
             if reason.is_empty() {
                 "no reason given".to_owned()
             } else {
-                clean_text(reason)
+                reason.clone()
             },
             *age_secs,
         )),
@@ -292,7 +295,7 @@ fn needs_line(owner: &str, state: &str, detail: &str, age_secs: Option<i64>) -> 
     push_field(&mut prefix, &clipped(state, 14), 12);
     push_field(&mut prefix, &brief::age(age_secs), 4);
     let first_width = WIDTH.saturating_sub(prefix.chars().count());
-    let mut lines = wrap_detail(detail, first_width, WIDTH - DETAIL_INDENT, MAX_NEED_LINES);
+    let mut lines = brief::wrap_text(detail, first_width, WIDTH - DETAIL_INDENT, MAX_NEED_LINES);
     if lines.is_empty() {
         lines.push(String::new());
     }
@@ -305,63 +308,6 @@ fn needs_line(owner: &str, state: &str, detail: &str, age_secs: Option<i64>) -> 
         out.push_str(&line);
     }
     out
-}
-
-fn wrap_detail(
-    detail: &str,
-    first_width: usize,
-    continuation_width: usize,
-    max_lines: usize,
-) -> Vec<String> {
-    let mut lines = Vec::new();
-    let mut rest = detail;
-    let mut width = first_width;
-    while !rest.is_empty() && lines.len() < max_lines {
-        let take = rest.chars().count().min(width);
-        let boundary = (rest.chars().count() > width)
-            .then(|| {
-                rest.char_indices()
-                    .take(take + 1)
-                    .filter(|(_, ch)| ch.is_whitespace())
-                    .map(|(index, _)| index)
-                    .filter(|index| rest[..*index].chars().count() <= width)
-                    .filter(|index| rest[..*index].chars().count() >= width / 2)
-                    .fold(None, |_, index| Some(index))
-            })
-            .flatten();
-        let end = boundary.unwrap_or_else(|| {
-            rest.char_indices()
-                .nth(take)
-                .map_or(rest.len(), |(index, _)| index)
-        });
-        let mut line = rest[..end].trim_end().to_owned();
-        rest = rest[end..].trim_start();
-        if !rest.is_empty() && lines.len() + 1 == max_lines {
-            line = line.chars().take(width.saturating_sub(1)).collect();
-            line.push('…');
-            rest = "";
-        }
-        lines.push(line);
-        width = continuation_width;
-    }
-    lines
-}
-
-fn clean_text(text: &str) -> String {
-    let mut clean = String::with_capacity(text.len());
-    let mut in_run = false;
-    for ch in text.chars() {
-        if ch.is_control() || ch.is_whitespace() {
-            if !in_run {
-                clean.push(' ');
-                in_run = true;
-            }
-        } else {
-            clean.push(ch);
-            in_run = false;
-        }
-    }
-    clean.trim().to_owned()
 }
 
 fn working_line(session: &str, agent: &str, detail: &str, open_asks: usize) -> String {
@@ -606,15 +552,19 @@ mod tests {
     }
 
     #[test]
-    fn a_180_character_reason_keeps_its_last_decision_token_within_three_lines() {
-        let reason = format!("{} decision", "x".repeat(171));
-        assert_eq!(reason.chars().count(), 180);
+    fn a_600_character_reason_fits_twelve_lines_because_28_plus_ten_times_48_plus_96_is_604() {
+        let mut parts = vec!["x".repeat(28)];
+        parts.extend((0..10).map(|_| "x".repeat(48)));
+        parts.push(format!("{}decision", "x".repeat(73)));
+        let reason = parts.join(" ");
+        assert_eq!(reason.chars().count(), 600);
         let mut entry = card(
-            "a".repeat(28).as_str(),
-            vec![agent("lead", "waiting-user", 99_999, None)],
+            "alpha",
+            vec![agent(&"o".repeat(18), "waiting-user", 99_999, None)],
         );
+        entry.main = Some("o".repeat(18));
         entry.needs.push(Need::Declared {
-            owner: "lead".to_owned(),
+            owner: "o".repeat(18),
             state: "waiting-user".to_owned(),
             age_secs: Some(99_999),
             reason: reason.clone(),
@@ -623,7 +573,7 @@ mod tests {
         assert!(text.contains("decision"), "{text}");
         assert!(!text.contains('…'), "{text}");
         let need_lines = text.lines().skip(2).count();
-        assert!(need_lines <= 3, "{need_lines} need lines:\n{text}");
+        assert_eq!(need_lines, 12, "{need_lines} need lines:\n{text}");
         assert!(
             text.lines().all(|line| line.chars().count() <= WIDTH),
             "{text}"

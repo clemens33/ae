@@ -55,8 +55,11 @@ omits the orchestrator's own session and bounds data lines to 100 characters.
 `NEEDS YOU` has one heading per session and includes only explicit
 `waiting-user`/`blocked` declarations from that session's main or named
 `colead`; worker declarations stay with their session leadership. Sessions and
-their needs sort oldest first. Each need occupies at most three lines: a
-four-space-indented 96-character body, word-wrapped and ellipsized when needed.
+their needs sort oldest first. Each need occupies at most twelve lines: after
+the first identity-bearing line, continuation lines have a four-space indent
+and a 96-character body. Word wrapping consumes at least half of each
+non-final line, so even the worst split carries a full 600-character reason;
+only text beyond that bound is ellipsized.
 Unanswered asks/reviews never enter `NEEDS YOU`; their count is appended once to
 the session's first `WORKING` row when nonzero. The renderer groups the remaining
 facts under `WORKING` and `QUIET`. The watchdog hashes the semantic facts behind
