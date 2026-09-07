@@ -280,27 +280,37 @@ impl Mark {
     }
 }
 
-/// The spinner frames shown in place of an attached pane's working glyph.
-const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+/// The working mark and its eased breathing colour at one motion tick.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkingFrame {
+    pub glyph: &'static str,
+    pub fg: String,
+}
 
-/// The ASCII spinner for the same animation without the braille block.
-const ASCII_SPINNER: [&str; 4] = ["|", "/", "-", "\\"];
+fn hex_byte(value: &str, offset: usize) -> u8 {
+    u8::from_str_radix(&value[offset..offset + 2], 16).unwrap_or(0)
+}
 
-/// The spinner frame at `tick`, in the vocabulary `icons` selects.
-///
-/// ```
-/// assert_eq!(ae::theme::spinner(0, true), "⠋");
-/// assert_eq!(ae::theme::spinner(10, true), "⠋");
-/// assert_eq!(ae::theme::spinner(1, false), "/");
-/// ```
+fn blend_hex(low: &str, high: &str, progress: u16) -> String {
+    let mut out = String::from("#");
+    for offset in [1, 3, 5] {
+        let low = u32::from(hex_byte(low, offset));
+        let high = u32::from(hex_byte(high, offset));
+        let value = (low * u32::from(1000 - progress) + high * u32::from(progress) + 500) / 1000;
+        let _ = write!(out, "{value:02X}");
+    }
+    out
+}
+
+/// The smooth 2-second working pulse: dim at ticks 0 and 20, accent at 10.
 #[must_use]
-pub fn spinner(tick: u64, icons: bool) -> &'static str {
-    if icons {
-        let index = usize::try_from(tick % SPINNER.len() as u64).unwrap_or(0);
-        SPINNER.get(index).copied().unwrap_or("●")
-    } else {
-        let index = usize::try_from(tick % ASCII_SPINNER.len() as u64).unwrap_or(0);
-        ASCII_SPINNER.get(index).copied().unwrap_or("*")
+pub fn working_frame(tick: u64, palette: &Palette, icons: bool) -> WorkingFrame {
+    let phase = u16::try_from(tick % 20).unwrap_or(0);
+    let linear = if phase <= 10 { phase } else { 20 - phase };
+    let eased = linear * linear * (30 - 2 * linear);
+    WorkingFrame {
+        glyph: Mark::Working.glyph(icons),
+        fg: blend_hex(palette.dim, palette.accent(Mark::Working), eased),
     }
 }
 
@@ -354,7 +364,7 @@ pub struct Look {
     /// `status-right` can show ae's facts in the user's own layout.
     pub drawn: bool,
     /// Whether anything animates. `[workspace] motion = off` freezes the
-    /// spinner on its mark, for a reader who does not want movement in the
+    /// pulse on its mark, for a reader who does not want movement in the
     /// corner of their eye.
     pub motion: bool,
 }
@@ -782,7 +792,7 @@ pub fn next_fleet_session(rows: &[FleetRow], dying: &str) -> Option<String> {
 /// built from one server's own listing. `working_frame` replaces only a
 /// [`Mark::Working`] glyph; `None` draws the static vocabulary.
 #[must_use]
-pub fn fleet_strip(look: &Look, rows: &[FleetRow], working_frame: Option<&str>) -> String {
+pub fn fleet_strip(look: &Look, rows: &[FleetRow], working_frame: Option<&WorkingFrame>) -> String {
     let palette = &look.palette;
     let icons = look.icons;
     let mut ordered: Vec<&FleetRow> = ordered_fleet_rows(rows)
@@ -832,18 +842,18 @@ pub fn fleet_strip(look: &Look, rows: &[FleetRow], working_frame: Option<&str>) 
             (palette.base, format!("fg={} nobold", palette.dim))
         };
         let lead = if row.current { " " } else { "" };
-        let glyph = if row.mark == Mark::Working {
-            working_frame.unwrap_or_else(|| row.mark.glyph(icons))
-        } else {
-            row.mark.glyph(icons)
-        };
         let accent = palette.accent(row.mark);
+        let (glyph, glyph_accent) = if row.mark == Mark::Working {
+            working_frame.map_or((row.mark.glyph(icons), accent), |frame| (frame.glyph, frame.fg.as_str()))
+        } else {
+            (row.mark.glyph(icons), accent)
+        };
         let _ = write!(
             out,
             "#[range=session|{id} fg={accent} bg={ground}]{lead}{glyph}#[{text} bg={ground}] {name}{lead}\
              #[norange nobold fg={dim} bg={base}] ",
             id = row.id,
-            accent = accent,
+            accent = glyph_accent,
             glyph = glyph,
             base = palette.base,
             dim = palette.dim,
@@ -866,17 +876,26 @@ pub fn fleet_strip(look: &Look, rows: &[FleetRow], working_frame: Option<&str>) 
 /// It keeps the same verdict glyph and motion rules as a fleet row, but is
 /// rendered separately so the fleet list can stay focused on other sessions.
 #[must_use]
-pub fn orchestrator_strip(look: &Look, row: &FleetRow, working_frame: Option<&str>) -> String {
+pub fn orchestrator_strip(
+    look: &Look,
+    row: &FleetRow,
+    working_frame: Option<&WorkingFrame>,
+) -> String {
     let palette = &look.palette;
     let calm_pin = matches!(row.mark, Mark::Done | Mark::Idle);
-    let glyph = if row.mark == Mark::Working {
-        working_frame.unwrap_or_else(|| row.mark.glyph(look.icons))
+    let (glyph, working_accent) = if row.mark == Mark::Working {
+        working_frame.map_or(
+            (row.mark.glyph(look.icons), palette.accent(row.mark)),
+            |frame| (frame.glyph, frame.fg.as_str()),
+        )
     } else if calm_pin {
-        if look.icons { "◆" } else { "o" }
+        (if look.icons { "◆" } else { "o" }, palette.dim)
     } else {
-        row.mark.glyph(look.icons)
+        (row.mark.glyph(look.icons), palette.accent(row.mark))
     };
-    let accent = if calm_pin {
+    let accent = if row.mark == Mark::Working {
+        working_accent
+    } else if calm_pin {
         palette.dim
     } else {
         palette.accent(row.mark)
@@ -929,16 +948,26 @@ pub fn pane_active_border_style(palette: &Palette) -> String {
 /// mark's accent, then the reason word.
 ///
 /// The GLYPH is passed rather than derived: the verdict cycle publishes a
-/// static mark and the attached ticker publishes a spinner frame.
+/// static mark and the attached ticker publishes a working frame.
 ///
 /// Nothing here is escaped, and nothing may need to be: this is an option
 /// VALUE, which tmux interpolates literally, and `reason` is one of a closed
 /// set of words this crate wrote.
 #[must_use]
 pub fn pane_state(palette: &Palette, mark: Mark, glyph: &str, reason: &str) -> String {
+    pane_state_coloured(palette.accent(mark), glyph, reason)
+}
+
+/// Working ticker variant with the frame's breathing colour.
+#[must_use]
+pub fn pane_state_frame(frame: &WorkingFrame, reason: &str) -> String {
+    pane_state_coloured(&frame.fg, frame.glyph, reason)
+}
+
+fn pane_state_coloured(fg: &str, glyph: &str, reason: &str) -> String {
     format!(
         "{}{glyph}#[default] {reason}",
-        style(&[&format!("fg={}", palette.accent(mark))]),
+        style(&[&format!("fg={fg}")]),
     )
 }
 
@@ -1230,8 +1259,8 @@ mod tests {
     use super::{
         FleetRow, ICONS_OPTION, Look, Mark, PALETTE_OPTION, Palette, WINDOW_STAMP_OPTION,
         attention_style, fleet_strip, icons_wanted, mark_style, orchestrator_strip,
-        pane_border_format, pane_state, session_options, short_path, spinner, status_line_one,
-        status_line_zero, window_options,
+        pane_border_format, pane_state, session_options, short_path, status_line_one,
+        status_line_zero, window_options, working_frame,
     };
     use crate::attention::Reason;
 
@@ -1555,7 +1584,11 @@ mod tests {
                 current: false,
             })
             .collect();
-        let strip = fleet_strip(&Look::DEFAULT, &rows, Some("FRAME"));
+        let frame = super::WorkingFrame {
+            glyph: "FRAME",
+            fg: "#ABCDEF".to_owned(),
+        };
+        let strip = fleet_strip(&Look::DEFAULT, &rows, Some(&frame));
 
         assert_eq!(strip.matches("FRAME").count(), 1, "{strip}");
         for mark in [
@@ -1672,7 +1705,10 @@ mod tests {
         let strip = fleet_strip(
             &Look::DEFAULT,
             &[row("orchestrator", Mark::Working)],
-            Some("⠼"),
+            Some(&super::WorkingFrame {
+                glyph: "⠼",
+                fg: "#ABCDEF".to_owned(),
+            }),
         );
         assert!(
             strip.is_empty(),
@@ -1680,7 +1716,11 @@ mod tests {
         );
         let mut current_row = row("orchestrator", Mark::Working);
         current_row.current = true;
-        let current_strip = fleet_strip(&Look::DEFAULT, &[current_row], Some("⠼"));
+        let frame = super::WorkingFrame {
+            glyph: "⠼",
+            fg: "#ABCDEF".to_owned(),
+        };
+        let current_strip = fleet_strip(&Look::DEFAULT, &[current_row], Some(&frame));
         assert!(
             current_strip.contains("orchestrator"),
             "current orchestrator remains visible in fleet list: {current_strip}"
@@ -1688,7 +1728,7 @@ mod tests {
         let segment = orchestrator_strip(
             &Look::DEFAULT,
             &row("orchestrator", Mark::Working),
-            Some("⠼"),
+            Some(&frame),
         );
         assert!(
             segment.contains("#[range=session|$12")
@@ -1699,7 +1739,7 @@ mod tests {
 
         for mark in [Mark::Dead, Mark::NeedsYou, Mark::Stale] {
             let attention =
-                orchestrator_strip(&Look::DEFAULT, &row("orchestrator", mark), Some("⠼"));
+                orchestrator_strip(&Look::DEFAULT, &row("orchestrator", mark), Some(&frame));
             assert!(
                 attention.contains(mark.glyph(true)) && attention.contains("orchestrator"),
                 "attention beats motion and the pin: {attention}"
@@ -1707,7 +1747,7 @@ mod tests {
         }
 
         for mark in [Mark::Idle, Mark::Done] {
-            let calm = orchestrator_strip(&Look::DEFAULT, &row("orchestrator", mark), Some("⠼"));
+            let calm = orchestrator_strip(&Look::DEFAULT, &row("orchestrator", mark), Some(&frame));
             assert!(
                 calm.contains("◆"),
                 "calm orchestrator keeps its neutral anchor mark: {calm}"
@@ -1980,13 +2020,27 @@ mod tests {
     }
 
     #[test]
-    fn the_spinner_cycles_and_never_leaves_its_frames() {
-        let frames: Vec<&str> = (0..24).map(|tick| spinner(tick, true)).collect();
-        assert_eq!(frames[0], frames[10], "ten frames, then it repeats");
-        assert!(frames.iter().all(|frame| frame.chars().count() == 1));
-        let ascii: Vec<&str> = (0..8).map(|tick| spinner(tick, false)).collect();
-        assert_eq!(ascii[0], ascii[4], "four ASCII frames");
-        assert!(ascii.iter().all(|frame| frame.is_ascii()));
+    fn working_frame_pulses_between_dim_and_accent() {
+        for palette in PALETTES {
+            assert_eq!(
+                working_frame(0, &palette, true).fg,
+                palette.dim.to_ascii_uppercase()
+            );
+            assert_eq!(
+                working_frame(10, &palette, true).fg,
+                palette.accent(Mark::Working).to_ascii_uppercase()
+            );
+            assert_eq!(
+                working_frame(20, &palette, true).fg,
+                palette.dim.to_ascii_uppercase()
+            );
+        }
+        assert_eq!(working_frame(0, &Palette::DARCULA, true).glyph, "●");
+        assert_eq!(working_frame(0, &Palette::DARCULA, false).glyph, "*");
+        assert_ne!(
+            working_frame(5, &Palette::DARCULA, true).fg,
+            Palette::DARCULA.dim
+        );
     }
 
     #[test]

@@ -13,8 +13,8 @@ out. Who writes them and when is the launch's and the watchdog's business.
 **Opt-out, not opt-in.** `[workspace] theme = off` leaves `status-format`, the
 pane borders and the menu styles exactly as your own tmux configuration left
 them. ae still publishes every `@ae_*` value, so a hand-written `status-right`
-can carry ae's facts in your own layout. `motion = off` freezes the spinner on
-its mark. Both knobs are session-scoped like everything else here.
+can carry ae's facts in your own layout. `motion = off` freezes the working `●`
+at its accent colour. Both knobs are session-scoped like everything else here.
 
 **Session-scoped, never global.** `status`, `status-style`,
 `window-status-separator`, `set-titles`, `set-titles-string` and the two
@@ -69,22 +69,23 @@ session that finished. Stale and unknown share a glyph and never a WORD: the
 reason beside the mark says which of the two it was.
 
 A ticker runs between the watchdog's 60-second verdict cycles. Every attached
-pane whose latest verdict mark is working gets the next spinner frame every
-100 ms, and one batched tmux invocation advances its pane border, window entry
-and fleet strip together. Every fifth frame refreshes the pane and fleet
-observations; the four frames between reuse that snapshot, keeping tmux reads
-at 500 ms while animation runs at 10 fps. Detached sessions receive no
+pane whose latest verdict mark is working gets one pulsing `●` frame every
+100 ms: its foreground eases between the palette's dim colour and working
+accent over two seconds. One batched tmux invocation advances its pane border,
+window entry and fleet strip together. Every fifth frame refreshes the pane and
+fleet observations; the four frames between reuse that snapshot, keeping tmux
+reads at 500 ms while animation runs at 10 fps. Detached sessions receive no
 ticker writes; a last visible frame can remain cached until the next verdict
 cycle republishes the static working glyph, but no client can see it. The
-spinner declares the cached verdict; it
-does not infer terminal motion. Liveness belongs to the 60-second verdict
+the pulse declares the cached verdict; it does not infer terminal motion.
+Liveness belongs to the 60-second verdict
 cycle, which changes an inactive pane to stale. Tmux redraws changed user
 options for every attached client without waiting for `status-interval`, so no
 format polls and no status-interval setting participates in animation.
 A pane spawned after the last verdict cycle has no cached verdict yet, so it
 starts animating from the next cycle.
 
-The spinner is subordinate to the state: it stands in for the working glyph and
+The pulse is subordinate to the state: it stands in for the working glyph and
 nothing else, so done, needs-you, dead, stale and idle panes stay still.
 `[workspace] icons = off` selects the ASCII column. `motion = off` or
 `theme = off` disables the ticker. The watchdog re-reads the look every cycle, so
@@ -115,7 +116,7 @@ paired with a glyph, and each glyph with a reason word on the pane border.
 `status-format[0]` — the session's attention glyph in its accent, then the
 windows. Each window leads with its live mark and then names its agent
 (`0:✓lead`) or separates multiple agents with their marks
-(`0:✓lead ⠙colead`); a window with no agent panes falls back to its tmux name.
+(`0:✓lead ●colead`); a window with no agent panes falls back to its tmux name.
 Adjacent windows have a two-space separator. `Z` stays because a zoomed pane
 hides the rest of the window.
 The selected window uses the palette's selection ground and ink. The right
@@ -143,7 +144,7 @@ session's watchdog publishes its own `@ae_attn_rank`, and every other session
 reads it back and draws the glyph in its OWN vocabulary — so no session walks
 another session's state, and a session running the ASCII fallback never
 inherits someone else's braille. Dead, needs-you and stale outrank a working
-agent in the session rollup, so attention always stops that session's spinner.
+agent in the session rollup, so attention always stops that session's pulse.
 
 One snapshot feeds every surface. The marks the agent strip draws, the mark the
 session publishes for other sessions to sort on, and the words on the pane

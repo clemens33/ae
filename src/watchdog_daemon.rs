@@ -439,7 +439,7 @@ pub fn account(prior: &PaneState, seen: &Observation, knobs: &Knobs) -> Accounti
             next,
             effects,
             verdict: Verdict::Active,
-            // THE spinner's signal: this cycle's capture differs from the last.
+            // THE motion signal: this cycle's capture differs from the last.
             moved: true,
         };
     }
@@ -694,7 +694,7 @@ enum PublishedOrchestratorStrip {
     Value(String),
 }
 
-/// The ticker's carry: the most recent cycle verdicts and spinner frame.
+/// The ticker's carry: the most recent cycle verdicts and working frame.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct MotionState {
     verdicts: Vec<MotionVerdict>,
@@ -753,7 +753,7 @@ impl MotionState {
         &mut self,
         writes: &mut Vec<tmux::OptionWrite>,
         look: &Look,
-        working_frame: Option<&str>,
+        working_frame: Option<&theme::WorkingFrame>,
     ) {
         let Some(target) = self.fleet_target.as_deref() else {
             return;
@@ -807,7 +807,7 @@ impl MotionState {
         look: &Look,
         target: &str,
         row: Option<&theme::FleetRow>,
-        working_frame: Option<&str>,
+        working_frame: Option<&theme::WorkingFrame>,
     ) -> bool {
         let desired = row.map_or(PublishedOrchestratorStrip::Unset, |row| {
             PublishedOrchestratorStrip::Value(theme::orchestrator_strip(look, row, working_frame))
@@ -849,7 +849,7 @@ impl MotionState {
         if !working.is_empty() || fleet_working {
             self.spin = self.spin.wrapping_add(1);
         }
-        let spinner = theme::spinner(self.spin, look.icons);
+        let frame = theme::working_frame(self.spin, &look.palette, look.icons);
         let mut writes = Vec::new();
         let mut windows = Vec::new();
         for entry in &working {
@@ -857,7 +857,7 @@ impl MotionState {
                 OptionScope::Pane,
                 &entry.pane,
                 theme::PANE_STATE_OPTION,
-                &theme::pane_state(&look.palette, Mark::Working, spinner, "working"),
+                &theme::pane_state_frame(&frame, "working"),
             ));
             if !windows.contains(&entry.window) {
                 windows.push(entry.window.clone());
@@ -883,10 +883,10 @@ impl MotionState {
                 OptionScope::Window,
                 window,
                 theme::WINDOW_AGENTS_OPTION,
-                &window_agents_line(&agents, look, Some(spinner)),
+                &window_agents_line(&agents, look, Some(&frame)),
             ));
         }
-        self.push_fleet_write(&mut writes, look, fleet_working.then_some(spinner));
+        self.push_fleet_write(&mut writes, look, fleet_working.then_some(&frame));
         if let Some(target) = self.fleet_target.clone() {
             let orchestrator = self
                 .fleet
@@ -900,7 +900,7 @@ impl MotionState {
                     look,
                     &target,
                     Some(row),
-                    fleet_working.then_some(spinner),
+                    fleet_working.then_some(&frame),
                 );
             }
         }
@@ -2465,21 +2465,20 @@ fn schedule_automatic_upgrade() {
 fn window_agents_line(
     agents: &[(String, Mark)],
     look: &Look,
-    working_frame: Option<&str>,
+    working_frame: Option<&theme::WorkingFrame>,
 ) -> String {
     agents
         .iter()
         .map(|(agent, mark)| {
-            let glyph = if *mark == Mark::Working {
-                working_frame.unwrap_or_else(|| mark.glyph(look.icons))
+            let (glyph, fg) = if *mark == Mark::Working {
+                working_frame.map_or(
+                    (mark.glyph(look.icons), look.palette.accent(*mark)),
+                    |frame| (frame.glyph, frame.fg.as_str()),
+                )
             } else {
-                mark.glyph(look.icons)
+                (mark.glyph(look.icons), look.palette.accent(*mark))
             };
-            format!(
-                "#[fg={}]{}#[default]{agent}",
-                look.palette.accent(*mark),
-                glyph
-            )
+            format!("#[fg={fg}]{glyph}#[default]{agent}")
         })
         .collect::<Vec<_>>()
         .join(" ")
@@ -2700,25 +2699,25 @@ mod tests {
                 "-t",
                 "%1",
                 "@ae_pane_state",
-                "#[fg=#6897BB]⠙#[default] working",
+                "#[fg=#7F8182]●#[default] working",
                 ";",
                 "set-option",
                 "-p",
                 "-t",
                 "%6",
                 "@ae_pane_state",
-                "#[fg=#6897BB]⠙#[default] working",
+                "#[fg=#7F8182]●#[default] working",
                 ";",
                 "set-option",
                 "-w",
                 "-t",
                 "@7",
                 "@ae_window_agents",
-                "#[fg=#6897BB]⠙#[default]active #[fg=#6A8759]✓#[default]done #[fg=#CC7832]⚠#[default]blocked #[fg=#FF6B68]✖#[default]dead #[fg=#6897BB]⠙#[default]sweeping",
+                "#[fg=#7F8182]●#[default]active #[fg=#6A8759]✓#[default]done #[fg=#CC7832]⚠#[default]blocked #[fg=#FF6B68]✖#[default]dead #[fg=#7F8182]●#[default]sweeping",
             ]
         );
         let second = crate::tmux::set_options_args(&ServerId::Ambient, &state.step(&Look::DEFAULT));
-        assert!(second.iter().any(|word| word.contains('⠹')));
+        assert!(second.iter().any(|word| word.contains('●')));
         assert!(
             second
                 .iter()
@@ -2727,7 +2726,7 @@ mod tests {
     }
 
     #[test]
-    fn detached_sessions_never_write_spinner_frames() {
+    fn detached_sessions_never_write_working_frames() {
         let mut pane = motion("%1", "lead");
         pane.session_attached = 0;
         let mut state = MotionState {
@@ -2819,8 +2818,9 @@ mod tests {
             crate::tmux::set_options_args(&ServerId::Ambient, &state.step(&Look::DEFAULT));
         let next_frame =
             crate::tmux::set_options_args(&ServerId::Ambient, &state.step(&Look::DEFAULT));
-        assert!(first_frame.iter().any(|word| word.contains('⠙')));
-        assert!(next_frame.iter().any(|word| word.contains('⠹')));
+        assert!(first_frame.iter().any(|word| word.contains('●')));
+        assert!(next_frame.iter().any(|word| word.contains('●')));
+        assert_ne!(first_frame, next_frame, "pulse colour changes each tick");
     }
 
     #[test]
@@ -3661,16 +3661,24 @@ mod tests {
             window_agents_line(&many, &look(), None),
             "#[fg=#7fbf6a]✓#[default]lead #[fg=#57b6c2]●#[default]colead"
         );
+        let frame = crate::theme::WorkingFrame {
+            glyph: "⠙",
+            fg: "#57b6c2".to_owned(),
+        };
         assert_eq!(
-            window_agents_line(&many, &look(), Some("⠙")),
+            window_agents_line(&many, &look(), Some(&frame)),
             "#[fg=#7fbf6a]✓#[default]lead #[fg=#57b6c2]⠙#[default]colead"
         );
         let ascii = Look {
             icons: false,
             ..look()
         };
+        let ascii_frame = crate::theme::WorkingFrame {
+            glyph: "/",
+            fg: "#57b6c2".to_owned(),
+        };
         assert_eq!(
-            window_agents_line(&many, &ascii, Some("/")),
+            window_agents_line(&many, &ascii, Some(&ascii_frame)),
             "#[fg=#7fbf6a]+#[default]lead #[fg=#57b6c2]/#[default]colead"
         );
 

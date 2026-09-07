@@ -95,7 +95,7 @@ Old seat files that still carry `[profiles]`/`[roster]` are ignored for identity
 | `palette` | `darcula` (the JetBrains dark), `a` (neutral dark), `b` (warmer neutrals) | `darcula` |
 | `icons`   | `off` draws the ASCII fallback instead of the glyph set | `on`          |
 | `theme`   | `off` leaves your own status line, pane borders and menu styles alone | `on`  |
-| `motion`  | `off` freezes the spinner on its mark                 | `on`          |
+| `motion`  | `off` freezes the working `●` at its accent colour   | `on`          |
 
 Set `orchestrator = true` only in the dedicated overview seat. It authorizes
 unenveloped `relay` delivery, whose target treats the text as human input.
@@ -115,7 +115,7 @@ not rename it.
 The status bar has two lines. The first is this session: its attention mark,
 then windows led by their live marks and named agents, then the branch, goal,
 shortened path and watch segment. One agent is `0:✓lead`; multiple agents are
-`0:[✓lead ⠙colead]`. The selected window and current fleet row use the
+`0:[✓lead ●colead]`. The selected window and current fleet row use the
 palette's selection colours.
 The second is the **fleet strip** — every ae session on this tmux server in the order it
 was created, each with its live mark and clickable to switch to it. Every pane
@@ -133,8 +133,8 @@ The marks are the **watchdog's verdict**, never a claim about what an agent is "
 | `◌` | `?` | stale, or a fact ae could not establish |
 | `·` | `-` | no agent, or no verdict yet |
 
-While somebody is attached, a Working verdict shows a spinner in place of `●`.
-The spinner is the cached verdict, not terminal motion; silence past the liveness
+While somebody is attached, a Working verdict shows a pulsing `●` in its place.
+The pulse is the cached verdict, not terminal motion; silence past the liveness
 window changes the next watchdog verdict to stale.
 
 Session attention is keyed by the agents in session meta, so an agent whose
