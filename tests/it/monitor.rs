@@ -627,6 +627,10 @@ fn the_charter_pins_the_watchdog_overview_turn_and_retires_the_model_sweep() {
         "session creation requires confirmation"
     );
     assert!(
+        text.contains("confirm only when"),
+        "charter pins conditional confirmation"
+    );
+    assert!(
         text.contains("only when the human explicitly says purge or delete history"),
         "history purge requires explicit human wording"
     );
@@ -644,6 +648,10 @@ fn the_charter_pins_the_watchdog_overview_turn_and_retires_the_model_sweep() {
     assert!(
         config_text.contains("cannot stop or end itself"),
         "template pins self-stop guard"
+    );
+    assert!(
+        config_text.contains("confirm only when"),
+        "template pins conditional confirmation"
     );
     assert!(
         !text.contains("ae _monitor sweep"),
