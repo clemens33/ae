@@ -1181,6 +1181,20 @@ pub fn switch_command(session: &str) -> String {
     )
 }
 
+/// The root status-click command ae installs on a server it owns.
+///
+/// tmux's default sends both window and session ranges through `switch-client`.
+/// A session focus hook also observes a same-session window click, so window
+/// ranges must select their window without generating that event. Session
+/// ranges keep the default command and therefore keep their exact `=` target.
+pub(crate) const MOUSE_DOWN_STATUS_DISPATCH: [&str; 5] = [
+    "if-shell",
+    "-F",
+    "#{==:#{mouse_status_range},window}",
+    "select-window -t =",
+    "switch-client -t =",
+];
+
 /// Arguments that switch one exact client to one exact session.
 ///
 /// The client target is the exact id read from `list-clients`; the session
@@ -3080,6 +3094,20 @@ mod tests {
         let window = jump.find("select-window").expect("a window step");
         let pane = jump.find("select-pane").expect("a pane step");
         assert!(window < pane, "{jump}");
+    }
+
+    #[test]
+    fn a_status_click_selects_a_window_but_switches_a_session() {
+        assert_eq!(
+            super::MOUSE_DOWN_STATUS_DISPATCH,
+            [
+                "if-shell",
+                "-F",
+                "#{==:#{mouse_status_range},window}",
+                "select-window -t =",
+                "switch-client -t ="
+            ]
+        );
     }
 
     #[test]

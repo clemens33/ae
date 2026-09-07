@@ -14,7 +14,7 @@ use crate::config::{self, IdentityConfig, Seat};
 use crate::inventory::ServerId;
 use crate::launch::{self, PENDING};
 use crate::meta::{self, Meta, ServerSelector};
-use crate::session_tmux::{Op, Split, argv, interpret_pane_id};
+use crate::session_tmux::{Op, Split, argv, interpret_pane_id, mouse_down_status_binding_argv};
 use crate::state::{EXIT_FAILED, EXIT_USAGE};
 use crate::tool::ToolKind;
 use crate::{deliver, roster, tmux, transport};
@@ -1628,6 +1628,9 @@ fn stamp_session(server: &ServerId, env: &Env, shape: &Session, main_pane: &str)
         ),
         &shape.look,
     );
+    if let Some(binding) = mouse_down_status_binding_argv(server) {
+        let _ = transport::run_tmux_op(&binding);
+    }
     let _ = transport::run_tmux_op(&argv(server, &Op::SetClientSessionHook { pane: main_pane }));
     let _ = transport::run_tmux_op(&argv(server, &Op::SelectPane { pane: main_pane }));
 }

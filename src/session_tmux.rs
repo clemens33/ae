@@ -3,7 +3,7 @@
 //!
 //! The tmux calls the launch path makes: `new-session`, `set-environment`,
 //! `split-window`, `new-window`,
-//! `select-layout`, `select-pane`, `select-window`, `set-hook`,
+//! `select-layout`, `select-pane`, `select-window`, `set-hook`, `bind-key`,
 //! `set-window-option`.
 //!
 //! Same shape as [`crate::git`] and for the same reason: the inner vector of
@@ -16,7 +16,7 @@
 //! [`crate::transport::publish_option`], which is the existing door.
 
 use crate::inventory::ServerId;
-use crate::tmux::{server_args, session_target};
+use crate::tmux::{MOUSE_DOWN_STATUS_DISPATCH, server_args, session_target};
 
 /// The `-P -F` format every pane-creating call here prints.
 const PANE_ID_FORMAT: &str = "#{pane_id}";
@@ -108,6 +108,9 @@ pub(crate) enum Op<'a> {
     /// `set-hook` takes a target-PANE, so the pane id makes this session-scoped
     /// without a name target (and without prefix matching).
     SetClientSessionHook { pane: &'a str },
+    /// Replace tmux's root `MouseDown1Status` on an ae-owned server so a
+    /// window-range click selects the window without firing the session hook.
+    BindMouseDownStatus,
     /// `rename-session -t <target> <name>` — `ae rename`'s tmux half.
     RenameSession { target: &'a str, name: &'a str },
     /// `set-window-option -t <target> <name> <value>` — the monitor window's
@@ -232,6 +235,10 @@ pub(crate) fn argv(server: &ServerId, op: &Op<'_>) -> TmuxArgv {
                 .map(ToOwned::to_owned),
             );
         }
+        Op::BindMouseDownStatus => {
+            args.extend(["bind-key", "-T", "root", "MouseDown1Status"].map(ToOwned::to_owned));
+            args.extend(MOUSE_DOWN_STATUS_DISPATCH.map(ToOwned::to_owned));
+        }
         Op::RenameSession { target, name } => {
             args.extend(["rename-session", "-t"].map(ToOwned::to_owned));
             args.push(session_target(target));
@@ -251,6 +258,15 @@ pub(crate) fn argv(server: &ServerId, op: &Op<'_>) -> TmuxArgv {
         }
     }
     TmuxArgv(args)
+}
+
+/// The server-global status binding for a positively selected, ae-owned
+/// server. Ambient means the user's own root table, which launch never writes.
+pub(crate) fn mouse_down_status_binding_argv(server: &ServerId) -> Option<TmuxArgv> {
+    match server {
+        ServerId::Ambient => None,
+        ServerId::Selected(_) => Some(argv(server, &Op::BindMouseDownStatus)),
+    }
 }
 
 /// The `#{pane_id}` a `-P -F` run printed, or `None` when nothing usable came
@@ -348,6 +364,33 @@ mod tests {
                 "client-session-changed",
                 "select-window -t %9 ; select-pane -t %9"
             ]
+        );
+    }
+
+    #[test]
+    fn the_status_click_binding_is_only_minted_for_an_ae_owned_server() {
+        let server = ServerId::Selected(crate::meta::Selector::Name("ae".to_owned()));
+        let binding = mouse_down_status_binding_argv(&server)
+            .unwrap_or_else(|| panic!("a selected server owns its root table"));
+        assert_eq!(
+            binding.as_args(),
+            [
+                "-L",
+                "ae",
+                "bind-key",
+                "-T",
+                "root",
+                "MouseDown1Status",
+                "if-shell",
+                "-F",
+                "#{==:#{mouse_status_range},window}",
+                "select-window -t =",
+                "switch-client -t ="
+            ]
+        );
+        assert!(
+            mouse_down_status_binding_argv(&ServerId::Ambient).is_none(),
+            "an ambient server's root table belongs to its user"
         );
     }
 

@@ -89,7 +89,8 @@ Other rules of the loop:
   it. Never write a global (`-g`) option, never `#()` in a format, and prove a look change
   by rendering it in `ae-dev` before it touches a live session. The launch also stamps a
   session-scoped focus hook by main-pane ID, never by name or globally; it applies with
-  `theme = off` and is not part of the look.
+  `theme = off` and is not part of the look. The launch installs ONE server-global key
+  binding, `MouseDown1Status`, on ae-owned servers only — a bind cannot be session-scoped.
 - **Workers get their own git worktree.** `git worktree add <path> -b <branch> main`.
 - **One writer per file.** Other agents edit this tree concurrently; coordinate before
   reverting or overwriting anything you did not change.
@@ -287,7 +288,7 @@ Each is one rule with one owner. Change the owner, not a copy.
 | Every tmux format uses a printable pipe separator, never a control byte — tmux 3.4 octal-escapes those. Each format literal is written out; `SLOTS_FORMAT` deliberately uses an unspaced pipe | `src/tmux.rs` (`FIELD_SEPARATOR` is the parser delimiter) + the control-char-free test over every format constant |
 | A session name handed to tmux as a target is `=name` — exact, never prefix/fnmatch | `src/tmux.rs::session_target`; pinned by `tests/it/entry.rs::a_launch_target_is_an_exact_session_name_not_a_prefix` |
 | The tmux floor is REFUSED at exactly two places — a launch (before its first write) and the picker — and REPORTED at three: `ae version`, `ae doctor`, a publish. The parse and the verdict have one owner | `src/tmux_floor.rs`; the sites are pinned by `tests/it/floor.rs` |
-| A session's look is SESSION- and WINDOW-scoped, never global. Three writers, one job each: a launch writes the layout, the facts and the attention SEED; a rename rewrites the layout and the facts only; the watchdog owns the verdicts every cycle and rewrites the layout ONLY on a look-stamp change | `src/theme.rs` splits the sets (`layout_options` / `fact_options` / `seed_options`); `src/session_launch.rs::apply_status_bar` / `redress_status_bar` / `stamp_window` write them; `src/watchdog_daemon.rs::reconcile_look` is the only one that rewrites them, and `::publish` the only writer of the values |
+| A session's look is SESSION- and WINDOW-scoped, never global. Three writers, one job each: a launch writes the layout, the facts and the attention SEED; a rename rewrites the layout and the facts only; the watchdog owns the verdicts every cycle and rewrites the layout ONLY on a look-stamp change. The launch's one server-global write is the `MouseDown1Status` binding on an ae-owned server, because tmux cannot scope a key binding to one session | `src/theme.rs` splits the sets (`layout_options` / `fact_options` / `seed_options`); `src/session_launch.rs::apply_status_bar` / `redress_status_bar` / `stamp_window` write them; `src/watchdog_daemon.rs::reconcile_look` is the only one that rewrites them, and `::publish` the only writer of the values; `src/session_tmux.rs::mouse_down_status_binding_argv` owns the binding's server boundary |
 | The server pair is read by SET, not by nonempty; an untypeable pair is refused | `src/doors.rs` |
 | A resume never rewrites the pair under a running session; a re-pair is written only by the build's publication | `src/session_launch.rs` |
 | Control bytes never reach JSON raw: they are written as JSON escapes | `src/json.rs` |

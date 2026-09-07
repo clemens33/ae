@@ -788,9 +788,9 @@ pub fn next_fleet_session(rows: &[FleetRow], dying: &str) -> Option<String> {
 /// accent, which change in place. The tmux `$<n>` id is the creation order,
 /// assigned once per server and never reused while it runs.
 ///
-/// The range is tmux's OWN `session` range, so the default root binding
-/// (`MouseDown1Status` → `switch-client -t =`) already does the jump: ae adds no
-/// key binding, which would be a server-global write on the user's key table.
+/// The range is tmux's OWN `session` range, so ae's owned-server root binding
+/// keeps tmux's default `MouseDown1Status` action (`switch-client -t =`) for
+/// this arm. Window ranges take the binding's other arm and select in place.
 /// A session on another tmux server cannot appear here at all — the strip is
 /// built from one server's own listing. `working_frame` replaces only a
 /// [`Mark::Working`] glyph; `None` draws the static vocabulary.
@@ -1685,9 +1685,9 @@ mod tests {
         assert!(strip.contains("+2"), "{strip}");
     }
 
-    /// Each row is a tmux SESSION range, which is what makes it clickable with
-    /// no key binding of ae's own: tmux's default `MouseDown1Status` is
-    /// `switch-client -t =`, and `=` resolves through the range.
+    /// Each row is a tmux SESSION range, which makes ae's owned-server
+    /// `MouseDown1Status` binding preserve tmux's `switch-client -t =` action;
+    /// `=` resolves through the range.
     #[test]
     fn every_fleet_row_is_a_session_range_that_closes_itself() {
         let strip = fleet_strip(

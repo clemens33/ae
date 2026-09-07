@@ -13,7 +13,7 @@
 )]
 
 use std::fmt::Write as _;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{MetadataExt as _, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -107,6 +107,8 @@ impl Rig {
         );
         let sock = scratch.join("sock");
         scratch.add_tmux_server(sock.clone());
+        let uid = std::fs::metadata(&scratch).map_or(0, |metadata| metadata.uid());
+        scratch.add_tmux_server(scratch.join(format!("tmux-{uid}")).join("default"));
         Self {
             scratch,
             sock,
@@ -1058,6 +1060,22 @@ fn the_session_focus_hook_follows_the_lead_through_resume_and_rename() {
     let (code, stdout, stderr) = rig.launch(&["--local", "lnfocus"]);
     assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
 
+    let assert_mouse_binding = || {
+        let (_, keys) = rig.tmux(&["list-keys", "-T", "root"]);
+        let binding = keys
+            .lines()
+            .find(|line| line.starts_with("bind-key  -T root MouseDown1Status "))
+            .unwrap_or_else(|| panic!("one MouseDown1Status binding: {keys}"));
+        assert!(
+            binding.contains("if-shell -F")
+                && binding.contains("#{==:#{mouse_status_range},window}")
+                && binding.contains("select-window -t =")
+                && binding.contains("switch-client -t ="),
+            "window ranges select their window and session ranges keep tmux's switch: {binding}"
+        );
+    };
+    assert_mouse_binding();
+
     let main_pane = || {
         rig.panes("lnfocus")
             .into_iter()
@@ -1097,6 +1115,7 @@ fn the_session_focus_hook_follows_the_lead_through_resume_and_rename() {
     assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
     let resumed_pane = main_pane();
     assert_hook("lnfocus", &resumed_pane);
+    assert_mouse_binding();
 
     let renamed = ae()
         .env("HOME", &rig.scratch)
@@ -1109,6 +1128,54 @@ fn the_session_focus_hook_follows_the_lead_through_resume_and_rename() {
         .unwrap_or_else(|why| panic!("the rename should run: {why}"));
     assert_eq!(renamed.status.code(), Some(0), "rename failed: {renamed:?}");
     assert_hook("lnrenamed", &resumed_pane);
+}
+
+/// An ambient server may carry the user's own root table. A launch there keeps
+/// tmux's default status click instead of replacing a server-global binding.
+#[test]
+fn an_ambient_launch_does_not_replace_mouse_down_status() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("focus-ambient");
+    let ambient = |words: &[&str]| {
+        run_tmux(
+            &words
+                .iter()
+                .map(|word| (*word).to_owned())
+                .collect::<Vec<_>>(),
+            &rig.scratch,
+        )
+    };
+    assert!(
+        ambient(&["new-session", "-d", "-s", "ambient-owner", "sleep", "600"]).0,
+        "the user's ambient server starts"
+    );
+    assert!(
+        ambient(&[
+            "bind-key",
+            "-T",
+            "root",
+            "MouseDown1Status",
+            "display-message",
+            "ambient-owned"
+        ])
+        .0,
+        "the user owns the ambient binding"
+    );
+    let (code, stdout, stderr) = rig.launch_with_server("", "", &["--local", "lnfocus-ambient"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+
+    let (listed, keys) = ambient(&["list-keys", "-T", "root"]);
+    assert!(listed, "the ambient server's root table: {keys}");
+    let binding = keys
+        .lines()
+        .find(|line| line.starts_with("bind-key  -T root MouseDown1Status "))
+        .unwrap_or_else(|| panic!("tmux's MouseDown1Status binding remains: {keys}"));
+    assert!(
+        binding.contains("display-message ambient-owned") && !binding.contains("if-shell"),
+        "an ambient launch leaves the server-global binding alone: {binding}"
+    );
 }
 
 /// `--worktree` creates a real git worktree; a launch that cannot build its

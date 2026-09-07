@@ -25,7 +25,15 @@ those lands on that session's *current* window and silently leaves the others on
 the global table — so ae stamps each window individually and never touches `-g`.
 The launch also stamps a session-scoped `client-session-changed` hook that
 selects the lead window and pane by pane id; it is a focus rule, not a look
-option, and is present when `theme = off` too.
+option, and is present when `theme = off` too. One input rule cannot be
+session-scoped: on a positively selected ae-owned server, launch replaces the
+root `MouseDown1Status` binding. Window ranges use `select-window -t =`, so a
+tab click does not fire the session hook and bounce back to the lead window;
+session ranges keep tmux's default `switch-client -t =`, so the fleet strip
+still switches sessions and the hook still focuses the destination's lead.
+Launch never writes this server-global binding on an ambient server, where the
+root key table belongs to the user. Every launch on an owned server reasserts
+the same binding, so the write is idempotent.
 
 **Three writers, one job each.** A launch writes the layout, the look facts and
 the attention seed. A rename rewrites the layout and the facts, and leaves every
@@ -133,9 +141,9 @@ the ONE place the seat is drawn — with its own verdict mark and a tmux
 selection colours mark it in place; it never jumps into the fleet strip. Three
 spaces separate it from the fleet and one space separates it from `ae <version>`.
 Each strip entry is a tmux `range=session` region, so
-tmux's own default
-`MouseDown1Status` binding (`switch-client -t =`) makes it clickable: ae adds no
-key binding, which would be a server-global write on your key table.
+ae's root `MouseDown1Status` binding sends it through tmux's default
+`switch-client -t =` action. The binding is the one server-global exception
+described above and is installed only on an ae-owned server.
 The bottom-right `ae <version>` segment is another session range when an
 orchestrator exists, targeting its `$<n>` id; the orchestrator's own segment and
 a fleet without one stay plain text.
