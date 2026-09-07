@@ -638,6 +638,14 @@ fn the_charter_pins_the_watchdog_overview_turn_and_retires_the_model_sweep() {
         "the seat prompt pins non-attaching lifecycle commands"
     );
     assert!(
+        text.contains("cannot stop or end itself"),
+        "charter pins self-stop guard"
+    );
+    assert!(
+        config_text.contains("cannot stop or end itself"),
+        "template pins self-stop guard"
+    );
+    assert!(
         !text.contains("ae _monitor sweep"),
         "the seat no longer renders or heartbeats a timer sweep"
     );
