@@ -11,6 +11,8 @@
 //! where you were would be a second answer to a question tmux already answers,
 //! and two answers can disagree.
 
+use std::path::Path;
+
 use crate::attention::Reason;
 use crate::digest::{SessionEntry, Status};
 use crate::listing::World;
@@ -54,6 +56,14 @@ pub(crate) const CONFIG_FILE: &str = "orchestrator.config";
 /// The config seeded for the seat on its first launch.
 pub(crate) const DEFAULT_CONFIG: &str =
     include_str!("../contrib/aeorchestrator/orchestrator.config");
+
+/// Whether `path` is the canonical local overlay owned by the orchestrator
+/// seat. A session named `orchestrator` can still be an ordinary project
+/// session, so the overlay path—not the session name—decides identity scope.
+#[must_use]
+pub(crate) fn is_seat_overlay(path: &Path, home: &Path) -> bool {
+    path == home.join(CONFIG_FILE)
+}
 
 /// The code a refused orchestrator invocation takes.
 pub const EXIT_USAGE: u8 = 2;

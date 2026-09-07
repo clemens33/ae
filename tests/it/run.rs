@@ -342,6 +342,53 @@ fn a_link_invoked_by_path_reaches_the_core_with_its_own_session() {
     );
 }
 
+/// `_run` must apply the global-only identity rule too: a legacy seat profile
+/// with the same name cannot shadow the command recorded in the global roster.
+#[test]
+fn an_orchestrator_run_ignores_a_shadowing_legacy_profile() {
+    let mut rig = Rig::new("orch-shadow");
+    rig.dir = rig.home.join("sessions").join("orchestrator");
+    assert!(
+        std::fs::create_dir_all(&rig.dir).is_ok(),
+        "an orchestrator session dir"
+    );
+    let global = format!(
+        "[profiles]\nshared = \"{} --global\"\n\n[roster]\norchestrator = shared\n\n[workspace]\nmain = orchestrator\n",
+        rig.tool("claude")
+    );
+    assert!(
+        std::fs::write(&rig.config, global).is_ok(),
+        "a global config"
+    );
+    let seat = rig.home.join("orchestrator.config");
+    let old_seat = format!(
+        "[profiles]\nshared = \"{} --legacy\"\n\n[roster]\norchestrator = shared\n\n[workspace]\nmain = orchestrator\n",
+        rig.tool("codex")
+    );
+    assert!(
+        std::fs::write(&seat, old_seat).is_ok(),
+        "an old seat config"
+    );
+    let meta = format!(
+        "mode=local\nschema=2\nsession=orchestrator\norigin={}\nwork_dir={}\nlayout=vertical\nconfig={}\nlocal_config={}\nseat.main=orchestrator\nprofile.main=shared\nlaunch_id.main=tok-1\n",
+        rig.project.display(),
+        rig.project.display(),
+        rig.config.display(),
+        seat.display()
+    );
+    assert!(
+        std::fs::write(rig.dir.join("meta"), meta).is_ok(),
+        "a session meta"
+    );
+
+    let (argv, _) = rig.exec();
+    assert_eq!(argv[0], "--global", "the global command ran: {argv:?}");
+    assert!(
+        !argv.contains(&"--legacy".to_owned()),
+        "the legacy command was ignored: {argv:?}"
+    );
+}
+
 #[test]
 fn an_alias_link_prepends_its_own_fixed_word() {
     let rig = Rig::new("alias");

@@ -697,8 +697,23 @@ pub fn read_workspace_keys(
     local: Option<&Path>,
     keys: &[&str],
 ) -> Vec<Option<String>> {
+    read_workspace_keys_with_identity_sections(global, local, keys).0
+}
+
+/// Read `[workspace]` keys and report whether the local file carries legacy
+/// identity sections. The latter are metadata for compatibility notices only:
+/// callers that own identity globally must not parse or overlay those rows.
+#[must_use]
+pub fn read_workspace_keys_with_identity_sections(
+    global: Option<&Path>,
+    local: Option<&Path>,
+    keys: &[&str],
+) -> (Vec<Option<String>>, bool, bool) {
     let mut found: Vec<Option<String>> = vec![None; keys.len()];
-    for file in [global, local].into_iter().flatten() {
+    let mut local_has_profiles = false;
+    let mut local_has_roster = false;
+    for (is_local, file) in [(false, global), (true, local)] {
+        let Some(file) = file else { continue };
         #[allow(
             clippy::disallowed_methods,
             reason = "a door: reads the INI config the frozen parse_config reads — see clippy.toml"
@@ -712,6 +727,10 @@ pub fn read_workspace_keys(
                 continue;
             }
             if let Some(name) = section_header(line) {
+                if is_local {
+                    local_has_profiles |= name == "profiles";
+                    local_has_roster |= name == "roster";
+                }
                 section = name;
                 continue;
             }
@@ -725,7 +744,7 @@ pub fn read_workspace_keys(
             }
         }
     }
-    found
+    (found, local_has_profiles, local_has_roster)
 }
 
 #[cfg(test)]

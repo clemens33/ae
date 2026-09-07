@@ -714,6 +714,79 @@ fn the_bare_orchestrator_seeds_its_own_config_and_seats_exactly_one_agent() {
     );
 }
 
+/// A legacy seat file may still contain identity sections, but the global
+/// roster is the only profile authority. Workspace and prompt values remain
+/// local overlays.
+#[test]
+fn the_orchestrator_ignores_legacy_seat_identity_and_uses_the_global_profile() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::new("orch-legacy");
+    assert!(std::fs::create_dir_all(&rig.home).is_ok(), "an ae home");
+    let global = "[profiles]\nglobal = \"claude\"\n\n[roster]\norchestrator = global\n\n[workspace]\nmain = orchestrator\nwatchdog = false\n";
+    assert!(
+        std::fs::write(rig.config(), global).is_ok(),
+        "a global config"
+    );
+    let seat = rig.home.join("orchestrator.config");
+    let old_seat = "[profiles]\nlocal = \"codex\"\n\n[roster]\norchestrator = local\n\n[workspace]\nmain = orchestrator\nlayout = horizontal\nwatchdog = false\n";
+    assert!(
+        std::fs::write(&seat, old_seat).is_ok(),
+        "an old seat config"
+    );
+    let (bin, marker) = rig.fake_profiles();
+    let (code, stdout, stderr) =
+        rig.run_on_with_path(Some(&rig.sock), &bin, &["orchestrator", "--no-attach"]);
+    assert_eq!(code, Some(0), "{stdout}{stderr}");
+    assert_eq!(
+        stderr,
+        format!(
+            "ae orchestrator: ignoring [roster]/[profiles] in {}: the seat profile is [roster] orchestrator in {}\n",
+            seat.display(),
+            rig.config().display()
+        )
+    );
+    assert_agent_launched(&marker, "the global profile reached the fake executable");
+    let launched = std::fs::read_to_string(&marker).unwrap_or_default();
+    assert!(
+        launched.contains("claude") && !launched.contains("codex"),
+        "the global profile launched, not the legacy seat profile: {launched}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&seat).unwrap_or_default(),
+        old_seat,
+        "the legacy seat file remains untouched"
+    );
+}
+
+/// The reserved word is special only when it uses the canonical seat overlay;
+/// an explicit project-local launch named `orchestrator` keeps its roster.
+#[test]
+fn a_plain_local_orchestrator_name_keeps_the_project_roster() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::new("orch-project");
+    write_competing_orchestrator_configs(&rig);
+    let (code, stdout, stderr) = rig.run_on(Some(&rig.sock), &["--local", "orchestrator"]);
+    assert!(
+        code != Some(2),
+        "a project launch named orchestrator is not a usage error: {stdout}{stderr}"
+    );
+    let meta = rig.sessions().join("orchestrator").join("meta");
+    let text = std::fs::read_to_string(&meta).unwrap_or_default();
+    assert!(
+        text.contains("seat.main=local"),
+        "project roster kept: {text}"
+    );
+    assert!(
+        text.contains("profile.main=idle"),
+        "project profile kept: {text}"
+    );
+    assert!(!stderr.contains("ignoring [roster]/[profiles]"), "{stderr}");
+}
+
 /// A fresh home seeds the global roster first, then the seat overlay, before
 /// building the one named orchestrator seat.
 #[test]
@@ -751,10 +824,32 @@ fn a_fresh_orchestrator_seeds_global_then_seat_and_builds_without_attach() {
         &marker,
         "the globally bound default profile reached the seat",
     );
+
+    // A running seat reattaches before identity validation. Removing its
+    // global row must not make the live session unreachable.
+    let global = std::fs::read_to_string(rig.config()).unwrap_or_default();
+    let removed_row = global
+        .lines()
+        .filter(|line| !line.starts_with("orchestrator = "))
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    assert!(
+        std::fs::write(rig.config(), removed_row).is_ok(),
+        "remove global row"
+    );
+    let (code, stdout, stderr) =
+        rig.run_on_with_path(Some(&rig.sock), &bin, &["orchestrator", "--no-attach"]);
+    assert_eq!(code, Some(0), "{stdout}{stderr}");
+    assert!(
+        stdout.contains("Session 'orchestrator' is running."),
+        "{stdout}"
+    );
+    assert!(!stderr.contains("no profile for the seat"), "{stderr}");
 }
 
-/// A custom global config must bind the dedicated seat before ae writes its
-/// local overlay or session state.
+/// A custom global config must bind the dedicated seat before ae builds its
+/// session state.
 #[test]
 fn the_bare_orchestrator_refuses_without_a_global_profile_row() {
     if skip() {
@@ -767,12 +862,20 @@ fn the_bare_orchestrator_refuses_without_a_global_profile_row() {
         std::fs::write(rig.config(), global).is_ok(),
         "a global config"
     );
+    let seat = rig.home.join("orchestrator.config");
+    let old_seat = "[profiles]\nlocal = \"sleep 600\"\n\n[roster]\norchestrator = local\n\n[workspace]\nmain = orchestrator\nwatchdog = false\n";
+    assert!(
+        std::fs::write(&seat, old_seat).is_ok(),
+        "an old seat config"
+    );
     let (code, stdout, stderr) = rig.run_on(Some(&rig.sock), &["orchestrator"]);
     assert_eq!(code, Some(1), "{stdout}{stderr}");
     assert_eq!(
         stderr,
         format!(
-            "ae orchestrator: no profile for the seat — add \"orchestrator = <profile>\" under [roster] in {}\n",
+            "ae orchestrator: ignoring [roster]/[profiles] in {}: the seat profile is [roster] orchestrator in {}\nae orchestrator: no profile for the seat — add \"orchestrator = <profile>\" under [roster] in {}\n",
+            seat.display(),
+            rig.config().display(),
             rig.config().display()
         )
     );
@@ -781,7 +884,7 @@ fn the_bare_orchestrator_refuses_without_a_global_profile_row() {
         std::fs::read_to_string(rig.config()).unwrap_or_default(),
         global
     );
-    assert!(!rig.home.join("orchestrator.config").exists());
+    assert_eq!(std::fs::read_to_string(&seat).unwrap_or_default(), old_seat);
     assert!(!rig.sessions().join("orchestrator").exists());
 }
 

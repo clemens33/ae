@@ -16,8 +16,8 @@ On first run, ae seeds `~/.ae/orchestrator.config` from `orchestrator.config`
 and reads it as the seat's local overlay. The profile comes from the global
 `[roster] orchestrator = <profile>` row; it never reads the current project's
 `.ae/config` for this launch. Existing seat files that still carry `[profiles]`
-or `[roster]` keep working, with local values winning. Edit the seeded file to
-change local preferences. `CHARTER.md` is the readable copy of the role
+or `[roster]` are ignored for identity; `[workspace]` and `[prompt]` still
+overlay. Edit the seeded file to change local preferences. `CHARTER.md` is the readable copy of the role
 contract; it is not loaded from a guessed path.
 
 ## Role

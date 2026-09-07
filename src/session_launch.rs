@@ -538,41 +538,6 @@ fn launch(
     {
         return Ok(code);
     }
-    if seeds_orchestrator_config && let Some(global) = env.global.as_deref() {
-        // The global roster chooses the seat's profile. Check it after the
-        // global first-run seed (whose template carries the default row), but
-        // before the dedicated seat file or any session state is written.
-        let local = env.local.as_deref().filter(|path| node_exists(path));
-        let cfg = match config::read_identity(Some(global), local) {
-            Ok(cfg) => cfg,
-            Err(why) => {
-                writeln!(err, "{why}")?;
-                return Ok(EXIT_FAILED);
-            }
-        };
-        if cfg
-            .roster_profile(crate::orchestrator::ORCHESTRATOR_SESSION)
-            .is_none()
-        {
-            writeln!(
-                err,
-                "ae orchestrator: no profile for the seat — add \"orchestrator = <profile>\" under [roster] in {}",
-                global.display()
-            )?;
-            return Ok(EXIT_FAILED);
-        }
-    }
-    if seeds_orchestrator_config
-        && let Some(code) = crate::seed_default_config(
-            &orchestrator_config,
-            crate::orchestrator::DEFAULT_CONFIG,
-            "orchestrator",
-            err,
-        )?
-    {
-        return Ok(code);
-    }
-
     let meta_present = node_exists(&dir.join(crate::store::META));
     // THE CHAIN, before anything reads a field of this meta: a resume or a
     // reattach is ae touching a session, and a shape it cannot place is one it
@@ -580,6 +545,34 @@ fn launch(
     if meta_present && let Err(refusal) = crate::migrate::session(&dir) {
         writeln!(err, "Error: {}", refusal.line(&session))?;
         return Ok(EXIT_FAILED);
+    }
+    // On resume the RECORDED config wins: an agent's aliases must resolve from
+    // the file the session was created with, not from wherever the caller is.
+    let mut env = env.clone();
+    if meta_present {
+        if let Some(stored) = meta_value(&dir, "config").filter(|v| !v.is_empty()) {
+            env.global = Some(PathBuf::from(stored));
+        }
+        let origin = meta_value(&dir, "origin").unwrap_or_default();
+        env.local = config::local_overlay(&dir, &origin);
+    }
+    let orchestrator_seat = env
+        .local
+        .as_deref()
+        .is_some_and(|local| crate::orchestrator::is_seat_overlay(local, &env.home));
+    if orchestrator_seat {
+        let (_, has_profiles, has_roster) =
+            config::read_workspace_keys_with_identity_sections(None, env.local.as_deref(), &[]);
+        if (has_profiles || has_roster)
+            && let (Some(local), Some(global)) = (env.local.as_deref(), env.global.as_deref())
+        {
+            writeln!(
+                err,
+                "ae orchestrator: ignoring [roster]/[profiles] in {}: the seat profile is [roster] orchestrator in {}",
+                local.display(),
+                global.display()
+            )?;
+        }
     }
     // DERIVED-NAME OWNERSHIP.
     if derived && meta_present {
@@ -717,28 +710,68 @@ fn launch(
             )?;
             return Ok(0);
         }
-        return Ok(attach(&server, env, &session));
+        return Ok(attach(&server, &env, &session));
     }
 
-    // ---- config, roster, workspace values ----
-    // On resume the RECORDED config wins: an agent's aliases must resolve from
-    // the file the session was created with, not from wherever the caller is.
-    let mut env = env.clone();
-    if meta_present {
-        if let Some(stored) = meta_value(&dir, "config").filter(|v| !v.is_empty()) {
-            env.global = Some(PathBuf::from(stored));
-        }
-        let origin = meta_value(&dir, "origin").unwrap_or_default();
-        env.local = config::local_overlay(&dir, &origin);
-    }
-    let cfg: IdentityConfig =
-        match config::read_identity(env.global.as_deref(), env.local.as_deref()) {
+    if seeds_orchestrator_config && let Some(global) = env.global.as_deref() {
+        // The global roster chooses the seat's profile. Check it after the
+        // global first-run seed, but only after the live-session reattach
+        // branch: a running seat is never rebuilt or revalidated.
+        let cfg = match config::read_identity(Some(global), None) {
             Ok(cfg) => cfg,
             Err(why) => {
                 writeln!(err, "{why}")?;
                 return Ok(EXIT_FAILED);
             }
         };
+        if cfg
+            .roster_profile(crate::orchestrator::ORCHESTRATOR_SESSION)
+            .is_none()
+        {
+            writeln!(
+                err,
+                "ae orchestrator: no profile for the seat — add \"orchestrator = <profile>\" under [roster] in {}",
+                global.display()
+            )?;
+            return Ok(EXIT_FAILED);
+        }
+    }
+    if seeds_orchestrator_config
+        && let Some(code) = crate::seed_default_config(
+            &orchestrator_config,
+            crate::orchestrator::DEFAULT_CONFIG,
+            "orchestrator",
+            err,
+        )?
+    {
+        return Ok(code);
+    }
+
+    // ---- config, roster, workspace values ----
+    let mut cfg: IdentityConfig = match if orchestrator_seat {
+        config::read_identity(env.global.as_deref(), None)
+    } else {
+        config::read_identity(env.global.as_deref(), env.local.as_deref())
+    } {
+        Ok(cfg) => cfg,
+        Err(why) => {
+            writeln!(err, "{why}")?;
+            return Ok(EXIT_FAILED);
+        }
+    };
+    if orchestrator_seat {
+        // Identity is global-only, while the dedicated seat still overlays its
+        // workspace choices. Read those two keys without parsing legacy local
+        // profiles or roster rows.
+        let local_workspace =
+            config::read_workspace_keys(None, env.local.as_deref(), &["main", "workers"]);
+        if local_workspace[0].is_some() {
+            cfg.main.clone_from(&local_workspace[0]);
+        }
+        if local_workspace[1].is_some() {
+            cfg.workers.clone_from(&local_workspace[1]);
+        }
+    }
     let extras = config::read_workspace_keys(
         env.global.as_deref(),
         env.local.as_deref(),
@@ -773,7 +806,6 @@ fn launch(
             .as_str(),
     );
 
-    let mut cfg = cfg;
     if let Some(workers) = &plan.workers {
         cfg.workers = Some(workers.clone());
     }

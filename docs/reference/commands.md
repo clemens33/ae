@@ -276,7 +276,8 @@ Bare `ae orchestrator` starts or reattaches the local session named
 ae refuses before writing the seat when that row is missing. Ae seeds the seat
 file from the embedded template on first run; the template carries only
 workspace and prompt settings. Existing seat files that still carry
-`[profiles]`/`[roster]` keep working, with local values winning. Add
+`[profiles]`/`[roster]` are ignored for identity; `[workspace]` and `[prompt]`
+still overlay. Add
 `--no-attach` to build without attaching. The seat is pinned first in the status
 bar's fleet strip, marked `◆`. The `--popup` form is the picker, next.
 
@@ -476,7 +477,8 @@ reattaches the local seat with that file as its overlay. Project-local
 `[roster] orchestrator = <profile>`; a missing row refuses before the seat file
 is written. Use `--no-attach` to build without attaching. The generated config
 carries workspace and role prompt only; old generated configs with
-`[profiles]`/`[roster]` remain valid. `CHARTER.md` is its readable reference,
+`[profiles]`/`[roster]` are ignored for identity; `[workspace]` and `[prompt]`
+still overlay. `CHARTER.md` is its readable reference,
 not a guessed runtime path.
 
 **Autostart.** A launch may start the configured Telegram bridge. The

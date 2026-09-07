@@ -505,9 +505,14 @@ fn read_seat(dir: &Path, slot: &str) -> Result<Seat, String> {
     if let Some(local) = &local {
         config_files.push(local.clone());
     }
+    let orchestrator_seat = local.as_deref().is_some_and(|path| {
+        dir.parent()
+            .and_then(Path::parent)
+            .is_some_and(|home| crate::orchestrator::is_seat_overlay(path, home))
+    });
     let cfg = crate::config::read_identity(
         (!global.is_empty()).then(|| Path::new(&global)),
-        local.as_deref(),
+        (!orchestrator_seat).then_some(local.as_deref()).flatten(),
     )
     .map_err(|why| why.to_string())?;
     let Some(command) = cfg.profile(&profile).filter(|cmd| !cmd.trim().is_empty()) else {

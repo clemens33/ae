@@ -98,7 +98,8 @@ The bare `ae orchestrator` command starts one seat using
 `[roster]`; ae seeds the dedicated config on first run and refuses before
 writing when the row is missing. Use `--no-attach` to build the seat without
 attaching. Existing dedicated configs that still carry `[profiles]`/`[roster]`
-remain compatible, with local values winning.
+remain compatible, with `[profiles]`/`[roster]` ignored for identity;
+`[workspace]`/`[prompt]` still overlay.
 
 Bind the picker to a key (ae needs tmux 3.4+); `switch-client -l` (prefix + `L`) is the
 way back:

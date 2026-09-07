@@ -76,8 +76,8 @@ otherwise and lists every violation. A name bound here but not seated is legal:
 on demand with `spawn <name> --using <profile>`. The optional orchestrator seat
 also uses this global roster: add `orchestrator = <profile>` before running
 `ae orchestrator`; its dedicated local overlay no longer chooses the profile.
-Old seat files that still carry `[profiles]`/`[roster]` remain valid, with local
-values winning.
+Old seat files that still carry `[profiles]`/`[roster]` are ignored for identity;
+`[workspace]` and `[prompt]` still overlay.
 
 ## `[workspace]`
 
