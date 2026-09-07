@@ -528,6 +528,7 @@ fn the_charter_pins_the_watchdog_overview_turn_and_retires_the_model_sweep() {
             agents: vec![
                 AgentLine {
                     name: "lead".to_owned(),
+                    profile: "fable5".to_owned(),
                     state: "waiting-user".to_owned(),
                     age_secs: Some(720),
                     reason: "FOCUS export: enable | defer (recommend enable for billing)"
@@ -536,6 +537,7 @@ fn the_charter_pins_the_watchdog_overview_turn_and_retires_the_model_sweep() {
                 },
                 AgentLine {
                     name: "colead".to_owned(),
+                    profile: "gpt6astra".to_owned(),
                     state: "blocked".to_owned(),
                     age_secs: Some(3_600),
                     reason: "gate needs a second provider: none seated".to_owned(),
@@ -573,6 +575,7 @@ fn the_charter_pins_the_watchdog_overview_turn_and_retires_the_model_sweep() {
             topics: Vec::new(),
             agents: vec![AgentLine {
                 name: "lead".to_owned(),
+                profile: "fable5".to_owned(),
                 state: "working".to_owned(),
                 age_secs: Some(0),
                 reason: String::new(),

@@ -9,6 +9,16 @@ ae my-app
 
 First run creates `~/.ae/config` with sensible defaults and launches your main agent in tmux. Session names are explicit, so the same directory can host distinct sessions.
 
+Pick another configured profile for a standing seat on this launch:
+
+```bash
+ae mdk-rust --lead solx --colead astrax
+```
+
+`solx` and `astrax` are ordinary rows you define under `[profiles]`. The same general form is
+`--seat <agent>=<profile>` and may be repeated. The selection persists when you stop and resume
+the session.
+
 Detach any time with `Ctrl+b d`. Agents keep running.
 
 ## Reattach

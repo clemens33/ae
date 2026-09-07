@@ -7,6 +7,9 @@ ae <name> [--local|--copy|--worktree] [--dir <path>] [--no-attach]
                        Start or reattach a session. --dir selects its origin;
                        --no-attach prints the exact attach command and exits
 ae <name> use <alias>  Start session with a specific agent as main
+ae <name> --seat <agent>=<profile> [...]
+                       Replace selected launch-seat profiles; --lead and --colead
+                       are shortcuts for those agent names
 ae list [--all|--stopped|--needs-attn]
                        List sessions (running by default; --all adds stopped
                        history, --needs-attn only those needing attention)
@@ -98,6 +101,13 @@ server-aware attach command, and exits successfully. When `--dir` names an exist
 canonical directory must match the recorded origin; ae refuses rather than attaching to a session
 owned by another directory. Without `--dir`, named-session reattach behavior stays unchanged.
 A launch always needs an explicit name; `ae --dir <path>` without one is a usage error.
+
+Use `--seat <agent>=<profile>` more than once to select profiles for this launch. The agent
+must be one of its configured main/workers and the profile must exist under `[profiles]`.
+`--lead <profile>` and `--colead <profile>` are shortcuts for those two agent names. ae records
+the choices in session metadata, so a later stop/resume keeps them. A stopped seat can be
+re-paired to another profile of the same tool kind while keeping its conversation; changing tool
+kind is refused. A running session must be stopped before any seat profile changes.
 
 See [Configuration → copy modes](../getting-started/config.md#copy-modes) for the trade-offs.
 

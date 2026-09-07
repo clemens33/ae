@@ -24,13 +24,13 @@ pub(crate) mod capture;
 pub(crate) mod name;
 
 /// The usage line for the core entry.
-pub const USAGE: &str = "Usage: _launch --home <ae-home> --cwd <dir> [--global <cfg>] [--local <cfg>] [--server-kind <kind>] [--server <value>] [--caller-socket <path>] [--attach|--no-attach] [--no-autostart] [--] [--worktree|--copy|--local] [--dir <path>] [--no-attach] [--from <uuid>] [use <name>] <session-name>";
+pub const USAGE: &str = "Usage: _launch --home <ae-home> --cwd <dir> [--global <cfg>] [--local <cfg>] [--server-kind <kind>] [--server <value>] [--caller-socket <path>] [--attach|--no-attach] [--no-autostart] [--] [--worktree|--copy|--local] [--dir <path>] [--no-attach] [--from <uuid>] [--seat <agent>=<profile>] [--lead <profile>] [--colead <profile>] [use <name>] <session-name>";
 
 /// The public refusal for a launch argv that names no session.
 pub const MISSING_NAME: &str = "Error: a session needs a name: ae <name> [...]";
 
 /// The public launch usage line paired with [`MISSING_NAME`].
-pub const PUBLIC_USAGE: &str = "Usage: ae <name> [--local|--copy|--worktree] [--dir <path>] [--no-attach] [--from <archive-uuid>] [use <agent>]";
+pub const PUBLIC_USAGE: &str = "Usage: ae <name> [--local|--copy|--worktree] [--dir <path>] [--no-attach] [--from <archive-uuid>] [--seat <agent>=<profile>] [--lead <profile>] [--colead <profile>] [use <agent>]";
 
 /// How long a freshly created pane's shell is given to draw its prompt before
 /// anything is pasted.
@@ -104,6 +104,8 @@ pub struct Plan {
     pub from: Option<String>,
     /// The FROZEN worker list, when a relaunch supplies one.
     pub workers: Option<String>,
+    /// Per-agent profile replacements for this launch, in command-line order.
+    pub seat_profiles: Vec<(String, String)>,
     /// `--dir <path>` — the explicit origin for this launch.
     pub dir: Option<String>,
     /// A public attach override. `None` keeps the preamble's default.
@@ -121,6 +123,10 @@ pub fn parse_plan(args: &[String]) -> Result<Plan, String> {
 
 /// Parse the same grammar for the orchestrator seat, whose existing public
 /// surface also permits an explicit `--attach`.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one owner for the complete public launch grammar and its duplicate checks"
+)]
 pub(crate) fn parse_plan_with_attach(args: &[String], allow_attach: bool) -> Result<Plan, String> {
     let mut plan = Plan::default();
     let mut rest = args;
@@ -161,6 +167,75 @@ pub(crate) fn parse_plan_with_attach(args: &[String], allow_attach: bool) -> Res
                 plan.main = Some(value.clone());
                 rest = tail;
             }
+            _ if !allow_attach
+                && (word == "--lead"
+                    || word.starts_with("--lead=")
+                    || word == "--colead"
+                    || word.starts_with("--colead=")
+                    || word == "--seat"
+                    || word.starts_with("--seat=")) =>
+            {
+                let (agent, inline) = if let Some(value) = word.strip_prefix("--lead=") {
+                    ("lead", Some(value))
+                } else if word == "--lead" {
+                    ("lead", None)
+                } else if let Some(value) = word.strip_prefix("--colead=") {
+                    ("colead", Some(value))
+                } else if word == "--colead" {
+                    ("colead", None)
+                } else {
+                    let raw = if let Some(value) = word.strip_prefix("--seat=") {
+                        value.to_owned()
+                    } else {
+                        match rest.split_first() {
+                            Some((value, tail)) => {
+                                rest = tail;
+                                value.clone()
+                            }
+                            None => String::new(),
+                        }
+                    };
+                    let Some((agent, profile)) = raw.split_once('=') else {
+                        return Err(
+                            "Error: --seat requires <agent>=<profile> (e.g. --seat lead=solx)."
+                                .to_owned(),
+                        );
+                    };
+                    if agent.is_empty() || profile.is_empty() {
+                        return Err(
+                            "Error: --seat requires non-empty <agent>=<profile>.".to_owned()
+                        );
+                    }
+                    if plan.seat_profiles.iter().any(|(seen, _)| seen == agent) {
+                        return Err(format!(
+                            "Error: profile override for agent '{agent}' may be given only once."
+                        ));
+                    }
+                    plan.seat_profiles
+                        .push((agent.to_owned(), profile.to_owned()));
+                    continue;
+                };
+                let profile = if let Some(value) = inline {
+                    value.to_owned()
+                } else {
+                    match rest.split_first() {
+                        Some((value, tail)) => {
+                            rest = tail;
+                            value.clone()
+                        }
+                        None => String::new(),
+                    }
+                };
+                if profile.is_empty() {
+                    return Err(format!("Error: --{agent} requires a profile."));
+                }
+                if plan.seat_profiles.iter().any(|(seen, _)| seen == agent) {
+                    return Err(format!(
+                        "Error: profile override for agent '{agent}' may be given only once."
+                    ));
+                }
+                plan.seat_profiles.push((agent.to_owned(), profile));
+            }
             _ if word == "--from" || word.starts_with("--from=") => {
                 if plan.from.is_some() {
                     return Err("Error: --from may be given only once — a session inherits from exactly one archive.".to_owned());
@@ -186,7 +261,7 @@ pub(crate) fn parse_plan_with_attach(args: &[String], allow_attach: bool) -> Res
             }
             _ if word.starts_with("--") => {
                 return Err(format!(
-                    "Error: unknown flag '{word}'. Use --worktree, --copy, --local, --dir <path>, --no-attach, or --from <archive-uuid>."
+                    "Error: unknown flag '{word}'. Use --worktree, --copy, --local, --dir <path>, --no-attach, --from <archive-uuid>, --seat <agent>=<profile>, --lead <profile>, or --colead <profile>."
                 ));
             }
             // Last positional wins.
@@ -472,6 +547,7 @@ pub fn relaunch(
         main,
         from: Some(plan.uuid.to_owned()),
         workers,
+        seat_profiles: Vec::new(),
         dir: None,
         attach: None,
     };
@@ -511,6 +587,186 @@ pub(crate) fn floor_refusal(server: &ServerId, session: &str) -> Option<String> 
     }
     let probe = transport::observe_tmux_floor(server);
     (!probe.clears_floor()).then(|| crate::tmux_floor::refusal("launch", &probe, server))
+}
+
+/// One command-line seat override that could not be honored.
+enum SeatOverrideRefusal {
+    /// The user named a profile or launch seat that does not exist, or asked a
+    /// stopped conversation to cross harnesses.
+    Usage(String),
+    /// The selected config or profile command itself is not launchable.
+    Failed(String),
+}
+
+/// The launch-agent names an override may target, in seat order.
+fn override_agents(cfg: &IdentityConfig, plan: &Plan, dir: &Path, resuming: bool) -> Vec<String> {
+    if resuming {
+        let Ok(bytes) = meta::read_bytes(dir) else {
+            return Vec::new();
+        };
+        return Meta::parse(&String::from_utf8_lossy(&bytes))
+            .roster()
+            .iter()
+            .filter(|entry| entry.slot == "main" || entry.slot.starts_with("worker."))
+            .map(|entry| entry.name.clone())
+            .collect();
+    }
+
+    let mut agents = Vec::new();
+    if let Some(main) = plan.main.as_deref().or(cfg.main.as_deref()) {
+        let main = main.trim();
+        if !main.is_empty() && cfg.roster_profile(main).is_some() {
+            agents.push(main.to_owned());
+        }
+    }
+    let workers = plan.workers.as_deref().or(cfg.workers.as_deref());
+    if let Some(workers) = workers {
+        agents.extend(
+            workers
+                .split(',')
+                .map(str::trim)
+                .filter(|name| !name.is_empty() && cfg.roster_profile(name).is_some())
+                .map(str::to_owned),
+        );
+    }
+    agents
+}
+
+/// Read the config this launch will use without changing session state.
+fn override_identity(
+    env: &Env,
+    dir: &Path,
+    resuming: bool,
+) -> Result<IdentityConfig, SeatOverrideRefusal> {
+    let mut global = env.global.clone();
+    let mut local = env.local.clone();
+    if resuming {
+        if let Some(stored) = meta_value(dir, "config").filter(|value| !value.is_empty()) {
+            global = Some(PathBuf::from(stored));
+        }
+        let origin = meta_value(dir, "origin").unwrap_or_default();
+        local = config::local_overlay(dir, &origin);
+    }
+    config::read_identity(global.as_deref(), local.as_deref())
+        .map_err(|why| SeatOverrideRefusal::Failed(why.to_string()))
+}
+
+/// Validate every explicit seat profile before the launch's first write.
+fn validate_seat_overrides(
+    env: &Env,
+    plan: &Plan,
+    dir: &Path,
+    resuming: bool,
+    running: bool,
+) -> Result<(), SeatOverrideRefusal> {
+    if plan.seat_profiles.is_empty() {
+        return Ok(());
+    }
+    if running {
+        let session = plan.name.as_deref().unwrap_or_default();
+        return Err(SeatOverrideRefusal::Usage(format!(
+            "Error: session '{session}' is running; stop it before changing a seat profile."
+        )));
+    }
+
+    let cfg = override_identity(env, dir, resuming)?;
+    let agents = override_agents(&cfg, plan, dir, resuming);
+    let known_agents = if agents.is_empty() {
+        "<none>".to_owned()
+    } else {
+        agents.join(", ")
+    };
+    let known_profiles = if cfg.profiles.is_empty() {
+        "<none>".to_owned()
+    } else {
+        cfg.profiles
+            .iter()
+            .map(|(profile, _)| profile.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let recorded = if resuming {
+        meta::read_bytes(dir)
+            .ok()
+            .map(|bytes| Meta::parse(&String::from_utf8_lossy(&bytes)))
+    } else {
+        None
+    };
+
+    for (agent, profile) in &plan.seat_profiles {
+        if !agents.iter().any(|known| known == agent) {
+            return Err(SeatOverrideRefusal::Usage(format!(
+                "Error: unknown launch agent '{agent}' in --seat. Known agents: {known_agents}."
+            )));
+        }
+        let Some(command) = cfg.profile(profile) else {
+            return Err(SeatOverrideRefusal::Usage(format!(
+                "Error: unknown profile '{profile}' in --seat. Known profiles: {known_profiles}."
+            )));
+        };
+        let parsed = crate::launch_cmd::lex_simple_command(command).map_err(|why| {
+            SeatOverrideRefusal::Failed(format!(
+                "Error: [profiles] {profile} (seat '{agent}'): the launch command must be one simple command — it has {why}."
+            ))
+        })?;
+        if let Some(parsed_meta) = recorded.as_ref()
+            && let Some(entry) = parsed_meta
+                .roster()
+                .iter()
+                .find(|entry| entry.name == *agent)
+        {
+            let old = ToolKind::from_binary_name(entry.binary.as_deref().unwrap_or_default());
+            let new = parsed.tool();
+            if old != new {
+                return Err(SeatOverrideRefusal::Usage(format!(
+                    "Error: cannot change agent '{agent}' from {} to {} on resume — its recorded conversation cannot cross tool kinds.",
+                    old.as_str(),
+                    new.as_str()
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Replace one resolved seat's profile and every command-derived field.
+fn reprofile_seat(seat: &mut Seat, profile: &str, command: &str) -> Result<(), String> {
+    let parsed = crate::launch_cmd::lex_simple_command(command).map_err(|why| {
+        format!(
+            "Error: [profiles] {profile} (seat '{}'): the launch command must be one simple command — it has {why}.",
+            seat.name
+        )
+    })?;
+    let tool = parsed.tool();
+    profile.clone_into(&mut seat.profile);
+    command.clone_into(&mut seat.command);
+    seat.assign_span = parsed.assign_span;
+    seat.argv_span = parsed.argv_span;
+    seat.binary = parsed.binary;
+    seat.tool = tool;
+    Ok(())
+}
+
+/// Apply already-preflighted overrides to final, possibly restored seats.
+fn apply_seat_overrides(
+    cfg: &IdentityConfig,
+    plan: &Plan,
+    seats: &mut [Seat],
+) -> Result<(), String> {
+    for (agent, profile) in &plan.seat_profiles {
+        let Some(seat) = seats.iter_mut().find(|seat| seat.name == *agent) else {
+            return Err(format!(
+                "Error: launch agent '{agent}' disappeared after preflight."
+            ));
+        };
+        let Some(command) = cfg.profile(profile) else {
+            return Err(format!(
+                "Error: profile '{profile}' disappeared after preflight."
+            ));
+        };
+        reprofile_seat(seat, profile, command)?;
+    }
+    Ok(())
 }
 
 /// A session's resolved shape, once every refusal has passed.
@@ -633,9 +889,23 @@ fn launch(
     } else {
         proposed_server.clone()
     };
+    let running_preflight = meta_present && transport::session_exists(&floor_server, &session);
     if let Some(refusal) = floor_refusal(&floor_server, &session) {
         write!(err, "{refusal}")?;
         return Ok(crate::tmux_floor::EXIT_REFUSED);
+    }
+    if let Err(refusal) = validate_seat_overrides(env, plan, &dir, meta_present, running_preflight)
+    {
+        match refusal {
+            SeatOverrideRefusal::Usage(line) => {
+                writeln!(err, "{line}")?;
+                return Ok(EXIT_USAGE);
+            }
+            SeatOverrideRefusal::Failed(line) => {
+                writeln!(err, "{line}")?;
+                return Ok(EXIT_FAILED);
+            }
+        }
     }
 
     // A resume's liveness decision and any legacy backfill share the lock
@@ -1004,6 +1274,14 @@ fn launch(
     if let Some(workers) = &plan.workers {
         cfg.workers = Some(workers.clone());
     }
+    // A command-line choice replaces this launch's roster binding only. The
+    // config file remains untouched, while `launch_plan` still owns command
+    // validation and all ordinary roster invariants.
+    for (agent, profile) in &plan.seat_profiles {
+        if let Some((_, bound)) = cfg.roster.iter_mut().find(|(name, _)| name == agent) {
+            bound.clone_from(profile);
+        }
+    }
     let mut seats = match config::launch_plan(&cfg, plan.main.as_deref()) {
         Ok(resolved) => resolved.seats,
         Err(violations) => {
@@ -1124,6 +1402,10 @@ fn launch(
                 seat.profile = saved;
             }
         }
+    }
+    if let Err(line) = apply_seat_overrides(&cfg, plan, &mut seats) {
+        writeln!(err, "{line}")?;
+        return Ok(EXIT_FAILED);
     }
     if resuming && let Some(saved) = meta_value(&dir, "layout").filter(|v| !v.is_empty()) {
         layout = saved;
@@ -2876,6 +3158,42 @@ mod tests {
             ])
             .is_err()
         );
+    }
+
+    #[test]
+    fn the_public_launch_parser_owns_general_and_sugar_seat_profiles() {
+        let plan = parse_plan(
+            &[
+                "named",
+                "--seat",
+                "builder=terrax",
+                "--lead",
+                "solx",
+                "--colead=astrax",
+            ]
+            .map(str::to_owned),
+        )
+        .expect("seat profile flags");
+        assert_eq!(
+            plan.seat_profiles,
+            [
+                ("builder".to_owned(), "terrax".to_owned()),
+                ("lead".to_owned(), "solx".to_owned()),
+                ("colead".to_owned(), "astrax".to_owned()),
+            ]
+        );
+
+        for args in [
+            vec!["--seat", "lead=one", "--seat=lead=two"],
+            vec!["--lead", "one", "--seat", "lead=two"],
+            vec!["--seat"],
+            vec!["--seat", "lead"],
+            vec!["--seat", "=profile"],
+            vec!["--seat", "lead="],
+            vec!["--colead"],
+        ] {
+            assert!(parse_plan(&args.into_iter().map(str::to_owned).collect::<Vec<_>>()).is_err());
+        }
     }
 
     #[test]

@@ -396,6 +396,13 @@ fn skip() -> bool {
     !present
 }
 
+/// Add an ordinary profile row to a rig's config without changing its roster.
+fn add_profile(rig: &Rig, name: &str, command: &str) {
+    let mut config = std::fs::read_to_string(&rig.config).unwrap_or_default();
+    let _ = writeln!(config, "\n[profiles]\n{name} = \"{command}\"");
+    assert!(std::fs::write(&rig.config, config).is_ok(), "a profile");
+}
+
 fn bare_session(rig: &Rig, socket: &Path, name: &str) -> String {
     let (created, pane) = rig.tmux_on(
         socket,
@@ -1045,6 +1052,178 @@ fn a_resume_reruns_with_the_resume_variant() {
     assert!(
         !rig.dir("lnres").join("launch.main.sh").exists(),
         "and no bash was written to decide any of it"
+    );
+}
+
+#[test]
+fn seat_profile_flags_refuse_unknown_words_before_session_state_is_written() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::new("seat-unknown", &["claude", "codex"], None);
+
+    let (code, stdout, stderr) = rig.launch(&["--local", "lnbadagent", "--seat", "ghost=claude"]);
+    assert_eq!(code, Some(2), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        stderr.contains("unknown launch agent 'ghost'") && stderr.contains("Known agents: lead"),
+        "{stderr}"
+    );
+    assert!(
+        !rig.dir("lnbadagent").exists(),
+        "unknown agent wrote session state"
+    );
+    assert!(!rig.home.exists(), "unknown agent wrote under AE_HOME");
+
+    let (code, stdout, stderr) = rig.launch(&["--local", "lnbadprofile", "--lead", "missing"]);
+    assert_eq!(code, Some(2), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        stderr.contains("unknown profile 'missing'")
+            && stderr.contains("Known profiles: claude, codex"),
+        "{stderr}"
+    );
+    assert!(
+        !rig.dir("lnbadprofile").exists(),
+        "unknown profile wrote session state"
+    );
+    assert!(!rig.home.exists(), "unknown profile wrote under AE_HOME");
+}
+
+#[test]
+fn a_seat_profile_override_is_persisted_and_restored() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::new("seat-roundtrip", &["claude"], None);
+    let binary = rig.scratch.join("bin/claude");
+    add_profile(
+        &rig,
+        "altclaude",
+        &format!("{} --served alt", binary.display()),
+    );
+
+    let (code, stdout, stderr) = rig.launch(&["--local", "lnseatround", "--lead", "altclaude"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(!rig.launch_argv().is_empty(), "the first agent started");
+    let fresh = rig.meta("lnseatround");
+    assert!(fresh.contains("profile.main=altclaude\n"), "{fresh}");
+    assert!(fresh.contains("agent_bin.main=claude\n"), "{fresh}");
+    assert!(
+        rig.plan("lnseatround", "main")
+            .contains(r#""--served","alt""#)
+    );
+
+    assert!(
+        rig.tmux(&["kill-session", "-t", "=lnseatround"]).0,
+        "the session stops"
+    );
+    let (code, stdout, stderr) = rig.launch(&["--local", "lnseatround"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let resumed = rig.meta("lnseatround");
+    assert!(resumed.contains("profile.main=altclaude\n"), "{resumed}");
+    assert!(
+        rig.plan("lnseatround", "main")
+            .contains(r#""--served","alt""#),
+        "the stored profile chooses the resumed command"
+    );
+}
+
+#[test]
+fn a_stopped_seat_can_repair_within_its_tool_kind_and_keeps_its_conversation() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::new("seat-repair", &["claude"], None);
+    let binary = rig.scratch.join("bin/claude");
+    add_profile(
+        &rig,
+        "otherclaude",
+        &format!("{} --model other", binary.display()),
+    );
+    let (code, stdout, stderr) = rig.launch(&["--local", "lnseatrepair"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(!rig.launch_argv().is_empty(), "the first agent started");
+    let before = rig.meta("lnseatrepair");
+    let sid = before
+        .lines()
+        .find_map(|line| line.strip_prefix("harness_session.main="))
+        .unwrap_or_default()
+        .to_owned();
+    assert!(!sid.is_empty(), "{before}");
+    assert!(
+        rig.tmux(&["kill-session", "-t", "=lnseatrepair"]).0,
+        "the session stops"
+    );
+
+    let (code, stdout, stderr) =
+        rig.launch(&["--local", "lnseatrepair", "--seat", "lead=otherclaude"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let resumed = rig.meta("lnseatrepair");
+    assert!(resumed.contains("profile.main=otherclaude\n"), "{resumed}");
+    assert!(resumed.contains("agent_bin.main=claude\n"), "{resumed}");
+    assert!(
+        resumed.contains(&format!("harness_session.main={sid}\n")),
+        "the recorded conversation follows the same harness: {resumed}"
+    );
+    assert!(
+        rig.plan("lnseatrepair", "main")
+            .contains(r#""--model","other""#),
+        "the resumed command uses the replacement profile"
+    );
+}
+
+#[test]
+fn a_stopped_seat_refuses_a_profile_from_another_tool_kind() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::new("seat-cross-tool", &["claude", "codex"], None);
+    let (code, stdout, stderr) = rig.launch(&["--local", "lnseatcross"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(!rig.launch_argv().is_empty(), "the first agent started");
+    assert!(
+        rig.tmux(&["kill-session", "-t", "=lnseatcross"]).0,
+        "the session stops"
+    );
+    let before = rig.meta("lnseatcross");
+
+    let (code, stdout, stderr) = rig.launch(&["--local", "lnseatcross", "--lead", "codex"]);
+    assert_eq!(code, Some(2), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        stderr.contains("cannot change agent 'lead' from claude to codex")
+            && stderr.contains("cannot cross tool kinds"),
+        "{stderr}"
+    );
+    assert_eq!(rig.meta("lnseatcross"), before, "meta is untouched");
+    assert!(
+        !rig.sessions().contains(&"lnseatcross".to_owned()),
+        "nothing resumed"
+    );
+}
+
+#[test]
+fn a_running_session_refuses_seat_profile_flags_and_tells_the_user_to_stop() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::new("seat-running", &["claude"], None);
+    let binary = rig.scratch.join("bin/claude");
+    add_profile(
+        &rig,
+        "otherclaude",
+        &format!("{} --model other", binary.display()),
+    );
+    let (code, stdout, stderr) = rig.launch(&["--local", "lnseatrunning"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let before = rig.meta("lnseatrunning");
+
+    let (code, stdout, stderr) =
+        rig.launch(&["--local", "lnseatrunning", "--seat", "lead=otherclaude"]);
+    assert_eq!(code, Some(2), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(stderr.contains("is running; stop it before"), "{stderr}");
+    assert_eq!(rig.meta("lnseatrunning"), before, "meta is untouched");
+    assert!(
+        rig.sessions().contains(&"lnseatrunning".to_owned()),
+        "the running session remains"
     );
 }
 

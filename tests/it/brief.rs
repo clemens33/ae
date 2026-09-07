@@ -182,8 +182,8 @@ fn the_card_carries_the_goal_the_latest_record_per_topic_and_who_is_waiting() {
          \x20   decision    {}    human         gate once per merge, release after both land\n\
          \x20   parking     {}    human         resume here: the renderer is half written\n\
          \x20 agents:\n\
-         \x20   lead          waiting-user  12m   \"which layout do you want\"\n\
-         \x20   scribe        waiting-user  10m   \"worker-only layout request\"\n\
+         \x20   lead          cl            waiting-user  12m   \"which layout do you want\"\n\
+         \x20   scribe        cx            waiting-user  10m   \"worker-only layout request\"\n\
          \x20 needs you:\n\
          \x20   lead          waiting-user  12m   which layout do you want\n",
         ages[0], ages[1],
@@ -231,7 +231,10 @@ fn a_session_with_nothing_recorded_says_so_in_every_section() {
     // The roster is not empty, so `agents:` is not a "none recorded" section:
     // an agent that has declared nothing renders `-`, which is a different fact.
     assert!(stdout.contains("  agents:\n"), "{stdout}");
-    assert!(stdout.contains("    lead          -"), "{stdout}");
+    assert!(
+        stdout.contains("    lead          cl            -"),
+        "{stdout}"
+    );
 }
 
 #[test]

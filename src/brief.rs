@@ -187,6 +187,8 @@ pub struct TopicLine {
 pub struct AgentLine {
     /// The agent's name.
     pub name: String,
+    /// The profile this agent launches through.
+    pub profile: String,
     /// Its declared state, or `-` when it has declared none.
     pub state: String,
     /// How long ago it declared that.
@@ -373,11 +375,12 @@ fn push_card(out: &mut String, card: &Card) {
     for agent in &card.agents {
         out.push_str("    ");
         push_padded(out, &agent.name, 14);
+        push_padded(out, &agent.profile, 14);
         push_padded(out, &agent.state, 14);
         push_padded(out, &age(agent.age_secs), 6);
         if !agent.reason.is_empty() {
             out.push('"');
-            out.push_str(&clip(Some(&agent.reason), "", WIDTH - 40));
+            out.push_str(&clip(Some(&agent.reason), "", WIDTH - 54));
             out.push('"');
         }
         // A line whose last column is empty must not carry the padding of one.
@@ -649,6 +652,7 @@ fn agent_lines(entry: &SessionEntry, container: &[u8], now: Timestamp) -> Vec<Ag
                 .filter(|latest| latest.value == state.as_bytes());
             AgentLine {
                 name: agent.name.clone(),
+                profile: agent.alias.clone(),
                 state,
                 age_secs: declared.as_ref().and_then(|latest| {
                     Timestamp::parse(&String::from_utf8_lossy(&latest.ts))
@@ -826,6 +830,7 @@ mod tests {
         entry.agents = vec![
             AgentLine {
                 name: "lead".to_owned(),
+                profile: "fable5".to_owned(),
                 state: "waiting-user".to_owned(),
                 age_secs: Some(720),
                 reason: String::new(),
@@ -833,6 +838,7 @@ mod tests {
             },
             AgentLine {
                 name: "worker".to_owned(),
+                profile: "gpt56luna".to_owned(),
                 state: "blocked".to_owned(),
                 age_secs: Some(600),
                 reason: String::new(),
@@ -840,6 +846,7 @@ mod tests {
             },
             AgentLine {
                 name: "colead".to_owned(),
+                profile: "gpt6astra".to_owned(),
                 state: "blocked".to_owned(),
                 age_secs: Some(300),
                 reason: String::new(),
@@ -897,6 +904,7 @@ mod tests {
         entry.agents = vec![
             AgentLine {
                 name: "lead".to_owned(),
+                profile: "fable5".to_owned(),
                 state: "working".to_owned(),
                 age_secs: Some(180),
                 reason: String::new(),
@@ -904,6 +912,7 @@ mod tests {
             },
             AgentLine {
                 name: "brief".to_owned(),
+                profile: "gpt56luna".to_owned(),
                 state: "blocked".to_owned(),
                 age_secs: Some(720),
                 reason: "codex read".to_owned(),
@@ -912,7 +921,7 @@ mod tests {
         ];
         let rendered = render(&[entry]);
         assert!(
-            rendered.contains("    lead          working       3m\n"),
+            rendered.contains("    lead          fable5        working       3m\n"),
             "{rendered}"
         );
         assert!(rendered.contains(r#""codex read""#), "{rendered}");

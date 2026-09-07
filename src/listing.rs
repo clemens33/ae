@@ -287,7 +287,12 @@ pub fn table_at(sessions: &[&SessionEntry], now: Timestamp) -> String {
         push_frozen_session_subline(&mut out, session, now);
         for agent in &session.agents {
             out.push_str("  ");
-            push_padded(&mut out, &agent.reference, AGENT_WIDTH);
+            let label = if agent.reference == agent.name && !agent.alias.is_empty() {
+                format!("{} {}", agent.name, agent.alias)
+            } else {
+                agent.reference.clone()
+            };
+            push_padded(&mut out, &label, AGENT_WIDTH);
             // Frozen rendered the short session id on BOTH grammars — running
             // and stopped — and our table omitted it entirely, which run 2
             // semantic-fails independently of every health or state question.
@@ -1403,7 +1408,7 @@ mod tests {
         // The dash in the id cell is the RULED outcome for an arm that NO
         // standing authority reaches.
         assert!(
-            row_fields(&human, "lead") == ["lead", "-", "unknown"],
+            row_fields(&human, "lead") == ["lead", "claude", "-", "unknown"],
             "the malformed event hides stale blocked state behind the human unknown: {human}"
         );
         assert!(
@@ -1547,8 +1552,8 @@ mod tests {
         // (running, stopped) and our table omitted it.
         assert_eq!(
             row_fields(&table(&[&session]), "lead"),
-            ["lead", "-", "blocked"],
-            "reference, short id, declared state"
+            ["lead", "claude", "-", "blocked"],
+            "name, profile, short id, declared state"
         );
 
         session.agents[0].state = None;
@@ -1556,7 +1561,7 @@ mod tests {
         // the second is exact no-declaration.
         assert_eq!(
             row_fields(&table(&[&session]), "lead"),
-            ["lead", "-", "-"],
+            ["lead", "claude", "-", "-"],
             "no declaration renders the dash cell"
         );
     }

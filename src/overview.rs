@@ -456,6 +456,7 @@ mod tests {
     fn agent(name: &str, state: &str, age_secs: i64, attention: Option<Reason>) -> AgentLine {
         AgentLine {
             name: name.to_owned(),
+            profile: String::new(),
             state: state.to_owned(),
             age_secs: Some(age_secs),
             reason: String::new(),

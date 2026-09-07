@@ -87,6 +87,10 @@ Usage:
   ae <name> --dir <path> Start or reattach using an explicit origin directory
   ae <name> --no-attach  Start or reattach without attaching; print attach command
   ae <name> use <name>   Start session with a specific agent as main
+  ae <name> --seat <agent>=<profile>
+                         Use a different profile for one launch seat (repeatable)
+  ae <name> --lead <profile> --colead <profile>
+                         Shortcuts for the named lead and colead seats
   ae --local <name>      Start session in current directory (default)
   ae --copy <name>       Start session with full copy (includes untracked files)
   ae --worktree <name>   Start session with git worktree (tracked files only)
