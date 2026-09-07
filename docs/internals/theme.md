@@ -129,6 +129,9 @@ needs-you or stale replaces it with the more urgent mark. Each strip entry is a
 tmux `range=session` region, so tmux's own default
 `MouseDown1Status` binding (`switch-client -t =`) makes it clickable: ae adds no
 key binding, which would be a server-global write on your key table.
+The bottom-right `ae <version>` segment is another session range when an
+orchestrator exists, targeting its `$<n>` id; the orchestrator's own segment and
+a fleet without one stay plain text.
 
 The ticker refreshes the strip from one `list-sessions` call every 500 ms and
 rewrites it only when a rank, name, order or working frame changed. Each
@@ -164,6 +167,7 @@ lines; `[workspace] theme = off` leaves the user's title settings untouched.
 | `@ae_fleet_strip`, `@ae_watchdog_status` | session | watchdog |
 | `@ae_goal_status` | session | watchdog |
 | `@ae_version` | session | watchdog (the core it runs on, `ae <version>`) |
+| `@ae_orchestrator_id` | session | watchdog (the local fleet's orchestrator target) |
 | `@ae_branch_status`, `@ae_branch_name` | session | watchdog |
 | `@ae_window_agents` | window | watchdog |
 | `@ae_window_plumbing` | monitor window | launch, watchdog lifecycle |

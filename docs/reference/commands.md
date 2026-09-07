@@ -303,7 +303,9 @@ workspace and prompt settings. Existing seat files that still carry
 `[profiles]`/`[roster]` are ignored for identity; `[workspace]` and `[prompt]`
 still overlay. Add
 `--no-attach` to build without attaching. The seat is pinned first in the status
-bar's fleet strip, marked `◆`. The `--popup` form is the picker, next.
+bar's fleet strip, marked `◆`. The `--popup` form is the picker, next. From another
+ae session on the same tmux server, click `ae <version>` at the bottom-right of
+the status bar to jump to the orchestrator.
 
 ## `ae orchestrator --popup`
 

@@ -619,6 +619,18 @@ struct MotionVerdict {
     verdict: Verdict,
 }
 
+/// The orchestrator target publication state, including not-yet-published.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+enum PublishedOrchestrator {
+    /// No fleet observation has been published since this daemon attached.
+    #[default]
+    Unknown,
+    /// The observed fleet has no orchestrator target.
+    Unset,
+    /// The observed fleet's orchestrator session id.
+    Target(String),
+}
+
 /// The ticker's carry: the most recent cycle verdicts and spinner frame.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct MotionState {
@@ -627,6 +639,8 @@ struct MotionState {
     fleet: Vec<theme::FleetRow>,
     fleet_target: Option<String>,
     published_fleet: Option<String>,
+    /// The last orchestrator target publication, including a successful unset.
+    published_orchestrator_id: PublishedOrchestrator,
     spin: u64,
 }
 
@@ -692,6 +706,33 @@ impl MotionState {
         self.published_fleet = Some(strip);
     }
 
+    /// Add the orchestrator target only when it changed. A missing target is
+    /// still recorded so the caller can unset it once, rather than spawning a
+    /// tmux process on every motion tick.
+    fn push_orchestrator_id_write(
+        &mut self,
+        writes: &mut Vec<tmux::OptionWrite>,
+        target: &str,
+        desired: Option<&str>,
+    ) -> bool {
+        let desired = desired.map_or(PublishedOrchestrator::Unset, |id| {
+            PublishedOrchestrator::Target(id.to_owned())
+        });
+        if self.published_orchestrator_id == desired {
+            return false;
+        }
+        if let PublishedOrchestrator::Target(id) = &desired {
+            writes.push(tmux::OptionWrite::new(
+                OptionScope::Session,
+                target,
+                theme::ORCHESTRATOR_ID_OPTION,
+                id,
+            ));
+        }
+        self.published_orchestrator_id = desired;
+        true
+    }
+
     /// Advance every attached working surface from the cached observation.
     fn step(&mut self, look: &Look) -> Vec<tmux::OptionWrite> {
         if !self.panes.iter().any(|pane| pane.session_attached > 0) {
@@ -754,6 +795,19 @@ impl MotionState {
         self.push_fleet_write(&mut writes, look, fleet_working.then_some(spinner));
         writes
     }
+}
+
+/// The fleet target the version segment may jump to: absent for this session
+/// when it is itself the orchestrator, or when the fleet has none. The exact
+/// canonical seat name is intentional: a renamed seat loses the click target.
+fn orchestrator_id_for<'a>(sessions: &'a [tmux::FleetSession], session: &str) -> Option<&'a str> {
+    if session == crate::orchestrator::ORCHESTRATOR_SESSION {
+        return None;
+    }
+    sessions
+        .iter()
+        .find(|entry| entry.name == crate::orchestrator::ORCHESTRATOR_SESSION)
+        .map(|entry| entry.id.as_str())
 }
 
 /// Whether the attached ticker must refresh its cached observations now.
@@ -1348,6 +1402,7 @@ pub(crate) fn clear_published(server: &crate::inventory::ServerId, session: &str
         theme::ATTENTION_RANK_OPTION,
         theme::ATTENTION_STYLE_OPTION,
         theme::FLEET_STRIP_OPTION,
+        theme::ORCHESTRATOR_ID_OPTION,
         theme::GOAL_OPTION,
         theme::VERSION_OPTION,
     ] {
@@ -1760,10 +1815,28 @@ impl Cycle<'_> {
         let Some(sessions) = transport::observe_fleet_sessions(self.server) else {
             return;
         };
+        let orchestrator_id = orchestrator_id_for(&sessions, self.session);
         let mut next = motion.clone();
         next.replace_fleet(&sessions, self.session);
         let mut writes = Vec::new();
         next.push_fleet_write(&mut writes, look, None);
+        if let Some(target) = next.fleet_target.clone() {
+            let id_changed = next.push_orchestrator_id_write(&mut writes, &target, orchestrator_id);
+            if id_changed
+                && orchestrator_id.is_none()
+                && !transport::clear_option(
+                    self.server,
+                    OptionScope::Session,
+                    &target,
+                    theme::ORCHESTRATOR_ID_OPTION,
+                )
+            {
+                // The fleet strip is independent and still gets published;
+                // restore the cache so the failed unset is retried next cycle.
+                next.published_orchestrator_id
+                    .clone_from(&motion.published_orchestrator_id);
+            }
+        }
         if writes.is_empty() || transport::publish_options(self.server, &writes) {
             *motion = next;
         }
@@ -2473,6 +2546,54 @@ mod tests {
             crate::tmux::set_options_args(&ServerId::Ambient, &state.step(&Look::DEFAULT));
         assert!(first_frame.iter().any(|word| word.contains('⠙')));
         assert!(next_frame.iter().any(|word| word.contains('⠹')));
+    }
+
+    #[test]
+    fn orchestrator_id_targets_other_sessions_only() {
+        let fleet = [
+            crate::tmux::FleetSession {
+                name: "worker".to_owned(),
+                id: "$4".to_owned(),
+                rank: "2".to_owned(),
+            },
+            crate::tmux::FleetSession {
+                name: "orchestrator".to_owned(),
+                id: "$7".to_owned(),
+                rank: "1".to_owned(),
+            },
+        ];
+        assert_eq!(super::orchestrator_id_for(&fleet, "worker"), Some("$7"));
+        assert_eq!(
+            super::orchestrator_id_for(&fleet, "orchestrator"),
+            None,
+            "the orchestrator has nowhere else to jump"
+        );
+        assert_eq!(
+            super::orchestrator_id_for(&fleet[..1], "worker"),
+            None,
+            "a fleet without an orchestrator leaves the option unset"
+        );
+    }
+
+    #[test]
+    fn an_unchanged_orchestrator_target_never_writes_or_clears_again() {
+        let mut state = MotionState::default();
+        let mut writes = Vec::new();
+        assert!(state.push_orchestrator_id_write(&mut writes, "$4", Some("$7")));
+        assert_eq!(writes.len(), 1);
+        assert!(!state.push_orchestrator_id_write(&mut writes, "$4", Some("$7")));
+        assert_eq!(writes.len(), 1, "unchanged target is a no-op");
+
+        let mut transitions = MotionState::default();
+        let mut writes = Vec::new();
+        assert!(transitions.push_orchestrator_id_write(&mut writes, "$4", Some("$7")));
+        writes.clear();
+        assert!(transitions.push_orchestrator_id_write(&mut writes, "$4", None));
+        assert_eq!(writes.len(), 0, "an unset target has no set write");
+        assert!(!transitions.push_orchestrator_id_write(&mut writes, "$4", None));
+        assert_eq!(writes.len(), 0, "an unset target has no set write");
+        assert!(transitions.push_orchestrator_id_write(&mut writes, "$4", Some("$9")));
+        assert_eq!(writes.len(), 1, "a new target gets one set write");
     }
 
     #[test]

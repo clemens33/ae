@@ -452,6 +452,13 @@ pub const PATHS_OPTION: &str = "@ae_paths";
 /// session" without a relaunch.
 pub const VERSION_OPTION: &str = "@ae_version";
 
+/// SESSION — the `$<n>` id of the fleet's orchestrator, for the version click.
+///
+/// Published by the WATCHDOG from this server's fleet listing. The
+/// orchestrator's own session and a fleet with no orchestrator leave it unset,
+/// because there is nowhere else for a click to jump.
+pub const ORCHESTRATOR_ID_OPTION: &str = "@ae_orchestrator_id";
+
 /// SESSION — the look the LAYOUT was written for.
 ///
 /// The watchdog compares it with the look the session's own options now
@@ -517,7 +524,7 @@ pub const WINDOW_STAMP_OPTION: &str = "@ae_theme";
 /// changes shape: the version leads both stamps, so a session or window carrying
 /// an older one is rewritten by the next watchdog cycle rather than left on the
 /// layout an older core wrote.
-pub const FORMAT_VERSION: &str = "6";
+pub const FORMAT_VERSION: &str = "7";
 
 /// What [`WINDOW_STAMP_OPTION`] is set to: the LOOK the window was dressed in,
 /// formats version first.
@@ -672,9 +679,20 @@ pub fn status_line_zero(palette: &Palette) -> String {
 pub fn status_line_one(palette: &Palette) -> String {
     format!(
         "#[align=left fg={dim} bg={base}] #{{{FLEET_STRIP_OPTION}}}\
-         #[align=right fg={dim} bg={base}] #{{{VERSION_OPTION}}} ",
+         #[align=right fg={dim} bg={base}] {version} ",
         dim = palette.dim,
         base = palette.base,
+        version = version_segment(),
+    )
+}
+
+/// The bottom-right `ae <version>` segment, clickable to the orchestrator
+/// while this session is not the orchestrator itself.
+fn version_segment() -> String {
+    format!(
+        "#{{?#{{{ORCHESTRATOR_ID_OPTION}}},\
+         #[range=session|#{{{ORCHESTRATOR_ID_OPTION}}}]#{{{VERSION_OPTION}}}#[norange],\
+         #{{{VERSION_OPTION}}}}}"
     )
 }
 
@@ -1162,13 +1180,16 @@ mod tests {
     const PALETTES: [Palette; 3] = [Palette::DARCULA, Palette::NEUTRAL, Palette::WARM];
 
     /// Line two ends in the core version, so a reader can tell whether an
-    /// upgrade reached this session without leaving the bar.
+    /// upgrade reached this session without leaving the bar. The conditional
+    /// keeps that same segment when no orchestrator target is published.
     #[test]
     fn line_one_carries_the_core_version_at_its_right_end() {
         for palette in PALETTES {
             let line = status_line_one(&palette);
-            let reference = format!("#{{{}}}", super::VERSION_OPTION);
-            assert!(line.ends_with(&format!("{reference} ")), "{line}");
+            assert!(
+                line.ends_with(&format!("{} ", super::version_segment())),
+                "{line}"
+            );
         }
     }
 
@@ -1604,7 +1625,7 @@ mod tests {
     #[test]
     fn terminal_titles_are_part_of_the_drawn_layout() {
         let options = super::layout_options(&Look::DEFAULT);
-        assert_eq!(super::FORMAT_VERSION, "6");
+        assert_eq!(super::FORMAT_VERSION, "7");
         assert_eq!(
             options
                 .iter()
