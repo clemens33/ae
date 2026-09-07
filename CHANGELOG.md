@@ -1,6 +1,11 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [v2026.9.7] - 2026-09-07
+
+### Bug Fixes
+
+- **watchdog**: Typing is not motion
 ## [v2026.9.6] - 2026-09-06
 
 ### Documentation
