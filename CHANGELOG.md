@@ -1,6 +1,16 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [v2026.9.19] - 2026-09-07
+
+### Other
+
+- Give detached checker marker poll more time
+- Clarify orchestrator self-stop guard
+- Fix orchestrator guard wording
+- Pulse working mark colour
+- Stabilize watchdog working pulse test
+- Require names and attach bare ae
 ## [v2026.9.18] - 2026-09-07
 
 ### Other
