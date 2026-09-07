@@ -246,7 +246,7 @@ aedev · running · attn:waiting-user · ae 2026.9.5 · s1-brief* · ~/projects/
 | `goal:` | the session's [`goal`](helpers.md), in full, or `none` |
 | `topics:` | the **latest** record per `memo` topic, newest topic first — see the topic convention below |
 | `agents:` | one line per roster agent: its declared state, how long ago it declared, and the reason it gave |
-| `needs you:` | the only two EXPLICIT claims on your attention — an agent that declared `waiting-user`/`blocked`, and an `ask`/`review` nobody has answered. Reasons wrap to three lines; unanswered rows include request id, sender and body excerpt. Nothing here is inferred, so an empty section reads `none recorded` |
+| `needs you:` | the only two EXPLICIT claims on your attention — an agent that declared `waiting-user`/`blocked`, and an `ask`/`review` nobody has answered. Nothing here is inferred, so an empty section reads `none recorded` |
 
 ### The topic convention
 

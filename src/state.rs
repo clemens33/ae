@@ -22,9 +22,8 @@ use crate::requests::Viewer;
 use crate::store;
 use crate::time::Timestamp;
 
-/// The reason cap, in CHARACTERS — `ae_cap_summary … 200` counts characters
-/// under a UTF-8 locale, and so does this.
-pub const SUMMARY_CAP: usize = 200;
+/// Maximum persisted decision/blocker reason length in characters.
+pub const REASON_MAX: usize = 180;
 
 /// `ae_emit_event`'s chat arm: a `chat` event's summary keeps its newlines and
 /// tabs and is capped at this many characters, not [`SUMMARY_CAP`].
@@ -109,7 +108,7 @@ pub fn parse(tail: &[String]) -> Result<Command, Usage> {
         return Err(Usage::UnknownValue(value.clone()));
     }
     let reason = rest.join(" ");
-    if reason.is_empty() {
+    if reason.trim().is_empty() {
         return Err(if value == "blocked" {
             Usage::BlockedNeedsReason
         } else if value == "waiting-user" {
@@ -245,13 +244,13 @@ pub fn read(dir: &Path, viewer: &Viewer) -> Vec<u8> {
 }
 
 /// The reason as the event carries it: newlines and tabs flattened to spaces,
-/// then capped at [`SUMMARY_CAP`] characters — `ae_emit_event`'s non-chat arm.
+/// then capped at [`REASON_MAX`] characters — `ae_emit_event`'s non-chat arm.
 #[must_use]
 pub fn summary_of(reason: &str) -> String {
     reason
         .chars()
         .map(|c| if c == '\n' || c == '\t' { ' ' } else { c })
-        .take(SUMMARY_CAP)
+        .take(REASON_MAX)
         .collect()
 }
 
@@ -373,8 +372,8 @@ pub fn declare(
 )]
 mod tests {
     use super::{
-        CHAT_SUMMARY_CAP, Command, Declaration, Failure, Latest, SUMMARY_CAP, USAGE, Usage,
-        declare, event_body, event_line, latest, parse, read, read_line, summary_for, summary_of,
+        CHAT_SUMMARY_CAP, Command, Declaration, Failure, Latest, REASON_MAX, USAGE, Usage, declare,
+        event_body, event_line, latest, parse, read, read_line, summary_for, summary_of,
     };
     use crate::requests::Viewer;
     use crate::time::Timestamp;
@@ -420,6 +419,14 @@ mod tests {
             parse(&words(&["waiting-user"])),
             Err(Usage::WaitingUserNeedsReason)
         );
+        assert_eq!(
+            parse(&words(&["blocked", "   "])),
+            Err(Usage::BlockedNeedsReason)
+        );
+        assert_eq!(
+            parse(&words(&["waiting-user", "\t", "\n"])),
+            Err(Usage::WaitingUserNeedsReason)
+        );
         assert!(parse(&words(&["blocked", "on x"])).is_ok());
         assert_eq!(
             parse(&words(&["Working"])),
@@ -448,10 +455,10 @@ mod tests {
     #[test]
     fn the_summary_is_flattened_then_capped_in_characters() {
         assert_eq!(summary_of("a\nb\tc"), "a b c");
-        let long: String = "é".repeat(SUMMARY_CAP + 5);
+        let long: String = "é".repeat(REASON_MAX + 5);
         let capped = summary_of(&long);
-        assert_eq!(capped.chars().count(), SUMMARY_CAP);
-        assert_eq!(capped.len(), SUMMARY_CAP * 2, "cut on a character boundary");
+        assert_eq!(capped.chars().count(), REASON_MAX);
+        assert_eq!(capped.len(), REASON_MAX * 2, "cut on a character boundary");
     }
 
     #[test]
@@ -469,7 +476,7 @@ mod tests {
         );
         assert_eq!(
             summary_for("say", &"x".repeat(250)).len(),
-            SUMMARY_CAP,
+            REASON_MAX,
             "the literal action chat, nothing that resembles it"
         );
         let long: String = "é\n".repeat(CHAT_SUMMARY_CAP);

@@ -510,7 +510,7 @@ fn the_charter_pins_the_watchdog_overview_turn_and_retires_the_model_sweep() {
     let charter = Path::new(env!("CARGO_MANIFEST_DIR")).join("contrib/aeorchestrator/CHARTER.md");
     let text = fs::read_to_string(&charter).expect("the charter ships with the repo");
     let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    let overview = "NEEDS YOU\n  aedev:colead   waiting-user  FOCUS export must be enabled in Google Console (12m)\n  dotfiles:lead  unanswered    ask ae-…-9d07aac0 from reviewer (1d)\nWORKING\n  aedev     lead    landing names; inside; server1 (goal: #113 orchestrator…)\n  wikiskill lead    …\nQUIET\n  dotfiles2 (done 20m)   400 (done 2h)";
+    let overview = "NEEDS YOU\n  aedev:colead   waiting-user  FOCUS export: enabled | disabled (recommend enabled because billing needs it) (12m)\n  dotfiles:lead  unanswered    ask ae-…-9d07aac0 from reviewer: review dashboard query (1d)\nWORKING\n  aedev     lead    landing names; inside; server1 (goal: #113 orchestrator…)\n  wikiskill lead    …\nQUIET\n  dotfiles2 (done 20m)   400 (done 2h)";
     assert!(
         text.contains(overview),
         "the overview shape is the role's exact output contract"

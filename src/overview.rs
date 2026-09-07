@@ -14,7 +14,7 @@ pub const TRAILER: &str = "— overview; declare done.";
 pub const WIDTH: usize = 100;
 
 /// Indentation under the detail column in a NEEDS YOU row.
-const DETAIL_INDENT: usize = 38;
+const DETAIL_INDENT: usize = 4;
 const MAX_NEED_LINES: usize = 3;
 const DETAIL_WIDTH: usize = 60;
 
@@ -329,10 +329,14 @@ fn needs_line(identity: &str, state: &str, detail: &str, age_secs: Option<i64>) 
         detail.split_once(": ").map_or_else(
             || (detail.to_owned(), format!(" ({})", brief::age(age_secs))),
             |(head, body)| {
-                (
-                    format!("{head} ({}): {body}", brief::age(age_secs)),
-                    String::new(),
-                )
+                if detail.chars().count() <= WIDTH.saturating_sub(prefix_width(&identity, &state)) {
+                    (
+                        format!("{head} ({}): {body}", brief::age(age_secs)),
+                        String::new(),
+                    )
+                } else {
+                    (detail.to_owned(), format!(" ({})", brief::age(age_secs)))
+                }
             },
         )
     } else {
@@ -344,7 +348,16 @@ fn needs_line(identity: &str, state: &str, detail: &str, age_secs: Option<i64>) 
     let remaining = WIDTH
         .saturating_sub(prefix.chars().count())
         .saturating_sub(suffix.chars().count());
-    let mut lines = wrap_detail(&detail, remaining);
+    if detail.chars().count() > remaining {
+        let mut out = format!("{prefix}{suffix}");
+        for line in wrap_detail(&detail, WIDTH - DETAIL_INDENT, MAX_NEED_LINES) {
+            out.push('\n');
+            out.push_str(&" ".repeat(DETAIL_INDENT));
+            out.push_str(&line);
+        }
+        return out;
+    }
+    let mut lines = wrap_detail(&detail, remaining, 1);
     if lines.is_empty() {
         lines.push(String::new());
     }
@@ -359,20 +372,23 @@ fn needs_line(identity: &str, state: &str, detail: &str, age_secs: Option<i64>) 
     out
 }
 
-fn wrap_detail(detail: &str, first_width: usize) -> Vec<String> {
+fn wrap_detail(detail: &str, first_width: usize, max_lines: usize) -> Vec<String> {
     let mut lines = Vec::new();
     let mut rest = detail;
     let mut width = first_width;
-    while !rest.is_empty() && lines.len() < MAX_NEED_LINES {
+    while !rest.is_empty() && lines.len() < max_lines {
         let take = rest.chars().count().min(width);
-        let boundary = rest
-            .char_indices()
-            .take(take + 1)
-            .filter(|(_, ch)| ch.is_whitespace())
-            .map(|(index, _)| index)
-            .filter(|index| rest[..*index].chars().count() <= width)
-            .filter(|index| rest[..*index].chars().count() >= width / 2)
-            .fold(None, |_, index| Some(index));
+        let boundary = (rest.chars().count() > width)
+            .then(|| {
+                rest.char_indices()
+                    .take(take + 1)
+                    .filter(|(_, ch)| ch.is_whitespace())
+                    .map(|(index, _)| index)
+                    .filter(|index| rest[..*index].chars().count() <= width)
+                    .filter(|index| rest[..*index].chars().count() >= width / 2)
+                    .fold(None, |_, index| Some(index))
+            })
+            .flatten();
         let end = boundary.unwrap_or_else(|| {
             rest.char_indices()
                 .nth(take)
@@ -380,15 +396,19 @@ fn wrap_detail(detail: &str, first_width: usize) -> Vec<String> {
         });
         let mut line = rest[..end].trim_end().to_owned();
         rest = rest[end..].trim_start();
-        if !rest.is_empty() && lines.len() + 1 == MAX_NEED_LINES {
+        if !rest.is_empty() && lines.len() + 1 == max_lines {
             line = clipped(&line, width.saturating_sub(1));
             line.push('…');
             rest = "";
         }
         lines.push(line);
-        width = WIDTH.saturating_sub(DETAIL_INDENT);
+        width = first_width;
     }
     lines
+}
+
+fn prefix_width(identity: &str, state: &str) -> usize {
+    2 + identity.chars().count().max(18) + 2 + state.chars().count().max(14) + 2
 }
 
 fn clean_text(text: &str) -> String {
@@ -564,7 +584,7 @@ mod tests {
         });
         let text = render(&[pending], "orchestrator");
         assert!(
-            text.contains("ask ae-20260907T000000Z-9d07aac0 from reviewer (1d)"),
+            text.contains("ask ae-20260907T000000Z-9d07aac0 from reviewer"),
             "{text}"
         );
         assert!(
@@ -594,13 +614,43 @@ mod tests {
         });
         let text = render(&[pending, request], "orchestrator");
         let lines: Vec<&str> = text.lines().collect();
-        assert!(lines.len() <= 7, "{text}");
+        assert!(lines.len() <= 8, "{text}");
         assert!(text.contains("body-"), "{text}");
         assert!(
             lines
                 .iter()
                 .skip(1)
                 .all(|line| line.chars().count() <= WIDTH)
+        );
+    }
+
+    #[test]
+    fn max_reason_with_whitespace_tokens_fits_three_continuations() {
+        let reason = format!(
+            "{} {} {}",
+            "a".repeat(50),
+            "b".repeat(80),
+            "decision".to_owned() + &"c".repeat(40)
+        );
+        let mut entry = card(
+            "a".repeat(28).as_str(),
+            vec![agent("lead", "waiting-user", 99_999, None)],
+        );
+        entry.needs.push(Need::Declared {
+            owner: "lead".to_owned(),
+            state: "waiting-user".to_owned(),
+            age_secs: Some(99_999),
+            reason: reason.clone(),
+        });
+        let text = render(&[entry], "orchestrator");
+        assert!(text.contains("decision"), "{text}");
+        assert!(
+            text.lines().skip(2).all(|line| !line.contains('…')),
+            "{text}"
+        );
+        assert!(
+            text.lines().all(|line| line.chars().count() <= WIDTH),
+            "{text}"
         );
     }
 

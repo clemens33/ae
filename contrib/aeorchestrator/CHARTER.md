@@ -21,16 +21,6 @@ QUIET
   dotfiles2 (done 20m)   400 (done 2h)
 ```
 
-<!-- Legacy fixture retained for parser compatibility:
-NEEDS YOU
-  aedev:colead   waiting-user  FOCUS export must be enabled in Google Console (12m)
-  dotfiles:lead  unanswered    ask ae-…-9d07aac0 from reviewer (1d)
-WORKING
-  aedev     lead    landing names; inside; server1 (goal: #113 orchestrator…)
-  wikiskill lead    …
-QUIET
-  dotfiles2 (done 20m)   400 (done 2h) -->
-
 Every watchdog overview ends with this exact line:
 
 ```text
