@@ -1,6 +1,12 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [v2026.9.23] - 2026-09-07
+
+### Other
+
+- Group orchestrator needs by session
+- Carry explicit main seat into overview
 ## [v2026.9.22] - 2026-09-07
 
 ### Other
