@@ -1,6 +1,15 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [v2026.9.24] - 2026-09-07
+
+### Other
+
+- Add per-seat launch profile overrides
+- Align listing profile column
+- Fix seat override preflight races
+- Freeze restored spawned seat commands
+- Synchronize launch race tests deterministically
 ## [v2026.9.23] - 2026-09-07
 
 ### Other
