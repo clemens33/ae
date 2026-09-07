@@ -110,7 +110,7 @@ delivers a changed `NEEDS YOU` / `WORKING` / `QUIET` view to that pane; the seat
 only declares `done` and stays done between changes.
 Its privileged `relay <session[:agent]> <text…>` helper delivers only explicit
 human instructions as bare text and audits them in the orchestrator session.
-It never your own session (the seat named `orchestrator`) and never all sessions: on such a request run nothing and answer that the seat cannot stop or end itself; the human does that from a terminal.
+It never stops or ends its own session (the seat named `orchestrator`) and never all sessions: on such a request it runs nothing and answers that the seat cannot stop or end itself; the human does that from a terminal.
 
 Bind the picker to a key (ae needs tmux 3.4+); `switch-client -l` (prefix + `L`) is the
 way back:
