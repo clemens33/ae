@@ -1,7 +1,7 @@
 //! `_launch`: a whole session, created or resumed, as ONE core operation.
 //!
-//! The whole launch path: the flag parse, the name derivation and its
-//! ownership guard, the teardown tombstones, the `--from` preflight, the
+//! The whole launch path: the flag parse, the explicit session name, the
+//! teardown tombstones, the `--from` preflight, the
 //! working-directory modes, the tmux session and its layout, the meta publish,
 //! the session assets, the pane commands and their readiness-gated paste, the
 //! monitor panes, and the attach.
@@ -24,7 +24,13 @@ pub(crate) mod capture;
 pub(crate) mod name;
 
 /// The usage line for the core entry.
-pub const USAGE: &str = "Usage: _launch --home <ae-home> --cwd <dir> [--global <cfg>] [--local <cfg>] [--server-kind <kind>] [--server <value>] [--caller-socket <path>] [--attach|--no-attach] [--no-autostart] [--] [--worktree|--copy|--local] [--dir <path>] [--no-attach] [--from <uuid>] [use <name>] [<session-name>]";
+pub const USAGE: &str = "Usage: _launch --home <ae-home> --cwd <dir> [--global <cfg>] [--local <cfg>] [--server-kind <kind>] [--server <value>] [--caller-socket <path>] [--attach|--no-attach] [--no-autostart] [--] [--worktree|--copy|--local] [--dir <path>] [--no-attach] [--from <uuid>] [use <name>] <session-name>";
+
+/// The public refusal for a launch argv that names no session.
+pub const MISSING_NAME: &str = "Error: a session needs a name: ae <name> [...]";
+
+/// The public launch usage line paired with [`MISSING_NAME`].
+pub const PUBLIC_USAGE: &str = "Usage: ae <name> [--local|--copy|--worktree] [--dir <path>] [--no-attach] [--from <archive-uuid>] [use <agent>]";
 
 /// How long a freshly created pane's shell is given to draw its prompt before
 /// anything is pasted.
@@ -384,6 +390,11 @@ pub fn run(tail: &[String], out: &mut impl Write, err: &mut impl Write) -> crate
             return Ok(EXIT_USAGE);
         }
     };
+    if plan.name.is_none() {
+        writeln!(err, "{MISSING_NAME}")?;
+        writeln!(err, "{PUBLIC_USAGE}")?;
+        return Ok(EXIT_USAGE);
+    }
     if let Some(path) = plan.dir.as_deref() {
         let Some(origin) = canonical_directory(Path::new(path)) else {
             writeln!(
@@ -531,16 +542,15 @@ fn launch(
     err: &mut impl Write,
 ) -> crate::Result<u8> {
     let cwd = env.cwd.display().to_string();
-    let home = env.home.display().to_string();
     let sessions = env.sessions();
     let worktrees = env.worktrees();
 
     // ---- the name, and the guards that must precede every side effect ----
-    let derived = plan.name.is_none();
-    let session = plan
-        .name
-        .clone()
-        .unwrap_or_else(|| name::default_session_name(&cwd, &home, 6));
+    let Some(session) = plan.name.clone() else {
+        writeln!(err, "{MISSING_NAME}")?;
+        writeln!(err, "{PUBLIC_USAGE}")?;
+        return Ok(EXIT_USAGE);
+    };
     if !name::is_session_name(&session) {
         writeln!(
             err,
@@ -812,74 +822,6 @@ fn launch(
             )?;
         }
     }
-    // DERIVED-NAME OWNERSHIP.
-    if derived && meta_present {
-        // An unreadable or vanished directory never establishes ownership;
-        // canonical comparison fails closed instead of trusting raw spelling.
-        let recorded = meta_value(&dir, "origin");
-        match recorded.as_deref() {
-            None | Some("") => {
-                writeln!(
-                    err,
-                    "note: '{session}' records no origin (pre-dates ownership tracking) — assuming it belongs to {cwd}."
-                )?;
-            }
-            Some(owner) if !dir_exists(Path::new(owner)) => {
-                writeln!(
-                    err,
-                    "Error: '{session}' records origin {owner}, which no longer exists."
-                )?;
-                writeln!(
-                    err,
-                    "       A MOVED project and a name COLLISION with a DELETED one look identical"
-                )?;
-                writeln!(
-                    err,
-                    "       from here, and guessing wrong resumes someone else's conversation."
-                )?;
-                writeln!(
-                    err,
-                    "       If that session is this project's, claim it by name:"
-                )?;
-                writeln!(err, "           ae {session}")?;
-                writeln!(
-                    err,
-                    "       If it is not, start this one under a distinguished name:"
-                )?;
-                writeln!(
-                    err,
-                    "           ae {}",
-                    name::default_session_name(&cwd, &home, 12)
-                )?;
-                return Ok(EXIT_FAILED);
-            }
-            Some(owner) if !same_directory(owner, &cwd) => {
-                writeln!(
-                    err,
-                    "Error: '{session}' is the derived name of a DIFFERENT directory."
-                )?;
-                writeln!(err, "       it belongs to:  {owner}")?;
-                writeln!(err, "       you are in:     {cwd}")?;
-                writeln!(
-                    err,
-                    "       Two directories can reduce to the same derived name; attaching would join"
-                )?;
-                writeln!(
-                    err,
-                    "       that project's session and its conversation. Launch this one under a name"
-                )?;
-                writeln!(err, "       carrying more of the path hash:")?;
-                writeln!(
-                    err,
-                    "           ae {}",
-                    name::default_session_name(&cwd, &home, 12)
-                )?;
-                return Ok(EXIT_FAILED);
-            }
-            Some(_) => {}
-        }
-    }
-
     // ---- explicit lineage, proved before anything is created ----
     let mut parent: Option<FromProof> = None;
     if let Some(uuid) = &plan.from {
@@ -2377,6 +2319,20 @@ fn attach_hint(server: &ServerId, session: &str) -> String {
     }
 }
 
+/// The command that attaches to `server` and lets tmux choose its most recent
+/// session.
+pub(crate) fn server_attach_hint(server: &ServerId) -> String {
+    match server {
+        ServerId::Ambient => "tmux attach".to_owned(),
+        ServerId::Selected(crate::meta::Selector::Name(name)) => {
+            format!("tmux -L {} attach", paste_safe(name))
+        }
+        ServerId::Selected(crate::meta::Selector::Socket(path)) => {
+            format!("tmux -S {} attach", paste_safe(&path.display().to_string()))
+        }
+    }
+}
+
 /// `word` as it can be pasted into a shell: bare when nothing in it is
 /// significant there, quoted when anything is.
 fn paste_safe(word: &str) -> String {
@@ -2563,7 +2519,7 @@ fn same_directory(one: &str, other: &str) -> bool {
 /// One existing directory, canonicalised.
 #[allow(
     clippy::disallowed_methods,
-    reason = "a door: the derived-name ownership guard and --dir resolve canonical directories — see clippy.toml"
+    reason = "a door: --dir and explicit-origin resume checks resolve canonical directories — see clippy.toml"
 )]
 fn canonical_directory(path: &Path) -> Option<PathBuf> {
     std::fs::canonicalize(path)
@@ -2844,8 +2800,9 @@ fn from_preflight(root: &Path, raw_uuid: &str) -> Result<FromProof, String> {
 mod tests {
     use super::{
         AttachAction, EVENTS_KEEP, ToolKind, attach_action, launch_token, launch_turn_is_pasted,
-        parse_plan, trim_events,
+        parse_plan, server_attach_hint, trim_events,
     };
+    use crate::inventory::ServerId;
     use std::fmt::Write as _;
     use std::path::PathBuf;
 
@@ -2932,6 +2889,20 @@ mod tests {
         assert_eq!(
             attach_action(true, false, Some("inside"), "inside"),
             AttachAction::Hint
+        );
+    }
+
+    #[test]
+    fn fleet_attach_hints_keep_the_selected_server_spelling() {
+        use crate::meta::Selector;
+
+        assert_eq!(
+            server_attach_hint(&ServerId::Selected(Selector::Name("ae".to_owned()))),
+            "tmux -L ae attach"
+        );
+        assert_eq!(
+            server_attach_hint(&ServerId::Selected(Selector::Socket("/tmp/ae.sock".into()))),
+            "tmux -S /tmp/ae.sock attach"
         );
     }
 

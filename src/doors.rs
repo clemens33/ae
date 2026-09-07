@@ -42,12 +42,12 @@ pub fn home() -> Option<PathBuf> {
 pub fn cwd() -> PathBuf {
     #[allow(
         clippy::disallowed_methods,
-        reason = "a door: the working directory is what a nameless launch derives its name from and what a relative config is resolved against"
+        reason = "a door: the working directory is a launch's default origin and what a relative config is resolved against"
     )]
     let physical = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     #[allow(
         clippy::disallowed_methods,
-        reason = "a door: $PWD is the caller's LOGICAL spelling of the same directory — see the note above"
+        reason = "a door: $PWD is the caller's LOGICAL spelling of the launch origin — see the note above"
     )]
     let raw = std::env::var_os("PWD");
     let Some(logical) = raw.map(PathBuf::from).filter(|path| path.is_absolute()) else {

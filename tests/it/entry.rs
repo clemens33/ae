@@ -206,6 +206,44 @@ impl Rig {
         )
     }
 
+    /// Run as a command typed inside `caller`, with an independently selected
+    /// launch target.
+    fn run_inside_on(
+        &self,
+        caller: &Path,
+        target: Option<&Path>,
+        argv: &[&str],
+    ) -> (Option<i32>, String, String) {
+        let mut command = ae();
+        command
+            .env("HOME", &self.scratch)
+            .env("AE_HOME", &self.home)
+            .env("CONFIG_FILE", self.config())
+            .env("AE_NO_AUTOSTART", "1")
+            .env("TMUX_TMPDIR", &self.scratch)
+            .env("TMUX", format!("{},1,0", caller.display()))
+            .env("TMUX_PANE", "%0")
+            .current_dir(&self.project);
+        if let Some(socket) = target {
+            command
+                .env("AE_TMUX_SERVER_KIND", "socket")
+                .env("AE_TMUX_SERVER", socket);
+        } else {
+            command
+                .env_remove("AE_TMUX_SERVER_KIND")
+                .env_remove("AE_TMUX_SERVER");
+        }
+        let out = command
+            .args(argv)
+            .output()
+            .unwrap_or_else(|why| panic!("the ae binary should run: {why}"));
+        (
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    }
+
     fn tmux(&self, tail: &[&str]) -> (bool, String) {
         let mut args = ae::tmux::server_args(&ae::inventory::ServerId::Selected(
             ae::meta::Selector::Socket(self.sock.clone()),
@@ -841,34 +879,161 @@ fn a_launch_target_is_an_exact_session_name_not_a_prefix() {
     assert_eq!(names, ["dotfiles", "dotfiles2"], "{listed}");
 }
 
-/// An EMPTY argv after the preamble is a LAUNCH, not the help an empty argv
-/// gets everywhere else — `ae` with no words starts the default session and
-/// always has.
+/// Bare `ae` on a server with no session explains how to start one and writes
+/// no state.
 #[test]
-fn no_argv_at_all_launches_rather_than_printing_help() {
+fn bare_ae_with_no_running_session_refuses_without_writing_state() {
     if skip() {
         return;
     }
-    let rig = Rig::idle("bare");
+    let rig = Rig::new("bare-empty");
     let sock = rig.sock.clone();
     let (code, stdout, stderr) = rig.run_on(Some(&sock), &[]);
-    assert_ne!(code, Some(2), "not a usage error: {stdout}\n{stderr}");
-    // Help would have printed the command list and written nothing.
-    assert!(!stdout.contains("Usage:"), "help was printed: {stdout}");
-    assert!(rig.config().exists(), "the launch prelude did not run");
-    let started: Vec<String> = std::fs::read_dir(rig.sessions())
-        .into_iter()
-        .flatten()
-        .flatten()
-        .map(|entry| entry.file_name().to_string_lossy().into_owned())
-        // The lifecycle lock is a sibling FILE in the same root, not a session.
-        .filter(|name| !name.starts_with(".lifecycle."))
-        .collect();
-    assert_eq!(started.len(), 1, "one derived session: {started:?}");
-    assert!(
-        started[0].contains("project"),
-        "the name is derived from the cwd door: {started:?}"
+    assert_eq!(code, Some(1), "{stdout}\n{stderr}");
+    assert!(stdout.is_empty(), "{stdout}");
+    assert_eq!(
+        stderr,
+        "ae: no running ae session. Start one with: ae <name>\n"
     );
+    assert!(!rig.config().exists(), "bare attach seeded config");
+    assert!(
+        !rig.sessions().exists(),
+        "bare attach created session state"
+    );
+}
+
+/// Every launch mode still needs an explicit session name, including forms
+/// whose operand is an agent, archive, or directory rather than that name.
+#[test]
+fn launch_flags_without_a_session_name_are_usage_errors_before_any_write() {
+    let rig = Rig::new("nameless-flags");
+    let project = rig.project.to_string_lossy().into_owned();
+    let forms: Vec<Vec<&str>> = vec![
+        vec!["--local"],
+        vec!["--copy"],
+        vec!["--worktree"],
+        vec!["--no-attach"],
+        vec!["use", "lead"],
+        vec!["--from", "0199c0de-1234-4890-abcd-ef0123456789"],
+        vec!["--dir", &project],
+    ];
+    for form in forms {
+        let (code, stdout, stderr) = rig.run(&form);
+        assert_eq!(code, Some(2), "{form:?}: {stdout}\n{stderr}");
+        assert!(stdout.is_empty(), "{form:?}: {stdout}");
+        assert_eq!(
+            stderr,
+            format!(
+                "{}\n{}\n",
+                ae::session_launch::MISSING_NAME,
+                ae::session_launch::PUBLIC_USAGE
+            ),
+            "{form:?}"
+        );
+        assert!(!rig.config().exists(), "{form:?} seeded config");
+        assert!(!rig.sessions().exists(), "{form:?} created state");
+    }
+}
+
+/// Outside tmux, bare `ae` reaches the untargeted attach door when the launch
+/// server has sessions. The pure argv test pins absence of `-t`.
+#[test]
+fn bare_ae_outside_tmux_attaches_when_the_server_has_sessions() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::new("bare-attach");
+    assert!(
+        rig.tmux(&["-f", "/dev/null", "new-session", "-d", "-s", "one"])
+            .0
+    );
+    assert!(
+        rig.tmux(&["-f", "/dev/null", "new-session", "-d", "-s", "two"])
+            .0
+    );
+    let sock = rig.sock.clone();
+    let (code, stdout, stderr) = rig.run_on(Some(&sock), &[]);
+    assert_ne!(code, Some(0), "the rig has no terminal: {stdout}\n{stderr}");
+    assert_ne!(code, Some(2), "attach is not usage: {stdout}\n{stderr}");
+    assert!(stdout.is_empty(), "{stdout}");
+    assert!(!stderr.contains("no running ae session"), "{stderr}");
+    assert!(!rig.sessions().exists(), "attach created state");
+}
+
+#[test]
+fn bare_ae_names_stopped_sessions_when_no_tmux_session_is_running() {
+    if skip() {
+        return;
+    }
+    let mut rig = Rig::idle("bare-stopped");
+    let sock = rig.sock.clone();
+    let (code, stdout, stderr) = rig.run_on(Some(&sock), &["old", "--no-attach"]);
+    assert_eq!(code, Some(0), "{stdout}\n{stderr}");
+    assert!(
+        rig.tmux(&["-f", "/dev/null", "new-session", "-d", "-s", "keeper",])
+            .0
+    );
+    assert!(rig.tmux(&["kill-session", "-t", "=old"]).0);
+
+    let empty_target = rig.scratch.join("empty.sock");
+    rig.scratch.add_tmux_server(empty_target.clone());
+    let (code, stdout, stderr) = rig.run_on(Some(&empty_target), &[]);
+    assert_eq!(code, Some(1), "{stdout}\n{stderr}");
+    assert!(stdout.is_empty(), "{stdout}");
+    assert!(
+        stderr.starts_with("ae: no running ae session. Start one with: ae <name>\n"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("Stopped sessions: old\n"), "{stderr}");
+}
+
+#[test]
+fn bare_ae_inside_the_launch_server_lists_instead_of_switching() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("bare-inside");
+    let (code, stdout, stderr) = rig.run(&["listed", "--no-attach"]);
+    assert_eq!(code, Some(0), "{stdout}\n{stderr}");
+    let (ok, socket) = rig.default_tmux(&["display-message", "-p", "#{socket_path}"]);
+    assert!(ok, "default ae server socket: {socket}");
+    let socket = PathBuf::from(socket.trim());
+
+    let (code, stdout, stderr) = rig.run_inside_on(&socket, None, &[]);
+    assert_eq!(code, Some(0), "{stdout}\n{stderr}");
+    assert!(stdout.contains("listed"), "{stdout}");
+    assert!(!stdout.contains("Attach with:"), "{stdout}");
+}
+
+#[test]
+fn bare_ae_inside_a_foreign_server_prints_named_and_socket_hints() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::new("bare-foreign");
+    assert!(
+        rig.tmux(&["-f", "/dev/null", "new-session", "-d", "-s", "foreign"])
+            .0
+    );
+    let named = rig.run_inside_on(&rig.sock, None, &[]);
+    assert_eq!(named.0, Some(0), "{named:?}");
+    assert_eq!(
+        named.1,
+        "ae: the ae fleet is on another tmux server. Attach with: tmux -L ae attach\n"
+    );
+    assert!(named.2.is_empty(), "{named:?}");
+
+    let target = rig.scratch.join("declared.sock");
+    let socket = rig.run_inside_on(&rig.sock, Some(&target), &[]);
+    assert_eq!(socket.0, Some(0), "{socket:?}");
+    assert_eq!(
+        socket.1,
+        format!(
+            "ae: the ae fleet is on another tmux server. Attach with: tmux -S {} attach\n",
+            target.display()
+        )
+    );
+    assert!(socket.2.is_empty(), "{socket:?}");
 }
 
 // ---------------------------------------------------------------------------
@@ -1540,8 +1705,8 @@ fn the_server_pair_door_decides_where_a_launch_lands() {
     assert!(text.contains("tmux_server_kind=socket"), "{text}");
 }
 
-/// The CWD door: a launch with no name derives one from the working directory,
-/// and `$PWD` is honoured only when it names the same directory.
+/// The CWD door supplies a named launch's default origin, and `$PWD` is
+/// honoured only when it names the same directory.
 #[test]
 fn the_cwd_door_prefers_the_logical_pwd_only_when_it_agrees() {
     if skip() {
@@ -1563,24 +1728,22 @@ fn the_cwd_door_prefers_the_logical_pwd_only_when_it_agrees() {
         .env("PWD", "/")
         .current_dir(&rig.project);
     let out = command
+        .args(["pwd-door", "--no-attach"])
         .output()
         .unwrap_or_else(|why| panic!("the ae binary should run: {why}"));
-    let started: Vec<String> = std::fs::read_dir(rig.sessions())
-        .into_iter()
-        .flatten()
-        .flatten()
-        .map(|entry| entry.file_name().to_string_lossy().into_owned())
-        .filter(|name| !name.starts_with(".lifecycle."))
-        .collect();
     assert_eq!(
-        started.len(),
-        1,
-        "one derived session: {started:?} ({})",
+        out.status.code(),
+        Some(0),
+        "{}",
         String::from_utf8_lossy(&out.stderr)
     );
+    let meta = std::fs::read_to_string(rig.sessions().join("pwd-door").join("meta"))
+        .unwrap_or_else(|why| panic!("named session meta: {why}"));
+    let expected_origin = std::fs::canonicalize(&rig.project)
+        .unwrap_or_else(|why| panic!("canonical project directory: {why}"));
     assert!(
-        started[0].contains("project"),
-        "the stale PWD did not decide where ae thinks it is: {started:?}"
+        meta.contains(&format!("origin={}\n", expected_origin.display())),
+        "stale PWD decided launch origin: {meta}"
     );
 }
 

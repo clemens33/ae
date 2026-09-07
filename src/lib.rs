@@ -304,6 +304,7 @@ fn resolve_facts(shape: &shape::Shape, err: &mut impl Write) -> Result<Option<en
     let cwd = doors::cwd();
     let declared = doors::declared_server(shape);
     let (server_kind, server_value) = doors::resolve_launch_server(declared.as_ref());
+    let launch_target = doors::launch_target(declared.as_ref());
     let caller_server = doors::caller_server();
     let inside_tmux = doors::inside_tmux(caller_server.as_ref(), err)?;
     Ok(Some(entry::Preamble {
@@ -313,6 +314,7 @@ fn resolve_facts(shape: &shape::Shape, err: &mut impl Write) -> Result<Option<en
         cwd,
         server_kind,
         server_value,
+        launch_target,
         caller_server,
         inside_tmux,
         attach: true,
@@ -664,6 +666,7 @@ fn run_entry(
             return run_archive_preview(preamble, name.as_deref(), out, err);
         }
         entry::Route::Core(effective) => return run_dispatch(&effective, out, err),
+        entry::Route::Attach => return run_bare_attach(preamble, out, err),
         entry::Route::Launch(user) => {
             if user.first().map(String::as_str) == Some(orchestrator::ORCHESTRATOR_SESSION) {
                 let Some(flags) = orchestrator::parse_launch_tail(&user[1..]) else {
@@ -685,6 +688,55 @@ fn run_entry(
     out.flush()?;
     err.flush()?;
     Ok(code)
+}
+
+/// Bare `ae`: list when already on the launch server, print the cross-server
+/// attach hint from another tmux, or attach this terminal and let tmux choose
+/// its most recently used session.
+fn run_bare_attach(
+    preamble: &entry::Preamble,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> Result<u8> {
+    let Some(server) = preamble.launch_target.as_ref() else {
+        writeln!(
+            err,
+            "Error: '{}' is not a tmux server kind.",
+            preamble.server_kind
+        )?;
+        return Ok(entry::EXIT_USAGE);
+    };
+    if preamble.inside_tmux {
+        let same_server = preamble.caller_server.as_ref().is_some_and(|caller| {
+            let mut sockets = SocketPaths::asking(transport::observe_socket_path);
+            sockets.proven_same(caller, server)
+        });
+        if same_server {
+            return run_dispatch(&["list".to_owned()], out, err);
+        }
+        writeln!(
+            out,
+            "ae: the ae fleet is on another tmux server. Attach with: {}",
+            session_launch::server_attach_hint(server)
+        )?;
+        return Ok(0);
+    }
+    if transport::session_names(server).is_some_and(|names| !names.is_empty()) {
+        return Ok(transport::attach(server));
+    }
+    writeln!(err, "ae: no running ae session. Start one with: ae <name>")?;
+    let (_, world) = current_world(&preamble.home);
+    let mut stopped = world
+        .sessions
+        .iter()
+        .filter(|session| session.status == digest::Status::Stopped)
+        .map(|session| session.name.as_str())
+        .collect::<Vec<_>>();
+    stopped.sort_unstable();
+    if !stopped.is_empty() {
+        writeln!(err, "Stopped sessions: {}", stopped.join(", "))?;
+    }
+    Ok(entry::EXIT_FAILED)
 }
 
 /// `ae archive preview [name]` — resolve the target, path-check it, then hand
@@ -732,6 +784,20 @@ fn run_launch(
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> Result<u8> {
+    let plan = match session_launch::parse_plan(user) {
+        Ok(plan) => plan,
+        Err(line) => {
+            writeln!(err, "{line}")?;
+            err.flush()?;
+            return Ok(entry::EXIT_USAGE);
+        }
+    };
+    let Some(hint) = plan.name.as_deref() else {
+        writeln!(err, "{}", session_launch::MISSING_NAME)?;
+        writeln!(err, "{}", session_launch::PUBLIC_USAGE)?;
+        err.flush()?;
+        return Ok(entry::EXIT_USAGE);
+    };
     let deps = doctor::check_deps(&[], err)?;
     if deps != 0 {
         err.flush()?;
@@ -744,12 +810,8 @@ fn run_launch(
     // The NAME grammar is the launch's own and answers first, so a traversal
     // name is refused as a name rather than as a path object and the message
     // says what is actually wrong.
-    let hint = entry::session_hint(user);
-    if !hint.is_empty()
-        && session_name_usable(preamble, &hint)
-        && !session_path_is_safe(preamble, &hint)
-    {
-        write_unsafe_path(&preamble.sessions().join(&hint), err)?;
+    if session_name_usable(preamble, hint) && !session_path_is_safe(preamble, hint) {
+        write_unsafe_path(&preamble.sessions().join(hint), err)?;
         err.flush()?;
         return Ok(entry::EXIT_FAILED);
     }

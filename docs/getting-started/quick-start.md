@@ -4,18 +4,19 @@
 
 ```bash
 cd ~/projects/my-app
-ae
+ae my-app
 ```
 
-First run creates `~/.ae/config` with sensible defaults and launches your main agent in tmux. The session is named after the current directory.
+First run creates `~/.ae/config` with sensible defaults and launches your main agent in tmux. Session names are explicit, so the same directory can host distinct sessions.
 
 Detach any time with `Ctrl+b d`. Agents keep running.
 
 ## Reattach
 
 ```bash
-ae                # same directory, reattaches the default session
-ae my-feature     # named session
+ae                # attach to the ae server's most recent session
+ae my-app         # reattach this named session
+ae my-feature     # start or reattach another named session
 ```
 
 Helpers and `workspace.md` regenerate from the currently-installed ae on every start, so upgrades propagate for free.

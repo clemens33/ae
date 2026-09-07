@@ -1790,7 +1790,7 @@ fn criterion_3_the_places_this_crate_can_read_the_world_are_the_inventoried_ones
             // The LAUNCH operation's own reads (B move 3): the `.ending.<name>`
             // tombstone lstats (a dangling link is a standing tombstone, so
             // never `metadata`), the origin/work-dir existence gates, the
-            // canonicalise behind the derived-name ownership guard, the
+            // canonicalise behind the explicit-origin resume guard, the
             // `--copy` mode's recursive tree walk, and the resume-time
             // events.jsonl retention read. Its meta and config reads are
             // `meta.rs`'s and `config.rs`'s inventoried doors, not new ones

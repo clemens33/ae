@@ -82,14 +82,14 @@ watchdog = true
 pub const HELP: &str = r"ae - agentic engineering: tmux multi-agent workspace
 
 Usage:
-  ae                     Start or reattach default session (local)
+  ae                     Attach to the ae tmux server
   ae <name>              Start or reattach a named session
   ae <name> --dir <path> Start or reattach using an explicit origin directory
   ae <name> --no-attach  Start or reattach without attaching; print attach command
   ae <name> use <name>   Start session with a specific agent as main
-  ae --local [name]      Start session in current directory (default)
-  ae --copy [name]       Start session with full copy (includes untracked files)
-  ae --worktree [name]   Start session with git worktree (tracked files only)
+  ae --local <name>      Start session in current directory (default)
+  ae --copy <name>       Start session with full copy (includes untracked files)
+  ae --worktree <name>   Start session with git worktree (tracked files only)
   ae <new-name> --from <archive-uuid>
                          Start a NEW session that explicitly continues an archived one
                          (the main agent is told to read that archive's digest first)
@@ -198,6 +198,9 @@ pub struct Preamble {
     pub server_kind: String,
     /// The resolved server's value.
     pub server_value: String,
+    /// The launch target before a running named server is upgraded to its
+    /// socket spelling. Bare `ae` keeps this spelling in attach hints.
+    pub launch_target: Option<ServerId>,
     /// The tmux server whose client invoked ae, resolved from `$TMUX` alone.
     pub caller_server: Option<ServerId>,
     /// Whether the caller is genuinely inside a tmux pane (attach vs switch).
@@ -221,6 +224,7 @@ impl Default for Preamble {
             local: None,
             server_kind: String::new(),
             server_value: String::new(),
+            launch_target: None,
             caller_server: None,
             inside_tmux: false,
             attach: true,
@@ -309,7 +313,9 @@ pub enum Route {
     /// A word the core already answers: the effective argv, environmental facts
     /// appended, for the ordinary dispatch.
     Core(Vec<String>),
-    /// Everything else, including an EMPTY argv: create or resume a session.
+    /// An EMPTY argv: attach to the ae tmux server or list from inside it.
+    Attach,
+    /// Everything else: create or resume an explicitly named session.
     Launch(Vec<String>),
 }
 
@@ -327,13 +333,14 @@ pub enum Route {
 /// ```
 /// use ae::entry::{Preamble, Route, route};
 /// let preamble = Preamble::default();
-/// assert_eq!(route(&preamble, &[], None), Route::Launch(Vec::new()));
+/// assert_eq!(route(&preamble, &[], None), Route::Attach);
 /// assert!(matches!(route(&preamble, &["status".to_owned()], None), Route::Retired(_)));
 /// ```
 #[must_use]
 pub fn route(preamble: &Preamble, argv: &[String], pane: Option<&str>) -> Route {
     let tail = || argv[1..].to_vec();
     match argv.first().map(String::as_str) {
+        None => Route::Attach,
         Some("list" | "ls") => {
             if argv[1..]
                 .iter()
@@ -381,7 +388,7 @@ pub fn route(preamble: &Preamble, argv: &[String], pane: Option<&str>) -> Route 
         Some("transfer") => Route::Retired(RETIRED_TRANSFER),
         Some("help" | "-h" | "--help") => Route::Help,
         Some("version" | "--version" | "-V") => Route::Version,
-        _ => Route::Launch(argv.to_vec()),
+        Some(_) => Route::Launch(argv.to_vec()),
     }
 }
 
@@ -421,42 +428,6 @@ fn telegram_tail(preamble: &Preamble, tail: &[String]) -> Vec<String> {
     words
 }
 
-/// The session name a launch argv NAMES, or empty when it derives one.
-///
-/// ADVISORY, and deliberately not a grammar: the core owns the launch grammar
-/// and every refusal it carries, so this scan accepts anything and answers with
-/// the last positional exactly as that grammar's own fallback arm does. `use`
-/// and `--from` consume the word after them — an agent name and an archive
-/// uuid, neither of which is a session name.
-///
-/// ```
-/// use ae::entry::session_hint;
-/// let argv: Vec<String> = ["--worktree", "use", "lead", "feature"]
-///     .iter()
-///     .map(|w| (*w).to_owned())
-///     .collect();
-/// assert_eq!(session_hint(&argv), "feature");
-/// assert_eq!(session_hint(&[]), "");
-/// ```
-#[must_use]
-pub fn session_hint(argv: &[String]) -> String {
-    let mut name = String::new();
-    let mut rest = argv;
-    while let [word, after @ ..] = rest {
-        rest = after;
-        match word.as_str() {
-            "use" | "--from" | "--dir" => {
-                if let [_consumed, next @ ..] = rest {
-                    rest = next;
-                }
-            }
-            flag if flag.starts_with("--") => {}
-            positional => positional.clone_into(&mut name),
-        }
-    }
-    name
-}
-
 /// Whether `name` could be a DIRECT CHILD of the sessions root, by pure string
 /// structure — the belt to the grammar, before anything on disk is touched.
 #[must_use]
@@ -466,9 +437,7 @@ pub fn is_direct_child_name(name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        DEFAULT_CONFIG, HELP, LIST_HELP, Preamble, Route, is_direct_child_name, route, session_hint,
-    };
+    use super::{DEFAULT_CONFIG, HELP, LIST_HELP, Preamble, Route, is_direct_child_name, route};
 
     fn argv(words: &[&str]) -> Vec<String> {
         words.iter().map(|word| (*word).to_owned()).collect()
@@ -484,8 +453,8 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_argv_launches_rather_than_printing_help() {
-        assert_eq!(route(&preamble(), &[], None), Route::Launch(Vec::new()));
+    fn an_empty_argv_takes_the_attach_route() {
+        assert_eq!(route(&preamble(), &[], None), Route::Attach);
     }
 
     #[test]
@@ -689,16 +658,6 @@ mod tests {
         // `current_exe()` is the answer under this shape, and a flag would only
         // be a second, staler one.
         assert!(!preamble().launch_argv(&[]).iter().any(|w| w == "--core"));
-    }
-
-    #[test]
-    fn the_hint_is_the_last_positional_and_skips_operand_words() {
-        assert_eq!(session_hint(&argv(&["feature"])), "feature");
-        assert_eq!(session_hint(&argv(&["use", "lead"])), "");
-        assert_eq!(session_hint(&argv(&["--from", "uuid", "child"])), "child");
-        assert_eq!(session_hint(&argv(&["child", "--dir", "/repo"])), "child");
-        assert_eq!(session_hint(&argv(&["--worktree"])), "");
-        assert_eq!(session_hint(&argv(&["a", "b"])), "b");
     }
 
     #[test]

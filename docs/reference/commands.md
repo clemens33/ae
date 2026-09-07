@@ -1,10 +1,12 @@
 # Commands
 
 ```text
-ae [name] [--local|--copy|--worktree] [--dir <path>] [--no-attach]
+ae                     Attach to the fleet server's most recently used session;
+                       inside that server, list the fleet instead
+ae <name> [--local|--copy|--worktree] [--dir <path>] [--no-attach]
                        Start or reattach a session. --dir selects its origin;
                        --no-attach prints the exact attach command and exits
-ae [name] use <alias>  Start session with a specific agent as main
+ae <name> use <alias>  Start session with a specific agent as main
 ae list [--all|--stopped|--needs-attn]
                        List sessions (running by default; --all adds stopped
                        history, --needs-attn only those needing attention)
@@ -31,7 +33,7 @@ ae stop [name]         Pause session, keep ae + agent conversation state for res
 ae archive preview [name]
                        Print the digest an end would archive. Read-only: writes nothing,
                        emits no event, does not stop the session
-ae [name] --from <archive-uuid>
+ae <name> --from <archive-uuid>
                        Start a NEW session that explicitly continues an archived one
 ae compact [-f] [--digest-only] [--keep-history] [name]
                        Archive the session and start a fresh one under the SAME name,
@@ -95,7 +97,7 @@ ae my-feature --worktree --dir /path/to/project --no-attach
 server-aware attach command, and exits successfully. When `--dir` names an existing session, its
 canonical directory must match the recorded origin; ae refuses rather than attaching to a session
 owned by another directory. Without `--dir`, named-session reattach behavior stays unchanged.
-When no name is given, ae derives the session name from the `--dir` origin, not the caller's cwd.
+A launch always needs an explicit name; `ae --dir <path>` without one is a usage error.
 
 See [Configuration → copy modes](../getting-started/config.md#copy-modes) for the trade-offs.
 
@@ -105,6 +107,14 @@ With no checkout override, every new session starts on ae's isolated named serve
 
 ```bash
 tmux -L ae attach -t "=my-feature"
+```
+
+Outside tmux, bare `ae` attaches to this server without a session target, so tmux chooses its most
+recently used session. Inside the same server, it behaves as `ae list`. From another tmux server it
+prints this line; a declared socket uses the corresponding `tmux -S <path> attach` form:
+
+```text
+ae: the ae fleet is on another tmux server. Attach with: tmux -L ae attach
 ```
 
 The exact `=name` target prevents tmux from falling through to prefix or pattern matching. Every

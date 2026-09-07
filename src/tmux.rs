@@ -1219,6 +1219,15 @@ pub fn focus_args(server: &ServerId, verb: FocusVerb, session: &str) -> Vec<Stri
     args
 }
 
+/// Arguments that attach to `server` and let tmux choose its most recently
+/// used session.
+#[must_use]
+pub fn attach_args(server: &ServerId) -> Vec<String> {
+    let mut args = server_args(server);
+    args.push(FocusVerb::AttachSession.as_str().to_owned());
+    args
+}
+
 /// `#{version}` — the running server's own version, as tmux spells it
 /// (`3.4`, `3.5a`, `next-3.6`, `master`).
 pub const VERSION_FORMAT: &str = "#{version}";
@@ -3098,8 +3107,9 @@ mod tests {
 
     #[test]
     fn the_focus_verb_follows_inside_ness_and_carries_the_target_separately() {
-        use super::{FocusVerb, focus_args};
+        use super::{FocusVerb, attach_args, focus_args};
         use crate::inventory::ServerId;
+        use crate::meta::Selector;
         // Frozen's `_next_focus_verb`: attach-session errors inside tmux
         // ("sessions should be nested with care"), and there is no client to
         // switch outside it.
@@ -3118,6 +3128,14 @@ mod tests {
         assert_eq!(
             focus_args(&ServerId::Ambient, FocusVerb::AttachSession, "s"),
             vec!["attach-session", "-t", "=s"]
+        );
+        assert_eq!(
+            attach_args(&ServerId::Selected(Selector::Name("ae".to_owned()))),
+            vec!["-L", "ae", "attach-session"]
+        );
+        assert_eq!(
+            attach_args(&ServerId::Selected(Selector::Socket("/tmp/ae.sock".into()))),
+            vec!["-S", "/tmp/ae.sock", "attach-session"]
         );
     }
 

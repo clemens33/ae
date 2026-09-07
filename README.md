@@ -12,7 +12,8 @@ Works with any CLI-based agentic harness.
 
 ## Why ae
 
-- **One command** -- `ae` starts a session, `ae` reattaches. That's the whole workflow.
+- **One command** -- `ae <name>` starts or reattaches a session; bare `ae` attaches to the
+  fleet server's most recently used session.
 - **Agents talk to each other** -- each agent gets workspace context injected into its system prompt. They send messages by name, spawn new agents, and coordinate without manual wiring.
 - **Everything survives reboots** -- sessions, spawned agents, conversation history. Pick up exactly where you left off.
 - **Nothing touches your repo** -- session state lives in `~/.ae/sessions/`. Your working directory stays clean.
@@ -62,17 +63,26 @@ Prerequisites: [rustup](https://rustup.rs/) and [just](https://github.com/casey/
 
 ```bash
 cd ~/projects/my-app
-ae
+ae my-app
 ```
 
-First run creates `~/.ae/config` with sensible defaults and launches your main agent in tmux. Detach with `Ctrl+b d` -- agents keep running in the background.
+First run creates `~/.ae/config` with sensible defaults and launches your main agent in tmux.
+Session names are explicit; a directory never silently decides one. Detach with `Ctrl+b d` --
+agents keep running in the background.
 
 ## What you can do
 
 **Start a session and let agents collaborate:**
 ```bash
-ae my-feature                  # named session
-ae                             # default session (named after the directory)
+ae my-feature                  # start or reattach a named session
+ae                             # attach to the fleet server's most recent session
+```
+
+Inside the fleet's tmux server, bare `ae` shows `ae list` instead of switching. From another
+tmux server it prints this line (or the declared `tmux -S <path> attach` form):
+
+```text
+ae: the ae fleet is on another tmux server. Attach with: tmux -L ae attach
 ```
 
 **Ask your agent to bring in help:**

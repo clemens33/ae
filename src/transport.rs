@@ -739,6 +739,23 @@ pub fn focus(server: &ServerId, verb: tmux::FocusVerb, session: &str) -> u8 {
     }
 }
 
+/// Hand this terminal to `server`; tmux chooses its most recently used session.
+#[must_use]
+pub fn attach(server: &ServerId) -> u8 {
+    if !addressable(server) {
+        return FOCUS_FAILED;
+    }
+    let args = tmux::attach_args(server);
+    match spawn(PROGRAM, &args, &[], Streams::Terminal, None) {
+        Some(output) => output
+            .status
+            .code()
+            .and_then(|code| u8::try_from(code).ok())
+            .unwrap_or(FOCUS_FAILED),
+        None => FOCUS_FAILED,
+    }
+}
+
 /// Move one exact client to one exact session, or report tmux's refusal.
 #[must_use]
 pub fn switch_client(server: &ServerId, client: &str, session: &str) -> bool {
