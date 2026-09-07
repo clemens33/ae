@@ -490,7 +490,7 @@ pub(super) fn recorded_server(root: &Path, name: &str) -> Option<ServerId> {
 /// the server `$TMUX` names establishes its name, but that name becomes an ae
 /// self-target only after the session's durable selector answers with the same
 /// socket identity.
-pub(super) fn recorded_caller_session(
+pub(crate) fn recorded_caller_session(
     root: &Path,
     caller_server: Option<&ServerId>,
     pane: &str,

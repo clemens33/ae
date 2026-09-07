@@ -375,6 +375,38 @@ fn a_bare_end_from_a_foreign_namesake_never_targets_the_recorded_session() {
 }
 
 #[test]
+fn bare_watchdog_status_from_a_foreign_namesake_has_no_inferred_target() {
+    let rig = Rig::new("foreignwatchdog");
+    let (foreign, pane) = rig.foreign_namesake("watchdog");
+    let meta = rig.dir.join("meta");
+    let before = std::fs::read(&meta).expect("the recorded meta");
+
+    // Naming the target remains valid from another server and addresses the
+    // server the target records.
+    let (code, out, err) =
+        rig.run_from(&["watchdog", "status", &rig.name], Some((&foreign, &pane)));
+    assert_eq!(code, Some(0), "stdout: {out}\nstderr: {err}");
+    assert_eq!(out, "Watchdog is not running.\n");
+    assert!(err.is_empty(), "{err}");
+
+    let (code, out, err) = rig.run_from(&["watchdog", "status"], Some((&foreign, &pane)));
+    let _ = rig.tmux_at(&foreign, &["kill-server"]);
+
+    assert_eq!(code, Some(1), "stdout: {out}\nstderr: {err}");
+    assert!(out.is_empty(), "{out}");
+    assert_eq!(
+        err,
+        "Error: no session name given and not inside an ae tmux session\n"
+    );
+    assert!(rig.session_is_live(), "the recorded session stays live");
+    assert_eq!(
+        std::fs::read(meta).expect("the recorded meta after refusal"),
+        before,
+        "the recorded watchdog state stays untouched"
+    );
+}
+
+#[test]
 fn a_self_stop_returns_from_the_pane_it_kills() {
     // THE SHAPE THAT NEEDS THE SUPERVISOR, driven the way it actually happens:
     // the command runs in a shell INSIDE the target's own pane, so the process

@@ -123,12 +123,9 @@ pub fn run(
         return Ok(EXIT_USAGE);
     };
     if target.is_empty() {
-        // The caller's own pane names its session.
-        if !pane.is_empty()
-            && let Some(server) = crate::doors::caller_server()
-            && let Some(owner) = transport::observe_pane_owner(&server, &pane)
-        {
-            target = owner.session;
+        let caller_server = crate::doors::caller_server();
+        if let Some(own) = lifecycle::recorded_caller_session(root, caller_server.as_ref(), &pane) {
+            target = own;
         }
     }
     if target.is_empty() {
