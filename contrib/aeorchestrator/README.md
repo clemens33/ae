@@ -46,10 +46,13 @@ the seat deliberately runs a cheap model; never give it judgment tasks.
 The standard workspace watchdog checks the template's orchestrator each cycle.
 The persisted `[workspace] sweep` setting is the minimum spacing between
 changed overviews and outranks the process-wide fallback and default. A zero
-disables overview delivery. The watchdog persists the last delivered hash and
-its own heartbeat, so restarts do not resend unchanged text. The seat never
-runs `ae brief --all` on a timer; it may read it once for a human fleet question
-or routing decision. The seat is started explicitly; it is never an autostart companion.
+disables overview delivery. The watchdog persists a semantic hash, the latest
+successful delivery for spacing, the oldest unacknowledged delivery for the
+fixed liveness deadline, and its own heartbeat. Elapsed age labels alone never
+wake the seat, and restarts neither resend unchanged text nor reset the
+deadline. The seat never runs `ae brief --all` on a timer; it may read it once
+for a human fleet question or routing decision. The seat is started explicitly;
+it is never an autostart companion.
 `AE_NO_AUTOSTART=1` suppresses the Telegram bridge when launching another session.
 
 ## Files

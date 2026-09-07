@@ -562,7 +562,24 @@ fn last_done_event_at(events: &[Event], session: &str, agent: &str) -> Option<Sy
         })?
         .ts
         .epoch();
-    UNIX_EPOCH.checked_add(Duration::from_secs(u64::try_from(epoch).ok()?))
+    system_time_from_epoch(epoch)
+}
+
+fn system_time_from_epoch(epoch: i64) -> Option<SystemTime> {
+    if epoch >= 0 {
+        UNIX_EPOCH.checked_add(Duration::from_secs(u64::try_from(epoch).ok()?))
+    } else {
+        UNIX_EPOCH.checked_sub(Duration::from_secs(epoch.unsigned_abs()))
+    }
+}
+
+fn epoch_second(at: SystemTime) -> i64 {
+    match at.duration_since(UNIX_EPOCH) {
+        Ok(since) => i64::try_from(since.as_secs()).unwrap_or(i64::MAX),
+        Err(before) => {
+            i64::try_from(before.duration().as_secs()).map_or(i64::MIN, i64::saturating_neg)
+        }
+    }
 }
 
 /// The age reported for an agent with no event at all.
@@ -1521,9 +1538,16 @@ impl OverviewReading {
         self.checkpoint.hash.as_deref() != Some(self.hash.as_str())
     }
 
+    fn persisted_outstanding_since(&self) -> Option<SystemTime> {
+        system_time_from_epoch(self.checkpoint.outstanding_since?)
+    }
+
     fn persisted_last_delivery(&self) -> Option<SystemTime> {
-        let epoch = u64::try_from(self.checkpoint.delivered_at?).ok()?;
-        UNIX_EPOCH.checked_add(Duration::from_secs(epoch))
+        let epoch = self
+            .checkpoint
+            .last_delivered_at
+            .or(self.checkpoint.outstanding_since)?;
+        system_time_from_epoch(epoch)
     }
 
     fn body(&self) -> String {
@@ -1574,7 +1598,7 @@ impl Cycle<'_> {
             })
             .collect();
         let rendered = crate::overview::render(&cards, self.session);
-        let hash = crate::overview::hash(&rendered);
+        let hash = crate::overview::semantic_hash(&cards, self.session);
         let checkpoint = match crate::monitor::overview_heartbeat(self.meta_dir, now) {
             Ok(checkpoint) => checkpoint,
             Err(why) => {
@@ -1608,6 +1632,7 @@ impl Cycle<'_> {
             )
             .with_overview(
                 overview.is_some_and(OverviewReading::changed),
+                overview.and_then(OverviewReading::persisted_outstanding_since),
                 overview.and_then(OverviewReading::persisted_last_delivery),
             )
         })
@@ -2200,7 +2225,7 @@ impl Cycle<'_> {
         state: &mut PaneState,
         err: &mut impl Write,
     ) -> crate::Result<()> {
-        let Some(observed) = on.seen.sweep.as_ref() else {
+        let Some(_observed) = on.seen.sweep.as_ref() else {
             // Unreachable by construction: only the sweep branch emits this
             // effect, and it runs only where the observation exists.
             writeln!(
@@ -2224,25 +2249,29 @@ impl Cycle<'_> {
         // Delivery is CHECKED.
         let body = overview.body();
         let delivered = self.deliver(on.agent, &body, "fleet overview changed");
-        if delivered
-            && let Err(why) = crate::monitor::record_overview_delivery(
+        // This is intentionally AFTER the checked delivery. A deferred submit
+        // cannot be acknowledged by a `done` event that preceded the paste,
+        // and the minimum spacing begins when the paste actually landed.
+        let settled_epoch = Timestamp::now().epoch();
+        let settled_now = system_time_from_epoch(settled_epoch).unwrap_or(UNIX_EPOCH);
+        let booked = record_sweep(&mut state.sweep, delivered, settled_now, &self.knobs.sweep);
+        if delivered {
+            let outstanding_since = state
+                .sweep
+                .outstanding_since
+                .map_or_else(|| epoch_second(settled_now), epoch_second);
+            if let Err(why) = crate::monitor::record_overview_delivery(
                 self.meta_dir,
                 &overview.hash,
-                on.seen.now_epoch,
-            )
-        {
-            writeln!(
-                err,
-                "ae: watchdog: delivered fleet overview but could not persist its hash: {why}"
-            )?;
+                outstanding_since,
+                settled_epoch,
+            ) {
+                writeln!(
+                    err,
+                    "ae: watchdog: delivered fleet overview but could not persist its hash: {why}"
+                )?;
+            }
         }
-        let booked = record_sweep(
-            &mut state.sweep,
-            delivered,
-            observed.now,
-            SystemTime::now(),
-            &self.knobs.sweep,
-        );
         for effect in sweep_effects(booked) {
             self.apply(&effect, on, state, err)?;
         }
@@ -3944,8 +3973,8 @@ mod tests {
             vec![
                 Effect::Emit {
                     action: "alert",
-                    summary: "meta-agent not acknowledging overviews — latest delivery \
-                              unacknowledged for 11m (may be stuck)"
+                    summary: "meta-agent not acknowledging overviews — oldest outstanding \
+                              overview unacknowledged for 11m (may be stuck)"
                         .to_owned(),
                 },
                 Effect::Notify(
@@ -3970,7 +3999,8 @@ mod tests {
             hash: "0123456789abcdef".to_owned(),
             checkpoint: crate::monitor::OverviewCheckpoint {
                 hash: Some("fedcba9876543210".to_owned()),
-                delivered_at: Some(300),
+                outstanding_since: Some(240),
+                last_delivered_at: Some(300),
             },
         };
         assert!(reading.changed());
@@ -3981,6 +4011,10 @@ mod tests {
         assert_eq!(
             reading.persisted_last_delivery(),
             Some(UNIX_EPOCH + Duration::from_mins(5))
+        );
+        assert_eq!(
+            reading.persisted_outstanding_since(),
+            Some(UNIX_EPOCH + Duration::from_mins(4))
         );
     }
 
@@ -3994,7 +4028,7 @@ mod tests {
             ..Knobs::default()
         };
         let mut prior = PaneState::default();
-        prior.sweep.last_delivered = Some(at(0));
+        prior.sweep.outstanding_since = Some(at(0));
         prior.sweep.unacknowledged_deliveries = 1;
         prior.sweep.last_sweep = Some(at(240));
         let mut observed = seen();

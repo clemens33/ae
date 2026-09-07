@@ -542,7 +542,7 @@ pub fn is_sweep_target(meta_agent: bool, slot: &str) -> bool {
 /// What the orchestrator's row shows this cycle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SweepVerdict {
-    /// The latest delivered overview has a later `state done` acknowledgement.
+    /// Every delivered overview has a later `state done` acknowledgement.
     MetaSweeping,
     /// A delivered overview passed the grace window without `state done`.
     MetaWedged,
@@ -565,9 +565,10 @@ impl SweepVerdict {
 /// Which missing overview acknowledgement the wedge alert is reporting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WedgeDetail {
-    /// The seat has acknowledged before, but not since the latest delivery.
+    /// The seat has acknowledged before, but not since the oldest outstanding
+    /// delivery.
     Stalled {
-        /// Seconds since the latest overview landed.
+        /// Seconds since the oldest unacknowledged overview landed.
         age_secs: u64,
     },
     /// No `done` event exists despite one or more delivered overviews.
@@ -609,8 +610,8 @@ impl SweepAlert {
     pub fn summary(self) -> String {
         match self {
             Self::RaiseWedge(WedgeDetail::Stalled { age_secs }) => format!(
-                "meta-agent not acknowledging overviews — latest delivery unacknowledged for {}m \
-                 (may be stuck)",
+                "meta-agent not acknowledging overviews — oldest outstanding overview \
+                 unacknowledged for {}m (may be stuck)",
                 age_secs / 60
             ),
             Self::RaiseWedge(WedgeDetail::Never { deliveries }) => format!(
@@ -663,8 +664,9 @@ pub enum SweepEffect {
 pub struct SweepState {
     /// When the cadence was last satisfied.
     pub last_sweep: Option<SystemTime>,
-    /// When the latest overview LANDED — the acknowledgement grace's origin.
-    pub last_delivered: Option<SystemTime>,
+    /// When the oldest unacknowledged overview landed — the fixed origin of
+    /// the acknowledgement grace until a `done` event clears it.
+    pub outstanding_since: Option<SystemTime>,
     /// Successful overview deliveries not yet followed by `state done`.
     pub unacknowledged_deliveries: u32,
     /// Consecutive undelivered prompts.
@@ -687,7 +689,9 @@ pub struct SweepObservation {
     /// Whether the newly rendered overview differs from the last one that
     /// landed in the orchestrator pane.
     pub overview_changed: bool,
-    /// Last delivered overview recovered from the durable checkpoint state.
+    /// Oldest unacknowledged delivery recovered from durable state.
+    pub persisted_outstanding_since: Option<SystemTime>,
+    /// Latest delivered overview recovered for durable minimum spacing.
     pub persisted_last_delivery: Option<SystemTime>,
 }
 
@@ -699,6 +703,7 @@ impl SweepObservation {
             now,
             last_done,
             overview_changed: true,
+            persisted_outstanding_since: None,
             persisted_last_delivery: None,
         }
     }
@@ -710,9 +715,11 @@ impl SweepObservation {
     pub const fn with_overview(
         mut self,
         changed: bool,
+        persisted_outstanding_since: Option<SystemTime>,
         persisted_last_delivery: Option<SystemTime>,
     ) -> Self {
         self.overview_changed = changed;
+        self.persisted_outstanding_since = persisted_outstanding_since;
         self.persisted_last_delivery = persisted_last_delivery;
         self
     }
@@ -746,26 +753,28 @@ pub fn sweep_step(
 
     // 1. The verdict. The watchdog's own checkpoint proves only that THIS loop
     //    ran. Seat liveness comes from the `state done` event the charter
-    //    requires after every delivered overview. The grace comparison is
+    //    requires after every delivered overview. Repeated deliveries retain
+    //    the oldest outstanding deadline. The grace comparison is
     //    strict `>`, so an age exactly equal to the window is still starting.
-    let delivered_at = match (prior.last_delivered, seen.persisted_last_delivery) {
-        (Some(memory), Some(persisted)) => Some(memory.max(persisted)),
+    let outstanding_since = match (prior.outstanding_since, seen.persisted_outstanding_since) {
+        (Some(memory), Some(persisted)) => Some(memory.min(persisted)),
         (memory, persisted) => memory.or(persisted),
     };
-    next.last_delivered = delivered_at;
-    let acknowledged = delivered_at.is_some_and(|delivery| {
+    next.outstanding_since = outstanding_since;
+    let acknowledged = outstanding_since.is_some_and(|delivery| {
         seen.last_done
             .is_some_and(|done| done.duration_since(delivery).is_ok())
     });
-    let grace_secs = delivered_at.map(|at| secs_between(seen.now, at));
-    let verdict = match (delivered_at, acknowledged, grace_secs) {
+    let grace_secs = outstanding_since.map(|at| secs_between(seen.now, at));
+    let verdict = match (outstanding_since, acknowledged, grace_secs) {
         (Some(_), true, _) => SweepVerdict::MetaSweeping,
         (Some(_), false, Some(elapsed)) if elapsed > knobs.wedge_secs() => SweepVerdict::MetaWedged,
         _ => SweepVerdict::MetaStarting,
     };
     if acknowledged {
+        next.outstanding_since = None;
         next.unacknowledged_deliveries = 0;
-    } else if delivered_at.is_some() && next.unacknowledged_deliveries == 0 {
+    } else if outstanding_since.is_some() && next.unacknowledged_deliveries == 0 {
         // A persisted delivery survived a daemon restart; its in-memory count
         // did not, but the durable timestamp proves there was at least one.
         next.unacknowledged_deliveries = 1;
@@ -821,15 +830,18 @@ pub fn sweep_step(
 pub fn record_sweep(
     state: &mut SweepState,
     delivered: bool,
-    cycle_now: SystemTime,
     settled_now: SystemTime,
     knobs: &SweepKnobs,
 ) -> Vec<SweepEffect> {
     if delivered {
         state.fails = 0;
-        state.last_sweep = Some(cycle_now);
-        state.last_delivered = Some(cycle_now);
-        state.unacknowledged_deliveries = state.unacknowledged_deliveries.saturating_add(1);
+        state.last_sweep = Some(settled_now);
+        if state.outstanding_since.is_none() {
+            state.outstanding_since = Some(settled_now);
+            state.unacknowledged_deliveries = 1;
+        } else {
+            state.unacknowledged_deliveries = state.unacknowledged_deliveries.saturating_add(1);
+        }
         if !state.unreachable_alerted {
             return Vec::new();
         }
@@ -1722,7 +1734,7 @@ tail line
     fn a_delivered_overview_without_a_done_event_eventually_wedges() {
         let k = knobs();
         let prior = SweepState::default();
-        let observed = seen(661, None, &k).with_overview(false, Some(at(0)));
+        let observed = seen(661, None, &k).with_overview(false, Some(at(0)), Some(at(0)));
 
         let booked = sweep_step(&prior, &observed, &k).expect("enabled");
 
@@ -1740,7 +1752,7 @@ tail line
     fn a_done_event_after_delivery_is_fresh_even_long_after_the_grace() {
         let k = knobs();
         let prior = SweepState {
-            last_delivered: Some(at(0)),
+            outstanding_since: Some(at(0)),
             unacknowledged_deliveries: 1,
             ..SweepState::default()
         };
@@ -1757,7 +1769,7 @@ tail line
         let k = knobs();
         let jumped = SweepState {
             // Both stamped an hour ahead of the cycle clock.
-            last_delivered: Some(at(3600)),
+            outstanding_since: Some(at(3600)),
             last_sweep: Some(at(3600)),
             ..SweepState::default()
         };
@@ -1813,7 +1825,7 @@ tail line
         // produce a wedge alert on a live cadence produce NO BRANCH at all
         // on `0` — the caller falls through to the normal watchdog.
         let prior = SweepState {
-            last_delivered: Some(at(0)),
+            outstanding_since: Some(at(0)),
             unacknowledged_deliveries: 1,
             ..SweepState::default()
         };
@@ -1864,7 +1876,7 @@ tail line
     #[test]
     fn an_unchanged_overview_never_spends_a_seat_turn() {
         let k = knobs();
-        let seen = seen(900, Some(900), &k).with_overview(false, Some(at(0)));
+        let seen = seen(900, Some(900), &k).with_overview(false, Some(at(0)), Some(at(0)));
         let booked = sweep_step(&SweepState::default(), &seen, &k).expect("enabled");
         assert!(
             !booked.effects.contains(&SweepEffect::FireSweepNudge),
@@ -1875,7 +1887,7 @@ tail line
     #[test]
     fn a_changed_overview_waits_for_the_persisted_minimum_spacing() {
         let k = knobs();
-        let too_soon = seen(299, Some(299), &k).with_overview(true, Some(at(0)));
+        let too_soon = seen(299, Some(299), &k).with_overview(true, Some(at(0)), Some(at(0)));
         assert!(
             !sweep_step(&SweepState::default(), &too_soon, &k)
                 .expect("enabled")
@@ -1883,7 +1895,7 @@ tail line
                 .contains(&SweepEffect::FireSweepNudge)
         );
 
-        let due = seen(300, Some(300), &k).with_overview(true, Some(at(0)));
+        let due = seen(300, Some(300), &k).with_overview(true, Some(at(0)), Some(at(0)));
         assert!(
             sweep_step(&SweepState::default(), &due, &k)
                 .expect("enabled")
@@ -1902,11 +1914,11 @@ tail line
             last_sweep: Some(at(0)),
             ..SweepState::default()
         };
-        let effects = record_sweep(&mut state, false, at(300), at(302), &k);
+        let effects = record_sweep(&mut state, false, at(302), &k);
         assert!(effects.is_empty(), "a fast retry escalates nothing");
         assert_eq!(state.fails, 1);
         assert_eq!(
-            state.last_delivered, None,
+            state.outstanding_since, None,
             "the acknowledgement grace never starts on an attempt"
         );
 
@@ -1932,7 +1944,7 @@ tail line
             ..knobs()
         };
         let mut state = SweepState::default();
-        assert!(record_sweep(&mut state, false, at(0), at(0), &k).is_empty());
+        assert!(record_sweep(&mut state, false, at(0), &k).is_empty());
         assert!(
             !sweep_step(&state, &seen(299, None, &k), &k)
                 .expect("enabled")
@@ -1954,11 +1966,11 @@ tail line
         let k = knobs();
         let mut state = SweepState::default();
         for attempt in 1..=k.retry_max {
-            let effects = record_sweep(&mut state, false, at(0), at(0), &k);
+            let effects = record_sweep(&mut state, false, at(0), &k);
             assert!(effects.is_empty(), "fast retry {attempt} escalates nothing");
             assert!(!state.unreachable_alerted);
         }
-        let escalation = record_sweep(&mut state, false, at(0), at(0), &k);
+        let escalation = record_sweep(&mut state, false, at(0), &k);
         assert_eq!(
             escalation,
             vec![SweepEffect::Alert(SweepAlert::RaiseUnreachable {
@@ -1974,12 +1986,12 @@ tail line
 
         // ONE alert: the next failure escalates nothing.
         assert!(
-            record_sweep(&mut state, false, at(0), at(0), &k).is_empty(),
+            record_sweep(&mut state, false, at(0), &k).is_empty(),
             "the unreachable alert is raised once per run"
         );
 
         // Cleared on a landed delivery.
-        let cleared = record_sweep(&mut state, true, at(900), at(901), &k);
+        let cleared = record_sweep(&mut state, true, at(901), &k);
         assert_eq!(
             cleared,
             vec![SweepEffect::Alert(SweepAlert::ClearUnreachable)]
@@ -1988,10 +2000,10 @@ tail line
         assert_eq!(state.fails, 0);
         assert_eq!(
             state.last_sweep,
-            Some(at(900)),
-            "a landed prompt schedules off the CYCLE clock"
+            Some(at(901)),
+            "a landed prompt schedules off the successful submit clock"
         );
-        assert_eq!(state.last_delivered, Some(at(900)));
+        assert_eq!(state.outstanding_since, Some(at(901)));
         assert_eq!(state.unacknowledged_deliveries, 1);
     }
 
@@ -2005,7 +2017,7 @@ tail line
         };
         let mut state = SweepState::default();
         assert_eq!(
-            record_sweep(&mut state, false, at(0), at(0), &k),
+            record_sweep(&mut state, false, at(0), &k),
             vec![SweepEffect::Alert(SweepAlert::RaiseUnreachable {
                 undelivered: 1
             })]
@@ -2024,7 +2036,7 @@ tail line
             ..SweepState::default()
         };
         assert!(
-            record_sweep(&mut state, true, at(0), at(0), &k).is_empty(),
+            record_sweep(&mut state, true, at(0), &k).is_empty(),
             "reachable again, but the wedge alert owns its own clear"
         );
         assert!(!state.unreachable_alerted);
@@ -2032,24 +2044,62 @@ tail line
     }
 
     #[test]
-    fn each_delivered_overview_restarts_the_acknowledgement_grace() {
+    fn repeated_deliveries_keep_the_oldest_unacknowledged_deadline_and_eventually_wedge() {
         let k = knobs();
         let mut state = SweepState::default();
-        assert!(record_sweep(&mut state, true, at(10), at(11), &k).is_empty());
-        assert_eq!(state.last_delivered, Some(at(10)));
+        assert!(record_sweep(&mut state, true, at(10), &k).is_empty());
+        assert_eq!(state.outstanding_since, Some(at(10)), "first delivery");
         assert_eq!(state.unacknowledged_deliveries, 1);
-        assert!(record_sweep(&mut state, true, at(310), at(311), &k).is_empty());
-        assert_eq!(state.last_delivered, Some(at(310)));
+        assert!(record_sweep(&mut state, true, at(310), &k).is_empty());
+        assert_eq!(
+            state.outstanding_since,
+            Some(at(10)),
+            "another overview cannot reset the acknowledgement grace"
+        );
         assert_eq!(state.unacknowledged_deliveries, 2);
+
+        let booked = sweep_step(&state, &seen(671, None, &k), &k).expect("enabled");
+        assert_eq!(booked.verdict, SweepVerdict::MetaWedged);
+        assert!(
+            booked
+                .effects
+                .contains(&SweepEffect::Alert(SweepAlert::RaiseWedge(
+                    WedgeDetail::Never { deliveries: 2 }
+                )))
+        );
+    }
+
+    #[test]
+    fn a_deferred_delivery_uses_submit_time_for_acknowledgement_and_spacing() {
+        let k = knobs();
+        let mut state = SweepState::default();
+
+        // The cycle began at t=0, a done event landed at t=90, and the
+        // delivery did not actually settle until t=100.
+        assert!(record_sweep(&mut state, true, at(100), &k).is_empty());
+        assert_eq!(state.last_sweep, Some(at(100)));
+        assert_eq!(state.outstanding_since, Some(at(100)));
+
+        let before_spacing = sweep_step(&state, &seen(399, Some(90), &k), &k).expect("enabled");
+        assert_eq!(before_spacing.verdict, SweepVerdict::MetaStarting);
+        assert!(
+            !before_spacing
+                .effects
+                .contains(&SweepEffect::FireSweepNudge),
+            "spacing is anchored at the successful submit, not cycle start"
+        );
+        let due = sweep_step(&state, &seen(400, Some(90), &k), &k).expect("enabled");
+        assert!(due.effects.contains(&SweepEffect::FireSweepNudge));
     }
 
     #[test]
     fn the_wedge_raises_once_past_the_grace_and_the_boundary_is_strict() {
-        // The grace runs from the latest DELIVERED overview; the comparison is
-        // `>`, so an elapsed exactly at the window is still starting up.
+        // The grace runs from the oldest UNACKNOWLEDGED overview; the
+        // comparison is `>`, so an elapsed exactly at the window is still
+        // starting up.
         let k = knobs();
         let prior = SweepState {
-            last_delivered: Some(at(0)),
+            outstanding_since: Some(at(0)),
             unacknowledged_deliveries: 1,
             ..SweepState::default()
         };
@@ -2090,7 +2140,7 @@ tail line
     fn an_old_done_and_no_done_wedge_with_different_details() {
         let k = knobs();
         let prior = SweepState {
-            last_delivered: Some(at(100)),
+            outstanding_since: Some(at(100)),
             unacknowledged_deliveries: 2,
             ..SweepState::default()
         };
@@ -2117,7 +2167,7 @@ tail line
     fn a_done_after_delivery_clears_a_latched_wedge_and_reports_sweeping() {
         let k = knobs();
         let wedged = SweepState {
-            last_delivered: Some(at(700)),
+            outstanding_since: Some(at(700)),
             unacknowledged_deliveries: 1,
             last_sweep: Some(at(700)),
             wedge_alerted: true,
@@ -2152,13 +2202,13 @@ tail line
         // acknowledged overview has to reach for the event log — once.
         let k = knobs();
         let restarted = SweepState::default();
-        let first_seen = seen(1, Some(1), &k).with_overview(true, Some(at(0)));
+        let first_seen = seen(1, Some(1), &k).with_overview(true, Some(at(0)), Some(at(0)));
         let first = sweep_step(&restarted, &first_seen, &k).expect("enabled");
         assert_eq!(first.verdict, SweepVerdict::MetaSweeping);
         assert!(first.effects.contains(&SweepEffect::ReconcileWedge));
         assert!(first.next.reconciled);
 
-        let second_seen = seen(400, Some(1), &k).with_overview(true, Some(at(0)));
+        let second_seen = seen(400, Some(1), &k).with_overview(true, Some(at(0)), Some(at(0)));
         let second = sweep_step(&first.next, &second_seen, &k).expect("enabled");
         assert!(
             !second.effects.contains(&SweepEffect::ReconcileWedge),
@@ -2176,8 +2226,8 @@ tail line
         assert_eq!(wedge.action(), "alert");
         assert_eq!(
             wedge.summary(),
-            "meta-agent not acknowledging overviews — latest delivery unacknowledged for 11m \
-             (may be stuck)"
+            "meta-agent not acknowledging overviews — oldest outstanding overview \
+             unacknowledged for 11m (may be stuck)"
         );
         assert_eq!(
             wedge.notify(),
@@ -2229,7 +2279,7 @@ tail line
     fn only_a_done_at_or_after_delivery_is_reported_as_sweeping() {
         let k = knobs();
         let prior = SweepState {
-            last_delivered: Some(at(1000)),
+            outstanding_since: Some(at(1000)),
             unacknowledged_deliveries: 1,
             ..SweepState::default()
         };

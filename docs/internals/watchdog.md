@@ -53,18 +53,22 @@ For an orchestrator main, each verdict cycle calls `current_world` once and
 builds the same detail cards as `ae brief --all`. The pure overview renderer
 omits the orchestrator's own session, bounds agent lines to 100 characters, and
 groups the facts under `NEEDS YOU`, `WORKING`, and `QUIET`. The watchdog hashes
-that text and pastes it only when the last delivered hash differs and the
-minimum spacing has elapsed. Unchanged cycles never wake the model.
+the semantic facts behind that text and pastes it only when the last delivered
+hash differs and the minimum spacing has elapsed. Elapsed age labels still
+advance on screen, but never change the hash by themselves; unchanged cycles
+never wake the model.
 
-`meta-agent-state.json` carries the watchdog heartbeat plus the last delivered
-overview hash and time. The watchdog refreshes that checkpoint after each
-successful render and advances the hash/time only after delivery succeeds, so
-a restart neither resends unchanged text nor forgets the spacing. Its mtime is
-not seat liveness: the watchdog compares the delivered time with the main
-seat's newest `state done` event in `events.jsonl`. A delivery with no later
-`done` becomes `wedged` after `sweep * 2 + 60` seconds and clears on the next
-`done`. The seat's only action on the pasted turn is that acknowledgement; it
-never runs `ae brief --all` on a timer.
+`meta-agent-state.json` carries the watchdog heartbeat, semantic hash, the
+oldest delivery awaiting acknowledgement, and the latest successful delivery
+used for spacing. Both delivery clocks are captured after the checked submit;
+repeated unacknowledged deliveries advance spacing but never slide the oldest
+acknowledgement deadline. A restart therefore neither resends unchanged text,
+forgets spacing, nor grants a fresh grace window. The file mtime is not seat
+liveness: the watchdog compares the oldest outstanding delivery with the main
+seat's newest `state done` event in `events.jsonl`. No later `done` past
+`sweep * 2 + 60` seconds becomes `wedged`; the next `done` clears it. The seat's
+only action on the pasted turn is that acknowledgement; it never runs
+`ae brief --all` on a timer.
 
 ## Per-cycle state machine
 

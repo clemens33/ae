@@ -110,15 +110,94 @@ pub fn nudge_body(rendered: &str) -> String {
     }
 }
 
-/// A stable dependency-free FNV-1a 64 digest for the persisted last-delivered overview.
+/// Return a stable dependency-free FNV-1a 64 digest of the semantic fleet
+/// facts that decide an overview, never their elapsed ages. The display can
+/// advance from `20m` to `22m` without spending a seat turn; a state, reason,
+/// request, goal, topic, or attention change cannot.
 #[must_use]
-pub fn hash(rendered: &str) -> String {
+pub fn semantic_hash(cards: &[Card], own_session: &str) -> String {
     let mut value = 0xcbf2_9ce4_8422_2325_u64;
-    for byte in rendered.as_bytes() {
-        value ^= u64::from(*byte);
-        value = value.wrapping_mul(0x0000_0100_0000_01b3);
+    for card in cards
+        .iter()
+        .filter(|card| card.name != own_session && card.status == "running")
+    {
+        hash_field(&mut value, "session");
+        hash_field(&mut value, &card.name);
+        hash_field(&mut value, card.status);
+        hash_attention(&mut value, card.attention);
+        hash_optional(&mut value, card.goal.as_deref());
+        for topic in &card.topics {
+            hash_field(&mut value, "topic");
+            hash_field(&mut value, &topic.topic);
+            hash_field(&mut value, &topic.text);
+        }
+        for agent in &card.agents {
+            hash_field(&mut value, "agent");
+            hash_field(&mut value, &agent.name);
+            hash_field(&mut value, &agent.state);
+            hash_field(&mut value, &agent.reason);
+            hash_attention(&mut value, agent.attention);
+        }
+        for need in &card.needs {
+            match need {
+                Need::Declared {
+                    owner,
+                    state,
+                    reason,
+                    ..
+                } => {
+                    hash_field(&mut value, "declared");
+                    hash_field(&mut value, owner);
+                    hash_field(&mut value, state);
+                    hash_field(&mut value, reason);
+                }
+                Need::Unanswered {
+                    kind,
+                    reference,
+                    from,
+                    to,
+                    question,
+                    ..
+                } => {
+                    hash_field(&mut value, "unanswered");
+                    hash_field(&mut value, kind);
+                    hash_field(&mut value, reference);
+                    hash_field(&mut value, from);
+                    hash_field(&mut value, to);
+                    hash_field(&mut value, question);
+                }
+            }
+        }
+        hash_field(&mut value, "end-session");
     }
     format!("{value:016x}")
+}
+
+fn hash_attention(value: &mut u64, attention: Option<Reason>) {
+    hash_optional(value, attention.map(Reason::as_str));
+}
+
+fn hash_optional(value: &mut u64, field: Option<&str>) {
+    match field {
+        Some(field) => {
+            hash_field(value, "some");
+            hash_field(value, field);
+        }
+        None => hash_field(value, "none"),
+    }
+}
+
+fn hash_field(value: &mut u64, field: &str) {
+    let len = u64::try_from(field.len()).unwrap_or(u64::MAX);
+    hash_bytes(value, &len.to_le_bytes());
+    hash_bytes(value, field.as_bytes());
+}
+
+fn hash_bytes(value: &mut u64, bytes: &[u8]) {
+    for byte in bytes {
+        *value ^= u64::from(*byte);
+        *value = value.wrapping_mul(0x0000_0100_0000_01b3);
+    }
 }
 
 fn push_rows(sections: &mut Vec<String>, header: &str, rows: &[Row]) {
@@ -324,7 +403,7 @@ fn clipped(text: &str, max: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{TRAILER, WIDTH, hash, nudge_body, render};
+    use super::{TRAILER, WIDTH, nudge_body, render, semantic_hash};
     use crate::attention::Reason;
     use crate::brief::{AgentLine, Card, Need, TopicLine};
 
@@ -470,15 +549,65 @@ mod tests {
     }
 
     #[test]
-    fn body_and_hash_are_exact_and_stable() {
+    fn body_is_exact() {
         assert_eq!(
             nudge_body("WORKING\n  alpha lead ship"),
             format!("WORKING\n  alpha lead ship\n{TRAILER}")
         );
         assert_eq!(nudge_body(""), TRAILER);
-        assert_eq!(hash("same"), hash("same"));
-        assert_ne!(hash("same"), hash("changed"));
-        assert_eq!(hash("same").len(), 16);
+    }
+
+    #[test]
+    fn semantic_hash_ignores_clock_only_changes_but_tracks_state_and_requests() {
+        let mut pending = card("alpha", vec![agent("lead", "done", 1_200, None)]);
+        pending.topics.push(TopicLine {
+            topic: "goal".to_owned(),
+            age_secs: Some(60),
+            author: "lead".to_owned(),
+            text: "ship overview".to_owned(),
+        });
+        pending.needs.push(Need::Unanswered {
+            kind: "review".to_owned(),
+            reference: "ae-20260907T000000Z-first".to_owned(),
+            from: "reviewer".to_owned(),
+            to: "lead".to_owned(),
+            age_secs: 60,
+            question: "check it".to_owned(),
+        });
+        let original = vec![pending];
+        let mut later = original.clone();
+        later[0].agents[0].age_secs = Some(1_320);
+        later[0].topics[0].age_secs = Some(180);
+        if let Need::Unanswered { age_secs, .. } = &mut later[0].needs[0] {
+            *age_secs = 180;
+        }
+
+        assert_ne!(
+            render(&original, "orchestrator"),
+            render(&later, "orchestrator"),
+            "the displayed ages still advance"
+        );
+        assert_eq!(
+            semantic_hash(&original, "orchestrator"),
+            semantic_hash(&later, "orchestrator"),
+            "elapsed time alone never spends a seat turn"
+        );
+
+        later[0].agents[0].state = "working".to_owned();
+        assert_ne!(
+            semantic_hash(&original, "orchestrator"),
+            semantic_hash(&later, "orchestrator"),
+            "a real state change wakes the seat"
+        );
+        later[0].agents[0].state = "done".to_owned();
+        if let Need::Unanswered { reference, .. } = &mut later[0].needs[0] {
+            *reference = "ae-20260907T000000Z-second".to_owned();
+        }
+        assert_ne!(
+            semantic_hash(&original, "orchestrator"),
+            semantic_hash(&later, "orchestrator"),
+            "a different open request wakes the seat"
+        );
     }
 
     #[test]

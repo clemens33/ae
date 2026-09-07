@@ -535,15 +535,19 @@ receive the same overview twice rather than silently lose it.
 
 Liveness is still guarded two ways: the dead/missing-pane checks catch a crashed
 orchestrator, while a live seat acknowledges each delivered overview with
-`state done`. The watchdog records delivery time in `meta-agent-state.json` and
-compares it with the main seat's newest `done` event in `events.jsonl`; no later
-acknowledgement past `sweep * 2 + 60` seconds raises one `meta-agent not
-acknowledging overviews` alert, cleared by the next `done`. The state-file mtime
-is the watchdog's own render heartbeat and is never treated as seat liveness.
-That file also carries the last delivered overview hash, so a restart does not
-resend unchanged text or forget the minimum spacing. The overview is built from
-the same `current_world` plus brief-card facts as `ae brief --all`; the seat does
-not run that command on a timer. Sweep nudges use `action=nudge`, which is **not
+`state done`. The watchdog records the oldest unacknowledged delivery and the
+latest successful delivery in `meta-agent-state.json`, both at the checked
+submit time. Repeated deliveries advance minimum spacing without sliding the
+acknowledgement deadline. No later `done` in `events.jsonl` past
+`sweep * 2 + 60` seconds raises one `meta-agent not acknowledging overviews`
+alert, cleared by the next `done`. The state-file mtime is the watchdog's own
+render heartbeat and is never treated as seat liveness. The same file carries
+the last semantic overview hash: elapsed age labels do not change it, but a
+state, reason, request, goal, topic, or attention change does. A restart neither
+resends unchanged text nor forgets minimum spacing or the outstanding deadline.
+The overview is built from the same `current_world` plus brief-card facts as
+`ae brief --all`; the seat does not run that command on a timer. Sweep nudges
+use `action=nudge`, which is **not
 in the default telegram include set**, so routine overviews do not reach your
 phone (a custom `include` containing `nudge` would forward them).
 

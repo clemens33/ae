@@ -217,8 +217,12 @@ pub struct State {
     pub sessions: BTreeMap<String, usize>,
     /// Digest of the last fleet overview the watchdog delivered to the seat.
     pub overview_hash: Option<String>,
-    /// Epoch second of that delivery; the cadence survives watchdog restarts.
+    /// Epoch second of the oldest delivery not yet acknowledged. Repeated
+    /// deliveries retain it so the acknowledgement deadline cannot slide.
     pub overview_delivered_at: Option<i64>,
+    /// Epoch second of the latest successful delivery; minimum spacing
+    /// survives watchdog restarts independently of the acknowledgement age.
+    pub overview_last_delivered_at: Option<i64>,
 }
 
 impl State {
@@ -267,6 +271,9 @@ impl State {
         if let Some(at) = self.overview_delivered_at {
             fields.push(("overview_delivered_at", Value::Num(at)));
         }
+        if let Some(at) = self.overview_last_delivered_at {
+            fields.push(("overview_last_delivered_at", Value::Num(at)));
+        }
         if let Some(hash) = &self.overview_hash {
             fields.push(("overview_hash", Value::str(hash)));
         }
@@ -298,6 +305,7 @@ impl State {
                 .is_none_or(|value| matches!(value, Value::Bool(true))),
             overview_hash: doc.get_str("overview_hash").map(ToOwned::to_owned),
             overview_delivered_at: num(&doc, "overview_delivered_at"),
+            overview_last_delivered_at: num(&doc, "overview_last_delivered_at"),
             ..Self::default()
         };
         if let Some(Value::Obj(fields)) = doc.get("attention") {
@@ -610,6 +618,7 @@ pub fn sweep(prior: Option<&State>, cur: &[Observed], args: &Args) -> Outcome {
             monitor_initialized: true,
             overview_hash: prior.overview_hash.clone(),
             overview_delivered_at: prior.overview_delivered_at,
+            overview_last_delivered_at: prior.overview_last_delivered_at,
             ..State::default()
         },
         reported_attn: BTreeSet::new(),
@@ -678,6 +687,7 @@ fn sweep_from_state(prior: Option<&State>, cur: &[Observed], args: &Args) -> Out
     if let Some(state) = prior {
         outcome.next.overview_hash.clone_from(&state.overview_hash);
         outcome.next.overview_delivered_at = state.overview_delivered_at;
+        outcome.next.overview_last_delivered_at = state.overview_last_delivered_at;
     }
     outcome
 }
@@ -893,8 +903,10 @@ fn read_state(path: &Path) -> Option<State> {
 pub(crate) struct OverviewCheckpoint {
     /// Digest of the last overview that landed in the seat.
     pub hash: Option<String>,
-    /// Epoch second of that delivery.
-    pub delivered_at: Option<i64>,
+    /// Epoch second of the oldest delivery awaiting acknowledgement.
+    pub outstanding_since: Option<i64>,
+    /// Epoch second of the latest successful delivery, for minimum spacing.
+    pub last_delivered_at: Option<i64>,
 }
 
 /// Mark one successful watchdog render as a heartbeat and return the last
@@ -905,8 +917,18 @@ pub(crate) fn overview_heartbeat(dir: &Path, now: i64) -> std::io::Result<Overvi
 }
 
 /// Persist the overview whose nudge just landed.
-pub(crate) fn record_overview_delivery(dir: &Path, hash: &str, now: i64) -> std::io::Result<()> {
-    update_overview_state(dir, now, Some(hash)).map(|_| ())
+pub(crate) fn record_overview_delivery(
+    dir: &Path,
+    hash: &str,
+    outstanding_since: i64,
+    delivered_at: i64,
+) -> std::io::Result<()> {
+    update_overview_state(
+        dir,
+        delivered_at,
+        Some((hash, outstanding_since, delivered_at)),
+    )
+    .map(|_| ())
 }
 
 /// One locked read-decide-write over the heartbeat document. This keeps the
@@ -914,7 +936,7 @@ pub(crate) fn record_overview_delivery(dir: &Path, hash: &str, now: i64) -> std:
 fn update_overview_state(
     dir: &Path,
     now: i64,
-    delivered_hash: Option<&str>,
+    delivery: Option<(&str, i64, i64)>,
 ) -> std::io::Result<OverviewCheckpoint> {
     let state_path = dir.join(STATE_NAME);
     let _lock = crate::store::lock(
@@ -924,12 +946,14 @@ fn update_overview_state(
     let mut state = read_state(&state_path).unwrap_or_default();
     let checkpoint = OverviewCheckpoint {
         hash: state.overview_hash.clone(),
-        delivered_at: state.overview_delivered_at,
+        outstanding_since: state.overview_delivered_at,
+        last_delivered_at: state.overview_last_delivered_at,
     };
     state.last_sweep_at = now;
-    if let Some(hash) = delivered_hash {
+    if let Some((hash, outstanding_since, delivered_at)) = delivery {
         state.overview_hash = Some(hash.to_owned());
-        state.overview_delivered_at = Some(now);
+        state.overview_delivered_at = Some(outstanding_since);
+        state.overview_last_delivered_at = Some(delivered_at);
     }
     publish(&state_path, &state.render())?;
     Ok(checkpoint)
@@ -1363,6 +1387,7 @@ mod tests {
             sessions: [("alpha".to_owned(), 2)].into_iter().collect(),
             overview_hash: Some("0123456789abcdef".to_owned()),
             overview_delivered_at: Some(NOW - 30),
+            overview_last_delivered_at: Some(NOW - 15),
         };
         let text = state.render();
         assert_eq!(State::parse(&text), Some(state), "parse(render(x)) == x");
@@ -1392,15 +1417,29 @@ mod tests {
 
         let empty = overview_heartbeat(&dir, NOW).expect("first heartbeat");
         assert_eq!(empty.hash, None);
-        assert_eq!(empty.delivered_at, None);
+        assert_eq!(empty.outstanding_since, None);
+        assert_eq!(empty.last_delivered_at, None);
 
-        record_overview_delivery(&dir, "0123456789abcdef", NOW + 5).expect("persist delivery");
+        record_overview_delivery(&dir, "0123456789abcdef", NOW + 5, NOW + 10)
+            .expect("persist delivery");
         let resumed = overview_heartbeat(&dir, NOW + 60).expect("restart heartbeat");
         assert_eq!(resumed.hash.as_deref(), Some("0123456789abcdef"));
-        assert_eq!(resumed.delivered_at, Some(NOW + 5));
+        assert_eq!(resumed.outstanding_since, Some(NOW + 5));
+        assert_eq!(resumed.last_delivered_at, Some(NOW + 10));
+
+        record_overview_delivery(&dir, "fedcba9876543210", NOW + 5, NOW + 30)
+            .expect("persist a repeated unacknowledged delivery");
+        let repeated = overview_heartbeat(&dir, NOW + 60).expect("second restart heartbeat");
+        assert_eq!(repeated.hash.as_deref(), Some("fedcba9876543210"));
+        assert_eq!(
+            repeated.outstanding_since,
+            Some(NOW + 5),
+            "the oldest unacknowledged deadline survives repeated deliveries"
+        );
+        assert_eq!(repeated.last_delivered_at, Some(NOW + 30));
         let state = read_state(&dir.join(STATE_NAME)).expect("published heartbeat state");
         assert_eq!(state.last_sweep_at, NOW + 60);
-        assert_eq!(state.overview_hash, resumed.hash);
+        assert_eq!(state.overview_hash, repeated.hash);
         assert!(
             !state.monitor_initialized,
             "a watchdog heartbeat must not seed the manual monitor baseline"
@@ -1415,6 +1454,7 @@ mod tests {
             last_sweep_at: NOW - 60,
             overview_hash: Some("0123456789abcdef".to_owned()),
             overview_delivered_at: Some(NOW - 120),
+            overview_last_delivered_at: Some(NOW - 60),
             ..State::default()
         };
         let seen = observe(
@@ -1431,6 +1471,10 @@ mod tests {
         assert_eq!(
             outcome.next.overview_delivered_at,
             prior.overview_delivered_at
+        );
+        assert_eq!(
+            outcome.next.overview_last_delivered_at,
+            prior.overview_last_delivered_at
         );
         assert_eq!(outcome.next.sessions.get("alpha"), Some(&1));
     }
