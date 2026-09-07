@@ -935,6 +935,20 @@ rust-lint:
 
 # Run the test suite: nextest + doctests
 rust-test:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    test_tmux_tmp="$(mktemp -d "${TMPDIR:-/tmp}/ae-rust-test.XXXXXX")"
+    cleanup() {
+        TMUX_TMPDIR="$test_tmux_tmp" env -u TMUX -u TMUX_PANE tmux -L ae kill-server >/dev/null 2>&1 || true
+        rm -rf "$test_tmux_tmp"
+    }
+    trap cleanup EXIT
+    export TMUX_TMPDIR="$test_tmux_tmp"
+    unset TMUX TMUX_PANE
+    # An owned sentry proves every in-process fleet read stays on this run's
+    # server. It is deliberately visible: Name(ae) is a real entitlement, and
+    # tests asserting whole-fleet cardinality account for this one row.
+    tmux -f /dev/null -L ae new-session -d -s foreign-review-sentry -e AE_SESSION=foreign-review-sentry
     cargo nextest run --locked --all-features
     cargo test --doc --locked --all-features
 

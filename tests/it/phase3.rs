@@ -927,7 +927,7 @@ fn criterion_2_presentation_starts_from_one_completed_classified_snapshot() {
     }
 
     // THE REAL ROUTE.
-    let (snapshot, world) = ae::current_world(&root);
+    let (snapshot, world) = super::phase2::current_world(&root);
     let classified: Vec<(String, &str)> = snapshot
         .sessions
         .iter()
@@ -956,7 +956,17 @@ fn criterion_2_presentation_starts_from_one_completed_classified_snapshot() {
         "the presentation input is the completed classified set, IN ITS ORDER — a \
          filter or sort at or before the boundary would show here"
     );
-    assert_eq!(at_entry.len(), 3, "and the fixture is not empty");
+    assert_eq!(
+        at_entry.len(),
+        4,
+        "the three durable fixtures plus the run-private -L ae sentry are present"
+    );
+    assert!(
+        at_entry
+            .iter()
+            .any(|(name, status)| name == "foreign-review-sentry" && *status == "running"),
+        "the run-private sentry pins Name(ae) as an entitled fleet source"
+    );
 
     // Everything downstream presents from that one input and changes nothing.
     for spelling in ["list", "ls"] {
@@ -1136,16 +1146,15 @@ fn record_paths(snapshot: &ae::liveness::Snapshot) -> Vec<PathBuf> {
     snapshot
         .sessions
         .iter()
-        .map(|classified| {
-            classified.candidate.durable.as_ref().map_or_else(
-                || {
-                    panic!(
-                        "{} has no durable path the product observed",
-                        classified.candidate.name
-                    )
-                },
-                |record| record.path.clone(),
-            )
+        .filter_map(|classified| {
+            if let Some(record) = &classified.candidate.durable {
+                return Some(record.path.clone());
+            }
+            assert_eq!(
+                classified.candidate.name, "foreign-review-sentry",
+                "only the run-private -L ae sentry may lack a durable path"
+            );
+            None
         })
         .collect()
 }
@@ -1350,7 +1359,7 @@ fn criterion_3_presentation_output_does_not_rederive_any_planted_snapshot_fact()
     let root = c3_root("fixed");
     plant(&root, &WORLD_A);
 
-    let (snapshot_a, world_a) = ae::current_world(&root);
+    let (snapshot_a, world_a) = super::phase2::current_world(&root);
     let paths = record_paths(&snapshot_a);
     assert_eq!(paths.len(), 4, "the fixture reached the real route");
     assert_facts_via_product(&paths, &WORLD_A);
@@ -1367,7 +1376,7 @@ fn criterion_3_presentation_output_does_not_rederive_any_planted_snapshot_fact()
 
     let (snapshot_b, world_b) = {
         let _hook = AfterClassifyHook::arm();
-        ae::current_world(&root)
+        super::phase2::current_world(&root)
     };
 
     assert_eq!(
@@ -1420,7 +1429,7 @@ fn criterion_3_a_new_listing_through_the_real_route_sees_every_opposed_axis() {
     // CALIBRATION.
     let root = c3_root("fresh");
     plant(&root, &WORLD_A);
-    let (snapshot_a, world_a) = ae::current_world(&root);
+    let (snapshot_a, world_a) = super::phase2::current_world(&root);
     let paths = record_paths(&snapshot_a);
     let before = presented(&world_a);
     let payload_a = planted_payload(&world_a);
@@ -1457,7 +1466,7 @@ fn criterion_3_a_new_listing_through_the_real_route_sees_every_opposed_axis() {
         );
     }
 
-    let (snapshot_b, world_b) = ae::current_world(&root);
+    let (snapshot_b, world_b) = super::phase2::current_world(&root);
     let after = presented(&world_b);
     let payload_b = planted_payload(&world_b);
     let attn_b: Vec<String> = payload_b

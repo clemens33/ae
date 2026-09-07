@@ -16,6 +16,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use ae::digest::Status;
+use ae::doors::DEFAULT_SERVER_NAME;
 use ae::inventory::{
     Candidate, DiscoveredSession, Discovery, FailedSource, Inventory, LiveSighting, MetaRead,
     QueryFailed, Roots, ServerId, durable_records, take,
@@ -32,6 +33,38 @@ use super::parity::capture::ExitOutcome;
 use super::parity::capture::raw;
 
 const NOW: Timestamp = Timestamp::from_epoch(1_780_000_000);
+
+/// The product's real fleet route, guarded so an in-process test can never
+/// enumerate the developer's `-L ae` server.
+pub fn current_world(root: &Path) -> (Snapshot, ae::listing::World) {
+    let tmux_tmp = std::env::var_os("TMUX_TMPDIR").unwrap_or_else(|| {
+        panic!(
+            "in-process tmux test isolation: TMUX_TMPDIR is unset; run `SHELL=/bin/bash just test`"
+        )
+    });
+    let private_dir = fs::canonicalize(&tmux_tmp).unwrap_or_else(|why| {
+        panic!(
+            "in-process tmux test isolation: TMUX_TMPDIR {} is not resolvable: {why}",
+            Path::new(&tmux_tmp).display()
+        )
+    });
+    let server = ServerId::Selected(Selector::Name(DEFAULT_SERVER_NAME.to_owned()));
+    let socket = ae::transport::observe_socket_path(&server).unwrap_or_else(|| {
+        panic!(
+            "in-process tmux test isolation: private `tmux -L ae` did not answer; run `SHELL=/bin/bash just test`"
+        )
+    });
+    let socket = fs::canonicalize(&socket).unwrap_or_else(|why| {
+        panic!("in-process tmux test isolation: ae socket {socket} is not resolvable: {why}")
+    });
+    assert!(
+        socket.starts_with(&private_dir),
+        "in-process tmux test isolation: ae socket {} escapes TMUX_TMPDIR {}",
+        socket.display(),
+        private_dir.display()
+    );
+    ae::current_world(root)
+}
 
 fn named(server: &str) -> ServerId {
     ServerId::Selected(Selector::Name(server.to_owned()))

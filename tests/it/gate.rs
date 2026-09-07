@@ -131,6 +131,40 @@ fn pin_availability_ok(justfile: &str) -> bool {
     }
 }
 
+/// Whether the Rust test lane contains every boundary that keeps product tmux
+/// probes away from a developer's server.
+fn rust_test_tmux_isolation_ok(justfile: &str) -> bool {
+    let lines = recipe_text(justfile, "rust-test:");
+    let position = |needle: &str| lines.iter().position(|line| line.contains(needle));
+    let required = [
+        "mktemp -d \"${TMPDIR:-/tmp}/ae-rust-test.XXXXXX\"",
+        "TMUX_TMPDIR=\"$test_tmux_tmp\" env -u TMUX -u TMUX_PANE tmux -L ae kill-server",
+        "rm -rf \"$test_tmux_tmp\"",
+        "trap cleanup EXIT",
+        "export TMUX_TMPDIR=\"$test_tmux_tmp\"",
+        "unset TMUX TMUX_PANE",
+        "tmux -f /dev/null -L ae new-session -d -s foreign-review-sentry -e AE_SESSION=foreign-review-sentry",
+        "cargo nextest run --locked --all-features",
+        "cargo test --doc --locked --all-features",
+    ];
+    if required.iter().any(|needle| position(needle).is_none()) {
+        return false;
+    }
+    let Some(unset) = position("unset TMUX TMUX_PANE") else {
+        return false;
+    };
+    let Some(sentry) = position("tmux -f /dev/null -L ae new-session") else {
+        return false;
+    };
+    let Some(nextest) = position("cargo nextest run") else {
+        return false;
+    };
+    let Some(doctest) = position("cargo test --doc") else {
+        return false;
+    };
+    unset < sentry && sentry < nextest && nextest < doctest
+}
+
 #[test]
 fn the_lint_recipe_protects_shellchecks_stdin() {
     assert!(
@@ -187,6 +221,25 @@ fn the_pin_recipe_asks_whether_shellcheck_exists_before_probing_it() {
     // availability test, so an absent binary kills the recipe at rc 127.
     assert!(!pin_availability_ok(
         "_shellcheck-pin:\n    want=\"0.11.0\"\n    have=\"$(shellcheck --version)\"\n"
+    ));
+}
+
+#[test]
+fn the_rust_test_recipe_isolates_every_real_tmux_probe() {
+    assert!(
+        rust_test_tmux_isolation_ok(&read(&root().join("justfile"))),
+        "rust-test must give nextest and doctests one fresh private -L ae server and clean it up"
+    );
+
+    // RED — merely unsetting the inherited client still reaches the ordinary
+    // socket directory and therefore the developer's named ae server.
+    assert!(!rust_test_tmux_isolation_ok(
+        "rust-test:\n    unset TMUX TMUX_PANE\n    cargo nextest run --locked --all-features\n    cargo test --doc --locked --all-features\n"
+    ));
+    // RED — an isolated run that never kills its server or removes its socket
+    // directory leaves state behind and can contaminate a later run.
+    assert!(!rust_test_tmux_isolation_ok(
+        "rust-test:\n    test_tmux_tmp=\"$(mktemp -d \"${TMPDIR:-/tmp}/ae-rust-test.XXXXXX\")\"\n    export TMUX_TMPDIR=\"$test_tmux_tmp\"\n    unset TMUX TMUX_PANE\n    tmux -L ae new-session -d -s foreign-review-sentry -e AE_SESSION=foreign-review-sentry\n    cargo nextest run --locked --all-features\n    cargo test --doc --locked --all-features\n"
     ));
 }
 

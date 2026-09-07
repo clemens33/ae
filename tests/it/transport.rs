@@ -22,7 +22,7 @@ use ae::tmux::{interpret_panes, list_panes_args};
 use ae::transport::Tmux;
 
 use super::parity::{Invocation, capture::raw};
-use super::phase2::{run_tmux, tmux_present};
+use super::phase2::{current_world, run_tmux, tmux_present};
 
 /// A short-lived scratch directory, short enough to hold a socket path.
 fn scratch(tag: &str) -> PathBuf {
@@ -143,7 +143,7 @@ fn sc_017k_one_real_query_answers_present_absent_and_prefix_candidates_by_exact_
     plant(&root, "ali", &socket);
 
     // THE REAL ROUTE: this is the function `ae list` calls.
-    let (snapshot, _world) = ae::current_world(&root);
+    let (snapshot, _world) = current_world(&root);
     let alive = status_of(&snapshot, "alive");
     let gone = status_of(&snapshot, "gone");
     let ali = status_of(&snapshot, "ali");
@@ -194,7 +194,7 @@ fn sc_017l_a_socket_that_is_not_a_server_is_unknown_and_never_stopped() {
     plant(&root, "absent-path", &missing);
     plant(&root, "wrong-kind", &not_a_socket);
 
-    let (snapshot, _world) = ae::current_world(&root);
+    let (snapshot, _world) = current_world(&root);
     let absent_path = status_of(&snapshot, "absent-path");
     let wrong_kind = status_of(&snapshot, "wrong-kind");
     let complete = snapshot.complete();
@@ -236,7 +236,7 @@ fn sc_017l_a_session_the_server_reports_without_ae_s_marker_is_unknown() {
         plant(&root, name, &socket);
     }
 
-    let (snapshot, _world) = ae::current_world(&root);
+    let (snapshot, _world) = current_world(&root);
     let unowned = status_of(&snapshot, "unowned");
     let mismatched = status_of(&snapshot, "mismatched");
     let owned = status_of(&snapshot, "owned");
@@ -570,7 +570,7 @@ fn sc_017p_the_list_route_answers_each_seat_from_the_live_panes_and_the_publishe
     plant_roster(&root, "live", &socket);
 
     // THE REAL ROUTE: the function `ae list` calls.
-    let (_snapshot, world) = ae::current_world(&root);
+    let (_snapshot, world) = current_world(&root);
     let entry = world
         .sessions
         .iter()
