@@ -1,6 +1,21 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [v2026.9.9] - 2026-09-07
+
+### Other
+
+- Give orchestrator its own seat config
+
+Seed a dedicated config and persist its overlay path so launch, resume, run, rename, and refresh resolve the same single-seat roster.
+
+Live probe:
+pane_count=1
+pane=%3 agent=orchestrator slot=main
+seat.main=orchestrator
+profile.main=claude
+local_config=/Users/ckriech/.ae-dev/orchestrator.config
+strip=◆ orchestrator
 ## [v2026.9.8] - 2026-09-07
 
 ### Features
