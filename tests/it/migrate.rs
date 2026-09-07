@@ -782,6 +782,32 @@ fn tmux(socket: &Path, scratch: &Path, words: &[&str]) -> (bool, String) {
     run_tmux(&args, scratch)
 }
 
+fn mouse_down_status_binding(socket: &Path, scratch: &Path) -> String {
+    let (_, keys) = tmux(socket, scratch, &["list-keys", "-T", "root"]);
+    keys.lines()
+        .find(|line| line.starts_with("bind-key  -T root MouseDown1Status "))
+        .unwrap_or_else(|| panic!("one MouseDown1Status binding: {keys}"))
+        .to_owned()
+}
+
+fn assert_tmux_default_mouse_binding(socket: &Path, scratch: &Path) {
+    let binding = mouse_down_status_binding(socket, scratch);
+    assert!(
+        binding.contains("switch-client -t =") && !binding.contains("if-shell"),
+        "the pre-release server begins with tmux's default: {binding}"
+    );
+}
+
+fn assert_ae_mouse_binding(socket: &Path, scratch: &Path) {
+    let binding = mouse_down_status_binding(socket, scratch);
+    assert!(
+        binding.contains("#{==:#{mouse_status_range},window}")
+            && binding.contains("select-window -t =")
+            && binding.contains("switch-client -t ="),
+        "the upgrade reasserts status clicks on the running session's server: {binding}"
+    );
+}
+
 /// A core that behaves like the two things a session runs it as: the watchdog
 /// publishes a pidfile, everything else just stays alive.
 const FAKE_CORE: &str = "#!/bin/sh\n\
@@ -894,8 +920,11 @@ fn a_running_sessions_daemons_are_restarted_on_the_new_core() {
     let dir = plant_running(&scratch, &socket, &root, session, &old_core);
     let before = ae::watchdog_glue::read_pid(&dir).expect("a pidfile");
     let agent_pane = agent_pane_of(&socket, &scratch, session);
+    assert_tmux_default_mouse_binding(&socket, &scratch);
 
     let notes = ae::migrate::onto(&root, &new_core, "2026.9.9").expect("the sweep");
+
+    assert_ae_mouse_binding(&socket, &scratch);
 
     // The meta and every helper now name the new core.
     let text = meta_of(&dir);

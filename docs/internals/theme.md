@@ -32,8 +32,9 @@ tab click does not fire the session hook and bounce back to the lead window;
 session ranges keep tmux's default `switch-client -t =`, so the fleet strip
 still switches sessions and the hook still focuses the destination's lead.
 Launch never writes this server-global binding on an ambient server, where the
-root key table belongs to the user. Every launch on an owned server reasserts
-the same binding, so the write is idempotent.
+root key table belongs to the user. Every launch and upgrade of a running
+session on an owned server reasserts the same binding, so the write is
+idempotent and pre-release servers adopt it without a session rebuild.
 
 **Three writers, one job each.** A launch writes the layout, the look facts and
 the attention seed. A rename rewrites the layout and the facts, and leaves every

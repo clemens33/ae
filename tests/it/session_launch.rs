@@ -1108,6 +1108,27 @@ fn the_session_focus_hook_follows_the_lead_through_resume_and_rename() {
     assert_hook("lnfocus", &first_pane);
 
     assert!(
+        rig.tmux(&[
+            "bind-key",
+            "-T",
+            "root",
+            "MouseDown1Status",
+            "switch-client",
+            "-t",
+            "="
+        ])
+        .0,
+        "restore tmux's default to model a server launched before this release"
+    );
+    let (code, stdout, stderr) = rig.launch(&["--local", "lnfocus"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        stdout.contains("is running"),
+        "the live reattach branch: {stdout}"
+    );
+    assert_mouse_binding();
+
+    assert!(
         rig.tmux(&["kill-session", "-t", "=lnfocus"]).0,
         "stop the session before resume"
     );

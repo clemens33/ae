@@ -884,6 +884,9 @@ fn launch(
             )?;
             return Ok(EXIT_FAILED);
         }
+        if let Some(binding) = mouse_down_status_binding_argv(&server) {
+            let _ = transport::run_tmux_op(&binding);
+        }
         // The guard protects only the resume decision and its verification.
         // Attaching may block for the client's whole lifetime; holding the
         // guard across it would make stop/end refuse while the user is there.

@@ -564,6 +564,9 @@ fn restart_daemons(
     if !crate::transport::session_exists(&server, name) {
         return notes;
     }
+    if let Some(binding) = crate::session_tmux::mouse_down_status_binding_argv(&server) {
+        let _ = crate::transport::run_tmux_op(&binding);
+    }
     if matches!(
         crate::watchdog_lifecycle::presence(&server, name, dir),
         crate::watchdog_lifecycle::Presence::Running(_)
