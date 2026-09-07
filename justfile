@@ -933,10 +933,14 @@ rust-lint:
 # of the public docs — so they get their own invocation. Dropping that second
 # line silently retires a whole lane.
 
-# Run the test suite: nextest + doctests
-rust-test:
+# One config-free named server per test-tool invocation. Every lane that can
+# execute the integration target comes through here, including the mutation
+# baseline and coverage.
+_tmux-isolated lane *args:
     #!/usr/bin/env bash
     set -euo pipefail
+    lane="$1"
+    shift
     test_tmux_tmp="$(mktemp -d "${TMPDIR:-/tmp}/ae-rust-test.XXXXXX")"
     cleanup() {
         TMUX_TMPDIR="$test_tmux_tmp" env -u TMUX -u TMUX_PANE tmux -L ae kill-server >/dev/null 2>&1 || true
@@ -949,22 +953,33 @@ rust-test:
     # server. It is deliberately visible: Name(ae) is a real entitlement, and
     # tests asserting whole-fleet cardinality account for this one row.
     tmux -f /dev/null -L ae new-session -d -s foreign-review-sentry -e AE_SESSION=foreign-review-sentry
-    cargo nextest run --locked --all-features
-    cargo test --doc --locked --all-features
+    case "$lane" in
+        test)
+            cargo nextest run --locked --all-features
+            cargo test --doc --locked --all-features
+            ;;
+        cov) cargo llvm-cov nextest --locked --all-features ;;
+        mutants) cargo mutants --cargo-arg=--locked "$@" ;;
+        *) echo "Error: unknown isolated test lane '$lane'" >&2; exit 2 ;;
+    esac
+
+# Run the test suite: nextest + doctests
+rust-test:
+    just _tmux-isolated test
 
 # Coverage is a REPORT, not a gate. It becomes a gate the day a threshold is
 # ratified, and not before.
 
 # Coverage report (not a gate)
 rust-cov:
-    cargo llvm-cov nextest --locked --all-features
+    just _tmux-isolated cov
 
 # The lane that asks whether the tests DISCRIMINATE, not just whether they pass.
 # Agents write tests that pass; this is the check that costs them something.
 
 # Mutation testing
 rust-mutants *args:
-    cargo mutants --cargo-arg=--locked {{ args }}
+    just _tmux-isolated mutants {{ args }}
 
 # The `--allow license-not-encountered` crutch is GONE as of the first real
 # dependency (2026-08-29, P4.3 tracer A): the deny.toml allow-list is now

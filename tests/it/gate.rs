@@ -134,9 +134,11 @@ fn pin_availability_ok(justfile: &str) -> bool {
 /// Whether the Rust test lane contains every boundary that keeps product tmux
 /// probes away from a developer's server.
 fn rust_test_tmux_isolation_ok(justfile: &str) -> bool {
-    let lines = recipe_text(justfile, "rust-test:");
+    let lines = recipe_text(justfile, "_tmux-isolated lane *args:");
     let position = |needle: &str| lines.iter().position(|line| line.contains(needle));
     let required = [
+        "lane=\"$1\"",
+        "shift",
         "mktemp -d \"${TMPDIR:-/tmp}/ae-rust-test.XXXXXX\"",
         "TMUX_TMPDIR=\"$test_tmux_tmp\" env -u TMUX -u TMUX_PANE tmux -L ae kill-server",
         "rm -rf \"$test_tmux_tmp\"",
@@ -146,6 +148,8 @@ fn rust_test_tmux_isolation_ok(justfile: &str) -> bool {
         "tmux -f /dev/null -L ae new-session -d -s foreign-review-sentry -e AE_SESSION=foreign-review-sentry",
         "cargo nextest run --locked --all-features",
         "cargo test --doc --locked --all-features",
+        "cargo llvm-cov nextest --locked --all-features",
+        "cargo mutants --cargo-arg=--locked \"$@\"",
     ];
     if required.iter().any(|needle| position(needle).is_none()) {
         return false;
@@ -162,7 +166,20 @@ fn rust_test_tmux_isolation_ok(justfile: &str) -> bool {
     let Some(doctest) = position("cargo test --doc") else {
         return false;
     };
-    unset < sentry && sentry < nextest && nextest < doctest
+    let callers = [
+        ("rust-test:", "just _tmux-isolated test"),
+        ("rust-cov:", "just _tmux-isolated cov"),
+        (
+            "rust-mutants *args:",
+            "just _tmux-isolated mutants {{ args }}",
+        ),
+    ];
+    unset < sentry
+        && sentry < nextest
+        && nextest < doctest
+        && callers
+            .iter()
+            .all(|(header, command)| recipe_text(justfile, header) == [*command])
 }
 
 #[test]
@@ -228,7 +245,7 @@ fn the_pin_recipe_asks_whether_shellcheck_exists_before_probing_it() {
 fn the_rust_test_recipe_isolates_every_real_tmux_probe() {
     assert!(
         rust_test_tmux_isolation_ok(&read(&root().join("justfile"))),
-        "rust-test must give nextest and doctests one fresh private -L ae server and clean it up"
+        "every Rust test tool must run through one fresh private -L ae server and clean it up"
     );
 
     // RED — merely unsetting the inherited client still reaches the ordinary
