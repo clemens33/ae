@@ -892,7 +892,6 @@ impl MotionState {
                 .fleet
                 .iter()
                 .find(|row| row.name == crate::orchestrator::ORCHESTRATOR_SESSION)
-                .filter(|row| !row.current)
                 .cloned();
             if let Some(row) = orchestrator.as_ref() {
                 let _ = self.push_orchestrator_strip_write(
@@ -2040,7 +2039,6 @@ impl Cycle<'_> {
                 .fleet
                 .iter()
                 .find(|row| row.name == crate::orchestrator::ORCHESTRATOR_SESSION)
-                .filter(|row| !row.current)
                 .cloned();
             let strip_changed = next.push_orchestrator_strip_write(
                 &mut writes,
@@ -2821,6 +2819,108 @@ mod tests {
         assert!(first_frame.iter().any(|word| word.contains('●')));
         assert!(next_frame.iter().any(|word| word.contains('●')));
         assert_ne!(first_frame, next_frame, "pulse colour changes each tick");
+    }
+
+    #[test]
+    fn current_orchestrator_publishes_its_segment_and_keeps_it_on_ticker() {
+        let session = |name: &str, id: &str, rank: &str| crate::tmux::FleetSession {
+            name: name.to_owned(),
+            id: id.to_owned(),
+            rank: rank.to_owned(),
+        };
+        let mut state = MotionState::default();
+        state.replace_observation(
+            vec![motion("%1", "lead")],
+            &[
+                session("worker", "$4", "1"),
+                session("orchestrator", "$7", "0"),
+            ],
+            "orchestrator",
+        );
+
+        let first = crate::tmux::set_options_args(&ServerId::Ambient, &state.step(&Look::DEFAULT));
+        assert!(
+            first
+                .iter()
+                .any(|word| word == crate::theme::ORCHESTRATOR_STRIP_OPTION),
+            "orchestrator option is published: {first:?}"
+        );
+        assert!(
+            first
+                .iter()
+                .any(|word| { word.contains("bg=#214283") && word.contains("range=session|$7") }),
+            "current orchestrator segment is published: {first:?}"
+        );
+        assert!(
+            first
+                .iter()
+                .any(|word| word == crate::theme::FLEET_STRIP_OPTION),
+            "fleet strip still publishes separately: {first:?}"
+        );
+        assert!(
+            !state
+                .published_fleet
+                .as_deref()
+                .is_some_and(|strip| strip.contains("orchestrator")),
+            "fleet strip excludes pinned orchestrator: {:?}",
+            state.published_fleet
+        );
+        let second = state.step(&Look::DEFAULT);
+        assert!(
+            second.is_empty(),
+            "unchanged current segment stays cached: {second:?}"
+        );
+    }
+
+    #[test]
+    fn verdict_cycle_current_orchestrator_publishes_segment_and_excludes_fleet_row() {
+        let sessions = [
+            crate::tmux::FleetSession {
+                name: "worker".to_owned(),
+                id: "$4".to_owned(),
+                rank: "1".to_owned(),
+            },
+            crate::tmux::FleetSession {
+                name: "orchestrator".to_owned(),
+                id: "$7".to_owned(),
+                rank: "0".to_owned(),
+            },
+        ];
+        let mut state = MotionState::default();
+        state.replace_fleet(&sessions, "orchestrator");
+        let mut writes = Vec::new();
+        state.push_fleet_write(&mut writes, &Look::DEFAULT, None);
+        let row = state
+            .fleet
+            .iter()
+            .find(|row| row.name == crate::orchestrator::ORCHESTRATOR_SESSION)
+            .cloned();
+        assert!(state.push_orchestrator_strip_write(
+            &mut writes,
+            &Look::DEFAULT,
+            "$7",
+            row.as_ref(),
+            None,
+        ));
+        let args = crate::tmux::set_options_args(&ServerId::Ambient, &writes);
+        assert!(
+            args.iter()
+                .any(|word| word == crate::theme::ORCHESTRATOR_STRIP_OPTION)
+        );
+        assert!(
+            args.iter()
+                .any(|word| { word.contains("bg=#214283") && word.contains("range=session|$7") })
+        );
+        assert!(
+            !state
+                .published_fleet
+                .as_deref()
+                .is_some_and(|strip| strip.contains("orchestrator"))
+        );
+        assert!(!matches!(
+            state.published_orchestrator_strip,
+            super::PublishedOrchestratorStrip::Unset
+        ));
     }
 
     #[test]

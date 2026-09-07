@@ -797,7 +797,7 @@ pub fn fleet_strip(look: &Look, rows: &[FleetRow], working_frame: Option<&Workin
     let icons = look.icons;
     let mut ordered: Vec<&FleetRow> = ordered_fleet_rows(rows)
         .into_iter()
-        .filter(|row| !row.pinned() || row.current)
+        .filter(|row| !row.pinned())
         .collect();
     // OVERFLOW: the strip sheds its calmest rows first, because a session that
     // wants nothing is the one the reader loses least by not seeing, and the
@@ -900,10 +900,22 @@ pub fn orchestrator_strip(
     } else {
         palette.accent(row.mark)
     };
+    let (ground, text, lead) = if row.current {
+        (
+            palette.selected,
+            format!("fg={} bold", palette.selected_ink),
+            " ",
+        )
+    } else {
+        (palette.base, format!("fg={} nobold", palette.dim), "")
+    };
     format!(
-        "#[range=session|{id} fg={accent} bg={base}]{glyph}#[fg={dim} nobold bg={base}] orchestrator#[norange nobold fg={dim} bg={base}]",
+        "#[range=session|{id} fg={accent} bg={ground}]{lead}{glyph}#[{text} bg={ground}] orchestrator{lead}#[norange nobold fg={dim} bg={base}]",
         id = row.id,
         accent = accent,
+        ground = ground,
+        lead = lead,
+        text = text,
         base = palette.base,
         dim = palette.dim,
     )
@@ -1720,20 +1732,18 @@ mod tests {
             glyph: "⠼",
             fg: "#ABCDEF".to_owned(),
         };
-        let current_strip = fleet_strip(&Look::DEFAULT, &[current_row], Some(&frame));
+        let current_fleet = fleet_strip(&Look::DEFAULT, &[current_row.clone()], Some(&frame));
         assert!(
-            current_strip.contains("orchestrator"),
-            "current orchestrator remains visible in fleet list: {current_strip}"
+            current_fleet.is_empty(),
+            "current orchestrator stays out of fleet list: {current_fleet}"
         );
-        let segment = orchestrator_strip(
-            &Look::DEFAULT,
-            &row("orchestrator", Mark::Working),
-            Some(&frame),
-        );
+        let segment = orchestrator_strip(&Look::DEFAULT, &current_row, Some(&frame));
         assert!(
             segment.contains("#[range=session|$12")
                 && segment.contains("⠼")
-                && segment.contains("orchestrator"),
+                && segment.contains("orchestrator")
+                && segment.contains("bg=#214283")
+                && segment.contains(&format!("fg={} bold", Look::DEFAULT.palette.selected_ink)),
             "working orchestrator keeps range and shared frame: {segment}"
         );
 

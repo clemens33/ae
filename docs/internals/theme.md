@@ -127,10 +127,12 @@ name is shown once in the fleet strip below.
 the order it was created, each with its live glyph. A session keeps its place
 while its attention changes, so a click never moves the thing that was clicked;
 the current session uses the palette's selection ground and ink, not a new
-position. The orchestrator is rendered immediately before the version segment,
-with its own verdict mark and a tmux `range=session` target for the canonical
-`orchestrator` session; three spaces separate it from the fleet and one space
-separates it from `ae <version>`. Each strip entry is a tmux `range=session` region, so
+position. The orchestrator is rendered immediately before the version segment —
+the ONE place the seat is drawn — with its own verdict mark and a tmux
+`range=session` target for the canonical `orchestrator` session. When current,
+selection colours mark it in place; it never jumps into the fleet strip. Three
+spaces separate it from the fleet and one space separates it from `ae <version>`.
+Each strip entry is a tmux `range=session` region, so
 tmux's own default
 `MouseDown1Status` binding (`switch-client -t =`) makes it clickable: ae adds no
 key binding, which would be a server-global write on your key table.
