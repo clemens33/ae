@@ -1,6 +1,11 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [v2026.9.21] - 2026-09-07
+
+### Other
+
+- Brighten working pulse endpoints
 ## [v2026.9.20] - 2026-09-07
 
 ### Other
