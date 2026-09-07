@@ -16,8 +16,9 @@ them. ae still publishes every `@ae_*` value, so a hand-written `status-right`
 can carry ae's facts in your own layout. `motion = off` freezes the spinner on
 its mark. Both knobs are session-scoped like everything else here.
 
-**Session-scoped, never global.** `status`, `status-style`, `set-titles`,
-`set-titles-string` and the two `status-format` indices are session options, so
+**Session-scoped, never global.** `status`, `status-style`,
+`window-status-separator`, `set-titles`, `set-titles-string` and the two
+`status-format` indices are session options, so
 ae writes them on its own sessions. The pane borders, the window entries and the menu and popup styles are
 **window** options — measured on tmux 3.7b, `set-option -t <session>` on one of
 those lands on that session's *current* window and silently leaves the others on
@@ -113,23 +114,23 @@ paired with a glyph, and each glyph with a reason word on the pane border.
 
 `status-format[0]` — the session's attention glyph in its accent, then the
 windows. Each window leads with its live mark and then names its agent
-(`0:✓lead`) or brackets multiple agents (`0:[✓lead ⠙colead]`); a window with no
-agent panes falls back to its tmux name. `Z` stays because a zoomed pane hides
-the rest of the window.
+(`0:✓lead`) or separates multiple agents with their marks
+(`0:✓lead ⠙colead`); a window with no agent panes falls back to its tmux name.
+Adjacent windows have a two-space separator. `Z` stays because a zoomed pane
+hides the rest of the window.
 The selected window uses the palette's selection ground and ink. The right
 side carries the branch, goal, shortened path and watch segment. The session
 name is shown once in the fleet strip below.
 
-`status-format[1]` — the **fleet strip**: the `orchestrator` session pinned
-first, then every other ae session
-in the order it was created, each with its live glyph. A session keeps its
-place while its attention changes, so a click never moves the thing that was
-clicked; the current session uses the palette's selection ground and ink, not
-a new position.
-The orchestrator pin is never shed on overflow. While calm it carries a dim `◆`
-(ASCII `o`); working replaces that pin with the shared spinner frame, and dead,
-needs-you or stale replaces it with the more urgent mark. Each strip entry is a
-tmux `range=session` region, so tmux's own default
+`status-format[1]` — the **fleet strip**: every non-orchestrator ae session in
+the order it was created, each with its live glyph. A session keeps its place
+while its attention changes, so a click never moves the thing that was clicked;
+the current session uses the palette's selection ground and ink, not a new
+position. The orchestrator is rendered immediately before the version segment,
+with its own verdict mark and a tmux `range=session` target for the canonical
+`orchestrator` session; three spaces separate it from the fleet and one space
+separates it from `ae <version>`. Each strip entry is a tmux `range=session` region, so
+tmux's own default
 `MouseDown1Status` binding (`switch-client -t =`) makes it clickable: ae adds no
 key binding, which would be a server-global write on your key table.
 The bottom-right `ae <version>` segment is another session range when an
@@ -167,7 +168,7 @@ lines; `[workspace] theme = off` leaves the user's title settings untouched.
 | `@ae_palette`, `@ae_icons`, `@ae_look`, `@ae_motion` | session | launch, rename |
 | `@ae_look_stamp`, `@ae_paths` | session | launch, rename, watchdog |
 | `@ae_attn_glyph`, `@ae_attn_rank`, `@ae_attn_style` | session | launch seeds them once, watchdog owns them after |
-| `@ae_fleet_strip`, `@ae_watchdog_status` | session | watchdog |
+| `@ae_fleet_strip`, `@ae_orchestrator_strip`, `@ae_watchdog_status` | session | watchdog |
 | `@ae_goal_status` | session | watchdog |
 | `@ae_version` | session | watchdog (the core it runs on, `ae <version>`) |
 | `@ae_orchestrator_id` | session | watchdog (the local fleet's orchestrator target) |

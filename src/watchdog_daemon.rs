@@ -682,6 +682,18 @@ enum PublishedOrchestrator {
     Target(String),
 }
 
+/// The orchestrator strip publication state, including not-yet-published.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+enum PublishedOrchestratorStrip {
+    /// No fleet observation has been published since this daemon attached.
+    #[default]
+    Unknown,
+    /// The observed fleet has no orchestrator segment.
+    Unset,
+    /// The rendered orchestrator segment.
+    Value(String),
+}
+
 /// The ticker's carry: the most recent cycle verdicts and spinner frame.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct MotionState {
@@ -692,6 +704,8 @@ struct MotionState {
     published_fleet: Option<String>,
     /// The last orchestrator target publication, including a successful unset.
     published_orchestrator_id: PublishedOrchestrator,
+    /// The last orchestrator segment publication, including a successful unset.
+    published_orchestrator_strip: PublishedOrchestratorStrip,
     spin: u64,
 }
 
@@ -784,6 +798,35 @@ impl MotionState {
         true
     }
 
+    /// Add the orchestrator segment only when its rendered text changed. A
+    /// missing orchestrator is recorded so the caller can unset stale output
+    /// once rather than spawning a tmux process on every motion tick.
+    fn push_orchestrator_strip_write(
+        &mut self,
+        writes: &mut Vec<tmux::OptionWrite>,
+        look: &Look,
+        target: &str,
+        row: Option<&theme::FleetRow>,
+        working_frame: Option<&str>,
+    ) -> bool {
+        let desired = row.map_or(PublishedOrchestratorStrip::Unset, |row| {
+            PublishedOrchestratorStrip::Value(theme::orchestrator_strip(look, row, working_frame))
+        });
+        if self.published_orchestrator_strip == desired {
+            return false;
+        }
+        if let PublishedOrchestratorStrip::Value(value) = &desired {
+            writes.push(tmux::OptionWrite::new(
+                OptionScope::Session,
+                target,
+                theme::ORCHESTRATOR_STRIP_OPTION,
+                value,
+            ));
+        }
+        self.published_orchestrator_strip = desired;
+        true
+    }
+
     /// Advance every attached working surface from the cached observation.
     fn step(&mut self, look: &Look) -> Vec<tmux::OptionWrite> {
         if !self.panes.iter().any(|pane| pane.session_attached > 0) {
@@ -844,6 +887,23 @@ impl MotionState {
             ));
         }
         self.push_fleet_write(&mut writes, look, fleet_working.then_some(spinner));
+        if let Some(target) = self.fleet_target.clone() {
+            let orchestrator = self
+                .fleet
+                .iter()
+                .find(|row| row.name == crate::orchestrator::ORCHESTRATOR_SESSION)
+                .filter(|row| !row.current)
+                .cloned();
+            if let Some(row) = orchestrator.as_ref() {
+                let _ = self.push_orchestrator_strip_write(
+                    &mut writes,
+                    look,
+                    &target,
+                    Some(row),
+                    fleet_working.then_some(spinner),
+                );
+            }
+        }
         writes
     }
 }
@@ -1454,6 +1514,7 @@ pub(crate) fn clear_published(server: &crate::inventory::ServerId, session: &str
         theme::ATTENTION_RANK_OPTION,
         theme::ATTENTION_STYLE_OPTION,
         theme::FLEET_STRIP_OPTION,
+        theme::ORCHESTRATOR_STRIP_OPTION,
         theme::ORCHESTRATOR_ID_OPTION,
         theme::GOAL_OPTION,
         theme::VERSION_OPTION,
@@ -1975,6 +2036,36 @@ impl Cycle<'_> {
         let mut writes = Vec::new();
         next.push_fleet_write(&mut writes, look, None);
         if let Some(target) = next.fleet_target.clone() {
+            let orchestrator = next
+                .fleet
+                .iter()
+                .find(|row| row.name == crate::orchestrator::ORCHESTRATOR_SESSION)
+                .filter(|row| !row.current)
+                .cloned();
+            let strip_changed = next.push_orchestrator_strip_write(
+                &mut writes,
+                look,
+                &target,
+                orchestrator.as_ref(),
+                None,
+            );
+            if strip_changed
+                && matches!(
+                    &next.published_orchestrator_strip,
+                    PublishedOrchestratorStrip::Unset
+                )
+                && !transport::clear_option(
+                    self.server,
+                    OptionScope::Session,
+                    &target,
+                    theme::ORCHESTRATOR_STRIP_OPTION,
+                )
+            {
+                // The fleet strip is independent and still gets published;
+                // restore the cache so the failed unset is retried next cycle.
+                next.published_orchestrator_strip
+                    .clone_from(&motion.published_orchestrator_strip);
+            }
             let id_changed = next.push_orchestrator_id_write(&mut writes, &target, orchestrator_id);
             if id_changed
                 && orchestrator_id.is_none()
@@ -2367,16 +2458,16 @@ fn schedule_automatic_upgrade() {
 /// The agents one window entry draws, in pane order.
 ///
 /// Labels have already passed through [`theme::agent_label`]. A mark comes
-/// first so a window's state is visible before its names: one agent needs no
-/// punctuation; two or more are bracketed so their boundary is visible beside
-/// the window index. `working_frame` replaces only working marks, allowing the
-/// ticker to animate the whole label without re-reading a verdict.
+/// first so a window's state is visible before its names: the mark itself
+/// separates adjacent agents, so no brackets are needed. `working_frame`
+/// replaces only working marks, allowing the ticker to animate the whole label
+/// without re-reading a verdict.
 fn window_agents_line(
     agents: &[(String, Mark)],
     look: &Look,
     working_frame: Option<&str>,
 ) -> String {
-    let line = agents
+    agents
         .iter()
         .map(|(agent, mark)| {
             let glyph = if *mark == Mark::Working {
@@ -2391,12 +2482,7 @@ fn window_agents_line(
             )
         })
         .collect::<Vec<_>>()
-        .join(" ");
-    if agents.len() > 1 {
-        format!("[{line}]")
-    } else {
-        line
-    }
+        .join(" ")
 }
 
 /// What ONE roster entry is saying.
@@ -2628,7 +2714,7 @@ mod tests {
                 "-t",
                 "@7",
                 "@ae_window_agents",
-                "[#[fg=#6897BB]⠙#[default]active #[fg=#6A8759]✓#[default]done #[fg=#CC7832]⚠#[default]blocked #[fg=#FF6B68]✖#[default]dead #[fg=#6897BB]⠙#[default]sweeping]",
+                "#[fg=#6897BB]⠙#[default]active #[fg=#6A8759]✓#[default]done #[fg=#CC7832]⚠#[default]blocked #[fg=#FF6B68]✖#[default]dead #[fg=#6897BB]⠙#[default]sweeping",
             ]
         );
         let second = crate::tmux::set_options_args(&ServerId::Ambient, &state.step(&Look::DEFAULT));
@@ -2783,6 +2869,54 @@ mod tests {
         assert_eq!(writes.len(), 0, "an unset target has no set write");
         assert!(transitions.push_orchestrator_id_write(&mut writes, "$4", Some("$9")));
         assert_eq!(writes.len(), 1, "a new target gets one set write");
+    }
+
+    #[test]
+    fn orchestrator_strip_composes_before_version_only_when_present() {
+        let session = |name: &str, id: &str, rank: &str| crate::tmux::FleetSession {
+            name: name.to_owned(),
+            id: id.to_owned(),
+            rank: rank.to_owned(),
+        };
+        let mut with = MotionState::default();
+        with.replace_fleet(
+            &[
+                session("worker", "$4", "2"),
+                session("orchestrator", "$7", "3"),
+            ],
+            "worker",
+        );
+        let mut writes = Vec::new();
+        let row = with
+            .fleet
+            .iter()
+            .find(|row| row.name == crate::orchestrator::ORCHESTRATOR_SESSION)
+            .cloned();
+        assert!(with.push_orchestrator_strip_write(
+            &mut writes,
+            &Look::DEFAULT,
+            "$4",
+            row.as_ref(),
+            None,
+        ));
+        let args = crate::tmux::set_options_args(&ServerId::Ambient, &writes);
+        assert!(
+            args.iter()
+                .any(|word| word == crate::theme::ORCHESTRATOR_STRIP_OPTION)
+        );
+        assert!(args.iter().any(|word| word.contains("orchestrator")));
+
+        let mut without = MotionState::default();
+        without.replace_fleet(&[session("worker", "$4", "2")], "worker");
+        let mut writes = Vec::new();
+        assert!(without.push_orchestrator_strip_write(
+            &mut writes,
+            &Look::DEFAULT,
+            "$4",
+            None,
+            None,
+        ));
+        assert!(writes.is_empty(), "caller performs the one required unset");
     }
 
     #[test]
@@ -3525,11 +3659,11 @@ mod tests {
         ];
         assert_eq!(
             window_agents_line(&many, &look(), None),
-            "[#[fg=#7fbf6a]✓#[default]lead #[fg=#57b6c2]●#[default]colead]"
+            "#[fg=#7fbf6a]✓#[default]lead #[fg=#57b6c2]●#[default]colead"
         );
         assert_eq!(
             window_agents_line(&many, &look(), Some("⠙")),
-            "[#[fg=#7fbf6a]✓#[default]lead #[fg=#57b6c2]⠙#[default]colead]"
+            "#[fg=#7fbf6a]✓#[default]lead #[fg=#57b6c2]⠙#[default]colead"
         );
         let ascii = Look {
             icons: false,
@@ -3537,7 +3671,7 @@ mod tests {
         };
         assert_eq!(
             window_agents_line(&many, &ascii, Some("/")),
-            "[#[fg=#7fbf6a]+#[default]lead #[fg=#57b6c2]/#[default]colead]"
+            "#[fg=#7fbf6a]+#[default]lead #[fg=#57b6c2]/#[default]colead"
         );
 
         let needs_you = vec![("lead".to_owned(), Mark::NeedsYou)];

@@ -433,6 +433,12 @@ pub const ATTENTION_STYLE_OPTION: &str = "@ae_attn_style";
 /// SESSION — the whole fleet strip, ranges included.
 pub const FLEET_STRIP_OPTION: &str = "@ae_fleet_strip";
 
+/// SESSION — the orchestrator's fleet segment, ranges included.
+///
+/// Published separately because the orchestrator sits immediately before the
+/// version on line two instead of in the fleet list.
+pub const ORCHESTRATOR_STRIP_OPTION: &str = "@ae_orchestrator_strip";
+
 /// SESSION — `on`/`off`, whether ae draws this session at all.
 pub const LOOK_OPTION: &str = "@ae_look";
 
@@ -478,7 +484,8 @@ pub const AGENT_LABEL_OPTION: &str = "@ae_agent_label";
 /// WINDOW — the agents in this window, each preceded by its live mark.
 ///
 /// Published by the watchdog from the pane identities and verdicts. A single
-/// agent is bare (`✓lead`); two or more are bracketed (`[✓lead ●colead]`).
+/// agent is bare (`✓lead`); multiple agents use the mark itself as the
+/// boundary (`✓lead ●colead`).
 pub const WINDOW_AGENTS_OPTION: &str = "@ae_window_agents";
 
 /// WINDOW — marks the one window owned by ae's monitor plumbing.
@@ -524,7 +531,7 @@ pub const WINDOW_STAMP_OPTION: &str = "@ae_theme";
 /// changes shape: the version leads both stamps, so a session or window carrying
 /// an older one is rewritten by the next watchdog cycle rather than left on the
 /// layout an older core wrote.
-pub const FORMAT_VERSION: &str = "7";
+pub const FORMAT_VERSION: &str = "8";
 
 /// What [`WINDOW_STAMP_OPTION`] is set to: the LOOK the window was dressed in,
 /// formats version first.
@@ -672,14 +679,17 @@ pub fn status_line_zero(palette: &Palette) -> String {
 // status-format[1] — the fleet strip
 // ---------------------------------------------------------------------------
 
-/// `status-format[1]`: every ae session on this server, then the core they run
-/// on — dim, at the far right, where a reader looks once after an upgrade and
-/// never otherwise.
+/// `status-format[1]`: every ae session on this server, then the orchestrator
+/// and core they run on — dim, at the far right, where a reader looks once
+/// after an upgrade and never otherwise.
 #[must_use]
 pub fn status_line_one(palette: &Palette) -> String {
+    // The conditional splits on format-text commas, so a comma-free option
+    // value is safe; this follows the same contract as @ae_fleet_strip.
     format!(
         "#[align=left fg={dim} bg={base}] #{{{FLEET_STRIP_OPTION}}}\
-         #[align=right fg={dim} bg={base}] {version} ",
+         #[align=right fg={dim} bg={base}] \
+         #{{?#{{{ORCHESTRATOR_STRIP_OPTION}}},  #{{{ORCHESTRATOR_STRIP_OPTION}}} ,}}{version} ",
         dim = palette.dim,
         base = palette.base,
         version = version_segment(),
@@ -726,7 +736,7 @@ impl FleetRow {
     }
 }
 
-/// Fleet rows in the same stable order used by [`fleet_strip`].
+/// Fleet rows in the same stable order used by [`fleet_strip`] and lifecycle.
 fn ordered_fleet_rows(rows: &[FleetRow]) -> Vec<&FleetRow> {
     let mut ordered: Vec<&FleetRow> = rows.iter().collect();
     ordered.sort_by(|left, right| {
@@ -756,8 +766,8 @@ pub fn next_fleet_session(rows: &[FleetRow], dying: &str) -> Option<String> {
         .map(|row| row.name.clone())
 }
 
-/// The fleet strip: `<glyph> <name>` per session, in the order the sessions
-/// were CREATED, each one a click that switches this client to it.
+/// The fleet strip: `<glyph> <name>` per non-orchestrator session, in the order
+/// the sessions were CREATED, each one a click that switches this client to it.
 ///
 /// Creation order, never attention order: a row's place is where the reader
 /// learned to find it, like a tab, and a click that moved the thing clicked is
@@ -775,16 +785,19 @@ pub fn next_fleet_session(rows: &[FleetRow], dying: &str) -> Option<String> {
 pub fn fleet_strip(look: &Look, rows: &[FleetRow], working_frame: Option<&str>) -> String {
     let palette = &look.palette;
     let icons = look.icons;
-    let mut ordered = ordered_fleet_rows(rows);
+    let mut ordered: Vec<&FleetRow> = ordered_fleet_rows(rows)
+        .into_iter()
+        .filter(|row| !row.pinned() || row.current)
+        .collect();
     // OVERFLOW: the strip sheds its calmest rows first, because a session that
     // wants nothing is the one the reader loses least by not seeing, and the
-    // rows that remain keep their order. The current session and the pinned
-    // anchor are never shed — a strip that cannot show you where you are is
-    // not a map.
+    // rows that remain keep their order. The current session is never shed —
+    // a strip that cannot show you where you are is not a map. The
+    // orchestrator is rendered beside the version instead.
     let hidden = ordered.len().saturating_sub(STRIP_ROWS);
     if hidden > 0 {
         let mut shed: Vec<usize> = (0..ordered.len())
-            .filter(|&index| !ordered[index].current && !ordered[index].pinned())
+            .filter(|&index| !ordered[index].current)
             .collect();
         shed.sort_by(|&left, &right| {
             ordered[left]
@@ -819,20 +832,12 @@ pub fn fleet_strip(look: &Look, rows: &[FleetRow], working_frame: Option<&str>) 
             (palette.base, format!("fg={} nobold", palette.dim))
         };
         let lead = if row.current { " " } else { "" };
-        let pinned = row.pinned();
-        let calm_pin = pinned && matches!(row.mark, Mark::Done | Mark::Idle);
         let glyph = if row.mark == Mark::Working {
             working_frame.unwrap_or_else(|| row.mark.glyph(icons))
-        } else if calm_pin {
-            if icons { "◆" } else { "o" }
         } else {
             row.mark.glyph(icons)
         };
-        let accent = if calm_pin {
-            palette.dim
-        } else {
-            palette.accent(row.mark)
-        };
+        let accent = palette.accent(row.mark);
         let _ = write!(
             out,
             "#[range=session|{id} fg={accent} bg={ground}]{lead}{glyph}#[{text} bg={ground}] {name}{lead}\
@@ -854,6 +859,35 @@ pub fn fleet_strip(look: &Look, rows: &[FleetRow], working_frame: Option<&str>) 
         );
     }
     strip
+}
+
+/// The orchestrator segment shown immediately before the version on line two.
+///
+/// It keeps the same verdict glyph and motion rules as a fleet row, but is
+/// rendered separately so the fleet list can stay focused on other sessions.
+#[must_use]
+pub fn orchestrator_strip(look: &Look, row: &FleetRow, working_frame: Option<&str>) -> String {
+    let palette = &look.palette;
+    let calm_pin = matches!(row.mark, Mark::Done | Mark::Idle);
+    let glyph = if row.mark == Mark::Working {
+        working_frame.unwrap_or_else(|| row.mark.glyph(look.icons))
+    } else if calm_pin {
+        if look.icons { "◆" } else { "o" }
+    } else {
+        row.mark.glyph(look.icons)
+    };
+    let accent = if calm_pin {
+        palette.dim
+    } else {
+        palette.accent(row.mark)
+    };
+    format!(
+        "#[range=session|{id} fg={accent} bg={base}]{glyph}#[fg={dim} nobold bg={base}] orchestrator#[norange nobold fg={dim} bg={base}]",
+        id = row.id,
+        accent = accent,
+        base = palette.base,
+        dim = palette.dim,
+    )
 }
 
 /// How many sessions the fleet strip draws before it starts counting instead.
@@ -1028,7 +1062,7 @@ pub fn redress_options(look: &Look, paths: &str) -> Vec<(String, String)> {
     options
 }
 
-/// The LAYOUT half: the two status lines and their ground.
+/// The LAYOUT half: the two status lines, their ground and window separator.
 ///
 /// Empty when the look is undrawn. `[workspace] theme = off` leaves `status`,
 /// `status-style`, titles and both `status-format` indices exactly as the user's own
@@ -1047,6 +1081,9 @@ pub fn layout_options(look: &Look) -> Vec<(String, String)> {
             "status-style".to_owned(),
             format!("bg={},fg={}", palette.base, palette.text),
         ),
+        // Two spaces keep adjacent named windows readable now that each
+        // window's agent marks no longer need wrapping brackets.
+        ("window-status-separator".to_owned(), "  ".to_owned()),
         ("set-titles".to_owned(), "on".to_owned()),
         (
             "set-titles-string".to_owned(),
@@ -1063,10 +1100,11 @@ pub fn layout_options(look: &Look) -> Vec<(String, String)> {
 /// UNSET, not written empty: a session option that is not set falls back to the
 /// global one, which is the user's own — so this is how ae actually gives the
 /// status line back rather than replacing it with a blank.
-pub const LAYOUT_OPTIONS: [&str; 7] = [
+pub const LAYOUT_OPTIONS: [&str; 8] = [
     "status",
     "status-interval",
     "status-style",
+    "window-status-separator",
     "set-titles",
     "set-titles-string",
     "status-format[0]",
@@ -1191,8 +1229,9 @@ pub fn window_options(look: &Look) -> Vec<(String, String)> {
 mod tests {
     use super::{
         FleetRow, ICONS_OPTION, Look, Mark, PALETTE_OPTION, Palette, WINDOW_STAMP_OPTION,
-        attention_style, fleet_strip, icons_wanted, mark_style, pane_border_format, pane_state,
-        session_options, short_path, spinner, status_line_one, status_line_zero, window_options,
+        attention_style, fleet_strip, icons_wanted, mark_style, orchestrator_strip,
+        pane_border_format, pane_state, session_options, short_path, spinner, status_line_one,
+        status_line_zero, window_options,
     };
     use crate::attention::Reason;
 
@@ -1211,6 +1250,22 @@ mod tests {
                 "{line}"
             );
         }
+    }
+
+    #[test]
+    fn line_one_places_optional_orchestrator_before_version() {
+        let line = status_line_one(&Palette::DARCULA);
+        let marker = format!(
+            "#{{?#{{{}}},  #{{{}}} ,}}",
+            super::ORCHESTRATOR_STRIP_OPTION,
+            super::ORCHESTRATOR_STRIP_OPTION,
+        );
+        assert!(line.contains(&marker), "{line}");
+        assert!(
+            line.find(&marker).unwrap_or(usize::MAX)
+                < line.find(super::VERSION_OPTION).unwrap_or(usize::MAX),
+            "orchestrator conditional must precede version: {line}"
+        );
     }
 
     /// The monitor window is ae's plumbing and leaves the bar: every window
@@ -1257,6 +1312,16 @@ mod tests {
                     mark: Mark::NeedsYou,
                     current: true,
                 }],
+                None,
+            ),
+            orchestrator_strip(
+                &Look::DEFAULT,
+                &FleetRow {
+                    name: "orchestrator".to_owned(),
+                    id: "$7".to_owned(),
+                    mark: Mark::NeedsYou,
+                    current: false,
+                },
                 None,
             ),
             pane_state(&Palette::NEUTRAL, Mark::Stale, "◌", "stale"),
@@ -1597,7 +1662,7 @@ mod tests {
     }
 
     #[test]
-    fn the_orchestrator_pin_yields_to_motion_and_attention() {
+    fn the_orchestrator_is_rendered_separately_from_the_fleet_strip() {
         let row = |name: &str, mark| FleetRow {
             name: name.to_owned(),
             id: format!("${}", name.len()),
@@ -1610,37 +1675,60 @@ mod tests {
             Some("⠼"),
         );
         assert!(
-            strip.contains("]⠼#["),
-            "working pin takes the shared frame: {strip}"
+            strip.is_empty(),
+            "orchestrator is not in fleet list: {strip}"
+        );
+        let mut current_row = row("orchestrator", Mark::Working);
+        current_row.current = true;
+        let current_strip = fleet_strip(&Look::DEFAULT, &[current_row], Some("⠼"));
+        assert!(
+            current_strip.contains("orchestrator"),
+            "current orchestrator remains visible in fleet list: {current_strip}"
+        );
+        let segment = orchestrator_strip(
+            &Look::DEFAULT,
+            &row("orchestrator", Mark::Working),
+            Some("⠼"),
+        );
+        assert!(
+            segment.contains("#[range=session|$12")
+                && segment.contains("⠼")
+                && segment.contains("orchestrator"),
+            "working orchestrator keeps range and shared frame: {segment}"
         );
 
         for mark in [Mark::Dead, Mark::NeedsYou, Mark::Stale] {
-            let attention = fleet_strip(&Look::DEFAULT, &[row("orchestrator", mark)], Some("⠼"));
+            let attention =
+                orchestrator_strip(&Look::DEFAULT, &row("orchestrator", mark), Some("⠼"));
             assert!(
-                attention.contains(&format!("]{}#[", mark.glyph(true))),
+                attention.contains(mark.glyph(true)) && attention.contains("orchestrator"),
                 "attention beats motion and the pin: {attention}"
             );
         }
 
         for mark in [Mark::Idle, Mark::Done] {
-            let calm = fleet_strip(&Look::DEFAULT, &[row("orchestrator", mark)], Some("⠼"));
-            assert!(calm.contains("]◆#["), "calm pin: {calm}");
-            assert!(calm.contains("fg=#808080"), "dim calm pin: {calm}");
+            let calm = orchestrator_strip(&Look::DEFAULT, &row("orchestrator", mark), Some("⠼"));
+            assert!(
+                calm.contains("◆"),
+                "calm orchestrator keeps its neutral anchor mark: {calm}"
+            );
+            assert!(calm.contains("fg=#808080"), "dim calm segment: {calm}");
         }
 
-        let ascii = fleet_strip(
+        let ascii = orchestrator_strip(
             &Look {
                 icons: false,
                 ..Look::DEFAULT
             },
-            &[row("orchestrator", Mark::Idle)],
+            &row("orchestrator", Mark::Idle),
             None,
         );
-        assert!(ascii.contains("]o#["), "ASCII pin: {ascii}");
+        assert!(ascii.contains('o'), "ASCII anchor mark: {ascii}");
+        assert!(ascii.contains("orchestrator"), "ASCII segment: {ascii}");
     }
 
     #[test]
-    fn the_pinned_orchestrator_survives_strip_overflow() {
+    fn the_orchestrator_is_not_counted_in_fleet_overflow() {
         let rows: Vec<FleetRow> = (0..super::STRIP_ROWS + 3)
             .map(|index| FleetRow {
                 name: if index == super::STRIP_ROWS + 2 {
@@ -1655,19 +1743,26 @@ mod tests {
             .collect();
         let strip = fleet_strip(&Look::DEFAULT, &rows, None);
         assert!(
-            strip.contains("orchestrator"),
-            "pinned row was shed: {strip}"
+            !strip.contains("orchestrator"),
+            "orchestrator belongs beside the version: {strip}"
         );
         assert!(
-            strip.contains("+3"),
-            "overflow count remains exact: {strip}"
+            strip.contains("+2"),
+            "overflow count excludes orchestrator: {strip}"
         );
     }
 
     #[test]
     fn terminal_titles_are_part_of_the_drawn_layout() {
         let options = super::layout_options(&Look::DEFAULT);
-        assert_eq!(super::FORMAT_VERSION, "7");
+        assert_eq!(super::FORMAT_VERSION, "8");
+        assert_eq!(
+            options
+                .iter()
+                .find(|(name, _)| name == "window-status-separator")
+                .map(|(_, value)| value.as_str()),
+            Some("  ")
+        );
         assert_eq!(
             options
                 .iter()
