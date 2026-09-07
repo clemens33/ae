@@ -1,7 +1,7 @@
 # ae
 
 One Rust core in one immutable versioned install, published read-only. tmux is the runtime.
-The only Bash in the product is `install`, the 79-line bootstrap that publishes the core.
+The only Bash in the product is `install`, the 83-line bootstrap that publishes the core.
 
 This file is the CURRENT contract: what to do, what never to do, who owns each rule. The
 reasoning, the retired rules and every measurement narrative are in
@@ -35,7 +35,8 @@ tests/it/           — the one integration-test target. The behaviours of the r
                       parity.rs = the one child-process door. Unit tests sit beside the code
 tests/fixtures/     — frozen inputs the suites read (session shapes, list goldens)
 install             — the bootstrap: download a bundle, prove it against the release
-                      manifest, extract, `ae-core _install --from <tmp>`. The only bash file
+                      manifest, extract, `ae-core _install --from <tmp>`. 83 lines; the only
+                      bash file
 justfile            — dev/release pipeline; holds every dev-tool version pin
 docs/               — user + internals docs; history.md holds the retired contract
 contrib/            — optional sidecars: aeorchestrator (templates only, no code)

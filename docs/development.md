@@ -13,7 +13,7 @@ tests/it/           — the single Rust integration target; `doors.rs`, `gate.rs
                       `parity.rs` are about the repository rather than the product
 tests/fixtures/     — frozen inputs the suites read (session shapes, list goldens)
 install             — the bootstrap (download, verify, extract, `ae-core _install`); the
-                      product's only bash file, 79 lines
+                      product's only bash file, 83 lines
 Cargo.toml          — Rust package (bin + lib, both `ae`)
 src/                — Rust core sources
 README.md           — short user-facing intro

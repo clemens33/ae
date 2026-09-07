@@ -513,6 +513,21 @@ fn the_installer_carries_no_gnu_only_coreutils_and_no_unreviewed_exemption() {
 }
 
 #[test]
+fn the_installer_uses_canonical_latest_and_tag_download_routes() {
+    let source = read(&root().join("install"));
+    for route in [
+        r#"url="$REPOSITORY/releases/latest/download""#,
+        r#"url="$REPOSITORY/releases/download/$release""#,
+    ] {
+        assert!(source.contains(route), "install must carry `{route}`");
+    }
+    assert!(
+        !source.contains(r#"url="$REPOSITORY/releases/$release/download""#),
+        "install must not use the invalid tag route"
+    );
+}
+
+#[test]
 fn the_bundle_recipe_is_the_one_definition_of_a_bundle_and_both_release_legs_call_it() {
     let justfile = read(&root().join("justfile"));
     let recipe = recipe_text(&justfile, "bundle version platform binary:").join("\n");

@@ -86,7 +86,7 @@ and running `ae` runs that binary directly — no re-exec, no pair to validate, 
 handed across a process boundary. `version` prints the crate version; `upgrade` downloads
 the platform bundle, proves it by SHA-256 and publishes it through the same code the
 bootstrap reaches, atomically repointing `~/.local/bin/ae` at the new version. The one bash
-file left in the product is `install` itself — 79 lines of it since slice Z4 — everything else the old `ae-entry` wrapper did
+file left in the product is `install` itself — 83 lines of it since slice Z4 — everything else the old `ae-entry` wrapper did
 (dispatcher, help text, name grammar, config writer, the facts it used to hand the core
 across the exec) is gone with it, not replaced.
 

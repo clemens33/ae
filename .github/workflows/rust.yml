@@ -6,7 +6,7 @@
 # THE BASH LANE USED TO BE DELIBERATELY ABSENT, held out by the gate-integrity
 # issues #58/#67 — a red badge for a known, separately-tracked gap was judged
 # worse than no badge at all. The trade has flipped. What the lane guards is now
-# ONE file, `install`: 79 lines, the only bash ae ships, and a member of every
+# ONE file, `install`: 83 lines, the only bash ae ships, and a member of every
 # release bundle. #67's fix is in the recipe it runs — the `< /dev/null` on
 # shellcheck's invocation, pinned structurally by tests/it/gate.rs — the lane
 # costs seconds, and until this landed `install` was the one product file no
@@ -332,7 +332,7 @@ jobs:
           [ "$sh_now" = "$SHFMT_VERSION" ] || { echo "::error::shfmt on PATH is ${sh_now:-absent}, want $SHFMT_VERSION"; exit 1; }
           echo "bash lane ready: shellcheck $sc_now, shfmt $sh_now"
 
-      # THE BASH LANE ITSELF, and `install` is the whole of its subject: 79 lines
+      # THE BASH LANE ITSELF, and `install` is the whole of its subject: 83 lines
       # that have to run before there is a core to run, published as a member of
       # every release bundle. It runs here, ahead of the Rust lanes, because it
       # costs seconds and needs nothing they build.

@@ -51,7 +51,11 @@ fi
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/ae-install.XXXXXX")"
 trap 'chmod -R u+w "$tmp" 2>/dev/null || true; rm -rf "$tmp"' EXIT
 
-url="$REPOSITORY/releases/$release/download"
+if [ "$release" = latest ]; then
+    url="$REPOSITORY/releases/latest/download"
+else
+    url="$REPOSITORY/releases/download/$release"
+fi
 curl -fsSL --retry 3 --output "$tmp/SHA256SUMS" "$url/SHA256SUMS" ||
     die "no release at $release; build from a checkout instead (just install)."
 [ -n "$version" ] || version="$(awk -v p="$platform" '

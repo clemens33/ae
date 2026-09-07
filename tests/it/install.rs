@@ -816,7 +816,7 @@ cat "$AE_FIXTURE_RELEASE/$name" > "$out"
                     .stdin
                     .take()
                     .unwrap_or_else(|| panic!("bash should have a piped stdin"));
-                // 79 lines fit a pipe buffer many times over, so one write and
+                // 83 lines fit a pipe buffer many times over, so one write and
                 // the close that drops it cannot deadlock against the child.
                 assert!(stdin.write_all(&text).is_ok(), "the script should pipe");
                 drop(stdin);
@@ -896,11 +896,16 @@ cat "$AE_FIXTURE_RELEASE/$name" > "$out"
             !present(&self.scratch.join("home").join(".ae")),
             "the bootstrap wrote into HOME"
         );
+        let release_route = if release == "latest" {
+            "latest/download".to_owned()
+        } else {
+            format!("download/{release}")
+        };
         assert_eq!(
             self.urls(),
             vec![
-                format!("{RELEASES}/{release}/download/SHA256SUMS"),
-                format!("{RELEASES}/{release}/download/{}", archive_name()),
+                format!("{RELEASES}/{release_route}/SHA256SUMS"),
+                format!("{RELEASES}/{release_route}/{}", archive_name()),
             ],
             "the bootstrap fetched something other than the manifest and its bundle"
         );
