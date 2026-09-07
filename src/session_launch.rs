@@ -48,6 +48,10 @@ const START_POLL: Duration = Duration::from_millis(100);
 /// How long to hold the lifecycle lock for before giving up.
 const LIFECYCLE_WAIT: Duration = Duration::from_secs(15);
 
+/// Debug-build synchronization point for lifecycle-lock race tests.
+#[doc(hidden)]
+pub const TEST_PRE_LOCK_MARKER: &str = ".test-launch-before-lifecycle-lock";
+
 /// The event log's resume-time retention, in lines.
 const EVENTS_KEEP: usize = 1000;
 
@@ -300,6 +304,9 @@ pub struct Env {
     pub core_version: Option<String>,
     /// `--no-autostart`: suppress the Telegram bridge.
     pub no_autostart: bool,
+    /// Internal debug-build test seam: publish [`TEST_PRE_LOCK_MARKER`] after
+    /// preflight and immediately before waiting for the lifecycle lock.
+    test_pre_lock_marker: Option<PathBuf>,
 }
 
 impl Env {
@@ -357,6 +364,7 @@ fn read_env(tail: &[String]) -> Result<(Env, Vec<String>), EnvError> {
         inside_tmux: false,
         attach: true,
         no_autostart: false,
+        test_pre_lock_marker: None,
         core: None,
         core_version: None,
     };
@@ -384,6 +392,11 @@ fn read_env(tail: &[String]) -> Result<(Env, Vec<String>), EnvError> {
             }
             "--no-autostart" => {
                 env.no_autostart = true;
+                rest = after;
+                continue;
+            }
+            "--test-pre-lock-marker" if cfg!(debug_assertions) => {
+                env.test_pre_lock_marker = Some(TEST_PRE_LOCK_MARKER.into());
                 rest = after;
                 continue;
             }
@@ -537,6 +550,7 @@ pub fn relaunch(
         // A relaunch IS a launch (compact's child), so Telegram autostart is
         // decided exactly as it is for one typed by hand.
         no_autostart: false,
+        test_pre_lock_marker: None,
         core: None,
         core_version: None,
     };
@@ -932,6 +946,14 @@ fn launch(
                 return Ok(EXIT_FAILED);
             }
         };
+
+    #[cfg(debug_assertions)]
+    if let Some(marker) = &env.test_pre_lock_marker {
+        let _ = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(env.home.join(marker));
+    }
 
     // A resume's liveness decision and any legacy backfill share the lock
     // stop/end use. The preflight above exists only to place the floor before

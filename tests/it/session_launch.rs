@@ -177,6 +177,16 @@ impl Rig {
     }
 
     fn launch_command_with_server(&self, kind: &str, value: &str, tail: &[&str]) -> Runner {
+        self.launch_command_with_server_options(kind, value, tail, false)
+    }
+
+    fn launch_command_with_server_options(
+        &self,
+        kind: &str,
+        value: &str,
+        tail: &[&str],
+        pre_lock_marker: bool,
+    ) -> Runner {
         let mut command = ae();
         command
             .env_remove("TMUX")
@@ -199,9 +209,11 @@ impl Rig {
                 "--server",
                 value,
                 "--no-attach",
-                "--",
-            ])
-            .args(tail);
+            ]);
+        if pre_lock_marker {
+            command.arg("--test-pre-lock-marker");
+        }
+        command.arg("--").args(tail);
         command
     }
 
@@ -214,6 +226,35 @@ impl Rig {
             .stderr(Stdio::piped())
             .spawn()
             .unwrap_or_else(|why| panic!("the ae binary should start: {why}"))
+    }
+
+    fn launch_child_with_pre_lock_marker(&self, tail: &[&str]) -> OwnedChild {
+        let mut command = self.launch_command_with_server_options(
+            "socket",
+            &self.sock.display().to_string(),
+            tail,
+            true,
+        );
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap_or_else(|why| panic!("the ae binary should start: {why}"))
+    }
+
+    fn wait_for_pre_lock_marker(&self) {
+        let marker = self.home.join(ae::session_launch::TEST_PRE_LOCK_MARKER);
+        for _ in 0..1_000 {
+            if marker.is_file() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!(
+            "launch did not finish preflight within 10s: {}",
+            marker.display()
+        );
     }
 
     /// Launch with attach enabled and an optional real caller pane/socket.
@@ -1399,8 +1440,9 @@ fn a_config_swap_while_resume_waits_cannot_change_the_preflighted_command() {
         .expect("the lifecycle lock opens");
     held.try_lock()
         .expect("the fixture holds the lifecycle lock");
-    let mut child = rig.launch_child(&["--local", "lnseatcfgswap", "--lead", "repair"]);
-    std::thread::sleep(Duration::from_millis(300));
+    let mut child =
+        rig.launch_child_with_pre_lock_marker(&["--local", "lnseatcfgswap", "--lead", "repair"]);
+    rig.wait_for_pre_lock_marker();
     assert!(
         matches!(child.try_wait(), Ok(None)),
         "the resume waits after preflight"
@@ -1478,8 +1520,9 @@ fn a_spawned_seat_launches_its_preflighted_command_after_a_config_swap() {
         .expect("the lifecycle lock opens");
     held.try_lock()
         .expect("the fixture holds the lifecycle lock");
-    let mut child = rig.launch_child(&["--local", session, "--lead", "repair"]);
-    std::thread::sleep(Duration::from_millis(300));
+    let mut child =
+        rig.launch_child_with_pre_lock_marker(&["--local", session, "--lead", "repair"]);
+    rig.wait_for_pre_lock_marker();
     assert!(
         matches!(child.try_wait(), Ok(None)),
         "the resume waits after preflight"
