@@ -98,9 +98,9 @@ keeps its first agent's name as its stable tmux routing name; later splits do
 not rename it.
 
 The status bar has two lines. The first is this session: its attention mark,
-then windows named with their agents and live marks, then the branch, goal,
-shortened path and watch segment. One agent is `0:lead✓`; multiple agents are
-`0:[lead✓ colead⠙]`. The selected window and current fleet row use the
+then windows led by their live marks and named agents, then the branch, goal,
+shortened path and watch segment. One agent is `0:✓lead`; multiple agents are
+`0:[✓lead ⠙colead]`. The selected window and current fleet row use the
 palette's selection colours.
 The second is the **fleet strip** — every ae session on this tmux server in the order it
 was created, each with its live mark and clickable to switch to it. Every pane

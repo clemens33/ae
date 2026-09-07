@@ -468,10 +468,10 @@ pub const LOOK_STAMP_OPTION: &str = "@ae_look_stamp";
 /// a style taken out of it.
 pub const AGENT_LABEL_OPTION: &str = "@ae_agent_label";
 
-/// WINDOW — the agents in this window, each followed by its live mark.
+/// WINDOW — the agents in this window, each preceded by its live mark.
 ///
 /// Published by the watchdog from the pane identities and verdicts. A single
-/// agent is bare (`lead✓`); two or more are bracketed (`[lead✓ colead●]`).
+/// agent is bare (`✓lead`); two or more are bracketed (`[✓lead ●colead]`).
 pub const WINDOW_AGENTS_OPTION: &str = "@ae_window_agents";
 
 /// WINDOW — marks the one window owned by ae's monitor plumbing.

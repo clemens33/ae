@@ -109,9 +109,10 @@ paired with a glyph, and each glyph with a reason word on the pane border.
 ## The two status lines
 
 `status-format[0]` — the session's attention glyph in its accent, then the
-windows. Each window names its agent and live mark (`0:lead✓`) or brackets
-multiple agents (`0:[lead✓ colead⠙]`); a window with no agent panes falls back
-to its tmux name. `Z` stays because a zoomed pane hides the rest of the window.
+windows. Each window leads with its live mark and then names its agent
+(`0:✓lead`) or brackets multiple agents (`0:[✓lead ⠙colead]`); a window with no
+agent panes falls back to its tmux name. `Z` stays because a zoomed pane hides
+the rest of the window.
 The selected window uses the palette's selection ground and ink. The right
 side carries the branch, goal, shortened path and watch segment. The session
 name is shown once in the fleet strip below.

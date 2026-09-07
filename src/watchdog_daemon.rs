@@ -2104,11 +2104,11 @@ impl Cycle<'_> {
 
 /// The agents one window entry draws, in pane order.
 ///
-/// Labels have already passed through [`theme::agent_label`]. A window with
-/// one agent needs no punctuation; two or more are bracketed so their boundary
-/// is visible beside the window index. `working_frame` replaces only working
-/// marks, allowing the ticker to animate the whole label without re-reading a
-/// verdict.
+/// Labels have already passed through [`theme::agent_label`]. A mark comes
+/// first so a window's state is visible before its names: one agent needs no
+/// punctuation; two or more are bracketed so their boundary is visible beside
+/// the window index. `working_frame` replaces only working marks, allowing the
+/// ticker to animate the whole label without re-reading a verdict.
 fn window_agents_line(
     agents: &[(String, Mark)],
     look: &Look,
@@ -2123,7 +2123,7 @@ fn window_agents_line(
                 mark.glyph(look.icons)
             };
             format!(
-                "{agent}#[fg={}]{}#[default]",
+                "#[fg={}]{}#[default]{agent}",
                 look.palette.accent(*mark),
                 glyph
             )
@@ -2366,7 +2366,7 @@ mod tests {
                 "-t",
                 "@7",
                 "@ae_window_agents",
-                "[active#[fg=#6897BB]⠙#[default] done#[fg=#6A8759]✓#[default] blocked#[fg=#CC7832]⚠#[default] dead#[fg=#FF6B68]✖#[default] sweeping#[fg=#6897BB]⠙#[default]]",
+                "[#[fg=#6897BB]⠙#[default]active #[fg=#6A8759]✓#[default]done #[fg=#CC7832]⚠#[default]blocked #[fg=#FF6B68]✖#[default]dead #[fg=#6897BB]⠙#[default]sweeping]",
             ]
         );
         let second = crate::tmux::set_options_args(&ServerId::Ambient, &state.step(&Look::DEFAULT));
@@ -3206,7 +3206,7 @@ mod tests {
         let one = vec![("act".to_owned(), Mark::Done)];
         assert_eq!(
             window_agents_line(&one, &look(), None),
-            "act#[fg=#7fbf6a]✓#[default]"
+            "#[fg=#7fbf6a]✓#[default]act"
         );
 
         let many = vec![
@@ -3215,11 +3215,11 @@ mod tests {
         ];
         assert_eq!(
             window_agents_line(&many, &look(), None),
-            "[lead#[fg=#7fbf6a]✓#[default] colead#[fg=#57b6c2]●#[default]]"
+            "[#[fg=#7fbf6a]✓#[default]lead #[fg=#57b6c2]●#[default]colead]"
         );
         assert_eq!(
             window_agents_line(&many, &look(), Some("⠙")),
-            "[lead#[fg=#7fbf6a]✓#[default] colead#[fg=#57b6c2]⠙#[default]]"
+            "[#[fg=#7fbf6a]✓#[default]lead #[fg=#57b6c2]⠙#[default]colead]"
         );
         let ascii = Look {
             icons: false,
@@ -3227,13 +3227,13 @@ mod tests {
         };
         assert_eq!(
             window_agents_line(&many, &ascii, Some("/")),
-            "[lead#[fg=#7fbf6a]+#[default] colead#[fg=#57b6c2]/#[default]]"
+            "[#[fg=#7fbf6a]+#[default]lead #[fg=#57b6c2]/#[default]colead]"
         );
 
         let needs_you = vec![("lead".to_owned(), Mark::NeedsYou)];
         assert!(
             window_agents_line(&needs_you, &Look::DEFAULT, None)
-                .contains("#[fg=#CC7832]⚠#[default]")
+                .contains("#[fg=#CC7832]⚠#[default]lead")
         );
     }
 

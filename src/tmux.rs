@@ -1902,7 +1902,7 @@ mod tests {
                 OptionScope::Window,
                 "@7",
                 crate::theme::WINDOW_AGENTS_OPTION,
-                "[lead● builder◌]"
+                "[●lead ◌builder]"
             ),
             [
                 "-L",
@@ -1912,7 +1912,7 @@ mod tests {
                 "-t",
                 "@7",
                 "@ae_window_agents",
-                "[lead● builder◌]"
+                "[●lead ◌builder]"
             ]
         );
         assert_eq!(
@@ -1952,7 +1952,7 @@ mod tests {
                 OptionScope::Window,
                 "@7",
                 crate::theme::WINDOW_AGENTS_OPTION,
-                "[lead⠋ builder◌]",
+                "[⠋lead ◌builder]",
             ),
         ];
         assert_eq!(
@@ -1972,7 +1972,7 @@ mod tests {
                 "-t",
                 "@7",
                 "@ae_window_agents",
-                "[lead⠋ builder◌]",
+                "[⠋lead ◌builder]",
             ]
         );
     }

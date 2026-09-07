@@ -967,10 +967,10 @@ fn the_window_agents_are_published_by_a_running_daemon() {
         "the daemon published window agents within the budget"
     );
 
-    // `<name><glyph>`: the bare name, then one status mark, and no alias.
+    // `<glyph><name>`: the live mark first, then the bare name, and no alias.
     assert!(
-        window.starts_with("lead") && window.chars().count() > "lead".chars().count(),
-        "the window entry is the bare name plus a glyph: {window:?}"
+        window.starts_with("#[fg=") && window.contains("#[default]lead"),
+        "the window entry leads with a styled mark then the bare name: {window:?}"
     );
     assert!(
         !window.contains(':'),
