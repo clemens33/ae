@@ -1,6 +1,14 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [v2026.9.16] - 2026-09-07
+
+### Other
+
+- Focus sessions on lead pane when entered
+- Keep test tmux directory existent
+- Move attached clients when ending sessions
+- Enforce session delivery boundaries
 ## [v2026.9.15] - 2026-09-07
 
 ### Bug Fixes
