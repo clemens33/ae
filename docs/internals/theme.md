@@ -70,8 +70,8 @@ reason beside the mark says which of the two it was.
 
 A ticker runs between the watchdog's 60-second verdict cycles. Every attached
 pane whose latest verdict mark is working gets one pulsing `●` frame every
-100 ms: its foreground eases between the palette's dim colour and working
-accent over two seconds. One batched tmux invocation advances its pane border,
+100 ms: its foreground breathes from near-background to bright working accent
+over two seconds. One batched tmux invocation advances its pane border,
 window entry and fleet strip together. Every fifth frame refreshes the pane and
 fleet observations; the four frames between reuse that snapshot, keeping tmux
 reads at 500 ms while animation runs at 10 fps. Detached sessions receive no
