@@ -1181,6 +1181,20 @@ pub fn switch_command(session: &str) -> String {
     )
 }
 
+/// Arguments that switch one exact client to one exact session.
+///
+/// The client target is the exact id read from `list-clients`; the session
+/// target uses tmux's leading `=` exact-match form.
+#[must_use]
+pub fn switch_client_args(server: &ServerId, client: &str, session: &str) -> Vec<String> {
+    let mut args = server_args(server);
+    args.extend(["switch-client", "-c"].map(ToOwned::to_owned));
+    args.push(client.to_owned());
+    args.push("-t".to_owned());
+    args.push(session_target(session));
+    args
+}
+
 /// The command that hands the calling client to `pane` of `session`.
 ///
 /// The WINDOW before the pane: a worker lives in its own, and `select-pane`
@@ -3104,6 +3118,16 @@ mod tests {
         assert_eq!(
             focus_args(&ServerId::Ambient, FocusVerb::AttachSession, "s"),
             vec!["attach-session", "-t", "=s"]
+        );
+    }
+
+    #[test]
+    fn client_switch_targets_exact_client_and_session_ids() {
+        use super::switch_client_args;
+        use crate::inventory::ServerId;
+        assert_eq!(
+            switch_client_args(&ServerId::Ambient, "/dev/ttys001", "next"),
+            vec!["switch-client", "-c", "/dev/ttys001", "-t", "=next"]
         );
     }
 

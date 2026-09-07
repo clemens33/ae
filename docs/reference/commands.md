@@ -576,6 +576,8 @@ Pause a session for later resume. Detaches all agents and kills the tmux session
 
 Use this when you're done for the day or switching contexts.
 
+When stopping a session a client is watching, ae moves that client to the next ae session in strip order on the same server; if none remains, the client is detached as before.
+
 **What "stopped" means.** `ae stop` resolves the session on the tmux server its own
 meta records — never whichever server happens to be ambient — addresses it by exact
 session id rather than by name, and verifies it is gone before saying so. If the kill
@@ -730,6 +732,8 @@ one to fix.
 
 End a session for good. Removes ae's own state; **keeps the agent conversation
 history by default**. If you want to resume later, use `ae stop` instead.
+
+When ending a session a client is watching, ae moves that client to the next ae session in strip order on the same server; if none remains, the client is detached as before.
 
 Inside a session, bare `ae end` and `ae end <current-name>` target the caller's session.
 When stdin has no terminal, ae asks the attached human's tmux client:

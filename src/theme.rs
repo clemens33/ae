@@ -726,6 +726,36 @@ impl FleetRow {
     }
 }
 
+/// Fleet rows in the same stable order used by [`fleet_strip`].
+fn ordered_fleet_rows(rows: &[FleetRow]) -> Vec<&FleetRow> {
+    let mut ordered: Vec<&FleetRow> = rows.iter().collect();
+    ordered.sort_by(|left, right| {
+        // The orchestrator is the fleet's fixed point of reference: keep it
+        // first regardless of attention, and never let overflow shed it.
+        let left_pinned = left.pinned();
+        let right_pinned = right.pinned();
+        right_pinned
+            .cmp(&left_pinned)
+            .then_with(|| left.created().cmp(&right.created()))
+            .then_with(|| left.name.cmp(&right.name))
+    });
+    ordered
+}
+
+/// The next session in fleet-strip order, excluding `dying`, with wraparound.
+///
+/// A missing or sole row has no destination. This is pure so lifecycle code
+/// and the strip share one ordering rule without a tmux read in the decision.
+#[must_use]
+pub fn next_fleet_session(rows: &[FleetRow], dying: &str) -> Option<String> {
+    let ordered = ordered_fleet_rows(rows);
+    let start = ordered.iter().position(|row| row.name == dying)?;
+    (1..ordered.len())
+        .map(|offset| ordered[(start + offset) % ordered.len()])
+        .find(|row| row.name != dying)
+        .map(|row| row.name.clone())
+}
+
 /// The fleet strip: `<glyph> <name>` per session, in the order the sessions
 /// were CREATED, each one a click that switches this client to it.
 ///
@@ -745,17 +775,7 @@ impl FleetRow {
 pub fn fleet_strip(look: &Look, rows: &[FleetRow], working_frame: Option<&str>) -> String {
     let palette = &look.palette;
     let icons = look.icons;
-    let mut ordered: Vec<&FleetRow> = rows.iter().collect();
-    ordered.sort_by(|left, right| {
-        // The orchestrator is the fleet's fixed point of reference: keep it
-        // first regardless of attention, and never let overflow shed it.
-        let left_pinned = left.pinned();
-        let right_pinned = right.pinned();
-        right_pinned
-            .cmp(&left_pinned)
-            .then_with(|| left.created().cmp(&right.created()))
-            .then_with(|| left.name.cmp(&right.name))
-    });
+    let mut ordered = ordered_fleet_rows(rows);
     // OVERFLOW: the strip sheds its calmest rows first, because a session that
     // wants nothing is the one the reader loses least by not seeing, and the
     // rows that remain keep their order. The current session and the pinned
@@ -1434,6 +1454,28 @@ mod tests {
             None,
         );
         assert_eq!(strip, again);
+    }
+
+    #[test]
+    fn next_fleet_session_wraps_and_excludes_the_dying_row() {
+        use super::next_fleet_session;
+        let row = |name: &str, id: &str| FleetRow {
+            name: name.to_owned(),
+            id: id.to_owned(),
+            mark: Mark::Idle,
+            current: false,
+        };
+        let rows = [row("third", "$3"), row("first", "$1"), row("second", "$2")];
+        assert_eq!(
+            next_fleet_session(&rows, "first").as_deref(),
+            Some("second")
+        );
+        assert_eq!(next_fleet_session(&rows, "third").as_deref(), Some("first"));
+        assert_eq!(
+            next_fleet_session(&rows, "second").as_deref(),
+            Some("third")
+        );
+        assert_eq!(next_fleet_session(&rows[..1], "third"), None);
     }
 
     #[test]

@@ -383,7 +383,16 @@ fn stop_recorded(
     let mut captured_err = Vec::new();
     let outcome = stop_one(root, name, &mut captured_out, &mut captured_err)?;
     let summary = match outcome {
-        StopOutcome::Stopped => "stopped: verified gone on its recorded server".to_owned(),
+        StopOutcome::Stopped => {
+            // A successful stop may still carry migration or client-handoff
+            // warnings; retain every captured warning in the durable result.
+            let warning = String::from_utf8_lossy(&captured_err).trim().to_owned();
+            if warning.is_empty() {
+                "stopped: verified gone on its recorded server".to_owned()
+            } else {
+                format!("stopped: verified gone on its recorded server; {warning}")
+            }
+        }
         StopOutcome::AlreadyStopped => "already stopped".to_owned(),
         StopOutcome::Failed => format!("FAILED: {}", String::from_utf8_lossy(&captured_err).trim()),
     };
@@ -473,6 +482,39 @@ pub(super) fn announce_to_clients(server: &ServerId, text: &str) {
             let _ = transport::display_client_message(server, &client.name, text);
         }
     }
+}
+
+/// Move clients watching `name` before its session is killed. The destination
+/// follows the same creation/pinned ordering the fleet strip draws.
+pub(super) fn handoff_clients_before_kill(server: &ServerId, name: &str) -> Option<String> {
+    let sessions = transport::observe_fleet_sessions(server)?;
+    let rows: Vec<crate::theme::FleetRow> = sessions
+        .iter()
+        .map(|session| crate::theme::FleetRow {
+            name: session.name.clone(),
+            id: session.id.clone(),
+            mark: crate::theme::Mark::from_rank(&session.rank),
+            current: session.name == name,
+        })
+        .collect();
+    let next = crate::theme::next_fleet_session(&rows, name)?;
+    let clients = transport::observe_clients(server)?;
+    let attached = clients
+        .into_iter()
+        .filter(|client| client.session == name)
+        .collect::<Vec<_>>();
+    if attached.is_empty() {
+        return None;
+    }
+    let failed = attached
+        .iter()
+        .filter(|client| !transport::switch_client(server, &client.name, &next))
+        .count();
+    (failed > 0).then(|| {
+        format!(
+            "client handoff failed: {failed} client(s) could not switch from '{name}' to '{next}'"
+        )
+    })
 }
 
 /// The positive server record of one session.
@@ -717,6 +759,8 @@ fn run_supervisor(
     if name != "all" {
         return supervise_one(root, name, out, err);
     }
+    // A fleet stop may move a client to the next session that this same sweep
+    // will end; once no session remains, tmux detaches it as usual.
     let mut failures = 0_u32;
     for session in all_sessions(root) {
         if supervise_one(root, &session, out, err)? != 0 {
@@ -914,6 +958,9 @@ fn stop_one(
         writeln!(err, "Session '{name}' is not running.")?;
         return Ok(StopOutcome::AlreadyStopped);
     };
+    if let Some(note) = handoff_clients_before_kill(&server, name) {
+        writeln!(err, "Warning: {note}")?;
+    }
     if !kill_verified(&server, name, "stop", &session_id, err)? {
         return Ok(StopOutcome::Failed);
     }

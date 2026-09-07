@@ -720,6 +720,12 @@ pub fn focus(server: &ServerId, verb: tmux::FocusVerb, session: &str) -> u8 {
     }
 }
 
+/// Move one exact client to one exact session, or report tmux's refusal.
+#[must_use]
+pub fn switch_client(server: &ServerId, client: &str, session: &str) -> bool {
+    addressable(server) && run(PROGRAM, &tmux::switch_client_args(server, client, session)).0
+}
+
 /// What a focus that never ran reports — `127`, the shell's command-not-found.
 pub const FOCUS_FAILED: u8 = 127;
 

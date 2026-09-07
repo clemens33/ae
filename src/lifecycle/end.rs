@@ -20,8 +20,8 @@ use crate::transport;
 
 use super::{
     ClientPrompt, DetachedArgv, all_sessions, announce_to_clients, confirm_on_client, dir_exists,
-    emit_lifecycle_event, kill_verified, live_id, lock, meta_value, name_is_usable, path_exists,
-    recorded_server, server_of, sessions_dir, worktrees_dir,
+    emit_lifecycle_event, handoff_clients_before_kill, kill_verified, live_id, lock, meta_value,
+    name_is_usable, path_exists, recorded_server, server_of, sessions_dir, worktrees_dir,
 };
 
 /// The usage line.
@@ -1069,10 +1069,18 @@ fn end_one(
     // outcome honestly as not-managed rather than inventing a range from the
     // human's own checkout.
     if mode == "local" || mode.is_empty() {
+        let handoff_note = server
+            .as_ref()
+            .zip(session_id.as_ref())
+            .and_then(|(server, _)| handoff_clients_before_kill(server, name));
         if let (Some(server), Some(id)) = (server.as_ref(), session_id.as_ref())
             && !kill_verified(server, name, "end", id, err)?
         {
             return Ok(false);
+        }
+        if let Some(note) = handoff_note {
+            emit_lifecycle_event(&dir, name, END_RESULT_ACTION, &note);
+            writeln!(err, "Warning: {note}")?;
         }
         // CAPTURE BEFORE DELETE.
         if !archive_step(root, name, &plan, &Git::none(), out, err)? {
@@ -1100,10 +1108,18 @@ fn end_one(
         return Ok(false);
     }
     // STOP FIRST — and verify it.
+    let handoff_note = server
+        .as_ref()
+        .zip(session_id.as_ref())
+        .and_then(|(server, _)| handoff_clients_before_kill(server, name));
     if let (Some(server), Some(id)) = (server.as_ref(), session_id.as_ref())
         && !kill_verified(server, name, "end", id, err)?
     {
         return Ok(false);
+    }
+    if let Some(note) = handoff_note {
+        emit_lifecycle_event(&dir, name, END_RESULT_ACTION, &note);
+        writeln!(err, "Warning: {note}")?;
     }
 
     if crate::git::has_pending_work(&wdir_bytes) {
