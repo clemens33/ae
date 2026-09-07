@@ -482,6 +482,11 @@ pub fn entry_from(
     }
 
     if let Some(meta) = meta {
+        entry.main_agent = meta
+            .roster()
+            .iter()
+            .find(|seat| seat.slot == "main")
+            .map(|seat| seat.name.clone());
         entry.agents = agent_entries(meta, read, runtime, name);
         entry.set_established_runtime_dead_agents(established_runtime_dead_agents(meta, runtime));
     }
@@ -1890,6 +1895,7 @@ mod tests {
         assert_eq!(entry.work_dir.as_deref(), Some("/home/c/.ae/worktrees/x"));
         assert_eq!(entry.goal.as_deref(), Some("ship the login flow"));
         assert_eq!(entry.last_active_epoch, Some(NOW.epoch() - 900));
+        assert_eq!(entry.main_agent.as_deref(), Some("lead"));
 
         assert_eq!(entry.agents.len(), 2);
         assert_eq!(entry.agents[0].reference, "lead");

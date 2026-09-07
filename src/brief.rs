@@ -230,9 +230,7 @@ pub enum Need {
 
 impl Need {
     /// Whether this fact is a direct claim on the human's attention.
-    ///
-    /// Roster order owns main-seat identity: [`Card::human_needs`] supplies the
-    /// first agent's name. `colead` is the one name-based leadership convention.
+    /// `colead` is the one name-based leadership convention.
     #[must_use]
     pub fn claims_human(&self, main_agent: Option<&str>) -> bool {
         matches!(
@@ -252,6 +250,8 @@ pub struct Card {
     pub name: String,
     /// `running` / `unknown` / `stopped`.
     pub status: &'static str,
+    /// The agent occupying the typed `main` roster slot, when established.
+    pub main: Option<String>,
     /// The session-level attention rollup, when it is exact enough to show.
     pub attention: Option<Reason>,
     /// The ae version the session was created under.
@@ -302,9 +302,9 @@ impl Card {
         self.attention.map_or(0, Reason::rank)
     }
 
-    /// Direct human claims, using the roster's first entry as the main seat.
+    /// Direct human claims, using explicit main-seat identity.
     pub fn human_needs(&self) -> impl Iterator<Item = &Need> {
-        let main_agent = self.agents.first().map(|agent| agent.name.as_str());
+        let main_agent = self.main.as_deref();
         self.needs
             .iter()
             .filter(move |need| need.claims_human(main_agent))
@@ -539,6 +539,7 @@ pub fn card_for(
     Card {
         name: entry.name.clone(),
         status: entry.status.as_str(),
+        main: entry.main_agent.clone(),
         // The same exactness rule the table applies: a class marker is not
         // printed off partial evidence.
         attention: entry.attention.filter(|_| entry.attention_is_exact()),
@@ -736,6 +737,7 @@ mod tests {
         Card {
             name: name.to_owned(),
             status: "running",
+            main: Some("lead".to_owned()),
             attention: None,
             ae_version: Some("2026.9.5".to_owned()),
             branch: Some("main".to_owned()),

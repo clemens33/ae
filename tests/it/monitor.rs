@@ -517,6 +517,7 @@ fn the_charter_pins_the_watchdog_overview_turn_and_retires_the_model_sweep() {
         Card {
             name: "aedev".to_owned(),
             status: "running",
+            main: Some("lead".to_owned()),
             attention: None,
             ae_version: None,
             branch: None,
@@ -562,6 +563,7 @@ fn the_charter_pins_the_watchdog_overview_turn_and_retires_the_model_sweep() {
         Card {
             name: "dotfiles".to_owned(),
             status: "running",
+            main: Some("lead".to_owned()),
             attention: None,
             ae_version: None,
             branch: None,

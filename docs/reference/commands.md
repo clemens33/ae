@@ -557,9 +557,9 @@ when it is at or after the latest successful delivery. When none qualifies by
 raises one `meta-agent not acknowledging overviews` alert, cleared by the next
 qualifying `done`. The state-file mtime is the watchdog's own render heartbeat
 and is never treated as seat liveness. The same file carries
-the last semantic overview hash: elapsed age labels and request bodies do not
-change it, but a state, reason, per-session open-request count, goal, topic, or
-attention change does. A restart neither
+the last semantic overview hash: elapsed age labels, request bodies and hidden
+worker needs do not change it, but a visible state, leadership reason,
+per-session open-request count, goal or topic change does. A restart neither
 resends unchanged text nor forgets minimum spacing or the outstanding deadline.
 The overview is built from the same `current_world` plus brief-card facts as
 `ae brief --all`; the seat does not run that command on a timer. Sweep nudges

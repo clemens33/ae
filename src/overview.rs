@@ -4,7 +4,6 @@
 //! same [`crate::brief::Card`] facts as `ae brief --all` and owns only stable,
 //! bounded presentation. No clock and no filesystem read enters this module.
 
-use crate::attention::Reason;
 use crate::brief::{self, Card, Need};
 
 /// The final line of every overview turn.
@@ -141,8 +140,8 @@ pub fn nudge_body(rendered: &str) -> String {
 
 /// Return a stable dependency-free FNV-1a 64 digest of the semantic fleet
 /// facts that decide an overview, never their elapsed ages. The display can
-/// advance from `20m` to `22m` without spending a seat turn; a state, reason,
-/// open-request count, goal, topic, or attention change cannot.
+/// advance from `20m` to `22m` without spending a seat turn; a visible state,
+/// leadership reason, open-request count, goal, or topic change cannot.
 #[must_use]
 pub fn semantic_hash(cards: &[Card], own_session: &str) -> String {
     let mut value = 0xcbf2_9ce4_8422_2325_u64;
@@ -153,21 +152,21 @@ pub fn semantic_hash(cards: &[Card], own_session: &str) -> String {
         hash_field(&mut value, "session");
         hash_field(&mut value, &card.name);
         hash_field(&mut value, card.status);
-        hash_attention(&mut value, card.attention);
         hash_optional(&mut value, card.goal.as_deref());
         for topic in &card.topics {
             hash_field(&mut value, "topic");
             hash_field(&mut value, &topic.topic);
             hash_field(&mut value, &topic.text);
         }
-        for agent in &card.agents {
-            hash_field(&mut value, "agent");
+        let has_working = card.agents.iter().any(|agent| agent.state == "working");
+        for agent in card.agents.iter().filter(|agent| agent.state == "working") {
+            hash_field(&mut value, "working-agent");
             hash_field(&mut value, &agent.name);
             hash_field(&mut value, &agent.state);
-            hash_field(&mut value, &agent.reason);
-            hash_attention(&mut value, agent.attention);
         }
+        let mut has_human_needs = false;
         for need in card.human_needs() {
+            has_human_needs = true;
             if let Need::Declared {
                 owner,
                 state,
@@ -181,15 +180,15 @@ pub fn semantic_hash(cards: &[Card], own_session: &str) -> String {
                 hash_field(&mut value, reason);
             }
         }
+        if !has_human_needs && !has_working {
+            hash_field(&mut value, "quiet-state");
+            hash_field(&mut value, quiet_state(card));
+        }
         hash_field(&mut value, "open-asks");
         hash_field(&mut value, &card.open_ask_count().to_string());
         hash_field(&mut value, "end-session");
     }
     format!("{value:016x}")
-}
-
-fn hash_attention(value: &mut u64, attention: Option<Reason>) {
-    hash_optional(value, attention.map(Reason::as_str));
 }
 
 fn hash_optional(value: &mut u64, field: Option<&str>) {
@@ -382,20 +381,30 @@ fn working_line(session: &str, agent: &str, detail: &str, open_asks: usize) -> S
 }
 
 fn quiet_chunk(card: &Card) -> String {
-    let (state, age) = match card.agents.as_slice() {
-        [] => ("no agents", None),
-        [only] => (only.state.as_str(), only.age_secs),
-        agents => {
-            let first = agents[0].state.as_str();
-            let common = agents.iter().all(|agent| agent.state == first);
-            let age = agents.iter().filter_map(|agent| agent.age_secs).min();
-            (if common { first } else { "quiet" }, age)
-        }
+    let age = match card.agents.as_slice() {
+        [] => None,
+        [only] => only.age_secs,
+        agents => agents.iter().filter_map(|agent| agent.age_secs).min(),
     };
     clipped(
-        &format!("{} ({state} {})", card.name, brief::age(age)),
+        &format!("{} ({} {})", card.name, quiet_state(card), brief::age(age)),
         WIDTH - 2,
     )
+}
+
+fn quiet_state(card: &Card) -> &str {
+    match card.agents.as_slice() {
+        [] => "no agents",
+        [only] => only.state.as_str(),
+        agents => {
+            let first = agents[0].state.as_str();
+            if agents.iter().all(|agent| agent.state == first) {
+                first
+            } else {
+                "quiet"
+            }
+        }
+    }
 }
 
 fn packed_quiet(chunks: &[String]) -> Vec<String> {
@@ -455,9 +464,11 @@ mod tests {
     }
 
     fn card(name: &str, agents: Vec<AgentLine>) -> Card {
+        let main = agents.first().map(|agent| agent.name.clone());
         Card {
             name: name.to_owned(),
             status: "running",
+            main,
             attention: None,
             ae_version: None,
             branch: None,
@@ -550,12 +561,16 @@ mod tests {
     }
 
     #[test]
-    fn worker_needs_are_hidden_while_main_and_colead_share_one_session_heading() {
-        let mut pending = card("alpha", vec![agent("captain", "waiting-user", 0, None)]);
-        pending
-            .agents
-            .push(agent("worker", "waiting-user", 3_600, None));
-        pending.agents.push(agent("colead", "blocked", 1_800, None));
+    fn explicit_main_not_first_and_colead_share_one_session_heading() {
+        let mut pending = card(
+            "alpha",
+            vec![
+                agent("worker", "waiting-user", 3_600, None),
+                agent("captain", "waiting-user", 0, None),
+                agent("colead", "blocked", 1_800, None),
+            ],
+        );
+        pending.main = Some("captain".to_owned());
         pending.needs.push(Need::Declared {
             owner: "captain".to_owned(),
             state: "waiting-user".to_owned(),
@@ -717,8 +732,7 @@ mod tests {
         assert_eq!(nudge_body(""), TRAILER);
     }
 
-    #[test]
-    fn semantic_hash_tracks_human_facts_and_open_ask_count_but_not_ages_or_bodies() {
+    fn hash_card() -> Card {
         let mut pending = card("alpha", vec![agent("lead", "waiting-user", 1_200, None)]);
         pending.agents[0].reason = "choose blue".to_owned();
         pending.topics.push(TopicLine {
@@ -741,7 +755,12 @@ mod tests {
             age_secs: 60,
             question: "check it".to_owned(),
         });
-        let original = vec![pending];
+        pending
+    }
+
+    #[test]
+    fn semantic_hash_ignores_display_ages() {
+        let original = vec![hash_card()];
         let mut later = original.clone();
         later[0].agents[0].age_secs = Some(1_320);
         later[0].topics[0].age_secs = Some(180);
@@ -762,7 +781,11 @@ mod tests {
             semantic_hash(&later, "orchestrator"),
             "elapsed time alone never spends a seat turn"
         );
+    }
 
+    #[test]
+    fn semantic_hash_changes_when_a_leadership_reason_changes() {
+        let original = vec![hash_card()];
         let mut changed_reason = original.clone();
         changed_reason[0].agents[0].reason = "choose green".to_owned();
         if let Need::Declared { reason, .. } = &mut changed_reason[0].needs[0] {
@@ -773,7 +796,11 @@ mod tests {
             semantic_hash(&changed_reason, "orchestrator"),
             "a reason change wakes the seat"
         );
+    }
 
+    #[test]
+    fn semantic_hash_ignores_an_open_ask_body() {
+        let original = vec![hash_card()];
         let mut changed_body = original.clone();
         if let Need::Unanswered { question, .. } = &mut changed_body[0].needs[1] {
             *question = "different body".to_owned();
@@ -783,7 +810,11 @@ mod tests {
             semantic_hash(&changed_body, "orchestrator"),
             "request bodies never spend a seat turn"
         );
+    }
 
+    #[test]
+    fn semantic_hash_changes_with_the_open_ask_count() {
+        let original = vec![hash_card()];
         let mut changed_count = original.clone();
         changed_count[0].needs.push(Need::Unanswered {
             kind: "ask".to_owned(),
@@ -797,6 +828,39 @@ mod tests {
             semantic_hash(&original, "orchestrator"),
             semantic_hash(&changed_count, "orchestrator"),
             "a changed open-ask count wakes the seat"
+        );
+    }
+
+    #[test]
+    fn semantic_hash_ignores_a_hidden_worker_block() {
+        let original = vec![card(
+            "alpha",
+            vec![
+                agent("lead", "working", 0, None),
+                agent("worker", "done", 60, None),
+            ],
+        )];
+        let mut worker_blocked = original.clone();
+        worker_blocked[0].agents[1].state = "blocked".to_owned();
+        worker_blocked[0].agents[1].reason = "internal worker blocker".to_owned();
+        worker_blocked[0].agents[1].attention = Some(Reason::Blocked);
+        worker_blocked[0].attention = Some(Reason::Blocked);
+        worker_blocked[0].needs.push(Need::Declared {
+            owner: "worker".to_owned(),
+            state: "blocked".to_owned(),
+            age_secs: Some(0),
+            reason: "internal worker blocker".to_owned(),
+        });
+
+        assert_eq!(
+            render(&original, "orchestrator"),
+            render(&worker_blocked, "orchestrator"),
+            "worker needs stay absent from the overview"
+        );
+        assert_eq!(
+            semantic_hash(&original, "orchestrator"),
+            semantic_hash(&worker_blocked, "orchestrator"),
+            "a hidden worker need never spends a seat turn"
         );
     }
 

@@ -238,6 +238,9 @@ pub struct SessionEntry {
     pub attention: Option<Reason>,
     /// The session's agents.
     pub agents: Vec<AgentEntry>,
+    /// The agent occupying the typed `main` roster slot, when established.
+    /// Kept separately because roster file order is not seat identity.
+    pub main_agent: Option<String>,
     /// Whether this entry suffered ACTUAL read/parse loss.
     pub degraded: bool,
     /// Per-member source completeness.
@@ -265,6 +268,7 @@ impl SessionEntry {
             last_active_epoch: None,
             attention: None,
             agents: Vec::new(),
+            main_agent: None,
             degraded: false,
             knowledge: RenderKnowledge::complete(),
             established_runtime_dead_agents: Vec::new(),
