@@ -92,10 +92,10 @@ ae orchestrator --popup        # pick a session, then an agent, in a tmux menu; 
 watch -n 10 'ae list'          # live dashboard
 ```
 
-The bare `ae orchestrator` command uses the current directory and session-local
-config. If you need the role contract, copy
-`contrib/aeorchestrator/orchestrator.config` to `.ae/config` first; ae prints
-that hint when the file is missing.
+The bare `ae orchestrator` command starts one seat using
+`~/.ae/orchestrator.config`, independent of the current directory's
+`.ae/config`. Ae seeds that dedicated config on first run; edit it to choose the
+harness profile or customize the role.
 
 Bind the picker to a key (ae needs tmux 3.4+); `switch-client -l` (prefix + `L`) is the
 way back:
@@ -213,7 +213,7 @@ Everything else is **optional**, never required for core commands:
 | Feature | What | Needs |
 |---|---|---|
 | `ae telegram` | machine-global bridge: fleet events to your Telegram chat, replies route back | a configured ae core (no extra CLI deps) |
-| the orchestrator seat ([contrib/aeorchestrator](contrib/aeorchestrator)) | an ordinary local ae session named `orchestrator`: reads `ae brief --all` / `ae list`, reports fleet health, and relays only explicit human instructions | an agent CLI + copied `.ae/config` |
+| the orchestrator seat ([contrib/aeorchestrator](contrib/aeorchestrator)) | a dedicated single-seat local session named `orchestrator`: reads `ae brief --all` / `ae list`, reports fleet health, and relays only explicit human instructions | an agent CLI; ae seeds its config |
 
 Both daemons are Rust, start to finish: the watchdog pane runs core `_watchdog-run`, the bridge runs core `_telegram-run`, and `ae watchdog`/`ae telegram` are core operations. Neither needs `jq` or `curl`. The orchestrator's deterministic sweep is the core entry `ae _monitor sweep` — it was a Python sidecar (`contrib/aemonitor`) until the core took the job, and that was the product's last Python. Autostart controls are per component: set `watchdog = false` in workspace config to disable the workspace watchdog; set `enabled = false` in Telegram config to disable Telegram; set `AE_NO_AUTOSTART=1` to suppress the Telegram bridge on launch.
 

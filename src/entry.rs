@@ -89,7 +89,7 @@ Usage:
                          Card one session or the fleet: goal, the latest note per memo
                          topic, each agent's declared state, and who is waiting on you
   ae orchestrator        Start or reattach the orchestrator seat (a session named
-                         orchestrator in this directory; see contrib/aeorchestrator)
+                         orchestrator; config: ~/.ae/orchestrator.config)
   ae orchestrator --popup
                          Pick a session, then one of its agents, in a tmux menu and
                          hand this client to that agent's pane (needs tmux 3.4+)
@@ -481,7 +481,7 @@ mod tests {
         );
         assert_eq!(
             route(&preamble(), &argv(&["orchestrator"]), None),
-            Route::Launch(argv(&["orchestrator", "--local"]))
+            Route::Launch(argv(&["orchestrator"]))
         );
     }
 

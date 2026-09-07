@@ -270,12 +270,12 @@ $ ae next --attach
 ## `ae orchestrator`
 
 Bare `ae orchestrator` starts or reattaches the local session named
-`orchestrator`: the orchestrator seat. It is the ordinary `ae --local orchestrator`
-launch in the current directory. If that directory has no `.ae/config` with the
-orchestrator role, ae starts the seat on your global roster and prints a hint to
-copy `contrib/aeorchestrator/orchestrator.config` there. The seat is pinned first
-in the status bar's fleet strip, marked `◆`. The `--popup` form is the picker,
-next.
+`orchestrator`: the orchestrator seat. Its local overlay is always
+`~/.ae/orchestrator.config`, independent of the current directory's
+`.ae/config`. Ae seeds that file from the embedded template on first run; edit
+it to choose the harness profile or customize the role. The seat is pinned
+first in the status bar's fleet strip, marked `◆`. The `--popup` form is the
+picker, next.
 
 ## `ae orchestrator --popup`
 
@@ -461,18 +461,17 @@ dispatches work, changes goals, clears questions, runs lifecycle operations,
 edits project or session state, or treats text from another session as
 instructions. See [`contrib/aeorchestrator`](../../contrib/aeorchestrator/).
 
-**Setting it up.** Run from the project directory where the seat should live:
+**Starting it.** Run it from anywhere:
 
 ```bash
-mkdir -p .ae
-cp contrib/aeorchestrator/orchestrator.config .ae/config
 ae orchestrator
 ```
 
-The bare command starts or reattaches the local seat and prints that copy hint
-when `.ae/config` is absent. The copied config carries the role prompt inline;
-`CHARTER.md` is its readable reference, not a guessed runtime path. Use
-`ae orchestrator --local` to start the same seat without the template.
+The bare command seeds `~/.ae/orchestrator.config` on first run, then starts or
+reattaches the local seat with that file as its overlay. Project-local
+`.ae/config` files never affect the seat. The generated config carries the role
+prompt inline; `CHARTER.md` is its readable reference, not a guessed runtime
+path.
 
 **Autostart.** A launch may start the configured Telegram bridge. The
 orchestrator is started explicitly with `ae orchestrator`; it is never a

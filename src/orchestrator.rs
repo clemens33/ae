@@ -22,8 +22,9 @@ use crate::tmux::{Menu, MenuAction, MenuItem, jump_command, switch_command};
 pub const USAGE: &str = "\
 Usage: ae orchestrator [--popup]
 
-Bare `ae orchestrator` starts or reattaches the orchestrator seat. With
-`--popup`, pick a session, then an agent, in a tmux menu.
+Bare `ae orchestrator` starts or reattaches the orchestrator seat from its
+dedicated config under ae's state home. With `--popup`, pick a session, then
+an agent, in a tmux menu.
 
 The menu lists every running ae session in attention order — dead, stale,
 waiting-user, blocked, throttled, unanswered, then the quiet ones by name —
@@ -42,6 +43,13 @@ disabled and shows the attach command instead.
 
 /// The canonical orchestrator session name.
 pub const ORCHESTRATOR_SESSION: &str = "orchestrator";
+
+/// The seat's local-overlay config, relative to ae's state home.
+pub(crate) const CONFIG_FILE: &str = "orchestrator.config";
+
+/// The config seeded for the seat on its first launch.
+pub(crate) const DEFAULT_CONFIG: &str =
+    include_str!("../contrib/aeorchestrator/orchestrator.config");
 
 /// The code a refused orchestrator invocation takes.
 pub const EXIT_USAGE: u8 = 2;
@@ -110,7 +118,7 @@ pub fn parse(tail: &[String]) -> Result<Args, Usage> {
 /// The user-facing launch tail for the canonical orchestrator seat.
 #[must_use]
 pub fn seat_launch_args() -> Vec<String> {
-    vec![ORCHESTRATOR_SESSION.to_owned(), "--local".to_owned()]
+    vec![ORCHESTRATOR_SESSION.to_owned()]
 }
 
 /// Where one session's panes are, as the caller's own tmux server sees them.
@@ -630,11 +638,8 @@ mod tests {
     }
 
     #[test]
-    fn the_bare_word_routes_to_the_canonical_local_seat() {
-        assert_eq!(
-            super::seat_launch_args(),
-            vec!["orchestrator".to_owned(), "--local".to_owned()]
-        );
+    fn the_bare_word_routes_to_the_canonical_seat() {
+        assert_eq!(super::seat_launch_args(), vec!["orchestrator".to_owned()]);
         assert_eq!(super::ORCHESTRATOR_SESSION, "orchestrator");
     }
 

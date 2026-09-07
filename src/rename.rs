@@ -221,7 +221,9 @@ fn republish(dir: &Path, name: &str, server: &ServerId) {
     if !recorded.is_empty() {
         config_files.push(PathBuf::from(recorded));
     }
-    config_files.push(Path::new(&origin).join(".ae").join("config"));
+    if let Some(local) = crate::config::local_overlay(dir, &origin) {
+        config_files.push(local);
+    }
     let manifest = crate::render::manifest_document(
         dir,
         name,

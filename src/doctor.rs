@@ -722,9 +722,8 @@ fn refresh_one(name: &str, dir: &Path, core: &Path, global: Option<&Path>, docum
         return;
     }
 
-    // The manifest reads the session's OWN recorded config, layered under the
-    // origin's project override, which is why a refresh renders the same
-    // document a launch does.
+    // The manifest reads the session's OWN recorded config and local overlay,
+    // which is why a refresh renders the same document a launch does.
     let origin = or_dot(value("origin"));
     let work_dir = or_dot(value("work_dir"));
     let mut config_files: Vec<PathBuf> = Vec::new();
@@ -734,7 +733,9 @@ fn refresh_one(name: &str, dir: &Path, core: &Path, global: Option<&Path>, docum
     } else if let Some(global) = global {
         config_files.push(global.to_path_buf());
     }
-    config_files.push(Path::new(&origin).join(".ae").join("config"));
+    if let Some(local) = crate::config::local_overlay(dir, &origin) {
+        config_files.push(local);
+    }
     let mode = value("mode");
     let mode = if mode.is_empty() {
         "local".to_owned()

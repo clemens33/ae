@@ -236,6 +236,17 @@ fn assert_no_tmux_processes(scratch: &Path) {
     let _ = std::fs::remove_dir_all(&probe);
 }
 
+/// Wait briefly for a pane's fake agent to record that `_run` reached it.
+fn assert_agent_launched(marker: &Path, context: &str) {
+    for _ in 0..200 {
+        if marker.exists() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    assert!(marker.exists(), "{context}");
+}
+
 fn skip() -> bool {
     let probe = PathBuf::from(format!("/tmp/aeentry-probe.{}", std::process::id()));
     let _ = std::fs::create_dir_all(&probe);
@@ -543,28 +554,45 @@ fn a_cut_word_refuses_and_creates_no_session() {
     }
 }
 
-/// The bare `ae orchestrator` is a LAUNCH of the orchestrator seat: an ordinary
-/// local session named `orchestrator`, built through the same preamble as any
-/// launch. With no `.ae/config` beside it, the seat still starts, on the global
-/// roster, and says where the role contract comes from.
-#[test]
-fn the_bare_orchestrator_launches_the_seat_and_names_the_missing_local_config() {
-    if skip() {
-        return;
-    }
-    let rig = Rig::new("orch");
+fn write_competing_orchestrator_configs(rig: &Rig) {
     assert!(std::fs::create_dir_all(&rig.home).is_ok(), "an ae home");
     assert!(
         std::fs::write(
             rig.config(),
-            "[profiles]\nidle = \"sleep 600\"\n\n[roster]\nlead = idle\n\n\
-             [workspace]\nmain = lead\nlayout = vertical\nwatchdog = false\n",
+            "[profiles]\nother = \"claude\"\n\n[roster]\nlead = other\nworker = other\n\n\
+             [workspace]\nmain = lead\nworkers = worker\nlayout = lead-pair\nwatchdog = false\n",
         )
         .is_ok(),
-        "a global config"
+        "a global config with workers"
     );
+    let local_dir = rig.project.join(".ae");
+    assert!(
+        std::fs::create_dir_all(&local_dir).is_ok(),
+        "a local config dir"
+    );
+    assert!(
+        std::fs::write(
+            local_dir.join("config"),
+            "[profiles]\nidle = \"sleep 600\"\n\n[roster]\nlocal = idle\nworker = idle\n\n\
+             [workspace]\nmain = local\nworkers = worker\nlayout = horizontal\n",
+        )
+        .is_ok(),
+        "a project config with workers"
+    );
+}
+
+/// The bare `ae orchestrator` seeds and uses its state-local config, ignoring a
+/// project overlay that would otherwise add workers. The seed is one-shot.
+#[test]
+fn the_bare_orchestrator_seeds_its_own_config_and_seats_exactly_one_agent() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::new("orch");
+    write_competing_orchestrator_configs(&rig);
+    let (bin, marker) = rig.fake_profiles();
     let sock = rig.sock.clone();
-    let (code, stdout, stderr) = rig.run_on(Some(&sock), &["orchestrator"]);
+    let (code, stdout, stderr) = rig.run_on_with_path(Some(&sock), &bin, &["orchestrator"]);
     // The rig has no terminal, so the attach at the end of a launch fails; the
     // build before it is what this test is about.
     assert!(
@@ -576,16 +604,75 @@ fn the_bare_orchestrator_launches_the_seat_and_names_the_missing_local_config() 
         "the bare word built the seat: {stdout}{stderr}"
     );
     assert!(
-        stderr.contains("ae orchestrator: no .ae/config under"),
-        "the missing local config is named: {stderr}"
+        stderr.contains("Created orchestrator config at") && stderr.contains("orchestrator.config"),
+        "the seed is named: {stderr}"
     );
+    let config = rig.home.join("orchestrator.config");
+    let seeded = std::fs::read_to_string(&config)
+        .unwrap_or_else(|why| panic!("{}: {why}", config.display()));
+    assert!(seeded.contains("main = orchestrator"), "{seeded}");
+    assert!(seeded.contains("workers = \"\""), "{seeded}");
+    let meta_path = rig.sessions().join("orchestrator").join("meta");
+    let meta = std::fs::read_to_string(&meta_path)
+        .unwrap_or_else(|why| panic!("{}: {why}", meta_path.display()));
+    let seats = meta
+        .lines()
+        .filter(|line| line.starts_with("seat."))
+        .collect::<Vec<_>>();
+    assert_eq!(seats, ["seat.main=orchestrator"], "{meta}");
     assert!(
-        stderr.contains("contrib/aeorchestrator/orchestrator.config"),
-        "the hint names the template: {stderr}"
+        meta.contains(&format!("local_config={}", config.display())),
+        "the nonstandard overlay is a session fact: {meta}"
+    );
+    assert_agent_launched(
+        &marker,
+        "the dedicated config's profile reached the fake executable",
     );
     let (ok, names) = rig.tmux(&["list-sessions", "-F", "#{session_name}"]);
     assert!(ok, "{names}");
     assert!(names.lines().any(|line| line == "orchestrator"), "{names}");
+
+    let customized = format!("{seeded}\n# human customization survives\n");
+    assert!(
+        std::fs::write(&config, &customized).is_ok(),
+        "customize the seeded config"
+    );
+    let (_, _, second_stderr) = rig.run_on_with_path(Some(&sock), &bin, &["orchestrator"]);
+    assert!(
+        !second_stderr.contains("Created orchestrator config at"),
+        "a reattach must not reseed: {second_stderr}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&config).unwrap_or_default(),
+        customized,
+        "a reattach preserves the human's config"
+    );
+
+    let (killed, kill_output) = rig.tmux(&["kill-session", "-t", "orchestrator"]);
+    assert!(killed, "stop the live half for a resume: {kill_output}");
+    assert!(
+        std::fs::remove_file(&marker).is_ok(),
+        "clear the first launch marker"
+    );
+    let (resume_code, resume_stdout, resume_stderr) =
+        rig.run_on_with_path(Some(&sock), &bin, &["orchestrator"]);
+    assert!(
+        resume_code == Some(0) || resume_stderr.contains("open terminal failed"),
+        "{resume_stdout}{resume_stderr}"
+    );
+    assert_agent_launched(
+        &marker,
+        &format!("the resumed run resolved the recorded dedicated overlay: {resume_stderr}"),
+    );
+    assert!(
+        !resume_stderr.contains("Created orchestrator config at"),
+        "a resume must not reseed: {resume_stderr}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&config).unwrap_or_default(),
+        customized,
+        "a resume preserves the human's config"
+    );
 }
 
 /// An underscore word nobody serves fails CLOSED for the same reason.

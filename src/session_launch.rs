@@ -525,11 +525,26 @@ fn launch(
         return Ok(crate::tmux_floor::EXIT_REFUSED);
     }
 
+    let orchestrator_config = env.home.join(crate::orchestrator::CONFIG_FILE);
+    let seeds_orchestrator_config = session == crate::orchestrator::ORCHESTRATOR_SESSION
+        && env.local.as_deref() == Some(orchestrator_config.as_path());
+
     // The FIRST write a launch makes, and it happens here rather than on the
     // public path so that nothing at all can land between the floor decision
     // and it. One gate, one decision, and every write below it.
     if let Some(global) = env.global.as_ref()
-        && let Some(code) = crate::seed_default_config(global, err)?
+        && let Some(code) =
+            crate::seed_default_config(global, crate::entry::DEFAULT_CONFIG, "default", err)?
+    {
+        return Ok(code);
+    }
+    if seeds_orchestrator_config
+        && let Some(code) = crate::seed_default_config(
+            &orchestrator_config,
+            crate::orchestrator::DEFAULT_CONFIG,
+            "orchestrator",
+            err,
+        )?
     {
         return Ok(code);
     }
@@ -689,13 +704,8 @@ fn launch(
         if let Some(stored) = meta_value(&dir, "config").filter(|v| !v.is_empty()) {
             env.global = Some(PathBuf::from(stored));
         }
-        match meta_value(&dir, "origin").filter(|v| !v.is_empty()) {
-            Some(origin) => {
-                let candidate = Path::new(&origin).join(".ae").join("config");
-                env.local = node_exists(&candidate).then_some(candidate);
-            }
-            None => env.local = None,
-        }
+        let origin = meta_value(&dir, "origin").unwrap_or_default();
+        env.local = config::local_overlay(&dir, &origin);
     }
     let cfg: IdentityConfig =
         match config::read_identity(env.global.as_deref(), env.local.as_deref()) {
@@ -1598,6 +1608,13 @@ fn meta_document(
             .map(|path| path.display().to_string())
             .unwrap_or_default(),
     );
+    let origin_local = shape.origin.join(".ae").join("config");
+    if let Some(local) = env.local.as_ref().filter(|local| *local != &origin_local) {
+        row(
+            crate::config::LOCAL_CONFIG_KEY,
+            &local.display().to_string(),
+        );
+    }
     row("main_pane", &main_pane);
     row("ae_version", crate::VERSION);
     if let Some(core) = crate::shape::resolved_exe() {

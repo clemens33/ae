@@ -17,6 +17,28 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 
+/// The persisted path of a nonstandard per-session config overlay.
+pub(crate) const LOCAL_CONFIG_KEY: &str = "local_config";
+
+/// Resolve a session's local config overlay.
+///
+/// A recorded nonstandard path wins. Sessions without that row keep the
+/// historical `<origin>/.ae/config` lookup, selected only while it exists.
+#[must_use]
+pub(crate) fn local_overlay(meta_dir: &Path, origin: &str) -> Option<PathBuf> {
+    let recorded = crate::meta::read_bytes(meta_dir)
+        .ok()
+        .map(|bytes| crate::lifecycle::meta_value(&bytes, LOCAL_CONFIG_KEY))
+        .unwrap_or_default();
+    if !recorded.is_empty() {
+        return Some(PathBuf::from(recorded));
+    }
+    let local = Path::new(if origin.is_empty() { "." } else { origin })
+        .join(".ae")
+        .join("config");
+    crate::lifecycle::path_exists(&local).then_some(local)
+}
+
 /// The `[workspace]` values compact resolves.
 #[derive(Debug)]
 pub(crate) struct Workspace {
@@ -738,6 +760,70 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_file(&self.0);
         }
+    }
+
+    /// A fresh directory tree removed with the test that owns it.
+    struct NamedDir(std::path::PathBuf);
+    impl NamedDir {
+        fn new(tag: &str) -> Self {
+            use std::sync::atomic::{AtomicUsize, Ordering};
+            static N: AtomicUsize = AtomicUsize::new(0);
+            let path = std::env::temp_dir().join(format!(
+                "ae-config-dir-{tag}-{}-{}",
+                std::process::id(),
+                N.fetch_add(1, Ordering::Relaxed)
+            ));
+            std::fs::create_dir_all(&path).expect("temp config tree");
+            Self(path)
+        }
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+    impl Drop for NamedDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn local_overlay_prefers_the_record_then_falls_back_then_answers_none() {
+        let recorded = NamedDir::new("recorded");
+        let recorded_session = recorded.path().join("session");
+        let recorded_path = recorded.path().join("seat.config");
+        std::fs::create_dir_all(&recorded_session).expect("session dir");
+        std::fs::write(
+            recorded_session.join("meta"),
+            format!("{}={}\n", LOCAL_CONFIG_KEY, recorded_path.display()),
+        )
+        .expect("recorded overlay");
+        assert_eq!(
+            local_overlay(&recorded_session, "/ignored/origin"),
+            Some(recorded_path),
+            "a recorded path wins even when it is currently missing"
+        );
+
+        let fallback = NamedDir::new("fallback");
+        let fallback_session = fallback.path().join("session");
+        let fallback_origin = fallback.path().join("origin");
+        let fallback_path = fallback_origin.join(".ae/config");
+        std::fs::create_dir_all(&fallback_session).expect("session dir");
+        std::fs::create_dir_all(fallback_path.parent().expect("config parent"))
+            .expect("local config dir");
+        std::fs::write(&fallback_path, "").expect("local config");
+        assert_eq!(
+            local_overlay(&fallback_session, &fallback_origin.display().to_string()),
+            Some(fallback_path)
+        );
+
+        let absent = NamedDir::new("absent");
+        let absent_session = absent.path().join("session");
+        let absent_origin = absent.path().join("origin");
+        std::fs::create_dir_all(&absent_session).expect("session dir");
+        assert_eq!(
+            local_overlay(&absent_session, &absent_origin.display().to_string()),
+            None
+        );
     }
 
     #[test]

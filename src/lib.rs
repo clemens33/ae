@@ -560,13 +560,10 @@ fn run_entry(
         }
         entry::Route::Core(effective) => return run_dispatch(&effective, out, err),
         entry::Route::Launch(user) => {
-            if user == orchestrator::seat_launch_args() && preamble.local.is_none() {
-                writeln!(
-                    err,
-                    "ae orchestrator: no .ae/config under {} — the seat runs on your global roster. \
-                     For the role contract: mkdir -p .ae && cp <ae repo>/contrib/aeorchestrator/orchestrator.config .ae/config",
-                    preamble.cwd.display()
-                )?;
+            if user == orchestrator::seat_launch_args() {
+                let mut seat = preamble.clone();
+                seat.local = Some(preamble.home.join(orchestrator::CONFIG_FILE));
+                return run_launch(&seat, &user, out, err);
             }
             return run_launch(preamble, &user, out, err);
         }
@@ -732,6 +729,8 @@ fn lstat_kind(path: &std::path::Path) -> Option<PathKind> {
 /// so before ae leaves anything behind.
 pub(crate) fn seed_default_config(
     path: &std::path::Path,
+    contents: &str,
+    name: &str,
     err: &mut impl Write,
 ) -> Result<Option<u8>> {
     if regular_file(path) {
@@ -750,8 +749,8 @@ pub(crate) fn seed_default_config(
     let mut temp_name = file_name.to_os_string();
     temp_name.push(format!(".tmp.{}", std::process::id()));
     let temp = path.with_file_name(temp_name);
-    let written = std::fs::File::create(&temp)
-        .and_then(|mut file| file.write_all(entry::DEFAULT_CONFIG.as_bytes()));
+    let written =
+        std::fs::File::create(&temp).and_then(|mut file| file.write_all(contents.as_bytes()));
     if let Err(why) = written {
         let _ = std::fs::remove_file(&temp);
         writeln!(
@@ -772,7 +771,7 @@ pub(crate) fn seed_default_config(
     }
     // STDERR, not stdout: the launch's stdout belongs to the session it is
     // about to become.
-    writeln!(err, "Created default config at {}", path.display())?;
+    writeln!(err, "Created {name} config at {}", path.display())?;
     Ok(None)
 }
 

@@ -501,13 +501,13 @@ fn read_seat(dir: &Path, slot: &str) -> Result<Seat, String> {
     if !global.is_empty() {
         config_files.push(PathBuf::from(&global));
     }
-    let local = Path::new(if origin.is_empty() { "." } else { &origin })
-        .join(".ae")
-        .join("config");
-    config_files.push(local.clone());
+    let local = crate::config::local_overlay(dir, &origin);
+    if let Some(local) = &local {
+        config_files.push(local.clone());
+    }
     let cfg = crate::config::read_identity(
         (!global.is_empty()).then(|| Path::new(&global)),
-        crate::lifecycle::path_exists(&local).then_some(local.as_path()),
+        local.as_deref(),
     )
     .map_err(|why| why.to_string())?;
     let Some(command) = cfg.profile(&profile).filter(|cmd| !cmd.trim().is_empty()) else {

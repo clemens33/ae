@@ -1,27 +1,22 @@
 # aeorchestrator — role contract and config template
 
-Optional templates for the `orchestrator` seat. Core ae does not require these
-files. The bare command starts an ordinary local session named `orchestrator`;
-the config below gives that seat its roster and role instructions.
+Role contract and embedded config template for the `orchestrator` seat. The
+bare command starts a single-seat local session named `orchestrator` from its
+own config under ae's state home.
 
 ## Install
 
-From the project directory where the seat should run:
+Run it from anywhere:
 
 ```bash
-mkdir -p .ae
-cp contrib/aeorchestrator/orchestrator.config .ae/config
 ae orchestrator
 ```
 
-`ae orchestrator` starts or reattaches the local `orchestrator` session. If no
-local config exists, ae still starts the seat and prints this copy hint. The
-config is read as the normal project-local overlay, so it must contain its own
-`[profiles]`, `[roster]`, `[workspace]`, and `[prompt]` entries. `CHARTER.md` is
-the readable copy of the role contract; it is not loaded from a guessed path.
-
-To run the seat without the template, use `ae orchestrator --local`; it then
-uses the current project config like any other local launch.
+On first run, ae seeds `~/.ae/orchestrator.config` from `orchestrator.config`
+and reads it as the seat's local overlay. It never reads the current project's
+`.ae/config` for this launch. Edit the seeded file to change the profile or
+local preferences. `CHARTER.md` is the readable copy of the role contract; it
+is not loaded from a guessed path.
 
 ## Role
 
@@ -43,11 +38,11 @@ its sweep. The seat is started explicitly; it is never an autostart companion.
 
 | File | Role |
 |---|---|
-| `orchestrator.config` | Copy-ready local config with the role prompt inline. |
+| `orchestrator.config` | Embedded first-run config with the role prompt inline. |
 | `CHARTER.md` | Short human-readable role contract. |
 
-Edit the copied config to choose another profile or add local preferences. Keep
-the role boundaries intact.
+Edit `~/.ae/orchestrator.config` to choose another profile or add local
+preferences. Keep the role boundaries intact.
 
 ## Dependencies
 
