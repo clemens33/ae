@@ -1,6 +1,11 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [v2026.9.14] - 2026-09-07
+
+### Other
+
+- Render window marks before agent names
 ## [v2026.9.13] - 2026-09-07
 
 ### Other
