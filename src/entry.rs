@@ -81,6 +81,8 @@ pub const HELP: &str = r"ae - agentic engineering: tmux multi-agent workspace
 Usage:
   ae                     Start or reattach default session (local)
   ae <name>              Start or reattach a named session
+  ae <name> --dir <path> Start or reattach using an explicit origin directory
+  ae <name> --no-attach  Start or reattach without attaching; print attach command
   ae <name> use <name>   Start session with a specific agent as main
   ae --local [name]      Start session in current directory (default)
   ae --copy [name]       Start session with full copy (includes untracked files)
@@ -440,7 +442,7 @@ pub fn session_hint(argv: &[String]) -> String {
     while let [word, after @ ..] = rest {
         rest = after;
         match word.as_str() {
-            "use" | "--from" => {
+            "use" | "--from" | "--dir" => {
                 if let [_consumed, next @ ..] = rest {
                     rest = next;
                 }
@@ -687,10 +689,11 @@ mod tests {
     }
 
     #[test]
-    fn the_hint_is_the_last_positional_and_skips_the_two_operand_words() {
+    fn the_hint_is_the_last_positional_and_skips_operand_words() {
         assert_eq!(session_hint(&argv(&["feature"])), "feature");
         assert_eq!(session_hint(&argv(&["use", "lead"])), "");
         assert_eq!(session_hint(&argv(&["--from", "uuid", "child"])), "child");
+        assert_eq!(session_hint(&argv(&["child", "--dir", "/repo"])), "child");
         assert_eq!(session_hint(&argv(&["--worktree"])), "");
         assert_eq!(session_hint(&argv(&["a", "b"])), "b");
     }

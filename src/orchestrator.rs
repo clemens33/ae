@@ -129,17 +129,52 @@ pub fn parse(tail: &[String]) -> Result<Args, Usage> {
     Ok(args)
 }
 
-/// Whether a bare seat launch tail consists only of `_launch` preamble flags.
-/// Shape and lineage flags are not accepted because the seat has one fixed
-/// local session and working directory mode.
+/// Parsed flags for a bare orchestrator-seat launch.
+pub struct LaunchTail {
+    /// A typed attach override, when present.
+    pub attach: Option<bool>,
+    /// Whether the caller identified itself as already inside tmux.
+    pub inside_tmux: bool,
+    /// Whether this launch suppresses companion autostart.
+    pub no_autostart: bool,
+}
+
+/// Parse a bare seat launch tail through the public launch grammar. Shape,
+/// origin and lineage flags remain unavailable because the seat has one fixed
+/// local session and directory mode.
+#[must_use]
+pub fn parse_launch_tail(tail: &[String]) -> Option<LaunchTail> {
+    let mut public = Vec::new();
+    let mut inside_tmux = false;
+    let mut no_autostart = false;
+    for word in tail {
+        match word.as_str() {
+            "--inside-tmux" => inside_tmux = true,
+            "--no-autostart" => no_autostart = true,
+            _ => public.push(word.clone()),
+        }
+    }
+    let plan = crate::session_launch::parse_plan_with_attach(&public, true).ok()?;
+    if plan.mode.is_some()
+        || plan.name.is_some()
+        || plan.main.is_some()
+        || plan.from.is_some()
+        || plan.workers.is_some()
+        || plan.dir.is_some()
+    {
+        return None;
+    }
+    Some(LaunchTail {
+        attach: plan.attach,
+        inside_tmux,
+        no_autostart,
+    })
+}
+
+/// Whether a bare seat launch tail uses only its fixed launch flags.
 #[must_use]
 pub fn launch_tail_is_valid(tail: &[String]) -> bool {
-    tail.iter().all(|word| {
-        matches!(
-            word.as_str(),
-            "--attach" | "--no-attach" | "--inside-tmux" | "--no-autostart"
-        )
-    })
+    parse_launch_tail(tail).is_some()
 }
 
 /// The user-facing launch tail for the canonical orchestrator seat.
@@ -573,7 +608,7 @@ pub fn attach_command(server: &crate::inventory::ServerId, session: &str) -> Str
 mod tests {
     use super::{
         AgentPane, Args, KEYS, Located, Placement, ROW_CAP, Usage, attach_command,
-        launch_tail_is_valid, menu, parse,
+        launch_tail_is_valid, menu, parse, parse_launch_tail,
     };
     use crate::attention::Reason;
     use crate::digest::{AgentEntry, SessionEntry, Status};
@@ -672,7 +707,24 @@ mod tests {
         for flag in ["--attach", "--no-attach", "--inside-tmux", "--no-autostart"] {
             assert!(launch_tail_is_valid(&[flag.to_owned()]), "{flag}");
         }
-        for flag in ["--popup", "--copy", "--worktree", "--from", "use", "--nope"] {
+        let parsed = parse_launch_tail(&[
+            "--no-attach".to_owned(),
+            "--inside-tmux".to_owned(),
+            "--no-autostart".to_owned(),
+        ])
+        .expect("seat flags");
+        assert_eq!(parsed.attach, Some(false));
+        assert!(parsed.inside_tmux);
+        assert!(parsed.no_autostart);
+        for flag in [
+            "--popup",
+            "--copy",
+            "--worktree",
+            "--dir",
+            "--from",
+            "use",
+            "--nope",
+        ] {
             assert!(!launch_tail_is_valid(&[flag.to_owned()]), "{flag}");
         }
     }

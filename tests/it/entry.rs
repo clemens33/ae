@@ -31,7 +31,7 @@ use std::time::Duration;
 #[cfg(unix)]
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
-use super::cli::{OwnedScratch, ae};
+use super::cli::{OwnedScratch, ae, git_in};
 use super::parity::{Invocation, capture::raw};
 use super::phase2::{run_tmux, tmux_present};
 
@@ -166,6 +166,16 @@ impl Rig {
     /// The same, with the tmux server pair declared — the door the launch needs
     /// so it lands on this rig's own server and not the developer's.
     fn run_on(&self, server: Option<&Path>, argv: &[&str]) -> (Option<i32>, String, String) {
+        self.run_from_on(&self.project, server, argv)
+    }
+
+    /// Run through the public entry from an arbitrary directory.
+    fn run_from_on(
+        &self,
+        cwd: &Path,
+        server: Option<&Path>,
+        argv: &[&str],
+    ) -> (Option<i32>, String, String) {
         let mut command = ae();
         command
             .env_remove("TMUX")
@@ -175,7 +185,7 @@ impl Rig {
             .env("CONFIG_FILE", self.config())
             .env("AE_NO_AUTOSTART", "1")
             .env("TMUX_TMPDIR", &self.scratch)
-            .current_dir(&self.project);
+            .current_dir(cwd);
         if let Some(socket) = server {
             command
                 .env("AE_TMUX_SERVER_KIND", "socket")
@@ -503,6 +513,173 @@ fn a_launch_candidate_becomes_a_session_from_the_preamble_facts() {
         ok && listed.lines().any(|line| line == "entryone"),
         "{listed}"
     );
+}
+
+/// A public launch can name its origin without changing the caller's cwd; all
+/// three copy modes resolve from that canonical directory.
+#[test]
+fn a_directory_explicit_launch_uses_that_origin_in_every_mode() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("explicit-dir");
+    let source = rig.scratch.join("source");
+    assert!(std::fs::create_dir_all(&source).is_ok(), "a source dir");
+    assert!(std::fs::write(source.join("marker"), "source").is_ok());
+    assert!(std::fs::create_dir_all(source.join(".ae")).is_ok());
+    assert!(
+        std::fs::write(
+            source.join(".ae/config"),
+            "[workspace]\nlayout = horizontal\nwatchdog = false\n",
+        )
+        .is_ok()
+    );
+    let source_link = rig.scratch.join("source-link");
+    assert!(
+        std::os::unix::fs::symlink(&source, &source_link).is_ok(),
+        "a logical spelling for the source"
+    );
+    let source = std::fs::canonicalize(&source).expect("canonical source");
+    let source_arg = source_link.to_string_lossy();
+    let sock = rig.sock.clone();
+
+    let (code, stdout, stderr) = rig.run_from_on(
+        &rig.project,
+        Some(&sock),
+        &["explicit-local", "--dir", &source_arg, "--no-attach"],
+    );
+    assert_eq!(code, Some(0), "{stdout}{stderr}");
+    let local = std::fs::read_to_string(rig.sessions().join("explicit-local/meta"))
+        .unwrap_or_else(|why| panic!("local meta: {why}"));
+    assert!(
+        local.contains(&format!("origin={}\n", source.display())),
+        "{local}"
+    );
+    assert!(
+        local.contains(&format!("work_dir={}\n", source.display())),
+        "{local}"
+    );
+    assert!(local.contains("layout=horizontal\n"), "{local}");
+
+    let (code, stdout, stderr) = rig.run_from_on(
+        &rig.project,
+        Some(&sock),
+        &[
+            "explicit-copy",
+            "--copy",
+            "--dir",
+            &source_arg,
+            "--no-attach",
+        ],
+    );
+    assert_eq!(code, Some(0), "{stdout}{stderr}");
+    let copy = std::fs::read_to_string(rig.sessions().join("explicit-copy/meta"))
+        .unwrap_or_else(|why| panic!("copy meta: {why}"));
+    assert!(
+        copy.contains(&format!("origin={}\n", source.display())),
+        "{copy}"
+    );
+    assert!(
+        rig.home.join("worktrees/explicit-copy/marker").is_file(),
+        "copy came from explicit origin"
+    );
+
+    git_in(&source, &["init", "-q"]);
+    git_in(&source, &["add", "-A"]);
+    git_in(&source, &["commit", "-qm", "base"]);
+    let (code, stdout, stderr) = rig.run_from_on(
+        &rig.project,
+        Some(&sock),
+        &[
+            "explicit-worktree",
+            "--worktree",
+            "--dir",
+            &source_arg,
+            "--no-attach",
+        ],
+    );
+    assert_eq!(code, Some(0), "{stdout}{stderr}");
+    let worktree = std::fs::read_to_string(rig.sessions().join("explicit-worktree/meta"))
+        .unwrap_or_else(|why| panic!("worktree meta: {why}"));
+    assert!(
+        worktree.contains(&format!("origin={}\n", source.display())),
+        "{worktree}"
+    );
+    assert!(
+        rig.home
+            .join("worktrees/explicit-worktree/marker")
+            .is_file(),
+        "worktree came from explicit origin"
+    );
+}
+
+#[test]
+fn a_public_no_attach_launch_starts_and_reattaches_with_the_exact_hint() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("public-no-attach");
+    let expected = "Session 'detached' started. Attach with: tmux -L ae attach -t \"=detached\"\n";
+    let (code, stdout, stderr) = rig.run(&["detached", "--no-attach"]);
+    assert_eq!(code, Some(0), "{stdout}{stderr}");
+    assert!(stdout.ends_with(expected), "{stdout}");
+    assert!(
+        rig.default_tmux(&["has-session", "-t", "=detached"]).0,
+        "session is running"
+    );
+
+    let (code, stdout, stderr) = rig.run(&["detached", "--no-attach"]);
+    assert_eq!(code, Some(0), "{stdout}{stderr}");
+    assert_eq!(
+        stdout,
+        "Session 'detached' is running. Attach with: tmux -L ae attach -t \"=detached\"\n"
+    );
+}
+
+#[test]
+fn a_directory_explicit_reattach_refuses_a_different_or_missing_origin() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("explicit-dir-refusal");
+    let first = rig.scratch.join("first");
+    let other = rig.scratch.join("other");
+    assert!(std::fs::create_dir_all(&first).is_ok());
+    assert!(std::fs::create_dir_all(&other).is_ok());
+    let first = first.to_string_lossy();
+    let other = other.to_string_lossy();
+    let sock = rig.sock.clone();
+    let (code, stdout, stderr) =
+        rig.run_on(Some(&sock), &["owned", "--dir", &first, "--no-attach"]);
+    assert_eq!(code, Some(0), "{stdout}{stderr}");
+
+    let (code, stdout, stderr) =
+        rig.run_on(Some(&sock), &["owned", "--dir", &other, "--no-attach"]);
+    assert_eq!(code, Some(1), "{stdout}{stderr}");
+    assert!(
+        stderr.contains("exists with a different origin"),
+        "{stderr}"
+    );
+
+    let absent = rig.scratch.join("absent");
+    let (code, stdout, stderr) = rig.run_on(
+        Some(&sock),
+        &["missing", "--dir", &absent.to_string_lossy(), "--no-attach"],
+    );
+    assert_eq!(code, Some(1), "{stdout}{stderr}");
+    assert!(
+        stderr.contains("does not exist or is not a directory"),
+        "{stderr}"
+    );
+    assert!(!rig.sessions().join("missing").exists(), "no state written");
+
+    let (code, stdout, stderr) = rig.run_on(Some(&sock), &["missing-value", "--dir"]);
+    assert_eq!(code, Some(2), "{stdout}{stderr}");
+    assert!(stderr.contains("--dir requires a path"), "{stderr}");
+
+    let (code, stdout, stderr) = rig.run_on(Some(&sock), &["unknown", "--nope"]);
+    assert_eq!(code, Some(2), "{stdout}{stderr}");
+    assert!(stderr.contains("unknown flag '--nope'"), "{stderr}");
 }
 
 #[test]

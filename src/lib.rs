@@ -635,19 +635,17 @@ fn run_entry(
         entry::Route::Core(effective) => return run_dispatch(&effective, out, err),
         entry::Route::Launch(user) => {
             if user.first().map(String::as_str) == Some(orchestrator::ORCHESTRATOR_SESSION) {
+                let Some(flags) = orchestrator::parse_launch_tail(&user[1..]) else {
+                    return run_dispatch(&user, out, err);
+                };
                 let mut seat = preamble.clone();
                 seat.local = Some(preamble.home.join(orchestrator::CONFIG_FILE));
                 let launch = orchestrator::seat_launch_args();
-                for flag in user.iter().skip(1) {
-                    match flag.as_str() {
-                        "--attach" => seat.attach = true,
-                        "--no-attach" => seat.attach = false,
-                        "--inside-tmux" => seat.inside_tmux = true,
-                        "--no-autostart" => seat.no_autostart = true,
-                        // Defensive fallback; route sends only launch_tail_is_valid tails here.
-                        _ => return run_dispatch(&user, out, err),
-                    }
+                if let Some(attach) = flags.attach {
+                    seat.attach = attach;
                 }
+                seat.inside_tmux |= flags.inside_tmux;
+                seat.no_autostart |= flags.no_autostart;
                 return run_launch(&seat, &launch, out, err);
             }
             return run_launch(preamble, &user, out, err);

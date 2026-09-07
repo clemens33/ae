@@ -24,7 +24,7 @@ pub(crate) mod capture;
 pub(crate) mod name;
 
 /// The usage line for the core entry.
-pub const USAGE: &str = "Usage: _launch --home <ae-home> --cwd <dir> [--global <cfg>] [--local <cfg>] [--server-kind <kind>] [--server <value>] [--caller-socket <path>] [--attach|--no-attach] [--no-autostart] [--] [--worktree|--copy|--local] [--from <uuid>] [use <name>] [<session-name>]";
+pub const USAGE: &str = "Usage: _launch --home <ae-home> --cwd <dir> [--global <cfg>] [--local <cfg>] [--server-kind <kind>] [--server <value>] [--caller-socket <path>] [--attach|--no-attach] [--no-autostart] [--] [--worktree|--copy|--local] [--dir <path>] [--no-attach] [--from <uuid>] [use <name>] [<session-name>]";
 
 /// How long a freshly created pane's shell is given to draw its prompt before
 /// anything is pasted.
@@ -98,6 +98,10 @@ pub struct Plan {
     pub from: Option<String>,
     /// The FROZEN worker list, when a relaunch supplies one.
     pub workers: Option<String>,
+    /// `--dir <path>` — the explicit origin for this launch.
+    pub dir: Option<String>,
+    /// A public attach override. `None` keeps the preamble's default.
+    pub attach: Option<bool>,
 }
 
 /// Parse the user's launch argv.
@@ -106,6 +110,12 @@ pub struct Plan {
 ///
 /// The refusal line, ready for stderr.
 pub fn parse_plan(args: &[String]) -> Result<Plan, String> {
+    parse_plan_with_attach(args, false)
+}
+
+/// Parse the same grammar for the orchestrator seat, whose existing public
+/// surface also permits an explicit `--attach`.
+pub(crate) fn parse_plan_with_attach(args: &[String], allow_attach: bool) -> Result<Plan, String> {
     let mut plan = Plan::default();
     let mut rest = args;
     while let [word, tail @ ..] = rest {
@@ -114,6 +124,30 @@ pub fn parse_plan(args: &[String]) -> Result<Plan, String> {
             "--worktree" => plan.mode = Some(Mode::Git),
             "--copy" => plan.mode = Some(Mode::Full),
             "--local" => plan.mode = Some(Mode::Local),
+            "--attach" if allow_attach => plan.attach = Some(true),
+            "--no-attach" => plan.attach = Some(false),
+            _ if word == "--dir" || word.starts_with("--dir=") => {
+                if plan.dir.is_some() {
+                    return Err(
+                        "Error: --dir may be given only once — a launch has one origin.".to_owned(),
+                    );
+                }
+                let value = if let Some(inline) = word.strip_prefix("--dir=") {
+                    inline.to_owned()
+                } else {
+                    match rest.split_first() {
+                        Some((value, tail)) => {
+                            rest = tail;
+                            value.clone()
+                        }
+                        None => String::new(),
+                    }
+                };
+                if value.is_empty() {
+                    return Err("Error: --dir requires a path.".to_owned());
+                }
+                plan.dir = Some(value);
+            }
             "use" => {
                 let Some((value, tail)) = rest.split_first() else {
                     return Err("Error: 'use' requires an agent NAME bound in [roster] (e.g. ae myproject use colead)".to_owned());
@@ -146,7 +180,7 @@ pub fn parse_plan(args: &[String]) -> Result<Plan, String> {
             }
             _ if word.starts_with("--") => {
                 return Err(format!(
-                    "Error: unknown flag '{word}'. Use --worktree, --copy, --local, or --from <archive-uuid>."
+                    "Error: unknown flag '{word}'. Use --worktree, --copy, --local, --dir <path>, --no-attach, or --from <archive-uuid>."
                 ));
             }
             // Last positional wins.
@@ -323,7 +357,7 @@ fn read_env(tail: &[String]) -> Result<(Env, Vec<String>), EnvError> {
 ///
 /// Only a failure to write `out` or `err`. Every refusal is an exit code.
 pub fn run(tail: &[String], out: &mut impl Write, err: &mut impl Write) -> crate::Result<u8> {
-    let (env, args) = match read_env(tail) {
+    let (mut env, args) = match read_env(tail) {
         Ok(pair) => pair,
         Err(EnvError::OffendingWord(word)) => {
             writeln!(err, "ae: {USAGE}")?;
@@ -350,6 +384,20 @@ pub fn run(tail: &[String], out: &mut impl Write, err: &mut impl Write) -> crate
             return Ok(EXIT_USAGE);
         }
     };
+    if let Some(path) = plan.dir.as_deref() {
+        let Some(origin) = canonical_directory(Path::new(path)) else {
+            writeln!(
+                err,
+                "Error: --dir path '{path}' does not exist or is not a directory."
+            )?;
+            return Ok(EXIT_FAILED);
+        };
+        env.local = crate::doors::local_config(&origin);
+        env.cwd = origin;
+    }
+    if let Some(attach) = plan.attach {
+        env.attach = attach;
+    }
     launch(&env, &plan, None, out, err)
 }
 
@@ -413,6 +461,8 @@ pub fn relaunch(
         main,
         from: Some(plan.uuid.to_owned()),
         workers,
+        dir: None,
+        attach: None,
     };
     launch(&env, &launch_plan, Some(plan.proof), out, err)
 }
@@ -710,6 +760,29 @@ fn launch(
         writeln!(err, "Error: {}", refusal.line(&session))?;
         return Ok(EXIT_FAILED);
     }
+    // An explicit origin is a claim about this exact session, including a
+    // live one. It must agree with the recorded owner before reattach can
+    // bypass the rest of the build.
+    if plan.dir.is_some() && meta_present {
+        let recorded = meta_value(&dir, "origin").unwrap_or_default();
+        if recorded.is_empty() || !same_directory(&recorded, &cwd) {
+            writeln!(
+                err,
+                "Error: session '{session}' exists with a different origin."
+            )?;
+            writeln!(
+                err,
+                "       recorded: {}",
+                if recorded.is_empty() {
+                    "<none>"
+                } else {
+                    &recorded
+                }
+            )?;
+            writeln!(err, "       requested: {cwd}")?;
+            return Ok(EXIT_FAILED);
+        }
+    }
     // On resume the RECORDED config wins: an agent's aliases must resolve from
     // the file the session was created with, not from wherever the caller is.
     if meta_present {
@@ -739,6 +812,8 @@ fn launch(
     }
     // DERIVED-NAME OWNERSHIP.
     if derived && meta_present {
+        // An unreadable or vanished directory never establishes ownership;
+        // canonical comparison fails closed instead of trusting raw spelling.
         let recorded = meta_value(&dir, "origin");
         match recorded.as_deref() {
             None | Some("") => {
@@ -2472,19 +2547,24 @@ fn dir_exists(path: &Path) -> bool {
 
 /// Whether two spellings name the same directory.
 fn same_directory(one: &str, other: &str) -> bool {
-    canonical(one) == canonical(other)
+    match (
+        canonical_directory(Path::new(one)),
+        canonical_directory(Path::new(other)),
+    ) {
+        (Some(one), Some(other)) => one == other,
+        _ => false,
+    }
 }
 
-/// One directory, canonicalised, falling back to its raw spelling.
+/// One existing directory, canonicalised.
 #[allow(
     clippy::disallowed_methods,
-    reason = "a door: the derived-name ownership guard compares canonical directories — see clippy.toml"
+    reason = "a door: the derived-name ownership guard and --dir resolve canonical directories — see clippy.toml"
 )]
-fn canonical(path: &str) -> String {
-    match std::fs::canonicalize(path) {
-        Ok(resolved) => resolved.display().to_string(),
-        Err(_) => path.trim_end_matches('/').to_owned(),
-    }
+fn canonical_directory(path: &Path) -> Option<PathBuf> {
+    std::fs::canonicalize(path)
+        .ok()
+        .filter(|resolved| dir_exists(resolved))
 }
 
 /// One meta value of the session at `dir`, or `None`.
@@ -2760,7 +2840,7 @@ fn from_preflight(root: &Path, raw_uuid: &str) -> Result<FromProof, String> {
 mod tests {
     use super::{
         AttachAction, EVENTS_KEEP, ToolKind, attach_action, launch_token, launch_turn_is_pasted,
-        trim_events,
+        parse_plan, trim_events,
     };
     use std::fmt::Write as _;
     use std::path::PathBuf;
@@ -2770,6 +2850,28 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn the_public_launch_parser_owns_directory_and_attach_flags() {
+        let args = ["named", "--dir", "/repo", "--no-attach", "--worktree"].map(str::to_owned);
+        let plan = parse_plan(&args).expect("public launch flags");
+        assert_eq!(plan.name.as_deref(), Some("named"));
+        assert_eq!(plan.dir.as_deref(), Some("/repo"));
+        assert_eq!(plan.attach, Some(false));
+        assert_eq!(plan.mode, Some(super::Mode::Git));
+
+        assert!(parse_plan(&["--dir".to_owned()]).is_err());
+        assert!(parse_plan(&["--dir=".to_owned()]).is_err());
+        assert!(parse_plan(&["--attach".to_owned()]).is_err());
+        assert!(
+            parse_plan(&[
+                "--dir=/one".to_owned(),
+                "--dir".to_owned(),
+                "/two".to_owned(),
+            ])
+            .is_err()
+        );
     }
 
     #[test]

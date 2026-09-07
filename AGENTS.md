@@ -238,7 +238,7 @@ inventoried by the clippy `disallowed-methods` boundary. Never read the world ad
 | Door | Decides | Read in |
 |---|---|---|
 | `HOME` | where ae state lives | both shapes |
-| `PWD` | the caller's working directory | both |
+| `PWD` | the caller's working directory; public launch `--dir` overrides it for that launch | both |
 | `AE_HOME` | relocates ALL ae state | CHECKOUT only |
 | `CONFIG_FILE` | which global config is read | CHECKOUT only |
 | `AE_TMUX_SERVER` + `AE_TMUX_SERVER_KIND` | which tmux server a launch lands on; absent → named server `ae` | CHECKOUT only |

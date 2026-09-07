@@ -1,7 +1,9 @@
 # Commands
 
 ```text
-ae [name]              Start or reattach a session
+ae [name] [--local|--copy|--worktree] [--dir <path>] [--no-attach]
+                       Start or reattach a session. --dir selects its origin;
+                       --no-attach prints the exact attach command and exits
 ae [name] use <alias>  Start session with a specific agent as main
 ae list [--all|--stopped|--needs-attn]
                        List sessions (running by default; --all adds stopped
@@ -80,6 +82,20 @@ ae --local my-feature       # default — agents work in the current dir
 ae --copy my-feature        # full cp -a; isolated copy
 ae --worktree my-feature    # git worktree; lightweight branch isolation
 ```
+
+Use `--dir <path>` when the origin is not the shell's current directory. ae requires the path to
+exist, canonicalises it, reads its `.ae/config`, and uses it as the local/copy/worktree source:
+
+```bash
+ae my-feature --worktree --dir /path/to/project --no-attach
+# Session 'my-feature' started. Attach with: tmux -L ae attach -t "=my-feature"
+```
+
+`--no-attach` works for new and running sessions. It leaves the session running, prints the exact
+server-aware attach command, and exits successfully. When `--dir` names an existing session, its
+canonical directory must match the recorded origin; ae refuses rather than attaching to a session
+owned by another directory. Without `--dir`, named-session reattach behavior stays unchanged.
+When no name is given, ae derives the session name from the `--dir` origin, not the caller's cwd.
 
 See [Configuration → copy modes](../getting-started/config.md#copy-modes) for the trade-offs.
 
@@ -317,8 +333,9 @@ ae refuses before writing the seat when that row is missing. Ae seeds the seat
 file from the embedded template on first run; the template carries only
 workspace and prompt settings. Existing seat files that still carry
 `[profiles]`/`[roster]` are ignored for identity; `[workspace]` and `[prompt]`
-still overlay. Add
-`--no-attach` to build without attaching. The seat is pinned first in the status
+still overlay. Add `--no-attach` to build or reattach without attaching; ae prints the exact
+attach command and exits successfully. The seat keeps its fixed launch shape, so `--dir` remains
+an ordinary-session flag. The seat is pinned first in the status
 bar's fleet strip, marked `◆`. The `--popup` form is the picker, next. From another
 ae session on the same tmux server, click `ae <version>` at the bottom-right of
 the status bar to jump to the orchestrator.
@@ -548,7 +565,8 @@ The bare command seeds `~/.ae/orchestrator.config` on first run, then starts or
 reattaches the local seat with that file as its overlay. Project-local
 `.ae/config` files never affect the seat. Bind the profile globally with
 `[roster] orchestrator = <profile>`; a missing row refuses before the seat file
-is written. Use `--no-attach` to build without attaching. The generated config
+is written. Use `--no-attach` to build or reattach without attaching and print the exact attach
+command. The generated config
 carries workspace and role prompt only, including `orchestrator = true` and
 `sweep = 120`; old generated configs with
 `[profiles]`/`[roster]` are ignored for identity; `[workspace]` and `[prompt]`
