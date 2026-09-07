@@ -64,11 +64,12 @@ used for spacing. Both delivery clocks are captured after the checked submit;
 repeated unacknowledged deliveries advance spacing but never slide the oldest
 acknowledgement deadline. A restart therefore neither resends unchanged text,
 forgets spacing, nor grants a fresh grace window. The file mtime is not seat
-liveness: the watchdog compares the oldest outstanding delivery with the main
-seat's newest `state done` event in `events.jsonl`. No later `done` past
-`sweep * 2 + 60` seconds becomes `wedged`; the next `done` clears it. The seat's
-only action on the pasted turn is that acknowledgement; it never runs
-`ae brief --all` on a timer.
+liveness: the main seat's newest `state done` event in `events.jsonl` must be at
+or after the latest successful delivery before it acknowledges the batch. The
+oldest outstanding delivery still owns the fixed deadline; no qualifying
+`done` past `sweep * 2 + 60` seconds becomes `wedged`, and the next qualifying
+`done` clears it. The seat's only action on the pasted turn is that
+acknowledgement; it never runs `ae brief --all` on a timer.
 
 ## Per-cycle state machine
 

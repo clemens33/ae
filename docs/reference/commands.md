@@ -538,10 +538,12 @@ orchestrator, while a live seat acknowledges each delivered overview with
 `state done`. The watchdog records the oldest unacknowledged delivery and the
 latest successful delivery in `meta-agent-state.json`, both at the checked
 submit time. Repeated deliveries advance minimum spacing without sliding the
-acknowledgement deadline. No later `done` in `events.jsonl` past
-`sweep * 2 + 60` seconds raises one `meta-agent not acknowledging overviews`
-alert, cleared by the next `done`. The state-file mtime is the watchdog's own
-render heartbeat and is never treated as seat liveness. The same file carries
+acknowledgement deadline. A `done` in `events.jsonl` acknowledges the batch only
+when it is at or after the latest successful delivery. When none qualifies by
+`sweep * 2 + 60` seconds from the oldest outstanding delivery, the watchdog
+raises one `meta-agent not acknowledging overviews` alert, cleared by the next
+qualifying `done`. The state-file mtime is the watchdog's own render heartbeat
+and is never treated as seat liveness. The same file carries
 the last semantic overview hash: elapsed age labels do not change it, but a
 state, reason, request, goal, topic, or attention change does. A restart neither
 resends unchanged text nor forgets minimum spacing or the outstanding deadline.

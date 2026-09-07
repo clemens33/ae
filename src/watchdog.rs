@@ -667,6 +667,9 @@ pub struct SweepState {
     /// When the oldest unacknowledged overview landed — the fixed origin of
     /// the acknowledgement grace until a `done` event clears it.
     pub outstanding_since: Option<SystemTime>,
+    /// When the latest overview landed — the acknowledgement boundary. A
+    /// `done` event must follow this delivery before it can clear the batch.
+    pub last_delivered: Option<SystemTime>,
     /// Successful overview deliveries not yet followed by `state done`.
     pub unacknowledged_deliveries: u32,
     /// Consecutive undelivered prompts.
@@ -761,10 +764,20 @@ pub fn sweep_step(
         (memory, persisted) => memory.or(persisted),
     };
     next.outstanding_since = outstanding_since;
-    let acknowledged = outstanding_since.is_some_and(|delivery| {
-        seen.last_done
-            .is_some_and(|done| done.duration_since(delivery).is_ok())
-    });
+    let recovered_last_delivered = match (prior.last_delivered, seen.persisted_last_delivery) {
+        (Some(memory), Some(persisted)) => Some(memory.max(persisted)),
+        (memory, persisted) => memory.or(persisted),
+    };
+    let last_delivered = match (recovered_last_delivered, outstanding_since) {
+        (Some(latest), Some(oldest)) => Some(latest.max(oldest)),
+        (latest, oldest) => latest.or(oldest),
+    };
+    next.last_delivered = last_delivered;
+    let acknowledged = outstanding_since.is_some()
+        && last_delivered.is_some_and(|delivery| {
+            seen.last_done
+                .is_some_and(|done| done.duration_since(delivery).is_ok())
+        });
     let grace_secs = outstanding_since.map(|at| secs_between(seen.now, at));
     let verdict = match (outstanding_since, acknowledged, grace_secs) {
         (Some(_), true, _) => SweepVerdict::MetaSweeping,
@@ -836,6 +849,7 @@ pub fn record_sweep(
     if delivered {
         state.fails = 0;
         state.last_sweep = Some(settled_now);
+        state.last_delivered = Some(settled_now);
         if state.outstanding_since.is_none() {
             state.outstanding_since = Some(settled_now);
             state.unacknowledged_deliveries = 1;
@@ -2090,6 +2104,51 @@ tail line
         );
         let due = sweep_step(&state, &seen(400, Some(90), &k), &k).expect("enabled");
         assert!(due.effects.contains(&SweepEffect::FireSweepNudge));
+    }
+
+    #[test]
+    fn a_restart_cannot_ack_a_deferred_second_delivery_with_an_earlier_done() {
+        let k = knobs();
+        let mut before_restart = SweepState::default();
+        assert!(record_sweep(&mut before_restart, true, at(0), &k).is_empty());
+
+        // A later changed overview was due at t=120. While its submit was
+        // deferred, the first turn acknowledged at t=150; the second delivery
+        // did not actually settle until t=200.
+        assert!(record_sweep(&mut before_restart, true, at(200), &k).is_empty());
+        assert_eq!(before_restart.outstanding_since, Some(at(0)));
+        assert_eq!(before_restart.last_sweep, Some(at(200)));
+        assert_eq!(before_restart.last_delivered, Some(at(200)));
+
+        // Lose all in-memory accounting to model a daemon restart. The two
+        // distinct durable clocks are the only delivery evidence left.
+        let restarted = SweepState::default();
+        let persisted = seen(201, Some(150), &k).with_overview(
+            false,
+            before_restart.outstanding_since,
+            before_restart.last_delivered,
+        );
+        let booked = sweep_step(&restarted, &persisted, &k).expect("enabled");
+        assert_eq!(
+            booked.verdict,
+            SweepVerdict::MetaStarting,
+            "a done before the latest delivery cannot acknowledge it"
+        );
+        assert_eq!(booked.next.outstanding_since, Some(at(0)));
+        assert_eq!(booked.next.unacknowledged_deliveries, 1);
+
+        let overdue = seen(661, Some(150), &k).with_overview(
+            false,
+            before_restart.outstanding_since,
+            before_restart.last_delivered,
+        );
+        assert_eq!(
+            sweep_step(&booked.next, &overdue, &k)
+                .expect("enabled")
+                .verdict,
+            SweepVerdict::MetaWedged,
+            "the oldest outstanding deadline still governs the wedge"
+        );
     }
 
     #[test]

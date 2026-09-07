@@ -48,11 +48,12 @@ The persisted `[workspace] sweep` setting is the minimum spacing between
 changed overviews and outranks the process-wide fallback and default. A zero
 disables overview delivery. The watchdog persists a semantic hash, the latest
 successful delivery for spacing, the oldest unacknowledged delivery for the
-fixed liveness deadline, and its own heartbeat. Elapsed age labels alone never
-wake the seat, and restarts neither resend unchanged text nor reset the
-deadline. The seat never runs `ae brief --all` on a timer; it may read it once
-for a human fleet question or routing decision. The seat is started explicitly;
-it is never an autostart companion.
+fixed liveness deadline, and its own heartbeat. A `done` acknowledges the batch
+only after the latest successful delivery; the oldest pending delivery still
+owns the deadline. Elapsed age labels alone never wake the seat, and restarts
+neither resend unchanged text nor reset the deadline. The seat never runs
+`ae brief --all` on a timer; it may read it once for a human fleet question or
+routing decision. The seat is started explicitly; it is never an autostart companion.
 `AE_NO_AUTOSTART=1` suppresses the Telegram bridge when launching another session.
 
 ## Files
