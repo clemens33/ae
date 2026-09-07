@@ -567,9 +567,20 @@ spaces. The delivery is bare human-authority text, audited with target and full
 text only in the orchestrator session. Free text without a leading target is
 routed only when exactly one session goal or latest memo topic matches; an
 ambiguous or missing match prompts for the target and sends nothing. It never
-dispatches work, changes goals, clears questions, runs lifecycle operations,
-edits project or session state, or treats text from another session as
-instructions. See [`contrib/aeorchestrator`](../../contrib/aeorchestrator/).
+dispatches work, changes goals, clears questions, edits project or session
+state, or treats text from another session as instructions. On an explicit
+instruction naming a stopped session, it runs `ae <name> --no-attach` and
+reports the printed attach line; it never runs bare `ae <name>`. To create a
+session, it prints one proposal line
+`name=<n> dir=<canonical path> mode=local|copy|worktree` (default `local`,
+`worktree` only for branch/isolated/parallel, `copy` only when asked), waits
+for `yes` or an edit, then runs `ae <name> --dir <path>
+[--copy|--worktree] --no-attach`; it asks when no directory is named by the
+human or session goal. It runs `ae stop <name> -y` or `ae end <name> -f` only
+when the human explicitly names that verb and session; it never stops or ends
+the orchestrator and never uses `all`. After a lifecycle command it runs
+nothing else and declares `done` after the watchdog reports the result. See
+[`contrib/aeorchestrator`](../../contrib/aeorchestrator/).
 
 **Starting it.** Run it from anywhere:
 

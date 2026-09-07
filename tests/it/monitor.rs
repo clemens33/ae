@@ -545,6 +545,32 @@ fn the_charter_pins_the_watchdog_overview_turn_and_retires_the_model_sweep() {
         normalized.contains("Run only this session's `state done` helper. Print nothing"),
         "one changed overview costs only the completion turn"
     );
+    for command in [
+        "`ae <name> --no-attach`",
+        "`ae <name> --dir <path> [--copy|--worktree] --no-attach`",
+        "`ae stop <name> -y`",
+        "`ae end <name> -f`",
+    ] {
+        assert!(
+            text.contains(command),
+            "charter pins explicit lifecycle command {command}"
+        );
+    }
+    assert!(
+        text.contains("name=<n> dir=<canonical path> mode=local|copy|worktree"),
+        "session creation starts with the proposal line"
+    );
+    assert!(
+        text.contains("wait for the human's `yes` or edit"),
+        "session creation requires confirmation"
+    );
+    let config =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("contrib/aeorchestrator/orchestrator.config");
+    let config_text = fs::read_to_string(&config).expect("the config ships with the repo");
+    assert!(
+        config_text.contains("--no-attach"),
+        "the seat prompt pins non-attaching lifecycle commands"
+    );
     assert!(
         !text.contains("ae _monitor sweep"),
         "the seat no longer renders or heartbeats a timer sweep"

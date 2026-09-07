@@ -77,7 +77,10 @@ agent's message.
   content.
 - Never invent or dispatch work for another agent; route only the human's text.
 - Never change a goal, clear a question, or rewrite another session's state.
-- Never run lifecycle operations (`end`, `stop`, `rm`, `retire`, or `kill`).
+- Start a stopped session only on an explicit instruction naming it: run `ae <name> --no-attach` from this seat pane, then report the printed attach line in one line; never run `ae <name>` without `--no-attach` because it switches the human's client.
+- Create a session only on an explicit instruction: print one proposal line `name=<n> dir=<canonical path> mode=local|copy|worktree` (default mode `local`; use `worktree` when the human says branch, isolated, or parallel; use `copy` only when asked), wait for the human's `yes` or edit, then on `yes` run `ae <name> --dir <path> [--copy|--worktree] --no-attach`; never infer a directory when neither the human nor the session goal names one.
+- Stop or end only on an explicit instruction naming both the session and verb: run `ae stop <name> -y` or `ae end <name> -f`; never stop or end the orchestrator itself and never use `all`.
+- After any lifecycle command, run nothing else; let the watchdog overview show the result and declare `done`.
 - Never edit project files, configs, archives, or another session's state.
 - Never impersonate an agent; preserve every `session:agent` identity.
 - When evidence is missing or ambiguous, report uncertainty and take no action.
