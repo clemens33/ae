@@ -20,6 +20,9 @@ use std::path::{Path, PathBuf};
 use crate::inventory::ServerId;
 use crate::shape::Shape;
 
+/// The isolated tmux server a launch uses when no checkout override was declared.
+pub const DEFAULT_SERVER_NAME: &str = "ae";
+
 /// `$HOME`, or `None` when it is unset or empty.
 #[must_use]
 pub fn home() -> Option<PathBuf> {
@@ -209,11 +212,28 @@ pub fn probe_target(declared: Option<&Declared>) -> Option<ServerId> {
     ServerId::from_typed_flags(&declared.kind, &declared.value).ok()
 }
 
-/// Where a launch ACTUALLY lands, as the typed pair `(kind, value)` — frozen's
-/// `resolve_launch_tmux_server`, whole.
+/// The server a launch targets: the declared checkout override, or ae's own
+/// named server. The caller's ambient server is never a launch destination.
+#[must_use]
+pub fn launch_target(declared: Option<&Declared>) -> Option<ServerId> {
+    let Some(declared) = declared else {
+        return Some(ServerId::Selected(crate::meta::Selector::Name(
+            DEFAULT_SERVER_NAME.to_owned(),
+        )));
+    };
+    if declared.kind == "ambiguous" {
+        return None;
+    }
+    ServerId::from_typed_flags(&declared.kind, &declared.value).ok()
+}
+
+/// Where a launch ACTUALLY lands, as the typed pair `(kind, value)`.
+///
+/// A running named server is upgraded to its proven socket spelling. A cold
+/// named server keeps its name so `new-session` creates exactly that server.
 #[must_use]
 pub fn resolve_launch_server(declared: Option<&Declared>) -> (String, String) {
-    if let Some(server) = probe_target(declared)
+    if let Some(server) = launch_target(declared)
         && let Some(socket) = crate::transport::observe_socket_path(&server)
     {
         return prove_socket(&server, socket);
@@ -221,15 +241,7 @@ pub fn resolve_launch_server(declared: Option<&Declared>) -> (String, String) {
     if let Some(declared) = declared {
         return (declared.kind.clone(), declared.value.clone());
     }
-    // DELIBERATELY a bare `$TMUX` read, unlike the client-semantics probe: this
-    // is the SOCKET PATH, not our client status.
-    match tmux_env() {
-        Some(marker) => (
-            "socket".to_owned(),
-            marker.split(',').next().unwrap_or_default().to_owned(),
-        ),
-        None => (String::new(), String::new()),
-    }
+    ("name".to_owned(), DEFAULT_SERVER_NAME.to_owned())
 }
 
 /// Turn a server's own `#{socket_path}` answer into the recorded pair.
@@ -414,6 +426,37 @@ mod tests {
         ] {
             assert_eq!(probe_target(Some(&declared)), None, "{declared:?}");
         }
+    }
+
+    #[test]
+    fn a_launch_defaults_to_aes_named_server_and_never_to_ambient() {
+        assert_eq!(
+            launch_target(None),
+            Some(ServerId::Selected(Selector::Name(
+                DEFAULT_SERVER_NAME.to_owned()
+            )))
+        );
+        assert_ne!(launch_target(None), Some(ServerId::Ambient));
+    }
+
+    #[test]
+    fn a_declared_launch_target_wins_and_an_ambiguous_pair_refuses() {
+        assert_eq!(
+            launch_target(Some(&Declared {
+                kind: "socket".to_owned(),
+                value: "/tmp/declared.sock".to_owned(),
+            })),
+            Some(ServerId::Selected(Selector::Socket(PathBuf::from(
+                "/tmp/declared.sock"
+            ))))
+        );
+        assert_eq!(
+            launch_target(Some(&Declared {
+                kind: "ambiguous".to_owned(),
+                value: "relative.sock".to_owned(),
+            })),
+            None
+        );
     }
 
     #[test]

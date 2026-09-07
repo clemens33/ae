@@ -370,6 +370,10 @@ pub fn entitled_servers(ambient: Option<&ServerId>, durable: &[DurableRecord]) -
             }
         }
     }
+    let default = ServerId::Selected(Selector::Name(crate::doors::DEFAULT_SERVER_NAME.to_owned()));
+    if !entitled.contains(&default) {
+        entitled.push(default);
+    }
     entitled
 }
 
@@ -424,7 +428,10 @@ impl Inventory {
 ///
 /// struct OneSession;
 /// impl Discovery for OneSession {
-///     fn enumerate(&self, _: &ServerId) -> Result<Vec<DiscoveredSession>, QueryFailed> {
+///     fn enumerate(&self, server: &ServerId) -> Result<Vec<DiscoveredSession>, QueryFailed> {
+///         if server != &ServerId::Ambient {
+///             return Ok(Vec::new());
+///         }
 ///         Ok(vec![DiscoveredSession {
 ///             name: "my-feature".to_owned(),
 ///             marker: Some("my-feature".to_owned()),
@@ -443,6 +450,24 @@ pub fn take<D: Discovery + ?Sized>(
     discovery: &D,
 ) -> Inventory {
     let entitled = entitled_servers(ambient, &durable.records);
+    take_entitled(durable, entitled, discovery, ServerId::eq)
+}
+
+/// Take the inventory from a caller-proven, de-duplicated entitlement set.
+///
+/// The ordinary public operation derives that set with [`entitled_servers`].
+/// The real entry path additionally collapses name/socket aliases after tmux
+/// proves they resolve to the same socket.
+pub(crate) fn take_entitled<D, E>(
+    durable: DurableScan,
+    entitled: Vec<ServerId>,
+    discovery: &D,
+    equivalent: E,
+) -> Inventory
+where
+    D: Discovery + ?Sized,
+    E: Fn(&ServerId, &ServerId) -> bool,
+{
     let mut inventory = Inventory {
         candidates: durable
             .records
@@ -478,7 +503,7 @@ pub fn take<D: Discovery + ?Sized>(
 
     // Reconciliation, over the complete picture.
     for sighting in sighted {
-        match join_witness(&inventory.candidates, &sighting) {
+        match join_witness(&inventory.candidates, &sighting, &equivalent) {
             Some(at) => inventory.candidates[at].live = Some(sighting),
             None => inventory.candidates.push(Candidate::tmux_only(sighting)),
         }
@@ -488,14 +513,21 @@ pub fn take<D: Discovery + ?Sized>(
 
 /// The single durable candidate `sighting` positively joins, if exactly one
 /// does.
-fn join_witness(candidates: &[Candidate], sighting: &LiveSighting) -> Option<usize> {
+fn join_witness<E>(
+    candidates: &[Candidate],
+    sighting: &LiveSighting,
+    equivalent: &E,
+) -> Option<usize>
+where
+    E: Fn(&ServerId, &ServerId) -> bool,
+{
     let mut found = None;
     for (at, candidate) in candidates.iter().enumerate() {
         let matches = candidate.live.is_none()
             && candidate.durable.as_ref().is_some_and(|record| {
                 record.name == sighting.name
                     && record.server.entitles().is_some_and(|selector| {
-                        ServerId::Selected(selector.clone()) == sighting.server
+                        equivalent(&ServerId::Selected(selector.clone()), &sighting.server)
                     })
             });
         if matches {
@@ -958,7 +990,7 @@ mod tests {
             baseline_servers.contacted(),
             "and archive bytes conferred no entitlement"
         );
-        assert_eq!(after_servers.contacted(), ["ambient"]);
+        assert_eq!(after_servers.contacted(), ["ambient", "name:ae"]);
     }
 
     // ---- criterion 4: an unreadable meta deletes nothing, in EACH layout ---
@@ -1002,8 +1034,8 @@ mod tests {
         }
         assert_eq!(
             servers.contacted(),
-            ["ambient"],
-            "and no server query was sourced from either unreadable record"
+            ["ambient", "name:ae"],
+            "only ambient and ae's built-in destination are queried"
         );
     }
 
@@ -1183,9 +1215,10 @@ mod tests {
     // ---- criteria 10/11/12: entitlement, end to end ------------------------
 
     #[test]
-    fn criterion_10_only_the_ambient_server_and_recorded_pointers_are_contacted() {
+    fn criterion_10_only_the_built_in_and_recorded_servers_are_contacted() {
         // A = ambient, B = named by a durable candidate's own meta on disk,
-        // C = live and reachable to the harness but named by nobody.
+        // ae = the built-in destination, C = live and reachable to the harness
+        // but named by neither policy nor durable state.
         let scratch = Scratch::new("entitlement");
         let pointer = scratch.session("pointer");
         fs::write(
@@ -1207,7 +1240,7 @@ mod tests {
 
         assert_eq!(
             servers.contacted(),
-            ["ambient", "name:B-pointed-at"],
+            ["ambient", "name:B-pointed-at", "name:ae"],
             "C is never contacted — the trace, not the result, is what shows a sweep"
         );
         assert_eq!(
@@ -1255,7 +1288,11 @@ mod tests {
             found(&inventory, &ambiguous).server,
             ServerSelector::Ambiguous
         );
-        assert_eq!(servers.contacted(), ["ambient"], "no guessed selector");
+        assert_eq!(
+            servers.contacted(),
+            ["ambient", "name:ae"],
+            "no server was guessed from unusable metadata"
+        );
         assert_eq!(
             identities(&inventory).len(),
             2,
@@ -1305,7 +1342,7 @@ mod tests {
 
         assert_eq!(
             servers.contacted(),
-            ["ambient"],
+            ["ambient", "name:ae"],
             "a sweeper that queries and then discards would show up HERE and nowhere else"
         );
         assert!(
@@ -1708,8 +1745,8 @@ mod tests {
         );
         assert_eq!(
             servers.contacted(),
-            ["ambient"],
-            "the fixture is REACHABLE: ambient is the only entitlement derivable here"
+            ["ambient", "name:ae"],
+            "the fixture is REACHABLE through ambient plus the built-in destination"
         );
         assert_eq!(
             identities(&inventory),
@@ -1863,9 +1900,10 @@ mod tests {
         for dir in [&absent, &unreadable] {
             assert_eq!(found(&inventory, dir).server, ServerSelector::Missing);
         }
-        assert!(
-            servers.contacted().is_empty(),
-            "and a missing selector never reaches the queried-server set"
+        assert_eq!(
+            servers.contacted(),
+            ["name:ae"],
+            "missing metadata adds no pointer beyond the built-in destination"
         );
         assert_eq!(durable_identities(&inventory).len(), 2, "both still here");
     }
@@ -1888,8 +1926,8 @@ mod tests {
 
         assert_eq!(
             servers.contacted(),
-            ["name:by-name", "socket:/tmp/ae.sock"],
-            "both positive TYPES are queried, and nothing else is"
+            ["name:ae", "name:by-name", "socket:/tmp/ae.sock"],
+            "both positive TYPES and the built-in destination are queried"
         );
         assert_eq!(
             durable_identities(&inventory).len(),
@@ -1913,7 +1951,7 @@ mod tests {
         let _ = take(durable, None, &servers);
         assert_eq!(
             servers.contacted(),
-            ["name:/tmp/ae.sock", "socket:/tmp/ae.sock"],
+            ["name:/tmp/ae.sock", "name:ae", "socket:/tmp/ae.sock"],
             "the type is part of the identity"
         );
     }
@@ -2135,7 +2173,7 @@ mod tests {
     }
 
     #[test]
-    fn sc_017j_the_entitled_set_is_the_ambient_server_plus_distinct_recorded_pointers() {
+    fn sc_017j_the_entitled_set_adds_ae_to_ambient_and_distinct_recorded_pointers() {
         let durable = scan(vec![
             record("/s/one", positive("sock-a")),
             plain("/s/two"),
@@ -2144,8 +2182,13 @@ mod tests {
         ]);
         assert_eq!(
             entitled_servers(Some(&ServerId::Ambient), &durable.records),
-            [ServerId::Ambient, named("sock-a")],
-            "distinct pointers only: a repeat is not a second entitlement"
+            [ServerId::Ambient, named("sock-a"), named("ae")],
+            "distinct pointers plus the built-in destination"
         );
+    }
+
+    #[test]
+    fn the_ae_server_is_entitled_even_before_any_session_records_it() {
+        assert_eq!(entitled_servers(None, &[]), [named("ae")]);
     }
 }

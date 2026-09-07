@@ -71,8 +71,12 @@ Live upgrade probes therefore go in a sandboxed `$HOME`, never `ae-dev`. Why:
 
 Other rules of the loop:
 
-- **Live probes go in the `ae-dev` namespace** — `~/.local/bin/ae-dev`: own `~/.ae-dev` home
-  and config, own tmux server (`-L ae-dev`), checkout binary. NEVER the default server or `~/.ae`.
+- **Persistent development goes in the `ae-dev` namespace** — `~/.local/bin/ae-dev`: own
+  `~/.ae-dev` home and config, own tmux server (`-L ae-dev`), checkout binary. NEVER the
+  default server or `~/.ae`. A one-shot launch probe gets a fresh private `TMUX_TMPDIR`, clears
+  `TMUX` / `TMUX_PANE`, and uses scratch state; never let checkout `-L ae` reach the real socket:
+  `probe=$(mktemp -d)` then
+  `TMUX_TMPDIR="$probe" AE_HOME="$probe/state" CONFIG_FILE="$probe/config" env -u TMUX -u TMUX_PANE target/debug/ae …`.
 - **A session's LOOK is session-scoped, and it has three writers with one job each.**
   `src/theme.rs` owns the palettes, the six marks and every format. A LAUNCH writes the
   layout, the look facts and the attention SEED, and stamps each WINDOW (tmux keeps pane
@@ -225,7 +229,7 @@ inventoried by the clippy `disallowed-methods` boundary. Never read the world ad
 | `PWD` | the caller's working directory | both |
 | `AE_HOME` | relocates ALL ae state | CHECKOUT only |
 | `CONFIG_FILE` | which global config is read | CHECKOUT only |
-| `AE_TMUX_SERVER` + `AE_TMUX_SERVER_KIND` | which tmux server a launch lands on | CHECKOUT only |
+| `AE_TMUX_SERVER` + `AE_TMUX_SERVER_KIND` | which tmux server a launch lands on; absent → named server `ae` | CHECKOUT only |
 | `AE_NO_AUTOSTART` | start no companion: neither the watchdog nor the Telegram bridge | both |
 | `TMUX` / `TMUX_PANE` | which pane this shell is, for `stop` and `watchdog` | both |
 

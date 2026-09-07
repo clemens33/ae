@@ -23,7 +23,7 @@ They are not a model of the versioned-install topology above.
 flowchart LR
     User[You] -->|runs the ae-core binary directly| AE[ae-core]
     AE --> Cfg[~/.ae/config<br/>INI parser]
-    AE --> Tmux[(tmux session)]
+    AE --> Tmux[(tmux -L ae<br/>sessions)]
     AE --> SessDir[~/.ae/sessions/&lt;name&gt;/<br/>helpers + meta + events.jsonl]
     Tmux --> AgentPane1[claude:lead pane]
     Tmux --> AgentPane2[codex:coworker pane]
@@ -39,6 +39,14 @@ flowchart LR
 ## Session lifecycle — start vs resume
 
 The same `ae <name>` command handles both first creation and reattach. The only branch is whether a session directory already exists on disk; everything downstream is shared.
+
+A new launch with no checkout override targets ae's own named tmux server, `tmux -L ae`, never
+the caller's ambient server. A checkout can declare a different typed
+`AE_TMUX_SERVER_KIND` / `AE_TMUX_SERVER` pair for development and tests. The launch records both
+rows in `meta` every time: a cold named server stays `name=ae` so `new-session` can create it; a
+running server is recorded by the absolute socket path it reports. Fleet discovery always includes
+`-L ae` and collapses name/socket spellings only after tmux proves they report the same socket.
+The server still reads the user's ordinary `~/.tmux.conf`; ae does not supply a private `-f` config.
 
 ```mermaid
 flowchart TB

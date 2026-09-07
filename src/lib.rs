@@ -493,6 +493,70 @@ impl SocketPaths {
         self.seen.push((server.clone(), path.clone()));
         path
     }
+
+    /// Keep the first spelling of each server whose socket identity tmux can
+    /// prove. Recorded pointers precede the default named entitlement, so a
+    /// durable record retains its own spelling when both name one server.
+    fn deduplicated(&mut self, servers: Vec<inventory::ServerId>) -> Vec<inventory::ServerId> {
+        let mut paths: Vec<String> = Vec::new();
+        let mut distinct = Vec::new();
+        for server in servers {
+            let path = self.of(&server);
+            if path.as_ref().is_some_and(|path| paths.contains(path)) {
+                continue;
+            }
+            if let Some(path) = path {
+                paths.push(path);
+            }
+            distinct.push(server);
+        }
+        distinct
+    }
+
+    /// Whether two spellings were proven to name one socket while building a
+    /// de-duplicated entitlement set.
+    fn equivalent(&self, left: &inventory::ServerId, right: &inventory::ServerId) -> bool {
+        if left == right {
+            return true;
+        }
+        let known = |server: &inventory::ServerId| {
+            self.seen
+                .iter()
+                .find(|(candidate, _)| candidate == server)
+                .and_then(|(_, path)| path.as_deref())
+        };
+        known(left).is_some() && known(left) == known(right)
+    }
+}
+
+/// Fleet discovery with one opportunistic source: ae's built-in server is
+/// useful before any meta points at it, but its cold absence is not inventory
+/// loss. Once a durable record names it, an unanswered query is loss again.
+/// Warm launches record the socket spelling instead; that server's own failed
+/// socket query still carries the loss while the unused name stays optional.
+struct FleetDiscovery<'a, D> {
+    inner: &'a D,
+    default_is_optional: bool,
+}
+
+impl<D: inventory::Discovery> inventory::Discovery for FleetDiscovery<'_, D> {
+    fn enumerate(
+        &self,
+        server: &inventory::ServerId,
+    ) -> std::result::Result<Vec<inventory::DiscoveredSession>, inventory::QueryFailed> {
+        match self.inner.enumerate(server) {
+            Err(_)
+                if self.default_is_optional
+                    && server
+                        == &inventory::ServerId::Selected(meta::Selector::Name(
+                            doors::DEFAULT_SERVER_NAME.to_owned(),
+                        )) =>
+            {
+                Ok(Vec::new())
+            }
+            answer => answer,
+        }
+    }
 }
 
 /// Each classified candidate's name and the server its record entitles ae to
@@ -1278,9 +1342,25 @@ pub(crate) fn state_root() -> Option<std::path::PathBuf> {
 #[must_use]
 pub fn current_world(root: &std::path::Path) -> (liveness::Snapshot, listing::World) {
     let scan = inventory::durable_records(&inventory::Roots::under(root));
-    // No ambient server: selecting one is unratified question, and
-    // entitlement without a pointer is exactly what is forbidden.
-    let taken = inventory::take(scan, None, &transport::Tmux);
+    // No caller server: fleet discovery spans recorded destinations plus ae's
+    // own default server. A recorded socket may be another spelling of `-L
+    // ae`; tmux's own socket answer is the only proof that lets us query it
+    // once without losing the durable record's preferred spelling.
+    let entitled = inventory::entitled_servers(None, &scan.records);
+    let mut sockets = SocketPaths::asking(transport::observe_socket_path);
+    let entitled = sockets.deduplicated(entitled);
+    let default_recorded = scan.records.iter().any(|record| {
+        record.server.entitles()
+            == Some(&meta::Selector::Name(doors::DEFAULT_SERVER_NAME.to_owned()))
+    });
+    let tmux = transport::Tmux;
+    let discovery = FleetDiscovery {
+        inner: &tmux,
+        default_is_optional: !default_recorded,
+    };
+    let taken = inventory::take_entitled(scan, entitled, &discovery, |left, right| {
+        sockets.equivalent(left, right)
+    });
     let snapshot = liveness::classify(taken, &transport::Tmux);
     // Criterion 3 only: the opposed disk must change HERE, on this function's
     // path, not after it returns.
@@ -1747,6 +1827,20 @@ mod tests {
         }
     }
 
+    fn aliased_socket_of(server: &crate::inventory::ServerId) -> Option<String> {
+        match server {
+            crate::inventory::ServerId::Selected(crate::meta::Selector::Name(name))
+                if name == crate::doors::DEFAULT_SERVER_NAME =>
+            {
+                Some("/private/tmux/ae".to_owned())
+            }
+            crate::inventory::ServerId::Selected(crate::meta::Selector::Socket(path)) => {
+                Some(path.display().to_string())
+            }
+            _ => None,
+        }
+    }
+
     fn named(name: &str) -> crate::inventory::ServerId {
         crate::inventory::ServerId::Selected(crate::meta::Selector::Name(name.to_owned()))
     }
@@ -1843,6 +1937,23 @@ mod tests {
         let mut sockets = super::SocketPaths::asking(socket_of);
         let _located = super::placements(&recorded, &named("A"), &world, &panes, &mut sockets);
         assert_eq!(sockets.seen.len(), 1, "one server, one question");
+    }
+
+    #[test]
+    fn a_recorded_socket_suppresses_the_default_name_only_when_tmux_proves_the_alias() {
+        let recorded = crate::inventory::ServerId::Selected(crate::meta::Selector::Socket(
+            "/private/tmux/ae".into(),
+        ));
+        let default = named(crate::doors::DEFAULT_SERVER_NAME);
+        let unresolved = crate::inventory::ServerId::Ambient;
+        let mut sockets = super::SocketPaths::asking(aliased_socket_of);
+        let candidates = vec![recorded.clone(), default.clone(), unresolved.clone()];
+        assert_eq!(
+            sockets.deduplicated(candidates),
+            [recorded.clone(), unresolved],
+            "the durable spelling wins; an unproved server is never discarded"
+        );
+        assert!(sockets.equivalent(&recorded, &default));
     }
 
     #[test]

@@ -203,6 +203,14 @@ impl Rig {
         args.extend(tail.iter().map(|arg| (*arg).to_owned()));
         run_tmux(&args, &self.scratch)
     }
+
+    fn default_tmux(&self, tail: &[&str]) -> (bool, String) {
+        let mut args = ae::tmux::server_args(&ae::inventory::ServerId::Selected(
+            ae::meta::Selector::Name(ae::doors::DEFAULT_SERVER_NAME.to_owned()),
+        ));
+        args.extend(tail.iter().map(|arg| (*arg).to_owned()));
+        run_tmux(&args, &self.scratch)
+    }
 }
 
 /// Confirm that a rig's detached tmux command is gone after its Drop guard.
@@ -495,6 +503,55 @@ fn a_launch_candidate_becomes_a_session_from_the_preamble_facts() {
         ok && listed.lines().any(|line| line == "entryone"),
         "{listed}"
     );
+}
+
+#[test]
+fn an_undeclared_cold_launch_uses_the_private_ae_server_and_list_finds_it_once() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("default-ae-server");
+
+    let (code, stdout, stderr) = rig.run(&["--local", "coldone"]);
+    assert_ne!(code, Some(2), "not a usage error: {stdout}\n{stderr}");
+    let cold_meta = std::fs::read_to_string(rig.sessions().join("coldone/meta"))
+        .unwrap_or_else(|why| panic!("the cold launch publishes meta: {why}"));
+    assert!(cold_meta.contains("tmux_server_kind=name\n"), "{cold_meta}");
+    assert!(cold_meta.contains("tmux_server=ae\n"), "{cold_meta}");
+
+    let (ok, socket) = rig.default_tmux(&["display-message", "-p", "#{socket_path}"]);
+    assert!(ok, "the named server answers: {socket}");
+    let socket = socket.trim();
+    let private_root =
+        std::fs::canonicalize(&rig.scratch).unwrap_or_else(|_| rig.scratch.path().to_owned());
+    assert!(
+        Path::new(socket).starts_with(&private_root),
+        "the default server escaped the private TMUX_TMPDIR: {socket}"
+    );
+
+    // Once the server is warm, the resolver records its proven socket spelling.
+    let (code, stdout, stderr) = rig.run(&["--local", "warmtwo"]);
+    assert_ne!(code, Some(2), "not a usage error: {stdout}\n{stderr}");
+    let warm_meta = std::fs::read_to_string(rig.sessions().join("warmtwo/meta"))
+        .unwrap_or_else(|why| panic!("the warm launch publishes meta: {why}"));
+    assert!(
+        warm_meta.contains("tmux_server_kind=socket\n"),
+        "{warm_meta}"
+    );
+    assert!(
+        warm_meta.contains(&format!("tmux_server={socket}\n")),
+        "{warm_meta}"
+    );
+
+    let (code, listed, stderr) = rig.run(&["list"]);
+    assert_eq!(code, Some(0), "{stderr}");
+    for name in ["coldone", "warmtwo"] {
+        assert_eq!(
+            listed.lines().filter(|line| line.contains(name)).count(),
+            1,
+            "{name} should be listed once across the name/socket aliases:\n{listed}"
+        );
+    }
 }
 
 /// A tmux target without `=` first matches exactly, then by prefix. A longer

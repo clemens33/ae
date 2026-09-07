@@ -74,6 +74,24 @@ ae --worktree my-feature    # git worktree; lightweight branch isolation
 
 See [Configuration → copy modes](../getting-started/config.md#copy-modes) for the trade-offs.
 
+## tmux server
+
+With no checkout override, every new session starts on ae's isolated named server:
+
+```bash
+tmux -L ae attach -t "=my-feature"
+```
+
+The exact `=name` target prevents tmux from falling through to prefix or pattern matching. Every
+launch records its typed server pair in session metadata. A cold server is recorded as `name=ae`;
+once running, tmux's absolute socket answer is recorded instead. Both spellings address the
+same server, and `ae list` de-duplicates them only after proving that equality from the servers'
+own socket answers. The server reads your normal `~/.tmux.conf`; ae supplies no private `-f`
+configuration.
+
+Checkout runs may override the destination with the typed `AE_TMUX_SERVER_KIND` /
+`AE_TMUX_SERVER` pair used by `ae-dev` and the test rigs. Installed ae ignores that override.
+
 ## `ae list`
 
 Tabular view of ae sessions with per-agent health, declared state, and a
@@ -290,7 +308,7 @@ choose.
 ```text
 $ ae orchestrator --popup
 ┌─ ae fleet — 3 running ──────────────────────────────────────────────────┐
-│ gamma              dead         tmux -L ae-dev2 attach -t gamma         │
+│ gamma              dead         tmux -L ae-dev2 attach -t "=gamma"     │
 │ alpha              -             2ag ship the S0 picker                 │ (1)
 │ beta               stale         3ag port the watchdog                  │ (2)
 └─────────────────────────────────────────────────────────────────────────┘
@@ -329,7 +347,7 @@ is a second chance to disagree with it.
 session by NAME on the server it is given — so a session ae recorded elsewhere, with a
 same-named stranger here, would otherwise take your jump. The picker compares the socket
 path each server reports for itself, and a session it cannot prove is on this one becomes a
-row you cannot choose, showing the `tmux … attach -t <name>` command that reaches it — with
+row you cannot choose, showing the `tmux … attach -t "=<name>"` command that reaches it — with
 its attention word intact, because a session ae cannot reach can still be the one that needs
 you.
 

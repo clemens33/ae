@@ -263,10 +263,8 @@ pub(crate) struct OwnedScratch {
 
 impl OwnedScratch {
     pub(crate) fn absent(path: std::path::PathBuf) -> Self {
-        Self {
-            path,
-            tmux_servers: Vec::new(),
-        }
+        let tmux_servers = vec![named_tmux_socket(&path, ae::doors::DEFAULT_SERVER_NAME)];
+        Self { path, tmux_servers }
     }
 
     pub(crate) fn existing(path: std::path::PathBuf) -> Self {
@@ -279,10 +277,8 @@ impl OwnedScratch {
             std::fs::create_dir_all(&path).is_ok(),
             "a scratch directory"
         );
-        Self {
-            path,
-            tmux_servers: Vec::new(),
-        }
+        let tmux_servers = vec![named_tmux_socket(&path, ae::doors::DEFAULT_SERVER_NAME)];
+        Self { path, tmux_servers }
     }
 
     pub(crate) fn path(&self) -> &std::path::Path {
@@ -292,6 +288,21 @@ impl OwnedScratch {
     pub(crate) fn add_tmux_server(&mut self, socket: std::path::PathBuf) {
         self.tmux_servers.push(socket);
     }
+}
+
+/// Where tmux places `-L name` beneath this fixture's private `TMUX_TMPDIR`.
+fn named_tmux_socket(tmpdir: &std::path::Path, name: &str) -> std::path::PathBuf {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        let uid = std::fs::metadata(tmpdir).map_or_else(
+            |_| std::fs::metadata(std::env::temp_dir()).map_or(0, |meta| meta.uid()),
+            |meta| meta.uid(),
+        );
+        tmpdir.join(format!("tmux-{uid}")).join(name)
+    }
+    #[cfg(not(unix))]
+    tmpdir.join("tmux-0").join(name)
 }
 
 impl std::ops::Deref for OwnedScratch {

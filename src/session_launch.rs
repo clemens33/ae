@@ -1694,10 +1694,8 @@ fn meta_document(
             env.core_version.as_deref().unwrap_or(crate::VERSION),
         );
     }
-    if !env.server_kind.is_empty() {
-        row("tmux_server", &env.server_value);
-        row("tmux_server_kind", &env.server_kind);
-    }
+    row("tmux_server", &env.server_value);
+    row("tmux_server_kind", &env.server_kind);
     for (key, value) in [
         (
             "watchdog",

@@ -117,7 +117,14 @@ pub(crate) mod capture {
                 command.env(key, value);
             }
             if invocation.program == "tmux" {
-                command.env("SHELL", "/bin/sh");
+                // Every real-tmux fixture is isolated structurally at the one
+                // process door. An inherited client marker can redirect even
+                // a named/default command to the developer's live server.
+                command
+                    .env_remove("TMUX")
+                    .env_remove("TMUX_PANE")
+                    .env("TMUX_TMPDIR", cwd)
+                    .env("SHELL", "/bin/sh");
             }
             command
                 .stdin(Stdio::null())
