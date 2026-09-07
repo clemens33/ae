@@ -593,6 +593,54 @@ fn a_no_tty_end_inside_prompts_the_attached_client_then_archives() {
 }
 
 #[test]
+fn review_end_confirmation_must_not_silently_change_keep_to_purge() {
+    let rig = Rig::new("reviewcontract");
+    let (controller_pane, _client) = rig.attach_client();
+    let (code, out, err) = std::thread::scope(|scope| {
+        let waiting = scope.spawn(|| rig.run_inside(&["end"]));
+        let mut shown = false;
+        for _ in 0..200 {
+            let (_, screen) = rig.tmux(&["capture-pane", "-p", "-t", &controller_pane]);
+            if screen.contains("Archives, then deletes its state. (y/n)") {
+                shown = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        assert!(shown, "the human was offered KEEP, not PURGE");
+        let config = rig.home.join("config");
+        let before = std::fs::read_to_string(&config).expect("fixture config");
+        std::fs::write(&config, format!("{before}purge_agent_history = on\n"))
+            .expect("operator changes policy while confirmation is open");
+        assert!(rig.tmux(&["send-keys", "-t", &controller_pane, "y"]).0);
+        waiting.join().expect("caller")
+    });
+    assert_eq!(code, Some(0), "{out} {err}");
+    let mut events = String::new();
+    for _ in 0..200 {
+        events = std::fs::read_to_string(rig.dir.join("events.jsonl")).unwrap_or_default();
+        if !exists(&rig.dir) || events.contains("\"action\":\"end-result\"") {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    assert!(
+        exists(&rig.dir) && rig.session_is_live(),
+        "confirmed KEEP was discarded: session_dir_exists={}, archive_exists={}, live={}",
+        exists(&rig.dir),
+        exists(&rig.archive()),
+        rig.session_is_live()
+    );
+    assert!(!exists(&rig.archive()), "no unconfirmed plan was archived");
+    assert!(events.contains("\"action\":\"end-result\""), "{events}");
+    assert!(
+        events
+            .contains("what 'lcreviewcontract' would do changed between the confirmation and now"),
+        "the lock-time changed-plan refusal is the cause: {events}"
+    );
+}
+
+#[test]
 fn self_is_a_claim_about_one_session_and_cannot_be_combined_with_all() {
     let mut cmd = ae();
     cmd.env("AE_HOME", "/tmp");

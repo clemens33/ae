@@ -44,12 +44,52 @@ enum Action {
     Unavailable,
 }
 
+impl Action {
+    fn word(&self) -> &'static str {
+        match self {
+            Self::Keep => "keep",
+            Self::Purge => "purge",
+            Self::Nothing => "nothing",
+            Self::Unavailable => "unavailable",
+        }
+    }
+
+    fn from_word(word: &str) -> Option<Self> {
+        match word {
+            "keep" => Some(Self::Keep),
+            "purge" => Some(Self::Purge),
+            "nothing" => Some(Self::Nothing),
+            "unavailable" => Some(Self::Unavailable),
+            _ => None,
+        }
+    }
+}
+
 /// One target's resolved plan.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Plan {
     action: Action,
     detail: String,
     purge: bool,
+}
+
+/// One prompt-time plan carried across the tmux and detached-process handoffs.
+#[derive(Clone)]
+struct ConfirmedPlan {
+    name: String,
+    plan: Plan,
+    /// The history choice came from config, so config remains part of the
+    /// changed-plan check under the lifecycle lock.
+    from_default: bool,
+}
+
+#[derive(Default)]
+struct ConfirmedParts {
+    name: String,
+    action: Option<Action>,
+    detail: Option<String>,
+    purge: Option<bool>,
+    from_default: Option<bool>,
 }
 
 impl Plan {
@@ -85,6 +125,7 @@ struct Args {
     assume_stopped: bool,
     mode: RunMode,
     pane: Option<String>,
+    confirmed: Vec<ConfirmedPlan>,
     /// `Some(true)` for `--purge-history`, `Some(false)` for `--keep-history`,
     /// `None` when the caller passed neither and each session's OWN config
     /// decides.
@@ -145,7 +186,28 @@ pub(crate) fn run(
     }
 
     // RESOLVE BEFORE PROMPTING.
-    let targets: Vec<String> = if args.target == "all" {
+    let targets: Vec<String> = if args.mode == RunMode::Handoff && !args.confirmed.is_empty() {
+        let carried: Vec<String> = args
+            .confirmed
+            .iter()
+            .map(|confirmed| confirmed.name.clone())
+            .collect();
+        let matches_operand =
+            args.target == "all" || (carried.len() == 1 && carried.first() == Some(&args.target));
+        let unique = carried
+            .iter()
+            .enumerate()
+            .all(|(index, name)| !carried[..index].contains(name));
+        if !matches_operand || !unique {
+            writeln!(
+                err,
+                "Error: carried end plans do not match '{}'.",
+                args.target
+            )?;
+            return Ok(EXIT_USAGE);
+        }
+        carried
+    } else if args.target == "all" {
         all_sessions(root)
     } else {
         if !name_is_usable(root, &args.target) {
@@ -165,7 +227,10 @@ pub(crate) fn run(
     let frozen: Vec<(String, Plan)> = targets
         .iter()
         .map(|name| {
-            let plan = resolve_plan(root, name, args.purge_cli);
+            let plan = confirmed_for(&args, name).map_or_else(
+                || resolve_plan(root, name, args.purge_cli),
+                |confirmed| confirmed.plan.clone(),
+            );
             (name.clone(), plan)
         })
         .collect();
@@ -178,7 +243,7 @@ pub(crate) fn run(
         return handoff(
             root,
             &args,
-            &targets,
+            &frozen,
             caller_session.as_deref(),
             false,
             out,
@@ -190,7 +255,7 @@ pub(crate) fn run(
         && !std::io::IsTerminal::is_terminal(&std::io::stdin())
         && let Some(caller) = &caller_session
     {
-        let Some(continuation) = handoff_argv(&args) else {
+        let Some(continuation) = handoff_argv(&args, &frozen) else {
             writeln!(
                 err,
                 "Error: ae cannot name its own executable, so it cannot hand '{}' to a supervisor — nothing was ended.",
@@ -201,7 +266,7 @@ pub(crate) fn run(
         return match confirm_on_client(
             &ServerId::Ambient,
             caller,
-            &end_prompt(&args.target),
+            &end_prompt(&args.target, &frozen),
             &continuation,
         ) {
             ClientPrompt::Shown => Ok(0),
@@ -255,7 +320,7 @@ pub(crate) fn run(
         return handoff(
             root,
             &args,
-            &targets,
+            &frozen,
             caller_session.as_deref(),
             true,
             out,
@@ -267,7 +332,9 @@ pub(crate) fn run(
     let mut failures = 0_u32;
     for (name, plan) in &frozen {
         // `-f` freezes nothing, because nothing was promised.
-        let contract = if args.force { None } else { Some(plan) };
+        let contract = confirmed_for(&args, name)
+            .map(|confirmed| &confirmed.plan)
+            .or_else(|| (!args.force).then_some(plan));
         if !end_one(root, name, &args, contract, out, err)? {
             failures += 1;
         }
@@ -289,8 +356,10 @@ fn parse(tail: &[String]) -> Result<Args, String> {
         assume_stopped: false,
         mode: RunMode::Direct,
         pane: None,
+        confirmed: Vec::new(),
         purge_cli: None,
     };
+    let mut confirmed = Vec::<ConfirmedParts>::new();
     for arg in tail {
         match arg.as_str() {
             "-f" | "--force" => args.force = true,
@@ -304,6 +373,45 @@ fn parse(tail: &[String]) -> Result<Args, String> {
             }
             flag if flag.starts_with("--pane=") => {
                 args.pane = flag.strip_prefix("--pane=").map(ToOwned::to_owned);
+            }
+            flag if flag.starts_with("--confirmed-target=") => {
+                let name = flag.strip_prefix("--confirmed-target=").unwrap_or_default();
+                if name.is_empty() {
+                    return Err("Error: a carried end plan has no target.".to_owned());
+                }
+                confirmed.push(ConfirmedParts {
+                    name: name.to_owned(),
+                    ..ConfirmedParts::default()
+                });
+            }
+            flag if flag.starts_with("--confirmed-action=") => {
+                let word = flag.strip_prefix("--confirmed-action=").unwrap_or_default();
+                let Some(action) = Action::from_word(word) else {
+                    return Err(format!("Error: invalid carried end action '{word}'."));
+                };
+                last_confirmed(&mut confirmed, flag)?.action = Some(action);
+            }
+            flag if flag.starts_with("--confirmed-detail=") => {
+                let detail = flag.strip_prefix("--confirmed-detail=").unwrap_or_default();
+                last_confirmed(&mut confirmed, flag)?.detail = Some(detail.to_owned());
+            }
+            flag if flag.starts_with("--confirmed-purge=") => {
+                let word = flag.strip_prefix("--confirmed-purge=").unwrap_or_default();
+                let purge = match word {
+                    "on" => true,
+                    "off" => false,
+                    _ => return Err(format!("Error: invalid carried purge decision '{word}'.")),
+                };
+                last_confirmed(&mut confirmed, flag)?.purge = Some(purge);
+            }
+            flag if flag.starts_with("--confirmed-source=") => {
+                let word = flag.strip_prefix("--confirmed-source=").unwrap_or_default();
+                let from_default = match word {
+                    "default" => true,
+                    "explicit" => false,
+                    _ => return Err(format!("Error: invalid carried end source '{word}'.")),
+                };
+                last_confirmed(&mut confirmed, flag)?.from_default = Some(from_default);
             }
             flag if flag.starts_with('-') => {
                 return Err(format!(
@@ -319,44 +427,131 @@ fn parse(tail: &[String]) -> Result<Args, String> {
             }
         }
     }
+    args.confirmed = confirmed
+        .into_iter()
+        .map(|parts| {
+            let (Some(action), Some(detail), Some(purge), Some(from_default)) =
+                (parts.action, parts.detail, parts.purge, parts.from_default)
+            else {
+                return Err(format!(
+                    "Error: carried end plan for '{}' is incomplete.",
+                    parts.name
+                ));
+            };
+            Ok(ConfirmedPlan {
+                name: parts.name,
+                plan: Plan {
+                    action,
+                    detail,
+                    purge,
+                },
+                from_default,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
     Ok(args)
 }
 
-fn end_prompt(name: &str) -> String {
-    format!("End '{name}'? Archives, then deletes its state. (y/n)")
+fn last_confirmed<'a>(
+    confirmed: &'a mut [ConfirmedParts],
+    flag: &str,
+) -> Result<&'a mut ConfirmedParts, String> {
+    confirmed
+        .last_mut()
+        .ok_or_else(|| format!("Error: '{flag}' has no carried end target."))
+}
+
+fn confirmed_for<'a>(args: &'a Args, name: &str) -> Option<&'a ConfirmedPlan> {
+    args.confirmed
+        .iter()
+        .find(|confirmed| confirmed.name == name)
+}
+
+fn confirmed_plans(args: &Args, frozen: &[(String, Plan)]) -> Vec<ConfirmedPlan> {
+    if !args.confirmed.is_empty() {
+        return args.confirmed.clone();
+    }
+    frozen
+        .iter()
+        .map(|(name, plan)| ConfirmedPlan {
+            name: name.clone(),
+            plan: plan.clone(),
+            from_default: args.purge_cli.is_none(),
+        })
+        .collect()
+}
+
+fn end_prompt(name: &str, frozen: &[(String, Plan)]) -> String {
+    let has_purge = frozen.iter().any(|(_, plan)| plan.purge);
+    let has_keep = frozen.iter().any(|(_, plan)| !plan.purge);
+    let consequence = match (has_keep, has_purge) {
+        (true, false) => "Archives, then deletes its state.",
+        (false, true) => "Deletes its state and purges the agent history.",
+        (true, true) => "Archives kept histories, purges configured histories, then deletes state.",
+        (false, false) => "Deletes its state.",
+    };
+    format!("End '{name}'? {consequence} (y/n)")
+}
+
+fn push_confirmed(command: &mut Vec<String>, confirmed: &ConfirmedPlan) {
+    command.push(format!("--confirmed-target={}", confirmed.name));
+    command.push(format!(
+        "--confirmed-action={}",
+        confirmed.plan.action.word()
+    ));
+    command.push(format!("--confirmed-detail={}", confirmed.plan.detail));
+    command.push(format!(
+        "--confirmed-purge={}",
+        if confirmed.plan.purge { "on" } else { "off" }
+    ));
+    command.push(format!(
+        "--confirmed-source={}",
+        if confirmed.from_default {
+            "default"
+        } else {
+            "explicit"
+        }
+    ));
+    command.push(
+        if confirmed.plan.purge {
+            "--purge-history"
+        } else {
+            "--keep-history"
+        }
+        .to_owned(),
+    );
 }
 
 /// The detached worker's exact argv.
-fn supervisor_argv(args: &Args) -> Option<DetachedArgv> {
+fn supervisor_argv(args: &Args, confirmed: &ConfirmedPlan) -> Option<DetachedArgv> {
     let own = crate::shape::resolved_exe()?;
-    let mut command = vec![
+    Some(supervisor_args(
         own.to_string_lossy().into_owned(),
+        args,
+        confirmed,
+    ))
+}
+
+fn supervisor_args(core: String, args: &Args, confirmed: &ConfirmedPlan) -> DetachedArgv {
+    let mut command = vec![
+        core,
         crate::cli::END.to_owned(),
         "--supervise".to_owned(),
-        args.target.clone(),
+        confirmed.name.clone(),
     ];
-    if let Some(purge) = args.purge_cli {
-        command.push(
-            if purge {
-                "--purge-history"
-            } else {
-                "--keep-history"
-            }
-            .to_owned(),
-        );
-    }
+    push_confirmed(&mut command, confirmed);
     if args.assume_stopped {
         command.push("--assume-stopped".to_owned());
     }
     if let Some(pane) = args.pane.as_deref().filter(|pane| !pane.is_empty()) {
         command.push(format!("--pane={pane}"));
     }
-    Some(DetachedArgv(command))
+    DetachedArgv(command)
 }
 
 /// The short-lived tmux job's exact argv. It records intent, starts the
 /// detached worker and exits before the target session is killed.
-fn handoff_argv(args: &Args) -> Option<DetachedArgv> {
+fn handoff_argv(args: &Args, frozen: &[(String, Plan)]) -> Option<DetachedArgv> {
     let own = crate::shape::resolved_exe()?;
     let mut command = vec![
         own.to_string_lossy().into_owned(),
@@ -364,15 +559,8 @@ fn handoff_argv(args: &Args) -> Option<DetachedArgv> {
         "--handoff".to_owned(),
         args.target.clone(),
     ];
-    if let Some(purge) = args.purge_cli {
-        command.push(
-            if purge {
-                "--purge-history"
-            } else {
-                "--keep-history"
-            }
-            .to_owned(),
-        );
+    for confirmed in confirmed_plans(args, frozen) {
+        push_confirmed(&mut command, &confirmed);
     }
     if args.assume_stopped {
         command.push("--assume-stopped".to_owned());
@@ -393,20 +581,16 @@ struct Notice {
 }
 
 fn notices(root: &Path, args: &Args) -> Vec<Notice> {
-    let names = if args.target == "all" {
-        all_sessions(root)
-    } else {
-        vec![args.target.clone()]
-    };
-    names
-        .into_iter()
-        .map(|name| {
+    args.confirmed
+        .iter()
+        .map(|confirmed| {
+            let name = confirmed.name.clone();
             let dir = sessions_dir(root).join(&name);
             let bytes = meta::read_bytes(&dir).unwrap_or_default();
             Notice {
                 server: recorded_server(root, &name),
                 archive_id: archive::canonical_uuid(&meta_value(&bytes, "session_id")),
-                purge: effective_purge(&bytes, args.purge_cli),
+                purge: confirmed.plan.purge,
                 name,
                 dir,
             }
@@ -433,22 +617,23 @@ fn run_supervised(
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> io::Result<u8> {
+    if args.confirmed.len() != 1
+        || args.confirmed.first().map(|plan| &plan.name) != Some(&args.target)
+    {
+        writeln!(
+            err,
+            "Error: end supervisor received no matching confirmed plan."
+        )?;
+        return Ok(EXIT_USAGE);
+    }
     let notices = notices(root, args);
-    let mut tail = vec!["-f".to_owned()];
+    let mut tail = vec!["-f".to_owned(), args.target.clone()];
+    for confirmed in &args.confirmed {
+        push_confirmed(&mut tail, confirmed);
+    }
     if args.assume_stopped {
         tail.push("--assume-stopped".to_owned());
     }
-    if let Some(purge) = args.purge_cli {
-        tail.push(
-            if purge {
-                "--purge-history"
-            } else {
-                "--keep-history"
-            }
-            .to_owned(),
-        );
-    }
-    tail.push(args.target.clone());
     let mut captured_out = Vec::new();
     let mut captured_err = Vec::new();
     let code = match run(root, &tail, None, &mut captured_out, &mut captured_err) {
@@ -499,20 +684,23 @@ fn run_supervised(
 fn handoff(
     root: &Path,
     args: &Args,
-    targets: &[String],
+    frozen: &[(String, Plan)],
     caller_session: Option<&str>,
     report_start: bool,
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> io::Result<u8> {
-    let mut ordered: Vec<&String> = targets.iter().collect();
+    let carried = confirmed_plans(args, frozen);
+    let mut ordered: Vec<&String> = frozen.iter().map(|(name, _)| name).collect();
     ordered.sort_by_key(|name| u8::from(caller_session == Some(name.as_str())));
     let Some(supervisors) = ordered
         .iter()
         .map(|name| {
-            let mut worker = args.clone();
-            worker.target.clone_from(name);
-            supervisor_argv(&worker).map(|argv| (*name, argv))
+            carried
+                .iter()
+                .find(|confirmed| confirmed.name == name.as_str())
+                .and_then(|confirmed| supervisor_argv(args, confirmed))
+                .map(|argv| (*name, argv))
         })
         .collect::<Option<Vec<_>>>()
     else {
@@ -524,7 +712,7 @@ fn handoff(
         return Ok(EXIT_FAILED);
     };
     let requested = request_summary(args.pane.as_deref());
-    for name in targets {
+    for (name, _) in frozen {
         emit_lifecycle_event(
             &sessions_dir(root).join(name),
             name,
@@ -830,7 +1018,14 @@ fn end_one(
     // A session ae cannot IDENTIFY is refused HERE, before anything is stopped:
     // the archive step would refuse it at the end anyway, and there is no
     // reason to stop a session for a failure already visible.
-    let plan = resolve_plan(root, name, args.purge_cli);
+    let current_purge = confirmed_for(args, name).map_or(args.purge_cli, |confirmed| {
+        if confirmed.from_default {
+            None
+        } else {
+            Some(confirmed.plan.purge)
+        }
+    });
+    let plan = resolve_plan(root, name, current_purge);
     if plan.action == Action::Unavailable {
         writeln!(
             err,
@@ -1482,15 +1677,67 @@ fn socket_dir(root: &Path) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Action, Plan, end_prompt, path_exists, purge_conversation_files, sanitize_branch_name,
+        Action, ConfirmedPlan, Plan, end_prompt, parse, path_exists, purge_conversation_files,
+        sanitize_branch_name, supervisor_args,
     };
     use std::path::{Path, PathBuf};
 
     #[test]
     fn the_in_pane_end_prompt_names_the_session_and_the_consequence() {
+        let keep = vec![(
+            "inside".to_owned(),
+            Plan {
+                action: Action::Keep,
+                detail: "/archive/id".to_owned(),
+                purge: false,
+            },
+        )];
         assert_eq!(
-            end_prompt("inside"),
+            end_prompt("inside", &keep),
             "End 'inside'? Archives, then deletes its state. (y/n)"
+        );
+        let purge = vec![(
+            "inside".to_owned(),
+            Plan {
+                action: Action::Purge,
+                detail: "/archive/id".to_owned(),
+                purge: true,
+            },
+        )];
+        assert_eq!(
+            end_prompt("inside", &purge),
+            "End 'inside'? Deletes its state and purges the agent history. (y/n)"
+        );
+    }
+
+    #[test]
+    fn the_supervisor_argv_carries_the_confirmed_plan_and_history_flag() {
+        let args =
+            parse(&["inside".to_owned(), "--assume-stopped".to_owned()]).expect("valid end args");
+        let confirmed = ConfirmedPlan {
+            name: "inside".to_owned(),
+            plan: Plan {
+                action: Action::Keep,
+                detail: "/archive/id".to_owned(),
+                purge: false,
+            },
+            from_default: true,
+        };
+        assert_eq!(
+            supervisor_args("/core".to_owned(), &args, &confirmed).as_args(),
+            [
+                "/core",
+                "_end",
+                "--supervise",
+                "inside",
+                "--confirmed-target=inside",
+                "--confirmed-action=keep",
+                "--confirmed-detail=/archive/id",
+                "--confirmed-purge=off",
+                "--confirmed-source=default",
+                "--keep-history",
+                "--assume-stopped",
+            ]
         );
     }
 

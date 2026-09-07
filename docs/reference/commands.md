@@ -711,10 +711,18 @@ When stdin has no terminal, ae asks the attached human's tmux client:
 End 'myproject'? Archives, then deletes its state. (y/n)
 ```
 
+When the frozen plan purges history, the prompt says so instead:
+
+```text
+End 'myproject'? Deletes its state and purges the agent history. (y/n)
+```
+
 `y` hands the entire kill/archive/cleanup sequence to a detached supervisor, so destroying
-the caller's pane cannot interrupt the archive. `n` or Escape changes nothing. With no
-attached client, ae refuses with `nobody attached to confirm; pass -f`. `-f` remains the
-explicit non-interactive authorization.
+the caller's pane cannot interrupt the archive. The plan is carried to the supervisor and
+revalidated under the lifecycle lock; if policy or state changes while the prompt is open,
+ae refuses before stopping the session. `n` or Escape changes nothing. With no attached
+client, ae refuses with `nobody attached to confirm; pass -f`. `-f` remains the explicit
+non-interactive authorization.
 
 Before the handoff, ae records `end-request`; that event is therefore captured by a
 successful archive. A failed end leaves live state and records `end-result` with the failed
