@@ -1,6 +1,26 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [v2026.9.15] - 2026-09-07
+
+### Bug Fixes
+
+- Fix installer URL for pinned releases
+
+### Other
+
+- Run launches on the isolated ae server
+- Isolate in-process tmux tests
+- Isolate every Rust test lane
+- Harden lead charter and model tiers
+- Make in-pane lifecycle commands safe
+- Freeze confirmed end plans across handoff
+- Make ae version link to orchestrator
+- Add orchestrator fleet overview and relay
+- Bind relay authority and restore sweep heartbeat
+- Route sessions across tmux servers
+- Bind lifecycle self-targets to caller servers
+- Bind watchdog inference to caller server
 ## [v2026.9.14] - 2026-09-07
 
 ### Other
