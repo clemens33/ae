@@ -66,10 +66,13 @@ reason beside the mark says which of the two it was.
 
 A ticker runs between the watchdog's 60-second verdict cycles. Every attached
 pane whose latest verdict mark is working gets the next spinner frame every
-250 ms, and one batched tmux invocation advances its pane border and window
-glyph. Detached sessions receive no ticker writes; a last visible frame can
-remain cached until the next verdict cycle republishes the static working
-glyph, but no client can see it. The spinner declares the cached verdict; it
+100 ms, and one batched tmux invocation advances its pane border, window glyph
+and fleet strip together. Every fifth frame refreshes the pane and fleet
+observations; the four frames between reuse that snapshot, keeping tmux reads
+at 500 ms while animation runs at 10 fps. Detached sessions receive no
+ticker writes; a last visible frame can remain cached until the next verdict
+cycle republishes the static working glyph, but no client can see it. The
+spinner declares the cached verdict; it
 does not infer terminal motion. Liveness belongs to the 60-second verdict
 cycle, which changes an inactive pane to stale. Tmux redraws changed user
 options for every attached client without waiting for `status-interval`, so no
@@ -112,20 +115,25 @@ goal, the shortened path and the watch segment. The session name is shown once
 in the fleet strip below.
 
 `status-format[1]` — the **fleet strip**: the `orchestrator` session pinned
-first with a dim `◆` (ASCII `o` when icons are off), then every other ae session
+first, then every other ae session
 in the order it was created, each with its live glyph, then this session's own
 agents with their marks. A session keeps its place while its attention changes,
 so a click never moves the thing that was clicked; the current session is drawn
 raised, not moved.
-The orchestrator pin is never shed on overflow and never displays its attention
-glyph. Each strip entry is a tmux `range=session` region, so tmux's own default
+The orchestrator pin is never shed on overflow. While calm it carries a dim `◆`
+(ASCII `o`); working replaces that pin with the shared spinner frame, and dead,
+needs-you or stale replaces it with the more urgent mark. Each strip entry is a
+tmux `range=session` region, so tmux's own default
 `MouseDown1Status` binding (`switch-client -t =`) makes it clickable: ae adds no
 key binding, which would be a server-global write on your key table.
 
-The strip is one `list-sessions` call. Each session's watchdog publishes its own
-`@ae_attn_rank`, and every other session reads it back and draws the glyph in
-its OWN vocabulary — so no session walks another session's state, and a session
-running the ASCII fallback never inherits someone else's braille.
+The ticker refreshes the strip from one `list-sessions` call every 500 ms and
+rewrites it only when a rank, name, order or working frame changed. Each
+session's watchdog publishes its own `@ae_attn_rank`, and every other session
+reads it back and draws the glyph in its OWN vocabulary — so no session walks
+another session's state, and a session running the ASCII fallback never
+inherits someone else's braille. Dead, needs-you and stale outrank a working
+agent in the session rollup, so attention always stops that session's spinner.
 
 One snapshot feeds every surface. The marks the agent strip draws, the mark the
 session publishes for other sessions to sort on, and the words on the pane

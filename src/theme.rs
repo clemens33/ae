@@ -700,9 +700,10 @@ impl FleetRow {
 /// (`MouseDown1Status` → `switch-client -t =`) already does the jump: ae adds no
 /// key binding, which would be a server-global write on the user's key table.
 /// A session on another tmux server cannot appear here at all — the strip is
-/// built from one server's own listing.
+/// built from one server's own listing. `working_frame` replaces only a
+/// [`Mark::Working`] glyph; `None` draws the static vocabulary.
 #[must_use]
-pub fn fleet_strip(look: &Look, rows: &[FleetRow]) -> String {
+pub fn fleet_strip(look: &Look, rows: &[FleetRow], working_frame: Option<&str>) -> String {
     let palette = &look.palette;
     let icons = look.icons;
     let mut ordered: Vec<&FleetRow> = rows.iter().collect();
@@ -756,13 +757,20 @@ pub fn fleet_strip(look: &Look, rows: &[FleetRow]) -> String {
             (palette.base, format!("fg={} nobold", palette.dim))
         };
         let lead = if row.current { " " } else { "" };
-        let pinned = row.pinned() && row.mark != Mark::Dead;
-        let glyph = if pinned {
+        let pinned = row.pinned();
+        let calm_pin = pinned && matches!(row.mark, Mark::Done | Mark::Idle);
+        let glyph = if row.mark == Mark::Working {
+            working_frame.unwrap_or_else(|| row.mark.glyph(icons))
+        } else if calm_pin {
             if icons { "◆" } else { "o" }
         } else {
             row.mark.glyph(icons)
         };
-        let accent = if pinned { palette.dim } else { palette.accent(row.mark) };
+        let accent = if calm_pin {
+            palette.dim
+        } else {
+            palette.accent(row.mark)
+        };
         let _ = write!(
             out,
             "#[range=session|{id} fg={accent} bg={ground}]{lead}{glyph}#[{text} bg={ground}] {name}{lead}\
@@ -1166,6 +1174,7 @@ mod tests {
                     mark: Mark::NeedsYou,
                     current: true,
                 }],
+                None,
             ),
             pane_state(&Palette::NEUTRAL, Mark::Stale, "◌", "stale"),
         ];
@@ -1341,6 +1350,7 @@ mod tests {
                 row("beta", "$2", Mark::NeedsYou),
                 row("gamma", "$4", Mark::Working),
             ],
+            None,
         );
         let at = |name: &str| strip.find(name).unwrap_or(usize::MAX);
         assert!(at("alpha") < at("beta"), "$1 before $2: {strip}");
@@ -1358,8 +1368,36 @@ mod tests {
                 row("alpha", "$1", Mark::Working),
                 row("zeta", "$3", Mark::Done),
             ],
+            None,
         );
         assert_eq!(strip, again);
+    }
+
+    #[test]
+    fn only_working_fleet_rows_take_the_passed_frame() {
+        let rows: Vec<FleetRow> = Mark::BY_URGENCY
+            .into_iter()
+            .enumerate()
+            .map(|(index, mark)| FleetRow {
+                name: format!("s{index}"),
+                id: format!("${index}"),
+                mark,
+                current: false,
+            })
+            .collect();
+        let strip = fleet_strip(&Look::DEFAULT, &rows, Some("FRAME"));
+
+        assert_eq!(strip.matches("FRAME").count(), 1, "{strip}");
+        for mark in [
+            Mark::Dead,
+            Mark::NeedsYou,
+            Mark::Stale,
+            Mark::Done,
+            Mark::Idle,
+        ] {
+            assert!(strip.contains(mark.glyph(true)), "{mark:?}: {strip}");
+        }
+        assert!(!strip.contains(Mark::Working.glyph(true)), "{strip}");
     }
 
     /// Overflow sheds the CALMEST rows and keeps the order of the rest; the
@@ -1378,7 +1416,7 @@ mod tests {
                 current: index == super::STRIP_ROWS + 1,
             })
             .collect();
-        let strip = fleet_strip(&Look::DEFAULT, &rows);
+        let strip = fleet_strip(&Look::DEFAULT, &rows, None);
         let drawn: Vec<&str> = rows
             .iter()
             .map(|row| row.name.as_str())
@@ -1421,6 +1459,7 @@ mod tests {
                 mark: Mark::Working,
                 current: false,
             }],
+            None,
         );
         assert!(strip.contains("#[range=session|$7 "), "{strip}");
         assert_eq!(strip.matches("#[range=session|").count(), 1, "{strip}");
@@ -1432,7 +1471,7 @@ mod tests {
     }
 
     #[test]
-    fn the_orchestrator_is_a_pinned_dim_fleet_anchor() {
+    fn the_orchestrator_pin_yields_to_motion_and_attention() {
         let row = |name: &str, mark| FleetRow {
             name: name.to_owned(),
             id: format!("${}", name.len()),
@@ -1441,45 +1480,37 @@ mod tests {
         };
         let strip = fleet_strip(
             &Look::DEFAULT,
-            &[
-                row("zeta", Mark::Done),
-                row("orchestrator", Mark::Working),
-                row("alpha", Mark::NeedsYou),
-            ],
+            &[row("orchestrator", Mark::Working)],
+            Some("⠼"),
         );
         assert!(
-            strip.find("orchestrator").unwrap_or(usize::MAX)
-                < strip.find("alpha").unwrap_or(usize::MAX),
-            "the anchor stays first: {strip}"
+            strip.contains("]⠼#["),
+            "working pin takes the shared frame: {strip}"
         );
-        assert_eq!(strip.matches("◆").count(), 1, "{strip}");
-        assert!(strip.contains("fg=#808080"), "the pin is dim: {strip}");
+
+        for mark in [Mark::Dead, Mark::NeedsYou, Mark::Stale] {
+            let attention = fleet_strip(&Look::DEFAULT, &[row("orchestrator", mark)], Some("⠼"));
+            assert!(
+                attention.contains(&format!("]{}#[", mark.glyph(true))),
+                "attention beats motion and the pin: {attention}"
+            );
+        }
+
+        for mark in [Mark::Idle, Mark::Done] {
+            let calm = fleet_strip(&Look::DEFAULT, &[row("orchestrator", mark)], Some("⠼"));
+            assert!(calm.contains("]◆#["), "calm pin: {calm}");
+            assert!(calm.contains("fg=#808080"), "dim calm pin: {calm}");
+        }
 
         let ascii = fleet_strip(
             &Look {
                 icons: false,
                 ..Look::DEFAULT
             },
-            &[row("orchestrator", Mark::Working)],
+            &[row("orchestrator", Mark::Idle)],
+            None,
         );
         assert!(ascii.contains("]o#["), "ASCII pin: {ascii}");
-        assert!(
-            !ascii.contains("x#["),
-            "the softer attention glyph is hidden: {ascii}"
-        );
-
-        let dead = fleet_strip(
-            &Look {
-                icons: false,
-                ..Look::DEFAULT
-            },
-            &[row("orchestrator", Mark::Dead)],
-        );
-        assert!(dead.contains("]x#["), "dead keeps its alarm glyph: {dead}");
-        assert!(
-            dead.contains("fg=#FF6B68"),
-            "dead keeps its alarm accent: {dead}"
-        );
     }
 
     #[test]
@@ -1496,7 +1527,7 @@ mod tests {
                 current: false,
             })
             .collect();
-        let strip = fleet_strip(&Look::DEFAULT, &rows);
+        let strip = fleet_strip(&Look::DEFAULT, &rows, None);
         assert!(
             strip.contains("orchestrator"),
             "pinned row was shed: {strip}"

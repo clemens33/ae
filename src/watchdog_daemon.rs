@@ -33,7 +33,10 @@ const NON_AGENT_PANES: [&str; 5] = ["(null)", "_watchdog", "_events", "_shepherd
 const UNKNOWN_ALERT_CYCLES: u32 = 5;
 
 /// Motion cadence while at least one client can see the session.
-const ATTACHED_MOTION_TICK: Duration = Duration::from_millis(250);
+const ATTACHED_MOTION_TICK: Duration = Duration::from_millis(100);
+
+/// Attached animation frames between process and fleet observations.
+const MOTION_OBSERVATION_TICKS: u8 = 5;
 
 /// Motion cadence while nobody can see the session.
 const DETACHED_MOTION_TICK: Duration = Duration::from_secs(2);
@@ -620,6 +623,10 @@ struct MotionVerdict {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct MotionState {
     verdicts: Vec<MotionVerdict>,
+    panes: Vec<tmux::MotionPane>,
+    fleet: Vec<theme::FleetRow>,
+    fleet_target: Option<String>,
+    published_fleet: Option<String>,
     spin: u64,
 }
 
@@ -630,9 +637,64 @@ impl MotionState {
         self.verdicts = verdicts;
     }
 
-    /// Advance every attached pane whose last cycle verdict is Working.
-    fn step(&mut self, current: &[tmux::MotionPane], look: &Look) -> Vec<tmux::OptionWrite> {
-        if !current.iter().any(|pane| pane.session_attached > 0) {
+    /// Replace the ticker's two observations together: the panes decide
+    /// visibility and local animation, while the fleet drives line two.
+    fn replace_observation(
+        &mut self,
+        panes: Vec<tmux::MotionPane>,
+        sessions: &[tmux::FleetSession],
+        session: &str,
+    ) {
+        self.panes = panes;
+        self.replace_fleet(sessions, session);
+    }
+
+    /// Replace the fleet half of an observation and remember which exact
+    /// session table owns the strip.
+    fn replace_fleet(&mut self, sessions: &[tmux::FleetSession], session: &str) {
+        self.fleet_target = sessions
+            .iter()
+            .find(|entry| entry.name == session)
+            .map(|entry| entry.id.clone());
+        self.fleet = sessions
+            .iter()
+            .map(|entry| theme::FleetRow {
+                name: entry.name.clone(),
+                id: entry.id.clone(),
+                mark: Mark::from_rank(&entry.rank),
+                current: entry.name == session,
+            })
+            .collect();
+    }
+
+    /// Add the fleet strip when its text has changed. A working frame makes
+    /// that true on every animation step; a static fleet writes only after a
+    /// rank, name or order change.
+    fn push_fleet_write(
+        &mut self,
+        writes: &mut Vec<tmux::OptionWrite>,
+        look: &Look,
+        working_frame: Option<&str>,
+    ) {
+        let Some(target) = self.fleet_target.as_deref() else {
+            return;
+        };
+        let strip = theme::fleet_strip(look, &self.fleet, working_frame);
+        if self.published_fleet.as_deref() == Some(&strip) {
+            return;
+        }
+        writes.push(tmux::OptionWrite::new(
+            OptionScope::Session,
+            target,
+            theme::FLEET_STRIP_OPTION,
+            &strip,
+        ));
+        self.published_fleet = Some(strip);
+    }
+
+    /// Advance every attached working surface from the cached observation.
+    fn step(&mut self, look: &Look) -> Vec<tmux::OptionWrite> {
+        if !self.panes.iter().any(|pane| pane.session_attached > 0) {
             return Vec::new();
         }
         let working: Vec<&MotionVerdict> = self
@@ -640,7 +702,7 @@ impl MotionState {
             .iter()
             .filter(|entry| entry.verdict.mark() == Mark::Working)
             .filter(|entry| {
-                current.iter().any(|pane| {
+                self.panes.iter().any(|pane| {
                     pane.pane_id == entry.pane
                         && pane.agent.as_deref().is_some_and(|agent| {
                             !agent.is_empty() && !NON_AGENT_PANES.contains(&agent)
@@ -648,10 +710,10 @@ impl MotionState {
                 })
             })
             .collect();
-        if working.is_empty() {
-            return Vec::new();
+        let fleet_working = self.fleet.iter().any(|row| row.mark == Mark::Working);
+        if !working.is_empty() || fleet_working {
+            self.spin = self.spin.wrapping_add(1);
         }
-        self.spin = self.spin.wrapping_add(1);
         let spinner = theme::spinner(self.spin, look.icons);
         let mut writes = Vec::new();
         let mut windows = Vec::new();
@@ -686,8 +748,14 @@ impl MotionState {
                 &glyphs,
             ));
         }
+        self.push_fleet_write(&mut writes, look, fleet_working.then_some(spinner));
         writes
     }
+}
+
+/// Whether the attached ticker must refresh its cached observations now.
+const fn motion_observation_due(ticks_since_observation: u8) -> bool {
+    ticks_since_observation >= MOTION_OBSERVATION_TICKS
 }
 
 /// Whether this look permits periodic redraws at all.
@@ -709,6 +777,17 @@ fn motion_cadence(panes: &[tmux::MotionPane]) -> Duration {
 const fn motion_failure(prior: u8) -> (u8, bool) {
     let next = prior.saturating_add(1);
     (next, next >= MOTION_FAILURE_LIMIT)
+}
+
+/// A write against cached pane identities may fail because the fleet changed
+/// since observation. Refresh it without spending the transport failure
+/// budget; only a write against fresh identities proves a ticker failure.
+const fn motion_publish_failure(prior: u8, observed: bool) -> (u8, bool) {
+    if observed {
+        motion_failure(prior)
+    } else {
+        (prior, false)
+    }
 }
 
 /// Everything one cycle publishes, gathered so the call reads as one statement.
@@ -984,28 +1063,36 @@ fn wait_between_cycles(
     };
     let started = Instant::now();
     let mut cadence = ATTACHED_MOTION_TICK;
+    let mut ticks_since_observation = MOTION_OBSERVATION_TICKS;
     let mut failures = 0_u8;
     loop {
         let remaining = interval.saturating_sub(started.elapsed());
         if remaining.is_zero() {
             break;
         }
-        let Some(reading) = transport::observe_motion_panes(server, session) else {
-            let failed = motion_failure(failures);
-            failures = failed.0;
-            let remaining = interval.saturating_sub(started.elapsed());
-            if failed.1 {
-                std::thread::sleep(remaining);
-                break;
-            }
-            std::thread::sleep(cadence.min(remaining));
-            continue;
-        };
-        cadence = motion_cadence(&reading);
         let mut next = carry.motion.clone();
-        let writes = next.step(&reading, &look);
+        let observed = motion_observation_due(ticks_since_observation);
+        if observed {
+            let reading = transport::observe_motion_panes(server, session);
+            let fleet = transport::observe_fleet_sessions(server);
+            let (Some(reading), Some(fleet)) = (reading, fleet) else {
+                let failed = motion_failure(failures);
+                failures = failed.0;
+                let remaining = interval.saturating_sub(started.elapsed());
+                if failed.1 {
+                    std::thread::sleep(remaining);
+                    break;
+                }
+                std::thread::sleep(cadence.min(remaining));
+                continue;
+            };
+            cadence = motion_cadence(&reading);
+            next.replace_observation(reading, &fleet, session);
+        }
+        let writes = next.step(&look);
         if !writes.is_empty() && !transport::publish_options(server, &writes) {
-            let failed = motion_failure(failures);
+            ticks_since_observation = MOTION_OBSERVATION_TICKS;
+            let failed = motion_publish_failure(failures, observed);
             failures = failed.0;
             let remaining = interval.saturating_sub(started.elapsed());
             if failed.1 {
@@ -1017,6 +1104,13 @@ fn wait_between_cycles(
         }
         failures = 0;
         carry.motion = next;
+        ticks_since_observation = if cadence == DETACHED_MOTION_TICK {
+            MOTION_OBSERVATION_TICKS
+        } else if observed {
+            1
+        } else {
+            ticks_since_observation.saturating_add(1)
+        };
         let remaining = interval.saturating_sub(started.elapsed());
         std::thread::sleep(cadence.min(remaining));
     }
@@ -1475,7 +1569,7 @@ impl Cycle<'_> {
         };
         carry.look = Some(look);
         if read.is_some() {
-            self.reconcile_look(&look);
+            self.reconcile_look(&look, &mut carry.motion);
         }
         // The roster is composed from the PRIOR debounce state, then the state
         // is advanced, so a slot's first absent cycle renders neutral and only
@@ -1513,7 +1607,7 @@ impl Cycle<'_> {
     /// is what the layout was written FOR; when it and the live look disagree,
     /// the layout is written again — or taken off, which unsets the session
     /// options and hands the user's own global status line back.
-    fn reconcile_look(&self, look: &Look) {
+    fn reconcile_look(&self, look: &Look, motion: &mut MotionState) {
         let Some(session_id) = transport::observe_session_id(self.server, self.session) else {
             return;
         };
@@ -1523,6 +1617,10 @@ impl Cycle<'_> {
         if stamped == look.stamp() {
             return;
         }
+        // The strip value may be unchanged while tmux's layout was removed or
+        // repainted. Forget the local equality proof so this cycle republishes
+        // it into the new surface.
+        motion.published_fleet = None;
         // `&=`, never `&&`: every option is attempted even after one fails, and
         // the STAMP is only advanced when all of them landed. A stamp written
         // over a partial repaint would tell every later cycle the work was
@@ -1685,32 +1783,23 @@ impl Cycle<'_> {
         // The core THIS daemon runs on. An upgrade restarts the daemon on the
         // new core, so the value moves with the install and never with a launch.
         set(theme::VERSION_OPTION, &crate::version_line());
-        self.publish_fleet(&session_id, look);
+        self.publish_fleet(look, motion);
         self.publish_windows(published, motion);
     }
 
     /// The fleet strip: every ae session on THIS server, as each one's own
     /// watchdog described itself.
-    fn publish_fleet(&self, session_id: &str, look: &Look) {
+    fn publish_fleet(&self, look: &Look, motion: &mut MotionState) {
         let Some(sessions) = transport::observe_fleet_sessions(self.server) else {
             return;
         };
-        let rows: Vec<theme::FleetRow> = sessions
-            .iter()
-            .map(|entry| theme::FleetRow {
-                name: entry.name.clone(),
-                id: entry.id.clone(),
-                mark: Mark::from_rank(&entry.rank),
-                current: entry.name == self.session,
-            })
-            .collect();
-        let _ = transport::publish_option(
-            self.server,
-            OptionScope::Session,
-            session_id,
-            theme::FLEET_STRIP_OPTION,
-            &theme::fleet_strip(look, &rows),
-        );
+        let mut next = motion.clone();
+        next.replace_fleet(&sessions, self.session);
+        let mut writes = Vec::new();
+        next.push_fleet_write(&mut writes, look, None);
+        if writes.is_empty() || transport::publish_options(self.server, &writes) {
+            *motion = next;
+        }
     }
 
     /// Per-window marks and per-pane state, grouped from the SAME per-pane
@@ -2198,8 +2287,9 @@ mod tests {
         MotionState, MotionVerdict, Observation, PaneState, QuietCycle, QuietQuery, Rebind,
         SWEEP_PROMPT, SendHelper, UNKNOWN_ALERT_CYCLES, Verdict, account, adopt_server, age_secs,
         bar_glyph, continuation, entry_mut, heartbeat_mtime, is_meta_agent, last_actor_event_age,
-        motion_cadence, motion_failure, motion_ticker_enabled, nudge_text, read_events, rebind,
-        record_nudge, roster_label, roster_line, session_name, stale_display, sweep_effects,
+        motion_cadence, motion_failure, motion_observation_due, motion_publish_failure,
+        motion_ticker_enabled, nudge_text, read_events, rebind, record_nudge, roster_label,
+        roster_line, session_name, stale_display, sweep_effects,
     };
     use super::{Look, Mark, PaneMark, session_mark};
     use crate::events::Event;
@@ -2276,12 +2366,10 @@ mod tests {
                     verdict: Verdict::Meta(SweepVerdict::MetaSweeping),
                 },
             ],
+            panes: current.to_vec(),
             ..MotionState::default()
         };
-        let first = crate::tmux::set_options_args(
-            &ServerId::Ambient,
-            &state.step(&current, &Look::DEFAULT),
-        );
+        let first = crate::tmux::set_options_args(&ServerId::Ambient, &state.step(&Look::DEFAULT));
         assert_eq!(
             first,
             [
@@ -2307,10 +2395,7 @@ mod tests {
                 "⠙✓⚠✖⠙",
             ]
         );
-        let second = crate::tmux::set_options_args(
-            &ServerId::Ambient,
-            &state.step(&current, &Look::DEFAULT),
-        );
+        let second = crate::tmux::set_options_args(&ServerId::Ambient, &state.step(&Look::DEFAULT));
         assert!(second.iter().any(|word| word.contains('⠹')));
         assert!(
             second
@@ -2329,9 +2414,10 @@ mod tests {
                 window: "@7".to_owned(),
                 verdict: Verdict::Active,
             }],
+            panes: vec![pane],
             ..MotionState::default()
         };
-        assert!(state.step(&[pane], &Look::DEFAULT).is_empty());
+        assert!(state.step(&Look::DEFAULT).is_empty());
         assert_eq!(state.spin, 0, "an invisible ticker does not advance");
     }
 
@@ -2340,7 +2426,7 @@ mod tests {
         let attached = motion("%1", "lead");
         let mut detached = attached.clone();
         detached.session_attached = 0;
-        assert_eq!(motion_cadence(&[attached]), Duration::from_millis(250));
+        assert_eq!(motion_cadence(&[attached]), Duration::from_millis(100));
         assert_eq!(motion_cadence(&[detached]), Duration::from_secs(2));
         assert!(motion_ticker_enabled(Look::DEFAULT));
         assert!(!motion_ticker_enabled(Look {
@@ -2351,6 +2437,68 @@ mod tests {
             drawn: false,
             ..Look::DEFAULT
         }));
+    }
+
+    #[test]
+    fn attached_observation_is_every_fifth_motion_tick() {
+        assert_eq!(super::MOTION_OBSERVATION_TICKS, 5);
+        let mut ticks_since_observation = super::MOTION_OBSERVATION_TICKS;
+        let observed: Vec<u8> = (0..=10)
+            .filter(|_| {
+                let due = motion_observation_due(ticks_since_observation);
+                if due {
+                    ticks_since_observation = 0;
+                }
+                ticks_since_observation = ticks_since_observation.saturating_add(1);
+                due
+            })
+            .collect();
+        assert_eq!(observed, [0, 5, 10]);
+    }
+
+    #[test]
+    fn a_failed_cached_write_refreshes_without_spending_the_failure_budget() {
+        let (failures, stop) = motion_publish_failure(2, false);
+        assert_eq!(failures, 2);
+        assert!(!stop);
+        assert!(motion_observation_due(super::MOTION_OBSERVATION_TICKS));
+
+        let (failures, stop) = motion_publish_failure(failures, true);
+        assert_eq!(failures, 3);
+        assert!(
+            stop,
+            "the same failure against fresh identities still stops"
+        );
+    }
+
+    #[test]
+    fn fleet_strip_writes_only_for_changed_text_or_working_frames() {
+        let session = |rank: &str| crate::tmux::FleetSession {
+            name: "current".to_owned(),
+            id: "$7".to_owned(),
+            rank: rank.to_owned(),
+        };
+        let mut state = MotionState::default();
+        state.replace_observation(vec![motion("%1", "lead")], &[session("1")], "current");
+
+        let first = state.step(&Look::DEFAULT);
+        assert_eq!(first.len(), 1, "the first static strip is new");
+        assert!(
+            state.step(&Look::DEFAULT).is_empty(),
+            "unchanged static strip"
+        );
+
+        state.replace_fleet(&[session("4")], "current");
+        assert_eq!(state.step(&Look::DEFAULT).len(), 1, "changed rank");
+        assert!(state.step(&Look::DEFAULT).is_empty(), "unchanged attention");
+
+        state.replace_fleet(&[session("2")], "current");
+        let first_frame =
+            crate::tmux::set_options_args(&ServerId::Ambient, &state.step(&Look::DEFAULT));
+        let next_frame =
+            crate::tmux::set_options_args(&ServerId::Ambient, &state.step(&Look::DEFAULT));
+        assert!(first_frame.iter().any(|word| word.contains('⠙')));
+        assert!(next_frame.iter().any(|word| word.contains('⠹')));
     }
 
     #[test]
