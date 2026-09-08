@@ -636,7 +636,12 @@ bundle version platform binary:
     chmod 0555 "$root/ae-core" "$root/install"
     chmod 0444 "$root/SHA256SUMS"
     chmod 0555 "$root"
-    tar -czf "$root.tar.gz" "$root"
+    # Keep macOS xattrs out of bundles; GNU tar otherwise warns on WSL extraction.
+    tar_flags=(--no-xattrs)
+    if tar --version 2>/dev/null | grep -qi bsdtar; then
+        tar_flags+=(--no-mac-metadata)
+    fi
+    COPYFILE_DISABLE=1 tar "${tar_flags[@]}" -czf "$root.tar.gz" "$root"
     echo "==> $root.tar.gz"
 
 # Both release halves, and the release-level SHA256SUMS over them, built HERE.
