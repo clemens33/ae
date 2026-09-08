@@ -1,6 +1,15 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [v2026.9.29] - 2026-09-08
+
+### Other
+
+- Show session lifecycle ages in list output
+- Repair rename monitor and resume lifecycle
+
+The live rollback failure for numeric session 416 could not be reproduced in an isolated probe: list-sessions returned $0 and kill-session -t =$0 succeeded. Rollback now kills the exact new name directly, removing the fallible discovery step; this is a simplification, not a proven root-cause fix.
+- Add solo session launches
 ## [v2026.9.28] - 2026-09-08
 
 ### Other
