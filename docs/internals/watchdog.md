@@ -128,7 +128,7 @@ After the per-pane pass:
 
 Concretely:
 
-- Agent emits `state blocked "waiting on X"` → state event in `events.jsonl`.
+- Agent emits `state blocked "Codex review blocks merge; lead unblocks req-Z. I ran local tests and recorded failures in .local/review.md."` → state event in `events.jsonl`.
 - The watchdog skips it each cycle while the pane is quiet (step 2 fires).
 - Human types unblock info in the pane → pane hash keeps diverging from the re-armed baseline for two cycles → `_quiet_pane_decision` yields → normal state machine resumes; if the agent then hangs, it gets nudged.
 - Or another agent sends it a message → newer event → quiet invalidated the same way.
