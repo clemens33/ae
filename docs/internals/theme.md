@@ -122,8 +122,7 @@ paired with a glyph, and each glyph with a reason word on the pane border.
 
 ## The two status lines
 
-`status-format[0]` — the session's attention glyph in its accent, then the
-windows. Each window leads with its live mark and then names its agent
+`status-format[0]` — the windows. Each window leads with its live mark and then names its agent
 (`0:✓lead`) or separates multiple agents with their marks
 (`0:✓lead ●colead`); a window with no agent panes falls back to its tmux name.
 Adjacent windows have a two-space separator. `Z` stays because a zoomed pane

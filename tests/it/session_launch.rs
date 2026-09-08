@@ -2262,14 +2262,15 @@ fn the_status_bar_is_ae_owned_and_its_first_line_still_renders() {
             .trim_end_matches('\n')
             .to_owned()
     };
-    // Line 0 is ae's own: the attention mark, the windows, and the right-hand
-    // facts. The session NAME is not on it — the fleet strip on line 1 names
+    // Line 0 is ae's own: the windows and the right-hand facts. The session
+    // NAME is not on it — the fleet strip on line 1 names
     // every session and raises this one — so the format depends on the look
     // alone. The watch segment is a user option at the END, referenced exactly
     // once, so a watchdog restart cannot double it.
     let zero = option("status-format[0]");
-    assert!(zero.contains("#{@ae_attn_style}"), "{zero}");
-    assert!(zero.contains("#{@ae_attn_glyph}"), "{zero}");
+    assert!(zero.starts_with("#[align=left]#[nobold"), "{zero}");
+    assert!(!zero.contains("#{@ae_attn_style}"), "{zero}");
+    assert!(!zero.contains("#{@ae_attn_glyph}"), "{zero}");
     assert!(!zero.contains("lnbar"), "{zero}");
     assert!(zero.contains("#{window_name}"), "{zero}");
     assert!(zero.contains("#{@ae_window_agents}"), "{zero}");
@@ -2316,17 +2317,8 @@ fn the_status_bar_is_ae_owned_and_its_first_line_still_renders() {
         drawn.contains("range=window|0"),
         "the window entry is a click target: {drawn:?}"
     );
-    // The attention SEED, drawn: the stale mark, in the palette's stale accent
-    // and never a verdict the watchdog has not reached yet.
-    let stale = ae::theme::Mark::Stale;
-    assert!(
-        drawn.contains(stale.glyph(true)),
-        "line 0 draws the seeded attention glyph: {drawn:?}"
-    );
-    assert!(
-        drawn.contains(ae::theme::Palette::DARCULA.accent(stale)),
-        "and in its accent: {drawn:?}"
-    );
+    // The attention seed remains published for borders, menus, and fleet
+    // strip, but line 0 starts directly with the window list.
     // Both watchdog-owned surfaces render their option values. The rig runs no
     // watchdog, so seed them directly.
     let (set, why) = rig.tmux(&[

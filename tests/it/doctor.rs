@@ -358,7 +358,7 @@ fn rename_moves_the_tmux_session_the_directory_and_the_meta_together() {
     let (_, windows) = rig.tmux(&["list-windows", "-t", "after", "-F", "#{window_name}"]);
     assert_eq!(windows.trim(), "lead", "{windows}");
     let (_, line) = rig.tmux(&["show-options", "-v", "-t", "after", "status-format[0]"]);
-    assert!(line.contains(ae::theme::ATTENTION_GLYPH_OPTION), "{line}");
+    assert!(!line.contains(ae::theme::ATTENTION_GLYPH_OPTION), "{line}");
     assert!(!line.contains("before"), "{line}");
     // The rename re-renders the LAYOUT and leaves the verdicts alone: those are
     // the watchdog's, and every other session on this server sorts its fleet

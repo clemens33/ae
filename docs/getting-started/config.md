@@ -112,8 +112,8 @@ Names show in pane borders and are how agents address each other. Each window
 keeps its first agent's name as its stable tmux routing name; later splits do
 not rename it.
 
-The status bar has two lines. The first is this session: its attention mark,
-then windows led by their live marks and named agents, then the branch, goal,
+The status bar has two lines. The first is this session: windows led by their
+live marks and named agents, then the branch, goal,
 shortened path and watch segment. One agent is `0:✓lead`; multiple agents are
 `0:[✓lead ●colead]`. The selected window and current fleet row use the
 palette's selection colours.
