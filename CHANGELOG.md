@@ -1,6 +1,14 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [v2026.9.27] - 2026-09-08
+
+### Other
+
+- Restore spacing in session strips
+- Enforce strong state reason guidance
+- Clarify state guidance wording
+- Hold orchestrator overviews during active work
 ## [v2026.9.26] - 2026-09-08
 
 ### Other
