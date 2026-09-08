@@ -1,6 +1,12 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [v2026.9.31] - 2026-09-08
+
+### Other
+
+- Exclude macOS metadata from release bundles
+- Allow publish past stopped legacy sessions
 ## [v2026.9.30] - 2026-09-08
 
 ### Other
