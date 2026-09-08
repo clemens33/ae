@@ -258,9 +258,10 @@ ae upgrade
 
 `ae upgrade` downloads the latest release (or an `AE_VERSION` pin), verifies the checksum
 before extraction, then hands publication to the downloaded core. It publishes the new
-version read-only under `~/.ae/versions/<V>/`; migrates every session; repoints every
-session's core record, helpers, watchdog and Telegram bridge; and only then atomically
-moves `~/.local/bin/ae` to the new core. Existing agent harnesses are never restarted.
+version read-only under `~/.ae/versions/<V>/`; migrates and repoints every placeable
+session's core record and helpers; reports and skips stopped unplaceable sessions; updates
+running watchdogs and Telegram bridges; and only then atomically moves `~/.local/bin/ae` to
+the new core. Existing agent harnesses are never restarted.
 Partial migration/relink failures are diagnosed with the same journal and recovery path
 for manual and automatic upgrades. See [docs/upgrade.md](docs/upgrade.md).
 

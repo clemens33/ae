@@ -22,16 +22,17 @@ the answer, and `ae list`, which only reports it. One question, one answer.
 
 ## The sweep
 
-Between the new version directory and the repointed command link, the publish asks EVERY
-session whether the chain can place it, and only then writes. Per session: the chain, the
-core rows rewritten as one locked document, all helper links re-rendered, and for a running
-session a live watchdog is restarted on the new core, while a missing enabled watchdog is
+Between the new version directory and the repointed command link, the publish asks every
+session whether the chain can place it, and only then writes. Every placeable session gets the
+chain, the core rows rewritten as one locked document, all helper links re-rendered, and for a
+running session a live watchdog restarted on the new core, while a missing enabled watchdog is
 started there. An explicitly disabled watchdog stays absent. The Telegram bridge is restarted
 once per server. Agent panes are never touched — they run the agent tool, not ae.
 
-Nothing is written until every session has been asked, so a session that cannot be migrated
-aborts the publish by name with the old link intact. An abort later than that names the
-sessions that did move rather than claiming none did.
+Nothing is written until every session has been asked. A stopped session the chain cannot place
+has no live helpers to protect, so the publish reports it and skips its directory untouched. An
+unplaceable running session still aborts the publish by name with the old link intact. An abort
+later than that names the sessions that did move rather than claiming none did.
 
 `ae upgrade` hands the publish to the DOWNLOADED core, as the `install` bootstrap already
 does. The steps for versions N..M belong to the core being installed; a publish run in-process
@@ -104,7 +105,8 @@ their immutable `releases/download/v<V>/...` route and verified before delegatio
 Only automatic publication carries the internal newer-only flag. The downloaded core takes
 the existing install lock, recovers an interrupted publish, then repeats the numeric
 strictly-newer comparison before it creates a journal or mutates anything. A manual upgrade
-still permits an explicit reinstall or downgrade. The publisher then migrates and relinks
-every session before moving the public command pointer, and prunes only afterward. Running
-agent harnesses stay alive; helpers and companion daemons move to the new core, subject to
-the same partial-failure diagnostics as a manual publish.
+still permits an explicit reinstall or downgrade. The publisher then migrates and relinks every
+placeable session before moving the public command pointer, reports and skips stopped
+unplaceable sessions, and prunes only afterward. Running agent harnesses stay alive; helpers
+and companion daemons move to the new core, subject to the same partial-failure diagnostics as
+a manual publish.

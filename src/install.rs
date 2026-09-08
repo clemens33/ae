@@ -775,9 +775,10 @@ fn publish_steps(
     publish_version_dir(bundle, &version_dir)?;
 
     // BEFORE the repoint, and after the new core is whole on disk: every
-    // session is stepped, re-pointed and re-linked onto it, and the daemons of
-    // the running ones are restarted. A session that cannot be migrated fails
-    // here, while `~/.local/bin/ae` still names the core that built it.
+    // placeable session is stepped, re-pointed and re-linked onto it, and the
+    // daemons of the running ones are restarted. An unplaceable running session
+    // fails here while `~/.local/bin/ae` still names the core that built it; a
+    // stopped one is reported and skipped untouched.
     let core = version_dir.join(crate::shape::CORE);
     let notes = crate::migrate::onto(&paths.home, &core, &bundle.version)?;
 
@@ -1182,6 +1183,11 @@ pub fn run(
                 "ae: installed {} under {}",
                 published.version,
                 published.version_dir.display()
+            )?;
+            writeln!(
+                out,
+                "ae {} installed: ~/.local/bin/ae — if `ae` is not found, open a new shell or add ~/.local/bin to PATH",
+                published.version
             )?;
             // A WARNING, never a refusal: the install has to land on a machine
             // below the floor, because `ae version` is how the operator sees

@@ -91,6 +91,18 @@ impl Rig {
         self.run(&["_install", "--from", &from.to_string_lossy()])
     }
 
+    fn install_with_tmux_tmpdir(
+        &self,
+        from: &Path,
+        tmux_tmpdir: &Path,
+    ) -> (Option<i32>, String, String) {
+        self.run_as_with_tmux_tmpdir(
+            Path::new(env!("CARGO_BIN_EXE_ae")),
+            &["_install", "--from", &from.to_string_lossy()],
+            Some(tmux_tmpdir),
+        )
+    }
+
     /// [`Rig::install`] started but not waited for — the second half of the
     /// exclusion proof, which needs two publishers alive at once.
     fn spawn_install(&self, from: &Path) -> std::process::Child {
@@ -122,19 +134,33 @@ impl Rig {
     }
 
     fn run_as(&self, program: &Path, argv: &[&str]) -> (Option<i32>, String, String) {
+        self.run_as_with_tmux_tmpdir(program, argv, None)
+    }
+
+    fn run_as_with_tmux_tmpdir(
+        &self,
+        program: &Path,
+        argv: &[&str],
+        tmux_tmpdir: Option<&Path>,
+    ) -> (Option<i32>, String, String) {
         #[allow(
             clippy::disallowed_types,
             reason = "the black-box door: an install is what a real process does to a real HOME"
         )]
         let mut command = std::process::Command::new(program);
-        let out = command
+        command
             .env_remove("AE_HOME")
             .env_remove("CONFIG_FILE")
             .env_remove("AE_VERSION")
             .env_remove("TMUX")
+            .env_remove("TMUX_PANE")
             .env("AE_NO_AUTOSTART", "1")
             .env("HOME", &self.home)
-            .args(argv)
+            .args(argv);
+        if let Some(tmux_tmpdir) = tmux_tmpdir {
+            command.env("TMUX_TMPDIR", tmux_tmpdir);
+        }
+        let out = command
             .output()
             .unwrap_or_else(|why| panic!("the product binary should run: {why}"));
         (
@@ -213,6 +239,12 @@ fn a_verified_bundle_publishes_the_layout_and_the_modes_that_make_it_immutable()
     let rig = Rig::new("layout");
     let (code, stdout, stderr) = rig.install(&rig.bundle("2026.8.1"));
     assert_eq!(code, Some(0), "install failed: {stdout}{stderr}");
+    assert!(
+        stdout.lines().any(|line| {
+            line == "ae 2026.8.1 installed: ~/.local/bin/ae — if `ae` is not found, open a new shell or add ~/.local/bin to PATH"
+        }),
+        "the successful install did not explain how to reach ae: {stdout}"
+    );
 
     let dir = rig.version_dir("2026.8.1");
     assert_eq!(mode(&dir.join("ae-core")), 0o555, "the core is immutable");
@@ -246,6 +278,105 @@ fn a_verified_bundle_publishes_the_layout_and_the_modes_that_make_it_immutable()
         !present(&rig.home.join(".ae").join("config")),
         "the installer wrote a config"
     );
+}
+
+#[test]
+fn install_over_a_bash_era_home_replaces_the_command_and_keeps_legacy_sessions_listable() {
+    let rig = Rig::new("bash-era-home");
+    let tmux_tmpdir = rig.scratch.join("tmux");
+    assert!(
+        std::fs::create_dir_all(&tmux_tmpdir).is_ok(),
+        "a private tmux root"
+    );
+    let root = rig.home.join(".ae");
+    let config = root.join("config");
+    assert!(std::fs::create_dir_all(root.join("sessions")).is_ok());
+    let old_config = b"[agents]\nfable5 = \"claude\"\ngpt56sol = \"codex\"\n\n\
+[workspace]\nmain = fable5:lead\nworkers = gpt56sol:colead\nlayout = lead-pair\n\
+watchdog = true\n";
+    assert!(
+        std::fs::write(&config, old_config).is_ok(),
+        "the old config"
+    );
+
+    let mut preserved = Vec::new();
+    for (index, name) in ["old-one", "old-two"].iter().enumerate() {
+        let dir = root.join("sessions").join(name);
+        assert!(std::fs::create_dir_all(&dir).is_ok(), "an old session");
+        let meta = format!(
+            "mode=local\norigin=/work/{name}\nsession={name}\nwork_dir=/work/{name}\n\
+             layout=lead-pair\nconfig={}\nmain_pane=%{index}\nae_path={}\nae_version=2026.8.2\n\
+             tmux_server=\ntmux_server_kind=\nagent.main=fable5:lead:pending\n\
+             agent.worker.0=gpt56sol:colead:pending\nagent_bin.main=claude\n\
+             agent_bin.worker.0=codex\nwatchdog=true\n",
+            config.display(),
+            rig.link().display()
+        );
+        assert!(std::fs::write(dir.join("meta"), meta).is_ok(), "old meta");
+        write_exec(&dir.join("send"), "#!/usr/bin/env bash\necho old helper\n");
+        preserved.push((
+            dir.clone(),
+            read(&dir.join("meta")),
+            read(&dir.join("send")),
+        ));
+    }
+
+    assert!(
+        std::fs::create_dir_all(rig.link().parent().unwrap_or(Path::new("/missing"))).is_ok(),
+        "the old command parent"
+    );
+    write_exec(&rig.link(), "#!/usr/bin/env bash\necho old ae\n");
+    assert!(
+        std::fs::symlink_metadata(rig.link()).is_ok_and(|meta| meta.file_type().is_file()),
+        "the bash-era command is not a regular file"
+    );
+
+    let (code, stdout, stderr) = rig.install_with_tmux_tmpdir(&rig.product_bundle(), &tmux_tmpdir);
+    assert_eq!(code, Some(0), "the install failed: {stdout}{stderr}");
+    for name in ["old-one", "old-two"] {
+        assert!(
+            stdout.contains(&format!("ae: skipped {name}:")),
+            "the old session was not reported: {stdout}"
+        );
+    }
+    let target = read_link(&rig.link());
+    assert_eq!(
+        target,
+        rig.version_dir(ae::VERSION).join("ae-core"),
+        "the command does not name the new core"
+    );
+    assert!(
+        std::fs::symlink_metadata(rig.link()).is_ok_and(|meta| meta.file_type().is_symlink()),
+        "the old regular command was not replaced by a symlink"
+    );
+    assert_eq!(read(&config), old_config, "the old config was rewritten");
+    for (dir, meta, helper) in &preserved {
+        assert_eq!(read(&dir.join("meta")), *meta, "old meta changed");
+        assert_eq!(read(&dir.join("send")), *helper, "old helper changed");
+    }
+
+    let (code, listed, stderr) = rig.run_as_with_tmux_tmpdir(
+        &rig.link(),
+        &["list", "--all", "--json"],
+        Some(&tmux_tmpdir),
+    );
+    assert_eq!(code, Some(0), "list failed after install: {listed}{stderr}");
+    let document = ae::json::parse(listed.trim_end())
+        .unwrap_or_else(|why| panic!("list returned invalid JSON ({why:?}): {listed}"));
+    let Some(ae::json::Value::Arr(sessions)) = document.get("sessions") else {
+        panic!("list returned no sessions array: {listed}");
+    };
+    for name in ["old-one", "old-two"] {
+        let entry = sessions
+            .iter()
+            .find(|entry| entry.get_str("name") == Some(name))
+            .unwrap_or_else(|| panic!("{name} disappeared from list: {listed}"));
+        assert_eq!(
+            entry.get("degraded"),
+            Some(&ae::json::Value::Bool(true)),
+            "{name} was not marked degraded: {listed}"
+        );
+    }
 }
 
 #[test]
@@ -481,11 +612,11 @@ fn an_interrupted_install_is_reversed_by_the_next_run_which_then_completes() {
 
 #[test]
 fn a_second_install_repoints_the_link_and_sweeps_the_version_nothing_records() {
-    // A publish repoints every session onto the new core BEFORE it repoints
-    // the link, so by the time the sweep
-    // runs, nothing records the superseded version and it goes. One installed
-    // version, one pointer, no accumulation — and no relink-to-yesterday
-    // rollback, which is the cost this buys the guarantee with.
+    // A publish repoints every placeable session onto the new core BEFORE it
+    // repoints the link, so by the time the sweep runs, nothing records the
+    // superseded version and it goes. One installed version, one pointer, no
+    // accumulation — and no relink-to-yesterday rollback, which is the cost
+    // this buys the guarantee with.
     let rig = Rig::new("switch");
     assert_eq!(rig.install(&rig.bundle("2026.8.1")).0, Some(0));
     assert_eq!(rig.install(&rig.bundle("2026.8.2")).0, Some(0));

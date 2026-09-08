@@ -112,6 +112,31 @@ impl Rig {
         dir
     }
 
+    /// A stopped session whose declared version row cannot be parsed.
+    fn unreadable_session(&self, name: &str) -> PathBuf {
+        let dir = self.session(name, "/nowhere/ae-core", Some(ae::migrate::CURRENT));
+        let text = meta_of(&dir).replacen(
+            &format!("{}={}\n", ae::migrate::KEY, ae::migrate::CURRENT),
+            &format!("{}=v{}\n", ae::migrate::KEY, ae::migrate::CURRENT),
+            1,
+        );
+        assert!(
+            fs::write(dir.join("meta"), text).is_ok(),
+            "an unreadable meta"
+        );
+        dir
+    }
+
+    /// A session whose `meta` node cannot be read as a file.
+    fn unreadable_meta_session(&self, name: &str) -> PathBuf {
+        let dir = self.root().join("sessions").join(name);
+        assert!(
+            fs::create_dir_all(dir.join("meta")).is_ok(),
+            "an unreadable meta node"
+        );
+        dir
+    }
+
     /// A version directory with one member, standing in for a published one.
     fn plant_version(&self, version: &str) -> PathBuf {
         let dir = self.versions().join(version);
@@ -121,19 +146,54 @@ impl Rig {
     }
 
     fn install(&self, from: &Path) -> (Option<i32>, String, String) {
+        self.install_inner(from, None, None)
+    }
+
+    fn install_with_tmux_tmpdir(
+        &self,
+        from: &Path,
+        tmux_tmpdir: Option<&Path>,
+    ) -> (Option<i32>, String, String) {
+        self.install_inner(from, tmux_tmpdir, None)
+    }
+
+    fn install_with_caller(
+        &self,
+        from: &Path,
+        tmux_tmpdir: &Path,
+        marker: &str,
+        pane: &str,
+    ) -> (Option<i32>, String, String) {
+        self.install_inner(from, Some(tmux_tmpdir), Some((marker, pane)))
+    }
+
+    fn install_inner(
+        &self,
+        from: &Path,
+        tmux_tmpdir: Option<&Path>,
+        caller: Option<(&str, &str)>,
+    ) -> (Option<i32>, String, String) {
         #[allow(
             clippy::disallowed_types,
             reason = "the black-box door: a publish is what a real process does to a real HOME"
         )]
         let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_ae"));
-        let out = command
+        command
             .env_remove("AE_HOME")
             .env_remove("CONFIG_FILE")
             .env_remove("AE_VERSION")
-            .env_remove("TMUX")
             .env("AE_NO_AUTOSTART", "1")
             .env("HOME", &self.home)
-            .args(["_install", "--from", &from.to_string_lossy()])
+            .args(["_install", "--from", &from.to_string_lossy()]);
+        if let Some((marker, pane)) = caller {
+            command.env("TMUX", marker).env("TMUX_PANE", pane);
+        } else {
+            command.env_remove("TMUX").env_remove("TMUX_PANE");
+        }
+        if let Some(tmux_tmpdir) = tmux_tmpdir {
+            command.env("TMUX_TMPDIR", tmux_tmpdir);
+        }
+        let out = command
             .output()
             .unwrap_or_else(|why| panic!("the product binary should run: {why}"));
         (
@@ -186,6 +246,51 @@ fn value_of(meta: &str, key: &str) -> Option<String> {
 
 fn present(path: &Path) -> bool {
     fs::symlink_metadata(path).is_ok()
+}
+
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum SnapshotEntry {
+    Directory(PathBuf),
+    File(PathBuf, Vec<u8>),
+    Symlink(PathBuf, PathBuf),
+    Other(PathBuf),
+}
+
+/// Every entry below `root`, including file bytes and symlink targets.
+fn snapshot(root: &Path) -> Vec<SnapshotEntry> {
+    let mut out = Vec::new();
+    let mut stack = vec![root.to_owned()];
+    while let Some(dir) = stack.pop() {
+        for entry in fs::read_dir(&dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            let relative = path
+                .strip_prefix(root)
+                .unwrap_or_else(|why| {
+                    panic!("{} is below {}: {why}", path.display(), root.display())
+                })
+                .to_owned();
+            let meta = fs::symlink_metadata(&path)
+                .unwrap_or_else(|why| panic!("{}: {why}", path.display()));
+            if meta.file_type().is_symlink() {
+                out.push(SnapshotEntry::Symlink(
+                    relative,
+                    fs::read_link(&path).unwrap_or_else(|why| panic!("{}: {why}", path.display())),
+                ));
+            } else if meta.is_dir() {
+                out.push(SnapshotEntry::Directory(relative));
+                stack.push(path);
+            } else if meta.is_file() {
+                out.push(SnapshotEntry::File(
+                    relative,
+                    fs::read(&path).unwrap_or_else(|why| panic!("{}: {why}", path.display())),
+                ));
+            } else {
+                out.push(SnapshotEntry::Other(relative));
+            }
+        }
+    }
+    out.sort();
+    out
 }
 
 // ─── the chain itself ────────────────────────────────────────────────────
@@ -564,80 +669,92 @@ fn a_publish_stamps_every_pre_chain_session_and_counts_them_in_one_line() {
 }
 
 #[test]
-fn a_session_the_chain_refuses_aborts_the_publish_with_the_old_link_intact() {
-    let rig = Rig::new("refuse");
-    // A first publish, so there is a command link with something to lose.
+fn a_stopped_pre_chain_session_is_reported_and_skipped_by_a_publish() {
+    let rig = Rig::new("skip-stopped-pre-chain");
+    let stale = rig.plant_version("2026.1.1");
+    let healthy = rig.session(
+        "healthy",
+        &stale.join("ae-core").to_string_lossy(),
+        Some(ae::migrate::CURRENT),
+    );
+    let skipped = rig.legacy_session("legacy");
+    let before = snapshot(&skipped);
+    assert!(
+        !present(&rig.link()),
+        "the fixture already has a command link"
+    );
+
     let (code, stdout, stderr) = rig.install(&rig.bundle("2026.9.9"));
-    assert_eq!(code, Some(0), "the first install failed: {stdout}{stderr}");
-    let first = rig.versions().join("2026.9.9").join("ae-core");
+    assert_eq!(code, Some(0), "the publish failed: {stdout}{stderr}");
 
-    let refused = rig.legacy_session("legacy");
-    let before = meta_of(&refused);
-
-    let (code, stdout, stderr) = rig.install(&rig.bundle("2026.9.10"));
-    assert_eq!(code, Some(1), "the publish did not fail: {stdout}{stderr}");
-    assert!(
-        stderr.contains("legacy"),
-        "the refusal names no session: {stderr}"
-    );
-    assert!(
-        stderr.contains(ae::migrate::KEY),
-        "the refusal does not say what is wrong: {stderr}"
-    );
-    // THE POINT: the link still names the core that was current when the
-    // upgrade started, so nothing on this machine has moved.
+    let published = rig.versions().join("2026.9.9").join("ae-core");
     assert_eq!(
         fs::read_link(rig.link()).ok(),
-        Some(first),
-        "the command link moved despite the refusal"
+        Some(published.clone()),
+        "the command link did not move past the stopped legacy session"
     );
-    // And no session was repointed at a core the operator never got — the
-    // refused one included, which is the session an implementation that
-    // repointed first and asked afterwards would have already rewritten.
     assert_eq!(
-        meta_of(&refused),
-        before,
-        "the refused session was repointed anyway"
+        value_of(&meta_of(&healthy), "ae_core").as_deref(),
+        Some(published.to_string_lossy().as_ref()),
+        "the placeable session was not repointed"
     );
-    for helper in ae::shim::HELPERS {
-        assert!(
-            !present(&refused.join(helper.name)),
-            "{} was rendered into a session the publish refused",
-            helper.name
-        );
-    }
     assert!(
-        present(&rig.versions().join("2026.9.9")),
-        "the current version directory was removed"
+        stdout.contains(
+            "ae: skipped legacy: it pre-dates the migration chain and is not running — end it (ae end legacy)"
+        ),
+        "the skip was not reported: {stdout}"
     );
+    assert_eq!(
+        snapshot(&skipped),
+        before,
+        "the skipped session directory changed"
+    );
+    assert!(
+        !meta_of(&skipped).contains("ae_core_version="),
+        "the skipped meta started naming a version"
+    );
+    assert!(!present(&stale), "the superseded version was not swept");
 }
 
 #[test]
-fn a_refusal_late_in_the_sweep_leaves_the_sessions_before_it_untouched() {
-    // THE PRECHECK. Sessions are swept in name order, so `aaa` is repointed
-    // before `zzz` is even read — unless nothing is written until every session
-    // has been asked. Without that pass, a publish that then rolls its version
-    // directory back would leave `aaa` naming a core that is not there.
-    let rig = Rig::new("precheck");
+fn stopped_sessions_are_skipped_for_every_version_refusal() {
+    let rig = Rig::new("skip-version-refusals");
+    let sessions = [
+        ("unreadable", rig.unreadable_session("unreadable")),
+        ("no-step", rig.session("no-step", "/old/core", Some(1))),
+        (
+            "ahead",
+            rig.session("ahead", "/old/core", Some(ae::migrate::CURRENT + 1)),
+        ),
+    ];
+    let before: Vec<_> = sessions.iter().map(|(_, dir)| snapshot(dir)).collect();
+
     let (code, stdout, stderr) = rig.install(&rig.bundle("2026.9.9"));
-    assert_eq!(code, Some(0), "the first install failed: {stdout}{stderr}");
-    let first = rig.versions().join("2026.9.9").join("ae-core");
-
-    let early = rig.session("aaa", &first.to_string_lossy(), Some(ae::migrate::CURRENT));
-    rig.legacy_session("zzz");
-    let before = meta_of(&early);
-
-    let (code, stdout, stderr) = rig.install(&rig.bundle("2026.9.10"));
-    assert_eq!(code, Some(1), "the publish did not fail: {stdout}{stderr}");
+    assert_eq!(code, Some(0), "the publish failed: {stdout}{stderr}");
     assert!(
-        stderr.contains("zzz"),
-        "the refusal names no session: {stderr}"
+        fs::read_link(rig.link()).is_ok_and(|target| target.ends_with("2026.9.9/ae-core")),
+        "the command link did not move"
     );
-    assert_eq!(
-        meta_of(&early),
-        before,
-        "a session before the refusal was repointed anyway"
+    assert!(
+        stdout.lines().any(|line| {
+            line == "ae: skipped ahead: meta newer than this ae, left untouched — upgrade ae to resume it"
+        }),
+        "the newer session was given unsafe recovery advice: {stdout}"
     );
+    for ((name, dir), before) in sessions.iter().zip(before) {
+        assert!(
+            stdout.contains(&format!("ae: skipped {name}:")),
+            "{name} was not reported: {stdout}"
+        );
+        assert_eq!(snapshot(dir), before, "the skipped {name} session changed");
+        for helper in ae::shim::HELPERS {
+            assert!(
+                !present(&dir.join(helper.name)),
+                "{} was rendered into skipped session {name}",
+                helper.name
+            );
+        }
+    }
 }
 
 #[test]
@@ -738,6 +855,45 @@ struct Cleanup {
     scratch: PathBuf,
 }
 
+/// A named or ambient server rooted in a private `TMUX_TMPDIR`.
+struct ServerCleanup {
+    selector: Vec<String>,
+    scratch: PathBuf,
+}
+
+struct MultiServerCleanup {
+    selectors: Vec<Vec<String>>,
+    scratch: PathBuf,
+}
+
+impl Drop for MultiServerCleanup {
+    fn drop(&mut self) {
+        for selector in &self.selectors {
+            let mut args = selector.clone();
+            args.push("kill-server".to_owned());
+            let _ = run_tmux(&args, &self.scratch);
+        }
+        let _ = remove(&self.scratch);
+    }
+}
+
+impl Drop for ServerCleanup {
+    fn drop(&mut self) {
+        let mut invocation = Invocation::new("tmux");
+        for word in &self.selector {
+            invocation = invocation.arg(word);
+        }
+        invocation = invocation.arg("kill-server");
+        let _ = raw::run(
+            &invocation,
+            &self.scratch,
+            &self.scratch.join("cleanup-out"),
+            &self.scratch.join("cleanup-err"),
+        );
+        let _ = remove(&self.scratch);
+    }
+}
+
 impl Drop for Cleanup {
     fn drop(&mut self) {
         // NOT the panicking helper: this runs while a panic may already be
@@ -782,6 +938,33 @@ fn tmux(socket: &Path, scratch: &Path, words: &[&str]) -> (bool, String) {
     run_tmux(&args, scratch)
 }
 
+fn start_session(scratch: &Path, selector: &[&str], session: &str) {
+    let mut args: Vec<String> = selector.iter().map(|word| (*word).to_owned()).collect();
+    args.extend(
+        [
+            "-f",
+            "/dev/null",
+            "new-session",
+            "-d",
+            "-s",
+            session,
+            "sleep",
+            "60",
+        ]
+        .iter()
+        .map(|word| (*word).to_owned()),
+    );
+    assert!(run_tmux(&args, scratch).0, "the {session} server");
+}
+
+fn start_server(scratch: &Path, selector: &[&str], session: &str) -> ServerCleanup {
+    start_session(scratch, selector, session);
+    ServerCleanup {
+        selector: selector.iter().map(|word| (*word).to_owned()).collect(),
+        scratch: scratch.to_owned(),
+    }
+}
+
 fn assert_two_to_one_widths(socket: &Path, scratch: &Path, target: &str) {
     let (_, listed) = tmux(
         socket,
@@ -823,6 +1006,244 @@ fn assert_ae_mouse_binding(socket: &Path, scratch: &Path) {
             && binding.contains("select-window -t =")
             && binding.contains("switch-client -t ="),
         "the upgrade reasserts status clicks on the running session's server: {binding}"
+    );
+}
+
+#[test]
+fn an_unreadable_stopped_meta_is_reported_and_skipped() {
+    let rig = Rig::new("skip-unreadable-meta");
+    let held = rig.plant_version("2026.1.1");
+    let dir = rig.unreadable_meta_session("unreadable");
+    assert!(
+        std::os::unix::fs::symlink(held.join("ae-core"), dir.join("send")).is_ok(),
+        "a helper whose version cannot be read from meta"
+    );
+    let before = snapshot(&dir);
+    let tmux_tmpdir = tmux_scratch("unreadable-stopped");
+
+    let (code, stdout, stderr) =
+        rig.install_with_tmux_tmpdir(&rig.bundle("2026.9.9"), Some(&tmux_tmpdir));
+    let _ = remove(&tmux_tmpdir);
+    assert_eq!(code, Some(0), "the publish failed: {stdout}{stderr}");
+    assert!(
+        stdout.contains("ae: skipped unreadable: meta unreadable (")
+            && stdout.contains("), not running"),
+        "the unreadable meta was not reported: {stdout}"
+    );
+    assert!(
+        stdout.contains("WARNING: no version was removed"),
+        "the unsafe prune was not reported: {stdout}"
+    );
+    assert_eq!(
+        snapshot(&dir),
+        before,
+        "the unreadable stopped session changed"
+    );
+    assert!(
+        fs::read_link(rig.link()).is_ok_and(|target| target.ends_with("2026.9.9/ae-core")),
+        "the command link did not move"
+    );
+    assert!(present(&held), "the unreadable session's core was pruned");
+    assert!(
+        fs::canonicalize(dir.join("send")).is_ok(),
+        "the unreadable session's helper became dangling"
+    );
+}
+
+#[test]
+fn an_unreadable_live_meta_aborts_on_both_legacy_servers() {
+    for (tag, selector) in [("owned", &["-L", "ae"][..]), ("historical", &[][..])] {
+        let rig = Rig::new(&format!("refuse-unreadable-{tag}"));
+        let tmux_tmpdir = tmux_scratch(&format!("unreadable-{tag}"));
+        let (code, stdout, stderr) =
+            rig.install_with_tmux_tmpdir(&rig.bundle("2026.9.9"), Some(&tmux_tmpdir));
+        assert_eq!(code, Some(0), "the first install failed: {stdout}{stderr}");
+        let first = rig.versions().join("2026.9.9").join("ae-core");
+        let name = format!("unreadable-{tag}");
+        let _server = start_server(&tmux_tmpdir, selector, &name);
+        let dir = rig.unreadable_meta_session(&name);
+        assert!(
+            std::os::unix::fs::symlink(&first, dir.join("send")).is_ok(),
+            "a live helper"
+        );
+        let before = snapshot(&dir);
+
+        let (code, stdout, stderr) =
+            rig.install_with_tmux_tmpdir(&rig.bundle("2026.9.10"), Some(&tmux_tmpdir));
+        assert_eq!(
+            code,
+            Some(1),
+            "the live meta did not abort: {stdout}{stderr}"
+        );
+        assert!(
+            stderr.contains(&format!("session {name:?}: meta could not be read")),
+            "the live refusal does not name its session: {stderr}"
+        );
+        assert_eq!(
+            fs::read_link(rig.link()).ok(),
+            Some(first),
+            "the command link moved past the live unreadable meta"
+        );
+        assert_eq!(
+            snapshot(&dir),
+            before,
+            "the live unreadable session changed"
+        );
+    }
+}
+
+#[test]
+fn a_running_pre_chain_session_still_aborts_the_publish() {
+    let rig = Rig::new("refuse-running-pre-chain");
+    let (code, stdout, stderr) = rig.install(&rig.bundle("2026.9.9"));
+    assert_eq!(code, Some(0), "the first install failed: {stdout}{stderr}");
+    let first = rig.versions().join("2026.9.9").join("ae-core");
+    let early = rig.session("aaa", &first.to_string_lossy(), Some(ae::migrate::CURRENT));
+    let early_before = snapshot(&early);
+
+    let scratch = tmux_scratch("running-pre-chain");
+    if !tmux_present(&scratch) {
+        let _ = remove(&scratch);
+        panic!(
+            "tmux is not runnable here, so the running pre-chain refusal cannot be proven; \
+             install tmux or run this suite where one exists"
+        );
+    }
+    let socket = scratch.join("s");
+    let _cleanup = Cleanup {
+        socket: socket.clone(),
+        scratch: scratch.clone(),
+    };
+    let session = "zzz";
+    let dir = rig.legacy_session(session);
+    let mut meta = meta_of(&dir);
+    let _ = write!(
+        meta,
+        "tmux_server_kind=socket\ntmux_server={}\n",
+        socket.display()
+    );
+    assert!(fs::write(dir.join("meta"), meta).is_ok(), "the server rows");
+    assert!(
+        tmux(
+            &socket,
+            &scratch,
+            &["new-session", "-d", "-s", session, "sleep", "60"]
+        )
+        .0,
+        "the running legacy session"
+    );
+    let before = snapshot(&dir);
+
+    let (code, stdout, stderr) = rig.install(&rig.bundle("2026.9.10"));
+    assert_eq!(code, Some(1), "the publish did not fail: {stdout}{stderr}");
+    assert!(
+        stderr.contains("session \"zzz\" records no meta_version"),
+        "the refusal changed: {stderr}"
+    );
+    assert_eq!(
+        fs::read_link(rig.link()).ok(),
+        Some(first),
+        "the command link moved despite the running legacy session"
+    );
+    assert_eq!(snapshot(&dir), before, "the running legacy session changed");
+    assert_eq!(
+        snapshot(&early),
+        early_before,
+        "pass one repointed a placeable session before the live refusal"
+    );
+}
+
+/// Historical default-server liveness must not depend on caller `$TMUX`.
+#[test]
+fn a_legacy_default_session_blocks_publish_from_outside_and_foreign_caller() {
+    let rig = Rig::new("legacy-default-foreign-caller");
+    let (code, stdout, stderr) = rig.install(&rig.bundle("2026.9.9"));
+    assert_eq!(code, Some(0), "the first install failed: {stdout}{stderr}");
+    let old_core = rig.versions().join("2026.9.9").join("ae-core");
+    let victim = rig.legacy_session("victim");
+    assert!(std::os::unix::fs::symlink(&old_core, victim.join("send")).is_ok());
+    let before = snapshot(&victim);
+    let scratch = tmux_scratch("legacy-default-foreign-caller");
+    if !tmux_present(&scratch) {
+        let _ = remove(&scratch);
+        panic!("tmux is not runnable here");
+    }
+    let _servers = MultiServerCleanup {
+        selectors: vec![Vec::new(), vec!["-L".to_owned(), "foreign".to_owned()]],
+        scratch: scratch.clone(),
+    };
+    start_session(&scratch, &[], "victim");
+
+    let (code, stdout, stderr) =
+        rig.install_with_tmux_tmpdir(&rig.bundle("2026.9.10"), Some(&scratch));
+    assert_eq!(
+        code,
+        Some(1),
+        "outside-TMUX publish did not refuse: {stdout}{stderr}"
+    );
+    assert!(
+        stderr.contains("session \"victim\" records no meta_version"),
+        "{stderr}"
+    );
+    assert_eq!(fs::read_link(rig.link()).ok(), Some(old_core.clone()));
+    assert_eq!(snapshot(&victim), before);
+
+    start_session(&scratch, &["-L", "foreign"], "caller");
+    let (_, marker) = run_tmux(
+        &[
+            "-L",
+            "foreign",
+            "list-panes",
+            "-a",
+            "-F",
+            "#{socket_path}|#{pane_id}",
+        ]
+        .iter()
+        .map(|word| (*word).to_owned())
+        .collect::<Vec<_>>(),
+        &scratch,
+    );
+    let (socket, pane) = marker.trim().split_once('|').expect("caller marker");
+    let (code, stdout, stderr) = rig.install_with_caller(
+        &rig.bundle("2026.9.10"),
+        &scratch,
+        &format!("{socket},0,0"),
+        pane,
+    );
+    assert_eq!(
+        code,
+        Some(1),
+        "foreign-caller publish did not refuse: {stdout}{stderr}"
+    );
+    assert!(
+        stderr.contains("session \"victim\" records no meta_version"),
+        "{stderr}"
+    );
+    assert_eq!(fs::read_link(rig.link()).ok(), Some(old_core));
+    assert_eq!(snapshot(&victim), before);
+}
+
+#[test]
+fn an_ahead_meta_without_ae_core_keeps_old_helper_resolvable() {
+    let rig = Rig::new("legacy-version-only");
+    let (code, stdout, stderr) = rig.install(&rig.bundle("2026.9.9"));
+    assert_eq!(code, Some(0), "the first install failed: {stdout}{stderr}");
+    let old_core = rig.versions().join("2026.9.9").join("ae-core");
+    let dir = rig.root().join("sessions").join("version-only");
+    assert!(fs::create_dir_all(&dir).is_ok());
+    assert!(
+        fs::write(
+            dir.join("meta"),
+            "meta_version=3\nmode=local\nsession=version-only\nae_core_version=2026.9.9\n",
+        )
+        .is_ok()
+    );
+    assert!(std::os::unix::fs::symlink(&old_core, dir.join("send")).is_ok());
+    let (code, stdout, stderr) = rig.install(&rig.bundle("2026.9.10"));
+    assert_eq!(code, Some(0), "publish failed: {stdout}{stderr}");
+    assert!(
+        fs::canonicalize(dir.join("send")).is_ok(),
+        "old helper became dangling"
     );
 }
 

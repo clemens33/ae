@@ -28,8 +28,8 @@
 //!   operation continues, because a session that cannot be migrated is exactly
 //!   the one an operator needs to be able to tear down;
 //! * `ae upgrade` / `ae _install` ([`crate::install::publish`]) — the whole
-//!   sweep below, and there a refusal aborts the upgrade before the command
-//!   link is repointed.
+//!   sweep below. A refusal on a running session aborts before the command link
+//!   is repointed; a stopped unplaceable session is reported and skipped.
 //!
 //! WHAT THIS DOES NOT PROMISE. There is no quiescent cut across the sweep, the
 //! command repoint and the version prune: each session's lifecycle lock is
@@ -60,14 +60,16 @@
 //!
 //! The upgrade sweep is the reason the module owns more than the chain: after
 //! the new version directory is on disk and before `~/.local/bin/ae` names it,
-//! EVERY session — running or stopped — is stepped, re-pointed at the new core
-//! and re-linked, and the two daemons of a running one are restarted so they
-//! run the core the rest of the install just became. Agent panes are never
-//! touched: they run the agent tool, not ae.
+//! Every PLACEABLE session — running or stopped — is stepped, re-pointed at the
+//! new core and re-linked, and the two daemons of a running one are restarted
+//! so they run the core the rest of the install just became. A stopped session
+//! the chain cannot place is reported and skipped untouched. Agent panes are
+//! never touched: they run the agent tool, not ae.
 
 use std::path::{Path, PathBuf};
 
 use crate::inventory::ServerId;
+use crate::meta::{Selector, ServerSelector};
 
 /// The row that carries the shape, in every session meta.
 pub const KEY: &str = "meta_version";
@@ -358,7 +360,7 @@ pub fn session_noted(dir: &Path, name: &str) -> Option<String> {
 
 // ─── the upgrade sweep ───────────────────────────────────────────────────
 
-/// The three rows a session records about the core it was built against.
+/// The two rows a session records about the core it was built against.
 const CORE_ROWS: [&str; 2] = ["ae_core", "ae_core_version"];
 
 /// The `ae_path` row some metas still carry. REWRITTEN where a session already
@@ -380,24 +382,75 @@ fn taken(root: &Path) -> std::io::Result<Vec<String>> {
     crate::lifecycle::census(root).map(Option::unwrap_or_default)
 }
 
-/// Bring every session under `root` onto `core`, and restart the daemons of
-/// the running ones.
+/// Whether `name` is live on either server a bash-era session could inhabit.
+///
+/// This is the fallback when a meta has no usable selector — including a meta
+/// that cannot be read at all. Exact-name probes keep an unrelated session on
+/// either server from turning this into a refusal.
+fn running_on_legacy_server(name: &str) -> bool {
+    let owned = ServerId::Selected(Selector::Name(crate::doors::DEFAULT_SERVER_NAME.to_owned()));
+    crate::transport::session_exists(&owned, name)
+        || crate::transport::session_exists(&crate::doors::historical_server(), name)
+}
+
+/// Whether an unplaceable readable meta still has live helpers to protect.
+fn unplaceable_is_running(text: &str, name: &str) -> bool {
+    match crate::meta::Meta::parse(text).server_selector() {
+        ServerSelector::Positive(selector) => {
+            crate::transport::session_exists(&ServerId::Selected(selector), name)
+        }
+        ServerSelector::Missing | ServerSelector::Ambiguous => running_on_legacy_server(name),
+    }
+}
+
+/// The note for a stopped session the chain cannot place.
+fn skipped_refusal(name: &str, refusal: &Refusal) -> String {
+    match refusal {
+        Refusal::Absent => format!(
+            "skipped {name}: it pre-dates the migration chain and is not running — end it (ae end {name})"
+        ),
+        Refusal::Ahead(_) => format!(
+            "skipped {name}: meta newer than this ae, left untouched — upgrade ae to resume it"
+        ),
+        _ => format!(
+            "skipped {name}: {}, not running — end it (ae end {name})",
+            refusal.line(name).trim_end_matches('.')
+        ),
+    }
+}
+
+/// The note for a stopped session whose meta could not be read.
+fn skipped_unreadable(name: &str, why: &std::io::Error) -> String {
+    format!("skipped {name}: meta unreadable ({why}), not running — end it (ae end {name})")
+}
+
+/// The existing abort line for a meta read failure.
+fn unreadable_refusal(name: &str, why: &std::io::Error) -> String {
+    Refusal::Io(format!("meta could not be read: {why}")).line(name)
+}
+
+/// Bring every placeable session under `root` onto `core`, and restart the
+/// daemons of the running ones.
 ///
 /// This is the upgrade's step, and it runs AFTER the new version directory is
 /// published and BEFORE the command link names it — so a session that cannot
 /// be migrated aborts the upgrade while the old core is still the current one.
+/// The exception is an unplaceable session that is not running: it has no live
+/// helpers to protect, so it is reported and skipped without touching anything
+/// under its directory. A meta without a usable server selector is checked on
+/// both servers where bash-era sessions could have lived.
 ///
 /// Per session, under the same per-session lifecycle lock a start or an end
-/// takes: the chain, then `ae_core` / `ae_core_version` / `ae_version` (and a
-/// an `ae_path` where a session has one) rewritten to the new core, then the helper links
-/// re-rendered. A RUNNING session then has its watchdog restarted, and the
+/// takes: the chain, then `ae_core` / `ae_core_version` / `ae_version` (and an
+/// `ae_path` where a session has one) rewritten to the new core, then the
+/// helper links re-rendered. A RUNNING session then has its watchdog restarted, and the
 /// Telegram bridge on its tmux server restarted once per server. Agent panes
 /// are never touched.
 ///
 /// # Errors
 ///
-/// The first session that could not be migrated, named — nothing after it is
-/// attempted.
+/// The first non-skippable session that could not be migrated, named — nothing
+/// after it is attempted.
 pub fn onto(root: &Path, core: &Path, version: &str) -> Result<Vec<String>, String> {
     // PASS ONE, READ-ONLY: every session is asked whether the chain can place
     // it, and NOTHING is written until they all can. Without this the sweep
@@ -414,18 +467,19 @@ pub fn onto(root: &Path, core: &Path, version: &str) -> Result<Vec<String>, Stri
         let dir = crate::lifecycle::sessions_dir(root).join(name);
         let text = match crate::meta::read_bytes(&dir) {
             Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
-            // No meta, or one this process cannot read: pass two decides what
-            // that means, and an unreadable meta is not a refusal to migrate.
-            // A directory with NO meta is not a session and pass two skips
-            // it. Any OTHER read failure is refused here, while refusing is
-            // still free: pass two would meet the same error after it had
-            // already repointed every session before this one.
+            // A directory with NO meta is not a session and pass two skips it.
+            // An unreadable meta is skippable only when neither bash-era server
+            // has the exact session; a live one refuses here, while refusing is
+            // still free.
             Err(why) if why.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(why) => {
-                return Err(Refusal::Io(format!("meta could not be read: {why}")).line(name));
-            }
+            Err(_) if !running_on_legacy_server(name) => continue,
+            Err(why) => return Err(unreadable_refusal(name, &why)),
         };
-        migrate(&text).map_err(|refusal| refusal.line(name))?;
+        match migrate(&text) {
+            Ok(_) => {}
+            Err(_) if !unplaceable_is_running(&text, name) => {}
+            Err(refusal) => return Err(refusal.line(name)),
+        }
     }
 
     let mut notes = Vec::new();
@@ -453,6 +507,38 @@ pub fn onto(root: &Path, core: &Path, version: &str) -> Result<Vec<String>, Stri
                 already(&repointed, version)
             ));
         };
+        // Re-read both facts under the lifecycle lock. A stopped session from
+        // pass one may have started before this pass; that one must now abort,
+        // while a session that is still stopped must never take the meta lock
+        // or gain helper links.
+        match crate::meta::read_bytes(&dir) {
+            Ok(bytes) => {
+                let text = String::from_utf8_lossy(&bytes);
+                if let Err(refusal) = migrate(&text) {
+                    if unplaceable_is_running(&text, &name) {
+                        return Err(format!(
+                            "{}{}",
+                            refusal.line(&name),
+                            already(&repointed, version)
+                        ));
+                    }
+                    notes.push(skipped_refusal(&name, &refusal));
+                    continue;
+                }
+            }
+            Err(why) if why.kind() == std::io::ErrorKind::NotFound => {}
+            Err(why) if !running_on_legacy_server(&name) => {
+                notes.push(skipped_unreadable(&name, &why));
+                continue;
+            }
+            Err(why) => {
+                return Err(format!(
+                    "{}{}",
+                    unreadable_refusal(&name, &why),
+                    already(&repointed, version)
+                ));
+            }
+        }
         match session(&dir) {
             Ok(None) => {}
             Ok(Some(Stepped::Stamped)) => stamped += 1,
@@ -668,10 +754,12 @@ fn start_watchdog(root: &Path, server: &ServerId, name: &str, dir: &Path) -> Str
 /// whatever `link` currently resolves into.
 ///
 /// This runs AFTER the command link is repointed, which is what makes it safe:
-/// by then every session's `ae_core` has been rewritten, so the set of
-/// referenced version directories is complete and current. `published` is
-/// never a candidate even when no session names it — a first install has no
-/// sessions at all.
+/// by then every placeable session's core rows have been rewritten. Every core
+/// row of a skipped unplaceable session is kept too, and an unreadable meta
+/// suppresses the whole prune because its references cannot be proved. The
+/// resulting set of referenced version directories is therefore complete and
+/// current. `published` is never a candidate even when no session names it — a
+/// first install has no sessions at all.
 ///
 /// `link` is the second floor, and it is there for the one publisher this
 /// process cannot exclude: a core older than the publisher lock takes no lock,
@@ -719,13 +807,24 @@ pub fn prune_versions(root: &Path, link: &Path, published: &str) -> Vec<String> 
                 )];
             }
         };
-        let Some(value) = crate::meta::first_value(&bytes, CORE_ROWS[0]) else {
-            continue;
-        };
-        if let Some(version) = version_of(&String::from_utf8_lossy(value))
-            && !keep.contains(&version)
-        {
-            keep.push(version);
+        for key in CORE_ROWS {
+            let Some(value) = crate::meta::first_value(&bytes, key) else {
+                continue;
+            };
+            let value = value.strip_suffix(b"\r").unwrap_or(value);
+            let version = if key == CORE_ROWS[0] {
+                version_of(&String::from_utf8_lossy(value))
+            } else {
+                std::str::from_utf8(value)
+                    .ok()
+                    .filter(|version| !version.is_empty())
+                    .map(ToOwned::to_owned)
+            };
+            if let Some(version) = version
+                && !keep.contains(&version)
+            {
+                keep.push(version);
+            }
         }
     }
     let mut notes = Vec::new();

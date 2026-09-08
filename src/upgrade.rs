@@ -331,13 +331,14 @@ pub fn run(
         return Ok(crate::entry::EXIT_USAGE);
     };
     // BEFORE THE DOWNLOAD AND BEFORE ANY MUTATION. A publish is `$HOME`-pinned
-    // end to end, and it is not only a file copy: it migrates, repoints
-    // and relinks every session under `$HOME/.ae` and then deletes version
-    // directories there. A checkout run whose state root is somewhere else —
+    // end to end, and it is not only a file copy: it migrates, repoints and
+    // relinks every placeable session under `$HOME/.ae`, reports and skips
+    // stopped unplaceable ones, then deletes version directories there. A
+    // checkout run whose state root is somewhere else —
     // `ae-dev` is the whole point of that door — would therefore reach straight
     // past its own namespace into the real fleet. That was documented and not
-    // prevented, which is not good enough now that a publish writes to every
-    // session it finds.
+    // prevented, which is not good enough now that a publish writes across the
+    // session fleet it finds.
     if let Some(escape) = namespace_escape(&home) {
         writeln!(err, "{escape}")?;
         err.flush()?;

@@ -324,10 +324,10 @@ AE_VERSION=2026.8.2 ae upgrade
 `ae upgrade` runs ahead of the version-directory gate, so a broken installed generation can
 still repair itself. It downloads the selected release, verifies its checksum before
 extraction, and hands publication to that release's own core. Publication creates the
-immutable `~/.ae/versions/<V>/`, migrates every session, repoints its recorded core and helper
-links, restarts companion daemons, then atomically moves `~/.local/bin/ae` to the new core.
-Existing agent harnesses stay running. The `install` script beside `ae-core` is only the
-bootstrap for a machine with no ae yet.
+immutable `~/.ae/versions/<V>/`, migrates and repoints every placeable session, reports and
+skips stopped unplaceable sessions untouched, restarts companion daemons, then atomically moves
+`~/.local/bin/ae` to the new core. Existing agent harnesses stay running. The `install` script
+beside `ae-core` is only the bootstrap for a machine with no ae yet.
 
 Installed ae also checks quietly during validated launch/reattach, list, brief and
 orchestrator use, and after watchdog verdict cycles. `[workspace] auto_upgrade = off` in the
@@ -499,11 +499,12 @@ permanently OK**: `flock` and `timeout` are no longer ae's dependencies (the cor
 its own `flock(2)` and times out in its own code), and there is no portability-shim layer
 left to name in a `userland` row.
 
-An upgrade needs no helper refresh: publication migrates and relinks every session and restarts
-its companion daemons before moving the public command pointer. Existing agent harnesses retain
-their loaded process. `doctor --refresh` is an explicit repair/development mutation; do not run
-it unscoped while sessions are running. After `git pull`, run `just install` (checkout mode), or
-use tagged `ae upgrade`:
+An upgrade needs no helper refresh: publication migrates and relinks every placeable session,
+reports and skips stopped unplaceable sessions untouched, and restarts companion daemons before
+moving the public command pointer. Existing agent harnesses retain their loaded process.
+`doctor --refresh` is an explicit repair/development mutation; do not run it unscoped while
+sessions are running. After `git pull`, run `just install` (checkout mode), or use tagged
+`ae upgrade`:
 
 ```bash
 ae doctor --refresh         # all sessions
