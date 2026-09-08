@@ -132,7 +132,8 @@ side carries the branch, goal, shortened path and watch segment. The session
 name is shown once in the fleet strip below.
 
 `status-format[1]` — the **fleet strip**: every non-orchestrator ae session in
-the order it was created, each with its live glyph. A session keeps its place
+the order it was created, each drawn as its live glyph, one blank, then its
+name. A session keeps its place
 while its attention changes, so a click never moves the thing that was clicked;
 the current session uses the palette's selection ground and ink, not a new
 position. The orchestrator is rendered immediately before the version segment —

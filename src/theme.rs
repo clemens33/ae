@@ -544,7 +544,7 @@ pub const WINDOW_STAMP_OPTION: &str = "@ae_theme";
 /// changes shape: the version leads both stamps, so a session or window carrying
 /// an older one is rewritten by the next watchdog cycle rather than left on the
 /// layout an older core wrote.
-pub const FORMAT_VERSION: &str = "9";
+pub const FORMAT_VERSION: &str = "10";
 
 /// What [`WINDOW_STAMP_OPTION`] is set to: the LOOK the window was dressed in,
 /// formats version first.
@@ -851,7 +851,7 @@ pub fn fleet_strip(look: &Look, rows: &[FleetRow], working_frame: Option<&Workin
         };
         let _ = write!(
             out,
-            "#[range=session|{id} fg={accent} bg={ground}]{lead}{glyph}#[{text} bg={ground}]{name}{lead}\
+             "#[range=session|{id} fg={accent} bg={ground}]{lead}{glyph}#[{text} bg={ground}] {name}{lead}\
              #[norange nobold fg={dim} bg={base}] ",
             id = row.id,
             accent = glyph_accent,
@@ -911,7 +911,7 @@ pub fn orchestrator_strip(
         (palette.base, format!("fg={} nobold", palette.dim), "")
     };
     format!(
-        "#[range=session|{id} fg={accent} bg={ground}]{lead}{glyph}#[{text} bg={ground}]orchestrator{lead}#[norange nobold fg={dim} bg={base}]",
+        "#[range=session|{id} fg={accent} bg={ground}]{lead}{glyph}#[{text} bg={ground}] orchestrator{lead}#[norange nobold fg={dim} bg={base}]",
         id = row.id,
         accent = accent,
         ground = ground,
@@ -1549,10 +1549,7 @@ mod tests {
             at("zeta") < at("gamma"),
             "$3 before $4, done or not: {strip}"
         );
-        assert!(
-            !strip.contains("] alpha"),
-            "mark/name have no blank: {strip}"
-        );
+        assert!(strip.contains("] alpha"), "mark/name have blank: {strip}");
         // The same rows in another listing order draw the same strip.
         let again = fleet_strip(
             &Look::DEFAULT,
@@ -1752,8 +1749,8 @@ mod tests {
             "working orchestrator keeps range and shared frame: {segment}"
         );
         assert!(
-            !segment.contains("] orchestrator"),
-            "mark/name have no blank: {segment}"
+            segment.contains("] orchestrator"),
+            "mark/name have blank: {segment}"
         );
 
         for mark in [Mark::Dead, Mark::NeedsYou, Mark::Stale] {
@@ -1814,7 +1811,7 @@ mod tests {
     #[test]
     fn terminal_titles_are_part_of_the_drawn_layout() {
         let options = super::layout_options(&Look::DEFAULT);
-        assert_eq!(super::FORMAT_VERSION, "9");
+        assert_eq!(super::FORMAT_VERSION, "10");
         assert_eq!(
             options
                 .iter()
