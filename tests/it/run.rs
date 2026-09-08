@@ -29,7 +29,14 @@ const REPORTING_TOOL: &str = "#!/bin/sh\n\
      : > \"__OUT__\"\n\
      for a in \"$@\"; do printf '%s\\036' \"$a\" >> \"__OUT__\"; done\n\
      printf 'ENV\\036%s\\036%s\\036' \"${CLAUDECODE-<unset>}\" \
-     \"${CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION-<unset>}\" >> \"__OUT__\"\n";
+     \"${CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION-<unset>}\" >> \"__OUT__\"\n\
+     printf 'CLAUDE_CONFIG_DIR=%s\\036CODEX_HOME=%s\\036' \
+     \"${CLAUDE_CONFIG_DIR-<unset>}\" \"${CODEX_HOME-<unset>}\" >> \"__OUT__\"\n\
+     if [ -n \"${AE_META_FILE-}\" ]; then \
+       if grep -q '^config_home.main=' \"$AE_META_FILE\"; then \
+         printf 'META_ROW=present\\036' >> \"__OUT__\"; \
+       else printf 'META_ROW=missing\\036' >> \"__OUT__\"; fi; \
+     fi\n";
 
 /// One hand-built session: a config with one profile per tool, and a meta whose
 /// seat names one of them.
@@ -55,6 +62,9 @@ impl Rig {
         let home = scratch.join("home");
         for path in [&dir, &project, &bin, &home] {
             assert!(std::fs::create_dir_all(path).is_ok(), "a fixture dir");
+        }
+        for path in [home.join(".claude"), home.join(".codex")] {
+            assert!(std::fs::create_dir_all(path).is_ok(), "a config home");
         }
         let out = scratch.join("argv");
         let mut profiles = String::from("[profiles]\n");
@@ -132,6 +142,18 @@ impl Rig {
             std::fs::write(self.dir.join("launch.main.started"), "").is_ok(),
             "a start marker"
         );
+    }
+
+    /// Append one named row to the fixture meta.
+    fn append_meta(&self, row: &str) {
+        let path = self.dir.join("meta");
+        let mut body = std::fs::read_to_string(&path)
+            .unwrap_or_else(|why| panic!("fixture meta should read: {why}"));
+        body.push_str(row);
+        if !body.ends_with('\n') {
+            body.push('\n');
+        }
+        assert!(std::fs::write(path, body).is_ok(), "updated fixture meta");
     }
 
     /// Plant the evidence a tool's own resume probe looks for.
@@ -504,7 +526,8 @@ fn each_tool_gets_the_argv_its_capability_row_promises() {
         "{plan}"
     );
     assert!(
-        plan.contains(r#""env_set":{"CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION":"0"}"#),
+        plan.contains(r#""CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION":"0""#)
+            && plan.contains("CLAUDE_CONFIG_DIR"),
         "{plan}"
     );
 
@@ -738,6 +761,139 @@ fn a_first_run_creates_a_second_resumes_and_the_marker_is_the_difference() {
 }
 
 #[test]
+fn a_config_home_is_recorded_before_exec_then_survives_config_and_symlink_changes() {
+    use std::os::unix::fs::symlink;
+
+    let rig = Rig::new("config-home");
+    let first = rig.scratch.join("account-a");
+    let second = rig.scratch.join("account-b");
+    let link = rig.home.join("client");
+    std::fs::create_dir_all(&first).expect("first account");
+    std::fs::create_dir_all(&second).expect("second account");
+    symlink(&first, &link).expect("client link");
+    let config = format!(
+        "[clients]\ncc = {} config_home={}\n\n[profiles]\ncustom = \"AE_META_FILE={} cc --flag\"\n\n[roster]\nlead = custom\n\n[workspace]\nmain = lead\n",
+        rig.tool("claude"),
+        link.display(),
+        rig.dir.join("meta").display()
+    );
+    std::fs::write(&rig.config, config).expect("client config");
+    let id = "88888888-8888-4888-8888-888888888888";
+    rig.seat("custom", id);
+    let first = std::fs::canonicalize(&first).expect("canonical first account");
+    let second = std::fs::canonicalize(&second).expect("canonical second account");
+
+    let preview = rig.plan();
+    assert!(preview.contains(&first.display().to_string()), "{preview}");
+    assert!(
+        !std::fs::read_to_string(rig.dir.join("meta"))
+            .expect("meta")
+            .contains("config_home.main="),
+        "--print is read-only"
+    );
+    let (reported, said) = rig.exec();
+    assert!(!said.contains("config now points"), "{said}");
+    let recorded_meta = std::fs::read_to_string(rig.dir.join("meta")).expect("meta");
+    assert!(
+        recorded_meta.contains(&format!("config_home.main={}\n", first.display())),
+        "the first start records the canonical target: {recorded_meta}"
+    );
+    assert!(
+        reported.contains(&format!("CLAUDE_CONFIG_DIR={}", first.display())),
+        "the canonical value reaches exec: {reported:?}"
+    );
+    assert!(
+        reported.contains(&"META_ROW=present".to_owned()),
+        "publication precedes exec: {reported:?}"
+    );
+
+    let key: String = std::fs::canonicalize(&rig.project)
+        .expect("canonical project")
+        .display()
+        .to_string()
+        .chars()
+        .map(|ch| if ch == '/' { '-' } else { ch })
+        .collect();
+    let transcript = first.join("projects").join(key).join(format!("{id}.jsonl"));
+    std::fs::create_dir_all(transcript.parent().expect("transcript directory"))
+        .expect("transcript directory");
+    std::fs::write(&transcript, "{}\n").expect("transcript");
+    std::fs::remove_file(&link).expect("old link");
+    symlink(&second, &link).expect("retargeted link");
+
+    let planned = rig.planned_argv();
+    assert!(carries(&planned, &["--resume", id]), "{planned:?}");
+    let (reported, said) = rig.exec();
+    assert!(
+        said.contains(&format!("config now points claude at {}", second.display()))
+            && said.contains(&format!(
+                "retained conversation lives in {}",
+                first.display()
+            )),
+        "{said}"
+    );
+    assert!(
+        reported.contains(&format!("CLAUDE_CONFIG_DIR={}", first.display())),
+        "recorded root wins after retargeting: {reported:?}"
+    );
+    assert!(
+        !reported.contains(&format!("CLAUDE_CONFIG_DIR={}", second.display())),
+        "new config root must not capture the retained conversation: {reported:?}"
+    );
+}
+
+#[test]
+fn config_home_publication_failure_refuses_before_marker_or_exec() {
+    let rig = Rig::new("config-home-write");
+    rig.seat("claude", "u-1");
+    rig.chmod(0o555);
+    let result = rig.run_raw(&[]);
+    rig.chmod(0o755);
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert_eq!(result.status.code(), Some(1), "{stderr}");
+    assert!(
+        stderr.contains("could not record config_home.main before launch"),
+        "{stderr}"
+    );
+    assert!(!rig.dir.join("launch.main.started").exists());
+    assert!(!rig.out.exists(), "the tool did not run");
+}
+
+#[test]
+fn uncertain_recorded_config_homes_resume_exactly_and_hostile_rows_refuse() {
+    let id = "99999999-9999-4999-8999-999999999999";
+    for row in ["absent", "unknown"] {
+        let rig = Rig::new(&format!("config-home-{row}"));
+        rig.seat("claude", id);
+        rig.started();
+        rig.append_meta(&format!("config_home.main={row}\n"));
+        let argv = rig.planned_argv();
+        assert!(
+            carries(&argv, &["--resume", id]),
+            "{row} lets the tool answer the exact id: {argv:?}"
+        );
+        assert!(!argv.iter().any(|word| word == "--continue"), "{argv:?}");
+    }
+
+    for rows in [
+        "config_home.main=relative\n",
+        "config_home.main=/one\nconfig_home.main=/two\n",
+    ] {
+        let rig = Rig::new("config-home-hostile");
+        rig.seat("claude", id);
+        rig.append_meta(rows);
+        let result = rig.run_raw(&[]);
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        assert_eq!(result.status.code(), Some(1), "{stderr}");
+        assert!(
+            stderr.contains("malformed or duplicate config_home metadata"),
+            "{stderr}"
+        );
+        assert!(!rig.out.exists());
+    }
+}
+
+#[test]
 fn a_seat_that_cannot_be_launched_refuses_instead_of_execing() {
     let rig = Rig::new("refuse");
     rig.seat("claude", "u-1");
@@ -793,7 +949,7 @@ fn a_bare_leading_assignment_is_an_environment_delta_and_never_the_binary() {
     rig.only_profile(&format!("AE_Z2_MARK=set {} --flag", rig.tool("codex")));
     rig.seat("custom", "");
     let plan = rig.plan();
-    assert!(plan.contains(r#""env_set":{"AE_Z2_MARK":"set"}"#), "{plan}");
+    assert!(plan.contains(r#""AE_Z2_MARK":"set""#), "{plan}");
     assert_eq!(
         rig.planned_argv()[0],
         rig.tool("codex"),
@@ -846,7 +1002,7 @@ fn a_quoted_leading_assignment_is_the_binary_on_both_sides() {
     // The same line WITHOUT the quotes is an ordinary assignment.
     rig.only_profile(&format!("AE_Z2_MARK=set {} --flag", rig.tool("codex")));
     let plan = rig.plan();
-    assert!(plan.contains(r#""env_set":{"AE_Z2_MARK":"set"}"#), "{plan}");
+    assert!(plan.contains(r#""AE_Z2_MARK":"set""#), "{plan}");
     assert_eq!(rig.planned_argv()[0], rig.tool("codex"), "{plan}");
 }
 
@@ -882,6 +1038,12 @@ fn a_start_marker_that_cannot_be_published_refuses_before_the_exec() {
     // The marker is the whole create-vs-resume discriminator.
     let rig = Rig::new("marker");
     rig.seat("claude", "u-1");
+    rig.append_meta(&format!(
+        "config_home.main={}\n",
+        std::fs::canonicalize(rig.home.join(".claude"))
+            .expect("canonical config home")
+            .display()
+    ));
     rig.chmod(0o555);
     for run in 1..=2 {
         let out = rig.run_raw(&[]);

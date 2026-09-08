@@ -5,7 +5,7 @@
 //!
 //! | Tool | How the id is found |
 //! |---|---|
-//! | codex | the `codex.<slot>.sid` file its own `developer_instructions` write, then a launch-token scan of `~/.codex/sessions/<day>/*.jsonl`, then a cwd scan of the same files, then its TUI header |
+//! | codex | the `codex.<slot>.sid` file its own `developer_instructions` write, then a launch-token scan of the recorded config home's `sessions/<day>/*.jsonl`, then a cwd scan of the same files, then its TUI header |
 //! | opencode | `opencode session list --format json`, matched on the session's `directory` |
 //! | gemini | `~/.gemini/tmp/<project>/chats/session-*.json`, matched on the launch token, then on the project root alone |
 //! | agy | the launch token, searched in the BYTES of `~/.gemini/antigravity-cli/conversations/<id>.db` — OR, for a seat that has no token at all, the CLI log that names both the workspace and the conversation it created. Alternatives, not a chain: a token miss stays pending, because falling through cross-wires two seats sharing one directory |
@@ -112,7 +112,8 @@ pub fn run(dir: &Path, slot: &str, pane: &str, server: &ServerId) -> u8 {
     let home = home_dir();
     let captured = match facts.tool.adapter().capture {
         CaptureSpec::HandshakeRolloutOrTui => {
-            capture_codex(dir, slot, pane, server, home.as_deref(), &facts)
+            let config_home = codex_config_home(&facts, home.as_deref());
+            capture_codex(dir, slot, pane, server, config_home.as_deref(), &facts)
         }
         CaptureSpec::SessionList => capture_opencode(&facts),
         CaptureSpec::ChatHistory => home
@@ -173,9 +174,9 @@ pub fn attempt(dir: &Path, slot: &str) -> Option<String> {
     let facts = facts(dir, slot)?;
     let home = home_dir();
     match facts.tool.adapter().capture {
-        CaptureSpec::HandshakeRolloutOrTui => {
-            home.as_deref().and_then(|home| scan_codex(home, &facts))
-        }
+        CaptureSpec::HandshakeRolloutOrTui => codex_config_home(&facts, home.as_deref())
+            .as_deref()
+            .and_then(|config_home| scan_codex(config_home, &facts)),
         CaptureSpec::ChatHistory => home.as_deref().and_then(|home| scan_gemini(home, &facts)),
         CaptureSpec::ConversationDatabaseOrLog => {
             home.as_deref().and_then(|home| scan_agy(home, &facts))
@@ -202,11 +203,14 @@ struct Facts {
     launch_id: String,
     /// The adapter-owned marker prefix written into the tool store.
     launch_marker: Option<&'static str>,
+    /// The recorded config store; missing means the legacy default.
+    config_home: crate::meta::RecordedConfigHome,
 }
 
 /// Read one seat's capture facts, or nothing when the meta cannot be read.
 fn facts(dir: &Path, slot: &str) -> Option<Facts> {
     let bytes = crate::meta::read_bytes(dir).ok()?;
+    let parsed = crate::meta::Meta::parse(&String::from_utf8_lossy(&bytes));
     let value = |key: &str| {
         crate::meta::first_value(&bytes, key)
             .map(|raw| String::from_utf8_lossy(raw).into_owned())
@@ -226,7 +230,24 @@ fn facts(dir: &Path, slot: &str) -> Option<Facts> {
         },
         launch_id: value(&format!("launch_id.{slot}")),
         launch_marker: tool.adapter().launch_marker,
+        config_home: parsed
+            .roster()
+            .iter()
+            .find(|entry| entry.slot == slot)
+            .map(|entry| entry.config_home.clone())
+            .unwrap_or_default(),
     })
+}
+
+/// Codex's recorded config root, or the pre-row default for legacy metadata.
+fn codex_config_home(facts: &Facts, ambient_home: Option<&Path>) -> Option<PathBuf> {
+    match &facts.config_home {
+        crate::meta::RecordedConfigHome::Path(path) => Some(path.clone()),
+        crate::meta::RecordedConfigHome::Missing => ambient_home.map(|home| home.join(".codex")),
+        crate::meta::RecordedConfigHome::Absent
+        | crate::meta::RecordedConfigHome::Unknown
+        | crate::meta::RecordedConfigHome::Invalid => None,
+    }
 }
 
 /// The caller's own `HOME`, where every tool keeps its conversation history.
@@ -298,7 +319,11 @@ pub fn register_sid(
             )?;
             return Ok(crate::state::EXIT_USAGE);
         };
-        let Some(found) = home_dir().and_then(|home| scan_codex(&home, &facts)) else {
+        let ambient_home = home_dir();
+        let Some(found) = codex_config_home(&facts, ambient_home.as_deref())
+            .as_deref()
+            .and_then(|config_home| scan_codex(config_home, &facts))
+        else {
             writeln!(err, "No codex session matched seat '{slot}' yet.")?;
             return Ok(crate::state::EXIT_FAILED);
         };
@@ -342,7 +367,7 @@ fn capture_codex(
     slot: &str,
     pane: &str,
     server: &ServerId,
-    home: Option<&Path>,
+    config_home: Option<&Path>,
     facts: &Facts,
 ) -> Option<String> {
     let file = sid_file(dir, slot);
@@ -361,7 +386,7 @@ fn capture_codex(
             }
         }
     }
-    if let Some(id) = home.and_then(|home| scan_codex(home, facts)) {
+    if let Some(id) = config_home.and_then(|home| scan_codex(home, facts)) {
         return Some(id);
     }
     // The TUI scrape, least reliable and therefore last: codex prints
@@ -372,19 +397,24 @@ fn capture_codex(
 
 /// One look through codex's own history: the launch token first, this
 /// directory's newest conversation second.
-fn scan_codex(home: &Path, facts: &Facts) -> Option<String> {
+fn scan_codex(config_home: &Path, facts: &Facts) -> Option<String> {
     let days = day_dirs(Timestamp::now());
     if !facts.launch_id.is_empty()
         && let Some(marker) = facts.launch_marker
-        && let Some(id) =
-            find_codex_by_launch_id(home, marker, &facts.launch_id, facts.launch_time, &days)
+        && let Some(id) = find_codex_by_launch_id(
+            config_home,
+            marker,
+            &facts.launch_id,
+            facts.launch_time,
+            &days,
+        )
     {
         return Some(id);
     }
     if facts.work_dir.is_empty() {
         return None;
     }
-    find_codex_by_cwd(home, &facts.work_dir, facts.launch_time, &days)
+    find_codex_by_cwd(config_home, &facts.work_dir, facts.launch_time, &days)
 }
 
 /// The first `session id: <hex-and-dashes>` a screen carries.
@@ -407,14 +437,14 @@ pub(crate) fn scrape_session_id(screen: &str) -> Option<String> {
 /// The newest codex session whose log carries this launch token.
 #[must_use]
 pub(crate) fn find_codex_by_launch_id(
-    home: &Path,
+    config_home: &Path,
     marker_prefix: &str,
     launch_id: &str,
     launch_time: i64,
     days: &[String],
 ) -> Option<String> {
     let marker = format!("AE_{marker_prefix}_LAUNCH_ID={launch_id}");
-    newest(codex_logs(home, days), launch_time, |text| {
+    newest(codex_logs(config_home, days), launch_time, |text| {
         if !text.contains(&marker) {
             return None;
         }
@@ -425,13 +455,13 @@ pub(crate) fn find_codex_by_launch_id(
 /// The newest codex session whose recorded `cwd` is this working directory.
 #[must_use]
 pub(crate) fn find_codex_by_cwd(
-    home: &Path,
+    config_home: &Path,
     work_dir: &str,
     launch_time: i64,
     days: &[String],
 ) -> Option<String> {
     let target = canonical(work_dir);
-    newest(codex_logs(home, days), launch_time, |text| {
+    newest(codex_logs(config_home, days), launch_time, |text| {
         let first = text.lines().next().unwrap_or_default();
         let cwd = first_string_field(first, "cwd")?;
         if canonical(&cwd) != target {
@@ -441,9 +471,9 @@ pub(crate) fn find_codex_by_cwd(
     })
 }
 
-/// Every `*.jsonl` under the named day directories of `~/.codex/sessions`.
-fn codex_logs(home: &Path, days: &[String]) -> Vec<PathBuf> {
-    let root = home.join(".codex").join("sessions");
+/// Every `*.jsonl` under the named day directories of a Codex config home.
+fn codex_logs(config_home: &Path, days: &[String]) -> Vec<PathBuf> {
+    let root = config_home.join("sessions");
     let mut found = Vec::new();
     for day in days {
         if day.is_empty() {
@@ -1143,6 +1173,7 @@ mod tests {
             name: name.to_owned(),
             profile: Some("p".to_owned()),
             harness_session: id.map(ToOwned::to_owned),
+            config_home: crate::meta::RecordedConfigHome::Missing,
             binary: Some(binary.to_owned()),
         }
     }
@@ -1358,6 +1389,7 @@ mod tests {
             launch_time: 0,
             launch_id: "own-token".to_owned(),
             launch_marker: Some("AGY"),
+            config_home: crate::meta::RecordedConfigHome::Missing,
         };
         assert_eq!(
             scan_agy(&home, &facts),
@@ -1516,7 +1548,8 @@ mod tests {
         let work = root.join("project");
         std::fs::create_dir_all(&work).expect("a project dir");
         let days = vec!["2026/09/03".to_owned()];
-        let day = home.join(".codex").join("sessions").join("2026/09/03");
+        let config_home = home.join(".codex");
+        let day = config_home.join("sessions").join("2026/09/03");
         write(
             &day.join("rollout-1.jsonl"),
             &format!(
@@ -1534,25 +1567,76 @@ mod tests {
         write(&day.join("notes.txt"), "AE_CODEX_LAUNCH_ID=tok-1\n");
         let work = work.display().to_string();
         assert_eq!(
-            find_codex_by_launch_id(&home, "CODEX", "tok-1", 0, &days).as_deref(),
+            find_codex_by_launch_id(&config_home, "CODEX", "tok-1", 0, &days).as_deref(),
             Some("c0de-01")
         );
         assert_eq!(
-            find_codex_by_launch_id(&home, "CODEX", "tok-2", 0, &days),
+            find_codex_by_launch_id(&config_home, "CODEX", "tok-2", 0, &days),
             None
         );
         assert_eq!(
-            find_codex_by_cwd(&home, &work, 0, &days).as_deref(),
+            find_codex_by_cwd(&config_home, &work, 0, &days).as_deref(),
             Some("c0de-01")
         );
         assert_eq!(
-            find_codex_by_cwd(&home, "/nowhere", 0, &days).as_deref(),
+            find_codex_by_cwd(&config_home, "/nowhere", 0, &days).as_deref(),
             Some("c0de-02")
         );
         // A day that was never written is not an error.
         assert_eq!(
-            find_codex_by_launch_id(&home, "CODEX", "tok-1", 0, &["2020/01/01".to_owned()],),
+            find_codex_by_launch_id(
+                &config_home,
+                "CODEX",
+                "tok-1",
+                0,
+                &["2020/01/01".to_owned()],
+            ),
             None
+        );
+    }
+
+    #[test]
+    fn register_sid_scans_the_recorded_codex_home_not_the_capture_process_home() {
+        let dir = scratch("recorded-codex-home");
+        let config_home = dir.join("account");
+        let work = dir.join("project");
+        std::fs::create_dir_all(&work).expect("project");
+        let day = day_dirs(Timestamp::now())
+            .into_iter()
+            .next()
+            .expect("today");
+        let id = "88888888-8888-4888-8888-888888888888";
+        write(
+            &config_home
+                .join("sessions")
+                .join(day)
+                .join(format!("rollout-{id}.jsonl")),
+            &format!(
+                "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{id}\",\"cwd\":\"{}\"}}}}\n\
+                 {{\"text\":\"AE_CODEX_LAUNCH_ID=tok-recorded\"}}\n",
+                work.display()
+            ),
+        );
+        write(
+            &dir.join("meta"),
+            &format!(
+                "schema=2\nwork_dir={}\nseat.main=lead\nagent_bin.main=codex\n\
+                 config_home.main={}\nlaunch_id.main=tok-recorded\nlaunch_time.main=0\n",
+                work.display(),
+                config_home.display()
+            ),
+        );
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        assert_eq!(
+            register_sid(&dir, "main", None, &mut out, &mut err).expect("register"),
+            0,
+            "{}",
+            String::from_utf8_lossy(&err)
+        );
+        assert_eq!(
+            std::fs::read_to_string(sid_file(&dir, "main")).expect("sid file"),
+            format!("{id}\n")
         );
     }
 
@@ -1562,13 +1646,22 @@ mod tests {
         write(
             &dir.join("meta"),
             "session=s\nwork_dir=/w\nschema=2\nseat.main=lead\nagent_bin.main=opencode\n\
-             launch_time.main=not-a-number\nlaunch_id.main=tok-9\n",
+             config_home.main=/account/codex\nlaunch_time.main=not-a-number\nlaunch_id.main=tok-9\n",
         );
         let read = facts(&dir, "main").expect("the meta reads");
         assert_eq!(read.tool, ToolKind::OpenCode);
         assert_eq!(read.work_dir, "/w");
         assert_eq!(read.launch_time, 0);
         assert_eq!(read.launch_id, "tok-9");
+        assert_eq!(
+            read.config_home,
+            crate::meta::RecordedConfigHome::Path(PathBuf::from("/account/codex"))
+        );
+        assert_eq!(
+            codex_config_home(&read, Some(Path::new("/ambient"))),
+            Some(PathBuf::from("/account/codex")),
+            "the recorded root wins over the detached capture process's HOME"
+        );
         // A seat that is not in the meta is a tool nothing captures.
         let missing = facts(&dir, "worker.0").expect("the meta still reads");
         assert_eq!(missing.tool, ToolKind::Unknown);

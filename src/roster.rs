@@ -2,7 +2,8 @@
 //!
 //! The core side of `_meta-init`: given the seats a launch resolved, render the
 //! `schema=2` + `seat.<slot>` + `profile.<slot>` + `harness_session.<slot>` +
-//! `agent_bin.<slot>` lines that [`crate::meta::init`] publishes in one rename.
+//! `agent_bin.<slot>` + `config_home.<slot>` lines that
+//! [`crate::meta::init`] publishes in one rename.
 //! `agent.<slot>` is never written, and never read into a seat: a v1 meta is a
 //! session to start over from, not one to migrate.
 
@@ -21,6 +22,8 @@ pub struct SeatLines {
     pub binary: Option<String>,
     /// The captured harness session id, where the meta carries one.
     pub harness_session: Option<String>,
+    /// The canonical config-home row, where this seat has started before.
+    pub config_home: Option<String>,
 }
 
 /// Render the v2 roster block for `seats`, in the order given.
@@ -39,6 +42,9 @@ pub fn render(seats: &[SeatLines]) -> String {
         if let Some(session) = &seat.harness_session {
             let _ = writeln!(out, "harness_session.{}={}", seat.slot, session);
         }
+        if let Some(home) = &seat.config_home {
+            let _ = writeln!(out, "config_home.{}={}", seat.slot, home);
+        }
     }
     out
 }
@@ -46,12 +52,13 @@ pub fn render(seats: &[SeatLines]) -> String {
 /// Whether an anomaly makes the ROSTER itself untrustworthy, at the provenance
 /// grain:
 pub(crate) fn roster_doubting(a: &Anomaly) -> bool {
-    const IDENTITY_PREFIXES: [&str; 5] = [
+    const IDENTITY_PREFIXES: [&str; 6] = [
         "agent.",
         "agent_bin.",
         "seat.",
         "profile.",
         "harness_session.",
+        "config_home.",
     ];
     match a {
         Anomaly::LegacyRoster { .. }
@@ -82,20 +89,22 @@ mod tests {
             profile: profile.to_owned(),
             binary: bin.map(ToOwned::to_owned),
             harness_session: sid.map(ToOwned::to_owned),
+            config_home: None,
         }
     }
 
     #[test]
     fn render_writes_the_v2_block_and_parses_back_to_the_same_seats() {
-        let seats = [
+        let mut seats = [
             seat("main", "lead", "fable5", Some("claude"), Some("e795")),
             seat("worker.0", "colead", "gpt56sol", Some("codex"), None),
         ];
+        seats[0].config_home = Some("/accounts/claude".to_owned());
         let block = render(&seats);
         assert_eq!(
             block,
             "schema=2\n\
-             seat.main=lead\nprofile.main=fable5\nagent_bin.main=claude\nharness_session.main=e795\n\
+             seat.main=lead\nprofile.main=fable5\nagent_bin.main=claude\nharness_session.main=e795\nconfig_home.main=/accounts/claude\n\
              seat.worker.0=colead\nprofile.worker.0=gpt56sol\nagent_bin.worker.0=codex\n"
         );
         // The core's own reader reads it back to exactly these seats.
@@ -107,6 +116,10 @@ mod tests {
         assert_eq!(roster[0].profile.as_deref(), Some("fable5"));
         assert_eq!(roster[0].harness_session.as_deref(), Some("e795"));
         assert_eq!(roster[0].binary.as_deref(), Some("claude"));
+        assert_eq!(
+            roster[0].config_home,
+            crate::meta::RecordedConfigHome::Path("/accounts/claude".into())
+        );
         assert_eq!(roster[1].name, "colead");
         assert_eq!(roster[1].harness_session, None);
         assert!(meta.anomalies().is_empty());

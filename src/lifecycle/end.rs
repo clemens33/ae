@@ -16,6 +16,7 @@ use crate::meta::{self, Selector, ServerSelector};
 use crate::state::{EXIT_FAILED, EXIT_USAGE};
 use crate::time::Timestamp;
 use crate::tmux::StopProbe;
+use crate::tool::ToolKind;
 use crate::transport;
 
 use super::{
@@ -1489,18 +1490,23 @@ fn purge_conversation_files(
         }
         let uuid = uuid.as_str();
         let tool = entry.binary.as_deref().unwrap_or_default();
-        let Some(home) = home.as_ref() else { continue };
         match tool {
             "claude" => {
-                if let Some(file) = find_claude_file(home, uuid)
-                    && std::fs::remove_file(&file).is_ok()
+                let Some(config_home) = purge_config_home(root, entry, "claude", err)? else {
+                    continue;
+                };
+                if let Some(file) = find_claude_file(&config_home, uuid, &entry.slot, err)?
+                    && remove_contained(&config_home, &file, &entry.slot, err)?
                 {
                     writeln!(out, "  removed claude conversation: {}", file.display())?;
                 }
             }
             "codex" => {
-                if let Some(file) = find_codex_file(home, uuid)
-                    && std::fs::remove_file(&file).is_ok()
+                let Some(config_home) = purge_config_home(root, entry, "codex", err)? else {
+                    continue;
+                };
+                if let Some(file) = find_codex_file(&config_home, uuid, &entry.slot, err)?
+                    && remove_contained(&config_home, &file, &entry.slot, err)?
                 {
                     writeln!(out, "  removed codex rollout: {}", file.display())?;
                 }
@@ -1511,6 +1517,7 @@ fn purge_conversation_files(
             // are an orphaned write-ahead log for a database that no longer
             // exists, which is the same retention leak as the database itself.
             "agy" => {
+                let Some(home) = home.as_ref() else { continue };
                 for file in agy_conversation_files(home, uuid) {
                     if std::fs::remove_file(&file).is_ok() {
                         writeln!(out, "  removed agy conversation: {}", file.display())?;
@@ -1528,6 +1535,96 @@ fn purge_conversation_files(
         }
     }
     Ok(())
+}
+
+/// Resolve and validate the config-store root a destructive walk may enter.
+fn purge_config_home(
+    state_root: &Path,
+    entry: &meta::RosterEntry,
+    tool: &str,
+    err: &mut impl Write,
+) -> io::Result<Option<PathBuf>> {
+    let (candidate, recorded) = match &entry.config_home {
+        meta::RecordedConfigHome::Path(path) => (path.clone(), true),
+        meta::RecordedConfigHome::Missing => {
+            let Some(home) = state_root.parent() else {
+                warn_config_home(entry, tool, "legacy HOME is unavailable", err)?;
+                return Ok(None);
+            };
+            let Some(default) = ToolKind::from_binary_name(tool)
+                .adapter()
+                .config_home_default
+            else {
+                return Ok(None);
+            };
+            (home.join(default), false)
+        }
+        meta::RecordedConfigHome::Absent => {
+            warn_config_home(entry, tool, "recorded config home is absent", err)?;
+            return Ok(None);
+        }
+        meta::RecordedConfigHome::Unknown => {
+            warn_config_home(entry, tool, "recorded config home is unknown", err)?;
+            return Ok(None);
+        }
+        meta::RecordedConfigHome::Invalid => {
+            warn_config_home(
+                entry,
+                tool,
+                "recorded config home is malformed or duplicated",
+                err,
+            )?;
+            return Ok(None);
+        }
+    };
+    if !candidate.is_absolute() {
+        warn_config_home(entry, tool, "config home is not absolute", err)?;
+        return Ok(None);
+    }
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: purge validates the recorded tool-store root before entering it"
+    )]
+    let metadata = std::fs::symlink_metadata(&candidate);
+    let Ok(metadata) = metadata else {
+        warn_config_home(entry, tool, "config home is not an existing directory", err)?;
+        return Ok(None);
+    };
+    if recorded && metadata.file_type().is_symlink() {
+        warn_config_home(entry, tool, "recorded config home is a symbolic link", err)?;
+        return Ok(None);
+    }
+    if !metadata.is_dir() {
+        warn_config_home(entry, tool, "config home is not an existing directory", err)?;
+        return Ok(None);
+    }
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: purge pins every destructive walk to the config store's canonical root"
+    )]
+    let canonical = std::fs::canonicalize(&candidate);
+    let Ok(canonical) = canonical else {
+        warn_config_home(entry, tool, "config home cannot be canonicalized", err)?;
+        return Ok(None);
+    };
+    if recorded && canonical != candidate {
+        warn_config_home(entry, tool, "recorded config home is not canonical", err)?;
+        return Ok(None);
+    }
+    Ok(Some(canonical))
+}
+
+fn warn_config_home(
+    entry: &meta::RosterEntry,
+    tool: &str,
+    reason: &str,
+    err: &mut impl Write,
+) -> io::Result<()> {
+    writeln!(
+        err,
+        "  note: {tool} conversation file for slot {} left in place ({reason})",
+        entry.slot
+    )
 }
 
 /// agy's conversation database for `uuid`, and the `SQLite` sidecars beside it.
@@ -1556,46 +1653,177 @@ fn agy_conversation_files(home: &Path, uuid: &str) -> Vec<PathBuf> {
     .collect()
 }
 
-/// `~/.claude/projects/*/<uuid>.jsonl`, and only when exactly one matches.
-fn find_claude_file(home: &Path, uuid: &str) -> Option<PathBuf> {
-    #[allow(
-        clippy::disallowed_methods,
-        reason = "a door: the frozen conversation-file purge enumerates ~/.claude/projects"
-    )]
-    let entries = std::fs::read_dir(home.join(".claude").join("projects")).ok()?;
-    let mut hits: Vec<PathBuf> = entries
-        .flatten()
-        .map(|entry| entry.path().join(format!("{uuid}.jsonl")))
-        .filter(|path| path_exists(path))
-        .collect();
-    if hits.len() == 1 { hits.pop() } else { None }
+/// `<config-home>/projects/*/<uuid>.jsonl`, and only when exactly one matches.
+fn find_claude_file(
+    root: &Path,
+    uuid: &str,
+    slot: &str,
+    err: &mut impl Write,
+) -> io::Result<Option<PathBuf>> {
+    let mut hits = Vec::new();
+    for project in safe_directories(root, &root.join("projects"), slot, err)? {
+        let candidate = project.join(format!("{uuid}.jsonl"));
+        if safe_file(root, &candidate, slot, err)? {
+            hits.push(candidate);
+        }
+    }
+    Ok(if hits.len() == 1 { hits.pop() } else { None })
 }
 
-/// `~/.codex/sessions/Y/M/D/*<uuid>*.jsonl`, and only when exactly one matches.
-fn find_codex_file(home: &Path, uuid: &str) -> Option<PathBuf> {
-    fn children(path: &Path) -> Vec<PathBuf> {
+/// `<config-home>/sessions/Y/M/D/*<uuid>*.jsonl`, exactly one match.
+fn find_codex_file(
+    root: &Path,
+    uuid: &str,
+    slot: &str,
+    err: &mut impl Write,
+) -> io::Result<Option<PathBuf>> {
+    let mut level = vec![root.join("sessions")];
+    for _ in 0..3 {
+        let mut next = Vec::new();
+        for directory in level {
+            next.extend(safe_directories(root, &directory, slot, err)?);
+        }
+        level = next;
+    }
+    let mut hits = Vec::new();
+    for directory in level {
+        for file in safe_files(root, &directory, slot, err)? {
+            let name = file.file_name().unwrap_or_default().to_string_lossy();
+            if name.contains(uuid) && name.ends_with(".jsonl") {
+                hits.push(file);
+            }
+        }
+    }
+    Ok(if hits.len() == 1 { hits.pop() } else { None })
+}
+
+/// Child directories of `directory`, without following symbolic links.
+fn safe_directories(
+    root: &Path,
+    directory: &Path,
+    slot: &str,
+    err: &mut impl Write,
+) -> io::Result<Vec<PathBuf>> {
+    Ok(safe_entries(root, directory, slot, err)?
+        .into_iter()
+        .filter_map(|(path, directory)| directory.then_some(path))
+        .collect())
+}
+
+/// Child files of `directory`, without following symbolic links.
+fn safe_files(
+    root: &Path,
+    directory: &Path,
+    slot: &str,
+    err: &mut impl Write,
+) -> io::Result<Vec<PathBuf>> {
+    Ok(safe_entries(root, directory, slot, err)?
+        .into_iter()
+        .filter_map(|(path, directory)| (!directory).then_some(path))
+        .collect())
+}
+
+fn safe_entries(
+    root: &Path,
+    directory: &Path,
+    slot: &str,
+    err: &mut impl Write,
+) -> io::Result<Vec<(PathBuf, bool)>> {
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: purge inspects each store node without following symbolic links"
+    )]
+    let metadata = std::fs::symlink_metadata(directory);
+    let Ok(metadata) = metadata else {
+        return Ok(Vec::new());
+    };
+    if metadata.file_type().is_symlink() {
+        warn_symlink(directory, slot, err)?;
+        return Ok(Vec::new());
+    }
+    if !metadata.is_dir() || !canonical_parented(root, directory) {
+        return Ok(Vec::new());
+    }
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: the contained conversation-file purge enumerates a validated store directory"
+    )]
+    let entries = std::fs::read_dir(directory);
+    let Ok(entries) = entries else {
+        return Ok(Vec::new());
+    };
+    let mut safe = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
         #[allow(
             clippy::disallowed_methods,
-            reason = "a door: the frozen conversation-file purge walks ~/.codex/sessions/Y/M/D"
+            reason = "a door: purge rejects descendant links before considering a node"
         )]
-        let entries = std::fs::read_dir(path);
-        entries.map_or_else(
-            |_| Vec::new(),
-            |entries| entries.flatten().map(|entry| entry.path()).collect(),
-        )
+        let child = std::fs::symlink_metadata(&path);
+        let Ok(child) = child else { continue };
+        if child.file_type().is_symlink() {
+            warn_symlink(&path, slot, err)?;
+        } else if child.is_dir() || child.is_file() {
+            safe.push((path, child.is_dir()));
+        }
     }
-    let mut level = vec![home.join(".codex").join("sessions")];
-    for _ in 0..3 {
-        level = level.iter().flat_map(|path| children(path)).collect();
+    Ok(safe)
+}
+
+fn safe_file(root: &Path, path: &Path, slot: &str, err: &mut impl Write) -> io::Result<bool> {
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: purge rejects a conversation-file link rather than following it"
+    )]
+    let metadata = std::fs::symlink_metadata(path);
+    let Ok(metadata) = metadata else {
+        return Ok(false);
+    };
+    if metadata.file_type().is_symlink() {
+        warn_symlink(path, slot, err)?;
+        return Ok(false);
     }
-    let mut hits: Vec<PathBuf> = level
-        .into_iter()
-        .filter(|path| {
-            let name = path.file_name().unwrap_or_default().to_string_lossy();
-            name.contains(uuid) && name.ends_with(".jsonl")
-        })
-        .collect();
-    if hits.len() == 1 { hits.pop() } else { None }
+    Ok(metadata.is_file() && canonical_parented(root, path.parent().unwrap_or(path)))
+}
+
+fn canonical_parented(root: &Path, path: &Path) -> bool {
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: every destructive traversal node is canonicalized under its pinned root"
+    )]
+    let canonical = std::fs::canonicalize(path);
+    canonical.is_ok_and(|canonical| canonical.starts_with(root))
+}
+
+fn remove_contained(
+    root: &Path,
+    path: &Path,
+    slot: &str,
+    err: &mut impl Write,
+) -> io::Result<bool> {
+    let Some(parent) = path.parent() else {
+        return Ok(false);
+    };
+    if !canonical_parented(root, parent) {
+        writeln!(
+            err,
+            "  note: conversation file for slot {slot} left in place (parent escapes recorded config home): {}",
+            path.display()
+        )?;
+        return Ok(false);
+    }
+    if !safe_file(root, path, slot, err)? {
+        return Ok(false);
+    }
+    Ok(std::fs::remove_file(path).is_ok())
+}
+
+fn warn_symlink(path: &Path, slot: &str, err: &mut impl Write) -> io::Result<()> {
+    writeln!(
+        err,
+        "  note: conversation path for slot {slot} left in place (symbolic link skipped): {}",
+        path.display()
+    )
 }
 
 /// Where a session's work is — its recorded `work_dir`, else the standard
@@ -1763,6 +1991,178 @@ mod tests {
                 "--assume-stopped",
             ]
         );
+    }
+
+    #[test]
+    fn purge_uses_each_recorded_config_home_and_legacy_still_uses_the_default() {
+        let scratch =
+            std::env::temp_dir().join(format!("ae-purge-config-home-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&scratch);
+        let home = scratch.join("home");
+        let root = home.join(".ae");
+        let claude = scratch.join("claude-account");
+        let codex = scratch.join("codex-account");
+        let legacy = home.join(".claude");
+        let claude_id = "11111111-1111-4111-8111-111111111111";
+        let codex_id = "22222222-2222-4222-8222-222222222222";
+        let legacy_id = "33333333-3333-4333-8333-333333333333";
+        let claude_file = claude
+            .join("projects/work")
+            .join(format!("{claude_id}.jsonl"));
+        let codex_file = codex
+            .join("sessions/2026/09/08")
+            .join(format!("rollout-{codex_id}.jsonl"));
+        let legacy_file = legacy
+            .join("projects/work")
+            .join(format!("{legacy_id}.jsonl"));
+        for file in [&claude_file, &codex_file, &legacy_file] {
+            std::fs::create_dir_all(file.parent().expect("a store directory")).expect("dirs");
+            std::fs::write(file, "conversation").expect("conversation");
+        }
+        std::fs::create_dir_all(&root).expect("state root");
+        let claude = std::fs::canonicalize(&claude).expect("canonical claude root");
+        let codex = std::fs::canonicalize(&codex).expect("canonical codex root");
+        let meta = format!(
+            "schema=2\nseat.main=lead\nagent_bin.main=claude\nconfig_home.main={}\n\
+             harness_session.main={claude_id}\nseat.worker.1=pair\nagent_bin.worker.1=codex\n\
+             config_home.worker.1={}\nharness_session.worker.1={codex_id}\n\
+             seat.worker.2=legacy\nagent_bin.worker.2=claude\nharness_session.worker.2={legacy_id}\n",
+            claude.display(),
+            codex.display()
+        );
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        purge_conversation_files(&root, meta.as_bytes(), &mut out, &mut err).expect("purge");
+        assert!(!path_exists(&claude_file), "recorded Claude root");
+        assert!(!path_exists(&codex_file), "recorded Codex root");
+        assert!(!path_exists(&legacy_file), "legacy default root");
+        assert!(err.is_empty(), "{}", String::from_utf8_lossy(&err));
+        let _ = std::fs::remove_dir_all(&scratch);
+    }
+
+    #[test]
+    fn purge_skips_and_reports_descendant_symlinks_that_escape_the_store() {
+        use std::os::unix::fs::symlink;
+
+        let scratch = std::env::temp_dir().join(format!("ae-purge-links-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&scratch);
+        let home = scratch.join("home");
+        let root = home.join(".ae");
+        let claude = scratch.join("claude");
+        let codex = scratch.join("codex");
+        let outside_claude = scratch.join("outside-claude");
+        let outside_codex = scratch.join("outside-codex");
+        let claude_id = "44444444-4444-4444-8444-444444444444";
+        let codex_id = "55555555-5555-4555-8555-555555555555";
+        let claude_file = outside_claude.join(format!("{claude_id}.jsonl"));
+        let codex_file = outside_codex
+            .join("09/08")
+            .join(format!("rollout-{codex_id}.jsonl"));
+        for file in [&claude_file, &codex_file] {
+            std::fs::create_dir_all(file.parent().expect("an outside directory")).expect("dirs");
+            std::fs::write(file, "keep").expect("outside conversation");
+        }
+        std::fs::create_dir_all(claude.join("projects")).expect("claude store");
+        std::fs::create_dir_all(codex.join("sessions")).expect("codex store");
+        std::fs::create_dir_all(&root).expect("state root");
+        symlink(&outside_claude, claude.join("projects/escape")).expect("project link");
+        symlink(&outside_codex, codex.join("sessions/2026")).expect("date link");
+        let claude = std::fs::canonicalize(&claude).expect("canonical claude root");
+        let codex = std::fs::canonicalize(&codex).expect("canonical codex root");
+        let meta = format!(
+            "schema=2\nseat.main=lead\nagent_bin.main=claude\nconfig_home.main={}\n\
+             harness_session.main={claude_id}\nseat.worker.1=pair\nagent_bin.worker.1=codex\n\
+             config_home.worker.1={}\nharness_session.worker.1={codex_id}\n",
+            claude.display(),
+            codex.display()
+        );
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        purge_conversation_files(&root, meta.as_bytes(), &mut out, &mut err).expect("purge");
+        assert!(path_exists(&claude_file) && path_exists(&codex_file));
+        let warning = String::from_utf8_lossy(&err);
+        assert!(warning.contains("symbolic link skipped"), "{warning}");
+        assert!(warning.contains("projects/escape"), "{warning}");
+        assert!(warning.contains("sessions/2026"), "{warning}");
+        assert!(out.is_empty(), "{}", String::from_utf8_lossy(&out));
+        let _ = std::fs::remove_dir_all(&scratch);
+    }
+
+    #[test]
+    fn a_recorded_canonical_root_survives_the_original_symlink_being_retargeted() {
+        use std::os::unix::fs::symlink;
+
+        let scratch =
+            std::env::temp_dir().join(format!("ae-purge-retarget-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&scratch);
+        let home = scratch.join("home");
+        let root = home.join(".ae");
+        let first = scratch.join("account-a");
+        let second = scratch.join("account-b");
+        let link = scratch.join("client");
+        let id = "66666666-6666-4666-8666-666666666666";
+        let first_file = first.join("projects/w").join(format!("{id}.jsonl"));
+        let second_file = second.join("projects/w").join(format!("{id}.jsonl"));
+        for file in [&first_file, &second_file] {
+            std::fs::create_dir_all(file.parent().expect("a store directory")).expect("dirs");
+            std::fs::write(file, "conversation").expect("conversation");
+        }
+        std::fs::create_dir_all(&root).expect("state root");
+        symlink(&first, &link).expect("first target");
+        let recorded = std::fs::canonicalize(&link).expect("first-start canonical root");
+        std::fs::remove_file(&link).expect("remove old link");
+        symlink(&second, &link).expect("retargeted link");
+        let meta = format!(
+            "schema=2\nseat.main=lead\nagent_bin.main=claude\nconfig_home.main={}\n\
+             harness_session.main={id}\n",
+            recorded.display()
+        );
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        purge_conversation_files(&root, meta.as_bytes(), &mut out, &mut err).expect("purge");
+        assert!(!path_exists(&first_file), "recorded target is purged");
+        assert!(
+            path_exists(&second_file),
+            "retargeted destination is untouched"
+        );
+        assert!(err.is_empty(), "{}", String::from_utf8_lossy(&err));
+        let _ = std::fs::remove_dir_all(&scratch);
+    }
+
+    #[test]
+    fn purge_leaves_unknown_absent_and_malformed_config_homes_intact() {
+        let scratch = std::env::temp_dir().join(format!("ae-purge-unknown-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&scratch);
+        let home = scratch.join("home");
+        let root = home.join(".ae");
+        let store = home.join(".claude/projects/w");
+        let id = "77777777-7777-4777-8777-777777777777";
+        let file = store.join(format!("{id}.jsonl"));
+        std::fs::create_dir_all(&store).expect("default store");
+        std::fs::create_dir_all(&root).expect("state root");
+        std::fs::write(&file, "keep").expect("conversation");
+        for row in [
+            "config_home.main=unknown\n",
+            "config_home.main=absent\n",
+            "config_home.main=relative\n",
+            "config_home.main=/one\nconfig_home.main=/two\n",
+        ] {
+            let meta = format!(
+                "schema=2\nseat.main=lead\nagent_bin.main=claude\n{row}\
+                 harness_session.main={id}\n"
+            );
+            let mut out = Vec::new();
+            let mut err = Vec::new();
+            purge_conversation_files(&root, meta.as_bytes(), &mut out, &mut err).expect("purge");
+            assert!(path_exists(&file), "{row:?}");
+            assert!(out.is_empty(), "{row:?}");
+            assert!(
+                String::from_utf8_lossy(&err).contains("left in place"),
+                "{row:?}: {}",
+                String::from_utf8_lossy(&err)
+            );
+        }
+        let _ = std::fs::remove_dir_all(&scratch);
     }
 
     /// `--purge-history` deletes the conversations ae can name by EXACT id, and

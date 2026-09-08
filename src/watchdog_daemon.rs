@@ -3760,6 +3760,7 @@ mod tests {
             name: name.to_owned(),
             profile: Some(alias.to_owned()),
             harness_session: None,
+            config_home: crate::meta::RecordedConfigHome::Missing,
             binary: None,
         }
     }

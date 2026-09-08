@@ -42,6 +42,9 @@ impl Split {
     }
 }
 
+use std::path::{Path, PathBuf};
+
+use crate::config::ResolvedCommand;
 use crate::tool::ToolKind;
 
 /// Split `cmd` at its binary word, or `None` when it is malformed or carries
@@ -267,6 +270,140 @@ pub(crate) fn prefix_mentions(command: &SimpleCommand, variable: &str) -> bool {
         index += 1;
     }
     false
+}
+
+/// The config home a resolved launch command will give its tool.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Resolved {
+    /// A verified absolute config-home path.
+    Path(PathBuf),
+    /// Neither the account variable nor an effective `HOME` exists.
+    Absent,
+    /// The command names a value ae cannot safely use as a config home.
+    Unknown(String),
+}
+
+impl Resolved {
+    /// Stable spelling for a persisted `config_home.<slot>` row.
+    #[must_use]
+    pub fn record_value(&self) -> String {
+        match self {
+            Self::Path(path) => path.display().to_string(),
+            Self::Absent => "absent".to_owned(),
+            Self::Unknown(_) => "unknown".to_owned(),
+        }
+    }
+
+    /// Short human spelling used when current config differs from a seat's
+    /// retained conversation store.
+    #[must_use]
+    pub fn shown(&self) -> String {
+        match self {
+            Self::Path(path) => path.display().to_string(),
+            Self::Absent => "absent".to_owned(),
+            Self::Unknown(reason) => format!("unknown ({reason})"),
+        }
+    }
+}
+
+/// Resolve the config home the direct executor will expose to `tool`.
+///
+/// The injected lookup is the pane's inherited environment. Profile-prefix
+/// assignments are layered over it with the same ordering as `_run`: clear,
+/// unsets, then assignments. Parameter expansion happens once while words are
+/// split; the resulting values are never expanded again.
+#[must_use]
+pub fn config_home(
+    cmd: &ResolvedCommand,
+    tool: ToolKind,
+    lookup: &dyn Fn(&str) -> Option<String>,
+) -> Resolved {
+    let adapter = tool.adapter();
+    let (Some(variable), Some(default)) = (adapter.config_home_env, adapter.config_home_default)
+    else {
+        return Resolved::Absent;
+    };
+    let words = match crate::words::split_words(cmd.as_str(), &|name| lookup(name)) {
+        Ok(words) => words,
+        Err(why) => return Resolved::Unknown(why),
+    };
+    let mut index = 0;
+    let mut clear = false;
+    let mut unset: Vec<String> = Vec::new();
+    let mut assignments: Vec<(String, String)> = Vec::new();
+    while words.get(index).is_some_and(|word| word.assignment) {
+        if let Some((name, value)) = words[index].value.split_once('=') {
+            assignments.push((name.to_owned(), value.to_owned()));
+        }
+        index += 1;
+    }
+    if words.get(index).is_some_and(|word| word.value == "env") {
+        index += 1;
+        while let Some(word) = words.get(index) {
+            match word.value.as_str() {
+                "-i" => {
+                    clear = true;
+                    index += 1;
+                }
+                "-u" => {
+                    let Some(name) = words.get(index + 1) else {
+                        return Resolved::Unknown("env -u has no variable name".to_owned());
+                    };
+                    unset.push(name.value.clone());
+                    index += 2;
+                }
+                value if is_assignment(value) => {
+                    if let Some((name, value)) = value.split_once('=') {
+                        assignments.push((name.to_owned(), value.to_owned()));
+                    }
+                    index += 1;
+                }
+                _ => break,
+            }
+        }
+    }
+
+    let assigned = |name: &str| {
+        assignments
+            .iter()
+            .rev()
+            .find(|(candidate, _)| candidate == name)
+            .map(|(_, value)| value.clone())
+    };
+    let inherited = |name: &str| {
+        if clear || unset.iter().any(|candidate| candidate == name) {
+            None
+        } else {
+            lookup(name)
+        }
+    };
+    if let Some(value) = assigned(variable) {
+        return absolute_value(variable, &value);
+    }
+    if !unset.iter().any(|candidate| candidate == variable)
+        && let Some(value) = inherited(variable)
+    {
+        return absolute_value(variable, &value);
+    }
+    let home = assigned("HOME").or_else(|| inherited("HOME"));
+    let Some(home) = home else {
+        return Resolved::Absent;
+    };
+    match absolute_value("HOME", &home) {
+        Resolved::Path(home) => Resolved::Path(home.join(default)),
+        other => other,
+    }
+}
+
+fn absolute_value(variable: &str, value: &str) -> Resolved {
+    if value.is_empty() {
+        return Resolved::Unknown(format!("{variable} is empty or unresolved"));
+    }
+    let path = Path::new(value);
+    if !path.is_absolute() {
+        return Resolved::Unknown(format!("{variable} is not an absolute path: {value}"));
+    }
+    Resolved::Path(path.to_path_buf())
 }
 
 /// A word the lexer built: the raw source span and its quote-resolved value.
@@ -509,7 +646,11 @@ pub(crate) fn is_assignment(word: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{Refusal, Split, ToolKind, lex_simple_command, split_binary};
+    use std::path::PathBuf;
+
+    use super::{
+        Refusal, Resolved, Split, ToolKind, config_home, lex_simple_command, split_binary,
+    };
 
     fn bin(cmd: &str) -> Option<String> {
         split_binary(cmd).map(|s| s.binary_name().to_owned())
@@ -922,6 +1063,66 @@ mod tests {
         assert_eq!(
             lex_simple_command("'A=1' claude").unwrap().words,
             ["'A=1'", "claude"]
+        );
+    }
+
+    #[test]
+    fn config_home_obeys_the_executor_environment_order() {
+        let resolve = |command: &str, tool: ToolKind, inherited: &[(&str, &str)]| {
+            let command = crate::config::IdentityConfig::resolved_snapshot(command);
+            config_home(&command, tool, &|name| {
+                inherited
+                    .iter()
+                    .find(|(key, _)| *key == name)
+                    .map(|(_, value)| (*value).to_owned())
+            })
+        };
+        let home = [("HOME", "/pane"), ("CODEX_HOME", "/inherited/codex")];
+        assert_eq!(
+            resolve("codex", ToolKind::Codex, &home),
+            Resolved::Path(PathBuf::from("/inherited/codex"))
+        );
+        assert_eq!(
+            resolve("HOME=/other codex", ToolKind::Codex, &home),
+            Resolved::Path(PathBuf::from("/inherited/codex")),
+            "the inherited account variable still outranks HOME"
+        );
+        assert_eq!(
+            resolve("HOME=/other codex", ToolKind::Codex, &[("HOME", "/pane")]),
+            Resolved::Path(PathBuf::from("/other/.codex")),
+            "a prefix HOME selects the default store when no account variable exists"
+        );
+        assert_eq!(
+            resolve(
+                "env -u CODEX_HOME HOME=/other codex",
+                ToolKind::Codex,
+                &home
+            ),
+            Resolved::Path(PathBuf::from("/other/.codex"))
+        );
+        assert_eq!(
+            resolve("env -i CODEX_HOME=/explicit codex", ToolKind::Codex, &home),
+            Resolved::Path(PathBuf::from("/explicit"))
+        );
+        assert_eq!(
+            resolve("env -i codex", ToolKind::Codex, &home),
+            Resolved::Absent
+        );
+        assert_eq!(
+            resolve("CODEX_HOME=relative codex", ToolKind::Codex, &home),
+            Resolved::Unknown("CODEX_HOME is not an absolute path: relative".to_owned())
+        );
+        assert_eq!(
+            resolve("CODEX_HOME=$MISSING codex", ToolKind::Codex, &home),
+            Resolved::Unknown("CODEX_HOME is empty or unresolved".to_owned())
+        );
+        assert_eq!(
+            resolve(
+                "CLAUDE_CONFIG_DIR=${ACCOUNT} claude",
+                ToolKind::Claude,
+                &[("HOME", "/pane"), ("ACCOUNT", "/accounts/claude")]
+            ),
+            Resolved::Path(PathBuf::from("/accounts/claude"))
         );
     }
 }

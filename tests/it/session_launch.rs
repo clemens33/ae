@@ -79,6 +79,9 @@ impl Rig {
         let home = scratch.join("aehome");
         let project = scratch.join("project");
         assert!(std::fs::create_dir_all(&project).is_ok(), "a project dir");
+        for path in [scratch.join(".claude"), scratch.join(".codex")] {
+            assert!(std::fs::create_dir_all(path).is_ok(), "a config home");
+        }
         let launched = scratch.join("launched");
         let bin_dir = scratch.join("bin");
         assert!(std::fs::create_dir_all(&bin_dir).is_ok(), "a bin dir");
@@ -494,12 +497,22 @@ fn add_profile(rig: &Rig, name: &str, command: &str) {
 }
 
 #[test]
+#[allow(clippy::too_many_lines, reason = "one end-to-end retained-store story")]
 fn a_client_profile_launches_the_configured_executable_and_home() {
     if skip() {
         return;
     }
     let rig = Rig::new("client-profile", &["claude"], None);
     let executable = rig.bin.join("claude");
+    let first_home = rig.scratch.join(".claude-mic");
+    let second_home = rig.scratch.join(".claude-other");
+    assert!(std::fs::create_dir_all(&first_home).is_ok(), "first store");
+    assert!(
+        std::fs::create_dir_all(&second_home).is_ok(),
+        "second store"
+    );
+    let first_home = std::fs::canonicalize(first_home).expect("canonical first store");
+    let second_home = std::fs::canonicalize(second_home).expect("canonical second store");
     assert!(
         std::fs::write(
             &rig.config,
@@ -523,10 +536,7 @@ fn a_client_profile_launches_the_configured_executable_and_home() {
         "argv evidence: {evidence}"
     );
     assert!(
-        evidence.contains(&format!(
-            "CLAUDE_CONFIG_DIR={}",
-            rig.scratch.join(".claude-mic").display()
-        )),
+        evidence.contains(&format!("CLAUDE_CONFIG_DIR={}", first_home.display())),
         "env evidence: {evidence}"
     );
     let plan = rig.plan("lnclientprofile", "main");
@@ -537,9 +547,62 @@ fn a_client_profile_launches_the_configured_executable_and_home() {
     assert!(
         plan.contains(&format!(
             r#""CLAUDE_CONFIG_DIR":"{}""#,
-            rig.scratch.join(".claude-mic").display()
+            first_home.display()
         )),
         "{plan}"
+    );
+    let first_meta = rig.meta("lnclientprofile");
+    assert!(
+        first_meta.contains(&format!("config_home.main={}\n", first_home.display())),
+        "{first_meta}"
+    );
+
+    let sid = first_meta
+        .lines()
+        .find_map(|line| line.strip_prefix("harness_session.main="))
+        .unwrap_or_default();
+    let key: String = std::fs::canonicalize(&rig.project)
+        .unwrap_or_else(|_| rig.project.clone())
+        .display()
+        .to_string()
+        .chars()
+        .map(|ch| if ch == '/' { '-' } else { ch })
+        .collect();
+    let transcript = first_home
+        .join("projects")
+        .join(key)
+        .join(format!("{sid}.jsonl"));
+    assert!(
+        std::fs::create_dir_all(transcript.parent().unwrap_or(&first_home)).is_ok()
+            && std::fs::write(&transcript, "{}\n").is_ok(),
+        "a retained transcript"
+    );
+    assert!(
+        rig.tmux(&["kill-session", "-t", "=lnclientprofile"]).0,
+        "the session stops"
+    );
+    let changed = std::fs::read_to_string(&rig.config)
+        .unwrap_or_default()
+        .replace(".claude-mic", ".claude-other");
+    assert!(std::fs::write(&rig.config, changed).is_ok(), "config moves");
+    let _ = std::fs::remove_file(&rig.launched);
+
+    let (code, stdout, stderr) = rig.launch(&["--local", "lnclientprofile"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let resumed = rig.launch_argv();
+    assert!(
+        resumed.contains(&format!("--resume {sid}"))
+            && resumed.contains(&format!("CLAUDE_CONFIG_DIR={}", first_home.display())),
+        "recorded row controls probe and exec: {resumed}"
+    );
+    assert!(
+        !resumed.contains(&format!("CLAUDE_CONFIG_DIR={}", second_home.display())),
+        "changed config does not move retained conversation: {resumed}"
+    );
+    let rebuilt = rig.meta("lnclientprofile");
+    assert!(
+        rebuilt.contains(&format!("config_home.main={}\n", first_home.display())),
+        "full resume carries recorded home: {rebuilt}"
     );
 }
 
@@ -1111,6 +1174,7 @@ fn a_helper_link_is_the_core_with_its_own_session() {
 /// A resume re-runs the SAME session with the resume variant, and does not
 /// rebuild it.
 #[test]
+#[allow(clippy::too_many_lines, reason = "one end-to-end resume story")]
 fn a_resume_reruns_with_the_resume_variant() {
     if skip() {
         return;
@@ -1150,6 +1214,18 @@ fn a_resume_reruns_with_the_resume_variant() {
         .unwrap_or_default()
         .to_owned();
     assert!(!sid.is_empty(), "claude's id is known upfront:\n{fresh}");
+    let config_home = fresh
+        .lines()
+        .find_map(|line| line.strip_prefix("config_home.main="))
+        .unwrap_or_default()
+        .to_owned();
+    assert_eq!(
+        Path::new(&config_home),
+        std::fs::canonicalize(rig.scratch.join(".claude"))
+            .expect("canonical default")
+            .as_path(),
+        "first start pins its canonical store: {fresh}"
+    );
 
     // The session stops; its state stays.
     assert!(
@@ -1217,6 +1293,11 @@ fn a_resume_reruns_with_the_resume_variant() {
         rig.meta("lnres")
             .contains(&format!("harness_session.main={sid}")),
         "the id survives the resume"
+    );
+    assert!(
+        rig.meta("lnres")
+            .contains(&format!("config_home.main={config_home}\n")),
+        "the recorded config home survives the full meta rebuild"
     );
     assert!(
         !rig.dir("lnres").join("launch.main.sh").exists(),
@@ -1551,6 +1632,55 @@ fn doubtful_solo_meta_refuses_before_configured_workers_can_grow_the_roster() {
         );
         assert!(rig.windows(name).is_empty(), "no windows were recreated");
         assert!(rig.panes(name).is_empty(), "no panes were recreated");
+    }
+}
+
+#[test]
+fn a_hostile_config_home_row_refuses_a_stopped_resume_without_rewriting_meta() {
+    if skip() {
+        return;
+    }
+    for (tag, session, damage) in [
+        ("bad-config-home", "lnbadconfighome", "relative"),
+        ("dup-config-home", "lndupconfighome", "duplicate"),
+    ] {
+        let rig = Rig::new(tag, &["claude"], None);
+        let (code, stdout, stderr) = rig.launch(&["--local", session]);
+        assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+        assert!(!rig.launch_argv().is_empty(), "the first agent started");
+        assert!(
+            rig.tmux(&["kill-session", "-t", &format!("={session}")]).0,
+            "the session stops"
+        );
+        let path = rig.dir(session).join("meta");
+        let original = std::fs::read_to_string(&path).expect("meta");
+        let damaged = if damage == "relative" {
+            original
+                .lines()
+                .map(|line| {
+                    if line.starts_with("config_home.main=") {
+                        "config_home.main=relative"
+                    } else {
+                        line
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+                + "\n"
+        } else {
+            format!("{original}config_home.main=/second\n")
+        };
+        std::fs::write(&path, &damaged).expect("hostile meta");
+        let (code, stdout, stderr) = rig.launch(&["--local", session]);
+        assert_eq!(code, Some(1), "stdout: {stdout}\nstderr: {stderr}");
+        assert!(
+            stderr.contains("doubtful roster metadata")
+                && stderr.contains("config_home.main")
+                && stderr.contains("ae doctor"),
+            "{stderr}"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap_or_default(), damaged);
+        assert!(!rig.sessions().contains(&session.to_owned()));
     }
 }
 
@@ -2314,8 +2444,9 @@ fn resumable_rig(tag: &str, session: &str, profile: &str) -> (Rig, PathBuf) {
                 "meta_version={version}\nsession={session}\ntmux_server_kind=socket\n\
                  tmux_server={server}\nmode=local\nlayout=vertical\n\
                  work_dir={home}\norigin={home}\nschema=2\nseat.main=lead\n\
-                 profile.main=idle\nagent_bin.main=sleep\nseat.spawned.0=helper\n\
-                 profile.spawned.0=bad\nagent_bin.spawned.0=sleep\n",
+                 profile.main=idle\nagent_bin.main=sleep\nconfig_home.main=absent\n\
+                 seat.spawned.0=helper\nprofile.spawned.0=bad\nagent_bin.spawned.0=sleep\n\
+                 config_home.spawned.0=unknown\n",
                 version = ae::migrate::CURRENT,
                 server = rig.sock.display(),
                 home = rig.project.display(),
@@ -2374,6 +2505,12 @@ fn a_restored_spawned_seat_with_a_valid_profile_still_resumes() {
     assert!(
         panes.iter().any(|(_, slot, _)| slot == "spawned.0"),
         "the restored seat gets its pane back: {panes:?}"
+    );
+    let rebuilt = rig.meta("lnspwo");
+    assert!(rebuilt.contains("config_home.main=absent\n"), "{rebuilt}");
+    assert!(
+        rebuilt.contains("config_home.spawned.0=unknown\n"),
+        "restored spawned seats carry the named row: {rebuilt}"
     );
 }
 

@@ -37,12 +37,13 @@ const ROSTER_PREFIX: &str = "agent.";
 const SERVER_KEY: &str = "tmux_server";
 const SERVER_KIND_KEY: &str = "tmux_server_kind";
 const ROSTER_BIN_PREFIX: &str = "agent_bin.";
-/// Identity schema v2 (alias-free): the seat's NAME, its execution PROFILE and
-/// the harness's own conversation id live under three keys instead of one
-/// `alias:name:sid` value.
+/// Identity schema v2 (alias-free): the seat's NAME, execution PROFILE,
+/// harness conversation id and pinned config home live under named keys
+/// instead of one `alias:name:sid` value.
 const SEAT_PREFIX: &str = "seat.";
 const PROFILE_PREFIX: &str = "profile.";
 const HARNESS_SESSION_PREFIX: &str = "harness_session.";
+const CONFIG_HOME_PREFIX: &str = "config_home.";
 /// `schema=<n>` — the identity schema the writer used.
 const SCHEMA_KEY: &str = "schema";
 /// The VERSION of the core a session is pinned to, and the shape its meta is
@@ -71,8 +72,50 @@ pub struct RosterEntry {
     /// The harness's own conversation id (`harness_session.<slot>`), where the
     /// roster carries one.
     pub harness_session: Option<String>,
+    /// `config_home.<slot>` — the conversation store pinned at first start.
+    pub config_home: RecordedConfigHome,
     /// `agent_bin.<slot>` — the recorded binary, where the meta carries one.
     pub binary: Option<String>,
+}
+
+/// What a seat's optional `config_home.<slot>` row says.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum RecordedConfigHome {
+    /// Legacy meta: no row has been recorded yet.
+    #[default]
+    Missing,
+    /// A canonical absolute config-home directory.
+    Path(PathBuf),
+    /// The first-start environment exposed no effective config home.
+    Absent,
+    /// The first-start environment could not be resolved safely.
+    Unknown,
+    /// A malformed or duplicated row: no value may be trusted.
+    Invalid,
+}
+
+impl RecordedConfigHome {
+    /// The value emitted when this state belongs in a meta row.
+    #[must_use]
+    pub fn record_value(&self) -> Option<String> {
+        match self {
+            Self::Missing | Self::Invalid => None,
+            Self::Path(path) => Some(path.display().to_string()),
+            Self::Absent => Some("absent".to_owned()),
+            Self::Unknown => Some("unknown".to_owned()),
+        }
+    }
+
+    fn parse(value: &str) -> Self {
+        match value {
+            "absent" => Self::Absent,
+            "unknown" => Self::Unknown,
+            value if Path::new(value).is_absolute() && !value.chars().any(char::is_control) => {
+                Self::Path(PathBuf::from(value))
+            }
+            _ => Self::Invalid,
+        }
+    }
 }
 
 impl RosterEntry {
@@ -237,6 +280,7 @@ pub struct Meta {
     /// read before their `seat.<slot>` — same rule as the binaries.
     pending_profiles: Vec<PendingRow>,
     pending_harness: Vec<PendingRow>,
+    pending_config_homes: Vec<PendingRow>,
     /// Every `seat.<slot>` KEY met so far — `=` or not, valid or not, first or
     /// repeated.
     claims: Vec<SlotClaim>,
@@ -354,6 +398,11 @@ impl Meta {
                         entry.harness_session = None;
                     }
                     self.mark_metadata_duplicated(key);
+                } else if let Some(slot) = key.strip_prefix(CONFIG_HOME_PREFIX) {
+                    if let Some(entry) = self.roster.iter_mut().find(|e| e.slot == slot) {
+                        entry.config_home = RecordedConfigHome::Invalid;
+                    }
+                    self.mark_metadata_duplicated(key);
                 } else if let Some(slot) = key.strip_prefix(SEAT_PREFIX) {
                     // A doubly-named slot is a slot whose identity is in doubt,
                     // and agents[] membership is roster-defined —
@@ -392,6 +441,8 @@ impl Meta {
                     self.set_metadata(Metadata::Profile, slot, key, value, line);
                 } else if let Some(slot) = key.strip_prefix(HARNESS_SESSION_PREFIX) {
                     self.set_metadata(Metadata::HarnessSession, slot, key, value, line);
+                } else if let Some(slot) = key.strip_prefix(CONFIG_HOME_PREFIX) {
+                    self.set_metadata(Metadata::ConfigHome, slot, key, value, line);
                 } else if let Some(slot) = key.strip_prefix(ROSTER_PREFIX) {
                     self.note_legacy(slot, line);
                 } else if let Some(slot) = key.strip_prefix(SEAT_PREFIX) {
@@ -449,11 +500,22 @@ impl Meta {
             .and_then(|row| (!row.value.is_empty() && !row.duplicated).then_some(row.value));
         let harness_session = take_pending(&mut self.pending_harness, slot)
             .and_then(|row| (!row.value.is_empty() && !row.duplicated).then_some(row.value));
+        let config_home = take_pending(&mut self.pending_config_homes, slot).map_or(
+            RecordedConfigHome::Missing,
+            |row| {
+                if row.duplicated {
+                    RecordedConfigHome::Invalid
+                } else {
+                    RecordedConfigHome::parse(&row.value)
+                }
+            },
+        );
         self.roster.push(RosterEntry {
             slot: slot.to_owned(),
             name: value.to_owned(),
             profile,
             harness_session,
+            config_home,
             binary,
         });
     }
@@ -489,7 +551,11 @@ impl Meta {
     /// Flag every open metadata row for `key` value-invalidated, keeping its
     /// provenance.
     fn mark_metadata_duplicated(&mut self, key: &str) {
-        for list in [&mut self.pending_profiles, &mut self.pending_harness] {
+        for list in [
+            &mut self.pending_profiles,
+            &mut self.pending_harness,
+            &mut self.pending_config_homes,
+        ] {
             for row in list.iter_mut() {
                 if row.key == key {
                     row.duplicated = true;
@@ -517,9 +583,20 @@ impl Meta {
         });
     }
 
-    /// `profile.<slot>` / `harness_session.<slot>`: attaches to its seat, or
-    /// waits for one that has not been read yet.
+    /// Named per-seat metadata: attaches to its seat, or waits for one that has
+    /// not been read yet.
     fn set_metadata(&mut self, which: Metadata, slot: &str, key: &str, value: &str, line: usize) {
+        let config_home = (which == Metadata::ConfigHome).then(|| RecordedConfigHome::parse(value));
+        if slot.is_empty()
+            || config_home
+                .as_ref()
+                .is_some_and(|value| *value == RecordedConfigHome::Invalid)
+        {
+            self.anomalies.push(Anomaly::MalformedRosterEntry {
+                key: key.to_owned(),
+                line,
+            });
+        }
         // Ownership FIRST, value second: an empty row on a seat is absent
         // metadata, not a missing seat.
         if let Some(existing) = self.roster.iter_mut().find(|entry| entry.slot == slot) {
@@ -527,6 +604,9 @@ impl Meta {
             match which {
                 Metadata::Profile => existing.profile = value,
                 Metadata::HarnessSession => existing.harness_session = value,
+                Metadata::ConfigHome => {
+                    existing.config_home = config_home.unwrap_or(RecordedConfigHome::Invalid);
+                }
             }
             return;
         }
@@ -540,6 +620,7 @@ impl Meta {
         match which {
             Metadata::Profile => self.pending_profiles.push(row),
             Metadata::HarnessSession => self.pending_harness.push(row),
+            Metadata::ConfigHome => self.pending_config_homes.push(row),
         }
     }
 
@@ -715,6 +796,7 @@ impl Meta {
 enum Metadata {
     Profile,
     HarnessSession,
+    ConfigHome,
 }
 
 /// A persisted epoch that can produce a meaningful age.
@@ -1218,7 +1300,7 @@ agent_bin.main=claude
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    use super::{Anomaly, Meta, Selector, ServerSelector};
+    use super::{Anomaly, Meta, RecordedConfigHome, Selector, ServerSelector};
     use std::path::PathBuf;
 
     #[test]
@@ -1471,6 +1553,53 @@ agent_bin.main=claude
         assert!(
             meta.anomalies().is_empty(),
             "every v2 key is read, none is unknown"
+        );
+    }
+
+    #[test]
+    fn config_home_rows_are_typed_and_hostile_shapes_are_invalid() {
+        for (value, expected) in [
+            (
+                "/accounts/claude",
+                RecordedConfigHome::Path(PathBuf::from("/accounts/claude")),
+            ),
+            ("absent", RecordedConfigHome::Absent),
+            ("unknown", RecordedConfigHome::Unknown),
+        ] {
+            for text in [
+                format!("seat.main=lead\nconfig_home.main={value}\n"),
+                format!("config_home.main={value}\nseat.main=lead\n"),
+            ] {
+                let meta = Meta::parse(&text);
+                assert_eq!(meta.roster()[0].config_home, expected, "{text:?}");
+                assert!(meta.anomalies().is_empty(), "{text:?}");
+            }
+        }
+
+        for text in [
+            "seat.main=lead\nconfig_home.main=relative\n",
+            "config_home.main=\nseat.main=lead\n",
+            "seat.main=lead\nconfig_home.main=/one\nconfig_home.main=/two\n",
+            "config_home.main=/one\nconfig_home.main=/two\nseat.main=lead\n",
+        ] {
+            let meta = Meta::parse(text);
+            assert_eq!(
+                meta.roster()[0].config_home,
+                RecordedConfigHome::Invalid,
+                "{text:?}"
+            );
+            assert!(
+                meta.anomalies().iter().any(|anomaly| matches!(
+                    anomaly,
+                    Anomaly::MalformedRosterEntry { .. } | Anomaly::DuplicateKey { .. }
+                )),
+                "{text:?}"
+            );
+        }
+        assert_eq!(
+            Meta::parse("seat.main=lead\n").roster()[0].config_home,
+            RecordedConfigHome::Missing,
+            "the optional row keeps old v2 metadata readable"
         );
     }
 

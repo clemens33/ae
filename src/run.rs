@@ -46,6 +46,10 @@ pub struct Plan {
     pub set: Vec<(String, String)>,
     /// The tool and its arguments — never empty.
     pub argv: Vec<String>,
+    /// A first start publishes this row before its marker and exec.
+    config_home_row: Option<String>,
+    /// A retained conversation whose current config points elsewhere.
+    config_home_notice: Option<String>,
 }
 
 impl Plan {
@@ -173,6 +177,21 @@ pub fn run(
         out.flush()?;
         return Ok(0);
     }
+    if let Some(value) = plan.config_home_row.as_deref()
+        && let Err(why) = crate::meta::rewrite(dir, &format!("config_home.{slot}"), Some(value))
+    {
+        writeln!(
+            err,
+            "ae: could not record config_home.{slot} before launch ({}) — refusing to start",
+            why.cause()
+        )?;
+        err.flush()?;
+        return Ok(EXIT_FAILED);
+    }
+    if let Some(notice) = &plan.config_home_notice {
+        writeln!(err, "{notice}")?;
+        err.flush()?;
+    }
     // BEFORE the exec, because after it there is no "after" — and REFUSING when
     // it cannot be written.
     let marker = started_marker(dir, slot);
@@ -278,9 +297,48 @@ fn build_with_snapshot(
         slot,
         &seat.config_files,
     );
-    let composed = compose(dir, slot, &seat, &ctx, mode);
+    let current = crate::launch_cmd::config_home(&seat.command, seat.tool, &env_lookup);
+    let canonical = canonical_config_home(&current);
+    let (effective, config_home_row) = match &seat.config_home {
+        crate::meta::RecordedConfigHome::Missing => (
+            match (&canonical, &current) {
+                (crate::launch_cmd::Resolved::Unknown(_), crate::launch_cmd::Resolved::Path(_)) => {
+                    current.clone()
+                }
+                _ => canonical.clone(),
+            },
+            Some(canonical.record_value()),
+        ),
+        crate::meta::RecordedConfigHome::Path(path) => {
+            (crate::launch_cmd::Resolved::Path(path.clone()), None)
+        }
+        crate::meta::RecordedConfigHome::Absent => (crate::launch_cmd::Resolved::Absent, None),
+        crate::meta::RecordedConfigHome::Unknown => (
+            crate::launch_cmd::Resolved::Unknown("recorded as unknown".to_owned()),
+            None,
+        ),
+        crate::meta::RecordedConfigHome::Invalid => {
+            return Err(format!(
+                "seat '{slot}' has malformed or duplicate config_home metadata"
+            ));
+        }
+    };
+    let config_home_notice = (mode == Mode::Resume
+        && seat.config_home != crate::meta::RecordedConfigHome::Missing
+        && canonical != effective)
+        .then(|| {
+            format!(
+                "ae: seat {slot}: config now points {} at {}; the retained conversation lives in {}, resuming there — end the session to adopt {}",
+                seat.tool.as_str(),
+                canonical.shown(),
+                effective.shown(),
+                canonical.shown()
+            )
+        });
+    let composed = compose(dir, slot, &seat, &ctx, mode, &effective);
     let words = crate::words::split_words(&composed, &env_lookup)?;
-    let (prefix, argv) = peel_env(words)?;
+    let (mut prefix, argv) = peel_env(words)?;
+    apply_config_home(&mut prefix, seat.tool, &effective);
     Ok(Plan {
         mode,
         tool: seat.tool,
@@ -288,16 +346,25 @@ fn build_with_snapshot(
         unset: prefix.unset,
         set: prefix.assign,
         argv,
+        config_home_row,
+        config_home_notice,
     })
 }
 
 /// The composed shell command line, in builder order.
-fn compose(dir: &Path, slot: &str, seat: &Seat, ctx: &str, mode: Mode) -> String {
+fn compose(
+    dir: &Path,
+    slot: &str,
+    seat: &Seat,
+    ctx: &str,
+    mode: Mode,
+    config_home: &crate::launch_cmd::Resolved,
+) -> String {
     if mode == Mode::Resume {
         let (resume_form, fallback_form) =
             resume_forms(seat.command.as_str(), seat.tool, &seat.harness_session);
         // DECIDE, THEN INJECT.
-        let form = if resumable(seat.tool, &seat.harness_session) {
+        let form = if resumable(seat.tool, &seat.harness_session, config_home) {
             resume_form
         } else {
             fallback_form
@@ -315,7 +382,7 @@ fn compose(dir: &Path, slot: &str, seat: &Seat, ctx: &str, mode: Mode) -> String
 }
 
 /// Should this seat be resumed with the id its meta records?
-fn resumable(tool: ToolKind, id: &str) -> bool {
+fn resumable(tool: ToolKind, id: &str, config_home: &crate::launch_cmd::Resolved) -> bool {
     if !launch::id_probeable(id) {
         return false;
     }
@@ -323,7 +390,10 @@ fn resumable(tool: ToolKind, id: &str) -> bool {
         // Claude keeps a transcript per conversation at a path derived from the
         // working directory, so the file's existence IS the answer.
         StoreProbe::ProjectTranscript => {
-            let (Some(home), Some(cwd)) = (env_lookup("HOME"), working_dir()) else {
+            let crate::launch_cmd::Resolved::Path(home) = config_home else {
+                return true;
+            };
+            let Some(cwd) = working_dir() else {
                 return false;
             };
             let key: String = cwd
@@ -333,18 +403,15 @@ fn resumable(tool: ToolKind, id: &str) -> bool {
                 .map(|ch| if ch == '/' { '-' } else { ch })
                 .collect();
             crate::lifecycle::path_exists(
-                &Path::new(&home)
-                    .join(".claude/projects")
-                    .join(key)
-                    .join(format!("{id}.jsonl")),
+                &home.join("projects").join(key).join(format!("{id}.jsonl")),
             )
         }
         // Codex records under dated directories, so the id is searched for.
         StoreProbe::DatedRollouts => {
-            let Some(home) = env_lookup("HOME") else {
-                return false;
+            let crate::launch_cmd::Resolved::Path(home) = config_home else {
+                return true;
             };
-            contains_id(&Path::new(&home).join(".codex/sessions"), id, 4)
+            contains_id(&home.join("sessions"), id, 4)
         }
         // agy keeps ONE SQLite file per conversation, named for the id, in one
         // flat directory (measured 2026-09-04) — so the file's existence is the
@@ -390,6 +457,24 @@ fn contains_id(root: &Path, id: &str, depth: usize) -> bool {
         }
     }
     false
+}
+
+/// Canonicalize a first-start config home before it becomes seat identity.
+fn canonical_config_home(resolved: &crate::launch_cmd::Resolved) -> crate::launch_cmd::Resolved {
+    let crate::launch_cmd::Resolved::Path(path) = resolved else {
+        return resolved.clone();
+    };
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: first start pins the tool store's canonical location before exec"
+    )]
+    match std::fs::canonicalize(path) {
+        Ok(canonical) => crate::launch_cmd::Resolved::Path(canonical),
+        Err(why) => crate::launch_cmd::Resolved::Unknown(format!(
+            "could not canonicalize {} ({why})",
+            path.display()
+        )),
+    }
 }
 
 /// The resume form of a profile's command, and the form to use when the
@@ -490,6 +575,24 @@ fn peel_env(words: Vec<crate::words::Word>) -> Result<(EnvPrefix, Vec<String>), 
     Ok((prefix, argv))
 }
 
+/// Make a recorded concrete store override mutable profile/environment state.
+fn apply_config_home(
+    prefix: &mut EnvPrefix,
+    tool: ToolKind,
+    resolved: &crate::launch_cmd::Resolved,
+) {
+    let (Some(variable), crate::launch_cmd::Resolved::Path(path)) =
+        (tool.adapter().config_home_env, resolved)
+    else {
+        return;
+    };
+    prefix.unset.retain(|name| name != variable);
+    prefix.assign.retain(|(name, _)| name != variable);
+    prefix
+        .assign
+        .push((variable.to_owned(), path.display().to_string()));
+}
+
 /// One seat, read back out of the session's own state.
 struct Seat {
     session: String,
@@ -499,6 +602,7 @@ struct Seat {
     tool: ToolKind,
     harness_session: String,
     launch_id: String,
+    config_home: crate::meta::RecordedConfigHome,
 }
 
 /// Read the seat `slot` names, refusing anything that is not launchable.
@@ -508,11 +612,18 @@ fn read_seat(dir: &Path, slot: &str, command_snapshot: Option<&str>) -> Result<S
     }
     let bytes = crate::meta::read_bytes(dir)
         .map_err(|why| format!("could not read the session meta ({why})"))?;
+    let parsed_meta = crate::meta::Meta::parse(&String::from_utf8_lossy(&bytes));
     let value = |key: &str| crate::lifecycle::meta_value(&bytes, key);
     let name = value(&format!("seat.{slot}"));
     if name.is_empty() {
         return Err(format!("no seat '{slot}' in {}", dir.display()));
     }
+    let config_home = parsed_meta
+        .roster()
+        .iter()
+        .find(|entry| entry.slot == slot)
+        .map(|entry| entry.config_home.clone())
+        .unwrap_or_default();
     let profile = value(&format!("profile.{slot}"));
     if profile.is_empty() {
         return Err(format!("seat '{slot}' has no profile recorded"));
@@ -578,6 +689,7 @@ fn read_seat(dir: &Path, slot: &str, command_snapshot: Option<&str>) -> Result<S
         command,
         harness_session: value(&format!("harness_session.{slot}")),
         launch_id: value(&format!("launch_id.{slot}")),
+        config_home,
     })
 }
 
@@ -657,6 +769,8 @@ mod tests {
             unset: vec!["CLAUDECODE".to_owned()],
             set: vec![("K".to_owned(), "0".to_owned())],
             argv: vec!["claude".to_owned(), "a\nb".to_owned()],
+            config_home_row: None,
+            config_home_notice: None,
         };
         let line = plan.render();
         assert!(!line.contains('\n'), "{line}");
@@ -799,6 +913,8 @@ mod tests {
             unset: Vec::new(),
             set: Vec::new(),
             argv: vec!["/usr/bin/env".to_owned()],
+            config_home_row: None,
+            config_home_notice: None,
         };
         assert!(
             plan.render().contains(r#""env_clear":true"#),
@@ -854,13 +970,33 @@ mod tests {
         // No probe exists for these three, and that is not evidence of
         // absence: the recorded id is still this seat's own conversation.
         for tool in [ToolKind::Gemini, ToolKind::Grok, ToolKind::OpenCode] {
-            assert!(resumable(tool, "3f2a-1"), "{}", tool.as_str());
-            assert!(!resumable(tool, "pending"), "{}", tool.as_str());
-            assert!(!resumable(tool, ""), "{}", tool.as_str());
+            assert!(
+                resumable(tool, "3f2a-1", &crate::launch_cmd::Resolved::Absent),
+                "{}",
+                tool.as_str()
+            );
+            assert!(
+                !resumable(tool, "pending", &crate::launch_cmd::Resolved::Absent),
+                "{}",
+                tool.as_str()
+            );
+            assert!(
+                !resumable(tool, "", &crate::launch_cmd::Resolved::Absent),
+                "{}",
+                tool.as_str()
+            );
         }
         // A tool ae CAN probe still has to pass it, and a `pending` id never
         // reaches the probe at all.
-        assert!(!resumable(ToolKind::Claude, "pending"));
-        assert!(!resumable(ToolKind::Codex, ""));
+        assert!(!resumable(
+            ToolKind::Claude,
+            "pending",
+            &crate::launch_cmd::Resolved::Absent
+        ));
+        assert!(!resumable(
+            ToolKind::Codex,
+            "",
+            &crate::launch_cmd::Resolved::Absent
+        ));
     }
 }
