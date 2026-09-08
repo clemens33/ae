@@ -782,6 +782,24 @@ fn tmux(socket: &Path, scratch: &Path, words: &[&str]) -> (bool, String) {
     run_tmux(&args, scratch)
 }
 
+fn assert_two_to_one_widths(socket: &Path, scratch: &Path, target: &str) {
+    let (_, listed) = tmux(
+        socket,
+        scratch,
+        &["list-panes", "-t", target, "-F", "#{pane_width}"],
+    );
+    let widths = listed
+        .lines()
+        .filter_map(|width| width.parse::<usize>().ok())
+        .collect::<Vec<_>>();
+    assert_eq!(widths.len(), 2, "two lead-pair panes: {listed}");
+    let percent = widths[0] * 100 / (widths[0] + widths[1]);
+    assert!(
+        (65..=67).contains(&percent),
+        "lead pane is {percent}% rather than two thirds: {listed}"
+    );
+}
+
 fn mouse_down_status_binding(socket: &Path, scratch: &Path) -> String {
     let (_, keys) = tmux(socket, scratch, &["list-keys", "-T", "root"]);
     keys.lines()
@@ -894,6 +912,86 @@ fn plant_running(
     panic!("the watchdog did not start after two tries: {last}");
 }
 
+/// Rewrite a planted running session into the unhooked, equal-width
+/// lead-pair shape that predates the pair policy.
+fn make_unhooked_lead_pair(socket: &Path, scratch: &Path, dir: &Path, session: &str) -> String {
+    let main_pane = agent_pane_of(socket, scratch, session);
+    let mut meta = meta_of(dir);
+    let _ = write!(
+        meta,
+        "layout=lead-pair\nmain_pane={main_pane}\nseat.worker.0=colead\nprofile.worker.0=cl\nagent_bin.worker.0=claude\n"
+    );
+    assert!(fs::write(dir.join("meta"), meta).is_ok(), "lead-pair meta");
+    assert!(
+        tmux(
+            socket,
+            scratch,
+            &["split-window", "-h", "-t", &main_pane, "sleep", "60"]
+        )
+        .0,
+        "the colead pane"
+    );
+    assert!(
+        tmux(
+            socket,
+            scratch,
+            &[
+                "set-window-option",
+                "-t",
+                &main_pane,
+                "main-pane-width",
+                "50%"
+            ]
+        )
+        .0,
+        "the old equal width"
+    );
+    assert!(
+        tmux(
+            socket,
+            scratch,
+            &["select-layout", "-t", &main_pane, "even-horizontal"]
+        )
+        .0,
+        "the old equal layout"
+    );
+    main_pane
+}
+
+fn assert_lead_pair_policy(socket: &Path, scratch: &Path, main_pane: &str, session: &str) {
+    let (_, main_width) = tmux(
+        socket,
+        scratch,
+        &[
+            "show-window-options",
+            "-v",
+            "-t",
+            main_pane,
+            "main-pane-width",
+        ],
+    );
+    assert_eq!(main_width.trim(), "66%", "upgrade restores pair width");
+    let (_, resize_hook) = tmux(
+        socket,
+        scratch,
+        &["show-hooks", "-w", "-t", main_pane, "window-resized"],
+    );
+    assert!(
+        resize_hook.contains("window_zoomed_flag") && resize_hook.contains("main-vertical"),
+        "upgrade restores the guarded resize hook: {resize_hook}"
+    );
+    assert!(
+        tmux(
+            socket,
+            scratch,
+            &["resize-window", "-t", session, "-x", "150", "-y", "40"]
+        )
+        .0,
+        "resize the upgraded lead-pair window"
+    );
+    assert_two_to_one_widths(socket, scratch, session);
+}
+
 #[test]
 fn a_running_sessions_daemons_are_restarted_on_the_new_core() {
     let scratch = tmux_scratch("run");
@@ -919,12 +1017,13 @@ fn a_running_sessions_daemons_are_restarted_on_the_new_core() {
 
     let dir = plant_running(&scratch, &socket, &root, session, &old_core);
     let before = ae::watchdog_glue::read_pid(&dir).expect("a pidfile");
-    let agent_pane = agent_pane_of(&socket, &scratch, session);
+    let agent_pane = make_unhooked_lead_pair(&socket, &scratch, &dir, session);
     assert_tmux_default_mouse_binding(&socket, &scratch);
 
     let notes = ae::migrate::onto(&root, &new_core, "2026.9.9").expect("the sweep");
 
     assert_ae_mouse_binding(&socket, &scratch);
+    assert_lead_pair_policy(&socket, &scratch, &agent_pane, session);
 
     // The meta and every helper now name the new core.
     let text = meta_of(&dir);

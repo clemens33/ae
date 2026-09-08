@@ -2440,6 +2440,45 @@ fn lead_config(layout: &str, workers: &[&str]) -> String {
     cfg
 }
 
+fn assert_two_to_one_widths(rig: &Rig, target: &str) {
+    let (_, listed) = rig.tmux(&["list-panes", "-t", target, "-F", "#{pane_width}"]);
+    let widths = listed
+        .lines()
+        .filter_map(|width| width.parse::<usize>().ok())
+        .collect::<Vec<_>>();
+    assert_eq!(widths.len(), 2, "two lead-pair panes: {listed}");
+    let percent = widths[0] * 100 / (widths[0] + widths[1]);
+    assert!(
+        (65..=67).contains(&percent),
+        "lead pane is {percent}% rather than two thirds: {listed}"
+    );
+}
+
+fn assert_resize_preserves_colead_zoom(rig: &Rig, session: &str) {
+    let colead_pane = rig
+        .panes(session)
+        .into_iter()
+        .find(|(_, slot, _)| slot == "worker.0")
+        .map_or_else(|| panic!("a colead pane"), |(pane, _, _)| pane);
+    assert!(
+        rig.tmux(&["resize-pane", "-Z", "-t", &colead_pane]).0,
+        "zoom the colead"
+    );
+    assert!(
+        rig.tmux(&["resize-window", "-t", session, "-x", "150", "-y", "40"])
+            .0,
+        "resize the zoomed lead-pair window"
+    );
+    let (_, zoomed) = rig.tmux(&[
+        "display-message",
+        "-p",
+        "-t",
+        &colead_pane,
+        "#{window_zoomed_flag}",
+    ]);
+    assert_eq!(zoomed.trim(), "1", "a resize must not unzoom the colead");
+}
+
 /// The two LEAD layouts seat each agent together and keep each window's first
 /// agent as its stable routing name.
 #[test]
@@ -2529,11 +2568,87 @@ fn the_lead_layouts_seat_each_agent_in_the_window_their_layout_names() {
         resize_hook.contains("select-layout -t") && resize_hook.contains("main-vertical"),
         "the lead-pair window reapplies its percentage after a resize: {resize_hook}"
     );
+    assert_resize_preserves_colead_zoom(&pair, "lpair:0");
     assert!(
         pair.meta("lpair").contains("layout=lead-pair"),
         "the layout is pinned:\n{}",
         pair.meta("lpair")
     );
+}
+
+#[test]
+fn a_running_lead_pair_reasserts_the_resize_policy_without_a_restart() {
+    if skip() {
+        return;
+    }
+    let pair = Rig::new("pair-reattach", &[], None);
+    assert!(
+        std::fs::write(&pair.config, lead_config("lead-pair", &["colead"])).is_ok(),
+        "a lead-pair config"
+    );
+    let (code, stdout, stderr) = pair.launch(&["--local", "lpairlive"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let main_pane = pair
+        .panes("lpairlive")
+        .into_iter()
+        .find(|(_, slot, _)| slot == "main")
+        .map_or_else(|| panic!("a lead pane"), |(pane, _, _)| pane);
+
+    assert!(
+        pair.tmux(&["set-hook", "-wu", "-t", &main_pane, "window-resized"])
+            .0,
+        "remove the new policy to model a pre-upgrade session"
+    );
+    assert!(
+        pair.tmux(&[
+            "set-window-option",
+            "-t",
+            &main_pane,
+            "main-pane-width",
+            "50%"
+        ])
+        .0,
+        "restore the old equal width"
+    );
+    assert!(
+        pair.tmux(&["select-layout", "-t", &main_pane, "even-horizontal"])
+            .0,
+        "restore the old equal layout"
+    );
+
+    let (code, stdout, stderr) = pair.launch(&["--local", "lpairlive"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        stdout.contains("is running"),
+        "the live reattach path: {stdout}"
+    );
+    let (_, main_width) = pair.tmux(&[
+        "show-window-options",
+        "-v",
+        "-t",
+        &main_pane,
+        "main-pane-width",
+    ]);
+    assert_eq!(main_width.trim(), "66%", "reattach restores pair width");
+    let (_, resize_hook) = pair.tmux(&["show-hooks", "-w", "-t", &main_pane, "window-resized"]);
+    assert!(
+        resize_hook.contains("window_zoomed_flag") && resize_hook.contains("main-vertical"),
+        "reattach restores the guarded resize hook: {resize_hook}"
+    );
+    assert!(
+        pair.tmux(&[
+            "resize-window",
+            "-t",
+            "lpairlive:0",
+            "-x",
+            "150",
+            "-y",
+            "40"
+        ])
+        .0,
+        "resize the repaired window"
+    );
+    assert_two_to_one_widths(&pair, "lpairlive:0");
 }
 
 /// `[workspace] theme = off` writes the FACTS and NONE of the layout.

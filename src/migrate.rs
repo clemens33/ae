@@ -567,6 +567,19 @@ fn restart_daemons(
     if let Some(binding) = crate::session_tmux::mouse_down_status_binding_argv(&server) {
         let _ = crate::transport::run_tmux_op(&binding);
     }
+    if let Ok(bytes) = crate::meta::read_bytes(dir) {
+        let layout = crate::meta::first_value(&bytes, "layout")
+            .map(|value| String::from_utf8_lossy(value).into_owned())
+            .unwrap_or_default();
+        let main_pane = crate::meta::first_value(&bytes, "main_pane")
+            .map(|value| String::from_utf8_lossy(value).into_owned())
+            .unwrap_or_default();
+        let pane_belongs = crate::transport::observe_agents(&server, name)
+            .is_some_and(|panes| panes.into_iter().any(|pane| pane.pane == main_pane));
+        if pane_belongs {
+            crate::session_launch::stamp_lead_pair_policy(&server, &layout, &main_pane);
+        }
+    }
     match crate::watchdog_lifecycle::presence(&server, name, dir) {
         crate::watchdog_lifecycle::Presence::Running(_) => {
             notes.push(restart_watchdog(root, &server, name, dir));

@@ -1348,15 +1348,20 @@ fn launch(
 
     // ---- a session that is already running is reattached, never rebuilt ----
     if let Some(server) = running_server {
-        if transport::observe_agents(&server, &session).is_none() {
+        let Some(observed) = transport::observe_agents(&server, &session) else {
             writeln!(
                 err,
                 "Error: tmux session '{session}' exists but is not an ae session."
             )?;
             return Ok(EXIT_FAILED);
-        }
+        };
         if let Some(binding) = mouse_down_status_binding_argv(&server) {
             let _ = transport::run_tmux_op(&binding);
+        }
+        let layout = meta_value(&dir, "layout").unwrap_or_default();
+        let main_pane = meta_value(&dir, "main_pane").unwrap_or_default();
+        if observed.iter().any(|pane| pane.pane == main_pane) {
+            stamp_lead_pair_policy(&server, &layout, &main_pane);
         }
         // The guard protects only the resume decision and its verification.
         // Attaching may block for the client's whole lifetime; holding the
@@ -2154,12 +2159,6 @@ fn stamp_session(server: &ServerId, env: &Env, shape: &Session, main_pane: &str)
         let _ = transport::run_tmux_op(&binding);
     }
     let _ = transport::run_tmux_op(&argv(server, &Op::SetClientSessionHook { pane: main_pane }));
-    if shape.layout == "lead-pair" {
-        let _ = transport::run_tmux_op(&argv(
-            server,
-            &Op::SetLeadPairResizeHook { pane: main_pane },
-        ));
-    }
     let _ = transport::run_tmux_op(&argv(server, &Op::SelectPane { pane: main_pane }));
 }
 
@@ -2265,9 +2264,30 @@ pub(crate) fn status_paths(mode: &str, origin: &str, work_dir: &str, home: &str)
 
 /// Distribute the panes the layout put in each window.
 fn apply_layout(server: &ServerId, shape: &Session, panes: &[String], workers: usize) {
+    if let Some(main_pane) = panes.first() {
+        stamp_lead_pair_policy(server, shape.layout.as_str(), main_pane);
+    }
     for command in layout_argvs(server, shape.layout.as_str(), &shape.name, panes, workers) {
         let _ = transport::run_tmux_op(&command);
     }
+}
+
+/// Idempotently install and apply the complete lead-pair window policy.
+pub(crate) fn stamp_lead_pair_policy(server: &ServerId, layout: &str, main_pane: &str) {
+    for command in lead_pair_policy_argvs(server, layout, main_pane) {
+        let _ = transport::run_tmux_op(&command);
+    }
+}
+
+fn lead_pair_policy_argvs(server: &ServerId, layout: &str, main_pane: &str) -> Vec<TmuxArgv> {
+    if layout != "lead-pair" || main_pane.is_empty() {
+        return Vec::new();
+    }
+    vec![
+        argv(server, &Op::SetLeadPairWidth { target: main_pane }),
+        argv(server, &Op::SelectLeadPairLayout { pane: main_pane }),
+        argv(server, &Op::SetLeadPairResizeHook { pane: main_pane }),
+    ]
 }
 
 /// Build the complete, ordered layout program before touching tmux.
@@ -2285,8 +2305,6 @@ fn layout_argvs(
     let select = |target: &str, layout: &str| argv(server, &Op::SelectLayout { target, layout });
     match layout {
         "lead-pair" => {
-            commands.push(argv(server, &Op::SetLeadPairWidth { target: &panes[0] }));
-            commands.push(select(&panes[0], "main-vertical"));
             if workers > 2 {
                 commands.push(select(&panes[2], "even-vertical"));
             }
@@ -3454,7 +3472,8 @@ fn from_preflight(root: &Path, raw_uuid: &str) -> Result<FromProof, String> {
 mod tests {
     use super::{
         AttachAction, EVENTS_KEEP, ToolKind, attach_action, launch_token, launch_turn_is_pasted,
-        layout_argvs, parse_plan, replace_watchdog_registration, server_attach_hint, trim_events,
+        layout_argvs, lead_pair_policy_argvs, parse_plan, replace_watchdog_registration,
+        server_attach_hint, trim_events,
     };
     use crate::inventory::ServerId;
     use std::fmt::Write as _;
@@ -3467,16 +3486,39 @@ mod tests {
             .collect()
     }
 
+    fn pair_policy_words(layout: &str, main_pane: &str) -> Vec<Vec<String>> {
+        lead_pair_policy_argvs(&ServerId::Ambient, layout, main_pane)
+            .iter()
+            .map(|command| command.as_args().to_vec())
+            .collect()
+    }
+
     #[test]
     fn the_lead_pair_sets_two_thirds_before_selecting_the_main_vertical_layout() {
         let panes = ["%0".to_owned(), "%1".to_owned()];
         assert_eq!(
-            layout_words("lead-pair", &panes, 1),
+            pair_policy_words("lead-pair", &panes[0]),
             vec![
                 vec!["set-window-option", "-t", "%0", "main-pane-width", "66%"],
-                vec!["select-layout", "-t", "%0", "main-vertical"],
+                vec![
+                    "if-shell",
+                    "-F",
+                    "-t",
+                    "%0",
+                    "#{==:#{window_zoomed_flag},0}",
+                    "select-layout -t %0 main-vertical"
+                ],
+                vec![
+                    "set-hook",
+                    "-w",
+                    "-t",
+                    "%0",
+                    "window-resized",
+                    "if-shell -F -t %0 '#{==:#{window_zoomed_flag},0}' 'select-layout -t %0 main-vertical'"
+                ],
             ]
         );
+        assert!(pair_policy_words("vertical", "%0").is_empty());
 
         let panes = [
             "%0".to_owned(),
@@ -3486,11 +3528,7 @@ mod tests {
         ];
         assert_eq!(
             layout_words("lead-pair", &panes, 3),
-            vec![
-                vec!["set-window-option", "-t", "%0", "main-pane-width", "66%"],
-                vec!["select-layout", "-t", "%0", "main-vertical"],
-                vec!["select-layout", "-t", "%2", "even-vertical"],
-            ],
+            vec![vec!["select-layout", "-t", "%2", "even-vertical"]],
             "extra standing workers keep their separate stacked window"
         );
     }

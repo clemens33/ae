@@ -21,6 +21,20 @@ use crate::tmux::{MOUSE_DOWN_STATUS_DISPATCH, server_args, session_target};
 /// The `-P -F` format every pane-creating call here prints.
 const PANE_ID_FORMAT: &str = "#{pane_id}";
 
+/// The main layout must never collapse a zoomed pane back into its window.
+const LEAD_PAIR_NOT_ZOOMED: &str = "#{==:#{window_zoomed_flag},0}";
+
+fn lead_pair_layout_command(pane: &str) -> String {
+    format!("select-layout -t {pane} main-vertical")
+}
+
+fn lead_pair_layout_if_unzoomed_command(pane: &str) -> String {
+    format!(
+        "if-shell -F -t {pane} '{LEAD_PAIR_NOT_ZOOMED}' '{}'",
+        lead_pair_layout_command(pane)
+    )
+}
+
 /// A tmux argv minted ONLY by this module's [`argv`] builder.
 pub(crate) struct TmuxArgv(Vec<String>);
 
@@ -105,6 +119,9 @@ pub(crate) enum Op<'a> {
     /// `set-window-option -t <target> main-pane-width 66%` — the lead-pair
     /// window's persistent two-thirds main column.
     SetLeadPairWidth { target: &'a str },
+    /// Apply `main-vertical` to the lead-pair window unless one of its panes
+    /// is zoomed.
+    SelectLeadPairLayout { pane: &'a str },
     /// `select-pane -t <pane>` — focus.
     SelectPane { pane: &'a str },
     /// `select-pane -t <pane> -d` — make a monitor pane read-only.
@@ -236,6 +253,19 @@ pub(crate) fn argv(server: &ServerId, op: &Op<'_>) -> TmuxArgv {
                     .map(ToOwned::to_owned),
             );
         }
+        Op::SelectLeadPairLayout { pane } => {
+            args.extend(
+                [
+                    "if-shell",
+                    "-F",
+                    "-t",
+                    pane,
+                    LEAD_PAIR_NOT_ZOOMED,
+                    &lead_pair_layout_command(pane),
+                ]
+                .map(ToOwned::to_owned),
+            );
+        }
         Op::SelectPane { pane } => {
             args.extend(["select-pane", "-t", pane].map(ToOwned::to_owned));
         }
@@ -265,7 +295,7 @@ pub(crate) fn argv(server: &ServerId, op: &Op<'_>) -> TmuxArgv {
                     "-t",
                     pane,
                     "window-resized",
-                    &format!("select-layout -t {pane} main-vertical"),
+                    &lead_pair_layout_if_unzoomed_command(pane),
                 ]
                 .map(ToOwned::to_owned),
             );
@@ -409,6 +439,21 @@ mod tests {
     }
 
     #[test]
+    fn the_lead_pair_layout_is_applied_only_while_the_window_is_not_zoomed() {
+        assert_eq!(
+            words(&Op::SelectLeadPairLayout { pane: "%9" }),
+            vec![
+                "if-shell",
+                "-F",
+                "-t",
+                "%9",
+                "#{==:#{window_zoomed_flag},0}",
+                "select-layout -t %9 main-vertical"
+            ]
+        );
+    }
+
+    #[test]
     fn the_session_focus_hook_targets_the_lead_pane_and_keeps_its_command_one_argv_element() {
         assert_eq!(
             words(&Op::SetClientSessionHook { pane: "%9" }),
@@ -432,7 +477,7 @@ mod tests {
                 "-t",
                 "%9",
                 "window-resized",
-                "select-layout -t %9 main-vertical"
+                "if-shell -F -t %9 '#{==:#{window_zoomed_flag},0}' 'select-layout -t %9 main-vertical'"
             ]
         );
     }
