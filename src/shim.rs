@@ -20,7 +20,7 @@ pub struct Helper {
 
 /// THE helper set — the names a session directory holds, and the only names
 /// this dispatch answers to.
-pub const HELPERS: [Helper; 22] = [
+pub const HELPERS: [Helper; 23] = [
     Helper {
         name: "send",
         entry: crate::cli::SEND,
@@ -89,6 +89,11 @@ pub const HELPERS: [Helper; 22] = [
     Helper {
         name: "agents",
         entry: crate::cli::AGENTS,
+        prefix: &[],
+    },
+    Helper {
+        name: "quota",
+        entry: crate::cli::QUOTA,
         prefix: &[],
     },
     Helper {
@@ -275,6 +280,13 @@ mod tests {
             &["work:lead".to_owned(), "ship it".to_owned()],
         );
         assert_eq!(argv, ["_relay", "/s/orchestrator", "work:lead", "ship it"]);
+    }
+
+    #[test]
+    fn quota_is_a_session_derived_read_only_helper() {
+        let helper = lookup("quota").expect("quota is a helper");
+        let argv = translate(helper, Path::new("/s/work"), &[]);
+        assert_eq!(argv, ["_quota", "/s/work"]);
     }
 
     #[test]

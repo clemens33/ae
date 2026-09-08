@@ -559,6 +559,28 @@ ae doctor --refresh         # all sessions
 ae doctor --refresh my-fix  # one session
 ```
 
+## `ae quota`
+
+Shows each configured agent profile's locally cached subscription-quota windows. Inside a
+session, its `quota` helper also uses the recorded Codex conversation ids for that session:
+
+```bash
+ae quota
+~/.ae/sessions/my-feature/quota
+```
+
+Rows are keyed by client config home and preserve every vendor bucket and actual window. Claude
+Code reads `~/.claude.json` (or the cache beside a custom `CLAUDE_CONFIG_DIR`); Codex reads only
+the bounded tail of rollouts named by ae-recorded harness session ids under `CODEX_HOME`.
+`fresh` means the vendor observation is at most 15 minutes old. Older unexpired observations are
+`stale`; expired, missing, or clock-skewed observations are `unknown`. Unexpected file kinds,
+oversized files, and malformed complete records are `read-error`.
+
+Grok Build, Antigravity, OpenCode, and Gemini CLI have no verified reusable local subscription
+quota source. They render `unsupported` with an operator hint rather than treating token or cost
+history as quota. This command makes no network request, reads no credentials, starts no vendor
+process, and writes no state.
+
 ## Session helpers
 
 Session delivery helpers stay inside their own ae session by default:

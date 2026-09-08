@@ -964,6 +964,39 @@ fn a_machine_that_cannot_say_where_its_state_lives_is_told_so() {
     assert!(stderr.contains(ae::NO_STATE_ROOT), "stderr: {stderr}");
 }
 
+#[test]
+fn quota_is_a_real_public_read_only_command() {
+    let root = scratch("quota-public");
+    std::fs::write(
+        root.join("config"),
+        "[profiles]\nclaude = claude\ngrok = grok\n",
+    )
+    .expect("quota config");
+    let out = ae()
+        .env("HOME", &root)
+        .env("AE_HOME", &root)
+        .env("CONFIG_FILE", root.join("config"))
+        .current_dir(&root)
+        .arg("quota")
+        .output()
+        .expect("ae quota should run");
+    let _ = std::fs::remove_dir_all(&root);
+    assert!(out.status.success(), "{:?}", out.status);
+    assert!(
+        out.stderr.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8(out.stdout).expect("UTF-8 table");
+    assert!(stdout.starts_with("PROFILES"), "{stdout}");
+    assert!(stdout.contains("claude · ~/.claude"), "{stdout}");
+    assert!(stdout.contains("unknown"), "{stdout}");
+    assert!(
+        stdout.contains("unsupported (run /usage in grok)"),
+        "{stdout}"
+    );
+}
+
 /// A scratch state root, short-lived and per-test.
 fn scratch(tag: &str) -> std::path::PathBuf {
     let dir = std::path::PathBuf::from(format!("/tmp/ae-cli-{}-{tag}", std::process::id()));

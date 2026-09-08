@@ -221,6 +221,7 @@ Usage:
   ae brief [name] [--all] [--since <dur>]
                          Card one session or the fleet: goal, the latest note per memo
                          topic, each agent's declared state, and who is waiting on you
+  ae quota               Show local cached quota windows for configured agent profiles
   ae orchestrator        Start or reattach the orchestrator seat (a session named
                          orchestrator; config: ~/.ae/orchestrator.config)
   ae orchestrator --popup
@@ -259,7 +260,7 @@ When inside an ae session, stop/end/compact work without specifying the name.
 
 Config: ~/.ae/config (per-project override: .ae/config in project dir)
 Session helpers, in every session dir: send, relay, ask, review, reply, requests, state,
-  mark-done, goal, memo, say, peek (peak), agents, focus, interrupt, spawn, retire.
+  mark-done, goal, memo, say, peek (peak), agents, quota, focus, interrupt, spawn, retire.
 Run 'ae doctor' after install or agent CLI upgrades.
 Run 'ae doctor --refresh' after updating ae to regenerate existing session helpers.
 ";
@@ -432,6 +433,9 @@ pub enum Route {
     ArchivePreview(Option<String>),
     /// `ae archive <anything else>` — [`ARCHIVE_USAGE`], exit 1.
     ArchiveUsage,
+    /// `ae quota` — selected config and the optional calling session are still
+    /// carried by the preamble, so the entry answers it directly.
+    Quota(Vec<String>),
     /// A word the core already answers: the effective argv, environmental facts
     /// appended, for the ordinary dispatch.
     Core(Vec<String>),
@@ -475,6 +479,7 @@ pub fn route(preamble: &Preamble, argv: &[String], pane: Option<&str>) -> Route 
         }
         Some("next" | "jump") => Route::Core(with_head("next", &tail())),
         Some("brief") => Route::Core(with_head("brief", &tail())),
+        Some("quota") => Route::Quota(tail()),
         Some("compact") => Route::Core(with_head(crate::cli::COMPACT, &tail())),
         Some("archive") => match argv.get(1).map(String::as_str) {
             Some("preview") => Route::ArchivePreview(argv.get(2).cloned()),
@@ -595,6 +600,18 @@ mod tests {
         assert_eq!(
             route(&preamble(), &argv(&["init", "--yes"]), None),
             Route::Core(argv(&["init", "--yes"]))
+        );
+    }
+
+    #[test]
+    fn quota_is_a_public_read_only_route() {
+        assert_eq!(
+            route(&preamble(), &argv(&["quota"]), None),
+            Route::Quota(Vec::new())
+        );
+        assert_eq!(
+            route(&preamble(), &argv(&["quota", "extra"]), None),
+            Route::Quota(argv(&["extra"]))
         );
     }
 

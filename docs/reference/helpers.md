@@ -113,6 +113,12 @@ Every agent pane carries a stable **slot** — `main`, `worker.<n>`, or `spawned
 | `agents` | List session agents with pane ids and current process. |
 | `agents --all` | List agents across every running ae session. |
 
+## Capacity
+
+| Helper | Purpose |
+|---|---|
+| `quota` | Show each configured client scope's locally cached quota windows and freshness. The helper uses this session's recorded Codex rollout ids and never reads credentials, starts a vendor process, or makes a network request. |
+
 ## Lifecycle
 
 | Helper | Purpose |

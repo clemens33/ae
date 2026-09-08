@@ -205,6 +205,30 @@ pub(crate) struct InputSpec {
     pub(crate) paste_initial_on_resume: bool,
 }
 
+/// Which local vendor state, if any, can provide quota observations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum QuotaSource {
+    /// Claude Code's cached usage snapshot.
+    ClaudeCache,
+    /// Codex rollout response records.
+    CodexRollouts,
+    /// No verified local quota source exists.
+    Unsupported,
+}
+
+/// Static quota discovery behaviour for one harness.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct QuotaSpec {
+    /// Client-owned source shape.
+    pub(crate) source: QuotaSource,
+    /// Environment assignment that relocates the client's config home.
+    pub(crate) config_home_env: Option<&'static str>,
+    /// Client config home relative to the operator home.
+    pub(crate) default_home: Option<&'static str>,
+    /// Operator action or reason shown when local quota is unsupported.
+    pub(crate) unsupported_hint: Option<&'static str>,
+}
+
 /// Everything ae needs to know about one agent harness.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ToolAdapter {
@@ -231,6 +255,8 @@ pub(crate) struct ToolAdapter {
     pub(crate) capture: CaptureSpec,
     /// Input observation and first-turn delivery behaviour.
     pub(crate) input: InputSpec,
+    /// Local quota discovery behaviour.
+    pub(crate) quota: QuotaSpec,
 }
 
 const CLAUDE: ToolAdapter = ToolAdapter {
@@ -264,6 +290,12 @@ const CLAUDE: ToolAdapter = ToolAdapter {
         wait_for_process: true,
         paste_initial_on_resume: false,
     },
+    quota: QuotaSpec {
+        source: QuotaSource::ClaudeCache,
+        config_home_env: Some("CLAUDE_CONFIG_DIR"),
+        default_home: Some(".claude"),
+        unsupported_hint: None,
+    },
 };
 
 const CODEX: ToolAdapter = ToolAdapter {
@@ -293,6 +325,12 @@ const CODEX: ToolAdapter = ToolAdapter {
         model: InputModel::StyleDelimited,
         wait_for_process: true,
         paste_initial_on_resume: true,
+    },
+    quota: QuotaSpec {
+        source: QuotaSource::CodexRollouts,
+        config_home_env: Some("CODEX_HOME"),
+        default_home: Some(".codex"),
+        unsupported_hint: None,
     },
 };
 
@@ -324,6 +362,12 @@ const GEMINI: ToolAdapter = ToolAdapter {
         wait_for_process: false,
         paste_initial_on_resume: false,
     },
+    quota: QuotaSpec {
+        source: QuotaSource::Unsupported,
+        config_home_env: None,
+        default_home: Some(".gemini"),
+        unsupported_hint: Some("no verified local quota source"),
+    },
 };
 
 const AGY: ToolAdapter = ToolAdapter {
@@ -354,6 +398,12 @@ const AGY: ToolAdapter = ToolAdapter {
         model: InputModel::Unmodelled,
         wait_for_process: false,
         paste_initial_on_resume: false,
+    },
+    quota: QuotaSpec {
+        source: QuotaSource::Unsupported,
+        config_home_env: None,
+        default_home: Some(".gemini/antigravity-cli"),
+        unsupported_hint: Some("run agy -p \"/quota\""),
     },
 };
 
@@ -390,6 +440,12 @@ const GROK: ToolAdapter = ToolAdapter {
         wait_for_process: false,
         paste_initial_on_resume: false,
     },
+    quota: QuotaSpec {
+        source: QuotaSource::Unsupported,
+        config_home_env: None,
+        default_home: Some(".grok"),
+        unsupported_hint: Some("run /usage in grok"),
+    },
 };
 
 const OPENCODE: ToolAdapter = ToolAdapter {
@@ -420,6 +476,12 @@ const OPENCODE: ToolAdapter = ToolAdapter {
         wait_for_process: true,
         paste_initial_on_resume: false,
     },
+    quota: QuotaSpec {
+        source: QuotaSource::Unsupported,
+        config_home_env: None,
+        default_home: Some(".local/share/opencode"),
+        unsupported_hint: Some("local stats are cost history, not quota"),
+    },
 };
 
 const UNKNOWN: ToolAdapter = ToolAdapter {
@@ -446,6 +508,12 @@ const UNKNOWN: ToolAdapter = ToolAdapter {
         model: InputModel::Unmodelled,
         wait_for_process: false,
         paste_initial_on_resume: false,
+    },
+    quota: QuotaSpec {
+        source: QuotaSource::Unsupported,
+        config_home_env: None,
+        default_home: None,
+        unsupported_hint: Some("no local quota adapter"),
     },
 };
 
@@ -549,6 +617,12 @@ mod tests {
                         wait_for_process: true,
                         paste_initial_on_resume: false,
                     },
+                    quota: QuotaSpec {
+                        source: QuotaSource::ClaudeCache,
+                        config_home_env: Some("CLAUDE_CONFIG_DIR"),
+                        default_home: Some(".claude"),
+                        unsupported_hint: None,
+                    },
                 },
                 ToolAdapter {
                     kind: ToolKind::Codex,
@@ -577,6 +651,12 @@ mod tests {
                         model: InputModel::StyleDelimited,
                         wait_for_process: true,
                         paste_initial_on_resume: true,
+                    },
+                    quota: QuotaSpec {
+                        source: QuotaSource::CodexRollouts,
+                        config_home_env: Some("CODEX_HOME"),
+                        default_home: Some(".codex"),
+                        unsupported_hint: None,
                     },
                 },
                 ToolAdapter {
@@ -607,6 +687,12 @@ mod tests {
                         wait_for_process: false,
                         paste_initial_on_resume: false,
                     },
+                    quota: QuotaSpec {
+                        source: QuotaSource::Unsupported,
+                        config_home_env: None,
+                        default_home: Some(".gemini"),
+                        unsupported_hint: Some("no verified local quota source"),
+                    },
                 },
                 ToolAdapter {
                     kind: ToolKind::Agy,
@@ -636,6 +722,12 @@ mod tests {
                         model: InputModel::Unmodelled,
                         wait_for_process: false,
                         paste_initial_on_resume: false,
+                    },
+                    quota: QuotaSpec {
+                        source: QuotaSource::Unsupported,
+                        config_home_env: None,
+                        default_home: Some(".gemini/antigravity-cli"),
+                        unsupported_hint: Some("run agy -p \"/quota\""),
                     },
                 },
                 ToolAdapter {
@@ -670,6 +762,12 @@ mod tests {
                         wait_for_process: false,
                         paste_initial_on_resume: false,
                     },
+                    quota: QuotaSpec {
+                        source: QuotaSource::Unsupported,
+                        config_home_env: None,
+                        default_home: Some(".grok"),
+                        unsupported_hint: Some("run /usage in grok"),
+                    },
                 },
                 ToolAdapter {
                     kind: ToolKind::OpenCode,
@@ -698,6 +796,12 @@ mod tests {
                         model: InputModel::Unmodelled,
                         wait_for_process: true,
                         paste_initial_on_resume: false,
+                    },
+                    quota: QuotaSpec {
+                        source: QuotaSource::Unsupported,
+                        config_home_env: None,
+                        default_home: Some(".local/share/opencode"),
+                        unsupported_hint: Some("local stats are cost history, not quota"),
                     },
                 },
             ]
@@ -732,6 +836,12 @@ mod tests {
                     model: InputModel::Unmodelled,
                     wait_for_process: false,
                     paste_initial_on_resume: false,
+                },
+                quota: QuotaSpec {
+                    source: QuotaSource::Unsupported,
+                    config_home_env: None,
+                    default_home: None,
+                    unsupported_hint: Some("no local quota adapter"),
                 },
             }
         );

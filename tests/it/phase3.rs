@@ -1779,6 +1779,11 @@ fn criterion_3_the_places_this_crate_can_read_the_world_are_the_inventoried_ones
             // The orchestrator sweep's ONE own door: its state file, which is
             // also the watchdog's heartbeat.
             "src/monitor.rs".to_owned(),
+            // `ae quota` reads only bounded, lstat-checked client cache files
+            // and the dated directory names needed to locate an ae-recorded
+            // Codex rollout id. It neither reads credentials nor starts a
+            // client process.
+            "src/quota.rs".to_owned(),
             // The two document renders' own reads (A.2c): the INI config behind
             // the profile inventory and `prompt.instructions`, and the `[[ -f
             // ]]` that decides whether a parent archive's digest is still on

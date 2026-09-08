@@ -350,6 +350,15 @@ pub enum MetaRead {
     Unreadable,
 }
 
+/// Read one session's meta through the crate's single meta-open door.
+///
+/// # Errors
+///
+/// Returns the underlying I/O error, including an absent meta file.
+pub fn read_meta(dir: &Path) -> io::Result<Meta> {
+    Meta::read(dir)
+}
+
 /// Everything one session directory said, read ONCE.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct RecordSnapshot {
@@ -368,7 +377,7 @@ impl RecordSnapshot {
     /// Read both halves of the record at `dir`.
     #[must_use]
     pub fn read(dir: &Path) -> Self {
-        let (meta, meta_read) = match Meta::read(dir) {
+        let (meta, meta_read) = match read_meta(dir) {
             Ok(meta) => (Some(meta), MetaRead::Parsed),
             // The ONE place absent and unreadable are told apart, from the error the
             // read itself returned.

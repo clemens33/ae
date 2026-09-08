@@ -1,0 +1,15 @@
+PROFILES             SCOPE                                       BUCKET                 WINDOW  USED  RESETS     OBSERVED  STATUS
+fablex fable5 opusx  claude · ~/.claude                          session                5h      66%   in 2h39m   3m ago    fresh
+                                                                 weekly_all             7d      9%    in 4d 14h  3m ago    fresh
+                                                                 weekly_scoped Fable    7d      100%  in 4d 14h  3m ago    fresh
+fablework            claude · ~/.claude-work                     -                      -       -     -          -         unknown
+astrax solx          codex · ~/.codex · unidentified (lead)      codex (pro)            7d      7%    in 7d      9m ago    fresh
+                                                                 codex_bengalfox (pro)  5h      3.5%  in 50m     8m ago    fresh
+                                                                 codex_bengalfox (pro)  7d      12%   in 7d      8m ago    fresh
+astrax solx          codex · ~/.codex · unidentified (reviewer)  codex (pro)            7d      7%    in 7d      9m ago    fresh
+                                                                 codex_bengalfox (pro)  5h      3.5%  in 50m     8m ago    fresh
+                                                                 codex_bengalfox (pro)  7d      12%   in 7d      8m ago    fresh
+grok46               grok · ~/.grok                              -                      -       -     -          -         unsupported (run /usage in grok)
+agy                  agy · ~/.gemini/antigravity-cli             -                      -       -     -          -         unsupported (run agy -p "/quota")
+opencode             opencode · ~/.local/share/opencode          -                      -       -     -          -         unsupported (local stats are cost history, not quota)
+gemini               gemini · ~/.gemini                          -                      -       -     -          -         unsupported (no verified local quota source)

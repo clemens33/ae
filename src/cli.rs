@@ -175,6 +175,9 @@ pub const PEEK: &str = "_peek";
 /// The `agents` helper's surface: `_agents <dir> [--all]`.
 pub const AGENTS: &str = "_agents";
 
+/// The read-only quota helper surface: `_quota <dir>`.
+pub const QUOTA: &str = "_quota";
+
 /// The `focus` helper's surface: `_focus <dir> <target>`.
 pub const FOCUS: &str = "_focus";
 
@@ -637,6 +640,11 @@ pub enum Request {
         /// Everything after the subcommand, as typed.
         tail: Vec<String>,
     },
+    /// `_quota <dir>` — read configured clients' local quota snapshots.
+    Quota {
+        /// The session directory the helper derives from `$0`.
+        dir: PathBuf,
+    },
     /// `rename [old] <new>` — validated by [`crate::rename`].
     Rename {
         /// Everything after the subcommand, as typed.
@@ -765,6 +773,11 @@ impl Request {
             },
             Some("brief") => Self::Brief {
                 tail: args[1..].to_vec(),
+            },
+            Some(QUOTA) => match &args[1..] {
+                [dir] => Self::Quota { dir: dir.into() },
+                [_, extra, ..] => Self::UsageError(extra.clone()),
+                _ => Self::MissingOperand(QUOTA),
             },
             Some(SAY) => match &args[1..] {
                 [] => Self::MissingOperand(SAY),
@@ -1302,6 +1315,7 @@ impl Request {
             | Self::Next { .. }
             | Self::Orchestrator { .. }
             | Self::Brief { .. }
+            | Self::Quota { .. }
             | Self::LaunchCandidate(_)
             | Self::Requests { .. }
             | Self::Say { .. }
@@ -1504,7 +1518,7 @@ mod tests {
         ARCHIVE_PREVIEW, ASK, COMPACT_ARCHIVE, COMPACT_CANCEL, COMPACT_FIND_OUTSTANDING,
         COMPACT_FREEZE, COMPACT_MEMO_BASELINE, COMPACT_REVALIDATE, COMPACT_TEARDOWN, COMPACT_WAIT,
         DEFAULT_REVALIDATE_WHEN, END_NONLOCAL_TEARDOWN, EVENTS_TAIL, GOAL, INIT, INTERRUPT, MEMO,
-        NET_PROBE, RELAY, REPLY, REQUESTS, REVIEW, RUN, Request, SEND, STATE, TELEGRAM_RUN,
+        NET_PROBE, QUOTA, RELAY, REPLY, REQUESTS, REVIEW, RUN, Request, SEND, STATE, TELEGRAM_RUN,
         WATCHDOG_RUN,
     };
     use crate::filters::{ListArgs, Scope};
@@ -1725,6 +1739,24 @@ mod tests {
             Request::parse(&argv(&["my-feature"])),
             Request::LaunchCandidate("my-feature".to_owned()),
             "the same word at top level is not an error at all"
+        );
+    }
+
+    #[test]
+    fn quota_helper_requires_exactly_its_session_directory() {
+        assert_eq!(
+            Request::parse(&[QUOTA.to_owned(), "/s/work".to_owned()]),
+            Request::Quota {
+                dir: "/s/work".into()
+            }
+        );
+        assert_eq!(
+            Request::parse(&[QUOTA.to_owned()]),
+            Request::MissingOperand(QUOTA)
+        );
+        assert_eq!(
+            Request::parse(&[QUOTA.to_owned(), "/s/work".to_owned(), "extra".to_owned()]),
+            Request::UsageError("extra".to_owned())
         );
     }
 

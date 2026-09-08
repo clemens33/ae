@@ -176,7 +176,7 @@ Pins, not channels. CI, laptop and agent sandbox must resolve to the same compil
 
 ## Session helpers
 
-The core LINKS 22 names into `~/.ae/sessions/<name>/`. Every one is a **symlink to the core
+The core LINKS 23 names into `~/.ae/sessions/<name>/`. Every one is a **symlink to the core
 binary**; the core dispatches on `argv[0]`'s basename and derives the session from its
 dirname. Names and argv are the compatibility contract.
 
@@ -194,6 +194,7 @@ dirname. Names and argv are the compatibility contract.
 | `goal [text\|--clear]` | The session's one-line objective. Survives resume; shown in `ae list` |
 | `peek <agent> [lines]` / `peak` | Capture recent pane output. Inspection only, never a reply channel |
 | `agents [--all]` | List agents with pane IDs and processes. `focus <agent>` switches tmux focus |
+| `quota` | Show each configured client scope's locally cached quota windows and freshness |
 | `interrupt [--cross-session] <agent> [msg]` | Cancel in the same session; another session needs `--cross-session` |
 | `spawn <name> --using <profile> [prompt]` | Add an agent to the workspace |
 | `retire <name>` \| `retire %pane` | Remove a spawned agent. Exact name only; `main`/`worker` refuse |

@@ -118,6 +118,7 @@ pub fn help_text() -> String {
          ae <COMMAND> [OPTIONS]\n\n\
          Commands:\n  \
          list, ls       List ae sessions (--json for the machine-readable digest)\n\n\
+         quota          Show local cached quota windows for configured profiles\n\n\
          Internal commands (a session's own helpers call these):\n  \
          {} <dir> [mine|inbox|all]\n                 \
          Request state from a session's event log\n  \
@@ -678,6 +679,30 @@ fn run_entry(
         entry::Route::ArchiveUsage => {
             write!(err, "{}", entry::ARCHIVE_USAGE)?;
             entry::EXIT_FAILED
+        }
+        entry::Route::Quota(tail) => {
+            if let Some(extra) = tail.first() {
+                writeln!(err, "ae quota: unknown argument: {extra}")?;
+                entry::EXIT_USAGE
+            } else {
+                let session_dir =
+                    calling_session_name().map(|session| preamble.sessions().join(session));
+                let meta = session_dir
+                    .as_deref()
+                    .and_then(|dir| session::read_meta(dir).ok());
+                quota::run(
+                    &quota::Inputs {
+                        home: doors::home().as_deref(),
+                        cwd: &preamble.cwd,
+                        global: preamble.global.as_deref(),
+                        local: preamble.local.as_deref(),
+                        meta: meta.as_ref(),
+                        now: time::Timestamp::now().epoch(),
+                    },
+                    out,
+                    err,
+                )?
+            }
         }
         entry::Route::ArchivePreview(name) => {
             return run_archive_preview(preamble, name.as_deref(), out, err);
@@ -1465,6 +1490,46 @@ fn own_session(dir: &std::path::Path) -> String {
     })
 }
 
+/// The session helper's quota entry: recover the config selection from the
+/// helper's durable session rather than consulting tmux.
+fn run_quota_helper(
+    dir: &std::path::Path,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> Result<u8> {
+    let meta = session::read_meta(dir).ok();
+    let cwd = meta
+        .as_ref()
+        .and_then(meta::Meta::work_dir)
+        .or_else(|| meta.as_ref().and_then(meta::Meta::origin))
+        .map_or_else(doors::cwd, std::path::PathBuf::from);
+    let local = meta
+        .as_ref()
+        .and_then(meta::Meta::origin)
+        .and_then(|origin| config::local_overlay(dir, origin));
+    let root = state_root().or_else(|| {
+        dir.parent()
+            .and_then(std::path::Path::parent)
+            .map(std::path::Path::to_path_buf)
+    });
+    let global = root
+        .as_deref()
+        .map(|root| doors::config_file(shape::current(), root));
+    let home = doors::home();
+    quota::run(
+        &quota::Inputs {
+            home: home.as_deref(),
+            cwd: &cwd,
+            global: global.as_deref(),
+            local: local.as_deref(),
+            meta: meta.as_ref(),
+            now: time::Timestamp::now().epoch(),
+        },
+        out,
+        err,
+    )
+}
+
 /// Where this invocation's state lives — [`doors::state_root`] for this
 /// process's [`shape`], which is the one derivation.
 pub(crate) fn state_root() -> Option<std::path::PathBuf> {
@@ -1690,6 +1755,7 @@ pub fn run_with(
         cli::Request::Agents { dir, tail } => {
             panes::agents(dir, tail, &own_session(dir), out, err)?
         }
+        cli::Request::Quota { dir } => run_quota_helper(dir, out, err)?,
         cli::Request::Focus { dir, tail } => {
             panes::focus(dir, tail, &own_session(dir), time::Timestamp::now(), err)?
         }
