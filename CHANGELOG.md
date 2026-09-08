@@ -1,6 +1,11 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [v2026.9.28] - 2026-09-08
+
+### Other
+
+- Keep selected strips width stable
 ## [v2026.9.27] - 2026-09-08
 
 ### Other
