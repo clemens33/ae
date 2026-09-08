@@ -1,0 +1,46 @@
+{
+  "cachedUsageUtilization": {
+    "accountUuid": "[REDACTED]",
+    "fetchedAtMs": 1788858413691,
+    "utilization": {
+      "five_hour": {
+        "utilization": 66,
+        "resets_at": "2026-09-08T11:49:59.759599+00:00"
+      },
+      "seven_day": {
+        "utilization": 9,
+        "resets_at": "2026-09-12T23:59:59.759623+00:00"
+      },
+      "limits": [
+        {
+          "kind": "session",
+          "group": "session",
+          "percent": 66,
+          "resets_at": "2026-09-08T11:49:59.759599+00:00",
+          "scope": null
+        },
+        {
+          "kind": "weekly_all",
+          "group": "weekly",
+          "percent": 9,
+          "resets_at": "2026-09-12T23:59:59.759623+00:00",
+          "scope": null
+        },
+        {
+          "kind": "weekly_scoped",
+          "group": "weekly",
+          "percent": 100,
+          "resets_at": "2026-09-12T23:59:59.759904+00:00",
+          "scope": {
+            "model": {
+              "id": null,
+              "display_name": "Fable"
+            },
+            "surface": null
+          }
+        }
+      ]
+    }
+  },
+  "unrelated": "ignored"
+}
