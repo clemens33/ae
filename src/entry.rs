@@ -84,6 +84,7 @@ pub const HELP: &str = r"ae - agentic engineering: tmux multi-agent workspace
 Usage:
   ae                     Attach to the ae tmux server
   ae <name>              Start or reattach a named session
+  ae <name> --solo       lead only, no colead
   ae <name> --dir <path> Start or reattach using an explicit origin directory
   ae <name> --no-attach  Start or reattach without attaching; print attach command
   ae <name> use <name>   Start session with a specific agent as main

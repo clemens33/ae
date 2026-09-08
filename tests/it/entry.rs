@@ -913,6 +913,7 @@ fn launch_flags_without_a_session_name_are_usage_errors_before_any_write() {
         vec!["--copy"],
         vec!["--worktree"],
         vec!["--no-attach"],
+        vec!["--solo"],
         vec!["use", "lead"],
         vec!["--from", "0199c0de-1234-4890-abcd-ef0123456789"],
         vec!["--dir", &project],
@@ -1239,6 +1240,19 @@ fn the_orchestrator_ignores_legacy_seat_identity_and_uses_the_global_profile() {
         old_seat,
         "the legacy seat file remains untouched"
     );
+
+    let (killed, output) = rig.tmux(&["kill-session", "-t", "=orchestrator"]);
+    assert!(killed, "stop the legacy seat for a resume: {output}");
+    assert!(std::fs::remove_file(&marker).is_ok(), "clear launch marker");
+    let (code, stdout, stderr) =
+        rig.run_on_with_path(Some(&rig.sock), &bin, &["orchestrator", "--no-attach"]);
+    assert_eq!(code, Some(0), "{stdout}{stderr}");
+    assert_agent_launched(&marker, "the resumed global profile reached the executable");
+    let launched = std::fs::read_to_string(&marker).unwrap_or_default();
+    assert!(
+        launched.contains("claude") && !launched.contains("codex"),
+        "the resumed global profile launched, not the legacy seat profile: {launched}"
+    );
 }
 
 /// The reserved word is special only when it uses the canonical seat overlay;
@@ -1400,6 +1414,7 @@ fn help_is_the_command_set_and_names_no_retired_word() {
         assert_eq!(stdout, ae::entry::HELP);
     }
     for row in [
+        "  ae <name> --solo       lead only, no colead",
         "  ae list [",
         "  ae next [",
         "  ae brief [",

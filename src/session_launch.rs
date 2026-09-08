@@ -24,13 +24,13 @@ pub(crate) mod capture;
 pub(crate) mod name;
 
 /// The usage line for the core entry.
-pub const USAGE: &str = "Usage: _launch --home <ae-home> --cwd <dir> [--global <cfg>] [--local <cfg>] [--server-kind <kind>] [--server <value>] [--caller-socket <path>] [--attach|--no-attach] [--no-autostart] [--] [--worktree|--copy|--local] [--dir <path>] [--no-attach] [--from <uuid>] [--seat <agent>=<profile>] [--lead <profile>] [--colead <profile>] [use <name>] <session-name>";
+pub const USAGE: &str = "Usage: _launch --home <ae-home> --cwd <dir> [--global <cfg>] [--local <cfg>] [--server-kind <kind>] [--server <value>] [--caller-socket <path>] [--attach|--no-attach] [--no-autostart] [--] [--worktree|--copy|--local] [--dir <path>] [--no-attach] [--solo] [--from <uuid>] [--seat <agent>=<profile>] [--lead <profile>] [--colead <profile>] [use <name>] <session-name>";
 
 /// The public refusal for a launch argv that names no session.
 pub const MISSING_NAME: &str = "Error: a session needs a name: ae <name> [...]";
 
 /// The public launch usage line paired with [`MISSING_NAME`].
-pub const PUBLIC_USAGE: &str = "Usage: ae <name> [--local|--copy|--worktree] [--dir <path>] [--no-attach] [--from <archive-uuid>] [--seat <agent>=<profile>] [--lead <profile>] [--colead <profile>] [use <agent>]";
+pub const PUBLIC_USAGE: &str = "Usage: ae <name> [--local|--copy|--worktree] [--dir <path>] [--no-attach] [--solo] [--from <archive-uuid>] [--seat <agent>=<profile>] [--lead <profile>] [--colead <profile>] [use <agent>]";
 
 /// How long a freshly created pane's shell is given to draw its prompt before
 /// anything is pasted.
@@ -133,6 +133,7 @@ pub fn parse_plan(args: &[String]) -> Result<Plan, String> {
 )]
 pub(crate) fn parse_plan_with_attach(args: &[String], allow_attach: bool) -> Result<Plan, String> {
     let mut plan = Plan::default();
+    let mut colead_override = false;
     let mut rest = args;
     while let [word, tail @ ..] = rest {
         rest = tail;
@@ -142,6 +143,7 @@ pub(crate) fn parse_plan_with_attach(args: &[String], allow_attach: bool) -> Res
             "--local" => plan.mode = Some(Mode::Local),
             "--attach" if allow_attach => plan.attach = Some(true),
             "--no-attach" => plan.attach = Some(false),
+            "--solo" if !allow_attach => plan.workers = Some(String::new()),
             _ if word == "--dir" || word.starts_with("--dir=") => {
                 if plan.dir.is_some() {
                     return Err(
@@ -184,8 +186,10 @@ pub(crate) fn parse_plan_with_attach(args: &[String], allow_attach: bool) -> Res
                 } else if word == "--lead" {
                     ("lead", None)
                 } else if let Some(value) = word.strip_prefix("--colead=") {
+                    colead_override = true;
                     ("colead", Some(value))
                 } else if word == "--colead" {
+                    colead_override = true;
                     ("colead", None)
                 } else {
                     let raw = if let Some(value) = word.strip_prefix("--seat=") {
@@ -265,12 +269,17 @@ pub(crate) fn parse_plan_with_attach(args: &[String], allow_attach: bool) -> Res
             }
             _ if word.starts_with("--") => {
                 return Err(format!(
-                    "Error: unknown flag '{word}'. Use --worktree, --copy, --local, --dir <path>, --no-attach, --from <archive-uuid>, --seat <agent>=<profile>, --lead <profile>, or --colead <profile>."
+                    "Error: unknown flag '{word}'. Use --worktree, --copy, --local, --dir <path>, --no-attach, --solo, --from <archive-uuid>, --seat <agent>=<profile>, --lead <profile>, or --colead <profile>."
                 ));
             }
             // Last positional wins.
             _ => plan.name = Some(word.clone()),
         }
+    }
+    if colead_override && plan.workers.as_deref() == Some("") {
+        return Err(
+            "Error: '--solo' starts the lead alone; drop --colead/--seat <worker>.".to_owned(),
+        );
     }
     Ok(plan)
 }
@@ -691,6 +700,131 @@ fn running_override_refusal(session: &str) -> String {
     format!("Error: session '{session}' is running; stop it before changing a seat profile.")
 }
 
+fn solo_resume_refusal(plan: &Plan, dir: &Path, resuming: bool) -> Option<String> {
+    if plan.workers.as_deref() != Some("") || !resuming {
+        return None;
+    }
+    let workers = meta::read_bytes(dir)
+        .ok()
+        .map(|bytes| Meta::parse(&String::from_utf8_lossy(&bytes)))
+        .map(|parsed| {
+            parsed
+                .roster()
+                .iter()
+                .filter(|entry| entry.slot.starts_with("worker."))
+                .map(|entry| entry.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .unwrap_or_default();
+    (!workers.is_empty()).then(|| {
+        format!(
+            "Error: '{}' already has workers ({workers}); '--solo' applies to a first launch.",
+            plan.name.as_deref().unwrap_or_default()
+        )
+    })
+}
+
+fn solo_worker_override_refusal(plan: &Plan, cfg: &IdentityConfig) -> Option<String> {
+    if plan.workers.as_deref() != Some("") {
+        return None;
+    }
+    let main = plan.main.as_deref().or(cfg.main.as_deref()).map(str::trim);
+    let configured_workers = cfg
+        .workers
+        .as_deref()
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|name| !name.is_empty() && Some(*name) != main);
+    plan.seat_profiles
+        .iter()
+        .any(|(agent, _)| configured_workers.clone().any(|worker| worker == agent))
+        .then(|| "Error: '--solo' starts the lead alone; drop --colead/--seat <worker>.".to_owned())
+}
+
+/// The recorded main identity when the standing roster has no worker seats.
+///
+/// Such a roster is the only durable fact a later launch has that this session
+/// was created solo. Carrying it into the existing config snapshot prevents a
+/// configured worker list from growing the roster on resume, while keeping the
+/// command paired with the profile that the main seat recorded.
+fn recorded_solo_identity(dir: &Path) -> Result<Option<(String, String)>, String> {
+    let bytes = meta::read_bytes(dir).map_err(|why| format!("cannot read meta ({why})"))?;
+    let parsed = Meta::parse(&String::from_utf8_lossy(&bytes));
+    if parsed.schema() != Some("2") {
+        return Err("missing schema=2".to_owned());
+    }
+    if let Some(anomaly) = parsed
+        .anomalies()
+        .iter()
+        .find(|item| roster::roster_doubting(item))
+    {
+        return Err(anomaly.to_string());
+    }
+    let Some(main) = parsed.roster().iter().find(|entry| entry.slot == "main") else {
+        return Err("missing seat.main".to_owned());
+    };
+    let Some(profile) = main.profile.as_ref().filter(|profile| !profile.is_empty()) else {
+        return Err("missing profile.main".to_owned());
+    };
+    if parsed
+        .roster()
+        .iter()
+        .any(|entry| entry.slot.starts_with("worker."))
+    {
+        return Ok(None);
+    }
+    Ok(Some((main.name.clone(), profile.clone())))
+}
+
+fn doubtful_solo_meta_refusal(plan: &Plan, anomaly: &str) -> String {
+    format!(
+        "Error: session '{}' has doubtful roster metadata ({anomaly}); run 'ae doctor' before resuming.",
+        plan.name.as_deref().unwrap_or_default()
+    )
+}
+
+fn frozen_solo_identity(
+    plan: &Plan,
+    dir: &Path,
+    resuming: bool,
+    running: bool,
+) -> Result<Option<(String, String)>, SeatOverrideRefusal> {
+    // The dedicated orchestrator already has a separate global-identity rule;
+    // forcing its single-seat roster through this snapshot would re-enable
+    // legacy identity rows from its local workspace overlay.
+    if !resuming
+        || running
+        || plan.name.as_deref() == Some(crate::orchestrator::ORCHESTRATOR_SESSION)
+    {
+        return Ok(None);
+    }
+    recorded_solo_identity(dir)
+        .map_err(|anomaly| SeatOverrideRefusal::Failed(doubtful_solo_meta_refusal(plan, &anomaly)))
+}
+
+fn freeze_solo_config(
+    cfg: &mut IdentityConfig,
+    plan: &Plan,
+    recorded_main: &str,
+    recorded_profile: &str,
+) -> Result<(), SeatOverrideRefusal> {
+    cfg.workers = Some(String::new());
+    let selected_main = plan.main.as_deref().or(cfg.main.as_deref()).map(str::trim);
+    let Some((_, bound_profile)) = cfg
+        .roster
+        .iter_mut()
+        .find(|(name, _)| Some(name.as_str()) == selected_main)
+    else {
+        return Err(SeatOverrideRefusal::Failed(format!(
+            "Error: recorded solo main '{recorded_main}' is not in [roster] of the current config."
+        )));
+    };
+    recorded_profile.clone_into(bound_profile);
+    Ok(())
+}
+
 /// Validate every explicit seat profile before the launch's first write.
 fn validate_seat_overrides(
     env: &Env,
@@ -699,10 +833,14 @@ fn validate_seat_overrides(
     resuming: bool,
     running: bool,
 ) -> Result<Option<SeatOverrideSnapshot>, SeatOverrideRefusal> {
-    if plan.seat_profiles.is_empty() {
+    if let Some(line) = solo_resume_refusal(plan, dir, resuming) {
+        return Err(SeatOverrideRefusal::Usage(line));
+    }
+    let frozen_solo_identity = frozen_solo_identity(plan, dir, resuming, running)?;
+    if plan.seat_profiles.is_empty() && frozen_solo_identity.is_none() {
         return Ok(None);
     }
-    if running {
+    if running && !plan.seat_profiles.is_empty() {
         let session = plan.name.as_deref().unwrap_or_default();
         return Err(SeatOverrideRefusal::Usage(running_override_refusal(
             session,
@@ -710,6 +848,12 @@ fn validate_seat_overrides(
     }
 
     let mut cfg = override_identity(env, dir, resuming)?;
+    if let Some((recorded_main, recorded_profile)) = frozen_solo_identity {
+        freeze_solo_config(&mut cfg, plan, &recorded_main, &recorded_profile)?;
+    }
+    if let Some(line) = solo_worker_override_refusal(plan, &cfg) {
+        return Err(SeatOverrideRefusal::Usage(line));
+    }
     let agents = override_agents(&cfg, plan, dir, resuming);
     let known_agents = if agents.is_empty() {
         "<none>".to_owned()
@@ -3417,6 +3561,27 @@ mod tests {
             vec!["--colead"],
         ] {
             assert!(parse_plan(&args.into_iter().map(str::to_owned).collect::<Vec<_>>()).is_err());
+        }
+    }
+
+    #[test]
+    fn the_public_launch_parser_owns_the_solo_roster_override() {
+        let plan = parse_plan(&["named", "--solo", "--lead", "solx"].map(str::to_owned))
+            .expect("a solo launch with a lead profile override");
+        assert_eq!(plan.workers.as_deref(), Some(""));
+        assert_eq!(plan.seat_profiles, [("lead".to_owned(), "solx".to_owned())]);
+
+        for args in [
+            ["named", "--solo", "--colead", "astrax"],
+            ["named", "--colead", "astrax", "--solo"],
+        ] {
+            assert_eq!(
+                parse_plan(&args.map(str::to_owned)),
+                Err(
+                    "Error: '--solo' starts the lead alone; drop --colead/--seat <worker>."
+                        .to_owned()
+                )
+            );
         }
     }
 

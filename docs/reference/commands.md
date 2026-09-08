@@ -6,6 +6,7 @@ ae                     Attach to the fleet server's most recently used session;
 ae <name> [--local|--copy|--worktree] [--dir <path>] [--no-attach]
                        Start or reattach a session. --dir selects its origin;
                        --no-attach prints the exact attach command and exits
+ae <name> --solo       lead only, no colead
 ae <name> use <alias>  Start session with a specific agent as main
 ae <name> --seat <agent>=<profile> [...]
                        Replace selected launch-seat profiles; --lead and --colead
@@ -108,6 +109,12 @@ must be one of its configured main/workers and the profile must exist under `[pr
 the choices in session metadata, so a later stop/resume keeps them. A stopped seat can be
 re-paired to another profile of the same tool kind while keeping its conversation; changing tool
 kind is refused. A running session must be stopped before any seat profile changes.
+
+Use `--solo` on a first launch to start only the configured main seat, even when
+`[workspace] workers` names standing workers. The main-only roster is recorded, so later resumes
+stay solo without repeating the flag. `--lead <profile>` may select that lead's profile. A solo
+launch refuses `--colead` or `--seat <worker>`, and `--solo` refuses a resume whose recorded roster
+already has workers.
 
 See [Configuration → copy modes](../getting-started/config.md#copy-modes) for the trade-offs.
 

@@ -50,6 +50,10 @@ while (1) { sleep 1; }
 const IDLE_CONFIG: &str = "[profiles]\nidle = \"sleep 600\"\n\n[roster]\nlead = idle\n\n\
      [workspace]\nmain = lead\nlayout = vertical\nwatchdog = false\n";
 
+const SOLO_OVERRIDE_CONFIG: &str = "[profiles]\nidle = \"sleep 600\"\nsolx = \"tail -f /dev/null\"\n\n\
+     [roster]\nlead = idle\ncolead = idle\nbuilder = idle\n\n\
+     [workspace]\nmain = lead\nworkers = colead, builder\nlayout = lead-pair\nwatchdog = false\n";
+
 /// One isolated ae home, one project directory, one tmux server.
 struct Rig {
     scratch: OwnedScratch,
@@ -407,6 +411,27 @@ impl Rig {
             })
             .filter(|window| window.1 != "ae-monitor")
             .collect()
+    }
+
+    fn wait_for_pane_command(&self, session: &str, slot: &str, command: &str) {
+        for _ in 0..200 {
+            let (_, listed) = self.tmux(&[
+                "list-panes",
+                "-s",
+                "-t",
+                &format!("={session}"),
+                "-F",
+                "#{@ae_slot}|#{pane_current_command}",
+            ]);
+            if listed
+                .lines()
+                .any(|line| line == format!("{slot}|{command}"))
+            {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        panic!("{session} {slot} never ran {command}");
     }
 
     fn panes(&self, session: &str) -> Vec<(String, String, String)> {
@@ -1301,6 +1326,179 @@ fn a_seat_profile_override_is_persisted_and_restored() {
             .contains(r#""--served","alt""#),
         "the stored profile chooses the resumed command"
     );
+}
+
+#[test]
+fn solo_overrides_configured_workers_and_the_frozen_roster_stays_solo() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::new("solo-override", &[], None);
+    assert!(
+        std::fs::write(&rig.config, SOLO_OVERRIDE_CONFIG).is_ok(),
+        "a configured lead pair"
+    );
+
+    let (code, stdout, stderr) =
+        rig.launch(&["--local", "lnsolooverride", "--solo", "--lead", "solx"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let fresh = rig.meta("lnsolooverride");
+    assert!(fresh.contains("seat.main=lead\n"), "{fresh}");
+    assert!(fresh.contains("profile.main=solx\n"), "{fresh}");
+    assert!(!fresh.contains("seat.worker."), "{fresh}");
+    assert_eq!(
+        rig.windows("lnsolooverride"),
+        vec![("0".to_owned(), "lead".to_owned(), 1)]
+    );
+
+    let dir = rig.dir("lnsolooverride");
+    let context = ae::render::context_document(
+        &dir,
+        "lnsolooverride",
+        &rig.project.display().to_string(),
+        "main",
+        std::slice::from_ref(&rig.config),
+    );
+    assert!(context.contains("LEAD ROLE"), "{context}");
+    assert!(!context.contains("LEADERSHIP PEER"), "{context}");
+    assert!(!context.contains("one of two EQUAL leads"), "{context}");
+    let manifest = std::fs::read_to_string(dir.join("workspace.md")).unwrap_or_default();
+    assert!(
+        manifest.contains("| lead | solx | tail | lead |"),
+        "{manifest}"
+    );
+    assert!(!manifest.contains("| colead |"), "{manifest}");
+    assert!(!manifest.contains("| builder |"), "{manifest}");
+
+    assert!(
+        rig.tmux(&["kill-session", "-t", "=lnsolooverride"]).0,
+        "the solo session stops"
+    );
+    let (code, stdout, stderr) = rig.launch(&["--local", "lnsolooverride"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let resumed = rig.meta("lnsolooverride");
+    assert!(resumed.contains("seat.main=lead\n"), "{resumed}");
+    assert!(resumed.contains("profile.main=solx\n"), "{resumed}");
+    assert!(!resumed.contains("seat.worker."), "{resumed}");
+    assert_eq!(
+        rig.windows("lnsolooverride"),
+        vec![("0".to_owned(), "lead".to_owned(), 1)]
+    );
+    rig.wait_for_pane_command("lnsolooverride", "main", "tail");
+}
+
+#[test]
+fn solo_refuses_worker_overrides_and_a_workerful_resume() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::new("solo-refusals", &[], None);
+    assert!(
+        std::fs::write(&rig.config, SOLO_OVERRIDE_CONFIG).is_ok(),
+        "a configured lead pair"
+    );
+    for (name, flag, value) in [
+        ("lnsolocolead", "--colead", "solx"),
+        ("lnsoloseat", "--seat", "colead=solx"),
+        ("lnsolobuilder", "--seat", "builder=solx"),
+    ] {
+        let (code, stdout, stderr) = rig.launch(&["--local", name, "--solo", flag, value]);
+        assert_eq!(code, Some(2), "stdout: {stdout}\nstderr: {stderr}");
+        assert_eq!(
+            stderr,
+            "Error: '--solo' starts the lead alone; drop --colead/--seat <worker>.\n"
+        );
+        assert!(!rig.dir(name).exists(), "a refused launch wrote state");
+    }
+
+    let (code, stdout, stderr) = rig.launch(&[
+        "--local",
+        "lnsolouse",
+        "use",
+        "colead",
+        "--solo",
+        "--seat",
+        "colead=solx",
+    ]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let selected_main = rig.meta("lnsolouse");
+    assert!(
+        selected_main.contains("seat.main=colead\n"),
+        "{selected_main}"
+    );
+    assert!(
+        selected_main.contains("profile.main=solx\n"),
+        "{selected_main}"
+    );
+    assert!(!selected_main.contains("seat.worker."), "{selected_main}");
+
+    let (code, stdout, stderr) = rig.launch(&["--local", "lnsoloresume"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        rig.tmux(&["kill-session", "-t", "=lnsoloresume"]).0,
+        "the lead pair stops"
+    );
+    let before = rig.meta("lnsoloresume");
+    let (code, stdout, stderr) = rig.launch(&["--local", "lnsoloresume", "--solo"]);
+    assert_eq!(code, Some(2), "stdout: {stdout}\nstderr: {stderr}");
+    assert_eq!(
+        stderr,
+        "Error: 'lnsoloresume' already has workers (colead, builder); '--solo' applies to a first launch.\n"
+    );
+    assert_eq!(rig.meta("lnsoloresume"), before, "meta is untouched");
+    assert!(
+        !rig.sessions().contains(&"lnsoloresume".to_owned()),
+        "nothing resumed"
+    );
+}
+
+#[test]
+fn doubtful_solo_meta_refuses_before_configured_workers_can_grow_the_roster() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::new("solo-doubtful", &[], None);
+    assert!(
+        std::fs::write(&rig.config, SOLO_OVERRIDE_CONFIG).is_ok(),
+        "a config whose workers must not repair doubtful meta"
+    );
+
+    for (name, damage, reason) in [
+        ("lnsolomalformed", "malformed", "malformed meta line"),
+        ("lnsolomissing", "missing-profile", "missing profile.main"),
+    ] {
+        let (code, stdout, stderr) = rig.launch(&["--local", name, "--solo"]);
+        assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+        assert!(
+            rig.tmux(&["kill-session", "-t", &format!("={name}")]).0,
+            "the solo session stops"
+        );
+
+        let meta_path = rig.dir(name).join("meta");
+        let original = std::fs::read_to_string(&meta_path).unwrap_or_default();
+        let damaged = if damage == "malformed" {
+            format!("{original}not-a-meta-row\n")
+        } else {
+            original.replace("profile.main=idle\n", "")
+        };
+        assert_ne!(damaged, original, "the fixture damage is real");
+        assert!(
+            std::fs::write(&meta_path, &damaged).is_ok(),
+            "publish the doubtful meta"
+        );
+
+        let (code, stdout, stderr) = rig.launch(&["--local", name]);
+        assert_eq!(code, Some(1), "stdout: {stdout}\nstderr: {stderr}");
+        assert!(stderr.contains(reason), "{stderr}");
+        assert!(stderr.contains("ae doctor"), "{stderr}");
+        assert_eq!(
+            std::fs::read_to_string(&meta_path).unwrap_or_default(),
+            damaged,
+            "a refusal preserves the doubtful bytes"
+        );
+        assert!(rig.windows(name).is_empty(), "no windows were recreated");
+        assert!(rig.panes(name).is_empty(), "no panes were recreated");
+    }
 }
 
 #[test]

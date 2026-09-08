@@ -276,7 +276,7 @@ const STATE_GUIDANCE: &str = " STATE REASONS: The human decides from this text A
 /// The `lead-pair` shared role block.
 const PEER_ROLE: &str = r" LEADERSHIP PEER: you are one of two EQUAL leads (lead and colead are interchangeable, same level — no implicit seniority; the main slot is only a technical lifecycle anchor, not rank). Both peers interface with the human, triage, decide, delegate, gate, and review; your tokens are for JUDGMENT. NEVER BUILD: a lead writes no product code, tests or docs into the tree — not a one-liner, not a 'quick fix', not 'while I am here', not because the worker is slow. Every tree change goes through a spawned worker with a brief, the gate and a review. A lead's own hands touch only briefs and plans under .local/, memos, and the merge/release from the live checkout. A lead that builds loses its context to the build and stops gating — that is the failure, not the slowness. If you find yourself editing src/, tests/ or docs/, stop and spawn. Every decision gets ONE explicitly assigned owner — whoever opens a topic proposes its owner; the other peer stress-tests it: challenge once, concretely, with evidence, log dissent via memo so it survives — then the OWNER RULES and both commit, no stalemates. Escalate to the human only when ownership itself is unclear or disputed, or when safety or irreversibility warrants it. Run second reads on each other's gated diffs and hunt the blind spots in each other's reasoning. DELEGATE execution (implementation, tests, docs, chores, research, scoping) per rule 9; each peer owns review and retirement of its OWN spawns and never retires its peer's worker without an explicit handoff. Before you declare done: SWEEP YOUR SPAWNS — every worker you started is retired or explicitly reassigned; a leaked worker is a failed slice.";
 
-/// The solo lead's role block, for every layout that is not `lead-pair`.
+/// The solo lead's role block, whenever no leadership-peer seat is recorded.
 const LEAD_ROLE: &str = r" LEAD ROLE: your tokens are for JUDGMENT — triage, rulings, gates, adjudication, and the human interface; never delegate those. NEVER BUILD: a lead writes no product code, tests or docs into the tree — not a one-liner, not a 'quick fix', not 'while I am here', not because the worker is slow. Every tree change goes through a spawned worker with a brief, the gate and a review. A lead's own hands touch only briefs and plans under .local/, memos, and the merge/release from the live checkout. A lead that builds loses its context to the build and stops gating — that is the failure, not the slowness. If you find yourself editing src/, tests/ or docs/, stop and spawn. DELEGATE the rest (implementation, tests, docs, chores, research, scoping): when a subtask has a spec that fits ~10 lines AND a verifiable stop condition, spawn a worker (rule 9) instead of spending your own context on it. You still own review and retirement of every worker, and you keep the judgment-heavy work yourself. Before you declare done: SWEEP YOUR SPAWNS — every worker you started is retired or explicitly reassigned; a leaked worker is a failed slice.";
 
 /// The execution contract every non-peer `worker.*`/`spawned.*` seat gets.
@@ -505,6 +505,16 @@ fn or_zero(value: &str) -> &str {
     if value.is_empty() { "0" } else { value }
 }
 
+/// Whether the recorded standing roster actually has the worker seat that
+/// `lead-pair` promotes to a leadership peer.
+fn has_leadership_peer(meta_bytes: &[u8], layout: &str) -> bool {
+    layout == "lead-pair"
+        && Meta::parse(&String::from_utf8_lossy(meta_bytes))
+            .roster()
+            .iter()
+            .any(|entry| entry.slot == "worker.0")
+}
+
 /// The `workspace.md` document for one session.
 #[must_use]
 pub fn manifest_document(
@@ -525,6 +535,7 @@ pub fn manifest_document(
         _ => String::new(),
     };
     let layout = row(&meta_bytes, "layout");
+    let peer = has_leadership_peer(&meta_bytes, &layout);
     let mut agent_rows = String::new();
     // A failed enumeration reads as no panes: the manifest still renders,
     // with an empty
@@ -540,7 +551,7 @@ pub fn manifest_document(
         }
         // Under lead-pair the standing worker.0 seat is an EQUAL leadership
         // peer of main, so both rows read `lead`.
-        if layout == "lead-pair" && pane.slot == "worker.0" {
+        if peer && pane.slot == "worker.0" {
             role = "lead";
         }
         let (profile, agent_bin) = if pane.slot.is_empty() {
@@ -613,7 +624,7 @@ pub fn context_document(
     ctx.push_str(STATE_GUIDANCE);
 
     // The slot-aware ROLE block.
-    let peer = layout == "lead-pair";
+    let peer = has_leadership_peer(&meta_bytes, &layout);
     if slot == "main" {
         ctx.push_str(if peer { PEER_ROLE } else { LEAD_ROLE });
     } else if slot.starts_with("worker.") || slot.starts_with("spawned.") {
@@ -974,17 +985,35 @@ mod tests {
     #[test]
     fn lead_pair_gives_main_and_worker_zero_the_same_peer_block() {
         let dir = scratch("peer");
-        std::fs::write(dir.join("meta"), "layout=lead-pair\nmode=local\n").unwrap();
+        std::fs::write(
+            dir.join("meta"),
+            "layout=lead-pair\nmode=local\nschema=2\nseat.main=lead\nseat.worker.0=partner\nseat.worker.1=builder\n",
+        )
+        .unwrap();
         let main = context_document(&dir, "s", "/w", "main", &[]);
-        let colead = context_document(&dir, "s", "/w", "worker.0", &[]);
+        let peer = context_document(&dir, "s", "/w", "worker.0", &[]);
         let other = context_document(&dir, "s", "/w", "worker.1", &[]);
         assert!(main.contains(PEER_ROLE));
-        assert!(colead.contains(PEER_ROLE));
+        assert!(peer.contains(PEER_ROLE));
         assert_eq!(main.matches("NEVER BUILD").count(), 1);
-        assert_eq!(colead.matches("NEVER BUILD").count(), 1);
+        assert_eq!(peer.matches("NEVER BUILD").count(), 1);
         assert!(other.contains(WORKER_ROLE));
         assert!(!other.contains(PEER_ROLE));
         assert!(!other.contains("NEVER BUILD"));
+    }
+
+    #[test]
+    fn lead_pair_without_a_recorded_worker_keeps_the_solo_lead_role() {
+        let dir = scratch("lead-pair-solo");
+        std::fs::write(
+            dir.join("meta"),
+            "layout=lead-pair\nmode=local\nschema=2\nseat.main=lead\n",
+        )
+        .unwrap();
+        let main = context_document(&dir, "s", "/w", "main", &[]);
+        assert!(main.contains(LEAD_ROLE));
+        assert!(!main.contains(PEER_ROLE));
+        assert!(!main.contains("one of two EQUAL leads"));
     }
 
     #[test]

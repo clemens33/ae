@@ -76,6 +76,7 @@ agents keep running in the background.
 **Start a session and let agents collaborate:**
 ```bash
 ae my-feature                  # start or reattach a named session
+ae my-feature --solo           # lead only, no colead
 ae                             # attach to the fleet server's most recent session
 ```
 
