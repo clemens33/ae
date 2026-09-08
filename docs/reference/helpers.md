@@ -95,7 +95,7 @@ Every agent pane carries a stable **slot** — `main`, `worker.<n>`, or `spawned
 
 | Helper | Purpose |
 |---|---|
-| `state <working\|waiting-user\|blocked\|done> [reason]` | Declare or read the caller's state. `waiting-user` takes a self-contained decision of at most 600 characters: option clauses, a recommendation with its reason, and a `.local/<file>` or memo-topic path to any long form. `blocked` names the blocker and unblock owner. |
+| `state <working\|waiting-user\|blocked\|done> [reason]` | Declare or read the caller's state. `waiting-user`/`blocked` require 80–600 characters after trimming: 2–5 self-contained sentences stating the decision or blocker, impacts, recommendation or unblock owner, what you tried, and a `.local/<file>` or memo-topic path. Pointers such as `see pane` are refused. |
 | `mark-done [message]` | Signal completion / pause. The watchdog stops nudging until a newer ae event mentions the agent. |
 | `memo add [--topic t] <text>` | Append to durable shared session memory. |
 | `memo read [--topic t]` | Read shared memory. |

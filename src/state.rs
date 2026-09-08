@@ -25,6 +25,9 @@ use crate::time::Timestamp;
 /// Maximum persisted decision/blocker reason length in characters.
 pub const REASON_MAX: usize = 600;
 
+/// Minimum decision/blocker reason length in characters after trimming.
+pub const REASON_MIN: usize = 80;
+
 /// `ae_emit_event`'s chat arm: a `chat` event's summary keeps its newlines and
 /// tabs and is capped at this many characters, not [`REASON_MAX`].
 pub const CHAT_SUMMARY_CAP: usize = 3500;
@@ -35,7 +38,7 @@ pub const VALUES: [&str; 4] = ["working", "waiting-user", "blocked", "done"];
 /// The usage text.
 pub const USAGE: &str = "Usage: state <working|waiting-user|blocked|done> [reason]\n       state                              # print current state\n\n  working       actively making progress\n  waiting-user  needs human input\n  blocked       stuck on external dep — REASON REQUIRED\n  done          complete or paused\n";
 
-const REASON_SHAPE: &str = "Reason required: waiting-user gives a self-contained decision in 600 characters or fewer: '<what you need decided>: <option A and impact> | <option B and impact> (recommend A because <reason>; details: .local/<file> or memo <topic>)'; blocked names blocker and unblock owner";
+const REASON_SHAPE: &str = "Reason required: waiting-user gives a self-contained decision in 80–600 characters: '<what you need decided>: <option A and impact> | <option B and impact> (recommend A because <reason>; details: .local/<file> or memo <topic>)'; blocked names what blocks, who/what unblocks it, what you tried, and a long-form path in 80–600 characters";
 
 /// The refusal when the caller has no pane identity.
 pub const NO_IDENTITY: &str =
@@ -108,7 +111,8 @@ pub fn parse(tail: &[String]) -> Result<Command, Usage> {
         return Err(Usage::UnknownValue(value.clone()));
     }
     let reason = rest.join(" ");
-    if reason.trim().is_empty() {
+    let trimmed_len = reason.trim().chars().count();
+    if trimmed_len < REASON_MIN {
         return Err(if value == "blocked" {
             Usage::BlockedNeedsReason
         } else if value == "waiting-user" {
@@ -372,8 +376,9 @@ pub fn declare(
 )]
 mod tests {
     use super::{
-        CHAT_SUMMARY_CAP, Command, Declaration, Failure, Latest, REASON_MAX, USAGE, Usage, declare,
-        event_body, event_line, latest, parse, read, read_line, summary_for, summary_of,
+        CHAT_SUMMARY_CAP, Command, Declaration, Failure, Latest, REASON_MAX, REASON_MIN, USAGE,
+        Usage, declare, event_body, event_line, latest, parse, read, read_line, summary_for,
+        summary_of,
     };
     use crate::requests::Viewer;
     use crate::time::Timestamp;
@@ -427,7 +432,25 @@ mod tests {
             parse(&words(&["waiting-user", "\t", "\n"])),
             Err(Usage::WaitingUserNeedsReason)
         );
-        assert!(parse(&words(&["blocked", "on x"])).is_ok());
+        assert_eq!(
+            parse(&words(&["blocked", &"x".repeat(REASON_MIN - 1)])),
+            Err(Usage::BlockedNeedsReason)
+        );
+        assert!(parse(&words(&["blocked", &"x".repeat(REASON_MIN)])).is_ok());
+        assert_eq!(
+            parse(&words(&[
+                "waiting-user",
+                &format!("  {}  ", "x".repeat(REASON_MIN - 1))
+            ])),
+            Err(Usage::WaitingUserNeedsReason)
+        );
+        assert!(
+            parse(&words(&[
+                "waiting-user",
+                &format!("  {}  ", "x".repeat(REASON_MIN))
+            ]))
+            .is_ok()
+        );
         assert_eq!(
             parse(&words(&["Working"])),
             Err(Usage::UnknownValue("Working".to_owned())),

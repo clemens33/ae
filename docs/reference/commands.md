@@ -168,10 +168,11 @@ session's agents, by severity:
 
 (`dead`/`stale`/`throttled` reuse the watchdog's own alert events;
 `waiting-user`/`blocked` are self-declared and require a reason. A `waiting-user`
-reason is a self-contained decision of at most 600 characters: each option gets one
-clause, the recommendation gives its reason, and the text points to any long form in
-`.local/<file>` or a memo topic. Never use pointers such as “see pane” or “as discussed.”
-`blocked` names blocker and unblock owner. `unanswered` flags an `ask`/`review`
+reason is a self-contained 2–5 sentence decision in 80–600 characters after trimming:
+each option gets one clause, the recommendation gives its reason, and the text points
+to any long form in `.local/<file>` or a memo topic. Never use pointers such as “see
+pane” or “as discussed.” `blocked` names what blocks, who or what unblocks it, what
+you tried, and a long-form path. `unanswered` flags an `ask`/`review`
 whose target never replied within 1800 seconds (30 minutes) — the lowest-severity reason.)
 
 By default it shows **running sessions only** — stopped sessions are usually the
