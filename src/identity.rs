@@ -177,7 +177,8 @@ pub fn launch_plan(
             workers.clone()
         });
     }
-    let plan = match config::launch_plan(&cfg, flags.main.as_deref()) {
+    let home = crate::doors::home();
+    let plan = match config::launch_plan(&cfg, flags.main.as_deref(), home.as_deref()) {
         Ok(plan) => plan,
         Err(violations) => {
             write!(err, "{}", config::render_violations(&violations))?;
@@ -194,7 +195,7 @@ pub fn launch_plan(
             &seat.binary,
             seat.tool.as_str(),
             NONE,
-            &seat.command,
+            seat.command.as_str(),
         ]) {
             Ok(line) => body.push_str(&line),
             Err(bad) => {
@@ -859,20 +860,27 @@ fn list(
             return Ok(EXIT_REFUSED);
         }
     };
+    let home = crate::doors::home();
     let mut body = String::new();
     for entry in current.roster() {
         // The seat's own profile row, resolved as an OPTION — never through the
         // rendered `-`, or a config that happened to define a profile literally
         // named `-` would resolve a seat that has no profile at all.
-        let resolved = entry
-            .profile
-            .as_deref()
-            .and_then(|profile| cfg.profile(profile))
-            .and_then(|command| {
-                launch_cmd::lex_simple_command(command)
-                    .ok()
-                    .zip(Some(command))
-            });
+        let command = match entry.profile.as_deref() {
+            Some(profile) => match cfg.command(profile, home.as_deref()) {
+                Ok(command) => command,
+                Err(why) => {
+                    writeln!(err, "{why}")?;
+                    return Ok(EXIT_REFUSED);
+                }
+            },
+            None => None,
+        };
+        let resolved = command.and_then(|command| {
+            launch_cmd::lex_simple_command(command.as_str())
+                .ok()
+                .map(|lexed| (lexed, command))
+        });
         let profile = entry.profile.clone().unwrap_or_else(|| NONE.to_owned());
         let sid = entry
             .harness_session
@@ -887,7 +895,7 @@ fn list(
                 &lexed.binary,
                 lexed.tool().as_str(),
                 &sid,
-                command,
+                command.as_str(),
             ],
             None => vec![
                 "unresolved",

@@ -279,7 +279,15 @@ pub fn run_spawn(
             return Ok(EXIT_FAILED);
         }
     };
-    let Some(command) = cfg.profile(&parsed.profile).map(ToOwned::to_owned) else {
+    let home = crate::doors::home();
+    let command = match cfg.command(&parsed.profile, home.as_deref()) {
+        Ok(command) => command,
+        Err(why) => {
+            writeln!(err, "{why}")?;
+            return Ok(EXIT_FAILED);
+        }
+    };
+    let Some(command) = command else {
         writeln!(
             err,
             "Error: profile '{}' not defined in [profiles] of {}",
@@ -312,7 +320,7 @@ pub fn run_spawn(
     // spawn is held to the same one: a value like `bad = "touch m; tail -f
     // /dev/null"` is REFUSED rather than run. Tool and binary come from the one
     // validated parse.
-    let lexed = match crate::launch_cmd::lex_simple_command(&command) {
+    let lexed = match crate::launch_cmd::lex_simple_command(command.as_str()) {
         Ok(lexed) => lexed,
         Err(why) => {
             writeln!(
@@ -324,9 +332,7 @@ pub fn run_spawn(
         }
     };
     let tool = lexed.tool();
-    let binary = crate::launch_cmd::split_binary(&command)
-        .map(|split| split.binary_name().to_owned())
-        .unwrap_or_default();
+    let binary = lexed.binary.clone();
     let session_id = if launch::takes_launch_session_id(tool) {
         launch::generate_uuid()
     } else {
@@ -431,7 +437,7 @@ pub fn run_spawn(
     let _ = deliver::submit_shell_text(
         &facts.server,
         &pane,
-        &crate::run::pane_command(&core, dir, &slot),
+        &crate::run::pane_command_with_snapshot(&core, dir, &slot, command.as_str()),
     );
     wait_for_agent_start(&facts.server, &pane, tool);
     // The capture tools need the launch instant to filter stale sessions, so it

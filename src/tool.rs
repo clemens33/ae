@@ -216,6 +216,8 @@ pub(crate) struct ToolAdapter {
     pub(crate) label: Option<&'static str>,
     /// Prefix shared by launch-marker writers and tool-store readers.
     pub(crate) launch_marker: Option<&'static str>,
+    /// Environment variable that relocates this harness's account/config home.
+    pub(crate) config_home_env: Option<&'static str>,
     /// Fresh-launch and initial-turn behaviour.
     pub(crate) launch: LaunchSpec,
     /// Exact/fallback resume behaviour and its store evidence.
@@ -231,6 +233,7 @@ const CLAUDE: ToolAdapter = ToolAdapter {
     name: "claude",
     label: Some("claude code"),
     launch_marker: None,
+    config_home_env: Some("CLAUDE_CONFIG_DIR"),
     launch: LaunchSpec {
         session_flags: SessionFlags::Common,
         id: IdStyle::Flag {
@@ -261,6 +264,7 @@ const CODEX: ToolAdapter = ToolAdapter {
     name: "codex",
     label: Some("codex"),
     launch_marker: Some("CODEX"),
+    config_home_env: Some("CODEX_HOME"),
     launch: LaunchSpec {
         session_flags: SessionFlags::Common,
         id: IdStyle::None,
@@ -288,6 +292,7 @@ const GEMINI: ToolAdapter = ToolAdapter {
     name: "gemini",
     label: Some("gemini cli"),
     launch_marker: Some("GEMINI"),
+    config_home_env: None,
     launch: LaunchSpec {
         session_flags: SessionFlags::Common,
         id: IdStyle::None,
@@ -315,6 +320,7 @@ const AGY: ToolAdapter = ToolAdapter {
     name: "agy",
     label: Some("antigravity cli"),
     launch_marker: Some("AGY"),
+    config_home_env: None,
     launch: LaunchSpec {
         session_flags: SessionFlags::Conversation,
         id: IdStyle::None,
@@ -343,6 +349,7 @@ const GROK: ToolAdapter = ToolAdapter {
     name: "grok",
     label: Some("grok build"),
     launch_marker: None,
+    config_home_env: None,
     launch: LaunchSpec {
         session_flags: SessionFlags::Common,
         id: IdStyle::Flag {
@@ -375,6 +382,7 @@ const OPENCODE: ToolAdapter = ToolAdapter {
     name: "opencode",
     label: Some("opencode"),
     launch_marker: None,
+    config_home_env: None,
     launch: LaunchSpec {
         session_flags: SessionFlags::Common,
         id: IdStyle::None,
@@ -402,6 +410,7 @@ const UNKNOWN: ToolAdapter = ToolAdapter {
     name: "unknown",
     label: None,
     launch_marker: None,
+    config_home_env: None,
     launch: LaunchSpec {
         session_flags: SessionFlags::Common,
         id: IdStyle::None,
@@ -495,6 +504,7 @@ mod tests {
                     name: "claude",
                     label: Some("claude code"),
                     launch_marker: None,
+                    config_home_env: Some("CLAUDE_CONFIG_DIR"),
                     launch: LaunchSpec {
                         session_flags: SessionFlags::Common,
                         id: IdStyle::Flag {
@@ -524,6 +534,7 @@ mod tests {
                     name: "codex",
                     label: Some("codex"),
                     launch_marker: Some("CODEX"),
+                    config_home_env: Some("CODEX_HOME"),
                     launch: LaunchSpec {
                         session_flags: SessionFlags::Common,
                         id: IdStyle::None,
@@ -550,6 +561,7 @@ mod tests {
                     name: "gemini",
                     label: Some("gemini cli"),
                     launch_marker: Some("GEMINI"),
+                    config_home_env: None,
                     launch: LaunchSpec {
                         session_flags: SessionFlags::Common,
                         id: IdStyle::None,
@@ -576,6 +588,7 @@ mod tests {
                     name: "agy",
                     label: Some("antigravity cli"),
                     launch_marker: Some("AGY"),
+                    config_home_env: None,
                     launch: LaunchSpec {
                         session_flags: SessionFlags::Conversation,
                         id: IdStyle::None,
@@ -603,6 +616,7 @@ mod tests {
                     name: "grok",
                     label: Some("grok build"),
                     launch_marker: None,
+                    config_home_env: None,
                     launch: LaunchSpec {
                         session_flags: SessionFlags::Common,
                         id: IdStyle::Flag {
@@ -633,6 +647,7 @@ mod tests {
                     name: "opencode",
                     label: Some("opencode"),
                     launch_marker: None,
+                    config_home_env: None,
                     launch: LaunchSpec {
                         session_flags: SessionFlags::Common,
                         id: IdStyle::None,
@@ -667,6 +682,7 @@ mod tests {
                 name: "unknown",
                 label: None,
                 launch_marker: None,
+                config_home_env: None,
                 launch: LaunchSpec {
                     session_flags: SessionFlags::Common,
                     id: IdStyle::None,

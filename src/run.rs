@@ -295,7 +295,7 @@ fn build_with_snapshot(
 fn compose(dir: &Path, slot: &str, seat: &Seat, ctx: &str, mode: Mode) -> String {
     if mode == Mode::Resume {
         let (resume_form, fallback_form) =
-            resume_forms(&seat.command, seat.tool, &seat.harness_session);
+            resume_forms(seat.command.as_str(), seat.tool, &seat.harness_session);
         // DECIDE, THEN INJECT.
         let form = if resumable(seat.tool, &seat.harness_session) {
             resume_form
@@ -307,7 +307,7 @@ fn compose(dir: &Path, slot: &str, seat: &Seat, ctx: &str, mode: Mode) -> String
         // its UI returns, and no other tool has one.
         return launch::build_launch_command(&injected.cmd, "");
     }
-    let pre = launch::inject_session_id(&seat.command, &seat.harness_session);
+    let pre = launch::inject_session_id(seat.command.as_str(), &seat.harness_session);
     let injected = launch::inject_ae_context(&pre, dir, slot, ctx, &seat.launch_id);
     let prompt =
         read_prompt(dir, slot).unwrap_or_else(|| launch::initial_prompt_for(seat.tool, dir, slot));
@@ -495,7 +495,7 @@ struct Seat {
     session: String,
     work_dir: String,
     config_files: Vec<PathBuf>,
-    command: String,
+    command: crate::config::ResolvedCommand,
     tool: ToolKind,
     harness_session: String,
     launch_id: String,
@@ -532,27 +532,29 @@ fn read_seat(dir: &Path, slot: &str, command_snapshot: Option<&str>) -> Result<S
             .and_then(Path::parent)
             .is_some_and(|home| crate::orchestrator::is_seat_overlay(path, home))
     });
-    let configured;
     let command = if let Some(command) = command_snapshot {
-        command
+        crate::config::IdentityConfig::resolved_snapshot(command)
     } else {
         let cfg = crate::config::read_identity(
             (!global.is_empty()).then(|| Path::new(&global)),
             (!orchestrator_seat).then_some(local.as_deref()).flatten(),
         )
         .map_err(|why| why.to_string())?;
-        let Some(command) = cfg.profile(&profile).filter(|cmd| !cmd.trim().is_empty()) else {
+        let home = crate::doors::home();
+        let command = cfg
+            .command(&profile, home.as_deref())
+            .map_err(|why| why.to_string())?;
+        let Some(command) = command.filter(|cmd| !cmd.as_str().trim().is_empty()) else {
             return Err(format!(
                 "profile '{profile}' is not configured on this machine — '{name}' cannot be launched"
             ));
         };
-        configured = command.to_owned();
-        &configured
+        command
     };
     // An ordinary/manual `_run` reads the profile fresh, so it re-asks the same
     // validator. A launch-provided snapshot already passed that validator, but
     // validating the transported bytes again keeps this entry safe on its own.
-    let parsed = crate::launch_cmd::lex_simple_command(command).map_err(|why| {
+    let parsed = crate::launch_cmd::lex_simple_command(command.as_str()).map_err(|why| {
         format!(
             "profile '{profile}' is not one simple command — {why} — '{name}' cannot be launched"
         )
@@ -573,7 +575,7 @@ fn read_seat(dir: &Path, slot: &str, command_snapshot: Option<&str>) -> Result<S
         work_dir: value("work_dir"),
         config_files,
         tool,
-        command: command.to_owned(),
+        command,
         harness_session: value(&format!("harness_session.{slot}")),
         launch_id: value(&format!("launch_id.{slot}")),
     })

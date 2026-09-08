@@ -30,7 +30,10 @@ system("stty raw -echo 2>/dev/null");
 binmode(STDIN, ':raw');
 binmode(STDOUT, ':raw');
 $| = 1;
-open(my $log, '>>', "__LAUNCHED__") or die; print $log join(" ", @ARGV), "\n"; close($log);
+open(my $log, '>>', "__LAUNCHED__") or die;
+print $log join(" ", @ARGV), "\n";
+print $log "CLAUDE_CONFIG_DIR=", ($ENV{CLAUDE_CONFIG_DIR} // "<unset>"), "\n";
+close($log);
 if (length("__SID__")) {
     open(my $sid, '>', "__SID__") or die; print $sid "cafe-1234\n"; close($sid);
 }
@@ -488,6 +491,56 @@ fn add_profile(rig: &Rig, name: &str, command: &str) {
     let mut config = std::fs::read_to_string(&rig.config).unwrap_or_default();
     let _ = writeln!(config, "\n[profiles]\n{name} = \"{command}\"");
     assert!(std::fs::write(&rig.config, config).is_ok(), "a profile");
+}
+
+#[test]
+fn a_client_profile_launches_the_configured_executable_and_home() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::new("client-profile", &["claude"], None);
+    let executable = rig.bin.join("claude");
+    assert!(
+        std::fs::write(
+            &rig.config,
+            format!(
+                "[clients]\ncc = {} config_home=$HOME/.claude-mic\n\
+                 [profiles]\nfable = cc --served client\n\
+                 [roster]\nlead = fable\n\
+                 [workspace]\nmain = lead\nlayout = vertical\nwatchdog = false\n",
+                executable.display()
+            )
+        )
+        .is_ok(),
+        "a client-based config"
+    );
+
+    let (code, stdout, stderr) = rig.launch(&["--local", "lnclientprofile"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let evidence = rig.launch_argv();
+    assert!(
+        evidence.contains("--served client"),
+        "argv evidence: {evidence}"
+    );
+    assert!(
+        evidence.contains(&format!(
+            "CLAUDE_CONFIG_DIR={}",
+            rig.scratch.join(".claude-mic").display()
+        )),
+        "env evidence: {evidence}"
+    );
+    let plan = rig.plan("lnclientprofile", "main");
+    assert!(
+        plan.contains(&format!(r#""argv":["{}""#, executable.display())),
+        "{plan}"
+    );
+    assert!(
+        plan.contains(&format!(
+            r#""CLAUDE_CONFIG_DIR":"{}""#,
+            rig.scratch.join(".claude-mic").display()
+        )),
+        "{plan}"
+    );
 }
 
 fn bare_session(rig: &Rig, socket: &Path, name: &str) -> String {

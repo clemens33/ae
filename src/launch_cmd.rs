@@ -197,6 +197,12 @@ pub struct SimpleCommand {
     /// The resolved binary the pane will actually run (quoting resolved, path
     /// stripped, a contextual `env` prefix peeled) — the harness word.
     pub binary: String,
+    /// Quote-resolved argv words, parallel to [`Self::words`].
+    word_values: Vec<String>,
+    /// Index of the executable inside `words` / `word_values`.
+    binary_index: usize,
+    /// Byte range of the executable word in the original command.
+    binary_span: (usize, usize),
 }
 
 impl SimpleCommand {
@@ -205,6 +211,62 @@ impl SimpleCommand {
     pub fn tool(&self) -> ToolKind {
         ToolKind::from_binary_name(&self.binary)
     }
+}
+
+/// The executable word selected by the same prefix grammar the executor uses.
+pub(crate) struct LaunchBinary<'a> {
+    /// Index inside [`SimpleCommand::words`].
+    pub(crate) index: usize,
+    /// Full quote-resolved word; paths are not stripped.
+    pub(crate) word: &'a str,
+    /// Byte range in the original command.
+    pub(crate) span: (usize, usize),
+}
+
+/// Locate the executable after leading assignments and one contextual `env`
+/// prefix. This is the shared classifier/rewriter rule.
+#[must_use]
+pub(crate) fn launch_binary(command: &SimpleCommand) -> LaunchBinary<'_> {
+    LaunchBinary {
+        index: command.binary_index,
+        word: &command.word_values[command.binary_index],
+        span: command.binary_span,
+    }
+}
+
+/// Whether the executable prefix assigns or `env -u` unsets `variable`.
+#[must_use]
+pub(crate) fn prefix_mentions(command: &SimpleCommand, variable: &str) -> bool {
+    if command.assignments.iter().any(|assignment| {
+        assignment
+            .split_once('=')
+            .is_some_and(|(name, _)| name == variable)
+    }) {
+        return true;
+    }
+    let binary = launch_binary(command);
+    if command.word_values.first().is_none_or(|word| word != "env") {
+        return false;
+    }
+    let prefix = &command.word_values[1..binary.index];
+    let mut index = 0;
+    while index < prefix.len() {
+        if prefix[index] == "-u" {
+            if prefix.get(index + 1).is_some_and(|name| name == variable) {
+                return true;
+            }
+            index += 2;
+            continue;
+        }
+        if prefix[index]
+            .split_once('=')
+            .is_some_and(|(name, _)| name == variable)
+        {
+            return true;
+        }
+        index += 1;
+    }
+    false
 }
 
 /// A word the lexer built: the raw source span and its quote-resolved value.
@@ -272,13 +334,31 @@ pub fn lex_simple_command(cmd: &str) -> Result<SimpleCommand, Refusal> {
     };
     let assign_span = span(&lexed[..argv_start]);
     let argv_span = span(&lexed[argv_start..]);
-    let binary = launch_binary(&lexed[argv_start..]).ok_or(Refusal::NoCommand)?;
+    let binary_index = launch_binary_index(&lexed[argv_start..]).ok_or(Refusal::NoCommand)?;
+    let binary_word = &lexed[argv_start + binary_index];
+    let binary = binary_word
+        .unquoted
+        .rsplit('/')
+        .next()
+        .unwrap_or(&binary_word.unquoted)
+        .to_owned();
+    let byte_at = |char_index: usize| {
+        cmd.char_indices()
+            .nth(char_index)
+            .map_or(cmd.len(), |(byte, _)| byte)
+    };
     Ok(SimpleCommand {
         assignments,
         words,
         assign_span,
         argv_span,
         binary,
+        word_values: lexed[argv_start..]
+            .iter()
+            .map(|word| word.unquoted.clone())
+            .collect(),
+        binary_index,
+        binary_span: (byte_at(binary_word.start), byte_at(binary_word.end)),
     })
 }
 
@@ -391,7 +471,7 @@ fn scan_param_expansion(chars: &[char], dollar: usize) -> Result<usize, Refusal>
 /// The harness word an argv actually runs: a contextual `env` prefix (its `-i`,
 /// `-u NAME` options and `VAR=value` words) is peeled, then the next word is
 /// the binary, quoting resolved and path stripped.
-fn launch_binary(argv: &[Word]) -> Option<String> {
+fn launch_binary_index(argv: &[Word]) -> Option<usize> {
     let unq: Vec<&str> = argv.iter().map(|w| w.unquoted.as_str()).collect();
     let mut i = 0;
     if unq.first() == Some(&"env") {
@@ -406,11 +486,10 @@ fn launch_binary(argv: &[Word]) -> Option<String> {
         }
     }
     let word = unq.get(i).copied().unwrap_or("");
-    let name = word.rsplit('/').next().unwrap_or(word);
-    if name.is_empty() {
+    if word.is_empty() || word.rsplit('/').next().unwrap_or(word).is_empty() {
         None
     } else {
-        Some(name.to_owned())
+        Some(i)
     }
 }
 

@@ -159,6 +159,8 @@ pub struct ProfileFacts {
     pub executable: Option<String>,
     /// Whether that word resolves on `PATH`.
     pub resolves: bool,
+    /// Why client expansion failed before an executable could be inspected.
+    pub resolution_error: Option<String>,
 }
 
 /// Everything the report is a function of, read exactly once.
@@ -278,6 +280,10 @@ fn install_rows(facts: &Facts, out: &mut Report) {
     } else {
         for profile in &facts.profiles {
             let label = format!("agent:{}", profile.profile);
+            if let Some(why) = &profile.resolution_error {
+                out.push(Level::Fail, &label, why);
+                continue;
+            }
             match (&profile.executable, profile.resolves) {
                 (None, _) => out.push(
                     Level::Fail,
@@ -461,29 +467,49 @@ pub fn gather(root: &Path, global: Option<&Path>, local: Option<&Path>) -> Facts
     let roots = crate::inventory::Roots::under(root);
     let config = global.map_or_else(|| root.join("config"), Path::to_path_buf);
     let read = crate::config::read_identity(Some(&config), local);
-    let (config_error, identity) = match read {
+    let (mut config_error, identity) = match read {
         Ok(identity) => (None, identity),
         Err(why) => (
             Some(why.to_string()),
             crate::config::IdentityConfig::default(),
         ),
     };
-    let mut profiles: Vec<ProfileFacts> = identity
-        .profiles
-        .iter()
-        .map(|(profile, command)| {
-            let executable = executable_of(command);
-            let resolves = executable
-                .as_deref()
-                .is_some_and(|exec| resolve_on_path(exec).is_some());
-            ProfileFacts {
-                profile: profile.clone(),
-                command: command.clone(),
-                executable,
-                resolves,
+    let home = crate::doors::home();
+    let mut profiles: Vec<ProfileFacts> = Vec::with_capacity(identity.profiles.len());
+    for (profile, raw) in &identity.profiles {
+        let command = match identity.command(profile, home.as_deref()) {
+            Ok(Some(command)) => command,
+            Ok(None) => continue,
+            Err(why) => {
+                let why = why.to_string();
+                if let Some(existing) = &mut config_error {
+                    existing.push_str(" | ");
+                    existing.push_str(&why);
+                } else {
+                    config_error = Some(why.clone());
+                }
+                profiles.push(ProfileFacts {
+                    profile: profile.clone(),
+                    command: raw.clone(),
+                    executable: None,
+                    resolves: false,
+                    resolution_error: Some(why),
+                });
+                continue;
             }
-        })
-        .collect();
+        };
+        let executable = executable_of(command.as_str());
+        let resolves = executable
+            .as_deref()
+            .is_some_and(|exec| resolve_on_path(exec).is_some());
+        profiles.push(ProfileFacts {
+            profile: profile.clone(),
+            command: command.into_string(),
+            executable,
+            resolves,
+            resolution_error: None,
+        });
+    }
     profiles.sort_by(|left, right| left.profile.cmp(&right.profile));
 
     let core = crate::shape::resolved_exe();
@@ -870,6 +896,7 @@ mod tests {
                 command: "claude --dangerously-skip-permissions".to_owned(),
                 executable: Some("claude".to_owned()),
                 resolves: true,
+                resolution_error: None,
             }],
             sessions_dir: PathBuf::from("/home/me/.ae/sessions"),
             worktrees_dir: PathBuf::from("/home/me/.ae/worktrees"),
@@ -989,6 +1016,20 @@ mod tests {
         let document = report(&input);
         assert!(
             document.render().contains("command 'claude' not found"),
+            "{}",
+            document.render()
+        );
+    }
+
+    #[test]
+    fn a_client_resolution_failure_keeps_its_profile_and_reason() {
+        let mut input = facts();
+        input.profiles[0].resolution_error = Some("HOME unavailable".to_owned());
+        let document = report(&input);
+        assert!(
+            document
+                .render()
+                .contains("FAIL  agent:cl       HOME unavailable"),
             "{}",
             document.render()
         );

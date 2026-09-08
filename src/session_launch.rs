@@ -627,7 +627,7 @@ enum SeatOverrideRefusal {
 struct ResolvedSeatOverride {
     agent: String,
     profile: String,
-    command: String,
+    command: config::ResolvedCommand,
     parsed: crate::launch_cmd::SimpleCommand,
 }
 
@@ -880,18 +880,22 @@ fn validate_seat_overrides(
     };
 
     let mut overrides = Vec::with_capacity(plan.seat_profiles.len());
+    let home = crate::doors::home();
     for (agent, profile) in &plan.seat_profiles {
         if !agents.iter().any(|known| known == agent) {
             return Err(SeatOverrideRefusal::Usage(format!(
                 "Error: unknown launch agent '{agent}' in --seat. Known agents: {known_agents}."
             )));
         }
-        let Some(command) = cfg.profile(profile).map(str::to_owned) else {
+        let command = cfg
+            .command(profile, home.as_deref())
+            .map_err(|why| SeatOverrideRefusal::Failed(why.to_string()))?;
+        let Some(command) = command else {
             return Err(SeatOverrideRefusal::Usage(format!(
                 "Error: unknown profile '{profile}' in --seat. Known profiles: {known_profiles}."
             )));
         };
-        let parsed = crate::launch_cmd::lex_simple_command(&command).map_err(|why| {
+        let parsed = crate::launch_cmd::lex_simple_command(command.as_str()).map_err(|why| {
             SeatOverrideRefusal::Failed(format!(
                 "Error: [profiles] {profile} (seat '{agent}'): the launch command must be one simple command — it has {why}."
             ))
@@ -1484,7 +1488,8 @@ fn launch(
     if let Some(workers) = &plan.workers {
         cfg.workers = Some(workers.clone());
     }
-    let mut seats = match config::launch_plan(&cfg, plan.main.as_deref()) {
+    let home = crate::doors::home();
+    let mut seats = match config::launch_plan(&cfg, plan.main.as_deref(), home.as_deref()) {
         Ok(resolved) => resolved.seats,
         Err(violations) => {
             write!(err, "{}", config::render_violations(&violations))?;
@@ -1653,7 +1658,7 @@ fn launch(
     // in whatever config is current — so the command it resolves to is one no
     // earlier validation ever saw. `config::launch_plan` lexes the [roster]
     // seats and `_spawn` lexes the profile it is handed, but this path did
-    // neither: it read `cfg.profile()`, opened a pane, and let the pane shell
+    // neither: it read `cfg.command()`, opened a pane, and let the pane shell
     // run the string. A profile holding `touch m ; tail -f /dev/null` therefore
     // executed BOTH commands on resume — the same defect the spawn gate closed
     // (colead gate b5d60fec), reached through the restore instead.
@@ -1661,10 +1666,17 @@ fn launch(
         for entry in spawned_entries(&dir) {
             // An unconfigured profile is not a refusal: the seat is preserved
             // verbatim and never launched, which the restore already handles.
-            let Some(command) = cfg.profile(&entry.profile).filter(|c| !c.is_empty()) else {
+            let command = match cfg.command(&entry.profile, home.as_deref()) {
+                Ok(command) => command,
+                Err(why) => {
+                    writeln!(err, "{why}")?;
+                    return Ok(EXIT_FAILED);
+                }
+            };
+            let Some(command) = command.filter(|command| !command.as_str().is_empty()) else {
                 continue;
             };
-            if let Err(why) = crate::launch_cmd::lex_simple_command(command) {
+            if let Err(why) = crate::launch_cmd::lex_simple_command(command.as_str()) {
                 writeln!(
                     err,
                     "Error: seat '{}' ({}) — profile '{}' refused — {why}. Nothing was resumed.",
@@ -1715,7 +1727,7 @@ struct Launching {
     session_id: String,
     launch_id: String,
     pane: String,
-    command_snapshot: Option<String>,
+    command_snapshot: Option<config::ResolvedCommand>,
 }
 
 #[allow(
@@ -1737,6 +1749,7 @@ fn build(
     err: &mut impl Write,
 ) -> crate::Result<u8> {
     let server = env.server();
+    let home = crate::doors::home();
     let sessions = env.sessions();
     let dir = sessions.join(&shape.name);
     let work_dir = shape.work_dir.display().to_string();
@@ -1889,8 +1902,14 @@ fn build(
             // VERBATIM at its original index — a later resume with the profile
             // configured restores the worker, and preserving the index keeps
             // the slot key stable for any in-flight request addressed to it.
-            let command = cfg.profile(&entry.profile).unwrap_or_default().to_owned();
-            let pane = if command.is_empty() {
+            let command = match cfg.command(&entry.profile, home.as_deref()) {
+                Ok(Some(command)) => command,
+                Ok(None) => IdentityConfig::resolved_snapshot(""),
+                Err(why) => {
+                    return rollback_launch(shape, &dir, &server, &why.to_string(), err);
+                }
+            };
+            let pane = if command.as_str().is_empty() {
                 String::new()
             } else {
                 match new_window(
@@ -1907,7 +1926,7 @@ fn build(
                     None => String::new(),
                 }
             };
-            let tool = ToolKind::from_cmd(&command);
+            let tool = ToolKind::from_cmd(command.as_str());
             let launch_id =
                 launch_token(tool, meta_value(&dir, &format!("launch_id.{}", entry.slot)));
             launching.push(Launching {
@@ -1920,7 +1939,7 @@ fn build(
                 launch_id,
                 pane,
                 command_snapshot: seat_overrides
-                    .and_then(|_| (!command.is_empty()).then(|| command.clone())),
+                    .and_then(|_| (!command.as_str().is_empty()).then(|| command.clone())),
             });
         }
         // Rebalance only the SPLIT layouts: a spawned agent gets its own window,
@@ -2569,9 +2588,11 @@ fn start_agent(
         crate::lifecycle::path_exists(&crate::run::started_marker(dir, &agent.slot));
     // Fire and forget: the reader here IS a shell, and an unconfirmed submit
     // must not abort a launch that may well have taken.
-    let command = agent.command_snapshot.as_deref().map_or_else(
+    let command = agent.command_snapshot.as_ref().map_or_else(
         || crate::run::pane_command(core, dir, &agent.slot),
-        |snapshot| crate::run::pane_command_with_snapshot(core, dir, &agent.slot, snapshot),
+        |snapshot| {
+            crate::run::pane_command_with_snapshot(core, dir, &agent.slot, snapshot.as_str())
+        },
     );
     let _ = deliver::submit_shell_text(server, &agent.pane, &command);
     wait_for_agent_start(server, &agent.pane, agent.tool);

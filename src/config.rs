@@ -4,12 +4,12 @@
 //! `purge_agent_history`) — [`read_workspace`], the original reader, kept exactly
 //! as it was: compact needs three keys, so it reads three keys.
 //!
-//! **Identity v2** — [`read_identity`] and [`launch_plan`]: the `[profiles]`
-//! inventory, the `[roster]` name→profile bindings and the workspace seats, read
-//! with one per-line grammar and validated BOTH directions into a typed
-//! [`LaunchPlan`] before any session side effect exists. The identity plan
-//! (alias-free names, profile as metadata) is the authority for the rules
-//! pinned here.
+//! **Identity v2** — [`read_identity`] and [`launch_plan`]: the `[clients]`
+//! executable/config-home inventory, `[profiles]` commands, `[roster]`
+//! name→profile bindings and the workspace seats, read with one per-line grammar
+//! and validated BOTH directions into a typed [`LaunchPlan`] before any session
+//! side effect exists. The identity plan (alias-free names, profile as metadata)
+//! is the authority for the rules pinned here.
 //!
 //! Still not a general config framework: `[prompt]`, `[telegram]`, the layout
 //! and copy-mode keys stay with the glue's reader.
@@ -200,10 +200,42 @@ pub fn is_agent_name(name: &str) -> bool {
     name.len() <= 64 && bytes.all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
-/// The identity v2 config: `[profiles]`, `[roster]`, and the two workspace seat
-/// keys.
+/// One configured CLI instance that profiles may build on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Client {
+    /// The executable word, preserving operator-authored quoting.
+    pub executable: String,
+    /// The optional config-home path, preserving its launch-time expansion.
+    pub config_home: Option<String>,
+    /// The harness selected by the executable basename.
+    pub tool: crate::tool::ToolKind,
+}
+
+/// A profile command after its optional client label has been expanded once.
+/// The private field prevents resolved snapshots from re-entering expansion.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedCommand(String);
+
+impl ResolvedCommand {
+    /// The command text consumed by launch-command validators and builders.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// Consume the typed command into its transport representation.
+    #[must_use]
+    pub fn into_string(self) -> String {
+        self.0
+    }
+}
+
+/// The identity v2 config: `[clients]`, `[profiles]`, `[roster]`, and the two
+/// workspace seat keys.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct IdentityConfig {
+    /// `[clients] <label> = <executable> [config_home=<path>]`.
+    pub clients: Vec<(String, Client)>,
     /// `[profiles] <profile> = <launch command>` — the reusable inventory.
     pub profiles: Vec<(String, String)>,
     /// `[roster] <name> = <profile>` — the agents promised to launch.
@@ -215,13 +247,76 @@ pub struct IdentityConfig {
 }
 
 impl IdentityConfig {
-    /// The launch command bound to `profile`, if defined.
+    /// The raw launch command bound to `profile`, if defined.
     #[must_use]
     pub fn profile(&self, profile: &str) -> Option<&str> {
         self.profiles
             .iter()
             .find(|(key, _)| key == profile)
             .map(|(_, cmd)| cmd.as_str())
+    }
+
+    /// The configured CLI instance bound to `label`, if defined.
+    #[must_use]
+    pub fn client(&self, label: &str) -> Option<&Client> {
+        self.clients
+            .iter()
+            .find(|(key, _)| key == label)
+            .map(|(_, client)| client)
+    }
+
+    /// Resolve the profile's client label exactly once.
+    ///
+    /// # Errors
+    ///
+    /// A `$HOME`-rooted client path when `home` is unavailable or not absolute.
+    pub fn command(
+        &self,
+        profile: &str,
+        home: Option<&Path>,
+    ) -> Result<Option<ResolvedCommand>, ConfigError> {
+        let Some(raw) = self.profile(profile) else {
+            return Ok(None);
+        };
+        let Ok(parsed) = crate::launch_cmd::lex_simple_command(raw) else {
+            return Ok(Some(ResolvedCommand(raw.to_owned())));
+        };
+        let binary = crate::launch_cmd::launch_binary(&parsed);
+        if binary.word.contains('/') {
+            return Ok(Some(ResolvedCommand(raw.to_owned())));
+        }
+        let Some(client) = self.client(binary.word) else {
+            return Ok(Some(ResolvedCommand(raw.to_owned())));
+        };
+        let mut replacement = client.executable.clone();
+        if let Some(config_home) = &client.config_home {
+            let Some(variable) = client.tool.adapter().config_home_env else {
+                return Err(ConfigError::ClientHome {
+                    profile: profile.to_owned(),
+                    client: binary.word.to_owned(),
+                    reason: format!(
+                        "config_home is not supported for {}: its account variable is unverified",
+                        client.tool.as_str()
+                    ),
+                });
+            };
+            let expanded = expand_client_home(profile, binary.word, config_home, home)?;
+            replacement = format!(
+                "{variable}={} {replacement}",
+                crate::launch::shell_quote(&expanded)
+            );
+        }
+        let mut command = String::with_capacity(raw.len() + replacement.len());
+        command.push_str(&raw[..binary.span.0]);
+        command.push_str(&replacement);
+        command.push_str(&raw[binary.span.1..]);
+        Ok(Some(ResolvedCommand(command)))
+    }
+
+    /// Type a command snapshot already resolved by [`Self::command`].
+    #[must_use]
+    pub(crate) fn resolved_snapshot(command: &str) -> ResolvedCommand {
+        ResolvedCommand(command.to_owned())
     }
 
     /// The profile `name` is bound to in `[roster]`, if any.
@@ -269,6 +364,44 @@ pub enum ConfigError {
         /// 1-based line.
         line: usize,
     },
+    /// A `[clients]` label outside the agent-name grammar.
+    ClientKey {
+        /// The file.
+        file: PathBuf,
+        /// The label as written.
+        key: String,
+        /// 1-based line.
+        line: usize,
+    },
+    /// A `[clients]` value outside the client grammar.
+    ClientEntry {
+        /// The file.
+        file: PathBuf,
+        /// The client label.
+        client: String,
+        /// 1-based line.
+        line: usize,
+        /// The specific refusal.
+        reason: String,
+    },
+    /// A profile and its selected client both set the client's account variable.
+    ClientEnvConflict {
+        /// The profile key.
+        profile: String,
+        /// The client label.
+        client: String,
+        /// The conflicting variable.
+        variable: String,
+    },
+    /// A `$HOME`-rooted client path could not be resolved for one profile.
+    ClientHome {
+        /// The profile key.
+        profile: String,
+        /// The client label.
+        client: String,
+        /// The specific refusal.
+        reason: String,
+    },
 }
 
 impl fmt::Display for ConfigError {
@@ -297,6 +430,37 @@ impl fmt::Display for ConfigError {
                 "Error: {}:{line}: invalid agent name '{key}' in [roster]. Names must match {AGENT_NAME_GRAMMAR}.",
                 file.display()
             ),
+            Self::ClientKey { file, key, line } => write!(
+                f,
+                "Error: {}:{line}: invalid client label '{key}' in [clients]. Labels must match {AGENT_NAME_GRAMMAR}.",
+                file.display()
+            ),
+            Self::ClientEntry {
+                file,
+                client,
+                line,
+                reason,
+            } => write!(
+                f,
+                "Error: {}:{line}: invalid [clients] entry '{client}': {reason}",
+                file.display()
+            ),
+            Self::ClientEnvConflict {
+                profile,
+                client,
+                variable,
+            } => write!(
+                f,
+                "Error: [profiles] {profile}: both profile and client '{client}' set {variable}."
+            ),
+            Self::ClientHome {
+                profile,
+                client,
+                reason,
+            } => write!(
+                f,
+                "Error: [profiles] {profile} via client '{client}': {reason}"
+            ),
         }
     }
 }
@@ -320,6 +484,7 @@ pub fn read_identity(
     for file in [global, local].into_iter().flatten() {
         overlay_identity(file, &mut cfg)?;
     }
+    validate_client_conflicts(&cfg)?;
     Ok(cfg)
 }
 
@@ -368,11 +533,12 @@ pub fn read_identity_with_global_default(
     if let Some(file) = local {
         overlay_identity(file, &mut cfg)?;
     }
+    validate_client_conflicts(&cfg)?;
     Ok(cfg)
 }
 
-/// The three identity sections.
-const IDENTITY_SECTIONS: [&str; 3] = ["profiles", "roster", "workspace"];
+/// The four identity sections.
+const IDENTITY_SECTIONS: [&str; 4] = ["clients", "profiles", "roster", "workspace"];
 
 fn overlay_identity(file: &Path, cfg: &mut IdentityConfig) -> Result<(), ConfigError> {
     #[allow(
@@ -416,13 +582,29 @@ fn overlay_identity_text(
         let Some(key) = key_claim(trimmed) else {
             continue;
         };
-        if section == "roster" {
+        if section == "roster" || section == "clients" {
             if !is_agent_name(key) {
-                return Err(ConfigError::RosterKey {
-                    file: file.to_owned(),
-                    key: key.to_owned(),
-                    line,
+                return Err(if section == "roster" {
+                    ConfigError::RosterKey {
+                        file: file.to_owned(),
+                        key: key.to_owned(),
+                        line,
+                    }
+                } else {
+                    ConfigError::ClientKey {
+                        file: file.to_owned(),
+                        key: key.to_owned(),
+                        line,
+                    }
                 });
+            }
+            if section == "clients" && key == "env" {
+                return Err(client_error(
+                    file,
+                    key,
+                    line,
+                    "offending word 'env': the label is reserved prefix syntax".to_owned(),
+                ));
             }
         } else if !is_config_key(key) {
             // A non-key line contributes nothing.
@@ -445,6 +627,10 @@ fn overlay_identity_text(
             continue;
         };
         match section.as_str() {
+            "clients" => {
+                let client = parse_client(file, key, line, &value)?;
+                upsert_client(&mut cfg.clients, key, client);
+            }
             "profiles" => upsert(&mut cfg.profiles, key, value),
             "roster" => upsert(&mut cfg.roster, key, value),
             _ => {
@@ -459,8 +645,263 @@ fn overlay_identity_text(
     Ok(())
 }
 
+/// Parse one client definition with the launch-command lexer. `$HOME` expands
+/// to a sentinel only for structural validation; the caller's HOME is applied
+/// later by [`IdentityConfig::command`].
+fn parse_client(file: &Path, label: &str, line: usize, value: &str) -> Result<Client, ConfigError> {
+    let parsed = crate::launch_cmd::lex_simple_command(value).map_err(|why| {
+        let offending = value.split_ascii_whitespace().next().unwrap_or(value);
+        client_error(
+            file,
+            label,
+            line,
+            format!("offending word '{offending}': client value is not one simple command ({why})"),
+        )
+    })?;
+    if let Some(offending) = parsed.assignments.first() {
+        return Err(client_error(
+            file,
+            label,
+            line,
+            format!("offending word '{offending}': an env prefix is not an executable"),
+        ));
+    }
+    let executable = crate::launch_cmd::launch_binary(&parsed);
+    if executable.index != 0 || executable.word == "env" {
+        let offending = parsed.words.first().map_or("", String::as_str);
+        return Err(client_error(
+            file,
+            label,
+            line,
+            format!("offending word '{offending}': an env prefix is not an executable"),
+        ));
+    }
+    let executable_source = parsed.words.first().map_or("", String::as_str);
+    if executable.word.is_empty()
+        || (executable.word.contains('/') && !outer_quote_body(executable_source).starts_with('/'))
+    {
+        return Err(client_error(
+            file,
+            label,
+            line,
+            format!(
+                "offending word '{executable_source}': executable must be a basename or absolute path"
+            ),
+        ));
+    }
+    let binary_name = executable
+        .word
+        .rsplit('/')
+        .next()
+        .unwrap_or(executable.word);
+    let tool = crate::tool::ToolKind::from_binary_name(binary_name);
+    let config_home = match parsed.words.get(1) {
+        None => None,
+        Some(word) => {
+            if parsed.words.len() > 2 {
+                let offending = &parsed.words[2];
+                return Err(client_error(
+                    file,
+                    label,
+                    line,
+                    format!(
+                        "offending word '{offending}': flags and extra words belong to [profiles]; quote config_home paths containing spaces"
+                    ),
+                ));
+            }
+            Some(parse_client_home(file, label, line, word, tool)?)
+        }
+    };
+    Ok(Client {
+        executable: executable_source.to_owned(),
+        config_home,
+        tool,
+    })
+}
+
+fn parse_client_home(
+    file: &Path,
+    label: &str,
+    line: usize,
+    word: &str,
+    tool: crate::tool::ToolKind,
+) -> Result<String, ConfigError> {
+    use std::cell::Cell;
+
+    let Some(raw_path) = word.strip_prefix("config_home=") else {
+        return Err(client_error(
+            file,
+            label,
+            line,
+            format!("offending word '{word}': only config_home=<path> may follow the executable"),
+        ));
+    };
+    if outer_quote_body(raw_path).starts_with('~') {
+        return Err(client_error(
+            file,
+            label,
+            line,
+            format!("offending word '{word}': config_home must be absolute or $HOME-rooted"),
+        ));
+    }
+    let other_variable = Cell::new(false);
+    let expanded = crate::words::split(raw_path, &|name| {
+        if name == "HOME" {
+            Some("/__ae_home__".to_owned())
+        } else {
+            other_variable.set(true);
+            None
+        }
+    })
+    .map_err(|reason| client_error(file, label, line, reason))?;
+    if other_variable.get() {
+        return Err(client_error(
+            file,
+            label,
+            line,
+            format!("offending word '{word}': config_home may reference only $HOME or ${{HOME}}"),
+        ));
+    }
+    let Some(expanded) = expanded.first().filter(|_| expanded.len() == 1) else {
+        return Err(client_error(
+            file,
+            label,
+            line,
+            format!("offending word '{word}': config_home must be one path word"),
+        ));
+    };
+    if !Path::new(expanded).is_absolute() {
+        return Err(client_error(
+            file,
+            label,
+            line,
+            format!("offending word '{word}': config_home must be absolute or $HOME-rooted"),
+        ));
+    }
+    if tool.adapter().config_home_env.is_none() {
+        return Err(client_error(
+            file,
+            label,
+            line,
+            format!(
+                "config_home is not supported for {}: its account variable is unverified",
+                tool.as_str()
+            ),
+        ));
+    }
+    Ok(raw_path.to_owned())
+}
+
+fn client_error(file: &Path, client: &str, line: usize, reason: String) -> ConfigError {
+    ConfigError::ClientEntry {
+        file: file.to_owned(),
+        client: client.to_owned(),
+        line,
+        reason,
+    }
+}
+
+/// Strip one matching outer quote pair for structural path checks only.
+fn outer_quote_body(word: &str) -> &str {
+    if word.len() >= 2
+        && ((word.starts_with('\'') && word.ends_with('\''))
+            || (word.starts_with('"') && word.ends_with('"')))
+    {
+        &word[1..word.len() - 1]
+    } else {
+        word
+    }
+}
+
+/// Refuse raw profiles whose selected client and prefix fight over ownership
+/// of the harness's account variable.
+fn validate_client_conflicts(cfg: &IdentityConfig) -> Result<(), ConfigError> {
+    for (profile, command) in &cfg.profiles {
+        let Ok(parsed) = crate::launch_cmd::lex_simple_command(command) else {
+            continue;
+        };
+        let binary = crate::launch_cmd::launch_binary(&parsed);
+        if binary.word.contains('/') {
+            continue;
+        }
+        let Some((label, client)) = cfg.clients.iter().find(|(key, _)| key == binary.word) else {
+            continue;
+        };
+        if client.config_home.is_some() {
+            let Some(variable) = client.tool.adapter().config_home_env else {
+                continue;
+            };
+            if crate::launch_cmd::prefix_mentions(&parsed, variable) {
+                return Err(ConfigError::ClientEnvConflict {
+                    profile: profile.clone(),
+                    client: label.clone(),
+                    variable: variable.to_owned(),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+fn expand_client_home(
+    profile: &str,
+    client: &str,
+    raw: &str,
+    home: Option<&Path>,
+) -> Result<String, ConfigError> {
+    use std::cell::Cell;
+
+    let home_unavailable = Cell::new(false);
+    let expanded = crate::words::split(raw, &|name| {
+        if name == "HOME" {
+            if let Some(path) = home {
+                Some(path.to_string_lossy().into_owned())
+            } else {
+                home_unavailable.set(true);
+                None
+            }
+        } else {
+            None
+        }
+    })
+    .map_err(|reason| ConfigError::ClientHome {
+        profile: profile.to_owned(),
+        client: client.to_owned(),
+        reason,
+    })?;
+    if home_unavailable.get() {
+        return Err(ConfigError::ClientHome {
+            profile: profile.to_owned(),
+            client: client.to_owned(),
+            reason: "HOME unavailable".to_owned(),
+        });
+    }
+    let Some(path) = expanded.first().filter(|_| expanded.len() == 1) else {
+        return Err(ConfigError::ClientHome {
+            profile: profile.to_owned(),
+            client: client.to_owned(),
+            reason: "config_home did not resolve to one path".to_owned(),
+        });
+    };
+    if !Path::new(path).is_absolute() {
+        return Err(ConfigError::ClientHome {
+            profile: profile.to_owned(),
+            client: client.to_owned(),
+            reason: "config_home did not resolve to an absolute path".to_owned(),
+        });
+    }
+    Ok(path.clone())
+}
+
 /// Replace `key`'s value in place (keeping its position), else append.
 fn upsert(rows: &mut Vec<(String, String)>, key: &str, value: String) {
+    match rows.iter_mut().find(|(k, _)| k == key) {
+        Some((_, existing)) => *existing = value,
+        None => rows.push((key.to_owned(), value)),
+    }
+}
+
+fn upsert_client(rows: &mut Vec<(String, Client)>, key: &str, value: Client) {
     match rows.iter_mut().find(|(k, _)| k == key) {
         Some((_, existing)) => *existing = value,
         None => rows.push((key.to_owned(), value)),
@@ -477,8 +918,8 @@ pub struct Seat {
     pub name: String,
     /// The profile bound in `[roster]`.
     pub profile: String,
-    /// The profile's launch command, verbatim (operator-authored shell text).
-    pub command: String,
+    /// The profile's launch command after one-shot client expansion.
+    pub command: ResolvedCommand,
     /// The RAW leading-assignment span (`cmd.assign`), byte-exact from the
     /// command — empty when there are none.
     pub assign_span: String,
@@ -548,6 +989,15 @@ pub enum Violation {
         /// Why.
         why: crate::launch_cmd::Refusal,
     },
+    /// A selected client command could not resolve its config home.
+    CommandResolution {
+        /// The seat name.
+        name: String,
+        /// The profile whose command failed.
+        profile: String,
+        /// Why resolution failed.
+        why: String,
+    },
 }
 
 impl fmt::Display for Violation {
@@ -584,6 +1034,10 @@ impl fmt::Display for Violation {
                 f,
                 "[profiles] {profile} (seat '{name}'): the launch command must be one simple command — it has {why}."
             ),
+            Self::CommandResolution { name, profile, why } => write!(
+                f,
+                "[profiles] {profile} (seat '{name}'): the client command could not be resolved — {why}."
+            ),
         }
     }
 }
@@ -608,6 +1062,7 @@ fn resolve_seat(
     seat: &str,
     name: &str,
     slot: String,
+    home: Option<&Path>,
 ) -> Result<Option<Seat>, Violation> {
     let Some(profile) = cfg.roster_profile(name) else {
         return Err(Violation::NotInRoster {
@@ -615,11 +1070,24 @@ fn resolve_seat(
             name: name.to_owned(),
         });
     };
-    let Some(command) = cfg.profile(profile) else {
+    let command = cfg.command(profile, home).map_err(|error| {
+        let why = match error {
+            ConfigError::ClientHome { client, reason, .. } => {
+                format!("client '{client}': {reason}")
+            }
+            other => other.to_string(),
+        };
+        Violation::CommandResolution {
+            name: name.to_owned(),
+            profile: profile.to_owned(),
+            why,
+        }
+    })?;
+    let Some(command) = command else {
         // Undefined profile: reported once by the independent roster pass.
         return Ok(None);
     };
-    let parsed = crate::launch_cmd::lex_simple_command(command).map_err(|why| {
+    let parsed = crate::launch_cmd::lex_simple_command(command.as_str()).map_err(|why| {
         Violation::CommandRefused {
             name: name.to_owned(),
             profile: profile.to_owned(),
@@ -631,7 +1099,7 @@ fn resolve_seat(
         slot,
         name: name.to_owned(),
         profile: profile.to_owned(),
-        command: command.to_owned(),
+        command,
         assign_span: parsed.assign_span,
         argv_span: parsed.argv_span,
         binary: parsed.binary,
@@ -652,6 +1120,7 @@ fn resolve_seat(
 pub fn launch_plan(
     cfg: &IdentityConfig,
     main_override: Option<&str>,
+    home: Option<&Path>,
 ) -> Result<LaunchPlan, Vec<Violation>> {
     let mut violations = Vec::new();
     let mut named: Vec<(String, String)> = Vec::new(); // (seat label, name)
@@ -719,7 +1188,7 @@ pub fn launch_plan(
         } else {
             "main".to_owned()
         };
-        match resolve_seat(cfg, seat, name, slot) {
+        match resolve_seat(cfg, seat, name, slot, home) {
             // A resolved seat consumes its worker index; a profile-missing seat
             // (Ok(None), already reported above) does not create a worker.
             Ok(Some(resolved)) => {
@@ -1118,7 +1587,7 @@ mod tests {
         );
         assert_eq!(cfg.main.as_deref(), Some("lead"));
         assert_eq!(cfg.workers.as_deref(), Some("colead"));
-        let plan = launch_plan(&cfg, None).expect("launchable");
+        let plan = launch_plan(&cfg, None, None).expect("launchable");
         assert_eq!(plan.seats.len(), 2);
         assert_eq!(plan.seats[0].slot, "main");
         assert_eq!(plan.seats[0].name, "lead");
@@ -1128,7 +1597,230 @@ mod tests {
         assert_eq!(plan.seats[1].slot, "worker.0");
         assert_eq!(plan.seats[1].name, "colead");
         assert_eq!(plan.seats[1].tool, crate::tool::ToolKind::Codex);
-        assert!(plan.seats[1].command.starts_with("codex --yolo"));
+        assert!(plan.seats[1].command.as_str().starts_with("codex --yolo"));
+    }
+
+    fn command(cfg: &IdentityConfig, profile: &str, home: Option<&Path>) -> String {
+        cfg.command(profile, home)
+            .expect("client path resolves")
+            .expect("profile exists")
+            .into_string()
+    }
+
+    #[test]
+    fn clients_expand_the_executor_selected_full_word_once() {
+        let (_f, cfg) = v2("[clients]\ncc = /opt/claude\nclaude = codex\n\
+             [profiles]\ndirect = cc --model fable\nraw = other --flag\n\
+             path = /usr/bin/cc --flag\nenv = env -i -u KEEP cc --effort high\n\
+             unicode = NOTE=grüß cc --unicode\nquoted = 'cc' --quoted\nescaped = c\\c --escaped\n\
+             [roster]\nlead = direct\n[workspace]\nmain = lead\n");
+        assert_eq!(command(&cfg, "direct", None), "/opt/claude --model fable");
+        assert_eq!(command(&cfg, "raw", None), "other --flag");
+        assert_eq!(command(&cfg, "path", None), "/usr/bin/cc --flag");
+        assert_eq!(
+            command(&cfg, "env", None),
+            "env -i -u KEEP /opt/claude --effort high"
+        );
+        assert_eq!(
+            command(&cfg, "unicode", None),
+            "NOTE=grüß /opt/claude --unicode",
+            "rewriting a later word uses byte offsets, not character offsets"
+        );
+        assert_eq!(command(&cfg, "quoted", None), "/opt/claude --quoted");
+        assert_eq!(command(&cfg, "escaped", None), "/opt/claude --escaped");
+        let (_f, no_chain) = v2(
+            "[clients]\ncc = claude\nclaude = codex\n[profiles]\np = cc --x\n\
+             [roster]\nlead = p\n[workspace]\nmain = lead\n",
+        );
+        assert_eq!(
+            command(&no_chain, "p", None),
+            "claude --x",
+            "the replacement executable is never looked up as another label"
+        );
+
+        let (_f, cfg) = v2(
+            "[clients]\nclaude = /custom/claude\n[profiles]\np = claude --x\n\
+             [roster]\nlead = p\n[workspace]\nmain = lead\n",
+        );
+        assert_eq!(command(&cfg, "p", None), "/custom/claude --x");
+    }
+
+    #[test]
+    fn client_config_homes_insert_the_owned_variable_before_the_executable() {
+        let (_f, cfg) = v2(
+            "[clients]\ncc = claude config_home=\"$HOME/Library/Application Support/Claude\"\n\
+             cx = codex config_home=/srv/codex\ncxhome = codex config_home=${HOME}/.codex-work\n\
+             [profiles]\nfable = cc --model fable\nsol = env -i cx -m sol\nsolhome = cxhome -m sol\n\
+             [roster]\nlead = fable\n[workspace]\nmain = lead\n",
+        );
+        assert_eq!(
+            command(&cfg, "fable", Some(Path::new("/Users/a"))),
+            "CLAUDE_CONFIG_DIR='/Users/a/Library/Application Support/Claude' claude --model fable"
+        );
+        assert_eq!(
+            command(&cfg, "sol", Some(Path::new("/Users/a"))),
+            "env -i CODEX_HOME='/srv/codex' codex -m sol"
+        );
+        assert_eq!(
+            command(&cfg, "solhome", Some(Path::new("/Users/a"))),
+            "CODEX_HOME='/Users/a/.codex-work' codex -m sol"
+        );
+        let err = cfg.command("fable", None).unwrap_err();
+        assert!(err.to_string().contains("HOME unavailable"), "{err}");
+    }
+
+    #[test]
+    fn client_resolution_uses_the_fully_overlaid_definition() {
+        let global = NamedTemp::new(
+            "client-overlay-global",
+            "[clients]\ncc = claude config_home=/global\n\
+             [profiles]\np = CLAUDE_CONFIG_DIR=/profile cc --x\n",
+        );
+        let local = NamedTemp::new(
+            "client-overlay-local",
+            "[clients]\ncc = codex config_home=${HOME}/local\n",
+        );
+        let cfg = read_identity(Some(global.path()), Some(local.path())).expect("overlaid config");
+        assert_eq!(
+            command(&cfg, "p", Some(Path::new("/home/a"))),
+            "CLAUDE_CONFIG_DIR=/profile CODEX_HOME='/home/a/local' codex --x"
+        );
+    }
+
+    #[test]
+    fn invalid_client_values_refuse_at_config_load_with_the_offending_word() {
+        for (value, offending) in [
+            ("env -i claude", "env"),
+            ("A=1 claude", "A=1"),
+            ("A=1", "A=1"),
+            ("claude --model", "--model"),
+            ("./claude", "./claude"),
+            ("claude config_home=relative", "config_home=relative"),
+            ("claude config_home=~/.claude", "config_home=~/.claude"),
+            ("claude config_home=$OTHER/x", "config_home=$OTHER/x"),
+        ] {
+            let file = NamedTemp::new("bad-client", &format!("[clients]\ncc = {value}\n"));
+            let err = read_identity(Some(file.path()), None).unwrap_err();
+            let line = err.to_string();
+            assert!(line.contains(offending), "{value:?}: {line}");
+        }
+        let file = NamedTemp::new("env-label", "[clients]\nenv = claude\n");
+        assert!(
+            read_identity(Some(file.path()), None)
+                .unwrap_err()
+                .to_string()
+                .contains("label is reserved prefix syntax")
+        );
+        let empty = NamedTemp::new("empty-env-label", "[clients]\nenv =\n");
+        assert!(
+            read_identity(Some(empty.path()), None)
+                .unwrap_err()
+                .to_string()
+                .contains("label is reserved prefix syntax")
+        );
+        let key = NamedTemp::new("bad-client-label", "[clients]\n_bad = claude\n");
+        assert!(matches!(
+            read_identity(Some(key.path()), None).unwrap_err(),
+            ConfigError::ClientKey { .. }
+        ));
+    }
+
+    #[test]
+    fn unsupported_client_homes_use_the_frozen_refusal() {
+        for tool in ["grok", "agy", "opencode", "gemini"] {
+            let file = NamedTemp::new(
+                "unsupported-home",
+                &format!("[clients]\nx = {tool} config_home=/tmp/{tool}\n"),
+            );
+            let err = read_identity(Some(file.path()), None).unwrap_err();
+            assert!(
+                err.to_string().contains(&format!(
+                    "config_home is not supported for {tool}: its account variable is unverified"
+                )),
+                "{err}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_profile_cannot_assign_or_unset_its_clients_account_variable() {
+        for command in [
+            "CLAUDE_CONFIG_DIR=/other cc",
+            "env -u CLAUDE_CONFIG_DIR cc",
+            "env CLAUDE_CONFIG_DIR=/other cc",
+        ] {
+            let file = NamedTemp::new(
+                "client-conflict",
+                &format!("[clients]\ncc = claude config_home=/client\n[profiles]\np = {command}\n"),
+            );
+            let err = read_identity(Some(file.path()), None).unwrap_err();
+            assert!(
+                matches!(err, ConfigError::ClientEnvConflict { ref variable, .. } if variable == "CLAUDE_CONFIG_DIR"),
+                "{command:?}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_same_file_duplicate_client_label_refuses_like_a_duplicate_profile() {
+        let file = NamedTemp::new("dup-client", "[clients]\ncc = claude\ncc = codex\n");
+        assert!(matches!(
+            read_identity(Some(file.path()), None).unwrap_err(),
+            ConfigError::DuplicateKey { section, key, line: 3, .. }
+                if section == "clients" && key == "cc"
+        ));
+    }
+
+    #[test]
+    fn client_parse_and_command_resolution_are_deterministic_for_10000_inputs() {
+        let mut state = 0x4d59_5df4_d0f3_3173_u64;
+        for case in 0..10_000 {
+            let len = usize::try_from(state % 96).unwrap_or_default() + 1;
+            let mut bytes = Vec::with_capacity(len);
+            for _ in 0..len {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                bytes.push(state.to_le_bytes()[0]);
+            }
+            let arbitrary = String::from_utf8_lossy(&bytes).into_owned();
+            let path = Path::new("property");
+            assert_eq!(
+                parse_client(path, "cc", case + 1, &arbitrary),
+                parse_client(path, "cc", case + 1, &arbitrary)
+            );
+
+            let cfg = IdentityConfig {
+                clients: vec![(
+                    "cc".to_owned(),
+                    Client {
+                        executable: "claude".to_owned(),
+                        config_home: None,
+                        tool: crate::tool::ToolKind::Claude,
+                    },
+                )],
+                profiles: vec![
+                    ("candidate".to_owned(), format!("cc {arbitrary}")),
+                    ("variable".to_owned(), arbitrary.clone()),
+                    ("raw".to_owned(), format!("/raw/tool {arbitrary}")),
+                ],
+                ..IdentityConfig::default()
+            };
+            assert_eq!(
+                cfg.command("candidate", Some(Path::new("/home/a"))),
+                cfg.command("candidate", Some(Path::new("/home/a")))
+            );
+            assert_eq!(
+                cfg.command("variable", Some(Path::new("/home/a"))),
+                cfg.command("variable", Some(Path::new("/home/a")))
+            );
+            let raw = cfg.profile("raw").unwrap_or_default();
+            let resolved = cfg
+                .command("raw", Some(Path::new("/home/a")))
+                .expect("raw resolution cannot fail")
+                .expect("raw profile exists");
+            assert_eq!(resolved.as_str(), raw, "case {case}");
+        }
     }
 
     #[test]
@@ -1177,7 +1869,7 @@ mod tests {
         assert_eq!(cfg.roster_profile("lead"), Some("b"));
         assert_eq!(cfg.main.as_deref(), Some("lead"), "global's main survives");
         // The same key in BOTH files is an overlay, not a duplicate.
-        assert!(launch_plan(&cfg, None).is_ok());
+        assert!(launch_plan(&cfg, None, None).is_ok());
     }
 
     #[test]
@@ -1264,7 +1956,7 @@ mod tests {
             [roster]\nlead = cc\nghost = nope\nsleepy = cc\nbad = broken\n\
             [workspace]\nmain = lead\nworkers = lead, ghost, , nobody, x:y, bad\n";
         let (_f, cfg) = v2(text);
-        let violations = launch_plan(&cfg, None).unwrap_err();
+        let violations = launch_plan(&cfg, None, None).unwrap_err();
         assert_eq!(
             violations,
             [
@@ -1309,7 +2001,7 @@ mod tests {
         let (_f, cfg) =
             v2("[profiles]\ncc = \"claude\"\n[roster]\nlead = cc\n[workspace]\nworkers = lead\n");
         assert_eq!(
-            launch_plan(&cfg, None).unwrap_err(),
+            launch_plan(&cfg, None, None).unwrap_err(),
             [Violation::MainMissing]
         );
     }
@@ -1323,7 +2015,7 @@ mod tests {
              [workspace]\nmain = lead\n",
         );
         assert_eq!(
-            launch_plan(&cfg, None).unwrap_err(),
+            launch_plan(&cfg, None, None).unwrap_err(),
             [Violation::ProfileMissing {
                 name: "unused".to_owned(),
                 profile: "missing".to_owned()
@@ -1332,11 +2024,11 @@ mod tests {
         let (_f, cfg) = v2(
             "[profiles]\ncc = \"claude\"\n[roster]\nlead = cc\nspare = cc\n[workspace]\nmain = lead\n",
         );
-        let plan = launch_plan(&cfg, None).expect("an unseated row is not a violation");
+        let plan = launch_plan(&cfg, None, None).expect("an unseated row is not a violation");
         assert_eq!(plan.seats.len(), 1);
         // And `use spare` seats it as main, displacing lead — the config's own main
         // is then the unseated row, and that is fine too.
-        let plan = launch_plan(&cfg, Some("spare")).expect("`use` selects the unseated row");
+        let plan = launch_plan(&cfg, Some("spare"), None).expect("`use` selects the unseated row");
         assert_eq!(plan.seats[0].name, "spare");
         assert_eq!(plan.seats[0].slot, "main");
     }
@@ -1349,7 +2041,10 @@ mod tests {
             "[profiles]\ncc = \"claude\"\n[roster]\n# old = fable5\nlead = cc\n\
              [workspace]\nmain = lead\n",
         );
-        assert!(launch_plan(&cfg, None).is_ok(), "the comment is ignored");
+        assert!(
+            launch_plan(&cfg, None, None).is_ok(),
+            "the comment is ignored"
+        );
         assert_eq!(cfg.roster_profile("lead"), Some("cc"));
         assert_eq!(cfg.roster_profile("old"), None, "the comment bound nothing");
         // A good key with an EMPTY value binds nothing — the seat then reports
@@ -1361,7 +2056,7 @@ mod tests {
         let cfg = read_identity(Some(empty.path()), None).expect("an empty value is not a bad key");
         assert_eq!(cfg.roster_profile("lead"), None);
         assert_eq!(
-            launch_plan(&cfg, None).unwrap_err(),
+            launch_plan(&cfg, None, None).unwrap_err(),
             [Violation::NotInRoster {
                 seat: "workspace.main".to_owned(),
                 name: "lead".to_owned()
@@ -1420,7 +2115,7 @@ mod tests {
                 "[profiles]\np = \"{cmd}\"\n[roster]\nlead = p\n[workspace]\nmain = lead\n"
             ));
             assert_eq!(
-                launch_plan(&cfg, None).unwrap_err(),
+                launch_plan(&cfg, None, None).unwrap_err(),
                 [Violation::CommandRefused {
                     name: "lead".to_owned(),
                     profile: "p".to_owned(),
@@ -1439,7 +2134,7 @@ mod tests {
             "[profiles]\nmic = \"A=1  B=2 env -u C claude --model\tfable\"\n\
              [roster]\nlead = mic\n[workspace]\nmain = lead\n",
         );
-        let plan = launch_plan(&cfg, None).expect("launchable");
+        let plan = launch_plan(&cfg, None, None).expect("launchable");
         let seat = &plan.seats[0];
         assert_eq!(seat.assign_span, "A=1  B=2");
         assert_eq!(seat.argv_span, "env -u C claude --model\tfable");
@@ -1450,7 +2145,7 @@ mod tests {
     #[test]
     fn identity_plan_honours_a_use_override_and_no_workers() {
         let (_f, cfg) = v2(V2);
-        let plan = launch_plan(&cfg, Some("colead")).unwrap_err();
+        let plan = launch_plan(&cfg, Some("colead"), None).unwrap_err();
         assert_eq!(
             plan,
             [Violation::NameTwice {
@@ -1460,7 +2155,7 @@ mod tests {
             "`use colead` with colead still a worker: one name, two seats"
         );
         assert_eq!(
-            launch_plan(&cfg, Some("cl:lead")).unwrap_err()[0],
+            launch_plan(&cfg, Some("cl:lead"), None).unwrap_err()[0],
             Violation::BadName {
                 seat: "use".to_owned(),
                 name: "cl:lead".to_owned()
@@ -1469,13 +2164,13 @@ mod tests {
         );
         let (_f, cfg) =
             v2("[profiles]\ncc = \"claude\"\n[roster]\nsolo = cc\n[workspace]\nmain = solo\n");
-        let plan = launch_plan(&cfg, None).expect("a workspace with no workers launches");
+        let plan = launch_plan(&cfg, None, None).expect("a workspace with no workers launches");
         assert_eq!(plan.seats.len(), 1);
         let (_f, cfg) = v2(
             "[profiles]\ncc = \"claude\"\n[roster]\nsolo = cc\n[workspace]\nmain = solo\nworkers = \"\"\n",
         );
         assert_eq!(
-            launch_plan(&cfg, None)
+            launch_plan(&cfg, None, None)
                 .expect("an explicitly empty workers list")
                 .seats
                 .len(),
@@ -1486,7 +2181,7 @@ mod tests {
             "[profiles]\ncc = \"claude\"\n[roster]\na = cc\nb = cc\n[workspace]\nmain = a\nworkers =  b , \n",
         );
         assert_eq!(
-            launch_plan(&cfg, None).unwrap_err(),
+            launch_plan(&cfg, None, None).unwrap_err(),
             [Violation::EmptyWorker { position: 2 }],
             "a trailing comma is an empty seat, not silence"
         );
