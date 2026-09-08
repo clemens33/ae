@@ -102,6 +102,9 @@ pub(crate) enum Op<'a> {
     },
     /// `select-layout -t <target> <layout>`.
     SelectLayout { target: &'a str, layout: &'a str },
+    /// `set-window-option -t <target> main-pane-width 66%` — the lead-pair
+    /// window's persistent two-thirds main column.
+    SetLeadPairWidth { target: &'a str },
     /// `select-pane -t <pane>` — focus.
     SelectPane { pane: &'a str },
     /// `select-pane -t <pane> -d` — make a monitor pane read-only.
@@ -114,6 +117,9 @@ pub(crate) enum Op<'a> {
     /// `set-hook` takes a target-PANE, so the pane id makes this session-scoped
     /// without a name target (and without prefix matching).
     SetClientSessionHook { pane: &'a str },
+    /// `set-hook -w -t <pane> window-resized <layout command>` — keep the
+    /// lead-pair ratio when its window follows a client resize.
+    SetLeadPairResizeHook { pane: &'a str },
     /// Replace tmux's root `MouseDown1Status` on an ae-owned server so a
     /// window-range click selects the window without firing the session hook.
     BindMouseDownStatus,
@@ -224,6 +230,12 @@ pub(crate) fn argv(server: &ServerId, op: &Op<'_>) -> TmuxArgv {
         Op::SelectLayout { target, layout } => {
             args.extend(["select-layout", "-t", target, layout].map(ToOwned::to_owned));
         }
+        Op::SetLeadPairWidth { target } => {
+            args.extend(
+                ["set-window-option", "-t", target, "main-pane-width", "66%"]
+                    .map(ToOwned::to_owned),
+            );
+        }
         Op::SelectPane { pane } => {
             args.extend(["select-pane", "-t", pane].map(ToOwned::to_owned));
         }
@@ -241,6 +253,19 @@ pub(crate) fn argv(server: &ServerId, op: &Op<'_>) -> TmuxArgv {
                     pane,
                     "client-session-changed",
                     &format!("select-window -t {pane} ; select-pane -t {pane}"),
+                ]
+                .map(ToOwned::to_owned),
+            );
+        }
+        Op::SetLeadPairResizeHook { pane } => {
+            args.extend(
+                [
+                    "set-hook",
+                    "-w",
+                    "-t",
+                    pane,
+                    "window-resized",
+                    &format!("select-layout -t {pane} main-vertical"),
                 ]
                 .map(ToOwned::to_owned),
             );
@@ -376,6 +401,14 @@ mod tests {
     }
 
     #[test]
+    fn the_lead_pair_width_is_window_scoped_and_percentage_based() {
+        assert_eq!(
+            words(&Op::SetLeadPairWidth { target: "%1" }),
+            vec!["set-window-option", "-t", "%1", "main-pane-width", "66%"]
+        );
+    }
+
+    #[test]
     fn the_session_focus_hook_targets_the_lead_pane_and_keeps_its_command_one_argv_element() {
         assert_eq!(
             words(&Op::SetClientSessionHook { pane: "%9" }),
@@ -385,6 +418,21 @@ mod tests {
                 "%9",
                 "client-session-changed",
                 "select-window -t %9 ; select-pane -t %9"
+            ]
+        );
+    }
+
+    #[test]
+    fn the_lead_pair_resize_hook_is_window_scoped_and_targets_the_lead_pane() {
+        assert_eq!(
+            words(&Op::SetLeadPairResizeHook { pane: "%9" }),
+            vec![
+                "set-hook",
+                "-w",
+                "-t",
+                "%9",
+                "window-resized",
+                "select-layout -t %9 main-vertical"
             ]
         );
     }

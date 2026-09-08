@@ -2512,6 +2512,23 @@ fn the_lead_layouts_seat_each_agent_in_the_window_their_layout_names() {
         colead.lines().any(|row| row == "worker.0|colead"),
         "the colead seat is in window 0: {colead}"
     );
+    let (_, main_width) = pair.tmux(&[
+        "show-window-options",
+        "-v",
+        "-t",
+        "lpair:0",
+        "main-pane-width",
+    ]);
+    assert_eq!(
+        main_width.trim(),
+        "66%",
+        "the lead-pair width stays percentage-based across resizes"
+    );
+    let (_, resize_hook) = pair.tmux(&["show-hooks", "-w", "-t", "lpair:0", "window-resized"]);
+    assert!(
+        resize_hook.contains("select-layout -t") && resize_hook.contains("main-vertical"),
+        "the lead-pair window reapplies its percentage after a resize: {resize_hook}"
+    );
     assert!(
         pair.meta("lpair").contains("layout=lead-pair"),
         "the layout is pinned:\n{}",

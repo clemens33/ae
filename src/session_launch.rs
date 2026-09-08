@@ -14,7 +14,9 @@ use crate::config::{self, IdentityConfig, Seat};
 use crate::inventory::ServerId;
 use crate::launch::{self, PENDING};
 use crate::meta::{self, Meta, ServerSelector};
-use crate::session_tmux::{Op, Split, argv, interpret_pane_id, mouse_down_status_binding_argv};
+use crate::session_tmux::{
+    Op, Split, TmuxArgv, argv, interpret_pane_id, mouse_down_status_binding_argv,
+};
 use crate::state::{EXIT_FAILED, EXIT_USAGE};
 use crate::tool::ToolKind;
 use crate::{deliver, roster, tmux, transport};
@@ -2152,6 +2154,12 @@ fn stamp_session(server: &ServerId, env: &Env, shape: &Session, main_pane: &str)
         let _ = transport::run_tmux_op(&binding);
     }
     let _ = transport::run_tmux_op(&argv(server, &Op::SetClientSessionHook { pane: main_pane }));
+    if shape.layout == "lead-pair" {
+        let _ = transport::run_tmux_op(&argv(
+            server,
+            &Op::SetLeadPairResizeHook { pane: main_pane },
+        ));
+    }
     let _ = transport::run_tmux_op(&argv(server, &Op::SelectPane { pane: main_pane }));
 }
 
@@ -2257,33 +2265,47 @@ pub(crate) fn status_paths(mode: &str, origin: &str, work_dir: &str, home: &str)
 
 /// Distribute the panes the layout put in each window.
 fn apply_layout(server: &ServerId, shape: &Session, panes: &[String], workers: usize) {
-    if panes.len() <= 1 {
-        return;
+    for command in layout_argvs(server, shape.layout.as_str(), &shape.name, panes, workers) {
+        let _ = transport::run_tmux_op(&command);
     }
-    let select = |target: &str, layout: &str| {
-        let _ = transport::run_tmux_op(&argv(server, &Op::SelectLayout { target, layout }));
-    };
-    match shape.layout.as_str() {
+}
+
+/// Build the complete, ordered layout program before touching tmux.
+fn layout_argvs(
+    server: &ServerId,
+    layout: &str,
+    session: &str,
+    panes: &[String],
+    workers: usize,
+) -> Vec<TmuxArgv> {
+    if panes.len() <= 1 {
+        return Vec::new();
+    }
+    let mut commands = Vec::new();
+    let select = |target: &str, layout: &str| argv(server, &Op::SelectLayout { target, layout });
+    match layout {
         "lead-pair" => {
-            select(&panes[0], "even-horizontal");
+            commands.push(argv(server, &Op::SetLeadPairWidth { target: &panes[0] }));
+            commands.push(select(&panes[0], "main-vertical"));
             if workers > 2 {
-                select(&panes[2], "even-vertical");
+                commands.push(select(&panes[2], "even-vertical"));
             }
         }
         "lead-solo" => {
             if workers > 1 {
-                select(&panes[1], "even-vertical");
+                commands.push(select(&panes[1], "even-vertical"));
             }
         }
-        "vertical" => select(
-            &format!("{}:", tmux::session_target(&shape.name)),
+        "vertical" => commands.push(select(
+            &format!("{}:", tmux::session_target(session)),
             "even-horizontal",
-        ),
-        _ => select(
-            &format!("{}:", tmux::session_target(&shape.name)),
+        )),
+        _ => commands.push(select(
+            &format!("{}:", tmux::session_target(session)),
             "even-vertical",
-        ),
+        )),
     }
+    commands
 }
 
 /// Name a window for the first agent placed in it and freeze that name.
@@ -3432,11 +3454,63 @@ fn from_preflight(root: &Path, raw_uuid: &str) -> Result<FromProof, String> {
 mod tests {
     use super::{
         AttachAction, EVENTS_KEEP, ToolKind, attach_action, launch_token, launch_turn_is_pasted,
-        parse_plan, replace_watchdog_registration, server_attach_hint, trim_events,
+        layout_argvs, parse_plan, replace_watchdog_registration, server_attach_hint, trim_events,
     };
     use crate::inventory::ServerId;
     use std::fmt::Write as _;
     use std::path::PathBuf;
+
+    fn layout_words(layout: &str, panes: &[String], workers: usize) -> Vec<Vec<String>> {
+        layout_argvs(&ServerId::Ambient, layout, "named", panes, workers)
+            .iter()
+            .map(|command| command.as_args().to_vec())
+            .collect()
+    }
+
+    #[test]
+    fn the_lead_pair_sets_two_thirds_before_selecting_the_main_vertical_layout() {
+        let panes = ["%0".to_owned(), "%1".to_owned()];
+        assert_eq!(
+            layout_words("lead-pair", &panes, 1),
+            vec![
+                vec!["set-window-option", "-t", "%0", "main-pane-width", "66%"],
+                vec!["select-layout", "-t", "%0", "main-vertical"],
+            ]
+        );
+
+        let panes = [
+            "%0".to_owned(),
+            "%1".to_owned(),
+            "%2".to_owned(),
+            "%3".to_owned(),
+        ];
+        assert_eq!(
+            layout_words("lead-pair", &panes, 3),
+            vec![
+                vec!["set-window-option", "-t", "%0", "main-pane-width", "66%"],
+                vec!["select-layout", "-t", "%0", "main-vertical"],
+                vec!["select-layout", "-t", "%2", "even-vertical"],
+            ],
+            "extra standing workers keep their separate stacked window"
+        );
+    }
+
+    #[test]
+    fn every_non_pair_layout_keeps_its_existing_layout_program() {
+        let panes = ["%0".to_owned(), "%1".to_owned(), "%2".to_owned()];
+        assert_eq!(
+            layout_words("lead-solo", &panes, 2),
+            vec![vec!["select-layout", "-t", "%1", "even-vertical"]]
+        );
+        assert_eq!(
+            layout_words("vertical", &panes, 2),
+            vec![vec!["select-layout", "-t", "=named:", "even-horizontal"]]
+        );
+        assert_eq!(
+            layout_words("horizontal", &panes, 2),
+            vec![vec!["select-layout", "-t", "=named:", "even-vertical"]]
+        );
+    }
 
     #[test]
     fn automatic_upgrade_hooks_follow_reattach_validation_and_fresh_launch_completion() {
