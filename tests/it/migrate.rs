@@ -988,7 +988,9 @@ fn a_running_sessions_daemons_are_restarted_on_the_new_core() {
         "the bridge was not restarted on the new core: {bridge:?}"
     );
     assert!(
-        notes.iter().any(|note| note.contains("watchdog")),
+        notes
+            .iter()
+            .any(|note| note.starts_with("restarted the watchdog of wdmig on the new core")),
         "the sweep did not report the watchdog restart: {notes:?}"
     );
     assert!(
@@ -1007,5 +1009,67 @@ fn a_running_sessions_daemons_are_restarted_on_the_new_core() {
     assert!(
         after_panes.lines().any(|line| line == agent_pane),
         "the agent pane {agent_pane} did not survive the sweep: {after_panes:?}"
+    );
+}
+
+#[test]
+fn a_publish_starts_a_missing_watchdog_on_the_new_core() {
+    let scratch = tmux_scratch("missing-watchdog");
+    if !tmux_present(&scratch) {
+        let _ = remove(&scratch);
+        panic!(
+            "tmux is not runnable here, so missing-watchdog recovery cannot be proven; install \
+             tmux or run this suite where one exists"
+        );
+    }
+    let socket = scratch.join("s");
+    let _cleanup = Cleanup {
+        socket: socket.clone(),
+        scratch: scratch.clone(),
+    };
+    let root = scratch.join("home");
+    let session = "wdmissing";
+    let old_core = scratch.join("old-core");
+    let new_core = scratch.join("new-core");
+    write_exec(&old_core, FAKE_CORE);
+    write_exec(&new_core, FAKE_CORE);
+    let dir = plant_running(&scratch, &socket, &root, session, &old_core);
+    let (_, watchdog) = tmux(
+        &socket,
+        &scratch,
+        &[
+            "list-panes",
+            "-s",
+            "-t",
+            session,
+            "-F",
+            "#{@ae_agent}|#{pane_id}",
+        ],
+    );
+    let watchdog_pane = watchdog
+        .lines()
+        .find_map(|line| line.strip_prefix("_watchdog|"))
+        .unwrap_or_else(|| panic!("the planted watchdog pane: {watchdog:?}"));
+    assert!(
+        tmux(&socket, &scratch, &["kill-pane", "-t", watchdog_pane]).0,
+        "the watchdog is removed before publish"
+    );
+
+    let notes = ae::migrate::onto(&root, &new_core, "2026.9.9").expect("the sweep");
+
+    let pid = ae::watchdog_glue::read_pid(&dir).expect("publish started a watchdog");
+    assert!(matches!(
+        ae::watchdog_lifecycle::presence(
+            &ae::inventory::ServerId::Selected(ae::meta::Selector::Socket(socket.clone())),
+            session,
+            &dir,
+        ),
+        ae::watchdog_lifecycle::Presence::Running(seen) if seen == pid
+    ));
+    assert!(
+        notes.iter().any(|note| {
+            note.starts_with("started the watchdog of wdmissing on the new core (pid ")
+        }),
+        "the recovery note is missing: {notes:?}"
     );
 }

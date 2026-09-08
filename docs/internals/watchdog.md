@@ -11,6 +11,9 @@ supervision.
 - **On by default.** Created with the session, unless `workspace.watchdog = false` in config or the session meta says otherwise (`watchdog = false`). Explicit `false`/`no`/`off`/`0` disables it.
 - **Manual control:** `~/.ae/sessions/<name>/watchdog start|stop|status` (alias: `loop`).
 - **Persists across resume.** The state is recorded in session meta.
+- **Repaired by publish.** An upgrade restarts a live watchdog on the new core and starts one
+  that is missing from a running watchdog-enabled session. An explicitly disabled watchdog
+  stays absent.
 - **Self-terminates** if the tmux session or `meta` file disappears.
 
 The `_watchdog` pane runs the core directly: its command is the session's `watchdog` link,

@@ -25,8 +25,9 @@ the answer, and `ae list`, which only reports it. One question, one answer.
 Between the new version directory and the repointed command link, the publish asks EVERY
 session whether the chain can place it, and only then writes. Per session: the chain, the
 core rows rewritten as one locked document, all helper links re-rendered, and for a running
-session the watchdog and the Telegram bridge restarted on the new core. Agent panes are never
-touched — they run the agent tool, not ae.
+session a live watchdog is restarted on the new core, while a missing enabled watchdog is
+started there. An explicitly disabled watchdog stays absent. The Telegram bridge is restarted
+once per server. Agent panes are never touched — they run the agent tool, not ae.
 
 Nothing is written until every session has been asked, so a session that cannot be migrated
 aborts the publish by name with the old link intact. An abort later than that names the

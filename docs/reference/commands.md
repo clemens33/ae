@@ -689,6 +689,10 @@ core operation. The running tmux server stays up. `[old]` is optional — run it
 session you mean and the core resolves it. The new name must satisfy the session-name
 grammar, and the error echoes it verbatim when it does not.
 
+A git worktree or full-copy directory keeps its original path when the session is renamed.
+That path is recorded session state, so a later `stop` and resume returns every agent to the
+same working directory instead of creating a second copy under the new session name.
+
 ## `ae stop`
 
 Pause a session for later resume. Detaches all agents and kills the tmux session, but leaves everything on disk: ae state at `~/.ae/sessions/<name>/` plus the per-agent conversation files at `~/.claude/projects/.../<uuid>.jsonl` and `~/.codex/sessions/.../<uuid>.jsonl`. The next `ae <name>` resumes with the full conversation history. When the recorded server proves the session absent, that build may move it to the current launch destination; the server pair changes only with the successful build publication.

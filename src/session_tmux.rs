@@ -3,8 +3,8 @@
 //!
 //! The tmux calls the launch path makes: `new-session`, `set-environment`,
 //! `split-window`, `new-window`,
-//! `select-layout`, `select-pane`, `select-window`, `set-hook`, `bind-key`,
-//! `set-window-option`.
+//! `respawn-pane`, `select-layout`, `select-pane`, `select-window`, `set-hook`,
+//! `bind-key`, `set-window-option`.
 //!
 //! Same shape as [`crate::git`] and for the same reason: the inner vector of
 //! [`TmuxArgv`] is private to this module, so no other module can hand the
@@ -92,6 +92,12 @@ pub(crate) enum Op<'a> {
         /// The working directory, or empty to inherit.
         work_dir: &'a str,
         /// The command the new pane runs, or empty for a shell.
+        command: &'a [String],
+    },
+    /// `respawn-pane -k -t <pane> <command…>` — replace a monitor process in
+    /// place, preserving its pane id and the monitor window's layout.
+    RespawnPane {
+        pane: &'a str,
         command: &'a [String],
     },
     /// `select-layout -t <target> <layout>`.
@@ -209,6 +215,10 @@ pub(crate) fn argv(server: &ServerId, op: &Op<'_>) -> TmuxArgv {
                 args.extend(["-c", work_dir].map(ToOwned::to_owned));
             }
             args.extend(["-P", "-F", PANE_ID_FORMAT].map(ToOwned::to_owned));
+            args.extend(command.iter().cloned());
+        }
+        Op::RespawnPane { pane, command } => {
+            args.extend(["respawn-pane", "-k", "-t", pane].map(ToOwned::to_owned));
             args.extend(command.iter().cloned());
         }
         Op::SelectLayout { target, layout } => {
@@ -329,6 +339,18 @@ mod tests {
                 "#{pane_id}",
                 "/m/watchdog"
             ]
+        );
+    }
+
+    #[test]
+    fn a_monitor_respawn_kills_the_old_process_in_place() {
+        let cmd = vec!["/m/events-tail".to_owned()];
+        assert_eq!(
+            words(&Op::RespawnPane {
+                pane: "%9",
+                command: &cmd,
+            }),
+            vec!["respawn-pane", "-k", "-t", "%9", "/m/events-tail"]
         );
     }
 

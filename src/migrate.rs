@@ -567,11 +567,17 @@ fn restart_daemons(
     if let Some(binding) = crate::session_tmux::mouse_down_status_binding_argv(&server) {
         let _ = crate::transport::run_tmux_op(&binding);
     }
-    if matches!(
-        crate::watchdog_lifecycle::presence(&server, name, dir),
-        crate::watchdog_lifecycle::Presence::Running(_)
-    ) {
-        notes.push(restart_watchdog(root, &server, name, dir));
+    match crate::watchdog_lifecycle::presence(&server, name, dir) {
+        crate::watchdog_lifecycle::Presence::Running(_) => {
+            notes.push(restart_watchdog(root, &server, name, dir));
+        }
+        crate::watchdog_lifecycle::Presence::Stopped
+            if crate::session_launch::watchdog_enabled_for_session(dir) =>
+        {
+            notes.push(start_watchdog(root, &server, name, dir));
+        }
+        crate::watchdog_lifecycle::Presence::Stopped
+        | crate::watchdog_lifecycle::Presence::Unknown => {}
     }
     if !bridges.contains(&server) {
         bridges.push(server.clone());
@@ -615,6 +621,30 @@ fn restart_watchdog(root: &Path, server: &ServerId, name: &str, dir: &Path) -> S
         crate::watchdog_lifecycle::Presence::Stopped
         | crate::watchdog_lifecycle::Presence::Unknown => format!(
             "WARNING: {name} was left with NO watchdog — the restart reported success and none is running; start it by hand with `ae watchdog start {name}`"
+        ),
+    }
+}
+
+/// Start a watchdog missing from a running session, then prove it registered.
+fn start_watchdog(root: &Path, server: &ServerId, name: &str, dir: &Path) -> String {
+    let tail = ["start".to_owned(), name.to_owned()];
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    match crate::watchdog_lifecycle::run(root, &tail, &mut out, &mut err) {
+        Ok(0) => {}
+        Ok(_) | Err(_) => {
+            return format!(
+                "WARNING: the watchdog of {name} did not start ({}) — start it by hand with `ae watchdog start {name}`",
+                String::from_utf8_lossy(&err).trim()
+            );
+        }
+    }
+    match crate::watchdog_lifecycle::presence(server, name, dir) {
+        crate::watchdog_lifecycle::Presence::Running(pid) => {
+            format!("started the watchdog of {name} on the new core (pid {pid})")
+        }
+        crate::watchdog_lifecycle::Presence::Stopped
+        | crate::watchdog_lifecycle::Presence::Unknown => format!(
+            "WARNING: {name} was left with NO watchdog — the start reported success and none is running; start it by hand with `ae watchdog start {name}`"
         ),
     }
 }

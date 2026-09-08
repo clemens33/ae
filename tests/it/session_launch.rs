@@ -1801,6 +1801,142 @@ fn worktree_mode_creates_its_copy_and_a_failed_launch_rolls_back() {
     );
 }
 
+/// A rename changes session identity, not the working copy's identity. A
+/// stopped renamed session resumes from the recorded directory and replaces
+/// its existing meta instead of taking the new name's worktree path as proof
+/// that this is a fresh launch.
+#[test]
+fn a_renamed_worktree_resume_uses_its_recorded_dir_and_existing_meta() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("renamed-worktree-resume");
+    git_in(&rig.project, &["init", "-q"]);
+    assert!(std::fs::write(rig.project.join("f"), "x").is_ok());
+    git_in(&rig.project, &["add", "-A"]);
+    git_in(&rig.project, &["commit", "-qm", "base"]);
+
+    let old = "lnwtold";
+    let new = "lnwtnew";
+    let (code, stdout, stderr) = rig.launch(&["--worktree", old]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let recorded_work = rig.home.join("worktrees").join(old);
+    assert!(recorded_work.join("f").is_file(), "the original worktree");
+
+    let renamed = ae()
+        .env("HOME", &rig.scratch)
+        .env("AE_HOME", &rig.home)
+        .env("TMUX_TMPDIR", &rig.scratch)
+        .env_remove("TMUX")
+        .env_remove("TMUX_PANE")
+        .args([ae::cli::RENAME, old, new])
+        .output()
+        .unwrap_or_else(|why| panic!("the rename should run: {why}"));
+    assert_eq!(renamed.status.code(), Some(0), "rename failed: {renamed:?}");
+    assert!(
+        rig.tmux(&["kill-session", "-t", &format!("={new}")]).0,
+        "stop the renamed session"
+    );
+
+    let before = rig.meta(new);
+    let new_work = rig.home.join("worktrees").join(new);
+    assert!(!new_work.exists(), "rename does not move the working copy");
+    let (code, stdout, stderr) = rig.launch(&[new]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(stdout.contains("Resuming session lnwtnew"), "{stdout}");
+    assert!(!stdout.contains("Creating git worktree"), "{stdout}");
+    assert!(
+        !new_work.exists(),
+        "resume must not create a second name-derived worktree"
+    );
+    let after = rig.meta(new);
+    assert!(
+        before.contains(&format!("work_dir={}", recorded_work.display()))
+            && after.contains(&format!("work_dir={}", recorded_work.display())),
+        "the stored working directory survives replacement:\n{after}"
+    );
+    let (_, pane_dir) = rig.tmux(&[
+        "display-message",
+        "-p",
+        "-t",
+        &format!("={new}:0.0"),
+        "#{pane_current_path}",
+    ]);
+    let actual = std::fs::canonicalize(pane_dir.trim()).unwrap_or_default();
+    let expected = std::fs::canonicalize(&recorded_work).unwrap_or(recorded_work);
+    assert_eq!(actual, expected, "the resumed agent's cwd");
+}
+
+#[test]
+fn a_resume_with_a_recorded_missing_copy_never_adopts_a_name_derived_copy() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("missing-renamed-copy");
+    assert!(std::fs::write(rig.project.join("f"), "x").is_ok());
+
+    let old = "lncopyold";
+    let new = "lncopynew";
+    let (code, stdout, stderr) = rig.launch(&["--copy", old]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let recorded_work = rig.home.join("worktrees").join(old);
+
+    let renamed = ae()
+        .env("HOME", &rig.scratch)
+        .env("AE_HOME", &rig.home)
+        .env("TMUX_TMPDIR", &rig.scratch)
+        .env_remove("TMUX")
+        .env_remove("TMUX_PANE")
+        .args([ae::cli::RENAME, old, new])
+        .output()
+        .unwrap_or_else(|why| panic!("the rename should run: {why}"));
+    assert_eq!(renamed.status.code(), Some(0), "rename failed: {renamed:?}");
+    assert!(
+        rig.tmux(&["kill-session", "-t", &format!("={new}")]).0,
+        "stop the renamed session"
+    );
+    assert!(
+        std::fs::remove_dir_all(&recorded_work).is_ok(),
+        "remove the recorded copy"
+    );
+    let name_derived = rig.home.join("worktrees").join(new);
+    assert!(
+        std::fs::create_dir_all(&name_derived).is_ok(),
+        "plant an unrelated name-derived copy"
+    );
+    let unrelated = name_derived.join("unrelated");
+    assert!(
+        std::fs::write(&unrelated, "not this session").is_ok(),
+        "mark the unrelated copy"
+    );
+    let before = rig.meta(new);
+
+    let (code, stdout, stderr) = rig.launch(&[new]);
+
+    assert_eq!(code, Some(1), "stdout: {stdout}\nstderr: {stderr}");
+    assert_eq!(
+        stderr,
+        format!(
+            "Error: '{new}' records its working copy at {} but it is gone — restore it or end the session (ae end {new})\n",
+            recorded_work.display()
+        )
+    );
+    assert!(
+        !rig.sessions().iter().any(|session| session == new),
+        "the refusal must precede tmux creation"
+    );
+    assert_eq!(
+        rig.meta(new),
+        before,
+        "the refusal leaves meta byte-identical"
+    );
+    assert_eq!(
+        std::fs::read_to_string(unrelated).unwrap_or_default(),
+        "not this session",
+        "the refusal leaves the namesake copy untouched"
+    );
+}
+
 /// The codex handshake: the tool writes `codex.<slot>.sid`, and the capture
 /// pass turns it into the roster's `harness_session.main`.
 #[test]

@@ -251,6 +251,123 @@ fn exists(path: &Path) -> bool {
     std::fs::symlink_metadata(path).is_ok()
 }
 
+/// A monitor helper whose watchdog registers, then stays alive only while the
+/// session directory its argv[0] named still exists. This models the real
+/// watchdog's dependence on that directory while keeping the fixture small.
+const RENAME_MONITOR_CORE: &str = "#!/bin/sh\n\
+    d=$(cd \"$(dirname \"$0\")\" && pwd)\n\
+    if [ \"$(basename \"$0\")\" = watchdog ]; then\n\
+      printf '%s\\n' \"$$\" > \"$d/.watchdog.pid.staged\"\n\
+      mv \"$d/.watchdog.pid.staged\" \"$d/.watchdog.pid\"\n\
+      while [ -d \"$d\" ]; do sleep 0.1; done\n\
+      sleep 1\n\
+      exit 0\n\
+    fi\n\
+    exec sleep 60\n";
+
+fn write_exec(path: &Path, text: &str) {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let _ = std::fs::remove_file(path);
+    std::fs::write(path, text).expect("an executable fixture");
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
+        .expect("executable mode");
+}
+
+#[test]
+fn rename_respawns_both_monitor_panes_against_the_new_session_directory() {
+    let rig = Rig::new("renamemon");
+    let monitor_core = rig.home.join("monitor-core");
+    write_exec(&monitor_core, RENAME_MONITOR_CORE);
+    for helper in ["watchdog", "events-tail"] {
+        std::os::unix::fs::symlink(&monitor_core, rig.dir.join(helper)).expect("a monitor helper");
+    }
+    let (mut start_out, mut start_err) = (Vec::new(), Vec::new());
+    let started = ae::watchdog_lifecycle::run(
+        &rig.home,
+        &["start".to_owned(), rig.name.clone()],
+        &mut start_out,
+        &mut start_err,
+    )
+    .expect("the watchdog entry writes to buffers");
+    assert_eq!(
+        started,
+        0,
+        "watchdog start: {}",
+        String::from_utf8_lossy(&start_err)
+    );
+    let old_pid = ae::watchdog_glue::read_pid(&rig.dir).expect("the old watchdog registered");
+    let (_, before) = rig.tmux(&[
+        "list-panes",
+        "-t",
+        &format!("={}:99", rig.name),
+        "-F",
+        "#{@ae_agent}|#{pane_id}|#{pane_top}|#{pane_height}",
+    ]);
+
+    let new = format!("{}new", rig.name);
+    let (code, out, err) = rig.run(&["rename", &rig.name, &new]);
+
+    assert_eq!(code, Some(0), "stdout: {out}\nstderr: {err}");
+    let new_dir = rig.home.join("sessions").join(&new);
+    let (_, after) = rig.tmux(&[
+        "list-panes",
+        "-t",
+        &format!("={new}:99"),
+        "-F",
+        "#{@ae_agent}|#{pane_id}|#{pane_top}|#{pane_height}",
+    ]);
+    assert_eq!(after, before, "respawn preserves pane ids and layout");
+    let (_, commands) = rig.tmux(&[
+        "list-panes",
+        "-t",
+        &format!("={new}:99"),
+        "-F",
+        "#{@ae_agent}|#{pane_start_command}",
+    ]);
+    for (agent, helper) in [("_watchdog", "watchdog"), ("_events", "events-tail")] {
+        assert!(
+            commands.lines().any(|line| {
+                line.starts_with(&format!("{agent}|"))
+                    && line.contains(&new_dir.join(helper).display().to_string())
+            }),
+            "{helper} did not move to the new session helper: {commands:?}"
+        );
+    }
+    assert!(
+        !commands.contains(&format!("{}/", rig.dir.display())),
+        "an old session helper survived: {commands:?}"
+    );
+    let new_pid = ae::watchdog_glue::read_pid(&new_dir).expect("the new watchdog registered");
+    assert_ne!(new_pid, old_pid, "the old watchdog process survived rename");
+    assert!(matches!(
+        ae::watchdog_lifecycle::presence(
+            &ae::inventory::ServerId::Selected(ae::meta::Selector::Socket(rig.sock.clone())),
+            &new,
+            &new_dir,
+        ),
+        ae::watchdog_lifecycle::Presence::Running(pid) if pid == new_pid
+    ));
+}
+
+#[test]
+fn rename_reports_a_missing_watchdog_instead_of_claiming_success() {
+    let rig = Rig::new("renamefail");
+    let new = format!("{}new", rig.name);
+
+    let (code, out, err) = rig.run(&["rename", &rig.name, &new]);
+
+    assert_eq!(code, Some(1), "stdout: {out}\nstderr: {err}");
+    assert!(out.is_empty(), "rename must not report success: {out}");
+    assert!(err.contains("NO verified watchdog"), "{err}");
+    assert!(err.contains(&format!("ae watchdog start {new}")), "{err}");
+    let (_, names) = rig.tmux(&["list-sessions", "-F", "#{session_name}"]);
+    assert!(
+        names.lines().any(|name| name == new),
+        "the diagnostic names the actual post-rename state: {names:?}"
+    );
+}
+
 #[test]
 fn an_end_that_keeps_its_history_archives_before_it_removes() {
     let rig = Rig::new("keep");
@@ -1141,7 +1258,9 @@ fn an_ambiguous_server_record_refuses_the_rename_rather_than_taking_an_ambient_s
 #[test]
 fn a_session_that_records_no_server_still_renames_on_the_ambient_one() {
     let rig = AmbientRig::new("ambok");
-    rig.plant("ambplain", "");
+    // This fixture has no helper links or monitor panes; disable the watchdog
+    // explicitly so the test stays scoped to ambient-server resolution.
+    rig.plant("ambplain", "watchdog=false\n");
 
     let (code, out, err) = rig.run(&["rename", "ambplain", "ambmoved"]);
     assert_eq!(code, Some(0), "stdout: {out}\nstderr: {err}");

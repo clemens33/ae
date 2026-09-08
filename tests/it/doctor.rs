@@ -320,7 +320,10 @@ fn rename_moves_the_tmux_session_the_directory_and_the_meta_together() {
         return;
     }
     let rig = Rig::new("rename");
-    let dir = rig.session("before", "");
+    // This hand-planted session has no monitor helpers or panes, so it models
+    // the supported watchdog-disabled shape while this test isolates rename's
+    // tmux/directory/meta transaction.
+    let dir = rig.session("before", "watchdog=false\n");
     assert!(
         rig.tmux(&["new-session", "-d", "-s", "before", "-n", "lead"])
             .0,

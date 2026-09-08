@@ -177,7 +177,34 @@ fn locked(
             )?;
             return Ok(EXIT_FAILED);
         }
+        let watchdog_expected = crate::session_launch::watchdog_enabled_for_session(&new_dir);
+        let mut monitors =
+            crate::session_launch::rebind_monitor_panes(root, &server, new, &new_dir).map(|_| ());
         republish(&new_dir, new, &server);
+        // Success is decided after the renamed session's layout and facts are
+        // back in place. The respawn helper proves registration too, but this
+        // final look makes the ordering explicit and catches a daemon that
+        // disappeared while rename republished the look.
+        if monitors.is_ok()
+            && watchdog_expected
+            && crate::watchdog_lifecycle::await_running(&server, new, &new_dir).is_none()
+        {
+            monitors = Err("watchdog disappeared after the look was republished".to_owned());
+        }
+        if let Err(why) = monitors {
+            if watchdog_expected {
+                writeln!(
+                    err,
+                    "Error: the session was renamed to '{new}', but its monitor processes were not rebound ({why}). The renamed session has NO verified watchdog; run 'ae watchdog start {new}' after fixing it."
+                )?;
+            } else {
+                writeln!(
+                    err,
+                    "Error: the session was renamed to '{new}', but its events monitor was not rebound ({why})."
+                )?;
+            }
+            return Ok(EXIT_FAILED);
+        }
     }
 
     writeln!(out, "Renamed '{old}' → '{new}'")?;

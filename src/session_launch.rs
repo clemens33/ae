@@ -1355,7 +1355,11 @@ fn launch(
     // ---- the working copy ----
     let mut origin = env.cwd.clone();
     let mut work_dir = work_root.clone();
-    let mut resuming = false;
+    // The session document is the ONE resume discriminator. A worktree path is
+    // not identity: rename deliberately leaves it under the old name, and an
+    // unrelated directory under the new name must never turn a fresh launch
+    // into a resume.
+    let resuming = meta_present;
     if mode == Mode::Local {
         if dir_exists(&work_root) {
             writeln!(
@@ -1365,8 +1369,7 @@ fn launch(
             return Ok(EXIT_FAILED);
         }
         work_dir.clone_from(&env.cwd);
-        if meta_present {
-            resuming = true;
+        if resuming {
             if let Some(stored) = meta_value(&dir, "work_dir").filter(|v| dir_exists(Path::new(v)))
             {
                 work_dir = PathBuf::from(stored);
@@ -1380,13 +1383,42 @@ fn launch(
                 work_dir.display()
             )?;
         }
-    } else if dir_exists(&work_root) {
-        resuming = true;
+    } else if resuming {
+        let stored_work = meta_value(&dir, "work_dir").filter(|value| !value.is_empty());
+        if let Some(stored) = stored_work.as_deref() {
+            if !dir_exists(Path::new(stored)) {
+                writeln!(
+                    err,
+                    "Error: '{session}' records its working copy at {stored} but it is gone — restore it or end the session (ae end {session})"
+                )?;
+                return Ok(EXIT_FAILED);
+            }
+            work_dir = PathBuf::from(stored);
+        } else if !dir_exists(&work_root) {
+            writeln!(
+                err,
+                "Error: '{session}' records its working copy at {} but it is gone — restore it or end the session (ae end {session})",
+                work_root.display()
+            )?;
+            return Ok(EXIT_FAILED);
+        }
         if let Some(stored) = meta_value(&dir, "origin").filter(|v| !v.is_empty()) {
             origin = PathBuf::from(stored);
         }
-        writeln!(out, "Resuming session {session}...")?;
+        writeln!(
+            out,
+            "Resuming session {session} (dir: {})...",
+            work_dir.display()
+        )?;
     } else {
+        if dir_exists(&work_root) {
+            writeln!(
+                err,
+                "Error: working copy '{}' exists without session metadata; refusing to overwrite it.",
+                work_root.display()
+            )?;
+            return Ok(EXIT_FAILED);
+        }
         if let Err(why) = std::fs::create_dir_all(&work_root) {
             writeln!(
                 err,
@@ -1847,7 +1879,7 @@ fn build(
     // ---- the monitor panes ----
     let events_pane = ensure_events_pane(&server, &shape.name, &dir);
     if let Some(anchor) = &events_pane {
-        start_watchdog_pane(env, shape, &dir, &server, anchor);
+        start_watchdog_pane(shape, &dir, &server, anchor);
     }
 
     // ---- the per-window half of the look ----
@@ -1921,10 +1953,10 @@ fn new_window(server: &ServerId, target: &str, name: &str, work_dir: &str) -> Op
 
 /// Kill the session this launch created — the rollback's first step.
 fn kill_session(server: &ServerId, name: &str) -> bool {
-    match transport::observe_session_id(server, name) {
-        Some(id) => transport::kill_session(server, &id),
-        None => false,
-    }
+    // `transport` adds tmux's `=` exact-target marker. This build just created
+    // the session under the lifecycle lock, so a fallible list-sessions lookup
+    // would only add a way for rollback to strand it.
+    transport::kill_session(server, name)
 }
 
 /// The environment, options and status bar every ae session carries.
@@ -2564,6 +2596,113 @@ pub(crate) fn ensure_events_pane(server: &ServerId, session: &str, dir: &Path) -
     Some(pane)
 }
 
+/// Replace both monitor processes after a session directory moves.
+///
+/// Existing panes are respawned in place so window 99 keeps its pane ids and
+/// layout. A monitor pane that vanished before rename reached it is recreated
+/// through the ordinary start path. An enabled watchdog is not considered
+/// rebound until its pidfile, process and stamped pane agree.
+pub(crate) fn rebind_monitor_panes(
+    root: &Path,
+    server: &ServerId,
+    session: &str,
+    dir: &Path,
+) -> Result<Option<u32>, String> {
+    let events_command = vec![dir.join("events-tail").display().to_string()];
+    if let Some(events) = monitor_pane(server, session, "_events") {
+        let (respawned, _) = transport::run_tmux_op(&argv(
+            server,
+            &Op::RespawnPane {
+                pane: &events,
+                command: &events_command,
+            },
+        ));
+        if !respawned {
+            return Err(format!("could not respawn events pane {events}"));
+        }
+    } else if ensure_events_pane(server, session, dir).is_none() {
+        return Err("could not recreate the events pane".to_owned());
+    }
+
+    if !watchdog_enabled_for_session(dir) {
+        return Ok(None);
+    }
+    if let Some(watchdog) = monitor_pane(server, session, "_watchdog") {
+        let command = vec![dir.join("watchdog").display().to_string()];
+        let (respawned, _) = replace_watchdog_registration(dir, || {
+            transport::run_tmux_op(&argv(
+                server,
+                &Op::RespawnPane {
+                    pane: &watchdog,
+                    command: &command,
+                },
+            ))
+        });
+        if !respawned {
+            return Err(format!("could not respawn watchdog pane {watchdog}"));
+        }
+    } else {
+        let tail = ["start".to_owned(), session.to_owned()];
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        match crate::watchdog_lifecycle::run(root, &tail, &mut out, &mut err) {
+            Ok(0) => {}
+            Ok(_) | Err(_) => {
+                return Err(format!(
+                    "could not recreate the watchdog pane ({})",
+                    String::from_utf8_lossy(&err).trim()
+                ));
+            }
+        }
+    }
+    crate::watchdog_lifecycle::await_running(server, session, dir)
+        .map(Some)
+        .ok_or_else(|| "watchdog did not publish a live pid within the start bound".to_owned())
+}
+
+/// Replace a watchdog after releasing its old registration.
+fn replace_watchdog_registration<F>(dir: &Path, respawn: F) -> (bool, String)
+where
+    F: FnOnce() -> (bool, String),
+{
+    let old_pid = crate::watchdog_glue::read_pid(dir);
+    if let Some(pid) = old_pid {
+        let _ = crate::watchdog_glue::clear_pid(dir, pid);
+    }
+    respawn()
+}
+
+/// Whether the session's persisted settings ask for a watchdog.
+///
+/// The meta flag wins over config, as it does at launch. Otherwise the global
+/// config recorded in meta and the session's resolved local overlay recreate
+/// the launch-time layering. No setting means the documented default: on.
+pub(crate) fn watchdog_enabled_for_session(dir: &Path) -> bool {
+    let bytes = meta::read_bytes(dir).unwrap_or_default();
+    let value = |key: &str| crate::lifecycle::meta_value(&bytes, key);
+    let recorded = [value("watchdog"), value("loop")]
+        .into_iter()
+        .find(|value| !value.is_empty());
+    let configured = if recorded.is_none() {
+        let global = value("config");
+        let global = (!global.is_empty()).then(|| PathBuf::from(global));
+        let origin = value("origin");
+        let local = config::local_overlay(dir, &origin);
+        let values =
+            config::read_workspace_keys(global.as_deref(), local.as_deref(), &["watchdog", "loop"]);
+        values.into_iter().flatten().next()
+    } else {
+        None
+    };
+    !matches!(
+        recorded
+            .or(configured)
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+            .as_str(),
+        "false" | "no" | "off" | "0"
+    )
+}
+
 /// Mark the monitor pane's window as ae-owned plumbing for status rendering.
 fn mark_plumbing_window(server: &ServerId, pane: &str) {
     let _ = transport::publish_option(
@@ -2577,21 +2716,8 @@ fn mark_plumbing_window(server: &ServerId, pane: &str) {
 
 /// The watchdog pane, split ABOVE the events pane so the visual order stays
 /// watchdog-on-top / events-below.
-fn start_watchdog_pane(env: &Env, shape: &Session, dir: &Path, server: &ServerId, anchor: &str) {
-    let recorded = meta_value(dir, "watchdog").or_else(|| meta_value(dir, "loop"));
-    let configured = config::read_workspace_keys(
-        env.global.as_deref(),
-        env.local.as_deref(),
-        &["watchdog", "loop"],
-    );
-    let enabled = recorded
-        .or_else(|| configured[0].clone())
-        .or_else(|| configured[1].clone())
-        .unwrap_or_default();
-    if matches!(
-        enabled.to_ascii_lowercase().as_str(),
-        "false" | "no" | "off" | "0"
-    ) {
+fn start_watchdog_pane(shape: &Session, dir: &Path, server: &ServerId, anchor: &str) {
+    if !watchdog_enabled_for_session(dir) {
         return;
     }
     if monitor_pane(server, &shape.name, "_watchdog").is_some() {
@@ -3162,7 +3288,7 @@ fn from_preflight(root: &Path, raw_uuid: &str) -> Result<FromProof, String> {
 mod tests {
     use super::{
         AttachAction, EVENTS_KEEP, ToolKind, attach_action, launch_token, launch_turn_is_pasted,
-        parse_plan, server_attach_hint, trim_events,
+        parse_plan, replace_watchdog_registration, server_attach_hint, trim_events,
     };
     use crate::inventory::ServerId;
     use std::fmt::Write as _;
@@ -3210,6 +3336,30 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn watchdog_registration_is_cleared_before_a_fast_replacement_publishes() {
+        let dir = scratch("watchdog-replacement-order");
+        std::fs::write(crate::watchdog_glue::pidfile(&dir), "41\n").unwrap();
+
+        let (replaced, _) = replace_watchdog_registration(&dir, || {
+            assert_eq!(
+                crate::watchdog_glue::read_pid(&dir),
+                None,
+                "the old registration must be gone before respawn can publish"
+            );
+            std::fs::write(crate::watchdog_glue::pidfile(&dir), "42\n").unwrap();
+            (true, String::new())
+        });
+
+        assert!(replaced);
+        assert_eq!(
+            crate::watchdog_glue::read_pid(&dir),
+            Some(42),
+            "the replacement registration survives"
+        );
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

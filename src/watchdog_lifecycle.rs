@@ -266,15 +266,7 @@ fn start(
     let _ = transport::set_pane_title(server, &pane, PANE_TITLE);
     let _ = transport::run_tmux_op(&argv(server, &Op::DisablePane { pane: &pane }));
     // REGISTRATION, by the same criteria the NEXT starter will apply.
-    let mut registered = false;
-    for _ in 0..REGISTER_TRIES {
-        if matches!(observe(server, session, meta_dir), Presence::Running(_)) {
-            registered = true;
-            break;
-        }
-        std::thread::sleep(REGISTER_POLL);
-    }
-    if !registered {
+    if await_running(server, session, meta_dir).is_none() {
         // Nothing live-but-unregistered may be left for the next starter to
         // duplicate, and the lock is still held while we tear our own pane down.
         watchdog_glue::kill_owned_pane(server, &pane, session, Some(AGENT_STAMP), err)?;
@@ -290,6 +282,18 @@ fn start(
         "Watchdog started in hidden ae-monitor window. Use 'peek _watchdog' or 'peek _events' to inspect."
     )?;
     Ok(0)
+}
+
+/// Wait for the watchdog pane to publish a pidfile that names its live
+/// process. Rename uses the same registration proof as a normal start.
+pub(crate) fn await_running(server: &ServerId, session: &str, meta_dir: &Path) -> Option<u32> {
+    for _ in 0..REGISTER_TRIES {
+        if let Presence::Running(pid) = observe(server, session, meta_dir) {
+            return Some(pid);
+        }
+        std::thread::sleep(REGISTER_POLL);
+    }
+    None
 }
 
 /// `watchdog stop` — reap, kill the pane, retract the registration and the bar.
