@@ -641,6 +641,46 @@ fn direct_session_mutation(code: &str) -> Option<&str> {
     })
 }
 
+#[test]
+fn init_owns_exclusive_config_creation_and_first_launch_routes_through_it() {
+    let halves = product_halves();
+    let init = halves
+        .iter()
+        .find(|(name, _)| name == "src/init.rs")
+        .map_or_else(|| panic!("src/init.rs was not scanned"), |(_, code)| code);
+    let lib = halves
+        .iter()
+        .find(|(name, _)| name == "src/lib.rs")
+        .map_or_else(|| panic!("src/lib.rs was not scanned"), |(_, code)| code);
+    assert!(
+        init.contains(".create_new(true)"),
+        "init's staging writer must retain O_EXCL"
+    );
+    assert!(
+        init.contains("file.write_all(bytes).and_then(|()| file.sync_all())")
+            && init.contains("fs::hard_link(&temp, path)")
+            && init.contains("let _ = fs::remove_file(&temp)"),
+        "exclusive config publication must fsync a temp, hard-link without clobbering, then unlink the temp"
+    );
+    assert!(
+        init.contains("fs::rename(&temp, path)"),
+        "forced config replacement must stay atomic rename"
+    );
+    assert!(
+        lib.contains("crate::init::create_exclusive(path, contents.as_bytes(), 0o666)"),
+        "first-launch seeding must race through init's same exclusive writer and retain its umask-derived mode"
+    );
+    for (name, code) in &halves {
+        if name == "src/init.rs" || name == "src/lib.rs" {
+            continue;
+        }
+        assert!(
+            !code.contains("create_exclusive("),
+            "{name} gained a caller of init's config-publication boundary"
+        );
+    }
+}
+
 /// Lexical guard for direct `ToolKind::Variant` decisions in each production
 /// half. Aliases, glob-imported variants, and code after the first test module
 /// are outside what this source-text check can prove.

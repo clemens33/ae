@@ -34,7 +34,8 @@ verifies it against the manifest before extraction, then publishes it read-only 
 `~/.ae/versions/<V>/` and points `~/.local/bin/ae` straight at that version's `ae-core` —
 one symlink, no separate wrapper or pointer file to keep in sync. Switching versions later
 is one atomic rename of that symlink. Make sure `~/.local/bin` is on your `PATH`, then run
-`ae doctor`. Set `AE_VERSION=2026.8.2` to pin a release.
+`ae init` to discover installed agent CLIs and write the starting config. Set
+`AE_VERSION=2026.8.2` to pin a release.
 
 Installed ae checks for strictly newer releases during ordinary use and applies
 them quietly in a detached process. Set global `[workspace] auto_upgrade = off`
@@ -64,10 +65,13 @@ Prerequisites: [rustup](https://rustup.rs/) and [just](https://github.com/casey/
 
 ```bash
 cd ~/projects/my-app
+ae init
 ae my-app
 ```
 
-First run creates `~/.ae/config` with sensible defaults and launches your main agent in tmux.
+`ae init` discovers supported harnesses on `PATH` without running them, then proposes the lead,
+colead and orchestrator profiles. Use `ae init --yes` in a non-interactive shell. A session launch
+still creates the broad default config when init has not been run.
 Session names are explicit; a directory never silently decides one. Detach with `Ctrl+b d` --
 agents keep running in the background.
 

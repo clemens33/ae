@@ -249,6 +249,50 @@ fn an_installed_ae_ignores_the_home_and_server_doors_and_says_which() {
 }
 
 #[test]
+fn installed_init_reports_ignored_config_doors_and_writes_the_pinned_path() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let rig = Install::plant("init-ignore");
+    let bin = rig.scratch.join("bin");
+    assert!(std::fs::create_dir_all(&bin).is_ok(), "fake bin");
+    let claude = bin.join("claude");
+    assert!(std::fs::write(&claude, b"not executed\n").is_ok());
+    assert!(
+        std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o755)).is_ok(),
+        "executable fake"
+    );
+    let ignored_home = rig.scratch.join("ignored-ae-home");
+    let ignored_config = rig.scratch.join("ignored-config");
+    let path = bin.display().to_string();
+    let home = ignored_home.display().to_string();
+    let config = ignored_config.display().to_string();
+
+    let (code, stdout, stderr) = rig.run(
+        &[
+            ("PATH", &path),
+            ("AE_HOME", &home),
+            ("CONFIG_FILE", &config),
+        ],
+        &["init", "--yes"],
+    );
+    let pinned_config = rig.home.join(".ae").join("config");
+    assert_eq!(code, Some(0), "{stdout}\n{stderr}");
+    assert!(stderr.contains("ae: ignoring inherited"), "{stderr}");
+    assert!(stderr.contains(&format!("AE_HOME={home}")), "{stderr}");
+    assert!(
+        stderr.contains(&format!("CONFIG_FILE={config}")),
+        "{stderr}"
+    );
+    let written_config = std::fs::canonicalize(&pinned_config).expect("written installed config");
+    assert!(
+        stdout.contains(&format!("Wrote config to {}", written_config.display())),
+        "{stdout}"
+    );
+    assert!(pinned_config.is_file(), "installed path used");
+    assert!(!ignored_config.exists(), "inherited CONFIG_FILE ignored");
+}
+
+#[test]
 fn a_home_equal_to_the_default_is_not_worth_a_notice() {
     let rig = Install::plant("samehome");
     let same = rig.home.join(".ae");

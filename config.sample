@@ -1,5 +1,6 @@
 # ae config — auto-created on first run, yours to edit. Also mirrored in the repo as
 # config.sample. INI-style: [section] headers, key = value, "#" starts a comment.
+# Run `ae init` to discover installed harnesses and propose a smaller starting roster.
 # New sessions read this whole file. Stopping + resuming an existing session (ae stop <name>;
 # ae <name>) relaunches its preserved agents with their CURRENT command + [prompt] — but the
 # roster (main/workers), layout, and watchdog stay pinned in session meta, so edits to those
@@ -27,6 +28,14 @@ gpt56luna = "codex -m gpt-5.6-luna -c model_reasoning_effort=xhigh -a never"
 grok46 = "grok --always-approve -m grok-4.6 --effort high"
 gpt56terra = "codex --yolo -m gpt-5.6-terra -c model_reasoning_effort=xhigh"
 opencode = "opencode"
+# `ae init` uses these seat shortcuts and additional harness profiles.
+fablex = "claude --permission-mode bypassPermissions --model fable --effort xhigh"
+opusx = "claude --permission-mode bypassPermissions --model claude-opus-5 --effort xhigh"
+astrax = "codex --yolo -m gpt-6-astra -c model_reasoning_effort=xhigh"
+solx = "codex --yolo -m gpt-5.6-sol -c model_reasoning_effort=xhigh"
+gpt56solx = "codex -m gpt-5.6-sol -c model_reasoning_effort=xhigh -a never"
+agy = "agy --dangerously-skip-permissions"
+gemini = "gemini"
 
 [roster]
 # The agents promised to launch: name = profile. The NAME is the identity of the agent — it is
@@ -42,7 +51,7 @@ orchestrator = gpt56luna
 [workspace]
 # main = the standing main seat (a [roster] NAME) — under lead-pair a technical lifecycle
 # anchor, not a rank. workers = comma-separated [roster] names launched at start.
-# layout = vertical | horizontal | lead-pair. watchdog = true nudges stale/idle agents.
+# layout = vertical | horizontal | lead-solo | lead-pair. watchdog = true nudges stale/idle agents.
 # The leads delegate by rule (see docs/reference/delegation.md — spawn workers on demand).
 # Standing seats are the JUDGMENT PAIR only: under lead-pair the FIRST worker (worker.0)
 # is the COLEAD seat — an EQUAL leadership peer of the lead (interchangeable, same level,

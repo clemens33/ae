@@ -1748,6 +1748,11 @@ fn criterion_3_the_places_this_crate_can_read_the_world_are_the_inventoried_ones
             // `AE_NO_AUTOSTART`, `TMUX`, `TMUX_PANE`, the `<cwd>/.ae/config`
             "src/doors.rs".to_owned(),
             "src/events.rs".to_owned(),
+            // `ae init` classifies the selected config with lstat and reads a
+            // regular existing file before writing an exclusive proposal,
+            // backup, or atomic replacement. PATH discovery stays behind
+            // doctor.rs's existing resolver door.
+            "src/init.rs".to_owned(),
             // THE INSTALLER'S OWN DOORS: the bundle members read to
             // be hashed, the `lstat` that classifies every member and every
             // publication destination WITHOUT following a link, the journal

@@ -28,6 +28,9 @@ ae orchestrator --popup
 ae doctor              Check local environment and ae config
 ae doctor --refresh [name|all]
                        Regenerate helper scripts and workspace.md in existing sessions
+ae init [--yes] [--lead <profile>] [--colead <profile>|--solo]
+        [--orchestrator <profile>|--no-orchestrator] [--palette <p>] [--force]
+                       Discover harnesses and propose or write the global config
 ae rename [old] <new>  Rename a running session
 ae watchdog <start|stop|status> [name]
                        Toggle the stale-agent watchdog (per-session, persists across resume)
@@ -78,6 +81,39 @@ otherwise create a session called `status`.
 
 Any other `_`-prefixed word nobody serves also fails closed with exit 2, for the same
 fall-through reason.
+
+## `ae init`
+
+`ae init` resolves `claude`, `codex`, `grok`, `agy`, `opencode`, and `gemini` through the same
+PATH resolver as `ae doctor`. It runs no child process, performs no network or authentication
+check, and reports those limits beside each found executable. Shell aliases are not executable
+files and are therefore invisible.
+
+The default roster is derived from the found harnesses:
+
+| Found set | Lead | Colead | Orchestrator |
+|---|---|---|---|
+| Claude + Codex, with or without others | `fablex` | `astrax` | `gpt56solx` |
+| Claude, without Codex | `fablex` | `opusx` | `fablex` |
+| Codex, without Claude | `astrax` | `solx` | `gpt56solx` |
+| Neither; Grok + agy, with or without others | `grok46` | `agy` | `grok46` |
+| Neither; other combinations | first found | second found, or solo | first found |
+
+The fallback order is `grok46`, `agy`, `opencode`, `gemini`. Known xAI + Google choices satisfy
+the provider-diversity note; OpenCode and Gemini proposals keep provider status unverified.
+With Claude or Codex alone plus a fallback harness, the standing pair remains the same-provider
+default and init names the available reviewer profile.
+
+On a terminal, Enter accepts each bracketed default. EOF, Ctrl-C, an invalid answer, or an
+overlong answer writes nothing. Without a terminal the proposal is printed but writing requires
+`--yes`. `--solo` removes the colead and selects the `lead-solo` layout;
+`--no-orchestrator` removes that roster row.
+
+An absent config is created exclusively. When a regular config already exists, init leaves it
+byte-identical, creates `<config>.proposed` exclusively, and prints a pure-Rust unified diff.
+`--force` first creates `<config>.<epoch>.bak` exclusively, then atomically replaces the config;
+a backup or staging failure leaves the active config untouched. Symlinks and non-regular config
+paths are refused. Checkout builds honor `CONFIG_FILE`; installed builds use `~/.ae/config`.
 
 ## Modes
 

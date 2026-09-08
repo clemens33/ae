@@ -4,10 +4,13 @@
 
 ```bash
 cd ~/projects/my-app
+ae init
 ae my-app
 ```
 
-First run creates `~/.ae/config` with sensible defaults and launches your main agent in tmux. Session names are explicit, so the same directory can host distinct sessions.
+`ae init` discovers supported harness executables and proposes a roster before the first session.
+If you skip it, the first launch still creates the broad default config. Session names are
+explicit, so the same directory can host distinct sessions.
 
 Pick another configured profile for a standing seat on this launch:
 

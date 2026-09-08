@@ -21,6 +21,7 @@ mod fixtures;
 mod floor;
 mod gate;
 mod git;
+mod init;
 mod install;
 mod lifecycle;
 mod menu;

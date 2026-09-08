@@ -29,6 +29,7 @@ pub mod filters;
 pub mod git;
 pub mod goal;
 pub mod identity;
+pub mod init;
 pub mod install;
 pub mod interrupt;
 pub mod inventory;
@@ -254,10 +255,25 @@ pub fn run(args: &[String], out: &mut impl Write, err: &mut impl Write) -> Resul
         return run_dispatch(args, out, err);
     }
     let shape = shape::current();
-    // ONE aggregated notice, and only on this path: an agent's `send` would
-    // otherwise turn one stale export into a line of noise in every pane.
+    // ONE aggregated notice, and only on the public path: an agent's `send`
+    // would otherwise turn one stale export into a line of noise in every pane.
     if let Some(line) = doors::notice(&doors::ignored(shape)) {
         writeln!(err, "{line}")?;
+    }
+    // `init` discovers executables by reading PATH and must run NO child. The
+    // ordinary preamble asks tmux to resolve a launch server, so init routes
+    // before that preamble exists and reads only its state/config doors.
+    if args.first().map(String::as_str) == Some(cli::INIT) {
+        let Some(root) = doors::state_root(shape) else {
+            writeln!(err, "ae: {NO_STATE_ROOT}")?;
+            err.flush()?;
+            return Ok(EXIT_UNAVAILABLE);
+        };
+        let path = doors::config_file(shape, &root);
+        let code = init::run(&path, &args[1..], out, err)?;
+        out.flush()?;
+        err.flush()?;
+        return Ok(code);
     }
     let Some(preamble) = resolve_facts(shape, err)? else {
         err.flush()?;
@@ -910,35 +926,27 @@ pub(crate) fn seed_default_config(
     if regular_file(path) {
         return Ok(None);
     }
-    let Some(file_name) = path.file_name() else {
+    if path.file_name().is_none() {
         writeln!(err, "ae: {} is not a config file path.", path.display())?;
         return Ok(Some(entry::EXIT_FAILED));
-    };
+    }
     if let Some(parent) = path.parent()
         && let Err(why) = std::fs::create_dir_all(parent)
     {
         writeln!(err, "ae: could not create {} ({why}).", parent.display())?;
         return Ok(Some(entry::EXIT_FAILED));
     }
-    let mut temp_name = file_name.to_os_string();
-    temp_name.push(format!(".tmp.{}", std::process::id()));
-    let temp = path.with_file_name(temp_name);
-    let written =
-        std::fs::File::create(&temp).and_then(|mut file| file.write_all(contents.as_bytes()));
-    if let Err(why) = written {
-        let _ = std::fs::remove_file(&temp);
+    // `File::create` used 0666 before this path gained O_EXCL; retain its
+    // caller-umask-derived mode while sharing init's race-safe publisher.
+    if let Err(why) = crate::init::create_exclusive(path, contents.as_bytes(), 0o666) {
+        // Another first-run publisher won after the initial probe. It owns the
+        // complete file because both paths use the same O_EXCL writer.
+        if why.kind() == std::io::ErrorKind::AlreadyExists && regular_file(path) {
+            return Ok(None);
+        }
         writeln!(
             err,
-            "ae: could not write the default config at {} ({why}).",
-            path.display()
-        )?;
-        return Ok(Some(entry::EXIT_FAILED));
-    }
-    if let Err(why) = std::fs::rename(&temp, path) {
-        let _ = std::fs::remove_file(&temp);
-        writeln!(
-            err,
-            "ae: could not publish the default config at {} ({why}).",
+            "ae: could not create the default config at {} ({why}).",
             path.display()
         )?;
         return Ok(Some(entry::EXIT_FAILED));
@@ -1754,6 +1762,15 @@ pub fn run_with(
         cli::Request::Doctor { tail } => {
             if let Some(root) = state_root() {
                 doctor::run(&root, tail, out, err)?
+            } else {
+                writeln!(err, "ae: {NO_STATE_ROOT}")?;
+                EXIT_UNAVAILABLE
+            }
+        }
+        cli::Request::Init { tail } => {
+            if let Some(root) = state_root() {
+                let path = doors::config_file(shape::current(), &root);
+                init::run(&path, tail, out, err)?
             } else {
                 writeln!(err, "ae: {NO_STATE_ROOT}")?;
                 EXIT_UNAVAILABLE

@@ -6,9 +6,103 @@ use std::path::PathBuf;
 use crate::inventory::ServerId;
 use crate::meta::Selector;
 
+/// One profile `ae init` may offer, tied to the executable whose discovery
+/// makes it usable. Commands stay in [`DEFAULT_CONFIG`], so first-run seeding
+/// and init have one command catalog rather than two copies that can drift.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Profile {
+    /// Config key under `[profiles]`.
+    pub name: &'static str,
+    /// Executable looked up through doctor's PATH resolver.
+    pub harness: &'static str,
+    /// Model provider when the profile establishes one; `None` means an init
+    /// proposal cannot prove provider diversity from the command alone.
+    pub provider: Option<&'static str>,
+}
+
+/// The profile catalog shared by the seeded config and `ae init`.
+pub const PROFILE_CATALOG: &[Profile] = &[
+    Profile {
+        name: "opus5",
+        harness: "claude",
+        provider: Some("Anthropic"),
+    },
+    Profile {
+        name: "fable5",
+        harness: "claude",
+        provider: Some("Anthropic"),
+    },
+    Profile {
+        name: "fablex",
+        harness: "claude",
+        provider: Some("Anthropic"),
+    },
+    Profile {
+        name: "opusx",
+        harness: "claude",
+        provider: Some("Anthropic"),
+    },
+    Profile {
+        name: "gpt56sol",
+        harness: "codex",
+        provider: Some("OpenAI"),
+    },
+    Profile {
+        name: "gpt6astra",
+        harness: "codex",
+        provider: Some("OpenAI"),
+    },
+    Profile {
+        name: "gpt56luna",
+        harness: "codex",
+        provider: Some("OpenAI"),
+    },
+    Profile {
+        name: "gpt56terra",
+        harness: "codex",
+        provider: Some("OpenAI"),
+    },
+    Profile {
+        name: "astrax",
+        harness: "codex",
+        provider: Some("OpenAI"),
+    },
+    Profile {
+        name: "solx",
+        harness: "codex",
+        provider: Some("OpenAI"),
+    },
+    Profile {
+        name: "gpt56solx",
+        harness: "codex",
+        provider: Some("OpenAI"),
+    },
+    Profile {
+        name: "grok46",
+        harness: "grok",
+        provider: Some("xAI"),
+    },
+    Profile {
+        name: "agy",
+        harness: "agy",
+        provider: Some("Google"),
+    },
+    Profile {
+        name: "opencode",
+        harness: "opencode",
+        provider: None,
+    },
+    Profile {
+        name: "gemini",
+        harness: "gemini",
+        provider: None,
+    },
+];
+
 /// The config `ae` writes on a first run.
 pub const DEFAULT_CONFIG: &str = r##"# ae config — auto-created on first run, yours to edit. Also mirrored in the repo as
 # config.sample. INI-style: [section] headers, key = value, "#" starts a comment.
+# Run `ae init` to discover installed harnesses and propose a smaller starting roster.
 # New sessions read this whole file. Stopping + resuming an existing session (ae stop <name>;
 # ae <name>) relaunches its preserved agents with their CURRENT command + [prompt] — but the
 # roster (main/workers), layout, and watchdog stay pinned in session meta, so edits to those
@@ -36,6 +130,14 @@ gpt56luna = "codex -m gpt-5.6-luna -c model_reasoning_effort=xhigh -a never"
 grok46 = "grok --always-approve -m grok-4.6 --effort high"
 gpt56terra = "codex --yolo -m gpt-5.6-terra -c model_reasoning_effort=xhigh"
 opencode = "opencode"
+# `ae init` uses these seat shortcuts and additional harness profiles.
+fablex = "claude --permission-mode bypassPermissions --model fable --effort xhigh"
+opusx = "claude --permission-mode bypassPermissions --model claude-opus-5 --effort xhigh"
+astrax = "codex --yolo -m gpt-6-astra -c model_reasoning_effort=xhigh"
+solx = "codex --yolo -m gpt-5.6-sol -c model_reasoning_effort=xhigh"
+gpt56solx = "codex -m gpt-5.6-sol -c model_reasoning_effort=xhigh -a never"
+agy = "agy --dangerously-skip-permissions"
+gemini = "gemini"
 
 [roster]
 # The agents promised to launch: name = profile. The NAME is the identity of the agent — it is
@@ -51,7 +153,7 @@ orchestrator = gpt56luna
 [workspace]
 # main = the standing main seat (a [roster] NAME) — under lead-pair a technical lifecycle
 # anchor, not a rank. workers = comma-separated [roster] names launched at start.
-# layout = vertical | horizontal | lead-pair. watchdog = true nudges stale/idle agents.
+# layout = vertical | horizontal | lead-solo | lead-pair. watchdog = true nudges stale/idle agents.
 # The leads delegate by rule (see docs/reference/delegation.md — spawn workers on demand).
 # Standing seats are the JUDGMENT PAIR only: under lead-pair the FIRST worker (worker.0)
 # is the COLEAD seat — an EQUAL leadership peer of the lead (interchangeable, same level,
@@ -112,6 +214,7 @@ Usage:
                          hand this client to that agent's pane (needs tmux 3.4+)
   ae doctor [--refresh [name|all]]
                          Check local environment and optionally refresh existing session helpers
+  ae init [--yes]        Discover installed harnesses and propose a global config
   ae rename [old] <new>  Rename a running session
   ae watchdog <start|stop|status> [name]
                          Toggle the stale-agent watchdog for a session
@@ -364,6 +467,7 @@ pub fn route(preamble: &Preamble, argv: &[String], pane: Option<&str>) -> Route 
             _ => Route::ArchiveUsage,
         },
         Some("doctor") => Route::Core(with_head(crate::cli::DOCTOR, &tail())),
+        Some("init") => Route::Core(with_head(crate::cli::INIT, &tail())),
         Some("stop") => Route::Core(with_head(crate::cli::STOP, &with_pane(&tail(), pane))),
         Some("rename") => Route::Core(with_head(crate::cli::RENAME, &tail())),
         // `loop` is the deprecated spelling of the renamed feature, kept as an
@@ -470,6 +574,14 @@ mod tests {
             };
             assert!(text.starts_with("Error: "), "{text}");
         }
+    }
+
+    #[test]
+    fn init_is_a_core_command_not_a_session_name() {
+        assert_eq!(
+            route(&preamble(), &argv(&["init", "--yes"]), None),
+            Route::Core(argv(&["init", "--yes"]))
+        );
     }
 
     #[test]
@@ -678,6 +790,9 @@ mod tests {
     fn the_embedded_texts_are_the_ones_the_glue_printed() {
         assert!(HELP.starts_with("ae - agentic engineering: tmux multi-agent workspace\n"));
         assert!(HELP.contains("  ae compact [-f] [--keep-history] [--digest-only] [name]\n"));
+        assert!(HELP.contains(
+            "  ae init [--yes]        Discover installed harnesses and propose a global config\n"
+        ));
         assert!(HELP.ends_with("regenerate existing session helpers.\n"));
         assert!(LIST_HELP.starts_with("Usage: ae list ["));
         assert!(LIST_HELP.contains("--needs-attn"));

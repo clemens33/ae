@@ -193,6 +193,9 @@ pub const REGISTER_SID: &str = "_register-sid";
 /// The environment report: `doctor [--refresh [all|<session>]]`.
 pub const DOCTOR: &str = "doctor";
 
+/// First-run harness discovery and global config proposal.
+pub const INIT: &str = "init";
+
 /// The rename: `rename [old] <new>`.
 pub const RENAME: &str = "rename";
 
@@ -623,6 +626,11 @@ pub enum Request {
         /// Everything after the subcommand, as typed.
         tail: Vec<String>,
     },
+    /// `init [flags]` — validated by [`crate::init`].
+    Init {
+        /// Everything after the subcommand, as typed.
+        tail: Vec<String>,
+    },
     /// `brief [session] [--all] [--since <dur>]` — validated by
     /// [`crate::brief::parse`], which owns the flag grammar and its usage text.
     Brief {
@@ -813,6 +821,9 @@ impl Request {
                 tail: args[1..].to_vec(),
             },
             Some(DOCTOR) => Self::Doctor {
+                tail: args[1..].to_vec(),
+            },
+            Some(INIT) => Self::Init {
                 tail: args[1..].to_vec(),
             },
             Some(RENAME) => Self::Rename {
@@ -1301,6 +1312,7 @@ impl Request {
             | Self::CaptureSid { .. }
             | Self::RegisterSid { .. }
             | Self::Doctor { .. }
+            | Self::Init { .. }
             | Self::Rename { .. }
             | Self::CheckDeps { .. }
             | Self::Install { .. }
@@ -1491,7 +1503,7 @@ mod tests {
     use super::{
         ARCHIVE_PREVIEW, ASK, COMPACT_ARCHIVE, COMPACT_CANCEL, COMPACT_FIND_OUTSTANDING,
         COMPACT_FREEZE, COMPACT_MEMO_BASELINE, COMPACT_REVALIDATE, COMPACT_TEARDOWN, COMPACT_WAIT,
-        DEFAULT_REVALIDATE_WHEN, END_NONLOCAL_TEARDOWN, EVENTS_TAIL, GOAL, INTERRUPT, MEMO,
+        DEFAULT_REVALIDATE_WHEN, END_NONLOCAL_TEARDOWN, EVENTS_TAIL, GOAL, INIT, INTERRUPT, MEMO,
         NET_PROBE, RELAY, REPLY, REQUESTS, REVIEW, RUN, Request, SEND, STATE, TELEGRAM_RUN,
         WATCHDOG_RUN,
     };
@@ -1570,6 +1582,16 @@ mod tests {
     #[test]
     fn bare_argv_is_help() {
         assert_eq!(Request::parse(&[]), Request::Help);
+    }
+
+    #[test]
+    fn init_carries_its_tail_to_the_config_command() {
+        assert_eq!(
+            Request::parse(&argv(&[INIT, "--yes", "--solo"])),
+            Request::Init {
+                tail: argv(&["--yes", "--solo"])
+            }
+        );
     }
 
     #[test]

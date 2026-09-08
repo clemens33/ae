@@ -28,6 +28,16 @@ once installed), and `~/.local/bin/ae` is pointed straight at that version's
 one atomic rename of that symlink. Make sure `~/.local/bin` is on your `PATH`.
 Set `AE_VERSION=2026.8.2` to pin a release.
 
+Discover installed agent harnesses and write the starting config:
+
+```bash
+ae init
+```
+
+The command only resolves executable files on `PATH`; it does not run a harness, inspect login
+state, access the network, or infer model availability. In a non-interactive shell use
+`ae init --yes` to accept the proposed defaults.
+
 ## Build from source
 
 Prerequisites: [rustup](https://rustup.rs/) and [just](https://github.com/casey/just) installed; then run `just rust-setup` once to provision the pinned toolchain.

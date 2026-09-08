@@ -1,6 +1,9 @@
 # Configuration
 
-`~/.ae/config` is auto-created on first run. Per-project overrides go in `.ae/config` inside your project directory (the project file shadows the global file key by key).
+Run `ae init` to discover supported harness executables on `PATH` and propose `~/.ae/config`.
+It never runs a harness or checks login/model access. A first session launch still auto-creates
+the broad default when the file is absent. Per-project overrides go in `.ae/config` inside your
+project directory (the project file shadows the global file key by key).
 
 ## Example
 
