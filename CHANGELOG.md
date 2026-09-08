@@ -1,6 +1,13 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [v2026.9.32] - 2026-09-08
+
+### Other
+
+- Add guided configuration initialization
+
+Publish new config files from synced same-directory temps so concurrent readers never observe partial bytes.
 ## [v2026.9.31] - 2026-09-08
 
 ### Other
