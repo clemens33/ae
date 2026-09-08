@@ -25,10 +25,12 @@ contract; it is not loaded from a guessed path.
 The watchdog reads fleet state through ae, renders a compact `NEEDS YOU` /
 `WORKING` / `QUIET` overview, and pastes it into the orchestrator pane only
 when the rendered content changed. Empty sections are omitted and quiet
-sessions collapse to one line. The seat only declares `done` on that turn, so
-the watchdog can tell the delivery was acknowledged. Each delivered change
-costs one minimal model turn; a timer alone costs none.
-Routine overviews do not use Telegram. It stays `done` between changes.
+sessions collapse to one line. An overview is a notification, never a task: a
+human instruction already in progress finishes before the seat acknowledges
+the overview with `state done`. An idle seat runs only that acknowledgement on
+the overview turn. Each delivered change costs one minimal model turn; a timer
+alone costs none. Routine overviews do not use Telegram. It stays `done`
+between changes.
 
 It relays only explicit human instructions through its full-path `relay`
 helper. The target is a session or exact `session:agent`; the text arrives bare
@@ -47,7 +49,9 @@ nonexistent, resolution lands elsewhere such as a symlink, or mode unclear).
 Otherwise it first prints one proposal line
 `name=<n> dir=<canonical path> mode=local|copy|worktree` (default `local`,
 `worktree` only for branch/isolated/parallel, `copy` only when asked), waits
-for `yes` or an edit, then runs exactly one matching command: mode `local` →
+for `yes` or an edit, and declares `waiting-user` with the full decision and
+recommended command rather than a short caption. It then runs exactly one
+matching command: mode `local` →
 `ae <name> --dir <path> --local --no-attach`; mode `copy` →
 `ae <name> --dir <path> --copy --no-attach`; mode `worktree` →
 `ae <name> --dir <path> --worktree --no-attach`. It never omits or combines

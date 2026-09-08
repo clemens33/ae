@@ -513,6 +513,10 @@ fn the_charter_pins_the_watchdog_overview_turn_and_retires_the_model_sweep() {
     let charter = Path::new(env!("CARGO_MANIFEST_DIR")).join("contrib/aeorchestrator/CHARTER.md");
     let text = fs::read_to_string(&charter).expect("the charter ships with the repo");
     let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let template = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("contrib/aeorchestrator/orchestrator.config"),
+    )
+    .expect("the orchestrator config template ships with the repo");
     let cards = vec![
         Card {
             name: "aedev".to_owned(),
@@ -628,6 +632,15 @@ fn the_charter_pins_the_watchdog_overview_turn_and_retires_the_model_sweep() {
         normalized.contains("Run only this session's `state done` helper. Print nothing"),
         "one changed overview costs only the completion turn"
     );
+    let notification_rule = "An overview is a notification, never a task: if a human instruction is in progress, finish it first, then run `state done`; never abandon an instruction because an overview arrived.";
+    assert!(
+        normalized.contains(notification_rule),
+        "the charter keeps an in-progress human instruction ahead of an overview"
+    );
+    assert!(
+        template.contains(notification_rule),
+        "the shipped prompt keeps an in-progress human instruction ahead of an overview"
+    );
     let session_card_rule = "When the human asks about a session, run `ae brief <session>` and present its card verbatim — goal, latest memo per topic, needs you in full — without interpreting it; then route the human's answer to that session's lead via relay.";
     assert!(
         normalized.contains(session_card_rule),
@@ -654,6 +667,15 @@ fn the_charter_pins_the_watchdog_overview_turn_and_retires_the_model_sweep() {
     assert!(
         text.contains("wait for the human's `yes` or edit"),
         "session creation requires confirmation"
+    );
+    let creation_reason = "confirm session creation: name=<n> dir=<canonical path> mode=<mode> — yes runs ae <n> --dir <path> --<mode> --no-attach, or edit any field (recommend as proposed because <why>)";
+    assert!(
+        normalized.contains(creation_reason),
+        "charter pins a complete waiting-user decision above the reason minimum"
+    );
+    assert!(
+        template.contains(creation_reason),
+        "shipped prompt pins a complete waiting-user decision above the reason minimum"
     );
     assert!(
         text.contains("confirm only when"),

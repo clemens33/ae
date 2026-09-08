@@ -481,6 +481,11 @@ impl QuietCycle {
 // ---------------------------------------------------------------------------
 // The orchestrator (meta-agent) changed-overview cadence.
 
+/// Keep fleet overviews out of a seat that just declared active human work.
+/// A finite hold protects the instruction without letting a stuck declaration
+/// starve the human forever.
+pub const OVERVIEW_HOLD_WHILE_WORKING_SECS: u64 = 600;
+
 /// The orchestrator sweep tunables, with their defaults.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SweepKnobs {
@@ -689,6 +694,8 @@ pub struct SweepObservation {
     pub now: SystemTime,
     /// Newest `state done` event by the orchestrator main, if one exists.
     pub last_done: Option<SystemTime>,
+    /// When the orchestrator main's current `working` declaration landed.
+    pub working_since: Option<SystemTime>,
     /// Whether the newly rendered overview differs from the last one that
     /// landed in the orchestrator pane.
     pub overview_changed: bool,
@@ -705,6 +712,7 @@ impl SweepObservation {
         Self {
             now,
             last_done,
+            working_since: None,
             overview_changed: true,
             persisted_outstanding_since: None,
             persisted_last_delivery: None,
@@ -724,6 +732,14 @@ impl SweepObservation {
         self.overview_changed = changed;
         self.persisted_outstanding_since = persisted_outstanding_since;
         self.persisted_last_delivery = persisted_last_delivery;
+        self
+    }
+
+    /// Add the active-human-work hold recovered from the main seat's newest
+    /// declaration. `None` means its current declaration is not `working`.
+    #[must_use]
+    pub const fn with_working_since(mut self, working_since: Option<SystemTime>) -> Self {
+        self.working_since = working_since;
         self
     }
 }
@@ -828,7 +844,12 @@ pub fn sweep_step(
         (memory, persisted) => memory.or(persisted),
     };
     let due = last_sweep.is_none_or(|at| secs_between(seen.now, at) >= knobs.sweep_secs);
-    if due && seen.overview_changed {
+    let holding_for_work = seen
+        .working_since
+        .is_some_and(|at| secs_between(seen.now, at) < OVERVIEW_HOLD_WHILE_WORKING_SECS);
+    if due && seen.overview_changed && !holding_for_work {
+        // A held overview is not an attempted delivery: no booking, hash or
+        // spacing clock advances, so the next cycle sees the same change.
         effects.push(SweepEffect::FireSweepNudge);
     }
 
@@ -893,12 +914,12 @@ mod tests {
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     use super::{
-        QuietCycle, QuietKind, QuietPane, SweepAlert, SweepEffect, SweepKnobs, SweepObservation,
-        SweepState, SweepVerdict, WedgeDetail, classify_dead, command_is_shell, declaration_key,
-        indented, is_echo, is_sweep_target, latest_relevant_event, quiet_cursor_advance,
-        quiet_filter, quiet_hash, quiet_pane_decision, quiet_reason, quiet_stabilize,
-        quiet_stabilize_allowed, raw_nudge, record_sweep, shows_throttle, stale_composite,
-        submit_hdr, sweep_step,
+        OVERVIEW_HOLD_WHILE_WORKING_SECS, QuietCycle, QuietKind, QuietPane, SweepAlert,
+        SweepEffect, SweepKnobs, SweepObservation, SweepState, SweepVerdict, WedgeDetail,
+        classify_dead, command_is_shell, declaration_key, indented, is_echo, is_sweep_target,
+        latest_relevant_event, quiet_cursor_advance, quiet_filter, quiet_hash, quiet_pane_decision,
+        quiet_reason, quiet_stabilize, quiet_stabilize_allowed, raw_nudge, record_sweep,
+        shows_throttle, stale_composite, submit_hdr, sweep_step,
     };
     use crate::events::Event;
     use crate::procs::Descendancy;
@@ -1917,6 +1938,52 @@ tail line
                 .contains(&SweepEffect::FireSweepNudge),
             "a changed overview fires exactly at the durable boundary"
         );
+    }
+
+    #[test]
+    fn a_fresh_working_declaration_holds_a_changed_overview_without_booking_it() {
+        let k = knobs();
+        let prior = SweepState::default();
+        let observed =
+            seen(OVERVIEW_HOLD_WHILE_WORKING_SECS - 1, None, &k).with_working_since(Some(at(0)));
+
+        let booked = sweep_step(&prior, &observed, &k).expect("enabled");
+
+        assert!(
+            !booked.effects.contains(&SweepEffect::FireSweepNudge),
+            "human work owns the seat during the hold"
+        );
+        assert_eq!(
+            booked.next, prior,
+            "a held overview spends no delivery, retry, or spacing state"
+        );
+    }
+
+    #[test]
+    fn a_stale_working_declaration_no_longer_holds_the_overview() {
+        let k = knobs();
+        for age in [
+            OVERVIEW_HOLD_WHILE_WORKING_SECS,
+            OVERVIEW_HOLD_WHILE_WORKING_SECS + 1,
+        ] {
+            let observed = seen(age, None, &k).with_working_since(Some(at(0)));
+            let booked = sweep_step(&SweepState::default(), &observed, &k).expect("enabled");
+
+            assert!(
+                booked.effects.contains(&SweepEffect::FireSweepNudge),
+                "a stuck working seat must not starve the human at age {age}"
+            );
+        }
+    }
+
+    #[test]
+    fn done_or_idle_does_not_hold_a_changed_overview() {
+        let k = knobs();
+        for last_done in [Some(0), None] {
+            let observed = seen(1, last_done, &k);
+            let booked = sweep_step(&SweepState::default(), &observed, &k).expect("enabled");
+            assert!(booked.effects.contains(&SweepEffect::FireSweepNudge));
+        }
     }
 
     #[test]

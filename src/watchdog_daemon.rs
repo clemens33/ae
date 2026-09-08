@@ -549,20 +549,36 @@ fn last_done_event_at(events: &[Event], session: &str, agent: &str) -> Option<Sy
     let epoch = events
         .iter()
         .rev()
-        .find(|event| {
-            let from_main = match event.actor_identity() {
-                crate::events::Identity::Routed {
-                    slot,
-                    session: owner,
-                } => slot == crate::watchdog::MAIN_SLOT && owner == session,
-                crate::events::Identity::Display(display) => display == agent,
-                crate::events::Identity::Unassociated => false,
-            };
-            from_main && event.declared_state() == Some("done")
-        })?
+        .find(|event| main_actor(event, session, agent) && event.declared_state() == Some("done"))?
         .ts
         .epoch();
     system_time_from_epoch(epoch)
+}
+
+/// Whether an event belongs to this session's main seat. New routed records
+/// use slot + session; display identity keeps old event logs readable.
+fn main_actor(event: &Event, session: &str, agent: &str) -> bool {
+    match event.actor_identity() {
+        crate::events::Identity::Routed {
+            slot,
+            session: owner,
+        } => slot == crate::watchdog::MAIN_SLOT && owner == session,
+        crate::events::Identity::Display(display) => display == agent,
+        crate::events::Identity::Unassociated => false,
+    }
+}
+
+/// The current `working` declaration's wall clock, if the orchestrator main's
+/// newest declaration is still `working`.
+fn last_working_declaration_at(events: &[Event], session: &str, agent: &str) -> Option<SystemTime> {
+    let latest = events
+        .iter()
+        .rev()
+        .find(|event| main_actor(event, session, agent) && event.declared_state().is_some())?;
+    if latest.declared_state() != Some("working") {
+        return None;
+    }
+    system_time_from_epoch(latest.ts.epoch())
 }
 
 fn system_time_from_epoch(epoch: i64) -> Option<SystemTime> {
@@ -1684,12 +1700,14 @@ impl Cycle<'_> {
         agent: &str,
         events: &[Event],
         overview: Option<&OverviewReading>,
+        now: i64,
     ) -> Option<SweepObservation> {
         is_sweep_target(self.meta_agent, slot).then(|| {
             SweepObservation::new(
-                SystemTime::now(),
+                system_time_from_epoch(now).unwrap_or(UNIX_EPOCH),
                 last_done_event_at(events, self.session, agent),
             )
+            .with_working_since(last_working_declaration_at(events, self.session, agent))
             .with_overview(
                 overview.is_some_and(OverviewReading::changed),
                 overview.and_then(OverviewReading::persisted_outstanding_since),
@@ -1769,7 +1787,7 @@ impl Cycle<'_> {
                 // Decided HERE, once, and the type carries the answer: a pane
                 // that is not the orchestrator main gets `None` and no sweep
                 // branch can reach it.
-                sweep: self.sweep_observation(&slot, agent, &events, overview.as_ref()),
+                sweep: self.sweep_observation(&slot, agent, &events, overview.as_ref(), now),
             };
             let acting = Acting {
                 agent,
@@ -2606,9 +2624,10 @@ mod tests {
         MotionVerdict, Observation, OverviewReading, PaneState, QuietCycle, QuietQuery, Rebind,
         SendHelper, UNKNOWN_ALERT_CYCLES, Verdict, account, adopt_server, age_secs, bar_glyph,
         continuation, entry_mut, is_meta_agent, last_actor_event_age, last_done_event_at,
-        motion_cadence, motion_failure, motion_observation_due, motion_publish_failure,
-        motion_ticker_enabled, nudge_text, read_events, rebind, record_nudge, session_name,
-        slot_mark, stale_display, sweep_effects, sweep_seconds, window_agents_line,
+        last_working_declaration_at, motion_cadence, motion_failure, motion_observation_due,
+        motion_publish_failure, motion_ticker_enabled, nudge_text, read_events, rebind,
+        record_nudge, session_name, slot_mark, stale_display, sweep_effects, sweep_seconds,
+        system_time_from_epoch, window_agents_line,
     };
     use super::{Look, Mark, PaneMark, session_mark};
     use crate::events::Event;
@@ -4371,6 +4390,45 @@ mod tests {
             "a routed worker with the same display name is not the main slot"
         );
         assert_eq!(last_done_event_at(&events, "orchestrator", "nobody"), None);
+    }
+
+    #[test]
+    fn only_the_main_agents_newest_working_declaration_holds_an_overview() {
+        let events: Vec<Event> = [
+            r#"{"ts":"2026-09-07T09:00:00Z","actor":"seat:main","action":"state","ref":"working"}"#,
+            r#"{"ts":"2026-09-07T09:01:00Z","actor":"seat:main","action":"state","ref":"working","actor_slot":"worker.0","actor_session":"orchestrator"}"#,
+        ]
+        .iter()
+        .map(|line| Event::parse_line(line).expect("specimen"))
+        .collect();
+        let expected_epoch = crate::time::Timestamp::parse("2026-09-07T09:00:00Z")
+            .expect("specimen")
+            .epoch();
+        let expected = system_time_from_epoch(expected_epoch);
+
+        assert_eq!(
+            last_working_declaration_at(&events, "orchestrator", "seat:main"),
+            expected,
+            "a routed worker with the same display name cannot hold the main seat"
+        );
+
+        for latest in [
+            r#"{"ts":"2026-09-07T09:02:00Z","actor":"seat:main","action":"state","ref":"done"}"#,
+            r#"{"ts":"2026-09-07T09:02:00Z","actor":"seat:main","action":"state","ref":"blocked"}"#,
+        ] {
+            let mut superseded = events.clone();
+            superseded.push(Event::parse_line(latest).expect("specimen"));
+            assert_eq!(
+                last_working_declaration_at(&superseded, "orchestrator", "seat:main"),
+                None,
+                "only the newest declaration defines the current state"
+            );
+        }
+        assert_eq!(
+            last_working_declaration_at(&[], "orchestrator", "seat:main"),
+            None,
+            "an idle seat declares no working hold"
+        );
     }
 
     #[test]

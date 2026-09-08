@@ -587,9 +587,11 @@ receives a watchdog-rendered `NEEDS YOU` / `WORKING` / `QUIET` overview only
 when that text changes. `NEEDS YOU` is grouped by session and contains only the
 main/`colead` decisions that need the human; open asks are counts on `WORKING`
 rows. A human answer for a session is relayed to that session's lead, or to the
-named seat when the human selects one. Its entire overview turn is `state done`: it prints
-nothing and stays done until another change. Each delivered change therefore
-costs one minimal seat turn; a timer-only cycle costs none. For a human fleet
+named seat when the human selects one. When idle, its entire overview turn is
+`state done`: it prints nothing and stays done until another change. If a human
+instruction is already in progress, the overview is only a notification: the
+seat finishes the instruction first, then declares `state done`. Each delivered
+change therefore costs one minimal seat turn; a timer-only cycle costs none. For a human fleet
 question it may run `ae brief --all` once. It relays only explicit human
 instructions through its `relay <session[:agent]> <text…>` helper.
 When the human asks about one session, it runs `ae brief <session>` and presents

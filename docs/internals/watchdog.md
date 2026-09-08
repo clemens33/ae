@@ -68,6 +68,13 @@ spacing has elapsed. Elapsed age labels and request bodies never change the hash
 leadership state/reason or the per-session open-request count does. Unchanged
 cycles never wake the model.
 
+A main-seat `state working` declaration holds a changed overview for 600
+seconds. During that hold there is no delivery attempt or booking: the
+delivered hash and both spacing clocks remain unchanged, so the next cycle
+retries the same overview. At 600 seconds the hold expires and delivery may
+proceed, preventing a stuck `working` declaration from starving the human.
+Other declarations and an idle seat never hold an overview.
+
 `meta-agent-state.json` carries the watchdog heartbeat, semantic hash, the
 oldest delivery awaiting acknowledgement, and the latest successful delivery
 used for spacing. Both delivery clocks are captured after the checked submit;
@@ -78,8 +85,10 @@ liveness: the main seat's newest `state done` event in `events.jsonl` must be at
 or after the latest successful delivery before it acknowledges the batch. The
 oldest outstanding delivery still owns the fixed deadline; no qualifying
 `done` past `sweep * 2 + 60` seconds becomes `wedged`, and the next qualifying
-`done` clears it. The seat's only action on the pasted turn is that
-acknowledgement; it never runs `ae brief --all` on a timer.
+`done` clears it. For an idle seat, the only action on the pasted turn is that
+acknowledgement. If a human instruction is already in progress, the seat
+finishes it before acknowledging; an overview is a notification, never a
+replacement task. The seat never runs `ae brief --all` on a timer.
 
 ## Per-cycle state machine
 
