@@ -135,8 +135,9 @@ name is shown once in the fleet strip below.
 the order it was created, each drawn as its live glyph, one blank, then its
 name. A session keeps its place
 while its attention changes, so a click never moves the thing that was clicked;
-the current session uses the palette's selection ground and ink, not a new
-position. The orchestrator is rendered immediately before the version segment —
+the current session uses the palette's selection ground, ink and weight, never
+extra leading or trailing blanks, so selection never changes row width. The
+orchestrator is rendered immediately before the version segment —
 the ONE place the seat is drawn — with its own verdict mark and a tmux
 `range=session` target for the canonical `orchestrator` session. When current,
 selection colours mark it in place; it never jumps into the fleet strip. Three

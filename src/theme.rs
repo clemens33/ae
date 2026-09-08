@@ -830,10 +830,8 @@ pub fn fleet_strip(look: &Look, rows: &[FleetRow], working_frame: Option<&Workin
         // interpolates literally, and a session name is an allowlist that
         // admits no `#`.
         let name = &row.name;
-        // The CURRENT session is the selected tab: the palette's selection
-        // ground and ink, bold, with a space of ground on
-        // either side so the segment reads as a shape. It is the only place the
-        // bar names the session you are in, so it has to be found at a glance.
+        // The CURRENT session is selected by palette ground, ink and boldness;
+        // selection never changes the row width.
         let (ground, text) = if row.current {
             (
                 palette.selected,
@@ -842,16 +840,17 @@ pub fn fleet_strip(look: &Look, rows: &[FleetRow], working_frame: Option<&Workin
         } else {
             (palette.base, format!("fg={} nobold", palette.dim))
         };
-        let lead = if row.current { " " } else { "" };
         let accent = palette.accent(row.mark);
         let (glyph, glyph_accent) = if row.mark == Mark::Working {
-            working_frame.map_or((row.mark.glyph(icons), accent), |frame| (frame.glyph, frame.fg.as_str()))
+            working_frame.map_or((row.mark.glyph(icons), accent), |frame| {
+                (frame.glyph, frame.fg.as_str())
+            })
         } else {
             (row.mark.glyph(icons), accent)
         };
         let _ = write!(
             out,
-             "#[range=session|{id} fg={accent} bg={ground}]{lead}{glyph}#[{text} bg={ground}] {name}{lead}\
+            "#[range=session|{id} fg={accent} bg={ground}]{glyph}#[{text} bg={ground}] {name}\
              #[norange nobold fg={dim} bg={base}] ",
             id = row.id,
             accent = glyph_accent,
@@ -901,21 +900,19 @@ pub fn orchestrator_strip(
     } else {
         palette.accent(row.mark)
     };
-    let (ground, text, lead) = if row.current {
+    let (ground, text) = if row.current {
         (
             palette.selected,
             format!("fg={} bold", palette.selected_ink),
-            " ",
         )
     } else {
-        (palette.base, format!("fg={} nobold", palette.dim), "")
+        (palette.base, format!("fg={} nobold", palette.dim))
     };
     format!(
-        "#[range=session|{id} fg={accent} bg={ground}]{lead}{glyph}#[{text} bg={ground}] orchestrator{lead}#[norange nobold fg={dim} bg={base}]",
+        "#[range=session|{id} fg={accent} bg={ground}]{glyph}#[{text} bg={ground}] orchestrator#[norange nobold fg={dim} bg={base}]",
         id = row.id,
         accent = accent,
         ground = ground,
-        lead = lead,
         text = text,
         base = palette.base,
         dim = palette.dim,
@@ -1636,6 +1633,52 @@ mod tests {
         let other = fleet_strip(&Look::DEFAULT, &[row(false)], None);
         assert!(!other.contains("bg=#214283"), "{other}");
         assert!(other.contains("bg=#313335"), "{other}");
+    }
+
+    fn strip_tmux_styles(value: &str) -> String {
+        let mut plain = String::new();
+        let mut rest = value;
+        while let Some(start) = rest.find("#[") {
+            plain.push_str(&rest[..start]);
+            let Some(end) = rest[start..].find(']') else {
+                break;
+            };
+            rest = &rest[start + end + 1..];
+        }
+        plain.push_str(rest);
+        plain
+    }
+
+    #[test]
+    fn strip_selection_preserves_row_width_and_separator() {
+        let row = |name: &str, current| FleetRow {
+            name: name.to_owned(),
+            id: format!("${}", name.len()),
+            mark: Mark::Done,
+            current,
+        };
+        let plain = |rows: &[FleetRow]| strip_tmux_styles(&fleet_strip(&Look::DEFAULT, rows, None));
+        let first = [row("first", true)];
+        let first_other = [row("first", false)];
+        assert_eq!(plain(&first), plain(&first_other));
+
+        let rows = [row("first", true), row("second", false)];
+        let switched = [row("first", false), row("second", true)];
+        assert_eq!(plain(&rows), plain(&switched));
+        assert!(plain(&rows).contains("first ✓ second"), "{}", plain(&rows));
+    }
+
+    #[test]
+    fn orchestrator_selection_preserves_row_width() {
+        let row = |current| FleetRow {
+            name: "orchestrator".to_owned(),
+            id: "$12".to_owned(),
+            mark: Mark::Working,
+            current,
+        };
+        let plain =
+            |current| strip_tmux_styles(&orchestrator_strip(&Look::DEFAULT, &row(current), None));
+        assert_eq!(plain(true), plain(false));
     }
 
     /// Overflow sheds the CALMEST rows and keeps the order of the rest; the
