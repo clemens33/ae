@@ -1,6 +1,12 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [v2026.9.30] - 2026-09-08
+
+### Other
+
+- Keep lead-pair ratio on window resize
+- Preserve zoom and repair live lead-pair layouts
 ## [v2026.9.29] - 2026-09-08
 
 ### Other
