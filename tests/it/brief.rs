@@ -174,9 +174,20 @@ fn the_card_carries_the_goal_the_latest_record_per_topic_and_who_is_waiting() {
             "a memo written by this fixture is seconds old, not {age}: {stdout}"
         );
     }
+    let active_age = lines
+        .first()
+        .and_then(|line| {
+            line.split(" · ")
+                .find_map(|part| part.strip_prefix("active "))
+        })
+        .unwrap_or_default();
+    assert!(
+        active_age.ends_with("s ago"),
+        "fixture events were written seconds ago: {stdout}"
+    );
 
     let expected = format!(
-        "brf1 · unknown · attn:waiting-user · ae 2026.9.5 · s1-brief · ~/work\n\
+        "brf1 · unknown · attn:waiting-user · ae 2026.9.5 · created - · started - · active {active_age} · s1-brief · ~/work\n\
          \x20 goal: ship S1 of #113\n\
          \x20 topics:\n\
          \x20   decision    {}    human         gate once per merge, release after both land\n\

@@ -54,6 +54,10 @@ const SCHEMA_KEY: &str = "schema";
 /// `resolved_exe` canonicalizes, so on macOS every session read as behind
 /// because `/tmp` and `/private/tmp` are the same directory spelled twice.
 const CORE_KEY: &str = "ae_core_version";
+/// Session lifecycle epochs, written by the launch metadata owner.
+const CREATED_KEY: &str = "created";
+const STARTED_KEY: &str = "started";
+const LAUNCH_TIME_PREFIX: &str = "launch_time.";
 
 /// One agent, as the roster records it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -217,6 +221,12 @@ pub struct Meta {
     ae_version: Option<String>,
     /// The version of the core binary this session's helpers are pinned to.
     ae_core: Option<String>,
+    /// First successful publication time; absent on legacy sessions.
+    created: Option<String>,
+    /// Most recent successful launch/resume time; absent on legacy sessions.
+    started: Option<String>,
+    /// Per-seat legacy launch times, retained for the started fallback.
+    launch_times: Vec<(String, String)>,
     /// The raw `meta_version=` value — the shape this document is written in.
     declared_version: Option<String>,
     roster: Vec<RosterEntry>,
@@ -318,6 +328,8 @@ impl Meta {
             "goal" => self.goal = None,
             "ae_version" => self.ae_version = None,
             CORE_KEY => self.ae_core = None,
+            CREATED_KEY => self.created = None,
+            STARTED_KEY => self.started = None,
             crate::migrate::KEY => self.declared_version = None,
             SCHEMA_KEY => self.schema = None,
             // A repeated selector key is AMBIGUOUS, which is a
@@ -325,7 +337,9 @@ impl Meta {
             // even if the repeats agreed.
             SERVER_KEY | SERVER_KIND_KEY => self.server_duplicated = true,
             _ => {
-                if let Some(slot) = key.strip_prefix(ROSTER_BIN_PREFIX) {
+                if key.strip_prefix(LAUNCH_TIME_PREFIX).is_some() {
+                    self.launch_times.retain(|(recorded, _)| recorded != key);
+                } else if let Some(slot) = key.strip_prefix(ROSTER_BIN_PREFIX) {
                     if let Some(entry) = self.roster.iter_mut().find(|e| e.slot == slot) {
                         entry.binary = None;
                     }
@@ -358,6 +372,8 @@ impl Meta {
             "goal" => self.goal = Some(value.to_owned()),
             "ae_version" => self.ae_version = Some(value.to_owned()),
             CORE_KEY => self.ae_core = Some(value.to_owned()),
+            CREATED_KEY => self.created = Some(value.to_owned()),
+            STARTED_KEY => self.started = Some(value.to_owned()),
             crate::migrate::KEY => self.declared_version = Some(value.to_owned()),
             // The selector family is the one exception: these two are read and
             // normalized rather than tolerated-and-ignored.
@@ -365,7 +381,12 @@ impl Meta {
             SERVER_KIND_KEY => self.server_kind = Some(value.to_owned()),
             SCHEMA_KEY => self.schema = Some(value.to_owned()),
             _ => {
-                if let Some(slot) = key.strip_prefix(ROSTER_BIN_PREFIX) {
+                if key
+                    .strip_prefix(LAUNCH_TIME_PREFIX)
+                    .is_some_and(|slot| !slot.is_empty())
+                {
+                    self.launch_times.push((key.to_owned(), value.to_owned()));
+                } else if let Some(slot) = key.strip_prefix(ROSTER_BIN_PREFIX) {
                     self.set_binary(slot, value);
                 } else if let Some(slot) = key.strip_prefix(PROFILE_PREFIX) {
                     self.set_metadata(Metadata::Profile, slot, key, value, line);
@@ -635,6 +656,34 @@ impl Meta {
         self.ae_core.as_deref()
     }
 
+    /// When this session was first created.
+    #[must_use]
+    pub fn created_epoch(&self) -> Option<i64> {
+        positive_epoch(self.created.as_deref())
+    }
+
+    /// When this session was most recently launched or resumed.
+    #[must_use]
+    pub fn started_epoch(&self) -> Option<i64> {
+        positive_epoch(self.started.as_deref())
+    }
+
+    /// Newest configured-seat launch time, for sessions predating started.
+    #[must_use]
+    pub fn latest_launch_epoch(&self) -> Option<i64> {
+        self.launch_times
+            .iter()
+            .filter_map(|(key, value)| {
+                let slot = key.strip_prefix(LAUNCH_TIME_PREFIX)?;
+                if slot == "main" || slot.starts_with("worker.") {
+                    positive_epoch(Some(value))
+                } else {
+                    None
+                }
+            })
+            .max()
+    }
+
     /// The shape this meta declares — see [`crate::migrate`].
     #[must_use]
     pub fn meta_version(&self) -> Option<&str> {
@@ -666,6 +715,11 @@ impl Meta {
 enum Metadata {
     Profile,
     HarnessSession,
+}
+
+/// A persisted epoch that can produce a meaningful age.
+fn positive_epoch(value: Option<&str>) -> Option<i64> {
+    value?.parse::<i64>().ok().filter(|epoch| *epoch > 0)
 }
 
 /// Remove and return the row pending for `slot`, if any.

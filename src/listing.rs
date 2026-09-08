@@ -374,9 +374,29 @@ fn push_frozen_session_subline(out: &mut String, session: &SessionEntry, now: Ti
     if session.behind {
         out.push_str(" (old)");
     }
-    out.push_str(" · active ");
-    out.push_str(&frozen_relative_time(now, session.last_active_epoch));
+    out.push_str(" · ");
+    out.push_str(&lifecycle_ages(
+        now,
+        session.created_epoch,
+        session.started_epoch,
+        session.last_active_epoch,
+    ));
     out.push('\n');
+}
+
+/// The three lifecycle clocks shared by list detail lines and brief headers.
+pub(crate) fn lifecycle_ages(
+    now: Timestamp,
+    created_epoch: Option<i64>,
+    started_epoch: Option<i64>,
+    active_epoch: Option<i64>,
+) -> String {
+    format!(
+        "created {} · started {} · active {}",
+        frozen_relative_time(now, created_epoch),
+        frozen_relative_time(now, started_epoch),
+        frozen_relative_time(now, active_epoch),
+    )
 }
 
 /// At most 60 characters of a goal, the final character reserved for an
@@ -581,12 +601,14 @@ mod tests {
 
         assert_eq!(
             render_goal(exactly_sixty.clone()),
-            format!("  goal: {exactly_sixty} · git:? · ae 0.2.1 · active -\n")
+            format!(
+                "  goal: {exactly_sixty} · git:? · ae 0.2.1 · created - · started - · active -\n"
+            )
         );
         assert_eq!(
             render_goal(sixty_one),
             format!(
-                "  goal: {}… · git:? · ae 0.2.1 · active -\n",
+                "  goal: {}… · git:? · ae 0.2.1 · created - · started - · active -\n",
                 "a".repeat(59)
             )
         );
@@ -604,7 +626,7 @@ mod tests {
 
         assert_eq!(
             subline,
-            b"  git:? \xC2\xB7 ae 0.2.1 \xC2\xB7 active 23m ago\n"
+            b"  git:? \xC2\xB7 ae 0.2.1 \xC2\xB7 created - \xC2\xB7 started - \xC2\xB7 active 23m ago\n"
         );
     }
 
@@ -613,8 +635,14 @@ mod tests {
         // The marker rides the version atom because that is what it is about:
         // a session whose shape or whose pinned core is not this one's.
         for (behind, expected) in [
-            (false, "  git:? \u{b7} ae 0.2.1 \u{b7} active -\n"),
-            (true, "  git:? \u{b7} ae 0.2.1 (old) \u{b7} active -\n"),
+            (
+                false,
+                "  git:? \u{b7} ae 0.2.1 \u{b7} created - \u{b7} started - \u{b7} active -\n",
+            ),
+            (
+                true,
+                "  git:? \u{b7} ae 0.2.1 (old) \u{b7} created - \u{b7} started - \u{b7} active -\n",
+            ),
         ] {
             let mut entry = SessionEntry::new("behind", Status::Running);
             entry.ae_version = Some("0.2.1".to_owned());
@@ -693,9 +721,24 @@ mod tests {
             let world = World::new(NOW, vec![entry]);
             assert_eq!(
                 successor_subline_bytes(&render(&args(&[]), &world)),
-                b"  ae 0.2.1 \xC2\xB7 active -\n"
+                b"  ae 0.2.1 \xC2\xB7 created - \xC2\xB7 started - \xC2\xB7 active -\n"
             );
         }
+    }
+
+    #[test]
+    fn lifecycle_ages_share_the_existing_relative_formatter() {
+        let mut entry = SessionEntry::new("clocked", Status::Running);
+        entry.ae_version = Some("2026.9.27".to_owned());
+        entry.created_epoch = Some(NOW.epoch() - 172_800);
+        entry.started_epoch = Some(NOW.epoch() - 3_600);
+        entry.last_active_epoch = Some(NOW.epoch() - 14);
+        let world = World::new(NOW, vec![entry]);
+
+        let rendered = render(&args(&[]), &world);
+        assert!(
+            rendered.contains("ae 2026.9.27 · created 2d ago · started 1h ago · active 14s ago")
+        );
     }
 
     #[test]

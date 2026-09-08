@@ -153,6 +153,11 @@ Checkout runs may override the destination with the typed `AE_TMUX_SERVER_KIND` 
 
 Tabular view of ae sessions with per-agent health, declared state, and a
 session-level `attn:<reason>` marker when a session needs attention.
+Each session's indented detail line ends with three lifecycle ages:
+`created` is the first launch, `started` is the latest launch or resume, and
+`active` is the newest ae event. Legacy sessions derive creation from the
+main-seat start marker and latest start from their per-seat launch times; a
+missing clock renders as `-`. Stopped sessions keep the first two clocks.
 
 The marker is a derived rollup — the single most-actionable reason across the
 session's agents, by severity:
@@ -250,7 +255,7 @@ ae brief --all --since 4h    # ... dropping topic records older than four hours
 One card per session, plain text, no colour:
 
 ```text
-aedev · running · attn:waiting-user · ae 2026.9.5 · s1-brief* · ~/projects/clemens33/ae
+aedev · running · attn:waiting-user · ae 2026.9.5 · created 2d ago · started 1h ago · active 14s ago · s1-brief* · ~/projects/clemens33/ae
   goal: ship S1 of #113
   topics:
     decision    12m   lead          gate once per merge, release after both land
@@ -266,7 +271,7 @@ aedev · running · attn:waiting-user · ae 2026.9.5 · s1-brief* · ~/projects/
 
 | Section | What it holds |
 |---|---|
-| header | name, liveness, the `attn:` rollup [`ae list`](#ae-list) shows, the session's ae version, its branch (`*` when the work tree has tracked changes) and its work dir |
+| header | name, liveness, the `attn:` rollup [`ae list`](#ae-list) shows, the session's ae version, its created/started/active ages, its branch (`*` when the work tree has tracked changes) and its work dir |
 | `goal:` | the session's [`goal`](helpers.md), in full, or `none` |
 | `topics:` | the **latest** record per `memo` topic, newest topic first — see the topic convention below |
 | `agents:` | one line per roster agent: its declared state, how long ago it declared, and the reason it gave |

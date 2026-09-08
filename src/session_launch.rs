@@ -2184,6 +2184,17 @@ fn meta_document(
         .unwrap_or_default();
     // Launch facts that must survive every rewrite.
     let preserved = |key: &str| meta_value(&dir, key).filter(|v| !v.is_empty());
+    let started = crate::time::Timestamp::now().epoch().to_string();
+    let created = if shape.resuming {
+        preserved("created")
+            .or_else(|| crate::session::legacy_created_epoch(&dir).map(|epoch| epoch.to_string()))
+            .or_else(|| {
+                preserved("launch_time.main")
+                    .filter(|epoch| epoch.parse::<i64>().is_ok_and(i64::is_positive))
+            })
+    } else {
+        Some(started.clone())
+    };
     let session_id = preserved("session_id").unwrap_or_else(launch::generate_uuid);
     let git_base = preserved("git_base_commit").or_else(|| {
         (!shape.resuming && shape.mode != Mode::Local)
@@ -2217,6 +2228,10 @@ fn meta_document(
     row("origin", &shape.origin.display().to_string());
     row("session", &shape.name);
     row("session_id", &session_id);
+    if let Some(created) = created {
+        row("created", &created);
+    }
+    row("started", &started);
     row("work_dir", &shape.work_dir.display().to_string());
     row("layout", &shape.layout);
     row(

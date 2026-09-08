@@ -234,6 +234,10 @@ pub struct SessionEntry {
     pub branch: Option<String>,
     /// When the session last did anything ae could see.
     pub last_active_epoch: Option<i64>,
+    /// When the session was first created.
+    pub created_epoch: Option<i64>,
+    /// When the session was most recently launched or resumed.
+    pub started_epoch: Option<i64>,
     /// The session-level rollup.
     pub attention: Option<Reason>,
     /// The session's agents.
@@ -266,6 +270,8 @@ impl SessionEntry {
             goal_set_epoch: None,
             branch: None,
             last_active_epoch: None,
+            created_epoch: None,
+            started_epoch: None,
             attention: None,
             agents: Vec::new(),
             main_agent: None,

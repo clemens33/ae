@@ -267,6 +267,14 @@ pub struct Card {
     pub attention: Option<Reason>,
     /// The ae version the session was created under.
     pub ae_version: Option<String>,
+    /// Snapshot time used for all three lifecycle ages.
+    pub as_of: Timestamp,
+    /// When the session was first created.
+    pub created_epoch: Option<i64>,
+    /// When the session was most recently launched or resumed.
+    pub started_epoch: Option<i64>,
+    /// When the session last did anything ae could see.
+    pub active_epoch: Option<i64>,
     /// The live branch, when one is known.
     pub branch: Option<String>,
     /// Whether that work tree has tracked modifications — the watchdog's `*`.
@@ -418,6 +426,12 @@ fn push_header(out: &mut String, card: &Card) {
     if let Some(version) = card.ae_version.as_deref().filter(|v| !v.is_empty()) {
         segments.push(format!("ae {version}"));
     }
+    segments.push(crate::listing::lifecycle_ages(
+        card.as_of,
+        card.created_epoch,
+        card.started_epoch,
+        card.active_epoch,
+    ));
     if let Some(branch) = card.branch.as_deref().filter(|b| !b.is_empty()) {
         segments.push(format!("{branch}{}", if card.dirty { "*" } else { "" }));
     }
@@ -632,6 +646,10 @@ pub fn card_for(
         // printed off partial evidence.
         attention: entry.attention.filter(|_| entry.attention_is_exact()),
         ae_version: entry.ae_version.clone(),
+        as_of: now,
+        created_epoch: entry.created_epoch,
+        started_epoch: entry.started_epoch,
+        active_epoch: entry.last_active_epoch,
         branch: entry.branch.clone(),
         dirty,
         work_dir: entry.work_dir.as_deref().map(|path| short_path(path, home)),
@@ -829,6 +847,10 @@ mod tests {
             main: Some("lead".to_owned()),
             attention: None,
             ae_version: Some("2026.9.5".to_owned()),
+            as_of: Timestamp::from_epoch(0),
+            created_epoch: None,
+            started_epoch: None,
+            active_epoch: None,
             branch: Some("main".to_owned()),
             dirty: false,
             work_dir: Some("~/projects/ae".to_owned()),
@@ -881,7 +903,10 @@ mod tests {
         bare.goal = None;
         let rendered = render(&[bare]);
         let header = rendered.lines().next().unwrap_or_default();
-        assert_eq!(header, "alpha · running", "{rendered}");
+        assert_eq!(
+            header, "alpha · running · created - · started - · active -",
+            "{rendered}"
+        );
         assert!(
             !header.contains("··") && !header.ends_with(" ·"),
             "an absent segment must not leave its separator: {header}"
@@ -893,8 +918,23 @@ mod tests {
     fn a_dirty_work_tree_marks_the_branch_and_a_clean_one_does_not() {
         let mut dirty = card("alpha");
         dirty.dirty = true;
-        assert!(render(&[dirty]).starts_with("alpha · running · ae 2026.9.5 · main* · "));
+        assert!(render(&[dirty]).starts_with(
+            "alpha · running · ae 2026.9.5 · created - · started - · active - · main* · "
+        ));
         assert!(render(&[card("alpha")]).contains(" · main · "));
+    }
+
+    #[test]
+    fn the_header_uses_the_lists_three_lifecycle_ages() {
+        let mut card = card("alpha");
+        card.as_of = Timestamp::from_epoch(1_780_000_000);
+        card.created_epoch = Some(1_780_000_000 - 172_800);
+        card.started_epoch = Some(1_780_000_000 - 3_600);
+        card.active_epoch = Some(1_780_000_000 - 14);
+
+        assert!(render(&[card]).starts_with(
+            "alpha · running · ae 2026.9.5 · created 2d ago · started 1h ago · active 14s ago"
+        ));
     }
 
     #[test]

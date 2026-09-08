@@ -127,6 +127,14 @@ After the per-pane pass:
 8. **Missing pane check** — agents registered in `meta` whose tmux panes have vanished. Alert once each.
 9. **Recover pending session ids** — retry codex/gemini/opencode post-launch session capture for slots still marked `pending`.
 
+The list/brief attention reader treats the session's latest successful launch as
+a recovery boundary: a durable watchdog alert older than `started=` no longer
+contributes `attn:dead`, `attn:stale`, or `attn:throttled`. An alert at or
+after that boundary still contributes normally, so a seat that dies after
+relaunch is visible. Legacy metadata uses the newest `launch_time.main` or
+`launch_time.worker.*` as the boundary; only sessions lacking both clock forms
+keep the prior behavior.
+
 ## Quiet states and how they're invalidated
 
 `_agent_quiet_reason` returns an agent's current quiet state (`done` / `waiting-user` / `blocked`) plus its declaration timestamp, or empty. It reads the *latest relevant event* for the agent: a `state` declaration (or a `mark-done`/`done` event, mapped to `done`) wins only if no newer event mentions the agent as actor or target. An inbound `send`/`ask`/`review`/`nudge` is newer → quiet state invalidated.

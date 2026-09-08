@@ -162,6 +162,18 @@ impl SessionRead {
         alert_reason_in(&self.events, session, slot, reference)
     }
 
+    /// Standing watchdog verdict, ignoring alerts older than this launch.
+    #[must_use]
+    pub fn alert_reason_of_since(
+        &self,
+        session: &str,
+        slot: &str,
+        reference: &str,
+        started_epoch: Option<i64>,
+    ) -> Option<Reason> {
+        alert_reason_since_in(&self.events, session, slot, reference, started_epoch)
+    }
+
     /// Whether this read lost anything.
     #[must_use]
     pub fn lost_records(&self) -> bool {
@@ -229,9 +241,29 @@ pub fn alert_reason_in(
     slot: &str,
     reference: &str,
 ) -> Option<Reason> {
+    alert_reason_since_in(events, session, slot, reference, None)
+}
+
+/// The durable verdict after the latest launch boundary, when one is known.
+fn alert_reason_since_in(
+    events: &[Event],
+    session: &str,
+    slot: &str,
+    reference: &str,
+    started_epoch: Option<i64>,
+) -> Option<Reason> {
     match events
         .iter()
-        .filter_map(|event| decisive_verdict(event, session, slot, reference))
+        .filter_map(|event| {
+            let verdict = decisive_verdict(event, session, slot, reference)?;
+            if matches!(verdict, Verdict::Raised(_))
+                && started_epoch.is_some_and(|started| event.ts.epoch() < started)
+            {
+                None
+            } else {
+                Some(verdict)
+            }
+        })
         .next_back()
     {
         Some(Verdict::Raised(reason)) => Some(reason),
@@ -328,6 +360,8 @@ pub struct RecordSnapshot {
     pub meta_read: MetaRead,
     /// The event stream, when it could be read.
     pub events: Option<SessionRead>,
+    /// Legacy creation time from the main-seat start marker, when present.
+    pub legacy_created_epoch: Option<i64>,
 }
 
 impl RecordSnapshot {
@@ -345,8 +379,22 @@ impl RecordSnapshot {
             meta,
             meta_read,
             events: SessionRead::open(dir).ok(),
+            legacy_created_epoch: legacy_created_epoch(dir),
         }
     }
+}
+
+/// One marker's mtime as epoch seconds, for the legacy creation fallback.
+pub(crate) fn legacy_created_epoch(dir: &Path) -> Option<i64> {
+    let path = crate::run::started_marker(dir, "main");
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: legacy session creation time is the mtime of launch.main.started"
+    )]
+    let metadata = fs::metadata(path).ok()?;
+    let modified = metadata.modified().ok()?;
+    let since_epoch = modified.duration_since(std::time::UNIX_EPOCH).ok()?;
+    Some(i64::try_from(since_epoch.as_secs()).unwrap_or(i64::MAX))
 }
 
 /// The branch checked out in the work tree at `dir`, read from git's own files.
@@ -469,6 +517,8 @@ pub fn entry_from(
         entry.goal = meta.goal().map(ToOwned::to_owned);
         entry.ae_version = meta.ae_version().map(ToOwned::to_owned);
         entry.behind = is_behind(meta);
+        entry.created_epoch = meta.created_epoch().or(snapshot.legacy_created_epoch);
+        entry.started_epoch = meta.started_epoch().or_else(|| meta.latest_launch_epoch());
         // A runtime observation wins when one exists; otherwise read the work tree.
         if entry.branch.is_none() {
             entry.branch = meta.work_dir().and_then(|dir| branch_at(Path::new(dir)));
@@ -487,7 +537,7 @@ pub fn entry_from(
             .iter()
             .find(|seat| seat.slot == "main")
             .map(|seat| seat.name.clone());
-        entry.agents = agent_entries(meta, read, runtime, name);
+        entry.agents = agent_entries(meta, read, runtime, name, entry.started_epoch);
         entry.set_established_runtime_dead_agents(established_runtime_dead_agents(meta, runtime));
     }
     // The MAX across agent reasons PLUS session-level unresolved-request facts.
@@ -592,6 +642,7 @@ fn agent_entries(
     read: Option<&SessionRead>,
     runtime: &SessionRuntime,
     session: &str,
+    started_epoch: Option<i64>,
 ) -> Vec<AgentEntry> {
     meta.roster()
         .iter()
@@ -615,11 +666,14 @@ fn agent_entries(
                     runtime_agent
                         .and_then(|agent| agent.alert)
                         .into_iter()
-                        .chain(
-                            read.and_then(|read| {
-                                read.alert_reason_of(session, &slot.slot, &reference)
-                            }),
-                        )
+                        .chain(read.and_then(|read| {
+                            read.alert_reason_of_since(
+                                session,
+                                &slot.slot,
+                                &reference,
+                                started_epoch,
+                            )
+                        }))
                         .chain(declared.and_then(declared_reason)),
                 ),
             }
@@ -776,6 +830,54 @@ mod tests {
 
     fn event(ts: &str, actor: &str, action: &str, extra: &str) -> String {
         format!(r#"{{"ts":"{ts}","actor":"{actor}","action":"{action}"{extra}}}"#)
+    }
+
+    #[test]
+    fn lifecycle_epochs_prefer_session_rows_and_legacy_rows_fall_back() {
+        let current = Scratch::new("lifecycle-current");
+        current.meta("created=1779827200\nstarted=1779996400\n");
+        let entry = entry_for(
+            &current.0,
+            "current",
+            &running(),
+            NOW,
+            DEFAULT_UNANSWERED_SECS,
+        );
+        assert_eq!(entry.created_epoch, Some(1_779_827_200));
+        assert_eq!(entry.started_epoch, Some(1_779_996_400));
+
+        let legacy = Scratch::new("lifecycle-legacy");
+        let before = Timestamp::now().epoch();
+        fs::write(legacy.0.join("launch.main.started"), "").expect("legacy marker");
+        let after = Timestamp::now().epoch();
+        legacy.meta("launch_time.main=1779990000\nlaunch_time.worker.0=1779996400\n");
+        let entry = entry_for(
+            &legacy.0,
+            "legacy",
+            &running(),
+            NOW,
+            DEFAULT_UNANSWERED_SECS,
+        );
+        assert!(
+            entry
+                .created_epoch
+                .is_some_and(|created| created >= before && created <= after),
+            "{:?}",
+            entry.created_epoch
+        );
+        assert_eq!(entry.started_epoch, Some(1_779_996_400));
+
+        let unknown = Scratch::new("lifecycle-unknown");
+        unknown.meta("mode=local\n");
+        let entry = entry_for(
+            &unknown.0,
+            "unknown",
+            &running(),
+            NOW,
+            DEFAULT_UNANSWERED_SECS,
+        );
+        assert_eq!(entry.created_epoch, None);
+        assert_eq!(entry.started_epoch, None);
     }
 
     fn read(lines: &[String]) -> SessionRead {
@@ -2428,6 +2530,76 @@ mod tests {
         scratch.events(&lines);
         let entry = entry_for(&scratch.0, "pair", &running(), NOW, DEFAULT_UNANSWERED_SECS);
         assert_eq!(entry.agents[0].reason, Some(Reason::Dead));
+    }
+
+    #[test]
+    fn a_launch_boundary_supersedes_only_older_watchdog_alerts() {
+        for (summary, reason) in CORPUS_ALERTS {
+            for (alert_age, expected) in [(900, None), (300, Some(reason))] {
+                let scratch = Scratch::new("launchboundary");
+                scratch.meta(&format!("started={}\n{PAIR_META}", NOW.epoch() - 600));
+                scratch.events(&[event(
+                    &at(alert_age),
+                    "_watchdog",
+                    "alert",
+                    &format!(r#","target":"high","summary":"{summary}""#),
+                )]);
+                let entry = entry_for(&scratch.0, "pair", &running(), NOW, DEFAULT_UNANSWERED_SECS);
+                assert_eq!(
+                    entry.agents[0].reason, expected,
+                    "{summary:?}, alert age {alert_age}"
+                );
+                assert_eq!(
+                    entry.attention, expected,
+                    "{summary:?}, alert age {alert_age}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_spawn_time_is_neither_the_session_start_nor_an_attention_boundary() {
+        let scratch = Scratch::new("spawn-not-session-start");
+        let session_start = NOW.epoch() - 900;
+        let spawn_start = NOW.epoch() - 300;
+        scratch.meta(&format!(
+            "launch_time.main={session_start}\nlaunch_time.spawned.0={spawn_start}\n{PAIR_META}"
+        ));
+        scratch.events(&[event(
+            &at(600),
+            "_watchdog",
+            "alert",
+            r#","target":"high","summary":"agent process dead — dropped to shell""#,
+        )]);
+
+        let entry = entry_for(&scratch.0, "pair", &running(), NOW, DEFAULT_UNANSWERED_SECS);
+        assert_eq!(entry.started_epoch, Some(session_start));
+        assert_eq!(entry.agents[0].reason, Some(Reason::Dead));
+        assert_eq!(entry.attention, Some(Reason::Dead));
+    }
+
+    #[test]
+    fn current_runtime_dead_still_outranks_an_older_durable_alert() {
+        let scratch = Scratch::new("launchboundary-runtime");
+        scratch.meta(&format!("started={}\n{PAIR_META}", NOW.epoch() - 600));
+        scratch.events(&[event(
+            &at(900),
+            "_watchdog",
+            "alert",
+            r#","target":"high","summary":"agent process dead — dropped to shell""#,
+        )]);
+        let runtime = SessionRuntime {
+            status: Status::Running,
+            branch: None,
+            agents: vec![AgentRuntime {
+                slot: "main".to_owned(),
+                alive: Some(false),
+                alert: Some(Reason::Dead),
+            }],
+        };
+        let entry = entry_for(&scratch.0, "pair", &runtime, NOW, DEFAULT_UNANSWERED_SECS);
+        assert_eq!(entry.agents[0].reason, Some(Reason::Dead));
+        assert_eq!(entry.attention, Some(Reason::Dead));
     }
 
     #[test]

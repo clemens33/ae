@@ -1051,6 +1051,21 @@ fn a_resume_reruns_with_the_resume_variant() {
         "the first run marked the seat"
     );
     let fresh = rig.meta("lnres");
+    let created = fresh
+        .lines()
+        .find_map(|line| line.strip_prefix("created="))
+        .unwrap_or_default()
+        .to_owned();
+    let started = fresh
+        .lines()
+        .find_map(|line| line.strip_prefix("started="))
+        .unwrap_or_default()
+        .to_owned();
+    assert!(
+        created.parse::<i64>().is_ok_and(|epoch| epoch > 0),
+        "fresh launch records created: {fresh}"
+    );
+    assert_eq!(started, created, "one instant owns both first-launch rows");
     let sid = fresh
         .lines()
         .find_map(|line| line.strip_prefix("harness_session.main="))
@@ -1063,12 +1078,26 @@ fn a_resume_reruns_with_the_resume_variant() {
         rig.tmux(&["kill-session", "-t", "lnres"]).0,
         "the kill lands"
     );
+    ae::meta::rewrite(&rig.dir("lnres"), "started", Some("1"))
+        .expect("fixture makes the prior started value observable");
 
     let (code, stdout, stderr) = rig.launch(&["--local", "lnres"]);
     assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
     assert!(
         stdout.contains("Resuming session lnres"),
         "the resume announces itself: {stdout}"
+    );
+    let resumed_meta = rig.meta("lnres");
+    assert!(
+        resumed_meta.contains(&format!("created={created}\n")),
+        "resume preserves first creation: {resumed_meta}"
+    );
+    assert!(
+        resumed_meta
+            .lines()
+            .find_map(|line| line.strip_prefix("started="))
+            .is_some_and(|value| value != "1" && value.parse::<i64>().is_ok_and(|epoch| epoch > 1)),
+        "resume refreshes started: {resumed_meta}"
     );
     // THE RESUME DECISION IS THE CORE'S NOW, and it is the start marker plus a
     // probe rather than a shell `if` in a generated script.
@@ -1115,6 +1144,35 @@ fn a_resume_reruns_with_the_resume_variant() {
         !rig.dir("lnres").join("launch.main.sh").exists(),
         "and no bash was written to decide any of it"
     );
+}
+
+#[test]
+fn a_legacy_resume_promotes_the_main_marker_to_created() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::new("legacy-created", &["claude"], None);
+    let (code, stdout, stderr) = rig.launch(&["--local", "lnlegacycreated"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(!rig.launch_argv().is_empty(), "the agent started");
+    let marker_created = std::fs::metadata(rig.dir("lnlegacycreated").join("launch.main.started"))
+        .expect("the original marker remains")
+        .mtime();
+    assert!(
+        rig.tmux(&["kill-session", "-t", "lnlegacycreated"]).0,
+        "the kill lands"
+    );
+    ae::meta::rewrite(&rig.dir("lnlegacycreated"), "created", None)
+        .expect("fixture makes this a legacy meta");
+
+    let (code, stdout, stderr) = rig.launch(&["--local", "lnlegacycreated"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let promoted = rig
+        .meta("lnlegacycreated")
+        .lines()
+        .find_map(|line| line.strip_prefix("created="))
+        .and_then(|epoch| epoch.parse::<i64>().ok());
+    assert_eq!(promoted, Some(marker_created), "legacy marker is promoted");
 }
 
 #[test]
