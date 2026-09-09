@@ -1,0 +1,42 @@
+# Independent cargo-fuzz crate. The root manifest deliberately declares no
+# workspace, so this dependency graph stays outside ae's product deny/vet lanes.
+#
+# There is NO rust-toolchain.toml here: the justfile's `FUZZ_TOOLCHAIN` is the
+# lane's one nightly pin, and every invocation passes it as `cargo +<pin>`.
+# Cargo.lock IS committed; `just rust-fuzz` proves it with `cargo metadata
+# --locked` because cargo-fuzz 0.13.2 has no `--locked` pass-through.
+[package]
+name = "ae-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "=0.4.13"
+
+[dependencies.ae]
+path = ".."
+
+[[bin]]
+name = "config_parse"
+path = "fuzz_targets/config_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "meta_parse"
+path = "fuzz_targets/meta_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "launch_cmd_lex"
+path = "fuzz_targets/launch_cmd_lex.rs"
+test = false
+doc = false
+bench = false

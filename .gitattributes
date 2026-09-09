@@ -10,3 +10,9 @@
 #
 # Never remove without re-checking every byte-exact comparison from a CLONE.
 tests/fixtures/** -text
+
+# Same rule, same reason: a fuzz seed IS a byte-exact parser input. The hostile
+# shapes are made of the bytes normalization rewrites — a BOM, a NUL run, a lone
+# carriage return — so a rewritten seed retires its own case without changing a
+# visible line.
+fuzz/seeds/** -text

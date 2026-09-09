@@ -1,0 +1,4 @@
+schema=2
+mode=local
+agent.main=lead
+goal=ship it

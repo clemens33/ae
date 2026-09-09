@@ -1,0 +1,6 @@
+# libFuzzer's own outputs. The named seeds live in seeds/<target>/ and are
+# TRACKED; corpus/<target>/ is the fuzzer's writable scratch and is not.
+/artifacts/
+/corpus/
+/coverage/
+/target/

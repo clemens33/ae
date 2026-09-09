@@ -323,6 +323,21 @@ pub fn read_identity(
     Ok(cfg)
 }
 
+/// Parse one in-memory identity v2 config.
+///
+/// This is the pure parser behind [`read_identity`], exposed so hostile config
+/// text can be exercised without putting a filesystem door in the fuzz loop.
+///
+/// # Errors
+///
+/// [`ConfigError`] — an invalid identity row or duplicate key. Diagnostics use
+/// `<config>` as the source path because this input has no file.
+pub fn parse_identity(text: &str) -> Result<IdentityConfig, ConfigError> {
+    let mut cfg = IdentityConfig::default();
+    overlay_identity_text(Path::new("<config>"), text, &mut cfg)?;
+    Ok(cfg)
+}
+
 /// Read identity like [`read_identity`], but parse `global_default` when the
 /// selected global file does not exist yet. A first launch uses this to
 /// validate against the exact config text it will seed after preflight.
@@ -1219,6 +1234,27 @@ mod tests {
         assert_eq!(
             read_identity(None, None).expect("absence is empty"),
             IdentityConfig::default()
+        );
+    }
+
+    #[test]
+    fn parse_identity_agrees_with_the_file_reader_and_names_its_source_config() {
+        let text = "[profiles]\nidle = \"sleep 600\"\n\n[roster]\nlead = idle\n";
+        let file = NamedTemp::new("pure", text);
+        assert_eq!(
+            parse_identity(text).expect("valid v2 text"),
+            read_identity(Some(file.path()), None).expect("the same text, in a file"),
+            "the pure parser is the one behind read_identity, not a second grammar"
+        );
+        // This input has no file, so a diagnostic names the source `<config>`.
+        assert_eq!(
+            parse_identity("[profiles]\na = \"one\"\na = \"two\"\n").unwrap_err(),
+            ConfigError::DuplicateKey {
+                file: Path::new("<config>").to_owned(),
+                section: "profiles".to_owned(),
+                key: "a".to_owned(),
+                line: 3
+            }
         );
     }
 

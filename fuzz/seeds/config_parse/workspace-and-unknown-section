@@ -1,0 +1,10 @@
+[workspace]
+main = lead
+workers = a, b ,c
+layout = vertical
+palette = darcula
+icons = on
+theme = off
+
+[clients]
+codex = "codex resume"

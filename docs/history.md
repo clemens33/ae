@@ -712,6 +712,38 @@ dependency exists until a real error does" generalises. `Cargo.lock` is committe
 **Trigger:** cargo-fuzz is required *before* any hostile persisted-state parser cuts
 over — recorded so it is not rediscovered late.
 
+**Lane added (2026-09-09).** `just rust-fuzz target=<name> secs=60` and
+`just rust-fuzz-all secs=60` exercise config text, session meta and launch-command
+lexing through thin targets in the independent `fuzz/` crate. The lane pins
+`nightly-2026-08-20` without moving the product's `1.97.1` compiler, runs only by
+human request, and stays outside the product lockfile, cargo-deny and cargo-vet graphs.
+
+Four decisions the lane's shape rests on:
+
+- **One nightly source.** `FUZZ_TOOLCHAIN` in the justfile, passed as `cargo +<pin>`.
+  A `fuzz/rust-toolchain.toml` would have been a second copy of the same date with
+  nothing to keep the two in step, so there is none.
+- **`--locked` is proven, not passed.** cargo-fuzz 0.13.2 has no `--locked`
+  pass-through, so the preflight runs `cargo metadata --locked` over
+  `fuzz/Cargo.toml` before anything builds. The committed lock records the path
+  dependency's version, and `just release` rewrites the ROOT `Cargo.toml` and lock
+  only — so a CalVer bump leaves this lock stale and the lane refuses with the
+  refresh command. That refusal is a dev-lane stop; it can never fail a release.
+- **Seeds are tracked, the corpus is not.** `seeds/<target>/` holds the named
+  shapes; `corpus/<target>/` is libFuzzer's writable scratch and is ignored
+  wholesale. The first arrangement kept both in one directory behind a list of
+  `!` un-ignore lines, which silently drops any seed nobody remembers to name.
+- **Every byte reaches the parser.** The targets convert with
+  `String::from_utf8_lossy` rather than returning early on invalid UTF-8. The
+  product reads these files with `read_to_string`, so a `str` is all a parser ever
+  sees, and the lossy form keeps a hostile input at full length instead of
+  spending the run on a rejection.
+
+First measurement, 30s per target on the M-series laptop: `config_parse` 1.24M runs
+at 40k exec/s (cov 400), `meta_parse` 1.03M at 33k (cov 587), `launch_cmd_lex` 1.05M
+at 34k (cov 524). No crash, no leak, no timeout. `-Zbuild-std` is cargo-fuzz's
+default, which is why the nightly needs `rust-src` and why the preflight checks for it.
+
 
 ---
 

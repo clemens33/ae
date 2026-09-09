@@ -39,6 +39,9 @@ install             — the bootstrap: download a bundle, prove it against the r
                       bash file
 justfile            — dev/release pipeline; holds every dev-tool version pin
 docs/               — user + internals docs; history.md holds the retired contract
+fuzz/               — the cargo-fuzz crate: one thin target per hostile parser, tracked
+                      seeds in seeds/<target>/. Its own lock and its own nightly, outside
+                      the product graph. Human-run, never a CI gate
 contrib/            — optional sidecars: aeorchestrator (templates only, no code)
 .github/workflows/  — rust lanes (both platforms) + dispatch-only release-proof lanes
 Cargo.toml          — one crate, bin + lib, both named `ae`. No workspace
@@ -133,7 +136,8 @@ Other rules of the loop:
 - No `--force`, `--no-verify` or `-f` to get past a check. Fix the cause.
 - No secrets in tracked files. `$ENV_VAR` placeholders only.
 - **A parser of hostile persisted state gets cargo-fuzz BEFORE it cuts over.** Session
-  meta, journals, archives and anything hand-editable are hostile input.
+  meta, journals, archives and anything hand-editable are hostile input. The lane is
+  `just rust-fuzz`; its targets, seeds and pending parsers are in `fuzz/README.md`.
 
 ## Toolchain pins
 
@@ -145,7 +149,8 @@ Pins, not channels. CI, laptop and agent sandbox must resolve to the same compil
 | Edition / MSRV | `2024` / `rust-version = "1.97.1"` | `Cargo.toml` |
 | Profile + components | `minimal` + rustfmt, clippy, llvm-tools | `rust-toolchain.toml` |
 | Targets | `aarch64-apple-darwin`, `x86_64-unknown-linux-musl` | `rust-toolchain.toml`, justfile, `deny.toml` |
-| Dev tools | nextest `0.9.143`, taplo `0.10.0`, deny `0.20.2`, mutants `27.1.0`, llvm-cov `0.9.0`, vet `0.10.2` | justfile `*_VERSION` — the single source |
+| Dev tools | nextest `0.9.143`, taplo `0.10.0`, deny `0.20.2`, mutants `27.1.0`, llvm-cov `0.9.0`, vet `0.10.2`; cargo-fuzz `0.13.2` on request, not by `rust-setup` | justfile `*_VERSION` — the single source |
+| Fuzz compiler | `nightly-2026-08-20` (exact). The product compiler does not move; there is no `fuzz/rust-toolchain.toml`, the lane passes `cargo +<pin>` | justfile `FUZZ_TOOLCHAIN` — the only source |
 | `just` | `1.57.0` | justfile `JUST_VERSION`; CI reads the pin from there |
 | tmux floor | `3.4` — a launch and the picker REFUSE below it; `list`/`version`/`doctor`/`upgrade` do not. Ubuntu 24.04 and Homebrew both package a tmux that clears it, so CI installs the package | `src/tmux_floor.rs`; CI step in `.github/workflows/rust.yml` |
 
@@ -164,6 +169,7 @@ Pins, not channels. CI, laptop and agent sandbox must resolve to the same compil
 | `just rust-test` | `cargo nextest run --locked` **and** `cargo test --doc --locked`. Both. nextest does not run doctests |
 | `just rust-deny` / `rust-vet` | supply chain. The TLS graph is EXEMPTED, not audited (docs/history.md §11) |
 | `just rust-mutants` | does the suite discriminate? CI runs it diff-bounded per push. `rust-cov` reports, never gates |
+| `just rust-fuzz target=<name> secs=60` / `rust-fuzz-all secs=60` | human-run cargo-fuzz over the hostile parsers, on an exact nightly. Refuses on an unpinned tool or a stale `fuzz/Cargo.lock`, ends on the cutover evidence line, and REPORTS — CI carries no nightly and never runs it (`fuzz/README.md`) |
 | `just rust-build-release` / `bundles` | native release binary (native only, a bare clone must build) / both platform bundles + `SHA256SUMS` into `dist/` (needs the musl cross toolchain) |
 | `just release` | the whole release, locally. Pre-flight refuses before any state is written |
 

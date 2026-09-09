@@ -806,8 +806,9 @@ help:
 # `rust-` and owns core/toolchain work.
 #
 # PINS ARE THE CONTRACT. This block is the single source of truth for dev-tool
-# versions; `rust-setup` installs exactly these and nothing else. The compiler
-# pin lives in rust-toolchain.toml (cargo/rustup read it, just does not).
+# versions. `rust-setup` installs shared product-development tools; the human-run
+# fuzz lane checks its optional cargo-fuzz pin itself. The product compiler pin lives
+# in rust-toolchain.toml (cargo/rustup read it, just does not).
 #
 # EVERY graph-consuming cargo invocation below passes `--locked`. Without it
 # cargo will happily UPDATE Cargo.lock to satisfy a build and then report green —
@@ -830,6 +831,13 @@ TAPLO_VERSION := "0.10.0"
 DENY_VERSION := "0.20.2"
 MUTANTS_VERSION := "27.1.0"
 LLVM_COV_VERSION := "0.9.0"
+# The fuzz lane's three pins. cargo-fuzz is installed on request, not by
+# `rust-setup`, because the lane is human-run. FUZZ_TOOLCHAIN is the lane's ONE
+# nightly source — there is no fuzz/rust-toolchain.toml, every invocation passes
+# `cargo +{{ FUZZ_TOOLCHAIN }}`, and the product's 1.97.1 pin never moves.
+CARGO_FUZZ_VERSION := "0.13.2"
+FUZZ_TOOLCHAIN := "nightly-2026-08-20"
+FUZZ_TARGETS := "config_parse meta_parse launch_cmd_lex"
 # Arrived with the FIRST runtime dependency (P4.3): cargo-deny gates the graph's
 # advisories/licenses/bans/sources, cargo-vet gates its PROVENANCE (who reviewed
 # the code). See `rust-vet`.
@@ -985,6 +993,87 @@ rust-cov:
 # Mutation testing
 rust-mutants *args:
     just _tmux-isolated mutants {{ args }}
+
+# Fuzz the parsers of hostile persisted state on an exact nightly, without
+# touching ae's product compiler. This lane REPORTS and is run by a human before
+# such a parser cuts over; it never gates CI, which carries no nightly. Details,
+# seed layout and the pending targets: fuzz/README.md.
+
+# Refuse a fuzz run unless the pinned tools and a current fuzz lock are here.
+_fuzz-preflight:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    want="{{ CARGO_FUZZ_VERSION }}"
+    have="$(cargo fuzz --version 2>/dev/null | awk '{ print $2 }' || true)"
+    if [ "$have" != "$want" ]; then
+        echo "Error: the fuzz lane requires cargo-fuzz $want, found ${have:-none}" >&2
+        echo "       cargo install --locked --version $want cargo-fuzz" >&2
+        exit 1
+    fi
+    if ! rustup run {{ FUZZ_TOOLCHAIN }} rustc --version >/dev/null 2>&1; then
+        echo "Error: the fuzz lane requires toolchain {{ FUZZ_TOOLCHAIN }}" >&2
+        echo "       rustup toolchain install {{ FUZZ_TOOLCHAIN }} --component rust-src" >&2
+        exit 1
+    fi
+    # cargo-fuzz passes -Zbuild-std by default, which compiles std from source.
+    if ! rustup component list --toolchain {{ FUZZ_TOOLCHAIN }} | grep -q "^rust-src (installed)"; then
+        echo "Error: {{ FUZZ_TOOLCHAIN }} has no rust-src, and cargo-fuzz builds std from source" >&2
+        echo "       rustup component add rust-src --toolchain {{ FUZZ_TOOLCHAIN }}" >&2
+        exit 1
+    fi
+    # cargo-fuzz 0.13.2 has no --locked pass-through, so the committed lock is
+    # proven HERE instead, before anything builds.
+    if ! cargo +{{ FUZZ_TOOLCHAIN }} metadata --locked --manifest-path fuzz/Cargo.toml --format-version 1 >/dev/null 2>&1; then
+        echo "Error: fuzz/Cargo.lock is not current — a CalVer bump moves the ae version it records" >&2
+        echo "       cargo +{{ FUZZ_TOOLCHAIN }} metadata --manifest-path fuzz/Cargo.toml --format-version 1 >/dev/null" >&2
+        echo "       git add fuzz/Cargo.lock" >&2
+        exit 1
+    fi
+    # No product lane formats these sources — fuzz/ is not a workspace member —
+    # so the lane checks them itself, with the PRODUCT rustfmt.
+    if ! cargo fmt --manifest-path fuzz/Cargo.toml --check; then
+        echo "Error: the fuzz sources are not rustfmt-clean" >&2
+        echo "       cargo fmt --manifest-path fuzz/Cargo.toml" >&2
+        exit 1
+    fi
+
+# Fuzz one parser (for example: just rust-fuzz target=config_parse secs=60)
+rust-fuzz target secs="secs=60": _fuzz-preflight
+    #!/usr/bin/env bash
+    set -euo pipefail
+    target="${1:-}"
+    target="${target#target=}"
+    secs="${2:-secs=60}"
+    secs="${secs#secs=}"
+    case " {{ FUZZ_TARGETS }} " in
+        *" $target "*) ;;
+        *) echo "Error: target must be one of: {{ FUZZ_TARGETS }}" >&2; exit 2 ;;
+    esac
+    case "$secs" in
+        '' | 0 | *[!0-9]*) echo "Error: secs must be a positive integer" >&2; exit 2 ;;
+    esac
+    seeds="$PWD/fuzz/seeds/$target"
+    corpus="$PWD/fuzz/corpus/$target"
+    mkdir -p "$corpus"
+    count="$(find "$seeds" -type f | wc -l | tr -d '[:space:]')"
+    commit="$(git rev-parse --short=8 HEAD 2>/dev/null || echo unknown)"
+    if ! git diff --quiet HEAD 2>/dev/null; then
+        commit="$commit-dirty"
+    fi
+    # The FIRST corpus path is the one libFuzzer WRITES to; the tracked seeds are
+    # read alongside it. Both are absolute: the target runs from the fuzz dir.
+    cargo +{{ FUZZ_TOOLCHAIN }} fuzz run "$target" "$corpus" "$seeds" -- -max_total_time="$secs"
+    # The cutover evidence line. Paste it into the slice report it gates.
+    echo "fuzz evidence: target=$target seeds=$count duration=${secs}s commit=$commit toolchain={{ FUZZ_TOOLCHAIN }} cargo-fuzz={{ CARGO_FUZZ_VERSION }} result=clean"
+
+# Fuzz every hostile parser (for example: just rust-fuzz-all secs=60)
+rust-fuzz-all secs="secs=60":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    secs="${1:-secs=60}"
+    for target in {{ FUZZ_TARGETS }}; do
+        just rust-fuzz "target=$target" "$secs"
+    done
 
 # The `--allow license-not-encountered` crutch is GONE as of the first real
 # dependency (2026-08-29, P4.3 tracer A): the deny.toml allow-list is now
