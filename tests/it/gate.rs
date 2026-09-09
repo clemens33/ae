@@ -260,6 +260,67 @@ fn the_rust_test_recipe_isolates_every_real_tmux_probe() {
     ));
 }
 
+/// Whether the `release` recipe refreshes the fuzz crate's lock inside the
+/// version commit, and cannot refuse the release when it does not.
+///
+/// The fuzz crate is outside the workspace, so the bump's own rewrite never
+/// reaches its lock — and that lock records the ae version. Refreshed too early
+/// it records the OLD version; refreshed after the commit it needs a second
+/// one; refreshed without a probe it turns a missing DEV toolchain into a
+/// failed release.
+fn fuzz_lock_refresh_ok(justfile: &str) -> bool {
+    let lines = recipe_text(justfile, "release:");
+    let position = |needle: &str| lines.iter().position(|line| line.contains(needle));
+    let (Some(bump), Some(refresh), Some(commit)) = (
+        position("just bump"),
+        position("metadata --manifest-path fuzz/Cargo.toml"),
+        position("chore(release):"),
+    ) else {
+        return false;
+    };
+    // The bump writes the version the refresh records, and the commit that
+    // carries the bump carries the refreshed lock with it.
+    if !(bump < refresh && refresh < commit) {
+        return false;
+    }
+    // ONE condition: the refresh runs only when the fuzz nightly answers.
+    if !lines[refresh].contains("rustup run") {
+        return false;
+    }
+    // And nothing from the refresh to the commit may refuse.
+    lines[refresh..commit]
+        .iter()
+        .all(|line| bare_word_count(line, "exit") == 0)
+}
+
+#[test]
+fn the_release_recipe_refreshes_the_fuzz_lock_without_being_able_to_refuse() {
+    assert!(
+        fuzz_lock_refresh_ok(&read(&root().join("justfile"))),
+        "the release must carry the refreshed fuzz lock in its version commit, and \
+         a missing fuzz nightly must warn rather than fail the release"
+    );
+
+    // RED — no refresh at all: the fuzz lane refuses on a stale lock after every
+    // release until someone refreshes it by hand.
+    assert!(!fuzz_lock_refresh_ok(
+        "release:\n    VERSION=$(just bump)\n    git commit -m \"chore(release): $TAG\"\n"
+    ));
+    // RED — refreshed BEFORE the bump, so the lock records the version the
+    // release is replacing.
+    assert!(!fuzz_lock_refresh_ok(
+        "release:\n    if rustup run nightly rustc --version && cargo +nightly metadata --manifest-path fuzz/Cargo.toml; then git add fuzz/Cargo.lock; fi\n    VERSION=$(just bump)\n    git commit -m \"chore(release): $TAG\"\n"
+    ));
+    // RED — unguarded: a laptop without the fuzz nightly cannot release.
+    assert!(!fuzz_lock_refresh_ok(
+        "release:\n    VERSION=$(just bump)\n    cargo +nightly metadata --manifest-path fuzz/Cargo.toml --format-version 1 >/dev/null\n    git commit -m \"chore(release): $TAG\"\n"
+    ));
+    // RED — guarded, in order, and still able to refuse.
+    assert!(!fuzz_lock_refresh_ok(
+        "release:\n    VERSION=$(just bump)\n    if rustup run nightly rustc --version && cargo +nightly metadata --manifest-path fuzz/Cargo.toml; then git add fuzz/Cargo.lock; else exit 1; fi\n    git commit -m \"chore(release): $TAG\"\n"
+    ));
+}
+
 /// The joined, comment-free text the portability rules read.
 fn installer_lines(source: &str) -> Vec<String> {
     let mut out = Vec::new();

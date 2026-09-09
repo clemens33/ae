@@ -502,6 +502,26 @@ release:
     RELEASE_BODY=$(git-cliff --tag "$TAG" --unreleased --strip header)
     RELEASE_BODY="${RELEASE_BODY:-Release $TAG}"
 
+    # The fuzz crate is outside the workspace, so nothing above refreshed ITS
+    # lock — and it records the ae version too, which the bump just moved. It is
+    # refreshed HERE so one commit carries the whole CalVer bump, and with the
+    # fuzz lane's own nightly so the lane's `cargo metadata --locked` proof
+    # agrees with what was written.
+    #
+    # A RELEASE NEVER FAILS ON A DEV TOOLCHAIN. The probe and the refresh are one
+    # condition: a machine without the nightly publishes with the lock as
+    # committed and says so, and the fuzz lane then refuses on the stale lock
+    # with this same command. The `checkout` is why the warning can promise the
+    # lock is untouched — a metadata run that failed half-way leaves no residue
+    # for `git add -u` below to stage.
+    if rustup run {{ FUZZ_TOOLCHAIN }} rustc --version >/dev/null 2>&1 && cargo +{{ FUZZ_TOOLCHAIN }} metadata --manifest-path fuzz/Cargo.toml --format-version 1 >/dev/null 2>&1; then
+        git add fuzz/Cargo.lock
+    else
+        git checkout -- fuzz/Cargo.lock
+        echo "Warning: fuzz/Cargo.lock NOT refreshed — {{ FUZZ_TOOLCHAIN }} is missing or its metadata run failed" >&2
+        echo "         the fuzz lane will refuse until: cargo +{{ FUZZ_TOOLCHAIN }} metadata --manifest-path fuzz/Cargo.toml --format-version 1 >/dev/null" >&2
+    fi
+
     # Commit
     git add CHANGELOG.md
     git add -u
