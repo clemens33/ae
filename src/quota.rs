@@ -164,8 +164,6 @@ pub(crate) fn vendor_timestamp(text: &str) -> Option<i64> {
 pub struct Inputs<'a> {
     /// The operator's home, where default client config homes live.
     pub home: Option<&'a Path>,
-    /// The working directory used to resolve a relative config-home assignment.
-    pub cwd: &'a Path,
     /// Selected global ae config.
     pub global: Option<&'a Path>,
     /// Selected project-local ae config.
@@ -180,7 +178,10 @@ pub struct Inputs<'a> {
 struct Scope {
     tool: ToolKind,
     home: Option<PathBuf>,
+    source: Option<PathBuf>,
     profiles: Vec<String>,
+    clients: Vec<String>,
+    hint: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -188,10 +189,11 @@ struct Group {
     profiles: Vec<String>,
     tool: ToolKind,
     home: Option<PathBuf>,
+    clients: Vec<String>,
     rollout: Option<String>,
     owner: Option<String>,
     rows: Vec<Row>,
-    hint: Option<&'static str>,
+    hint: Option<String>,
     summary: Option<RolloutSummary>,
 }
 
@@ -321,7 +323,7 @@ pub fn run(inputs: &Inputs<'_>, out: &mut impl Write, err: &mut impl Write) -> c
             return Ok(1);
         }
     };
-    let scopes = configured_scopes(&cfg, inputs.home, inputs.cwd);
+    let scopes = configured_scopes(&cfg, inputs.home);
     let mut groups = Vec::new();
     let mut budget = Budget::new();
     let fleet = scopes
@@ -335,10 +337,11 @@ pub fn run(inputs: &Inputs<'_>, out: &mut impl Write, err: &mut impl Write) -> c
                 profiles: scope.profiles.clone(),
                 tool: scope.tool,
                 home: scope.home.clone(),
+                clients: scope.clients.clone(),
                 rollout: None,
                 owner: None,
-                rows: rows_or_placeholder(read_claude(scope, inputs.home, inputs.now, &mut budget)),
-                hint: None,
+                rows: rows_or_placeholder(read_claude(scope, inputs.now, &mut budget)),
+                hint: scope.hint.clone(),
                 summary: None,
             }),
             QuotaSource::CodexRollouts => {
@@ -350,128 +353,195 @@ pub fn run(inputs: &Inputs<'_>, out: &mut impl Write, err: &mut impl Write) -> c
                 profiles: scope.profiles.clone(),
                 tool: scope.tool,
                 home: scope.home.clone(),
+                clients: scope.clients.clone(),
                 rollout: None,
                 owner: None,
                 rows: vec![placeholder(Status::Unsupported)],
-                hint: quota.unsupported_hint,
+                hint: scope
+                    .hint
+                    .clone()
+                    .or_else(|| quota.unsupported_hint.map(str::to_owned)),
                 summary: None,
             }),
         }
     }
-    write!(out, "{}", render_at(&groups, inputs.home, inputs.now))?;
+    let canonical_operator_home = inputs.home.and_then(|home| {
+        crate::run::canonical_config_home(&crate::launch_cmd::Resolved::Path(home.to_path_buf()))
+            .ok()
+            .and_then(|resolved| match resolved {
+                crate::launch_cmd::Resolved::Path(path) => Some(path),
+                crate::launch_cmd::Resolved::Absent | crate::launch_cmd::Resolved::Unknown(_) => {
+                    None
+                }
+            })
+    });
+    write!(
+        out,
+        "{}",
+        render_at(
+            &groups,
+            canonical_operator_home.as_deref().or(inputs.home),
+            inputs.now
+        )
+    )?;
     Ok(0)
 }
 
-fn configured_scopes(
-    cfg: &crate::config::IdentityConfig,
-    home: Option<&Path>,
-    cwd: &Path,
-) -> Vec<Scope> {
+fn configured_scopes(cfg: &crate::config::IdentityConfig, home: Option<&Path>) -> Vec<Scope> {
     let mut scopes: Vec<Scope> = Vec::new();
-    for (profile, command) in &cfg.profiles {
-        let tool = ToolKind::from_cmd(command);
-        let config_home = config_home(tool, command, home, cwd);
+    for (profile, raw) in &cfg.profiles {
+        let resolved = match cfg.command(profile, home) {
+            Ok(Some(resolved)) => resolved,
+            Ok(None) => {
+                scopes.push(unknown_scope(profile, resolved_tool(""), None, None));
+                continue;
+            }
+            Err(error) => {
+                let client = config_error_client(&error);
+                let tool = client
+                    .and_then(|label| cfg.client(label))
+                    .map_or_else(|| resolved_tool(raw), |client| client.tool);
+                let client = client.and_then(|label| displayed_client(cfg, label, tool));
+                scopes.push(unknown_scope(
+                    profile,
+                    tool,
+                    client,
+                    Some(error.to_string()),
+                ));
+                continue;
+            }
+        };
+        let tool = resolved_tool(resolved.as_str());
+        let client = resolved
+            .client_label()
+            .and_then(|label| displayed_client(cfg, label, tool));
+        let resolution = crate::launch_cmd::config_home_resolution(&resolved, tool, &|name| {
+            (name == "HOME")
+                .then(|| home.map(|path| path.display().to_string()))
+                .flatten()
+        });
+        let (config_home, source) = match resolved_scope_paths(tool, &resolution, home) {
+            Ok(paths) => paths,
+            Err(error) => {
+                scopes.push(unknown_scope(profile, tool, client, Some(error)));
+                continue;
+            }
+        };
         if let Some(scope) = scopes
             .iter_mut()
             .find(|scope| scope.tool == tool && scope.home == config_home)
         {
             scope.profiles.push(profile.clone());
+            if let Some(client) = client
+                && !scope.clients.contains(&client)
+            {
+                scope.clients.push(client);
+            }
         } else {
             scopes.push(Scope {
                 tool,
                 home: config_home,
+                source,
                 profiles: vec![profile.clone()],
+                clients: client.into_iter().collect(),
+                hint: None,
             });
         }
     }
     scopes
 }
 
-fn config_home(tool: ToolKind, command: &str, home: Option<&Path>, cwd: &Path) -> Option<PathBuf> {
-    let quota = tool.adapter().quota;
-    let path = match profile_home(command, quota.config_home_env, home) {
-        ProfileHome::Default => quota
-            .default_home
-            .and_then(|name| home.map(|base| base.join(name)))?,
-        ProfileHome::Assigned(path) => path,
-        ProfileHome::Unknown => return None,
-    };
-    Some(if path.is_absolute() {
-        path
-    } else {
-        cwd.join(path)
-    })
+fn resolved_tool(command: &str) -> ToolKind {
+    crate::launch_cmd::lex_simple_command(command)
+        .map_or_else(|_| ToolKind::from_binary_name(""), |parsed| parsed.tool())
 }
 
-enum ProfileHome {
-    Default,
-    Assigned(PathBuf),
-    Unknown,
-}
-
-fn profile_home(command: &str, variable: Option<&str>, home: Option<&Path>) -> ProfileHome {
-    let Some(split) = crate::launch_cmd::split_binary(command) else {
-        return ProfileHome::Unknown;
-    };
-    let unknown_expansion = std::cell::Cell::new(false);
-    let missing_home = std::cell::Cell::new(false);
-    let Ok(words) = crate::words::split_words(&split.prefix, &|name| {
-        if name != "HOME" {
-            unknown_expansion.set(true);
-            return None;
-        }
-        let value = home.map(|path| path.to_string_lossy().into_owned());
-        if value.is_none() {
-            missing_home.set(true);
-        }
-        value
-    }) else {
-        return ProfileHome::Unknown;
-    };
-    if unknown_expansion.get() || missing_home.get() {
-        return ProfileHome::Unknown;
+fn config_error_client(error: &crate::config::ConfigError) -> Option<&str> {
+    match error {
+        crate::config::ConfigError::ClientEnvConflict { client, .. }
+        | crate::config::ConfigError::ClientHome { client, .. } => Some(client),
+        _ => None,
     }
-    let mut assigned = None;
-    for (index, word) in words.into_iter().enumerate() {
-        if index == 0 && word.raw == "env" {
-            continue;
-        }
-        if !word.assignment {
-            return ProfileHome::Unknown;
-        }
-        let Some((name, value)) = word.value.split_once('=') else {
-            return ProfileHome::Unknown;
-        };
-        if Some(name) != variable || !plain_home_assignment(&word.raw, name) {
-            return ProfileHome::Unknown;
-        }
-        assigned = Some(PathBuf::from(value));
-    }
-    assigned.map_or(ProfileHome::Default, ProfileHome::Assigned)
 }
 
-fn plain_home_assignment(raw: &str, variable: &str) -> bool {
-    let prefix = format!("{variable}=$HOME");
-    raw == prefix
-        || raw.strip_prefix(&prefix).is_some_and(|rest| {
-            rest.starts_with('/')
-                && !rest
-                    .chars()
-                    .any(|ch| matches!(ch, '\'' | '"' | '\\' | '$' | '`'))
-        })
+fn displayed_client(
+    cfg: &crate::config::IdentityConfig,
+    label: &str,
+    tool: ToolKind,
+) -> Option<String> {
+    let client = cfg.client(label)?;
+    let default_alias =
+        label == tool.as_str() && client.executable == label && client.config_home.is_none();
+    (!default_alias).then(|| label.to_owned())
 }
 
-fn read_claude(
-    scope: &Scope,
+fn resolved_scope_paths(
+    tool: ToolKind,
+    resolution: &crate::launch_cmd::ConfigHomeResolution,
     operator_home: Option<&Path>,
-    now: i64,
-    budget: &mut Budget,
-) -> ReadRows {
-    let Some(home) = scope.home.as_deref() else {
+) -> Result<(Option<PathBuf>, Option<PathBuf>), String> {
+    let canonical_home = crate::run::canonical_config_home(&resolution.home)?;
+    let home = match canonical_home {
+        crate::launch_cmd::Resolved::Path(path) => Some(path),
+        crate::launch_cmd::Resolved::Absent | crate::launch_cmd::Resolved::Unknown(_) => None,
+    };
+    if tool.adapter().quota.source == QuotaSource::Unsupported {
+        let fallback = tool
+            .adapter()
+            .quota
+            .default_home
+            .and_then(|name| operator_home.map(|base| base.join(name)));
+        let fallback = match fallback {
+            Some(path) => {
+                match crate::run::canonical_config_home(&crate::launch_cmd::Resolved::Path(path))? {
+                    crate::launch_cmd::Resolved::Path(path) => Some(path),
+                    crate::launch_cmd::Resolved::Absent
+                    | crate::launch_cmd::Resolved::Unknown(_) => None,
+                }
+            }
+            None => None,
+        };
+        return Ok((fallback, None));
+    }
+    let source = match (tool.adapter().quota.source, home.as_ref()) {
+        (QuotaSource::ClaudeCache, Some(config_home)) if resolution.explicit => {
+            Some(config_home.join(".claude.json"))
+        }
+        (QuotaSource::ClaudeCache, Some(_)) => {
+            match crate::run::canonical_config_home(&resolution.base)? {
+                crate::launch_cmd::Resolved::Path(base) => Some(base.join(".claude.json")),
+                crate::launch_cmd::Resolved::Absent | crate::launch_cmd::Resolved::Unknown(_) => {
+                    None
+                }
+            }
+        }
+        (QuotaSource::CodexRollouts, Some(config_home)) => Some(config_home.join("sessions")),
+        _ => None,
+    };
+    Ok((home, source))
+}
+
+fn unknown_scope(
+    profile: &str,
+    tool: ToolKind,
+    client: Option<String>,
+    hint: Option<String>,
+) -> Scope {
+    Scope {
+        tool,
+        home: None,
+        source: None,
+        profiles: vec![profile.to_owned()],
+        clients: client.into_iter().collect(),
+        hint,
+    }
+}
+
+fn read_claude(scope: &Scope, now: i64, budget: &mut Budget) -> ReadRows {
+    let Some(path) = scope.source.as_deref() else {
         return ReadRows::Missing;
     };
-    let path = claude_cache_path(home, operator_home);
-    let bytes = match bounded_whole_file(&path, CLAUDE_MAX_BYTES, budget) {
+    let bytes = match bounded_whole_file(path, CLAUDE_MAX_BYTES, budget) {
         Ok(Bounded::Ready(Some(bytes))) => bytes,
         Ok(Bounded::Ready(None)) => return ReadRows::Missing,
         Ok(Bounded::Truncated) => return ReadRows::Truncated,
@@ -482,15 +552,6 @@ fn read_claude(
         Ok(_) => ReadRows::Missing,
         Err(_) => ReadRows::Failed,
     }
-}
-
-fn claude_cache_path(config_home: &Path, operator_home: Option<&Path>) -> PathBuf {
-    if let Some(home) = operator_home
-        && config_home == home.join(".claude")
-    {
-        return home.join(".claude.json");
-    }
-    config_home.join(".claude.json")
 }
 
 fn fleet_rollouts(sessions: Option<&Path>, budget: &mut Budget) -> FleetRollouts {
@@ -633,10 +694,11 @@ fn codex_groups(scope: &Scope, fleet: &FleetRollouts, now: i64, budget: &mut Bud
                 profiles: scope.profiles.clone(),
                 tool: scope.tool,
                 home: scope.home.clone(),
+                clients: scope.clients.clone(),
                 rollout: Some(located.rollout.id.clone()),
                 owner: Some(located.rollout.owner.clone()),
                 rows,
-                hint: None,
+                hint: scope.hint.clone(),
                 summary: None,
             },
             observed,
@@ -671,8 +733,8 @@ fn locate_rollouts<'a>(
 ) -> Vec<LocatedRollout<'a>> {
     let mut located = Vec::new();
     for &rollout in candidates {
-        let source = match scope.home.as_deref() {
-            Some(home) => match find_codex_rollout(&home.join("sessions"), &rollout.id, budget) {
+        let source = match scope.source.as_deref() {
+            Some(sessions) => match find_codex_rollout(sessions, &rollout.id, budget) {
                 Ok(Bounded::Ready(Some(file))) => RolloutSource::File(file),
                 Ok(Bounded::Ready(None)) => RolloutSource::Missing,
                 Ok(Bounded::Truncated) => {
@@ -733,10 +795,11 @@ fn summarize_codex_groups(
             profiles: scope.profiles.clone(),
             tool: scope.tool,
             home: scope.home.clone(),
+            clients: scope.clients.clone(),
             rollout: None,
             owner: None,
             rows: vec![placeholder(Status::Unknown)],
-            hint: None,
+            hint: scope.hint.clone(),
             summary: None,
         });
     }
@@ -752,6 +815,7 @@ fn summarize_codex_groups(
             profiles: Vec::new(),
             tool: scope.tool,
             home: scope.home.clone(),
+            clients: scope.clients.clone(),
             rollout: None,
             owner: None,
             rows: Vec::new(),
@@ -824,11 +888,15 @@ fn placeholder(status: Status) -> Row {
 }
 
 fn scope_label(group: &Group, home: Option<&Path>) -> String {
-    let path = group
-        .home
-        .as_deref()
-        .map_or_else(|| "unknown".to_owned(), |path| short_path(path, home));
-    let mut label = format!("{} · {path}", group.tool.as_str());
+    let identity = if group.clients.is_empty() {
+        group
+            .home
+            .as_deref()
+            .map_or_else(|| "unknown".to_owned(), |path| short_path(path, home))
+    } else {
+        group.clients.join(", ")
+    };
+    let mut label = format!("{} · {identity}", group.tool.as_str());
     if group.tool.adapter().quota.source == QuotaSource::CodexRollouts {
         label.push_str(" · unidentified");
         if let Some(owner) = group.owner.as_deref() {
@@ -867,7 +935,7 @@ fn render_at(groups: &[Group], home: Option<&Path>, now: i64) -> String {
         }
         for (index, row) in group.rows.iter().enumerate() {
             let trustworthy = matches!(row.status, Status::Fresh | Status::Stale);
-            let status = group.hint.map_or_else(
+            let status = group.hint.as_deref().map_or_else(
                 || row.status.as_str().to_owned(),
                 |hint| format!("{} ({hint})", row.status.as_str()),
             );
@@ -1392,8 +1460,8 @@ mod tests {
     use super::{
         Bounded, Budget, CLAUDE_MAX_BYTES, CODEX_TAIL_BYTES, FRESH_SECS, FUTURE_SKEW_SECS,
         FleetRollout, FleetRollouts, FleetStatus, LocatedRollout, ReadRows, RenderLine,
-        RolloutSource, Scope, Status, bounded_tail, bounded_whole_file, claude_cache_path,
-        codex_groups, codex_rollout_dirs, config_home, find_codex_rollout, freshness,
+        RolloutSource, Scope, Status, bounded_tail, bounded_whole_file, codex_groups,
+        codex_rollout_dirs, configured_scopes, find_codex_rollout, freshness,
         order_located_rollouts, percent_label, profiles_label, read_bounded_tail, read_claude,
         render_at, render_table, rows_or_placeholder, sanitize_cell, vendor_timestamp,
     };
@@ -1514,7 +1582,10 @@ mod tests {
         let scope = Scope {
             tool: ToolKind::Codex,
             home: Some(root.join(".codex")),
+            source: Some(root.join(".codex/sessions")),
             profiles: vec!["codex-profile".to_owned()],
+            clients: Vec::new(),
+            hint: None,
         };
         let groups = codex_groups(&scope, &fleet, NOW, &mut Budget::new());
         let shown: Vec<_> = groups
@@ -1588,7 +1659,10 @@ mod tests {
         let scope = Scope {
             tool: ToolKind::Codex,
             home: Some(root.join(".codex")),
+            source: Some(root.join(".codex/sessions")),
             profiles: vec!["codex-profile".to_owned()],
+            clients: Vec::new(),
+            hint: None,
         };
         let mut budget = Budget {
             files_left: 4_096,
@@ -1619,87 +1693,67 @@ mod tests {
     }
 
     #[test]
-    fn plain_tool_home_assignments_resolve_and_ambiguous_prefixes_do_not() {
-        let home = std::path::Path::new("/users/c");
+    fn configured_scopes_use_resolved_client_identity_and_vendor_paths() {
+        let root = std::path::PathBuf::from(format!(
+            "/tmp/ae-quota-resolved-scopes-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("operator home");
+        let canonical_root = match crate::run::canonical_config_home(
+            &crate::launch_cmd::Resolved::Path(root.clone()),
+        )
+        .expect("canonical operator home")
+        {
+            crate::launch_cmd::Resolved::Path(path) => path,
+            other => panic!("unexpected canonical home: {other:?}"),
+        };
+        let cfg = crate::config::IdentityConfig {
+            clients: vec![
+                (
+                    "claude".to_owned(),
+                    crate::config::Client {
+                        executable: "claude".to_owned(),
+                        config_home: None,
+                        tool: ToolKind::Claude,
+                    },
+                ),
+                (
+                    "mic".to_owned(),
+                    crate::config::Client {
+                        executable: "claude".to_owned(),
+                        config_home: Some("$HOME/.claude-mic".to_owned()),
+                        tool: ToolKind::Claude,
+                    },
+                ),
+            ],
+            profiles: vec![
+                ("default".to_owned(), "claude".to_owned()),
+                ("custom".to_owned(), "mic".to_owned()),
+                ("moved-home".to_owned(), "HOME=/other claude".to_owned()),
+            ],
+            ..crate::config::IdentityConfig::default()
+        };
+        let scopes = configured_scopes(&cfg, Some(&root));
+        assert_eq!(scopes.len(), 3);
+        assert_eq!(scopes[0].home, Some(canonical_root.join(".claude")));
+        assert_eq!(scopes[0].source, Some(canonical_root.join(".claude.json")));
+        assert!(scopes[0].clients.is_empty(), "default alias stays concise");
+        assert_eq!(scopes[1].home, Some(canonical_root.join(".claude-mic")));
         assert_eq!(
-            config_home(ToolKind::Claude, "claude", Some(home), home),
-            Some(home.join(".claude"))
+            scopes[1].source,
+            Some(canonical_root.join(".claude-mic/.claude.json"))
+        );
+        assert_eq!(scopes[1].clients, ["mic"]);
+        assert_eq!(
+            scopes[2].home,
+            Some(std::path::PathBuf::from("/other/.claude"))
         );
         assert_eq!(
-            config_home(
-                ToolKind::Claude,
-                "CLAUDE_CONFIG_DIR=$HOME/.claude-work claude",
-                Some(home),
-                home,
-            ),
-            Some(home.join(".claude-work"))
+            scopes[2].source,
+            Some(std::path::PathBuf::from("/other/.claude.json"))
         );
-        assert_eq!(
-            config_home(
-                ToolKind::Codex,
-                "env CODEX_HOME=$HOME/.codex-work codex",
-                Some(home),
-                home,
-            ),
-            Some(home.join(".codex-work"))
-        );
-        assert_eq!(
-            config_home(
-                ToolKind::Claude,
-                "env \"CLAUDE_CONFIG_DIR=$HOME/.claude-work\" claude",
-                Some(home),
-                home,
-            ),
-            None
-        );
-        assert_eq!(
-            config_home(
-                ToolKind::Codex,
-                "env CODEX_HOME=relative codex",
-                Some(home),
-                std::path::Path::new("/work"),
-            ),
-            None
-        );
-        assert_eq!(
-            config_home(
-                ToolKind::Codex,
-                "CODEX_HOME=/old env -u CODEX_HOME codex",
-                Some(home),
-                home,
-            ),
-            None
-        );
-        assert_eq!(
-            config_home(ToolKind::Claude, "env -u OTHER claude", Some(home), home),
-            None
-        );
-        assert_eq!(
-            config_home(ToolKind::Claude, "env -i claude", Some(home), home),
-            None
-        );
-        assert_eq!(
-            config_home(ToolKind::Claude, "OTHER=1 claude", Some(home), home),
-            None
-        );
-        assert_eq!(
-            config_home(
-                ToolKind::Claude,
-                "HOME=/other CLAUDE_CONFIG_DIR=$HOME/.claude-work claude",
-                Some(home),
-                home,
-            ),
-            None
-        );
-        assert_eq!(
-            config_home(
-                ToolKind::Claude,
-                "CLAUDE_CONFIG_DIR=$OTHER/.claude-work claude",
-                Some(home),
-                home,
-            ),
-            None
-        );
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
@@ -1707,7 +1761,6 @@ mod tests {
         let root =
             std::path::PathBuf::from(format!("/tmp/ae-quota-claude-homes-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        let default = root.join(".claude");
         let custom = root.join(".claude-mic");
         std::fs::create_dir_all(&custom).expect("custom client home");
         let cache = |percent| {
@@ -1717,27 +1770,28 @@ mod tests {
         };
         std::fs::write(root.join(".claude.json"), cache(11)).expect("default cache");
         std::fs::write(custom.join(".claude.json"), cache(77)).expect("custom cache");
-        assert_eq!(
-            claude_cache_path(&default, Some(&root)),
-            root.join(".claude.json")
-        );
-        assert_eq!(
-            claude_cache_path(&custom, Some(&root)),
-            custom.join(".claude.json")
-        );
-        let read = |home: std::path::PathBuf| {
+        let read = |home: std::path::PathBuf, source: std::path::PathBuf| {
             let scope = Scope {
                 tool: ToolKind::Claude,
                 home: Some(home),
+                source: Some(source),
                 profiles: vec!["p".to_owned()],
+                clients: Vec::new(),
+                hint: None,
             };
-            match read_claude(&scope, Some(&root), 1_001, &mut Budget::new()) {
+            match read_claude(&scope, 1_001, &mut Budget::new()) {
                 ReadRows::Rows(rows) => rows[0].used_percent.clone(),
                 _ => None,
             }
         };
-        assert_eq!(read(default), Some("11".to_owned()));
-        assert_eq!(read(custom), Some("77".to_owned()));
+        assert_eq!(
+            read(root.join(".claude"), root.join(".claude.json")),
+            Some("11".to_owned())
+        );
+        assert_eq!(
+            read(custom.clone(), custom.join(".claude.json")),
+            Some("77".to_owned())
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 

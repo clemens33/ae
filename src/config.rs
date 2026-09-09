@@ -214,19 +214,28 @@ pub struct Client {
 /// A profile command after its optional client label has been expanded once.
 /// The private field prevents resolved snapshots from re-entering expansion.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ResolvedCommand(String);
+pub struct ResolvedCommand {
+    text: String,
+    client_label: Option<String>,
+}
 
 impl ResolvedCommand {
     /// The command text consumed by launch-command validators and builders.
     #[must_use]
     pub fn as_str(&self) -> &str {
-        &self.0
+        &self.text
+    }
+
+    /// The `[clients]` label expanded by this resolution, if any.
+    #[must_use]
+    pub(crate) fn client_label(&self) -> Option<&str> {
+        self.client_label.as_deref()
     }
 
     /// Consume the typed command into its transport representation.
     #[must_use]
     pub fn into_string(self) -> String {
-        self.0
+        self.text
     }
 }
 
@@ -279,15 +288,25 @@ impl IdentityConfig {
             return Ok(None);
         };
         let Ok(parsed) = crate::launch_cmd::lex_simple_command(raw) else {
-            return Ok(Some(ResolvedCommand(raw.to_owned())));
+            return Ok(Some(ResolvedCommand {
+                text: raw.to_owned(),
+                client_label: None,
+            }));
         };
         let binary = crate::launch_cmd::launch_binary(&parsed);
         if binary.word.contains('/') {
-            return Ok(Some(ResolvedCommand(raw.to_owned())));
+            return Ok(Some(ResolvedCommand {
+                text: raw.to_owned(),
+                client_label: None,
+            }));
         }
         let Some(client) = self.client(binary.word) else {
-            return Ok(Some(ResolvedCommand(raw.to_owned())));
+            return Ok(Some(ResolvedCommand {
+                text: raw.to_owned(),
+                client_label: None,
+            }));
         };
+        let client_label = binary.word.to_owned();
         let mut replacement = client.executable.clone();
         if let Some(config_home) = &client.config_home {
             let Some(variable) = client.tool.adapter().config_home_env else {
@@ -311,13 +330,19 @@ impl IdentityConfig {
         command.push_str(&raw[..binary.span.0]);
         command.push_str(&replacement);
         command.push_str(&raw[binary.span.1..]);
-        Ok(Some(ResolvedCommand(command)))
+        Ok(Some(ResolvedCommand {
+            text: command,
+            client_label: Some(client_label),
+        }))
     }
 
     /// Type a command snapshot already resolved by [`Self::command`].
     #[must_use]
     pub(crate) fn resolved_snapshot(command: &str) -> ResolvedCommand {
-        ResolvedCommand(command.to_owned())
+        ResolvedCommand {
+            text: command.to_owned(),
+            client_label: None,
+        }
     }
 
     /// The profile `name` is bound to in `[roster]`, if any.

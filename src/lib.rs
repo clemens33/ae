@@ -315,7 +315,6 @@ fn run_public_quota(
     quota::run(
         &quota::Inputs {
             home: home.as_deref(),
-            cwd: &cwd,
             global: Some(&global),
             local: local.as_deref(),
             sessions: Some(roots.sessions()),
@@ -1516,11 +1515,6 @@ fn run_quota_helper(
     err: &mut impl Write,
 ) -> Result<u8> {
     let meta = session::read_meta(dir).ok();
-    let cwd = meta
-        .as_ref()
-        .and_then(meta::Meta::work_dir)
-        .or_else(|| meta.as_ref().and_then(meta::Meta::origin))
-        .map_or_else(doors::cwd, std::path::PathBuf::from);
     let local = meta
         .as_ref()
         .and_then(meta::Meta::origin)
@@ -1538,7 +1532,6 @@ fn run_quota_helper(
     quota::run(
         &quota::Inputs {
             home: home.as_deref(),
-            cwd: &cwd,
             global: global.as_deref(),
             local: local.as_deref(),
             sessions: roots.as_ref().map(inventory::Roots::sessions),

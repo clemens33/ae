@@ -2,7 +2,9 @@ PROFILES             SCOPE                                BUCKET                
 fablex fable5 opusx  claude · ~/.claude                   session                5h      66%   in 2h39m   3m ago    fresh
                                                           weekly_all             7d      9%    in 4d 14h  3m ago    fresh
                                                           weekly_scoped Fable    7d      100%  in 4d 14h  3m ago    fresh
-fablework            claude · ~/.claude-work              -                      -       -     -          -         unknown
+micx                 claude · mic                         session                5h      77%   in 2h39m   3m ago    fresh
+                                                          weekly_all             7d      9%    in 4d 14h  3m ago    fresh
+                                                          weekly_scoped Fable    7d      100%  in 4d 14h  3m ago    fresh
 astrax solx          codex · ~/.codex · unidentified      codex (pro)            7d      7%    in 7d      9m ago    fresh
                      (session:lead)
                                                           codex_bengalfox (pro)  5h      3.5%  in 50m     8m ago    fresh

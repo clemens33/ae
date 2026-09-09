@@ -82,8 +82,9 @@ solmic = "codex-mic --yolo -m gpt-5.6-sol -c model_reasoning_effort=xhigh"
 Each distinct config home isolates local login state, settings, and conversation files, so one
 workspace can mix work and personal identities seat by seat. It does not create an independent
 provider quota: two homes may authenticate the same account, while two client labels may share one
-home. Bind the profiles to different `[roster]` names and run the tool's login flow once per new
-home.
+home. `ae quota` groups profiles by the resolved client home and lists the client labels sharing
+each scope. Bind the profiles to different `[roster]` names and run the tool's login flow once per
+new home.
 
 **Claude default-state trap:** never set `CLAUDE_CONFIG_DIR` (directly or through `config_home`) to
 the default `$HOME/.claude` directory. Without the variable, Claude Code reads its account state

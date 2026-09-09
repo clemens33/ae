@@ -621,7 +621,7 @@ fn contains_id(root: &Path, id: &str, depth: usize) -> bool {
 /// A tool may create its account directory on first launch. In that case the
 /// longest existing ancestor is canonicalized and the still-missing tail is
 /// appended without following anything in that tail.
-fn canonical_config_home(
+pub(crate) fn canonical_config_home(
     resolved: &crate::launch_cmd::Resolved,
 ) -> Result<crate::launch_cmd::Resolved, String> {
     let crate::launch_cmd::Resolved::Path(path) = resolved else {

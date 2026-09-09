@@ -571,16 +571,19 @@ ae quota
 ```
 
 Rows preserve canonical tool, config home, rollout, vendor bucket, and actual window even when
-their display labels wrap. Claude Code reads `$HOME/.claude.json` for its default home and
-`<CLAUDE_CONFIG_DIR>/.claude.json` for a custom home. Codex reads at most the final 256 KiB of the
-rollout named by each fleet session's ae-recorded harness id, looking only in the UUIDv7 UTC day
-and its two neighbouring local-clock days. Exact rollout files are ordered by mtime before their
-tails are read so the bounded budget reaches recent activity first; mtime never supplies the
-displayed observation age. Its owner is labelled `<session>:<seat>`. A plain
-`CLAUDE_CONFIG_DIR` or `CODEX_HOME` assignment using only `$HOME` is resolved exactly. `env -i`,
-`env -u`, `HOME=`, another assignment, or another variable expansion makes the home `unknown`
-rather than guessed. Quoting that assignment also makes the home `unknown` until the shared
-launch-command resolver replaces this narrow parser.
+their display labels wrap. Scopes are keyed by tool and canonical config home, so client labels
+whose homes resolve through the same symlink are grouped together. A client-selected scope lists
+its distinct client labels; a raw profile keeps the shortened home label.
+
+Quota resolves each configured command through the same client expansion and environment rules as
+the launcher. Claude Code reads `<effective HOME>/.claude.json` when `CLAUDE_CONFIG_DIR` is absent
+and `<CLAUDE_CONFIG_DIR>/.claude.json` when it is explicit. Codex reads at most the final 256 KiB of
+the rollout named by each fleet session's ae-recorded harness id below its resolved `CODEX_HOME`,
+looking only in the UUIDv7 UTC day and its two neighbouring local-clock days. Exact rollout files
+are ordered by mtime before their tails are read so the bounded budget reaches recent activity
+first; mtime never supplies the displayed observation age. Its owner is labelled
+`<session>:<seat>`, and a retained rollout remains attached to its recorded profile rather than
+being relabelled when that profile's configured client changes.
 
 At most three Codex rollout groups appear per scope, newest record observation first. A summary
 line counts hidden rollouts and reports the oldest known record observation among parsed hidden
