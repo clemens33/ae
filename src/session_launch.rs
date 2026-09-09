@@ -15,7 +15,7 @@ use crate::inventory::ServerId;
 use crate::launch::{self, PENDING};
 use crate::meta::{self, Meta, ServerSelector};
 use crate::session_tmux::{
-    Op, Split, TmuxArgv, argv, interpret_pane_id, mouse_down_status_binding_argv,
+    Op, Split, TmuxArgv, argv, interpret_pane_id, mouse_status_bindings_argv,
 };
 use crate::state::{EXIT_FAILED, EXIT_USAGE};
 use crate::tool::ToolKind;
@@ -1355,7 +1355,7 @@ fn launch(
             )?;
             return Ok(EXIT_FAILED);
         };
-        if let Some(binding) = mouse_down_status_binding_argv(&server) {
+        for binding in mouse_status_bindings_argv(&server) {
             let _ = transport::run_tmux_op(&binding);
         }
         let layout = meta_value(&dir, "layout").unwrap_or_default();
@@ -2155,7 +2155,7 @@ fn stamp_session(server: &ServerId, env: &Env, shape: &Session, main_pane: &str)
         ),
         &shape.look,
     );
-    if let Some(binding) = mouse_down_status_binding_argv(server) {
+    for binding in mouse_status_bindings_argv(server) {
         let _ = transport::run_tmux_op(&binding);
     }
     let _ = transport::run_tmux_op(&argv(server, &Op::SetClientSessionHook { pane: main_pane }));

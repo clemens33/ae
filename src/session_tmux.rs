@@ -16,7 +16,9 @@
 //! [`crate::transport::publish_option`], which is the existing door.
 
 use crate::inventory::ServerId;
-use crate::tmux::{MOUSE_DOWN_STATUS_DISPATCH, server_args, session_target};
+use crate::tmux::{
+    MOUSE_DOWN_STATUS_DISPATCH, MOUSE_DOWN_STATUS_MENU_ACTION, server_args, session_target,
+};
 
 /// The `-P -F` format every pane-creating call here prints.
 const PANE_ID_FORMAT: &str = "#{pane_id}";
@@ -140,6 +142,8 @@ pub(crate) enum Op<'a> {
     /// Replace tmux's root `MouseDown1Status` on an ae-owned server so a
     /// window-range click selects the window without firing the session hook.
     BindMouseDownStatus,
+    /// Bind ae's root `MouseDown3Status` context menu on an ae-owned server.
+    BindMouseDownStatusMenu,
     /// `rename-session -t <target> <name>` — `ae rename`'s tmux half.
     RenameSession { target: &'a str, name: &'a str },
     /// `set-window-option -t <target> <name> <value>` — the monitor window's
@@ -304,6 +308,29 @@ pub(crate) fn argv(server: &ServerId, op: &Op<'_>) -> TmuxArgv {
             args.extend(["bind-key", "-T", "root", "MouseDown1Status"].map(ToOwned::to_owned));
             args.extend(MOUSE_DOWN_STATUS_DISPATCH.map(ToOwned::to_owned));
         }
+        Op::BindMouseDownStatusMenu => {
+            args.extend(
+                [
+                    "bind-key",
+                    "-T",
+                    "root",
+                    "MouseDown3Status",
+                    "display-menu",
+                    "-t",
+                    "{mouse}",
+                    "-T",
+                    "#{session_name}",
+                    "-x",
+                    "M",
+                    "-y",
+                    "S",
+                    "Flip lead/colead panes",
+                    "f",
+                    MOUSE_DOWN_STATUS_MENU_ACTION,
+                ]
+                .map(ToOwned::to_owned),
+            );
+        }
         Op::RenameSession { target, name } => {
             args.extend(["rename-session", "-t"].map(ToOwned::to_owned));
             args.push(session_target(target));
@@ -325,12 +352,15 @@ pub(crate) fn argv(server: &ServerId, op: &Op<'_>) -> TmuxArgv {
     TmuxArgv(args)
 }
 
-/// The server-global status binding for a positively selected, ae-owned
+/// The server-global status bindings for a positively selected, ae-owned
 /// server. Ambient means the user's own root table, which launch never writes.
-pub(crate) fn mouse_down_status_binding_argv(server: &ServerId) -> Option<TmuxArgv> {
+pub(crate) fn mouse_status_bindings_argv(server: &ServerId) -> Vec<TmuxArgv> {
     match server {
-        ServerId::Ambient => None,
-        ServerId::Selected(_) => Some(argv(server, &Op::BindMouseDownStatus)),
+        ServerId::Ambient => Vec::new(),
+        ServerId::Selected(_) => vec![
+            argv(server, &Op::BindMouseDownStatus),
+            argv(server, &Op::BindMouseDownStatusMenu),
+        ],
     }
 }
 
@@ -483,12 +513,12 @@ mod tests {
     }
 
     #[test]
-    fn the_status_click_binding_is_only_minted_for_an_ae_owned_server() {
+    fn the_status_mouse_bindings_are_only_minted_for_an_ae_owned_server() {
         let server = ServerId::Selected(crate::meta::Selector::Name("ae".to_owned()));
-        let binding = mouse_down_status_binding_argv(&server)
-            .unwrap_or_else(|| panic!("a selected server owns its root table"));
+        let bindings = mouse_status_bindings_argv(&server);
+        assert_eq!(bindings.len(), 2, "an owned server gets both root bindings");
         assert_eq!(
-            binding.as_args(),
+            bindings[0].as_args(),
             [
                 "-L",
                 "ae",
@@ -503,8 +533,31 @@ mod tests {
                 "switch-client -t ="
             ]
         );
+        assert_eq!(
+            bindings[1].as_args(),
+            [
+                "-L",
+                "ae",
+                "bind-key",
+                "-T",
+                "root",
+                "MouseDown3Status",
+                "display-menu",
+                "-t",
+                "{mouse}",
+                "-T",
+                "#{session_name}",
+                "-x",
+                "M",
+                "-y",
+                "S",
+                "Flip lead/colead panes",
+                "f",
+                "if-shell -F '##{&&:##{==:##{window_panes},2},##{==:##{window_zoomed_flag},0}}' 'swap-pane -d -s \"{top-left}\" -t \"{bottom-right}\"' 'display-message \"flip needs an unzoomed two-pane window\"'"
+            ]
+        );
         assert!(
-            mouse_down_status_binding_argv(&ServerId::Ambient).is_none(),
+            mouse_status_bindings_argv(&ServerId::Ambient).is_empty(),
             "an ambient server's root table belongs to its user"
         );
     }

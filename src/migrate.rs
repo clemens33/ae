@@ -650,7 +650,7 @@ fn restart_daemons(
     if !crate::transport::session_exists(&server, name) {
         return notes;
     }
-    if let Some(binding) = crate::session_tmux::mouse_down_status_binding_argv(&server) {
+    for binding in crate::session_tmux::mouse_status_bindings_argv(&server) {
         let _ = crate::transport::run_tmux_op(&binding);
     }
     if let Ok(bytes) = crate::meta::read_bytes(dir) {

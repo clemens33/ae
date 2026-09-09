@@ -124,6 +124,11 @@ The second is the **fleet strip** — every ae session on this tmux server in th
 was created, each with its live mark and clickable to switch to it. Every pane
 also carries a border title: `<name> · <mark> <reason>`.
 
+Right-click a session tab in the fleet strip to open its context menu. **Flip
+lead/colead panes** swaps the clicked session's current window when it has exactly
+two panes and is not zoomed; otherwise ae leaves it alone and explains why. The
+tmux keys `prefix {` and `prefix }` provide the same pane swap directly.
+
 The marks are the **watchdog's verdict**, never a claim about what an agent is "doing"
 (it cannot see that):
 

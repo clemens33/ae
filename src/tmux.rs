@@ -1195,6 +1195,16 @@ pub(crate) const MOUSE_DOWN_STATUS_DISPATCH: [&str; 5] = [
     "switch-client -t =",
 ];
 
+/// The one action in ae's root status context menu.
+///
+/// `display-menu -t {mouse}` supplies the target context: the guard reads the
+/// clicked session's current window, and both pane tokens resolve inside that
+/// same window. `swap-pane -d` preserves the client's focus while swapping the
+/// panes and their indices. `display-menu` expands item commands when the menu
+/// opens, so every format hash is doubled: menu creation consumes one hash and
+/// leaves the predicate for `if-shell -F` to evaluate when the item is chosen.
+pub(crate) const MOUSE_DOWN_STATUS_MENU_ACTION: &str = "if-shell -F '##{&&:##{==:##{window_panes},2},##{==:##{window_zoomed_flag},0}}' 'swap-pane -d -s \"{top-left}\" -t \"{bottom-right}\"' 'display-message \"flip needs an unzoomed two-pane window\"'";
+
 /// Arguments that switch one exact client to one exact session.
 ///
 /// The client target is the exact id read from `list-clients`; the session
@@ -2250,10 +2260,10 @@ mod tests {
     #[test]
     fn no_tmux_format_carries_a_control_character() {
         use super::{
-            AGENTS_FORMAT, CLIENT_FORMAT, FLEET_PANE_FORMAT, MOTION_PANE_FORMAT, PANE_FORMAT,
-            PANE_ID_FORMAT, PANE_PROBE_FORMAT, PANE_TTY_FORMAT, SESSION_ID_FORMAT,
-            SESSION_NAME_FORMAT, SLOTS_FORMAT, VERSION_FORMAT, VIEWER_FORMAT, WATCH_PANE_FORMAT,
-            WINDOW_PANE_FORMAT,
+            AGENTS_FORMAT, CLIENT_FORMAT, FLEET_PANE_FORMAT, MOTION_PANE_FORMAT,
+            MOUSE_DOWN_STATUS_DISPATCH, MOUSE_DOWN_STATUS_MENU_ACTION, PANE_FORMAT, PANE_ID_FORMAT,
+            PANE_PROBE_FORMAT, PANE_TTY_FORMAT, SESSION_ID_FORMAT, SESSION_NAME_FORMAT,
+            SLOTS_FORMAT, VERSION_FORMAT, VIEWER_FORMAT, WATCH_PANE_FORMAT, WINDOW_PANE_FORMAT,
         };
 
         for format in [
@@ -2275,6 +2285,15 @@ mod tests {
             super::FLEET_SESSION_FORMAT,
             super::LOOK_FORMAT,
         ] {
+            assert!(
+                !format.chars().any(char::is_control),
+                "{format:?} carries a control character, which tmux 3.4 escapes"
+            );
+        }
+        for format in MOUSE_DOWN_STATUS_DISPATCH
+            .into_iter()
+            .chain([MOUSE_DOWN_STATUS_MENU_ACTION])
+        {
             assert!(
                 !format.chars().any(char::is_control),
                 "{format:?} carries a control character, which tmux 3.4 escapes"

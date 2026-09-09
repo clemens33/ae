@@ -285,3 +285,227 @@ fn the_menu_ae_builds_draws_on_a_real_server_and_its_rows_land_the_client() {
         ids[1]
     );
 }
+
+const STATUS_MENU_ACTION: &str = "if-shell -F '##{&&:##{==:##{window_panes},2},##{==:##{window_zoomed_flag},0}}' 'swap-pane -d -s \"{top-left}\" -t \"{bottom-right}\"' 'display-message \"flip needs an unzoomed two-pane window\"'";
+
+/// Two sessions and a real client viewing one, while the other supplies the
+/// pane target for the menu.
+fn stage_status_menu_target(socket: &Path, main: &Path) -> (String, String) {
+    for words in [
+        &["new-session", "-d", "-s", "clicked", "-x", "80", "-y", "24"][..],
+        &["split-window", "-h", "-t", "clicked"][..],
+        &["new-session", "-d", "-s", "viewed", "-x", "80", "-y", "24"][..],
+        &["split-window", "-h", "-t", "viewed"][..],
+    ] {
+        assert!(tmux(socket, main, words).0, "setting up: {words:?}");
+    }
+    let attach = format!("env -u TMUX tmux -S {} attach -t viewed", socket.display());
+    assert!(
+        tmux(
+            socket,
+            main,
+            &[
+                "new-session",
+                "-d",
+                "-s",
+                "viewer",
+                "-x",
+                "140",
+                "-y",
+                "40",
+                &attach,
+            ],
+        )
+        .0,
+        "the nested client"
+    );
+    let client = wait_for(
+        "a client on viewed",
+        || {
+            tmux(
+                socket,
+                main,
+                &["list-clients", "-F", "#{client_name}|#{session_name}"],
+            )
+            .1
+        },
+        |seen| seen.lines().any(|line| line.ends_with("|viewed")),
+    )
+    .lines()
+    .find_map(|line| line.strip_suffix("|viewed"))
+    .unwrap_or_else(|| panic!("the viewed client has a name"))
+    .to_owned();
+    let clicked_pane = tmux(
+        socket,
+        main,
+        &["list-panes", "-t", "clicked", "-F", "#{pane_id}"],
+    )
+    .1
+    .lines()
+    .next()
+    .unwrap_or_else(|| panic!("the clicked session has a pane"))
+    .to_owned();
+    (client, clicked_pane)
+}
+
+fn pane_order(socket: &Path, main: &Path, session: &str) -> String {
+    tmux(
+        socket,
+        main,
+        &[
+            "list-panes",
+            "-t",
+            session,
+            "-F",
+            "#{pane_index}|#{pane_id}|#{pane_left}",
+        ],
+    )
+    .1
+}
+
+/// `display-menu -t <clicked pane>` supplies the target context to commands
+/// chosen from the menu. This is the tmux-side half of the status binding pin:
+/// the argv unit test fixes `<clicked pane>` as `{mouse}`, while this arm proves
+/// the guarded action changes that window rather than the client's own window.
+#[test]
+fn a_status_menu_flip_targets_the_clicked_sessions_window() {
+    let scratch = scratch("status-target");
+    if !tmux_present(&scratch) {
+        let _ = fs::remove_dir_all(&scratch);
+        panic!(
+            "tmux is not runnable here, so the status menu's target context cannot be proven; \
+             install tmux or run this suite where one exists"
+        );
+    }
+    let socket = scratch.join("s");
+    let _cleanup = Cleanup {
+        socket: socket.clone(),
+        scratch: scratch.clone(),
+    };
+    let main = scratch.join("main");
+    let watcher = scratch.join("watcher");
+    let (client, clicked_pane) = stage_status_menu_target(&socket, &main);
+    let clicked_before = pane_order(&socket, &main, "clicked");
+    let viewed_before = pane_order(&socket, &main, "viewed");
+
+    std::thread::scope(|scope| {
+        let driver = scope.spawn(|| {
+            wait_for(
+                "the flip menu",
+                || tmux(&socket, &watcher, &["capture-pane", "-p", "-t", "viewer"]).1,
+                |text| text.contains("Flip lead/colead panes"),
+            );
+            assert!(tmux(&socket, &watcher, &["send-keys", "-t", "viewer", "f"]).0);
+        });
+        assert!(
+            tmux(
+                &socket,
+                &main,
+                &[
+                    "display-menu",
+                    "-c",
+                    &client,
+                    "-t",
+                    &clicked_pane,
+                    "-T",
+                    "#{session_name}",
+                    "-x",
+                    "C",
+                    "-y",
+                    "C",
+                    "Flip lead/colead panes",
+                    "f",
+                    STATUS_MENU_ACTION,
+                ],
+            )
+            .0,
+            "tmux accepts the status menu action"
+        );
+        driver.join().expect("the key driver");
+    });
+
+    let clicked_after = pane_order(&socket, &main, "clicked");
+    let viewed_after = pane_order(&socket, &main, "viewed");
+    assert_ne!(
+        clicked_after, clicked_before,
+        "the clicked session flips: {clicked_before:?}"
+    );
+    assert_eq!(
+        viewed_after, viewed_before,
+        "the client's own session does not flip"
+    );
+}
+
+/// The guard must be evaluated when the menu action runs, not when the menu is
+/// drawn. Split the clicked window after the menu is visible, then choose the
+/// row: a stale draw-time `2` would still swap panes instead of refusing.
+#[test]
+fn a_status_menu_flip_refuses_after_clicked_window_grows() {
+    let scratch = scratch("status-guard");
+    if !tmux_present(&scratch) {
+        let _ = fs::remove_dir_all(&scratch);
+        panic!(
+            "tmux is not runnable here, so the status menu guard cannot be proven; \
+             install tmux or run this suite where one exists"
+        );
+    }
+    let socket = scratch.join("s");
+    let _cleanup = Cleanup {
+        socket: socket.clone(),
+        scratch: scratch.clone(),
+    };
+    let main = scratch.join("main");
+    let watcher = scratch.join("watcher");
+    let (client, clicked_pane) = stage_status_menu_target(&socket, &main);
+
+    std::thread::scope(|scope| {
+        let driver = scope.spawn(|| {
+            wait_for(
+                "the flip menu",
+                || tmux(&socket, &watcher, &["capture-pane", "-p", "-t", "viewer"]).1,
+                |text| text.contains("Flip lead/colead panes"),
+            );
+            // Change the clicked window while display-menu is holding the client.
+            assert!(tmux(&socket, &watcher, &["split-window", "-h", "-t", "clicked"]).0);
+            let grown = wait_for(
+                "the clicked window to grow",
+                || pane_order(&socket, &watcher, "clicked"),
+                |order| order.lines().count() == 3,
+            );
+            assert!(tmux(&socket, &watcher, &["send-keys", "-t", "viewer", "f"]).0);
+            std::thread::sleep(Duration::from_millis(250));
+            let message = tmux(&socket, &watcher, &["capture-pane", "-p", "-t", "viewer"]).1;
+            (grown, message)
+        });
+        assert!(
+            tmux(
+                &socket,
+                &main,
+                &[
+                    "display-menu",
+                    "-c",
+                    &client,
+                    "-t",
+                    &clicked_pane,
+                    "-T",
+                    "#{session_name}",
+                    "-x",
+                    "C",
+                    "-y",
+                    "C",
+                    "Flip lead/colead panes",
+                    "f",
+                    STATUS_MENU_ACTION,
+                ],
+            )
+            .0,
+            "tmux accepts the status menu action"
+        );
+        let (grown, message) = driver.join().expect("the key driver");
+        let after = pane_order(&socket, &main, "clicked");
+        assert!(
+            after == grown && message.contains("flip needs an unzoomed two-pane window"),
+            "guard must refuse without swapping; before={grown:?}, after={after:?}, message={message:?}"
+        );
+    });
+}

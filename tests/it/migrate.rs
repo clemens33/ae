@@ -983,29 +983,40 @@ fn assert_three_to_two_widths(socket: &Path, scratch: &Path, target: &str) {
     );
 }
 
-fn mouse_down_status_binding(socket: &Path, scratch: &Path) -> String {
+fn mouse_down_status_binding(socket: &Path, scratch: &Path, key: &str) -> String {
     let (_, keys) = tmux(socket, scratch, &["list-keys", "-T", "root"]);
+    let prefix = format!("bind-key  -T root {key} ");
     keys.lines()
-        .find(|line| line.starts_with("bind-key  -T root MouseDown1Status "))
-        .unwrap_or_else(|| panic!("one MouseDown1Status binding: {keys}"))
+        .find(|line| line.starts_with(&prefix))
+        .unwrap_or_else(|| panic!("one {key} binding: {keys}"))
         .to_owned()
 }
 
 fn assert_tmux_default_mouse_binding(socket: &Path, scratch: &Path) {
-    let binding = mouse_down_status_binding(socket, scratch);
+    let binding = mouse_down_status_binding(socket, scratch, "MouseDown1Status");
     assert!(
         binding.contains("switch-client -t =") && !binding.contains("if-shell"),
         "the pre-release server begins with tmux's default: {binding}"
     );
 }
 
-fn assert_ae_mouse_binding(socket: &Path, scratch: &Path) {
-    let binding = mouse_down_status_binding(socket, scratch);
+fn assert_ae_mouse_bindings(socket: &Path, scratch: &Path) {
+    let binding = mouse_down_status_binding(socket, scratch, "MouseDown1Status");
     assert!(
         binding.contains("#{==:#{mouse_status_range},window}")
             && binding.contains("select-window -t =")
             && binding.contains("switch-client -t ="),
         "the upgrade reasserts status clicks on the running session's server: {binding}"
+    );
+    let menu = mouse_down_status_binding(socket, scratch, "MouseDown3Status");
+    assert!(
+        menu.contains("display-menu")
+            && menu.contains("-t \"{mouse}\"")
+            && menu.contains("Flip lead/colead panes")
+            && menu.contains("##{==:##{window_panes},2}")
+            && menu.contains("##{==:##{window_zoomed_flag},0}")
+            && menu.contains("swap-pane -d"),
+        "the upgrade reasserts the guarded context menu on the running session's server: {menu}"
     );
 }
 
@@ -1443,7 +1454,7 @@ fn a_running_sessions_daemons_are_restarted_on_the_new_core() {
 
     let notes = ae::migrate::onto(&root, &new_core, "2026.9.9").expect("the sweep");
 
-    assert_ae_mouse_binding(&socket, &scratch);
+    assert_ae_mouse_bindings(&socket, &scratch);
     assert_lead_pair_policy(&socket, &scratch, &agent_pane, session);
 
     // The meta and every helper now name the new core.

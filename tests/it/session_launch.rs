@@ -1805,6 +1805,44 @@ fn a_spawned_seat_launches_its_preflighted_command_after_a_config_swap() {
     assert!(!launched.contains("spawned-swapped"), "{launched}");
 }
 
+fn assert_ae_mouse_bindings(rig: &Rig) {
+    let (_, keys) = rig.tmux(&["list-keys", "-T", "root"]);
+    let click = keys
+        .lines()
+        .find(|line| line.starts_with("bind-key  -T root MouseDown1Status "))
+        .unwrap_or_else(|| panic!("one MouseDown1Status binding: {keys}"));
+    assert!(
+        click.contains("if-shell -F")
+            && click.contains("#{==:#{mouse_status_range},window}")
+            && click.contains("select-window -t =")
+            && click.contains("switch-client -t ="),
+        "window ranges select their window and session ranges keep tmux's switch: {click}"
+    );
+    let menu = keys
+        .lines()
+        .find(|line| line.starts_with("bind-key  -T root MouseDown3Status "))
+        .unwrap_or_else(|| panic!("one MouseDown3Status binding: {keys}"));
+    assert!(
+        menu.contains("display-menu")
+            && menu.contains("-t \"{mouse}\"")
+            && menu.contains("Flip lead/colead panes")
+            && menu.contains("##{==:##{window_panes},2}")
+            && menu.contains("##{==:##{window_zoomed_flag},0}")
+            && menu.contains("swap-pane -d"),
+        "the context menu targets the clicked window and guards its flip: {menu}"
+    );
+    assert_eq!(
+        keys.lines()
+            .filter(|line| {
+                line.starts_with("bind-key  -T root MouseDown1Status ")
+                    || line.starts_with("bind-key  -T root MouseDown3Status ")
+            })
+            .count(),
+        2,
+        "one left-click and one context-menu binding: {keys}"
+    );
+}
+
 /// Every entry into a session returns the client to its lead pane. The hook is
 /// session-scoped through the lead pane id, so a resume installs the new id and
 /// a rename keeps the old one.
@@ -1817,21 +1855,7 @@ fn the_session_focus_hook_follows_the_lead_through_resume_and_rename() {
     let (code, stdout, stderr) = rig.launch(&["--local", "lnfocus"]);
     assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
 
-    let assert_mouse_binding = || {
-        let (_, keys) = rig.tmux(&["list-keys", "-T", "root"]);
-        let binding = keys
-            .lines()
-            .find(|line| line.starts_with("bind-key  -T root MouseDown1Status "))
-            .unwrap_or_else(|| panic!("one MouseDown1Status binding: {keys}"));
-        assert!(
-            binding.contains("if-shell -F")
-                && binding.contains("#{==:#{mouse_status_range},window}")
-                && binding.contains("select-window -t =")
-                && binding.contains("switch-client -t ="),
-            "window ranges select their window and session ranges keep tmux's switch: {binding}"
-        );
-    };
-    assert_mouse_binding();
+    assert_ae_mouse_bindings(&rig);
 
     let main_pane = || {
         rig.panes("lnfocus")
@@ -1877,13 +1901,25 @@ fn the_session_focus_hook_follows_the_lead_through_resume_and_rename() {
         .0,
         "restore tmux's default to model a server launched before this release"
     );
+    assert!(
+        rig.tmux(&[
+            "bind-key",
+            "-T",
+            "root",
+            "MouseDown3Status",
+            "display-message",
+            "pre-release"
+        ])
+        .0,
+        "plant a pre-release right-click binding"
+    );
     let (code, stdout, stderr) = rig.launch(&["--local", "lnfocus"]);
     assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
     assert!(
         stdout.contains("is running"),
         "the live reattach branch: {stdout}"
     );
-    assert_mouse_binding();
+    assert_ae_mouse_bindings(&rig);
 
     assert!(
         rig.tmux(&["kill-session", "-t", "=lnfocus"]).0,
@@ -1893,7 +1929,7 @@ fn the_session_focus_hook_follows_the_lead_through_resume_and_rename() {
     assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
     let resumed_pane = main_pane();
     assert_hook("lnfocus", &resumed_pane);
-    assert_mouse_binding();
+    assert_ae_mouse_bindings(&rig);
 
     let renamed = ae()
         .env("HOME", &rig.scratch)
@@ -1941,18 +1977,38 @@ fn an_ambient_launch_does_not_replace_mouse_down_status() {
         .0,
         "the user owns the ambient binding"
     );
+    assert!(
+        ambient(&[
+            "bind-key",
+            "-T",
+            "root",
+            "MouseDown3Status",
+            "display-message",
+            "ambient-menu"
+        ])
+        .0,
+        "the user owns the ambient context-menu binding"
+    );
     let (code, stdout, stderr) = rig.launch_with_server("", "", &["--local", "lnfocus-ambient"]);
     assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
 
     let (listed, keys) = ambient(&["list-keys", "-T", "root"]);
     assert!(listed, "the ambient server's root table: {keys}");
-    let binding = keys
+    let click = keys
         .lines()
         .find(|line| line.starts_with("bind-key  -T root MouseDown1Status "))
         .unwrap_or_else(|| panic!("tmux's MouseDown1Status binding remains: {keys}"));
     assert!(
-        binding.contains("display-message ambient-owned") && !binding.contains("if-shell"),
-        "an ambient launch leaves the server-global binding alone: {binding}"
+        click.contains("display-message ambient-owned") && !click.contains("if-shell"),
+        "an ambient launch leaves the server-global click binding alone: {click}"
+    );
+    let menu = keys
+        .lines()
+        .find(|line| line.starts_with("bind-key  -T root MouseDown3Status "))
+        .unwrap_or_else(|| panic!("tmux's MouseDown3Status binding remains: {keys}"));
+    assert!(
+        menu.contains("display-message ambient-menu") && !menu.contains("display-menu"),
+        "an ambient launch leaves the server-global menu binding alone: {menu}"
     );
 }
 
@@ -2714,6 +2770,21 @@ fn a_session_with_the_theme_off_keeps_the_users_own_look() {
     assert_eq!(session(ae::theme::PALETTE_OPTION), "darcula");
     assert!(!session(ae::theme::ATTENTION_GLYPH_OPTION).is_empty());
     assert!(!session(ae::theme::PATHS_OPTION).is_empty());
+
+    // Input policy is not part of the look: both root bindings remain.
+    let (_, keys) = rig.tmux(&["list-keys", "-T", "root"]);
+    assert!(
+        keys.lines()
+            .any(|line| line.starts_with("bind-key  -T root MouseDown1Status ")),
+        "theme off keeps strip navigation: {keys}"
+    );
+    assert!(
+        keys.lines().any(|line| {
+            line.starts_with("bind-key  -T root MouseDown3Status ")
+                && line.contains("Flip lead/colead panes")
+        }),
+        "theme off keeps the strip context menu: {keys}"
+    );
 }
 
 #[test]
