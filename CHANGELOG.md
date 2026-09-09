@@ -1,6 +1,11 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [v2026.9.35] - 2026-09-09
+
+### Other
+
+- Draw twelve sessions in the fleet strip before counting
 ## [v2026.9.34] - 2026-09-09
 
 ### Bug Fixes
