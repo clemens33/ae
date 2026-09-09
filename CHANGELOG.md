@@ -1,6 +1,45 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [v2026.9.34] - 2026-09-09
+
+### Bug Fixes
+
+- **quota**: Harden local cache boundaries
+- **quota**: Discover fleet rollout owners
+- **quota**: Prioritize recent rollouts
+- **quota**: Preserve uncertain cache evidence
+
+### Features
+
+- **quota**: Parse cached vendor limits
+- **quota**: Expose local quota table
+
+### Other
+
+- Add configured client command expansion
+- Record and contain client config homes
+- Preserve default client environments
+- Reconcile recorded client homes safely
+- Document configured clients
+- Preserve recorded client home mode
+- Record implicit client home base
+- Refuse retargeted implicit client stores
+- Key quota scopes by resolved clients
+- Fix quota source and rollout provenance
+- Fix quota scope provenance
+- Fix nested quota expansion provenance
+- Fuzz the client expansion and both quota parsers
+
+The lane's three pending targets: config_command resolves a profile
+through [clients] with a home and without, and the two quota targets
+read the vendor-written caches ae does not control. The codex target
+takes its record-boundary flag from the first input byte and the claude
+target reparses at a clock the input chooses, so window arithmetic sees
+hostile times too.
+
+Each carries four tracked seeds. The README's TODO section goes: the
+wait is over.
 ## [v2026.9.33] - 2026-09-09
 
 ### Other
