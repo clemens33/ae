@@ -1069,13 +1069,25 @@ rust-fuzz target secs="secs=60": _fuzz-preflight
         *" $target "*) ;;
         *) echo "Error: target must be one of: {{ FUZZ_TARGETS }}" >&2; exit 2 ;;
     esac
-    case "$secs" in
-        '' | 0 | *[!0-9]*) echo "Error: secs must be a positive integer" >&2; exit 2 ;;
-    esac
+    # ANCHORED AND BOUNDED, because libFuzzer reads -max_total_time into an int
+    # and treats zero as NO LIMIT. `00` is all-digits and is not the literal `0`,
+    # so a leading-zero spelling used to pass a digits-only guard and disable the
+    # bound this lane exists to impose; a value past the int range wrapped.
+    # 999999s is ~11.5 days: far past any real run, far inside the range.
+    if ! [[ $secs =~ ^[1-9][0-9]{0,5}$ ]]; then
+        echo "Error: secs must be 1..999999 (a bounded run; 0, 00 and a leading + are not)" >&2
+        exit 2
+    fi
     seeds="$PWD/fuzz/seeds/$target"
     corpus="$PWD/fuzz/corpus/$target"
+    if [ ! -d "$seeds" ]; then
+        echo "Error: $target has no seeds directory: $seeds" >&2
+        exit 2
+    fi
     mkdir -p "$corpus"
-    count="$(find "$seeds" -type f | wc -l | tr -d '[:space:]')"
+    # TRACKED seeds, which is what the evidence line claims and the only part of
+    # the input someone else can reproduce from the commit.
+    count="$(git ls-files -- "fuzz/seeds/$target" | wc -l | tr -d '[:space:]')"
     commit="$(git rev-parse --short=8 HEAD 2>/dev/null || echo unknown)"
     if ! git diff --quiet HEAD 2>/dev/null; then
         commit="$commit-dirty"

@@ -15,6 +15,10 @@ just rust-fuzz target=meta_parse secs=60     # one target
 just rust-fuzz-all secs=60                   # every target
 ```
 
+`secs` is 1..999999 and nothing else. libFuzzer reads `-max_total_time` into an
+int and treats zero as NO LIMIT, so `0`, `00` and a value past the int range are
+refused rather than quietly turned into an unbounded run.
+
 Both refuse before running unless the pinned cargo-fuzz, the pinned nightly and
 its `rust-src` component are present, `fuzz/Cargo.lock` is current, and these
 sources are rustfmt-clean — `cargo fmt` at the root does not reach a crate

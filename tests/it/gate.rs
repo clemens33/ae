@@ -321,6 +321,66 @@ fn the_release_recipe_refreshes_the_fuzz_lock_without_being_able_to_refuse() {
     ));
 }
 
+/// Whether the fuzz lane BOUNDS the duration it hands libFuzzer, on every route.
+///
+/// libFuzzer reads `-max_total_time` into an int and treats zero as NO LIMIT, so
+/// a digits-only guard was never one: `00` is all digits and is not the literal
+/// `0`, and a value past the int range wrapped. The test has to be ANCHORED and
+/// bounded, it has to run before the value reaches cargo-fuzz, and the sweep
+/// must reach the fuzzer through the same guarded recipe rather than around it.
+fn fuzz_secs_guard_ok(justfile: &str) -> bool {
+    let lines = recipe_text(justfile, "rust-fuzz target secs=");
+    let position = |needle: &str| lines.iter().position(|line| line.contains(needle));
+    let (Some(guard), Some(run)) = (
+        position("=~ ^[1-9][0-9]{0,5}$"),
+        position("-max_total_time="),
+    ) else {
+        return false;
+    };
+    // A digits-only test, anywhere in the recipe, accepts `00`.
+    if lines.iter().any(|line| line.contains("*[!0-9]*")) {
+        return false;
+    }
+    if guard >= run {
+        return false;
+    }
+    let sweep = recipe_text(justfile, "rust-fuzz-all secs=");
+    sweep.iter().any(|line| line.contains("just rust-fuzz "))
+        && sweep.iter().all(|line| !line.contains("cargo +"))
+}
+
+#[test]
+fn the_fuzz_lane_bounds_every_duration_it_hands_libfuzzer() {
+    assert!(
+        fuzz_secs_guard_ok(&read(&root().join("justfile"))),
+        "an unbounded fuzz run is the one thing this lane must not be able to start"
+    );
+
+    // GREEN on a synthetic lane, so every red case below differs by ONE rule and
+    // a green run cannot come from a check that matches nothing.
+    assert!(fuzz_secs_guard_ok(
+        "rust-fuzz target secs=\"secs=60\":\n    if ! [[ $secs =~ ^[1-9][0-9]{0,5}$ ]]; then exit 2; fi\n    cargo +nightly fuzz run \"$target\" -- -max_total_time=\"$secs\"\n\nrust-fuzz-all secs=\"secs=60\":\n    for target in $TARGETS; do just rust-fuzz \"target=$target\" \"$secs\"; done\n"
+    ));
+
+    // RED — the digits-only guard that shipped in the first round: `00` is all
+    // digits and is not the literal `0`, so it passed and the run had no bound.
+    assert!(!fuzz_secs_guard_ok(
+        "rust-fuzz target secs=\"secs=60\":\n    case \"$secs\" in\n        '' | 0 | *[!0-9]*) exit 2 ;;\n    esac\n    cargo +nightly fuzz run \"$target\" -- -max_total_time=\"$secs\"\n\nrust-fuzz-all secs=\"secs=60\":\n    for target in $TARGETS; do just rust-fuzz \"target=$target\" \"$secs\"; done\n"
+    ));
+    // RED — the anchored test is there, but the loose one survives beside it.
+    assert!(!fuzz_secs_guard_ok(
+        "rust-fuzz target secs=\"secs=60\":\n    if ! [[ $secs =~ ^[1-9][0-9]{0,5}$ ]]; then exit 2; fi\n    case \"$secs\" in\n        *[!0-9]*) exit 2 ;;\n    esac\n    cargo +nightly fuzz run \"$target\" -- -max_total_time=\"$secs\"\n\nrust-fuzz-all secs=\"secs=60\":\n    for target in $TARGETS; do just rust-fuzz \"target=$target\" \"$secs\"; done\n"
+    ));
+    // RED — guarded, but only after the value has already reached cargo-fuzz.
+    assert!(!fuzz_secs_guard_ok(
+        "rust-fuzz target secs=\"secs=60\":\n    cargo +nightly fuzz run \"$target\" -- -max_total_time=\"$secs\"\n    if ! [[ $secs =~ ^[1-9][0-9]{0,5}$ ]]; then exit 2; fi\n\nrust-fuzz-all secs=\"secs=60\":\n    for target in $TARGETS; do just rust-fuzz \"target=$target\" \"$secs\"; done\n"
+    ));
+    // RED — the sweep runs the fuzzer itself, so ITS duration is never guarded.
+    assert!(!fuzz_secs_guard_ok(
+        "rust-fuzz target secs=\"secs=60\":\n    if ! [[ $secs =~ ^[1-9][0-9]{0,5}$ ]]; then exit 2; fi\n    cargo +nightly fuzz run \"$target\" -- -max_total_time=\"$secs\"\n\nrust-fuzz-all secs=\"secs=60\":\n    cargo +nightly fuzz run \"$target\" -- -max_total_time=\"$secs\"\n"
+    ));
+}
+
 /// The joined, comment-free text the portability rules read.
 fn installer_lines(source: &str) -> Vec<String> {
     let mut out = Vec::new();

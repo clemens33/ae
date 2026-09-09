@@ -744,6 +744,18 @@ at 40k exec/s (cov 400), `meta_parse` 1.03M at 33k (cov 587), `launch_cmd_lex` 1
 at 34k (cov 524). No crash, no leak, no timeout. `-Zbuild-std` is cargo-fuzz's
 default, which is why the nightly needs `rust-src` and why the preflight checks for it.
 
+**`00` is not zero, and a digits-only guard is not a bound.** The lane's first
+duration check refused the literal `0` and every non-digit, which reads as
+sufficient and is not: `00` is all digits and is not `0`, so it passed, and
+libFuzzer — which reads `-max_total_time` into an `int` and imposes a limit only
+when the value is positive — ran with no time limit at all. A value past the int
+range wrapped the same way. The cross-provider review found it by running the real
+recipe against an intercepting cargo stub, so no unbounded fuzzer was ever started.
+The guard is now anchored and bounded, `^[1-9][0-9]{0,5}$`, and
+`tests/it/gate.rs` pins the anchoring, the ordering against the cargo-fuzz call
+and the sweep's single route — a lane whose whole purpose is a BOUNDED run must
+not be able to start an unbounded one.
+
 
 ---
 
