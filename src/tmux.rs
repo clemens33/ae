@@ -924,6 +924,23 @@ pub fn run_shell_background_command(argv: &[String]) -> String {
     format!("run-shell -b {}", tmux_double_quote(&shell))
 }
 
+/// A background picker launch whose last word is the client that clicked.
+///
+/// Fixed words take the same two quoting layers as
+/// [`run_shell_background_command`]. The one unescaped format is deliberate:
+/// tmux's `q` modifier makes the expanded client name one safe shell word.
+#[must_use]
+pub(crate) fn status_picker_command(launcher: &[String]) -> String {
+    let mut argv = launcher.to_vec();
+    argv.extend(["orchestrator", "--popup", "--client"].map(ToOwned::to_owned));
+    let mut command = run_shell_background_command(&argv);
+    if command.ends_with('"') {
+        command.pop();
+        command.push_str(" #{q:client_name}\"");
+    }
+    command
+}
+
 /// One argument in tmux's deferred command language.
 fn tmux_double_quote(text: &str) -> String {
     let mut out = String::with_capacity(text.len() + 2);
@@ -1066,29 +1083,48 @@ const DISABLED_PREFIX: char = '-';
 const END_OF_FLAGS: &str = "--";
 
 /// The arguments that draw `menu` on `server`'s current client.
-///
-/// No `-c` and no `-t`: the client is the one this invocation's `$TMUX` already
-/// selects, which is what a key binding and a popup both want.
 #[must_use]
 pub fn display_menu_args(server: &ServerId, menu: &Menu) -> Vec<String> {
+    display_menu_for_client_args(server, None, menu)
+}
+
+/// The arguments that draw `menu` on one explicit client.
+///
+/// A status binding can run outside either attached client's command queue,
+/// and `$TMUX` identifies only the server. Carrying `client` through this menu
+/// and every nested menu prevents tmux from choosing whichever client was most
+/// recently active when two clients watch the same pane.
+#[must_use]
+pub fn display_menu_for_client_args(
+    server: &ServerId,
+    client: Option<&str>,
+    menu: &Menu,
+) -> Vec<String> {
     let mut args = server_args(server);
     args.push("display-menu".to_owned());
+    if let Some(client) = client {
+        args.extend(["-c".to_owned(), client.to_owned()]);
+    }
     args.extend(MENU_POSITION.map(ToOwned::to_owned));
     args.push("-T".to_owned());
     args.push(titled(menu));
     args.push(END_OF_FLAGS.to_owned());
     for item in &menu.items {
-        args.extend(item_words(item));
+        args.extend(item_words(item, client));
     }
     args
 }
 
 /// One row as the three arguments tmux reads it from.
-fn item_words(item: &MenuItem) -> Vec<String> {
+fn item_words(item: &MenuItem, client: Option<&str>) -> Vec<String> {
     let label = menu_literal(&item.label);
     match &item.action {
         MenuAction::Run(command) => vec![label, item.key.clone(), command.clone()],
-        MenuAction::Open(inner) => vec![label, item.key.clone(), menu_command(inner)],
+        MenuAction::Open(inner) => vec![
+            label,
+            item.key.clone(),
+            menu_command_for_client(client, inner),
+        ],
         // The leading hyphen is tmux's own dim-and-unselectable marker; the two
         // empty arguments keep the row a triplet like every other.
         MenuAction::Disabled => vec![
@@ -1107,13 +1143,22 @@ fn titled(menu: &Menu) -> String {
 /// `menu` as ONE tmux command word — what a row that opens a second menu runs.
 #[must_use]
 pub fn menu_command(menu: &Menu) -> String {
+    menu_command_for_client(None, menu)
+}
+
+/// `menu` as one tmux command word, pinned to `client` at every level.
+#[must_use]
+pub fn menu_command_for_client(client: Option<&str>, menu: &Menu) -> String {
     let mut words = vec!["display-menu".to_owned()];
+    if let Some(client) = client {
+        words.extend(["-c".to_owned(), client.to_owned()]);
+    }
     words.extend(MENU_POSITION.map(ToOwned::to_owned));
     words.push("-T".to_owned());
     words.push(titled(menu));
     words.push(END_OF_FLAGS.to_owned());
     for item in &menu.items {
-        words.extend(item_words(item));
+        words.extend(item_words(item, client));
     }
     words
         .iter()
@@ -1181,28 +1226,30 @@ pub fn switch_command(session: &str) -> String {
     )
 }
 
-/// The root status-click command ae installs on a server it owns.
-///
-/// tmux's default sends both window and session ranges through `switch-client`.
-/// A session focus hook also observes a same-session window click, so window
-/// ranges must select their window without generating that event. Session
-/// ranges keep the default command and therefore keep their exact `=` target.
-pub(crate) const MOUSE_DOWN_STATUS_DISPATCH: [&str; 5] = [
-    "if-shell",
-    "-F",
-    "#{==:#{mouse_status_range},window}",
-    "select-window -t =",
-    "switch-client -t =",
-];
+/// Hand one explicit client to `session`.
+#[must_use]
+pub fn switch_client_command(client: &str, session: &str) -> String {
+    format!(
+        "{} -c {} -t {}",
+        FocusVerb::SwitchClient.as_str(),
+        single_quoted(client),
+        session_target(session)
+    )
+}
+
+/// Predicates shared by the two root status bindings.
+pub(crate) const MOUSE_STATUS_AE: &str = "#{==:#{mouse_status_range},ae}";
+pub(crate) const MOUSE_STATUS_AE_MORE: &str = "#{==:#{mouse_status_range},ae-more}";
+pub(crate) const MOUSE_STATUS_PICKER: &str =
+    "#{||:#{==:#{mouse_status_range},ae},#{==:#{mouse_status_range},ae-more}}";
+pub(crate) const MOUSE_STATUS_SESSION: &str = "#{==:#{mouse_status_range},session}";
+pub(crate) const MOUSE_STATUS_WINDOW: &str = "#{==:#{mouse_status_range},window}";
 
 /// The one action in ae's root status context menu.
 ///
-/// `display-menu -t {mouse}` supplies the target context: the guard reads the
-/// clicked session's current window, and both pane tokens resolve inside that
-/// same window. `swap-pane -d` preserves the client's focus while swapping the
-/// panes and their indices. `display-menu` expands item commands when the menu
-/// opens, so every format hash is doubled: menu creation consumes one hash and
-/// leaves the predicate for `if-shell -F` to evaluate when the item is chosen.
+/// `display-menu` expands item commands when the menu opens, so every format
+/// hash is doubled: menu creation consumes one hash and leaves the predicate
+/// for `if-shell -F` to evaluate when the item is chosen.
 pub(crate) const MOUSE_DOWN_STATUS_MENU_ACTION: &str = "if-shell -F '##{&&:##{==:##{window_panes},2},##{==:##{window_zoomed_flag},0}}' 'swap-pane -d -s \"{top-left}\" -t \"{bottom-right}\"' 'display-message \"flip needs an unzoomed two-pane window\"'";
 
 /// Arguments that switch one exact client to one exact session.
@@ -1230,6 +1277,15 @@ pub fn jump_command(session: &str, pane: &str) -> String {
     format!(
         "{} ; select-window -t {pane} ; select-pane -t {pane}",
         switch_command(session)
+    )
+}
+
+/// Hand one explicit client to `pane` of `session`.
+#[must_use]
+pub fn jump_client_command(client: &str, session: &str, pane: &str) -> String {
+    format!(
+        "{} ; select-window -t {pane} ; select-pane -t {pane}",
+        switch_client_command(client, session)
     )
 }
 
@@ -1915,7 +1971,7 @@ mod tests {
         CLIENT_FORMAT, Key, ObservedClient, ObservedPaneProbe, PANE_PROBE_FORMAT, Styling,
         capture_screen_args, confirm_before_args, display_client_message_args, interpret_clients,
         interpret_pane_probe, list_clients_args, load_buffer_args, pane_probe_args,
-        paste_buffer_args, run_shell_background_command, send_keys_args,
+        paste_buffer_args, run_shell_background_command, send_keys_args, status_picker_command,
     };
 
     #[test]
@@ -2079,6 +2135,19 @@ mod tests {
                 "/dev/ttys004",
                 "Stopped inside",
             ]
+        );
+    }
+
+    #[test]
+    fn the_status_picker_quotes_fixed_words_and_expands_only_the_clicking_client() {
+        let launcher = [
+            "env".to_owned(),
+            "AE_HOME=/tmp/ae home".to_owned(),
+            "/tmp/ae checkout/target/debug/ae".to_owned(),
+        ];
+        assert_eq!(
+            status_picker_command(&launcher),
+            r#"run-shell -b "'env' 'AE_HOME=/tmp/ae home' '/tmp/ae checkout/target/debug/ae' 'orchestrator' '--popup' '--client' #{q:client_name}""#
         );
     }
 
@@ -2261,9 +2330,11 @@ mod tests {
     fn no_tmux_format_carries_a_control_character() {
         use super::{
             AGENTS_FORMAT, CLIENT_FORMAT, FLEET_PANE_FORMAT, MOTION_PANE_FORMAT,
-            MOUSE_DOWN_STATUS_DISPATCH, MOUSE_DOWN_STATUS_MENU_ACTION, PANE_FORMAT, PANE_ID_FORMAT,
-            PANE_PROBE_FORMAT, PANE_TTY_FORMAT, SESSION_ID_FORMAT, SESSION_NAME_FORMAT,
-            SLOTS_FORMAT, VERSION_FORMAT, VIEWER_FORMAT, WATCH_PANE_FORMAT, WINDOW_PANE_FORMAT,
+            MOUSE_DOWN_STATUS_MENU_ACTION, MOUSE_STATUS_AE, MOUSE_STATUS_AE_MORE,
+            MOUSE_STATUS_PICKER, MOUSE_STATUS_SESSION, MOUSE_STATUS_WINDOW, PANE_FORMAT,
+            PANE_ID_FORMAT, PANE_PROBE_FORMAT, PANE_TTY_FORMAT, SESSION_ID_FORMAT,
+            SESSION_NAME_FORMAT, SLOTS_FORMAT, VERSION_FORMAT, VIEWER_FORMAT, WATCH_PANE_FORMAT,
+            WINDOW_PANE_FORMAT,
         };
 
         for format in [
@@ -2290,10 +2361,14 @@ mod tests {
                 "{format:?} carries a control character, which tmux 3.4 escapes"
             );
         }
-        for format in MOUSE_DOWN_STATUS_DISPATCH
-            .into_iter()
-            .chain([MOUSE_DOWN_STATUS_MENU_ACTION])
-        {
+        for format in [
+            MOUSE_STATUS_AE,
+            MOUSE_STATUS_AE_MORE,
+            MOUSE_STATUS_PICKER,
+            MOUSE_STATUS_SESSION,
+            MOUSE_STATUS_WINDOW,
+            MOUSE_DOWN_STATUS_MENU_ACTION,
+        ] {
             assert!(
                 !format.chars().any(char::is_control),
                 "{format:?} carries a control character, which tmux 3.4 escapes"
@@ -3116,16 +3191,23 @@ mod tests {
     }
 
     #[test]
-    fn a_status_click_selects_a_window_but_switches_a_session() {
+    fn status_click_predicates_name_each_owned_range() {
+        assert_eq!(super::MOUSE_STATUS_AE, "#{==:#{mouse_status_range},ae}");
         assert_eq!(
-            super::MOUSE_DOWN_STATUS_DISPATCH,
-            [
-                "if-shell",
-                "-F",
-                "#{==:#{mouse_status_range},window}",
-                "select-window -t =",
-                "switch-client -t ="
-            ]
+            super::MOUSE_STATUS_AE_MORE,
+            "#{==:#{mouse_status_range},ae-more}"
+        );
+        assert_eq!(
+            super::MOUSE_STATUS_PICKER,
+            "#{||:#{==:#{mouse_status_range},ae},#{==:#{mouse_status_range},ae-more}}"
+        );
+        assert_eq!(
+            super::MOUSE_STATUS_SESSION,
+            "#{==:#{mouse_status_range},session}"
+        );
+        assert_eq!(
+            super::MOUSE_STATUS_WINDOW,
+            "#{==:#{mouse_status_range},window}"
         );
     }
 

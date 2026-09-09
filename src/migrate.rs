@@ -650,10 +650,21 @@ fn restart_daemons(
     if !crate::transport::session_exists(&server, name) {
         return notes;
     }
-    for binding in crate::session_tmux::mouse_status_bindings_argv(&server) {
+    let meta_bytes = crate::meta::read_bytes(dir).ok();
+    let config = meta_bytes
+        .as_deref()
+        .and_then(|bytes| crate::meta::first_value(bytes, "config"))
+        .filter(|value| !value.is_empty())
+        .map_or_else(
+            || root.join("config"),
+            |value| PathBuf::from(String::from_utf8_lossy(value).into_owned()),
+        );
+    let launcher =
+        crate::session_tmux::picker_launcher(crate::shape::current(), core, root, &config, &server);
+    for binding in crate::session_tmux::mouse_status_bindings_argv(&server, &launcher) {
         let _ = crate::transport::run_tmux_op(&binding);
     }
-    if let Ok(bytes) = crate::meta::read_bytes(dir) {
+    if let Some(bytes) = meta_bytes {
         let layout = crate::meta::first_value(&bytes, "layout")
             .map(|value| String::from_utf8_lossy(value).into_owned())
             .unwrap_or_default();

@@ -618,10 +618,15 @@ pub fn observe_fleet_panes(server: &ServerId) -> Option<Vec<tmux::FleetPane>> {
     tmux::interpret_fleet_panes(succeeded, &stdout)
 }
 
-/// Draw `menu` on `server`'s current client, and report whether tmux drew it.
+/// Draw `menu` on `client`, or the server's current client when absent.
 #[must_use]
-pub fn display_menu(server: &ServerId, menu: &tmux::Menu) -> bool {
-    addressable(server) && run(PROGRAM, &tmux::display_menu_args(server, menu)).0
+pub fn display_menu(server: &ServerId, client: Option<&str>, menu: &tmux::Menu) -> bool {
+    addressable(server)
+        && run(
+            PROGRAM,
+            &tmux::display_menu_for_client_args(server, client, menu),
+        )
+        .0
 }
 
 /// The version `server` is RUNNING, or `None` when it did not answer.

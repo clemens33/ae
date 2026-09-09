@@ -544,7 +544,7 @@ pub const WINDOW_STAMP_OPTION: &str = "@ae_theme";
 /// changes shape: the version leads both stamps, so a session or window carrying
 /// an older one is rewritten by the next watchdog cycle rather than left on the
 /// layout an older core wrote.
-pub const FORMAT_VERSION: &str = "10";
+pub const FORMAT_VERSION: &str = "11";
 
 /// What [`WINDOW_STAMP_OPTION`] is set to: the LOOK the window was dressed in,
 /// formats version first.
@@ -707,14 +707,10 @@ pub fn status_line_one(palette: &Palette) -> String {
     )
 }
 
-/// The bottom-right `ae <version>` segment, clickable to the orchestrator
-/// while this session is not the orchestrator itself.
+/// The bottom-right `ae <version>` segment: a named range whose mouse binding
+/// opens the fleet picker, or jumps to the published orchestrator on left-click.
 fn version_segment() -> String {
-    format!(
-        "#{{?#{{{ORCHESTRATOR_ID_OPTION}}},\
-         #[range=session|#{{{ORCHESTRATOR_ID_OPTION}}}]#{{{VERSION_OPTION}}}#[norange],\
-         #{{{VERSION_OPTION}}}}}"
-    )
+    format!("#[range=user|ae]#{{{VERSION_OPTION}}}#[norange]")
 }
 
 /// One session as the fleet strip carries it.
@@ -863,7 +859,7 @@ pub fn fleet_strip(look: &Look, rows: &[FleetRow], working_frame: Option<&Workin
     if hidden > 0 {
         let _ = write!(
             strip,
-            "#[fg={dim} bg={base}]+{hidden} ",
+            "#[range=user|ae-more fg={dim} bg={base}]+{hidden} #[norange]",
             dim = palette.dim,
             base = palette.base,
         );
@@ -1730,7 +1726,7 @@ mod tests {
         assert!(strip.contains("+2"), "{strip}");
     }
 
-    /// Each row is a tmux SESSION range, which makes ae's owned-server
+    /// Each fleet row is a tmux SESSION range, which makes ae's owned-server
     /// `MouseDown1Status` binding preserve tmux's `switch-client -t =` action;
     /// `=` resolves through the range.
     #[test]
@@ -1752,6 +1748,25 @@ mod tests {
             1,
             "an unclosed range bleeds into the next row: {strip}"
         );
+    }
+
+    #[test]
+    fn version_and_overflow_have_stable_user_ranges() {
+        assert_eq!(
+            super::version_segment(),
+            "#[range=user|ae]#{@ae_version}#[norange]"
+        );
+        let rows: Vec<FleetRow> = (0..=super::STRIP_ROWS)
+            .map(|index| FleetRow {
+                name: format!("s{index}"),
+                id: format!("${index}"),
+                mark: Mark::Idle,
+                current: index == 0,
+            })
+            .collect();
+        let strip = fleet_strip(&Look::DEFAULT, &rows, None);
+        assert!(strip.contains("#[range=user|ae-more "), "{strip}");
+        assert_eq!(strip.matches("range=user|ae-more").count(), 1, "{strip}");
     }
 
     #[test]
@@ -1857,7 +1872,7 @@ mod tests {
     #[test]
     fn terminal_titles_are_part_of_the_drawn_layout() {
         let options = super::layout_options(&Look::DEFAULT);
-        assert_eq!(super::FORMAT_VERSION, "10");
+        assert_eq!(super::FORMAT_VERSION, "11");
         assert_eq!(
             options
                 .iter()

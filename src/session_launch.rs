@@ -15,7 +15,7 @@ use crate::inventory::ServerId;
 use crate::launch::{self, PENDING};
 use crate::meta::{self, Meta, ServerSelector};
 use crate::session_tmux::{
-    Op, Split, TmuxArgv, argv, interpret_pane_id, mouse_status_bindings_argv,
+    Op, Split, TmuxArgv, argv, interpret_pane_id, mouse_status_bindings_argv, picker_launcher,
 };
 use crate::state::{EXIT_FAILED, EXIT_USAGE};
 use crate::tool::ToolKind;
@@ -1359,8 +1359,8 @@ fn launch(
             )?;
             return Ok(EXIT_FAILED);
         };
-        for binding in mouse_status_bindings_argv(&server) {
-            let _ = transport::run_tmux_op(&binding);
+        if let Some(core) = env.core.clone().or_else(crate::shape::resolved_exe) {
+            assert_mouse_status_bindings(&server, &env, &core);
         }
         let layout = meta_value(&dir, "layout").unwrap_or_default();
         let main_pane = meta_value(&dir, "main_pane").unwrap_or_default();
@@ -1862,6 +1862,11 @@ fn build(
         held
     };
 
+    let Some(core) = crate::shape::resolved_exe() else {
+        writeln!(err, "Error: the core could not name its own binary.")?;
+        return Ok(EXIT_FAILED);
+    };
+
     // ---- the session and its first pane ----
     let Some(main_pane) = new_session(&server, &shape.name, &work_dir) else {
         writeln!(err, "Error: could not create tmux session '{}'", shape.name)?;
@@ -1875,7 +1880,7 @@ fn build(
         return Ok(EXIT_FAILED);
     }
 
-    stamp_session(&server, env, shape, &main_pane);
+    stamp_session(&server, env, shape, &main_pane, &core);
     if let Some(main) = seats.first() {
         name_agent_window(&server, &main_pane, &main.name);
     }
@@ -2089,15 +2094,6 @@ fn build(
     // the path this process was exec'd BY, so on an installed machine the raw
     // answer is the command symlink — and a session whose helpers pointed at it
     // would follow the next `ae upgrade` to a core it was never built against.
-    let Some(core) = crate::shape::resolved_exe() else {
-        return rollback_launch(
-            shape,
-            &dir,
-            &server,
-            "Error: the core could not name its own binary.",
-            err,
-        );
-    };
     if let Err(why) = assets::write_helpers(&dir, &core) {
         return rollback_launch(shape, &dir, &server, &format!("Error: {why}"), err);
     }
@@ -2231,7 +2227,7 @@ fn kill_session(server: &ServerId, name: &str) -> bool {
 }
 
 /// The environment, options and status bar every ae session carries.
-fn stamp_session(server: &ServerId, env: &Env, shape: &Session, main_pane: &str) {
+fn stamp_session(server: &ServerId, env: &Env, shape: &Session, main_pane: &str, core: &Path) {
     let name = shape.name.as_str();
     // Claude Code refuses to start with these set inside tmux.
     for key in ["CLAUDECODE", "CLAUDE_CODE_SESSION"] {
@@ -2275,11 +2271,20 @@ fn stamp_session(server: &ServerId, env: &Env, shape: &Session, main_pane: &str)
         ),
         &shape.look,
     );
-    for binding in mouse_status_bindings_argv(server) {
-        let _ = transport::run_tmux_op(&binding);
-    }
+    assert_mouse_status_bindings(server, env, core);
     let _ = transport::run_tmux_op(&argv(server, &Op::SetClientSessionHook { pane: main_pane }));
     let _ = transport::run_tmux_op(&argv(server, &Op::SelectPane { pane: main_pane }));
+}
+
+fn assert_mouse_status_bindings(server: &ServerId, env: &Env, core: &Path) {
+    let config = env
+        .global
+        .clone()
+        .unwrap_or_else(|| env.home.join("config"));
+    let launcher = picker_launcher(crate::shape::current(), core, &env.home, &config, server);
+    for binding in mouse_status_bindings_argv(server, &launcher) {
+        let _ = transport::run_tmux_op(&binding);
+    }
 }
 
 /// The SESSION-scoped look: the two status lines ae owns, and the `@ae_*`

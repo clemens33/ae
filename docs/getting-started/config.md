@@ -169,6 +169,10 @@ Right-click a session tab in the fleet strip to open its context menu. **Flip
 lead/colead panes** swaps the clicked session's current window when it has exactly
 two panes and is not zoomed; otherwise ae leaves it alone and explains why. The
 tmux keys `prefix {` and `prefix }` provide the same pane swap directly.
+Right-click `ae <version>` or the `+N` overflow count to open the fleet picker;
+the picker is urgency-ordered, shows up to 30 sessions, and opens a chosen
+session's agent submenu. Left-click `ae <version>` switches to the orchestrator
+when one is running; left-click `+N` opens the picker too.
 
 The marks are the **watchdog's verdict**, never a claim about what an agent is "doing"
 (it cannot see that):

@@ -25,7 +25,8 @@ ae orchestrator        Start or reattach the orchestrator seat: a local session 
                        orchestrator, pinned first in the fleet strip
 ae orchestrator --popup
                        Pick a session, then one of its agents, in a tmux menu; the
-                       chosen agent's pane gets the client. Needs tmux >= 3.4
+                       chosen agent's pane gets the client. Also opened from the
+                       status bar's ae version and +N ranges. Needs tmux >= 3.4
 ae doctor              Check local environment and ae config
 ae doctor --refresh [name|all]
                        Regenerate helper scripts and workspace.md in existing sessions
@@ -438,6 +439,13 @@ The fleet picker, drawn by tmux itself. No daemon, no polling, no dependency: on
 `display-menu` built from the same [`ae list`](#ae-list) digest, thrown away when you
 choose.
 
+Right-click `ae <version>` or the fleet strip's `+N` counter to open it; left-click
+`+N` does the same. The picker shows at most 30 urgency-ordered sessions. A session
+row opens that session's agent submenu. A status click names its tmux client
+explicitly through both menus and every action, so another client watching the
+same pane is untouched; if that client vanishes, the picker refuses instead of
+choosing another.
+
 ```text
 $ ae orchestrator --popup
 ┌─ ae fleet — 3 running ──────────────────────────────────────────────────┐
@@ -490,9 +498,9 @@ you.
 bind o run-shell "ae orchestrator --popup"
 ```
 
-Measured on tmux 3.7b: `run-shell` needs neither `-c` nor `-t`. The command inherits the
-pane it was bound from, and `display-menu` with no target draws on that pane's client. The
-plain form above is the working one.
+The manual keyboard binding uses tmux's invoking client. ae's built-in status
+binding is stricter: it captures `#{client_name}` and the picker uses
+`display-menu -c <name>` because two clients can watch the same pane.
 
 ### The tmux floor
 

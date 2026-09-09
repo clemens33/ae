@@ -2086,25 +2086,43 @@ fn assert_ae_mouse_bindings(rig: &Rig) {
         .find(|line| line.starts_with("bind-key  -T root MouseDown1Status "))
         .unwrap_or_else(|| panic!("one MouseDown1Status binding: {keys}"));
     assert!(
-        click.contains("if-shell -F")
-            && click.contains("#{==:#{mouse_status_range},window}")
-            && click.contains("select-window -t =")
-            && click.contains("switch-client -t ="),
-        "window ranges select their window and session ranges keep tmux's switch: {click}"
+        click.contains("run-shell -C")
+            && click.contains("#{==:#{mouse_status_range},ae-more}")
+            && click.contains("#{&&:#{==:#{mouse_status_range},ae},#{@ae_orchestrator_id}}")
+            && click.contains("@ae_orchestrator_id")
+            && click.contains("mouse_status_range},window")
+            && click.contains("mouse_status_range},session")
+            && click.contains("select-window -t #{window_id}")
+            && click.contains("switch-client -c #{q:client_name} -t #{session_id}")
+            && click.contains("orchestrator")
+            && click.contains("--popup")
+            && click.contains("--client")
+            && click.contains("#{q:client_name}")
+            && click.contains(&format!("AE_HOME={}", rig.home.display()))
+            && click.contains(&format!("CONFIG_FILE={}", rig.config.display()))
+            && click.contains(&format!("AE_TMUX_SERVER={}", rig.sock.display()))
+            && click.contains("AE_TMUX_SERVER_KIND=socket")
+            && click.contains(env!("CARGO_BIN_EXE_ae")),
+        "the left-click dispatch and checkout picker namespace are complete: {click}"
     );
     let menu = keys
         .lines()
         .find(|line| line.starts_with("bind-key  -T root MouseDown3Status "))
         .unwrap_or_else(|| panic!("one MouseDown3Status binding: {keys}"));
-    assert!(
-        menu.contains("display-menu")
-            && menu.contains("-t \"{mouse}\"")
-            && menu.contains("Flip lead/colead panes")
-            && menu.contains("##{==:##{window_panes},2}")
-            && menu.contains("##{==:##{window_zoomed_flag},0}")
-            && menu.contains("swap-pane -d"),
-        "the context menu targets the clicked window and guards its flip: {menu}"
-    );
+    for needle in [
+        "#{||:#{==:#{mouse_status_range},ae}",
+        "mouse_status_range},ae-more",
+        "orchestrator",
+        "--client",
+        "display-menu",
+        "{mouse}",
+        "Flip lead/colead panes",
+        "window_panes",
+        "window_zoomed_flag",
+        "swap-pane -d",
+    ] {
+        assert!(menu.contains(needle), "missing {needle:?}: {menu}");
+    }
     assert_eq!(
         keys.lines()
             .filter(|line| {

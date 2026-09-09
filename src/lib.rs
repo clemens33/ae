@@ -436,11 +436,14 @@ fn run_orchestrator(
     world: &listing::World,
     err: &mut impl Write,
 ) -> Result<u8> {
-    if let Err(usage) = orchestrator::parse(tail) {
-        write!(err, "{}", usage.render())?;
-        err.flush()?;
-        return Ok(usage.code());
-    }
+    let args = match orchestrator::parse(tail) {
+        Ok(args) => args,
+        Err(usage) => {
+            write!(err, "{}", usage.render())?;
+            err.flush()?;
+            return Ok(usage.code());
+        }
+    };
     // The server whose client invoked ae. A launch override names a
     // destination, never the `%pane` on which this menu must be drawn.
     let Some(server) = doors::caller_server() else {
@@ -492,12 +495,27 @@ fn run_orchestrator(
     let look = transport::observe_look_here(&server).map_or(theme::Look::DEFAULT, |read| {
         theme::Look::read(&read.icons, &read.palette, &read.drawn, &read.motion)
     });
-    let menu = orchestrator::menu(world, &located, world.now, look.icons, &look.palette);
-    if !transport::display_menu(&server, &menu) {
-        writeln!(
-            err,
-            "ae orchestrator: tmux refused to draw the menu (no attached client?)."
-        )?;
+    let client = args.client.as_deref();
+    let menu = orchestrator::menu_for_client(
+        world,
+        &located,
+        world.now,
+        look.icons,
+        &look.palette,
+        client,
+    );
+    if !transport::display_menu(&server, client, &menu) {
+        if let Some(client) = client {
+            writeln!(
+                err,
+                "ae orchestrator: tmux refused to draw the menu for client {client:?} (it may have vanished)."
+            )?;
+        } else {
+            writeln!(
+                err,
+                "ae orchestrator: tmux refused to draw the menu (no attached client?)."
+            )?;
+        }
         err.flush()?;
         return Ok(EXIT_UNAVAILABLE);
     }

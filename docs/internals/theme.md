@@ -27,20 +27,26 @@ The launch also stamps a session-scoped `client-session-changed` hook that
 selects the lead window and pane by pane id; it is a focus rule, not a look
 option, and is present when `theme = off` too. Two input rules cannot be
 session-scoped: on a positively selected ae-owned server, launch replaces the
-root `MouseDown1Status` and `MouseDown3Status` bindings. Window ranges use `select-window -t =`, so a
-tab click does not fire the session hook and bounce back to the lead window;
-session ranges keep tmux's default `switch-client -t =`, so the fleet strip
-still switches sessions and the hook still focuses the destination's lead. A
-right-click opens the strip's context menu, targeted at the clicked session's
-current window; its Flip action swaps an unzoomed two-pane window. The guard's
-format hashes are escaped through menu construction, so pane count and zoom are
-read when the row is chosen, not frozen when the menu opens. Launch never
+root `MouseDown1Status` and `MouseDown3Status` bindings. Left-click sends a
+window range through `select-window -t =`, a session range through
+`switch-client -t =`, `ae` to the recorded `@ae_orchestrator_id` when one is
+set, and `ae-more` to the fleet picker. Right-click sends `ae` and `ae-more` to
+the picker, a session range to its context menu, and a window range nowhere.
+The context menu targets the clicked session's current window; its Flip action
+swaps an unzoomed two-pane window. The guard's format hashes are escaped
+through menu construction, so pane count and zoom are read when the row is
+chosen, not frozen when the menu opens. A status click also carries
+`#{client_name}` into `ae orchestrator --popup --client`, and both menu levels
+and their actions retain it: two clients may watch one pane, so `$TMUX_PANE`
+cannot identify the one that clicked. Launch never
 writes these server-global bindings on an ambient server, where the root key
 table belongs to the user. Every launch and upgrade of a running session on an
 owned server reasserts the same bindings, so the writes are idempotent and
 pre-release servers adopt them without a session rebuild. Both bindings remain
 when `theme = off`; like the focus and resize hooks, they are input rules, not
-part of the look.
+part of the look. An installed binding launches the public `~/.local/bin/ae`
+pointer so pruning an old core cannot strand it; a checkout binding carries its
+own state, config and tmux-server namespace to its absolute checkout core.
 
 **Three writers, one job each.** A launch writes the layout, the look facts and
 the attention seed. A rename rewrites the layout and the facts, and leaves every
@@ -153,9 +159,11 @@ ae's root `MouseDown1Status` binding sends it through tmux's default
 `switch-client -t =` action. `MouseDown3Status` opens the context menu for the
 clicked session's current window. The bindings are the server-global exception
 described above and are installed only on an ae-owned server.
-The bottom-right `ae <version>` segment is another session range when an
-orchestrator exists, targeting its `$<n>` id; the orchestrator's own segment and
-a fleet without one stay plain text.
+The bottom-right `ae <version>` segment is always the user range `ae`:
+left-click switches to the recorded orchestrator when one exists and otherwise
+does nothing; right-click opens the fleet picker. When the strip hides rows,
+its `+N` counter is the user range `ae-more`, and either mouse button opens the
+same picker. The orchestrator's own segment remains its separate session range.
 
 The ticker refreshes the strip from one `list-sessions` call every 500 ms and
 rewrites it only when a rank, name, order or working frame changed. Each

@@ -22,6 +22,7 @@ use std::fmt::Write as _;
 use std::fs;
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use super::parity::Invocation;
 use super::parity::capture::raw;
@@ -1003,21 +1004,37 @@ fn assert_tmux_default_mouse_binding(socket: &Path, scratch: &Path) {
 fn assert_ae_mouse_bindings(socket: &Path, scratch: &Path) {
     let binding = mouse_down_status_binding(socket, scratch, "MouseDown1Status");
     assert!(
-        binding.contains("#{==:#{mouse_status_range},window}")
-            && binding.contains("select-window -t =")
-            && binding.contains("switch-client -t ="),
+        binding.contains("#{==:#{mouse_status_range},ae-more}")
+            && binding.contains("#{&&:#{==:#{mouse_status_range},ae},#{@ae_orchestrator_id}}")
+            && binding.contains("@ae_orchestrator_id")
+            && binding.contains("mouse_status_range},window")
+            && binding.contains("mouse_status_range},session")
+            && binding.contains("select-window -t #{window_id}")
+            && binding.contains("switch-client -c #{q:client_name} -t #{session_id}")
+            && binding.contains("orchestrator")
+            && binding.contains("--client")
+            && binding.contains("#{q:client_name}")
+            && binding.contains("AE_HOME=")
+            && binding.contains("CONFIG_FILE=")
+            && binding.contains("AE_TMUX_SERVER=")
+            && binding.contains("AE_TMUX_SERVER_KIND=socket"),
         "the upgrade reasserts status clicks on the running session's server: {binding}"
     );
     let menu = mouse_down_status_binding(socket, scratch, "MouseDown3Status");
-    assert!(
-        menu.contains("display-menu")
-            && menu.contains("-t \"{mouse}\"")
-            && menu.contains("Flip lead/colead panes")
-            && menu.contains("##{==:##{window_panes},2}")
-            && menu.contains("##{==:##{window_zoomed_flag},0}")
-            && menu.contains("swap-pane -d"),
-        "the upgrade reasserts the guarded context menu on the running session's server: {menu}"
-    );
+    for needle in [
+        "#{||:#{==:#{mouse_status_range},ae}",
+        "mouse_status_range},ae-more",
+        "orchestrator",
+        "--client",
+        "display-menu",
+        "{mouse}",
+        "Flip lead/colead panes",
+        "window_panes",
+        "window_zoomed_flag",
+        "swap-pane -d",
+    ] {
+        assert!(menu.contains(needle), "missing {needle:?}: {menu}");
+    }
 }
 
 #[test]
@@ -1540,6 +1557,105 @@ fn a_running_sessions_daemons_are_restarted_on_the_new_core() {
     assert!(
         after_panes.lines().any(|line| line == agent_pane),
         "the agent pane {agent_pane} did not survive the sweep: {after_panes:?}"
+    );
+}
+
+#[test]
+fn upgrading_a_running_session_without_an_orchestrator_rewrites_the_version_range() {
+    let scratch = tmux_scratch("running-look");
+    if !tmux_present(&scratch) {
+        let _ = remove(&scratch);
+        panic!("tmux is not runnable here, so running look migration cannot be proven");
+    }
+    let socket = scratch.join("s");
+    let _cleanup = Cleanup {
+        socket: socket.clone(),
+        scratch: scratch.clone(),
+    };
+    let root = scratch.join("home");
+    let session = "lookmig";
+    let old_core = scratch.join("old-core");
+    write_exec(&old_core, FAKE_CORE);
+    let dir = plant_running(&scratch, &socket, &root, session, &old_core);
+    assert!(
+        tmux(&socket, &scratch, &["kill-session", "-t", "ae-telegram"]).0,
+        "this arm needs no bridge"
+    );
+    for (name, value) in [
+        (ae::theme::LOOK_OPTION, "on"),
+        (ae::theme::PALETTE_OPTION, "darcula"),
+        (ae::theme::ICONS_OPTION, "on"),
+        (ae::theme::MOTION_OPTION, "on"),
+        (ae::theme::LOOK_STAMP_OPTION, "10:darcula:on:on"),
+        ("status-format[1]", "old version layout"),
+    ] {
+        assert!(
+            tmux(
+                &socket,
+                &scratch,
+                &["set-option", "-t", session, name, value]
+            )
+            .0,
+            "plant {name}"
+        );
+    }
+    let (_, orchestrator) = tmux(
+        &socket,
+        &scratch,
+        &[
+            "show-option",
+            "-v",
+            "-t",
+            session,
+            ae::theme::ORCHESTRATOR_ID_OPTION,
+        ],
+    );
+    assert!(
+        orchestrator.trim().is_empty(),
+        "no orchestrator: {orchestrator}"
+    );
+
+    let actual_core = Path::new(env!("CARGO_BIN_EXE_ae"));
+    let notes = ae::migrate::onto(&root, actual_core, ae::VERSION).expect("the sweep");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut line = String::new();
+    let mut stamp = String::new();
+    while Instant::now() < deadline {
+        line = tmux(
+            &socket,
+            &scratch,
+            &["show-option", "-v", "-t", session, "status-format[1]"],
+        )
+        .1;
+        stamp = tmux(
+            &socket,
+            &scratch,
+            &[
+                "show-option",
+                "-v",
+                "-t",
+                session,
+                ae::theme::LOOK_STAMP_OPTION,
+            ],
+        )
+        .1;
+        if line.contains("#[range=user|ae]") && stamp.trim() == ae::theme::Look::DEFAULT.stamp() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(
+        line.contains("#[range=user|ae]") && line.contains("#[norange]"),
+        "running session kept its pre-upgrade version layout: {line:?}; stamp={stamp:?}; notes={notes:?}"
+    );
+    assert_eq!(
+        stamp.trim(),
+        ae::theme::Look::DEFAULT.stamp(),
+        "the new format stamp did not land"
+    );
+    assert_eq!(
+        fs::read_link(dir.join("watchdog")).ok(),
+        Some(actual_core.to_path_buf())
     );
 }
 

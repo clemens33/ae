@@ -66,6 +66,17 @@ impl Shape {
             Self::Checkout => None,
         }
     }
+
+    /// The public command link for a published core.
+    ///
+    /// Status bindings use this pointer instead of the immutable core that
+    /// installed them: an upgrade may prune that core while the server-global
+    /// binding remains in tmux.
+    #[must_use]
+    pub fn command_link(&self) -> Option<PathBuf> {
+        let home = self.published_home()?;
+        Some(home.parent()?.join(".local").join("bin").join("ae"))
+    }
 }
 
 /// Classify `exe` — an already-resolved `current_exe()` — against `home`, the
@@ -345,6 +356,10 @@ mod tests {
             }
         );
         assert!(!shape.honours_environment());
+        assert_eq!(
+            shape.command_link(),
+            Some(PathBuf::from("/u/me/.local/bin/ae"))
+        );
     }
 
     #[test]

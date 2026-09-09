@@ -18,11 +18,14 @@ use crate::digest::{SessionEntry, Status};
 use crate::listing::World;
 use crate::theme::{Mark, Palette};
 use crate::time::Timestamp;
-use crate::tmux::{Menu, MenuAction, MenuItem, jump_command, switch_command};
+use crate::tmux::{
+    Menu, MenuAction, MenuItem, jump_client_command, jump_command, switch_client_command,
+    switch_command,
+};
 
 /// `--help`, verbatim.
 pub const USAGE: &str = "\
-Usage: ae orchestrator [--popup | --attach | --no-attach | --inside-tmux | --no-autostart]
+Usage: ae orchestrator [--popup [--client <name>] | --attach | --no-attach | --inside-tmux | --no-autostart]
 
 Bare `ae orchestrator` starts or reattaches the orchestrator seat from its
 dedicated config under ae's state home. With `--popup`, pick a session, then
@@ -69,10 +72,12 @@ pub(crate) fn is_seat_overlay(path: &Path, home: &Path) -> bool {
 pub const EXIT_USAGE: u8 = 2;
 
 /// What the argv asked for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Args {
     /// `--popup`: draw the picker.
     pub popup: bool,
+    /// `--client <name>`: draw on the client that opened a status menu.
+    pub client: Option<String>,
 }
 
 /// An argv `ae orchestrator` refuses, or the help it treats as one.
@@ -82,6 +87,10 @@ pub enum Usage {
     Help,
     /// A word this command does not accept, carried for its message.
     Unknown(String),
+    /// `--client` was not followed by a nonempty client name.
+    MissingClient,
+    /// One invocation may target only one client.
+    DuplicateClient,
 }
 
 impl Usage {
@@ -93,6 +102,12 @@ impl Usage {
             Self::Unknown(token) => format!(
                 "ae orchestrator: unknown argument '{token}' (see: ae orchestrator --help)\n"
             ),
+            Self::MissingClient => {
+                "ae orchestrator: --client requires a nonempty tmux client name\n".to_owned()
+            }
+            Self::DuplicateClient => {
+                "ae orchestrator: --client may be given only once\n".to_owned()
+            }
         }
     }
 
@@ -101,7 +116,7 @@ impl Usage {
     pub const fn code(&self) -> u8 {
         match self {
             Self::Help => 0,
-            Self::Unknown(_) => EXIT_USAGE,
+            Self::Unknown(_) | Self::MissingClient | Self::DuplicateClient => EXIT_USAGE,
         }
     }
 }
@@ -110,19 +125,40 @@ impl Usage {
 ///
 /// # Errors
 ///
-/// [`Usage::Help`] for the help spellings, [`Usage::Unknown`] for anything else.
+/// [`Usage::Help`] for the help spellings, or the first malformed option.
 ///
 /// ```
 /// use ae::orchestrator::{parse, Args, Usage};
-/// assert_eq!(parse(&["--popup".to_owned()]), Ok(Args { popup: true }));
-/// assert_eq!(parse(&[]), Ok(Args { popup: false }));
+/// assert_eq!(
+///     parse(&["--popup".to_owned()]),
+///     Ok(Args { popup: true, client: None })
+/// );
+/// assert_eq!(parse(&[]), Ok(Args { popup: false, client: None }));
 /// ```
 pub fn parse(tail: &[String]) -> Result<Args, Usage> {
-    let mut args = Args { popup: false };
-    for word in tail {
+    let mut args = Args {
+        popup: false,
+        client: None,
+    };
+    let mut rest = tail;
+    while let Some((word, after)) = rest.split_first() {
+        rest = after;
         match word.as_str() {
             "-h" | "--help" => return Err(Usage::Help),
             "--popup" => args.popup = true,
+            "--client" => {
+                if args.client.is_some() {
+                    return Err(Usage::DuplicateClient);
+                }
+                let Some((client, after_client)) = rest.split_first() else {
+                    return Err(Usage::MissingClient);
+                };
+                if client.is_empty() {
+                    return Err(Usage::MissingClient);
+                }
+                args.client = Some(client.clone());
+                rest = after_client;
+            }
             other => return Err(Usage::Unknown(other.to_owned())),
         }
     }
@@ -257,6 +293,19 @@ pub fn menu(
     icons: bool,
     palette: &Palette,
 ) -> Menu {
+    menu_for_client(world, located, now, icons, palette, None)
+}
+
+/// The picker model with every action pinned to the client that opened it.
+#[must_use]
+pub fn menu_for_client(
+    world: &World,
+    located: &[Located],
+    now: Timestamp,
+    icons: bool,
+    palette: &Palette,
+    client: Option<&str>,
+) -> Menu {
     let ranked = ranked_sessions(world);
     let shown = ranked.len().min(ROW_CAP);
     let mut items: Vec<MenuItem> = Vec::with_capacity(shown + 1);
@@ -265,7 +314,9 @@ pub fn menu(
             .iter()
             .find(|entry| entry.session == session.name)
             .map(|entry| &entry.placement);
-        items.push(session_item(session, placement, now, icons, palette));
+        items.push(session_item(
+            session, placement, now, icons, palette, client,
+        ));
     }
     if ranked.len() > shown {
         items.push(disabled(format!(
@@ -318,6 +369,7 @@ fn session_item(
     now: Timestamp,
     icons: bool,
     palette: &Palette,
+    client: Option<&str>,
 ) -> MenuItem {
     let agents: Vec<&AgentPane> = match placement {
         Some(Placement::Here(panes)) => panes.iter().filter(|pane| is_agent(pane)).collect(),
@@ -352,8 +404,11 @@ fn session_item(
             ));
         }
         // Nothing to pick between, so the row does the only useful thing.
-        _ if agents.is_empty() => MenuAction::Run(switch_command(&session.name)),
-        _ => MenuAction::Open(agent_menu(session, &agents, now, icons, palette)),
+        _ if agents.is_empty() => MenuAction::Run(client.map_or_else(
+            || switch_command(&session.name),
+            |client| switch_client_command(client, &session.name),
+        )),
+        _ => MenuAction::Open(agent_menu(session, &agents, now, icons, palette, client)),
     };
     MenuItem {
         label,
@@ -369,11 +424,12 @@ fn agent_menu(
     now: Timestamp,
     icons: bool,
     palette: &Palette,
+    client: Option<&str>,
 ) -> Menu {
     let shown = agents.len().min(ROW_CAP);
     let mut items: Vec<MenuItem> = Vec::with_capacity(shown + 1);
     for pane in agents.iter().take(shown) {
-        items.push(agent_item(session, pane, icons));
+        items.push(agent_item(session, pane, icons, client));
     }
     if agents.len() > shown {
         items.push(disabled(format!("… {} more", agents.len() - shown)));
@@ -392,7 +448,12 @@ fn agent_menu(
 }
 
 /// One agent's row: what it declared, what it is asking for, and its pane.
-fn agent_item(session: &SessionEntry, pane: &AgentPane, icons: bool) -> MenuItem {
+fn agent_item(
+    session: &SessionEntry,
+    pane: &AgentPane,
+    icons: bool,
+    client: Option<&str>,
+) -> MenuItem {
     let entry = session
         .agents
         .iter()
@@ -426,7 +487,10 @@ fn agent_item(session: &SessionEntry, pane: &AgentPane, icons: bool) -> MenuItem
         clean(&pane.pane),
     );
     let action = if pane_is_targetable(&pane.pane) {
-        MenuAction::Run(jump_command(&session.name, &pane.pane))
+        MenuAction::Run(client.map_or_else(
+            || jump_command(&session.name, &pane.pane),
+            |client| jump_client_command(client, &session.name, &pane.pane),
+        ))
     } else {
         MenuAction::Disabled
     };
@@ -608,7 +672,7 @@ pub fn attach_command(server: &crate::inventory::ServerId, session: &str) -> Str
 mod tests {
     use super::{
         AgentPane, Args, KEYS, Located, Placement, ROW_CAP, Usage, attach_command,
-        launch_tail_is_valid, menu, parse, parse_launch_tail,
+        launch_tail_is_valid, menu, menu_for_client, parse, parse_launch_tail,
     };
     use crate::attention::Reason;
     use crate::digest::{AgentEntry, SessionEntry, Status};
@@ -617,7 +681,7 @@ mod tests {
     use crate::meta::Selector;
     use crate::theme::{Mark, Palette};
     use crate::time::Timestamp;
-    use crate::tmux::{Menu, MenuAction, display_menu_args};
+    use crate::tmux::{Menu, MenuAction, display_menu_args, display_menu_for_client_args};
 
     const NOW: Timestamp = Timestamp::from_epoch(1_780_000_000);
 
@@ -685,7 +749,24 @@ mod tests {
     #[test]
     fn the_flags_the_picker_accepts_and_the_ones_it_refuses() {
         assert!(parse(&["--popup".to_owned()]).unwrap().popup);
-        assert_eq!(parse(&[]), Ok(Args { popup: false }));
+        assert_eq!(
+            parse(&[
+                "--client".to_owned(),
+                "/dev/ttys007".to_owned(),
+                "--popup".to_owned(),
+            ]),
+            Ok(Args {
+                popup: true,
+                client: Some("/dev/ttys007".to_owned()),
+            })
+        );
+        assert_eq!(
+            parse(&[]),
+            Ok(Args {
+                popup: false,
+                client: None
+            })
+        );
         for spelling in ["-h", "--help"] {
             assert_eq!(
                 parse(&[spelling.to_owned()]),
@@ -699,6 +780,16 @@ mod tests {
             Err(Usage::Unknown("--nope".to_owned()))
         );
         assert_eq!(Usage::Unknown("--nope".to_owned()).code(), 2);
+        assert_eq!(parse(&["--client".to_owned()]), Err(Usage::MissingClient));
+        assert_eq!(
+            parse(&[
+                "--client".to_owned(),
+                "one".to_owned(),
+                "--client".to_owned(),
+                "two".to_owned(),
+            ]),
+            Err(Usage::DuplicateClient)
+        );
     }
 
     #[test]
@@ -940,6 +1031,29 @@ mod tests {
         let window = command.find("select-window").expect("a window step");
         let pane = command.find("select-pane").expect("a pane step");
         assert!(window < pane, "{command}");
+    }
+
+    #[test]
+    fn an_explicit_client_survives_both_menu_levels_and_every_action() {
+        let mut session = running("hub");
+        session.agents = vec![agent("lead", Some("working"), None)];
+        let world = world(vec![session]);
+        let located = [here("hub", &[("lead", "%12")])];
+        let client = "/dev/ttys007";
+        let drawn = menu_for_client(&world, &located, NOW, true, &Palette::DARCULA, Some(client));
+        let words = display_menu_for_client_args(&ServerId::Ambient, Some(client), &drawn);
+        assert_eq!(&words[..3], ["display-menu", "-c", client]);
+        let nested = words.last().expect("the nested menu command");
+        assert!(
+            nested.starts_with("'display-menu' '-c' '/dev/ttys007'"),
+            "{nested}"
+        );
+        assert!(
+            nested.ends_with(
+                "'switch-client -c /dev/ttys007 -t =hub ; select-window -t %12 ; select-pane -t %12'"
+            ),
+            "{nested}"
+        );
     }
 
     #[test]
