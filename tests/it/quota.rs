@@ -477,6 +477,105 @@ fn quota_marks_unobserved_parameter_home_unknown_but_launch_resolves_injected_va
 }
 
 #[test]
+fn quota_self_referential_claude_config_dir_fallback_is_unknown_before_launch_injection() {
+    let root = rig("parameter-home-claude-config-dir");
+    let config =
+        "[profiles]\np = CLAUDE_CONFIG_DIR=${CLAUDE_CONFIG_DIR:-$HOME/.claude-mic} claude\n";
+    std::fs::write(root.join("config"), config).expect("profile config");
+    let cfg = ae::config::parse_identity(config).expect("identity config");
+    let command = cfg
+        .command("p", Some(&root))
+        .expect("profile command")
+        .expect("profile");
+    let other = root.join("other");
+    let resolved =
+        ae::launch_cmd::config_home(&command, ae::tool::ToolKind::Claude, &|name| match name {
+            "HOME" => Some(root.display().to_string()),
+            "CLAUDE_CONFIG_DIR" => Some(other.display().to_string()),
+            _ => None,
+        });
+    let quota_text = run_quota(&root);
+    eprintln!(
+        "quota output:\n{quota_text}launch resolved home: {}",
+        resolved.shown()
+    );
+    assert_eq!(resolved, ae::launch_cmd::Resolved::Path(other));
+    let _ = std::fs::remove_dir_all(&root);
+
+    assert!(!quota_text.contains("77%"), "{quota_text}");
+    let normalized = quota_text.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        normalized.contains("depends on pane variable CLAUDE_CONFIG_DIR"),
+        "{quota_text}"
+    );
+}
+
+#[test]
+fn mixed_recorded_and_legacy_codex_same_profile_do_not_cross_attribute_rollouts() {
+    let root = rig("mixed-recorded-legacy");
+    let a = root.join("codex-a");
+    let b = root.join("codex-b");
+    let day_a = a.join("sessions/2026/09/08");
+    let day_b = b.join("sessions/2026/09/08");
+    std::fs::create_dir_all(&day_a).expect("A rollout dir");
+    std::fs::create_dir_all(&day_b).expect("B rollout dir");
+    let fixture = include_bytes!("../fixtures/quota/codex-rollout.jsonl");
+    let a_seven = fixture.to_vec();
+    let b_ninety_one = String::from_utf8_lossy(fixture).replace("7.0", "91.0");
+    let a_seventy_seven = String::from_utf8_lossy(fixture).replace("7.0", "77.0");
+    std::fs::write(
+        day_a.join(format!("rollout-2026-09-08T09-00-00-{FIRST_ID}.jsonl")),
+        a_seven,
+    )
+    .expect("A/X rollout");
+    std::fs::write(
+        day_b.join(format!("rollout-2026-09-08T09-00-00-{SECOND_ID}.jsonl")),
+        b_ninety_one,
+    )
+    .expect("B/Y rollout");
+    std::fs::write(
+        day_a.join(format!("rollout-2026-09-08T09-00-00-{SECOND_ID}.jsonl")),
+        a_seventy_seven,
+    )
+    .expect("A/Y copied rollout");
+    std::fs::write(
+        root.join("config"),
+        format!("[profiles]\np = CODEX_HOME={} codex\n", b.display()),
+    )
+    .expect("profile config");
+    std::fs::write(
+        root.join("sessions/session/meta"),
+        format!(
+            "schema=2\nseat.main=legacy\nprofile.main=p\nharness_session.main={SECOND_ID}\nagent_bin.main=codex\n"
+        ),
+    )
+    .expect("legacy meta");
+    let control = run_quota(&root);
+    let recorded_a = std::fs::canonicalize(&a).expect("canonical A home");
+    std::fs::create_dir_all(root.join("sessions/recorded")).expect("recorded session directory");
+    std::fs::write(
+        root.join("sessions/recorded/meta"),
+        format!(
+            "schema=2\nseat.main=recorded\nprofile.main=p\nharness_session.main={FIRST_ID}\nagent_bin.main=codex\nconfig_home.main={}\n",
+            recorded_a.display()
+        ),
+    )
+    .expect("recorded meta");
+    let meta_before =
+        std::fs::read_to_string(root.join("sessions/recorded/meta")).expect("recorded meta before");
+    let mixed = run_quota(&root);
+    let meta_after =
+        std::fs::read_to_string(root.join("sessions/recorded/meta")).expect("recorded meta after");
+    assert_eq!(meta_after, meta_before);
+    let _ = std::fs::remove_dir_all(&root);
+
+    assert!(control.contains("91%"), "{control}");
+    assert!(!control.contains("77%"), "{control}");
+    assert!(mixed.contains("7%") && mixed.contains("91%"), "{mixed}");
+    assert!(!mixed.contains("77%"), "{mixed}");
+}
+
+#[test]
 fn changed_config_home_never_relabels_a_retained_rollout() {
     let root = rig("retained-home");
     let changed = root.join(".codex-b/sessions/2026/09/08");

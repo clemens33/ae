@@ -181,6 +181,7 @@ struct Scope {
     source: Option<PathBuf>,
     source_key: Option<PathBuf>,
     profiles: Vec<String>,
+    configured_profiles: Vec<String>,
     clients: Vec<String>,
     hint: Option<String>,
 }
@@ -434,6 +435,17 @@ fn configured_scopes(cfg: &crate::config::IdentityConfig, home: Option<&Path>) -
             .and_then(|label| displayed_client(cfg, label, tool));
         let unknown_variable = std::cell::RefCell::new(None);
         let account_variable = tool.adapter().config_home_env;
+        if let Some(variable) = account_variable
+            && crate::launch_cmd::references_variable(&resolved, variable)
+        {
+            scopes.push(unknown_scope(
+                profile,
+                tool,
+                client,
+                Some(format!("depends on pane variable {variable}")),
+            ));
+            continue;
+        }
         let resolution = crate::launch_cmd::config_home_resolution(&resolved, tool, &|name| {
             if name == "HOME" {
                 return home.map(|path| path.display().to_string());
@@ -473,6 +485,7 @@ fn configured_scopes(cfg: &crate::config::IdentityConfig, home: Option<&Path>) -
             scope.tool == tool && scope.source_key == source_key && scope.hint == hint
         }) {
             scope.profiles.push(profile.clone());
+            scope.configured_profiles.push(profile.clone());
             if let Some(client) = client
                 && !scope.clients.contains(&client)
             {
@@ -485,6 +498,7 @@ fn configured_scopes(cfg: &crate::config::IdentityConfig, home: Option<&Path>) -
                 source,
                 source_key,
                 profiles: vec![profile.clone()],
+                configured_profiles: vec![profile.clone()],
                 clients: client.into_iter().collect(),
                 hint,
             });
@@ -606,6 +620,7 @@ fn unknown_scope(
         source: None,
         source_key: None,
         profiles: vec![profile.to_owned()],
+        configured_profiles: vec![profile.to_owned()],
         clients: client.into_iter().collect(),
         hint,
     }
@@ -748,6 +763,7 @@ fn add_recorded_codex_scopes(scopes: &mut Vec<Scope>, fleet: &FleetRollouts) {
                         source: Some(source.clone()),
                         source_key: Some(source_key.clone()),
                         profiles: vec![rollout.profile.clone()],
+                        configured_profiles: Vec::new(),
                         clients: Vec::new(),
                         hint: None,
                     });
@@ -769,6 +785,7 @@ fn add_recorded_codex_scopes(scopes: &mut Vec<Scope>, fleet: &FleetRollouts) {
                         source: None,
                         source_key: None,
                         profiles: vec![rollout.profile.clone()],
+                        configured_profiles: Vec::new(),
                         clients: Vec::new(),
                         hint: Some(reason.clone()),
                     });
@@ -869,7 +886,7 @@ fn scope_rollouts<'a>(scope: &Scope, fleet: &'a FleetRollouts) -> Vec<&'a FleetR
         .rollouts
         .iter()
         .filter(|rollout| match &rollout.location {
-            RolloutLocation::Configured => scope.profiles.contains(&rollout.profile),
+            RolloutLocation::Configured => scope.configured_profiles.contains(&rollout.profile),
             RolloutLocation::Recorded { source_key, .. } => {
                 scope.source_key.as_ref() == Some(source_key)
             }
@@ -1757,6 +1774,7 @@ mod tests {
             source: Some(root.join(".codex/sessions")),
             source_key: Some(root.join(".codex/sessions")),
             profiles: vec!["codex-profile".to_owned()],
+            configured_profiles: vec!["codex-profile".to_owned()],
             clients: Vec::new(),
             hint: None,
         };
@@ -1841,6 +1859,7 @@ mod tests {
             source: Some(root.join(".codex/sessions")),
             source_key: Some(root.join(".codex/sessions")),
             profiles: vec!["codex-profile".to_owned()],
+            configured_profiles: vec!["codex-profile".to_owned()],
             clients: Vec::new(),
             hint: None,
         };
@@ -1957,6 +1976,7 @@ mod tests {
                 source: Some(source),
                 source_key: None,
                 profiles: vec!["p".to_owned()],
+                configured_profiles: vec!["p".to_owned()],
                 clients: Vec::new(),
                 hint: None,
             };

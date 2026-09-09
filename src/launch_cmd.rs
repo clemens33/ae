@@ -272,6 +272,20 @@ pub(crate) fn prefix_mentions(command: &SimpleCommand, variable: &str) -> bool {
     false
 }
 
+/// Whether the command text expands `variable` before the launcher injects
+/// its effective environment.
+#[must_use]
+pub(crate) fn references_variable(command: &ResolvedCommand, variable: &str) -> bool {
+    let referenced = std::cell::Cell::new(false);
+    let _ = crate::words::split_words(command.as_str(), &|name| {
+        if name == variable {
+            referenced.set(true);
+        }
+        None
+    });
+    referenced.get()
+}
+
 /// The config home a resolved launch command will give its tool.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Resolved {
