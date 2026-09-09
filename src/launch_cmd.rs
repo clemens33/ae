@@ -323,10 +323,63 @@ pub fn config_home(
     else {
         return Resolved::Absent;
     };
-    let words = match crate::words::split_words(cmd.as_str(), &|name| lookup(name)) {
-        Ok(words) => words,
+    let environment = match command_environment(cmd, lookup) {
+        Ok(environment) => environment,
         Err(why) => return Resolved::Unknown(why),
     };
+    if let Some(value) = environment.value(variable, lookup) {
+        return absolute_value(variable, &value);
+    }
+    default_home(&environment, default, lookup)
+}
+
+/// The default config home below the command's effective `HOME`, ignoring the
+/// tool-specific relocation variable.
+#[must_use]
+pub(crate) fn default_config_home(
+    cmd: &ResolvedCommand,
+    tool: ToolKind,
+    lookup: &dyn Fn(&str) -> Option<String>,
+) -> Resolved {
+    let Some(default) = tool.adapter().config_home_default else {
+        return Resolved::Absent;
+    };
+    let environment = match command_environment(cmd, lookup) {
+        Ok(environment) => environment,
+        Err(why) => return Resolved::Unknown(why),
+    };
+    default_home(&environment, default, lookup)
+}
+
+struct CommandEnvironment {
+    clear: bool,
+    unset: Vec<String>,
+    assignments: Vec<(String, String)>,
+}
+
+impl CommandEnvironment {
+    fn value(&self, name: &str, lookup: &dyn Fn(&str) -> Option<String>) -> Option<String> {
+        if let Some((_, value)) = self
+            .assignments
+            .iter()
+            .rev()
+            .find(|(candidate, _)| candidate == name)
+        {
+            return Some(value.clone());
+        }
+        if self.clear || self.unset.iter().any(|candidate| candidate == name) {
+            None
+        } else {
+            lookup(name)
+        }
+    }
+}
+
+fn command_environment(
+    cmd: &ResolvedCommand,
+    lookup: &dyn Fn(&str) -> Option<String>,
+) -> Result<CommandEnvironment, String> {
+    let words = crate::words::split_words(cmd.as_str(), &|name| lookup(name))?;
     let mut index = 0;
     let mut clear = false;
     let mut unset: Vec<String> = Vec::new();
@@ -347,7 +400,7 @@ pub fn config_home(
                 }
                 "-u" => {
                     let Some(name) = words.get(index + 1) else {
-                        return Resolved::Unknown("env -u has no variable name".to_owned());
+                        return Err("env -u has no variable name".to_owned());
                     };
                     unset.push(name.value.clone());
                     index += 2;
@@ -362,30 +415,19 @@ pub fn config_home(
             }
         }
     }
+    Ok(CommandEnvironment {
+        clear,
+        unset,
+        assignments,
+    })
+}
 
-    let assigned = |name: &str| {
-        assignments
-            .iter()
-            .rev()
-            .find(|(candidate, _)| candidate == name)
-            .map(|(_, value)| value.clone())
-    };
-    let inherited = |name: &str| {
-        if clear || unset.iter().any(|candidate| candidate == name) {
-            None
-        } else {
-            lookup(name)
-        }
-    };
-    if let Some(value) = assigned(variable) {
-        return absolute_value(variable, &value);
-    }
-    if !unset.iter().any(|candidate| candidate == variable)
-        && let Some(value) = inherited(variable)
-    {
-        return absolute_value(variable, &value);
-    }
-    let home = assigned("HOME").or_else(|| inherited("HOME"));
+fn default_home(
+    environment: &CommandEnvironment,
+    default: &str,
+    lookup: &dyn Fn(&str) -> Option<String>,
+) -> Resolved {
+    let home = environment.value("HOME", lookup);
     let Some(home) = home else {
         return Resolved::Absent;
     };

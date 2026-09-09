@@ -298,16 +298,28 @@ fn build_with_snapshot(
         &seat.config_files,
     );
     let current = crate::launch_cmd::config_home(&seat.command, seat.tool, &env_lookup);
-    let canonical = canonical_config_home(&current)?;
-    let (effective, config_home_row) = match &seat.config_home {
+    let canonical_current = canonical_config_home(&current);
+    let (current_for_notice, effective, config_home_row) = match &seat.config_home {
         crate::meta::RecordedConfigHome::Missing => {
-            (canonical.clone(), Some(canonical.record_value()))
+            let canonical = canonical_current?;
+            (
+                canonical.clone(),
+                canonical.clone(),
+                Some(canonical.record_value()),
+            )
         }
-        crate::meta::RecordedConfigHome::Path(path) => {
-            (crate::launch_cmd::Resolved::Path(path.clone()), None)
-        }
-        crate::meta::RecordedConfigHome::Absent => (crate::launch_cmd::Resolved::Absent, None),
+        crate::meta::RecordedConfigHome::Path(path) => (
+            current_notice(canonical_current),
+            crate::launch_cmd::Resolved::Path(path.clone()),
+            None,
+        ),
+        crate::meta::RecordedConfigHome::Absent => (
+            current_notice(canonical_current),
+            crate::launch_cmd::Resolved::Absent,
+            None,
+        ),
         crate::meta::RecordedConfigHome::Unknown => (
+            current_notice(canonical_current),
             crate::launch_cmd::Resolved::Unknown("recorded as unknown".to_owned()),
             None,
         ),
@@ -319,23 +331,29 @@ fn build_with_snapshot(
     };
     let config_home_notice = (mode == Mode::Resume
         && seat.config_home != crate::meta::RecordedConfigHome::Missing
-        && canonical != effective)
+        && current_for_notice != effective)
         .then(|| {
             format!(
                 "ae: seat {slot}: config now points {} at {}; the retained conversation lives in {}, resuming there — end the session to adopt {}",
                 seat.tool.as_str(),
-                canonical.shown(),
+                current_for_notice.shown(),
                 effective.shown(),
-                canonical.shown()
+                current_for_notice.shown()
             )
         });
     let composed = compose(dir, slot, &seat, &ctx, mode, &effective);
     let words = crate::words::split_words(&composed, &env_lookup)?;
     let (mut prefix, argv) = peel_env(words)?;
-    let force_config_home = config_home_is_explicit(&prefix, seat.tool) && current != effective;
-    if force_config_home {
-        apply_config_home(&mut prefix, seat.tool, &effective);
-    }
+    let default = crate::launch_cmd::default_config_home(&seat.command, seat.tool, &env_lookup);
+    let canonical_default = canonical_config_home(&default).ok();
+    reconcile_config_home(
+        &mut prefix,
+        seat.tool,
+        &current,
+        &current_for_notice,
+        &effective,
+        canonical_default.as_ref(),
+    );
     Ok(Plan {
         mode,
         tool: seat.tool,
@@ -345,6 +363,14 @@ fn build_with_snapshot(
         argv,
         config_home_row,
         config_home_notice,
+    })
+}
+
+fn current_notice(
+    canonical: Result<crate::launch_cmd::Resolved, String>,
+) -> crate::launch_cmd::Resolved {
+    canonical.unwrap_or_else(|why| {
+        crate::launch_cmd::Resolved::Unknown(format!("current config unresolvable: {why}"))
     })
 }
 
@@ -632,17 +658,36 @@ fn peel_env(words: Vec<crate::words::Word>) -> Result<(EnvPrefix, Vec<String>), 
     Ok((prefix, argv))
 }
 
-/// Whether the executor already exposes the tool-specific config-home variable.
-fn config_home_is_explicit(prefix: &EnvPrefix, tool: ToolKind) -> bool {
-    let Some(variable) = tool.adapter().config_home_env else {
-        return false;
-    };
-    if prefix.assign.iter().any(|(name, _)| name == variable) {
-        return true;
+/// Reconcile mutable config with the store identity recorded by the seat.
+fn reconcile_config_home(
+    prefix: &mut EnvPrefix,
+    tool: ToolKind,
+    current: &crate::launch_cmd::Resolved,
+    canonical_current: &crate::launch_cmd::Resolved,
+    effective: &crate::launch_cmd::Resolved,
+    default: Option<&crate::launch_cmd::Resolved>,
+) {
+    if !matches!(effective, crate::launch_cmd::Resolved::Path(_)) {
+        return;
     }
-    !prefix.clear
-        && !prefix.unset.iter().any(|name| name == variable)
-        && env_lookup(variable).is_some()
+    if default == Some(effective) {
+        if canonical_current != effective {
+            use_default_config_home(prefix, tool);
+        }
+    } else if current != effective {
+        apply_config_home(prefix, tool, effective);
+    }
+}
+
+/// Select a recorded default store without relocating the harness into it.
+fn use_default_config_home(prefix: &mut EnvPrefix, tool: ToolKind) {
+    let Some(variable) = tool.adapter().config_home_env else {
+        return;
+    };
+    prefix.assign.retain(|(name, _)| name != variable);
+    if !prefix.unset.iter().any(|name| name == variable) {
+        prefix.unset.push(variable.to_owned());
+    }
 }
 
 /// Make a recorded concrete store override mutable profile/environment state.

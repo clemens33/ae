@@ -284,15 +284,36 @@ impl Rig {
 
     /// Replace the config so the seat's `custom` profile runs `cmd` verbatim.
     fn only_profile(&self, cmd: &str) {
+        self.profile("custom", cmd);
+    }
+
+    /// Replace the config with one named profile running `cmd` verbatim.
+    fn profile(&self, profile: &str, cmd: &str) {
         assert!(
             std::fs::write(
                 &self.config,
                 format!(
-                    "[profiles]\ncustom = \"{cmd}\"\n\n[roster]\nlead = custom\n\n[workspace]\nmain = lead\n"
+                    "[profiles]\n{profile} = \"{cmd}\"\n\n[roster]\nlead = {profile}\n\n[workspace]\nmain = lead\n"
                 ),
             )
             .is_ok(),
             "a fixture config"
+        );
+    }
+
+    /// Replace one profile with a configured client for `tool` and its store.
+    fn client_profile(&self, profile: &str, tool: &str, config_home: &Path) {
+        assert!(
+            std::fs::write(
+                &self.config,
+                format!(
+                    "[clients]\nselected = {} config_home={}\n\n[profiles]\n{profile} = \"selected --flag\"\n\n[roster]\nlead = {profile}\n\n[workspace]\nmain = lead\n",
+                    self.tool(tool),
+                    config_home.display()
+                ),
+            )
+            .is_ok(),
+            "a client fixture config"
         );
     }
 
@@ -866,6 +887,95 @@ fn a_default_claude_home_is_recorded_without_becoming_an_explicit_override() {
         meta.contains(&format!("config_home.main={}\n", expected.display())),
         "the probe and purge still receive the recorded store: {meta}"
     );
+
+    let (reported, _) = rig.exec();
+    assert!(
+        reported.contains(&"CLAUDE_CONFIG_DIR=<unset>".to_owned()),
+        "default -> default never turns the default into an override: {reported:?}"
+    );
+    let custom = rig.scratch.join("later-client");
+    std::fs::create_dir_all(&custom).expect("later client store");
+    rig.client_profile("claude", "claude", &custom);
+    let (reported, _) = rig.exec();
+    assert!(
+        reported.contains(&"CLAUDE_CONFIG_DIR=<unset>".to_owned()),
+        "default -> client unsets the relocation variable: {reported:?}"
+    );
+}
+
+#[test]
+fn a_recorded_custom_home_wins_after_the_client_is_removed_or_changed() {
+    for next in ["default", "client-b"] {
+        let rig = Rig::new(&format!("custom-to-{next}"));
+        let first = rig.scratch.join("account-a");
+        let second = rig.scratch.join("account-b");
+        std::fs::create_dir_all(&first).expect("first account");
+        std::fs::create_dir_all(&second).expect("second account");
+        rig.client_profile("claude", "claude", &first);
+        rig.seat("claude", "");
+        let _ = rig.exec();
+        let first = std::fs::canonicalize(first).expect("canonical first account");
+
+        if next == "default" {
+            rig.profile("claude", &format!("{} --flag", rig.tool("claude")));
+        } else {
+            rig.client_profile("claude", "claude", &second);
+        }
+        let (reported, _) = rig.exec();
+        assert!(
+            reported.contains(&format!("CLAUDE_CONFIG_DIR={}", first.display())),
+            "client A -> {next} retains custom A: {reported:?}"
+        );
+    }
+}
+
+#[test]
+fn a_recorded_default_codex_home_unsets_a_later_client_override() {
+    let rig = Rig::new("codex-default-to-client");
+    rig.seat("codex", "");
+    let _ = rig.exec();
+    let custom = rig.scratch.join("later-codex-client");
+    std::fs::create_dir_all(&custom).expect("later codex client store");
+    rig.client_profile("codex", "codex", &custom);
+
+    let (reported, _) = rig.exec();
+    assert!(
+        reported.contains(&"CODEX_HOME=<unset>".to_owned()),
+        "default -> client unsets CODEX_HOME too: {reported:?}"
+    );
+}
+
+#[test]
+fn a_recorded_home_survives_an_unresolvable_current_config() {
+    use std::os::unix::fs::symlink;
+
+    for bad_tail in ["parent", "dangling"] {
+        let rig = Rig::new(&format!("recorded-vs-{bad_tail}"));
+        let recorded = rig.scratch.join("recorded");
+        std::fs::create_dir_all(&recorded).expect("recorded account");
+        rig.client_profile("claude", "claude", &recorded);
+        rig.seat("claude", "");
+        let _ = rig.exec();
+        let recorded = std::fs::canonicalize(recorded).expect("canonical recorded account");
+
+        let bad = if bad_tail == "parent" {
+            rig.scratch.join("missing/../account")
+        } else {
+            let dangling = rig.scratch.join("dangling");
+            symlink(rig.scratch.join("absent-target"), &dangling).expect("dangling link");
+            dangling.join("account")
+        };
+        rig.client_profile("claude", "claude", &bad);
+        let (reported, said) = rig.exec();
+        assert!(
+            said.contains("current config unresolvable:"),
+            "the degraded current config is visible: {said}"
+        );
+        assert!(
+            reported.contains(&format!("CLAUDE_CONFIG_DIR={}", recorded.display())),
+            "the recorded store still reaches exec: {reported:?}"
+        );
+    }
 }
 
 #[test]
