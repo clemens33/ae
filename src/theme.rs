@@ -919,8 +919,8 @@ pub fn orchestrator_strip(
     )
 }
 
-/// How many sessions the fleet strip draws before it starts counting instead.
-const STRIP_ROWS: usize = 8;
+/// How many sessions the fleet strip draws before it starts counting instead: twelve.
+const STRIP_ROWS: usize = 12;
 
 // ---------------------------------------------------------------------------
 // the pane border
@@ -1708,12 +1708,15 @@ mod tests {
             drawn.contains(&"s01") && drawn.contains(&"s04"),
             "needs-you kept: {strip}"
         );
+        let current_name = format!("s{:02}", super::STRIP_ROWS + 1);
+        let newest_calm = format!("s{:02}", super::STRIP_ROWS);
+        let next_newest_calm = format!("s{:02}", super::STRIP_ROWS - 1);
         assert!(
-            drawn.contains(&"s09"),
+            drawn.contains(&current_name.as_str()),
             "the current session is never shed: {strip}"
         );
         assert!(
-            !drawn.contains(&"s08") && !drawn.contains(&"s07"),
+            !drawn.contains(&newest_calm.as_str()) && !drawn.contains(&next_newest_calm.as_str()),
             "the newest calm rows went: {strip}"
         );
         let positions: Vec<usize> = drawn
