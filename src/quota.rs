@@ -10,18 +10,19 @@ use std::fmt::Write as _;
 use std::fs::File;
 use std::io::{self, Read, Seek, Write};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use crate::json::Value;
 use crate::time::Timestamp;
 use crate::tool::{QuotaSource, ToolKind};
 
 const CLAUDE_MAX_BYTES: u64 = 4 * 1024 * 1024;
-const CODEX_TAIL_BYTES: u64 = 1024 * 1024;
+const CODEX_TAIL_BYTES: u64 = 256 * 1024;
 const SESSION_META_MAX_BYTES: u64 = 1024 * 1024;
 const QUOTA_MAX_FILES: usize = 4_096;
 const QUOTA_MAX_BYTES: u64 = 16 * 1024 * 1024;
 const QUOTA_MAX_ELAPSED: Duration = Duration::from_secs(2);
+const CODEX_DISPLAY_ROLLOUTS: usize = 3;
 const TABLE_MAX_WIDTHS: [usize; 8] = [40, 35, 22, 6, 5, 9, 9, 20];
 
 /// Maximum age of an observation that may be called fresh.
@@ -191,6 +192,14 @@ struct Group {
     owner: Option<String>,
     rows: Vec<Row>,
     hint: Option<&'static str>,
+    summary: Option<RolloutSummary>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RolloutSummary {
+    hidden: usize,
+    oldest_observed: Option<i64>,
+    status: Option<Status>,
 }
 
 enum ReadRows {
@@ -222,6 +231,34 @@ enum FleetStatus {
 struct FleetRollouts {
     rollouts: Vec<FleetRollout>,
     status: FleetStatus,
+}
+
+struct RolloutFile {
+    path: PathBuf,
+    metadata: std::fs::Metadata,
+    modified: Option<SystemTime>,
+}
+
+enum RolloutSource {
+    File(RolloutFile),
+    Missing,
+    Failed,
+}
+
+struct LocatedRollout<'a> {
+    rollout: &'a FleetRollout,
+    source: RolloutSource,
+    modified: Option<SystemTime>,
+}
+
+struct RankedGroup {
+    group: Group,
+    observed: Option<i64>,
+}
+
+enum RenderLine {
+    Cells([String; 8]),
+    Summary { label: String, status: String },
 }
 
 struct Budget {
@@ -300,6 +337,7 @@ pub fn run(inputs: &Inputs<'_>, out: &mut impl Write, err: &mut impl Write) -> c
                 owner: None,
                 rows: rows_or_placeholder(read_claude(scope, inputs.home, inputs.now, &mut budget)),
                 hint: None,
+                summary: None,
             }),
             QuotaSource::CodexRollouts => {
                 if let Some(fleet) = &fleet {
@@ -314,6 +352,7 @@ pub fn run(inputs: &Inputs<'_>, out: &mut impl Write, err: &mut impl Write) -> c
                 owner: None,
                 rows: vec![placeholder(Status::Unsupported)],
                 hint: quota.unsupported_hint,
+                summary: None,
             }),
         }
     }
@@ -558,46 +597,113 @@ fn session_paths(root: &Path, budget: &mut Budget) -> io::Result<Bounded<Vec<Pat
 }
 
 fn codex_groups(scope: &Scope, fleet: &FleetRollouts, now: i64, budget: &mut Budget) -> Vec<Group> {
-    let mut groups = Vec::new();
-    for rollout in &fleet.rollouts {
-        if !scope.profiles.contains(&rollout.profile)
-            || groups
-                .iter()
-                .any(|group: &Group| group.rollout.as_ref() == Some(&rollout.id))
-        {
-            continue;
-        }
-        let rows = read_codex(scope.home.as_deref(), &rollout.id, now, budget);
-        let exhausted = matches!(&rows, ReadRows::Truncated);
-        groups.push(Group {
-            profiles: scope.profiles.clone(),
-            tool: scope.tool,
-            home: scope.home.clone(),
-            rollout: Some(rollout.id.clone()),
-            owner: Some(rollout.owner.clone()),
-            rows: rows_or_placeholder(rows),
-            hint: None,
-        });
-        if exhausted {
+    let candidates = scope_rollouts(scope, fleet);
+    let total = candidates.len();
+    let mut truncated = fleet.status == FleetStatus::Truncated;
+    let located = locate_rollouts(scope, &candidates, budget, &mut truncated);
+
+    let mut ranked = Vec::new();
+    for located in located {
+        let rows = match located.source {
+            RolloutSource::File(file) => read_codex_file(&file, now, budget),
+            RolloutSource::Missing => ReadRows::Missing,
+            RolloutSource::Failed => ReadRows::Failed,
+        };
+        if matches!(rows, ReadRows::Truncated) {
+            truncated = true;
             break;
         }
-    }
-    let fleet_status = match fleet.status {
-        FleetStatus::Complete => None,
-        FleetStatus::Failed => Some(Status::ReadError),
-        FleetStatus::Truncated => Some(Status::Truncated),
-    };
-    if let Some(status) = fleet_status {
-        groups.push(Group {
-            profiles: scope.profiles.clone(),
-            tool: scope.tool,
-            home: scope.home.clone(),
-            rollout: None,
-            owner: None,
-            rows: vec![placeholder(status)],
-            hint: None,
+        let rows = rows_or_placeholder(rows);
+        let observed = rows.iter().filter_map(|row| row.observed_at).max();
+        ranked.push(RankedGroup {
+            group: Group {
+                profiles: scope.profiles.clone(),
+                tool: scope.tool,
+                home: scope.home.clone(),
+                rollout: Some(located.rollout.id.clone()),
+                owner: Some(located.rollout.owner.clone()),
+                rows,
+                hint: None,
+                summary: None,
+            },
+            observed,
         });
     }
+    order_ranked_groups(&mut ranked);
+
+    summarize_codex_groups(scope, fleet.status, ranked, total, truncated)
+}
+
+fn scope_rollouts<'a>(scope: &Scope, fleet: &'a FleetRollouts) -> Vec<&'a FleetRollout> {
+    fleet
+        .rollouts
+        .iter()
+        .filter(|rollout| scope.profiles.contains(&rollout.profile))
+        .fold(Vec::new(), |mut unique, rollout| {
+            if !unique
+                .iter()
+                .any(|seen: &&FleetRollout| seen.id == rollout.id)
+            {
+                unique.push(rollout);
+            }
+            unique
+        })
+}
+
+fn locate_rollouts<'a>(
+    scope: &Scope,
+    candidates: &[&'a FleetRollout],
+    budget: &mut Budget,
+    truncated: &mut bool,
+) -> Vec<LocatedRollout<'a>> {
+    let mut located = Vec::new();
+    for &rollout in candidates {
+        let source = match scope.home.as_deref() {
+            Some(home) => match find_codex_rollout(&home.join("sessions"), &rollout.id, budget) {
+                Ok(Bounded::Ready(Some(file))) => RolloutSource::File(file),
+                Ok(Bounded::Ready(None)) => RolloutSource::Missing,
+                Ok(Bounded::Truncated) => {
+                    *truncated = true;
+                    break;
+                }
+                Err(_) => RolloutSource::Failed,
+            },
+            None => RolloutSource::Missing,
+        };
+        let modified = match &source {
+            RolloutSource::File(file) => file.modified,
+            RolloutSource::Missing | RolloutSource::Failed => None,
+        };
+        located.push(LocatedRollout {
+            rollout,
+            source,
+            modified,
+        });
+    }
+    order_located_rollouts(&mut located);
+    located
+}
+
+fn summarize_codex_groups(
+    scope: &Scope,
+    fleet_status: FleetStatus,
+    ranked: Vec<RankedGroup>,
+    total: usize,
+    truncated: bool,
+) -> Vec<Group> {
+    let shown = ranked.len().min(CODEX_DISPLAY_ROLLOUTS);
+    let hidden = total.saturating_sub(shown);
+    let oldest_observed = ranked
+        .iter()
+        .skip(shown)
+        .flat_map(|ranked| ranked.group.rows.iter())
+        .filter_map(|row| row.observed_at)
+        .min();
+    let mut groups: Vec<Group> = ranked
+        .into_iter()
+        .take(CODEX_DISPLAY_ROLLOUTS)
+        .map(|ranked| ranked.group)
+        .collect();
     if groups.is_empty() {
         groups.push(Group {
             profiles: scope.profiles.clone(),
@@ -607,25 +713,58 @@ fn codex_groups(scope: &Scope, fleet: &FleetRollouts, now: i64, budget: &mut Bud
             owner: None,
             rows: vec![placeholder(Status::Unknown)],
             hint: None,
+            summary: None,
+        });
+    }
+    let summary_status = if truncated {
+        Some(Status::Truncated)
+    } else if fleet_status == FleetStatus::Failed {
+        Some(Status::ReadError)
+    } else {
+        None
+    };
+    if hidden > 0 || summary_status.is_some() {
+        groups.push(Group {
+            profiles: Vec::new(),
+            tool: scope.tool,
+            home: scope.home.clone(),
+            rollout: None,
+            owner: None,
+            rows: Vec::new(),
+            hint: None,
+            summary: Some(RolloutSummary {
+                hidden,
+                oldest_observed,
+                status: summary_status,
+            }),
         });
     }
     groups
 }
 
-fn read_codex(home: Option<&Path>, id: &str, now: i64, budget: &mut Budget) -> ReadRows {
-    let Some(home) = home else {
-        return ReadRows::Missing;
-    };
-    if crate::archive::canonical_uuid(id) != id {
-        return ReadRows::Failed;
-    }
-    let path = match find_codex_rollout(&home.join("sessions"), id, budget) {
-        Ok(Bounded::Ready(Some(path))) => path,
-        Ok(Bounded::Ready(None)) => return ReadRows::Missing,
-        Ok(Bounded::Truncated) => return ReadRows::Truncated,
-        Err(_) => return ReadRows::Failed,
-    };
-    let (bytes, starts_at_boundary) = match bounded_tail(&path, CODEX_TAIL_BYTES, budget) {
+fn order_located_rollouts(rollouts: &mut [LocatedRollout<'_>]) {
+    rollouts.sort_by(|left, right| {
+        right
+            .modified
+            .cmp(&left.modified)
+            .then_with(|| left.rollout.owner.cmp(&right.rollout.owner))
+            .then_with(|| left.rollout.id.cmp(&right.rollout.id))
+    });
+}
+
+fn order_ranked_groups(groups: &mut [RankedGroup]) {
+    groups.sort_by(|left, right| {
+        right
+            .observed
+            .cmp(&left.observed)
+            .then_with(|| left.group.owner.cmp(&right.group.owner))
+            .then_with(|| left.group.rollout.cmp(&right.group.rollout))
+    });
+}
+
+fn read_codex_file(file: &RolloutFile, now: i64, budget: &mut Budget) -> ReadRows {
+    let (bytes, starts_at_boundary) = match bounded_tail_after_lstat(file, CODEX_TAIL_BYTES, budget)
+    {
         Ok(Bounded::Ready(tail)) => tail,
         Ok(Bounded::Truncated) => return ReadRows::Truncated,
         Err(_) => return ReadRows::Failed,
@@ -689,15 +828,24 @@ fn render_at(groups: &[Group], home: Option<&Path>, now: i64) -> String {
     const HEADER: [&str; 8] = [
         "PROFILES", "SCOPE", "BUCKET", "WINDOW", "USED", "RESETS", "OBSERVED", "STATUS",
     ];
-    let mut table: Vec<[String; 8]> = vec![HEADER.map(str::to_owned)];
+    let mut table = vec![RenderLine::Cells(HEADER.map(str::to_owned))];
     for group in groups {
+        if let Some(summary) = &group.summary {
+            table.push(RenderLine::Summary {
+                label: rollout_summary_label(summary, now),
+                status: summary
+                    .status
+                    .map_or_else(String::new, |status| status.as_str().to_owned()),
+            });
+            continue;
+        }
         for (index, row) in group.rows.iter().enumerate() {
             let trustworthy = matches!(row.status, Status::Fresh | Status::Stale);
             let status = group.hint.map_or_else(
                 || row.status.as_str().to_owned(),
                 |hint| format!("{} ({hint})", row.status.as_str()),
             );
-            table.push([
+            table.push(RenderLine::Cells([
                 if index == 0 {
                     profiles_label(&group.profiles)
                 } else {
@@ -726,15 +874,38 @@ fn render_at(groups: &[Group], home: Option<&Path>, now: i64) -> String {
                     .flatten()
                     .unwrap_or_else(|| "-".to_owned()),
                 status,
-            ]);
+            ]));
         }
     }
     render_table(&table)
 }
 
-fn render_table(table: &[[String; 8]]) -> String {
+fn rollout_summary_label(summary: &RolloutSummary, now: i64) -> String {
+    if summary.hidden == 0 {
+        return "rollout inventory incomplete".to_owned();
+    }
+    let noun = if summary.hidden == 1 {
+        "rollout"
+    } else {
+        "rollouts"
+    };
+    let mut label = format!("+{} older {noun} not shown", summary.hidden);
+    if let Some(observed) = summary.oldest_observed {
+        let _ = write!(
+            label,
+            " (oldest observed {})",
+            age_label(now.saturating_sub(observed))
+        );
+    }
+    label
+}
+
+fn render_table(table: &[RenderLine]) -> String {
     let mut widths = [0_usize; 8];
-    for row in table {
+    for row in table.iter().filter_map(|line| match line {
+        RenderLine::Cells(row) => Some(row),
+        RenderLine::Summary { .. } => None,
+    }) {
         for (column, value) in row.iter().enumerate() {
             widths[column] = widths[column]
                 .max(value.chars().count())
@@ -742,7 +913,26 @@ fn render_table(table: &[[String; 8]]) -> String {
         }
     }
     let mut out = String::new();
-    for row in table {
+    for line in table {
+        let row = match line {
+            RenderLine::Cells(row) => row,
+            RenderLine::Summary { label, status } => {
+                let indent = widths[0] + 2;
+                out.extend(std::iter::repeat_n(' ', indent));
+                out.push_str(label);
+                if !status.is_empty() {
+                    let status_column = widths[..7].iter().sum::<usize>() + 2 * 7;
+                    let used = indent + label.chars().count();
+                    out.extend(std::iter::repeat_n(
+                        ' ',
+                        status_column.saturating_sub(used).max(2),
+                    ));
+                    out.push_str(status);
+                }
+                out.push('\n');
+                continue;
+            }
+        };
         let wrapped: Vec<Vec<String>> = row
             .iter()
             .enumerate()
@@ -916,6 +1106,7 @@ fn bounded_whole_file(
     Ok(Bounded::Ready(Some(bytes)))
 }
 
+#[cfg(test)]
 fn bounded_tail(
     path: &Path,
     cap: u64,
@@ -935,13 +1126,33 @@ fn bounded_tail(
             "rollout is not a regular file",
         ));
     }
+    let modified = metadata.modified().ok();
+    bounded_tail_after_lstat(
+        &RolloutFile {
+            path: path.to_owned(),
+            metadata,
+            modified,
+        },
+        cap,
+        budget,
+    )
+}
+
+fn bounded_tail_after_lstat(
+    rollout: &RolloutFile,
+    cap: u64,
+    budget: &mut Budget,
+) -> io::Result<Bounded<(Vec<u8>, bool)>> {
+    if cap == 0 {
+        return Ok(Bounded::Truncated);
+    }
     #[allow(
         clippy::disallowed_methods,
         reason = "a door: opens only the exact rollout named by an ae-recorded harness session id"
     )]
-    let mut file = File::open(path)?;
+    let mut file = File::open(&rollout.path)?;
     let opened = file.metadata()?;
-    if !opened.file_type().is_file() || !same_file(&metadata, &opened) {
+    if !opened.file_type().is_file() || !same_file(&rollout.metadata, &opened) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "rollout changed identity before the bounded read",
@@ -994,7 +1205,7 @@ fn find_codex_rollout(
     root: &Path,
     id: &str,
     budget: &mut Budget,
-) -> io::Result<Bounded<Option<PathBuf>>> {
+) -> io::Result<Bounded<Option<RolloutFile>>> {
     let Some(dirs) = codex_rollout_dirs(root, id) else {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -1032,10 +1243,15 @@ fn find_codex_rollout(
                 return Ok(Bounded::Truncated);
             }
             let entry = entry?;
-            let kind = entry.file_type()?;
             let name = entry.file_name();
             if name.to_string_lossy().ends_with(&suffix) {
-                if !kind.is_file() || kind.is_symlink() {
+                let path = entry.path();
+                #[allow(
+                    clippy::disallowed_methods,
+                    reason = "a door: one budgeted lstat validates and ranks an exact ae-owned Codex rollout"
+                )]
+                let metadata = std::fs::symlink_metadata(&path)?;
+                if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
                         "recorded rollout is not a regular file",
@@ -1047,7 +1263,12 @@ fn find_codex_rollout(
                         "recorded rollout id is not unique",
                     ));
                 }
-                found = Some(entry.path());
+                let modified = metadata.modified().ok();
+                found = Some(RolloutFile {
+                    path,
+                    metadata,
+                    modified,
+                });
             }
         }
     }
@@ -1083,10 +1304,12 @@ fn dated_dir(root: &Path, seconds: i64) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Bounded, Budget, CLAUDE_MAX_BYTES, FRESH_SECS, FUTURE_SKEW_SECS, ReadRows, Scope, Status,
-        bounded_tail, bounded_whole_file, claude_cache_path, codex_rollout_dirs, config_home,
-        find_codex_rollout, freshness, percent_label, profiles_label, read_bounded_tail,
-        read_claude, render_table, rows_or_placeholder, vendor_timestamp,
+        Bounded, Budget, CLAUDE_MAX_BYTES, CODEX_TAIL_BYTES, FRESH_SECS, FUTURE_SKEW_SECS,
+        FleetRollout, FleetRollouts, FleetStatus, LocatedRollout, ReadRows, RenderLine,
+        RolloutSource, Scope, Status, bounded_tail, bounded_whole_file, claude_cache_path,
+        codex_groups, codex_rollout_dirs, config_home, find_codex_rollout, freshness,
+        order_located_rollouts, percent_label, profiles_label, read_bounded_tail, read_claude,
+        render_at, render_table, rows_or_placeholder, vendor_timestamp,
     };
     use crate::tool::ToolKind;
 
@@ -1158,7 +1381,155 @@ mod tests {
         let Bounded::Ready(Some(found)) = found else {
             panic!("neighbour rollout was not found");
         };
-        assert_eq!(found, rollout);
+        assert_eq!(found.path, rollout);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn codex_rollouts_read_newest_files_first_then_display_three_by_record_clock() {
+        const NOW: i64 = 1_788_858_600;
+        let root = std::path::PathBuf::from(format!(
+            "/tmp/ae-quota-five-rollouts-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let day = root.join(".codex/sessions/2026/09/08");
+        std::fs::create_dir_all(&day).expect("rollout day");
+        let ids = [
+            "01a08046-2000-7abc-8abc-000000000000",
+            "01a08046-2001-7abc-8abc-000000000001",
+            "01a08046-2002-7abc-8abc-000000000002",
+            "01a08046-2003-7abc-8abc-000000000003",
+            "01a08046-2004-7abc-8abc-000000000004",
+        ];
+        let timestamps = [
+            "2026-09-08T09:00:00Z",
+            "2026-09-08T09:01:00Z",
+            "2026-09-08T09:02:00Z",
+            "2026-09-08T09:03:00Z",
+            "2026-09-08T09:04:00Z",
+        ];
+        let mut fleet = FleetRollouts {
+            rollouts: Vec::new(),
+            status: FleetStatus::Complete,
+        };
+        for (index, (id, timestamp)) in ids.into_iter().zip(timestamps).enumerate() {
+            let record = format!(
+                "{{\"timestamp\":\"{timestamp}\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"token_count\",\"rate_limits\":{{\"limit_id\":\"codex\",\"plan_type\":\"pro\",\"primary\":{{\"used_percent\":{index},\"window_minutes\":300,\"resets_at\":1788861600}}}}}}}}\n"
+            );
+            std::fs::write(day.join(format!("rollout-test-{id}.jsonl")), record)
+                .expect("rollout record");
+            fleet.rollouts.push(FleetRollout {
+                owner: format!("session:seat-{index}"),
+                profile: "codex-profile".to_owned(),
+                id: id.to_owned(),
+            });
+        }
+        let scope = Scope {
+            tool: ToolKind::Codex,
+            home: Some(root.join(".codex")),
+            profiles: vec!["codex-profile".to_owned()],
+        };
+        let groups = codex_groups(&scope, &fleet, NOW, &mut Budget::new());
+        let shown: Vec<_> = groups
+            .iter()
+            .filter(|group| group.summary.is_none())
+            .filter_map(|group| group.owner.as_deref())
+            .collect();
+        assert_eq!(
+            shown,
+            ["session:seat-4", "session:seat-3", "session:seat-2"]
+        );
+        let rendered = render_at(&groups, Some(&root), NOW);
+        assert!(
+            rendered.contains("+2 older rollouts not shown"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("oldest observed 10m ago"), "{rendered}");
+        assert!(!rendered.contains("session:seat-0"), "{rendered}");
+        assert!(rendered.lines().all(|line| line.chars().count() <= 160));
+        assert_eq!(CODEX_TAIL_BYTES, 256 * 1024);
+
+        let older = FleetRollout {
+            owner: "older".to_owned(),
+            profile: "p".to_owned(),
+            id: ids[0].to_owned(),
+        };
+        let newer = FleetRollout {
+            owner: "newer".to_owned(),
+            profile: "p".to_owned(),
+            id: ids[1].to_owned(),
+        };
+        let epoch = std::time::UNIX_EPOCH;
+        let mut located = [
+            LocatedRollout {
+                rollout: &older,
+                source: RolloutSource::Missing,
+                modified: Some(epoch),
+            },
+            LocatedRollout {
+                rollout: &newer,
+                source: RolloutSource::Missing,
+                modified: Some(epoch + std::time::Duration::from_secs(1)),
+            },
+        ];
+        order_located_rollouts(&mut located);
+        assert_eq!(located[0].rollout.owner, "newer");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn codex_budget_exhaustion_marks_the_summary_not_a_rollout_group() {
+        const NOW: i64 = 1_788_858_600;
+        let root = std::path::PathBuf::from(format!(
+            "/tmp/ae-quota-truncated-summary-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let day = root.join(".codex/sessions/2026/09/08");
+        std::fs::create_dir_all(&day).expect("rollout day");
+        let mut fleet = FleetRollouts {
+            rollouts: Vec::new(),
+            status: FleetStatus::Complete,
+        };
+        for index in 0..5 {
+            let id = format!("01a08046-2{index:03}-7abc-8abc-00000000000{index}");
+            std::fs::write(day.join(format!("rollout-test-{id}.jsonl")), b"{}\n")
+                .expect("rollout record");
+            fleet.rollouts.push(FleetRollout {
+                owner: format!("session:seat-{index}"),
+                profile: "codex-profile".to_owned(),
+                id,
+            });
+        }
+        let scope = Scope {
+            tool: ToolKind::Codex,
+            home: Some(root.join(".codex")),
+            profiles: vec!["codex-profile".to_owned()],
+        };
+        let mut budget = Budget {
+            files_left: 4_096,
+            bytes_left: 0,
+            started: std::time::Instant::now(),
+            max_elapsed: std::time::Duration::from_secs(1),
+        };
+        let groups = codex_groups(&scope, &fleet, NOW, &mut budget);
+        assert!(groups.iter().all(|group| {
+            group.summary.is_some() || group.rows.iter().all(|row| row.status != Status::Truncated)
+        }));
+        let summary = groups
+            .iter()
+            .find_map(|group| group.summary.as_ref())
+            .expect("truncated summary");
+        assert_eq!(summary.hidden, 5);
+        assert_eq!(summary.status, Some(Status::Truncated));
+        let rendered = render_at(&groups, Some(&root), NOW);
+        assert!(
+            rendered.lines().any(|line| {
+                line.contains("+5 older rollouts not shown") && line.contains("truncated")
+            }),
+            "{rendered}"
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -1282,7 +1653,7 @@ mod tests {
             label, "50 profiles: profile-0 profile-1 profile-2",
             "the first three profile names stay intact"
         );
-        let rendered = render_table(&[[
+        let rendered = render_table(&[RenderLine::Cells([
             label,
             "scope".to_owned(),
             "bucket".to_owned(),
@@ -1291,7 +1662,7 @@ mod tests {
             "in 1h".to_owned(),
             "1m ago".to_owned(),
             "fresh".to_owned(),
-        ]]);
+        ])]);
         assert!(rendered.contains("profile-2"), "{rendered}");
         assert!(rendered.lines().all(|line| line.chars().count() <= 160));
     }

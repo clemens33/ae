@@ -572,17 +572,23 @@ ae quota
 
 Rows preserve canonical tool, config home, rollout, vendor bucket, and actual window even when
 their display labels wrap. Claude Code reads `$HOME/.claude.json` for its default home and
-`<CLAUDE_CONFIG_DIR>/.claude.json` for a custom home. Codex reads at most the final 1 MiB of the
+`<CLAUDE_CONFIG_DIR>/.claude.json` for a custom home. Codex reads at most the final 256 KiB of the
 rollout named by each fleet session's ae-recorded harness id, looking only in the UUIDv7 UTC day
-and its two neighbouring local-clock days. Its owner is labelled `<session>:<seat>`. A plain
+and its two neighbouring local-clock days. Exact rollout files are ordered by mtime before their
+tails are read so the bounded budget reaches recent activity first; mtime never supplies the
+displayed observation age. Its owner is labelled `<session>:<seat>`. A plain
 `CLAUDE_CONFIG_DIR` or `CODEX_HOME` assignment using only `$HOME` is resolved exactly. `env -i`,
 `env -u`, `HOME=`, another assignment, or another variable expansion makes the home `unknown`
 rather than guessed.
 
+At most three Codex rollout groups appear per scope, newest record observation first. A summary
+line counts older hidden rollouts and reports their oldest known record observation; if discovery
+or reads exhaust the invocation budget, that summary line carries `truncated`.
+
 `fresh` means the vendor observation is at most 15 minutes old. Older unexpired observations are
 `stale`; expired, missing, or clock-skewed observations are `unknown`. Unexpected file kinds,
 oversized files, and malformed complete records are `read-error`. An invocation stops with
-explicit `truncated` rows after 4,096 filesystem entries, 16 MiB of reads, or two seconds. All
+an explicit `truncated` summary after 4,096 filesystem entries, 16 MiB of reads, or two seconds. All
 table lines are at most 160 columns.
 
 Grok Build, Antigravity, OpenCode, and Gemini CLI have no verified reusable local subscription
