@@ -207,6 +207,8 @@ impl Rig {
         let out = ae()
             .env_remove("TMUX")
             .env_remove("TMUX_PANE")
+            .env_remove("CLAUDE_CONFIG_DIR")
+            .env_remove("CODEX_HOME")
             .env("HOME", &self.home)
             .current_dir(&self.project)
             .args([ae::cli::RUN, "--print"])
@@ -249,6 +251,8 @@ impl Rig {
         let out = ae()
             .env_remove("TMUX")
             .env_remove("TMUX_PANE")
+            .env_remove("CLAUDE_CONFIG_DIR")
+            .env_remove("CODEX_HOME")
             // Set so the claude nesting guard has something to REMOVE.
             .env("CLAUDECODE", "1")
             .env("HOME", &self.home)
@@ -299,6 +303,8 @@ impl Rig {
         let mut cmd = ae();
         cmd.env_remove("TMUX")
             .env_remove("TMUX_PANE")
+            .env_remove("CLAUDE_CONFIG_DIR")
+            .env_remove("CODEX_HOME")
             .env("HOME", &self.home)
             .current_dir(&self.project)
             .arg(ae::cli::RUN)
@@ -527,7 +533,7 @@ fn each_tool_gets_the_argv_its_capability_row_promises() {
     );
     assert!(
         plan.contains(r#""CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION":"0""#)
-            && plan.contains("CLAUDE_CONFIG_DIR"),
+            && !plan.contains("CLAUDE_CONFIG_DIR"),
         "{plan}"
     );
 
@@ -839,6 +845,54 @@ fn a_config_home_is_recorded_before_exec_then_survives_config_and_symlink_change
     assert!(
         !reported.contains(&format!("CLAUDE_CONFIG_DIR={}", second.display())),
         "new config root must not capture the retained conversation: {reported:?}"
+    );
+}
+
+#[test]
+fn a_default_claude_home_is_recorded_without_becoming_an_explicit_override() {
+    let rig = Rig::new("default-config-home");
+    rig.seat("claude", "");
+
+    let plan = rig.plan();
+    assert!(!plan.contains("CLAUDE_CONFIG_DIR"), "{plan}");
+    let (reported, _) = rig.exec();
+    assert!(
+        reported.contains(&"CLAUDE_CONFIG_DIR=<unset>".to_owned()),
+        "the default keeps Claude state at ~/.claude.json: {reported:?}"
+    );
+    let meta = std::fs::read_to_string(rig.dir.join("meta")).expect("meta");
+    let expected = std::fs::canonicalize(rig.home.join(".claude")).expect("default store");
+    assert!(
+        meta.contains(&format!("config_home.main={}\n", expected.display())),
+        "the probe and purge still receive the recorded store: {meta}"
+    );
+}
+
+#[test]
+fn a_not_yet_existing_config_home_is_recorded_from_its_canonical_ancestor() {
+    let rig = Rig::new("future-config-home");
+    let parent = rig.scratch.join("account-parent");
+    std::fs::create_dir_all(&parent).expect("existing account parent");
+    let future = parent.join("new/nested");
+    rig.only_profile(&format!(
+        "CLAUDE_CONFIG_DIR={} {} --flag",
+        future.display(),
+        rig.tool("claude")
+    ));
+    rig.seat("custom", "");
+
+    let expected = std::fs::canonicalize(&parent)
+        .expect("canonical parent")
+        .join("new/nested");
+    let (reported, _) = rig.exec();
+    assert!(
+        reported.contains(&format!("CLAUDE_CONFIG_DIR={}", expected.display())),
+        "the reconstructed canonical path reaches exec: {reported:?}"
+    );
+    let meta = std::fs::read_to_string(rig.dir.join("meta")).expect("meta");
+    assert!(
+        meta.contains(&format!("config_home.main={}\n", expected.display())),
+        "the future store is pinned as a path, not unknown: {meta}"
     );
 }
 

@@ -298,17 +298,11 @@ fn build_with_snapshot(
         &seat.config_files,
     );
     let current = crate::launch_cmd::config_home(&seat.command, seat.tool, &env_lookup);
-    let canonical = canonical_config_home(&current);
+    let canonical = canonical_config_home(&current)?;
     let (effective, config_home_row) = match &seat.config_home {
-        crate::meta::RecordedConfigHome::Missing => (
-            match (&canonical, &current) {
-                (crate::launch_cmd::Resolved::Unknown(_), crate::launch_cmd::Resolved::Path(_)) => {
-                    current.clone()
-                }
-                _ => canonical.clone(),
-            },
-            Some(canonical.record_value()),
-        ),
+        crate::meta::RecordedConfigHome::Missing => {
+            (canonical.clone(), Some(canonical.record_value()))
+        }
         crate::meta::RecordedConfigHome::Path(path) => {
             (crate::launch_cmd::Resolved::Path(path.clone()), None)
         }
@@ -338,7 +332,10 @@ fn build_with_snapshot(
     let composed = compose(dir, slot, &seat, &ctx, mode, &effective);
     let words = crate::words::split_words(&composed, &env_lookup)?;
     let (mut prefix, argv) = peel_env(words)?;
-    apply_config_home(&mut prefix, seat.tool, &effective);
+    let force_config_home = config_home_is_explicit(&prefix, seat.tool) && current != effective;
+    if force_config_home {
+        apply_config_home(&mut prefix, seat.tool, &effective);
+    }
     Ok(Plan {
         mode,
         tool: seat.tool,
@@ -460,20 +457,80 @@ fn contains_id(root: &Path, id: &str, depth: usize) -> bool {
 }
 
 /// Canonicalize a first-start config home before it becomes seat identity.
-fn canonical_config_home(resolved: &crate::launch_cmd::Resolved) -> crate::launch_cmd::Resolved {
+///
+/// A tool may create its account directory on first launch. In that case the
+/// longest existing ancestor is canonicalized and the still-missing tail is
+/// appended without following anything in that tail.
+fn canonical_config_home(
+    resolved: &crate::launch_cmd::Resolved,
+) -> Result<crate::launch_cmd::Resolved, String> {
     let crate::launch_cmd::Resolved::Path(path) = resolved else {
-        return resolved.clone();
+        return Ok(resolved.clone());
     };
-    #[allow(
-        clippy::disallowed_methods,
-        reason = "a door: first start pins the tool store's canonical location before exec"
-    )]
-    match std::fs::canonicalize(path) {
-        Ok(canonical) => crate::launch_cmd::Resolved::Path(canonical),
-        Err(why) => crate::launch_cmd::Resolved::Unknown(format!(
-            "could not canonicalize {} ({why})",
-            path.display()
-        )),
+    let mut probe = path.as_path();
+    let mut tail = Vec::new();
+    loop {
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "a door: first start pins the tool store's longest existing canonical ancestor before exec"
+        )]
+        match std::fs::canonicalize(probe) {
+            Ok(mut canonical) => {
+                for component in tail.iter().rev() {
+                    canonical.push(component);
+                }
+                return Ok(crate::launch_cmd::Resolved::Path(canonical));
+            }
+            Err(why) if why.kind() == std::io::ErrorKind::NotFound => {}
+            Err(why) => {
+                return Err(format!(
+                    "could not canonicalize config home {} ({why})",
+                    path.display()
+                ));
+            }
+        }
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "a door: a dangling link in a future config-home tail must be refused rather than recorded lexically"
+        )]
+        match std::fs::symlink_metadata(probe) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(format!(
+                    "config home {} has a symbolic link in its non-existing tail",
+                    path.display()
+                ));
+            }
+            Ok(_) => {}
+            Err(why) if why.kind() == std::io::ErrorKind::NotFound => {}
+            Err(why) => {
+                return Err(format!(
+                    "could not inspect config home {} ({why})",
+                    path.display()
+                ));
+            }
+        }
+        match probe.components().next_back() {
+            Some(std::path::Component::Normal(component)) => tail.push(component.to_os_string()),
+            Some(std::path::Component::ParentDir) => {
+                return Err(format!(
+                    "config home {} has '..' in its non-existing tail",
+                    path.display()
+                ));
+            }
+            _ => {
+                return Err(format!(
+                    "config home {} has no existing ancestor",
+                    path.display()
+                ));
+            }
+        }
+        let Some(parent) = probe.parent() else {
+            return Err(format!(
+                "config home {} has no existing ancestor",
+                path.display()
+            ));
+        };
+        probe = parent;
     }
 }
 
@@ -573,6 +630,19 @@ fn peel_env(words: Vec<crate::words::Word>) -> Result<(EnvPrefix, Vec<String>), 
         return Err("a launch command with no binary to run".to_owned());
     }
     Ok((prefix, argv))
+}
+
+/// Whether the executor already exposes the tool-specific config-home variable.
+fn config_home_is_explicit(prefix: &EnvPrefix, tool: ToolKind) -> bool {
+    let Some(variable) = tool.adapter().config_home_env else {
+        return false;
+    };
+    if prefix.assign.iter().any(|(name, _)| name == variable) {
+        return true;
+    }
+    !prefix.clear
+        && !prefix.unset.iter().any(|name| name == variable)
+        && env_lookup(variable).is_some()
 }
 
 /// Make a recorded concrete store override mutable profile/environment state.
@@ -921,6 +991,32 @@ mod tests {
             "{}",
             plan.render()
         );
+    }
+
+    #[test]
+    fn a_future_config_home_refuses_parent_segments_and_dangling_links() {
+        use std::os::unix::fs::symlink;
+
+        let root =
+            std::env::temp_dir().join(format!("ae-future-config-home-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("existing ancestor");
+        let parent = crate::launch_cmd::Resolved::Path(root.join("missing/../account"));
+        assert!(
+            canonical_config_home(&parent)
+                .expect_err("a parent segment in the missing tail refuses")
+                .contains("'..'")
+        );
+
+        let dangling = root.join("dangling");
+        symlink(root.join("absent-target"), &dangling).expect("dangling link");
+        let linked = crate::launch_cmd::Resolved::Path(dangling.join("account"));
+        assert!(
+            canonical_config_home(&linked)
+                .expect_err("a dangling link in the missing tail refuses")
+                .contains("symbolic link")
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
